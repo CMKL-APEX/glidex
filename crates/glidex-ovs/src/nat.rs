@@ -64,18 +64,34 @@ impl NatState {
 
     /// Existing reservation for `mac`, or the lowest free pool address.
     pub fn allocate(&mut self, mac: &str) -> Result<Ipv4Addr, OvsError> {
+        self.allocate_avoiding(mac, &BTreeMap::new())
+    }
+
+    /// Like [`allocate`](Self::allocate), but a new reservation skips
+    /// addresses dnsmasq still has leased to another MAC (`leases`, from
+    /// [`active_leases`]): dnsmasq won't hand a reserved address out while
+    /// that lease lasts, so the VM would get a pool address instead. Such
+    /// addresses are used only when nothing else is free.
+    pub fn allocate_avoiding(&mut self, mac: &str, leases: &BTreeMap<Ipv4Addr, String>) -> Result<Ipv4Addr, OvsError> {
         validate_mac(mac)?;
         let mac = mac.to_ascii_lowercase();
         if let Some(ip) = self.reservations.get(&mac) {
             return Ok(*ip);
         }
         let used: std::collections::BTreeSet<Ipv4Addr> = self.reservations.values().copied().collect();
-        let free = (u32::from(self.pool_start)..=u32::from(self.pool_end))
+        let free: Vec<Ipv4Addr> = (u32::from(self.pool_start)..=u32::from(self.pool_end))
             .map(Ipv4Addr::from)
-            .find(|ip| !used.contains(ip))
+            .filter(|ip| !used.contains(ip))
+            .collect();
+        let leased_elsewhere = |ip: &Ipv4Addr| leases.get(ip).is_some_and(|m| *m != mac);
+        let pick = free
+            .iter()
+            .find(|ip| !leased_elsewhere(ip))
+            .or_else(|| free.first())
+            .copied()
             .ok_or_else(|| OvsError::conflict(format!("NAT pool of '{}' is exhausted", self.bridge)))?;
-        self.reservations.insert(mac, free);
-        Ok(free)
+        self.reservations.insert(mac, pick);
+        Ok(pick)
     }
 
     pub fn release(&mut self, mac: &str) {
@@ -268,11 +284,30 @@ pub fn write_dnsmasq_files(exec: &dyn Exec, state: &NatState) -> Result<(), OvsE
     Ok(())
 }
 
+/// Remove dnsmasq's files for a deleted network, leases included: a
+/// recreated network starts its reservations over, and old leases would
+/// block them.
 pub fn remove_dnsmasq_files(exec: &dyn Exec, state: &NatState) -> Result<(), OvsError> {
     exec.remove_file(&state.conf_path())?;
     exec.remove_file(&state.hosts_path())?;
     exec.remove_file(&state.pid_path())?;
+    exec.remove_file(&state.lease_path())?;
     Ok(())
+}
+
+/// Unexpired leases in a dnsmasq lease file (`<expiry> <mac> <ip> ...`
+/// per line; expiry 0 = infinite), as address → lowercase MAC.
+pub fn active_leases(contents: &str, now_unix: u64) -> BTreeMap<Ipv4Addr, String> {
+    contents
+        .lines()
+        .filter_map(|l| {
+            let mut f = l.split_whitespace();
+            let expiry: u64 = f.next()?.parse().ok()?;
+            let mac = f.next()?.to_ascii_lowercase();
+            let ip: Ipv4Addr = f.next()?.parse().ok()?;
+            (expiry == 0 || expiry > now_unix).then_some((ip, mac))
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -333,6 +368,31 @@ mod tests {
         assert_eq!(s.allocate("02:aa:00:00:00:09").unwrap(), a, "freed address reused");
         assert!(s.allocate("ff:ff:ff:ff:ff:ff").is_err());
         assert_eq!(s.dnsmasq_hosts(), "02:aa:00:00:00:02,10.88.0.3\n02:aa:00:00:00:09,10.88.0.2\n");
+    }
+
+    #[test]
+    fn allocation_skips_addresses_leased_to_other_macs() {
+        // A deleted VM's lease on .2 outlives its reservation.
+        let leases = active_leases(
+            "2000 02:89:53:f9:ac:2d 10.88.0.2 * ff:b5\n\
+             500 02:00:00:00:00:77 10.88.0.3 * ff:00\n\
+             0 02:AA:00:00:00:01 10.88.0.4 host *\n\
+             garbage line\n",
+            1000,
+        );
+        assert_eq!(leases.len(), 2, "expired and malformed lines dropped: {leases:?}");
+        assert_eq!(leases[&"10.88.0.4".parse().unwrap()], "02:aa:00:00:00:01", "infinite lease kept, MAC lowercased");
+        let mut s = NatState::new("gxbr-nat", net("10.88.0.0/24"), true).unwrap();
+        assert_eq!(s.allocate_avoiding("02:aa:00:00:00:09", &leases).unwrap().to_string(), "10.88.0.3", ".2 is still leased, .3 expired");
+        // A MAC's own lease doesn't block it (.2 is still someone else's).
+        assert_eq!(s.allocate_avoiding("02:aa:00:00:00:01", &leases).unwrap().to_string(), "10.88.0.4");
+    }
+
+    #[test]
+    fn leased_addresses_used_only_when_nothing_else_is_free() {
+        let mut s = NatState::new("gxbr-t", net("10.88.9.0/29"), false).unwrap();
+        let leases: BTreeMap<Ipv4Addr, String> = (2..=6).map(|n| (format!("10.88.9.{n}").parse().unwrap(), "02:ff:00:00:00:01".to_string())).collect();
+        assert_eq!(s.allocate_avoiding("02:00:00:00:00:01", &leases).unwrap().to_string(), "10.88.9.2");
     }
 
     #[test]

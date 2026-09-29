@@ -527,7 +527,16 @@ impl Netd {
 
         let ipv4 = match self.store.get::<NatState>(NAT, &spec.bridge)? {
             Some(mut state) => {
-                let ip = state.allocate(&spec.mac)?;
+                // Unreadable/missing lease file: nothing leased yet.
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_secs());
+                let leases = self
+                    .ex()
+                    .read_file(&state.lease_path())
+                    .map(|l| nat::active_leases(&l, now))
+                    .unwrap_or_default();
+                let ip = state.allocate_avoiding(&spec.mac, &leases)?;
                 nat::write_dnsmasq_files(self.ex(), &state)?;
                 self.store.put(NAT, &state.bridge, &state)?;
                 self.supervisor.reload(&state.bridge);

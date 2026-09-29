@@ -119,6 +119,25 @@ fn attach_reserves_address_and_detach_keeps_it() {
     assert!(nats[0].state.reservations.is_empty());
 }
 
+/// A deleted VM's dnsmasq lease outlives its reservation; the next VM must
+/// not be reserved that address (dnsmasq wouldn't hand it out). Deleting
+/// the network drops the lease file.
+#[test]
+fn reservations_skip_live_leases_and_delete_drops_them() {
+    let dir = TempDir::new().unwrap();
+    let exec = exec();
+    let (netd, _) = netd(exec.clone(), &dir);
+    setup_nat(&netd);
+    exec.file("/var/lib/glidex/dnsmasq/gxbr-nat.leases", "4000000000 02:89:53:f9:ac:2d 10.88.0.2 * ff:b5\n");
+
+    let res: AttachResult = serde_json::from_value(netd.handle(Op::AttachVmPort(port_spec()), &peer()).unwrap()).unwrap();
+    assert_eq!(res.ipv4.unwrap().to_string(), "10.88.0.3");
+
+    netd.handle(Op::ReleaseVm { vm_id: VM.into() }, &peer()).unwrap();
+    netd.handle(Op::DeleteNat { bridge: "gxbr-nat".into() }, &peer()).unwrap();
+    assert!(exec.calls().contains(&"rm /var/lib/glidex/dnsmasq/gxbr-nat.leases".to_string()), "{:#?}", exec.calls());
+}
+
 #[test]
 fn deletes_are_refused_while_in_use() {
     let dir = TempDir::new().unwrap();
