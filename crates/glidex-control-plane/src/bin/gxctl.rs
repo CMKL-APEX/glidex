@@ -25,7 +25,7 @@ use tabled::{Table, Tabled};
 #[command(about = "Interactive CLI for Glidex Control Plane")]
 struct Cli {
     /// API server URL
-    #[arg(short, long, default_value = "http://localhost:8080")]
+    #[arg(short, long, default_value = "http://localhost:8841")]
     server: String,
 }
 

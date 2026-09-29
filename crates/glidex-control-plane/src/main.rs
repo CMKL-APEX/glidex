@@ -159,8 +159,8 @@ async fn main() {
             .filter_map(|a| a.trim().parse().ok())
             .collect(),
         Err(_) => vec![
-            SocketAddr::from(([127, 0, 0, 1], 8080)),
-            SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, 8080)),
+            SocketAddr::from(([127, 0, 0, 1], 8841)),
+            SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, 8841)),
         ],
     };
     let mut listeners = Vec::new();
@@ -171,7 +171,7 @@ async fn main() {
         }
     }
     if listeners.is_empty() {
-        eprintln!("No usable listen address (set GLIDEX_LISTEN, e.g. 127.0.0.1:8080)");
+        eprintln!("No usable listen address (set GLIDEX_LISTEN, e.g. 127.0.0.1:8841)");
         std::process::exit(1);
     }
     println!();

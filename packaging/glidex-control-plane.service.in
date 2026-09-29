@@ -17,7 +17,7 @@ Environment=HOME=@HOME@
 WorkingDirectory=@HOME@
 ExecStart=@BIN@
 # Listen on loopback only (default). To expose the unauthenticated API,
-# set e.g. Environment=GLIDEX_LISTEN=0.0.0.0:8080 in a drop-in.
+# set e.g. Environment=GLIDEX_LISTEN=0.0.0.0:8841 in a drop-in.
 # Stopping the service stops running VMs (the control plane's shutdown).
 KillSignal=SIGTERM
 TimeoutStopSec=60

@@ -592,9 +592,9 @@ fn setup_networking() -> Result<()> {
     }
 
     // 1. Open vSwitch from distro packages.
-    let profile = match prompt_line("Open vSwitch profile [kernel/dpdk] (default: kernel): ")?.as_str() {
-        "dpdk" => Profile::Dpdk,
-        _ => Profile::Kernel,
+    let profile = match prompt_line("Open vSwitch profile [dpdk/kernel] (default: dpdk): ")?.as_str() {
+        "kernel" => Profile::Kernel,
+        _ => Profile::Dpdk,
     };
     let exec = if is_root() { SystemExec::new() } else { SystemExec::sudo() };
     let ch_binary = run_capture("sh", &["-c", "command -v cloud-hypervisor"]).ok().map(|p| PathBuf::from(p.trim()));
@@ -891,7 +891,7 @@ fn install_services(install_dir: &Path) -> Result<()> {
     }
     sudo(&enable)?;
     println!("{} glidex-control-plane.service (runs as {})", "Enabled:".green(), user);
-    if confirm_yn("Start it now? (a control plane already running on port 8080 must be stopped first)", false)? {
+    if confirm_yn("Start it now? (a control plane already running on port 8841 must be stopped first)", false)? {
         sudo(&s(&["systemctl", "restart", "glidex-control-plane.service"]))?;
         println!("{} systemctl status glidex-control-plane", "Started:".green());
     }

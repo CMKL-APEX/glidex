@@ -23,9 +23,9 @@ development mode (Vite HMR) is the only supported mode.
 ## Dev-server proxy
 
 `ui/vite.config.ts` proxies everything under `/api` to the control
-plane on `:8080`, stripping the `/api` prefix. WebSocket upgrades
+plane on `:8841`, stripping the `/api` prefix. WebSocket upgrades
 are forwarded (`ws: true`) so `/api/vms/:id/console/ws` resolves to
-`ws://localhost:8080/vms/:id/console/ws`.
+`ws://localhost:8841/vms/:id/console/ws`.
 
 Consequence: the frontend never has to know the server URL.
 Everything is same-origin from the browser's perspective.

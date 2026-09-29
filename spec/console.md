@@ -145,5 +145,5 @@ See `vite.config.ts` — the `/api` proxy is configured with
   sub-protocol could carry PTY ioctls. Not needed for the serial
   console of a microVM, which is 80x24 by default and not reshaped.
 - **Authentication**: the WebSocket has none. Anyone who can reach
-  `:8080` can read/write every console. This matches the overall
+  `:8841` can read/write every console. This matches the overall
   security model (see [README](README.md) "non-goals").

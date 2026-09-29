@@ -59,7 +59,7 @@ to `command -v`.
    `gxctl` into the install dir.
 8. **VM networking** *(optional, prompts)* — creates the `glidex` group
    (adds the invoking user), installs Open vSwitch through
-   `glidex-ovs` (`kernel` or `dpdk` profile, via sudo; this also pulls
+   `glidex-ovs` (`dpdk` profile by default, or `kernel`, via sudo; this also pulls
    in `dnsmasq` and `nftables`), applies the host settings below,
    installs `glidex-netd` to `/usr/local/bin` with
    `packaging/glidex-netd.service`, and offers `cap_net_admin+ep` on

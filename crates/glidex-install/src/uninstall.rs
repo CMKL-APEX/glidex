@@ -111,6 +111,8 @@ pub enum Step {
     NetworkTeardown(PathBuf),
     /// Stop dnsmasq processes started by glidex-netd.
     StopGlidexDnsmasq,
+    /// Drop netd's `inet glidex` nftables table if it's still there.
+    DropNftTable,
     /// Remove a file or a directory tree.
     Remove(PathBuf),
     /// Replace a file's contents.
@@ -127,6 +129,7 @@ impl Step {
                 db.display()
             ),
             Step::StopGlidexDnsmasq => "stop dnsmasq processes started by glidex-netd".into(),
+            Step::DropNftTable => format!("drop nftables table inet {} if present", glidex_ovs::nat::NFT_TABLE),
             Step::Remove(p) => format!("remove: {}", p.display()),
             Step::Write(p, _) => format!("rewrite: {}", p.display()),
             Step::Note(n) => format!("note: {}", n),
@@ -161,8 +164,9 @@ pub fn plan(host: &dyn HostView, opts: &Options, user_home: &Path) -> Vec<Step> 
     }
     steps.push(Step::StopGlidexDnsmasq);
     if host.exists(Path::new("/usr/sbin/nft")) {
-        // Normally gone after the teardown; harmless if it is.
-        steps.push(run(&["nft", "delete", "table", "inet", "glidex"]));
+        // The teardown normally removes it; this catches tables netd's
+        // state doesn't know about (missing or damaged netd.db).
+        steps.push(Step::DropNftTable);
     }
 
     // 3. Capabilities / binaries.
@@ -425,7 +429,7 @@ fn execute(step: &Step) -> Result<()> {
     match step {
         Step::Run(argv) => {
             let status = Command::new(&argv[0]).args(&argv[1..]).status().with_context(|| argv[0].clone())?;
-            // Best effort: e.g. the nft table is usually gone already.
+            // Best effort: keep going so the rest of the cleanup happens.
             if !status.success() {
                 println!("  {} {} exited with {}", "warning:".yellow(), argv.join(" "), status);
             }
@@ -433,6 +437,21 @@ fn execute(step: &Step) -> Result<()> {
         Step::NetworkTeardown(db) => {
             for d in network_teardown(db)? {
                 println!("  removed {}", d);
+            }
+        }
+        Step::DropNftTable => {
+            // netd's script for "no NAT networks": create-then-delete, so
+            // it succeeds whether or not the table exists.
+            let mut child = Command::new("nft")
+                .args(["-f", "-"])
+                .stdin(std::process::Stdio::piped())
+                .spawn()
+                .context("nft")?;
+            use std::io::Write as _;
+            child.stdin.take().expect("piped stdin").write_all(glidex_ovs::nat::nft_script(&[]).as_bytes())?;
+            let status = child.wait()?;
+            if !status.success() {
+                bail!("nft -f - exited with {}", status);
             }
         }
         Step::StopGlidexDnsmasq => {
@@ -480,7 +499,7 @@ pub fn main(args: &[String]) -> Result<()> {
     let home = invoking_user_home();
     let steps = plan(&RealHost, &opts, &home);
     println!("{}", "glidex uninstall plan:".cyan().bold());
-    if steps.iter().all(|s| matches!(s, Step::Note(_) | Step::StopGlidexDnsmasq)) {
+    if steps.iter().all(|s| matches!(s, Step::Note(_) | Step::StopGlidexDnsmasq | Step::DropNftTable)) {
         println!("  nothing glidex-owned found");
     }
     for s in &steps {
@@ -598,6 +617,9 @@ mod tests {
         // netd's state (which describes it) is deleted.
         assert!(pos("systemctl disable --now glidex-control-plane.service glidex-netd.service") < pos("tear down glidex networking"));
         assert!(pos("tear down glidex networking") < pos("remove: /var/lib/glidex"));
+        // The nft fallback runs after the teardown, as an idempotent script.
+        assert!(pos("tear down glidex networking") < pos("drop nftables table inet glidex if present"));
+        assert!(!l.iter().any(|s| s.contains("nft delete table")), "{l:#?}");
         for needle in [
             "setcap -r /usr/local/bin/cloud-hypervisor",
             "remove: /usr/local/bin/glidex-netd",

@@ -47,8 +47,8 @@ fresh reader cannot infer just by reading the source.
 
 - Clustering / multi-host orchestration.
 - User authentication and authorization on the REST API. The control
-  plane listens on loopback only by default (`127.0.0.1:8080` and
-  `[::1]:8080`; `GLIDEX_LISTEN` overrides) because anyone who can reach it
+  plane listens on loopback only by default (`127.0.0.1:8841` and
+  `[::1]:8841`; `GLIDEX_LISTEN` overrides) because anyone who can reach it
   can manage VMs and, through glidex-netd, host networking. There are no
   accounts, tokens, or ACLs.
 - Networking beyond Cloud Hypervisor VMs (QEMU NICs), static guest

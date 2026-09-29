@@ -91,7 +91,7 @@ If you enabled the systemd units, glidex already runs at boot
 cargo run --bin glidex-control-plane
 ```
 
-The server listens on `http://localhost:8080` by default.
+The server listens on `http://localhost:8841` by default.
 
 2. **Option A: Start the Web UI:**
 
@@ -194,7 +194,7 @@ The `hypervisor` field is optional and defaults to `"cloudhypervisor"`. Supporte
 
 ```bash
 # Create a VM
-curl -X POST http://localhost:8080/vms \
+curl -X POST http://localhost:8841/vms \
   -H "Content-Type: application/json" \
   -d '{
     "name": "test-vm",
@@ -205,10 +205,10 @@ curl -X POST http://localhost:8080/vms \
   }'
 
 # Start the VM
-curl -X POST http://localhost:8080/vms/{vm-id}/start
+curl -X POST http://localhost:8841/vms/{vm-id}/start
 
 # List VMs
-curl http://localhost:8080/vms
+curl http://localhost:8841/vms
 ```
 
 ## Architecture
@@ -389,16 +389,27 @@ Credential created: alice (password: set, SSH keys: 1)
 ```
 
 The control-plane API has no authentication, so run it on a trusted host or
-network: anyone who can reach port 8080 can manage credentials and VMs.
+network: anyone who can reach port 8841 can manage credentials and VMs.
 
 Pass your own seed image with `cloud_init_path` to override this.
 
-### Running the boot test
+### Running the VM tests
+
+The `--ignored` functional tests boot real VMs:
 
 ```bash
 GLIDEX_TEST_IMAGE=~/images/ubuntu-cloudimg.raw \
-  cargo test -p glidex-control-plane --test functional_tests -- --ignored
+  cargo test -p glidex-control-plane --test functional_tests -- --ignored --test-threads=1
 ```
+
+- `firmware_boot_with_generated_cloud_init` needs KVM and cloud-hypervisor.
+- `nat_network_e2e` also needs a running glidex-netd (the installer's VM
+  networking step) and membership in the `glidex` group.
+- `vhost_user_e2e` also needs OVS-DPDK initialized (dpdk profile); set
+  `GLIDEX_TEST_DPDK=1`.
+- `bridged_uplink_e2e` and `afxdp_uplink_e2e` need a fake LAN of veth pairs
+  (no real NICs are touched): run `sudo scripts/dev/fake-lan-setup.sh`, set
+  `GLIDEX_TEST_LAN=1`, and afterwards `sudo scripts/dev/fake-lan-teardown.sh`.
 
 ## License
 

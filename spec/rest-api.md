@@ -1,6 +1,6 @@
 # REST API
 
-The control plane listens on `0.0.0.0:8080` by default. All request and
+The control plane listens on `127.0.0.1:8841` and `[::1]:8841` by default (`GLIDEX_LISTEN` overrides). All request and
 response bodies are JSON except for the console WebSocket.
 
 ## Endpoints

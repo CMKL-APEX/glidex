@@ -672,9 +672,10 @@ async fn nat_network_e2e() {
 
 // ---- uplink e2e (M6 bridged/kernel, M8 AF_XDP) -----------------------------
 //
-// Need the fake LAN from the dev scripts (`fake-lan-setup.sh`): veth pairs
-// gxup0/gxup1 whose peers live in netns `gxlan` with a gateway and dnsmasq.
-// Never run against real NICs.
+// Need the fake LAN from `sudo scripts/dev/fake-lan-setup.sh`: veth pairs
+// gxup0/gxup1 whose peers live in netns `gxlan` with a gateway and dnsmasq
+// (it also sets netd's commit window to 10 s). Never run against real NICs.
+// Undo with `sudo scripts/dev/fake-lan-teardown.sh`.
 
 fn host_ip(args: &[&str]) -> String {
     String::from_utf8_lossy(&Command::new("ip").args(args).output().unwrap().stdout).into_owned()
@@ -733,7 +734,7 @@ async fn boot_and_check(app: &Router, tmp: &TempDir, network: &str, hostname: &s
 }
 
 async fn require_lan_and_netd(app: &Router) {
-    assert!(std::env::var("GLIDEX_TEST_LAN").is_ok(), "set GLIDEX_TEST_LAN=1 after running fake-lan-setup.sh");
+    assert!(std::env::var("GLIDEX_TEST_LAN").is_ok(), "set GLIDEX_TEST_LAN=1 after running sudo scripts/dev/fake-lan-setup.sh");
     assert!(host_ip(&["-br", "link", "show", "gxup0"]).contains("gxup0"), "fake LAN missing (gxup0)");
     let (_, status) = request(app, "GET", "/ovs/status", None).await;
     assert_eq!(status["netd"]["access"], "full", "{status}");

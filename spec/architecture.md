@@ -13,7 +13,7 @@ host.
                 │ HTTP + WebSocket                    │ HTTP + Unix
                 ▼                                     ▼
  ┌────────────────────────────────────────────────────────────────┐
- │  glidex-control-plane  (axum, :8080)                           │
+ │  glidex-control-plane  (axum, :8841)                           │
  │  ├── REST API            (api.rs)                              │
  │  ├── Console WS bridge   (api.rs::console_ws)                  │
  │  ├── VmManager           (state.rs)   — in-memory VM registry  │
@@ -39,7 +39,7 @@ host.
 Separately, the UI crate (`glidex-ui`) spawns `bun run dev` from
 `crates/glidex-ui/ui/` to serve a Vite dev server on `:5173`; Vite
 proxies `/api/**` (including WebSocket upgrades) to the control plane
-on `:8080`. In production one would build the UI and serve it
+on `:8841`. In production one would build the UI and serve it
 statically, but that path is not wired up yet.
 
 ## Control-plane layers
@@ -49,7 +49,7 @@ Reading top-to-bottom inside `crates/glidex-control-plane/src/`:
 - **`main.rs`** — process entrypoint. Checks `/dev/kvm`, opens the
   ReDB database at `~/.glidex/glidex.db`, calls `VmManager::initialize()`
   to reconcile persisted VMs, builds the axum router with
-  `TraceLayer`, and binds `:8080`. On shutdown it invokes
+  `TraceLayer`, and binds `:8841`. On shutdown it invokes
   `VmManager::shutdown()` to kill every running hypervisor process
   before exiting.
 - **`api.rs`** — axum `Router`. Thin translation between HTTP and
@@ -107,7 +107,7 @@ and started with `-S`).
 1. Browser navigates to `/vms/:id/console` → React renders `VmConsole`.
 2. The page opens a WebSocket to `ws(s)://…/api/vms/:id/console/ws`
    with `binaryType = "arraybuffer"`.
-3. Vite proxy forwards the upgrade to the control plane on `:8080`.
+3. Vite proxy forwards the upgrade to the control plane on `:8841`.
 4. `api::console_ws` looks up the VM, grabs its `console_socket_path`,
    and on upgrade hands off to `bridge_console`.
 5. `bridge_console` opens a `tokio::net::UnixStream` to the console

@@ -5,7 +5,7 @@ produced by the same crate as the control plane.
 
 `gxctl` is an **interactive** shell. Invoking it drops into a
 `rustyline` REPL with history and tab completion. Commands talk to
-the control plane over HTTP (default `http://localhost:8080`, override
+the control plane over HTTP (default `http://localhost:8841`, override
 with `--server`).
 
 ## Command reference

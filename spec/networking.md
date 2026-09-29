@@ -807,9 +807,9 @@ New step after Cloud-Hypervisor, every part prompted:
   `SO_PEERCRED`, never from requests.
 - `glidex` group membership = network-admin rights on the host (with
   confirmations). Only host status is public (decision 7).
-- **The REST API is unauthenticated**, so anyone reaching port 8080
+- **The REST API is unauthenticated**, so anyone reaching port 8841
   gets the control plane's netd rights. M4 therefore changes the
-  control plane's default bind from `0.0.0.0:8080` to `127.0.0.1:8080`
+  control plane's default bind from `0.0.0.0:8841` to `127.0.0.1:8841`
   (configurable).
 - `cap_net_admin+ep` on `cloud-hypervisor` applies to anyone who can run
   it (decision 9).
