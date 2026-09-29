@@ -18,6 +18,7 @@ fresh reader cannot infer just by reading the source.
 | [rest-api.md](rest-api.md) | HTTP endpoints, payloads, error model, console WebSocket |
 | [hypervisors.md](hypervisors.md) | Hypervisor trait contract and per-backend implementations |
 | [credentials.md](credentials.md) | Credential store: guest logins for cloud-init, hashing, security rules |
+| [networking.md](networking.md) | **Implementation spec (not built yet):** `glidex-ovs` + root `glidex-netd` — OVS install (distro or pinned source), bridges, uplinks with IP migration, NAT + DHCP, vhost-user/tap VM ports, milestones M1–M8 |
 | [console.md](console.md) | Console proxy thread, listener invariant, WebSocket bridge, xterm |
 | [cli.md](cli.md) | `gxctl` interactive CLI, command semantics, console attach loop |
 | [web-ui.md](web-ui.md) | Vite + React UI structure, routes, API client, dev-proxy |
