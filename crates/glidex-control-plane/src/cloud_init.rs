@@ -7,12 +7,18 @@
 //! here with `mkdosfs` + `mcopy` (the same approach as cloud-hypervisor's
 //! `create-cloud-init.sh`).
 //!
-//! Credentials are never baked in. The guest user `cloud` gets:
+//! Credentials are never baked in. If the VM names a stored credential
+//! (`credentials.rs`), its username, password hash and SSH keys are used.
+//! Otherwise the guest user `cloud` gets:
 //! - the host's SSH public keys (`~/.ssh/*.pub` of the control-plane user),
 //! - a password only if `GLIDEX_CLOUD_INIT_PASSWD_HASH` holds a crypt(3)
 //!   hash (e.g. from `openssl passwd -6`); otherwise password login is locked.
+//!
+//! The seed holds a password hash, so the image is created mode 0600.
 
+use crate::credentials::Credential;
 use crate::hypervisor::HypervisorError;
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::Path;
 use std::process::Command;
 
@@ -26,12 +32,37 @@ pub const DEFAULT_USER: &str = "cloud";
 const SEED_SIZE_KIB: &str = "8192";
 
 /// Inputs for the generated seed.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone)]
 pub struct SeedConfig {
     pub instance_id: String,
     pub hostname: String,
+    pub username: String,
     pub ssh_authorized_keys: Vec<String>,
     pub passwd_hash: Option<String>,
+}
+
+impl Default for SeedConfig {
+    fn default() -> Self {
+        Self {
+            instance_id: String::new(),
+            hostname: String::new(),
+            username: DEFAULT_USER.to_string(),
+            ssh_authorized_keys: Vec::new(),
+            passwd_hash: None,
+        }
+    }
+}
+
+impl std::fmt::Debug for SeedConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SeedConfig")
+            .field("instance_id", &self.instance_id)
+            .field("hostname", &self.hostname)
+            .field("username", &self.username)
+            .field("ssh_authorized_keys", &self.ssh_authorized_keys.len())
+            .field("passwd_hash", &self.passwd_hash.as_ref().map(|_| "[REDACTED]"))
+            .finish()
+    }
 }
 
 impl SeedConfig {
@@ -40,11 +71,24 @@ impl SeedConfig {
         Self {
             instance_id: vm_id.to_string(),
             hostname: sanitize_hostname(vm_name),
+            username: DEFAULT_USER.to_string(),
             ssh_authorized_keys: host_ssh_public_keys(),
             passwd_hash: std::env::var(PASSWD_HASH_ENV)
                 .ok()
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty()),
+        }
+    }
+
+    /// Seed for a VM that names a stored credential. Only that
+    /// credential's keys are authorized; host keys are not added.
+    pub fn for_credential(vm_id: &str, vm_name: &str, credential: &Credential) -> Self {
+        Self {
+            instance_id: vm_id.to_string(),
+            hostname: sanitize_hostname(vm_name),
+            username: credential.username.clone(),
+            ssh_authorized_keys: credential.ssh_authorized_keys.clone(),
+            passwd_hash: credential.password_hash.clone(),
         }
     }
 
@@ -68,7 +112,7 @@ impl SeedConfig {
 
     pub fn user_data(&self) -> String {
         let mut s = String::from("#cloud-config\nusers:\n");
-        s.push_str(&format!("  - name: {}\n", DEFAULT_USER));
+        s.push_str(&format!("  - name: {}\n", self.username));
         s.push_str("    sudo: ALL=(ALL) NOPASSWD:ALL\n");
         s.push_str("    shell: /bin/bash\n");
         match &self.passwd_hash {
@@ -88,7 +132,7 @@ impl SeedConfig {
         // rootfs reused from an earlier boot); chpasswd applies either way.
         if let Some(hash) = &self.passwd_hash {
             s.push_str("chpasswd:\n  expire: false\n  users:\n");
-            s.push_str(&format!("    - name: {}\n", DEFAULT_USER));
+            s.push_str(&format!("    - name: {}\n", self.username));
             s.push_str(&format!("      password: {}\n", yaml_quote(hash)));
             s.push_str("      type: hash\n");
         }
@@ -107,20 +151,36 @@ pub fn write_seed_image(path: &str, seed: &SeedConfig) -> Result<(), HypervisorE
 
     let io_err = |e: std::io::Error| HypervisorError::CloudInit(format!("{}: {}", path, e));
     let result = (|| {
-        std::fs::create_dir_all(&staging).map_err(io_err)?;
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&staging)
+            .map_err(io_err)?;
+        // Pre-create the image 0600 so mkdosfs never leaves the hash
+        // world-readable; `-C` refuses an existing file, so size it here
+        // and let mkdosfs format it in place instead.
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&tmp_image)
+            .and_then(|f| f.set_len(SEED_SIZE_KIB.parse::<u64>().unwrap() * 1024))
+            .map_err(io_err)?;
         let files = [
             ("meta-data", seed.meta_data()),
             ("user-data", seed.user_data()),
             ("network-config", seed.network_config()),
         ];
         for (name, contents) in &files {
-            std::fs::write(Path::new(&staging).join(name), contents).map_err(io_err)?;
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(Path::new(&staging).join(name))
+                .and_then(|mut f| std::io::Write::write_all(&mut f, contents.as_bytes()))
+                .map_err(io_err)?;
         }
 
-        run_tool(
-            Command::new("mkdosfs")
-                .args(["-n", "CIDATA", "-C", &tmp_image, SEED_SIZE_KIB]),
-        )?;
+        run_tool(Command::new("mkdosfs").args(["-n", "CIDATA", &tmp_image]))?;
         for (name, _) in &files {
             let src = Path::new(&staging).join(name);
             run_tool(
@@ -227,6 +287,7 @@ mod tests {
             hostname: "h".into(),
             ssh_authorized_keys: vec!["ssh-ed25519 AAAA test".into()],
             passwd_hash: None,
+            ..Default::default()
         };
         let ud = seed.user_data();
         assert!(ud.starts_with("#cloud-config\n"));

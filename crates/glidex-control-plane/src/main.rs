@@ -1,5 +1,6 @@
 mod api;
 mod cloud_init;
+mod credentials;
 mod hypervisor;
 mod models;
 mod pci;

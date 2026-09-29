@@ -34,22 +34,23 @@ Everything is same-origin from the browser's perspective.
 
 ```
 ui/src/
-├── App.tsx                 # <Routes> for the three pages
+├── App.tsx                 # <Routes> for the four pages
 ├── main.tsx                # ReactDOM.createRoot entrypoint
 ├── api.ts                  # Typed fetch wrappers around the REST API
 ├── types.ts                # VmResponse / CreateVmRequest / helpers
 ├── index.css               # Tailwind entry
 ├── components/
-│   ├── Header.tsx
+│   ├── Header.tsx          # Brand, VMs / Credentials nav, API health
 │   ├── Loading.tsx
 │   ├── Modal.tsx
-│   ├── CreateVmForm.tsx    # POST /vms form
+│   ├── CreateVmForm.tsx    # POST /vms form (boot mode, credential picker)
 │   ├── VmActions.tsx       # Start/Stop/Pause/Delete buttons
 │   └── VmCard.tsx          # Dashboard VM row
 └── pages/
     ├── Dashboard.tsx       # List VMs, open create modal
     ├── VmDetail.tsx        # VM details, actions, Open Console link
     ├── VmConsole.tsx       # xterm.js + console WebSocket
+    ├── Credentials.tsx     # List / add / edit / delete guest logins
     └── NotFound.tsx
 ```
 
@@ -60,6 +61,7 @@ ui/src/
 | `/` | `Dashboard` |
 | `/vms/:id` | `VmDetail` |
 | `/vms/:id/console` | `VmConsole` |
+| `/credentials` | `Credentials` |
 | `*` | `NotFound` |
 
 ## API client
@@ -68,6 +70,15 @@ ui/src/
 that parses `ApiError` bodies into thrown `Error`s formatted as
 `"<error>: <message>"`. The base URL is hard-coded `/api` — the
 Vite proxy handles forwarding in dev.
+
+## Credentials page
+
+`pages/Credentials.tsx` lists `CredentialInfo` rows and opens `Modal`
+forms to add or edit. Passwords use `type="password"` inputs with a
+confirmation field and are sent once, in the create/update request; the
+UI never receives a hash, only `has_password`. SSH keys are edited as a
+textarea, one key per line. `CreateVmForm` shows a credential `<select>`
+only for Cloud-Hypervisor firmware boot, fed by `GET /credentials`.
 
 ## `VmConsole` contract
 

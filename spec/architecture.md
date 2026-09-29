@@ -68,6 +68,9 @@ Reading top-to-bottom inside `crates/glidex-control-plane/src/`:
 - **`models.rs`** — serde types that cross the API boundary
   (`CreateVmRequest`, `VmResponse`, …) and the internal `Vm` /
   `VmConfig` / `VmState` types.
+- **`credentials.rs`** — `CredentialStore`: guest logins (username,
+  SHA-512-crypt hash, SSH keys) in the `credentials` table of the same
+  ReDB file. See [credentials.md](credentials.md).
 - **`cloud_init.rs`** — builds the default NoCloud seed image
   (`CIDATA` FAT volume) for firmware-booted VMs by shelling out to
   `mkdosfs`/`mcopy`. Called from `VmManager::start_vm`.

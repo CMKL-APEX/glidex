@@ -1,4 +1,7 @@
 use crate::cloud_init;
+use crate::credentials::{
+    Credential, CredentialError, CredentialStore, CreateCredentialRequest, UpdateCredentialRequest,
+};
 use crate::hypervisor::{create_backend, Hypervisor, HypervisorError, HypervisorProcess, HypervisorType};
 use crate::models::{Vm, VmConfig, VmState};
 use crate::persistence::{PersistenceError, VmStore};
@@ -15,6 +18,8 @@ pub enum VmManagerError {
     HypervisorError(HypervisorError),
     PersistenceError(String),
     HypervisorNotAvailable(HypervisorType),
+    Credential(CredentialError),
+    CredentialInUse { username: String, vms: Vec<String> },
 }
 
 impl std::fmt::Display for VmManagerError {
@@ -30,6 +35,13 @@ impl std::fmt::Display for VmManagerError {
             VmManagerError::HypervisorNotAvailable(h) => {
                 write!(f, "Hypervisor not available: {:?}", h)
             }
+            VmManagerError::Credential(e) => write!(f, "{}", e),
+            VmManagerError::CredentialInUse { username, vms } => write!(
+                f,
+                "credential {} is used by VM(s): {}",
+                username,
+                vms.join(", ")
+            ),
         }
     }
 }
@@ -37,6 +49,12 @@ impl std::fmt::Display for VmManagerError {
 impl From<HypervisorError> for VmManagerError {
     fn from(e: HypervisorError) -> Self {
         VmManagerError::HypervisorError(e)
+    }
+}
+
+impl From<CredentialError> for VmManagerError {
+    fn from(e: CredentialError) -> Self {
+        VmManagerError::Credential(e)
     }
 }
 
@@ -54,6 +72,7 @@ struct VmEntry {
 pub struct VmManager {
     vms: RwLock<HashMap<String, VmEntry>>,
     store: VmStore,
+    credentials: CredentialStore,
     backends: HashMap<HypervisorType, Box<dyn Hypervisor>>,
 }
 
@@ -86,6 +105,7 @@ impl VmManager {
 
         Ok(Arc::new(Self {
             vms: RwLock::new(HashMap::new()),
+            credentials: CredentialStore::new(store.database())?,
             store,
             backends,
         }))
@@ -206,8 +226,31 @@ impl VmManager {
             )
             .into());
         }
-
         let mut vms = self.vms.write().await;
+
+        // Checked under the VM write lock so delete_credential (which holds
+        // the read lock) can't remove it between the check and the insert.
+        if let Some(username) = &config.credential {
+            // A credential only takes effect through the generated seed.
+            if config.firmware_path.is_none() || config.cloud_init_path.is_some() {
+                return Err(HypervisorError::InvalidConfig(
+                    "credential requires firmware boot without a custom cloud_init_path"
+                        .to_string(),
+                )
+                .into());
+            }
+            match self.credentials.get(username) {
+                Ok(_) => {}
+                Err(CredentialError::NotFound(_)) => {
+                    return Err(HypervisorError::InvalidConfig(format!(
+                        "credential not found: {}",
+                        username
+                    ))
+                    .into());
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
 
         // Check if VM with same name exists
         if vms.values().any(|entry| entry.vm.name == name) {
@@ -258,7 +301,20 @@ impl VmManager {
                 let mut config = entry.vm.config.clone();
                 if config.firmware_path.is_some() && config.cloud_init_path.is_none() {
                     let path = entry.vm.default_cloud_init_path();
-                    let seed = cloud_init::SeedConfig::for_vm(&entry.vm.id, &entry.vm.name);
+                    let seed = match &config.credential {
+                        Some(username) => match self.credentials.get(username) {
+                            Ok(cred) => cloud_init::SeedConfig::for_credential(
+                                &entry.vm.id,
+                                &entry.vm.name,
+                                &cred,
+                            ),
+                            Err(e) => {
+                                let _ = process.kill();
+                                return Err(e.into());
+                            }
+                        },
+                        None => cloud_init::SeedConfig::for_vm(&entry.vm.id, &entry.vm.name),
+                    };
                     if seed.ssh_authorized_keys.is_empty() && seed.passwd_hash.is_none() {
                         tracing::warn!(
                             vm_id = %entry.vm.id,
@@ -548,6 +604,54 @@ impl VmManager {
         let _ = std::fs::remove_file(entry.vm.default_cloud_init_path());
 
         vms.remove(vm_id);
+        Ok(())
+    }
+
+    pub fn list_credentials(&self) -> Result<Vec<Credential>, VmManagerError> {
+        Ok(self.credentials.list()?)
+    }
+
+    pub fn get_credential(&self, username: &str) -> Result<Credential, VmManagerError> {
+        Ok(self.credentials.get(username)?)
+    }
+
+    pub fn create_credential(
+        &self,
+        req: CreateCredentialRequest,
+    ) -> Result<Credential, VmManagerError> {
+        let cred = self.credentials.create(req)?;
+        tracing::info!(username = %cred.username, "Credential created");
+        Ok(cred)
+    }
+
+    /// Changes reach a VM only on its first boot: cloud-init provisions
+    /// users once per instance-id, and a VM keeps its id for life.
+    pub fn update_credential(
+        &self,
+        username: &str,
+        req: UpdateCredentialRequest,
+    ) -> Result<Credential, VmManagerError> {
+        let cred = self.credentials.update(username, req)?;
+        tracing::info!(username = %cred.username, "Credential updated");
+        Ok(cred)
+    }
+
+    /// Refuses to delete a credential still referenced by a VM.
+    pub async fn delete_credential(&self, username: &str) -> Result<(), VmManagerError> {
+        let vms = self.vms.read().await;
+        let users: Vec<String> = vms
+            .values()
+            .filter(|e| e.vm.config.credential.as_deref() == Some(username))
+            .map(|e| e.vm.name.clone())
+            .collect();
+        if !users.is_empty() {
+            return Err(VmManagerError::CredentialInUse {
+                username: username.to_string(),
+                vms: users,
+            });
+        }
+        self.credentials.delete(username)?;
+        tracing::info!(username = %username, "Credential deleted");
         Ok(())
     }
 

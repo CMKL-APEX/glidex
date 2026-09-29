@@ -126,11 +126,13 @@ attached `readonly`. Contents (`cloud_init.rs`):
   provisions once per VM), `local-hostname` = VM name reduced to an
   RFC 1123 label.
 - `network-config`: v2, DHCP on `en*`.
-- `user-data`: sudo user `cloud` with the control-plane user's
-  `~/.ssh/*.pub` keys. A password is set only from
+- `user-data`: a sudo user. If the VM names a stored credential
+  ([credentials.md](credentials.md)), that username, password hash and
+  SSH keys are used and nothing else. Otherwise the user is `cloud` with
+  the control-plane user's `~/.ssh/*.pub` keys, and a password only from
   `GLIDEX_CLOUD_INIT_PASSWD_HASH` (crypt hash, e.g. `openssl passwd -6`);
-  otherwise password login is locked. Credentials are never baked
-  into the source.
+  without it password login is locked. Credentials are never baked into
+  the source. The seed image is created `0600`.
 
 Why the hash is written twice (`users[].passwd` and `chpasswd.users`):
 cloud-init ignores `users[].passwd` for a user that already exists,

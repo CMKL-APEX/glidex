@@ -1,6 +1,7 @@
 use crate::models::{Vm, VmState};
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use std::path::Path;
+use std::sync::Arc;
 use thiserror::Error;
 
 const VMS_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("vms");
@@ -33,7 +34,7 @@ pub enum PersistenceError {
 }
 
 pub struct VmStore {
-    db: Database,
+    db: Arc<Database>,
 }
 
 impl VmStore {
@@ -44,7 +45,13 @@ impl VmStore {
             std::fs::create_dir_all(parent)?;
         }
 
-        let db = Database::create(path)?;
+        let db = Database::create(path.as_ref())?;
+        // The database also holds credential hashes (credentials.rs), so
+        // keep it readable by the control-plane user only.
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path.as_ref(), std::fs::Permissions::from_mode(0o600))?;
+        }
 
         // Initialize table on first run
         let write_txn = db.begin_write()?;
@@ -53,7 +60,13 @@ impl VmStore {
         }
         write_txn.commit()?;
 
-        Ok(Self { db })
+        Ok(Self { db: Arc::new(db) })
+    }
+
+    /// Shared handle to the underlying database, for other tables
+    /// (e.g. the credential store) living in the same file.
+    pub fn database(&self) -> Arc<Database> {
+        self.db.clone()
     }
 
     /// Load all VMs from the database

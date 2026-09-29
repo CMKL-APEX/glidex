@@ -15,9 +15,10 @@ A Rust-based control plane for managing KVM virtual machines with [Cloud-Hypervi
 
 - **Multi-hypervisor support** - Control Cloud-Hypervisor and QEMU VMs through a unified interface
 - **Cloud image boot** - Boot stock distro cloud images via UEFI firmware with an auto-generated cloud-init seed
+- **Credential store** - Stored guest logins (password hash + SSH keys) provisioned by cloud-init
 - **REST API** for VM lifecycle management (create, start, stop, pause, delete)
 - **Web UI** - Vite + React web interface for VM management
-- **Interactive CLI** (`gxctl`) with command history and tab completion
+- **Interactive CLI** (`gxctl`) with command history and Tab completion of commands and file paths
 - **Interactive console** - connect to VM serial console with full I/O support
 - **Console logging** - persistent logs of all VM console output
 - **Multi-client support** - multiple CLI sessions can connect to the same VM console
@@ -289,6 +290,7 @@ glidex/
     │   │   ├── state.rs          # VM state management
     │   │   ├── persistence.rs    # ReDB-based persistence
     │   │   ├── cloud_init.rs     # cloud-init NoCloud seed image builder
+    │   │   ├── credentials.rs    # Credential store (guest logins, hashed)
     │   │   ├── hypervisor/       # Hypervisor abstraction layer
     │   │   │   ├── mod.rs        # Traits and HypervisorType enum
     │   │   │   ├── cloud_hypervisor.rs # Cloud-Hypervisor backend
@@ -297,6 +299,7 @@ glidex/
     │   │       └── gxctl.rs      # CLI client
     │   └── tests/
     │       ├── api_tests.rs      # API integration tests
+    │       ├── credential_tests.rs # Credential store API tests
     │       └── functional_tests.rs # Firmware boot / cloud-init tests
     ├── glidex-install/           # Installer (cargo run -p glidex-install)
     │   └── src/main.rs
@@ -340,13 +343,31 @@ qemu-img convert -p -f qcow2 -O raw resolute-server-cloudimg-amd64.img ubuntu-cl
 ```
 
 On each start glidex generates a cloud-init seed that sets the hostname to
-the VM name and creates a sudo user `cloud`. Login credentials come from the
-host, never from glidex itself:
+the VM name and creates a sudo user. The login comes from one of:
 
-- SSH: the public keys in `~/.ssh/*.pub` of the user running the control plane.
-- Console password: set `GLIDEX_CLOUD_INIT_PASSWD_HASH` to a crypt hash
-  (e.g. `openssl passwd -6`) before starting the control plane. Without it,
-  password login stays locked.
+- **A stored credential** (recommended). Add one in the web UI
+  (**Credentials** page) or with `gxctl credential-add`, then pick it when
+  creating the VM. glidex keeps only a SHA-512-crypt hash of the password,
+  never the password itself, and never returns the hash over the API.
+  cloud-init applies it on the VM's first boot; later password changes
+  don't affect guests that are already provisioned.
+- **The host fallback**, when no credential is chosen: user `cloud` with the
+  public keys in `~/.ssh/*.pub` of the user running the control plane, and a
+  console password only if `GLIDEX_CLOUD_INIT_PASSWD_HASH` holds a crypt hash
+  (e.g. `openssl passwd -6`). Without it, password login stays locked.
+
+```
+gxctl> credential-add
+Username: alice
+Leave the password empty for SSH-key-only login.
+Password:
+Confirm password:
+SSH public key files (optional, comma-separated, e.g. ~/.ssh/id_ed25519.pub): ~/.ssh/id_ed25519.pub
+Credential created: alice (password: set, SSH keys: 1)
+```
+
+The control-plane API has no authentication, so run it on a trusted host or
+network: anyone who can reach port 8080 can manage credentials and VMs.
 
 Pass your own seed image with `cloud_init_path` to override this.
 

@@ -45,6 +45,10 @@ pub struct VmConfig {
     /// time (see `cloud_init.rs`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cloud_init_path: Option<String>,
+    /// Username of a stored credential (`credentials.rs`) that the
+    /// generated cloud-init seed provisions as the guest login.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential: Option<String>,
     pub rootfs_path: String,
     pub kernel_args: String,
     #[serde(default)]
@@ -106,6 +110,8 @@ pub struct CreateVmRequest {
     pub firmware_path: Option<String>,
     #[serde(default)]
     pub cloud_init_path: Option<String>,
+    #[serde(default)]
+    pub credential: Option<String>,
     pub rootfs_path: String,
     #[serde(default)]
     pub kernel_args: Option<String>,
@@ -124,6 +130,7 @@ impl From<CreateVmRequest> for VmConfig {
             kernel_image_path: expand_tilde(req.kernel_image_path),
             firmware_path: req.firmware_path.map(expand_tilde),
             cloud_init_path: req.cloud_init_path.map(expand_tilde),
+            credential: req.credential,
             rootfs_path: expand_tilde(req.rootfs_path),
             kernel_args: req
                 .kernel_args
@@ -146,6 +153,8 @@ pub struct VmResponse {
     pub hypervisor: HypervisorType,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub vfio_devices: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential: Option<String>,
 }
 
 impl From<&Vm> for VmResponse {
@@ -160,6 +169,7 @@ impl From<&Vm> for VmResponse {
             log_path: vm.log_path.clone(),
             hypervisor: vm.hypervisor,
             vfio_devices: vm.config.vfio_devices.clone(),
+            credential: vm.config.credential.clone(),
         }
     }
 }

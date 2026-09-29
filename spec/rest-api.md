@@ -20,6 +20,11 @@ response bodies are JSON except for the console WebSocket.
 | `POST` | `/vms/{id}/devices` | `attach_device` | Attach a VFIO PCI device |
 | `DELETE` | `/vms/{id}/devices` | `detach_device` | Detach a VFIO PCI device |
 | `GET` | `/pci-devices` | `list_pci_devices` | Enumerate host PCI devices |
+| `GET` | `/credentials` | `list_credentials` | List stored guest logins (no hashes) |
+| `POST` | `/credentials` | `create_credential` | Create a login; password is hashed on arrival |
+| `GET` | `/credentials/{username}` | `get_credential` | Get one login (no hash) |
+| `PUT` | `/credentials/{username}` | `update_credential` | Change password and/or replace SSH keys |
+| `DELETE` | `/credentials/{username}` | `delete_credential` | Delete; `409` while a VM uses it |
 
 All handlers live in `crates/glidex-control-plane/src/api.rs`.
 
@@ -61,6 +66,23 @@ All handlers live in `crates/glidex-control-plane/src/api.rs`.
   rootfs that was provisioned before.
 - `~` is expanded server-side (see [data-model.md](data-model.md)).
 - Response: `201 Created` with a `VmResponse`.
+
+- `credential` (firmware boot only, no custom `cloud_init_path`) names a
+  stored credential that the generated seed provisions as the guest login.
+  Unknown names are `400 invalid_config`. See [credentials.md](credentials.md).
+
+### `POST /credentials`, `PUT /credentials/{username}`
+
+```json
+{ "username": "alice", "password": "…", "ssh_authorized_keys": ["ssh-ed25519 AAAA… alice@host"] }
+```
+
+- `POST` needs a password, at least one key, or both. `PUT` takes the
+  same body without `username`; omitted fields are unchanged and an empty
+  key list clears the keys.
+- Responses are `CredentialInfo`:
+  `{ "username", "has_password", "ssh_authorized_keys", "created_at", "updated_at" }`.
+  The password hash is never returned.
 
 ### `POST /vms/{id}/devices`, `DELETE /vms/{id}/devices`
 
@@ -120,6 +142,10 @@ not the caller's fault — e.g. `HypervisorError::CloudInit` when
 | `HypervisorError` (any other) | `500` | `hypervisor_error` |
 | `PersistenceError` | `500` | `persistence_error` |
 | `HypervisorNotAvailable` | `503` | `hypervisor_unavailable` |
+| `Credential(NotFound)` | `404` | `not_found` |
+| `Credential(AlreadyExists)`, `CredentialInUse` | `409` | `conflict` |
+| `Credential(Invalid)` | `400` | `invalid_credential` |
+| `Credential` (storage/hashing) | `500` | `credential_error` |
 
 ## Console WebSocket
 

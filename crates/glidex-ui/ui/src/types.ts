@@ -17,6 +17,7 @@ export interface VmResponse {
   log_path: string;
   hypervisor: HypervisorType;
   vfio_devices: string[];
+  credential?: string;
 }
 
 export interface CreateVmRequest {
@@ -24,10 +25,32 @@ export interface CreateVmRequest {
   vcpu_count: number;
   mem_size_mib: number;
   kernel_image_path: string;
+  firmware_path?: string;
+  credential?: string;
   rootfs_path: string;
   kernel_args?: string;
   hypervisor?: HypervisorType;
   vfio_devices?: string[];
+}
+
+/** Guest login stored by the control plane. The password hash is never sent to clients. */
+export interface CredentialInfo {
+  username: string;
+  has_password: boolean;
+  ssh_authorized_keys: string[];
+  created_at: number;
+  updated_at: number;
+}
+
+export interface CreateCredentialRequest {
+  username: string;
+  password?: string;
+  ssh_authorized_keys?: string[];
+}
+
+export interface UpdateCredentialRequest {
+  password?: string;
+  ssh_authorized_keys?: string[];
 }
 
 export interface ApiError {

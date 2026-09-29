@@ -17,6 +17,7 @@ fresh reader cannot infer just by reading the source.
 | [data-model.md](data-model.md) | VM/VmConfig/VmState types, persistence schema, reconciliation |
 | [rest-api.md](rest-api.md) | HTTP endpoints, payloads, error model, console WebSocket |
 | [hypervisors.md](hypervisors.md) | Hypervisor trait contract and per-backend implementations |
+| [credentials.md](credentials.md) | Credential store: guest logins for cloud-init, hashing, security rules |
 | [console.md](console.md) | Console proxy thread, listener invariant, WebSocket bridge, xterm |
 | [cli.md](cli.md) | `gxctl` interactive CLI, command semantics, console attach loop |
 | [web-ui.md](web-ui.md) | Vite + React UI structure, routes, API client, dev-proxy |

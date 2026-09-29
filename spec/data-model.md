@@ -40,6 +40,9 @@ The guest configuration the hypervisor needs to boot:
   firmware boot → `start_vm` generates a default seed (`cloud_init.rs`) at
   `Vm::default_cloud_init_path()` and passes it to the backend; the
   persisted config is left untouched. The file is removed on delete.
+- `credential: Option<String>` — username of a stored credential the
+  generated seed provisions; see [credentials.md](credentials.md). Also
+  surfaced on `VmResponse`.
 - `rootfs_path: String`
 - `kernel_args: String`
 - `hypervisor: HypervisorType` (`cloudhypervisor` by default; `#[default]`
@@ -135,7 +138,8 @@ sensible default `kernel_args` string (see `hypervisor/mod.rs`).
 ```
 
 `error` values: `not_found | conflict | invalid_state | invalid_config |
-hypervisor_error | persistence_error | hypervisor_unavailable`.
+invalid_credential | hypervisor_error | persistence_error |
+hypervisor_unavailable | credential_error`.
 See [rest-api.md](rest-api.md) for the HTTP status code mapping.
 
 ## Persistence schema

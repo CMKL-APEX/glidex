@@ -3,11 +3,16 @@ use colored::Colorize;
 use glidex_control_plane::hypervisor::cloud_hypervisor::default_firmware_path;
 use nix::sys::termios::{self, LocalFlags, SetArg, Termios};
 use reqwest::Client;
+use rustyline::completion::{unescape, Completer, FilenameCompleter, Pair};
 use rustyline::error::ReadlineError;
-use rustyline::DefaultEditor;
+use rustyline::highlight::Highlighter;
+use rustyline::hint::Hinter;
+use rustyline::history::DefaultHistory;
+use rustyline::validate::Validator;
+use rustyline::{CompletionType, Config, Context, Editor, Helper};
 use serde::{Deserialize, Serialize};
 use std::fs::File;
-use std::io::{self, BufRead, BufReader, Read, Write};
+use std::io::{self, BufRead, BufReader, IsTerminal, Read, Write};
 use std::os::fd::{AsFd, BorrowedFd};
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -37,6 +42,52 @@ struct VmResponse {
     vfio_devices: Vec<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct CredentialInfo {
+    username: String,
+    has_password: bool,
+    #[serde(default)]
+    ssh_authorized_keys: Vec<String>,
+    updated_at: u64,
+}
+
+#[derive(Tabled)]
+struct CredentialRow {
+    username: String,
+    password: &'static str,
+    ssh_keys: usize,
+    updated: String,
+}
+
+impl From<&CredentialInfo> for CredentialRow {
+    fn from(c: &CredentialInfo) -> Self {
+        Self {
+            username: c.username.clone(),
+            password: if c.has_password { "set" } else { "-" },
+            ssh_keys: c.ssh_authorized_keys.len(),
+            updated: format_unix_time(c.updated_at),
+        }
+    }
+}
+
+/// Request bodies carrying a plaintext password deliberately don't derive
+/// `Debug`, so the password can't end up in a log line by accident.
+#[derive(Serialize)]
+struct CreateCredentialRequest {
+    username: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    password: Option<String>,
+    ssh_authorized_keys: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct UpdateCredentialRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    password: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ssh_authorized_keys: Option<Vec<String>>,
+}
+
 #[derive(Debug, Serialize)]
 struct CreateVmRequest {
     name: String,
@@ -47,6 +98,8 @@ struct CreateVmRequest {
     firmware_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     cloud_init_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    credential: Option<String>,
     rootfs_path: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     kernel_args: Option<String>,
@@ -251,6 +304,59 @@ impl CliClient {
         }
     }
 
+    async fn list_credentials(&self) -> Result<Vec<CredentialInfo>, String> {
+        let resp = self
+            .client
+            .get(format!("{}/credentials", self.base_url))
+            .send()
+            .await
+            .map_err(|e| format!("Request failed: {}", e))?;
+        json_or_api_error(resp).await
+    }
+
+    async fn create_credential(
+        &self,
+        request: &CreateCredentialRequest,
+    ) -> Result<CredentialInfo, String> {
+        let resp = self
+            .client
+            .post(format!("{}/credentials", self.base_url))
+            .json(request)
+            .send()
+            .await
+            .map_err(|e| format!("Request failed: {}", e))?;
+        json_or_api_error(resp).await
+    }
+
+    async fn update_credential(
+        &self,
+        username: &str,
+        request: &UpdateCredentialRequest,
+    ) -> Result<CredentialInfo, String> {
+        let resp = self
+            .client
+            .put(format!("{}/credentials/{}", self.base_url, username))
+            .json(request)
+            .send()
+            .await
+            .map_err(|e| format!("Request failed: {}", e))?;
+        json_or_api_error(resp).await
+    }
+
+    async fn delete_credential(&self, username: &str) -> Result<(), String> {
+        let resp = self
+            .client
+            .delete(format!("{}/credentials/{}", self.base_url, username))
+            .send()
+            .await
+            .map_err(|e| format!("Request failed: {}", e))?;
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            Err(api_error_message(resp).await)
+        }
+    }
+
     async fn health_check(&self) -> Result<(), String> {
         let resp = self
             .client
@@ -402,6 +508,11 @@ fn print_help() {
         "  {} - Detach PCI device from VM",
         "detach-device <name|id> <path>".cyan()
     );
+    println!("  {}       - List stored guest login credentials", "credentials".cyan());
+    println!("  {}    - Add a credential (interactive)", "credential-add".cyan());
+    println!("  {} - Change a credential's password", "credential-passwd <user>".cyan());
+    println!("  {} - Replace a credential's SSH keys", "credential-keys <user>".cyan());
+    println!("  {}  - Delete a credential", "credential-rm <user>".cyan());
     println!("  {}            - Check API server health", "health".cyan());
     println!("  {}              - Show this help", "help".cyan());
     println!("  {}              - Exit the CLI", "exit".cyan());
@@ -410,6 +521,315 @@ fn print_help() {
         "{} You can use either VM name or ID for commands.",
         "Note:".dimmed()
     );
+}
+
+async fn api_error_message(resp: reqwest::Response) -> String {
+    match resp.json::<ApiError>().await {
+        Ok(error) => format!("{}: {}", error.error, error.message),
+        Err(e) => format!("Failed to parse error: {}", e),
+    }
+}
+
+async fn json_or_api_error<T: serde::de::DeserializeOwned>(
+    resp: reqwest::Response,
+) -> Result<T, String> {
+    if resp.status().is_success() {
+        resp.json()
+            .await
+            .map_err(|e| format!("Failed to parse response: {}", e))
+    } else {
+        Err(api_error_message(resp).await)
+    }
+}
+
+fn format_unix_time(secs: u64) -> String {
+    let days = secs / 86_400;
+    let rem = secs % 86_400;
+    // Civil-from-days (Howard Hinnant), to avoid pulling in a date crate.
+    let z = days as i64 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + if month <= 2 { 1 } else { 0 };
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02} UTC",
+        year,
+        month,
+        day,
+        rem / 3600,
+        (rem % 3600) / 60
+    )
+}
+
+/// Read a line without echoing it when stdin is a terminal.
+fn prompt_hidden(msg: &str) -> String {
+    print!("{}", msg);
+    io::stdout().flush().unwrap();
+    let stdin = io::stdin();
+    let fd = stdin.as_fd();
+    let saved = termios::tcgetattr(fd).ok();
+    if let Some(orig) = &saved {
+        let mut quiet = orig.clone();
+        quiet.local_flags.remove(LocalFlags::ECHO);
+        let _ = termios::tcsetattr(fd, SetArg::TCSANOW, &quiet);
+    }
+    let mut input = String::new();
+    let _ = stdin.read_line(&mut input);
+    if let Some(orig) = &saved {
+        restore_terminal(fd, orig);
+        println!();
+    }
+    input.trim_end_matches(['\r', '\n']).to_string()
+}
+
+/// Ask for a new password twice. `Ok(None)` when left empty and `allow_empty`.
+fn prompt_new_password(allow_empty: bool) -> Result<Option<String>, String> {
+    let first = prompt_hidden("Password: ");
+    if first.is_empty() {
+        return if allow_empty {
+            Ok(None)
+        } else {
+            Err("password is required".to_string())
+        };
+    }
+    if prompt_hidden("Confirm password: ") != first {
+        return Err("passwords do not match".to_string());
+    }
+    Ok(Some(first))
+}
+
+/// Read SSH public keys from comma-separated `.pub` file paths. Refuses
+/// anything that looks like a private key so it is never sent anywhere.
+fn read_public_key_files(input: &str) -> Result<Vec<String>, String> {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let mut keys = Vec::new();
+    for path in input.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+        let path = match path.strip_prefix("~/") {
+            Some(rest) => format!("{}/{}", home, rest),
+            None => path.to_string(),
+        };
+        let contents =
+            std::fs::read_to_string(&path).map_err(|e| format!("{}: {}", path, e))?;
+        if contents.contains("PRIVATE KEY") {
+            return Err(format!(
+                "{} is a private key; give the matching .pub file instead",
+                path
+            ));
+        }
+        keys.extend(
+            contents
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                .map(str::to_string),
+        );
+    }
+    Ok(keys)
+}
+
+async fn handle_credential_add(client: &CliClient) {
+    let username = prompt("Username: ");
+    if username.is_empty() {
+        println!("{}", "Error: username is required".red());
+        return;
+    }
+    println!("{}", "Leave the password empty for SSH-key-only login.".dimmed());
+    let password = match prompt_new_password(true) {
+        Ok(p) => p,
+        Err(e) => {
+            println!("{} {}", "Error:".red(), e);
+            return;
+        }
+    };
+    let keys = match prompt_path_optional("SSH public key files (optional, comma-separated, e.g. ~/.ssh/id_ed25519.pub): ")
+        .map(|s| read_public_key_files(&s))
+        .transpose()
+    {
+        Ok(k) => k.unwrap_or_default(),
+        Err(e) => {
+            println!("{} {}", "Error:".red(), e);
+            return;
+        }
+    };
+    let request = CreateCredentialRequest {
+        username,
+        password,
+        ssh_authorized_keys: keys,
+    };
+    match client.create_credential(&request).await {
+        Ok(c) => println!(
+            "{} {} (password: {}, SSH keys: {})",
+            "Credential created:".green(),
+            c.username.yellow(),
+            if c.has_password { "set" } else { "none" },
+            c.ssh_authorized_keys.len()
+        ),
+        Err(e) => println!("{} {}", "Error:".red(), e),
+    }
+}
+
+async fn handle_credential_update(client: &CliClient, username: &str, request: UpdateCredentialRequest) {
+    match client.update_credential(username, &request).await {
+        Ok(c) => {
+            println!("{} {}", "Credential updated:".green(), c.username.yellow());
+            println!(
+                "{} Changes apply to VMs on their first boot only; running or already-provisioned VMs keep their current login.",
+                "Note:".dimmed()
+            );
+        }
+        Err(e) => println!("{} {}", "Error:".red(), e),
+    }
+}
+
+/// REPL command names offered by Tab (aliases included).
+const COMMANDS: &[&str] = &[
+    "help", "exit", "quit", "list", "ls", "get", "create", "start", "stop", "pause",
+    "connect", "console", "attach", "log", "logs", "delete", "rm", "pci", "pci-devices",
+    "attach-device", "detach-device", "credentials", "creds", "credential-add",
+    "credential-passwd", "credential-keys", "credential-rm", "health",
+];
+
+/// Commands whose argument at this (0-based, after the command) index is a
+/// filesystem path.
+const PATH_ARGS: &[(&str, usize)] = &[("attach-device", 1), ("detach-device", 1)];
+
+/// What Tab completes in the line being edited.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum CompletionMode {
+    /// REPL line: command names, then path arguments.
+    Command,
+    /// A prompt for one path or a comma-separated list of paths.
+    Path,
+}
+
+struct GxHelper {
+    mode: CompletionMode,
+    files: FilenameCompleter,
+}
+
+impl GxHelper {
+    fn new(mode: CompletionMode) -> Self {
+        Self {
+            mode,
+            files: FilenameCompleter::new(),
+        }
+    }
+}
+
+impl Completer for GxHelper {
+    type Candidate = Pair;
+
+    fn complete(
+        &self,
+        line: &str,
+        pos: usize,
+        _ctx: &Context<'_>,
+    ) -> rustyline::Result<(usize, Vec<Pair>)> {
+        match self.mode {
+            CompletionMode::Command => complete_command_line(&self.files, line, pos),
+            CompletionMode::Path => complete_path_list(&self.files, line, pos),
+        }
+    }
+}
+
+impl Hinter for GxHelper {
+    type Hint = String;
+}
+impl Highlighter for GxHelper {}
+impl Validator for GxHelper {}
+impl Helper for GxHelper {}
+
+fn new_editor(mode: CompletionMode) -> rustyline::Result<Editor<GxHelper, DefaultHistory>> {
+    // List mode behaves like bash: complete the common prefix, list the rest.
+    let config = Config::builder()
+        .completion_type(CompletionType::List)
+        .auto_add_history(false)
+        .build();
+    let mut editor = Editor::with_config(config)?;
+    editor.set_helper(Some(GxHelper::new(mode)));
+    Ok(editor)
+}
+
+/// Complete the command word, or a path for commands that take one.
+fn complete_command_line(
+    files: &FilenameCompleter,
+    line: &str,
+    pos: usize,
+) -> rustyline::Result<(usize, Vec<Pair>)> {
+    let before = &line[..pos];
+    let words: Vec<&str> = before.split_whitespace().collect();
+    let starting_new_word = before.is_empty() || before.ends_with(char::is_whitespace);
+
+    // Still typing the command itself.
+    if words.is_empty() || (words.len() == 1 && !starting_new_word) {
+        let prefix = words.first().copied().unwrap_or("");
+        let start = pos - prefix.len();
+        let candidates = COMMANDS
+            .iter()
+            .filter(|c| c.starts_with(prefix))
+            .map(|c| Pair {
+                display: c.to_string(),
+                replacement: format!("{} ", c),
+            })
+            .collect();
+        return Ok((start, candidates));
+    }
+
+    // Index of the argument under the cursor, not counting the command.
+    let arg_index = if starting_new_word {
+        words.len() - 1
+    } else {
+        words.len() - 2
+    };
+    if PATH_ARGS.contains(&(words[0], arg_index)) {
+        return files.complete_path(line, pos);
+    }
+    Ok((pos, Vec::new()))
+}
+
+/// Complete the path under the cursor, where the input may be a
+/// comma-separated list (commas aren't a word break for rustyline).
+fn complete_path_list(
+    files: &FilenameCompleter,
+    line: &str,
+    pos: usize,
+) -> rustyline::Result<(usize, Vec<Pair>)> {
+    let before = &line[..pos];
+    let segment_start = before.rfind(',').map(|i| i + 1).unwrap_or(0);
+    let segment_start = segment_start + (before[segment_start..].len() - before[segment_start..].trim_start().len());
+    let (start, candidates) = files.complete_path(&before[segment_start..], pos - segment_start)?;
+    Ok((segment_start + start, candidates))
+}
+
+/// Prompt for a path (or comma-separated paths) with Tab completion when
+/// stdin is a terminal. Completion escapes spaces (`my\ dir`); undo that
+/// so callers get the real path.
+fn prompt_path(msg: &str) -> String {
+    if !io::stdin().is_terminal() {
+        return prompt(msg);
+    }
+    let mut editor = match new_editor(CompletionMode::Path) {
+        Ok(editor) => editor,
+        Err(_) => return prompt(msg),
+    };
+    match editor.readline(msg) {
+        Ok(line) => unescape(line.trim(), Some('\\')).into_owned(),
+        // Ctrl-C / Ctrl-D answer the prompt with nothing, like an empty line.
+        Err(_) => String::new(),
+    }
+}
+
+fn prompt_path_optional(msg: &str) -> Option<String> {
+    let input = prompt_path(msg);
+    if input.is_empty() {
+        None
+    } else {
+        Some(input)
+    }
 }
 
 fn prompt(msg: &str) -> String {
@@ -472,7 +892,7 @@ async fn handle_create(client: &CliClient) {
             .filter(|p| p.exists())
             .map(|p| p.to_string_lossy().into_owned());
         let hint = default_firmware.as_deref().unwrap_or("none");
-        match prompt(&format!(
+        match prompt_path(&format!(
             "UEFI firmware path ['none' for kernel boot] [{}]: ",
             hint
         ))
@@ -489,7 +909,7 @@ async fn handle_create(client: &CliClient) {
     let kernel_image_path = if firmware_path.is_some() {
         String::new()
     } else {
-        let path = prompt("Kernel image path: ");
+        let path = prompt_path("Kernel image path: ");
         if path.is_empty() {
             println!("{}", "Error: kernel image path is required for kernel boot".red());
             return;
@@ -504,14 +924,37 @@ async fn handle_create(client: &CliClient) {
     } else {
         "Root filesystem path: "
     };
-    let rootfs_path = prompt(rootfs_prompt);
+    let rootfs_path = prompt_path(rootfs_prompt);
     if rootfs_path.is_empty() {
         println!("{}", "Error: disk image path is required".red());
         return;
     }
 
     let cloud_init_path = if firmware_path.is_some() {
-        prompt_optional("cloud-init seed image (optional, default: auto-generated): ")
+        prompt_path_optional("cloud-init seed image (optional, default: auto-generated): ")
+    } else {
+        None
+    };
+
+    // A stored credential is provisioned through the generated seed only.
+    let credential = if firmware_path.is_some() && cloud_init_path.is_none() {
+        let names: Vec<String> = client
+            .list_credentials()
+            .await
+            .map(|cs| cs.into_iter().map(|c| c.username).collect())
+            .unwrap_or_default();
+        if names.is_empty() {
+            println!(
+                "{} No stored credentials; the guest login falls back to host SSH keys / GLIDEX_CLOUD_INIT_PASSWD_HASH (add one with 'credential-add').",
+                "Note:".dimmed()
+            );
+            None
+        } else {
+            prompt_optional(&format!(
+                "Login credential (optional; one of: {}): ",
+                names.join(", ")
+            ))
+        }
     } else {
         None
     };
@@ -523,7 +966,7 @@ async fn handle_create(client: &CliClient) {
     };
 
     let vfio_devices =
-        prompt_optional("VFIO PCI devices (comma-separated, e.g. /sys/bus/pci/devices/0000:41:00.0): ")
+        prompt_path_optional("VFIO PCI devices (comma-separated, e.g. /sys/bus/pci/devices/0000:41:00.0): ")
             .map(|s| {
                 s.split(',')
                     .map(|d| d.trim().to_string())
@@ -539,6 +982,7 @@ async fn handle_create(client: &CliClient) {
         kernel_image_path,
         firmware_path,
         cloud_init_path,
+        credential,
         rootfs_path,
         kernel_args,
         hypervisor,
@@ -1045,6 +1489,56 @@ async fn handle_command(line: &str, client: &CliClient) -> bool {
             }
         }
 
+        "credentials" | "creds" => match client.list_credentials().await {
+            Ok(creds) if creds.is_empty() => println!("No credentials stored."),
+            Ok(creds) => {
+                let rows: Vec<CredentialRow> = creds.iter().map(CredentialRow::from).collect();
+                println!("{}", Table::new(rows));
+            }
+            Err(e) => println!("{} {}", "Error:".red(), e),
+        },
+
+        "credential-add" | "cred-add" => handle_credential_add(client).await,
+
+        "credential-passwd" | "cred-passwd" => match parts.get(1) {
+            Some(username) => match prompt_new_password(false) {
+                Ok(password) => {
+                    let request = UpdateCredentialRequest {
+                        password,
+                        ssh_authorized_keys: None,
+                    };
+                    handle_credential_update(client, username, request).await
+                }
+                Err(e) => println!("{} {}", "Error:".red(), e),
+            },
+            None => println!("{}", "Usage: credential-passwd <user>".yellow()),
+        },
+
+        "credential-keys" | "cred-keys" => match parts.get(1) {
+            Some(username) => {
+                let input = prompt_path("SSH public key files (comma-separated; empty to remove all keys): ");
+                match read_public_key_files(&input) {
+                    Ok(keys) => {
+                        let request = UpdateCredentialRequest {
+                            password: None,
+                            ssh_authorized_keys: Some(keys),
+                        };
+                        handle_credential_update(client, username, request).await
+                    }
+                    Err(e) => println!("{} {}", "Error:".red(), e),
+                }
+            }
+            None => println!("{}", "Usage: credential-keys <user>".yellow()),
+        },
+
+        "credential-rm" | "cred-rm" => match parts.get(1) {
+            Some(username) => match client.delete_credential(username).await {
+                Ok(()) => println!("{} {}", "Credential deleted:".green(), username),
+                Err(e) => println!("{} {}", "Error:".red(), e),
+            },
+            None => println!("{}", "Usage: credential-rm <user>".yellow()),
+        },
+
         "health" => match client.health_check().await {
             Ok(()) => println!("{} API server is healthy", "OK:".green()),
             Err(e) => println!("{} {}", "Error:".red(), e),
@@ -1082,7 +1576,8 @@ async fn main() {
     println!("Connected to: {}", cli.server.yellow());
     println!("Type {} for available commands\n", "help".cyan());
 
-    let mut rl = DefaultEditor::new().expect("Failed to initialize readline");
+    let mut rl = new_editor(CompletionMode::Command).expect("Failed to initialize readline");
+    println!("{} Tab completes commands and file paths.\n", "Tip:".dimmed());
 
     loop {
         match rl.readline("gxctl> ") {
@@ -1114,6 +1609,108 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn replacements(result: rustyline::Result<(usize, Vec<Pair>)>) -> (usize, Vec<String>) {
+        let (start, pairs) = result.unwrap();
+        let mut r: Vec<String> = pairs.into_iter().map(|p| p.replacement).collect();
+        r.sort();
+        (start, r)
+    }
+
+    fn temp_tree() -> tempfile::TempDir {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("CLOUDHV.fd"), b"").unwrap();
+        std::fs::write(dir.path().join("cloud.raw"), b"").unwrap();
+        std::fs::create_dir(dir.path().join("my dir")).unwrap();
+        std::fs::write(dir.path().join("my dir").join("key.pub"), b"").unwrap();
+        dir
+    }
+
+    #[test]
+    fn completes_command_names() {
+        let files = FilenameCompleter::new();
+        let (start, got) = replacements(complete_command_line(&files, "cred", 4));
+        assert_eq!(start, 0);
+        assert_eq!(
+            got,
+            ["cred-add", "credential-add", "credential-keys", "credential-passwd", "credential-rm", "credentials", "creds"]
+                .iter()
+                .filter(|c| COMMANDS.contains(c))
+                .map(|c| format!("{c} "))
+                .collect::<Vec<_>>()
+        );
+        let (_, got) = replacements(complete_command_line(&files, "", 0));
+        assert_eq!(got.len(), COMMANDS.len());
+    }
+
+    #[test]
+    fn completes_paths_only_where_a_command_takes_one() {
+        let dir = temp_tree();
+        let files = FilenameCompleter::new();
+        let base = dir.path().display().to_string();
+
+        // attach-device <vm> <path>: the path argument completes.
+        let line = format!("attach-device my-vm {base}/CLO");
+        let (start, got) = replacements(complete_command_line(&files, &line, line.len()));
+        assert_eq!(start, "attach-device my-vm ".len());
+        assert_eq!(got, vec![format!("{base}/CLOUDHV.fd")]);
+
+        // ...but not the VM name, and not arguments of other commands.
+        let line = format!("attach-device {base}/CLO");
+        assert!(replacements(complete_command_line(&files, &line, line.len())).1.is_empty());
+        let line = format!("start {base}/CLO");
+        assert!(replacements(complete_command_line(&files, &line, line.len())).1.is_empty());
+    }
+
+    #[test]
+    fn completes_each_entry_of_a_comma_separated_path_list() {
+        let dir = temp_tree();
+        let files = FilenameCompleter::new();
+        let base = dir.path().display().to_string();
+
+        let line = format!("{base}/CLOUDHV.fd, {base}/clo");
+        let (start, got) = replacements(complete_path_list(&files, &line, line.len()));
+        assert_eq!(start, format!("{base}/CLOUDHV.fd, ").len());
+        assert_eq!(got, vec![format!("{base}/cloud.raw")]);
+
+        // Spaces are escaped for editing and unescaped by prompt_path.
+        let line = format!("{base}/my");
+        let (_, got) = replacements(complete_path_list(&files, &line, line.len()));
+        assert_eq!(got, vec![format!("{base}/my\\ dir/")]);
+        assert_eq!(unescape(&got[0], Some('\\')), format!("{base}/my dir/"));
+    }
+
+    #[test]
+    fn completes_tilde_paths() {
+        let files = FilenameCompleter::new();
+        let (start, got) = replacements(complete_path_list(&files, "~/", 2));
+        assert_eq!(start, 0);
+        assert!(got.iter().all(|c| c.starts_with("~/")), "{got:?}");
+    }
+
+    #[test]
+    fn formats_unix_time_as_utc() {
+        assert_eq!(format_unix_time(0), "1970-01-01 00:00 UTC");
+        assert_eq!(format_unix_time(1_790_000_000), "2026-09-21 14:13 UTC");
+    }
+
+    #[test]
+    fn reads_public_keys_and_refuses_private_keys() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let public = dir.path().join("id.pub");
+        std::fs::write(&public, "# comment\nssh-ed25519 AAAA a@b\n\nssh-rsa BBBB c@d\n").unwrap();
+        let private = dir.path().join("id");
+        std::fs::write(&private, "-----BEGIN OPENSSH PRIVATE KEY-----\nxxx\n").unwrap();
+
+        let keys = read_public_key_files(public.to_str().unwrap()).unwrap();
+        assert_eq!(keys, vec!["ssh-ed25519 AAAA a@b", "ssh-rsa BBBB c@d"]);
+
+        let both = format!("{}, {}", public.display(), private.display());
+        let err = read_public_key_files(&both).unwrap_err();
+        assert!(err.contains("private key"), "{err}");
+        assert!(!err.contains("xxx"), "error must not echo key material");
+        assert!(read_public_key_files("").unwrap().is_empty());
+    }
 
     #[test]
     fn pci_device_info_deserializes_sysfs_path() {

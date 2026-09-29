@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { NavLink } from "react-router-dom";
 import { healthCheck } from "../api";
 
 export default function Header() {
@@ -24,6 +25,27 @@ export default function Header() {
               GlideX
             </a>
             <span className="text-sm text-gray-500">VM Control Panel</span>
+            <nav className="flex items-center space-x-1 pl-4">
+              {[
+                { to: "/", label: "VMs" },
+                { to: "/credentials", label: "Credentials" },
+              ].map(({ to, label }) => (
+                <NavLink
+                  key={to}
+                  to={to}
+                  end={to === "/"}
+                  className={({ isActive }) =>
+                    `px-3 py-1.5 text-sm rounded-lg transition-colors ${
+                      isActive
+                        ? "bg-sky-50 text-sky-700 font-medium"
+                        : "text-gray-600 hover:bg-gray-100"
+                    }`
+                  }
+                >
+                  {label}
+                </NavLink>
+              ))}
+            </nav>
           </div>
           <div className="flex items-center space-x-2">
             <span className="text-sm text-gray-600">API:</span>

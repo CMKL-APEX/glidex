@@ -24,9 +24,45 @@ with `--server`).
 | `pci` / `pci-devices` | `GET /pci-devices` + table |
 | `attach-device <vm> <path>` | `POST /vms/{id}/devices` |
 | `detach-device <vm> <path>` | `DELETE /vms/{id}/devices` |
+| `credentials` / `creds` | `GET /credentials` + table (no hashes) |
+| `credential-add` | Username, hidden password ×2, `.pub` files → `POST /credentials` |
+| `credential-passwd <user>` | Hidden password ×2 → `PUT /credentials/{user}` |
+| `credential-keys <user>` | `.pub` files → `PUT /credentials/{user}` (replaces keys) |
+| `credential-rm <user>` | `DELETE /credentials/{user}` |
 | `health` | `GET /health` |
 | `help` / `?` | Command list |
 | `exit` | Leave the REPL |
+
+### Tab completion
+
+Both the REPL and the path prompts use a rustyline `Editor` with
+`GxHelper` (`CompletionType::List`: Tab completes the common prefix, a
+second Tab lists candidates). `CompletionMode` picks the behavior:
+
+- **`Command`** (REPL line): the first word completes against
+  `COMMANDS` (aliases included; keep it in sync with `handle_command`).
+  Later words complete as file paths only where `PATH_ARGS` says the
+  command takes one (`attach-device <vm> <path>`, `detach-device <vm>
+  <path>`); other arguments get no candidates.
+- **`Path`** (`prompt_path` / `prompt_path_optional`): firmware, kernel,
+  disk image, cloud-init seed, VFIO device and SSH key file prompts.
+  Completion applies to the segment after the last comma, since commas
+  aren't a rustyline word break and several prompts take lists.
+
+Rustyline's `FilenameCompleter` expands `~` and escapes spaces
+(`my\ dir/`); `prompt_path` unescapes the answer so callers get the
+real path. When stdin isn't a terminal, `prompt_path` falls back to
+plain `read_line`, so piped input keeps working. Ctrl-C/Ctrl-D at a path
+prompt answer it with an empty line.
+
+### Credential input
+
+Passwords are read with terminal echo off (`prompt_hidden`, termios
+`ECHO` cleared; plain `read_line` when stdin isn't a TTY) and asked twice.
+SSH keys are read client-side from `.pub` files; a file containing
+`PRIVATE KEY` is refused before anything is sent, and the error never
+echoes file contents. Request structs carrying a password don't derive
+`Debug`.
 
 ### Name vs id resolution
 
@@ -57,6 +93,8 @@ Interactive `handle_create` asks, in order:
    rootfs has no bootloader.
 8. *(firmware boot only)* cloud-init seed image (optional; empty →
    auto-generated at start, see [hypervisors.md](hypervisors.md#firmware-boot)).
+   *(auto-generated seed only)* Login credential: lists stored usernames;
+   empty → host SSH keys / `GLIDEX_CLOUD_INIT_PASSWD_HASH` fallback.
 9. Kernel args (optional — server picks per-hypervisor default) —
    skipped for firmware boot.
 10. Optional VFIO PCI devices, comma-separated sysfs paths.

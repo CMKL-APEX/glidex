@@ -7,7 +7,7 @@
 //!   but no hypervisor.
 //!
 //! - `#[ignore]`d tests boot a real guest with cloud-hypervisor and need
-//!   `/dev/kvm`, `cloud-hypervisor`, `openssl` and a UEFI-bootable disk
+//!   `/dev/kvm`, `cloud-hypervisor` and a UEFI-bootable disk
 //!   image. The firmware defaults to `~/.glidex/CLOUDHV.fd` as downloaded
 //!   by `glidex-install` (override with `GLIDEX_TEST_FIRMWARE`):
 //!
@@ -300,6 +300,7 @@ fn seed_image_is_a_cidata_volume_with_nocloud_files() {
     let seed = SeedConfig {
         instance_id: "vm-1234".into(),
         hostname: "func-test".into(),
+        username: "func-user".into(),
         ssh_authorized_keys: vec!["ssh-ed25519 AAAAC3Nza test@host".into()],
         passwd_hash: Some("$6$salt$hash".into()),
     };
@@ -449,21 +450,6 @@ fn env_path(name: &str, default: Option<String>) -> PathBuf {
     path.canonicalize().unwrap()
 }
 
-/// Throwaway random password and its SHA-512 crypt hash.
-fn throwaway_credentials() -> (String, String) {
-    let password = uuid::Uuid::new_v4().simple().to_string();
-    let mut child = Command::new("openssl")
-        .args(["passwd", "-6", "-stdin"])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .spawn()
-        .expect("openssl is required for the boot test");
-    child.stdin.take().unwrap().write_all(password.as_bytes()).unwrap();
-    let out = child.wait_with_output().unwrap();
-    assert!(out.status.success(), "openssl passwd failed");
-    (password, String::from_utf8(out.stdout).unwrap().trim().to_string())
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "boots a real VM; needs KVM, cloud-hypervisor and GLIDEX_TEST_IMAGE"]
 async fn firmware_boot_with_generated_cloud_init() {
@@ -481,8 +467,17 @@ async fn firmware_boot_with_generated_cloud_init() {
     let rootfs = tmp.path().join("rootfs.raw");
     run_ok(Command::new("cp").arg("--sparse=always").arg(&source_image).arg(&rootfs));
 
-    let (password, hash) = throwaway_credentials();
-    std::env::set_var(cloud_init::PASSWD_HASH_ENV, &hash);
+    // Guest login from the credential store, with a throwaway password.
+    let username = "gxtester";
+    let password = uuid::Uuid::new_v4().simple().to_string();
+    let (status, body) = request(
+        &app,
+        "POST",
+        "/credentials",
+        Some(json!({"username": username, "password": password})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
 
     let hostname = "gx-functest";
     let (status, vm) = request(
@@ -496,6 +491,7 @@ async fn firmware_boot_with_generated_cloud_init() {
             "hypervisor": "cloudhypervisor",
             "firmware_path": firmware,
             "rootfs_path": rootfs,
+            "credential": username,
         })),
     )
     .await;
@@ -523,12 +519,12 @@ async fn firmware_boot_with_generated_cloud_init() {
         std::thread::sleep(Duration::from_secs(2));
         console.send("\r");
         console.expect(&format!("{hostname} login: "), Duration::from_secs(60));
-        console.send("cloud\r");
+        console.send(&format!("{username}\r"));
         console.expect("Password: ", Duration::from_secs(30));
         console.send(&format!("{password}\r"));
-        console.expect(&format!("cloud@{hostname}:~$ "), Duration::from_secs(60));
+        console.expect(&format!("{username}@{hostname}:~$ "), Duration::from_secs(60));
         console.send("echo GX_$((6*7))_$(id -un)_$(sudo -n true && echo root)\r");
-        console.expect("GX_42_cloud_root", Duration::from_secs(30));
+        console.expect(&format!("GX_42_{username}_root"), Duration::from_secs(30));
         console
     })
     .await
@@ -559,5 +555,7 @@ async fn firmware_boot_with_generated_cloud_init() {
     assert_eq!(status, StatusCode::NO_CONTENT);
     assert!(!Path::new(&seed_path).exists(), "seed image not removed on delete");
 
-    std::env::remove_var(cloud_init::PASSWD_HASH_ENV);
+    // The credential is no longer referenced and can be removed.
+    let (status, _) = request(&app, "DELETE", &format!("/credentials/{username}"), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
 }

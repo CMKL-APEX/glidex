@@ -5,7 +5,7 @@ use axum::{
     },
     http::StatusCode,
     response::{IntoResponse, Response},
-    routing::{delete, get, post},
+    routing::{delete, get, post, put},
     Json, Router,
 };
 use std::sync::Arc;
@@ -13,6 +13,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 
 use crate::models::{ApiError, CreateVmRequest, DeviceRequest, VmConfig, VmResponse, VmState};
+use crate::credentials::{
+    CreateCredentialRequest, CredentialError, CredentialInfo, UpdateCredentialRequest,
+};
 use crate::hypervisor::HypervisorError;
 use crate::state::{VmManager, VmManagerError};
 use serde::Serialize;
@@ -32,6 +35,11 @@ pub fn create_router(state: AppState) -> Router {
         .route("/vms/{id}/console/ws", get(console_ws))
         .route("/vms/{id}/devices", post(attach_device))
         .route("/vms/{id}/devices", delete(detach_device))
+        .route("/credentials", get(list_credentials))
+        .route("/credentials", post(create_credential))
+        .route("/credentials/{username}", get(get_credential))
+        .route("/credentials/{username}", put(update_credential))
+        .route("/credentials/{username}", delete(delete_credential))
         .route("/pci-devices", get(list_pci_devices))
         .route("/health", get(health_check))
         .with_state(state)
@@ -58,6 +66,51 @@ async fn create_vm(
         Ok(vm) => Ok((StatusCode::CREATED, Json(VmResponse::from(&vm)))),
         Err(e) => Err(error_to_response(e)),
     }
+}
+
+async fn list_credentials(
+    State(manager): State<AppState>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ApiError>)> {
+    let creds = manager.list_credentials().map_err(error_to_response)?;
+    Ok(Json(creds.iter().map(CredentialInfo::from).collect::<Vec<_>>()))
+}
+
+async fn create_credential(
+    State(manager): State<AppState>,
+    Json(request): Json<CreateCredentialRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ApiError>)> {
+    let cred = manager.create_credential(request).map_err(error_to_response)?;
+    Ok((StatusCode::CREATED, Json(CredentialInfo::from(&cred))))
+}
+
+async fn get_credential(
+    State(manager): State<AppState>,
+    Path(username): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ApiError>)> {
+    let cred = manager.get_credential(&username).map_err(error_to_response)?;
+    Ok(Json(CredentialInfo::from(&cred)))
+}
+
+async fn update_credential(
+    State(manager): State<AppState>,
+    Path(username): Path<String>,
+    Json(request): Json<UpdateCredentialRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ApiError>)> {
+    let cred = manager
+        .update_credential(&username, request)
+        .map_err(error_to_response)?;
+    Ok(Json(CredentialInfo::from(&cred)))
+}
+
+async fn delete_credential(
+    State(manager): State<AppState>,
+    Path(username): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, Json<ApiError>)> {
+    manager
+        .delete_credential(&username)
+        .await
+        .map_err(error_to_response)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn get_vm(
@@ -262,6 +315,23 @@ fn error_to_response(error: VmManagerError) -> (StatusCode, Json<ApiError>) {
         VmManagerError::PersistenceError(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ApiError::new("persistence_error", error.to_string())),
+        ),
+        VmManagerError::Credential(CredentialError::NotFound(_)) => (
+            StatusCode::NOT_FOUND,
+            Json(ApiError::new("not_found", error.to_string())),
+        ),
+        VmManagerError::Credential(CredentialError::AlreadyExists(_))
+        | VmManagerError::CredentialInUse { .. } => (
+            StatusCode::CONFLICT,
+            Json(ApiError::new("conflict", error.to_string())),
+        ),
+        VmManagerError::Credential(CredentialError::Invalid(_)) => (
+            StatusCode::BAD_REQUEST,
+            Json(ApiError::new("invalid_credential", error.to_string())),
+        ),
+        VmManagerError::Credential(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError::new("credential_error", error.to_string())),
         ),
         VmManagerError::HypervisorNotAvailable(_) => (
             StatusCode::SERVICE_UNAVAILABLE,
