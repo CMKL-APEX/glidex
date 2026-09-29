@@ -21,7 +21,7 @@ only invocation mode is interactive bootstrap.
 - `libc::geteuid()` — if root, installs binaries to `/usr/local/bin`;
   otherwise to `~/.local/bin` (created if missing).
 - Presence of `curl`, `apt-get | dnf | yum | pacman`, `bun`,
-  `rustup`, `unsquashfs`, `cloud-hypervisor`, `firecracker`,
+  `rustup`, `mkdosfs`, `mcopy`, `cloud-hypervisor`,
   `qemu-system-x86_64`.
 
 All detection goes through a `command_exists` helper that shells out
@@ -46,28 +46,23 @@ to `command -v`.
    `~/.glidex/CLOUDHV.fd` (`CLOUDHV_EFI.fd` on aarch64), then ensures
    `dosfstools` + `mtools` are installed for cloud-init seed images.
    See below.
-5. **Firecracker** *(optional, prompts)* — downloads
-   `firecracker-<ver>-<arch>.tgz`, untars, installs `firecracker`
-   and `jailer`.
-6. **QEMU** *(optional, prompts)* — delegates to the system
+5. **QEMU** *(optional, prompts)* — delegates to the system
    package manager (`apt-get install qemu-system-x86 qemu-kvm`,
    `dnf install qemu-kvm`, etc). We don't ship a QEMU binary
    because its distribution story is already well handled by
    every Linux distro and the resulting tree is large.
-7. **KVM access check** — verifies `/dev/kvm` exists and is
+6. **KVM access check** — verifies `/dev/kvm` exists and is
    read-writable. On failure it prints the appropriate
    `usermod -aG kvm $USER` instruction but does not make the
    change itself.
-8. **Control-plane build** — runs `cargo build --release
+7. **Control-plane build** — runs `cargo build --release
    -p glidex-control-plane` and offers to install
    `glidex-control-plane` and `gxctl` into the install dir.
-9. **UI dependencies** — runs `bun install` inside
+8. **UI dependencies** — runs `bun install` inside
    `crates/glidex-ui/ui`. Skipped with a warning if bun isn't
    on PATH.
-10. **Sample kernel + rootfs** *(optional, prompts)* — downloads
-   Firecracker CI artifacts into `~/.glidex/`. See below.
-11. **Usage blurb** — prints the 1-2-3 for starting the server,
-    UI, and CLI.
+9. **Usage blurb** — prints the 1-2-3 for starting the server,
+   UI, and CLI.
 
 ## Binary installation helper
 
@@ -107,29 +102,14 @@ to the repo, to keep a 4 MB binary out of git history.
   is set. The installer can't depend on the control-plane crate, so
   the file name is duplicated there.
 
-## Sample artifact pipeline
+## No sample kernel / rootfs
 
-The most elaborate step. Why bother: first-time users need
-*something* to boot, and hand-building a kernel + rootfs is not
-a reasonable first hour.
-
-1. Derive the latest Firecracker CI `major.minor` by curling
-   `releases/latest` and reading the `Location` redirect.
-2. List the S3 bucket `spec.ccfc.min` under
-   `firecracker-ci/<ci>/<arch>/` — this returns XML with
-   `<Key>…</Key>` entries. `pick_latest_key_matching` picks the
-   highest-version entry matching a given prefix and filter.
-3. Download `vmlinux-*` → `~/.glidex/vmlinux.bin`.
-4. Download `ubuntu-*.squashfs`, `sudo unsquashfs` it to a tempdir.
-5. `ssh-keygen -f ~/.glidex/vm_key -N ""` if no key exists, and
-   copy the pubkey into `root/.ssh/authorized_keys` inside the
-   unsquashed root.
-6. `truncate -s 1G ~/.glidex/rootfs.ext4`, then
-   `sudo mkfs.ext4 -d <squashfs-root> -F ~/.glidex/rootfs.ext4`.
-7. Remove the temp extraction.
-
-The resulting rootfs has no partition table — that's why the QEMU
-default kernel args use `root=/dev/vda`, not `/dev/vda1`.
+Earlier versions downloaded a kernel and built an ext4 rootfs from
+Firecracker's CI artifacts. That was removed together with Firecracker
+support. The out-of-the-box path is now firmware boot: the installer
+provides `CLOUDHV.fd`, and any distro cloud image (converted to raw)
+boots with an auto-generated cloud-init seed. Kernel boot still works
+but needs a user-supplied kernel + rootfs.
 
 ## What it deliberately does not do
 

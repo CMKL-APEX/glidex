@@ -43,24 +43,23 @@ Interactive `handle_create` asks, in order:
 1. VM name (required, unique).
 2. vCPU count (default 1).
 3. Memory in MiB (default 512).
-4. Hypervisor choice: `firecracker | cloudhypervisor | qemu`,
-   default `cloudhypervisor`. Aliases: `fc`, `ch`, `q`. Asked first
+4. Hypervisor choice: `cloudhypervisor | qemu`, default
+   `cloudhypervisor`. Aliases: `ch`, `q`. Asked first
    because it decides which of the following prompts appear.
 5. *(Cloud-Hypervisor only)* UEFI firmware path. Defaults to
    `default_firmware_path()` (`~/.glidex/CLOUDHV.fd`, downloaded by
    `glidex-install`) when that file exists, otherwise no default;
    `none` selects kernel boot.
-6. Kernel image path (default `~/.glidex/vmlinux.bin`) — skipped for
-   firmware boot.
-7. Rootfs path (default `~/.glidex/rootfs.ext4`). For firmware boot
-   this becomes a required "disk image" prompt with no default, since
-   the bare-ext4 sample rootfs has no bootloader.
+6. Kernel image path (required, no default) — skipped for firmware
+   boot.
+7. Rootfs path (required, no default). For firmware boot the prompt
+   asks for a UEFI-bootable disk image instead, since a bare ext4
+   rootfs has no bootloader.
 8. *(firmware boot only)* cloud-init seed image (optional; empty →
    auto-generated at start, see [hypervisors.md](hypervisors.md#firmware-boot)).
 9. Kernel args (optional — server picks per-hypervisor default) —
    skipped for firmware boot.
 10. Optional VFIO PCI devices, comma-separated sysfs paths.
-    Skipped when hypervisor is Firecracker (no VFIO support there).
 
 The request is `POST /vms`. Tilde in paths is expanded server-side
 (see [data-model.md](data-model.md)); the CLI does not do it itself.

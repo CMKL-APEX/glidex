@@ -449,11 +449,10 @@ async fn handle_create(client: &CliClient) {
         Err(_) => 512,
     };
 
-    let hypervisor = match prompt("Hypervisor [firecracker/cloudhypervisor/qemu] (default: cloudhypervisor): ")
+    let hypervisor = match prompt("Hypervisor [cloudhypervisor/qemu] (default: cloudhypervisor): ")
         .to_lowercase()
         .as_str()
     {
-        "firecracker" | "fc" => Some("firecracker".to_string()),
         "" | "cloudhypervisor" | "cloud-hypervisor" | "ch" => Some("cloudhypervisor".to_string()),
         "qemu" | "q" => Some("qemu".to_string()),
         other => {
@@ -465,10 +464,6 @@ async fn handle_create(client: &CliClient) {
             Some("cloudhypervisor".to_string())
         }
     };
-
-    let home_dir = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    let default_kernel = format!("{}/.glidex/vmlinux.bin", home_dir);
-    let default_rootfs = format!("{}/.glidex/rootfs.ext4", home_dir);
 
     // Cloud Hypervisor boots a disk image through UEFI firmware by default,
     // using the CLOUDHV.fd that glidex-install downloads into ~/.glidex.
@@ -494,27 +489,26 @@ async fn handle_create(client: &CliClient) {
     let kernel_image_path = if firmware_path.is_some() {
         String::new()
     } else {
-        match prompt(&format!("Kernel image path [{}]: ", default_kernel)).as_str() {
-            "" => default_kernel,
-            s => s.to_string(),
-        }
-    };
-
-    let rootfs_path = if firmware_path.is_some() {
-        // Firmware boot needs a disk with its own bootloader (e.g. a raw
-        // distro cloud image), so the bare-ext4 sample rootfs won't do.
-        let path = prompt("Disk image path (UEFI-bootable, e.g. a raw cloud image): ");
+        let path = prompt("Kernel image path: ");
         if path.is_empty() {
-            println!("{}", "Error: disk image path is required for firmware boot".red());
+            println!("{}", "Error: kernel image path is required for kernel boot".red());
             return;
         }
         path
-    } else {
-        match prompt(&format!("Root filesystem path [{}]: ", default_rootfs)).as_str() {
-            "" => default_rootfs,
-            s => s.to_string(),
-        }
     };
+
+    // Firmware boot needs a disk with its own bootloader (e.g. a raw distro
+    // cloud image); kernel boot takes a bare root filesystem image.
+    let rootfs_prompt = if firmware_path.is_some() {
+        "Disk image path (UEFI-bootable, e.g. a raw cloud image): "
+    } else {
+        "Root filesystem path: "
+    };
+    let rootfs_path = prompt(rootfs_prompt);
+    if rootfs_path.is_empty() {
+        println!("{}", "Error: disk image path is required".red());
+        return;
+    }
 
     let cloud_init_path = if firmware_path.is_some() {
         prompt_optional("cloud-init seed image (optional, default: auto-generated): ")
@@ -528,18 +522,15 @@ async fn handle_create(client: &CliClient) {
         prompt_optional("Kernel arguments (optional, default: root=/dev/vda reboot=k panic=1): ")
     };
 
-    let vfio_devices = if hypervisor.as_deref() != Some("firecracker") {
-        let input = prompt_optional("VFIO PCI devices (comma-separated, e.g. /sys/bus/pci/devices/0000:41:00.0): ");
-        input.map(|s| {
-            s.split(',')
-                .map(|d| d.trim().to_string())
-                .filter(|d| !d.is_empty())
-                .collect::<Vec<_>>()
-        })
-        .filter(|v| !v.is_empty())
-    } else {
-        None
-    };
+    let vfio_devices =
+        prompt_optional("VFIO PCI devices (comma-separated, e.g. /sys/bus/pci/devices/0000:41:00.0): ")
+            .map(|s| {
+                s.split(',')
+                    .map(|d| d.trim().to_string())
+                    .filter(|d| !d.is_empty())
+                    .collect::<Vec<_>>()
+            })
+            .filter(|v| !v.is_empty());
 
     let request = CreateVmRequest {
         name,

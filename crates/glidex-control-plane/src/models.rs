@@ -5,7 +5,7 @@ use uuid::Uuid;
 /// Expand a leading `~` or `~/` to the user's home directory. Hypervisors
 /// don't do shell-style expansion themselves, so paths like
 /// `~/.glidex/rootfs.ext4` need to be resolved before being passed to
-/// qemu-system-x86_64 / firecracker / cloud-hypervisor.
+/// qemu-system-x86_64 / cloud-hypervisor.
 fn expand_tilde(path: String) -> String {
     if path == "~" {
         return dirs::home_dir()

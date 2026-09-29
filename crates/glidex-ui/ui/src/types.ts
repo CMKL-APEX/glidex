@@ -1,10 +1,9 @@
 export type VmState = "created" | "running" | "paused" | "stopped";
 
-export type HypervisorType = "cloudhypervisor" | "firecracker" | "qemu";
+export type HypervisorType = "cloudhypervisor" | "qemu";
 
 export const HYPERVISOR_LABELS: Record<HypervisorType, string> = {
   cloudhypervisor: "Cloud Hypervisor",
-  firecracker: "Firecracker",
   qemu: "QEMU",
 };
 

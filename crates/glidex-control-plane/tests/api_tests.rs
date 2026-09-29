@@ -441,7 +441,7 @@ async fn test_list_vms_after_create() {
 }
 
 // ============================================================================
-// VM Lifecycle Tests (without actual Firecracker)
+// VM Lifecycle Tests (without an actual hypervisor)
 // ============================================================================
 
 #[tokio::test]

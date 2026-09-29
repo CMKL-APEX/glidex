@@ -32,8 +32,8 @@ All handlers live in `crates/glidex-control-plane/src/api.rs`.
   "name": "my-vm",
   "vcpu_count": 2,
   "mem_size_mib": 1024,
-  "kernel_image_path": "~/.glidex/vmlinux.bin",
-  "rootfs_path": "~/.glidex/rootfs.ext4",
+  "kernel_image_path": "/path/to/vmlinux",
+  "rootfs_path": "/path/to/rootfs.ext4",
   "kernel_args": "console=ttyS0 root=/dev/vda reboot=k panic=1",
   "hypervisor": "qemu",
   "vfio_devices": ["/sys/bus/pci/devices/0000:41:00.0"]

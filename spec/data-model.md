@@ -83,16 +83,24 @@ pub struct Vm {
 ```
 
 where `<prefix>` comes from `HypervisorType::socket_prefix()`:
-`firecracker`, `cloud-hypervisor`, or `qemu`.
+`cloud-hypervisor` or `qemu`.
 
 ### `HypervisorType`
 
 ```rust
-pub enum HypervisorType { Firecracker, CloudHypervisor, Qemu }
+pub enum HypervisorType { CloudHypervisor, Qemu }
 ```
 
-Serialized lowercase (`"firecracker" | "cloudhypervisor" | "qemu"`).
-Default is `Qemu` — most broadly available on a typical Linux host.
+Serialized lowercase (`"cloudhypervisor" | "qemu"`). Default is
+`CloudHypervisor`; the installer always installs it.
+
+**Invariant.** Unknown hypervisor names are rejected at the API
+boundary (`422`, serde can't deserialize the enum). Records already in
+the database with a hypervisor this build doesn't know — e.g.
+`"firecracker"` from a build before its removal — are skipped by
+`VmStore::load_all` with a warning, not treated as fatal, so the
+control plane still starts. They are left in the database
+untouched.
 Each variant knows its binary name, socket path prefix, and a
 sensible default `kernel_args` string (see `hypervisor/mod.rs`).
 

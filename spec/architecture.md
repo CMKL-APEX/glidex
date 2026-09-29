@@ -18,21 +18,20 @@ host.
  │  ├── Console WS bridge   (api.rs::console_ws)                  │
  │  ├── VmManager           (state.rs)   — in-memory VM registry  │
  │  ├── VmStore / ReDB      (persistence.rs)                      │
- │  ├── Hypervisor backends (hypervisor/{firecracker,cloud_hypervisor,qemu}.rs)
+ │  ├── Hypervisor backends (hypervisor/{cloud_hypervisor,qemu}.rs)
  │  └── PCI scanner         (pci.rs)                              │
  └──────────────┬──────────────────────────┬──────────────────────┘
                 │ Unix socket              │ PTY proxy thread
                 ▼                          │ (broadcasts to console socket)
  ┌────────────────────────┐    ┌────────────┴───────────┐
  │ Hypervisor API socket  │    │ /tmp/<prefix>-<id>.console.sock
- │ (Firecracker HTTP,     │    │ (serial console + replay log)
- │  CH HTTP, QEMU QMP)    │    └────────────────────────┘
+ │ (CH HTTP, QEMU QMP)    │    │ (serial console + replay log)
+ │                        │    └────────────────────────┘
  └──────────┬─────────────┘
             ▼
  ┌────────────────────────┐
  │ Hypervisor process     │
- │ (firecracker /          │
- │  cloud-hypervisor /     │
+ │ (cloud-hypervisor /     │
  │  qemu-system-x86_64)    │
  └────────────────────────┘
 ```
@@ -96,8 +95,8 @@ Reading top-to-bottom inside `crates/glidex-control-plane/src/`:
    The process handle is stashed on `VmEntry.process`.
 
 See [hypervisors.md](hypervisors.md) for what `spawn`/`configure`/`start`
-actually do per backend; they differ a lot (Firecracker/CH take
-runtime config via their HTTP APIs; QEMU is configured at launch time
+actually do per backend; they differ a lot (CH takes
+runtime config via its HTTP API; QEMU is configured at launch time
 and started with `-S`).
 
 ## Data flow: "open console in the browser"

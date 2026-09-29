@@ -175,7 +175,7 @@ fn vfio_device_id(path: &str) -> String {
 
 /// QEMU VM instance implementing HypervisorProcess.
 ///
-/// Unlike Firecracker/Cloud-Hypervisor, QEMU accepts all VM configuration at
+/// Unlike Cloud-Hypervisor, QEMU accepts all VM configuration at
 /// launch time rather than via runtime API calls. We therefore defer the
 /// actual `qemu-system-x86_64` spawn until `configure()` is invoked, and use
 /// `-S` to hold the guest in a stopped state until `start()` issues `cont`.

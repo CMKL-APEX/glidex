@@ -48,8 +48,8 @@ pub trait HypervisorProcess: Send + Sync {
 ### Trait contract
 
 - `spawn` **may or may not** launch the actual hypervisor binary.
-  Firecracker and Cloud-Hypervisor launch in `spawn` (their APIs are
-  HTTP: you talk to them while they wait for config). QEMU launches
+  Cloud-Hypervisor launches in `spawn` (its API is HTTP: you talk to
+  it while it waits for config). QEMU launches
   in `configure` because QEMU needs the full config on its command
   line; see below.
 - `configure` must be called exactly once, before `start`.
@@ -67,32 +67,12 @@ pub trait HypervisorProcess: Send + Sync {
 ### Backend selection
 
 `VmManager` maintains a `HashMap<HypervisorType, Box<dyn Hypervisor>>`
-populated at startup with all three backends. On `start_vm`, it
+populated at startup with both backends (Cloud-Hypervisor and QEMU).
+Firecracker support was removed; see [data-model.md](data-model.md)
+for how old Firecracker records are handled. On `start_vm`, it
 looks the VM's `hypervisor` up in that map and delegates to it.
 Backends whose binary is missing from `PATH` are still registered —
 the error surfaces only at launch time.
-
-## Firecracker
-
-Source: `hypervisor/firecracker.rs`. API: Firecracker's own HTTP/JSON
-control protocol over a Unix socket.
-
-`spawn` immediately forks `firecracker --api-sock <sock>` with its
-stdio attached to a PTY slave. The PTY master is handed to a proxy
-thread that bridges the PTY to the client-facing console Unix socket
-(`hypervisor/firecracker.rs::console_proxy_loop`) and tees everything
-into the log file.
-
-`configure` issues three HTTP `PUT`s on the API socket:
-
-1. `/machine-config` — CPU count + memory.
-2. `/boot-source` — kernel image path + boot args.
-3. `/drives/rootfs` — rootfs file as the root drive.
-
-`start` issues `/actions` with `{"action_type":"InstanceStart"}`;
-`pause` / `resume` is a `PATCH /vm` with `{"state": …}`. There is no
-hot-plug device support — `add_device`/`remove_device` fall back to
-the trait's `Unsupported` default.
 
 ## Cloud-Hypervisor
 
@@ -129,7 +109,7 @@ asset of <https://github.com/cloud-hypervisor/edk2>), downloaded by
 [installer.md](installer.md#uefi-firmware). It boots the bootloader on
 the rootfs disk, so `rootfs_path` must be a full, partitioned,
 UEFI-bootable image (e.g. a distro `*-server-cloudimg-amd64.img`
-converted to raw), not the bare-ext4 sample rootfs. There is no
+converted to raw), not a bare ext4 rootfs. There is no
 kernel command line: the guest's own GRUB config applies.
 
 Why serial instead of virtio-console: distro cloud images put
@@ -244,12 +224,13 @@ launch-time errors.
 
 `HypervisorType::Qemu::default_kernel_args` is
 `"console=ttyS0 root=/dev/vda reboot=k panic=1"`. `root=/dev/vda`
-(no partition number) matches the bare-ext4 sample rootfs produced
-by `glidex-install`, which has no partition table.
+(no partition number) assumes a bare ext4 rootfs image with no
+partition table. glidex no longer ships one; bring your own kernel +
+rootfs for kernel boot, or use firmware boot with a distro cloud image.
 
 ## VFIO device identifiers
 
-All three backends that support VFIO derive a stable *id* for a
+Both backends derive a stable *id* for a
 device from the sysfs path. Given
 `/sys/bus/pci/devices/0000:41:00.0` the id is `_vfio_0000_41_00_0`
 (colons/dots replaced with underscores, `_vfio_` prefix). This id is:

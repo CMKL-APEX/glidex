@@ -31,8 +31,8 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
       name,
       vcpu_count: vcpuCount,
       mem_size_mib: memSizeMib,
-      kernel_image_path: kernelPath || "~/.glidex/vmlinux.bin",
-      rootfs_path: rootfsPath || "~/.glidex/rootfs.ext4",
+      kernel_image_path: kernelPath,
+      rootfs_path: rootfsPath,
       hypervisor,
       kernel_args: kernelArgs || undefined,
       vfio_devices: devices.length > 0 ? devices : undefined,
@@ -110,11 +110,11 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
         <input
           type="text"
           className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-transparent"
-          placeholder="~/.glidex/vmlinux.bin"
+          placeholder="/path/to/vmlinux"
+          required
           value={kernelPath}
           onChange={(e) => setKernelPath(e.target.value)}
         />
-        <p className="mt-1 text-xs text-gray-500">Leave empty for default</p>
       </div>
 
       <div>
@@ -124,11 +124,11 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
         <input
           type="text"
           className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-transparent"
-          placeholder="~/.glidex/rootfs.ext4"
+          placeholder="/path/to/rootfs.ext4"
+          required
           value={rootfsPath}
           onChange={(e) => setRootfsPath(e.target.value)}
         />
-        <p className="mt-1 text-xs text-gray-500">Leave empty for default</p>
       </div>
 
       <div>

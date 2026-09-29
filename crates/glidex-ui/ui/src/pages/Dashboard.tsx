@@ -71,7 +71,7 @@ export default function Dashboard() {
           <h1 className="text-2xl font-bold text-gray-900">
             Virtual Machines
           </h1>
-          <p className="text-gray-500 mt-1">Manage your Firecracker VMs</p>
+          <p className="text-gray-500 mt-1">Manage your Cloud Hypervisor and QEMU VMs</p>
         </div>
         <button
           className="px-4 py-2 text-sm font-medium text-white bg-sky-600 hover:bg-sky-700 rounded-lg transition-colors"

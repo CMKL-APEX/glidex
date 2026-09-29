@@ -16,11 +16,10 @@ the code is structured the way it is.
 How the guest's serial bytes reach the control plane differs per
 hypervisor:
 
-- **Firecracker / QEMU** — we allocate a `pty(7)` pair ourselves,
-  pass the slave fd as the hypervisor's stdin/stdout/stderr
-  (`setsid()` in `pre_exec` to detach from our controlling tty), and
-  keep the master fd. For QEMU we additionally pass `-serial stdio`.
-  For Firecracker, the hypervisor naturally uses its stdio.
+- **QEMU** — we allocate a `pty(7)` pair ourselves, pass the slave
+  fd as the hypervisor's stdin/stdout/stderr (`setsid()` in
+  `pre_exec` to detach from our controlling tty), keep the master fd,
+  and pass `-serial stdio`.
 - **Cloud-Hypervisor** — CH allocates *its own* PTY when the VM
   boots. We discover the slave's path by querying
   `GET /vm.info` and then open it ourselves. The PTY belongs to the
@@ -37,7 +36,7 @@ Per VM, when the hypervisor process is launched, we spawn **one OS
 thread** (not a Tokio task) running `console_proxy_loop`. The code
 for each backend is nearly identical. Inputs:
 
-- The PTY fd (as `OwnedFd` for Firecracker/QEMU, or `File` for CH).
+- The PTY fd (as `OwnedFd` for QEMU, or `File` for CH).
 - A `UnixListener` already bound to the console socket path.
 - A `File` handle opened append-only on the log file.
 - An `Arc<AtomicBool>` "running" flag.
@@ -69,8 +68,8 @@ If the thread exited on PTY EOF, the listener would drop, the Unix
 socket would become inert, and `gxctl connect` / the browser WS
 bridge would fail with `Connection refused` — with no way to see
 what the kernel printed before dying. See
-`{qemu,cloud_hypervisor,firecracker}.rs::console_proxy_loop` — all
-three use the same `pty_alive` flag.
+`{qemu,cloud_hypervisor}.rs::console_proxy_loop` — both use the same
+`pty_alive` flag.
 
 ### Thread shutdown
 

@@ -117,17 +117,15 @@ async fn firmware_vm_can_be_created_without_kernel() {
 async fn firmware_path_rejected_for_other_hypervisors() {
     let (app, _manager, _tmp) = create_test_app();
 
-    for hv in ["qemu", "firecracker"] {
-        let mut req = firmware_vm(&format!("fw-{hv}"));
-        req["hypervisor"] = json!(hv);
-        let (status, body) = request(&app, "POST", "/vms", Some(req)).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{hv}: {body}");
-        assert_eq!(body["error"], "invalid_config");
-        assert!(
-            body["message"].as_str().unwrap_or_default().contains("firmware_path"),
-            "{hv}: {body}"
-        );
-    }
+    let mut req = firmware_vm("fw-qemu");
+    req["hypervisor"] = json!("qemu");
+    let (status, body) = request(&app, "POST", "/vms", Some(req)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"], "invalid_config");
+    assert!(
+        body["message"].as_str().unwrap_or_default().contains("firmware_path"),
+        "{body}"
+    );
 
     let (_, list) = request(&app, "GET", "/vms", None).await;
     assert_eq!(list.as_array().unwrap().len(), 0, "rejected VMs must not persist");
@@ -171,6 +169,70 @@ async fn zero_vcpus_is_a_bad_request() {
     let (status, body) = request(&app, "POST", "/vms", Some(req)).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert_eq!(body["error"], "invalid_config");
+}
+
+#[tokio::test]
+async fn firecracker_is_no_longer_a_hypervisor() {
+    let (app, _manager, _tmp) = create_test_app();
+
+    let req = json!({
+        "name": "fc",
+        "vcpu_count": 1,
+        "mem_size_mib": 512,
+        "hypervisor": "firecracker",
+        "kernel_image_path": "/path/to/vmlinux",
+        "rootfs_path": "/path/to/rootfs"
+    });
+    let (status, _) = request(&app, "POST", "/vms", Some(req)).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+/// A database written by an older build may hold Firecracker VMs. They must
+/// not stop the control plane from starting or hide the other VMs.
+#[tokio::test]
+async fn legacy_firecracker_records_are_skipped_on_load() {
+    let tmp = TempDir::new().unwrap();
+    let db = tmp.path().join("test.db");
+
+    let (keep_id, legacy_id) = {
+        let manager = VmManager::with_db_path(db.clone()).unwrap();
+        manager.initialize().await.unwrap();
+        let app = create_router(manager);
+        let (_, keep) = request(&app, "POST", "/vms", Some(firmware_vm("keep"))).await;
+        let (_, legacy) = request(&app, "POST", "/vms", Some(firmware_vm("legacy"))).await;
+        (
+            keep["id"].as_str().unwrap().to_string(),
+            legacy["id"].as_str().unwrap().to_string(),
+        )
+    };
+
+    // Rewrite one record the way an older build would have stored it.
+    {
+        use redb::{Database, ReadableDatabase, TableDefinition};
+        const VMS: TableDefinition<&str, &[u8]> = TableDefinition::new("vms");
+        let database = Database::create(&db).unwrap();
+        let mut record: Value = {
+            let txn = database.begin_read().unwrap();
+            let table = txn.open_table(VMS).unwrap();
+            let bytes = table.get(legacy_id.as_str()).unwrap().unwrap();
+            serde_json::from_slice(bytes.value()).unwrap()
+        };
+        record["hypervisor"] = json!("firecracker");
+        record["config"]["hypervisor"] = json!("firecracker");
+        let txn = database.begin_write().unwrap();
+        {
+            let mut table = txn.open_table(VMS).unwrap();
+            let bytes = serde_json::to_vec(&record).unwrap();
+            table.insert(legacy_id.as_str(), bytes.as_slice()).unwrap();
+        }
+        txn.commit().unwrap();
+    }
+
+    let manager = VmManager::with_db_path(db).unwrap();
+    manager.initialize().await.unwrap();
+    assert!(manager.get_vm(&keep_id).await.is_ok());
+    assert!(manager.get_vm(&legacy_id).await.is_err());
+    assert_eq!(manager.list_vms().await.len(), 1);
 }
 
 #[tokio::test]

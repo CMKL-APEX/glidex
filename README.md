@@ -1,6 +1,6 @@
 # Glidex
 
-A Rust-based control plane for managing microVMs with support for multiple hypervisors including [Firecracker](https://firecracker-microvm.github.io/), [Cloud-Hypervisor](https://www.cloudhypervisor.org/), and [QEMU](https://www.qemu.org/).
+A Rust-based control plane for managing KVM virtual machines with [Cloud-Hypervisor](https://www.cloudhypervisor.org/) (default) and [QEMU](https://www.qemu.org/).
 
 ```
    _____ _ _     _
@@ -13,7 +13,8 @@ A Rust-based control plane for managing microVMs with support for multiple hyper
 
 ## Features
 
-- **Multi-hypervisor support** - Control Firecracker, Cloud-Hypervisor, and QEMU VMs through a unified interface
+- **Multi-hypervisor support** - Control Cloud-Hypervisor and QEMU VMs through a unified interface
+- **Cloud image boot** - Boot stock distro cloud images via UEFI firmware with an auto-generated cloud-init seed
 - **REST API** for VM lifecycle management (create, start, stop, pause, delete)
 - **Web UI** - Vite + React web interface for VM management
 - **Interactive CLI** (`gxctl`) with command history and tab completion
@@ -40,11 +41,10 @@ The installer will:
 3. Install Cloud-Hypervisor (default hypervisor)
 4. Download Cloud-Hypervisor's UEFI firmware (`CLOUDHV.fd`) to `~/.glidex/`
    for booting distro cloud images, plus `dosfstools`/`mtools`
-5. Optionally install Firecracker and QEMU
+5. Optionally install QEMU
 6. Check KVM access
 7. Build the Glidex binaries
 8. Install UI npm dependencies (`bun install`)
-9. Optionally download sample kernel and rootfs images to `~/.glidex/`
 
 ### Manual Installation
 
@@ -90,11 +90,12 @@ cargo run --bin gxctl
 gxctl> create
 VM name: my-vm
 vCPU count [1]: 2
-Memory (MiB) [512]: 1024
-Kernel image path [~/.glidex/vmlinux.bin]:
-Root filesystem path [~/.glidex/rootfs.ext4]:
-Kernel arguments (optional):
-Hypervisor [firecracker/cloudhypervisor/qemu] (default: qemu):
+Memory (MiB) [512]: 2048
+Hypervisor [cloudhypervisor/qemu] (default: cloudhypervisor):
+UEFI firmware path ['none' for kernel boot] [/home/user/.glidex/CLOUDHV.fd]:
+Disk image path (UEFI-bootable, e.g. a raw cloud image): ~/images/ubuntu-cloudimg.raw
+cloud-init seed image (optional, default: auto-generated):
+VFIO PCI devices (comma-separated, e.g. /sys/bus/pci/devices/0000:41:00.0):
 
 gxctl> start my-vm
 ```
@@ -153,17 +154,18 @@ gxctl> log my-vm
   "name": "my-vm",
   "vcpu_count": 2,
   "mem_size_mib": 1024,
-  "kernel_image_path": "/path/to/vmlinux.bin",
-  "rootfs_path": "/path/to/rootfs.ext4",
-  "kernel_args": "console=ttyS0 reboot=k panic=1 pci=off",
+  "firmware_path": "~/.glidex/CLOUDHV.fd",
+  "rootfs_path": "~/images/ubuntu-cloudimg.raw",
   "hypervisor": "cloudhypervisor"
 }
 ```
 
-The `hypervisor` field is optional and defaults to `"qemu"`. Supported values:
-- `"qemu"` - Use QEMU (default, requires `qemu-system-x86_64`)
-- `"cloudhypervisor"` - Use Cloud-Hypervisor
-- `"firecracker"` - Use Firecracker hypervisor
+For kernel boot, pass `kernel_image_path` (and optionally `kernel_args`)
+instead of `firmware_path`.
+
+The `hypervisor` field is optional and defaults to `"cloudhypervisor"`. Supported values:
+- `"cloudhypervisor"` - Use Cloud-Hypervisor (default)
+- `"qemu"` - Use QEMU (requires `qemu-system-x86_64`, kernel boot only)
 
 ### Example: Create and Start a VM with curl
 
@@ -175,8 +177,8 @@ curl -X POST http://localhost:8080/vms \
     "name": "test-vm",
     "vcpu_count": 2,
     "mem_size_mib": 512,
-    "kernel_image_path": "/home/user/.glidex/vmlinux.bin",
-    "rootfs_path": "/home/user/.glidex/rootfs.ext4"
+    "firmware_path": "/home/user/.glidex/CLOUDHV.fd",
+    "rootfs_path": "/home/user/images/ubuntu-cloudimg.raw"
   }'
 
 # Start the VM
@@ -212,13 +214,13 @@ curl http://localhost:8080/vms
 │  - Persistence (ReDB)                                       │
 └─────────────────┬───────────────────────────────────────────┘
                   │ Unix Socket (Hypervisor API / QMP)
-        ┌─────────┼─────────┐
-        ▼         ▼         ▼
-┌────────────┐ ┌────────────┐ ┌────────┐
-│ Firecracker│ │Cloud-Hypvsr│ │  QEMU  │
-│   microVM  │ │   microVM  │ │  VM    │
-│ KVM-based  │ │ KVM-based  │ │  KVM   │
-└────────────┘ └────────────┘ └────────┘
+             ┌────┴────┐
+             ▼         ▼
+     ┌────────────┐ ┌────────┐
+     │Cloud-Hypvsr│ │  QEMU  │
+     │     VM     │ │   VM   │
+     │ KVM-based  │ │  KVM   │
+     └────────────┘ └────────┘
 ```
 
 ### Hypervisor Abstraction
@@ -228,7 +230,6 @@ The control plane uses a trait-based abstraction to support multiple hypervisors
 ```
 hypervisor/
 ├── mod.rs              # Hypervisor and HypervisorProcess traits
-├── firecracker.rs      # Firecracker implementation
 ├── cloud_hypervisor.rs # Cloud-Hypervisor implementation
 └── qemu.rs             # QEMU implementation (QMP over Unix socket)
 ```
@@ -242,15 +243,14 @@ Both hypervisors implement the same interface:
 
 ### Console Architecture
 
-For each running VM (Firecracker):
-- A PTY (pseudo-terminal) pair is created
-- The hypervisor's stdin/stdout/stderr connect to the PTY slave
-- A background thread reads from the PTY master and:
+For each running VM:
+- A PTY (pseudo-terminal) carries the guest console. QEMU's serial port is
+  attached to a PTY glidex creates; Cloud-Hypervisor allocates its own PTY
+  (virtio console for kernel boot, serial port for firmware boot)
+- A background thread reads from the PTY and:
   - Writes all output to a log file (`/tmp/{hypervisor}-{id}.log`)
   - Broadcasts to connected clients via Unix socket (`/tmp/{hypervisor}-{id}.console.sock`)
 - Multiple clients can connect simultaneously
-
-For Cloud-Hypervisor, console output is captured via the `--console file` option.
 
 ## Requirements
 
@@ -259,7 +259,7 @@ For Cloud-Hypervisor, console output is captured via the `--console file` option
 - **Rust 1.85+** (for building)
 - **Bun** (for the Vite + React dev server)
 - **Cloud-Hypervisor 50.0+** (default hypervisor)
-- **Firecracker 1.14.0+** (optional)
+- **dosfstools** and **mtools** (to build cloud-init seed images)
 - **QEMU** (`qemu-system-x86_64`, optional)
 
 ### Enabling KVM
@@ -288,15 +288,16 @@ glidex/
     │   │   ├── models.rs         # Data structures (VM, VmConfig, etc.)
     │   │   ├── state.rs          # VM state management
     │   │   ├── persistence.rs    # ReDB-based persistence
+    │   │   ├── cloud_init.rs     # cloud-init NoCloud seed image builder
     │   │   ├── hypervisor/       # Hypervisor abstraction layer
     │   │   │   ├── mod.rs        # Traits and HypervisorType enum
-    │   │   │   ├── firecracker.rs    # Firecracker backend
     │   │   │   ├── cloud_hypervisor.rs # Cloud-Hypervisor backend
     │   │   │   └── qemu.rs       # QEMU backend (QMP)
     │   │   └── bin/
     │   │       └── gxctl.rs      # CLI client
     │   └── tests/
-    │       └── api_tests.rs      # API integration tests
+    │       ├── api_tests.rs      # API integration tests
+    │       └── functional_tests.rs # Firmware boot / cloud-init tests
     ├── glidex-install/           # Installer (cargo run -p glidex-install)
     │   └── src/main.rs
     └── glidex-ui/                # Web UI (Vite + React)
@@ -327,26 +328,33 @@ cargo build
 cargo build --release
 ```
 
-## Sample Kernel and RootFS
+## Booting a Cloud Image
 
-The installer can download official Firecracker CI images:
+The installer downloads Cloud-Hypervisor's UEFI firmware to
+`~/.glidex/CLOUDHV.fd`. With it, any distro cloud image boots; convert it
+to raw first:
 
-- **Kernel**: Linux kernel compiled for Firecracker
-- **RootFS**: Ubuntu-based root filesystem (ext4)
-- **SSH Key**: Generated key pair for VM access
-
-Files are stored in `~/.glidex/`:
-```
-~/.glidex/
-├── vmlinux.bin    # Linux kernel
-├── rootfs.ext4    # Ubuntu root filesystem
-├── vm_key         # SSH private key
-└── vm_key.pub     # SSH public key
-```
-
-To SSH into a running VM (requires network configuration):
 ```bash
-ssh -i ~/.glidex/vm_key root@<vm-ip>
+wget https://cloud-images.ubuntu.com/resolute/current/resolute-server-cloudimg-amd64.img
+qemu-img convert -p -f qcow2 -O raw resolute-server-cloudimg-amd64.img ubuntu-cloudimg.raw
+```
+
+On each start glidex generates a cloud-init seed that sets the hostname to
+the VM name and creates a sudo user `cloud`. Login credentials come from the
+host, never from glidex itself:
+
+- SSH: the public keys in `~/.ssh/*.pub` of the user running the control plane.
+- Console password: set `GLIDEX_CLOUD_INIT_PASSWD_HASH` to a crypt hash
+  (e.g. `openssl passwd -6`) before starting the control plane. Without it,
+  password login stays locked.
+
+Pass your own seed image with `cloud_init_path` to override this.
+
+### Running the boot test
+
+```bash
+GLIDEX_TEST_IMAGE=~/images/ubuntu-cloudimg.raw \
+  cargo test -p glidex-control-plane --test functional_tests -- --ignored
 ```
 
 ## License
@@ -355,8 +363,8 @@ MIT
 
 ## Acknowledgments
 
-- [Firecracker](https://firecracker-microvm.github.io/) - microVM hypervisor
 - [Cloud-Hypervisor](https://www.cloudhypervisor.org/) - microVM hypervisor
+- [QEMU](https://www.qemu.org/) - machine emulator and virtualizer
 - [Axum](https://github.com/tokio-rs/axum) - Web framework
 - [Vite](https://vitejs.dev/) + [React](https://react.dev/) - Web UI stack
 - [Tokio](https://tokio.rs/) - Async runtime

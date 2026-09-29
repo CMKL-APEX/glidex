@@ -1,5 +1,4 @@
 pub mod cloud_hypervisor;
-pub mod firecracker;
 pub mod qemu;
 
 use crate::models::VmConfig;
@@ -11,7 +10,6 @@ use thiserror::Error;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum HypervisorType {
-    Firecracker,
     #[default]
     CloudHypervisor,
     Qemu,
@@ -21,7 +19,6 @@ impl HypervisorType {
     /// Get the binary name for this hypervisor
     pub fn binary_name(&self) -> &'static str {
         match self {
-            HypervisorType::Firecracker => "firecracker",
             HypervisorType::CloudHypervisor => "cloud-hypervisor",
             HypervisorType::Qemu => "qemu-system-x86_64",
         }
@@ -30,7 +27,6 @@ impl HypervisorType {
     /// Get the socket path prefix for this hypervisor
     pub fn socket_prefix(&self) -> &'static str {
         match self {
-            HypervisorType::Firecracker => "firecracker",
             HypervisorType::CloudHypervisor => "cloud-hypervisor",
             HypervisorType::Qemu => "qemu",
         }
@@ -39,7 +35,6 @@ impl HypervisorType {
     /// Get the default kernel boot arguments for this hypervisor
     pub fn default_kernel_args(&self) -> &'static str {
         match self {
-            HypervisorType::Firecracker => "console=ttyS0 reboot=k panic=1 pci=off",
             HypervisorType::CloudHypervisor => "console=hvc0 root=/dev/vda reboot=k panic=1",
             HypervisorType::Qemu => "console=ttyS0 root=/dev/vda reboot=k panic=1",
         }
@@ -49,7 +44,6 @@ impl HypervisorType {
 impl fmt::Display for HypervisorType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            HypervisorType::Firecracker => write!(f, "firecracker"),
             HypervisorType::CloudHypervisor => write!(f, "cloudhypervisor"),
             HypervisorType::Qemu => write!(f, "qemu"),
         }
@@ -147,7 +141,6 @@ pub trait HypervisorProcess: Send + Sync {
 /// Create a hypervisor backend for the given type
 pub fn create_backend(hypervisor_type: HypervisorType) -> Box<dyn Hypervisor> {
     match hypervisor_type {
-        HypervisorType::Firecracker => Box::new(firecracker::FirecrackerBackend),
         HypervisorType::CloudHypervisor => Box::new(cloud_hypervisor::CloudHypervisorBackend),
         HypervisorType::Qemu => Box::new(qemu::QemuBackend),
     }
@@ -159,7 +152,6 @@ mod tests {
 
     #[test]
     fn binary_name_matches_hypervisor_type() {
-        assert_eq!(HypervisorType::Firecracker.binary_name(), "firecracker");
         assert_eq!(
             HypervisorType::CloudHypervisor.binary_name(),
             "cloud-hypervisor"
@@ -179,7 +171,6 @@ mod tests {
     #[test]
     fn backends_report_their_hypervisor_type() {
         for ty in [
-            HypervisorType::Firecracker,
             HypervisorType::CloudHypervisor,
             HypervisorType::Qemu,
         ] {

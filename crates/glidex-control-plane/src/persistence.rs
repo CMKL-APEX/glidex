@@ -63,9 +63,19 @@ impl VmStore {
 
         let mut vms = Vec::new();
         for result in table.iter()? {
-            let (_, value): (_, redb::AccessGuard<'_, &[u8]>) = result?;
-            let vm: Vm = serde_json::from_slice(value.value())?;
-            vms.push(vm);
+            let (key, value): (redb::AccessGuard<'_, &str>, redb::AccessGuard<'_, &[u8]>) =
+                result?;
+            // Skip records this build can't decode (e.g. VMs for a removed
+            // hypervisor such as Firecracker) rather than refusing to start.
+            // They stay in the database untouched.
+            match serde_json::from_slice::<Vm>(value.value()) {
+                Ok(vm) => vms.push(vm),
+                Err(e) => tracing::warn!(
+                    vm_id = key.value(),
+                    "Skipping unreadable VM record: {}",
+                    e
+                ),
+            }
         }
 
         Ok(vms)

@@ -70,7 +70,6 @@ impl VmManager {
         // Initialize hypervisor backends and probe whether each binary is on PATH.
         let mut backends: HashMap<HypervisorType, Box<dyn Hypervisor>> = HashMap::new();
         for ty in [
-            HypervisorType::Firecracker,
             HypervisorType::CloudHypervisor,
             HypervisorType::Qemu,
         ] {

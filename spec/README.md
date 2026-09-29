@@ -2,7 +2,7 @@
 
 This directory is the authoritative design reference for Glidex — a
 control plane for managing KVM-based microVMs across multiple
-hypervisor backends (QEMU, Cloud-Hypervisor, Firecracker).
+hypervisor backends (Cloud-Hypervisor, QEMU).
 
 The top-level `README.md` is a *user* document. Documents here are for
 contributors: they capture **invariants**, **contracts between
@@ -25,7 +25,7 @@ fresh reader cannot infer just by reading the source.
 ## Goals
 
 1. **Uniform microVM control across hypervisors.** A single REST API
-   and CLI drive Firecracker, Cloud-Hypervisor, and QEMU identically
+   and CLI drive Cloud-Hypervisor and QEMU identically
    from the caller's point of view, including VFIO PCI passthrough
    and interactive console I/O.
 2. **Durable VM state.** A VM survives control-plane restarts: its
@@ -36,11 +36,10 @@ fresh reader cannot infer just by reading the source.
    (CLI + browser) over the same Unix socket. Clients that connect
    after the guest has died still get a useful view.
 4. **Minimal host dependencies, maximal out-of-the-box experience.**
-   One `cargo run -p glidex-install` stands the system up, including
-   a runnable sample kernel + rootfs. Cloud-Hypervisor can instead boot
-   stock distro cloud images through the EDK2 UEFI firmware the
-   installer downloads to `~/.glidex/CLOUDHV.fd`, provisioned by an
-   auto-generated cloud-init seed.
+   One `cargo run -p glidex-install` stands the system up. Cloud-
+   Hypervisor boots stock distro cloud images through the EDK2 UEFI
+   firmware the installer downloads to `~/.glidex/CLOUDHV.fd`,
+   provisioned by an auto-generated cloud-init seed.
 
 ## Non-goals
 

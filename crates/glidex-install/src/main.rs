@@ -8,7 +8,6 @@ use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
 const CLOUD_HYPERVISOR_VERSION: &str = "v50.0";
-const FIRECRACKER_VERSION: &str = "v1.14.0";
 /// Release tag of https://github.com/cloud-hypervisor/edk2/releases to fetch
 /// the UEFI firmware from. Bump together with the digests in
 /// `firmware_asset`.
@@ -42,12 +41,10 @@ fn main() -> Result<()> {
     install_bun()?;
     install_cloud_hypervisor(&platform, &install_dir)?;
     install_uefi_firmware(&platform)?;
-    install_firecracker(&platform, &install_dir)?;
     install_qemu()?;
     check_kvm()?;
     build_project(&install_dir)?;
     install_ui_deps()?;
-    download_samples(&platform)?;
     print_usage();
 
     Ok(())
@@ -70,7 +67,7 @@ fn detect_platform() -> Result<Platform> {
     let os = env::consts::OS;
     if os != "linux" {
         bail!(
-            "Cloud-Hypervisor, Firecracker, and QEMU only support Linux (detected: {})",
+            "Cloud-Hypervisor and QEMU only support Linux (detected: {})",
             os
         );
     }
@@ -120,12 +117,10 @@ fn print_plan(install_dir: &Path) {
         "  4. Download Cloud-Hypervisor UEFI firmware ({}) to ~/.glidex, plus dosfstools/mtools for cloud-init seeds",
         EDK2_FIRMWARE_VERSION
     );
-    println!("  5. (Optional) Install Firecracker {}", FIRECRACKER_VERSION);
-    println!("  6. (Optional) Install QEMU via system package manager");
-    println!("  7. Check KVM access");
-    println!("  8. Build the control plane (cargo build --release)");
-    println!("  9. Install UI npm dependencies (bun install)");
-    println!("  10. (Optional) Download sample kernel and rootfs");
+    println!("  5. (Optional) Install QEMU via system package manager");
+    println!("  6. Check KVM access");
+    println!("  7. Build the control plane (cargo build --release)");
+    println!("  8. Install UI npm dependencies (bun install)");
     println!();
 }
 
@@ -215,22 +210,6 @@ fn run_sh(script: &str) -> Result<()> {
         bail!("Shell command failed: {}", script);
     }
     Ok(())
-}
-
-fn run_sh_capture(script: &str) -> Result<String> {
-    let output = Command::new("sh")
-        .arg("-c")
-        .arg(script)
-        .output()
-        .with_context(|| format!("Failed to run: {}", script))?;
-    if !output.status.success() {
-        bail!(
-            "Shell command failed: {}: {}",
-            script,
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 fn download(url: &str, dest: &Path) -> Result<()> {
@@ -446,65 +425,6 @@ fn install_uefi_firmware(platform: &Platform) -> Result<()> {
     ensure_tools(&[("mkdosfs", "dosfstools"), ("mcopy", "mtools")])
 }
 
-fn install_firecracker(platform: &Platform, install_dir: &Path) -> Result<()> {
-    section("Firecracker (Optional)");
-    if command_exists("firecracker") {
-        let v = run_capture("firecracker", &["--version"]).unwrap_or_default();
-        println!(
-            "{} {}",
-            "Firecracker is installed:".green(),
-            v.lines().next().unwrap_or("").trim()
-        );
-        return Ok(());
-    }
-    if !confirm_yn("Install Firecracker?", false)? {
-        return Ok(());
-    }
-
-    let url = format!(
-        "https://github.com/firecracker-microvm/firecracker/releases/download/{ver}/firecracker-{ver}-{arch}.tgz",
-        ver = FIRECRACKER_VERSION,
-        arch = platform.arch
-    );
-    let tmp = TempDir::new()?;
-    let tgz = tmp.path().join("firecracker.tgz");
-    println!("Downloading {}", url);
-    download(&url, &tgz)?;
-
-    run(
-        "tar",
-        &[
-            "-xzf",
-            tgz.to_str().unwrap(),
-            "-C",
-            tmp.path().to_str().unwrap(),
-        ],
-    )?;
-
-    let release_dir_name = format!("release-{}-{}", FIRECRACKER_VERSION, platform.arch);
-    let release_dir = tmp.path().join(&release_dir_name);
-    if !release_dir.is_dir() {
-        bail!("Firecracker tarball missing {}", release_dir_name);
-    }
-
-    let fc_src = release_dir.join(format!(
-        "firecracker-{}-{}",
-        FIRECRACKER_VERSION, platform.arch
-    ));
-    install_binary(&fc_src, &install_dir.join("firecracker"))?;
-    println!("{} firecracker", "Installed:".green());
-
-    let jailer_src = release_dir.join(format!(
-        "jailer-{}-{}",
-        FIRECRACKER_VERSION, platform.arch
-    ));
-    if jailer_src.is_file() {
-        install_binary(&jailer_src, &install_dir.join("jailer"))?;
-        println!("{} jailer", "Installed:".green());
-    }
-    Ok(())
-}
-
 fn install_qemu() -> Result<()> {
     section("QEMU (Optional)");
     if command_exists("qemu-system-x86_64") {
@@ -624,157 +544,6 @@ fn install_ui_deps() -> Result<()> {
     Ok(())
 }
 
-fn download_samples(platform: &Platform) -> Result<()> {
-    section("Sample Kernel and RootFS");
-    if !confirm_yn("Download sample kernel and rootfs?", false)? {
-        return Ok(());
-    }
-
-    let sample_dir = dirs::home_dir()
-        .context("No home directory")?
-        .join(".glidex");
-    fs::create_dir_all(&sample_dir)?;
-
-    ensure_squashfs_tools()?;
-
-    // The Firecracker CI S3 bucket is keyed by major.minor — derive that from
-    // the redirect URL of the "latest" GitHub release.
-    println!("Discovering latest Firecracker CI version...");
-    let redirect_url = run_sh_capture(
-        "curl -fsSLI -o /dev/null -w %{url_effective} https://github.com/firecracker-microvm/firecracker/releases/latest",
-    )?;
-    let latest_tag = redirect_url
-        .trim()
-        .rsplit('/')
-        .next()
-        .unwrap_or("")
-        .to_string();
-    // e.g. "v1.14.0" -> "v1.14"
-    let ci_version = latest_tag
-        .rsplitn(2, '.')
-        .nth(1)
-        .ok_or_else(|| anyhow::anyhow!("Could not derive CI version from tag {}", latest_tag))?
-        .to_string();
-    println!("Using Firecracker CI version: {}", ci_version);
-
-    let kernel_path = sample_dir.join("vmlinux.bin");
-    if !kernel_path.exists() {
-        let prefix = format!("firecracker-ci/{}/{}/vmlinux-", ci_version, platform.arch);
-        let listing = run_sh_capture(&format!(
-            "curl -fsSL 'http://spec.ccfc.min.s3.amazonaws.com/?prefix={}&list-type=2'",
-            prefix
-        ))?;
-        let kernel_key =
-            pick_latest_key_matching(&listing, &prefix, |k| !k.ends_with(".config"))
-                .context("Could not find kernel image in S3 listing")?;
-        let url = format!("https://s3.amazonaws.com/spec.ccfc.min/{}", kernel_key);
-        println!("Downloading kernel: {}", kernel_key);
-        download(&url, &kernel_path)?;
-    } else {
-        println!("Kernel already exists: {}", kernel_path.display());
-    }
-
-    let rootfs_path = sample_dir.join("rootfs.ext4");
-    if !rootfs_path.exists() {
-        let prefix = format!("firecracker-ci/{}/{}/ubuntu-", ci_version, platform.arch);
-        let listing = run_sh_capture(&format!(
-            "curl -fsSL 'http://spec.ccfc.min.s3.amazonaws.com/?prefix={}&list-type=2'",
-            prefix
-        ))?;
-        let ubuntu_key = pick_latest_key_matching(&listing, &prefix, |k| k.ends_with(".squashfs"))
-            .context("Could not find Ubuntu squashfs in S3 listing")?;
-        let url = format!("https://s3.amazonaws.com/spec.ccfc.min/{}", ubuntu_key);
-
-        let tmp = TempDir::new()?;
-        let squashfs = tmp.path().join("ubuntu.squashfs");
-        println!("Downloading rootfs: {}", ubuntu_key);
-        download(&url, &squashfs)?;
-
-        println!("Extracting squashfs...");
-        let squashfs_root = tmp.path().join("squashfs-root");
-        run(
-            "sudo",
-            &[
-                "unsquashfs",
-                "-d",
-                squashfs_root.to_str().unwrap(),
-                squashfs.to_str().unwrap(),
-            ],
-        )?;
-
-        let ssh_key = sample_dir.join("vm_key");
-        if !ssh_key.exists() {
-            run(
-                "ssh-keygen",
-                &["-f", ssh_key.to_str().unwrap(), "-N", "", "-q"],
-            )?;
-            println!("{} {}", "Generated SSH key:".green(), ssh_key.display());
-        }
-
-        let ssh_dir = squashfs_root.join("root/.ssh");
-        run("sudo", &["mkdir", "-p", ssh_dir.to_str().unwrap()])?;
-        let authorized_keys = ssh_dir.join("authorized_keys");
-        run(
-            "sudo",
-            &[
-                "cp",
-                sample_dir.join("vm_key.pub").to_str().unwrap(),
-                authorized_keys.to_str().unwrap(),
-            ],
-        )?;
-        run(
-            "sudo",
-            &["chmod", "600", authorized_keys.to_str().unwrap()],
-        )?;
-
-        run(
-            "truncate",
-            &["-s", "1G", rootfs_path.to_str().unwrap()],
-        )?;
-        run(
-            "sudo",
-            &[
-                "mkfs.ext4",
-                "-d",
-                squashfs_root.to_str().unwrap(),
-                "-F",
-                rootfs_path.to_str().unwrap(),
-            ],
-        )?;
-        run(
-            "sudo",
-            &[
-                "rm",
-                "-rf",
-                squashfs_root.to_str().unwrap(),
-                squashfs.to_str().unwrap(),
-            ],
-        )?;
-        println!("{} {}", "Built rootfs:".green(), rootfs_path.display());
-    } else {
-        println!("RootFS already exists: {}", rootfs_path.display());
-    }
-
-    println!();
-    println!("{}", "Sample files:".cyan().bold());
-    println!("  Kernel:  {}", sample_dir.join("vmlinux.bin").display());
-    println!("  RootFS:  {}", sample_dir.join("rootfs.ext4").display());
-    let ssh_key = sample_dir.join("vm_key");
-    if ssh_key.exists() {
-        println!("  SSH Key: {}", ssh_key.display());
-        println!(
-            "{} ssh -i {} root@<vm-ip>",
-            "Connect via:".yellow(),
-            ssh_key.display()
-        );
-    }
-    Ok(())
-}
-
-fn ensure_squashfs_tools() -> Result<()> {
-    ensure_tools(&[("unsquashfs", "squashfs-tools")])
-}
-
 /// Install the packages providing any missing `(command, package)` pairs.
 /// Package names are the same on apt, dnf, yum and pacman for everything
 /// we need.
@@ -801,41 +570,6 @@ fn ensure_tools(tools: &[(&str, &str)]) -> Result<()> {
     } else {
         bail!("Please install {} manually", list)
     }
-}
-
-/// Pull all `<Key>…</Key>` entries from an S3 XML listing that start with
-/// `prefix` and pass `filter`, then return the one with the highest numeric
-/// version.
-fn pick_latest_key_matching(
-    xml: &str,
-    prefix: &str,
-    filter: impl Fn(&str) -> bool,
-) -> Option<String> {
-    let mut keys: Vec<String> = Vec::new();
-    let mut rest = xml;
-    while let Some(start) = rest.find("<Key>") {
-        rest = &rest[start + 5..];
-        if let Some(end) = rest.find("</Key>") {
-            let key = &rest[..end];
-            if key.starts_with(prefix) && filter(key) {
-                keys.push(key.to_string());
-            }
-            rest = &rest[end + 6..];
-        } else {
-            break;
-        }
-    }
-    keys.sort_by(|a, b| version_cmp(a, b));
-    keys.pop()
-}
-
-fn version_cmp(a: &str, b: &str) -> std::cmp::Ordering {
-    let digits = |s: &str| -> Vec<u64> {
-        s.split(|c: char| !c.is_ascii_digit())
-            .filter_map(|p| p.parse::<u64>().ok())
-            .collect()
-    };
-    digits(a).cmp(&digits(b))
 }
 
 fn print_usage() {
