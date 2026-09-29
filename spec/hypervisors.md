@@ -108,10 +108,56 @@ its own PTY when the VM boots. We discover that PTY path through
 PTY and bridges it to the console Unix socket.
 
 `configure` does a single `PUT /vm.create` with a full config
-payload (CPU, memory, kernel payload, disks, console/serial config,
-any VFIO devices). Console mode is `"Pty"`, serial is `"Off"`.
-`start` issues `PUT /vm.boot`, then polls `vm.info` to discover the
-allocated console PTY, and starts the console proxy against it.
+payload (CPU, memory, payload, disks, console/serial config, any
+VFIO devices). The payload depends on the boot mode:
+
+| Boot mode | `payload` | `console` | `serial` | Guest console |
+|---|---|---|---|---|
+| Kernel (`firmware_path` unset) | `kernel` + `cmdline` | `Pty` | `Off` | `hvc0` |
+| Firmware (`firmware_path` set) | `firmware` only | `Off` | `Pty` | `ttyS0` |
+
+`start` issues `PUT /vm.boot`, then polls `vm.info` for the `file` of
+whichever of `console` / `serial` is in `Pty` mode, and starts the
+console proxy against it.
+
+### Firmware boot
+
+The firmware is Cloud-Hypervisor's EDK2 build (`CLOUDHV.fd` release
+asset of <https://github.com/cloud-hypervisor/edk2>), downloaded by
+`glidex-install` to `default_firmware_path()` —
+`~/.glidex/CLOUDHV.fd` (`CLOUDHV_EFI.fd` on aarch64); see
+[installer.md](installer.md#uefi-firmware). It boots the bootloader on
+the rootfs disk, so `rootfs_path` must be a full, partitioned,
+UEFI-bootable image (e.g. a distro `*-server-cloudimg-amd64.img`
+converted to raw), not the bare-ext4 sample rootfs. There is no
+kernel command line: the guest's own GRUB config applies.
+
+Why serial instead of virtio-console: distro cloud images put
+`console=ttyS0` on their kernel command line, so the login prompt only
+appears on the emulated 16550 UART.
+
+Disks are `[rootfs, seed]`. The seed is `config.cloud_init_path`, or —
+if unset on a firmware boot — the image `VmManager::start_vm`
+regenerates at `Vm::default_cloud_init_path()`
+(`/tmp/cloud-hypervisor-<id>.cloudinit.img`) before `configure`. It is
+attached `readonly`. Contents (`cloud_init.rs`):
+
+- `meta-data`: `instance-id` = VM id (stable, so cloud-init
+  provisions once per VM), `local-hostname` = VM name reduced to an
+  RFC 1123 label.
+- `network-config`: v2, DHCP on `en*`.
+- `user-data`: sudo user `cloud` with the control-plane user's
+  `~/.ssh/*.pub` keys. A password is set only from
+  `GLIDEX_CLOUD_INIT_PASSWD_HASH` (crypt hash, e.g. `openssl passwd -6`);
+  otherwise password login is locked. Credentials are never baked
+  into the source.
+
+Why the hash is written twice (`users[].passwd` and `chpasswd.users`):
+cloud-init ignores `users[].passwd` for a user that already exists,
+which is the case whenever the rootfs was provisioned by an earlier
+instance. `chpasswd` applies either way. Its `type` must be lowercase
+`hash`; cloud-init compares it case-sensitively and silently skips
+`HASH`.
 
 `pause` / `resume` / `kill` map directly to the corresponding CH API
 endpoints. `add_device` / `remove_device` use CH's `/vm.add-device`

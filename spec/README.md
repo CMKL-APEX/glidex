@@ -37,7 +37,10 @@ fresh reader cannot infer just by reading the source.
    after the guest has died still get a useful view.
 4. **Minimal host dependencies, maximal out-of-the-box experience.**
    One `cargo run -p glidex-install` stands the system up, including
-   a runnable sample kernel + rootfs.
+   a runnable sample kernel + rootfs. Cloud-Hypervisor can instead boot
+   stock distro cloud images through the EDK2 UEFI firmware the
+   installer downloads to `~/.glidex/CLOUDHV.fd`, provisioned by an
+   auto-generated cloud-init seed.
 
 ## Non-goals
 

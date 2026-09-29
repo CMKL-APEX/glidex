@@ -1,3 +1,4 @@
+use crate::cloud_init;
 use crate::hypervisor::{create_backend, Hypervisor, HypervisorError, HypervisorProcess, HypervisorType};
 use crate::models::{Vm, VmConfig, VmState};
 use crate::persistence::{PersistenceError, VmStore};
@@ -181,6 +182,31 @@ impl VmManager {
             )
             .into());
         }
+        match (&config.firmware_path, config.hypervisor) {
+            (Some(_), HypervisorType::CloudHypervisor) => {}
+            (Some(_), other) => {
+                return Err(HypervisorError::InvalidConfig(format!(
+                    "firmware_path is only supported by cloudhypervisor, not {}",
+                    other
+                ))
+                .into());
+            }
+            (None, _) if config.kernel_image_path.is_empty() => {
+                return Err(HypervisorError::InvalidConfig(
+                    "either kernel_image_path or firmware_path is required".to_string(),
+                )
+                .into());
+            }
+            (None, _) => {}
+        }
+        if config.cloud_init_path.is_some()
+            && config.hypervisor != HypervisorType::CloudHypervisor
+        {
+            return Err(HypervisorError::InvalidConfig(
+                "cloud_init_path is only supported by cloudhypervisor".to_string(),
+            )
+            .into());
+        }
 
         let mut vms = self.vms.write().await;
 
@@ -226,8 +252,31 @@ impl VmManager {
                     &entry.vm.log_path,
                 )?;
 
+                // Firmware-booted cloud images need a cloud-init seed to
+                // get a usable login; generate the default one if the VM
+                // didn't bring its own. Regenerated on every start so it
+                // tracks the host's current SSH keys.
+                let mut config = entry.vm.config.clone();
+                if config.firmware_path.is_some() && config.cloud_init_path.is_none() {
+                    let path = entry.vm.default_cloud_init_path();
+                    let seed = cloud_init::SeedConfig::for_vm(&entry.vm.id, &entry.vm.name);
+                    if seed.ssh_authorized_keys.is_empty() && seed.passwd_hash.is_none() {
+                        tracing::warn!(
+                            vm_id = %entry.vm.id,
+                            "cloud-init seed has no SSH keys and {} is unset; guest user '{}' will have no way to log in",
+                            cloud_init::PASSWD_HASH_ENV,
+                            cloud_init::DEFAULT_USER
+                        );
+                    }
+                    if let Err(e) = cloud_init::write_seed_image(&path, &seed) {
+                        let _ = process.kill();
+                        return Err(e.into());
+                    }
+                    config.cloud_init_path = Some(path);
+                }
+
                 // Configure the VM, cleanup process on failure
-                if let Err(e) = process.configure(&entry.vm.config) {
+                if let Err(e) = process.configure(&config) {
                     let _ = process.kill();
                     return Err(e.into());
                 }
@@ -497,6 +546,7 @@ impl VmManager {
 
         // Delete from database BEFORE removing from memory
         self.store.delete(vm_id)?;
+        let _ = std::fs::remove_file(entry.vm.default_cloud_init_path());
 
         vms.remove(vm_id);
         Ok(())

@@ -31,15 +31,23 @@ The guest configuration the hypervisor needs to boot:
 
 - `vcpu_count: u8`
 - `mem_size_mib: u32`
-- `kernel_image_path: String`
+- `kernel_image_path: String` — empty when booting via firmware
+- `firmware_path: Option<String>` — UEFI firmware, normally
+  `~/.glidex/CLOUDHV.fd` as downloaded by `glidex-install`;
+  when set, the guest boots its disk's bootloader and the kernel fields are
+  ignored. Accepted only for `cloudhypervisor`.
+- `cloud_init_path: Option<String>` — NoCloud seed disk. `None` on a
+  firmware boot → `start_vm` generates a default seed (`cloud_init.rs`) at
+  `Vm::default_cloud_init_path()` and passes it to the backend; the
+  persisted config is left untouched. The file is removed on delete.
 - `rootfs_path: String`
 - `kernel_args: String`
-- `hypervisor: HypervisorType` (`qemu` by default; `#[default]` on
-  `HypervisorType::Qemu` in `hypervisor/mod.rs`)
+- `hypervisor: HypervisorType` (`cloudhypervisor` by default; `#[default]`
+  on `HypervisorType::CloudHypervisor` in `hypervisor/mod.rs`)
 - `vfio_devices: Vec<String>` — sysfs paths
   (e.g. `/sys/bus/pci/devices/0000:41:00.0`), may be empty
 
-**Invariant.** `kernel_image_path` and `rootfs_path` are tilde-expanded
+**Invariant.** `kernel_image_path`, `firmware_path` and `rootfs_path` are tilde-expanded
 at the moment `VmConfig` is built from `CreateVmRequest`. Hypervisors
 do not do shell expansion themselves; keeping expansion at the API
 boundary means every backend sees a filesystem-ready path.
@@ -94,7 +102,9 @@ sensible default `kernel_args` string (see `hypervisor/mod.rs`).
 
 - `kernel_args` — omitted → use
   `HypervisorType::default_kernel_args()` for the chosen backend.
-- `hypervisor` — omitted → `HypervisorType::default()` (currently `qemu`).
+- `hypervisor` — omitted → `HypervisorType::default()` (currently `cloudhypervisor`).
+- `firmware_path` — omitted → direct kernel boot. `create_vm` rejects a
+  request that has neither a `kernel_image_path` nor a `firmware_path`.
 - `vfio_devices` — omitted → empty list.
 
 `VmResponse` is the API projection — a strict subset of `Vm`:
@@ -116,7 +126,7 @@ sensible default `kernel_args` string (see `hypervisor/mod.rs`).
 { "error": "not_found", "message": "VM not found: <id>" }
 ```
 
-`error` values: `not_found | conflict | invalid_state |
+`error` values: `not_found | conflict | invalid_state | invalid_config |
 hypervisor_error | persistence_error | hypervisor_unavailable`.
 See [rest-api.md](rest-api.md) for the HTTP status code mapping.
 

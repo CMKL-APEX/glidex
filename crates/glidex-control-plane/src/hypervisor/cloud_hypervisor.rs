@@ -11,6 +11,18 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+/// Where `glidex-install` puts Cloud-Hypervisor's EDK2 UEFI firmware:
+/// `~/.glidex/CLOUDHV.fd` on x86_64, `~/.glidex/CLOUDHV_EFI.fd` on aarch64.
+/// Returns the path even if the file has not been downloaded.
+pub fn default_firmware_path() -> Option<std::path::PathBuf> {
+    let name = if cfg!(target_arch = "aarch64") {
+        "CLOUDHV_EFI.fd"
+    } else {
+        "CLOUDHV.fd"
+    };
+    dirs::home_dir().map(|home| home.join(".glidex").join(name))
+}
+
 /// Cloud-Hypervisor API request structures
 #[derive(Debug, Serialize)]
 struct CpuConfig {
@@ -27,13 +39,17 @@ struct MemoryConfig {
 struct PayloadConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     firmware: Option<String>,
-    kernel: String,
-    cmdline: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    kernel: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cmdline: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 struct DiskConfig {
     path: String,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    readonly: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -193,6 +209,30 @@ impl CloudHypervisorClient {
     }
 
     pub fn create_vm(&self, config: &VmConfig) -> Result<(), HypervisorError> {
+        // Firmware boot (CLOUDHV.fd) hands off to the disk's own bootloader,
+        // so there is no kernel/cmdline. Distro cloud images put their
+        // console on ttyS0, so expose the serial port instead of hvc0.
+        let (payload, console_mode, serial_mode) = match &config.firmware_path {
+            Some(firmware) => (
+                PayloadConfig {
+                    firmware: Some(firmware.clone()),
+                    kernel: None,
+                    cmdline: None,
+                },
+                "Off",
+                "Pty",
+            ),
+            None => (
+                PayloadConfig {
+                    firmware: None,
+                    kernel: Some(config.kernel_image_path.clone()),
+                    cmdline: Some(config.kernel_args.clone()),
+                },
+                "Pty",
+                "Off",
+            ),
+        };
+
         let vm_config = VmCreateConfig {
             cpus: CpuConfig {
                 boot_vcpus: config.vcpu_count,
@@ -201,20 +241,22 @@ impl CloudHypervisorClient {
             memory: MemoryConfig {
                 size: (config.mem_size_mib as u64) * 1024 * 1024,
             },
-            payload: PayloadConfig {
-                firmware: None,
-                kernel: config.kernel_image_path.clone(),
-                cmdline: config.kernel_args.clone(),
-            },
-            disks: vec![DiskConfig {
+            payload,
+            disks: std::iter::once(DiskConfig {
                 path: config.rootfs_path.clone(),
-            }],
+                readonly: false,
+            })
+            .chain(config.cloud_init_path.iter().map(|path| DiskConfig {
+                path: path.clone(),
+                readonly: true,
+            }))
+            .collect(),
             console: ConsoleConfig {
-                mode: "Pty".to_string(),
+                mode: console_mode.to_string(),
                 file: None,
             },
             serial: ConsoleConfig {
-                mode: "Off".to_string(),
+                mode: serial_mode.to_string(),
                 file: None,
             },
             devices: config
@@ -235,7 +277,8 @@ impl CloudHypervisorClient {
         Ok(())
     }
 
-    /// Extract console PTY path from vm.info response
+    /// Extract the PTY path of whichever of `console` / `serial` is in Pty
+    /// mode from the vm.info response.
     pub fn get_console_pty_path(&self) -> Result<Option<String>, HypervisorError> {
         let body = self
             .expect_success("GET", "/vm.info", None)?
@@ -243,19 +286,7 @@ impl CloudHypervisorClient {
                 HypervisorError::ApiRequest("vm.info returned no body".to_string())
             })?;
 
-        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
-            if let Some(config) = json.get("config") {
-                if let Some(console) = config.get("console") {
-                    if let Some(file) = console.get("file") {
-                        if let Some(path) = file.as_str() {
-                            return Ok(Some(path.to_string()));
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(None)
+        Ok(pty_path_from_vm_info(&body))
     }
 
     pub fn boot_vm(&self) -> Result<(), HypervisorError> {
@@ -297,6 +328,18 @@ impl CloudHypervisorClient {
         self.expect_success("PUT", "/vm.remove-device", Some(&body))?;
         Ok(())
     }
+}
+
+fn pty_path_from_vm_info(body: &str) -> Option<String> {
+    let json = serde_json::from_str::<serde_json::Value>(body).ok()?;
+    let config = json.get("config")?;
+    ["console", "serial"].iter().find_map(|dev| {
+        let dev = config.get(*dev)?;
+        if dev.get("mode")?.as_str()? != "Pty" {
+            return None;
+        }
+        dev.get("file")?.as_str().map(str::to_string)
+    })
 }
 
 /// Derive a deterministic Cloud-Hypervisor device ID from a sysfs path.
@@ -610,5 +653,22 @@ impl Hypervisor for CloudHypervisorBackend {
             .arg("--version")
             .output()
             .is_ok()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pty_path_prefers_whichever_device_is_pty() {
+        let virtio = r#"{"config":{"console":{"mode":"Pty","file":"/dev/pts/3"},"serial":{"mode":"Off","file":null}}}"#;
+        assert_eq!(pty_path_from_vm_info(virtio).as_deref(), Some("/dev/pts/3"));
+
+        let serial = r#"{"config":{"console":{"mode":"Off","file":null},"serial":{"mode":"Pty","file":"/dev/pts/7"}}}"#;
+        assert_eq!(pty_path_from_vm_info(serial).as_deref(), Some("/dev/pts/7"));
+
+        let pending = r#"{"config":{"console":{"mode":"Pty","file":null},"serial":{"mode":"Off"}}}"#;
+        assert_eq!(pty_path_from_vm_info(pending), None);
     }
 }

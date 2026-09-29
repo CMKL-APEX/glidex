@@ -23,7 +23,10 @@ hypervisor:
   For Firecracker, the hypervisor naturally uses its stdio.
 - **Cloud-Hypervisor** — CH allocates *its own* PTY when the VM
   boots. We discover the slave's path by querying
-  `GET /vm.info` and then open it ourselves.
+  `GET /vm.info` and then open it ourselves. The PTY belongs to the
+  virtio console (`hvc0`) for kernel boots and to the serial port
+  (`ttyS0`) for firmware boots — see
+  [hypervisors.md](hypervisors.md#firmware-boot).
 
 In every case the control plane ends up owning an fd that reads
 serial output and accepts serial input.

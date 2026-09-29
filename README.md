@@ -38,11 +38,13 @@ The installer will:
 1. Install Rust via rustup (if not present)
 2. Install Bun for the UI dev server (if not present)
 3. Install Cloud-Hypervisor (default hypervisor)
-4. Optionally install Firecracker and QEMU
-5. Check KVM access
-6. Build the Glidex binaries
-7. Install UI npm dependencies (`bun install`)
-8. Optionally download sample kernel and rootfs images to `~/.glidex/`
+4. Download Cloud-Hypervisor's UEFI firmware (`CLOUDHV.fd`) to `~/.glidex/`
+   for booting distro cloud images, plus `dosfstools`/`mtools`
+5. Optionally install Firecracker and QEMU
+6. Check KVM access
+7. Build the Glidex binaries
+8. Install UI npm dependencies (`bun install`)
+9. Optionally download sample kernel and rootfs images to `~/.glidex/`
 
 ### Manual Installation
 

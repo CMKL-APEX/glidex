@@ -33,7 +33,18 @@ pub enum VmState {
 pub struct VmConfig {
     pub vcpu_count: u8,
     pub mem_size_mib: u32,
+    #[serde(default)]
     pub kernel_image_path: String,
+    /// UEFI firmware (e.g. Cloud Hypervisor's `CLOUDHV.fd`). When set, the
+    /// guest boots from its disk's bootloader and `kernel_image_path` /
+    /// `kernel_args` are ignored. Only Cloud Hypervisor supports this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub firmware_path: Option<String>,
+    /// cloud-init NoCloud seed disk attached alongside the rootfs. For
+    /// firmware boots without one, a default seed is generated at start
+    /// time (see `cloud_init.rs`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cloud_init_path: Option<String>,
     pub rootfs_path: String,
     pub kernel_args: String,
     #[serde(default)]
@@ -73,6 +84,15 @@ impl Vm {
             hypervisor,
         }
     }
+
+    /// Where the auto-generated cloud-init seed for this VM lives.
+    pub fn default_cloud_init_path(&self) -> String {
+        format!(
+            "/tmp/{}-{}.cloudinit.img",
+            self.hypervisor.socket_prefix(),
+            self.id
+        )
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -80,7 +100,12 @@ pub struct CreateVmRequest {
     pub name: String,
     pub vcpu_count: u8,
     pub mem_size_mib: u32,
+    #[serde(default)]
     pub kernel_image_path: String,
+    #[serde(default)]
+    pub firmware_path: Option<String>,
+    #[serde(default)]
+    pub cloud_init_path: Option<String>,
     pub rootfs_path: String,
     #[serde(default)]
     pub kernel_args: Option<String>,
@@ -97,6 +122,8 @@ impl From<CreateVmRequest> for VmConfig {
             vcpu_count: req.vcpu_count,
             mem_size_mib: req.mem_size_mib,
             kernel_image_path: expand_tilde(req.kernel_image_path),
+            firmware_path: req.firmware_path.map(expand_tilde),
+            cloud_init_path: req.cloud_init_path.map(expand_tilde),
             rootfs_path: expand_tilde(req.rootfs_path),
             kernel_args: req
                 .kernel_args

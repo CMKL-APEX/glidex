@@ -1,4 +1,5 @@
 mod api;
+mod cloud_init;
 mod hypervisor;
 mod models;
 mod pci;
@@ -92,6 +93,17 @@ async fn main() {
         std::process::exit(1);
     }
     println!("OK");
+
+    // Not fatal: kernel-boot VMs don't need it.
+    print_status("Checking UEFI firmware");
+    match hypervisor::cloud_hypervisor::default_firmware_path() {
+        Some(path) if path.exists() => println!("OK ({})", path.display()),
+        Some(path) => println!(
+            "MISSING ({}; run glidex-install for Cloud-Hypervisor firmware boot)",
+            path.display()
+        ),
+        None => println!("MISSING (no home directory)"),
+    }
 
     // Create VM manager with persistence
     print_status("Opening database");

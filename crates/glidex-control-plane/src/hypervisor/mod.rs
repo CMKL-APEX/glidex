@@ -12,8 +12,8 @@ use thiserror::Error;
 #[serde(rename_all = "lowercase")]
 pub enum HypervisorType {
     Firecracker,
-    CloudHypervisor,
     #[default]
+    CloudHypervisor,
     Qemu,
 }
 
@@ -76,6 +76,9 @@ pub enum HypervisorError {
 
     #[error("Timeout waiting for hypervisor: {0}")]
     Timeout(String),
+
+    #[error("Failed to build cloud-init seed: {0}")]
+    CloudInit(String),
 }
 
 /// Trait for hypervisor backends that can spawn VM processes

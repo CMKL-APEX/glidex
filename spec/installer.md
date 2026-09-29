@@ -40,27 +40,33 @@ to `command -v`.
    binary from GitHub releases at the version pinned in
    `CLOUD_HYPERVISOR_VERSION` (currently `v50.0`), installs it via
    `install_binary` helper.
-4. **Firecracker** *(optional, prompts)* — downloads
+4. **UEFI firmware** — downloads Cloud-Hypervisor's EDK2 firmware
+   from <https://github.com/cloud-hypervisor/edk2/releases> at the tag
+   pinned in `EDK2_FIRMWARE_VERSION` (currently `ch-811ce5ea35`) into
+   `~/.glidex/CLOUDHV.fd` (`CLOUDHV_EFI.fd` on aarch64), then ensures
+   `dosfstools` + `mtools` are installed for cloud-init seed images.
+   See below.
+5. **Firecracker** *(optional, prompts)* — downloads
    `firecracker-<ver>-<arch>.tgz`, untars, installs `firecracker`
    and `jailer`.
-5. **QEMU** *(optional, prompts)* — delegates to the system
+6. **QEMU** *(optional, prompts)* — delegates to the system
    package manager (`apt-get install qemu-system-x86 qemu-kvm`,
    `dnf install qemu-kvm`, etc). We don't ship a QEMU binary
    because its distribution story is already well handled by
    every Linux distro and the resulting tree is large.
-6. **KVM access check** — verifies `/dev/kvm` exists and is
+7. **KVM access check** — verifies `/dev/kvm` exists and is
    read-writable. On failure it prints the appropriate
    `usermod -aG kvm $USER` instruction but does not make the
    change itself.
-7. **Control-plane build** — runs `cargo build --release
+8. **Control-plane build** — runs `cargo build --release
    -p glidex-control-plane` and offers to install
    `glidex-control-plane` and `gxctl` into the install dir.
-8. **UI dependencies** — runs `bun install` inside
+9. **UI dependencies** — runs `bun install` inside
    `crates/glidex-ui/ui`. Skipped with a warning if bun isn't
    on PATH.
-9. **Sample kernel + rootfs** *(optional, prompts)* — downloads
+10. **Sample kernel + rootfs** *(optional, prompts)* — downloads
    Firecracker CI artifacts into `~/.glidex/`. See below.
-10. **Usage blurb** — prints the 1-2-3 for starting the server,
+11. **Usage blurb** — prints the 1-2-3 for starting the server,
     UI, and CLI.
 
 ## Binary installation helper
@@ -75,6 +81,31 @@ to `command -v`.
 This accommodates both dev setups (`~/.local/bin`) and system
 installs (`/usr/local/bin`) without requiring the user to choose
 up front.
+
+## UEFI firmware
+
+Firmware boot (see [hypervisors.md](hypervisors.md#firmware-boot)) needs
+Cloud-Hypervisor's EDK2 build. It is downloaded rather than committed
+to the repo, to keep a 4 MB binary out of git history.
+
+- **Pinned, not `latest`.** The edk2 fork publishes a release per
+  build (`ch-<commit>`), several a month. Pinning keeps installs
+  reproducible and ties the version to one that has been boot-tested;
+  bump `EDK2_FIRMWARE_VERSION` and the digests in `firmware_asset`
+  together.
+- **Verified.** The file is downloaded to `<name>.part` next to the
+  destination, checked against the sha256 in `firmware_asset` (the
+  digests GitHub publishes for the release assets), then renamed into
+  place. A mismatch deletes the partial file and aborts.
+- **Idempotent.** If the destination already has the expected sha256
+  the download is skipped; if it differs (e.g. a hand-placed newer
+  build) the user is asked before it is replaced, default no.
+- **Consumers.** `hypervisor::cloud_hypervisor::default_firmware_path()`
+  returns the same path; `gxctl create` offers it as the default,
+  the control plane reports whether it exists at startup, and the
+  end-to-end functional test uses it unless `GLIDEX_TEST_FIRMWARE`
+  is set. The installer can't depend on the control-plane crate, so
+  the file name is duplicated there.
 
 ## Sample artifact pipeline
 

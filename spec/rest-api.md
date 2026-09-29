@@ -41,6 +41,24 @@ All handlers live in `crates/glidex-control-plane/src/api.rs`.
 ```
 
 - `kernel_args`, `hypervisor`, `vfio_devices` are optional.
+- `firmware_path` (Cloud Hypervisor only) boots the disk through UEFI
+  firmware instead of a kernel, e.g.
+  `{"hypervisor": "cloudhypervisor", "firmware_path": "~/.glidex/CLOUDHV.fd",
+  "rootfs_path": "~/images/ubuntu-cloudimg.raw", ...}`. `glidex-install`
+  downloads the firmware to that path. Relative paths resolve against the
+  control plane's working directory, so prefer absolute or `~` paths. `kernel_image_path`
+  and `kernel_args` may then be omitted; they are ignored if given. The
+  console is attached to the guest's serial port (`ttyS0`), which is where
+  distro cloud images put their login prompt.
+- `cloud_init_path` (Cloud Hypervisor only) attaches a NoCloud seed image
+  read-only as the second disk. When omitted on a firmware boot, glidex
+  generates one at `/tmp/cloud-hypervisor-<id>.cloudinit.img` on every start
+  (needs `mkdosfs`/`mcopy` from dosfstools/mtools): hostname from the VM
+  name, DHCP on `en*`, and a sudo user `cloud` with the control-plane
+  user's `~/.ssh/*.pub` keys. Password login stays locked unless
+  `GLIDEX_CLOUD_INIT_PASSWD_HASH` holds a crypt hash
+  (`openssl passwd -6`), applied via `chpasswd` so it also works on a
+  rootfs that was provisioned before.
 - `~` is expanded server-side (see [data-model.md](data-model.md)).
 - Response: `201 Created` with a `VmResponse`.
 
@@ -86,12 +104,20 @@ All non-2xx responses are:
 
 Status code mapping (`api::error_to_response`):
 
+**Invariant.** Request validation in `VmManager::create_vm` (zero vCPUs
+or memory, missing kernel *and* firmware, `firmware_path` /
+`cloud_init_path` on a non-Cloud-Hypervisor VM) returns
+`HypervisorError::InvalidConfig`, which maps to `400`. Failures that are
+not the caller's fault — e.g. `HypervisorError::CloudInit` when
+`mkdosfs`/`mcopy` are missing at start time — stay `500`.
+
 | `VmManagerError` variant | HTTP | `error` code |
 |---|---|---|
 | `VmNotFound` | `404` | `not_found` |
 | `VmAlreadyExists` | `409` | `conflict` |
 | `InvalidState` | `400` | `invalid_state` |
-| `HypervisorError` | `500` | `hypervisor_error` |
+| `HypervisorError(InvalidConfig)` | `400` | `invalid_config` |
+| `HypervisorError` (any other) | `500` | `hypervisor_error` |
 | `PersistenceError` | `500` | `persistence_error` |
 | `HypervisorNotAvailable` | `503` | `hypervisor_unavailable` |
 

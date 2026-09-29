@@ -69,6 +69,9 @@ Reading top-to-bottom inside `crates/glidex-control-plane/src/`:
 - **`models.rs`** — serde types that cross the API boundary
   (`CreateVmRequest`, `VmResponse`, …) and the internal `Vm` /
   `VmConfig` / `VmState` types.
+- **`cloud_init.rs`** — builds the default NoCloud seed image
+  (`CIDATA` FAT volume) for firmware-booted VMs by shelling out to
+  `mkdosfs`/`mcopy`. Called from `VmManager::start_vm`.
 - **`pci.rs`** — read-only sysfs scan of `/sys/bus/pci/devices`,
   exposed via `GET /pci-devices` to help users pick VFIO targets.
 

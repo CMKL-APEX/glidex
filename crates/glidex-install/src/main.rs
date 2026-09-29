@@ -9,6 +9,10 @@ use tempfile::TempDir;
 
 const CLOUD_HYPERVISOR_VERSION: &str = "v50.0";
 const FIRECRACKER_VERSION: &str = "v1.14.0";
+/// Release tag of https://github.com/cloud-hypervisor/edk2/releases to fetch
+/// the UEFI firmware from. Bump together with the digests in
+/// `firmware_asset`.
+const EDK2_FIRMWARE_VERSION: &str = "ch-811ce5ea35";
 
 struct Platform {
     os: &'static str,
@@ -37,6 +41,7 @@ fn main() -> Result<()> {
     install_rust()?;
     install_bun()?;
     install_cloud_hypervisor(&platform, &install_dir)?;
+    install_uefi_firmware(&platform)?;
     install_firecracker(&platform, &install_dir)?;
     install_qemu()?;
     check_kvm()?;
@@ -111,12 +116,16 @@ fn print_plan(install_dir: &Path) {
         CLOUD_HYPERVISOR_VERSION,
         install_dir.display()
     );
-    println!("  4. (Optional) Install Firecracker {}", FIRECRACKER_VERSION);
-    println!("  5. (Optional) Install QEMU via system package manager");
-    println!("  6. Check KVM access");
-    println!("  7. Build the control plane (cargo build --release)");
-    println!("  8. Install UI npm dependencies (bun install)");
-    println!("  9. (Optional) Download sample kernel and rootfs");
+    println!(
+        "  4. Download Cloud-Hypervisor UEFI firmware ({}) to ~/.glidex, plus dosfstools/mtools for cloud-init seeds",
+        EDK2_FIRMWARE_VERSION
+    );
+    println!("  5. (Optional) Install Firecracker {}", FIRECRACKER_VERSION);
+    println!("  6. (Optional) Install QEMU via system package manager");
+    println!("  7. Check KVM access");
+    println!("  8. Build the control plane (cargo build --release)");
+    println!("  9. Install UI npm dependencies (bun install)");
+    println!("  10. (Optional) Download sample kernel and rootfs");
     println!();
 }
 
@@ -359,6 +368,82 @@ fn install_cloud_hypervisor(platform: &Platform, install_dir: &Path) -> Result<(
     install_binary(&download_path, &target)?;
     println!("{} {}", "Installed:".green(), target.display());
     Ok(())
+}
+
+/// UEFI firmware asset name and its sha256 for `EDK2_FIRMWARE_VERSION`.
+/// The control plane / gxctl look for the same file name in `~/.glidex`.
+fn firmware_asset(platform: &Platform) -> (&'static str, &'static str) {
+    if platform.arch == "x86_64" {
+        (
+            "CLOUDHV.fd",
+            "db5c16e374efab916910a87e0d800fd94b4a55c32bc87e01481a300e5196136b",
+        )
+    } else {
+        (
+            "CLOUDHV_EFI.fd",
+            "43570f9d7f8f8b87e0218956daa8f652260273d811ff791727215569f5812220",
+        )
+    }
+}
+
+fn file_sha256(path: &Path) -> Result<String> {
+    let out = run_capture("sha256sum", &[path.to_str().unwrap()])?;
+    out.split_whitespace()
+        .next()
+        .map(str::to_string)
+        .context("sha256sum produced no output")
+}
+
+/// Download the EDK2 firmware Cloud-Hypervisor uses to boot UEFI disk
+/// images (distro cloud images), and the tools the control plane needs to
+/// build cloud-init seed images for them.
+fn install_uefi_firmware(platform: &Platform) -> Result<()> {
+    section("Cloud-Hypervisor UEFI Firmware");
+    let (asset, sha256) = firmware_asset(platform);
+    let glidex_dir = dirs::home_dir()
+        .context("No home directory")?
+        .join(".glidex");
+    fs::create_dir_all(&glidex_dir)?;
+    let dest = glidex_dir.join(asset);
+
+    let up_to_date = dest.exists() && file_sha256(&dest)? == sha256;
+    if up_to_date {
+        println!("{} {}", "Firmware already installed:".green(), dest.display());
+    } else if dest.exists()
+        && !confirm_yn(
+            &format!(
+                "{} differs from {}. Replace it?",
+                dest.display(),
+                EDK2_FIRMWARE_VERSION
+            ),
+            false,
+        )?
+    {
+        println!("Keeping existing {}", dest.display());
+    } else {
+        let url = format!(
+            "https://github.com/cloud-hypervisor/edk2/releases/download/{}/{}",
+            EDK2_FIRMWARE_VERSION, asset
+        );
+        // Download next to the destination so the final rename is atomic.
+        let partial = glidex_dir.join(format!("{}.part", asset));
+        println!("Downloading {}", url);
+        download(&url, &partial)?;
+        let actual = file_sha256(&partial)?;
+        if actual != sha256 {
+            let _ = fs::remove_file(&partial);
+            bail!(
+                "Checksum mismatch for {}: expected {}, got {}",
+                url,
+                sha256,
+                actual
+            );
+        }
+        fs::rename(&partial, &dest)?;
+        println!("{} {}", "Installed:".green(), dest.display());
+    }
+
+    ensure_tools(&[("mkdosfs", "dosfstools"), ("mcopy", "mtools")])
 }
 
 fn install_firecracker(platform: &Platform, install_dir: &Path) -> Result<()> {
@@ -687,20 +772,34 @@ fn download_samples(platform: &Platform) -> Result<()> {
 }
 
 fn ensure_squashfs_tools() -> Result<()> {
-    if command_exists("unsquashfs") {
+    ensure_tools(&[("unsquashfs", "squashfs-tools")])
+}
+
+/// Install the packages providing any missing `(command, package)` pairs.
+/// Package names are the same on apt, dnf, yum and pacman for everything
+/// we need.
+fn ensure_tools(tools: &[(&str, &str)]) -> Result<()> {
+    let mut packages: Vec<&str> = tools
+        .iter()
+        .filter(|(cmd, _)| !command_exists(cmd))
+        .map(|(_, pkg)| *pkg)
+        .collect();
+    packages.dedup();
+    if packages.is_empty() {
         return Ok(());
     }
-    println!("{}", "Installing squashfs-tools...".yellow());
+    let list = packages.join(" ");
+    println!("{} {}", "Installing".yellow(), list);
     if command_exists("apt-get") {
-        run_sh("sudo apt-get update && sudo apt-get install -y squashfs-tools")
+        run_sh(&format!("sudo apt-get update && sudo apt-get install -y {}", list))
     } else if command_exists("dnf") {
-        run_sh("sudo dnf install -y squashfs-tools")
+        run_sh(&format!("sudo dnf install -y {}", list))
     } else if command_exists("yum") {
-        run_sh("sudo yum install -y squashfs-tools")
+        run_sh(&format!("sudo yum install -y {}", list))
     } else if command_exists("pacman") {
-        run_sh("sudo pacman -S --noconfirm squashfs-tools")
+        run_sh(&format!("sudo pacman -S --noconfirm {}", list))
     } else {
-        bail!("Please install squashfs-tools manually")
+        bail!("Please install {} manually", list)
     }
 }
 
@@ -753,4 +852,53 @@ fn print_usage() {
     println!("     {}", "gxctl".green());
     println!();
     println!("{}", "Installation complete!".green().bold());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn firmware_asset_matches_arch() {
+        let x86 = Platform { os: "linux", arch: "x86_64" };
+        let arm = Platform { os: "linux", arch: "aarch64" };
+        assert_eq!(firmware_asset(&x86).0, "CLOUDHV.fd");
+        assert_eq!(firmware_asset(&arm).0, "CLOUDHV_EFI.fd");
+        for p in [&x86, &arm] {
+            let sha = firmware_asset(p).1;
+            assert_eq!(sha.len(), 64);
+            assert!(sha.chars().all(|c| c.is_ascii_hexdigit()));
+        }
+    }
+
+    /// Downloads the pinned firmware from GitHub into a throwaway HOME.
+    #[test]
+    #[ignore = "downloads from github.com"]
+    fn downloads_and_verifies_pinned_firmware() {
+        let home = TempDir::new().unwrap();
+        std::env::set_var("HOME", home.path());
+        let platform = detect_platform().unwrap();
+        let (asset, sha256) = firmware_asset(&platform);
+
+        install_uefi_firmware(&platform).unwrap();
+        let dest = home.path().join(".glidex").join(asset);
+        assert_eq!(file_sha256(&dest).unwrap(), sha256);
+        assert!(!home.path().join(".glidex").join(format!("{asset}.part")).exists());
+
+        // Second run sees the verified file and does not re-download.
+        let mtime = fs::metadata(&dest).unwrap().modified().unwrap();
+        install_uefi_firmware(&platform).unwrap();
+        assert_eq!(fs::metadata(&dest).unwrap().modified().unwrap(), mtime);
+    }
+
+    #[test]
+    fn file_sha256_hashes_contents() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("f");
+        fs::write(&path, b"abc").unwrap();
+        assert_eq!(
+            file_sha256(&path).unwrap(),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
 }

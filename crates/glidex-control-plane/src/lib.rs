@@ -1,4 +1,5 @@
 pub mod api;
+pub mod cloud_init;
 pub mod hypervisor;
 pub mod models;
 pub mod pci;

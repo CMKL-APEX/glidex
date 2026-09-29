@@ -13,6 +13,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 
 use crate::models::{ApiError, CreateVmRequest, DeviceRequest, VmConfig, VmResponse, VmState};
+use crate::hypervisor::HypervisorError;
 use crate::state::{VmManager, VmManagerError};
 use serde::Serialize;
 
@@ -249,6 +250,10 @@ fn error_to_response(error: VmManagerError) -> (StatusCode, Json<ApiError>) {
         VmManagerError::InvalidState { .. } => (
             StatusCode::BAD_REQUEST,
             Json(ApiError::new("invalid_state", error.to_string())),
+        ),
+        VmManagerError::HypervisorError(HypervisorError::InvalidConfig(_)) => (
+            StatusCode::BAD_REQUEST,
+            Json(ApiError::new("invalid_config", error.to_string())),
         ),
         VmManagerError::HypervisorError(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
