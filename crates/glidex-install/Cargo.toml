@@ -8,6 +8,7 @@ name = "glidex-install"
 path = "src/main.rs"
 
 [dependencies]
+glidex-ovs = { path = "../glidex-ovs" }
 anyhow = "1"
 colored = "3"
 dirs = "6"

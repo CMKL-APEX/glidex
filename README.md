@@ -16,6 +16,7 @@ A Rust-based control plane for managing KVM virtual machines with [Cloud-Hypervi
 - **Multi-hypervisor support** - Control Cloud-Hypervisor and QEMU VMs through a unified interface
 - **Cloud image boot** - Boot stock distro cloud images via UEFI firmware with an auto-generated cloud-init seed
 - **Credential store** - Stored guest logins (password hash + SSH keys) provisioned by cloud-init
+- **VM networking** - Open vSwitch bridges via a root helper (`glidex-netd`): NAT networks with DHCP, bridged uplinks (kernel, AF_XDP, DPDK) with safe IP migration, tap and vhost-user VM ports
 - **REST API** for VM lifecycle management (create, start, stop, pause, delete)
 - **Web UI** - Vite + React web interface for VM management
 - **Interactive CLI** (`gxctl`) with command history and Tab completion of commands and file paths

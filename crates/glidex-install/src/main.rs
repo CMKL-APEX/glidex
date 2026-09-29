@@ -44,6 +44,7 @@ fn main() -> Result<()> {
     install_qemu()?;
     check_kvm()?;
     build_project(&install_dir)?;
+    setup_networking()?;
     install_ui_deps()?;
     print_usage();
 
@@ -120,7 +121,8 @@ fn print_plan(install_dir: &Path) {
     println!("  5. (Optional) Install QEMU via system package manager");
     println!("  6. Check KVM access");
     println!("  7. Build the control plane (cargo build --release)");
-    println!("  8. Install UI npm dependencies (bun install)");
+    println!("  8. (Optional) VM networking: Open vSwitch, glidex-netd service, glidex group");
+    println!("  9. Install UI npm dependencies (bun install)");
     println!();
 }
 
@@ -499,7 +501,7 @@ fn build_project(install_dir: &Path) -> Result<()> {
     let root = workspace_root();
     run_in(
         "cargo",
-        &["build", "--release", "-p", "glidex-control-plane"],
+        &["build", "--release", "-p", "glidex-control-plane", "-p", "glidex-netd"],
         &root,
     )?;
     println!("{}", "Build successful".green());
@@ -520,6 +522,120 @@ fn build_project(install_dir: &Path) -> Result<()> {
             "{} {}",
             "Installed binaries to".green(),
             install_dir.display()
+        );
+    }
+    Ok(())
+}
+
+/// Privileged commands for the networking step, in order (spec §13).
+/// Kept separate from execution so the exact root actions are testable.
+fn networking_commands(user: Option<&str>, netd_src: &Path, unit_src: &Path) -> Vec<Vec<String>> {
+    let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+    let mut cmds = vec![s(&["groupadd", "-f", NETD_GROUP])];
+    if let Some(user) = user.filter(|u| *u != "root") {
+        cmds.push(s(&["usermod", "-aG", NETD_GROUP, user]));
+    }
+    cmds.push(s(&["install", "-m", "0755", "-o", "root", "-g", "root", &netd_src.to_string_lossy(), NETD_BIN]));
+    cmds.push(s(&["install", "-m", "0644", "-o", "root", "-g", "root", &unit_src.to_string_lossy(), NETD_UNIT]));
+    cmds.push(s(&["systemctl", "daemon-reload"]));
+    cmds.push(s(&["systemctl", "enable", "glidex-netd.service"]));
+    // restart (not just start) so an upgraded binary takes effect.
+    cmds.push(s(&["systemctl", "restart", "glidex-netd.service"]));
+    cmds
+}
+
+const NETD_GROUP: &str = "glidex";
+const NETD_BIN: &str = "/usr/local/bin/glidex-netd";
+const NETD_UNIT: &str = "/etc/systemd/system/glidex-netd.service";
+
+fn sudo(args: &[String]) -> Result<()> {
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    if is_root() {
+        run(refs[0], &refs[1..])
+    } else {
+        run("sudo", &refs)
+    }
+}
+
+/// VM networking (spec §13): OVS, the glidex-netd service, the glidex
+/// group, and CAP_NET_ADMIN for cloud-hypervisor's tap devices.
+fn setup_networking() -> Result<()> {
+    use glidex_ovs::install::{install, InstallRequest, Profile};
+    use glidex_ovs::host::ProbeOptions;
+    use glidex_ovs::{OvsError, SystemExec};
+
+    section("VM Networking (Open vSwitch + glidex-netd)");
+    println!("glidex-netd is a small root service that manages Open vSwitch bridges,");
+    println!("NAT networks (DHCP + masquerade) and VM ports. Members of the '{}'", NETD_GROUP);
+    println!("group can use it, which amounts to network-admin rights on this host.");
+    if !confirm_yn("Set up VM networking?", true)? {
+        return Ok(());
+    }
+    if !is_root() {
+        // Cache sudo credentials up front so a password prompt doesn't
+        // count against a command's timeout.
+        run("sudo", &["-v"])?;
+    }
+
+    // 1. Open vSwitch from distro packages.
+    let profile = match prompt_line("Open vSwitch profile [kernel/dpdk] (default: kernel): ")?.as_str() {
+        "dpdk" => Profile::Dpdk,
+        _ => Profile::Kernel,
+    };
+    let exec = if is_root() { SystemExec::new() } else { SystemExec::sudo() };
+    let ch_binary = run_capture("sh", &["-c", "command -v cloud-hypervisor"]).ok().map(|p| PathBuf::from(p.trim()));
+    let probe = ProbeOptions { ch_binary: ch_binary.clone() };
+    let mut req = InstallRequest { profile, source_build: false, confirm: false };
+    loop {
+        match install(&exec, &probe, &req) {
+            Ok(report) => {
+                if report.changed {
+                    println!("{} Open vSwitch {}", "Installed:".green(), report.ovs_version.unwrap_or_default());
+                } else {
+                    println!("{} Open vSwitch {}", "Already installed:".green(), report.ovs_version.unwrap_or_default());
+                }
+                for w in report.warnings {
+                    println!("{} {}", "Note:".yellow(), w);
+                }
+                break;
+            }
+            Err(OvsError::ConfirmationRequired { impact }) if !req.confirm => {
+                println!("{} {}", "Warning:".yellow(), impact);
+                if !confirm_yn("Proceed?", false)? {
+                    println!("Skipping Open vSwitch installation");
+                    return Ok(());
+                }
+                req.confirm = true;
+            }
+            Err(e) => bail!("Open vSwitch installation failed: {}", e),
+        }
+    }
+
+    // 2. glidex-netd service and group.
+    let root = workspace_root();
+    let target_dir = env::var("CARGO_TARGET_DIR").map(PathBuf::from).unwrap_or_else(|_| root.join("target"));
+    let netd_src = target_dir.join("release/glidex-netd");
+    let unit_src = root.join("packaging/glidex-netd.service");
+    let user = env::var("SUDO_USER").or_else(|_| env::var("USER")).ok();
+    for cmd in networking_commands(user.as_deref(), &netd_src, &unit_src) {
+        sudo(&cmd)?;
+    }
+    println!("{} glidex-netd (systemctl status glidex-netd)", "Running:".green());
+
+    // 3. Tap devices: cloud-hypervisor brings them up itself.
+    if let Some(ch) = ch_binary {
+        println!();
+        println!("Tap-based VM networking needs CAP_NET_ADMIN on {}.", ch.display());
+        println!("Anyone who can run that binary gets the capability for it.");
+        if confirm_yn("Grant cap_net_admin to cloud-hypervisor?", true)? {
+            sudo(&["setcap".into(), "cap_net_admin+ep".into(), ch.to_string_lossy().into_owned()])?;
+        }
+    }
+    if user.as_deref().is_some_and(|u| u != "root") {
+        println!(
+            "{} log out and back in (or run `newgrp {}`) so the group applies.",
+            "Note:".yellow(),
+            NETD_GROUP
         );
     }
     Ok(())
@@ -591,6 +707,34 @@ fn print_usage() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn networking_commands_in_order() {
+        let cmds = networking_commands(Some("alice"), Path::new("/src/target/release/glidex-netd"), Path::new("/src/packaging/glidex-netd.service"));
+        let lines: Vec<String> = cmds.iter().map(|c| c.join(" ")).collect();
+        assert_eq!(
+            lines,
+            vec![
+                "groupadd -f glidex",
+                "usermod -aG glidex alice",
+                "install -m 0755 -o root -g root /src/target/release/glidex-netd /usr/local/bin/glidex-netd",
+                "install -m 0644 -o root -g root /src/packaging/glidex-netd.service /etc/systemd/system/glidex-netd.service",
+                "systemctl daemon-reload",
+                "systemctl enable glidex-netd.service",
+                "systemctl restart glidex-netd.service",
+            ]
+        );
+        let as_root = networking_commands(Some("root"), Path::new("/n"), Path::new("/u"));
+        assert!(!as_root.iter().any(|c| c[0] == "usermod"), "root isn't added to the group");
+    }
+
+    #[test]
+    fn unit_file_preserves_runtime_dir() {
+        let unit = std::fs::read_to_string(workspace_root().join("packaging/glidex-netd.service")).unwrap();
+        assert!(unit.contains("ExecStart=/usr/local/bin/glidex-netd"));
+        assert!(unit.contains("RuntimeDirectory=glidex"));
+        assert!(unit.contains("RuntimeDirectoryPreserve=yes"), "vhost-user sockets must survive netd restarts");
+    }
 
     #[test]
     fn firmware_asset_matches_arch() {

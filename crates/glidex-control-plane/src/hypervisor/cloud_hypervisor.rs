@@ -1,5 +1,6 @@
 use super::{Hypervisor, HypervisorError, HypervisorProcess, HypervisorType};
 use crate::models::VmConfig;
+use glidex_ovs::vm_port::VmPortBinding;
 use serde::Serialize;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
@@ -33,6 +34,57 @@ struct CpuConfig {
 #[derive(Debug, Serialize)]
 struct MemoryConfig {
     size: u64, // bytes
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    shared: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    hugepages: bool,
+}
+
+/// `NetConfig` subset (CH v53 OpenAPI schema).
+#[derive(Debug, Serialize, PartialEq)]
+struct NetConfig {
+    id: String,
+    mac: String,
+    num_queues: u16,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tap: Option<String>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    vhost_user: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    vhost_socket: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    vhost_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mtu: Option<u16>,
+}
+
+fn net_configs(config: &VmConfig) -> Vec<NetConfig> {
+    config
+        .nic_bindings
+        .iter()
+        .map(|nic| {
+            let mut net = NetConfig {
+                id: nic.id.clone(),
+                mac: nic.mac.clone(),
+                num_queues: 2 * nic.queue_pairs as u16,
+                tap: None,
+                vhost_user: false,
+                vhost_socket: None,
+                vhost_mode: None,
+                mtu: nic.mtu,
+            };
+            match &nic.binding {
+                VmPortBinding::Tap { ifname } => net.tap = Some(ifname.clone()),
+                VmPortBinding::VhostUser { socket } => {
+                    // OVS's dpdkvhostuserclient is the client, so CH serves.
+                    net.vhost_user = true;
+                    net.vhost_socket = Some(socket.to_string_lossy().into_owned());
+                    net.vhost_mode = Some("Server".into());
+                }
+            }
+            net
+        })
+        .collect()
 }
 
 #[derive(Debug, Serialize)]
@@ -78,6 +130,8 @@ struct VmCreateConfig {
     serial: ConsoleConfig,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     devices: Vec<VfioDeviceConfig>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    net: Vec<NetConfig>,
 }
 
 /// Find the end of HTTP headers (position after the \r\n\r\n separator).
@@ -240,7 +294,14 @@ impl CloudHypervisorClient {
             },
             memory: MemoryConfig {
                 size: (config.mem_size_mib as u64) * 1024 * 1024,
+                // vhost-user: OVS maps guest RAM, so it must be shared.
+                shared: config
+                    .nic_bindings
+                    .iter()
+                    .any(|n| matches!(n.binding, VmPortBinding::VhostUser { .. })),
+                hugepages: config.hugepages,
             },
+            net: net_configs(config),
             payload,
             disks: std::iter::once(DiskConfig {
                 path: config.rootfs_path.clone(),
@@ -659,6 +720,26 @@ impl Hypervisor for CloudHypervisorBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn net_configs_for_tap_and_vhost_user() {
+        use crate::models::NicBinding;
+        use glidex_ovs::vm_port::VmPortBinding;
+        let mut config: VmConfig = serde_json::from_value(serde_json::json!({
+            "vcpu_count": 1, "mem_size_mib": 512, "rootfs_path": "/d", "kernel_args": ""
+        }))
+        .unwrap();
+        config.nic_bindings = vec![
+            NicBinding { id: "net0".into(), mac: "02:00:00:00:00:01".into(), binding: VmPortBinding::Tap { ifname: "gxabc-0".into() }, queue_pairs: 1, mtu: None },
+            NicBinding { id: "net1".into(), mac: "02:00:00:00:00:02".into(), binding: VmPortBinding::VhostUser { socket: "/run/glidex/vhost/x.net1.sock".into() }, queue_pairs: 2, mtu: Some(9000) },
+        ];
+        let json = serde_json::to_value(net_configs(&config)).unwrap();
+        assert_eq!(json[0], serde_json::json!({"id": "net0", "mac": "02:00:00:00:00:01", "num_queues": 2, "tap": "gxabc-0"}));
+        assert_eq!(json[1], serde_json::json!({
+            "id": "net1", "mac": "02:00:00:00:00:02", "num_queues": 4, "mtu": 9000,
+            "vhost_user": true, "vhost_socket": "/run/glidex/vhost/x.net1.sock", "vhost_mode": "Server"
+        }));
+    }
 
     #[test]
     fn pty_path_prefers_whichever_device_is_pty() {

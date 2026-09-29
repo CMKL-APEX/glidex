@@ -5,6 +5,7 @@ import VmDetail from "./pages/VmDetail";
 import VmConsole from "./pages/VmConsole";
 import NotFound from "./pages/NotFound";
 import Credentials from "./pages/Credentials";
+import Networking from "./pages/Networking";
 
 export default function App() {
   return (
@@ -16,6 +17,7 @@ export default function App() {
           <Route path="/vms/:id" element={<VmDetail />} />
           <Route path="/vms/:id/console" element={<VmConsole />} />
           <Route path="/credentials" element={<Credentials />} />
+          <Route path="/networking" element={<Networking />} />
           <Route path="*" element={<NotFound />} />
         </Routes>
       </main>

@@ -29,6 +29,7 @@ export default function Header() {
               {[
                 { to: "/", label: "VMs" },
                 { to: "/credentials", label: "Credentials" },
+                { to: "/networking", label: "Networking" },
               ].map(({ to, label }) => (
                 <NavLink
                   key={to}

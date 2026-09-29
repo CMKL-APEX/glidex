@@ -1,12 +1,77 @@
 # VM Networking with Open vSwitch (DPDK / AF_XDP)
 
-**Status: approved for implementation.** All design questions are
-decided (§1). This document is the implementation spec: component
-boundaries, wire protocol, data models, host commands, and milestones
-with acceptance tests (§15). Nothing is implemented yet; today glidex VMs
-have no network device (`CloudHypervisorClient::create_vm` sends no
-`net` array). Implementing M4 removes networking from the non-goals in
-[README.md](README.md#non-goals).
+**Status: implemented (M1–M8).** All design questions are decided (§1).
+This document is the implementation spec: component boundaries, wire
+protocol, data models, host commands, and milestones with acceptance
+tests (§15). §0 records what was verified on a real host and what host
+testing changed.
+
+## 0. Implementation status
+
+Crates: `crates/glidex-ovs` (library), `crates/glidex-netd` (daemon +
+protocol/client library), control-plane `network.rs`; packaging in
+`packaging/glidex-netd.service`.
+
+| Milestone | Unit / API tests | Verified on a real host (Ubuntu 26.04, OVS 3.7.1) |
+|---|---|---|
+| M1 core, M2 distro install | yes | `gxctl ovs install` installed OVS 3.7.1 (kernel, then dpdk profile) |
+| M3 netd | yes | root netd, both sockets, peer-group auth, restart + reconcile |
+| M4 NAT | yes | `nat_network_e2e`: DHCP `10.88.0.2`, NAT to the host's gateway |
+| M5 installer + UI | yes (installer command list, UI builds) | UI through the Vite proxy; full installer run not done |
+| M6 bridged | yes | `bridged_uplink_e2e`: refused, rolled back, committed, VM on LAN, restored |
+| M7 DPDK / vhost-user | yes | `vhost_user_e2e` on OVS-DPDK 25.11.0 (no DPDK *NIC* uplink: no IOMMU on the test host) |
+| M8 AF_XDP + source build | yes | `afxdp_uplink_e2e` (generic mode, veth); the source build is unit-tested only |
+
+End-to-end tests are `#[ignore]`d in
+`crates/glidex-control-plane/tests/functional_tests.rs` and need a root
+netd plus, for M6/M8, a fake LAN (two veth pairs into a netns with a
+gateway and dnsmasq) — never real NICs.
+
+### Findings from host testing
+
+Each changed the implementation; the sections below already reflect them.
+
+1. **No `set-name` in `network-config`** (§11.5). cloud-init can't rename
+   an interface that is already up ("[busy] Error renaming … ens3 to
+   eth0"); networkd then waits for an `eth0` that never appears. Matching
+   by MAC alone is enough.
+2. **Taps get `multi_queue` only with >1 queue pair** (§9). Cloud
+   Hypervisor sets `IFF_MULTI_QUEUE` only when `num_queues > 2`, and
+   `TUNSETIFF` fails if the flag differs from how the tap was created.
+3. **dnsmasq drops privileges** to `nobody`; lease writing works, and its
+   files/dirs are `0755`/`0644` so it can re-read the hosts file on
+   `SIGHUP` (§7.1).
+4. **Stale dnsmasq after an unclean netd exit** kept the gateway's port.
+   netd now stops a dnsmasq named by its own pid file whose command line
+   uses its own config before starting a new one; restarts back off
+   exponentially (2 s … 60 s).
+5. **Ubuntu 26.04's plain `openvswitch-switch` includes AF_XDP**
+   (`afxdp`, `afxdp-nonpmd`), so combination D needs no source build there.
+6. **AF_XDP over veth needs TX checksum offload off on the peer**
+   (`ethtool -K <peer> tx off`). Veths leave checksums partial; AF_XDP in
+   generic mode forwards the frame as is and guests drop it (`bad udp
+   cksum`). Real NICs finish checksums before the wire. Same root cause as
+   upstream's "TCP fails on veth in generic mode".
+7. **DPDK port types appear only after `init_dpdk`.** The dpdk profile is
+   detected from `ovs-vswitchd --version` (`DPDK …` line), not from
+   `iface_types` (§6.1).
+8. **Ubuntu ships DPDK's ring mempool driver separately**
+   (`librte-mempool-ring<abi>`, only *recommended* by `dpdk`). Without it
+   every OVS mempool fails with `EINVAL` and vhost-user ports never poll
+   (guest: "TX timeout"). The dpdk profile installs with recommends, and
+   installs the `librte-mempool-*` packages `dpdk` recommends by name
+   (apt skips recommends of already-installed packages). `probe` reports
+   `dpdk_mempool_driver`.
+9. **DPDK socket memory ≥ 2048 MB.** OVS's default shared mempool is
+   262144 mbufs (~600 MB at MTU 1500); size hugepages for OVS *plus*
+   hugepage-backed guests. `init_dpdk` now applies changed settings to an
+   already-initialized OVS (restart, with confirmation).
+10. **vhost-user guests were verified with hugepage-backed memory**
+    (`hugepages: true`). memfd-only shared memory was not re-tested after
+    fixing (8), so hugepages are the supported setup.
+11. **`dhcp_managed` / `active_connections`** are detected from
+    systemd-networkd lease files and `ss` (established TCP sessions on the
+    NIC's addresses); see §8.4.
 
 Scope is **Cloud Hypervisor only**. Facts are from the Cloud Hypervisor
 v53 API schema and source (`../ch/cloud-hypervisor`), the Open vSwitch
@@ -305,9 +370,9 @@ release FAQ's pairing.
 | `/run/glidex/netd.sock` | `root:glidex 0660` | full socket |
 | `/run/glidex/netd-ro.sock` | `root:root 0666` | status-only socket (decision 7) |
 | `/run/glidex/vhost/` | `root:glidex 2770` | vhost-user sockets, created by CH |
-| `/run/glidex/dnsmasq/` | `root:root 0750` | per-NAT `*.conf`, `*.hosts`, `*.pid` |
+| `/run/glidex/dnsmasq/` | `root:root 0755` | per-NAT `*.conf`, `*.hosts`, `*.pid` (readable by dnsmasq after it drops to `nobody`) |
 | `/var/lib/glidex/netd.db` | `root:root 0600` | ReDB state (§7.4) |
-| `/var/lib/glidex/dnsmasq/` | `root:root 0750` | lease files |
+| `/var/lib/glidex/dnsmasq/` | `root:root 0755` | lease files |
 | `/etc/glidex/netd.json` | `root:root 0644` | optional config (§7.5) |
 
 ### 7.2 Authorization
@@ -346,11 +411,12 @@ per connection. The first message must be `hello`.
 | `install_ovs` | full | `{profile, source_build, confirm}` → `InstallReport` |
 | `init_dpdk` | full | `{socket_mem, pmd_cpu_mask, confirm}` → – |
 | `ensure_bridge` · `delete_bridge` | full | `BridgeSpec` · `{name}` |
-| `ensure_uplink` | full | `UplinkSpec` + `confirm` → `UplinkState` (may be `pending_commit`) |
-| `commit_uplink` | full | `{bridge, name, token}` → `UplinkState` |
+| `ensure_uplink` | full | `{spec: UplinkSpec, confirm}` → `UplinkResult {record, phase: active\|pending_commit, live, classification}` |
+| `commit_uplink` | full | `{bridge, name, token}` → `UplinkResult` |
 | `delete_uplink` | full | `{bridge, name}` |
 | `ensure_nat` · `delete_nat` | full | `NatSpec` · `{bridge}` → `NatState` |
 | `attach_vm_port` · `detach_vm_port` | full | `VmPortSpec` · `{vm_id, nic_index}` → binding (+ `ipv4` on NAT) |
+| `release_vm` | full | `{vm_id}` → – (VM deleted: detach ports, free NAT reservations) |
 | `sync_vms` | full | `{running: [vm_id]}` → `ReconcileReport` |
 
 Error codes: `invalid_argument`, `not_found`, `not_owned`, `conflict`,
@@ -473,8 +539,8 @@ Before any uplink, `nic.rs` classifies the NIC:
 |---|---|
 | `has_addresses` | `ip -j addr show dev <if>` lists global addresses |
 | `default_route` | `ip -j route show default` uses `<if>` |
-| `carries_api` | the control plane's clients route via `<if>` (`ip -j route get <peer>`, peer addresses passed by the control plane) |
-| `dhcp_managed` | `networkctl status <if>` shows DHCP, or NetworkManager `ipv4.method auto` |
+| `active_connections` | an established TCP connection (`ss -Htn state established`) uses one of the NIC's addresses — e.g. the SSH session running the CLI |
+| `dhcp_managed` | systemd-networkd has a lease file for the NIC (`/run/systemd/netif/leases/<ifindex>`); NetworkManager is not detected **(verify)** |
 
 No reasons → proceed. Any reason → `host_interface_in_use` with the
 list, unless `migrate_ip: true` **and** `confirm: true`.
@@ -514,7 +580,9 @@ Limits, returned in `UplinkState.warnings`:
   - MAC `02:` + 5 bytes of `sha256(U ‖ i)`: locally administered
     unicast, stable across restarts;
   - vhost socket `/run/glidex/vhost/<U>.net<i>.sock` (< 108 bytes).
-- **Tap:** `ip tuntap add dev <port> mode tap multi_queue user <uid>`;
+- **Tap:** `ip tuntap add dev <port> mode tap [multi_queue] user <uid>`
+  (`multi_queue` only when `queue_pairs > 1`, matching what Cloud
+  Hypervisor asks for);
   `ovs-vsctl --may-exist add-port <br> <port> -- set Interface <port>
   external_ids:…` (+ `set Port <port> tag=<vlan>`).
 - **VhostUser:** `ovs-vsctl --may-exist add-port <br> <port> -- set
@@ -678,9 +746,10 @@ version: 2
 ethernets:
   net0:
     match: { macaddress: "02:5a:1c:9e:44:00" }
-    set-name: eth0
     dhcp4: true
 ```
+
+No `set-name`: see §0 finding 1.
 
 Without attachments the current "DHCP on `en*`" stays.
 
@@ -692,7 +761,7 @@ Without attachments the current "DHCP on `en*`" stays.
 |---|---|
 | `ovs status` | `GET /ovs/status` |
 | `ovs install [--profile kernel\|dpdk] [--source] [--force]` | `POST /ovs/install` |
-| `ovs dpdk-init --socket-mem 1024 --pmd-cpu-mask 0xf [--force]` | `POST /ovs/dpdk-init` |
+| `ovs dpdk-init --socket-mem 2048 --pmd-cpu-mask 0x4 [--force]` | `POST /ovs/dpdk-init` |
 | `bridges` · `bridge-add <name> [--netdev]` · `bridge-rm <name>` | bridges |
 | `uplink-add <bridge> <name> (--kernel <if> \| --afxdp <if> [--xdp-mode m] \| --dpdk <bdf>) [--migrate-ip] [--force]` · `uplink-rm <bridge> <name>` | uplinks; auto-commit after a successful `health` |
 | `networks` · `network-add <name> (--nat [--subnet s] \| --bridged <bridge> \| --isolated) [--vhost-user] [--vlan n]` · `network-rm <name>` | networks |

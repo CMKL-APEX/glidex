@@ -1,7 +1,9 @@
 [workspace]
 members = [
     "crates/glidex-control-plane",
+    "crates/glidex-ovs",
     "crates/glidex-install",
+    "crates/glidex-netd",
     "crates/glidex-ui",
 ]
 resolver = "2"

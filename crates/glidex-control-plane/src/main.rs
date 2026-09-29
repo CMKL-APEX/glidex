@@ -1,4 +1,5 @@
 mod api;
+mod network;
 mod cloud_init;
 mod credentials;
 mod hypervisor;
@@ -128,25 +129,80 @@ async fn main() {
     let vm_count = vm_manager.list_vms().await.len();
     println!("OK ({} VMs)", vm_count);
 
+    // Networking is optional: without glidex-netd, VMs just have no NICs.
+    print_status("Checking networking");
+    match vm_manager.ensure_default_network().await {
+        Ok(Some(net)) => println!("OK (created network '{}' on {})", net.name, net.bridge),
+        Ok(None) => match vm_manager.netd().probe() {
+            (network::NetdAccess::Full, Ok(_)) => println!("OK"),
+            (network::NetdAccess::Status, Ok(_)) => {
+                println!("LIMITED (not in the glidex group; status only)")
+            }
+            (_, Err(e)) => println!("UNAVAILABLE ({})", e),
+            (network::NetdAccess::None, Ok(_)) => println!("UNAVAILABLE"),
+        },
+        Err(e) => println!("WARNING (default network: {})", e),
+    }
+
     // Clone vm_manager for the shutdown handler before passing to router
     let vm_manager_shutdown = Arc::clone(&vm_manager);
 
     // Create router
     let app = api::create_router(vm_manager).layer(TraceLayer::new_for_http());
 
-    // Start server
-    let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
+    // The API is unauthenticated and can reconfigure host networking
+    // through glidex-netd, so listen on loopback only unless told otherwise
+    // (spec §14). Both address families, since "localhost" may be ::1.
+    let addrs: Vec<SocketAddr> = match std::env::var("GLIDEX_LISTEN") {
+        Ok(list) => list
+            .split(',')
+            .filter_map(|a| a.trim().parse().ok())
+            .collect(),
+        Err(_) => vec![
+            SocketAddr::from(([127, 0, 0, 1], 8080)),
+            SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, 8080)),
+        ],
+    };
+    let mut listeners = Vec::new();
+    for addr in &addrs {
+        match tokio::net::TcpListener::bind(addr).await {
+            Ok(l) => listeners.push(l),
+            Err(e) => eprintln!("  Warning: cannot listen on {}: {}", addr, e),
+        }
+    }
+    if listeners.is_empty() {
+        eprintln!("No usable listen address (set GLIDEX_LISTEN, e.g. 127.0.0.1:8080)");
+        std::process::exit(1);
+    }
     println!();
-    println!("  Listening on http://{}", addr);
+    for l in &listeners {
+        println!("  Listening on http://{}", l.local_addr().unwrap());
+    }
     println!("  Press Ctrl+C to shutdown");
     println!();
 
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal(vm_manager_shutdown))
-        .await
-        .unwrap();
+    // One shutdown signal (which stops VMs) fans out to every listener.
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    tokio::spawn(async move {
+        shutdown_signal(vm_manager_shutdown).await;
+        let _ = stop_tx.send(true);
+    });
+    let servers = listeners.into_iter().map(|listener| {
+        let app = app.clone();
+        let mut rx = stop_rx.clone();
+        tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async move {
+                    let _ = rx.wait_for(|stop| *stop).await;
+                })
+                .await
+        })
+    });
+    for server in servers.collect::<Vec<_>>() {
+        if let Ok(Err(e)) = server.await {
+            eprintln!("server error: {}", e);
+        }
+    }
 }
 
 async fn shutdown_signal(vm_manager: Arc<VmManager>) {

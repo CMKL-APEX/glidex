@@ -303,6 +303,7 @@ fn seed_image_is_a_cidata_volume_with_nocloud_files() {
         username: "func-user".into(),
         ssh_authorized_keys: vec!["ssh-ed25519 AAAAC3Nza test@host".into()],
         passwd_hash: Some("$6$salt$hash".into()),
+        nic_macs: Vec::new(),
     };
 
     cloud_init::write_seed_image(image.to_str().unwrap(), &seed).unwrap();
@@ -558,4 +559,328 @@ async fn firmware_boot_with_generated_cloud_init() {
     // The credential is no longer referenced and can be removed.
     let (status, _) = request(&app, "DELETE", &format!("/credentials/{username}"), None).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
+}
+
+/// Host's IPv4 default gateway (from `ip -j route`), used as a target that
+/// is reachable only through NAT.
+fn host_default_gateway() -> Option<String> {
+    let out = Command::new("ip").args(["-4", "-j", "route", "show", "default"]).output().ok()?;
+    let routes: Value = serde_json::from_slice(&out.stdout).ok()?;
+    routes.get(0)?.get("gateway")?.as_str().map(str::to_string)
+}
+
+/// M4 acceptance (spec §15): a VM on a NAT network gets a 10.88.x address
+/// by DHCP and reaches a host outside the machine through masquerading.
+/// Needs a running glidex-netd (`GLIDEX_NETD_RUN_DIR`, default
+/// /run/glidex) that this user may use, with Open vSwitch running.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "boots a real VM; needs KVM, glidex-netd, Open vSwitch and GLIDEX_TEST_IMAGE"]
+async fn nat_network_e2e() {
+    let firmware = env_path(
+        "GLIDEX_TEST_FIRMWARE",
+        default_firmware_path().map(|p| p.to_string_lossy().into_owned()),
+    );
+    let source_image = env_path("GLIDEX_TEST_IMAGE", None);
+    let gateway = host_default_gateway().expect("host has no IPv4 default gateway");
+
+    let (app, manager, tmp) = create_test_app();
+    let _guard = ShutdownGuard(manager.clone());
+
+    let (_, status) = request(&app, "GET", "/ovs/status", None).await;
+    assert_eq!(status["netd"]["access"], "full", "glidex-netd not usable: {status}");
+    assert_eq!(status["host"]["ovs_running"], true, "Open vSwitch not running: {status}");
+
+    // Leftovers from an interrupted run.
+    request(&app, "DELETE", "/networks/e2e", None).await;
+
+    let (st, net) = request(
+        &app,
+        "POST",
+        "/networks",
+        Some(json!({"name": "e2e", "mode": "nat", "bridge": "gxbr-e2e"})),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED, "{net}");
+
+    let rootfs = tmp.path().join("rootfs.raw");
+    run_ok(Command::new("cp").arg("--sparse=always").arg(&source_image).arg(&rootfs));
+    let username = "gxnet";
+    let password = uuid::Uuid::new_v4().simple().to_string();
+    let (st, body) = request(&app, "POST", "/credentials", Some(json!({"username": username, "password": password}))).await;
+    assert_eq!(st, StatusCode::CREATED, "{body}");
+
+    let hostname = "gx-nattest";
+    let (st, vm) = request(
+        &app,
+        "POST",
+        "/vms",
+        Some(json!({
+            "name": hostname, "vcpu_count": 2, "mem_size_mib": 2048,
+            "hypervisor": "cloudhypervisor",
+            "firmware_path": firmware, "rootfs_path": rootfs,
+            "credential": username,
+            "networks": [{"network": "e2e"}],
+        })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED, "{vm}");
+    let id = vm["id"].as_str().unwrap().to_string();
+
+    let (st, body) = request(&app, "POST", &format!("/vms/{id}/start"), None).await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    let ipv4 = body["nics"][0]["ipv4"].as_str().expect("NAT reservation").to_string();
+    assert!(ipv4.starts_with("10.88."), "{ipv4}");
+
+    let (_, info) = request(&app, "GET", &format!("/vms/{id}/console"), None).await;
+    let console_path = info["console_socket_path"].as_str().unwrap().to_string();
+    let expected_ip = ipv4.clone();
+    tokio::task::spawn_blocking(move || {
+        let mut c = Console::connect(&console_path);
+        c.expect("Cloud-init v.", Duration::from_secs(300));
+        c.expect("finished", Duration::from_secs(120));
+        std::thread::sleep(Duration::from_secs(2));
+        c.send("\r");
+        c.expect(&format!("{hostname} login: "), Duration::from_secs(60));
+        c.send(&format!("{username}\r"));
+        c.expect("Password: ", Duration::from_secs(30));
+        c.send(&format!("{password}\r"));
+        c.expect(&format!("{username}@{hostname}:~$ "), Duration::from_secs(60));
+        // DHCP from netd's dnsmasq gave the reserved address (whatever
+        // the guest named the interface).
+        c.send(&format!("ip -4 -o addr | grep -q ' {expected_ip}/24 ' && echo GX_$((40+1))_DHCP_OK\r"));
+        c.expect("GX_41_DHCP_OK", Duration::from_secs(30));
+        // Masquerade: reach the host's own default gateway.
+        c.send(&format!("ping -c 2 -W 3 {gateway} >/dev/null && echo GX_$((40+2))_NAT_OK\r"));
+        c.expect("GX_42_NAT_OK", Duration::from_secs(30));
+    })
+    .await
+    .unwrap();
+
+    let (st, _) = request(&app, "POST", &format!("/vms/{id}/stop"), None).await;
+    assert_eq!(st, StatusCode::OK);
+    let (st, _) = request(&app, "DELETE", &format!("/vms/{id}"), None).await;
+    assert_eq!(st, StatusCode::NO_CONTENT);
+    let (st, body) = request(&app, "DELETE", "/networks/e2e", None).await;
+    assert_eq!(st, StatusCode::NO_CONTENT, "{body}");
+    let (_, bridges) = request(&app, "GET", "/ovs/bridges", None).await;
+    assert!(
+        !bridges.as_array().unwrap().iter().any(|b| b["spec"]["name"] == "gxbr-e2e"),
+        "bridge removed with its network: {bridges}"
+    );
+    request(&app, "DELETE", &format!("/credentials/{username}"), None).await;
+}
+
+// ---- uplink e2e (M6 bridged/kernel, M8 AF_XDP) -----------------------------
+//
+// Need the fake LAN from the dev scripts (`fake-lan-setup.sh`): veth pairs
+// gxup0/gxup1 whose peers live in netns `gxlan` with a gateway and dnsmasq.
+// Never run against real NICs.
+
+fn host_ip(args: &[&str]) -> String {
+    String::from_utf8_lossy(&Command::new("ip").args(args).output().unwrap().stdout).into_owned()
+}
+
+/// Boot a VM with a throwaway credential on `network`, log in on the
+/// console, run `checks` (command, expected marker), then delete the VM.
+async fn boot_and_check(app: &Router, tmp: &TempDir, network: &str, hostname: &str, extra: Value, checks: Vec<(String, String)>) {
+    let firmware = env_path("GLIDEX_TEST_FIRMWARE", default_firmware_path().map(|p| p.to_string_lossy().into_owned()));
+    let source_image = env_path("GLIDEX_TEST_IMAGE", None);
+    let rootfs = tmp.path().join(format!("{hostname}.raw"));
+    run_ok(Command::new("cp").arg("--sparse=always").arg(&source_image).arg(&rootfs));
+    let username = "gxnet";
+    let password = uuid::Uuid::new_v4().simple().to_string();
+    request(app, "DELETE", &format!("/credentials/{username}"), None).await;
+    let (st, body) = request(app, "POST", "/credentials", Some(json!({"username": username, "password": password}))).await;
+    assert_eq!(st, StatusCode::CREATED, "{body}");
+    let mut spec = json!({
+        "name": hostname, "vcpu_count": 2, "mem_size_mib": 2048, "hypervisor": "cloudhypervisor",
+        "firmware_path": firmware, "rootfs_path": rootfs, "credential": username,
+        "networks": [{"network": network}],
+    });
+    for (k, v) in extra.as_object().cloned().unwrap_or_default() {
+        spec[k] = v;
+    }
+    let (st, vm) = request(app, "POST", "/vms", Some(spec)).await;
+    assert_eq!(st, StatusCode::CREATED, "{vm}");
+    let id = vm["id"].as_str().unwrap().to_string();
+    let (st, body) = request(app, "POST", &format!("/vms/{id}/start"), None).await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    let (_, info) = request(app, "GET", &format!("/vms/{id}/console"), None).await;
+    let console_path = info["console_socket_path"].as_str().unwrap().to_string();
+    let host = hostname.to_string();
+    tokio::task::spawn_blocking(move || {
+        let mut c = Console::connect(&console_path);
+        c.expect("Cloud-init v.", Duration::from_secs(300));
+        c.expect("finished", Duration::from_secs(180));
+        std::thread::sleep(Duration::from_secs(2));
+        c.send("\r");
+        c.expect(&format!("{host} login: "), Duration::from_secs(60));
+        c.send(&format!("{username}\r"));
+        c.expect("Password: ", Duration::from_secs(30));
+        c.send(&format!("{password}\r"));
+        c.expect(&format!("{username}@{host}:~$ "), Duration::from_secs(60));
+        for (cmd, marker) in checks {
+            c.send(&format!("{cmd}\r"));
+            c.expect(&marker, Duration::from_secs(40));
+        }
+    })
+    .await
+    .unwrap();
+    request(app, "POST", &format!("/vms/{id}/stop"), None).await;
+    let (st, _) = request(app, "DELETE", &format!("/vms/{id}"), None).await;
+    assert_eq!(st, StatusCode::NO_CONTENT);
+    request(app, "DELETE", &format!("/credentials/{username}"), None).await;
+}
+
+async fn require_lan_and_netd(app: &Router) {
+    assert!(std::env::var("GLIDEX_TEST_LAN").is_ok(), "set GLIDEX_TEST_LAN=1 after running fake-lan-setup.sh");
+    assert!(host_ip(&["-br", "link", "show", "gxup0"]).contains("gxup0"), "fake LAN missing (gxup0)");
+    let (_, status) = request(app, "GET", "/ovs/status", None).await;
+    assert_eq!(status["netd"]["access"], "full", "{status}");
+    assert_eq!(status["host"]["ovs_running"], true, "{status}");
+}
+
+/// M6 acceptance: kernel uplink on an in-use NIC with IP migration —
+/// refused, rolled back without commit, committed, VM on the LAN, restored.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs root-run glidex-netd, OVS, the fake LAN (GLIDEX_TEST_LAN) and GLIDEX_TEST_IMAGE"]
+async fn bridged_uplink_e2e() {
+    let (app, manager, tmp) = create_test_app();
+    let _guard = ShutdownGuard(manager.clone());
+    require_lan_and_netd(&app).await;
+    // Leftovers from an interrupted run.
+    request(&app, "DELETE", "/networks/lan", None).await;
+    request(&app, "DELETE", "/ovs/bridges/gxbr-up/uplinks/gxup0", None).await;
+    request(&app, "DELETE", "/ovs/bridges/gxbr-up", None).await;
+    assert!(host_ip(&["-4", "-o", "addr", "show", "dev", "gxup0"]).contains("192.0.2.10/24"), "gxup0 should hold 192.0.2.10");
+
+    let (st, body) = request(&app, "POST", "/ovs/bridges", Some(json!({"name": "gxbr-up", "datapath": "system"}))).await;
+    assert_eq!(st, StatusCode::CREATED, "{body}");
+    let uplink = json!({"name": "gxup0", "kind": "kernel", "ifname": "gxup0"});
+
+    // 1. In use by the host: refused without migrate_ip + confirm.
+    let (st, body) = request(&app, "POST", "/ovs/bridges/gxbr-up/uplinks", Some(uplink.clone())).await;
+    assert_eq!(st, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"], "host_interface_in_use");
+    assert!(body["details"]["reasons"].as_array().unwrap().iter().any(|r| r == "has_addresses"), "{body}");
+
+    // 2. Migrated but never committed: rolled back by netd (10 s window in the dev config).
+    let mut migrate = uplink.clone();
+    migrate["migrate_ip"] = json!(true);
+    migrate["confirm"] = json!(true);
+    let (st, body) = request(&app, "POST", "/ovs/bridges/gxbr-up/uplinks", Some(migrate.clone())).await;
+    assert_eq!(st, StatusCode::ACCEPTED, "{body}");
+    assert!(host_ip(&["-4", "-o", "addr", "show", "dev", "gxbr-up"]).contains("192.0.2.10/24"), "address moved to the bridge");
+    assert!(Command::new("ping").args(["-c", "1", "-W", "2", "192.0.2.1"]).status().unwrap().success(), "LAN reachable through the bridge");
+    // netd deletes the record as the last rollback step, so wait for that.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let (_, list) = request(&app, "GET", "/ovs/bridges/gxbr-up/uplinks", None).await;
+        if list.as_array().unwrap().is_empty() {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "not rolled back: {list}");
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    assert!(host_ip(&["-4", "-o", "addr", "show", "dev", "gxup0"]).contains("192.0.2.10/24"), "address restored");
+    assert!(host_ip(&["-4", "route", "show", "198.51.100.0/24"]).contains("dev gxup0"), "route restored");
+
+    // 3. Migrated and committed.
+    let (st, body) = request(&app, "POST", "/ovs/bridges/gxbr-up/uplinks", Some(migrate)).await;
+    assert_eq!(st, StatusCode::ACCEPTED, "{body}");
+    let token = body["record"]["pending"]["token"].as_str().unwrap().to_string();
+    let (st, body) = request(&app, "POST", "/ovs/bridges/gxbr-up/uplinks/gxup0/commit", Some(json!({"token": token}))).await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    assert_eq!(body["phase"], "active");
+    assert!(host_ip(&["-4", "route", "show", "198.51.100.0/24"]).contains("dev gxbr-up"), "route moved");
+
+    // 4. A VM on the bridged network gets a LAN address and reaches the LAN and the host.
+    let (st, body) = request(&app, "POST", "/networks", Some(json!({"name": "lan", "mode": "bridged", "bridge": "gxbr-up"}))).await;
+    assert_eq!(st, StatusCode::CREATED, "{body}");
+    boot_and_check(&app, &tmp, "lan", "gx-lantest", json!({}), vec![
+        ("ip -4 -o addr | grep -q ' 192.0.2.1[0-9][0-9]/24 ' && echo GX_$((60+1))_LAN_DHCP".into(), "GX_61_LAN_DHCP".into()),
+        ("ping -c 2 -W 3 192.0.2.1 >/dev/null && echo GX_$((60+2))_LAN_GW".into(), "GX_62_LAN_GW".into()),
+        ("ping -c 2 -W 3 192.0.2.10 >/dev/null && echo GX_$((60+3))_HOST".into(), "GX_63_HOST".into()),
+    ]).await;
+
+    // 5. Cleanup restores the NIC.
+    let (st, _) = request(&app, "DELETE", "/networks/lan", None).await;
+    assert_eq!(st, StatusCode::NO_CONTENT);
+    let (st, body) = request(&app, "DELETE", "/ovs/bridges/gxbr-up/uplinks/gxup0", None).await;
+    assert_eq!(st, StatusCode::NO_CONTENT, "{body}");
+    assert!(host_ip(&["-4", "-o", "addr", "show", "dev", "gxup0"]).contains("192.0.2.10/24"), "address back on gxup0");
+    assert!(host_ip(&["-4", "route", "show", "198.51.100.0/24"]).contains("dev gxup0"), "route back on gxup0");
+    let (st, _) = request(&app, "DELETE", "/ovs/bridges/gxbr-up", None).await;
+    assert_eq!(st, StatusCode::NO_CONTENT);
+}
+
+/// M8 acceptance (combination D): AF_XDP uplink in generic mode on a
+/// userspace-datapath bridge, tap VM port, DHCP from the LAN.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs root-run glidex-netd, OVS with afxdp, the fake LAN (GLIDEX_TEST_LAN) and GLIDEX_TEST_IMAGE"]
+async fn afxdp_uplink_e2e() {
+    let (app, manager, tmp) = create_test_app();
+    let _guard = ShutdownGuard(manager.clone());
+    require_lan_and_netd(&app).await;
+    request(&app, "DELETE", "/networks/xdp", None).await;
+    request(&app, "DELETE", "/ovs/bridges/gxbr-xdp/uplinks/gxup1", None).await;
+    request(&app, "DELETE", "/ovs/bridges/gxbr-xdp", None).await;
+
+    let (st, body) = request(&app, "POST", "/ovs/bridges", Some(json!({"name": "gxbr-xdp", "datapath": "netdev"}))).await;
+    assert_eq!(st, StatusCode::CREATED, "{body}");
+    let (st, body) = request(&app, "POST", "/ovs/bridges/gxbr-xdp/uplinks", Some(json!({
+        "name": "gxup1", "kind": "afxdp", "ifname": "gxup1", "xdp_mode": "generic"
+    }))).await;
+    assert_eq!(st, StatusCode::CREATED, "{body}");
+    assert!(body["live"]["error"].is_null(), "AF_XDP port error: {body}");
+
+    let (st, body) = request(&app, "POST", "/networks", Some(json!({"name": "xdp", "mode": "bridged", "bridge": "gxbr-xdp"}))).await;
+    assert_eq!(st, StatusCode::CREATED, "{body}");
+    boot_and_check(&app, &tmp, "xdp", "gx-xdptest", json!({}), vec![
+        ("ip -4 -o addr | grep -q ' 198.18.0.1[0-9][0-9]/24 ' && echo GX_$((70+1))_XDP_DHCP".into(), "GX_71_XDP_DHCP".into()),
+        ("ping -c 2 -W 3 198.18.0.1 >/dev/null && echo GX_$((70+2))_XDP_GW".into(), "GX_72_XDP_GW".into()),
+    ]).await;
+
+    request(&app, "DELETE", "/networks/xdp", None).await;
+    let (st, _) = request(&app, "DELETE", "/ovs/bridges/gxbr-xdp/uplinks/gxup1", None).await;
+    assert_eq!(st, StatusCode::NO_CONTENT);
+    let (st, _) = request(&app, "DELETE", "/ovs/bridges/gxbr-xdp", None).await;
+    assert_eq!(st, StatusCode::NO_CONTENT);
+}
+
+/// M7 acceptance: vhost-user VM port on a userspace-datapath NAT network
+/// with OVS-DPDK (shared guest memory, CH as vhost-user server).
+/// Needs `ovs install --profile dpdk` and `ovs dpdk-init` done first.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs root-run glidex-netd, OVS-DPDK initialized (GLIDEX_TEST_DPDK) and GLIDEX_TEST_IMAGE"]
+async fn vhost_user_e2e() {
+    assert!(std::env::var("GLIDEX_TEST_DPDK").is_ok(), "set GLIDEX_TEST_DPDK=1 once OVS-DPDK is initialized");
+    let (app, manager, tmp) = create_test_app();
+    let _guard = ShutdownGuard(manager.clone());
+    let (_, status) = request(&app, "GET", "/ovs/status", None).await;
+    assert_eq!(status["host"]["dpdk_initialized"], true, "{status}");
+    assert!(
+        status["host"]["iface_types"].as_array().unwrap().iter().any(|t| t == "dpdkvhostuserclient"),
+        "{status}"
+    );
+    request(&app, "DELETE", "/networks/fast", None).await;
+
+    let (st, net) = request(&app, "POST", "/networks", Some(json!({
+        "name": "fast", "mode": "nat", "port_type": "vhost_user", "bridge": "gxbr-fast"
+    }))).await;
+    assert_eq!(st, StatusCode::CREATED, "{net}");
+    let (_, bridges) = request(&app, "GET", "/ovs/bridges", None).await;
+    let fast = bridges.as_array().unwrap().iter().find(|b| b["spec"]["name"] == "gxbr-fast").unwrap().clone();
+    assert_eq!(fast["spec"]["datapath"], "netdev");
+
+    let (_, nats) = request(&app, "GET", "/networks/fast", None).await;
+    assert_eq!(nats["port_type"], "vhost_user");
+    // OVS-DPDK's vhost-user backend needs hugepage-backed guest memory.
+    boot_and_check(&app, &tmp, "fast", "gx-vhosttest", json!({"hugepages": true, "mem_size_mib": 1024}), vec![
+        ("ip -4 -o addr | grep -q ' 10.88.' && echo GX_$((80+1))_VHOST_DHCP".into(), "GX_81_VHOST_DHCP".into()),
+        ("ping -c 2 -W 3 $(ip -4 route show default | awk '{print $3}') >/dev/null && echo GX_$((80+2))_VHOST_GW".into(), "GX_82_VHOST_GW".into()),
+    ]).await;
+
+    let (st, body) = request(&app, "DELETE", "/networks/fast", None).await;
+    assert_eq!(st, StatusCode::NO_CONTENT, "{body}");
 }

@@ -18,7 +18,7 @@ fresh reader cannot infer just by reading the source.
 | [rest-api.md](rest-api.md) | HTTP endpoints, payloads, error model, console WebSocket |
 | [hypervisors.md](hypervisors.md) | Hypervisor trait contract and per-backend implementations |
 | [credentials.md](credentials.md) | Credential store: guest logins for cloud-init, hashing, security rules |
-| [networking.md](networking.md) | **Implementation spec (not built yet):** `glidex-ovs` + root `glidex-netd` — OVS install (distro or pinned source), bridges, uplinks with IP migration, NAT + DHCP, vhost-user/tap VM ports, milestones M1–M8 |
+| [networking.md](networking.md) | VM networking: `glidex-ovs` + root `glidex-netd` — OVS install (distro or pinned source), bridges, uplinks with IP migration, NAT + DHCP, vhost-user/tap VM ports; host-test findings in §0 |
 | [console.md](console.md) | Console proxy thread, listener invariant, WebSocket bridge, xterm |
 | [cli.md](cli.md) | `gxctl` interactive CLI, command semantics, console attach loop |
 | [web-ui.md](web-ui.md) | Vite + React UI structure, routes, API client, dev-proxy |
@@ -47,11 +47,13 @@ fresh reader cannot infer just by reading the source.
 
 - Clustering / multi-host orchestration.
 - User authentication and authorization on the REST API. The control
-  plane binds to `0.0.0.0:8080` and assumes the host is trusted by
-  whoever can reach it; there are no accounts, tokens, or ACLs.
-- Persistent networking configuration (bridges, TAPs, IP allocation).
-  Current scope is boot + console + VFIO; networking is the user's
-  responsibility via kernel args or VFIO NICs.
+  plane listens on loopback only by default (`127.0.0.1:8080` and
+  `[::1]:8080`; `GLIDEX_LISTEN` overrides) because anyone who can reach it
+  can manage VMs and, through glidex-netd, host networking. There are no
+  accounts, tokens, or ACLs.
+- Networking beyond Cloud Hypervisor VMs (QEMU NICs), static guest
+  addressing, and persistent (netplan/NetworkManager) host network
+  changes; see [networking.md](networking.md).
 
 ## Repository layout
 
@@ -60,8 +62,11 @@ glidex/
 ├── Cargo.toml                       # Workspace root
 ├── README.md                        # User-facing readme
 ├── spec/                            # (this directory)
+├── packaging/                       # systemd unit for glidex-netd
 └── crates/
     ├── glidex-control-plane/        # REST server + hypervisor backends + gxctl
+    ├── glidex-ovs/                  # host networking library (OVS, NAT, VM ports)
+    ├── glidex-netd/                 # root networking helper daemon + protocol client
     ├── glidex-install/              # `cargo run -p glidex-install` bootstrapper
     └── glidex-ui/                   # Vite+React UI; the Rust bin launches `bun run dev`
 ```

@@ -134,6 +134,22 @@ export default function VmDetail() {
                   {vm.mem_size_mib} MiB
                 </p>
               </div>
+              {vm.nics && vm.nics.length > 0 && (
+                <div>
+                  <h3 className="text-sm font-medium text-gray-500">Network</h3>
+                  <ul className="mt-1 space-y-1 text-sm">
+                    {vm.nics.map((nic, i) => (
+                      <li key={i} className="font-mono">
+                        <span className="text-gray-900">{nic.network}</span>{" "}
+                        <span className="text-gray-500">{nic.mac}</span>{" "}
+                        <span className={nic.ipv4 ? "text-green-700" : "text-gray-400"}>
+                          {nic.ipv4 ?? "no address"}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
             </div>
             <div className="space-y-4">
               <div>

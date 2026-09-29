@@ -18,6 +18,68 @@ export interface VmResponse {
   hypervisor: HypervisorType;
   vfio_devices: string[];
   credential?: string;
+  nics?: NicState[];
+}
+
+export interface NicState {
+  network: string;
+  mac: string;
+  port?: string;
+  ipv4?: string;
+}
+
+export type NetworkMode = "nat" | "bridged" | "isolated";
+export type PortType = "tap" | "vhost_user";
+
+export interface Network {
+  name: string;
+  bridge: string;
+  mode: NetworkMode;
+  port_type: PortType;
+  vlan?: number;
+  mtu?: number;
+  owns_bridge: boolean;
+  created_at: number;
+}
+
+export interface CreateNetworkRequest {
+  name: string;
+  mode: NetworkMode;
+  port_type?: PortType;
+  bridge?: string;
+  subnet?: string;
+  vlan?: number;
+}
+
+export interface Combination {
+  id: string;
+  description: string;
+  available: boolean;
+  missing: string[];
+}
+
+export interface HostCapabilities {
+  ovs_installed: boolean;
+  ovs_version?: string;
+  ovs_running: boolean;
+  iface_types: string[];
+  dpdk_initialized: boolean;
+  dnsmasq: boolean;
+  nft: boolean;
+  ip_forward: boolean;
+  ch_net_admin?: boolean;
+  firewalls: string[];
+  combinations: Combination[];
+}
+
+export interface OvsStatus {
+  netd: { available: boolean; access: "full" | "status" | "none"; error?: string };
+  host?: HostCapabilities;
+}
+
+export interface BridgeRecord {
+  spec: { name: string; datapath: "system" | "netdev" };
+  live?: { ports: string[] } | null;
 }
 
 export interface CreateVmRequest {
@@ -27,6 +89,7 @@ export interface CreateVmRequest {
   kernel_image_path: string;
   firmware_path?: string;
   credential?: string;
+  networks?: { network: string }[];
   rootfs_path: string;
   kernel_args?: string;
   hypervisor?: HypervisorType;
@@ -56,6 +119,7 @@ export interface UpdateCredentialRequest {
 export interface ApiError {
   error: string;
   message: string;
+  details?: { impact?: string; missing?: string[]; reasons?: string[] };
 }
 
 export interface HealthResponse {

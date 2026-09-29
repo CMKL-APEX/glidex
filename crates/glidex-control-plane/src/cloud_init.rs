@@ -39,6 +39,8 @@ pub struct SeedConfig {
     pub username: String,
     pub ssh_authorized_keys: Vec<String>,
     pub passwd_hash: Option<String>,
+    /// MACs of the VM's glidex NICs, in order. Empty: DHCP on every `en*`.
+    pub nic_macs: Vec<String>,
 }
 
 impl Default for SeedConfig {
@@ -49,6 +51,7 @@ impl Default for SeedConfig {
             username: DEFAULT_USER.to_string(),
             ssh_authorized_keys: Vec::new(),
             passwd_hash: None,
+            nic_macs: Vec::new(),
         }
     }
 }
@@ -77,6 +80,7 @@ impl SeedConfig {
                 .ok()
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty()),
+            nic_macs: Vec::new(),
         }
     }
 
@@ -89,6 +93,7 @@ impl SeedConfig {
             username: credential.username.clone(),
             ssh_authorized_keys: credential.ssh_authorized_keys.clone(),
             passwd_hash: credential.password_hash.clone(),
+            nic_macs: Vec::new(),
         }
     }
 
@@ -101,13 +106,28 @@ impl SeedConfig {
     }
 
     pub fn network_config(&self) -> String {
-        "version: 2\n\
-         ethernets:\n\
-         \x20 all-en:\n\
-         \x20   match:\n\
-         \x20     name: \"en*\"\n\
-         \x20   dhcp4: true\n"
-            .to_string()
+        if self.nic_macs.is_empty() {
+            return "version: 2\n\
+             ethernets:\n\
+             \x20 all-en:\n\
+             \x20   match:\n\
+             \x20     name: \"en*\"\n\
+             \x20   dhcp4: true\n"
+                .to_string();
+        }
+        // One entry per glidex NIC, matched by MAC so guest NIC order
+        // doesn't matter (spec §11.5). No `set-name`: renaming at first
+        // boot fails with "busy" once the interface is up, and networkd
+        // then waits for an `eth0` that never appears.
+        let mut s = String::from("version: 2\nethernets:\n");
+        for (i, mac) in self.nic_macs.iter().enumerate() {
+            s.push_str(&format!(
+                "  net{i}:\n    match:\n      macaddress: {mac}\n    dhcp4: true\n",
+                i = i,
+                mac = yaml_quote(mac)
+            ));
+        }
+        s
     }
 
     pub fn user_data(&self) -> String {
@@ -272,6 +292,19 @@ fn yaml_quote(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn network_config_matches_nics_by_mac() {
+        let seed = SeedConfig {
+            nic_macs: vec!["02:aa:bb:cc:dd:00".into(), "02:aa:bb:cc:dd:01".into()],
+            ..Default::default()
+        };
+        assert_eq!(
+            seed.network_config(),
+            "version: 2\nethernets:\n  net0:\n    match:\n      macaddress: '02:aa:bb:cc:dd:00'\n    dhcp4: true\n  net1:\n    match:\n      macaddress: '02:aa:bb:cc:dd:01'\n    dhcp4: true\n"
+        );
+        assert!(SeedConfig::default().network_config().contains("name: \"en*\""));
+    }
 
     #[test]
     fn hostname_is_sanitized() {

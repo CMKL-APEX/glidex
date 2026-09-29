@@ -17,7 +17,12 @@ use crate::credentials::{
     CreateCredentialRequest, CredentialError, CredentialInfo, UpdateCredentialRequest,
 };
 use crate::hypervisor::HypervisorError;
+use crate::network::{CreateNetworkRequest, NetError, Netd, NetdAccess};
 use crate::state::{VmManager, VmManagerError};
+use glidex_netd::proto::{BridgeRecord, EnsureUplinkArgs, ErrorBody, Op, UplinkPhase, UplinkResult};
+use glidex_ovs::uplink::{UplinkKind, UplinkSpec};
+use glidex_ovs::bridge::BridgeSpec;
+use glidex_ovs::install::{InstallReport, InstallRequest};
 use serde::Serialize;
 
 pub type AppState = Arc<VmManager>;
@@ -40,9 +45,228 @@ pub fn create_router(state: AppState) -> Router {
         .route("/credentials/{username}", get(get_credential))
         .route("/credentials/{username}", put(update_credential))
         .route("/credentials/{username}", delete(delete_credential))
+        .route("/networks", get(list_networks))
+        .route("/networks", post(create_network))
+        .route("/networks/{name}", get(get_network))
+        .route("/networks/{name}", delete(delete_network))
+        .route("/ovs/status", get(ovs_status))
+        .route("/ovs/install", post(ovs_install))
+        .route("/ovs/dpdk-init", post(ovs_dpdk_init))
+        .route("/ovs/bridges", get(list_bridges))
+        .route("/ovs/bridges", post(create_bridge))
+        .route("/ovs/bridges/{name}", delete(delete_bridge))
+        .route("/ovs/bridges/{name}/uplinks", get(list_uplinks))
+        .route("/ovs/bridges/{name}/uplinks", post(create_uplink))
+        .route("/ovs/bridges/{name}/uplinks/{uplink}", delete(delete_uplink))
+        .route("/ovs/bridges/{name}/uplinks/{uplink}/commit", post(commit_uplink))
         .route("/pci-devices", get(list_pci_devices))
         .route("/health", get(health_check))
         .with_state(state)
+}
+
+type ApiResult<T> = Result<T, (StatusCode, Json<ApiError>)>;
+
+async fn list_networks(State(manager): State<AppState>) -> ApiResult<impl IntoResponse> {
+    Ok(Json(manager.list_networks().map_err(error_to_response)?))
+}
+
+async fn get_network(State(manager): State<AppState>, Path(name): Path<String>) -> ApiResult<impl IntoResponse> {
+    Ok(Json(manager.get_network(&name).map_err(error_to_response)?))
+}
+
+async fn create_network(
+    State(manager): State<AppState>,
+    Json(req): Json<CreateNetworkRequest>,
+) -> ApiResult<impl IntoResponse> {
+    let net = manager.create_network(req).await.map_err(error_to_response)?;
+    Ok((StatusCode::CREATED, Json(net)))
+}
+
+async fn delete_network(State(manager): State<AppState>, Path(name): Path<String>) -> ApiResult<impl IntoResponse> {
+    manager.delete_network(&name).await.map_err(error_to_response)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Run a blocking netd call off the async runtime.
+async fn netd_blocking<T, F>(netd: Netd, f: F) -> ApiResult<T>
+where
+    T: Send + 'static,
+    F: FnOnce(&Netd) -> Result<T, NetError> + Send + 'static,
+{
+    tokio::task::spawn_blocking(move || f(&netd))
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError::new("internal", e.to_string())),
+            )
+        })?
+        .map_err(|e| error_to_response(VmManagerError::Network(e)))
+}
+
+#[derive(Serialize)]
+struct OvsStatus {
+    netd: NetdStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    host: Option<serde_json::Value>,
+}
+
+#[derive(Serialize)]
+struct NetdStatus {
+    available: bool,
+    access: NetdAccess,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+async fn ovs_status(State(manager): State<AppState>) -> ApiResult<impl IntoResponse> {
+    let netd = manager.netd().clone();
+    let status = tokio::task::spawn_blocking(move || {
+        let (access, result) = netd.probe();
+        match result {
+            Ok(host) => OvsStatus {
+                netd: NetdStatus { available: true, access, error: None },
+                host: Some(host),
+            },
+            Err(e) => OvsStatus {
+                netd: NetdStatus { available: false, access, error: Some(e.to_string()) },
+                host: None,
+            },
+        }
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError::new("internal", e.to_string()))))?;
+    Ok(Json(status))
+}
+
+async fn ovs_install(
+    State(manager): State<AppState>,
+    Json(req): Json<InstallRequest>,
+) -> ApiResult<impl IntoResponse> {
+    let report: InstallReport =
+        netd_blocking(manager.netd().clone(), move |n| n.call(Op::InstallOvs(req))).await?;
+    Ok(Json(report))
+}
+
+async fn ovs_dpdk_init(
+    State(manager): State<AppState>,
+    Json(settings): Json<glidex_ovs::install::DpdkSettings>,
+) -> ApiResult<impl IntoResponse> {
+    netd_blocking(manager.netd().clone(), move |n| n.call::<serde_json::Value>(Op::InitDpdk(settings))).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn list_bridges(State(manager): State<AppState>) -> ApiResult<impl IntoResponse> {
+    let bridges: Vec<BridgeRecord> = netd_blocking(manager.netd().clone(), |n| n.call(Op::ListBridges)).await?;
+    Ok(Json(bridges))
+}
+
+async fn create_bridge(
+    State(manager): State<AppState>,
+    Json(spec): Json<BridgeSpec>,
+) -> ApiResult<impl IntoResponse> {
+    let bridge: BridgeRecord = netd_blocking(manager.netd().clone(), move |n| n.call(Op::EnsureBridge(spec))).await?;
+    Ok((StatusCode::CREATED, Json(bridge)))
+}
+
+async fn delete_bridge(State(manager): State<AppState>, Path(name): Path<String>) -> ApiResult<impl IntoResponse> {
+    if let Some(net) = manager
+        .list_networks()
+        .map_err(error_to_response)?
+        .into_iter()
+        .find(|n| n.bridge == name)
+    {
+        return Err(error_to_response(VmManagerError::Network(NetError::Conflict(format!(
+            "bridge '{}' is used by network '{}'",
+            name, net.name
+        )))));
+    }
+    netd_blocking(manager.netd().clone(), move |n| {
+        n.call::<serde_json::Value>(Op::DeleteBridge { name })
+    })
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn list_uplinks(State(manager): State<AppState>, Path(bridge): Path<String>) -> ApiResult<impl IntoResponse> {
+    let all: Vec<UplinkResult> = netd_blocking(manager.netd().clone(), |n| n.call(Op::ListUplinks)).await?;
+    Ok(Json(all.into_iter().filter(|u| u.record.spec.bridge == bridge).collect::<Vec<_>>()))
+}
+
+#[derive(serde::Deserialize)]
+struct CreateUplinkRequest {
+    name: String,
+    #[serde(flatten)]
+    kind: UplinkKind,
+    #[serde(default)]
+    migrate_ip: bool,
+    #[serde(default)]
+    confirm: bool,
+}
+
+async fn create_uplink(
+    State(manager): State<AppState>,
+    Path(bridge): Path<String>,
+    Json(req): Json<CreateUplinkRequest>,
+) -> ApiResult<impl IntoResponse> {
+    let args = EnsureUplinkArgs {
+        spec: UplinkSpec { name: req.name, bridge, kind: req.kind, migrate_ip: req.migrate_ip },
+        confirm: req.confirm,
+    };
+    let res: UplinkResult = netd_blocking(manager.netd().clone(), move |n| n.call(Op::EnsureUplink(args))).await?;
+    // 202: the IP migration must still be committed within the window.
+    let status = match res.phase {
+        UplinkPhase::PendingCommit => StatusCode::ACCEPTED,
+        UplinkPhase::Active => StatusCode::CREATED,
+    };
+    Ok((status, Json(res)))
+}
+
+#[derive(serde::Deserialize)]
+struct CommitRequest {
+    token: String,
+}
+
+async fn commit_uplink(
+    State(manager): State<AppState>,
+    Path((bridge, name)): Path<(String, String)>,
+    Json(req): Json<CommitRequest>,
+) -> ApiResult<impl IntoResponse> {
+    let res: UplinkResult = netd_blocking(manager.netd().clone(), move |n| {
+        n.call(Op::CommitUplink { bridge, name, token: req.token })
+    })
+    .await?;
+    Ok(Json(res))
+}
+
+async fn delete_uplink(
+    State(manager): State<AppState>,
+    Path((bridge, name)): Path<(String, String)>,
+) -> ApiResult<impl IntoResponse> {
+    netd_blocking(manager.netd().clone(), move |n| {
+        n.call::<serde_json::Value>(Op::DeleteUplink { bridge, name })
+    })
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// REST status for an error reported by netd (spec §11.3).
+fn netd_error_response(body: &ErrorBody) -> (StatusCode, Json<ApiError>) {
+    let (status, code) = match body.code.as_str() {
+        "invalid_argument" => (StatusCode::BAD_REQUEST, "invalid_network"),
+        "not_found" => (StatusCode::NOT_FOUND, "not_found"),
+        "not_owned" | "conflict" => (StatusCode::CONFLICT, "conflict"),
+        "host_interface_in_use" => (StatusCode::CONFLICT, "host_interface_in_use"),
+        "confirmation_required" => (StatusCode::CONFLICT, "confirmation_required"),
+        "migration_rolled_back" => (StatusCode::CONFLICT, "migration_rolled_back"),
+        "unsupported" => (StatusCode::UNPROCESSABLE_ENTITY, "unsupported_on_host"),
+        "permission_denied" => (StatusCode::SERVICE_UNAVAILABLE, "netd_permission_denied"),
+        _ => (StatusCode::BAD_GATEWAY, "netd_error"),
+    };
+    (
+        status,
+        Json(ApiError::new(code, body.message.clone()).with_details(body.details.clone())),
+    )
 }
 
 async fn health_check() -> impl IntoResponse {
@@ -292,6 +516,31 @@ async fn bridge_console(mut ws: WebSocket, console_path: String) {
 
 fn error_to_response(error: VmManagerError) -> (StatusCode, Json<ApiError>) {
     match &error {
+        VmManagerError::Network(NetError::Netd(body)) => netd_error_response(body),
+        VmManagerError::Network(NetError::Unavailable(_)) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ApiError::new("netd_unavailable", error.to_string())),
+        ),
+        VmManagerError::Network(NetError::Protocol(_)) => (
+            StatusCode::BAD_GATEWAY,
+            Json(ApiError::new("netd_error", error.to_string())),
+        ),
+        VmManagerError::Network(NetError::Invalid(_)) => (
+            StatusCode::BAD_REQUEST,
+            Json(ApiError::new("invalid_network", error.to_string())),
+        ),
+        VmManagerError::Network(NetError::NotFound(_)) => (
+            StatusCode::NOT_FOUND,
+            Json(ApiError::new("not_found", error.to_string())),
+        ),
+        VmManagerError::Network(NetError::Conflict(_)) => (
+            StatusCode::CONFLICT,
+            Json(ApiError::new("conflict", error.to_string())),
+        ),
+        VmManagerError::Network(NetError::Storage(_)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError::new("persistence_error", error.to_string())),
+        ),
         VmManagerError::VmNotFound(_) => (
             StatusCode::NOT_FOUND,
             Json(ApiError::new("not_found", error.to_string())),

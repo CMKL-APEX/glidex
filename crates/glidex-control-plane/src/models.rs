@@ -1,5 +1,7 @@
 use crate::hypervisor::HypervisorType;
+use glidex_ovs::vm_port::VmPortBinding;
 use serde::{Deserialize, Serialize};
+use std::net::Ipv4Addr;
 use uuid::Uuid;
 
 /// Expand a leading `~` or `~/` to the user's home directory. Hypervisors
@@ -55,6 +57,47 @@ pub struct VmConfig {
     pub hypervisor: HypervisorType,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub vfio_devices: Vec<String>,
+    /// Networks the VM's NICs attach to, in NIC order (spec §11.1).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub networks: Vec<NetworkAttachment>,
+    /// Back guest RAM with hugepages (implies shared memory).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hugepages: bool,
+    /// Host-side NIC bindings from glidex-netd, filled in by `start_vm`
+    /// for the hypervisor; never persisted.
+    #[serde(skip)]
+    pub nic_bindings: Vec<NicBinding>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NetworkAttachment {
+    pub network: String,
+    /// Filled in at create time (stable, derived from the VM id) if omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mac: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_pairs: Option<u8>,
+}
+
+/// What the hypervisor needs for one NIC.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NicBinding {
+    pub id: String,
+    pub mac: String,
+    pub binding: VmPortBinding,
+    pub queue_pairs: u8,
+    pub mtu: Option<u16>,
+}
+
+/// Last known state of a VM NIC, shown in `VmResponse`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NicState {
+    pub network: String,
+    pub mac: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ipv4: Option<Ipv4Addr>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -67,6 +110,8 @@ pub struct Vm {
     pub console_socket_path: String,
     pub log_path: String,
     pub hypervisor: HypervisorType,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub nics: Vec<NicState>,
 }
 
 impl Vm {
@@ -86,6 +131,7 @@ impl Vm {
             console_socket_path,
             log_path,
             hypervisor,
+            nics: Vec::new(),
         }
     }
 
@@ -119,6 +165,10 @@ pub struct CreateVmRequest {
     pub hypervisor: Option<HypervisorType>,
     #[serde(default)]
     pub vfio_devices: Option<Vec<String>>,
+    #[serde(default)]
+    pub networks: Option<Vec<NetworkAttachment>>,
+    #[serde(default)]
+    pub hugepages: bool,
 }
 
 impl From<CreateVmRequest> for VmConfig {
@@ -137,6 +187,9 @@ impl From<CreateVmRequest> for VmConfig {
                 .unwrap_or_else(|| hypervisor.default_kernel_args().to_string()),
             hypervisor,
             vfio_devices: req.vfio_devices.unwrap_or_default(),
+            networks: req.networks.unwrap_or_default(),
+            hugepages: req.hugepages,
+            nic_bindings: Vec::new(),
         }
     }
 }
@@ -155,6 +208,8 @@ pub struct VmResponse {
     pub vfio_devices: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub nics: Vec<NicState>,
 }
 
 impl From<&Vm> for VmResponse {
@@ -170,6 +225,20 @@ impl From<&Vm> for VmResponse {
             hypervisor: vm.hypervisor,
             vfio_devices: vm.config.vfio_devices.clone(),
             credential: vm.config.credential.clone(),
+            nics: if vm.nics.is_empty() {
+                vm.config
+                    .networks
+                    .iter()
+                    .map(|a| NicState {
+                        network: a.network.clone(),
+                        mac: a.mac.clone().unwrap_or_default(),
+                        port: None,
+                        ipv4: None,
+                    })
+                    .collect()
+            } else {
+                vm.nics.clone()
+            },
         }
     }
 }
@@ -183,6 +252,8 @@ pub struct DeviceRequest {
 pub struct ApiError {
     pub error: String,
     pub message: String,
+    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+    pub details: serde_json::Value,
 }
 
 impl ApiError {
@@ -190,6 +261,12 @@ impl ApiError {
         Self {
             error: error.into(),
             message: message.into(),
+            details: serde_json::Value::Null,
         }
+    }
+
+    pub fn with_details(mut self, details: serde_json::Value) -> Self {
+        self.details = details;
+        self
     }
 }

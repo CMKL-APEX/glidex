@@ -3,6 +3,7 @@ pub mod cloud_init;
 pub mod credentials;
 pub mod hypervisor;
 pub mod models;
+pub mod network;
 pub mod pci;
 pub mod persistence;
 pub mod state;

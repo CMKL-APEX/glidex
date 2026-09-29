@@ -1,0 +1,20 @@
+[Unit]
+Description=glidex network helper (Open vSwitch, NAT, VM ports)
+Documentation=file:///usr/local/share/doc/glidex/networking.md
+After=network-online.target openvswitch-switch.service ovs-vswitchd.service glidex-ovs-vswitchd.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/glidex-netd
+RuntimeDirectory=glidex
+RuntimeDirectoryMode=0755
+# vhost-user sockets of running VMs live under /run/glidex/vhost. They must
+# survive a netd restart, or OVS can never reconnect to those VMs.
+RuntimeDirectoryPreserve=yes
+StateDirectory=glidex
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

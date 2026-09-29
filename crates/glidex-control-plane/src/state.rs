@@ -3,7 +3,12 @@ use crate::credentials::{
     Credential, CredentialError, CredentialStore, CreateCredentialRequest, UpdateCredentialRequest,
 };
 use crate::hypervisor::{create_backend, Hypervisor, HypervisorError, HypervisorProcess, HypervisorType};
-use crate::models::{Vm, VmConfig, VmState};
+use crate::models::{NicBinding, NicState, Vm, VmConfig, VmState};
+use crate::network::{self, CreateNetworkRequest, NetError, Netd, Network, NetworkMode, NetworkStore};
+use glidex_netd::proto::{AttachResult, BridgeRecord, NatInfo, Op, ReconcileReport};
+use glidex_ovs::bridge::{BridgeSpec, Datapath};
+use glidex_ovs::nat::NatSpec;
+use glidex_ovs::vm_port::{VmPortKind, VmPortSpec};
 use crate::persistence::{PersistenceError, VmStore};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -20,6 +25,7 @@ pub enum VmManagerError {
     HypervisorNotAvailable(HypervisorType),
     Credential(CredentialError),
     CredentialInUse { username: String, vms: Vec<String> },
+    Network(NetError),
 }
 
 impl std::fmt::Display for VmManagerError {
@@ -36,6 +42,7 @@ impl std::fmt::Display for VmManagerError {
                 write!(f, "Hypervisor not available: {:?}", h)
             }
             VmManagerError::Credential(e) => write!(f, "{}", e),
+            VmManagerError::Network(e) => write!(f, "{}", e),
             VmManagerError::CredentialInUse { username, vms } => write!(
                 f,
                 "credential {} is used by VM(s): {}",
@@ -49,6 +56,12 @@ impl std::fmt::Display for VmManagerError {
 impl From<HypervisorError> for VmManagerError {
     fn from(e: HypervisorError) -> Self {
         VmManagerError::HypervisorError(e)
+    }
+}
+
+impl From<NetError> for VmManagerError {
+    fn from(e: NetError) -> Self {
+        VmManagerError::Network(e)
     }
 }
 
@@ -73,6 +86,8 @@ pub struct VmManager {
     vms: RwLock<HashMap<String, VmEntry>>,
     store: VmStore,
     credentials: CredentialStore,
+    networks: NetworkStore,
+    netd: Netd,
     backends: HashMap<HypervisorType, Box<dyn Hypervisor>>,
 }
 
@@ -84,6 +99,11 @@ impl VmManager {
 
     /// Create a new VmManager with persistence at a custom path
     pub fn with_db_path(db_path: PathBuf) -> Result<Arc<Self>, VmManagerError> {
+        Self::with_db_path_and_netd(db_path, Netd::from_env())
+    }
+
+    /// As `with_db_path`, talking to the glidex-netd at `netd`.
+    pub fn with_db_path_and_netd(db_path: PathBuf, netd: Netd) -> Result<Arc<Self>, VmManagerError> {
         let store = VmStore::open(&db_path)?;
 
         // Initialize hypervisor backends and probe whether each binary is on PATH.
@@ -106,6 +126,8 @@ impl VmManager {
         Ok(Arc::new(Self {
             vms: RwLock::new(HashMap::new()),
             credentials: CredentialStore::new(store.database())?,
+            networks: NetworkStore::new(store.database())?,
+            netd,
             store,
             backends,
         }))
@@ -149,6 +171,18 @@ impl VmManager {
                     process: None, // Process handles cannot be restored
                 },
             );
+        }
+
+        // Every VM is stopped after a control-plane restart, so any VM
+        // ports netd still has are stale.
+        if vms.values().any(|e| !e.vm.config.networks.is_empty()) {
+            match self.netd.call::<ReconcileReport>(Op::SyncVms { running: Vec::new() }) {
+                Ok(report) if !report.detached.is_empty() || !report.orphans.is_empty() => {
+                    tracing::info!(detached = ?report.detached, orphans = ?report.orphans, "netd sync");
+                }
+                Ok(_) => {}
+                Err(e) => tracing::warn!("glidex-netd sync skipped: {}", e),
+            }
         }
 
         Ok(())
@@ -226,6 +260,43 @@ impl VmManager {
             )
             .into());
         }
+        self.refuse_dpdk_uplink_devices(&config.vfio_devices)?;
+        if !config.networks.is_empty() {
+            if config.hypervisor != HypervisorType::CloudHypervisor {
+                return Err(HypervisorError::InvalidConfig(
+                    "networks are only supported by cloudhypervisor".to_string(),
+                )
+                .into());
+            }
+            if config.networks.len() > glidex_ovs::names::MAX_NICS as usize {
+                return Err(HypervisorError::InvalidConfig(format!(
+                    "at most {} networks per VM",
+                    glidex_ovs::names::MAX_NICS
+                ))
+                .into());
+            }
+            for att in &config.networks {
+                if self.networks.get(&att.network)?.is_none() {
+                    return Err(HypervisorError::InvalidConfig(format!(
+                        "network not found: {}",
+                        att.network
+                    ))
+                    .into());
+                }
+                if let Some(mac) = &att.mac {
+                    glidex_ovs::names::validate_mac(mac)
+                        .map_err(|e| HypervisorError::InvalidConfig(e.to_string()))?;
+                }
+                if let Some(q) = att.queue_pairs {
+                    if !(1..=8).contains(&q) {
+                        return Err(HypervisorError::InvalidConfig(
+                            "queue_pairs must be 1-8".to_string(),
+                        )
+                        .into());
+                    }
+                }
+            }
+        }
         let mut vms = self.vms.write().await;
 
         // Checked under the VM write lock so delete_credential (which holds
@@ -257,7 +328,14 @@ impl VmManager {
             return Err(VmManagerError::VmAlreadyExists(name));
         }
 
-        let vm = Vm::new(name, config);
+        let mut vm = Vm::new(name, config);
+        // Stable MACs derived from the VM id, so they show up in the API
+        // and survive restarts.
+        for (i, att) in vm.config.networks.iter_mut().enumerate() {
+            if att.mac.is_none() {
+                att.mac = glidex_ovs::names::mac_address(&vm.id, i as u8).ok();
+            }
+        }
 
         // Persist to database BEFORE adding to in-memory cache
         self.store.save(&vm)?;
@@ -294,11 +372,27 @@ impl VmManager {
                     &entry.vm.log_path,
                 )?;
 
+                // Attach NICs through glidex-netd before configuring, so
+                // the hypervisor gets real tap names / vhost-user sockets.
+                let mut config = entry.vm.config.clone();
+                let nics = match self.attach_nics(&entry.vm) {
+                    Ok(nics) => nics,
+                    Err(e) => {
+                        let _ = process.kill();
+                        return Err(e);
+                    }
+                };
+                config.nic_bindings = nics.iter().map(|(b, _)| b.clone()).collect();
+                let (cleanup_id, cleanup_nics) = (entry.vm.id.clone(), config.networks.len());
+                let detach_on_error = |process: &dyn HypervisorProcess| {
+                    let _ = process.kill();
+                    self.detach_nics(&cleanup_id, cleanup_nics);
+                };
+
                 // Firmware-booted cloud images need a cloud-init seed to
                 // get a usable login; generate the default one if the VM
                 // didn't bring its own. Regenerated on every start so it
                 // tracks the host's current SSH keys.
-                let mut config = entry.vm.config.clone();
                 if config.firmware_path.is_some() && config.cloud_init_path.is_none() {
                     let path = entry.vm.default_cloud_init_path();
                     let seed = match &config.credential {
@@ -309,12 +403,14 @@ impl VmManager {
                                 &cred,
                             ),
                             Err(e) => {
-                                let _ = process.kill();
+                                detach_on_error(process.as_ref());
                                 return Err(e.into());
                             }
                         },
                         None => cloud_init::SeedConfig::for_vm(&entry.vm.id, &entry.vm.name),
                     };
+                    let mut seed = seed;
+                    seed.nic_macs = config.nic_bindings.iter().map(|n| n.mac.clone()).collect();
                     if seed.ssh_authorized_keys.is_empty() && seed.passwd_hash.is_none() {
                         tracing::warn!(
                             vm_id = %entry.vm.id,
@@ -324,7 +420,7 @@ impl VmManager {
                         );
                     }
                     if let Err(e) = cloud_init::write_seed_image(&path, &seed) {
-                        let _ = process.kill();
+                        detach_on_error(process.as_ref());
                         return Err(e.into());
                     }
                     config.cloud_init_path = Some(path);
@@ -332,20 +428,23 @@ impl VmManager {
 
                 // Configure the VM, cleanup process on failure
                 if let Err(e) = process.configure(&config) {
-                    let _ = process.kill();
+                    detach_on_error(process.as_ref());
                     return Err(e.into());
                 }
 
                 // Start the VM, cleanup process on failure
                 if let Err(e) = process.start() {
-                    let _ = process.kill();
+                    detach_on_error(process.as_ref());
                     return Err(e.into());
                 }
 
                 // Persist state change BEFORE updating in-memory state
                 // If persist fails, kill the process to maintain consistency
-                if let Err(e) = self.store.update_state(vm_id, VmState::Running) {
-                    let _ = process.kill();
+                entry.vm.nics = nics.into_iter().map(|(_, s)| s).collect();
+                entry.vm.state = VmState::Running;
+                if let Err(e) = self.store.save(&entry.vm) {
+                    entry.vm.state = VmState::Stopped;
+                    detach_on_error(process.as_ref());
                     return Err(e.into());
                 }
 
@@ -409,6 +508,10 @@ impl VmManager {
                 }
                 entry.process = None;
                 entry.vm.state = VmState::Stopped;
+                self.detach_nics(&entry.vm.id, entry.vm.config.networks.len());
+                for nic in &mut entry.vm.nics {
+                    nic.port = None;
+                }
 
                 // Persist state change - log warning if fails since operation already happened
                 if let Err(e) = self.store.update_state(vm_id, VmState::Stopped) {
@@ -477,6 +580,7 @@ impl VmManager {
     }
 
     pub async fn attach_device(&self, vm_id: &str, device_path: String) -> Result<Vm, VmManagerError> {
+        self.refuse_dpdk_uplink_devices(std::slice::from_ref(&device_path))?;
         let mut vms = self.vms.write().await;
 
         let entry = vms
@@ -598,6 +702,12 @@ impl VmManager {
         if let Some(ref process) = entry.process {
             let _ = process.kill();
         }
+        if !entry.vm.config.networks.is_empty() {
+            // Detaches any ports and frees the VM's NAT reservations.
+            if let Err(e) = self.netd.call::<serde_json::Value>(Op::ReleaseVm { vm_id: entry.vm.id.clone() }) {
+                tracing::warn!(vm_id = %entry.vm.id, "glidex-netd release failed: {}", e);
+            }
+        }
 
         // Delete from database BEFORE removing from memory
         self.store.delete(vm_id)?;
@@ -605,6 +715,220 @@ impl VmManager {
 
         vms.remove(vm_id);
         Ok(())
+    }
+
+    // ---- networks -----------------------------------------------------
+
+    /// A NIC bound to vfio-pci for a DPDK uplink must not also be passed
+    /// through to a VM (spec §8.3). Without netd there are no uplinks.
+    fn refuse_dpdk_uplink_devices(&self, devices: &[String]) -> Result<(), VmManagerError> {
+        if devices.is_empty() {
+            return Ok(());
+        }
+        let Ok(uplinks) = self.netd.call::<Vec<glidex_netd::proto::UplinkResult>>(Op::ListUplinks) else {
+            return Ok(());
+        };
+        for dev in devices {
+            let bdf = dev.rsplit('/').next().unwrap_or(dev);
+            if let Some(u) = uplinks.iter().find(|u| {
+                matches!(&u.record.spec.kind, glidex_ovs::uplink::UplinkKind::Dpdk { pci, .. } if pci == bdf)
+            }) {
+                return Err(NetError::Conflict(format!(
+                    "{} is the DPDK uplink '{}' of bridge '{}'",
+                    bdf, u.record.spec.name, u.record.spec.bridge
+                ))
+                .into());
+            }
+        }
+        Ok(())
+    }
+
+    /// Attach every NIC of `vm` through netd. On failure, detaches the NICs
+    /// attached so far.
+    fn attach_nics(&self, vm: &Vm) -> Result<Vec<(NicBinding, NicState)>, VmManagerError> {
+        let mut out = Vec::new();
+        for (i, att) in vm.config.networks.iter().enumerate() {
+            let result = (|| -> Result<(NicBinding, NicState), VmManagerError> {
+                let net = self
+                    .networks
+                    .get(&att.network)?
+                    .ok_or_else(|| NetError::NotFound(att.network.clone()))?;
+                let mac = match &att.mac {
+                    Some(m) => m.clone(),
+                    None => glidex_ovs::names::mac_address(&vm.id, i as u8)
+                        .map_err(|e| NetError::Invalid(e.to_string()))?,
+                };
+                let queue_pairs = att.queue_pairs.unwrap_or(1);
+                let spec = VmPortSpec {
+                    bridge: net.bridge.clone(),
+                    vm_id: vm.id.clone(),
+                    nic_index: i as u8,
+                    kind: net.port_type,
+                    mac: mac.clone(),
+                    vlan: net.vlan,
+                    mtu: net.mtu,
+                    queue_pairs,
+                };
+                let res: AttachResult = self.netd.call(Op::AttachVmPort(spec))?;
+                Ok((
+                    NicBinding {
+                        id: format!("net{}", i),
+                        mac: mac.clone(),
+                        binding: res.binding,
+                        queue_pairs,
+                        mtu: net.mtu,
+                    },
+                    NicState {
+                        network: net.name,
+                        mac,
+                        port: Some(res.port),
+                        ipv4: res.ipv4,
+                    },
+                ))
+            })();
+            match result {
+                Ok(nic) => out.push(nic),
+                Err(e) => {
+                    self.detach_nics(&vm.id, i);
+                    return Err(e);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Detach the first `count` NICs of a VM. Errors are logged: the VM is
+    /// already stopped, and netd's sync cleans up anything left behind.
+    fn detach_nics(&self, vm_id: &str, count: usize) {
+        for i in 0..count {
+            if let Err(e) = self.netd.call::<serde_json::Value>(Op::DetachVmPort {
+                vm_id: vm_id.to_string(),
+                nic_index: i as u8,
+            }) {
+                tracing::warn!(vm_id, nic = i, "glidex-netd detach failed: {}", e);
+            }
+        }
+    }
+
+    pub fn list_networks(&self) -> Result<Vec<Network>, VmManagerError> {
+        Ok(self.networks.list()?)
+    }
+
+    pub fn get_network(&self, name: &str) -> Result<Network, VmManagerError> {
+        Ok(self
+            .networks
+            .get(name)?
+            .ok_or_else(|| NetError::NotFound(name.to_string()))?)
+    }
+
+    /// Create a network: host side in netd first, record only on success.
+    pub async fn create_network(&self, req: CreateNetworkRequest) -> Result<Network, VmManagerError> {
+        let net = req.to_network()?;
+        if self.networks.get(&net.name)?.is_some() {
+            return Err(NetError::Conflict(format!("network '{}' already exists", net.name)).into());
+        }
+        if let Some(other) = self.networks.list()?.into_iter().find(|n| n.bridge == net.bridge) {
+            return Err(NetError::Conflict(format!(
+                "bridge '{}' already belongs to network '{}'",
+                net.bridge, other.name
+            ))
+            .into());
+        }
+        match net.mode {
+            NetworkMode::Nat | NetworkMode::Isolated => {
+                let datapath = match net.port_type {
+                    VmPortKind::VhostUser => Datapath::Netdev,
+                    VmPortKind::Tap => Datapath::System,
+                };
+                let _: BridgeRecord = self.netd.call(Op::EnsureBridge(BridgeSpec {
+                    name: net.bridge.clone(),
+                    datapath,
+                    mtu: net.mtu,
+                    adopt: false,
+                }))?;
+                if net.mode == NetworkMode::Nat {
+                    let res: Result<NatInfo, NetError> = self.netd.call(Op::EnsureNat(NatSpec {
+                        bridge: net.bridge.clone(),
+                        subnet: req.subnet,
+                        dns: req.dns,
+                    }));
+                    if let Err(e) = res {
+                        let _ = self.netd.call::<serde_json::Value>(Op::DeleteBridge { name: net.bridge.clone() });
+                        return Err(e.into());
+                    }
+                }
+            }
+            NetworkMode::Bridged => {
+                let bridges: Vec<BridgeRecord> = self.netd.call(Op::ListBridges)?;
+                if !bridges.iter().any(|b| b.spec.name == net.bridge) {
+                    return Err(NetError::Invalid(format!(
+                        "bridge '{}' is not a glidex bridge; create it (with an uplink) first",
+                        net.bridge
+                    ))
+                    .into());
+                }
+            }
+        }
+        self.networks.put(&net)?;
+        tracing::info!(network = %net.name, bridge = %net.bridge, mode = ?net.mode, "network created");
+        Ok(net)
+    }
+
+    pub async fn delete_network(&self, name: &str) -> Result<(), VmManagerError> {
+        let net = self.get_network(name)?;
+        let vms = self.vms.read().await;
+        let users: Vec<String> = vms
+            .values()
+            .filter(|e| e.vm.config.networks.iter().any(|a| a.network == name))
+            .map(|e| e.vm.name.clone())
+            .collect();
+        if !users.is_empty() {
+            return Err(NetError::Conflict(format!(
+                "network '{}' is used by VM(s): {}",
+                name,
+                users.join(", ")
+            ))
+            .into());
+        }
+        if net.owns_bridge {
+            if net.mode == NetworkMode::Nat {
+                self.netd.call::<serde_json::Value>(Op::DeleteNat { bridge: net.bridge.clone() })?;
+            }
+            self.netd.call::<serde_json::Value>(Op::DeleteBridge { name: net.bridge.clone() })?;
+        }
+        self.networks.delete(name)?;
+        tracing::info!(network = %name, "network deleted");
+        Ok(())
+    }
+
+    /// Create the `default` NAT network if netd is usable and it's missing.
+    pub async fn ensure_default_network(&self) -> Result<Option<Network>, VmManagerError> {
+        if self.networks.get(network::DEFAULT_NETWORK)?.is_some() {
+            return Ok(None);
+        }
+        let (access, caps) = self.netd.probe();
+        let running = caps
+            .ok()
+            .and_then(|c| c.get("ovs_running").and_then(|v| v.as_bool()))
+            .unwrap_or(false);
+        if access != network::NetdAccess::Full || !running {
+            return Ok(None);
+        }
+        let req = CreateNetworkRequest {
+            name: network::DEFAULT_NETWORK.into(),
+            mode: NetworkMode::Nat,
+            port_type: VmPortKind::Tap,
+            bridge: Some(network::DEFAULT_BRIDGE.into()),
+            subnet: None,
+            vlan: None,
+            mtu: None,
+            dns: true,
+        };
+        self.create_network(req).await.map(Some)
+    }
+
+    pub fn netd(&self) -> &Netd {
+        &self.netd
     }
 
     pub fn list_credentials(&self) -> Result<Vec<Credential>, VmManagerError> {
@@ -665,6 +989,7 @@ impl VmManager {
                 tracing::info!("Stopping VM {} ({})...", entry.vm.name, vm_id);
                 let _ = process.kill();
                 stopped_count += 1;
+                self.detach_nics(&entry.vm.id, entry.vm.config.networks.len());
 
                 // Update state in DB - log warning if fails
                 if let Err(e) = self.store.update_state(vm_id, VmState::Stopped) {

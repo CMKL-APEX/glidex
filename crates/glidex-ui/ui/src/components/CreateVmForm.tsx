@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { listCredentials } from "../api";
-import type { CreateVmRequest, CredentialInfo, HypervisorType } from "../types";
+import { listCredentials, listNetworks } from "../api";
+import type { CreateVmRequest, CredentialInfo, HypervisorType, Network } from "../types";
 import { HYPERVISOR_LABELS } from "../types";
 
 type BootMode = "firmware" | "kernel";
@@ -19,6 +19,8 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
   const [firmwarePath, setFirmwarePath] = useState("~/.glidex/CLOUDHV.fd");
   const [credential, setCredential] = useState("");
   const [credentials, setCredentials] = useState<CredentialInfo[]>([]);
+  const [networks, setNetworks] = useState<Network[]>([]);
+  const [selectedNetworks, setSelectedNetworks] = useState<string[]>([]);
   const [kernelPath, setKernelPath] = useState("");
   const [rootfsPath, setRootfsPath] = useState("");
   const [kernelArgs, setKernelArgs] = useState("");
@@ -32,6 +34,12 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
     listCredentials()
       .then(setCredentials)
       .catch(() => setCredentials([]));
+    listNetworks()
+      .then((nets) => {
+        setNetworks(nets);
+        if (nets.some((n) => n.name === "default")) setSelectedNetworks(["default"]);
+      })
+      .catch(() => setNetworks([]));
   }, []);
 
   const handleSubmit = (e: FormEvent) => {
@@ -50,6 +58,10 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
       kernel_image_path: firmware ? "" : kernelPath,
       firmware_path: firmware ? firmwarePath : undefined,
       credential: firmware && credential ? credential : undefined,
+      networks:
+        hypervisor === "cloudhypervisor" && selectedNetworks.length > 0
+          ? selectedNetworks.map((network) => ({ network }))
+          : undefined,
       rootfs_path: rootfsPath,
       hypervisor,
       kernel_args: !firmware && kernelArgs ? kernelArgs : undefined,
@@ -239,6 +251,35 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
           />
         </div>
         </>
+      )}
+
+      {hypervisor === "cloudhypervisor" && networks.length > 0 && (
+        <div>
+          <label className="block text-sm font-medium text-gray-700">
+            Networks
+          </label>
+          <div className="mt-1 flex flex-wrap gap-3">
+            {networks.map((n) => (
+              <label key={n.name} className="flex items-center space-x-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={selectedNetworks.includes(n.name)}
+                  onChange={(e) =>
+                    setSelectedNetworks((cur) =>
+                      e.target.checked ? [...cur, n.name] : cur.filter((x) => x !== n.name),
+                    )
+                  }
+                />
+                <span className="font-mono">{n.name}</span>
+                <span className="text-gray-400">({n.mode})</span>
+              </label>
+            ))}
+          </div>
+          <p className="mt-1 text-xs text-gray-500">
+            One NIC per selected network, in this order. Manage networks on the
+            Networking page.
+          </p>
+        </div>
       )}
 
       <div>

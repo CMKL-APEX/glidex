@@ -1,0 +1,11 @@
+[package]
+name = "glidex-ovs"
+version.workspace = true
+edition.workspace = true
+description = "Host-network management for glidex: Open vSwitch, NAT, VM ports"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+sha2 = "0.11"
