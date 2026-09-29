@@ -7,6 +7,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
+mod sysconfig;
+mod uninstall;
+
 const CLOUD_HYPERVISOR_VERSION: &str = "v50.0";
 /// Release tag of https://github.com/cloud-hypervisor/edk2/releases to fetch
 /// the UEFI firmware from. Bump together with the digests in
@@ -19,6 +22,10 @@ struct Platform {
 }
 
 fn main() -> Result<()> {
+    let args: Vec<String> = env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("uninstall") {
+        return uninstall::main(&args[1..]);
+    }
     print_banner();
 
     let platform = detect_platform()?;
@@ -45,6 +52,7 @@ fn main() -> Result<()> {
     check_kvm()?;
     build_project(&install_dir)?;
     setup_networking()?;
+    install_services(&install_dir)?;
     install_ui_deps()?;
     print_usage();
 
@@ -122,7 +130,8 @@ fn print_plan(install_dir: &Path) {
     println!("  6. Check KVM access");
     println!("  7. Build the control plane (cargo build --release)");
     println!("  8. (Optional) VM networking: Open vSwitch, glidex-netd service, glidex group");
-    println!("  9. Install UI npm dependencies (bun install)");
+    println!("  9. (Optional) Start glidex at boot: systemd units for glidex-netd and the control plane");
+    println!("  10. Install UI npm dependencies (bun install)");
     println!();
 }
 
@@ -476,13 +485,18 @@ fn check_kvm() -> Result<()> {
     if accessible {
         println!("{}", "KVM access: OK".green());
     } else {
-        let user = env::var("USER").unwrap_or_default();
+        let user = env::var("SUDO_USER").or_else(|_| env::var("USER")).unwrap_or_default();
         println!(
             "{}",
             "/dev/kvm exists but is not writable by your user.".yellow()
         );
-        println!("  Run: sudo usermod -aG kvm {}", user);
-        println!("  Then log out and back in.");
+        if !user.is_empty() && user != "root" && group_exists("kvm") && confirm_yn(&format!("Add {} to the kvm group?", user), true)? {
+            sudo(&["usermod".into(), "-aG".into(), "kvm".into(), user.clone()])?;
+            println!("{} log out and back in so the group applies.", "Added:".green());
+        } else {
+            println!("  Run: sudo usermod -aG kvm {}", user);
+            println!("  Then log out and back in.");
+        }
     }
     Ok(())
 }
@@ -611,7 +625,11 @@ fn setup_networking() -> Result<()> {
         }
     }
 
-    // 2. glidex-netd service and group.
+    // 2. Host settings: forwarding for NAT; hugepages, vfio-pci and DPDK
+    //    init for the dpdk profile.
+    configure_host(profile, &exec, &probe)?;
+
+    // 3. glidex-netd service and group.
     let root = workspace_root();
     let target_dir = env::var("CARGO_TARGET_DIR").map(PathBuf::from).unwrap_or_else(|_| root.join("target"));
     let netd_src = target_dir.join("release/glidex-netd");
@@ -622,8 +640,9 @@ fn setup_networking() -> Result<()> {
     }
     println!("{} glidex-netd (systemctl status glidex-netd)", "Running:".green());
 
-    // 3. Tap devices: cloud-hypervisor brings them up itself.
+    // 4. Tap devices: cloud-hypervisor brings them up itself.
     if let Some(ch) = ch_binary {
+        ensure_tools(&[("setcap", setcap_package())])?;
         println!();
         println!("Tap-based VM networking needs CAP_NET_ADMIN on {}.", ch.display());
         println!("Anyone who can run that binary gets the capability for it.");
@@ -637,6 +656,244 @@ fn setup_networking() -> Result<()> {
             "Note:".yellow(),
             NETD_GROUP
         );
+    }
+    Ok(())
+}
+
+fn setcap_package() -> &'static str {
+    if command_exists("apt-get") {
+        "libcap2-bin"
+    } else {
+        "libcap"
+    }
+}
+
+/// Write a root-owned 0644 file (through sudo when not root).
+fn sudo_write(path: &str, contents: &str) -> Result<()> {
+    let tmp = tempfile::NamedTempFile::new()?;
+    fs::write(tmp.path(), contents)?;
+    sudo(&[
+        "install".into(),
+        "-D".into(),
+        "-m".into(),
+        "0644".into(),
+        tmp.path().to_string_lossy().into_owned(),
+        path.into(),
+    ])
+}
+
+fn read_sysctl(key: &str) -> Option<String> {
+    fs::read_to_string(sysconfig::proc_path(key)).ok().map(|v| v.trim().to_string())
+}
+
+/// Persist and apply the kernel settings VM networking needs (see
+/// sysconfig.rs), then initialize OVS-DPDK for the dpdk profile.
+fn configure_host(
+    profile: glidex_ovs::install::Profile,
+    exec: &glidex_ovs::SystemExec,
+    probe: &glidex_ovs::host::ProbeOptions,
+) -> Result<()> {
+    use glidex_ovs::install::{init_dpdk, DpdkSettings, Profile};
+    use glidex_ovs::OvsError;
+    use sysconfig::{IP_FORWARD, NR_HUGEPAGES};
+
+    println!();
+    println!("NAT networks route VM traffic through this host, which needs");
+    println!("{}=1 (persisted in {}).", IP_FORWARD, sysconfig::SYSCTL_DROPIN);
+    let mut wanted: Vec<(&str, String)> = Vec::new();
+    if read_sysctl(IP_FORWARD).as_deref() != Some("1") {
+        if confirm_yn("Enable IPv4 forwarding?", true)? {
+            wanted.push((IP_FORWARD, "1".into()));
+        }
+    } else {
+        // Already on; still persist it so a reboot doesn't lose it.
+        wanted.push((IP_FORWARD, "1".into()));
+    }
+
+    let dpdk = profile == Profile::Dpdk;
+    if dpdk {
+        let mem = fs::read_to_string("/proc/meminfo").ok().and_then(|m| sysconfig::mem_total_kb(&m)).unwrap_or(0);
+        let reserved = read_sysctl(NR_HUGEPAGES).and_then(|v| v.parse().ok()).unwrap_or(0);
+        let pages = sysconfig::hugepages_for(mem, reserved);
+        if pages < sysconfig::MIN_HUGEPAGES {
+            println!(
+                "{} only {} MiB of RAM; OVS-DPDK needs at least {} MiB of hugepages. Skipping DPDK setup.",
+                "Warning:".yellow(),
+                mem / 1024,
+                sysconfig::MIN_HUGEPAGES * 2
+            );
+            return write_sysctls(&wanted);
+        }
+        println!();
+        println!("OVS-DPDK and vhost-user guests need 2 MiB hugepages. Reserving {} pages", pages);
+        println!("({} MiB) takes that memory away from everything else on this host.", pages * 2);
+        if !confirm_yn(&format!("Reserve {} MiB of hugepages?", pages * 2), true)? {
+            println!("Skipping DPDK setup (run `gxctl ovs dpdk-init` after reserving hugepages).");
+            return write_sysctls(&wanted);
+        }
+        wanted.push((NR_HUGEPAGES, pages.to_string()));
+    }
+    write_sysctls(&wanted)?;
+    if !dpdk {
+        return Ok(());
+    }
+
+    // The kernel reserves what it can find contiguous memory for.
+    let got: u64 = read_sysctl(NR_HUGEPAGES).and_then(|v| v.parse().ok()).unwrap_or(0);
+    println!("{} {} hugepages", "Reserved:".green(), got);
+    if got < sysconfig::MIN_HUGEPAGES {
+        println!(
+            "{} only {} hugepages could be reserved (memory is fragmented). Reboot to apply {}, then run `gxctl ovs dpdk-init`.",
+            "Warning:".yellow(),
+            got,
+            sysconfig::SYSCTL_DROPIN
+        );
+        return Ok(());
+    }
+
+    // vfio-pci binds physical NICs for DPDK uplinks.
+    sudo_write(sysconfig::MODULES_DROPIN, "# Managed by glidex-install\nvfio-pci\n")?;
+    if let Err(e) = sudo(&["modprobe".into(), "vfio-pci".into()]) {
+        println!("{} could not load vfio-pci: {}", "Note:".yellow(), e);
+    }
+    let iommu = fs::read_dir("/sys/kernel/iommu_groups").map(|mut d| d.next().is_some()).unwrap_or(false);
+    if !iommu {
+        println!(
+            "{} no IOMMU groups: DPDK NIC uplinks need intel_iommu=on / amd_iommu=on (and VT-d/AMD-Vi in firmware).",
+            "Note:".yellow()
+        );
+        println!("      vhost-user and AF_XDP don't need it.");
+    }
+
+    let socket_mem = sysconfig::socket_mem_mb(got);
+    let pmd = prompt_line("PMD CPU mask, hex (e.g. 0x2; empty = let OVS choose): ")?;
+    let mut settings = DpdkSettings {
+        socket_mem: socket_mem.to_string(),
+        pmd_cpu_mask: (!pmd.is_empty()).then_some(pmd),
+        confirm: false,
+    };
+    loop {
+        match init_dpdk(exec, probe, &settings) {
+            Ok(()) => {
+                println!("{} OVS-DPDK ({} MiB socket memory)", "Initialized:".green(), socket_mem);
+                return Ok(());
+            }
+            Err(OvsError::ConfirmationRequired { impact }) if !settings.confirm => {
+                println!("{} {}", "Warning:".yellow(), impact);
+                if !confirm_yn("Proceed?", false)? {
+                    println!("Skipping DPDK init (run `gxctl ovs dpdk-init` later).");
+                    return Ok(());
+                }
+                settings.confirm = true;
+            }
+            Err(e) => bail!("OVS-DPDK init failed: {}", e),
+        }
+    }
+}
+
+/// Merge `wanted` into the sysctl drop-in (keeping previously recorded
+/// original values) and apply it.
+fn write_sysctls(wanted: &[(&str, String)]) -> Result<()> {
+    if wanted.is_empty() {
+        return Ok(());
+    }
+    let existing = fs::read_to_string(sysconfig::SYSCTL_DROPIN).ok();
+    let settings = sysconfig::merge(existing.as_deref(), wanted, read_sysctl);
+    sudo_write(sysconfig::SYSCTL_DROPIN, &sysconfig::render(&settings))?;
+    sudo(&["sysctl".into(), "-q".into(), "-p".into(), sysconfig::SYSCTL_DROPIN.into()])?;
+    for (key, value) in wanted {
+        println!("{} {} = {}", "Set:".green(), key, value);
+    }
+    Ok(())
+}
+
+const CONTROL_PLANE_UNIT: &str = "/etc/systemd/system/glidex-control-plane.service";
+
+/// Fill in the control-plane unit template (packaging/*.service.in).
+fn render_control_plane_unit(template: &str, user: &str, home: &Path, bin: &Path, groups: &[&str]) -> String {
+    template
+        .replace("@USER@", user)
+        .replace("@HOME@", &home.to_string_lossy())
+        .replace("@BIN@", &bin.to_string_lossy())
+        .replace("@GROUPS@", &groups.join(" "))
+}
+
+/// Supplementary groups for the control plane: only ones that exist, since
+/// systemd refuses to start a unit naming a missing group.
+fn control_plane_groups(exists: impl Fn(&str) -> bool) -> Vec<&'static str> {
+    ["kvm", NETD_GROUP].into_iter().filter(|g| exists(g)).collect()
+}
+
+fn group_exists(name: &str) -> bool {
+    Command::new("getent")
+        .args(["group", name])
+        .stdout(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// systemd units so glidex comes up at boot: Open vSwitch → glidex-netd
+/// (reconciles bridges, DPDK binding, IP migrations, NAT) → control plane.
+fn install_services(install_dir: &Path) -> Result<()> {
+    section("Start at Boot (systemd)");
+    if !Path::new("/run/systemd/system").exists() {
+        println!("{}", "systemd is not running here; skipping".yellow());
+        return Ok(());
+    }
+    println!("glidex-netd starts after Open vSwitch and restores host networking;");
+    println!("the control plane then starts as your user and stops VMs on shutdown.");
+    if !confirm_yn("Start glidex at boot?", true)? {
+        return Ok(());
+    }
+
+    let root = workspace_root();
+    let target_dir = env::var("CARGO_TARGET_DIR").map(PathBuf::from).unwrap_or_else(|_| root.join("target"));
+    let bin = install_dir.join("glidex-control-plane");
+    if !bin.exists() {
+        println!("The service needs the control plane installed at {}.", bin.display());
+        if !confirm_yn("Install the release binaries now?", true)? {
+            println!("Skipping: install the binaries first, then re-run the installer.");
+            return Ok(());
+        }
+        install_binary(&target_dir.join("release/glidex-control-plane"), &bin)?;
+        install_binary(&target_dir.join("release/gxctl"), &install_dir.join("gxctl"))?;
+    }
+
+    let user = env::var("SUDO_USER").or_else(|_| env::var("USER")).unwrap_or_else(|_| "root".into());
+    let home = if user == "root" {
+        PathBuf::from("/root")
+    } else {
+        run_capture("getent", &["passwd", &user])
+            .ok()
+            .and_then(|l| l.trim().split(':').nth(5).map(PathBuf::from))
+            .or_else(dirs::home_dir)
+            .context("could not determine the user's home directory")?
+    };
+    let groups = control_plane_groups(group_exists);
+    let template = fs::read_to_string(root.join("packaging/glidex-control-plane.service.in"))
+        .context("packaging/glidex-control-plane.service.in")?;
+    let unit = render_control_plane_unit(&template, &user, &home, &bin, &groups);
+
+    let tmp = TempDir::new()?;
+    let rendered = tmp.path().join("glidex-control-plane.service");
+    fs::write(&rendered, unit)?;
+    let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+    sudo(&s(&["install", "-m", "0644", "-o", "root", "-g", "root", &rendered.to_string_lossy(), CONTROL_PLANE_UNIT]))?;
+    if Path::new(NETD_UNIT).exists() {
+        // Refresh netd's unit too (e.g. Type=notify ordering).
+        sudo(&s(&["install", "-m", "0644", "-o", "root", "-g", "root", &root.join("packaging/glidex-netd.service").to_string_lossy(), NETD_UNIT]))?;
+    }
+    sudo(&s(&["systemctl", "daemon-reload"]))?;
+    let mut enable = s(&["systemctl", "enable", "glidex-control-plane.service"]);
+    if Path::new(NETD_UNIT).exists() {
+        enable.push("glidex-netd.service".into());
+    }
+    sudo(&enable)?;
+    println!("{} glidex-control-plane.service (runs as {})", "Enabled:".green(), user);
+    if confirm_yn("Start it now? (a control plane already running on port 8080 must be stopped first)", false)? {
+        sudo(&s(&["systemctl", "restart", "glidex-control-plane.service"]))?;
+        println!("{} systemctl status glidex-control-plane", "Started:".green());
     }
     Ok(())
 }
@@ -707,6 +964,34 @@ fn print_usage() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn control_plane_unit_renders_and_keeps_only_existing_groups() {
+        let template = std::fs::read_to_string(workspace_root().join("packaging/glidex-control-plane.service.in")).unwrap();
+        let groups = control_plane_groups(|g| g == "kvm");
+        assert_eq!(groups, vec!["kvm"], "missing glidex group is left out");
+        let unit = render_control_plane_unit(&template, "alice", Path::new("/home/alice"), Path::new("/usr/local/bin/glidex-control-plane"), &groups);
+        for line in [
+            "User=alice",
+            "SupplementaryGroups=kvm",
+            "Environment=HOME=/home/alice",
+            "WorkingDirectory=/home/alice",
+            "ExecStart=/usr/local/bin/glidex-control-plane",
+            "After=network-online.target glidex-netd.service",
+            "Wants=glidex-netd.service",
+        ] {
+            assert!(unit.lines().any(|l| l == line), "missing {line:?}");
+        }
+        assert!(!unit.contains('@'), "all placeholders filled");
+    }
+
+    #[test]
+    fn netd_unit_is_notify_and_ordered_after_ovs() {
+        let unit = std::fs::read_to_string(workspace_root().join("packaging/glidex-netd.service")).unwrap();
+        assert!(unit.contains("Type=notify"));
+        assert!(unit.lines().any(|l| l.starts_with("After=") && l.contains("openvswitch-switch.service") && l.contains("glidex-ovs-vswitchd.service")));
+        assert!(unit.contains("Before=glidex-control-plane.service"));
+    }
 
     #[test]
     fn networking_commands_in_order() {

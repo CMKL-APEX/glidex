@@ -6,6 +6,7 @@
 pub mod auth;
 pub mod client;
 pub mod proto;
+pub mod sd;
 pub mod server;
 pub mod store;
 pub mod supervisor;

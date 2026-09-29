@@ -447,15 +447,18 @@ ReDB tables with JSON values:
   "nat_supernet": "10.88.0.0/16", "log_level": "info" }
 ```
 
-### 7.6 systemd unit (`packaging/glidex-netd.service`)
+### 7.6 systemd units (`packaging/`)
+
+`glidex-netd.service` (root):
 
 ```ini
 [Unit]
-Description=glidex network helper (Open vSwitch, NAT, VM ports)
-After=network-online.target openvswitch-switch.service glidex-ovs-vswitchd.service
-Wants=network-online.target
+Wants=network-online.target openvswitch-switch.service openvswitch.service glidex-ovs-vswitchd.service
+After=network-online.target openvswitch-switch.service openvswitch.service ovs-vswitchd.service glidex-ovs-vswitchd.service
+Before=glidex-control-plane.service
 
 [Service]
+Type=notify              # READY=1 after reconciliation + sockets bound (glidex_netd::sd)
 ExecStart=/usr/local/bin/glidex-netd
 RuntimeDirectory=glidex
 RuntimeDirectoryMode=0755
@@ -464,10 +467,16 @@ RuntimeDirectoryMode=0755
 RuntimeDirectoryPreserve=yes
 StateDirectory=glidex
 Restart=on-failure
+TimeoutStartSec=180
 
 [Install]
 WantedBy=multi-user.target
 ```
+
+`glidex-control-plane.service.in` is rendered by `glidex-install` for the
+installing user (`User=`, `HOME`, `SupplementaryGroups=kvm glidex`,
+`Wants=`/`After=glidex-netd.service`). Boot order and rationale:
+[installer.md](installer.md#boot-sequence-systemd).
 
 ### 7.7 Startup and reconciliation
 

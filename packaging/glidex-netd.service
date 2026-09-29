@@ -1,11 +1,17 @@
 [Unit]
 Description=glidex network helper (Open vSwitch, NAT, VM ports)
-Documentation=file:///usr/local/share/doc/glidex/networking.md
-After=network-online.target openvswitch-switch.service ovs-vswitchd.service glidex-ovs-vswitchd.service
-Wants=network-online.target
+Documentation=https://github.com/akkarit/glidex/blob/main/spec/networking.md
+# Open vSwitch must be up first; whichever of these exists is used
+# (Debian/Ubuntu, Fedora, or glidex's source build). Missing ones are ignored.
+Wants=network-online.target openvswitch-switch.service openvswitch.service glidex-ovs-vswitchd.service
+After=network-online.target openvswitch-switch.service openvswitch.service ovs-vswitchd.service glidex-ovs-vswitchd.service
+Before=glidex-control-plane.service
 
 [Service]
-Type=simple
+# READY=1 is sent once startup reconciliation is done and both sockets are
+# bound: bridges re-created, DPDK NICs re-bound to vfio-pci, IP migrations
+# re-applied, NAT (address, nftables, dnsmasq) restored.
+Type=notify
 ExecStart=/usr/local/bin/glidex-netd
 RuntimeDirectory=glidex
 RuntimeDirectoryMode=0755
@@ -15,6 +21,7 @@ RuntimeDirectoryPreserve=yes
 StateDirectory=glidex
 Restart=on-failure
 RestartSec=2
+TimeoutStartSec=180
 
 [Install]
 WantedBy=multi-user.target

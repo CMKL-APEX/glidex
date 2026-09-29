@@ -46,7 +46,24 @@ The installer will:
 5. Optionally install QEMU
 6. Check KVM access
 7. Build the Glidex binaries
-8. Install UI npm dependencies (`bun install`)
+8. Optionally set up VM networking (Open vSwitch, `glidex-netd`, `glidex` group)
+   and the host settings it needs: `net.ipv4.ip_forward=1`, and for OVS-DPDK
+   hugepages, `vfio-pci` and DPDK init (persisted in `/etc/sysctl.d/90-glidex.conf`
+   and `/etc/modules-load.d/glidex.conf`)
+9. Optionally start glidex at boot (systemd units for `glidex-netd` and the control plane)
+10. Install UI npm dependencies (`bun install`)
+
+### Uninstall
+
+```bash
+cargo run -p glidex-install -- uninstall --dry-run   # show what would be removed
+cargo run -p glidex-install -- uninstall             # stop services, restore host networking, remove glidex
+```
+
+Open vSwitch, DPDK settings, `cloud-hypervisor` and `~/.glidex` are kept
+unless you add `--remove-ovs`, `--reset-dpdk`, `--remove-cloud-hypervisor`
+or `--purge-user-data`. Sysctls the installer changed go back to their previous
+values (hugepages stay while OVS keeps its DPDK settings).
 
 ### Manual Installation
 
@@ -63,6 +80,10 @@ cargo build --release
 ```
 
 ### Running
+
+If you enabled the systemd units, glidex already runs at boot
+(`systemctl status glidex-netd glidex-control-plane`; logs with
+`journalctl -u glidex-control-plane`). Otherwise:
 
 1. **Start the control plane server:**
 

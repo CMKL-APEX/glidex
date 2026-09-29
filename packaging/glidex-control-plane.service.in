@@ -1,0 +1,28 @@
+# Rendered by glidex-install (@USER@, @HOME@, @BIN@, @GROUPS@ are filled in).
+[Unit]
+Description=glidex control plane (REST API for VMs, networks, credentials)
+Documentation=https://github.com/akkarit/glidex
+# Networking is optional: start after glidex-netd if it is installed, but
+# don't fail without it (VMs without networks still work).
+Wants=glidex-netd.service
+After=network-online.target glidex-netd.service
+
+[Service]
+Type=simple
+User=@USER@
+# kvm for /dev/kvm; glidex for glidex-netd's socket. Supplementary groups
+# apply here without the user having to log in again.
+SupplementaryGroups=@GROUPS@
+Environment=HOME=@HOME@
+WorkingDirectory=@HOME@
+ExecStart=@BIN@
+# Listen on loopback only (default). To expose the unauthenticated API,
+# set e.g. Environment=GLIDEX_LISTEN=0.0.0.0:8080 in a drop-in.
+# Stopping the service stops running VMs (the control plane's shutdown).
+KillSignal=SIGTERM
+TimeoutStopSec=60
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

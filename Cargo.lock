@@ -643,8 +643,10 @@ dependencies = [
  "anyhow",
  "colored",
  "dirs",
+ "glidex-netd",
  "glidex-ovs",
  "libc",
+ "serde_json",
  "tempfile",
 ]
 

@@ -113,6 +113,7 @@ fn main() {
         }
     };
     tracing::info!(run_dir = %config.run_dir.display(), "listening");
+    glidex_netd::sd::notify_ready();
     let expiry_netd = netd.clone();
     std::thread::spawn(move || loop {
         std::thread::sleep(std::time::Duration::from_secs(1));
