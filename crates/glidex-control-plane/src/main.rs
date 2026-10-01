@@ -181,6 +181,20 @@ async fn main() {
     println!("  Press Ctrl+C to shutdown");
     println!();
 
+    // SIGHUP's default action would end the process, and systemd counts
+    // that as a clean exit (no restart). A hangup only ever comes from a
+    // terminal going away, never a request to stop, so log and carry on.
+    #[cfg(unix)]
+    {
+        let mut hangup = signal::unix::signal(signal::unix::SignalKind::hangup())
+            .expect("Failed to install SIGHUP handler");
+        tokio::spawn(async move {
+            while hangup.recv().await.is_some() {
+                tracing::warn!("SIGHUP received; ignoring (use SIGTERM to stop)");
+            }
+        });
+    }
+
     // One shutdown signal (which stops VMs) fans out to every listener.
     let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
     tokio::spawn(async move {

@@ -133,10 +133,12 @@ fn detect_image_type(path: &str) -> Option<ImageType> {
     // VHD keeps a 512-byte footer at the end: "conectix" cookie, then the
     // big-endian disk type at offset 60 (2 = fixed, the only kind CH runs).
     let mut footer = [0u8; 512];
-    if file.seek(SeekFrom::End(-512)).is_ok() && file.read_exact(&mut footer).is_ok() {
-        if footer[..8] == *b"conectix" && footer[60..64] == 2u32.to_be_bytes() {
-            return Some(ImageType::FixedVhd);
-        }
+    if file.seek(SeekFrom::End(-512)).is_ok()
+        && file.read_exact(&mut footer).is_ok()
+        && footer[..8] == *b"conectix"
+        && footer[60..64] == 2u32.to_be_bytes()
+    {
+        return Some(ImageType::FixedVhd);
     }
     Some(ImageType::Raw)
 }
@@ -520,14 +522,9 @@ impl CloudHypervisorProcessHandle {
         // Remove existing console socket if present
         let _ = std::fs::remove_file(&self.console_socket_path);
 
-        // Open the PTY
-        let pty_fd = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(pty_path)
-            .map_err(|e| {
-                HypervisorError::SocketConnection(format!("Failed to open PTY {}: {}", pty_path, e))
-            })?;
+        let pty_fd = open_console_pty(pty_path).map_err(|e| {
+            HypervisorError::SocketConnection(format!("Failed to open PTY {}: {}", pty_path, e))
+        })?;
 
         // Create Unix socket for console connections
         let console_listener = UnixListener::bind(&self.console_socket_path).map_err(|e| {
@@ -568,8 +565,9 @@ impl CloudHypervisorProcessHandle {
         // PTY reads EOF once cloud-hypervisor's virtio console closes. We
         // don't tear down the listener in that case — clients should still
         // be able to connect and replay the captured log to diagnose why
-        // the guest died.
-        let mut pty_alive = true;
+        // the guest died. The PTY itself is closed then (`None`), so a
+        // stopped VM's PTY isn't held open.
+        let mut pty_file = Some(pty_file);
 
         // Set PTY to non-blocking
         unsafe {
@@ -593,11 +591,11 @@ impl CloudHypervisorProcessHandle {
                 clients.push(stream);
             }
 
-            if pty_alive {
+            if pty_file.is_some() {
                 // Read from PTY and broadcast to clients + log file
                 let mut pty_reader = unsafe { File::from_raw_fd(libc::dup(pty_raw)) };
                 match pty_reader.read(&mut buf) {
-                    Ok(0) => pty_alive = false,
+                    Ok(0) => pty_file = None,
                     Ok(n) => {
                         let data = &buf[..n];
 
@@ -607,7 +605,7 @@ impl CloudHypervisorProcessHandle {
                         clients.retain_mut(|client| client.write_all(data).is_ok());
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-                    Err(_) => pty_alive = false,
+                    Err(_) => pty_file = None,
                 }
 
                 // Read from clients and write to PTY
@@ -629,6 +627,19 @@ impl CloudHypervisorProcessHandle {
             thread::sleep(Duration::from_millis(10));
         }
     }
+}
+
+/// Open a VM console PTY. `O_NOCTTY` matters: under systemd the control
+/// plane is a session leader with no terminal, so a plain open would make
+/// the PTY its controlling terminal, and the hangup when the VM exits (or a
+/// ^C from the guest) would signal the control plane itself.
+fn open_console_pty(path: &str) -> std::io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags(libc::O_NOCTTY)
+        .open(path)
 }
 
 /// Cloud-Hypervisor instance that implements HypervisorProcess
@@ -815,6 +826,38 @@ mod tests {
         })
         .unwrap();
         assert_eq!(json, serde_json::json!({"path": "/d", "image_type": "FixedVhd"}));
+    }
+
+    #[test]
+    fn console_pty_never_becomes_controlling_terminal() {
+        use nix::sys::wait::{waitpid, WaitStatus};
+        use nix::unistd::{fork, setsid, ForkResult};
+        let pty = nix::pty::openpty(None, None).unwrap();
+        let path = nix::unistd::ttyname(&pty.slave).unwrap().to_string_lossy().into_owned();
+        drop(pty.slave);
+        match unsafe { fork() }.unwrap() {
+            ForkResult::Child => {
+                drop(pty.master);
+                // Like the control plane under systemd: a session leader
+                // with no controlling terminal.
+                let code = (|| {
+                    setsid().ok()?;
+                    let _console = open_console_pty(&path).ok()?;
+                    if File::open("/dev/tty").is_ok() {
+                        return Some(2); // the PTY became our terminal
+                    }
+                    std::thread::sleep(Duration::from_millis(500));
+                    Some(0)
+                })()
+                .unwrap_or(1);
+                unsafe { libc::_exit(code) }
+            }
+            ForkResult::Parent { child } => {
+                std::thread::sleep(Duration::from_millis(200));
+                drop(pty.master); // the VM exits: hangup on the PTY
+                assert_eq!(waitpid(child, None).unwrap(), WaitStatus::Exited(child, 0));
+            }
+        }
     }
 
     #[test]

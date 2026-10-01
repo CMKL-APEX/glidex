@@ -22,6 +22,9 @@ ExecStart=@BIN@
 KillSignal=SIGTERM
 TimeoutStopSec=60
 Restart=on-failure
+# systemd counts death by SIGHUP as clean, so on-failure alone wouldn't
+# restart after a stray one (the binary also ignores it).
+RestartForceExitStatus=SIGHUP
 RestartSec=2
 
 [Install]
