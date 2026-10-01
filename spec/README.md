@@ -17,6 +17,7 @@ fresh reader cannot infer just by reading the source.
 | [data-model.md](data-model.md) | VM/VmConfig/VmState types, persistence schema, reconciliation |
 | [rest-api.md](rest-api.md) | HTTP endpoints, payloads, error model, console WebSocket |
 | [hypervisors.md](hypervisors.md) | Hypervisor trait contract and per-backend implementations |
+| [images.md](images.md) | Image catalog + verified download, managed disks: create/delete, grow/shrink, root-partition extend |
 | [credentials.md](credentials.md) | Credential store: guest logins for cloud-init, hashing, security rules |
 | [networking.md](networking.md) | VM networking: `glidex-ovs` + root `glidex-netd` — OVS install (distro or pinned source), bridges, uplinks with IP migration, NAT + DHCP, vhost-user/tap VM ports; host-test findings in §0 |
 | [console.md](console.md) | Console proxy thread, listener invariant, WebSocket bridge, xterm |

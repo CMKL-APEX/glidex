@@ -1,4 +1,5 @@
 use super::{Hypervisor, HypervisorError, HypervisorProcess, HypervisorType};
+use crate::images::qemu_img::{detect_image_type, ImageType};
 use crate::models::VmConfig;
 use nix::pty::{openpty, OpenptyResult};
 use nix::unistd::setsid;
@@ -241,10 +242,7 @@ impl QemuInstance {
             .arg("-append")
             .arg(&config.kernel_args)
             .arg("-drive")
-            .arg(format!(
-                "file={},if=virtio,format=raw",
-                config.rootfs_path
-            ))
+            .arg(drive_arg(&config.rootfs_path, root_format(config)))
             .arg("-qmp")
             .arg(format!("unix:{},server,nowait", self.socket_path))
             .arg("-serial")
@@ -252,6 +250,10 @@ impl QemuInstance {
             .arg("-display")
             .arg("none")
             .arg("-S");
+
+        for disk in &config.data_disk_bindings {
+            cmd.arg("-drive").arg(drive_arg(&disk.path, disk.format.into()));
+        }
 
         for device in &config.vfio_devices {
             let bdf = vfio_bdf(device);
@@ -511,4 +513,20 @@ impl Hypervisor for QemuBackend {
             .output()
             .is_ok()
     }
+}
+
+/// The root disk's format: recorded for managed disks, probed otherwise.
+/// Never left to QEMU's own probing, which would let a guest that writes a
+/// qcow2 header into a raw disk change how it is opened next boot.
+fn root_format(config: &VmConfig) -> ImageType {
+    match &config.root_disk_binding {
+        Some(b) => b.format.into(),
+        None => detect_image_type(&config.rootfs_path).unwrap_or(ImageType::Raw),
+    }
+}
+
+/// `-drive` value. Commas in a path are doubled, as QEMU's option parser
+/// requires.
+fn drive_arg(path: &str, format: ImageType) -> String {
+    format!("file={},if=virtio,format={}", path.replace(',', ",,"), format.qemu_format())
 }

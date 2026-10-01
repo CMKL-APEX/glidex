@@ -1,4 +1,8 @@
 import type {
+  CatalogItem,
+  CreateDiskRequest,
+  DiskInfo,
+  ImageInfo,
   BridgeRecord,
   CreateNetworkRequest,
   Network,
@@ -75,8 +79,10 @@ export async function pauseVm(id: string): Promise<VmResponse> {
   return handleResponse(resp);
 }
 
-export async function deleteVm(id: string): Promise<void> {
-  const resp = await fetch(`${API_BASE}/vms/${id}`, { method: "DELETE" });
+export async function deleteVm(id: string, keepDisk = false): Promise<void> {
+  const resp = await fetch(`${API_BASE}/vms/${id}${keepDisk ? "?keep_disk=true" : ""}`, {
+    method: "DELETE",
+  });
   if (resp.ok || resp.status === 204) return;
   const err: ApiError = await resp.json();
   throw new Error(`${err.error}: ${err.message}`);
@@ -163,3 +169,33 @@ export async function installOvs(
 export async function listBridges(): Promise<BridgeRecord[]> {
   return handleResponse(await fetch(`${API_BASE}/ovs/bridges`));
 }
+
+// ---- images and disks ---------------------------------------------------------
+
+async function sendJson<T>(method: string, path: string, body?: unknown): Promise<T> {
+  const resp = await fetch(`${API_BASE}${path}`, {
+    method,
+    headers: body === undefined ? undefined : { "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (resp.status === 204) return undefined as T;
+  return handleResponse(resp);
+}
+
+export const imageCatalog = () => sendJson<CatalogItem[]>("GET", "/images/catalog");
+export const listImages = () => sendJson<ImageInfo[]>("GET", "/images");
+export const pullImage = (req: { catalog?: string; url?: string; sha256?: string; name?: string }) =>
+  sendJson<ImageInfo>("POST", "/images", req);
+export const deleteImage = (id: string) => sendJson<void>("DELETE", `/images/${encodeURIComponent(id)}`);
+
+export const listDisks = () => sendJson<DiskInfo[]>("GET", "/disks");
+export const getDisk = (id: string) => sendJson<DiskInfo>("GET", `/disks/${encodeURIComponent(id)}`);
+export const createDisk = (req: CreateDiskRequest) => sendJson<DiskInfo>("POST", "/disks", req);
+export const resizeDisk = (id: string, sizeGib: number, extendRoot?: boolean) =>
+  sendJson<DiskInfo>("POST", `/disks/${encodeURIComponent(id)}/resize`, {
+    size_gib: sizeGib,
+    extend_root: extendRoot,
+  });
+export const extendRoot = (id: string, mode: "offline" | "on-boot") =>
+  sendJson<DiskInfo>("POST", `/disks/${encodeURIComponent(id)}/extend-root`, { mode });
+export const deleteDisk = (id: string) => sendJson<void>("DELETE", `/disks/${encodeURIComponent(id)}`);

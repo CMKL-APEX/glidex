@@ -41,6 +41,9 @@ pub struct SeedConfig {
     pub passwd_hash: Option<String>,
     /// MACs of the VM's glidex NICs, in order. Empty: DHCP on every `en*`.
     pub nic_macs: Vec<String>,
+    /// Ask cloud-init to grow the root partition (a managed root disk with
+    /// `pending_growpart`, spec/images.md §6.4).
+    pub growpart: bool,
 }
 
 impl Default for SeedConfig {
@@ -52,6 +55,7 @@ impl Default for SeedConfig {
             ssh_authorized_keys: Vec::new(),
             passwd_hash: None,
             nic_macs: Vec::new(),
+            growpart: false,
         }
     }
 }
@@ -81,6 +85,7 @@ impl SeedConfig {
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty()),
             nic_macs: Vec::new(),
+            growpart: false,
         }
     }
 
@@ -94,6 +99,7 @@ impl SeedConfig {
             ssh_authorized_keys: credential.ssh_authorized_keys.clone(),
             passwd_hash: credential.password_hash.clone(),
             nic_macs: Vec::new(),
+            growpart: false,
         }
     }
 
@@ -157,6 +163,13 @@ impl SeedConfig {
             s.push_str("      type: hash\n");
         }
         s.push_str(&format!("ssh_pwauth: {}\n", self.passwd_hash.is_some()));
+        // Grow the root filesystem into its partition on every boot (a
+        // no-op when it already fills it). glidex extends partitions
+        // offline but cannot resize filesystems from the host.
+        s.push_str("resize_rootfs: true\n");
+        if self.growpart {
+            s.push_str("growpart:\n  mode: auto\n  devices: [\"/\"]\n  ignore_growroot_disabled: false\n");
+        }
         s
     }
 }
@@ -343,5 +356,16 @@ mod tests {
         assert!(ud.contains("lock_passwd: false"));
         assert!(ud.contains("ssh_pwauth: true"));
         assert!(!ud.contains("ssh_authorized_keys"));
+    }
+
+    #[test]
+    fn user_data_grows_root_only_when_asked() {
+        let mut seed = SeedConfig { instance_id: "i".into(), hostname: "h".into(), ..Default::default() };
+        let ud = seed.user_data();
+        assert!(ud.contains("resize_rootfs: true\n"));
+        assert!(!ud.contains("growpart:"));
+        seed.growpart = true;
+        let ud = seed.user_data();
+        assert!(ud.contains("growpart:\n  mode: auto\n  devices: [\"/\"]\n"), "{}", ud);
     }
 }

@@ -19,6 +19,9 @@ export interface VmResponse {
   vfio_devices: string[];
   credential?: string;
   nics?: NicState[];
+  root_disk?: string;
+  data_disks?: string[];
+  warnings?: string[];
 }
 
 export interface NicState {
@@ -90,10 +93,99 @@ export interface CreateVmRequest {
   firmware_path?: string;
   credential?: string;
   networks?: { network: string }[];
-  rootfs_path: string;
+  rootfs_path?: string;
+  /** Image id/name: glidex creates and owns a root disk from it. */
+  image?: string;
+  root_disk_size_gib?: number;
+  /** Existing, unattached disk to boot from. */
+  root_disk?: string;
+  data_disks?: string[];
   kernel_args?: string;
   hypervisor?: HypervisorType;
   vfio_devices?: string[];
+}
+
+// ---- images and disks (spec/images.md) ------------------------------------
+
+export type ImageStatus =
+  | { state: "downloading"; received_bytes: number; total_bytes?: number | null }
+  | { state: "verifying" }
+  | { state: "ready" }
+  | { state: "failed"; reason: string }
+  | { state: "missing" };
+
+export type ImageSource =
+  | { kind: "catalog"; key: string; url: string; version: string }
+  | { kind: "url"; url: string; expected_sha256?: string | null };
+
+export interface ImageInfo {
+  id: string;
+  name: string;
+  source: ImageSource;
+  status: ImageStatus;
+  format: "qcow2" | "raw";
+  virtual_size_bytes: number;
+  file_size_bytes: number;
+  sha256: string;
+  arch: string;
+  created_at: number;
+  verified: boolean;
+  path: string;
+  linked_disks: string[];
+}
+
+export interface CatalogItem {
+  key: string;
+  distro: string;
+  release: string;
+  arch: string;
+  url: string;
+  downloaded_image_id?: string | null;
+}
+
+export interface PartitionInfo {
+  number: number;
+  start_bytes: number;
+  size_bytes: number;
+  type: string;
+  is_root: boolean;
+}
+
+export interface DiskInfo {
+  id: string;
+  name: string;
+  format: "qcow2" | "raw";
+  size_bytes: number;
+  origin: { kind: "blank" } | { kind: "image"; image_id: string; mode: "linked" | "full" };
+  attached_to?: string | null;
+  pending_growpart: boolean;
+  status: "ready" | "busy" | "missing";
+  busy_op?: string;
+  path: string;
+  created_at: number;
+  partition_table?: { kind: "gpt" | "mbr"; partitions: PartitionInfo[]; free_tail_bytes: number };
+  extend_root?: "grown" | "already_full" | "on_boot" | "skipped";
+  warnings?: string[];
+}
+
+export interface CreateDiskRequest {
+  name: string;
+  size_gib?: number;
+  image?: string;
+  clone?: "linked" | "full";
+  format?: "qcow2" | "raw";
+  extend_root?: boolean;
+}
+
+export function formatBytes(n: number): string {
+  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+  let v = n;
+  let u = 0;
+  while (v >= 1024 && u < units.length - 1) {
+    v /= 1024;
+    u++;
+  }
+  return u === 0 ? `${n} B` : `${v.toFixed(1)} ${units[u]}`;
 }
 
 /** Guest login stored by the control plane. The password hash is never sent to clients. */
@@ -119,7 +211,7 @@ export interface UpdateCredentialRequest {
 export interface ApiError {
   error: string;
   message: string;
-  details?: { impact?: string; missing?: string[]; reasons?: string[] };
+  details?: { impact?: string; missing?: string[]; reasons?: string[]; min_size_bytes?: number };
 }
 
 export interface HealthResponse {

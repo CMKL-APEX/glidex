@@ -49,6 +49,12 @@ The guest configuration the hypervisor needs to boot:
   on `HypervisorType::CloudHypervisor` in `hypervisor/mod.rs`)
 - `vfio_devices: Vec<String>` — sysfs paths
   (e.g. `/sys/bus/pci/devices/0000:41:00.0`), may be empty
+- `root_disk: Option<String>`, `data_disks: Vec<String>`,
+  `owns_root_disk: bool` — managed disks by id
+  ([images.md](images.md#7-vm-integration)). For a managed root disk,
+  `rootfs_path` holds that disk's file path. The non-persisted
+  `root_disk_binding` / `data_disk_bindings` carry each disk's recorded
+  format to the backend at start.
 
 **Invariant.** `kernel_image_path`, `firmware_path` and `rootfs_path` are tilde-expanded
 at the moment `VmConfig` is built from `CreateVmRequest`. Hypervisors
@@ -139,7 +145,9 @@ sensible default `kernel_args` string (see `hypervisor/mod.rs`).
 
 `error` values: `not_found | conflict | invalid_state | invalid_config |
 invalid_credential | hypervisor_error | persistence_error |
-hypervisor_unavailable | credential_error`.
+hypervisor_unavailable | credential_error | invalid_image | invalid_disk |
+image_error | tool_unavailable` (plus the networking codes). `details`
+carries extra data, e.g. `min_size_bytes` for a refused shrink.
 See [rest-api.md](rest-api.md) for the HTTP status code mapping.
 
 ## Persistence schema
@@ -157,6 +165,10 @@ C dependency and over sled for its simpler transactional model.
 
 - **Key**: `Vm.id` as a `&str`.
 - **Value**: `serde_json::to_vec(&vm)` — the whole `Vm` struct.
+
+The same file also holds `credentials`, `networks`, `images` and `disks`
+([images.md](images.md#3-data-model)). `VmStore::commit` writes a VM and
+the disks it references in one transaction.
 
 We chose JSON (not bincode / postcard) because on-disk records are
 rarely migrated and human-inspectable disk state is useful when
@@ -183,8 +195,9 @@ a single host actually runs.
 - `attach_device` / `detach_device` (running VM): invoke hypervisor
   hot-plug API first, then `store.save` the updated `Vm`. If
   persist fails, roll the hot-plug back.
-- `delete_vm`: kill the process, `store.delete`, then remove from
-  the in-memory map.
+- `delete_vm`: kill the process, then one `store.commit` that deletes
+  the VM, detaches its disks and deletes a disk it owns, then remove from
+  the in-memory map and delete the owned disk's file.
 
 ### Reconciliation on startup
 

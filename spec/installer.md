@@ -51,7 +51,10 @@ to `command -v`.
    from <https://github.com/cloud-hypervisor/edk2/releases> at the tag
    pinned in `EDK2_FIRMWARE_VERSION` (currently `ch-811ce5ea35`) into
    `~/.glidex/CLOUDHV.fd` (`CLOUDHV_EFI.fd` on aarch64), then ensures
-   `dosfstools` + `mtools` are installed for cloud-init seed images.
+   `dosfstools` + `mtools` are installed for cloud-init seed images, and
+   the image/disk tools (`qemu-img`, `qemu-io`, `sgdisk`, `growpart`;
+   `DISK_TOOLS` maps them to each package manager's package names, e.g.
+   `qemu-utils` on apt, `qemu-img` on dnf/pacman).
    See below.
 6. **QEMU** *(optional, prompts)* — delegates to the system
    package manager (`apt-get install qemu-system-x86 qemu-kvm`,
@@ -221,8 +224,10 @@ to the repo, to keep a 4 MB binary out of git history.
 Earlier versions downloaded a kernel and built an ext4 rootfs from
 Firecracker's CI artifacts. That was removed together with Firecracker
 support. The out-of-the-box path is now firmware boot: the installer
-provides `CLOUDHV.fd`, and any distro cloud image (converted to raw)
-boots with an auto-generated cloud-init seed. Kernel boot still works
+provides `CLOUDHV.fd`, and `gxctl image pull ubuntu-26.04` (or any catalog
+key; see [images.md](images.md#4-image-catalog)) fetches a verified cloud
+image at run time, not install time, so it is always the current build.
+It boots with an auto-generated cloud-init seed. Kernel boot still works
 but needs a user-supplied kernel + rootfs.
 
 ## What it deliberately does not do

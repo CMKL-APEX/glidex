@@ -1,7 +1,7 @@
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
-        Path, State,
+        Path, Query, State,
     },
     http::StatusCode,
     response::{IntoResponse, Response},
@@ -17,6 +17,7 @@ use crate::credentials::{
     CreateCredentialRequest, CredentialError, CredentialInfo, UpdateCredentialRequest,
 };
 use crate::hypervisor::HypervisorError;
+use crate::images::{CreateDiskRequest, ExtendRootRequest, ImageError, PullImageRequest, ResizeDiskRequest};
 use crate::network::{CreateNetworkRequest, NetError, Netd, NetdAccess};
 use crate::state::{VmManager, VmManagerError};
 use glidex_netd::proto::{BridgeRecord, EnsureUplinkArgs, ErrorBody, Op, UplinkPhase, UplinkResult};
@@ -59,12 +60,114 @@ pub fn create_router(state: AppState) -> Router {
         .route("/ovs/bridges/{name}/uplinks", post(create_uplink))
         .route("/ovs/bridges/{name}/uplinks/{uplink}", delete(delete_uplink))
         .route("/ovs/bridges/{name}/uplinks/{uplink}/commit", post(commit_uplink))
+        .route("/vms/{id}/disks", post(attach_disk))
+        .route("/vms/{id}/disks/{disk}", delete(detach_disk))
+        .route("/images/catalog", get(image_catalog))
+        .route("/images", get(list_images))
+        .route("/images", post(pull_image))
+        .route("/images/{id}", get(get_image))
+        .route("/images/{id}", delete(delete_image))
+        .route("/disks", get(list_disks))
+        .route("/disks", post(create_disk))
+        .route("/disks/{id}", get(get_disk))
+        .route("/disks/{id}", delete(delete_disk))
+        .route("/disks/{id}/resize", post(resize_disk))
+        .route("/disks/{id}/extend-root", post(extend_root))
         .route("/pci-devices", get(list_pci_devices))
         .route("/health", get(health_check))
         .with_state(state)
 }
 
 type ApiResult<T> = Result<T, (StatusCode, Json<ApiError>)>;
+
+// ---- images and disks (spec/images.md §8) ----------------------------------
+
+async fn image_catalog(State(manager): State<AppState>) -> impl IntoResponse {
+    Json(manager.image_catalog())
+}
+
+async fn list_images(State(manager): State<AppState>) -> impl IntoResponse {
+    Json(manager.list_images())
+}
+
+async fn get_image(State(manager): State<AppState>, Path(id): Path<String>) -> ApiResult<impl IntoResponse> {
+    Ok(Json(manager.get_image(&id).await.map_err(error_to_response)?))
+}
+
+/// `202` for a new download, `200` for one already in flight.
+async fn pull_image(
+    State(manager): State<AppState>,
+    Json(req): Json<PullImageRequest>,
+) -> ApiResult<impl IntoResponse> {
+    let (img, created) = manager.pull_image(req).await.map_err(error_to_response)?;
+    let status = if created { StatusCode::ACCEPTED } else { StatusCode::OK };
+    Ok((status, Json(img)))
+}
+
+async fn delete_image(State(manager): State<AppState>, Path(id): Path<String>) -> ApiResult<impl IntoResponse> {
+    manager.delete_image(&id).map_err(error_to_response)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn list_disks(State(manager): State<AppState>) -> impl IntoResponse {
+    Json(manager.list_disks())
+}
+
+async fn get_disk(State(manager): State<AppState>, Path(id): Path<String>) -> ApiResult<impl IntoResponse> {
+    Ok(Json(manager.get_disk(&id).await.map_err(error_to_response)?))
+}
+
+async fn create_disk(
+    State(manager): State<AppState>,
+    Json(req): Json<CreateDiskRequest>,
+) -> ApiResult<impl IntoResponse> {
+    let disk = manager.create_disk(req).await.map_err(error_to_response)?;
+    Ok((StatusCode::CREATED, Json(disk)))
+}
+
+async fn resize_disk(
+    State(manager): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<ResizeDiskRequest>,
+) -> ApiResult<impl IntoResponse> {
+    Ok(Json(manager.resize_disk(&id, req).await.map_err(error_to_response)?))
+}
+
+async fn extend_root(
+    State(manager): State<AppState>,
+    Path(id): Path<String>,
+    body: Option<Json<ExtendRootRequest>>,
+) -> ApiResult<impl IntoResponse> {
+    let mode = body.map(|Json(b)| b.mode).unwrap_or_default();
+    Ok(Json(manager.extend_root(&id, mode).await.map_err(error_to_response)?))
+}
+
+async fn delete_disk(State(manager): State<AppState>, Path(id): Path<String>) -> ApiResult<impl IntoResponse> {
+    manager.delete_disk(&id).await.map_err(error_to_response)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(serde::Deserialize)]
+struct AttachDiskRequest {
+    disk: String,
+}
+
+async fn attach_disk(
+    State(manager): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<AttachDiskRequest>,
+) -> ApiResult<impl IntoResponse> {
+    let vm = manager.attach_disk(&id, &req.disk).await.map_err(error_to_response)?;
+    Ok(Json(VmResponse::from(&vm)))
+}
+
+async fn detach_disk(
+    State(manager): State<AppState>,
+    Path((id, disk)): Path<(String, String)>,
+) -> ApiResult<impl IntoResponse> {
+    let vm = manager.detach_disk(&id, &disk).await.map_err(error_to_response)?;
+    Ok(Json(VmResponse::from(&vm)))
+}
 
 async fn list_networks(State(manager): State<AppState>) -> ApiResult<impl IntoResponse> {
     Ok(Json(manager.list_networks().map_err(error_to_response)?))
@@ -284,10 +387,15 @@ async fn create_vm(
     Json(request): Json<CreateVmRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ApiError>)> {
     let name = request.name.clone();
+    let disks = request.disk_selection();
     let config = VmConfig::from(request);
 
-    match manager.create_vm(name, config).await {
-        Ok(vm) => Ok((StatusCode::CREATED, Json(VmResponse::from(&vm)))),
+    match manager.create_vm_with_disks(name, config, disks).await {
+        Ok((vm, warnings)) => {
+            let mut resp = VmResponse::from(&vm);
+            resp.warnings = warnings;
+            Ok((StatusCode::CREATED, Json(resp)))
+        }
         Err(e) => Err(error_to_response(e)),
     }
 }
@@ -347,11 +455,18 @@ async fn get_vm(
     }
 }
 
+#[derive(serde::Deserialize, Default)]
+struct DeleteVmQuery {
+    #[serde(default)]
+    keep_disk: bool,
+}
+
 async fn delete_vm(
     State(manager): State<AppState>,
     Path(id): Path<String>,
+    Query(q): Query<DeleteVmQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ApiError>)> {
-    match manager.delete_vm(&id).await {
+    match manager.delete_vm_with(&id, q.keep_disk).await {
         Ok(()) => Ok(StatusCode::NO_CONTENT),
         Err(e) => Err(error_to_response(e)),
     }
@@ -514,8 +629,27 @@ async fn bridge_console(mut ws: WebSocket, console_path: String) {
     }
 }
 
+fn image_error_response(e: &ImageError) -> (StatusCode, Json<ApiError>) {
+    let (status, code) = match e {
+        ImageError::NotFound(_) => (StatusCode::NOT_FOUND, "not_found"),
+        ImageError::AlreadyExists(_) | ImageError::InUse(_) | ImageError::Busy(_) | ImageError::NotReady(_) => {
+            (StatusCode::CONFLICT, "conflict")
+        }
+        ImageError::InvalidImage(_) => (StatusCode::BAD_REQUEST, "invalid_image"),
+        ImageError::InvalidDisk { .. } => (StatusCode::BAD_REQUEST, "invalid_disk"),
+        // A host that is not set up, not a bug (like hypervisor_unavailable).
+        ImageError::ToolMissing { .. } => (StatusCode::SERVICE_UNAVAILABLE, "tool_unavailable"),
+        ImageError::Io(_) | ImageError::Tool { .. } | ImageError::Download(_) => {
+            (StatusCode::INTERNAL_SERVER_ERROR, "image_error")
+        }
+        ImageError::Storage(_) => (StatusCode::INTERNAL_SERVER_ERROR, "persistence_error"),
+    };
+    (status, Json(ApiError::new(code, e.to_string()).with_details(e.details())))
+}
+
 fn error_to_response(error: VmManagerError) -> (StatusCode, Json<ApiError>) {
     match &error {
+        VmManagerError::Image(e) => image_error_response(e),
         VmManagerError::Network(NetError::Netd(body)) => netd_error_response(body),
         VmManagerError::Network(NetError::Unavailable(_)) => (
             StatusCode::SERVICE_UNAVAILABLE,

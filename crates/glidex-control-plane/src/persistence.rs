@@ -1,3 +1,4 @@
+use crate::images::{self, Disk, ImageError};
 use crate::models::{Vm, VmState};
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use std::path::Path;
@@ -31,6 +32,19 @@ pub enum PersistenceError {
 
     #[error("VM not found: {0}")]
     VmNotFound(String),
+
+    #[error("{0}")]
+    Disk(#[from] ImageError),
+}
+
+/// One atomic write across the `vms` and `disks` tables, so a VM and the
+/// disks it references never disagree on disk (spec images.md §3).
+#[derive(Default)]
+pub struct Commit<'a> {
+    pub put_vm: Option<&'a Vm>,
+    pub delete_vm: Option<&'a str>,
+    pub put_disks: Vec<&'a Disk>,
+    pub delete_disks: Vec<&'a str>,
 }
 
 pub struct VmStore {
@@ -108,15 +122,26 @@ impl VmStore {
         Ok(())
     }
 
-    /// Delete a VM by ID
-    pub fn delete(&self, vm_id: &str) -> Result<(), PersistenceError> {
+    /// Apply a `Commit` in a single write transaction.
+    pub fn commit(&self, c: Commit<'_>) -> Result<(), PersistenceError> {
         let write_txn = self.db.begin_write()?;
         {
             let mut table = write_txn.open_table(VMS_TABLE)?;
-            table.remove(vm_id)?;
+            if let Some(vm) = c.put_vm {
+                let serialized = serde_json::to_vec(vm)?;
+                table.insert(vm.id.as_str(), serialized.as_slice())?;
+            }
+            if let Some(id) = c.delete_vm {
+                table.remove(id)?;
+            }
+        }
+        for d in c.put_disks {
+            images::write_disk(&write_txn, d)?;
+        }
+        for id in c.delete_disks {
+            images::delete_disk_record(&write_txn, id)?;
         }
         write_txn.commit()?;
-
         Ok(())
     }
 

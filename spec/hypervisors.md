@@ -108,15 +108,20 @@ asset of <https://github.com/cloud-hypervisor/edk2>), downloaded by
 `~/.glidex/CLOUDHV.fd` (`CLOUDHV_EFI.fd` on aarch64); see
 [installer.md](installer.md#uefi-firmware). It boots the bootloader on
 the rootfs disk, so `rootfs_path` must be a full, partitioned,
-UEFI-bootable image (e.g. a distro `*-server-cloudimg-amd64.img`
-converted to raw), not a bare ext4 rootfs. There is no
+UEFI-bootable image (e.g. a distro `*-server-cloudimg-amd64.img`, raw or
+qcow2, or a managed disk from [images.md](images.md)), not a bare ext4
+rootfs. There is no
 kernel command line: the guest's own GRUB config applies.
 
 Why serial instead of virtio-console: distro cloud images put
 `console=ttyS0` on their kernel command line, so the login prompt only
 appears on the emulated 16550 UART.
 
-Disks are `[rootfs, seed]`. The seed is `config.cloud_init_path`, or —
+Disks are `[rootfs, data disks…, seed]` (`disk_configs`). A managed disk
+sends its recorded `image_type`, and `backing_files: true` if it is a
+linked overlay ([images.md](images.md#10-changes-to-existing-components)).
+A user-supplied `rootfs_path` is probed by magic bytes. The seed is
+`config.cloud_init_path`, or —
 if unset on a firmware boot — the image `VmManager::start_vm`
 regenerates at `Vm::default_cloud_init_path()`
 (`/tmp/cloud-hypervisor-<id>.cloudinit.img`) before `configure`. It is
@@ -126,7 +131,8 @@ attached `readonly`. Contents (`cloud_init.rs`):
   provisions once per VM), `local-hostname` = VM name reduced to an
   RFC 1123 label.
 - `network-config`: v2, DHCP on `en*`.
-- `user-data`: a sudo user. If the VM names a stored credential
+- `user-data`: `resize_rootfs: true` (plus a `growpart` block when the
+  root disk has `pending_growpart`), and a sudo user. If the VM names a stored credential
   ([credentials.md](credentials.md)), that username, password hash and
   SSH keys are used and nothing else. Otherwise the user is `cloud` with
   the control-plane user's `~/.ssh/*.pub` keys, and a password only from
@@ -174,7 +180,8 @@ qemu-system-x86_64
   -smp <vcpus>
   -kernel <kernel_image_path>
   -append "<kernel_args>"
-  -drive file=<rootfs_path>,if=virtio,format=raw
+  -drive file=<rootfs_path>,if=virtio,format=<qcow2|raw|…>
+  [-drive file=<data disk>,if=virtio,format=<…> …]
   -qmp unix:<socket_path>,server,nowait
   -serial stdio
   -display none
@@ -190,6 +197,9 @@ Notes captured in code comments:
   isn't expressible.
 - We use `server,nowait` (pre-6.0 syntax) because it's accepted by
   both old and new QEMU, unlike the newer `server=on,wait=off`.
+- `format=` is always explicit: the recorded format for managed disks,
+  glidex's own magic-byte probe for a user-supplied `rootfs_path`
+  (`root_format`). It is never left to QEMU's probing.
 
 ### QMP client
 

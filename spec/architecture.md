@@ -76,6 +76,12 @@ Reading top-to-bottom inside `crates/glidex-control-plane/src/`:
   `mkdosfs`/`mcopy`. Called from `VmManager::start_vm`.
 - **`pci.rs`** — read-only sysfs scan of `/sys/bus/pci/devices`,
   exposed via `GET /pci-devices` to help users pick VFIO targets.
+- **`images/`** — `ImageManager`: the image catalog, verified downloads,
+  and managed disks (create, resize, extend root partition), shelling out
+  to `qemu-img`/`qemu-io`/`sgdisk`/`growpart`. Records live in the
+  `images` and `disks` tables, files in `~/.glidex/{images,disks}`.
+  `VmManager` owns it and does the VM-related checks (attachment,
+  running VMs). See [images.md](images.md).
 
 ## Data flow: "create and start a VM"
 

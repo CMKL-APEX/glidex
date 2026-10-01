@@ -3,13 +3,17 @@ use crate::credentials::{
     Credential, CredentialError, CredentialStore, CreateCredentialRequest, UpdateCredentialRequest,
 };
 use crate::hypervisor::{create_backend, Hypervisor, HypervisorError, HypervisorProcess, HypervisorType};
-use crate::models::{NicBinding, NicState, Vm, VmConfig, VmState};
+use crate::images::{
+    self, disk::requested_size, CatalogItem, CreateDiskRequest, Disk, DiskResponse, ExtendMode,
+    ImageError, ImageManager, ImageResponse, ImageSettings, PullImageRequest, ResizeDiskRequest,
+};
+use crate::models::{DiskBinding, DiskSelection, NicBinding, NicState, Vm, VmConfig, VmState};
 use crate::network::{self, CreateNetworkRequest, NetError, Netd, Network, NetworkMode, NetworkStore};
 use glidex_netd::proto::{AttachResult, BridgeRecord, NatInfo, Op, ReconcileReport};
 use glidex_ovs::bridge::{BridgeSpec, Datapath};
 use glidex_ovs::nat::NatSpec;
 use glidex_ovs::vm_port::{VmPortKind, VmPortSpec};
-use crate::persistence::{PersistenceError, VmStore};
+use crate::persistence::{Commit, PersistenceError, VmStore};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -26,6 +30,7 @@ pub enum VmManagerError {
     Credential(CredentialError),
     CredentialInUse { username: String, vms: Vec<String> },
     Network(NetError),
+    Image(ImageError),
 }
 
 impl std::fmt::Display for VmManagerError {
@@ -43,6 +48,7 @@ impl std::fmt::Display for VmManagerError {
             }
             VmManagerError::Credential(e) => write!(f, "{}", e),
             VmManagerError::Network(e) => write!(f, "{}", e),
+            VmManagerError::Image(e) => write!(f, "{}", e),
             VmManagerError::CredentialInUse { username, vms } => write!(
                 f,
                 "credential {} is used by VM(s): {}",
@@ -65,6 +71,12 @@ impl From<NetError> for VmManagerError {
     }
 }
 
+impl From<ImageError> for VmManagerError {
+    fn from(e: ImageError) -> Self {
+        VmManagerError::Image(e)
+    }
+}
+
 impl From<CredentialError> for VmManagerError {
     fn from(e: CredentialError) -> Self {
         VmManagerError::Credential(e)
@@ -73,7 +85,10 @@ impl From<CredentialError> for VmManagerError {
 
 impl From<PersistenceError> for VmManagerError {
     fn from(e: PersistenceError) -> Self {
-        VmManagerError::PersistenceError(e.to_string())
+        match e {
+            PersistenceError::Disk(e) => VmManagerError::Image(e),
+            e => VmManagerError::PersistenceError(e.to_string()),
+        }
     }
 }
 
@@ -88,7 +103,23 @@ pub struct VmManager {
     credentials: CredentialStore,
     networks: NetworkStore,
     netd: Netd,
+    images: Arc<ImageManager>,
     backends: HashMap<HypervisorType, Box<dyn Hypervisor>>,
+}
+
+type RootBinding = (DiskBinding, Disk);
+
+/// A disk name derived from a VM name (`<vm>-root`), made valid.
+fn root_disk_name(vm_name: &str) -> String {
+    let base: String = vm_name
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || "._-".contains(c) { c } else { '-' })
+        .collect();
+    let base = base.trim_start_matches('.');
+    let base = if base.is_empty() { "vm" } else { base };
+    let mut name = format!("{}-root", base);
+    name.truncate(64);
+    name
 }
 
 impl VmManager {
@@ -105,6 +136,8 @@ impl VmManager {
     /// As `with_db_path`, talking to the glidex-netd at `netd`.
     pub fn with_db_path_and_netd(db_path: PathBuf, netd: Netd) -> Result<Arc<Self>, VmManagerError> {
         let store = VmStore::open(&db_path)?;
+        let base = db_path.parent().map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+        let images = ImageManager::new(store.database(), ImageSettings::from_env(&base))?;
 
         // Initialize hypervisor backends and probe whether each binary is on PATH.
         let mut backends: HashMap<HypervisorType, Box<dyn Hypervisor>> = HashMap::new();
@@ -128,6 +161,7 @@ impl VmManager {
             credentials: CredentialStore::new(store.database())?,
             networks: NetworkStore::new(store.database())?,
             netd,
+            images,
             store,
             backends,
         }))
@@ -152,6 +186,7 @@ impl VmManager {
     /// Initialize VmManager by loading persisted VMs and reconciling state
     pub async fn initialize(&self) -> Result<(), VmManagerError> {
         let persisted_vms = self.store.load_all()?;
+        self.images.initialize();
         let mut vms = self.vms.write().await;
 
         for mut vm in persisted_vms {
@@ -221,7 +256,40 @@ impl VmManager {
         );
     }
 
+    #[allow(dead_code)] // used by the tests through the lib crate
     pub async fn create_vm(&self, name: String, config: VmConfig) -> Result<Vm, VmManagerError> {
+        self.create_vm_with_disks(name, config, DiskSelection::default())
+            .await
+            .map(|(vm, _)| vm)
+    }
+
+    /// Create a VM, resolving managed disks (spec images.md §7). Returns
+    /// the VM and any warnings.
+    pub async fn create_vm_with_disks(
+        &self,
+        name: String,
+        mut config: VmConfig,
+        sel: DiskSelection,
+    ) -> Result<(Vm, Vec<String>), VmManagerError> {
+        let roots = [!config.rootfs_path.is_empty(), sel.image.is_some(), sel.root_disk.is_some()];
+        if roots.iter().filter(|b| **b).count() != 1 {
+            return Err(HypervisorError::InvalidConfig(
+                "give exactly one of rootfs_path, image or root_disk".to_string(),
+            )
+            .into());
+        }
+        if sel.root_disk_size_gib.is_some() && sel.image.is_none() {
+            return Err(HypervisorError::InvalidConfig("root_disk_size_gib needs image".to_string()).into());
+        }
+        // A managed root disk is a cloud image: firmware boot unless the
+        // caller brought a kernel.
+        if (sel.image.is_some() || sel.root_disk.is_some())
+            && config.kernel_image_path.is_empty()
+            && config.firmware_path.is_none()
+        {
+            config.firmware_path = crate::hypervisor::cloud_hypervisor::default_firmware_path()
+                .map(|p| p.to_string_lossy().into_owned());
+        }
         // Reject obviously broken configurations before persisting them.
         if config.vcpu_count == 0 {
             return Err(HypervisorError::InvalidConfig(
@@ -337,8 +405,79 @@ impl VmManager {
             }
         }
 
-        // Persist to database BEFORE adding to in-memory cache
-        self.store.save(&vm)?;
+        // Managed disks. Checked under the VM write lock, so no other VM
+        // can claim the same disk in between.
+        let mut disks: Vec<Disk> = Vec::new();
+        let mut warnings = Vec::new();
+        for key in &sel.data_disks {
+            let d = self.attachable_disk(key)?;
+            if disks.iter().any(|x| x.id == d.id) {
+                return Err(HypervisorError::InvalidConfig(format!("disk {} listed twice", d.name)).into());
+            }
+            vm.config.data_disks.push(d.id.clone());
+            disks.push(d);
+        }
+        if let Some(key) = &sel.root_disk {
+            let d = self.attachable_disk(key)?;
+            if disks.iter().any(|x| x.id == d.id) {
+                return Err(HypervisorError::InvalidConfig(format!(
+                    "disk {} is both root_disk and a data disk",
+                    d.name
+                ))
+                .into());
+            }
+            vm.config.root_disk = Some(d.id.clone());
+            vm.config.rootfs_path = self.images.disk_path(&d).to_string_lossy().into_owned();
+            disks.push(d);
+        }
+        let mut created: Option<Disk> = None;
+        let mut image_hold = None;
+        if let Some(image) = &sel.image {
+            let mut disk_name = root_disk_name(&vm.name);
+            if self.images.disk_name_taken(&disk_name) {
+                disk_name = format!("{}-{}", disk_name.trim_end_matches("-root"), &vm.id[..8]);
+            }
+            let req = CreateDiskRequest {
+                name: disk_name,
+                size_gib: sel.root_disk_size_gib,
+                image: Some(image.clone()),
+                ..Default::default()
+            };
+            let mgr = self.images.clone();
+            let (d, mut w, hold) = tokio::task::spawn_blocking(move || mgr.create_disk_file(&req))
+                .await
+                .map_err(|e| ImageError::Io(e.to_string()))??;
+            image_hold = hold;
+            warnings.append(&mut w);
+            vm.config.root_disk = Some(d.id.clone());
+            vm.config.owns_root_disk = true;
+            vm.config.rootfs_path = self.images.disk_path(&d).to_string_lossy().into_owned();
+            created = Some(d.clone());
+            disks.push(d);
+        }
+        for d in &mut disks {
+            d.attached_to = Some(vm.id.clone());
+            if Some(&d.id) == vm.config.root_disk.as_ref() && d.pending_growpart && vm.config.cloud_init_path.is_some() {
+                warnings.push(format!(
+                    "disk {} is waiting for an on-boot root partition grow, but this VM uses a custom cloud_init_path; enable growpart in that seed",
+                    d.name
+                ));
+            }
+        }
+
+        // Persist BEFORE adding to the in-memory cache; the VM and its
+        // disks' attached_to go in one transaction.
+        let commit = Commit { put_vm: Some(&vm), put_disks: disks.iter().collect(), ..Default::default() };
+        if let Err(e) = self.store.commit(commit) {
+            if let Some(d) = &created {
+                self.images.remove_disk_file(d);
+            }
+            return Err(e.into());
+        }
+        for d in &disks {
+            self.images.cache_disk(d);
+        }
+        drop(image_hold);
 
         let vm_clone = vm.clone();
 
@@ -350,7 +489,50 @@ impl VmManager {
             },
         );
 
-        Ok(vm_clone)
+        Ok((vm_clone, warnings))
+    }
+
+    /// A disk a new VM may attach: exists, not attached, not busy.
+    fn attachable_disk(&self, key: &str) -> Result<Disk, VmManagerError> {
+        let d = self.images.get_disk(key)?;
+        if let Some(vm) = &d.attached_to {
+            return Err(ImageError::InUse(format!("disk {} is attached to VM {}", d.name, vm)).into());
+        }
+        if let Some(op) = self.images.busy_op(&d.id) {
+            return Err(ImageError::Busy(format!("disk {} is busy ({})", d.name, op)).into());
+        }
+        Ok(d)
+    }
+
+    /// Bindings for a VM's managed disks, checked to be usable right now:
+    /// the root disk (with its record) and the data disks.
+    fn disk_bindings(&self, vm: &Vm) -> Result<(Option<RootBinding>, Vec<DiskBinding>), VmManagerError> {
+        let bind = |id: &str| -> Result<(DiskBinding, Disk), VmManagerError> {
+            let d = self.images.get_disk(id)?;
+            if let Some(op) = self.images.busy_op(&d.id) {
+                return Err(ImageError::Busy(format!("disk {} is busy ({})", d.name, op)).into());
+            }
+            let path = self.images.disk_path(&d);
+            if !path.exists() {
+                return Err(ImageError::Io(format!("disk {} file is missing: {}", d.name, path.display())).into());
+            }
+            Ok((
+                DiskBinding {
+                    path: path.to_string_lossy().into_owned(),
+                    format: d.format,
+                    backing_files: d.is_linked(),
+                },
+                d,
+            ))
+        };
+        let root = vm.config.root_disk.as_deref().map(bind).transpose()?;
+        let data = vm
+            .config
+            .data_disks
+            .iter()
+            .map(|id| bind(id).map(|(b, _)| b))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok((root, data))
     }
 
     pub async fn start_vm(&self, vm_id: &str) -> Result<Vm, VmManagerError> {
@@ -364,6 +546,7 @@ impl VmManager {
             VmState::Created | VmState::Stopped => {
                 // Get the appropriate backend for this VM's hypervisor
                 let backend = self.get_backend(entry.vm.hypervisor)?;
+                let (root_disk, data_disks) = self.disk_bindings(&entry.vm)?;
 
                 // Spawn hypervisor process with console socket and log file
                 let process = backend.spawn(
@@ -375,6 +558,8 @@ impl VmManager {
                 // Attach NICs through glidex-netd before configuring, so
                 // the hypervisor gets real tap names / vhost-user sockets.
                 let mut config = entry.vm.config.clone();
+                config.root_disk_binding = root_disk.as_ref().map(|(b, _)| b.clone());
+                config.data_disk_bindings = data_disks;
                 let nics = match self.attach_nics(&entry.vm) {
                     Ok(nics) => nics,
                     Err(e) => {
@@ -411,6 +596,7 @@ impl VmManager {
                     };
                     let mut seed = seed;
                     seed.nic_macs = config.nic_bindings.iter().map(|n| n.mac.clone()).collect();
+                    seed.growpart = root_disk.as_ref().is_some_and(|(_, d)| d.pending_growpart);
                     if seed.ssh_authorized_keys.is_empty() && seed.passwd_hash.is_none() {
                         tracing::warn!(
                             vm_id = %entry.vm.id,
@@ -459,6 +645,17 @@ impl VmManager {
 
                 entry.process = Some(process);
                 entry.vm.state = VmState::Running;
+
+                // The seed now carries the growpart request; cloud-init
+                // acts on it during this boot.
+                if let Some((_, mut d)) = root_disk.filter(|(_, d)| d.pending_growpart) {
+                    if config.cloud_init_path.as_deref() == Some(entry.vm.default_cloud_init_path().as_str()) {
+                        d.pending_growpart = false;
+                        if let Err(e) = self.images.put_disk(&d) {
+                            tracing::warn!(disk = %d.name, "could not clear pending_growpart: {}", e);
+                        }
+                    }
+                }
 
                 Ok(entry.vm.clone())
             }
@@ -691,12 +888,34 @@ impl VmManager {
         }
     }
 
+    #[allow(dead_code)] // used by the tests through the lib crate
     pub async fn delete_vm(&self, vm_id: &str) -> Result<(), VmManagerError> {
+        self.delete_vm_with(vm_id, false).await
+    }
+
+    /// Delete a VM. Its owned root disk goes with it unless `keep_disk`;
+    /// other disks are detached and kept (spec images.md §7).
+    pub async fn delete_vm_with(&self, vm_id: &str, keep_disk: bool) -> Result<(), VmManagerError> {
         let mut vms = self.vms.write().await;
 
         let entry = vms
             .get_mut(vm_id)
             .ok_or_else(|| VmManagerError::VmNotFound(vm_id.to_string()))?;
+
+        let mut detach = Vec::new();
+        let mut owned = None;
+        for id in entry.vm.config.root_disk.iter().chain(entry.vm.config.data_disks.iter()) {
+            let Ok(mut d) = self.images.get_disk(id) else { continue };
+            if let Some(op) = self.images.busy_op(&d.id) {
+                return Err(ImageError::Busy(format!("disk {} is busy ({})", d.name, op)).into());
+            }
+            d.attached_to = None;
+            if entry.vm.config.owns_root_disk && !keep_disk && Some(id) == entry.vm.config.root_disk.as_ref() {
+                owned = Some(d);
+            } else {
+                detach.push(d);
+            }
+        }
 
         // Stop the VM if running
         if let Some(ref process) = entry.process {
@@ -709,12 +928,190 @@ impl VmManager {
             }
         }
 
-        // Delete from database BEFORE removing from memory
-        self.store.delete(vm_id)?;
+        // Delete from database BEFORE removing from memory; the disks'
+        // records change in the same transaction.
+        self.store.commit(Commit {
+            delete_vm: Some(vm_id),
+            put_disks: detach.iter().collect(),
+            delete_disks: owned.iter().map(|d| d.id.as_str()).collect(),
+            ..Default::default()
+        })?;
+        for d in &detach {
+            self.images.cache_disk(d);
+        }
+        if let Some(d) = &owned {
+            self.images.uncache_disk(&d.id);
+            self.images.remove_disk_file(d);
+        }
         let _ = std::fs::remove_file(entry.vm.default_cloud_init_path());
 
         vms.remove(vm_id);
         Ok(())
+    }
+
+    // ---- images and disks (spec/images.md) -----------------------------
+
+    pub fn image_catalog(&self) -> Vec<CatalogItem> {
+        self.images.catalog()
+    }
+
+    pub fn list_images(&self) -> Vec<ImageResponse> {
+        self.images.list_images().iter().map(|i| self.images.image_response(i, false)).collect()
+    }
+
+    pub async fn get_image(&self, key: &str) -> Result<ImageResponse, VmManagerError> {
+        let img = self.images.get_image(key)?;
+        let mgr = self.images.clone();
+        Ok(blocking(move || Ok(mgr.image_response(&img, true))).await?)
+    }
+
+    pub async fn pull_image(&self, req: PullImageRequest) -> Result<(ImageResponse, bool), VmManagerError> {
+        let (img, created) = self.images.pull_image(req).await?;
+        Ok((self.images.image_response(&img, false), created))
+    }
+
+    pub fn delete_image(&self, key: &str) -> Result<(), VmManagerError> {
+        Ok(self.images.delete_image(key)?)
+    }
+
+    pub fn list_disks(&self) -> Vec<DiskResponse> {
+        self.images.list_disks().iter().map(|d| self.images.disk_response(d, false)).collect()
+    }
+
+    pub async fn get_disk(&self, key: &str) -> Result<DiskResponse, VmManagerError> {
+        let d = self.images.get_disk(key)?;
+        let mgr = self.images.clone();
+        Ok(blocking(move || Ok(mgr.disk_response(&d, true))).await?)
+    }
+
+    pub async fn create_disk(&self, req: CreateDiskRequest) -> Result<DiskResponse, VmManagerError> {
+        let mgr = self.images.clone();
+        let (disk, warnings) = blocking(move || {
+            let (disk, warnings, _hold) = mgr.create_disk_file(&req)?;
+            if let Err(e) = mgr.put_disk(&disk) {
+                mgr.remove_disk_file(&disk);
+                return Err(e);
+            }
+            Ok((disk, warnings))
+        })
+        .await?;
+        let mut resp = self.images.disk_response(&disk, false);
+        resp.warnings = warnings;
+        Ok(resp)
+    }
+
+    /// Mark a disk busy for `op`, refusing while a running or paused VM
+    /// has it open. Holds the VM read lock while checking, so `start_vm`
+    /// (write lock) cannot slip in between the check and the mark.
+    async fn begin_disk_op(&self, key: &str, op: &'static str) -> Result<(Disk, images::BusyGuard), VmManagerError> {
+        let vms = self.vms.read().await;
+        let disk = self.images.get_disk(key)?;
+        if let Some(vm_id) = &disk.attached_to {
+            if let Some(entry) = vms.get(vm_id) {
+                if matches!(entry.vm.state, VmState::Running | VmState::Paused) {
+                    return Err(ImageError::InUse(format!(
+                        "disk {} is in use by {} VM {}; stop it first",
+                        disk.name,
+                        format!("{:?}", entry.vm.state).to_lowercase(),
+                        entry.vm.name
+                    ))
+                    .into());
+                }
+            }
+        }
+        let guard = self.images.begin(&disk.id, op)?;
+        Ok((disk, guard))
+    }
+
+    pub async fn resize_disk(&self, key: &str, req: ResizeDiskRequest) -> Result<DiskResponse, VmManagerError> {
+        let size = requested_size(req.size_gib, req.size_bytes)?
+            .ok_or_else(|| ImageError::invalid_disk("give size_gib or size_bytes"))?;
+        let (disk, guard) = self.begin_disk_op(key, "resize").await?;
+        let mgr = self.images.clone();
+        let (disk, outcome, warnings) = blocking(move || {
+            let _guard = guard;
+            mgr.resize_disk(&disk.id, size, req.extend_root)
+        })
+        .await?;
+        let mut resp = self.images.disk_response(&disk, false);
+        resp.extend_root = outcome;
+        resp.warnings = warnings;
+        Ok(resp)
+    }
+
+    pub async fn extend_root(&self, key: &str, mode: ExtendMode) -> Result<DiskResponse, VmManagerError> {
+        let (disk, guard) = self.begin_disk_op(key, "extend-root").await?;
+        let mgr = self.images.clone();
+        let (disk, outcome, warnings) = blocking(move || {
+            let _guard = guard;
+            mgr.extend_root(&disk.id, mode)
+        })
+        .await?;
+        let mut resp = self.images.disk_response(&disk, false);
+        resp.extend_root = Some(outcome);
+        resp.warnings = warnings;
+        Ok(resp)
+    }
+
+    pub async fn delete_disk(&self, key: &str) -> Result<(), VmManagerError> {
+        // Write lock: no VM may attach the disk while it goes away.
+        let vms = self.vms.write().await;
+        let disk = self.images.get_disk(key)?;
+        if let Some(vm_id) = &disk.attached_to {
+            let vm = vms.get(vm_id).map(|e| e.vm.name.clone()).unwrap_or_else(|| vm_id.clone());
+            return Err(ImageError::InUse(format!("disk {} is attached to VM {}; detach it or delete the VM first", disk.name, vm)).into());
+        }
+        let _guard = self.images.begin(&disk.id, "delete")?;
+        self.store.commit(Commit { delete_disks: vec![disk.id.as_str()], ..Default::default() })?;
+        self.images.uncache_disk(&disk.id);
+        self.images.remove_disk_file(&disk);
+        tracing::info!(disk = %disk.name, "disk deleted");
+        Ok(())
+    }
+
+    /// Attach a data disk to a Created/Stopped VM (config only).
+    pub async fn attach_disk(&self, vm_id: &str, key: &str) -> Result<Vm, VmManagerError> {
+        let mut vms = self.vms.write().await;
+        let entry = vms.get_mut(vm_id).ok_or_else(|| VmManagerError::VmNotFound(vm_id.to_string()))?;
+        if !matches!(entry.vm.state, VmState::Created | VmState::Stopped) {
+            return Err(VmManagerError::InvalidState { current: entry.vm.state.clone(), operation: "attach_disk".into() });
+        }
+        let mut disk = self.attachable_disk(key)?;
+        disk.attached_to = Some(entry.vm.id.clone());
+        let mut vm = entry.vm.clone();
+        vm.config.data_disks.push(disk.id.clone());
+        self.store.commit(Commit { put_vm: Some(&vm), put_disks: vec![&disk], ..Default::default() })?;
+        self.images.cache_disk(&disk);
+        entry.vm = vm;
+        Ok(entry.vm.clone())
+    }
+
+    /// Detach a data disk from a Created/Stopped VM (config only).
+    pub async fn detach_disk(&self, vm_id: &str, key: &str) -> Result<Vm, VmManagerError> {
+        let mut vms = self.vms.write().await;
+        let entry = vms.get_mut(vm_id).ok_or_else(|| VmManagerError::VmNotFound(vm_id.to_string()))?;
+        if !matches!(entry.vm.state, VmState::Created | VmState::Stopped) {
+            return Err(VmManagerError::InvalidState { current: entry.vm.state.clone(), operation: "detach_disk".into() });
+        }
+        let mut disk = self.images.get_disk(key)?;
+        let pos = entry.vm.config.data_disks.iter().position(|d| *d == disk.id).ok_or_else(|| {
+            let msg = if entry.vm.config.root_disk.as_ref() == Some(&disk.id) {
+                format!("disk {} is the VM's root disk, not a data disk", disk.name)
+            } else {
+                format!("disk {} is not attached to this VM", disk.name)
+            };
+            VmManagerError::Image(ImageError::invalid_disk(msg))
+        })?;
+        if let Some(op) = self.images.busy_op(&disk.id) {
+            return Err(ImageError::Busy(format!("disk {} is busy ({})", disk.name, op)).into());
+        }
+        disk.attached_to = None;
+        let mut vm = entry.vm.clone();
+        vm.config.data_disks.remove(pos);
+        self.store.commit(Commit { put_vm: Some(&vm), put_disks: vec![&disk], ..Default::default() })?;
+        self.images.cache_disk(&disk);
+        entry.vm = vm;
+        Ok(entry.vm.clone())
     }
 
     // ---- networks -----------------------------------------------------
@@ -1008,4 +1405,13 @@ impl VmManager {
             tracing::info!("Stopped {} running VM(s)", stopped_count);
         }
     }
+}
+
+/// Run blocking image work off the async runtime.
+async fn blocking<T: Send + 'static>(
+    f: impl FnOnce() -> Result<T, ImageError> + Send + 'static,
+) -> Result<T, ImageError> {
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|e| ImageError::Io(format!("task failed: {}", e)))?
 }

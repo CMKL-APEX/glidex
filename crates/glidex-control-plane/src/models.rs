@@ -1,4 +1,5 @@
 use crate::hypervisor::HypervisorType;
+use crate::images::qemu_img::DiskFormat;
 use glidex_ovs::vm_port::VmPortBinding;
 use serde::{Deserialize, Serialize};
 use std::net::Ipv4Addr;
@@ -51,10 +52,21 @@ pub struct VmConfig {
     /// generated cloud-init seed provisions as the guest login.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential: Option<String>,
+    /// Path of the boot disk. For a managed root disk (`root_disk`) this
+    /// is that disk's file, so backends see one field either way.
     pub rootfs_path: String,
     pub kernel_args: String,
     #[serde(default)]
     pub hypervisor: HypervisorType,
+    /// Managed disk (id) the VM boots from; see spec/images.md §7.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_disk: Option<String>,
+    /// Managed data disks (ids), attached in order after the root disk.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub data_disks: Vec<String>,
+    /// The root disk was created for this VM and is deleted with it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub owns_root_disk: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub vfio_devices: Vec<String>,
     /// Networks the VM's NICs attach to, in NIC order (spec §11.1).
@@ -67,7 +79,25 @@ pub struct VmConfig {
     /// for the hypervisor; never persisted.
     #[serde(skip)]
     pub nic_bindings: Vec<NicBinding>,
+    /// Format etc. of a managed root disk, filled in by `start_vm`; never
+    /// persisted. `None`: user-supplied `rootfs_path`, format probed.
+    #[serde(skip)]
+    pub root_disk_binding: Option<DiskBinding>,
+    /// Managed data disks, filled in by `start_vm`; never persisted.
+    #[serde(skip)]
+    pub data_disk_bindings: Vec<DiskBinding>,
 }
+
+/// What a hypervisor needs to open one managed disk.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiskBinding {
+    pub path: String,
+    pub format: DiskFormat,
+    /// qcow2 overlay on an image: the backend must allow backing files.
+    /// Only ever set for disks glidex created.
+    pub backing_files: bool,
+}
+
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NetworkAttachment {
@@ -158,7 +188,18 @@ pub struct CreateVmRequest {
     pub cloud_init_path: Option<String>,
     #[serde(default)]
     pub credential: Option<String>,
+    #[serde(default)]
     pub rootfs_path: String,
+    /// Image id/name: create a linked root disk for this VM from it.
+    #[serde(default)]
+    pub image: Option<String>,
+    #[serde(default)]
+    pub root_disk_size_gib: Option<u64>,
+    /// Existing, unattached disk (id/name) to boot from.
+    #[serde(default)]
+    pub root_disk: Option<String>,
+    #[serde(default)]
+    pub data_disks: Option<Vec<String>>,
     #[serde(default)]
     pub kernel_args: Option<String>,
     #[serde(default)]
@@ -169,6 +210,26 @@ pub struct CreateVmRequest {
     pub networks: Option<Vec<NetworkAttachment>>,
     #[serde(default)]
     pub hugepages: bool,
+}
+
+/// The managed-disk part of `CreateVmRequest`, resolved by `create_vm`.
+#[derive(Debug, Clone, Default)]
+pub struct DiskSelection {
+    pub image: Option<String>,
+    pub root_disk_size_gib: Option<u64>,
+    pub root_disk: Option<String>,
+    pub data_disks: Vec<String>,
+}
+
+impl CreateVmRequest {
+    pub fn disk_selection(&self) -> DiskSelection {
+        DiskSelection {
+            image: self.image.clone(),
+            root_disk_size_gib: self.root_disk_size_gib,
+            root_disk: self.root_disk.clone(),
+            data_disks: self.data_disks.clone().unwrap_or_default(),
+        }
+    }
 }
 
 impl From<CreateVmRequest> for VmConfig {
@@ -190,6 +251,11 @@ impl From<CreateVmRequest> for VmConfig {
             networks: req.networks.unwrap_or_default(),
             hugepages: req.hugepages,
             nic_bindings: Vec::new(),
+            root_disk: None,
+            data_disks: Vec::new(),
+            owns_root_disk: false,
+            root_disk_binding: None,
+            data_disk_bindings: Vec::new(),
         }
     }
 }
@@ -210,6 +276,12 @@ pub struct VmResponse {
     pub credential: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub nics: Vec<NicState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_disk: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub data_disks: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 impl From<&Vm> for VmResponse {
@@ -225,6 +297,9 @@ impl From<&Vm> for VmResponse {
             hypervisor: vm.hypervisor,
             vfio_devices: vm.config.vfio_devices.clone(),
             credential: vm.config.credential.clone(),
+            root_disk: vm.config.root_disk.clone(),
+            data_disks: vm.config.data_disks.clone(),
+            warnings: Vec::new(),
             nics: if vm.nics.is_empty() {
                 vm.config
                     .networks
