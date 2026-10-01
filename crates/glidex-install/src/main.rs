@@ -44,6 +44,7 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    install_build_packages()?;
     install_rust()?;
     install_bun()?;
     install_cloud_hypervisor(&platform, &install_dir)?;
@@ -115,23 +116,24 @@ fn resolve_install_dir() -> Result<PathBuf> {
 fn print_plan(install_dir: &Path) {
     println!();
     println!("{}", "This installer will:".cyan().bold());
-    println!("  1. Install Rust via rustup (if missing)");
-    println!("  2. Install Bun for the UI dev server (if missing)");
+    println!("  1. Install build packages: unzip, OpenSSL headers, pkg-config, clang (if missing)");
+    println!("  2. Install Rust via rustup (if missing)");
+    println!("  3. Install Bun for the UI dev server (if missing)");
     println!(
-        "  3. Install Cloud-Hypervisor {} to {}",
+        "  4. Install Cloud-Hypervisor {} to {}",
         CLOUD_HYPERVISOR_VERSION,
         install_dir.display()
     );
     println!(
-        "  4. Download Cloud-Hypervisor UEFI firmware ({}) to ~/.glidex, plus dosfstools/mtools for cloud-init seeds",
+        "  5. Download Cloud-Hypervisor UEFI firmware ({}) to ~/.glidex, plus dosfstools/mtools for cloud-init seeds",
         EDK2_FIRMWARE_VERSION
     );
-    println!("  5. (Optional) Install QEMU via system package manager");
-    println!("  6. Check KVM access");
-    println!("  7. Build the control plane (cargo build --release)");
-    println!("  8. (Optional) VM networking: Open vSwitch, glidex-netd service, glidex group");
-    println!("  9. (Optional) Start glidex at boot: systemd units for glidex-netd and the control plane");
-    println!("  10. Install UI npm dependencies (bun install)");
+    println!("  6. (Optional) Install QEMU via system package manager");
+    println!("  7. Check KVM access");
+    println!("  8. Build the control plane (cargo build --release)");
+    println!("  9. (Optional) VM networking: Open vSwitch, glidex-netd service, glidex group");
+    println!("  10. (Optional) Start glidex at boot: systemd units for glidex-netd and the control plane");
+    println!("  11. Install UI npm dependencies (bun install)");
     println!();
 }
 
@@ -285,6 +287,42 @@ fn install_binary(src: &Path, dst: &Path) -> Result<()> {
 }
 
 // --- Install steps ---
+
+/// System packages the build needs: unzip for bun's installer, pkg-config
+/// and the OpenSSL headers for `openssl-sys`, and clang. Each slot in the
+/// returned list names that distro's package for the same dependency.
+fn build_packages(manager: &str) -> [&'static str; 4] {
+    match manager {
+        "apt-get" => ["unzip", "libssl-dev", "pkg-config", "clang"],
+        "pacman" => ["unzip", "openssl", "pkgconf", "clang"],
+        // dnf and yum
+        _ => ["unzip", "openssl-devel", "pkgconfig", "clang"],
+    }
+}
+
+fn install_build_packages() -> Result<()> {
+    section("Build packages");
+    let present = [
+        command_exists("unzip"),
+        command_exists("pkg-config") && run_capture("pkg-config", &["--exists", "openssl"]).is_ok(),
+        command_exists("pkg-config"),
+        command_exists("clang"),
+    ];
+    if present.iter().all(|&p| p) {
+        println!("{}", "Build packages are installed.".green());
+        return Ok(());
+    }
+    let Some(manager) = package_manager() else {
+        bail!("Could not detect a package manager; please install unzip, OpenSSL headers, pkg-config and clang manually")
+    };
+    let missing: Vec<&str> = build_packages(manager)
+        .into_iter()
+        .zip(present)
+        .filter(|(_, p)| !p)
+        .map(|(pkg, _)| pkg)
+        .collect();
+    install_packages(manager, &missing.join(" "))
+}
 
 fn install_rust() -> Result<()> {
     section("Rust");
@@ -931,18 +969,26 @@ fn ensure_tools(tools: &[(&str, &str)]) -> Result<()> {
         return Ok(());
     }
     let list = packages.join(" ");
-    println!("{} {}", "Installing".yellow(), list);
-    if command_exists("apt-get") {
-        run_sh(&format!("sudo apt-get update && sudo apt-get install -y {}", list))
-    } else if command_exists("dnf") {
-        run_sh(&format!("sudo dnf install -y {}", list))
-    } else if command_exists("yum") {
-        run_sh(&format!("sudo yum install -y {}", list))
-    } else if command_exists("pacman") {
-        run_sh(&format!("sudo pacman -S --noconfirm {}", list))
-    } else {
-        bail!("Please install {} manually", list)
+    match package_manager() {
+        Some(manager) => install_packages(manager, &list),
+        None => bail!("Please install {} manually", list),
     }
+}
+
+/// The first supported package manager on PATH.
+fn package_manager() -> Option<&'static str> {
+    ["apt-get", "dnf", "yum", "pacman"]
+        .into_iter()
+        .find(|m| command_exists(m))
+}
+
+fn install_packages(manager: &str, list: &str) -> Result<()> {
+    println!("{} {}", "Installing".yellow(), list);
+    run_sh(&match manager {
+        "apt-get" => format!("sudo apt-get update && sudo apt-get install -y {}", list),
+        "pacman" => format!("sudo pacman -S --noconfirm {}", list),
+        _ => format!("sudo {} install -y {}", manager, list),
+    })
 }
 
 fn print_usage() {
@@ -964,6 +1010,14 @@ fn print_usage() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn build_packages_per_distro() {
+        assert_eq!(build_packages("apt-get"), ["unzip", "libssl-dev", "pkg-config", "clang"]);
+        assert_eq!(build_packages("dnf"), ["unzip", "openssl-devel", "pkgconfig", "clang"]);
+        assert_eq!(build_packages("yum"), build_packages("dnf"));
+        assert_eq!(build_packages("pacman"), ["unzip", "openssl", "pkgconf", "clang"]);
+    }
 
     #[test]
     fn control_plane_unit_renders_and_keeps_only_existing_groups() {

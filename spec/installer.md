@@ -29,35 +29,42 @@ to `command -v`.
 
 ## Steps, in order
 
-1. **Rust** — if `rustc` is missing, curls the rustup installer and
+1. **Build packages** — installs whichever of these are missing through
+   the system package manager: `unzip` (bun's installer), `pkg-config`
+   and the OpenSSL headers (`openssl-sys`, via reqwest), and `clang`.
+   Names per distro: `libssl-dev`/`pkg-config` on apt,
+   `openssl-devel`/`pkgconfig` on dnf/yum, `openssl`/`pkgconf` on
+   pacman. OpenSSL counts as present when `pkg-config --exists openssl`
+   succeeds.
+2. **Rust** — if `rustc` is missing, curls the rustup installer and
    runs it non-interactively. If `rustup` is present, runs
    `rustup update stable` for good measure. The installer does
    not re-exec into a new shell; a fresh `source $HOME/.cargo/env`
    is needed for subsequent shell invocations.
-2. **Bun** — installed via `curl -fsSL https://bun.sh/install | bash`
+3. **Bun** — installed via `curl -fsSL https://bun.sh/install | bash`
    if missing. Bun is the UI's package manager and Vite runner.
-3. **Cloud-Hypervisor** — downloads the arch-appropriate static
+4. **Cloud-Hypervisor** — downloads the arch-appropriate static
    binary from GitHub releases at the version pinned in
    `CLOUD_HYPERVISOR_VERSION` (currently `v53.0`), installs it via
    `install_binary` helper.
-4. **UEFI firmware** — downloads Cloud-Hypervisor's EDK2 firmware
+5. **UEFI firmware** — downloads Cloud-Hypervisor's EDK2 firmware
    from <https://github.com/cloud-hypervisor/edk2/releases> at the tag
    pinned in `EDK2_FIRMWARE_VERSION` (currently `ch-811ce5ea35`) into
    `~/.glidex/CLOUDHV.fd` (`CLOUDHV_EFI.fd` on aarch64), then ensures
    `dosfstools` + `mtools` are installed for cloud-init seed images.
    See below.
-5. **QEMU** *(optional, prompts)* — delegates to the system
+6. **QEMU** *(optional, prompts)* — delegates to the system
    package manager (`apt-get install qemu-system-x86 qemu-kvm`,
    `dnf install qemu-kvm`, etc). We don't ship a QEMU binary
    because its distribution story is already well handled by
    every Linux distro and the resulting tree is large.
-6. **KVM access check** — verifies `/dev/kvm` exists and is
+7. **KVM access check** — verifies `/dev/kvm` exists and is
    read-writable. On failure it offers `usermod -aG kvm $USER` (when the
    `kvm` group exists), or prints the instruction if declined.
-7. **Build** — runs `cargo build --release -p glidex-control-plane
+8. **Build** — runs `cargo build --release -p glidex-control-plane
    -p glidex-netd` and offers to install `glidex-control-plane` and
    `gxctl` into the install dir.
-8. **VM networking** *(optional, prompts)* — creates the `glidex` group
+9. **VM networking** *(optional, prompts)* — creates the `glidex` group
    (adds the invoking user), installs Open vSwitch through
    `glidex-ovs` (`dpdk` profile by default, or `kernel`, via sudo; this also pulls
    in `dnsmasq` and `nftables`), applies the host settings below,
@@ -89,14 +96,14 @@ to `command -v`.
    pre-glidex value rather than glidex's own. Firewalls are not touched:
    netd's nftables table only adds masquerade, so a host firewall that
    drops forwarded traffic must allow the NAT subnets.
-9. **Start at boot** *(optional, prompts; skipped without systemd)* —
+10. **Start at boot** *(optional, prompts; skipped without systemd)* —
    renders `packaging/glidex-control-plane.service.in` for the invoking
    user (§ below), installs it (and refreshes netd's unit), and enables
    both; offers to start the control plane now.
-10. **UI dependencies** — runs `bun install` inside
+11. **UI dependencies** — runs `bun install` inside
    `crates/glidex-ui/ui`. Skipped with a warning if bun isn't
    on PATH.
-11. **Usage blurb** — prints the 1-2-3 for starting the server,
+12. **Usage blurb** — prints the 1-2-3 for starting the server,
    UI, and CLI.
 
 ## Boot sequence (systemd)
@@ -219,7 +226,7 @@ but needs a user-supplied kernel + rootfs.
 
 ## What it deliberately does not do
 
-- **Writes systemd units only when asked** (steps 8–9), for
+- **Writes systemd units only when asked** (steps 9–10), for
   glidex-netd and the control plane; nothing else is supervised.
 - **Does not configure networking itself**: bridges, NAT and uplinks
   are created later through glidex-netd, never by the installer.
