@@ -15,6 +15,9 @@ pub const DEFAULT_SUPERNET: &str = "10.88.0.0/16";
 pub const DNSMASQ_RUN_DIR: &str = "/run/glidex/dnsmasq";
 pub const DNSMASQ_LEASE_DIR: &str = "/var/lib/glidex/dnsmasq";
 pub const NFT_TABLE: &str = "glidex";
+/// glidex's chain in iptables' `filter` table, for hosts whose FORWARD
+/// policy would otherwise drop NAT traffic (see [`apply_iptables`]).
+pub const IPT_CHAIN: &str = "GLIDEX-FORWARD";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NatSpec {
@@ -276,6 +279,82 @@ pub fn apply_nft(exec: &dyn Exec, nats: &[NatState]) -> Result<(), OvsError> {
     Ok(())
 }
 
+/// Where to hook [`IPT_CHAIN`] in so a dropping iptables FORWARD chain
+/// lets NAT traffic through. An accept in our own nftables table can't
+/// overrule a drop in another table at the same hook, so the accept has to
+/// live in the dropping chain itself: Docker's `DOCKER-USER` (Docker sets
+/// FORWARD to DROP and keeps that chain for admin rules), else FORWARD
+/// when its policy is DROP. `None`: nothing drops forwarded traffic, or
+/// iptables isn't installed.
+pub fn iptables_hook(exec: &dyn Exec) -> Option<&'static str> {
+    let rules = |chain: &str| {
+        exec.run(&Cmd::new(Program::Iptables, ["-w", "-S", chain]))
+            .ok()
+            .filter(|o| o.status == 0)
+            .map(|o| o.stdout_str())
+            .unwrap_or_default()
+    };
+    if rules("DOCKER-USER").lines().any(|l| l.trim() == "-N DOCKER-USER") {
+        Some("DOCKER-USER")
+    } else if rules("FORWARD").lines().any(|l| l.trim() == "-P FORWARD DROP") {
+        Some("FORWARD")
+    } else {
+        None
+    }
+}
+
+/// The `-A` rules of [`IPT_CHAIN`]: the same accepts as the nftables
+/// forward chain.
+pub fn iptables_rules(nats: &[NatState]) -> Vec<Vec<String>> {
+    nats.iter()
+        .flat_map(|n| {
+            let (br, net) = (n.bridge.as_str(), n.subnet.to_string());
+            [
+                vec!["-i", br, "-s", &net, "-j", "ACCEPT"],
+                vec!["-o", br, "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT"],
+            ]
+            .map(|r| {
+                ["-w", "-A", IPT_CHAIN]
+                    .into_iter()
+                    .chain(r)
+                    .map(String::from)
+                    .collect()
+            })
+        })
+        .collect()
+}
+
+/// Bring [`IPT_CHAIN`] in line with `nats`: rebuilt and jumped to from
+/// [`iptables_hook`]'s chain when something drops forwarded traffic,
+/// removed (chain and jumps) otherwise or once no NAT networks remain.
+pub fn apply_iptables(exec: &dyn Exec, nats: &[NatState]) -> Result<(), OvsError> {
+    let ipt = |args: &[&str]| Cmd::new(Program::Iptables, args.iter().copied());
+    let ok = |cmd: Cmd| exec.run(&cmd).is_ok_and(|o| o.status == 0);
+    let hook = iptables_hook(exec).filter(|_| !nats.is_empty());
+    // glidex only ever inserts one jump, so one `-D` per chain clears a
+    // stale one (it fails harmlessly when there's none, or no iptables).
+    for chain in ["DOCKER-USER", "FORWARD"] {
+        if Some(chain) != hook {
+            ok(ipt(&["-w", "-D", chain, "-j", IPT_CHAIN]));
+        }
+    }
+    let Some(hook) = hook else {
+        ok(ipt(&["-w", "-F", IPT_CHAIN]));
+        ok(ipt(&["-w", "-X", IPT_CHAIN]));
+        return Ok(());
+    };
+    if !ok(ipt(&["-w", "-F", IPT_CHAIN])) {
+        exec.check(&ipt(&["-w", "-N", IPT_CHAIN]))?;
+    }
+    for rule in iptables_rules(nats) {
+        exec.check(&Cmd::new(Program::Iptables, rule))?;
+    }
+    if !ok(ipt(&["-w", "-C", hook, "-j", IPT_CHAIN])) {
+        exec.check(&ipt(&["-w", "-I", hook, "1", "-j", IPT_CHAIN]))?;
+    }
+    Ok(())
+}
+
 /// Write the dnsmasq config and hosts file (the process is supervised by
 /// netd).
 pub fn write_dnsmasq_files(exec: &dyn Exec, state: &NatState) -> Result<(), OvsError> {
@@ -413,6 +492,72 @@ mod tests {
         assert!(script.contains("iifname \"gxbr-nat\" ip saddr 10.88.0.0/24 accept"));
         assert!(!script.contains("oifname \"eth"), "no outgoing interface is pinned");
         assert_eq!(nft_script(&[]), "table inet glidex\ndelete table inet glidex\n");
+    }
+
+    #[test]
+    fn iptables_hook_prefers_docker_user() {
+        let exec = RecordingExec::new();
+        assert_eq!(iptables_hook(&exec), None, "empty output: nothing drops");
+
+        let exec = RecordingExec::new();
+        exec.on("iptables -w -S FORWARD", Output::ok("-P FORWARD DROP\n-A FORWARD -j DOCKER-USER\n"));
+        assert_eq!(iptables_hook(&exec), Some("FORWARD"));
+        exec.on("iptables -w -S DOCKER-USER", Output::ok("-N DOCKER-USER\n"));
+        assert_eq!(iptables_hook(&exec), Some("DOCKER-USER"));
+
+        let exec = RecordingExec::new();
+        exec.on("iptables -w -S FORWARD", Output::ok("-P FORWARD ACCEPT\n"));
+        exec.on("iptables -w -S DOCKER-USER", Output::failed(1, "No chain/target/match by that name."));
+        assert_eq!(iptables_hook(&exec), None);
+    }
+
+    #[test]
+    fn apply_iptables_behind_docker() {
+        let a = NatState::new("gxbr-nat", net("10.88.0.0/24"), true).unwrap();
+        let exec = RecordingExec::new();
+        exec.on("iptables -w -S DOCKER-USER", Output::ok("-N DOCKER-USER\n"));
+        exec.on("iptables -w -F GLIDEX-FORWARD", Output::failed(1, "No chain"));
+        exec.on("iptables -w -C DOCKER-USER", Output::failed(1, "Bad rule"));
+        apply_iptables(&exec, &[a.clone()]).unwrap();
+        let calls = exec.calls();
+        let after_detect: Vec<&str> = calls.iter().skip(1).map(String::as_str).collect();
+        assert_eq!(after_detect, [
+            "iptables -w -D FORWARD -j GLIDEX-FORWARD",
+            "iptables -w -F GLIDEX-FORWARD",
+            "iptables -w -N GLIDEX-FORWARD",
+            "iptables -w -A GLIDEX-FORWARD -i gxbr-nat -s 10.88.0.0/24 -j ACCEPT",
+            "iptables -w -A GLIDEX-FORWARD -o gxbr-nat -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT",
+            "iptables -w -C DOCKER-USER -j GLIDEX-FORWARD",
+            "iptables -w -I DOCKER-USER 1 -j GLIDEX-FORWARD",
+        ]);
+
+        // Re-applying keeps the existing chain and jump.
+        let exec = RecordingExec::new();
+        exec.on("iptables -w -S DOCKER-USER", Output::ok("-N DOCKER-USER\n"));
+        apply_iptables(&exec, &[a]).unwrap();
+        assert!(!exec.calls().iter().any(|c| c.contains(" -N ") || c.contains(" -I ")), "{:#?}", exec.calls());
+    }
+
+    #[test]
+    fn apply_iptables_removes_chain_when_unneeded() {
+        let a = NatState::new("gxbr-nat", net("10.88.0.0/24"), true).unwrap();
+        for nats in [vec![], vec![a]] {
+            let exec = RecordingExec::new();
+            if nats.is_empty() {
+                exec.on("iptables -w -S DOCKER-USER", Output::ok("-N DOCKER-USER\n"));
+            }
+            apply_iptables(&exec, &nats).unwrap();
+            let calls = exec.calls();
+            for c in [
+                "iptables -w -D DOCKER-USER -j GLIDEX-FORWARD",
+                "iptables -w -D FORWARD -j GLIDEX-FORWARD",
+                "iptables -w -F GLIDEX-FORWARD",
+                "iptables -w -X GLIDEX-FORWARD",
+            ] {
+                assert!(calls.iter().any(|x| x == c), "missing {c}: {calls:#?}");
+            }
+            assert!(!calls.iter().any(|c| c.contains(" -A ")), "{calls:#?}");
+        }
     }
 
     #[test]

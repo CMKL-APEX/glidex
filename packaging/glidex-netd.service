@@ -5,6 +5,9 @@ Documentation=https://github.com/akkarit/glidex/blob/main/spec/networking.md
 # (Debian/Ubuntu, Fedora, or glidex's source build). Missing ones are ignored.
 Wants=network-online.target openvswitch-switch.service openvswitch.service glidex-ovs-vswitchd.service
 After=network-online.target openvswitch-switch.service openvswitch.service ovs-vswitchd.service glidex-ovs-vswitchd.service
+# Docker sets iptables FORWARD to DROP; start after it so DOCKER-USER
+# exists when the NAT pass-through is restored (ignored without Docker).
+After=docker.service
 Before=glidex-control-plane.service
 
 [Service]

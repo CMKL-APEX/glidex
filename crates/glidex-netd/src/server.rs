@@ -421,6 +421,7 @@ impl Netd {
             self.store.put(META, "ip_forward_set_by_glidex", &true)?;
         }
         nat::apply_nft(ex, all)?;
+        nat::apply_iptables(ex, all)?;
         nat::write_dnsmasq_files(ex, state)?;
         self.stop_stale_dnsmasq(state);
         self.supervisor.start(&state.bridge, state.dnsmasq_args())
@@ -491,6 +492,7 @@ impl Netd {
         self.supervisor.stop(bridge);
         let rest: Vec<NatState> = self.nats()?.into_iter().filter(|n| n.bridge != bridge).collect();
         nat::apply_nft(self.ex(), &rest)?;
+        nat::apply_iptables(self.ex(), &rest)?;
         nat::remove_address(self.ex(), &state)?;
         nat::remove_dnsmasq_files(self.ex(), &state)?;
         self.store.delete(NAT, bridge)?;

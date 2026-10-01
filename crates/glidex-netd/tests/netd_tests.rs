@@ -89,6 +89,30 @@ fn nat_network_lifecycle() {
     assert!(nats[0].dnsmasq_running);
 }
 
+#[test]
+fn nat_passes_dockers_forward_drop() {
+    let dir = TempDir::new().unwrap();
+    let exec = exec();
+    exec.on("iptables -w -S DOCKER-USER", Output::ok("-N DOCKER-USER\n"));
+    exec.on("iptables -w -C DOCKER-USER -j GLIDEX-FORWARD", Output::failed(1, "Bad rule"));
+    let (netd, _sup) = netd(exec.clone(), &dir);
+    setup_nat(&netd);
+    let calls = exec.calls();
+    for c in [
+        "iptables -w -A GLIDEX-FORWARD -i gxbr-nat -s 10.88.0.0/24 -j ACCEPT",
+        "iptables -w -I DOCKER-USER 1 -j GLIDEX-FORWARD",
+    ] {
+        assert!(calls.iter().any(|x| x == c), "missing {c}: {calls:#?}");
+    }
+
+    // Deleting the last NAT network takes glidex's chain out again.
+    netd.handle(Op::DeleteNat { bridge: "gxbr-nat".into() }, &peer()).unwrap();
+    let calls = exec.calls();
+    for c in ["iptables -w -D DOCKER-USER -j GLIDEX-FORWARD", "iptables -w -X GLIDEX-FORWARD"] {
+        assert!(calls.iter().any(|x| x == c), "missing {c}: {calls:#?}");
+    }
+}
+
 use glidex_netd::supervisor::Supervisor;
 
 #[test]

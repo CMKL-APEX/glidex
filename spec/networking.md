@@ -488,7 +488,8 @@ directories, runs `probe`, then **reconciles**:
    `vfio-pci`** (decision 5); **re-apply IP migrations** from the stored
    snapshot (a reboot puts the host's own config back on the NIC).
 2. **NAT:** gateway address, `ip_forward`, the `inet glidex` table
-   (replaced atomically with `nft -f`), dnsmasq processes.
+   (replaced atomically with `nft -f`), `GLIDEX-FORWARD` where iptables
+   drops forwarded traffic, dnsmasq processes.
 3. **VM ports:** kept until the control plane calls `sync_vms`; then
    ports whose VM isn't in `running` are detached (port, tap, socket).
 4. **Orphans:** glidex-tagged objects with no record are reported in
@@ -505,6 +506,7 @@ after every reconnect.
 |---|---|
 | OVS bridge / port / interface | `external_ids:glidex-owner=glidex` plus `glidex-role` (`bridge`/`uplink`/`vm`), `glidex-vm-id`, `glidex-nic`, `glidex-uplink`, `glidex-orig-driver` |
 | nftables | only table `inet glidex` |
+| iptables | only chain `GLIDEX-FORWARD` and its jump from `DOCKER-USER`/`FORWARD` |
 | dnsmasq | only processes whose pid files are in `/run/glidex/dnsmasq/` |
 | taps | `gx` prefix **and** a `vm_ports` record |
 
@@ -632,6 +634,16 @@ Limits, returned in `UplinkState.warnings`:
    ```
    No outgoing interface is named, so traffic follows the host's
    existing route (decision 4).
+   **iptables FORWARD drop:** an accept in `inet glidex` can't overrule a
+   drop in another table at the same hook, so when iptables' `filter`
+   table drops forwarded traffic netd also maintains chain
+   `GLIDEX-FORWARD` (the same two accepts per network, via `iptables
+   -w`) and one jump to it at the top of `DOCKER-USER` when that chain
+   exists (Docker sets FORWARD to DROP and leaves `DOCKER-USER` to
+   admins), else of `FORWARD` when its policy is DROP. Rebuilt with the
+   nftables table; removed with the last NAT network or when nothing
+   drops. The unit is ordered `After=docker.service` so the chain exists
+   at boot.
 5. **dnsmasq**, a supervised child of netd (restarted if it exits):
    `dnsmasq --keep-in-foreground --conf-file=/run/glidex/dnsmasq/<br>.conf`
    with:
@@ -658,7 +670,8 @@ creates it: bridge `gxbr-nat` (`system`), `ensure_nat` with the default
 subnet, and network `default` (tap). Failure is logged, not fatal.
 
 **Firewalls:** `probe` reports active `ufw`/`firewalld`; a drop in their
-forward chains still wins over `inet glidex`. `GET /ovs/status` shows
+forward chains still wins over `inet glidex`. (A plain iptables FORWARD
+DROP, Docker's included, is handled by `GLIDEX-FORWARD` above.) `GET /ovs/status` shows
 the command needed to allow the NAT subnet **(verify)**.
 
 ## 11. Control plane

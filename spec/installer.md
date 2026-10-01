@@ -93,9 +93,10 @@ to `command -v`.
    `sysctl -p`. Each setting is preceded by
    `# glidex-previous: key=value`, the value before glidex changed it.
    Re-runs keep the recorded original, so the uninstaller restores the
-   pre-glidex value rather than glidex's own. Firewalls are not touched:
-   netd's nftables table only adds masquerade, so a host firewall that
-   drops forwarded traffic must allow the NAT subnets.
+   pre-glidex value rather than glidex's own. Firewall managers are not
+   touched: ufw or firewalld dropping forwarded traffic must allow the NAT
+   subnets. A plain iptables FORWARD DROP (e.g. Docker's) is handled by
+   netd's `GLIDEX-FORWARD` chain (networking.md §10).
 10. **Start at boot** *(optional, prompts; skipped without systemd)* —
    renders `packaging/glidex-control-plane.service.in` for the invoking
    user (§ below), installs it (and refreshes netd's unit), and enables
