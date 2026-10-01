@@ -102,6 +102,43 @@ struct DiskConfig {
     path: String,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     readonly: bool,
+    // CH deprecated image-type auto-detection in v52; `None` (unreadable
+    // image) leaves the field out so CH reports the open error itself.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    image_type: Option<ImageType>,
+}
+
+/// Disk image formats CH can open; names match its `ImageType` API enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+enum ImageType {
+    FixedVhd,
+    Qcow2,
+    Raw,
+    Vhdx,
+}
+
+/// Identify a disk image by the same magic bytes CH's own probe used.
+/// Anything without a recognised header is a raw image.
+fn detect_image_type(path: &str) -> Option<ImageType> {
+    use std::io::{Seek, SeekFrom};
+    let mut file = File::open(path).ok()?;
+    let mut header = [0u8; 8];
+    let n = file.read(&mut header).ok()?;
+    if n >= 4 && header[..4] == *b"QFI\xfb" {
+        return Some(ImageType::Qcow2);
+    }
+    if n == 8 && header == *b"vhdxfile" {
+        return Some(ImageType::Vhdx);
+    }
+    // VHD keeps a 512-byte footer at the end: "conectix" cookie, then the
+    // big-endian disk type at offset 60 (2 = fixed, the only kind CH runs).
+    let mut footer = [0u8; 512];
+    if file.seek(SeekFrom::End(-512)).is_ok() && file.read_exact(&mut footer).is_ok() {
+        if footer[..8] == *b"conectix" && footer[60..64] == 2u32.to_be_bytes() {
+            return Some(ImageType::FixedVhd);
+        }
+    }
+    Some(ImageType::Raw)
 }
 
 #[derive(Debug, Serialize)]
@@ -306,10 +343,13 @@ impl CloudHypervisorClient {
             disks: std::iter::once(DiskConfig {
                 path: config.rootfs_path.clone(),
                 readonly: false,
+                image_type: detect_image_type(&config.rootfs_path),
             })
+            // The seed is always the raw FAT image `write_seed_image` builds.
             .chain(config.cloud_init_path.iter().map(|path| DiskConfig {
                 path: path.clone(),
                 readonly: true,
+                image_type: Some(ImageType::Raw),
             }))
             .collect(),
             console: ConsoleConfig {
@@ -739,6 +779,42 @@ mod tests {
             "id": "net1", "mac": "02:00:00:00:00:02", "num_queues": 4, "mtu": 9000,
             "vhost_user": true, "vhost_socket": "/run/glidex/vhost/x.net1.sock", "vhost_mode": "Server"
         }));
+    }
+
+    #[test]
+    fn detect_image_type_from_magic() {
+        let dir = tempfile::tempdir().unwrap();
+        let write = |name: &str, bytes: &[u8]| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, bytes).unwrap();
+            path.to_string_lossy().into_owned()
+        };
+
+        let mut qcow2 = b"QFI\xfb\x00\x00\x00\x03".to_vec();
+        qcow2.resize(4096, 0);
+        assert_eq!(detect_image_type(&write("a.qcow2", &qcow2)), Some(ImageType::Qcow2));
+
+        let mut vhdx = b"vhdxfile".to_vec();
+        vhdx.resize(4096, 0);
+        assert_eq!(detect_image_type(&write("a.vhdx", &vhdx)), Some(ImageType::Vhdx));
+
+        let mut vhd = vec![0u8; 4096];
+        let footer = vhd.len() - 512;
+        vhd[footer..footer + 8].copy_from_slice(b"conectix");
+        vhd[footer + 60..footer + 64].copy_from_slice(&2u32.to_be_bytes());
+        assert_eq!(detect_image_type(&write("a.vhd", &vhd)), Some(ImageType::FixedVhd));
+
+        assert_eq!(detect_image_type(&write("a.raw", &[0u8; 4096])), Some(ImageType::Raw));
+        assert_eq!(detect_image_type(&write("tiny.raw", b"xy")), Some(ImageType::Raw));
+        assert_eq!(detect_image_type("/nonexistent/disk.img"), None);
+
+        let json = serde_json::to_value(DiskConfig {
+            path: "/d".into(),
+            readonly: false,
+            image_type: Some(ImageType::FixedVhd),
+        })
+        .unwrap();
+        assert_eq!(json, serde_json::json!({"path": "/d", "image_type": "FixedVhd"}));
     }
 
     #[test]
