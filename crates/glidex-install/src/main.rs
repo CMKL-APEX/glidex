@@ -10,7 +10,7 @@ use tempfile::TempDir;
 mod sysconfig;
 mod uninstall;
 
-const CLOUD_HYPERVISOR_VERSION: &str = "v50.0";
+const CLOUD_HYPERVISOR_VERSION: &str = "v53.0";
 /// Release tag of https://github.com/cloud-hypervisor/edk2/releases to fetch
 /// the UEFI firmware from. Bump together with the digests in
 /// `firmware_asset`.

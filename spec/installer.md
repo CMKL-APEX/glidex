@@ -38,7 +38,7 @@ to `command -v`.
    if missing. Bun is the UI's package manager and Vite runner.
 3. **Cloud-Hypervisor** — downloads the arch-appropriate static
    binary from GitHub releases at the version pinned in
-   `CLOUD_HYPERVISOR_VERSION` (currently `v50.0`), installs it via
+   `CLOUD_HYPERVISOR_VERSION` (currently `v53.0`), installs it via
    `install_binary` helper.
 4. **UEFI firmware** — downloads Cloud-Hypervisor's EDK2 firmware
    from <https://github.com/cloud-hypervisor/edk2/releases> at the tag
