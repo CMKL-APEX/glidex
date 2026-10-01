@@ -6,6 +6,8 @@ import VmConsole from "./pages/VmConsole";
 import NotFound from "./pages/NotFound";
 import Credentials from "./pages/Credentials";
 import Networking from "./pages/Networking";
+import Images from "./pages/Images";
+import Disks from "./pages/Disks";
 
 export default function App() {
   return (
@@ -18,6 +20,8 @@ export default function App() {
           <Route path="/vms/:id/console" element={<VmConsole />} />
           <Route path="/credentials" element={<Credentials />} />
           <Route path="/networking" element={<Networking />} />
+          <Route path="/images" element={<Images />} />
+          <Route path="/disks" element={<Disks />} />
           <Route path="*" element={<NotFound />} />
         </Routes>
       </main>

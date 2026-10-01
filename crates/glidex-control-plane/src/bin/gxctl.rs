@@ -307,7 +307,16 @@ struct CreateVmRequest {
     cloud_init_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     credential: Option<String>,
+    #[serde(skip_serializing_if = "String::is_empty")]
     rootfs_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    image: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    root_disk_size_gib: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    root_disk: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    data_disks: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     kernel_args: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -496,10 +505,10 @@ impl CliClient {
         }
     }
 
-    async fn delete_vm(&self, id: &str) -> Result<(), String> {
+    async fn delete_vm(&self, id: &str, keep_disk: bool) -> Result<(), String> {
         let resp = self
             .client
-            .delete(format!("{}/vms/{}", self.base_url, id))
+            .delete(format!("{}/vms/{}{}", self.base_url, id, if keep_disk { "?keep_disk=true" } else { "" }))
             .send()
             .await
             .map_err(|e| format!("Request failed: {}", e))?;
@@ -539,6 +548,9 @@ impl CliClient {
             let mut msg = format!("{}: {}", err.error, err.message);
             if let Some(impact) = err.details.get("impact").and_then(|v| v.as_str()) {
                 msg.push_str(&format!("\n  Impact: {}\n  Re-run with --force to proceed.", impact));
+            }
+            if let Some(min) = err.details.get("min_size_bytes").and_then(|v| v.as_u64()) {
+                msg.push_str(&format!("\n  Minimum size: {} ({} bytes)", format_bytes(min), min));
             }
             if let Some(missing) = err.details.get("missing").and_then(|v| v.as_array()) {
                 let items: Vec<&str> = missing.iter().filter_map(|m| m.as_str()).collect();
@@ -725,6 +737,290 @@ impl CliClient {
     }
 }
 
+/// `1.5 GiB`-style sizes (binary units).
+fn format_bytes(n: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut v = n as f64;
+    let mut u = 0;
+    while v >= 1024.0 && u < UNITS.len() - 1 {
+        v /= 1024.0;
+        u += 1;
+    }
+    if u == 0 { format!("{} B", n) } else { format!("{:.1} {}", v, UNITS[u]) }
+}
+
+fn image_status(img: &serde_json::Value) -> String {
+    let st = &img["status"];
+    match st["state"].as_str().unwrap_or("?") {
+        "downloading" => {
+            let got = st["received_bytes"].as_u64().unwrap_or(0);
+            match st["total_bytes"].as_u64() {
+                Some(t) if t > 0 => format!("downloading {:.0}%", got as f64 * 100.0 / t as f64),
+                _ => format!("downloading {}", format_bytes(got)),
+            }
+        }
+        "failed" => format!("failed: {}", st["reason"].as_str().unwrap_or("")).red().to_string(),
+        "ready" => "ready".green().to_string(),
+        other => other.to_string(),
+    }
+}
+
+async fn handle_image(client: &CliClient, args: &[&str]) {
+    use reqwest::Method;
+    let usage = "Usage: image catalog | list | pull <catalog-key|url> [--name N] [--sha256 H] | rm <name|id>";
+    match args.first().copied().unwrap_or("list") {
+        "catalog" => match client.request_json::<Vec<serde_json::Value>>(Method::GET, "/images/catalog", None).await {
+            Ok(items) => {
+                for i in items {
+                    println!(
+                        "  {:<14} {} {}{}",
+                        i["key"].as_str().unwrap_or("?").cyan(),
+                        i["distro"].as_str().unwrap_or(""),
+                        i["release"].as_str().unwrap_or(""),
+                        if i["downloaded_image_id"].is_null() { String::new() } else { " (downloaded)".green().to_string() }
+                    );
+                }
+            }
+            Err(e) => println!("{} {}", "Error:".red(), e),
+        },
+        "list" | "ls" => match client.request_json::<Vec<serde_json::Value>>(Method::GET, "/images", None).await {
+            Ok(imgs) if imgs.is_empty() => println!("No images. Pull one with 'image pull <key>' (see 'image catalog')."),
+            Ok(imgs) => {
+                for i in imgs {
+                    let src = &i["source"];
+                    let from = match src["kind"].as_str() {
+                        Some("catalog") => format!("{} {}", src["key"].as_str().unwrap_or(""), src["version"].as_str().unwrap_or("")),
+                        _ => src["url"].as_str().unwrap_or("").to_string(),
+                    };
+                    println!(
+                        "  {:<20} {:<22} {:>9}  {}{}",
+                        i["name"].as_str().unwrap_or("?").cyan(),
+                        image_status(&i),
+                        format_bytes(i["virtual_size_bytes"].as_u64().unwrap_or(0)),
+                        from.trim(),
+                        if i["verified"] == true { "" } else { " (unverified)" }
+                    );
+                }
+            }
+            Err(e) => println!("{} {}", "Error:".red(), e),
+        },
+        "pull" => {
+            let Some(what) = args.get(1).filter(|a| !a.starts_with("--")) else {
+                println!("{}", usage.yellow());
+                return;
+            };
+            let mut body = if what.contains("://") {
+                serde_json::json!({ "url": what })
+            } else {
+                serde_json::json!({ "catalog": what })
+            };
+            if let Some(n) = flag_value(args, "--name") {
+                body["name"] = serde_json::json!(n);
+            }
+            if let Some(h) = flag_value(args, "--sha256") {
+                body["sha256"] = serde_json::json!(h);
+            }
+            let img = match client.request_json::<serde_json::Value>(Method::POST, "/images", Some(body)).await {
+                Ok(i) => i,
+                Err(e) => {
+                    println!("{} {}", "Error:".red(), e);
+                    return;
+                }
+            };
+            let id = img["id"].as_str().unwrap_or("").to_string();
+            println!("Pulling {} as {} (Ctrl-C stops watching; the download continues)", what, img["name"].as_str().unwrap_or("?").yellow());
+            loop {
+                match client.request_json::<serde_json::Value>(Method::GET, &format!("/images/{}", id), None).await {
+                    Ok(i) => {
+                        let state = i["status"]["state"].as_str().unwrap_or("").to_string();
+                        print!("\r  {:<60}", image_status(&i));
+                        let _ = io::stdout().flush();
+                        if state != "downloading" && state != "verifying" {
+                            println!();
+                            if state == "ready" {
+                                println!("{} {} ({}, sha256 {})", "Image ready:".green(), i["name"].as_str().unwrap_or(""), format_bytes(i["virtual_size_bytes"].as_u64().unwrap_or(0)), i["sha256"].as_str().unwrap_or(""));
+                            }
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        println!("\n{} {}", "Error:".red(), e);
+                        break;
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
+        }
+        "rm" | "delete" => match args.get(1) {
+            Some(name) => match client.request_json::<()>(Method::DELETE, &format!("/images/{}", name), None).await {
+                Ok(()) => println!("{} {}", "Image deleted:".green(), name),
+                Err(e) => println!("{} {}", "Error:".red(), e),
+            },
+            None => println!("{}", usage.yellow()),
+        },
+        _ => println!("{}", usage.yellow()),
+    }
+}
+
+fn print_disk_result(d: &serde_json::Value) {
+    println!(
+        "  {} {} {} {}",
+        d["name"].as_str().unwrap_or("?").cyan(),
+        format_bytes(d["size_bytes"].as_u64().unwrap_or(0)),
+        d["format"].as_str().unwrap_or(""),
+        d["extend_root"].as_str().map(|r| format!("(root partition: {})", r.replace('_', " "))).unwrap_or_default()
+    );
+    for w in d["warnings"].as_array().into_iter().flatten() {
+        println!("  {} {}", "Warning:".yellow(), w.as_str().unwrap_or(""));
+    }
+}
+
+async fn handle_disk(client: &CliClient, args: &[&str]) {
+    use reqwest::Method;
+    let usage = "Usage: disk list | show <disk> | create <name> [--size-gib N] [--image I] [--full] [--raw] [--no-extend] | resize <disk> <GiB> [--no-extend] | extend-root <disk> [--on-boot] | rm <disk>";
+    let gib = |s: &str| s.parse::<u64>().map_err(|_| format!("{} is not a whole number of GiB", s));
+    match args.first().copied().unwrap_or("list") {
+        "list" | "ls" => match client.request_json::<Vec<serde_json::Value>>(Method::GET, "/disks", None).await {
+            Ok(disks) if disks.is_empty() => println!("No disks."),
+            Ok(disks) => {
+                let vms = client.list_vms().await.unwrap_or_default();
+                for d in disks {
+                    let vm = d["attached_to"].as_str().map(|id| {
+                        vms.iter().find(|v| v.id == id).map(|v| v.name.clone()).unwrap_or_else(|| id.to_string())
+                    });
+                    let origin = match d["origin"]["kind"].as_str() {
+                        Some("image") => format!("image ({})", d["origin"]["mode"].as_str().unwrap_or("")),
+                        _ => "blank".to_string(),
+                    };
+                    println!(
+                        "  {:<20} {:>9} {:<6} {:<14} {:<7} {}",
+                        d["name"].as_str().unwrap_or("?").cyan(),
+                        format_bytes(d["size_bytes"].as_u64().unwrap_or(0)),
+                        d["format"].as_str().unwrap_or(""),
+                        origin,
+                        d["status"].as_str().unwrap_or(""),
+                        vm.map(|v| format!("→ {}", v)).unwrap_or_default()
+                    );
+                }
+            }
+            Err(e) => println!("{} {}", "Error:".red(), e),
+        },
+        "show" | "get" => match args.get(1) {
+            Some(name) => match client.request_json::<serde_json::Value>(Method::GET, &format!("/disks/{}", name), None).await {
+                Ok(d) => {
+                    print_disk_result(&d);
+                    println!("  path: {}", d["path"].as_str().unwrap_or(""));
+                    if let Some(b) = d["info"]["backing-filename"].as_str() {
+                        println!("  backing file: {}", b);
+                    }
+                    if d["pending_growpart"] == true {
+                        println!("  root partition grows on next boot");
+                    }
+                    let t = &d["partition_table"];
+                    match t["partitions"].as_array() {
+                        Some(parts) => {
+                            println!("  partitions ({}):", t["kind"].as_str().unwrap_or(""));
+                            for p in parts {
+                                println!(
+                                    "    {} start {:>9} size {:>9} {}{}",
+                                    p["number"],
+                                    format_bytes(p["start_bytes"].as_u64().unwrap_or(0)),
+                                    format_bytes(p["size_bytes"].as_u64().unwrap_or(0)),
+                                    p["type"].as_str().unwrap_or(""),
+                                    if p["is_root"] == true { " (root)" } else { "" }
+                                );
+                            }
+                            println!("  free at end: {}", format_bytes(t["free_tail_bytes"].as_u64().unwrap_or(0)));
+                        }
+                        None => println!("  no partition table"),
+                    }
+                }
+                Err(e) => println!("{} {}", "Error:".red(), e),
+            },
+            None => println!("{}", usage.yellow()),
+        },
+        "create" => {
+            let Some(name) = args.get(1).filter(|a| !a.starts_with("--")) else {
+                println!("{}", usage.yellow());
+                return;
+            };
+            let mut body = serde_json::json!({ "name": name });
+            if let Some(n) = flag_value(args, "--size-gib") {
+                match gib(n) {
+                    Ok(n) => body["size_gib"] = serde_json::json!(n),
+                    Err(e) => return println!("{} {}", "Error:".red(), e),
+                }
+            }
+            if let Some(i) = flag_value(args, "--image") {
+                body["image"] = serde_json::json!(i);
+            }
+            if has_flag(args, "--full") {
+                body["clone"] = serde_json::json!("full");
+            }
+            if has_flag(args, "--raw") {
+                body["format"] = serde_json::json!("raw");
+            }
+            if has_flag(args, "--no-extend") {
+                body["extend_root"] = serde_json::json!(false);
+            }
+            match client.request_json::<serde_json::Value>(Method::POST, "/disks", Some(body)).await {
+                Ok(d) => {
+                    println!("{}", "Disk created:".green());
+                    print_disk_result(&d);
+                }
+                Err(e) => println!("{} {}", "Error:".red(), e),
+            }
+        }
+        "resize" => match (args.get(1), args.get(2)) {
+            (Some(name), Some(size)) => {
+                let size = match gib(size) {
+                    Ok(n) => n,
+                    Err(e) => return println!("{} {}", "Error:".red(), e),
+                };
+                let mut body = serde_json::json!({ "size_gib": size });
+                if has_flag(args, "--no-extend") {
+                    body["extend_root"] = serde_json::json!(false);
+                }
+                match client.request_json::<serde_json::Value>(Method::POST, &format!("/disks/{}/resize", name), Some(body)).await {
+                    Ok(d) => {
+                        println!("{}", "Disk resized:".green());
+                        print_disk_result(&d);
+                    }
+                    Err(e) => println!("{} {}", "Error:".red(), e),
+                }
+            }
+            _ => println!("{}", usage.yellow()),
+        },
+        "extend-root" => match args.get(1) {
+            Some(name) => {
+                let mode = if has_flag(args, "--on-boot") { "on-boot" } else { "offline" };
+                match client
+                    .request_json::<serde_json::Value>(Method::POST, &format!("/disks/{}/extend-root", name), Some(serde_json::json!({ "mode": mode })))
+                    .await
+                {
+                    Ok(d) => print_disk_result(&d),
+                    Err(e) => println!("{} {}", "Error:".red(), e),
+                }
+            }
+            None => println!("{}", usage.yellow()),
+        },
+        "rm" | "delete" => match args.get(1) {
+            Some(name) => {
+                if prompt(&format!("Delete disk {} and its data? [y/N]: ", name)).to_lowercase() != "y" {
+                    println!("Cancelled");
+                    return;
+                }
+                match client.request_json::<()>(Method::DELETE, &format!("/disks/{}", name), None).await {
+                    Ok(()) => println!("{} {}", "Disk deleted:".green(), name),
+                    Err(e) => println!("{} {}", "Error:".red(), e),
+                }
+            }
+            None => println!("{}", usage.yellow()),
+        },
+        _ => println!("{}", usage.yellow()),
+    }
+}
+
 fn print_help() {
     println!("{}", "Available commands:".bold());
     println!("  {}              - List all VMs", "list".cyan());
@@ -738,7 +1034,7 @@ fn print_help() {
     println!("  {}  - Pause a VM", "pause <name|id>".cyan());
     println!("  {} - Connect to VM console (interactive)", "connect <name|id>".cyan());
     println!("  {}     - Show VM serial console log", "log <name|id>".cyan());
-    println!("  {} - Delete a VM", "delete <name|id>".cyan());
+    println!("  {} - Delete a VM (and its own root disk)", "delete <name|id> [--keep-disk]".cyan());
     println!("  {}               - List host PCI devices", "pci".cyan());
     println!(
         "  {}     - Show detailed info (incl. sysfs path) for one device",
@@ -766,6 +1062,16 @@ fn print_help() {
     println!("  {} - Remove an uplink, restoring the NIC", "uplink-rm <bridge> <name>".cyan());
     println!("  {}        - Host networking status", "ovs status".cyan());
     println!("  {} - Install Open vSwitch", "ovs install [--profile kernel|dpdk] [--force]".cyan());
+    println!("  {}     - Cloud images in the built-in catalog", "image catalog".cyan());
+    println!("  {}        - List downloaded images", "image list".cyan());
+    println!("  {} - Download and verify an image", "image pull <catalog-key|https-url> [--name N] [--sha256 H]".cyan());
+    println!("  {}   - Delete an image", "image rm <name|id>".cyan());
+    println!("  {}         - List disks", "disk list".cyan());
+    println!("  {}  - Disk details and partitions", "disk show <name|id>".cyan());
+    println!("  {} - Create a disk", "disk create <name> [--size-gib N] [--image I] [--full] [--raw] [--no-extend]".cyan());
+    println!("  {} - Grow or shrink a disk", "disk resize <disk> <GiB> [--no-extend]".cyan());
+    println!("  {} - Grow the root partition", "disk extend-root <disk> [--on-boot]".cyan());
+    println!("  {}    - Delete a disk", "disk rm <name|id>".cyan());
     println!("  {}            - Check API server health", "health".cyan());
     println!("  {}              - Show this help", "help".cyan());
     println!("  {}              - Exit the CLI", "exit".cyan());
@@ -945,6 +1251,7 @@ const COMMANDS: &[&str] = &[
     "attach-device", "detach-device", "credentials", "creds", "credential-add",
     "credential-passwd", "credential-keys", "credential-rm", "networks", "network-add",
     "network-rm", "bridges", "uplinks", "uplink-add", "uplink-rm", "ovs", "health",
+    "image", "images", "disk", "disks",
 ];
 
 /// Commands whose argument at this (0-based, after the command) index is a
@@ -1171,18 +1478,71 @@ async fn handle_create(client: &CliClient) {
         path
     };
 
-    // Firmware boot needs a disk with its own bootloader (e.g. a raw distro
-    // cloud image); kernel boot takes a bare root filesystem image.
-    let rootfs_prompt = if firmware_path.is_some() {
-        "Disk image path (UEFI-bootable, e.g. a raw cloud image): "
-    } else {
-        "Root filesystem path: "
-    };
-    let rootfs_path = prompt_path(rootfs_prompt);
-    if rootfs_path.is_empty() {
-        println!("{}", "Error: disk image path is required".red());
-        return;
+    // Boot disk. Firmware boot offers managed images first (spec
+    // images.md §10); kernel boot takes a bare root filesystem image.
+    let (mut rootfs_path, mut image, mut root_disk_size_gib, mut root_disk) = (String::new(), None, None, None);
+    let mut choice = "path".to_string();
+    if firmware_path.is_some() {
+        let ready: Vec<String> = client
+            .request_json::<Vec<serde_json::Value>>(reqwest::Method::GET, "/images", None)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|i| i["status"]["state"] == "ready")
+            .filter_map(|i| i["name"].as_str().map(str::to_string))
+            .collect();
+        let default = if ready.is_empty() { "path" } else { "image" };
+        choice = prompt(&format!("Boot disk from [image/disk/path] [{}]: ", default)).to_lowercase();
+        if choice.is_empty() {
+            choice = default.to_string();
+        }
+        match choice.as_str() {
+            "image" | "i" => {
+                if ready.is_empty() {
+                    println!("{}", "Error: no downloaded images; pull one with 'image pull <key>'".red());
+                    return;
+                }
+                let pick = prompt(&format!("Image ({}) [{}]: ", ready.join(", "), ready[0]));
+                image = Some(if pick.is_empty() { ready[0].clone() } else { pick });
+                root_disk_size_gib = match prompt("Root disk size in GiB [10]: ").as_str() {
+                    "" => None,
+                    s => match s.parse::<u64>() {
+                        Ok(n) => Some(n),
+                        Err(_) => {
+                            println!("{}", "Error: size must be a whole number of GiB".red());
+                            return;
+                        }
+                    },
+                };
+            }
+            "disk" | "d" => {
+                let d = prompt("Existing disk (name or id; see 'disk list'): ");
+                if d.is_empty() {
+                    println!("{}", "Error: a disk is required".red());
+                    return;
+                }
+                root_disk = Some(d);
+            }
+            _ => choice = "path".into(),
+        }
     }
+    if choice == "path" {
+        // Firmware boot needs a disk with its own bootloader (e.g. a raw
+        // distro cloud image); kernel boot takes a bare root filesystem image.
+        let rootfs_prompt = if firmware_path.is_some() {
+            "Disk image path (UEFI-bootable, e.g. a raw cloud image): "
+        } else {
+            "Root filesystem path: "
+        };
+        rootfs_path = prompt_path(rootfs_prompt);
+        if rootfs_path.is_empty() {
+            println!("{}", "Error: disk image path is required".red());
+            return;
+        }
+    }
+    let data_disks = prompt_optional("Data disks (optional, comma-separated disk names): ").map(|s| {
+        s.split(',').map(|d| d.trim().to_string()).filter(|d| !d.is_empty()).collect::<Vec<_>>()
+    });
 
     let cloud_init_path = if firmware_path.is_some() {
         prompt_path_optional("cloud-init seed image (optional, default: auto-generated): ")
@@ -1273,6 +1633,10 @@ async fn handle_create(client: &CliClient) {
         cloud_init_path,
         credential,
         rootfs_path,
+        image,
+        root_disk_size_gib,
+        root_disk,
+        data_disks: data_disks.filter(|v| !v.is_empty()),
         kernel_args,
         hypervisor,
         vfio_devices,
@@ -1682,12 +2046,14 @@ async fn handle_command(line: &str, client: &CliClient) -> bool {
                     return true;
                 }
             };
+            let keep_disk = has_flag(&parts[2..], "--keep-disk");
             let confirm = prompt(&format!(
-                "Are you sure you want to delete VM {}? [y/N]: ",
-                parts[1]
+                "Are you sure you want to delete VM {}{}? [y/N]: ",
+                parts[1],
+                if keep_disk { "" } else { " (and a root disk created for it)" }
             ));
             if confirm.to_lowercase() == "y" {
-                match client.delete_vm(&vm_id).await {
+                match client.delete_vm(&vm_id, keep_disk).await {
                     Ok(()) => println!("{} VM deleted", "Success:".green()),
                     Err(e) => println!("{} {}", "Error:".red(), e),
                 }
@@ -1915,6 +2281,10 @@ async fn handle_command(line: &str, client: &CliClient) -> bool {
             },
             _ => println!("{}", "Usage: uplink-rm <bridge> <name>".yellow()),
         },
+
+        "image" | "images" => handle_image(client, &parts[1..]).await,
+
+        "disk" | "disks" => handle_disk(client, &parts[1..]).await,
 
         "health" => match client.health_check().await {
             Ok(()) => println!("{} API server is healthy", "OK:".green()),

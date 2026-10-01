@@ -304,6 +304,7 @@ fn seed_image_is_a_cidata_volume_with_nocloud_files() {
         ssh_authorized_keys: vec!["ssh-ed25519 AAAAC3Nza test@host".into()],
         passwd_hash: Some("$6$salt$hash".into()),
         nic_macs: Vec::new(),
+        growpart: false,
     };
 
     cloud_init::write_seed_image(image.to_str().unwrap(), &seed).unwrap();
@@ -884,4 +885,101 @@ async fn vhost_user_e2e() {
 
     let (st, body) = request(&app, "DELETE", "/networks/fast", None).await;
     assert_eq!(st, StatusCode::NO_CONTENT, "{body}");
+}
+
+/// spec/images.md §12: pull a catalog image, boot a VM created from it with
+/// a 12 GiB root disk, check the guest's `/` filled it; stop, grow to
+/// 16 GiB, boot again and check again. Downloads the image (~700 MB) from
+/// the vendor; `GLIDEX_TEST_CATALOG` picks the entry (default ubuntu-26.04).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "downloads a cloud image and boots it; needs network, KVM, cloud-hypervisor and qemu-img/qemu-io/sgdisk/growpart"]
+async fn catalog_image_boots_and_root_grows() {
+    let firmware = env_path(
+        "GLIDEX_TEST_FIRMWARE",
+        default_firmware_path().map(|p| p.to_string_lossy().into_owned()),
+    );
+    let key = std::env::var("GLIDEX_TEST_CATALOG").unwrap_or_else(|_| "ubuntu-26.04".into());
+    let (app, manager, _tmp) = create_test_app();
+    let _guard = ShutdownGuard(manager.clone());
+
+    let (status, img) = request(&app, "POST", "/images", Some(json!({"catalog": key}))).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{img}");
+    let image_id = img["id"].as_str().unwrap().to_string();
+    let deadline = Instant::now() + Duration::from_secs(1800);
+    let img = loop {
+        let (_, img) = request(&app, "GET", &format!("/images/{image_id}"), None).await;
+        match img["status"]["state"].as_str().unwrap() {
+            "downloading" | "verifying" => {}
+            _ => break img,
+        }
+        assert!(Instant::now() < deadline, "download timed out: {img}");
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    };
+    assert_eq!(img["status"]["state"], "ready", "{img}");
+    assert_eq!(img["verified"], true);
+    eprintln!("pulled {key}: {}", img["source"]);
+
+    let username = "gxtester";
+    let password = uuid::Uuid::new_v4().simple().to_string();
+    let (status, body) = request(&app, "POST", "/credentials", Some(json!({"username": username, "password": password}))).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    let hostname = "gx-imgtest";
+    let (status, vm) = request(&app, "POST", "/vms", Some(json!({
+        "name": hostname, "vcpu_count": 2, "mem_size_mib": 2048,
+        "firmware_path": firmware, "image": image_id, "root_disk_size_gib": 12,
+        "credential": username,
+    }))).await;
+    assert_eq!(status, StatusCode::CREATED, "{vm}");
+    let id = vm["id"].as_str().unwrap().to_string();
+    let root = vm["root_disk"].as_str().unwrap().to_string();
+    // glidex extended the root partition offline, before the first boot.
+    assert!(vm.get("warnings").is_none(), "{vm}");
+    let (_, disk) = request(&app, "GET", &format!("/disks/{root}"), None).await;
+    assert_eq!(disk["partition_table"]["free_tail_bytes"], 0, "{disk}");
+
+    // Boot, log in, and check the root filesystem against `min_gib`.
+    let boot_and_check = |min_gib: u32, marker: &'static str| {
+        let (app, id) = (app.clone(), id.clone());
+        let (username, password) = (username.to_string(), password.clone());
+        async move {
+            let (status, body) = request(&app, "POST", &format!("/vms/{id}/start"), None).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            let (_, info) = request(&app, "GET", &format!("/vms/{id}/console"), None).await;
+            let console_path = info["console_socket_path"].as_str().unwrap().to_string();
+            tokio::task::spawn_blocking(move || {
+                let mut console = Console::connect(&console_path);
+                console.expect(&format!("{hostname} login: "), Duration::from_secs(400));
+                console.send(&format!("{username}\r"));
+                console.expect("Password: ", Duration::from_secs(30));
+                console.send(&format!("{password}\r"));
+                console.expect(&format!("{username}@{hostname}:~$ "), Duration::from_secs(60));
+                // cloud-init's resizefs runs during boot; wait for it to finish.
+                console.send("cloud-init status --wait >/dev/null; df -BG --output=size / | tail -1\r");
+                console.send(&format!(
+                    "[ $(df -BG --output=size / | tail -1 | tr -dc 0-9) -ge {min_gib} ] && echo {marker}_$((40+2))\r"
+                ));
+                console.expect(&format!("{marker}_42"), Duration::from_secs(120));
+            })
+            .await
+            .unwrap();
+            let (status, body) = request(&app, "POST", &format!("/vms/{id}/stop"), None).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+        }
+    };
+
+    boot_and_check(11, "GX_ROOT12").await;
+
+    let (status, d) = request(&app, "POST", &format!("/disks/{root}/resize"), Some(json!({"size_gib": 16}))).await;
+    assert_eq!(status, StatusCode::OK, "{d}");
+    assert_eq!(d["extend_root"], "grown", "{d}");
+
+    boot_and_check(15, "GX_ROOT16").await;
+
+    let (status, _) = request(&app, "DELETE", &format!("/vms/{id}"), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _) = request(&app, "GET", &format!("/disks/{root}"), None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "owned root disk is deleted with the VM");
+    let (status, _) = request(&app, "DELETE", &format!("/images/{image_id}"), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
 }

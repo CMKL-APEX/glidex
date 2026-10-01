@@ -106,42 +106,50 @@ struct DiskConfig {
     // image) leaves the field out so CH reports the open error itself.
     #[serde(skip_serializing_if = "Option::is_none")]
     image_type: Option<ImageType>,
+    // CH refuses qcow2 backing files unless asked. Only set for linked
+    // disks glidex created: a user-supplied qcow2 could otherwise name any
+    // host file as its backing file and hand it to the guest.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    backing_files: bool,
 }
 
-/// Disk image formats CH can open; names match its `ImageType` API enum.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-enum ImageType {
-    FixedVhd,
-    Qcow2,
-    Raw,
-    Vhdx,
+/// `[root, data disks…, seed]`. Managed disks use the format recorded in
+/// the database; only a user-supplied `rootfs_path` is probed.
+fn disk_configs(config: &VmConfig) -> Vec<DiskConfig> {
+    let root = match &config.root_disk_binding {
+        Some(b) => DiskConfig {
+            path: b.path.clone(),
+            readonly: false,
+            image_type: Some(b.format.into()),
+            backing_files: b.backing_files,
+        },
+        None => DiskConfig {
+            path: config.rootfs_path.clone(),
+            readonly: false,
+            image_type: detect_image_type(&config.rootfs_path),
+            backing_files: false,
+        },
+    };
+    std::iter::once(root)
+        .chain(config.data_disk_bindings.iter().map(|b| DiskConfig {
+            path: b.path.clone(),
+            readonly: false,
+            image_type: Some(b.format.into()),
+            backing_files: b.backing_files,
+        }))
+        // The seed is always the raw FAT image `write_seed_image` builds.
+        .chain(config.cloud_init_path.iter().map(|path| DiskConfig {
+            path: path.clone(),
+            readonly: true,
+            image_type: Some(ImageType::Raw),
+            backing_files: false,
+        }))
+        .collect()
 }
 
-/// Identify a disk image by the same magic bytes CH's own probe used.
-/// Anything without a recognised header is a raw image.
-fn detect_image_type(path: &str) -> Option<ImageType> {
-    use std::io::{Seek, SeekFrom};
-    let mut file = File::open(path).ok()?;
-    let mut header = [0u8; 8];
-    let n = file.read(&mut header).ok()?;
-    if n >= 4 && header[..4] == *b"QFI\xfb" {
-        return Some(ImageType::Qcow2);
-    }
-    if n == 8 && header == *b"vhdxfile" {
-        return Some(ImageType::Vhdx);
-    }
-    // VHD keeps a 512-byte footer at the end: "conectix" cookie, then the
-    // big-endian disk type at offset 60 (2 = fixed, the only kind CH runs).
-    let mut footer = [0u8; 512];
-    if file.seek(SeekFrom::End(-512)).is_ok()
-        && file.read_exact(&mut footer).is_ok()
-        && footer[..8] == *b"conectix"
-        && footer[60..64] == 2u32.to_be_bytes()
-    {
-        return Some(ImageType::FixedVhd);
-    }
-    Some(ImageType::Raw)
-}
+// Format detection lives with the other image code; re-exported for the
+// tests below.
+use crate::images::qemu_img::{detect_image_type, ImageType};
 
 #[derive(Debug, Serialize)]
 struct ConsoleConfig {
@@ -342,18 +350,7 @@ impl CloudHypervisorClient {
             },
             net: net_configs(config),
             payload,
-            disks: std::iter::once(DiskConfig {
-                path: config.rootfs_path.clone(),
-                readonly: false,
-                image_type: detect_image_type(&config.rootfs_path),
-            })
-            // The seed is always the raw FAT image `write_seed_image` builds.
-            .chain(config.cloud_init_path.iter().map(|path| DiskConfig {
-                path: path.clone(),
-                readonly: true,
-                image_type: Some(ImageType::Raw),
-            }))
-            .collect(),
+            disks: disk_configs(config),
             console: ConsoleConfig {
                 mode: console_mode.to_string(),
                 file: None,
@@ -823,9 +820,29 @@ mod tests {
             path: "/d".into(),
             readonly: false,
             image_type: Some(ImageType::FixedVhd),
+            backing_files: false,
         })
         .unwrap();
         assert_eq!(json, serde_json::json!({"path": "/d", "image_type": "FixedVhd"}));
+    }
+
+    #[test]
+    fn managed_disks_use_recorded_format_and_seed_stays_last() {
+        use crate::images::qemu_img::DiskFormat;
+        use crate::models::DiskBinding;
+        let mut config: VmConfig = serde_json::from_value(serde_json::json!({
+            "vcpu_count": 1, "mem_size_mib": 512, "rootfs_path": "/disks/root.qcow2", "kernel_args": "",
+            "cloud_init_path": "/tmp/seed.img"
+        }))
+        .unwrap();
+        config.root_disk_binding = Some(DiskBinding { path: "/disks/root.qcow2".into(), format: DiskFormat::Qcow2, backing_files: true });
+        config.data_disk_bindings = vec![DiskBinding { path: "/disks/data.raw".into(), format: DiskFormat::Raw, backing_files: false }];
+        let json = serde_json::to_value(disk_configs(&config)).unwrap();
+        assert_eq!(json, serde_json::json!([
+            {"path": "/disks/root.qcow2", "image_type": "Qcow2", "backing_files": true},
+            {"path": "/disks/data.raw", "image_type": "Raw"},
+            {"path": "/tmp/seed.img", "readonly": true, "image_type": "Raw"},
+        ]));
     }
 
     #[test]

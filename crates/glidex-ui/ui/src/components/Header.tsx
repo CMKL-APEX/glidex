@@ -28,6 +28,8 @@ export default function Header() {
             <nav className="flex items-center space-x-1 pl-4">
               {[
                 { to: "/", label: "VMs" },
+                { to: "/images", label: "Images" },
+                { to: "/disks", label: "Disks" },
                 { to: "/credentials", label: "Credentials" },
                 { to: "/networking", label: "Networking" },
               ].map(({ to, label }) => (

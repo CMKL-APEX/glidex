@@ -1,9 +1,11 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { listCredentials, listNetworks } from "../api";
-import type { CreateVmRequest, CredentialInfo, HypervisorType, Network } from "../types";
-import { HYPERVISOR_LABELS } from "../types";
+import { listCredentials, listDisks, listImages, listNetworks } from "../api";
+import type { CreateVmRequest, CredentialInfo, DiskInfo, HypervisorType, ImageInfo, Network } from "../types";
+import { HYPERVISOR_LABELS, formatBytes } from "../types";
 
 type BootMode = "firmware" | "kernel";
+/** Where a firmware-boot VM's root disk comes from (spec/images.md §7). */
+type RootSource = "image" | "disk" | "path";
 
 interface CreateVmFormProps {
   onSubmit: (request: CreateVmRequest) => void;
@@ -25,6 +27,12 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
   const [rootfsPath, setRootfsPath] = useState("");
   const [kernelArgs, setKernelArgs] = useState("");
   const [vfioDevices, setVfioDevices] = useState("");
+  const [images, setImages] = useState<ImageInfo[]>([]);
+  const [freeDisks, setFreeDisks] = useState<DiskInfo[]>([]);
+  const [rootSource, setRootSource] = useState<RootSource>("path");
+  const [image, setImage] = useState("");
+  const [rootSizeGib, setRootSizeGib] = useState("");
+  const [rootDisk, setRootDisk] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
   // Firmware boot is Cloud Hypervisor only; QEMU always boots a kernel.
@@ -40,6 +48,23 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
         if (nets.some((n) => n.name === "default")) setSelectedNetworks(["default"]);
       })
       .catch(() => setNetworks([]));
+    listImages()
+      .then((imgs) => {
+        const ready = imgs.filter((i) => i.status.state === "ready");
+        setImages(ready);
+        if (ready.length > 0) {
+          setImage(ready[0].id);
+          setRootSource("image");
+        }
+      })
+      .catch(() => setImages([]));
+    listDisks()
+      .then((ds) => {
+        const free = ds.filter((d) => !d.attached_to);
+        setFreeDisks(free);
+        if (free.length > 0) setRootDisk(free[0].id);
+      })
+      .catch(() => setFreeDisks([]));
   }, []);
 
   const handleSubmit = (e: FormEvent) => {
@@ -62,7 +87,11 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
         hypervisor === "cloudhypervisor" && selectedNetworks.length > 0
           ? selectedNetworks.map((network) => ({ network }))
           : undefined,
-      rootfs_path: rootfsPath,
+      rootfs_path: !firmware || rootSource === "path" ? rootfsPath : undefined,
+      image: firmware && rootSource === "image" ? image : undefined,
+      root_disk_size_gib:
+        firmware && rootSource === "image" && rootSizeGib ? Number(rootSizeGib) : undefined,
+      root_disk: firmware && rootSource === "disk" ? rootDisk : undefined,
       hypervisor,
       kernel_args: !firmware && kernelArgs ? kernelArgs : undefined,
       vfio_devices: devices.length > 0 ? devices : undefined,
@@ -169,20 +198,91 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
 
           <div>
             <label className="block text-sm font-medium text-gray-700">
-              Disk Image Path
+              Boot Disk
             </label>
-            <input
-              type="text"
-              className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-transparent"
-              placeholder="~/images/ubuntu-cloudimg.raw"
-              required
-              value={rootfsPath}
-              onChange={(e) => setRootfsPath(e.target.value)}
-            />
-            <p className="mt-1 text-xs text-gray-500">
-              UEFI-bootable raw image, e.g. a converted distro cloud image
-            </p>
+            <select
+              className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-transparent bg-white"
+              value={rootSource}
+              onChange={(e) => setRootSource(e.target.value as RootSource)}
+            >
+              <option value="image" disabled={images.length === 0}>
+                New disk from an image{images.length === 0 ? " (pull one on the Images page)" : ""}
+              </option>
+              <option value="disk" disabled={freeDisks.length === 0}>
+                Existing disk{freeDisks.length === 0 ? " (none unattached)" : ""}
+              </option>
+              <option value="path">Disk image file path</option>
+            </select>
           </div>
+
+          {rootSource === "image" && (
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Image</label>
+                <select
+                  className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-transparent bg-white"
+                  value={image}
+                  onChange={(e) => setImage(e.target.value)}
+                >
+                  {images.map((i) => (
+                    <option key={i.id} value={i.id}>
+                      {i.name} ({formatBytes(i.virtual_size_bytes)})
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Root disk (GiB)</label>
+                <input
+                  type="number"
+                  min="1"
+                  className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-transparent"
+                  placeholder="10"
+                  value={rootSizeGib}
+                  onChange={(e) => setRootSizeGib(e.target.value)}
+                />
+              </div>
+              <p className="col-span-2 -mt-2 text-xs text-gray-500">
+                A linked disk is created for this VM, its root partition extended, and deleted with the VM.
+              </p>
+            </div>
+          )}
+
+          {rootSource === "disk" && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700">Disk</label>
+              <select
+                className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-transparent bg-white"
+                value={rootDisk}
+                onChange={(e) => setRootDisk(e.target.value)}
+              >
+                {freeDisks.map((d) => (
+                  <option key={d.id} value={d.id}>
+                    {d.name} ({formatBytes(d.size_bytes)})
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          {rootSource === "path" && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700">
+                Disk Image Path
+              </label>
+              <input
+                type="text"
+                className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-transparent"
+                placeholder="~/images/ubuntu-cloudimg.raw"
+                required
+                value={rootfsPath}
+                onChange={(e) => setRootfsPath(e.target.value)}
+              />
+              <p className="mt-1 text-xs text-gray-500">
+                UEFI-bootable image file (raw or qcow2), used as is
+              </p>
+            </div>
+          )}
 
           <div>
             <label className="block text-sm font-medium text-gray-700">

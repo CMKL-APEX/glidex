@@ -25,6 +25,18 @@ response bodies are JSON except for the console WebSocket.
 | `GET` | `/credentials/{username}` | `get_credential` | Get one login (no hash) |
 | `PUT` | `/credentials/{username}` | `update_credential` | Change password and/or replace SSH keys |
 | `DELETE` | `/credentials/{username}` | `delete_credential` | Delete; `409` while a VM uses it |
+| `GET` | `/images/catalog` | `image_catalog` | Built-in cloud images for this host's arch |
+| `GET` / `POST` | `/images` | `list_images` / `pull_image` | List; download + verify (`202`) |
+| `GET` / `DELETE` | `/images/{id}` | `get_image` / `delete_image` | Details + progress; delete or cancel (`409` while linked disks exist) |
+| `GET` / `POST` | `/disks` | `list_disks` / `create_disk` | List; create blank or from an image (`201`) |
+| `GET` / `DELETE` | `/disks/{id}` | `get_disk` / `delete_disk` | Details + partition table; delete (`409` while attached) |
+| `POST` | `/disks/{id}/resize` | `resize_disk` | Grow (extends root) or shrink (never into a partition) |
+| `POST` | `/disks/{id}/extend-root` | `extend_root` | Grow the root partition, `offline` or `on-boot` |
+| `POST` | `/vms/{id}/disks` | `attach_disk` | Attach a data disk (Created/Stopped VM) |
+| `DELETE` | `/vms/{id}/disks/{disk}` | `detach_disk` | Detach a data disk (Created/Stopped VM) |
+
+Image and disk payloads, semantics and invariants are in
+[images.md](images.md#8-rest-api).
 
 All handlers live in `crates/glidex-control-plane/src/api.rs`.
 
@@ -70,6 +82,15 @@ All handlers live in `crates/glidex-control-plane/src/api.rs`.
 - `credential` (firmware boot only, no custom `cloud_init_path`) names a
   stored credential that the generated seed provisions as the guest login.
   Unknown names are `400 invalid_config`. See [credentials.md](credentials.md).
+
+- Managed disks ([images.md](images.md#7-vm-integration)): instead of
+  `rootfs_path`, give `image` (+ optional `root_disk_size_gib`) to have a
+  root disk created for the VM, or `root_disk` to boot an existing disk.
+  Exactly one of the three is required. `data_disks` lists extra disks.
+  Without a kernel, these imply firmware boot with the default firmware
+  path. The response may carry `warnings`.
+- `DELETE /vms/{id}?keep_disk=true` keeps a root disk that was created for
+  the VM; by default it is deleted with it.
 
 ### `POST /credentials`, `PUT /credentials/{username}`
 
@@ -146,6 +167,7 @@ not the caller's fault — e.g. `HypervisorError::CloudInit` when
 | `Credential(AlreadyExists)`, `CredentialInUse` | `409` | `conflict` |
 | `Credential(Invalid)` | `400` | `invalid_credential` |
 | `Credential` (storage/hashing) | `500` | `credential_error` |
+| `Image(…)` | `400` / `404` / `409` / `500` / `503` | `invalid_image`, `invalid_disk`, `not_found`, `conflict`, `image_error`, `tool_unavailable`; see [images.md](images.md#8-rest-api) |
 
 ## Console WebSocket
 

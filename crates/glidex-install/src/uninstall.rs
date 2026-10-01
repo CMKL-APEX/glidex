@@ -87,7 +87,7 @@ fn print_help() {
          \x20                              or the glidex source build in /opt/glidex)\n\
          \x20     --reset-dpdk             clear DPDK settings glidex put in OVS\n\
          \x20     --remove-cloud-hypervisor also delete the cloud-hypervisor binary\n\
-         \x20     --purge-user-data        also delete ~/.glidex (VMs, credentials, firmware)"
+         \x20     --purge-user-data        also delete ~/.glidex (VMs, credentials, firmware, images, disks)"
     );
 }
 
@@ -256,7 +256,7 @@ pub fn plan(host: &dyn HostView, opts: &Options, user_home: &Path) -> Vec<Step> 
             steps.push(Step::Remove(user_data));
         } else {
             steps.push(Step::Note(format!(
-                "keeping {} (VM database, credentials, firmware); use --purge-user-data to remove it",
+                "keeping {} (VM database, credentials, firmware, images and disks); use --purge-user-data to remove it",
                 user_data.display()
             )));
         }

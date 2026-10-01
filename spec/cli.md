@@ -20,7 +20,7 @@ with `--server`).
 | `pause <name\|id>` | `POST /vms/{id}/pause` |
 | `connect <name\|id>` | Attach local terminal to the VM's console socket |
 | `log <name\|id>` | `tail`-like print of the VM's log file |
-| `delete <name\|id>` | Confirmation prompt → `DELETE /vms/{id}` |
+| `delete <name\|id> [--keep-disk]` | Confirmation prompt → `DELETE /vms/{id}[?keep_disk=true]` |
 | `pci` / `pci-devices` | `GET /pci-devices` + table |
 | `attach-device <vm> <path>` | `POST /vms/{id}/devices` |
 | `detach-device <vm> <path>` | `DELETE /vms/{id}/devices` |
@@ -29,6 +29,16 @@ with `--server`).
 | `credential-passwd <user>` | Hidden password ×2 → `PUT /credentials/{user}` |
 | `credential-keys <user>` | `.pub` files → `PUT /credentials/{user}` (replaces keys) |
 | `credential-rm <user>` | `DELETE /credentials/{user}` |
+| `image catalog` | `GET /images/catalog` |
+| `image list` / `images` | `GET /images` |
+| `image pull <key\|url> [--name N] [--sha256 H]` | `POST /images`, then polls `GET /images/{id}` with a progress line until ready or failed (Ctrl-C stops watching only) |
+| `image rm <image>` | `DELETE /images/{id}` |
+| `disk list` / `disks` | `GET /disks`, attached VM shown by name |
+| `disk show <disk>` | `GET /disks/{id}`: path, backing file, partitions |
+| `disk create <name> [--size-gib N] [--image I] [--full] [--raw] [--no-extend]` | `POST /disks` |
+| `disk resize <disk> <GiB> [--no-extend]` | `POST /disks/{id}/resize`; a refused shrink prints the minimum |
+| `disk extend-root <disk> [--on-boot]` | `POST /disks/{id}/extend-root` |
+| `disk rm <disk>` | Confirmation prompt → `DELETE /disks/{id}` |
 | `health` | `GET /health` |
 | `help` / `?` | Command list |
 | `exit` | Leave the REPL |
@@ -88,9 +98,12 @@ Interactive `handle_create` asks, in order:
    `none` selects kernel boot.
 6. Kernel image path (required, no default) — skipped for firmware
    boot.
-7. Rootfs path (required, no default). For firmware boot the prompt
-   asks for a UEFI-bootable disk image instead, since a bare ext4
-   rootfs has no bootloader.
+7. Boot disk. For firmware boot: `image` / `disk` / `path`, defaulting to
+   `image` when a downloaded image is ready. `image` asks for the image
+   (first ready one by default) and a root disk size in GiB (default from
+   the server, 10); `disk` asks for an existing disk. `path` (and kernel
+   boot) asks for a disk image or rootfs path, as before. Then optional
+   data disks, comma-separated names.
 8. *(firmware boot only)* cloud-init seed image (optional; empty →
    auto-generated at start, see [hypervisors.md](hypervisors.md#firmware-boot)).
    *(auto-generated seed only)* Login credential: lists stored usernames;

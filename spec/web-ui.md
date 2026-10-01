@@ -34,16 +34,16 @@ Everything is same-origin from the browser's perspective.
 
 ```
 ui/src/
-├── App.tsx                 # <Routes> for the four pages
+├── App.tsx                 # <Routes> for the pages
 ├── main.tsx                # ReactDOM.createRoot entrypoint
 ├── api.ts                  # Typed fetch wrappers around the REST API
 ├── types.ts                # VmResponse / CreateVmRequest / helpers
 ├── index.css               # Tailwind entry
 ├── components/
-│   ├── Header.tsx          # Brand, VMs / Credentials nav, API health
+│   ├── Header.tsx          # Brand, VMs / Images / Disks / Credentials / Networking nav, API health
 │   ├── Loading.tsx
 │   ├── Modal.tsx
-│   ├── CreateVmForm.tsx    # POST /vms form (boot mode, credential picker)
+│   ├── CreateVmForm.tsx    # POST /vms form (boot mode, boot disk source, credential picker)
 │   ├── VmActions.tsx       # Start/Stop/Pause/Delete buttons
 │   └── VmCard.tsx          # Dashboard VM row
 └── pages/
@@ -51,6 +51,8 @@ ui/src/
     ├── VmDetail.tsx        # VM details, actions, Open Console link
     ├── VmConsole.tsx       # xterm.js + console WebSocket
     ├── Credentials.tsx     # List / add / edit / delete guest logins
+    ├── Images.tsx          # Catalog (Pull), downloaded images with progress
+    ├── Disks.tsx           # Disks: create, resize, extend root, delete, partitions
     └── NotFound.tsx
 ```
 
@@ -62,6 +64,8 @@ ui/src/
 | `/vms/:id` | `VmDetail` |
 | `/vms/:id/console` | `VmConsole` |
 | `/credentials` | `Credentials` |
+| `/images` | `Images` |
+| `/disks` | `Disks` |
 | `*` | `NotFound` |
 
 ## API client
@@ -79,6 +83,20 @@ confirmation field and are sent once, in the create/update request; the
 UI never receives a hash, only `has_password`. SSH keys are edited as a
 textarea, one key per line. `CreateVmForm` shows a credential `<select>`
 only for Cloud-Hypervisor firmware boot, fed by `GET /credentials`.
+
+## Images and disks pages
+
+`pages/Images.tsx` shows the catalog (`GET /images/catalog`) with a Pull
+button per entry, and downloaded images with a progress bar. It polls
+`GET /images` every 1.5 s while anything is downloading or verifying.
+"Download from URL" opens a form for `{url, sha256?, name?}`.
+`pages/Disks.tsx` lists disks with Resize / Extend root / Delete actions
+(Delete is disabled while the disk is attached), and clicking a name shows
+its partition table (`GET /disks/{id}`). A refused shrink shows
+`details.min_size_bytes`. `CreateVmForm`'s firmware-boot "Boot Disk"
+select offers a new disk from a ready image (with a root size), an
+unattached existing disk, or a file path. It defaults to the image option
+when one is ready.
 
 ## `VmConsole` contract
 

@@ -125,7 +125,7 @@ fn print_plan(install_dir: &Path) {
         install_dir.display()
     );
     println!(
-        "  5. Download Cloud-Hypervisor UEFI firmware ({}) to ~/.glidex, plus dosfstools/mtools for cloud-init seeds",
+        "  5. Download Cloud-Hypervisor UEFI firmware ({}) to ~/.glidex, plus dosfstools/mtools for cloud-init seeds and qemu-img/sgdisk/growpart for images and disks",
         EDK2_FIRMWARE_VERSION
     );
     println!("  6. (Optional) Install QEMU via system package manager");
@@ -471,7 +471,57 @@ fn install_uefi_firmware(platform: &Platform) -> Result<()> {
         println!("{} {}", "Installed:".green(), dest.display());
     }
 
-    ensure_tools(&[("mkdosfs", "dosfstools"), ("mcopy", "mtools")])
+    ensure_tools(&[("mkdosfs", "dosfstools"), ("mcopy", "mtools")])?;
+    ensure_disk_tools()
+}
+
+/// Tools the control plane's image and disk module shells out to
+/// (spec/images.md §9), with their package per manager: apt, dnf/yum,
+/// pacman.
+const DISK_TOOLS: &[(&str, [&str; 3])] = &[
+    ("qemu-img", ["qemu-utils", "qemu-img", "qemu-img"]),
+    ("qemu-io", ["qemu-utils", "qemu-img", "qemu-img"]),
+    ("sgdisk", ["gdisk", "gdisk", "gptfdisk"]),
+    ("growpart", ["cloud-guest-utils", "cloud-utils-growpart", "cloud-guest-utils"]),
+];
+
+/// `command -v`, or the sbin dirs that aren't on every user's PATH
+/// (where `sgdisk` lives on Debian).
+fn tool_present(cmd: &str) -> bool {
+    command_exists(cmd)
+        || ["/usr/sbin", "/sbin", "/usr/local/sbin"]
+            .iter()
+            .any(|d| Path::new(d).join(cmd).exists())
+}
+
+fn disk_tool_packages(manager: &str, present: impl Fn(&str) -> bool) -> Vec<&'static str> {
+    let column = match manager {
+        "apt-get" => 0,
+        "pacman" => 2,
+        _ => 1,
+    };
+    let mut packages: Vec<&str> = DISK_TOOLS
+        .iter()
+        .filter(|(cmd, _)| !present(cmd))
+        .map(|(_, pkgs)| pkgs[column])
+        .collect();
+    packages.dedup();
+    packages
+}
+
+fn ensure_disk_tools() -> Result<()> {
+    let Some(manager) = package_manager() else {
+        let missing: Vec<&str> = DISK_TOOLS.iter().map(|(c, _)| *c).filter(|c| !tool_present(c)).collect();
+        if missing.is_empty() {
+            return Ok(());
+        }
+        bail!("Please install {} manually", missing.join(", "));
+    };
+    let packages = disk_tool_packages(manager, tool_present);
+    if packages.is_empty() {
+        return Ok(());
+    }
+    install_packages(manager, &packages.join(" "))
 }
 
 fn install_qemu() -> Result<()> {
@@ -1009,6 +1059,16 @@ fn print_usage() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn disk_tool_packages_per_manager() {
+        let none = |_: &str| false;
+        assert_eq!(super::disk_tool_packages("apt-get", none), ["qemu-utils", "gdisk", "cloud-guest-utils"]);
+        assert_eq!(super::disk_tool_packages("dnf", none), ["qemu-img", "gdisk", "cloud-utils-growpart"]);
+        assert_eq!(super::disk_tool_packages("pacman", none), ["qemu-img", "gptfdisk", "cloud-guest-utils"]);
+        assert!(super::disk_tool_packages("apt-get", |_| true).is_empty());
+        assert_eq!(super::disk_tool_packages("apt-get", |c| c != "sgdisk"), ["gdisk"]);
+    }
+
     use super::*;
 
     #[test]

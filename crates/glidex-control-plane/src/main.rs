@@ -3,6 +3,7 @@ mod network;
 mod cloud_init;
 mod credentials;
 mod hypervisor;
+mod images;
 mod models;
 mod pci;
 mod persistence;
@@ -105,6 +106,22 @@ async fn main() {
             path.display()
         ),
         None => println!("MISSING (no home directory)"),
+    }
+
+    // Not fatal either: only image/disk operations need these.
+    print_status("Checking disk tools");
+    let missing: Vec<&str> = images::qemu_img::ALL_TOOLS
+        .iter()
+        .filter(|t| !t.available())
+        .map(|t| t.name)
+        .collect();
+    if missing.is_empty() {
+        println!("OK");
+    } else {
+        println!(
+            "MISSING ({}; image and disk operations that need them will fail; run glidex-install)",
+            missing.join(", ")
+        );
     }
 
     // Create VM manager with persistence

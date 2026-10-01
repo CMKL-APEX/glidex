@@ -15,6 +15,7 @@ A Rust-based control plane for managing KVM virtual machines with [Cloud-Hypervi
 
 - **Multi-hypervisor support** - Control Cloud-Hypervisor and QEMU VMs through a unified interface
 - **Cloud image boot** - Boot stock distro cloud images via UEFI firmware with an auto-generated cloud-init seed
+- **Images and disks** - Pull verified cloud images (Ubuntu, Debian, Fedora, AlmaLinux) from a built-in catalog; create, grow, shrink and delete disks, with the root partition extended automatically
 - **Credential store** - Stored guest logins (password hash + SSH keys) provisioned by cloud-init
 - **VM networking** - Open vSwitch bridges via a root helper (`glidex-netd`): NAT networks with DHCP, bridged uplinks (kernel, AF_XDP, DPDK) with safe IP migration, tap and vhost-user VM ports
 - **REST API** for VM lifecycle management (create, start, stop, pause, delete)
@@ -42,7 +43,8 @@ The installer will:
 2. Install Bun for the UI dev server (if not present)
 3. Install Cloud-Hypervisor (default hypervisor)
 4. Download Cloud-Hypervisor's UEFI firmware (`CLOUDHV.fd`) to `~/.glidex/`
-   for booting distro cloud images, plus `dosfstools`/`mtools`
+   for booting distro cloud images, plus `dosfstools`/`mtools`, and the disk
+   tools for images and disks (`qemu-img`, `sgdisk`, `growpart`)
 5. Optionally install QEMU
 6. Check KVM access
 7. Build the Glidex binaries
@@ -116,7 +118,10 @@ vCPU count [1]: 2
 Memory (MiB) [512]: 2048
 Hypervisor [cloudhypervisor/qemu] (default: cloudhypervisor):
 UEFI firmware path ['none' for kernel boot] [/home/user/.glidex/CLOUDHV.fd]:
-Disk image path (UEFI-bootable, e.g. a raw cloud image): ~/images/ubuntu-cloudimg.raw
+Boot disk from [image/disk/path] [image]:
+Image (ubuntu-26.04) [ubuntu-26.04]:
+Root disk size in GiB [10]: 20
+Data disks (optional, comma-separated disk names):
 cloud-init seed image (optional, default: auto-generated):
 VFIO PCI devices (comma-separated, e.g. /sys/bus/pci/devices/0000:41:00.0):
 
@@ -356,13 +361,36 @@ cargo build --release
 ## Booting a Cloud Image
 
 The installer downloads Cloud-Hypervisor's UEFI firmware to
-`~/.glidex/CLOUDHV.fd`. With it, any distro cloud image boots; convert it
-to raw first:
+`~/.glidex/CLOUDHV.fd`. With it, distro cloud images boot as is. Let glidex
+fetch one: it downloads the vendor's current build and checks it against the
+checksum the vendor publishes.
 
-```bash
-wget https://cloud-images.ubuntu.com/resolute/current/resolute-server-cloudimg-amd64.img
-qemu-img convert -p -f qcow2 -O raw resolute-server-cloudimg-amd64.img ubuntu-cloudimg.raw
 ```
+gxctl> image catalog
+  ubuntu-26.04   Ubuntu 26.04 LTS (Resolute Raccoon)
+  ...
+gxctl> image pull ubuntu-26.04
+gxctl> create            # answer "image" for the boot disk
+```
+
+or over the API: `POST /images {"catalog": "ubuntu-26.04"}`, then
+`POST /vms {..., "image": "ubuntu-26.04", "root_disk_size_gib": 20}`. Each
+such VM gets its own thin (linked) root disk, with the root partition
+already extended to the requested size. It is deleted with the VM unless
+you pass `?keep_disk=true`. Disks can be created on their own too, attached
+to VMs as data disks, and resized while the VM is stopped:
+
+```
+gxctl> disk create scratch --size-gib 50
+gxctl> disk resize my-vm-root 40        # grows the root partition too
+gxctl> disk list
+```
+
+Shrinking only gives back unpartitioned space at the end of a disk; glidex
+never shrinks filesystems. Images and disks live in `~/.glidex/images` and
+`~/.glidex/disks`; see [spec/images.md](spec/images.md). A cloud image you
+downloaded yourself also still works as a plain `rootfs_path` (raw or
+qcow2).
 
 On each start glidex generates a cloud-init seed that sets the hostname to
 the VM name and creates a sudo user. The login comes from one of:
@@ -403,6 +431,11 @@ GLIDEX_TEST_IMAGE=~/images/ubuntu-cloudimg.raw \
 ```
 
 - `firmware_boot_with_generated_cloud_init` needs KVM and cloud-hypervisor.
+- `catalog_image_boots_and_root_grows` downloads `ubuntu-26.04` (or
+  `GLIDEX_TEST_CATALOG`) from the vendor, boots it from a managed 12 GiB
+  disk, grows the disk to 16 GiB and checks the guest sees both; it needs
+  network access and the disk tools, but not `GLIDEX_TEST_IMAGE`:
+  `cargo test -p glidex-control-plane --test functional_tests catalog_image_boots_and_root_grows -- --ignored`
 - `nat_network_e2e` also needs a running glidex-netd (the installer's VM
   networking step) and membership in the `glidex` group.
 - `vhost_user_e2e` also needs OVS-DPDK initialized (dpdk profile); set
