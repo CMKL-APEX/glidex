@@ -456,8 +456,8 @@ impl AuthService {
             return Ok(None);
         };
         let groups = unix_groups(&user);
-        let admin = uid == 0 || groups.iter().any(|g| *g == self.config.admin_group);
-        let member = admin || groups.iter().any(|g| *g == self.config.users_group);
+        let admin = uid == 0 || groups.contains(&self.config.admin_group);
+        let member = admin || groups.contains(&self.config.users_group);
         if !member {
             return Ok(None);
         }
@@ -877,7 +877,7 @@ impl AuthService {
             tracing::error!("audit write failed: {}", e);
         }
         let n = self.audit_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        if n % 500 == 0 {
+        if n.is_multiple_of(500) {
             let keep = self.config.audit.retention_days * 86_400_000;
             let _ = self.store.prune_audit(store::now_millis().saturating_sub(keep));
         }
@@ -936,7 +936,7 @@ mod tests {
         assert_eq!(base62(&[0]), "0");
         assert_eq!(base62(&[61]), "z");
         assert_eq!(base62(&[62]), "10");
-        assert_eq!(random_token(32).len() >= 40, true);
+        assert!(random_token(32).len() >= 40);
     }
 
     #[test]

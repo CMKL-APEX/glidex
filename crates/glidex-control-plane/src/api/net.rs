@@ -229,7 +229,7 @@ pub async fn list_shares(c: Caller, Path(project): Path<String>) -> Result<impl 
         .map_err(manager_err)?
         .into_iter()
         .map(|n| {
-            let accepted = n.shares.iter().any(|s| *s == project);
+            let accepted = n.shares.contains(&project);
             ShareView {
                 expires_at: (!accepted).then(|| n.share_offers.iter().find(|o| o.project == project).map(|o| o.expires_at)).flatten(),
                 status: if accepted { "accepted" } else { "offered" },

@@ -6,6 +6,8 @@
 //! (through [`Caller`]) and audits the request; a global layer
 //! authenticates it. Handlers ask Cedar before touching anything.
 
+#![allow(clippy::result_large_err)] // handlers return (StatusCode, Json<ApiError>), as before
+
 mod access;
 mod errors;
 mod net;

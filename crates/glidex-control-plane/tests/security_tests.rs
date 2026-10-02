@@ -737,7 +737,8 @@ async fn oidc_code_flow_with_pkce() {
 async fn oidc_rejects_bad_tokens() {
     let mock = idp::start().await;
     let (h, _s) = oidc_harness(&mock, |_| {}).await;
-    let cases: Vec<(&str, Box<dyn Fn(&str) -> String>)> = vec![
+    type MakeToken<'a> = Box<dyn Fn(&str) -> String + 'a>;
+    let cases: Vec<(&str, MakeToken)> = vec![
         ("wrong nonce", Box::new(|_n| idp::sign(claims(&mock, "other"), "k1"))),
         ("wrong audience", Box::new(|n| { let mut c = claims(&mock, n); c["aud"] = json!("someone-else"); idp::sign(c, "k1") })),
         ("wrong issuer", Box::new(|n| { let mut c = claims(&mock, n); c["iss"] = json!("https://evil.example"); idp::sign(c, "k1") })),

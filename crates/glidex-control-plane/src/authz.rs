@@ -511,10 +511,10 @@ impl Engine {
         let mut out: Vec<PolicyInfo> = sets
             .full
             .templates()
-            .map(|t| PolicyInfo { id: t.id().to_string(), source: src(&t.id().to_string()), template: true, text: t.to_string() })
+            .map(|t| PolicyInfo { id: t.id().to_string(), source: src(t.id().as_ref()), template: true, text: t.to_string() })
             .chain(sets.full.policies().map(|p| PolicyInfo {
                 id: p.id().to_string(),
-                source: src(&p.id().to_string()),
+                source: src(p.id().as_ref()),
                 template: false,
                 text: p.to_string(),
             }))

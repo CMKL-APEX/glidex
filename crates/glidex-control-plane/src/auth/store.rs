@@ -401,7 +401,7 @@ impl IdentityStore {
     /// `wanted` (spec §5.3, §5.4). Manual memberships are left alone.
     pub fn sync_memberships(&self, user_id: &str, source: MemberSource, wanted: &[String]) -> Result<(), StoreError> {
         for mut t in self.teams()? {
-            let want = wanted.iter().any(|n| *n == t.name);
+            let want = wanted.contains(&t.name);
             let has = t.members.iter().any(|m| m.user_id == user_id && m.source == source);
             let manual = t.members.iter().any(|m| m.user_id == user_id && m.source == MemberSource::Manual);
             if want && !has && !manual {
