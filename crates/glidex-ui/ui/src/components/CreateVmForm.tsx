@@ -1,7 +1,8 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { listCredentials, listDisks, listImages, listNetworks } from "../api";
 import type { CreateVmRequest, CredentialInfo, DiskInfo, HypervisorType, ImageInfo, Network } from "../types";
-import { HYPERVISOR_LABELS, formatBytes } from "../types";
+import { HYPERVISOR_LABELS, formatBytes, networkUsableBy } from "../types";
+import { useSession } from "../session";
 
 type BootMode = "firmware" | "kernel";
 
@@ -24,6 +25,7 @@ interface CreateVmFormProps {
 }
 
 export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) {
+  const { project } = useSession();
   const [name, setName] = useState("");
   const [vcpuCount, setVcpuCount] = useState(1);
   const [memSizeMib, setMemSizeMib] = useState(512);
@@ -55,11 +57,13 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
   };
 
   useEffect(() => {
-    listCredentials()
+    listCredentials(project)
       .then(setCredentials)
       .catch(() => setCredentials([]));
     listNetworks()
-      .then((nets) => {
+      .then((all) => {
+        // Only networks this project may attach to.
+        const nets = all.filter((n) => networkUsableBy(n, project));
         setNetworks(nets);
         if (nets.some((n) => n.name === "default")) setSelectedNetworks(["default"]);
       })
@@ -74,14 +78,14 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
         }
       })
       .catch(() => setImages([]));
-    listDisks()
+    listDisks(project)
       .then((ds) => {
         const free = ds.filter((d) => !d.attached_to);
         setFreeDisks(free);
         if (free.length > 0) setRootDisk(free[0].id);
       })
       .catch(() => setFreeDisks([]));
-  }, []);
+  }, [project]);
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();

@@ -9,9 +9,17 @@ Type=simple
 User=glidex
 Group=glidex
 Environment=GLIDEX_UI_DIR=/usr/local/share/glidex/ui
-# Loopback only (default), like the API it proxies. To expose it, set e.g.
-# Environment=GLIDEX_UI_LISTEN=0.0.0.0:5173 in a drop-in; anyone who can
-# reach it can manage every VM.
+# The control plane's ui.sock only accepts the glidex-ui user
+# (spec/security.md §5.6). Until this unit runs as that user, talk to the
+# control plane over loopback TCP instead (browsers' session cookies are
+# passed through either way).
+Environment=GLIDEX_API_URL=http://127.0.0.1:8841
+# Loopback only (default). Exposing it needs TLS: in a drop-in set
+#   Environment=GLIDEX_UI_LISTEN=0.0.0.0:8443
+#   Environment=GLIDEX_UI_HOSTS=glidex.example.org
+#   Environment=GLIDEX_UI_TLS_CERT=/etc/glidex/tls/ui.crt
+#   LoadCredential=ui-tls-key:/etc/glidex/tls/ui.key
+# and add the https origin to auth.allowed_origins in control-plane.json.
 ExecStart=/usr/local/bin/glidex-ui
 # It only reads the UI files and talks HTTP to the control plane.
 NoNewPrivileges=yes

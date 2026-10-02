@@ -3,6 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
+import * as api from "../api";
 
 type Status = "connecting" | "connected" | "closed" | "error";
 
@@ -36,50 +37,68 @@ export default function VmConsole() {
     };
     window.addEventListener("resize", handleResize);
 
-    const wsProto = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const wsUrl = `${wsProto}//${window.location.host}/api/vms/${id}/console/ws`;
-    const ws = new WebSocket(wsUrl);
-    ws.binaryType = "arraybuffer";
-
-    ws.onopen = () => {
-      setStatus("connected");
-      setError(null);
-    };
-    ws.onclose = (ev) => {
-      setStatus("closed");
-      if (ev.code !== 1000 && ev.code !== 1005) {
-        setError(`WebSocket closed (code ${ev.code})`);
-      }
-    };
-    ws.onerror = () => {
-      setStatus("error");
-      setError("WebSocket connection error");
-    };
-    ws.onmessage = (ev) => {
-      if (typeof ev.data === "string") {
-        term.write(ev.data);
-      } else {
-        term.write(new Uint8Array(ev.data as ArrayBuffer));
-      }
-    };
-
+    let ws: WebSocket | null = null;
+    let disposed = false;
     const encoder = new TextEncoder();
     const inputDisposable = term.onData((data) => {
-      if (ws.readyState === WebSocket.OPEN) {
+      if (ws?.readyState === WebSocket.OPEN) {
         ws.send(encoder.encode(data));
       }
     });
 
+    // Browsers open the console with a fresh single-use ticket
+    // (spec/security.md §5.6): POST for it, then connect at once.
+    api
+      .consoleTicket(id)
+      .then(({ ticket }) => {
+        if (disposed) return;
+        const wsProto = window.location.protocol === "https:" ? "wss:" : "ws:";
+        const wsUrl = `${wsProto}//${window.location.host}/api/vms/${encodeURIComponent(id)}/console/ws?ticket=${encodeURIComponent(ticket)}`;
+        const sock = new WebSocket(wsUrl);
+        sock.binaryType = "arraybuffer";
+        ws = sock;
+
+        sock.onopen = () => {
+          setStatus("connected");
+          setError(null);
+        };
+        sock.onclose = (ev) => {
+          setStatus("closed");
+          if (ev.code !== 1000 && ev.code !== 1005) {
+            setError(`WebSocket closed (code ${ev.code})`);
+          }
+        };
+        sock.onerror = () => {
+          setStatus("error");
+          setError("WebSocket connection error");
+        };
+        sock.onmessage = (ev) => {
+          if (typeof ev.data === "string") {
+            term.write(ev.data);
+          } else {
+            term.write(new Uint8Array(ev.data as ArrayBuffer));
+          }
+        };
+      })
+      .catch((e) => {
+        if (disposed) return;
+        setStatus("error");
+        setError(e instanceof Error ? e.message : String(e));
+      });
+
     return () => {
+      disposed = true;
       window.removeEventListener("resize", handleResize);
       inputDisposable.dispose();
       // Detach first: a message already in flight would otherwise be
       // written to the disposed terminal (xterm throws on "dimensions").
-      ws.onopen = ws.onclose = ws.onerror = ws.onmessage = null;
-      try {
-        ws.close();
-      } catch {
-        /* already closed */
+      if (ws) {
+        ws.onopen = ws.onclose = ws.onerror = ws.onmessage = null;
+        try {
+          ws.close();
+        } catch {
+          /* already closed */
+        }
       }
       // xterm 5.5 queues a setTimeout(syncScrollArea) in open(); disposing
       // before it runs (StrictMode's mount/unmount, a quick navigation)

@@ -2,7 +2,7 @@
 // with firmware boot, start, console login, pause/resume, graceful shut
 // down, delete. Needs KVM, the hypervisor, glidex-netd + OVS and
 // GLIDEX_TEST_IMAGE (a UEFI-bootable cloud image, copied first).
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { api, bootPrerequisites, CLEAN_POWEROFF, del, E2E_HOME, expect, field, LABEL, test, testImage, vmCard } from "../fixtures";
 
@@ -120,8 +120,8 @@ test("boots a cloud image and runs it from the UI", async ({ page, hypervisor })
       await expect(page.getByRole("button", { name: "Start" })).toBeVisible({ timeout: 90_000 });
       const stopped = await vm();
       expect(stopped.state).toBe("stopped");
-      const { log_path } = await api(`/vms/${stopped.id}/console`);
-      expect(readFileSync(log_path, "utf8"), "guest powered off cleanly").toMatch(CLEAN_POWEROFF);
+      const log = await api<string>(`/vms/${stopped.id}/console/log`);
+      expect(log, "guest powered off cleanly").toMatch(CLEAN_POWEROFF);
     });
 
     await test.step("delete it", async () => {

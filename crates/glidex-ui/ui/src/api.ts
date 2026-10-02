@@ -1,204 +1,320 @@
 import type {
+  ApiToken,
+  AuditEntry,
+  AuthMethods,
+  Binding,
   CatalogItem,
   CreateDiskRequest,
+  CreatedToken,
+  CreateTokenRequest,
   DiskInfo,
+  EntityRef,
   ImageInfo,
   BridgeRecord,
   CreateNetworkRequest,
   Network,
+  NetworkShare,
   OvsStatus,
   CreateCredentialRequest,
   CredentialInfo,
+  PolicyChange,
+  PolicyInfo,
+  Project,
+  ProjectView,
+  Quotas,
+  SimulationRequest,
+  SimulationResult,
+  SitePolicy,
+  SitePolicyVersion,
+  Team,
   UpdateCredentialRequest,
   CreateVmRequest,
   HealthResponse,
+  User,
+  UserView,
   VmResponse,
+  WhoAmI,
   ApiError,
 } from "./types";
 
 const API_BASE = "/api";
 
-/** An API error that keeps the machine-readable code and details. */
+/** An API error that keeps the HTTP status, the machine-readable code and details. */
 export class ApiRequestError extends Error {
+  status: number;
   code: string;
   details: ApiError["details"];
-  constructor(err: ApiError) {
+  constructor(status: number, err: ApiError) {
     super(`${err.error}: ${err.message}`);
+    this.status = status;
     this.code = err.error;
     this.details = err.details;
   }
 }
 
-async function handleResponse<T>(resp: Response): Promise<T> {
-  if (resp.ok) {
-    return resp.json();
-  }
-  const err: ApiError = await resp.json();
-  throw new ApiRequestError(err);
+// ---- session plumbing (spec/security.md §5.5, §5.6) -------------------------
+
+/** The session's CSRF value, from `/auth/whoami` or a login response. */
+let csrf: string | null = null;
+
+export function setCsrf(value: string | null | undefined) {
+  csrf = value ?? null;
 }
+
+/** Called when the session is gone (401 unauthenticated). */
+let onUnauthenticated: () => void = () => {};
+/** Asks the user to log in again (401 reauth_required); resolves true when they did. */
+let reauthenticate: () => Promise<boolean> = async () => false;
+
+export function setSessionHandlers(h: { unauthenticated: () => void; reauth: () => Promise<boolean> }) {
+  onUnauthenticated = h.unauthenticated;
+  reauthenticate = h.reauth;
+}
+
+async function errorOf(resp: Response): Promise<ApiRequestError> {
+  const text = await resp.text();
+  try {
+    const body = JSON.parse(text) as ApiError;
+    if (body && typeof body.error === "string") return new ApiRequestError(resp.status, body);
+  } catch {
+    /* not JSON (a proxy error, say) */
+  }
+  return new ApiRequestError(resp.status, {
+    error: `http_${resp.status}`,
+    message: text.trim() || resp.statusText || "request failed",
+  });
+}
+
+interface RequestOptions {
+  /** Don't treat a 401 as the end of the session (whoami, login). */
+  quiet401?: boolean;
+}
+
+/** One API call: same-origin cookies, the CSRF header on writes, and the
+ * 401 handling. A step-up (`reauth_required`) asks the user to log in
+ * again, then retries once. */
+async function request<T>(method: string, path: string, body?: unknown, opts: RequestOptions = {}): Promise<T> {
+  const send = () => {
+    const headers: Record<string, string> = {};
+    if (body !== undefined) headers["Content-Type"] = "application/json";
+    if (method !== "GET" && method !== "HEAD" && csrf) headers["X-Glidex-CSRF"] = csrf;
+    return fetch(`${API_BASE}${path}`, {
+      method,
+      headers,
+      credentials: "same-origin",
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+  };
+  let resp = await send();
+  if (resp.status === 401) {
+    let err = await errorOf(resp);
+    if (err.code === "reauth_required" && (await reauthenticate())) {
+      resp = await send();
+      if (resp.status === 401) err = await errorOf(resp);
+    }
+    if (resp.status === 401) {
+      if (err.code === "unauthenticated" && !opts.quiet401) onUnauthenticated();
+      throw err;
+    }
+  }
+  if (!resp.ok) throw await errorOf(resp);
+  if (resp.status === 204) return undefined as T;
+  const text = await resp.text();
+  return (text ? JSON.parse(text) : undefined) as T;
+}
+
+const get = <T>(path: string) => request<T>("GET", path);
+const post = <T>(path: string, body?: unknown) => request<T>("POST", path, body ?? {});
+const put = <T>(path: string, body?: unknown) => request<T>("PUT", path, body ?? {});
+const patch = <T>(path: string, body: unknown) => request<T>("PATCH", path, body);
+const del = <T = void>(path: string) => request<T>("DELETE", path);
+
+const enc = encodeURIComponent;
+
+/** `?project=<id>` when a project is selected. */
+function inProject(project?: string | null): string {
+  return project ? `?project=${enc(project)}` : "";
+}
+
+// ---- authentication -----------------------------------------------------------
 
 export async function healthCheck(): Promise<HealthResponse> {
-  const resp = await fetch(`${API_BASE}/health`);
-  return handleResponse(resp);
+  return request("GET", "/health", undefined, { quiet401: true });
 }
 
-export async function listVms(): Promise<VmResponse[]> {
-  const resp = await fetch(`${API_BASE}/vms`);
-  return handleResponse(resp);
+export const authMethods = () => request<AuthMethods>("GET", "/auth/methods", undefined, { quiet401: true });
+
+export async function whoami(): Promise<WhoAmI> {
+  const w = await request<WhoAmI>("GET", "/auth/whoami", undefined, { quiet401: true });
+  setCsrf(w.csrf);
+  return w;
 }
+
+export async function loginPam(username: string, password: string): Promise<WhoAmI> {
+  const w = await request<WhoAmI>("POST", "/auth/login", { method: "pam", username, password }, { quiet401: true });
+  setCsrf(w.csrf);
+  return w;
+}
+
+/** Leave the page for the identity provider. */
+export function startOidc(returnTo: string, reauth = false) {
+  const q = new URLSearchParams({ return_to: returnTo });
+  if (reauth) q.set("reauth", "1");
+  window.location.assign(`${API_BASE}/auth/oidc/start?${q}`);
+}
+
+export async function logout(): Promise<void> {
+  await request<void>("POST", "/auth/logout", {}, { quiet401: true });
+  setCsrf(null);
+}
+
+export const updateMe = (body: { default_project: string | null }) => patch<User>("/users/me", body);
+
+/** Capability checks for the caller (spec §7.7): one boolean per check. */
+export async function checkAccess(checks: { action: string; resource: EntityRef }[]): Promise<boolean[]> {
+  if (checks.length === 0) return [];
+  const r = await post<{ results: { allowed: boolean }[] }>("/authz/check", { checks });
+  return r.results.map((x) => x.allowed);
+}
+
+// ---- VMs --------------------------------------------------------------------
+
+export const listVms = (project?: string | null) => get<VmResponse[]>(`/vms${inProject(project)}`);
 
 export async function getVm(id: string): Promise<VmResponse> {
-  const resp = await fetch(`${API_BASE}/vms/${id}`);
-  if (resp.status === 404) throw new Error("VM not found");
-  return handleResponse(resp);
+  try {
+    return await get<VmResponse>(`/vms/${enc(id)}`);
+  } catch (e) {
+    if (e instanceof ApiRequestError && e.status === 404) throw new Error("VM not found");
+    throw e;
+  }
 }
 
-export async function createVm(
-  request: CreateVmRequest,
-): Promise<VmResponse> {
-  const resp = await fetch(`${API_BASE}/vms`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(request),
-  });
-  return handleResponse(resp);
-}
-
-export async function startVm(id: string): Promise<VmResponse> {
-  const resp = await fetch(`${API_BASE}/vms/${id}/start`, { method: "POST" });
-  return handleResponse(resp);
-}
+export const createVm = (req: CreateVmRequest) => post<VmResponse>("/vms", req);
+export const startVm = (id: string) => post<VmResponse>(`/vms/${enc(id)}/start`);
 
 /** Stop a VM. With `gracefulTimeoutSecs`, press the guest's power button
  * first and stop it hard only if it is still running after that long. */
-export async function stopVm(id: string, gracefulTimeoutSecs?: number): Promise<VmResponse> {
+export function stopVm(id: string, gracefulTimeoutSecs?: number): Promise<VmResponse> {
   const query = gracefulTimeoutSecs === undefined ? "" : `?graceful_timeout_secs=${gracefulTimeoutSecs}`;
-  const resp = await fetch(`${API_BASE}/vms/${id}/stop${query}`, { method: "POST" });
-  return handleResponse(resp);
+  return post<VmResponse>(`/vms/${enc(id)}/stop${query}`);
 }
 
-export async function pauseVm(id: string): Promise<VmResponse> {
-  const resp = await fetch(`${API_BASE}/vms/${id}/pause`, { method: "POST" });
-  return handleResponse(resp);
-}
+export const pauseVm = (id: string) => post<VmResponse>(`/vms/${enc(id)}/pause`);
+export const deleteVm = (id: string, keepDisk = false) => del(`/vms/${enc(id)}${keepDisk ? "?keep_disk=true" : ""}`);
 
-export async function deleteVm(id: string, keepDisk = false): Promise<void> {
-  const resp = await fetch(`${API_BASE}/vms/${id}${keepDisk ? "?keep_disk=true" : ""}`, {
-    method: "DELETE",
+/** A single-use console ticket for the WebSocket (spec §5.6). */
+export const consoleTicket = (id: string) =>
+  post<{ ticket: string; expires_in: number }>(`/vms/${enc(id)}/console/ticket`);
+
+// ---- guest credentials ------------------------------------------------------
+
+export const listCredentials = (project?: string | null) => get<CredentialInfo[]>(`/credentials${inProject(project)}`);
+export const createCredential = (req: CreateCredentialRequest) => post<CredentialInfo>("/credentials", req);
+export const updateCredential = (username: string, req: UpdateCredentialRequest, project?: string | null) =>
+  put<CredentialInfo>(`/credentials/${enc(username)}${inProject(project)}`, req);
+export const deleteCredential = (username: string, project?: string | null) =>
+  del(`/credentials/${enc(username)}${inProject(project)}`);
+
+// ---- networks ---------------------------------------------------------------
+
+export const listNetworks = () => get<Network[]>("/networks");
+export const createNetwork = (req: CreateNetworkRequest) => post<Network>("/networks", req);
+export const deleteNetwork = (name: string) => del(`/networks/${enc(name)}`);
+export const createProjectNetwork = (project: string, req: CreateNetworkRequest) =>
+  post<Network>(`/projects/${enc(project)}/networks`, req);
+export const offerNetworkShare = (network: string, project: string) =>
+  post<void>(`/networks/${enc(network)}/shares`, { project });
+export const unshareNetwork = (network: string, project: string) =>
+  del(`/networks/${enc(network)}/shares/${enc(project)}`);
+export const listNetworkShares = (project: string) => get<NetworkShare[]>(`/projects/${enc(project)}/network-shares`);
+export const acceptNetworkShare = (project: string, network: string) =>
+  post<Network>(`/projects/${enc(project)}/network-shares/${enc(network)}/accept`);
+export const leaveNetworkShare = (project: string, network: string) =>
+  del(`/projects/${enc(project)}/network-shares/${enc(network)}`);
+
+export const ovsStatus = () => get<OvsStatus>("/ovs/status");
+
+export const installOvs = (profile: "kernel" | "dpdk", confirm: boolean) =>
+  post<{ changed: boolean; ovs_version?: string; warnings: string[] }>("/ovs/install", {
+    profile,
+    source_build: false,
+    confirm,
   });
-  if (resp.ok || resp.status === 204) return;
-  const err: ApiError = await resp.json();
-  throw new Error(`${err.error}: ${err.message}`);
-}
 
-export async function listCredentials(): Promise<CredentialInfo[]> {
-  const resp = await fetch(`${API_BASE}/credentials`);
-  return handleResponse(resp);
-}
-
-export async function createCredential(
-  request: CreateCredentialRequest,
-): Promise<CredentialInfo> {
-  const resp = await fetch(`${API_BASE}/credentials`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(request),
-  });
-  return handleResponse(resp);
-}
-
-export async function updateCredential(
-  username: string,
-  request: UpdateCredentialRequest,
-): Promise<CredentialInfo> {
-  const resp = await fetch(
-    `${API_BASE}/credentials/${encodeURIComponent(username)}`,
-    {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(request),
-    },
-  );
-  return handleResponse(resp);
-}
-
-export async function deleteCredential(username: string): Promise<void> {
-  const resp = await fetch(
-    `${API_BASE}/credentials/${encodeURIComponent(username)}`,
-    { method: "DELETE" },
-  );
-  if (resp.ok || resp.status === 204) return;
-  const err: ApiError = await resp.json();
-  throw new Error(`${err.error}: ${err.message}`);
-}
-
-export async function listNetworks(): Promise<Network[]> {
-  return handleResponse(await fetch(`${API_BASE}/networks`));
-}
-
-export async function createNetwork(req: CreateNetworkRequest): Promise<Network> {
-  const resp = await fetch(`${API_BASE}/networks`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(req),
-  });
-  return handleResponse(resp);
-}
-
-export async function deleteNetwork(name: string): Promise<void> {
-  const resp = await fetch(`${API_BASE}/networks/${encodeURIComponent(name)}`, {
-    method: "DELETE",
-  });
-  if (resp.ok || resp.status === 204) return;
-  throw new ApiRequestError(await resp.json());
-}
-
-export async function ovsStatus(): Promise<OvsStatus> {
-  return handleResponse(await fetch(`${API_BASE}/ovs/status`));
-}
-
-export async function installOvs(
-  profile: "kernel" | "dpdk",
-  confirm: boolean,
-): Promise<{ changed: boolean; ovs_version?: string; warnings: string[] }> {
-  const resp = await fetch(`${API_BASE}/ovs/install`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ profile, source_build: false, confirm }),
-  });
-  return handleResponse(resp);
-}
-
-export async function listBridges(): Promise<BridgeRecord[]> {
-  return handleResponse(await fetch(`${API_BASE}/ovs/bridges`));
-}
+export const listBridges = () => get<BridgeRecord[]>("/ovs/bridges");
 
 // ---- images and disks ---------------------------------------------------------
 
-async function sendJson<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const resp = await fetch(`${API_BASE}${path}`, {
-    method,
-    headers: body === undefined ? undefined : { "Content-Type": "application/json" },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-  if (resp.status === 204) return undefined as T;
-  return handleResponse(resp);
-}
-
-export const imageCatalog = () => sendJson<CatalogItem[]>("GET", "/images/catalog");
-export const listImages = () => sendJson<ImageInfo[]>("GET", "/images");
+export const imageCatalog = () => get<CatalogItem[]>("/images/catalog");
+export const listImages = () => get<ImageInfo[]>("/images");
 export const pullImage = (req: { catalog?: string; url?: string; sha256?: string; name?: string }) =>
-  sendJson<ImageInfo>("POST", "/images", req);
-export const deleteImage = (id: string) => sendJson<void>("DELETE", `/images/${encodeURIComponent(id)}`);
+  post<ImageInfo>("/images", req);
+export const deleteImage = (id: string) => del(`/images/${enc(id)}`);
 
-export const listDisks = () => sendJson<DiskInfo[]>("GET", "/disks");
-export const getDisk = (id: string) => sendJson<DiskInfo>("GET", `/disks/${encodeURIComponent(id)}`);
-export const createDisk = (req: CreateDiskRequest) => sendJson<DiskInfo>("POST", "/disks", req);
+export const listDisks = (project?: string | null) => get<DiskInfo[]>(`/disks${inProject(project)}`);
+export const getDisk = (id: string) => get<DiskInfo>(`/disks/${enc(id)}`);
+export const createDisk = (req: CreateDiskRequest) => post<DiskInfo>("/disks", req);
 export const resizeDisk = (id: string, sizeGib: number, extendRoot?: boolean) =>
-  sendJson<DiskInfo>("POST", `/disks/${encodeURIComponent(id)}/resize`, {
-    size_gib: sizeGib,
-    extend_root: extendRoot,
-  });
+  post<DiskInfo>(`/disks/${enc(id)}/resize`, { size_gib: sizeGib, extend_root: extendRoot });
 export const extendRoot = (id: string, mode: "offline" | "on-boot") =>
-  sendJson<DiskInfo>("POST", `/disks/${encodeURIComponent(id)}/extend-root`, { mode });
-export const deleteDisk = (id: string) => sendJson<void>("DELETE", `/disks/${encodeURIComponent(id)}`);
+  post<DiskInfo>(`/disks/${enc(id)}/extend-root`, { mode });
+export const deleteDisk = (id: string) => del(`/disks/${enc(id)}`);
+
+// ---- projects and role links ------------------------------------------------
+
+export const listProjects = () => get<ProjectView[]>("/projects");
+export const getProject = (id: string) => get<ProjectView>(`/projects/${enc(id)}`);
+export const createProject = (req: { name: string; description?: string; quotas?: Partial<Quotas>; owners?: string[] }) =>
+  post<Project>("/projects", req);
+export const updateProject = (id: string, req: { description?: string; quotas?: Quotas }) =>
+  patch<Project>(`/projects/${enc(id)}`, req);
+export const deleteProject = (id: string) => del(`/projects/${enc(id)}`);
+
+export const listBindings = (project: string) => get<Binding[]>(`/projects/${enc(project)}/bindings`);
+export const addBinding = (project: string, role: string, principal: EntityRef) =>
+  post<Binding>(`/projects/${enc(project)}/bindings`, { role, principal });
+export const removeBinding = (project: string, link: string) => del(`/projects/${enc(project)}/bindings/${enc(link)}`);
+
+export const listSystemBindings = () => get<Binding[]>("/system/bindings");
+export const addSystemBinding = (role: string, principal: EntityRef) =>
+  post<Binding>("/system/bindings", { role, principal });
+export const removeSystemBinding = (link: string) => del(`/system/bindings/${enc(link)}`);
+
+// ---- users, teams and tokens --------------------------------------------------
+
+export const listUsers = () => get<UserView[]>("/users");
+export const updateUser = (id: string, req: { display_name?: string; disabled?: boolean; default_project?: string }) =>
+  patch<User>(`/users/${enc(id)}`, req);
+
+export const listTeams = () => get<Team[]>("/teams");
+export const createTeam = (name: string) => post<Team>("/teams", { name });
+export const deleteTeam = (id: string) => del(`/teams/${enc(id)}`);
+export const addTeamMember = (team: string, user: string) => put<Team>(`/teams/${enc(team)}/members/${enc(user)}`);
+export const removeTeamMember = (team: string, user: string) => del<Team>(`/teams/${enc(team)}/members/${enc(user)}`);
+
+export const listTokens = () => get<ApiToken[]>("/tokens");
+export const createToken = (req: CreateTokenRequest) => post<CreatedToken>("/tokens", req);
+export const revokeToken = (id: string) => del(`/tokens/${enc(id)}`);
+
+// ---- policies and audit -------------------------------------------------------
+
+export const listPolicies = () => get<{ policies: PolicyInfo[]; site: SitePolicy[] }>("/authz/policies");
+export const policyVersions = (id: string) => get<SitePolicyVersion[]>(`/authz/policies/${enc(id)}/versions`);
+export const validatePolicy = (id: string, text: string) =>
+  post<{ valid: boolean; errors?: string[] }>("/authz/validate", { id, text });
+export const simulatePolicy = (changes: PolicyChange[], requests: SimulationRequest[]) =>
+  post<{ results: SimulationResult[] }>("/authz/simulate", { changes, requests });
+export const putPolicy = (id: string, req: { text: string; description: string; enabled: boolean; version: number }) =>
+  put<SitePolicy | null>(`/authz/policies/${enc(id)}`, req);
+export const deletePolicy = (id: string, version: number) => del(`/authz/policies/${enc(id)}?version=${version}`);
+
+export function readAudit(q: { project?: string; user?: string; since?: number; limit?: number }): Promise<AuditEntry[]> {
+  const p = new URLSearchParams();
+  if (q.project) p.set("project", q.project);
+  if (q.user) p.set("user", q.user);
+  if (q.since) p.set("since", String(q.since));
+  if (q.limit) p.set("limit", String(q.limit));
+  const s = p.toString();
+  return get<AuditEntry[]>(`/audit${s ? `?${s}` : ""}`);
+}

@@ -46,9 +46,10 @@ command -v cargo >/dev/null || die "cargo is not installed"
 # The suite starts its own servers and never reuses running ones.
 api_port=${E2E_API_PORT:-8851}
 ui_port=${E2E_UI_PORT:-5174}
-for port in "$api_port" "$ui_port"; do
+ui_server_port=${E2E_UI_SERVER_PORT:-5175}
+for port in "$api_port" "$ui_port" "$ui_server_port"; do
   if ss -ltnH "sport = :$port" 2>/dev/null | grep -q .; then
-    die "port $port is in use (a previous run still going?); set E2E_API_PORT / E2E_UI_PORT"
+    die "port $port is in use (a previous run still going?); set E2E_API_PORT / E2E_UI_PORT / E2E_UI_SERVER_PORT"
   fi
 done
 

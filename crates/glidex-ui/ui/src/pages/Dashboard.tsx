@@ -7,16 +7,19 @@ import { LoadingCard } from "../components/Loading";
 import Modal from "../components/Modal";
 import CreateVmForm from "../components/CreateVmForm";
 import type { CreateVmRequest } from "../types";
+import { useCan, useSession } from "../session";
 
 export default function Dashboard() {
+  const { project, projectName } = useSession();
   const [vms, setVms] = useState<VmResponse[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [canCreate] = useCan(project ? [{ action: "createVm", resource: { type: "Project", id: project } }] : []) ?? [];
 
   const fetchVms = useCallback(async () => {
     try {
-      const data = await api.listVms();
+      const data = await api.listVms(project);
       setVms(data);
       setError(null);
     } catch (e) {
@@ -24,7 +27,7 @@ export default function Dashboard() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [project]);
 
   useEffect(() => {
     fetchVms();
@@ -59,7 +62,7 @@ export default function Dashboard() {
   const handleCreate = async (request: CreateVmRequest) => {
     setError(null);
     try {
-      await api.createVm(request);
+      await api.createVm({ ...request, project: project ?? undefined });
       setShowCreateModal(false);
       fetchVms();
     } catch (e) {
@@ -74,14 +77,18 @@ export default function Dashboard() {
           <h1 className="text-2xl font-bold text-gray-900">
             Virtual Machines
           </h1>
-          <p className="text-gray-500 mt-1">Manage your Cloud Hypervisor and QEMU VMs</p>
+          <p className="text-gray-500 mt-1">
+            Cloud Hypervisor and QEMU VMs in project <span className="font-medium">{projectName(project)}</span>
+          </p>
         </div>
-        <button
-          className="px-4 py-2 text-sm font-medium text-white bg-sky-600 hover:bg-sky-700 rounded-lg transition-colors"
-          onClick={() => setShowCreateModal(true)}
-        >
-          + Create VM
-        </button>
+        {canCreate && (
+          <button
+            className="px-4 py-2 text-sm font-medium text-white bg-sky-600 hover:bg-sky-700 rounded-lg transition-colors"
+            onClick={() => setShowCreateModal(true)}
+          >
+            + Create VM
+          </button>
+        )}
       </div>
 
       {error && (
