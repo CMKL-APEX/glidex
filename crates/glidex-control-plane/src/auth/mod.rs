@@ -349,6 +349,34 @@ impl AuthService {
         Ok(())
     }
 
+    // ---- bootstrap (spec §11) -------------------------------------------
+
+    /// On first start (no `role.system-admin` link yet), make every member
+    /// of the admin group a system administrator and owner of the default
+    /// project, so they can also manage glidex from a browser session.
+    pub fn bootstrap(&self, default_project: &str) -> Result<Vec<String>, AuthError> {
+        let members = nix::unistd::Group::from_name(&self.config.admin_group)
+            .ok()
+            .flatten()
+            .map(|g| g.mem)
+            .unwrap_or_default();
+        self.bootstrap_with(&members, default_project)
+    }
+
+    pub fn bootstrap_with(&self, members: &[String], default_project: &str) -> Result<Vec<String>, AuthError> {
+        if self.store.links()?.iter().any(|l| l.link.template == "role.system-admin") {
+            return Ok(Vec::new());
+        }
+        let mut made = Vec::new();
+        for name in members {
+            let Some(u) = self.store.user_for_identity("unix", name, name, None, true)? else { continue };
+            self.add_link("role.system-admin", Ent::User(u.id.clone()), Ent::Host, "bootstrap")?;
+            self.add_link("role.owner", Ent::User(u.id.clone()), Ent::Project(default_project.into()), "bootstrap")?;
+            made.push(name.clone());
+        }
+        Ok(made)
+    }
+
     // ---- authorization --------------------------------------------------
 
     /// Add `p`'s entities (user and teams, token and owner) to `es`.
@@ -979,6 +1007,20 @@ mod tests {
         let u2 = s.pam_user("carol", &["glidex-users".into()]).unwrap();
         assert_eq!(u2.id, u.id);
         assert!(s.store.teams_of(&u.id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn bootstrap_admins_once() {
+        let (s, _d) = svc();
+        assert_eq!(s.bootstrap_with(&["root2".into()], "pdefault").unwrap(), vec!["root2"]);
+        let links = s.store.links().unwrap();
+        assert_eq!(links.len(), 2);
+        assert!(links.iter().any(|l| l.link.template == "role.system-admin" && l.link.resource == Ent::Host));
+        // A PAM login of the same name is the same user.
+        let u = s.store.user_for_identity("pam", "root2", "root2", None, true).unwrap().unwrap();
+        assert!(links.iter().all(|l| l.link.principal == Ent::User(u.id.clone())));
+        // Only on first start.
+        assert!(s.bootstrap_with(&["other".into()], "pdefault").unwrap().is_empty());
     }
 
     #[test]

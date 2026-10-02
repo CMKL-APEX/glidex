@@ -195,7 +195,11 @@ async fn main() {
             std::process::exit(1);
         }
     };
-    println!("OK");
+    match auth.bootstrap(&vm_manager.default_project_id()) {
+        Ok(made) if !made.is_empty() => println!("OK (administrators: {})", made.join(", ")),
+        Ok(_) => println!("OK"),
+        Err(e) => println!("WARNING (bootstrap: {})", e),
+    }
 
     // Clone vm_manager for the shutdown handler before passing to router
     let vm_manager_shutdown = Arc::clone(&vm_manager);

@@ -23,6 +23,7 @@ const OWNED_IF: &str = r#"{"data":[["gx00000000-0",["map",[["glidex-owner","glid
 
 struct Harness {
     app: Router,
+    manager: std::sync::Arc<VmManager>,
     exec: Arc<RecordingExec>,
     _dir: TempDir,
 }
@@ -72,7 +73,8 @@ fn harness(ovs_running: bool) -> Harness {
 
     let manager = VmManager::with_db_path_and_netd(dir.path().join("cp.db"), Netd::new(&run_dir)).unwrap();
     Harness {
-        app: create_router(manager),
+        app: create_router(manager.clone()),
+        manager,
         exec,
         _dir: dir,
     }
@@ -241,4 +243,70 @@ async fn netd_errors_map_to_rest() {
     v.as_object_mut().unwrap().remove("networks");
     let (status, _) = request(&app, "POST", "/vms", Some(v)).await;
     assert_eq!(status, StatusCode::CREATED);
+}
+
+/// Project networks, quotas and two-sided sharing (spec/security.md §6.2).
+#[tokio::test(flavor = "multi_thread")]
+async fn project_networks_and_sharing() {
+    let h = harness(true);
+    let pa = h.manager.projects().create("pa", String::new(), None).unwrap().id;
+    let pb = h.manager.projects().create("pb", String::new(), None).unwrap().id;
+
+    let (status, net) = request(&h.app, "POST", &format!("/projects/{pa}/networks"), Some(json!({"name": "pnet", "mode": "nat"}))).await;
+    assert_eq!(status, StatusCode::CREATED, "{net}");
+    assert_eq!(net["project"], pa);
+    assert!(net["bridge"].as_str().unwrap().starts_with("gxp-"), "{net}");
+    // Project networks are NAT only and pick their own bridge.
+    let (status, _) = request(&h.app, "POST", &format!("/projects/{pa}/networks"), Some(json!({"name": "x", "mode": "isolated"}))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    // Quota: 2 project networks by default.
+    let req = |n: &str| serde_json::from_value(json!({"name": n, "mode": "nat"})).unwrap();
+    h.manager.create_project_network(&pa, req("pnet2"), glidex_control_plane::tenancy::QuotaMode::Enforce).await.unwrap();
+    let over = h.manager.create_project_network(&pa, req("pnet3"), glidex_control_plane::tenancy::QuotaMode::Enforce).await;
+    assert!(matches!(over, Err(glidex_control_plane::state::VmManagerError::QuotaExceeded(_))), "{over:?}");
+
+    // Not usable from another project until shared and accepted.
+    let mut spec = vm("b1", json!([{"network": "pnet"}]));
+    spec["project"] = json!(pb);
+    let (status, body) = request(&h.app, "POST", "/vms", Some(spec.clone())).await;
+    assert!(status.is_client_error(), "{status} {body}");
+    // Project networks are never granted, only shared.
+    let (status, _) = request(&h.app, "PUT", "/networks/pnet/grants", Some(json!({"grants": [pb]}))).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let (status, _) = request(&h.app, "POST", "/networks/pnet/shares", Some(json!({"project": pb}))).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    // Offers to unknown projects look the same and record nothing.
+    let (status, _) = request(&h.app, "POST", "/networks/pnet/shares", Some(json!({"project": "no-such-project"}))).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let (_, shares) = request(&h.app, "GET", &format!("/projects/{pb}/network-shares"), None).await;
+    assert_eq!(shares, json!([{"network": "pnet", "owner_project": pa, "status": "offered", "expires_at": shares[0]["expires_at"]}]));
+    // An offer alone grants nothing.
+    let (status, _) = request(&h.app, "POST", "/vms", Some(spec.clone())).await;
+    assert!(status.is_client_error());
+
+    let (status, body) = request(&h.app, "POST", &format!("/projects/{pb}/network-shares/pnet/accept"), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["shares"], json!([pb]));
+    let (status, body) = request(&h.app, "POST", "/vms", Some(spec)).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let id = body["id"].as_str().unwrap().to_string();
+
+    // Ending the share is refused while the target's VMs use it.
+    let (status, _) = request(&h.app, "DELETE", &format!("/networks/pnet/shares/{pb}"), None).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    let (status, _) = request(&h.app, "DELETE", &format!("/projects/{pb}/network-shares/pnet"), None).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    // Deleting the network is refused too.
+    let (status, _) = request(&h.app, "DELETE", "/networks/pnet", None).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+
+    request(&h.app, "DELETE", &format!("/vms/{id}"), None).await;
+    let (status, _) = request(&h.app, "DELETE", &format!("/projects/{pb}/network-shares/pnet"), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, shares) = request(&h.app, "GET", &format!("/projects/{pb}/network-shares"), None).await;
+    assert_eq!(shares, json!([]));
+    // A project that still owns networks can't be deleted.
+    let (status, _) = request(&h.app, "DELETE", &format!("/projects/{pa}"), None).await;
+    assert_eq!(status, StatusCode::CONFLICT);
 }
