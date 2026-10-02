@@ -878,6 +878,14 @@ may ask it for what.
 | `glidex-netd` | `ProtectHome=yes`, `CapabilityBoundingSet` limited to what the op set needs (to verify on a host: `CAP_NET_ADMIN CAP_NET_RAW CAP_SYS_ADMIN CAP_DAC_OVERRIDE CAP_CHOWN CAP_FOWNER`, plus package-manager needs for `install_ovs`). |
 | `glidex-authd` | Socket-activated, `PrivateNetwork=yes`, `ProtectSystem=strict`, `ProtectHome=read-only`, `NoNewPrivileges=yes` (PAM modules that need setuid helpers are not supported). |
 
+- **Not set on the control-plane unit: `NoNewPrivileges`,
+  `RestrictAddressFamilies`, `LockPersonality`** (and anything else that
+  makes systemd set no_new_privs for a non-root unit, such as
+  `SystemCallFilter` or `PrivateDevices`). cloud-hypervisor gets
+  `CAP_NET_ADMIN` from its file capability to bring taps up, and the
+  kernel ignores file capabilities under no_new_privs. They can come back
+  once netd fully prepares taps, so the hypervisor needs no capability.
+  The unit also makes `/run/glidex/vhost` writable for vhost-user sockets.
 - Data: `.glidex/{images,disks}` become `0700`; `glidex.db` stays `0600`.
 - Installer supply chain: pin the rustup-init and Bun versions and
   verify their published sha256 before running them, instead of

@@ -80,8 +80,11 @@ impl SeedConfig {
             hostname: sanitize_hostname(vm_name),
             username: DEFAULT_USER.to_string(),
             ssh_authorized_keys: host_ssh_public_keys(),
-            passwd_hash: std::env::var(PASSWD_HASH_ENV)
-                .ok()
+            // The systemd credential `cloud-init-passwd-hash` first
+            // (spec/security.md §9), then the environment variable.
+            passwd_hash: crate::config::credential("cloud-init-passwd-hash")
+                .and_then(|p| std::fs::read_to_string(p).ok())
+                .or_else(|| std::env::var(PASSWD_HASH_ENV).ok())
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty()),
             nic_macs: Vec::new(),
