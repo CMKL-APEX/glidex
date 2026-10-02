@@ -1,7 +1,8 @@
 # Security: authentication, tenancy and authorization
 
-Status: **draft for review**. Nothing here is implemented yet unless §1
-says so. Code references are to `617594e`.
+Status: **implemented** on branch `security-authz` (see §17 for what
+is where and what still needs a real host). §1 records the starting
+point at `617594e`.
 
 This document defines who may do what to a glidex host: how callers
 prove who they are (§5), how users, teams and projects are modeled (§6),
@@ -10,7 +11,7 @@ how the processes are confined (§9). It supersedes the "unauthenticated
 REST API" non-goal in [README.md](README.md) and the authorization
 bullets of [networking.md §14](networking.md#14-security).
 
-## 1. Current state (617594e)
+## 1. Starting point (617594e)
 
 | Area | Today | Problem |
 |---|---|---|
@@ -105,8 +106,12 @@ OIDC endpoints).
 
 | Transport | Address | Accepted credentials |
 |---|---|---|
-| Local Unix socket | `/run/glidex-cp/api.sock`, `glidex:glidex-users 0660` | Peer uid (§5.2). |
-| UI Unix socket | `/run/glidex-cp/ui.sock`, `glidex:glidex-ui 0660` | Session or token only; the peer must be `glidex-ui` (§5.6). |
+| Local Unix socket | `/run/glidex-cp/api.sock` | Peer uid (§5.2). |
+| UI Unix socket | `/run/glidex-cp/ui.sock` | Session or token only; the peer must be `glidex-ui` (§5.6). |
+
+Both socket files are mode `0666`: the access control is the per-request
+peer-uid check, not the file mode. (Giving them group `glidex-users`
+would need the `glidex` user to be a member of that group.)
 | TCP, loopback | `127.0.0.1:8841`, `[::1]:8841` | Token or session. Loopback is **not** trusted. |
 | TCP, other | `GLIDEX_LISTEN` | Token or session, **TLS required**: the control plane refuses to start on a non-loopback address without `tls.cert` and `tls.key`. |
 
@@ -196,7 +201,7 @@ selects TCP.
 **Sessions** (browser):
 - 256-bit random id; only `SHA-256(id)` is stored (`sessions` table).
 - Cookie `gx_session`: `HttpOnly; Secure` (when TLS); `SameSite=Strict;
-  Path=/api`.
+  Path=/`.
 - Idle timeout 30 minutes, absolute 12 hours. The id rotates at login;
   logout and user disable delete it.
 - `authenticated_at` is kept for step-up (`base.step-up`, §7.3).
@@ -297,7 +302,8 @@ Share offers, acceptances and ends are audited on both projects.
 Projects sharing a network share its L2 segment (§6.2). The NAT
 isolation of §8 still separates it from every other network.
 
-Names stay unique per project (VM, disk) instead of globally. Lookups
+VM names are unique per project. Disk names stay globally unique, so a
+disk can still be named without its project. Lookups
 by name need `?project=`, or resolve within the caller's default project.
 
 ### 6.3 Quotas
@@ -651,10 +657,16 @@ allow.**
 | `POST /vms/{id}/networks` | `attachNetwork` on the Vm; `useNetwork` on the network |
 | `POST /ovs/bridges/{b}/uplinks` with `confirm: true` | `confirmUplink` on `Host::"local"` |
 
-**Paths.** A path counts as *managed* when it resolves with
-`canonicalize` (symlinks and `..` resolved) inside the control plane's
-`.glidex/{images,disks}` or its firmware directory. The file is then
-opened by the resolved path. Anything else needs `useHostPath`.
+**Paths.** Any explicit `kernel_image_path`, `rootfs_path` or
+`cloud_init_path` needs `useHostPath`. So does a `firmware_path` other
+than the default firmware files of the two hypervisors (compared after
+`canonicalize`). Managed disks are named with `image`, `root_disk` and
+`data_disks` instead. Paths into the disk or image directories are not
+treated as managed: they would reach other projects' disks, or let a VM
+write to a shared base image.
+
+**VFIO devices** must be `/sys/bus/pci/devices/<DDDD:BB:DD.F>` (or the
+bare address); anything else is refused before authorization.
 
 **Not found vs forbidden.** For a project resource the control plane
 first asks `readVm` (or `readDisk`, …). If that is denied the answer is
@@ -663,15 +675,18 @@ first asks `readVm` (or `readDisk`, …). If that is denied the answer is
 ### 7.5 Tokens
 
 A token is a Cedar principal of its own (`Token`), with its own links.
-- A **personal token** (`owner` set) is evaluated **twice**, once as the
-  `Token` and once as its owner `User`. It is allowed only if both
-  allow. A token can therefore never exceed its owner, and removing the
-  owner's role narrows the token at once.
+- A **personal token** (`owner` set) with no links of its own acts as
+  its owner. With links, it is evaluated **twice**, as the `Token` and
+  as its owner `User`, and allowed only if both allow. Either way it can
+  never exceed its owner, and removing the owner's role narrows the
+  token at once.
 - A **service-account token** (no `owner`) is evaluated once. It can
   only be linked to roles in its own project.
 
-Host-network actions through a token need the token to be linked to
-`role.net-admin` itself (and its owner, for a personal token).
+Step-up actions through a token need the token to be linked to the
+role itself (e.g. `role.net-admin`; and its owner, for a personal
+token). A personal token acting purely as its owner never counts as a
+recent login.
 
 ### 7.6 Site policies
 
@@ -804,10 +819,13 @@ impl Authz {
 5. **Requests.** `Request::new(principal, action, resource, context,
    Some(&schema))`, so the request is validated too: wrong resource
    types are rejected before evaluation.
-6. **Handlers.** Every handler takes an axum extractor `Authz<A>` naming
-   its concrete action. Managers (`VmManager`, `ImageManager`,
-   `CredentialStore`) take the `Allowed` proof value, so a manager
-   method can't be called without a decision.
+6. **Handlers.** Every route is declared once in `api::routes` with its
+   action; a route layer hands the action to the handler through the
+   `Caller` extractor and records each decision for the audit entry.
+   A test checks every route's action exists in the schema. Managers
+   don't take a proof value; instead they re-check project consistency
+   themselves (a VM only gets disks, credentials and networks of its
+   project), so a handler mistake can't cross projects.
 7. **Lists.** `GET /vms` and similar first narrow to projects where the
    caller has a link (directly, through a team, or on the host), then
    check `readVm` per item. Each check takes microseconds at
@@ -855,7 +873,7 @@ may ask it for what.
 
 | Unit | Changes |
 |---|---|
-| `glidex-control-plane` | `RuntimeDirectory=glidex-cp` (`0750`); per-VM files in `/run/glidex-cp/vms/<id>/` (`0700`): API socket, console socket, cloud-init seed. Console logs in `/var/lib/glidex-control-plane/logs/` (`0700`). `UMask=0077`. `NoNewPrivileges=yes`, `PrivateTmp=yes`, `ProtectSystem=strict`, `ProtectHome=yes`, `ReadWritePaths=/var/lib/glidex-control-plane`, `DevicePolicy=closed`, `DeviceAllow=/dev/kvm rw`, `DeviceAllow=char-vfio rw`, `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK`, `LoadCredential=` for `tls-key`, `oidc-client-secret`, `cloud-init-passwd-hash` (replaces `GLIDEX_CLOUD_INIT_PASSWD_HASH`). |
+| `glidex-control-plane` | `RuntimeDirectory=glidex-cp` (`0755`, preserved across restarts) holds `api.sock`, `ui.sock` and `vms/` (`0700`); per-VM files in `/run/glidex-cp/vms/<id>/` (`0700`): API socket, console socket, console log, cloud-init seed. `UMask=0077`. `NoNewPrivileges=yes`, `PrivateTmp=yes`, `ProtectSystem=strict`, `ProtectHome=yes`, `ReadWritePaths=/var/lib/glidex-control-plane`, `DevicePolicy=closed`, `DeviceAllow=/dev/kvm rw`, `DeviceAllow=char-vfio rw`, `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK`, `LoadCredential=` for `tls-key`, `oidc-client-secret`, `cloud-init-passwd-hash` (replaces `GLIDEX_CLOUD_INIT_PASSWD_HASH`). |
 | `glidex-ui` | `User=glidex-ui`, `InaccessiblePaths=/run/glidex /var/lib/glidex-control-plane /run/glidex-authd`, `CapabilityBoundingSet=`, `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6`, existing `ProtectSystem`/`PrivateDevices` kept. |
 | `glidex-netd` | `ProtectHome=yes`, `CapabilityBoundingSet` limited to what the op set needs (to verify on a host: `CAP_NET_ADMIN CAP_NET_RAW CAP_SYS_ADMIN CAP_DAC_OVERRIDE CAP_CHOWN CAP_FOWNER`, plus package-manager needs for `install_ovs`). |
 | `glidex-authd` | Socket-activated, `PrivateNetwork=yes`, `ProtectSystem=strict`, `ProtectHome=read-only`, `NoNewPrivileges=yes` (PAM modules that need setuid helpers are not supported). |
@@ -896,13 +914,17 @@ connect` uses the API's console WebSocket instead of the raw socket.
 2. On first start with the new schema the control plane creates project
    `default`, assigns every existing VM, disk and guest credential to
    it, and grants every existing network to `default`.
-3. The invoking user's `unix:<name>` identity gets two role links:
-   `role.system-admin` on `Host::"local"` and `role.owner` on `default`. No default passwords or tokens are created.
+3. On first start (no `role.system-admin` link exists yet) every member
+   of `glidex-admin` (the installer added the invoking user) gets
+   `role.system-admin` on `Host::"local"` and `role.owner` on
+   `default`, for its `unix:<name>` identity (which a PAM login of the
+   same name shares). No default passwords or tokens are created.
 4. OIDC stays disabled until `oidc.issuer` and the client credentials
    are configured. PAM is enabled when `glidex-authd` is installed.
-5. During the transition `GLIDEX_AUTH=off` keeps the old behavior,
-   **loopback TCP only** (refused with any non-loopback listener), with
-   a warning at every start. It is removed in S5.
+5. There is no switch to turn authentication off in the binary. The
+   library keeps `api::create_router` with authentication disabled
+   (every request is a break-glass principal, still decided by Cedar)
+   for embedding and tests.
 
 ## 12. Out of scope
 
@@ -972,7 +994,11 @@ New endpoints:
 | `POST /projects/{id}/networks`, `DELETE /networks/{name}` (project network) | `network.manage` |
 | `POST /networks/{name}/shares` (`{project}`), `DELETE /networks/{name}/shares/{project}` | `network.share` on the network (offer, unshare) |
 | `GET /projects/{id}/network-shares`, `POST /projects/{id}/network-shares/{network}/accept`, `DELETE /projects/{id}/network-shares/{network}` | `network.share` on the target project (list offers, accept, leave) |
-| `POST /networks/{name}/grants` | `host.network` |
+| `PUT /networks/{name}/grants` (`{grants, all_projects}`) | `host.network` |
+| `POST /auth/session` | a peer-identified user on api.sock: a browser session for themselves (without break-glass) |
+| `GET /vms/{id}/console/log` | `vm.console` (console output replaces reading the log file) |
+| `PATCH /users/me` (`{default_project}`) | authenticated |
+| `POST /auth/oidc/device`, `POST /auth/oidc/device/poll` | none (device grant for gxctl; returns a 1-day personal token) |
 | `POST /vms/{id}/console/ticket` | `vm.console` |
 | `GET /audit` | §10 |
 
@@ -1061,3 +1087,22 @@ resource`; turned into linked policies at load), `sessions`, `api_tokens`,
 ## 16. Open questions
 
 None. Earlier questions were answered and recorded as decisions 10–17 (§2).
+
+## 17. Implementation status
+
+| Spec | Code |
+|---|---|
+| Cedar schema and shipped policies (§7.1, §7.3) | `crates/glidex-control-plane/policies/`, engine in `src/authz.rs` |
+| Projects, quotas, migration (§6, §11) | `src/tenancy.rs`, `src/state.rs` (`create_vm_in`, `usage_locked`, `adopt_into_default_project`) |
+| Identity store, principals, sessions, tokens, tickets, audit (§5, §10) | `src/auth/mod.rs`, `src/auth/store.rs` |
+| OIDC (§5.4) | `src/auth/oidc.rs` |
+| API, route table, compound checks (§7.4, §7.7, §13) | `src/api/` |
+| Listeners, TLS (§5.1) | `src/serve.rs`, `src/config.rs` |
+| Private VM runtime directories (§9) | `src/paths.rs` |
+| PAM helper (§5.3) | `crates/glidex-authd` |
+| netd ownership, policy, admin socket, audit context, NAT isolation (§8) | `crates/glidex-netd`, `crates/glidex-ovs/src/nat.rs` |
+| Tests (§14) | `tests/security_tests.rs`, `tests/network_tests.rs`, unit tests in each module, `crates/glidex-authd/tests`, `crates/glidex-netd/tests` |
+
+Still to verify on a real host: the generated nftables rules (§8.4),
+systemd sandboxing with VFIO, hugepages and taps (§9), a real PAM stack
+including expired accounts, and OIDC against the production IdP.
