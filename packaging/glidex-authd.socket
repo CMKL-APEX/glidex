@@ -1,0 +1,18 @@
+[Unit]
+Description=glidex PAM helper socket
+Documentation=https://github.com/akkarit/glidex/blob/main/spec/security.md
+
+[Socket]
+ListenStream=/run/glidex-authd/auth.sock
+SocketUser=root
+SocketGroup=glidex
+SocketMode=0660
+# systemd creates /run/glidex-authd (root-owned) for the socket. It must be
+# traversable by the glidex user, so 0755; the socket's own 0660
+# root:glidex mode is the access control, and authd also checks the peer
+# uid. glidex-ui is kept out with InaccessiblePaths= (security.md §9).
+DirectoryMode=0755
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target
