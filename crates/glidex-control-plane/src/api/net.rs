@@ -48,16 +48,45 @@ fn network_entities(n: &Network) -> (Ent, EntitySet) {
 
 // ---- networks ------------------------------------------------------------
 
+/// Host networks, and project networks of (or shared with) projects the
+/// caller can see. Share offers are shown only to those who may manage
+/// the network's shares.
+fn network_view(c: &Caller, visible: &crate::auth::LinkedProjects, mut n: Network) -> Option<Network> {
+    if let Some(p) = &n.project {
+        if !visible.contains(p) && !n.shares.iter().any(|s| visible.contains(s)) {
+            return None;
+        }
+        let (e, mut es) = network_entities(&n);
+        es.project(p);
+        let manage = c.auth().authorize(&c.p, "unshareNetwork", e, es, &[("project", Ent::Project(p.clone()))]).allowed;
+        if !manage {
+            n.share_offers.clear();
+        }
+    }
+    Some(n)
+}
+
 pub async fn list_networks(c: Caller) -> Result<impl IntoResponse, ApiErr> {
     c.require(Ent::Host, EntitySet::new())?;
-    Ok(Json(c.manager().list_networks().map_err(manager_err)?))
+    let visible = c.visible_projects()?;
+    let nets: Vec<Network> = c
+        .manager()
+        .list_networks()
+        .map_err(manager_err)?
+        .into_iter()
+        .filter_map(|n| network_view(&c, &visible, n))
+        .collect();
+    Ok(Json(nets))
 }
 
 pub async fn get_network(c: Caller, Path(name): Path<String>) -> Result<impl IntoResponse, ApiErr> {
     let n = c.manager().get_network(&name).map_err(manager_err)?;
     let (e, es) = network_entities(&n);
     c.require(e, es)?;
-    Ok(Json(n))
+    let visible = c.visible_projects()?;
+    network_view(&c, &visible, n)
+        .map(Json)
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, "not_found", format!("network not found: {}", name)))
 }
 
 #[derive(Deserialize)]

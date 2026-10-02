@@ -389,8 +389,8 @@ async fn audit_layer(State(app): State<AppState>, mut req: Request, next: Next) 
     let info = slot.0.lock().unwrap();
     let status = resp.status();
     let audited = !safe || info.denied;
-    // Successful logins are audited by the login handlers.
-    if audited && !(action == PUBLIC && status.is_success()) && !app.auth.is_disabled() {
+    // Public routes (logins) are audited by their handlers.
+    if audited && action != PUBLIC && !app.auth.is_disabled() {
         let result = if info.denied {
             "denied".to_string()
         } else if status.is_success() {
