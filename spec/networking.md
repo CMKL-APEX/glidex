@@ -839,6 +839,10 @@ New step after Cloud-Hypervisor, every part prompted:
 
 ## 14. Security
 
+> Superseded for authentication, authorization and NAT isolation by
+> [security.md](security.md) (§4, §8). The notes below describe netd's
+> own invariants.
+
 - Only netd is privileged. It runs only the `Program` allow-list with
   vector arguments, validates every field, enforces the ownership
   invariant and host-NIC guard itself, and takes the tap owner from
