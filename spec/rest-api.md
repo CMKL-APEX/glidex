@@ -3,6 +3,24 @@
 The control plane listens on `127.0.0.1:8841` and `[::1]:8841` by default (`GLIDEX_LISTEN` overrides). All request and
 response bodies are JSON except for the console WebSocket.
 
+## Authentication and authorization
+
+Every endpoint except `/health`, `/auth/methods`, `/auth/login` and the
+OIDC endpoints needs a principal: a local user on `api.sock` (peer uid),
+a bearer token, or a browser session (cookie + `X-Glidex-CSRF` on
+writes). Each route maps to one Cedar action; see
+[security.md](security.md) §7 and §13 for the actions, the additional
+endpoints (projects, bindings, tokens, users, teams, policies, audit) and
+the error codes `401 unauthenticated`, `401 reauth_required`,
+`403 forbidden`, `403 quota_exceeded`, `409 would_lock_out` and
+`422 invalid_policy`.
+
+VMs, disks and guest credentials belong to a project: responses carry
+`project`, create bodies accept `project` (id or name; default: the
+caller's default project), and lists and `/credentials/{username}`
+accept `?project=`. Resources in projects the caller can't read are
+reported as `404`.
+
 ## Endpoints
 
 | Method | Path | Handler | Purpose |
@@ -73,7 +91,7 @@ All handlers live in `crates/glidex-control-plane/src/api.rs`.
   distro cloud images put their login prompt.
 - `cloud_init_path` attaches a NoCloud seed image
   read-only as the second disk. When omitted on a firmware boot, glidex
-  generates one at `/tmp/cloud-hypervisor-<id>.cloudinit.img` on every start
+  generates one at `<run dir>/vms/<id>/cloudinit.img` on every start
   (needs `mkdosfs`/`mcopy` from dosfstools/mtools): hostname from the VM
   name, DHCP on `en*`, and a sudo user `cloud` with the control-plane
   user's `~/.ssh/*.pub` keys. Password login stays locked unless
@@ -130,8 +148,7 @@ Semantics depend on VM state:
 ```json
 {
   "vm_id": "…",
-  "console_socket_path": "/tmp/qemu-<id>.console.sock",
-  "log_path": "/tmp/qemu-<id>.log",
+  "websocket": "/vms/<id>/console/ws",
   "available": true
 }
 ```
@@ -182,7 +199,8 @@ not the caller's fault — e.g. `HypervisorError::CloudInit` when
 
 1. Looks up the VM. If `VmNotFound`, responds `404`. Any other
    lookup error responds `500`.
-2. Opens a `tokio::net::UnixStream` to the VM's `console_socket_path`.
+2. Opens a `tokio::net::UnixStream` to the VM's console socket (in its
+   private runtime directory; never exposed to clients).
    If the connect fails, sends a `Message::Text` containing the
    error string and then `Message::Close`.
 3. Enters a `select!` loop:

@@ -1,5 +1,9 @@
 # Credential Store
 
+> Credentials belong to a project and are keyed by `(project, username)`;
+> a VM only uses credentials of its own project (spec/security.md §6.2).
+> Records from before projects moved to the default project on upgrade.
+
 Source: `crates/glidex-control-plane/src/credentials.rs`. Stored guest
 logins that the generated cloud-init seed provisions on a firmware-booted
 VM's first boot (see [hypervisors.md](hypervisors.md#firmware-boot)).

@@ -133,7 +133,7 @@ A user-supplied `rootfs_path` is probed by magic bytes. The seed is
 `config.cloud_init_path`, or —
 if unset on a firmware boot — the image `VmManager::start_vm`
 regenerates at `Vm::default_cloud_init_path()`
-(`/tmp/cloud-hypervisor-<id>.cloudinit.img`) before `configure`. It is
+(`<run dir>/vms/<id>/cloudinit.img`) before `configure`. It is
 attached `readonly`. Contents (`cloud_init.rs`):
 
 - `meta-data`: `instance-id` = VM id (stable, so cloud-init
@@ -228,7 +228,7 @@ Notes captured in code comments:
   follow whatever backing file a user-supplied qcow2 names and hand
   that host file to the guest. Disks on filesystems that support
   `O_DIRECT` get `cache.direct=on,aio=native`; others (e.g. a tmpfs
-  `/tmp` seed) use the page cache.
+  runtime-directory seed) use the page cache.
 - The root disk has `bootindex=1`, so OVMF boots it rather than the
   seed or a data disk.
 - QEMU's stderr goes to the VM's log file only (opened `O_APPEND`, as
