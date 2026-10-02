@@ -156,6 +156,16 @@ selects TCP.
 - Rate limits: 5 failures per user per 15 minutes, 30 per minute
   globally; a fixed 1 s delay on every failure. The password is never
   logged and is zeroized after use.
+- Implementation notes (`crates/glidex-authd`): the group check runs in
+  authd itself, from `allowed_groups` in `/etc/glidex/authd.json`
+  (default `["glidex-users"]`); the control plane's `pam.allowed_groups`
+  must match it. Denials that never reach PAM (unknown user, wrong group)
+  also wait as long as the last PAM failure took, so timing doesn't tell
+  them apart. Errors carry a fixed `message` next to `code`. The socket
+  directory is `0755` (systemd creates it root-owned for the socket
+  unit, and the `glidex` user must traverse it); the socket's `0660`
+  mode and the peer-uid check are the access control. libpam is loaded
+  at run time (`libpam.so.0`), so building needs no PAM headers.
 - PAM login over the control plane is accepted only on TLS or loopback.
 
 ### 5.4 OIDC

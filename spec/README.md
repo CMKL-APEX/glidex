@@ -61,11 +61,12 @@ glidex/
 ├── Cargo.toml                       # Workspace root
 ├── README.md                        # User-facing readme
 ├── spec/                            # (this directory)
-├── packaging/                       # systemd unit for glidex-netd
+├── packaging/                       # systemd units (netd, authd, control plane, UI)
 └── crates/
     ├── glidex-control-plane/        # REST server + hypervisor backends + gxctl
     ├── glidex-ovs/                  # host networking library (OVS, NAT, VM ports)
     ├── glidex-netd/                 # root networking helper daemon + protocol client
+    ├── glidex-authd/                # root PAM helper daemon (security.md §5.3) + client
     ├── glidex-install/              # `cargo run -p glidex-install` bootstrapper
     └── glidex-ui/                   # Vite+React UI; the Rust bin serves it and proxies /api
 ```

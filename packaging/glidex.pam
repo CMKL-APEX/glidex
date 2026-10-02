@@ -1,0 +1,5 @@
+# /etc/pam.d/glidex: PAM service used by glidex-authd (security.md §5.3).
+# Debian/Ubuntu; on Fedora/RHEL use "auth include system-auth" and
+# "account include system-auth" instead.
+@include common-auth
+@include common-account
