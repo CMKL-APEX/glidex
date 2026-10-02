@@ -6,7 +6,8 @@
 //! then remove units, binaries, configuration and state. Kernel settings
 //! the installer changed (ip_forward, hugepages) go back to their recorded
 //! previous values. OVS packages, DPDK settings (and the hugepages they
-//! need), cloud-hypervisor and `~/.glidex` stay unless asked for.
+//! need), cloud-hypervisor, `~/.glidex` and the service user's data stay
+//! unless asked for.
 
 use crate::sysconfig;
 use anyhow::{bail, Context, Result};
@@ -14,14 +15,21 @@ use colored::Colorize;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-pub const UNITS: &[&str] = &["glidex-control-plane.service", "glidex-netd.service"];
+/// In stop order: the UI, the control plane (stops VMs), then netd.
+pub const UNITS: &[&str] = &["glidex-ui.service", "glidex-control-plane.service", "glidex-netd.service"];
 /// Units of the pinned OVS source build (removed only with --remove-ovs).
 pub const OVS_SOURCE_UNITS: &[&str] = &["glidex-ovs-vswitchd.service", "glidex-ovsdb-server.service"];
 pub const UNIT_DIR: &str = "/etc/systemd/system";
 pub const NETD_DB: &str = "/var/lib/glidex/netd.db";
 pub const SYSTEM_BIN_DIR: &str = "/usr/local/bin";
-pub const BINARIES: &[&str] = &["glidex-control-plane", "gxctl", "glidex-netd"];
+pub const BINARIES: &[&str] = &["glidex-control-plane", "gxctl", "glidex-netd", "glidex-ui"];
 pub const GROUP: &str = "glidex";
+/// The system user the control plane and UI run as, and its home (the
+/// control plane's VM database, images and disks).
+pub const SERVICE_USER: &str = "glidex";
+pub const SERVICE_HOME: &str = crate::SERVICE_HOME;
+/// The built web UI.
+pub const UI_ASSET_ROOT: &str = "/usr/local/share/glidex";
 /// Directories owned entirely by glidex.
 pub const STATE_DIRS: &[&str] = &["/etc/glidex", "/var/lib/glidex", "/run/glidex"];
 pub const SOURCE_PREFIX: &str = "/opt/glidex";
@@ -87,7 +95,9 @@ fn print_help() {
          \x20                              or the glidex source build in /opt/glidex)\n\
          \x20     --reset-dpdk             clear DPDK settings glidex put in OVS\n\
          \x20     --remove-cloud-hypervisor also delete the cloud-hypervisor binary\n\
-         \x20     --purge-user-data        also delete ~/.glidex (VMs, credentials, firmware, images, disks)"
+         \x20     --purge-user-data        also delete ~/.glidex and the glidex user's home,\n\
+         \x20                              /var/lib/glidex-control-plane (VMs, credentials,\n\
+         \x20                              firmware, images, disks)"
     );
 }
 
@@ -96,6 +106,7 @@ pub trait HostView {
     fn exists(&self, path: &Path) -> bool;
     fn unit_known(&self, unit: &str) -> bool;
     fn group_exists(&self, name: &str) -> bool;
+    fn user_exists(&self, name: &str) -> bool;
     fn has_net_admin(&self, bin: &Path) -> bool;
     fn package_installed(&self, name: &str) -> bool;
     fn read(&self, path: &Path) -> Option<String>;
@@ -236,7 +247,7 @@ pub fn plan(host: &dyn HostView, opts: &Options, user_home: &Path) -> Vec<Step> 
     }
 
     // 6. State, configuration, runtime files.
-    for d in STATE_DIRS {
+    for d in STATE_DIRS.iter().chain([&UI_ASSET_ROOT]) {
         if host.exists(Path::new(d)) {
             steps.push(Step::Remove(PathBuf::from(d)));
         }
@@ -244,21 +255,26 @@ pub fn plan(host: &dyn HostView, opts: &Options, user_home: &Path) -> Vec<Step> 
     for img in host.seed_images() {
         steps.push(Step::Remove(img));
     }
+    // The user first: groupdel refuses a user's primary group.
+    if host.user_exists(SERVICE_USER) {
+        steps.push(run(&["userdel", SERVICE_USER]));
+    }
     if host.group_exists(GROUP) {
         steps.push(run(&["groupdel", GROUP]));
     }
     host_settings(host, opts, &mut steps);
 
-    // 7. User data (optional).
-    let user_data = user_home.join(".glidex");
-    if host.exists(&user_data) {
-        if opts.purge_user_data {
-            steps.push(Step::Remove(user_data));
-        } else {
-            steps.push(Step::Note(format!(
-                "keeping {} (VM database, credentials, firmware, images and disks); use --purge-user-data to remove it",
-                user_data.display()
-            )));
+    // 7. User data (optional): the services' and the user's own.
+    for data in [PathBuf::from(SERVICE_HOME), user_home.join(".glidex")] {
+        if host.exists(&data) {
+            if opts.purge_user_data {
+                steps.push(Step::Remove(data));
+            } else {
+                steps.push(Step::Note(format!(
+                    "keeping {} (VM database, credentials, firmware, images and disks); use --purge-user-data to remove it",
+                    data.display()
+                )));
+            }
         }
     }
     steps
@@ -315,6 +331,9 @@ impl HostView for RealHost {
     }
     fn group_exists(&self, name: &str) -> bool {
         Command::new("getent").args(["group", name]).output().map(|o| o.status.success()).unwrap_or(false)
+    }
+    fn user_exists(&self, name: &str) -> bool {
+        Command::new("getent").args(["passwd", name]).output().map(|o| o.status.success()).unwrap_or(false)
     }
     fn has_net_admin(&self, bin: &Path) -> bool {
         Command::new("getcap")
@@ -548,6 +567,7 @@ mod tests {
         paths: HashSet<PathBuf>,
         units: HashSet<String>,
         groups: HashSet<String>,
+        users: HashSet<String>,
         caps: HashSet<PathBuf>,
         packages: HashSet<String>,
         seeds: Vec<PathBuf>,
@@ -563,6 +583,9 @@ mod tests {
         }
         fn group_exists(&self, g: &str) -> bool {
             self.groups.contains(g)
+        }
+        fn user_exists(&self, u: &str) -> bool {
+            self.users.contains(u)
         }
         fn has_net_admin(&self, b: &Path) -> bool {
             self.caps.contains(b)
@@ -583,7 +606,11 @@ mod tests {
         for p in [
             "/etc/systemd/system/glidex-control-plane.service",
             "/etc/systemd/system/glidex-netd.service",
+            "/etc/systemd/system/glidex-ui.service",
             "/usr/local/bin/glidex-netd",
+            "/usr/local/bin/glidex-ui",
+            "/usr/local/share/glidex",
+            "/var/lib/glidex-control-plane",
             "/usr/local/bin/cloud-hypervisor",
             "/home/alice/.local/bin/glidex-control-plane",
             "/home/alice/.local/bin/gxctl",
@@ -596,8 +623,9 @@ mod tests {
         ] {
             h.paths.insert(PathBuf::from(p));
         }
-        h.units.extend(["glidex-control-plane.service".to_string(), "glidex-netd.service".to_string()]);
+        h.units.extend(["glidex-ui.service", "glidex-control-plane.service", "glidex-netd.service"].map(String::from));
         h.groups.insert("glidex".into());
+        h.users.insert("glidex".into());
         h.caps.insert(PathBuf::from("/usr/local/bin/cloud-hypervisor"));
         h.packages.insert("openvswitch-switch".into());
         h.seeds.push(PathBuf::from("/tmp/cloud-hypervisor-abc.cloudinit.img"));
@@ -615,7 +643,8 @@ mod tests {
         let pos = |needle: &str| l.iter().position(|s| s.contains(needle)).unwrap_or_else(|| panic!("missing {needle}: {l:#?}"));
         // Services stop before networking is torn down, which happens before
         // netd's state (which describes it) is deleted.
-        assert!(pos("systemctl disable --now glidex-control-plane.service glidex-netd.service") < pos("tear down glidex networking"));
+        assert!(pos("systemctl disable --now glidex-ui.service glidex-control-plane.service glidex-netd.service") < pos("tear down glidex networking"));
+        assert!(pos("userdel glidex") < pos("groupdel glidex"));
         assert!(pos("tear down glidex networking") < pos("remove: /var/lib/glidex"));
         // The nft fallback runs after the teardown, as an idempotent script.
         assert!(pos("tear down glidex networking") < pos("drop nftables table inet glidex if present"));
@@ -630,12 +659,22 @@ mod tests {
             "remove: /run/glidex",
             "remove: /tmp/cloud-hypervisor-abc.cloudinit.img",
             "groupdel glidex",
+            "remove: /etc/systemd/system/glidex-ui.service",
+            "remove: /usr/local/bin/glidex-ui",
+            "remove: /usr/local/share/glidex",
+            "keeping /var/lib/glidex-control-plane",
             "keeping /home/alice/.glidex",
         ] {
             pos(needle);
         }
         // Not without the flags.
-        for absent in ["apt-get remove", "remove: /usr/local/bin/cloud-hypervisor", "remove: /home/alice/.glidex", "dpdk-init"] {
+        for absent in [
+            "apt-get remove",
+            "remove: /usr/local/bin/cloud-hypervisor",
+            "remove: /home/alice/.glidex",
+            "remove: /var/lib/glidex-control-plane",
+            "dpdk-init",
+        ] {
             assert!(!l.iter().any(|s| s.contains(absent)), "unexpected {absent}");
         }
     }
@@ -655,6 +694,7 @@ mod tests {
             "apt-get remove -y openvswitch-switch",
             "remove: /usr/local/bin/cloud-hypervisor",
             "remove: /home/alice/.glidex",
+            "remove: /var/lib/glidex-control-plane",
         ] {
             assert!(l.iter().any(|s| s.contains(needle)), "missing {needle}: {l:#?}");
         }

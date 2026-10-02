@@ -2,14 +2,18 @@
 
 Two crates cooperate to deliver the UI:
 
-- `crates/glidex-ui` (Rust bin) — a thin launcher that runs
-  `bun run dev` inside `crates/glidex-ui/ui/`. Exists so the UI can
-  be started with `cargo run -p glidex-ui` as a peer of
-  `cargo run -p glidex-control-plane`. No rendering happens here.
+- `crates/glidex-ui` (Rust bin) — serves the production build
+  (`bun run build` → `ui/dist`, or `GLIDEX_UI_DIR`) on
+  `GLIDEX_UI_LISTEN` (default `127.0.0.1:5173`), with unknown paths
+  answered by `index.html` (client-side routes), and proxies `/api/*`
+  to `GLIDEX_API_URL` (default `http://127.0.0.1:8841`), WebSocket
+  upgrades included. `glidex-ui --dev` instead runs `bun run dev`
+  inside `crates/glidex-ui/ui/` (Vite HMR). No rendering happens here.
 - `crates/glidex-ui/ui` — the actual Vite + React + TypeScript app.
 
-There is currently no production build path wired into the launcher;
-development mode (Vite HMR) is the only supported mode.
+The installer builds the UI, copies `dist` to
+`/usr/local/share/glidex/ui` and runs `glidex-ui.service` as the
+`glidex` user (see [installer.md](installer.md)).
 
 ## Stack
 

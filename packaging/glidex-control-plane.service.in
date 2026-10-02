@@ -1,7 +1,7 @@
 # Rendered by glidex-install (@USER@, @HOME@, @BIN@, @GROUPS@ are filled in).
 [Unit]
 Description=glidex control plane (REST API for VMs, networks, credentials)
-Documentation=https://github.com/akkarit/glidex
+Documentation=https://github.com/CMKL-APEX/glidex
 # Networking is optional: start after glidex-netd if it is installed, but
 # don't fail without it (VMs without networks still work).
 Wants=glidex-netd.service
@@ -9,10 +9,14 @@ After=network-online.target glidex-netd.service
 
 [Service]
 Type=simple
+# The glidex system user; its primary group also opens glidex-netd's socket.
 User=@USER@
-# kvm for /dev/kvm; glidex for glidex-netd's socket. Supplementary groups
-# apply here without the user having to log in again.
+Group=glidex
+# kvm for /dev/kvm (left out when the group doesn't exist).
 SupplementaryGroups=@GROUPS@
+# Console sockets and logs are group-accessible, so members of the glidex
+# group can `gxctl connect`.
+UMask=0007
 Environment=HOME=@HOME@
 WorkingDirectory=@HOME@
 ExecStart=@BIN@

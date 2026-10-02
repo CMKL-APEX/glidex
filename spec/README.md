@@ -68,7 +68,7 @@ glidex/
     ├── glidex-ovs/                  # host networking library (OVS, NAT, VM ports)
     ├── glidex-netd/                 # root networking helper daemon + protocol client
     ├── glidex-install/              # `cargo run -p glidex-install` bootstrapper
-    └── glidex-ui/                   # Vite+React UI; the Rust bin launches `bun run dev`
+    └── glidex-ui/                   # Vite+React UI; the Rust bin serves it and proxies /api
 ```
 
 Conventions that apply across documents:

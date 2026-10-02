@@ -23,22 +23,30 @@ A Rust control plane for KVM virtual machines on
 
 ```bash
 git clone https://github.com/CMKL-APEX/glidex.git && cd glidex
-cargo run -p glidex-install                   # Rust, Bun, Cloud Hypervisor, firmware, build
+cargo run -p glidex-install                   # install, or update everything
 cargo run -p glidex-install -- uninstall      # --dry-run shows what would go
 ```
 
-The installer asks before each optional step: QEMU with OVMF, VM networking
-(Open vSwitch, `glidex-netd`, the `glidex` group), and systemd units. It
-needs Linux with KVM (`/dev/kvm`; add yourself to the `kvm` group). See
+The installer asks nothing but your sudo password. It installs what is
+missing and updates what is outdated: system packages, Rust, Bun, Cloud
+Hypervisor and its firmware (pinned versions), QEMU with OVMF, VM
+networking (Open vSwitch, `glidex-netd`), and the glidex binaries. The
+control plane and web UI then run as systemd units under a `glidex`
+system user (data in `/var/lib/glidex-control-plane/.glidex`). Re-run it
+to update. `--no-qemu`, `--no-networking`, `--no-services` and
+`--ovs-profile kernel` opt out (remembered for later runs; `--help` for
+all). It needs Linux with KVM (`/dev/kvm`). See
 [spec/installer.md](spec/installer.md).
 
 ## Run
 
-With the systemd units enabled, glidex already runs. Otherwise:
+With the systemd units, glidex already runs: the web UI is on
+http://localhost:5173 and the API on http://localhost:8841. To run it
+yourself instead:
 
 ```bash
 cargo run --bin glidex-control-plane   # API on http://localhost:8841
-cargo run -p glidex-ui                 # web UI on http://localhost:5173
+cargo run -p glidex-ui -- --dev        # web UI (Vite, hot reload) on http://localhost:5173
 cargo run --bin gxctl                  # CLI
 ```
 
@@ -73,9 +81,12 @@ curl -X POST 'localhost:8841/vms/<id>/stop?graceful_timeout_secs=60'
   or `root_disk`, the VM boots through that hypervisor's default UEFI
   firmware (`~/.glidex/CLOUDHV.fd`, or OVMF from the `ovmf` /
   `edk2-ovmf` package); pass `firmware_path` to choose one, or
-  `kernel_image_path` for a direct kernel boot.
-- Without a stored credential, the guest user is `cloud` with the host's
-  `~/.ssh/*.pub` keys. `cloud_init_path` replaces the generated seed.
+  `kernel_image_path` for a direct kernel boot. Paths you pass are opened
+  by the control plane, so under the units they must be readable by the
+  `glidex` user (your home directory usually isn't).
+- Without a stored credential, the guest user is `cloud` with the
+  `~/.ssh/*.pub` keys of the user the control plane runs as (none for the
+  `glidex` service user, so add a credential). `cloud_init_path` replaces the generated seed.
 - Networks: `default` (NAT) is created when glidex-netd is available; add
   more with `gxctl network-add` or the web UI's Networking page.
 

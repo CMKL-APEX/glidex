@@ -8,6 +8,10 @@ name = "glidex-ui"
 path = "src/main.rs"
 
 [dependencies]
+axum = { workspace = true }
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["client-legacy", "http1", "tokio"] }
 tokio = { workspace = true }
+tower-http = { version = "0.6", features = ["fs"] }
 tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

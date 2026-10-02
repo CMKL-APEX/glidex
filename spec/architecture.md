@@ -36,11 +36,11 @@ host.
  └────────────────────────┘
 ```
 
-Separately, the UI crate (`glidex-ui`) spawns `bun run dev` from
-`crates/glidex-ui/ui/` to serve a Vite dev server on `:5173`; Vite
+Separately, the UI crate (`glidex-ui`) serves the built UI
+(`ui/dist`, installed to `/usr/local/share/glidex/ui`) on `:5173` and
 proxies `/api/**` (including WebSocket upgrades) to the control plane
-on `:8841`. In production one would build the UI and serve it
-statically, but that path is not wired up yet.
+on `:8841`; `glidex-ui --dev` runs the Vite dev server instead, whose
+proxy does the same. The installer runs it as `glidex-ui.service`.
 
 ## Control-plane layers
 

@@ -1486,10 +1486,17 @@ async fn handle_create(client: &CliClient) {
         ))
         .as_str()
         {
-            "" => default_firmware,
+            "" => default_firmware.map(|p| (p, true)),
             "none" => None,
-            s => Some(s.to_string()),
+            s => Some((s.to_string(), false)),
         }
+    };
+    // Whether the firmware is just this machine's default: for an image or
+    // managed disk the server then picks its own (the control plane may run
+    // as another user, who can't read this user's ~/.glidex).
+    let (firmware_path, firmware_is_default) = match firmware_path {
+        Some((p, default)) => (Some(p), default),
+        None => (None, false),
     };
 
     let kernel_image_path = if firmware_path.is_some() {
@@ -1652,7 +1659,11 @@ async fn handle_create(client: &CliClient) {
         vcpu_count,
         mem_size_mib,
         kernel_image_path,
-        firmware_path,
+        firmware_path: if firmware_is_default && (image.is_some() || root_disk.is_some()) {
+            None
+        } else {
+            firmware_path
+        },
         cloud_init_path,
         credential,
         rootfs_path,
