@@ -1,8 +1,16 @@
+//! `gxctl`: interactive CLI for the glidex control plane (spec/cli.md).
+
+mod admin;
+mod client;
+mod console;
+
 use clap::Parser;
+use client::{enc, ApiClient};
 use colored::Colorize;
+use console::{handle_connect, handle_log, restore_terminal};
 use glidex_control_plane::hypervisor::HypervisorType;
-use nix::sys::termios::{self, LocalFlags, SetArg, Termios};
-use reqwest::Client;
+use hyper::Method;
+use nix::sys::termios::{self, LocalFlags, SetArg};
 use rustyline::completion::{unescape, Completer, FilenameCompleter, Pair};
 use rustyline::error::ReadlineError;
 use rustyline::highlight::Highlighter;
@@ -11,38 +19,105 @@ use rustyline::history::DefaultHistory;
 use rustyline::validate::Validator;
 use rustyline::{CompletionType, Config, Context, Editor, Helper};
 use serde::{Deserialize, Serialize};
-use std::fs::File;
-use std::io::{self, BufRead, BufReader, IsTerminal, Read, Write};
-use std::os::fd::{AsFd, BorrowedFd};
-use std::os::unix::net::UnixStream;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::thread;
+use std::io::{self, IsTerminal, Write};
+use std::os::fd::AsFd;
+use std::path::PathBuf;
 use tabled::{Table, Tabled};
 
 #[derive(Parser)]
 #[command(name = "gxctl")]
 #[command(about = "Interactive CLI for Glidex Control Plane")]
 struct Cli {
-    /// API server URL
-    #[arg(short, long, default_value = "http://localhost:8841")]
-    server: String,
+    /// Control plane Unix socket (default: the first existing of
+    /// /run/glidex-cp/api.sock, $XDG_RUNTIME_DIR/glidex/api.sock,
+    /// /tmp/glidex-<uid>/api.sock). You're identified by your Unix user.
+    #[arg(long, env = "GLIDEX_SOCKET")]
+    socket: Option<PathBuf>,
+
+    /// Use TCP instead (wins over --socket), e.g. https://glidex.example.org:8841. Sends the
+    /// token from GLIDEX_TOKEN or ~/.config/glidex/token (see `login`).
+    #[arg(short = 's', long, visible_alias = "server")]
+    url: Option<String>,
+
+    /// Project (id or name) for creates, lists and name lookups;
+    /// default: your default project (`project use`).
+    #[arg(short, long, env = "GLIDEX_PROJECT")]
+    project: Option<String>,
+
+    /// Run one command and exit instead of starting the shell, e.g.
+    /// `gxctl list` or `gxctl --url https://… login --oidc`.
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    command: Vec<String>,
 }
 
-#[derive(Debug, Deserialize, Tabled)]
+/// Pick the transport (spec/cli.md "Transport"): `--url` → TCP with a
+/// token; else `--socket` / `GLIDEX_SOCKET` / the first existing default
+/// socket; else TCP to localhost.
+fn build_client(cli: &Cli) -> Result<ApiClient, String> {
+    let tcp = |url: &str| -> Result<ApiClient, String> {
+        let token = match client::load_token() {
+            Ok(t) => t,
+            Err(e) => {
+                println!("{} {}", "Warning:".yellow(), e);
+                None
+            }
+        };
+        ApiClient::tcp(url, token)
+    };
+    let c = match &cli.url {
+        Some(url) => tcp(url)?,
+        None => {
+            let candidates = client::socket_candidates(
+                std::env::var("XDG_RUNTIME_DIR").ok().as_deref(),
+                nix::unistd::geteuid().as_raw(),
+            );
+            match client::select_socket(cli.socket.clone(), &candidates, client::is_socket) {
+                Some(p) => ApiClient::unix(p),
+                None => tcp(client::DEFAULT_URL)?,
+            }
+        }
+    };
+    c.set_project(cli.project.clone());
+    Ok(c)
+}
+
+#[derive(Debug, Deserialize)]
 struct VmResponse {
     id: String,
     name: String,
+    #[serde(default)]
+    project: String,
     state: String,
     vcpu_count: u8,
     mem_size_mib: u32,
     hypervisor: String,
-    #[tabled(skip)]
     #[serde(default)]
     vfio_devices: Vec<String>,
-    #[tabled(skip)]
     #[serde(default)]
     nics: Vec<NicInfo>,
+}
+
+/// A `list` row: the project shown by name when it's known.
+#[derive(Tabled)]
+struct VmRow {
+    id: String,
+    name: String,
+    project: String,
+    state: String,
+    vcpu_count: u8,
+    mem_size_mib: u32,
+    hypervisor: String,
+}
+
+/// Project names by id (best effort: an empty map when not allowed).
+async fn project_names(client: &ApiClient) -> std::collections::HashMap<String, String> {
+    client
+        .request_json::<Vec<serde_json::Value>>(Method::GET, "/projects", None)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|p| Some((p["id"].as_str()?.to_string(), p["name"].as_str()?.to_string())))
+        .collect()
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -64,6 +139,28 @@ struct NetworkRow {
     #[tabled(display_with = "display_opt_u16")]
     #[serde(default)]
     vlan: Option<u16>,
+    /// Owning project (project networks); host networks have none.
+    #[tabled(display_with = "display_option")]
+    #[serde(default)]
+    project: Option<String>,
+}
+
+async fn list_networks(client: &ApiClient) {
+    match client.request_json::<Vec<NetworkRow>>(Method::GET, "/networks", None).await {
+        Ok(nets) if nets.is_empty() => println!("No networks. Create one with 'network create <name>'."),
+        Ok(mut nets) => {
+            let names = project_names(client).await;
+            for n in &mut nets {
+                if let Some(p) = n.project.as_mut() {
+                    if let Some(name) = names.get(p.as_str()) {
+                        *p = name.clone();
+                    }
+                }
+            }
+            println!("{}", Table::new(nets))
+        }
+        Err(e) => println!("{} {}", "Error:".red(), e),
+    }
 }
 
 fn display_opt_u16(o: &Option<u16>) -> String {
@@ -73,6 +170,54 @@ fn display_opt_u16(o: &Option<u16>) -> String {
 /// `--flag value` from a command's arguments.
 fn flag_value<'a>(args: &'a [&'a str], flag: &str) -> Option<&'a str> {
     args.iter().position(|a| *a == flag).and_then(|i| args.get(i + 1)).copied()
+}
+
+/// Every value of a repeatable `--flag value`.
+fn flag_values<'a>(args: &[&'a str], flag: &str) -> Vec<&'a str> {
+    args.windows(2).filter(|w| w[0] == flag).map(|w| w[1]).collect()
+}
+
+/// Split a command line into words; single or double quotes keep spaces
+/// (`project create lab --description "Lab VMs"`), backslash escapes.
+fn split_line(line: &str) -> Result<Vec<String>, String> {
+    let mut words = Vec::new();
+    let mut cur = String::new();
+    let mut in_word = false;
+    let mut quote: Option<char> = None;
+    let mut chars = line.chars();
+    while let Some(c) = chars.next() {
+        match (quote, c) {
+            (Some(q), c) if c == q => quote = None,
+            (Some(_), c) => cur.push(c),
+            (None, '\'' | '"') => {
+                quote = Some(c);
+                in_word = true;
+            }
+            (None, '\\') => {
+                if let Some(n) = chars.next() {
+                    cur.push(n);
+                }
+                in_word = true;
+            }
+            (None, c) if c.is_whitespace() => {
+                if in_word {
+                    words.push(std::mem::take(&mut cur));
+                    in_word = false;
+                }
+            }
+            (None, c) => {
+                cur.push(c);
+                in_word = true;
+            }
+        }
+    }
+    if quote.is_some() {
+        return Err("unterminated quote".into());
+    }
+    if in_word {
+        words.push(cur);
+    }
+    Ok(words)
 }
 
 /// `--graceful [secs]` from a `stop` command's arguments.
@@ -125,7 +270,7 @@ async fn handle_network_add(client: &CliClient, args: &[&str]) {
             }
         }
     }
-    match client.request_json::<NetworkRow>(reqwest::Method::POST, "/networks", Some(body)).await {
+    match client.request_json::<NetworkRow>(Method::POST, "/networks", Some(body)).await {
         Ok(n) => println!("{} {} ({} on {})", "Network created:".green(), n.name.yellow(), n.mode, n.bridge),
         Err(e) => println!("{} {}", "Error:".red(), e),
     }
@@ -156,7 +301,7 @@ async fn handle_uplink_add(client: &CliClient, args: &[&str]) {
     body["migrate_ip"] = serde_json::json!(has_flag(args, "--migrate-ip"));
     body["confirm"] = serde_json::json!(has_flag(args, "--force"));
     let path = format!("/ovs/bridges/{}/uplinks", bridge);
-    let res = match client.request_json::<serde_json::Value>(reqwest::Method::POST, &path, Some(body)).await {
+    let res = match client.request_json::<serde_json::Value>(Method::POST, &path, Some(body)).await {
         Ok(r) => r,
         Err(e) => {
             if e.contains("host_interface_in_use") {
@@ -179,7 +324,7 @@ async fn handle_uplink_add(client: &CliClient, args: &[&str]) {
             return;
         }
         let commit = format!("/ovs/bridges/{}/uplinks/{}/commit", bridge, name);
-        match client.request_json::<serde_json::Value>(reqwest::Method::POST, &commit, Some(serde_json::json!({"token": token}))).await {
+        match client.request_json::<serde_json::Value>(Method::POST, &commit, Some(serde_json::json!({"token": token}))).await {
             Ok(_) => println!("{} uplink {} on {} (IP migrated)", "Committed:".green(), name, bridge),
             Err(e) => println!("{} {} (the change will be rolled back)", "Error:".red(), e),
         }
@@ -191,7 +336,7 @@ async fn handle_uplink_add(client: &CliClient, args: &[&str]) {
 async fn handle_ovs(client: &CliClient, args: &[&str]) {
     match args.first().copied() {
         Some("status") | None => {
-            match client.request_json::<serde_json::Value>(reqwest::Method::GET, "/ovs/status", None).await {
+            match client.request_json::<serde_json::Value>(Method::GET, "/ovs/status", None).await {
                 Ok(s) => {
                     let netd = &s["netd"];
                     if netd["available"] != true {
@@ -236,7 +381,7 @@ async fn handle_ovs(client: &CliClient, args: &[&str]) {
                 "confirm": has_flag(args, "--force"),
             });
             println!("Installing Open vSwitch ({} profile); this can take a few minutes...", profile);
-            match client.request_json::<serde_json::Value>(reqwest::Method::POST, "/ovs/install", Some(body)).await {
+            match client.request_json::<serde_json::Value>(Method::POST, "/ovs/install", Some(body)).await {
                 Ok(r) if r["changed"] == true => println!("{} Open vSwitch {}", "Installed:".green(), r["ovs_version"].as_str().unwrap_or("?")),
                 Ok(r) => println!("{} Open vSwitch {} already satisfies the profile", "Nothing to do:".green(), r["ovs_version"].as_str().unwrap_or("?")),
                 Err(e) => println!("{} {}", "Error:".red(), e),
@@ -249,7 +394,7 @@ async fn handle_ovs(client: &CliClient, args: &[&str]) {
                 "confirm": has_flag(args, "--force"),
             });
             println!("Enabling DPDK in ovs-vswitchd (restarts it)...");
-            match client.request_json::<()>(reqwest::Method::POST, "/ovs/dpdk-init", Some(body)).await {
+            match client.request_json::<()>(Method::POST, "/ovs/dpdk-init", Some(body)).await {
                 Ok(()) => println!("{} DPDK initialized", "OK:".green()),
                 Err(e) => println!("{} {}", "Error:".red(), e),
             }
@@ -341,14 +486,6 @@ struct CreateVmRequest {
     networks: Option<Vec<NetworkAttachmentReq>>,
 }
 
-#[derive(Debug, Deserialize)]
-struct ApiError {
-    error: String,
-    message: String,
-    #[serde(default)]
-    details: serde_json::Value,
-}
-
 #[derive(Debug, Deserialize, Tabled)]
 struct PciDeviceInfo {
     address: String,
@@ -370,383 +507,100 @@ fn display_option(o: &Option<String>) -> String {
     }
 }
 
-#[derive(Debug, Deserialize)]
-struct ConsoleInfo {
-    #[allow(dead_code)]
-    vm_id: String,
-    console_socket_path: String,
-    log_path: String,
-    available: bool,
-}
+/// The API client (transport, auth, project scope) lives in `client.rs`;
+/// these are the VM and credential calls the REPL uses.
+type CliClient = ApiClient;
 
-struct CliClient {
-    client: Client,
-    base_url: String,
-}
-
-impl CliClient {
-    fn new(base_url: String) -> Self {
-        Self {
-            client: Client::new(),
-            base_url,
-        }
-    }
-
+impl ApiClient {
     async fn list_vms(&self) -> Result<Vec<VmResponse>, String> {
-        let resp = self
-            .client
-            .get(format!("{}/vms", self.base_url))
-            .send()
-            .await
-            .map_err(|e| format!("Request failed: {}", e))?;
-
-        if resp.status().is_success() {
-            resp.json()
-                .await
-                .map_err(|e| format!("Failed to parse response: {}", e))
-        } else {
-            let error: ApiError = resp
-                .json()
-                .await
-                .map_err(|e| format!("Failed to parse error: {}", e))?;
-            Err(format!("{}: {}", error.error, error.message))
-        }
+        self.request_json(Method::GET, &self.scoped("/vms"), None).await
     }
 
     async fn get_vm(&self, id: &str) -> Result<VmResponse, String> {
-        let resp = self
-            .client
-            .get(format!("{}/vms/{}", self.base_url, id))
-            .send()
-            .await
-            .map_err(|e| format!("Request failed: {}", e))?;
-
-        if resp.status().is_success() {
-            resp.json()
-                .await
-                .map_err(|e| format!("Failed to parse response: {}", e))
-        } else {
-            let error: ApiError = resp
-                .json()
-                .await
-                .map_err(|e| format!("Failed to parse error: {}", e))?;
-            Err(format!("{}: {}", error.error, error.message))
-        }
+        self.request_json(Method::GET, &format!("/vms/{}", enc(id)), None).await
     }
 
     async fn create_vm(&self, request: CreateVmRequest) -> Result<VmResponse, String> {
-        let resp = self
-            .client
-            .post(format!("{}/vms", self.base_url))
-            .json(&request)
-            .send()
-            .await
-            .map_err(|e| format!("Request failed: {}", e))?;
-
-        if resp.status().is_success() {
-            resp.json()
-                .await
-                .map_err(|e| format!("Failed to parse response: {}", e))
-        } else {
-            let error: ApiError = resp
-                .json()
-                .await
-                .map_err(|e| format!("Failed to parse error: {}", e))?;
-            Err(format!("{}: {}", error.error, error.message))
-        }
+        let mut body = serde_json::to_value(&request).map_err(|e| e.to_string())?;
+        self.scope_body(&mut body);
+        self.request_json(Method::POST, "/vms", Some(body)).await
     }
 
     async fn start_vm(&self, id: &str) -> Result<VmResponse, String> {
-        let resp = self
-            .client
-            .post(format!("{}/vms/{}/start", self.base_url, id))
-            .send()
-            .await
-            .map_err(|e| format!("Request failed: {}", e))?;
-
-        if resp.status().is_success() {
-            resp.json()
-                .await
-                .map_err(|e| format!("Failed to parse response: {}", e))
-        } else {
-            let error: ApiError = resp
-                .json()
-                .await
-                .map_err(|e| format!("Failed to parse error: {}", e))?;
-            Err(format!("{}: {}", error.error, error.message))
-        }
+        self.request_json(Method::POST, &format!("/vms/{}/start", enc(id)), None).await
     }
 
     /// Stop a VM; with `graceful_secs`, power-button first and wait.
     async fn stop_vm(&self, id: &str, graceful_secs: Option<u64>) -> Result<VmResponse, String> {
-        let query = graceful_secs
-            .map(|s| format!("?graceful_timeout_secs={}", s))
-            .unwrap_or_default();
-        let resp = self
-            .client
-            .post(format!("{}/vms/{}/stop{}", self.base_url, id, query))
-            .send()
-            .await
-            .map_err(|e| format!("Request failed: {}", e))?;
-
-        if resp.status().is_success() {
-            resp.json()
-                .await
-                .map_err(|e| format!("Failed to parse response: {}", e))
-        } else {
-            let error: ApiError = resp
-                .json()
-                .await
-                .map_err(|e| format!("Failed to parse error: {}", e))?;
-            Err(format!("{}: {}", error.error, error.message))
+        let mut path = format!("/vms/{}/stop", enc(id));
+        if let Some(s) = graceful_secs {
+            path = client::add_query(&path, "graceful_timeout_secs", &s.to_string());
         }
+        self.request_json(Method::POST, &path, None).await
     }
 
     async fn pause_vm(&self, id: &str) -> Result<VmResponse, String> {
-        let resp = self
-            .client
-            .post(format!("{}/vms/{}/pause", self.base_url, id))
-            .send()
-            .await
-            .map_err(|e| format!("Request failed: {}", e))?;
-
-        if resp.status().is_success() {
-            resp.json()
-                .await
-                .map_err(|e| format!("Failed to parse response: {}", e))
-        } else {
-            let error: ApiError = resp
-                .json()
-                .await
-                .map_err(|e| format!("Failed to parse error: {}", e))?;
-            Err(format!("{}: {}", error.error, error.message))
-        }
+        self.request_json(Method::POST, &format!("/vms/{}/pause", enc(id)), None).await
     }
 
     async fn delete_vm(&self, id: &str, keep_disk: bool) -> Result<(), String> {
-        let resp = self
-            .client
-            .delete(format!("{}/vms/{}{}", self.base_url, id, if keep_disk { "?keep_disk=true" } else { "" }))
-            .send()
-            .await
-            .map_err(|e| format!("Request failed: {}", e))?;
-
-        if resp.status().is_success() {
-            Ok(())
-        } else {
-            let error: ApiError = resp
-                .json()
-                .await
-                .map_err(|e| format!("Failed to parse error: {}", e))?;
-            Err(format!("{}: {}", error.error, error.message))
-        }
-    }
-
-    /// Generic JSON request; errors include `details.impact` /
-    /// `details.missing` when the API provides them.
-    async fn request_json<T: serde::de::DeserializeOwned>(
-        &self,
-        method: reqwest::Method,
-        path: &str,
-        body: Option<serde_json::Value>,
-    ) -> Result<T, String> {
-        let mut req = self.client.request(method, format!("{}{}", self.base_url, path));
-        if let Some(b) = body {
-            req = req.json(&b);
-        }
-        let resp = req.send().await.map_err(|e| format!("Request failed: {}", e))?;
-        if resp.status() == reqwest::StatusCode::NO_CONTENT {
-            return serde_json::from_value(serde_json::Value::Null)
-                .map_err(|e| format!("Failed to parse response: {}", e));
-        }
-        if resp.status().is_success() {
-            resp.json().await.map_err(|e| format!("Failed to parse response: {}", e))
-        } else {
-            let err: ApiError = resp.json().await.map_err(|e| format!("Failed to parse error: {}", e))?;
-            let mut msg = format!("{}: {}", err.error, err.message);
-            if let Some(impact) = err.details.get("impact").and_then(|v| v.as_str()) {
-                msg.push_str(&format!("\n  Impact: {}\n  Re-run with --force to proceed.", impact));
-            }
-            if let Some(min) = err.details.get("min_size_bytes").and_then(|v| v.as_u64()) {
-                msg.push_str(&format!("\n  Minimum size: {} ({} bytes)", format_bytes(min), min));
-            }
-            if let Some(missing) = err.details.get("missing").and_then(|v| v.as_array()) {
-                let items: Vec<&str> = missing.iter().filter_map(|m| m.as_str()).collect();
-                msg.push_str(&format!("\n  Missing on this host: {}", items.join(", ")));
-            }
-            Err(msg)
-        }
+        let path = format!("/vms/{}{}", enc(id), if keep_disk { "?keep_disk=true" } else { "" });
+        self.request_json(Method::DELETE, &path, None).await
     }
 
     async fn list_credentials(&self) -> Result<Vec<CredentialInfo>, String> {
-        let resp = self
-            .client
-            .get(format!("{}/credentials", self.base_url))
-            .send()
-            .await
-            .map_err(|e| format!("Request failed: {}", e))?;
-        json_or_api_error(resp).await
+        self.request_json(Method::GET, &self.scoped("/credentials"), None).await
     }
 
-    async fn create_credential(
-        &self,
-        request: &CreateCredentialRequest,
-    ) -> Result<CredentialInfo, String> {
-        let resp = self
-            .client
-            .post(format!("{}/credentials", self.base_url))
-            .json(request)
-            .send()
-            .await
-            .map_err(|e| format!("Request failed: {}", e))?;
-        json_or_api_error(resp).await
+    async fn create_credential(&self, request: &CreateCredentialRequest) -> Result<CredentialInfo, String> {
+        let mut body = serde_json::to_value(request).map_err(|e| e.to_string())?;
+        self.scope_body(&mut body);
+        self.request_json(Method::POST, "/credentials", Some(body)).await
     }
 
-    async fn update_credential(
-        &self,
-        username: &str,
-        request: &UpdateCredentialRequest,
-    ) -> Result<CredentialInfo, String> {
-        let resp = self
-            .client
-            .put(format!("{}/credentials/{}", self.base_url, username))
-            .json(request)
-            .send()
-            .await
-            .map_err(|e| format!("Request failed: {}", e))?;
-        json_or_api_error(resp).await
+    async fn update_credential(&self, username: &str, request: &UpdateCredentialRequest) -> Result<CredentialInfo, String> {
+        let body = serde_json::to_value(request).map_err(|e| e.to_string())?;
+        self.request_json(Method::PUT, &self.scoped(&format!("/credentials/{}", enc(username))), Some(body)).await
     }
 
     async fn delete_credential(&self, username: &str) -> Result<(), String> {
-        let resp = self
-            .client
-            .delete(format!("{}/credentials/{}", self.base_url, username))
-            .send()
-            .await
-            .map_err(|e| format!("Request failed: {}", e))?;
-        if resp.status().is_success() {
-            Ok(())
-        } else {
-            Err(api_error_message(resp).await)
-        }
+        self.request_json(Method::DELETE, &self.scoped(&format!("/credentials/{}", enc(username))), None).await
     }
 
     async fn health_check(&self) -> Result<(), String> {
-        let resp = self
-            .client
-            .get(format!("{}/health", self.base_url))
-            .send()
-            .await
-            .map_err(|e| format!("Request failed: {}", e))?;
-
-        if resp.status().is_success() {
-            Ok(())
-        } else {
-            Err("Health check failed".to_string())
-        }
-    }
-
-    async fn get_console_info(&self, id: &str) -> Result<ConsoleInfo, String> {
-        let resp = self
-            .client
-            .get(format!("{}/vms/{}/console", self.base_url, id))
-            .send()
-            .await
-            .map_err(|e| format!("Request failed: {}", e))?;
-
-        if resp.status().is_success() {
-            resp.json()
-                .await
-                .map_err(|e| format!("Failed to parse response: {}", e))
-        } else {
-            let error: ApiError = resp
-                .json()
-                .await
-                .map_err(|e| format!("Failed to parse error: {}", e))?;
-            Err(format!("{}: {}", error.error, error.message))
-        }
+        self.request_bytes(Method::GET, "/health", None).await.map(|_| ()).map_err(|e| e.message)
     }
 
     async fn list_pci_devices(&self) -> Result<Vec<PciDeviceInfo>, String> {
-        let resp = self
-            .client
-            .get(format!("{}/pci-devices", self.base_url))
-            .send()
-            .await
-            .map_err(|e| format!("Request failed: {}", e))?;
-
-        if resp.status().is_success() {
-            resp.json()
-                .await
-                .map_err(|e| format!("Failed to parse response: {}", e))
-        } else {
-            Err("Failed to list PCI devices".to_string())
-        }
+        self.request_json(Method::GET, "/pci-devices", None).await
     }
 
     async fn attach_device(&self, vm_id: &str, device_path: &str) -> Result<VmResponse, String> {
-        let resp = self
-            .client
-            .post(format!("{}/vms/{}/devices", self.base_url, vm_id))
-            .json(&serde_json::json!({ "device_path": device_path }))
-            .send()
-            .await
-            .map_err(|e| format!("Request failed: {}", e))?;
-
-        if resp.status().is_success() {
-            resp.json()
-                .await
-                .map_err(|e| format!("Failed to parse response: {}", e))
-        } else {
-            let error: ApiError = resp
-                .json()
-                .await
-                .map_err(|e| format!("Failed to parse error: {}", e))?;
-            Err(format!("{}: {}", error.error, error.message))
-        }
+        let body = serde_json::json!({ "device_path": device_path });
+        self.request_json(Method::POST, &format!("/vms/{}/devices", enc(vm_id)), Some(body)).await
     }
 
     async fn detach_device(&self, vm_id: &str, device_path: &str) -> Result<VmResponse, String> {
-        let resp = self
-            .client
-            .delete(format!("{}/vms/{}/devices", self.base_url, vm_id))
-            .json(&serde_json::json!({ "device_path": device_path }))
-            .send()
-            .await
-            .map_err(|e| format!("Request failed: {}", e))?;
-
-        if resp.status().is_success() {
-            resp.json()
-                .await
-                .map_err(|e| format!("Failed to parse response: {}", e))
-        } else {
-            let error: ApiError = resp
-                .json()
-                .await
-                .map_err(|e| format!("Failed to parse error: {}", e))?;
-            Err(format!("{}: {}", error.error, error.message))
-        }
+        let body = serde_json::json!({ "device_path": device_path });
+        self.request_json(Method::DELETE, &format!("/vms/{}/devices", enc(vm_id)), Some(body)).await
     }
 
     /// Resolve a VM identifier (name or ID) to an ID.
-    /// First tries to use it as an ID, then searches by name.
+    /// First tries to use it as an ID, then searches by name (within the
+    /// selected project, if any).
     async fn resolve_vm(&self, name_or_id: &str) -> Result<String, String> {
-        // First, try to get VM by ID directly
         if let Ok(vm) = self.get_vm(name_or_id).await {
             return Ok(vm.id);
         }
-
-        // If that fails, search by name
         let vms = self.list_vms().await?;
         let matches: Vec<_> = vms.iter().filter(|vm| vm.name == name_or_id).collect();
-
         match matches.len() {
             0 => Err(format!("VM '{}' not found", name_or_id)),
             1 => Ok(matches[0].id.clone()),
             _ => {
-                let ids: Vec<_> = matches.iter().map(|vm| vm.id.as_str()).collect();
+                let ids: Vec<_> = matches.iter().map(|vm| format!("{} (project {})", vm.id, vm.project)).collect();
                 Err(format!(
-                    "Multiple VMs found with name '{}'. Use ID instead: {}",
+                    "Multiple VMs found with name '{}'. Use --project or the ID instead: {}",
                     name_or_id,
                     ids.join(", ")
                 ))
@@ -784,7 +638,6 @@ fn image_status(img: &serde_json::Value) -> String {
 }
 
 async fn handle_image(client: &CliClient, args: &[&str]) {
-    use reqwest::Method;
     let usage = "Usage: image catalog | list | pull <catalog-key|url> [--name N] [--sha256 H] | rm <name|id>";
     match args.first().copied().unwrap_or("list") {
         "catalog" => match client.request_json::<Vec<serde_json::Value>>(Method::GET, "/images/catalog", None).await {
@@ -894,11 +747,10 @@ fn print_disk_result(d: &serde_json::Value) {
 }
 
 async fn handle_disk(client: &CliClient, args: &[&str]) {
-    use reqwest::Method;
     let usage = "Usage: disk list | show <disk> | create <name> [--size-gib N] [--image I] [--full] [--raw] [--no-extend] | resize <disk> <GiB> [--no-extend] | extend-root <disk> [--on-boot] | rm <disk>";
     let gib = |s: &str| s.parse::<u64>().map_err(|_| format!("{} is not a whole number of GiB", s));
     match args.first().copied().unwrap_or("list") {
-        "list" | "ls" => match client.request_json::<Vec<serde_json::Value>>(Method::GET, "/disks", None).await {
+        "list" | "ls" => match client.request_json::<Vec<serde_json::Value>>(Method::GET, &client.scoped("/disks"), None).await {
             Ok(disks) if disks.is_empty() => println!("No disks."),
             Ok(disks) => {
                 let vms = client.list_vms().await.unwrap_or_default();
@@ -981,6 +833,7 @@ async fn handle_disk(client: &CliClient, args: &[&str]) {
             if has_flag(args, "--no-extend") {
                 body["extend_root"] = serde_json::json!(false);
             }
+            client.scope_body(&mut body);
             match client.request_json::<serde_json::Value>(Method::POST, "/disks", Some(body)).await {
                 Ok(d) => {
                     println!("{}", "Disk created:".green());
@@ -1095,32 +948,32 @@ fn print_help() {
     println!("  {} - Grow the root partition", "disk extend-root <disk> [--on-boot]".cyan());
     println!("  {}    - Delete a disk", "disk rm <name|id>".cyan());
     println!("  {}            - Check API server health", "health".cyan());
+    println!();
+    println!("{}", "Access control:".bold());
+    println!("  {}            - Who you are: method, teams, roles", "whoami".cyan());
+    println!("  {} - Log in over TCP (OIDC device flow or a pasted token)", "login --oidc | --token".cyan());
+    println!("  {} - Forget the saved token", "logout [--revoke]".cyan());
+    println!("  {}                - Print the web UI address", "ui".cyan());
+    println!("  {} - Access tokens", "token list | create <name> [--days N] [--service-account] [--role R[@P]] | revoke <id>".cyan());
+    println!("  {} - Projects", "project list | show <p> | create <name> [--description D] | delete <p>".cyan());
+    println!("  {} - Quotas (none = unlimited)", "project quota <p> vms=10 memory_mib=none ...".cyan());
+    println!("  {} - Set your default project", "project use <p>".cyan());
+    println!("  {} - Project role bindings", "binding list <p> | add <p> <role> user:<id> | remove <p> <id>".cyan());
+    println!("  {} - Host role bindings", "system-binding list | add <role> <principal> | remove <id>".cyan());
+    println!("  {}         - Users and their identities", "user list".cyan());
+    println!("  {} - Teams", "team list | create <name> | add-member <team> <user> | remove-member <team> <user>".cyan());
+    println!("  {} - Site Cedar policies", "policy list | show <id> | put <id> <file> [--disable] | delete <id> | validate <id> <file> | history <id>".cyan());
+    println!("  {} - Audit log", "audit [--project P] [--since <unix-ms>] [--limit N] [--user U]".cyan());
+    println!("  {} - Project networks", "network create <name> --project P | share <net> <project-id> | unshare <net> <project-id>".cyan());
+    println!("  {} - Shares offered to a project", "network shares <p> | accept <p> <net> | leave <p> <net>".cyan());
+    println!();
     println!("  {}              - Show this help", "help".cyan());
     println!("  {}              - Exit the CLI", "exit".cyan());
     println!();
     println!(
-        "{} You can use either VM name or ID for commands.",
+        "{} You can use either VM name or ID for commands. Global --project P scopes creates, lists and name lookups.",
         "Note:".dimmed()
     );
-}
-
-async fn api_error_message(resp: reqwest::Response) -> String {
-    match resp.json::<ApiError>().await {
-        Ok(error) => format!("{}: {}", error.error, error.message),
-        Err(e) => format!("Failed to parse error: {}", e),
-    }
-}
-
-async fn json_or_api_error<T: serde::de::DeserializeOwned>(
-    resp: reqwest::Response,
-) -> Result<T, String> {
-    if resp.status().is_success() {
-        resp.json()
-            .await
-            .map_err(|e| format!("Failed to parse response: {}", e))
-    } else {
-        Err(api_error_message(resp).await)
-    }
 }
 
 fn format_unix_time(secs: u64) -> String {
@@ -1273,12 +1126,47 @@ const COMMANDS: &[&str] = &[
     "attach-device", "detach-device", "credentials", "creds", "credential-add",
     "credential-passwd", "credential-keys", "credential-rm", "networks", "network-add",
     "network-rm", "bridges", "uplinks", "uplink-add", "uplink-rm", "ovs", "health",
-    "image", "images", "disk", "disks",
+    "image", "images", "disk", "disks", "whoami", "login", "logout", "ui", "token",
+    "tokens", "project", "projects", "binding", "bindings", "system-binding", "user",
+    "users", "team", "teams", "policy", "policies", "audit", "network",
+];
+
+/// Subcommands offered by Tab after these commands.
+const SUBCOMMANDS: &[(&str, &[&str])] = &[
+    ("image", &["catalog", "list", "pull", "rm"]),
+    ("disk", &["list", "show", "create", "resize", "extend-root", "rm"]),
+    ("ovs", &["status", "install", "dpdk-init"]),
+    ("login", &["--oidc", "--token"]),
+    ("logout", &["--revoke"]),
+    ("token", &["list", "create", "revoke"]),
+    ("project", &["list", "show", "create", "delete", "quota", "use"]),
+    ("binding", &["list", "add", "remove"]),
+    ("system-binding", &["list", "add", "remove"]),
+    ("user", &["list"]),
+    ("team", &["list", "create", "delete", "add-member", "remove-member"]),
+    ("policy", &["list", "show", "put", "delete", "validate", "history", "reload"]),
+    ("network", &["list", "create", "rm", "share", "unshare", "shares", "accept", "leave"]),
 ];
 
 /// Commands whose argument at this (0-based, after the command) index is a
 /// filesystem path.
-const PATH_ARGS: &[(&str, usize)] = &[("attach-device", 1), ("detach-device", 1)];
+const PATH_ARGS: &[(&str, usize)] = &[("attach-device", 1), ("detach-device", 1), ("policy", 2)];
+
+/// The subcommands of `cmd` (aliases share their command's list).
+fn subcommands(cmd: &str) -> &'static [&'static str] {
+    let cmd = match cmd {
+        "images" => "image",
+        "disks" => "disk",
+        "tokens" => "token",
+        "projects" => "project",
+        "bindings" => "binding",
+        "users" => "user",
+        "teams" => "team",
+        "policies" => "policy",
+        c => c,
+    };
+    SUBCOMMANDS.iter().find(|(c, _)| *c == cmd).map(|(_, s)| *s).unwrap_or(&[])
+}
 
 /// What Tab completes in the line being edited.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1368,6 +1256,18 @@ fn complete_command_line(
     } else {
         words.len() - 2
     };
+    if arg_index == 0 {
+        let prefix = if starting_new_word { "" } else { words[words.len() - 1] };
+        let subs = subcommands(words[0]);
+        if !subs.is_empty() {
+            let candidates = subs
+                .iter()
+                .filter(|c| c.starts_with(prefix))
+                .map(|c| Pair { display: c.to_string(), replacement: format!("{} ", c) })
+                .collect();
+            return Ok((pos - prefix.len(), candidates));
+        }
+    }
     if PATH_ARGS.contains(&(words[0], arg_index)) {
         return files.complete_path(line, pos);
     }
@@ -1442,15 +1342,9 @@ async fn handle_create(client: &CliClient) {
         return;
     }
 
-    let vcpu_count: u8 = match prompt("vCPU count [1]: ").parse() {
-        Ok(n) => n,
-        Err(_) => 1,
-    };
+    let vcpu_count: u8 = prompt("vCPU count [1]: ").parse().unwrap_or(1);
 
-    let mem_size_mib: u32 = match prompt("Memory (MiB) [512]: ").parse() {
-        Ok(n) => n,
-        Err(_) => 512,
-    };
+    let mem_size_mib: u32 = prompt("Memory (MiB) [512]: ").parse().unwrap_or(512);
 
     let hypervisor = match prompt("Hypervisor [cloudhypervisor/qemu] (default: cloudhypervisor): ")
         .to_lowercase()
@@ -1516,7 +1410,7 @@ async fn handle_create(client: &CliClient) {
     let mut choice = "path".to_string();
     if firmware_path.is_some() {
         let ready: Vec<String> = client
-            .request_json::<Vec<serde_json::Value>>(reqwest::Method::GET, "/images", None)
+            .request_json::<Vec<serde_json::Value>>(Method::GET, "/images", None)
             .await
             .unwrap_or_default()
             .into_iter()
@@ -1614,7 +1508,7 @@ async fn handle_create(client: &CliClient) {
     // Networks: offer the ones that exist.
     let networks = {
         let names: Vec<String> = client
-            .request_json::<Vec<NetworkRow>>(reqwest::Method::GET, "/networks", None)
+            .request_json::<Vec<NetworkRow>>(Method::GET, "/networks", None)
             .await
             .map(|ns| ns.into_iter().map(|n| n.name).collect())
             .unwrap_or_default();
@@ -1699,207 +1593,19 @@ fn format_state(state: &str) -> String {
     }
 }
 
-/// Set terminal to raw mode for interactive console
-fn set_raw_mode(fd: BorrowedFd<'_>) -> Option<Termios> {
-    let orig_termios = termios::tcgetattr(fd).ok()?;
-    let mut raw = orig_termios.clone();
-
-    // Disable canonical mode and echo
-    raw.local_flags.remove(LocalFlags::ICANON);
-    raw.local_flags.remove(LocalFlags::ECHO);
-    raw.local_flags.remove(LocalFlags::ISIG);
-
-    termios::tcsetattr(fd, SetArg::TCSANOW, &raw).ok()?;
-    Some(orig_termios)
-}
-
-/// Restore terminal to original mode
-fn restore_terminal(fd: BorrowedFd<'_>, termios: &Termios) {
-    let _ = termios::tcsetattr(fd, SetArg::TCSANOW, termios);
-}
-
-async fn handle_log(client: &CliClient, vm_id: &str) {
-    // Get console info from API
-    let console_info = match client.get_console_info(vm_id).await {
-        Ok(info) => info,
-        Err(e) => {
-            println!("{} {}", "Error:".red(), e);
-            return;
-        }
-    };
-
-    let log_path = &console_info.log_path;
-
-    // Try to open and read the log file
-    match File::open(log_path) {
-        Ok(file) => {
-            let reader = BufReader::new(file);
-            let mut has_content = false;
-
-            for line in reader.lines() {
-                match line {
-                    Ok(l) => {
-                        println!("{}", l);
-                        has_content = true;
-                    }
-                    Err(e) => {
-                        println!("{} Error reading log: {}", "Error:".red(), e);
-                        return;
-                    }
-                }
-            }
-
-            if !has_content {
-                println!("{} Log file is empty. Start the VM to see console output.", "Info:".yellow());
-            }
-        }
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            println!("{} Log file not found. Start the VM first.", "Info:".yellow());
-        }
-        Err(e) => {
-            println!("{} Failed to open log file: {}", "Error:".red(), e);
-        }
-    }
-}
-
-async fn handle_connect(client: &CliClient, vm_id: &str) {
-    // Get console info from API
-    let console_info = match client.get_console_info(vm_id).await {
-        Ok(info) => info,
-        Err(e) => {
-            println!("{} {}", "Error:".red(), e);
-            return;
-        }
-    };
-
-    if !console_info.available {
-        println!(
-            "{} VM is not running. Start the VM first with: start {}",
-            "Error:".red(),
-            vm_id
-        );
-        return;
-    }
-
-    let socket_path = &console_info.console_socket_path;
-
-    println!(
-        "{} Connecting to VM console via {}",
-        "Info:".cyan(),
-        socket_path
-    );
-    println!(
-        "{} Press {} to detach from console\n",
-        "Tip:".yellow(),
-        "Ctrl+]".bold()
-    );
-
-    // Connect to the console Unix socket
-    let stream = match UnixStream::connect(socket_path) {
-        Ok(s) => s,
-        Err(e) => {
-            println!(
-                "{} Failed to connect to console socket {}: {}",
-                "Error:".red(),
-                socket_path,
-                e
-            );
-            return;
-        }
-    };
-
-    // Set socket to non-blocking for the reader
-    stream.set_nonblocking(true).ok();
-    let stream_write = match stream.try_clone() {
-        Ok(s) => s,
-        Err(e) => {
-            println!("{} Failed to clone socket: {}", "Error:".red(), e);
-            return;
-        }
-    };
-
-    // Set up signal handler for Ctrl+C (we'll handle Ctrl+] for detach)
-    let running = Arc::new(AtomicBool::new(true));
-    let r = running.clone();
-
-    // Save original terminal settings and set raw mode
-    let stdin = io::stdin();
-    let stdin_fd = stdin.as_fd();
-    let orig_termios = match set_raw_mode(stdin_fd) {
-        Some(t) => t,
-        None => {
-            println!("{} Failed to set terminal to raw mode", "Error:".red());
-            return;
-        }
-    };
-
-    // Spawn thread to read from socket and write to stdout
-    let running_reader = running.clone();
-    let reader_handle = thread::spawn(move || {
-        let mut stream = stream;
-        let mut buf = [0u8; 1024];
-
-        while running_reader.load(Ordering::SeqCst) {
-            match stream.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    let _ = io::stdout().write_all(&buf[..n]);
-                    let _ = io::stdout().flush();
-                }
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                    thread::sleep(std::time::Duration::from_millis(10));
-                }
-                Err(_) => break,
-            }
-        }
-    });
-
-    // Spawn thread to read from stdin and write to socket
-    let running_writer = running.clone();
-    let writer_handle = thread::spawn(move || {
-        let mut stream = stream_write;
-        let mut buf = [0u8; 1];
-
-        while running_writer.load(Ordering::SeqCst) {
-            match io::stdin().read(&mut buf) {
-                Ok(0) => break,
-                Ok(1) => {
-                    // Check for Ctrl+] (0x1d) to detach
-                    if buf[0] == 0x1d {
-                        running_writer.store(false, Ordering::SeqCst);
-                        break;
-                    }
-                    let _ = stream.write_all(&buf);
-                    let _ = stream.flush();
-                }
-                Ok(_) => {}
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                    thread::sleep(std::time::Duration::from_millis(10));
-                }
-                Err(_) => break,
-            }
-        }
-    });
-
-    // Handle Ctrl+C gracefully
-    ctrlc::set_handler(move || {
-        r.store(false, Ordering::SeqCst);
-    })
-    .ok();
-
-    // Wait for threads to finish
-    let _ = writer_handle.join();
-    running.store(false, Ordering::SeqCst);
-    let _ = reader_handle.join();
-
-    // Restore terminal
-    restore_terminal(stdin.as_fd(), &orig_termios);
-
-    println!("\n{} Detached from console", "Info:".cyan());
-}
-
 async fn handle_command(line: &str, client: &CliClient) -> bool {
-    let parts: Vec<&str> = line.trim().split_whitespace().collect();
+    match split_line(line) {
+        Ok(words) => handle_words(&words, client).await,
+        Err(e) => {
+            println!("{} {}", "Error:".red(), e);
+            true
+        }
+    }
+}
+
+/// Run one command; `false` to leave the shell.
+async fn handle_words(words: &[String], client: &CliClient) -> bool {
+    let parts: Vec<&str> = words.iter().map(String::as_str).collect();
     if parts.is_empty() {
         return true;
     }
@@ -1914,8 +1620,20 @@ async fn handle_command(line: &str, client: &CliClient) -> bool {
                 if vms.is_empty() {
                     println!("{}", "No VMs found".yellow());
                 } else {
-                    let table = Table::new(&vms).to_string();
-                    println!("{}", table);
+                    let names = project_names(client).await;
+                    let rows: Vec<VmRow> = vms
+                        .into_iter()
+                        .map(|vm| VmRow {
+                            project: names.get(&vm.project).cloned().unwrap_or(vm.project),
+                            id: vm.id,
+                            name: vm.name,
+                            state: vm.state,
+                            vcpu_count: vm.vcpu_count,
+                            mem_size_mib: vm.mem_size_mib,
+                            hypervisor: vm.hypervisor,
+                        })
+                        .collect();
+                    println!("{}", Table::new(rows));
                 }
             }
             Err(e) => println!("{} {}", "Error:".red(), e),
@@ -1939,6 +1657,8 @@ async fn handle_command(line: &str, client: &CliClient) -> bool {
                     println!("{}", "-".repeat(40));
                     println!("  ID:         {}", vm.id.yellow());
                     println!("  Name:       {}", vm.name);
+                    let names = project_names(client).await;
+                    println!("  Project:    {}", names.get(&vm.project).map(|n| format!("{} ({})", n, vm.project)).unwrap_or(vm.project.clone()));
                     println!("  State:      {}", format_state(&vm.state));
                     println!("  Hypervisor: {}", vm.hypervisor);
                     println!("  vCPUs:      {}", vm.vcpu_count);
@@ -2249,19 +1969,27 @@ async fn handle_command(line: &str, client: &CliClient) -> bool {
             None => println!("{}", "Usage: credential-rm <user>".yellow()),
         },
 
-        "networks" | "nets" => {
-            match client.request_json::<Vec<NetworkRow>>(reqwest::Method::GET, "/networks", None).await {
-                Ok(nets) if nets.is_empty() => println!("No networks. Create one with 'network-add <name>'."),
-                Ok(nets) => println!("{}", Table::new(nets)),
-                Err(e) => println!("{} {}", "Error:".red(), e),
-            }
-        }
+        "networks" | "nets" => list_networks(client).await,
+
+        "network" | "net" => admin::network(client, &parts[1..]).await,
+        "whoami" => admin::whoami(client).await,
+        "login" => admin::login(client, &parts[1..]).await,
+        "logout" => admin::logout(client, &parts[1..]).await,
+        "ui" => admin::ui(),
+        "token" | "tokens" => admin::token(client, &parts[1..]).await,
+        "project" | "projects" => admin::project(client, &parts[1..]).await,
+        "binding" | "bindings" => admin::binding(client, &parts[1..]).await,
+        "system-binding" => admin::system_binding(client, &parts[1..]).await,
+        "user" | "users" => admin::user(client, &parts[1..]).await,
+        "team" | "teams" => admin::team(client, &parts[1..]).await,
+        "policy" | "policies" => admin::policy(client, &parts[1..]).await,
+        "audit" => admin::audit(client, &parts[1..]).await,
 
         "network-add" | "net-add" => handle_network_add(client, &parts[1..]).await,
 
         "network-rm" | "net-rm" => match parts.get(1) {
             Some(name) => match client
-                .request_json::<()>(reqwest::Method::DELETE, &format!("/networks/{}", name), None)
+                .request_json::<()>(Method::DELETE, &format!("/networks/{}", name), None)
                 .await
             {
                 Ok(()) => println!("{} {}", "Network deleted:".green(), name),
@@ -2271,7 +1999,7 @@ async fn handle_command(line: &str, client: &CliClient) -> bool {
         },
 
         "bridges" => match client
-            .request_json::<Vec<serde_json::Value>>(reqwest::Method::GET, "/ovs/bridges", None)
+            .request_json::<Vec<serde_json::Value>>(Method::GET, "/ovs/bridges", None)
             .await
         {
             Ok(bridges) if bridges.is_empty() => println!("No glidex bridges."),
@@ -2292,7 +2020,7 @@ async fn handle_command(line: &str, client: &CliClient) -> bool {
 
         "uplinks" => match parts.get(1) {
             Some(bridge) => match client
-                .request_json::<Vec<serde_json::Value>>(reqwest::Method::GET, &format!("/ovs/bridges/{}/uplinks", bridge), None)
+                .request_json::<Vec<serde_json::Value>>(Method::GET, &format!("/ovs/bridges/{}/uplinks", bridge), None)
                 .await
             {
                 Ok(list) if list.is_empty() => println!("No uplinks on {}.", bridge),
@@ -2317,7 +2045,7 @@ async fn handle_command(line: &str, client: &CliClient) -> bool {
 
         "uplink-rm" => match (parts.get(1), parts.get(2)) {
             (Some(bridge), Some(name)) => match client
-                .request_json::<()>(reqwest::Method::DELETE, &format!("/ovs/bridges/{}/uplinks/{}", bridge, name), None)
+                .request_json::<()>(Method::DELETE, &format!("/ovs/bridges/{}/uplinks/{}", bridge, name), None)
                 .await
             {
                 Ok(()) => println!("{} uplink {} (NIC restored)", "Removed:".green(), name),
@@ -2348,7 +2076,18 @@ async fn handle_command(line: &str, client: &CliClient) -> bool {
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
-    let client = CliClient::new(cli.server.clone());
+    let client = match build_client(&cli) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("{} {}", "Error:".red(), e);
+            std::process::exit(2);
+        }
+    };
+
+    if !cli.command.is_empty() {
+        handle_words(&cli.command, &client).await;
+        return;
+    }
 
     println!(
         "{}",
@@ -2364,7 +2103,15 @@ async fn main() {
         .cyan()
     );
 
-    println!("Connected to: {}", cli.server.yellow());
+    println!("Connected to: {}", client.describe().yellow());
+    if client.is_unix() {
+        println!("{} identified by your Unix user (see 'whoami')", "Auth:".dimmed());
+    } else if !client.has_token() {
+        println!("{} no token; run 'login --oidc' or 'login --token' (or set GLIDEX_TOKEN)", "Auth:".dimmed());
+    }
+    if let Some(p) = client.project() {
+        println!("Project: {}", p.cyan());
+    }
     println!("Type {} for available commands\n", "help".cyan());
 
     let mut rl = new_editor(CompletionMode::Command).expect("Failed to initialize readline");
@@ -2529,6 +2276,112 @@ mod tests {
         assert_eq!(info.address, "0000:00:1f.0");
         assert_eq!(info.driver.as_deref(), Some("lpc_ich"));
         assert_eq!(info.iommu_group.as_deref(), Some("5"));
+    }
+
+    #[test]
+    fn splits_lines_with_quotes() {
+        assert_eq!(split_line("  list  ").unwrap(), vec!["list"]);
+        assert_eq!(
+            split_line(r#"project create lab --description "Lab VMs" 'a b' c\ d"#).unwrap(),
+            vec!["project", "create", "lab", "--description", "Lab VMs", "a b", "c d"]
+        );
+        assert_eq!(split_line(r#"x """#).unwrap(), vec!["x", ""]);
+        assert!(split_line("say 'oops").is_err());
+        assert_eq!(flag_values(&["--role", "a", "x", "--role", "b@p"], "--role"), vec!["a", "b@p"]);
+    }
+
+    #[test]
+    fn completes_subcommands() {
+        let files = FilenameCompleter::new();
+        let (start, got) = replacements(complete_command_line(&files, "token ", 6));
+        assert_eq!(start, 6);
+        assert_eq!(got, vec!["create ", "list ", "revoke "]);
+        let (start, got) = replacements(complete_command_line(&files, "projects q", 10));
+        assert_eq!(start, 9);
+        assert_eq!(got, vec!["quota "]);
+        // Second argument: no subcommands.
+        assert!(replacements(complete_command_line(&files, "token create ", 13)).1.is_empty());
+        for (cmd, _) in SUBCOMMANDS {
+            assert!(COMMANDS.contains(cmd), "{cmd} is missing from COMMANDS");
+        }
+    }
+
+    /// A control plane (auth disabled) on a temporary api.sock.
+    async fn serve_temp() -> (tempfile::TempDir, std::path::PathBuf, tokio::sync::watch::Sender<bool>) {
+        use glidex_control_plane::api::{create_router, Listener};
+        use glidex_control_plane::serve::{bind_unix, serve_unix};
+        use glidex_control_plane::state::VmManager;
+        let dir = tempfile::TempDir::new().unwrap();
+        let manager = VmManager::with_db_path(dir.path().join("t.db")).unwrap();
+        let sock = dir.path().join("api.sock");
+        let l = bind_unix(&sock).unwrap();
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        tokio::spawn(serve_unix(l, create_router(manager), Listener::Api, rx));
+        (dir, sock, tx)
+    }
+
+    #[tokio::test]
+    async fn api_calls_over_the_unix_socket() {
+        let (_dir, sock, stop) = serve_temp().await;
+        assert_eq!(client::select_socket(None, std::slice::from_ref(&sock), client::is_socket), Some(sock.clone()));
+        let client = ApiClient::unix(sock);
+
+        client.health_check().await.unwrap();
+        assert!(client.list_vms().await.unwrap().is_empty());
+
+        let who: serde_json::Value = client.request_json(Method::GET, "/auth/whoami", None).await.unwrap();
+        assert_eq!(who["method"], "disabled");
+
+        let req = CreateCredentialRequest {
+            username: "alice".into(),
+            password: None,
+            ssh_authorized_keys: vec!["ssh-ed25519 AAAAC3Nza alice@host".into()],
+        };
+        let c = client.create_credential(&req).await.unwrap();
+        assert_eq!(c.username, "alice");
+        assert_eq!(c.ssh_authorized_keys.len(), 1);
+
+        // Scoped to a project by name: ?project= on lists and /credentials/{user}.
+        let projects: Vec<serde_json::Value> = client.request_json(Method::GET, "/projects", None).await.unwrap();
+        let project = projects[0]["name"].as_str().unwrap().to_string();
+        client.set_project(Some(project.clone()));
+        let creds = client.list_credentials().await.unwrap();
+        assert_eq!(creds.iter().map(|c| c.username.as_str()).collect::<Vec<_>>(), ["alice"]);
+        let one: serde_json::Value = client.request_json(Method::GET, &client.scoped("/credentials/alice"), None).await.unwrap();
+        assert_eq!(one["username"], "alice");
+        assert_eq!(one["project"], projects[0]["id"]);
+        assert!(client.list_vms().await.unwrap().is_empty());
+
+        // A project that doesn't exist is an API error, rendered.
+        client.set_project(Some("no-such-project".into()));
+        let e = client.list_credentials().await.unwrap_err();
+        assert!(e.starts_with("not_found:"), "{e}");
+        client.set_project(None);
+
+        let e = client.request::<serde_json::Value>(Method::GET, "/vms/nope", None).await.unwrap_err();
+        assert_eq!(e.status, Some(hyper::StatusCode::NOT_FOUND));
+        assert!(client.resolve_vm("nope").await.unwrap_err().contains("not found"));
+
+        client.update_credential("alice", &UpdateCredentialRequest { password: None, ssh_authorized_keys: Some(vec!["ssh-ed25519 BBBBC3Nza alice@new".into()]) }).await.unwrap();
+        client.delete_credential("alice").await.unwrap();
+        assert!(client.list_credentials().await.unwrap().is_empty());
+
+        // The console WebSocket goes over the same socket; errors come back
+        // as API errors.
+        let e = console::open_ws(&client, "/vms/nope/console/ws").await.err().unwrap();
+        assert!(e.contains("not_found"), "{e}");
+        let e = client.request_bytes(Method::GET, "/vms/nope/console/log", None).await.err().unwrap();
+        assert_eq!(e.status, Some(hyper::StatusCode::NOT_FOUND));
+
+        let _ = stop.send(true);
+    }
+
+    #[tokio::test]
+    async fn unreachable_socket_says_so() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let client = ApiClient::unix(dir.path().join("api.sock"));
+        let e = client.health_check().await.unwrap_err();
+        assert!(e.contains("is glidex-control-plane running?"), "{e}");
     }
 
     #[test]
