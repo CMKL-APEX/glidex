@@ -1,0 +1,691 @@
+//! gxctl's API client (spec/cli.md "Transport").
+//!
+//! Requests go over HTTP/1.1, either on the control plane's Unix socket
+//! `api.sock`, where the server identifies the caller by peer uid and no
+//! credentials are sent (spec/security.md §5.2), or over TCP (TLS for
+//! `https://`) with `Authorization: Bearer <token>`. One connection per
+//! request. The token is never printed, logged or put in a URL.
+
+use http_body_util::{BodyExt, Full};
+use hyper::body::Bytes;
+use hyper::header::{HeaderValue, AUTHORIZATION, CONTENT_TYPE, HOST};
+use hyper::{Method, Request, StatusCode, Uri};
+use hyper_util::rt::TokioIo;
+use serde::de::DeserializeOwned;
+use std::fmt;
+use std::io;
+use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use tokio::io::{AsyncRead, AsyncWrite};
+use tokio_rustls::rustls;
+use zeroize::Zeroizing;
+
+/// TCP fallback when no socket exists and no `--url` was given.
+pub const DEFAULT_URL: &str = "http://localhost:8841";
+
+/// A connected byte stream: Unix socket, TCP, or TLS over TCP.
+pub trait Conn: AsyncRead + AsyncWrite + Unpin + Send {}
+impl<T: AsyncRead + AsyncWrite + Unpin + Send> Conn for T {}
+
+// ---- socket selection ------------------------------------------------------
+
+/// Where the control plane's `api.sock` usually is, in order: the systemd
+/// unit's runtime directory, then the run directories a control plane
+/// started by hand uses (`paths::run_dir`).
+pub fn socket_candidates(xdg_runtime_dir: Option<&str>, euid: u32) -> Vec<PathBuf> {
+    let mut v = vec![PathBuf::from("/run/glidex-cp/api.sock")];
+    if let Some(x) = xdg_runtime_dir.filter(|x| !x.is_empty()) {
+        v.push(Path::new(x).join("glidex").join("api.sock"));
+    }
+    v.push(PathBuf::from(format!("/tmp/glidex-{}/api.sock", euid)));
+    v
+}
+
+/// `explicit` (`--socket` / `GLIDEX_SOCKET`) wins; else the first
+/// candidate that `exists`.
+pub fn select_socket(explicit: Option<PathBuf>, candidates: &[PathBuf], exists: impl Fn(&Path) -> bool) -> Option<PathBuf> {
+    if let Some(p) = explicit.filter(|p| !p.as_os_str().is_empty()) {
+        return Some(p);
+    }
+    candidates.iter().find(|p| exists(p)).cloned()
+}
+
+pub fn is_socket(p: &Path) -> bool {
+    std::fs::metadata(p).map(|m| m.file_type().is_socket()).unwrap_or(false)
+}
+
+// ---- the saved token -------------------------------------------------------
+
+/// `~/.config/glidex/token` (honours `XDG_CONFIG_HOME`).
+pub fn token_path() -> Option<PathBuf> {
+    dirs::config_dir().map(|d| d.join("glidex").join("token"))
+}
+
+/// Read a saved token. Refuses a file that group or others can read, or
+/// that someone else owns: the token is as good as a password.
+pub fn read_token_file(path: &Path) -> Result<Option<Zeroizing<String>>, String> {
+    let meta = match std::fs::metadata(path) {
+        Ok(m) => m,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("{}: {}", path.display(), e)),
+    };
+    let mode = meta.permissions().mode() & 0o777;
+    if mode & 0o077 != 0 {
+        return Err(format!(
+            "refusing to use the token in {}: it is accessible by group or others (mode {:03o}). \
+             Treat the token as exposed: revoke it ('token revoke <id>'), delete the file and log in again \
+             (or run 'chmod 600 {}' if you are sure nobody read it)",
+            path.display(),
+            mode,
+            path.display()
+        ));
+    }
+    let euid = nix::unistd::geteuid().as_raw();
+    if meta.uid() != euid {
+        return Err(format!("refusing to use the token in {}: it is owned by uid {}, not you", path.display(), meta.uid()));
+    }
+    let text = Zeroizing::new(std::fs::read_to_string(path).map_err(|e| format!("{}: {}", path.display(), e))?);
+    let t = text.trim();
+    Ok((!t.is_empty()).then(|| Zeroizing::new(t.to_string())))
+}
+
+/// Save a token: directory 0700, file 0600, written to a temporary file
+/// and renamed so a reader never sees a partial or wider-mode file.
+pub fn save_token_file(path: &Path, token: &str) -> Result<(), String> {
+    let dir = path.parent().ok_or("token path has no directory")?;
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)
+        .map_err(|e| format!("{}: {}", dir.display(), e))?;
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).map_err(|e| format!("{}: {}", dir.display(), e))?;
+    let tmp = dir.join(format!(".token.{}", std::process::id()));
+    let _ = std::fs::remove_file(&tmp);
+    let write = || -> io::Result<()> {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&tmp)?;
+        f.write_all(token.as_bytes())?;
+        f.write_all(b"\n")?;
+        f.sync_all()?;
+        std::fs::rename(&tmp, path)
+    };
+    write().map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("{}: {}", path.display(), e)
+    })
+}
+
+/// Delete the saved token; `Ok(false)` when there was none.
+pub fn delete_token_file(path: &Path) -> Result<bool, String> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(format!("{}: {}", path.display(), e)),
+    }
+}
+
+/// The token for TCP: `GLIDEX_TOKEN`, else the token file.
+pub fn load_token() -> Result<Option<Zeroizing<String>>, String> {
+    if let Ok(t) = std::env::var("GLIDEX_TOKEN") {
+        let t = Zeroizing::new(t);
+        if !t.trim().is_empty() {
+            return Ok(Some(Zeroizing::new(t.trim().to_string())));
+        }
+    }
+    match token_path() {
+        Some(p) => read_token_file(&p),
+        None => Ok(None),
+    }
+}
+
+// ---- principals and roles in CLI syntax ------------------------------------
+
+/// `user:<id>`, `team:<id>`, `token:<id>` → the API's entity JSON
+/// (`{"type": "User", "id": …}`). Team ids may contain colons
+/// (`team:unix:glidex-admin`).
+pub fn parse_principal(s: &str) -> Result<serde_json::Value, String> {
+    let (kind, id) = s.split_once(':').ok_or_else(|| format!("'{}': write a principal as user:<id>, team:<id> or token:<id>", s))?;
+    let ty = match kind {
+        "user" => "User",
+        "team" => "Team",
+        "token" => "Token",
+        _ => return Err(format!("'{}': a principal is user:<id>, team:<id> or token:<id>", s)),
+    };
+    if id.is_empty() {
+        return Err(format!("'{}': the id is missing", s));
+    }
+    Ok(serde_json::json!({ "type": ty, "id": id }))
+}
+
+/// Entity JSON → `user:<id>` etc. (`host` for the host).
+pub fn format_entity(v: &serde_json::Value) -> String {
+    let ty = v["type"].as_str().unwrap_or("?").to_lowercase();
+    match v["id"].as_str() {
+        Some(id) => format!("{}:{}", ty, id),
+        None => ty,
+    }
+}
+
+/// `owner` → `role.owner`; names with a prefix (`grant.host-paths`) stay.
+pub fn role_name(r: &str) -> String {
+    if r.contains('.') {
+        r.to_string()
+    } else {
+        format!("role.{}", r)
+    }
+}
+
+/// `ROLE[@PROJECT]` → `{"role": …, "project": …}`.
+pub fn parse_role_ref(s: &str) -> Result<serde_json::Value, String> {
+    let (role, project) = match s.split_once('@') {
+        Some((r, p)) if !p.is_empty() => (r, Some(p)),
+        Some(_) => return Err(format!("'{}': project missing after @", s)),
+        None => (s, None),
+    };
+    if role.is_empty() {
+        return Err(format!("'{}': role missing", s));
+    }
+    let mut v = serde_json::json!({ "role": role_name(role) });
+    if let Some(p) = project {
+        v["project"] = serde_json::json!(p);
+    }
+    Ok(v)
+}
+
+/// Percent-encode a query or path value.
+pub fn enc(s: &str) -> String {
+    const SET: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC.remove(b'-').remove(b'_').remove(b'.').remove(b'~');
+    percent_encoding::utf8_percent_encode(s, SET).to_string()
+}
+
+/// Append `key=value` to a path's query string.
+pub fn add_query(path: &str, key: &str, value: &str) -> String {
+    let sep = if path.contains('?') { '&' } else { '?' };
+    format!("{}{}{}={}", path, sep, key, enc(value))
+}
+
+// ---- errors ----------------------------------------------------------------
+
+/// A failed request: transport trouble (`status: None`) or an API error.
+#[derive(Debug, Clone)]
+pub struct Failure {
+    pub status: Option<StatusCode>,
+    pub code: Option<String>,
+    pub message: String,
+}
+
+impl fmt::Display for Failure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl Failure {
+    fn transport(message: String) -> Self {
+        Failure { status: None, code: None, message }
+    }
+}
+
+/// Render an error response (`{"error": code, "message": …, "details": …}`)
+/// for people. `tcp`: whether `gxctl login` would help.
+pub fn render_error(status: StatusCode, body: &[u8], tcp: bool) -> Failure {
+    let v: Option<serde_json::Value> = serde_json::from_slice(body).ok();
+    let (code, message) = match v.as_ref().and_then(|v| v["error"].as_str().map(|c| (c, v))) {
+        Some((c, v)) => (Some(c.to_string()), v["message"].as_str().unwrap_or("").to_string()),
+        None => {
+            let text = String::from_utf8_lossy(body);
+            let text: String = text.trim().chars().take(300).collect();
+            (None, if text.is_empty() { status.canonical_reason().unwrap_or("").to_string() } else { text })
+        }
+    };
+    let details = v.as_ref().map(|v| v["details"].clone()).unwrap_or(serde_json::Value::Null);
+    let mut msg = match (status, code.as_deref()) {
+        (StatusCode::UNAUTHORIZED, Some("reauth_required")) => {
+            format!("log in again: {}{}", message, if tcp { " (gxctl login)" } else { "" })
+        }
+        (StatusCode::UNAUTHORIZED, Some("unauthenticated")) if tcp => {
+            format!("not logged in: {} (run `gxctl login --oidc` or `gxctl login --token`, or set GLIDEX_TOKEN)", message)
+        }
+        (StatusCode::FORBIDDEN, Some(c)) => format!("permission denied ({}): {}", c, message),
+        (_, Some(c)) => format!("{}: {}", c, message),
+        (_, None) => format!("HTTP {}: {}", status.as_u16(), message),
+    };
+    if let Some(impact) = details.get("impact").and_then(|v| v.as_str()) {
+        msg.push_str(&format!("\n  Impact: {}\n  Re-run with --force to proceed.", impact));
+    }
+    if let Some(min) = details.get("min_size_bytes").and_then(|v| v.as_u64()) {
+        msg.push_str(&format!("\n  Minimum size: {} ({} bytes)", crate::format_bytes(min), min));
+    }
+    if let Some(missing) = details.get("missing").and_then(|v| v.as_array()) {
+        let items: Vec<&str> = missing.iter().filter_map(|m| m.as_str()).collect();
+        msg.push_str(&format!("\n  Missing on this host: {}", items.join(", ")));
+    }
+    if let Some(over) = details.get("quota").and_then(|v| v.as_array()) {
+        for o in over {
+            msg.push_str(&format!(
+                "\n  Quota {}: limit {}, used {}, requested {}",
+                o["resource"].as_str().unwrap_or("?"),
+                o["limit"],
+                o["used"],
+                o["requested"]
+            ));
+        }
+    }
+    if let Some(errors) = details.get("errors").and_then(|v| v.as_array()) {
+        for e in errors {
+            msg.push_str(&format!("\n  {}", e.as_str().map(str::to_string).unwrap_or_else(|| e.to_string())));
+        }
+    }
+    Failure { status: Some(status), code, message: msg }
+}
+
+// ---- the client ------------------------------------------------------------
+
+#[derive(Clone)]
+enum Endpoint {
+    Unix(PathBuf),
+    Tcp {
+        tls: Option<Arc<rustls::ClientConfig>>,
+        host: String,
+        port: u16,
+        /// Path prefix of `--url`, without a trailing slash.
+        base: String,
+    },
+}
+
+pub struct Response {
+    pub status: StatusCode,
+    pub body: Bytes,
+}
+
+pub struct ApiClient {
+    endpoint: Endpoint,
+    token: Mutex<Option<Zeroizing<String>>>,
+    project: Mutex<Option<String>>,
+}
+
+impl fmt::Debug for ApiClient {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Never the token.
+        f.debug_struct("ApiClient").field("endpoint", &self.describe()).finish()
+    }
+}
+
+fn is_loopback_host(h: &str) -> bool {
+    let h = h.trim_start_matches('[').trim_end_matches(']');
+    h == "localhost" || h.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
+}
+
+/// Client TLS: the system's trust store plus `GLIDEX_CA_CERT` (a PEM
+/// file, for a self-signed control-plane certificate).
+fn tls_config() -> Result<Arc<rustls::ClientConfig>, String> {
+    use rustls_pki_types::pem::PemObject;
+    use rustls_pki_types::CertificateDer;
+    let mut roots = rustls::RootCertStore::empty();
+    for c in rustls_native_certs::load_native_certs().certs {
+        let _ = roots.add(c);
+    }
+    if let Some(ca) = std::env::var_os("GLIDEX_CA_CERT").filter(|v| !v.is_empty()) {
+        let ca = PathBuf::from(ca);
+        let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_file_iter(&ca)
+            .map_err(|e| format!("GLIDEX_CA_CERT {}: {}", ca.display(), e))?
+            .collect::<Result<_, _>>()
+            .map_err(|e| format!("GLIDEX_CA_CERT {}: {}", ca.display(), e))?;
+        for c in certs {
+            roots.add(c).map_err(|e| format!("GLIDEX_CA_CERT {}: {}", ca.display(), e))?;
+        }
+    }
+    if roots.is_empty() {
+        return Err("no trusted CA certificates found (install the system CA bundle or set GLIDEX_CA_CERT)".into());
+    }
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let mut cfg = rustls::ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .map_err(|e| e.to_string())?
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    cfg.alpn_protocols = vec![b"http/1.1".to_vec()];
+    Ok(Arc::new(cfg))
+}
+
+impl ApiClient {
+    pub fn unix(path: PathBuf) -> Self {
+        ApiClient { endpoint: Endpoint::Unix(path), token: Mutex::new(None), project: Mutex::new(None) }
+    }
+
+    /// `http://` or `https://` URL. A token is never sent in clear text
+    /// off the loopback interface.
+    pub fn tcp(url: &str, token: Option<Zeroizing<String>>) -> Result<Self, String> {
+        let uri: Uri = url.parse().map_err(|e| format!("--url {}: {}", url, e))?;
+        let tls = match uri.scheme_str() {
+            Some("https") => true,
+            Some("http") => false,
+            _ => return Err(format!("--url {}: use http:// or https://", url)),
+        };
+        let host = uri.host().ok_or_else(|| format!("--url {}: no host", url))?.to_string();
+        if !tls && !is_loopback_host(&host) {
+            return Err(format!("--url {}: plain http is only allowed to localhost; use https://", url));
+        }
+        let port = uri.port_u16().unwrap_or(if tls { 443 } else { 80 });
+        let base = uri.path().trim_end_matches('/').to_string();
+        Ok(ApiClient {
+            endpoint: Endpoint::Tcp { tls: if tls { Some(tls_config()?) } else { None }, host, port, base },
+            token: Mutex::new(token),
+            project: Mutex::new(None),
+        })
+    }
+
+    pub fn is_unix(&self) -> bool {
+        matches!(self.endpoint, Endpoint::Unix(_))
+    }
+
+    /// Where requests go, for messages (never the token).
+    pub fn describe(&self) -> String {
+        match &self.endpoint {
+            Endpoint::Unix(p) => format!("unix:{}", p.display()),
+            Endpoint::Tcp { tls, host, port, base } => {
+                format!("{}://{}:{}{}", if tls.is_some() { "https" } else { "http" }, host, port, base)
+            }
+        }
+    }
+
+    pub fn has_token(&self) -> bool {
+        self.token.lock().unwrap().is_some()
+    }
+
+    pub fn set_token(&self, t: Option<Zeroizing<String>>) {
+        *self.token.lock().unwrap() = t;
+    }
+
+    /// The `--project` / `project use` choice for this session.
+    pub fn project(&self) -> Option<String> {
+        self.project.lock().unwrap().clone()
+    }
+
+    pub fn set_project(&self, p: Option<String>) {
+        *self.project.lock().unwrap() = p.filter(|p| !p.is_empty());
+    }
+
+    /// `path` with `?project=` when a project is selected.
+    pub fn scoped(&self, path: &str) -> String {
+        match self.project() {
+            Some(p) => add_query(path, "project", &p),
+            None => path.to_string(),
+        }
+    }
+
+    /// Add `"project"` to a create body when a project is selected.
+    pub fn scope_body(&self, body: &mut serde_json::Value) {
+        if let (Some(p), Some(obj)) = (self.project(), body.as_object_mut()) {
+            obj.entry("project").or_insert(serde_json::json!(p));
+        }
+    }
+
+    pub async fn connect(&self) -> Result<Box<dyn Conn>, String> {
+        match &self.endpoint {
+            Endpoint::Unix(p) => match tokio::net::UnixStream::connect(p).await {
+                Ok(s) => Ok(Box::new(s)),
+                Err(e) => Err(match e.kind() {
+                    io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused => {
+                        format!("cannot reach the control plane at {}: {} (is glidex-control-plane running?)", p.display(), e)
+                    }
+                    io::ErrorKind::PermissionDenied => format!(
+                        "cannot open {}: {} (local users need to be in the glidex-users group; log out and in again after being added)",
+                        p.display(),
+                        e
+                    ),
+                    _ => format!("cannot reach the control plane at {}: {}", p.display(), e),
+                }),
+            },
+            Endpoint::Tcp { tls, host, port, .. } => {
+                let bare = host.trim_start_matches('[').trim_end_matches(']');
+                let addr = if bare.contains(':') { format!("[{}]:{}", bare, port) } else { format!("{}:{}", bare, port) };
+                let tcp = tokio::time::timeout(std::time::Duration::from_secs(10), tokio::net::TcpStream::connect(&addr))
+                    .await
+                    .map_err(|_| format!("cannot reach the control plane at {}: timed out", self.describe()))?
+                    .map_err(|e| format!("cannot reach the control plane at {}: {}", self.describe(), e))?;
+                let _ = tcp.set_nodelay(true);
+                match tls {
+                    None => Ok(Box::new(tcp)),
+                    Some(cfg) => {
+                        let name = rustls_pki_types::ServerName::try_from(bare.to_string())
+                            .map_err(|e| format!("{}: {}", host, e))?;
+                        let s = tokio_rustls::TlsConnector::from(cfg.clone())
+                            .connect(name, tcp)
+                            .await
+                            .map_err(|e| format!("TLS with {}: {}", self.describe(), e))?;
+                        Ok(Box::new(s))
+                    }
+                }
+            }
+        }
+    }
+
+    fn host_header(&self) -> String {
+        match &self.endpoint {
+            Endpoint::Unix(_) => "localhost".into(),
+            Endpoint::Tcp { host, port, .. } => format!("{}:{}", host, port),
+        }
+    }
+
+    fn full_path(&self, path: &str) -> String {
+        match &self.endpoint {
+            Endpoint::Unix(_) => path.to_string(),
+            Endpoint::Tcp { base, .. } => format!("{}{}", base, path),
+        }
+    }
+
+    /// `ws://` / `wss://` URL of an API path, for the WebSocket handshake
+    /// over a stream from [`connect`](Self::connect).
+    pub fn ws_url(&self, path: &str) -> String {
+        let scheme = match &self.endpoint {
+            Endpoint::Tcp { tls: Some(_), .. } => "wss",
+            _ => "ws",
+        };
+        format!("{}://{}{}", scheme, self.host_header(), self.full_path(path))
+    }
+
+    /// `Authorization` for TCP requests, marked sensitive.
+    pub fn auth_header(&self) -> Option<HeaderValue> {
+        if self.is_unix() {
+            return None;
+        }
+        let t = self.token.lock().unwrap();
+        let t = t.as_ref()?;
+        let mut v = HeaderValue::from_str(&Zeroizing::new(format!("Bearer {}", t.as_str()))).ok()?;
+        v.set_sensitive(true);
+        Some(v)
+    }
+
+    /// Send one request and read the whole response.
+    pub async fn send(&self, method: Method, path: &str, body: Option<&serde_json::Value>) -> Result<Response, Failure> {
+        let stream = self.connect().await.map_err(Failure::transport)?;
+        let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
+            .await
+            .map_err(|e| Failure::transport(format!("connection to {}: {}", self.describe(), e)))?;
+        tokio::spawn(async move {
+            let _ = conn.await;
+        });
+        let mut req = Request::builder().method(method).uri(self.full_path(path)).header(HOST, self.host_header());
+        if let Some(h) = self.auth_header() {
+            req = req.header(AUTHORIZATION, h);
+        }
+        let payload = match body {
+            Some(b) => {
+                req = req.header(CONTENT_TYPE, "application/json");
+                Bytes::from(serde_json::to_vec(b).map_err(|e| Failure::transport(e.to_string()))?)
+            }
+            None => Bytes::new(),
+        };
+        let req = req.body(Full::new(payload)).map_err(|e| Failure::transport(format!("bad request: {}", e)))?;
+        let resp = sender
+            .send_request(req)
+            .await
+            .map_err(|e| Failure::transport(format!("request to {} failed: {}", self.describe(), e)))?;
+        let status = resp.status();
+        let body = resp
+            .into_body()
+            .collect()
+            .await
+            .map_err(|e| Failure::transport(format!("reading the response: {}", e)))?
+            .to_bytes();
+        Ok(Response { status, body })
+    }
+
+    /// Request returning the raw body of a successful response.
+    pub async fn request_bytes(&self, method: Method, path: &str, body: Option<serde_json::Value>) -> Result<Response, Failure> {
+        let r = self.send(method, path, body.as_ref()).await?;
+        if r.status.is_success() {
+            Ok(r)
+        } else {
+            Err(render_error(r.status, &r.body, !self.is_unix()))
+        }
+    }
+
+    /// JSON request; an empty body (204) parses as `null`, so `T = ()` works.
+    pub async fn request<T: DeserializeOwned>(&self, method: Method, path: &str, body: Option<serde_json::Value>) -> Result<T, Failure> {
+        let r = self.request_bytes(method, path, body).await?;
+        let v = if r.body.is_empty() || r.status == StatusCode::NO_CONTENT {
+            serde_json::Value::Null
+        } else {
+            serde_json::from_slice(&r.body).map_err(|e| Failure::transport(format!("Failed to parse response: {}", e)))?
+        };
+        serde_json::from_value(v).map_err(|e| Failure::transport(format!("Failed to parse response: {}", e)))
+    }
+
+    /// [`request`](Self::request) with the error as a message.
+    pub async fn request_json<T: DeserializeOwned>(&self, method: Method, path: &str, body: Option<serde_json::Value>) -> Result<T, String> {
+        self.request(method, path, body).await.map_err(|e| e.message)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn socket_selection_order() {
+        let c = socket_candidates(Some("/run/user/1000"), 1000);
+        assert_eq!(
+            c,
+            vec![
+                PathBuf::from("/run/glidex-cp/api.sock"),
+                PathBuf::from("/run/user/1000/glidex/api.sock"),
+                PathBuf::from("/tmp/glidex-1000/api.sock"),
+            ]
+        );
+        assert_eq!(socket_candidates(None, 7).len(), 2);
+        assert_eq!(socket_candidates(Some(""), 7)[1], PathBuf::from("/tmp/glidex-7/api.sock"));
+
+        // Explicit always wins, even if it doesn't exist (yet).
+        let none = |_: &Path| false;
+        assert_eq!(select_socket(Some("/x/api.sock".into()), &c, none), Some(PathBuf::from("/x/api.sock")));
+        assert_eq!(select_socket(None, &c, none), None);
+        // Otherwise the first that exists.
+        let xdg = |p: &Path| p.starts_with("/run/user") || p.starts_with("/tmp");
+        assert_eq!(select_socket(None, &c, xdg), Some(PathBuf::from("/run/user/1000/glidex/api.sock")));
+        let all = |_: &Path| true;
+        assert_eq!(select_socket(Some(PathBuf::new()), &c, all), Some(PathBuf::from("/run/glidex-cp/api.sock")));
+    }
+
+    #[test]
+    fn real_sockets_are_detected() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let sock = dir.path().join("api.sock");
+        let _l = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+        let file = dir.path().join("plain");
+        std::fs::write(&file, b"").unwrap();
+        assert!(is_socket(&sock));
+        assert!(!is_socket(&file));
+        assert!(!is_socket(&dir.path().join("missing")));
+    }
+
+    #[test]
+    fn token_file_is_private_and_checked() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("cfg").join("glidex").join("token");
+        assert!(read_token_file(&path).unwrap().is_none());
+
+        save_token_file(&path, "gxt_secret").unwrap();
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&path), 0o600);
+        assert_eq!(mode(path.parent().unwrap()), 0o700);
+        assert_eq!(read_token_file(&path).unwrap().as_deref().map(String::as_str), Some("gxt_secret"));
+
+        // Overwriting keeps 0600, and no temporary file is left.
+        save_token_file(&path, "gxt_other").unwrap();
+        assert_eq!(read_token_file(&path).unwrap().as_deref().map(String::as_str), Some("gxt_other"));
+        assert_eq!(std::fs::read_dir(path.parent().unwrap()).unwrap().count(), 1);
+
+        for bad in [0o640, 0o604, 0o644] {
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(bad)).unwrap();
+            let err = read_token_file(&path).unwrap_err();
+            assert!(err.contains("group or others"), "{err}");
+            assert!(!err.contains("gxt_other"), "the error must not echo the token");
+        }
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o400)).unwrap();
+        assert!(read_token_file(&path).unwrap().is_some());
+
+        assert!(delete_token_file(&path).unwrap());
+        assert!(!delete_token_file(&path).unwrap());
+    }
+
+    #[test]
+    fn principals_and_roles() {
+        assert_eq!(parse_principal("user:abc").unwrap(), serde_json::json!({"type": "User", "id": "abc"}));
+        assert_eq!(parse_principal("team:unix:glidex-admin").unwrap(), serde_json::json!({"type": "Team", "id": "unix:glidex-admin"}));
+        assert_eq!(parse_principal("token:t1").unwrap(), serde_json::json!({"type": "Token", "id": "t1"}));
+        assert!(parse_principal("abc").is_err());
+        assert!(parse_principal("user:").is_err());
+        assert!(parse_principal("project:p").is_err());
+        assert_eq!(format_entity(&serde_json::json!({"type": "Team", "id": "x"})), "team:x");
+        assert_eq!(format_entity(&serde_json::json!({"type": "Host"})), "host");
+
+        assert_eq!(role_name("owner"), "role.owner");
+        assert_eq!(role_name("grant.host-paths"), "grant.host-paths");
+        assert_eq!(parse_role_ref("viewer@lab").unwrap(), serde_json::json!({"role": "role.viewer", "project": "lab"}));
+        assert_eq!(parse_role_ref("role.auditor").unwrap(), serde_json::json!({"role": "role.auditor"}));
+        assert!(parse_role_ref("viewer@").is_err());
+        assert!(parse_role_ref("@lab").is_err());
+    }
+
+    #[test]
+    fn queries_are_encoded() {
+        assert_eq!(add_query("/vms", "project", "my lab"), "/vms?project=my%20lab");
+        assert_eq!(add_query("/audit?limit=5", "project", "a&b"), "/audit?limit=5&project=a%26b");
+    }
+
+    #[test]
+    fn errors_read_well() {
+        let body = |c: &str, m: &str| serde_json::to_vec(&serde_json::json!({"error": c, "message": m})).unwrap();
+        let e = render_error(StatusCode::UNAUTHORIZED, &body("reauth_required", "needs a recent login"), true);
+        assert!(e.message.starts_with("log in again: needs a recent login"), "{e}");
+        let e = render_error(StatusCode::UNAUTHORIZED, &body("unauthenticated", "authentication required"), true);
+        assert!(e.message.contains("gxctl login"), "{e}");
+        let e = render_error(StatusCode::UNAUTHORIZED, &body("unauthenticated", "authentication required"), false);
+        assert!(!e.message.contains("gxctl login"), "{e}");
+        let e = render_error(StatusCode::FORBIDDEN, &body("forbidden", "not allowed: createVm"), false);
+        assert_eq!(e.message, "permission denied (forbidden): not allowed: createVm");
+        assert_eq!(e.code.as_deref(), Some("forbidden"));
+        let e = render_error(StatusCode::NOT_FOUND, &body("not_found", "VM not found"), false);
+        assert_eq!(e.message, "not_found: VM not found");
+        let e = render_error(StatusCode::BAD_GATEWAY, b"upstream down", false);
+        assert_eq!(e.message, "HTTP 502: upstream down");
+    }
+
+    #[test]
+    fn plain_http_with_a_token_stays_on_loopback() {
+        assert!(ApiClient::tcp("http://localhost:8841", None).is_ok());
+        assert!(ApiClient::tcp("http://127.0.0.1:8841", None).is_ok());
+        assert!(ApiClient::tcp("http://[::1]:8841", None).is_ok());
+        assert!(ApiClient::tcp("http://example.org:8841", None).is_err());
+        assert!(ApiClient::tcp("ftp://localhost", None).is_err());
+        let c = ApiClient::tcp("http://localhost:8841/api/", Some(Zeroizing::new("gxt_s".into()))).unwrap();
+        assert_eq!(c.describe(), "http://localhost:8841/api");
+        assert_eq!(c.ws_url("/vms/x/console/ws"), "ws://localhost:8841/api/vms/x/console/ws");
+        assert!(!format!("{:?}", c).contains("gxt_s"));
+        assert!(c.auth_header().unwrap().is_sensitive());
+        assert!(ApiClient::unix("/x".into()).auth_header().is_none());
+    }
+}

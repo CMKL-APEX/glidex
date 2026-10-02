@@ -53,6 +53,15 @@ cargo run --bin gxctl                  # CLI
 The API has no authentication and listens on loopback only
 (`GLIDEX_LISTEN` changes that): only expose it to a trusted network.
 
+`gxctl` talks to the control plane's Unix socket (`/run/glidex-cp/api.sock`,
+or the one a hand-started control plane creates under `$XDG_RUNTIME_DIR/glidex`)
+and you're identified by your Unix account: no login. From another
+machine, `gxctl --url https://host:8841 login --oidc` (or `login --token`)
+saves a token in `~/.config/glidex/token`. `--project <p>` picks the
+project; `whoami`, `project`, `token`, `binding`, `team`, `policy` and
+`audit` manage access ([spec/cli.md](spec/cli.md),
+[spec/security.md](spec/security.md)).
+
 ## Your first VM
 
 ```
