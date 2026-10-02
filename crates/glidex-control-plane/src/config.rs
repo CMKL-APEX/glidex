@@ -295,6 +295,25 @@ mod tests {
         assert!(Config::load_from(&p).is_err());
     }
 
+    /// The installer ships packaging/control-plane.json.example as
+    /// /etc/glidex/control-plane.json.example; it must stay loadable and
+    /// match the defaults.
+    #[test]
+    fn packaged_example_parses_and_matches_defaults() {
+        let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packaging/control-plane.json.example");
+        let c = Config::load_from(&p).unwrap();
+        let d = Config::default();
+        assert_eq!(c.listen, d.listen);
+        assert_eq!((&c.ui_user, &c.users_group, &c.admin_group), (&d.ui_user, &d.users_group, &d.admin_group));
+        assert_eq!(c.auth.allowed_origins, d.auth.allowed_origins);
+        assert_eq!(c.auth.pam.allowed_groups, d.auth.pam.allowed_groups);
+        assert_eq!(c.auth.pam.authd_socket, d.auth.pam.authd_socket);
+        assert_eq!(c.auth.oidc.enabled, d.auth.oidc.enabled);
+        assert_eq!(c.authz.policy_files_dir, d.authz.policy_files_dir);
+        assert_eq!(c.audit.retention_days, d.audit.retention_days);
+        assert!(c.check_listeners().is_ok());
+    }
+
     #[test]
     fn non_loopback_needs_tls() {
         let mut c = Config { listen: vec!["0.0.0.0:8841".parse().unwrap()], ..Default::default() };

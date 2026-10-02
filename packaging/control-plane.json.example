@@ -1,0 +1,33 @@
+{
+  "listen": ["127.0.0.1:8841", "[::1]:8841"],
+  "ui_user": "glidex-ui",
+  "users_group": "glidex-users",
+  "admin_group": "glidex-admin",
+  "auth": {
+    "allowed_origins": ["http://localhost:5173", "http://127.0.0.1:5173", "http://[::1]:5173"],
+    "session": { "idle_minutes": 30, "absolute_hours": 12 },
+    "tokens": { "default_days": 90, "max_days": 365 },
+    "pam": {
+      "enabled": true,
+      "allowed_groups": ["glidex-users"],
+      "jit": true,
+      "group_teams": {},
+      "authd_socket": "/run/glidex-authd/auth.sock",
+      "service": "glidex"
+    },
+    "oidc": {
+      "enabled": false,
+      "issuer": "",
+      "client_id": "",
+      "scopes": ["openid", "profile", "email", "groups"],
+      "groups_claim": "groups",
+      "jit": true,
+      "allowed_domains": [],
+      "required_groups": [],
+      "group_teams": {}
+    }
+  },
+  "authz": { "policy_files_dir": "/etc/glidex/policies" },
+  "pci": { "allow": [] },
+  "audit": { "retention_days": 90 }
+}

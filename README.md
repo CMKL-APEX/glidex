@@ -29,10 +29,16 @@ cargo run -p glidex-install -- uninstall      # --dry-run shows what would go
 
 The installer asks nothing but your sudo password. It installs what is
 missing and updates what is outdated: system packages, Rust, Bun, Cloud
-Hypervisor and its firmware (pinned versions), QEMU with OVMF, VM
-networking (Open vSwitch, `glidex-netd`), and the glidex binaries. The
-control plane and web UI then run as systemd units under a `glidex`
-system user (data in `/var/lib/glidex-control-plane/.glidex`). Re-run it
+Hypervisor and its firmware (pinned versions, downloads checked against
+pinned sha256s), QEMU with OVMF, VM networking (Open vSwitch,
+`glidex-netd`), and the glidex binaries. The control plane runs as a
+sandboxed systemd unit under the `glidex` system user (data in
+`/var/lib/glidex-control-plane/.glidex`), the web UI as `glidex-ui`, and
+`glidex-authd` checks local passwords (PAM). You are added to
+`glidex-users` and `glidex-admin` (gxctl on `/run/glidex-cp/api.sock`)
+and taken out of `glidex` if an earlier install put you there; log out
+and back in afterwards. Defaults need no config file;
+`/etc/glidex/control-plane.json.example` lists the settings. Re-run it
 to update. `--no-qemu`, `--no-networking`, `--no-services` and
 `--ovs-profile kernel` opt out (remembered for later runs; `--help` for
 all). It needs Linux with KVM (`/dev/kvm`). See
@@ -50,8 +56,11 @@ cargo run -p glidex-ui -- --dev        # web UI (Vite, hot reload) on http://loc
 cargo run --bin gxctl                  # CLI
 ```
 
-The API has no authentication and listens on loopback only
-(`GLIDEX_LISTEN` changes that): only expose it to a trusted network.
+The API listens on loopback and on `api.sock` in its run directory
+(`/run/glidex-cp/api.sock` under systemd, for members of
+`glidex-users`); every request is authenticated, and a non-loopback
+listener (`GLIDEX_LISTEN`, or `listen` in `/etc/glidex/control-plane.json`)
+needs TLS. See [spec/security.md](spec/security.md).
 
 ## Your first VM
 

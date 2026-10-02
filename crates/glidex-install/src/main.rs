@@ -16,11 +16,27 @@ const CLOUD_HYPERVISOR_VERSION: &str = "v53.0";
 /// the UEFI firmware from. Bump together with the digests in
 /// `firmware_asset`.
 const EDK2_FIRMWARE_VERSION: &str = "ch-811ce5ea35";
+/// rustup-init from static.rust-lang.org/rustup/archive/<version>/<target>/,
+/// verified against `rustup_asset` (the `rustup-init.sha256` published next
+/// to it) before it runs. Only used when Rust is missing; after that
+/// `rustup update` keeps it current.
+const RUSTUP_VERSION: &str = "1.29.1";
+/// Bun release (github.com/oven-sh/bun/releases, tag `bun-v<version>`),
+/// verified against `bun_asset` (the release's SHASUMS256.txt). Bun builds
+/// the web UI, so it is pinned like the rest of the build.
+const BUN_VERSION: &str = "1.4.2";
 
-/// The system user every glidex unit but glidex-netd (the root helper)
-/// runs as. Its primary group is also the group allowed to use netd.
+/// The system user the control plane runs as. Its primary group is the
+/// one allowed to use glidex-netd and glidex-authd: nobody else is in it
+/// (spec/security.md §4).
 const SERVICE_USER: &str = "glidex";
 const NETD_GROUP: &str = "glidex";
+/// The web UI's own user (and group); not in `glidex`.
+const UI_USER: &str = "glidex-ui";
+/// Humans allowed to use gxctl on the control plane's api.sock.
+const USERS_GROUP: &str = "glidex-users";
+/// Break-glass administrators (api.sock as system-admin, netd directly).
+const ADMIN_GROUP: &str = "glidex-admin";
 /// The service user's home: the control plane keeps its database, images,
 /// disks and firmware in `<home>/.glidex`, like an interactive run.
 pub(crate) const SERVICE_HOME: &str = "/var/lib/glidex-control-plane";
@@ -33,6 +49,22 @@ const INSTALL_CONF: &str = "/etc/glidex/install.conf";
 const NETD_UNIT: &str = "/etc/systemd/system/glidex-netd.service";
 const CONTROL_PLANE_UNIT: &str = "/etc/systemd/system/glidex-control-plane.service";
 const UI_UNIT: &str = "/etc/systemd/system/glidex-ui.service";
+const AUTHD_SOCKET_UNIT: &str = "/etc/systemd/system/glidex-authd.socket";
+const AUTHD_SERVICE_UNIT: &str = "/etc/systemd/system/glidex-authd.service";
+/// PAM service glidex-authd authenticates with. Rewritten only while it
+/// carries `PAM_MARKER`, so an administrator's edits are kept.
+pub(crate) const PAM_FILE: &str = "/etc/pam.d/glidex";
+pub(crate) const PAM_MARKER: &str = "Managed by glidex-install";
+/// glidex-authd's settings, written once (left alone afterwards).
+pub(crate) const AUTHD_CONFIG: &str = "/etc/glidex/authd.json";
+const AUTHD_CONFIG_DEFAULT: &str = "{\"service_user\":\"glidex\",\"allowed_groups\":[\"glidex-users\"]}\n";
+/// The control plane's settings with their defaults, for reference; the
+/// installer never writes control-plane.json itself (defaults apply).
+pub(crate) const CP_CONFIG_EXAMPLE: &str = "/etc/glidex/control-plane.json.example";
+/// Read-only site policy files (spec/security.md §7.6), root:glidex 0750.
+pub(crate) const POLICY_DIR: &str = "/etc/glidex/policies";
+/// The control plane's local API socket (RuntimeDirectory=glidex-cp).
+const API_SOCKET: &str = "/run/glidex-cp/api.sock";
 const API_ADDR: &str = "127.0.0.1:8841";
 const UI_ADDR: &str = "127.0.0.1:5173";
 
@@ -55,10 +87,10 @@ fn main() -> Result<()> {
     print_plan(&opts);
 
     install_system_packages(&opts, &platform)?;
-    let cargo = install_rust()?;
-    let bun = install_bun()?;
+    let cargo = install_rust(&platform)?;
+    let bun = install_bun(&platform)?;
     check_kvm();
-    build_project(&cargo)?;
+    build_project(&cargo, &opts)?;
     build_ui(&bun)?;
 
     let user = invoking_user();
@@ -78,6 +110,7 @@ fn main() -> Result<()> {
         setup_networking(&opts, &changed)?;
     }
     if opts.services {
+        install_service_config()?;
         install_services(&changed, user.as_deref(), &user_home)?;
     }
     opts.save(saved.as_deref())?;
@@ -240,7 +273,7 @@ fn print_help() {
          Options:\n\
          \x20     --no-qemu              skip QEMU and OVMF (Cloud Hypervisor only)\n\
          \x20     --no-networking        skip Open vSwitch, glidex-netd and host settings\n\
-         \x20     --no-services          don't install the systemd units / glidex user\n\
+         \x20     --no-services          don't install the systemd units, users and groups\n\
          \x20     --ovs-profile P        dpdk (default; reserves hugepages) or kernel\n\
          \x20     --pmd-cpu-mask MASK    OVS-DPDK PMD CPU mask, hex (\"auto\" to clear)\n\
          \x20     --allow-ovs-restart    allow restarting ovs-vswitchd while it has bridges\n\
@@ -253,7 +286,7 @@ fn print_plan(opts: &Options) {
     println!();
     println!("{}", "Installing / updating:".cyan().bold());
     println!("  - System packages (build tools, OpenSSL headers, disk and cloud-init tools)");
-    println!("  - Rust (rustup), Bun");
+    println!("  - Rust (rustup {} if missing), Bun {} (checksums verified)", RUSTUP_VERSION, BUN_VERSION);
     println!("  - Cloud-Hypervisor {} and its UEFI firmware ({})", CLOUD_HYPERVISOR_VERSION, EDK2_FIRMWARE_VERSION);
     println!("  - glidex binaries in {}, web UI in {}", BIN_DIR, UI_ASSET_DIR);
     println!("  - QEMU + OVMF: {}", on(opts.qemu));
@@ -263,8 +296,11 @@ fn print_plan(opts: &Options) {
         on(opts.networking)
     );
     println!(
-        "  - systemd units (control plane and web UI as user '{}'): {}",
+        "  - systemd units (control plane as '{}', web UI as '{}', glidex-authd), groups {} and {}: {}",
         SERVICE_USER,
+        UI_USER,
+        USERS_GROUP,
+        ADMIN_GROUP,
         on(opts.services)
     );
     println!();
@@ -357,18 +393,6 @@ fn succeeds(cmd: &str, args: &[&str]) -> bool {
         .unwrap_or(false)
 }
 
-fn run_sh(script: &str) -> Result<()> {
-    let status = Command::new("sh")
-        .arg("-c")
-        .arg(script)
-        .status()
-        .with_context(|| format!("Failed to run: {}", script))?;
-    if !status.success() {
-        bail!("Shell command failed: {}", script);
-    }
-    Ok(())
-}
-
 fn download(url: &str, dest: &Path) -> Result<()> {
     if !command_exists("curl") {
         bail!("curl is required to download {}", url);
@@ -381,6 +405,26 @@ fn download(url: &str, dest: &Path) -> Result<()> {
         .context("Failed to invoke curl")?;
     if !status.success() {
         bail!("Failed to download {}", url);
+    }
+    Ok(())
+}
+
+/// Download `url` to `dest` and check its sha256; on a mismatch the file
+/// is deleted and the install stops (never run or install an unverified
+/// download).
+fn download_verified(url: &str, dest: &Path, sha256: &str) -> Result<()> {
+    println!("Downloading {}", url);
+    download(url, dest)?;
+    let actual = file_sha256(dest)?;
+    if actual != sha256 {
+        let _ = fs::remove_file(dest);
+        bail!(
+            "Checksum mismatch for {}: expected {}, got {}. The download was deleted; \
+             check your network (proxy, captive portal) and re-run, or report it if it persists.",
+            url,
+            sha256,
+            actual
+        );
     }
     Ok(())
 }
@@ -713,15 +757,62 @@ fn install_system_packages(opts: &Options, platform: &Platform) -> Result<()> {
 
 // --- Toolchains ---
 
+/// rustup-init's target triple and its sha256 for `RUSTUP_VERSION`.
+fn rustup_asset(platform: &Platform) -> (&'static str, &'static str) {
+    if platform.arch == "x86_64" {
+        ("x86_64-unknown-linux-gnu", "dda7234360b7f578ca8b0ddcb80145646fa61a67c1720a5abc7051b35c9fcb71")
+    } else {
+        ("aarch64-unknown-linux-gnu", "15f6e4ce9f583b929c996c91562bad6d4454f3281de858b02cdfdef615fac433")
+    }
+}
+
+fn rustup_url(platform: &Platform) -> String {
+    format!(
+        "https://static.rust-lang.org/rustup/archive/{}/{}/rustup-init",
+        RUSTUP_VERSION,
+        rustup_asset(platform).0
+    )
+}
+
+/// Bun's release zip name (without `.zip`) and its sha256 for `BUN_VERSION`.
+fn bun_asset(platform: &Platform) -> (&'static str, &'static str) {
+    if platform.arch == "x86_64" {
+        ("bun-linux-x64", "36368faef7527875d5ffa52e53cd48021741f2a83eb6208a8dd64068d422a913")
+    } else {
+        ("bun-linux-aarch64", "54328bbc2d9c8e0c9f892c544d66c57a83b84139e34909e5ee81758f1ac8fda7")
+    }
+}
+
+fn bun_url(platform: &Platform) -> String {
+    format!(
+        "https://github.com/oven-sh/bun/releases/download/bun-v{}/{}.zip",
+        BUN_VERSION,
+        bun_asset(platform).0
+    )
+}
+
+/// `1.4.2` → (1, 4, 2); anything after the numbers (`-canary…`) is ignored.
+fn parse_version(v: &str) -> Option<(u64, u64, u64)> {
+    let mut parts = v
+        .trim()
+        .trim_start_matches('v')
+        .split('.')
+        .map(|p| p.chars().take_while(char::is_ascii_digit).collect::<String>().parse::<u64>().ok());
+    Some((parts.next()??, parts.next()??, parts.next().flatten().unwrap_or(0)))
+}
+
 /// Rust via rustup, kept on the latest stable. Returns the cargo to build with.
-fn install_rust() -> Result<String> {
+fn install_rust(platform: &Platform) -> Result<String> {
     section("Rust");
     let home_cargo = dirs::home_dir().map(|h| h.join(".cargo/bin")).unwrap_or_default();
     if !command_exists("rustc") && !home_cargo.join("rustc").exists() {
-        println!("{}", "Rust not found; installing via rustup...".yellow());
-        run_sh(
-            "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable",
-        )?;
+        println!("{} {}", "Rust not found; installing rustup".yellow(), RUSTUP_VERSION);
+        // A pinned, checksummed rustup-init instead of `curl … | sh`.
+        let tmp = TempDir::new()?;
+        let init = tmp.path().join("rustup-init");
+        download_verified(&rustup_url(platform), &init, rustup_asset(platform).1)?;
+        run("chmod", &["0755", &init.to_string_lossy()])?;
+        run(&init.to_string_lossy(), &["-y", "--default-toolchain", "stable"])?;
     }
     let rustup = if command_exists("rustup") { "rustup".to_string() } else { home_cargo.join("rustup").to_string_lossy().into_owned() };
     if Path::new(&rustup).exists() || command_exists(&rustup) {
@@ -738,20 +829,68 @@ fn install_rust() -> Result<String> {
     Ok(cargo)
 }
 
-/// Bun (builds the UI), kept up to date when its own installer put it in
-/// ~/.bun. Returns the bun to run.
-fn install_bun() -> Result<String> {
+/// What to do about Bun, given the version in ~/.bun (if any) and whether
+/// another bun is on PATH.
+#[derive(Debug, PartialEq, Eq)]
+enum BunAction {
+    /// Install (or upgrade to) the pinned release in ~/.bun.
+    Install,
+    /// ~/.bun has the pinned version or a newer one.
+    Keep,
+    /// A bun from elsewhere (distro, npm, …): left to whoever installed it.
+    Foreign,
+}
+
+fn bun_action(home_version: Option<&str>, on_path: bool) -> BunAction {
+    match home_version {
+        Some(v) => match (parse_version(v), parse_version(BUN_VERSION)) {
+            (Some(have), Some(want)) if have >= want => BunAction::Keep,
+            _ => BunAction::Install,
+        },
+        None if on_path => BunAction::Foreign,
+        None => BunAction::Install,
+    }
+}
+
+/// Put the pinned, verified Bun release in `~/.bun/bin` (where bun.sh's
+/// installer puts it, so earlier installs are upgraded in place).
+fn install_bun_release(platform: &Platform, home_bun: &Path) -> Result<()> {
+    let (asset, sha256) = bun_asset(platform);
+    let tmp = TempDir::new()?;
+    let zip = tmp.path().join(format!("{}.zip", asset));
+    download_verified(&bun_url(platform), &zip, sha256)?;
+    run("unzip", &["-q", "-o", &zip.to_string_lossy(), "-d", &tmp.path().to_string_lossy()])?;
+    let bin_dir = home_bun.parent().context("bun path has no parent")?;
+    fs::create_dir_all(bin_dir)?;
+    // Replace by rename, so a running bun keeps its file.
+    let staged = bin_dir.join(".bun.new");
+    fs::copy(tmp.path().join(asset).join("bun"), &staged)?;
+    run("chmod", &["0755", &staged.to_string_lossy()])?;
+    fs::rename(&staged, home_bun)?;
+    let bunx = bin_dir.join("bunx");
+    if fs::symlink_metadata(&bunx).is_err() {
+        std::os::unix::fs::symlink("bun", &bunx)?;
+    }
+    Ok(())
+}
+
+/// Bun (builds the UI): the pinned release (or newer) in ~/.bun. Returns
+/// the bun to run.
+fn install_bun(platform: &Platform) -> Result<String> {
     section("Bun");
     let home_bun = dirs::home_dir().map(|h| h.join(".bun/bin/bun")).unwrap_or_default();
-    if !command_exists("bun") && !home_bun.exists() {
-        println!("{}", "Bun not found; installing...".yellow());
-        run_sh("curl -fsSL https://bun.sh/install | bash")?;
-    } else if home_bun.exists() {
-        if let Err(e) = run(&home_bun.to_string_lossy(), &["upgrade"]) {
-            println!("{} could not update Bun: {:#}", "Note:".yellow(), e);
+    let home_version = home_bun
+        .exists()
+        .then(|| run_capture(&home_bun.to_string_lossy(), &["--version"]).unwrap_or_default());
+    match bun_action(home_version.as_deref(), command_exists("bun")) {
+        BunAction::Install => {
+            println!("{} {}", "Installing Bun".yellow(), BUN_VERSION);
+            install_bun_release(platform, &home_bun)?;
         }
-    } else {
-        println!("{} Bun was not installed by bun.sh; update it the way you installed it.", "Note:".yellow());
+        BunAction::Keep => {}
+        BunAction::Foreign => {
+            println!("{} Bun was not installed in ~/.bun; update it the way you installed it.", "Note:".yellow())
+        }
     }
     let bun = if command_exists("bun") { "bun".to_string() } else { home_bun.to_string_lossy().into_owned() };
     let version = run_capture(&bun, &["--version"]).unwrap_or_default();
@@ -767,6 +906,7 @@ struct Changes {
     control_plane: bool,
     ui: bool,
     netd: bool,
+    authd: bool,
 }
 
 /// `cloud-hypervisor v53.0` (possibly with a suffix) → `v53.0`.
@@ -869,18 +1009,7 @@ fn install_uefi_firmware(platform: &Platform, home: &Path, services: bool) -> Re
         );
         // Download next to the destination so the final rename is atomic.
         let partial = glidex_dir.join(format!("{}.part", asset));
-        println!("Downloading {}", url);
-        download(&url, &partial)?;
-        let actual = file_sha256(&partial)?;
-        if actual != sha256 {
-            let _ = fs::remove_file(&partial);
-            bail!(
-                "Checksum mismatch for {}: expected {}, got {}",
-                url,
-                sha256,
-                actual
-            );
-        }
+        download_verified(&url, &partial, sha256)?;
         fs::rename(&partial, &dest)?;
         println!("{} {}", "Installed:".green(), dest.display());
     }
@@ -944,13 +1073,18 @@ fn target_dir() -> PathBuf {
         .unwrap_or_else(|_| workspace_root().join("target"))
 }
 
-fn build_project(cargo: &str) -> Result<()> {
+/// `cargo build` arguments: the packages whose binaries `binaries` installs.
+fn build_args(opts: &Options) -> Vec<&'static str> {
+    let mut args = vec!["build", "--release", "-p", "glidex-control-plane", "-p", "glidex-netd", "-p", "glidex-ui"];
+    if opts.services {
+        args.extend(["-p", "glidex-authd"]);
+    }
+    args
+}
+
+fn build_project(cargo: &str, opts: &Options) -> Result<()> {
     section("Building glidex");
-    run_in(
-        cargo,
-        &["build", "--release", "-p", "glidex-control-plane", "-p", "glidex-netd", "-p", "glidex-ui"],
-        &workspace_root(),
-    )?;
+    run_in(cargo, &build_args(opts), &workspace_root())?;
     println!("{}", "Build successful".green());
     Ok(())
 }
@@ -971,6 +1105,10 @@ fn binaries(opts: &Options) -> Vec<&'static str> {
     if opts.networking {
         v.push("glidex-netd");
     }
+    // The root PAM helper only serves the control plane's unit.
+    if opts.services {
+        v.push("glidex-authd");
+    }
     v
 }
 
@@ -985,6 +1123,7 @@ fn install_binaries(opts: &Options, user_home: &Path, changed: &mut Changes) -> 
                 "glidex-control-plane" => changed.control_plane = true,
                 "glidex-ui" => changed.ui = true,
                 "glidex-netd" => changed.netd = true,
+                "glidex-authd" => changed.authd = true,
                 _ => {}
             }
         } else {
@@ -1003,18 +1142,27 @@ fn install_binaries(opts: &Options, user_home: &Path, changed: &mut Changes) -> 
     Ok(())
 }
 
-/// Swap the built UI into `UI_ASSET_DIR` when it changed.
+/// Whether `path` is readable and traversable by everyone (glidex-ui is
+/// neither the owner nor in the group).
+fn world_readable_dir(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    fs::metadata(path).is_ok_and(|m| m.is_dir() && m.permissions().mode() & 0o005 == 0o005)
+}
+
+/// Swap the built UI into `UI_ASSET_DIR` when it changed. The files are
+/// root-owned and world-readable, so the `glidex-ui` user can serve them.
 fn install_ui_assets() -> Result<()> {
     let dist = workspace_root().join("crates/glidex-ui/ui/dist");
-    if succeeds("diff", &["-rq", &dist.to_string_lossy(), UI_ASSET_DIR]) {
+    let parent = Path::new(UI_ASSET_DIR).parent().unwrap().to_string_lossy().into_owned();
+    let readable = world_readable_dir(Path::new(&parent)) && world_readable_dir(Path::new(UI_ASSET_DIR));
+    if readable && succeeds("diff", &["-rq", &dist.to_string_lossy(), UI_ASSET_DIR]) {
         println!("{} {}", "Up to date:".green(), UI_ASSET_DIR);
         return Ok(());
     }
     let staging = format!("{}.new", UI_ASSET_DIR);
-    let parent = Path::new(UI_ASSET_DIR).parent().unwrap().to_string_lossy().into_owned();
     for cmd in [
         argv(&["rm", "-rf", &staging]),
-        argv(&["mkdir", "-p", &parent]),
+        argv(&["install", "-d", "-m", "0755", "-o", "root", "-g", "root", &parent]),
         argv(&["cp", "-r", &dist.to_string_lossy(), &staging]),
         argv(&["chown", "-R", "root:root", &staging]),
         argv(&["chmod", "-R", "u=rwX,go=rX", &staging]),
@@ -1044,7 +1192,18 @@ fn nologin_shell() -> &'static str {
         .unwrap_or("/bin/false")
 }
 
+/// The invoking user's current memberships, for `service_user_commands`.
+#[derive(Debug, Clone, Copy)]
+struct Member<'a> {
+    name: &'a str,
+    /// In `glidex` (an earlier installer added humans there).
+    in_netd_group: bool,
+    in_users: bool,
+    in_admin: bool,
+}
+
 /// What the host already has, for `service_user_commands`.
+#[derive(Debug, Clone, Copy)]
 struct UserState<'a> {
     group: bool,
     user: bool,
@@ -1052,12 +1211,19 @@ struct UserState<'a> {
     home_owned: bool,
     home_exists: bool,
     data_dir: bool,
-    /// The invoking user (not root), and whether it is in the group.
-    member: Option<(&'a str, bool)>,
+    users_group: bool,
+    admin_group: bool,
+    ui_group: bool,
+    ui_user: bool,
+    /// The invoking user (not root).
+    member: Option<Member<'a>>,
 }
 
-/// Root commands that create the service user, its home and data dir, and
-/// add the invoking user to its group (gxctl console sockets, netd).
+/// Root commands that create the identities of spec/security.md §4: the
+/// `glidex` service user (only the control plane), its home and data dir,
+/// the `glidex-users` and `glidex-admin` groups with the invoking user in
+/// both, and the `glidex-ui` user (own group, no login, no home). The
+/// invoking user is taken out of `glidex`, where earlier installs put it.
 fn service_user_commands(s: &UserState, shell: &str) -> Vec<Vec<String>> {
     let data_dir = format!("{}/.glidex", SERVICE_HOME);
     let mut cmds = Vec::new();
@@ -1079,15 +1245,41 @@ fn service_user_commands(s: &UserState, shell: &str) -> Vec<Vec<String>> {
     if !s.data_dir {
         cmds.push(argv(&["install", "-d", "-m", "0750", "-o", SERVICE_USER, "-g", NETD_GROUP, &data_dir]));
     }
-    if let Some((user, false)) = s.member {
-        cmds.push(argv(&["usermod", "-aG", NETD_GROUP, user]));
+    if !s.users_group {
+        cmds.push(argv(&["groupadd", "--system", USERS_GROUP]));
+    }
+    if !s.admin_group {
+        cmds.push(argv(&["groupadd", "--system", ADMIN_GROUP]));
+    }
+    if !s.ui_user {
+        // Its own group: --user-group, or the group kept from an earlier one.
+        let group: &[&str] = if s.ui_group { &["--gid", UI_USER] } else { &["--user-group"] };
+        let mut cmd = argv(&["useradd", "--system"]);
+        cmd.extend(argv(group));
+        cmd.extend(argv(&[
+            "--home-dir", "/nonexistent", "--no-create-home", "--shell", shell, "--comment", "glidex web UI", UI_USER,
+        ]));
+        cmds.push(cmd);
+    }
+    if let Some(m) = s.member {
+        let missing: Vec<&str> = [(m.in_users, USERS_GROUP), (m.in_admin, ADMIN_GROUP)]
+            .into_iter()
+            .filter(|(member, _)| !member)
+            .map(|(_, g)| g)
+            .collect();
+        if !missing.is_empty() {
+            cmds.push(argv(&["usermod", "-aG", &missing.join(","), m.name]));
+        }
+        if m.in_netd_group {
+            cmds.push(argv(&["gpasswd", "-d", m.name, NETD_GROUP]));
+        }
     }
     cmds
 }
 
 fn ensure_service_user(invoking: Option<&str>) -> Result<()> {
     use std::os::unix::fs::MetadataExt;
-    section(&format!("Service user '{}'", SERVICE_USER));
+    section("Users and groups");
     let uid = run_capture("id", &["-u", SERVICE_USER]).ok().and_then(|u| u.trim().parse::<u32>().ok());
     let home = fs::metadata(SERVICE_HOME).ok();
     let data_dir = Path::new(SERVICE_HOME).join(".glidex");
@@ -1096,7 +1288,7 @@ fn ensure_service_user(invoking: Option<&str>) -> Result<()> {
         user: uid.is_some(),
         home_exists: home.is_some(),
         home_owned: home.as_ref().is_some_and(|m| Some(m.uid()) == uid),
-        // Unreadable before our group membership applies: ask root.
+        // Unreadable without the glidex group: ask root.
         data_dir: match fs::metadata(&data_dir) {
             Ok(_) => true,
             Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
@@ -1104,24 +1296,47 @@ fn ensure_service_user(invoking: Option<&str>) -> Result<()> {
             }
             Err(_) => false,
         },
-        member: invoking.map(|u| (u, user_in_group(u, NETD_GROUP))),
+        users_group: group_exists(USERS_GROUP),
+        admin_group: group_exists(ADMIN_GROUP),
+        ui_group: group_exists(UI_USER),
+        ui_user: succeeds("getent", &["passwd", UI_USER]),
+        member: invoking.map(|u| Member {
+            name: u,
+            in_netd_group: user_in_group(u, NETD_GROUP),
+            in_users: user_in_group(u, USERS_GROUP),
+            in_admin: user_in_group(u, ADMIN_GROUP),
+        }),
     };
     let cmds = service_user_commands(&state, nologin_shell());
     if cmds.is_empty() {
-        println!("{} {} (home {})", "Up to date:".green(), SERVICE_USER, SERVICE_HOME);
+        println!("{} {} (home {}), {}, {}, {}", "Up to date:".green(), SERVICE_USER, SERVICE_HOME, UI_USER, USERS_GROUP, ADMIN_GROUP);
         return Ok(());
     }
     for cmd in cmds {
         sudo(&cmd)?;
     }
-    println!("{} {} (home {})", "Ready:".green(), SERVICE_USER, SERVICE_HOME);
-    if let Some((user, false)) = state.member {
-        println!(
-            "{} added {} to the {} group (gxctl console, networking); log out and back in for it to apply.",
-            "Note:".yellow(),
-            user,
-            NETD_GROUP
-        );
+    println!("{} {} (home {}), {}, {}, {}", "Ready:".green(), SERVICE_USER, SERVICE_HOME, UI_USER, USERS_GROUP, ADMIN_GROUP);
+    if let Some(m) = state.member {
+        if !(m.in_users && m.in_admin) {
+            println!(
+                "{} added {} to {} and {} (gxctl on {}, administrator); log out and back in for it to apply.",
+                "Note:".yellow(),
+                m.name,
+                USERS_GROUP,
+                ADMIN_GROUP,
+                API_SOCKET
+            );
+        }
+        if m.in_netd_group {
+            println!(
+                "{} removed {} from the {} group: it opens glidex-netd's full socket, which is root-level control \
+                 of host networking, so only the control plane is in it now. gxctl talks to {} instead.",
+                "Note:".yellow(),
+                m.name,
+                NETD_GROUP,
+                API_SOCKET
+            );
+        }
     }
     Ok(())
 }
@@ -1345,8 +1560,22 @@ fn port_in_use(addr: &str) -> bool {
 /// Running or paused VMs per the local control plane; `None` if it can't
 /// be asked.
 fn active_vms() -> Option<usize> {
-    let body = run_capture("curl", &["-fsS", "--max-time", "5", &format!("http://{}/vms", API_ADDR)]).ok()?;
-    let vms: Vec<serde_json::Value> = serde_json::from_str(&body).ok()?;
+    // As root on api.sock (break-glass: sees every project); the loopback
+    // API answers only for a control plane from before authentication.
+    let unix = ["curl", "-fsS", "--max-time", "5", "--unix-socket", API_SOCKET, "http://localhost/vms"];
+    let body = if is_root() {
+        run_capture(unix[0], &unix[1..]).ok()
+    } else {
+        let mut args = vec!["-n"];
+        args.extend(unix);
+        run_capture("sudo", &args).ok()
+    }
+    .or_else(|| run_capture("curl", &["-fsS", "--max-time", "5", &format!("http://{}/vms", API_ADDR)]).ok())?;
+    count_active_vms(&body)
+}
+
+fn count_active_vms(body: &str) -> Option<usize> {
+    let vms: Vec<serde_json::Value> = serde_json::from_str(body).ok()?;
     Some(vms.iter().filter(|v| matches!(v["state"].as_str(), Some("running" | "paused"))).count())
 }
 
@@ -1355,9 +1584,101 @@ fn unit_user(unit_text: &str) -> Option<&str> {
     unit_text.lines().find_map(|l| l.strip_prefix("User=")).map(str::trim)
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum PamAction {
+    Write,
+    UpToDate,
+    /// The file exists without our marker: an administrator's.
+    KeepLocal,
+}
+
+fn pam_action(existing: Option<&str>, ours: &str) -> PamAction {
+    match existing {
+        None => PamAction::Write,
+        Some(t) if t == ours => PamAction::UpToDate,
+        Some(t) if t.contains(PAM_MARKER) => PamAction::Write,
+        Some(_) => PamAction::KeepLocal,
+    }
+}
+
+/// packaging/glidex.pam is written for Debian/Ubuntu (`@include common-*`);
+/// distributions without those files (Fedora/RHEL, Arch) include
+/// `system-auth` instead.
+fn render_pam(template: &str, debian_style: bool) -> String {
+    if debian_style {
+        return template.to_string();
+    }
+    template
+        .replace("@include common-auth", "auth     include  system-auth")
+        .replace("@include common-account", "account  include  system-auth")
+}
+
+/// `stat -c '%a %U:%G'` output of the policy directory, if it is right.
+fn policy_dir_ok(stat: Option<&str>) -> bool {
+    stat.map(str::trim) == Some(&format!("750 root:{}", NETD_GROUP))
+}
+
+/// Configuration for the services (spec/security.md §5.3, §13):
+/// /etc/pam.d/glidex (unless an administrator took it over), a default
+/// /etc/glidex/authd.json (once), control-plane.json.example (never
+/// control-plane.json itself: defaults apply), and the site policy
+/// directory.
+fn install_service_config() -> Result<()> {
+    section("Configuration");
+    let root = workspace_root();
+    let template = fs::read_to_string(root.join("packaging/glidex.pam")).context("packaging/glidex.pam")?;
+    let debian_style = Path::new("/etc/pam.d/common-auth").exists() || !Path::new("/etc/pam.d/system-auth").exists();
+    let pam = render_pam(&template, debian_style);
+    match pam_action(fs::read_to_string(PAM_FILE).ok().as_deref(), &pam) {
+        PamAction::Write => {
+            sudo_write(PAM_FILE, &pam)?;
+            println!("{} {}", "Updated:".green(), PAM_FILE);
+        }
+        PamAction::UpToDate => println!("{} {}", "Up to date:".green(), PAM_FILE),
+        PamAction::KeepLocal => println!(
+            "{} {} has local changes (no \"{}\" line); leaving it alone.",
+            "Kept:".yellow(),
+            PAM_FILE,
+            PAM_MARKER
+        ),
+    }
+    if Path::new(AUTHD_CONFIG).exists() {
+        println!("{} {} (not overwritten)", "Kept:".green(), AUTHD_CONFIG);
+    } else {
+        sudo_write(AUTHD_CONFIG, AUTHD_CONFIG_DEFAULT)?;
+        println!("{} {}", "Created:".green(), AUTHD_CONFIG);
+    }
+    if install_if_changed(&root.join("packaging/control-plane.json.example"), CP_CONFIG_EXAMPLE, "0644")? {
+        println!("{} {}", "Updated:".green(), CP_CONFIG_EXAMPLE);
+    }
+    let stat = run_capture("stat", &["-c", "%a %U:%G", POLICY_DIR]).ok();
+    if !policy_dir_ok(stat.as_deref()) {
+        sudo(&argv(&["install", "-d", "-m", "0750", "-o", "root", "-g", NETD_GROUP, POLICY_DIR]))?;
+        println!("{} {} (root:{} 0750)", "Ready:".green(), POLICY_DIR, NETD_GROUP);
+    }
+    Ok(())
+}
+
+/// What to do with glidex-authd's units: (start or restart the socket,
+/// try-restart the service).
+fn authd_actions(socket_active: bool, socket_changed: bool, service_changed: bool) -> Vec<Vec<String>> {
+    let mut cmds = Vec::new();
+    if !socket_active {
+        cmds.push(argv(&["systemctl", "start", "glidex-authd.socket"]));
+    } else if socket_changed {
+        cmds.push(argv(&["systemctl", "restart", "glidex-authd.socket"]));
+    }
+    if service_changed {
+        // Only if it is running; otherwise the next connection starts it.
+        cmds.push(argv(&["systemctl", "try-restart", "glidex-authd.service"]));
+    }
+    cmds
+}
+
 /// systemd units so glidex comes up at boot: Open vSwitch → glidex-netd
 /// (reconciles bridges, DPDK binding, IP migrations, NAT) → control plane
-/// → web UI, the last two as the service user.
+/// (as `glidex`) → web UI (as `glidex-ui`), plus the socket-activated
+/// glidex-authd (root).
 fn install_services(changed: &Changes, invoking: Option<&str>, user_home: &Path) -> Result<()> {
     section("Services (systemd)");
     if !Path::new("/run/systemd/system").exists() {
@@ -1378,11 +1699,26 @@ fn install_services(changed: &Changes, invoking: Option<&str>, user_home: &Path)
     );
     let cp_unit_changed = write_if_changed(CONTROL_PLANE_UNIT, &unit)?;
     let ui_unit_changed = install_if_changed(&root.join("packaging/glidex-ui.service"), UI_UNIT, "0644")?;
-    if cp_unit_changed || ui_unit_changed {
+    let authd_socket_changed =
+        install_if_changed(&root.join("packaging/glidex-authd.socket"), AUTHD_SOCKET_UNIT, "0644")?;
+    let authd_service_changed =
+        install_if_changed(&root.join("packaging/glidex-authd.service"), AUTHD_SERVICE_UNIT, "0644")?;
+    if cp_unit_changed || ui_unit_changed || authd_socket_changed || authd_service_changed {
         sudo(&argv(&["systemctl", "daemon-reload"]))?;
     }
+    enable_unit("glidex-authd.socket")?;
     enable_unit("glidex-control-plane.service")?;
     enable_unit("glidex-ui.service")?;
+
+    // glidex-authd first, so the control plane finds its socket.
+    for cmd in authd_actions(
+        unit_active("glidex-authd.socket"),
+        authd_socket_changed,
+        authd_service_changed || changed.authd,
+    ) {
+        sudo(&cmd)?;
+    }
+    println!("{} glidex-authd.socket (/run/glidex-authd/auth.sock)", "Running:".green());
 
     // Control plane: stopping it stops every VM, so never restart it under
     // running VMs.
@@ -1453,10 +1789,11 @@ fn print_usage(opts: &Options) {
     section("Quick Start");
     println!();
     if opts.services {
-        println!("glidex runs as systemd services (user '{}'):", SERVICE_USER);
+        println!("glidex runs as systemd services (control plane as '{}', web UI as '{}'):", SERVICE_USER, UI_USER);
         println!("     web UI:  {}", "http://localhost:5173".green());
-        println!("     API:     {}", "http://localhost:8841".green());
-        println!("     status:  {}", "systemctl status glidex-control-plane glidex-ui".green());
+        println!("     API:     {} (members of {}), {} (tokens)", API_SOCKET.green(), USERS_GROUP, "http://localhost:8841".green());
+        println!("     status:  {}", "systemctl status glidex-control-plane glidex-ui glidex-authd.socket".green());
+        println!("     config:  {} (copy to control-plane.json to change defaults)", CP_CONFIG_EXAMPLE);
     } else {
         println!("1. Start the control plane server:");
         println!("     {}", "glidex-control-plane".green());
@@ -1583,37 +1920,109 @@ mod tests {
         assert_eq!(cloud_hypervisor_version(""), None);
     }
 
+    fn cmd_lines(s: &UserState, shell: &str) -> Vec<String> {
+        service_user_commands(s, shell).iter().map(|c| c.join(" ")).collect()
+    }
+
+    const ALICE_NEW: Member = Member { name: "alice", in_netd_group: false, in_users: false, in_admin: false };
+    const ALICE_DONE: Member = Member { name: "alice", in_netd_group: false, in_users: true, in_admin: true };
+    const DONE: UserState = UserState {
+        group: true,
+        user: true,
+        home_exists: true,
+        home_owned: true,
+        data_dir: true,
+        users_group: true,
+        admin_group: true,
+        ui_group: true,
+        ui_user: true,
+        member: Some(ALICE_DONE),
+    };
+
     #[test]
-    fn service_user_created_once() {
-        let fresh = UserState { group: false, user: false, home_exists: false, home_owned: false, data_dir: false, member: Some(("alice", false)) };
-        let lines: Vec<String> = service_user_commands(&fresh, "/usr/sbin/nologin").iter().map(|c| c.join(" ")).collect();
+    fn identities_created_once() {
+        let fresh = UserState {
+            group: false,
+            user: false,
+            home_exists: false,
+            home_owned: false,
+            data_dir: false,
+            users_group: false,
+            admin_group: false,
+            ui_group: false,
+            ui_user: false,
+            member: Some(ALICE_NEW),
+        };
         assert_eq!(
-            lines,
+            cmd_lines(&fresh, "/usr/sbin/nologin"),
             [
                 "groupadd --system glidex",
                 "useradd --system --gid glidex --home-dir /var/lib/glidex-control-plane --no-create-home --shell /usr/sbin/nologin --comment glidex services glidex",
                 "install -d -m 0750 -o glidex -g glidex /var/lib/glidex-control-plane",
                 "install -d -m 0750 -o glidex -g glidex /var/lib/glidex-control-plane/.glidex",
-                "usermod -aG glidex alice",
+                "groupadd --system glidex-users",
+                "groupadd --system glidex-admin",
+                "useradd --system --user-group --home-dir /nonexistent --no-create-home --shell /usr/sbin/nologin --comment glidex web UI glidex-ui",
+                "usermod -aG glidex-users,glidex-admin alice",
             ]
         );
-        let done = UserState { group: true, user: true, home_exists: true, home_owned: true, data_dir: true, member: Some(("alice", true)) };
-        assert!(service_user_commands(&done, "/usr/sbin/nologin").is_empty(), "a re-run needs no root");
+        let all = cmd_lines(&fresh, "/usr/sbin/nologin").join("\n");
+        assert!(!all.contains("-aG glidex alice"), "humans are no longer added to glidex");
+        assert!(!all.contains("glidex-ui glidex\n") && !all.contains("-G glidex "), "glidex-ui is not in glidex");
+        assert!(cmd_lines(&DONE, "/usr/sbin/nologin").is_empty(), "a re-run needs no root");
         // A home kept from an earlier install (user recreated with a new uid).
-        let kept = UserState { home_owned: false, user: false, member: None, ..done };
-        let lines: Vec<String> = service_user_commands(&kept, "/bin/false").iter().map(|c| c.join(" ")).collect();
+        let kept = UserState { home_owned: false, user: false, member: None, ..DONE };
+        let lines = cmd_lines(&kept, "/bin/false");
         assert!(lines[0].starts_with("useradd"));
         assert_eq!(lines[1], "chown -R glidex:glidex /var/lib/glidex-control-plane");
         assert_eq!(lines.len(), 2);
+        // glidex-ui's group left behind by an earlier user: reuse it.
+        let group_kept = UserState { ui_user: false, ..DONE };
+        assert_eq!(
+            cmd_lines(&group_kept, "/bin/false"),
+            ["useradd --system --gid glidex-ui --home-dir /nonexistent --no-create-home --shell /bin/false --comment glidex web UI glidex-ui"]
+        );
+        // Only the missing group is added.
+        let half = UserState { member: Some(Member { in_admin: false, ..ALICE_DONE }), ..DONE };
+        assert_eq!(cmd_lines(&half, "/bin/false"), ["usermod -aG glidex-admin alice"]);
+    }
+
+    #[test]
+    fn earlier_install_member_of_glidex_is_moved_out() {
+        let upgraded = UserState {
+            users_group: false,
+            admin_group: false,
+            ui_group: false,
+            ui_user: false,
+            member: Some(Member { in_netd_group: true, ..ALICE_NEW }),
+            ..DONE
+        };
+        let lines = cmd_lines(&upgraded, "/usr/sbin/nologin");
+        let pos = |needle: &str| lines.iter().position(|l| l == needle).unwrap_or_else(|| panic!("missing {needle}: {lines:#?}"));
+        // Added to the new groups before losing glidex, so access never lapses.
+        assert!(pos("usermod -aG glidex-users,glidex-admin alice") < pos("gpasswd -d alice glidex"));
+        assert!(pos("groupadd --system glidex-users") < pos("usermod -aG glidex-users,glidex-admin alice"));
+        // Root runs (no invoking user) touch no human's groups.
+        let root = UserState { member: None, ..upgraded };
+        assert!(!cmd_lines(&root, "/bin/false").iter().any(|l| l.starts_with("usermod") || l.starts_with("gpasswd")));
+    }
+
+    fn rendered_cp_unit() -> String {
+        let template = std::fs::read_to_string(workspace_root().join("packaging/glidex-control-plane.service.in")).unwrap();
+        let groups = control_plane_groups(|g| g == "kvm");
+        render_control_plane_unit(&template, SERVICE_USER, Path::new(SERVICE_HOME), Path::new("/usr/local/bin/glidex-control-plane"), &groups)
+    }
+
+    /// Setting lines (`Key=value`) of a unit, comments dropped.
+    fn settings(unit: &str) -> Vec<&str> {
+        unit.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#') && !l.starts_with('[')).collect()
     }
 
     #[test]
     fn control_plane_unit_runs_as_the_service_user() {
-        let template = std::fs::read_to_string(workspace_root().join("packaging/glidex-control-plane.service.in")).unwrap();
-        let groups = control_plane_groups(|g| g == "kvm");
-        assert_eq!(groups, vec!["kvm"]);
+        assert_eq!(control_plane_groups(|g| g == "kvm"), vec!["kvm"]);
         assert!(control_plane_groups(|_| false).is_empty(), "missing kvm group is left out");
-        let unit = render_control_plane_unit(&template, SERVICE_USER, Path::new(SERVICE_HOME), Path::new("/usr/local/bin/glidex-control-plane"), &groups);
+        let unit = rendered_cp_unit();
         for line in [
             "User=glidex",
             "Group=glidex",
@@ -1621,9 +2030,8 @@ mod tests {
             "Environment=HOME=/var/lib/glidex-control-plane",
             "WorkingDirectory=/var/lib/glidex-control-plane",
             "ExecStart=/usr/local/bin/glidex-control-plane",
-            "After=network-online.target glidex-netd.service",
-            "Wants=glidex-netd.service",
-            "UMask=0007",
+            "After=network-online.target glidex-netd.service glidex-authd.socket",
+            "Wants=glidex-netd.service glidex-authd.socket",
         ] {
             assert!(unit.lines().any(|l| l == line), "missing {line:?}");
         }
@@ -1632,18 +2040,148 @@ mod tests {
     }
 
     #[test]
-    fn ui_unit_runs_as_the_service_user_after_the_control_plane() {
-        let unit = std::fs::read_to_string(workspace_root().join("packaging/glidex-ui.service")).unwrap();
+    fn control_plane_unit_is_sandboxed_without_breaking_vms() {
+        let unit = rendered_cp_unit();
+        let s = settings(&unit);
         for line in [
-            "User=glidex",
-            "Group=glidex",
+            "RuntimeDirectory=glidex-cp",
+            "RuntimeDirectoryMode=0755",
+            "RuntimeDirectoryPreserve=yes",
+            "UMask=0077",
+            "PrivateTmp=yes",
+            "ProtectSystem=strict",
+            "ProtectHome=yes",
+            "ReadWritePaths=/var/lib/glidex-control-plane",
+            "ReadWritePaths=-/run/glidex/vhost",
+            "DevicePolicy=closed",
+            "DeviceAllow=/dev/kvm rw",
+            "DeviceAllow=/dev/vfio/vfio rw",
+            "DeviceAllow=char-vfio rw",
+            "DeviceAllow=/dev/net/tun rw",
+            "DeviceAllow=/dev/vhost-net rw",
+        ] {
+            assert!(s.contains(&line), "missing {line:?}");
+        }
+        assert!(!s.contains(&"UMask=0007"), "consoles are reached through the API now");
+        // These set no_new_privs (explicitly, or implied for a non-root
+        // unit), which would drop cloud-hypervisor's file capability
+        // (CAP_NET_ADMIN for taps); the others break VFIO or the JITs of
+        // the hypervisors' children.
+        for key in [
+            "NoNewPrivileges=",
+            "RestrictAddressFamilies=",
+            "LockPersonality=",
+            "SystemCallFilter=",
+            "RestrictSUIDSGID=",
+            "PrivateDevices=",
+            "ProtectKernelTunables=",
+            "ProtectKernelModules=",
+            "MemoryDenyWriteExecute=",
+            "CapabilityBoundingSet=",
+        ] {
+            assert!(!s.iter().any(|l| l.starts_with(key)), "{key} would break VMs");
+        }
+        // Firmware is in the service home, which ProtectHome= doesn't cover.
+        assert!(SERVICE_HOME.starts_with("/var/lib/"));
+        // Secrets come from credentials, offered commented out.
+        for cred in ["tls-key", "oidc-client-secret", "cloud-init-passwd-hash"] {
+            assert!(unit.lines().any(|l| l.starts_with(&format!("#LoadCredential={cred}:"))), "{cred}");
+        }
+        assert!(!unit.contains("unauthenticated"));
+    }
+
+    #[test]
+    fn ui_unit_runs_as_its_own_user_after_the_control_plane() {
+        let unit = std::fs::read_to_string(workspace_root().join("packaging/glidex-ui.service")).unwrap();
+        let s = settings(&unit);
+        for line in [
+            "User=glidex-ui",
+            "Group=glidex-ui",
             "ExecStart=/usr/local/bin/glidex-ui",
             "Environment=GLIDEX_UI_DIR=/usr/local/share/glidex/ui",
+            "Environment=GLIDEX_API_SOCKET=/run/glidex-cp/ui.sock",
             "After=network-online.target glidex-control-plane.service",
             "Wants=glidex-control-plane.service",
+            "CapabilityBoundingSet=",
+            "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6",
+            "InaccessiblePaths=-/run/glidex -/var/lib/glidex-control-plane -/run/glidex-authd",
+            "NoNewPrivileges=yes",
+            "ProtectSystem=strict",
+            "ProtectHome=yes",
+            "PrivateTmp=yes",
+            "PrivateDevices=yes",
         ] {
-            assert!(unit.lines().any(|l| l == line), "missing {line:?}");
+            assert!(s.contains(&line), "missing {line:?}");
         }
+        assert_eq!(unit_user(&unit), Some(UI_USER));
+        // /run/glidex-cp (ui.sock) must stay reachable: "/run/glidex " is a
+        // separate path, not a prefix of it.
+        let inaccessible = s.iter().find(|l| l.starts_with("InaccessiblePaths=")).unwrap();
+        assert!(!inaccessible.contains("glidex-cp"));
+        assert!(unit.contains("GLIDEX_UI_TLS_CERT"));
+    }
+
+    #[test]
+    fn authd_units_are_socket_activated_for_the_glidex_group() {
+        let socket = std::fs::read_to_string(workspace_root().join("packaging/glidex-authd.socket")).unwrap();
+        let s = settings(&socket);
+        for line in ["ListenStream=/run/glidex-authd/auth.sock", "SocketUser=root", "SocketGroup=glidex", "SocketMode=0660", "WantedBy=sockets.target"] {
+            assert!(s.contains(&line), "missing {line:?}");
+        }
+        let service = std::fs::read_to_string(workspace_root().join("packaging/glidex-authd.service")).unwrap();
+        let s = settings(&service);
+        for line in ["ExecStart=/usr/local/bin/glidex-authd", "Requires=glidex-authd.socket", "PrivateNetwork=yes", "NoNewPrivileges=yes"] {
+            assert!(s.contains(&line), "missing {line:?}");
+        }
+        assert!(!s.iter().any(|l| l.starts_with("User=")), "root: it runs PAM");
+        let lines = |a, b, c| -> Vec<String> { authd_actions(a, b, c).iter().map(|c| c.join(" ")).collect() };
+        assert_eq!(lines(false, true, true), ["systemctl start glidex-authd.socket", "systemctl try-restart glidex-authd.service"]);
+        assert_eq!(lines(true, true, false), ["systemctl restart glidex-authd.socket"]);
+        assert!(lines(true, false, false).is_empty(), "a re-run needs no root");
+    }
+
+    #[test]
+    fn pam_file_is_ours_until_an_admin_edits_it() {
+        let template = std::fs::read_to_string(workspace_root().join("packaging/glidex.pam")).unwrap();
+        assert!(template.contains(PAM_MARKER));
+        assert!(template.lines().any(|l| l == "@include common-auth"));
+        assert!(template.lines().any(|l| l == "@include common-account"));
+        let rh = render_pam(&template, false);
+        assert!(rh.lines().any(|l| l.split_whitespace().collect::<Vec<_>>() == ["auth", "include", "system-auth"]));
+        assert!(rh.lines().any(|l| l.split_whitespace().collect::<Vec<_>>() == ["account", "include", "system-auth"]));
+        assert!(!rh.lines().any(|l| l.starts_with("@include")));
+        assert!(rh.contains(PAM_MARKER));
+
+        let ours = render_pam(&template, true);
+        assert_eq!(pam_action(None, &ours), PamAction::Write);
+        assert_eq!(pam_action(Some(&ours), &ours), PamAction::UpToDate);
+        // An older glidex version of the file is updated.
+        assert_eq!(pam_action(Some(&format!("# {PAM_MARKER}\nauth required pam_unix.so\n")), &ours), PamAction::Write);
+        // An administrator's file (marker removed) is kept.
+        assert_eq!(pam_action(Some("auth required pam_sss.so\naccount required pam_sss.so\n"), &ours), PamAction::KeepLocal);
+    }
+
+    #[test]
+    fn default_authd_config_and_policy_dir() {
+        let v: serde_json::Value = serde_json::from_str(AUTHD_CONFIG_DEFAULT).unwrap();
+        assert_eq!(v["service_user"], SERVICE_USER);
+        assert_eq!(v["allowed_groups"], serde_json::json!([USERS_GROUP]));
+        let example: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(workspace_root().join("packaging/control-plane.json.example")).unwrap()).unwrap();
+        assert_eq!(example["users_group"], USERS_GROUP);
+        assert_eq!(example["admin_group"], ADMIN_GROUP);
+        assert_eq!(example["ui_user"], UI_USER);
+        assert_eq!(example["authz"]["policy_files_dir"], POLICY_DIR);
+        assert!(policy_dir_ok(Some("750 root:glidex\n")));
+        assert!(!policy_dir_ok(Some("755 root:root")));
+        assert!(!policy_dir_ok(None));
+    }
+
+    #[test]
+    fn active_vms_counts_running_and_paused() {
+        let body = r#"[{"state":"running"},{"state":"paused"},{"state":"stopped"}]"#;
+        assert_eq!(count_active_vms(body), Some(2));
+        assert_eq!(count_active_vms(r#"{"error":{"code":"unauthenticated"}}"#), None);
     }
 
     #[test]
@@ -1664,9 +2202,65 @@ mod tests {
 
     #[test]
     fn binaries_follow_options() {
-        assert_eq!(binaries(&Options::default()), ["glidex-control-plane", "gxctl", "glidex-ui", "glidex-netd"]);
+        assert_eq!(binaries(&Options::default()), ["glidex-control-plane", "gxctl", "glidex-ui", "glidex-netd", "glidex-authd"]);
         let no_net = Options { networking: false, ..Options::default() };
         assert!(!binaries(&no_net).contains(&"glidex-netd"));
+        let no_services = Options { services: false, ..Options::default() };
+        assert!(!binaries(&no_services).contains(&"glidex-authd"));
+        assert!(build_args(&Options::default()).windows(2).any(|w| w == ["-p", "glidex-authd"]));
+        assert!(!build_args(&no_services).contains(&"glidex-authd"));
+    }
+
+    #[test]
+    fn toolchains_are_pinned_and_verified() {
+        let x86 = Platform { os: "linux", arch: "x86_64" };
+        let arm = Platform { os: "linux", arch: "aarch64" };
+        assert_eq!(
+            rustup_url(&x86),
+            format!("https://static.rust-lang.org/rustup/archive/{RUSTUP_VERSION}/x86_64-unknown-linux-gnu/rustup-init")
+        );
+        assert!(rustup_url(&arm).contains("/aarch64-unknown-linux-gnu/"));
+        assert_eq!(bun_url(&x86), format!("https://github.com/oven-sh/bun/releases/download/bun-v{BUN_VERSION}/bun-linux-x64.zip"));
+        assert!(bun_url(&arm).ends_with("/bun-linux-aarch64.zip"));
+        for sha in [rustup_asset(&x86).1, rustup_asset(&arm).1, bun_asset(&x86).1, bun_asset(&arm).1] {
+            assert_eq!(sha.len(), 64);
+            assert!(sha.chars().all(|c| c.is_ascii_hexdigit()));
+        }
+        // No `curl … | sh` left in the installer.
+        let src = std::fs::read_to_string(workspace_root().join("crates/glidex-install/src/main.rs")).unwrap();
+        for pipe in ["| sh", "| bash"] {
+            let code = src.lines().filter(|l| !l.trim_start().starts_with("//") && !l.contains("assert"));
+            assert!(!code.into_iter().any(|l| l.contains("curl") && l.contains(pipe)), "{pipe}");
+        }
+    }
+
+    #[test]
+    fn bun_is_upgraded_to_the_pin_but_never_downgraded() {
+        assert_eq!(parse_version("1.4.2\n"), Some((1, 4, 2)));
+        assert_eq!(parse_version("v1.10"), Some((1, 10, 0)));
+        assert_eq!(parse_version("1.5.0-canary.3"), Some((1, 5, 0)));
+        assert_eq!(parse_version(""), None);
+        assert_eq!(bun_action(None, false), BunAction::Install);
+        assert_eq!(bun_action(None, true), BunAction::Foreign, "a distro/npm bun is left alone");
+        assert_eq!(bun_action(Some("1.1.0"), true), BunAction::Install);
+        assert_eq!(bun_action(Some(BUN_VERSION), true), BunAction::Keep);
+        assert_eq!(bun_action(Some("99.0.0"), false), BunAction::Keep);
+        assert_eq!(bun_action(Some("garbage"), false), BunAction::Install);
+    }
+
+    #[test]
+    fn download_verified_rejects_a_bad_checksum() {
+        let dir = TempDir::new().unwrap();
+        let src = dir.path().join("src");
+        fs::write(&src, b"abc").unwrap();
+        let url = format!("file://{}", src.display());
+        let dest = dir.path().join("dest");
+        download_verified(&url, &dest, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad").unwrap();
+        assert!(dest.exists());
+        let bad = dir.path().join("bad");
+        let err = download_verified(&url, &bad, &"0".repeat(64)).unwrap_err();
+        assert!(format!("{err:#}").contains("Checksum mismatch"));
+        assert!(!bad.exists(), "a mismatching download is deleted");
     }
 
     #[test]

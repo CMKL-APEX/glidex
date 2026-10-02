@@ -30,7 +30,7 @@ by later runs (flags override the saved values):
 |---|---|
 | `--no-qemu` / `--qemu` | skip / include QEMU and OVMF |
 | `--no-networking` / `--networking` | skip / include OVS, glidex-netd and host settings |
-| `--no-services` / `--services` | skip / include the `glidex` user and the systemd units |
+| `--no-services` / `--services` | skip / include the users and groups, glidex-authd, the service configuration and the systemd units |
 | `--ovs-profile dpdk\|kernel` | OVS flavour (default `dpdk`, which reserves hugepages) |
 | `--pmd-cpu-mask MASK` | OVS-DPDK PMD CPU mask (`auto` clears it) |
 | `--allow-ovs-restart` | allow restarting an ovs-vswitchd that has bridges (interrupts their traffic) |
@@ -46,8 +46,11 @@ by later runs (flags override the saved values):
   file), installed from its package, and upgradable.
 - `cloud-hypervisor --version` of `/usr/local/bin/cloud-hypervisor`,
   the firmware's sha256, `getcap` on cloud-hypervisor.
-- The `glidex` user and group, unit states (`systemctl is-active` /
-  `is-enabled`), and running VMs (`GET /vms` on the local API).
+- The `glidex`, `glidex-ui`, `glidex-users` and `glidex-admin` users and
+  groups and the invoking user's memberships, unit states (`systemctl
+  is-active` / `is-enabled`), and running VMs (`GET /vms` as root on
+  `/run/glidex-cp/api.sock`, falling back to the loopback API of a
+  control plane from before authentication).
 
 ## Steps, in order
 
@@ -71,34 +74,58 @@ by later runs (flags override the saved values):
    Open vSwitch is not upgraded here: an OVS upgrade restarts
    ovs-vswitchd, which interrupts VM traffic, so it is left to the
    distro's normal updates.
-2. **Rust** — installed with rustup if missing; `rustup update stable`
-   on every run (which also updates rustup). The build then uses
-   `~/.cargo/bin/cargo` if `cargo` isn't on PATH yet.
-3. **Bun** — installed from bun.sh if missing; `bun upgrade` when it
-   lives in `~/.bun` (other installs are left to their installer).
+2. **Rust** — if missing, `rustup-init` `RUSTUP_VERSION` (currently
+   1.29.1) is downloaded from
+   `static.rust-lang.org/rustup/archive/<version>/<target>/rustup-init`
+   to a temporary file, checked against the sha256 pinned in
+   `rustup_asset` (the `rustup-init.sha256` published next to it), and
+   only then run (`-y --default-toolchain stable`). No `curl … | sh`.
+   `rustup update stable` on every run (which also updates rustup). The
+   build then uses `~/.cargo/bin/cargo` if `cargo` isn't on PATH yet.
+3. **Bun** — the release zip `bun-linux-x64.zip` / `bun-linux-aarch64.zip`
+   of `BUN_VERSION` (currently 1.4.2) from GitHub, checked against the
+   sha256 in `bun_asset` (the release's `SHASUMS256.txt`), unpacked to
+   `~/.bun/bin/bun` (+ `bunx`) when Bun is missing or `~/.bun` has an
+   older version; a newer one is kept, and a bun installed elsewhere
+   (distro, npm) is left to its installer. Bump the version and digests
+   together; a mismatch deletes the download and stops the install.
 4. **KVM check** — reports a missing `/dev/kvm`. The services get
    access through the `kvm` group; the invoking user only needs it for
    running VMs by hand, which is printed, not changed.
 5. **Build** — `cargo build --release -p glidex-control-plane
-   -p glidex-netd -p glidex-ui`, then the UI: `bun install
+   -p glidex-netd -p glidex-ui` (and `-p glidex-authd` with services), then the UI: `bun install
    --frozen-lockfile` and `bun run build` in `crates/glidex-ui/ui`.
-6. **Service user** *(with services)* — the `glidex` system group and
-   user (primary group `glidex`, home `/var/lib/glidex-control-plane`,
-   no login shell), the home and its `.glidex` data dir (0750), and the
-   invoking user added to the `glidex` group (`gxctl connect` to console
-   sockets, netd). A home kept from an earlier install whose user had
-   another uid is chowned back.
+6. **Users and groups** *(with services; spec/security.md §4, §11)*:
+
+   | Identity | Created as | Members / use |
+   |---|---|---|
+   | user + group `glidex` | `groupadd --system`, `useradd --system --gid glidex`, home `/var/lib/glidex-control-plane`, nologin | **only** the control plane: netd's full socket, authd's socket, `/dev/kvm` (via `kvm`), VFIO |
+   | user `glidex-ui` | `useradd --system --user-group`, home `/nonexistent`, nologin | the web UI; uses `ui.sock` only. Not in `glidex` |
+   | group `glidex-users` | `groupadd --system` | people allowed to use gxctl on `/run/glidex-cp/api.sock`, and PAM login (authd's `allowed_groups`) |
+   | group `glidex-admin` | `groupadd --system` | break-glass administrators |
+
+   The home and its `.glidex` data dir are 0750 `glidex:glidex`; a home
+   kept from an earlier install whose user had another uid is chowned
+   back. The invoking user is added to `glidex-users` and `glidex-admin`
+   and, if an earlier install put them in `glidex`, **removed from it**
+   (`gpasswd -d <user> glidex`, after the new groups are added, with a
+   note): membership in `glidex` is root-level control of host
+   networking through netd, and people now reach glidex through
+   `api.sock`. Log out and back in for group changes to apply.
 7. **Cloud-Hypervisor** — the static binary at the version pinned in
    `CLOUD_HYPERVISOR_VERSION` (currently `v53.0`), installed to
    `/usr/local/bin` when that copy's version differs. Running VMs keep
    their process, so no restart follows.
-8. **Binaries** — `glidex-control-plane`, `gxctl`, `glidex-ui` and
-   (with networking) `glidex-netd` to `/usr/local/bin`, each only when it
+8. **Binaries** — `glidex-control-plane`, `gxctl`, `glidex-ui`,
+   (with networking) `glidex-netd` and (with services) `glidex-authd` to
+   `/usr/local/bin`, each only when it
    differs from the build. Copies an earlier installer put in
    `~/.local/bin` are removed so they don't shadow these.
 9. **Web UI files** — `ui/dist` swapped into
-   `/usr/local/share/glidex/ui` when it differs (no restart needed:
-   files are read per request).
+   `/usr/local/share/glidex/ui` when it differs, root-owned and
+   world-readable (`u=rwX,go=rX`, parent `0755`) so `glidex-ui` can
+   serve them; wrong modes are fixed even when the files are current (no
+   restart needed: files are read per request).
 10. **UEFI firmware** — see below; into the invoking user's
     `~/.glidex` and, with services, the service user's.
 11. **VM networking** *(unless `--no-networking`)* — installs Open
@@ -137,10 +164,34 @@ by later runs (flags override the saved values):
     touched: ufw or firewalld dropping forwarded traffic must allow the NAT
     subnets. A plain iptables FORWARD DROP (e.g. Docker's) is handled by
     netd's `GLIDEX-FORWARD` chain (networking.md §10).
-12. **Services** *(unless `--no-services`; skipped without systemd)* —
+12. **Configuration** *(with services)*:
+    - `/etc/pam.d/glidex` from `packaging/glidex.pam` (`@include
+      common-auth` / `common-account`; `auth/account include system-auth`
+      where there is no `common-auth`, e.g. Fedora, Arch). Written when
+      absent or when it still has the `# Managed by glidex-install` line;
+      an administrator who deletes that line keeps their edits (also on
+      uninstall).
+    - `/etc/glidex/authd.json`, only if absent:
+      `{"service_user":"glidex","allowed_groups":["glidex-users"]}`.
+    - `/etc/glidex/control-plane.json.example` from
+      `packaging/control-plane.json.example`: valid JSON holding the
+      defaults (a control-plane test loads it with the real parser). The
+      installer never writes `control-plane.json`; without it the
+      defaults apply. Copy the example (`root:glidex 0640`) and edit it
+      to change listeners, TLS, PAM or OIDC; secrets go in systemd
+      credentials (`LoadCredential=` lines in the unit), not in the file.
+    - `/etc/glidex/policies/`, `root:glidex 0750`: read-only site policy
+      files (spec/security.md §7.6).
+13. **Services** *(unless `--no-services`; skipped without systemd)* —
     renders `packaging/glidex-control-plane.service.in` for the `glidex`
-    user and installs `packaging/glidex-ui.service` (each only when
-    changed, then `daemon-reload`), enables both, and starts them:
+    user and installs `packaging/glidex-ui.service`,
+    `packaging/glidex-authd.socket` and `packaging/glidex-authd.service`
+    (each only when changed, then one `daemon-reload`), enables
+    `glidex-authd.socket`, the control plane and the UI, and starts them:
+    - `glidex-authd.socket` is started if it isn't listening, restarted
+      when its unit changed; `glidex-authd.service` is `try-restart`ed
+      when its binary or unit changed (otherwise the next connection
+      starts it).
     - the control plane is started if it isn't running, and restarted
       after an update **only when no VM is running or paused** (stopping
       it stops them); otherwise the installer says to restart it later.
@@ -150,7 +201,7 @@ by later runs (flags override the saved values):
       isn't running.
     If the previous unit ran the control plane as the invoking user, a
     note says that their `~/.glidex` data was not moved.
-13. **Save options** to `/etc/glidex/install.conf` when they changed,
+14. **Save options** to `/etc/glidex/install.conf` when they changed,
     then the usage blurb.
 
 ## Boot sequence (systemd)
@@ -159,8 +210,9 @@ by later runs (flags override the saved values):
 network-online.target
   → Open vSwitch (openvswitch-switch / openvswitch / glidex-ovs-vswitchd)
   → glidex-netd.service            root, Type=notify
+  → glidex-authd.socket            root:glidex 0660; starts glidex-authd (root) on demand
   → glidex-control-plane.service   user glidex
-  → glidex-ui.service              user glidex
+  → glidex-ui.service              user glidex-ui
 ```
 
 - **glidex-netd** is where host networking is initialized at boot: its
@@ -176,19 +228,43 @@ network-online.target
   `WorkingDirectory=/var/lib/glidex-control-plane`, so its database and
   firmware are in `/var/lib/glidex-control-plane/.glidex`.
   `SupplementaryGroups=kvm` (only if the group exists, since systemd
-  refuses a unit naming a missing group). `UMask=0007` makes console
-  sockets and logs usable by the `glidex` group (`gxctl connect`). It
-  `Wants=` netd but doesn't require it: without networking, VMs without
-  NICs still work. Stopping the unit stops running VMs (the control
-  plane's shutdown path). It listens on loopback; expose it only via a
-  drop-in setting `GLIDEX_LISTEN`, since the API is unauthenticated.
-  Paths given to the API (disk images, kernels, seeds) must be readable
-  by `glidex`.
-- **glidex-ui** runs as `glidex`, serves `/usr/local/share/glidex/ui`
-  on `127.0.0.1:5173` and proxies `/api` to the control plane (see
+  refuses a unit naming a missing group). It `Wants=` netd and
+  `glidex-authd.socket` but requires neither: without networking, VMs
+  without NICs still work; without authd, PAM login fails. Stopping the
+  unit stops running VMs (the control plane's shutdown path). It listens
+  on loopback TCP and on `/run/glidex-cp/api.sock` and `ui.sock`;
+  settings are in `/etc/glidex/control-plane.json` (a non-loopback
+  listener needs TLS). Hardening (spec/security.md §9):
+  `RuntimeDirectory=glidex-cp` (`0755`, preserved across restarts),
+  `UMask=0077` (per-VM files are private; consoles go through the API),
+  `PrivateTmp`, `ProtectSystem=strict`, `ProtectHome=yes`,
+  `ReadWritePaths=/var/lib/glidex-control-plane` and
+  `-/run/glidex/vhost` (cloud-hypervisor serves vhost-user sockets
+  there), `DevicePolicy=closed` with `/dev/kvm`, `/dev/vfio/vfio`,
+  `char-vfio`, `/dev/net/tun` and `/dev/vhost-net`. cloud-hypervisor and
+  QEMU inherit the sandbox, so **no** `NoNewPrivileges=` nor anything
+  that implies it for a non-root unit (`RestrictAddressFamilies=`,
+  `LockPersonality=`, `SystemCallFilter=`, `PrivateDevices=`,
+  `ProtectKernel*=`, …): cloud-hypervisor's `cap_net_admin` file
+  capability (tap devices) would be ignored. Commented `LoadCredential=`
+  lines show where the TLS key, OIDC client secret and cloud-init
+  password hash go. Paths given to the API (disk images, kernels,
+  seeds) must be readable by `glidex` and outside `/home`, `/root` and
+  `/run/user`.
+- **glidex-authd** (root, spec/security.md §5.3) is socket-activated:
+  `/run/glidex-authd/auth.sock`, `root:glidex 0660`, and it accepts only
+  the `glidex` user's uid. It runs PAM with `/etc/pam.d/glidex` for
+  accounts in `glidex-users` (`/etc/glidex/authd.json`).
+- **glidex-ui** runs as `glidex-ui`, serves `/usr/local/share/glidex/ui`
+  on `127.0.0.1:5173` and proxies `/api` to the control plane's
+  `ui.sock` (`GLIDEX_API_SOCKET=/run/glidex-cp/ui.sock`; see
   [web-ui.md](web-ui.md)). It is sandboxed (`ProtectSystem=strict`,
-  `ProtectHome`, `PrivateTmp`, `PrivateDevices`, `NoNewPrivileges`).
-  Exposing it (`GLIDEX_UI_LISTEN` in a drop-in) exposes the API.
+  `ProtectHome`, `PrivateTmp`, `PrivateDevices`, `NoNewPrivileges`,
+  empty `CapabilityBoundingSet=`, `RestrictAddressFamilies=AF_UNIX
+  AF_INET AF_INET6`, and `InaccessiblePaths=` for `/run/glidex`,
+  `/var/lib/glidex-control-plane` and `/run/glidex-authd`). A
+  non-loopback `GLIDEX_UI_LISTEN` needs `GLIDEX_UI_TLS_CERT` /
+  `GLIDEX_UI_TLS_KEY`; users still log in.
 - Validate with `systemd-analyze verify`; the installer's tests check
   the rendered units and netd's ordering.
 
@@ -204,7 +280,7 @@ built by a pure function over a `HostView`, so tests pin exactly what is
 removed. Order:
 
 1. `systemctl disable --now` the UI, the control plane (its shutdown
-   stops VMs) and glidex-netd.
+   stops VMs), glidex-authd (service and socket) and glidex-netd.
 2. **Network teardown with netd's own code**, in-process on netd's state
    database: release VM ports, delete uplinks (moving migrated IPs back
    onto their NICs and restoring NIC drivers after DPDK), delete NAT
@@ -215,16 +291,24 @@ removed. Order:
    the only record of how to undo those host changes.
 3. `setcap -r` on `cloud-hypervisor` (or remove it with
    `--remove-cloud-hypervisor`); remove `glidex-control-plane`, `gxctl`,
-   `glidex-netd`, `glidex-ui` from `/usr/local/bin` and `~/.local/bin`.
+   `glidex-netd`, `glidex-ui`, `glidex-authd` from `/usr/local/bin` and
+   `~/.local/bin`.
 4. Remove the glidex unit files and `daemon-reload`.
 5. Optional: `--reset-dpdk` clears `dpdk-init`, `dpdk-socket-mem`,
    `pmd-cpu-mask` from OVS; `--remove-ovs` disables and removes the source
    build (units + `/opt/glidex`) and removes the distro OVS packages
    (`dnsmasq-base` and `nftables` are kept: they are shared).
-6. Remove `/etc/glidex`, `/var/lib/glidex`, `/run/glidex`, the UI files
-   in `/usr/local/share/glidex`, leftover
-   `/tmp/cloud-hypervisor-*.cloudinit.img`, and the `glidex` user and
-   group.
+6. `/etc/glidex`: removed whole when it holds only the installer's files
+   (`install.conf`, `authd.json`, `control-plane.json.example`, an empty
+   `policies/`) or with `--purge-user-data`; otherwise only those files
+   go and the site configuration (`control-plane.json`, `netd.json`,
+   policy files, TLS files…) is kept, with a note. `/etc/pam.d/glidex`
+   is removed only while it has the `Managed by glidex-install` line.
+   Then `/var/lib/glidex`, `/run/glidex`, `/run/glidex-cp`,
+   `/run/glidex-authd`, the UI files in `/usr/local/share/glidex`,
+   leftover `/tmp/cloud-hypervisor-*.cloudinit.img`, the `glidex` and
+   `glidex-ui` users, and the `glidex`, `glidex-ui`, `glidex-users` and
+   `glidex-admin` groups (`--dry-run` lists all of it).
 7. Host settings from `/etc/sysctl.d/90-glidex.conf`: each goes back to
    its recorded previous value (`sysctl -w`), then the drop-in is removed.
    While OVS keeps its DPDK configuration (no `--reset-dpdk` /
@@ -300,8 +384,12 @@ but needs a user-supplied kernel + rootfs.
   run it is left alone.
 - **Modifies `/etc` only through files it owns**: the systemd units,
   `/etc/sysctl.d/90-glidex.conf`, `/etc/modules-load.d/glidex.conf`,
-  `/etc/glidex/install.conf` (plus what package installs and
-  `useradd`/`usermod` do). The uninstaller removes them.
+  `/etc/glidex/install.conf`, `/etc/glidex/authd.json` (once),
+  `/etc/glidex/control-plane.json.example`, `/etc/glidex/policies/`
+  (the directory), and `/etc/pam.d/glidex` while it carries the marker
+  (plus what package installs and `useradd`/`usermod`/`gpasswd` do).
+  The uninstaller removes them. It never writes
+  `/etc/glidex/control-plane.json`.
 - **Does not move data** from an earlier per-user install's `~/.glidex`
   to the service user's.
 
@@ -318,4 +406,6 @@ tempfile = "3"
 ```
 
 Downloads are done by shelling to `curl`, not by pulling in a HTTP
-stack. The installer itself is therefore small and fast to build.
+stack. What is downloaded and then run is pinned by version and sha256
+(`download_verified`): the firmware, rustup-init and Bun.
+Cloud-Hypervisor is fetched by pinned release tag over HTTPS. The installer itself is therefore small and fast to build.

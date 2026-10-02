@@ -6,8 +6,10 @@
 //! then remove units, binaries, configuration and state. Kernel settings
 //! the installer changed (ip_forward, hugepages) go back to their recorded
 //! previous values. OVS packages, DPDK settings (and the hugepages they
-//! need), cloud-hypervisor, `~/.glidex` and the service user's data stay
-//! unless asked for.
+//! need), cloud-hypervisor, `~/.glidex`, the service user's data and the
+//! site configuration in `/etc/glidex` (control-plane.json, netd.json,
+//! policies) stay unless asked for, as does a locally edited
+//! `/etc/pam.d/glidex`.
 
 use crate::sysconfig;
 use anyhow::{bail, Context, Result};
@@ -15,15 +17,31 @@ use colored::Colorize;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// In stop order: the UI, the control plane (stops VMs), then netd.
-pub const UNITS: &[&str] = &["glidex-ui.service", "glidex-control-plane.service", "glidex-netd.service"];
+/// In stop order: the UI, the control plane (stops VMs), glidex-authd,
+/// then netd.
+pub const UNITS: &[&str] = &[
+    "glidex-ui.service",
+    "glidex-control-plane.service",
+    "glidex-authd.service",
+    "glidex-authd.socket",
+    "glidex-netd.service",
+];
 /// Units of the pinned OVS source build (removed only with --remove-ovs).
 pub const OVS_SOURCE_UNITS: &[&str] = &["glidex-ovs-vswitchd.service", "glidex-ovsdb-server.service"];
 pub const UNIT_DIR: &str = "/etc/systemd/system";
 pub const NETD_DB: &str = "/var/lib/glidex/netd.db";
 pub const SYSTEM_BIN_DIR: &str = "/usr/local/bin";
-pub const BINARIES: &[&str] = &["glidex-control-plane", "gxctl", "glidex-netd", "glidex-ui"];
+pub const BINARIES: &[&str] = &["glidex-control-plane", "gxctl", "glidex-netd", "glidex-ui", "glidex-authd"];
 pub const GROUP: &str = "glidex";
+/// The web UI's user; its own group of the same name.
+pub const UI_USER: &str = crate::UI_USER;
+/// Groups of people (spec/security.md §4), removed with glidex.
+pub const PEOPLE_GROUPS: &[&str] = &[crate::USERS_GROUP, crate::ADMIN_GROUP];
+pub const CONFIG_DIR: &str = "/etc/glidex";
+/// What the installer itself puts in `CONFIG_DIR`. The rest (control-plane.json,
+/// netd.json, site policies, TLS files…) is the administrator's and is kept
+/// unless --purge-user-data.
+pub const INSTALLER_CONFIG: &[&str] = &["install.conf", "authd.json", "control-plane.json.example"];
 /// The system user the control plane and UI run as, and its home (the
 /// control plane's VM database, images and disks).
 pub const SERVICE_USER: &str = "glidex";
@@ -31,7 +49,7 @@ pub const SERVICE_HOME: &str = crate::SERVICE_HOME;
 /// The built web UI.
 pub const UI_ASSET_ROOT: &str = "/usr/local/share/glidex";
 /// Directories owned entirely by glidex.
-pub const STATE_DIRS: &[&str] = &["/etc/glidex", "/var/lib/glidex", "/run/glidex"];
+pub const STATE_DIRS: &[&str] = &["/var/lib/glidex", "/run/glidex", "/run/glidex-cp", "/run/glidex-authd"];
 pub const SOURCE_PREFIX: &str = "/opt/glidex";
 pub const DISTRO_OVS_PACKAGES: &[&str] = &["openvswitch-switch-dpdk", "openvswitch-switch"];
 
@@ -97,7 +115,9 @@ fn print_help() {
          \x20     --remove-cloud-hypervisor also delete the cloud-hypervisor binary\n\
          \x20     --purge-user-data        also delete ~/.glidex and the glidex user's home,\n\
          \x20                              /var/lib/glidex-control-plane (VMs, credentials,\n\
-         \x20                              firmware, images, disks)"
+         \x20                              firmware, images, disks), and the site\n\
+         \x20                              configuration in /etc/glidex (control-plane.json,\n\
+         \x20                              netd.json, policies/)"
     );
 }
 
@@ -110,6 +130,8 @@ pub trait HostView {
     fn has_net_admin(&self, bin: &Path) -> bool;
     fn package_installed(&self, name: &str) -> bool;
     fn read(&self, path: &Path) -> Option<String>;
+    /// Names of the entries of a directory (empty if it can't be read).
+    fn list(&self, dir: &Path) -> Vec<String>;
     /// Files matching `/tmp/cloud-hypervisor-*.cloudinit.img`.
     fn seed_images(&self) -> Vec<PathBuf>;
 }
@@ -247,6 +269,18 @@ pub fn plan(host: &dyn HostView, opts: &Options, user_home: &Path) -> Vec<Step> 
     }
 
     // 6. State, configuration, runtime files.
+    config_dir(host, opts, &mut steps);
+    if let Some(text) = host.read(Path::new(crate::PAM_FILE)) {
+        if text.contains(crate::PAM_MARKER) {
+            steps.push(Step::Remove(PathBuf::from(crate::PAM_FILE)));
+        } else {
+            steps.push(Step::Note(format!(
+                "keeping {} (edited locally: no \"{}\" line)",
+                crate::PAM_FILE,
+                crate::PAM_MARKER
+            )));
+        }
+    }
     for d in STATE_DIRS.iter().chain([&UI_ASSET_ROOT]) {
         if host.exists(Path::new(d)) {
             steps.push(Step::Remove(PathBuf::from(d)));
@@ -255,12 +289,17 @@ pub fn plan(host: &dyn HostView, opts: &Options, user_home: &Path) -> Vec<Step> 
     for img in host.seed_images() {
         steps.push(Step::Remove(img));
     }
-    // The user first: groupdel refuses a user's primary group.
-    if host.user_exists(SERVICE_USER) {
-        steps.push(run(&["userdel", SERVICE_USER]));
+    // Users first: groupdel refuses a user's primary group. (userdel may
+    // already remove a same-named group; groupdel then just warns.)
+    for user in [SERVICE_USER, UI_USER] {
+        if host.user_exists(user) {
+            steps.push(run(&["userdel", user]));
+        }
     }
-    if host.group_exists(GROUP) {
-        steps.push(run(&["groupdel", GROUP]));
+    for group in [GROUP, UI_USER].iter().chain(PEOPLE_GROUPS) {
+        if host.group_exists(group) {
+            steps.push(run(&["groupdel", group]));
+        }
     }
     host_settings(host, opts, &mut steps);
 
@@ -278,6 +317,38 @@ pub fn plan(host: &dyn HostView, opts: &Options, user_home: &Path) -> Vec<Step> 
         }
     }
     steps
+}
+
+/// `/etc/glidex`: removed whole when it holds only what the installer put
+/// there (or with --purge-user-data); otherwise just the installer's files,
+/// keeping the administrator's configuration and site policies.
+fn config_dir(host: &dyn HostView, opts: &Options, steps: &mut Vec<Step>) {
+    let dir = Path::new(CONFIG_DIR);
+    if !host.exists(dir) {
+        return;
+    }
+    let policies_empty = host.list(Path::new(crate::POLICY_DIR)).is_empty();
+    let mut theirs: Vec<String> = host
+        .list(dir)
+        .into_iter()
+        .filter(|e| !INSTALLER_CONFIG.contains(&e.as_str()) && !(e == "policies" && policies_empty))
+        .collect();
+    theirs.sort();
+    if opts.purge_user_data || theirs.is_empty() {
+        steps.push(Step::Remove(dir.to_path_buf()));
+        return;
+    }
+    for f in INSTALLER_CONFIG {
+        let p = dir.join(f);
+        if host.exists(&p) {
+            steps.push(Step::Remove(p));
+        }
+    }
+    steps.push(Step::Note(format!(
+        "keeping {} ({}: site configuration); use --purge-user-data to remove it",
+        CONFIG_DIR,
+        theirs.join(", ")
+    )));
 }
 
 /// Put back the kernel settings the installer changed. Hugepages and
@@ -351,6 +422,13 @@ impl HostView for RealHost {
     }
     fn read(&self, path: &Path) -> Option<String> {
         std::fs::read_to_string(path).ok()
+    }
+    fn list(&self, dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .map(|d| d.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().into_owned()).collect())
+            .unwrap_or_default();
+        names.sort();
+        names
     }
     fn seed_images(&self) -> Vec<PathBuf> {
         std::fs::read_dir("/tmp")
@@ -435,10 +513,11 @@ fn stop_glidex_dnsmasq() -> usize {
         let Ok(cmdline) = std::fs::read(p.path().join("cmdline")) else { continue };
         let args: Vec<String> = cmdline.split(|b| *b == 0).map(|a| String::from_utf8_lossy(a).into_owned()).collect();
         let is_dnsmasq = args.first().is_some_and(|a| a.rsplit('/').next() == Some("dnsmasq"));
-        if is_dnsmasq && args.iter().any(|a| a.starts_with("--conf-file=/run/glidex/dnsmasq/")) {
-            if unsafe { libc::kill(pid, libc::SIGTERM) } == 0 {
-                stopped += 1;
-            }
+        if is_dnsmasq
+            && args.iter().any(|a| a.starts_with("--conf-file=/run/glidex/dnsmasq/"))
+            && unsafe { libc::kill(pid, libc::SIGTERM) } == 0
+        {
+            stopped += 1;
         }
     }
     stopped
@@ -572,6 +651,7 @@ mod tests {
         packages: HashSet<String>,
         seeds: Vec<PathBuf>,
         files: HashMap<PathBuf, String>,
+        dirs: HashMap<PathBuf, Vec<String>>,
     }
 
     impl HostView for FakeHost {
@@ -595,6 +675,9 @@ mod tests {
         }
         fn read(&self, p: &Path) -> Option<String> {
             self.files.get(p).cloned()
+        }
+        fn list(&self, d: &Path) -> Vec<String> {
+            self.dirs.get(d).cloned().unwrap_or_default()
         }
         fn seed_images(&self) -> Vec<PathBuf> {
             self.seeds.clone()
@@ -620,12 +703,32 @@ mod tests {
             "/usr/sbin/nft",
             "/usr/bin/ovs-vsctl",
             "/home/alice/.glidex",
+            "/etc/systemd/system/glidex-authd.socket",
+            "/etc/systemd/system/glidex-authd.service",
+            "/usr/local/bin/glidex-authd",
+            "/run/glidex-cp",
+            "/etc/glidex",
+            "/etc/glidex/install.conf",
+            "/etc/glidex/authd.json",
+            "/etc/glidex/control-plane.json.example",
+            "/etc/glidex/policies",
+            "/etc/pam.d/glidex",
         ] {
             h.paths.insert(PathBuf::from(p));
         }
-        h.units.extend(["glidex-ui.service", "glidex-control-plane.service", "glidex-netd.service"].map(String::from));
-        h.groups.insert("glidex".into());
-        h.users.insert("glidex".into());
+        h.units.extend(
+            ["glidex-ui.service", "glidex-control-plane.service", "glidex-authd.socket", "glidex-netd.service"].map(String::from),
+        );
+        h.groups.extend(["glidex", "glidex-ui", "glidex-users", "glidex-admin"].map(String::from));
+        h.users.extend(["glidex", "glidex-ui"].map(String::from));
+        h.files.insert(
+            PathBuf::from(crate::PAM_FILE),
+            std::fs::read_to_string(crate::workspace_root().join("packaging/glidex.pam")).unwrap(),
+        );
+        h.dirs.insert(
+            PathBuf::from("/etc/glidex"),
+            ["authd.json", "control-plane.json.example", "install.conf", "policies"].map(String::from).to_vec(),
+        );
         h.caps.insert(PathBuf::from("/usr/local/bin/cloud-hypervisor"));
         h.packages.insert("openvswitch-switch".into());
         h.seeds.push(PathBuf::from("/tmp/cloud-hypervisor-abc.cloudinit.img"));
@@ -643,8 +746,12 @@ mod tests {
         let pos = |needle: &str| l.iter().position(|s| s.contains(needle)).unwrap_or_else(|| panic!("missing {needle}: {l:#?}"));
         // Services stop before networking is torn down, which happens before
         // netd's state (which describes it) is deleted.
-        assert!(pos("systemctl disable --now glidex-ui.service glidex-control-plane.service glidex-netd.service") < pos("tear down glidex networking"));
+        assert!(
+            pos("systemctl disable --now glidex-ui.service glidex-control-plane.service glidex-authd.socket glidex-netd.service")
+                < pos("tear down glidex networking")
+        );
         assert!(pos("userdel glidex") < pos("groupdel glidex"));
+        assert!(pos("userdel glidex-ui") < pos("groupdel glidex-ui"));
         assert!(pos("tear down glidex networking") < pos("remove: /var/lib/glidex"));
         // The nft fallback runs after the teardown, as an idempotent script.
         assert!(pos("tear down glidex networking") < pos("drop nftables table inet glidex if present"));
@@ -664,9 +771,18 @@ mod tests {
             "remove: /usr/local/share/glidex",
             "keeping /var/lib/glidex-control-plane",
             "keeping /home/alice/.glidex",
+            "remove: /etc/systemd/system/glidex-authd.socket",
+            "remove: /etc/systemd/system/glidex-authd.service",
+            "remove: /usr/local/bin/glidex-authd",
+            "remove: /etc/pam.d/glidex",
+            "remove: /run/glidex-cp",
+            "groupdel glidex-users",
+            "groupdel glidex-admin",
         ] {
             pos(needle);
         }
+        // Only installer files in /etc/glidex (policies/ empty): all of it goes.
+        assert!(l.iter().any(|s| s == "remove: /etc/glidex"), "{l:#?}");
         // Not without the flags.
         for absent in [
             "apt-get remove",
@@ -749,6 +865,29 @@ mod tests {
         ] {
             assert!(l.iter().any(|s| s == needle), "missing {needle}: {l:#?}");
         }
+    }
+
+    #[test]
+    fn site_configuration_and_local_pam_are_kept() {
+        let mut host = full_install();
+        host.dirs.get_mut(Path::new("/etc/glidex")).unwrap().extend(["control-plane.json".to_string(), "netd.json".to_string()]);
+        host.dirs.insert(PathBuf::from("/etc/glidex/policies"), vec!["site.cedar".into()]);
+        host.files.insert(PathBuf::from(crate::PAM_FILE), "auth required pam_sss.so\n".into());
+        let l = lines(&plan(&host, &Options::default(), Path::new("/home/alice")));
+        for needle in [
+            "remove: /etc/glidex/install.conf",
+            "remove: /etc/glidex/authd.json",
+            "remove: /etc/glidex/control-plane.json.example",
+            "note: keeping /etc/glidex (control-plane.json, netd.json, policies: site configuration)",
+            "note: keeping /etc/pam.d/glidex (edited locally",
+        ] {
+            assert!(l.iter().any(|s| s.starts_with(needle)), "missing {needle}: {l:#?}");
+        }
+        assert!(!l.iter().any(|s| s == "remove: /etc/glidex" || s == "remove: /etc/pam.d/glidex"), "{l:#?}");
+        // --purge-user-data takes the site configuration too.
+        let opts = Options { purge_user_data: true, ..Options::default() };
+        let l = lines(&plan(&host, &opts, Path::new("/home/alice")));
+        assert!(l.iter().any(|s| s == "remove: /etc/glidex"), "{l:#?}");
     }
 
     #[test]
