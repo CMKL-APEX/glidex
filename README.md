@@ -443,6 +443,22 @@ GLIDEX_TEST_IMAGE=~/images/ubuntu-cloudimg.raw \
 - `bridged_uplink_e2e` and `afxdp_uplink_e2e` need a fake LAN of veth pairs
   (no real NICs are touched): run `sudo scripts/dev/fake-lan-setup.sh`, set
   `GLIDEX_TEST_LAN=1`, and afterwards `sudo scripts/dev/fake-lan-teardown.sh`.
+- Every boot test has a `qemu_*` twin (needs `qemu-system-x86_64` and
+  OVMF); `mixed_hypervisors_share_a_network` boots one VM of each on one
+  network.
+
+### Web UI tests
+
+`crates/glidex-ui/e2e/` drives the web UI with Playwright against a
+throwaway control plane, for Cloud Hypervisor and QEMU:
+
+```bash
+cd crates/glidex-ui/e2e && bun install && bunx playwright install chromium
+GLIDEX_TEST_IMAGE=~/images/ubuntu-cloudimg.img bun run test
+```
+
+See [its README](crates/glidex-ui/e2e/README.md) for what it covers and
+needs.
 
 ## License
 

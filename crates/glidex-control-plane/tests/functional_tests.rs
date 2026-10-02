@@ -585,7 +585,12 @@ async fn firmware_boot_e2e(hypervisor: &str) {
     assert_eq!(body["state"], "stopped");
     assert!(started.elapsed() < Duration::from_secs(110), "guest ignored the power button");
     let log = std::fs::read_to_string(body["log_path"].as_str().unwrap()).unwrap_or_default();
-    assert!(log.contains("reboot: Power down"), "guest did not power off cleanly:\n{log}");
+    // systemd's last word; the kernel's "reboot: Power down" can be lost
+    // when Cloud-Hypervisor exits before the console proxy reads it.
+    assert!(
+        log.contains("poweroff.target") || log.contains("reboot: Power down"),
+        "guest did not power off cleanly:\n{log}"
+    );
 
     // Delete cleans up the generated seed (and the variable store).
     let (status, _) = request(&app, "DELETE", &format!("/vms/{id}"), None).await;
