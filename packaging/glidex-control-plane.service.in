@@ -3,25 +3,26 @@
 Description=glidex control plane (REST API for VMs, networks, credentials)
 Documentation=https://github.com/CMKL-APEX/glidex
 # Networking is optional: start after glidex-netd if it is installed, but
-# don't fail without it (VMs without networks still work).
-Wants=glidex-netd.service
-After=network-online.target glidex-netd.service
+# don't fail without it (VMs without networks still work). PAM logins go
+# through glidex-authd (socket-activated; optional too).
+Wants=glidex-netd.service glidex-authd.socket
+After=network-online.target glidex-netd.service glidex-authd.socket
 
 [Service]
 Type=simple
-# The glidex system user; its primary group also opens glidex-netd's socket.
+# The glidex system user; its primary group also opens glidex-netd's and
+# glidex-authd's sockets. No human is in this group (spec/security.md §4).
 User=@USER@
 Group=glidex
 # kvm for /dev/kvm (left out when the group doesn't exist).
 SupplementaryGroups=@GROUPS@
-# Console sockets and logs are group-accessible, so members of the glidex
-# group can `gxctl connect`.
-UMask=0007
 Environment=HOME=@HOME@
 WorkingDirectory=@HOME@
 ExecStart=@BIN@
-# Listen on loopback only (default). To expose the unauthenticated API,
-# set e.g. Environment=GLIDEX_LISTEN=0.0.0.0:8841 in a drop-in.
+# Listens on loopback TCP and on /run/glidex-cp/{api,ui}.sock. Settings
+# (listeners, TLS, PAM, OIDC) are in /etc/glidex/control-plane.json; see
+# control-plane.json.example. A non-loopback listener needs TLS, or the
+# control plane refuses to start.
 # Stopping the service stops running VMs (the control plane's shutdown).
 KillSignal=SIGTERM
 TimeoutStopSec=60
@@ -30,6 +31,56 @@ Restart=on-failure
 # restart after a stray one (the binary also ignores it).
 RestartForceExitStatus=SIGHUP
 RestartSec=2
+
+# Runtime files (spec/security.md §9): api.sock and ui.sock in
+# /run/glidex-cp (0755 so glidex-users and glidex-ui reach their socket;
+# each socket checks its peer), per-VM directories in vms/<id>/ (0700:
+# hypervisor API socket, console socket, cloud-init seed). Kept across a
+# crash-restart so console logs aren't lost; a clean stop stops the VMs.
+RuntimeDirectory=glidex-cp
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
+# Nothing the control plane creates is for anyone else: consoles are
+# reached through the API (vm.console), not the raw sockets.
+UMask=0077
+
+# Credentials (spec/security.md §13): secrets are not put in
+# control-plane.json or the environment. Uncomment in a drop-in
+# (systemctl edit glidex-control-plane) for the features you use; systemd
+# copies each file into $CREDENTIALS_DIRECTORY, readable only by this unit.
+#LoadCredential=tls-key:/etc/glidex/tls/cp.key
+#LoadCredential=oidc-client-secret:/etc/glidex/oidc-client-secret
+#LoadCredential=cloud-init-passwd-hash:/etc/glidex/cloud-init-passwd-hash
+
+# Sandbox. cloud-hypervisor and QEMU run as children of this unit and
+# inherit all of it, so only settings that keep VMs working are used:
+#  - No NoNewPrivileges=, and none of the settings that imply it for a
+#    non-root unit (RestrictAddressFamilies=, LockPersonality=,
+#    SystemCallFilter=, RestrictSUIDSGID=, ProtectKernel*=,
+#    PrivateDevices=, MemoryDenyWriteExecute=): cloud-hypervisor gets
+#    CAP_NET_ADMIN (to bring tap devices up) from a file capability,
+#    which no_new_privs would ignore.
+#  - /dev is closed except for what VMs use: KVM, VFIO passthrough (the
+#    container and the per-group devices), tap (/dev/net/tun) and QEMU's
+#    vhost-net. Hugepage memory is memfd-backed; /dev/hugepages stays
+#    writable (ProtectSystem= leaves /dev, /proc and /sys alone).
+PrivateTmp=yes
+ProtectSystem=strict
+# The service home holds the database, images, disks, firmware and logs.
+# Disk images and kernels given to the API must be outside /home, /root
+# and /run/user (ProtectHome).
+ProtectHome=yes
+ReadWritePaths=@HOME@
+# vhost-user sockets: cloud-hypervisor serves them in glidex-netd's
+# directory (glidex group, setgid). Connecting to netd's and authd's
+# sockets needs no write access to the file system.
+ReadWritePaths=-/run/glidex/vhost
+DevicePolicy=closed
+DeviceAllow=/dev/kvm rw
+DeviceAllow=/dev/vfio/vfio rw
+DeviceAllow=char-vfio rw
+DeviceAllow=/dev/net/tun rw
+DeviceAllow=/dev/vhost-net rw
 
 [Install]
 WantedBy=multi-user.target

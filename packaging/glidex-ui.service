@@ -6,19 +6,27 @@ After=network-online.target glidex-control-plane.service
 
 [Service]
 Type=simple
-User=glidex
-Group=glidex
+# Its own user: it may use the control plane's ui.sock (sessions and tokens
+# only, spec/security.md §5.6) and nothing else.
+User=glidex-ui
+Group=glidex-ui
 Environment=GLIDEX_UI_DIR=/usr/local/share/glidex/ui
-# Loopback only (default), like the API it proxies. To expose it, set e.g.
-# Environment=GLIDEX_UI_LISTEN=0.0.0.0:5173 in a drop-in; anyone who can
-# reach it can manage every VM.
+Environment=GLIDEX_API_SOCKET=/run/glidex-cp/ui.sock
+# Loopback only (default). A non-loopback GLIDEX_UI_LISTEN (set in a
+# drop-in) needs TLS: GLIDEX_UI_TLS_CERT and GLIDEX_UI_TLS_KEY. Users
+# still log in; the UI holds no rights of its own.
 ExecStart=/usr/local/bin/glidex-ui
-# It only reads the UI files and talks HTTP to the control plane.
+# It only reads the UI files and talks to the control plane.
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
 PrivateDevices=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# netd's socket, the control plane's data and authd's socket are not its
+# business (/run/glidex-cp stays reachable for ui.sock).
+InaccessiblePaths=-/run/glidex -/var/lib/glidex-control-plane -/run/glidex-authd
 Restart=on-failure
 RestartSec=2
 
