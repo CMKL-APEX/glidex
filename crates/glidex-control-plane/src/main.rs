@@ -1,13 +1,4 @@
-mod api;
-mod network;
-mod cloud_init;
-mod credentials;
-mod hypervisor;
-mod images;
-mod models;
-mod pci;
-mod persistence;
-mod state;
+use glidex_control_plane::{api, hypervisor, images, network, state};
 
 use std::io::{self, Write};
 use std::net::SocketAddr;
@@ -17,7 +8,7 @@ use tokio::signal;
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use crate::state::VmManager;
+use glidex_control_plane::state::VmManager;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 

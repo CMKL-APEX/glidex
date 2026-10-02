@@ -1,4 +1,5 @@
 pub mod api;
+pub mod authz;
 pub mod cloud_init;
 pub mod credentials;
 pub mod hypervisor;
@@ -8,3 +9,5 @@ pub mod network;
 pub mod pci;
 pub mod persistence;
 pub mod state;
+pub mod tenancy;
+pub mod paths;

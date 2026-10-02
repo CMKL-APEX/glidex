@@ -20,6 +20,7 @@ use crate::hypervisor::HypervisorError;
 use crate::images::{CreateDiskRequest, ExtendRootRequest, ImageError, PullImageRequest, ResizeDiskRequest};
 use crate::network::{CreateNetworkRequest, NetError, Netd, NetdAccess};
 use crate::state::{VmManager, VmManagerError};
+use crate::tenancy::TenancyError;
 use glidex_netd::proto::{BridgeRecord, EnsureUplinkArgs, ErrorBody, Op, UplinkPhase, UplinkResult};
 use glidex_ovs::uplink::{UplinkKind, UplinkSpec};
 use glidex_ovs::bridge::BridgeSpec;
@@ -181,7 +182,8 @@ async fn create_network(
     State(manager): State<AppState>,
     Json(req): Json<CreateNetworkRequest>,
 ) -> ApiResult<impl IntoResponse> {
-    let net = manager.create_network(req).await.map_err(error_to_response)?;
+    let default = manager.default_project_id();
+    let net = manager.create_host_network(req, vec![default], false).await.map_err(error_to_response)?;
     Ok((StatusCode::CREATED, Json(net)))
 }
 
@@ -738,5 +740,18 @@ fn error_to_response(error: VmManagerError) -> (StatusCode, Json<ApiError>) {
             StatusCode::SERVICE_UNAVAILABLE,
             Json(ApiError::new("hypervisor_unavailable", error.to_string())),
         ),
+        VmManagerError::QuotaExceeded(over) => (
+            StatusCode::FORBIDDEN,
+            Json(ApiError::new("quota_exceeded", error.to_string()).with_details(serde_json::json!({ "quota": over }))),
+        ),
+        VmManagerError::Tenancy(e) => {
+            let (status, code) = match e {
+                TenancyError::NotFound(_) => (StatusCode::NOT_FOUND, "not_found"),
+                TenancyError::AlreadyExists(_) => (StatusCode::CONFLICT, "conflict"),
+                TenancyError::Invalid(_) => (StatusCode::BAD_REQUEST, "invalid_project"),
+                TenancyError::Storage(_) => (StatusCode::INTERNAL_SERVER_ERROR, "persistence_error"),
+            };
+            (status, Json(ApiError::new(code, error.to_string())))
+        }
     }
 }

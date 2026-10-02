@@ -14,6 +14,7 @@ use glidex_ovs::bridge::{BridgeSpec, Datapath};
 use glidex_ovs::nat::NatSpec;
 use glidex_ovs::vm_port::{VmPortKind, VmPortSpec};
 use crate::persistence::{Commit, PersistenceError, VmStore};
+use crate::tenancy::{self, Delta, ProjectStore, QuotaMode, QuotaOverrun, TenancyError, Usage};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -31,6 +32,9 @@ pub enum VmManagerError {
     CredentialInUse { username: String, vms: Vec<String> },
     Network(NetError),
     Image(ImageError),
+    /// The request would go over these project quotas.
+    QuotaExceeded(Vec<QuotaOverrun>),
+    Tenancy(TenancyError),
 }
 
 impl std::fmt::Display for VmManagerError {
@@ -49,6 +53,12 @@ impl std::fmt::Display for VmManagerError {
             VmManagerError::Credential(e) => write!(f, "{}", e),
             VmManagerError::Network(e) => write!(f, "{}", e),
             VmManagerError::Image(e) => write!(f, "{}", e),
+            VmManagerError::QuotaExceeded(o) => write!(
+                f,
+                "{}",
+                o.iter().map(|o| o.to_string()).collect::<Vec<_>>().join("; ")
+            ),
+            VmManagerError::Tenancy(e) => write!(f, "{}", e),
             VmManagerError::CredentialInUse { username, vms } => write!(
                 f,
                 "credential {} is used by VM(s): {}",
@@ -77,6 +87,12 @@ impl From<ImageError> for VmManagerError {
     }
 }
 
+impl From<TenancyError> for VmManagerError {
+    fn from(e: TenancyError) -> Self {
+        VmManagerError::Tenancy(e)
+    }
+}
+
 impl From<CredentialError> for VmManagerError {
     fn from(e: CredentialError) -> Self {
         VmManagerError::Credential(e)
@@ -102,6 +118,7 @@ pub struct VmManager {
     store: VmStore,
     credentials: CredentialStore,
     networks: NetworkStore,
+    projects: ProjectStore,
     netd: Netd,
     images: Arc<ImageManager>,
     backends: HashMap<HypervisorType, Box<dyn Hypervisor>>,
@@ -162,6 +179,7 @@ impl VmManager {
             vms: RwLock::new(HashMap::new()),
             credentials: CredentialStore::new(store.database())?,
             networks: NetworkStore::new(store.database())?,
+            projects: ProjectStore::new(store.database())?,
             netd,
             images,
             store,
@@ -192,13 +210,27 @@ impl VmManager {
         self.images.initialize();
         let mut vms = self.vms.write().await;
 
+        let default_project = self.projects.default_project_id();
         for mut vm in persisted_vms {
             // Reconcile state: VMs that were Running/Paused are now orphaned
             let reconciled_state = self.reconcile_vm_state(&vm);
+            let mut dirty = false;
 
             if vm.state != reconciled_state {
                 vm.state = reconciled_state;
-                // Update DB with reconciled state
+                dirty = true;
+            }
+            // Records from before projects, and from before per-VM
+            // runtime directories (spec/security.md §9, §11).
+            if vm.project.is_empty() {
+                vm.project = default_project.clone();
+                dirty = true;
+            }
+            if vm.socket_path.starts_with("/tmp/") {
+                vm.relocate_runtime_paths();
+                dirty = true;
+            }
+            if dirty {
                 self.store.save(&vm)?;
             }
 
@@ -210,6 +242,8 @@ impl VmManager {
                 },
             );
         }
+
+        self.adopt_into_default_project()?;
 
         // Every VM is stopped after a control-plane restart, so any VM
         // ports netd still has are stale.
@@ -266,14 +300,32 @@ impl VmManager {
             .map(|(vm, _)| vm)
     }
 
-    /// Create a VM, resolving managed disks (spec images.md §7). Returns
-    /// the VM and any warnings.
+    /// Create a VM in the default project, quotas not enforced (embedding
+    /// and tests). The API uses [`Self::create_vm_in`].
     pub async fn create_vm_with_disks(
         &self,
         name: String,
-        mut config: VmConfig,
+        config: VmConfig,
         sel: DiskSelection,
     ) -> Result<(Vm, Vec<String>), VmManagerError> {
+        let project = self.default_project_id();
+        self.create_vm_in(&project, name, config, sel, QuotaMode::MayExceed)
+            .await
+            .map(|(vm, w, _)| (vm, w))
+    }
+
+    /// Create a VM in `project`, resolving managed disks (spec images.md
+    /// §7). Returns the VM, any warnings, and the quota limits it went
+    /// over (only with [`QuotaMode::MayExceed`]; to be audited).
+    pub async fn create_vm_in(
+        &self,
+        project: &str,
+        name: String,
+        mut config: VmConfig,
+        sel: DiskSelection,
+        quota: QuotaMode,
+    ) -> Result<(Vm, Vec<String>, Vec<QuotaOverrun>), VmManagerError> {
+        let project_rec = self.projects.get(project)?.ok_or_else(|| TenancyError::NotFound(project.to_string()))?;
         let roots = [!config.rootfs_path.is_empty(), sel.image.is_some(), sel.root_disk.is_some()];
         if roots.iter().filter(|b| **b).count() != 1 {
             return Err(HypervisorError::InvalidConfig(
@@ -324,12 +376,22 @@ impl VmManager {
                 .into());
             }
             for att in &config.networks {
-                if self.networks.get(&att.network)?.is_none() {
-                    return Err(HypervisorError::InvalidConfig(format!(
-                        "network not found: {}",
-                        att.network
-                    ))
-                    .into());
+                match self.networks.get(&att.network)? {
+                    None => {
+                        return Err(HypervisorError::InvalidConfig(format!(
+                            "network not found: {}",
+                            att.network
+                        ))
+                        .into())
+                    }
+                    Some(n) if !n.usable_by(project) => {
+                        return Err(HypervisorError::InvalidConfig(format!(
+                            "network '{}' is not available to this project",
+                            att.network
+                        ))
+                        .into())
+                    }
+                    Some(_) => {}
                 }
                 if let Some(mac) = &att.mac {
                     glidex_ovs::names::validate_mac(mac)
@@ -358,7 +420,7 @@ impl VmManager {
                 )
                 .into());
             }
-            match self.credentials.get(username) {
+            match self.credentials.get(project, username) {
                 Ok(_) => {}
                 Err(CredentialError::NotFound(_)) => {
                     return Err(HypervisorError::InvalidConfig(format!(
@@ -371,12 +433,27 @@ impl VmManager {
             }
         }
 
-        // Check if VM with same name exists
-        if vms.values().any(|entry| entry.vm.name == name) {
+        // Names are unique per project.
+        if vms.values().any(|entry| entry.vm.name == name && entry.vm.project == project) {
             return Err(VmManagerError::VmAlreadyExists(name));
         }
 
+        // Quotas, checked under the write lock so concurrent creates
+        // can't both pass. Disk use is checked again once the root disk's
+        // real size is known.
+        let mut bypassed = Vec::new();
+        let delta = Delta {
+            vms: 1,
+            vcpus: config.vcpu_count as u64,
+            memory_mib: config.mem_size_mib as u64,
+            disk_gib: sel.root_disk_size_gib.unwrap_or(0),
+            ..Default::default()
+        };
+        let usage = self.usage_locked(project, &vms)?;
+        Self::apply_quota(&project_rec.quotas, &usage, &delta, quota, &mut bypassed)?;
+
         let mut vm = Vm::new(name, config);
+        vm.project = project.to_string();
         // Stable MACs derived from the VM id, so they show up in the API
         // and survive restarts.
         for (i, att) in vm.config.networks.iter_mut().enumerate() {
@@ -390,7 +467,7 @@ impl VmManager {
         let mut disks: Vec<Disk> = Vec::new();
         let mut warnings = Vec::new();
         for key in &sel.data_disks {
-            let d = self.attachable_disk(key)?;
+            let d = self.attachable_disk_in(key, project)?;
             if disks.iter().any(|x| x.id == d.id) {
                 return Err(HypervisorError::InvalidConfig(format!("disk {} listed twice", d.name)).into());
             }
@@ -398,7 +475,7 @@ impl VmManager {
             disks.push(d);
         }
         if let Some(key) = &sel.root_disk {
-            let d = self.attachable_disk(key)?;
+            let d = self.attachable_disk_in(key, project)?;
             if disks.iter().any(|x| x.id == d.id) {
                 return Err(HypervisorError::InvalidConfig(format!(
                     "disk {} is both root_disk and a data disk",
@@ -419,6 +496,7 @@ impl VmManager {
             }
             let req = CreateDiskRequest {
                 name: disk_name,
+                project: Some(project.to_string()),
                 size_gib: sel.root_disk_size_gib,
                 image: Some(image.clone()),
                 ..Default::default()
@@ -427,6 +505,13 @@ impl VmManager {
             let (d, mut w, hold) = tokio::task::spawn_blocking(move || mgr.create_disk_file(&req))
                 .await
                 .map_err(|e| ImageError::Io(e.to_string()))??;
+            if sel.root_disk_size_gib.is_none() {
+                let disk_delta = Delta { disk_gib: gib_ceil(d.size_bytes), ..Default::default() };
+                if let Err(e) = Self::apply_quota(&project_rec.quotas, &usage, &disk_delta, quota, &mut bypassed) {
+                    self.images.remove_disk_file(&d);
+                    return Err(e);
+                }
+            }
             image_hold = hold;
             warnings.append(&mut w);
             vm.config.root_disk = Some(d.id.clone());
@@ -469,12 +554,20 @@ impl VmManager {
             },
         );
 
-        Ok((vm_clone, warnings))
+        Ok((vm_clone, warnings, bypassed))
     }
 
-    /// A disk a new VM may attach: exists, not attached, not busy.
-    fn attachable_disk(&self, key: &str) -> Result<Disk, VmManagerError> {
+    /// A disk a VM of `project` may attach: exists, in that project, not
+    /// attached, not busy.
+    fn attachable_disk_in(&self, key: &str, project: &str) -> Result<Disk, VmManagerError> {
         let d = self.images.get_disk(key)?;
+        if d.project != project {
+            return Err(HypervisorError::InvalidConfig(format!(
+                "disk {} belongs to another project",
+                d.name
+            ))
+            .into());
+        }
         if let Some(vm) = &d.attached_to {
             return Err(ImageError::InUse(format!("disk {} is attached to VM {}", d.name, vm)).into());
         }
@@ -515,9 +608,30 @@ impl VmManager {
         Ok((root, data))
     }
 
+    /// Start a VM, quotas not enforced (embedding and tests). The API uses
+    /// [`Self::start_vm_with`].
     pub async fn start_vm(&self, vm_id: &str) -> Result<Vm, VmManagerError> {
-        let mut vms = self.vms.write().await;
+        self.start_vm_with(vm_id, QuotaMode::MayExceed).await.map(|(vm, _)| vm)
+    }
 
+    /// Start (or resume) a VM, checking its project's `running_vms` quota.
+    pub async fn start_vm_with(&self, vm_id: &str, quota: QuotaMode) -> Result<(Vm, Vec<QuotaOverrun>), VmManagerError> {
+        let mut vms = self.vms.write().await;
+        let mut bypassed = Vec::new();
+        if let Some(entry) = vms.get(vm_id) {
+            if matches!(entry.vm.state, VmState::Created | VmState::Stopped) {
+                let project = entry.vm.project.clone();
+                if let Some(p) = self.projects.get(&project)? {
+                    let usage = self.usage_locked(&project, &vms)?;
+                    let delta = Delta { running_vms: 1, ..Default::default() };
+                    Self::apply_quota(&p.quotas, &usage, &delta, quota, &mut bypassed)?;
+                }
+            }
+        }
+        self.start_vm_locked(&mut vms, vm_id).await.map(|vm| (vm, bypassed))
+    }
+
+    async fn start_vm_locked(&self, vms: &mut HashMap<String, VmEntry>, vm_id: &str) -> Result<Vm, VmManagerError> {
         let entry = vms
             .get_mut(vm_id)
             .ok_or_else(|| VmManagerError::VmNotFound(vm_id.to_string()))?;
@@ -527,6 +641,7 @@ impl VmManager {
                 // Get the appropriate backend for this VM's hypervisor
                 let backend = self.get_backend(entry.vm.hypervisor)?;
                 let (root_disk, data_disks) = self.disk_bindings(&entry.vm)?;
+                crate::paths::ensure_vm_dir(&entry.vm.id).map_err(HypervisorError::ProcessStart)?;
 
                 // Spawn hypervisor process with console socket and log file
                 let process = backend.spawn(
@@ -564,7 +679,7 @@ impl VmManager {
                 if config.firmware_path.is_some() && config.cloud_init_path.is_none() {
                     let path = entry.vm.default_cloud_init_path();
                     let seed = match &config.credential {
-                        Some(username) => match self.credentials.get(username) {
+                        Some(username) => match self.credentials.get(&entry.vm.project, username) {
                             Ok(cred) => cloud_init::SeedConfig::for_credential(
                                 &entry.vm.id,
                                 &entry.vm.name,
@@ -1007,6 +1122,7 @@ impl VmManager {
         }
         let _ = std::fs::remove_file(entry.vm.default_cloud_init_path());
         let _ = std::fs::remove_file(self.firmware_vars_path(vm_id));
+        crate::paths::remove_vm_dir(vm_id);
 
         vms.remove(vm_id);
         Ok(())
@@ -1047,20 +1163,54 @@ impl VmManager {
         Ok(blocking(move || Ok(mgr.disk_response(&d, true))).await?)
     }
 
+    /// Create a disk in the default project (embedding and tests).
     pub async fn create_disk(&self, req: CreateDiskRequest) -> Result<DiskResponse, VmManagerError> {
+        let project = self.default_project_id();
+        self.create_disk_in(&project, req, QuotaMode::MayExceed).await.map(|(d, _)| d)
+    }
+
+    /// Create a disk in `project`, checking its `disk_gib` quota.
+    pub async fn create_disk_in(
+        &self,
+        project: &str,
+        mut req: CreateDiskRequest,
+        quota: QuotaMode,
+    ) -> Result<(DiskResponse, Vec<QuotaOverrun>), VmManagerError> {
+        let p = self.projects.get(project)?.ok_or_else(|| TenancyError::NotFound(project.to_string()))?;
+        req.project = Some(project.to_string());
+        // The VM lock serializes quota checks with VM creation.
+        let vms = self.vms.write().await;
+        let usage = self.usage_locked(project, &vms)?;
+        let mut bypassed = Vec::new();
+        if let Some(gib) = req.size_gib.or(req.size_bytes.map(gib_ceil)) {
+            Self::apply_quota(&p.quotas, &usage, &Delta { disk_gib: gib, ..Default::default() }, quota, &mut bypassed)?;
+        }
         let mgr = self.images.clone();
         let (disk, warnings) = blocking(move || {
             let (disk, warnings, _hold) = mgr.create_disk_file(&req)?;
-            if let Err(e) = mgr.put_disk(&disk) {
-                mgr.remove_disk_file(&disk);
-                return Err(e);
-            }
             Ok((disk, warnings))
         })
         .await?;
+        // An image clone's size is only known now.
+        let delta = Delta { disk_gib: gib_ceil(disk.size_bytes), ..Default::default() };
+        let mut after = Vec::new();
+        if let Err(e) = Self::apply_quota(&p.quotas, &usage, &delta, quota, &mut after) {
+            self.images.remove_disk_file(&disk);
+            return Err(e);
+        }
+        for o in after {
+            if !bypassed.iter().any(|b: &QuotaOverrun| b.resource == o.resource) {
+                bypassed.push(o);
+            }
+        }
+        if let Err(e) = self.images.put_disk(&disk) {
+            self.images.remove_disk_file(&disk);
+            return Err(e.into());
+        }
+        drop(vms);
         let mut resp = self.images.disk_response(&disk, false);
         resp.warnings = warnings;
-        Ok(resp)
+        Ok((resp, bypassed))
     }
 
     /// Mark a disk busy for `op`, refusing while a running or paused VM
@@ -1087,8 +1237,30 @@ impl VmManager {
     }
 
     pub async fn resize_disk(&self, key: &str, req: ResizeDiskRequest) -> Result<DiskResponse, VmManagerError> {
+        self.resize_disk_with(key, req, QuotaMode::MayExceed).await.map(|(d, _)| d)
+    }
+
+    /// Resize a disk, checking its project's `disk_gib` quota on growth.
+    pub async fn resize_disk_with(
+        &self,
+        key: &str,
+        req: ResizeDiskRequest,
+        quota: QuotaMode,
+    ) -> Result<(DiskResponse, Vec<QuotaOverrun>), VmManagerError> {
         let size = requested_size(req.size_gib, req.size_bytes)?
             .ok_or_else(|| ImageError::invalid_disk("give size_gib or size_bytes"))?;
+        let mut bypassed = Vec::new();
+        {
+            let current = self.images.get_disk(key)?;
+            let grow = gib_ceil(size).saturating_sub(gib_ceil(current.size_bytes));
+            if grow > 0 {
+                if let Some(p) = self.projects.get(&current.project)? {
+                    let vms = self.vms.read().await;
+                    let usage = self.usage_locked(&current.project, &vms)?;
+                    Self::apply_quota(&p.quotas, &usage, &Delta { disk_gib: grow, ..Default::default() }, quota, &mut bypassed)?;
+                }
+            }
+        }
         let (disk, guard) = self.begin_disk_op(key, "resize").await?;
         let mgr = self.images.clone();
         let (disk, outcome, warnings) = blocking(move || {
@@ -1099,7 +1271,7 @@ impl VmManager {
         let mut resp = self.images.disk_response(&disk, false);
         resp.extend_root = outcome;
         resp.warnings = warnings;
-        Ok(resp)
+        Ok((resp, bypassed))
     }
 
     pub async fn extend_root(&self, key: &str, mode: ExtendMode) -> Result<DiskResponse, VmManagerError> {
@@ -1139,7 +1311,7 @@ impl VmManager {
         if !matches!(entry.vm.state, VmState::Created | VmState::Stopped) {
             return Err(VmManagerError::InvalidState { current: entry.vm.state.clone(), operation: "attach_disk".into() });
         }
-        let mut disk = self.attachable_disk(key)?;
+        let mut disk = self.attachable_disk_in(key, &entry.vm.project)?;
         disk.attached_to = Some(entry.vm.id.clone());
         let mut vm = entry.vm.clone();
         vm.config.data_disks.push(disk.id.clone());
@@ -1361,6 +1533,150 @@ impl VmManager {
         Ok(())
     }
 
+    /// Create a host network usable by `grants` (or every project).
+    pub async fn create_host_network(
+        &self,
+        req: CreateNetworkRequest,
+        grants: Vec<String>,
+        all_projects: bool,
+    ) -> Result<Network, VmManagerError> {
+        for g in &grants {
+            if self.projects.get(g)?.is_none() {
+                return Err(TenancyError::NotFound(g.clone()).into());
+            }
+        }
+        let mut net = self.create_network(req).await?;
+        net.grants = grants;
+        net.all_projects = all_projects;
+        self.networks.put(&net)?;
+        Ok(net)
+    }
+
+    /// Create a NAT network private to `project` (spec/security.md §6.2):
+    /// NAT only, generated bridge name, counted against the `networks`
+    /// quota.
+    pub async fn create_project_network(
+        &self,
+        project: &str,
+        mut req: CreateNetworkRequest,
+        quota: QuotaMode,
+    ) -> Result<(Network, Vec<QuotaOverrun>), VmManagerError> {
+        let p = self.projects.get(project)?.ok_or_else(|| TenancyError::NotFound(project.to_string()))?;
+        if req.mode != NetworkMode::Nat {
+            return Err(NetError::Invalid("project networks are NAT networks".into()).into());
+        }
+        if req.bridge.is_some() || req.vlan.is_some() {
+            return Err(NetError::Invalid("project networks choose their own bridge; bridge and vlan can't be set".into()).into());
+        }
+        let vms = self.vms.write().await;
+        let mut bypassed = Vec::new();
+        let usage = self.usage_locked(project, &vms)?;
+        Self::apply_quota(&p.quotas, &usage, &Delta { networks: 1, ..Default::default() }, quota, &mut bypassed)?;
+        let id = uuid::Uuid::new_v4().simple().to_string();
+        req.bridge = Some(format!("gxp-{}", &id[..8]));
+        let mut net = self.create_network(req).await?;
+        net.project = Some(project.to_string());
+        self.networks.put(&net)?;
+        drop(vms);
+        Ok((net, bypassed))
+    }
+
+    /// Set which projects may use a host network.
+    pub fn grant_network(&self, name: &str, grants: Vec<String>, all_projects: bool) -> Result<Network, VmManagerError> {
+        let mut net = self.get_network(name)?;
+        if net.project.is_some() {
+            return Err(NetError::Invalid("project networks are shared, not granted".into()).into());
+        }
+        for g in &grants {
+            if self.projects.get(g)?.is_none() {
+                return Err(TenancyError::NotFound(g.clone()).into());
+            }
+        }
+        net.grants = grants;
+        net.all_projects = all_projects;
+        self.networks.put(&net)?;
+        Ok(net)
+    }
+
+    /// Offer a project network to `target`. Silently succeeds when the
+    /// target doesn't exist, so offers can't probe for projects.
+    pub fn offer_network_share(&self, name: &str, target: &str, by: &str) -> Result<(), VmManagerError> {
+        let mut net = self.get_network(name)?;
+        if net.project.is_none() {
+            return Err(NetError::Invalid("only project networks can be shared".into()).into());
+        }
+        if self.projects.get(target)?.is_none() || net.shares.iter().any(|s| s == target) {
+            return Ok(());
+        }
+        let now = tenancy::now();
+        net.share_offers.retain(|o| o.project != target && o.expires_at > now);
+        net.share_offers.push(network::ShareOffer {
+            project: target.to_string(),
+            offered_by: by.to_string(),
+            offered_at: now,
+            expires_at: now + network::SHARE_OFFER_SECS,
+        });
+        self.networks.put(&net)?;
+        Ok(())
+    }
+
+    /// Networks with an open offer to, or an accepted share with, `project`.
+    pub fn network_shares_for(&self, project: &str) -> Result<Vec<Network>, VmManagerError> {
+        let now = tenancy::now();
+        Ok(self
+            .networks
+            .list()?
+            .into_iter()
+            .filter(|n| {
+                n.shares.iter().any(|s| s == project)
+                    || n.share_offers.iter().any(|o| o.project == project && o.expires_at > now)
+            })
+            .collect())
+    }
+
+    /// Accept an open offer of `name` to `project`.
+    pub fn accept_network_share(&self, project: &str, name: &str) -> Result<Network, VmManagerError> {
+        let mut net = self.get_network(name)?;
+        let now = tenancy::now();
+        let Some(pos) = net.share_offers.iter().position(|o| o.project == project && o.expires_at > now) else {
+            return Err(NetError::NotFound(format!("no open share offer of network '{}' to this project", name)).into());
+        };
+        net.share_offers.remove(pos);
+        if !net.shares.iter().any(|s| s == project) {
+            net.shares.push(project.to_string());
+        }
+        self.networks.put(&net)?;
+        Ok(net)
+    }
+
+    /// End a share (unshare by the owner, or leave by the target).
+    /// Refused while VMs of `project` use the network.
+    pub async fn end_network_share(&self, name: &str, project: &str) -> Result<(), VmManagerError> {
+        let vms = self.vms.read().await;
+        let mut net = self.get_network(name)?;
+        let users: Vec<String> = vms
+            .values()
+            .filter(|e| e.vm.project == project && e.vm.config.networks.iter().any(|a| a.network == name))
+            .map(|e| e.vm.name.clone())
+            .collect();
+        if !users.is_empty() {
+            return Err(NetError::Conflict(format!(
+                "network '{}' is used by VM(s) of that project: {}",
+                name,
+                users.join(", ")
+            ))
+            .into());
+        }
+        let before = (net.shares.len(), net.share_offers.len());
+        net.shares.retain(|s| s != project);
+        net.share_offers.retain(|o| o.project != project);
+        if before == (net.shares.len(), net.share_offers.len()) {
+            return Err(NetError::NotFound(format!("network '{}' isn't shared with that project", name)).into());
+        }
+        self.networks.put(&net)?;
+        Ok(())
+    }
+
     /// Create the `default` NAT network if netd is usable and it's missing.
     pub async fn ensure_default_network(&self) -> Result<Option<Network>, VmManagerError> {
         if self.networks.get(network::DEFAULT_NETWORK)?.is_some() {
@@ -1384,48 +1700,71 @@ impl VmManager {
             mtu: None,
             dns: true,
         };
-        self.create_network(req).await.map(Some)
+        let default_project = self.default_project_id();
+        self.create_host_network(req, vec![default_project], false).await.map(Some)
     }
 
     pub fn netd(&self) -> &Netd {
         &self.netd
     }
 
+    /// Credentials of `project`, or of every project.
+    pub fn list_credentials_in(&self, project: Option<&str>) -> Result<Vec<Credential>, VmManagerError> {
+        Ok(self.credentials.list(project)?)
+    }
+
     pub fn list_credentials(&self) -> Result<Vec<Credential>, VmManagerError> {
-        Ok(self.credentials.list()?)
+        self.list_credentials_in(Some(&self.default_project_id()))
+    }
+
+    pub fn get_credential_in(&self, project: &str, username: &str) -> Result<Credential, VmManagerError> {
+        Ok(self.credentials.get(project, username)?)
     }
 
     pub fn get_credential(&self, username: &str) -> Result<Credential, VmManagerError> {
-        Ok(self.credentials.get(username)?)
+        self.get_credential_in(&self.default_project_id(), username)
     }
 
-    pub fn create_credential(
+    pub fn create_credential_in(
         &self,
+        project: &str,
         req: CreateCredentialRequest,
     ) -> Result<Credential, VmManagerError> {
-        let cred = self.credentials.create(req)?;
-        tracing::info!(username = %cred.username, "Credential created");
+        if self.projects.get(project)?.is_none() {
+            return Err(TenancyError::NotFound(project.to_string()).into());
+        }
+        let cred = self.credentials.create(project, req)?;
+        tracing::info!(username = %cred.username, project, "Credential created");
         Ok(cred)
+    }
+
+    pub fn create_credential(&self, req: CreateCredentialRequest) -> Result<Credential, VmManagerError> {
+        self.create_credential_in(&self.default_project_id(), req)
     }
 
     /// Changes reach a VM only on its first boot: cloud-init provisions
     /// users once per instance-id, and a VM keeps its id for life.
-    pub fn update_credential(
+    pub fn update_credential_in(
         &self,
+        project: &str,
         username: &str,
         req: UpdateCredentialRequest,
     ) -> Result<Credential, VmManagerError> {
-        let cred = self.credentials.update(username, req)?;
-        tracing::info!(username = %cred.username, "Credential updated");
+        let cred = self.credentials.update(project, username, req)?;
+        tracing::info!(username = %cred.username, project, "Credential updated");
         Ok(cred)
     }
 
+    pub fn update_credential(&self, username: &str, req: UpdateCredentialRequest) -> Result<Credential, VmManagerError> {
+        self.update_credential_in(&self.default_project_id(), username, req)
+    }
+
     /// Refuses to delete a credential still referenced by a VM.
-    pub async fn delete_credential(&self, username: &str) -> Result<(), VmManagerError> {
+    pub async fn delete_credential_in(&self, project: &str, username: &str) -> Result<(), VmManagerError> {
         let vms = self.vms.read().await;
         let users: Vec<String> = vms
             .values()
-            .filter(|e| e.vm.config.credential.as_deref() == Some(username))
+            .filter(|e| e.vm.project == project && e.vm.config.credential.as_deref() == Some(username))
             .map(|e| e.vm.name.clone())
             .collect();
         if !users.is_empty() {
@@ -1434,8 +1773,130 @@ impl VmManager {
                 vms: users,
             });
         }
-        self.credentials.delete(username)?;
-        tracing::info!(username = %username, "Credential deleted");
+        self.credentials.delete(project, username)?;
+        tracing::info!(username = %username, project, "Credential deleted");
+        Ok(())
+    }
+
+    pub async fn delete_credential(&self, username: &str) -> Result<(), VmManagerError> {
+        self.delete_credential_in(&self.default_project_id(), username).await
+    }
+
+    // ---- projects and quotas (spec/security.md §6) ---------------------
+
+    pub fn projects(&self) -> &ProjectStore {
+        &self.projects
+    }
+
+    pub fn default_project_id(&self) -> String {
+        self.projects.default_project_id()
+    }
+
+    /// Assign records from before projects to the default project, once.
+    fn adopt_into_default_project(&self) -> Result<(), VmManagerError> {
+        if self.projects.meta(tenancy::META_TENANCY_V1)?.is_some() {
+            return Ok(());
+        }
+        let default = self.default_project_id();
+        for mut d in self.images.list_disks() {
+            if d.project.is_empty() {
+                d.project = default.clone();
+                self.images.put_disk(&d)?;
+            }
+        }
+        let moved = self.credentials.adopt_unscoped(&default)?;
+        let mut nets = 0;
+        for mut n in self.networks.list()? {
+            if n.project.is_none() && !n.all_projects && n.grants.is_empty() {
+                n.grants.push(default.clone());
+                self.networks.put(&n)?;
+                nets += 1;
+            }
+        }
+        self.projects.set_meta(tenancy::META_TENANCY_V1, b"1")?;
+        tracing::info!(credentials = moved, networks = nets, "assigned existing resources to the default project");
+        Ok(())
+    }
+
+    /// A project's current use. Takes the VM map so callers holding the
+    /// write lock get a consistent count.
+    fn usage_locked(&self, project: &str, vms: &HashMap<String, VmEntry>) -> Result<Usage, VmManagerError> {
+        let mut u = Usage::default();
+        for e in vms.values().filter(|e| e.vm.project == project) {
+            u.vms += 1;
+            u.vcpus += e.vm.config.vcpu_count as u64;
+            u.memory_mib += e.vm.config.mem_size_mib as u64;
+            if matches!(e.vm.state, VmState::Running | VmState::Paused) {
+                u.running_vms += 1;
+            }
+        }
+        u.disk_gib = self
+            .images
+            .list_disks()
+            .iter()
+            .filter(|d| d.project == project)
+            .map(|d| gib_ceil(d.size_bytes))
+            .sum();
+        u.networks = self.networks.list()?.iter().filter(|n| n.project.as_deref() == Some(project)).count() as u64;
+        Ok(u)
+    }
+
+    pub async fn usage(&self, project: &str) -> Result<Usage, VmManagerError> {
+        let vms = self.vms.read().await;
+        self.usage_locked(project, &vms)
+    }
+
+    /// Refuse `delta` if it goes over `quotas`, unless the caller may
+    /// exceed them; then record what was exceeded in `bypassed`.
+    fn apply_quota(
+        quotas: &tenancy::Quotas,
+        usage: &Usage,
+        delta: &Delta,
+        mode: QuotaMode,
+        bypassed: &mut Vec<QuotaOverrun>,
+    ) -> Result<(), VmManagerError> {
+        let over = tenancy::overruns(quotas, usage, delta);
+        if over.is_empty() {
+            return Ok(());
+        }
+        match mode {
+            QuotaMode::Enforce => Err(VmManagerError::QuotaExceeded(over)),
+            QuotaMode::MayExceed => {
+                bypassed.extend(over);
+                Ok(())
+            }
+        }
+    }
+
+    /// Whether a project still owns anything (it can't be deleted then).
+    pub async fn project_in_use(&self, project: &str) -> Result<Option<String>, VmManagerError> {
+        let vms = self.vms.read().await;
+        if let Some(e) = vms.values().find(|e| e.vm.project == project) {
+            return Ok(Some(format!("VM {}", e.vm.name)));
+        }
+        if let Some(d) = self.images.list_disks().iter().find(|d| d.project == project) {
+            return Ok(Some(format!("disk {}", d.name)));
+        }
+        if let Some(c) = self.credentials.list(Some(project))?.first() {
+            return Ok(Some(format!("credential {}", c.username)));
+        }
+        if let Some(n) = self.networks.list()?.iter().find(|n| n.project.as_deref() == Some(project)) {
+            return Ok(Some(format!("network {}", n.name)));
+        }
+        Ok(None)
+    }
+
+    /// Remove a deleted project from network grants and shares.
+    pub fn forget_project(&self, project: &str) -> Result<(), VmManagerError> {
+        for mut n in self.networks.list()? {
+            let before = (n.grants.len(), n.shares.len(), n.share_offers.len());
+            n.grants.retain(|p| p != project);
+            n.shares.retain(|p| p != project);
+            n.share_offers.retain(|o| o.project != project);
+            if before != (n.grants.len(), n.shares.len(), n.share_offers.len()) {
+                self.networks.put(&n)?;
+            }
+        }
         Ok(())
     }
 
@@ -1477,4 +1938,9 @@ async fn blocking<T: Send + 'static>(
     tokio::task::spawn_blocking(f)
         .await
         .map_err(|e| ImageError::Io(format!("task failed: {}", e)))?
+}
+
+/// Size in GiB, rounded up.
+fn gib_ceil(bytes: u64) -> u64 {
+    bytes.div_ceil(1 << 30)
 }

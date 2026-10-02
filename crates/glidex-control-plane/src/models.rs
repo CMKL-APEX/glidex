@@ -139,6 +139,10 @@ pub struct NicState {
 pub struct Vm {
     pub id: String,
     pub name: String,
+    /// Owning project id (spec/security.md §6). Empty only in records
+    /// from before projects existed; `VmManager::initialize` fills it in.
+    #[serde(default)]
+    pub project: String,
     pub state: VmState,
     pub config: VmConfig,
     pub socket_path: String,
@@ -153,18 +157,16 @@ impl Vm {
     pub fn new(name: String, config: VmConfig) -> Self {
         let id = Uuid::new_v4().to_string();
         let hypervisor = config.hypervisor;
-        let prefix = hypervisor.socket_prefix();
-        let socket_path = format!("/tmp/{}-{}.sock", prefix, id);
-        let console_socket_path = format!("/tmp/{}-{}.console.sock", prefix, id);
-        let log_path = format!("/tmp/{}-{}.log", prefix, id);
+        let paths = crate::paths::vm_paths(&id);
         Self {
             id,
             name,
+            project: String::new(),
             state: VmState::Created,
             config,
-            socket_path,
-            console_socket_path,
-            log_path,
+            socket_path: paths.api_socket,
+            console_socket_path: paths.console_socket,
+            log_path: paths.log,
             hypervisor,
             nics: Vec::new(),
         }
@@ -172,17 +174,25 @@ impl Vm {
 
     /// Where the auto-generated cloud-init seed for this VM lives.
     pub fn default_cloud_init_path(&self) -> String {
-        format!(
-            "/tmp/{}-{}.cloudinit.img",
-            self.hypervisor.socket_prefix(),
-            self.id
-        )
+        crate::paths::vm_paths(&self.id).cloud_init
+    }
+
+    /// Point the runtime paths at the VM's private directory. Used to
+    /// move records from before per-VM directories (`/tmp/<prefix>-<id>.*`).
+    pub fn relocate_runtime_paths(&mut self) {
+        let paths = crate::paths::vm_paths(&self.id);
+        self.socket_path = paths.api_socket;
+        self.console_socket_path = paths.console_socket;
+        self.log_path = paths.log;
     }
 }
 
 #[derive(Debug, Deserialize)]
 pub struct CreateVmRequest {
     pub name: String,
+    /// Project id or name; default: the caller's default project.
+    #[serde(default)]
+    pub project: Option<String>,
     pub vcpu_count: u8,
     pub mem_size_mib: u32,
     #[serde(default)]
@@ -270,6 +280,7 @@ impl From<CreateVmRequest> for VmConfig {
 pub struct VmResponse {
     pub id: String,
     pub name: String,
+    pub project: String,
     pub state: VmState,
     pub vcpu_count: u8,
     pub mem_size_mib: u32,
@@ -295,6 +306,7 @@ impl From<&Vm> for VmResponse {
         VmResponse {
             id: vm.id.clone(),
             name: vm.name.clone(),
+            project: vm.project.clone(),
             state: vm.state.clone(),
             vcpu_count: vm.config.vcpu_count,
             mem_size_mib: vm.config.mem_size_mib,

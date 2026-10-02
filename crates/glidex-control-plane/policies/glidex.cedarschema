@@ -1,0 +1,163 @@
+// Cedar schema for glidex authorization (spec/security.md §7.1).
+//
+// Every API route maps to exactly one concrete action below. Roles and
+// permission groups are action groups and are never requested directly.
+namespace Glidex {
+  type Auth = {
+    method: String,        // "peer" | "pam" | "oidc" | "token" | "disabled"
+    transport: String,     // "unix" | "tcp"
+    age_secs: Long,        // seconds since this principal last authenticated
+    source_ip?: ipaddr,    // TCP clients (from X-Forwarded-For only via glidex-ui)
+  };
+  type Ctx = { auth: Auth };
+  type ProjectCtx = { auth: Auth, project: Project };
+  type NetworkCtx = { auth: Auth, network: Network };
+
+  entity Host;                                    // one: Host::"local"
+  entity Team;
+  entity User in [Team] { disabled: Bool };
+  entity Token { owner?: User, expired: Bool };   // personal (owner) or service account
+  entity Project in [Host];
+  entity Vm in [Project] { project: Project };
+  entity Disk in [Project] { project: Project };
+  entity Credential in [Project] { project: Project };
+  entity Image in [Host];
+  // Host networks: parent Host, no `project`. Project networks: parent Project.
+  // shares: projects that accepted a share of a project network.
+  entity Network in [Host, Project] {
+    project?: Project, all_projects: Bool, grants: Set<Project>, shares: Set<Project>,
+  };
+  entity PciDevice in [Host] { grants: Set<Project> };
+
+  // Roles are action groups. A role includes every role listed under it.
+  action "role.system-admin";
+  action "role.owner", "role.auditor", "role.net-admin", "role.image-admin"
+    in ["role.system-admin"];
+  action "role.editor"   in ["role.owner"];
+  action "role.operator" in ["role.editor"];
+  action "role.viewer"   in ["role.operator", "role.auditor"];
+
+  // Marker group: everything in it needs a recent login (base.step-up).
+  action "step-up";
+
+  // Permission groups (spec §7.2).
+  action "project.read", "vm.read", "disk.read" in ["role.viewer"];
+  action "vm.operate", "vm.console" in ["role.operator"];
+  action "vm.write", "disk.write", "credential.read", "credential.write",
+         "network.use" in ["role.editor"];
+  action "project.members", "network.manage", "network.share" in ["role.owner"];
+  action "host.read" in ["role.auditor", "role.net-admin"];
+  action "policy.read", "system.audit" in ["role.auditor"];
+  action "host.network", "host.devices" in ["role.net-admin"];
+  action "host.network.critical" in ["host.network", "step-up"];
+  action "image.manage" in ["role.image-admin"];
+  action "policy.write" in ["role.system-admin", "step-up"];
+  action "system.identity", "system.projects", "host.paths", "quota.exceed"
+    in ["role.system-admin"];
+  action "identity.read" in ["role.auditor", "system.identity"];
+
+  // ---- projects ----------------------------------------------------------
+  action readProject, readBindings in ["project.read"]
+    appliesTo { principal: [User, Token], resource: [Project], context: Ctx };
+  action manageBindings, manageServiceTokens, readProjectAudit in ["project.members"]
+    appliesTo { principal: [User, Token], resource: [Project], context: Ctx };
+  action updateProject, deleteProject in ["system.projects"]
+    appliesTo { principal: [User, Token], resource: [Project], context: Ctx };
+  action createProject, manageSystemBindings in ["system.projects"]
+    appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
+  action readSystemBindings in ["policy.read"]
+    appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
+  action exceedQuota in ["quota.exceed"]
+    appliesTo { principal: [User, Token], resource: [Project], context: Ctx };
+
+  // ---- VMs ---------------------------------------------------------------
+  action readVm, getConsoleInfo in ["vm.read"]
+    appliesTo { principal: [User, Token], resource: [Vm], context: Ctx };
+  action listVms in ["vm.read"]
+    appliesTo { principal: [User, Token], resource: [Project], context: Ctx };
+  action startVm, stopVm, pauseVm in ["vm.operate"]
+    appliesTo { principal: [User, Token], resource: [Vm], context: Ctx };
+  action openConsole in ["vm.console"]
+    appliesTo { principal: [User, Token], resource: [Vm], context: Ctx };
+  action createVm in ["vm.write"]
+    appliesTo { principal: [User, Token], resource: [Project], context: Ctx };
+  action deleteVm, attachDisk, detachDisk, attachDevice, detachDevice in ["vm.write"]
+    appliesTo { principal: [User, Token], resource: [Vm], context: Ctx };
+  action useDisk in ["vm.write"]
+    appliesTo { principal: [User, Token], resource: [Disk], context: ProjectCtx };
+  action useCredential in ["vm.write"]
+    appliesTo { principal: [User, Token], resource: [Credential], context: ProjectCtx };
+  action usePciDevice in ["host.devices"]
+    appliesTo { principal: [User, Token], resource: [PciDevice], context: ProjectCtx };
+  action useHostPath in ["host.paths"]
+    appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
+
+  // ---- disks and guest credentials ---------------------------------------
+  action listDisks in ["disk.read"]
+    appliesTo { principal: [User, Token], resource: [Project], context: Ctx };
+  action readDisk in ["disk.read"]
+    appliesTo { principal: [User, Token], resource: [Disk], context: Ctx };
+  action createDisk in ["disk.write"]
+    appliesTo { principal: [User, Token], resource: [Project], context: Ctx };
+  action deleteDisk, resizeDisk, extendRoot in ["disk.write"]
+    appliesTo { principal: [User, Token], resource: [Disk], context: Ctx };
+  action listCredentials in ["credential.read"]
+    appliesTo { principal: [User, Token], resource: [Project], context: Ctx };
+  action readCredential in ["credential.read"]
+    appliesTo { principal: [User, Token], resource: [Credential], context: Ctx };
+  action createCredential in ["credential.write"]
+    appliesTo { principal: [User, Token], resource: [Project], context: Ctx };
+  action updateCredential, deleteCredential in ["credential.write"]
+    appliesTo { principal: [User, Token], resource: [Credential], context: Ctx };
+
+  // ---- networks ----------------------------------------------------------
+  action attachNetwork, detachNetwork in ["network.use"]
+    appliesTo { principal: [User, Token], resource: [Vm, Project], context: Ctx };
+  action useNetwork        // in no group: who may attach is `attachNetwork`
+    appliesTo { principal: [User, Token], resource: [Network], context: ProjectCtx };
+  action createProjectNetwork in ["network.manage"]
+    appliesTo { principal: [User, Token], resource: [Project], context: Ctx };
+  action deleteProjectNetwork in ["network.manage"]
+    appliesTo { principal: [User, Token], resource: [Network], context: Ctx };
+  // Source side, on the network; context.project is the target project.
+  action offerNetworkShare, unshareNetwork in ["network.share"]
+    appliesTo { principal: [User, Token], resource: [Network], context: ProjectCtx };
+  // Target side, on the target project.
+  action acceptNetworkShare, leaveNetworkShare in ["network.share"]
+    appliesTo { principal: [User, Token], resource: [Project], context: NetworkCtx };
+  action listNetworkShares in ["network.share"]
+    appliesTo { principal: [User, Token], resource: [Project], context: Ctx };
+
+  // ---- host --------------------------------------------------------------
+  action readOvsStatus, listBridges, listUplinks, listPciDevices in ["host.read"]
+    appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
+  action createNetwork, createBridge, ensureUplink in ["host.network"]
+    appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
+  action deleteNetwork, grantNetwork in ["host.network"]
+    appliesTo { principal: [User, Token], resource: [Network], context: Ctx };
+  action installOvs, initDpdk, confirmUplink, commitUplink, deleteUplink,
+         deleteBridge in ["host.network.critical"]
+    appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
+
+  // ---- images ------------------------------------------------------------
+  action readImage, readNetwork
+    appliesTo { principal: [User, Token], resource: [Host, Image, Network], context: Ctx };
+  action pullImage in ["image.manage"]
+    appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
+  action deleteImage in ["image.manage"]
+    appliesTo { principal: [User, Token], resource: [Image], context: Ctx };
+
+  // ---- identity, tokens, audit, policies ---------------------------------
+  action listUsers, listTeams in ["identity.read"]
+    appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
+  action manageUsers, manageTeams, manageAnyTokens in ["system.identity"]
+    appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
+  action manageOwnTokens
+    appliesTo { principal: [User, Token], resource: [User], context: Ctx };
+  action readAudit in ["system.audit"]
+    appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
+  action readPolicy, validatePolicy, simulatePolicy in ["policy.read"]
+    appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
+  action writePolicy, deletePolicy, reloadPolicies in ["policy.write"]
+    appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
+}

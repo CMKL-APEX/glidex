@@ -69,6 +69,10 @@ storage_err!(
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Credential {
     pub username: String,
+    /// Owning project id (spec/security.md §6.2). Credentials are keyed by
+    /// `(project, username)`.
+    #[serde(default)]
+    pub project: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub password_hash: Option<String>,
     #[serde(default)]
@@ -81,6 +85,7 @@ impl std::fmt::Debug for Credential {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Credential")
             .field("username", &self.username)
+            .field("project", &self.project)
             .field(
                 "password_hash",
                 &self.password_hash.as_ref().map(|_| "[REDACTED]"),
@@ -94,6 +99,7 @@ impl std::fmt::Debug for Credential {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CredentialInfo {
     pub username: String,
+    pub project: String,
     pub has_password: bool,
     pub ssh_authorized_keys: Vec<String>,
     pub created_at: u64,
@@ -104,6 +110,7 @@ impl From<&Credential> for CredentialInfo {
     fn from(c: &Credential) -> Self {
         Self {
             username: c.username.clone(),
+            project: c.project.clone(),
             has_password: c.password_hash.is_some(),
             ssh_authorized_keys: c.ssh_authorized_keys.clone(),
             created_at: c.created_at,
@@ -242,27 +249,31 @@ impl CredentialStore {
         Ok(Self { db })
     }
 
-    pub fn get(&self, username: &str) -> Result<Credential, CredentialError> {
+    pub fn get(&self, project: &str, username: &str) -> Result<Credential, CredentialError> {
         let txn = self.db.begin_read()?;
         let table = txn.open_table(CREDENTIALS_TABLE)?;
         let value = table
-            .get(username)?
+            .get(key(project, username).as_str())?
             .ok_or_else(|| CredentialError::NotFound(username.to_string()))?;
         Ok(serde_json::from_slice(value.value())?)
     }
 
-    pub fn list(&self) -> Result<Vec<Credential>, CredentialError> {
+    /// Credentials of `project`, or of every project.
+    pub fn list(&self, project: Option<&str>) -> Result<Vec<Credential>, CredentialError> {
         let txn = self.db.begin_read()?;
         let table = txn.open_table(CREDENTIALS_TABLE)?;
         let mut out = Vec::new();
         for entry in table.iter()? {
             let (_, value) = entry?;
-            out.push(serde_json::from_slice(value.value())?);
+            let c: Credential = serde_json::from_slice(value.value())?;
+            if project.is_none_or(|p| p == c.project) {
+                out.push(c);
+            }
         }
         Ok(out)
     }
 
-    pub fn create(&self, req: CreateCredentialRequest) -> Result<Credential, CredentialError> {
+    pub fn create(&self, project: &str, req: CreateCredentialRequest) -> Result<Credential, CredentialError> {
         validate_username(&req.username)?;
         let password_hash = req.password.as_deref().map(hash_password).transpose()?;
         let ssh_authorized_keys = validate_ssh_keys(req.ssh_authorized_keys.unwrap_or_default())?;
@@ -274,20 +285,22 @@ impl CredentialStore {
         let ts = now();
         let credential = Credential {
             username: req.username,
+            project: project.to_string(),
             password_hash,
             ssh_authorized_keys,
             created_at: ts,
             updated_at: ts,
         };
 
+        let k = key(project, &credential.username);
         let txn = self.db.begin_write()?;
         {
             let mut table = txn.open_table(CREDENTIALS_TABLE)?;
-            if table.get(credential.username.as_str())?.is_some() {
+            if table.get(k.as_str())?.is_some() {
                 return Err(CredentialError::AlreadyExists(credential.username));
             }
             let bytes = serde_json::to_vec(&credential)?;
-            table.insert(credential.username.as_str(), bytes.as_slice())?;
+            table.insert(k.as_str(), bytes.as_slice())?;
         }
         txn.commit()?;
         Ok(credential)
@@ -295,18 +308,20 @@ impl CredentialStore {
 
     pub fn update(
         &self,
+        project: &str,
         username: &str,
         req: UpdateCredentialRequest,
     ) -> Result<Credential, CredentialError> {
         let password_hash = req.password.as_deref().map(hash_password).transpose()?;
         let ssh_keys = req.ssh_authorized_keys.map(validate_ssh_keys).transpose()?;
 
+        let k = key(project, username);
         let txn = self.db.begin_write()?;
         let credential = {
             let mut table = txn.open_table(CREDENTIALS_TABLE)?;
             let mut credential: Credential = {
                 let value = table
-                    .get(username)?
+                    .get(k.as_str())?
                     .ok_or_else(|| CredentialError::NotFound(username.to_string()))?;
                 serde_json::from_slice(value.value())?
             };
@@ -323,24 +338,55 @@ impl CredentialStore {
             }
             credential.updated_at = now();
             let bytes = serde_json::to_vec(&credential)?;
-            table.insert(username, bytes.as_slice())?;
+            table.insert(k.as_str(), bytes.as_slice())?;
             credential
         };
         txn.commit()?;
         Ok(credential)
     }
 
-    pub fn delete(&self, username: &str) -> Result<(), CredentialError> {
+    pub fn delete(&self, project: &str, username: &str) -> Result<(), CredentialError> {
         let txn = self.db.begin_write()?;
         {
             let mut table = txn.open_table(CREDENTIALS_TABLE)?;
-            if table.remove(username)?.is_none() {
+            if table.remove(key(project, username).as_str())?.is_none() {
                 return Err(CredentialError::NotFound(username.to_string()));
             }
         }
         txn.commit()?;
         Ok(())
     }
+
+    /// Move credentials from before projects (keyed by username alone)
+    /// into `project`. Returns how many moved.
+    pub fn adopt_unscoped(&self, project: &str) -> Result<usize, CredentialError> {
+        let txn = self.db.begin_write()?;
+        let moved = {
+            let mut table = txn.open_table(CREDENTIALS_TABLE)?;
+            let mut old = Vec::new();
+            for entry in table.iter()? {
+                let (k, v) = entry?;
+                if !k.value().contains('/') {
+                    old.push((k.value().to_string(), v.value().to_vec()));
+                }
+            }
+            for (k, v) in &old {
+                let mut c: Credential = serde_json::from_slice(v)?;
+                c.project = project.to_string();
+                let bytes = serde_json::to_vec(&c)?;
+                table.remove(k.as_str())?;
+                table.insert(key(project, &c.username).as_str(), bytes.as_slice())?;
+            }
+            old.len()
+        };
+        txn.commit()?;
+        Ok(moved)
+    }
+}
+
+/// Table key: `<project>/<username>` (usernames never contain `/`).
+fn key(project: &str, username: &str) -> String {
+    format!("{}/{}", project, username)
 }
 
 #[cfg(test)]
@@ -365,7 +411,7 @@ mod tests {
     #[test]
     fn stores_only_a_verifiable_sha512_hash() {
         let (store, _dir) = store();
-        let cred = store.create(req("alice", Some("correct horse"))).unwrap();
+        let cred = store.create("p", req("alice", Some("correct horse"))).unwrap();
         let hash = cred.password_hash.clone().unwrap();
         assert!(hash.starts_with("$6$"), "{hash}");
         // glibc only reads 16 salt characters; a longer salt in the string
@@ -374,7 +420,7 @@ mod tests {
         assert_eq!(salt.len(), 16, "{hash}");
         assert!(!hash.contains("correct horse"));
 
-        let stored = store.get("alice").unwrap();
+        let stored = store.get("p", "alice").unwrap();
         let parsed = PasswordHashRef::new(stored.password_hash.as_deref().unwrap()).unwrap();
         assert!(ShaCrypt::default()
             .verify_password(b"correct horse", parsed)
@@ -385,7 +431,7 @@ mod tests {
     #[test]
     fn debug_output_redacts_secrets() {
         let (store, _dir) = store();
-        let cred = store.create(req("bob", Some("s3cret-pass"))).unwrap();
+        let cred = store.create("p", req("bob", Some("s3cret-pass"))).unwrap();
         let debug = format!("{:?}", cred);
         assert!(!debug.contains("$6$"), "{debug}");
         let debug = format!("{:?}", req("bob", Some("s3cret-pass")));
@@ -395,7 +441,7 @@ mod tests {
     #[test]
     fn info_never_contains_the_hash() {
         let (store, _dir) = store();
-        let cred = store.create(req("carol", Some("password123"))).unwrap();
+        let cred = store.create("p", req("carol", Some("password123"))).unwrap();
         let json = serde_json::to_string(&CredentialInfo::from(&cred)).unwrap();
         assert!(!json.contains("$6$"), "{json}");
         assert!(json.contains("\"has_password\":true"));
@@ -406,33 +452,31 @@ mod tests {
         let (store, _dir) = store();
         for name in ["Root", "root", "9lives", "a b", "", &"x".repeat(33)] {
             assert!(
-                matches!(store.create(req(name, Some("password123"))), Err(CredentialError::Invalid(_))),
+                matches!(store.create("p", req(name, Some("password123"))), Err(CredentialError::Invalid(_))),
                 "{name:?}"
             );
         }
-        assert!(matches!(store.create(req("dave", Some("short"))), Err(CredentialError::Invalid(_))));
-        assert!(matches!(store.create(req("dave", None)), Err(CredentialError::Invalid(_))));
+        assert!(matches!(store.create("p", req("dave", Some("short"))), Err(CredentialError::Invalid(_))));
+        assert!(matches!(store.create("p", req("dave", None)), Err(CredentialError::Invalid(_))));
         let bad_key = CreateCredentialRequest {
             username: "dave".into(),
             password: None,
             ssh_authorized_keys: Some(vec!["not a key".into()]),
         };
-        assert!(matches!(store.create(bad_key), Err(CredentialError::Invalid(_))));
+        assert!(matches!(store.create("p", bad_key), Err(CredentialError::Invalid(_))));
     }
 
     #[test]
     fn create_update_delete_round_trip() {
         let (store, _dir) = store();
-        store.create(req("erin", Some("password123"))).unwrap();
+        store.create("p", req("erin", Some("password123"))).unwrap();
         assert!(matches!(
-            store.create(req("erin", Some("password456"))),
+            store.create("p", req("erin", Some("password456"))),
             Err(CredentialError::AlreadyExists(_))
         ));
 
-        let before = store.get("erin").unwrap().password_hash;
-        let updated = store
-            .update(
-                "erin",
+        let before = store.get("p", "erin").unwrap().password_hash;
+        let updated = store.update("p", "erin",
                 UpdateCredentialRequest {
                     password: Some("new-password".into()),
                     ssh_authorized_keys: Some(vec!["ssh-ed25519 AAAAC3Nza erin@host".into()]),
@@ -441,10 +485,10 @@ mod tests {
             .unwrap();
         assert_ne!(updated.password_hash, before);
         assert_eq!(updated.ssh_authorized_keys.len(), 1);
-        assert_eq!(store.list().unwrap().len(), 1);
+        assert_eq!(store.list(Some("p")).unwrap().len(), 1);
 
-        store.delete("erin").unwrap();
-        assert!(matches!(store.get("erin"), Err(CredentialError::NotFound(_))));
-        assert!(matches!(store.delete("erin"), Err(CredentialError::NotFound(_))));
+        store.delete("p", "erin").unwrap();
+        assert!(matches!(store.get("p", "erin"), Err(CredentialError::NotFound(_))));
+        assert!(matches!(store.delete("p", "erin"), Err(CredentialError::NotFound(_))));
     }
 }

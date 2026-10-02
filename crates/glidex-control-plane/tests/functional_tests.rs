@@ -288,7 +288,12 @@ async fn firmware_config_survives_restart() {
     manager.initialize().await.unwrap();
     let vm = manager.get_vm(&id).await.unwrap();
     assert_eq!(vm.config.firmware_path.as_deref(), Some("/path/to/CLOUDHV.fd"));
-    assert_eq!(vm.default_cloud_init_path(), format!("/tmp/cloud-hypervisor-{id}.cloudinit.img"));
+    // Per-VM private runtime directory (spec/security.md §9).
+    assert_eq!(
+        vm.default_cloud_init_path(),
+        glidex_control_plane::paths::vm_dir(&id).join("cloudinit.img").to_string_lossy()
+    );
+    assert!(vm.socket_path.ends_with(&format!("/vms/{id}/api.sock")), "{}", vm.socket_path);
 }
 
 // ============================================================================
