@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import * as api from "../api";
+import { useCan, useSession } from "../session";
 import type { CredentialInfo } from "../types";
 import Modal from "../components/Modal";
 import { LoadingCard } from "../components/Loading";
@@ -72,6 +73,7 @@ function AddCredentialForm({
   onDone: () => void;
   onCancel: () => void;
 }) {
+  const { project } = useSession();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -89,6 +91,7 @@ function AddCredentialForm({
     setError(null);
     try {
       await api.createCredential({
+        project: project ?? undefined,
         username,
         password: password || undefined,
         ssh_authorized_keys: parseKeys(keys),
@@ -156,6 +159,7 @@ function EditCredentialForm({
 }) {
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
+  const { project } = useSession();
   const [keys, setKeys] = useState(credential.ssh_authorized_keys.join("\n"));
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -172,7 +176,7 @@ function EditCredentialForm({
       await api.updateCredential(credential.username, {
         password: password || undefined,
         ssh_authorized_keys: parseKeys(keys),
-      });
+      }, credential.project ?? project);
       onDone();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to update credential");
@@ -240,6 +244,8 @@ function FormButtons({
 }
 
 export default function Credentials() {
+  const { project } = useSession();
+  const [canAdd] = useCan(project ? [{ action: "createCredential", resource: { type: "Project", id: project } }] : []) ?? [];
   const [credentials, setCredentials] = useState<CredentialInfo[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
@@ -247,14 +253,14 @@ export default function Credentials() {
 
   const refresh = useCallback(async () => {
     try {
-      const data = await api.listCredentials();
+      const data = await api.listCredentials(project);
       data.sort((a, b) => a.username.localeCompare(b.username));
       setCredentials(data);
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load credentials");
     }
-  }, []);
+  }, [project]);
 
   useEffect(() => {
     refresh();
@@ -263,7 +269,7 @@ export default function Credentials() {
   const remove = async (username: string) => {
     if (!confirm(`Delete credential "${username}"?`)) return;
     try {
-      await api.deleteCredential(username);
+      await api.deleteCredential(username, project);
       refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to delete credential");
@@ -280,12 +286,14 @@ export default function Credentials() {
             Passwords are stored as SHA-512-crypt hashes only.
           </p>
         </div>
-        <button
-          className="px-4 py-2 text-sm font-medium text-white bg-sky-600 hover:bg-sky-700 rounded-lg transition-colors"
-          onClick={() => setAdding(true)}
-        >
-          Add Credential
-        </button>
+        {canAdd && (
+          <button
+            className="px-4 py-2 text-sm font-medium text-white bg-sky-600 hover:bg-sky-700 rounded-lg transition-colors"
+            onClick={() => setAdding(true)}
+          >
+            Add Credential
+          </button>
+        )}
       </div>
 
       {error && (

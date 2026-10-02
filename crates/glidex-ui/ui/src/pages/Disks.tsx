@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import * as api from "../api";
 import { ApiRequestError } from "../api";
+import { useCan, useSession } from "../session";
 import type { DiskInfo, ImageInfo, VmResponse } from "../types";
 import { formatBytes } from "../types";
 import Modal from "../components/Modal";
@@ -34,6 +35,7 @@ function CreateDiskForm({
   onDone: (d: DiskInfo) => void;
   onCancel: () => void;
 }) {
+  const { project } = useSession();
   const ready = images.filter((i) => i.status.state === "ready");
   const [name, setName] = useState("");
   const [image, setImage] = useState(ready[0]?.id ?? "");
@@ -49,6 +51,7 @@ function CreateDiskForm({
     setError(null);
     try {
       const d = await api.createDisk({
+        project: project ?? undefined,
         name,
         image: image || undefined,
         size_gib: size ? Number(size) : undefined,
@@ -183,6 +186,8 @@ function ResizeForm({ disk, onDone, onCancel }: { disk: DiskInfo; onDone: (d: Di
 }
 
 export default function Disks() {
+  const { project } = useSession();
+  const [canCreate] = useCan(project ? [{ action: "createDisk", resource: { type: "Project", id: project } }] : []) ?? [];
   const [disks, setDisks] = useState<DiskInfo[] | null>(null);
   const [images, setImages] = useState<ImageInfo[]>([]);
   const [vms, setVms] = useState<VmResponse[]>([]);
@@ -193,10 +198,10 @@ export default function Disks() {
   const [detail, setDetail] = useState<DiskInfo | null>(null);
 
   const refresh = useCallback(() => {
-    api.listDisks().then(setDisks).catch((e) => setError(errorText(e)));
+    api.listDisks(project).then(setDisks).catch((e) => setError(errorText(e)));
     api.listImages().then(setImages).catch(() => setImages([]));
-    api.listVms().then(setVms).catch(() => setVms([]));
-  }, []);
+    api.listVms(project).then(setVms).catch(() => setVms([]));
+  }, [project]);
 
   useEffect(() => {
     refresh();
@@ -233,9 +238,11 @@ export default function Disks() {
             Writable volumes VMs boot from or attach. Resize and extend-root need the VM stopped.
           </p>
         </div>
-        <button className="px-4 py-2 text-sm font-medium text-white bg-sky-600 hover:bg-sky-700 rounded-lg" onClick={() => setCreating(true)}>
-          Create Disk
-        </button>
+        {canCreate && (
+          <button className="px-4 py-2 text-sm font-medium text-white bg-sky-600 hover:bg-sky-700 rounded-lg" onClick={() => setCreating(true)}>
+            Create Disk
+          </button>
+        )}
       </div>
 
       {error && <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700">{error}</div>}
