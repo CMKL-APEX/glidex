@@ -1704,6 +1704,11 @@ impl VmManager {
         self.create_host_network(req, vec![default_project], false).await.map(Some)
     }
 
+    /// The control-plane database (shared with the identity store).
+    pub fn database(&self) -> Arc<redb::Database> {
+        self.store.database()
+    }
+
     pub fn netd(&self) -> &Netd {
         &self.netd
     }

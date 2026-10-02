@@ -79,9 +79,10 @@ fn every_denial_looks_the_same() {
     let wrong_group = denied_body(&h, "mallory", PASSWORD);
     let unknown = denied_body(&h, "nobody-here", PASSWORD);
     let invalid_name = denied_body(&h, "Not A User!", PASSWORD);
+    // Compared as JSON: key order depends on serde_json's features.
     assert_eq!(
-        wrong_password,
-        r#"{"error":{"code":"denied","message":"authentication failed"},"id":1}"#
+        serde_json::from_str::<serde_json::Value>(&wrong_password).unwrap(),
+        serde_json::json!({"error": {"code": "denied", "message": "authentication failed"}, "id": 1})
     );
     assert_eq!(wrong_group, wrong_password);
     assert_eq!(unknown, wrong_password);

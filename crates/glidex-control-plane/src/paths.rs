@@ -76,10 +76,11 @@ pub fn ensure_private_dir(path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Create the run directory and a VM's private directory.
+/// Create a VM's private directory. The run directory itself also holds
+/// the API sockets, so it stays traversable; `vms/` and below are 0700.
 pub fn ensure_vm_dir(vm_id: &str) -> std::io::Result<PathBuf> {
     let run = run_dir();
-    ensure_private_dir(&run)?;
+    std::fs::DirBuilder::new().recursive(true).mode(0o755).create(&run)?;
     ensure_private_dir(&run.join("vms"))?;
     let dir = vm_dir(vm_id);
     ensure_private_dir(&dir)?;

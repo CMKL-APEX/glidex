@@ -2,7 +2,7 @@
 //! client side of glidex-netd, which owns all host network state.
 
 use glidex_netd::client::{Client, ClientError};
-use glidex_netd::proto::{ErrorBody, Op, FULL_SOCKET_NAME, STATUS_SOCKET_NAME};
+use glidex_netd::proto::{ErrorBody, OnBehalfOf, Op, FULL_SOCKET_NAME, STATUS_SOCKET_NAME};
 use glidex_ovs::names::{validate_name, MAX_IFNAME};
 use glidex_ovs::net::Ipv4Net;
 use glidex_ovs::vm_port::VmPortKind;
@@ -294,6 +294,14 @@ impl Netd {
         let timeout = Self::timeout(&op);
         let mut client = Client::connect(&self.run_dir.join(FULL_SOCKET_NAME))?;
         Ok(client.call(op, timeout)?)
+    }
+
+    /// As `call`, telling netd whom the request is for (logged by netd
+    /// next to our uid; never used for authorization, spec §8.3).
+    pub fn call_as<T: DeserializeOwned>(&self, op: Op, on_behalf_of: &OnBehalfOf) -> Result<T, NetError> {
+        let timeout = Self::timeout(&op);
+        let mut client = Client::connect(&self.run_dir.join(FULL_SOCKET_NAME))?;
+        Ok(client.call_as(op, Some(on_behalf_of), timeout)?)
     }
 
     /// Host status: full socket if we're allowed, else the status socket.

@@ -284,8 +284,6 @@ pub struct VmResponse {
     pub state: VmState,
     pub vcpu_count: u8,
     pub mem_size_mib: u32,
-    pub console_socket_path: String,
-    pub log_path: String,
     pub hypervisor: HypervisorType,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub vfio_devices: Vec<String>,
@@ -310,8 +308,6 @@ impl From<&Vm> for VmResponse {
             state: vm.state.clone(),
             vcpu_count: vm.config.vcpu_count,
             mem_size_mib: vm.config.mem_size_mib,
-            console_socket_path: vm.console_socket_path.clone(),
-            log_path: vm.log_path.clone(),
             hypervisor: vm.hypervisor,
             vfio_devices: vm.config.vfio_devices.clone(),
             credential: vm.config.credential.clone(),
