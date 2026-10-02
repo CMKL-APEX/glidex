@@ -1,6 +1,6 @@
 import type { VmState } from "../types";
 
-export type VmAction = "start" | "stop" | "pause" | "delete";
+export type VmAction = "start" | "shutdown" | "stop" | "pause" | "delete";
 
 interface VmActionsProps {
   vmId: string;
@@ -19,6 +19,8 @@ export default function VmActions({
     state === "created" || state === "stopped" || state === "paused";
   const canStop = state === "running" || state === "paused";
   const canPause = state === "running";
+  // The power button only reaches a running guest.
+  const canShutdown = state === "running";
 
   return (
     <div className="flex items-center space-x-2">
@@ -40,10 +42,21 @@ export default function VmActions({
           Pause
         </button>
       )}
+      {canShutdown && (
+        <button
+          className="px-3 py-1.5 text-sm font-medium text-gray-700 bg-gray-200 hover:bg-gray-300 rounded-lg transition-colors disabled:opacity-50"
+          disabled={loading}
+          title="Press the guest's power button; stop it if it hasn't shut down within 60 s"
+          onClick={() => onAction(vmId, "shutdown")}
+        >
+          Shut down
+        </button>
+      )}
       {canStop && (
         <button
           className="px-3 py-1.5 text-sm font-medium text-gray-700 bg-gray-200 hover:bg-gray-300 rounded-lg transition-colors disabled:opacity-50"
           disabled={loading}
+          title="Stop immediately, like pulling the plug"
           onClick={() => onAction(vmId, "stop")}
         >
           Stop

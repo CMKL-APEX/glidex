@@ -38,9 +38,10 @@ pub struct VmConfig {
     pub mem_size_mib: u32,
     #[serde(default)]
     pub kernel_image_path: String,
-    /// UEFI firmware (e.g. Cloud Hypervisor's `CLOUDHV.fd`). When set, the
-    /// guest boots from its disk's bootloader and `kernel_image_path` /
-    /// `kernel_args` are ignored. Only Cloud Hypervisor supports this.
+    /// UEFI firmware: Cloud Hypervisor's `CLOUDHV.fd`, or an OVMF code
+    /// image (`OVMF_CODE*.fd`) for QEMU. When set, the guest boots from its
+    /// disk's bootloader and `kernel_image_path` / `kernel_args` are
+    /// ignored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub firmware_path: Option<String>,
     /// cloud-init NoCloud seed disk attached alongside the rootfs. For
@@ -86,6 +87,10 @@ pub struct VmConfig {
     /// Managed data disks, filled in by `start_vm`; never persisted.
     #[serde(skip)]
     pub data_disk_bindings: Vec<DiskBinding>,
+    /// This VM's own copy of the OVMF variable store (QEMU firmware boot),
+    /// filled in by `start_vm`; never persisted.
+    #[serde(skip)]
+    pub firmware_vars_path: Option<String>,
 }
 
 /// What a hypervisor needs to open one managed disk.
@@ -255,6 +260,7 @@ impl From<CreateVmRequest> for VmConfig {
             data_disks: Vec::new(),
             owns_root_disk: false,
             root_disk_binding: None,
+            firmware_vars_path: None,
             data_disk_bindings: Vec::new(),
         }
     }

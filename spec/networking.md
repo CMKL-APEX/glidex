@@ -73,7 +73,7 @@ Each changed the implementation; the sections below already reflect them.
     systemd-networkd lease files and `ss` (established TCP sessions on the
     NIC's addresses); see §8.4.
 
-Scope is **Cloud Hypervisor only**. Facts are from the Cloud Hypervisor
+Written for Cloud Hypervisor first; QEMU uses the same netd ports (§3a). Facts are from the Cloud Hypervisor
 v53 API schema and source (`../ch/cloud-hypervisor`), the Open vSwitch
 documentation ([AF_XDP][ovs-afxdp], [DPDK vhost-user][ovs-vhost],
 [userspace TSO][ovs-tso], [release FAQ][ovs-releases]) and the Ubuntu
@@ -86,7 +86,7 @@ during the milestone that uses them.
 |---|---|---|
 | 1 | Privilege model | A root helper, **`glidex-netd`**, from the first milestone; the control plane runs unprivileged. |
 | 2 | NIC IP migration | **In scope**, with confirmation (`confirm: true` / `--force`) and automatic rollback. |
-| 3 | Hypervisors | **Cloud Hypervisor only.** QEMU is future work (Appendix A). |
+| 3 | Hypervisors | **Cloud Hypervisor and QEMU**, on the same ports (§3, §3a). |
 | 4 | Addressing | **DHCP, plus NAT through the host's existing route.** Static addressing is later. |
 | 5 | DPDK `vfio-pci` binding | **Re-applied by netd at start**; no udev/`driverctl` rule. |
 | 6 | Installing OVS | **`glidex-ovs` installs it**: distro packages by profile. |
@@ -140,6 +140,27 @@ Everything else is rejected with `unsupported`.
   the capability, so the installer re-applies it and `probe` reports it
   missing (`getcap`).
 - Hotplug (`vm.add-net`, `vm.remove-device` by `id`) is not used yet.
+
+## 3a. QEMU requirements
+
+`hypervisor/qemu.rs::nic_args` turns each `NicBinding` into a
+`-netdev` / `-device` pair (`id = "net<i>"`, device `dev-net<i>`):
+
+- **tap:** `-netdev tap,id=net0,ifname=<tap>,script=no,downscript=no,vhost=on[,queues=<pairs>]`.
+  `vhost=on` (in-kernel vhost-net) when `/dev/vhost-net` opens (usually
+  the `kvm` group), otherwise `vhost=off` with a warning. QEMU opens the
+  tap as its owner (`user <uid>` at creation) and needs no capability:
+  netd sets the MTU (`mtu_request`) and brings the tap up (§9).
+- **vhost-user:** `-chardev socket,id=chr-net0,path=<sock>,server=on,wait=off`
+  plus `-netdev vhost-user,id=net0,chardev=chr-net0[,queues=<pairs>]`. QEMU
+  serves the socket, like CH's `vhost_mode: "Server"`; `wait=off` is safe
+  because the guest is held with `-S` until `start`.
+- **device:** `virtio-net-pci,netdev=net0,id=dev-net0,mac=<mac>[,host_mtu=<mtu>][,mq=on,vectors=<2·pairs+2>]`.
+- **Shared guest memory** (any vhost-user NIC, or `hugepages`):
+  `-object memory-backend-memfd,id=mem,size=<M>M,share=on[,hugetlb=on]`
+  and `-machine q35,memory-backend=mem`.
+- `-nodefaults` keeps QEMU from adding its default user-mode NIC: a VM
+  with no networks has no NIC, as under CH.
 
 ## 4. Components
 
@@ -592,13 +613,15 @@ Limits, returned in `UplinkState.warnings`:
     unicast, stable across restarts;
   - vhost socket `/run/glidex/vhost/<U>.net<i>.sock` (< 108 bytes).
 - **Tap:** `ip tuntap add dev <port> mode tap [multi_queue] user <uid>`
-  (`multi_queue` only when `queue_pairs > 1`, matching what Cloud
-  Hypervisor asks for);
+  (`multi_queue` only when `queue_pairs > 1`, matching what the
+  hypervisor asks for);
   `ovs-vsctl --may-exist add-port <br> <port> -- set Interface <port>
-  external_ids:…` (+ `set Port <port> tag=<vlan>`).
+  [mtu_request=<mtu>] external_ids:…` (+ `set Port <port> tag=<vlan>`);
+  then `ip link set dev <port> up`. OVS doesn't bring a tap up, and QEMU,
+  unlike CH (decision 9), has no `CAP_NET_ADMIN` to do it itself.
 - **VhostUser:** `ovs-vsctl --may-exist add-port <br> <port> -- set
   Interface <port> type=dpdkvhostuserclient
-  options:vhost-server-path=<sock> external_ids:…` (+ tag). Requires a
+  options:vhost-server-path=<sock> [mtu_request=<mtu>] external_ids:…` (+ tag). Requires a
   `netdev` bridge and `dpdkvhostuserclient`.
 - On a NAT bridge, attach allocates the lowest free pool address for the
   MAC (kept for the VM's lifetime, freed when the VM is deleted) and
@@ -742,8 +765,7 @@ Error mapping:
 | netd unreachable | 503 | `netd_unavailable` |
 | `permission_denied` | 503 | `netd_permission_denied` (control plane not in `glidex`) |
 
-`create_vm` validation: networks only for `cloudhypervisor` (400);
-unknown network (400); ≤ 8 attachments; a custom MAC must be unicast;
+`create_vm` validation: unknown network (400); ≤ 8 attachments; a custom MAC must be unicast;
 VhostUser forces `memory.shared = true`. Deleting a network used by any
 VM → `409`.
 
@@ -756,7 +778,10 @@ VM → `409`.
 - `stop_vm`, `delete_vm`, `shutdown`: `detach_vm_port` per attachment
   (errors logged, not fatal).
 - `CloudHypervisorClient::create_vm` gains `net: Vec<NetConfig>` and
-  `MemoryConfig { shared, hugepages }`.
+  `MemoryConfig { shared, hugepages }`; QEMU gets the arguments in §3a.
+- A guest that powers itself off takes its hypervisor with it. The
+  control plane checks every 2 s (`reap_exited_vms`), marks such VMs
+  `stopped` and detaches their ports.
 
 ### 11.5 Guest `network-config`
 
@@ -795,7 +820,7 @@ a re-run with `--force`.
 UI: a **Networking** page (status panel with missing-capability hints
 and an Install OVS button; bridges with uplinks; networks), a
 confirmation dialog for `confirmation_required`, a networks multi-select
-in `CreateVmForm` (Cloud Hypervisor only), and NICs/IPs in `VmDetail`.
+in `CreateVmForm`, and NICs/IPs in `VmDetail`.
 
 ## 13. `glidex-install`
 
@@ -850,15 +875,11 @@ pairs instead of real NICs, and tears down its bridges, the `inet
 glidex` table and dnsmasq even on failure. CI runs only unit and API
 tests.
 
-## Appendix A: QEMU (future)
+## Appendix A: QEMU
 
-- vhost-user: `-object memory-backend-memfd,id=mem,size=<M>M,share=on
-  -machine q35,memory-backend=mem -chardev
-  socket,id=vhu0,path=<sock>,server=on,wait=off -netdev
-  vhost-user,id=net0,chardev=vhu0,queues=<pairs> -device
-  virtio-net-pci,netdev=net0,mac=<mac>,mq=on,vectors=<2*pairs+2>`
-  (`wait=off` because glidex launches QEMU paused with `-S`).
-- tap: `-netdev tap,id=net0,ifname=<tap>,script=no,downscript=no`.
+Implemented; see §3a. Verified on the host below with the ignored
+`qemu_nat_network_e2e`, `qemu_vhost_user_e2e` and
+`mixed_hypervisors_share_a_network` tests (QEMU 10.2.1).
 
 ## Appendix B: OVS notes
 

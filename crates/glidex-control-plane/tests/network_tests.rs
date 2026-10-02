@@ -142,7 +142,9 @@ async fn vms_reference_networks() {
     qemu["kernel_image_path"] = json!("/k");
     qemu.as_object_mut().unwrap().remove("firmware_path");
     let (status, body) = request(&h.app, "POST", "/vms", Some(qemu)).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(status, StatusCode::CREATED, "QEMU VMs take networks too: {body}");
+    assert!(body["nics"][0]["mac"].as_str().unwrap().starts_with("02:"), "{body}");
+    let qemu_id = body["id"].as_str().unwrap().to_string();
 
     let (status, body) = request(&h.app, "POST", "/vms", Some(vm("v4", json!([{"network": "lab", "mac": "01:00:5e:00:00:01"}])))).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "multicast MAC: {body}");
@@ -151,21 +153,34 @@ async fn vms_reference_networks() {
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
     assert!(body["message"].as_str().unwrap().contains("v1"));
 
-    let (status, _) = request(&h.app, "DELETE", &format!("/vms/{id}"), None).await;
-    assert_eq!(status, StatusCode::NO_CONTENT);
+    for vm_id in [&id, &qemu_id] {
+        let (status, _) = request(&h.app, "DELETE", &format!("/vms/{vm_id}"), None).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+    }
     let (status, _) = request(&h.app, "DELETE", "/networks/lab", None).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn failed_start_detaches_ports() {
-    if std::process::Command::new("cloud-hypervisor").arg("--version").output().is_err() {
-        eprintln!("skipping: cloud-hypervisor not installed");
+    failed_start_detaches_ports_for("cloudhypervisor", "cloud-hypervisor").await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn qemu_failed_start_detaches_ports() {
+    failed_start_detaches_ports_for("qemu", "qemu-system-x86_64").await;
+}
+
+async fn failed_start_detaches_ports_for(hypervisor: &str, binary: &str) {
+    if std::process::Command::new(binary).arg("--version").output().is_err() {
+        eprintln!("skipping: {binary} not installed");
         return;
     }
     let h = harness(true);
     request(&h.app, "POST", "/networks", Some(json!({"name": "lab", "mode": "nat"}))).await;
-    let (_, body) = request(&h.app, "POST", "/vms", Some(vm("boom", json!([{"network": "lab"}])))).await;
+    let mut spec = vm("boom", json!([{"network": "lab"}]));
+    spec["hypervisor"] = json!(hypervisor);
+    let (_, body) = request(&h.app, "POST", "/vms", Some(spec)).await;
     let id = body["id"].as_str().unwrap().to_string();
     let port = glidex_ovs::names::port_name(&id, 0).unwrap();
 

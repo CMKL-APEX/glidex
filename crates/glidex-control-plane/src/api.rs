@@ -482,11 +482,29 @@ async fn start_vm(
     }
 }
 
+/// Longest a stop request may wait for the guest to power off.
+const MAX_GRACEFUL_STOP_SECS: u64 = 300;
+
+#[derive(Debug, serde::Deserialize)]
+struct StopParams {
+    /// Press the guest's power button and wait up to this long for it to
+    /// shut down before stopping it hard. Absent: stop immediately.
+    graceful_timeout_secs: Option<u64>,
+}
+
 async fn stop_vm(
     State(manager): State<AppState>,
     Path(id): Path<String>,
+    Query(params): Query<StopParams>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ApiError>)> {
-    match manager.stop_vm(&id).await {
+    let result = match params.graceful_timeout_secs {
+        Some(secs) => {
+            let grace = std::time::Duration::from_secs(secs.min(MAX_GRACEFUL_STOP_SECS));
+            manager.stop_vm_graceful(&id, grace).await
+        }
+        None => manager.stop_vm(&id).await,
+    };
+    match result {
         Ok(vm) => Ok(Json(VmResponse::from(&vm))),
         Err(e) => Err(error_to_response(e)),
     }

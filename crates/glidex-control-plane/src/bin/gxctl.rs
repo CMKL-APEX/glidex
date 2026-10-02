@@ -1,6 +1,6 @@
 use clap::Parser;
 use colored::Colorize;
-use glidex_control_plane::hypervisor::cloud_hypervisor::default_firmware_path;
+use glidex_control_plane::hypervisor::HypervisorType;
 use nix::sys::termios::{self, LocalFlags, SetArg, Termios};
 use reqwest::Client;
 use rustyline::completion::{unescape, Completer, FilenameCompleter, Pair};
@@ -73,6 +73,20 @@ fn display_opt_u16(o: &Option<u16>) -> String {
 /// `--flag value` from a command's arguments.
 fn flag_value<'a>(args: &'a [&'a str], flag: &str) -> Option<&'a str> {
     args.iter().position(|a| *a == flag).and_then(|i| args.get(i + 1)).copied()
+}
+
+/// `--graceful [secs]` from a `stop` command's arguments.
+fn graceful_stop_secs(args: &[&str]) -> Result<Option<u64>, String> {
+    const DEFAULT_SECS: u64 = 60;
+    match args {
+        [] => Ok(None),
+        ["--graceful"] => Ok(Some(DEFAULT_SECS)),
+        ["--graceful", secs] => secs
+            .parse()
+            .map(Some)
+            .map_err(|_| format!("'{}' is not a number of seconds", secs)),
+        _ => Err("usage: stop <name|id> [--graceful [secs]]".to_string()),
+    }
 }
 
 fn has_flag(args: &[&str], flag: &str) -> bool {
@@ -463,10 +477,14 @@ impl CliClient {
         }
     }
 
-    async fn stop_vm(&self, id: &str) -> Result<VmResponse, String> {
+    /// Stop a VM; with `graceful_secs`, power-button first and wait.
+    async fn stop_vm(&self, id: &str, graceful_secs: Option<u64>) -> Result<VmResponse, String> {
+        let query = graceful_secs
+            .map(|s| format!("?graceful_timeout_secs={}", s))
+            .unwrap_or_default();
         let resp = self
             .client
-            .post(format!("{}/vms/{}/stop", self.base_url, id))
+            .post(format!("{}/vms/{}/stop{}", self.base_url, id, query))
             .send()
             .await
             .map_err(|e| format!("Request failed: {}", e))?;
@@ -1031,6 +1049,10 @@ fn print_help() {
     );
     println!("  {}  - Start a VM", "start <name|id>".cyan());
     println!("  {}   - Stop a VM", "stop <name|id>".cyan());
+    println!(
+        "  {} - Shut a VM down via its power button (default wait 60 s), then stop it",
+        "stop <name|id> --graceful [secs]".cyan()
+    );
     println!("  {}  - Pause a VM", "pause <name|id>".cyan());
     println!("  {} - Connect to VM console (interactive)", "connect <name|id>".cyan());
     println!("  {}     - Show VM serial console log", "log <name|id>".cyan());
@@ -1446,10 +1468,15 @@ async fn handle_create(client: &CliClient) {
         }
     };
 
-    // Cloud Hypervisor boots a disk image through UEFI firmware by default,
-    // using the CLOUDHV.fd that glidex-install downloads into ~/.glidex.
-    let firmware_path = if hypervisor.as_deref() == Some("cloudhypervisor") {
-        let default_firmware = default_firmware_path()
+    // A disk image boots through UEFI firmware by default: the CLOUDHV.fd
+    // glidex-install downloads into ~/.glidex, or the host's OVMF for QEMU.
+    let firmware_path = {
+        let ty = match hypervisor.as_deref() {
+            Some("qemu") => HypervisorType::Qemu,
+            _ => HypervisorType::CloudHypervisor,
+        };
+        let default_firmware = ty
+            .default_firmware_path()
             .filter(|p| p.exists())
             .map(|p| p.to_string_lossy().into_owned());
         let hint = default_firmware.as_deref().unwrap_or("none");
@@ -1463,8 +1490,6 @@ async fn handle_create(client: &CliClient) {
             "none" => None,
             s => Some(s.to_string()),
         }
-    } else {
-        None
     };
 
     let kernel_image_path = if firmware_path.is_some() {
@@ -1579,8 +1604,8 @@ async fn handle_create(client: &CliClient) {
         prompt_optional("Kernel arguments (optional, default: root=/dev/vda reboot=k panic=1): ")
     };
 
-    // Networks (Cloud Hypervisor only). Offer the ones that exist.
-    let networks = if hypervisor.as_deref() == Some("cloudhypervisor") {
+    // Networks: offer the ones that exist.
+    let networks = {
         let names: Vec<String> = client
             .request_json::<Vec<NetworkRow>>(reqwest::Method::GET, "/networks", None)
             .await
@@ -1610,8 +1635,6 @@ async fn handle_create(client: &CliClient) {
                 .filter(|v| !v.is_empty())
             }
         }
-    } else {
-        None
     };
 
     let vfio_devices =
@@ -1956,9 +1979,16 @@ async fn handle_command(line: &str, client: &CliClient) -> bool {
 
         "stop" => {
             if parts.len() < 2 {
-                println!("{}", "Usage: stop <name|id>".yellow());
+                println!("{}", "Usage: stop <name|id> [--graceful [secs]]".yellow());
                 return true;
             }
+            let graceful = match graceful_stop_secs(&parts[2..]) {
+                Ok(g) => g,
+                Err(e) => {
+                    println!("{} {}", "Error:".red(), e);
+                    return true;
+                }
+            };
             let vm_id = match client.resolve_vm(parts[1]).await {
                 Ok(id) => id,
                 Err(e) => {
@@ -1966,7 +1996,10 @@ async fn handle_command(line: &str, client: &CliClient) -> bool {
                     return true;
                 }
             };
-            match client.stop_vm(&vm_id).await {
+            if let Some(secs) = graceful {
+                println!("Pressing the power button; waiting up to {} s for the guest to shut down...", secs);
+            }
+            match client.stop_vm(&vm_id, graceful).await {
                 Ok(vm) => {
                     println!(
                         "{} VM {} is now {}",
@@ -2356,6 +2389,15 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn graceful_stop_arguments() {
+        assert_eq!(graceful_stop_secs(&[]), Ok(None));
+        assert_eq!(graceful_stop_secs(&["--graceful"]), Ok(Some(60)));
+        assert_eq!(graceful_stop_secs(&["--graceful", "15"]), Ok(Some(15)));
+        assert!(graceful_stop_secs(&["--graceful", "soon"]).is_err());
+        assert!(graceful_stop_secs(&["--force"]).is_err());
+    }
 
     fn replacements(result: rustyline::Result<(usize, Vec<Pair>)>) -> (usize, Vec<String>) {
         let (start, pairs) = result.unwrap();

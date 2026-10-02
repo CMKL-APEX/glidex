@@ -23,7 +23,7 @@ development mode (Vite HMR) is the only supported mode.
 ## Dev-server proxy
 
 `ui/vite.config.ts` proxies everything under `/api` to the control
-plane on `:8841`, stripping the `/api` prefix. WebSocket upgrades
+plane on `:8841` (or `GLIDEX_API_URL`), stripping the `/api` prefix. WebSocket upgrades
 are forwarded (`ws: true`) so `/api/vms/:id/console/ws` resolves to
 `ws://localhost:8841/vms/:id/console/ws`.
 
@@ -44,7 +44,7 @@ ui/src/
 │   ├── Loading.tsx
 │   ├── Modal.tsx
 │   ├── CreateVmForm.tsx    # POST /vms form (boot mode, boot disk source, credential picker)
-│   ├── VmActions.tsx       # Start/Stop/Pause/Delete buttons
+│   ├── VmActions.tsx       # Start/Shut down/Stop/Pause/Delete buttons (Shut down: power button, 60 s)
 │   └── VmCard.tsx          # Dashboard VM row
 └── pages/
     ├── Dashboard.tsx       # List VMs, open create modal
@@ -112,12 +112,22 @@ The console page is the non-obvious component. It:
    - **term → WS**: `term.onData(d => ws.send(TextEncoder.encode(d)))`.
 4. Tracks a `Status` enum (`connecting | connected | closed | error`)
    for the status pill shown in the page header.
-5. On unmount, disposes the input handler, closes the socket, and
-   disposes the terminal — the order matters to avoid writing to a
-   disposed terminal.
+5. On unmount, disposes the input handler, detaches the socket's
+   handlers and closes it, takes the terminal off the page, and disposes
+   it on the next tick. xterm 5.5's `open()` queues a timer that reads
+   the renderer; disposing before it runs (React StrictMode mounts twice
+   in dev) throws "reading 'dimensions'". `e2e/tests/console.spec.ts`
+   covers this.
 
 See [console.md](console.md) for how the server side of that
 WebSocket is implemented.
+
+## End-to-end tests
+
+`crates/glidex-ui/e2e/` is a Playwright suite that drives this UI against
+a scratch control plane, for both hypervisors: the create form, a full VM
+lifecycle on a real guest (console login, pause/resume, Shut down) and
+the console page's teardown. See its [README](../crates/glidex-ui/e2e/README.md).
 
 ## State management
 

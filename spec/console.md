@@ -13,30 +13,38 @@ the code is structured the way it is.
 
 ## Physical I/O
 
-How the guest's serial bytes reach the control plane differs per
-hypervisor:
+Both hypervisors are wired the same way (`hypervisor/console.rs`,
+`spawn_on_pty`): glidex allocates a `pty(7)` pair, puts the slave in raw
+mode, passes it as the hypervisor's stdin and stdout (`setsid()` in
+`pre_exec` to detach from our session; stderr goes to the log file),
+and keeps the master. QEMU gets `-serial stdio`; Cloud-Hypervisor gets
+console/serial mode `Tty` — the virtio console (`hvc0`) for kernel boots,
+the serial port (`ttyS0`) for firmware boots, see
+[hypervisors.md](hypervisors.md#firmware-boot).
 
-- **QEMU** — we allocate a `pty(7)` pair ourselves, pass the slave
-  fd as the hypervisor's stdin/stdout/stderr (`setsid()` in
-  `pre_exec` to detach from our controlling tty), keep the master fd,
-  and pass `-serial stdio`.
-- **Cloud-Hypervisor** — CH allocates *its own* PTY when the VM
-  boots. We discover the slave's path by querying
-  `GET /vm.info` and then open it ourselves. The PTY belongs to the
-  virtio console (`hvc0`) for kernel boots and to the serial port
-  (`ttyS0`) for firmware boots — see
-  [hypervisors.md](hypervisors.md#firmware-boot).
+### Why glidex owns the master
 
-In every case the control plane ends up owning an fd that reads
-serial output and accepts serial input.
+Output the hypervisor wrote to the slave stays readable on the master
+after the hypervisor exits. The other way round — CH's `Pty` mode, where
+CH owns the master and we opened the slave by the path from `vm.info` —
+the hangup when CH exits throws away whatever we hadn't read yet. A
+guest that powers off prints its last line ("reboot: Power down") and
+CH exits within microseconds, so with a reader polling every 10 ms that
+line was routinely lost. Owning the master also means the proxy runs
+from `spawn`, so firmware output before boot completes is captured too.
+
+`openpty` opens the slave `O_NOCTTY`, so the PTY never becomes the
+control plane's controlling terminal (under systemd the control plane
+is a session leader; a controlling terminal's hangup at VM exit would
+kill it).
 
 ## Console proxy thread
 
 Per VM, when the hypervisor process is launched, we spawn **one OS
-thread** (not a Tokio task) running `console_proxy_loop`. The code
-for each backend is nearly identical. Inputs:
+thread** (not a Tokio task) via `console::start_console_proxy`, shared
+by both backends. Inputs:
 
-- The PTY fd (as `OwnedFd` for QEMU, or `File` for CH).
+- The PTY master.
 - A `UnixListener` already bound to the console socket path.
 - A `File` handle opened append-only on the log file.
 - An `Arc<AtomicBool>` "running" flag.
@@ -59,24 +67,28 @@ The loop does four things per tick:
 
 The listener is held by the thread until `running.store(false)`.
 Specifically, the loop **does not break** when the PTY EOFs. On
-`Ok(0)` or an error from the PTY read, we flip a local `pty_alive`
-flag that skips future PTY I/O but keeps accepting connections and
+`Ok(0)` or an error from the PTY read, the PTY is closed (set to
+`None`) and PTY I/O stops, but the loop keeps accepting connections and
 replaying the log.
 
 Why: a crashed guest is the moment you most want to read the log.
 If the thread exited on PTY EOF, the listener would drop, the Unix
 socket would become inert, and `gxctl connect` / the browser WS
 bridge would fail with `Connection refused` — with no way to see
-what the kernel printed before dying. See
-`{qemu,cloud_hypervisor}.rs::console_proxy_loop` — both use the same
-`pty_alive` flag.
+what the kernel printed before dying. See `console.rs::proxy_loop`.
 
 ### Thread shutdown
 
-`HypervisorProcess::kill` sets the `running` flag to `false`, kills
-the child process, joins the console thread, and unlinks the socket
-files. The thread notices the flag at the top of the next loop
-iteration (worst case ~10 ms later).
+`HypervisorProcess::kill` kills the child process, *then* sets the
+`running` flag to `false`, joins the console thread, and unlinks the
+socket files. The thread notices the flag at the top of the next loop
+iteration (worst case ~10 ms later) and, before returning, drains what
+is still buffered on the master into the log — so the last output
+before a stop is kept.
+
+The log is the guest's raw byte stream and need not be valid UTF-8;
+code that reads it as text (launch errors, tests) decodes it lossily
+(`console::read_log`).
 
 ## Log files
 

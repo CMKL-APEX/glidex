@@ -13,7 +13,7 @@ response bodies are JSON except for the console WebSocket.
 | `GET` | `/vms/{id}` | `get_vm` | Get a VM by id |
 | `DELETE` | `/vms/{id}` | `delete_vm` | Delete a VM (also stops it) |
 | `POST` | `/vms/{id}/start` | `start_vm` | Start / resume a VM |
-| `POST` | `/vms/{id}/stop` | `stop_vm` | Stop a VM |
+| `POST` | `/vms/{id}/stop[?graceful_timeout_secs=N]` | `stop_vm` | Stop a VM; with `graceful_timeout_secs`, press the guest's power button and wait up to `N` s (max 300) before stopping it hard |
 | `POST` | `/vms/{id}/pause` | `pause_vm` | Pause a running VM |
 | `GET` | `/vms/{id}/console` | `get_console_info` | Return console-socket path and availability |
 | `GET` | `/vms/{id}/console/ws` | `console_ws` | WebSocket upgrade — see below |
@@ -58,16 +58,20 @@ All handlers live in `crates/glidex-control-plane/src/api.rs`.
 ```
 
 - `kernel_args`, `hypervisor`, `vfio_devices` are optional.
-- `firmware_path` (Cloud Hypervisor only) boots the disk through UEFI
-  firmware instead of a kernel, e.g.
+- `firmware_path` boots the disk through UEFI firmware instead of a
+  kernel, e.g.
   `{"hypervisor": "cloudhypervisor", "firmware_path": "~/.glidex/CLOUDHV.fd",
   "rootfs_path": "~/images/ubuntu-cloudimg.raw", ...}`. `glidex-install`
-  downloads the firmware to that path. Relative paths resolve against the
+  downloads that firmware for Cloud Hypervisor; QEMU takes an OVMF code
+  image (`/usr/share/OVMF/OVMF_CODE_4M.fd` from the `ovmf` package) and
+  keeps a private copy of the matching variable store per VM (see
+  [hypervisors.md](hypervisors.md#firmware-boot-1)). With `image` or
+  `root_disk` and no kernel, the hypervisor's default firmware is used. Relative paths resolve against the
   control plane's working directory, so prefer absolute or `~` paths. `kernel_image_path`
   and `kernel_args` may then be omitted; they are ignored if given. The
   console is attached to the guest's serial port (`ttyS0`), which is where
   distro cloud images put their login prompt.
-- `cloud_init_path` (Cloud Hypervisor only) attaches a NoCloud seed image
+- `cloud_init_path` attaches a NoCloud seed image
   read-only as the second disk. When omitted on a firmware boot, glidex
   generates one at `/tmp/cloud-hypervisor-<id>.cloudinit.img` on every start
   (needs `mkdosfs`/`mcopy` from dosfstools/mtools): hostname from the VM

@@ -1,0 +1,16 @@
+{
+  "name": "glidex-ui-e2e",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "playwright test",
+    "test:ch": "playwright test --project=ui --project=cloudhypervisor",
+    "test:qemu": "playwright test --project=ui --project=qemu",
+    "typecheck": "tsc --noEmit -p ."
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.8.3"
+  }
+}

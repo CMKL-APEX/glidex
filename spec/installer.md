@@ -57,8 +57,11 @@ to `command -v`.
    `qemu-utils` on apt, `qemu-img` on dnf/pacman).
    See below.
 6. **QEMU** *(optional, prompts)* — delegates to the system
-   package manager (`apt-get install qemu-system-x86 qemu-kvm`,
-   `dnf install qemu-kvm`, etc). We don't ship a QEMU binary
+   package manager, together with the OVMF UEFI firmware QEMU boots
+   cloud images with (`qemu_packages`: `qemu-system-x86 ovmf` on apt —
+   there is no `qemu-kvm` package there any more — `qemu-kvm edk2-ovmf`
+   on dnf/yum, `qemu-base edk2-ovmf` on pacman). If QEMU is present but
+   OVMF isn't, it offers OVMF alone. We don't ship a QEMU binary
    because its distribution story is already well handled by
    every Linux distro and the resulting tree is large.
 7. **KVM access check** — verifies `/dev/kvm` exists and is

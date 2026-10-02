@@ -128,7 +128,7 @@ fn print_plan(install_dir: &Path) {
         "  5. Download Cloud-Hypervisor UEFI firmware ({}) to ~/.glidex, plus dosfstools/mtools for cloud-init seeds and qemu-img/sgdisk/growpart for images and disks",
         EDK2_FIRMWARE_VERSION
     );
-    println!("  6. (Optional) Install QEMU via system package manager");
+    println!("  6. (Optional) Install QEMU and OVMF via system package manager");
     println!("  7. Check KVM access");
     println!("  8. Build the control plane (cargo build --release)");
     println!("  9. (Optional) VM networking: Open vSwitch, glidex-netd service, glidex group");
@@ -524,34 +524,58 @@ fn ensure_disk_tools() -> Result<()> {
     install_packages(manager, &packages.join(" "))
 }
 
+/// QEMU and the OVMF UEFI firmware its cloud-image VMs boot from, per
+/// package manager. (`qemu-kvm` is no Debian/Ubuntu package any more.)
+fn qemu_packages(manager: &str, qemu: bool, ovmf: bool) -> Vec<&'static str> {
+    let (qemu_pkg, ovmf_pkg) = match manager {
+        "apt-get" => ("qemu-system-x86", "ovmf"),
+        "pacman" => ("qemu-base", "edk2-ovmf"),
+        _ => ("qemu-kvm", "edk2-ovmf"),
+    };
+    [(qemu, qemu_pkg), (ovmf, ovmf_pkg)]
+        .into_iter()
+        .filter_map(|(wanted, pkg)| wanted.then_some(pkg))
+        .collect()
+}
+
+/// Where distributions put OVMF (kept in step with the control plane's
+/// `hypervisor::qemu::OVMF_CODE_CANDIDATES`).
+const OVMF_CODE_PATHS: &[&str] = &[
+    "/usr/share/OVMF/OVMF_CODE_4M.fd",
+    "/usr/share/OVMF/OVMF_CODE.fd",
+    "/usr/share/edk2/ovmf/OVMF_CODE.fd",
+    "/usr/share/edk2/x64/OVMF_CODE.4m.fd",
+    "/usr/share/edk2-ovmf/x64/OVMF_CODE.fd",
+];
+
 fn install_qemu() -> Result<()> {
     section("QEMU (Optional)");
-    if command_exists("qemu-system-x86_64") {
+    let have_qemu = command_exists("qemu-system-x86_64");
+    let have_ovmf = OVMF_CODE_PATHS.iter().any(|p| Path::new(p).exists());
+    if have_qemu {
         let v = run_capture("qemu-system-x86_64", &["--version"]).unwrap_or_default();
         println!(
             "{} {}",
             "QEMU is installed:".green(),
             v.lines().next().unwrap_or("").trim()
         );
-        return Ok(());
-    }
-    if !confirm_yn("Install QEMU via your system package manager?", false)? {
+        if have_ovmf {
+            return Ok(());
+        }
+        println!("{}", "OVMF (UEFI firmware for QEMU cloud-image VMs) is missing.".yellow());
+        if !confirm_yn("Install OVMF via your system package manager?", true)? {
+            return Ok(());
+        }
+    } else if !confirm_yn("Install QEMU (with OVMF UEFI firmware) via your system package manager?", false)? {
         return Ok(());
     }
 
-    if command_exists("apt-get") {
-        run_sh("sudo apt-get update && sudo apt-get install -y qemu-system-x86 qemu-kvm")?;
-    } else if command_exists("dnf") {
-        run_sh("sudo dnf install -y qemu-kvm")?;
-    } else if command_exists("yum") {
-        run_sh("sudo yum install -y qemu-kvm")?;
-    } else if command_exists("pacman") {
-        run_sh("sudo pacman -S --noconfirm qemu-base")?;
-    } else {
-        println!(
+    match package_manager() {
+        Some(manager) => install_packages(manager, &qemu_packages(manager, !have_qemu, !have_ovmf).join(" "))?,
+        None => println!(
             "{}",
-            "Could not detect a package manager; please install QEMU manually.".yellow()
-        );
+            "Could not detect a package manager; please install QEMU and OVMF manually.".yellow()
+        ),
     }
     Ok(())
 }
@@ -1059,6 +1083,14 @@ fn print_usage() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn qemu_packages_per_manager() {
+        assert_eq!(super::qemu_packages("apt-get", true, true), ["qemu-system-x86", "ovmf"]);
+        assert_eq!(super::qemu_packages("apt-get", false, true), ["ovmf"]);
+        assert_eq!(super::qemu_packages("dnf", true, true), ["qemu-kvm", "edk2-ovmf"]);
+        assert_eq!(super::qemu_packages("pacman", true, false), ["qemu-base"]);
+    }
+
     #[test]
     fn disk_tool_packages_per_manager() {
         let none = |_: &str| false;
