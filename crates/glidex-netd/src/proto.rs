@@ -21,12 +21,30 @@ pub const MAX_LINE: usize = 1 << 20;
 pub const DEFAULT_RUN_DIR: &str = "/run/glidex";
 pub const FULL_SOCKET_NAME: &str = "netd.sock";
 pub const STATUS_SOCKET_NAME: &str = "netd-ro.sock";
+/// Second full-access socket, `root:glidex-admin 0660`, bound only when
+/// the admin group exists (security spec §4).
+pub const ADMIN_SOCKET_NAME: &str = "netd-admin.sock";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Request {
     pub id: u64,
     #[serde(flatten)]
     pub op: Op,
+    /// Who the caller acts for. Logged, never used for authorization.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_behalf_of: Option<OnBehalfOf>,
+}
+
+/// Audit context the control plane attaches to a request: the user it
+/// acts for (security spec §8.3). netd can't verify it, so it only goes
+/// to the log next to the peer uid.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OnBehalfOf {
+    pub user: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -274,9 +292,29 @@ mod tests {
         assert_eq!(r.op.name(), "detach_vm_port");
         assert!(serde_json::from_str::<Request>(r#"{"id":4,"op":"rm_rf"}"#).is_err());
         assert_eq!(
-            serde_json::to_string(&Request { id: 5, op: Op::ListNat }).unwrap(),
+            serde_json::to_string(&Request { id: 5, op: Op::ListNat, on_behalf_of: None }).unwrap(),
             r#"{"id":5,"op":"list_nat"}"#
         );
+    }
+
+    #[test]
+    fn on_behalf_of_is_optional() {
+        let r: Request = serde_json::from_str(
+            r#"{"id":1,"op":"release_vm","args":{"vm_id":"abc"},"on_behalf_of":{"user":"alice","project":"p1","request_id":"r-9"}}"#,
+        )
+        .unwrap();
+        assert_eq!(r.op, Op::ReleaseVm { vm_id: "abc".into() });
+        let obo = r.on_behalf_of.clone().unwrap();
+        assert_eq!(
+            (obo.user.as_str(), obo.project.as_deref(), obo.request_id.as_deref()),
+            ("alice", Some("p1"), Some("r-9"))
+        );
+        assert_eq!(serde_json::from_str::<Request>(&serde_json::to_string(&r).unwrap()).unwrap(), r);
+
+        // Only `user` is required; absent fields aren't serialized.
+        let r: Request = serde_json::from_str(r#"{"id":2,"op":"list_nat","on_behalf_of":{"user":"bob"}}"#).unwrap();
+        assert_eq!(serde_json::to_string(&r).unwrap(), r#"{"id":2,"op":"list_nat","on_behalf_of":{"user":"bob"}}"#);
+        assert!(serde_json::from_str::<Request>(r#"{"id":3,"op":"list_nat","on_behalf_of":{}}"#).is_err());
     }
 
     #[test]

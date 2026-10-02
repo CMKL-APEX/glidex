@@ -2,7 +2,7 @@
 //! (`packaging/glidex-netd.service`).
 
 use glidex_netd::auth;
-use glidex_netd::proto::{FULL_SOCKET_NAME, STATUS_SOCKET_NAME};
+use glidex_netd::proto::{ADMIN_SOCKET_NAME, FULL_SOCKET_NAME, STATUS_SOCKET_NAME};
 use glidex_netd::server::{self, Access, Config, Netd};
 use glidex_netd::supervisor::DnsmasqSupervisor;
 use glidex_ovs::SystemExec;
@@ -19,6 +19,8 @@ struct FileConfig {
     ovs_bin_dir: Option<PathBuf>,
     commit_window_secs: Option<u64>,
     gateway_check_secs: Option<u64>,
+    admin_group: Option<String>,
+    policy: Option<auth::Policy>,
 }
 
 fn find_in_path(name: &str) -> Option<PathBuf> {
@@ -43,10 +45,22 @@ fn main() {
         .nth(1)
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/etc/glidex/netd.json"));
-    let file: FileConfig = std::fs::read(&config_path)
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default();
+    // A missing file means defaults; an unreadable or invalid one is fatal,
+    // so a typo can't silently replace a narrowed policy with the default.
+    let file: FileConfig = match std::fs::read(&config_path) {
+        Ok(b) => match serde_json::from_slice(&b) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("glidex-netd: {}: {}", config_path.display(), e);
+                std::process::exit(1);
+            }
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => FileConfig::default(),
+        Err(e) => {
+            eprintln!("glidex-netd: {}: {}", config_path.display(), e);
+            std::process::exit(1);
+        }
+    };
 
     let mut config = Config::default();
     if let Some(g) = file.group {
@@ -68,6 +82,16 @@ fn main() {
     if let Some(s) = file.gateway_check_secs {
         config.gateway_check = std::time::Duration::from_secs(s);
     }
+    if let Some(g) = file.admin_group {
+        config.admin_group = g;
+    }
+    config.policy = file
+        .policy
+        .unwrap_or_else(|| auth::default_policy(&config.group, &config.admin_group));
+    for p in auth::suspicious_patterns(&config.policy) {
+        tracing::warn!(pattern = %p, "policy pattern never matches: only a trailing '*' is a glob");
+    }
+    tracing::info!(policy = %serde_json::to_string(&config.policy).unwrap_or_default(), "netd policy");
 
     let exec: Arc<dyn glidex_ovs::Exec> = Arc::new(match file.ovs_bin_dir {
         Some(dir) => SystemExec::with_ovs_bin_dir(dir),
@@ -112,8 +136,30 @@ fn main() {
             std::process::exit(1);
         }
     };
-    tracing::info!(run_dir = %config.run_dir.display(), "listening");
+    // The admin socket exists only with its group; otherwise drop a stale
+    // one (the run directory survives restarts).
+    let admin_path = config.run_dir.join(ADMIN_SOCKET_NAME);
+    let admin_gid = auth::group_gid(&config.admin_group);
+    let admin = match admin_gid {
+        Some(gid) => match server::bind(&admin_path, 0o660, Some(gid)) {
+            Ok(l) => Some(l),
+            Err(e) => {
+                eprintln!("glidex-netd: cannot bind {}: {}", admin_path.display(), e);
+                std::process::exit(1);
+            }
+        },
+        None => {
+            let _ = std::fs::remove_file(&admin_path);
+            tracing::info!(group = %config.admin_group, "admin group does not exist; no admin socket");
+            None
+        }
+    };
+    tracing::info!(run_dir = %config.run_dir.display(), admin_socket = admin.is_some(), "listening");
     glidex_netd::sd::notify_ready();
+    if let Some(admin) = admin {
+        let admin_netd = netd.clone();
+        std::thread::spawn(move || server::serve(admin_netd, admin, Access::Admin, admin_gid));
+    }
     let expiry_netd = netd.clone();
     std::thread::spawn(move || loop {
         std::thread::sleep(std::time::Duration::from_secs(1));

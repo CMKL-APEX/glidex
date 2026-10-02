@@ -33,6 +33,10 @@ pub struct Config {
     pub commit_window: Duration,
     /// Time the default gateway has to answer after an IP migration.
     pub gateway_check: Duration,
+    /// Group of the admin socket ([`ADMIN_SOCKET_NAME`]).
+    pub admin_group: String,
+    /// Which ops each group may send on the full sockets.
+    pub policy: auth::Policy,
 }
 
 impl Default for Config {
@@ -45,6 +49,8 @@ impl Default for Config {
             probe: ProbeOptions::default(),
             commit_window: Duration::from_secs(60),
             gateway_check: Duration::from_secs(20),
+            admin_group: "glidex-admin".into(),
+            policy: auth::default_policy("glidex", "glidex-admin"),
         }
     }
 }
@@ -118,9 +124,9 @@ impl Netd {
             Op::DeleteNat { bridge } => self.delete_nat(&bridge).map(|_| Value::Null),
             Op::AttachVmPort(spec) => to_value(self.attach(spec, peer.uid)?),
             Op::DetachVmPort { vm_id, nic_index } => {
-                self.detach(&vm_id, nic_index).map(|_| Value::Null)
+                self.detach(&vm_id, nic_index, peer.uid).map(|_| Value::Null)
             }
-            Op::ReleaseVm { vm_id } => self.release_vm(&vm_id).map(|_| Value::Null),
+            Op::ReleaseVm { vm_id } => self.release_vm(&vm_id, peer.uid).map(|_| Value::Null),
             Op::SyncVms { running } => to_value(self.sync_vms(&running)?),
         }
     }
@@ -558,8 +564,29 @@ impl Netd {
         Ok(AttachResult { port, binding, ipv4 })
     }
 
-    fn detach(&self, vm_id: &str, nic_index: u8) -> Result<(), OvsError> {
+    /// A port belongs to the uid that attached it (security spec §8.2);
+    /// root may detach anyone's.
+    fn check_owner(record: &VmPortRecord, uid: u32) -> Result<(), OvsError> {
+        if uid == 0 || record.owner_uid == uid {
+            return Ok(());
+        }
+        Err(OvsError::not_owned(format!(
+            "VM port {} belongs to uid {}",
+            record.port, record.owner_uid
+        )))
+    }
+
+    /// `detach_vm_port` from `uid`. Without a record (already detached, or
+    /// an untracked port) there is no owner to check.
+    fn detach(&self, vm_id: &str, nic_index: u8, uid: u32) -> Result<(), OvsError> {
         names::validate_vm_id(vm_id)?;
+        if let Some(record) = self.store.get::<VmPortRecord>(VM_PORTS, &store::vm_port_key(vm_id, nic_index))? {
+            Self::check_owner(&record, uid)?;
+        }
+        self.remove_port(vm_id, nic_index)
+    }
+
+    fn remove_port(&self, vm_id: &str, nic_index: u8) -> Result<(), OvsError> {
         vm_port::detach(self.ex(), vm_id, nic_index)?;
         // The NAT reservation is kept: the VM gets the same address next start.
         self.store.delete(VM_PORTS, &store::vm_port_key(vm_id, nic_index))?;
@@ -567,16 +594,20 @@ impl Netd {
         Ok(())
     }
 
-    fn release_vm(&self, vm_id: &str) -> Result<(), OvsError> {
+    fn release_vm(&self, vm_id: &str, uid: u32) -> Result<(), OvsError> {
         names::validate_vm_id(vm_id)?;
+        let mut records = Vec::new();
         for nic in 0..names::MAX_NICS {
-            if self
-                .store
-                .get::<VmPortRecord>(VM_PORTS, &store::vm_port_key(vm_id, nic))?
-                .is_some()
-            {
-                self.detach(vm_id, nic)?;
+            if let Some(record) = self.store.get::<VmPortRecord>(VM_PORTS, &store::vm_port_key(vm_id, nic))? {
+                records.push(record);
             }
+        }
+        // All or nothing: check every port before detaching any.
+        for record in &records {
+            Self::check_owner(record, uid)?;
+        }
+        for record in &records {
+            self.remove_port(vm_id, record.spec.nic_index)?;
         }
         let macs: Vec<String> = (0..names::MAX_NICS)
             .filter_map(|nic| names::mac_address(vm_id, nic).ok())
@@ -598,11 +629,13 @@ impl Netd {
     // ---- reconciliation ------------------------------------------------
 
     /// Detach ports of VMs that aren't running; report untracked glidex ports.
+    /// Not owner-scoped: it reconciles the whole host, and it is how ports
+    /// left by an earlier control-plane uid get cleaned up.
     fn sync_vms(&self, running: &[String]) -> Result<ReconcileReport, OvsError> {
         let mut report = ReconcileReport::default();
         for r in self.vm_ports()? {
             if !running.contains(&r.spec.vm_id) {
-                match self.detach(&r.spec.vm_id, r.spec.nic_index) {
+                match self.remove_port(&r.spec.vm_id, r.spec.nic_index) {
                     Ok(()) => report.detached.push(r.port),
                     Err(e) => report.errors.push(format!("{}: {}", r.port, e)),
                 }
@@ -718,8 +751,22 @@ fn random_token() -> String {
 /// Which socket a connection arrived on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Access {
+    /// `netd.sock`: root and the `group` (the control plane).
     Full,
+    /// `netd-admin.sock`: root and the `admin_group`. Same ops as `Full`.
+    Admin,
     Status,
+}
+
+impl Access {
+    /// Socket file name under the run directory.
+    pub fn socket_name(self) -> &'static str {
+        match self {
+            Access::Full => FULL_SOCKET_NAME,
+            Access::Admin => ADMIN_SOCKET_NAME,
+            Access::Status => STATUS_SOCKET_NAME,
+        }
+    }
 }
 
 fn write_line(stream: &mut UnixStream, resp: &Response) -> std::io::Result<()> {
@@ -728,7 +775,9 @@ fn write_line(stream: &mut UnixStream, resp: &Response) -> std::io::Result<()> {
     stream.write_all(line.as_bytes())
 }
 
-/// Serve one connection until it closes.
+/// Serve one connection until it closes. `group_gid` is the group a
+/// peer must be in to connect to a full socket (`group` for `Full`,
+/// `admin_group` for `Admin`; unused for `Status`).
 pub fn serve_connection(netd: &Netd, stream: UnixStream, access: Access, group_gid: Option<u32>) {
     let peer = match auth::peer(&stream) {
         Ok(p) => p,
@@ -737,10 +786,17 @@ pub fn serve_connection(netd: &Netd, stream: UnixStream, access: Access, group_g
             return;
         }
     };
-    if access == Access::Full && !auth::authorized(&peer, group_gid) {
-        tracing::warn!(uid = peer.uid, pid = peer.pid, "rejected peer not in group {}", netd.config.group);
+    if access != Access::Status && !auth::authorized(&peer, group_gid) {
+        let group = if access == Access::Admin { &netd.config.admin_group } else { &netd.config.group };
+        tracing::warn!(uid = peer.uid, pid = peer.pid, socket = access.socket_name(), "rejected peer not in group {}", group);
         return;
     }
+    // Policy groups the peer is in, looked up once per connection.
+    let policy_groups = if access == Access::Status || peer.uid == 0 {
+        Vec::new()
+    } else {
+        auth::policy_groups(&netd.config.policy, &peer)
+    };
     let mut writer = match stream.try_clone() {
         Ok(w) => w,
         Err(_) => return,
@@ -771,6 +827,14 @@ pub fn serve_connection(netd: &Netd, stream: UnixStream, access: Access, group_g
                 req.id,
                 ErrorBody::new("permission_denied", format!("'{}' is not available on the status socket", req.op.name())),
             )
+        } else if access != Access::Status
+            && !auth::allows(&netd.config.policy, peer.uid, req.op.name(), |g| policy_groups.iter().any(|m| m == g))
+        {
+            tracing::warn!(uid = peer.uid, op = req.op.name(), "denied by policy");
+            Response::err(
+                req.id,
+                ErrorBody::new("permission_denied", format!("netd policy does not allow '{}' for uid {}", req.op.name(), peer.uid)),
+            )
         } else {
             if let Op::Hello { protocol } = &req.op {
                 if *protocol != PROTOCOL_VERSION {
@@ -783,7 +847,14 @@ pub fn serve_connection(netd: &Netd, stream: UnixStream, access: Access, group_g
                 said_hello = true;
             }
             if req.op.is_mutating() {
-                tracing::info!(uid = peer.uid, op = req.op.name(), args = %serde_json::to_string(&req.op).unwrap_or_default(), "request");
+                // on_behalf_of is the caller's claim, logged for audit only.
+                tracing::info!(
+                    uid = peer.uid,
+                    op = req.op.name(),
+                    args = %serde_json::to_string(&req.op).unwrap_or_default(),
+                    on_behalf_of = %req.on_behalf_of.as_ref().and_then(|o| serde_json::to_string(o).ok()).unwrap_or_else(|| "-".into()),
+                    "request"
+                );
             }
             match netd.handle(req.op, &peer) {
                 Ok(v) => Response::ok(req.id, v),
