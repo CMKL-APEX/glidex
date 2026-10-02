@@ -153,6 +153,19 @@ pub async fn login(
     Ok(resp)
 }
 
+/// A browser session for a local user identified on api.sock (gxctl
+/// `ui`). The session carries the user's stored teams only: break-glass
+/// (from Unix groups on the socket) doesn't carry over to a browser.
+pub async fn peer_session(c: Caller) -> Result<impl IntoResponse, ApiErr> {
+    if c.p.method != Method::Peer {
+        return Err(err(StatusCode::FORBIDDEN, "forbidden", "only local users on the glidex socket can open a session this way"));
+    }
+    let user = c.p.user.clone().ok_or_else(|| err(StatusCode::FORBIDDEN, "forbidden", "no user"))?;
+    let (cookie, csrf) = c.auth().create_session(&user, Method::Pam).map_err(auth_error)?;
+    c.set_target(format!("user:{}", user.id));
+    Ok(Json(serde_json::json!({ "cookie_name": auth::SESSION_COOKIE, "cookie": cookie, "csrf": csrf })))
+}
+
 pub async fn logout(c: Caller, listener: Option<Extension<Listener>>, headers: HeaderMap) -> Result<Response, ApiErr> {
     c.auth().end_session(&c.p).map_err(auth_error)?;
     let secure = secure_transport(&c.app, &headers, listener.map(|l| l.0).unwrap_or(Listener::Tcp));

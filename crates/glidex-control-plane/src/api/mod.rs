@@ -191,6 +191,7 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         .add("POST", "/auth/oidc/device", PUBLIC, post(access::oidc_device_start))
         .add("POST", "/auth/oidc/device/poll", PUBLIC, post(access::oidc_device_poll))
         .add("POST", "/auth/logout", AUTHENTICATED, post(access::logout))
+        .add("POST", "/auth/session", AUTHENTICATED, post(access::peer_session))
         .add("GET", "/auth/whoami", AUTHENTICATED, get(access::whoami))
         .add("POST", "/authz/check", AUTHENTICATED, post(access::authz_check))
         // ---- tokens
