@@ -4,6 +4,17 @@ import type { CreateVmRequest, CredentialInfo, DiskInfo, HypervisorType, ImageIn
 import { HYPERVISOR_LABELS, formatBytes } from "../types";
 
 type BootMode = "firmware" | "kernel";
+
+/** Where each hypervisor's UEFI firmware usually lives. */
+const DEFAULT_FIRMWARE: Record<HypervisorType, string> = {
+  cloudhypervisor: "~/.glidex/CLOUDHV.fd",
+  qemu: "/usr/share/OVMF/OVMF_CODE_4M.fd",
+};
+
+const FIRMWARE_HINT: Record<HypervisorType, string> = {
+  cloudhypervisor: "Downloaded by glidex-install",
+  qemu: "OVMF code image from the ovmf / edk2-ovmf package",
+};
 /** Where a firmware-boot VM's root disk comes from (spec/images.md §7). */
 type RootSource = "image" | "disk" | "path";
 
@@ -18,7 +29,7 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
   const [memSizeMib, setMemSizeMib] = useState(512);
   const [hypervisor, setHypervisor] = useState<HypervisorType>("cloudhypervisor");
   const [bootMode, setBootMode] = useState<BootMode>("firmware");
-  const [firmwarePath, setFirmwarePath] = useState("~/.glidex/CLOUDHV.fd");
+  const [firmwarePath, setFirmwarePath] = useState(DEFAULT_FIRMWARE.cloudhypervisor);
   const [credential, setCredential] = useState("");
   const [credentials, setCredentials] = useState<CredentialInfo[]>([]);
   const [networks, setNetworks] = useState<Network[]>([]);
@@ -35,8 +46,13 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
   const [rootDisk, setRootDisk] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
-  // Firmware boot is Cloud Hypervisor only; QEMU always boots a kernel.
-  const firmware = hypervisor === "cloudhypervisor" && bootMode === "firmware";
+  const firmware = bootMode === "firmware";
+
+  // Follow the hypervisor's default firmware unless the user typed one.
+  const changeHypervisor = (next: HypervisorType) => {
+    if (firmwarePath === DEFAULT_FIRMWARE[hypervisor]) setFirmwarePath(DEFAULT_FIRMWARE[next]);
+    setHypervisor(next);
+  };
 
   useEffect(() => {
     listCredentials()
@@ -84,9 +100,7 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
       firmware_path: firmware ? firmwarePath : undefined,
       credential: firmware && credential ? credential : undefined,
       networks:
-        hypervisor === "cloudhypervisor" && selectedNetworks.length > 0
-          ? selectedNetworks.map((network) => ({ network }))
-          : undefined,
+        selectedNetworks.length > 0 ? selectedNetworks.map((network) => ({ network })) : undefined,
       rootfs_path: !firmware || rootSource === "path" ? rootfsPath : undefined,
       image: firmware && rootSource === "image" ? image : undefined,
       root_disk_size_gib:
@@ -121,7 +135,7 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
         <select
           className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-transparent bg-white"
           value={hypervisor}
-          onChange={(e) => setHypervisor(e.target.value as HypervisorType)}
+          onChange={(e) => changeHypervisor(e.target.value as HypervisorType)}
         >
           {(Object.entries(HYPERVISOR_LABELS) as [HypervisorType, string][]).map(
             ([value, label]) => (
@@ -162,21 +176,19 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
         </div>
       </div>
 
-      {hypervisor === "cloudhypervisor" && (
-        <div>
-          <label className="block text-sm font-medium text-gray-700">
-            Boot Mode
-          </label>
-          <select
-            className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-transparent bg-white"
-            value={bootMode}
-            onChange={(e) => setBootMode(e.target.value as BootMode)}
-          >
-            <option value="firmware">UEFI firmware (distro cloud image)</option>
-            <option value="kernel">Direct kernel boot</option>
-          </select>
-        </div>
-      )}
+      <div>
+        <label className="block text-sm font-medium text-gray-700">
+          Boot Mode
+        </label>
+        <select
+          className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-transparent bg-white"
+          value={bootMode}
+          onChange={(e) => setBootMode(e.target.value as BootMode)}
+        >
+          <option value="firmware">UEFI firmware (distro cloud image)</option>
+          <option value="kernel">Direct kernel boot</option>
+        </select>
+      </div>
 
       {firmware ? (
         <>
@@ -192,7 +204,7 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
               onChange={(e) => setFirmwarePath(e.target.value)}
             />
             <p className="mt-1 text-xs text-gray-500">
-              Downloaded by glidex-install
+              {FIRMWARE_HINT[hypervisor]}
             </p>
           </div>
 
@@ -353,7 +365,7 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
         </>
       )}
 
-      {hypervisor === "cloudhypervisor" && networks.length > 0 && (
+      {networks.length > 0 && (
         <div>
           <label className="block text-sm font-medium text-gray-700">
             Networks
@@ -394,8 +406,7 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
           onChange={(e) => setVfioDevices(e.target.value)}
         />
         <p className="mt-1 text-xs text-gray-500">
-          Comma-separated VFIO device paths for GPU passthrough (Cloud
-          Hypervisor only)
+          Comma-separated VFIO device paths for GPU passthrough
         </p>
       </div>
 

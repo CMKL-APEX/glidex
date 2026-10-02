@@ -16,7 +16,7 @@ with `--server`).
 | `get <name\|id>` | `GET /vms/{id}` with VM-name resolution |
 | `create` | Interactive prompts → `POST /vms` |
 | `start <name\|id>` | `POST /vms/{id}/start` |
-| `stop <name\|id>` | `POST /vms/{id}/stop` |
+| `stop <name\|id> [--graceful [secs]]` | `POST /vms/{id}/stop[?graceful_timeout_secs=<secs>]` (power button first; default 60 s) |
 | `pause <name\|id>` | `POST /vms/{id}/pause` |
 | `connect <name\|id>` | Attach local terminal to the VM's console socket |
 | `log <name\|id>` | `tail`-like print of the VM's log file |
@@ -92,10 +92,10 @@ Interactive `handle_create` asks, in order:
 4. Hypervisor choice: `cloudhypervisor | qemu`, default
    `cloudhypervisor`. Aliases: `ch`, `q`. Asked first
    because it decides which of the following prompts appear.
-5. *(Cloud-Hypervisor only)* UEFI firmware path. Defaults to
+5. UEFI firmware path. Defaults to the hypervisor's
    `default_firmware_path()` (`~/.glidex/CLOUDHV.fd`, downloaded by
-   `glidex-install`) when that file exists, otherwise no default;
-   `none` selects kernel boot.
+   `glidex-install`, or the host's OVMF for QEMU) when that file exists,
+   otherwise no default; `none` selects kernel boot.
 6. Kernel image path (required, no default) — skipped for firmware
    boot.
 7. Boot disk. For firmware boot: `image` / `disk` / `path`, defaulting to

@@ -98,14 +98,24 @@ async fn main() {
     println!("OK");
 
     // Not fatal: kernel-boot VMs don't need it.
-    print_status("Checking UEFI firmware");
-    match hypervisor::cloud_hypervisor::default_firmware_path() {
-        Some(path) if path.exists() => println!("OK ({})", path.display()),
-        Some(path) => println!(
-            "MISSING ({}; run glidex-install for Cloud-Hypervisor firmware boot)",
-            path.display()
+    for (ty, label, fix) in [
+        (
+            hypervisor::HypervisorType::CloudHypervisor,
+            "Cloud-Hypervisor",
+            "run glidex-install for Cloud-Hypervisor firmware boot",
         ),
-        None => println!("MISSING (no home directory)"),
+        (
+            hypervisor::HypervisorType::Qemu,
+            "QEMU",
+            "install the ovmf / edk2-ovmf package for QEMU firmware boot",
+        ),
+    ] {
+        print_status(&format!("Checking UEFI firmware ({})", label));
+        match ty.default_firmware_path() {
+            Some(path) if path.exists() => println!("OK ({})", path.display()),
+            Some(path) => println!("MISSING ({}; {})", path.display(), fix),
+            None => println!("MISSING (no home directory)"),
+        }
     }
 
     // Not fatal either: only image/disk operations need these.
@@ -159,6 +169,19 @@ async fn main() {
             (network::NetdAccess::None, Ok(_)) => println!("UNAVAILABLE"),
         },
         Err(e) => println!("WARNING (default network: {})", e),
+    }
+
+    // A guest that powers off (or crashes) takes its hypervisor with it;
+    // notice that, so the VM shows as stopped and its NICs are released.
+    {
+        let manager = Arc::clone(&vm_manager);
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
+            loop {
+                tick.tick().await;
+                manager.reap_exited_vms().await;
+            }
+        });
     }
 
     // Clone vm_manager for the shutdown handler before passing to router

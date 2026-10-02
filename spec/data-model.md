@@ -32,10 +32,11 @@ The guest configuration the hypervisor needs to boot:
 - `vcpu_count: u8`
 - `mem_size_mib: u32`
 - `kernel_image_path: String` — empty when booting via firmware
-- `firmware_path: Option<String>` — UEFI firmware, normally
-  `~/.glidex/CLOUDHV.fd` as downloaded by `glidex-install`;
-  when set, the guest boots its disk's bootloader and the kernel fields are
-  ignored. Accepted only for `cloudhypervisor`.
+- `firmware_path: Option<String>` — UEFI firmware: normally
+  `~/.glidex/CLOUDHV.fd` as downloaded by `glidex-install` for
+  `cloudhypervisor`, or an OVMF code image for `qemu`
+  (`HypervisorType::default_firmware_path()`); when set, the guest boots
+  its disk's bootloader and the kernel fields are ignored.
 - `cloud_init_path: Option<String>` — NoCloud seed disk. `None` on a
   firmware boot → `start_vm` generates a default seed (`cloud_init.rs`) at
   `Vm::default_cloud_init_path()` and passes it to the backend; the

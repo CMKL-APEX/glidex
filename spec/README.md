@@ -52,8 +52,7 @@ fresh reader cannot infer just by reading the source.
   `[::1]:8841`; `GLIDEX_LISTEN` overrides) because anyone who can reach it
   can manage VMs and, through glidex-netd, host networking. There are no
   accounts, tokens, or ACLs.
-- Networking beyond Cloud Hypervisor VMs (QEMU NICs), static guest
-  addressing, and persistent (netplan/NetworkManager) host network
+- Static guest addressing, and persistent (netplan/NetworkManager) host network
   changes; see [networking.md](networking.md).
 
 ## Repository layout

@@ -52,6 +52,11 @@ impl VmPortSpec {
         if !(1..=8).contains(&self.queue_pairs) {
             return Err(OvsError::invalid("queue_pairs must be 1-8"));
         }
+        if let Some(mtu) = self.mtu {
+            if !(576..=9216).contains(&mtu) {
+                return Err(OvsError::invalid("mtu must be 576-9216"));
+            }
+        }
         Ok(())
     }
 
@@ -60,12 +65,12 @@ impl VmPortSpec {
     }
 }
 
-/// What Cloud Hypervisor needs to use the port.
+/// What the hypervisor needs to use the port.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VmPortBinding {
     Tap { ifname: String },
-    /// Cloud Hypervisor must run as the vhost-user *server* on this path.
+    /// The hypervisor must run as the vhost-user *server* on this path.
     VhostUser { socket: PathBuf },
 }
 
@@ -141,6 +146,11 @@ pub fn attach(
             VmPortBinding::VhostUser { socket }
         }
     };
+    // OVS sets (and keeps) the port's MTU, so the hypervisor doesn't need
+    // the privilege to change it.
+    if let Some(mtu) = spec.mtu {
+        args.push(format!("mtu_request={}", mtu));
+    }
     args.extend(tags);
     if let Some(vlan) = spec.vlan {
         args.extend([
@@ -157,6 +167,11 @@ pub fn attach(
             let _ = exec.run(&Cmd::new(Program::Ip, ["link", "del", port.as_str()]));
         }
         return Err(e);
+    }
+    // OVS doesn't bring a tap up, and only a hypervisor with
+    // CAP_NET_ADMIN could (QEMU, as packaged, can't).
+    if spec.kind == VmPortKind::Tap {
+        exec.check(&Cmd::new(Program::Ip, ["link", "set", "dev", port.as_str(), "up"]))?;
     }
     Ok(binding)
 }
@@ -232,7 +247,18 @@ mod tests {
         assert_eq!(binding, VmPortBinding::Tap { ifname: "gx1a2b3c4d-0".into() });
         let calls = exec.calls();
         assert!(calls.contains(&"ip tuntap add dev gx1a2b3c4d-0 mode tap user 1000".to_string()), "{calls:?}");
+        assert_eq!(calls.last().map(String::as_str), Some("ip link set dev gx1a2b3c4d-0 up"), "{calls:?}");
         assert!(calls.contains(&format!("ovs-vsctl --may-exist add-port gxbr-nat gx1a2b3c4d-0 -- set Interface gx1a2b3c4d-0 external_ids:glidex-owner=glidex external_ids:glidex-role=vm external_ids:glidex-vm-id={VM} external_ids:glidex-nic=0 -- set Port gx1a2b3c4d-0 tag=10")), "{calls:?}");
+    }
+
+    #[test]
+    fn port_mtu_is_requested_from_ovs() {
+        let exec = RecordingExec::new();
+        exec.on(FIND_BR, bridge("system", true));
+        attach(&exec, &HostCapabilities::default(), &VmPortSpec { mtu: Some(9000), ..spec(VmPortKind::Tap) }, 1000).unwrap();
+        assert!(exec.calls().iter().any(|c| c.contains("set Interface gx1a2b3c4d-0 mtu_request=9000 external_ids:")), "{:?}", exec.calls());
+        let bad = VmPortSpec { mtu: Some(100), ..spec(VmPortKind::Tap) };
+        assert!(bad.validate().is_err());
     }
 
     #[test]

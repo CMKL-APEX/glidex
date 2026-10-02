@@ -44,7 +44,7 @@ ui/src/
 │   ├── Loading.tsx
 │   ├── Modal.tsx
 │   ├── CreateVmForm.tsx    # POST /vms form (boot mode, boot disk source, credential picker)
-│   ├── VmActions.tsx       # Start/Stop/Pause/Delete buttons
+│   ├── VmActions.tsx       # Start/Shut down/Stop/Pause/Delete buttons (Shut down: power button, 60 s)
 │   └── VmCard.tsx          # Dashboard VM row
 └── pages/
     ├── Dashboard.tsx       # List VMs, open create modal

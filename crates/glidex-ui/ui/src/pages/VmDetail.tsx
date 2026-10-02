@@ -39,6 +39,9 @@ export default function VmDetail() {
         case "start":
           await api.startVm(vmId);
           break;
+        case "shutdown":
+          await api.stopVm(vmId, 60);
+          break;
         case "stop":
           await api.stopVm(vmId);
           break;

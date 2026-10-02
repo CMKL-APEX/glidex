@@ -6,10 +6,12 @@
 //!   image builder. They need `mkdosfs`/`mcopy`/`mdir` (dosfstools + mtools)
 //!   but no hypervisor.
 //!
-//! - `#[ignore]`d tests boot a real guest with cloud-hypervisor and need
-//!   `/dev/kvm`, `cloud-hypervisor` and a UEFI-bootable disk
-//!   image. The firmware defaults to `~/.glidex/CLOUDHV.fd` as downloaded
-//!   by `glidex-install` (override with `GLIDEX_TEST_FIRMWARE`):
+//! - `#[ignore]`d tests boot a real guest with cloud-hypervisor (or QEMU,
+//!   the `qemu_*` variants) and need `/dev/kvm`, the hypervisor and a
+//!   UEFI-bootable disk image. The firmware defaults to
+//!   `~/.glidex/CLOUDHV.fd` as downloaded by `glidex-install` (override with
+//!   `GLIDEX_TEST_FIRMWARE`), or the host's OVMF for QEMU (override with
+//!   `GLIDEX_TEST_QEMU_FIRMWARE`):
 //!
 //!   ```sh
 //!   GLIDEX_TEST_IMAGE=~/ch/resolute-server-cloudimg-amd64.raw \
@@ -38,6 +40,7 @@ use tower::ServiceExt;
 use glidex_control_plane::api::create_router;
 use glidex_control_plane::cloud_init::{self, SeedConfig};
 use glidex_control_plane::hypervisor::cloud_hypervisor::default_firmware_path;
+use glidex_control_plane::hypervisor::HypervisorType;
 use glidex_control_plane::state::VmManager;
 
 // ============================================================================
@@ -114,21 +117,19 @@ async fn firmware_vm_can_be_created_without_kernel() {
 }
 
 #[tokio::test]
-async fn firmware_path_rejected_for_other_hypervisors() {
-    let (app, _manager, _tmp) = create_test_app();
+async fn qemu_firmware_vm_can_be_created_without_kernel() {
+    let (app, manager, _tmp) = create_test_app();
 
     let mut req = firmware_vm("fw-qemu");
     req["hypervisor"] = json!("qemu");
+    req["firmware_path"] = json!("/usr/share/OVMF/OVMF_CODE_4M.fd");
     let (status, body) = request(&app, "POST", "/vms", Some(req)).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-    assert_eq!(body["error"], "invalid_config");
-    assert!(
-        body["message"].as_str().unwrap_or_default().contains("firmware_path"),
-        "{body}"
-    );
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(body["hypervisor"], "qemu");
 
-    let (_, list) = request(&app, "GET", "/vms", None).await;
-    assert_eq!(list.as_array().unwrap().len(), 0, "rejected VMs must not persist");
+    let vm = manager.get_vm(body["id"].as_str().unwrap()).await.unwrap();
+    assert_eq!(vm.config.firmware_path.as_deref(), Some("/usr/share/OVMF/OVMF_CODE_4M.fd"));
+    assert_eq!(vm.config.kernel_image_path, "");
 }
 
 #[tokio::test]
@@ -143,8 +144,8 @@ async fn kernel_or_firmware_is_required() {
 }
 
 #[tokio::test]
-async fn cloud_init_path_rejected_for_other_hypervisors() {
-    let (app, _manager, _tmp) = create_test_app();
+async fn qemu_accepts_a_custom_cloud_init_path() {
+    let (app, manager, _tmp) = create_test_app();
 
     let req = json!({
         "name": "qemu-ci",
@@ -156,8 +157,9 @@ async fn cloud_init_path_rejected_for_other_hypervisors() {
         "cloud_init_path": "/path/to/seed.img"
     });
     let (status, body) = request(&app, "POST", "/vms", Some(req)).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-    assert!(body["message"].as_str().unwrap_or_default().contains("cloud_init_path"));
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let vm = manager.get_vm(body["id"].as_str().unwrap()).await.unwrap();
+    assert_eq!(vm.config.cloud_init_path.as_deref(), Some("/path/to/seed.img"));
 }
 
 #[tokio::test]
@@ -452,13 +454,36 @@ fn env_path(name: &str, default: Option<String>) -> PathBuf {
     path.canonicalize().unwrap()
 }
 
+/// The UEFI firmware the boot tests use for `hypervisor`.
+fn test_firmware(hypervisor: &str) -> PathBuf {
+    match hypervisor {
+        "qemu" => env_path(
+            "GLIDEX_TEST_QEMU_FIRMWARE",
+            HypervisorType::Qemu.default_firmware_path().map(|p| p.to_string_lossy().into_owned()),
+        ),
+        _ => env_path(
+            "GLIDEX_TEST_FIRMWARE",
+            default_firmware_path().map(|p| p.to_string_lossy().into_owned()),
+        ),
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "boots a real VM; needs KVM, cloud-hypervisor and GLIDEX_TEST_IMAGE"]
 async fn firmware_boot_with_generated_cloud_init() {
-    let firmware = env_path(
-        "GLIDEX_TEST_FIRMWARE",
-        default_firmware_path().map(|p| p.to_string_lossy().into_owned()),
-    );
+    firmware_boot_e2e("cloudhypervisor").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "boots a real VM; needs KVM, qemu-system-x86_64, OVMF and GLIDEX_TEST_IMAGE"]
+async fn qemu_firmware_boot_with_generated_cloud_init() {
+    firmware_boot_e2e("qemu").await;
+}
+
+/// Boot a cloud image through UEFI with a generated seed and a stored
+/// credential, log in, pause/resume, then shut the guest down gracefully.
+async fn firmware_boot_e2e(hypervisor: &str) {
+    let firmware = test_firmware(hypervisor);
     let source_image = env_path("GLIDEX_TEST_IMAGE", None);
     assert!(Path::new("/dev/kvm").exists(), "/dev/kvm is required");
 
@@ -490,7 +515,7 @@ async fn firmware_boot_with_generated_cloud_init() {
             "name": hostname,
             "vcpu_count": 2,
             "mem_size_mib": 2048,
-            "hypervisor": "cloudhypervisor",
+            "hypervisor": hypervisor,
             "firmware_path": firmware,
             "rootfs_path": rootfs,
             "credential": username,
@@ -548,14 +573,25 @@ async fn firmware_boot_with_generated_cloud_init() {
     .unwrap();
     drop(console);
 
-    // Stop, then delete cleans up the generated seed.
-    let (status, body) = request(&app, "POST", &format!("/vms/{id}/stop"), None).await;
+    // QEMU keeps a private copy of the UEFI variable store.
+    let vars = tmp.path().join("firmware-vars").join(format!("{id}.fd"));
+    assert_eq!(vars.exists(), hypervisor == "qemu", "{}", vars.display());
+
+    // Graceful stop: the guest shuts down on the power button, well
+    // before the deadline that would force it.
+    let started = Instant::now();
+    let (status, body) = request(&app, "POST", &format!("/vms/{id}/stop?graceful_timeout_secs=120"), None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["state"], "stopped");
+    assert!(started.elapsed() < Duration::from_secs(110), "guest ignored the power button");
+    let log = std::fs::read_to_string(body["log_path"].as_str().unwrap()).unwrap_or_default();
+    assert!(log.contains("reboot: Power down"), "guest did not power off cleanly:\n{log}");
 
+    // Delete cleans up the generated seed (and the variable store).
     let (status, _) = request(&app, "DELETE", &format!("/vms/{id}"), None).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
     assert!(!Path::new(&seed_path).exists(), "seed image not removed on delete");
+    assert!(!vars.exists(), "variable store not removed on delete");
 
     // The credential is no longer referenced and can be removed.
     let (status, _) = request(&app, "DELETE", &format!("/credentials/{username}"), None).await;
@@ -577,10 +613,42 @@ fn host_default_gateway() -> Option<String> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "boots a real VM; needs KVM, glidex-netd, Open vSwitch and GLIDEX_TEST_IMAGE"]
 async fn nat_network_e2e() {
-    let firmware = env_path(
-        "GLIDEX_TEST_FIRMWARE",
-        default_firmware_path().map(|p| p.to_string_lossy().into_owned()),
-    );
+    nat_e2e("cloudhypervisor").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "boots a real VM; needs KVM, QEMU, OVMF, glidex-netd, Open vSwitch and GLIDEX_TEST_IMAGE"]
+async fn qemu_nat_network_e2e() {
+    nat_e2e("qemu").await;
+}
+
+/// A Cloud-Hypervisor guest and a QEMU guest on one tap network reach
+/// each other.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "boots two real VMs; needs KVM, cloud-hypervisor, QEMU, OVMF, glidex-netd, Open vSwitch and GLIDEX_TEST_IMAGE"]
+async fn mixed_hypervisors_share_a_network() {
+    let (app, manager, tmp) = create_test_app();
+    let _guard = ShutdownGuard(manager.clone());
+    request(&app, "DELETE", "/networks/mixed", None).await;
+    let (st, net) = request(&app, "POST", "/networks", Some(json!({"name": "mixed", "mode": "nat", "bridge": "gxbr-mixed"}))).await;
+    assert_eq!(st, StatusCode::CREATED, "{net}");
+
+    let ch = start_and_login(&app, &tmp, "mixed", "gx-mix-ch", json!({"hypervisor": "cloudhypervisor"})).await;
+    let qemu = start_and_login(&app, &tmp, "mixed", "gx-mix-qemu", json!({"hypervisor": "qemu"})).await;
+    let (ch_ip, qemu_ip) = (ch.ipv4.clone().unwrap(), qemu.ipv4.clone().unwrap());
+    let qemu = run_checks(qemu, vec![(format!("ping -c 2 -W 3 {ch_ip} >/dev/null && echo GX_$((60+1))_TO_CH"), "GX_61_TO_CH".into())]).await;
+    let ch = run_checks(ch, vec![(format!("ping -c 2 -W 3 {qemu_ip} >/dev/null && echo GX_$((60+2))_TO_QEMU"), "GX_62_TO_QEMU".into())]).await;
+    stop_and_delete(&app, qemu).await;
+    stop_and_delete(&app, ch).await;
+    let (st, body) = request(&app, "DELETE", "/networks/mixed", None).await;
+    assert_eq!(st, StatusCode::NO_CONTENT, "{body}");
+}
+
+/// NAT network acceptance for one hypervisor. Ends with the guest
+/// powering itself off, which must leave the VM stopped with its port
+/// released.
+async fn nat_e2e(hypervisor: &str) {
+    let firmware = test_firmware(hypervisor);
     let source_image = env_path("GLIDEX_TEST_IMAGE", None);
     let gateway = host_default_gateway().expect("host has no IPv4 default gateway");
 
@@ -617,10 +685,10 @@ async fn nat_network_e2e() {
         "/vms",
         Some(json!({
             "name": hostname, "vcpu_count": 2, "mem_size_mib": 2048,
-            "hypervisor": "cloudhypervisor",
+            "hypervisor": hypervisor,
             "firmware_path": firmware, "rootfs_path": rootfs,
             "credential": username,
-            "networks": [{"network": "e2e"}],
+            "networks": [{"network": "e2e", "queue_pairs": 2}],
         })),
     )
     .await;
@@ -653,12 +721,24 @@ async fn nat_network_e2e() {
         // Masquerade: reach the host's own default gateway.
         c.send(&format!("ping -c 2 -W 3 {gateway} >/dev/null && echo GX_$((40+2))_NAT_OK\r"));
         c.expect("GX_42_NAT_OK", Duration::from_secs(30));
+        // queue_pairs: 2 reached the guest as a multiqueue NIC.
+        c.send("ls -d /sys/class/net/*/queues/rx-1 >/dev/null && echo GX_$((40+3))_MQ_OK\r");
+        c.expect("GX_43_MQ_OK", Duration::from_secs(30));
+        c.send("sudo poweroff\r");
     })
     .await
     .unwrap();
 
-    let (st, _) = request(&app, "POST", &format!("/vms/{id}/stop"), None).await;
-    assert_eq!(st, StatusCode::OK);
+    // The guest powered itself off: the VM ends up stopped, port released.
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while manager.reap_exited_vms().await.is_empty() {
+        assert!(Instant::now() < deadline, "VM still running after guest poweroff");
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    let (_, body) = request(&app, "GET", &format!("/vms/{id}"), None).await;
+    assert_eq!(body["state"], "stopped", "{body}");
+    assert!(body["nics"][0]["port"].is_null(), "{body}");
+
     let (st, _) = request(&app, "DELETE", &format!("/vms/{id}"), None).await;
     assert_eq!(st, StatusCode::NO_CONTENT);
     let (st, body) = request(&app, "DELETE", "/networks/e2e", None).await;
@@ -682,20 +762,30 @@ fn host_ip(args: &[&str]) -> String {
     String::from_utf8_lossy(&Command::new("ip").args(args).output().unwrap().stdout).into_owned()
 }
 
-/// Boot a VM with a throwaway credential on `network`, log in on the
-/// console, run `checks` (command, expected marker), then delete the VM.
-async fn boot_and_check(app: &Router, tmp: &TempDir, network: &str, hostname: &str, extra: Value, checks: Vec<(String, String)>) {
-    let firmware = env_path("GLIDEX_TEST_FIRMWARE", default_firmware_path().map(|p| p.to_string_lossy().into_owned()));
+/// A logged-in guest started by `start_and_login`.
+struct Guest {
+    id: String,
+    console: Console,
+    ipv4: Option<String>,
+    username: String,
+}
+
+/// Boot a VM with a throwaway credential (named after the host) on
+/// `network` and log in on the console. `extra` overrides fields of the
+/// create request; `"hypervisor"` also picks the firmware.
+async fn start_and_login(app: &Router, tmp: &TempDir, network: &str, hostname: &str, extra: Value) -> Guest {
+    let hypervisor = extra["hypervisor"].as_str().unwrap_or("cloudhypervisor").to_string();
+    let firmware = test_firmware(&hypervisor);
     let source_image = env_path("GLIDEX_TEST_IMAGE", None);
     let rootfs = tmp.path().join(format!("{hostname}.raw"));
     run_ok(Command::new("cp").arg("--sparse=always").arg(&source_image).arg(&rootfs));
-    let username = "gxnet";
+    let username = format!("gx{}", hostname.replace('-', "").chars().rev().take(6).collect::<String>());
     let password = uuid::Uuid::new_v4().simple().to_string();
     request(app, "DELETE", &format!("/credentials/{username}"), None).await;
     let (st, body) = request(app, "POST", "/credentials", Some(json!({"username": username, "password": password}))).await;
     assert_eq!(st, StatusCode::CREATED, "{body}");
     let mut spec = json!({
-        "name": hostname, "vcpu_count": 2, "mem_size_mib": 2048, "hypervisor": "cloudhypervisor",
+        "name": hostname, "vcpu_count": 2, "mem_size_mib": 2048, "hypervisor": hypervisor,
         "firmware_path": firmware, "rootfs_path": rootfs, "credential": username,
         "networks": [{"network": network}],
     });
@@ -707,31 +797,57 @@ async fn boot_and_check(app: &Router, tmp: &TempDir, network: &str, hostname: &s
     let id = vm["id"].as_str().unwrap().to_string();
     let (st, body) = request(app, "POST", &format!("/vms/{id}/start"), None).await;
     assert_eq!(st, StatusCode::OK, "{body}");
+    let ipv4 = body["nics"][0]["ipv4"].as_str().map(str::to_string);
     let (_, info) = request(app, "GET", &format!("/vms/{id}/console"), None).await;
     let console_path = info["console_socket_path"].as_str().unwrap().to_string();
     let host = hostname.to_string();
-    tokio::task::spawn_blocking(move || {
+    let user = username.clone();
+    let console = tokio::task::spawn_blocking(move || {
         let mut c = Console::connect(&console_path);
         c.expect("Cloud-init v.", Duration::from_secs(300));
         c.expect("finished", Duration::from_secs(180));
         std::thread::sleep(Duration::from_secs(2));
         c.send("\r");
         c.expect(&format!("{host} login: "), Duration::from_secs(60));
-        c.send(&format!("{username}\r"));
+        c.send(&format!("{user}\r"));
         c.expect("Password: ", Duration::from_secs(30));
         c.send(&format!("{password}\r"));
-        c.expect(&format!("{username}@{host}:~$ "), Duration::from_secs(60));
-        for (cmd, marker) in checks {
-            c.send(&format!("{cmd}\r"));
-            c.expect(&marker, Duration::from_secs(40));
-        }
+        c.expect(&format!("{user}@{host}:~$ "), Duration::from_secs(60));
+        c
     })
     .await
     .unwrap();
-    request(app, "POST", &format!("/vms/{id}/stop"), None).await;
-    let (st, _) = request(app, "DELETE", &format!("/vms/{id}"), None).await;
+    Guest { id, console, ipv4, username }
+}
+
+/// Run `checks` (command, expected marker) on a guest's console.
+async fn run_checks(guest: Guest, checks: Vec<(String, String)>) -> Guest {
+    let Guest { id, mut console, ipv4, username } = guest;
+    let console = tokio::task::spawn_blocking(move || {
+        for (cmd, marker) in checks {
+            console.send(&format!("{cmd}\r"));
+            console.expect(&marker, Duration::from_secs(40));
+        }
+        console
+    })
+    .await
+    .unwrap();
+    Guest { id, console, ipv4, username }
+}
+
+async fn stop_and_delete(app: &Router, guest: Guest) {
+    drop(guest.console);
+    request(app, "POST", &format!("/vms/{}/stop", guest.id), None).await;
+    let (st, _) = request(app, "DELETE", &format!("/vms/{}", guest.id), None).await;
     assert_eq!(st, StatusCode::NO_CONTENT);
-    request(app, "DELETE", &format!("/credentials/{username}"), None).await;
+    request(app, "DELETE", &format!("/credentials/{}", guest.username), None).await;
+}
+
+/// Boot a VM on `network`, log in, run `checks`, then delete the VM.
+async fn boot_and_check(app: &Router, tmp: &TempDir, network: &str, hostname: &str, extra: Value, checks: Vec<(String, String)>) {
+    let guest = start_and_login(app, tmp, network, hostname, extra).await;
+    let guest = run_checks(guest, checks).await;
+    stop_and_delete(app, guest).await;
 }
 
 async fn require_lan_and_netd(app: &Router) {
@@ -856,6 +972,16 @@ async fn afxdp_uplink_e2e() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "needs root-run glidex-netd, OVS-DPDK initialized (GLIDEX_TEST_DPDK) and GLIDEX_TEST_IMAGE"]
 async fn vhost_user_e2e() {
+    vhost_user_net_e2e("cloudhypervisor").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs root-run glidex-netd, OVS-DPDK initialized (GLIDEX_TEST_DPDK), QEMU, OVMF and GLIDEX_TEST_IMAGE"]
+async fn qemu_vhost_user_e2e() {
+    vhost_user_net_e2e("qemu").await;
+}
+
+async fn vhost_user_net_e2e(hypervisor: &str) {
     assert!(std::env::var("GLIDEX_TEST_DPDK").is_ok(), "set GLIDEX_TEST_DPDK=1 once OVS-DPDK is initialized");
     let (app, manager, tmp) = create_test_app();
     let _guard = ShutdownGuard(manager.clone());
@@ -878,7 +1004,7 @@ async fn vhost_user_e2e() {
     let (_, nats) = request(&app, "GET", "/networks/fast", None).await;
     assert_eq!(nats["port_type"], "vhost_user");
     // OVS-DPDK's vhost-user backend needs hugepage-backed guest memory.
-    boot_and_check(&app, &tmp, "fast", "gx-vhosttest", json!({"hugepages": true, "mem_size_mib": 1024}), vec![
+    boot_and_check(&app, &tmp, "fast", "gx-vhosttest", json!({"hugepages": true, "mem_size_mib": 1024, "hypervisor": hypervisor}), vec![
         ("ip -4 -o addr | grep -q ' 10.88.' && echo GX_$((80+1))_VHOST_DHCP".into(), "GX_81_VHOST_DHCP".into()),
         ("ping -c 2 -W 3 $(ip -4 route show default | awk '{print $3}') >/dev/null && echo GX_$((80+2))_VHOST_GW".into(), "GX_82_VHOST_GW".into()),
     ]).await;

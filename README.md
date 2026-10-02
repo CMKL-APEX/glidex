@@ -45,7 +45,7 @@ The installer will:
 4. Download Cloud-Hypervisor's UEFI firmware (`CLOUDHV.fd`) to `~/.glidex/`
    for booting distro cloud images, plus `dosfstools`/`mtools`, and the disk
    tools for images and disks (`qemu-img`, `sgdisk`, `growpart`)
-5. Optionally install QEMU
+5. Optionally install QEMU and its OVMF UEFI firmware
 6. Check KVM access
 7. Build the Glidex binaries
 8. Optionally set up VM networking (Open vSwitch, `glidex-netd`, `glidex` group)
@@ -171,7 +171,7 @@ gxctl> log my-vm
 | `GET` | `/vms/{id}` | Get VM details |
 | `DELETE` | `/vms/{id}` | Delete a VM |
 | `POST` | `/vms/{id}/start` | Start a VM |
-| `POST` | `/vms/{id}/stop` | Stop a VM |
+| `POST` | `/vms/{id}/stop` | Stop a VM (`?graceful_timeout_secs=N`: power button first) |
 | `POST` | `/vms/{id}/pause` | Pause a VM |
 | `GET` | `/vms/{id}/console` | Get console connection info |
 
@@ -193,7 +193,7 @@ instead of `firmware_path`.
 
 The `hypervisor` field is optional and defaults to `"cloudhypervisor"`. Supported values:
 - `"cloudhypervisor"` - Use Cloud-Hypervisor (default)
-- `"qemu"` - Use QEMU (requires `qemu-system-x86_64`, kernel boot only)
+- `"qemu"` - Use QEMU (requires `qemu-system-x86_64`; firmware boot also needs OVMF, e.g. `/usr/share/OVMF/OVMF_CODE_4M.fd` from the `ovmf` package)
 
 ### Example: Create and Start a VM with curl
 

@@ -69,8 +69,11 @@ export async function startVm(id: string): Promise<VmResponse> {
   return handleResponse(resp);
 }
 
-export async function stopVm(id: string): Promise<VmResponse> {
-  const resp = await fetch(`${API_BASE}/vms/${id}/stop`, { method: "POST" });
+/** Stop a VM. With `gracefulTimeoutSecs`, press the guest's power button
+ * first and stop it hard only if it is still running after that long. */
+export async function stopVm(id: string, gracefulTimeoutSecs?: number): Promise<VmResponse> {
+  const query = gracefulTimeoutSecs === undefined ? "" : `?graceful_timeout_secs=${gracefulTimeoutSecs}`;
+  const resp = await fetch(`${API_BASE}/vms/${id}/stop${query}`, { method: "POST" });
   return handleResponse(resp);
 }
 

@@ -1,4 +1,7 @@
-use super::{Hypervisor, HypervisorError, HypervisorProcess, HypervisorType};
+use super::{
+    needs_shared_memory, vfio_device_id, vm_disks, Hypervisor, HypervisorError, HypervisorProcess,
+    HypervisorType,
+};
 use crate::models::VmConfig;
 use glidex_ovs::vm_port::VmPortBinding;
 use serde::Serialize;
@@ -113,43 +116,22 @@ struct DiskConfig {
     backing_files: bool,
 }
 
-/// `[root, data disks…, seed]`. Managed disks use the format recorded in
-/// the database; only a user-supplied `rootfs_path` is probed.
+/// `[root, data disks…, seed]`, see `vm_disks`.
 fn disk_configs(config: &VmConfig) -> Vec<DiskConfig> {
-    let root = match &config.root_disk_binding {
-        Some(b) => DiskConfig {
-            path: b.path.clone(),
-            readonly: false,
-            image_type: Some(b.format.into()),
-            backing_files: b.backing_files,
-        },
-        None => DiskConfig {
-            path: config.rootfs_path.clone(),
-            readonly: false,
-            image_type: detect_image_type(&config.rootfs_path),
-            backing_files: false,
-        },
-    };
-    std::iter::once(root)
-        .chain(config.data_disk_bindings.iter().map(|b| DiskConfig {
-            path: b.path.clone(),
-            readonly: false,
-            image_type: Some(b.format.into()),
-            backing_files: b.backing_files,
-        }))
-        // The seed is always the raw FAT image `write_seed_image` builds.
-        .chain(config.cloud_init_path.iter().map(|path| DiskConfig {
-            path: path.clone(),
-            readonly: true,
-            image_type: Some(ImageType::Raw),
-            backing_files: false,
-        }))
+    vm_disks(config)
+        .into_iter()
+        .map(|d| DiskConfig {
+            path: d.path,
+            readonly: d.read_only,
+            image_type: d.format,
+            backing_files: d.backing_files,
+        })
         .collect()
 }
 
-// Format detection lives with the other image code; re-exported for the
-// tests below.
-use crate::images::qemu_img::{detect_image_type, ImageType};
+use crate::images::qemu_img::ImageType;
+#[cfg(test)]
+use crate::images::qemu_img::detect_image_type;
 
 #[derive(Debug, Serialize)]
 struct ConsoleConfig {
@@ -341,11 +323,7 @@ impl CloudHypervisorClient {
             },
             memory: MemoryConfig {
                 size: (config.mem_size_mib as u64) * 1024 * 1024,
-                // vhost-user: OVS maps guest RAM, so it must be shared.
-                shared: config
-                    .nic_bindings
-                    .iter()
-                    .any(|n| matches!(n.binding, VmPortBinding::VhostUser { .. })),
+                shared: needs_shared_memory(config),
                 hugepages: config.hugepages,
             },
             net: net_configs(config),
@@ -409,6 +387,11 @@ impl CloudHypervisorClient {
         Ok(())
     }
 
+    pub fn power_button(&self) -> Result<(), HypervisorError> {
+        self.expect_success("PUT", "/vm.power-button", None)?;
+        Ok(())
+    }
+
     pub fn add_device(&self, device_path: &str) -> Result<(), HypervisorError> {
         let body = serde_json::json!({
             "path": device_path,
@@ -440,13 +423,6 @@ fn pty_path_from_vm_info(body: &str) -> Option<String> {
         }
         dev.get("file")?.as_str().map(str::to_string)
     })
-}
-
-/// Derive a deterministic Cloud-Hypervisor device ID from a sysfs path.
-/// e.g. "/sys/bus/pci/devices/0000:41:00.0" -> "_vfio_0000_41_00_0"
-fn vfio_device_id(path: &str) -> String {
-    let bdf = path.rsplit('/').next().unwrap_or(path);
-    format!("_vfio_{}", bdf.replace(':', "_").replace('.', "_"))
 }
 
 /// Manages a running Cloud-Hypervisor process
@@ -512,6 +488,14 @@ impl CloudHypervisorProcessHandle {
         Err(HypervisorError::Timeout(
             "Socket not available after timeout".to_string(),
         ))
+    }
+
+    /// Whether the cloud-hypervisor process hasn't exited yet.
+    fn child_alive(&self) -> bool {
+        match self.child.lock().unwrap().as_mut() {
+            Some(child) => matches!(child.try_wait(), Ok(None)),
+            None => false,
+        }
     }
 
     /// Start the console proxy thread that bridges the PTY to a Unix socket
@@ -721,8 +705,13 @@ impl HypervisorProcess for CloudHypervisorInstance {
         self.client.remove_device(device_path)
     }
 
+    fn request_shutdown(&self) -> Result<(), HypervisorError> {
+        self.client.power_button()
+    }
+
     fn is_running(&self) -> bool {
-        self.process.running.load(Ordering::SeqCst)
+        // Cloud-Hypervisor exits once the guest powers off.
+        self.process.running.load(Ordering::SeqCst) && self.process.child_alive()
     }
 
     fn socket_path(&self) -> &str {

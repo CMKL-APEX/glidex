@@ -546,6 +546,45 @@ async fn test_stop_vm_invalid_state() {
 }
 
 #[tokio::test]
+async fn test_graceful_stop_follows_stop_rules() {
+    let (app, _temp_dir) = create_test_app();
+    let create_request = json!({
+        "name": "graceful-vm",
+        "vcpu_count": 1,
+        "mem_size_mib": 256,
+        "kernel_image_path": "/path/to/kernel",
+        "rootfs_path": "/path/to/rootfs.ext4"
+    });
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/vms")
+                .header("content-type", "application/json")
+                .body(Body::from(create_request.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let vm_id = body_to_json(response.into_body()).await["id"].as_str().unwrap().to_string();
+
+    // A VM that isn't running has no guest to shut down: same as stop.
+    let stop = |uri: String| {
+        app.clone().oneshot(Request::builder().method("POST").uri(uri).body(Body::empty()).unwrap())
+    };
+    let response = stop(format!("/vms/{}/stop?graceful_timeout_secs=5", vm_id)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(body_to_json(response.into_body()).await["error"], "invalid_state");
+
+    let response = stop("/vms/nonexistent-id/stop?graceful_timeout_secs=5".to_string()).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+    let response = stop(format!("/vms/{}/stop?graceful_timeout_secs=soon", vm_id)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
 async fn test_pause_vm_invalid_state() {
     let (app, _temp_dir) = create_test_app();
 

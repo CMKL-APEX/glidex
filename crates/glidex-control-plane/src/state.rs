@@ -105,6 +105,8 @@ pub struct VmManager {
     netd: Netd,
     images: Arc<ImageManager>,
     backends: HashMap<HypervisorType, Box<dyn Hypervisor>>,
+    /// Where per-VM state outside the database lives (next to it).
+    data_dir: PathBuf,
 }
 
 type RootBinding = (DiskBinding, Disk);
@@ -164,6 +166,7 @@ impl VmManager {
             images,
             store,
             backends,
+            data_dir: base,
         }))
     }
 
@@ -287,7 +290,9 @@ impl VmManager {
             && config.kernel_image_path.is_empty()
             && config.firmware_path.is_none()
         {
-            config.firmware_path = crate::hypervisor::cloud_hypervisor::default_firmware_path()
+            config.firmware_path = config
+                .hypervisor
+                .default_firmware_path()
                 .map(|p| p.to_string_lossy().into_owned());
         }
         // Reject obviously broken configurations before persisting them.
@@ -303,39 +308,14 @@ impl VmManager {
             )
             .into());
         }
-        match (&config.firmware_path, config.hypervisor) {
-            (Some(_), HypervisorType::CloudHypervisor) => {}
-            (Some(_), other) => {
-                return Err(HypervisorError::InvalidConfig(format!(
-                    "firmware_path is only supported by cloudhypervisor, not {}",
-                    other
-                ))
-                .into());
-            }
-            (None, _) if config.kernel_image_path.is_empty() => {
-                return Err(HypervisorError::InvalidConfig(
-                    "either kernel_image_path or firmware_path is required".to_string(),
-                )
-                .into());
-            }
-            (None, _) => {}
-        }
-        if config.cloud_init_path.is_some()
-            && config.hypervisor != HypervisorType::CloudHypervisor
-        {
+        if config.firmware_path.is_none() && config.kernel_image_path.is_empty() {
             return Err(HypervisorError::InvalidConfig(
-                "cloud_init_path is only supported by cloudhypervisor".to_string(),
+                "either kernel_image_path or firmware_path is required".to_string(),
             )
             .into());
         }
         self.refuse_dpdk_uplink_devices(&config.vfio_devices)?;
         if !config.networks.is_empty() {
-            if config.hypervisor != HypervisorType::CloudHypervisor {
-                return Err(HypervisorError::InvalidConfig(
-                    "networks are only supported by cloudhypervisor".to_string(),
-                )
-                .into());
-            }
             if config.networks.len() > glidex_ovs::names::MAX_NICS as usize {
                 return Err(HypervisorError::InvalidConfig(format!(
                     "at most {} networks per VM",
@@ -560,6 +540,9 @@ impl VmManager {
                 let mut config = entry.vm.config.clone();
                 config.root_disk_binding = root_disk.as_ref().map(|(b, _)| b.clone());
                 config.data_disk_bindings = data_disks;
+                if config.firmware_path.is_some() && entry.vm.hypervisor == HypervisorType::Qemu {
+                    config.firmware_vars_path = Some(self.firmware_vars_path(&entry.vm.id));
+                }
                 let nics = match self.attach_nics(&entry.vm) {
                     Ok(nics) => nics,
                     Err(e) => {
@@ -688,6 +671,85 @@ impl VmManager {
                 operation: "start".to_string(),
             }),
         }
+    }
+
+    /// This VM's private copy of the UEFI variable store (QEMU firmware
+    /// boot), so boot entries the guest writes survive a restart.
+    fn firmware_vars_path(&self, vm_id: &str) -> String {
+        self.data_dir
+            .join("firmware-vars")
+            .join(format!("{}.fd", vm_id))
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    /// Stop a VM, first asking the guest to power off (ACPI power button)
+    /// and giving it up to `grace` to do so. A guest that is paused, has
+    /// no ACPI support or doesn't finish in time is stopped hard.
+    pub async fn stop_vm_graceful(&self, vm_id: &str, grace: std::time::Duration) -> Result<Vm, VmManagerError> {
+        let requested = {
+            let vms = self.vms.read().await;
+            let entry = vms
+                .get(vm_id)
+                .ok_or_else(|| VmManagerError::VmNotFound(vm_id.to_string()))?;
+            match (&entry.vm.state, &entry.process) {
+                (VmState::Running, Some(process)) => match process.request_shutdown() {
+                    Ok(()) => true,
+                    Err(e) => {
+                        tracing::warn!(vm_id, "graceful shutdown request failed: {}", e);
+                        false
+                    }
+                },
+                _ => false,
+            }
+        };
+        if requested {
+            // Poll without holding the lock, so the API stays responsive.
+            let deadline = tokio::time::Instant::now() + grace;
+            while tokio::time::Instant::now() < deadline {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                let vms = self.vms.read().await;
+                let alive = vms
+                    .get(vm_id)
+                    .and_then(|e| e.process.as_ref())
+                    .is_some_and(|p| p.is_running());
+                if !alive {
+                    break;
+                }
+            }
+        }
+        match self.stop_vm(vm_id).await {
+            // The guest powered off and the reaper got there first.
+            Err(VmManagerError::InvalidState { current: VmState::Stopped, .. }) if requested => self.get_vm(vm_id).await,
+            other => other,
+        }
+    }
+
+    /// Mark VMs whose hypervisor exited on its own (guest powered off or
+    /// crashed) as stopped and release their NICs. Returns their ids.
+    pub async fn reap_exited_vms(&self) -> Vec<String> {
+        let mut vms = self.vms.write().await;
+        let mut reaped = Vec::new();
+        for (vm_id, entry) in vms.iter_mut() {
+            if !matches!(entry.vm.state, VmState::Running | VmState::Paused) {
+                continue;
+            }
+            let Some(process) = entry.process.take_if(|p| !p.is_running()) else {
+                continue;
+            };
+            let _ = process.kill();
+            entry.vm.state = VmState::Stopped;
+            self.detach_nics(&entry.vm.id, entry.vm.config.networks.len());
+            for nic in &mut entry.vm.nics {
+                nic.port = None;
+            }
+            if let Err(e) = self.store.update_state(vm_id, VmState::Stopped) {
+                tracing::error!("Failed to persist VM {} state change to Stopped: {}", vm_id, e);
+            }
+            tracing::info!(vm_id = %vm_id, name = %entry.vm.name, "VM exited; marked stopped");
+            reaped.push(vm_id.clone());
+        }
+        reaped
     }
 
     pub async fn stop_vm(&self, vm_id: &str) -> Result<Vm, VmManagerError> {
@@ -944,6 +1006,7 @@ impl VmManager {
             self.images.remove_disk_file(d);
         }
         let _ = std::fs::remove_file(entry.vm.default_cloud_init_path());
+        let _ = std::fs::remove_file(self.firmware_vars_path(vm_id));
 
         vms.remove(vm_id);
         Ok(())
