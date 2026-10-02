@@ -91,11 +91,11 @@ over a Unix socket. Message framing is hand-rolled to match the
 upstream `api_client` format exactly (see `send_request` in that
 file).
 
-`spawn` runs `cloud-hypervisor --api-socket <sock>` with stdio muted.
-The PTY-based proxy thread is *not* started in `spawn`; CH allocates
-its own PTY when the VM boots. We discover that PTY path through
-`vm.info` and only then start `start_console_proxy`, which opens the
-PTY and bridges it to the console Unix socket.
+`spawn` runs `cloud-hypervisor --api-socket <sock>` on a PTY glidex
+owns (`console::spawn_on_pty`: the raw slave is CH's stdin/stdout, CH's
+stderr goes to the log) and starts the console proxy at once; see
+[console.md](console.md#why-glidex-owns-the-master). If the API socket
+doesn't appear, the error includes what CH printed.
 
 `configure` does a single `PUT /vm.create` with a full config
 payload (CPU, memory, payload, disks, console/serial config, any
@@ -103,12 +103,11 @@ VFIO devices). The payload depends on the boot mode:
 
 | Boot mode | `payload` | `console` | `serial` | Guest console |
 |---|---|---|---|---|
-| Kernel (`firmware_path` unset) | `kernel` + `cmdline` | `Pty` | `Off` | `hvc0` |
-| Firmware (`firmware_path` set) | `firmware` only | `Off` | `Pty` | `ttyS0` |
+| Kernel (`firmware_path` unset) | `kernel` + `cmdline` | `Tty` | `Off` | `hvc0` |
+| Firmware (`firmware_path` set) | `firmware` only | `Off` | `Tty` | `ttyS0` |
 
-`start` issues `PUT /vm.boot`, then polls `vm.info` for the `file` of
-whichever of `console` / `serial` is in `Pty` mode, and starts the
-console proxy against it.
+(`boot_payload`.) `Tty` makes the device CH's stdio, i.e. the PTY above.
+`start` issues `PUT /vm.boot`.
 
 ### Firmware boot
 

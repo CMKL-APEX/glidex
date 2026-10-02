@@ -4,13 +4,19 @@ Playwright tests that drive the web UI in headless Chromium against a
 **throwaway control plane**, for both hypervisors.
 
 ```bash
-cd crates/glidex-ui/ui && bun install          # the UI's own dependencies
-cd ../e2e && bun install
-bunx playwright install chromium               # once; into ~/.cache/ms-playwright
+scripts/dev/ui-e2e.sh -i ~/images/resolute-server-cloudimg-amd64.img   # from the repo root
+scripts/dev/ui-e2e.sh -H ch       # or -H qemu: the ui project plus one hypervisor
+scripts/dev/ui-e2e.sh -- --headed -g "create form"   # extra Playwright arguments
+```
 
-GLIDEX_TEST_IMAGE=~/images/resolute-server-cloudimg-amd64.img bun run test
-bun run test:ch      # ui + cloudhypervisor projects only
-bun run test:qemu    # ui + qemu projects only
+The script installs the UI's and the suite's dependencies and
+Playwright's Chromium (into `~/.cache/ms-playwright`) when missing,
+refuses to start if `:8851` / `:5174` are taken, and passes everything
+after `--` to `playwright test`. Without the script:
+
+```bash
+(cd ../ui && bun install) && bun install && bunx playwright install chromium
+GLIDEX_TEST_IMAGE=~/images/resolute-server-cloudimg-amd64.img bun run test   # or test:ch / test:qemu
 ```
 
 ## What runs
@@ -38,6 +44,10 @@ delete `ui-ch` / `ui-qemu` networks.
 | `ui` | `console.spec.ts`: the console page opens and closes without errors (xterm teardown regression) | nothing beyond the servers |
 | `cloudhypervisor`, `qemu` | `create-form.spec.ts`: boot mode, default firmware per hypervisor, credential and network pickers, the request the form sends | nothing beyond the servers |
 | | `vm-lifecycle.spec.ts`: credential and network created on their pages, VM created with firmware boot, started (NIC address shown), console login checked against that address, pause/resume, **Shut down** (clean guest poweroff), delete | KVM, the hypervisor (and OVMF for QEMU), glidex-netd with full access, OVS, `GLIDEX_TEST_IMAGE` |
+
+Shutting down checks the console log ends with the kernel's
+`reboot: Power down` — the guest's very last output, so it also checks
+that nothing printed just before the hypervisor exits is lost.
 
 `vm-lifecycle.spec.ts` skips itself, saying what is missing, when a
 prerequisite is absent. Every test fails on an uncaught page error or a

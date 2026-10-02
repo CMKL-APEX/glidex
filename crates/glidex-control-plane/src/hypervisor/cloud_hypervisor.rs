@@ -5,11 +5,11 @@ use super::{
 use crate::models::VmConfig;
 use glidex_ovs::vm_port::VmPortBinding;
 use serde::Serialize;
+use super::console::{read_log, spawn_on_pty, start_console_proxy};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
-use std::os::fd::{AsRawFd, FromRawFd};
-use std::os::unix::net::{UnixListener, UnixStream};
-use std::process::{Child, Command, Stdio};
+use std::os::unix::net::UnixStream;
+use std::process::{Child, Command};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -163,6 +163,34 @@ struct VmCreateConfig {
     net: Vec<NetConfig>,
 }
 
+/// Payload plus the `console` / `serial` modes. Firmware boot
+/// (CLOUDHV.fd) hands off to the disk's own bootloader, so there is no
+/// kernel/cmdline; distro cloud images put their console on ttyS0, so the
+/// serial port is the console instead of hvc0. The console device is
+/// `Tty`: CH's stdio, the PTY glidex owns (console.rs).
+fn boot_payload(config: &VmConfig) -> (PayloadConfig, &'static str, &'static str) {
+    match &config.firmware_path {
+        Some(firmware) => (
+            PayloadConfig {
+                firmware: Some(firmware.clone()),
+                kernel: None,
+                cmdline: None,
+            },
+            "Off",
+            "Tty",
+        ),
+        None => (
+            PayloadConfig {
+                firmware: None,
+                kernel: Some(config.kernel_image_path.clone()),
+                cmdline: Some(config.kernel_args.clone()),
+            },
+            "Tty",
+            "Off",
+        ),
+    }
+}
+
 /// Find the end of HTTP headers (position after the \r\n\r\n separator).
 fn find_header_end(data: &[u8]) -> Option<usize> {
     data.windows(4)
@@ -292,29 +320,7 @@ impl CloudHypervisorClient {
     }
 
     pub fn create_vm(&self, config: &VmConfig) -> Result<(), HypervisorError> {
-        // Firmware boot (CLOUDHV.fd) hands off to the disk's own bootloader,
-        // so there is no kernel/cmdline. Distro cloud images put their
-        // console on ttyS0, so expose the serial port instead of hvc0.
-        let (payload, console_mode, serial_mode) = match &config.firmware_path {
-            Some(firmware) => (
-                PayloadConfig {
-                    firmware: Some(firmware.clone()),
-                    kernel: None,
-                    cmdline: None,
-                },
-                "Off",
-                "Pty",
-            ),
-            None => (
-                PayloadConfig {
-                    firmware: None,
-                    kernel: Some(config.kernel_image_path.clone()),
-                    cmdline: Some(config.kernel_args.clone()),
-                },
-                "Pty",
-                "Off",
-            ),
-        };
+        let (payload, console_mode, serial_mode) = boot_payload(config);
 
         let vm_config = VmCreateConfig {
             cpus: CpuConfig {
@@ -353,18 +359,6 @@ impl CloudHypervisorClient {
 
         self.expect_success("PUT", "/vm.create", Some(&body))?;
         Ok(())
-    }
-
-    /// Extract the PTY path of whichever of `console` / `serial` is in Pty
-    /// mode from the vm.info response.
-    pub fn get_console_pty_path(&self) -> Result<Option<String>, HypervisorError> {
-        let body = self
-            .expect_success("GET", "/vm.info", None)?
-            .ok_or_else(|| {
-                HypervisorError::ApiRequest("vm.info returned no body".to_string())
-            })?;
-
-        Ok(pty_path_from_vm_info(&body))
     }
 
     pub fn boot_vm(&self) -> Result<(), HypervisorError> {
@@ -413,18 +407,6 @@ impl CloudHypervisorClient {
     }
 }
 
-fn pty_path_from_vm_info(body: &str) -> Option<String> {
-    let json = serde_json::from_str::<serde_json::Value>(body).ok()?;
-    let config = json.get("config")?;
-    ["console", "serial"].iter().find_map(|dev| {
-        let dev = config.get(*dev)?;
-        if dev.get("mode")?.as_str()? != "Pty" {
-            return None;
-        }
-        dev.get("file")?.as_str().map(str::to_string)
-    })
-}
-
 /// Manages a running Cloud-Hypervisor process
 pub struct CloudHypervisorProcessHandle {
     child: Mutex<Option<Child>>,
@@ -441,53 +423,68 @@ impl CloudHypervisorProcessHandle {
         console_socket_path: &str,
         log_path: &str,
     ) -> Result<Self, HypervisorError> {
-        // Remove existing sockets if present
         let _ = std::fs::remove_file(socket_path);
-        let _ = std::fs::remove_file(console_socket_path);
 
-        // Create/truncate log file
-        let _log_file = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(log_path)?;
+        // Truncate once; the console proxy and CH's stderr then both
+        // append, so neither overwrites the other.
+        File::create(log_path)?;
+        let log_file = OpenOptions::new().append(true).open(log_path)?;
+        let stderr_log = OpenOptions::new().append(true).open(log_path)?;
 
-        // Spawn cloud-hypervisor with API socket
-        let child = Command::new("cloud-hypervisor")
-            .arg("--api-socket")
-            .arg(socket_path)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()?;
-
+        // The guest console is CH's stdio (`Tty` mode), on a PTY glidex
+        // owns, proxied from the start so no early output is missed.
+        let mut cmd = Command::new("cloud-hypervisor");
+        cmd.arg("--api-socket").arg(socket_path);
+        let (child, master) = spawn_on_pty(&mut cmd, stderr_log)?;
         let running = Arc::new(AtomicBool::new(true));
+        let handle = Self {
+            child: Mutex::new(Some(child)),
+            socket_path: socket_path.to_string(),
+            console_socket_path: console_socket_path.to_string(),
+            log_path: log_path.to_string(),
+            running: running.clone(),
+            console_thread: Mutex::new(None),
+        };
+        match start_console_proxy(master, console_socket_path, log_path, log_file, running) {
+            Ok(thread) => *handle.console_thread.lock().unwrap() = Some(thread),
+            Err(e) => {
+                handle.stop();
+                return Err(e);
+            }
+        }
 
         // Wait for API socket to be available
         for _ in 0..50 {
             if std::path::Path::new(socket_path).exists() {
-                return Ok(Self {
-                    child: Mutex::new(Some(child)),
-                    socket_path: socket_path.to_string(),
-                    console_socket_path: console_socket_path.to_string(),
-                    log_path: log_path.to_string(),
-                    running,
-                    console_thread: Mutex::new(None),
-                });
+                return Ok(handle);
+            }
+            if !handle.child_alive() {
+                break;
             }
             std::thread::sleep(Duration::from_millis(100));
         }
 
-        // Cleanup on timeout
-        running.store(false, Ordering::SeqCst);
-        let mut child = child;
-        let _ = child.kill();
-        let _ = child.wait();
-        let _ = std::fs::remove_file(socket_path);
+        let log = read_log(log_path);
+        handle.stop();
+        Err(HypervisorError::Timeout(format!(
+            "cloud-hypervisor API socket not available.\n--- cloud-hypervisor output ---\n{}",
+            log.trim()
+        )))
+    }
 
-        Err(HypervisorError::Timeout(
-            "Socket not available after timeout".to_string(),
-        ))
+    /// Kill the process, then stop the console proxy (which first drains
+    /// what the guest printed last) and remove the sockets.
+    fn stop(&self) {
+        if let Some(mut child) = self.child.lock().unwrap().take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        self.running.store(false, Ordering::SeqCst);
+        if let Some(handle) = self.console_thread.lock().unwrap().take() {
+            let _ = handle.join();
+        }
+        let _ = std::fs::remove_file(&self.socket_path);
+        let _ = std::fs::remove_file(&self.console_socket_path);
     }
 
     /// Whether the cloud-hypervisor process hasn't exited yet.
@@ -497,130 +494,6 @@ impl CloudHypervisorProcessHandle {
             None => false,
         }
     }
-
-    /// Start the console proxy thread that bridges the PTY to a Unix socket
-    pub fn start_console_proxy(&self, pty_path: &str) -> Result<(), HypervisorError> {
-        // Remove existing console socket if present
-        let _ = std::fs::remove_file(&self.console_socket_path);
-
-        let pty_fd = open_console_pty(pty_path).map_err(|e| {
-            HypervisorError::SocketConnection(format!("Failed to open PTY {}: {}", pty_path, e))
-        })?;
-
-        // Create Unix socket for console connections
-        let console_listener = UnixListener::bind(&self.console_socket_path).map_err(|e| {
-            HypervisorError::SocketConnection(format!("Failed to create console socket: {}", e))
-        })?;
-        console_listener.set_nonblocking(true).map_err(|e| {
-            HypervisorError::SocketConnection(format!("Failed to set non-blocking: {}", e))
-        })?;
-
-        // Open log file for writing
-        let log_file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.log_path)?;
-
-        let running_clone = self.running.clone();
-        let log_path_clone = self.log_path.clone();
-
-        // Spawn thread to handle console I/O
-        let console_thread = thread::spawn(move || {
-            Self::console_proxy_loop(pty_fd, console_listener, log_file, &log_path_clone, running_clone);
-        });
-
-        *self.console_thread.lock().unwrap() = Some(console_thread);
-        Ok(())
-    }
-
-    fn console_proxy_loop(
-        pty_file: File,
-        listener: UnixListener,
-        mut log_file: File,
-        log_path: &str,
-        running: Arc<AtomicBool>,
-    ) {
-        let pty_raw = pty_file.as_raw_fd();
-        let mut clients: Vec<UnixStream> = Vec::new();
-        let mut buf = [0u8; 4096];
-        // PTY reads EOF once cloud-hypervisor's virtio console closes. We
-        // don't tear down the listener in that case — clients should still
-        // be able to connect and replay the captured log to diagnose why
-        // the guest died. The PTY itself is closed then (`None`), so a
-        // stopped VM's PTY isn't held open.
-        let mut pty_file = Some(pty_file);
-
-        // Set PTY to non-blocking
-        unsafe {
-            let flags = libc::fcntl(pty_raw, libc::F_GETFL);
-            libc::fcntl(pty_raw, libc::F_SETFL, flags | libc::O_NONBLOCK);
-        }
-
-        while running.load(Ordering::SeqCst) {
-            // Accept new client connections
-            if let Ok((stream, _)) = listener.accept() {
-                stream.set_nonblocking(true).ok();
-                // Send existing log content to new client
-                if let Ok(mut existing_log) = File::open(log_path) {
-                    let mut log_content = Vec::new();
-                    if existing_log.read_to_end(&mut log_content).is_ok() && !log_content.is_empty()
-                    {
-                        let mut s = stream.try_clone().unwrap();
-                        let _ = s.write_all(&log_content);
-                    }
-                }
-                clients.push(stream);
-            }
-
-            if pty_file.is_some() {
-                // Read from PTY and broadcast to clients + log file
-                let mut pty_reader = unsafe { File::from_raw_fd(libc::dup(pty_raw)) };
-                match pty_reader.read(&mut buf) {
-                    Ok(0) => pty_file = None,
-                    Ok(n) => {
-                        let data = &buf[..n];
-
-                        let _ = log_file.write_all(data);
-                        let _ = log_file.flush();
-
-                        clients.retain_mut(|client| client.write_all(data).is_ok());
-                    }
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-                    Err(_) => pty_file = None,
-                }
-
-                // Read from clients and write to PTY
-                for client in &mut clients {
-                    match client.read(&mut buf) {
-                        Ok(0) => {}
-                        Ok(n) => {
-                            let mut pty_writer =
-                                unsafe { File::from_raw_fd(libc::dup(pty_raw)) };
-                            let _ = pty_writer.write_all(&buf[..n]);
-                            let _ = pty_writer.flush();
-                        }
-                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-                        Err(_) => {}
-                    }
-                }
-            }
-
-            thread::sleep(Duration::from_millis(10));
-        }
-    }
-}
-
-/// Open a VM console PTY. `O_NOCTTY` matters: under systemd the control
-/// plane is a session leader with no terminal, so a plain open would make
-/// the PTY its controlling terminal, and the hangup when the VM exits (or a
-/// ^C from the guest) would signal the control plane itself.
-fn open_console_pty(path: &str) -> std::io::Result<File> {
-    use std::os::unix::fs::OpenOptionsExt;
-    OpenOptions::new()
-        .read(true)
-        .write(true)
-        .custom_flags(libc::O_NOCTTY)
-        .open(path)
 }
 
 /// Cloud-Hypervisor instance that implements HypervisorProcess
@@ -643,28 +516,7 @@ impl HypervisorProcess for CloudHypervisorInstance {
     }
 
     fn start(&self) -> Result<(), HypervisorError> {
-        self.client.boot_vm()?;
-
-        // The console PTY is allocated during vm.boot (device creation),
-        // not during vm.create. Poll for the PTY path to become available.
-        for _ in 0..30 {
-            match self.client.get_console_pty_path() {
-                Ok(Some(pty_path)) => {
-                    self.process.start_console_proxy(&pty_path)?;
-                    return Ok(());
-                }
-                Ok(None) => {
-                    std::thread::sleep(Duration::from_millis(100));
-                }
-                Err(_) => {
-                    std::thread::sleep(Duration::from_millis(100));
-                }
-            }
-        }
-
-        Err(HypervisorError::Timeout(
-            "Console PTY path not available after boot".to_string(),
-        ))
+        self.client.boot_vm()
     }
 
     fn pause(&self) -> Result<(), HypervisorError> {
@@ -676,24 +528,9 @@ impl HypervisorProcess for CloudHypervisorInstance {
     }
 
     fn kill(&self) -> Result<(), HypervisorError> {
-        self.process.running.store(false, Ordering::SeqCst);
-
-        // Try graceful shutdown first
+        // Shut the VM down first (no-op if it's already gone), then kill.
         let _ = self.client.shutdown_vm();
-
-        // Then force kill if needed
-        if let Some(mut child) = self.process.child.lock().unwrap().take() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-
-        // Wait for console thread to finish
-        if let Some(handle) = self.process.console_thread.lock().unwrap().take() {
-            let _ = handle.join();
-        }
-
-        let _ = std::fs::remove_file(&self.process.socket_path);
-        let _ = std::fs::remove_file(&self.process.console_socket_path);
+        self.process.stop();
         Ok(())
     }
 
@@ -835,46 +672,17 @@ mod tests {
     }
 
     #[test]
-    fn console_pty_never_becomes_controlling_terminal() {
-        use nix::sys::wait::{waitpid, WaitStatus};
-        use nix::unistd::{fork, setsid, ForkResult};
-        let pty = nix::pty::openpty(None, None).unwrap();
-        let path = nix::unistd::ttyname(&pty.slave).unwrap().to_string_lossy().into_owned();
-        drop(pty.slave);
-        match unsafe { fork() }.unwrap() {
-            ForkResult::Child => {
-                drop(pty.master);
-                // Like the control plane under systemd: a session leader
-                // with no controlling terminal.
-                let code = (|| {
-                    setsid().ok()?;
-                    let _console = open_console_pty(&path).ok()?;
-                    if File::open("/dev/tty").is_ok() {
-                        return Some(2); // the PTY became our terminal
-                    }
-                    std::thread::sleep(Duration::from_millis(500));
-                    Some(0)
-                })()
-                .unwrap_or(1);
-                unsafe { libc::_exit(code) }
-            }
-            ForkResult::Parent { child } => {
-                std::thread::sleep(Duration::from_millis(200));
-                drop(pty.master); // the VM exits: hangup on the PTY
-                assert_eq!(waitpid(child, None).unwrap(), WaitStatus::Exited(child, 0));
-            }
-        }
-    }
+    fn guest_console_is_chs_stdio() {
+        let mut config: VmConfig = serde_json::from_value(serde_json::json!({
+            "vcpu_count": 1, "mem_size_mib": 512, "rootfs_path": "/d",
+            "kernel_image_path": "/k", "kernel_args": "console=hvc0"
+        }))
+        .unwrap();
+        let (payload, console, serial) = boot_payload(&config);
+        assert_eq!((payload.kernel.as_deref(), console, serial), (Some("/k"), "Tty", "Off"));
 
-    #[test]
-    fn pty_path_prefers_whichever_device_is_pty() {
-        let virtio = r#"{"config":{"console":{"mode":"Pty","file":"/dev/pts/3"},"serial":{"mode":"Off","file":null}}}"#;
-        assert_eq!(pty_path_from_vm_info(virtio).as_deref(), Some("/dev/pts/3"));
-
-        let serial = r#"{"config":{"console":{"mode":"Off","file":null},"serial":{"mode":"Pty","file":"/dev/pts/7"}}}"#;
-        assert_eq!(pty_path_from_vm_info(serial).as_deref(), Some("/dev/pts/7"));
-
-        let pending = r#"{"config":{"console":{"mode":"Pty","file":null},"serial":{"mode":"Off"}}}"#;
-        assert_eq!(pty_path_from_vm_info(pending), None);
+        config.firmware_path = Some("/fw/CLOUDHV.fd".into());
+        let (payload, console, serial) = boot_payload(&config);
+        assert_eq!((payload.firmware.as_deref(), payload.kernel, console, serial), (Some("/fw/CLOUDHV.fd"), None, "Off", "Tty"));
     }
 }

@@ -29,10 +29,10 @@ export const BINARY: Record<Hypervisor, string> = {
   cloudhypervisor: "cloud-hypervisor",
   qemu: "qemu-system-x86_64",
 };
-/** A guest that shut down cleanly logs this. (The kernel's own "reboot:
- * Power down" can be lost: Cloud-Hypervisor exits, closing its PTY, before
- * the console proxy reads the last bytes.) */
-export const CLEAN_POWEROFF = /Reached target .*poweroff\.target|reboot: Power down/;
+/** The kernel's last line when a guest powers off cleanly. Being the very
+ * last thing printed before the hypervisor exits, it also checks that the
+ * console log keeps the guest's final output. */
+export const CLEAN_POWEROFF = /reboot: Power down/;
 
 export const LABEL: Record<Hypervisor, string> = {
   cloudhypervisor: "Cloud Hypervisor",

@@ -5,16 +5,13 @@ use super::{
 use crate::images::qemu_img::ImageType;
 use crate::models::{NicBinding, VmConfig};
 use glidex_ovs::vm_port::VmPortBinding;
-use nix::pty::{openpty, OpenptyResult};
-use nix::unistd::setsid;
+use super::console::{read_log, spawn_on_pty, start_console_proxy};
 use std::fs::{File, OpenOptions};
-use std::io::{BufRead, BufReader, Read, Write};
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::OpenOptionsExt;
-use std::os::unix::net::{UnixListener, UnixStream};
-use std::os::unix::process::CommandExt;
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
@@ -616,53 +613,21 @@ impl QemuInstance {
         let log_file = OpenOptions::new().append(true).open(&self.log_path)?;
         let stderr_log = OpenOptions::new().append(true).open(&self.log_path)?;
 
-        let OpenptyResult { master, slave } = openpty(None, None).map_err(|e| {
-            HypervisorError::SocketConnection(format!("Failed to create PTY: {}", e))
-        })?;
-
-        let slave_raw = slave.as_raw_fd();
-        let stdin_fd = unsafe { File::from_raw_fd(libc::dup(slave_raw)) };
-        let stdout_fd = unsafe { File::from_raw_fd(libc::dup(slave_raw)) };
-
-        // The serial console is the PTY; QEMU's own messages go to the log
-        // only, so they never land in a guest's console session.
+        // The serial console is the PTY (console.rs); QEMU's own messages
+        // go to the log only, so they never land in a guest's console
+        // session.
         let mut cmd = Command::new("qemu-system-x86_64");
         cmd.args(spec.args());
-        let child = unsafe {
-            cmd.stdin(Stdio::from(stdin_fd))
-                .stdout(Stdio::from(stdout_fd))
-                .stderr(Stdio::from(stderr_log))
-                .pre_exec(|| {
-                    setsid().ok();
-                    Ok(())
-                })
-                .spawn()?
-        };
-
-        drop(slave);
-
-        let console_listener = UnixListener::bind(&self.console_socket_path).map_err(|e| {
-            HypervisorError::SocketConnection(format!("Failed to create console socket: {}", e))
-        })?;
-        console_listener.set_nonblocking(true).map_err(|e| {
-            HypervisorError::SocketConnection(format!("Failed to set non-blocking: {}", e))
-        })?;
-
-        let running = self.running.clone();
-        let log_path_clone = self.log_path.clone();
-
-        let console_thread = thread::spawn(move || {
-            Self::console_proxy_loop(
-                master,
-                console_listener,
-                log_file,
-                &log_path_clone,
-                running,
-            );
-        });
-
+        let (child, master) = spawn_on_pty(&mut cmd, stderr_log)?;
         *self.child.lock().unwrap() = Some(child);
-        *self.console_thread.lock().unwrap() = Some(console_thread);
+        let thread = match start_console_proxy(master, &self.console_socket_path, &self.log_path, log_file, self.running.clone()) {
+            Ok(thread) => thread,
+            Err(e) => {
+                self.cleanup_partial();
+                return Err(e.into());
+            }
+        };
+        *self.console_thread.lock().unwrap() = Some(thread);
 
         // Wait for the QMP socket to become usable. The file existing is
         // not sufficient: if QEMU crashes it leaves an orphaned socket
@@ -670,7 +635,7 @@ impl QemuInstance {
         // confirm the process is alive and listening.
         for _ in 0..50 {
             if let Some(exit_status) = self.child_exit_status() {
-                let log = std::fs::read_to_string(&self.log_path).unwrap_or_default();
+                let log = read_log(&self.log_path);
                 self.cleanup_partial();
                 return Err(LaunchFailure::Exited {
                     error: HypervisorError::ProcessStart(std::io::Error::other(format!(
@@ -688,7 +653,7 @@ impl QemuInstance {
             std::thread::sleep(Duration::from_millis(100));
         }
 
-        let log = std::fs::read_to_string(&self.log_path).unwrap_or_default();
+        let log = read_log(&self.log_path);
         self.cleanup_partial();
         Err(LaunchFailure::Other(HypervisorError::Timeout(format!(
             "QMP socket not ready after timeout.\n--- qemu output ---\n{}",
@@ -707,88 +672,17 @@ impl QemuInstance {
 
     /// Kill the child and join the console thread. Used on failed launches.
     fn cleanup_partial(&self) {
-        self.running.store(false, Ordering::SeqCst);
         if let Some(mut child) = self.child.lock().unwrap().take() {
             let _ = child.kill();
             let _ = child.wait();
         }
+        // After the child: the proxy drains what it printed last.
+        self.running.store(false, Ordering::SeqCst);
         if let Some(handle) = self.console_thread.lock().unwrap().take() {
             let _ = handle.join();
         }
         let _ = std::fs::remove_file(&self.socket_path);
         let _ = std::fs::remove_file(&self.console_socket_path);
-    }
-
-    fn console_proxy_loop(
-        master: OwnedFd,
-        listener: UnixListener,
-        mut log_file: File,
-        log_path: &str,
-        running: Arc<AtomicBool>,
-    ) {
-        let mut clients: Vec<UnixStream> = Vec::new();
-        let mut buf = [0u8; 4096];
-        // PTY reads EOF once QEMU exits. We don't tear down the listener in
-        // that case — clients should still be able to connect and read the
-        // captured log to see *why* the guest died. The PTY itself is
-        // closed then (`None`).
-        let mut pty = Some(File::from(master));
-
-        if let Some(pty) = &pty {
-            unsafe {
-                let raw = pty.as_raw_fd();
-                let flags = libc::fcntl(raw, libc::F_GETFL);
-                libc::fcntl(raw, libc::F_SETFL, flags | libc::O_NONBLOCK);
-            }
-        }
-
-        while running.load(Ordering::SeqCst) {
-            if let Ok((stream, _)) = listener.accept() {
-                stream.set_nonblocking(true).ok();
-                if let Ok(mut existing_log) = File::open(log_path) {
-                    let mut log_content = Vec::new();
-                    if existing_log.read_to_end(&mut log_content).is_ok()
-                        && !log_content.is_empty()
-                    {
-                        let mut s = &stream;
-                        let _ = s.write_all(&log_content);
-                    }
-                }
-                clients.push(stream);
-            }
-
-            if let Some(file) = &pty {
-                let mut reader = file;
-                match reader.read(&mut buf) {
-                    Ok(0) => pty = None,
-                    Ok(n) => {
-                        let data = &buf[..n];
-                        let _ = log_file.write_all(data);
-                        let _ = log_file.flush();
-                        clients.retain_mut(|client| client.write_all(data).is_ok());
-                    }
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-                    Err(_) => pty = None,
-                }
-            }
-
-            if let Some(file) = &pty {
-                for client in &mut clients {
-                    match client.read(&mut buf) {
-                        Ok(0) => {}
-                        Ok(n) => {
-                            let mut writer = file;
-                            let _ = writer.write_all(&buf[..n]);
-                            let _ = writer.flush();
-                        }
-                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-                        Err(_) => {}
-                    }
-                }
-            }
-
-            thread::sleep(Duration::from_millis(10));
-        }
     }
 }
 
@@ -810,21 +704,8 @@ impl HypervisorProcess for QemuInstance {
     }
 
     fn kill(&self) -> Result<(), HypervisorError> {
-        self.running.store(false, Ordering::SeqCst);
-
         let _ = self.client.quit();
-
-        if let Some(mut child) = self.child.lock().unwrap().take() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-
-        if let Some(handle) = self.console_thread.lock().unwrap().take() {
-            let _ = handle.join();
-        }
-
-        let _ = std::fs::remove_file(&self.socket_path);
-        let _ = std::fs::remove_file(&self.console_socket_path);
+        self.cleanup_partial();
         Ok(())
     }
 

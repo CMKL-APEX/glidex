@@ -142,8 +142,8 @@ and started with `-S`).
 - Each VM, while running, has:
   - One async hypervisor process (sub-child of the control plane).
   - One **OS thread** hosting the console proxy loop
-    (`Self::console_proxy_loop`), owning the PTY master fd (or the
-    cloud-hypervisor PTY file handle) and the
+    (`hypervisor/console.rs`), owning the PTY master (both
+    hypervisors run on a PTY glidex allocates) and the
     `UnixListener` for the console socket. This is a plain
     `std::thread`, not a Tokio task, because the code uses blocking
     `UnixListener`/`File` APIs.

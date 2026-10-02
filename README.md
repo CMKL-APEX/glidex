@@ -272,9 +272,10 @@ Both hypervisors implement the same interface:
 ### Console Architecture
 
 For each running VM:
-- A PTY (pseudo-terminal) carries the guest console. QEMU's serial port is
-  attached to a PTY glidex creates; Cloud-Hypervisor allocates its own PTY
-  (virtio console for kernel boot, serial port for firmware boot)
+- A PTY (pseudo-terminal) glidex creates carries the guest console: it is
+  the hypervisor's stdio (QEMU `-serial stdio`; Cloud-Hypervisor `Tty`
+  mode on the virtio console for kernel boot, the serial port for firmware
+  boot), so nothing the guest prints is lost when the hypervisor exits
 - A background thread reads from the PTY and:
   - Writes all output to a log file (`/tmp/{hypervisor}-{id}.log`)
   - Broadcasts to connected clients via Unix socket (`/tmp/{hypervisor}-{id}.console.sock`)
@@ -453,9 +454,12 @@ GLIDEX_TEST_IMAGE=~/images/ubuntu-cloudimg.raw \
 throwaway control plane, for Cloud Hypervisor and QEMU:
 
 ```bash
-cd crates/glidex-ui/e2e && bun install && bunx playwright install chromium
-GLIDEX_TEST_IMAGE=~/images/ubuntu-cloudimg.img bun run test
+scripts/dev/ui-e2e.sh -i ~/images/ubuntu-cloudimg.img          # both hypervisors
+scripts/dev/ui-e2e.sh -i ~/images/ubuntu-cloudimg.img -H qemu  # or -H ch
 ```
+
+It installs the suite's dependencies and Playwright's Chromium on first
+use; extra arguments after `--` go to Playwright (e.g. `-- --headed`).
 
 See [its README](crates/glidex-ui/e2e/README.md) for what it covers and
 needs.

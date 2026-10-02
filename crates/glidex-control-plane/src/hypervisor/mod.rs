@@ -1,4 +1,5 @@
 pub mod cloud_hypervisor;
+mod console;
 pub mod qemu;
 
 use crate::images::qemu_img::{detect_image_type, ImageType};
