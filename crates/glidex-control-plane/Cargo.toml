@@ -43,6 +43,8 @@ rustls-pki-types = { version = "1", features = ["std"] }
 tower = { version = "0.5", features = ["util"] }
 
 [dev-dependencies]
+rsa = "0.9"
+rand = "0.8"
 http-body-util = "0.1"
 mime = "0.3"
 
