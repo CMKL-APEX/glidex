@@ -73,12 +73,20 @@ export default function VmConsole() {
     return () => {
       window.removeEventListener("resize", handleResize);
       inputDisposable.dispose();
+      // Detach first: a message already in flight would otherwise be
+      // written to the disposed terminal (xterm throws on "dimensions").
+      ws.onopen = ws.onclose = ws.onerror = ws.onmessage = null;
       try {
         ws.close();
       } catch {
         /* already closed */
       }
-      term.dispose();
+      // xterm 5.5 queues a setTimeout(syncScrollArea) in open(); disposing
+      // before it runs (StrictMode's mount/unmount, a quick navigation)
+      // makes it throw on the disposed renderer. Take the terminal off the
+      // page now and dispose it once that timer has run.
+      term.element?.remove();
+      setTimeout(() => term.dispose(), 0);
     };
   }, [id]);
 

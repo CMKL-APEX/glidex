@@ -352,7 +352,7 @@ export default function Networking() {
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Networking</h1>
           <p className="text-gray-500 mt-1">
-            Open vSwitch bridges and the networks VMs attach to (Cloud Hypervisor).
+            Open vSwitch bridges and the networks VMs attach to.
           </p>
         </div>
         {canManage && (

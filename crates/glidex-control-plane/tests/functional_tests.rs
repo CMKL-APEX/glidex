@@ -1020,10 +1020,20 @@ async fn vhost_user_net_e2e(hypervisor: &str) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "downloads a cloud image and boots it; needs network, KVM, cloud-hypervisor and qemu-img/qemu-io/sgdisk/growpart"]
 async fn catalog_image_boots_and_root_grows() {
-    let firmware = env_path(
-        "GLIDEX_TEST_FIRMWARE",
-        default_firmware_path().map(|p| p.to_string_lossy().into_owned()),
-    );
+    catalog_image_e2e("cloudhypervisor").await;
+}
+
+/// The same on QEMU, without a `firmware_path`: an `image` VM must get
+/// the host's OVMF by default.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "downloads a cloud image and boots it; needs network, KVM, QEMU, OVMF and qemu-img/qemu-io/sgdisk/growpart"]
+async fn qemu_catalog_image_boots_and_root_grows() {
+    catalog_image_e2e("qemu").await;
+}
+
+async fn catalog_image_e2e(hypervisor: &str) {
+    // QEMU relies on the server-side default firmware.
+    let firmware = (hypervisor != "qemu").then(|| test_firmware(hypervisor));
     let key = std::env::var("GLIDEX_TEST_CATALOG").unwrap_or_else(|_| "ubuntu-26.04".into());
     let (app, manager, _tmp) = create_test_app();
     let _guard = ShutdownGuard(manager.clone());
@@ -1051,13 +1061,21 @@ async fn catalog_image_boots_and_root_grows() {
     assert_eq!(status, StatusCode::CREATED, "{body}");
 
     let hostname = "gx-imgtest";
-    let (status, vm) = request(&app, "POST", "/vms", Some(json!({
-        "name": hostname, "vcpu_count": 2, "mem_size_mib": 2048,
-        "firmware_path": firmware, "image": image_id, "root_disk_size_gib": 12,
-        "credential": username,
-    }))).await;
+    let mut spec = json!({
+        "name": hostname, "vcpu_count": 2, "mem_size_mib": 2048, "hypervisor": hypervisor,
+        "image": image_id, "root_disk_size_gib": 12, "credential": username,
+    });
+    if let Some(firmware) = &firmware {
+        spec["firmware_path"] = json!(firmware);
+    }
+    let (status, vm) = request(&app, "POST", "/vms", Some(spec)).await;
     assert_eq!(status, StatusCode::CREATED, "{vm}");
     let id = vm["id"].as_str().unwrap().to_string();
+    let config = manager.get_vm(&id).await.unwrap().config;
+    let expected = HypervisorType::Qemu.default_firmware_path().map(|p| p.to_string_lossy().into_owned());
+    if hypervisor == "qemu" {
+        assert_eq!(config.firmware_path, expected, "QEMU image VMs default to OVMF");
+    }
     let root = vm["root_disk"].as_str().unwrap().to_string();
     // glidex extended the root partition offline, before the first boot.
     assert!(vm.get("warnings").is_none(), "{vm}");
