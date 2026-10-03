@@ -226,7 +226,9 @@ Interactive `handle_create` asks, in order:
 8. *(firmware boot only)* cloud-init seed image (optional; empty →
    auto-generated at start, see [hypervisors.md](hypervisors.md#firmware-boot)).
    *(auto-generated seed only)* Login credential: lists the project's
-   stored usernames; empty → none, and the VM has no way to log in. With
+   stored usernames; empty → none, and the VM has no way to log in. If
+   the project has a credential named after the signed-in user, that is
+   the default instead (`none` for no login). With
    no credentials in the project gxctl says "no login available" and
    doesn't ask.
 9. Kernel args (optional — server picks per-hypervisor default) —

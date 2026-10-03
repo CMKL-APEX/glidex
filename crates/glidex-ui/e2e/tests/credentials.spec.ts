@@ -42,6 +42,31 @@ test("the VM form says there is no login without credentials", async ({ page }) 
   await expect(page.getByTestId("credential-hint")).toContainText("Provisioned by cloud-init");
 });
 
+test("the VM form defaults to my own credential when the project has one", async ({ page }) => {
+  const project = await defaultProject();
+  // api() is the same Unix user as the browser session.
+  const me = (await api<{ user: { display_name: string } }>("/auth/whoami")).user.display_name;
+  await api("/credentials", { method: "POST", body: { username: USER, project, ssh_authorized_keys: [KEY] } });
+  await page.goto("/");
+  await page.getByRole("button", { name: "+ Create VM" }).click();
+  const select = field(page, "Login Credential");
+  // Only someone else's credential: no default.
+  await expect(select.locator("option", { hasText: USER })).toHaveCount(1);
+  await expect(select).toHaveValue("");
+
+  await api("/credentials", { method: "POST", body: { username: me, project, ssh_authorized_keys: [KEY] } });
+  try {
+    await page.reload();
+    await page.getByRole("button", { name: "+ Create VM" }).click();
+    await expect(select).toHaveValue(me);
+    // It's only a default: "no login" can still be chosen.
+    await select.selectOption("");
+    await expect(select).toHaveValue("");
+  } finally {
+    await removeCredential(me);
+  }
+});
+
 test("Add Credential prefills my own public keys", async ({ page }) => {
   // The server reads ~/.ssh through glidex-authd, which only serves the
   // glidex service user; the scratch control plane can't use it, so the

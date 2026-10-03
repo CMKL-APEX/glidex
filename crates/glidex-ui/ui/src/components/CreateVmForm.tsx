@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useRef, useEffect, useState, type FormEvent } from "react";
 import { listCredentials, listDisks, listImages, listNetworks } from "../api";
 import type { CreateVmRequest, CredentialInfo, DiskInfo, HypervisorType, ImageInfo, Network } from "../types";
 import { HYPERVISOR_LABELS, formatBytes, networkUsableBy } from "../types";
@@ -25,7 +25,7 @@ interface CreateVmFormProps {
 }
 
 export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) {
-  const { project } = useSession();
+  const { project, me } = useSession();
   const [name, setName] = useState("");
   const [vcpuCount, setVcpuCount] = useState(1);
   const [memSizeMib, setMemSizeMib] = useState(512);
@@ -33,6 +33,8 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
   const [bootMode, setBootMode] = useState<BootMode>("firmware");
   const [firmwarePath, setFirmwarePath] = useState(DEFAULT_FIRMWARE.cloudhypervisor);
   const [credential, setCredential] = useState("");
+  // Set once the user picks a credential, so a late load never overrides it.
+  const credentialChosen = useRef(false);
   const [credentials, setCredentials] = useState<CredentialInfo[]>([]);
   const [networks, setNetworks] = useState<Network[]>([]);
   const [selectedNetworks, setSelectedNetworks] = useState<string[]>([]);
@@ -58,7 +60,15 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
 
   useEffect(() => {
     listCredentials(project)
-      .then(setCredentials)
+      .then((creds) => {
+        setCredentials(creds);
+        // Default to the signed-in user's own credential, if the project
+        // has one by that name.
+        const mine = me.user?.display_name;
+        if (!credentialChosen.current && mine && creds.some((c) => c.username === mine)) {
+          setCredential(mine);
+        }
+      })
       .catch(() => setCredentials([]));
     listNetworks()
       .then((all) => {
@@ -85,7 +95,7 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
         if (free.length > 0) setRootDisk(free[0].id);
       })
       .catch(() => setFreeDisks([]));
-  }, [project]);
+  }, [project, me.user?.display_name]);
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
@@ -307,7 +317,10 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
             <select
               className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-transparent bg-white"
               value={credential}
-              onChange={(e) => setCredential(e.target.value)}
+              onChange={(e) => {
+                credentialChosen.current = true;
+                setCredential(e.target.value);
+              }}
             >
               <option value="">
                 {credentials.length === 0

@@ -1065,6 +1065,22 @@ fn read_public_key_files(input: &str) -> Result<Vec<String>, String> {
     Ok(keys)
 }
 
+/// The signed-in user's name (the login name for local accounts).
+async fn signed_in_name(client: &CliClient) -> Option<String> {
+    let w: serde_json::Value = client.request_json(Method::GET, "/auth/whoami", None).await.ok()?;
+    w["user"]["display_name"].as_str().filter(|n| !n.is_empty()).map(str::to_string)
+}
+
+/// The login-credential answer: empty takes the default (if any),
+/// `none` means no login.
+fn credential_choice(answer: &str, default: Option<&str>) -> Option<String> {
+    match answer.trim() {
+        "" => default.map(str::to_string),
+        a if a.eq_ignore_ascii_case("none") => None,
+        a => Some(a.to_string()),
+    }
+}
+
 /// Your own public key files (`~/.ssh/*.pub` that hold a public key),
 /// offered as the default for a new credential.
 fn own_public_key_files() -> Vec<String> {
@@ -1536,10 +1552,18 @@ async fn handle_create(client: &CliClient) {
             );
             None
         } else {
-            prompt_optional(&format!(
-                "Login credential (one of: {}; empty: none, no login): ",
-                names.join(", ")
-            ))
+            // Default to the signed-in user's own credential, if the
+            // project has one by that name.
+            let mine = signed_in_name(client).await.filter(|n| names.contains(n));
+            let answer = match &mine {
+                Some(m) => prompt(&format!(
+                    "Login credential (one of: {}; 'none' for no login) [{}]: ",
+                    names.join(", "),
+                    m
+                )),
+                None => prompt(&format!("Login credential (one of: {}; empty: none, no login): ", names.join(", "))),
+            };
+            credential_choice(&answer, mine.as_deref())
         }
     } else {
         None
@@ -2193,6 +2217,14 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn credential_choice_defaults_to_mine() {
+        assert_eq!(credential_choice("", Some("alice")).as_deref(), Some("alice"));
+        assert_eq!(credential_choice("none", Some("alice")), None);
+        assert_eq!(credential_choice("bob", Some("alice")).as_deref(), Some("bob"));
+        assert_eq!(credential_choice("", None), None);
+    }
 
     #[test]
     fn credential_key_file_answers() {
