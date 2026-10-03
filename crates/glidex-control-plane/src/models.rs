@@ -314,6 +314,9 @@ pub struct InstanceRef {
     /// cleared once the guest is seen running.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub growpart_disk: Option<String>,
+    /// That disk's `applied_extend_root_seq` when the seed was made.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub growpart_seq: Option<u64>,
 }
 
 pub use glidex_vm_shim::state::ExitCause;
@@ -519,6 +522,8 @@ pub struct VmResponse {
     pub desired_state: PowerState,
     pub generation: u64,
     pub observed_generation: u64,
+    /// For `If-Match` (spec/reconciliation.md §12.1).
+    pub resource_version: u64,
     pub restart_required: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub conditions: Vec<Condition>,
@@ -557,6 +562,7 @@ impl From<&Vm> for VmResponse {
             desired_state: vm.spec.power,
             generation: vm.generation,
             observed_generation: vm.status.observed_generation,
+            resource_version: vm.resource_version,
             restart_required: vm.condition("RestartRequired").is_some_and(|c| c.status == Tristate::True),
             conditions: vm.status.conditions.clone(),
             last_exit: vm.status.last_exit.clone(),

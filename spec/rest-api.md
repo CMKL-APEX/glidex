@@ -26,17 +26,22 @@ reported as `404`.
 | Method | Path | Handler | Purpose |
 |---|---|---|---|
 | `GET` | `/health` | `health_check` | Liveness probe |
-| `GET` | `/vms` | `list_vms` | List all VMs |
-| `POST` | `/vms` | `create_vm` | Create a new VM |
-| `GET` | `/vms/{id}` | `get_vm` | Get a VM by id |
-| `DELETE` | `/vms/{id}` | `delete_vm` | Delete a VM (also stops it) |
-| `POST` | `/vms/{id}/start` | `start_vm` | Start / resume a VM |
-| `POST` | `/vms/{id}/stop[?graceful_timeout_secs=N]` | `stop_vm` | Stop a VM; with `graceful_timeout_secs`, press the guest's power button and wait up to `N` s (max 300) before stopping it hard |
-| `POST` | `/vms/{id}/pause` | `pause_vm` | Pause a running VM |
-| `GET` | `/vms/{id}/console` | `get_console_info` | Return console-socket path and availability |
+| `GET` | `/vms` | `list` | List VMs |
+| `POST` | `/vms` | `create` | Create a new VM (desired state `stopped` unless `power` says otherwise) |
+| `GET` | `/vms/{id}[?view=full]` | `get_one` | Get a VM by id; `view=full` returns the stored `{meta, spec, status}` record instead of the flat `VmResponse`; it also needs `readSystemStatus` (`host.read`), since the record carries host paths, PIDs and the boot id |
+| `PATCH` | `/vms/{id}` | `patch_one` | JSON merge patch of the VM's spec (below) |
+| `DELETE` | `/vms/{id}[?keep_disk=true]` | `delete_one` | Request deletion; the controller stops the VM and cleans up (below) |
+| `POST` | `/vms/{id}/start` | `start` | Desired state `running` (from `paused`: resume) |
+| `POST` | `/vms/{id}/stop[?graceful_timeout_secs=N]` | `stop` | Desired state `stopped`; `N` (max 300) is stored as `stop_grace_secs`: press the guest's power button and wait up to `N` s before stopping it hard |
+| `POST` | `/vms/{id}/pause` | `pause` | Desired state `paused` |
+| `GET` | `/vms/{id}/events` | `events` | The VM's last 50 events, oldest first |
+| `GET` | `/vms/{id}/console` | `console_info` | Console availability and WebSocket URL |
+| `POST` | `/vms/{id}/console/ticket` | `console_ticket` | Single-use ticket for a browser's console WebSocket (security.md §5.6) |
 | `GET` | `/vms/{id}/console/ws` | `console_ws` | WebSocket upgrade — see below |
-| `POST` | `/vms/{id}/devices` | `attach_device` | Attach a VFIO PCI device |
-| `DELETE` | `/vms/{id}/devices` | `detach_device` | Detach a VFIO PCI device |
+| `GET` | `/vms/{id}/console/log[?tail_bytes=N][&previous=true]` | `console_log` | Last `N` bytes (max and default 1 MiB) of the console log; `previous=true` reads the rotated `console.log.1` (`404` if none) |
+| `POST` | `/vms/{id}/devices` | `attach_device` | Add a VFIO PCI device to the spec (hot-plugged while running) |
+| `DELETE` | `/vms/{id}/devices` | `detach_device` | Remove a VFIO PCI device from the spec (hot-unplugged while running) |
+| `GET` | `/system/reconcile` | `system_reconcile` | Controller status: runner, bus, netd, queue, orphans, unknown VMs |
 | `GET` | `/pci-devices` | `list_pci_devices` | Enumerate host PCI devices |
 | `GET` | `/credentials` | `list_credentials` | List stored guest logins (no hashes) |
 | `POST` | `/credentials` | `create_credential` | Create a login; password is hashed on arrival |
@@ -46,17 +51,110 @@ reported as `404`.
 | `GET` | `/images/catalog` | `image_catalog` | Built-in cloud images for this host's arch |
 | `GET` / `POST` | `/images` | `list_images` / `pull_image` | List; download + verify (`202`) |
 | `GET` / `DELETE` | `/images/{id}` | `get_image` / `delete_image` | Details + progress; delete or cancel (`409` while linked disks exist) |
-| `GET` / `POST` | `/disks` | `list_disks` / `create_disk` | List; create blank or from an image (`201`) |
-| `GET` / `DELETE` | `/disks/{id}` | `get_disk` / `delete_disk` | Details + partition table; delete (`409` while attached) |
-| `POST` | `/disks/{id}/resize` | `resize_disk` | Grow (extends root) or shrink (never into a partition) |
-| `POST` | `/disks/{id}/extend-root` | `extend_root` | Grow the root partition, `offline` or `on-boot` |
-| `POST` | `/vms/{id}/disks` | `attach_disk` | Attach a data disk (Created/Stopped VM) |
-| `DELETE` | `/vms/{id}/disks/{disk}` | `detach_disk` | Detach a data disk (Created/Stopped VM) |
+| `POST` | `/images/{id}/retry` | `retry_image` | Download a failed image again (`202`; needs `pullImage`) |
+| `GET` | `/images/{id}/events` | `image_events` | The image's last 50 events (`readImage`) |
+| `GET` / `POST` | `/disks[?wait=N]` | `list_disks` / `create_disk` | List; create blank or from an image (`201`, made by the disk controller; below) |
+| `GET` / `DELETE` | `/disks/{id}` | `get_disk` / `delete_disk` | Details + partition table; delete (`204`, or `202` while an operation on it finishes; `409` while attached) |
+| `POST` | `/disks/{id}/resize[?wait=N]` | `resize_disk` | Grow (extends root) or shrink (never into a partition); `202`, applied by the disk controller |
+| `POST` | `/disks/{id}/extend-root[?wait=N]` | `extend_root` | Grow the root partition, `offline` or `on-boot`; `202`, applied by the disk controller |
+| `GET` | `/disks/{id}/events` | `disk_events` | The disk's last 50 events (`readDisk`) |
+| `GET` | `/networks/{name}/events` | `network_events` | The network's last 50 events (`readNetwork`) |
+| `POST` | `/vms/{id}/disks` | `attach_disk` | Attach a data disk; on a running VM it takes effect at the next start (`restart_required`) |
+| `DELETE` | `/vms/{id}/disks/{disk}` | `detach_disk` | Detach a data disk; on a running VM at the next start, and the disk stays claimed until then |
 
 Image and disk payloads, semantics and invariants are in
 [images.md](images.md#8-rest-api).
 
-All handlers live in `crates/glidex-control-plane/src/api.rs`.
+Handlers live in `crates/glidex-control-plane/src/api/` (VM routes in
+`api/vms.rs`; the route table with each route's Cedar action in
+`api/mod.rs`).
+
+## Desired state and `?wait`
+
+VM writes record **what the user wants** and return; the VM controller
+makes it so ([reconciliation.md §12](reconciliation.md#12-api)).
+Admission — validation, authorization, quotas, disk/device claims,
+name uniqueness — is still checked when the spec is written and still
+fails the request (D5). Host actions (launching, stopping, hot-plug,
+VM ports) happen in the controller; their failures show in the VM's
+`state`, `conditions` and events.
+
+Every VM write (create, start, stop, pause, `PATCH`, delete, devices,
+disks) accepts `?wait=<secs>` (capped at 300; gxctl and the UI send
+60):
+
+| Outcome | Response |
+|---|---|
+| no `wait` | `202` with the VM (`201` for a create) |
+| converged (`observed_generation ≥` the written generation and `Ready=True`) | `200` with the VM (`201` for a create) |
+| the reconcile of that generation failed (`state: failed`) | the error envelope the call used to return synchronously, chosen from the `Ready` reason, with `details.reason` and the VM in `details.vm` (D20) |
+| timeout, including while waiting on a dependency | `202` with the VM |
+
+Failure mapping (`api/errors.rs::failed_reconcile_response`):
+`NetdUnavailable` → `503 netd_unavailable`; `DiskBusy` → `409 conflict`;
+`DiskMissing`, `DiskNotReady` → `500 image_error`; a missing hypervisor
+binary → `503 hypervisor_unavailable`; anything else (`LaunchFailed`,
+`ProvisioningFailed`, `HypervisorError`, …) → `500 hypervisor_error`.
+The spec stays as written and the controller keeps retrying with
+backoff, so a later `GET` may show the VM running.
+
+**Invariant.** A VM's `state` is what the controller last observed, and
+`desired_state` what was asked for; a client waits for `Ready=True` at
+the current generation, never for `state` alone (a VM that should be
+stopped is also "ready" once stopped).
+
+**`If-Match: <resource_version>`** on start, stop, pause and `PATCH`
+(the other writes ignore it): `412 precondition_failed` (with
+`details.resource_version`) when the VM has been written since. Without
+it, the last writer wins. `VmResponse` carries `resource_version`; it
+grows on every write, spec or status.
+
+**Deletion** (`DELETE /vms/{id}`): `204` when nothing ever ran (no
+instance, no ports: the record is gone at once); otherwise `202` with
+the VM (`deleting: true`) while the controller stops the instance and
+works off its finalizers, or with `?wait`, `200` once the record is
+gone. A deleting VM refuses other writes with `409 conflict`.
+
+### Disks
+
+Disk writes are admitted synchronously (name, size, shrink minimum,
+quota, claims: the same `400`/`403`/`409` as before) and carried out by
+the disk controller ([images.md §6](images.md#6-disk-operations)).
+`POST /disks`, `/disks/{id}/resize` and `/disks/{id}/extend-root` accept
+`?wait=<secs>` (capped at 300):
+
+| Outcome | `POST /disks` | resize, extend-root |
+|---|---|---|
+| no `wait` | `201` with the disk (`phase: pending`) | `202` with the disk |
+| settled: made, or the change applied or reported pending | `201` | `200` |
+| `Ready` reason `InvalidDisk` / `ResizeInvalid` | `400 invalid_disk` | `400 invalid_disk` |
+| phase `failed` or `missing` | `500 image_error` | `500 image_error` |
+| timeout (e.g. its image still downloading) | `202` with the disk | `202` with the disk |
+
+A resize or extend-root of a disk a live instance has open settles at
+once as pending (`Ready=False/ResizePending` or `ExtendRootPending`) and
+is applied once the VM stops. `DELETE /disks/{id}` returns `204` once
+the record is gone (normally at once), or `202` with the disk
+(`deleting: true`) while an operation on it finishes first.
+
+`DiskResponse` fields besides the record's (`id`, `name`, `project`,
+`format`, `size_bytes`, `origin`, `attached_to`, `pending_growpart`,
+`path`, `created_at`):
+
+| Field | Meaning |
+|---|---|
+| `phase` | `pending`, `creating`, `ready`, `resizing`, `missing`, `failed` |
+| `status` | `phase`, with `busy` while an operation runs and `missing` when the file is gone (kept for older clients) |
+| `conditions` | `Ready` with reasons `Converged`, `Progressing`, `ImageNotReady`, `ResizePending`, `ResizeInvalid`, `ExtendRootPending`, `InvalidDisk`, `ToolUnavailable`, `IoError`, `FileMissing`, `Deleting` |
+| `pending_size_bytes` | a resize not applied yet |
+| `owner` | the VM the disk was made for (deleted with it unless `keep_disk`) |
+| `deleting` | `true` while a deletion is in progress |
+| `busy_op` | the operation running on it |
+| `info`, `partition_table` | single-disk `GET` of a ready disk only |
+| `extend_root`, `warnings` | the outcome of an operation, when the response carries one |
+
+Image, disk and network events (`GET /{images,disks}/{id}/events`,
+`GET /networks/{name}/events`) have the shape of the VM's below.
 
 ## Payloads
 
@@ -98,7 +196,15 @@ All handlers live in `crates/glidex-control-plane/src/api.rs`.
   A credential's password hash is applied via `chpasswd`, so it also
   works on a rootfs that was provisioned before.
 - `~` is expanded server-side (see [data-model.md](data-model.md)).
-- Response: `201 Created` with a `VmResponse`.
+- `power` (`"stopped"` by default, `"running"`, `"paused"`) is the
+  desired state; with `"running"` one call creates and starts the VM.
+  `restart_policy` (`"on_failure"` default, `"never"`), `on_host_boot`
+  (`"resume"` / `"stop"`, default from `reconcile.on_host_boot`) and
+  `stop_grace_secs` (0–300, default 0 = hard stop) are optional.
+- Paths that reach the hypervisor command line must not contain `"` or
+  control characters, and with the systemd runner must not be under
+  `/tmp` or `/var/tmp` (`400 invalid_config`).
+- Response: `201 Created` with a `VmResponse` (see `?wait` above).
 
 - `credential` (firmware boot only, no custom `cloud_init_path`) names a
   stored credential that the generated seed provisions as the guest login.
@@ -112,6 +218,76 @@ All handlers live in `crates/glidex-control-plane/src/api.rs`.
   path. The response may carry `warnings`.
 - `DELETE /vms/{id}?keep_disk=true` keeps a root disk that was created for
   the VM; by default it is deleted with it.
+
+### `VmResponse`
+
+```json
+{ "id": "…", "name": "web-1", "project": "…",
+  "state": "running", "desired_state": "running",
+  "generation": 4, "observed_generation": 4, "resource_version": 17, "restart_required": false,
+  "conditions": [ { "kind": "Ready", "status": "True", "reason": "Converged", "message": "", "last_transition_at": 1791000000 } ],
+  "last_exit": { "at": 1790990000, "instance_id": "…", "cause": "crashed", "signal": 9 },
+  "restart_policy": "on_failure", "on_host_boot": "resume", "stop_grace_secs": 0,
+  "vcpu_count": 2, "mem_size_mib": 2048, "hypervisor": "cloudhypervisor", "…": "…" }
+```
+
+`state` is one of `created`, `starting`, `running`, `paused`,
+`stopping`, `stopped`, `failed`, `unknown`
+([data-model.md](data-model.md#powerstate-vmphase-and-the-derived-vmstate));
+`desired_state` one of `running`, `paused`, `stopped`. `conditions` and
+their reasons are the closed catalogue of
+[reconciliation.md §7.5](reconciliation.md#75-exit-handling);
+`last_exit.cause` is `requested`, `terminated`, `clean_exit`,
+`crashed`, `launch_failed`, `host_reboot` or `lost`. `deleting: true`
+appears while a deletion is in progress.
+
+### `PATCH /vms/{id}`
+
+A JSON merge patch of the spec:
+
+```json
+{ "power": "running", "stop_grace_secs": 30,
+  "config": { "mem_size_mib": 4096, "data_disks": ["data-1"], "credential": null } }
+```
+
+Top level: `power`, `restart_policy`, `on_host_boot`,
+`stop_grace_secs`. `config`: `vcpu_count`, `mem_size_mib`,
+`kernel_args`, `credential` (`null` removes it), `hugepages`,
+`vfio_devices`, `data_disks` (ids or names; replaces the list),
+`networks`. Unknown fields are `422`; immutable ones
+(`hypervisor`, `kernel_image_path`, `firmware_path`, `rootfs_path`,
+`cloud_init_path`, `root_disk`, `image`) are refused with `400
+invalid_config` ("immutable field(s): …") before anything is authorized.
+When each change takes effect is in
+[data-model.md](data-model.md) (mutability); changes that need a new
+launch set `restart_required` while the VM runs. Each changed field is
+authorized separately (security.md §7.4). vCPU and memory increases are
+checked against the project quota like a create.
+
+### `GET /vms/{id}/events`
+
+```json
+{ "events": [ { "at": 1791000520, "actor": "guest", "kind": "warning",
+                "reason": "CleanExit", "message": "guest powered off; desired state set to stopped" } ] }
+```
+
+`actor` is `api:<principal>`, `controller`, `guest`, `systemd` or
+`host`; `kind` is `normal` or `warning`. Needs `readVm`.
+
+### `GET /system/reconcile`
+
+```json
+{ "runner": "systemd", "bus": "connected", "netd": "connected",
+  "queue": { "pending": 0, "in_flight": 1 },
+  "orphans": [ { "kind": "unit", "id": "glidex-vm@<uuid>.service" },
+               { "kind": "runtime_dir", "id": "<uuid>" } ],
+  "unknown_vms": ["<uuid>"] }
+```
+
+`bus` is `n/a` under the detached runner; `netd` is `connected`,
+`status_only` or `unavailable`. Orphans are found at startup and never
+touched (reconciliation.md §9.4). Needs `readSystemStatus` on
+`Host::"local"`.
 
 ### `POST /credentials`, `PUT /credentials/{username}`
 
@@ -132,15 +308,15 @@ All handlers live in `crates/glidex-control-plane/src/api.rs`.
 { "device_path": "/sys/bus/pci/devices/0000:41:00.0" }
 ```
 
-Semantics depend on VM state:
-
-- **Running**: hot-plug via the hypervisor API. On success the
-  config is updated and persisted; on persistence failure the
-  hot-plug is rolled back.
-- **Created / Stopped**: config-only mutation. The device will be
-  present at next start.
-- **Paused**: rejected with `invalid_state` (hot-plug while paused
-  is a mess to reason about; require unpause first).
+Both edit `config.vfio_devices` (as a `PATCH` would) and are accepted
+in any state; attaching a device already in the list, or detaching one
+that isn't, is `400 invalid_state`, and a device another VM claims is
+`409 conflict`. The controller hot-plugs or unplugs it while the guest
+is observed running; while it is paused the change waits
+(`DevicesPending=True/GuestPaused`); a stopped VM gets it at the next
+launch. A hot-plug the hypervisor refuses shows as
+`DevicesPending=True/HotplugFailed` (a `?wait` then times out with
+`202`), with the spec left as written.
 
 ### `GET /vms/{id}/console`
 
@@ -152,10 +328,10 @@ Semantics depend on VM state:
 }
 ```
 
-`available` is `true` iff `state == Running`. This endpoint is used
-by `gxctl` (which then `connect()`s to the Unix socket directly) and
-by any client that wants to find the log file without opening the
-WebSocket.
+`available` is `true` while an instance exists, including after the
+guest exited and until the controller releases the shim, so the last
+output of a crashed guest stays reachable. gxctl checks it before
+opening the WebSocket.
 
 ## Error model
 
@@ -167,12 +343,12 @@ All non-2xx responses are:
 
 Status code mapping (`api::error_to_response`):
 
-**Invariant.** Request validation in `VmManager::create_vm` (zero vCPUs
-or memory, missing kernel *and* firmware, `firmware_path` /
-`cloud_init_path` on a non-Cloud-Hypervisor VM) returns
+**Invariant.** Request validation in admission (zero vCPUs or memory,
+missing kernel *and* firmware, bad paths, immutable fields) returns
 `HypervisorError::InvalidConfig`, which maps to `400`. Failures that are
-not the caller's fault — e.g. `HypervisorError::CloudInit` when
-`mkdosfs`/`mcopy` are missing at start time — stay `500`.
+not the caller's fault — e.g. `mkdosfs`/`mcopy` missing when the seed is
+built — happen in the controller and reach the caller only through
+`?wait` (`500`).
 
 | `VmManagerError` variant | HTTP | `error` code |
 |---|---|---|
@@ -187,6 +363,9 @@ not the caller's fault — e.g. `HypervisorError::CloudInit` when
 | `Credential(AlreadyExists)`, `CredentialInUse` | `409` | `conflict` |
 | `Credential(Invalid)` | `400` | `invalid_credential` |
 | `Credential` (storage/hashing) | `500` | `credential_error` |
+| `Deleting` (write to a VM being deleted) | `409` | `conflict` |
+| `PreconditionFailed` (`If-Match`) | `412` | `precondition_failed` |
+| `QuotaExceeded` | `403` | `quota_exceeded` |
 | `Image(…)` | `400` / `404` / `409` / `500` / `503` | `invalid_image`, `invalid_disk`, `not_found`, `conflict`, `image_error`, `tool_unavailable`; see [images.md](images.md#8-rest-api) |
 
 ## Console WebSocket
@@ -222,9 +401,10 @@ not the caller's fault — e.g. `HypervisorError::CloudInit` when
 
 ### Replay-on-connect behavior
 
-The console Unix socket on the server is listened on by a proxy
-thread inside the hypervisor backend. That thread replays the
-captured log file to every newly-accepted client before starting
+The console Unix socket is listened on by a proxy thread in the VM's
+`glidex-vm-shim`. That thread replays the current console log (which
+spans earlier instances of the VM, separated by `--- glidex: instance …
+started … ---` lines) to every newly-accepted client before starting
 live broadcast. So opening a WebSocket on a VM that has already
 booted will immediately flush the boot-time output into your xterm.
 See [console.md](console.md).

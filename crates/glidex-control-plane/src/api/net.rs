@@ -89,6 +89,17 @@ pub async fn get_network(c: Caller, Path(name): Path<String>) -> Result<impl Int
         .ok_or_else(|| err(StatusCode::NOT_FOUND, "not_found", format!("network not found: {}", name)))
 }
 
+pub async fn network_events(c: Caller, Path(name): Path<String>) -> Result<impl IntoResponse, ApiErr> {
+    let n = c.manager().get_network(&name).map_err(manager_err)?;
+    let (e, es) = network_entities(&n);
+    c.require(e, es)?;
+    let visible = c.visible_projects()?;
+    if network_view(&c, &visible, n.clone()).is_none() {
+        return Err(err(StatusCode::NOT_FOUND, "not_found", format!("network not found: {}", name)));
+    }
+    Ok(Json(serde_json::json!({ "events": c.manager().object_events("network", &n.name).map_err(manager_err)? })))
+}
+
 #[derive(Deserialize)]
 pub struct CreateHostNetwork {
     #[serde(flatten)]

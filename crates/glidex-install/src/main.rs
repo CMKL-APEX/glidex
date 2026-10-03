@@ -1826,6 +1826,11 @@ fn install_vm_units(root: &Path) -> Result<bool> {
     if changed {
         println!("{} {} and {}", "Updated:".green(), VM_UNIT, VMS_SLICE);
     }
+    // A unit systemd would refuse surfaces now, not at the first VM start.
+    // Not fatal: the check also complains about things it can't know yet.
+    if let Err(e) = run_capture("systemd-analyze", &["verify", VM_UNIT, VMS_SLICE, CONTROL_PLANE_UNIT]) {
+        println!("{} systemd-analyze verify: {}", "Warning:".yellow(), e);
+    }
     Ok(changed)
 }
 
@@ -2096,7 +2101,9 @@ mod tests {
         ] {
             assert!(unit.lines().any(|l| l == line), "missing {line:?}");
         }
-        assert!(!unit.contains('@'), "all placeholders filled");
+        for p in ["@USER@", "@HOME@", "@BIN@", "@GROUPS@"] {
+            assert!(!unit.contains(p), "{p} filled");
+        }
         assert_eq!(unit_user(&unit), Some("glidex"));
     }
 
@@ -2146,38 +2153,31 @@ mod tests {
             "RuntimeDirectoryMode=0755",
             "RuntimeDirectoryPreserve=yes",
             "UMask=0077",
+            "NoNewPrivileges=yes",
             "PrivateTmp=yes",
             "ProtectSystem=strict",
             "ProtectHome=yes",
             "ReadWritePaths=/var/lib/glidex-control-plane",
-            "ReadWritePaths=-/run/glidex/vhost",
             "DevicePolicy=closed",
-            "DeviceAllow=/dev/kvm rw",
-            "DeviceAllow=/dev/vfio/vfio rw",
-            "DeviceAllow=char-vfio rw",
-            "DeviceAllow=/dev/net/tun rw",
-            "DeviceAllow=/dev/vhost-net rw",
+            "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6",
+            "LockPersonality=yes",
+            "RestrictSUIDSGID=yes",
+            "SystemCallFilter=@system-service",
+            "ProtectKernelTunables=yes",
+            "ProtectKernelModules=yes",
+            "ProtectKernelLogs=yes",
         ] {
             assert!(s.contains(&line), "missing {line:?}");
         }
         assert!(!s.contains(&"UMask=0007"), "consoles are reached through the API now");
-        // These set no_new_privs (explicitly, or implied for a non-root
-        // unit), which would drop cloud-hypervisor's file capability
-        // (CAP_NET_ADMIN for taps); the others break VFIO or the JITs of
-        // the hypervisors' children.
-        for key in [
-            "NoNewPrivileges=",
-            "RestrictAddressFamilies=",
-            "LockPersonality=",
-            "SystemCallFilter=",
-            "RestrictSUIDSGID=",
-            "PrivateDevices=",
-            "ProtectKernelTunables=",
-            "ProtectKernelModules=",
-            "MemoryDenyWriteExecute=",
-            "CapabilityBoundingSet=",
-        ] {
-            assert!(!s.iter().any(|l| l.starts_with(key)), "{key} would break VMs");
+        // Hypervisors run in the glidex-vm units (spec/reconciliation.md
+        // §13.3): this one opens no device and serves no vhost-user socket.
+        for key in ["DeviceAllow=", "ReadWritePaths=-/run/glidex/vhost", "KillMode="] {
+            assert!(!s.iter().any(|l| l.starts_with(key)), "{key} is for the VM units");
+        }
+        // Not vetted against the disk tools it runs (qemu-img, sgdisk, …).
+        for key in ["MemoryDenyWriteExecute=", "CapabilityBoundingSet="] {
+            assert!(!s.iter().any(|l| l.starts_with(key)), "{key}");
         }
         // Firmware is in the service home, which ProtectHome= doesn't cover.
         assert!(SERVICE_HOME.starts_with("/var/lib/"));

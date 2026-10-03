@@ -1,8 +1,8 @@
 # Reconciliation: desired state, control loops and detached VMs
 
-> Status: **implementation-ready draft** (2026-10-03). No open questions
-> remain; host facts the design depends on were verified on the pinned
-> versions (§4). Nothing here is implemented yet. It changes the
+> Status: **implemented through M3** (2026-10-03); §18 notes where the
+> build differs from this design. Host facts the design depends on were
+> verified on the pinned versions (§4). It changes the
 > contracts in [architecture.md](architecture.md),
 > [data-model.md](data-model.md), [hypervisors.md](hypervisors.md),
 > [console.md](console.md), [rest-api.md](rest-api.md),
@@ -151,13 +151,13 @@ runtime directory `<run dir>/vms/<id>/` (`0700`, as today):
 
 | Crate / module | Content |
 |---|---|
-| `crates/glidex-hv-client` (new; sync, no Tokio) | CH HTTP client and QMP client, moved out of `hypervisor/cloud_hypervisor.rs` and `hypervisor/qemu.rs`; shared by the shim and the control plane |
-| `crates/glidex-vm-shim` (new; bin, sync, no Tokio/ReDB/axum) | `main.rs` (CLI, §8.3), `launch.rs` (`launch.json`, allowlist), `proxy.rs` (moved from `hypervisor/console.rs`, plus rotation), `protocol.rs` (§8.5), `state.rs` (`instance.json`), `sd.rs` (`sd_notify`; same 20-line implementation as `glidex-netd/src/sd.rs`) |
-| `glidex-control-plane/src/store/` (replaces `persistence.rs`) | envelope types, tables, schema version, migration (§6) |
-| `glidex-control-plane/src/controller/` | `queue.rs` (work queue, backoff), `vm.rs`, `disk.rs`, `image.rs`, `network.rs`, `startup.rs` (§9.4) |
-| `glidex-control-plane/src/instance/` | `observe.rs` (§8.7 checks), `runner/{systemd,detached}.rs` (§8.8), `launch.rs` (builds `launch.json` via the drivers) |
-| `glidex-control-plane/src/hypervisor/` | `HypervisorDriver` (§16); CH argv builder replaces the `vm.create` payload builder |
-| `glidex-control-plane/src/state.rs` | shrinks to admission logic (validation, authz-adjacent checks, quotas, claims) over the store; no process handles |
+| `crates/glidex-hv-client` (sync, no Tokio) | `ch.rs` (CH HTTP client), `qmp.rs` (QMP client), moved out of `hypervisor/cloud_hypervisor.rs` and `hypervisor/qemu.rs`; shared by the shim and the control plane |
+| `crates/glidex-vm-shim` (bin + lib, sync, no Tokio/ReDB/axum) | `main.rs` (CLI, §8.3), `supervisor.rs` (lifecycle, signals, `shim.sock` server), `launch.rs` (`launch.json`, allowlist), `proxy.rs` (moved from `hypervisor/console.rs`, plus rotation), `proto.rs` (§8.5), `client.rs` (the control plane's `shim.sock` client), `state.rs` (`instance.json`), `util.rs` (boot id, process identity, socket probes), `sd.rs` (`sd_notify`) |
+| `glidex-control-plane/src/store.rs` (replaces `persistence.rs`) | the VM envelope, `Commit` (one write transaction across VMs, disks and events), schema version, migration, event rings (§6) |
+| `glidex-control-plane/src/controller/` | `mod.rs` (workers, resync, exit watch, netd sync), `queue.rs` (work queue, backoff), `vm.rs`, `disk.rs`, `image.rs`, `network.rs`, `startup.rs` (§9.4) |
+| `glidex-control-plane/src/instance/` | `mod.rs` (§8.7 liveness checks), `runner.rs` (systemd and detached runners, §8.8) |
+| `glidex-control-plane/src/hypervisor/` | drivers (§16) producing the launch argv; CH argv builder replaces the `vm.create` payload builder (`controller/vm.rs` writes `launch.json` from it) |
+| `glidex-control-plane/src/state.rs` | `VmManager`: admission logic (validation, authz-adjacent checks, quotas, claims) over the store; no process handles |
 
 New dependencies: `zbus` (Tokio integration) in the control plane;
 `nix` (already used) in the shim.
@@ -232,7 +232,7 @@ object rejects spec writes with `409 conflict`.
 
 | Resource | Finalizers |
 |---|---|
-| VM | `vm.instance` (no live instance), `vm.ports` (netd `release_vm`), `vm.disks` (clear claims, delete the owned root disk unless `?keep_disk=true`), `vm.runtime` (remove the runtime directory and firmware vars) |
+| VM | `vm.instance` (no live instance), `vm.ports` (netd `release_vm`), `vm.disks` (clear claims), `vm.owned-disk` (delete the owned root disk; left out with `?keep_disk=true`), `vm.runtime` (remove the runtime directory and firmware vars) |
 | Disk | `disk.file` (remove the file; a failure is logged and the file left as an orphan, images.md §6.5) |
 | Image | `image.download` (abort a running download, remove `.part`), `image.file` |
 | Network | `network.netd` (`delete_nat`, `delete_bridge` for networks glidex created) |
@@ -241,15 +241,29 @@ Admission keeps today's refusals (`409` deleting an attached disk, an
 image with linked disks, a network in use): finalizers are for cleanup
 the deleter owns, never for waiting on other users.
 
+As built, only VMs carry a `finalizers` list. A disk delete sets
+`deletion_requested_at` and the disk controller removes the record, then
+the file (`204`, or `202` while an operation on it finishes). Images and
+networks are still deleted synchronously by the API (`delete_image`
+aborts a download and removes `.part`; `delete_network` calls netd's
+`delete_nat`/`delete_bridge` first).
+
 ### 6.4 Tables
 
-Same ReDB file. Values are serde-JSON of the envelope.
+Same ReDB file. Values are serde-JSON.
 
 | Table | Key | Value |
 |---|---|---|
 | `meta` (new) | `schema_version` | `2` (absent = 1, today's layout) |
-| `vms`, `disks`, `images`, `networks` | id (network: name) | `Object<Spec, Status>` |
+| `vms` | id | `{meta, spec, status}` envelope (`store::VmRecord`) |
+| `disks`, `images`, `networks` | id (network: name) | today's flat records, with the controller's fields added as serde-defaulted fields: disk `phase`, `create`, `resize`, `extend_root`, `applied_extend_root_seq`, `owner`, `deletion_requested_at`, `conditions`; image `retry_seq`, `applied_retry_seq`; network `phase`, `conditions`. Records written before them load as `Ready` |
 | `events` (new) | `<kind>/<id>` | ring of the last 50 `Event { at, actor, kind: Normal\|Warning, reason, message }` |
+
+Only the VM is nested. Disks, images and networks keep their flat shape
+because their spec/status split is a split of fields, not of writers
+that need a generation: requests are one-shot or replace-only (`resize`,
+`extend_root.seq`, `retry_seq`), and the controller compares them with
+what it applied.
 
 Event actors: `api:<principal id>`, `controller`, `guest`, `systemd`,
 `host`. Events are written in the same transaction as the status or spec
@@ -272,8 +286,9 @@ At startup, if `schema_version` is absent, one write transaction:
    it stopped, and its startup marked them stopped); `spec` defaults
    from §7.1; `status.phase = Stopped`, `never_started = (state ==
    Created)`; `generation = 1`.
-2. Rewrites disks, images and networks into envelopes; their status is
-   computed by the first reconcile.
+2. Leaves disks, images and networks as they are (flat records whose
+   new fields default, §6.4); their status is computed by the first
+   reconcile.
 3. Sets `schema_version = 2`.
 
 A schema-1 binary must not run on a schema-2 database. M1 therefore
@@ -620,7 +635,8 @@ Written by the shim, atomic tmp + rename, on every phase change:
 ### 8.5 `shim.sock` protocol
 
 `0600` (service user only; the VM directory is `0700`). The shim also
-checks `SO_PEERCRED` uid equals its own. Newline-delimited JSON, max
+checks that the `SO_PEERCRED` uid is its own or 0 (root, e.g. an
+operator's diagnostics). Newline-delimited JSON, max
 64 KiB per line, one request in flight per connection, any number of
 sequential connections; the first message must be `hello`.
 
@@ -699,9 +715,9 @@ and re-opened on error (§9.4 orders it before adoption).
   otherwise `Ready=False/ProvisioningFailed` with the job result.
 - Stop escalation (§9.1 step 4): `Manager.StopUnit(…, "replace")`, then
   `Manager.KillUnit(…, "all", 9)`.
-- Observation: unit object properties `ActiveState`, `SubState`,
-  `MainPID`, `ExecMainStatus`; `Manager.Subscribe()` plus
-  `PropertiesChanged` on loaded `glidex-vm@` units as an exit trigger.
+- Observation: the unit's `ActiveState` (§8.7 check 1);
+  `Manager.Subscribe()` so `JobRemoved` is delivered. Exits are noticed
+  by the pidfd exit watch and the resync (§9.2), not by unit signals.
 - D-Bus errors map to conditions: `org.freedesktop.DBus.Error.AccessDenied`
   / `InteractiveAuthorizationRequired` → `Ready=False/ProvisioningFailed`
   with "polkit rule missing" (installer problem); `NoSuchUnit` →
@@ -778,7 +794,9 @@ Each step is idempotent and may end the round with "requeue after *t*".
 - API spec write → enqueue the object.
 - Exit watch: `pidfd_open` on each live `hypervisor_pid` and `shim_pid`
   (non-children are fine; the exit status comes from `instance.json`),
-  polled by one task → enqueue. Plus unit `PropertiesChanged` (§8.8).
+  one task per watched process → enqueue. There is no unit
+  `PropertiesChanged` trigger: an exit the watch misses (e.g. one that
+  happened while the control plane was down) is found by the resync.
   Replaces the 2 s `reap_exited_vms` poll.
 - netd reconnect → enqueue every VM with `status.nics`.
 - Disk or Network becoming `Ready`, Image becoming `Ready` → enqueue the
@@ -818,8 +836,10 @@ an error and does not grow the backoff.
 
 `VmManager::initialize` (mark everything stopped) and
 `VmManager::shutdown` (kill every VM) are removed. On SIGTERM the
-control plane stops accepting requests, lets in-flight reconciles finish
-their current step (bounded by 10 s), and exits; instances keep running.
+control plane stops its API listeners and exits without waiting for
+in-flight reconciles: every step is safe to interrupt (G5), and the next
+start finishes or undoes it. Instances keep running; nothing is
+stopped.
 
 ## 10. Disk, Image and Network controllers
 
@@ -903,20 +923,23 @@ D13 (`Ready` when the phase is `Ready` and spec and status agree).
 | `POST /vms/{id}/pause` | `spec.power = Paused` | `pauseVm` |
 | `POST`/`DELETE /vms/{id}/devices` | edit `vfio_devices` (+ claim) | unchanged |
 | `POST /vms/{id}/disks`, `DELETE /vms/{id}/disks/{disk}` | edit `data_disks` (+ claim); no longer refused on a running VM: takes effect next launch | unchanged |
-| `PATCH /vms/{id}` (new) | JSON merge patch of `spec` | per changed field, all must allow: `power` → `startVm`/`stopVm`/`pauseVm`; `vfio_devices` → `attachDevice`/`detachDevice` + `usePciDevice`; `data_disks` → `attachDisk`/`detachDisk` + `useDisk`; `networks` → `attachNetwork` + `useNetwork`; `credential` → `updateVm` + `useCredential`; other mutable fields → **`updateVm` (new action)** |
+| `PATCH /vms/{id}` (new) | JSON merge patch of `spec` | per changed field, all must allow: `power` → `startVm`/`stopVm`/`pauseVm`; `vfio_devices` → `attachDevice`/`detachDevice` + `usePciDevice`; `data_disks` → `attachDisk`/`detachDisk` + `useDisk`; `networks` → `attachNetwork` + `useNetwork` for added ones, `detachNetwork` when any is removed; `credential` → `updateVm` + `useCredential`; other mutable fields → **`updateVm` (new action)** |
 | `DELETE /vms/{id}[?keep_disk=true]` | deletion request | `deleteVm` |
 | `POST /disks/{id}/resize`, `/extend-root` | Disk spec writes | unchanged |
 | `POST /images/{id}/retry` (new) | bump `retry_seq` | `pullImage` |
 | `GET /{vms,disks,images,networks}/{id}/events` (new) | event ring | `readVm` / `readDisk` / `readImage` / `readNetwork` |
-| `GET /system/reconcile` (new) | §12.5 | **`readSystemStatus` (new) on `Host::"local"`**, in the admin permission group |
+| `GET /system/reconcile` (new) | §12.5 | **`readSystemStatus` (new) on `Host::"local"`**, in the `host.read` group (with `readOvsStatus`, `listBridges`, …) |
 
 `updateVm` joins the permission group of `startVm`/`stopVm`
 (security.md §7.2) and the schema in `policies/glidex.cedarschema`.
 `PATCH` refuses immutable fields with `400 invalid_config` before
 authorization of the remaining fields.
 
-`If-Match: <resource_version>` on any write → `412 precondition_failed`
-when it does not match. Without it, last writer wins (today).
+`If-Match: <resource_version>` on a lifecycle action (`start`, `stop`,
+`pause`) or `PATCH` → `412 precondition_failed` (with
+`details.resource_version`) when it does not match; other writes ignore
+it. Without it, last writer wins (today). `VmResponse` carries
+`resource_version`.
 
 ### 12.2 Quotas
 
@@ -949,7 +972,9 @@ Without `wait`: `202` with the object.
 
 ### 12.4 Responses
 
-Flat fields kept (§7.4); `?view=full` returns `{meta, spec, status}`.
+Flat fields kept (§7.4); `?view=full` returns `{meta, spec, status}`
+to host readers only (`readSystemStatus`): it carries host paths, PIDs
+and the boot id.
 `GET /vms/{id}/console` `available` is true while an instance exists
 (including after the guest exited, until `release`).
 
@@ -1056,8 +1081,15 @@ Reads (properties, signals, `Subscribe`) need no authorization (F6).
   `SystemCallFilter=@system-service`, `ProtectKernelTunables=yes`,
   `ProtectKernelModules=yes`, `ProtectKernelLogs=yes`. Its remaining
   children (`qemu-img`, `qemu-io`, `sgdisk`, `growpart`, `mkdosfs`,
-  `mcopy`) need none of what is removed. Lands in M4 after the full test
-  suite runs under it.
+  `mcopy`) need none of what is removed. As built (M4) the unit also sets
+  `SystemCallArchitectures=native`, `ProtectControlGroups=yes`,
+  `RestrictNamespaces=yes` and `RestrictRealtime=yes`.
+- The detached runner cannot work inside this sandbox (no_new_privs, a
+  closed `/dev`): with `vm_runner` `"detached"` and `NoNewPrivs: 1` in
+  `/proc/self/status` the control plane refuses to start. Under the
+  systemd runner `/dev/kvm` is checked with `access(2)` and is not fatal
+  (the VM units open it); QEMU's vhost-net check uses `access(2)` too,
+  since this unit can no longer open the device.
 
 ### 13.4 Installer and uninstaller
 
@@ -1160,6 +1192,35 @@ As built: M1 and M2 landed together for the VM path (the VM controller
 directly, rather than an imperative M1 rewritten for M2), followed by M3
 and M4.
 
+As built: M3. Disk, image and network controllers (`controller/disk.rs`,
+`image.rs`, `network.rs`) on the shared work queue and resync.
+Differences from §10:
+
+- Disks: create, resize and extend-root are recorded and answered at
+  once (`201` for a create, `202` otherwise; `?wait` up to 300 s, §12.3),
+  and a VM created from `image` records a `Pending` disk owned by the VM
+  in the same transaction. Resizes and extend-roots wait while a live
+  instance has the disk (`ResizePending`, `ExtendRootPending`). The
+  `Ready` reasons as built: `Converged`, `Progressing`, `ImageNotReady`,
+  `ResizePending`, `ResizeInvalid`, `ExtendRootPending`, `InvalidDisk`,
+  `ToolUnavailable`, `IoError`, `FileMissing`, `Deleting`; a running
+  operation shows as `status: busy`, not as a `Busy` reason or the
+  `Resizing` phase. A missing file goes back to `Ready` if it reappears.
+- Images: the controller resumes a `Downloading`/`Verifying` image whose
+  task is gone, starts a retry when `retry_seq > applied_retry_seq`, and
+  flips `Ready` ↔ `Missing` with the file. `GLIDEX_MAX_DOWNLOADS` is
+  still enforced by the download queue, not the work queue.
+- Networks: phases `Ready`, `Degraded`, `NetdUnavailable` (`Pending` is
+  unused). A lost bridge the network owns is re-created
+  (`ensure_bridge`); a lost NAT and a dnsmasq that is not running are
+  reported (`Degraded`), never re-created, because the NAT's subnet
+  lives only in netd. There is no `network.netd` finalizer (§6.3).
+- Port drift (§10.3) is checked in the VM controller's round for a
+  running VM. netd `sync_vms` is sent only when some VM uses networks,
+  at startup and when netd restarted (socket inode changed).
+- Events: `GET /{disks,images}/{id}/events` and
+  `GET /networks/{name}/events`; `POST /images/{id}/retry`.
+
 **M1 — Detached instances (imperative API unchanged).**
 `glidex-hv-client`, `glidex-vm-shim`, both runners, `launch.json` /
 `instance.json`, CH argv (D9), QEMU without `-S`, console log append and
@@ -1183,6 +1244,15 @@ finalizers, port drift. *Accept:* disk, image and network tests.
 **M4 — Polish and hardening.** UI and gxctl condition display and
 `--no-wait`, `watch` (SSE) if wanted, control-plane unit tightening
 (§13.3).
+
+As built: M4. The control-plane unit sandbox of §13.3. The disk tools
+and the API test suites pass under its syscall filter, no_new_privs and
+address-family restrictions (run in a transient unit); the installed
+unit with the systemd runner on a KVM host is the remaining check.
+`watch` (SSE) is not built: clients poll, or use `?wait`.
+`GET /vms/{id}?view=full` requires `readSystemStatus` (`host.read`),
+because the stored record carries host paths, PIDs and the boot id that
+the flat view leaves out.
 
 ## 19. Testing
 

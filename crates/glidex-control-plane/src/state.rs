@@ -647,8 +647,10 @@ impl VmManager {
             disks.push(d);
         }
         let mut created: Option<Disk> = None;
-        let mut image_hold = None;
         if let Some(image) = &sel.image {
+            // The root disk is recorded with the VM, pending; the disk
+            // controller makes it once the image is ready (§7.6), so the
+            // image may still be downloading.
             let mut disk_name = root_disk_name(&vm.name);
             if self.images.disk_name_taken(&disk_name) {
                 disk_name = format!("{}-{}", disk_name.trim_end_matches("-root"), &vm.id[..8]);
@@ -660,19 +662,12 @@ impl VmManager {
                 image: Some(image.clone()),
                 ..Default::default()
             };
-            let mgr = self.images.clone();
-            let (d, mut w, hold) = tokio::task::spawn_blocking(move || mgr.create_disk_file(&req))
-                .await
-                .map_err(|e| ImageError::Io(e.to_string()))??;
+            let mut d = self.images.new_disk_record(&req)?;
             if sel.root_disk_size_gib.is_none() {
-                let disk_delta = Delta { disk_gib: gib_ceil(d.size_bytes), ..Default::default() };
-                if let Err(e) = Self::apply_quota(&project_rec.quotas, &usage, &disk_delta, quota, &mut bypassed) {
-                    self.images.remove_disk_file(&d);
-                    return Err(e);
-                }
+                let disk_delta = Delta { disk_gib: gib_ceil(self.estimated_size(&d)), ..Default::default() };
+                Self::apply_quota(&project_rec.quotas, &usage, &disk_delta, quota, &mut bypassed)?;
             }
-            image_hold = hold;
-            warnings.append(&mut w);
+            d.owner = Some(vm.id.clone());
             vm.spec.config.root_disk = Some(d.id.clone());
             vm.spec.config.owns_root_disk = true;
             vm.spec.config.rootfs_path = self.images.disk_path(&d).to_string_lossy().into_owned();
@@ -697,18 +692,15 @@ impl VmManager {
             events: vec![(event_key("vm", &vm.id), ev)],
             ..Default::default()
         };
-        if let Err(e) = self.store.commit(commit) {
-            if let Some(d) = &created {
-                self.images.remove_disk_file(d);
-            }
-            return Err(e.into());
-        }
+        self.store.commit(commit)?;
         for d in &disks {
             self.images.cache_disk(d);
         }
-        drop(image_hold);
         vms.insert(vm.id.clone(), vm.clone());
         self.notify_changed();
+        if let Some(d) = &created {
+            self.queue.add(Key::Disk(d.id.clone()));
+        }
         self.queue.add(Key::Vm(vm.id.clone()));
         Ok((vm, warnings, bypassed))
     }
@@ -764,6 +756,10 @@ impl VmManager {
     pub(crate) fn disk_bindings(&self, vm: &Vm) -> Result<(Option<RootBinding>, Vec<DiskBinding>), VmManagerError> {
         let bind = |id: &str| -> Result<(DiskBinding, Disk), VmManagerError> {
             let d = self.images.get_disk(id)?;
+            if d.phase != images::DiskPhase::Ready {
+                let why = d.conditions.iter().find(|c| c.kind == "Ready").map(|c| format!(": {}", c.message)).unwrap_or_default();
+                return Err(ImageError::NotReady(format!("disk {} is {:?}{}", d.name, d.phase, why)).into());
+            }
             if let Some(op) = self.images.busy_op(&d.id) {
                 return Err(ImageError::Busy(format!("disk {} is busy ({})", d.name, op)).into());
             }
@@ -1139,6 +1135,37 @@ impl VmManager {
         }
     }
 
+    /// Wait until disk `key` has settled (§12.3): made or failed, its
+    /// resize and extend-root applied or reported pending. Returns whether
+    /// it settled, and the disk (`None` once deleted).
+    pub async fn wait_disk(&self, key: &str, timeout: Duration) -> (bool, Option<DiskResponse>) {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let Ok(d) = self.images.get_disk(key) else { return (true, None) };
+            let ready = d.conditions.iter().find(|c| c.kind == "Ready");
+            let decided_pending = ready.is_some_and(|c| {
+                matches!(c.reason.as_str(), "ResizePending" | "ResizeInvalid" | "ExtendRootPending" | "InvalidDisk" | "FileMissing")
+            });
+            let settled = d.deletion_requested_at.is_none()
+                && match d.phase {
+                    images::DiskPhase::Failed | images::DiskPhase::Missing => true,
+                    images::DiskPhase::Ready => {
+                        decided_pending
+                            || (d.resize.is_none() && d.extend_root.is_none_or(|e| e.seq <= d.applied_extend_root_seq))
+                    }
+                    _ => false,
+                };
+            if settled || tokio::time::Instant::now() >= deadline {
+                return (settled, Some(self.images.disk_response(&d, false)));
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
+
+    pub fn object_events(&self, kind: &str, id: &str) -> Result<Vec<Event>, VmManagerError> {
+        Ok(self.store.events(&event_key(kind, id))?)
+    }
+
     /// Set every VM to stopped and wait (tests, and tools that need a
     /// clean host). Not called on shutdown: VMs outlive the control plane.
     pub async fn stop_all(&self, timeout: Duration) {
@@ -1205,7 +1232,22 @@ impl VmManager {
         self.create_disk_in(&project, req, QuotaMode::MayExceed).await.map(|(d, _)| d)
     }
 
-    /// Create a disk in `project`, checking its `disk_gib` quota.
+    /// What a pending disk will take, for quotas: its requested size, else
+    /// its image's size or the default root size.
+    fn estimated_size(&self, d: &Disk) -> u64 {
+        let requested = d.create.as_ref().and_then(|c| c.size_bytes);
+        match &d.origin {
+            images::DiskOrigin::Blank => requested.unwrap_or(d.size_bytes),
+            images::DiskOrigin::Image { image_id, .. } => {
+                let image_size = self.images.get_image(image_id).map(|i| i.virtual_size_bytes).unwrap_or(0);
+                self.images.root_size(requested, image_size)
+            }
+        }
+    }
+
+    /// Create a disk in `project`, checking its `disk_gib` quota. The disk
+    /// is recorded pending; the disk controller makes its file
+    /// (spec/reconciliation.md §10.1).
     pub async fn create_disk_in(
         &self,
         project: &str,
@@ -1216,52 +1258,43 @@ impl VmManager {
         req.project = Some(project.to_string());
         // The VM lock serializes quota checks with VM creation.
         let vms = self.vms.write().await;
+        let disk = self.images.new_disk_record(&req)?;
         let usage = self.usage_locked(project, &vms)?;
         let mut bypassed = Vec::new();
-        if let Some(gib) = req.size_gib.or(req.size_bytes.map(gib_ceil)) {
-            Self::apply_quota(&p.quotas, &usage, &Delta { disk_gib: gib, ..Default::default() }, quota, &mut bypassed)?;
-        }
-        let mgr = self.images.clone();
-        let (disk, warnings) = blocking(move || {
-            let (disk, warnings, _hold) = mgr.create_disk_file(&req)?;
-            Ok((disk, warnings))
-        })
-        .await?;
-        // An image clone's size is only known now.
-        let delta = Delta { disk_gib: gib_ceil(disk.size_bytes), ..Default::default() };
-        let mut after = Vec::new();
-        if let Err(e) = Self::apply_quota(&p.quotas, &usage, &delta, quota, &mut after) {
-            self.images.remove_disk_file(&disk);
-            return Err(e);
-        }
-        for o in after {
-            if !bypassed.iter().any(|b: &QuotaOverrun| b.resource == o.resource) {
-                bypassed.push(o);
-            }
-        }
-        if let Err(e) = self.images.put_disk(&disk) {
-            self.images.remove_disk_file(&disk);
-            return Err(e.into());
-        }
+        let delta = Delta { disk_gib: gib_ceil(self.estimated_size(&disk)), ..Default::default() };
+        Self::apply_quota(&p.quotas, &usage, &delta, quota, &mut bypassed)?;
+        self.store.commit(Commit {
+            put_disks: vec![&disk],
+            events: vec![(event_key("disk", &disk.id), Event::new("api", EventKind::Normal, "Created", "disk recorded; its file is made next"))],
+            ..Default::default()
+        })?;
+        self.images.cache_disk(&disk);
         drop(vms);
-        let mut resp = self.images.disk_response(&disk, false);
-        resp.warnings = warnings;
-        Ok((resp, bypassed))
+        self.queue.add(Key::Disk(disk.id.clone()));
+        Ok((self.images.disk_response(&disk, false), bypassed))
+    }
+
+    /// Whether a live instance (or a VM being launched) has disk `id` open:
+    /// then it is not resized or edited (§10.1).
+    pub(crate) fn disk_in_use(vms: &HashMap<String, Vm>, id: &str) -> Option<String> {
+        vms.values()
+            .find(|vm| {
+                vm.status.instance.as_ref().is_some_and(|i| i.disks.iter().any(|d| d == id))
+                    || (matches!(vm.status.phase, VmPhase::Provisioning | VmPhase::Starting)
+                        && (vm.config().root_disk.as_deref() == Some(id) || vm.config().data_disks.iter().any(|d| d == id)))
+            })
+            .map(|vm| vm.name.clone())
     }
 
     /// Mark a disk busy for `op`, refusing while a live instance has it
     /// open. Holds the VM read lock while checking, so a launch (which
     /// records the instance's disks under the write lock) cannot slip in
     /// between the check and the mark.
-    async fn begin_disk_op(&self, key: &str, op: &'static str) -> Result<(Disk, images::BusyGuard), VmManagerError> {
+    pub(crate) async fn begin_disk_op(&self, key: &str, op: &'static str) -> Result<(Disk, images::BusyGuard), VmManagerError> {
         let vms = self.vms.read().await;
         let disk = self.images.get_disk(key)?;
-        if let Some(vm) = vms.values().find(|vm| {
-            vm.status.instance.as_ref().is_some_and(|i| i.disks.contains(&disk.id))
-                || (matches!(vm.status.phase, VmPhase::Provisioning | VmPhase::Starting)
-                    && (vm.config().root_disk.as_ref() == Some(&disk.id) || vm.config().data_disks.contains(&disk.id)))
-        }) {
-            return Err(ImageError::InUse(format!("disk {} is in use by {} VM {}; stop it first", disk.name, vm.state(), vm.name)).into());
+        if let Some(vm) = Self::disk_in_use(&vms, &disk.id) {
+            return Err(ImageError::InUse(format!("disk {} is in use by VM {}; stop it first", disk.name, vm)).into());
         }
         let guard = self.images.begin(&disk.id, op)?;
         Ok((disk, guard))
@@ -1271,7 +1304,10 @@ impl VmManager {
         self.resize_disk_with(key, req, QuotaMode::MayExceed).await.map(|(d, _)| d)
     }
 
-    /// Resize a disk, checking its project's `disk_gib` quota on growth.
+    /// Resize a disk (a spec write, §10.1), checking its project's
+    /// `disk_gib` quota on growth and, for a shrink, that it would not cut
+    /// into a partition. Applied by the disk controller once no instance
+    /// has the disk open.
     pub async fn resize_disk_with(
         &self,
         key: &str,
@@ -1279,57 +1315,94 @@ impl VmManager {
         quota: QuotaMode,
     ) -> Result<(DiskResponse, Vec<QuotaOverrun>), VmManagerError> {
         let size = requested_size(req.size_gib, req.size_bytes)?.ok_or_else(|| ImageError::invalid_disk("give size_gib or size_bytes"))?;
+        let current = self.images.get_disk(key)?;
+        if current.deletion_requested_at.is_some() {
+            return Err(ImageError::InUse(format!("disk {} is being deleted", current.name)).into());
+        }
+        if !matches!(current.phase, images::DiskPhase::Ready | images::DiskPhase::Resizing) {
+            return Err(ImageError::NotReady(format!("disk {} is {:?}", current.name, current.phase)).into());
+        }
         let mut bypassed = Vec::new();
-        {
-            let current = self.images.get_disk(key)?;
-            let grow = gib_ceil(size).saturating_sub(gib_ceil(current.size_bytes));
-            if grow > 0 {
-                if let Some(p) = self.projects.get(&current.project)? {
-                    let vms = self.vms.read().await;
-                    let usage = self.usage_locked(&current.project, &vms)?;
-                    Self::apply_quota(&p.quotas, &usage, &Delta { disk_gib: grow, ..Default::default() }, quota, &mut bypassed)?;
-                }
+        let grow = gib_ceil(size).saturating_sub(gib_ceil(current.size_bytes));
+        if grow > 0 {
+            if let Some(p) = self.projects.get(&current.project)? {
+                let vms = self.vms.read().await;
+                let usage = self.usage_locked(&current.project, &vms)?;
+                Self::apply_quota(&p.quotas, &usage, &Delta { disk_gib: grow, ..Default::default() }, quota, &mut bypassed)?;
             }
         }
-        let (disk, guard) = self.begin_disk_op(key, "resize").await?;
-        let mgr = self.images.clone();
-        let (disk, outcome, warnings) = blocking(move || {
-            let _guard = guard;
-            mgr.resize_disk(&disk.id, size, req.extend_root)
-        })
-        .await?;
-        let mut resp = self.images.disk_response(&disk, false);
-        resp.extend_root = outcome;
-        resp.warnings = warnings;
-        Ok((resp, bypassed))
-    }
-
-    pub async fn extend_root(&self, key: &str, mode: ExtendMode) -> Result<DiskResponse, VmManagerError> {
-        let (disk, guard) = self.begin_disk_op(key, "extend-root").await?;
-        let mgr = self.images.clone();
-        let (disk, outcome, warnings) = blocking(move || {
-            let _guard = guard;
-            mgr.extend_root(&disk.id, mode)
-        })
-        .await?;
-        let mut resp = self.images.disk_response(&disk, false);
-        resp.extend_root = Some(outcome);
-        resp.warnings = warnings;
-        Ok(resp)
-    }
-
-    pub async fn delete_disk(&self, key: &str) -> Result<(), VmManagerError> {
-        // Write lock: no VM may claim the disk while it goes away.
-        let vms = self.vms.write().await;
-        let disk = self.images.get_disk(key)?;
-        if let Some(vm) = Self::disk_claimed_by(&vms, &disk.id, None) {
-            return Err(ImageError::InUse(format!("disk {} is attached to VM {}; detach it or delete the VM first", disk.name, vm)).into());
+        if size < current.size_bytes {
+            let (mgr, d) = (self.images.clone(), current.clone());
+            let (min, _) = blocking(move || mgr.shrink_minimum(&d)).await?;
+            if size < min {
+                return Err(ImageError::InvalidDisk {
+                    message: format!("{} bytes would cut into a partition; the minimum is {} bytes", size, min),
+                    details: serde_json::json!({ "min_size_bytes": min }),
+                }
+                .into());
+            }
         }
-        let _guard = self.images.begin(&disk.id, "delete")?;
-        self.store.commit(Commit { delete_disks: vec![disk.id.as_str()], ..Default::default() })?;
-        self.images.uncache_disk(&disk.id);
-        self.images.remove_disk_file(&disk);
-        tracing::info!(disk = %disk.name, "disk deleted");
+        let mut disk = current;
+        disk.resize = (size != disk.size_bytes).then_some(images::ResizeSpec { size_bytes: size, extend_root: req.extend_root });
+        self.store.commit(Commit {
+            put_disks: vec![&disk],
+            events: vec![(event_key("disk", &disk.id), Event::new("api", EventKind::Normal, "ResizeRequested", format!("size {} bytes", size)))],
+            ..Default::default()
+        })?;
+        self.images.cache_disk(&disk);
+        self.queue.add(Key::Disk(disk.id.clone()));
+        Ok((self.images.disk_response(&disk, false), bypassed))
+    }
+
+    /// Request a root-partition extend (a one-shot action, D19): bumps the
+    /// disk's `extend_root.seq`. A disk without a growable root partition
+    /// is refused here.
+    pub async fn extend_root(&self, key: &str, mode: ExtendMode) -> Result<DiskResponse, VmManagerError> {
+        let current = self.images.get_disk(key)?;
+        if current.phase != images::DiskPhase::Ready || current.deletion_requested_at.is_some() {
+            return Err(ImageError::NotReady(format!("disk {} is {:?}", current.name, current.phase)).into());
+        }
+        let (mgr, d) = (self.images.clone(), current.clone());
+        blocking(move || {
+            let path = mgr.disk_path(&d);
+            let table = images::partition::read_table(&path, d.format, d.size_bytes)?
+                .ok_or_else(|| ImageError::invalid_disk("disk has no partition table"))?;
+            images::partition::growable_root(&table).map(|_| ())
+        })
+        .await?;
+        let mut disk = current;
+        let seq = disk.extend_root.map(|e| e.seq).unwrap_or(0).max(disk.applied_extend_root_seq) + 1;
+        disk.extend_root = Some(images::ExtendRootSpec { mode, seq });
+        self.store.commit(Commit {
+            put_disks: vec![&disk],
+            events: vec![(event_key("disk", &disk.id), Event::new("api", EventKind::Normal, "ExtendRootRequested", format!("{:?}, request {}", mode, seq)))],
+            ..Default::default()
+        })?;
+        self.images.cache_disk(&disk);
+        self.queue.add(Key::Disk(disk.id.clone()));
+        Ok(self.images.disk_response(&disk, false))
+    }
+
+    /// Delete a disk: refused while a VM claims it; otherwise a deletion
+    /// request the disk controller finishes (its record, then its file).
+    /// Returns once it is gone, unless an operation on it is running.
+    pub async fn delete_disk(&self, key: &str) -> Result<(), VmManagerError> {
+        let disk = {
+            // Write lock: no VM may claim the disk while it goes away.
+            let vms = self.vms.write().await;
+            let disk = self.images.get_disk(key)?;
+            if let Some(vm) = Self::disk_claimed_by(&vms, &disk.id, None) {
+                return Err(ImageError::InUse(format!("disk {} is attached to VM {}; detach it or delete the VM first", disk.name, vm)).into());
+            }
+            if let Some(op) = self.images.busy_op(&disk.id) {
+                return Err(ImageError::Busy(format!("disk {} is busy ({})", disk.name, op)).into());
+            }
+            let mut d = disk;
+            d.deletion_requested_at.get_or_insert(tenancy::now());
+            self.images.put_disk(&d)?;
+            d
+        };
+        self.reconcile_disk(&disk.id).await?;
         Ok(())
     }
 
@@ -1413,6 +1486,7 @@ impl VmManager {
         }
         self.networks.put(&net)?;
         tracing::info!(network = %net.name, bridge = %net.bridge, mode = ?net.mode, "network created");
+        self.queue.add(Key::Network(net.name.clone()));
         Ok(net)
     }
 

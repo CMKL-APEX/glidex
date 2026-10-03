@@ -6,6 +6,9 @@
 //! shim), and a periodic resync of every object, so a missed event only
 //! delays convergence until the next resync.
 
+pub mod disk;
+pub mod image;
+pub mod network;
 pub mod queue;
 pub mod startup;
 pub mod vm;
@@ -68,13 +71,26 @@ impl VmManager {
         let m = me.clone();
         tasks.push(tokio::spawn(async move { m.resync_loop().await }));
         tasks.push(tokio::spawn(async move {
+            for key in me.all_keys().await {
+                me.queue.add(key);
+            }
             let ids: Vec<String> = me.vms.read().await.keys().cloned().collect();
             for id in ids {
-                me.queue.add(Key::Vm(id.clone()));
                 me.watch_instance(&id).await;
             }
         }));
         self.tasks.lock().unwrap().extend(tasks);
+    }
+
+    /// Every object the controllers own.
+    async fn all_keys(&self) -> Vec<Key> {
+        let mut keys: Vec<Key> = self.vms.read().await.keys().cloned().map(Key::Vm).collect();
+        keys.extend(self.images.list_disks().into_iter().map(|d| Key::Disk(d.id)));
+        keys.extend(self.images.list_images().into_iter().map(|i| Key::Image(i.id)));
+        if let Ok(nets) = self.networks.list() {
+            keys.extend(nets.into_iter().map(|n| Key::Network(n.name)));
+        }
+        keys
     }
 
     /// Stop the controllers (workers finish their current round first is
@@ -97,8 +113,9 @@ impl VmManager {
             let key = self.queue.next().await;
             let result = match &key {
                 Key::Vm(id) => self.reconcile_vm(id).await,
-                // Disks, images and networks: see their controllers (M3).
-                _ => Ok(None),
+                Key::Disk(id) => self.reconcile_disk(id).await,
+                Key::Image(id) => self.reconcile_image(id).await,
+                Key::Network(name) => self.reconcile_network(name).await,
             };
             match result {
                 Ok(next) => {
@@ -122,10 +139,10 @@ impl VmManager {
     async fn resync_loop(self: Arc<Self>) {
         loop {
             let period = Duration::from_secs(self.settings().resync_secs.max(1));
-            let ids: Vec<String> = self.vms.read().await.keys().cloned().collect();
-            let step = period / (ids.len().max(1) as u32 + 1);
-            for (i, id) in ids.into_iter().enumerate() {
-                self.queue.add_after(Key::Vm(id), step * (i as u32 + 1));
+            let keys = self.all_keys().await;
+            let step = period / (keys.len().max(1) as u32 + 1);
+            for (i, key) in keys.into_iter().enumerate() {
+                self.queue.add_after(key, step * (i as u32 + 1));
             }
             tokio::time::sleep(period).await;
             let now = self.netd.socket_identity();

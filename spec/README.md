@@ -14,13 +14,14 @@ fresh reader cannot infer just by reading the source.
 | Document | Scope |
 |---|---|
 | [architecture.md](architecture.md) | Processes, layers, and request/data flow |
-| [data-model.md](data-model.md) | VM/VmConfig/VmState types, persistence schema, reconciliation |
+| [data-model.md](data-model.md) | VM envelope (`spec`/`status`), VmConfig, phases, persistence schema |
+| [reconciliation.md](reconciliation.md) | Desired state, the VM controller, detached VM instances (`glidex-vm-shim`, `glidex-vm@` units), adoption |
 | [rest-api.md](rest-api.md) | HTTP endpoints, payloads, error model, console WebSocket |
-| [hypervisors.md](hypervisors.md) | Hypervisor trait contract and per-backend implementations |
+| [hypervisors.md](hypervisors.md) | Hypervisor driver contract and per-backend command lines |
 | [images.md](images.md) | Image catalog + verified download, managed disks: create/delete, grow/shrink, root-partition extend |
 | [credentials.md](credentials.md) | Credential store: guest logins for cloud-init, hashing, security rules |
 | [networking.md](networking.md) | VM networking: `glidex-ovs` + root `glidex-netd` — OVS install (distro or pinned source), bridges, uplinks with IP migration, NAT + DHCP, vhost-user/tap VM ports; host-test findings in §0 |
-| [console.md](console.md) | Console proxy thread, listener invariant, WebSocket bridge, xterm |
+| [console.md](console.md) | Console proxy in the shim, listener invariant, log append/rotation, WebSocket bridge, xterm |
 | [cli.md](cli.md) | `gxctl` interactive CLI, command semantics, console attach loop |
 | [web-ui.md](web-ui.md) | Vite + React UI structure, routes, API client, dev-proxy |
 | [installer.md](installer.md) | `glidex-install` bootstrap flow and what it brings up |
@@ -32,9 +33,13 @@ fresh reader cannot infer just by reading the source.
    and CLI drive Cloud-Hypervisor and QEMU identically
    from the caller's point of view, including VFIO PCI passthrough
    and interactive console I/O.
-2. **Durable VM state.** A VM survives control-plane restarts: its
-   config is persisted before being acknowledged, and process-level
-   orphaning is reconciled on startup.
+2. **Durable desired state; VMs survive control-plane restarts.** The
+   API records what the user wants (`spec`) before acknowledging it; a
+   control loop moves the host toward it and reports what it sees
+   (`status`). Each VM runs under its own `glidex-vm-shim`, outside the
+   control plane's process tree, so stopping, crashing or upgrading the
+   control plane leaves guests running; on startup it adopts them
+   ([reconciliation.md](reconciliation.md)).
 3. **Observable console.** Every VM's serial output is captured to a
    log file *and* broadcast to any number of concurrent clients
    (CLI + browser) over the same Unix socket. Clients that connect
@@ -61,9 +66,11 @@ glidex/
 ├── Cargo.toml                       # Workspace root
 ├── README.md                        # User-facing readme
 ├── spec/                            # (this directory)
-├── packaging/                       # systemd units (netd, authd, control plane, UI)
+├── packaging/                       # systemd units (netd, authd, control plane, UI, glidex-vm@), polkit rule
 └── crates/
-    ├── glidex-control-plane/        # REST server + hypervisor backends + gxctl
+    ├── glidex-control-plane/        # REST server, controllers, hypervisor drivers, gxctl
+    ├── glidex-vm-shim/              # per-VM supervisor: hypervisor parent, console, exit record
+    ├── glidex-hv-client/            # CH HTTP and QMP clients (shim + control plane)
     ├── glidex-ovs/                  # host networking library (OVS, NAT, VM ports)
     ├── glidex-netd/                 # root networking helper daemon + protocol client
     ├── glidex-authd/                # root PAM helper daemon (security.md §5.3) + client

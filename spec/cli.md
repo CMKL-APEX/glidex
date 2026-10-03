@@ -77,15 +77,16 @@ name (ids when `/projects` isn't readable).
 
 | Command | Effect |
 |---|---|
-| `list` / `ls` | `GET /vms` + pretty-print |
-| `get <name\|id>` | `GET /vms/{id}` with VM-name resolution |
+| `list` / `ls` | `GET /vms` + table; `STATE` shows `state → desired_state` while they differ |
+| `get <name\|id>` | `GET /vms/{id}` with VM-name resolution; also prints the `Ready` reason while not converged (`Waiting:`) and `last_exit` |
 | `create` | Interactive prompts → `POST /vms` |
-| `start <name\|id>` | `POST /vms/{id}/start` |
-| `stop <name\|id> [--graceful [secs]]` | `POST /vms/{id}/stop[?graceful_timeout_secs=<secs>]` (power button first; default 60 s) |
-| `pause <name\|id>` | `POST /vms/{id}/pause` |
+| `start <name\|id> [--no-wait]` | `POST /vms/{id}/start?wait=60` |
+| `stop <name\|id> [--graceful [secs]] [--no-wait]` | `POST /vms/{id}/stop?wait=<w>[&graceful_timeout_secs=<secs>]` (power button first; default 60 s); `w` = max(60, secs + 20), at most 300 |
+| `pause <name\|id> [--no-wait]` | `POST /vms/{id}/pause?wait=60` |
+| `events <name\|id>` | `GET /vms/{id}/events`: time, actor, reason (warnings highlighted), message |
 | `connect <name\|id>` | `GET /vms/{id}/console`, then the console WebSocket `GET /vms/{id}/console/ws` |
 | `log <name\|id>` | `GET /vms/{id}/console/log` (last 1 MiB) |
-| `delete <name\|id> [--keep-disk]` | Confirmation prompt → `DELETE /vms/{id}[?keep_disk=true]` |
+| `delete <name\|id> [--keep-disk] [--no-wait]` | Confirmation prompt → `DELETE /vms/{id}?wait=60[&keep_disk=true]` |
 | `pci` / `pci-devices` | `GET /pci-devices` + table |
 | `attach-device <vm> <path>` | `POST /vms/{id}/devices` |
 | `detach-device <vm> <path>` | `DELETE /vms/{id}/devices` |
@@ -97,13 +98,14 @@ name (ids when `/projects` isn't readable).
 | `image catalog` | `GET /images/catalog` |
 | `image list` / `images` | `GET /images` |
 | `image pull <key\|url> [--name N] [--sha256 H]` | `POST /images`, then polls `GET /images/{id}` with a progress line until ready or failed (Ctrl-C stops watching only) |
+| `image retry <name\|id>` | `POST /images/{id}/retry`: download a failed image again (follow it with `image list`) |
 | `image rm <image>` | `DELETE /images/{id}` |
 | `disk list` / `disks` | `GET /disks`, attached VM shown by name |
 | `disk show <disk>` | `GET /disks/{id}`: path, backing file, partitions |
-| `disk create <name> [--size-gib N] [--image I] [--full] [--raw] [--no-extend]` | `POST /disks` |
-| `disk resize <disk> <GiB> [--no-extend]` | `POST /disks/{id}/resize`; a refused shrink prints the minimum |
-| `disk extend-root <disk> [--on-boot]` | `POST /disks/{id}/extend-root` |
-| `disk rm <disk>` | Confirmation prompt → `DELETE /disks/{id}` |
+| `disk create <name> [--size-gib N] [--image I] [--full] [--raw] [--no-extend]` | `POST /disks?wait=300` (it may wait for its image to download) |
+| `disk resize <disk> <GiB> [--no-extend]` | `POST /disks/{id}/resize?wait=120`; a refused shrink prints the minimum |
+| `disk extend-root <disk> [--on-boot]` | `POST /disks/{id}/extend-root?wait=120` |
+| `disk rm <disk>` | Confirmation prompt → `DELETE /disks/{id}`; prints `Deleting:` instead of `Disk deleted:` when the server deferred it (`202`, an operation on the disk finishes first) |
 | `networks` / `network list` | `GET /networks` (project networks show their project) |
 | `network create <name> [--project P] [--subnet CIDR] [--mtu N]` | With `--project`: `POST /projects/{P}/networks` (NAT, generated bridge); without: as `network-add` |
 | `network rm <name>` | `DELETE /networks/{name}` |
@@ -193,6 +195,30 @@ SSH keys are read client-side from `.pub` files; a file containing
 echoes file contents. Request structs carrying a password don't derive
 `Debug`.
 
+### Lifecycle commands wait
+
+`start`, `stop`, `pause` and `delete` change the VM's desired state
+([reconciliation.md §12.3](reconciliation.md#123-waitsecs-d20)), so by
+default they send `?wait` and print the VM as the controller left it:
+`Success: VM <name> is now <state>`, plus `Not there yet: <Ready
+reason>: <message>` when the wait ended before the VM converged (a
+`202`: e.g. still starting, crash-loop backoff, disk busy). A failed
+reconcile comes back as the usual API error (`Error: …`), as the
+synchronous calls of earlier releases did. `--no-wait` returns at once
+with `state → desired_state`; `get` or `events` shows how it went.
+
+`disk create`, `resize` and `extend-root` wait the same way
+([images.md §8](images.md#8-rest-api)) and print the disk's size,
+format and status, plus `Not there yet: <Ready reason>: <message>` when
+it has not converged (e.g. `ImageNotReady` while its image downloads,
+`ResizePending` / `ExtendRootPending` while a VM has it open). They have
+no `--no-wait`. `events` covers VMs only; disk, image and network events
+are on the API (`GET /{disks,images,networks}/{id}/events`).
+
+`state → desired` (`format_vm_state`) is printed whenever the two
+differ, treating `created` as `stopped`; `failed` and `unknown` are
+shown in bold red.
+
 ### Name vs id resolution
 
 Every command that takes a `<name|id>` argument goes through
@@ -244,8 +270,10 @@ The request is `POST /vms`. Tilde in paths is expanded server-side
 The VM's console socket is in its private `0700` run directory
 (`paths::vm_dir`), so gxctl goes through the API like the browser does:
 
-1. `GET /vms/{id}/console` → `{available, websocket}`; a stopped VM is
-   refused before anything else.
+1. `GET /vms/{id}/console` → `{available, websocket}`; a VM with no
+   instance is refused before anything else. A VM whose guest has
+   exited but whose shim is not yet released still connects and
+   replays its log.
 2. `ApiClient::connect` opens the same kind of stream as any request
    (Unix socket, TCP or TLS) and `tokio_tungstenite::client_async` does
    the WebSocket handshake on it for `GET /vms/{id}/console/ws`, with the
@@ -269,4 +297,6 @@ They all see the same output and share one input stream (no locking).
 
 `GET /vms/{id}/console/log` (needs `vm.console`) returns the last 1 MiB
 of the captured console output, printed as is. Not a follow; to
-live-tail, use `connect`.
+live-tail, use `connect`. The log spans the VM's earlier instances,
+separated by `--- glidex: instance … ---` lines; the rotated
+`console.log.1` (`?previous=true`) has no gxctl command yet.

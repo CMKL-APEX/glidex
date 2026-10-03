@@ -93,7 +93,7 @@ by later runs (flags override the saved values):
    access through the `kvm` group; the invoking user only needs it for
    running VMs by hand, which is printed, not changed.
 5. **Build** — `cargo build --release -p glidex-control-plane
-   -p glidex-netd -p glidex-ui` (and `-p glidex-authd` with services), then the UI: `bun install
+   -p glidex-netd -p glidex-ui -p glidex-vm-shim` (and `-p glidex-authd` with services), then the UI: `bun install
    --frozen-lockfile` and `bun run build` in `crates/glidex-ui/ui`.
 6. **Users and groups** *(with services; spec/security.md §4, §11)*:
 
@@ -115,9 +115,12 @@ by later runs (flags override the saved values):
 7. **Cloud-Hypervisor** — the static binary at the version pinned in
    `CLOUD_HYPERVISOR_VERSION` (currently `v53.0`), installed to
    `/usr/local/bin` when that copy's version differs. Running VMs keep
-   their process, so no restart follows.
+   their process, so no restart follows. A replaced `glidex-vm-shim`
+   binary likewise only applies to VMs launched afterwards; running
+   shims keep running, and the control plane speaks the previous shim
+   protocol too (reconciliation.md §8.5).
 8. **Binaries** — `glidex-control-plane`, `gxctl`, `glidex-ui`,
-   (with networking) `glidex-netd` and (with services) `glidex-authd` to
+   `glidex-vm-shim`, (with networking) `glidex-netd` and (with services) `glidex-authd` to
    `/usr/local/bin`, each only when it
    differs from the build. Copies an earlier installer put in
    `~/.local/bin` are removed so they don't shadow these.
@@ -187,14 +190,39 @@ by later runs (flags override the saved values):
     user and installs `packaging/glidex-ui.service`,
     `packaging/glidex-authd.socket` and `packaging/glidex-authd.service`
     (each only when changed, then one `daemon-reload`), enables
-    `glidex-authd.socket`, the control plane and the UI, and starts them:
+    `glidex-authd.socket`, the control plane and the UI, and starts them.
+    For VMs (`install_vm_units`,
+    [reconciliation.md §13](reconciliation.md#13-systemd-polkit-installer)):
+    - `/etc/systemd/system/glidex-vm@.service`, rendered from
+      `packaging/glidex-vm@.service.in` for the `glidex` user (`ExecStart`
+      is `/usr/local/bin/glidex-vm-shim --vm %i --dir
+      /run/glidex-cp/vms/%i`), and `glidex-vms.slice`. Neither has an
+      `[Install]` section and neither is enabled or started: only the
+      control plane starts VM units, and relaunching VMs after a host
+      reboot is its job (D10).
+    - `/etc/polkit-1/rules.d/50-glidex-vm.rules` (from
+      `packaging/50-glidex-vm.rules.in`): the `glidex` user may `start`,
+      `stop` and `kill` units named `glidex-vm@<uuid>.service`, and
+      nothing else.
+    - `/etc/glidex/vm-shim.json` (`root:root 0644`): the hypervisor
+      binaries the shim may run — whichever of
+      `/usr/local/bin/cloud-hypervisor`, `/usr/bin/cloud-hypervisor`,
+      `/usr/bin/qemu-system-<arch>`, `/usr/local/bin/qemu-system-<arch>`
+      exist.
+
+    Then:
     - `glidex-authd.socket` is started if it isn't listening, restarted
       when its unit changed; `glidex-authd.service` is `try-restart`ed
       when its binary or unit changed (otherwise the next connection
       starts it).
     - the control plane is started if it isn't running, and restarted
-      after an update **only when no VM is running or paused** (stopping
-      it stops them); otherwise the installer says to restart it later.
+      after an update; running VMs keep running (they are in their own
+      units). **Exception:** if the installed unit is from a release
+      before detached VMs (it still carries the comment "Stopping the
+      service stops running VMs", `LEGACY_CP_MARKER`), that old control
+      plane kills every VM when it stops, so it is restarted only when
+      no VM is running or paused; otherwise the installer says that this
+      one restart stops them once and to restart it when convenient.
       If something else already listens on `127.0.0.1:8841` (a control
       plane started by hand), it isn't started.
     - the UI is (re)started whenever its binary or unit changed or it
@@ -212,6 +240,8 @@ network-online.target
   → glidex-netd.service            root, Type=notify
   → glidex-authd.socket            root:glidex 0660; starts glidex-authd (root) on demand
   → glidex-control-plane.service   user glidex
+       └ starts glidex-vm@<id>.service (user glidex, glidex-vms.slice) over D-Bus,
+         one per VM whose desired state is running or paused
   → glidex-ui.service              user glidex-ui
 ```
 
@@ -230,27 +260,50 @@ network-online.target
   `SupplementaryGroups=kvm` (only if the group exists, since systemd
   refuses a unit naming a missing group). It `Wants=` netd and
   `glidex-authd.socket` but requires neither: without networking, VMs
-  without NICs still work; without authd, PAM login fails. Stopping the
-  unit stops running VMs (the control plane's shutdown path). It listens
+  without NICs still work; without authd, PAM login fails. Stopping,
+  restarting or upgrading the unit leaves running VMs alone; on start it
+  adopts them and relaunches VMs that should run (after a host reboot,
+  `on_host_boot: resume`). It listens
   on loopback TCP and on `/run/glidex-cp/api.sock` and `ui.sock`;
   settings are in `/etc/glidex/control-plane.json` (a non-loopback
   listener needs TLS). Hardening (spec/security.md §9):
-  `RuntimeDirectory=glidex-cp` (`0755`, preserved across restarts),
+  `RuntimeDirectory=glidex-cp` (`0755`) with
+  `RuntimeDirectoryPreserve=yes` — required, since the running VMs'
+  directories (`vms/<id>/`: shim, hypervisor and console sockets,
+  console log) live there —
   `UMask=0077` (per-VM files are private; consoles go through the API),
   `PrivateTmp`, `ProtectSystem=strict`, `ProtectHome=yes`,
-  `ReadWritePaths=/var/lib/glidex-control-plane` and
-  `-/run/glidex/vhost` (cloud-hypervisor serves vhost-user sockets
-  there), `DevicePolicy=closed` with `/dev/kvm`, `/dev/vfio/vfio`,
-  `char-vfio`, `/dev/net/tun` and `/dev/vhost-net`. cloud-hypervisor and
-  QEMU inherit the sandbox, so **no** `NoNewPrivileges=` nor anything
-  that implies it for a non-root unit (`RestrictAddressFamilies=`,
-  `LockPersonality=`, `SystemCallFilter=`, `PrivateDevices=`,
-  `ProtectKernel*=`, …): cloud-hypervisor's `cap_net_admin` file
-  capability (tap devices) would be ignored. Commented `LoadCredential=`
+  `ReadWritePaths=/var/lib/glidex-control-plane`, `DevicePolicy=closed`
+  with no device allowed, `NoNewPrivileges=yes`,
+  `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6`,
+  `LockPersonality=`, `RestrictSUIDSGID=`,
+  `SystemCallFilter=@system-service`, `SystemCallArchitectures=native`,
+  `ProtectKernelTunables=`, `ProtectKernelModules=`,
+  `ProtectKernelLogs=`, `ProtectControlGroups=`, `RestrictNamespaces=`
+  and `RestrictRealtime=` (reconciliation.md §13.3). It runs no
+  hypervisor (they run in the `glidex-vm@` units, which keep the
+  devices and cloud-hypervisor's `cap_net_admin`), so the detached VM
+  runner can't be used under it: the control plane refuses to start
+  with `vm_runner` `"detached"` there. Commented `LoadCredential=`
   lines show where the TLS key, OIDC client secret and cloud-init
   password hash go. Paths given to the API (disk images, kernels,
   seeds) must be readable by `glidex` and outside `/home`, `/root` and
   `/run/user`.
+- **`glidex-vm@<id>`** runs `glidex-vm-shim` for one VM as `glidex`
+  (`SupplementaryGroups=kvm`), `Type=notify` (the shim sends `READY=1`
+  once the hypervisor's socket answers, or once it has recorded a
+  failed launch), `Restart=no` (restarting is the VM controller's
+  decision), `KillMode=mixed` and `TimeoutStopSec=330`: a stop sends
+  SIGTERM to the shim only, which presses the power button, waits
+  `reconcile.host_shutdown_grace_secs` (default 60 s, at most 300) and
+  then stops the hypervisor. It is ordered `After=` netd and Open
+  vSwitch so that at host shutdown VMs stop first, but is not
+  `PartOf=`/`BindsTo=` the control plane. It carries the hypervisor
+  sandbox (spec/security.md §9): `PrivateTmp` (so paths given to the
+  API must not be under `/tmp`), `ProtectSystem=strict`, `ProtectHome`,
+  `ReadWritePaths=` the service home, its own `/run/glidex-cp/vms/%i`
+  and `-/run/glidex/vhost`, `DevicePolicy=closed` with the VM devices,
+  and no `NoNewPrivileges=`.
 - **glidex-authd** (root, spec/security.md §5.3) is socket-activated:
   `/run/glidex-authd/auth.sock`, `root:glidex 0660`, and it accepts only
   the `glidex` user's uid. It runs PAM with `/etc/pam.d/glidex` for
@@ -266,7 +319,8 @@ network-online.target
   non-loopback `GLIDEX_UI_LISTEN` needs `GLIDEX_UI_TLS_CERT` /
   `GLIDEX_UI_TLS_KEY`; users still log in.
 - Validate with `systemd-analyze verify`; the installer's tests check
-  the rendered units and netd's ordering.
+  the rendered units (including the VM template, the polkit rule and
+  the shim allowlist) and netd's ordering.
 
 ## Uninstall
 
@@ -279,8 +333,11 @@ It prints a plan first (`--dry-run` stops there; otherwise it asks unless
 built by a pure function over a `HostView`, so tests pin exactly what is
 removed. Order:
 
-1. `systemctl disable --now` the UI, the control plane (its shutdown
-   stops VMs), glidex-authd (service and socket) and glidex-netd.
+1. `systemctl stop 'glidex-vm@*.service'` when the template is
+   installed: every VM gets its power button and grace (VMs outlive the
+   control plane, so stopping it would not stop them). Then `systemctl
+   disable --now` the UI, the control plane, glidex-authd (service and
+   socket) and glidex-netd.
 2. **Network teardown with netd's own code**, in-process on netd's state
    database: release VM ports, delete uplinks (moving migrated IPs back
    onto their NICs and restoring NIC drivers after DPDK), delete NAT
@@ -291,9 +348,13 @@ removed. Order:
    the only record of how to undo those host changes.
 3. `setcap -r` on `cloud-hypervisor` (or remove it with
    `--remove-cloud-hypervisor`); remove `glidex-control-plane`, `gxctl`,
-   `glidex-netd`, `glidex-ui`, `glidex-authd` from `/usr/local/bin` and
-   `~/.local/bin`.
-4. Remove the glidex unit files and `daemon-reload`.
+   `glidex-netd`, `glidex-ui`, `glidex-authd`, `glidex-vm-shim` from
+   `/usr/local/bin` and `~/.local/bin`.
+4. Remove the glidex unit files (including `glidex-vm@.service` and
+   `glidex-vms.slice`), the polkit rule
+   `/etc/polkit-1/rules.d/50-glidex-vm.rules`, and `daemon-reload`.
+   `/etc/glidex/vm-shim.json` goes with the installer's other
+   configuration files.
 5. Optional: `--reset-dpdk` clears `dpdk-init`, `dpdk-socket-mem`,
    `pmd-cpu-mask` from OVS; `--remove-ovs` disables and removes the source
    build (units + `/opt/glidex`) and removes the distro OVS packages
@@ -376,14 +437,16 @@ but needs a user-supplied kernel + rootfs.
 
 ## What it deliberately does not do
 
-- **Supervises only glidex**: units for glidex-netd, the control plane
-  and the UI (none with `--no-services` / `--no-networking`).
+- **Supervises only glidex**: units for glidex-netd, the control plane,
+  the VM template and the UI (none with `--no-services` /
+  `--no-networking`).
 - **Does not configure networking itself**: bridges, NAT and uplinks
   are created later through glidex-netd, never by the installer.
 - **Does not touch the ReDB file**. If one exists from a previous
   run it is left alone.
 - **Modifies `/etc` only through files it owns**: the systemd units,
-  `/etc/sysctl.d/90-glidex.conf`, `/etc/modules-load.d/glidex.conf`,
+  the polkit rule `/etc/polkit-1/rules.d/50-glidex-vm.rules`,
+  `/etc/glidex/vm-shim.json`, `/etc/sysctl.d/90-glidex.conf`, `/etc/modules-load.d/glidex.conf`,
   `/etc/glidex/install.conf`, `/etc/glidex/authd.json` (once),
   `/etc/glidex/control-plane.json.example`, `/etc/glidex/policies/`
   (the directory), and `/etc/pam.d/glidex` while it carries the marker

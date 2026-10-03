@@ -143,7 +143,29 @@ fn create_app(dir: &Path) -> (Router, Arc<VmManager>) {
     // Every test sets the same value, so parallel tests don't race on it.
     std::env::set_var("GLIDEX_ALLOW_PRIVATE_IMAGE_URLS", "1");
     let manager = VmManager::with_db_path(dir.join("test.db")).unwrap();
+    // Disks are made, resized and extended by the disk controller
+    // (spec/reconciliation.md §10.1); the tests wait for it with ?wait.
+    manager.start_controllers();
     (create_router(manager.clone()), manager)
+}
+
+/// The disk once the disk controller has made it.
+async fn ready_disk(app: &Router, key: &str) -> Value {
+    for _ in 0..150 {
+        let (_, d) = request(app, "GET", &format!("/disks/{key}"), None).await;
+        if d["status"] == "ready" {
+            return d;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    panic!("disk {key} never became ready");
+}
+
+/// Reasons and messages of a disk's events, newest last.
+async fn disk_events(app: &Router, key: &str) -> Vec<(String, String)> {
+    let (_, d) = request(app, "GET", &format!("/disks/{key}"), None).await;
+    let (_, ev) = request(app, "GET", &format!("/disks/{}/events", d["id"].as_str().unwrap()), None).await;
+    ev["events"].as_array().unwrap().iter().map(|e| (e["reason"].as_str().unwrap().to_string(), e["message"].as_str().unwrap().to_string())).collect()
 }
 
 async fn request(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
@@ -250,13 +272,13 @@ async fn download_verify_then_linked_and_full_disks() {
     assert_eq!(status, StatusCode::CONFLICT);
 
     // Smaller than the image: refused with the minimum.
-    let (status, err) = request(&app, "POST", "/disks", Some(json!({"name": "tiny", "image": "base", "size_bytes": 16 * MIB}))).await;
+    let (status, err) = request(&app, "POST", "/disks?wait=30", Some(json!({"name": "tiny", "image": "base", "size_bytes": 16 * MIB}))).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{err}");
     assert_eq!(err["error"], "invalid_disk");
     assert_eq!(err["details"]["min_size_bytes"], 32 * MIB);
 
     // Linked, larger: root partition extended offline.
-    let (status, d) = request(&app, "POST", "/disks", Some(json!({"name": "web-root", "image": "base", "size_bytes": 64 * MIB}))).await;
+    let (status, d) = request(&app, "POST", "/disks?wait=30", Some(json!({"name": "web-root", "image": "base", "size_bytes": 64 * MIB}))).await;
     assert_eq!(status, StatusCode::CREATED, "{d}");
     assert_eq!(d["origin"]["mode"], "linked");
     let (_, detail) = request(&app, "GET", "/disks/web-root", None).await;
@@ -276,13 +298,13 @@ async fn download_verify_then_linked_and_full_disks() {
     assert!(err["message"].as_str().unwrap().contains("web-root"));
 
     // Full clone, default size (GLIDEX_DEFAULT_ROOT_GIB is 10 GiB).
-    let (status, full) = request(&app, "POST", "/disks", Some(json!({"name": "copy", "image": "base", "clone": "full", "format": "raw", "extend_root": false}))).await;
+    let (status, full) = request(&app, "POST", "/disks?wait=30", Some(json!({"name": "copy", "image": "base", "clone": "full", "format": "raw", "extend_root": false}))).await;
     assert_eq!(status, StatusCode::CREATED, "{full}");
     assert_eq!(full["size_bytes"], 10 * 1024 * MIB);
     assert_eq!(full["format"], "raw");
 
     // Raw + linked is impossible.
-    let (status, _) = request(&app, "POST", "/disks", Some(json!({"name": "x", "image": "base", "format": "raw"}))).await;
+    let (status, _) = request(&app, "POST", "/disks?wait=30", Some(json!({"name": "x", "image": "base", "format": "raw"}))).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 
     // Deleting the linked disk frees the image; the full copy doesn't hold it.
@@ -296,6 +318,7 @@ async fn download_verify_then_linked_and_full_disks() {
     assert_eq!(status, StatusCode::OK);
 
     // Records survive a control-plane restart.
+    manager.stop_controllers().await;
     drop(app);
     drop(manager);
     let (app, _m) = create_app(tmp.path());
@@ -332,8 +355,63 @@ async fn checksum_mismatch_and_backing_file_fail() {
     // A failed image can be deleted.
     let (status, _) = request(&app, "DELETE", "/images/evil", None).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
-    let (status, _) = request(&app, "POST", "/disks", Some(json!({"name": "d", "image": "bad"}))).await;
+    let (status, _) = request(&app, "POST", "/disks?wait=30", Some(json!({"name": "d", "image": "bad"}))).await;
     assert_eq!(status, StatusCode::CONFLICT, "a failed image is not ready");
+
+    // Retry (D19): downloaded again; the digest still doesn't match.
+    let (_, before) = request(&app, "GET", "/images/bad", None).await;
+    let (status, r) = request(&app, "POST", "/images/bad/retry", None).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{r}");
+    let img = wait_image(&app, before["id"].as_str().unwrap()).await;
+    assert_eq!(img["status"]["state"], "failed");
+    let (_, ev) = request(&app, "GET", &format!("/images/{}/events", before["id"].as_str().unwrap()), None).await;
+    let reasons: Vec<&str> = ev["events"].as_array().unwrap().iter().map(|e| e["reason"].as_str().unwrap()).collect();
+    assert!(reasons.contains(&"Retrying"), "{reasons:?}");
+    // Only a failed image can be retried.
+    let (status, _) = request(&app, "POST", "/images/nonexistent/retry", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+/// spec/reconciliation.md §7.6, §10.1: a disk may be created from an image
+/// still downloading; it waits pending and is made once the image is.
+/// A disk whose file disappears is reported missing, never recreated.
+#[tokio::test]
+async fn disks_wait_for_their_image_and_notice_a_lost_file() {
+    if !tools_present() {
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    let fx = fixtures(tmp.path());
+    let (base, _) = start_server(&fx).await;
+    let (app, _m) = create_app(tmp.path());
+
+    // The flaky URL needs a retry (about 2 s), so the image is still
+    // downloading when the disk is created.
+    let (status, img) = request(&app, "POST", "/images", Some(json!({"url": format!("{base}/flaky-good.qcow2"), "name": "slow"}))).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{img}");
+    let (status, d) = request(&app, "POST", "/disks", Some(json!({"name": "early", "image": "slow", "size_bytes": 64 * MIB}))).await;
+    assert_eq!(status, StatusCode::CREATED, "{d}");
+    assert_eq!(d["status"], "pending", "{d}");
+    let d = ready_disk(&app, "early").await;
+    assert_eq!(d["size_bytes"], 64 * MIB);
+    let reasons: Vec<String> = disk_events(&app, "early").await.into_iter().map(|e| e.0).collect();
+    assert_eq!(reasons, ["Created", "Created"], "recorded by the API, made by the controller");
+
+    // The file goes away behind glidex's back.
+    std::fs::remove_file(d["path"].as_str().unwrap()).unwrap();
+    let mut missing = false;
+    for _ in 0..200 {
+        // Resync is every 30 s; a resize request reconciles it at once.
+        let _ = request(&app, "POST", "/disks/early/resize", Some(json!({"size_bytes": 80 * MIB}))).await;
+        let (_, d) = request(&app, "GET", "/disks/early", None).await;
+        if d["status"] == "missing" {
+            missing = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(missing, "the lost file is reported");
+    assert!(!tmp.path().join("disks").read_dir().unwrap().any(|e| e.unwrap().file_name().to_string_lossy().contains(d["id"].as_str().unwrap())));
 }
 
 #[tokio::test]
@@ -373,18 +451,18 @@ async fn grow_shrink_and_extend_root() {
     pull_ready(&app, &base, "good.qcow2", "base", None).await;
 
     // Blank disks have no table: grow works, shrink is refused.
-    let (status, blank) = request(&app, "POST", "/disks", Some(json!({"name": "blank", "size_gib": 1}))).await;
+    let (status, blank) = request(&app, "POST", "/disks?wait=30", Some(json!({"name": "blank", "size_gib": 1}))).await;
     assert_eq!(status, StatusCode::CREATED, "{blank}");
-    let (status, d) = request(&app, "POST", "/disks/blank/resize", Some(json!({"size_gib": 2}))).await;
+    let (status, d) = request(&app, "POST", "/disks/blank/resize?wait=30", Some(json!({"size_gib": 2}))).await;
     assert_eq!(status, StatusCode::OK, "{d}");
     assert_eq!(d["size_bytes"], 2 * 1024 * MIB);
-    let (status, err) = request(&app, "POST", "/disks/blank/resize", Some(json!({"size_gib": 1}))).await;
+    let (status, err) = request(&app, "POST", "/disks/blank/resize?wait=30", Some(json!({"size_gib": 1}))).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{err}");
     assert!(err["message"].as_str().unwrap().contains("no partition table"));
 
     for format in ["qcow2", "raw"] {
         let name = format!("img-{format}");
-        let (status, d) = request(&app, "POST", "/disks", Some(json!({
+        let (status, d) = request(&app, "POST", "/disks?wait=30", Some(json!({
             "name": name, "image": "base", "clone": "full", "format": format,
             "size_bytes": 48 * MIB, "extend_root": false
         }))).await;
@@ -392,10 +470,10 @@ async fn grow_shrink_and_extend_root() {
         let path = PathBuf::from(d["path"].as_str().unwrap());
 
         // Root partition ends at 25 MiB (+ GPT backup) → minimum 26 MiB.
-        let (status, err) = request(&app, "POST", &format!("/disks/{name}/resize"), Some(json!({"size_bytes": 16 * MIB}))).await;
+        let (status, err) = request(&app, "POST", &format!("/disks/{name}/resize?wait=30"), Some(json!({"size_bytes": 16 * MIB}))).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{err}");
         assert_eq!(err["details"]["min_size_bytes"], 26 * MIB);
-        let (status, d) = request(&app, "POST", &format!("/disks/{name}/resize"), Some(json!({"size_bytes": 26 * MIB}))).await;
+        let (status, d) = request(&app, "POST", &format!("/disks/{name}/resize?wait=30"), Some(json!({"size_bytes": 26 * MIB}))).await;
         assert_eq!(status, StatusCode::OK, "{d}");
         assert_eq!(d["size_bytes"], 26 * MIB);
         assert_eq!(qemu_img::info(&path, None).unwrap().virtual_size, 26 * MIB);
@@ -403,26 +481,27 @@ async fn grow_shrink_and_extend_root() {
         assert!(marker_intact(&path, format, tmp.path()));
 
         // Grow: from an image, extend_root defaults to true.
-        let (status, d) = request(&app, "POST", &format!("/disks/{name}/resize"), Some(json!({"size_bytes": 80 * MIB}))).await;
+        let (status, d) = request(&app, "POST", &format!("/disks/{name}/resize?wait=30"), Some(json!({"size_bytes": 80 * MIB}))).await;
         assert_eq!(status, StatusCode::OK, "{d}");
-        assert_eq!(d["extend_root"], "grown");
+        // What the controller did is in the disk's events.
+        assert!(disk_events(&app, &name).await.last().unwrap().1.contains("Grown"), "{:?}", disk_events(&app, &name).await);
         let (_, detail) = request(&app, "GET", &format!("/disks/{name}"), None).await;
         assert_eq!(detail["partition_table"]["free_tail_bytes"], 0, "{detail}");
         assert!(sgdisk_verify(&path, format, tmp.path()).contains("No problems found"));
         assert!(marker_intact(&path, format, tmp.path()));
 
         // Nothing left to grow; on-boot just sets the flag.
-        let (status, d) = request(&app, "POST", &format!("/disks/{name}/extend-root"), Some(json!({}))).await;
+        let (status, d) = request(&app, "POST", &format!("/disks/{name}/extend-root?wait=30"), Some(json!({}))).await;
         assert_eq!(status, StatusCode::OK, "{d}");
-        assert_eq!(d["extend_root"], "already_full");
-        let (_, d) = request(&app, "POST", &format!("/disks/{name}/extend-root"), Some(json!({"mode": "on-boot"}))).await;
-        assert_eq!(d["extend_root"], "on_boot");
+        assert_eq!(disk_events(&app, &name).await.last().unwrap(), &("RootExtended".to_string(), "AlreadyFull".to_string()));
+        let (_, d) = request(&app, "POST", &format!("/disks/{name}/extend-root?wait=30"), Some(json!({"mode": "on-boot"}))).await;
+        assert_eq!(disk_events(&app, &name).await.last().unwrap(), &("RootExtended".to_string(), "OnBoot".to_string()));
         assert_eq!(d["pending_growpart"], true);
     }
 
     // Linked disks cannot shrink below their image.
-    let (_, _) = request(&app, "POST", "/disks", Some(json!({"name": "lnk", "image": "base", "size_bytes": 40 * MIB, "extend_root": false}))).await;
-    let (status, err) = request(&app, "POST", "/disks/lnk/resize", Some(json!({"size_bytes": 26 * MIB}))).await;
+    let (_, _) = request(&app, "POST", "/disks?wait=30", Some(json!({"name": "lnk", "image": "base", "size_bytes": 40 * MIB, "extend_root": false}))).await;
+    let (status, err) = request(&app, "POST", "/disks/lnk/resize?wait=30", Some(json!({"size_bytes": 26 * MIB}))).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{err}");
     assert_eq!(err["details"]["min_size_bytes"], 32 * MIB);
 }
@@ -445,7 +524,8 @@ async fn vms_create_attach_and_own_disks() {
     assert_eq!(status, StatusCode::CREATED, "{vm}");
     let vm_id = vm["id"].as_str().unwrap().to_string();
     let root_id = vm["root_disk"].as_str().unwrap().to_string();
-    let (_, root) = request(&app, "GET", &format!("/disks/{root_id}"), None).await;
+    // Recorded with the VM, made by the disk controller.
+    let root = ready_disk(&app, &root_id).await;
     assert_eq!(root["name"], "web-1-root");
     assert_eq!(root["attached_to"], vm_id.as_str());
     assert_eq!(root["size_bytes"], 1024 * MIB);
@@ -457,7 +537,7 @@ async fn vms_create_attach_and_own_disks() {
     // Attached: no delete; a Created VM's disk can still be resized.
     let (status, _) = request(&app, "DELETE", &format!("/disks/{root_id}"), None).await;
     assert_eq!(status, StatusCode::CONFLICT);
-    let (status, d) = request(&app, "POST", &format!("/disks/{root_id}/resize"), Some(json!({"size_gib": 2}))).await;
+    let (status, d) = request(&app, "POST", &format!("/disks/{root_id}/resize?wait=30"), Some(json!({"size_gib": 2}))).await;
     assert_eq!(status, StatusCode::OK, "{d}");
 
     // Exactly one root source.
@@ -467,7 +547,7 @@ async fn vms_create_attach_and_own_disks() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
 
     // Data disks: attach/detach are spec writes (202); one VM per disk.
-    let (_, _) = request(&app, "POST", "/disks", Some(json!({"name": "data1", "size_gib": 1}))).await;
+    let (_, _) = request(&app, "POST", "/disks?wait=30", Some(json!({"name": "data1", "size_gib": 1}))).await;
     let (status, v) = request(&app, "POST", &format!("/vms/{vm_id}/disks"), Some(json!({"disk": "data1"}))).await;
     assert_eq!(status, StatusCode::ACCEPTED, "{v}");
     assert_eq!(v["data_disks"].as_array().unwrap().len(), 1);
@@ -482,7 +562,7 @@ async fn vms_create_attach_and_own_disks() {
     assert!(v.get("data_disks").is_none());
 
     // VM on an existing root disk plus a data disk: deleting the VM keeps both.
-    let (_, _) = request(&app, "POST", "/disks", Some(json!({"name": "mine", "image": "base"}))).await;
+    let (_, _) = request(&app, "POST", "/disks?wait=30", Some(json!({"name": "mine", "image": "base"}))).await;
     let (status, vm2) = request(&app, "POST", "/vms", Some(json!({
         "name": "vm2", "vcpu_count": 1, "mem_size_mib": 512, "root_disk": "mine", "data_disks": ["data1"]
     }))).await;

@@ -222,7 +222,9 @@ mod tests {
         ChClient::new(sock.to_str().unwrap()).add_device("/sys/bus/pci/devices/0000:41:00.0", "_vfio_0000_41_00_0").unwrap();
         let req = server.join().unwrap();
         assert!(req.starts_with("PUT /api/v1/vm.add-device HTTP/1.1\r\nHost: localhost\r\nAccept: */*\r\nContent-Type: application/json\r\n"), "{req}");
-        assert!(req.ends_with(r#"{"id":"_vfio_0000_41_00_0","iommu":false,"path":"/sys/bus/pci/devices/0000:41:00.0"}"#), "{req}");
+        // Key order depends on serde_json's features, unified across the workspace.
+        let body: serde_json::Value = serde_json::from_str(req.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!(body, serde_json::json!({"id": "_vfio_0000_41_00_0", "iommu": false, "path": "/sys/bus/pci/devices/0000:41:00.0"}), "{req}");
     }
 
     #[test]

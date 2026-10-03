@@ -63,6 +63,21 @@ fn check_kvm_access() -> Result<(), String> {
     }
 }
 
+const DETACHED_IN_SANDBOX: &str = "The detached VM runner (reconcile.vm_runner \"detached\") runs hypervisors as \
+children of this process, but it runs with no_new_privs (the glidex-control-plane \
+unit's sandbox), which drops cloud-hypervisor's CAP_NET_ADMIN, and the unit closes \
+/dev/kvm. Use vm_runner \"auto\" or \"systemd\" under the installed unit.";
+
+/// `Some(())` when this process runs with `no_new_privs`, as under the
+/// installed unit's sandbox.
+fn no_new_privs() -> Option<()> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    status
+        .lines()
+        .any(|l| l.split_once(':').is_some_and(|(k, v)| k == "NoNewPrivs" && v.trim() == "1"))
+        .then_some(())
+}
+
 #[tokio::main]
 async fn main() {
     // Print startup banner
@@ -76,15 +91,6 @@ async fn main() {
         )
         .with(tracing_subscriber::fmt::layer())
         .init();
-
-    // Check KVM access before starting
-    print_status("Checking KVM access");
-    if let Err(e) = check_kvm_access() {
-        println!("FAILED");
-        eprintln!("\n{}", e);
-        std::process::exit(1);
-    }
-    println!("OK");
 
     // Not fatal: kernel-boot VMs don't need it.
     for (ty, label, fix) in [
@@ -148,6 +154,29 @@ async fn main() {
     };
     println!("OK");
     vm_manager.configure(&cfg);
+
+    // KVM (spec/reconciliation.md §13.3). Under the systemd runner the
+    // hypervisors open /dev/kvm in their glidex-vm units, and this unit's
+    // sandbox closes /dev: a missing device is reported, not fatal. Under
+    // the detached runner they are this process's children and need it.
+    print_status("Checking KVM access");
+    if vm_manager.runner().kind_name() == "systemd" {
+        // access(2): the VM units run as this user with these groups.
+        let rw = nix::unistd::AccessFlags::R_OK | nix::unistd::AccessFlags::W_OK;
+        if nix::unistd::access("/dev/kvm", rw).is_ok() {
+            println!("OK (VMs open it in their glidex-vm units)");
+        } else if Path::new("/dev/kvm").exists() {
+            println!("NO ACCESS (this user is not in the kvm group; no VM can start)");
+        } else {
+            println!("MISSING (/dev/kvm not found; no VM can start until KVM is enabled)");
+        }
+    } else if let Err(e) = no_new_privs().map_or(Ok(()), |_| Err(DETACHED_IN_SANDBOX.to_string())).and_then(|_| check_kvm_access()) {
+        println!("FAILED");
+        eprintln!("\n{}", e);
+        std::process::exit(1);
+    } else {
+        println!("OK");
+    }
 
     // Load VMs and adopt the instances still running (spec/reconciliation.md
     // §9.4): nothing is launched or stopped before every VM was observed.

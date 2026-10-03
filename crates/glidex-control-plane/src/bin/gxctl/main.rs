@@ -660,7 +660,7 @@ fn image_status(img: &serde_json::Value) -> String {
 }
 
 async fn handle_image(client: &CliClient, args: &[&str]) {
-    let usage = "Usage: image catalog | list | pull <catalog-key|url> [--name N] [--sha256 H] | rm <name|id>";
+    let usage = "Usage: image catalog | list | pull <catalog-key|url> [--name N] [--sha256 H] | retry <name|id> | rm <name|id>";
     match args.first().copied().unwrap_or("list") {
         "catalog" => match client.request_json::<Vec<serde_json::Value>>(Method::GET, "/images/catalog", None).await {
             Ok(items) => {
@@ -744,6 +744,13 @@ async fn handle_image(client: &CliClient, args: &[&str]) {
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             }
         }
+        "retry" => match args.get(1) {
+            Some(name) => match client.request_json::<serde_json::Value>(Method::POST, &format!("/images/{}/retry", name), None).await {
+                Ok(_) => println!("{} {} (follow it with: image list)", "Downloading again:".green(), name),
+                Err(e) => println!("{} {}", "Error:".red(), e),
+            },
+            None => println!("{}", usage.yellow()),
+        },
         "rm" | "delete" => match args.get(1) {
             Some(name) => match client.request_json::<()>(Method::DELETE, &format!("/images/{}", name), None).await {
                 Ok(()) => println!("{} {}", "Image deleted:".green(), name),
@@ -755,14 +762,19 @@ async fn handle_image(client: &CliClient, args: &[&str]) {
     }
 }
 
+/// A disk after a write the disk controller carries out (spec/
+/// reconciliation.md §10.1): its state, and what is still pending.
 fn print_disk_result(d: &serde_json::Value) {
     println!(
         "  {} {} {} {}",
         d["name"].as_str().unwrap_or("?").cyan(),
         format_bytes(d["size_bytes"].as_u64().unwrap_or(0)),
         d["format"].as_str().unwrap_or(""),
-        d["extend_root"].as_str().map(|r| format!("(root partition: {})", r.replace('_', " "))).unwrap_or_default()
+        d["status"].as_str().unwrap_or("")
     );
+    if let Some(ready) = d["conditions"].as_array().into_iter().flatten().find(|c| c["kind"] == "Ready" && c["status"] != "True") {
+        println!("  {} {}: {}", "Not there yet:".yellow(), ready["reason"].as_str().unwrap_or(""), ready["message"].as_str().unwrap_or(""));
+    }
     for w in d["warnings"].as_array().into_iter().flatten() {
         println!("  {} {}", "Warning:".yellow(), w.as_str().unwrap_or(""));
     }
@@ -856,7 +868,8 @@ async fn handle_disk(client: &CliClient, args: &[&str]) {
                 body["extend_root"] = serde_json::json!(false);
             }
             client.scope_body(&mut body);
-            match client.request_json::<serde_json::Value>(Method::POST, "/disks", Some(body)).await {
+            // Making it may wait for its image to download.
+            match client.request_json::<serde_json::Value>(Method::POST, "/disks?wait=300", Some(body)).await {
                 Ok(d) => {
                     println!("{}", "Disk created:".green());
                     print_disk_result(&d);
@@ -874,9 +887,9 @@ async fn handle_disk(client: &CliClient, args: &[&str]) {
                 if has_flag(args, "--no-extend") {
                     body["extend_root"] = serde_json::json!(false);
                 }
-                match client.request_json::<serde_json::Value>(Method::POST, &format!("/disks/{}/resize", name), Some(body)).await {
+                match client.request_json::<serde_json::Value>(Method::POST, &format!("/disks/{}/resize?wait=120", name), Some(body)).await {
                     Ok(d) => {
-                        println!("{}", "Disk resized:".green());
+                        println!("{}", "Disk resize:".green());
                         print_disk_result(&d);
                     }
                     Err(e) => println!("{} {}", "Error:".red(), e),
@@ -888,7 +901,7 @@ async fn handle_disk(client: &CliClient, args: &[&str]) {
             Some(name) => {
                 let mode = if has_flag(args, "--on-boot") { "on-boot" } else { "offline" };
                 match client
-                    .request_json::<serde_json::Value>(Method::POST, &format!("/disks/{}/extend-root", name), Some(serde_json::json!({ "mode": mode })))
+                    .request_json::<serde_json::Value>(Method::POST, &format!("/disks/{}/extend-root?wait=120", name), Some(serde_json::json!({ "mode": mode })))
                     .await
                 {
                     Ok(d) => print_disk_result(&d),
@@ -903,8 +916,9 @@ async fn handle_disk(client: &CliClient, args: &[&str]) {
                     println!("Cancelled");
                     return;
                 }
-                match client.request_json::<()>(Method::DELETE, &format!("/disks/{}", name), None).await {
-                    Ok(()) => println!("{} {}", "Disk deleted:".green(), name),
+                match client.request_json::<serde_json::Value>(Method::DELETE, &format!("/disks/{}", name), None).await {
+                    Ok(serde_json::Value::Null) => println!("{} {}", "Disk deleted:".green(), name),
+                    Ok(_) => println!("{} {} (once the operation on it finishes)", "Deleting:".green(), name),
                     Err(e) => println!("{} {}", "Error:".red(), e),
                 }
             }

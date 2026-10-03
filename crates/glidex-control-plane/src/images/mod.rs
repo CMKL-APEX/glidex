@@ -30,6 +30,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub const IMAGES_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("images");
 pub const DISKS_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("disks");
 
+pub use disk::{wanted_root_size, MaterializeOutcome};
+
 pub const GIB: u64 = 1024 * 1024 * 1024;
 
 #[derive(Debug, thiserror::Error)]
@@ -139,6 +141,12 @@ pub struct Image {
     pub created_at: u64,
     #[serde(default)]
     pub download: DownloadMeta,
+    /// Bumped by `POST /images/{id}/retry` (D19); a failed image is
+    /// downloaded again once this is newer than `applied_retry_seq`.
+    #[serde(default)]
+    pub retry_seq: u64,
+    #[serde(default)]
+    pub applied_retry_seq: u64,
 }
 
 impl Image {
@@ -176,6 +184,54 @@ pub enum DiskOrigin {
     Image { image_id: String, mode: CloneMode },
 }
 
+/// Where a disk is in its life (spec/reconciliation.md §10.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DiskPhase {
+    /// Recorded; its file is made once the source image is ready.
+    Pending,
+    Creating,
+    #[default]
+    Ready,
+    Resizing,
+    /// The file is gone. Never recreated: the data is gone.
+    Missing,
+    /// Creating it failed; see its `Ready` condition.
+    Failed,
+}
+
+/// How a pending disk is to be made (the create request, kept until it is).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiskCreateSpec {
+    /// Requested size; `None`: the image's size or the default root size.
+    #[serde(default)]
+    pub size_bytes: Option<u64>,
+    /// Grow the root partition into a disk larger than its image.
+    #[serde(default)]
+    pub extend_root: Option<bool>,
+}
+
+/// A one-shot extend-root request (D19): applied once `seq` is newer than
+/// the disk's `applied_extend_root_seq`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExtendRootSpec {
+    pub mode: ExtendMode,
+    pub seq: u64,
+}
+
+/// A resize waiting to be applied (§10.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResizeSpec {
+    pub size_bytes: u64,
+    #[serde(default)]
+    pub extend_root: Option<bool>,
+}
+
+/// A disk: spec (`format`, `origin`, `create`, `resize`, `extend_root`,
+/// `owner`) and status (`phase`, `size_bytes`, `pending_growpart`,
+/// `applied_extend_root_seq`, `conditions`). The record keeps its flat
+/// shape; the fields added for the controller default, so records from
+/// before it load as `Ready` disks.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Disk {
     pub id: String,
@@ -185,7 +241,7 @@ pub struct Disk {
     #[serde(default)]
     pub project: String,
     pub format: DiskFormat,
-    /// Virtual size, a multiple of 1 MiB.
+    /// Actual virtual size, a multiple of 1 MiB (0 until created).
     pub size_bytes: u64,
     pub origin: DiskOrigin,
     /// VM id; at most one.
@@ -195,9 +251,49 @@ pub struct Disk {
     #[serde(default)]
     pub pending_growpart: bool,
     pub created_at: u64,
+    #[serde(default)]
+    pub phase: DiskPhase,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub create: Option<DiskCreateSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resize: Option<ResizeSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extend_root: Option<ExtendRootSpec>,
+    #[serde(default)]
+    pub applied_extend_root_seq: u64,
+    /// The VM this disk was made for (deleted with it, unless kept).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deletion_requested_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conditions: Vec<crate::models::Condition>,
 }
 
 impl Disk {
+    /// A disk record with the controller fields at their defaults.
+    pub fn new(id: String, name: String, project: String, format: DiskFormat, size_bytes: u64, origin: DiskOrigin) -> Self {
+        Disk {
+            id,
+            name,
+            project,
+            format,
+            size_bytes,
+            origin,
+            attached_to: None,
+            pending_growpart: false,
+            created_at: now(),
+            phase: DiskPhase::Ready,
+            create: None,
+            resize: None,
+            extend_root: None,
+            applied_extend_root_seq: 0,
+            owner: None,
+            deletion_requested_at: None,
+            conditions: Vec::new(),
+        }
+    }
+
     pub fn is_linked(&self) -> bool {
         matches!(self.origin, DiskOrigin::Image { mode: CloneMode::Linked, .. })
     }
@@ -308,8 +404,19 @@ pub struct DiskResponse {
     pub origin: DiskOrigin,
     pub attached_to: Option<String>,
     pub pending_growpart: bool,
-    /// `ready`, `busy` or `missing`.
+    /// `pending`, `creating`, `ready`, `resizing`, `busy`, `missing` or
+    /// `failed`.
     pub status: String,
+    pub phase: DiskPhase,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub conditions: Vec<crate::models::Condition>,
+    /// A resize not applied yet (the disk is in use, §10.1).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pending_size_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub deleting: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub busy_op: Option<String>,
     pub path: String,
@@ -709,12 +816,14 @@ impl ImageManager {
     pub fn disk_response(&self, d: &Disk, with_detail: bool) -> DiskResponse {
         let path = self.disk_path(d);
         let busy_op = self.busy_op(&d.id);
-        let status = if busy_op.is_some() {
-            "busy"
-        } else if !path.exists() {
-            "missing"
-        } else {
-            "ready"
+        let status = match d.phase {
+            DiskPhase::Pending => "pending",
+            DiskPhase::Creating => "creating",
+            DiskPhase::Failed => "failed",
+            _ if busy_op.is_some() => "busy",
+            DiskPhase::Resizing => "resizing",
+            _ if !path.exists() => "missing",
+            _ => "ready",
         };
         let (info, table) = if with_detail && status == "ready" {
             (
@@ -734,6 +843,11 @@ impl ImageManager {
             attached_to: d.attached_to.clone(),
             pending_growpart: d.pending_growpart,
             status: status.to_string(),
+            phase: d.phase,
+            conditions: d.conditions.clone(),
+            pending_size_bytes: d.resize.map(|r| r.size_bytes),
+            owner: d.owner.clone(),
+            deleting: d.deletion_requested_at.is_some(),
             busy_op: busy_op.map(str::to_string),
             path: path.to_string_lossy().into_owned(),
             created_at: d.created_at,
@@ -853,6 +967,8 @@ mod tests {
             arch: Arch::X86_64,
             created_at: 0,
             download: DownloadMeta::default(),
+            retry_seq: 0,
+            applied_retry_seq: 0,
         };
         mgr.put_image(&img).unwrap();
         let hold = mgr.hold_image("img-1");
@@ -867,19 +983,15 @@ mod tests {
 
     #[test]
     fn record_json_shape() {
-        let d = Disk {
-            id: "i".into(),
-            name: "n".into(),
-            project: String::new(),
-            format: DiskFormat::Qcow2,
-            size_bytes: GIB,
-            origin: DiskOrigin::Image { image_id: "img".into(), mode: CloneMode::Linked },
-            attached_to: None,
-            pending_growpart: false,
-            created_at: 0,
-        };
+        let d = Disk::new("i".into(), "n".into(), String::new(), DiskFormat::Qcow2, GIB, DiskOrigin::Image { image_id: "img".into(), mode: CloneMode::Linked });
         let v = serde_json::to_value(&d).unwrap();
         assert_eq!(v["origin"], serde_json::json!({"kind": "image", "image_id": "img", "mode": "linked"}));
+        // Records from before the disk controller load as ready disks.
+        let old: Disk = serde_json::from_value(serde_json::json!({
+            "id": "i", "name": "n", "format": "qcow2", "size_bytes": 1, "origin": {"kind": "blank"}, "created_at": 0
+        }))
+        .unwrap();
+        assert_eq!((old.phase, old.applied_extend_root_seq), (DiskPhase::Ready, 0));
         assert_eq!(v["format"], "qcow2");
         let s = serde_json::to_value(ImageStatus::Downloading { received_bytes: 1, total_bytes: None }).unwrap();
         assert_eq!(s["state"], "downloading");

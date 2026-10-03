@@ -237,6 +237,37 @@ async fn ovs_status_and_bridges() {
     assert_eq!(body["error"], "invalid_network");
 }
 
+/// spec/reconciliation.md §10.3: the network controller checks netd's
+/// records and reports the network's phase.
+#[tokio::test(flavor = "multi_thread")]
+async fn network_controller_reports_the_phase() {
+    let h = harness(true);
+    h.manager.start_controllers();
+    let (status, _) = request(&h.app, "POST", "/networks", Some(json!({"name": "lab", "mode": "nat"}))).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let mut net = Value::Null;
+    for _ in 0..50 {
+        let (_, n) = request(&h.app, "GET", "/networks/lab", None).await;
+        if n["conditions"].as_array().is_some_and(|c| !c.is_empty()) {
+            net = n;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    // The fake OVS reports the bridge with no ports and no running
+    // dnsmasq: the controller says what is missing instead of guessing.
+    assert!(matches!(net["phase"].as_str(), Some("ready" | "degraded")), "{net}");
+    let ready = &net["conditions"][0];
+    assert_eq!(ready["kind"], "Ready", "{net}");
+    if net["phase"] == "degraded" {
+        assert!(!ready["message"].as_str().unwrap().is_empty(), "{net}");
+        let (status, ev) = request(&h.app, "GET", "/networks/lab/events", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(ev["events"][0]["reason"], "Degraded", "{ev}");
+    }
+    h.manager.stop_controllers().await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn netd_errors_map_to_rest() {
     // OVS not running: creating a network is unsupported on this host.

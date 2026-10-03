@@ -73,14 +73,11 @@ fn qemu_version() -> Option<(u32, u32)> {
     })
 }
 
-/// In-kernel virtio-net datapath, if we may open `/dev/vhost-net`
-/// (usually the `kvm` group).
+/// In-kernel virtio-net datapath, if the VM may open `/dev/vhost-net`
+/// (usually the `kvm` group). `access(2)`, not an open: the VM's unit runs
+/// as this user with these groups, but this unit's sandbox closes /dev.
 fn vhost_net_usable() -> bool {
-    OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open("/dev/vhost-net")
-        .is_ok()
+    nix::unistd::access("/dev/vhost-net", nix::unistd::AccessFlags::R_OK | nix::unistd::AccessFlags::W_OK).is_ok()
 }
 
 /// Whether the filesystem holding `path` supports `O_DIRECT` (tmpfs and

@@ -2,112 +2,113 @@
 
 Source: `crates/glidex-control-plane/src/hypervisor/`.
 
-## The traits
+## The driver
 
-`Hypervisor` is a **factory** for running VMs. It has no instance
-state of its own; it's stateless except for knowing what backend it
-represents.
+Since the move to detached instances
+([reconciliation.md §16](reconciliation.md#16-hypervisor-abstraction))
+the control plane has no hypervisor process handles. A backend is a
+**stateless driver** (`hypervisor/mod.rs`):
 
 ```rust
-pub trait Hypervisor: Send + Sync {
-    fn spawn(
-        &self,
-        socket_path: &str,          // hypervisor API / QMP socket
-        console_socket_path: &str,  // client-facing console
-        log_path: &str,             // append-only captured console
-    ) -> Result<Box<dyn HypervisorProcess>, HypervisorError>;
-
+pub trait HypervisorDriver: Send + Sync {
     fn hypervisor_type(&self) -> HypervisorType;
-    fn is_available(&self) -> bool;  // is the binary on PATH?
+    fn is_available(&self) -> bool;   // binary on PATH, /usr/local/bin or /usr/bin
+    /// The command line carrying the whole VM config (and QEMU's fallback).
+    fn launch_args(&self, config: &VmConfig, api_socket: &str) -> Result<LaunchArgs, HypervisorError>;
+    fn observe(&self, api_socket: &str) -> Result<Observed, HypervisorError>;  // guest state + device ids
+    fn pause(&self, api_socket: &str) -> Result<(), HypervisorError>;
+    fn resume(&self, api_socket: &str) -> Result<(), HypervisorError>;
+    fn add_device(&self, api_socket: &str, device_path: &str) -> Result<(), HypervisorError>;
+    fn remove_device(&self, api_socket: &str, device_path: &str) -> Result<(), HypervisorError>;
 }
 ```
 
-`HypervisorProcess` is the **running VM handle**. Every method is
-`&self` — mutable state (child pid, console thread join handle,
-atomic run flag) is behind interior-mutability primitives so the
-handle is `Send + Sync`:
+`hypervisor::driver(ty)` returns the static driver for a
+`HypervisorType`. Everything a driver needs about a running instance is
+a socket path, so a restarted control plane manages it exactly as the
+one that launched it.
 
-```rust
-pub trait HypervisorProcess: Send + Sync {
-    fn configure(&self, config: &VmConfig) -> Result<(), HypervisorError>;
-    fn start(&self) -> Result<(), HypervisorError>;
-    fn pause(&self) -> Result<(), HypervisorError>;
-    fn resume(&self) -> Result<(), HypervisorError>;
-    fn kill(&self) -> Result<(), HypervisorError>;
-    fn request_shutdown(&self) -> Result<(), HypervisorError>;                 // default: Unsupported
+### Contract
 
-    fn add_device(&self, device_path: &str) -> Result<(), HypervisorError>;     // default: Unsupported
-    fn remove_device(&self, device_path: &str) -> Result<(), HypervisorError>;  // default: Unsupported
+- **Launch = configured (D9).** `launch_args` returns an argv that
+  carries the *whole* VM config. The shim runs it; there is no
+  "configure" or "boot" call afterwards, so there is no half-configured
+  instance and no crash window between "launched" and "booted".
+  `config` arrives with its non-persisted bindings (disks, NICs, seed,
+  firmware vars) filled in by the VM controller. `launch_args` is pure
+  apart from host probes (QEMU firmware vars, `O_DIRECT`, vhost-net) and
+  resolves the binary to an absolute path, which the shim checks against
+  its allowlist.
+- **Process lifetime belongs to `glidex-vm-shim`**
+  ([reconciliation.md §8.3](reconciliation.md#83-shim-process)): spawn,
+  launch health check, QEMU's CPU fallback, power button, kill, exit
+  status. The driver never starts or signals a process.
+- `observe` maps the hypervisor's view to `GuestState` (`NotCreated`,
+  `Created`, `Running`, `Paused`, `Shutdown`) plus the ids of its
+  devices; the controller uses it for drift (pause/resume, VFIO
+  hot-plug). A live instance whose guest is `NotCreated`/`Created`
+  cannot happen with D9; the controller kills it rather than patching it
+  up through the API.
+- `add_device` / `remove_device` are hot-plug operations through the
+  hypervisor's live API, with the deterministic VFIO id below. The
+  controller calls them only while the guest is observed running.
+- The clients themselves (`ChClient`, `QmpClient`) are in
+  `crates/glidex-hv-client`, shared with the shim. Each call opens its
+  own connection, so the shim's and the control plane's never overlap
+  for long.
 
-    fn is_running(&self) -> bool;
-    fn socket_path(&self) -> &str;
-    fn console_socket_path(&self) -> &str;
-    fn log_path(&self) -> &str;
-}
-```
-
-### Trait contract
-
-- `spawn` **may or may not** launch the actual hypervisor binary.
-  Cloud-Hypervisor launches in `spawn` (its API is HTTP: you talk to
-  it while it waits for config). QEMU launches
-  in `configure` because QEMU needs the full config on its command
-  line; see below.
-- `configure` must be called exactly once, before `start`.
-- After `kill`, the process handle is done. A fresh `spawn` +
-  `configure` + `start` is required to bring the VM back.
-- `add_device` / `remove_device` on an already-running VM are
-  hot-plug operations and must go through the hypervisor's live
-  management API. Backends that don't support it can leave the
-  default impls, which return `Unsupported`.
-- `request_shutdown` presses the guest's ACPI power button (CH
-  `/vm.power-button`, QEMU `system_powerdown`) and returns at once.
-- `is_running` is false after `kill` **and** once the hypervisor
-  process has exited on its own: both backends exit when the guest
-  powers off. `VmManager::reap_exited_vms` (every 2 s, from `main`)
-  turns that into `stopped` and releases the NICs.
-  `stop_vm_graceful` (`POST /vms/{id}/stop?graceful_timeout_secs=N`)
-  requests a shutdown, polls `is_running` without holding the VM lock,
-  then stops the VM hard either way.
-- **Console listener lifetime** (see [console.md](console.md)): the
-  console Unix socket listener must remain bound from `spawn` (or
-  `configure`, for QEMU) until `kill`. It must not be dropped just
-  because the guest died.
+A guest that powers off makes its hypervisor exit with status 0 under
+both backends; so does SIGTERM to the hypervisor
+([reconciliation.md §4](reconciliation.md#4-verified-host-facts), F3/F4).
+The shim records that as `clean_exit` and the controller sets the
+desired state to stopped
+([reconciliation.md §7.5](reconciliation.md#75-exit-handling)). A guest
+*reboot* resets in place and never exits the hypervisor.
 
 ### Backend selection
 
-`VmManager` maintains a `HashMap<HypervisorType, Box<dyn Hypervisor>>`
-populated at startup with both backends (Cloud-Hypervisor and QEMU).
 Firecracker support was removed; see [data-model.md](data-model.md)
-for how old Firecracker records are handled. On `start_vm`, it
-looks the VM's `hypervisor` up in that map and delegates to it.
-Backends whose binary is missing from `PATH` are still registered —
-the error surfaces only at launch time.
+for how old Firecracker records are handled. Drivers whose binary is
+missing are still selectable: `main` warns at startup, and the error
+surfaces at launch (`ProvisioningFailed`, "… is not installed").
 
 ## Cloud-Hypervisor
 
-Source: `hypervisor/cloud_hypervisor.rs`. API: CH's HTTP protocol
-over a Unix socket. Message framing is hand-rolled to match the
-upstream `api_client` format exactly (see `send_request` in that
-file).
+Source: `hypervisor/cloud_hypervisor.rs` (command line) and
+`crates/glidex-hv-client/src/ch.rs` (API). API: CH's HTTP protocol over
+a Unix socket. Message framing is hand-rolled to match the upstream
+`api_client` format exactly (`ChClient::send_request`).
 
-`spawn` runs `cloud-hypervisor --api-socket <sock>` on a PTY glidex
-owns (`console::spawn_on_pty`: the raw slave is CH's stdin/stdout, CH's
-stderr goes to the log) and starts the console proxy at once; see
-[console.md](console.md#why-glidex-owns-the-master). If the API socket
-doesn't appear, the error includes what CH printed.
+`launch_args` builds the command line that replaced the `vm.create`
+payload, option for option, in this order
+([reconciliation.md §8.2](reconciliation.md#82-cloud-hypervisor-argv-d9)):
+`--api-socket path=…`, `--cpus boot=,max=`, `--memory
+size=…M[,shared=on][,hugepages=on]`, `--firmware` or `--kernel` +
+`--cmdline` (the cmdline is one argv element, never split), one
+`--disk` value per disk, one `--net` value per NIC, one `--device` per
+VFIO device, then `--console` / `--serial`. The boot mode decides the
+console:
 
-`configure` does a single `PUT /vm.create` with a full config
-payload (CPU, memory, payload, disks, console/serial config, any
-VFIO devices). The payload depends on the boot mode:
-
-| Boot mode | `payload` | `console` | `serial` | Guest console |
+| Boot mode | payload | `--console` | `--serial` | Guest console |
 |---|---|---|---|---|
-| Kernel (`firmware_path` unset) | `kernel` + `cmdline` | `Tty` | `Off` | `hvc0` |
-| Firmware (`firmware_path` set) | `firmware` only | `Off` | `Tty` | `ttyS0` |
+| Kernel (`firmware_path` unset) | `--kernel` + `--cmdline` | `tty` | `off` | `hvc0` |
+| Firmware (`firmware_path` set) | `--firmware` | `off` | `tty` | `ttyS0` |
 
-(`boot_payload`.) `Tty` makes the device CH's stdio, i.e. the PTY above.
-`start` issues `PUT /vm.boot`.
+`tty` makes the device CH's stdio, i.e. the shim's PTY; see
+[console.md](console.md#why-the-shim-owns-the-master).
+
+Command-line rules, verified against the pinned v53.0 (F1, F2) and
+pinned by unit tests in `cloud_hypervisor.rs`:
+
+- A value containing `,` is wrapped in double quotes
+  (`path="/a,b/x"`); unquoted, CH would parse the rest as options.
+  Paths with `"` or control characters are refused at admission, so
+  quoting never needs escaping.
+- `image_type=` uses CH's lower-case names: `raw`, `qcow2`, `vhdx`, and
+  `vhd` for `FixedVhd` (CH rejects `fixedvhd`).
+- `--net`: `id=net<i>,mac=…,num_queues=<2·queue_pairs>[,mtu=…]` plus
+  `tap=<if>` or `vhost_user=on,socket=…,vhost_mode=server`. `mtu=` is
+  accepted although `--help` does not list it.
 
 ### Firmware boot
 
@@ -126,15 +127,14 @@ Why serial instead of virtio-console: distro cloud images put
 `console=ttyS0` on their kernel command line, so the login prompt only
 appears on the emulated 16550 UART.
 
-Disks are `[rootfs, data disks…, seed]` (`disk_configs`). A managed disk
-sends its recorded `image_type`, and `backing_files: true` if it is a
+Disks are `[rootfs, data disks…, seed]` (`vm_disks`). A managed disk
+sends its recorded `image_type`, and `backing_files=on` if it is a
 linked overlay ([images.md](images.md#10-changes-to-existing-components)).
 A user-supplied `rootfs_path` is probed by magic bytes. The seed is
-`config.cloud_init_path`, or —
-if unset on a firmware boot — the image `VmManager::start_vm`
-regenerates at `Vm::default_cloud_init_path()`
-(`<run dir>/vms/<id>/cloudinit.img`) before `configure`. It is
-attached `readonly`. Contents (`cloud_init.rs`):
+`config.cloud_init_path`, or — if unset on a firmware boot — the image
+the VM controller regenerates at `Vm::default_cloud_init_path()`
+(`<run dir>/vms/<id>/cloudinit.img`) before every launch. It is
+attached `readonly=on`. Contents (`cloud_init.rs`):
 
 - `meta-data`: `instance-id` = VM id (stable, so cloud-init
   provisions once per VM), `local-hostname` = VM name reduced to an
@@ -156,33 +156,33 @@ instance. `chpasswd` applies either way. Its `type` must be lowercase
 `hash`; cloud-init compares it case-sensitively and silently skips
 `HASH`.
 
-`pause` / `resume` / `kill` map directly to the corresponding CH API
-endpoints, `request_shutdown` to `/vm.power-button`. `add_device` / `remove_device` use CH's `/vm.add-device`
-and `/vm.remove-device`, with a deterministic device id derived from
-the sysfs BDF (`_vfio_0000_41_00_0`).
+Runtime operations (`glidex-hv-client/src/ch.rs`): `observe` is `GET
+/vm.info`, `pause` / `resume` are `/vm.pause` / `/vm.resume`,
+`add_device` / `remove_device` use `/vm.add-device` and
+`/vm.remove-device` with a deterministic device id derived from the
+sysfs BDF (`_vfio_0000_41_00_0`). The shim uses `GET /vmm.ping` (launch
+health check), `/vm.power-button`, and `PUT /vmm.shutdown` to stop CH
+without the guest: it closes the disks first, where a bare SIGKILL can
+leave a qcow2 disk CH refuses to reopen (F8).
 
 ## QEMU
 
-Source: `hypervisor/qemu.rs`. API: **QMP** (QEMU Machine Protocol)
+Source: `hypervisor/qemu.rs` (command line) and
+`crates/glidex-hv-client/src/qmp.rs` (API). API: **QMP** (QEMU Machine Protocol)
 over a Unix socket. Needs QEMU ≥ 6.0 (`server=on` sockets,
 `-machine memory-backend=`); an older one is refused at launch.
 
-### Deferred launch
+### Launch
 
-QEMU is fundamentally different from Cloud-Hypervisor: it takes *all*
-its config on the command line. There is no runtime "configure" API
-once it's running. Therefore:
+QEMU takes all its config on the command line, as Cloud Hypervisor now
+does too. It is started **without** `-S`: the guest runs from launch
+(D9), and nothing is sent over QMP to boot it.
 
-- `QemuBackend::spawn` does **nothing but allocate the handle**. No
-  `qemu-system-x86_64` process is started.
-- `QemuInstance::configure(&config)` is where the process is
-  actually launched, with `-S` so the guest is paused at reset.
-- `start` then sends QMP `cont` to unfreeze it.
-
-`launch` first resolves the config against the host into a
+`launch_args` first resolves the config against the host into a
 `LaunchSpec` (firmware files, `O_DIRECT` support per disk,
-`/dev/vhost-net` access); `LaunchSpec::args` then builds the command
-line without touching the host, which is what the unit tests check:
+`/dev/vhost-net` access, QEMU ≥ 6.0); `LaunchSpec::args` then builds
+the command line without touching the host, which is what the unit
+tests check:
 
 ```
 qemu-system-x86_64
@@ -205,7 +205,6 @@ qemu-system-x86_64
   -object rng-random,id=rng0,filename=/dev/urandom -device virtio-rng-pci,rng=rng0
   -qmp unix:<socket_path>,server=on,wait=off
   -serial stdio -display none
-  -S
 ```
 
 Notes captured in code comments:
@@ -217,9 +216,11 @@ Notes captured in code comments:
 - We avoid `-nographic` because it implies `-serial mon:stdio` and
   collides with our explicit `-serial stdio`.
 - `-cpu host` first, so guests see the host's CPU features (CH's
-  default). Some hosts can't express their CPU to KVM; if QEMU exits
-  before QMP is up and its output mentions the CPU or an MSR,
-  `launch` retries once without `-cpu` (QEMU's default model).
+  default). Some hosts can't express their CPU to KVM: `launch_args`
+  also returns a `fallback` argv without `-cpu` (QEMU's default model)
+  with the markers `cpu` and `msr`; if QEMU exits before QMP answers
+  and its output contains one of them (case-insensitive), the shim runs
+  the fallback once (`launch.json`, reconciliation.md §8.1).
 - Disks use `-blockdev` JSON, so a path never needs escaping. The
   format is always explicit: the recorded format for managed disks,
   glidex's own magic-byte probe for a user-supplied `rootfs_path`,
@@ -231,9 +232,9 @@ Notes captured in code comments:
   runtime-directory seed) use the page cache.
 - The root disk has `bootindex=1`, so OVMF boots it rather than the
   seed or a data disk.
-- QEMU's stderr goes to the VM's log file only (opened `O_APPEND`, as
-  is the console proxy's handle), so its warnings never appear in a
-  console session but still show up in the launch error below.
+- QEMU's stderr goes to a pipe the shim's console proxy writes to the
+  VM's log only, so its warnings never appear in a console session but
+  still show up in a launch error.
 
 ### Firmware boot
 
@@ -247,7 +248,7 @@ Notes captured in code comments:
 - finds the pristine variable store next to it (`CODE` → `VARS` in the
   file name). Each VM gets its own copy at
   `<data dir>/firmware-vars/<vm id>.fd` (`VmConfig.firmware_vars_path`,
-  filled in by `start_vm`, never persisted), copied on first boot and
+  filled in by the VM controller, never persisted), copied on first boot and
   again only if the template's size changed. Boot entries the guest
   writes survive restarts; the copy is deleted with the VM;
 - treats a code image whose name contains `secboot`, `.ms.` or
@@ -261,8 +262,8 @@ disk, and the console is the serial port.
 
 ### QMP client
 
-`QmpClient` in the same file opens a *new* Unix connection per
-command. Each connection:
+`QmpClient` (`glidex-hv-client/src/qmp.rs`) opens a *new* Unix
+connection per command. Each connection:
 
 1. Reads the server greeting line.
 2. Sends `{"execute":"qmp_capabilities"}` and reads the `return`.
@@ -270,28 +271,32 @@ command. Each connection:
    `return`/`error` line, skipping any asynchronous `event` lines
    in between.
 
-Commands used:
+A QMP monitor serves one client at a time, so a connect that finds it
+busy is retried for up to 2 s (the shim and the control plane may both
+talk to it).
 
-| Operation | QMP command |
-|---|---|
-| `start` / `resume` | `cont` |
-| `pause` | `stop` |
-| `request_shutdown` | `system_powerdown` |
-| `kill` | `quit` (best-effort; child is also killed) |
-| `add_device` | `device_add` with `driver=vfio-pci`, `host=<bdf>`, `id=<deterministic>` |
-| `remove_device` | `device_del` with `id=<deterministic>` |
-
-`is_running` is false once the `qemu-system-x86_64` child has exited
-(the guest powered off), not only after `kill`.
+| Operation | Used by | QMP command |
+|---|---|---|
+| launch health check | shim | greeting + `qmp_capabilities` |
+| `observe` | controller | `query-status` (`prelaunch` → `Created`, `running` → `Running`, `paused`/… → `Paused`, `shutdown`/`guest-panicked`/… → `Shutdown`) and `qom-list /machine/peripheral` |
+| `pause` / `resume` | controller | `stop` / `cont` |
+| power button | shim | `system_powerdown` (after `cont` if paused) |
+| kill | shim | `quit`; SIGKILL if QEMU is still there after 2 s |
+| `add_device` | controller | `device_add` with `driver=vfio-pci`, `host=<bdf>`, `id=<deterministic>` |
+| `remove_device` | controller | `device_del` with `id=<deterministic>` |
 
 ### Launch health check
 
-`launch` loops up to 5 seconds waiting for the QMP socket to appear
-**and** respond with a greeting. It also calls `child_exit_status()`
-each iteration: if QEMU has already exited, we read the captured
-log and return a `ProcessStart` error whose message embeds QEMU's
-output. This is what surfaces misconfigured kernel paths, missing
-KVM, missing firmware and other launch-time errors.
+Done by the shim for both backends
+([reconciliation.md §8.3](reconciliation.md#83-shim-process) step 3):
+it waits up to `ready_timeout_secs` (30) for the API socket to answer
+(CH `GET /vmm.ping`, QEMU's QMP greeting), watching for early exit. If
+the hypervisor exits first (after the QEMU fallback, if any), the shim
+records exit cause `launch_failed` with the hypervisor's captured
+stderr as the message; the controller reports it as
+`Ready=False/LaunchFailed` and `?wait` returns it as `500
+hypervisor_error`. This is what surfaces misconfigured kernel paths,
+missing KVM, missing firmware and other launch-time errors.
 
 ### Default kernel args
 
@@ -308,7 +313,11 @@ device from the sysfs path. Given
 `/sys/bus/pci/devices/0000:41:00.0` the id is `_vfio_0000_41_00_0`
 (colons/dots replaced with underscores, `_vfio_` prefix). This id is:
 
-- Used in the hypervisor's attach/detach calls so detach can refer
-  to the same device that was attached.
+- Given to the device on the launch command line (CH `--device
+  …,id=`, QEMU `-device vfio-pci,…,id=`) and in hot-plug calls, so
+  detach can refer to the same device that was attached.
+- Compared with the device ids `observe` reports, so the controller can
+  tell which spec devices the running guest has (VFIO drift,
+  reconciliation.md §9.1 step 7).
 - Not persisted. `Vm.config.vfio_devices` stores the sysfs path —
   the id is rederived when needed.

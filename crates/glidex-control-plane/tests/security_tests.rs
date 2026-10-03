@@ -141,6 +141,15 @@ async fn project_isolation_and_not_found() {
     assert_eq!(vm["project"], pa);
     let id = vm["id"].as_str().unwrap();
 
+    // The stored record (host paths, PIDs) is for host readers only.
+    let (s, _, _) = h.call("GET", &format!("/vms/{id}?view=full"), None, &c).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let aud = h.user("aud");
+    h.link("role.auditor", Ent::User(aud.clone()), Ent::Host);
+    let (s, full, _) = h.call("GET", &format!("/vms/{id}?view=full"), None, &As::Bearer(h.token(&aud))).await;
+    assert_eq!(s, StatusCode::OK, "{full}");
+    assert_eq!(full["spec"]["power"], "stopped", "{full}");
+
     // Another project's editor can't see it at all.
     let (s, _, _) = h.call("GET", &format!("/vms/{id}"), None, &b).await;
     assert_eq!(s, StatusCode::NOT_FOUND);

@@ -331,6 +331,45 @@ impl VmStore {
     }
 }
 
+/// The `audit` table (spec/security.md §10), shared with `auth::store`.
+const AUDIT_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("audit");
+
+/// An audit line for a write the control plane made on its own (the VM
+/// controller's `spec.power = Stopped`, spec/reconciliation.md §6.2).
+pub fn audit_system(db: &Database, actor: &str, action: &str, project: &str, target: &str, details: serde_json::Value) {
+    let time = crate::auth::store::now_millis();
+    let entry = crate::auth::store::AuditEntry {
+        time,
+        request_id: String::new(),
+        principal: serde_json::json!({ "system": actor }),
+        source: "-".into(),
+        action: action.into(),
+        project: Some(project.into()),
+        target: Some(target.into()),
+        result: "ok".into(),
+        error_code: None,
+        policies: Vec::new(),
+        details,
+    };
+    tracing::info!(target: "glidex_audit", "{}", serde_json::to_string(&entry).unwrap_or_default());
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    // `s`: never collides with auth::store's all-digit sequence keys.
+    let key = format!("{:016}-s{:07}", time, seq % 10_000_000);
+    let write = || -> Result<(), PersistenceError> {
+        let txn = db.begin_write()?;
+        {
+            let mut t = txn.open_table(AUDIT_TABLE)?;
+            t.insert(key.as_str(), serde_json::to_vec(&entry)?.as_slice())?;
+        }
+        txn.commit()?;
+        Ok(())
+    };
+    if let Err(e) = write() {
+        tracing::error!("audit write failed: {}", e);
+    }
+}
+
 /// Append `event` to the ring at `key` inside `txn`.
 pub fn push_event(txn: &WriteTransaction, key: &str, event: Event) -> Result<(), PersistenceError> {
     let mut t = txn.open_table(EVENTS_TABLE)?;

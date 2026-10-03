@@ -112,6 +112,7 @@ mod tests {
             hypervisor_starttime: None,
             launched_at: 0,
             growpart_disk: None,
+            growpart_seq: None,
         }
     }
 

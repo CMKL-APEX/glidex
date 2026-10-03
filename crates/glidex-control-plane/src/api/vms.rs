@@ -237,9 +237,23 @@ pub async fn create(c: Caller, Query(w): Query<WaitQuery>, Json(req): Json<Creat
     Ok(respond(&c, vm, w.wait, StatusCode::CREATED, warnings).await)
 }
 
-pub async fn get_one(c: Caller, Path(id): Path<String>) -> Result<impl IntoResponse, ApiErr> {
+#[derive(Debug, serde::Deserialize, Default)]
+pub struct ViewQuery {
+    /// `full`: the stored `{meta, spec, status}` (§12.4).
+    #[serde(default)]
+    view: Option<String>,
+}
+
+pub async fn get_one(c: Caller, Path(id): Path<String>, Query(q): Query<ViewQuery>) -> Result<Response, ApiErr> {
     let (vm, _, _) = visible_vm(&c, &id).await?;
-    Ok(Json(VmResponse::from(&vm)))
+    if q.view.as_deref() == Some("full") {
+        // The stored record carries host paths (disk files, kernel, seed in
+        // the private runtime directory), PIDs and the boot id, which the
+        // flat view leaves out: host readers only (spec/security.md §9).
+        c.require_action("readSystemStatus", Ent::Host, EntitySet::new(), &[])?;
+        return Ok(Json(serde_json::to_value(&vm).unwrap_or_default()).into_response());
+    }
+    Ok(Json(VmResponse::from(&vm)).into_response())
 }
 
 #[derive(serde::Deserialize, Default)]

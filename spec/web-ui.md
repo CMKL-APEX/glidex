@@ -109,10 +109,10 @@ ui/src/
 │   ├── Modal.tsx
 │   ├── CreateVmForm.tsx    # POST /vms form (boot mode, boot disk source, credential picker)
 │   ├── VmActions.tsx       # Start/Shut down/Stop/Pause/Delete buttons (Shut down: power button, 60 s)
-│   └── VmCard.tsx          # Dashboard VM row
+│   └── VmCard.tsx          # Dashboard VM row: state → desired, Ready reason
 └── pages/
-    ├── Dashboard.tsx       # List VMs, open create modal
-    ├── VmDetail.tsx        # VM details, actions, Open Console link
+    ├── Dashboard.tsx       # List VMs, open create modal; polls while a VM converges
+    ├── VmDetail.tsx        # VM details, Ready reason, restart notice, actions, events, Open Console link
     ├── VmConsole.tsx       # xterm.js + console WebSocket
     ├── Credentials.tsx     # List / add / edit / delete guest logins
     ├── Images.tsx          # Catalog (Pull), downloaded images with progress
@@ -155,6 +155,34 @@ the 401 handling above. Error bodies become `ApiRequestError`s
 (`status`, `code`, `details`, message `"<error>: <message>"`); non-JSON
 errors (a proxy's 502, a 421) are wrapped too. The base URL is
 hard-coded `/api` — the Vite proxy or glidex-ui forwards it.
+
+## VM state display
+
+VMs have a desired state and an observed one
+([reconciliation.md §7.4](reconciliation.md#74-defaults-and-api-projection)).
+`types.ts` mirrors that: `VmState` is `created | starting | running |
+paused | stopping | stopped | failed | unknown`, `PowerState` is
+`running | paused | stopped`, and `VmResponse` carries `desired_state`,
+`generation`, `observed_generation`, `restart_required`, `conditions`
+and `last_exit`.
+
+- **`settled(vm)`**: the VM is where `desired_state` says (`created`
+  counts as `stopped`) and `Ready` is not false. Until then the state
+  badge reads `<state> → <desired>` (VmCard, VmDetail), and
+  `notReadyReason(vm)` (`Ready` reason and message) is shown under it.
+- **Polling.** Dashboard and VmDetail re-fetch every 2 s while any VM
+  shown is not settled, and stop once everything is.
+- **Actions** (`VmActions`): Start is offered for `created`, `stopped`,
+  `paused`, and `failed` unless the VM is already meant to run; Stop is
+  offered while running or paused **or** whenever the desired state is
+  not `stopped`, so a VM stuck starting or crash-looping can be stopped.
+  `api.ts` sends `?wait=60` with start, pause, stop (at least the grace
+  plus 20 s, at most 300) and delete; a failed reconcile comes back as
+  an `ApiRequestError` like any other.
+- **VmDetail** also shows "Configuration changes take effect at the next
+  start." while `restart_required`, and an **Events** list (newest
+  first, warnings highlighted) from `GET /vms/{id}/events`, refreshed
+  whenever the VM's state or observed generation changes.
 
 ## Access-control pages
 
@@ -252,7 +280,8 @@ page's teardown. See its [README](../crates/glidex-ui/e2e/README.md).
 
 There is none beyond React's built-in hooks. Lists are fetched on
 mount and refreshed after mutations by re-calling the list
-endpoint. No global store, no query cache. If that becomes painful
+endpoint, and VM pages poll while a VM converges (above). No global
+store, no query cache. If that becomes painful
 (polling, optimistic updates, cross-component invalidation) a
 lightweight option like TanStack Query is the natural upgrade.
 

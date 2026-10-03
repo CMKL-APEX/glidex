@@ -59,6 +59,23 @@ pub struct Network {
     /// Pending share offers (spec §6.2.1).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub share_offers: Vec<ShareOffer>,
+    /// What the network controller last saw in netd
+    /// (spec/reconciliation.md §10.3).
+    #[serde(default)]
+    pub phase: NetworkPhase,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conditions: Vec<crate::models::Condition>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum NetworkPhase {
+    Pending,
+    #[default]
+    Ready,
+    /// netd lacks part of it (bridge, NAT); see its `Ready` condition.
+    Degraded,
+    NetdUnavailable,
 }
 
 /// How long a share offer stays open.
@@ -242,6 +259,8 @@ impl CreateNetworkRequest {
             grants: Vec::new(),
             shares: Vec::new(),
             share_offers: Vec::new(),
+            phase: NetworkPhase::Ready,
+            conditions: Vec::new(),
         })
     }
 }

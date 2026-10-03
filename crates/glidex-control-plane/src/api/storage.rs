@@ -169,7 +169,44 @@ pub async fn get_disk(c: Caller, Path(id): Path<String>) -> Result<impl IntoResp
     Ok(Json(visible_disk(&c, &id).await?))
 }
 
-pub async fn create_disk(c: Caller, Json(req): Json<CreateDiskRequest>) -> Result<impl IntoResponse, ApiErr> {
+#[derive(Debug, serde::Deserialize, Default)]
+pub struct WaitQuery {
+    #[serde(default)]
+    wait: Option<u64>,
+}
+
+/// The answer to a disk write (spec/reconciliation.md §12.3): at once with
+/// `immediate` (`201` for a create, else `202`); with `?wait`, once the
+/// disk settled (`ok`), failed (the error the call would have returned
+/// synchronously), or the time ran out (`202`).
+async fn disk_reply(c: &Caller, id: &str, wait: Option<u64>, ok: StatusCode, immediate: StatusCode) -> axum::response::Response {
+    let Some(secs) = wait else {
+        return match c.manager().get_disk(id).await {
+            Ok(d) => (immediate, Json(d)).into_response(),
+            Err(_) => StatusCode::NO_CONTENT.into_response(),
+        };
+    };
+    match c.manager().wait_disk(id, std::time::Duration::from_secs(secs.min(300))).await {
+        (_, None) => StatusCode::NO_CONTENT.into_response(),
+        (false, Some(d)) => (StatusCode::ACCEPTED, Json(d)).into_response(),
+        (true, Some(d)) => {
+            let ready = d.conditions.iter().find(|c| c.kind == "Ready").cloned();
+            match ready.as_ref().map(|c| c.reason.as_str()) {
+                Some("InvalidDisk") | Some("ResizeInvalid") => {
+                    let msg = ready.map(|c| c.message).unwrap_or_default();
+                    err(StatusCode::BAD_REQUEST, "invalid_disk", msg).into_response()
+                }
+                _ if d.phase == crate::images::DiskPhase::Failed || d.phase == crate::images::DiskPhase::Missing => {
+                    let msg = ready.map(|c| c.message).unwrap_or_default();
+                    err(StatusCode::INTERNAL_SERVER_ERROR, "image_error", msg).into_response()
+                }
+                _ => (ok, Json(d)).into_response(),
+            }
+        }
+    }
+}
+
+pub async fn create_disk(c: Caller, Query(w): Query<WaitQuery>, Json(req): Json<CreateDiskRequest>) -> Result<axum::response::Response, ApiErr> {
     let project = c.target_project(req.project.as_deref())?;
     c.set_project(&project);
     c.require(Ent::Project(project.clone()), super::project_entities(&project))?;
@@ -182,25 +219,61 @@ pub async fn create_disk(c: Caller, Json(req): Json<CreateDiskRequest>) -> Resul
     let (disk, over) = c.manager().create_disk_in(&project, req, quota).await.map_err(manager_err)?;
     c.note_overruns(&over);
     c.set_target(format!("disk:{}", disk.id));
-    Ok((StatusCode::CREATED, Json(disk)))
+    Ok(disk_reply(&c, &disk.id, w.wait, StatusCode::CREATED, StatusCode::CREATED).await)
 }
 
-pub async fn resize_disk(c: Caller, Path(id): Path<String>, Json(req): Json<ResizeDiskRequest>) -> Result<impl IntoResponse, ApiErr> {
+pub async fn resize_disk(
+    c: Caller,
+    Path(id): Path<String>,
+    Query(w): Query<WaitQuery>,
+    Json(req): Json<ResizeDiskRequest>,
+) -> Result<axum::response::Response, ApiErr> {
     let d = visible_disk(&c, &id).await?;
     let quota = c.quota_mode(&d.project);
     let (disk, over) = c.manager().resize_disk_with(&d.id, req, quota).await.map_err(manager_err)?;
     c.note_overruns(&over);
-    Ok(Json(disk))
+    Ok(disk_reply(&c, &disk.id, w.wait, StatusCode::OK, StatusCode::ACCEPTED).await)
 }
 
-pub async fn extend_root(c: Caller, Path(id): Path<String>, body: Option<Json<ExtendRootRequest>>) -> Result<impl IntoResponse, ApiErr> {
+pub async fn extend_root(
+    c: Caller,
+    Path(id): Path<String>,
+    Query(w): Query<WaitQuery>,
+    body: Option<Json<ExtendRootRequest>>,
+) -> Result<axum::response::Response, ApiErr> {
     let d = visible_disk(&c, &id).await?;
     let mode = body.map(|Json(b)| b.mode).unwrap_or_default();
-    Ok(Json(c.manager().extend_root(&d.id, mode).await.map_err(manager_err)?))
+    let disk = c.manager().extend_root(&d.id, mode).await.map_err(manager_err)?;
+    Ok(disk_reply(&c, &disk.id, w.wait, StatusCode::OK, StatusCode::ACCEPTED).await)
 }
 
-pub async fn delete_disk(c: Caller, Path(id): Path<String>) -> Result<impl IntoResponse, ApiErr> {
+/// `204` once the disk is gone (normally at once), `202` while an
+/// operation on it finishes first.
+pub async fn delete_disk(c: Caller, Path(id): Path<String>) -> Result<axum::response::Response, ApiErr> {
     let d = visible_disk(&c, &id).await?;
     c.manager().delete_disk(&d.id).await.map_err(manager_err)?;
-    Ok(StatusCode::NO_CONTENT)
+    Ok(match c.manager().get_disk(&d.id).await {
+        Ok(still) => (StatusCode::ACCEPTED, Json(still)).into_response(),
+        Err(_) => StatusCode::NO_CONTENT.into_response(),
+    })
+}
+
+pub async fn disk_events(c: Caller, Path(id): Path<String>) -> Result<impl IntoResponse, ApiErr> {
+    let d = visible_disk(&c, &id).await?;
+    Ok(Json(serde_json::json!({ "events": c.manager().object_events("disk", &d.id).map_err(manager_err)? })))
+}
+
+pub async fn image_events(c: Caller, Path(id): Path<String>) -> Result<impl IntoResponse, ApiErr> {
+    let mut es = EntitySet::new();
+    es.image(&id);
+    c.require(Ent::Image(id.clone()), es)?;
+    let img = c.manager().get_image(&id).await.map_err(manager_err)?;
+    Ok(Json(serde_json::json!({ "events": c.manager().object_events("image", &img.id).map_err(manager_err)? })))
+}
+
+/// `POST /images/{id}/retry` (`pullImage`): download a failed image again.
+pub async fn retry_image(c: Caller, Path(id): Path<String>) -> Result<impl IntoResponse, ApiErr> {
+    c.require(Ent::Host, EntitySet::new())?;
+    c.set_target(format!("image:{}", id));
+    Ok((StatusCode::ACCEPTED, Json(c.manager().retry_image(&id).map_err(manager_err)?)))
 }

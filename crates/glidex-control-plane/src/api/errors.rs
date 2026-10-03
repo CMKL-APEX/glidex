@@ -59,6 +59,8 @@ pub fn failed_reconcile_response(vm: &crate::models::Vm) -> (StatusCode, Json<Ap
     let message = ready.map(|c| c.message.clone()).unwrap_or_default();
     let (status, code) = match reason {
         "NetdUnavailable" => (StatusCode::SERVICE_UNAVAILABLE, "netd_unavailable"),
+        "ToolUnavailable" => (StatusCode::SERVICE_UNAVAILABLE, "tool_unavailable"),
+        "CredentialError" => (StatusCode::INTERNAL_SERVER_ERROR, "credential_error"),
         "DiskBusy" => (StatusCode::CONFLICT, "conflict"),
         "DiskMissing" | "DiskNotReady" => (StatusCode::INTERNAL_SERVER_ERROR, "image_error"),
         _ if message.contains("is not installed") => (StatusCode::SERVICE_UNAVAILABLE, "hypervisor_unavailable"),
