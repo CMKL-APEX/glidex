@@ -209,6 +209,15 @@ export const consoleTicket = (id: string) =>
 
 // ---- guest credentials ------------------------------------------------------
 
+/** The caller's own SSH public keys from their home directory (local accounts only). */
+export interface MySshKeys {
+  available: boolean;
+  username?: string;
+  keys: string[];
+  reason?: string;
+}
+export const mySshKeys = () => get<MySshKeys>("/users/me/ssh-keys");
+
 export const listCredentials = (project?: string | null) => get<CredentialInfo[]>(`/credentials${inProject(project)}`);
 export const createCredential = (req: CreateCredentialRequest) => post<CredentialInfo>("/credentials", req);
 export const updateCredential = (username: string, req: UpdateCredentialRequest, project?: string | null) =>

@@ -204,6 +204,7 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         .add("GET", "/users", "listUsers", get(access::list_users))
         .add("GET", "/users/me", AUTHENTICATED, get(access::whoami))
         .add("PATCH", "/users/me", AUTHENTICATED, axum::routing::patch(access::update_me))
+        .add("GET", "/users/me/ssh-keys", AUTHENTICATED, get(access::my_ssh_keys))
         .add("POST", "/users", "manageUsers", post(access::create_user))
         .add("PATCH", "/users/{id}", "manageUsers", axum::routing::patch(access::update_user))
         .add("POST", "/users/{id}/identities", "manageUsers", post(access::link_identity))

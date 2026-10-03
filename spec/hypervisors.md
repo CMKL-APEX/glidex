@@ -143,10 +143,10 @@ attached `readonly`. Contents (`cloud_init.rs`):
 - `user-data`: `resize_rootfs: true` (plus a `growpart` block when the
   root disk has `pending_growpart`), and a sudo user. If the VM names a stored credential
   ([credentials.md](credentials.md)), that username, password hash and
-  SSH keys are used and nothing else. Otherwise the user is `cloud` with
-  the control-plane user's `~/.ssh/*.pub` keys, and a password only from
-  `GLIDEX_CLOUD_INIT_PASSWD_HASH` (crypt hash, e.g. `openssl passwd -6`);
-  without it password login is locked. Credentials are never baked into
+  SSH keys are used and nothing else. Otherwise the user is `cloud` with no SSH keys and a locked password:
+  there is no way to log in. There are no host-wide defaults (the
+  control-plane user's keys or a site password would open VMs in every
+  project, spec/security.md §6.2). Credentials are never baked into
   the source. The seed image is created `0600`.
 
 Why the hash is written twice (`users[].passwd` and `chpasswd.users`):

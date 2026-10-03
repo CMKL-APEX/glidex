@@ -696,11 +696,9 @@ impl VmManager {
                     seed.nic_macs = config.nic_bindings.iter().map(|n| n.mac.clone()).collect();
                     seed.growpart = root_disk.as_ref().is_some_and(|(_, d)| d.pending_growpart);
                     if seed.ssh_authorized_keys.is_empty() && seed.passwd_hash.is_none() {
-                        tracing::warn!(
+                        tracing::info!(
                             vm_id = %entry.vm.id,
-                            "cloud-init seed has no SSH keys and {} is unset; guest user '{}' will have no way to log in",
-                            cloud_init::PASSWD_HASH_ENV,
-                            cloud_init::DEFAULT_USER
+                            "VM has no login credential; the guest has no way to log in"
                         );
                     }
                     if let Err(e) = cloud_init::write_seed_image(&path, &seed) {

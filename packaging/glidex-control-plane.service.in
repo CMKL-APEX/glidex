@@ -50,7 +50,6 @@ UMask=0077
 # copies each file into $CREDENTIALS_DIRECTORY, readable only by this unit.
 #LoadCredential=tls-key:/etc/glidex/tls/cp.key
 #LoadCredential=oidc-client-secret:/etc/glidex/oidc-client-secret
-#LoadCredential=cloud-init-passwd-hash:/etc/glidex/cloud-init-passwd-hash
 
 # Sandbox. cloud-hypervisor and QEMU run as children of this unit and
 # inherit all of it, so only settings that keep VMs working are used:

@@ -33,6 +33,15 @@ impl Authenticator for FakePam {
     }
 }
 
+/// Every user has one key: `ssh-ed25519 AAAA…<name>`.
+pub struct FakeKeys;
+
+impl glidex_authd::keys::KeyReader for FakeKeys {
+    fn public_keys(&self, user: &str) -> Result<Vec<String>, String> {
+        Ok(vec![format!("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoq {}@host", user)])
+    }
+}
+
 pub struct FakeAccounts(pub HashMap<String, Account>);
 
 impl Accounts for FakeAccounts {
@@ -95,7 +104,9 @@ pub fn start_with(config: Config, service_uid: Option<u32>) -> Harness {
     let dir = TempDir::new().unwrap();
     let socket = dir.path().join("auth.sock");
     let listener = server::bind(&socket, 0o660, None).unwrap();
-    let authd = Arc::new(Authd::new(config, service_uid, pam.clone(), Arc::new(FakeAccounts(accounts))));
+    let authd = Arc::new(
+        Authd::new(config, service_uid, pam.clone(), Arc::new(FakeAccounts(accounts))).with_key_reader(Arc::new(FakeKeys)),
+    );
     std::thread::spawn(move || authd.serve(listener));
     Harness { dir, socket, pam }
 }

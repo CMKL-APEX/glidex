@@ -20,6 +20,8 @@ pub const DEFAULT_RUN_DIR: &str = "/run/glidex-authd";
 pub const SOCKET_NAME: &str = "auth.sock";
 pub const DEFAULT_SERVICE: &str = "glidex";
 pub const OP_AUTHENTICATE: &str = "authenticate";
+/// The caller's own `~/.ssh/*.pub` keys (args: `user` only).
+pub const OP_PUBLIC_KEYS: &str = "public_keys";
 
 /// Error codes. `denied` never says why: a wrong password, an unknown user,
 /// a user outside `allowed_groups` and an expired account look the same.
@@ -77,6 +79,8 @@ impl<'de> Deserialize<'de> for Password {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthenticateArgs {
     pub user: String,
+    /// Absent for `public_keys`.
+    #[serde(default)]
     pub password: Password,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub service: Option<String>,
@@ -95,10 +99,15 @@ pub struct Request {
 
 /// The client side of [`Request`], borrowing its strings.
 #[derive(Serialize)]
-pub struct RequestRef<'a> {
+pub struct RequestRef<'a, A: Serialize> {
     pub id: u64,
     pub op: &'a str,
-    pub args: AuthenticateArgsRef<'a>,
+    pub args: A,
+}
+
+#[derive(Serialize)]
+pub struct UserArgsRef<'a> {
+    pub user: &'a str,
 }
 
 #[derive(Serialize)]
@@ -138,17 +147,24 @@ pub struct Response {
     pub id: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ok: Option<AuthOk>,
+    /// `public_keys` result.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keys: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<ErrorBody>,
 }
 
 impl Response {
     pub fn ok(id: u64, ok: AuthOk) -> Self {
-        Self { id, ok: Some(ok), error: None }
+        Self { id, ok: Some(ok), keys: None, error: None }
+    }
+
+    pub fn keys(id: u64, keys: Vec<String>) -> Self {
+        Self { id, ok: None, keys: Some(keys), error: None }
     }
 
     pub fn err(id: u64, error: ErrorBody) -> Self {
-        Self { id, ok: None, error: Some(error) }
+        Self { id, ok: None, keys: None, error: Some(error) }
     }
 }
 

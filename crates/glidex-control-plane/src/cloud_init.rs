@@ -9,10 +9,10 @@
 //!
 //! Credentials are never baked in. If the VM names a stored credential
 //! (`credentials.rs`), its username, password hash and SSH keys are used.
-//! Otherwise the guest user `cloud` gets:
-//! - the host's SSH public keys (`~/.ssh/*.pub` of the control-plane user),
-//! - a password only if `GLIDEX_CLOUD_INIT_PASSWD_HASH` holds a crypt(3)
-//!   hash (e.g. from `openssl passwd -6`); otherwise password login is locked.
+//! Otherwise the guest user `cloud` gets no SSH keys and a locked password:
+//! there is no login. There are deliberately no host-wide defaults (the
+//! control-plane user's keys, a site password): one key or password would
+//! open VMs in every project (spec/security.md §6.2).
 //!
 //! The seed holds a password hash, so the image is created mode 0600.
 
@@ -21,9 +21,6 @@ use crate::hypervisor::HypervisorError;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::Path;
 use std::process::Command;
-
-/// Environment variable holding the crypt(3) password hash for the guest user.
-pub const PASSWD_HASH_ENV: &str = "GLIDEX_CLOUD_INIT_PASSWD_HASH";
 
 /// Name of the user created in the guest.
 pub const DEFAULT_USER: &str = "cloud";
@@ -73,22 +70,13 @@ impl std::fmt::Debug for SeedConfig {
 }
 
 impl SeedConfig {
-    /// Build the default seed for a VM from the host environment.
+    /// The seed for a VM without a credential: networking, hostname and
+    /// growpart, but no way to log in.
     pub fn for_vm(vm_id: &str, vm_name: &str) -> Self {
         Self {
             instance_id: vm_id.to_string(),
             hostname: sanitize_hostname(vm_name),
-            username: DEFAULT_USER.to_string(),
-            ssh_authorized_keys: host_ssh_public_keys(),
-            // The systemd credential `cloud-init-passwd-hash` first
-            // (spec/security.md §9), then the environment variable.
-            passwd_hash: crate::config::credential("cloud-init-passwd-hash")
-                .and_then(|p| std::fs::read_to_string(p).ok())
-                .or_else(|| std::env::var(PASSWD_HASH_ENV).ok())
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty()),
-            nic_macs: Vec::new(),
-            growpart: false,
+            ..Self::default()
         }
     }
 
@@ -257,32 +245,6 @@ fn run_tool(cmd: &mut Command) -> Result<(), HypervisorError> {
     Ok(())
 }
 
-/// Public keys from the control-plane user's `~/.ssh/*.pub`.
-fn host_ssh_public_keys() -> Vec<String> {
-    let Some(dir) = dirs::home_dir().map(|h| h.join(".ssh")) else {
-        return Vec::new();
-    };
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return Vec::new();
-    };
-    let mut paths: Vec<_> = entries
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.extension().is_some_and(|ext| ext == "pub"))
-        .collect();
-    paths.sort();
-    paths
-        .iter()
-        .filter_map(|p| std::fs::read_to_string(p).ok())
-        .flat_map(|s| {
-            s.lines()
-                .map(str::trim)
-                .filter(|l| !l.is_empty() && !l.starts_with('#'))
-                .map(str::to_string)
-                .collect::<Vec<_>>()
-        })
-        .collect()
-}
-
 /// Reduce a VM name to a valid RFC 1123 hostname label.
 fn sanitize_hostname(name: &str) -> String {
     let label: String = name
@@ -327,6 +289,21 @@ mod tests {
         assert_eq!(sanitize_hostname("My_VM.01"), "my-vm-01");
         assert_eq!(sanitize_hostname("--"), "cloud");
         assert_eq!(sanitize_hostname(&"a".repeat(80)).len(), 63);
+    }
+
+    #[test]
+    fn default_seed_has_no_login() {
+        // Even with keys in the control-plane user's ~/.ssh and the old
+        // variable set, a VM without a credential gets no way in.
+        std::env::set_var("GLIDEX_CLOUD_INIT_PASSWD_HASH", "$6$salt$hash");
+        let seed = SeedConfig::for_vm("id", "My VM");
+        std::env::remove_var("GLIDEX_CLOUD_INIT_PASSWD_HASH");
+        assert!(seed.ssh_authorized_keys.is_empty());
+        assert!(seed.passwd_hash.is_none());
+        let ud = seed.user_data();
+        assert!(ud.contains("lock_passwd: true") && ud.contains("ssh_pwauth: false"), "{ud}");
+        assert!(!ud.contains("ssh_authorized_keys") && !ud.contains("chpasswd"), "{ud}");
+        assert_eq!(seed.hostname, "my-vm");
     }
 
     #[test]

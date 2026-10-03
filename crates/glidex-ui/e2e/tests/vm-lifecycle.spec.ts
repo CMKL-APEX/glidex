@@ -51,7 +51,7 @@ test("boots a cloud image and runs it from the UI", async ({ page, hypervisor })
       await expect(field(page, "Boot Mode")).toHaveValue("firmware");
       await field(page, "Boot Disk").selectOption("path");
       await field(page, "Disk Image Path").fill(disk);
-      await field(page, "Login Credential (optional)").selectOption(username);
+      await field(page, "Login Credential").selectOption(username);
       const box = (name: string) => page.locator("label", { hasText: name }).locator('input[type="checkbox"]');
       if (await box("default").count()) await box("default").uncheck();
       await box(network).check();

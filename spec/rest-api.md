@@ -93,11 +93,10 @@ All handlers live in `crates/glidex-control-plane/src/api.rs`.
   read-only as the second disk. When omitted on a firmware boot, glidex
   generates one at `<run dir>/vms/<id>/cloudinit.img` on every start
   (needs `mkdosfs`/`mcopy` from dosfstools/mtools): hostname from the VM
-  name, DHCP on `en*`, and a sudo user `cloud` with the control-plane
-  user's `~/.ssh/*.pub` keys. Password login stays locked unless
-  `GLIDEX_CLOUD_INIT_PASSWD_HASH` holds a crypt hash
-  (`openssl passwd -6`), applied via `chpasswd` so it also works on a
-  rootfs that was provisioned before.
+  name, DHCP on `en*`, and a sudo user `cloud` with no SSH keys
+  and a locked password: without `credential` the VM has no login.
+  A credential's password hash is applied via `chpasswd`, so it also
+  works on a rootfs that was provisioned before.
 - `~` is expanded server-side (see [data-model.md](data-model.md)).
 - Response: `201 Created` with a `VmResponse`.
 

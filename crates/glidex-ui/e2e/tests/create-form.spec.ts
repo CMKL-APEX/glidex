@@ -14,7 +14,7 @@ test("offers firmware boot with the hypervisor's own firmware", async ({ page, h
   await expect(field(page, "Boot Mode")).toHaveValue("firmware");
   await expect(field(page, "UEFI Firmware Path")).toHaveValue(DEFAULT_FIRMWARE[hypervisor]);
   await expect(page.getByText(FIRMWARE_HINT[hypervisor])).toBeVisible();
-  await expect(page.getByText("Login Credential (optional)")).toBeVisible();
+  await expect(page.getByText("Login Credential")).toBeVisible();
   if ((await api<unknown[]>("/networks")).length > 0) {
     await expect(page.getByText("Networks", { exact: true })).toBeVisible();
   }
@@ -22,7 +22,7 @@ test("offers firmware boot with the hypervisor's own firmware", async ({ page, h
   await field(page, "Boot Mode").selectOption("kernel");
   await expect(page.getByText("Kernel Image Path")).toBeVisible();
   await expect(page.getByText("UEFI Firmware Path")).toBeHidden();
-  await expect(page.getByText("Login Credential (optional)")).toBeHidden();
+  await expect(page.getByText("Login Credential")).toBeHidden();
 });
 
 test("follows the hypervisor's default firmware unless one was typed", async ({ page, hypervisor }) => {

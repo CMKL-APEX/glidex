@@ -80,6 +80,36 @@ function AddCredentialForm({
   const [keys, setKeys] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  // The user's own ~/.ssh/*.pub, read by the server (local accounts only).
+  const [mine, setMine] = useState<api.MySshKeys | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .mySshKeys()
+      .then((m) => {
+        if (cancelled) return;
+        setMine(m);
+        // Prefill only what the user hasn't typed yet.
+        if (m.available && m.keys.length > 0) {
+          setKeys((k) => (k.trim() ? k : m.keys.join("\n")));
+        }
+        if (m.available && m.username) {
+          setUsername((u) => u || m.username!);
+        }
+      })
+      .catch(() => !cancelled && setMine({ available: false, keys: [], reason: "could not load your public keys" }));
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const useMyKeys = () => {
+    if (mine?.available && mine.keys.length > 0) {
+      const have = parseKeys(keys);
+      setKeys([...have, ...mine.keys.filter((k) => !have.includes(k))].join("\n"));
+    }
+  };
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -142,6 +172,25 @@ function AddCredentialForm({
         <p className="mt-1 text-xs text-gray-500">
           One public key per line. A password, a key, or both is required.
         </p>
+        {mine === null ? (
+          <p className="mt-1 text-xs text-gray-400">Looking for your public keys…</p>
+        ) : mine.available && mine.keys.length > 0 ? (
+          <p className="mt-1 text-xs text-gray-500" data-testid="my-keys-note">
+            Filled in from your <span className="font-mono">~/.ssh/*.pub</span> ({mine.keys.length}{" "}
+            {mine.keys.length === 1 ? "key" : "keys"}).{" "}
+            <button type="button" className="text-sky-600 hover:underline" onClick={useMyKeys}>
+              Add my keys again
+            </button>
+          </p>
+        ) : mine.available ? (
+          <p className="mt-1 text-xs text-gray-500" data-testid="my-keys-note">
+            No public keys found in your <span className="font-mono">~/.ssh</span>; paste one above.
+          </p>
+        ) : (
+          <p className="mt-1 text-xs text-gray-500" data-testid="my-keys-note">
+            Your keys can't be filled in automatically: {mine.reason}.
+          </p>
+        )}
       </div>
       <FormButtons onCancel={onCancel} submitting={submitting} label="Add" />
     </form>

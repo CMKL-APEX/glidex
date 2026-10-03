@@ -2084,9 +2084,11 @@ mod tests {
         // Firmware is in the service home, which ProtectHome= doesn't cover.
         assert!(SERVICE_HOME.starts_with("/var/lib/"));
         // Secrets come from credentials, offered commented out.
-        for cred in ["tls-key", "oidc-client-secret", "cloud-init-passwd-hash"] {
+        for cred in ["tls-key", "oidc-client-secret"] {
             assert!(unit.lines().any(|l| l.starts_with(&format!("#LoadCredential={cred}:"))), "{cred}");
         }
+        // VMs without a credential get no login: no site-wide password.
+        assert!(!unit.contains("cloud-init-passwd-hash"));
         assert!(!unit.contains("unauthenticated"));
     }
 

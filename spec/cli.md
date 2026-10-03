@@ -225,8 +225,10 @@ Interactive `handle_create` asks, in order:
    data disks, comma-separated names.
 8. *(firmware boot only)* cloud-init seed image (optional; empty →
    auto-generated at start, see [hypervisors.md](hypervisors.md#firmware-boot)).
-   *(auto-generated seed only)* Login credential: lists stored usernames;
-   empty → host SSH keys / `GLIDEX_CLOUD_INIT_PASSWD_HASH` fallback.
+   *(auto-generated seed only)* Login credential: lists the project's
+   stored usernames; empty → none, and the VM has no way to log in. With
+   no credentials in the project gxctl says "no login available" and
+   doesn't ask.
 9. Kernel args (optional — server picks per-hypervisor default) —
    skipped for firmware boot.
 10. Optional VFIO PCI devices, comma-separated sysfs paths.

@@ -1065,8 +1065,47 @@ fn read_public_key_files(input: &str) -> Result<Vec<String>, String> {
     Ok(keys)
 }
 
+/// Your own public key files (`~/.ssh/*.pub` that hold a public key),
+/// offered as the default for a new credential.
+fn own_public_key_files() -> Vec<String> {
+    match std::env::var_os("HOME") {
+        Some(home) => public_key_files_in(std::path::Path::new(&home)),
+        None => Vec::new(),
+    }
+}
+
+fn public_key_files_in(home: &std::path::Path) -> Vec<String> {
+    let dir = home.join(".ssh");
+    let Ok(entries) = std::fs::read_dir(&dir) else { return Vec::new() };
+    let mut files: Vec<String> = entries
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.is_file() && p.extension().is_some_and(|e| e == "pub"))
+        .filter(|p| read_public_key_files(&p.to_string_lossy()).is_ok_and(|k| !k.is_empty()))
+        .map(|p| format!("~/.ssh/{}", p.file_name().unwrap_or_default().to_string_lossy()))
+        .collect();
+    files.sort();
+    files
+}
+
+/// The key-files answer for `credential-add`: empty takes the offered
+/// defaults, `none` means no keys.
+fn chosen_key_files(answer: &str, defaults: &[String]) -> Option<String> {
+    match answer.trim() {
+        "" if defaults.is_empty() => None,
+        "" => Some(defaults.join(",")),
+        a if a.eq_ignore_ascii_case("none") => None,
+        a => Some(a.to_string()),
+    }
+}
+
 async fn handle_credential_add(client: &CliClient) {
-    let username = prompt("Username: ");
+    let me = std::env::var("USER").unwrap_or_default();
+    let username = if me.is_empty() {
+        prompt("Username: ")
+    } else {
+        let u = prompt(&format!("Username [{}]: ", me));
+        if u.is_empty() { me } else { u }
+    };
     if username.is_empty() {
         println!("{}", "Error: username is required".red());
         return;
@@ -1079,7 +1118,14 @@ async fn handle_credential_add(client: &CliClient) {
             return;
         }
     };
-    let keys = match prompt_path_optional("SSH public key files (optional, comma-separated, e.g. ~/.ssh/id_ed25519.pub): ")
+    // Offer your own ~/.ssh/*.pub by default.
+    let defaults = own_public_key_files();
+    let question = if defaults.is_empty() {
+        "SSH public key files (optional, comma-separated, e.g. ~/.ssh/id_ed25519.pub): ".to_string()
+    } else {
+        format!("SSH public key files (comma-separated; 'none' for no keys) [{}]: ", defaults.join(", "))
+    };
+    let keys = match chosen_key_files(&prompt_path(&question), &defaults)
         .map(|s| read_public_key_files(&s))
         .transpose()
     {
@@ -1485,13 +1531,13 @@ async fn handle_create(client: &CliClient) {
             .unwrap_or_default();
         if names.is_empty() {
             println!(
-                "{} No stored credentials; the guest login falls back to host SSH keys / GLIDEX_CLOUD_INIT_PASSWD_HASH (add one with 'credential-add').",
-                "Note:".dimmed()
+                "{} no login available: this project has no credentials, so the VM will have no way to log in (add one with 'credential-add').",
+                "Login credential:".dimmed()
             );
             None
         } else {
             prompt_optional(&format!(
-                "Login credential (optional; one of: {}): ",
+                "Login credential (one of: {}; empty: none, no login): ",
                 names.join(", ")
             ))
         }
@@ -2147,6 +2193,29 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn credential_key_file_answers() {
+        let d = vec!["~/.ssh/id_ed25519.pub".to_string(), "~/.ssh/id_rsa.pub".to_string()];
+        assert_eq!(chosen_key_files("", &d).as_deref(), Some("~/.ssh/id_ed25519.pub,~/.ssh/id_rsa.pub"));
+        assert_eq!(chosen_key_files("none", &d), None);
+        assert_eq!(chosen_key_files("NONE", &d), None);
+        assert_eq!(chosen_key_files("/tmp/k.pub", &d).as_deref(), Some("/tmp/k.pub"));
+        assert_eq!(chosen_key_files("", &[]), None);
+    }
+
+    #[test]
+    fn own_public_keys_skip_private_and_junk() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let ssh = dir.path().join(".ssh");
+        std::fs::create_dir(&ssh).unwrap();
+        std::fs::write(ssh.join("id_ed25519.pub"), "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA me@host\n").unwrap();
+        std::fs::write(ssh.join("id_ed25519"), "-----BEGIN OPENSSH PRIVATE KEY-----\n").unwrap();
+        std::fs::write(ssh.join("bad.pub"), "-----BEGIN OPENSSH PRIVATE KEY-----\n").unwrap();
+        std::fs::write(ssh.join("empty.pub"), "\n").unwrap();
+        let files = public_key_files_in(dir.path());
+        assert_eq!(files, vec!["~/.ssh/id_ed25519.pub"]);
+    }
 
     #[test]
     fn graceful_stop_arguments() {

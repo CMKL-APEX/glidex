@@ -281,3 +281,18 @@ fn socket_mode_is_0660() {
     let mode = std::fs::metadata(&h.socket).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode, 0o660);
 }
+
+#[test]
+fn public_keys_for_login_capable_users_only() {
+    let h = start();
+    let c = h.client();
+    let keys = c.public_keys("alice").unwrap();
+    assert_eq!(keys.len(), 1);
+    assert!(keys[0].ends_with("alice@host"));
+    // Not in an allowed group, unknown, or not a user name: the same denial.
+    for user in ["mallory", "nobody-here", "Not A User!"] {
+        assert_eq!(c.public_keys(user), Err(glidex_authd::client::AuthdError::Denied), "{user}");
+    }
+    // No password needed and PAM is never involved.
+    assert_eq!(h.pam_calls(), 0);
+}

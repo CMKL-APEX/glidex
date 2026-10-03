@@ -302,7 +302,7 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
 
           <div>
             <label className="block text-sm font-medium text-gray-700">
-              Login Credential (optional)
+              Login Credential
             </label>
             <select
               className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-transparent bg-white"
@@ -310,7 +310,9 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
               onChange={(e) => setCredential(e.target.value)}
             >
               <option value="">
-                Default (host SSH keys / GLIDEX_CLOUD_INIT_PASSWD_HASH)
+                {credentials.length === 0
+                  ? "No login available"
+                  : "None (no login)"}
               </option>
               {credentials.map((c) => (
                 <option key={c.username} value={c.username}>
@@ -318,9 +320,12 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
                 </option>
               ))}
             </select>
-            <p className="mt-1 text-xs text-gray-500">
-              Provisioned by cloud-init on first boot. Manage on the
-              Credentials page.
+            <p className="mt-1 text-xs text-gray-500" data-testid="credential-hint">
+              {credentials.length === 0
+                ? "This project has no credentials, so the VM will have no way to log in. Add one on the Credentials page first."
+                : credential
+                  ? "Provisioned by cloud-init on first boot."
+                  : "Without a credential the VM has no way to log in. Manage credentials on the Credentials page."}
             </p>
           </div>
         </>

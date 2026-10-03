@@ -9,6 +9,7 @@ pub mod activation;
 pub mod authenticator;
 pub mod client;
 pub mod config;
+pub mod keys;
 pub mod limiter;
 pub mod pam;
 pub mod proto;

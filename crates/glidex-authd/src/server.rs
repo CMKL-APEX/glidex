@@ -2,6 +2,7 @@
 
 use crate::authenticator::{AuthFailure, Accounts, Authenticator};
 use crate::config::Config;
+use crate::keys::{KeyReader, SystemKeyReader};
 use crate::limiter::RateLimiter;
 use crate::proto::*;
 use nix::sys::socket::{getsockopt, sockopt::PeerCredentials};
@@ -23,6 +24,7 @@ pub struct Authd {
     service_uid: Option<u32>,
     authenticator: Arc<dyn Authenticator>,
     accounts: Arc<dyn Accounts>,
+    keys: Arc<dyn KeyReader>,
     limiter: Mutex<RateLimiter>,
     /// How long the last failed PAM transaction took. Denials that never
     /// reach PAM (unknown user, wrong group) wait this long too, so timing
@@ -44,10 +46,34 @@ impl Authd {
             service_uid,
             authenticator,
             accounts,
+            keys: Arc::new(SystemKeyReader),
             limiter,
             last_pam_failure: Mutex::new(Duration::ZERO),
             active: AtomicUsize::new(0),
         }
+    }
+
+    /// Read public keys with `keys` instead of the host's home directories.
+    pub fn with_key_reader(mut self, keys: Arc<dyn KeyReader>) -> Self {
+        self.keys = keys;
+        self
+    }
+
+    /// The `public_keys` op: a login-capable user's own `~/.ssh/*.pub`.
+    /// Users outside the allowed groups get the same `denied` as unknown
+    /// ones. Public keys aren't secret, so no rate limit or delay.
+    pub fn public_keys(&self, user: &str) -> Result<Vec<String>, ErrorBody> {
+        if !valid_user_name(user) {
+            return Err(ErrorBody::denied());
+        }
+        match self.accounts.lookup(user) {
+            Some(a) if a.groups.iter().any(|g| self.config.allowed_groups.contains(g)) => {}
+            _ => return Err(ErrorBody::denied()),
+        }
+        self.keys.public_keys(user).map_err(|e| {
+            tracing::warn!(user, error = %e, "reading public keys");
+            ErrorBody::new(CODE_INTERNAL, "could not read the user's public keys")
+        })
     }
 
     pub fn config(&self) -> &Config {
@@ -138,15 +164,19 @@ impl Authd {
                 )
             }
         };
-        if req.op != OP_AUTHENTICATE {
-            return Response::err(req.id, ErrorBody::new(CODE_PROTOCOL_ERROR, "unknown op"));
-        }
         let Some(args) = req.args.as_ref() else {
             return Response::err(req.id, ErrorBody::new(CODE_PROTOCOL_ERROR, "missing args"));
         };
-        match self.authenticate(args) {
-            Ok(ok) => Response::ok(req.id, ok),
-            Err(e) => Response::err(req.id, e),
+        match req.op.as_str() {
+            OP_AUTHENTICATE => match self.authenticate(args) {
+                Ok(ok) => Response::ok(req.id, ok),
+                Err(e) => Response::err(req.id, e),
+            },
+            OP_PUBLIC_KEYS => match self.public_keys(&args.user) {
+                Ok(keys) => Response::keys(req.id, keys),
+                Err(e) => Response::err(req.id, e),
+            },
+            _ => Response::err(req.id, ErrorBody::new(CODE_PROTOCOL_ERROR, "unknown op")),
         }
     }
 

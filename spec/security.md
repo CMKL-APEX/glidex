@@ -174,6 +174,14 @@ selects TCP.
   mode and the peer-uid check are the access control. libpam is loaded
   at run time (`libpam.so.0`), so building needs no PAM headers.
 - PAM login over the control plane is accepted only on TLS or loopback.
+- A second op, `public_keys` (`{"user": …}`, no password), returns the
+  user's own `~/.ssh/*.pub` lines for users who may log in (others get
+  the same `denied`). authd reads them in a thread whose filesystem
+  identity is switched to the user, opening only regular files the user
+  owns, without following a final symlink, up to 16 KiB each, and keeps
+  only lines that look like public keys. The control plane exposes it
+  as `GET /users/me/ssh-keys` for the caller's own local (PAM/Unix)
+  account only, to prefill new guest credentials.
 
 ### 5.4 OIDC
 
@@ -273,6 +281,11 @@ selects TCP.
 | OVS bridges, uplinks, DPDK, OVS install | system | `host.network`. |
 | PCI devices (VFIO) | system, granted to projects | `/etc/glidex/control-plane.json` `pci.allow: [{bdf, projects}]`. A VM may only pass through BDFs granted to its project. |
 | Host paths | system | `host.paths` (§7.4). |
+
+A VM without a guest credential has **no login**: the generated
+cloud-init seed has no SSH keys and a locked password. There are no
+host-wide defaults (the control-plane user's keys, a site password), since
+one key or password would open VMs in every project.
 
 #### 6.2.1 Sharing a project network
 
@@ -879,7 +892,7 @@ may ask it for what.
 
 | Unit | Changes |
 |---|---|
-| `glidex-control-plane` | `RuntimeDirectory=glidex-cp` (`0755`, preserved across restarts) holds `api.sock`, `ui.sock` and `vms/` (`0700`); per-VM files in `/run/glidex-cp/vms/<id>/` (`0700`): API socket, console socket, console log, cloud-init seed. `UMask=0077`. `NoNewPrivileges=yes`, `PrivateTmp=yes`, `ProtectSystem=strict`, `ProtectHome=yes`, `ReadWritePaths=/var/lib/glidex-control-plane`, `DevicePolicy=closed`, `DeviceAllow=/dev/kvm rw`, `DeviceAllow=char-vfio rw`, `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK`, `LoadCredential=` for `tls-key`, `oidc-client-secret`, `cloud-init-passwd-hash` (replaces `GLIDEX_CLOUD_INIT_PASSWD_HASH`). |
+| `glidex-control-plane` | `RuntimeDirectory=glidex-cp` (`0755`, preserved across restarts) holds `api.sock`, `ui.sock` and `vms/` (`0700`); per-VM files in `/run/glidex-cp/vms/<id>/` (`0700`): API socket, console socket, console log, cloud-init seed. `UMask=0077`. `NoNewPrivileges=yes`, `PrivateTmp=yes`, `ProtectSystem=strict`, `ProtectHome=yes`, `ReadWritePaths=/var/lib/glidex-control-plane`, `DevicePolicy=closed`, `DeviceAllow=/dev/kvm rw`, `DeviceAllow=char-vfio rw`, `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK`, `LoadCredential=` for `tls-key`, `oidc-client-secret`. |
 | `glidex-ui` | `User=glidex-ui`, `InaccessiblePaths=/run/glidex /var/lib/glidex-control-plane /run/glidex-authd`, `CapabilityBoundingSet=`, `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6`, existing `ProtectSystem`/`PrivateDevices` kept. |
 | `glidex-netd` | `ProtectHome=yes`, `CapabilityBoundingSet` limited to what the op set needs (to verify on a host: `CAP_NET_ADMIN CAP_NET_RAW CAP_SYS_ADMIN CAP_DAC_OVERRIDE CAP_CHOWN CAP_FOWNER`, plus package-manager needs for `install_ovs`). |
 | `glidex-authd` | Socket-activated, `PrivateNetwork=yes`, `ProtectSystem=strict`, `ProtectHome=read-only`, `NoNewPrivileges=yes` (PAM modules that need setuid helpers are not supported). |
@@ -1012,6 +1025,7 @@ New endpoints:
 | `POST /auth/session` | a peer-identified user on api.sock: a browser session for themselves (without break-glass) |
 | `GET /vms/{id}/console/log` | `vm.console` (console output replaces reading the log file) |
 | `PATCH /users/me` (`{default_project}`) | authenticated |
+| `GET /users/me/ssh-keys` | authenticated (the caller's own local account only; `available: false` with a reason otherwise) |
 | `POST /auth/oidc/device`, `POST /auth/oidc/device/poll` | none (device grant for gxctl; returns a 1-day personal token) |
 | `POST /vms/{id}/console/ticket` | `vm.console` |
 | `GET /audit` | §10 |

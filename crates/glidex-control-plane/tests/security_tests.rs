@@ -466,6 +466,13 @@ mod pam {
         }
     }
 
+    pub struct FakeKeys;
+    impl glidex_authd::keys::KeyReader for FakeKeys {
+        fn public_keys(&self, user: &str) -> Result<Vec<String>, String> {
+            Ok(vec![format!("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoq {}@laptop", user)])
+        }
+    }
+
     pub struct FakeAccounts(pub HashMap<String, Account>);
     impl Accounts for FakeAccounts {
         fn lookup(&self, user: &str) -> Option<Account> {
@@ -487,12 +494,15 @@ async fn pam_login_provisions_on_first_login() {
     .map(|(n, g)| (n.to_string(), Account { uid: 1000, groups: g.into_iter().map(String::from).collect() }))
     .collect();
     let cfg = glidex_authd::config::Config { failure_delay: std::time::Duration::from_millis(1), ..Default::default() };
-    let authd = Arc::new(glidex_authd::server::Authd::new(
-        cfg,
-        Some(nix::unistd::getuid().as_raw()),
-        Arc::new(pam::FakePam),
-        Arc::new(pam::FakeAccounts(accounts)),
-    ));
+    let authd = Arc::new(
+        glidex_authd::server::Authd::new(
+            cfg,
+            Some(nix::unistd::getuid().as_raw()),
+            Arc::new(pam::FakePam),
+            Arc::new(pam::FakeAccounts(accounts)),
+        )
+        .with_key_reader(Arc::new(pam::FakeKeys)),
+    );
     let l = glidex_authd::server::bind(&sock, 0o600, None).unwrap();
     std::thread::spawn(move || authd.serve(l));
 
@@ -516,6 +526,17 @@ async fn pam_login_provisions_on_first_login() {
     let (_, who, _) = h.call("GET", "/auth/whoami", None, &me).await;
     assert_eq!(who["user"]["display_name"], "alice");
     assert_eq!(who["teams"], json!(["team-lab"]), "group_teams synced");
+    // Their own public keys, for prefilling a guest credential.
+    let (s, keys, _) = h.call("GET", "/users/me/ssh-keys", None, &me).await;
+    assert_eq!(s, StatusCode::OK, "{keys}");
+    assert_eq!(keys["available"], true);
+    assert_eq!(keys["username"], "alice");
+    assert_eq!(keys["keys"], json!(["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoq alice@laptop"]));
+    // A user without a local account (e.g. SSO only) gets a reason instead.
+    let sso = h.app.auth.store.user_for_identity("oidc:https://idp", "s1", "Sam", None, true).unwrap().unwrap();
+    let (_, keys, _) = h.call("GET", "/users/me/ssh-keys", None, &As::Bearer(h.token(&sso.id))).await;
+    assert_eq!(keys["available"], false);
+    assert!(keys["reason"].as_str().unwrap().contains("paste"));
     // New users have no rights yet.
     let (_, projects, _) = h.call("GET", "/projects", None, &me).await;
     assert_eq!(projects.as_array().unwrap().len(), 0);

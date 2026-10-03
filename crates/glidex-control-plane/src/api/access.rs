@@ -203,6 +203,37 @@ pub async fn update_me(c: Caller, Json(body): Json<UpdateMe>) -> Result<impl Int
     Ok(Json(user))
 }
 
+/// The caller's own SSH public keys from their home directory, read by
+/// glidex-authd (the control plane can't read home directories). Only
+/// for users with a local (PAM or Unix) account; for prefilling guest
+/// login credentials.
+pub async fn my_ssh_keys(c: Caller) -> Result<impl IntoResponse, ApiErr> {
+    let unavailable = |reason: &str| Json(serde_json::json!({ "available": false, "reason": reason, "keys": [] }));
+    let Some(user) = c.p.user.clone() else {
+        return Ok(unavailable("service accounts have no home directory"));
+    };
+    let identities = c.auth().store.identities_of(&user.id).map_err(store_err)?;
+    let Some(login) = ["pam", "unix"]
+        .iter()
+        .find_map(|p| identities.iter().find(|i| i.provider == *p).map(|i| i.subject.clone()))
+    else {
+        return Ok(unavailable("your account has no local login on this host; paste your public key"));
+    };
+    let client = glidex_authd::client::AuthdClient::new(&c.auth().config.auth.pam.authd_socket);
+    let who = login.clone();
+    let result = tokio::task::spawn_blocking(move || client.public_keys(&who))
+        .await
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()))?;
+    Ok(match result {
+        Ok(keys) => Json(serde_json::json!({ "available": true, "username": login, "keys": keys })),
+        Err(glidex_authd::client::AuthdError::Denied) => unavailable("your local account can't log in to glidex"),
+        Err(e) => {
+            tracing::warn!("reading public keys for {}: {}", login, e);
+            unavailable("your public keys can't be read right now (glidex-authd)")
+        }
+    })
+}
+
 // ---- OIDC ----------------------------------------------------------------
 
 const OIDC_COOKIE: &str = "gx_oidc";

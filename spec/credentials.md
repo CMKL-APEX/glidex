@@ -39,10 +39,15 @@ key, or both. `create` and `update` both enforce it.
   `cloud_init::write_seed_image` creates the staging dir `0700` and the
   seed image and its files `0600`, since both hold hashes.
 - **Least privilege in the guest.** A VM with a credential authorizes
-  only that credential's SSH keys; the control-plane user's
-  `~/.ssh/*.pub` fallback is not added (`SeedConfig::for_credential`).
-- **Transport.** The API is plain HTTP with no authentication (see
-  [README.md](README.md#non-goals)); the password crosses it once, at
+  only that credential's SSH keys (`SeedConfig::for_credential`); a VM
+  without one has no login at all. There are no host-wide default keys
+  or passwords.
+- **Prefilling keys.** The web UI fills a new credential with the
+  user's own `~/.ssh/*.pub` (`GET /users/me/ssh-keys`, read by
+  glidex-authd, spec/security.md §5.3); gxctl reads them locally and
+  offers them as the default.
+- **Transport.** The API needs authentication and TLS off loopback
+  (spec/security.md §5); the password crosses it once, at
   create/update time. Run the control plane on a trusted host/network.
 
 ### Why a custom salt
