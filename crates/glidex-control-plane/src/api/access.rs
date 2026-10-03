@@ -785,10 +785,12 @@ pub struct CreateProject {
 
 pub async fn create_project(c: Caller, Json(body): Json<CreateProject>) -> Result<impl IntoResponse, ApiErr> {
     c.require(Ent::Host, EntitySet::new())?;
+    // Without explicit quotas a project gets the site default (spec §6.3).
+    let quotas = body.quotas.unwrap_or_else(|| c.auth().config.quotas.default.clone());
     let p = c
         .manager()
         .projects()
-        .create(&body.name, body.description, body.quotas)
+        .create(&body.name, body.description, Some(quotas))
         .map_err(|e| manager_err(e.into()))?;
     c.set_project(&p.id);
     c.set_target(format!("project:{}", p.id));

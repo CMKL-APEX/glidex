@@ -260,6 +260,7 @@ pub fn constant_eq(a: &str, b: &str) -> bool {
 
 impl AuthService {
     pub fn new(db: Arc<redb::Database>, config: Config) -> Result<Arc<Self>, AuthError> {
+        config.check().map_err(AuthError::Invalid)?;
         let svc = Arc::new(Self {
             store: IdentityStore::new(db)?,
             engine: Engine::new()?,
@@ -269,6 +270,7 @@ impl AuthService {
             tickets: Mutex::new(HashMap::new()),
             audit_count: Default::default(),
         });
+        svc.store.set_policy_history(svc.config.authz.policy_history);
         svc.reload_policies()?;
         Ok(svc)
     }
@@ -276,7 +278,9 @@ impl AuthService {
     /// Authentication off: every request is the break-glass system user.
     /// For embedding and tests only; the binary never uses it.
     pub fn disabled(db: Arc<redb::Database>) -> Result<Arc<Self>, AuthError> {
-        let config = Config::default();
+        let mut config = Config::default();
+        // Embedding and tests never read the host's policy files.
+        config.authz.policy_files_dir = std::path::PathBuf::new();
         let svc = Arc::new(Self {
             store: IdentityStore::new(db)?,
             engine: Engine::new()?,
@@ -300,6 +304,9 @@ impl AuthService {
     fn file_policies(&self) -> Result<Vec<SiteSource>, AuthError> {
         let dir = &self.config.authz.policy_files_dir;
         let mut out = Vec::new();
+        if dir.as_os_str().is_empty() {
+            return Ok(out);
+        }
         let entries = match std::fs::read_dir(dir) {
             Ok(e) => e,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(out),
@@ -465,8 +472,16 @@ impl AuthService {
             return Ok(None);
         };
         let mut teams = self.store.teams_of(&u.id)?;
-        teams.extend(groups.iter().map(|g| format!("unix:{}", g)));
-        if admin && !teams.iter().any(|t| t == authz::BREAK_GLASS_TEAM) {
+        // Unix groups become `unix:<group>` teams, except that the
+        // break-glass team comes only from the configured admin group (or
+        // root): a host group that merely shares its name grants nothing.
+        teams.extend(
+            groups
+                .iter()
+                .map(|g| format!("unix:{}", g))
+                .filter(|t| t != authz::BREAK_GLASS_TEAM),
+        );
+        if admin {
             teams.push(authz::BREAK_GLASS_TEAM.into());
         }
         Ok(Some(Principal {
@@ -914,7 +929,7 @@ mod tests {
     fn svc() -> (Arc<AuthService>, tempfile::TempDir) {
         let dir = tempfile::TempDir::new().unwrap();
         let db = Arc::new(redb::Database::create(dir.path().join("a.db")).unwrap());
-        let cfg = Config { authz: crate::config::AuthzConfig { policy_files_dir: dir.path().join("policies") }, ..Default::default() };
+        let cfg = Config { authz: crate::config::AuthzConfig { policy_files_dir: dir.path().join("policies"), ..Default::default() }, ..Default::default() };
         (AuthService::new(db, cfg).unwrap(), dir)
     }
 
@@ -997,7 +1012,7 @@ mod tests {
     fn pam_user_requires_allowed_group_and_syncs_teams() {
         let dir = tempfile::TempDir::new().unwrap();
         let db = Arc::new(redb::Database::create(dir.path().join("a.db")).unwrap());
-        let mut cfg = Config { authz: crate::config::AuthzConfig { policy_files_dir: dir.path().join("p") }, ..Default::default() };
+        let mut cfg = Config { authz: crate::config::AuthzConfig { policy_files_dir: dir.path().join("p"), ..Default::default() }, ..Default::default() };
         cfg.auth.pam.group_teams.insert("lab-unix".into(), "lab".into());
         let s = AuthService::new(db, cfg).unwrap();
         assert!(matches!(s.pam_user("carol", &["staff".into()]), Err(AuthError::Denied)));

@@ -177,7 +177,7 @@ async fn main() {
     // Configuration and identity (spec/security.md §5, §13). A bad config
     // file stops startup rather than falling back to defaults.
     print_status("Loading configuration");
-    let cfg = match config::Config::load().and_then(|c| c.check_listeners().map(|_| c)) {
+    let cfg = match config::Config::load().and_then(|c| c.check().map(|_| c)) {
         Ok(c) => c,
         Err(e) => {
             println!("FAILED");
@@ -195,6 +195,9 @@ async fn main() {
             std::process::exit(1);
         }
     };
+    if let Err(e) = vm_manager.projects().adopt_default_quotas(&cfg.quotas.default) {
+        println!("WARNING (default project quotas: {})", e);
+    }
     match auth.bootstrap(&vm_manager.default_project_id()) {
         Ok(made) if !made.is_empty() => println!("OK (administrators: {})", made.join(", ")),
         Ok(_) => println!("OK"),

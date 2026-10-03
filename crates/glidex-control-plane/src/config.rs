@@ -32,6 +32,7 @@ pub struct Config {
     pub admin_group: String,
     pub auth: AuthConfig,
     pub authz: AuthzConfig,
+    pub quotas: QuotasConfig,
     pub pci: PciConfig,
     pub audit: AuditConfig,
 }
@@ -51,6 +52,7 @@ impl Default for Config {
             admin_group: "glidex-admin".into(),
             auth: AuthConfig::default(),
             authz: AuthzConfig::default(),
+            quotas: QuotasConfig::default(),
             pci: PciConfig::default(),
             audit: AuditConfig::default(),
         }
@@ -184,11 +186,30 @@ impl Default for OidcConfig {
 pub struct AuthzConfig {
     /// Read-only site policies managed outside glidex (spec §7.6).
     pub policy_files_dir: PathBuf,
+    /// Versions kept per site policy (1-1000).
+    pub policy_history: usize,
 }
 
 impl Default for AuthzConfig {
     fn default() -> Self {
-        Self { policy_files_dir: PathBuf::from("/etc/glidex/policies") }
+        Self { policy_files_dir: PathBuf::from("/etc/glidex/policies"), policy_history: 50 }
+    }
+}
+
+/// Site-wide quota defaults (spec/security.md §6.3).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct QuotasConfig {
+    /// Quotas for projects created without explicit ones, and for the
+    /// `default` project when it is first created. Omitted limits are
+    /// unlimited, except `networks`, which defaults to 2; `null` is
+    /// unlimited.
+    pub default: crate::tenancy::Quotas,
+}
+
+impl Default for QuotasConfig {
+    fn default() -> Self {
+        Self { default: crate::tenancy::Quotas::new_project() }
     }
 }
 
@@ -245,6 +266,14 @@ impl Config {
         }
     }
 
+    /// Refuse values that parse but make no sense.
+    pub fn check(&self) -> Result<(), String> {
+        if !(1..=1000).contains(&self.authz.policy_history) {
+            return Err("authz.policy_history must be 1-1000".into());
+        }
+        self.check_listeners()
+    }
+
     /// Refuse a non-loopback listener without TLS (spec §5.1).
     pub fn check_listeners(&self) -> Result<(), String> {
         if self.tls.is_none() {
@@ -295,6 +324,53 @@ mod tests {
         assert!(Config::load_from(&p).is_err());
     }
 
+    fn parse(json: &str) -> Result<Config, String> {
+        let dir = tempfile::TempDir::new().unwrap();
+        let p = dir.path().join("c.json");
+        std::fs::write(&p, json).unwrap();
+        Config::load_from(&p).and_then(|c| c.check().map(|_| c))
+    }
+
+    #[test]
+    fn quota_defaults() {
+        use crate::tenancy::Quotas;
+        // Nothing configured: 2 project networks, everything else unlimited.
+        let c = parse("{}").unwrap();
+        assert_eq!(c.quotas.default, Quotas { networks: Some(2), ..Default::default() });
+        // Partial: omitted networks keeps 2.
+        let c = parse(r#"{"quotas": {"default": {"vms": 10, "disk_gib": 500}}}"#).unwrap();
+        assert_eq!(c.quotas.default, Quotas { vms: Some(10), disk_gib: Some(500), networks: Some(2), ..Default::default() });
+        // null is unlimited.
+        let c = parse(r#"{"quotas": {"default": {"networks": null}}}"#).unwrap();
+        assert_eq!(c.quotas.default.networks, None);
+        // Typos are refused, not ignored.
+        assert!(parse(r#"{"quotas": {"default": {"network": 4}}}"#).is_err());
+        assert!(parse(r#"{"quotas": {"defaults": {}}}"#).is_err());
+        assert!(parse(r#"{"quotas": {"default": {"vms": -1}}}"#).is_err());
+    }
+
+    #[test]
+    fn policy_history_bounds() {
+        assert_eq!(parse("{}").unwrap().authz.policy_history, 50);
+        assert_eq!(parse(r#"{"authz": {"policy_history": 10}}"#).unwrap().authz.policy_history, 10);
+        assert!(parse(r#"{"authz": {"policy_history": 0}}"#).is_err());
+    }
+
+    /// The example in spec/security.md §13 must be a loadable config, so
+    /// the spec can't document keys the parser refuses.
+    #[test]
+    fn spec_example_parses() {
+        let spec = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../spec/security.md")).unwrap();
+        let start = spec.find("`/etc/glidex/control-plane.json` (`root:glidex 0640`").expect("§13 config heading");
+        let block = &spec[start..];
+        let a = block.find("```json\n").unwrap() + "```json\n".len();
+        let b = a + block[a..].find("```").unwrap();
+        let c = parse(&block[a..b]).unwrap();
+        assert_eq!(c.quotas.default.networks, Some(2));
+        assert_eq!(c.authz.policy_history, 50);
+        assert!(c.tls.is_some());
+    }
+
     /// The installer ships packaging/control-plane.json.example as
     /// /etc/glidex/control-plane.json.example; it must stay loadable and
     /// match the defaults.
@@ -311,7 +387,9 @@ mod tests {
         assert_eq!(c.auth.oidc.enabled, d.auth.oidc.enabled);
         assert_eq!(c.authz.policy_files_dir, d.authz.policy_files_dir);
         assert_eq!(c.audit.retention_days, d.audit.retention_days);
-        assert!(c.check_listeners().is_ok());
+        assert_eq!(c.authz.policy_history, d.authz.policy_history);
+        assert_eq!(c.quotas.default, d.quotas.default);
+        assert!(c.check().is_ok());
     }
 
     #[test]

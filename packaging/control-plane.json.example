@@ -27,7 +27,13 @@
       "group_teams": {}
     }
   },
-  "authz": { "policy_files_dir": "/etc/glidex/policies" },
+  "authz": { "policy_files_dir": "/etc/glidex/policies", "policy_history": 50 },
+  "quotas": {
+    "default": {
+      "vms": null, "vcpus": null, "memory_mib": null, "disk_gib": null,
+      "running_vms": null, "networks": 2
+    }
+  },
   "pci": { "allow": [] },
   "audit": { "retention_days": 90 }
 }

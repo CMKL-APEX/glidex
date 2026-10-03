@@ -127,8 +127,10 @@ On `api.sock` the control plane reads `SO_PEERCRED` (reusing
 - The peer's Unix groups become members of Cedar teams `unix:<group>`
   **for this request only** (§7.3). uid 0 is treated as a member of
   `unix:glidex-admin`.
-- uid 0, or a member of `glidex-admin` → user `unix:<name>`, allowed
-  everything by `base.break-glass`.
+- uid 0, or a member of the configured `admin_group` (default
+  `glidex-admin`) → user `unix:<name>`, allowed everything by
+  `base.break-glass`. Only that check adds the break-glass team: a host
+  group that merely has the same name grants nothing.
 - a member of `glidex-users` → user `unix:<name>`, created on first use
   (just-in-time); rights from its role links only.
 - anyone else, including `glidex-ui` (which uses `ui.sock`) → connection closed.
@@ -309,7 +311,11 @@ by name need `?project=`, or resolve within the caller's default project.
 ### 6.3 Quotas
 
 Per project: `vms`, `vcpus`, `memory_mib`, `disk_gib`, `running_vms`,
-`networks` (project networks, default 2). Checked under the `VmManager`
+`networks` (project networks, default 2). New projects created without
+explicit quotas get the site default `quotas.default` from
+`control-plane.json` (omitted limits are unlimited, except `networks`,
+which stays 2; `null` is unlimited); the `default` project takes it once,
+on the first start that sees it. Unknown quota names are refused. Checked under the `VmManager`
 write lock at create, start, disk create, resize and network create.
 `null` means unlimited.
 

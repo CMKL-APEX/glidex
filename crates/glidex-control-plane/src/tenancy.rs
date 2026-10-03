@@ -17,6 +17,9 @@ const META_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("meta");
 const META_DEFAULT_PROJECT: &str = "default_project";
 /// `meta` key set once existing records were assigned to the default project.
 pub const META_TENANCY_V1: &str = "tenancy_v1";
+/// `meta` key set once the site's default quotas were given to the
+/// default project.
+const META_DEFAULT_QUOTAS: &str = "default_project_quotas";
 
 pub const DEFAULT_PROJECT_NAME: &str = "default";
 
@@ -51,6 +54,7 @@ storage_from!(
 
 /// Per-project limits; `None` is unlimited (spec §6.3).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Quotas {
     #[serde(default)]
     pub vms: Option<u64>,
@@ -207,6 +211,21 @@ impl ProjectStore {
         Ok(store)
     }
 
+    /// Give the default project the site's default quotas, once: later
+    /// changes to its quotas (through the API) are kept.
+    pub fn adopt_default_quotas(&self, quotas: &Quotas) -> Result<bool, TenancyError> {
+        if self.meta(META_DEFAULT_QUOTAS)?.is_some() {
+            return Ok(false);
+        }
+        let id = self.default_project_id();
+        if let Some(mut p) = self.get(&id)? {
+            p.quotas = quotas.clone();
+            self.put(&p)?;
+        }
+        self.set_meta(META_DEFAULT_QUOTAS, b"1")?;
+        Ok(true)
+    }
+
     pub fn default_project_id(&self) -> String {
         self.meta(META_DEFAULT_PROJECT)
             .ok()
@@ -339,6 +358,20 @@ mod tests {
         assert!(s.delete(&s.default_project_id()).is_err());
         s.delete(&p.id).unwrap();
         assert!(matches!(s.resolve("lab-1"), Err(TenancyError::NotFound(_))));
+    }
+
+    #[test]
+    fn default_project_takes_site_quotas_once() {
+        let (s, _d) = store();
+        let site = Quotas { vms: Some(5), networks: Some(3), ..Default::default() };
+        assert!(s.adopt_default_quotas(&site).unwrap());
+        assert_eq!(s.resolve("default").unwrap().quotas, site);
+        // An admin's later change survives the next start.
+        let mut p = s.resolve("default").unwrap();
+        p.quotas.vms = Some(50);
+        s.put(&p).unwrap();
+        assert!(!s.adopt_default_quotas(&site).unwrap());
+        assert_eq!(s.resolve("default").unwrap().quotas.vms, Some(50));
     }
 
     #[test]

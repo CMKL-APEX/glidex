@@ -404,7 +404,11 @@ async fn peer_identity_requires_the_glidex_groups() {
     let (s, v, _) = h.call("GET", "/auth/whoami", None, &As::Peer(me)).await;
     assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
     let g = my_group();
-    let h = harness_with(|c| c.users_group = g.clone());
+    // Independent of whether this host's user is in glidex-admin.
+    let h = harness_with(|c| {
+        c.users_group = g.clone();
+        c.admin_group = "no-such-group-abc".into();
+    });
     let (s, v, _) = h.call("GET", "/auth/whoami", None, &As::Peer(me)).await;
     assert_eq!(s, StatusCode::OK, "{v}");
     assert_eq!(v["break_glass"], false);
@@ -823,4 +827,79 @@ async fn console_tickets_need_vm_console() {
     assert_eq!(s, StatusCode::FORBIDDEN, "the console log is console output");
     let (s, _, _) = h.call("GET", &format!("/vms/{}/console/log", vm.id), None, &As::Bearer(h.token(&op))).await;
     assert_eq!(s, StatusCode::OK);
+}
+
+// ---- control-plane.json: site quota defaults (spec §6.3, §13) ------------
+
+#[tokio::test]
+async fn site_default_quotas_apply_to_new_projects() {
+    use glidex_control_plane::tenancy::Quotas;
+    let h = harness_with(|c| c.quotas.default = Quotas { vms: Some(1), networks: Some(2), ..Default::default() });
+    let admin = h.user("admin");
+    h.link("role.system-admin", Ent::User(admin.clone()), Ent::Host);
+    let a = As::Bearer(h.token(&admin));
+
+    // No quotas in the request: the site default.
+    let (s, p, _) = h.call("POST", "/projects", Some(json!({"name": "lab"})), &a).await;
+    assert_eq!(s, StatusCode::CREATED, "{p}");
+    assert_eq!(p["quotas"], json!({"vms": 1, "vcpus": null, "memory_mib": null, "disk_gib": null, "running_vms": null, "networks": 2}));
+    // Explicit quotas win.
+    let (s, q, _) = h.call("POST", "/projects", Some(json!({"name": "big", "quotas": {"vms": 10}})), &a).await;
+    assert_eq!(s, StatusCode::CREATED, "{q}");
+    assert_eq!((q["quotas"]["vms"].as_u64(), q["quotas"]["networks"].as_u64()), (Some(10), Some(2)));
+    // A typo in a quota name is refused, not ignored.
+    let (s, _, _) = h.call("POST", "/projects", Some(json!({"name": "typo", "quotas": {"vm": 10}})), &a).await;
+    assert!(s.is_client_error());
+
+    // The default is enforced for the project's members.
+    let lab = p["id"].as_str().unwrap().to_string();
+    let owner = h.user("owner");
+    h.link("role.owner", Ent::User(owner.clone()), Ent::Project(lab.clone()));
+    h.link("grant.host-paths", Ent::User(owner.clone()), Ent::Host);
+    let o = As::Bearer(h.token(&owner));
+    let (s, v, _) = h.call("POST", "/vms", Some(vm_body("v1", "lab")), &o).await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let (s, v, _) = h.call("POST", "/vms", Some(vm_body("v2", "lab")), &o).await;
+    assert_eq!((s, v["error"].as_str()), (StatusCode::FORBIDDEN, Some("quota_exceeded")), "{v}");
+}
+
+#[tokio::test]
+async fn control_plane_json_drives_the_service() {
+    let dir = TempDir::new().unwrap();
+    let cfg_path = dir.path().join("control-plane.json");
+    std::fs::write(
+        &cfg_path,
+        json!({
+            "listen": ["127.0.0.1:0"],
+            "authz": { "policy_files_dir": dir.path().join("policies"), "policy_history": 3 },
+            "quotas": { "default": { "vms": 4, "networks": null } },
+            "auth": { "session": { "idle_minutes": 5, "absolute_hours": 1 } },
+        })
+        .to_string(),
+    )
+    .unwrap();
+    std::env::set_var("GLIDEX_CONFIG", &cfg_path);
+    let cfg = Config::load().unwrap();
+    std::env::remove_var("GLIDEX_CONFIG");
+    assert_eq!(cfg.quotas.default.vms, Some(4));
+    assert_eq!(cfg.quotas.default.networks, None, "null means unlimited");
+
+    let manager = VmManager::with_db_path(dir.path().join("t.db")).unwrap();
+    // The default project takes the site default once (main.rs does this
+    // at startup).
+    assert!(manager.projects().adopt_default_quotas(&cfg.quotas.default).unwrap());
+    assert_eq!(manager.projects().resolve("default").unwrap().quotas, cfg.quotas.default);
+    let auth = AuthService::new(manager.database(), cfg.clone()).unwrap();
+    // policy_history reaches the store.
+    for v in 0..5 {
+        auth.store.write_site_policy("site.x", v, Some(("t", "", true)), "u").unwrap();
+    }
+    assert_eq!(auth.store.site_policy_versions("site.x").unwrap().len(), 3);
+
+    // A config that parses but is out of range is refused at startup.
+    let mut bad = cfg;
+    bad.authz.policy_history = 0;
+    assert!(AuthService::new(manager.database(), bad).is_err());
+    std::fs::write(&cfg_path, r#"{"quotas": {"default": {"network": 4}}}"#).unwrap();
+    assert!(Config::load_from(&cfg_path).is_err(), "typos stop the control plane");
 }

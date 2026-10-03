@@ -213,12 +213,14 @@ pub struct AuditEntry {
     pub details: serde_json::Value,
 }
 
-/// Versions of a site policy kept (spec §7.6).
+/// Versions of a site policy kept by default (spec §7.6).
 pub const POLICY_HISTORY: usize = 50;
 
 pub struct IdentityStore {
     db: Arc<Database>,
     audit_seq: std::sync::atomic::AtomicU64,
+    /// Versions kept per site policy (config `authz.policy_history`).
+    policy_history: std::sync::atomic::AtomicUsize,
 }
 
 fn get<T: DeserializeOwned>(
@@ -274,7 +276,11 @@ impl IdentityStore {
             let _ = txn.open_table(t)?;
         }
         txn.commit()?;
-        Ok(Self { db, audit_seq: Default::default() })
+        Ok(Self { db, audit_seq: Default::default(), policy_history: POLICY_HISTORY.into() })
+    }
+
+    pub fn set_policy_history(&self, n: usize) {
+        self.policy_history.store(n.max(1), std::sync::atomic::Ordering::Relaxed);
     }
 
     pub fn database(&self) -> Arc<Database> {
@@ -544,7 +550,8 @@ impl IdentityStore {
             };
             let entry = SitePolicyVersion { id: id.to_string(), version, text, enabled, author: author.to_string(), time: ts, deleted };
             h.insert(format!("{}@{:012}", id, version).as_str(), serde_json::to_vec(&entry)?.as_slice())?;
-            // Keep the newest POLICY_HISTORY versions.
+            // Keep the newest `policy_history` versions.
+            let keep = self.policy_history.load(std::sync::atomic::Ordering::Relaxed);
             let prefix = format!("{}@", id);
             let mut keys = Vec::new();
             for e in h.range(prefix.as_str()..)? {
@@ -554,8 +561,8 @@ impl IdentityStore {
                 }
                 keys.push(k.value().to_string());
             }
-            if keys.len() > POLICY_HISTORY {
-                for k in &keys[..keys.len() - POLICY_HISTORY] {
+            if keys.len() > keep {
+                for k in &keys[..keys.len() - keep] {
                     h.remove(k.as_str())?;
                 }
             }
@@ -699,6 +706,9 @@ mod tests {
             s.write_site_policy("site.b", i, Some(("t", "", true)), "u").unwrap();
         }
         assert_eq!(s.site_policy_versions("site.b").unwrap().len(), POLICY_HISTORY);
+        s.set_policy_history(5);
+        s.write_site_policy("site.b", 60, Some(("t", "", true)), "u").unwrap();
+        assert_eq!(s.site_policy_versions("site.b").unwrap().len(), 5);
     }
 
     #[test]
