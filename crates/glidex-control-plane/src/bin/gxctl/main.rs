@@ -88,6 +88,14 @@ struct VmResponse {
     #[serde(default)]
     project: String,
     state: String,
+    /// What the VM should be doing; `state` is what it is doing
+    /// (spec/reconciliation.md §7.4).
+    #[serde(default)]
+    desired_state: String,
+    #[serde(default)]
+    conditions: Vec<serde_json::Value>,
+    #[serde(default)]
+    last_exit: Option<serde_json::Value>,
     vcpu_count: u8,
     mem_size_mib: u32,
     hypervisor: String,
@@ -526,26 +534,40 @@ impl ApiClient {
         self.request_json(Method::POST, "/vms", Some(body)).await
     }
 
-    async fn start_vm(&self, id: &str) -> Result<VmResponse, String> {
-        self.request_json(Method::POST, &format!("/vms/{}/start", enc(id)), None).await
+    /// `?wait=<secs>` unless the caller asked not to wait (`--no-wait`).
+    fn waiting(path: String, wait: Option<u64>) -> String {
+        match wait {
+            Some(w) => client::add_query(&path, "wait", &w.to_string()),
+            None => path,
+        }
+    }
+
+    async fn start_vm(&self, id: &str, wait: Option<u64>) -> Result<VmResponse, String> {
+        self.request_json(Method::POST, &Self::waiting(format!("/vms/{}/start", enc(id)), wait), None).await
     }
 
     /// Stop a VM; with `graceful_secs`, power-button first and wait.
-    async fn stop_vm(&self, id: &str, graceful_secs: Option<u64>) -> Result<VmResponse, String> {
+    async fn stop_vm(&self, id: &str, graceful_secs: Option<u64>, wait: Option<u64>) -> Result<VmResponse, String> {
         let mut path = format!("/vms/{}/stop", enc(id));
         if let Some(s) = graceful_secs {
             path = client::add_query(&path, "graceful_timeout_secs", &s.to_string());
         }
-        self.request_json(Method::POST, &path, None).await
+        // Waiting must cover the grace.
+        let wait = wait.map(|w| w.max(graceful_secs.unwrap_or(0) + 20).min(300));
+        self.request_json(Method::POST, &Self::waiting(path, wait), None).await
     }
 
-    async fn pause_vm(&self, id: &str) -> Result<VmResponse, String> {
-        self.request_json(Method::POST, &format!("/vms/{}/pause", enc(id)), None).await
+    async fn pause_vm(&self, id: &str, wait: Option<u64>) -> Result<VmResponse, String> {
+        self.request_json(Method::POST, &Self::waiting(format!("/vms/{}/pause", enc(id)), wait), None).await
     }
 
-    async fn delete_vm(&self, id: &str, keep_disk: bool) -> Result<(), String> {
+    async fn delete_vm(&self, id: &str, keep_disk: bool, wait: Option<u64>) -> Result<(), String> {
         let path = format!("/vms/{}{}", enc(id), if keep_disk { "?keep_disk=true" } else { "" });
-        self.request_json(Method::DELETE, &path, None).await
+        self.request_json::<serde_json::Value>(Method::DELETE, &Self::waiting(path, wait), None).await.map(|_| ())
+    }
+
+    async fn vm_events(&self, id: &str) -> Result<serde_json::Value, String> {
+        self.request_json(Method::GET, &format!("/vms/{}/events", enc(id)), None).await
     }
 
     async fn list_credentials(&self) -> Result<Vec<CredentialInfo>, String> {
@@ -900,7 +922,7 @@ fn print_help() {
         "  {}           - Create a new VM (interactive)",
         "create".cyan()
     );
-    println!("  {}  - Start a VM", "start <name|id>".cyan());
+    println!("  {}  - Start a VM (waits until it runs; --no-wait returns at once)", "start <name|id>".cyan());
     println!("  {}   - Stop a VM", "stop <name|id>".cyan());
     println!(
         "  {} - Shut a VM down via its power button (default wait 60 s), then stop it",
@@ -909,6 +931,7 @@ fn print_help() {
     println!("  {}  - Pause a VM", "pause <name|id>".cyan());
     println!("  {} - Connect to VM console (interactive)", "connect <name|id>".cyan());
     println!("  {}     - Show VM serial console log", "log <name|id>".cyan());
+    println!("  {}  - What happened to a VM (starts, exits, restarts, adoptions)", "events <name|id>".cyan());
     println!("  {} - Delete a VM (and its own root disk)", "delete <name|id> [--keep-disk]".cyan());
     println!("  {}               - List host PCI devices", "pci".cyan());
     println!(
@@ -1183,7 +1206,7 @@ async fn handle_credential_update(client: &CliClient, username: &str, request: U
 
 /// REPL command names offered by Tab (aliases included).
 const COMMANDS: &[&str] = &[
-    "help", "exit", "quit", "list", "ls", "get", "create", "start", "stop", "pause",
+    "help", "exit", "quit", "list", "ls", "get", "create", "start", "stop", "pause", "events",
     "connect", "console", "attach", "log", "logs", "delete", "rm", "pci", "pci-devices",
     "attach-device", "detach-device", "credentials", "creds", "credential-add",
     "credential-passwd", "credential-keys", "credential-rm", "networks", "network-add",
@@ -1659,7 +1682,60 @@ fn format_state(state: &str) -> String {
         "stopped" => state.red().to_string(),
         "paused" => state.yellow().to_string(),
         "created" => state.blue().to_string(),
+        "failed" | "unknown" => state.red().bold().to_string(),
         _ => state.to_string(),
+    }
+}
+
+/// `state`, plus `→ desired` while the VM is still getting there.
+fn format_vm_state(vm: &VmResponse) -> String {
+    let settled = match vm.desired_state.as_str() {
+        "" => true,
+        "stopped" => matches!(vm.state.as_str(), "stopped" | "created"),
+        d => d == vm.state,
+    };
+    if settled {
+        format_state(&vm.state)
+    } else {
+        format!("{} → {}", format_state(&vm.state), vm.desired_state)
+    }
+}
+
+/// `format_vm_state` without colours, for tables.
+fn plain_vm_state(vm: &VmResponse) -> String {
+    let settled = match vm.desired_state.as_str() {
+        "" => true,
+        "stopped" => matches!(vm.state.as_str(), "stopped" | "created"),
+        d => d == vm.state,
+    };
+    if settled {
+        vm.state.clone()
+    } else {
+        format!("{} → {}", vm.state, vm.desired_state)
+    }
+}
+
+/// What the controller says is in the way (the `Ready` condition), if
+/// the VM has not converged.
+fn not_ready_reason(vm: &VmResponse) -> Option<String> {
+    let ready = vm.conditions.iter().find(|c| c["kind"] == "Ready")?;
+    if ready["status"] == "True" {
+        return None;
+    }
+    let msg = ready["message"].as_str().unwrap_or("");
+    Some(format!("{}{}", ready["reason"].as_str().unwrap_or(""), if msg.is_empty() { String::new() } else { format!(": {}", msg) }))
+}
+
+/// How long lifecycle commands wait for the VM to get there, or `None`
+/// with `--no-wait` (spec/reconciliation.md §12.3).
+fn wait_secs(args: &[&str]) -> Option<u64> {
+    (!has_flag(args, "--no-wait")).then_some(60)
+}
+
+fn print_lifecycle_result(vm: &VmResponse) {
+    println!("{} VM {} is now {}", "Success:".green(), vm.name, format_vm_state(vm));
+    if let Some(r) = not_ready_reason(vm) {
+        println!("  {} {}", "Not there yet:".yellow(), r);
     }
 }
 
@@ -1694,10 +1770,10 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
                     let rows: Vec<VmRow> = vms
                         .into_iter()
                         .map(|vm| VmRow {
+                            state: plain_vm_state(&vm),
                             project: names.get(&vm.project).cloned().unwrap_or(vm.project),
                             id: vm.id,
                             name: vm.name,
-                            state: vm.state,
                             vcpu_count: vm.vcpu_count,
                             mem_size_mib: vm.mem_size_mib,
                             hypervisor: vm.hypervisor,
@@ -1729,7 +1805,13 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
                     println!("  Name:       {}", vm.name);
                     let names = project_names(client).await;
                     println!("  Project:    {}", names.get(&vm.project).map(|n| format!("{} ({})", n, vm.project)).unwrap_or(vm.project.clone()));
-                    println!("  State:      {}", format_state(&vm.state));
+                    println!("  State:      {}", format_vm_state(&vm));
+                    if let Some(r) = not_ready_reason(&vm) {
+                        println!("  Waiting:    {}", r);
+                    }
+                    if let Some(e) = &vm.last_exit {
+                        println!("  Last exit:  {} ({})", e["cause"].as_str().unwrap_or("?"), e["instance_id"].as_str().unwrap_or(""));
+                    }
                     println!("  Hypervisor: {}", vm.hypervisor);
                     println!("  vCPUs:      {}", vm.vcpu_count);
                     println!("  Memory:     {} MiB", vm.mem_size_mib);
@@ -1755,7 +1837,7 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
 
         "start" => {
             if parts.len() < 2 {
-                println!("{}", "Usage: start <name|id>".yellow());
+                println!("{}", "Usage: start <name|id> [--no-wait]".yellow());
                 return true;
             }
             let vm_id = match client.resolve_vm(parts[1]).await {
@@ -1765,25 +1847,19 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
                     return true;
                 }
             };
-            match client.start_vm(&vm_id).await {
-                Ok(vm) => {
-                    println!(
-                        "{} VM {} is now {}",
-                        "Success:".green(),
-                        vm.name,
-                        format_state(&vm.state)
-                    );
-                }
+            match client.start_vm(&vm_id, wait_secs(&parts[2..])).await {
+                Ok(vm) => print_lifecycle_result(&vm),
                 Err(e) => println!("{} {}", "Error:".red(), e),
             }
         }
 
         "stop" => {
             if parts.len() < 2 {
-                println!("{}", "Usage: stop <name|id> [--graceful [secs]]".yellow());
+                println!("{}", "Usage: stop <name|id> [--graceful [secs]] [--no-wait]".yellow());
                 return true;
             }
-            let graceful = match graceful_stop_secs(&parts[2..]) {
+            let flags: Vec<&str> = parts[2..].iter().copied().filter(|p| *p != "--no-wait").collect();
+            let graceful = match graceful_stop_secs(&flags) {
                 Ok(g) => g,
                 Err(e) => {
                     println!("{} {}", "Error:".red(), e);
@@ -1800,22 +1876,15 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
             if let Some(secs) = graceful {
                 println!("Pressing the power button; waiting up to {} s for the guest to shut down...", secs);
             }
-            match client.stop_vm(&vm_id, graceful).await {
-                Ok(vm) => {
-                    println!(
-                        "{} VM {} is now {}",
-                        "Success:".green(),
-                        vm.name,
-                        format_state(&vm.state)
-                    );
-                }
+            match client.stop_vm(&vm_id, graceful, wait_secs(&parts[2..])).await {
+                Ok(vm) => print_lifecycle_result(&vm),
                 Err(e) => println!("{} {}", "Error:".red(), e),
             }
         }
 
         "pause" => {
             if parts.len() < 2 {
-                println!("{}", "Usage: pause <name|id>".yellow());
+                println!("{}", "Usage: pause <name|id> [--no-wait]".yellow());
                 return true;
             }
             let vm_id = match client.resolve_vm(parts[1]).await {
@@ -1825,15 +1894,8 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
                     return true;
                 }
             };
-            match client.pause_vm(&vm_id).await {
-                Ok(vm) => {
-                    println!(
-                        "{} VM {} is now {}",
-                        "Success:".green(),
-                        vm.name,
-                        format_state(&vm.state)
-                    );
-                }
+            match client.pause_vm(&vm_id, wait_secs(&parts[2..])).await {
+                Ok(vm) => print_lifecycle_result(&vm),
                 Err(e) => println!("{} {}", "Error:".red(), e),
             }
         }
@@ -1851,6 +1913,36 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
                 }
             };
             handle_connect(client, &vm_id).await;
+        }
+
+        "events" => {
+            if parts.len() < 2 {
+                println!("{}", "Usage: events <name|id>".yellow());
+                return true;
+            }
+            let vm_id = match client.resolve_vm(parts[1]).await {
+                Ok(id) => id,
+                Err(e) => {
+                    println!("{} {}", "Error:".red(), e);
+                    return true;
+                }
+            };
+            match client.vm_events(&vm_id).await {
+                Ok(v) => {
+                    for e in v["events"].as_array().into_iter().flatten() {
+                        let reason = e["reason"].as_str().unwrap_or("");
+                        let reason = if e["kind"] == "warning" { reason.yellow().to_string() } else { reason.to_string() };
+                        println!(
+                            "{}  {:<12} {:<18} {}",
+                            format_unix_time(e["at"].as_u64().unwrap_or(0)),
+                            e["actor"].as_str().unwrap_or(""),
+                            reason,
+                            e["message"].as_str().unwrap_or("")
+                        );
+                    }
+                }
+                Err(e) => println!("{} {}", "Error:".red(), e),
+            }
         }
 
         "log" | "logs" => {
@@ -1887,7 +1979,7 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
                 if keep_disk { "" } else { " (and a root disk created for it)" }
             ));
             if confirm.to_lowercase() == "y" {
-                match client.delete_vm(&vm_id, keep_disk).await {
+                match client.delete_vm(&vm_id, keep_disk, wait_secs(&parts[2..])).await {
                     Ok(()) => println!("{} VM deleted", "Success:".green()),
                     Err(e) => println!("{} {}", "Error:".red(), e),
                 }

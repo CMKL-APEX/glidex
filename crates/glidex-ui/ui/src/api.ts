@@ -191,17 +191,35 @@ export async function getVm(id: string): Promise<VmResponse> {
 }
 
 export const createVm = (req: CreateVmRequest) => post<VmResponse>("/vms", req);
-export const startVm = (id: string) => post<VmResponse>(`/vms/${enc(id)}/start`);
+
+/** Lifecycle calls change the VM's desired state; `wait` holds the answer
+ * until the controller got it there, or reports why it couldn't
+ * (spec/reconciliation.md §12.3). */
+const WAIT_SECS = 60;
+
+export const startVm = (id: string) => post<VmResponse>(`/vms/${enc(id)}/start?wait=${WAIT_SECS}`);
 
 /** Stop a VM. With `gracefulTimeoutSecs`, press the guest's power button
  * first and stop it hard only if it is still running after that long. */
 export function stopVm(id: string, gracefulTimeoutSecs?: number): Promise<VmResponse> {
-  const query = gracefulTimeoutSecs === undefined ? "" : `?graceful_timeout_secs=${gracefulTimeoutSecs}`;
-  return post<VmResponse>(`/vms/${enc(id)}/stop${query}`);
+  const wait = Math.min(300, Math.max(WAIT_SECS, (gracefulTimeoutSecs ?? 0) + 20));
+  const grace = gracefulTimeoutSecs === undefined ? "" : `&graceful_timeout_secs=${gracefulTimeoutSecs}`;
+  return post<VmResponse>(`/vms/${enc(id)}/stop?wait=${wait}${grace}`);
 }
 
-export const pauseVm = (id: string) => post<VmResponse>(`/vms/${enc(id)}/pause`);
-export const deleteVm = (id: string, keepDisk = false) => del(`/vms/${enc(id)}${keepDisk ? "?keep_disk=true" : ""}`);
+export const pauseVm = (id: string) => post<VmResponse>(`/vms/${enc(id)}/pause?wait=${WAIT_SECS}`);
+export const deleteVm = (id: string, keepDisk = false) =>
+  del(`/vms/${enc(id)}?wait=${WAIT_SECS}${keepDisk ? "&keep_disk=true" : ""}`);
+
+/** A VM's event history: starts, exits, restarts, adoptions. */
+export interface VmEvent {
+  at: number;
+  actor: string;
+  kind: "normal" | "warning";
+  reason: string;
+  message: string;
+}
+export const vmEvents = (id: string) => get<{ events: VmEvent[] }>(`/vms/${enc(id)}/events`);
 
 /** A single-use console ticket for the WebSocket (spec §5.6). */
 export const consoleTicket = (id: string) =>

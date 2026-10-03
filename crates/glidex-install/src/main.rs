@@ -51,6 +51,17 @@ const CONTROL_PLANE_UNIT: &str = "/etc/systemd/system/glidex-control-plane.servi
 const UI_UNIT: &str = "/etc/systemd/system/glidex-ui.service";
 const AUTHD_SOCKET_UNIT: &str = "/etc/systemd/system/glidex-authd.socket";
 const AUTHD_SERVICE_UNIT: &str = "/etc/systemd/system/glidex-authd.service";
+/// One instance per running VM, started by the control plane over D-Bus
+/// (spec/reconciliation.md §13).
+pub(crate) const VM_UNIT: &str = "/etc/systemd/system/glidex-vm@.service";
+pub(crate) const VMS_SLICE: &str = "/etc/systemd/system/glidex-vms.slice";
+/// Lets the service user start/stop/kill exactly its glidex-vm@ units.
+pub(crate) const POLKIT_RULE: &str = "/etc/polkit-1/rules.d/50-glidex-vm.rules";
+/// The hypervisor binaries glidex-vm-shim may run (root-owned, 0644).
+pub(crate) const SHIM_ALLOWLIST: &str = "/etc/glidex/vm-shim.json";
+/// A line only control-plane units from before detached VMs carry: such a
+/// control plane still stops every VM when it stops.
+const LEGACY_CP_MARKER: &str = "Stopping the service stops running VMs";
 /// PAM service glidex-authd authenticates with. Rewritten only while it
 /// carries `PAM_MARKER`, so an administrator's edits are kept.
 pub(crate) const PAM_FILE: &str = "/etc/pam.d/glidex";
@@ -1075,7 +1086,9 @@ fn target_dir() -> PathBuf {
 
 /// `cargo build` arguments: the packages whose binaries `binaries` installs.
 fn build_args(opts: &Options) -> Vec<&'static str> {
-    let mut args = vec!["build", "--release", "-p", "glidex-control-plane", "-p", "glidex-netd", "-p", "glidex-ui"];
+    let mut args = vec![
+        "build", "--release", "-p", "glidex-control-plane", "-p", "glidex-netd", "-p", "glidex-ui", "-p", "glidex-vm-shim",
+    ];
     if opts.services {
         args.extend(["-p", "glidex-authd"]);
     }
@@ -1101,7 +1114,7 @@ fn build_ui(bun: &str) -> Result<()> {
 
 /// Binaries the install puts in `BIN_DIR`.
 fn binaries(opts: &Options) -> Vec<&'static str> {
-    let mut v = vec!["glidex-control-plane", "gxctl", "glidex-ui"];
+    let mut v = vec!["glidex-control-plane", "gxctl", "glidex-ui", "glidex-vm-shim"];
     if opts.networking {
         v.push("glidex-netd");
     }
@@ -1697,13 +1710,15 @@ fn install_services(changed: &Changes, invoking: Option<&str>, user_home: &Path)
         &Path::new(BIN_DIR).join("glidex-control-plane"),
         &control_plane_groups(group_exists),
     );
+    let previous_unit = fs::read_to_string(CONTROL_PLANE_UNIT).ok();
     let cp_unit_changed = write_if_changed(CONTROL_PLANE_UNIT, &unit)?;
+    let vm_units_changed = install_vm_units(&root)?;
     let ui_unit_changed = install_if_changed(&root.join("packaging/glidex-ui.service"), UI_UNIT, "0644")?;
     let authd_socket_changed =
         install_if_changed(&root.join("packaging/glidex-authd.socket"), AUTHD_SOCKET_UNIT, "0644")?;
     let authd_service_changed =
         install_if_changed(&root.join("packaging/glidex-authd.service"), AUTHD_SERVICE_UNIT, "0644")?;
-    if cp_unit_changed || ui_unit_changed || authd_socket_changed || authd_service_changed {
+    if cp_unit_changed || ui_unit_changed || authd_socket_changed || authd_service_changed || vm_units_changed {
         sudo(&argv(&["systemctl", "daemon-reload"]))?;
     }
     enable_unit("glidex-authd.socket")?;
@@ -1720,10 +1735,12 @@ fn install_services(changed: &Changes, invoking: Option<&str>, user_home: &Path)
     }
     println!("{} glidex-authd.socket (/run/glidex-authd/auth.sock)", "Running:".green());
 
-    // Control plane: stopping it stops every VM, so never restart it under
-    // running VMs.
+    // Control plane: VMs run in their own units and survive a restart. A
+    // control plane from before that still stops every VM when it stops,
+    // so that one upgrade waits while VMs run.
     let cp = "glidex-control-plane.service";
     let cp_stale = changed.control_plane || cp_unit_changed;
+    let legacy_running = previous_unit.as_deref().is_some_and(|u| u.contains(LEGACY_CP_MARKER));
     if !unit_active(cp) {
         if port_in_use(API_ADDR) {
             println!(
@@ -1737,13 +1754,14 @@ fn install_services(changed: &Changes, invoking: Option<&str>, user_home: &Path)
             println!("{} {} (as {})", "Started:".green(), cp, SERVICE_USER);
         }
     } else if cp_stale {
-        match active_vms() {
-            Some(0) => {
+        match (legacy_running, active_vms()) {
+            (false, _) | (true, Some(0)) => {
                 sudo(&argv(&["systemctl", "restart", cp]))?;
-                println!("{} {} (as {})", "Restarted:".green(), cp, SERVICE_USER);
+                println!("{} {} (as {}); running VMs keep running", "Restarted:".green(), cp, SERVICE_USER);
             }
-            n => println!(
-                "{} {} has {} running VM(s); restart it when convenient to apply the update (it stops them): sudo systemctl restart {}",
+            (true, n) => println!(
+                "{} {} has {} running VM(s), and the running release stops VMs when it stops. \
+                 This upgrade stops them once; later ones leave VMs running. Restart it when convenient: sudo systemctl restart {}",
                 "Not restarted:".yellow(),
                 cp,
                 n.map_or("possibly".to_string(), |n| n.to_string()),
@@ -1783,6 +1801,49 @@ fn install_services(changed: &Changes, invoking: Option<&str>, user_home: &Path)
         }
     }
     Ok(())
+}
+
+/// The VM unit template, its slice, the polkit rule and the shim's
+/// allowlist (spec/reconciliation.md §13). Returns whether a unit changed.
+fn install_vm_units(root: &Path) -> Result<bool> {
+    let template = fs::read_to_string(root.join("packaging/glidex-vm@.service.in")).context("packaging/glidex-vm@.service.in")?;
+    let unit = render_control_plane_unit(
+        &template,
+        SERVICE_USER,
+        Path::new(SERVICE_HOME),
+        &Path::new(BIN_DIR).join("glidex-vm-shim"),
+        &control_plane_groups(group_exists),
+    );
+    let mut changed = write_if_changed(VM_UNIT, &unit)?;
+    changed |= install_if_changed(&root.join("packaging/glidex-vms.slice"), VMS_SLICE, "0644")?;
+    let rule = fs::read_to_string(root.join("packaging/50-glidex-vm.rules.in")).context("packaging/50-glidex-vm.rules.in")?;
+    if write_if_changed(POLKIT_RULE, &render_polkit_rule(&rule, SERVICE_USER))? {
+        println!("{} {}", "Updated:".green(), POLKIT_RULE);
+    }
+    if write_if_changed(SHIM_ALLOWLIST, &shim_allowlist(|p| Path::new(p).exists()))? {
+        println!("{} {}", "Updated:".green(), SHIM_ALLOWLIST);
+    }
+    if changed {
+        println!("{} {} and {}", "Updated:".green(), VM_UNIT, VMS_SLICE);
+    }
+    Ok(changed)
+}
+
+fn render_polkit_rule(template: &str, user: &str) -> String {
+    template.replace("@USER@", user)
+}
+
+/// `/etc/glidex/vm-shim.json`: the installed hypervisors.
+fn shim_allowlist(exists: impl Fn(&str) -> bool) -> String {
+    let qemu = format!("qemu-system-{}", std::env::consts::ARCH);
+    let candidates = [
+        "/usr/local/bin/cloud-hypervisor".to_string(),
+        "/usr/bin/cloud-hypervisor".to_string(),
+        format!("/usr/bin/{}", qemu),
+        format!("/usr/local/bin/{}", qemu),
+    ];
+    let list: Vec<&String> = candidates.iter().filter(|p| exists(p)).collect();
+    serde_json::to_string_pretty(&serde_json::json!({ "hypervisors": list })).unwrap_or_default() + "\n"
 }
 
 fn print_usage(opts: &Options) {
@@ -2040,6 +2101,43 @@ mod tests {
     }
 
     #[test]
+    fn vm_unit_template_runs_the_shim_as_the_service_user() {
+        let template = std::fs::read_to_string(workspace_root().join("packaging/glidex-vm@.service.in")).unwrap();
+        let unit = render_control_plane_unit(&template, "glidex", Path::new("/var/lib/glidex-control-plane"), Path::new("/usr/local/bin/glidex-vm-shim"), &["kvm"]);
+        let s = settings(&unit);
+        for line in [
+            "Type=notify",
+            "NotifyAccess=main",
+            "User=glidex",
+            "Group=glidex",
+            "SupplementaryGroups=kvm",
+            "ExecStart=/usr/local/bin/glidex-vm-shim --vm %i --dir /run/glidex-cp/vms/%i",
+            "KillMode=mixed",
+            "TimeoutStopSec=330",
+            "Restart=no",
+            "Slice=glidex-vms.slice",
+            "PrivateTmp=yes",
+            "ReadWritePaths=/var/lib/glidex-control-plane /run/glidex-cp/vms/%i -/run/glidex/vhost",
+            "DeviceAllow=/dev/kvm rw",
+        ] {
+            assert!(s.contains(&line), "missing {line:?}");
+        }
+        assert!(!unit.contains("@USER@") && !unit.contains("@BIN@"), "all placeholders filled");
+        // Never enabled: only the control plane starts VMs (D10).
+        assert!(!unit.contains("[Install]"));
+        assert!(!s.iter().any(|l| l.starts_with("NoNewPrivileges=")), "would drop cloud-hypervisor's cap_net_admin");
+    }
+
+    #[test]
+    fn polkit_rule_and_shim_allowlist() {
+        let rule = render_polkit_rule(&std::fs::read_to_string(workspace_root().join("packaging/50-glidex-vm.rules.in")).unwrap(), "glidex");
+        assert!(rule.contains(r#"subject.user == "glidex""#) && !rule.contains("@USER@"));
+        assert!(rule.contains(r#"["start", "stop", "kill"]"#));
+        let list: serde_json::Value = serde_json::from_str(&shim_allowlist(|p| p == "/usr/local/bin/cloud-hypervisor")).unwrap();
+        assert_eq!(list, serde_json::json!({ "hypervisors": ["/usr/local/bin/cloud-hypervisor"] }));
+    }
+
+    #[test]
     fn control_plane_unit_is_sandboxed_without_breaking_vms() {
         let unit = rendered_cp_unit();
         let s = settings(&unit);
@@ -2204,7 +2302,7 @@ mod tests {
 
     #[test]
     fn binaries_follow_options() {
-        assert_eq!(binaries(&Options::default()), ["glidex-control-plane", "gxctl", "glidex-ui", "glidex-netd", "glidex-authd"]);
+        assert_eq!(binaries(&Options::default()), ["glidex-control-plane", "gxctl", "glidex-ui", "glidex-vm-shim", "glidex-netd", "glidex-authd"]);
         let no_net = Options { networking: false, ..Options::default() };
         assert!(!binaries(&no_net).contains(&"glidex-netd"));
         let no_services = Options { services: false, ..Options::default() };

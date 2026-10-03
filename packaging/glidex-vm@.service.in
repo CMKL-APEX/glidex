@@ -1,0 +1,54 @@
+# Rendered by glidex-install (@USER@, @HOME@, @BIN@, @GROUPS@ are filled in).
+# One instance per running VM, started only by the control plane over D-Bus
+# (polkit rule 50-glidex-vm.rules). Never enabled: relaunching VMs after a
+# host reboot is the control plane's job (spec/reconciliation.md D10, §13.1).
+[Unit]
+Description=glidex VM %i
+Documentation=https://github.com/CMKL-APEX/glidex
+# Ordering only, so that at host shutdown VMs stop before netd and Open
+# vSwitch. Not PartOf=/BindsTo= the control plane: VMs outlive it.
+After=glidex-netd.service openvswitch-switch.service openvswitch.service glidex-ovs-vswitchd.service
+
+[Service]
+Type=notify
+NotifyAccess=main
+User=@USER@
+Group=glidex
+# kvm, when the group exists.
+SupplementaryGroups=@GROUPS@
+Environment=HOME=@HOME@
+WorkingDirectory=@HOME@
+ExecStart=@BIN@ --vm %i --dir /run/glidex-cp/vms/%i
+TimeoutStartSec=60
+# SIGTERM goes to the shim only: it presses the power button, waits
+# host_shutdown_grace_secs, then stops the hypervisor. Anything left is
+# SIGKILLed after TimeoutStopSec, which covers the 300 s maximum grace.
+KillMode=mixed
+TimeoutStopSec=330
+# Restarting is the VM controller's decision, never systemd's.
+Restart=no
+Slice=glidex-vms.slice
+UMask=0077
+
+# The hypervisor sandbox (spec/security.md §9). No NoNewPrivileges= nor
+# anything implying it for a non-root unit: cloud-hypervisor's cap_net_admin
+# file capability (tap devices) would be ignored.
+#  - /dev is closed except for what VMs use: KVM, VFIO passthrough (the
+#    container and the per-group devices), tap (/dev/net/tun) and QEMU's
+#    vhost-net. Hugepage memory is memfd-backed.
+#  - A private /tmp: paths given to the API must not be under /tmp.
+PrivateTmp=yes
+ProtectSystem=strict
+# Disk images and kernels given to the API must be outside /home, /root and
+# /run/user (ProtectHome).
+ProtectHome=yes
+# The service home (disks, images, firmware and its variable stores), this
+# VM's runtime directory (sockets, console log), and vhost-user sockets in
+# glidex-netd's directory.
+ReadWritePaths=@HOME@ /run/glidex-cp/vms/%i -/run/glidex/vhost
+DevicePolicy=closed
+DeviceAllow=/dev/kvm rw
+DeviceAllow=/dev/vfio/vfio rw
+DeviceAllow=char-vfio rw
+DeviceAllow=/dev/net/tun rw
+DeviceAllow=/dev/vhost-net rw

@@ -23,16 +23,75 @@ fn expand_tilde(path: String) -> String {
     path
 }
 
+/// A VM's state as the API shows it, derived from the observed
+/// [`VmPhase`] (spec/reconciliation.md §7.4).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum VmState {
     Created,
+    Starting,
     Running,
     Paused,
+    Stopping,
+    Stopped,
+    Failed,
+    Unknown,
+}
+
+impl std::fmt::Display for VmState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = serde_json::to_value(self).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
+        f.write_str(&s)
+    }
+}
+
+/// What the user wants the VM to be doing (`spec.power`).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum PowerState {
+    Running,
+    Paused,
+    #[default]
     Stopped,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// What to do when the hypervisor dies without being asked to (§7.5).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RestartPolicy {
+    #[default]
+    OnFailure,
+    Never,
+}
+
+/// What to do with a VM that should be running after a host reboot (D10).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum HostBootPolicy {
+    #[default]
+    Resume,
+    Stop,
+}
+
+/// What the VM controller last observed (§7.2).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum VmPhase {
+    #[default]
+    Stopped,
+    Provisioning,
+    Starting,
+    Running,
+    Paused,
+    Stopping,
+    Failed,
+    Unknown,
+}
+
+/// The longest grace a stop may give the guest (§7.1).
+pub const MAX_STOP_GRACE_SECS: u32 = 300;
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct VmConfig {
     pub vcpu_count: u8,
     pub mem_size_mib: u32,
@@ -135,55 +194,218 @@ pub struct NicState {
     pub ipv4: Option<Ipv4Addr>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// The VM resource (spec/reconciliation.md §6.1, §7): what the user asked
+/// for (`spec`) and what the VM controller last saw (`status`). Stored as
+/// the `{meta, spec, status}` envelope (`store::VmRecord`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(into = "crate::store::VmRecord", from = "crate::store::VmRecord")]
 pub struct Vm {
     pub id: String,
     pub name: String,
-    /// Owning project id (spec/security.md §6). Empty only in records
-    /// from before projects existed; `VmManager::initialize` fills it in.
-    #[serde(default)]
+    /// Owning project id (spec/security.md §6).
     pub project: String,
-    pub state: VmState,
+    pub created_at: u64,
+    pub generation: u64,
+    pub resource_version: u64,
+    pub deletion_requested_at: Option<u64>,
+    pub finalizers: Vec<String>,
+    pub spec: VmSpec,
+    pub status: VmStatus,
+}
+
+/// `spec`: the only thing the API writes (D3).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VmSpec {
     pub config: VmConfig,
-    pub socket_path: String,
-    pub console_socket_path: String,
-    pub log_path: String,
-    pub hypervisor: HypervisorType,
+    #[serde(default)]
+    pub power: PowerState,
+    #[serde(default)]
+    pub restart_policy: RestartPolicy,
+    #[serde(default)]
+    pub on_host_boot: HostBootPolicy,
+    /// Power-button wait when glidex stops the VM; 0 = stop hard.
+    #[serde(default)]
+    pub stop_grace_secs: u32,
+}
+
+/// `status`: written only by the VM controller.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct VmStatus {
+    #[serde(default)]
+    pub observed_generation: u64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub nics: Vec<NicState>,
+    pub conditions: Vec<Condition>,
+    #[serde(default)]
+    pub last_reconciled_at: u64,
+    #[serde(default)]
+    pub phase: VmPhase,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance: Option<InstanceRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_exit: Option<ExitRecord>,
+    #[serde(default)]
+    pub restart_count: u32,
+    /// Consecutive failed launches (provisioning errors, `LaunchFailed`):
+    /// backs off like a crash loop but is not one (§7.5).
+    #[serde(default)]
+    pub launch_failures: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_restart_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_deadline: Option<u64>,
+    /// The ports this VM owns in netd: written before `attach_vm_port`,
+    /// removed after `detach_vm_port` (§9.1, D16).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub nics: Vec<NicStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed_growpart_seq: Option<u64>,
+    #[serde(default)]
+    pub never_started: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Tristate {
+    True,
+    False,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Condition {
+    pub kind: String,
+    pub status: Tristate,
+    pub reason: String,
+    #[serde(default)]
+    pub message: String,
+    pub last_transition_at: u64,
+}
+
+/// Where the instance runs (§8.8).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum Runner {
+    Systemd { unit: String },
+    Detached,
+}
+
+/// Everything needed to find and verify a running instance (D7).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstanceRef {
+    pub instance_id: String,
+    pub runner: Runner,
+    pub boot_id: String,
+    pub launched_generation: u64,
+    /// Disk ids the instance has open: they stay claimed until it is gone.
+    #[serde(default)]
+    pub disks: Vec<String>,
+    /// Host PCI devices it holds.
+    #[serde(default)]
+    pub vfio_devices: Vec<String>,
+    #[serde(default)]
+    pub shim_pid: Option<u32>,
+    #[serde(default)]
+    pub shim_starttime: Option<u64>,
+    #[serde(default)]
+    pub hypervisor_pid: Option<u32>,
+    #[serde(default)]
+    pub hypervisor_starttime: Option<u64>,
+    pub launched_at: u64,
+    /// The root disk whose `pending_growpart` this launch's seed carries;
+    /// cleared once the guest is seen running.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub growpart_disk: Option<String>,
+}
+
+pub use glidex_vm_shim::state::ExitCause;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExitRecord {
+    pub at: u64,
+    pub instance_id: String,
+    pub cause: ExitCause,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signal: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NicStatus {
+    pub network: String,
+    pub nic_index: u8,
+    pub mac: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ipv4: Option<Ipv4Addr>,
+    #[serde(default)]
+    pub port_ok: bool,
 }
 
 impl Vm {
     pub fn new(name: String, config: VmConfig) -> Self {
-        let id = Uuid::new_v4().to_string();
-        let hypervisor = config.hypervisor;
-        let paths = crate::paths::vm_paths(&id);
         Self {
-            id,
+            id: Uuid::new_v4().to_string(),
             name,
             project: String::new(),
-            state: VmState::Created,
-            config,
-            socket_path: paths.api_socket,
-            console_socket_path: paths.console_socket,
-            log_path: paths.log,
-            hypervisor,
-            nics: Vec::new(),
+            created_at: crate::tenancy::now(),
+            generation: 1,
+            resource_version: 1,
+            deletion_requested_at: None,
+            finalizers: Vec::new(),
+            spec: VmSpec {
+                config,
+                power: PowerState::Stopped,
+                restart_policy: RestartPolicy::OnFailure,
+                on_host_boot: HostBootPolicy::Resume,
+                stop_grace_secs: 0,
+            },
+            status: VmStatus { never_started: true, ..Default::default() },
         }
+    }
+
+    pub fn config(&self) -> &VmConfig {
+        &self.spec.config
+    }
+
+    pub fn hypervisor(&self) -> HypervisorType {
+        self.spec.config.hypervisor
+    }
+
+    pub fn paths(&self) -> crate::paths::VmPaths {
+        crate::paths::vm_paths(&self.id)
     }
 
     /// Where the auto-generated cloud-init seed for this VM lives.
     pub fn default_cloud_init_path(&self) -> String {
-        crate::paths::vm_paths(&self.id).cloud_init
+        self.paths().cloud_init
     }
 
-    /// Point the runtime paths at the VM's private directory. Used to
-    /// move records from before per-VM directories (`/tmp/<prefix>-<id>.*`).
-    pub fn relocate_runtime_paths(&mut self) {
-        let paths = crate::paths::vm_paths(&self.id);
-        self.socket_path = paths.api_socket;
-        self.console_socket_path = paths.console_socket;
-        self.log_path = paths.log;
+    /// The state the API shows (§7.4).
+    pub fn state(&self) -> VmState {
+        match self.status.phase {
+            VmPhase::Stopped if self.status.never_started => VmState::Created,
+            VmPhase::Stopped => VmState::Stopped,
+            VmPhase::Provisioning | VmPhase::Starting => VmState::Starting,
+            VmPhase::Running => VmState::Running,
+            VmPhase::Paused => VmState::Paused,
+            VmPhase::Stopping => VmState::Stopping,
+            VmPhase::Failed => VmState::Failed,
+            VmPhase::Unknown => VmState::Unknown,
+        }
+    }
+
+    pub fn condition(&self, kind: &str) -> Option<&Condition> {
+        self.status.conditions.iter().find(|c| c.kind == kind)
+    }
+
+    /// Converged (D13): the reconcile of the current generation is done
+    /// and nothing blocks the spec.
+    pub fn is_converged(&self) -> bool {
+        self.status.observed_generation >= self.generation
+            && self.condition("Ready").is_some_and(|c| c.status == Tristate::True)
     }
 }
 
@@ -225,6 +447,15 @@ pub struct CreateVmRequest {
     pub networks: Option<Vec<NetworkAttachment>>,
     #[serde(default)]
     pub hugepages: bool,
+    /// Desired power state; default `stopped` (create, then start).
+    #[serde(default)]
+    pub power: Option<PowerState>,
+    #[serde(default)]
+    pub restart_policy: Option<RestartPolicy>,
+    #[serde(default)]
+    pub on_host_boot: Option<HostBootPolicy>,
+    #[serde(default)]
+    pub stop_grace_secs: Option<u32>,
 }
 
 /// The managed-disk part of `CreateVmRequest`, resolved by `create_vm`.
@@ -276,12 +507,28 @@ impl From<CreateVmRequest> for VmConfig {
     }
 }
 
+/// The API projection of a [`Vm`]: today's flat fields plus the desired
+/// state and the controller's view (§7.4). The runtime paths stay private
+/// (spec/security.md §9).
 #[derive(Debug, Serialize)]
 pub struct VmResponse {
     pub id: String,
     pub name: String,
     pub project: String,
     pub state: VmState,
+    pub desired_state: PowerState,
+    pub generation: u64,
+    pub observed_generation: u64,
+    pub restart_required: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conditions: Vec<Condition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_exit: Option<ExitRecord>,
+    pub restart_policy: RestartPolicy,
+    pub on_host_boot: HostBootPolicy,
+    pub stop_grace_secs: u32,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub deleting: bool,
     pub vcpu_count: u8,
     pub mem_size_mib: u32,
     pub hypervisor: HypervisorType,
@@ -301,33 +548,44 @@ pub struct VmResponse {
 
 impl From<&Vm> for VmResponse {
     fn from(vm: &Vm) -> Self {
+        let config = vm.config();
         VmResponse {
             id: vm.id.clone(),
             name: vm.name.clone(),
             project: vm.project.clone(),
-            state: vm.state.clone(),
-            vcpu_count: vm.config.vcpu_count,
-            mem_size_mib: vm.config.mem_size_mib,
-            hypervisor: vm.hypervisor,
-            vfio_devices: vm.config.vfio_devices.clone(),
-            credential: vm.config.credential.clone(),
-            root_disk: vm.config.root_disk.clone(),
-            data_disks: vm.config.data_disks.clone(),
+            state: vm.state(),
+            desired_state: vm.spec.power,
+            generation: vm.generation,
+            observed_generation: vm.status.observed_generation,
+            restart_required: vm.condition("RestartRequired").is_some_and(|c| c.status == Tristate::True),
+            conditions: vm.status.conditions.clone(),
+            last_exit: vm.status.last_exit.clone(),
+            restart_policy: vm.spec.restart_policy,
+            on_host_boot: vm.spec.on_host_boot,
+            stop_grace_secs: vm.spec.stop_grace_secs,
+            deleting: vm.deletion_requested_at.is_some(),
+            vcpu_count: config.vcpu_count,
+            mem_size_mib: config.mem_size_mib,
+            hypervisor: config.hypervisor,
+            vfio_devices: config.vfio_devices.clone(),
+            credential: config.credential.clone(),
+            root_disk: config.root_disk.clone(),
+            data_disks: config.data_disks.clone(),
             warnings: Vec::new(),
-            nics: if vm.nics.is_empty() {
-                vm.config
-                    .networks
-                    .iter()
-                    .map(|a| NicState {
+            nics: config
+                .networks
+                .iter()
+                .enumerate()
+                .map(|(i, a)| {
+                    let live = vm.status.nics.iter().find(|n| n.nic_index as usize == i);
+                    NicState {
                         network: a.network.clone(),
                         mac: a.mac.clone().unwrap_or_default(),
-                        port: None,
-                        ipv4: None,
-                    })
-                    .collect()
-            } else {
-                vm.nics.clone()
-            },
+                        port: live.and_then(|n| n.port.clone()),
+                        ipv4: live.and_then(|n| n.ipv4),
+                    }
+                })
+                .collect(),
         }
     }
 }

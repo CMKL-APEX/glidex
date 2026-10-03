@@ -498,19 +498,15 @@ async fn test_pause_vm_not_found() {
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
-#[tokio::test]
-async fn test_stop_vm_invalid_state() {
-    let (app, _temp_dir) = create_test_app();
-
-    // Create a VM (state: created)
+/// Create a kernel-boot VM through the API; returns its id.
+async fn create_simple_vm(app: &axum::Router, name: &str) -> String {
     let create_request = json!({
-        "name": "stop-test-vm",
+        "name": name,
         "vcpu_count": 1,
         "mem_size_mib": 256,
         "kernel_image_path": "/path/to/kernel",
         "rootfs_path": "/path/to/rootfs.ext4"
     });
-
     let response = app
         .clone()
         .oneshot(
@@ -523,112 +519,113 @@ async fn test_stop_vm_invalid_state() {
         )
         .await
         .unwrap();
-
-    let created_vm = body_to_json(response.into_body()).await;
-    let vm_id = created_vm["id"].as_str().unwrap();
-
-    // Try to stop a VM that is not running (should fail)
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/vms/{}/stop", vm_id))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-
-    let body = body_to_json(response.into_body()).await;
-    assert_eq!(body["error"], "invalid_state");
+    assert_eq!(response.status(), StatusCode::CREATED);
+    body_to_json(response.into_body()).await["id"].as_str().unwrap().to_string()
 }
 
-#[tokio::test]
-async fn test_graceful_stop_follows_stop_rules() {
-    let (app, _temp_dir) = create_test_app();
-    let create_request = json!({
-        "name": "graceful-vm",
-        "vcpu_count": 1,
-        "mem_size_mib": 256,
-        "kernel_image_path": "/path/to/kernel",
-        "rootfs_path": "/path/to/rootfs.ext4"
-    });
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/vms")
-                .header("content-type", "application/json")
-                .body(Body::from(create_request.to_string()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let vm_id = body_to_json(response.into_body()).await["id"].as_str().unwrap().to_string();
-
-    // A VM that isn't running has no guest to shut down: same as stop.
-    let stop = |uri: String| {
-        app.clone().oneshot(Request::builder().method("POST").uri(uri).body(Body::empty()).unwrap())
+async fn send(app: &axum::Router, method: &str, uri: String, body: Option<Value>, headers: &[(&str, &str)]) -> (StatusCode, Value) {
+    let mut b = Request::builder().method(method).uri(uri);
+    for (k, v) in headers {
+        b = b.header(*k, *v);
+    }
+    let req = match body {
+        Some(v) => b.header("content-type", "application/json").body(Body::from(v.to_string())).unwrap(),
+        None => b.body(Body::empty()).unwrap(),
     };
-    let response = stop(format!("/vms/{}/stop?graceful_timeout_secs=5", vm_id)).await.unwrap();
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    assert_eq!(body_to_json(response.into_body()).await["error"], "invalid_state");
+    let response = app.clone().oneshot(req).await.unwrap();
+    let status = response.status();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+}
 
-    let response = stop("/vms/nonexistent-id/stop?graceful_timeout_secs=5".to_string()).await.unwrap();
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
-
-    let response = stop(format!("/vms/{}/stop?graceful_timeout_secs=soon", vm_id)).await.unwrap();
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+/// Stopping a stopped VM writes nothing: the spec already says stopped
+/// (spec/reconciliation.md §9.2).
+#[tokio::test]
+async fn test_stop_of_a_stopped_vm_is_a_no_op() {
+    let (app, _temp_dir) = create_test_app();
+    let vm_id = create_simple_vm(&app, "stop-test-vm").await;
+    let (status, body) = send(&app, "POST", format!("/vms/{}/stop", vm_id), None, &[]).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    assert_eq!(body["desired_state"], "stopped");
+    assert_eq!(body["state"], "created");
+    assert_eq!(body["generation"], 1, "nothing changed");
 }
 
 #[tokio::test]
-async fn test_pause_vm_invalid_state() {
+async fn test_graceful_stop_records_the_grace() {
     let (app, _temp_dir) = create_test_app();
+    let vm_id = create_simple_vm(&app, "graceful-vm").await;
 
-    // Create a VM (state: created)
-    let create_request = json!({
-        "name": "pause-test-vm",
-        "vcpu_count": 1,
-        "mem_size_mib": 256,
-        "kernel_image_path": "/path/to/kernel",
-        "rootfs_path": "/path/to/rootfs.ext4"
-    });
+    let (status, body) = send(&app, "POST", format!("/vms/{}/stop?graceful_timeout_secs=5", vm_id), None, &[]).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    assert_eq!((body["stop_grace_secs"].as_u64(), body["generation"].as_u64()), (Some(5), Some(2)));
 
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/vms")
-                .header("content-type", "application/json")
-                .body(Body::from(create_request.to_string()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+    let (status, _) = send(&app, "POST", "/vms/nonexistent-id/stop?graceful_timeout_secs=5".into(), None, &[]).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = send(&app, "POST", format!("/vms/{}/stop?graceful_timeout_secs=soon", vm_id), None, &[]).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
 
-    let created_vm = body_to_json(response.into_body()).await;
-    let vm_id = created_vm["id"].as_str().unwrap();
+/// Pause on a stopped VM means "launch it, then pause" (§7.1); the
+/// controller does that, the API only records it.
+#[tokio::test]
+async fn test_pause_records_the_desired_state() {
+    let (app, _temp_dir) = create_test_app();
+    let vm_id = create_simple_vm(&app, "pause-test-vm").await;
+    let (status, body) = send(&app, "POST", format!("/vms/{}/pause", vm_id), None, &[]).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    assert_eq!(body["desired_state"], "paused");
+    assert_eq!(body["generation"], 2);
+    assert_eq!(body["observed_generation"], 0, "no controller ran");
+}
 
-    // Try to pause a VM that is not running (should fail)
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/vms/{}/pause", vm_id))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+#[tokio::test]
+async fn test_patch_edits_spec_and_refuses_immutable_fields() {
+    let (app, _temp_dir) = create_test_app();
+    let vm_id = create_simple_vm(&app, "patch-vm").await;
+    let (status, body) = send(&app, "PATCH", format!("/vms/{}", vm_id), Some(json!({"config": {"vcpu_count": 4}, "restart_policy": "never"})), &[]).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    assert_eq!((body["vcpu_count"].as_u64(), body["restart_policy"].as_str()), (Some(4), Some("never")));
 
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let (status, body) = send(&app, "PATCH", format!("/vms/{}", vm_id), Some(json!({"config": {"hypervisor": "qemu"}})), &[]).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"], "invalid_config");
+    let (status, _) = send(&app, "PATCH", format!("/vms/{}", vm_id), Some(json!({"bogus": 1})), &[]).await;
+    assert!(status.is_client_error());
+    let (status, body) = send(&app, "PATCH", format!("/vms/{}", vm_id), Some(json!({"stop_grace_secs": 301})), &[]).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+}
 
-    let body = body_to_json(response.into_body()).await;
-    assert_eq!(body["error"], "invalid_state");
+#[tokio::test]
+async fn test_if_match_guards_writes() {
+    let (app, _temp_dir) = create_test_app();
+    let vm_id = create_simple_vm(&app, "match-vm").await;
+    let (status, body) = send(&app, "POST", format!("/vms/{}/pause", vm_id), None, &[("if-match", "999")]).await;
+    assert_eq!(status, StatusCode::PRECONDITION_FAILED, "{body}");
+    assert_eq!(body["error"], "precondition_failed");
+    let (status, _) = send(&app, "POST", format!("/vms/{}/pause", vm_id), None, &[("if-match", "1")]).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+}
+
+#[tokio::test]
+async fn test_events_record_spec_writes() {
+    let (app, _temp_dir) = create_test_app();
+    let vm_id = create_simple_vm(&app, "events-vm").await;
+    send(&app, "POST", format!("/vms/{}/start", vm_id), None, &[]).await;
+    let (status, body) = send(&app, "GET", format!("/vms/{}/events", vm_id), None, &[]).await;
+    assert_eq!(status, StatusCode::OK);
+    let reasons: Vec<&str> = body["events"].as_array().unwrap().iter().map(|e| e["reason"].as_str().unwrap()).collect();
+    assert_eq!(reasons, ["Created", "PowerChanged"]);
+}
+
+#[tokio::test]
+async fn test_never_started_vm_is_deleted_at_once() {
+    let (app, _temp_dir) = create_test_app();
+    let vm_id = create_simple_vm(&app, "gone-vm").await;
+    let (status, _) = send(&app, "DELETE", format!("/vms/{}", vm_id), None, &[]).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _) = send(&app, "GET", format!("/vms/{}", vm_id), None, &[]).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 // ============================================================================

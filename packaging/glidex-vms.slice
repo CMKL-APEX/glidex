@@ -1,0 +1,5 @@
+# Where glidex-vm@<id>.service instances run (spec/reconciliation.md §13.1):
+# a place for site-wide resource controls over all VMs.
+[Unit]
+Description=glidex VMs
+Documentation=https://github.com/CMKL-APEX/glidex

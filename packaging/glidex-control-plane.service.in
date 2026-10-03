@@ -23,7 +23,8 @@ ExecStart=@BIN@
 # (listeners, TLS, PAM, OIDC) are in /etc/glidex/control-plane.json; see
 # control-plane.json.example. A non-loopback listener needs TLS, or the
 # control plane refuses to start.
-# Stopping the service stops running VMs (the control plane's shutdown).
+# Each VM runs in its own glidex-vm unit: stopping, restarting or upgrading
+# this service leaves them running (spec/reconciliation.md D1/D2).
 KillSignal=SIGTERM
 TimeoutStopSec=60
 Restart=on-failure
@@ -35,8 +36,9 @@ RestartSec=2
 # Runtime files (spec/security.md §9): api.sock and ui.sock in
 # /run/glidex-cp (0755 so glidex-users and glidex-ui reach their socket;
 # each socket checks its peer), per-VM directories in vms/<id>/ (0700:
-# hypervisor API socket, console socket, cloud-init seed). Kept across a
-# crash-restart so console logs aren't lost; a clean stop stops the VMs.
+# launch.json, instance.json, the shim, hypervisor API and console sockets,
+# console log, cloud-init seed). Must survive this unit stopping: running
+# VMs' shims live there.
 RuntimeDirectory=glidex-cp
 RuntimeDirectoryMode=0755
 RuntimeDirectoryPreserve=yes
@@ -51,8 +53,9 @@ UMask=0077
 #LoadCredential=tls-key:/etc/glidex/tls/cp.key
 #LoadCredential=oidc-client-secret:/etc/glidex/oidc-client-secret
 
-# Sandbox. cloud-hypervisor and QEMU run as children of this unit and
-# inherit all of it, so only settings that keep VMs working are used:
+# Sandbox. Under the systemd VM runner, hypervisors run in the glidex-vm
+# units with their own sandbox; this one still allows what a VM needs, for
+# the detached runner (vm_runner "detached"), where they are its children:
 #  - No NoNewPrivileges=, and none of the settings that imply it for a
 #    non-root unit (RestrictAddressFamilies=, LockPersonality=,
 #    SystemCallFilter=, RestrictSUIDSGID=, ProtectKernel*=,

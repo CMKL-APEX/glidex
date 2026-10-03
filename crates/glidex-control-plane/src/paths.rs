@@ -35,12 +35,25 @@ pub fn vm_dir(vm_id: &str) -> PathBuf {
     run_dir().join("vms").join(vm_id)
 }
 
-/// Runtime file paths of a VM, inside its private directory.
+/// Runtime file paths of a VM, inside its private directory
+/// (spec/reconciliation.md §5.1).
+#[derive(Debug, Clone)]
 pub struct VmPaths {
+    pub dir: PathBuf,
     pub api_socket: String,
     pub console_socket: String,
     pub log: String,
     pub cloud_init: String,
+    pub launch: PathBuf,
+    pub instance: PathBuf,
+    pub shim_socket: String,
+}
+
+impl VmPaths {
+    /// The rotated console log (`console.log.1`).
+    pub fn previous_log(&self) -> String {
+        format!("{}.1", self.log)
+    }
 }
 
 pub fn vm_paths(vm_id: &str) -> VmPaths {
@@ -51,6 +64,10 @@ pub fn vm_paths(vm_id: &str) -> VmPaths {
         console_socket: p("console.sock"),
         log: p("console.log"),
         cloud_init: p("cloudinit.img"),
+        launch: dir.join(glidex_vm_shim::LAUNCH_FILE),
+        instance: dir.join(glidex_vm_shim::INSTANCE_FILE),
+        shim_socket: p(glidex_vm_shim::SHIM_SOCKET),
+        dir,
     }
 }
 

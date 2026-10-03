@@ -1,4 +1,34 @@
-export type VmState = "created" | "running" | "paused" | "stopped";
+/** What a VM is doing, as the controller last saw it (spec/reconciliation.md §7.4). */
+export type VmState =
+  | "created"
+  | "starting"
+  | "running"
+  | "paused"
+  | "stopping"
+  | "stopped"
+  | "failed"
+  | "unknown";
+
+/** What a VM should be doing (`spec.power`). */
+export type PowerState = "running" | "paused" | "stopped";
+
+/** A status condition (`Ready`, `DisksReady`, `CrashLoopBackOff`, …). */
+export interface Condition {
+  kind: string;
+  status: "True" | "False" | "Unknown";
+  reason: string;
+  message: string;
+  last_transition_at: number;
+}
+
+export interface ExitRecord {
+  at: number;
+  instance_id: string;
+  cause: string;
+  code?: number;
+  signal?: number;
+  message?: string;
+}
 
 export type HypervisorType = "cloudhypervisor" | "qemu";
 
@@ -13,6 +43,12 @@ export interface VmResponse {
   /** Owning project id. */
   project: string;
   state: VmState;
+  desired_state?: PowerState;
+  generation?: number;
+  observed_generation?: number;
+  restart_required?: boolean;
+  conditions?: Condition[];
+  last_exit?: ExitRecord;
   vcpu_count: number;
   mem_size_mib: number;
   hypervisor: HypervisorType;
@@ -255,7 +291,30 @@ export function stateColor(state: VmState): string {
       return "bg-yellow-500";
     case "created":
       return "bg-blue-500";
+    case "starting":
+    case "stopping":
+      return "bg-sky-400";
+    case "failed":
+    case "unknown":
+      return "bg-red-700";
   }
+}
+
+/** Whether the VM is where its desired state says (nothing to wait for). */
+export function settled(vm: VmResponse): boolean {
+  const desired = vm.desired_state;
+  if (!desired) return true;
+  const there =
+    desired === "stopped" ? vm.state === "stopped" || vm.state === "created" : vm.state === desired;
+  const ready = vm.conditions?.find((c) => c.kind === "Ready");
+  return there && (ready === undefined || ready.status === "True");
+}
+
+/** What keeps the VM from its desired state (the `Ready` condition). */
+export function notReadyReason(vm: VmResponse): string | null {
+  const ready = vm.conditions?.find((c) => c.kind === "Ready");
+  if (!ready || ready.status === "True") return null;
+  return ready.message ? `${ready.reason}: ${ready.message}` : ready.reason;
 }
 
 export function stateLabel(state: VmState): string {

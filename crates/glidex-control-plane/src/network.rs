@@ -304,6 +304,13 @@ impl Netd {
         Ok(client.call_as(op, Some(on_behalf_of), timeout)?)
     }
 
+    /// The identity of netd's full socket (device, inode): it changes when
+    /// netd restarts and binds it anew. `None` if there is none.
+    pub fn socket_identity(&self) -> Option<(u64, u64)> {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::metadata(self.run_dir.join(FULL_SOCKET_NAME)).ok().map(|m| (m.dev(), m.ino()))
+    }
+
     /// Host status: full socket if we're allowed, else the status socket.
     pub fn probe(&self) -> (NetdAccess, Result<serde_json::Value, NetError>) {
         match Client::connect(&self.run_dir.join(FULL_SOCKET_NAME)) {

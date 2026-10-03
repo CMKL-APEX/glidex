@@ -1,0 +1,437 @@
+//! The VM table as `{meta, spec, status}` envelopes, the schema version and
+//! its migration, and the per-object event rings (spec/reconciliation.md
+//! §6). Disks, images and networks keep their own tables (`images`,
+//! `network`); this module owns `vms` and `events`.
+
+use crate::images::{self, Disk, ImageError};
+use crate::models::{HostBootPolicy, PowerState, RestartPolicy, Vm, VmConfig, VmPhase, VmSpec, VmStatus};
+use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition, WriteTransaction};
+use serde::{Deserialize, Serialize};
+use std::path::Path;
+use std::sync::Arc;
+use thiserror::Error;
+
+const VMS_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("vms");
+const EVENTS_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("events");
+/// Shared with `tenancy` (same name and types).
+const META_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("meta");
+
+/// `meta.schema_version`: absent = 1 (flat VM records), 2 = envelopes.
+pub const SCHEMA_VERSION: u32 = 2;
+const SCHEMA_KEY: &str = "schema_version";
+
+/// Events kept per object.
+pub const EVENTS_PER_OBJECT: usize = 50;
+
+#[derive(Error, Debug)]
+pub enum PersistenceError {
+    #[error("Database error: {0}")]
+    Database(#[from] redb::DatabaseError),
+    #[error("Transaction error: {0}")]
+    Transaction(#[from] redb::TransactionError),
+    #[error("Table error: {0}")]
+    Table(#[from] redb::TableError),
+    #[error("Storage error: {0}")]
+    Storage(#[from] redb::StorageError),
+    #[error("Commit error: {0}")]
+    Commit(#[from] redb::CommitError),
+    #[error("Serialization error: {0}")]
+    Serialization(#[from] serde_json::Error),
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("VM not found: {0}")]
+    VmNotFound(String),
+    #[error("database schema {0} is newer than this glidex (schema {SCHEMA_VERSION}); upgrade glidex")]
+    NewerSchema(u32),
+    #[error("{0}")]
+    Disk(#[from] ImageError),
+}
+
+/// `meta` of every resource (§6.1).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Meta {
+    pub id: String,
+    pub name: String,
+    pub project: String,
+    pub created_at: u64,
+    pub generation: u64,
+    pub resource_version: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deletion_requested_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub finalizers: Vec<String>,
+}
+
+/// How a [`Vm`] is stored: the envelope.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VmRecord {
+    pub meta: Meta,
+    pub spec: VmSpec,
+    #[serde(default)]
+    pub status: VmStatus,
+}
+
+impl From<Vm> for VmRecord {
+    fn from(vm: Vm) -> Self {
+        VmRecord {
+            meta: Meta {
+                id: vm.id,
+                name: vm.name,
+                project: vm.project,
+                created_at: vm.created_at,
+                generation: vm.generation,
+                resource_version: vm.resource_version,
+                deletion_requested_at: vm.deletion_requested_at,
+                finalizers: vm.finalizers,
+            },
+            spec: vm.spec,
+            status: vm.status,
+        }
+    }
+}
+
+impl From<VmRecord> for Vm {
+    fn from(r: VmRecord) -> Self {
+        Vm {
+            id: r.meta.id,
+            name: r.meta.name,
+            project: r.meta.project,
+            created_at: r.meta.created_at,
+            generation: r.meta.generation,
+            resource_version: r.meta.resource_version,
+            deletion_requested_at: r.meta.deletion_requested_at,
+            finalizers: r.meta.finalizers,
+            spec: r.spec,
+            status: r.status,
+        }
+    }
+}
+
+/// A schema-1 record: the flat `Vm` of earlier releases.
+#[derive(Deserialize)]
+struct LegacyVm {
+    id: String,
+    name: String,
+    #[serde(default)]
+    project: String,
+    state: String,
+    config: VmConfig,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EventKind {
+    Normal,
+    Warning,
+}
+
+/// One entry of an object's event ring (§6.4).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Event {
+    pub at: u64,
+    /// `api:<principal>`, `controller`, `guest`, `systemd` or `host`.
+    pub actor: String,
+    pub kind: EventKind,
+    pub reason: String,
+    pub message: String,
+}
+
+impl Event {
+    pub fn new(actor: impl Into<String>, kind: EventKind, reason: impl Into<String>, message: impl Into<String>) -> Self {
+        Event { at: crate::tenancy::now(), actor: actor.into(), kind, reason: reason.into(), message: message.into() }
+    }
+}
+
+/// Event ring key: `<kind>/<id>`.
+pub fn event_key(kind: &str, id: &str) -> String {
+    format!("{}/{}", kind, id)
+}
+
+/// One atomic write across the `vms`, `disks` and `events` tables, so a
+/// VM and the disks it claims never disagree (spec images.md §3).
+#[derive(Default)]
+pub struct Commit<'a> {
+    pub put_vm: Option<&'a Vm>,
+    pub delete_vm: Option<&'a str>,
+    pub put_disks: Vec<&'a Disk>,
+    pub delete_disks: Vec<&'a str>,
+    pub events: Vec<(String, Event)>,
+}
+
+pub struct VmStore {
+    db: Arc<Database>,
+}
+
+impl VmStore {
+    /// Open or create the database. Refuses a database written by a newer
+    /// schema (§6.6).
+    pub fn open(path: impl AsRef<Path>) -> Result<Self, PersistenceError> {
+        if let Some(parent) = path.as_ref().parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let db = Database::create(path.as_ref())?;
+        // The database also holds credential hashes (credentials.rs), so
+        // keep it readable by the control-plane user only.
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path.as_ref(), std::fs::Permissions::from_mode(0o600))?;
+        }
+        let write_txn = db.begin_write()?;
+        {
+            let _ = write_txn.open_table(VMS_TABLE)?;
+            let _ = write_txn.open_table(EVENTS_TABLE)?;
+            let _ = write_txn.open_table(META_TABLE)?;
+        }
+        write_txn.commit()?;
+        let store = Self { db: Arc::new(db) };
+        if let Some(v) = store.schema_version()? {
+            if v > SCHEMA_VERSION {
+                return Err(PersistenceError::NewerSchema(v));
+            }
+        }
+        Ok(store)
+    }
+
+    pub fn database(&self) -> Arc<Database> {
+        self.db.clone()
+    }
+
+    pub fn schema_version(&self) -> Result<Option<u32>, PersistenceError> {
+        let txn = self.db.begin_read()?;
+        let t = txn.open_table(META_TABLE)?;
+        Ok(t.get(SCHEMA_KEY)?.and_then(|v| std::str::from_utf8(v.value()).ok().and_then(|s| s.parse().ok())))
+    }
+
+    /// Rewrite schema-1 VM records as envelopes, in one transaction
+    /// (§6.6). Every migrated VM is stopped: the release that wrote them
+    /// killed its guests when it stopped. Records this build can't read
+    /// (e.g. a removed hypervisor) are left untouched. Returns how many
+    /// records were rewritten.
+    pub fn migrate(&self, on_host_boot: HostBootPolicy) -> Result<usize, PersistenceError> {
+        if self.schema_version()?.is_some() {
+            return Ok(0);
+        }
+        let txn = self.db.begin_write()?;
+        let count;
+        {
+            let mut table = txn.open_table(VMS_TABLE)?;
+            let mut rewritten = Vec::new();
+            for entry in table.iter()? {
+                let (key, value) = entry?;
+                let bytes = value.value();
+                if serde_json::from_slice::<VmRecord>(bytes).is_ok() {
+                    continue;
+                }
+                let legacy: LegacyVm = match serde_json::from_slice(bytes) {
+                    Ok(l) => l,
+                    Err(e) => {
+                        tracing::warn!(vm_id = key.value(), "not migrating unreadable VM record: {}", e);
+                        continue;
+                    }
+                };
+                let mut vm = Vm::new(legacy.name, legacy.config);
+                vm.id = legacy.id;
+                vm.project = legacy.project;
+                vm.spec.power = PowerState::Stopped;
+                vm.spec.restart_policy = RestartPolicy::OnFailure;
+                vm.spec.on_host_boot = on_host_boot;
+                vm.status.phase = VmPhase::Stopped;
+                vm.status.never_started = legacy.state == "created";
+                rewritten.push((key.value().to_string(), serde_json::to_vec(&vm)?));
+            }
+            for (key, bytes) in &rewritten {
+                table.insert(key.as_str(), bytes.as_slice())?;
+            }
+            count = rewritten.len();
+            let mut meta = txn.open_table(META_TABLE)?;
+            meta.insert(SCHEMA_KEY, SCHEMA_VERSION.to_string().as_bytes())?;
+        }
+        txn.commit()?;
+        Ok(count)
+    }
+
+    /// Load all VMs. Records this build can't decode are skipped with a
+    /// warning and left in the database untouched.
+    pub fn load_all(&self) -> Result<Vec<Vm>, PersistenceError> {
+        let read_txn = self.db.begin_read()?;
+        let table = read_txn.open_table(VMS_TABLE)?;
+        let mut vms = Vec::new();
+        for result in table.iter()? {
+            let (key, value) = result?;
+            match serde_json::from_slice::<Vm>(value.value()) {
+                Ok(vm) => vms.push(vm),
+                Err(e) => tracing::warn!(vm_id = key.value(), "Skipping unreadable VM record: {}", e),
+            }
+        }
+        Ok(vms)
+    }
+
+    pub fn save(&self, vm: &Vm) -> Result<(), PersistenceError> {
+        self.commit(Commit { put_vm: Some(vm), ..Default::default() })
+    }
+
+    /// Apply a `Commit` in a single write transaction.
+    pub fn commit(&self, c: Commit<'_>) -> Result<(), PersistenceError> {
+        let write_txn = self.db.begin_write()?;
+        {
+            let mut table = write_txn.open_table(VMS_TABLE)?;
+            if let Some(vm) = c.put_vm {
+                let serialized = serde_json::to_vec(vm)?;
+                table.insert(vm.id.as_str(), serialized.as_slice())?;
+            }
+            if let Some(id) = c.delete_vm {
+                table.remove(id)?;
+                let mut events = write_txn.open_table(EVENTS_TABLE)?;
+                events.remove(event_key("vm", id).as_str())?;
+            }
+        }
+        for d in c.put_disks {
+            images::write_disk(&write_txn, d)?;
+        }
+        for id in c.delete_disks {
+            images::delete_disk_record(&write_txn, id)?;
+        }
+        for (key, event) in c.events {
+            if c.delete_vm.is_some_and(|id| key == event_key("vm", id)) {
+                continue;
+            }
+            push_event(&write_txn, &key, event)?;
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    /// Append to an object's event ring on its own.
+    pub fn push_event(&self, key: &str, event: Event) -> Result<(), PersistenceError> {
+        let txn = self.db.begin_write()?;
+        push_event(&txn, key, event)?;
+        txn.commit()?;
+        Ok(())
+    }
+
+    /// An object's events, oldest first.
+    pub fn events(&self, key: &str) -> Result<Vec<Event>, PersistenceError> {
+        let txn = self.db.begin_read()?;
+        let t = txn.open_table(EVENTS_TABLE)?;
+        match t.get(key)? {
+            Some(v) => Ok(serde_json::from_slice(v.value())?),
+            None => Ok(Vec::new()),
+        }
+    }
+
+    /// Drop an object's events (when it is deleted).
+    pub fn delete_events(&self, key: &str) -> Result<(), PersistenceError> {
+        let txn = self.db.begin_write()?;
+        {
+            let mut t = txn.open_table(EVENTS_TABLE)?;
+            t.remove(key)?;
+        }
+        txn.commit()?;
+        Ok(())
+    }
+}
+
+/// Append `event` to the ring at `key` inside `txn`.
+pub fn push_event(txn: &WriteTransaction, key: &str, event: Event) -> Result<(), PersistenceError> {
+    let mut t = txn.open_table(EVENTS_TABLE)?;
+    let mut ring: Vec<Event> = match t.get(key)? {
+        Some(v) => serde_json::from_slice(v.value()).unwrap_or_default(),
+        None => Vec::new(),
+    };
+    ring.push(event);
+    if ring.len() > EVENTS_PER_OBJECT {
+        let extra = ring.len() - EVENTS_PER_OBJECT;
+        ring.drain(..extra);
+    }
+    let bytes = serde_json::to_vec(&ring)?;
+    t.insert(key, bytes.as_slice())?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn legacy(id: &str, state: &str) -> serde_json::Value {
+        serde_json::json!({
+            "id": id, "name": format!("vm-{id}"), "project": "p1", "state": state,
+            "config": { "vcpu_count": 1, "mem_size_mib": 512, "rootfs_path": "/r", "kernel_args": "" },
+            "socket_path": "/x", "console_socket_path": "/y", "log_path": "/z", "hypervisor": "cloudhypervisor"
+        })
+    }
+
+    fn put_raw(store: &VmStore, id: &str, v: &serde_json::Value) {
+        let txn = store.db.begin_write().unwrap();
+        {
+            let mut t = txn.open_table(VMS_TABLE).unwrap();
+            t.insert(id, serde_json::to_vec(v).unwrap().as_slice()).unwrap();
+        }
+        txn.commit().unwrap();
+    }
+
+    #[test]
+    fn schema_one_records_migrate_stopped() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = VmStore::open(dir.path().join("db")).unwrap();
+        put_raw(&store, "a", &legacy("a", "running"));
+        put_raw(&store, "b", &legacy("b", "created"));
+        let mut fc = legacy("c", "stopped");
+        fc["config"]["hypervisor"] = "firecracker".into();
+        put_raw(&store, "c", &fc);
+
+        assert_eq!(store.migrate(HostBootPolicy::Stop).unwrap(), 2);
+        assert_eq!(store.schema_version().unwrap(), Some(SCHEMA_VERSION));
+        let mut vms = store.load_all().unwrap();
+        vms.sort_by(|x, y| x.id.cmp(&y.id));
+        assert_eq!(vms.len(), 2, "the firecracker record is skipped, not dropped");
+        assert_eq!((vms[0].spec.power, vms[0].status.phase, vms[0].status.never_started), (PowerState::Stopped, VmPhase::Stopped, false));
+        assert!(vms[1].status.never_started);
+        assert_eq!(vms[0].spec.on_host_boot, HostBootPolicy::Stop);
+        assert_eq!(vms[0].project, "p1");
+        // Idempotent.
+        assert_eq!(store.migrate(HostBootPolicy::Resume).unwrap(), 0);
+    }
+
+    #[test]
+    fn newer_schemas_are_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("db");
+        {
+            let store = VmStore::open(&path).unwrap();
+            let txn = store.db.begin_write().unwrap();
+            {
+                let mut t = txn.open_table(META_TABLE).unwrap();
+                t.insert(SCHEMA_KEY, b"3".as_slice()).unwrap();
+            }
+            txn.commit().unwrap();
+        }
+        assert!(matches!(VmStore::open(&path), Err(PersistenceError::NewerSchema(3))));
+    }
+
+    #[test]
+    fn envelopes_round_trip_and_events_are_bounded() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = VmStore::open(dir.path().join("db")).unwrap();
+        store.migrate(HostBootPolicy::Resume).unwrap();
+        let config: VmConfig = serde_json::from_value(serde_json::json!({
+            "vcpu_count": 1, "mem_size_mib": 512, "rootfs_path": "/r", "kernel_args": ""
+        }))
+        .unwrap();
+        let vm = Vm::new("x".into(), config);
+        store.save(&vm).unwrap();
+        let raw = serde_json::to_value(&vm).unwrap();
+        assert_eq!(raw["meta"]["generation"], 1);
+        assert_eq!(raw["spec"]["power"], "stopped");
+        assert_eq!(store.load_all().unwrap(), vec![vm.clone()]);
+
+        let key = event_key("vm", &vm.id);
+        for i in 0..(EVENTS_PER_OBJECT + 5) {
+            store.push_event(&key, Event::new("controller", EventKind::Normal, "Tick", i.to_string())).unwrap();
+        }
+        let ev = store.events(&key).unwrap();
+        assert_eq!(ev.len(), EVENTS_PER_OBJECT);
+        assert_eq!(ev[0].message, "5");
+        store.commit(Commit { delete_vm: Some(&vm.id), ..Default::default() }).unwrap();
+        assert!(store.events(&key).unwrap().is_empty());
+    }
+}

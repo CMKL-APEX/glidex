@@ -450,9 +450,9 @@ async fn vms_create_attach_and_own_disks() {
     assert_eq!(root["attached_to"], vm_id.as_str());
     assert_eq!(root["size_bytes"], 1024 * MIB);
     let internal = manager.get_vm(&vm_id).await.unwrap();
-    assert_eq!(internal.config.rootfs_path, root["path"].as_str().unwrap());
-    assert!(internal.config.owns_root_disk);
-    assert!(internal.config.firmware_path.is_some(), "image implies firmware boot");
+    assert_eq!(internal.spec.config.rootfs_path, root["path"].as_str().unwrap());
+    assert!(internal.spec.config.owns_root_disk);
+    assert!(internal.spec.config.firmware_path.is_some(), "image implies firmware boot");
 
     // Attached: no delete; a Created VM's disk can still be resized.
     let (status, _) = request(&app, "DELETE", &format!("/disks/{root_id}"), None).await;
@@ -466,10 +466,10 @@ async fn vms_create_attach_and_own_disks() {
     }))).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 
-    // Data disks: attach/detach on a Created VM; one VM per disk.
+    // Data disks: attach/detach are spec writes (202); one VM per disk.
     let (_, _) = request(&app, "POST", "/disks", Some(json!({"name": "data1", "size_gib": 1}))).await;
     let (status, v) = request(&app, "POST", &format!("/vms/{vm_id}/disks"), Some(json!({"disk": "data1"}))).await;
-    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(status, StatusCode::ACCEPTED, "{v}");
     assert_eq!(v["data_disks"].as_array().unwrap().len(), 1);
     let (status, _) = request(&app, "POST", "/vms", Some(json!({
         "name": "other", "vcpu_count": 1, "mem_size_mib": 512, "kernel_image_path": "/k", "rootfs_path": "/x", "data_disks": ["data1"]
@@ -478,7 +478,7 @@ async fn vms_create_attach_and_own_disks() {
     let (status, _) = request(&app, "DELETE", &format!("/vms/{vm_id}/disks/{root_id}"), None).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "root disk is not a data disk");
     let (status, v) = request(&app, "DELETE", &format!("/vms/{vm_id}/disks/data1"), None).await;
-    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(status, StatusCode::ACCEPTED, "{v}");
     assert!(v.get("data_disks").is_none());
 
     // VM on an existing root disk plus a data disk: deleting the VM keeps both.

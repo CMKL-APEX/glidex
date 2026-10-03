@@ -7,7 +7,6 @@ use tokio::signal;
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use glidex_control_plane::state::VmManager;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -124,6 +123,19 @@ async fn main() {
         );
     }
 
+    // Configuration and identity (spec/security.md §5, §13). A bad config
+    // file stops startup rather than falling back to defaults.
+    print_status("Loading configuration");
+    let cfg = match config::Config::load().and_then(|c| c.check().map(|_| c)) {
+        Ok(c) => c,
+        Err(e) => {
+            println!("FAILED");
+            eprintln!("\n{}", e);
+            std::process::exit(1);
+        }
+    };
+    println!("OK");
+
     // Create VM manager with persistence
     print_status("Opening database");
     let vm_manager = match state::VmManager::new() {
@@ -135,16 +147,19 @@ async fn main() {
         }
     };
     println!("OK");
+    vm_manager.configure(&cfg);
 
-    // Initialize: load persisted VMs and reconcile state
+    // Load VMs and adopt the instances still running (spec/reconciliation.md
+    // §9.4): nothing is launched or stopped before every VM was observed.
     print_status("Loading VMs");
     if let Err(e) = vm_manager.initialize().await {
         println!("FAILED");
         eprintln!("\nFailed to initialize VMs from database: {}", e);
         std::process::exit(1);
     }
-    let vm_count = vm_manager.list_vms().await.len();
-    println!("OK ({} VMs)", vm_count);
+    let vms = vm_manager.list_vms().await;
+    let running = vms.iter().filter(|v| v.status.instance.is_some()).count();
+    println!("OK ({} VMs, {} running, VM runner: {})", vms.len(), running, vm_manager.runner().kind_name());
 
     // Networking is optional: without glidex-netd, VMs just have no NICs.
     print_status("Checking networking");
@@ -161,31 +176,10 @@ async fn main() {
         Err(e) => println!("WARNING (default network: {})", e),
     }
 
-    // A guest that powers off (or crashes) takes its hypervisor with it;
-    // notice that, so the VM shows as stopped and its NICs are released.
-    {
-        let manager = Arc::clone(&vm_manager);
-        tokio::spawn(async move {
-            let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
-            loop {
-                tick.tick().await;
-                manager.reap_exited_vms().await;
-            }
-        });
-    }
+    // The control loops (§9): from here on the VM controller drives every
+    // VM toward its desired state.
+    vm_manager.start_controllers();
 
-    // Configuration and identity (spec/security.md §5, §13). A bad config
-    // file stops startup rather than falling back to defaults.
-    print_status("Loading configuration");
-    let cfg = match config::Config::load().and_then(|c| c.check().map(|_| c)) {
-        Ok(c) => c,
-        Err(e) => {
-            println!("FAILED");
-            eprintln!("\n{}", e);
-            std::process::exit(1);
-        }
-    };
-    println!("OK");
     print_status("Loading authorization policies");
     let auth = match auth::AuthService::new(vm_manager.database(), cfg.clone()) {
         Ok(a) => a,
@@ -203,9 +197,6 @@ async fn main() {
         Ok(_) => println!("OK"),
         Err(e) => println!("WARNING (bootstrap: {})", e),
     }
-
-    // Clone vm_manager for the shutdown handler before passing to router
-    let vm_manager_shutdown = Arc::clone(&vm_manager);
 
     let app = api::router(Arc::new(api::App { manager: vm_manager, auth }))
         .layer(TraceLayer::new_for_http());
@@ -271,21 +262,22 @@ async fn main() {
         });
     }
 
-    // One shutdown signal (which stops VMs) fans out to every listener.
+    // One shutdown signal fans out to every listener. VMs keep running:
+    // they belong to their glidex-vm-shim, not to us (D1).
     let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
     let servers: Vec<_> = tcp
         .into_iter()
         .map(|l| tokio::spawn(serve::serve_tcp(l, app.clone(), tls.clone(), stop_rx.clone())))
         .chain(unix.into_iter().map(|(l, kind, _)| tokio::spawn(serve::serve_unix(l, app.clone(), kind, stop_rx.clone()))))
         .collect();
-    shutdown_signal(vm_manager_shutdown).await;
+    shutdown_signal().await;
     let _ = stop_tx.send(true);
     for s in servers {
         let _ = s.await;
     }
 }
 
-async fn shutdown_signal(vm_manager: Arc<VmManager>) {
+async fn shutdown_signal() {
     let ctrl_c = async {
         signal::ctrl_c()
             .await
@@ -309,10 +301,5 @@ async fn shutdown_signal(vm_manager: Arc<VmManager>) {
     }
 
     println!();
-    tracing::info!("Shutdown signal received, stopping VMs...");
-
-    // Stop all running hypervisor processes
-    vm_manager.shutdown().await;
-
-    tracing::info!("Shutdown complete");
+    tracing::info!("Shutdown signal received; VMs keep running");
 }

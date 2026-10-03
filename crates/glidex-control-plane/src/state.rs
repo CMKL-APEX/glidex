@@ -1,23 +1,43 @@
-use crate::cloud_init;
+//! `VmManager`: admission over the store (spec/reconciliation.md D5).
+//!
+//! The API writes desired state here: validation, authorization-adjacent
+//! checks, quotas and exclusivity claims happen synchronously and still
+//! fail the request; a write that passes changes `spec`, bumps the VM's
+//! `generation` and queues it for the VM controller (`controller::vm`),
+//! which does everything that touches the host. Nothing here holds a
+//! hypervisor handle or talks to a hypervisor.
+//!
+//! The in-memory map is a cache of the `vms` table: every write goes
+//! through it under its lock and is persisted before the cache changes.
+
+use crate::controller::queue::{Key, WorkQueue};
+use crate::controller::Settings;
 use crate::credentials::{
     Credential, CredentialError, CredentialStore, CreateCredentialRequest, UpdateCredentialRequest,
 };
-use crate::hypervisor::{create_backend, Hypervisor, HypervisorError, HypervisorProcess, HypervisorType};
+use crate::hypervisor::{check_command_line_path, HypervisorError, HypervisorType};
 use crate::images::{
     self, disk::requested_size, CatalogItem, CreateDiskRequest, Disk, DiskResponse, ExtendMode,
     ImageError, ImageManager, ImageResponse, ImageSettings, PullImageRequest, ResizeDiskRequest,
 };
-use crate::models::{DiskBinding, DiskSelection, NicBinding, NicState, Vm, VmConfig, VmState};
+use crate::instance::runner::Runner;
+use crate::models::{
+    DiskBinding, DiskSelection, HostBootPolicy, NetworkAttachment, PowerState, RestartPolicy, Vm, VmConfig, VmPhase,
+    VmState, MAX_STOP_GRACE_SECS,
+};
 use crate::network::{self, CreateNetworkRequest, NetError, Netd, Network, NetworkMode, NetworkStore};
-use glidex_netd::proto::{AttachResult, BridgeRecord, NatInfo, Op, ReconcileReport};
+use crate::store::{event_key, Commit, Event, EventKind, PersistenceError, VmStore};
+use crate::tenancy::{self, Delta, ProjectStore, QuotaMode, QuotaOverrun, TenancyError, Usage};
+use arc_swap::ArcSwap;
+use glidex_netd::proto::{BridgeRecord, NatInfo, Op};
 use glidex_ovs::bridge::{BridgeSpec, Datapath};
 use glidex_ovs::nat::NatSpec;
-use glidex_ovs::vm_port::{VmPortKind, VmPortSpec};
-use crate::persistence::{Commit, PersistenceError, VmStore};
-use crate::tenancy::{self, Delta, ProjectStore, QuotaMode, QuotaOverrun, TenancyError, Usage};
+use glidex_ovs::vm_port::VmPortKind;
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
+use std::time::Duration;
 use tokio::sync::RwLock;
 
 #[derive(Debug)]
@@ -35,6 +55,10 @@ pub enum VmManagerError {
     /// The request would go over these project quotas.
     QuotaExceeded(Vec<QuotaOverrun>),
     Tenancy(TenancyError),
+    /// The VM is being deleted: its spec no longer changes (§6.3).
+    Deleting(String),
+    /// `If-Match` named another resource version (§12.1).
+    PreconditionFailed { expected: u64, actual: u64 },
 }
 
 impl std::fmt::Display for VmManagerError {
@@ -43,28 +67,25 @@ impl std::fmt::Display for VmManagerError {
             VmManagerError::VmNotFound(id) => write!(f, "VM not found: {}", id),
             VmManagerError::VmAlreadyExists(name) => write!(f, "VM already exists: {}", name),
             VmManagerError::InvalidState { current, operation } => {
-                write!(f, "Invalid state {:?} for operation: {}", current, operation)
+                write!(f, "Invalid state {} for operation: {}", current, operation)
             }
             VmManagerError::HypervisorError(e) => write!(f, "Hypervisor error: {}", e),
             VmManagerError::PersistenceError(e) => write!(f, "Persistence error: {}", e),
-            VmManagerError::HypervisorNotAvailable(h) => {
-                write!(f, "Hypervisor not available: {:?}", h)
-            }
+            VmManagerError::HypervisorNotAvailable(h) => write!(f, "Hypervisor not available: {:?}", h),
             VmManagerError::Credential(e) => write!(f, "{}", e),
             VmManagerError::Network(e) => write!(f, "{}", e),
             VmManagerError::Image(e) => write!(f, "{}", e),
-            VmManagerError::QuotaExceeded(o) => write!(
-                f,
-                "{}",
-                o.iter().map(|o| o.to_string()).collect::<Vec<_>>().join("; ")
-            ),
+            VmManagerError::QuotaExceeded(o) => {
+                write!(f, "{}", o.iter().map(|o| o.to_string()).collect::<Vec<_>>().join("; "))
+            }
             VmManagerError::Tenancy(e) => write!(f, "{}", e),
-            VmManagerError::CredentialInUse { username, vms } => write!(
-                f,
-                "credential {} is used by VM(s): {}",
-                username,
-                vms.join(", ")
-            ),
+            VmManagerError::CredentialInUse { username, vms } => {
+                write!(f, "credential {} is used by VM(s): {}", username, vms.join(", "))
+            }
+            VmManagerError::Deleting(name) => write!(f, "VM {} is being deleted", name),
+            VmManagerError::PreconditionFailed { expected, actual } => {
+                write!(f, "resource version is {}, not {}", actual, expected)
+            }
         }
     }
 }
@@ -108,22 +129,135 @@ impl From<PersistenceError> for VmManagerError {
     }
 }
 
-struct VmEntry {
-    vm: Vm,
-    process: Option<Box<dyn HypervisorProcess>>,
+/// An orphan found at startup (§9.4, D17): reported, never touched.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct Orphan {
+    pub kind: &'static str,
+    pub id: String,
+}
+
+/// How [`VmManager::wait_converged`] ended.
+#[derive(Debug)]
+pub enum Waited {
+    /// Converged, or failed (see its `Ready` condition).
+    Decided(Box<Vm>),
+    /// The VM is gone (a deletion finished).
+    Gone,
+    TimedOut(Option<Box<Vm>>),
+}
+
+/// Desired-state options of a new VM (§7.1).
+#[derive(Debug, Clone, Default)]
+pub struct VmOptions {
+    pub power: Option<PowerState>,
+    pub restart_policy: Option<RestartPolicy>,
+    pub on_host_boot: Option<HostBootPolicy>,
+    pub stop_grace_secs: Option<u32>,
+}
+
+/// `PATCH /vms/{id}`: a JSON merge patch of `spec` (§12.1). Immutable
+/// fields are accepted by the parser only to be refused with a clear
+/// error.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VmPatch {
+    #[serde(default)]
+    pub power: Option<PowerState>,
+    #[serde(default)]
+    pub restart_policy: Option<RestartPolicy>,
+    #[serde(default)]
+    pub on_host_boot: Option<HostBootPolicy>,
+    #[serde(default)]
+    pub stop_grace_secs: Option<u32>,
+    #[serde(default)]
+    pub config: Option<ConfigPatch>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigPatch {
+    #[serde(default)]
+    pub vcpu_count: Option<u8>,
+    #[serde(default)]
+    pub mem_size_mib: Option<u32>,
+    #[serde(default)]
+    pub kernel_args: Option<String>,
+    /// `null` removes the credential.
+    #[serde(default)]
+    pub credential: Option<serde_json::Value>,
+    #[serde(default)]
+    pub hugepages: Option<bool>,
+    #[serde(default)]
+    pub vfio_devices: Option<Vec<String>>,
+    /// Disk ids or names, replacing the list.
+    #[serde(default)]
+    pub data_disks: Option<Vec<String>>,
+    #[serde(default)]
+    pub networks: Option<Vec<NetworkAttachment>>,
+    // Immutable (§7.3): present only to be refused.
+    #[serde(default)]
+    pub hypervisor: Option<serde_json::Value>,
+    #[serde(default)]
+    pub kernel_image_path: Option<serde_json::Value>,
+    #[serde(default)]
+    pub firmware_path: Option<serde_json::Value>,
+    #[serde(default)]
+    pub rootfs_path: Option<serde_json::Value>,
+    #[serde(default)]
+    pub cloud_init_path: Option<serde_json::Value>,
+    #[serde(default)]
+    pub root_disk: Option<serde_json::Value>,
+    #[serde(default)]
+    pub image: Option<serde_json::Value>,
+}
+
+impl ConfigPatch {
+    pub fn immutable_fields(&self) -> Vec<&'static str> {
+        let mut v = Vec::new();
+        for (name, present) in [
+            ("hypervisor", self.hypervisor.is_some()),
+            ("kernel_image_path", self.kernel_image_path.is_some()),
+            ("firmware_path", self.firmware_path.is_some()),
+            ("rootfs_path", self.rootfs_path.is_some()),
+            ("cloud_init_path", self.cloud_init_path.is_some()),
+            ("root_disk", self.root_disk.is_some()),
+            ("image", self.image.is_some()),
+        ] {
+            if present {
+                v.push(name);
+            }
+        }
+        v
+    }
 }
 
 pub struct VmManager {
-    vms: RwLock<HashMap<String, VmEntry>>,
-    store: VmStore,
-    credentials: CredentialStore,
-    networks: NetworkStore,
-    projects: ProjectStore,
-    netd: Netd,
-    images: Arc<ImageManager>,
-    backends: HashMap<HypervisorType, Box<dyn Hypervisor>>,
+    pub(crate) vms: RwLock<HashMap<String, Vm>>,
+    pub(crate) store: VmStore,
+    pub(crate) credentials: CredentialStore,
+    pub(crate) networks: NetworkStore,
+    pub(crate) projects: ProjectStore,
+    pub(crate) netd: Netd,
+    pub(crate) images: Arc<ImageManager>,
     /// Where per-VM state outside the database lives (next to it).
-    data_dir: PathBuf,
+    pub(crate) data_dir: PathBuf,
+    pub(crate) settings: ArcSwap<Settings>,
+    pub(crate) runner: ArcSwap<Runner>,
+    pub(crate) queue: Arc<WorkQueue>,
+    /// Bumped on every VM write; `?wait` and tests watch it.
+    pub(crate) changed: tokio::sync::watch::Sender<u64>,
+    /// Serializes "write `status.nics` + attach a port" with `sync_vms`, so
+    /// a sync never detaches a port a reconcile is adding (D16).
+    pub(crate) ports_lock: tokio::sync::Mutex<()>,
+    /// `(vm id, pid)` pairs with an exit watch running.
+    pub(crate) watched: std::sync::Mutex<std::collections::HashSet<(String, u32)>>,
+    pub(crate) orphans: std::sync::Mutex<Vec<Orphan>>,
+    /// netd's socket identity at the last port sync (restart detection).
+    pub(crate) netd_seen: std::sync::Mutex<Option<(u64, u64)>>,
+    pub(crate) controllers_started: std::sync::atomic::AtomicBool,
+    /// The controllers' tasks, aborted by `stop_controllers`.
+    pub(crate) tasks: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    pub(crate) me: Weak<VmManager>,
 }
 
 type RootBinding = (DiskBinding, Disk);
@@ -139,6 +273,10 @@ fn root_disk_name(vm_name: &str) -> String {
     let mut name = format!("{}-root", base);
     name.truncate(64);
     name
+}
+
+fn invalid(msg: impl Into<String>) -> VmManagerError {
+    HypervisorError::InvalidConfig(msg.into()).into()
 }
 
 impl VmManager {
@@ -157,151 +295,154 @@ impl VmManager {
         let store = VmStore::open(&db_path)?;
         let base = db_path.parent().map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
         let images = ImageManager::new(store.database(), ImageSettings::from_env(&base))?;
-
-        // Initialize hypervisor backends and probe whether each binary is on PATH.
-        let mut backends: HashMap<HypervisorType, Box<dyn Hypervisor>> = HashMap::new();
-        for ty in [
-            HypervisorType::CloudHypervisor,
-            HypervisorType::Qemu,
-        ] {
-            let backend = create_backend(ty);
-            if !backend.is_available() {
-                tracing::warn!(
-                    "Hypervisor {} binary {:?} not found on PATH — VMs configured for it will fail to start",
-                    backend.hypervisor_type(),
-                    ty.binary_name()
-                );
+        for ty in [HypervisorType::CloudHypervisor, HypervisorType::Qemu] {
+            if !crate::hypervisor::driver(ty).is_available() {
+                tracing::warn!("Hypervisor {} binary {:?} not found — VMs configured for it will fail to start", ty, ty.binary_name());
             }
-            backends.insert(ty, backend);
         }
-
-        Ok(Arc::new(Self {
+        let settings = Settings::default();
+        let runner = Runner::new(settings.runner);
+        let credentials = CredentialStore::new(store.database())?;
+        let networks = NetworkStore::new(store.database())?;
+        let projects = ProjectStore::new(store.database())?;
+        let (changed, _) = tokio::sync::watch::channel(0u64);
+        Ok(Arc::new_cyclic(|me| Self {
             vms: RwLock::new(HashMap::new()),
-            credentials: CredentialStore::new(store.database())?,
-            networks: NetworkStore::new(store.database())?,
-            projects: ProjectStore::new(store.database())?,
+            credentials,
+            networks,
+            projects,
             netd,
             images,
             store,
-            backends,
             data_dir: base,
+            settings: ArcSwap::from_pointee(settings),
+            runner: ArcSwap::from_pointee(runner),
+            queue: Arc::new(WorkQueue::new()),
+            changed,
+            ports_lock: tokio::sync::Mutex::new(()),
+            watched: std::sync::Mutex::new(Default::default()),
+            orphans: std::sync::Mutex::new(Vec::new()),
+            netd_seen: std::sync::Mutex::new(None),
+            controllers_started: std::sync::atomic::AtomicBool::new(false),
+            tasks: std::sync::Mutex::new(Vec::new()),
+            me: me.clone(),
         }))
     }
 
-    /// Get the backend for a hypervisor type
-    fn get_backend(&self, hypervisor: HypervisorType) -> Result<&dyn Hypervisor, VmManagerError> {
-        self.backends
-            .get(&hypervisor)
-            .map(|b| b.as_ref())
-            .ok_or(VmManagerError::HypervisorNotAvailable(hypervisor))
+    /// Apply `control-plane.json`'s `reconcile` and `console` sections.
+    /// Call before [`Self::initialize`].
+    pub fn configure(&self, cfg: &crate::config::Config) {
+        let s = Settings::from_config(cfg);
+        self.runner.store(Arc::new(Runner::new(s.runner)));
+        self.settings.store(Arc::new(s));
+    }
+
+    pub fn settings(&self) -> Arc<Settings> {
+        self.settings.load_full()
+    }
+
+    pub fn runner(&self) -> Arc<Runner> {
+        self.runner.load_full()
+    }
+
+    pub(crate) fn arc(&self) -> Arc<VmManager> {
+        self.me.upgrade().expect("VmManager is alive")
     }
 
     /// Get the default database path (~/.glidex/glidex.db)
     fn default_db_path() -> PathBuf {
-        dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".glidex")
-            .join("glidex.db")
+        dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")).join(".glidex").join("glidex.db")
     }
 
-    /// Initialize VmManager by loading persisted VMs and reconciling state
+    /// Load the store (migrating it, §6.6), adopt running instances
+    /// (§9.4 steps 1-4). [`Self::start_controllers`] then starts the loops.
     pub async fn initialize(&self) -> Result<(), VmManagerError> {
-        let persisted_vms = self.store.load_all()?;
+        let migrated = self.store.migrate(self.settings().on_host_boot)?;
+        if migrated > 0 {
+            tracing::info!(count = migrated, "migrated VM records to the desired-state schema");
+        }
+        let persisted = self.store.load_all()?;
         self.images.initialize();
-        let mut vms = self.vms.write().await;
-
-        let default_project = self.projects.default_project_id();
-        for mut vm in persisted_vms {
-            // Reconcile state: VMs that were Running/Paused are now orphaned
-            let reconciled_state = self.reconcile_vm_state(&vm);
-            let mut dirty = false;
-
-            if vm.state != reconciled_state {
-                vm.state = reconciled_state;
-                dirty = true;
-            }
-            // Records from before projects, and from before per-VM
-            // runtime directories (spec/security.md §9, §11).
-            if vm.project.is_empty() {
-                vm.project = default_project.clone();
-                dirty = true;
-            }
-            if vm.socket_path.starts_with("/tmp/") {
-                vm.relocate_runtime_paths();
-                dirty = true;
-            }
-            if dirty {
-                self.store.save(&vm)?;
-            }
-
-            vms.insert(
-                vm.id.clone(),
-                VmEntry {
-                    vm,
-                    process: None, // Process handles cannot be restored
-                },
-            );
-        }
-
-        self.adopt_into_default_project()?;
-
-        // Every VM is stopped after a control-plane restart, so any VM
-        // ports netd still has are stale.
-        if vms.values().any(|e| !e.vm.config.networks.is_empty()) {
-            match self.netd.call::<ReconcileReport>(Op::SyncVms { running: Vec::new() }) {
-                Ok(report) if !report.detached.is_empty() || !report.orphans.is_empty() => {
-                    tracing::info!(detached = ?report.detached, orphans = ?report.orphans, "netd sync");
+        {
+            let default_project = self.projects.default_project_id();
+            let mut vms = self.vms.write().await;
+            for mut vm in persisted {
+                if vm.project.is_empty() {
+                    vm.project = default_project.clone();
+                    self.store.save(&vm)?;
                 }
-                Ok(_) => {}
-                Err(e) => tracing::warn!("glidex-netd sync skipped: {}", e),
+                vms.insert(vm.id.clone(), vm);
             }
         }
-
+        self.adopt_into_default_project()?;
+        self.adopt_instances().await;
         Ok(())
     }
 
-    /// Reconcile VM state after restart
-    fn reconcile_vm_state(&self, vm: &Vm) -> VmState {
-        match vm.state {
-            VmState::Running | VmState::Paused => {
-                // Check if the hypervisor process is still alive
-                if self.is_hypervisor_alive(&vm.socket_path) {
-                    // Process exists but we lost the handle - clean up and mark as stopped
-                    self.cleanup_orphaned_vm(vm);
-                }
-                VmState::Stopped
-            }
-            VmState::Created | VmState::Stopped => vm.state.clone(),
+    // ---- cache and writes ------------------------------------------------
+
+    pub(crate) async fn vm(&self, id: &str) -> Option<Vm> {
+        self.vms.read().await.get(id).cloned()
+    }
+
+    pub(crate) fn notify_changed(&self) {
+        self.changed.send_modify(|v| *v = v.wrapping_add(1));
+    }
+
+    /// Persist `vm` (with `events`) and update the cache. The caller holds
+    /// the map's write lock (`vms`).
+    pub(crate) fn put_locked(&self, vms: &mut HashMap<String, Vm>, vm: Vm, events: Vec<Event>) -> Result<Vm, VmManagerError> {
+        let key = event_key("vm", &vm.id);
+        self.store.commit(Commit {
+            put_vm: Some(&vm),
+            events: events.into_iter().map(|e| (key.clone(), e)).collect(),
+            ..Default::default()
+        })?;
+        vms.insert(vm.id.clone(), vm.clone());
+        self.notify_changed();
+        Ok(vm)
+    }
+
+    /// A spec write: bump generation and resource version, persist with an
+    /// event, queue the VM for its controller.
+    fn spec_write(
+        &self,
+        vms: &mut HashMap<String, Vm>,
+        mut vm: Vm,
+        actor: &str,
+        reason: &str,
+        message: String,
+    ) -> Result<Vm, VmManagerError> {
+        vm.generation += 1;
+        vm.resource_version += 1;
+        let ev = Event::new(actor, EventKind::Normal, reason, message);
+        let vm = self.put_locked(vms, vm, vec![ev])?;
+        self.queue.add(Key::Vm(vm.id.clone()));
+        Ok(vm)
+    }
+
+    fn writable<'a>(vms: &'a HashMap<String, Vm>, id: &str, if_match: Option<u64>) -> Result<&'a Vm, VmManagerError> {
+        let vm = vms.get(id).ok_or_else(|| VmManagerError::VmNotFound(id.to_string()))?;
+        if vm.deletion_requested_at.is_some() {
+            return Err(VmManagerError::Deleting(vm.name.clone()));
         }
+        if let Some(expected) = if_match {
+            if expected != vm.resource_version {
+                return Err(VmManagerError::PreconditionFailed { expected, actual: vm.resource_version });
+            }
+        }
+        Ok(vm)
     }
 
-    /// Check if a hypervisor process is still alive by probing its socket
-    fn is_hypervisor_alive(&self, socket_path: &str) -> bool {
-        std::path::Path::new(socket_path).exists()
-    }
-
-    /// Clean up resources from an orphaned VM
-    fn cleanup_orphaned_vm(&self, vm: &Vm) {
-        // Remove socket files
-        let _ = std::fs::remove_file(&vm.socket_path);
-        let _ = std::fs::remove_file(&vm.console_socket_path);
-
-        tracing::warn!(
-            "Cleaned up orphaned VM resources for {} ({})",
-            vm.name,
-            vm.id
-        );
-    }
+    // ---- create ----------------------------------------------------------
 
     #[allow(dead_code)] // used by the tests through the lib crate
     pub async fn create_vm(&self, name: String, config: VmConfig) -> Result<Vm, VmManagerError> {
-        self.create_vm_with_disks(name, config, DiskSelection::default())
-            .await
-            .map(|(vm, _)| vm)
+        self.create_vm_with_disks(name, config, DiskSelection::default()).await.map(|(vm, _)| vm)
     }
 
     /// Create a VM in the default project, quotas not enforced (embedding
-    /// and tests). The API uses [`Self::create_vm_in`].
+    /// and tests). The API uses [`Self::create_vm_with`].
     pub async fn create_vm_with_disks(
         &self,
         name: String,
@@ -309,144 +450,162 @@ impl VmManager {
         sel: DiskSelection,
     ) -> Result<(Vm, Vec<String>), VmManagerError> {
         let project = self.default_project_id();
-        self.create_vm_in(&project, name, config, sel, QuotaMode::MayExceed)
+        self.create_vm_with(&project, name, config, sel, VmOptions::default(), QuotaMode::MayExceed, "api")
             .await
             .map(|(vm, w, _)| (vm, w))
+    }
+
+    pub async fn create_vm_in(
+        &self,
+        project: &str,
+        name: String,
+        config: VmConfig,
+        sel: DiskSelection,
+        quota: QuotaMode,
+    ) -> Result<(Vm, Vec<String>, Vec<QuotaOverrun>), VmManagerError> {
+        self.create_vm_with(project, name, config, sel, VmOptions::default(), quota, "api").await
+    }
+
+    /// Admission paths the VM's command line will carry (§8.2).
+    fn check_paths(&self, config: &VmConfig) -> Result<(), VmManagerError> {
+        let systemd = matches!(*self.runner(), Runner::Systemd(_));
+        let mut paths: Vec<(&str, &str)> = vec![("kernel_image_path", &config.kernel_image_path), ("rootfs_path", &config.rootfs_path)];
+        if let Some(p) = &config.firmware_path {
+            paths.push(("firmware_path", p));
+        }
+        if let Some(p) = &config.cloud_init_path {
+            paths.push(("cloud_init_path", p));
+        }
+        for d in &config.vfio_devices {
+            paths.push(("vfio_devices", d));
+        }
+        for (field, p) in paths {
+            check_command_line_path(field, p)?;
+            // The VM unit has its own /tmp (PrivateTmp=, §13.1).
+            if systemd && (p.starts_with("/tmp/") || p.starts_with("/var/tmp/")) {
+                return Err(invalid(format!(
+                    "{} {} is under /tmp, which VMs cannot see (they have a private /tmp); use another directory",
+                    field, p
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn check_options(opts: &VmOptions) -> Result<(), VmManagerError> {
+        if opts.stop_grace_secs.is_some_and(|g| g > MAX_STOP_GRACE_SECS) {
+            return Err(invalid(format!("stop_grace_secs must be 0-{}", MAX_STOP_GRACE_SECS)));
+        }
+        Ok(())
+    }
+
+    fn check_networks(&self, project: &str, networks: &[NetworkAttachment]) -> Result<(), VmManagerError> {
+        if networks.len() > glidex_ovs::names::MAX_NICS as usize {
+            return Err(invalid(format!("at most {} networks per VM", glidex_ovs::names::MAX_NICS)));
+        }
+        for att in networks {
+            match self.networks.get(&att.network)? {
+                None => return Err(invalid(format!("network not found: {}", att.network))),
+                Some(n) if !n.usable_by(project) => {
+                    return Err(invalid(format!("network '{}' is not available to this project", att.network)))
+                }
+                Some(_) => {}
+            }
+            if let Some(mac) = &att.mac {
+                glidex_ovs::names::validate_mac(mac).map_err(|e| invalid(e.to_string()))?;
+            }
+            if let Some(q) = att.queue_pairs {
+                if !(1..=8).contains(&q) {
+                    return Err(invalid("queue_pairs must be 1-8"));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn check_credential(&self, project: &str, config: &VmConfig) -> Result<(), VmManagerError> {
+        if let Some(username) = &config.credential {
+            // A credential only takes effect through the generated seed.
+            if config.firmware_path.is_none() || config.cloud_init_path.is_some() {
+                return Err(invalid("credential requires firmware boot without a custom cloud_init_path"));
+            }
+            match self.credentials.get(project, username) {
+                Ok(_) => {}
+                Err(CredentialError::NotFound(_)) => return Err(invalid(format!("credential not found: {}", username))),
+                Err(e) => return Err(e.into()),
+            }
+        }
+        Ok(())
     }
 
     /// Create a VM in `project`, resolving managed disks (spec images.md
     /// §7). Returns the VM, any warnings, and the quota limits it went
     /// over (only with [`QuotaMode::MayExceed`]; to be audited).
-    pub async fn create_vm_in(
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_vm_with(
         &self,
         project: &str,
         name: String,
         mut config: VmConfig,
         sel: DiskSelection,
+        opts: VmOptions,
         quota: QuotaMode,
+        actor: &str,
     ) -> Result<(Vm, Vec<String>, Vec<QuotaOverrun>), VmManagerError> {
         let project_rec = self.projects.get(project)?.ok_or_else(|| TenancyError::NotFound(project.to_string()))?;
         let roots = [!config.rootfs_path.is_empty(), sel.image.is_some(), sel.root_disk.is_some()];
         if roots.iter().filter(|b| **b).count() != 1 {
-            return Err(HypervisorError::InvalidConfig(
-                "give exactly one of rootfs_path, image or root_disk".to_string(),
-            )
-            .into());
+            return Err(invalid("give exactly one of rootfs_path, image or root_disk"));
         }
         if sel.root_disk_size_gib.is_some() && sel.image.is_none() {
-            return Err(HypervisorError::InvalidConfig("root_disk_size_gib needs image".to_string()).into());
+            return Err(invalid("root_disk_size_gib needs image"));
         }
         // A managed root disk is a cloud image: firmware boot unless the
         // caller brought a kernel.
-        if (sel.image.is_some() || sel.root_disk.is_some())
-            && config.kernel_image_path.is_empty()
-            && config.firmware_path.is_none()
-        {
-            config.firmware_path = config
-                .hypervisor
-                .default_firmware_path()
-                .map(|p| p.to_string_lossy().into_owned());
+        if (sel.image.is_some() || sel.root_disk.is_some()) && config.kernel_image_path.is_empty() && config.firmware_path.is_none() {
+            config.firmware_path = config.hypervisor.default_firmware_path().map(|p| p.to_string_lossy().into_owned());
         }
-        // Reject obviously broken configurations before persisting them.
         if config.vcpu_count == 0 {
-            return Err(HypervisorError::InvalidConfig(
-                "vcpu_count must be greater than 0".to_string(),
-            )
-            .into());
+            return Err(invalid("vcpu_count must be greater than 0"));
         }
         if config.mem_size_mib == 0 {
-            return Err(HypervisorError::InvalidConfig(
-                "mem_size_mib must be greater than 0".to_string(),
-            )
-            .into());
+            return Err(invalid("mem_size_mib must be greater than 0"));
         }
         if config.firmware_path.is_none() && config.kernel_image_path.is_empty() {
-            return Err(HypervisorError::InvalidConfig(
-                "either kernel_image_path or firmware_path is required".to_string(),
-            )
-            .into());
+            return Err(invalid("either kernel_image_path or firmware_path is required"));
         }
+        Self::check_options(&opts)?;
+        self.check_paths(&config)?;
         self.refuse_dpdk_uplink_devices(&config.vfio_devices)?;
-        if !config.networks.is_empty() {
-            if config.networks.len() > glidex_ovs::names::MAX_NICS as usize {
-                return Err(HypervisorError::InvalidConfig(format!(
-                    "at most {} networks per VM",
-                    glidex_ovs::names::MAX_NICS
-                ))
-                .into());
-            }
-            for att in &config.networks {
-                match self.networks.get(&att.network)? {
-                    None => {
-                        return Err(HypervisorError::InvalidConfig(format!(
-                            "network not found: {}",
-                            att.network
-                        ))
-                        .into())
-                    }
-                    Some(n) if !n.usable_by(project) => {
-                        return Err(HypervisorError::InvalidConfig(format!(
-                            "network '{}' is not available to this project",
-                            att.network
-                        ))
-                        .into())
-                    }
-                    Some(_) => {}
-                }
-                if let Some(mac) = &att.mac {
-                    glidex_ovs::names::validate_mac(mac)
-                        .map_err(|e| HypervisorError::InvalidConfig(e.to_string()))?;
-                }
-                if let Some(q) = att.queue_pairs {
-                    if !(1..=8).contains(&q) {
-                        return Err(HypervisorError::InvalidConfig(
-                            "queue_pairs must be 1-8".to_string(),
-                        )
-                        .into());
-                    }
-                }
-            }
-        }
+        self.check_networks(project, &config.networks)?;
+
         let mut vms = self.vms.write().await;
 
         // Checked under the VM write lock so delete_credential (which holds
         // the read lock) can't remove it between the check and the insert.
-        if let Some(username) = &config.credential {
-            // A credential only takes effect through the generated seed.
-            if config.firmware_path.is_none() || config.cloud_init_path.is_some() {
-                return Err(HypervisorError::InvalidConfig(
-                    "credential requires firmware boot without a custom cloud_init_path"
-                        .to_string(),
-                )
-                .into());
-            }
-            match self.credentials.get(project, username) {
-                Ok(_) => {}
-                Err(CredentialError::NotFound(_)) => {
-                    return Err(HypervisorError::InvalidConfig(format!(
-                        "credential not found: {}",
-                        username
-                    ))
-                    .into());
-                }
-                Err(e) => return Err(e.into()),
-            }
-        }
+        self.check_credential(project, &config)?;
 
         // Names are unique per project.
-        if vms.values().any(|entry| entry.vm.name == name && entry.vm.project == project) {
+        if vms.values().any(|vm| vm.name == name && vm.project == project) {
             return Err(VmManagerError::VmAlreadyExists(name));
         }
+        for d in &config.vfio_devices {
+            if let Some(other) = Self::device_claimed_by(&vms, d, None) {
+                return Err(ImageError::InUse(format!("PCI device {} is used by VM {}", d, other)).into());
+            }
+        }
 
-        // Quotas, checked under the write lock so concurrent creates
-        // can't both pass. Disk use is checked again once the root disk's
-        // real size is known.
+        let power = opts.power.unwrap_or_default();
+        // Quotas, checked under the write lock so concurrent creates can't
+        // both pass. Disk use is checked again once the root disk's real
+        // size is known.
         let mut bypassed = Vec::new();
         let delta = Delta {
             vms: 1,
             vcpus: config.vcpu_count as u64,
             memory_mib: config.mem_size_mib as u64,
             disk_gib: sel.root_disk_size_gib.unwrap_or(0),
+            running_vms: u64::from(power != PowerState::Stopped),
             ..Default::default()
         };
         let usage = self.usage_locked(project, &vms)?;
@@ -454,9 +613,13 @@ impl VmManager {
 
         let mut vm = Vm::new(name, config);
         vm.project = project.to_string();
+        vm.spec.power = power;
+        vm.spec.restart_policy = opts.restart_policy.unwrap_or_default();
+        vm.spec.on_host_boot = opts.on_host_boot.unwrap_or(self.settings().on_host_boot);
+        vm.spec.stop_grace_secs = opts.stop_grace_secs.unwrap_or(0);
         // Stable MACs derived from the VM id, so they show up in the API
         // and survive restarts.
-        for (i, att) in vm.config.networks.iter_mut().enumerate() {
+        for (i, att) in vm.spec.config.networks.iter_mut().enumerate() {
             if att.mac.is_none() {
                 att.mac = glidex_ovs::names::mac_address(&vm.id, i as u8).ok();
             }
@@ -467,24 +630,20 @@ impl VmManager {
         let mut disks: Vec<Disk> = Vec::new();
         let mut warnings = Vec::new();
         for key in &sel.data_disks {
-            let d = self.attachable_disk_in(key, project)?;
+            let d = self.attachable_disk_in(&vms, key, project, None)?;
             if disks.iter().any(|x| x.id == d.id) {
-                return Err(HypervisorError::InvalidConfig(format!("disk {} listed twice", d.name)).into());
+                return Err(invalid(format!("disk {} listed twice", d.name)));
             }
-            vm.config.data_disks.push(d.id.clone());
+            vm.spec.config.data_disks.push(d.id.clone());
             disks.push(d);
         }
         if let Some(key) = &sel.root_disk {
-            let d = self.attachable_disk_in(key, project)?;
+            let d = self.attachable_disk_in(&vms, key, project, None)?;
             if disks.iter().any(|x| x.id == d.id) {
-                return Err(HypervisorError::InvalidConfig(format!(
-                    "disk {} is both root_disk and a data disk",
-                    d.name
-                ))
-                .into());
+                return Err(invalid(format!("disk {} is both root_disk and a data disk", d.name)));
             }
-            vm.config.root_disk = Some(d.id.clone());
-            vm.config.rootfs_path = self.images.disk_path(&d).to_string_lossy().into_owned();
+            vm.spec.config.root_disk = Some(d.id.clone());
+            vm.spec.config.rootfs_path = self.images.disk_path(&d).to_string_lossy().into_owned();
             disks.push(d);
         }
         let mut created: Option<Disk> = None;
@@ -514,15 +673,15 @@ impl VmManager {
             }
             image_hold = hold;
             warnings.append(&mut w);
-            vm.config.root_disk = Some(d.id.clone());
-            vm.config.owns_root_disk = true;
-            vm.config.rootfs_path = self.images.disk_path(&d).to_string_lossy().into_owned();
+            vm.spec.config.root_disk = Some(d.id.clone());
+            vm.spec.config.owns_root_disk = true;
+            vm.spec.config.rootfs_path = self.images.disk_path(&d).to_string_lossy().into_owned();
             created = Some(d.clone());
             disks.push(d);
         }
         for d in &mut disks {
             d.attached_to = Some(vm.id.clone());
-            if Some(&d.id) == vm.config.root_disk.as_ref() && d.pending_growpart && vm.config.cloud_init_path.is_some() {
+            if Some(&d.id) == vm.spec.config.root_disk.as_ref() && d.pending_growpart && vm.spec.config.cloud_init_path.is_some() {
                 warnings.push(format!(
                     "disk {} is waiting for an on-boot root partition grow, but this VM uses a custom cloud_init_path; enable growpart in that seed",
                     d.name
@@ -530,9 +689,14 @@ impl VmManager {
             }
         }
 
-        // Persist BEFORE adding to the in-memory cache; the VM and its
-        // disks' attached_to go in one transaction.
-        let commit = Commit { put_vm: Some(&vm), put_disks: disks.iter().collect(), ..Default::default() };
+        // The VM, its disks' claims and its first event in one transaction.
+        let ev = Event::new(actor, EventKind::Normal, "Created", format!("desired state {}", power_name(power)));
+        let commit = Commit {
+            put_vm: Some(&vm),
+            put_disks: disks.iter().collect(),
+            events: vec![(event_key("vm", &vm.id), ev)],
+            ..Default::default()
+        };
         if let Err(e) = self.store.commit(commit) {
             if let Some(d) = &created {
                 self.images.remove_disk_file(d);
@@ -543,33 +707,51 @@ impl VmManager {
             self.images.cache_disk(d);
         }
         drop(image_hold);
-
-        let vm_clone = vm.clone();
-
-        vms.insert(
-            vm.id.clone(),
-            VmEntry {
-                vm,
-                process: None,
-            },
-        );
-
-        Ok((vm_clone, warnings, bypassed))
+        vms.insert(vm.id.clone(), vm.clone());
+        self.notify_changed();
+        self.queue.add(Key::Vm(vm.id.clone()));
+        Ok((vm, warnings, bypassed))
     }
 
-    /// A disk a VM of `project` may attach: exists, in that project, not
-    /// attached, not busy.
-    fn attachable_disk_in(&self, key: &str, project: &str) -> Result<Disk, VmManagerError> {
+    // ---- claims (D11) ------------------------------------------------------
+
+    /// The VM (other than `except`) claiming disk `disk_id`: its spec
+    /// references it, or a live instance of it has it open.
+    pub(crate) fn disk_claimed_by(vms: &HashMap<String, Vm>, disk_id: &str, except: Option<&str>) -> Option<String> {
+        vms.values()
+            .filter(|vm| Some(vm.id.as_str()) != except)
+            .find(|vm| {
+                let c = vm.config();
+                c.root_disk.as_deref() == Some(disk_id)
+                    || c.data_disks.iter().any(|d| d == disk_id)
+                    || vm.status.instance.as_ref().is_some_and(|i| i.disks.iter().any(|d| d == disk_id))
+            })
+            .map(|vm| vm.name.clone())
+    }
+
+    fn device_claimed_by(vms: &HashMap<String, Vm>, device: &str, except: Option<&str>) -> Option<String> {
+        let bdf = crate::hypervisor::vfio_device_id(device);
+        vms.values()
+            .filter(|vm| Some(vm.id.as_str()) != except)
+            .find(|vm| {
+                vm.config().vfio_devices.iter().any(|d| crate::hypervisor::vfio_device_id(d) == bdf)
+                    || vm.status.instance.as_ref().is_some_and(|i| i.vfio_devices.iter().any(|d| crate::hypervisor::vfio_device_id(d) == bdf))
+            })
+            .map(|vm| vm.name.clone())
+    }
+
+    /// A disk a VM of `project` may claim: exists, in that project,
+    /// unclaimed (by anyone but `vm_id`), not busy.
+    fn attachable_disk_in(&self, vms: &HashMap<String, Vm>, key: &str, project: &str, vm_id: Option<&str>) -> Result<Disk, VmManagerError> {
         let d = self.images.get_disk(key)?;
         if d.project != project {
-            return Err(HypervisorError::InvalidConfig(format!(
-                "disk {} belongs to another project",
-                d.name
-            ))
-            .into());
+            return Err(invalid(format!("disk {} belongs to another project", d.name)));
         }
-        if let Some(vm) = &d.attached_to {
-            return Err(ImageError::InUse(format!("disk {} is attached to VM {}", d.name, vm)).into());
+        if let Some(other) = Self::disk_claimed_by(vms, &d.id, vm_id) {
+            return Err(ImageError::InUse(format!("disk {} is attached to VM {}", d.name, other)).into());
+        }
+        if let Some(owner) = d.attached_to.as_deref().filter(|o| Some(*o) != vm_id && vms.contains_key(*o)) {
+            return Err(ImageError::InUse(format!("disk {} is attached to VM {}", d.name, owner)).into());
         }
         if let Some(op) = self.images.busy_op(&d.id) {
             return Err(ImageError::Busy(format!("disk {} is busy ({})", d.name, op)).into());
@@ -579,7 +761,7 @@ impl VmManager {
 
     /// Bindings for a VM's managed disks, checked to be usable right now:
     /// the root disk (with its record) and the data disks.
-    fn disk_bindings(&self, vm: &Vm) -> Result<(Option<RootBinding>, Vec<DiskBinding>), VmManagerError> {
+    pub(crate) fn disk_bindings(&self, vm: &Vm) -> Result<(Option<RootBinding>, Vec<DiskBinding>), VmManagerError> {
         let bind = |id: &str| -> Result<(DiskBinding, Disk), VmManagerError> {
             let d = self.images.get_disk(id)?;
             if let Some(op) = self.images.busy_op(&d.id) {
@@ -589,541 +771,397 @@ impl VmManager {
             if !path.exists() {
                 return Err(ImageError::Io(format!("disk {} file is missing: {}", d.name, path.display())).into());
             }
-            Ok((
-                DiskBinding {
-                    path: path.to_string_lossy().into_owned(),
-                    format: d.format,
-                    backing_files: d.is_linked(),
-                },
-                d,
-            ))
+            Ok((DiskBinding { path: path.to_string_lossy().into_owned(), format: d.format, backing_files: d.is_linked() }, d))
         };
-        let root = vm.config.root_disk.as_deref().map(bind).transpose()?;
-        let data = vm
-            .config
-            .data_disks
-            .iter()
-            .map(|id| bind(id).map(|(b, _)| b))
-            .collect::<Result<Vec<_>, _>>()?;
+        let root = vm.config().root_disk.as_deref().map(bind).transpose()?;
+        let data = vm.config().data_disks.iter().map(|id| bind(id).map(|(b, _)| b)).collect::<Result<Vec<_>, _>>()?;
         Ok((root, data))
     }
 
-    /// Start a VM, quotas not enforced (embedding and tests). The API uses
-    /// [`Self::start_vm_with`].
+    // ---- desired power state ----------------------------------------------
+
+    /// Start a VM, quotas not enforced (embedding and tests); returns at
+    /// once, see [`Self::wait_converged`].
     pub async fn start_vm(&self, vm_id: &str) -> Result<Vm, VmManagerError> {
-        self.start_vm_with(vm_id, QuotaMode::MayExceed).await.map(|(vm, _)| vm)
-    }
-
-    /// Start (or resume) a VM, checking its project's `running_vms` quota.
-    pub async fn start_vm_with(&self, vm_id: &str, quota: QuotaMode) -> Result<(Vm, Vec<QuotaOverrun>), VmManagerError> {
-        let mut vms = self.vms.write().await;
-        let mut bypassed = Vec::new();
-        if let Some(entry) = vms.get(vm_id) {
-            if matches!(entry.vm.state, VmState::Created | VmState::Stopped) {
-                let project = entry.vm.project.clone();
-                if let Some(p) = self.projects.get(&project)? {
-                    let usage = self.usage_locked(&project, &vms)?;
-                    let delta = Delta { running_vms: 1, ..Default::default() };
-                    Self::apply_quota(&p.quotas, &usage, &delta, quota, &mut bypassed)?;
-                }
-            }
-        }
-        self.start_vm_locked(&mut vms, vm_id).await.map(|vm| (vm, bypassed))
-    }
-
-    async fn start_vm_locked(&self, vms: &mut HashMap<String, VmEntry>, vm_id: &str) -> Result<Vm, VmManagerError> {
-        let entry = vms
-            .get_mut(vm_id)
-            .ok_or_else(|| VmManagerError::VmNotFound(vm_id.to_string()))?;
-
-        match entry.vm.state {
-            VmState::Created | VmState::Stopped => {
-                // Get the appropriate backend for this VM's hypervisor
-                let backend = self.get_backend(entry.vm.hypervisor)?;
-                let (root_disk, data_disks) = self.disk_bindings(&entry.vm)?;
-                crate::paths::ensure_vm_dir(&entry.vm.id).map_err(HypervisorError::ProcessStart)?;
-
-                // Spawn hypervisor process with console socket and log file
-                let process = backend.spawn(
-                    &entry.vm.socket_path,
-                    &entry.vm.console_socket_path,
-                    &entry.vm.log_path,
-                )?;
-
-                // Attach NICs through glidex-netd before configuring, so
-                // the hypervisor gets real tap names / vhost-user sockets.
-                let mut config = entry.vm.config.clone();
-                config.root_disk_binding = root_disk.as_ref().map(|(b, _)| b.clone());
-                config.data_disk_bindings = data_disks;
-                if config.firmware_path.is_some() && entry.vm.hypervisor == HypervisorType::Qemu {
-                    config.firmware_vars_path = Some(self.firmware_vars_path(&entry.vm.id));
-                }
-                let nics = match self.attach_nics(&entry.vm) {
-                    Ok(nics) => nics,
-                    Err(e) => {
-                        let _ = process.kill();
-                        return Err(e);
-                    }
-                };
-                config.nic_bindings = nics.iter().map(|(b, _)| b.clone()).collect();
-                let (cleanup_id, cleanup_nics) = (entry.vm.id.clone(), config.networks.len());
-                let detach_on_error = |process: &dyn HypervisorProcess| {
-                    let _ = process.kill();
-                    self.detach_nics(&cleanup_id, cleanup_nics);
-                };
-
-                // Firmware-booted cloud images need a cloud-init seed to
-                // get a usable login; generate the default one if the VM
-                // didn't bring its own. Regenerated on every start so it
-                // tracks the host's current SSH keys.
-                if config.firmware_path.is_some() && config.cloud_init_path.is_none() {
-                    let path = entry.vm.default_cloud_init_path();
-                    let seed = match &config.credential {
-                        Some(username) => match self.credentials.get(&entry.vm.project, username) {
-                            Ok(cred) => cloud_init::SeedConfig::for_credential(
-                                &entry.vm.id,
-                                &entry.vm.name,
-                                &cred,
-                            ),
-                            Err(e) => {
-                                detach_on_error(process.as_ref());
-                                return Err(e.into());
-                            }
-                        },
-                        None => cloud_init::SeedConfig::for_vm(&entry.vm.id, &entry.vm.name),
-                    };
-                    let mut seed = seed;
-                    seed.nic_macs = config.nic_bindings.iter().map(|n| n.mac.clone()).collect();
-                    seed.growpart = root_disk.as_ref().is_some_and(|(_, d)| d.pending_growpart);
-                    if seed.ssh_authorized_keys.is_empty() && seed.passwd_hash.is_none() {
-                        tracing::info!(
-                            vm_id = %entry.vm.id,
-                            "VM has no login credential; the guest has no way to log in"
-                        );
-                    }
-                    if let Err(e) = cloud_init::write_seed_image(&path, &seed) {
-                        detach_on_error(process.as_ref());
-                        return Err(e.into());
-                    }
-                    config.cloud_init_path = Some(path);
-                }
-
-                // Configure the VM, cleanup process on failure
-                if let Err(e) = process.configure(&config) {
-                    detach_on_error(process.as_ref());
-                    return Err(e.into());
-                }
-
-                // Start the VM, cleanup process on failure
-                if let Err(e) = process.start() {
-                    detach_on_error(process.as_ref());
-                    return Err(e.into());
-                }
-
-                // Persist state change BEFORE updating in-memory state
-                // If persist fails, kill the process to maintain consistency
-                entry.vm.nics = nics.into_iter().map(|(_, s)| s).collect();
-                entry.vm.state = VmState::Running;
-                if let Err(e) = self.store.save(&entry.vm) {
-                    entry.vm.state = VmState::Stopped;
-                    detach_on_error(process.as_ref());
-                    return Err(e.into());
-                }
-
-                tracing::info!(
-                    vm_id = %entry.vm.id,
-                    running = process.is_running(),
-                    socket = process.socket_path(),
-                    console = process.console_socket_path(),
-                    log = process.log_path(),
-                    "VM started"
-                );
-
-                entry.process = Some(process);
-                entry.vm.state = VmState::Running;
-
-                // The seed now carries the growpart request; cloud-init
-                // acts on it during this boot.
-                if let Some((_, mut d)) = root_disk.filter(|(_, d)| d.pending_growpart) {
-                    if config.cloud_init_path.as_deref() == Some(entry.vm.default_cloud_init_path().as_str()) {
-                        d.pending_growpart = false;
-                        if let Err(e) = self.images.put_disk(&d) {
-                            tracing::warn!(disk = %d.name, "could not clear pending_growpart: {}", e);
-                        }
-                    }
-                }
-
-                Ok(entry.vm.clone())
-            }
-            VmState::Paused => {
-                // Resume paused VM
-                if let Some(ref process) = entry.process {
-                    process.resume()?;
-                } else {
-                    return Err(VmManagerError::InvalidState {
-                        current: VmState::Paused,
-                        operation: "start (no process handle)".to_string(),
-                    });
-                }
-
-                // Persist state change BEFORE updating in-memory state
-                // If persist fails, pause again to maintain consistency
-                if let Err(e) = self.store.update_state(vm_id, VmState::Running) {
-                    if let Some(ref process) = entry.process {
-                        let _ = process.pause();
-                    }
-                    return Err(e.into());
-                }
-
-                entry.vm.state = VmState::Running;
-
-                Ok(entry.vm.clone())
-            }
-            VmState::Running => Err(VmManagerError::InvalidState {
-                current: VmState::Running,
-                operation: "start".to_string(),
-            }),
-        }
-    }
-
-    /// This VM's private copy of the UEFI variable store (QEMU firmware
-    /// boot), so boot entries the guest writes survive a restart.
-    fn firmware_vars_path(&self, vm_id: &str) -> String {
-        self.data_dir
-            .join("firmware-vars")
-            .join(format!("{}.fd", vm_id))
-            .to_string_lossy()
-            .into_owned()
-    }
-
-    /// Stop a VM, first asking the guest to power off (ACPI power button)
-    /// and giving it up to `grace` to do so. A guest that is paused, has
-    /// no ACPI support or doesn't finish in time is stopped hard.
-    pub async fn stop_vm_graceful(&self, vm_id: &str, grace: std::time::Duration) -> Result<Vm, VmManagerError> {
-        let requested = {
-            let vms = self.vms.read().await;
-            let entry = vms
-                .get(vm_id)
-                .ok_or_else(|| VmManagerError::VmNotFound(vm_id.to_string()))?;
-            match (&entry.vm.state, &entry.process) {
-                (VmState::Running, Some(process)) => match process.request_shutdown() {
-                    Ok(()) => true,
-                    Err(e) => {
-                        tracing::warn!(vm_id, "graceful shutdown request failed: {}", e);
-                        false
-                    }
-                },
-                _ => false,
-            }
-        };
-        if requested {
-            // Poll without holding the lock, so the API stays responsive.
-            let deadline = tokio::time::Instant::now() + grace;
-            while tokio::time::Instant::now() < deadline {
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                let vms = self.vms.read().await;
-                let alive = vms
-                    .get(vm_id)
-                    .and_then(|e| e.process.as_ref())
-                    .is_some_and(|p| p.is_running());
-                if !alive {
-                    break;
-                }
-            }
-        }
-        match self.stop_vm(vm_id).await {
-            // The guest powered off and the reaper got there first.
-            Err(VmManagerError::InvalidState { current: VmState::Stopped, .. }) if requested => self.get_vm(vm_id).await,
-            other => other,
-        }
-    }
-
-    /// Mark VMs whose hypervisor exited on its own (guest powered off or
-    /// crashed) as stopped and release their NICs. Returns their ids.
-    pub async fn reap_exited_vms(&self) -> Vec<String> {
-        let mut vms = self.vms.write().await;
-        let mut reaped = Vec::new();
-        for (vm_id, entry) in vms.iter_mut() {
-            if !matches!(entry.vm.state, VmState::Running | VmState::Paused) {
-                continue;
-            }
-            let Some(process) = entry.process.take_if(|p| !p.is_running()) else {
-                continue;
-            };
-            let _ = process.kill();
-            entry.vm.state = VmState::Stopped;
-            self.detach_nics(&entry.vm.id, entry.vm.config.networks.len());
-            for nic in &mut entry.vm.nics {
-                nic.port = None;
-            }
-            if let Err(e) = self.store.update_state(vm_id, VmState::Stopped) {
-                tracing::error!("Failed to persist VM {} state change to Stopped: {}", vm_id, e);
-            }
-            tracing::info!(vm_id = %vm_id, name = %entry.vm.name, "VM exited; marked stopped");
-            reaped.push(vm_id.clone());
-        }
-        reaped
+        self.set_power(vm_id, PowerState::Running, None, QuotaMode::MayExceed, "api", None).await.map(|(vm, _)| vm)
     }
 
     pub async fn stop_vm(&self, vm_id: &str) -> Result<Vm, VmManagerError> {
-        let mut vms = self.vms.write().await;
-
-        let entry = vms
-            .get_mut(vm_id)
-            .ok_or_else(|| VmManagerError::VmNotFound(vm_id.to_string()))?;
-
-        match entry.vm.state {
-            VmState::Running | VmState::Paused => {
-                // Kill the hypervisor process (cannot be undone)
-                if let Some(ref process) = entry.process {
-                    let _ = process.kill();
-                }
-                entry.process = None;
-                entry.vm.state = VmState::Stopped;
-                self.detach_nics(&entry.vm.id, entry.vm.config.networks.len());
-                for nic in &mut entry.vm.nics {
-                    nic.port = None;
-                }
-
-                // Persist state change - log warning if fails since operation already happened
-                if let Err(e) = self.store.update_state(vm_id, VmState::Stopped) {
-                    tracing::error!(
-                        "Failed to persist VM {} state change to Stopped: {}. State will be reconciled on restart.",
-                        vm_id, e
-                    );
-                }
-
-                Ok(entry.vm.clone())
-            }
-            _ => Err(VmManagerError::InvalidState {
-                current: entry.vm.state.clone(),
-                operation: "stop".to_string(),
-            }),
-        }
+        self.set_power(vm_id, PowerState::Stopped, None, QuotaMode::MayExceed, "api", None).await.map(|(vm, _)| vm)
     }
 
     pub async fn pause_vm(&self, vm_id: &str) -> Result<Vm, VmManagerError> {
+        self.set_power(vm_id, PowerState::Paused, None, QuotaMode::MayExceed, "api", None).await.map(|(vm, _)| vm)
+    }
+
+    /// `spec.power = power` (and `stop_grace_secs` when given), checking the
+    /// project's `running_vms` quota when the VM leaves `Stopped` (§12.2).
+    pub async fn set_power(
+        &self,
+        vm_id: &str,
+        power: PowerState,
+        grace: Option<u32>,
+        quota: QuotaMode,
+        actor: &str,
+        if_match: Option<u64>,
+    ) -> Result<(Vm, Vec<QuotaOverrun>), VmManagerError> {
+        if grace.is_some_and(|g| g > MAX_STOP_GRACE_SECS) {
+            return Err(invalid(format!("graceful_timeout_secs must be 0-{}", MAX_STOP_GRACE_SECS)));
+        }
         let mut vms = self.vms.write().await;
-
-        let entry = vms
-            .get_mut(vm_id)
-            .ok_or_else(|| VmManagerError::VmNotFound(vm_id.to_string()))?;
-
-        if entry.vm.state != VmState::Running {
-            return Err(VmManagerError::InvalidState {
-                current: entry.vm.state.clone(),
-                operation: "pause".to_string(),
-            });
-        }
-
-        if let Some(ref process) = entry.process {
-            process.pause()?;
-        } else {
-            return Err(VmManagerError::InvalidState {
-                current: entry.vm.state.clone(),
-                operation: "pause (no process handle)".to_string(),
-            });
-        }
-
-        // Persist state change BEFORE updating in-memory state
-        // If persist fails, resume the VM to maintain consistency
-        if let Err(e) = self.store.update_state(vm_id, VmState::Paused) {
-            if let Some(ref process) = entry.process {
-                let _ = process.resume();
+        let cur = Self::writable(&vms, vm_id, if_match)?.clone();
+        let mut bypassed = Vec::new();
+        if cur.spec.power == PowerState::Stopped && power != PowerState::Stopped {
+            if let Some(p) = self.projects.get(&cur.project)? {
+                let usage = self.usage_locked(&cur.project, &vms)?;
+                Self::apply_quota(&p.quotas, &usage, &Delta { running_vms: 1, ..Default::default() }, quota, &mut bypassed)?;
             }
-            return Err(e.into());
         }
-
-        entry.vm.state = VmState::Paused;
-
-        Ok(entry.vm.clone())
+        let grace = grace.unwrap_or(cur.spec.stop_grace_secs);
+        if cur.spec.power == power && cur.spec.stop_grace_secs == grace {
+            return Ok((cur, bypassed));
+        }
+        let mut vm = cur;
+        vm.spec.power = power;
+        vm.spec.stop_grace_secs = grace;
+        let msg = format!("desired state {}", power_name(power));
+        let vm = self.spec_write(&mut vms, vm, actor, "PowerChanged", msg)?;
+        Ok((vm, bypassed))
     }
 
-    pub async fn get_vm(&self, vm_id: &str) -> Result<Vm, VmManagerError> {
-        let vms = self.vms.read().await;
-        vms.get(vm_id)
-            .map(|entry| entry.vm.clone())
-            .ok_or_else(|| VmManagerError::VmNotFound(vm_id.to_string()))
+    // ---- other spec edits (§7.3) -------------------------------------------
+
+    /// Apply a merge patch of `spec`. Immutable fields are refused before
+    /// anything else.
+    pub async fn patch_vm(
+        &self,
+        vm_id: &str,
+        patch: VmPatch,
+        quota: QuotaMode,
+        actor: &str,
+        if_match: Option<u64>,
+    ) -> Result<(Vm, Vec<QuotaOverrun>), VmManagerError> {
+        if let Some(c) = &patch.config {
+            let fields = c.immutable_fields();
+            if !fields.is_empty() {
+                return Err(invalid(format!("immutable field(s): {}", fields.join(", "))));
+            }
+        }
+        Self::check_options(&VmOptions { stop_grace_secs: patch.stop_grace_secs, ..Default::default() })?;
+        let mut vms = self.vms.write().await;
+        let cur = Self::writable(&vms, vm_id, if_match)?.clone();
+        let project = cur.project.clone();
+        let mut vm = cur.clone();
+        let mut disk_writes: Vec<Disk> = Vec::new();
+        let mut delta = Delta::default();
+
+        if let Some(p) = patch.power {
+            if cur.spec.power == PowerState::Stopped && p != PowerState::Stopped {
+                delta.running_vms = 1;
+            }
+            vm.spec.power = p;
+        }
+        if let Some(r) = patch.restart_policy {
+            vm.spec.restart_policy = r;
+        }
+        if let Some(h) = patch.on_host_boot {
+            vm.spec.on_host_boot = h;
+        }
+        if let Some(g) = patch.stop_grace_secs {
+            vm.spec.stop_grace_secs = g;
+        }
+        if let Some(c) = patch.config {
+            let config = &mut vm.spec.config;
+            if let Some(v) = c.vcpu_count {
+                if v == 0 {
+                    return Err(invalid("vcpu_count must be greater than 0"));
+                }
+                delta.vcpus = (v as u64).saturating_sub(config.vcpu_count as u64);
+                config.vcpu_count = v;
+            }
+            if let Some(m) = c.mem_size_mib {
+                if m == 0 {
+                    return Err(invalid("mem_size_mib must be greater than 0"));
+                }
+                delta.memory_mib = (m as u64).saturating_sub(config.mem_size_mib as u64);
+                config.mem_size_mib = m;
+            }
+            if let Some(a) = c.kernel_args {
+                config.kernel_args = a;
+            }
+            if let Some(h) = c.hugepages {
+                config.hugepages = h;
+            }
+            if let Some(cred) = c.credential {
+                config.credential = match cred {
+                    serde_json::Value::Null => None,
+                    serde_json::Value::String(s) => Some(s),
+                    _ => return Err(invalid("credential must be a username or null")),
+                };
+            }
+            if let Some(devs) = c.vfio_devices {
+                self.refuse_dpdk_uplink_devices(&devs)?;
+                for d in &devs {
+                    if let Some(other) = Self::device_claimed_by(&vms, d, Some(vm_id)) {
+                        return Err(ImageError::InUse(format!("PCI device {} is used by VM {}", d, other)).into());
+                    }
+                }
+                config.vfio_devices = devs;
+            }
+            if let Some(nets) = c.networks {
+                let mut nets = nets;
+                for (i, att) in nets.iter_mut().enumerate() {
+                    if att.mac.is_none() {
+                        att.mac = glidex_ovs::names::mac_address(&vm.id, i as u8).ok();
+                    }
+                }
+                self.check_networks(&project, &nets)?;
+                vm.spec.config.networks = nets;
+            }
+            if let Some(keys) = c.data_disks {
+                let mut ids = Vec::new();
+                for key in &keys {
+                    let d = self.attachable_disk_in(&vms, key, &project, Some(vm_id))?;
+                    if ids.contains(&d.id) || vm.spec.config.root_disk.as_ref() == Some(&d.id) {
+                        return Err(invalid(format!("disk {} listed twice", d.name)));
+                    }
+                    ids.push(d.id.clone());
+                    if d.attached_to.as_deref() != Some(vm_id) {
+                        let mut d = d;
+                        d.attached_to = Some(vm_id.to_string());
+                        disk_writes.push(d);
+                    }
+                }
+                for old in &cur.spec.config.data_disks {
+                    if !ids.contains(old) {
+                        if let Some(d) = self.release_claim_if_unused(&cur, old) {
+                            disk_writes.push(d);
+                        }
+                    }
+                }
+                vm.spec.config.data_disks = ids;
+            }
+            self.check_paths(&vm.spec.config)?;
+            self.check_credential(&project, &vm.spec.config)?;
+        }
+        if vm.spec == cur.spec {
+            return Ok((cur, Vec::new()));
+        }
+        let mut bypassed = Vec::new();
+        if delta.running_vms + delta.vcpus + delta.memory_mib > 0 {
+            if let Some(p) = self.projects.get(&project)? {
+                let usage = self.usage_locked(&project, &vms)?;
+                Self::apply_quota(&p.quotas, &usage, &delta, quota, &mut bypassed)?;
+            }
+        }
+        vm.generation += 1;
+        vm.resource_version += 1;
+        let ev = Event::new(actor, EventKind::Normal, "SpecChanged", "spec updated");
+        self.store.commit(Commit {
+            put_vm: Some(&vm),
+            put_disks: disk_writes.iter().collect(),
+            events: vec![(event_key("vm", &vm.id), ev)],
+            ..Default::default()
+        })?;
+        for d in &disk_writes {
+            self.images.cache_disk(d);
+        }
+        vms.insert(vm.id.clone(), vm.clone());
+        self.notify_changed();
+        self.queue.add(Key::Vm(vm.id.clone()));
+        Ok((vm, bypassed))
     }
 
-    pub async fn list_vms(&self) -> Vec<Vm> {
-        let vms = self.vms.read().await;
-        vms.values().map(|entry| entry.vm.clone()).collect()
+    /// A disk `vm` stops referencing keeps its claim while `vm`'s instance
+    /// has it open (D11); otherwise its `attached_to` is cleared. Returns
+    /// the disk record to write, if it changes.
+    fn release_claim_if_unused(&self, vm: &Vm, disk_id: &str) -> Option<Disk> {
+        if vm.status.instance.as_ref().is_some_and(|i| i.disks.iter().any(|d| d == disk_id)) {
+            return None;
+        }
+        let mut d = self.images.get_disk(disk_id).ok()?;
+        if d.attached_to.as_deref() == Some(vm.id.as_str()) {
+            d.attached_to = None;
+            Some(d)
+        } else {
+            None
+        }
     }
 
     pub async fn attach_device(&self, vm_id: &str, device_path: String) -> Result<Vm, VmManagerError> {
-        self.refuse_dpdk_uplink_devices(std::slice::from_ref(&device_path))?;
-        let mut vms = self.vms.write().await;
-
-        let entry = vms
-            .get_mut(vm_id)
-            .ok_or_else(|| VmManagerError::VmNotFound(vm_id.to_string()))?;
-
-        // Reject if device is already attached
-        if entry.vm.config.vfio_devices.contains(&device_path) {
+        let vm = self.get_vm(vm_id).await?;
+        if vm.config().vfio_devices.contains(&device_path) {
             return Err(VmManagerError::InvalidState {
-                current: entry.vm.state.clone(),
+                current: vm.state(),
                 operation: format!("attach_device: {} is already attached", device_path),
             });
         }
-
-        match entry.vm.state {
-            VmState::Running => {
-                // Hot-plug: call hypervisor API, then update config
-                if let Some(ref process) = entry.process {
-                    process.add_device(&device_path)?;
-                } else {
-                    return Err(VmManagerError::InvalidState {
-                        current: entry.vm.state.clone(),
-                        operation: "attach_device (no process handle)".to_string(),
-                    });
-                }
-
-                entry.vm.config.vfio_devices.push(device_path);
-
-                // Persist updated config. On failure, rollback the hot-plug.
-                if let Err(e) = self.store.save(&entry.vm) {
-                    let removed = entry.vm.config.vfio_devices.pop();
-                    if let (Some(ref process), Some(path)) = (&entry.process, removed) {
-                        let _ = process.remove_device(&path);
-                    }
-                    return Err(e.into());
-                }
-
-                Ok(entry.vm.clone())
-            }
-            VmState::Created | VmState::Stopped => {
-                // Config-only: device will be included at next VM start
-                entry.vm.config.vfio_devices.push(device_path);
-                self.store.save(&entry.vm)?;
-                Ok(entry.vm.clone())
-            }
-            VmState::Paused => Err(VmManagerError::InvalidState {
-                current: VmState::Paused,
-                operation: "attach_device".to_string(),
-            }),
-        }
+        let mut devs = vm.config().vfio_devices.clone();
+        devs.push(device_path);
+        let patch = VmPatch { config: Some(ConfigPatch { vfio_devices: Some(devs), ..Default::default() }), ..Default::default() };
+        self.patch_vm(vm_id, patch, QuotaMode::MayExceed, "api", None).await.map(|(vm, _)| vm)
     }
 
     pub async fn detach_device(&self, vm_id: &str, device_path: &str) -> Result<Vm, VmManagerError> {
-        let mut vms = self.vms.write().await;
-
-        let entry = vms
-            .get_mut(vm_id)
-            .ok_or_else(|| VmManagerError::VmNotFound(vm_id.to_string()))?;
-
-        // Check that the device is actually attached
-        let pos = entry
-            .vm
-            .config
-            .vfio_devices
-            .iter()
-            .position(|d| d == device_path)
-            .ok_or_else(|| VmManagerError::InvalidState {
-                current: entry.vm.state.clone(),
+        let vm = self.get_vm(vm_id).await?;
+        let mut devs = vm.config().vfio_devices.clone();
+        let Some(pos) = devs.iter().position(|d| d == device_path) else {
+            return Err(VmManagerError::InvalidState {
+                current: vm.state(),
                 operation: format!("detach_device: {} is not attached", device_path),
-            })?;
-
-        match entry.vm.state {
-            VmState::Running => {
-                // Hot-unplug: call hypervisor API, then update config
-                if let Some(ref process) = entry.process {
-                    process.remove_device(device_path)?;
-                } else {
-                    return Err(VmManagerError::InvalidState {
-                        current: entry.vm.state.clone(),
-                        operation: "detach_device (no process handle)".to_string(),
-                    });
-                }
-
-                let removed = entry.vm.config.vfio_devices.remove(pos);
-
-                // Persist updated config. On failure, rollback.
-                if let Err(e) = self.store.save(&entry.vm) {
-                    // Re-insert at original position
-                    entry.vm.config.vfio_devices.insert(pos, removed.clone());
-                    if let Some(ref process) = entry.process {
-                        let _ = process.add_device(&removed);
-                    }
-                    return Err(e.into());
-                }
-
-                Ok(entry.vm.clone())
-            }
-            VmState::Created | VmState::Stopped => {
-                // Config-only: just remove from the device list
-                entry.vm.config.vfio_devices.remove(pos);
-                self.store.save(&entry.vm)?;
-                Ok(entry.vm.clone())
-            }
-            VmState::Paused => Err(VmManagerError::InvalidState {
-                current: VmState::Paused,
-                operation: "detach_device".to_string(),
-            }),
-        }
+            });
+        };
+        devs.remove(pos);
+        let patch = VmPatch { config: Some(ConfigPatch { vfio_devices: Some(devs), ..Default::default() }), ..Default::default() };
+        self.patch_vm(vm_id, patch, QuotaMode::MayExceed, "api", None).await.map(|(vm, _)| vm)
     }
 
+    /// Attach a data disk; on a running VM it takes effect at the next
+    /// launch (`RestartRequired`, §7.3).
+    pub async fn attach_disk(&self, vm_id: &str, key: &str) -> Result<Vm, VmManagerError> {
+        let vm = self.get_vm(vm_id).await?;
+        let d = self.images.get_disk(key)?;
+        let mut keys = vm.config().data_disks.clone();
+        keys.push(d.id);
+        let patch = VmPatch { config: Some(ConfigPatch { data_disks: Some(keys), ..Default::default() }), ..Default::default() };
+        self.patch_vm(vm_id, patch, QuotaMode::MayExceed, "api", None).await.map(|(vm, _)| vm)
+    }
+
+    pub async fn detach_disk(&self, vm_id: &str, key: &str) -> Result<Vm, VmManagerError> {
+        let vm = self.get_vm(vm_id).await?;
+        let disk = self.images.get_disk(key)?;
+        let mut keys = vm.config().data_disks.clone();
+        let Some(pos) = keys.iter().position(|d| *d == disk.id) else {
+            let msg = if vm.config().root_disk.as_ref() == Some(&disk.id) {
+                format!("disk {} is the VM's root disk, not a data disk", disk.name)
+            } else {
+                format!("disk {} is not attached to this VM", disk.name)
+            };
+            return Err(VmManagerError::Image(ImageError::invalid_disk(msg)));
+        };
+        if let Some(op) = self.images.busy_op(&disk.id) {
+            return Err(ImageError::Busy(format!("disk {} is busy ({})", disk.name, op)).into());
+        }
+        keys.remove(pos);
+        let patch = VmPatch { config: Some(ConfigPatch { data_disks: Some(keys), ..Default::default() }), ..Default::default() };
+        self.patch_vm(vm_id, patch, QuotaMode::MayExceed, "api", None).await.map(|(vm, _)| vm)
+    }
+
+    // ---- delete (§6.3) ---------------------------------------------------------
+
     #[allow(dead_code)] // used by the tests through the lib crate
-    pub async fn delete_vm(&self, vm_id: &str) -> Result<(), VmManagerError> {
+    pub async fn delete_vm(&self, vm_id: &str) -> Result<bool, VmManagerError> {
         self.delete_vm_with(vm_id, false).await
     }
 
-    /// Delete a VM. Its owned root disk goes with it unless `keep_disk`;
-    /// other disks are detached and kept (spec images.md §7).
-    pub async fn delete_vm_with(&self, vm_id: &str, keep_disk: bool) -> Result<(), VmManagerError> {
-        let mut vms = self.vms.write().await;
+    /// Request deletion. Returns `true` when the VM is already gone (it had
+    /// no instance, ports or anything else to clean up), `false` when the
+    /// controller finishes it.
+    pub async fn delete_vm_with(&self, vm_id: &str, keep_disk: bool) -> Result<bool, VmManagerError> {
+        self.delete_vm_as(vm_id, keep_disk, "api").await
+    }
 
-        let entry = vms
-            .get_mut(vm_id)
-            .ok_or_else(|| VmManagerError::VmNotFound(vm_id.to_string()))?;
-
-        let mut detach = Vec::new();
-        let mut owned = None;
-        for id in entry.vm.config.root_disk.iter().chain(entry.vm.config.data_disks.iter()) {
-            let Ok(mut d) = self.images.get_disk(id) else { continue };
-            if let Some(op) = self.images.busy_op(&d.id) {
-                return Err(ImageError::Busy(format!("disk {} is busy ({})", d.name, op)).into());
+    pub async fn delete_vm_as(&self, vm_id: &str, keep_disk: bool, actor: &str) -> Result<bool, VmManagerError> {
+        let vm = {
+            let mut vms = self.vms.write().await;
+            let cur = vms.get(vm_id).ok_or_else(|| VmManagerError::VmNotFound(vm_id.to_string()))?.clone();
+            if cur.deletion_requested_at.is_some() {
+                return Ok(false);
             }
-            d.attached_to = None;
-            if entry.vm.config.owns_root_disk && !keep_disk && Some(id) == entry.vm.config.root_disk.as_ref() {
-                owned = Some(d);
-            } else {
-                detach.push(d);
+            for id in cur.config().root_disk.iter().chain(cur.config().data_disks.iter()) {
+                if let Some(op) = self.images.busy_op(id) {
+                    return Err(ImageError::Busy(format!("disk {} is busy ({})", id, op)).into());
+                }
+            }
+            let mut vm = cur;
+            vm.deletion_requested_at = Some(tenancy::now());
+            vm.finalizers = crate::controller::vm::FINALIZERS
+                .iter()
+                .filter(|f| !(keep_disk && **f == crate::controller::vm::FINALIZER_OWNED_DISK))
+                .map(|f| f.to_string())
+                .collect();
+            vm.resource_version += 1;
+            let ev = Event::new(actor, EventKind::Normal, "Deleting", if keep_disk { "deletion requested (keeping its root disk)" } else { "deletion requested" });
+            self.put_locked(&mut vms, vm, vec![ev])?
+        };
+        // Nothing ran: finish now, so a never-started VM is gone at once.
+        if vm.status.instance.is_none() && vm.status.nics.is_empty() && matches!(vm.status.phase, VmPhase::Stopped | VmPhase::Failed) {
+            let runner = self.runner();
+            let unit = runner.unit_active(&vm.id).await;
+            let v = vm.clone();
+            let seen = tokio::task::spawn_blocking(move || crate::instance::liveness(&v, unit))
+                .await
+                .map_err(|e| VmManagerError::PersistenceError(e.to_string()))?;
+            if seen.liveness == crate::instance::Liveness::Dead {
+                self.finalize_deletion(&vm).await?;
+                return Ok(true);
             }
         }
+        self.queue.add(Key::Vm(vm.id.clone()));
+        Ok(false)
+    }
 
-        // Stop the VM if running
-        if let Some(ref process) = entry.process {
-            let _ = process.kill();
-        }
-        if !entry.vm.config.networks.is_empty() {
-            // Detaches any ports and frees the VM's NAT reservations.
-            if let Err(e) = self.netd.call::<serde_json::Value>(Op::ReleaseVm { vm_id: entry.vm.id.clone() }) {
-                tracing::warn!(vm_id = %entry.vm.id, "glidex-netd release failed: {}", e);
+    // ---- reads -------------------------------------------------------------
+
+    pub async fn get_vm(&self, vm_id: &str) -> Result<Vm, VmManagerError> {
+        self.vm(vm_id).await.ok_or_else(|| VmManagerError::VmNotFound(vm_id.to_string()))
+    }
+
+    pub async fn list_vms(&self) -> Vec<Vm> {
+        self.vms.read().await.values().cloned().collect()
+    }
+
+    pub fn vm_events(&self, vm_id: &str) -> Result<Vec<Event>, VmManagerError> {
+        Ok(self.store.events(&event_key("vm", vm_id))?)
+    }
+
+    /// Wait until the VM's reconcile of `generation` is decided (§12.3):
+    /// converged or failed, gone (a deletion), or timed out.
+    pub async fn wait_converged(&self, vm_id: &str, generation: u64, timeout: Duration) -> Waited {
+        let mut rx = self.changed.subscribe();
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let vm = self.vm(vm_id).await;
+            match &vm {
+                None => return Waited::Gone,
+                Some(v)
+                    if v.deletion_requested_at.is_none()
+                        && v.status.observed_generation >= generation
+                        && (v.is_converged() || v.status.phase == VmPhase::Failed) =>
+                {
+                    return Waited::Decided(Box::new(v.clone()));
+                }
+                _ => {}
+            }
+            if tokio::time::timeout_at(deadline, rx.changed()).await.is_err() {
+                return Waited::TimedOut(vm.map(Box::new));
             }
         }
+    }
 
-        // Delete from database BEFORE removing from memory; the disks'
-        // records change in the same transaction.
-        self.store.commit(Commit {
-            delete_vm: Some(vm_id),
-            put_disks: detach.iter().collect(),
-            delete_disks: owned.iter().map(|d| d.id.as_str()).collect(),
-            ..Default::default()
-        })?;
-        for d in &detach {
-            self.images.cache_disk(d);
+    /// Set every VM to stopped and wait (tests, and tools that need a
+    /// clean host). Not called on shutdown: VMs outlive the control plane.
+    pub async fn stop_all(&self, timeout: Duration) {
+        let ids: Vec<String> = self.vms.read().await.keys().cloned().collect();
+        let mut gens = Vec::new();
+        for id in ids {
+            if let Ok((vm, _)) = self.set_power(&id, PowerState::Stopped, Some(0), QuotaMode::MayExceed, "controller", None).await {
+                gens.push((id, vm.generation));
+            }
         }
-        if let Some(d) = &owned {
-            self.images.uncache_disk(&d.id);
-            self.images.remove_disk_file(d);
+        for (id, g) in gens {
+            self.wait_converged(&id, g, timeout).await;
         }
-        let _ = std::fs::remove_file(entry.vm.default_cloud_init_path());
-        let _ = std::fs::remove_file(self.firmware_vars_path(vm_id));
-        crate::paths::remove_vm_dir(vm_id);
+    }
 
-        vms.remove(vm_id);
-        Ok(())
+    /// `(pending, in_flight)` of the controllers' work queue.
+    pub fn queue_stats(&self) -> (usize, usize) {
+        self.queue.stats()
+    }
+
+    /// Orphans found at startup.
+    pub fn orphans(&self) -> Vec<Orphan> {
+        self.orphans.lock().unwrap().clone()
     }
 
     // ---- images and disks (spec/images.md) -----------------------------
@@ -1211,24 +1249,19 @@ impl VmManager {
         Ok((resp, bypassed))
     }
 
-    /// Mark a disk busy for `op`, refusing while a running or paused VM
-    /// has it open. Holds the VM read lock while checking, so `start_vm`
-    /// (write lock) cannot slip in between the check and the mark.
+    /// Mark a disk busy for `op`, refusing while a live instance has it
+    /// open. Holds the VM read lock while checking, so a launch (which
+    /// records the instance's disks under the write lock) cannot slip in
+    /// between the check and the mark.
     async fn begin_disk_op(&self, key: &str, op: &'static str) -> Result<(Disk, images::BusyGuard), VmManagerError> {
         let vms = self.vms.read().await;
         let disk = self.images.get_disk(key)?;
-        if let Some(vm_id) = &disk.attached_to {
-            if let Some(entry) = vms.get(vm_id) {
-                if matches!(entry.vm.state, VmState::Running | VmState::Paused) {
-                    return Err(ImageError::InUse(format!(
-                        "disk {} is in use by {} VM {}; stop it first",
-                        disk.name,
-                        format!("{:?}", entry.vm.state).to_lowercase(),
-                        entry.vm.name
-                    ))
-                    .into());
-                }
-            }
+        if let Some(vm) = vms.values().find(|vm| {
+            vm.status.instance.as_ref().is_some_and(|i| i.disks.contains(&disk.id))
+                || (matches!(vm.status.phase, VmPhase::Provisioning | VmPhase::Starting)
+                    && (vm.config().root_disk.as_ref() == Some(&disk.id) || vm.config().data_disks.contains(&disk.id)))
+        }) {
+            return Err(ImageError::InUse(format!("disk {} is in use by {} VM {}; stop it first", disk.name, vm.state(), vm.name)).into());
         }
         let guard = self.images.begin(&disk.id, op)?;
         Ok((disk, guard))
@@ -1245,8 +1278,7 @@ impl VmManager {
         req: ResizeDiskRequest,
         quota: QuotaMode,
     ) -> Result<(DiskResponse, Vec<QuotaOverrun>), VmManagerError> {
-        let size = requested_size(req.size_gib, req.size_bytes)?
-            .ok_or_else(|| ImageError::invalid_disk("give size_gib or size_bytes"))?;
+        let size = requested_size(req.size_gib, req.size_bytes)?.ok_or_else(|| ImageError::invalid_disk("give size_gib or size_bytes"))?;
         let mut bypassed = Vec::new();
         {
             let current = self.images.get_disk(key)?;
@@ -1287,11 +1319,10 @@ impl VmManager {
     }
 
     pub async fn delete_disk(&self, key: &str) -> Result<(), VmManagerError> {
-        // Write lock: no VM may attach the disk while it goes away.
+        // Write lock: no VM may claim the disk while it goes away.
         let vms = self.vms.write().await;
         let disk = self.images.get_disk(key)?;
-        if let Some(vm_id) = &disk.attached_to {
-            let vm = vms.get(vm_id).map(|e| e.vm.name.clone()).unwrap_or_else(|| vm_id.clone());
+        if let Some(vm) = Self::disk_claimed_by(&vms, &disk.id, None) {
             return Err(ImageError::InUse(format!("disk {} is attached to VM {}; detach it or delete the VM first", disk.name, vm)).into());
         }
         let _guard = self.images.begin(&disk.id, "delete")?;
@@ -1300,51 +1331,6 @@ impl VmManager {
         self.images.remove_disk_file(&disk);
         tracing::info!(disk = %disk.name, "disk deleted");
         Ok(())
-    }
-
-    /// Attach a data disk to a Created/Stopped VM (config only).
-    pub async fn attach_disk(&self, vm_id: &str, key: &str) -> Result<Vm, VmManagerError> {
-        let mut vms = self.vms.write().await;
-        let entry = vms.get_mut(vm_id).ok_or_else(|| VmManagerError::VmNotFound(vm_id.to_string()))?;
-        if !matches!(entry.vm.state, VmState::Created | VmState::Stopped) {
-            return Err(VmManagerError::InvalidState { current: entry.vm.state.clone(), operation: "attach_disk".into() });
-        }
-        let mut disk = self.attachable_disk_in(key, &entry.vm.project)?;
-        disk.attached_to = Some(entry.vm.id.clone());
-        let mut vm = entry.vm.clone();
-        vm.config.data_disks.push(disk.id.clone());
-        self.store.commit(Commit { put_vm: Some(&vm), put_disks: vec![&disk], ..Default::default() })?;
-        self.images.cache_disk(&disk);
-        entry.vm = vm;
-        Ok(entry.vm.clone())
-    }
-
-    /// Detach a data disk from a Created/Stopped VM (config only).
-    pub async fn detach_disk(&self, vm_id: &str, key: &str) -> Result<Vm, VmManagerError> {
-        let mut vms = self.vms.write().await;
-        let entry = vms.get_mut(vm_id).ok_or_else(|| VmManagerError::VmNotFound(vm_id.to_string()))?;
-        if !matches!(entry.vm.state, VmState::Created | VmState::Stopped) {
-            return Err(VmManagerError::InvalidState { current: entry.vm.state.clone(), operation: "detach_disk".into() });
-        }
-        let mut disk = self.images.get_disk(key)?;
-        let pos = entry.vm.config.data_disks.iter().position(|d| *d == disk.id).ok_or_else(|| {
-            let msg = if entry.vm.config.root_disk.as_ref() == Some(&disk.id) {
-                format!("disk {} is the VM's root disk, not a data disk", disk.name)
-            } else {
-                format!("disk {} is not attached to this VM", disk.name)
-            };
-            VmManagerError::Image(ImageError::invalid_disk(msg))
-        })?;
-        if let Some(op) = self.images.busy_op(&disk.id) {
-            return Err(ImageError::Busy(format!("disk {} is busy ({})", disk.name, op)).into());
-        }
-        disk.attached_to = None;
-        let mut vm = entry.vm.clone();
-        vm.config.data_disks.remove(pos);
-        self.store.commit(Commit { put_vm: Some(&vm), put_disks: vec![&disk], ..Default::default() })?;
-        self.images.cache_disk(&disk);
-        entry.vm = vm;
-        Ok(entry.vm.clone())
     }
 
     // ---- networks -----------------------------------------------------
@@ -1373,82 +1359,12 @@ impl VmManager {
         Ok(())
     }
 
-    /// Attach every NIC of `vm` through netd. On failure, detaches the NICs
-    /// attached so far.
-    fn attach_nics(&self, vm: &Vm) -> Result<Vec<(NicBinding, NicState)>, VmManagerError> {
-        let mut out = Vec::new();
-        for (i, att) in vm.config.networks.iter().enumerate() {
-            let result = (|| -> Result<(NicBinding, NicState), VmManagerError> {
-                let net = self
-                    .networks
-                    .get(&att.network)?
-                    .ok_or_else(|| NetError::NotFound(att.network.clone()))?;
-                let mac = match &att.mac {
-                    Some(m) => m.clone(),
-                    None => glidex_ovs::names::mac_address(&vm.id, i as u8)
-                        .map_err(|e| NetError::Invalid(e.to_string()))?,
-                };
-                let queue_pairs = att.queue_pairs.unwrap_or(1);
-                let spec = VmPortSpec {
-                    bridge: net.bridge.clone(),
-                    vm_id: vm.id.clone(),
-                    nic_index: i as u8,
-                    kind: net.port_type,
-                    mac: mac.clone(),
-                    vlan: net.vlan,
-                    mtu: net.mtu,
-                    queue_pairs,
-                };
-                let res: AttachResult = self.netd.call(Op::AttachVmPort(spec))?;
-                Ok((
-                    NicBinding {
-                        id: format!("net{}", i),
-                        mac: mac.clone(),
-                        binding: res.binding,
-                        queue_pairs,
-                        mtu: net.mtu,
-                    },
-                    NicState {
-                        network: net.name,
-                        mac,
-                        port: Some(res.port),
-                        ipv4: res.ipv4,
-                    },
-                ))
-            })();
-            match result {
-                Ok(nic) => out.push(nic),
-                Err(e) => {
-                    self.detach_nics(&vm.id, i);
-                    return Err(e);
-                }
-            }
-        }
-        Ok(out)
-    }
-
-    /// Detach the first `count` NICs of a VM. Errors are logged: the VM is
-    /// already stopped, and netd's sync cleans up anything left behind.
-    fn detach_nics(&self, vm_id: &str, count: usize) {
-        for i in 0..count {
-            if let Err(e) = self.netd.call::<serde_json::Value>(Op::DetachVmPort {
-                vm_id: vm_id.to_string(),
-                nic_index: i as u8,
-            }) {
-                tracing::warn!(vm_id, nic = i, "glidex-netd detach failed: {}", e);
-            }
-        }
-    }
-
     pub fn list_networks(&self) -> Result<Vec<Network>, VmManagerError> {
         Ok(self.networks.list()?)
     }
 
     pub fn get_network(&self, name: &str) -> Result<Network, VmManagerError> {
-        Ok(self
-            .networks
-            .get(name)?
-            .ok_or_else(|| NetError::NotFound(name.to_string()))?)
+        Ok(self.networks.get(name)?.ok_or_else(|| NetError::NotFound(name.to_string()))?)
     }
 
     /// Create a network: host side in netd first, record only on success.
@@ -1458,11 +1374,7 @@ impl VmManager {
             return Err(NetError::Conflict(format!("network '{}' already exists", net.name)).into());
         }
         if let Some(other) = self.networks.list()?.into_iter().find(|n| n.bridge == net.bridge) {
-            return Err(NetError::Conflict(format!(
-                "bridge '{}' already belongs to network '{}'",
-                net.bridge, other.name
-            ))
-            .into());
+            return Err(NetError::Conflict(format!("bridge '{}' already belongs to network '{}'", net.bridge, other.name)).into());
         }
         match net.mode {
             NetworkMode::Nat | NetworkMode::Isolated => {
@@ -1509,16 +1421,11 @@ impl VmManager {
         let vms = self.vms.read().await;
         let users: Vec<String> = vms
             .values()
-            .filter(|e| e.vm.config.networks.iter().any(|a| a.network == name))
-            .map(|e| e.vm.name.clone())
+            .filter(|vm| vm.config().networks.iter().any(|a| a.network == name) || vm.status.nics.iter().any(|n| n.network == name))
+            .map(|vm| vm.name.clone())
             .collect();
         if !users.is_empty() {
-            return Err(NetError::Conflict(format!(
-                "network '{}' is used by VM(s): {}",
-                name,
-                users.join(", ")
-            ))
-            .into());
+            return Err(NetError::Conflict(format!("network '{}' is used by VM(s): {}", name, users.join(", "))).into());
         }
         if net.owns_bridge {
             if net.mode == NetworkMode::Nat {
@@ -1625,10 +1532,7 @@ impl VmManager {
             .networks
             .list()?
             .into_iter()
-            .filter(|n| {
-                n.shares.iter().any(|s| s == project)
-                    || n.share_offers.iter().any(|o| o.project == project && o.expires_at > now)
-            })
+            .filter(|n| n.shares.iter().any(|s| s == project) || n.share_offers.iter().any(|o| o.project == project && o.expires_at > now))
             .collect())
     }
 
@@ -1654,16 +1558,11 @@ impl VmManager {
         let mut net = self.get_network(name)?;
         let users: Vec<String> = vms
             .values()
-            .filter(|e| e.vm.project == project && e.vm.config.networks.iter().any(|a| a.network == name))
-            .map(|e| e.vm.name.clone())
+            .filter(|vm| vm.project == project && vm.config().networks.iter().any(|a| a.network == name))
+            .map(|vm| vm.name.clone())
             .collect();
         if !users.is_empty() {
-            return Err(NetError::Conflict(format!(
-                "network '{}' is used by VM(s) of that project: {}",
-                name,
-                users.join(", ")
-            ))
-            .into());
+            return Err(NetError::Conflict(format!("network '{}' is used by VM(s) of that project: {}", name, users.join(", "))).into());
         }
         let before = (net.shares.len(), net.share_offers.len());
         net.shares.retain(|s| s != project);
@@ -1681,10 +1580,7 @@ impl VmManager {
             return Ok(None);
         }
         let (access, caps) = self.netd.probe();
-        let running = caps
-            .ok()
-            .and_then(|c| c.get("ovs_running").and_then(|v| v.as_bool()))
-            .unwrap_or(false);
+        let running = caps.ok().and_then(|c| c.get("ovs_running").and_then(|v| v.as_bool())).unwrap_or(false);
         if access != network::NetdAccess::Full || !running {
             return Ok(None);
         }
@@ -1711,6 +1607,8 @@ impl VmManager {
         &self.netd
     }
 
+    // ---- credentials -----------------------------------------------------
+
     /// Credentials of `project`, or of every project.
     pub fn list_credentials_in(&self, project: Option<&str>) -> Result<Vec<Credential>, VmManagerError> {
         Ok(self.credentials.list(project)?)
@@ -1728,11 +1626,7 @@ impl VmManager {
         self.get_credential_in(&self.default_project_id(), username)
     }
 
-    pub fn create_credential_in(
-        &self,
-        project: &str,
-        req: CreateCredentialRequest,
-    ) -> Result<Credential, VmManagerError> {
+    pub fn create_credential_in(&self, project: &str, req: CreateCredentialRequest) -> Result<Credential, VmManagerError> {
         if self.projects.get(project)?.is_none() {
             return Err(TenancyError::NotFound(project.to_string()).into());
         }
@@ -1747,12 +1641,7 @@ impl VmManager {
 
     /// Changes reach a VM only on its first boot: cloud-init provisions
     /// users once per instance-id, and a VM keeps its id for life.
-    pub fn update_credential_in(
-        &self,
-        project: &str,
-        username: &str,
-        req: UpdateCredentialRequest,
-    ) -> Result<Credential, VmManagerError> {
+    pub fn update_credential_in(&self, project: &str, username: &str, req: UpdateCredentialRequest) -> Result<Credential, VmManagerError> {
         let cred = self.credentials.update(project, username, req)?;
         tracing::info!(username = %cred.username, project, "Credential updated");
         Ok(cred)
@@ -1767,14 +1656,11 @@ impl VmManager {
         let vms = self.vms.read().await;
         let users: Vec<String> = vms
             .values()
-            .filter(|e| e.vm.project == project && e.vm.config.credential.as_deref() == Some(username))
-            .map(|e| e.vm.name.clone())
+            .filter(|vm| vm.project == project && vm.config().credential.as_deref() == Some(username))
+            .map(|vm| vm.name.clone())
             .collect();
         if !users.is_empty() {
-            return Err(VmManagerError::CredentialInUse {
-                username: username.to_string(),
-                vms: users,
-            });
+            return Err(VmManagerError::CredentialInUse { username: username.to_string(), vms: users });
         }
         self.credentials.delete(project, username)?;
         tracing::info!(username = %username, project, "Credential deleted");
@@ -1821,25 +1707,20 @@ impl VmManager {
         Ok(())
     }
 
-    /// A project's current use. Takes the VM map so callers holding the
-    /// write lock get a consistent count.
-    fn usage_locked(&self, project: &str, vms: &HashMap<String, VmEntry>) -> Result<Usage, VmManagerError> {
+    /// A project's current use. `running_vms` counts VMs whose desired
+    /// state is not `stopped` (§12.2), so crash loops and host reboots can
+    /// never exceed it.
+    fn usage_locked(&self, project: &str, vms: &HashMap<String, Vm>) -> Result<Usage, VmManagerError> {
         let mut u = Usage::default();
-        for e in vms.values().filter(|e| e.vm.project == project) {
+        for vm in vms.values().filter(|vm| vm.project == project) {
             u.vms += 1;
-            u.vcpus += e.vm.config.vcpu_count as u64;
-            u.memory_mib += e.vm.config.mem_size_mib as u64;
-            if matches!(e.vm.state, VmState::Running | VmState::Paused) {
+            u.vcpus += vm.config().vcpu_count as u64;
+            u.memory_mib += vm.config().mem_size_mib as u64;
+            if vm.spec.power != PowerState::Stopped {
                 u.running_vms += 1;
             }
         }
-        u.disk_gib = self
-            .images
-            .list_disks()
-            .iter()
-            .filter(|d| d.project == project)
-            .map(|d| gib_ceil(d.size_bytes))
-            .sum();
+        u.disk_gib = self.images.list_disks().iter().filter(|d| d.project == project).map(|d| gib_ceil(d.size_bytes)).sum();
         u.networks = self.networks.list()?.iter().filter(|n| n.project.as_deref() == Some(project)).count() as u64;
         Ok(u)
     }
@@ -1874,8 +1755,8 @@ impl VmManager {
     /// Whether a project still owns anything (it can't be deleted then).
     pub async fn project_in_use(&self, project: &str) -> Result<Option<String>, VmManagerError> {
         let vms = self.vms.read().await;
-        if let Some(e) = vms.values().find(|e| e.vm.project == project) {
-            return Ok(Some(format!("VM {}", e.vm.name)));
+        if let Some(vm) = vms.values().find(|vm| vm.project == project) {
+            return Ok(Some(format!("VM {}", vm.name)));
         }
         if let Some(d) = self.images.list_disks().iter().find(|d| d.project == project) {
             return Ok(Some(format!("disk {}", d.name)));
@@ -1902,42 +1783,18 @@ impl VmManager {
         }
         Ok(())
     }
+}
 
-    /// Shutdown all running VMs. Called during control-plane termination.
-    pub async fn shutdown(&self) {
-        let mut vms = self.vms.write().await;
-        let mut stopped_count = 0;
-
-        for (vm_id, entry) in vms.iter_mut() {
-            if let Some(ref process) = entry.process {
-                tracing::info!("Stopping VM {} ({})...", entry.vm.name, vm_id);
-                let _ = process.kill();
-                stopped_count += 1;
-                self.detach_nics(&entry.vm.id, entry.vm.config.networks.len());
-
-                // Update state in DB - log warning if fails
-                if let Err(e) = self.store.update_state(vm_id, VmState::Stopped) {
-                    tracing::warn!(
-                        "Failed to persist VM {} state change to Stopped: {}",
-                        vm_id,
-                        e
-                    );
-                }
-            }
-            entry.process = None;
-            entry.vm.state = VmState::Stopped;
-        }
-
-        if stopped_count > 0 {
-            tracing::info!("Stopped {} running VM(s)", stopped_count);
-        }
+pub(crate) fn power_name(p: PowerState) -> &'static str {
+    match p {
+        PowerState::Running => "running",
+        PowerState::Paused => "paused",
+        PowerState::Stopped => "stopped",
     }
 }
 
 /// Run blocking image work off the async runtime.
-async fn blocking<T: Send + 'static>(
-    f: impl FnOnce() -> Result<T, ImageError> + Send + 'static,
-) -> Result<T, ImageError> {
+async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T, ImageError> + Send + 'static) -> Result<T, ImageError> {
     tokio::task::spawn_blocking(f)
         .await
         .map_err(|e| ImageError::Io(format!("task failed: {}", e)))?

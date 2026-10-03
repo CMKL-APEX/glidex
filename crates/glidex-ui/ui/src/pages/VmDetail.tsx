@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import * as api from "../api";
 import type { VmResponse } from "../types";
-import { stateColor, stateLabel, HYPERVISOR_LABELS } from "../types";
+import { stateColor, stateLabel, settled, notReadyReason, HYPERVISOR_LABELS } from "../types";
 import VmActions, { type VmAction } from "../components/VmActions";
 import { Loading } from "../components/Loading";
 import { useSession } from "../session";
@@ -15,6 +15,7 @@ export default function VmDetail() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
+  const [events, setEvents] = useState<api.VmEvent[]>([]);
 
   const fetchVm = useCallback(async () => {
     if (!id) return;
@@ -32,6 +33,18 @@ export default function VmDetail() {
   useEffect(() => {
     fetchVm();
   }, [fetchVm]);
+
+  // Follow the VM while it converges; refresh its history with it.
+  const converging = vm !== null && !settled(vm);
+  useEffect(() => {
+    if (!converging) return;
+    const t = setInterval(fetchVm, 2000);
+    return () => clearInterval(t);
+  }, [converging, fetchVm]);
+  useEffect(() => {
+    if (!id) return;
+    api.vmEvents(id).then((r) => setEvents(r.events)).catch(() => setEvents([]));
+  }, [id, vm?.state, vm?.observed_generation]);
 
   const handleAction = async (vmId: string, action: VmAction) => {
     setActionLoading(true);
@@ -112,8 +125,20 @@ export default function VmDetail() {
               className={`px-3 py-1 text-sm font-medium text-white rounded-full ${stateColor(vm.state)}`}
             >
               {stateLabel(vm.state)}
+              {!settled(vm) && vm.desired_state ? ` → ${stateLabel(vm.desired_state)}` : ""}
             </span>
           </div>
+
+          {notReadyReason(vm) && (
+            <div className="mb-6 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-800 whitespace-pre-wrap">
+              {notReadyReason(vm)}
+            </div>
+          )}
+          {vm.restart_required && (
+            <div className="mb-6 p-3 bg-sky-50 border border-sky-200 rounded-lg text-sm text-sky-800">
+              Configuration changes take effect at the next start.
+            </div>
+          )}
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
             <div className="space-y-4">
@@ -195,6 +220,7 @@ export default function VmDetail() {
               <VmActions
                 vmId={vm.id}
                 state={vm.state}
+                desired={vm.desired_state}
                 onAction={handleAction}
                 loading={actionLoading}
               />
@@ -219,6 +245,25 @@ export default function VmDetail() {
               </Link>
             </div>
           </div>
+
+          {events.length > 0 && (
+            <div className="pt-6 mt-6 border-t border-gray-100">
+              <h3 className="text-sm font-medium text-gray-500 mb-3">Events</h3>
+              <ul className="space-y-1 text-sm">
+                {[...events].reverse().map((e, i) => (
+                  <li key={i} className="flex gap-3">
+                    <span className="text-gray-400 font-mono shrink-0">
+                      {new Date(e.at * 1000).toLocaleString()}
+                    </span>
+                    <span className={e.kind === "warning" ? "text-amber-700 font-medium shrink-0" : "text-gray-700 font-medium shrink-0"}>
+                      {e.reason}
+                    </span>
+                    <span className="text-gray-600 break-all">{e.message}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </div>
       ) : (
         <div className="text-center py-12 mt-4">

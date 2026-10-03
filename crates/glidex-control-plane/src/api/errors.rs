@@ -49,6 +49,25 @@ fn image_error_response(e: &ImageError) -> (StatusCode, Json<ApiError>) {
     (status, Json(ApiError::new(code, e.to_string()).with_details(e.details())))
 }
 
+/// The error envelope a failed reconcile maps to under `?wait`
+/// (spec/reconciliation.md §12.3, D20): the one today's synchronous call
+/// would have returned, chosen from the `Ready` reason, with the VM in
+/// `details.vm`.
+pub fn failed_reconcile_response(vm: &crate::models::Vm) -> (StatusCode, Json<ApiError>) {
+    let ready = vm.condition("Ready");
+    let reason = ready.map(|c| c.reason.as_str()).unwrap_or("");
+    let message = ready.map(|c| c.message.clone()).unwrap_or_default();
+    let (status, code) = match reason {
+        "NetdUnavailable" => (StatusCode::SERVICE_UNAVAILABLE, "netd_unavailable"),
+        "DiskBusy" => (StatusCode::CONFLICT, "conflict"),
+        "DiskMissing" | "DiskNotReady" => (StatusCode::INTERNAL_SERVER_ERROR, "image_error"),
+        _ if message.contains("is not installed") => (StatusCode::SERVICE_UNAVAILABLE, "hypervisor_unavailable"),
+        _ => (StatusCode::INTERNAL_SERVER_ERROR, "hypervisor_error"),
+    };
+    let details = serde_json::json!({ "reason": reason, "vm": crate::models::VmResponse::from(vm) });
+    (status, Json(ApiError::new(code, message).with_details(details)))
+}
+
 pub fn error_to_response(error: VmManagerError) -> (StatusCode, Json<ApiError>) {
     match &error {
         VmManagerError::Image(e) => image_error_response(e),
@@ -125,6 +144,14 @@ pub fn error_to_response(error: VmManagerError) -> (StatusCode, Json<ApiError>) 
         VmManagerError::QuotaExceeded(over) => (
             StatusCode::FORBIDDEN,
             Json(ApiError::new("quota_exceeded", error.to_string()).with_details(serde_json::json!({ "quota": over }))),
+        ),
+        VmManagerError::Deleting(_) => (
+            StatusCode::CONFLICT,
+            Json(ApiError::new("conflict", error.to_string())),
+        ),
+        VmManagerError::PreconditionFailed { actual, .. } => (
+            StatusCode::PRECONDITION_FAILED,
+            Json(ApiError::new("precondition_failed", error.to_string()).with_details(serde_json::json!({ "resource_version": actual }))),
         ),
         VmManagerError::Tenancy(e) => {
             let (status, code) = match e {

@@ -186,6 +186,8 @@ async fn failed_start_detaches_ports_for(hypervisor: &str, binary: &str) {
         return;
     }
     let h = harness(true);
+    h.manager.initialize().await.unwrap();
+    h.manager.start_controllers();
     request(&h.app, "POST", "/networks", Some(json!({"name": "lab", "mode": "nat"}))).await;
     let mut spec = vm("boom", json!([{"network": "lab"}]));
     spec["hypervisor"] = json!(hypervisor);
@@ -193,17 +195,26 @@ async fn failed_start_detaches_ports_for(hypervisor: &str, binary: &str) {
     let id = body["id"].as_str().unwrap().to_string();
     let port = glidex_ovs::names::port_name(&id, 0).unwrap();
 
-    // The firmware path doesn't exist, so configure fails after the port
-    // was attached; the port must be detached again.
-    let (status, body) = request(&h.app, "POST", &format!("/vms/{id}/start"), None).await;
+    // The firmware path doesn't exist, so the launch fails after the port
+    // was attached (spec/reconciliation.md §9.1 step 5).
+    let (status, body) = request(&h.app, "POST", &format!("/vms/{id}/start?wait=60"), None).await;
     assert!(status.is_server_error() || status.is_client_error(), "{status} {body}");
+    assert_eq!(body["details"]["vm"]["state"], "failed", "{body}");
     let calls = h.exec.calls();
     let attached = calls.iter().position(|c| c.starts_with(&format!("ip tuntap add dev {port}"))).expect("attached");
-    let detached = calls.iter().position(|c| c == &format!("ovs-vsctl --if-exists del-port {port}")).expect("detached");
+
+    // Ports belong to the VM while it should run (D16); stopping it
+    // releases them.
+    let (status, body) = request(&h.app, "POST", &format!("/vms/{id}/stop?wait=60"), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    // `created` when the launch failed before anything ran (QEMU refuses
+    // the missing firmware while building its command line).
+    assert!(matches!(body["state"].as_str(), Some("stopped" | "created")), "{body}");
+    let calls = h.exec.calls();
+    let detached = calls.iter().rposition(|c| c == &format!("ovs-vsctl --if-exists del-port {port}")).expect("detached");
     assert!(detached > attached);
-    let (_, vm) = request(&h.app, "GET", &format!("/vms/{id}"), None).await;
-    assert_ne!(vm["state"], "running");
-    request(&h.app, "DELETE", &format!("/vms/{id}"), None).await;
+    assert!(body["nics"][0]["port"].is_null(), "{body}");
+    request(&h.app, "DELETE", &format!("/vms/{id}?wait=30"), None).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]

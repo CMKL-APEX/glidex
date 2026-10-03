@@ -108,7 +108,9 @@ into a regression test (§19).
 | F3 | A guest's ACPI power-off makes both CH v53.0 and QEMU exit with status **0** (Ubuntu cloud image, cloud-init `power_state: poweroff`, firmware boot). CH's event monitor logs `vm shutdown`, `vm deleted`, `vmm shutdown`. | booted the image under each hypervisor and recorded the exit status | §7.5 |
 | F4 | CH also exits **0** on SIGTERM (QEMU does too: "terminating on signal 15"). Exit status 0 therefore means "a clean stop", not specifically "the guest powered off". | sent SIGTERM to an idle CH | §7.5 |
 | F5 | netd's `attach_vm_port` succeeds on a port whose tap already exists: `vm_port::attach` skips `ip tuntap add` when the link exists and adds the OVS port with `--may-exist` (`crates/glidex-ovs/src/vm_port.rs:123`). | code | §10.3 |
-| F6 | systemd checks `StartUnit`/`StopUnit`/`KillUnit` from an unprivileged caller against polkit action `org.freedesktop.systemd1.manage-units` with details `unit` and `verb` (`start`, `stop`, `kill`). | systemd source (`src/core/dbus-unit.c`, `dbus-manager.c`); the M1 test calls each method as the service user against the installed rule | §13 |
+| F6 | systemd checks `StartUnit`/`StopUnit`/`KillUnit` from an unprivileged caller against polkit action `org.freedesktop.systemd1.manage-units` with details `unit` and `verb` (`start`, `stop`, `kill`). | systemd source (`src/core/dbus-unit.c`, `dbus-manager.c`); `systemd_runner_tests.rs` in system mode called each method as an unprivileged user allowed only by `50-glidex-vm.rules` (systemd 259) | §13 |
+| F7 | `cloud-hypervisor` carries the file capability `cap_net_admin`, so the kernel clears `PR_SET_PDEATHSIG` when the shim execs it: the death signal alone does not stop it outliving its shim. | killed a shim with `-9`; its CH kept running (`shim_tests.rs`) | §8.3 |
+| F8 | A Cloud Hypervisor qcow2 disk may not reopen after the VMM is SIGKILLed while running ("not cleanly closed … Invalid cluster index"); `PUT /vmm.shutdown` closes it cleanly. | `restart_e2e` before the fix | §8.5 |
 
 ## 5. Components
 
@@ -555,11 +557,18 @@ Lifecycle:
 
 1. Read and validate `launch.json`. Write `instance.json` with
    `phase: launching`, own pid and starttime, boot id.
-2. Open the log (§8.6), allocate the PTY (today's `spawn_on_pty`), spawn
-   the hypervisor from the main thread with `PR_SET_PDEATHSIG = SIGKILL`
-   in `pre_exec` (D8: it dies if the shim dies), bind `console.sock`,
-   start the console proxy thread. Record `hypervisor_pid` and its
-   starttime.
+2. Open the log (§8.6), allocate the PTY (both ends close-on-exec), bind
+   `console.sock`, start the console proxy thread, and spawn the
+   hypervisor from the main thread with the PTY slave as stdin/stdout and
+   its stderr on a pipe the proxy logs. D8, the hypervisor dies with its
+   shim, is kept two ways in `pre_exec`: `setsid` + `TIOCSCTTY` make the
+   PTY its controlling terminal, so the master closing when the shim dies
+   hangs the terminal up and sends it SIGHUP (raw mode: no other terminal
+   signal reaches it; the shim's own SIG_IGNs are reset to SIG_DFL first,
+   since ignored dispositions survive exec); and `PR_SET_PDEATHSIG =
+   SIGKILL` for binaries without file capabilities (F7). Record
+   `hypervisor_pid` and its starttime. The environment is cleared to
+   `LC_ALL=C` and a fixed `PATH`.
 3. Wait up to `ready_timeout_secs` for `api_socket` to accept and answer
    (CH: `GET /vmm.ping`; QEMU: QMP greeting), watching for early exit
    (and running `fallback` once, §8.1). Then `phase: running` — or, if
@@ -578,7 +587,12 @@ Lifecycle:
 
 Signals: SIGTERM → `stop` with `host_shutdown_grace_secs`, cause
 `Terminated` unless a `stop`/`kill` arrived first, then `release` once
-the hypervisor is gone. SIGINT and SIGHUP are ignored.
+the hypervisor is gone. SIGINT, SIGHUP and SIGPIPE are ignored.
+
+`GLIDEX_VM_SHIM_ALLOW` (colon-separated paths) adds to the allowlist only
+when the shim does not run under systemd (no `INVOCATION_ID`): dev runs
+and tests. A unit's environment comes from its unit file, which the
+control plane cannot write.
 
 **Invariant.** The shim never writes the database and never contacts
 netd or systemd. It knows one VM. It must keep working while the control
@@ -615,7 +629,7 @@ sequential connections; the first message must be `hello`.
 | `hello` | `{protocol: 1}` → `{protocol, shim_version}` | the shim answers with the highest protocol ≤ the client's it speaks |
 | `status` | – → `instance.json` contents | |
 | `stop` | `{grace_secs}` → – | resume if paused, power button (CH `vm.power-button`, QEMU `system_powerdown`), wait, then `kill`. Idempotent; a second `stop` can only shorten the deadline. `grace_secs = 0` = `kill` |
-| `kill` | – → – | QEMU: QMP `quit`, then SIGKILL after 2 s; CH: SIGKILL |
+| `kill` | – → – | stop the hypervisor without the guest: QEMU QMP `quit`, CH `PUT /vmm.shutdown` (closes its disks, F8); SIGKILL if it is still there after 2 s |
 | `release` | – → – | error `not_exited` while the hypervisor runs |
 
 Errors: `{"id": n, "error": {"code", "message"}}` with codes
@@ -634,7 +648,12 @@ started by the previous release stay manageable after an upgrade.
   `console.log.1` (replacing it) and opens a new `console.log`. Writes
   are whole PTY reads, so nothing is split; at most 2 × `log_max_bytes`
   per VM in the runtime directory (tmpfs).
-- Replay on connect sends the current `console.log` only.
+- Replay on connect sends the current `console.log` only, through a
+  per-client queue: what a client's socket does not take now waits (up
+  to the replay plus 4 MiB), so a slow client neither stalls the console
+  nor loses output; one further behind is dropped and can reconnect.
+  Because the replay spans earlier instances, expect-style clients should
+  skip it up to the current instance's `started` line.
   `GET /vms/{id}/console/log` gains `?previous=true` for `console.log.1`
   (`404` if none).
 - Logs are removed by the `vm.runtime` finalizer, not at stop. They do
@@ -688,12 +707,17 @@ and re-opened on error (§9.4 orders it before adoption).
   with "polkit rule missing" (installer problem); `NoSuchUnit` →
   "template unit not installed"; bus unreachable → `Unknown` (§8.7).
 
-**detached.** `fork`, `setsid`, `fork`, exec the shim with stdio on
-`/dev/null`; the shim is reparented to init (or the nearest subreaper)
-and survives the control plane. The control plane waits up to
+**detached.** Spawn the shim in its own session (`setsid`) with stdio on
+`/dev/null`, and reap it from a thread whenever it exits; if the
+control plane exits first, the shim is reparented to init (or the
+nearest subreaper) and survives it. The control plane waits up to
 `ready_timeout_secs + 5` for `instance.json` to leave `launching`.
 Stop escalation: SIGTERM, then SIGKILL, to the verified shim pid (the
-hypervisor follows by PDEATHSIG). Shim binary: `GLIDEX_VM_SHIM`, else
+hypervisor follows, §8.3).
+
+Test-only overrides: `GLIDEX_SYSTEMD_BUS=session` uses the user's own
+systemd manager (no root, no polkit), and `GLIDEX_VM_UNIT_RUN_DIR` names
+the run directory a test template points at. Shim binary: `GLIDEX_VM_SHIM`, else
 next to the control-plane executable, else `PATH`. Test harnesses must
 not kill the control plane's process group expecting VMs to die (§19).
 
@@ -783,7 +807,12 @@ an error and does not grow the backoff.
    `GET /system/reconcile` (§12.5), never stopped or removed.
 4. netd `sync_vms {running}` with `running` = every VM whose
    `status.nics` is non-empty (D16). **Invariant:** never sent before
-   step 2 completes; the same set on every reconnect.
+   step 2 completes; the same set whenever netd restarted (its
+   `netd.sock` was bound anew: device and inode changed, checked every
+   resync). Not sent at all while no VM of this control plane uses
+   networks: netd's sync is host-wide, and a control plane with nothing to
+   keep must not drop another's ports (a scratch instance next to the
+   real one, as the UI end-to-end suite runs).
 5. Start the exit watch, the workers (enqueue everything), then the API
    listeners.
 
@@ -1126,6 +1155,10 @@ a connect that fails with `EAGAIN`/`ECONNREFUSED` for up to 2 s.
 
 Each milestone is one PR (or a short series), ships on its own, and is
 done when its tests in §19 pass in CI and on a KVM host.
+
+As built: M1 and M2 landed together for the VM path (the VM controller
+directly, rather than an imperative M1 rewritten for M2), followed by M3
+and M4.
 
 **M1 — Detached instances (imperative API unchanged).**
 `glidex-hv-client`, `glidex-vm-shim`, both runners, `launch.json` /

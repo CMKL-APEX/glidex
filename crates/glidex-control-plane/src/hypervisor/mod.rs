@@ -1,12 +1,22 @@
+//! Hypervisor drivers (spec/reconciliation.md §16).
+//!
+//! A driver is stateless: it turns a VM's config into the command line the
+//! shim runs (`launch_args`, which carries the whole config, D9), and talks
+//! to a running instance through its API socket for the runtime operations
+//! (`observe`, pause/resume, VFIO hot-plug). Everything it needs is a path,
+//! so a restarted control plane manages instances exactly as before.
+//! Process lifetime belongs to `glidex-vm-shim`.
+
 pub mod cloud_hypervisor;
-mod console;
 pub mod qemu;
 
 use crate::images::qemu_img::{detect_image_type, ImageType};
 use crate::models::VmConfig;
+use glidex_hv_client::{HvError, Observed};
 use glidex_ovs::vm_port::VmPortBinding;
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::path::PathBuf;
 use thiserror::Error;
 
 /// Supported hypervisor types
@@ -27,14 +37,6 @@ impl HypervisorType {
         }
     }
 
-    /// Get the socket path prefix for this hypervisor
-    pub fn socket_prefix(&self) -> &'static str {
-        match self {
-            HypervisorType::CloudHypervisor => "cloud-hypervisor",
-            HypervisorType::Qemu => "qemu",
-        }
-    }
-
     /// Get the default kernel boot arguments for this hypervisor
     pub fn default_kernel_args(&self) -> &'static str {
         match self {
@@ -50,6 +52,14 @@ impl HypervisorType {
         match self {
             HypervisorType::CloudHypervisor => cloud_hypervisor::default_firmware_path(),
             HypervisorType::Qemu => qemu::default_firmware_path(),
+        }
+    }
+
+    /// The shim's name for it (`launch.json`).
+    pub fn launch_kind(&self) -> glidex_vm_shim::HypervisorKind {
+        match self {
+            HypervisorType::CloudHypervisor => glidex_vm_shim::HypervisorKind::CloudHypervisor,
+            HypervisorType::Qemu => glidex_vm_shim::HypervisorKind::Qemu,
         }
     }
 }
@@ -88,77 +98,60 @@ pub enum HypervisorError {
     CloudInit(String),
 }
 
-/// Trait for hypervisor backends that can spawn VM processes
-pub trait Hypervisor: Send + Sync {
-    /// Spawn a new hypervisor process
-    fn spawn(
-        &self,
-        socket_path: &str,
-        console_socket_path: &str,
-        log_path: &str,
-    ) -> Result<Box<dyn HypervisorProcess>, HypervisorError>;
-
-    /// Get the hypervisor type
-    fn hypervisor_type(&self) -> HypervisorType;
-
-    /// Check if the hypervisor binary is available on the system
-    fn is_available(&self) -> bool;
+impl From<HvError> for HypervisorError {
+    fn from(e: HvError) -> Self {
+        match e {
+            HvError::Connect(m) => HypervisorError::SocketConnection(m),
+            HvError::Api(m) => HypervisorError::ApiRequest(m),
+            HvError::Io(e) => HypervisorError::ProcessStart(e),
+        }
+    }
 }
 
-/// Trait for a running hypervisor process instance
-pub trait HypervisorProcess: Send + Sync {
-    /// Configure the VM with the given configuration
-    fn configure(&self, config: &VmConfig) -> Result<(), HypervisorError>;
+/// The command line the shim runs, and QEMU's CPU-model fallback.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LaunchArgs {
+    pub argv: Vec<String>,
+    pub fallback: Option<glidex_vm_shim::Fallback>,
+}
 
-    /// Start/boot the VM instance
-    fn start(&self) -> Result<(), HypervisorError>;
+/// One hypervisor backend (spec §16).
+pub trait HypervisorDriver: Send + Sync {
+    fn hypervisor_type(&self) -> HypervisorType;
 
-    /// Pause the VM
-    fn pause(&self) -> Result<(), HypervisorError>;
-
-    /// Resume a paused VM
-    fn resume(&self) -> Result<(), HypervisorError>;
-
-    /// Kill the hypervisor process
-    fn kill(&self) -> Result<(), HypervisorError>;
-
-    /// Press the guest's ACPI power button. Returns once the request is
-    /// sent; the hypervisor exits when the guest has shut down, which
-    /// `is_running` then reports.
-    fn request_shutdown(&self) -> Result<(), HypervisorError> {
-        Err(HypervisorError::Unsupported(
-            "request_shutdown not supported by this hypervisor".to_string(),
-        ))
+    /// Whether the binary is installed.
+    fn is_available(&self) -> bool {
+        resolve_binary(self.hypervisor_type().binary_name()).is_some()
     }
 
-    /// Hot-add a VFIO device to a running VM
-    fn add_device(&self, device_path: &str) -> Result<(), HypervisorError> {
-        Err(HypervisorError::Unsupported(format!(
-            "add_device not supported by this hypervisor (device: {})",
-            device_path
-        )))
+    /// The command line carrying the whole VM config. `config` has its
+    /// non-persisted bindings (disks, NICs, seed, firmware vars) filled in.
+    /// Pure apart from host probes (firmware vars, `O_DIRECT`, vhost-net).
+    fn launch_args(&self, config: &VmConfig, api_socket: &str) -> Result<LaunchArgs, HypervisorError>;
+
+    fn observe(&self, api_socket: &str) -> Result<Observed, HypervisorError>;
+    fn pause(&self, api_socket: &str) -> Result<(), HypervisorError>;
+    fn resume(&self, api_socket: &str) -> Result<(), HypervisorError>;
+    /// Hot-plug a VFIO device under its deterministic id.
+    fn add_device(&self, api_socket: &str, device_path: &str) -> Result<(), HypervisorError>;
+    fn remove_device(&self, api_socket: &str, device_path: &str) -> Result<(), HypervisorError>;
+}
+
+pub fn driver(ty: HypervisorType) -> &'static dyn HypervisorDriver {
+    match ty {
+        HypervisorType::CloudHypervisor => &cloud_hypervisor::CloudHypervisorDriver,
+        HypervisorType::Qemu => &qemu::QemuDriver,
     }
+}
 
-    /// Hot-remove a VFIO device from a running VM
-    fn remove_device(&self, device_path: &str) -> Result<(), HypervisorError> {
-        Err(HypervisorError::Unsupported(format!(
-            "remove_device not supported by this hypervisor (device: {})",
-            device_path
-        )))
-    }
-
-    /// Whether the hypervisor process is still alive: false after `kill`,
-    /// and once the guest has powered off.
-    fn is_running(&self) -> bool;
-
-    /// Get the API socket path
-    fn socket_path(&self) -> &str;
-
-    /// Get the console socket path
-    fn console_socket_path(&self) -> &str;
-
-    /// Get the log file path
-    fn log_path(&self) -> &str;
+/// The absolute path of a hypervisor binary: `PATH`, then `/usr/local/bin`
+/// and `/usr/bin` (the shim's allowlist is checked on canonical paths).
+pub fn resolve_binary(name: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    std::env::split_paths(&path)
+        .chain(["/usr/local/bin", "/usr/bin"].map(PathBuf::from))
+        .map(|d| d.join(name))
+        .find(|p| p.is_file())
 }
 
 /// One disk as a backend attaches it, in guest order.
@@ -226,17 +219,21 @@ pub(crate) fn vfio_bdf(path: &str) -> String {
 
 /// Derive a deterministic hypervisor device id from a sysfs path.
 /// e.g. "/sys/bus/pci/devices/0000:41:00.0" -> "_vfio_0000_41_00_0"
-pub(crate) fn vfio_device_id(path: &str) -> String {
+pub fn vfio_device_id(path: &str) -> String {
     let bdf = vfio_bdf(path);
     format!("_vfio_{}", bdf.replace([':', '.'], "_"))
 }
 
-/// Create a hypervisor backend for the given type
-pub fn create_backend(hypervisor_type: HypervisorType) -> Box<dyn Hypervisor> {
-    match hypervisor_type {
-        HypervisorType::CloudHypervisor => Box::new(cloud_hypervisor::CloudHypervisorBackend),
-        HypervisorType::Qemu => Box::new(qemu::QemuBackend),
+/// Characters a path must not contain to reach a hypervisor command line
+/// (spec §8.2): `"` (CH's quoting), newlines and other control characters.
+pub fn check_command_line_path(field: &str, path: &str) -> Result<(), HypervisorError> {
+    if path.chars().any(|c| c == '"' || c.is_control()) {
+        return Err(HypervisorError::InvalidConfig(format!(
+            "{} must not contain double quotes or control characters",
+            field
+        )));
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -245,10 +242,7 @@ mod tests {
 
     #[test]
     fn binary_name_matches_hypervisor_type() {
-        assert_eq!(
-            HypervisorType::CloudHypervisor.binary_name(),
-            "cloud-hypervisor"
-        );
+        assert_eq!(HypervisorType::CloudHypervisor.binary_name(), "cloud-hypervisor");
         assert_eq!(HypervisorType::Qemu.binary_name(), "qemu-system-x86_64");
     }
 
@@ -262,91 +256,21 @@ mod tests {
     #[test]
     fn invalid_config_error_renders_message() {
         let err = HypervisorError::InvalidConfig("bad vcpu count".to_string());
-        assert_eq!(
-            err.to_string(),
-            "Invalid configuration: bad vcpu count"
-        );
+        assert_eq!(err.to_string(), "Invalid configuration: bad vcpu count");
     }
 
     #[test]
-    fn backends_report_their_hypervisor_type() {
-        for ty in [
-            HypervisorType::CloudHypervisor,
-            HypervisorType::Qemu,
-        ] {
-            let backend = create_backend(ty);
-            assert_eq!(backend.hypervisor_type(), ty);
-            // Just exercise is_available — return value depends on host.
-            let _ = backend.is_available();
-        }
-    }
-
-    /// Minimal in-memory HypervisorProcess used to exercise trait accessors
-    /// without actually spawning a hypervisor.
-    struct StubProcess {
-        socket_path: String,
-        console_socket_path: String,
-        log_path: String,
-        running: std::sync::atomic::AtomicBool,
-    }
-
-    impl HypervisorProcess for StubProcess {
-        fn configure(&self, _config: &VmConfig) -> Result<(), HypervisorError> {
-            Ok(())
-        }
-        fn start(&self) -> Result<(), HypervisorError> {
-            Ok(())
-        }
-        fn pause(&self) -> Result<(), HypervisorError> {
-            Ok(())
-        }
-        fn resume(&self) -> Result<(), HypervisorError> {
-            Ok(())
-        }
-        fn kill(&self) -> Result<(), HypervisorError> {
-            self.running
-                .store(false, std::sync::atomic::Ordering::SeqCst);
-            Ok(())
-        }
-        fn is_running(&self) -> bool {
-            self.running.load(std::sync::atomic::Ordering::SeqCst)
-        }
-        fn socket_path(&self) -> &str {
-            &self.socket_path
-        }
-        fn console_socket_path(&self) -> &str {
-            &self.console_socket_path
-        }
-        fn log_path(&self) -> &str {
-            &self.log_path
+    fn drivers_report_their_hypervisor_type() {
+        for ty in [HypervisorType::CloudHypervisor, HypervisorType::Qemu] {
+            assert_eq!(driver(ty).hypervisor_type(), ty);
+            let _ = driver(ty).is_available();
         }
     }
 
     #[test]
-    fn hypervisor_process_accessors_round_trip() {
-        let proc: Box<dyn HypervisorProcess> = Box::new(StubProcess {
-            socket_path: "/tmp/sock".to_string(),
-            console_socket_path: "/tmp/console".to_string(),
-            log_path: "/tmp/log".to_string(),
-            running: std::sync::atomic::AtomicBool::new(true),
-        });
-
-        assert_eq!(proc.socket_path(), "/tmp/sock");
-        assert_eq!(proc.console_socket_path(), "/tmp/console");
-        assert_eq!(proc.log_path(), "/tmp/log");
-        assert!(proc.is_running());
-
-        // Default add_device / remove_device should report Unsupported.
-        assert!(matches!(
-            proc.add_device("0000:00:1f.0"),
-            Err(HypervisorError::Unsupported(_))
-        ));
-        assert!(matches!(
-            proc.remove_device("0000:00:1f.0"),
-            Err(HypervisorError::Unsupported(_))
-        ));
-
-        proc.kill().unwrap();
-        assert!(!proc.is_running());
+    fn command_line_paths() {
+        assert!(check_command_line_path("rootfs_path", "/a,b/c d.img").is_ok());
+        assert!(check_command_line_path("rootfs_path", "/a\"b").is_err());
+        assert!(check_command_line_path("rootfs_path", "/a\nb").is_err());
     }
 }

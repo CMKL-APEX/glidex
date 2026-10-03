@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import * as api from "../api";
 import type { VmResponse } from "../types";
+import { settled } from "../types";
 import type { VmAction } from "../components/VmActions";
 import VmCard from "../components/VmCard";
 import { LoadingCard } from "../components/Loading";
@@ -32,6 +33,14 @@ export default function Dashboard() {
   useEffect(() => {
     fetchVms();
   }, [fetchVms]);
+
+  // While any VM is on its way to its desired state, follow it.
+  const converging = (vms ?? []).some((vm) => !settled(vm));
+  useEffect(() => {
+    if (!converging) return;
+    const t = setInterval(fetchVms, 2000);
+    return () => clearInterval(t);
+  }, [converging, fetchVms]);
 
   const handleAction = async (vmId: string, action: VmAction) => {
     setError(null);

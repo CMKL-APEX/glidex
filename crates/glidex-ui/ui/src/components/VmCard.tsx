@@ -1,6 +1,6 @@
 import { Link } from "react-router-dom";
 import type { VmResponse } from "../types";
-import { stateColor, stateLabel, HYPERVISOR_LABELS } from "../types";
+import { stateColor, stateLabel, settled, notReadyReason, HYPERVISOR_LABELS } from "../types";
 import VmActions, { type VmAction } from "./VmActions";
 
 interface VmCardProps {
@@ -23,11 +23,17 @@ export default function VmCard({ vm, onAction }: VmCardProps) {
               className={`px-2 py-1 text-xs font-medium text-white rounded-full ${stateColor(vm.state)}`}
             >
               {stateLabel(vm.state)}
+              {!settled(vm) && vm.desired_state ? ` → ${stateLabel(vm.desired_state)}` : ""}
             </span>
           </div>
           <p className="mt-1 text-sm text-gray-500 font-mono truncate">
             {vm.id}
           </p>
+          {notReadyReason(vm) && (
+            <p className="mt-1 text-xs text-amber-700 truncate" title={notReadyReason(vm) ?? ""}>
+              {notReadyReason(vm)}
+            </p>
+          )}
         </div>
       </div>
 
@@ -61,7 +67,7 @@ export default function VmCard({ vm, onAction }: VmCardProps) {
       </div>
 
       <div className="mt-4 pt-4 border-t border-gray-100">
-        <VmActions vmId={vm.id} state={vm.state} onAction={onAction} />
+        <VmActions vmId={vm.id} state={vm.state} desired={vm.desired_state} onAction={onAction} />
       </div>
 
       <Link

@@ -1,21 +1,19 @@
+//! QEMU: configured entirely on its command line, now started running
+//! (no `-S`, D9), and driven over QMP (`glidex-hv-client`) at run time.
+
 use super::{
-    needs_shared_memory, vfio_bdf, vfio_device_id, vm_disks, Hypervisor, HypervisorError,
-    HypervisorProcess, HypervisorType, VmDisk,
+    needs_shared_memory, resolve_binary, vfio_bdf, vfio_device_id, vm_disks, HypervisorDriver, HypervisorError,
+    HypervisorType, LaunchArgs, VmDisk,
 };
 use crate::images::qemu_img::ImageType;
 use crate::models::{NicBinding, VmConfig};
+use glidex_hv_client::{qmp::QmpClient, Observed};
 use glidex_ovs::vm_port::VmPortBinding;
-use super::console::{read_log, spawn_on_pty, start_console_proxy};
-use std::fs::{File, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
+use std::fs::OpenOptions;
 use std::os::unix::fs::OpenOptionsExt;
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
-use std::thread;
-use std::time::Duration;
+use std::process::Command;
+use std::sync::OnceLock;
 
 /// OVMF code images glidex looks for, in order: Debian/Ubuntu (`ovmf`),
 /// Fedora/RHEL (`edk2-ovmf`), Arch (`edk2-ovmf`).
@@ -95,156 +93,6 @@ fn supports_direct_io(path: &str) -> bool {
         .is_ok()
 }
 
-/// Client for communicating with QEMU over the QEMU Machine Protocol (QMP)
-/// on a Unix socket. Each command opens a fresh connection, performs the
-/// capabilities handshake, sends the command, and waits for the reply.
-pub struct QmpClient {
-    socket_path: String,
-}
-
-impl QmpClient {
-    pub fn new(socket_path: &str) -> Self {
-        Self {
-            socket_path: socket_path.to_string(),
-        }
-    }
-
-    /// Open a QMP connection and complete the qmp_capabilities handshake.
-    fn connect(&self) -> Result<(UnixStream, BufReader<UnixStream>), HypervisorError> {
-        let stream = UnixStream::connect(&self.socket_path)
-            .map_err(|e| HypervisorError::SocketConnection(e.to_string()))?;
-        stream
-            .set_read_timeout(Some(Duration::from_secs(30)))
-            .map_err(HypervisorError::ProcessStart)?;
-
-        let reader_stream = stream
-            .try_clone()
-            .map_err(HypervisorError::ProcessStart)?;
-        let mut reader = BufReader::new(reader_stream);
-
-        // QEMU sends a greeting line on connect.
-        let mut greeting = String::new();
-        reader
-            .read_line(&mut greeting)
-            .map_err(HypervisorError::ProcessStart)?;
-
-        let mut writer = stream.try_clone().map_err(HypervisorError::ProcessStart)?;
-        writer
-            .write_all(b"{\"execute\":\"qmp_capabilities\"}\r\n")
-            .map_err(HypervisorError::ProcessStart)?;
-        writer.flush().map_err(HypervisorError::ProcessStart)?;
-
-        // Drain lines until the capabilities reply arrives.
-        loop {
-            let mut line = String::new();
-            let n = reader
-                .read_line(&mut line)
-                .map_err(HypervisorError::ProcessStart)?;
-            if n == 0 {
-                return Err(HypervisorError::ApiRequest(
-                    "QMP connection closed during handshake".to_string(),
-                ));
-            }
-            if line.contains("\"return\"") {
-                break;
-            }
-            if line.contains("\"error\"") {
-                return Err(HypervisorError::ApiRequest(format!(
-                    "QMP handshake failed: {}",
-                    line
-                )));
-            }
-        }
-
-        Ok((stream, reader))
-    }
-
-    fn execute(&self, command: &str) -> Result<(), HypervisorError> {
-        let (stream, mut reader) = self.connect()?;
-        let mut writer = stream.try_clone().map_err(HypervisorError::ProcessStart)?;
-
-        writer
-            .write_all(command.as_bytes())
-            .map_err(HypervisorError::ProcessStart)?;
-        writer
-            .write_all(b"\r\n")
-            .map_err(HypervisorError::ProcessStart)?;
-        writer.flush().map_err(HypervisorError::ProcessStart)?;
-
-        loop {
-            let mut line = String::new();
-            let n = reader
-                .read_line(&mut line)
-                .map_err(HypervisorError::ProcessStart)?;
-            if n == 0 {
-                return Err(HypervisorError::ApiRequest(
-                    "QMP connection closed before reply".to_string(),
-                ));
-            }
-            if line.contains("\"error\"") {
-                return Err(HypervisorError::ApiRequest(line.trim().to_string()));
-            }
-            if line.contains("\"return\"") {
-                return Ok(());
-            }
-            // Otherwise it's an asynchronous event — keep reading for the reply.
-        }
-    }
-
-    pub fn cont(&self) -> Result<(), HypervisorError> {
-        self.execute(r#"{"execute":"cont"}"#)
-    }
-
-    pub fn stop(&self) -> Result<(), HypervisorError> {
-        self.execute(r#"{"execute":"stop"}"#)
-    }
-
-    pub fn quit(&self) -> Result<(), HypervisorError> {
-        self.execute(r#"{"execute":"quit"}"#)
-    }
-
-    pub fn system_powerdown(&self) -> Result<(), HypervisorError> {
-        self.execute(r#"{"execute":"system_powerdown"}"#)
-    }
-
-    pub fn add_vfio_device(&self, device_path: &str) -> Result<(), HypervisorError> {
-        let cmd = serde_json::json!({
-            "execute": "device_add",
-            "arguments": {
-                "driver": "vfio-pci",
-                "host": vfio_bdf(device_path),
-                "id": vfio_device_id(device_path),
-            }
-        });
-        self.execute(&cmd.to_string())
-    }
-
-    pub fn remove_vfio_device(&self, device_path: &str) -> Result<(), HypervisorError> {
-        let cmd = serde_json::json!({
-            "execute": "device_del",
-            "arguments": { "id": vfio_device_id(device_path) }
-        });
-        self.execute(&cmd.to_string())
-    }
-}
-
-/// Try to open the QMP socket and read the greeting line. Returns true if
-/// QEMU responded, false if the socket exists but is dead / not yet ready.
-fn probe_qmp(socket_path: &str) -> bool {
-    let Ok(stream) = UnixStream::connect(socket_path) else {
-        return false;
-    };
-    if stream
-        .set_read_timeout(Some(Duration::from_millis(500)))
-        .is_err()
-    {
-        return false;
-    }
-    let mut reader = BufReader::new(stream);
-    let mut line = String::new();
-    matches!(reader.read_line(&mut line), Ok(n) if n > 0 && line.contains("QMP"))
-}
-
 /// Double the commas in a value for QEMU's `key=value,…` option parser.
 fn qopt(value: &str) -> String {
     value.replace(',', ",,")
@@ -308,7 +156,7 @@ impl QemuDisk {
 }
 
 /// Everything the `qemu-system-x86_64` command line depends on, resolved
-/// against the host by `QemuInstance::launch`. `args` itself is pure.
+/// against the host by `QemuDriver::launch_args`. `args` itself is pure.
 #[derive(Debug, Clone)]
 struct LaunchSpec<'a> {
     config: &'a VmConfig,
@@ -408,15 +256,13 @@ impl LaunchSpec<'_> {
         push(&mut args, "-qmp", format!("unix:{},server=on,wait=off", qopt(&self.qmp_socket)));
         push(&mut args, "-serial", "stdio".into());
         push(&mut args, "-display", "none".into());
-        // Hold the guest at reset until `start` sends `cont`.
-        args.push("-S".into());
         args
     }
 }
 
 /// `-netdev` / `-device` pairs for one NIC. vhost-user sockets are served
-/// by QEMU (OVS's `dpdkvhostuserclient` connects); `wait=off` because the
-/// guest is held with `-S` until OVS has had a chance to connect.
+/// by QEMU (OVS's `dpdkvhostuserclient` connects); `wait=off` so QEMU starts
+/// without waiting for OVS: the guest sees the link come up once it does.
 fn nic_args(nic: &NicBinding, vhost_net: bool) -> Vec<(&'static str, String)> {
     let id = &nic.id;
     let pairs = nic.queue_pairs.max(1);
@@ -457,72 +303,57 @@ fn nic_args(nic: &NicBinding, vhost_net: bool) -> Vec<(&'static str, String)> {
     out
 }
 
-/// Whether a failed launch looks like `-cpu host` was the problem.
+/// Output of a failed launch that means `-cpu host` was the problem: the
+/// shim then retries with QEMU's default CPU model (`launch.json`
+/// `fallback`).
+pub(crate) const CPU_REJECTED_MARKERS: &[&str] = &["cpu", "msr"];
+
+#[cfg(test)]
 fn cpu_model_rejected(log: &str) -> bool {
     let log = log.to_ascii_lowercase();
-    log.contains("cpu") || log.contains("msr")
+    CPU_REJECTED_MARKERS.iter().any(|m| log.contains(m))
 }
 
-/// Why a launch attempt failed.
-enum LaunchFailure {
-    /// QEMU exited before QMP came up; `log` is what it printed.
-    Exited { log: String, error: HypervisorError },
-    Other(HypervisorError),
-}
-
-impl From<LaunchFailure> for HypervisorError {
-    fn from(f: LaunchFailure) -> Self {
-        match f {
-            LaunchFailure::Exited { error, .. } | LaunchFailure::Other(error) => error,
+/// Map the firmware: OVMF code read-only, plus this VM's own variable
+/// store, copied from the pristine template on first boot (or when the
+/// template changed size, e.g. after a 2M -> 4M OVMF upgrade).
+fn prepare_firmware(code: &str, vars: &str) -> Result<Firmware, HypervisorError> {
+    let code_path = Path::new(code);
+    if !code_path.exists() {
+        return Err(HypervisorError::InvalidConfig(format!(
+            "UEFI firmware {} not found; install OVMF (ovmf / edk2-ovmf) or set firmware_path",
+            code
+        )));
+    }
+    let Some(template) = ovmf_vars_template(code_path) else {
+        return Ok(Firmware::Bios(code.to_string()));
+    };
+    let template_len = std::fs::metadata(&template)?.len();
+    let current_len = std::fs::metadata(vars).map(|m| m.len()).ok();
+    if current_len != Some(template_len) {
+        if let Some(dir) = Path::new(vars).parent() {
+            std::fs::create_dir_all(dir)?;
         }
+        std::fs::copy(&template, vars)?;
     }
+    let name = code_path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+    let secure_boot = ["secboot", ".ms.", "snakeoil"].iter().any(|s| name.contains(s));
+    Ok(Firmware::Pflash { code: code.to_string(), vars: vars.to_string(), secure_boot })
 }
 
-impl From<HypervisorError> for LaunchFailure {
-    fn from(e: HypervisorError) -> Self {
-        LaunchFailure::Other(e)
-    }
-}
+pub struct QemuDriver;
 
-impl From<std::io::Error> for LaunchFailure {
-    fn from(e: std::io::Error) -> Self {
-        LaunchFailure::Other(e.into())
-    }
-}
-
-/// QEMU VM instance implementing HypervisorProcess.
-///
-/// Unlike Cloud-Hypervisor, QEMU accepts all VM configuration at
-/// launch time rather than via runtime API calls. We therefore defer the
-/// actual `qemu-system-x86_64` spawn until `configure()` is invoked, and use
-/// `-S` to hold the guest in a stopped state until `start()` issues `cont`.
-pub struct QemuInstance {
-    socket_path: String,
-    console_socket_path: String,
-    log_path: String,
-    child: Mutex<Option<Child>>,
-    console_thread: Mutex<Option<thread::JoinHandle<()>>>,
-    running: Arc<AtomicBool>,
-    client: QmpClient,
-}
-
-impl QemuInstance {
-    pub fn new(socket_path: &str, console_socket_path: &str, log_path: &str) -> Self {
-        let client = QmpClient::new(socket_path);
-        Self {
-            socket_path: socket_path.to_string(),
-            console_socket_path: console_socket_path.to_string(),
-            log_path: log_path.to_string(),
-            child: Mutex::new(None),
-            console_thread: Mutex::new(None),
-            running: Arc::new(AtomicBool::new(true)),
-            client,
-        }
+impl HypervisorDriver for QemuDriver {
+    fn hypervisor_type(&self) -> HypervisorType {
+        HypervisorType::Qemu
     }
 
-    /// Resolve the config against the host, then launch; retried once
-    /// without `-cpu host` if QEMU rejects the host CPU model.
-    fn launch(&self, config: &VmConfig) -> Result<(), HypervisorError> {
+    /// Resolve the config against the host into a `LaunchSpec`; the
+    /// fallback is the same command line without `-cpu host`.
+    fn launch_args(&self, config: &VmConfig, api_socket: &str) -> Result<LaunchArgs, HypervisorError> {
+        let bin = resolve_binary("qemu-system-x86_64").ok_or_else(|| {
+            HypervisorError::ProcessStart(std::io::Error::new(std::io::ErrorKind::NotFound, "qemu-system-x86_64 is not installed"))
+        })?;
         if let Some(version) = qemu_version() {
             if version < MIN_QEMU_VERSION {
                 return Err(HypervisorError::Unsupported(format!(
@@ -532,19 +363,21 @@ impl QemuInstance {
             }
         }
         let firmware = match &config.firmware_path {
-            Some(code) => Some(self.prepare_firmware(code, config)?),
+            Some(code) => {
+                let vars = config.firmware_vars_path.clone().ok_or_else(|| {
+                    HypervisorError::InvalidConfig("firmware boot needs a firmware variable store path".into())
+                })?;
+                Some(prepare_firmware(code, &vars)?)
+            }
             None => None,
         };
         let disks = vm_disks(config)
             .into_iter()
-            .map(|disk| QemuDisk {
-                direct: supports_direct_io(&disk.path),
-                disk,
-            })
+            .map(|disk| QemuDisk { direct: supports_direct_io(&disk.path), disk })
             .collect();
         let mut spec = LaunchSpec {
             config,
-            qmp_socket: self.socket_path.clone(),
+            qmp_socket: api_socket.to_string(),
             firmware,
             disks,
             cpu_host: true,
@@ -553,226 +386,34 @@ impl QemuInstance {
         if !spec.vhost_net && config.nic_bindings.iter().any(|n| matches!(n.binding, VmPortBinding::Tap { .. })) {
             tracing::warn!("/dev/vhost-net is not usable; tap NICs fall back to QEMU's userspace virtio-net");
         }
-
-        match self.launch_with(&spec) {
-            Err(LaunchFailure::Exited { log, .. }) if cpu_model_rejected(&log) => {
-                tracing::warn!(
-                    "qemu-system-x86_64 rejected -cpu host; retrying with QEMU's default CPU model:\n{}",
-                    log.trim()
-                );
-                spec.cpu_host = false;
-                self.running.store(true, Ordering::SeqCst);
-                self.launch_with(&spec).map_err(Into::into)
-            }
-            other => other.map_err(Into::into),
-        }
-    }
-
-    /// Map the firmware: OVMF code read-only, plus this VM's own variable
-    /// store, copied from the pristine template on first boot (or when the
-    /// template changed size, e.g. after a 2M -> 4M OVMF upgrade).
-    fn prepare_firmware(&self, code: &str, config: &VmConfig) -> Result<Firmware, HypervisorError> {
-        let code_path = Path::new(code);
-        if !code_path.exists() {
-            return Err(HypervisorError::InvalidConfig(format!(
-                "UEFI firmware {} not found; install OVMF (ovmf / edk2-ovmf) or set firmware_path",
-                code
-            )));
-        }
-        let Some(template) = ovmf_vars_template(code_path) else {
-            return Ok(Firmware::Bios(code.to_string()));
+        let bin = bin.to_string_lossy().into_owned();
+        let argv = std::iter::once(bin.clone()).chain(spec.args()).collect();
+        spec.cpu_host = false;
+        let fallback = glidex_vm_shim::Fallback {
+            argv: std::iter::once(bin).chain(spec.args()).collect(),
+            when_output_matches: CPU_REJECTED_MARKERS.iter().map(|s| s.to_string()).collect(),
         };
-        let vars = config
-            .firmware_vars_path
-            .clone()
-            .unwrap_or_else(|| format!("{}.ovmf-vars.fd", self.log_path.trim_end_matches(".log")));
-        let template_len = std::fs::metadata(&template)?.len();
-        let current_len = std::fs::metadata(&vars).map(|m| m.len()).ok();
-        if current_len != Some(template_len) {
-            if let Some(dir) = Path::new(&vars).parent() {
-                std::fs::create_dir_all(dir)?;
-            }
-            std::fs::copy(&template, &vars)?;
-        }
-        let name = code_path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
-        let secure_boot = ["secboot", ".ms.", "snakeoil"].iter().any(|s| name.contains(s));
-        Ok(Firmware::Pflash {
-            code: code.to_string(),
-            vars,
-            secure_boot,
-        })
+        Ok(LaunchArgs { argv, fallback: Some(fallback) })
     }
 
-    fn launch_with(&self, spec: &LaunchSpec<'_>) -> Result<(), LaunchFailure> {
-        let _ = std::fs::remove_file(&self.socket_path);
-        let _ = std::fs::remove_file(&self.console_socket_path);
-
-        // Truncate once; the console proxy and QEMU's stderr then both
-        // append, so neither overwrites the other.
-        File::create(&self.log_path)?;
-        let log_file = OpenOptions::new().append(true).open(&self.log_path)?;
-        let stderr_log = OpenOptions::new().append(true).open(&self.log_path)?;
-
-        // The serial console is the PTY (console.rs); QEMU's own messages
-        // go to the log only, so they never land in a guest's console
-        // session.
-        let mut cmd = Command::new("qemu-system-x86_64");
-        cmd.args(spec.args());
-        let (child, master) = spawn_on_pty(&mut cmd, stderr_log)?;
-        *self.child.lock().unwrap() = Some(child);
-        let thread = match start_console_proxy(master, &self.console_socket_path, &self.log_path, log_file, self.running.clone()) {
-            Ok(thread) => thread,
-            Err(e) => {
-                self.cleanup_partial();
-                return Err(e.into());
-            }
-        };
-        *self.console_thread.lock().unwrap() = Some(thread);
-
-        // Wait for the QMP socket to become usable. The file existing is
-        // not sufficient: if QEMU crashes it leaves an orphaned socket
-        // that accepts but immediately resets. Probe the greeting to
-        // confirm the process is alive and listening.
-        for _ in 0..50 {
-            if let Some(exit_status) = self.child_exit_status() {
-                let log = read_log(&self.log_path);
-                self.cleanup_partial();
-                return Err(LaunchFailure::Exited {
-                    error: HypervisorError::ProcessStart(std::io::Error::other(format!(
-                        "qemu-system-x86_64 exited with {} before QMP was ready.\n--- qemu output ---\n{}",
-                        exit_status,
-                        log.trim()
-                    ))),
-                    log,
-                });
-            }
-
-            if Path::new(&self.socket_path).exists() && probe_qmp(&self.socket_path) {
-                return Ok(());
-            }
-            std::thread::sleep(Duration::from_millis(100));
-        }
-
-        let log = read_log(&self.log_path);
-        self.cleanup_partial();
-        Err(LaunchFailure::Other(HypervisorError::Timeout(format!(
-            "QMP socket not ready after timeout.\n--- qemu output ---\n{}",
-            log.trim()
-        ))))
+    fn observe(&self, api_socket: &str) -> Result<Observed, HypervisorError> {
+        Ok(QmpClient::new(api_socket).observe()?)
     }
 
-    /// Return the child's exit status if it has already terminated.
-    fn child_exit_status(&self) -> Option<std::process::ExitStatus> {
-        let mut guard = self.child.lock().unwrap();
-        match guard.as_mut()?.try_wait() {
-            Ok(Some(status)) => Some(status),
-            _ => None,
-        }
+    fn pause(&self, api_socket: &str) -> Result<(), HypervisorError> {
+        Ok(QmpClient::new(api_socket).stop()?)
     }
 
-    /// Kill the child and join the console thread. Used on failed launches.
-    fn cleanup_partial(&self) {
-        if let Some(mut child) = self.child.lock().unwrap().take() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-        // After the child: the proxy drains what it printed last.
-        self.running.store(false, Ordering::SeqCst);
-        if let Some(handle) = self.console_thread.lock().unwrap().take() {
-            let _ = handle.join();
-        }
-        let _ = std::fs::remove_file(&self.socket_path);
-        let _ = std::fs::remove_file(&self.console_socket_path);
-    }
-}
-
-impl HypervisorProcess for QemuInstance {
-    fn configure(&self, config: &VmConfig) -> Result<(), HypervisorError> {
-        self.launch(config)
+    fn resume(&self, api_socket: &str) -> Result<(), HypervisorError> {
+        Ok(QmpClient::new(api_socket).cont()?)
     }
 
-    fn start(&self) -> Result<(), HypervisorError> {
-        self.client.cont()
+    fn add_device(&self, api_socket: &str, device_path: &str) -> Result<(), HypervisorError> {
+        Ok(QmpClient::new(api_socket).device_add_vfio(&vfio_bdf(device_path), &vfio_device_id(device_path))?)
     }
 
-    fn pause(&self) -> Result<(), HypervisorError> {
-        self.client.stop()
-    }
-
-    fn resume(&self) -> Result<(), HypervisorError> {
-        self.client.cont()
-    }
-
-    fn kill(&self) -> Result<(), HypervisorError> {
-        let _ = self.client.quit();
-        self.cleanup_partial();
-        Ok(())
-    }
-
-    fn request_shutdown(&self) -> Result<(), HypervisorError> {
-        self.client.system_powerdown()
-    }
-
-    fn add_device(&self, device_path: &str) -> Result<(), HypervisorError> {
-        self.client.add_vfio_device(device_path)
-    }
-
-    fn remove_device(&self, device_path: &str) -> Result<(), HypervisorError> {
-        self.client.remove_vfio_device(device_path)
-    }
-
-    fn is_running(&self) -> bool {
-        // QEMU exits once the guest powers off.
-        self.running.load(Ordering::SeqCst)
-            && self
-                .child
-                .lock()
-                .unwrap()
-                .as_mut()
-                .is_some_and(|c| matches!(c.try_wait(), Ok(None)))
-    }
-
-    fn socket_path(&self) -> &str {
-        &self.socket_path
-    }
-
-    fn console_socket_path(&self) -> &str {
-        &self.console_socket_path
-    }
-
-    fn log_path(&self) -> &str {
-        &self.log_path
-    }
-}
-
-/// QEMU backend factory.
-pub struct QemuBackend;
-
-impl Hypervisor for QemuBackend {
-    fn spawn(
-        &self,
-        socket_path: &str,
-        console_socket_path: &str,
-        log_path: &str,
-    ) -> Result<Box<dyn HypervisorProcess>, HypervisorError> {
-        // The actual qemu-system process is launched in `configure()` once
-        // the VM config is known. Here we only allocate the handle.
-        Ok(Box::new(QemuInstance::new(
-            socket_path,
-            console_socket_path,
-            log_path,
-        )))
-    }
-
-    fn hypervisor_type(&self) -> HypervisorType {
-        HypervisorType::Qemu
-    }
-
-    fn is_available(&self) -> bool {
-        Command::new("qemu-system-x86_64")
-            .arg("--version")
-            .output()
-            .is_ok()
+    fn remove_device(&self, api_socket: &str, device_path: &str) -> Result<(), HypervisorError> {
+        Ok(QmpClient::new(api_socket).device_del(&vfio_device_id(device_path))?)
     }
 }
 
@@ -837,7 +478,8 @@ mod tests {
         assert_eq!(values(&args, "-qmp"), ["unix:/tmp/qmp.sock,server=on,wait=off"]);
         assert!(values(&args, "-netdev").is_empty());
         assert!(!args.iter().any(|a| a == "-no-reboot"));
-        assert_eq!(args.last().map(String::as_str), Some("-S"));
+        // D9: started running, not held at reset.
+        assert!(!args.iter().any(|a| a == "-S"));
         assert!(values(&args, "-device").contains(&"virtio-rng-pci,rng=rng0"));
     }
 
@@ -1017,11 +659,9 @@ mod tests {
         std::fs::write(&code, b"code").unwrap();
         std::fs::write(dir.path().join("OVMF_VARS_4M.fd"), b"pristine").unwrap();
         let vars = dir.path().join("vm/vars.fd");
-        let mut config = config(serde_json::json!({}));
-        config.firmware_vars_path = Some(vars.to_string_lossy().into_owned());
-        let qemu = QemuInstance::new("/tmp/x.sock", "/tmp/x.console.sock", "/tmp/x.log");
+        let vars_s = vars.to_string_lossy().into_owned();
 
-        let fw = qemu.prepare_firmware(code.to_str().unwrap(), &config).unwrap();
+        let fw = prepare_firmware(code.to_str().unwrap(), &vars_s).unwrap();
         assert_eq!(fw, Firmware::Pflash {
             code: code.to_string_lossy().into_owned(),
             vars: vars.to_string_lossy().into_owned(),
@@ -1031,11 +671,11 @@ mod tests {
 
         // Variables the guest wrote survive the next boot.
         std::fs::write(&vars, b"BOOTVARS").unwrap();
-        qemu.prepare_firmware(code.to_str().unwrap(), &config).unwrap();
+        prepare_firmware(code.to_str().unwrap(), &vars_s).unwrap();
         assert_eq!(std::fs::read(&vars).unwrap(), b"BOOTVARS");
 
         assert!(matches!(
-            qemu.prepare_firmware("/nonexistent/OVMF_CODE.fd", &config),
+            prepare_firmware("/nonexistent/OVMF_CODE.fd", &vars_s),
             Err(HypervisorError::InvalidConfig(_))
         ));
     }

@@ -111,9 +111,9 @@ async fn firmware_vm_can_be_created_without_kernel() {
     assert_eq!(body["state"], "created");
 
     let vm = manager.get_vm(body["id"].as_str().unwrap()).await.unwrap();
-    assert_eq!(vm.config.firmware_path.as_deref(), Some("/path/to/CLOUDHV.fd"));
-    assert_eq!(vm.config.kernel_image_path, "");
-    assert_eq!(vm.config.cloud_init_path, None);
+    assert_eq!(vm.spec.config.firmware_path.as_deref(), Some("/path/to/CLOUDHV.fd"));
+    assert_eq!(vm.spec.config.kernel_image_path, "");
+    assert_eq!(vm.spec.config.cloud_init_path, None);
 }
 
 #[tokio::test]
@@ -128,8 +128,8 @@ async fn qemu_firmware_vm_can_be_created_without_kernel() {
     assert_eq!(body["hypervisor"], "qemu");
 
     let vm = manager.get_vm(body["id"].as_str().unwrap()).await.unwrap();
-    assert_eq!(vm.config.firmware_path.as_deref(), Some("/usr/share/OVMF/OVMF_CODE_4M.fd"));
-    assert_eq!(vm.config.kernel_image_path, "");
+    assert_eq!(vm.spec.config.firmware_path.as_deref(), Some("/usr/share/OVMF/OVMF_CODE_4M.fd"));
+    assert_eq!(vm.spec.config.kernel_image_path, "");
 }
 
 #[tokio::test]
@@ -159,7 +159,7 @@ async fn qemu_accepts_a_custom_cloud_init_path() {
     let (status, body) = request(&app, "POST", "/vms", Some(req)).await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
     let vm = manager.get_vm(body["id"].as_str().unwrap()).await.unwrap();
-    assert_eq!(vm.config.cloud_init_path.as_deref(), Some("/path/to/seed.img"));
+    assert_eq!(vm.spec.config.cloud_init_path.as_deref(), Some("/path/to/seed.img"));
 }
 
 #[tokio::test]
@@ -219,8 +219,7 @@ async fn legacy_firecracker_records_are_skipped_on_load() {
             let bytes = table.get(legacy_id.as_str()).unwrap().unwrap();
             serde_json::from_slice(bytes.value()).unwrap()
         };
-        record["hypervisor"] = json!("firecracker");
-        record["config"]["hypervisor"] = json!("firecracker");
+        record["spec"]["config"]["hypervisor"] = json!("firecracker");
         let txn = database.begin_write().unwrap();
         {
             let mut table = txn.open_table(VMS).unwrap();
@@ -261,11 +260,11 @@ async fn firmware_and_cloud_init_paths_are_tilde_expanded() {
 
     let vm = manager.get_vm(body["id"].as_str().unwrap()).await.unwrap();
     assert_eq!(
-        vm.config.firmware_path.map(PathBuf::from),
+        vm.spec.config.firmware_path.map(PathBuf::from),
         Some(home.join("fw/CLOUDHV.fd"))
     );
     assert_eq!(
-        vm.config.cloud_init_path.map(PathBuf::from),
+        vm.spec.config.cloud_init_path.map(PathBuf::from),
         Some(home.join("seed.img"))
     );
 }
@@ -287,13 +286,13 @@ async fn firmware_config_survives_restart() {
     let manager = VmManager::with_db_path(db).unwrap();
     manager.initialize().await.unwrap();
     let vm = manager.get_vm(&id).await.unwrap();
-    assert_eq!(vm.config.firmware_path.as_deref(), Some("/path/to/CLOUDHV.fd"));
+    assert_eq!(vm.spec.config.firmware_path.as_deref(), Some("/path/to/CLOUDHV.fd"));
     // Per-VM private runtime directory (spec/security.md §9).
     assert_eq!(
         vm.default_cloud_init_path(),
         glidex_control_plane::paths::vm_dir(&id).join("cloudinit.img").to_string_lossy()
     );
-    assert!(vm.socket_path.ends_with(&format!("/vms/{id}/api.sock")), "{}", vm.socket_path);
+    assert!(vm.paths().api_socket.ends_with(&format!("/vms/{id}/api.sock")), "{}", vm.paths().api_socket);
 }
 
 // ============================================================================
@@ -374,16 +373,35 @@ fn seed_image_error_leaves_no_partial_files() {
 // ============================================================================
 
 /// Stops every VM the manager knows about when dropped, so a failing test
-/// never leaves a cloud-hypervisor process behind.
-struct ShutdownGuard(Arc<VmManager>);
+/// never leaves a cloud-hypervisor process behind: VMs outlive the control
+/// plane now, so nothing else would (spec/reconciliation.md §19).
+struct ShutdownGuard(Option<Arc<VmManager>>);
+
+impl ShutdownGuard {
+    /// Let go of the manager without stopping its VMs (a simulated
+    /// control-plane restart).
+    fn disarm(mut self) {
+        self.0 = None;
+    }
+}
 
 impl Drop for ShutdownGuard {
     fn drop(&mut self) {
-        let manager = self.0.clone();
+        let Some(manager) = self.0.take() else { return };
         tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(manager.shutdown())
+            tokio::runtime::Handle::current().block_on(manager.stop_all(Duration::from_secs(60)))
         });
     }
+}
+
+/// An app whose VM controller runs (detached runner), for tests that boot
+/// real guests. The shim binary must be built (`cargo build -p
+/// glidex-vm-shim`, or set GLIDEX_VM_SHIM).
+async fn create_running_app() -> (Router, Arc<VmManager>, TempDir) {
+    let (app, manager, tmp) = create_test_app();
+    manager.initialize().await.unwrap();
+    manager.start_controllers();
+    (app, manager, tmp)
 }
 
 /// Minimal expect-style driver for the VM console socket.
@@ -492,12 +510,14 @@ async fn firmware_boot_e2e(hypervisor: &str) {
     let source_image = env_path("GLIDEX_TEST_IMAGE", None);
     assert!(Path::new("/dev/kvm").exists(), "/dev/kvm is required");
 
-    let (app, manager, tmp) = create_test_app();
-    let _guard = ShutdownGuard(manager.clone());
+    let (app, manager, tmp) = create_running_app().await;
+    let _guard = ShutdownGuard(Some(manager.clone()));
 
     // Work on a sparse copy so the source image is never modified.
     let rootfs = tmp.path().join("rootfs.raw");
     run_ok(Command::new("cp").arg("--sparse=always").arg(&source_image).arg(&rootfs));
+    // The copy keeps the source's mode; a managed image is read-only.
+    std::fs::set_permissions(&rootfs, std::os::unix::fs::PermissionsExt::from_mode(0o644)).unwrap();
 
     // Guest login from the credential store, with a throwaway password.
     let username = "gxtester";
@@ -532,12 +552,12 @@ async fn firmware_boot_e2e(hypervisor: &str) {
     let seed_path = manager.get_vm(&id).await.unwrap().default_cloud_init_path();
 
     // Start: seed is generated and the VM reaches Running.
-    let (status, body) = request(&app, "POST", &format!("/vms/{id}/start"), None).await;
+    let (status, body) = request(&app, "POST", &format!("/vms/{id}/start?wait=120"), None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["state"], "running");
     assert!(Path::new(&seed_path).exists(), "seed image not generated");
     let persisted = manager.get_vm(&id).await.unwrap();
-    assert_eq!(persisted.config.cloud_init_path, None, "generated seed must not be persisted");
+    assert_eq!(persisted.spec.config.cloud_init_path, None, "generated seed must not be persisted");
 
     let console_path = glidex_control_plane::paths::vm_paths(&id).console_socket;
 
@@ -561,10 +581,10 @@ async fn firmware_boot_e2e(hypervisor: &str) {
     .unwrap();
 
     // Pause / resume keeps the guest alive.
-    let (status, body) = request(&app, "POST", &format!("/vms/{id}/pause"), None).await;
+    let (status, body) = request(&app, "POST", &format!("/vms/{id}/pause?wait=60"), None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["state"], "paused");
-    let (status, body) = request(&app, "POST", &format!("/vms/{id}/start"), None).await;
+    let (status, body) = request(&app, "POST", &format!("/vms/{id}/start?wait=60"), None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["state"], "running");
     console = tokio::task::spawn_blocking(move || {
@@ -583,14 +603,14 @@ async fn firmware_boot_e2e(hypervisor: &str) {
     // Graceful stop: the guest shuts down on the power button, well
     // before the deadline that would force it.
     let started = Instant::now();
-    let (status, body) = request(&app, "POST", &format!("/vms/{id}/stop?graceful_timeout_secs=120"), None).await;
+    let (status, body) = request(&app, "POST", &format!("/vms/{id}/stop?graceful_timeout_secs=120&wait=200"), None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["state"], "stopped");
     assert!(started.elapsed() < Duration::from_secs(110), "guest ignored the power button");
     // Lossy: the console log is the guest's raw bytes, not always UTF-8.
     let log = String::from_utf8_lossy(&std::fs::read(glidex_control_plane::paths::vm_paths(&id).log).unwrap()).into_owned();
     // The kernel's very last line: nothing the guest printed before the
-    // hypervisor exited may be lost (hypervisor/console.rs).
+    // hypervisor exited may be lost (glidex-vm-shim's proxy).
     assert!(log.contains("reboot: Power down"), "guest did not power off cleanly:\n{log}");
 
     // Delete cleans up the generated seed (and the variable store).
@@ -602,6 +622,172 @@ async fn firmware_boot_e2e(hypervisor: &str) {
     // The credential is no longer referenced and can be removed.
     let (status, _) = request(&app, "DELETE", &format!("/credentials/{username}"), None).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "boots a real VM; needs KVM, cloud-hypervisor, a built glidex-vm-shim and GLIDEX_TEST_IMAGE"]
+async fn vm_survives_control_plane_restart() {
+    restart_e2e("cloudhypervisor").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "boots a real VM; needs KVM, QEMU, OVMF, a built glidex-vm-shim and GLIDEX_TEST_IMAGE"]
+async fn qemu_vm_survives_control_plane_restart() {
+    restart_e2e("qemu").await;
+}
+
+/// Log in on a fresh console connection to instance `instance_id`. The
+/// log is appended across instances (spec §8.6), so skip the replay up to
+/// this instance's separator line first: earlier boots' prompts are in it.
+fn console_login(path: &str, instance_id: &str, hostname: &str, username: &str, password: &str) -> Console {
+    let mut console = Console::connect(path);
+    console.expect(&format!("--- glidex: instance {instance_id} started"), Duration::from_secs(30));
+    std::thread::sleep(Duration::from_secs(1));
+    console.send("\r");
+    console.expect(&format!("{hostname} login: "), Duration::from_secs(240));
+    console.send(&format!("{username}\r"));
+    console.expect("Password: ", Duration::from_secs(30));
+    console.send(&format!("{password}\r"));
+    console.expect(&format!("{username}@{hostname}:~$ "), Duration::from_secs(60));
+    console
+}
+
+/// Wait until `f` holds for the VM.
+async fn wait_vm(manager: &VmManager, id: &str, what: &str, timeout: Duration, f: impl Fn(&glidex_control_plane::models::Vm) -> bool) -> glidex_control_plane::models::Vm {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let vm = manager.get_vm(id).await.unwrap();
+        if f(&vm) {
+            return vm;
+        }
+        assert!(Instant::now() < deadline, "timed out waiting for {what}: {:?}", vm.status);
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+}
+
+/// spec/reconciliation.md §19: survival, adoption, crash restart and a
+/// guest power-off.
+async fn restart_e2e(hypervisor: &str) {
+    use glidex_vm_shim::util::same_process;
+    let firmware = test_firmware(hypervisor);
+    let source_image = env_path("GLIDEX_TEST_IMAGE", None);
+    let tmp = TempDir::new().unwrap();
+    let db = tmp.path().join("test.db");
+    // Raw: this test SIGKILLs the hypervisor, which a qcow2 image may not
+    // survive (Cloud Hypervisor then refuses to reopen it).
+    let rootfs = tmp.path().join("rootfs.raw");
+    run_ok(Command::new("qemu-img").args(["convert", "-O", "raw"]).arg(&source_image).arg(&rootfs));
+    let (username, hostname) = ("gxtester", "gx-restart");
+    let password = uuid::Uuid::new_v4().simple().to_string();
+
+    // ---- control plane #1: create, start, log in -------------------------
+    let manager = VmManager::with_db_path(db.clone()).unwrap();
+    manager.initialize().await.unwrap();
+    manager.start_controllers();
+    let guard = ShutdownGuard(Some(manager.clone()));
+    let app = create_router(manager.clone());
+    let (status, body) = request(&app, "POST", "/credentials", Some(json!({"username": username, "password": password}))).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let (status, vm) = request(&app, "POST", "/vms?wait=120", Some(json!({
+        "name": hostname, "vcpu_count": 2, "mem_size_mib": 2048, "hypervisor": hypervisor,
+        "firmware_path": firmware, "rootfs_path": rootfs, "credential": username, "power": "running",
+    }))).await;
+    assert_eq!(status, StatusCode::CREATED, "{vm}");
+    assert_eq!(vm["state"], "running", "{vm}");
+    let id = vm["id"].as_str().unwrap().to_string();
+    let before = manager.get_vm(&id).await.unwrap().status.instance.unwrap();
+    let hv = (before.hypervisor_pid.unwrap(), before.hypervisor_starttime.unwrap());
+    let console_path = glidex_control_plane::paths::vm_paths(&id).console_socket;
+    let mut console = {
+        let (p, h, u, pw) = (console_path.clone(), hostname.to_string(), username.to_string(), password.clone());
+        let inst = before.instance_id.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut c = console_login(&p, &inst, &h, &u, &pw);
+            c.send("echo GX_BEFORE_$((6*7))\r");
+            c.expect("GX_BEFORE_42", Duration::from_secs(30));
+            c
+        })
+        .await
+        .unwrap()
+    };
+
+    // ---- the control plane goes away; the guest does not -----------------
+    manager.stop_controllers().await;
+    guard.disarm();
+    drop(app);
+    drop(manager);
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert!(same_process(hv.0, hv.1).unwrap(), "the hypervisor died with the control plane");
+
+    // ---- control plane #2 adopts it ---------------------------------------
+    let manager = {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            match VmManager::with_db_path(db.clone()) {
+                Ok(m) => break m,
+                Err(e) if Instant::now() < deadline => {
+                    eprintln!("database still open: {e}");
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+                Err(e) => panic!("{e}"),
+            }
+        }
+    };
+    manager.initialize().await.unwrap();
+    manager.start_controllers();
+    let _guard = ShutdownGuard(Some(manager.clone()));
+    let app = create_router(manager.clone());
+    let vm = wait_vm(&manager, &id, "adoption", Duration::from_secs(30), |v| v.is_converged()).await;
+    let after = vm.status.instance.clone().unwrap();
+    assert_eq!(after.instance_id, before.instance_id, "a new instance was launched");
+    assert_eq!(after.hypervisor_pid, before.hypervisor_pid);
+    let events = manager.vm_events(&id).unwrap();
+    assert!(events.iter().any(|e| e.reason == "Adopted"), "{events:?}");
+    // The console connection held across the restart still works.
+    console = tokio::task::spawn_blocking(move || {
+        console.send("echo GX_AFTER_$((6*8))\r");
+        console.expect("GX_AFTER_48", Duration::from_secs(30));
+        console
+    })
+    .await
+    .unwrap();
+    drop(console);
+
+    // ---- a crash is restarted (restart_policy on_failure) -----------------
+    nix::sys::signal::kill(nix::unistd::Pid::from_raw(hv.0 as i32), nix::sys::signal::Signal::SIGKILL).unwrap();
+    let vm = wait_vm(&manager, &id, "crash restart", Duration::from_secs(120), |v| {
+        v.status.instance.as_ref().is_some_and(|i| i.instance_id != before.instance_id) && v.is_converged()
+    })
+    .await;
+    let exit = vm.status.last_exit.clone().unwrap();
+    assert_eq!((exit.cause, exit.signal), (glidex_control_plane::models::ExitCause::Crashed, Some(9)), "{exit:?}");
+    assert_eq!(vm.status.restart_count, 1);
+    assert_eq!(vm.spec.power, glidex_control_plane::models::PowerState::Running);
+
+    // ---- the guest powers itself off: desired state follows ---------------
+    {
+        let (p, h, u, pw) = (console_path.clone(), hostname.to_string(), username.to_string(), password.clone());
+        let inst = vm.status.instance.as_ref().unwrap().instance_id.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut c = console_login(&p, &inst, &h, &u, &pw);
+            c.send("sudo poweroff\r");
+        })
+        .await
+        .unwrap();
+    }
+    let vm = wait_vm(&manager, &id, "guest poweroff", Duration::from_secs(120), |v| {
+        v.spec.power == glidex_control_plane::models::PowerState::Stopped && v.is_converged()
+    })
+    .await;
+    assert_eq!(vm.status.last_exit.as_ref().unwrap().cause, glidex_control_plane::models::ExitCause::CleanExit);
+    let log = String::from_utf8_lossy(&std::fs::read(glidex_control_plane::paths::vm_paths(&id).log).unwrap()).into_owned();
+    // Appended across instances, with separators (§8.6).
+    assert!(log.matches("--- glidex: instance").count() >= 4, "{log}");
+    assert!(log.contains(&format!("--- glidex: instance {} exited: crashed (signal 9) ---", before.instance_id)), "{log}");
+
+    let (status, _) = request(&app, "DELETE", &format!("/vms/{id}"), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    request(&app, "DELETE", &format!("/credentials/{username}"), None).await;
 }
 
 /// Host's IPv4 default gateway (from `ip -j route`), used as a target that
@@ -633,8 +819,8 @@ async fn qemu_nat_network_e2e() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "boots two real VMs; needs KVM, cloud-hypervisor, QEMU, OVMF, glidex-netd, Open vSwitch and GLIDEX_TEST_IMAGE"]
 async fn mixed_hypervisors_share_a_network() {
-    let (app, manager, tmp) = create_test_app();
-    let _guard = ShutdownGuard(manager.clone());
+    let (app, manager, tmp) = create_running_app().await;
+    let _guard = ShutdownGuard(Some(manager.clone()));
     request(&app, "DELETE", "/networks/mixed", None).await;
     let (st, net) = request(&app, "POST", "/networks", Some(json!({"name": "mixed", "mode": "nat", "bridge": "gxbr-mixed"}))).await;
     assert_eq!(st, StatusCode::CREATED, "{net}");
@@ -658,8 +844,8 @@ async fn nat_e2e(hypervisor: &str) {
     let source_image = env_path("GLIDEX_TEST_IMAGE", None);
     let gateway = host_default_gateway().expect("host has no IPv4 default gateway");
 
-    let (app, manager, tmp) = create_test_app();
-    let _guard = ShutdownGuard(manager.clone());
+    let (app, manager, tmp) = create_running_app().await;
+    let _guard = ShutdownGuard(Some(manager.clone()));
 
     let (_, status) = request(&app, "GET", "/ovs/status", None).await;
     assert_eq!(status["netd"]["access"], "full", "glidex-netd not usable: {status}");
@@ -701,7 +887,7 @@ async fn nat_e2e(hypervisor: &str) {
     assert_eq!(st, StatusCode::CREATED, "{vm}");
     let id = vm["id"].as_str().unwrap().to_string();
 
-    let (st, body) = request(&app, "POST", &format!("/vms/{id}/start"), None).await;
+    let (st, body) = request(&app, "POST", &format!("/vms/{id}/start?wait=120"), None).await;
     assert_eq!(st, StatusCode::OK, "{body}");
     let ipv4 = body["nics"][0]["ipv4"].as_str().expect("NAT reservation").to_string();
     assert!(ipv4.starts_with("10.88."), "{ipv4}");
@@ -734,14 +920,21 @@ async fn nat_e2e(hypervisor: &str) {
     .await
     .unwrap();
 
-    // The guest powered itself off: the VM ends up stopped, port released.
+    // The guest powered itself off: the VM ends up stopped (its desired
+    // state too: CleanExit, §7.5), port released.
     let deadline = Instant::now() + Duration::from_secs(120);
-    while manager.reap_exited_vms().await.is_empty() {
+    loop {
+        let vm = manager.get_vm(&id).await.unwrap();
+        if vm.state() == glidex_control_plane::models::VmState::Stopped && vm.status.nics.is_empty() {
+            break;
+        }
         assert!(Instant::now() < deadline, "VM still running after guest poweroff");
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
     let (_, body) = request(&app, "GET", &format!("/vms/{id}"), None).await;
     assert_eq!(body["state"], "stopped", "{body}");
+    assert_eq!(body["desired_state"], "stopped", "{body}");
+    assert_eq!(body["last_exit"]["cause"], "clean_exit", "{body}");
     assert!(body["nics"][0]["port"].is_null(), "{body}");
 
     let (st, _) = request(&app, "DELETE", &format!("/vms/{id}"), None).await;
@@ -800,7 +993,7 @@ async fn start_and_login(app: &Router, tmp: &TempDir, network: &str, hostname: &
     let (st, vm) = request(app, "POST", "/vms", Some(spec)).await;
     assert_eq!(st, StatusCode::CREATED, "{vm}");
     let id = vm["id"].as_str().unwrap().to_string();
-    let (st, body) = request(app, "POST", &format!("/vms/{id}/start"), None).await;
+    let (st, body) = request(app, "POST", &format!("/vms/{id}/start?wait=120"), None).await;
     assert_eq!(st, StatusCode::OK, "{body}");
     let ipv4 = body["nics"][0]["ipv4"].as_str().map(str::to_string);
     let console_path = glidex_control_plane::paths::vm_paths(&id).console_socket;
@@ -841,7 +1034,7 @@ async fn run_checks(guest: Guest, checks: Vec<(String, String)>) -> Guest {
 
 async fn stop_and_delete(app: &Router, guest: Guest) {
     drop(guest.console);
-    request(app, "POST", &format!("/vms/{}/stop", guest.id), None).await;
+    request(app, "POST", &format!("/vms/{}/stop?wait=60", guest.id), None).await;
     let (st, _) = request(app, "DELETE", &format!("/vms/{}", guest.id), None).await;
     assert_eq!(st, StatusCode::NO_CONTENT);
     request(app, "DELETE", &format!("/credentials/{}", guest.username), None).await;
@@ -867,8 +1060,8 @@ async fn require_lan_and_netd(app: &Router) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "needs root-run glidex-netd, OVS, the fake LAN (GLIDEX_TEST_LAN) and GLIDEX_TEST_IMAGE"]
 async fn bridged_uplink_e2e() {
-    let (app, manager, tmp) = create_test_app();
-    let _guard = ShutdownGuard(manager.clone());
+    let (app, manager, tmp) = create_running_app().await;
+    let _guard = ShutdownGuard(Some(manager.clone()));
     require_lan_and_netd(&app).await;
     // Leftovers from an interrupted run.
     request(&app, "DELETE", "/networks/lan", None).await;
@@ -941,8 +1134,8 @@ async fn bridged_uplink_e2e() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "needs root-run glidex-netd, OVS with afxdp, the fake LAN (GLIDEX_TEST_LAN) and GLIDEX_TEST_IMAGE"]
 async fn afxdp_uplink_e2e() {
-    let (app, manager, tmp) = create_test_app();
-    let _guard = ShutdownGuard(manager.clone());
+    let (app, manager, tmp) = create_running_app().await;
+    let _guard = ShutdownGuard(Some(manager.clone()));
     require_lan_and_netd(&app).await;
     request(&app, "DELETE", "/networks/xdp", None).await;
     request(&app, "DELETE", "/ovs/bridges/gxbr-xdp/uplinks/gxup1", None).await;
@@ -987,8 +1180,8 @@ async fn qemu_vhost_user_e2e() {
 
 async fn vhost_user_net_e2e(hypervisor: &str) {
     assert!(std::env::var("GLIDEX_TEST_DPDK").is_ok(), "set GLIDEX_TEST_DPDK=1 once OVS-DPDK is initialized");
-    let (app, manager, tmp) = create_test_app();
-    let _guard = ShutdownGuard(manager.clone());
+    let (app, manager, tmp) = create_running_app().await;
+    let _guard = ShutdownGuard(Some(manager.clone()));
     let (_, status) = request(&app, "GET", "/ovs/status", None).await;
     assert_eq!(status["host"]["dpdk_initialized"], true, "{status}");
     assert!(
@@ -1039,8 +1232,8 @@ async fn catalog_image_e2e(hypervisor: &str) {
     // QEMU relies on the server-side default firmware.
     let firmware = (hypervisor != "qemu").then(|| test_firmware(hypervisor));
     let key = std::env::var("GLIDEX_TEST_CATALOG").unwrap_or_else(|_| "ubuntu-26.04".into());
-    let (app, manager, _tmp) = create_test_app();
-    let _guard = ShutdownGuard(manager.clone());
+    let (app, manager, _tmp) = create_running_app().await;
+    let _guard = ShutdownGuard(Some(manager.clone()));
 
     let (status, img) = request(&app, "POST", "/images", Some(json!({"catalog": key}))).await;
     assert_eq!(status, StatusCode::ACCEPTED, "{img}");
@@ -1075,7 +1268,7 @@ async fn catalog_image_e2e(hypervisor: &str) {
     let (status, vm) = request(&app, "POST", "/vms", Some(spec)).await;
     assert_eq!(status, StatusCode::CREATED, "{vm}");
     let id = vm["id"].as_str().unwrap().to_string();
-    let config = manager.get_vm(&id).await.unwrap().config;
+    let config = manager.get_vm(&id).await.unwrap().spec.config;
     let expected = HypervisorType::Qemu.default_firmware_path().map(|p| p.to_string_lossy().into_owned());
     if hypervisor == "qemu" {
         assert_eq!(config.firmware_path, expected, "QEMU image VMs default to OVMF");
@@ -1091,7 +1284,7 @@ async fn catalog_image_e2e(hypervisor: &str) {
         let (app, id) = (app.clone(), id.clone());
         let (username, password) = (username.to_string(), password.clone());
         async move {
-            let (status, body) = request(&app, "POST", &format!("/vms/{id}/start"), None).await;
+            let (status, body) = request(&app, "POST", &format!("/vms/{id}/start?wait=120"), None).await;
             assert_eq!(status, StatusCode::OK, "{body}");
             let console_path = glidex_control_plane::paths::vm_paths(&id).console_socket;
             tokio::task::spawn_blocking(move || {
@@ -1110,7 +1303,7 @@ async fn catalog_image_e2e(hypervisor: &str) {
             })
             .await
             .unwrap();
-            let (status, body) = request(&app, "POST", &format!("/vms/{id}/stop"), None).await;
+            let (status, body) = request(&app, "POST", &format!("/vms/{id}/stop?wait=60"), None).await;
             assert_eq!(status, StatusCode::OK, "{body}");
         }
     };

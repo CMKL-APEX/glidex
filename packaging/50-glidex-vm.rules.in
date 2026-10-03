@@ -1,0 +1,12 @@
+// Rendered by glidex-install (@USER@ is filled in).
+// glidex: the control plane may start, stop and kill its own VM units
+// (glidex-vm@<uuid>.service, spec/reconciliation.md §13.2), and nothing else.
+polkit.addRule(function (action, subject) {
+  if (action.id == "org.freedesktop.systemd1.manage-units" &&
+      subject.user == "@USER@" &&
+      /^glidex-vm@[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.service$/
+        .test(action.lookup("unit") || "") &&
+      ["start", "stop", "kill"].indexOf(action.lookup("verb")) >= 0) {
+    return polkit.Result.YES;
+  }
+});

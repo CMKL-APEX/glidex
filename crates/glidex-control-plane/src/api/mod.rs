@@ -131,6 +131,8 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         .add("POST", "/vms", "createVm", post(vms::create))
         .add("GET", "/vms/{id}", "readVm", get(vms::get_one))
         .add("DELETE", "/vms/{id}", "deleteVm", delete(vms::delete_one))
+        .add("PATCH", "/vms/{id}", "updateVm", axum::routing::patch(vms::patch_one))
+        .add("GET", "/vms/{id}/events", "readVm", get(vms::events))
         .add("POST", "/vms/{id}/start", "startVm", post(vms::start))
         .add("POST", "/vms/{id}/stop", "stopVm", post(vms::stop))
         .add("POST", "/vms/{id}/pause", "pauseVm", post(vms::pause))
@@ -184,6 +186,7 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         .add("DELETE", "/ovs/bridges/{name}/uplinks/{uplink}", "deleteUplink", delete(net::delete_uplink))
         .add("POST", "/ovs/bridges/{name}/uplinks/{uplink}/commit", "commitUplink", post(net::commit_uplink))
         .add("GET", "/pci-devices", "listPciDevices", get(net::list_pci_devices))
+        .add("GET", "/system/reconcile", "readSystemStatus", get(vms::system_reconcile))
         // ---- authentication
         .add("GET", "/health", PUBLIC, get(health_check))
         .add("GET", "/auth/methods", PUBLIC, get(access::methods))
@@ -499,6 +502,25 @@ impl Caller {
     /// The route's own action on `resource`.
     pub fn require(&self, resource: Ent, es: EntitySet) -> Result<(), ApiErr> {
         self.require_action(self.action, resource, es, &[])
+    }
+
+    /// A resource the caller can't `read_action` is reported as not found;
+    /// nothing else is checked (the handler checks per field, e.g. PATCH).
+    pub fn require_readable(&self, read_action: &str, resource: Ent, es: EntitySet, what: &str) -> Result<(), ApiErr> {
+        if !self.allowed(read_action, resource, es) {
+            self.audit.0.lock().unwrap().denied = true;
+            return Err(err(StatusCode::NOT_FOUND, "not_found", format!("{} not found", what)));
+        }
+        Ok(())
+    }
+
+    /// Who made a request, for events (`api:<user>` or `api:token:<id>`).
+    pub fn actor(&self) -> String {
+        match (&self.p.user, &self.p.token) {
+            (Some(u), _) => format!("api:{}", u.id),
+            (None, Some(t)) => format!("api:token:{}", t.id),
+            _ => "api".to_string(),
+        }
     }
 
     /// Like `require`, but a resource the caller can't even `read` is
