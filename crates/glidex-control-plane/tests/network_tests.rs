@@ -52,13 +52,20 @@ fn harness(ovs_running: bool) -> Harness {
     let run_dir = dir.path().join("run");
     std::fs::create_dir_all(&run_dir).unwrap();
     let exec = fake_exec(ovs_running);
+    let my_group = nix::unistd::Group::from_gid(nix::unistd::getgid()).unwrap().unwrap().name;
     let netd = Arc::new(
         NetdServer::new(
             exec.clone(),
             Arc::new(FakeSupervisor::default()),
+            // netd's policy for the test user's own group (the socket is
+            // bound to it below), so the result doesn't depend on whether
+            // the user running the tests is in glidex or glidex-admin.
             Config {
                 run_dir: run_dir.clone(),
                 state_path: dir.path().join("netd.db"),
+                group: my_group.clone(),
+                admin_group: "no-such-group-glidex-test".into(),
+                policy: glidex_netd::auth::default_policy(&my_group, "no-such-group-glidex-test"),
                 ..Config::default()
             },
         )
