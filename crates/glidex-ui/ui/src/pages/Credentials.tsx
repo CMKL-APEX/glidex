@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import * as api from "../api";
+import { useCan, useSession } from "../session";
 import type { CredentialInfo } from "../types";
 import Modal from "../components/Modal";
 import { LoadingCard } from "../components/Loading";
@@ -72,12 +73,43 @@ function AddCredentialForm({
   onDone: () => void;
   onCancel: () => void;
 }) {
+  const { project } = useSession();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [keys, setKeys] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  // The user's own ~/.ssh/*.pub, read by the server (local accounts only).
+  const [mine, setMine] = useState<api.MySshKeys | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .mySshKeys()
+      .then((m) => {
+        if (cancelled) return;
+        setMine(m);
+        // Prefill only what the user hasn't typed yet.
+        if (m.available && m.keys.length > 0) {
+          setKeys((k) => (k.trim() ? k : m.keys.join("\n")));
+        }
+        if (m.available && m.username) {
+          setUsername((u) => u || m.username!);
+        }
+      })
+      .catch(() => !cancelled && setMine({ available: false, keys: [], reason: "could not load your public keys" }));
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const useMyKeys = () => {
+    if (mine?.available && mine.keys.length > 0) {
+      const have = parseKeys(keys);
+      setKeys([...have, ...mine.keys.filter((k) => !have.includes(k))].join("\n"));
+    }
+  };
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -89,6 +121,7 @@ function AddCredentialForm({
     setError(null);
     try {
       await api.createCredential({
+        project: project ?? undefined,
         username,
         password: password || undefined,
         ssh_authorized_keys: parseKeys(keys),
@@ -139,6 +172,25 @@ function AddCredentialForm({
         <p className="mt-1 text-xs text-gray-500">
           One public key per line. A password, a key, or both is required.
         </p>
+        {mine === null ? (
+          <p className="mt-1 text-xs text-gray-400">Looking for your public keys…</p>
+        ) : mine.available && mine.keys.length > 0 ? (
+          <p className="mt-1 text-xs text-gray-500" data-testid="my-keys-note">
+            Filled in from your <span className="font-mono">~/.ssh/*.pub</span> ({mine.keys.length}{" "}
+            {mine.keys.length === 1 ? "key" : "keys"}).{" "}
+            <button type="button" className="text-sky-600 hover:underline" onClick={useMyKeys}>
+              Add my keys again
+            </button>
+          </p>
+        ) : mine.available ? (
+          <p className="mt-1 text-xs text-gray-500" data-testid="my-keys-note">
+            No public keys found in your <span className="font-mono">~/.ssh</span>; paste one above.
+          </p>
+        ) : (
+          <p className="mt-1 text-xs text-gray-500" data-testid="my-keys-note">
+            Your keys can't be filled in automatically: {mine.reason}.
+          </p>
+        )}
       </div>
       <FormButtons onCancel={onCancel} submitting={submitting} label="Add" />
     </form>
@@ -156,6 +208,7 @@ function EditCredentialForm({
 }) {
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
+  const { project } = useSession();
   const [keys, setKeys] = useState(credential.ssh_authorized_keys.join("\n"));
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -172,7 +225,7 @@ function EditCredentialForm({
       await api.updateCredential(credential.username, {
         password: password || undefined,
         ssh_authorized_keys: parseKeys(keys),
-      });
+      }, credential.project ?? project);
       onDone();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to update credential");
@@ -240,6 +293,8 @@ function FormButtons({
 }
 
 export default function Credentials() {
+  const { project } = useSession();
+  const [canAdd] = useCan(project ? [{ action: "createCredential", resource: { type: "Project", id: project } }] : []) ?? [];
   const [credentials, setCredentials] = useState<CredentialInfo[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
@@ -247,14 +302,14 @@ export default function Credentials() {
 
   const refresh = useCallback(async () => {
     try {
-      const data = await api.listCredentials();
+      const data = await api.listCredentials(project);
       data.sort((a, b) => a.username.localeCompare(b.username));
       setCredentials(data);
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load credentials");
     }
-  }, []);
+  }, [project]);
 
   useEffect(() => {
     refresh();
@@ -263,7 +318,7 @@ export default function Credentials() {
   const remove = async (username: string) => {
     if (!confirm(`Delete credential "${username}"?`)) return;
     try {
-      await api.deleteCredential(username);
+      await api.deleteCredential(username, project);
       refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to delete credential");
@@ -280,12 +335,14 @@ export default function Credentials() {
             Passwords are stored as SHA-512-crypt hashes only.
           </p>
         </div>
-        <button
-          className="px-4 py-2 text-sm font-medium text-white bg-sky-600 hover:bg-sky-700 rounded-lg transition-colors"
-          onClick={() => setAdding(true)}
-        >
-          Add Credential
-        </button>
+        {canAdd && (
+          <button
+            className="px-4 py-2 text-sm font-medium text-white bg-sky-600 hover:bg-sky-700 rounded-lg transition-colors"
+            onClick={() => setAdding(true)}
+          >
+            Add Credential
+          </button>
+        )}
       </div>
 
       {error && (

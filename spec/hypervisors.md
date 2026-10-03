@@ -133,7 +133,7 @@ A user-supplied `rootfs_path` is probed by magic bytes. The seed is
 `config.cloud_init_path`, or —
 if unset on a firmware boot — the image `VmManager::start_vm`
 regenerates at `Vm::default_cloud_init_path()`
-(`/tmp/cloud-hypervisor-<id>.cloudinit.img`) before `configure`. It is
+(`<run dir>/vms/<id>/cloudinit.img`) before `configure`. It is
 attached `readonly`. Contents (`cloud_init.rs`):
 
 - `meta-data`: `instance-id` = VM id (stable, so cloud-init
@@ -143,10 +143,10 @@ attached `readonly`. Contents (`cloud_init.rs`):
 - `user-data`: `resize_rootfs: true` (plus a `growpart` block when the
   root disk has `pending_growpart`), and a sudo user. If the VM names a stored credential
   ([credentials.md](credentials.md)), that username, password hash and
-  SSH keys are used and nothing else. Otherwise the user is `cloud` with
-  the control-plane user's `~/.ssh/*.pub` keys, and a password only from
-  `GLIDEX_CLOUD_INIT_PASSWD_HASH` (crypt hash, e.g. `openssl passwd -6`);
-  without it password login is locked. Credentials are never baked into
+  SSH keys are used and nothing else. Otherwise the user is `cloud` with no SSH keys and a locked password:
+  there is no way to log in. There are no host-wide defaults (the
+  control-plane user's keys or a site password would open VMs in every
+  project, spec/security.md §6.2). Credentials are never baked into
   the source. The seed image is created `0600`.
 
 Why the hash is written twice (`users[].passwd` and `chpasswd.users`):
@@ -228,7 +228,7 @@ Notes captured in code comments:
   follow whatever backing file a user-supplied qcow2 names and hand
   that host file to the guest. Disks on filesystems that support
   `O_DIRECT` get `cache.direct=on,aio=native`; others (e.g. a tmpfs
-  `/tmp` seed) use the page cache.
+  runtime-directory seed) use the page cache.
 - The root disk has `bootindex=1`, so OVMF boots it rather than the
   seed or a data disk.
 - QEMU's stderr goes to the VM's log file only (opened `O_APPEND`, as

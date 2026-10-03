@@ -602,7 +602,7 @@ back to `on-boot` mode, saying so in `warnings`. Shrinking a GPT disk needs
   "`gxctl image pull ubuntu-26.04`" instead of "bring your own image".
 - **Uninstaller.** `~/.glidex/images` and `~/.glidex/disks` are part of
   `~/.glidex`, which is removed only with `--purge-user-data`. The help
-  text says so. These hold user data, unlike the seed files in `/tmp`.
+  text says so. These hold user data, unlike the seed files in the VM's runtime directory.
 - **gxctl.** New `image catalog|list|pull|rm` and
   `disk list|show|create|resize|extend-root|rm` commands, and
   `delete <vm> --keep-disk`. `create` offers "image" as the boot disk

@@ -2,6 +2,8 @@ import { test as base, expect, type Page } from "@playwright/test";
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
+import { request as httpRequest } from "node:http";
+import { fileURLToPath } from "node:url";
 
 export type Hypervisor = "cloudhypervisor" | "qemu";
 
@@ -78,11 +80,53 @@ export function vmCard(page: Page, name: string) {
     .last();
 }
 
-/** JSON (or text) from the scratch control plane's REST API. */
-export async function api<T = any>(path: string, init?: RequestInit): Promise<T> {
-  const resp = await fetch(API + path, init);
-  const type = resp.headers.get("content-type") ?? "";
-  return (type.includes("json") ? resp.json() : resp.text()) as Promise<T>;
+/** The scratch control plane's local socket: requests on it are made as
+ * the user running the tests, who is its break-glass administrator
+ * (scripts/start-control-plane.sh sets `admin_group`). */
+export const API_SOCKET = `${E2E_HOME}/api.sock`;
+/** glidex-ui serving the built UI in front of the scratch control plane. */
+export const UI_SERVER_PORT = Number(process.env.E2E_UI_SERVER_PORT ?? 5175);
+/** Where the setup project leaves the browser session. */
+export const STORAGE_STATE = fileURLToPath(new URL("./.auth/state.json", import.meta.url));
+
+export interface RawResponse {
+  status: number;
+  headers: Record<string, string | string[] | undefined>;
+  body: string;
+}
+
+/** One HTTP request over a Unix socket or TCP, with any Host header. */
+export function rawRequest(
+  target: { socketPath: string } | { port: number; host?: string },
+  method: string,
+  path: string,
+  opts: { body?: unknown; headers?: Record<string, string> } = {},
+): Promise<RawResponse> {
+  const data = opts.body === undefined ? undefined : JSON.stringify(opts.body);
+  const headers: Record<string, string> = { ...(opts.headers ?? {}) };
+  if (data !== undefined) headers["content-type"] = "application/json";
+  return new Promise((resolve, reject) => {
+    const req = httpRequest(
+      { ...("socketPath" in target ? { socketPath: target.socketPath } : { host: target.host ?? "127.0.0.1", port: target.port }), method, path, headers },
+      (res) => {
+        let body = "";
+        res.setEncoding("utf8");
+        res.on("data", (c) => (body += c));
+        res.on("end", () => resolve({ status: res.statusCode ?? 0, headers: res.headers, body }));
+      },
+    );
+    req.on("error", reject);
+    if (data !== undefined) req.write(data);
+    req.end();
+  });
+}
+
+/** JSON (or text) from the scratch control plane's REST API, over its
+ * local socket as the break-glass administrator. */
+export async function api<T = any>(path: string, init?: { method?: string; body?: unknown }): Promise<T> {
+  const r = await rawRequest({ socketPath: API_SOCKET }, init?.method ?? "GET", path, { body: init?.body });
+  const type = String(r.headers["content-type"] ?? "");
+  return (type.includes("json") ? JSON.parse(r.body) : r.body) as T;
 }
 
 export const del = (path: string) => api(path, { method: "DELETE" });

@@ -1,7 +1,7 @@
 //! Blocking client for glidex-netd, used by the control plane (run it in
 //! `spawn_blocking`).
 
-use crate::proto::{ErrorBody, HelloResult, Op, Request, Response, PROTOCOL_VERSION};
+use crate::proto::{ErrorBody, HelloResult, OnBehalfOf, Op, Request, Response, PROTOCOL_VERSION};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Write};
@@ -60,9 +60,25 @@ impl Client {
     }
 
     pub fn call_value(&mut self, op: Op, timeout: Duration) -> Result<Value, ClientError> {
+        self.call_value_as(op, None, timeout)
+    }
+
+    /// Like [`Client::call_value`], with the user the caller acts for
+    /// (logged by netd, never used for authorization).
+    pub fn call_value_as(
+        &mut self,
+        op: Op,
+        on_behalf_of: Option<&OnBehalfOf>,
+        timeout: Duration,
+    ) -> Result<Value, ClientError> {
         let id = self.next_id;
         self.next_id += 1;
-        let mut line = serde_json::to_string(&Request { id, op })
+        let request = Request {
+            id,
+            op,
+            on_behalf_of: on_behalf_of.cloned(),
+        };
+        let mut line = serde_json::to_string(&request)
             .map_err(|e| ClientError::Protocol(e.to_string()))?;
         line.push('\n');
         let unavailable = |e: std::io::Error| ClientError::Unavailable(e.to_string());
@@ -93,7 +109,16 @@ impl Client {
     }
 
     pub fn call<T: DeserializeOwned>(&mut self, op: Op, timeout: Duration) -> Result<T, ClientError> {
-        let v = self.call_value(op, timeout)?;
+        self.call_as(op, None, timeout)
+    }
+
+    pub fn call_as<T: DeserializeOwned>(
+        &mut self,
+        op: Op,
+        on_behalf_of: Option<&OnBehalfOf>,
+        timeout: Duration,
+    ) -> Result<T, ClientError> {
+        let v = self.call_value_as(op, on_behalf_of, timeout)?;
         serde_json::from_value(v).map_err(|e| ClientError::Protocol(e.to_string()))
     }
 }

@@ -5,9 +5,11 @@ import type { VmResponse } from "../types";
 import { stateColor, stateLabel, HYPERVISOR_LABELS } from "../types";
 import VmActions, { type VmAction } from "../components/VmActions";
 import { Loading } from "../components/Loading";
+import { useSession } from "../session";
 
 export default function VmDetail() {
   const { id } = useParams<{ id: string }>();
+  const { projectName } = useSession();
   const navigate = useNavigate();
   const [vm, setVm] = useState<VmResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -156,19 +158,19 @@ export default function VmDetail() {
             </div>
             <div className="space-y-4">
               <div>
-                <h3 className="text-sm font-medium text-gray-500">
-                  Console Socket
-                </h3>
-                <p className="font-mono text-sm text-gray-700 break-all">
-                  {vm.console_socket_path}
+                <h3 className="text-sm font-medium text-gray-500">Project</h3>
+                <p className="text-lg font-semibold text-gray-900">
+                  <Link to={`/projects/${vm.project}`} className="text-sky-700 hover:underline">
+                    {projectName(vm.project)}
+                  </Link>
                 </p>
               </div>
-              <div>
-                <h3 className="text-sm font-medium text-gray-500">Log Path</h3>
-                <p className="font-mono text-sm text-gray-700 break-all">
-                  {vm.log_path}
-                </p>
-              </div>
+              {vm.root_disk && (
+                <div>
+                  <h3 className="text-sm font-medium text-gray-500">Root Disk</h3>
+                  <p className="font-mono text-sm text-gray-700 break-all">{vm.root_disk}</p>
+                </div>
+              )}
             </div>
           </div>
 

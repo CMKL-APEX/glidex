@@ -24,6 +24,7 @@ fresh reader cannot infer just by reading the source.
 | [cli.md](cli.md) | `gxctl` interactive CLI, command semantics, console attach loop |
 | [web-ui.md](web-ui.md) | Vite + React UI structure, routes, API client, dev-proxy |
 | [installer.md](installer.md) | `glidex-install` bootstrap flow and what it brings up |
+| [security.md](security.md) | Authentication (peer uid, PAM, OIDC, tokens), projects/teams, Cedar authorization policies, netd policy, hardening (draft) |
 
 ## Goals
 
@@ -47,11 +48,9 @@ fresh reader cannot infer just by reading the source.
 ## Non-goals
 
 - Clustering / multi-host orchestration.
-- User authentication and authorization on the REST API. The control
-  plane listens on loopback only by default (`127.0.0.1:8841` and
-  `[::1]:8841`; `GLIDEX_LISTEN` overrides) because anyone who can reach it
-  can manage VMs and, through glidex-netd, host networking. There are no
-  accounts, tokens, or ACLs.
+- Built-in identity provider. Users authenticate with local accounts
+  (PAM, peer credentials) or an external OIDC IdP; authorization is
+  Cedar policy. See [security.md](security.md).
 - Static guest addressing, and persistent (netplan/NetworkManager) host network
   changes; see [networking.md](networking.md).
 
@@ -62,11 +61,12 @@ glidex/
 ├── Cargo.toml                       # Workspace root
 ├── README.md                        # User-facing readme
 ├── spec/                            # (this directory)
-├── packaging/                       # systemd unit for glidex-netd
+├── packaging/                       # systemd units (netd, authd, control plane, UI)
 └── crates/
     ├── glidex-control-plane/        # REST server + hypervisor backends + gxctl
     ├── glidex-ovs/                  # host networking library (OVS, NAT, VM ports)
     ├── glidex-netd/                 # root networking helper daemon + protocol client
+    ├── glidex-authd/                # root PAM helper daemon (security.md §5.3) + client
     ├── glidex-install/              # `cargo run -p glidex-install` bootstrapper
     └── glidex-ui/                   # Vite+React UI; the Rust bin serves it and proxies /api
 ```

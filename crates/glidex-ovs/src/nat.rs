@@ -263,6 +263,23 @@ pub fn nft_script(nats: &[NatState]) -> String {
         ));
     }
     s.push_str("  }\n  chain forward {\n    type filter hook forward priority filter; policy accept;\n");
+    // NAT networks are isolated from each other (security spec §8.4):
+    // nothing is forwarded from one glidex NAT bridge to another. These
+    // come before the accepts, which would otherwise let it through.
+    for n in nats {
+        let others: Vec<&str> = nats
+            .iter()
+            .filter(|o| o.bridge != n.bridge)
+            .map(|o| o.bridge.as_str())
+            .collect();
+        if !others.is_empty() {
+            s.push_str(&format!(
+                "    iifname \"{}\" oifname {} drop\n",
+                n.bridge,
+                ifname_set(&others)
+            ));
+        }
+    }
     for n in nats {
         s.push_str(&format!(
             "    iifname \"{br}\" ip saddr {net} accept\n    oifname \"{br}\" ct state established,related accept\n",
@@ -270,8 +287,41 @@ pub fn nft_script(nats: &[NatState]) -> String {
             net = n.subnet
         ));
     }
+    // Guests reach the host itself only for DHCP, DNS (when the network
+    // serves it) and ping on their gateway, plus replies to connections
+    // the host opened. Everything else from a NAT bridge to a host
+    // address (any of them, not just the gateway) is dropped, so host
+    // services stay out of the guests' reach. Other interfaces are left
+    // alone (policy accept). The drop covers IPv6 too: glidex NAT
+    // networks are IPv4-only.
+    let all: Vec<&str> = nats.iter().map(|n| n.bridge.as_str()).collect();
+    let all = ifname_set(&all);
+    s.push_str("  }\n  chain input {\n    type filter hook input priority filter; policy accept;\n");
+    s.push_str(&format!("    iifname {all} ct state established,related accept\n"));
+    s.push_str(&format!("    iifname {all} udp dport 67 accept\n"));
+    for n in nats {
+        if n.dns {
+            for proto in ["udp", "tcp"] {
+                s.push_str(&format!(
+                    "    iifname \"{}\" ip daddr {} {} dport 53 accept\n",
+                    n.bridge, n.gateway, proto
+                ));
+            }
+        }
+        s.push_str(&format!(
+            "    iifname \"{}\" ip daddr {} icmp type echo-request accept\n",
+            n.bridge, n.gateway
+        ));
+    }
+    s.push_str(&format!("    iifname {all} drop\n"));
     s.push_str("  }\n}\n");
     s
+}
+
+/// An anonymous nftables set of interface names: `{ "a", "b" }`.
+fn ifname_set(names: &[&str]) -> String {
+    let quoted: Vec<String> = names.iter().map(|n| format!("\"{}\"", n)).collect();
+    format!("{{ {} }}", quoted.join(", "))
 }
 
 pub fn apply_nft(exec: &dyn Exec, nats: &[NatState]) -> Result<(), OvsError> {
@@ -491,7 +541,70 @@ mod tests {
         assert!(script.contains("ip saddr 10.88.0.0/24 ip daddr != 10.88.0.0/24 masquerade"));
         assert!(script.contains("iifname \"gxbr-nat\" ip saddr 10.88.0.0/24 accept"));
         assert!(!script.contains("oifname \"eth"), "no outgoing interface is pinned");
+        assert!(!script.contains("oifname { "), "a single network has nothing to isolate from");
         assert_eq!(nft_script(&[]), "table inet glidex\ndelete table inet glidex\n");
+    }
+
+    #[test]
+    fn nft_script_isolates_networks_and_the_host() {
+        let a = NatState::new("gxbr-nat", net("10.88.0.0/24"), true).unwrap();
+        let b = NatState::new("gxbr-p1", net("10.88.1.0/24"), false).unwrap();
+        let c = NatState::new("gxbr-p2", net("10.88.2.0/24"), true).unwrap();
+        let script = nft_script(&[a, b, c]);
+        let expected = r#"table inet glidex
+delete table inet glidex
+table inet glidex {
+  chain postrouting {
+    type nat hook postrouting priority srcnat; policy accept;
+    ip saddr 10.88.0.0/24 ip daddr != 10.88.0.0/24 masquerade
+    ip saddr 10.88.1.0/24 ip daddr != 10.88.1.0/24 masquerade
+    ip saddr 10.88.2.0/24 ip daddr != 10.88.2.0/24 masquerade
+  }
+  chain forward {
+    type filter hook forward priority filter; policy accept;
+    iifname "gxbr-nat" oifname { "gxbr-p1", "gxbr-p2" } drop
+    iifname "gxbr-p1" oifname { "gxbr-nat", "gxbr-p2" } drop
+    iifname "gxbr-p2" oifname { "gxbr-nat", "gxbr-p1" } drop
+    iifname "gxbr-nat" ip saddr 10.88.0.0/24 accept
+    oifname "gxbr-nat" ct state established,related accept
+    iifname "gxbr-p1" ip saddr 10.88.1.0/24 accept
+    oifname "gxbr-p1" ct state established,related accept
+    iifname "gxbr-p2" ip saddr 10.88.2.0/24 accept
+    oifname "gxbr-p2" ct state established,related accept
+  }
+  chain input {
+    type filter hook input priority filter; policy accept;
+    iifname { "gxbr-nat", "gxbr-p1", "gxbr-p2" } ct state established,related accept
+    iifname { "gxbr-nat", "gxbr-p1", "gxbr-p2" } udp dport 67 accept
+    iifname "gxbr-nat" ip daddr 10.88.0.1 udp dport 53 accept
+    iifname "gxbr-nat" ip daddr 10.88.0.1 tcp dport 53 accept
+    iifname "gxbr-nat" ip daddr 10.88.0.1 icmp type echo-request accept
+    iifname "gxbr-p1" ip daddr 10.88.1.1 icmp type echo-request accept
+    iifname "gxbr-p2" ip daddr 10.88.2.1 udp dport 53 accept
+    iifname "gxbr-p2" ip daddr 10.88.2.1 tcp dport 53 accept
+    iifname "gxbr-p2" ip daddr 10.88.2.1 icmp type echo-request accept
+    iifname { "gxbr-nat", "gxbr-p1", "gxbr-p2" } drop
+  }
+}
+"#;
+        assert_eq!(script, expected);
+    }
+
+    #[test]
+    fn nft_input_chain_for_one_network() {
+        let a = NatState::new("gxbr-nat", net("10.88.0.0/24"), true).unwrap();
+        let script = nft_script(&[a]);
+        let input = &script[script.find("  chain input").unwrap()..];
+        assert_eq!(
+            input,
+            "  chain input {\n    type filter hook input priority filter; policy accept;\n\
+             \x20   iifname { \"gxbr-nat\" } ct state established,related accept\n\
+             \x20   iifname { \"gxbr-nat\" } udp dport 67 accept\n\
+             \x20   iifname \"gxbr-nat\" ip daddr 10.88.0.1 udp dport 53 accept\n\
+             \x20   iifname \"gxbr-nat\" ip daddr 10.88.0.1 tcp dport 53 accept\n\
+             \x20   iifname \"gxbr-nat\" ip daddr 10.88.0.1 icmp type echo-request accept\n\
+             \x20   iifname { \"gxbr-nat\" } drop\n  }\n}\n"
+        );
     }
 
     #[test]

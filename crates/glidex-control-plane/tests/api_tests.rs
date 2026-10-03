@@ -697,9 +697,10 @@ async fn test_get_console_info_vm_not_running() {
     let body = body_to_json(response.into_body()).await;
     assert_eq!(body["vm_id"], vm_id);
     assert_eq!(body["available"], false);
-    // console_socket_path and log_path should be present
-    assert!(body["console_socket_path"].is_string());
-    assert!(body["log_path"].is_string());
+    // The console is reached through the API; the private socket and log
+    // paths are not exposed (spec/security.md §9).
+    assert_eq!(body["websocket"], format!("/vms/{}/console/ws", vm_id));
+    assert!(body.get("console_socket_path").is_none());
 }
 
 // ============================================================================

@@ -1,0 +1,34 @@
+[Unit]
+Description=glidex PAM helper (verifies local users' passwords for the control plane)
+Documentation=https://github.com/akkarit/glidex/blob/main/spec/security.md
+Requires=glidex-authd.socket
+After=glidex-authd.socket
+
+[Service]
+# Socket-activated: the listener arrives as fd 3 (LISTEN_FDS=1).
+# No RuntimeDirectory=: it would delete the socket's directory on stop.
+Type=simple
+ExecStart=/usr/local/bin/glidex-authd
+Restart=on-failure
+RestartSec=2
+
+# Hardening (security.md §9). PAM modules that need setuid helpers, the
+# network (LDAP/RADIUS without sssd) or writes outside /run/faillock are
+# not supported.
+NoNewPrivileges=yes
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=-/run/faillock
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+UMask=0077
+
+[Install]
+Also=glidex-authd.socket

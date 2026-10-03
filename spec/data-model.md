@@ -87,9 +87,9 @@ pub struct Vm {
 `Vm::new` derives the three paths deterministically:
 
 ```
-/tmp/<prefix>-<id>.sock
-/tmp/<prefix>-<id>.console.sock
-/tmp/<prefix>-<id>.log
+<run dir>/vms/<id>/api.sock
+<run dir>/vms/<id>/console.sock
+<run dir>/vms/<id>/console.log
 ```
 
 where `<prefix>` comes from `HypervisorType::socket_prefix()`:
@@ -127,8 +127,8 @@ sensible default `kernel_args` string (see `hypervisor/mod.rs`).
 
 `VmResponse` is the API projection — a strict subset of `Vm`:
 
-- `id, name, state, vcpu_count, mem_size_mib, console_socket_path,
-  log_path, hypervisor, vfio_devices`.
+- `id, name, project, state, vcpu_count, mem_size_mib, hypervisor,
+  vfio_devices` (the runtime paths stay private, spec/security.md §9).
 - Intentionally hides `socket_path` and the full `config` (e.g.
   `kernel_args` is not surfaced), because clients don't need it.
 

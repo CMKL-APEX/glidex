@@ -389,6 +389,7 @@ release FAQ's pairing.
 | Path | Owner / mode | Content |
 |---|---|---|
 | `/run/glidex/netd.sock` | `root:glidex 0660` | full socket |
+| `/run/glidex/netd-admin.sock` | `root:glidex-admin 0660` | full socket for the admin group; bound only if that group exists, removed otherwise |
 | `/run/glidex/netd-ro.sock` | `root:root 0666` | status-only socket (decision 7) |
 | `/run/glidex/vhost/` | `root:glidex 2770` | vhost-user sockets, created by CH |
 | `/run/glidex/dnsmasq/` | `root:root 0755` | per-NAT `*.conf`, `*.hosts`, `*.pid` (readable by dnsmasq after it drops to `nobody`) |
@@ -403,10 +404,34 @@ release FAQ's pairing.
   checks the uid is 0 or its groups (`getgrouplist`) include `glidex`;
   otherwise it closes the connection. The uid becomes the tap owner for
   VM ports created on that connection.
+- The **admin socket** (`netd-admin.sock`) is the same for the admin
+  group (`admin_group`, default `glidex-admin`), so break-glass
+  administrators reach netd without joining `glidex` (security.md §4).
+  It is bound only when the group exists.
+- **Per-op policy** (security.md §8.1), on both full sockets after the
+  accept check: `policy` in `netd.json` maps a group name to the ops its
+  members may send: op wire names (`release_vm`), `*`, or a prefix glob
+  with a trailing `*` (`list_*`; a `*` anywhere else matches nothing and
+  is warned about at startup). A request is allowed if the peer is root,
+  or any policy group it belongs to (primary or supplementary, resolved
+  once per connection) has a matching entry; otherwise it gets
+  `permission_denied`. `hello` and `probe` are always allowed (the
+  status socket serves them to anyone). Default:
+  `{"glidex": ["*"], "glidex-admin": ["*"]}` (with `group` and
+  `admin_group` substituted when renamed). Groups that don't exist
+  grant nothing.
+- **Ownership:** `detach_vm_port` and `release_vm` compare each stored
+  port's `owner_uid` with the peer uid and return `not_owned` on a
+  mismatch; root is exempt. `release_vm` checks every port before
+  detaching any. A port with no record has no owner to check (detach
+  stays idempotent). `sync_vms` is not owner-scoped: it reconciles the
+  host, and is how ports left by an earlier control-plane uid are
+  removed. NAT reservations carry no owner.
 - The **status socket** accepts any local user but only `hello` and
   `probe`; anything else returns `permission_denied`.
-- Every mutating request is logged to the journal: peer uid, op, and
-  arguments (the protocol carries no secrets).
+- Every mutating request is logged to the journal: peer uid, op,
+  arguments (the protocol carries no secrets), and the request's
+  `on_behalf_of` (or `-`). Denied requests are logged with uid and op.
 
 ### 7.3 Protocol
 
@@ -422,12 +447,22 @@ per connection. The first message must be `hello`.
 
 {"id": 3, "op": "install_ovs", "args": {"profile": "dpdk", "confirm": false}}
 {"id": 3, "error": {"code": "confirmation_required", "message": "…", "details": {"impact": "ovs-vswitchd will restart; bridges affected: br-int, gxbr-nat"}}}
+
+{"id": 4, "op": "release_vm", "args": {"vm_id": "…"}, "on_behalf_of": {"user": "alice", "project": "default", "request_id": "…"}}
+{"id": 4, "ok": null}
 ```
+
+Any request may carry a top-level `on_behalf_of`: `user` (required
+when present), `project` and `request_id` (optional). It is the
+caller's claim about who it acts for (security.md §8.3): netd logs it
+and never uses it for authorization. Absent fields are omitted, so old
+clients and old netds are unaffected. `glidex_netd::client::Client`
+sends it with `call_as` / `call_value_as`; `call` sends none.
 
 | Op | Socket | Args → result |
 |---|---|---|
-| `hello` | both | `{protocol}` → versions |
-| `probe` | both | – → `HostCapabilities` |
+| `hello` | all | `{protocol}` → versions |
+| `probe` | all | – → `HostCapabilities` |
 | `list_bridges` · `list_uplinks` · `list_nat` · `list_vm_ports` | full | – → records with live state |
 | `install_ovs` | full | `{profile, source_build, confirm}` → `InstallReport` |
 | `init_dpdk` | full | `{socket_mem, pmd_cpu_mask, confirm}` → – |
@@ -439,6 +474,9 @@ per connection. The first message must be `hello`.
 | `attach_vm_port` · `detach_vm_port` | full | `VmPortSpec` · `{vm_id, nic_index}` → binding (+ `ipv4` on NAT) |
 | `release_vm` | full | `{vm_id}` → – (VM deleted: detach ports, free NAT reservations) |
 | `sync_vms` | full | `{running: [vm_id]}` → `ReconcileReport` |
+
+"full" means both full sockets (`netd.sock`, `netd-admin.sock`), subject
+to the policy (§7.2).
 
 Error codes: `invalid_argument`, `not_found`, `not_owned`, `conflict`,
 `confirmation_required`, `unsupported`, `host_interface_in_use`,
@@ -465,8 +503,18 @@ ReDB tables with JSON values:
 
 ```json
 { "group": "glidex", "commit_window_secs": 60, "gateway_check_secs": 20,
-  "nat_supernet": "10.88.0.0/16", "log_level": "info" }
+  "nat_supernet": "10.88.0.0/16", "log_level": "info",
+  "admin_group": "glidex-admin",
+  "policy": { "glidex": ["*"], "glidex-admin": ["*"] } }
 ```
+
+All keys are optional; the values above are the defaults. `policy`
+replaces the default as a whole (§7.2), e.g. to stop the control plane
+from installing packages:
+`{"glidex": ["list_*", "ensure_*", "delete_*", "commit_uplink", "attach_vm_port", "detach_vm_port", "release_vm", "sync_vms"], "glidex-admin": ["*"]}`.
+A missing file means defaults; a file that can't be read or parsed stops
+netd at startup, so a typo never silently restores the default policy.
+The effective policy is logged at startup.
 
 ### 7.6 systemd units (`packaging/`)
 
@@ -489,6 +537,8 @@ RuntimeDirectoryPreserve=yes
 StateDirectory=glidex
 Restart=on-failure
 TimeoutStartSec=180
+ProtectHome=yes
+# No CapabilityBoundingSet: install_ovs runs apt/dnf maintainer scripts.
 
 [Install]
 WantedBy=multi-user.target
@@ -650,13 +700,29 @@ Limits, returned in `UplinkState.warnings`:
      }
      chain forward {
        type filter hook forward priority filter;
+       iifname "gxbr-nat" oifname { "gxbr-p1" } drop      # one per NAT bridge, when there are several
        iifname "gxbr-nat" ip saddr 10.88.0.0/24 accept
        oifname "gxbr-nat" ct state established,related accept
+     }
+     chain input {
+       type filter hook input priority filter;
+       iifname { "gxbr-nat", … } ct state established,related accept
+       iifname { "gxbr-nat", … } udp dport 67 accept                 # DHCP
+       iifname "gxbr-nat" ip daddr 10.88.0.1 udp dport 53 accept    # DNS, when dns = true
+       iifname "gxbr-nat" ip daddr 10.88.0.1 tcp dport 53 accept
+       iifname "gxbr-nat" ip daddr 10.88.0.1 icmp type echo-request accept
+       iifname { "gxbr-nat", … } drop
      }
    }
    ```
    No outgoing interface is named, so traffic follows the host's
-   existing route (decision 4).
+   existing route (decision 4). NAT networks are isolated from each
+   other and from the host (security.md §8.4): the per-bridge drops come
+   before the accepts, and from a NAT bridge the host answers only DHCP,
+   DNS on the gateway, ping to the gateway, and replies to connections it
+   opened. Every other packet to any host address is dropped (IPv6 too;
+   NAT networks are IPv4-only). Other interfaces are untouched (both
+   chains are `policy accept`).
    **iptables FORWARD drop:** an accept in `inet glidex` can't overrule a
    drop in another table at the same hook, so when iptables' `filter`
    table drops forwarded traffic netd also maintains chain
@@ -838,6 +904,10 @@ New step after Cloud-Hypervisor, every part prompted:
    `cloud-hypervisor` (decision 9), after printing what it grants.
 
 ## 14. Security
+
+> Superseded for authentication, authorization and NAT isolation by
+> [security.md](security.md) (§4, §8). The notes below describe netd's
+> own invariants.
 
 - Only netd is privileged. It runs only the `Program` allow-list with
   vector arguments, validates every field, enforces the ownership

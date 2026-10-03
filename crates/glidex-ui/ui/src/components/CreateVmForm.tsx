@@ -1,7 +1,8 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useRef, useEffect, useState, type FormEvent } from "react";
 import { listCredentials, listDisks, listImages, listNetworks } from "../api";
 import type { CreateVmRequest, CredentialInfo, DiskInfo, HypervisorType, ImageInfo, Network } from "../types";
-import { HYPERVISOR_LABELS, formatBytes } from "../types";
+import { HYPERVISOR_LABELS, formatBytes, networkUsableBy } from "../types";
+import { useSession } from "../session";
 
 type BootMode = "firmware" | "kernel";
 
@@ -24,6 +25,7 @@ interface CreateVmFormProps {
 }
 
 export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) {
+  const { project, me } = useSession();
   const [name, setName] = useState("");
   const [vcpuCount, setVcpuCount] = useState(1);
   const [memSizeMib, setMemSizeMib] = useState(512);
@@ -31,6 +33,8 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
   const [bootMode, setBootMode] = useState<BootMode>("firmware");
   const [firmwarePath, setFirmwarePath] = useState(DEFAULT_FIRMWARE.cloudhypervisor);
   const [credential, setCredential] = useState("");
+  // Set once the user picks a credential, so a late load never overrides it.
+  const credentialChosen = useRef(false);
   const [credentials, setCredentials] = useState<CredentialInfo[]>([]);
   const [networks, setNetworks] = useState<Network[]>([]);
   const [selectedNetworks, setSelectedNetworks] = useState<string[]>([]);
@@ -55,11 +59,21 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
   };
 
   useEffect(() => {
-    listCredentials()
-      .then(setCredentials)
+    listCredentials(project)
+      .then((creds) => {
+        setCredentials(creds);
+        // Default to the signed-in user's own credential, if the project
+        // has one by that name.
+        const mine = me.user?.display_name;
+        if (!credentialChosen.current && mine && creds.some((c) => c.username === mine)) {
+          setCredential(mine);
+        }
+      })
       .catch(() => setCredentials([]));
     listNetworks()
-      .then((nets) => {
+      .then((all) => {
+        // Only networks this project may attach to.
+        const nets = all.filter((n) => networkUsableBy(n, project));
         setNetworks(nets);
         if (nets.some((n) => n.name === "default")) setSelectedNetworks(["default"]);
       })
@@ -74,14 +88,14 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
         }
       })
       .catch(() => setImages([]));
-    listDisks()
+    listDisks(project)
       .then((ds) => {
         const free = ds.filter((d) => !d.attached_to);
         setFreeDisks(free);
         if (free.length > 0) setRootDisk(free[0].id);
       })
       .catch(() => setFreeDisks([]));
-  }, []);
+  }, [project, me.user?.display_name]);
 
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
@@ -298,15 +312,20 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
 
           <div>
             <label className="block text-sm font-medium text-gray-700">
-              Login Credential (optional)
+              Login Credential
             </label>
             <select
               className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-transparent bg-white"
               value={credential}
-              onChange={(e) => setCredential(e.target.value)}
+              onChange={(e) => {
+                credentialChosen.current = true;
+                setCredential(e.target.value);
+              }}
             >
               <option value="">
-                Default (host SSH keys / GLIDEX_CLOUD_INIT_PASSWD_HASH)
+                {credentials.length === 0
+                  ? "No login available"
+                  : "None (no login)"}
               </option>
               {credentials.map((c) => (
                 <option key={c.username} value={c.username}>
@@ -314,9 +333,12 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
                 </option>
               ))}
             </select>
-            <p className="mt-1 text-xs text-gray-500">
-              Provisioned by cloud-init on first boot. Manage on the
-              Credentials page.
+            <p className="mt-1 text-xs text-gray-500" data-testid="credential-hint">
+              {credentials.length === 0
+                ? "This project has no credentials, so the VM will have no way to log in. Add one on the Credentials page first."
+                : credential
+                  ? "Provisioned by cloud-init on first boot."
+                  : "Without a credential the VM has no way to log in. Manage credentials on the Credentials page."}
             </p>
           </div>
         </>

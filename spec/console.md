@@ -1,10 +1,14 @@
 # Console subsystem
 
+> Access: the console socket and log live in the VM's private runtime
+> directory (`0700`); clients reach them only through the API
+> (`/vms/{id}/console/ws`, `/vms/{id}/console/log`, both `vm.console`).
+
 Each running VM's serial console is:
 
 1. **Captured** to an append-only log file on disk.
 2. **Broadcast** to any number of concurrently-connected clients
-   over a per-VM Unix socket (`/tmp/<prefix>-<id>.console.sock`).
+   over a per-VM Unix socket (`<run dir>/vms/<id>/console.sock`).
 3. **Bridged** to browsers via a WebSocket endpoint on the control
    plane.
 
@@ -92,7 +96,7 @@ code that reads it as text (launch errors, tests) decodes it lossily
 
 ## Log files
 
-- Path: `/tmp/<prefix>-<id>.log`
+- Path: `<run dir>/vms/<id>/console.log`
 - Lifecycle: truncated on hypervisor spawn, appended during the
   VM's lifetime, left on disk after `kill` so the user can still
   `cat` it.
@@ -103,7 +107,7 @@ code that reads it as text (launch errors, tests) decodes it lossily
 
 ## Console Unix socket
 
-- Path: `/tmp/<prefix>-<id>.console.sock`
+- Path: `<run dir>/vms/<id>/console.sock`
 - Type: `SOCK_STREAM` Unix domain socket.
 - Multi-client: the proxy thread `accept`s any number of clients
   and broadcasts every byte of output to all of them. Input from

@@ -4,6 +4,7 @@ members = [
     "crates/glidex-ovs",
     "crates/glidex-install",
     "crates/glidex-netd",
+    "crates/glidex-authd",
     "crates/glidex-ui",
 ]
 resolver = "2"

@@ -1,23 +1,13 @@
-mod api;
-mod network;
-mod cloud_init;
-mod credentials;
-mod hypervisor;
-mod images;
-mod models;
-mod pci;
-mod persistence;
-mod state;
+use glidex_control_plane::{api, auth, config, hypervisor, images, network, serve, state};
 
 use std::io::{self, Write};
-use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::signal;
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use crate::state::VmManager;
+use glidex_control_plane::state::VmManager;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -184,39 +174,85 @@ async fn main() {
         });
     }
 
+    // Configuration and identity (spec/security.md §5, §13). A bad config
+    // file stops startup rather than falling back to defaults.
+    print_status("Loading configuration");
+    let cfg = match config::Config::load().and_then(|c| c.check().map(|_| c)) {
+        Ok(c) => c,
+        Err(e) => {
+            println!("FAILED");
+            eprintln!("\n{}", e);
+            std::process::exit(1);
+        }
+    };
+    println!("OK");
+    print_status("Loading authorization policies");
+    let auth = match auth::AuthService::new(vm_manager.database(), cfg.clone()) {
+        Ok(a) => a,
+        Err(e) => {
+            println!("FAILED");
+            eprintln!("\n{}", e);
+            std::process::exit(1);
+        }
+    };
+    if let Err(e) = vm_manager.projects().adopt_default_quotas(&cfg.quotas.default) {
+        println!("WARNING (default project quotas: {})", e);
+    }
+    match auth.bootstrap(&vm_manager.default_project_id()) {
+        Ok(made) if !made.is_empty() => println!("OK (administrators: {})", made.join(", ")),
+        Ok(_) => println!("OK"),
+        Err(e) => println!("WARNING (bootstrap: {})", e),
+    }
+
     // Clone vm_manager for the shutdown handler before passing to router
     let vm_manager_shutdown = Arc::clone(&vm_manager);
 
-    // Create router
-    let app = api::create_router(vm_manager).layer(TraceLayer::new_for_http());
+    let app = api::router(Arc::new(api::App { manager: vm_manager, auth }))
+        .layer(TraceLayer::new_for_http());
 
-    // The API is unauthenticated and can reconfigure host networking
-    // through glidex-netd, so listen on loopback only unless told otherwise
-    // (spec §14). Both address families, since "localhost" may be ::1.
-    let addrs: Vec<SocketAddr> = match std::env::var("GLIDEX_LISTEN") {
-        Ok(list) => list
-            .split(',')
-            .filter_map(|a| a.trim().parse().ok())
-            .collect(),
-        Err(_) => vec![
-            SocketAddr::from(([127, 0, 0, 1], 8841)),
-            SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, 8841)),
-        ],
+    let tls = match &cfg.tls {
+        Some(t) => match serve::tls_acceptor(&t.cert, t.key.as_deref()) {
+            Ok(a) => Some(a),
+            Err(e) => {
+                eprintln!("TLS: {}", e);
+                std::process::exit(1);
+            }
+        },
+        None => None,
     };
-    let mut listeners = Vec::new();
-    for addr in &addrs {
+    let mut tcp = Vec::new();
+    for addr in &cfg.listen {
         match tokio::net::TcpListener::bind(addr).await {
-            Ok(l) => listeners.push(l),
+            Ok(l) => tcp.push(l),
             Err(e) => eprintln!("  Warning: cannot listen on {}: {}", addr, e),
         }
     }
-    if listeners.is_empty() {
-        eprintln!("No usable listen address (set GLIDEX_LISTEN, e.g. 127.0.0.1:8841)");
+    let api_sock = cfg.api_socket_path();
+    let ui_sock = cfg.ui_socket_path();
+    let unix: Vec<(tokio::net::UnixListener, api::Listener, std::path::PathBuf)> = [
+        (api_sock, api::Listener::Api),
+        (ui_sock, api::Listener::Ui),
+    ]
+    .into_iter()
+    .filter_map(|(path, kind)| match serve::bind_unix(&path) {
+        Ok(l) => Some((l, kind, path)),
+        Err(e) => {
+            eprintln!("  Warning: cannot listen on {}: {}", path.display(), e);
+            None
+        }
+    })
+    .collect();
+    if tcp.is_empty() && unix.is_empty() {
+        eprintln!("No usable listen address");
         std::process::exit(1);
     }
     println!();
-    for l in &listeners {
-        println!("  Listening on http://{}", l.local_addr().unwrap());
+    let scheme = if tls.is_some() { "https" } else { "http" };
+    for l in &tcp {
+        println!("  Listening on {}://{}", scheme, l.local_addr().unwrap());
+    }
+    for (_, kind, path) in &unix {
+        println!("  Listening on {} ({:?})", path.display(), kind);
     }
     println!("  Press Ctrl+C to shutdown");
     println!();
@@ -237,25 +273,15 @@ async fn main() {
 
     // One shutdown signal (which stops VMs) fans out to every listener.
     let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
-    tokio::spawn(async move {
-        shutdown_signal(vm_manager_shutdown).await;
-        let _ = stop_tx.send(true);
-    });
-    let servers = listeners.into_iter().map(|listener| {
-        let app = app.clone();
-        let mut rx = stop_rx.clone();
-        tokio::spawn(async move {
-            axum::serve(listener, app)
-                .with_graceful_shutdown(async move {
-                    let _ = rx.wait_for(|stop| *stop).await;
-                })
-                .await
-        })
-    });
-    for server in servers.collect::<Vec<_>>() {
-        if let Ok(Err(e)) = server.await {
-            eprintln!("server error: {}", e);
-        }
+    let servers: Vec<_> = tcp
+        .into_iter()
+        .map(|l| tokio::spawn(serve::serve_tcp(l, app.clone(), tls.clone(), stop_rx.clone())))
+        .chain(unix.into_iter().map(|(l, kind, _)| tokio::spawn(serve::serve_unix(l, app.clone(), kind, stop_rx.clone()))))
+        .collect();
+    shutdown_signal(vm_manager_shutdown).await;
+    let _ = stop_tx.send(true);
+    for s in servers {
+        let _ = s.await;
     }
 }
 

@@ -180,6 +180,10 @@ pub enum DiskOrigin {
 pub struct Disk {
     pub id: String,
     pub name: String,
+    /// Owning project id (spec/security.md §6); empty in old records
+    /// until `VmManager::initialize` assigns the default project.
+    #[serde(default)]
+    pub project: String,
     pub format: DiskFormat,
     /// Virtual size, a multiple of 1 MiB.
     pub size_bytes: u64,
@@ -220,6 +224,10 @@ pub struct PullImageRequest {
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct CreateDiskRequest {
     pub name: String,
+    /// Project id or name; default: the caller's default project. The
+    /// control plane resolves it to an id before the disk is created.
+    #[serde(default)]
+    pub project: Option<String>,
     #[serde(default)]
     pub size_gib: Option<u64>,
     #[serde(default)]
@@ -294,6 +302,7 @@ pub struct ImageResponse {
 pub struct DiskResponse {
     pub id: String,
     pub name: String,
+    pub project: String,
     pub format: DiskFormat,
     pub size_bytes: u64,
     pub origin: DiskOrigin,
@@ -718,6 +727,7 @@ impl ImageManager {
         DiskResponse {
             id: d.id.clone(),
             name: d.name.clone(),
+            project: d.project.clone(),
             format: d.format,
             size_bytes: d.size_bytes,
             origin: d.origin.clone(),
@@ -860,6 +870,7 @@ mod tests {
         let d = Disk {
             id: "i".into(),
             name: "n".into(),
+            project: String::new(),
             format: DiskFormat::Qcow2,
             size_bytes: GIB,
             origin: DiskOrigin::Image { image_id: "img".into(), mode: CloneMode::Linked },

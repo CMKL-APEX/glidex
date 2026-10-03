@@ -138,6 +138,7 @@ impl ImageManager {
         let mut disk = Disk {
             id: id.clone(),
             name: req.name.clone(),
+            project: req.project.clone().unwrap_or_default(),
             format,
             size_bytes: size,
             origin,

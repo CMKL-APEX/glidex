@@ -1,7 +1,7 @@
 //! glidex-netd tests without root or OVS: handlers against a recording
 //! executor, and the real socket layer in a temp directory.
 
-use glidex_netd::auth::Peer;
+use glidex_netd::auth::{Peer, Policy};
 use glidex_netd::client::{Client, ClientError};
 use glidex_netd::proto::*;
 use glidex_netd::server::{self, Access, Config, Netd};
@@ -35,13 +35,25 @@ fn exec() -> Arc<RecordingExec> {
 }
 
 fn netd(exec: Arc<RecordingExec>, dir: &TempDir) -> (Netd, Arc<FakeSupervisor>) {
+    netd_with_policy(exec, dir, test_policy(&["*"]))
+}
+
+fn netd_with_policy(exec: Arc<RecordingExec>, dir: &TempDir, policy: Policy) -> (Netd, Arc<FakeSupervisor>) {
     let sup = Arc::new(FakeSupervisor::default());
     let config = Config {
         run_dir: dir.path().join("run"),
         state_path: dir.path().join("netd.db"),
+        policy,
         ..Config::default()
     };
     (Netd::new(exec, sup.clone(), config).unwrap(), sup)
+}
+
+/// A policy granting `patterns` to the test user's primary group (the
+/// socket tests connect as that user, not as a `glidex` member).
+fn test_policy(patterns: &[&str]) -> Policy {
+    let group = nix::unistd::Group::from_gid(nix::unistd::getgid()).unwrap().unwrap().name;
+    [(group, patterns.iter().map(|p| p.to_string()).collect())].into_iter().collect()
 }
 
 fn peer() -> Peer {
@@ -179,6 +191,74 @@ fn deletes_are_refused_while_in_use() {
     netd.handle(Op::DeleteBridge { name: "gxbr-nat".into() }, &peer()).unwrap();
 }
 
+fn other_peer() -> Peer {
+    Peer { uid: 2000, gid: 2000, pid: 2 }
+}
+
+fn root_peer() -> Peer {
+    Peer { uid: 0, gid: 0, pid: 3 }
+}
+
+fn port_count(netd: &Netd) -> usize {
+    serde_json::from_value::<Vec<VmPortRecord>>(netd.handle(Op::ListVmPorts, &peer()).unwrap()).unwrap().len()
+}
+
+#[test]
+fn only_the_owner_detaches_and_releases() {
+    let dir = TempDir::new().unwrap();
+    let exec = exec();
+    let (netd, _) = netd(exec.clone(), &dir);
+    setup_nat(&netd);
+    netd.handle(Op::AttachVmPort(port_spec()), &peer()).unwrap();
+    exec.clear_calls();
+
+    let err = netd.handle(Op::DetachVmPort { vm_id: VM.into(), nic_index: 0 }, &other_peer()).unwrap_err();
+    assert_eq!(err.code(), "not_owned");
+    assert!(err.to_string().contains("uid 1000"), "{err}");
+    let err = netd.handle(Op::ReleaseVm { vm_id: VM.into() }, &other_peer()).unwrap_err();
+    assert_eq!(err.code(), "not_owned");
+    assert!(!exec.calls().iter().any(|c| c.contains("del-port")), "nothing detached: {:#?}", exec.calls());
+    assert_eq!(port_count(&netd), 1);
+    let nats: Vec<NatInfo> = serde_json::from_value(netd.handle(Op::ListNat, &peer()).unwrap()).unwrap();
+    assert_eq!(nats[0].state.reservations.len(), 1, "reservation kept");
+
+    // The owner may.
+    netd.handle(Op::DetachVmPort { vm_id: VM.into(), nic_index: 0 }, &peer()).unwrap();
+    assert_eq!(port_count(&netd), 0);
+    // Without a record there is no owner to check (detach is idempotent).
+    netd.handle(Op::DetachVmPort { vm_id: VM.into(), nic_index: 0 }, &other_peer()).unwrap();
+}
+
+#[test]
+fn root_may_detach_and_release_any_port() {
+    let dir = TempDir::new().unwrap();
+    let (netd, _) = netd(exec(), &dir);
+    setup_nat(&netd);
+    netd.handle(Op::AttachVmPort(port_spec()), &peer()).unwrap();
+    netd.handle(Op::DetachVmPort { vm_id: VM.into(), nic_index: 0 }, &root_peer()).unwrap();
+    netd.handle(Op::AttachVmPort(port_spec()), &peer()).unwrap();
+    netd.handle(Op::ReleaseVm { vm_id: VM.into() }, &root_peer()).unwrap();
+    assert_eq!(port_count(&netd), 0);
+}
+
+#[test]
+fn release_is_all_or_nothing() {
+    let dir = TempDir::new().unwrap();
+    let exec = exec();
+    let (netd, _) = netd(exec.clone(), &dir);
+    setup_nat(&netd);
+    // nic 0 attached by the peer, nic 1 by someone else.
+    netd.handle(Op::AttachVmPort(port_spec()), &peer()).unwrap();
+    let nic1 = VmPortSpec { nic_index: 1, mac: names::mac_address(VM, 1).unwrap(), ..port_spec() };
+    netd.handle(Op::AttachVmPort(nic1), &other_peer()).unwrap();
+    exec.clear_calls();
+
+    let err = netd.handle(Op::ReleaseVm { vm_id: VM.into() }, &peer()).unwrap_err();
+    assert_eq!(err.code(), "not_owned");
+    assert!(!exec.calls().iter().any(|c| c.contains("del-port")), "no partial release: {:#?}", exec.calls());
+    assert_eq!(port_count(&netd), 2);
+}
+
 #[test]
 fn attach_requires_a_glidex_bridge() {
     let dir = TempDir::new().unwrap();
@@ -236,9 +316,13 @@ fn primary_gid() -> u32 {
 }
 
 fn start(dir: &TempDir, access: Access, group_gid: Option<u32>) -> std::path::PathBuf {
-    let (netd, _) = netd(exec(), dir);
+    start_with_policy(dir, access, group_gid, test_policy(&["*"]))
+}
+
+fn start_with_policy(dir: &TempDir, access: Access, group_gid: Option<u32>, policy: Policy) -> std::path::PathBuf {
+    let (netd, _) = netd_with_policy(exec(), dir, policy);
     let path = dir.path().join(format!("{:?}.sock", access));
-    let listener = server::bind(&path, if access == Access::Full { 0o660 } else { 0o666 }, group_gid).unwrap();
+    let listener = server::bind(&path, if access == Access::Status { 0o666 } else { 0o660 }, group_gid).unwrap();
     let netd = Arc::new(netd);
     std::thread::spawn(move || server::serve(netd, listener, access, group_gid));
     path
@@ -314,6 +398,105 @@ fn hello_must_come_first_and_garbage_is_rejected() {
     stream.write_all(b"{\"id\":2,\"op\":\"exec\",\"args\":{\"cmd\":\"sh\"}}\n").unwrap();
     reader.read_line(&mut line).unwrap();
     assert!(line.contains("protocol_error"), "unknown ops don't parse: {line}");
+}
+
+fn expect_denied(client: &mut Client, op: Op) {
+    let name = op.name();
+    match client.call_value(op, Duration::from_secs(5)) {
+        Err(ClientError::Remote(body)) => assert_eq!(body.code, "permission_denied", "{name}: {body:?}"),
+        other => panic!("{name}: expected permission_denied, got {other:?}"),
+    }
+}
+
+#[test]
+fn policy_limits_ops_per_group() {
+    if nix::unistd::getuid().is_root() {
+        return; // root is exempt from the policy
+    }
+    let dir = TempDir::new().unwrap();
+    let path = start_with_policy(&dir, Access::Full, Some(primary_gid()), test_policy(&["list_*", "delete_nat"]));
+    let mut client = Client::connect(&path).expect("hello is always allowed");
+    let _: Vec<BridgeRecord> = client.call(Op::ListBridges, Duration::from_secs(5)).unwrap();
+    let _: Vec<NatInfo> = client.call(Op::ListNat, Duration::from_secs(5)).unwrap();
+    client.call_value(Op::DeleteNat { bridge: "gxbr-x".into() }, Duration::from_secs(5)).unwrap();
+    let _: HostCapabilities = client.call(Op::Probe, Duration::from_secs(5)).unwrap();
+    expect_denied(&mut client, Op::DeleteBridge { name: "gxbr-x".into() });
+    expect_denied(&mut client, Op::SyncVms { running: vec![] });
+    expect_denied(&mut client, Op::ReleaseVm { vm_id: VM.into() });
+    // The connection keeps working after a denial.
+    let _: Vec<BridgeRecord> = client.call(Op::ListBridges, Duration::from_secs(5)).unwrap();
+}
+
+#[test]
+fn policy_without_the_peers_groups_denies_everything_but_hello_and_probe() {
+    if nix::unistd::getuid().is_root() {
+        return;
+    }
+    let dir = TempDir::new().unwrap();
+    // The default policy names glidex and glidex-admin; give the test a
+    // policy whose only group surely isn't the user's.
+    let policy: Policy = [("no-such-group-glidex-test".to_string(), vec!["*".to_string()])].into_iter().collect();
+    let path = start_with_policy(&dir, Access::Full, Some(primary_gid()), policy);
+    let mut client = Client::connect(&path).unwrap();
+    let _: HostCapabilities = client.call(Op::Probe, Duration::from_secs(5)).unwrap();
+    expect_denied(&mut client, Op::ListBridges);
+    expect_denied(&mut client, Op::DetachVmPort { vm_id: VM.into(), nic_index: 0 });
+}
+
+#[test]
+fn admin_socket_serves_admin_group_members_under_the_policy() {
+    let dir = TempDir::new().unwrap();
+    let path = start_with_policy(&dir, Access::Admin, Some(primary_gid()), test_policy(&["list_*"]));
+    let mut client = Client::connect(&path).unwrap();
+    let _: Vec<BridgeRecord> = client.call(Op::ListBridges, Duration::from_secs(5)).unwrap();
+    if !nix::unistd::getuid().is_root() {
+        expect_denied(&mut client, Op::SyncVms { running: vec![] });
+    }
+    let mode = std::fs::metadata(&path).map(|m| std::os::unix::fs::PermissionsExt::mode(&m.permissions()) & 0o777).unwrap();
+    assert_eq!(mode, 0o660);
+    assert_eq!(Access::Admin.socket_name(), "netd-admin.sock");
+}
+
+#[test]
+fn admin_socket_rejects_peers_outside_the_admin_group() {
+    if nix::unistd::getuid().is_root() {
+        return;
+    }
+    let dir = TempDir::new().unwrap();
+    let path = start(&dir, Access::Admin, Some(0));
+    assert!(matches!(Client::connect(&path), Err(ClientError::Unavailable(_))));
+    // No admin group on the host: nobody but root.
+    let dir = TempDir::new().unwrap();
+    let path = start(&dir, Access::Admin, None);
+    assert!(matches!(Client::connect(&path), Err(ClientError::Unavailable(_))));
+}
+
+#[test]
+fn on_behalf_of_is_accepted_and_optional() {
+    use std::io::{BufRead, BufReader, Write};
+    let dir = TempDir::new().unwrap();
+    let path = start(&dir, Access::Full, Some(primary_gid()));
+    let mut client = Client::connect(&path).unwrap();
+    let obo = OnBehalfOf { user: "alice".into(), project: Some("default".into()), request_id: Some("req-1".into()) };
+    let _: ReconcileReport = client.call_as(Op::SyncVms { running: vec![] }, Some(&obo), Duration::from_secs(5)).unwrap();
+    let _: Vec<BridgeRecord> = client.call_as(Op::ListBridges, None, Duration::from_secs(5)).unwrap();
+
+    // A raw client that has never heard of on_behalf_of, and one that sends
+    // only the user.
+    let mut stream = std::os::unix::net::UnixStream::connect(&path).unwrap();
+    let mut reader = BufReader::new(stream.try_clone().unwrap());
+    let mut line = String::new();
+    for req in [
+        r#"{"id":1,"op":"hello","args":{"protocol":1}}"#,
+        r#"{"id":2,"op":"sync_vms","args":{"running":[]}}"#,
+        r#"{"id":3,"op":"sync_vms","args":{"running":[]},"on_behalf_of":{"user":"bob"}}"#,
+    ] {
+        line.clear();
+        stream.write_all(format!("{req}\n").as_bytes()).unwrap();
+        reader.read_line(&mut line).unwrap();
+        let resp: Response = serde_json::from_str(&line).unwrap();
+        assert!(resp.error.is_none(), "{req}: {line}");
+    }
 }
 
 // ---- uplinks (M6) ----------------------------------------------------------

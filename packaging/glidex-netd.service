@@ -25,6 +25,16 @@ StateDirectory=glidex
 Restart=on-failure
 RestartSec=2
 TimeoutStartSec=180
+# netd never needs /home, /root or /run/user (state is in /var/lib/glidex,
+# source builds in /var/lib/glidex/build and /opt/glidex).
+ProtectHome=yes
+# No CapabilityBoundingSet on purpose: besides network administration
+# (CAP_NET_ADMIN, CAP_NET_RAW), sysfs driver binds and vfio (CAP_SYS_ADMIN)
+# and socket/directory ownership (CAP_CHOWN, CAP_FOWNER, CAP_DAC_OVERRIDE),
+# the install_ovs op runs apt/dnf and their maintainer scripts, which may
+# need any capability (creating users, setting file capabilities, restarting
+# services). A bounding set would make package installs fail in ways that
+# depend on the package. The netd.json policy decides who may ask for it.
 
 [Install]
 WantedBy=multi-user.target

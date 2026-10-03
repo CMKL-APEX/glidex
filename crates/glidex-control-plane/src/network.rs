@@ -2,7 +2,7 @@
 //! client side of glidex-netd, which owns all host network state.
 
 use glidex_netd::client::{Client, ClientError};
-use glidex_netd::proto::{ErrorBody, Op, FULL_SOCKET_NAME, STATUS_SOCKET_NAME};
+use glidex_netd::proto::{ErrorBody, OnBehalfOf, Op, FULL_SOCKET_NAME, STATUS_SOCKET_NAME};
 use glidex_ovs::names::{validate_name, MAX_IFNAME};
 use glidex_ovs::net::Ipv4Net;
 use glidex_ovs::vm_port::VmPortKind;
@@ -44,6 +44,42 @@ pub struct Network {
     #[serde(default)]
     pub owns_bridge: bool,
     pub created_at: u64,
+    /// Project networks (spec/security.md §6.2) belong to a project and
+    /// are usable by it and the projects in `shares`. Host networks have
+    /// no project and are usable by `grants` (or every project).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+    #[serde(default)]
+    pub all_projects: bool,
+    #[serde(default)]
+    pub grants: Vec<String>,
+    /// Projects that accepted a share of this project network.
+    #[serde(default)]
+    pub shares: Vec<String>,
+    /// Pending share offers (spec §6.2.1).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub share_offers: Vec<ShareOffer>,
+}
+
+/// How long a share offer stays open.
+pub const SHARE_OFFER_SECS: u64 = 7 * 24 * 3600;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShareOffer {
+    pub project: String,
+    pub offered_by: String,
+    pub offered_at: u64,
+    pub expires_at: u64,
+}
+
+impl Network {
+    /// Whether VMs of `project` may attach (mirrors `base.network-grant`).
+    pub fn usable_by(&self, project: &str) -> bool {
+        match &self.project {
+            Some(p) => p == project || self.shares.iter().any(|s| s == project),
+            None => self.all_projects || self.grants.iter().any(|g| g == project),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -201,6 +237,11 @@ impl CreateNetworkRequest {
             mtu: self.mtu,
             owns_bridge: self.mode != NetworkMode::Bridged,
             created_at: now(),
+            project: None,
+            all_projects: false,
+            grants: Vec::new(),
+            shares: Vec::new(),
+            share_offers: Vec::new(),
         })
     }
 }
@@ -253,6 +294,14 @@ impl Netd {
         let timeout = Self::timeout(&op);
         let mut client = Client::connect(&self.run_dir.join(FULL_SOCKET_NAME))?;
         Ok(client.call(op, timeout)?)
+    }
+
+    /// As `call`, telling netd whom the request is for (logged by netd
+    /// next to our uid; never used for authorization, spec §8.3).
+    pub fn call_as<T: DeserializeOwned>(&self, op: Op, on_behalf_of: &OnBehalfOf) -> Result<T, NetError> {
+        let timeout = Self::timeout(&op);
+        let mut client = Client::connect(&self.run_dir.join(FULL_SOCKET_NAME))?;
+        Ok(client.call_as(op, Some(on_behalf_of), timeout)?)
     }
 
     /// Host status: full socket if we're allowed, else the status socket.

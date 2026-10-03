@@ -24,7 +24,7 @@ host.
                 │ Unix socket              │ PTY proxy thread
                 ▼                          │ (broadcasts to console socket)
  ┌────────────────────────┐    ┌────────────┴───────────┐
- │ Hypervisor API socket  │    │ /tmp/<prefix>-<id>.console.sock
+ │ Hypervisor API socket  │    │ <run dir>/vms/<id>/console.sock
  │ (CH HTTP, QEMU QMP)    │    │ (serial console + replay log)
  │                        │    └────────────────────────┘
  └──────────┬─────────────┘
@@ -91,7 +91,7 @@ Reading top-to-bottom inside `crates/glidex-control-plane/src/`:
    kernel/rootfs paths is expanded — see `models.rs:expand_tilde`),
    and calls `VmManager::create_vm(name, config)`.
 3. `VmManager::create_vm` allocates an id (UUID), constructs `Vm`
-   with deterministic socket paths (`/tmp/<prefix>-<id>.sock` etc.),
+   with deterministic socket paths (`<run dir>/vms/<id>/api.sock` etc.),
    **persists via `VmStore::save` before** inserting into the
    in-memory map, and returns the `Vm`.
 4. User clicks Start → `POST /api/vms/{id}/start` → `VmManager::start_vm`.

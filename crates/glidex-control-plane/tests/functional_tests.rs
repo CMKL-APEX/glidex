@@ -288,7 +288,12 @@ async fn firmware_config_survives_restart() {
     manager.initialize().await.unwrap();
     let vm = manager.get_vm(&id).await.unwrap();
     assert_eq!(vm.config.firmware_path.as_deref(), Some("/path/to/CLOUDHV.fd"));
-    assert_eq!(vm.default_cloud_init_path(), format!("/tmp/cloud-hypervisor-{id}.cloudinit.img"));
+    // Per-VM private runtime directory (spec/security.md §9).
+    assert_eq!(
+        vm.default_cloud_init_path(),
+        glidex_control_plane::paths::vm_dir(&id).join("cloudinit.img").to_string_lossy()
+    );
+    assert!(vm.socket_path.ends_with(&format!("/vms/{id}/api.sock")), "{}", vm.socket_path);
 }
 
 // ============================================================================
@@ -534,9 +539,7 @@ async fn firmware_boot_e2e(hypervisor: &str) {
     let persisted = manager.get_vm(&id).await.unwrap();
     assert_eq!(persisted.config.cloud_init_path, None, "generated seed must not be persisted");
 
-    let (status, info) = request(&app, "GET", &format!("/vms/{id}/console"), None).await;
-    assert_eq!(status, StatusCode::OK, "{info}");
-    let console_path = info["console_socket_path"].as_str().unwrap().to_string();
+    let console_path = glidex_control_plane::paths::vm_paths(&id).console_socket;
 
     // Boot via UEFI firmware on the serial console, provisioned by cloud-init.
     let mut console = tokio::task::spawn_blocking(move || {
@@ -585,7 +588,7 @@ async fn firmware_boot_e2e(hypervisor: &str) {
     assert_eq!(body["state"], "stopped");
     assert!(started.elapsed() < Duration::from_secs(110), "guest ignored the power button");
     // Lossy: the console log is the guest's raw bytes, not always UTF-8.
-    let log = String::from_utf8_lossy(&std::fs::read(body["log_path"].as_str().unwrap()).unwrap()).into_owned();
+    let log = String::from_utf8_lossy(&std::fs::read(glidex_control_plane::paths::vm_paths(&id).log).unwrap()).into_owned();
     // The kernel's very last line: nothing the guest printed before the
     // hypervisor exited may be lost (hypervisor/console.rs).
     assert!(log.contains("reboot: Power down"), "guest did not power off cleanly:\n{log}");
@@ -703,8 +706,7 @@ async fn nat_e2e(hypervisor: &str) {
     let ipv4 = body["nics"][0]["ipv4"].as_str().expect("NAT reservation").to_string();
     assert!(ipv4.starts_with("10.88."), "{ipv4}");
 
-    let (_, info) = request(&app, "GET", &format!("/vms/{id}/console"), None).await;
-    let console_path = info["console_socket_path"].as_str().unwrap().to_string();
+    let console_path = glidex_control_plane::paths::vm_paths(&id).console_socket;
     let expected_ip = ipv4.clone();
     tokio::task::spawn_blocking(move || {
         let mut c = Console::connect(&console_path);
@@ -801,8 +803,7 @@ async fn start_and_login(app: &Router, tmp: &TempDir, network: &str, hostname: &
     let (st, body) = request(app, "POST", &format!("/vms/{id}/start"), None).await;
     assert_eq!(st, StatusCode::OK, "{body}");
     let ipv4 = body["nics"][0]["ipv4"].as_str().map(str::to_string);
-    let (_, info) = request(app, "GET", &format!("/vms/{id}/console"), None).await;
-    let console_path = info["console_socket_path"].as_str().unwrap().to_string();
+    let console_path = glidex_control_plane::paths::vm_paths(&id).console_socket;
     let host = hostname.to_string();
     let user = username.clone();
     let console = tokio::task::spawn_blocking(move || {
@@ -1092,8 +1093,7 @@ async fn catalog_image_e2e(hypervisor: &str) {
         async move {
             let (status, body) = request(&app, "POST", &format!("/vms/{id}/start"), None).await;
             assert_eq!(status, StatusCode::OK, "{body}");
-            let (_, info) = request(&app, "GET", &format!("/vms/{id}/console"), None).await;
-            let console_path = info["console_socket_path"].as_str().unwrap().to_string();
+            let console_path = glidex_control_plane::paths::vm_paths(&id).console_socket;
             tokio::task::spawn_blocking(move || {
                 let mut console = Console::connect(&console_path);
                 console.expect(&format!("{hostname} login: "), Duration::from_secs(400));
