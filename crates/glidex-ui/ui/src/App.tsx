@@ -1,9 +1,9 @@
+import { lazy, Suspense } from "react";
 import { Routes, Route } from "react-router-dom";
 import Header from "./components/Header";
 import Footer from "./components/Footer";
 import Dashboard from "./pages/Dashboard";
 import VmDetail from "./pages/VmDetail";
-import VmConsole from "./pages/VmConsole";
 import NotFound from "./pages/NotFound";
 import Credentials from "./pages/Credentials";
 import Networking from "./pages/Networking";
@@ -17,6 +17,10 @@ import Policies from "./pages/Policies";
 import Audit from "./pages/Audit";
 import { SessionProvider, useSession } from "./session";
 import { LiveProvider } from "./live";
+import { Loading } from "./components/Loading";
+
+// The console pulls in xterm; load it only when a console is opened.
+const VmConsole = lazy(() => import("./pages/VmConsole"));
 
 function Shell() {
   const { project } = useSession();
@@ -29,7 +33,14 @@ function Shell() {
           <Routes>
             <Route path="/" element={<Dashboard />} />
             <Route path="/vms/:id" element={<VmDetail />} />
-            <Route path="/vms/:id/console" element={<VmConsole />} />
+            <Route
+              path="/vms/:id/console"
+              element={
+                <Suspense fallback={<Loading />}>
+                  <VmConsole />
+                </Suspense>
+              }
+            />
             <Route path="/credentials" element={<Credentials />} />
             <Route path="/networking" element={<Networking />} />
             <Route path="/images" element={<Images />} />
