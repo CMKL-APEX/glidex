@@ -41,7 +41,9 @@ test("follows the hypervisor's default firmware unless one was typed", async ({ 
 
 test.afterEach(async ({ hypervisor }) => {
   const vm = (await api<any[]>("/vms")).find((v) => v.name === `form-${hypervisor}`);
-  if (vm) await del(`/vms/${vm.id}`);
+  // Wait: a VM that was started takes a moment to tear down, and the next
+  // test reuses its name.
+  if (vm) await del(`/vms/${vm.id}?wait=60`);
 });
 
 test("submits hypervisor, firmware and networks", async ({ page, hypervisor }) => {
@@ -103,10 +105,11 @@ test.describe("refused", () => {
 
   test("a refused create keeps the form open with the reason", async ({ page, hypervisor }) => {
     // Taken: the second create is refused (409).
-    await api("/vms", {
+    const taken = await api("/vms", {
       method: "POST",
       body: { name: `form-${hypervisor}`, vcpu_count: 1, mem_size_mib: 256, kernel_image_path: "/nonexistent/vmlinux", rootfs_path: "/nonexistent/disk.img" },
     });
+    expect(taken.id, JSON.stringify(taken)).toBeTruthy();
     await field(page, "VM Name").fill(`form-${hypervisor}`);
     await field(page, "Boot Disk").selectOption("path");
     await field(page, "Disk Image Path").fill("/nonexistent/disk.img");
