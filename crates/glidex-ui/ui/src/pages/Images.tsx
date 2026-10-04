@@ -132,6 +132,16 @@ export default function Images() {
     }
   };
 
+  const retry = async (img: ImageInfo) => {
+    setError(null);
+    try {
+      await api.retryImage(img.id);
+      refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to retry the download");
+    }
+  };
+
   const inFlight = (key: string) =>
     images?.some(
       (i) => i.source.kind === "catalog" && i.source.key === key && (i.status.state === "downloading" || i.status.state === "verifying"),
@@ -217,7 +227,15 @@ export default function Images() {
                     {!img.verified && <span className="ml-1 text-amber-700">(unverified)</span>}
                   </td>
                   <td className="px-4 py-3 text-xs font-mono">{img.linked_disks.join(", ") || "—"}</td>
-                  <td className="px-4 py-3 text-right">
+                  <td className="px-4 py-3 text-right space-x-2 whitespace-nowrap">
+                    {img.status.state === "failed" && (
+                      <button
+                        className="px-3 py-1 text-xs font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg"
+                        onClick={() => retry(img)}
+                      >
+                        Retry
+                      </button>
+                    )}
                     <button
                       className="px-3 py-1 text-xs font-medium text-red-700 bg-red-50 hover:bg-red-100 rounded-lg"
                       onClick={() => remove(img)}

@@ -278,15 +278,20 @@ export const listImages = () => get<ImageInfo[]>("/images");
 export const pullImage = (req: { catalog?: string; url?: string; sha256?: string; name?: string }) =>
   post<ImageInfo>("/images", req);
 export const deleteImage = (id: string) => del(`/images/${enc(id)}`);
+/** Download a failed image again (spec/reconciliation.md D19). */
+export const retryImage = (id: string) => post<ImageInfo>(`/images/${enc(id)}/retry`);
 
 export const listDisks = (project?: string | null) => get<DiskInfo[]>(`/disks${inProject(project)}`);
 export const getDisk = (id: string) => get<DiskInfo>(`/disks/${enc(id)}`);
-export const createDisk = (req: CreateDiskRequest) => post<DiskInfo>("/disks", req);
+// Disk writes are carried out by the disk controller (spec/reconciliation.md
+// §10.1): wait for it, and show what is still pending if it isn't done.
+export const createDisk = (req: CreateDiskRequest) => post<DiskInfo>(`/disks?wait=${WAIT_SECS}`, req);
 export const resizeDisk = (id: string, sizeGib: number, extendRoot?: boolean) =>
-  post<DiskInfo>(`/disks/${enc(id)}/resize`, { size_gib: sizeGib, extend_root: extendRoot });
+  post<DiskInfo>(`/disks/${enc(id)}/resize?wait=${WAIT_SECS}`, { size_gib: sizeGib, extend_root: extendRoot });
 export const extendRoot = (id: string, mode: "offline" | "on-boot") =>
-  post<DiskInfo>(`/disks/${enc(id)}/extend-root`, { mode });
-export const deleteDisk = (id: string) => del(`/disks/${enc(id)}`);
+  post<DiskInfo>(`/disks/${enc(id)}/extend-root?wait=${WAIT_SECS}`, { mode });
+/** `undefined` when gone (204), else the disk, deleted once its operation finishes (202). */
+export const deleteDisk = (id: string) => del<DiskInfo | undefined>(`/disks/${enc(id)}`);
 
 // ---- projects and role links ------------------------------------------------
 

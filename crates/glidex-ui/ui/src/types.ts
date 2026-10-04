@@ -86,6 +86,9 @@ export interface Network {
   /** Projects that accepted a share of this project network. */
   shares?: string[];
   share_offers?: { project: string; offered_by: string; offered_at: number; expires_at: number }[];
+  /** What the network controller last saw in netd (spec/reconciliation.md §10.3). */
+  phase?: "pending" | "ready" | "degraded" | "netd_unavailable";
+  conditions?: Condition[];
 }
 
 /** Whether VMs of `project` may attach to `n` (mirrors base.network-grant). */
@@ -211,14 +214,26 @@ export interface DiskInfo {
   origin: { kind: "blank" } | { kind: "image"; image_id: string; mode: "linked" | "full" };
   attached_to?: string | null;
   pending_growpart: boolean;
-  status: "ready" | "busy" | "missing";
+  /** `pending` waits for its image; `failed` and the `Ready` condition say why. */
+  status: "pending" | "creating" | "ready" | "resizing" | "busy" | "missing" | "failed";
+  phase: "pending" | "creating" | "ready" | "resizing" | "missing" | "failed";
+  conditions?: Condition[];
+  /** A resize not applied yet: a running VM has the disk open. */
+  pending_size_bytes?: number;
+  /** The VM that owns it (created with the VM from an image). */
+  owner?: string;
+  deleting?: boolean;
   busy_op?: string;
   path: string;
   project?: string;
   created_at: number;
   partition_table?: { kind: "gpt" | "mbr"; partitions: PartitionInfo[]; free_tail_bytes: number };
-  extend_root?: "grown" | "already_full" | "on_boot" | "skipped";
   warnings?: string[];
+}
+
+/** The `Ready` condition when it isn't True: why an object hasn't converged. */
+export function notReady(conditions?: Condition[]): Condition | undefined {
+  return conditions?.find((c) => c.kind === "Ready" && c.status !== "True");
 }
 
 export interface CreateDiskRequest {

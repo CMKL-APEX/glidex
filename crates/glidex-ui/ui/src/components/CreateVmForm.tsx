@@ -90,7 +90,9 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
       .catch(() => setImages([]));
     listDisks(project)
       .then((ds) => {
-        const free = ds.filter((d) => !d.attached_to);
+        // Not another VM's (or going away); a pending disk is fine, the VM
+        // starts once it's made.
+        const free = ds.filter((d) => !d.attached_to && !d.owner && !d.deleting && d.status !== "failed" && d.status !== "missing");
         setFreeDisks(free);
         if (free.length > 0) setRootDisk(free[0].id);
       })
