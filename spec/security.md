@@ -699,10 +699,9 @@ allow.**
 | `POST /ovs/bridges/{b}/uplinks` with `confirm: true` | `confirmUplink` on `Host::"local"` |
 
 **Paths.** Any explicit `kernel_image_path`, `rootfs_path` or
-`cloud_init_path` needs `useHostPath`. So does a `firmware_path` other
-than the default firmware files of the two hypervisors (compared after
-`canonicalize`). Managed disks are named with `image`, `root_disk` and
-`data_disks` instead. Paths into the disk or image directories are not
+`cloud_init_path` needs `useHostPath`, and so does any `firmware_path`.
+Managed disks are named with `image`, `root_disk` and `data_disks`
+instead, and firmware with `firmware` (a firmware image, `readImage`). Paths into the disk or image directories are not
 treated as managed: they would reach other projects' disks, or let a VM
 write to a shared base image.
 

@@ -96,9 +96,13 @@ curl -X POST 'localhost:8841/vms/<id>/stop?graceful_timeout_secs=60'
 ```
 
 - `hypervisor` is `cloudhypervisor` (default) or `qemu`. With an `image`
-  or `root_disk`, the VM boots through that hypervisor's default UEFI
-  firmware (`~/.glidex/CLOUDHV.fd`, or OVMF from the `ovmf` /
-  `edk2-ovmf` package); pass `firmware_path` to choose one, or
+  or `root_disk`, the VM boots through UEFI firmware, a *firmware image*
+  managed like the cloud images. The control plane imports the
+  installer's pinned `CLOUDHV.fd` (`cloudhv-edk2`) and the host's OVMF
+  (`ovmf`) once at its first start; otherwise pull them with
+  `gxctl image pull --firmware cloudhv-edk2` / `--firmware ovmf`, or from
+  the Images page. The newest one for the hypervisor
+  is used unless you pass `firmware` (an image name or id); pass
   `kernel_image_path` for a direct kernel boot. Paths you pass are opened
   by the control plane, so under the units they must be readable by the
   `glidex` user (your home directory usually isn't).

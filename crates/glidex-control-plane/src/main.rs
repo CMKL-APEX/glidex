@@ -93,27 +93,6 @@ async fn main() {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    // Not fatal: kernel-boot VMs don't need it.
-    for (ty, label, fix) in [
-        (
-            hypervisor::HypervisorType::CloudHypervisor,
-            "Cloud-Hypervisor",
-            "run glidex-install for Cloud-Hypervisor firmware boot",
-        ),
-        (
-            hypervisor::HypervisorType::Qemu,
-            "QEMU",
-            "install the ovmf / edk2-ovmf package for QEMU firmware boot",
-        ),
-    ] {
-        print_status(&format!("Checking UEFI firmware ({})", label));
-        match ty.default_firmware_path() {
-            Some(path) if path.exists() => println!("OK ({})", path.display()),
-            Some(path) => println!("MISSING ({}; {})", path.display(), fix),
-            None => println!("MISSING (no home directory)"),
-        }
-    }
-
     // Not fatal either: only image/disk operations need these.
     print_status("Checking disk tools");
     let missing: Vec<&str> = images::qemu_img::ALL_TOOLS
@@ -190,6 +169,29 @@ async fn main() {
     let vms = vm_manager.list_vms().await;
     let running = vms.iter().filter(|v| v.status.instance.is_some()).count();
     println!("OK ({} VMs, {} running, VM runner: {})", vms.len(), running, vm_manager.runner().kind_name());
+
+    // Firmware the installer or the host's packages left: imported as
+    // firmware images once, so image VMs boot out of the box.
+    for (key, result) in vm_manager.auto_import_firmware().await {
+        use images::AutoImport;
+        match result {
+            AutoImport::Imported(name) => tracing::info!(firmware = key, image = %name, "imported firmware"),
+            AutoImport::Failed(e) => tracing::warn!(firmware = key, "could not import firmware: {}", e),
+            _ => {}
+        }
+    }
+
+    // Not fatal: kernel-boot VMs don't need it.
+    for (ty, label, key) in [
+        (hypervisor::HypervisorType::CloudHypervisor, "Cloud-Hypervisor", "cloudhv-edk2"),
+        (hypervisor::HypervisorType::Qemu, "QEMU", "ovmf"),
+    ] {
+        print_status(&format!("Checking UEFI firmware ({})", label));
+        match vm_manager.default_firmware_name(ty) {
+            Some(name) => println!("OK (image {})", name),
+            None => println!("NONE (pull it for firmware boot: gxctl image pull --firmware {})", key),
+        }
+    }
 
     // Networking is optional: without glidex-netd, VMs just have no NICs.
     print_status("Checking networking");

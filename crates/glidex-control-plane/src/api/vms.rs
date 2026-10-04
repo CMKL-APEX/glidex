@@ -150,27 +150,11 @@ pub(crate) fn pci_entities(c: &Caller, bdf: &str) -> (Ent, EntitySet) {
     (Ent::PciDevice(bdf.to_string()), es)
 }
 
-/// Whether a create request names a host path outside what glidex manages
-/// (spec/security.md §7.4). Only the default firmware files count as
-/// managed: a path into the disk or image directories would reach other
-/// projects' disks or the shared base images.
+/// Whether a create request names a host path (spec/security.md §7.4).
+/// Firmware is a managed image (`firmware`) like the disks; a
+/// `firmware_path` is a host path like any other.
 fn names_host_path(req: &CreateVmRequest) -> bool {
-    if !req.kernel_image_path.is_empty() || !req.rootfs_path.is_empty() || req.cloud_init_path.is_some() {
-        return true;
-    }
-    match &req.firmware_path {
-        None => false,
-        Some(fw) => {
-            let canon = |p: &std::path::Path| std::fs::canonicalize(p).ok();
-            let wanted = canon(std::path::Path::new(fw));
-            let defaults = [crate::hypervisor::HypervisorType::CloudHypervisor, crate::hypervisor::HypervisorType::Qemu]
-                .iter()
-                .filter_map(|t| t.default_firmware_path())
-                .filter_map(|p| canon(&p))
-                .collect::<Vec<_>>();
-            !wanted.is_some_and(|w| defaults.contains(&w))
-        }
-    }
+    !req.kernel_image_path.is_empty() || !req.rootfs_path.is_empty() || req.cloud_init_path.is_some() || req.firmware_path.is_some()
 }
 
 pub async fn create(c: Caller, Query(w): Query<WaitQuery>, Json(req): Json<CreateVmRequest>) -> Result<Response, ApiErr> {
@@ -212,7 +196,7 @@ pub async fn create(c: Caller, Query(w): Query<WaitQuery>, Json(req): Json<Creat
     if names_host_path(&req) {
         c.require_action("useHostPath", Ent::Host, EntitySet::new(), &[])?;
     }
-    if let Some(image) = &sel.image {
+    for image in sel.image.iter().chain(sel.firmware.iter()) {
         let mut es = EntitySet::new();
         es.image(image);
         c.require_action("readImage", Ent::Image(image.clone()), es, &[])?;

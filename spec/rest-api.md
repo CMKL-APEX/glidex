@@ -224,17 +224,19 @@ beyond that the call is `503 too_many_watchers` (poll instead).
 ```
 
 - `kernel_args`, `hypervisor`, `vfio_devices` are optional.
-- `firmware_path` boots the disk through UEFI firmware instead of a
-  kernel, e.g.
-  `{"hypervisor": "cloudhypervisor", "firmware_path": "~/.glidex/CLOUDHV.fd",
-  "rootfs_path": "~/images/ubuntu-cloudimg.raw", ...}`. `glidex-install`
-  downloads that firmware for Cloud Hypervisor; QEMU takes an OVMF code
-  image (`/usr/share/OVMF/OVMF_CODE_4M.fd` from the `ovmf` package) and
-  keeps a private copy of the matching variable store per VM (see
-  [hypervisors.md](hypervisors.md#firmware-boot-1)). With `image` or
-  `root_disk` and no kernel, the hypervisor's default firmware is used. Relative paths resolve against the
-  control plane's working directory, so prefer absolute or `~` paths. `kernel_image_path`
-  and `kernel_args` may then be omitted; they are ignored if given. The
+- `firmware` boots the disk through UEFI firmware instead of a kernel:
+  a firmware image (id or name, [images.md](images.md#7-vm-integration))
+  built for the VM's `hypervisor`, e.g.
+  `{"hypervisor": "cloudhypervisor", "firmware": "cloudhv-edk2",
+  "image": "ubuntu-26.04", ...}`. With `image` or `root_disk` and no
+  kernel, the newest ready firmware image for the hypervisor is used
+  (`400 invalid_config` if there is none). QEMU keeps a private copy of
+  the image's variable store per VM (see
+  [hypervisors.md](hypervisors.md#firmware-boot-1)). `firmware_path`
+  instead names a host file (needs `useHostPath`; not with `firmware`);
+  relative paths resolve against the control plane's working directory,
+  so prefer absolute or `~` paths. `kernel_image_path` and `kernel_args`
+  may then be omitted; they are ignored if given. The
   console is attached to the guest's serial port (`ttyS0`), which is where
   distro cloud images put their login prompt.
 - `cloud_init_path` attaches a NoCloud seed image
@@ -264,8 +266,9 @@ beyond that the call is `503 too_many_watchers` (poll instead).
   `rootfs_path`, give `image` (+ optional `root_disk_size_gib`) to have a
   root disk created for the VM, or `root_disk` to boot an existing disk.
   Exactly one of the three is required. `data_disks` lists extra disks.
-  Without a kernel, these imply firmware boot with the default firmware
-  path. The response may carry `warnings`.
+  Without a kernel, these imply firmware boot through the default
+  firmware image. The response may carry `warnings` and, for firmware
+  boot, `firmware` (the image id).
 - `DELETE /vms/{id}?keep_disk=true` keeps a root disk that was created for
   the VM; by default it is deleted with it.
 
@@ -305,7 +308,7 @@ Top level: `power`, `restart_policy`, `on_host_boot`,
 `kernel_args`, `credential` (`null` removes it), `hugepages`,
 `vfio_devices`, `data_disks` (ids or names; replaces the list),
 `networks`. Unknown fields are `422`; immutable ones
-(`hypervisor`, `kernel_image_path`, `firmware_path`, `rootfs_path`,
+(`hypervisor`, `kernel_image_path`, `firmware_path`, `firmware`, `rootfs_path`,
 `cloud_init_path`, `root_disk`, `image`) are refused with `400
 invalid_config` ("immutable field(s): …") before anything is authorized.
 When each change takes effect is in

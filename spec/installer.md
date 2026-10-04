@@ -415,13 +415,15 @@ to the repo, to keep a 4 MB binary out of git history.
   runs by hand, the tests) and, with services,
   `/var/lib/glidex-control-plane/.glidex` (owned by `glidex`), copied
   from the first when its sha256 differs.
-- **Consumers.** `hypervisor::cloud_hypervisor::default_firmware_path()`
-  returns the same path; `gxctl create` offers it as the default (and,
-  when the default is taken for an image or managed disk, leaves
-  `firmware_path` unset so the server uses its own copy),
-  the control plane reports whether it exists at startup, and the
-  end-to-end functional test uses it unless `GLIDEX_TEST_FIRMWARE`
-  is set. The installer can't depend on the control-plane crate, so
+- **Consumers.** The control plane auto-imports this file as the
+  `cloudhv-edk2` firmware image at its first start
+  ([images.md](images.md#41-firmware-catalog), which pins the same
+  release and digests in `images/firmware.rs`), and a manual pull copies
+  it instead of downloading it, when its sha256 matches. VMs boot through that image,
+  not this path; the control plane reports at startup whether a firmware
+  image exists per hypervisor. The functional tests that pass a host
+  `firmware_path` use it unless `GLIDEX_TEST_FIRMWARE` is set. Bump
+  `EDK2_FIRMWARE_VERSION` in both crates together. The installer can't depend on the control-plane crate, so
   the file name is duplicated there.
 
 ## No sample kernel / rootfs

@@ -102,7 +102,12 @@ pub async fn image_catalog(c: Caller) -> Result<impl IntoResponse, ApiErr> {
 
 pub async fn list_images(c: Caller) -> Result<impl IntoResponse, ApiErr> {
     c.require(Ent::Host, EntitySet::new())?;
-    Ok(Json(c.manager().list_images()))
+    Ok(Json(c.manager().list_images().await))
+}
+
+pub async fn firmware_catalog(c: Caller) -> Result<impl IntoResponse, ApiErr> {
+    c.require(Ent::Host, EntitySet::new())?;
+    Ok(Json(c.manager().firmware_catalog()))
 }
 
 pub async fn get_image(c: Caller, Path(id): Path<String>) -> Result<impl IntoResponse, ApiErr> {

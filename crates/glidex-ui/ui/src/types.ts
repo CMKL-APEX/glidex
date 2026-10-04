@@ -61,6 +61,8 @@ export interface VmResponse {
   vfio_devices: string[];
   credential?: string;
   nics?: NicState[];
+  /** Firmware image id the VM boots through. */
+  firmware?: string;
   root_disk?: string;
   data_disks?: string[];
   warnings?: string[];
@@ -153,6 +155,9 @@ export interface CreateVmRequest {
   vcpu_count: number;
   mem_size_mib: number;
   kernel_image_path: string;
+  /** Firmware image id/name (spec/images.md §7); default: the newest for the hypervisor. */
+  firmware?: string;
+  /** Host path of UEFI firmware (admins only); prefer `firmware`. */
   firmware_path?: string;
   credential?: string;
   networks?: { network: string }[];
@@ -185,11 +190,18 @@ export type ImageStatus =
 
 export type ImageSource =
   | { kind: "catalog"; key: string; url: string; version: string }
-  | { kind: "url"; url: string; expected_sha256?: string | null };
+  | { kind: "url"; url: string; expected_sha256?: string | null }
+  | { kind: "firmware"; key: string; url: string; version: string };
+
+/** `disk`: a cloud image disks are cloned from; `firmware`: UEFI firmware VMs boot through. */
+export type ImageKind = "disk" | "firmware";
 
 export interface ImageInfo {
   id: string;
   name: string;
+  kind: ImageKind;
+  /** The hypervisor a firmware image is built for. */
+  hypervisor?: HypervisorType;
   source: ImageSource;
   status: ImageStatus;
   format: "qcow2" | "raw";
@@ -201,6 +213,8 @@ export interface ImageInfo {
   verified: boolean;
   path: string;
   linked_disks: string[];
+  /** VMs booting through this firmware image. */
+  used_by_vms?: string[];
   /** Deletion requested; the image controller is removing it. */
   deleting?: boolean;
 }
@@ -212,6 +226,28 @@ export interface CatalogItem {
   arch: string;
   url: string;
   downloaded_image_id?: string | null;
+}
+
+export interface FirmwareCatalogItem {
+  key: string;
+  name: string;
+  hypervisor: HypervisorType;
+  arch: string;
+  /** `download`: a pinned build; `host`: copied from the host's package. */
+  source: "download" | "host";
+  url?: string;
+  version?: string;
+  /** Whether it can be pulled now (a host entry needs its package). */
+  available: boolean;
+  hint?: string;
+  downloaded_image_id?: string | null;
+}
+
+/** Ready firmware images for `hypervisor`, newest first (the server's default). */
+export function firmwareFor(images: ImageInfo[], hypervisor: HypervisorType): ImageInfo[] {
+  return images
+    .filter((i) => i.kind === "firmware" && i.hypervisor === hypervisor && i.status.state === "ready" && !i.deleting)
+    .sort((a, b) => b.created_at - a.created_at);
 }
 
 export interface PartitionInfo {

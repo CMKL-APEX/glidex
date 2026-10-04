@@ -46,7 +46,7 @@ impl VmManager {
             }
             ImageStatus::Failed { .. } => Ok(None),
             ImageStatus::Ready => {
-                if !self.images.image_path(&img.id).exists() {
+                if !self.images.image_file(&img).exists() {
                     img.status = ImageStatus::Missing;
                     self.images.put_image(&img)?;
                     self.image_event(&img.id, EventKind::Warning, "FileMissing", "the image's file is gone; it is not downloaded again");
@@ -61,7 +61,7 @@ impl VmManager {
                 Ok(None)
             }
             ImageStatus::Missing => {
-                if self.images.image_path(&img.id).exists() {
+                if self.images.image_file(&img).exists() {
                     img.status = ImageStatus::Ready;
                     self.images.put_image(&img)?;
                     self.image_event(&img.id, EventKind::Normal, "FileFound", "the image's file is back");

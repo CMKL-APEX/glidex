@@ -114,7 +114,7 @@ async fn snapshot(c: &Caller, kinds: &[Kind], only: Option<&str>) -> Result<View
             }
             Kind::Image => {
                 if c.allowed("readImage", Ent::Host, EntitySet::new()) {
-                    for img in m.list_images() {
+                    for img in m.list_images().await {
                         view.insert((Kind::Image, img.id.clone()), serde_json::to_value(&img).unwrap_or_default());
                     }
                 }

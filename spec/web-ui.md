@@ -103,13 +103,14 @@ ui/src/
 ├── index.css               # Tailwind entry
 ├── components/
 │   ├── Header.tsx          # Nav (by capability), activity, project selector, user, Log out, API health
+│   ├── Footer.tsx          # Build info: version tag (if any), git branch, commit
 │   ├── Activity.tsx        # "N in progress" indicator and list; Spinner
 │   ├── ReauthDialog.tsx    # Step-up re-login, then retry
 │   ├── AddBindingForm.tsx  # Role + user/team picker for role links
 │   ├── ui.tsx              # Shared bits: cards, badges, binding table
 │   ├── Loading.tsx
 │   ├── Modal.tsx
-│   ├── CreateVmForm.tsx    # POST /vms form (boot mode, boot disk source, credential picker, restart behaviour, start now)
+│   ├── CreateVmForm.tsx    # POST /vms form (boot mode, firmware image, boot disk source, credential picker, restart behaviour, start now)
 │   ├── VmActions.tsx       # Start/Shut down/Stop/Pause/Delete buttons (Shut down: power button, 60 s)
 │   ├── VmStateBadge.tsx    # State pill (→ desired) plus what the controller is still doing
 │   └── VmCard.tsx          # Dashboard VM row: state badge, Ready reason
@@ -118,7 +119,7 @@ ui/src/
     ├── VmDetail.tsx        # VM details, Ready reason, restart notice, actions, events, Open Console link
     ├── VmConsole.tsx       # xterm.js + console WebSocket; Reconnect after it closes
     ├── Credentials.tsx     # List / add / edit / delete guest logins
-    ├── Images.tsx          # Catalog (Pull), downloaded images with progress
+    ├── Images.tsx          # Cloud image and firmware catalogs (Pull), downloaded images and firmware with progress
     ├── Disks.tsx           # Disks: create, resize, extend root, delete, partitions
     ├── Networking.tsx      # OVS status, bridges and uplinks, networks (networking.md §12)
     ├── Login.tsx           # PAM form and/or Sign in with SSO
@@ -223,7 +224,7 @@ reconnects and the next snapshot replaces the maps.
 `useLiveRefresh(kinds, refresh)` re-runs a page's refresh (debounced
 300 ms) when an object of those kinds changes, and returns whether the
 stream is live. Dashboard and VmDetail follow `vm`, Disks `disk` and
-`vm`, Images `image` and `disk`, Networking `network`; each polls as
+`vm`, Images `image`, `disk` and `vm` (firmware users), Networking `network`; each polls as
 before only while the stream isn't live (no EventSource, an old control
 plane, a buffering proxy, `503 too_many_watchers`).
 
@@ -291,15 +292,23 @@ only for Cloud-Hypervisor firmware boot, fed by `GET /credentials`.
 
 ## Images and disks pages
 
-`pages/Images.tsx` shows the catalog (`GET /images/catalog`) with a Pull
-button per entry, and downloaded images with a progress bar; an image
-being deleted shows "Deleting…". It follows the live stream, or without
+`pages/Images.tsx` shows two catalogs, each entry with a Pull button:
+cloud images (`GET /images/catalog`) and UEFI firmware
+(`GET /images/firmware-catalog`, [images.md](images.md#41-firmware-catalog);
+an entry copied from a host package says Import, and is disabled with
+the package to install when it isn't). Below, downloaded images in two
+tables: cloud images (with their linked disks) and firmware (with its
+hypervisor and the VMs booting through it; Delete is disabled while any
+do). Each has a progress bar while downloading; an image being deleted
+shows "Deleting…". It follows the live stream, or without
 it polls `GET /images` every 1.5 s while anything is downloading,
 verifying or being deleted. Delete doesn't wait (`204`, or `202` while
 the controller finishes); the page shows the progress.
 A failed image has **Retry** (`POST /images/{id}/retry`); the page
 looks again a second later, when the controller has restarted it.
-"Download from URL" opens a form for `{url, sha256?, name?}`.
+"Download from URL" opens a form for `{url, sha256?, name?}`, with a
+type (cloud image, or UEFI firmware for a chosen hypervisor: `kind:
+"firmware"`, `hypervisor`).
 `pages/Networking.tsx`'s Status column shows a network's phase, or
 "deleting" (with the `Ready` message, reason on hover) while a deletion waits (netd
 unreachable, a VM still on it); like image deletes, network deletes
@@ -311,7 +320,22 @@ its partition table (`GET /disks/{id}`). A refused shrink shows
 `details.min_size_bytes`. `CreateVmForm`'s firmware-boot "Boot Disk"
 select offers a new disk from a ready image (with a root size), an
 unattached existing disk, or a file path. It defaults to the image option
-when one is ready.
+when one is ready. Its "UEFI Firmware" select lists the ready firmware
+images built for the chosen hypervisor, newest first (preselected, the
+server's default too), and follows a hypervisor change; with none it
+names the catalog entry to pull and the form won't submit. It sends
+`firmware` (the image id), never a host `firmware_path`.
+
+## Footer
+
+`components/Footer.tsx`, under every signed-in page, shows the build the
+UI came from: the version tag on the built commit (if any), the git
+branch and the commit (marked "(modified)" when built from a tree with
+uncommitted changes). `vite.config.ts` reads them from git at build (or
+dev-server start) time into `__GLIDEX_BUILD__`; `GLIDEX_BUILD_TAG`,
+`GLIDEX_BUILD_BRANCH` and `GLIDEX_BUILD_COMMIT` override them for builds
+without a checkout (CI also supplies `GITHUB_REF_NAME`). A detached HEAD
+shows no branch.
 
 ## `VmConsole` contract
 

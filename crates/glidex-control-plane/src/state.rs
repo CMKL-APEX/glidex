@@ -202,6 +202,8 @@ pub struct ConfigPatch {
     #[serde(default)]
     pub firmware_path: Option<serde_json::Value>,
     #[serde(default)]
+    pub firmware: Option<serde_json::Value>,
+    #[serde(default)]
     pub rootfs_path: Option<serde_json::Value>,
     #[serde(default)]
     pub cloud_init_path: Option<serde_json::Value>,
@@ -218,6 +220,7 @@ impl ConfigPatch {
             ("hypervisor", self.hypervisor.is_some()),
             ("kernel_image_path", self.kernel_image_path.is_some()),
             ("firmware_path", self.firmware_path.is_some()),
+            ("firmware", self.firmware.is_some()),
             ("rootfs_path", self.rootfs_path.is_some()),
             ("cloud_init_path", self.cloud_init_path.is_some()),
             ("root_disk", self.root_disk.is_some()),
@@ -564,19 +567,35 @@ impl VmManager {
         if sel.root_disk_size_gib.is_some() && sel.image.is_none() {
             return Err(invalid("root_disk_size_gib needs image"));
         }
-        // A managed root disk is a cloud image: firmware boot unless the
-        // caller brought a kernel.
-        if (sel.image.is_some() || sel.root_disk.is_some()) && config.kernel_image_path.is_empty() && config.firmware_path.is_none() {
-            config.firmware_path = config.hypervisor.default_firmware_path().map(|p| p.to_string_lossy().into_owned());
+        if sel.firmware.is_some() && config.firmware_path.is_some() {
+            return Err(invalid("give firmware (an image) or firmware_path, not both"));
         }
+        // A managed root disk is a cloud image: firmware boot unless the
+        // caller brought a kernel, through the newest firmware image for
+        // the hypervisor unless one is named.
+        let firmware = match &sel.firmware {
+            Some(key) => Some(self.images.get_image(key)?),
+            None if (sel.image.is_some() || sel.root_disk.is_some())
+                && config.kernel_image_path.is_empty()
+                && config.firmware_path.is_none() =>
+            {
+                Some(self.images.default_firmware(config.hypervisor).ok_or_else(|| {
+                    invalid(format!(
+                        "no firmware image for {}: pull one from the firmware catalog (GET /images/firmware-catalog), or give kernel_image_path",
+                        config.hypervisor
+                    ))
+                })?)
+            }
+            None => None,
+        };
         if config.vcpu_count == 0 {
             return Err(invalid("vcpu_count must be greater than 0"));
         }
         if config.mem_size_mib == 0 {
             return Err(invalid("mem_size_mib must be greater than 0"));
         }
-        if config.firmware_path.is_none() && config.kernel_image_path.is_empty() {
-            return Err(invalid("either kernel_image_path or firmware_path is required"));
+        if firmware.is_none() && config.firmware_path.is_none() && config.kernel_image_path.is_empty() {
+            return Err(invalid("either kernel_image_path or firmware is required"));
         }
         Self::check_options(&opts)?;
         self.check_paths(&config)?;
@@ -584,6 +603,15 @@ impl VmManager {
         self.check_networks(project, &config.networks)?;
 
         let mut vms = self.vms.write().await;
+
+        // Checked under the VM write lock, so delete_image (which holds the
+        // read lock) can't remove it between the check and the insert.
+        if let Some(fw) = &firmware {
+            let fw = self.images.get_image(&fw.id)?;
+            self.check_firmware(&fw, config.hypervisor)?;
+            config.firmware_path = Some(self.images.firmware_path(&fw.id).to_string_lossy().into_owned());
+            config.firmware_image = Some(fw.id);
+        }
 
         // Checked under the VM write lock so delete_credential (which holds
         // the read lock) can't remove it between the check and the insert.
@@ -707,6 +735,36 @@ impl VmManager {
         }
         self.queue.add(Key::Vm(vm.id.clone()));
         Ok((vm, warnings, bypassed))
+    }
+
+    /// A firmware image a new VM of `hypervisor` may boot through.
+    fn check_firmware(&self, fw: &images::Image, hypervisor: crate::hypervisor::HypervisorType) -> Result<(), VmManagerError> {
+        if !fw.is_firmware() {
+            return Err(invalid(format!("image {} is not a firmware image", fw.name)));
+        }
+        if fw.hypervisor != Some(hypervisor) {
+            return Err(invalid(format!(
+                "firmware {} is built for {}, not {}",
+                fw.name,
+                fw.hypervisor.map(|h| h.to_string()).unwrap_or_default(),
+                hypervisor
+            )));
+        }
+        if fw.deletion_requested_at.is_some() {
+            return Err(ImageError::NotReady(format!("firmware {} is being deleted", fw.name)).into());
+        }
+        if fw.status != images::ImageStatus::Ready {
+            return Err(ImageError::NotReady(format!("firmware {} is not ready ({:?})", fw.name, fw.status)).into());
+        }
+        Ok(())
+    }
+
+    /// Names of the VMs booting through firmware image `id`.
+    fn firmware_users(vms: &HashMap<String, Vm>, id: &str) -> Vec<String> {
+        let mut v: Vec<String> =
+            vms.values().filter(|vm| vm.config().firmware_image.as_deref() == Some(id)).map(|vm| vm.name.clone()).collect();
+        v.sort();
+        v
     }
 
     // ---- claims (D11) ------------------------------------------------------
@@ -1217,14 +1275,49 @@ impl VmManager {
         self.images.catalog()
     }
 
-    pub fn list_images(&self) -> Vec<ImageResponse> {
-        self.images.list_images().iter().map(|i| self.images.image_response(i, false)).collect()
+    /// Import the firmware available locally, once per catalog entry
+    /// (`ImageManager::auto_import_firmware`); called at startup.
+    pub async fn auto_import_firmware(&self) -> Vec<(&'static str, images::AutoImport)> {
+        self.images.auto_import_firmware().await
+    }
+
+    /// The firmware image VMs of `hypervisor` boot through by default.
+    pub fn default_firmware_name(&self, hypervisor: crate::hypervisor::HypervisorType) -> Option<String> {
+        self.images.default_firmware(hypervisor).map(|i| i.name)
+    }
+
+    pub fn firmware_catalog(&self) -> Vec<images::FirmwareCatalogItem> {
+        self.images.firmware_catalog()
+    }
+
+    /// An image response with the VMs booting through it.
+    async fn with_users(&self, mut r: ImageResponse) -> ImageResponse {
+        if r.kind == images::ImageKind::Firmware {
+            r.used_by_vms = Self::firmware_users(&*self.vms.read().await, &r.id);
+        }
+        r
+    }
+
+    pub async fn list_images(&self) -> Vec<ImageResponse> {
+        let vms = self.vms.read().await;
+        self.images
+            .list_images()
+            .iter()
+            .map(|i| {
+                let mut r = self.images.image_response(i, false);
+                if i.is_firmware() {
+                    r.used_by_vms = Self::firmware_users(&vms, &i.id);
+                }
+                r
+            })
+            .collect()
     }
 
     pub async fn get_image(&self, key: &str) -> Result<ImageResponse, VmManagerError> {
         let img = self.images.get_image(key)?;
         let mgr = self.images.clone();
-        Ok(blocking(move || Ok(mgr.image_response(&img, true))).await?)
+        let r = blocking(move || Ok(mgr.image_response(&img, true))).await?;
+        Ok(self.with_users(r).await)
     }
 
     pub async fn pull_image(&self, req: PullImageRequest) -> Result<(ImageResponse, bool), VmManagerError> {
@@ -1236,7 +1329,17 @@ impl VmManager {
     /// depends on it; otherwise a deletion request the image controller
     /// finishes. `None` once gone, else the image still being deleted.
     pub async fn delete_image(&self, key: &str) -> Result<Option<ImageResponse>, VmManagerError> {
-        let img = self.images.request_image_delete(key)?;
+        let img = {
+            // Held across the check and the request, so create_vm (which
+            // holds the write lock) can't pick it up in between.
+            let vms = self.vms.read().await;
+            let img = self.images.get_image(key)?;
+            let users = Self::firmware_users(&vms, &img.id);
+            if !users.is_empty() {
+                return Err(ImageError::InUse(format!("firmware {} is used by VM(s): {}", img.name, users.join(", "))).into());
+            }
+            self.images.request_image_delete(key)?
+        };
         self.reconcile_image(&img.id).await?;
         Ok(self.images.get_image(&img.id).ok().map(|i| self.images.image_response(&i, false)))
     }

@@ -23,7 +23,8 @@ binary="${CARGO_TARGET_DIR:-$repo/target}/debug/glidex-control-plane"
 
 rm -rf "$e2e_home"
 mkdir -p "$e2e_home/.glidex" "$e2e_home/images" "$e2e_home/run" "$e2e_home/policies"
-# The UI's default Cloud-Hypervisor firmware is ~/.glidex/CLOUDHV.fd.
+# Pulling the cloudhv-edk2 firmware image copies ~/.glidex/CLOUDHV.fd (the
+# installer's pinned build) instead of downloading it.
 if [ -e "$HOME/.glidex/CLOUDHV.fd" ]; then
   ln -s "$HOME/.glidex/CLOUDHV.fd" "$e2e_home/.glidex/CLOUDHV.fd"
 fi

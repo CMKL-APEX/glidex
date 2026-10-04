@@ -17,6 +17,7 @@ use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -129,6 +130,7 @@ async fn start_server(fx: &Fixtures) -> (String, Arc<AtomicUsize>) {
     files.insert("good.qcow2".to_string(), fx.qcow2.clone());
     files.insert("disk.raw".to_string(), fx.raw.clone());
     files.insert("backing.qcow2".to_string(), fx.with_backing.clone());
+    files.insert("fw.fd".to_string(), FIRMWARE.to_vec());
     let hits = Arc::new(AtomicUsize::new(0));
     let st = Served { files: Arc::new(files), hits: hits.clone() };
     let app = Router::new().route("/{name}", get(serve)).with_state(st);
@@ -196,6 +198,19 @@ async fn wait_image(app: &Router, id: &str) -> Value {
         assert!(Instant::now() < deadline, "image {id} stuck: {img}");
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+}
+
+/// A stand-in firmware file (never booted).
+const FIRMWARE: &[u8] = &[0x5a; 64 * 1024];
+
+/// Pull `fw.fd` as a firmware image for `hypervisor`.
+async fn pull_firmware(app: &Router, base: &str, name: &str, hypervisor: &str) -> Value {
+    let body = json!({"url": format!("{base}/fw.fd"), "name": name, "kind": "firmware", "hypervisor": hypervisor, "sha256": sha256_hex(FIRMWARE)});
+    let (status, img) = request(app, "POST", "/images", Some(body)).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{img}");
+    let img = wait_image(app, img["id"].as_str().unwrap()).await;
+    assert_eq!(img["status"]["state"], "ready", "{img}");
+    img
 }
 
 async fn pull_ready(app: &Router, base: &str, file: &str, name: &str, sha: Option<&str>) -> Value {
@@ -532,11 +547,20 @@ async fn vms_create_attach_and_own_disks() {
     let (app, manager) = create_app(tmp.path());
     pull_ready(&app, &base, "good.qcow2", "base", None).await;
 
+    // An image boots through firmware: none pulled yet, so refused.
+    let (status, err) = request(&app, "POST", "/vms", Some(json!({
+        "name": "web 1", "vcpu_count": 1, "mem_size_mib": 512, "image": "base", "root_disk_size_gib": 1
+    }))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{err}");
+    assert!(err["message"].as_str().unwrap().contains("no firmware image"), "{err}");
+    let fw = pull_firmware(&app, &base, "edk2", "cloudhypervisor").await;
+
     // VM from an image: owned, linked root disk named after the VM.
     let (status, vm) = request(&app, "POST", "/vms", Some(json!({
         "name": "web 1", "vcpu_count": 1, "mem_size_mib": 512, "image": "base", "root_disk_size_gib": 1
     }))).await;
     assert_eq!(status, StatusCode::CREATED, "{vm}");
+    assert_eq!(vm["firmware"], fw["id"], "the default firmware image");
     let vm_id = vm["id"].as_str().unwrap().to_string();
     let root_id = vm["root_disk"].as_str().unwrap().to_string();
     // Recorded with the VM, made by the disk controller.
@@ -547,7 +571,13 @@ async fn vms_create_attach_and_own_disks() {
     let internal = manager.get_vm(&vm_id).await.unwrap();
     assert_eq!(internal.spec.config.rootfs_path, root["path"].as_str().unwrap());
     assert!(internal.spec.config.owns_root_disk);
-    assert!(internal.spec.config.firmware_path.is_some(), "image implies firmware boot");
+    assert_eq!(internal.spec.config.firmware_path.as_deref(), fw["path"].as_str(), "image implies firmware boot");
+    assert_eq!(internal.spec.config.firmware_image.as_deref(), fw["id"].as_str());
+    // In use: the firmware image stays.
+    let (status, err) = request(&app, "DELETE", "/images/edk2", None).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{err}");
+    let (_, img) = request(&app, "GET", "/images/edk2", None).await;
+    assert_eq!(img["used_by_vms"], json!(["web 1"]));
 
     // Attached: no delete; a Created VM's disk can still be resized.
     let (status, _) = request(&app, "DELETE", &format!("/disks/{root_id}"), None).await;
@@ -644,4 +674,135 @@ async fn deleting_an_image_cancels_its_download() {
 
     let img = pull_ready(&app, &base, "good.qcow2", "doomed", None).await;
     assert_eq!(img["name"], "doomed", "the name is free again");
+}
+
+#[tokio::test]
+async fn firmware_images() {
+    if !tools_present() {
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    let fx = fixtures(tmp.path());
+    let (base, _) = start_server(&fx).await;
+    let (app, _manager) = create_app(tmp.path());
+
+    let (status, cat) = request(&app, "GET", "/images/firmware-catalog", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(cat.as_array().unwrap().iter().any(|e| e["key"] == "cloudhv-edk2" && e["hypervisor"] == "cloudhypervisor"), "{cat}");
+
+    // A firmware download names its hypervisor.
+    let (status, err) = request(&app, "POST", "/images", Some(json!({"url": format!("{base}/fw.fd"), "kind": "firmware"}))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{err}");
+    let fw = pull_firmware(&app, &base, "ovmf-test", "qemu").await;
+    assert_eq!((fw["kind"].as_str(), fw["hypervisor"].as_str()), (Some("firmware"), Some("qemu")));
+    assert_eq!(fw["sha256"], sha256_hex(FIRMWARE));
+    assert!(fw["path"].as_str().unwrap().ends_with(".fd"));
+    let mode = std::fs::metadata(fw["path"].as_str().unwrap()).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o444);
+
+    // Not a disk source, and only for its own hypervisor.
+    let (status, err) = request(&app, "POST", "/disks", Some(json!({"name": "d", "image": "ovmf-test"}))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{err}");
+    pull_ready(&app, &base, "good.qcow2", "base", None).await;
+    let (status, err) = request(&app, "POST", "/vms", Some(json!({
+        "name": "wrong-hv", "vcpu_count": 1, "mem_size_mib": 512, "image": "base", "firmware": "ovmf-test"
+    }))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{err}");
+    assert!(err["message"].as_str().unwrap().contains("built for qemu"), "{err}");
+    let (status, err) = request(&app, "POST", "/vms", Some(json!({
+        "name": "both", "vcpu_count": 1, "mem_size_mib": 512, "image": "base", "hypervisor": "qemu",
+        "firmware": "ovmf-test", "firmware_path": "/x.fd"
+    }))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{err}");
+    let (status, vm) = request(&app, "POST", "/vms", Some(json!({
+        "name": "q", "vcpu_count": 1, "mem_size_mib": 512, "image": "base", "hypervisor": "qemu", "firmware": "ovmf-test"
+    }))).await;
+    assert_eq!(status, StatusCode::CREATED, "{vm}");
+    assert_eq!(vm["firmware"], fw["id"]);
+
+    // Free once the VM is gone; deleting removes the file.
+    let (status, _) = request(&app, "DELETE", &format!("/vms/{}?wait=30", vm["id"].as_str().unwrap()), None).await;
+    assert!(status.is_success(), "{status}");
+    let (status, _) = request(&app, "DELETE", "/images/ovmf-test?wait=30", None).await;
+    assert!(status.is_success(), "{status}");
+    assert!(!Path::new(fw["path"].as_str().unwrap()).exists());
+}
+
+/// `{"firmware": "ovmf"}` copies the host's OVMF code and its variable
+/// template into the image directory, ready at once.
+#[tokio::test]
+async fn ovmf_firmware_is_imported_from_the_host_package() {
+    let Some(code) = glidex_control_plane::hypervisor::qemu::OVMF_CODE_CANDIDATES.iter().map(Path::new).find(|p| p.is_file()) else {
+        eprintln!("skipping: no OVMF installed");
+        return;
+    };
+    let tmp = TempDir::new().unwrap();
+    let (app, _manager) = create_app(tmp.path());
+    let (status, img) = request(&app, "POST", "/images", Some(json!({"firmware": "ovmf"}))).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{img}");
+    assert_eq!(img["status"]["state"], "ready", "{img}");
+    assert_eq!((img["name"].as_str(), img["hypervisor"].as_str()), (Some("ovmf"), Some("qemu")));
+    assert_eq!(img["source"]["url"], code.to_str().unwrap());
+    assert_eq!(std::fs::read(img["path"].as_str().unwrap()).unwrap(), std::fs::read(code).unwrap());
+    let vars = img["path"].as_str().unwrap().replace(".fd", ".vars.fd");
+    assert!(Path::new(&vars).is_file(), "the variable store template comes along");
+    let (_, cat) = request(&app, "GET", "/images/firmware-catalog", None).await;
+    let entry = cat.as_array().unwrap().iter().find(|e| e["key"] == "ovmf").unwrap().clone();
+    assert_eq!(entry["downloaded_image_id"], img["id"]);
+}
+
+/// Startup imports local firmware once: not again, and not after the
+/// admin deleted it (spec/images.md §4.1 "Auto-import").
+#[tokio::test]
+async fn local_firmware_is_auto_imported_once() {
+    use glidex_control_plane::images::AutoImport;
+    if !glidex_control_plane::hypervisor::qemu::OVMF_CODE_CANDIDATES.iter().any(|p| Path::new(p).is_file()) {
+        eprintln!("skipping: no OVMF installed");
+        return;
+    }
+    let ovmf = |r: &[(&str, AutoImport)]| r.iter().find(|(k, _)| *k == "ovmf").map(|(_, a)| a.clone());
+    let tmp = TempDir::new().unwrap();
+    let (app, manager) = create_app(tmp.path());
+
+    let first = manager.auto_import_firmware().await;
+    assert_eq!(ovmf(&first), Some(AutoImport::Imported("ovmf".into())), "{first:?}");
+    let (_, img) = request(&app, "GET", "/images/ovmf", None).await;
+    assert_eq!((img["kind"].as_str(), img["status"]["state"].as_str()), (Some("firmware"), Some("ready")));
+    // Cloud Hypervisor's entry depends on this host's ~/.glidex; it never downloads.
+    let (_, all) = request(&app, "GET", "/images", None).await;
+    assert!(all.as_array().unwrap().iter().all(|i| i["status"]["state"] == "ready"), "{all}");
+
+    assert_eq!(ovmf(&manager.auto_import_firmware().await), Some(AutoImport::AlreadyDone));
+    let (status, _) = request(&app, "DELETE", "/images/ovmf?wait=30", None).await;
+    assert!(status.is_success(), "{status}");
+
+    // A restart doesn't bring the deleted image back.
+    manager.stop_controllers().await;
+    drop(app);
+    drop(manager);
+    let (app, manager) = create_app(tmp.path());
+    assert_eq!(ovmf(&manager.auto_import_firmware().await), Some(AutoImport::AlreadyDone));
+    let (status, _) = request(&app, "GET", "/images/ovmf", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+/// An entry whose hypervisor already has firmware is marked done without
+/// importing anything.
+#[tokio::test]
+async fn auto_import_leaves_existing_firmware_alone() {
+    use glidex_control_plane::images::AutoImport;
+    if !tools_present() {
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    let fx = fixtures(tmp.path());
+    let (base, _) = start_server(&fx).await;
+    let (app, manager) = create_app(tmp.path());
+    pull_firmware(&app, &base, "my-ovmf", "qemu").await;
+    let result = manager.auto_import_firmware().await;
+    if let Some((_, r)) = result.iter().find(|(k, _)| *k == "ovmf") {
+        assert_eq!(*r, AutoImport::HaveOne("my-ovmf".into()));
+    }
+    let (_, all) = request(&app, "GET", "/images", None).await;
+    assert_eq!(all.as_array().unwrap().iter().filter(|i| i["hypervisor"] == "qemu").count(), 1, "{all}");
 }

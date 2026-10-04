@@ -4,7 +4,8 @@
 
 use super::catalog::{self, Arch, ChecksumSource, HashAlgo, VersionSource};
 use super::qemu_img::{self, DiskFormat};
-use super::{now, validate_name, Image, ImageError, ImageManager, ImageSource, ImageStatus, PullImageRequest};
+use super::firmware::{self, FirmwareSource, MAX_FIRMWARE_SIZE};
+use super::{now, validate_name, Image, ImageError, ImageKind, ImageManager, ImageSource, ImageStatus, PullImageRequest};
 use futures_util::StreamExt;
 use sha2::{Digest, Sha256, Sha512};
 use std::io::{Read, Write};
@@ -163,8 +164,57 @@ impl ImageManager {
     /// new; an in-flight download of the same catalog key is returned as is.
     pub async fn pull_image(self: &Arc<Self>, req: PullImageRequest) -> Result<(Image, bool), ImageError> {
         let arch = Arch::host().ok_or_else(|| ImageError::InvalidImage("unsupported host architecture".into()))?;
-        let source = match (&req.catalog, &req.url) {
-            (Some(key), None) => {
+        let firmware_url = req.kind == Some(ImageKind::Firmware);
+        if req.hypervisor.is_some() && !firmware_url {
+            return Err(ImageError::InvalidImage("hypervisor is only for a firmware download (kind: firmware)".into()));
+        }
+        // What a firmware catalog entry imports from a host file instead of
+        // downloading: `(code, vars template)`.
+        let mut import: Option<(std::path::PathBuf, Option<std::path::PathBuf>)> = None;
+        let mut hypervisor = None;
+        let source = match (&req.catalog, &req.url, &req.firmware) {
+            (None, None, Some(key)) => {
+                let entry = firmware::find(key)
+                    .ok_or_else(|| ImageError::InvalidImage(format!("unknown firmware: {}", key)))?;
+                if !entry.supports(arch) {
+                    return Err(ImageError::InvalidImage(format!("{} has no firmware for {:?}", key, arch)));
+                }
+                if let Some(existing) = self.images.read().unwrap().values().find(|i| {
+                    i.firmware_key() == Some(key.as_str())
+                        && i.deletion_requested_at.is_none()
+                        && matches!(i.status, ImageStatus::Downloading { .. } | ImageStatus::Verifying)
+                }) {
+                    return Ok((existing.clone(), false));
+                }
+                hypervisor = Some(entry.hypervisor);
+                match entry.source {
+                    FirmwareSource::Download { version, .. } => {
+                        let (url, sha) = entry.download_for(arch).expect("supported arch");
+                        // The installer's copy of the same pinned build.
+                        if let Some(local) = firmware::installer_copy(arch) {
+                            let l = local.clone();
+                            let digest = tokio::task::spawn_blocking(move || sha256_file(&l)).await.map_err(|e| ImageError::Io(e.to_string()))?;
+                            if digest.ok().as_deref() == Some(sha) {
+                                import = Some((local, None));
+                            }
+                        }
+                        ImageSource::Firmware { key: key.clone(), url: url.to_string(), version: version.to_string() }
+                    }
+                    FirmwareSource::Host { package, .. } => {
+                        let code = entry.host_file().ok_or_else(|| {
+                            ImageError::ToolMissing { tool: "OVMF firmware".into(), package: package.into() }
+                        })?;
+                        let vars = crate::hypervisor::qemu::ovmf_vars_template(&code);
+                        let url = code.to_string_lossy().into_owned();
+                        import = Some((code, vars));
+                        ImageSource::Firmware { key: key.clone(), url, version: String::new() }
+                    }
+                }
+            }
+            (Some(_), None, None) if firmware_url => {
+                return Err(ImageError::InvalidImage("kind: firmware takes a url or a firmware key, not a catalog key".into()));
+            }
+            (Some(key), None, None) => {
                 let entry = catalog::find(key)
                     .ok_or_else(|| ImageError::InvalidImage(format!("unknown catalog image: {}", key)))?;
                 let img = entry.for_arch(arch).ok_or_else(|| {
@@ -179,7 +229,12 @@ impl ImageManager {
                 }
                 ImageSource::Catalog { key: key.clone(), url: img.url.to_string(), version: String::new() }
             }
-            (None, Some(url)) => {
+            (None, Some(url), None) => {
+                if firmware_url {
+                    hypervisor = Some(req.hypervisor.ok_or_else(|| {
+                        ImageError::InvalidImage("a firmware download needs hypervisor (cloudhypervisor or qemu)".into())
+                    })?);
+                }
                 let parsed = reqwest::Url::parse(url).map_err(|e| ImageError::InvalidImage(format!("bad URL: {}", e)))?;
                 let (u, allow) = (parsed.clone(), self.settings.allow_private_urls);
                 tokio::task::spawn_blocking(move || check_url(&u, allow))
@@ -198,13 +253,14 @@ impl ImageManager {
                 };
                 ImageSource::Url { url: parsed.to_string(), expected_sha256: sha }
             }
-            _ => return Err(ImageError::InvalidImage("give exactly one of catalog or url".into())),
+            _ => return Err(ImageError::InvalidImage("give exactly one of catalog, firmware or url".into())),
         };
+        let kind = if hypervisor.is_some() { ImageKind::Firmware } else { ImageKind::Disk };
 
         let name = match &req.name {
             Some(n) => n.clone(),
             None => match &source {
-                ImageSource::Catalog { key, .. } => key.clone(),
+                ImageSource::Catalog { key, .. } | ImageSource::Firmware { key, .. } => key.clone(),
                 ImageSource::Url { url, .. } => {
                     let file = catalog::url_file_name(url);
                     let stem = file.split('.').next().unwrap_or(file);
@@ -221,23 +277,29 @@ impl ImageManager {
             }));
         }
 
-        let img = Image {
+        let mut img = Image {
             id: uuid::Uuid::new_v4().to_string(),
             name,
+            kind,
+            hypervisor,
             download: super::DownloadMeta {
                 expected: match &source {
                     ImageSource::Url { expected_sha256: Some(s), .. } => Some((HashAlgo::Sha256, s.clone())),
+                    ImageSource::Firmware { key, .. } if import.is_none() => {
+                        firmware::find(key).and_then(|e| e.download_for(arch)).map(|(_, sha)| (HashAlgo::Sha256, sha.to_string()))
+                    }
                     _ => None,
                 },
                 url: match &source {
                     ImageSource::Url { url, .. } => url.clone(),
-                    ImageSource::Catalog { .. } => String::new(),
+                    ImageSource::Firmware { url, .. } if import.is_none() => url.clone(),
+                    ImageSource::Firmware { .. } | ImageSource::Catalog { .. } => String::new(),
                 },
                 ..Default::default()
             },
             source,
             status: ImageStatus::Downloading { received_bytes: 0, total_bytes: None },
-            format: DiskFormat::Qcow2,
+            format: if kind == ImageKind::Firmware { DiskFormat::Raw } else { DiskFormat::Qcow2 },
             virtual_size_bytes: 0,
             file_size_bytes: 0,
             sha256: String::new(),
@@ -247,10 +309,81 @@ impl ImageManager {
             applied_retry_seq: 0,
             deletion_requested_at: None,
         };
+        if let Some((code, vars)) = import {
+            // A local copy: made before the record exists, so a failure
+            // leaves nothing behind.
+            let (mgr, id) = (self.clone(), img.id.clone());
+            let (size, sha256) = tokio::task::spawn_blocking(move || mgr.import_firmware(&id, &code, vars.as_deref()))
+                .await
+                .map_err(|e| ImageError::Io(e.to_string()))??;
+            img.virtual_size_bytes = size;
+            img.file_size_bytes = size;
+            img.sha256 = sha256;
+            img.status = ImageStatus::Ready;
+            self.insert_image(&img)?;
+            tracing::info!(image = %img.name, source = ?img.source, "firmware imported");
+            return Ok((img, true));
+        }
         self.insert_image(&img)?;
         tracing::info!(image = %img.name, source = ?img.source, "image download queued");
         self.spawn_download(img.id.clone());
         Ok((img, true))
+    }
+
+    /// Import each firmware catalog entry that has a local source, once
+    /// (spec §4.1 "Auto-import"): the installer's copy of the pinned
+    /// `CLOUDHV.fd`, or the host's OVMF. Never downloads. An entry is
+    /// marked done once imported, or once a firmware image for its
+    /// hypervisor exists, so a deleted image is not brought back.
+    pub async fn auto_import_firmware(self: &Arc<Self>) -> Vec<(&'static str, super::AutoImport)> {
+        use super::AutoImport;
+        let Some(arch) = Arch::host() else { return Vec::new() };
+        let mut out = Vec::new();
+        for entry in firmware::FIRMWARE_CATALOG.iter().filter(|e| e.supports(arch)) {
+            let marker = format!("firmware-auto-import/{}", entry.key);
+            let result = match self.meta_get(&marker) {
+                Err(e) => AutoImport::Failed(e.to_string()),
+                Ok(Some(_)) => AutoImport::AlreadyDone,
+                Ok(None) => {
+                    let existing = self
+                        .list_images()
+                        .into_iter()
+                        .find(|i| i.is_firmware() && i.hypervisor == Some(entry.hypervisor) && i.deletion_requested_at.is_none());
+                    let local = match entry.source {
+                        FirmwareSource::Download { .. } => {
+                            let want = entry.download_for(arch).map(|(_, sha)| sha.to_string());
+                            match firmware::installer_copy(arch) {
+                                Some(p) => tokio::task::spawn_blocking(move || sha256_file(&p).ok())
+                                    .await
+                                    .ok()
+                                    .flatten()
+                                    .is_some_and(|d| Some(d) == want),
+                                None => false,
+                            }
+                        }
+                        FirmwareSource::Host { .. } => entry.host_file().is_some(),
+                    };
+                    match existing {
+                        Some(img) => AutoImport::HaveOne(img.name),
+                        None if !local => AutoImport::NoLocalSource,
+                        None => {
+                            let req = PullImageRequest { firmware: Some(entry.key.to_string()), ..Default::default() };
+                            match self.pull_image(req).await {
+                                Ok((img, _)) => AutoImport::Imported(img.name),
+                                Err(e) => AutoImport::Failed(e.to_string()),
+                            }
+                        }
+                    }
+                }
+            };
+            if matches!(result, AutoImport::Imported(_) | AutoImport::HaveOne(_)) {
+                if let Err(e) = self.meta_put(&marker, now().to_string().as_bytes()) {
+                    tracing::warn!(firmware = entry.key, "could not record the firmware auto-import: {}", e);
+                }
+            }
+            out.push((entry.key, result));
+        }
+        out
     }
 
     /// Whether a download task runs for image `id`.
@@ -329,15 +462,22 @@ impl ImageManager {
         let mgr = self.clone();
         let id_owned = id.to_string();
         let max = self.settings.max_image_size;
-        let (info, sha256) = tokio::task::spawn_blocking(move || mgr.verify_and_install(&id_owned, sha256, max))
-            .await
-            .map_err(|e| ImageError::Io(e.to_string()))??;
+        let firmware = img.is_firmware();
+        let (virtual_size, actual_size, sha256) = tokio::task::spawn_blocking(move || {
+            if firmware {
+                mgr.install_firmware(&id_owned, sha256)
+            } else {
+                mgr.verify_and_install(&id_owned, sha256, max).map(|(info, sha)| (info.virtual_size, info.actual_size, sha))
+            }
+        })
+        .await
+        .map_err(|e| ImageError::Io(e.to_string()))??;
 
         let mut img = self.get_image(id)?;
-        img.virtual_size_bytes = info.virtual_size;
-        img.file_size_bytes = info.actual_size;
+        img.virtual_size_bytes = virtual_size;
+        img.file_size_bytes = actual_size;
         img.sha256 = sha256;
-        img.format = DiskFormat::Qcow2;
+        img.format = if firmware { DiskFormat::Raw } else { DiskFormat::Qcow2 };
         img.status = ImageStatus::Ready;
         self.put_image(&img)?;
         tracing::info!(image = %img.name, size = img.virtual_size_bytes, "image ready");
@@ -389,9 +529,10 @@ impl ImageManager {
             }
         }
         let total = resp.content_length().map(|n| n + *received);
+        let limit = if img.is_firmware() { MAX_FIRMWARE_SIZE } else { self.settings.max_image_size.saturating_mul(2) };
         if let Some(t) = total {
-            if t > self.settings.max_image_size.saturating_mul(2) {
-                return Err(ImageError::InvalidImage(format!("download is {} bytes, over GLIDEX_MAX_IMAGE_SIZE", t)));
+            if t > limit {
+                return Err(ImageError::InvalidImage(format!("download is {} bytes, over the {} byte limit", t, limit)));
             }
         }
 
@@ -413,8 +554,8 @@ impl ImageManager {
             file.write_all(&chunk).map_err(|e| ImageError::Io(format!("{}: {}", part.display(), e)))?;
             hashers.update(&chunk);
             *received += chunk.len() as u64;
-            if *received > self.settings.max_image_size.saturating_mul(2) {
-                return Err(ImageError::InvalidImage("download exceeds GLIDEX_MAX_IMAGE_SIZE".into()));
+            if *received > limit {
+                return Err(ImageError::InvalidImage(format!("download exceeds the {} byte limit", limit)));
             }
             img.status = ImageStatus::Downloading { received_bytes: *received, total_bytes: total };
             if last_persist.elapsed() >= PERSIST_EVERY {
@@ -493,6 +634,46 @@ impl ImageManager {
             *v = version;
         }
         Ok(())
+    }
+
+    /// Install a downloaded firmware file (spec §5, firmware): no image
+    /// header to check, only a plausible size. Returns `(size, size, sha256)`.
+    fn install_firmware(&self, id: &str, sha256: String) -> Result<(u64, u64, String), ImageError> {
+        let part = self.part_path(id);
+        let size = std::fs::metadata(&part).map_err(|e| ImageError::Io(e.to_string()))?.len();
+        if size == 0 || size > MAX_FIRMWARE_SIZE {
+            return Err(ImageError::InvalidImage(format!("{} bytes is not a firmware image", size)));
+        }
+        std::fs::set_permissions(&part, std::fs::Permissions::from_mode(0o444)).map_err(|e| ImageError::Io(e.to_string()))?;
+        std::fs::rename(&part, self.firmware_path(id)).map_err(|e| ImageError::Io(e.to_string()))?;
+        Ok((size, size, sha256))
+    }
+
+    /// Copy host firmware (and its variable-store template) into the image
+    /// directory, read-only. Returns `(size, sha256)` of the code file.
+    fn import_firmware(&self, id: &str, code: &Path, vars: Option<&Path>) -> Result<(u64, String), ImageError> {
+        let io = |p: &Path, e: std::io::Error| ImageError::Io(format!("{}: {}", p.display(), e));
+        let copy = |from: &Path, to: &Path| -> Result<u64, ImageError> {
+            let size = std::fs::metadata(from).map_err(|e| io(from, e))?.len();
+            if size == 0 || size > MAX_FIRMWARE_SIZE {
+                return Err(ImageError::InvalidImage(format!("{} ({} bytes) is not a firmware image", from.display(), size)));
+            }
+            let name = to.file_name().and_then(|n| n.to_str()).unwrap_or(id);
+            let tmp = self.settings.image_dir.join(format!(".{}.import", name));
+            std::fs::copy(from, &tmp).map_err(|e| io(from, e))?;
+            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o444)).map_err(|e| io(&tmp, e))?;
+            std::fs::rename(&tmp, to).map_err(|e| io(to, e))?;
+            Ok(size)
+        };
+        let dest = self.firmware_path(id);
+        let size = copy(code, &dest)?;
+        if let Some(vars) = vars {
+            if let Err(e) = copy(vars, &self.firmware_vars_template(id)) {
+                let _ = std::fs::remove_file(&dest);
+                return Err(e);
+            }
+        }
+        Ok((size, sha256_file(&dest)?))
     }
 
     /// Steps 4–6 of spec §5, blocking. Returns the final `qemu-img info`

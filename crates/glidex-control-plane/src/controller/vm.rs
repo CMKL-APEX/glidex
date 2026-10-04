@@ -540,6 +540,10 @@ impl VmManager {
         config.data_disk_bindings = data;
         if config.firmware_path.is_some() && vm.hypervisor() == HypervisorType::Qemu {
             config.firmware_vars_path = Some(self.firmware_vars_path(&vm.id));
+            if let Some(id) = &config.firmware_image {
+                let template = self.images.firmware_vars_template(id);
+                config.firmware_vars_template = template.exists().then(|| template.to_string_lossy().into_owned());
+            }
         }
 
         // 5.1 the cloud-init seed (regenerated on every launch).
