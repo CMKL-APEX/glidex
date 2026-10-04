@@ -123,8 +123,14 @@ export default function Audit() {
                   <tr key={key} className="border-b border-gray-50 hover:bg-gray-50 cursor-pointer" onClick={() => setOpen(open === key ? null : key)}>
                     <td className="px-3 py-2 whitespace-nowrap text-gray-600">{new Date(e.time).toLocaleString()}</td>
                     <td className="px-3 py-2">
-                      {e.principal.name ?? userName(e.principal.user)}
-                      {e.principal.method && <span className="ml-1 text-xs text-gray-400">{e.principal.method}</span>}
+                      {e.principal == null ? (
+                        <span className="text-gray-400">anonymous</span>
+                      ) : e.principal.system ? (
+                        <span className="text-gray-500">system: {e.principal.system}</span>
+                      ) : (
+                        e.principal.name ?? userName(e.principal.user)
+                      )}
+                      {e.principal?.method && <span className="ml-1 text-xs text-gray-400">{e.principal.method}</span>}
                     </td>
                     <td className="px-3 py-2 font-mono text-xs">{e.action}</td>
                     <td className="px-3 py-2 font-mono text-xs">{e.target ?? "—"}</td>
