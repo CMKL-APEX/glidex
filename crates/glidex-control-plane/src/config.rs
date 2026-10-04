@@ -106,12 +106,30 @@ pub struct AuthConfig {
     /// Empty (the default): `https://<h>:5173` for every name and address
     /// of this host, filled in by `Config::load` (spec §5.6).
     pub allowed_origins: Vec<String>,
+    /// `allowed_origins` were computed from this host's names: also allow
+    /// `https://<ip>:5173` for an address the host has now (spec §5.6).
+    #[serde(skip)]
+    pub origins_from_host: bool,
     pub session: SessionConfig,
     pub tokens: TokenConfig,
     pub pam: PamConfig,
     pub oidc: OidcConfig,
 }
 
+
+impl AuthConfig {
+    /// Whether a browser `Origin` may use the API.
+    pub fn origin_allowed(&self, origin: &str) -> bool {
+        self.allowed_origins.iter().any(|a| a == origin)
+            || (self.origins_from_host && ui_origin_ip(origin).is_some_and(glidex_tls::is_local_ip))
+    }
+}
+
+/// The IP address of an `https://<ip>:5173` origin.
+fn ui_origin_ip(origin: &str) -> Option<std::net::IpAddr> {
+    let host = origin.strip_prefix("https://")?.strip_suffix(&format!(":{}", UI_PORT))?;
+    host.trim_start_matches('[').trim_end_matches(']').parse().ok()
+}
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields, default)]
@@ -321,6 +339,7 @@ impl Config {
         }
         if cfg.auth.allowed_origins.is_empty() {
             cfg.auth.allowed_origins = glidex_tls::LocalNames::discover().origins(UI_PORT);
+            cfg.auth.origins_from_host = true;
         }
         Ok(cfg)
     }
@@ -481,6 +500,22 @@ mod tests {
         assert!(c.check_listeners().is_err());
         c.listen = vec!["127.0.0.1:8841".parse().unwrap(), "[::1]:8841".parse().unwrap()];
         assert!(c.check_listeners().is_ok());
+    }
+
+    #[test]
+    fn origins_from_this_host() {
+        let mut a = AuthConfig { allowed_origins: vec!["https://glidex.example.org:5173".into()], ..Default::default() };
+        assert!(a.origin_allowed("https://glidex.example.org:5173"));
+        assert!(!a.origin_allowed("https://127.0.0.1:5173"));
+        a.origins_from_host = true;
+        assert!(a.origin_allowed("https://127.0.0.1:5173"));
+        assert!(a.origin_allowed("https://[::1]:5173"));
+        assert!(!a.origin_allowed("http://127.0.0.1:5173"));
+        assert!(!a.origin_allowed("https://127.0.0.1:5174"));
+        assert!(!a.origin_allowed("https://192.0.2.1:5173"));
+        assert!(!a.origin_allowed("https://evil.example:5173"));
+        // A config file can't switch it on.
+        assert!(parse(r#"{"auth": {"origins_from_host": true}}"#).is_err());
     }
 
     #[test]

@@ -457,6 +457,12 @@ fn ensure_sudo() -> Result<()> {
     if is_root() || SUDO_READY.swap(true, Ordering::SeqCst) {
         return Ok(());
     }
+    // Passwordless sudo needs no prompt. `sudo -v` would still ask when
+    // sudoers also has a rule that needs a password (verifypw=all), which
+    // fails without a terminal.
+    if Command::new("sudo").args(["-n", "true"]).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success()) {
+        return Ok(());
+    }
     println!("{}", "Administrator access (sudo) is needed for system changes.".yellow());
     if let Err(e) = run("sudo", &["-v"]) {
         SUDO_READY.store(false, Ordering::SeqCst);
@@ -2204,7 +2210,7 @@ mod tests {
             "ProtectHome=yes",
             "ReadWritePaths=/var/lib/glidex-control-plane",
             "DevicePolicy=closed",
-            "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6",
+            "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK",
             "LockPersonality=yes",
             "RestrictSUIDSGID=yes",
             "SystemCallFilter=@system-service",
@@ -2248,7 +2254,7 @@ mod tests {
             "After=network-online.target glidex-control-plane.service",
             "Wants=glidex-control-plane.service",
             "CapabilityBoundingSet=",
-            "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6",
+            "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK",
             "InaccessiblePaths=-/run/glidex -/var/lib/glidex-control-plane -/run/glidex-authd",
             "NoNewPrivileges=yes",
             "ProtectSystem=strict",

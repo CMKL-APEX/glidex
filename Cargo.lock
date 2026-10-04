@@ -1361,6 +1361,7 @@ dependencies = [
  "time",
  "tokio",
  "tokio-rustls",
+ "tracing",
  "x509-parser",
 ]
 

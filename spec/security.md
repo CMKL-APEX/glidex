@@ -169,6 +169,12 @@ redirect: API clients should be told, not silently upgraded.
 - Subject alternative names: `localhost`, the host name and FQDN,
   `127.0.0.1`, `::1`, and every non-link-local address of the host's
   interfaces at generation time.
+- The interface addresses come from netlink (`getifaddrs`), so both
+  units allow `AF_NETLINK` in `RestrictAddressFamilies=`; without
+  `CAP_NET_ADMIN` it can only read. Why: without it the lookup fails and
+  only `localhost` and the host name are known, so every LAN or VPN
+  address gets `421` and is missing from the certificate. A failed
+  lookup is logged as a warning.
 - Regenerated only when missing, unreadable or within 30 days of
   expiry. Invariant: the fingerprint stays stable across restarts and
   address changes, so clients that pinned it keep working; to cover a
@@ -317,13 +323,17 @@ selects TCP.
 - **Host check (UI):** `GLIDEX_UI_HOSTS` allowlist (default
   `localhost`, `127.0.0.1`, `[::1]`, the host name and FQDN, and the
   addresses of the host's interfaces, read at startup; any port).
-  Other `Host` values get `421`. This blocks DNS rebinding: an
-  attacker's domain never matches, and names or addresses that do
-  belong to the host are not a rebinding risk.
+  With the default list, an IP address the host has *at request
+  time* is also accepted, so an interface that comes up after startup
+  (a VPN, a DHCP change) works without a restart; an explicit
+  `GLIDEX_UI_HOSTS` is taken as is. Other `Host` values get `421`. This
+  blocks DNS rebinding: an attacker's domain never matches, and names or
+  addresses that do belong to the host are not a rebinding risk.
 - **Origin check (control plane):** state-changing methods and every
   WebSocket upgrade must carry an `Origin` in `auth.allowed_origins`
   (default: the UI's origins, `https://<h>:5173` for every default
-  `GLIDEX_UI_HOSTS` entry `<h>`, computed at startup). Bearer-token requests without `Origin`
+  `GLIDEX_UI_HOSTS` entry `<h>`, computed at startup, plus
+  `https://<ip>:5173` for any address the host has at request time). Bearer-token requests without `Origin`
   (non-browser clients) are allowed.
 - **CSRF:** requests authenticated by cookie and not `GET`/`HEAD` must
   send `X-Glidex-CSRF` equal to the session's CSRF value (returned by
@@ -991,7 +1001,7 @@ may ask it for what.
 |---|---|
 | `glidex-control-plane` | `RuntimeDirectory=glidex-cp` (`0755`, preserved across restarts — required, running VMs' directories live there) holds `api.sock`, `ui.sock` and `vms/` (`0700`); per-VM files in `/run/glidex-cp/vms/<id>/` (`0700`): `launch.json`, `instance.json`, `shim.sock`, API socket, console socket, console log, cloud-init seed. `UMask=0077`. `PrivateTmp=yes`, `ProtectSystem=strict`, `ProtectHome=yes`, `ReadWritePaths=/var/lib/glidex-control-plane`, `DevicePolicy=closed` (no device), `NoNewPrivileges=yes` and the syscall, address-family and kernel restrictions below, `LoadCredential=` for `tls-key`, `oidc-client-secret`. |
 | `glidex-vm@<id>` (new) | The hypervisor sandbox: `User=glidex`, `SupplementaryGroups=kvm`, `Slice=glidex-vms.slice`, `UMask=0077`, `PrivateTmp=yes`, `ProtectSystem=strict`, `ProtectHome=yes`, `ReadWritePaths=/var/lib/glidex-control-plane /run/glidex-cp/vms/%i -/run/glidex/vhost`, `DevicePolicy=closed`, `DeviceAllow=` `/dev/kvm`, `/dev/vfio/vfio`, `char-vfio`, `/dev/net/tun`, `/dev/vhost-net`. No `NoNewPrivileges=` (below). `Restart=no`, never enabled. |
-| `glidex-ui` | `User=glidex-ui`, `StateDirectory=glidex-ui` (`0700`, its self-signed certificate, §5.1.1), `InaccessiblePaths=/run/glidex /var/lib/glidex-control-plane /run/glidex-authd`, `CapabilityBoundingSet=`, `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6`, existing `ProtectSystem`/`PrivateDevices` kept. |
+| `glidex-ui` | `User=glidex-ui`, `StateDirectory=glidex-ui` (`0700`, its self-signed certificate, §5.1.1), `InaccessiblePaths=/run/glidex /var/lib/glidex-control-plane /run/glidex-authd`, `CapabilityBoundingSet=`, `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK`, existing `ProtectSystem`/`PrivateDevices` kept. |
 | `glidex-netd` | `ProtectHome=yes`, `CapabilityBoundingSet` limited to what the op set needs (to verify on a host: `CAP_NET_ADMIN CAP_NET_RAW CAP_SYS_ADMIN CAP_DAC_OVERRIDE CAP_CHOWN CAP_FOWNER`, plus package-manager needs for `install_ovs`). |
 | `glidex-authd` | Socket-activated, `PrivateNetwork=yes`, `ProtectSystem=strict`, `ProtectHome=read-only`, `NoNewPrivileges=yes` (PAM modules that need setuid helpers are not supported). |
 
@@ -1012,7 +1022,7 @@ may ask it for what.
 - **The control-plane unit runs no hypervisor** (reconciliation.md
   §13.3): `DevicePolicy=closed` with no device allowed, no
   `/run/glidex/vhost`, and `NoNewPrivileges=yes`,
-  `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6`,
+  `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK`,
   `LockPersonality=`, `RestrictSUIDSGID=`,
   `SystemCallFilter=@system-service`, `SystemCallArchitectures=native`,
   `ProtectKernel{Tunables,Modules,Logs}=`, `ProtectControlGroups=`,
