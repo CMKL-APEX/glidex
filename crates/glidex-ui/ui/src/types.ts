@@ -638,7 +638,8 @@ export interface AuditEntry {
   /** Unix milliseconds. */
   time: number;
   request_id: string;
-  principal: { user?: string | null; name?: string | null; token?: string | null; method?: string; [k: string]: unknown };
+  /** Null for unauthenticated requests; `{ system }` for the control plane's own writes. */
+  principal: { user?: string | null; name?: string | null; token?: string | null; method?: string; system?: string; [k: string]: unknown } | null;
   source: string;
   action: string;
   project?: string;
