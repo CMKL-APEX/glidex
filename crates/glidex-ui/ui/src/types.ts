@@ -1,4 +1,34 @@
-export type VmState = "created" | "running" | "paused" | "stopped";
+/** What a VM is doing, as the controller last saw it (spec/reconciliation.md §7.4). */
+export type VmState =
+  | "created"
+  | "starting"
+  | "running"
+  | "paused"
+  | "stopping"
+  | "stopped"
+  | "failed"
+  | "unknown";
+
+/** What a VM should be doing (`spec.power`). */
+export type PowerState = "running" | "paused" | "stopped";
+
+/** A status condition (`Ready`, `DisksReady`, `CrashLoopBackOff`, …). */
+export interface Condition {
+  kind: string;
+  status: "True" | "False" | "Unknown";
+  reason: string;
+  message: string;
+  last_transition_at: number;
+}
+
+export interface ExitRecord {
+  at: number;
+  instance_id: string;
+  cause: string;
+  code?: number;
+  signal?: number;
+  message?: string;
+}
 
 export type HypervisorType = "cloudhypervisor" | "qemu";
 
@@ -13,6 +43,18 @@ export interface VmResponse {
   /** Owning project id. */
   project: string;
   state: VmState;
+  desired_state?: PowerState;
+  generation?: number;
+  observed_generation?: number;
+  resource_version?: number;
+  restart_required?: boolean;
+  /** Deletion requested; the controller is tearing it down. */
+  deleting?: boolean;
+  restart_policy?: "on_failure" | "never";
+  on_host_boot?: "resume" | "stop";
+  stop_grace_secs?: number;
+  conditions?: Condition[];
+  last_exit?: ExitRecord;
   vcpu_count: number;
   mem_size_mib: number;
   hypervisor: HypervisorType;
@@ -50,6 +92,11 @@ export interface Network {
   /** Projects that accepted a share of this project network. */
   shares?: string[];
   share_offers?: { project: string; offered_by: string; offered_at: number; expires_at: number }[];
+  /** What the network controller last saw in netd (spec/reconciliation.md §10.3). */
+  phase?: "pending" | "ready" | "degraded" | "netd_unavailable";
+  conditions?: Condition[];
+  /** Deletion requested; the network controller is removing it (from netd, then the record). */
+  deletion_requested_at?: number;
 }
 
 /** Whether VMs of `project` may attach to `n` (mirrors base.network-grant). */
@@ -119,6 +166,12 @@ export interface CreateVmRequest {
   kernel_args?: string;
   hypervisor?: HypervisorType;
   vfio_devices?: string[];
+  /** Desired power state; default `stopped` (spec/reconciliation.md §7.4). */
+  power?: PowerState;
+  /** After a crash: restart (default) or leave it stopped. */
+  restart_policy?: "on_failure" | "never";
+  /** After a host reboot, if it should be running: start it again (default) or not. */
+  on_host_boot?: "resume" | "stop";
 }
 
 // ---- images and disks (spec/images.md) ------------------------------------
@@ -148,6 +201,8 @@ export interface ImageInfo {
   verified: boolean;
   path: string;
   linked_disks: string[];
+  /** Deletion requested; the image controller is removing it. */
+  deleting?: boolean;
 }
 
 export interface CatalogItem {
@@ -175,14 +230,66 @@ export interface DiskInfo {
   origin: { kind: "blank" } | { kind: "image"; image_id: string; mode: "linked" | "full" };
   attached_to?: string | null;
   pending_growpart: boolean;
-  status: "ready" | "busy" | "missing";
+  /** `pending` waits for its image; `failed` and the `Ready` condition say why. */
+  status: "pending" | "creating" | "ready" | "resizing" | "busy" | "missing" | "failed";
+  phase: "pending" | "creating" | "ready" | "resizing" | "missing" | "failed";
+  conditions?: Condition[];
+  /** A resize not applied yet: a running VM has the disk open. */
+  pending_size_bytes?: number;
+  /** The VM that owns it (created with the VM from an image). */
+  owner?: string;
+  deleting?: boolean;
   busy_op?: string;
   path: string;
   project?: string;
   created_at: number;
   partition_table?: { kind: "gpt" | "mbr"; partitions: PartitionInfo[]; free_tail_bytes: number };
-  extend_root?: "grown" | "already_full" | "on_boot" | "skipped";
   warnings?: string[];
+}
+
+/** Still changing: the disk controller is working on it. */
+export function diskActivity(d: DiskInfo): string | null {
+  if (d.deleting) return "Deleting";
+  switch (d.status) {
+    case "pending":
+      return "Waiting for its image";
+    case "creating":
+      return "Creating";
+    case "resizing":
+      return "Resizing";
+    case "busy":
+      return d.busy_op ? `Busy (${d.busy_op})` : "Busy";
+  }
+  if (d.pending_size_bytes !== undefined) return "Resize waits for its VM to stop";
+  return null;
+}
+
+/** Waiting on something outside the control plane (a VM to stop), not
+ * working: worth showing, not worth polling fast for. */
+export function diskWaiting(d: DiskInfo): boolean {
+  return !d.deleting && d.phase === "ready" && d.status === "ready" && d.pending_size_bytes !== undefined;
+}
+
+/** A deletion, a download or its verification in progress. */
+export function imageActivity(i: ImageInfo): string | null {
+  if (i.deleting) return "Deleting";
+  if (i.status.state === "downloading") {
+    const s = i.status;
+    return s.total_bytes ? `Downloading ${Math.floor((s.received_bytes * 100) / s.total_bytes)}%` : "Downloading";
+  }
+  return i.status.state === "verifying" ? "Verifying" : null;
+}
+
+/** A network deletion in progress (it waits for netd, or for a VM to leave). */
+export function networkActivity(n: Network): string | null {
+  if (!n.deletion_requested_at) return null;
+  const why = notReady(n.conditions);
+  return why && why.reason !== "Converged" ? `Deleting (${why.reason})` : "Deleting";
+}
+
+/** The `Ready` condition when it isn't True: why an object hasn't converged. */
+export function notReady(conditions?: Condition[]): Condition | undefined {
+  return conditions?.find((c) => c.kind === "Ready" && c.status !== "True");
 }
 
 export interface CreateDiskRequest {
@@ -255,7 +362,63 @@ export function stateColor(state: VmState): string {
       return "bg-yellow-500";
     case "created":
       return "bg-blue-500";
+    case "starting":
+    case "stopping":
+      return "bg-sky-400";
+    case "failed":
+    case "unknown":
+      return "bg-red-700";
   }
+}
+
+/** Whether the VM is where its desired state says (nothing to wait for). */
+export function settled(vm: VmResponse): boolean {
+  return vmActivity(vm) === null;
+}
+
+/** What the controller is still doing for a VM (spec/reconciliation.md
+ * §7.4), or `null` once it has converged. */
+export function vmActivity(vm: VmResponse): string | null {
+  if (vm.deleting) return "Deleting";
+  const desired = vm.desired_state;
+  if (!desired) return null;
+  const there =
+    desired === "stopped" ? vm.state === "stopped" || vm.state === "created" : vm.state === desired;
+  if (!there) {
+    if (desired === "stopped") return "Stopping";
+    if (desired === "paused") return vm.state === "running" ? "Pausing" : "Starting";
+    return vm.state === "paused" ? "Resuming" : "Starting";
+  }
+  if (vm.generation !== undefined && vm.observed_generation !== undefined && vm.observed_generation < vm.generation) {
+    return "Applying changes";
+  }
+  const ready = vm.conditions?.find((c) => c.kind === "Ready");
+  if (ready && ready.status !== "True") return "Reconciling";
+  return null;
+}
+
+/** What keeps the VM from its desired state (the `Ready` condition). */
+export function notReadyReason(vm: VmResponse): string | null {
+  const ready = vm.conditions?.find((c) => c.kind === "Ready");
+  if (!ready || ready.status === "True") return null;
+  return ready.message ? `${ready.reason}: ${ready.message}` : ready.reason;
+}
+
+/** "Crashed (exit 1) 5 min ago": the instance's last exit, for people. */
+export function describeExit(e: ExitRecord): string {
+  const cause: Record<string, string> = {
+    requested: "Stopped on request",
+    terminated: "Stopped by the host",
+    clean_exit: "Guest powered off",
+    crashed: "Crashed",
+    launch_failed: "Failed to launch",
+    host_reboot: "Host rebooted",
+    lost: "Lost",
+  };
+  const detail = e.signal !== undefined ? `signal ${e.signal}` : e.code !== undefined && e.code !== 0 ? `exit ${e.code}` : null;
+  return `${cause[e.cause] ?? e.cause}${detail ? ` (${detail})` : ""}, ${new Date(e.at * 1000).toLocaleString()}${
+    e.message ? `: ${e.message}` : ""
+  }`;
 }
 
 export function stateLabel(state: VmState): string {

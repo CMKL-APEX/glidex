@@ -35,5 +35,13 @@
     }
   },
   "pci": { "allow": [] },
-  "audit": { "retention_days": 90 }
+  "audit": { "retention_days": 90 },
+  "reconcile": {
+    "vm_runner": "auto",
+    "workers": 4,
+    "resync_secs": 30,
+    "on_host_boot": "resume",
+    "host_shutdown_grace_secs": 60
+  },
+  "console": { "log_max_bytes": 16777216 }
 }

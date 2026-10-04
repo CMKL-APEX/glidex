@@ -1,0 +1,13 @@
+[package]
+name = "glidex-hv-client"
+version.workspace = true
+edition.workspace = true
+description = "Blocking clients for Cloud Hypervisor's HTTP API and QEMU's QMP (spec/reconciliation.md §5.2)"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

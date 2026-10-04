@@ -1,7 +1,8 @@
 import { Link } from "react-router-dom";
 import type { VmResponse } from "../types";
-import { stateColor, stateLabel, HYPERVISOR_LABELS } from "../types";
+import { notReadyReason, HYPERVISOR_LABELS } from "../types";
 import VmActions, { type VmAction } from "./VmActions";
+import VmStateBadge from "./VmStateBadge";
 
 interface VmCardProps {
   vm: VmResponse;
@@ -15,19 +16,20 @@ export default function VmCard({ vm, onAction }: VmCardProps) {
     <div className="bg-white rounded-xl shadow-md p-6 border border-gray-100 hover:shadow-lg transition-shadow duration-200">
       <div className="flex items-start justify-between">
         <div className="flex-1 min-w-0">
-          <div className="flex items-center space-x-3">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
             <h3 className="text-lg font-semibold text-gray-900 truncate">
               {vm.name}
             </h3>
-            <span
-              className={`px-2 py-1 text-xs font-medium text-white rounded-full ${stateColor(vm.state)}`}
-            >
-              {stateLabel(vm.state)}
-            </span>
+            <VmStateBadge vm={vm} />
           </div>
           <p className="mt-1 text-sm text-gray-500 font-mono truncate">
             {vm.id}
           </p>
+          {notReadyReason(vm) && (
+            <p className="mt-1 text-xs text-amber-700 truncate" title={notReadyReason(vm) ?? ""}>
+              {notReadyReason(vm)}
+            </p>
+          )}
         </div>
       </div>
 
@@ -61,7 +63,7 @@ export default function VmCard({ vm, onAction }: VmCardProps) {
       </div>
 
       <div className="mt-4 pt-4 border-t border-gray-100">
-        <VmActions vmId={vm.id} state={vm.state} onAction={onAction} />
+        <VmActions vmId={vm.id} state={vm.state} desired={vm.desired_state} deleting={vm.deleting} onAction={onAction} />
       </div>
 
       <Link

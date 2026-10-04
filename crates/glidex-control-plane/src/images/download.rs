@@ -172,6 +172,7 @@ impl ImageManager {
                 })?;
                 if let Some(existing) = self.images.read().unwrap().values().find(|i| {
                     i.catalog_key() == Some(key.as_str())
+                        && i.deletion_requested_at.is_none()
                         && matches!(i.status, ImageStatus::Downloading { .. } | ImageStatus::Verifying)
                 }) {
                     return Ok((existing.clone(), false));
@@ -212,11 +213,12 @@ impl ImageManager {
             },
         };
         validate_name("image", &name)?;
-        if self.images.read().unwrap().values().any(|i| i.name == name) {
-            return Err(ImageError::AlreadyExists(format!(
-                "an image named {} already exists (pass a different name, or delete it first)",
-                name
-            )));
+        if let Some(other) = self.images.read().unwrap().values().find(|i| i.name == name) {
+            return Err(ImageError::AlreadyExists(if other.deletion_requested_at.is_some() {
+                format!("an image named {} is being deleted; try again in a moment", name)
+            } else {
+                format!("an image named {} already exists (pass a different name, or delete it first)", name)
+            }));
         }
 
         let img = Image {
@@ -241,14 +243,22 @@ impl ImageManager {
             sha256: String::new(),
             arch,
             created_at: now(),
+            retry_seq: 0,
+            applied_retry_seq: 0,
+            deletion_requested_at: None,
         };
-        self.put_image(&img)?;
+        self.insert_image(&img)?;
         tracing::info!(image = %img.name, source = ?img.source, "image download queued");
         self.spawn_download(img.id.clone());
         Ok((img, true))
     }
 
-    pub(super) fn spawn_download(self: &Arc<Self>, id: String) {
+    /// Whether a download task runs for image `id`.
+    pub fn download_running(&self, id: &str) -> bool {
+        self.tasks.lock().unwrap().contains_key(id)
+    }
+
+    pub(crate) fn spawn_download(self: &Arc<Self>, id: String) {
         let mgr = self.clone();
         let task_id = id.clone();
         let handle = tokio::spawn(async move {

@@ -7,8 +7,8 @@
 use super::partition::{self, round_up, TableKind, MIB};
 use super::qemu_img::{self, DiskFormat, GrowOutcome};
 use super::{
-    now, validate_name, CloneMode, CreateDiskRequest, Disk, DiskOrigin, ExtendMode, ExtendOutcome, ImageError,
-    ImageHold, ImageManager, ImageStatus,
+    validate_name, CloneMode, CreateDiskRequest, Disk, DiskCreateSpec, DiskOrigin, DiskPhase, ExtendMode, ExtendOutcome,
+    ImageError, ImageHold, ImageManager, ImageStatus,
 };
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -26,6 +26,30 @@ pub fn requested_size(size_gib: Option<u64>, size_bytes: Option<u64>) -> Result<
         Some(0) => Err(ImageError::invalid_disk("size must be greater than 0")),
         Some(b) => Ok(Some(round_up(b, MIB))),
         None => Ok(None),
+    }
+}
+
+/// What `materialize` made. Keep `_hold` until the disk record is
+/// persisted and cached: it keeps the source image from being deleted.
+pub struct MaterializeOutcome {
+    pub disk: Disk,
+    pub warnings: Vec<String>,
+    pub _hold: Option<ImageHold>,
+}
+
+/// A root disk's size: the request, else the image's own size rounded up
+/// to a MiB, but at least the default root size.
+pub fn wanted_root_size(requested: Option<u64>, image_size: u64, default_root: u64) -> u64 {
+    requested.unwrap_or_else(|| round_up(image_size, MIB).max(default_root))
+}
+
+fn too_small(size: u64, image: &str, image_size: u64) -> ImageError {
+    ImageError::InvalidDisk {
+        message: format!(
+            "size {} is smaller than image {} ({} bytes); that would cut off its partitions",
+            size, image, image_size
+        ),
+        details: serde_json::json!({ "min_size_bytes": round_up(image_size, MIB) }),
     }
 }
 
@@ -62,36 +86,96 @@ impl ImageManager {
         TempFile(Some(p))
     }
 
-    /// Create the disk file for `req` (spec §6.1) and return the record,
-    /// not yet persisted (the caller commits it, possibly together with a
-    /// VM), any warnings, and a hold on the source image to drop once the
-    /// record is cached. On error no file is left behind.
-    pub fn create_disk_file(
-        self: &Arc<Self>,
-        req: &CreateDiskRequest,
-    ) -> Result<(Disk, Vec<String>, Option<ImageHold>), ImageError> {
+    /// Validate a create request (spec §6.1) and return the record, in
+    /// phase `Pending` and not yet persisted: the disk controller makes its
+    /// file once the source image is ready (spec/reconciliation.md §10.1).
+    pub fn new_disk_record(&self, req: &CreateDiskRequest) -> Result<Disk, ImageError> {
         validate_name("disk", &req.name)?;
         if self.disk_name_taken(&req.name) {
             return Err(ImageError::AlreadyExists(format!("a disk named {} already exists", req.name)));
         }
         let format = req.format.unwrap_or_default();
         let size = requested_size(req.size_gib, req.size_bytes)?;
-        let mut warnings = Vec::new();
-        let id = uuid::Uuid::new_v4().to_string();
-        let tmp = self.temp_path(&id, "create", format);
-        let mut hold = None;
-
-        let (origin, size, image_size) = match &req.image {
+        let origin = match &req.image {
             None => {
                 if req.clone.is_some() {
                     return Err(ImageError::invalid_disk("clone needs an image"));
                 }
-                let size = size.ok_or_else(|| ImageError::invalid_disk("a blank disk needs size_gib or size_bytes"))?;
-                qemu_img::create(tmp.path(), format, size, None)?;
-                (DiskOrigin::Blank, size, None)
+                if size.is_none() {
+                    return Err(ImageError::invalid_disk("a blank disk needs size_gib or size_bytes"));
+                }
+                DiskOrigin::Blank
             }
             Some(key) => {
                 let img = self.get_image(key)?;
+                if img.deletion_requested_at.is_some() {
+                    return Err(ImageError::NotReady(format!("image {} is being deleted", img.name)));
+                }
+                match &img.status {
+                    ImageStatus::Missing => return Err(ImageError::NotReady(format!("image {} is missing its file", img.name))),
+                    // A disk would wait for it forever: retry it first.
+                    ImageStatus::Failed { reason } => {
+                        return Err(ImageError::NotReady(format!("image {} failed ({}); retry it first", img.name, reason)))
+                    }
+                    _ => {}
+                }
+                let mode = req.clone.unwrap_or_default();
+                if (mode, format) == (CloneMode::Linked, DiskFormat::Raw) {
+                    return Err(ImageError::invalid_disk("a raw disk cannot be linked; use clone: full"));
+                }
+                if let (Some(s), ImageStatus::Ready) = (size, &img.status) {
+                    if s < img.virtual_size_bytes {
+                        return Err(too_small(s, &img.name, img.virtual_size_bytes));
+                    }
+                }
+                DiskOrigin::Image { image_id: img.id.clone(), mode }
+            }
+        };
+        let mut disk = Disk::new(
+            uuid::Uuid::new_v4().to_string(),
+            req.name.clone(),
+            req.project.clone().unwrap_or_default(),
+            format,
+            0,
+            origin,
+        );
+        disk.phase = DiskPhase::Pending;
+        disk.create = Some(DiskCreateSpec { size_bytes: size, extend_root: req.extend_root });
+        Ok(disk)
+    }
+
+    /// The size a disk cloned from an image of `image_size` bytes gets.
+    pub fn root_size(&self, requested: Option<u64>, image_size: u64) -> u64 {
+        wanted_root_size(requested, image_size, self.settings.default_root_bytes)
+    }
+
+    /// Make the file of a pending disk (spec §6.1): on a temporary file,
+    /// renamed into place. Its own leftover temporary from a crash is
+    /// replaced; a file already in place (a crash after the rename) is
+    /// taken as made. Returns the disk in phase `Ready` (not persisted).
+    /// `NotReady` while the source image is not ready yet.
+    pub fn materialize(self: &Arc<Self>, disk: &Disk) -> Result<MaterializeOutcome, ImageError> {
+        let spec = disk.create.clone().unwrap_or(DiskCreateSpec { size_bytes: None, extend_root: None });
+        let mut disk = disk.clone();
+        let final_path = self.disk_path(&disk);
+        if final_path.exists() {
+            let info = qemu_img::info(&final_path, Some(disk.format))?;
+            disk.size_bytes = info.virtual_size;
+            disk.phase = DiskPhase::Ready;
+            disk.create = None;
+            return Ok(MaterializeOutcome { disk, warnings: vec!["the file was already made".into()], _hold: None });
+        }
+        let tmp = self.temp_path(&disk.id, "create", disk.format);
+        let mut warnings = Vec::new();
+        let mut hold = None;
+        let (size, image_size) = match disk.origin.clone() {
+            DiskOrigin::Blank => {
+                let size = spec.size_bytes.ok_or_else(|| ImageError::invalid_disk("a blank disk needs a size"))?;
+                qemu_img::create(tmp.path(), disk.format, size, None)?;
+                (size, None)
+            }
+            DiskOrigin::Image { image_id, mode } => {
+                let img = self.get_image(&image_id)?;
                 hold = Some(self.hold_image(&img.id));
                 // Re-read under the hold: a delete that won the race has
                 // removed the record by now.
@@ -101,54 +185,26 @@ impl ImageManager {
                 }
                 let image_path = self.image_path(&img.id);
                 let image_size = img.virtual_size_bytes;
-                let min = round_up(image_size, MIB);
-                let size = match size {
-                    Some(s) if s < image_size => {
-                        return Err(ImageError::InvalidDisk {
-                            message: format!(
-                                "size {} is smaller than image {} ({} bytes); that would cut off its partitions",
-                                s, img.name, image_size
-                            ),
-                            details: serde_json::json!({ "min_size_bytes": min }),
-                        });
-                    }
-                    Some(s) => s,
-                    None => min.max(self.settings.default_root_bytes),
-                };
-                let mode = req.clone.unwrap_or_default();
-                match (mode, format) {
-                    (CloneMode::Linked, DiskFormat::Raw) => {
-                        return Err(ImageError::invalid_disk("a raw disk cannot be linked; use clone: full"));
-                    }
-                    (CloneMode::Linked, DiskFormat::Qcow2) => {
-                        qemu_img::create(tmp.path(), format, size, Some(&image_path))?;
-                    }
-                    (CloneMode::Full, _) => {
-                        qemu_img::convert(&image_path, DiskFormat::Qcow2, tmp.path(), format)?;
+                if let Some(s) = spec.size_bytes.filter(|s| *s < image_size) {
+                    return Err(too_small(s, &img.name, image_size));
+                }
+                let size = self.root_size(spec.size_bytes, image_size);
+                match mode {
+                    CloneMode::Linked => qemu_img::create(tmp.path(), disk.format, size, Some(&image_path))?,
+                    CloneMode::Full => {
+                        qemu_img::convert(&image_path, DiskFormat::Qcow2, tmp.path(), disk.format)?;
                         if size > image_size {
-                            qemu_img::resize(tmp.path(), format, size, false)?;
+                            qemu_img::resize(tmp.path(), disk.format, size, false)?;
                         }
                     }
                 }
-                (DiskOrigin::Image { image_id: img.id.clone(), mode }, size, Some(image_size))
+                (size, Some(image_size))
             }
         };
         set_mode(tmp.path(), 0o600)?;
-
-        let mut disk = Disk {
-            id: id.clone(),
-            name: req.name.clone(),
-            project: req.project.clone().unwrap_or_default(),
-            format,
-            size_bytes: size,
-            origin,
-            attached_to: None,
-            pending_growpart: false,
-            created_at: now(),
-        };
-
+        disk.size_bytes = size;
         let grew = image_size.is_some_and(|s| size > s);
-        if grew && req.extend_root != Some(false) {
+        if grew && spec.extend_root != Some(false) {
             match self.extend_root_at(tmp.path(), &mut disk, ExtendMode::Offline) {
                 Ok((_, mut w)) => warnings.append(&mut w),
                 Err(ImageError::InvalidDisk { message, .. }) => {
@@ -157,11 +213,11 @@ impl ImageManager {
                 Err(e) => return Err(e),
             }
         }
-
-        let final_path = self.disk_path(&disk);
         std::fs::rename(tmp.keep(), &final_path).map_err(|e| ImageError::Io(e.to_string()))?;
+        disk.phase = DiskPhase::Ready;
+        disk.create = None;
         tracing::info!(disk = %disk.name, size = disk.size_bytes, origin = ?disk.origin, "disk created");
-        Ok((disk, warnings, hold))
+        Ok(MaterializeOutcome { disk, warnings, _hold: hold })
     }
 
     /// Remove a disk's file after its record is gone. Failures are logged:
@@ -176,7 +232,7 @@ impl ImageManager {
     }
 
     /// Minimum size a disk can be shrunk to.
-    fn shrink_minimum(&self, disk: &Disk) -> Result<(u64, TableKind), ImageError> {
+    pub fn shrink_minimum(&self, disk: &Disk) -> Result<(u64, TableKind), ImageError> {
         let path = self.disk_path(disk);
         let table = partition::read_table(&path, disk.format, disk.size_bytes)?.ok_or_else(|| {
             ImageError::invalid_disk("disk has no partition table, so where its data ends is unknown; it cannot be shrunk")

@@ -7,7 +7,6 @@ use tokio::signal;
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use glidex_control_plane::state::VmManager;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -64,6 +63,22 @@ fn check_kvm_access() -> Result<(), String> {
     }
 }
 
+const DETACHED_IN_SANDBOX: &str = "The detached VM runner (reconcile.vm_runner \"detached\", or \"auto\" outside a \
+glidex-control-plane*.service unit) runs hypervisors as children of this process, but it \
+runs with no_new_privs (a sandboxed unit), which drops cloud-hypervisor's CAP_NET_ADMIN, \
+and the unit closes /dev/kvm. Set vm_runner \"systemd\" (\"auto\" picks it in the \
+installed glidex-control-plane.service).";
+
+/// `Some(())` when this process runs with `no_new_privs`, as under the
+/// installed unit's sandbox.
+fn no_new_privs() -> Option<()> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    status
+        .lines()
+        .any(|l| l.split_once(':').is_some_and(|(k, v)| k == "NoNewPrivs" && v.trim() == "1"))
+        .then_some(())
+}
+
 #[tokio::main]
 async fn main() {
     // Print startup banner
@@ -77,15 +92,6 @@ async fn main() {
         )
         .with(tracing_subscriber::fmt::layer())
         .init();
-
-    // Check KVM access before starting
-    print_status("Checking KVM access");
-    if let Err(e) = check_kvm_access() {
-        println!("FAILED");
-        eprintln!("\n{}", e);
-        std::process::exit(1);
-    }
-    println!("OK");
 
     // Not fatal: kernel-boot VMs don't need it.
     for (ty, label, fix) in [
@@ -124,6 +130,19 @@ async fn main() {
         );
     }
 
+    // Configuration and identity (spec/security.md §5, §13). A bad config
+    // file stops startup rather than falling back to defaults.
+    print_status("Loading configuration");
+    let cfg = match config::Config::load().and_then(|c| c.check().map(|_| c)) {
+        Ok(c) => c,
+        Err(e) => {
+            println!("FAILED");
+            eprintln!("\n{}", e);
+            std::process::exit(1);
+        }
+    };
+    println!("OK");
+
     // Create VM manager with persistence
     print_status("Opening database");
     let vm_manager = match state::VmManager::new() {
@@ -135,16 +154,42 @@ async fn main() {
         }
     };
     println!("OK");
+    vm_manager.configure(&cfg);
 
-    // Initialize: load persisted VMs and reconcile state
+    // KVM (spec/reconciliation.md §13.3). Under the systemd runner the
+    // hypervisors open /dev/kvm in their glidex-vm units, and this unit's
+    // sandbox closes /dev: a missing device is reported, not fatal. Under
+    // the detached runner they are this process's children and need it.
+    print_status("Checking KVM access");
+    if vm_manager.runner().kind_name() == "systemd" {
+        // access(2): the VM units run as this user with these groups.
+        let rw = nix::unistd::AccessFlags::R_OK | nix::unistd::AccessFlags::W_OK;
+        if nix::unistd::access("/dev/kvm", rw).is_ok() {
+            println!("OK (VMs open it in their glidex-vm units)");
+        } else if Path::new("/dev/kvm").exists() {
+            println!("NO ACCESS (this user is not in the kvm group; no VM can start)");
+        } else {
+            println!("MISSING (/dev/kvm not found; no VM can start until KVM is enabled)");
+        }
+    } else if let Err(e) = no_new_privs().map_or(Ok(()), |_| Err(DETACHED_IN_SANDBOX.to_string())).and_then(|_| check_kvm_access()) {
+        println!("FAILED");
+        eprintln!("\n{}", e);
+        std::process::exit(1);
+    } else {
+        println!("OK");
+    }
+
+    // Load VMs and adopt the instances still running (spec/reconciliation.md
+    // §9.4): nothing is launched or stopped before every VM was observed.
     print_status("Loading VMs");
     if let Err(e) = vm_manager.initialize().await {
         println!("FAILED");
         eprintln!("\nFailed to initialize VMs from database: {}", e);
         std::process::exit(1);
     }
-    let vm_count = vm_manager.list_vms().await.len();
-    println!("OK ({} VMs)", vm_count);
+    let vms = vm_manager.list_vms().await;
+    let running = vms.iter().filter(|v| v.status.instance.is_some()).count();
+    println!("OK ({} VMs, {} running, VM runner: {})", vms.len(), running, vm_manager.runner().kind_name());
 
     // Networking is optional: without glidex-netd, VMs just have no NICs.
     print_status("Checking networking");
@@ -161,31 +206,10 @@ async fn main() {
         Err(e) => println!("WARNING (default network: {})", e),
     }
 
-    // A guest that powers off (or crashes) takes its hypervisor with it;
-    // notice that, so the VM shows as stopped and its NICs are released.
-    {
-        let manager = Arc::clone(&vm_manager);
-        tokio::spawn(async move {
-            let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
-            loop {
-                tick.tick().await;
-                manager.reap_exited_vms().await;
-            }
-        });
-    }
+    // The control loops (§9): from here on the VM controller drives every
+    // VM toward its desired state.
+    vm_manager.start_controllers();
 
-    // Configuration and identity (spec/security.md §5, §13). A bad config
-    // file stops startup rather than falling back to defaults.
-    print_status("Loading configuration");
-    let cfg = match config::Config::load().and_then(|c| c.check().map(|_| c)) {
-        Ok(c) => c,
-        Err(e) => {
-            println!("FAILED");
-            eprintln!("\n{}", e);
-            std::process::exit(1);
-        }
-    };
-    println!("OK");
     print_status("Loading authorization policies");
     let auth = match auth::AuthService::new(vm_manager.database(), cfg.clone()) {
         Ok(a) => a,
@@ -203,9 +227,6 @@ async fn main() {
         Ok(_) => println!("OK"),
         Err(e) => println!("WARNING (bootstrap: {})", e),
     }
-
-    // Clone vm_manager for the shutdown handler before passing to router
-    let vm_manager_shutdown = Arc::clone(&vm_manager);
 
     let app = api::router(Arc::new(api::App { manager: vm_manager, auth }))
         .layer(TraceLayer::new_for_http());
@@ -271,21 +292,22 @@ async fn main() {
         });
     }
 
-    // One shutdown signal (which stops VMs) fans out to every listener.
+    // One shutdown signal fans out to every listener. VMs keep running:
+    // they belong to their glidex-vm-shim, not to us (D1).
     let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
     let servers: Vec<_> = tcp
         .into_iter()
         .map(|l| tokio::spawn(serve::serve_tcp(l, app.clone(), tls.clone(), stop_rx.clone())))
         .chain(unix.into_iter().map(|(l, kind, _)| tokio::spawn(serve::serve_unix(l, app.clone(), kind, stop_rx.clone()))))
         .collect();
-    shutdown_signal(vm_manager_shutdown).await;
+    shutdown_signal().await;
     let _ = stop_tx.send(true);
     for s in servers {
         let _ = s.await;
     }
 }
 
-async fn shutdown_signal(vm_manager: Arc<VmManager>) {
+async fn shutdown_signal() {
     let ctrl_c = async {
         signal::ctrl_c()
             .await
@@ -309,10 +331,5 @@ async fn shutdown_signal(vm_manager: Arc<VmManager>) {
     }
 
     println!();
-    tracing::info!("Shutdown signal received, stopping VMs...");
-
-    // Stop all running hypervisor processes
-    vm_manager.shutdown().await;
-
-    tracing::info!("Shutdown complete");
+    tracing::info!("Shutdown signal received; VMs keep running");
 }

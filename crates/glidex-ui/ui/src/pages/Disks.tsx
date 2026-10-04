@@ -3,7 +3,9 @@ import * as api from "../api";
 import { ApiRequestError } from "../api";
 import { useCan, useSession } from "../session";
 import type { DiskInfo, ImageInfo, VmResponse } from "../types";
-import { formatBytes } from "../types";
+import { diskActivity, diskWaiting, formatBytes, notReady } from "../types";
+import { Spinner } from "../components/Activity";
+import { useLiveRefresh } from "../live";
 import Modal from "../components/Modal";
 import { LoadingCard } from "../components/Loading";
 
@@ -21,9 +23,29 @@ function errorText(e: unknown): string {
 
 function resultNotes(d: DiskInfo): string[] {
   const notes = [...(d.warnings ?? [])];
-  if (d.extend_root === "grown") notes.unshift("Root partition extended.");
-  if (d.extend_root === "on_boot") notes.unshift("The root partition will be grown by the guest on next boot.");
+  const waiting = notReady(d.conditions);
+  if (d.deleting) notes.unshift(`${d.name} is deleted once its current operation finishes.`);
+  else if (waiting) notes.unshift(`${d.name}: ${waiting.message || waiting.reason}`);
+  if (d.pending_growpart) notes.push("The root partition will be grown by the guest on next boot.");
   return notes;
+}
+
+function DiskStatus({ d }: { d: DiskInfo }) {
+  const why = notReady(d.conditions);
+  const color = d.status === "failed" || d.status === "missing" ? "text-red-700" : d.status === "ready" ? "" : "text-sky-700";
+  return (
+    <div title={why ? `${why.reason}: ${why.message}` : undefined}>
+      <span className={`inline-flex items-center gap-1 ${color}`}>
+        {diskActivity(d) && !diskWaiting(d) && <Spinner />}
+        {d.deleting ? "deleting" : d.status === "busy" ? `busy (${d.busy_op})` : d.status}
+      </span>
+      {d.pending_size_bytes !== undefined && (
+        <span className="ml-1 text-sky-700">· {formatBytes(d.pending_size_bytes)} once its VM stops</span>
+      )}
+      {d.pending_growpart && <span className="ml-1 text-sky-700">· grows on boot</span>}
+      {why && d.status !== "ready" && <div className="text-gray-500 truncate max-w-xs">{why.message || why.reason}</div>}
+    </div>
+  );
 }
 
 function CreateDiskForm({
@@ -207,6 +229,17 @@ export default function Disks() {
     refresh();
   }, [refresh]);
 
+  // Follow the live stream; without it, poll while the disk controller is
+  // still working on one.
+  const live = useLiveRefresh(["disk", "vm"], refresh);
+  const busy = disks?.some((d) => diskActivity(d) !== null && !diskWaiting(d)) ?? false;
+  const waiting = disks?.some(diskWaiting) ?? false;
+  useEffect(() => {
+    if ((!busy && !waiting) || live) return;
+    const id = setInterval(refresh, busy ? 2000 : 15000);
+    return () => clearInterval(id);
+  }, [busy, waiting, live, refresh]);
+
   const done = (d: DiskInfo) => {
     setNotes(resultNotes(d));
     setCreating(false);
@@ -235,7 +268,8 @@ export default function Disks() {
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Disks</h1>
           <p className="text-sm text-gray-500 mt-1">
-            Writable volumes VMs boot from or attach. Resize and extend-root need the VM stopped.
+            Writable volumes VMs boot from or attach. A resize or extend-root on a disk a running VM uses is applied once
+            the VM stops.
           </p>
         </div>
         {canCreate && (
@@ -289,16 +323,20 @@ export default function Disks() {
                   </td>
                   <td className="px-4 py-3 font-mono text-xs">{vmName(d.attached_to) ?? "—"}</td>
                   <td className="px-4 py-3 text-xs">
-                    {d.status === "busy" ? `busy (${d.busy_op})` : d.status}
-                    {d.pending_growpart && <span className="ml-1 text-sky-700">· grows on boot</span>}
+                    <DiskStatus d={d} />
                   </td>
                   <td className="px-4 py-3 text-right space-x-2 whitespace-nowrap">
-                    <button className="px-3 py-1 text-xs font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg" onClick={() => setResizing(d)}>
+                    <button
+                      className="px-3 py-1 text-xs font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg disabled:opacity-40"
+                      disabled={d.phase !== "ready" || !!d.deleting}
+                      onClick={() => setResizing(d)}
+                    >
                       Resize
                     </button>
                     {d.origin.kind === "image" && (
                       <button
-                        className="px-3 py-1 text-xs font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg"
+                        className="px-3 py-1 text-xs font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg disabled:opacity-40"
+                        disabled={d.phase !== "ready" || !!d.deleting}
                         onClick={() => act(() => api.extendRoot(d.id, "offline"))}
                       >
                         Extend root
@@ -306,8 +344,8 @@ export default function Disks() {
                     )}
                     <button
                       className="px-3 py-1 text-xs font-medium text-red-700 bg-red-50 hover:bg-red-100 rounded-lg disabled:opacity-40"
-                      disabled={!!d.attached_to}
-                      title={d.attached_to ? "Detach it or delete the VM first" : ""}
+                      disabled={!!d.attached_to || !!d.owner || !!d.deleting}
+                      title={d.attached_to || d.owner ? "Detach it or delete the VM first" : ""}
                       onClick={() => confirm(`Delete disk ${d.name} and its data?`) && act(() => api.deleteDisk(d.id))}
                     >
                       Delete

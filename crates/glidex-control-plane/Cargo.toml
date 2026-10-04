@@ -6,6 +6,9 @@ edition = "2021"
 [dependencies]
 glidex-ovs = { path = "../glidex-ovs" }
 glidex-netd = { path = "../glidex-netd" }
+glidex-hv-client = { path = "../glidex-hv-client" }
+glidex-vm-shim = { path = "../glidex-vm-shim" }
+zbus = { version = "5", default-features = false, features = ["tokio"] }
 axum = { version = "0.8", features = ["ws"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }

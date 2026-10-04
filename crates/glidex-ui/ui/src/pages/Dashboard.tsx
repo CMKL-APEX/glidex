@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import * as api from "../api";
 import type { VmResponse } from "../types";
+import { settled } from "../types";
 import type { VmAction } from "../components/VmActions";
 import VmCard from "../components/VmCard";
 import { LoadingCard } from "../components/Loading";
@@ -8,6 +9,7 @@ import Modal from "../components/Modal";
 import CreateVmForm from "../components/CreateVmForm";
 import type { CreateVmRequest } from "../types";
 import { useCan, useSession } from "../session";
+import { useLiveRefresh } from "../live";
 
 export default function Dashboard() {
   const { project, projectName } = useSession();
@@ -33,41 +35,41 @@ export default function Dashboard() {
     fetchVms();
   }, [fetchVms]);
 
+  // Follow changes on the live stream; without it, poll while any VM is
+  // on its way to its desired state.
+  const live = useLiveRefresh(["vm"], fetchVms);
+  const converging = (vms ?? []).some((vm) => !settled(vm));
+  useEffect(() => {
+    if (!converging || live) return;
+    const t = setInterval(fetchVms, 2000);
+    return () => clearInterval(t);
+  }, [converging, live, fetchVms]);
+
   const handleAction = async (vmId: string, action: VmAction) => {
+    if (action === "delete") {
+      const name = vms?.find((v) => v.id === vmId)?.name ?? vmId;
+      if (!confirm(`Delete VM ${name}? A root disk created with it is deleted too.`)) return;
+    }
     setError(null);
+    // The call waits for the controller (up to a minute); show the VM's
+    // progress meanwhile instead of the state from before the click.
+    const peek = setTimeout(fetchVms, 500);
     try {
-      switch (action) {
-        case "start":
-          await api.startVm(vmId);
-          break;
-        case "shutdown":
-          await api.stopVm(vmId, 60);
-          break;
-        case "stop":
-          await api.stopVm(vmId);
-          break;
-        case "pause":
-          await api.pauseVm(vmId);
-          break;
-        case "delete":
-          await api.deleteVm(vmId);
-          break;
-      }
-      fetchVms();
+      await api.vmAction(vmId, action);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Action failed");
+    } finally {
+      clearTimeout(peek);
+      fetchVms();
     }
   };
 
+  // Errors propagate to the form, which shows them and stays open.
   const handleCreate = async (request: CreateVmRequest) => {
     setError(null);
-    try {
-      await api.createVm({ ...request, project: project ?? undefined });
-      setShowCreateModal(false);
-      fetchVms();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to create VM");
-    }
+    await api.createVm({ ...request, project: project ?? undefined });
+    setShowCreateModal(false);
+    fetchVms();
   };
 
   return (

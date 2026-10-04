@@ -1,6 +1,7 @@
 //! `glidex-install uninstall`: undo what the installer and glidex-netd did.
 //!
-//! Order matters: stop the control plane (stops VMs) and netd, tear down
+//! Order matters: stop every VM unit (glidex-vm@*.service: each gets its
+//! power button and grace), the control plane and netd, tear down
 //! host networking with netd's own code (uplinks put the host's IP back on
 //! its NIC and restore NIC drivers; NAT, bridges and VM ports are removed),
 //! then remove units, binaries, configuration and state. Kernel settings
@@ -31,7 +32,9 @@ pub const OVS_SOURCE_UNITS: &[&str] = &["glidex-ovs-vswitchd.service", "glidex-o
 pub const UNIT_DIR: &str = "/etc/systemd/system";
 pub const NETD_DB: &str = "/var/lib/glidex/netd.db";
 pub const SYSTEM_BIN_DIR: &str = "/usr/local/bin";
-pub const BINARIES: &[&str] = &["glidex-control-plane", "gxctl", "glidex-netd", "glidex-ui", "glidex-authd"];
+pub const BINARIES: &[&str] = &["glidex-control-plane", "gxctl", "glidex-netd", "glidex-ui", "glidex-authd", "glidex-vm-shim"];
+/// The VM unit template and its slice (spec/reconciliation.md §13).
+pub const VM_UNIT_FILES: &[&str] = &["glidex-vm@.service", "glidex-vms.slice"];
 pub const GROUP: &str = "glidex";
 /// The web UI's user; its own group of the same name.
 pub const UI_USER: &str = crate::UI_USER;
@@ -41,7 +44,7 @@ pub const CONFIG_DIR: &str = "/etc/glidex";
 /// What the installer itself puts in `CONFIG_DIR`. The rest (control-plane.json,
 /// netd.json, site policies, TLS files…) is the administrator's and is kept
 /// unless --purge-user-data.
-pub const INSTALLER_CONFIG: &[&str] = &["install.conf", "authd.json", "control-plane.json.example"];
+pub const INSTALLER_CONFIG: &[&str] = &["install.conf", "authd.json", "control-plane.json.example", "vm-shim.json"];
 /// The system user the control plane and UI run as, and its home (the
 /// control plane's VM database, images and disks).
 pub const SERVICE_USER: &str = "glidex";
@@ -183,7 +186,12 @@ fn bin_dirs(user_home: &Path) -> Vec<PathBuf> {
 pub fn plan(host: &dyn HostView, opts: &Options, user_home: &Path) -> Vec<Step> {
     let mut steps = Vec::new();
 
-    // 1. Services: the control plane first (its shutdown stops VMs), then netd.
+    // 1. Services: every VM first (they outlive the control plane; each
+    // stop presses the guest's power button and waits its grace), then the
+    // control plane, then netd.
+    if host.exists(&Path::new(UNIT_DIR).join("glidex-vm@.service")) {
+        steps.push(run(&["systemctl", "stop", "glidex-vm@*.service"]));
+    }
     let units: Vec<&str> = UNITS.iter().copied().filter(|u| host.unit_known(u)).collect();
     if !units.is_empty() {
         let mut argv = vec!["systemctl", "disable", "--now"];
@@ -220,9 +228,9 @@ pub fn plan(host: &dyn HostView, opts: &Options, user_home: &Path) -> Vec<Step> 
         }
     }
 
-    // 4. Unit files.
+    // 4. Unit files, and the polkit rule for the VM units.
     let mut removed_units = false;
-    for u in UNITS {
+    for u in UNITS.iter().chain(VM_UNIT_FILES) {
         let p = Path::new(UNIT_DIR).join(u);
         if host.exists(&p) {
             steps.push(Step::Remove(p));
@@ -263,6 +271,9 @@ pub fn plan(host: &dyn HostView, opts: &Options, user_home: &Path) -> Vec<Step> 
             argv.extend(&pkgs);
             steps.push(run(&argv));
         }
+    }
+    if host.exists(Path::new(crate::POLKIT_RULE)) {
+        steps.push(Step::Remove(PathBuf::from(crate::POLKIT_RULE)));
     }
     if removed_units {
         steps.push(run(&["systemctl", "daemon-reload"]));

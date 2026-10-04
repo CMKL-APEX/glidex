@@ -23,7 +23,8 @@ ExecStart=@BIN@
 # (listeners, TLS, PAM, OIDC) are in /etc/glidex/control-plane.json; see
 # control-plane.json.example. A non-loopback listener needs TLS, or the
 # control plane refuses to start.
-# Stopping the service stops running VMs (the control plane's shutdown).
+# Each VM runs in its own glidex-vm unit: stopping, restarting or upgrading
+# this service leaves them running (spec/reconciliation.md D1/D2).
 KillSignal=SIGTERM
 TimeoutStopSec=60
 Restart=on-failure
@@ -35,8 +36,9 @@ RestartSec=2
 # Runtime files (spec/security.md §9): api.sock and ui.sock in
 # /run/glidex-cp (0755 so glidex-users and glidex-ui reach their socket;
 # each socket checks its peer), per-VM directories in vms/<id>/ (0700:
-# hypervisor API socket, console socket, cloud-init seed). Kept across a
-# crash-restart so console logs aren't lost; a clean stop stops the VMs.
+# launch.json, instance.json, the shim, hypervisor API and console sockets,
+# console log, cloud-init seed). Must survive this unit stopping: running
+# VMs' shims live there.
 RuntimeDirectory=glidex-cp
 RuntimeDirectoryMode=0755
 RuntimeDirectoryPreserve=yes
@@ -51,18 +53,13 @@ UMask=0077
 #LoadCredential=tls-key:/etc/glidex/tls/cp.key
 #LoadCredential=oidc-client-secret:/etc/glidex/oidc-client-secret
 
-# Sandbox. cloud-hypervisor and QEMU run as children of this unit and
-# inherit all of it, so only settings that keep VMs working are used:
-#  - No NoNewPrivileges=, and none of the settings that imply it for a
-#    non-root unit (RestrictAddressFamilies=, LockPersonality=,
-#    SystemCallFilter=, RestrictSUIDSGID=, ProtectKernel*=,
-#    PrivateDevices=, MemoryDenyWriteExecute=): cloud-hypervisor gets
-#    CAP_NET_ADMIN (to bring tap devices up) from a file capability,
-#    which no_new_privs would ignore.
-#  - /dev is closed except for what VMs use: KVM, VFIO passthrough (the
-#    container and the per-group devices), tap (/dev/net/tun) and QEMU's
-#    vhost-net. Hugepage memory is memfd-backed; /dev/hugepages stays
-#    writable (ProtectSystem= leaves /dev, /proc and /sys alone).
+# Sandbox (spec/reconciliation.md §13.3). Hypervisors run in the
+# glidex-vm units with their own sandbox (and keep cloud-hypervisor's
+# CAP_NET_ADMIN there); this unit runs none, so it closes /dev and sets
+# no_new_privs. Its remaining children are disk tools (qemu-img, qemu-io,
+# sgdisk, growpart, mkdosfs, mcopy). The detached VM runner can't work in
+# here, and the control plane refuses to start with it.
+NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 # The service home holds the database, images, disks, firmware and logs.
@@ -70,16 +67,20 @@ ProtectSystem=strict
 # and /run/user (ProtectHome).
 ProtectHome=yes
 ReadWritePaths=@HOME@
-# vhost-user sockets: cloud-hypervisor serves them in glidex-netd's
-# directory (glidex group, setgid). Connecting to netd's and authd's
-# sockets needs no write access to the file system.
-ReadWritePaths=-/run/glidex/vhost
 DevicePolicy=closed
-DeviceAllow=/dev/kvm rw
-DeviceAllow=/dev/vfio/vfio rw
-DeviceAllow=char-vfio rw
-DeviceAllow=/dev/net/tun rw
-DeviceAllow=/dev/vhost-net rw
+# Unix sockets (API, netd, authd, D-Bus, shims, hypervisor APIs) and TCP
+# (the API listeners, image downloads, OIDC).
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=yes
+RestrictSUIDSGID=yes
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
 
 [Install]
 WantedBy=multi-user.target

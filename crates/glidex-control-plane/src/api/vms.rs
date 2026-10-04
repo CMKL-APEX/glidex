@@ -1,22 +1,27 @@
 //! VM routes. Creating a VM is a compound request (spec/security.md §7.4):
 //! every disk, credential, network, PCI device and host path it names is
 //! checked on its own.
+//!
+//! Writes change the VM's desired state and return at once (`202`), or,
+//! with `?wait=<secs>`, once the VM controller has acted on them
+//! (spec/reconciliation.md §12.3).
 
 use super::{err, vm_entities, ApiErr, Caller};
 use crate::auth::Method;
 use crate::authz::{Ent, EntitySet};
-use crate::models::{CreateVmRequest, DeviceRequest, VmConfig, VmResponse, VmState};
-use crate::state::VmManagerError;
+use crate::models::{CreateVmRequest, DeviceRequest, PowerState, Vm, VmConfig, VmResponse};
+use crate::state::{VmManagerError, VmOptions, VmPatch, Waited};
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
         Path, Query,
     },
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     Json,
 };
 use serde::Serialize;
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 
@@ -24,8 +29,54 @@ fn manager_err(e: VmManagerError) -> ApiErr {
     super::error_to_response(e)
 }
 
+/// Longest `?wait` (and stop grace).
+const MAX_WAIT_SECS: u64 = 300;
+
+#[derive(Debug, serde::Deserialize, Default)]
+pub struct WaitQuery {
+    /// Hold the response until the controller has acted (§12.3).
+    #[serde(default)]
+    wait: Option<u64>,
+}
+
+/// `If-Match: <resource_version>` (§12.1).
+fn if_match(headers: &HeaderMap) -> Result<Option<u64>, ApiErr> {
+    match headers.get(axum::http::header::IF_MATCH) {
+        None => Ok(None),
+        Some(v) => v
+            .to_str()
+            .ok()
+            .map(|s| s.trim().trim_matches('"'))
+            .and_then(|s| s.parse().ok())
+            .map(Some)
+            .ok_or_else(|| err(StatusCode::BAD_REQUEST, "invalid_request", "If-Match must be a resource version")),
+    }
+}
+
+/// The response to a spec write: `202` (or `ok` for a create) at once, or
+/// with `?wait`, after the controller decided: converged → `ok`, failed →
+/// the error the call would have returned synchronously (D20), timeout →
+/// `202`.
+async fn respond(c: &Caller, vm: Vm, wait: Option<u64>, ok: StatusCode, warnings: Vec<String>) -> Response {
+    let body = |vm: &Vm| {
+        let mut r = VmResponse::from(vm);
+        r.warnings = warnings.clone();
+        Json(r)
+    };
+    let Some(secs) = wait else {
+        let status = if ok == StatusCode::CREATED { ok } else { StatusCode::ACCEPTED };
+        return (status, body(&vm)).into_response();
+    };
+    match c.manager().wait_converged(&vm.id, vm.generation, Duration::from_secs(secs.min(MAX_WAIT_SECS))).await {
+        Waited::Decided(v) if v.is_converged() => (ok, body(&v)).into_response(),
+        Waited::Decided(v) => super::errors::failed_reconcile_response(&v).into_response(),
+        Waited::Gone | Waited::TimedOut(None) => StatusCode::OK.into_response(),
+        Waited::TimedOut(Some(v)) => (StatusCode::ACCEPTED, body(&v)).into_response(),
+    }
+}
+
 /// The VM `id`, if the caller may see it (else 404), and its entities.
-async fn visible_vm(c: &Caller, id: &str) -> Result<(crate::models::Vm, Ent, EntitySet), ApiErr> {
+async fn visible_vm(c: &Caller, id: &str) -> Result<(Vm, Ent, EntitySet), ApiErr> {
     let vm = c.manager().get_vm(id).await.map_err(manager_err)?;
     c.set_project(&vm.project);
     c.set_target(format!("vm:{}", vm.id));
@@ -122,7 +173,7 @@ fn names_host_path(req: &CreateVmRequest) -> bool {
     }
 }
 
-pub async fn create(c: Caller, Json(req): Json<CreateVmRequest>) -> Result<impl IntoResponse, ApiErr> {
+pub async fn create(c: Caller, Query(w): Query<WaitQuery>, Json(req): Json<CreateVmRequest>) -> Result<Response, ApiErr> {
     let project = c.target_project(req.project.as_deref())?;
     c.set_project(&project);
     let pent = Ent::Project(project.clone());
@@ -168,72 +219,252 @@ pub async fn create(c: Caller, Json(req): Json<CreateVmRequest>) -> Result<impl 
     }
 
     let name = req.name.clone();
+    let opts = VmOptions {
+        power: req.power,
+        restart_policy: req.restart_policy,
+        on_host_boot: req.on_host_boot,
+        stop_grace_secs: req.stop_grace_secs,
+    };
     let config = VmConfig::from(req);
     let quota = c.quota_mode(&project);
     let (vm, warnings, over) = c
         .manager()
-        .create_vm_in(&project, name, config, sel, quota)
+        .create_vm_with(&project, name, config, sel, opts, quota, &c.actor())
         .await
         .map_err(manager_err)?;
     c.note_overruns(&over);
     c.set_target(format!("vm:{}", vm.id));
-    let mut resp = VmResponse::from(&vm);
-    resp.warnings = warnings;
-    Ok((StatusCode::CREATED, Json(resp)))
+    Ok(respond(&c, vm, w.wait, StatusCode::CREATED, warnings).await)
 }
 
-pub async fn get_one(c: Caller, Path(id): Path<String>) -> Result<impl IntoResponse, ApiErr> {
+#[derive(Debug, serde::Deserialize, Default)]
+pub struct ViewQuery {
+    /// `full`: the stored `{meta, spec, status}` (§12.4).
+    #[serde(default)]
+    view: Option<String>,
+}
+
+pub async fn get_one(c: Caller, Path(id): Path<String>, Query(q): Query<ViewQuery>) -> Result<Response, ApiErr> {
     let (vm, _, _) = visible_vm(&c, &id).await?;
-    Ok(Json(VmResponse::from(&vm)))
+    if q.view.as_deref() == Some("full") {
+        // The stored record carries host paths (disk files, kernel, seed in
+        // the private runtime directory), PIDs and the boot id, which the
+        // flat view leaves out: host readers only (spec/security.md §9).
+        c.require_action("readSystemStatus", Ent::Host, EntitySet::new(), &[])?;
+        return Ok(Json(serde_json::to_value(&vm).unwrap_or_default()).into_response());
+    }
+    Ok(Json(VmResponse::from(&vm)).into_response())
 }
 
 #[derive(serde::Deserialize, Default)]
 pub struct DeleteVmQuery {
     #[serde(default)]
     keep_disk: bool,
+    #[serde(default)]
+    wait: Option<u64>,
 }
 
-pub async fn delete_one(c: Caller, Path(id): Path<String>, Query(q): Query<DeleteVmQuery>) -> Result<impl IntoResponse, ApiErr> {
+/// `204` when the VM is gone at once (nothing ran), else `202` (or, with
+/// `?wait`, `200` once the record is gone).
+pub async fn delete_one(c: Caller, Path(id): Path<String>, Query(q): Query<DeleteVmQuery>) -> Result<Response, ApiErr> {
     visible_vm(&c, &id).await?;
-    c.manager().delete_vm_with(&id, q.keep_disk).await.map_err(manager_err)?;
-    Ok(StatusCode::NO_CONTENT)
+    let gone = c.manager().delete_vm_as(&id, q.keep_disk, &c.actor()).await.map_err(manager_err)?;
+    if gone {
+        return Ok(StatusCode::NO_CONTENT.into_response());
+    }
+    let Some(secs) = q.wait else {
+        let vm = c.manager().get_vm(&id).await.ok();
+        return Ok(match vm {
+            Some(vm) => (StatusCode::ACCEPTED, Json(VmResponse::from(&vm))).into_response(),
+            None => StatusCode::NO_CONTENT.into_response(),
+        });
+    };
+    let gen = c.manager().get_vm(&id).await.map(|v| v.generation).unwrap_or(0);
+    match c.manager().wait_converged(&id, gen, Duration::from_secs(secs.min(MAX_WAIT_SECS))).await {
+        Waited::Gone | Waited::TimedOut(None) => Ok(StatusCode::OK.into_response()),
+        Waited::Decided(vm) | Waited::TimedOut(Some(vm)) => Ok((StatusCode::ACCEPTED, Json(VmResponse::from(&*vm))).into_response()),
+    }
 }
 
-pub async fn start(c: Caller, Path(id): Path<String>) -> Result<impl IntoResponse, ApiErr> {
+async fn set_power(c: Caller, id: String, power: PowerState, grace: Option<u32>, wait: Option<u64>, headers: &HeaderMap) -> Result<Response, ApiErr> {
     let (vm, _, _) = visible_vm(&c, &id).await?;
     let quota = c.quota_mode(&vm.project);
-    let (vm, over) = c.manager().start_vm_with(&id, quota).await.map_err(manager_err)?;
+    let (vm, over) = c
+        .manager()
+        .set_power(&id, power, grace, quota, &c.actor(), if_match(headers)?)
+        .await
+        .map_err(manager_err)?;
     c.note_overruns(&over);
-    Ok(Json(VmResponse::from(&vm)))
+    Ok(respond(&c, vm, wait, StatusCode::OK, Vec::new()).await)
 }
 
-/// Longest a stop request may wait for the guest to power off.
-const MAX_GRACEFUL_STOP_SECS: u64 = 300;
+pub async fn start(c: Caller, Path(id): Path<String>, Query(w): Query<WaitQuery>, headers: HeaderMap) -> Result<Response, ApiErr> {
+    set_power(c, id, PowerState::Running, None, w.wait, &headers).await
+}
 
 #[derive(Debug, serde::Deserialize)]
 pub struct StopParams {
     /// Press the guest's power button and wait up to this long for it to
-    /// shut down before stopping it hard. Absent: stop immediately.
+    /// shut down before stopping it hard (`spec.stop_grace_secs`).
     graceful_timeout_secs: Option<u64>,
+    #[serde(default)]
+    wait: Option<u64>,
 }
 
-pub async fn stop(c: Caller, Path(id): Path<String>, Query(params): Query<StopParams>) -> Result<impl IntoResponse, ApiErr> {
-    visible_vm(&c, &id).await?;
-    let result = match params.graceful_timeout_secs {
-        Some(secs) => {
-            let grace = std::time::Duration::from_secs(secs.min(MAX_GRACEFUL_STOP_SECS));
-            c.manager().stop_vm_graceful(&id, grace).await
+pub async fn stop(c: Caller, Path(id): Path<String>, Query(params): Query<StopParams>, headers: HeaderMap) -> Result<Response, ApiErr> {
+    let grace = params.graceful_timeout_secs.map(|s| s.min(MAX_WAIT_SECS) as u32);
+    set_power(c, id, PowerState::Stopped, grace, params.wait, &headers).await
+}
+
+pub async fn pause(c: Caller, Path(id): Path<String>, Query(w): Query<WaitQuery>, headers: HeaderMap) -> Result<Response, ApiErr> {
+    set_power(c, id, PowerState::Paused, None, w.wait, &headers).await
+}
+
+/// `PATCH /vms/{id}`: a merge patch of `spec`, authorized per changed
+/// field (spec §12.1): power → start/stop/pauseVm, devices → attach/
+/// detachDevice + usePciDevice, data disks → attach/detachDisk + useDisk,
+/// networks → attach/detachNetwork + useNetwork, credential → updateVm +
+/// useCredential, anything else → updateVm.
+pub async fn patch_one(
+    c: Caller,
+    Path(id): Path<String>,
+    Query(w): Query<WaitQuery>,
+    headers: HeaderMap,
+    Json(patch): Json<VmPatch>,
+) -> Result<Response, ApiErr> {
+    let vm = c.manager().get_vm(&id).await.map_err(manager_err)?;
+    c.set_project(&vm.project);
+    c.set_target(format!("vm:{}", vm.id));
+    let (e, es) = vm_entities(&vm);
+    c.require_readable("readVm", e.clone(), es.clone(), "VM")?;
+    if let Some(fields) = patch.config.as_ref().map(|c| c.immutable_fields()).filter(|f| !f.is_empty()) {
+        return Err(err(StatusCode::BAD_REQUEST, "invalid_config", format!("immutable field(s): {}", fields.join(", "))));
+    }
+    let project = vm.project.clone();
+    let with_project: &[(&'static str, Ent)] = &[("project", Ent::Project(project.clone()))];
+    let mut update = false;
+    if let Some(p) = patch.power {
+        if p != vm.spec.power {
+            let action = match p {
+                PowerState::Running => "startVm",
+                PowerState::Paused => "pauseVm",
+                PowerState::Stopped => "stopVm",
+            };
+            c.require_action(action, e.clone(), es.clone(), &[])?;
         }
-        None => c.manager().stop_vm(&id).await,
-    };
-    let vm = result.map_err(manager_err)?;
-    Ok(Json(VmResponse::from(&vm)))
+    }
+    update |= patch.restart_policy.is_some_and(|r| r != vm.spec.restart_policy)
+        || patch.on_host_boot.is_some_and(|h| h != vm.spec.on_host_boot)
+        || patch.stop_grace_secs.is_some_and(|g| g != vm.spec.stop_grace_secs);
+    if let Some(cp) = &patch.config {
+        let cur = vm.config();
+        update |= cp.vcpu_count.is_some_and(|v| v != cur.vcpu_count)
+            || cp.mem_size_mib.is_some_and(|v| v != cur.mem_size_mib)
+            || cp.kernel_args.as_ref().is_some_and(|v| *v != cur.kernel_args)
+            || cp.hugepages.is_some_and(|v| v != cur.hugepages);
+        if let Some(cred) = &cp.credential {
+            update = true;
+            if let Some(username) = cred.as_str() {
+                let (ce, mut ces) = super::credential_entities(&project, username);
+                ces.project(&project);
+                c.require_action("useCredential", ce, ces, with_project)?;
+            }
+        }
+        if let Some(devs) = &cp.vfio_devices {
+            for d in devs.iter().filter(|d| !cur.vfio_devices.contains(d)) {
+                c.require_action("attachDevice", e.clone(), es.clone(), &[])?;
+                let bdf = device_bdf(d)?;
+                let (pe, mut pes) = pci_entities(&c, &bdf);
+                pes.project(&project);
+                c.require_action("usePciDevice", pe, pes, with_project)?;
+            }
+            if cur.vfio_devices.iter().any(|d| !devs.contains(d)) {
+                c.require_action("detachDevice", e.clone(), es.clone(), &[])?;
+            }
+        }
+        if let Some(keys) = &cp.data_disks {
+            let mut ids = Vec::new();
+            for key in keys {
+                if let Ok(d) = c.manager().get_disk(key).await {
+                    if !cur.data_disks.contains(&d.id) {
+                        c.require_action("attachDisk", e.clone(), es.clone(), &[])?;
+                        let (de, des) = super::disk_entities(&d.id, &d.project);
+                        c.require_action("useDisk", de, des, with_project)?;
+                    }
+                    ids.push(d.id);
+                }
+            }
+            if cur.data_disks.iter().any(|d| !ids.contains(d)) {
+                c.require_action("detachDisk", e.clone(), es.clone(), &[])?;
+            }
+        }
+        if let Some(nets) = &cp.networks {
+            let new: Vec<&str> = nets.iter().map(|a| a.network.as_str()).collect();
+            if nets.iter().any(|a| !cur.networks.iter().any(|b| b.network == a.network)) {
+                c.require_action("attachNetwork", e.clone(), es.clone(), &[])?;
+                for att in nets.iter().filter(|a| !cur.networks.iter().any(|b| b.network == a.network)) {
+                    if let Ok(n) = c.manager().get_network(&att.network) {
+                        let mut nes = super::project_entities(&project);
+                        let ne = super::add_network(&mut nes, &n);
+                        c.require_action("useNetwork", ne, nes, with_project)?;
+                    }
+                }
+            }
+            if cur.networks.iter().any(|b| !new.contains(&b.network.as_str())) {
+                c.require_action("detachNetwork", e.clone(), es.clone(), &[])?;
+            }
+        }
+    }
+    if update {
+        c.require_action("updateVm", e.clone(), es.clone(), &[])?;
+    }
+    let quota = c.quota_mode(&project);
+    let (vm, over) = c
+        .manager()
+        .patch_vm(&id, patch, quota, &c.actor(), if_match(&headers)?)
+        .await
+        .map_err(manager_err)?;
+    c.note_overruns(&over);
+    Ok(respond(&c, vm, w.wait, StatusCode::OK, Vec::new()).await)
 }
 
-pub async fn pause(c: Caller, Path(id): Path<String>) -> Result<impl IntoResponse, ApiErr> {
-    visible_vm(&c, &id).await?;
-    let vm = c.manager().pause_vm(&id).await.map_err(manager_err)?;
-    Ok(Json(VmResponse::from(&vm)))
+pub async fn events(c: Caller, Path(id): Path<String>) -> Result<impl IntoResponse, ApiErr> {
+    let (vm, _, _) = visible_vm(&c, &id).await?;
+    let events = c.manager().vm_events(&vm.id).map_err(manager_err)?;
+    Ok(Json(serde_json::json!({ "events": events })))
+}
+
+/// `GET /system/reconcile` (§12.5).
+pub async fn system_reconcile(c: Caller) -> Result<impl IntoResponse, ApiErr> {
+    c.require(Ent::Host, EntitySet::new())?;
+    let m = c.manager();
+    let runner = m.runner();
+    let bus = match runner.bus_connected().await {
+        None => "n/a",
+        Some(true) => "connected",
+        Some(false) => "unreachable",
+    };
+    let netd = match m.netd().probe() {
+        (crate::network::NetdAccess::Full, Ok(_)) => "connected",
+        (crate::network::NetdAccess::Status, Ok(_)) => "status_only",
+        _ => "unavailable",
+    };
+    let (pending, in_flight) = m.queue_stats();
+    let unknown: Vec<String> = m
+        .list_vms()
+        .await
+        .into_iter()
+        .filter(|v| v.status.phase == crate::models::VmPhase::Unknown)
+        .map(|v| v.id)
+        .collect();
+    Ok(Json(serde_json::json!({
+        "runner": runner.kind_name(),
+        "bus": bus,
+        "netd": netd,
+        "queue": { "pending": pending, "in_flight": in_flight },
+        "orphans": m.orphans(),
+        "unknown_vms": unknown,
+    })))
 }
 
 #[derive(Debug, Serialize)]
@@ -247,7 +478,9 @@ struct ConsoleInfo {
 pub async fn console_info(c: Caller, Path(id): Path<String>) -> Result<impl IntoResponse, ApiErr> {
     let (vm, _, _) = visible_vm(&c, &id).await?;
     Ok(Json(ConsoleInfo {
-        available: vm.state == VmState::Running,
+        // While an instance exists, including after the guest exited and
+        // before the shim is released.
+        available: vm.status.instance.is_some(),
         websocket: format!("/vms/{}/console/ws", vm.id),
         vm_id: vm.id,
     }))
@@ -277,21 +510,19 @@ pub async fn console_ws(c: Caller, Path(id): Path<String>, Query(q): Query<Ticke
     {
         return err(StatusCode::FORBIDDEN, "ticket_required", "open the console with a fresh ticket").into_response();
     }
-    let console_path = vm.console_socket_path.clone();
+    let console_path = vm.paths().console_socket;
     ws.on_upgrade(move |socket| bridge_console(socket, console_path))
 }
 
 /// Pump bytes in both directions between a browser WebSocket and the VM's
-/// console Unix socket until either side closes. The console proxy thread in
-/// the hypervisor backend keeps the listener alive even after the guest
-/// exits, so connecting to a dead VM still succeeds and replays the log.
+/// console Unix socket until either side closes. The shim keeps the
+/// listener alive even after the guest exits, so connecting to a dead VM
+/// still succeeds and replays the log.
 async fn bridge_console(mut ws: WebSocket, console_path: String) {
     let unix = match UnixStream::connect(&console_path).await {
         Ok(s) => s,
         Err(e) => {
-            let _ = ws
-                .send(Message::Text(format!("Failed to connect to the VM console: {}", e).into()))
-                .await;
+            let _ = ws.send(Message::Text(format!("Failed to connect to the VM console: {}", e).into())).await;
             let _ = ws.send(Message::Close(None)).await;
             return;
         }
@@ -338,48 +569,56 @@ pub struct LogQuery {
     /// Return at most this many bytes from the end (default and cap 1 MiB).
     #[serde(default)]
     tail_bytes: Option<u64>,
+    /// The rotated log (`console.log.1`) instead (§8.6).
+    #[serde(default)]
+    previous: bool,
 }
 
 /// The VM's captured console output (it can hold anything the guest
 /// printed, so it needs `vm.console` like the live console).
-pub async fn console_log(c: Caller, Path(id): Path<String>, Query(q): Query<LogQuery>) -> Result<impl IntoResponse, ApiErr> {
+pub async fn console_log(c: Caller, Path(id): Path<String>, Query(q): Query<LogQuery>) -> Result<Response, ApiErr> {
     let (vm, _, _) = visible_vm(&c, &id).await?;
     const CAP: u64 = 1 << 20;
     let tail = q.tail_bytes.unwrap_or(CAP).min(CAP);
-    let path = vm.log_path.clone();
-    let bytes = tokio::task::spawn_blocking(move || -> std::io::Result<Vec<u8>> {
+    let paths = vm.paths();
+    let path = if q.previous { paths.previous_log() } else { paths.log };
+    let previous = q.previous;
+    let bytes = tokio::task::spawn_blocking(move || -> std::io::Result<Option<Vec<u8>>> {
         use std::io::{Read, Seek, SeekFrom};
         let mut f = match std::fs::File::open(&path) {
             Ok(f) => f,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(if previous { None } else { Some(Vec::new()) }),
             Err(e) => return Err(e),
         };
         let len = f.metadata()?.len();
         f.seek(SeekFrom::Start(len.saturating_sub(tail)))?;
         let mut buf = Vec::new();
         f.take(tail).read_to_end(&mut buf)?;
-        Ok(buf)
+        Ok(Some(buf))
     })
     .await
     .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()))?
     .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, "internal", format!("console log: {}", e)))?;
-    Ok(([(axum::http::header::CONTENT_TYPE, "application/octet-stream")], bytes))
+    match bytes {
+        Some(b) => Ok(([(axum::http::header::CONTENT_TYPE, "application/octet-stream")], b).into_response()),
+        None => Err(err(StatusCode::NOT_FOUND, "not_found", "no rotated console log")),
+    }
 }
 
-pub async fn attach_device(c: Caller, Path(id): Path<String>, Json(req): Json<DeviceRequest>) -> Result<impl IntoResponse, ApiErr> {
+pub async fn attach_device(c: Caller, Path(id): Path<String>, Query(w): Query<WaitQuery>, Json(req): Json<DeviceRequest>) -> Result<Response, ApiErr> {
     let (vm, _, _) = visible_vm(&c, &id).await?;
     let bdf = device_bdf(&req.device_path)?;
     let (e, mut es) = pci_entities(&c, &bdf);
     es.project(&vm.project);
     c.require_action("usePciDevice", e, es, &[("project", Ent::Project(vm.project.clone()))])?;
     let vm = c.manager().attach_device(&id, req.device_path).await.map_err(manager_err)?;
-    Ok(Json(VmResponse::from(&vm)))
+    Ok(respond(&c, vm, w.wait, StatusCode::OK, Vec::new()).await)
 }
 
-pub async fn detach_device(c: Caller, Path(id): Path<String>, Json(req): Json<DeviceRequest>) -> Result<impl IntoResponse, ApiErr> {
+pub async fn detach_device(c: Caller, Path(id): Path<String>, Query(w): Query<WaitQuery>, Json(req): Json<DeviceRequest>) -> Result<Response, ApiErr> {
     visible_vm(&c, &id).await?;
     let vm = c.manager().detach_device(&id, &req.device_path).await.map_err(manager_err)?;
-    Ok(Json(VmResponse::from(&vm)))
+    Ok(respond(&c, vm, w.wait, StatusCode::OK, Vec::new()).await)
 }
 
 #[derive(serde::Deserialize)]
@@ -387,19 +626,19 @@ pub struct AttachDiskRequest {
     disk: String,
 }
 
-pub async fn attach_disk(c: Caller, Path(id): Path<String>, Json(req): Json<AttachDiskRequest>) -> Result<impl IntoResponse, ApiErr> {
+pub async fn attach_disk(c: Caller, Path(id): Path<String>, Query(w): Query<WaitQuery>, Json(req): Json<AttachDiskRequest>) -> Result<Response, ApiErr> {
     let (vm, _, _) = visible_vm(&c, &id).await?;
     let d = c.manager().get_disk(&req.disk).await.map_err(manager_err)?;
     let (e, es) = super::disk_entities(&d.id, &d.project);
     c.require_action("useDisk", e, es, &[("project", Ent::Project(vm.project.clone()))])?;
     let vm = c.manager().attach_disk(&id, &req.disk).await.map_err(manager_err)?;
-    Ok(Json(VmResponse::from(&vm)))
+    Ok(respond(&c, vm, w.wait, StatusCode::OK, Vec::new()).await)
 }
 
-pub async fn detach_disk(c: Caller, Path((id, disk)): Path<(String, String)>) -> Result<impl IntoResponse, ApiErr> {
+pub async fn detach_disk(c: Caller, Path((id, disk)): Path<(String, String)>, Query(w): Query<WaitQuery>) -> Result<Response, ApiErr> {
     visible_vm(&c, &id).await?;
     let vm = c.manager().detach_disk(&id, &disk).await.map_err(manager_err)?;
-    Ok(Json(VmResponse::from(&vm)))
+    Ok(respond(&c, vm, w.wait, StatusCode::OK, Vec::new()).await)
 }
 
 #[cfg(test)]
@@ -413,5 +652,15 @@ mod tests {
         assert!(device_bdf("/dev/sda").is_err());
         assert!(device_bdf("/sys/bus/pci/devices/../../../etc").is_err());
         assert!(device_bdf("0000:41:00.0/../x").is_err());
+    }
+
+    #[test]
+    fn if_match_parses_versions() {
+        let mut h = HeaderMap::new();
+        assert_eq!(if_match(&h).unwrap(), None);
+        h.insert(axum::http::header::IF_MATCH, "\"7\"".parse().unwrap());
+        assert_eq!(if_match(&h).unwrap(), Some(7));
+        h.insert(axum::http::header::IF_MATCH, "x".parse().unwrap());
+        assert!(if_match(&h).is_err());
     }
 }

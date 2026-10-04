@@ -59,6 +59,27 @@ pub struct Network {
     /// Pending share offers (spec §6.2.1).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub share_offers: Vec<ShareOffer>,
+    /// What the network controller last saw in netd
+    /// (spec/reconciliation.md §10.3).
+    #[serde(default)]
+    pub phase: NetworkPhase,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conditions: Vec<crate::models::Condition>,
+    /// Deletion requested; the network controller removes netd's records,
+    /// then this one (spec/reconciliation.md §6.3, §10.3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deletion_requested_at: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum NetworkPhase {
+    Pending,
+    #[default]
+    Ready,
+    /// netd lacks part of it (bridge, NAT); see its `Ready` condition.
+    Degraded,
+    NetdUnavailable,
 }
 
 /// How long a share offer stays open.
@@ -152,14 +173,23 @@ fn now() -> u64 {
 /// The control plane's `networks` table.
 pub struct NetworkStore {
     db: Arc<Database>,
+    bell: crate::store::Bell,
+    /// Serializes writes, so `put`'s read-modify-write keeps a deletion.
+    write: std::sync::Mutex<()>,
 }
 
 impl NetworkStore {
-    pub fn new(db: Arc<Database>) -> Result<Self, NetError> {
+    pub fn new(db: Arc<Database>, bell: crate::store::Bell) -> Result<Self, NetError> {
         let txn = db.begin_write().map_err(storage)?;
         txn.open_table(NETWORKS_TABLE).map_err(storage)?;
         txn.commit().map_err(storage)?;
-        Ok(Self { db })
+        Ok(Self { db, bell, write: std::sync::Mutex::new(()) })
+    }
+
+    /// Record a new network.
+    pub fn insert(&self, net: &Network) -> Result<(), NetError> {
+        let _w = self.write.lock().unwrap();
+        self.write_record(net)
     }
 
     pub fn get(&self, name: &str) -> Result<Option<Network>, NetError> {
@@ -182,23 +212,39 @@ impl NetworkStore {
         Ok(out)
     }
 
+    /// Update a network. As for images, a write from an older copy can't
+    /// undo a deletion: a network no longer recorded stays gone, and a
+    /// requested deletion is kept.
     pub fn put(&self, net: &Network) -> Result<(), NetError> {
+        let _w = self.write.lock().unwrap();
+        let Some(current) = self.get(&net.name)? else { return Ok(()) };
+        let mut net = net.clone();
+        net.deletion_requested_at = net.deletion_requested_at.or(current.deletion_requested_at);
+        self.write_record(&net)
+    }
+
+    fn write_record(&self, net: &Network) -> Result<(), NetError> {
         let bytes = serde_json::to_vec(net).map_err(storage)?;
         let txn = self.db.begin_write().map_err(storage)?;
         {
             let mut t = txn.open_table(NETWORKS_TABLE).map_err(storage)?;
             t.insert(net.name.as_str(), bytes.as_slice()).map_err(storage)?;
         }
-        txn.commit().map_err(storage)
+        txn.commit().map_err(storage)?;
+        crate::store::ring(&self.bell);
+        Ok(())
     }
 
     pub fn delete(&self, name: &str) -> Result<(), NetError> {
+        let _w = self.write.lock().unwrap();
         let txn = self.db.begin_write().map_err(storage)?;
         {
             let mut t = txn.open_table(NETWORKS_TABLE).map_err(storage)?;
             t.remove(name).map_err(storage)?;
         }
-        txn.commit().map_err(storage)
+        txn.commit().map_err(storage)?;
+        crate::store::ring(&self.bell);
+        Ok(())
     }
 }
 
@@ -242,6 +288,9 @@ impl CreateNetworkRequest {
             grants: Vec::new(),
             shares: Vec::new(),
             share_offers: Vec::new(),
+            phase: NetworkPhase::Ready,
+            conditions: Vec::new(),
+            deletion_requested_at: None,
         })
     }
 }
@@ -302,6 +351,13 @@ impl Netd {
         let timeout = Self::timeout(&op);
         let mut client = Client::connect(&self.run_dir.join(FULL_SOCKET_NAME))?;
         Ok(client.call_as(op, Some(on_behalf_of), timeout)?)
+    }
+
+    /// The identity of netd's full socket (device, inode): it changes when
+    /// netd restarts and binds it anew. `None` if there is none.
+    pub fn socket_identity(&self) -> Option<(u64, u64)> {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::metadata(self.run_dir.join(FULL_SOCKET_NAME)).ok().map(|m| (m.dev(), m.ino()))
     }
 
     /// Host status: full socket if we're allowed, else the status socket.

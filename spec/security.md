@@ -72,6 +72,24 @@ service user, and the control plane's own state (`glidex.db`).
 `glidex-authd`, ↔ `glidex-netd` (peer uid); control plane ↔ IdP (TLS,
 signed ID tokens).
 
+**VM units** (reconciliation.md §8.3, §13). Each running VM is a
+`glidex-vm@<id>.service` running `glidex-vm-shim` as `glidex`, started by
+the control plane over D-Bus. Two rules keep that from widening what a
+compromised control plane can do:
+- the polkit rule `50-glidex-vm.rules` lets the `glidex` user `start`,
+  `stop` and `kill` units named exactly `glidex-vm@<uuid>.service`, and
+  nothing else in systemd;
+- the shim runs only hypervisor binaries listed in the root-owned
+  `/etc/glidex/vm-shim.json` (compared after `canonicalize`; exit 2
+  otherwise), so a VM unit, which has `/dev/kvm` and VFIO, never becomes
+  "run anything with device access". `GLIDEX_VM_SHIM_ALLOW` widens the
+  list only outside systemd, since a unit's environment comes from its
+  unit file, which the control plane cannot write. Arguments are not
+  filtered: the control plane can run any VM it likes, as before.
+
+The shim's `shim.sock` is `0600` in the VM's `0700` directory and checks
+`SO_PEERCRED`.
+
 ## 4. Identities and processes
 
 ```
@@ -426,7 +444,9 @@ namespace Glidex {
     appliesTo { principal: [User, Token], resource: [Vm], context: Ctx };
   action listVms in ["vm.read"]
     appliesTo { principal: [User, Token], resource: [Project], context: Ctx };
-  action startVm, stopVm, pauseVm in ["vm.operate"]
+  // updateVm: PATCH of spec fields other than power, devices, disks and
+  // networks (reconciliation.md §12.1).
+  action startVm, stopVm, pauseVm, updateVm in ["vm.operate"]
     appliesTo { principal: [User, Token], resource: [Vm], context: Ctx };
   action openConsole in ["vm.console"]
     appliesTo { principal: [User, Token], resource: [Vm], context: Ctx };
@@ -458,7 +478,8 @@ namespace Glidex {
     appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
   action exceedQuota in ["quota.exceed"]
     appliesTo { principal: [User, Token], resource: [Project], context: Ctx };
-  action readOvsStatus, listBridges, listUplinks, listPciDevices in ["host.read"]
+  // readSystemStatus: GET /system/reconcile (reconciliation.md §12.5).
+  action readOvsStatus, listBridges, listUplinks, listPciDevices, readSystemStatus in ["host.read"]
     appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
   action createNetwork, deleteNetwork, grantNetwork, createBridge, ensureUplink
     in ["host.network"]
@@ -503,8 +524,8 @@ Rules for the schema:
 
 | Group | Scope (link resource) | Covers |
 |---|---|---|
-| `vm.read` | project | List and get VMs, console info |
-| `vm.operate` | project | Start, stop, pause |
+| `vm.read` | project | List and get VMs, their events, console info |
+| `vm.operate` | project | Start, stop, pause; other spec edits (`updateVm`: restart policy, host-boot policy, stop grace, vCPUs, memory, kernel args, hugepages, credential) |
 | `vm.console` | project | Console tickets / WebSocket |
 | `vm.write` | project | Create and delete VMs; attach and detach disks, devices and networks; use project disks and credentials |
 | `disk.read` · `disk.write` | project | Disks: list/get · create, delete, resize, extend root |
@@ -513,7 +534,7 @@ Rules for the schema:
 | `project.members` | project | Role links and service-account tokens in the project |
 | `network.manage` | project | Create and delete the project's own NAT networks |
 | `network.share` | project | Offer and end shares of the project's networks; accept and leave shares offered to the project (§6.2.1) |
-| `host.read` | host | OVS status, bridges, uplinks, `GET /pci-devices` |
+| `host.read` | host | OVS status, bridges, uplinks, `GET /pci-devices`, `GET /system/reconcile` (`readSystemStatus`) |
 | `host.network` | host | Host networks (create, delete, grant), bridges, uplinks |
 | `host.network.critical` | host | OVS install, DPDK init, confirmed uplinks (IP migration), uplink commit and delete, bridge delete. Subject to step-up. |
 | `host.devices` | host | PCI grants, any PCI device regardless of grants |
@@ -673,6 +694,7 @@ allow.**
 | `POST /vms` | `createVm` on the Project; `useDisk` on each data disk; `useCredential` on each credential; `attachNetwork` on the Project and `useNetwork` on each network if any; `usePciDevice` on each VFIO device; `useHostPath` on `Host::"local"` if any path is outside managed directories; `readImage` on the boot image |
 | `POST /vms/{id}/disks` | `attachDisk` on the Vm; `useDisk` on the Disk |
 | `POST /vms/{id}/devices` | `attachDevice` on the Vm; `usePciDevice` on the device |
+| `PATCH /vms/{id}` | `readVm` first (else `404`), then one request per *changed* field: `power` → `startVm` / `pauseVm` / `stopVm`; added `vfio_devices` → `attachDevice` + `usePciDevice` on each, removed → `detachDevice`; added `data_disks` → `attachDisk` + `useDisk` on each, removed → `detachDisk`; added `networks` → `attachNetwork` + `useNetwork` on each, removed → `detachNetwork`; `credential` → `updateVm` (+ `useCredential` unless removed); `restart_policy`, `on_host_boot`, `stop_grace_secs`, `vcpu_count`, `mem_size_mib`, `kernel_args`, `hugepages` → `updateVm`. Immutable fields are refused (`400`) before any of these. |
 | `POST /vms/{id}/networks` | `attachNetwork` on the Vm; `useNetwork` on the network |
 | `POST /ovs/bridges/{b}/uplinks` with `confirm: true` | `confirmUplink` on `Host::"local"` |
 
@@ -854,6 +876,18 @@ impl Authz {
    `[{action, resource}]` and returns booleans for the caller, so the
    UI can hide what the caller can't do. The server still checks every
    real request.
+9. **Live stream.** `GET /watch` (server-sent events,
+   [rest-api.md](rest-api.md#live-stream-get-watch)) needs only an
+   authenticated caller; each kind is filtered exactly like its list
+   endpoint (`readVm` / `readDisk` per item in visible projects,
+   `readImage` / `readNetwork` on `Host` with the network view of
+   `GET /networks`). The filter is re-evaluated on every change, not
+   once at connect, so a policy or role-link change applies to the next
+   event, and an object that stops being visible is sent as `deleted`.
+   A stream lasts at most 5 minutes, which bounds how long a revoked
+   session or token keeps receiving events; it also ends as soon as the
+   caller's access can't be resolved (e.g. the user was disabled). At
+   most 64 streams are open host-wide (`503 too_many_watchers`).
 
 ## 8. `glidex-netd`
 
@@ -892,27 +926,45 @@ may ask it for what.
 
 | Unit | Changes |
 |---|---|
-| `glidex-control-plane` | `RuntimeDirectory=glidex-cp` (`0755`, preserved across restarts) holds `api.sock`, `ui.sock` and `vms/` (`0700`); per-VM files in `/run/glidex-cp/vms/<id>/` (`0700`): API socket, console socket, console log, cloud-init seed. `UMask=0077`. `NoNewPrivileges=yes`, `PrivateTmp=yes`, `ProtectSystem=strict`, `ProtectHome=yes`, `ReadWritePaths=/var/lib/glidex-control-plane`, `DevicePolicy=closed`, `DeviceAllow=/dev/kvm rw`, `DeviceAllow=char-vfio rw`, `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK`, `LoadCredential=` for `tls-key`, `oidc-client-secret`. |
+| `glidex-control-plane` | `RuntimeDirectory=glidex-cp` (`0755`, preserved across restarts — required, running VMs' directories live there) holds `api.sock`, `ui.sock` and `vms/` (`0700`); per-VM files in `/run/glidex-cp/vms/<id>/` (`0700`): `launch.json`, `instance.json`, `shim.sock`, API socket, console socket, console log, cloud-init seed. `UMask=0077`. `PrivateTmp=yes`, `ProtectSystem=strict`, `ProtectHome=yes`, `ReadWritePaths=/var/lib/glidex-control-plane`, `DevicePolicy=closed` (no device), `NoNewPrivileges=yes` and the syscall, address-family and kernel restrictions below, `LoadCredential=` for `tls-key`, `oidc-client-secret`. |
+| `glidex-vm@<id>` (new) | The hypervisor sandbox: `User=glidex`, `SupplementaryGroups=kvm`, `Slice=glidex-vms.slice`, `UMask=0077`, `PrivateTmp=yes`, `ProtectSystem=strict`, `ProtectHome=yes`, `ReadWritePaths=/var/lib/glidex-control-plane /run/glidex-cp/vms/%i -/run/glidex/vhost`, `DevicePolicy=closed`, `DeviceAllow=` `/dev/kvm`, `/dev/vfio/vfio`, `char-vfio`, `/dev/net/tun`, `/dev/vhost-net`. No `NoNewPrivileges=` (below). `Restart=no`, never enabled. |
 | `glidex-ui` | `User=glidex-ui`, `InaccessiblePaths=/run/glidex /var/lib/glidex-control-plane /run/glidex-authd`, `CapabilityBoundingSet=`, `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6`, existing `ProtectSystem`/`PrivateDevices` kept. |
 | `glidex-netd` | `ProtectHome=yes`, `CapabilityBoundingSet` limited to what the op set needs (to verify on a host: `CAP_NET_ADMIN CAP_NET_RAW CAP_SYS_ADMIN CAP_DAC_OVERRIDE CAP_CHOWN CAP_FOWNER`, plus package-manager needs for `install_ovs`). |
 | `glidex-authd` | Socket-activated, `PrivateNetwork=yes`, `ProtectSystem=strict`, `ProtectHome=read-only`, `NoNewPrivileges=yes` (PAM modules that need setuid helpers are not supported). |
 
-- **Not set on the control-plane unit: `NoNewPrivileges`,
+- **The sandbox split.** Under the systemd runner hypervisors are
+  children of their `glidex-vm@<id>` unit, not of the control plane, so
+  the VM unit carries what a hypervisor needs (devices, writable
+  `/run/glidex/vhost`, its own runtime directory) and only that VM's
+  directory is writable. Its `PrivateTmp=` is why paths under `/tmp` are
+  refused at admission under that runner.
+- **Not set on the VM unit: `NoNewPrivileges`,
   `RestrictAddressFamilies`, `LockPersonality`** (and anything else that
   makes systemd set no_new_privs for a non-root unit, such as
   `SystemCallFilter` or `PrivateDevices`). cloud-hypervisor gets
   `CAP_NET_ADMIN` from its file capability to bring taps up, and the
-  kernel ignores file capabilities under no_new_privs. They can come back
-  once netd fully prepares taps, so the hypervisor needs no capability.
-  The unit also makes `/run/glidex/vhost` writable for vhost-user sockets.
+  kernel ignores file capabilities under no_new_privs. On the VM unit
+  this stays until netd fully prepares taps, so the hypervisor needs no
+  capability.
+- **The control-plane unit runs no hypervisor** (reconciliation.md
+  §13.3): `DevicePolicy=closed` with no device allowed, no
+  `/run/glidex/vhost`, and `NoNewPrivileges=yes`,
+  `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6`,
+  `LockPersonality=`, `RestrictSUIDSGID=`,
+  `SystemCallFilter=@system-service`, `SystemCallArchitectures=native`,
+  `ProtectKernel{Tunables,Modules,Logs}=`, `ProtectControlGroups=`,
+  `RestrictNamespaces=`, `RestrictRealtime=`. Its only children are the
+  disk tools. The detached runner (dev runs, tests) needs the old
+  allowances, so the control plane refuses to start with it under
+  no_new_privs.
 - Data: `.glidex/{images,disks}` become `0700`; `glidex.db` stays `0600`.
 - Installer supply chain: pin the rustup-init and Bun versions and
   verify their published sha256 before running them, instead of
   `curl … | sh`.
 
 Why per-VM `0700`: the hypervisor API socket (CH HTTP, QMP) gives full
-control of the VM, with no glidex checks. Only the control plane may
-open it. Humans reach consoles through `vm.console` (§5.6). `gxctl
+control of the VM, with no glidex checks. Only the control plane and
+the VM's own shim (both `glidex`) may open it. Humans reach consoles through `vm.console` (§5.6). `gxctl
 connect` uses the API's console WebSocket instead of the raw socket.
 
 ## 10. Audit
@@ -1015,6 +1067,7 @@ New endpoints:
 | `GET/PUT/DELETE /projects/{id}/bindings` | `project.members` (project-role links only; cannot link system roles) |
 | `GET/PUT/DELETE /system/bindings` | `system.projects` (system-role and grant links on the host) |
 | `POST /authz/check` | authenticated (answers for the caller only) |
+| `GET /watch` | authenticated; each kind filtered like its list endpoint, on every change (§7.7) |
 | `GET /authz/policies`, `GET /authz/policies/{id}`, `GET /authz/policies/{id}/versions` | `policy.read` |
 | `PUT /authz/policies/{id}`, `DELETE /authz/policies/{id}`, `POST /authz/reload` | `policy.write` (step-up) |
 | `POST /authz/validate`, `POST /authz/simulate` | `policy.read` |
@@ -1127,6 +1180,7 @@ None. Earlier questions were answered and recorded as decisions 10–17 (§2).
 | API, route table, compound checks (§7.4, §7.7, §13) | `src/api/` |
 | Listeners, TLS (§5.1) | `src/serve.rs`, `src/config.rs` |
 | Private VM runtime directories (§9) | `src/paths.rs` |
+| VM units, polkit rule, shim allowlist (§3, §9) | `packaging/glidex-vm@.service.in`, `packaging/50-glidex-vm.rules.in`, `crates/glidex-vm-shim/src/launch.rs`, `crates/glidex-install` (`install_vm_units`) |
 | PAM helper (§5.3) | `crates/glidex-authd` |
 | netd ownership, policy, admin socket, audit context, NAT isolation (§8) | `crates/glidex-netd`, `crates/glidex-ovs/src/nat.rs` |
 | Tests (§14) | `tests/security_tests.rs`, `tests/network_tests.rs`, unit tests in each module, `crates/glidex-authd/tests`, `crates/glidex-netd/tests` |

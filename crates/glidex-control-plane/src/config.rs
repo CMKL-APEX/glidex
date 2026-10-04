@@ -35,6 +35,8 @@ pub struct Config {
     pub quotas: QuotasConfig,
     pub pci: PciConfig,
     pub audit: AuditConfig,
+    pub reconcile: ReconcileConfig,
+    pub console: ConsoleConfig,
 }
 
 impl Default for Config {
@@ -55,6 +57,8 @@ impl Default for Config {
             quotas: QuotasConfig::default(),
             pci: PciConfig::default(),
             audit: AuditConfig::default(),
+            reconcile: ReconcileConfig::default(),
+            console: ConsoleConfig::default(),
         }
     }
 }
@@ -241,6 +245,52 @@ impl Default for AuditConfig {
     }
 }
 
+/// How VM instances are run and reconciled (spec/reconciliation.md §14).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct ReconcileConfig {
+    pub vm_runner: VmRunnerKind,
+    pub workers: usize,
+    pub resync_secs: u64,
+    pub on_host_boot: crate::models::HostBootPolicy,
+    pub host_shutdown_grace_secs: u64,
+}
+
+impl Default for ReconcileConfig {
+    fn default() -> Self {
+        Self {
+            vm_runner: VmRunnerKind::Auto,
+            workers: 4,
+            resync_secs: 30,
+            on_host_boot: crate::models::HostBootPolicy::Resume,
+            host_shutdown_grace_secs: 60,
+        }
+    }
+}
+
+/// Where `glidex-vm-shim` runs (spec §8.8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum VmRunnerKind {
+    /// `systemd` when the control plane itself runs under systemd.
+    Auto,
+    Systemd,
+    Detached,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct ConsoleConfig {
+    /// Rotate a VM's console log past this size (one old generation kept).
+    pub log_max_bytes: u64,
+}
+
+impl Default for ConsoleConfig {
+    fn default() -> Self {
+        Self { log_max_bytes: 16 << 20 }
+    }
+}
+
 impl Config {
     /// Load `GLIDEX_CONFIG` or the default path; a missing file is the
     /// defaults. `GLIDEX_LISTEN` (comma-separated) overrides `listen`.
@@ -270,6 +320,19 @@ impl Config {
     pub fn check(&self) -> Result<(), String> {
         if !(1..=1000).contains(&self.authz.policy_history) {
             return Err("authz.policy_history must be 1-1000".into());
+        }
+        let r = &self.reconcile;
+        if !(1..=64).contains(&r.workers) {
+            return Err("reconcile.workers must be 1-64".into());
+        }
+        if !(5..=3600).contains(&r.resync_secs) {
+            return Err("reconcile.resync_secs must be 5-3600".into());
+        }
+        if r.host_shutdown_grace_secs > 300 {
+            return Err("reconcile.host_shutdown_grace_secs must be 0-300".into());
+        }
+        if !((1 << 20)..=(256 << 20)).contains(&self.console.log_max_bytes) {
+            return Err("console.log_max_bytes must be 1 MiB-256 MiB".into());
         }
         self.check_listeners()
     }

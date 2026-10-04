@@ -17,7 +17,8 @@ ui_port=${E2E_UI_PORT:-5174}
 ui_server_port=${E2E_UI_SERVER_PORT:-5175}
 
 # Build before HOME changes: cargo and rustup live under the real HOME.
-cargo build -q -p glidex-control-plane --bin glidex-control-plane --manifest-path "$repo/Cargo.toml"
+# The shim too: VMs run under it (detached runner), found next to the binary.
+cargo build -q -p glidex-control-plane --bin glidex-control-plane -p glidex-vm-shim --manifest-path "$repo/Cargo.toml"
 binary="${CARGO_TARGET_DIR:-$repo/target}/debug/glidex-control-plane"
 
 rm -rf "$e2e_home"

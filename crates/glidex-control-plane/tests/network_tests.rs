@@ -186,6 +186,8 @@ async fn failed_start_detaches_ports_for(hypervisor: &str, binary: &str) {
         return;
     }
     let h = harness(true);
+    h.manager.initialize().await.unwrap();
+    h.manager.start_controllers();
     request(&h.app, "POST", "/networks", Some(json!({"name": "lab", "mode": "nat"}))).await;
     let mut spec = vm("boom", json!([{"network": "lab"}]));
     spec["hypervisor"] = json!(hypervisor);
@@ -193,17 +195,26 @@ async fn failed_start_detaches_ports_for(hypervisor: &str, binary: &str) {
     let id = body["id"].as_str().unwrap().to_string();
     let port = glidex_ovs::names::port_name(&id, 0).unwrap();
 
-    // The firmware path doesn't exist, so configure fails after the port
-    // was attached; the port must be detached again.
-    let (status, body) = request(&h.app, "POST", &format!("/vms/{id}/start"), None).await;
+    // The firmware path doesn't exist, so the launch fails after the port
+    // was attached (spec/reconciliation.md §9.1 step 5).
+    let (status, body) = request(&h.app, "POST", &format!("/vms/{id}/start?wait=60"), None).await;
     assert!(status.is_server_error() || status.is_client_error(), "{status} {body}");
+    assert_eq!(body["details"]["vm"]["state"], "failed", "{body}");
     let calls = h.exec.calls();
     let attached = calls.iter().position(|c| c.starts_with(&format!("ip tuntap add dev {port}"))).expect("attached");
-    let detached = calls.iter().position(|c| c == &format!("ovs-vsctl --if-exists del-port {port}")).expect("detached");
+
+    // Ports belong to the VM while it should run (D16); stopping it
+    // releases them.
+    let (status, body) = request(&h.app, "POST", &format!("/vms/{id}/stop?wait=60"), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    // `created` when the launch failed before anything ran (QEMU refuses
+    // the missing firmware while building its command line).
+    assert!(matches!(body["state"].as_str(), Some("stopped" | "created")), "{body}");
+    let calls = h.exec.calls();
+    let detached = calls.iter().rposition(|c| c == &format!("ovs-vsctl --if-exists del-port {port}")).expect("detached");
     assert!(detached > attached);
-    let (_, vm) = request(&h.app, "GET", &format!("/vms/{id}"), None).await;
-    assert_ne!(vm["state"], "running");
-    request(&h.app, "DELETE", &format!("/vms/{id}"), None).await;
+    assert!(body["nics"][0]["port"].is_null(), "{body}");
+    request(&h.app, "DELETE", &format!("/vms/{id}?wait=30"), None).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -224,6 +235,37 @@ async fn ovs_status_and_bridges() {
     let (status, body) = request(&h.app, "POST", "/ovs/bridges", Some(json!({"name": "Bad!", "datapath": "system"}))).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert_eq!(body["error"], "invalid_network");
+}
+
+/// spec/reconciliation.md §10.3: the network controller checks netd's
+/// records and reports the network's phase.
+#[tokio::test(flavor = "multi_thread")]
+async fn network_controller_reports_the_phase() {
+    let h = harness(true);
+    h.manager.start_controllers();
+    let (status, _) = request(&h.app, "POST", "/networks", Some(json!({"name": "lab", "mode": "nat"}))).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let mut net = Value::Null;
+    for _ in 0..50 {
+        let (_, n) = request(&h.app, "GET", "/networks/lab", None).await;
+        if n["conditions"].as_array().is_some_and(|c| !c.is_empty()) {
+            net = n;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    // The fake OVS reports the bridge with no ports and no running
+    // dnsmasq: the controller says what is missing instead of guessing.
+    assert!(matches!(net["phase"].as_str(), Some("ready" | "degraded")), "{net}");
+    let ready = &net["conditions"][0];
+    assert_eq!(ready["kind"], "Ready", "{net}");
+    if net["phase"] == "degraded" {
+        assert!(!ready["message"].as_str().unwrap().is_empty(), "{net}");
+        let (status, ev) = request(&h.app, "GET", "/networks/lab/events", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(ev["events"][0]["reason"], "Degraded", "{ev}");
+    }
+    h.manager.stop_controllers().await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -316,4 +358,52 @@ async fn project_networks_and_sharing() {
     // A project that still owns networks can't be deleted.
     let (status, _) = request(&h.app, "DELETE", &format!("/projects/{pa}"), None).await;
     assert_eq!(status, StatusCode::CONFLICT);
+}
+
+/// Deleting a network is a request the network controller finishes
+/// (spec/reconciliation.md §6.3, §10.3): with netd away it waits, says
+/// why, and keeps the network from new VMs; once netd is back, netd's NAT
+/// and bridge go, then the record.
+#[tokio::test(flavor = "multi_thread")]
+async fn network_deletion_waits_for_netd() {
+    let Harness { app, manager, exec, _dir: dir } = harness(true);
+    let (status, body) = request(&app, "POST", "/networks", Some(json!({"name": "lab", "mode": "nat"}))).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    drop(app);
+    drop(manager);
+
+    // The same database, with netd unreachable.
+    let away = dir.path().join("away");
+    std::fs::create_dir_all(&away).unwrap();
+    let manager = VmManager::with_db_path_and_netd(dir.path().join("cp.db"), Netd::new(&away)).unwrap();
+    let app = create_router(manager.clone());
+    let (status, net) = request(&app, "DELETE", "/networks/lab", None).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{net}");
+    assert!(net["deletion_requested_at"].is_u64(), "{net}");
+    assert_eq!(net["phase"], "netd_unavailable", "{net}");
+    assert_eq!(net["conditions"][0]["reason"], "NetdUnavailable", "{net}");
+    // No new VM may use it meanwhile.
+    let (status, body) = request(&app, "POST", "/vms", Some(vm("late", json!([{"network": "lab"}])))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body["message"].as_str().unwrap().contains("being deleted"), "{body}");
+    drop(app);
+    drop(manager);
+
+    // netd is back: the controller finishes the deletion.
+    let manager = VmManager::with_db_path_and_netd(dir.path().join("cp.db"), Netd::new(dir.path().join("run"))).unwrap();
+    let app = create_router(manager.clone());
+    manager.start_controllers();
+    let mut gone = false;
+    for _ in 0..100 {
+        let (status, _) = request(&app, "GET", "/networks/lab", None).await;
+        if status == StatusCode::NOT_FOUND {
+            gone = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(gone, "the network controller deleted it");
+    let calls = exec.calls();
+    assert!(calls.iter().any(|c| c.starts_with("ip addr del") || c.contains("gxbr-lab")), "{calls:#?}");
+    manager.stop_controllers().await;
 }

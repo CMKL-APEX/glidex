@@ -39,6 +39,9 @@ import type {
 
 const API_BASE = "/api";
 
+/** Dispatched on `window` after every successful write. */
+export const CHANGED_EVENT = "glidex:changed";
+
 /** An API error that keeps the HTTP status, the machine-readable code and details. */
 export class ApiRequestError extends Error {
   status: number;
@@ -118,6 +121,11 @@ async function request<T>(method: string, path: string, body?: unknown, opts: Re
     }
   }
   if (!resp.ok) throw await errorOf(resp);
+  // A write may have started work for the controllers: let the activity
+  // indicator look again now rather than at its next poll.
+  if (method !== "GET" && method !== "HEAD" && /^\/(vms|disks|images|networks)\b/.test(path) && !path.includes("/console/")) {
+    window.dispatchEvent(new Event(CHANGED_EVENT));
+  }
   if (resp.status === 204) return undefined as T;
   const text = await resp.text();
   return (text ? JSON.parse(text) : undefined) as T;
@@ -191,17 +199,52 @@ export async function getVm(id: string): Promise<VmResponse> {
 }
 
 export const createVm = (req: CreateVmRequest) => post<VmResponse>("/vms", req);
-export const startVm = (id: string) => post<VmResponse>(`/vms/${enc(id)}/start`);
+
+/** Lifecycle calls change the VM's desired state; `wait` holds the answer
+ * until the controller got it there, or reports why it couldn't
+ * (spec/reconciliation.md §12.3). */
+const WAIT_SECS = 60;
+
+export const startVm = (id: string) => post<VmResponse>(`/vms/${enc(id)}/start?wait=${WAIT_SECS}`);
 
 /** Stop a VM. With `gracefulTimeoutSecs`, press the guest's power button
  * first and stop it hard only if it is still running after that long. */
 export function stopVm(id: string, gracefulTimeoutSecs?: number): Promise<VmResponse> {
-  const query = gracefulTimeoutSecs === undefined ? "" : `?graceful_timeout_secs=${gracefulTimeoutSecs}`;
-  return post<VmResponse>(`/vms/${enc(id)}/stop${query}`);
+  const wait = Math.min(300, Math.max(WAIT_SECS, (gracefulTimeoutSecs ?? 0) + 20));
+  const grace = gracefulTimeoutSecs === undefined ? "" : `&graceful_timeout_secs=${gracefulTimeoutSecs}`;
+  return post<VmResponse>(`/vms/${enc(id)}/stop?wait=${wait}${grace}`);
 }
 
-export const pauseVm = (id: string) => post<VmResponse>(`/vms/${enc(id)}/pause`);
-export const deleteVm = (id: string, keepDisk = false) => del(`/vms/${enc(id)}${keepDisk ? "?keep_disk=true" : ""}`);
+export const pauseVm = (id: string) => post<VmResponse>(`/vms/${enc(id)}/pause?wait=${WAIT_SECS}`);
+export const deleteVm = (id: string, keepDisk = false) =>
+  del(`/vms/${enc(id)}?wait=${WAIT_SECS}${keepDisk ? "&keep_disk=true" : ""}`);
+
+/** One VM lifecycle action from the UI's buttons. `shutdown` presses the
+ * power button and stops the VM hard after 60 s. */
+export function vmAction(id: string, action: "start" | "shutdown" | "stop" | "pause" | "delete"): Promise<unknown> {
+  switch (action) {
+    case "start":
+      return startVm(id);
+    case "shutdown":
+      return stopVm(id, 60);
+    case "stop":
+      return stopVm(id);
+    case "pause":
+      return pauseVm(id);
+    case "delete":
+      return deleteVm(id);
+  }
+}
+
+/** A VM's event history: starts, exits, restarts, adoptions. */
+export interface VmEvent {
+  at: number;
+  actor: string;
+  kind: "normal" | "warning";
+  reason: string;
+  message: string;
+}
+export const vmEvents = (id: string) => get<{ events: VmEvent[] }>(`/vms/${enc(id)}/events`);
 
 /** A single-use console ticket for the WebSocket (spec §5.6). */
 export const consoleTicket = (id: string) =>
@@ -229,7 +272,8 @@ export const deleteCredential = (username: string, project?: string | null) =>
 
 export const listNetworks = () => get<Network[]>("/networks");
 export const createNetwork = (req: CreateNetworkRequest) => post<Network>("/networks", req);
-export const deleteNetwork = (name: string) => del(`/networks/${enc(name)}`);
+/** `undefined` when gone (204), else the network its controller is still deleting (202). */
+export const deleteNetwork = (name: string) => del<Network | undefined>(`/networks/${enc(name)}`);
 export const createProjectNetwork = (project: string, req: CreateNetworkRequest) =>
   post<Network>(`/projects/${enc(project)}/networks`, req);
 export const offerNetworkShare = (network: string, project: string) =>
@@ -259,16 +303,22 @@ export const imageCatalog = () => get<CatalogItem[]>("/images/catalog");
 export const listImages = () => get<ImageInfo[]>("/images");
 export const pullImage = (req: { catalog?: string; url?: string; sha256?: string; name?: string }) =>
   post<ImageInfo>("/images", req);
-export const deleteImage = (id: string) => del(`/images/${enc(id)}`);
+/** `undefined` when gone (204), else the image its controller is still deleting (202). */
+export const deleteImage = (id: string) => del<ImageInfo | undefined>(`/images/${enc(id)}`);
+/** Download a failed image again (spec/reconciliation.md D19). */
+export const retryImage = (id: string) => post<ImageInfo>(`/images/${enc(id)}/retry`);
 
 export const listDisks = (project?: string | null) => get<DiskInfo[]>(`/disks${inProject(project)}`);
 export const getDisk = (id: string) => get<DiskInfo>(`/disks/${enc(id)}`);
-export const createDisk = (req: CreateDiskRequest) => post<DiskInfo>("/disks", req);
+// Disk writes are carried out by the disk controller (spec/reconciliation.md
+// §10.1): wait for it, and show what is still pending if it isn't done.
+export const createDisk = (req: CreateDiskRequest) => post<DiskInfo>(`/disks?wait=${WAIT_SECS}`, req);
 export const resizeDisk = (id: string, sizeGib: number, extendRoot?: boolean) =>
-  post<DiskInfo>(`/disks/${enc(id)}/resize`, { size_gib: sizeGib, extend_root: extendRoot });
+  post<DiskInfo>(`/disks/${enc(id)}/resize?wait=${WAIT_SECS}`, { size_gib: sizeGib, extend_root: extendRoot });
 export const extendRoot = (id: string, mode: "offline" | "on-boot") =>
-  post<DiskInfo>(`/disks/${enc(id)}/extend-root`, { mode });
-export const deleteDisk = (id: string) => del(`/disks/${enc(id)}`);
+  post<DiskInfo>(`/disks/${enc(id)}/extend-root?wait=${WAIT_SECS}`, { mode });
+/** `undefined` when gone (204), else the disk, deleted once its operation finishes (202). */
+export const deleteDisk = (id: string) => del<DiskInfo | undefined>(`/disks/${enc(id)}`);
 
 // ---- projects and role links ------------------------------------------------
 

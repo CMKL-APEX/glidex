@@ -1,10 +1,14 @@
-import type { VmState } from "../types";
+import type { PowerState, VmState } from "../types";
 
 export type VmAction = "start" | "shutdown" | "stop" | "pause" | "delete";
 
 interface VmActionsProps {
   vmId: string;
   state: VmState;
+  /** What the VM should be doing; a VM still trying to start can be stopped. */
+  desired?: PowerState;
+  /** Being deleted: nothing to do but wait. */
+  deleting?: boolean;
   onAction: (vmId: string, action: VmAction) => void;
   loading?: boolean;
 }
@@ -12,12 +16,16 @@ interface VmActionsProps {
 export default function VmActions({
   vmId,
   state,
+  desired,
+  deleting = false,
   onAction,
   loading = false,
 }: VmActionsProps) {
+  if (deleting) return <span className="text-sm text-gray-500">Being deleted…</span>;
   const canStart =
-    state === "created" || state === "stopped" || state === "paused";
-  const canStop = state === "running" || state === "paused";
+    state === "created" || state === "stopped" || state === "paused" || (state === "failed" && desired !== "running");
+  const canStop =
+    state === "running" || state === "paused" || (desired !== undefined && desired !== "stopped");
   const canPause = state === "running";
   // The power button only reaches a running guest.
   const canShutdown = state === "running";

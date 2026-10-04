@@ -8,6 +8,8 @@ import type {
   OvsStatus,
   PortType,
 } from "../types";
+import { notReady } from "../types";
+import { useLiveRefresh } from "../live";
 import Modal from "../components/Modal";
 import { LoadingCard } from "../components/Loading";
 
@@ -304,6 +306,21 @@ function AddNetworkForm({
   );
 }
 
+/** The network controller's view (spec/reconciliation.md §10.3). */
+function NetworkStatus({ n }: { n: Network }) {
+  const why = notReady(n.conditions);
+  const phase = n.phase ?? "ready";
+  if (phase === "ready" && !n.deletion_requested_at) return <span className="text-green-700">ready</span>;
+  return (
+    <div title={why ? `${why.reason}: ${why.message}` : undefined}>
+      <span className={n.deletion_requested_at ? "text-gray-500" : phase === "degraded" ? "text-red-700" : "text-amber-700"}>
+        {n.deletion_requested_at ? "deleting" : phase.replace("_", " ")}
+      </span>
+      {why?.message && <div className="text-gray-500 truncate max-w-xs">{why.message}</div>}
+    </div>
+  );
+}
+
 export default function Networking() {
   const [status, setStatus] = useState<OvsStatus | null>(null);
   const [networks, setNetworks] = useState<Network[]>([]);
@@ -333,6 +350,15 @@ export default function Networking() {
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  // Follow the live stream; without it, poll while a network is deleting.
+  const live = useLiveRefresh(["network"], refresh);
+  const deleting = networks.some((n) => n.deletion_requested_at);
+  useEffect(() => {
+    if (!deleting || live) return;
+    const id = setInterval(refresh, 3000);
+    return () => clearInterval(id);
+  }, [deleting, live, refresh]);
 
   const remove = async (name: string) => {
     if (!confirm(`Delete network "${name}"?`)) return;
@@ -384,13 +410,14 @@ export default function Networking() {
               <th className="px-4 py-3 font-medium">Bridge</th>
               <th className="px-4 py-3 font-medium">VM port</th>
               <th className="px-4 py-3 font-medium">VLAN</th>
+              <th className="px-4 py-3 font-medium">Status</th>
               <th className="px-4 py-3" />
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100">
             {networks.length === 0 && (
               <tr>
-                <td className="px-4 py-6 text-center text-gray-500" colSpan={6}>
+                <td className="px-4 py-6 text-center text-gray-500" colSpan={7}>
                   No networks yet.
                 </td>
               </tr>
@@ -402,6 +429,9 @@ export default function Networking() {
                 <td className="px-4 py-3 font-mono">{n.bridge}</td>
                 <td className="px-4 py-3">{n.port_type === "vhost_user" ? "vhost-user" : "tap"}</td>
                 <td className="px-4 py-3">{n.vlan ?? "—"}</td>
+                <td className="px-4 py-3 text-xs">
+                  <NetworkStatus n={n} />
+                </td>
                 <td className="px-4 py-3 text-right">
                   {canManage && (
                     <button

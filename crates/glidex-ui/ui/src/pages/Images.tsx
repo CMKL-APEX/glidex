@@ -4,12 +4,14 @@ import type { CatalogItem, ImageInfo } from "../types";
 import { formatBytes } from "../types";
 import Modal from "../components/Modal";
 import { LoadingCard } from "../components/Loading";
+import { useLiveRefresh } from "../live";
 
 const inputClass =
   "mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-transparent";
 
 function StatusBadge({ image }: { image: ImageInfo }) {
   const s = image.status;
+  if (image.deleting) return <span className="text-xs text-gray-500">Deleting…</span>;
   switch (s.state) {
     case "downloading": {
       const pct = s.total_bytes ? Math.floor((s.received_bytes * 100) / s.total_bytes) : null;
@@ -102,13 +104,14 @@ export default function Images() {
     refresh();
   }, [refresh]);
 
-  // Poll while anything is downloading.
-  const busy = images?.some((i) => i.status.state === "downloading" || i.status.state === "verifying");
+  // Follow the live stream; without it, poll while anything is downloading.
+  const live = useLiveRefresh(["image", "disk"], refresh);
+  const busy = images?.some((i) => i.status.state === "downloading" || i.status.state === "verifying" || i.deleting);
   useEffect(() => {
-    if (!busy) return;
+    if (!busy || live) return;
     const id = setInterval(refresh, 1500);
     return () => clearInterval(id);
-  }, [busy, refresh]);
+  }, [busy, live, refresh]);
 
   const pull = async (key: string) => {
     setError(null);
@@ -129,6 +132,19 @@ export default function Images() {
       refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to delete image");
+    }
+  };
+
+  const retry = async (img: ImageInfo) => {
+    setError(null);
+    try {
+      await api.retryImage(img.id);
+      refresh();
+      // The image controller restarts the download a moment later; until
+      // then the image still reads "failed" and nothing would poll.
+      setTimeout(refresh, 1000);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to retry the download");
     }
   };
 
@@ -217,7 +233,15 @@ export default function Images() {
                     {!img.verified && <span className="ml-1 text-amber-700">(unverified)</span>}
                   </td>
                   <td className="px-4 py-3 text-xs font-mono">{img.linked_disks.join(", ") || "—"}</td>
-                  <td className="px-4 py-3 text-right">
+                  <td className="px-4 py-3 text-right space-x-2 whitespace-nowrap">
+                    {img.status.state === "failed" && (
+                      <button
+                        className="px-3 py-1 text-xs font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg"
+                        onClick={() => retry(img)}
+                      >
+                        Retry
+                      </button>
+                    )}
                     <button
                       className="px-3 py-1 text-xs font-medium text-red-700 bg-red-50 hover:bg-red-100 rounded-lg"
                       onClick={() => remove(img)}

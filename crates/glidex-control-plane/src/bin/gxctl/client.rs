@@ -533,6 +533,43 @@ impl ApiClient {
         Ok(Response { status, body })
     }
 
+    /// A streaming GET (`/watch`): `on_text` gets the body as it arrives and
+    /// returns false to stop. Returns when the server ends the stream.
+    pub async fn stream(&self, path: &str, mut on_text: impl FnMut(&str) -> bool) -> Result<(), Failure> {
+        use hyper::body::Body as _;
+        let stream = self.connect().await.map_err(Failure::transport)?;
+        let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
+            .await
+            .map_err(|e| Failure::transport(format!("connection to {}: {}", self.describe(), e)))?;
+        tokio::spawn(async move {
+            let _ = conn.await;
+        });
+        let mut req = Request::builder().method(Method::GET).uri(self.full_path(path)).header(HOST, self.host_header());
+        if let Some(h) = self.auth_header() {
+            req = req.header(AUTHORIZATION, h);
+        }
+        let req = req.body(Full::new(Bytes::new())).map_err(|e| Failure::transport(format!("bad request: {}", e)))?;
+        let resp = sender
+            .send_request(req)
+            .await
+            .map_err(|e| Failure::transport(format!("request to {} failed: {}", self.describe(), e)))?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.into_body().collect().await.map(|b| b.to_bytes()).unwrap_or_default();
+            return Err(render_error(status, &body, !self.is_unix()));
+        }
+        let mut body = resp.into_body();
+        while let Some(frame) = std::future::poll_fn(|cx| std::pin::Pin::new(&mut body).poll_frame(cx)).await {
+            let frame = frame.map_err(|e| Failure::transport(format!("reading the stream: {}", e)))?;
+            if let Ok(data) = frame.into_data() {
+                if !on_text(&String::from_utf8_lossy(&data)) {
+                    break;
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Request returning the raw body of a successful response.
     pub async fn request_bytes(&self, method: Method, path: &str, body: Option<serde_json::Value>) -> Result<Response, Failure> {
         let r = self.send(method, path, body.as_ref()).await?;

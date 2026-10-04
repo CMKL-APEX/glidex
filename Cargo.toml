@@ -6,6 +6,8 @@ members = [
     "crates/glidex-netd",
     "crates/glidex-authd",
     "crates/glidex-ui",
+    "crates/glidex-hv-client",
+    "crates/glidex-vm-shim",
 ]
 resolver = "2"
 

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { NavLink } from "react-router-dom";
 import { healthCheck } from "../api";
 import { useSession } from "../session";
+import Activity from "./Activity";
 
 export default function Header() {
   const session = useSession();
@@ -61,6 +62,7 @@ export default function Header() {
             </nav>
           </div>
           <div className="flex items-center gap-3">
+            <Activity />
             <label className="flex items-center gap-1 text-sm text-gray-600">
               <span>Project</span>
               <select

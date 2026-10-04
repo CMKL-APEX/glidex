@@ -13,6 +13,7 @@ mod errors;
 mod net;
 mod storage;
 mod vms;
+mod watch;
 
 pub use errors::{error_to_response, ApiErr};
 
@@ -131,6 +132,8 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         .add("POST", "/vms", "createVm", post(vms::create))
         .add("GET", "/vms/{id}", "readVm", get(vms::get_one))
         .add("DELETE", "/vms/{id}", "deleteVm", delete(vms::delete_one))
+        .add("PATCH", "/vms/{id}", "updateVm", axum::routing::patch(vms::patch_one))
+        .add("GET", "/vms/{id}/events", "readVm", get(vms::events))
         .add("POST", "/vms/{id}/start", "startVm", post(vms::start))
         .add("POST", "/vms/{id}/stop", "stopVm", post(vms::stop))
         .add("POST", "/vms/{id}/pause", "pauseVm", post(vms::pause))
@@ -154,6 +157,9 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         .add("POST", "/images", "pullImage", post(storage::pull_image))
         .add("GET", "/images/{id}", "readImage", get(storage::get_image))
         .add("DELETE", "/images/{id}", "deleteImage", delete(storage::delete_image))
+        .add("POST", "/images/{id}/retry", "pullImage", post(storage::retry_image))
+        .add("GET", "/images/{id}/events", "readImage", get(storage::image_events))
+        .add("GET", "/disks/{id}/events", "readDisk", get(storage::disk_events))
         .add("GET", "/disks", "listDisks", get(storage::list_disks))
         .add("POST", "/disks", "createDisk", post(storage::create_disk))
         .add("GET", "/disks/{id}", "readDisk", get(storage::get_disk))
@@ -165,6 +171,7 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         .add("POST", "/networks", "createNetwork", post(net::create_network))
         .add("GET", "/networks/{name}", "readNetwork", get(net::get_network))
         .add("DELETE", "/networks/{name}", "deleteNetwork", delete(net::delete_network))
+        .add("GET", "/networks/{name}/events", "readNetwork", get(net::network_events))
         .add("PUT", "/networks/{name}/grants", "grantNetwork", put(net::grant_network))
         .add("POST", "/networks/{name}/shares", "offerNetworkShare", post(net::offer_share))
         .add("DELETE", "/networks/{name}/shares/{project}", "unshareNetwork", delete(net::unshare))
@@ -184,6 +191,9 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         .add("DELETE", "/ovs/bridges/{name}/uplinks/{uplink}", "deleteUplink", delete(net::delete_uplink))
         .add("POST", "/ovs/bridges/{name}/uplinks/{uplink}/commit", "commitUplink", post(net::commit_uplink))
         .add("GET", "/pci-devices", "listPciDevices", get(net::list_pci_devices))
+        .add("GET", "/system/reconcile", "readSystemStatus", get(vms::system_reconcile))
+        // Live changes; each kind filtered like its list endpoint.
+        .add("GET", "/watch", AUTHENTICATED, get(watch::watch))
         // ---- authentication
         .add("GET", "/health", PUBLIC, get(health_check))
         .add("GET", "/auth/methods", PUBLIC, get(access::methods))
@@ -499,6 +509,25 @@ impl Caller {
     /// The route's own action on `resource`.
     pub fn require(&self, resource: Ent, es: EntitySet) -> Result<(), ApiErr> {
         self.require_action(self.action, resource, es, &[])
+    }
+
+    /// A resource the caller can't `read_action` is reported as not found;
+    /// nothing else is checked (the handler checks per field, e.g. PATCH).
+    pub fn require_readable(&self, read_action: &str, resource: Ent, es: EntitySet, what: &str) -> Result<(), ApiErr> {
+        if !self.allowed(read_action, resource, es) {
+            self.audit.0.lock().unwrap().denied = true;
+            return Err(err(StatusCode::NOT_FOUND, "not_found", format!("{} not found", what)));
+        }
+        Ok(())
+    }
+
+    /// Who made a request, for events (`api:<user>` or `api:token:<id>`).
+    pub fn actor(&self) -> String {
+        match (&self.p.user, &self.p.token) {
+            (Some(u), _) => format!("api:{}", u.id),
+            (None, Some(t)) => format!("api:token:{}", t.id),
+            _ => "api".to_string(),
+        }
     }
 
     /// Like `require`, but a resource the caller can't even `read` is

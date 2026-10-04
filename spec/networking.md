@@ -563,11 +563,27 @@ directories, runs `probe`, then **reconciles**:
    drops forwarded traffic, dnsmasq processes.
 3. **VM ports:** kept until the control plane calls `sync_vms`; then
    ports whose VM isn't in `running` are detached (port, tap, socket).
+   `running` is every VM that **owns ports** — whose `status.nics` is
+   non-empty — not every VM that is running right now (D16,
+   [reconciliation.md](reconciliation.md#94-startup-order)): a VM keeps
+   its tap and NAT address while it crash-restarts, and an adopted VM is
+   never cut off.
 4. **Orphans:** glidex-tagged objects with no record are reported in
    `ReconcileReport`, never deleted.
 
-The control plane calls `sync_vms` after its own `initialize()` and
-after every reconnect.
+**Invariant.** The control plane sends `sync_vms` only after it has
+observed (and adopted) every VM at startup (`controller/startup.rs`),
+and again whenever netd has restarted, always with the same set
+(`sync_netd_ports`). A restart is noticed on the resync tick: the
+identity (device, inode) of `netd.sock` changed since the last sync.
+The call holds the VM controller's ports lock, so it never races a
+reconcile that is recording and attaching a port. It is not sent at all
+while no VM of this control plane uses networks (no `networks` in any
+spec, no `status.nics`): netd's sync is host-wide, and a control plane
+with nothing to keep must not drop another's ports (a scratch instance
+next to the real one). Why: a `sync_vms` sent before adoption would
+detach the ports of VMs that kept running through a control-plane
+restart.
 
 ## 8. Bridges, uplinks and IP migration
 
@@ -779,7 +795,14 @@ pub struct Network {
     pub port_type: VmPortKind,     // Tap | VhostUser
     pub vlan: Option<u16>,
     pub mtu: Option<u16>,
+    pub owns_bridge: bool,         // created its bridge (and NAT); removes them on delete
     pub created_at: u64,
+    // project, all_projects, grants, shares, share_offers: security.md §6.2
+    // Written by the network controller only (§11.2a); defaulted, so
+    // older records load as `Ready`:
+    pub phase: NetworkPhase,       // Ready | Degraded | NetdUnavailable
+    pub conditions: Vec<Condition>,
+    pub deletion_requested_at: Option<u64>, // set by DELETE (§11.3); absent otherwise
 }
 
 pub struct NetworkAttachment {
@@ -798,11 +821,49 @@ netd's reservation on NAT networks.
 
 ### 11.2 netd client (`network.rs`)
 
-- A blocking `UnixStream` client run in `spawn_blocking`. It uses
-  `netd.sock`; for `probe` it falls back to `netd-ro.sock` when the full
-  socket isn't accessible. On error it reconnects, re-sends `hello`,
-  then `sync_vms`.
+- A blocking `UnixStream` client run in `spawn_blocking`. Each call
+  opens a short connection (`hello` + request), so a netd restart needs
+  no reconnect logic. It uses `netd.sock`; for `probe` it falls back to
+  `netd-ro.sock` when the full socket isn't accessible. `sync_vms`
+  follows a netd restart as in §7.7.
 - No socket or connection refused → `NetdUnavailable`.
+
+### 11.2a Network controller
+
+`controller/network.rs` ([reconciliation.md §10.3](reconciliation.md#103-network))
+keeps netd's records in line with the `networks` table; netd reconciles
+the host from its own records. Each round (on create, and every resync)
+calls `list_bridges` (and `list_nat` for NAT networks) and records a
+`phase` and a `Ready` condition on the network:
+
+| `phase` | When |
+|---|---|
+| `ready` | the bridge is in netd and live on the host; for NAT, netd has its NAT and, with `dns`, its dnsmasq is running |
+| `degraded` | something is missing; `Ready=False/Degraded` names it, event `Degraded` |
+| `netd_unavailable` | netd could not be reached (`Ready=Unknown`) |
+
+- A bridge the network owns (`owns_bridge`, NAT and isolated networks)
+  that netd lost, as a record or on the host, is re-created with
+  `ensure_bridge` (event `BridgeRestored`).
+- A lost NAT is **reported, not re-created**: its subnet lives only in
+  netd, and a new one would renumber every VM on it. A dnsmasq that is
+  not running is reported too (netd restarts it in its own reconcile).
+- A bridged network whose bridge is no longer a glidex bridge is
+  reported; glidex never takes over a bridge on its own.
+
+**Deletion.** A network with `deletion_requested_at` is torn down
+instead. While a VM still uses it: `Ready=False/InUse`, phase
+`degraded`, retried every 10 s. Then, for a network glidex created (`owns_bridge`): netd
+`delete_nat` (NAT mode), then `delete_bridge` if netd still has the
+bridge; a bridged network only drops its record. With netd unreachable
+it waits (`netd_unavailable`, `Ready=Unknown/NetdUnavailable`); a netd
+error gives `Ready=False/DeleteFailed` (phase `degraded`, event
+`DeleteFailed`); both are
+retried every 30 s. Finally the record is removed (event `Deleted`).
+
+Only `phase` and `conditions` are written by the controller; grants and
+shares written meanwhile are kept. `GET /networks/{name}/events` returns
+the network's event ring.
 
 ### 11.3 REST
 
@@ -813,7 +874,8 @@ netd's reservation on NAT networks.
 | `POST /ovs/dpdk-init` `{socket_mem, pmd_cpu_mask, confirm?}` | `init_dpdk` | 204 |
 | `GET` · `POST /ovs/bridges`, `DELETE /ovs/bridges/{name}` | `list_bridges` · `ensure_bridge` · `delete_bridge` | 200 · 201 · 204 |
 | `GET` · `POST /ovs/bridges/{b}/uplinks`, `DELETE …/{u}`, `POST …/{u}/commit {token}` | uplink ops | 200 · 201 or 202 (pending) · 204 · 200 |
-| `GET` · `POST /networks`, `DELETE /networks/{name}` | control-plane store (+ `ensure_bridge`/`ensure_nat` for NAT) | 200 · 201 · 204 |
+| `GET` · `POST /networks` | control-plane store (+ `ensure_bridge`/`ensure_nat` for NAT) | 200 · 201 |
+| `DELETE /networks/{name}[?wait=N]` | records `deletion_requested_at`; the controller calls `delete_nat`/`delete_bridge` (§11.2a) | 204 when gone at once, else 202 with the network; with `wait`, 200 once gone |
 | `POST /vms` with `networks` | validation only | 201 |
 
 Error mapping:
@@ -833,21 +895,47 @@ Error mapping:
 
 `create_vm` validation: unknown network (400); ≤ 8 attachments; a custom MAC must be unicast;
 VhostUser forces `memory.shared = true`. Deleting a network used by any
-VM → `409`.
+VM (spec or live NICs) → `409` (`deleteNetwork`, or `deleteProjectNetwork`
+for a project network). While a network is being deleted, attaching a VM
+to it is `400` ("network 'x' is being deleted") and creating one with
+the same name is `409` ("is being deleted; try again once it is gone").
 
 ### 11.4 VM lifecycle
 
-- `start_vm`, before `configure`: `attach_vm_port` per attachment; build
-  each `NetConfig` (§3) from the binding, with `id = "net<i>"` and
-  `num_queues = 2 × queue_pairs`; set `memory.shared` / `hugepages`. On
-  any failure, detach the ports attached so far, then return the error.
-- `stop_vm`, `delete_vm`, `shutdown`: `detach_vm_port` per attachment
-  (errors logged, not fatal).
-- `CloudHypervisorClient::create_vm` gains `net: Vec<NetConfig>` and
-  `MemoryConfig { shared, hugepages }`; QEMU gets the arguments in §3a.
-- A guest that powers itself off takes its hypervisor with it. The
-  control plane checks every 2 s (`reap_exited_vms`), marks such VMs
-  `stopped` and detaches their ports.
+VM ports belong to the VM controller
+([reconciliation.md §9.1](reconciliation.md#91-reconcile)); no API
+handler calls netd for them.
+
+- **Launch** (desired running, no live instance): for each attachment,
+  first add `{network, nic_index, mac}` to `status.nics` (a store
+  write), then `attach_vm_port`; record `port` and `ipv4`. The bindings
+  become `--net` / `-netdev` arguments (§3, §3a) with `id = "net<i>"`
+  and `num_queues = 2 × queue_pairs`; vhost-user sets shared memory.
+  Ports of a NIC the spec no longer has are detached first. If the
+  launch fails before the instance is recorded, the VM's ports are
+  detached again (`launch_round`).
+- **Ports survive crash-restarts** (D16): between an unexpected exit and
+  the relaunch the ports stay attached, and `attach_vm_port` on a port
+  whose tap still exists reuses it (`vm_port::attach` skips `ip tuntap
+  add` and uses `--may-exist`), so the VM keeps its tap and NAT address.
+- **Stop** (desired stopped, no live instance any more):
+  `detach_vm_port` per `status.nics` entry, removing each entry only
+  after netd confirmed; with netd unavailable the entry stays and the
+  next reconcile or netd's own `sync_vms` finishes it.
+- **Delete:** the `vm.ports` finalizer calls `release_vm` (ports and NAT
+  reservations).
+- A guest that powers itself off takes its hypervisor with it; the shim
+  records the exit, the controller notices through its exit watch
+  (`pidfd`) or the periodic resync, sets the desired state to stopped
+  and detaches the ports as above.
+- **Port drift** ([reconciliation.md §10.3](reconciliation.md#103-network)):
+  each round of a running VM compares its `status.nics` ports with the
+  live bridge (`list_bridges`). An OVS port that is gone while its tap
+  remains, or a missing vhost-user port, is re-added with
+  `attach_vm_port` (event `PortRestored`). A tap that is gone is not
+  re-created, because the hypervisor holds an fd to the old device:
+  `NetworkReady=False/PortLost` and `RestartRequired=True/PortLost`
+  until the VM is restarted. With netd away nothing is compared.
 
 ### 11.5 Guest `network-config`
 

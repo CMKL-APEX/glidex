@@ -88,6 +88,14 @@ struct VmResponse {
     #[serde(default)]
     project: String,
     state: String,
+    /// What the VM should be doing; `state` is what it is doing
+    /// (spec/reconciliation.md §7.4).
+    #[serde(default)]
+    desired_state: String,
+    #[serde(default)]
+    conditions: Vec<serde_json::Value>,
+    #[serde(default)]
+    last_exit: Option<serde_json::Value>,
     vcpu_count: u8,
     mem_size_mib: u32,
     hypervisor: String,
@@ -526,26 +534,40 @@ impl ApiClient {
         self.request_json(Method::POST, "/vms", Some(body)).await
     }
 
-    async fn start_vm(&self, id: &str) -> Result<VmResponse, String> {
-        self.request_json(Method::POST, &format!("/vms/{}/start", enc(id)), None).await
+    /// `?wait=<secs>` unless the caller asked not to wait (`--no-wait`).
+    fn waiting(path: String, wait: Option<u64>) -> String {
+        match wait {
+            Some(w) => client::add_query(&path, "wait", &w.to_string()),
+            None => path,
+        }
+    }
+
+    async fn start_vm(&self, id: &str, wait: Option<u64>) -> Result<VmResponse, String> {
+        self.request_json(Method::POST, &Self::waiting(format!("/vms/{}/start", enc(id)), wait), None).await
     }
 
     /// Stop a VM; with `graceful_secs`, power-button first and wait.
-    async fn stop_vm(&self, id: &str, graceful_secs: Option<u64>) -> Result<VmResponse, String> {
+    async fn stop_vm(&self, id: &str, graceful_secs: Option<u64>, wait: Option<u64>) -> Result<VmResponse, String> {
         let mut path = format!("/vms/{}/stop", enc(id));
         if let Some(s) = graceful_secs {
             path = client::add_query(&path, "graceful_timeout_secs", &s.to_string());
         }
-        self.request_json(Method::POST, &path, None).await
+        // Waiting must cover the grace.
+        let wait = wait.map(|w| w.max(graceful_secs.unwrap_or(0) + 20).min(300));
+        self.request_json(Method::POST, &Self::waiting(path, wait), None).await
     }
 
-    async fn pause_vm(&self, id: &str) -> Result<VmResponse, String> {
-        self.request_json(Method::POST, &format!("/vms/{}/pause", enc(id)), None).await
+    async fn pause_vm(&self, id: &str, wait: Option<u64>) -> Result<VmResponse, String> {
+        self.request_json(Method::POST, &Self::waiting(format!("/vms/{}/pause", enc(id)), wait), None).await
     }
 
-    async fn delete_vm(&self, id: &str, keep_disk: bool) -> Result<(), String> {
+    async fn delete_vm(&self, id: &str, keep_disk: bool, wait: Option<u64>) -> Result<(), String> {
         let path = format!("/vms/{}{}", enc(id), if keep_disk { "?keep_disk=true" } else { "" });
-        self.request_json(Method::DELETE, &path, None).await
+        self.request_json::<serde_json::Value>(Method::DELETE, &Self::waiting(path, wait), None).await.map(|_| ())
+    }
+
+    async fn vm_events(&self, id: &str) -> Result<serde_json::Value, String> {
+        self.request_json(Method::GET, &format!("/vms/{}/events", enc(id)), None).await
     }
 
     async fn list_credentials(&self) -> Result<Vec<CredentialInfo>, String> {
@@ -638,7 +660,7 @@ fn image_status(img: &serde_json::Value) -> String {
 }
 
 async fn handle_image(client: &CliClient, args: &[&str]) {
-    let usage = "Usage: image catalog | list | pull <catalog-key|url> [--name N] [--sha256 H] | rm <name|id>";
+    let usage = "Usage: image catalog | list | pull <catalog-key|url> [--name N] [--sha256 H] | retry <name|id> | rm <name|id>";
     match args.first().copied().unwrap_or("list") {
         "catalog" => match client.request_json::<Vec<serde_json::Value>>(Method::GET, "/images/catalog", None).await {
             Ok(items) => {
@@ -722,9 +744,16 @@ async fn handle_image(client: &CliClient, args: &[&str]) {
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             }
         }
+        "retry" => match args.get(1) {
+            Some(name) => match client.request_json::<serde_json::Value>(Method::POST, &format!("/images/{}/retry", name), None).await {
+                Ok(_) => println!("{} {} (follow it with: image list)", "Downloading again:".green(), name),
+                Err(e) => println!("{} {}", "Error:".red(), e),
+            },
+            None => println!("{}", usage.yellow()),
+        },
         "rm" | "delete" => match args.get(1) {
-            Some(name) => match client.request_json::<()>(Method::DELETE, &format!("/images/{}", name), None).await {
-                Ok(()) => println!("{} {}", "Image deleted:".green(), name),
+            Some(name) => match client.request_json::<serde_json::Value>(Method::DELETE, &format!("/images/{}?wait=60", name), None).await {
+                Ok(v) => print_delete_result("Image", name, &v),
                 Err(e) => println!("{} {}", "Error:".red(), e),
             },
             None => println!("{}", usage.yellow()),
@@ -733,14 +762,143 @@ async fn handle_image(client: &CliClient, args: &[&str]) {
     }
 }
 
+/// One line for an object from `/watch`: its name and what it is doing.
+fn watch_summary(kind: &str, o: &serde_json::Value) -> (String, String) {
+    let name = o["name"].as_str().unwrap_or("?").to_string();
+    let deleting = o["deleting"].as_bool().unwrap_or(false) || o["deletion_requested_at"].is_u64();
+    let mut what = match kind {
+        "vm" => {
+            let state = o["state"].as_str().unwrap_or("?");
+            match o["desired_state"].as_str() {
+                Some(d) if d != state && !(d == "stopped" && state == "created") => format!("{} → {}", state, d),
+                _ => state.to_string(),
+            }
+        }
+        "disk" => o["status"].as_str().unwrap_or("?").to_string(),
+        "image" => match o["status"]["state"].as_str().unwrap_or("?") {
+            "downloading" => match (o["status"]["received_bytes"].as_u64(), o["status"]["total_bytes"].as_u64()) {
+                (Some(r), Some(t)) if t > 0 => format!("downloading {}%", r * 100 / t),
+                _ => "downloading".to_string(),
+            },
+            s => s.to_string(),
+        },
+        _ => o["phase"].as_str().unwrap_or("ready").replace('_', " "),
+    };
+    if deleting {
+        what = format!("deleting ({})", what);
+    }
+    if let Some(c) = o["conditions"].as_array().into_iter().flatten().find(|c| c["kind"] == "Ready" && c["status"] != "True") {
+        what = format!("{} — {}: {}", what, c["reason"].as_str().unwrap_or(""), c["message"].as_str().unwrap_or(""));
+    }
+    (name, what)
+}
+
+/// `watch [kinds]` (spec/reconciliation.md §12.6): print changes to what
+/// the caller can see until Ctrl-C. Reconnects when the server ends a
+/// stream, printing only what changed meanwhile.
+async fn handle_watch(client: &ApiClient, args: &[&str]) {
+    let kinds = args.first().copied().unwrap_or("vms,disks,images,networks");
+    let path = format!("/watch?kinds={}", kinds);
+    // What was last printed per (kind, id), to skip repeats after a reconnect.
+    let mut last: std::collections::HashMap<(String, String), String> = std::collections::HashMap::new();
+    let mut synced_once = false;
+    println!("{} {} (Ctrl-C to stop)", "Watching".green(), kinds);
+    let watch = async {
+        loop {
+            let mut buf = String::new();
+            let mut ended = false;
+            let res = client
+                .stream(&path, |text| {
+                    buf.push_str(text);
+                    while let Some(end) = buf.find("\n\n") {
+                        let block: String = buf.drain(..end + 2).collect();
+                        let (mut event, mut data) = (String::new(), String::new());
+                        for line in block.lines() {
+                            if let Some(v) = line.strip_prefix("event:") {
+                                event = v.trim().to_string();
+                            } else if let Some(v) = line.strip_prefix("data:") {
+                                data.push_str(v.trim_start());
+                            }
+                        }
+                        let v: serde_json::Value = serde_json::from_str(&data).unwrap_or_default();
+                        let (kind, id) = (v["kind"].as_str().unwrap_or("").to_string(), v["id"].as_str().unwrap_or("").to_string());
+                        match event.as_str() {
+                            "synced" => {
+                                if !synced_once {
+                                    println!("{} {} objects; changes follow", "Synced:".green(), last.len());
+                                    synced_once = true;
+                                }
+                            }
+                            "expired" => ended = true,
+                            "added" | "modified" => {
+                                let (name, what) = watch_summary(&kind, &v["object"]);
+                                let line = format!("{:<8} {:<24} {}", kind, name, what);
+                                if last.get(&(kind.clone(), id.clone())) != Some(&line) {
+                                    if synced_once {
+                                        println!("{}  {}", chrono_now(), line);
+                                    }
+                                    last.insert((kind, id), line);
+                                }
+                            }
+                            "deleted" => {
+                                if let Some(prev) = last.remove(&(kind.clone(), id)) {
+                                    let name = prev.split_whitespace().nth(1).unwrap_or("?").to_string();
+                                    println!("{}  {:<8} {:<24} {}", chrono_now(), kind, name, "deleted".red());
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    !ended
+                })
+                .await;
+            if let Err(e) = res {
+                println!("{} {}", "Error:".red(), e.message);
+                return;
+            }
+            // The server ended the stream (lifetime, restart): follow on.
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
+    };
+    tokio::select! {
+        _ = watch => {}
+        _ = tokio::signal::ctrl_c() => println!(),
+    }
+}
+
+/// `HH:MM:SS` (UTC, like `events`), for `watch` lines.
+fn chrono_now() -> String {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let t = now % 86_400;
+    format!("{:02}:{:02}:{:02}", t / 3600, (t % 3600) / 60, t % 60)
+}
+
+/// After a `DELETE …?wait`: gone (no body), or still being deleted by its
+/// controller (spec/reconciliation.md §6.3), with the reason it waits.
+pub(crate) fn print_delete_result(kind: &str, name: &str, v: &serde_json::Value) {
+    if v.is_null() {
+        println!("{} {}", format!("{} deleted:", kind).green(), name);
+        return;
+    }
+    println!("{} {} (the control plane finishes it)", "Deleting:".yellow(), name);
+    if let Some(ready) = v["conditions"].as_array().into_iter().flatten().find(|c| c["kind"] == "Ready" && c["status"] != "True") {
+        println!("  {} {}: {}", "Waiting:".yellow(), ready["reason"].as_str().unwrap_or(""), ready["message"].as_str().unwrap_or(""));
+    }
+}
+
+/// A disk after a write the disk controller carries out (spec/
+/// reconciliation.md §10.1): its state, and what is still pending.
 fn print_disk_result(d: &serde_json::Value) {
     println!(
         "  {} {} {} {}",
         d["name"].as_str().unwrap_or("?").cyan(),
         format_bytes(d["size_bytes"].as_u64().unwrap_or(0)),
         d["format"].as_str().unwrap_or(""),
-        d["extend_root"].as_str().map(|r| format!("(root partition: {})", r.replace('_', " "))).unwrap_or_default()
+        d["status"].as_str().unwrap_or("")
     );
+    if let Some(ready) = d["conditions"].as_array().into_iter().flatten().find(|c| c["kind"] == "Ready" && c["status"] != "True") {
+        println!("  {} {}: {}", "Not there yet:".yellow(), ready["reason"].as_str().unwrap_or(""), ready["message"].as_str().unwrap_or(""));
+    }
     for w in d["warnings"].as_array().into_iter().flatten() {
         println!("  {} {}", "Warning:".yellow(), w.as_str().unwrap_or(""));
     }
@@ -834,7 +992,8 @@ async fn handle_disk(client: &CliClient, args: &[&str]) {
                 body["extend_root"] = serde_json::json!(false);
             }
             client.scope_body(&mut body);
-            match client.request_json::<serde_json::Value>(Method::POST, "/disks", Some(body)).await {
+            // Making it may wait for its image to download.
+            match client.request_json::<serde_json::Value>(Method::POST, "/disks?wait=300", Some(body)).await {
                 Ok(d) => {
                     println!("{}", "Disk created:".green());
                     print_disk_result(&d);
@@ -852,9 +1011,9 @@ async fn handle_disk(client: &CliClient, args: &[&str]) {
                 if has_flag(args, "--no-extend") {
                     body["extend_root"] = serde_json::json!(false);
                 }
-                match client.request_json::<serde_json::Value>(Method::POST, &format!("/disks/{}/resize", name), Some(body)).await {
+                match client.request_json::<serde_json::Value>(Method::POST, &format!("/disks/{}/resize?wait=120", name), Some(body)).await {
                     Ok(d) => {
-                        println!("{}", "Disk resized:".green());
+                        println!("{}", "Disk resize:".green());
                         print_disk_result(&d);
                     }
                     Err(e) => println!("{} {}", "Error:".red(), e),
@@ -866,7 +1025,7 @@ async fn handle_disk(client: &CliClient, args: &[&str]) {
             Some(name) => {
                 let mode = if has_flag(args, "--on-boot") { "on-boot" } else { "offline" };
                 match client
-                    .request_json::<serde_json::Value>(Method::POST, &format!("/disks/{}/extend-root", name), Some(serde_json::json!({ "mode": mode })))
+                    .request_json::<serde_json::Value>(Method::POST, &format!("/disks/{}/extend-root?wait=120", name), Some(serde_json::json!({ "mode": mode })))
                     .await
                 {
                     Ok(d) => print_disk_result(&d),
@@ -881,8 +1040,9 @@ async fn handle_disk(client: &CliClient, args: &[&str]) {
                     println!("Cancelled");
                     return;
                 }
-                match client.request_json::<()>(Method::DELETE, &format!("/disks/{}", name), None).await {
-                    Ok(()) => println!("{} {}", "Disk deleted:".green(), name),
+                match client.request_json::<serde_json::Value>(Method::DELETE, &format!("/disks/{}", name), None).await {
+                    Ok(serde_json::Value::Null) => println!("{} {}", "Disk deleted:".green(), name),
+                    Ok(_) => println!("{} {} (once the operation on it finishes)", "Deleting:".green(), name),
                     Err(e) => println!("{} {}", "Error:".red(), e),
                 }
             }
@@ -900,7 +1060,7 @@ fn print_help() {
         "  {}           - Create a new VM (interactive)",
         "create".cyan()
     );
-    println!("  {}  - Start a VM", "start <name|id>".cyan());
+    println!("  {}  - Start a VM (waits until it runs; --no-wait returns at once)", "start <name|id>".cyan());
     println!("  {}   - Stop a VM", "stop <name|id>".cyan());
     println!(
         "  {} - Shut a VM down via its power button (default wait 60 s), then stop it",
@@ -909,6 +1069,8 @@ fn print_help() {
     println!("  {}  - Pause a VM", "pause <name|id>".cyan());
     println!("  {} - Connect to VM console (interactive)", "connect <name|id>".cyan());
     println!("  {}     - Show VM serial console log", "log <name|id>".cyan());
+    println!("  {}  - What happened to a VM (starts, exits, restarts, adoptions)", "events <name|id>".cyan());
+    println!("  {}  - Follow VMs, disks, images and networks as they change (Ctrl-C stops)", "watch [vms,disks,images,networks]".cyan());
     println!("  {} - Delete a VM (and its own root disk)", "delete <name|id> [--keep-disk]".cyan());
     println!("  {}               - List host PCI devices", "pci".cyan());
     println!(
@@ -1183,7 +1345,7 @@ async fn handle_credential_update(client: &CliClient, username: &str, request: U
 
 /// REPL command names offered by Tab (aliases included).
 const COMMANDS: &[&str] = &[
-    "help", "exit", "quit", "list", "ls", "get", "create", "start", "stop", "pause",
+    "help", "exit", "quit", "list", "ls", "get", "create", "start", "stop", "pause", "events", "watch",
     "connect", "console", "attach", "log", "logs", "delete", "rm", "pci", "pci-devices",
     "attach-device", "detach-device", "credentials", "creds", "credential-add",
     "credential-passwd", "credential-keys", "credential-rm", "networks", "network-add",
@@ -1659,7 +1821,60 @@ fn format_state(state: &str) -> String {
         "stopped" => state.red().to_string(),
         "paused" => state.yellow().to_string(),
         "created" => state.blue().to_string(),
+        "failed" | "unknown" => state.red().bold().to_string(),
         _ => state.to_string(),
+    }
+}
+
+/// `state`, plus `→ desired` while the VM is still getting there.
+fn format_vm_state(vm: &VmResponse) -> String {
+    let settled = match vm.desired_state.as_str() {
+        "" => true,
+        "stopped" => matches!(vm.state.as_str(), "stopped" | "created"),
+        d => d == vm.state,
+    };
+    if settled {
+        format_state(&vm.state)
+    } else {
+        format!("{} → {}", format_state(&vm.state), vm.desired_state)
+    }
+}
+
+/// `format_vm_state` without colours, for tables.
+fn plain_vm_state(vm: &VmResponse) -> String {
+    let settled = match vm.desired_state.as_str() {
+        "" => true,
+        "stopped" => matches!(vm.state.as_str(), "stopped" | "created"),
+        d => d == vm.state,
+    };
+    if settled {
+        vm.state.clone()
+    } else {
+        format!("{} → {}", vm.state, vm.desired_state)
+    }
+}
+
+/// What the controller says is in the way (the `Ready` condition), if
+/// the VM has not converged.
+fn not_ready_reason(vm: &VmResponse) -> Option<String> {
+    let ready = vm.conditions.iter().find(|c| c["kind"] == "Ready")?;
+    if ready["status"] == "True" {
+        return None;
+    }
+    let msg = ready["message"].as_str().unwrap_or("");
+    Some(format!("{}{}", ready["reason"].as_str().unwrap_or(""), if msg.is_empty() { String::new() } else { format!(": {}", msg) }))
+}
+
+/// How long lifecycle commands wait for the VM to get there, or `None`
+/// with `--no-wait` (spec/reconciliation.md §12.3).
+fn wait_secs(args: &[&str]) -> Option<u64> {
+    (!has_flag(args, "--no-wait")).then_some(60)
+}
+
+fn print_lifecycle_result(vm: &VmResponse) {
+    println!("{} VM {} is now {}", "Success:".green(), vm.name, format_vm_state(vm));
+    if let Some(r) = not_ready_reason(vm) {
+        println!("  {} {}", "Not there yet:".yellow(), r);
     }
 }
 
@@ -1694,10 +1909,10 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
                     let rows: Vec<VmRow> = vms
                         .into_iter()
                         .map(|vm| VmRow {
+                            state: plain_vm_state(&vm),
                             project: names.get(&vm.project).cloned().unwrap_or(vm.project),
                             id: vm.id,
                             name: vm.name,
-                            state: vm.state,
                             vcpu_count: vm.vcpu_count,
                             mem_size_mib: vm.mem_size_mib,
                             hypervisor: vm.hypervisor,
@@ -1729,7 +1944,13 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
                     println!("  Name:       {}", vm.name);
                     let names = project_names(client).await;
                     println!("  Project:    {}", names.get(&vm.project).map(|n| format!("{} ({})", n, vm.project)).unwrap_or(vm.project.clone()));
-                    println!("  State:      {}", format_state(&vm.state));
+                    println!("  State:      {}", format_vm_state(&vm));
+                    if let Some(r) = not_ready_reason(&vm) {
+                        println!("  Waiting:    {}", r);
+                    }
+                    if let Some(e) = &vm.last_exit {
+                        println!("  Last exit:  {} ({})", e["cause"].as_str().unwrap_or("?"), e["instance_id"].as_str().unwrap_or(""));
+                    }
                     println!("  Hypervisor: {}", vm.hypervisor);
                     println!("  vCPUs:      {}", vm.vcpu_count);
                     println!("  Memory:     {} MiB", vm.mem_size_mib);
@@ -1755,7 +1976,7 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
 
         "start" => {
             if parts.len() < 2 {
-                println!("{}", "Usage: start <name|id>".yellow());
+                println!("{}", "Usage: start <name|id> [--no-wait]".yellow());
                 return true;
             }
             let vm_id = match client.resolve_vm(parts[1]).await {
@@ -1765,25 +1986,19 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
                     return true;
                 }
             };
-            match client.start_vm(&vm_id).await {
-                Ok(vm) => {
-                    println!(
-                        "{} VM {} is now {}",
-                        "Success:".green(),
-                        vm.name,
-                        format_state(&vm.state)
-                    );
-                }
+            match client.start_vm(&vm_id, wait_secs(&parts[2..])).await {
+                Ok(vm) => print_lifecycle_result(&vm),
                 Err(e) => println!("{} {}", "Error:".red(), e),
             }
         }
 
         "stop" => {
             if parts.len() < 2 {
-                println!("{}", "Usage: stop <name|id> [--graceful [secs]]".yellow());
+                println!("{}", "Usage: stop <name|id> [--graceful [secs]] [--no-wait]".yellow());
                 return true;
             }
-            let graceful = match graceful_stop_secs(&parts[2..]) {
+            let flags: Vec<&str> = parts[2..].iter().copied().filter(|p| *p != "--no-wait").collect();
+            let graceful = match graceful_stop_secs(&flags) {
                 Ok(g) => g,
                 Err(e) => {
                     println!("{} {}", "Error:".red(), e);
@@ -1800,22 +2015,15 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
             if let Some(secs) = graceful {
                 println!("Pressing the power button; waiting up to {} s for the guest to shut down...", secs);
             }
-            match client.stop_vm(&vm_id, graceful).await {
-                Ok(vm) => {
-                    println!(
-                        "{} VM {} is now {}",
-                        "Success:".green(),
-                        vm.name,
-                        format_state(&vm.state)
-                    );
-                }
+            match client.stop_vm(&vm_id, graceful, wait_secs(&parts[2..])).await {
+                Ok(vm) => print_lifecycle_result(&vm),
                 Err(e) => println!("{} {}", "Error:".red(), e),
             }
         }
 
         "pause" => {
             if parts.len() < 2 {
-                println!("{}", "Usage: pause <name|id>".yellow());
+                println!("{}", "Usage: pause <name|id> [--no-wait]".yellow());
                 return true;
             }
             let vm_id = match client.resolve_vm(parts[1]).await {
@@ -1825,15 +2033,8 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
                     return true;
                 }
             };
-            match client.pause_vm(&vm_id).await {
-                Ok(vm) => {
-                    println!(
-                        "{} VM {} is now {}",
-                        "Success:".green(),
-                        vm.name,
-                        format_state(&vm.state)
-                    );
-                }
+            match client.pause_vm(&vm_id, wait_secs(&parts[2..])).await {
+                Ok(vm) => print_lifecycle_result(&vm),
                 Err(e) => println!("{} {}", "Error:".red(), e),
             }
         }
@@ -1852,6 +2053,38 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
             };
             handle_connect(client, &vm_id).await;
         }
+
+        "events" => {
+            if parts.len() < 2 {
+                println!("{}", "Usage: events <name|id>".yellow());
+                return true;
+            }
+            let vm_id = match client.resolve_vm(parts[1]).await {
+                Ok(id) => id,
+                Err(e) => {
+                    println!("{} {}", "Error:".red(), e);
+                    return true;
+                }
+            };
+            match client.vm_events(&vm_id).await {
+                Ok(v) => {
+                    for e in v["events"].as_array().into_iter().flatten() {
+                        let reason = e["reason"].as_str().unwrap_or("");
+                        let reason = if e["kind"] == "warning" { reason.yellow().to_string() } else { reason.to_string() };
+                        println!(
+                            "{}  {:<12} {:<18} {}",
+                            format_unix_time(e["at"].as_u64().unwrap_or(0)),
+                            e["actor"].as_str().unwrap_or(""),
+                            reason,
+                            e["message"].as_str().unwrap_or("")
+                        );
+                    }
+                }
+                Err(e) => println!("{} {}", "Error:".red(), e),
+            }
+        }
+
+        "watch" => handle_watch(client, &parts[1..]).await,
 
         "log" | "logs" => {
             if parts.len() < 2 {
@@ -1887,7 +2120,7 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
                 if keep_disk { "" } else { " (and a root disk created for it)" }
             ));
             if confirm.to_lowercase() == "y" {
-                match client.delete_vm(&vm_id, keep_disk).await {
+                match client.delete_vm(&vm_id, keep_disk, wait_secs(&parts[2..])).await {
                     Ok(()) => println!("{} VM deleted", "Success:".green()),
                     Err(e) => println!("{} {}", "Error:".red(), e),
                 }
@@ -2059,10 +2292,10 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
 
         "network-rm" | "net-rm" => match parts.get(1) {
             Some(name) => match client
-                .request_json::<()>(Method::DELETE, &format!("/networks/{}", name), None)
+                .request_json::<serde_json::Value>(Method::DELETE, &format!("/networks/{}?wait=60", name), None)
                 .await
             {
-                Ok(()) => println!("{} {}", "Network deleted:".green(), name),
+                Ok(v) => print_delete_result("Network", name, &v),
                 Err(e) => println!("{} {}", "Error:".red(), e),
             },
             None => println!("{}", "Usage: network-rm <name>".yellow()),

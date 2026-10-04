@@ -15,32 +15,35 @@ import Tokens from "./pages/Tokens";
 import Policies from "./pages/Policies";
 import Audit from "./pages/Audit";
 import { SessionProvider, useSession } from "./session";
+import { LiveProvider } from "./live";
 
 function Shell() {
   const { project } = useSession();
   return (
-    <div className="min-h-screen">
-      <Header />
-      {/* Remount the pages when the project changes: they list its resources. */}
-      <main key={project ?? "-"} className="container mx-auto px-4 py-8">
-        <Routes>
-          <Route path="/" element={<Dashboard />} />
-          <Route path="/vms/:id" element={<VmDetail />} />
-          <Route path="/vms/:id/console" element={<VmConsole />} />
-          <Route path="/credentials" element={<Credentials />} />
-          <Route path="/networking" element={<Networking />} />
-          <Route path="/images" element={<Images />} />
-          <Route path="/disks" element={<Disks />} />
-          <Route path="/projects" element={<Projects />} />
-          <Route path="/projects/:id" element={<ProjectDetail />} />
-          <Route path="/access" element={<Access />} />
-          <Route path="/tokens" element={<Tokens />} />
-          <Route path="/policies" element={<Policies />} />
-          <Route path="/audit" element={<Audit />} />
-          <Route path="*" element={<NotFound />} />
-        </Routes>
-      </main>
-    </div>
+    <LiveProvider>
+      <div className="min-h-screen">
+        <Header />
+        {/* Remount the pages when the project changes: they list its resources. */}
+        <main key={project ?? "-"} className="container mx-auto px-4 py-8">
+          <Routes>
+            <Route path="/" element={<Dashboard />} />
+            <Route path="/vms/:id" element={<VmDetail />} />
+            <Route path="/vms/:id/console" element={<VmConsole />} />
+            <Route path="/credentials" element={<Credentials />} />
+            <Route path="/networking" element={<Networking />} />
+            <Route path="/images" element={<Images />} />
+            <Route path="/disks" element={<Disks />} />
+            <Route path="/projects" element={<Projects />} />
+            <Route path="/projects/:id" element={<ProjectDetail />} />
+            <Route path="/access" element={<Access />} />
+            <Route path="/tokens" element={<Tokens />} />
+            <Route path="/policies" element={<Policies />} />
+            <Route path="/audit" element={<Audit />} />
+            <Route path="*" element={<NotFound />} />
+          </Routes>
+        </main>
+      </div>
+    </LiveProvider>
   );
 }
 

@@ -16,7 +16,11 @@ managed object alongside it:
 Source: `crates/glidex-control-plane/src/images/`: `mod.rs` (records,
 `ImageManager`, `ImageError`), `catalog.rs`, `download.rs`, `disk.rs`,
 `partition.rs` and `qemu_img.rs`. `VmManager` (`state.rs`) owns the
-`ImageManager` and does every check that involves VMs.
+`ImageManager` and does every check that involves VMs. Since M3 of
+[reconciliation.md](reconciliation.md#10-disk-image-and-network-controllers),
+the API only *records* disk and image changes; the disk controller
+(`controller/disk.rs`) and image controller (`controller/image.rs`)
+carry them out.
 
 ## 1. Goals and non-goals
 
@@ -68,8 +72,8 @@ or `/`.
 
 **Invariant.** A file in these directories that has no database record is
 an orphan. `ImageManager::initialize` logs it and leaves it alone; it never
-deletes it. A database record whose file is missing is marked
-`status: "missing"` and not deleted. Either side can be fixed by hand, and
+deletes it. A database record whose file is missing is marked missing
+(image `status: "missing"`, disk `phase: "missing"`) and not deleted. Either side can be fixed by hand, and
 glidex never destroys data because it guessed wrong.
 
 ## 3. Data model
@@ -94,6 +98,9 @@ pub struct Image {
     pub created_at: u64,
     pub download: DownloadMeta,     // resolved URL, expected digest, ETag /
                                     // Last-Modified: what a resume needs
+    pub retry_seq: u64,             // bumped by POST /images/{id}/retry (§5)
+    pub applied_retry_seq: u64,     // the last retry the controller started
+    pub deletion_requested_at: Option<u64>, // set by DELETE; the controller finishes it (§6.6)
 }
 
 pub enum ImageSource {
@@ -122,6 +129,15 @@ pub struct Disk {
     pub attached_to: Option<String>,// VM id; at most one
     pub pending_growpart: bool,     // next generated seed grows root (§6.4)
     pub created_at: u64,
+    // Controller fields (all serde-defaulted: older records load as Ready):
+    pub phase: DiskPhase,           // Pending | Creating | Ready | Resizing | Missing | Failed
+    pub create: Option<DiskCreateSpec>,   // {size_bytes?, extend_root?} until made
+    pub resize: Option<ResizeSpec>,       // {size_bytes, extend_root?} not applied yet
+    pub extend_root: Option<ExtendRootSpec>, // {mode, seq} (D19)
+    pub applied_extend_root_seq: u64,
+    pub owner: Option<String>,      // VM the disk was made for
+    pub deletion_requested_at: Option<u64>,
+    pub conditions: Vec<Condition>, // `Ready`
 }
 
 pub enum DiskOrigin {
@@ -135,9 +151,24 @@ pub enum CloneMode {
 }
 ```
 
-A disk's status (`ready`, `busy` with the operation, or `missing`) is not
-stored. `DiskResponse` computes it from the in-memory busy set and whether
-the file exists, so a crash can never leave a disk stuck at "busy".
+The record stays flat (no `{meta, spec, status}` envelope): the request
+fields (`create`, `resize`, `extend_root`, `owner`) are written by the
+API, the rest by the disk controller. `size_bytes` is the actual size (0
+until the file is made). Phases:
+
+| `phase` | Meaning |
+|---|---|
+| `pending` | recorded; the file is made once the source image is `Ready` (`Ready=False/ImageNotReady` while it downloads) |
+| `creating` | the controller is making the file |
+| `ready` | the file exists; a resize or extend-root may still be pending |
+| `resizing` | reserved; a running operation shows as `status: "busy"` instead |
+| `missing` | the file is gone. Never recreated (the data is gone); back to `ready` if the file reappears |
+| `failed` | creating it failed for good (`InvalidDisk`); see the `Ready` condition |
+
+`DiskResponse.status` is the phase, except that a running operation
+shows as `busy` (from the in-memory busy set, so a crash can never leave
+a disk stuck at "busy") and a ready disk without its file as
+`missing`.
 
 `DiskFormat` (`qcow2 | raw`) lives in `images/qemu_img.rs` next to
 `detect_image_type` and `ImageType`, which moved there from the
@@ -153,9 +184,9 @@ this keeps the two tables consistent if the control plane crashes.
 
 **Invariant.** While a `Linked` disk exists, its backing image cannot be
 deleted (`409 conflict`, naming the disks). This also covers a disk still
-being created: `create_disk_file` takes an `ImageHold` on the image before
-it writes the overlay, and drops it only once the disk record is committed
-and cached. `delete_image` checks holds and linked disks under the same
+pending or being created: its record already names the image, and
+`materialize` takes an `ImageHold` on the image before it writes the
+overlay, dropping it only once the made disk is committed and cached. `delete_image` checks holds and linked disks under the same
 lock. The image file stays `0444` so that a stray write fails loudly.
 
 ## 4. Image catalog
@@ -248,33 +279,65 @@ image with that key is already `Downloading` returns the existing record
 with `200`, so it never starts a second download.
 
 **Restart.** `ImageManager::initialize` finds `Downloading` and `Verifying`
-records. If the `.part` file exists and the server sent an `ETag` or
+records, and the image controller resumes any such image whose download
+task is gone (checked every resync). If the `.part` file exists and the server sent an `ETag` or
 `Last-Modified` header at the start, it resumes with an HTTP `Range` request
 and an `If-Range` header. Otherwise it deletes the `.part` file and starts
 again. Either way the hash is recomputed over the whole file before it is
 verified. A resumed download is never trusted on the strength of its tail
 bytes alone.
 
-**Cancel.** `DELETE /images/{id}` on a downloading image aborts the task,
-removes the `.part` file and deletes the record. A failed image keeps its
-record (with the reason) until it is deleted, so the failure stays visible.
+**Cancel.** `DELETE /images/{id}` on a downloading image is a deletion
+(§6.6): the image controller aborts the task, deletes the record and
+removes the `.part` file. A failed image keeps its record (with the
+reason) until it is deleted, so the failure stays visible.
+
+**Retry** (D19). A failed image is not downloaded again on its own.
+`POST /images/{id}/retry` bumps `retry_seq` and returns `202` with the
+image; the image controller, seeing `retry_seq > applied_retry_seq`,
+sets `applied_retry_seq`, removes any `.part`, sets `Downloading` and
+starts the download (event `Retrying`). Retrying an image that is
+already downloading is a no-op; a `ready` or `missing` one is
+`400 invalid_image`.
+
+**Ready ↔ Missing.** The image controller checks a `Ready` image's file
+each round. Gone → `Missing` (event `FileMissing`); back → `Ready`
+(event `FileFound`). A missing image is **never downloaded again**:
+catalog URLs point at "current/latest", and a different file would sit
+under the linked disks written against the old one. A missing or failed
+image cannot be the source of a new disk (`409 conflict`).
+
+Events (`Retrying`, `FileMissing`, …) are kept per image and read with
+`GET /images/{id}/events`.
 
 ## 6. Disk operations
 
 All disk I/O shells out to `qemu-img`, `qemu-io`, `sgdisk` and `growpart`,
 through `images/qemu_img.rs` (`Command`, never a shell string, with an
-explicit argv and `LC_ALL=C`). It runs on `spawn_blocking`. Each operation:
+explicit argv and `LC_ALL=C`). It runs on `spawn_blocking`.
 
-- holds a `BusyGuard` for the disk while it runs, so a second mutation of
-  the same disk, `start_vm` of a VM using it, or deleting it gets
-  `409 conflict`;
-- refuses with `409 conflict` when `attached_to` is a VM in state
-  `Running` or `Paused`. Created and Stopped VMs are fine, because no
-  hypervisor has the file open. `VmManager::begin_disk_op` checks the VM
-  state and takes the guard while holding the VM-map read lock, so
-  `start_vm` (write lock) cannot start the VM in between;
+Create, resize and extend-root are **asynchronous**. The API validates
+the request (name, sizes, shrink minimum, quota, partition layout) and
+fails it as before, then records it on the disk and returns; the disk
+controller applies it (`controller/disk.rs`, [reconciliation.md
+§10.1](reconciliation.md#101-disk)). Each applied operation:
+
+- holds a `BusyGuard` for the disk while it runs, so a second operation
+  on the same disk or deleting it gets `409 conflict`, and a VM launch
+  waits (`DisksReady=False/DiskBusy`);
+- runs only while no live instance has the disk open (no VM's
+  `status.instance.disks` contains it, and no VM using it is being
+  launched). Otherwise the request stays pending, with
+  `Ready=False/ResizePending` or `ExtendRootPending`, and is applied once
+  the VM stops. `VmManager::begin_disk_op` checks this and takes the
+  guard while holding the VM-map read lock, so a launch cannot slip in
+  between;
 - works on a temporary file when it can (see each operation below) and
   renames it into place, so a crash leaves the old disk intact.
+
+Each step is recorded as a disk event (`Created`, `Resized`,
+`RootExtended`, `ExtendRootFailed`, `FileMissing`, `Released`, …), read
+with `GET /disks/{id}/events`.
 
 ### 6.1 Create
 
@@ -301,12 +364,19 @@ explicit argv and `LC_ALL=C`). It runs on `spawn_blocking`. Each operation:
   [§6.4 extend root partition](#64-extend-root-partition) runs
   automatically with `mode: "offline"`, unless `"extend_root": false` is
   passed.
-- The image must be `Ready` (otherwise `409 conflict`).
+- The image may still be downloading: the disk is recorded `pending`
+  (`Ready=False/ImageNotReady`) and made once the image is `Ready`. A
+  `failed` or `missing` image is refused (`409 conflict`: retry it
+  first). The size check against the image is made at admission when
+  the image is ready, otherwise when the disk is made (then
+  `phase: failed`, `InvalidDisk`).
 - A `raw` disk cannot be `linked` (`400 invalid_disk`).
 
-Response `201 Created` with a `DiskResponse`. Creation is synchronous: the
-linked and blank cases take milliseconds. A `full` clone of a large image
-can take seconds, which is acceptable for v1.
+Response `201 Created` with a `DiskResponse` in phase `pending`. With
+`?wait=<secs>` (at most 300) the response waits until the disk is made
+(`201`), fails (`400 invalid_disk` or `500 image_error`), or the time
+runs out (`202`). A crash while `creating` leaves only the disk's own
+dot-file temporary, which the next round replaces.
 
 **Why linked by default.** A linked clone of a 600 MiB Ubuntu image costs
 about 200 KiB until the guest writes to it, so ten VMs from one image cost
@@ -333,9 +403,16 @@ The new size is persisted after step 1 succeeds. If step 2 or 3 fails, the
 disk keeps its larger size and the error says that the partition was not
 extended. The operation can then be retried with
 `POST /disks/{id}/extend-root`. If only the partition tools are missing,
-the disk falls back to on-boot growth (§6.4) and the response says so in
-`warnings`. The response's `extend_root` is `grown`, `already_full`,
-`on_boot` or `skipped` (no partition table).
+the disk falls back to on-boot growth (§6.4). The outcome (`grown`,
+`already_full`, `on_boot` or `skipped` for no partition table) and any
+warnings are in the `Resized` event.
+
+The request is recorded as `resize` (`pending_size_bytes` in the
+response) and returns `202`; `?wait=<secs>` returns `200` once it is
+applied or reported pending, `400 invalid_disk` if it no longer fits
+(`ResizeInvalid`: the guest grew a partition since; the request stays
+until replaced), or `202` on timeout. A disk being deleted, or not
+`ready`, is refused (`409 conflict`).
 
 ### 6.3 Shrink
 
@@ -373,7 +450,12 @@ because the overlay must cover every sector the backing file can supply.
 
 `POST /disks/{id}/extend-root {"mode": "offline" | "on-boot"}`. This grows
 the root partition into free space at the end of the disk. The disk must
-already be large enough (§6.2).
+already be large enough (§6.2). It is a one-shot action (D19): the API
+checks that the disk has a growable root partition (else
+`400 invalid_disk`), sets `extend_root = {mode, seq: previous + 1}` and
+returns `202` (`200` with `?wait` once applied or reported pending). The
+controller applies it once `seq > applied_extend_root_seq` and no live
+instance has the disk, then records `applied_extend_root_seq = seq`.
 
 Finding the root partition: on the disk's GPT, the partition with the
 Discoverable Partitions root type for the host arch:
@@ -439,8 +521,9 @@ the fallback when `sgdisk`, `growpart` or `qemu-io` is missing, and the
 only mode that works for VMs with a custom `cloud_init_path` (in which case
 the user's own seed must enable growpart). `create_vm` warns in its
 response (`warnings`) when a root disk has `pending_growpart` and the VM
-uses a custom seed. `start_vm` clears the flag once it has started a VM
-with the generated seed.
+uses a custom seed. The disk controller clears the flag (event
+`RootGrownOnBoot`) once the claiming VM has booted a seed carrying the
+grow (its `seed_growpart_seq ≥ applied_extend_root_seq`).
 
 **Why both.** Offline mode makes the size the guest sees on first boot
 predictable and does not depend on the guest's cloud-init version. On-boot
@@ -453,17 +536,34 @@ default), but some do not (AlmaLinux sets `growpart` off in
 
 `DELETE /disks/{id}`:
 
-- refused with `409 conflict` while `attached_to` is set (naming the VM).
-  Detach it, or delete the VM, first;
-- deletes the record first, then the file. If the file cannot be removed,
-  this is logged and the file stays behind as an orphan (§2). The API call
-  still succeeds, because the disk no longer exists as far as glidex is
-  concerned.
+- refused with `409 conflict` while a VM claims it (its spec references
+  it, or a live instance has it open; naming the VM). Detach it, or
+  delete the VM, first. Also `409` while an operation runs on it;
+- otherwise records `deletion_requested_at` and runs the disk controller
+  at once, which deletes the record first, then the file. If the file
+  cannot be removed, this is logged and the file stays behind as an
+  orphan (§2). The call returns `204` once the record is gone (normally
+  at once), or `202` with the disk (`deleting: true`) when an operation
+  on it has to finish first.
 
 ### 6.6 Images: delete and inspect
 
-- `DELETE /images/{id}` is refused with `409` while `Linked` disks
-  reference it (§3). It works whether or not `Full` clones exist.
+- `DELETE /images/{id}` is refused with `409 conflict` while a `Linked`
+  disk uses it as backing file (§3), a disk waits for it (`pending` or
+  `creating` from it), or a clone from it is in progress. It works
+  whether or not finished `Full` clones exist. Otherwise it records
+  `deletion_requested_at` (persisted) and the image controller finishes
+  it: abort a running download, remove the record, then the image file
+  and its `.part`. A file that cannot be removed is logged and left as
+  an orphan (§2). The call returns `204` once the image is gone (the
+  normal case: at once), else `202` with the image (`deleting: true`);
+  with `?wait=<secs>`, `200` once gone (`202` on timeout).
+- While it is being deleted, an image cannot be the source of a new disk
+  (`409`, "being deleted") or be retried; a pull with the same name is
+  `409` ("is being deleted; try again in a moment"); a catalog pull does
+  not reuse it and the catalog's `downloaded_image_id` ignores it. A
+  stale writer (the download task, say) cannot clear the request or
+  bring a deleted image back.
 - `GET /images/{id}` and `GET /disks/{id}` include `qemu-img info` output
   (virtual size, actual size, backing chain) and, for disks, the parsed
   partition table:
@@ -476,7 +576,7 @@ default), but some do not (AlmaLinux sets `growpart` off in
 
 | Field | Meaning |
 |---|---|
-| `image` | Image id or name. glidex creates a linked root disk named `<vm-name>-root`, sized `root_disk_size_gib` (or the §6.1 default), extended offline, and owned by the VM. |
+| `image` | Image id or name. glidex records a linked root disk named `<vm-name>-root`, sized `root_disk_size_gib` (or the §6.1 default), extended offline, and owned by the VM (`owner`). The image may still be downloading. |
 | `root_disk` | Id or name of an existing, unattached disk to boot from. |
 | `data_disks` | Ids or names of extra unattached disks, attached in order after the root disk. |
 
@@ -499,17 +599,21 @@ any of the VM's disks is busy, and with `500 image_error` when a disk's
 file is missing. `VmResponse` shows `root_disk`, `data_disks` and, on
 create, `warnings`.
 
-**Invariant.** `create_vm` creates the disk, sets `attached_to`, and saves
-the VM in a single ReDB write transaction, all under the VM-map write lock
-that is already taken. If anything fails, the new disk file is removed.
+**Invariant.** `create_vm` records the new disk (phase `pending`,
+`owner` = the VM), sets `attached_to`, and saves the VM in a single ReDB
+write transaction (`store::Commit`), under the VM-map write lock. No
+file is written at create time; the disk controller makes it once the
+image is `Ready`. Until every disk is `ready` and not busy, the VM
+controller holds the launch with `DisksReady=False` (`DiskNotReady`,
+`DiskBusy` or `DiskMissing`), so a VM created with `power: running` from
+an image that is still downloading starts once the disk is made.
 
-`delete_vm` with `owns_root_disk = true` deletes the root disk too: the VM
-record, the owned disk's record and the other disks' cleared `attached_to`
-go in one transaction (`persistence::Commit`), and then the file is
-removed. Disks the VM only attached (`root_disk`, `data_disks`) are
-detached and kept. `DELETE /vms/{id}?keep_disk=true` keeps an owned root
-disk as a detached disk. A VM whose disk is busy cannot be deleted
-(`409`).
+Deleting a VM with `owns_root_disk = true` deletes the root disk too
+(the `vm.owned-disk` finalizer): the VM record, the owned disk's record
+and the other disks' cleared `attached_to` go in one transaction, and
+then the file is removed. Disks the VM only attached (`root_disk`,
+`data_disks`) are detached and kept. `DELETE /vms/{id}?keep_disk=true`
+keeps an owned root disk as a detached disk.
 
 Attaching and detaching data disks on a stopped VM (config-only, the same
 semantics as VFIO devices in [rest-api.md](rest-api.md)):
@@ -524,15 +628,21 @@ Running or Paused VMs get `400 invalid_state` in v1.
 | `GET` | `/images` | List images |
 | `POST` | `/images` | `{catalog, name?}` or `{url, sha256?, name?}`. Returns `202` and an `Image` (`200` with the existing record if that catalog key is already downloading) |
 | `GET` | `/images/{id}` | Image, including download progress |
-| `DELETE` | `/images/{id}` | Delete, or cancel a download. `409` while linked disks exist |
+| `DELETE` | `/images/{id}[?wait=N]` | Delete, or cancel a download (§6.6). `204`, or `202` with the image while the controller finishes; with `wait`, `200` once gone. `409` while a disk uses it |
+| `POST` | `/images/{id}/retry` | Download a failed image again (§5). Returns `202` |
+| `GET` | `/images/{id}/events` | The image's events |
 | `GET` | `/disks` | List disks |
-| `POST` | `/disks` | Create (§6.1). Returns `201` |
+| `POST` | `/disks[?wait=N]` | Create (§6.1). Returns `201` (pending); with `wait`, `201` once made or `202` on timeout |
 | `GET` | `/disks/{id}` | Disk, including its partition table |
-| `POST` | `/disks/{id}/resize` | `{size_gib \| size_bytes, extend_root?}` (§6.2, §6.3) |
-| `POST` | `/disks/{id}/extend-root` | `{mode}` (§6.4) |
-| `DELETE` | `/disks/{id}` | Delete. `409` while attached |
+| `POST` | `/disks/{id}/resize[?wait=N]` | `{size_gib \| size_bytes, extend_root?}` (§6.2, §6.3). `202`; with `wait`, `200` once applied or pending |
+| `POST` | `/disks/{id}/extend-root[?wait=N]` | `{mode}` (§6.4). `202`; with `wait`, `200` once applied or pending |
+| `DELETE` | `/disks/{id}` | Delete. `204`, or `202` while an operation finishes; `409` while attached |
+| `GET` | `/disks/{id}/events` | The disk's events |
 | `POST` | `/vms/{id}/disks` | Attach a data disk (stopped VM) |
 | `DELETE` | `/vms/{id}/disks/{disk}` | Detach a data disk (stopped VM) |
+
+Image responses carry `deleting: true` while a deletion is in progress
+(omitted otherwise).
 
 For images and disks, `{id}` path segments (and the `image`, `root_disk`,
 `data_disks` and `disk` request fields) accept an id or a unique name.
@@ -594,8 +704,8 @@ back to `on-boot` mode, saying so in `warnings`. Shrinking a GPT disk needs
   qcow2 header into a raw disk cannot change how it is opened.
 - **cloud-init seed** (`cloud_init.rs`). `user-data` always contains
   `resize_rootfs: true`. It also contains the `growpart` block from §6.4
-  when the root disk has `pending_growpart`, and that flag is cleared after
-  the first successful start.
+  when the root disk has `pending_growpart`; the flag is cleared once the
+  VM booted that seed (§6.4).
 - **Installer.** Step 5 also installs the §9 tools, with the right
   package name per package manager (`DISK_TOOLS`).
   [installer.md](installer.md#no-sample-kernel--rootfs) now points at
@@ -603,8 +713,9 @@ back to `on-boot` mode, saying so in `warnings`. Shrinking a GPT disk needs
 - **Uninstaller.** `~/.glidex/images` and `~/.glidex/disks` are part of
   `~/.glidex`, which is removed only with `--purge-user-data`. The help
   text says so. These hold user data, unlike the seed files in the VM's runtime directory.
-- **gxctl.** New `image catalog|list|pull|rm` and
-  `disk list|show|create|resize|extend-root|rm` commands, and
+- **gxctl.** New `image catalog|list|pull|retry|rm` and
+  `disk list|show|create|resize|extend-root|rm` commands (the disk
+  writes wait: create up to 300 s, resize and extend-root 120 s), and
   `delete <vm> --keep-disk`. `create` offers "image" as the boot disk
   source when images are downloaded ([cli.md](cli.md)).
 - **Web UI.** A new Images page (catalog with Pull buttons and progress

@@ -75,7 +75,9 @@ namespace Glidex {
     appliesTo { principal: [User, Token], resource: [Vm], context: Ctx };
   action listVms in ["vm.read"]
     appliesTo { principal: [User, Token], resource: [Project], context: Ctx };
-  action startVm, stopVm, pauseVm in ["vm.operate"]
+  // updateVm: PATCH of spec fields other than power, devices, disks and
+  // networks (spec/reconciliation.md §12.1).
+  action startVm, stopVm, pauseVm, updateVm in ["vm.operate"]
     appliesTo { principal: [User, Token], resource: [Vm], context: Ctx };
   action openConsole in ["vm.console"]
     appliesTo { principal: [User, Token], resource: [Vm], context: Ctx };
@@ -129,7 +131,8 @@ namespace Glidex {
     appliesTo { principal: [User, Token], resource: [Project], context: Ctx };
 
   // ---- host --------------------------------------------------------------
-  action readOvsStatus, listBridges, listUplinks, listPciDevices in ["host.read"]
+  // readSystemStatus: GET /system/reconcile (spec/reconciliation.md §12.5).
+  action readOvsStatus, listBridges, listUplinks, listPciDevices, readSystemStatus in ["host.read"]
     appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
   action createNetwork, createBridge, ensureUplink in ["host.network"]
     appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
