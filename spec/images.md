@@ -247,9 +247,10 @@ URL resolved at download time (Fedora) is checked again.
 |---|---|---|
 | `cloudhv-edk2` | Cloud Hypervisor | `github.com/cloud-hypervisor/edk2/releases/download/ch-811ce5ea35/CLOUDHV.fd` (`CLOUDHV_EFI.fd` on aarch64), sha256 pinned |
 | `ovmf` | QEMU (x86_64) | the host's `ovmf` / `edk2-ovmf` package: the first OVMF code image found ([hypervisors.md](hypervisors.md#firmware-boot-1)) |
+| `ovmf-debian` | QEMU (x86_64) | Debian's `ovmf` 2025.02-8+deb13u1 from `snapshot.debian.org`, sha256 pinned; `OVMF_CODE_4M.fd` and `OVMF_VARS_4M.fd` unpacked, each pinned too |
 
 `GET /images/firmware-catalog` lists the entries this host can use, with
-`source` (`download` or `host`), the URL or host file, the pinned
+`source` (`download`, `debian` or `host`), the URL or host file, the pinned
 `version`, `available` (a host entry needs its package; `hint` says which)
 and `downloaded_image_id`. `POST /images {"firmware": "<key>", name?}`
 pulls one as an image of kind `firmware`, named after the key by default:
@@ -261,6 +262,18 @@ pulls one as an image of kind `firmware`, named after the key by default:
   together. When the installer's `~/.glidex/CLOUDHV.fd` has that digest,
   it is copied instead and the image is `Ready` at once (offline
   installs);
+- a `debian` entry downloads a pinned Debian package the same way, then
+  unpacks the code image and its variable-store template from it
+  (`firmware::extract_deb`: the `ar` container parsed by hand, then
+  `data.tar.xz` with the pure-Rust `lzma-rs` and `tar` crates, so no
+  `dpkg` is needed and any distro works), checks each against its own
+  pinned digest, and stores them like a host import. The URL is
+  snapshot.debian.org's, which keeps a file at its first-seen URL forever;
+  the archive's pool drops a version once a point release replaces it.
+  **Why Debian:** upstream EDK2 publishes no prebuilt OVMF, and nightly
+  builds can't be pinned. `sha256` of the image is the unpacked code
+  file's; the package's digest stays in `download.expected`. Never
+  auto-imported (it would download);
 - a `host` entry copies the code image and its variable-store template
   (`<id>.vars.fd`) into the image directory, `0444`, `Ready` at once.
   Not installed: `503 tool_unavailable`, naming the package.
@@ -268,8 +281,14 @@ pulls one as an image of kind `firmware`, named after the key by default:
 A firmware file can also come from any URL:
 `{"url": …, "sha256"?, "kind": "firmware", "hypervisor": "qemu"}`
 (the same URL rules). Firmware downloads skip `qemu-img`: they must be
-1 byte to 64 MiB, and are stored raw as `<id>.fd`. Without a template, a
-QEMU VM maps such firmware with `-bios`.
+1 byte to 64 MiB, and are stored raw as `<id>.fd`. For QEMU,
+`vars_url` (and optional `vars_sha256`) names the variable-store template
+of a split OVMF build: fetched after the code file through the same
+client, stored as `<id>.vars.fd`, and a mismatch fails the image. The
+image is `verified` only when every file it is made of had a digest.
+Without a template, a QEMU VM maps the firmware with `-bios` (right for a
+combined `OVMF.fd`, but the guest's UEFI settings are not kept); image
+responses say which with `vars_template`.
 
 **Auto-import.** At startup (after `VmManager::initialize`, in `main`),
 `ImageManager::auto_import_firmware` pulls each entry that has a local
@@ -698,7 +717,7 @@ Running or Paused VMs get `400 invalid_state` in v1.
 | `GET` | `/images/catalog` | Catalog entries for this host's arch, each with `downloaded_image_id` if one exists |
 | `GET` | `/images/firmware-catalog` | Firmware catalog entries (§4.1), each with `available`, `hint` and `downloaded_image_id` |
 | `GET` | `/images` | List images |
-| `POST` | `/images` | `{catalog, name?}`, `{firmware, name?}` or `{url, sha256?, name?, kind?, hypervisor?}`. Returns `202` and an `Image` (`200` with the existing record if that catalog or firmware key is already downloading) |
+| `POST` | `/images` | `{catalog, name?}`, `{firmware, name?}` or `{url, sha256?, name?, kind?, hypervisor?, vars_url?, vars_sha256?}`. Returns `202` and an `Image` (`200` with the existing record if that catalog or firmware key is already downloading) |
 | `GET` | `/images/{id}` | Image, including download progress |
 | `DELETE` | `/images/{id}[?wait=N]` | Delete, or cancel a download (§6.6). `204`, or `202` with the image while the controller finishes; with `wait`, `200` once gone. `409` while a disk uses it |
 | `POST` | `/images/{id}/retry` | Download a failed image again (§5). Returns `202` |
@@ -788,7 +807,8 @@ back to `on-boot` mode, saying so in `warnings`. Shrinking a GPT disk needs
   text says so. These hold user data, unlike the seed files in the VM's runtime directory.
 - **gxctl.** `image catalog` lists the firmware catalog too, `image list`
   shows each image's kind, and `image pull --firmware <key>` (or
-  `<url> --firmware-for <hypervisor>`) pulls firmware; `create` asks for
+  `<url> --firmware-for <hypervisor> [--vars-url U] [--vars-sha256 H]`)
+  pulls firmware; `create` asks for
   a firmware image instead of a path. New `image catalog|list|pull|retry|rm` and
   `disk list|show|create|resize|extend-root|rm` commands (the disk
   writes wait: create up to 300 s, resize and extend-root 120 s), and
@@ -838,8 +858,13 @@ missing.
   with `kind: firmware`, not a disk source, hypervisor match, in use
   while a VM boots through it; an image VM refused until one exists;
   `ovmf_firmware_is_imported_from_the_host_package`).
+  `firmware_download_with_a_vars_template`; `ovmf_debian_is_downloaded_and_unpacked`
+  (`#[ignore]`d: network).
+- **Unit:** `firmware::tests::unpacks_and_checks_deb_files` builds a `.deb`
+  (plain and xz data archives) and checks digests and missing files.
 - **Functional:** `firmware_boot_with_generated_cloud_init` (and the QEMU
-  one) boot through a firmware image pulled from the firmware catalog.
+  one) boot through a firmware image pulled from the firmware catalog;
+  `GLIDEX_TEST_QEMU_FIRMWARE_KEY=ovmf-debian` boots Debian's OVMF.
 - **Functional (`#[ignore]`d, `catalog_image_boots_and_root_grows` in
   `tests/functional_tests.rs`):** pull `GLIDEX_TEST_CATALOG` (default
   `ubuntu-26.04`) from the vendor and create a VM with `image` and

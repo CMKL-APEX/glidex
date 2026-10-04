@@ -11,7 +11,10 @@
 //!   UEFI-bootable disk image. The firmware defaults to
 //!   `~/.glidex/CLOUDHV.fd` as downloaded by `glidex-install` (override with
 //!   `GLIDEX_TEST_FIRMWARE`), or the host's OVMF for QEMU (override with
-//!   `GLIDEX_TEST_QEMU_FIRMWARE`):
+//!   `GLIDEX_TEST_QEMU_FIRMWARE`). The firmware-boot tests boot through a
+//!   firmware image pulled from the firmware catalog instead:
+//!   `cloudhv-edk2`, and `ovmf` for QEMU (`GLIDEX_TEST_QEMU_FIRMWARE_KEY=
+//!   ovmf-debian` downloads Debian's):
 //!
 //!   ```sh
 //!   GLIDEX_TEST_IMAGE=~/ch/resolute-server-cloudimg-amd64.raw \
@@ -505,9 +508,11 @@ async fn qemu_firmware_boot_with_generated_cloud_init() {
 
 /// Pull the hypervisor's firmware catalog entry as a firmware image: the
 /// installer's pinned CLOUDHV.fd or the host's OVMF is copied (else it is
-/// downloaded). Returns its id.
+/// downloaded). `GLIDEX_TEST_QEMU_FIRMWARE_KEY` picks another QEMU entry
+/// (`ovmf-debian`). Returns its id.
 async fn pull_firmware_image(app: &Router, hypervisor: &str) -> String {
-    let key = if hypervisor == "qemu" { "ovmf" } else { "cloudhv-edk2" };
+    let qemu_key = std::env::var("GLIDEX_TEST_QEMU_FIRMWARE_KEY").unwrap_or_else(|_| "ovmf".into());
+    let key = if hypervisor == "qemu" { qemu_key.as_str() } else { "cloudhv-edk2" };
     let (status, fw) = request(app, "POST", "/images", Some(json!({"firmware": key}))).await;
     assert_eq!(status, StatusCode::ACCEPTED, "{fw}");
     let id = fw["id"].as_str().unwrap().to_string();

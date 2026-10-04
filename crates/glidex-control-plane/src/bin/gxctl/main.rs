@@ -661,7 +661,7 @@ fn image_status(img: &serde_json::Value) -> String {
 }
 
 async fn handle_image(client: &CliClient, args: &[&str]) {
-    let usage = "Usage: image catalog | list | pull <catalog-key|url> [--name N] [--sha256 H] [--firmware-for <cloudhypervisor|qemu>] | pull --firmware <key> [--name N] | retry <name|id> | rm <name|id>";
+    let usage = "Usage: image catalog | list | pull <catalog-key|url> [--name N] [--sha256 H] [--firmware-for <cloudhypervisor|qemu> [--vars-url U] [--vars-sha256 H]] | pull --firmware <key> [--name N] | retry <name|id> | rm <name|id>";
     match args.first().copied().unwrap_or("list") {
         "catalog" => match client.request_json::<Vec<serde_json::Value>>(Method::GET, "/images/catalog", None).await {
             Ok(items) => {
@@ -740,6 +740,13 @@ async fn handle_image(client: &CliClient, args: &[&str]) {
             if let Some(h) = flag_value(args, "--firmware-for") {
                 body["kind"] = serde_json::json!("firmware");
                 body["hypervisor"] = serde_json::json!(h);
+            }
+            // A split OVMF build's variable-store template (QEMU).
+            if let Some(u) = flag_value(args, "--vars-url") {
+                body["vars_url"] = serde_json::json!(u);
+            }
+            if let Some(h) = flag_value(args, "--vars-sha256") {
+                body["vars_sha256"] = serde_json::json!(h);
             }
             if let Some(n) = flag_value(args, "--name") {
                 body["name"] = serde_json::json!(n);
@@ -1137,6 +1144,7 @@ fn print_help() {
     println!("  {}        - List downloaded images", "image list".cyan());
     println!("  {} - Download and verify an image", "image pull <catalog-key|https-url> [--name N] [--sha256 H]".cyan());
     println!("  {} - Pull UEFI firmware VMs boot through", "image pull --firmware <key> [--name N]".cyan());
+    println!("  {} - Download firmware (QEMU: with its variable store)", "image pull <url> --firmware-for <hv> [--vars-url U] [--vars-sha256 H]".cyan());
     println!("  {}   - Delete an image", "image rm <name|id>".cyan());
     println!("  {}         - List disks", "disk list".cyan());
     println!("  {}  - Disk details and partitions", "disk show <name|id>".cyan());

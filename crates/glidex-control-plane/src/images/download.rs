@@ -104,6 +104,11 @@ pub fn http_client(allow_private: bool) -> Result<reqwest::Client, ImageError> {
         .map_err(|e| ImageError::Download(e.to_string()))
 }
 
+/// sha256 of `data`, lower-case hex.
+pub fn sha256_hex(data: &[u8]) -> String {
+    hex(&Sha256::digest(data))
+}
+
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
@@ -159,6 +164,15 @@ fn sha256_file(path: &Path) -> Result<String, ImageError> {
     Ok(h.finish(None).0)
 }
 
+/// A caller's sha256: 64 hex characters, lower-cased.
+fn parse_sha256(s: &str) -> Result<String, ImageError> {
+    let s = s.trim().to_ascii_lowercase();
+    if s.len() != 64 || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(ImageError::InvalidImage("sha256 must be 64 hex characters".into()));
+    }
+    Ok(s)
+}
+
 impl ImageManager {
     /// Start a download (spec §5). Returns the record and whether it is
     /// new; an in-flight download of the same catalog key is returned as is.
@@ -168,6 +182,25 @@ impl ImageManager {
         if req.hypervisor.is_some() && !firmware_url {
             return Err(ImageError::InvalidImage("hypervisor is only for a firmware download (kind: firmware)".into()));
         }
+        let vars_sha256 = req.vars_sha256.as_deref().map(parse_sha256).transpose()?;
+        let vars_url = match &req.vars_url {
+            None if vars_sha256.is_some() => return Err(ImageError::InvalidImage("vars_sha256 needs vars_url".into())),
+            None => None,
+            Some(_) if !(firmware_url && req.url.is_some() && req.hypervisor == Some(crate::hypervisor::HypervisorType::Qemu)) => {
+                return Err(ImageError::InvalidImage(
+                    "vars_url is for a QEMU firmware download (url, kind: firmware, hypervisor: qemu)".into(),
+                ))
+            }
+            Some(u) => {
+                let parsed = reqwest::Url::parse(u).map_err(|e| ImageError::InvalidImage(format!("bad vars_url: {}", e)))?;
+                let (p, allow) = (parsed.clone(), self.settings.allow_private_urls);
+                tokio::task::spawn_blocking(move || check_url(&p, allow))
+                    .await
+                    .map_err(|e| ImageError::Io(e.to_string()))?
+                    .map_err(|e| ImageError::InvalidImage(format!("vars_url: {}", e)))?;
+                Some(parsed.to_string())
+            }
+        };
         // What a firmware catalog entry imports from a host file instead of
         // downloading: `(code, vars template)`.
         let mut import: Option<(std::path::PathBuf, Option<std::path::PathBuf>)> = None;
@@ -198,6 +231,9 @@ impl ImageManager {
                                 import = Some((local, None));
                             }
                         }
+                        ImageSource::Firmware { key: key.clone(), url: url.to_string(), version: version.to_string() }
+                    }
+                    FirmwareSource::Deb { version, url, .. } => {
                         ImageSource::Firmware { key: key.clone(), url: url.to_string(), version: version.to_string() }
                     }
                     FirmwareSource::Host { package, .. } => {
@@ -241,16 +277,7 @@ impl ImageManager {
                     .await
                     .map_err(|e| ImageError::Io(e.to_string()))?
                     .map_err(ImageError::InvalidImage)?;
-                let sha = match &req.sha256 {
-                    Some(s) => {
-                        let s = s.trim().to_ascii_lowercase();
-                        if s.len() != 64 || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
-                            return Err(ImageError::InvalidImage("sha256 must be 64 hex characters".into()));
-                        }
-                        Some(s)
-                    }
-                    None => None,
-                };
+                let sha = req.sha256.as_deref().map(parse_sha256).transpose()?;
                 ImageSource::Url { url: parsed.to_string(), expected_sha256: sha }
             }
             _ => return Err(ImageError::InvalidImage("give exactly one of catalog, firmware or url".into())),
@@ -295,6 +322,8 @@ impl ImageManager {
                     ImageSource::Firmware { url, .. } if import.is_none() => url.clone(),
                     ImageSource::Firmware { .. } | ImageSource::Catalog { .. } => String::new(),
                 },
+                vars_url,
+                vars_sha256,
                 ..Default::default()
             },
             source,
@@ -362,6 +391,8 @@ impl ImageManager {
                             }
                         }
                         FirmwareSource::Host { .. } => entry.host_file().is_some(),
+                        // Only ever downloaded: pulled by hand.
+                        FirmwareSource::Deb { .. } => false,
                     };
                     match existing {
                         Some(img) => AutoImport::HaveOne(img.name),
@@ -463,9 +494,17 @@ impl ImageManager {
         let id_owned = id.to_string();
         let max = self.settings.max_image_size;
         let firmware = img.is_firmware();
+        let vars = match &img.download.vars_url {
+            Some(url) => Some(self.fetch_vars(url, img.download.vars_sha256.as_deref()).await?),
+            None => None,
+        };
+        let deb = img.firmware_key().and_then(firmware::find).and_then(|e| match e.source {
+            FirmwareSource::Deb { code, vars, .. } => Some((code, vars)),
+            _ => None,
+        });
         let (virtual_size, actual_size, sha256) = tokio::task::spawn_blocking(move || {
             if firmware {
-                mgr.install_firmware(&id_owned, sha256)
+                mgr.install_firmware(&id_owned, sha256, deb, vars)
             } else {
                 mgr.verify_and_install(&id_owned, sha256, max).map(|(info, sha)| (info.virtual_size, info.actual_size, sha))
             }
@@ -636,13 +675,75 @@ impl ImageManager {
         Ok(())
     }
 
+    /// Fetch a firmware download's variable-store template (small; one
+    /// attempt, the image can be retried), checked against `sha256`.
+    async fn fetch_vars(&self, url: &str, sha256: Option<&str>) -> Result<Vec<u8>, ImageError> {
+        let dl = |e: reqwest::Error| ImageError::Download(format!("vars_url: {}", e));
+        let resp = self.http.get(url).send().await.map_err(dl)?;
+        if !resp.status().is_success() {
+            return Err(ImageError::Download(format!("vars_url: HTTP {} from {}", resp.status(), url)));
+        }
+        let mut data = Vec::new();
+        let mut stream = resp.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            data.extend_from_slice(&chunk.map_err(dl)?);
+            if data.len() as u64 > MAX_FIRMWARE_SIZE {
+                return Err(ImageError::InvalidImage("vars_url: over the firmware size limit".into()));
+            }
+        }
+        if data.is_empty() {
+            return Err(ImageError::InvalidImage("vars_url: empty file".into()));
+        }
+        if let Some(want) = sha256 {
+            let got = sha256_hex(&data);
+            if got != want {
+                return Err(ImageError::InvalidImage(format!("vars_url: checksum mismatch (expected {}, got {})", want, got)));
+            }
+        }
+        Ok(data)
+    }
+
+    /// Write `data` as `dest`, read-only, through a temporary file.
+    fn write_firmware_file(&self, id: &str, dest: &Path, data: &[u8]) -> Result<(), ImageError> {
+        let name = dest.file_name().and_then(|n| n.to_str()).unwrap_or(id);
+        let tmp = self.settings.image_dir.join(format!(".{}.install", name));
+        let io = |e: std::io::Error| ImageError::Io(format!("{}: {}", tmp.display(), e));
+        let mut f = std::fs::OpenOptions::new().create(true).write(true).truncate(true).mode(0o600).open(&tmp).map_err(io)?;
+        f.write_all(data).map_err(io)?;
+        f.sync_all().map_err(io)?;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o444)).map_err(io)?;
+        std::fs::rename(&tmp, dest).map_err(io)
+    }
+
     /// Install a downloaded firmware file (spec §5, firmware): no image
-    /// header to check, only a plausible size. Returns `(size, size, sha256)`.
-    fn install_firmware(&self, id: &str, sha256: String) -> Result<(u64, u64, String), ImageError> {
+    /// header to check, only a plausible size; a pinned Debian package is
+    /// unpacked into its code image and variable-store template, and a
+    /// URL download's template (`vars`) is stored next to it. Returns
+    /// `(size, size, sha256)` of the code file.
+    fn install_firmware(
+        &self,
+        id: &str,
+        sha256: String,
+        deb: Option<(firmware::DebFile, firmware::DebFile)>,
+        vars: Option<Vec<u8>>,
+    ) -> Result<(u64, u64, String), ImageError> {
         let part = self.part_path(id);
+        if let Some((code, vars)) = deb {
+            let bytes = std::fs::read(&part).map_err(|e| ImageError::Io(format!("{}: {}", part.display(), e)))?;
+            let mut files = firmware::extract_deb(&bytes, &[code, vars])?.into_iter();
+            let (code_data, vars_data) = (files.next().unwrap_or_default(), files.next().unwrap_or_default());
+            self.write_firmware_file(id, &self.firmware_vars_template(id), &vars_data)?;
+            self.write_firmware_file(id, &self.firmware_path(id), &code_data)?;
+            let _ = std::fs::remove_file(&part);
+            let size = code_data.len() as u64;
+            return Ok((size, size, sha256_hex(&code_data)));
+        }
         let size = std::fs::metadata(&part).map_err(|e| ImageError::Io(e.to_string()))?.len();
         if size == 0 || size > MAX_FIRMWARE_SIZE {
             return Err(ImageError::InvalidImage(format!("{} bytes is not a firmware image", size)));
+        }
+        if let Some(vars) = vars {
+            self.write_firmware_file(id, &self.firmware_vars_template(id), &vars)?;
         }
         std::fs::set_permissions(&part, std::fs::Permissions::from_mode(0o444)).map_err(|e| ImageError::Io(e.to_string()))?;
         std::fs::rename(&part, self.firmware_path(id)).map_err(|e| ImageError::Io(e.to_string()))?;

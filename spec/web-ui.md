@@ -295,7 +295,8 @@ only for Cloud-Hypervisor firmware boot, fed by `GET /credentials`.
 `pages/Images.tsx` shows two catalogs, each entry with a Pull button:
 cloud images (`GET /images/catalog`) and UEFI firmware
 (`GET /images/firmware-catalog`, [images.md](images.md#41-firmware-catalog);
-an entry copied from a host package says Import (Imported once done),
+an entry copied from a host package says Import (Imported once done), a
+Debian package entry says it is downloaded,
 and is disabled with the package to install when it isn't). Below, downloaded images in two
 tables: cloud images (with their linked disks) and firmware (with its
 hypervisor and the VMs booting through it; Delete is disabled while any
@@ -308,7 +309,9 @@ A failed image has **Retry** (`POST /images/{id}/retry`); the page
 looks again a second later, when the controller has restarted it.
 "Download from URL" opens a form for `{url, sha256?, name?}`, with a
 type (cloud image, or UEFI firmware for a chosen hypervisor: `kind:
-"firmware"`, `hypervisor`).
+"firmware"`, `hypervisor`); QEMU firmware also takes an optional variable
+store URL and sha256 (`vars_url`, `vars_sha256`). The firmware table says
+whether a QEMU image has a variable store or is a single file.
 `pages/Networking.tsx`'s Status column shows a network's phase, or
 "deleting" (with the `Ready` message, reason on hover) while a deletion waits (netd
 unreachable, a VM still on it); like image deletes, network deletes

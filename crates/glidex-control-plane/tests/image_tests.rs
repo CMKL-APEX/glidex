@@ -131,6 +131,7 @@ async fn start_server(fx: &Fixtures) -> (String, Arc<AtomicUsize>) {
     files.insert("disk.raw".to_string(), fx.raw.clone());
     files.insert("backing.qcow2".to_string(), fx.with_backing.clone());
     files.insert("fw.fd".to_string(), FIRMWARE.to_vec());
+    files.insert("vars.fd".to_string(), VARS.to_vec());
     let hits = Arc::new(AtomicUsize::new(0));
     let st = Served { files: Arc::new(files), hits: hits.clone() };
     let app = Router::new().route("/{name}", get(serve)).with_state(st);
@@ -202,6 +203,8 @@ async fn wait_image(app: &Router, id: &str) -> Value {
 
 /// A stand-in firmware file (never booted).
 const FIRMWARE: &[u8] = &[0x5a; 64 * 1024];
+/// A stand-in UEFI variable-store template.
+const VARS: &[u8] = &[0xa5; 16 * 1024];
 
 /// Pull `fw.fd` as a firmware image for `hypervisor`.
 async fn pull_firmware(app: &Router, base: &str, name: &str, hypervisor: &str) -> Value {
@@ -805,4 +808,86 @@ async fn auto_import_leaves_existing_firmware_alone() {
     }
     let (_, all) = request(&app, "GET", "/images", None).await;
     assert_eq!(all.as_array().unwrap().iter().filter(|i| i["hypervisor"] == "qemu").count(), 1, "{all}");
+}
+
+/// A QEMU firmware download can bring its variable-store template.
+#[tokio::test]
+async fn firmware_download_with_a_vars_template() {
+    if !tools_present() {
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    let fx = fixtures(tmp.path());
+    let (base, _) = start_server(&fx).await;
+    let (app, _manager) = create_app(tmp.path());
+    let fw = |name: &str, extra: Value| {
+        let mut body = json!({"url": format!("{base}/fw.fd"), "sha256": sha256_hex(FIRMWARE), "name": name, "kind": "firmware", "hypervisor": "qemu"});
+        body.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        body
+    };
+
+    // Only for a QEMU firmware URL, and a digest needs the URL.
+    let (status, err) = request(&app, "POST", "/images", Some(json!({"url": format!("{base}/good.qcow2"), "vars_url": format!("{base}/vars.fd")}))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{err}");
+    let mut ch = fw("ch", json!({"vars_url": format!("{base}/vars.fd")}));
+    ch["hypervisor"] = json!("cloudhypervisor");
+    let (status, err) = request(&app, "POST", "/images", Some(ch)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{err}");
+    let (status, err) = request(&app, "POST", "/images", Some(fw("nourl", json!({"vars_sha256": sha256_hex(VARS)})))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{err}");
+
+    let (status, img) = request(&app, "POST", "/images", Some(fw("with-vars", json!({"vars_url": format!("{base}/vars.fd"), "vars_sha256": sha256_hex(VARS)})))).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{img}");
+    let img = wait_image(&app, img["id"].as_str().unwrap()).await;
+    assert_eq!(img["status"]["state"], "ready", "{img}");
+    assert_eq!((img["vars_template"].as_bool(), img["verified"].as_bool()), (Some(true), Some(true)));
+    let vars = img["path"].as_str().unwrap().replace(".fd", ".vars.fd");
+    assert_eq!(std::fs::read(&vars).unwrap(), VARS);
+    assert_eq!(std::fs::metadata(&vars).unwrap().permissions().mode() & 0o777, 0o444);
+
+    // Without a vars digest it works but isn't verified; a wrong one fails.
+    let (_, img) = request(&app, "POST", "/images", Some(fw("unpinned-vars", json!({"vars_url": format!("{base}/vars.fd")})))).await;
+    let img = wait_image(&app, img["id"].as_str().unwrap()).await;
+    assert_eq!((img["status"]["state"].as_str(), img["verified"].as_bool()), (Some("ready"), Some(false)), "{img}");
+    let (_, img) = request(&app, "POST", "/images", Some(fw("bad-vars", json!({"vars_url": format!("{base}/vars.fd"), "vars_sha256": sha256_hex(b"x")})))).await;
+    let img = wait_image(&app, img["id"].as_str().unwrap()).await;
+    assert_eq!(img["status"]["state"], "failed", "{img}");
+    assert!(img["status"]["reason"].as_str().unwrap().contains("vars_url: checksum mismatch"), "{img}");
+    assert!(!Path::new(&img["path"].as_str().unwrap().replace(".fd", ".vars.fd")).exists());
+
+    // Deleting removes the template too.
+    let (status, _) = request(&app, "DELETE", "/images/with-vars?wait=30", None).await;
+    assert!(status.is_success());
+    assert!(!Path::new(&vars).exists());
+}
+
+/// The pinned Debian OVMF package: downloaded, checked and unpacked.
+#[tokio::test]
+#[ignore = "downloads Debian's ovmf package (6 MB) from snapshot.debian.org"]
+async fn ovmf_debian_is_downloaded_and_unpacked() {
+    let tmp = TempDir::new().unwrap();
+    let (app, _manager) = create_app(tmp.path());
+    let (status, cat) = request(&app, "GET", "/images/firmware-catalog", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let entry = cat.as_array().unwrap().iter().find(|e| e["key"] == "ovmf-debian").unwrap().clone();
+    assert_eq!((entry["source"].as_str(), entry["available"].as_bool()), (Some("debian"), Some(true)), "{entry}");
+
+    let (status, img) = request(&app, "POST", "/images", Some(json!({"firmware": "ovmf-debian"}))).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{img}");
+    let mut img = img;
+    for _ in 0..600 {
+        let (_, i) = request(&app, "GET", &format!("/images/{}", img["id"].as_str().unwrap()), None).await;
+        img = i;
+        if !matches!(img["status"]["state"].as_str(), Some("downloading" | "verifying")) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    assert_eq!(img["status"]["state"], "ready", "{img}");
+    assert_eq!((img["hypervisor"].as_str(), img["vars_template"].as_bool(), img["verified"].as_bool()), (Some("qemu"), Some(true), Some(true)));
+    assert_eq!(img["sha256"], "624e06de18b4fa535e90db7160d00d3d07d206422b89999bf1e27d920264e4e0", "the unpacked OVMF_CODE_4M.fd");
+    assert_eq!(img["file_size_bytes"], 3653632);
+    let path = img["path"].as_str().unwrap();
+    assert!(!Path::new(&format!("{}.part", path.trim_end_matches(".fd"))).exists());
+    assert_eq!(std::fs::metadata(path.replace(".fd", ".vars.fd")).unwrap().len(), 540672);
 }

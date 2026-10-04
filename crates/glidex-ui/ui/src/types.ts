@@ -213,6 +213,8 @@ export interface ImageInfo {
   verified: boolean;
   path: string;
   linked_disks: string[];
+  /** A firmware image carries a UEFI variable-store template (QEMU keeps a per-VM store; without one, `-bios`). */
+  vars_template?: boolean;
   /** VMs booting through this firmware image. */
   used_by_vms?: string[];
   /** Deletion requested; the image controller is removing it. */
@@ -233,8 +235,8 @@ export interface FirmwareCatalogItem {
   name: string;
   hypervisor: HypervisorType;
   arch: string;
-  /** `download`: a pinned build; `host`: copied from the host's package. */
-  source: "download" | "host";
+  /** `download`: a pinned build; `debian`: a pinned Debian package, unpacked; `host`: copied from the host's package. */
+  source: "download" | "debian" | "host";
   url?: string;
   version?: string;
   /** Whether it can be pulled now (a host entry needs its package). */

@@ -145,6 +145,12 @@ pub struct DownloadMeta {
     pub etag: Option<String>,
     #[serde(default)]
     pub last_modified: Option<String>,
+    /// A firmware download's UEFI variable-store template (QEMU), fetched
+    /// after the code file and stored as `<id>.vars.fd`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vars_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vars_sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -187,7 +193,10 @@ impl Image {
         match &self.source {
             // Pinned digests, or a host package its manager verified.
             ImageSource::Catalog { .. } | ImageSource::Firmware { .. } => true,
-            ImageSource::Url { expected_sha256, .. } => expected_sha256.is_some(),
+            // Every file it is made of was checked.
+            ImageSource::Url { expected_sha256, .. } => {
+                expected_sha256.is_some() && (self.download.vars_url.is_none() || self.download.vars_sha256.is_some())
+            }
         }
     }
 
@@ -372,6 +381,11 @@ pub struct PullImageRequest {
     pub kind: Option<ImageKind>,
     #[serde(default)]
     pub hypervisor: Option<crate::hypervisor::HypervisorType>,
+    /// With a QEMU firmware `url`: its variable-store template.
+    #[serde(default)]
+    pub vars_url: Option<String>,
+    #[serde(default)]
+    pub vars_sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -450,6 +464,10 @@ pub struct ImageResponse {
     pub path: String,
     /// Linked disks that depend on this image.
     pub linked_disks: Vec<String>,
+    /// A firmware image carries a UEFI variable-store template (QEMU maps
+    /// code and a per-VM store; without one, `-bios`).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub vars_template: bool,
     /// VMs that boot through this firmware image (filled in by `VmManager`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub used_by_vms: Vec<String>,
@@ -987,6 +1005,7 @@ impl ImageManager {
             path: path.to_string_lossy().into_owned(),
             linked_disks: self.linked_disks(&img.id).into_iter().map(|d| d.name).collect(),
             used_by_vms: Vec::new(),
+            vars_template: img.is_firmware() && self.firmware_vars_template(&img.id).exists(),
             info,
             deleting: img.deletion_requested_at.is_some(),
         }
@@ -1067,6 +1086,7 @@ impl ImageManager {
             .map(|e| {
                 let (source, url, hint) = match e.source {
                     firmware::FirmwareSource::Download { .. } => ("download", e.download_for(arch).map(|(u, _)| u.to_string()), None),
+                    firmware::FirmwareSource::Deb { .. } => ("debian", e.download_for(arch).map(|(u, _)| u.to_string()), None),
                     firmware::FirmwareSource::Host { package, .. } => {
                         let file = e.host_file();
                         let hint = file.is_none().then(|| format!("install the {} package", package));

@@ -13,7 +13,8 @@ test("lists the firmware catalog and the firmware images", async ({ page, hyperv
     await expect(catalog).toContainText(entry.key);
   }
   // The pulled entry reads as downloaded.
-  const card = catalog.locator("> div").filter({ hasText: FIRMWARE_KEY[hypervisor] });
+  // By the exact key: "ovmf" is also a prefix of "ovmf-debian".
+  const card = catalog.locator("> div").filter({ has: page.locator("span.font-mono", { hasText: new RegExp(`^${FIRMWARE_KEY[hypervisor]}$`) }) });
   if (fw.source?.key === FIRMWARE_KEY[hypervisor]) await expect(card).toContainText(/Downloaded|Imported/);
 
   // Firmware sits in its own table, with its hypervisor, not among the cloud images.
@@ -56,4 +57,21 @@ test("the VM page names its firmware image", async ({ page, hypervisor }) => {
   } finally {
     await del(`/vms/${vm.id}?wait=60`);
   }
+});
+
+test("Download from URL asks for a variable store for QEMU firmware only", async ({ page }) => {
+  await page.goto("/images");
+  await expect(page.getByTestId("firmware-catalog")).toContainText("Debian package");
+  await page.getByRole("button", { name: "Download from URL" }).click();
+  await expect(page.getByText("Variable store URL (optional)")).toBeHidden();
+  await field(page, "Type").selectOption("firmware");
+  await field(page, "For hypervisor").selectOption("qemu");
+  await expect(page.getByText("Variable store URL (optional)")).toBeVisible();
+  // The digest field appears once there is a URL.
+  await expect(page.getByText("Variable store sha256 (optional)")).toBeHidden();
+  await field(page, "Variable store URL (optional)").fill("https://example.com/OVMF_VARS.fd");
+  await expect(page.getByText("Variable store sha256 (optional)")).toBeVisible();
+  if (process.env.UI_SHOTS) await page.screenshot({ path: `${process.env.UI_SHOTS}/url-form.png` });
+  await field(page, "For hypervisor").selectOption("cloudhypervisor");
+  await expect(page.getByText("Variable store URL (optional)")).toBeHidden();
 });

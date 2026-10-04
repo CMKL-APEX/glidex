@@ -315,6 +315,9 @@ export const pullImage = (req: {
   /** With `url`: the download is UEFI firmware for `hypervisor`. */
   kind?: "firmware";
   hypervisor?: HypervisorType;
+  /** With a QEMU firmware `url`: its UEFI variable-store template. */
+  vars_url?: string;
+  vars_sha256?: string;
 }) => post<ImageInfo>("/images", req);
 /** `undefined` when gone (204), else the image its controller is still deleting (202). */
 export const deleteImage = (id: string) => del<ImageInfo | undefined>(`/images/${enc(id)}`);

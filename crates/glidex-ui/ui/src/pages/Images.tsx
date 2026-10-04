@@ -47,7 +47,11 @@ function PullUrlForm({ onDone, onCancel }: { onDone: () => void; onCancel: () =>
   const [name, setName] = useState("");
   const [kind, setKind] = useState<ImageKind>("disk");
   const [hypervisor, setHypervisor] = useState<HypervisorType>("cloudhypervisor");
+  const [varsUrl, setVarsUrl] = useState("");
+  const [varsSha256, setVarsSha256] = useState("");
   const [error, setError] = useState<string | null>(null);
+  // QEMU maps split OVMF builds as code plus a variable store.
+  const withVars = kind === "firmware" && hypervisor === "qemu";
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -58,6 +62,7 @@ function PullUrlForm({ onDone, onCancel }: { onDone: () => void; onCancel: () =>
         sha256: sha256 || undefined,
         name: name || undefined,
         ...(kind === "firmware" ? { kind: "firmware" as const, hypervisor } : {}),
+        ...(withVars && varsUrl ? { vars_url: varsUrl, vars_sha256: varsSha256 || undefined } : {}),
       });
       onDone();
     } catch (err) {
@@ -98,6 +103,24 @@ function PullUrlForm({ onDone, onCancel }: { onDone: () => void; onCancel: () =>
         <input className={`${inputClass} font-mono text-xs`} value={sha256} onChange={(e) => setSha256(e.target.value)} />
         <p className="mt-1 text-xs text-gray-500">Without it the image is stored but marked unverified.</p>
       </div>
+      {withVars && (
+        <>
+          <div>
+            <label className="block text-sm font-medium text-gray-700">Variable store URL (optional)</label>
+            <input className={inputClass} placeholder="https://…/OVMF_VARS.fd" value={varsUrl} onChange={(e) => setVarsUrl(e.target.value)} />
+            <p className="mt-1 text-xs text-gray-500">
+              The OVMF_VARS file that goes with a split OVMF_CODE build. Each VM gets its own copy, so boot settings persist.
+              Without it the firmware is loaded as one file, as a combined OVMF.fd needs.
+            </p>
+          </div>
+          {varsUrl && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700">Variable store sha256 (optional)</label>
+              <input className={`${inputClass} font-mono text-xs`} value={varsSha256} onChange={(e) => setVarsSha256(e.target.value)} />
+            </div>
+          )}
+        </>
+      )}
       <div>
         <label className="block text-sm font-medium text-gray-700">Name (optional)</label>
         <input className={inputClass} value={name} onChange={(e) => setName(e.target.value)} />
@@ -163,7 +186,16 @@ function ImageTable({ images, firmware, onRetry, onRemove }: TableProps) {
             return (
               <tr key={img.id}>
                 <td className="px-4 py-3 font-mono">{img.name}</td>
-                {firmware && <td className="px-4 py-3">{img.hypervisor ? HYPERVISOR_LABELS[img.hypervisor] : "—"}</td>}
+                {firmware && (
+                  <td className="px-4 py-3">
+                    {img.hypervisor ? HYPERVISOR_LABELS[img.hypervisor] : "—"}
+                    {img.hypervisor === "qemu" && (
+                      <span className="block text-xs text-gray-500">
+                        {img.vars_template ? "with variable store" : "single file (no saved UEFI settings)"}
+                      </span>
+                    )}
+                  </td>
+                )}
                 <td className="px-4 py-3">
                   <StatusBadge image={img} />
                 </td>
@@ -331,7 +363,13 @@ export default function Images() {
                 <span className="font-mono">{f.key}</span> · {HYPERVISOR_LABELS[f.hypervisor]}
               </div>
               <div className="text-xs text-gray-400 truncate" title={f.url}>
-                {f.source === "download" ? `Pinned build ${f.version ?? ""}` : f.url ? `From ${f.url}` : "From the host's package"}
+                {f.source === "download"
+                  ? `Pinned build ${f.version ?? ""}`
+                  : f.source === "debian"
+                    ? `Debian package ${f.version ?? ""}, downloaded`
+                    : f.url
+                      ? `From ${f.url}`
+                      : "From the host's package"}
               </div>
               {f.hint && <div className="text-xs text-amber-700">Not installed: {f.hint}</div>}
             </div>
