@@ -1144,7 +1144,7 @@ Reads (properties, signals, `Subscribe`) need no authorization (F6).
 - No hypervisor children: drop all `DeviceAllow=` (keep
   `DevicePolicy=closed`) and `ReadWritePaths=-/run/glidex/vhost`; add
   `NoNewPrivileges=yes`, `RestrictAddressFamilies=AF_UNIX AF_INET
-  AF_INET6`, `LockPersonality=yes`, `RestrictSUIDSGID=yes`,
+  AF_INET6 AF_NETLINK`, `LockPersonality=yes`, `RestrictSUIDSGID=yes`,
   `SystemCallFilter=@system-service`, `ProtectKernelTunables=yes`,
   `ProtectKernelModules=yes`, `ProtectKernelLogs=yes`. Its remaining
   children (`qemu-img`, `qemu-io`, `sgdisk`, `growpart`, `mkdosfs`,

@@ -105,15 +105,15 @@ impl LocalNames {
         n.add_dns("localhost");
         n.add_ip(IpAddr::V4(Ipv4Addr::LOCALHOST));
         n.add_ip(IpAddr::V6(Ipv6Addr::LOCALHOST));
-        if let Ok(addrs) = nix::ifaddrs::getifaddrs() {
-            for ifa in addrs {
-                let Some(a) = ifa.address else { continue };
-                if let Some(v4) = a.as_sockaddr_in() {
-                    n.add_ip(IpAddr::V4(v4.ip()));
-                } else if let Some(v6) = a.as_sockaddr_in6() {
-                    n.add_ip(IpAddr::V6(v6.ip()));
-                }
-            }
+        match interface_ips() {
+            Ok(ips) => ips.into_iter().for_each(|ip| n.add_ip(ip)),
+            // Not fatal (loopback and names still work), but every LAN
+            // address would then get 421 and be missing from certificates.
+            Err(e) => tracing::warn!(
+                "cannot list network interfaces ({}); only localhost and the host name are known. \
+                 Under systemd the unit needs RestrictAddressFamilies=AF_NETLINK",
+                e
+            ),
         }
         n
     }
@@ -126,11 +126,7 @@ impl LocalNames {
     }
 
     fn add_ip(&mut self, ip: IpAddr) {
-        let link_local = match ip {
-            IpAddr::V4(v4) => v4.is_link_local() || v4.is_unspecified(),
-            IpAddr::V6(v6) => (v6.segments()[0] & 0xffc0) == 0xfe80 || v6.is_unspecified(),
-        };
-        if !link_local && !self.ips.contains(&ip) {
+        if usable_ip(ip) && !self.ips.contains(&ip) {
             self.ips.push(ip);
         }
     }
@@ -152,6 +148,40 @@ impl LocalNames {
     pub fn origins(&self, port: u16) -> Vec<String> {
         self.hosts().into_iter().map(|h| format!("https://{}:{}", h, port)).collect()
     }
+}
+
+/// Neither link-local nor unspecified: an address a client can name.
+fn usable_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => !(v4.is_link_local() || v4.is_unspecified()),
+        IpAddr::V6(v6) => !((v6.segments()[0] & 0xffc0) == 0xfe80 || v6.is_unspecified()),
+    }
+}
+
+/// The addresses of the host's interfaces right now. Needs a netlink
+/// socket (`AF_NETLINK`).
+pub fn interface_ips() -> io::Result<Vec<IpAddr>> {
+    let mut v = Vec::new();
+    for ifa in nix::ifaddrs::getifaddrs().map_err(io::Error::from)? {
+        let Some(a) = ifa.address else { continue };
+        if let Some(v4) = a.as_sockaddr_in() {
+            v.push(IpAddr::V4(v4.ip()));
+        } else if let Some(v6) = a.as_sockaddr_in6() {
+            v.push(IpAddr::V6(v6.ip()));
+        }
+    }
+    Ok(v)
+}
+
+/// Whether `ip` is one of this host's addresses now (loopback included,
+/// link-local excluded). For names that appear after startup, e.g. a VPN
+/// interface that comes up later.
+pub fn is_local_ip(ip: IpAddr) -> bool {
+    let ip = match ip {
+        IpAddr::V6(v6) => v6.to_ipv4_mapped().map(IpAddr::V4).unwrap_or(ip),
+        v4 => v4,
+    };
+    ip.is_loopback() || (usable_ip(ip) && interface_ips().is_ok_and(|ips| ips.contains(&ip)))
 }
 
 /// The resolver's canonical name for `host` (usually its FQDN).
@@ -490,6 +520,13 @@ mod tests {
         let d = LocalNames::discover();
         assert!(d.dns.contains(&"localhost".to_string()));
         assert!(d.ips.contains(&IpAddr::V4(Ipv4Addr::LOCALHOST)));
+        // Every discovered address is local now; others aren't.
+        for ip in &d.ips {
+            assert!(is_local_ip(*ip), "{ip}");
+        }
+        assert!(is_local_ip("::ffff:127.0.0.1".parse().unwrap()));
+        assert!(!is_local_ip("192.0.2.1".parse().unwrap()));
+        assert!(!is_local_ip("fe80::1".parse().unwrap()));
     }
 
     #[test]

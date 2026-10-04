@@ -31,7 +31,9 @@ ProtectHome=yes
 PrivateTmp=yes
 PrivateDevices=yes
 CapabilityBoundingSet=
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# Netlink lists the host's addresses (allowed Host values, certificate
+# names); with no capabilities it is read-only.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 # netd's socket, the control plane's data and authd's socket are not its
 # business (/run/glidex-cp stays reachable for ui.sock).
 InaccessiblePaths=-/run/glidex -/var/lib/glidex-control-plane -/run/glidex-authd

@@ -170,12 +170,39 @@ fn request_host(req: &Request) -> Option<String> {
         .or_else(|| req.uri().authority().map(|a| a.to_string()))
 }
 
-async fn host_check(State(rules): State<Arc<Vec<HostRule>>>, req: Request, next: Next) -> Response {
+/// Which `Host` values are served.
+#[derive(Debug, Clone)]
+struct HostPolicy {
+    rules: Vec<HostRule>,
+    /// The default list (no `GLIDEX_UI_HOSTS`): also accept an IP address
+    /// the host has *now*, so an interface that comes up after startup
+    /// (a VPN, DHCP) works without a restart. Still no rebinding risk: an
+    /// attacker's domain is never an IP literal of this host.
+    local_ips: bool,
+}
+
+impl HostPolicy {
+    fn allows(&self, host: &str) -> bool {
+        host_allowed(&self.rules, host) || (self.local_ips && host_ip(host).is_some_and(glidex_tls::is_local_ip))
+    }
+}
+
+/// The IP address in a `Host` value, if it is one.
+fn host_ip(host: &str) -> Option<IpAddr> {
+    let (h, _) = split_host_port(host)?;
+    h.trim_start_matches('[').trim_end_matches(']').parse().ok()
+}
+
+async fn host_check(State(policy): State<Arc<HostPolicy>>, req: Request, next: Next) -> Response {
     match request_host(&req) {
-        Some(h) if host_allowed(&rules, &h) => next.run(req).await,
+        Some(h) if policy.allows(&h) => next.run(req).await,
         h => {
             tracing::debug!(host = ?h, "refused Host");
-            (StatusCode::MISDIRECTED_REQUEST, "421 Misdirected Request: this Host is not served here\n").into_response()
+            (
+                StatusCode::MISDIRECTED_REQUEST,
+                "421 Misdirected Request: this Host is not served here (GLIDEX_UI_HOSTS lists the names that are)\n",
+            )
+                .into_response()
         }
     }
 }
@@ -522,7 +549,7 @@ async fn proxy_api(State(s): State<AppState>, mut req: Request) -> Response {
     resp.map(Body::new)
 }
 
-fn app(dist: &Path, state: AppState, hosts: Vec<HostRule>) -> Router {
+fn app(dist: &Path, state: AppState, hosts: HostPolicy) -> Router {
     let index = dist.join("index.html");
     let hsts = state.hsts;
     // Unknown paths get index.html: they are client-side routes.
@@ -622,7 +649,7 @@ where
 
 /// Plain HTTP on the HTTPS port: `308` to the same URL over `https://`
 /// (allowed `Host` values only; others get `421`).
-fn redirect_router(hosts: Arc<Vec<HostRule>>) -> Router {
+fn redirect_router(hosts: Arc<HostPolicy>) -> Router {
     Router::new()
         .fallback(|req: Request| async move {
             let host = request_host(&req).unwrap_or_default();
@@ -709,8 +736,8 @@ async fn serve() -> Result<(), String> {
         None => None,
     };
     let hosts = match env("GLIDEX_UI_HOSTS") {
-        Some(list) => parse_host_rules(&list)?,
-        None => default_host_rules(&glidex_tls::LocalNames::discover()),
+        Some(list) => HostPolicy { rules: parse_host_rules(&list)?, local_ips: false },
+        None => HostPolicy { rules: default_host_rules(&glidex_tls::LocalNames::discover()), local_ips: true },
     };
     let spec = upstream_spec(env("GLIDEX_API_SOCKET").as_deref(), env("GLIDEX_API_URL").as_deref())?;
     let upstream = Upstream::new(spec, env("GLIDEX_API_CA_CERT"))?;
@@ -824,6 +851,31 @@ mod tests {
         assert_eq!(up("/api/vms/x/console/ws?ticket=t"), "/vms/x/console/ws?ticket=t");
         assert_eq!(up("/api/images?all=1"), "/images?all=1");
         assert_eq!(up("/api"), "/");
+    }
+
+    /// The default policy also takes an address the host has now, even
+    /// if it wasn't there at startup; an explicit list doesn't.
+    #[test]
+    fn current_local_addresses() {
+        let ip = glidex_tls::interface_ips()
+            .unwrap()
+            .into_iter()
+            .find(|ip| !ip.is_loopback() && glidex_tls::is_local_ip(*ip));
+        let startup = HostPolicy { rules: default_host_rules(&glidex_tls::LocalNames::default()), local_ips: true };
+        let explicit = HostPolicy { local_ips: false, ..startup.clone() };
+        assert!(startup.allows("127.0.0.1:5173"));
+        assert!(!startup.allows("192.0.2.1:5173"));
+        assert!(!startup.allows("evil.example"));
+        if let Some(ip) = ip {
+            let host = match ip {
+                IpAddr::V4(v4) => format!("{v4}:5173"),
+                IpAddr::V6(v6) => format!("[{v6}]:5173"),
+            };
+            assert!(startup.allows(&host), "{host}");
+            assert!(!explicit.allows(&host), "{host}");
+        }
+        assert_eq!(host_ip("[::1]:5173"), Some("::1".parse().unwrap()));
+        assert_eq!(host_ip("glidex.example.org"), None);
     }
 
     #[test]
@@ -1023,7 +1075,7 @@ mod tests {
 
         let spec = UpstreamSpec { socket: Some(sock), tcp: None };
         let state = AppState { upstream: Upstream::new(spec, None).unwrap(), tls: false, hsts: false };
-        let router = app(dir.path(), state, default_host_rules(&local()));
+        let router = app(dir.path(), state, HostPolicy { rules: default_host_rules(&local()), local_ips: false });
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(accept_loop(listener, router, None, Router::new()));
@@ -1080,7 +1132,7 @@ mod tests {
 
         let ui = glidex_tls::ensure_self_signed(&dir.path().join("ui"), "ui", &names).unwrap();
         let acceptor = tokio_rustls::TlsAcceptor::from(glidex_tls::server_config(&ui.cert, &ui.key, &[b"http/1.1"]).unwrap());
-        let hosts = default_host_rules(&names);
+        let hosts = HostPolicy { rules: default_host_rules(&names), local_ips: false };
         let router = app(dir.path(), AppState { upstream, tls: true, hsts: false }, hosts.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();

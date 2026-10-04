@@ -70,9 +70,11 @@ ProtectSystem=strict
 ProtectHome=yes
 ReadWritePaths=@HOME@
 DevicePolicy=closed
-# Unix sockets (API, netd, authd, D-Bus, shims, hypervisor APIs) and TCP
-# (the API listeners, image downloads, OIDC).
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# Unix sockets (API, netd, authd, D-Bus, shims, hypervisor APIs), TCP
+# (the API listeners, image downloads, OIDC) and netlink, read-only, to
+# list the host's addresses (certificate names, allowed origins). Without
+# CAP_NET_ADMIN netlink can't change anything.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 LockPersonality=yes
 RestrictSUIDSGID=yes
 SystemCallFilter=@system-service

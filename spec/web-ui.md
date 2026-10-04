@@ -24,7 +24,7 @@ The installer builds the UI, copies `dist` to
 |---|---|---|
 | `GLIDEX_UI_DIR` | `crates/glidex-ui/ui/dist` | The built UI. |
 | `GLIDEX_UI_LISTEN` | `0.0.0.0:5173,[::]:5173` | Listen addresses, comma-separated. `[::]` is IPv6-only and skipped when the host has no IPv6. |
-| `GLIDEX_UI_HOSTS` | `localhost`, `127.0.0.1`, `[::1]`, the host name and FQDN, the interface addresses (any port) | Allowed `Host` values, `host[:port]` comma-separated (a port pins it); setting it replaces the default. Anything else gets `421 Misdirected Request`, static files and `/api` alike (DNS rebinding). |
+| `GLIDEX_UI_HOSTS` | `localhost`, `127.0.0.1`, `[::1]`, the host name and FQDN, the interface addresses (any port; an address that appears after startup counts too) | Allowed `Host` values, `host[:port]` comma-separated (a port pins it); setting it replaces the default. Anything else gets `421 Misdirected Request`, static files and `/api` alike (DNS rebinding). |
 | `GLIDEX_UI_TLS` | `auto` | `auto`: HTTPS (rustls with `ring`, HTTP/1.1) with `GLIDEX_UI_TLS_CERT`/`_KEY` if set, else a self-signed certificate generated on first start (security.md §5.1.1). `off`: plain HTTP, refused at startup unless every listen address is loopback. |
 | `GLIDEX_UI_TLS_CERT`, `GLIDEX_UI_TLS_KEY` | unset | PEM certificate chain and key to use instead of the self-signed one. The key may instead be the systemd credential `ui-tls-key` (`LoadCredential=`). |
 | `GLIDEX_API_SOCKET` | `/run/glidex-cp/ui.sock` | The control plane's UI socket. It only accepts the `glidex-ui` user. Set alone (the packaged unit), it is the only upstream: until it exists requests get `502`, never a TCP fallback. |

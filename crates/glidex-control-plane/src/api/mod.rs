@@ -310,7 +310,7 @@ async fn authenticate(State(app): State<AppState>, mut req: Request, next: Next)
     // on every WebSocket upgrade.
     let origin = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()).map(String::from);
     if let Some(o) = &origin {
-        if (!safe || websocket) && !app.auth.config.auth.allowed_origins.iter().any(|a| a == o) {
+        if (!safe || websocket) && !app.auth.config.auth.origin_allowed(o) {
             return plain_error(StatusCode::FORBIDDEN, "origin_not_allowed", "this origin may not use the API");
         }
     }

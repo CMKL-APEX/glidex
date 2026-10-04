@@ -280,7 +280,7 @@ network-online.target
   `PrivateTmp`, `ProtectSystem=strict`, `ProtectHome=yes`,
   `ReadWritePaths=/var/lib/glidex-control-plane`, `DevicePolicy=closed`
   with no device allowed, `NoNewPrivileges=yes`,
-  `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6`,
+  `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK`,
   `LockPersonality=`, `RestrictSUIDSGID=`,
   `SystemCallFilter=@system-service`, `SystemCallArchitectures=native`,
   `ProtectKernelTunables=`, `ProtectKernelModules=`,
@@ -321,7 +321,7 @@ network-online.target
   [web-ui.md](web-ui.md)). It is sandboxed (`ProtectSystem=strict`,
   `ProtectHome`, `PrivateTmp`, `PrivateDevices`, `NoNewPrivileges`,
   empty `CapabilityBoundingSet=`, `RestrictAddressFamilies=AF_UNIX
-  AF_INET AF_INET6`, and `InaccessiblePaths=` for `/run/glidex`,
+  AF_INET AF_INET6 AF_NETLINK`, and `InaccessiblePaths=` for `/run/glidex`,
   `/var/lib/glidex-control-plane` and `/run/glidex-authd`). Users
   always log in.
 - Validate with `systemd-analyze verify`; the installer's tests check
