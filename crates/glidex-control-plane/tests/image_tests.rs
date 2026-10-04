@@ -362,11 +362,22 @@ async fn checksum_mismatch_and_backing_file_fail() {
     let (_, before) = request(&app, "GET", "/images/bad", None).await;
     let (status, r) = request(&app, "POST", "/images/bad/retry", None).await;
     assert_eq!(status, StatusCode::ACCEPTED, "{r}");
-    let img = wait_image(&app, before["id"].as_str().unwrap()).await;
+    // The image controller acts on the retry a moment later; until then the
+    // image still reads "failed" from before.
+    let id = before["id"].as_str().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let (_, ev) = request(&app, "GET", &format!("/images/{id}/events"), None).await;
+        let reasons: Vec<String> = ev["events"].as_array().unwrap().iter().map(|e| e["reason"].as_str().unwrap().to_string()).collect();
+        if reasons.iter().any(|r| r == "Retrying") {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the controller never retried: {reasons:?}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let img = wait_image(&app, id).await;
     assert_eq!(img["status"]["state"], "failed");
-    let (_, ev) = request(&app, "GET", &format!("/images/{}/events", before["id"].as_str().unwrap()), None).await;
-    let reasons: Vec<&str> = ev["events"].as_array().unwrap().iter().map(|e| e["reason"].as_str().unwrap()).collect();
-    assert!(reasons.contains(&"Retrying"), "{reasons:?}");
+    assert!(img["status"]["reason"].as_str().unwrap().contains("checksum mismatch"), "{img}");
     // Only a failed image can be retried.
     let (status, _) = request(&app, "POST", "/images/nonexistent/retry", None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
