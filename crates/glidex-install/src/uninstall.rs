@@ -52,7 +52,8 @@ pub const SERVICE_HOME: &str = crate::SERVICE_HOME;
 /// The built web UI.
 pub const UI_ASSET_ROOT: &str = "/usr/local/share/glidex";
 /// Directories owned entirely by glidex.
-pub const STATE_DIRS: &[&str] = &["/var/lib/glidex", "/run/glidex", "/run/glidex-cp", "/run/glidex-authd"];
+/// (`/var/lib/glidex-ui` holds only the UI's self-signed certificate.)
+pub const STATE_DIRS: &[&str] = &["/var/lib/glidex", "/var/lib/glidex-ui", "/run/glidex", "/run/glidex-cp", "/run/glidex-authd"];
 pub const SOURCE_PREFIX: &str = "/opt/glidex";
 pub const DISTRO_OVS_PACKAGES: &[&str] = &["openvswitch-switch-dpdk", "openvswitch-switch"];
 

@@ -47,26 +47,37 @@ all). It needs Linux with KVM (`/dev/kvm`). See
 ## Run
 
 With the systemd units, glidex already runs: the web UI is on
-http://localhost:5173 and the API on http://localhost:8841. To run it
+`https://<host>:5173` and the API on `https://<host>:8841`. To run it
 yourself instead:
 
 ```bash
-cargo run --bin glidex-control-plane   # API on http://localhost:8841
-cargo run -p glidex-ui -- --dev        # web UI (Vite, hot reload) on http://localhost:5173
+cargo run --bin glidex-control-plane   # API on https://localhost:8841
+cargo run -p glidex-ui -- --dev        # web UI (Vite, hot reload) on https://localhost:5173
 cargo run --bin gxctl                  # CLI
 ```
 
-The API listens on loopback and on `api.sock` in its run directory
+Both serve HTTPS on every address of the host. Unless you configure a
+certificate (`tls` in `/etc/glidex/control-plane.json`;
+`GLIDEX_UI_TLS_CERT` / `GLIDEX_UI_TLS_KEY` for the UI), each one
+generates a self-signed certificate on first start and prints its SHA-256
+fingerprint (so does the installer): compare it with what your browser
+shows before accepting the warning. `listen` / `GLIDEX_LISTEN` and
+`GLIDEX_UI_LISTEN` narrow the addresses; plain HTTP (`"tls": "off"`,
+`GLIDEX_UI_TLS=off`) is only allowed on loopback. The installer doesn't
+touch the firewall.
+
+The API also listens on `api.sock` in its run directory
 (`/run/glidex-cp/api.sock` under systemd, for members of
-`glidex-users`); every request is authenticated, and a non-loopback
-listener (`GLIDEX_LISTEN`, or `listen` in `/etc/glidex/control-plane.json`)
-needs TLS. See [spec/security.md](spec/security.md).
+`glidex-users`); every request is authenticated. See
+[spec/security.md](spec/security.md).
 
 `gxctl` talks to the control plane's Unix socket (`/run/glidex-cp/api.sock`,
 or the one a hand-started control plane creates under `$XDG_RUNTIME_DIR/glidex`)
 and you're identified by your Unix account: no login. From another
 machine, `gxctl --url https://host:8841 login --oidc` (or `login --token`)
-saves a token in `~/.config/glidex/token`. `--project <p>` picks the
+saves a token in `~/.config/glidex/token`; for a self-signed certificate,
+copy the host's `/run/glidex-cp/tls.crt` and set `GLIDEX_CA_CERT` to it
+(local connections trust it already). `--project <p>` picks the
 project; `whoami`, `project`, `token`, `binding`, `team`, `policy` and
 `audit` manage access ([spec/cli.md](spec/cli.md),
 [spec/security.md](spec/security.md)).
@@ -82,17 +93,18 @@ gxctl> connect my-vm                  # Ctrl+] detaches
 gxctl> stop my-vm --graceful          # power button, then stop after 60 s
 ```
 
-Or over the API:
+Or over the API, with a token (`gxctl token create`):
 
 ```bash
-curl -X POST localhost:8841/images -H 'Content-Type: application/json' -d '{"catalog": "ubuntu-26.04"}'
-curl -X POST localhost:8841/vms -H 'Content-Type: application/json' -d '{
+api() { curl --cacert /run/glidex-cp/tls.crt -H "Authorization: Bearer $GLIDEX_TOKEN" "$@"; }
+api -X POST https://localhost:8841/images -H 'Content-Type: application/json' -d '{"catalog": "ubuntu-26.04"}'
+api -X POST https://localhost:8841/vms -H 'Content-Type: application/json' -d '{
   "name": "my-vm", "vcpu_count": 2, "mem_size_mib": 2048,
   "hypervisor": "qemu", "image": "ubuntu-26.04", "root_disk_size_gib": 20,
   "credential": "alice", "networks": [{"network": "default"}]
 }'
-curl -X POST localhost:8841/vms/<id>/start
-curl -X POST 'localhost:8841/vms/<id>/stop?graceful_timeout_secs=60'
+api -X POST https://localhost:8841/vms/<id>/start
+api -X POST 'https://localhost:8841/vms/<id>/stop?graceful_timeout_secs=60'
 ```
 
 - `hypervisor` is `cloudhypervisor` (default) or `qemu`. With an `image`

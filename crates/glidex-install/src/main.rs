@@ -76,8 +76,14 @@ pub(crate) const CP_CONFIG_EXAMPLE: &str = "/etc/glidex/control-plane.json.examp
 pub(crate) const POLICY_DIR: &str = "/etc/glidex/policies";
 /// The control plane's local API socket (RuntimeDirectory=glidex-cp).
 const API_SOCKET: &str = "/run/glidex-cp/api.sock";
+/// Loopback ends of the default listeners (every address, spec/security.md
+/// §5.1), to see whether something already holds the ports.
 const API_ADDR: &str = "127.0.0.1:8841";
 const UI_ADDR: &str = "127.0.0.1:5173";
+/// The control plane's published certificate (self-signed by default).
+const CP_CERT: &str = "/run/glidex-cp/tls.crt";
+/// The UI's self-signed certificate (StateDirectory=glidex-ui).
+const UI_CERT: &str = "/var/lib/glidex-ui/tls/ui.crt";
 
 struct Platform {
     os: &'static str,
@@ -1783,7 +1789,7 @@ fn install_services(changed: &Changes, invoking: Option<&str>, user_home: &Path)
         );
     } else if !unit_active(ui) || changed.ui || ui_unit_changed {
         sudo(&argv(&["systemctl", "restart", ui]))?;
-        println!("{} {} on http://localhost:5173", "Started:".green(), ui);
+        println!("{} {} on https://{}:5173", "Started:".green(), ui, host_name());
     } else {
         println!("{} {}", "Running:".green(), ui);
     }
@@ -1851,13 +1857,52 @@ fn shim_allowlist(exists: impl Fn(&str) -> bool) -> String {
     serde_json::to_string_pretty(&serde_json::json!({ "hypervisors": list })).unwrap_or_default() + "\n"
 }
 
+/// The name the services' certificates are made for first (the FQDN when
+/// the resolver knows it).
+fn host_name() -> String {
+    glidex_tls::LocalNames::discover().dns.into_iter().next().unwrap_or_else(|| "localhost".into())
+}
+
+/// SHA-256 fingerprint of a service's certificate, waiting a few seconds
+/// for a service that is still generating it. The certificate isn't
+/// secret, but the UI's state directory is private: read it as root.
+fn cert_fingerprint(path: &str) -> Option<String> {
+    for _ in 0..10 {
+        let pem = std::fs::read(path).ok().or_else(|| {
+            if is_root() {
+                None
+            } else {
+                run_capture("sudo", &["-n", "cat", path]).ok().map(String::into_bytes)
+            }
+        });
+        if let Some(fp) = pem.as_deref().and_then(glidex_tls::fingerprint_pem) {
+            return Some(fp);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    None
+}
+
 fn print_usage(opts: &Options) {
     section("Quick Start");
     println!();
     if opts.services {
         println!("glidex runs as systemd services (control plane as '{}', web UI as '{}'):", SERVICE_USER, UI_USER);
-        println!("     web UI:  {}", "http://localhost:5173".green());
-        println!("     API:     {} (members of {}), {} (tokens)", API_SOCKET.green(), USERS_GROUP, "http://localhost:8841".green());
+        let host = host_name();
+        println!("     web UI:  {}", format!("https://{}:5173", host).green());
+        println!(
+            "     API:     {} (members of {}), {} (tokens)",
+            API_SOCKET.green(),
+            USERS_GROUP,
+            format!("https://{}:8841", host).green()
+        );
+        // Self-signed by default: what the browser's warning should show.
+        for (what, path) in [("web UI", UI_CERT), ("API", CP_CERT)] {
+            if let Some(fp) = cert_fingerprint(path) {
+                println!("     {} certificate SHA-256: {}", what, fp);
+            }
+        }
+        println!("     Both listen on every address over HTTPS; the installer does not change the firewall.");
         println!("     status:  {}", "systemctl status glidex-control-plane glidex-ui glidex-authd.socket".green());
         println!("     config:  {} (copy to control-plane.json to change defaults)", CP_CONFIG_EXAMPLE);
     } else {
@@ -1866,7 +1911,7 @@ fn print_usage(opts: &Options) {
         println!();
         println!("2. (Optional) Start the web UI in another terminal:");
         println!("     {}", "glidex-ui".green());
-        println!("     Then open http://localhost:5173");
+        println!("     Then open https://localhost:5173 (a self-signed certificate; glidex-ui logs its fingerprint)");
     }
     println!();
     println!("Use the interactive CLI:");

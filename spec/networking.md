@@ -1006,7 +1006,8 @@ New step after Cloud-Hypervisor, every part prompted:
 - **The REST API is unauthenticated**, so anyone reaching port 8841
   gets the control plane's netd rights. M4 therefore changes the
   control plane's default bind from `0.0.0.0:8841` to `127.0.0.1:8841`
-  (configurable).
+  (configurable). Superseded: with authentication and TLS in place
+  (security.md §5.1), the default is HTTPS on every address again.
 - `cap_net_admin+ep` on `cloud-hypervisor` applies to anyone who can run
   it (decision 9).
 - vhost-user: OVS maps all guest RAM and is fully trusted by its VMs.

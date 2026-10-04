@@ -1,11 +1,33 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { rootCertificates } from "node:tls";
 import { fileURLToPath } from "node:url";
 
 // GLIDEX_API_URL points the dev proxy at another control plane (the e2e
-// suite runs a scratch one).
-const apiUrl = process.env.GLIDEX_API_URL ?? "http://localhost:8841";
+// suite runs a scratch one, over plain HTTP on loopback).
+const apiUrl = process.env.GLIDEX_API_URL ?? "https://localhost:8841";
+
+/** The file at env var `name`, if set. */
+function fileFromEnv(name: string): string | undefined {
+  const path = process.env[name];
+  return path ? readFileSync(path, "utf8") : undefined;
+}
+
+// HTTPS for the dev server: `glidex-ui --dev` passes the UI's certificate
+// (configured or self-signed). Run bare (`bunx vite`), it serves plain
+// HTTP on localhost.
+const cert = fileFromEnv("GLIDEX_UI_TLS_CERT");
+const key = fileFromEnv("GLIDEX_UI_TLS_KEY");
+const https = cert && key ? { cert, key } : undefined;
+
+// The control plane's certificate is verified, never skipped:
+// GLIDEX_API_CA_CERT (`glidex-ui --dev` sets it to the local control
+// plane's published tls.crt) is trusted in addition to Node's CA store
+// (a `ca` option replaces that store, so it is passed along).
+const extraCa = fileFromEnv("GLIDEX_API_CA_CERT");
+const apiCa = extraCa ? [...rootCertificates, extraCa] : undefined;
 
 /** `git <args>`, trimmed; `undefined` outside a checkout or on failure. */
 function git(...args: string[]): string | undefined {
@@ -41,11 +63,14 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    https,
     proxy: {
       "/api": {
         target: apiUrl,
         changeOrigin: true,
         ws: true,
+        secure: true,
+        ...(apiCa ? { ca: apiCa } : {}),
         rewrite: (path) => path.replace(/^\/api/, ""),
       },
     },

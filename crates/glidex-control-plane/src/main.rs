@@ -233,22 +233,27 @@ async fn main() {
     let app = api::router(Arc::new(api::App { manager: vm_manager, auth }))
         .layer(TraceLayer::new_for_http());
 
-    let tls = match &cfg.tls {
-        Some(t) => match serve::tls_acceptor(&t.cert, t.key.as_deref()) {
-            Ok(a) => Some(a),
-            Err(e) => {
-                eprintln!("TLS: {}", e);
-                std::process::exit(1);
-            }
-        },
-        None => None,
-    };
-    let mut tcp = Vec::new();
-    for addr in &cfg.listen {
-        match tokio::net::TcpListener::bind(addr).await {
-            Ok(l) => tcp.push(l),
-            Err(e) => eprintln!("  Warning: cannot listen on {}: {}", addr, e),
+    let tls = match serve::tls_setup(&cfg.tls) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("TLS: {}", e);
+            std::process::exit(1);
         }
+    };
+    // Local clients (gxctl, a hand-started UI) trust the published copy
+    // (spec/security.md §5.1.1).
+    let run_dir = glidex_control_plane::paths::run_dir();
+    match &tls {
+        Some(t) => {
+            if let Err(e) = glidex_tls::publish(&t.cert, &run_dir) {
+                eprintln!("  Warning: cannot publish the TLS certificate: {}", e);
+            }
+        }
+        None => glidex_tls::unpublish(&run_dir),
+    }
+    let (tcp, failed) = serve::bind_tcp(&cfg.listen);
+    for (addr, e) in failed {
+        eprintln!("  Warning: cannot listen on {}: {}", addr, e);
     }
     let api_sock = cfg.api_socket_path();
     let ui_sock = cfg.ui_socket_path();
@@ -273,6 +278,16 @@ async fn main() {
     let scheme = if tls.is_some() { "https" } else { "http" };
     for l in &tcp {
         println!("  Listening on {}://{}", scheme, l.local_addr().unwrap());
+    }
+    if let Some(t) = &tls {
+        println!(
+            "  TLS:       {} ({}{})",
+            t.cert.display(),
+            if t.self_signed { "self-signed" } else { "configured" },
+            if t.generated { ", generated now" } else { "" }
+        );
+        println!("  SHA-256:   {}", t.fingerprint);
+        tracing::info!(cert = %t.cert.display(), fingerprint = %t.fingerprint, self_signed = t.self_signed, "TLS certificate");
     }
     for (_, kind, path) in &unix {
         println!("  Listening on {} ({:?})", path.display(), kind);
@@ -299,7 +314,7 @@ async fn main() {
     let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
     let servers: Vec<_> = tcp
         .into_iter()
-        .map(|l| tokio::spawn(serve::serve_tcp(l, app.clone(), tls.clone(), stop_rx.clone())))
+        .map(|l| tokio::spawn(serve::serve_tcp(l, app.clone(), tls.as_ref().map(|t| t.acceptor.clone()), stop_rx.clone())))
         .chain(unix.into_iter().map(|(l, kind, _)| tokio::spawn(serve::serve_unix(l, app.clone(), kind, stop_rx.clone()))))
         .collect();
     shutdown_signal().await;

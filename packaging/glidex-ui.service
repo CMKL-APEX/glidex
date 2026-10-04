@@ -12,13 +12,17 @@ User=glidex-ui
 Group=glidex-ui
 Environment=GLIDEX_UI_DIR=/usr/local/share/glidex/ui
 Environment=GLIDEX_API_SOCKET=/run/glidex-cp/ui.sock
-# Loopback only (default). Users still log in; the UI holds no rights of
-# its own. Exposing it needs TLS: in a drop-in set
-#   Environment=GLIDEX_UI_LISTEN=0.0.0.0:8443
-#   Environment=GLIDEX_UI_HOSTS=glidex.example.org
+# HTTPS on every address, port 5173 (spec/security.md §5.1). Without a
+# configured certificate it generates a self-signed one in its state
+# directory and logs the fingerprint. Users still log in; the UI holds no
+# rights of its own. To use a real certificate, in a drop-in set
 #   Environment=GLIDEX_UI_TLS_CERT=/etc/glidex/tls/ui.crt
 #   LoadCredential=ui-tls-key:/etc/glidex/tls/ui.key
-# and add the https origin to auth.allowed_origins in control-plane.json.
+# GLIDEX_UI_LISTEN (e.g. 10.0.0.5:5173) narrows the addresses, and
+# GLIDEX_UI_HOSTS replaces the default Host allowlist (this host's names
+# and addresses).
+StateDirectory=glidex-ui
+StateDirectoryMode=0700
 ExecStart=/usr/local/bin/glidex-ui
 # It only reads the UI files and talks to the control plane.
 NoNewPrivileges=yes
