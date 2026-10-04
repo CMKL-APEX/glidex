@@ -4,7 +4,8 @@ Two crates cooperate to deliver the UI:
 
 - `crates/glidex-ui` (Rust bin) — serves the production build
   (`bun run build` → `ui/dist`, or `GLIDEX_UI_DIR`) on
-  `GLIDEX_UI_LISTEN` (default `127.0.0.1:5173`), with unknown paths
+  `GLIDEX_UI_LISTEN` over HTTPS (default every address, port 5173:
+  `https://<host>:5173`), with unknown paths
   answered by `index.html` (client-side routes), and proxies `/api/*`
   to the control plane, WebSocket upgrades included (see *Server*
   below). `glidex-ui --dev` instead runs `bun run dev` inside
@@ -22,14 +23,15 @@ The installer builds the UI, copies `dist` to
 | Variable | Default | Meaning |
 |---|---|---|
 | `GLIDEX_UI_DIR` | `crates/glidex-ui/ui/dist` | The built UI. |
-| `GLIDEX_UI_LISTEN` | `127.0.0.1:5173` | Listen address. A non-loopback address without TLS is refused at startup. |
-| `GLIDEX_UI_HOSTS` | `localhost,127.0.0.1,[::1]` (any port) | Allowed `Host` values, `host[:port]` comma-separated (a port pins it). Anything else gets `421 Misdirected Request`, static files and `/api` alike (DNS rebinding). |
-| `GLIDEX_UI_TLS_CERT`, `GLIDEX_UI_TLS_KEY` | unset | PEM certificate chain and key: serve HTTPS (rustls with `ring`, HTTP/1.1). The key may instead be the systemd credential `ui-tls-key` (`LoadCredential=`). |
+| `GLIDEX_UI_LISTEN` | `0.0.0.0:5173,[::]:5173` | Listen addresses, comma-separated. `[::]` is IPv6-only and skipped when the host has no IPv6. |
+| `GLIDEX_UI_HOSTS` | `localhost`, `127.0.0.1`, `[::1]`, the host name and FQDN, the interface addresses (any port) | Allowed `Host` values, `host[:port]` comma-separated (a port pins it); setting it replaces the default. Anything else gets `421 Misdirected Request`, static files and `/api` alike (DNS rebinding). |
+| `GLIDEX_UI_TLS` | `auto` | `auto`: HTTPS (rustls with `ring`, HTTP/1.1) with `GLIDEX_UI_TLS_CERT`/`_KEY` if set, else a self-signed certificate generated on first start (security.md §5.1.1). `off`: plain HTTP, refused at startup unless every listen address is loopback. |
+| `GLIDEX_UI_TLS_CERT`, `GLIDEX_UI_TLS_KEY` | unset | PEM certificate chain and key to use instead of the self-signed one. The key may instead be the systemd credential `ui-tls-key` (`LoadCredential=`). |
 | `GLIDEX_API_SOCKET` | `/run/glidex-cp/ui.sock` | The control plane's UI socket, used when it exists. It only accepts the `glidex-ui` user. |
-| `GLIDEX_API_URL` | `http://127.0.0.1:8841` | The control plane over TCP when there is no socket. Setting it without `GLIDEX_API_SOCKET` skips the default socket (development against a scratch control plane; also the packaged unit until it runs as `glidex-ui`). |
+| `GLIDEX_API_URL` | `https://127.0.0.1:8841` | The control plane over TCP when there is no socket, verified against the system store, `GLIDEX_API_CA_CERT` (a PEM file) and the control plane's published certificate (`/run/glidex-cp/tls.crt` or the hand-started run directory's, security.md §5.1.1). Setting it without `GLIDEX_API_SOCKET` skips the default socket (development against a scratch control plane; also the packaged unit until it runs as `glidex-ui`). |
 
 On every proxied request it replaces (never appends to) `X-Forwarded-For`
-(the TCP peer), `X-Forwarded-Proto` (`https` under TLS) and
+(the TCP peer), `X-Forwarded-Proto` (`https`, or `http` with TLS `off`) and
 `X-Forwarded-Host` (the request's `Host`), and drops `Forwarded`. The
 control plane trusts these only from the `glidex-ui` peer on `ui.sock`;
 over TCP it goes by the browser's session cookie alone. `Origin`,
@@ -40,8 +42,10 @@ connect-src 'self'; img-src 'self' data:; style-src 'self'
 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action
 'self'` (inline styles: React and xterm.js set `style` attributes),
 `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`,
-`X-Frame-Options: DENY`, and under TLS `Strict-Transport-Security:
-max-age=31536000`.
+`X-Frame-Options: DENY`, and with a configured certificate (not a
+self-signed one, security.md §5.1.1) `Strict-Transport-Security:
+max-age=31536000`. A plain-HTTP request on the HTTPS port gets `308` to
+the `https://` URL.
 
 ## Authentication flow
 
@@ -72,7 +76,9 @@ max-age=31536000`.
 
 ## Stack
 
-- **Vite 6** dev server on `:5173`.
+- **Vite 6** dev server on `https://localhost:5173` (`server.https`
+  with the UI's self-signed certificate, which `glidex-ui --dev`
+  generates if needed and passes to Vite).
 - **React 19** with **react-router-dom 7** for client-side routing.
 - **TypeScript 5** (strict).
 - **Tailwind CSS 3** for styling; config in `ui/tailwind.config.js`.
@@ -82,9 +88,12 @@ max-age=31536000`.
 ## Dev-server proxy
 
 `ui/vite.config.ts` proxies everything under `/api` to the control
-plane on `:8841` (or `GLIDEX_API_URL`), stripping the `/api` prefix. WebSocket upgrades
-are forwarded (`ws: true`) so `/api/vms/:id/console/ws` resolves to
-`ws://localhost:8841/vms/:id/console/ws`.
+plane on `https://localhost:8841` (or `GLIDEX_API_URL`), stripping the
+`/api` prefix, and verifies it against the control plane's published
+certificate (`tls.crt` in its run directory) or `GLIDEX_API_CA_CERT` —
+never `secure: false`. WebSocket upgrades are forwarded (`ws: true`)
+so `/api/vms/:id/console/ws` resolves to
+`wss://localhost:8841/vms/:id/console/ws`.
 
 Consequence: the frontend never has to know the server URL.
 Everything is same-origin from the browser's perspective.

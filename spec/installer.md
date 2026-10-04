@@ -223,10 +223,15 @@ by later runs (flags override the saved values):
       plane kills every VM when it stops, so it is restarted only when
       no VM is running or paused; otherwise the installer says that this
       one restart stops them once and to restart it when convenient.
-      If something else already listens on `127.0.0.1:8841` (a control
+      If something else already listens on port 8841 (a control
       plane started by hand), it isn't started.
     - the UI is (re)started whenever its binary or unit changed or it
       isn't running.
+    - the usage blurb prints the UI and API URLs
+      (`https://<host name>:5173`, `https://<host name>:8841`) and the
+      SHA-256 fingerprints of their self-signed certificates
+      (spec/security.md §5.1.1), read once the services have started.
+      The installer does not touch the host firewall.
     If the previous unit ran the control plane as the invoking user, a
     note says that their `~/.glidex` data was not moved.
 14. **Save options** to `/etc/glidex/install.conf` when they changed,
@@ -263,10 +268,10 @@ network-online.target
   without NICs still work; without authd, PAM login fails. Stopping,
   restarting or upgrading the unit leaves running VMs alone; on start it
   adopts them and relaunches VMs that should run (after a host reboot,
-  `on_host_boot: resume`). It listens
-  on loopback TCP and on `/run/glidex-cp/api.sock` and `ui.sock`;
-  settings are in `/etc/glidex/control-plane.json` (a non-loopback
-  listener needs TLS). Hardening (spec/security.md §9):
+  `on_host_boot: resume`). It serves HTTPS on every address, port 8841
+  (self-signed certificate unless one is configured), and listens on
+  `/run/glidex-cp/api.sock` and `ui.sock`; settings are in
+  `/etc/glidex/control-plane.json` (spec/security.md §5.1). Hardening (spec/security.md §9):
   `RuntimeDirectory=glidex-cp` (`0755`) with
   `RuntimeDirectoryPreserve=yes` — required, since the running VMs'
   directories (`vms/<id>/`: shim, hypervisor and console sockets,
@@ -309,15 +314,16 @@ network-online.target
   the `glidex` user's uid. It runs PAM with `/etc/pam.d/glidex` for
   accounts in `glidex-users` (`/etc/glidex/authd.json`).
 - **glidex-ui** runs as `glidex-ui`, serves `/usr/local/share/glidex/ui`
-  on `127.0.0.1:5173` and proxies `/api` to the control plane's
+  over HTTPS on every address, port 5173 (self-signed certificate in
+  `StateDirectory=glidex-ui` unless `GLIDEX_UI_TLS_CERT` /
+  `GLIDEX_UI_TLS_KEY` are set in a drop-in), and proxies `/api` to the control plane's
   `ui.sock` (`GLIDEX_API_SOCKET=/run/glidex-cp/ui.sock`; see
   [web-ui.md](web-ui.md)). It is sandboxed (`ProtectSystem=strict`,
   `ProtectHome`, `PrivateTmp`, `PrivateDevices`, `NoNewPrivileges`,
   empty `CapabilityBoundingSet=`, `RestrictAddressFamilies=AF_UNIX
   AF_INET AF_INET6`, and `InaccessiblePaths=` for `/run/glidex`,
-  `/var/lib/glidex-control-plane` and `/run/glidex-authd`). A
-  non-loopback `GLIDEX_UI_LISTEN` needs `GLIDEX_UI_TLS_CERT` /
-  `GLIDEX_UI_TLS_KEY`; users still log in.
+  `/var/lib/glidex-control-plane` and `/run/glidex-authd`). Users
+  always log in.
 - Validate with `systemd-analyze verify`; the installer's tests check
   the rendered units (including the VM template, the polkit rule and
   the shim allowlist) and netd's ordering.

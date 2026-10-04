@@ -1,6 +1,10 @@
 # REST API
 
-The control plane listens on `127.0.0.1:8841` and `[::1]:8841` by default (`GLIDEX_LISTEN` overrides). All request and
+The control plane serves HTTPS on every address, `0.0.0.0:8841` and
+`[::]:8841`, by default (`listen` / `GLIDEX_LISTEN` override; a
+self-signed certificate unless one is configured; plain HTTP only on
+loopback — [security.md](security.md) §5.1), and on its Unix sockets.
+All request and
 response bodies are JSON except for the console WebSocket.
 
 ## Authentication and authorization

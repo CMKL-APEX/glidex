@@ -126,16 +126,74 @@ OIDC endpoints).
 |---|---|---|
 | Local Unix socket | `/run/glidex-cp/api.sock` | Peer uid (§5.2). |
 | UI Unix socket | `/run/glidex-cp/ui.sock` | Session or token only; the peer must be `glidex-ui` (§5.6). |
+| TCP (HTTPS) | `listen` / `GLIDEX_LISTEN`; default every address: `0.0.0.0:8841` and `[::]:8841` | Token or session. No address is trusted, loopback included. |
 
 Both socket files are mode `0666`: the access control is the per-request
 peer-uid check, not the file mode. (Giving them group `glidex-users`
 would need the `glidex` user to be a member of that group.)
-| TCP, loopback | `127.0.0.1:8841`, `[::1]:8841` | Token or session. Loopback is **not** trusted. |
-| TCP, other | `GLIDEX_LISTEN` | Token or session, **TLS required**: the control plane refuses to start on a non-loopback address without `tls.cert` and `tls.key`. |
 
-The same rule applies to `GLIDEX_UI_LISTEN`: `glidex-ui` refuses a
-non-loopback address without TLS, and sets cookies `Secure` whenever
-it serves TLS.
+**HTTPS and all addresses by default.** The control plane and
+`glidex-ui` both listen on every address (`0.0.0.0` and `[::]`, the
+IPv6 socket with `IPV6_V6ONLY` so the two don't collide; the IPv6 one
+is skipped when the host has IPv6 disabled) and serve only HTTPS
+unless configured otherwise. Why: glidex is a host service meant to be
+reached from other machines; a loopback default made every real
+deployment edit a config file and supply a certificate before the UI
+was usable, and nothing on the wire should carry passwords, tokens or
+session cookies in clear text.
+
+The certificate (`tls` in `control-plane.json`; `GLIDEX_UI_TLS_*` for
+the UI, [web-ui.md](web-ui.md#server)):
+
+| Setting | Effect |
+|---|---|
+| `"auto"` (default) | A self-signed certificate, generated on first start (§5.1.1). |
+| `{"cert": …, "key": …}` | That PEM chain and key (the key defaults to the systemd credential `tls-key`). |
+| `"off"` | Plain HTTP. Accepted **only** when every listener is a loopback address; otherwise the process refuses to start. For development and tests. |
+
+`glidex-ui` follows the same rules, sets cookies `Secure` whenever it
+serves TLS (which is now the default), and answers a plain-HTTP request
+on its HTTPS port with `308` to `https://<Host><path>` (it peeks at the
+first byte of the connection: a TLS handshake starts with `0x16`), so
+`host:5173` typed in a browser still works. The control plane does not
+redirect: API clients should be told, not silently upgraded.
+
+#### 5.1.1 Self-signed certificates
+
+- Generated with `rcgen` (ECDSA P-256, valid 5 years), the key written
+  `0600` before the certificate. Control plane:
+  `<data dir>/tls/cp.{crt,key}` (`/var/lib/glidex-control-plane/.glidex/tls`
+  under systemd). UI: `$STATE_DIRECTORY/tls/ui.{crt,key}`
+  (`StateDirectory=glidex-ui`, i.e. `/var/lib/glidex-ui`), or
+  `~/.glidex/ui-tls/` when started by hand.
+- Subject alternative names: `localhost`, the host name and FQDN,
+  `127.0.0.1`, `::1`, and every non-link-local address of the host's
+  interfaces at generation time.
+- Regenerated only when missing, unreadable or within 30 days of
+  expiry. Invariant: the fingerprint stays stable across restarts and
+  address changes, so clients that pinned it keep working; to cover a
+  new name or address, delete the files or configure a real
+  certificate.
+- The SHA-256 fingerprint is logged at every start, and the installer
+  prints both, so a user can compare it with the browser's warning.
+- The control plane copies its certificate (never the key) to
+  `<run dir>/tls.crt` (`/run/glidex-cp/tls.crt`, `0644`). gxctl and the
+  UI's TCP fallback trust that file when it exists (local clients get
+  verified TLS with no setup); remote gxctl uses `GLIDEX_CA_CERT`
+  ([cli.md](cli.md)).
+- `Strict-Transport-Security` is sent only with a configured
+  certificate, never with a self-signed one: browsers make certificate
+  errors non-bypassable for an HSTS host, which would lock users out of
+  a host whose self-signed certificate they had not yet trusted.
+
+**Exposure.** Listening on every address also listens on the gateway
+addresses of glidex NAT bridges; the `input` chain of §8.4 keeps guests
+on NAT networks away from it. Guests on bridged networks, and anything
+else on those LANs, reach the host like any other client: TLS,
+authentication and the `Host`/`Origin` checks (§5.6) are what protect
+it. To restrict reachability, set `listen` / `GLIDEX_UI_LISTEN` to
+specific addresses or use the host firewall; the installer changes
+neither.
 
 ### 5.2 Local peer identity (gxctl)
 
@@ -228,7 +286,8 @@ selects TCP.
 
 **Sessions** (browser):
 - 256-bit random id; only `SHA-256(id)` is stored (`sessions` table).
-- Cookie `gx_session`: `HttpOnly; Secure` (when TLS); `SameSite=Strict;
+- Cookie `gx_session`: `HttpOnly; Secure` (always, unless TLS is
+  `"off"` on loopback); `SameSite=Strict;
   Path=/`.
 - Idle timeout 30 minutes, absolute 12 hours. The id rotates at login;
   logout and user disable delete it.
@@ -256,11 +315,15 @@ selects TCP.
   read `X-Forwarded-For`, `X-Forwarded-Proto` and `X-Forwarded-Host`.
   The UI overwrites, never appends to, these headers.
 - **Host check (UI):** `GLIDEX_UI_HOSTS` allowlist (default
-  `localhost`, `127.0.0.1`, `[::1]` with the listen port). Other
-  `Host` values get `421`. This blocks DNS rebinding.
+  `localhost`, `127.0.0.1`, `[::1]`, the host name and FQDN, and the
+  addresses of the host's interfaces, read at startup; any port).
+  Other `Host` values get `421`. This blocks DNS rebinding: an
+  attacker's domain never matches, and names or addresses that do
+  belong to the host are not a rebinding risk.
 - **Origin check (control plane):** state-changing methods and every
   WebSocket upgrade must carry an `Origin` in `auth.allowed_origins`
-  (default: the UI's origins). Bearer-token requests without `Origin`
+  (default: the UI's origins, `https://<h>:5173` for every default
+  `GLIDEX_UI_HOSTS` entry `<h>`, computed at startup). Bearer-token requests without `Origin`
   (non-browser clients) are allowed.
 - **CSRF:** requests authenticated by cookie and not `GET`/`HEAD` must
   send `X-Glidex-CSRF` equal to the session's CSRF value (returned by
@@ -273,7 +336,8 @@ selects TCP.
 - Response headers from the UI: `Content-Security-Policy: default-src
   'self'; connect-src 'self'; frame-ancestors 'none'`,
   `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, and
-  `Strict-Transport-Security` under TLS.
+  `Strict-Transport-Security` under TLS with a configured certificate
+  (§5.1.1).
 
 ## 6. Tenancy model
 
@@ -927,7 +991,7 @@ may ask it for what.
 |---|---|
 | `glidex-control-plane` | `RuntimeDirectory=glidex-cp` (`0755`, preserved across restarts — required, running VMs' directories live there) holds `api.sock`, `ui.sock` and `vms/` (`0700`); per-VM files in `/run/glidex-cp/vms/<id>/` (`0700`): `launch.json`, `instance.json`, `shim.sock`, API socket, console socket, console log, cloud-init seed. `UMask=0077`. `PrivateTmp=yes`, `ProtectSystem=strict`, `ProtectHome=yes`, `ReadWritePaths=/var/lib/glidex-control-plane`, `DevicePolicy=closed` (no device), `NoNewPrivileges=yes` and the syscall, address-family and kernel restrictions below, `LoadCredential=` for `tls-key`, `oidc-client-secret`. |
 | `glidex-vm@<id>` (new) | The hypervisor sandbox: `User=glidex`, `SupplementaryGroups=kvm`, `Slice=glidex-vms.slice`, `UMask=0077`, `PrivateTmp=yes`, `ProtectSystem=strict`, `ProtectHome=yes`, `ReadWritePaths=/var/lib/glidex-control-plane /run/glidex-cp/vms/%i -/run/glidex/vhost`, `DevicePolicy=closed`, `DeviceAllow=` `/dev/kvm`, `/dev/vfio/vfio`, `char-vfio`, `/dev/net/tun`, `/dev/vhost-net`. No `NoNewPrivileges=` (below). `Restart=no`, never enabled. |
-| `glidex-ui` | `User=glidex-ui`, `InaccessiblePaths=/run/glidex /var/lib/glidex-control-plane /run/glidex-authd`, `CapabilityBoundingSet=`, `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6`, existing `ProtectSystem`/`PrivateDevices` kept. |
+| `glidex-ui` | `User=glidex-ui`, `StateDirectory=glidex-ui` (`0700`, its self-signed certificate, §5.1.1), `InaccessiblePaths=/run/glidex /var/lib/glidex-control-plane /run/glidex-authd`, `CapabilityBoundingSet=`, `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6`, existing `ProtectSystem`/`PrivateDevices` kept. |
 | `glidex-netd` | `ProtectHome=yes`, `CapabilityBoundingSet` limited to what the op set needs (to verify on a host: `CAP_NET_ADMIN CAP_NET_RAW CAP_SYS_ADMIN CAP_DAC_OVERRIDE CAP_CHOWN CAP_FOWNER`, plus package-manager needs for `install_ovs`). |
 | `glidex-authd` | Socket-activated, `PrivateNetwork=yes`, `ProtectSystem=strict`, `ProtectHome=read-only`, `NoNewPrivileges=yes` (PAM modules that need setuid helpers are not supported). |
 
@@ -1019,10 +1083,10 @@ connect` uses the API's console WebSocket instead of the raw socket.
 
 ```json
 {
-  "listen": ["127.0.0.1:8841", "[::1]:8841"],
-  "tls": { "cert": "/etc/glidex/tls/cp.crt" },
+  "listen": ["0.0.0.0:8841", "[::]:8841"],
+  "tls": "auto",
   "auth": {
-    "allowed_origins": ["http://localhost:5173"],
+    "allowed_origins": ["https://glidex.example.org:5173"],
     "session": { "idle_minutes": 30, "absolute_hours": 12 },
     "tokens": { "default_days": 90, "max_days": 365 },
     "pam": {
@@ -1156,7 +1220,7 @@ resource`; turned into linked policies at load), `sessions`, `api_tokens`,
 
 | # | Scope | Acceptance |
 |---|---|---|
-| **S0** containment | netd owner checks; NAT isolation (§8.4); `glidex-ui` user; per-VM runtime dirs under `/run/glidex-cp` with `UMask=0077` and `PrivateTmp`; UI `Host` check; control plane `Origin` check; refuse non-loopback listeners without TLS | Existing tests pass; new netd ownership and Origin/Host tests. |
+| **S0** containment | netd owner checks; NAT isolation (§8.4); `glidex-ui` user; per-VM runtime dirs under `/run/glidex-cp` with `UMask=0077` and `PrivateTmp`; UI `Host` check; control plane `Origin` check; HTTPS by default, plain HTTP only on loopback | Existing tests pass; new netd ownership and Origin/Host tests. |
 | **S1** identity | `api.sock` with peer identity; gxctl on `api.sock`, console through the WebSocket; users/identities tables; sessions; tokens; TLS; `glidex-authd` + PAM login with first-login provisioning and `group_teams`; console tickets; CSRF; `GLIDEX_AUTH=off` | §14 auth tests; installer creates groups and stops adding humans to `glidex`. |
 | **S2** tenancy and Cedar | `authz.rs` with `cedar-policy`; schema, base and role policies; `policy_links`; projects, teams, quotas with `exceedQuota`; the eight shipped roles; `Authz<A>` on every route; compound requests; migration to `default`; path and PCI rules; network grants; project networks and sharing; `/authz/check` | Route-coverage, strict validation and policy decision tests; cross-project API tests; migration test from a pre-S2 database. |
 | **S3** OIDC | code + PKCE, JWKS, JIT, group-to-team mapping, device grant for gxctl | Mock-IdP tests. |
@@ -1177,7 +1241,7 @@ None. Earlier questions were answered and recorded as decisions 10–17 (§2).
 | Identity store, principals, sessions, tokens, tickets, audit (§5, §10) | `src/auth/mod.rs`, `src/auth/store.rs` |
 | OIDC (§5.4) | `src/auth/oidc.rs` |
 | API, route table, compound checks (§7.4, §7.7, §13) | `src/api/` |
-| Listeners, TLS (§5.1) | `src/serve.rs`, `src/config.rs` |
+| Listeners, TLS (§5.1) | `src/serve.rs`, `src/config.rs`. **Not yet implemented:** the HTTPS / all-addresses defaults and self-signed certificates of §5.1 and §5.1.1; the code still defaults to loopback, plain HTTP, and refuses a non-loopback listener without a configured certificate. |
 | Private VM runtime directories (§9) | `src/paths.rs` |
 | VM units, polkit rule, shim allowlist (§3, §9) | `packaging/glidex-vm@.service.in`, `packaging/50-glidex-vm.rules.in`, `crates/glidex-vm-shim/src/launch.rs`, `crates/glidex-install` (`install_vm_units`) |
 | PAM helper (§5.3) | `crates/glidex-authd` |

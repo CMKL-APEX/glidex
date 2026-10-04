@@ -46,9 +46,9 @@ key, or both. `create` and `update` both enforce it.
   user's own `~/.ssh/*.pub` (`GET /users/me/ssh-keys`, read by
   glidex-authd, spec/security.md §5.3); gxctl reads them locally and
   offers them as the default.
-- **Transport.** The API needs authentication and TLS off loopback
-  (spec/security.md §5); the password crosses it once, at
-  create/update time. Run the control plane on a trusted host/network.
+- **Transport.** The API is authenticated and served over HTTPS by
+  default (plain HTTP only on loopback, spec/security.md §5.1); the
+  password crosses it once, at create/update time. Run the control plane on a trusted host/network.
 
 ### Why a custom salt
 

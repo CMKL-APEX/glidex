@@ -18,7 +18,7 @@ See [security.md](security.md) §5.1, §5.2, §5.5.
 | `--socket <path>` / `GLIDEX_SOCKET` | HTTP over this Unix socket. |
 | *(default)* | The first existing socket of `/run/glidex-cp/api.sock` (systemd unit), `$XDG_RUNTIME_DIR/glidex/api.sock`, `/tmp/glidex-<euid>/api.sock` (a control plane started by hand, `paths::run_dir`). |
 | `--url http(s)://host:port[/prefix]` (`-s`, alias `--server`) | TCP instead; wins over `--socket`. Plain `http://` is refused unless the host is loopback, so a token never crosses the network in clear text. |
-| *(no socket, no `--url`)* | TCP to `http://localhost:8841`. |
+| *(no socket, no `--url`)* | TCP to `https://localhost:8841`. |
 | `--project <id\|name>` (`-p`) / `GLIDEX_PROJECT` | Project for this session (below). |
 | `gxctl [options] <command…>` | Run one REPL command and exit (`gxctl list`, `gxctl --url https://cp:8841 login --oidc`). |
 
@@ -35,8 +35,14 @@ See [security.md](security.md) §5.1, §5.2, §5.5.
   `token create`), logged, put in a URL or shown by `Debug`; the header
   is marked sensitive.
 - **TLS** (`https://`): rustls with the `ring` provider, trusting the
-  system store (`rustls-native-certs`) plus `GLIDEX_CA_CERT` (a PEM
-  file, for a self-signed control-plane certificate). HTTP/1.1 only.
+  system store (`rustls-native-certs`), plus `GLIDEX_CA_CERT` (a PEM
+  file: a copy of a remote control plane's self-signed certificate),
+  plus the local control plane's published certificate
+  (`/run/glidex-cp/tls.crt`, or `tls.crt` in a hand-started one's run
+  directory) when it exists, so `https://localhost` works with no
+  setup. There is no option to skip verification; an unverified
+  certificate is an error that names `GLIDEX_CA_CERT` and the
+  fingerprint the server sent. HTTP/1.1 only.
 - **Implementation:** `ApiClient` (`client.rs`) opens one connection per
   request (`tokio::net::UnixStream`, `TcpStream`, or `tokio-rustls` over
   it) and runs a hyper 1 `client::conn::http1` handshake on it. Every
@@ -128,7 +134,7 @@ name (ids when `/projects` isn't readable).
 | `login --token` | TCP only. Reads a token from stdin with echo off, checks it with `whoami`, saves it |
 | `login` on the Unix socket | Prints that no login is needed |
 | `logout [--revoke]` | Deletes the token file (`--revoke`: `DELETE /tokens/{id}` for the current token first) |
-| `ui` | Prints the web UI URL (`GLIDEX_UI_URL`, default `http://localhost:5173`) |
+| `ui` | Prints the web UI URL (`GLIDEX_UI_URL`, default `https://localhost:5173`) |
 | `token list` | `GET /tokens` |
 | `token create <name> [--days N] [--service-account [--project P]] [--role ROLE[@PROJECT]]…` | `POST /tokens {name, expires_in_days, kind, project, roles}`; prints the secret once with a warning |
 | `token revoke <id>` | `DELETE /tokens/{id}` |

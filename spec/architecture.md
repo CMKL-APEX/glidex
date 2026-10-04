@@ -42,9 +42,10 @@ and NAT go through `glidex-netd` (`netd.sock`,
 [networking.md](networking.md)).
 
 Separately, the UI crate (`glidex-ui`) serves the built UI
-(`ui/dist`, installed to `/usr/local/share/glidex/ui`) on `:5173` and
-proxies `/api/**` (including WebSocket upgrades) to the control plane
-on `:8841`; `glidex-ui --dev` runs the Vite dev server instead, whose
+(`ui/dist`, installed to `/usr/local/share/glidex/ui`) over HTTPS on
+`:5173` (every address) and proxies `/api/**` (including WebSocket
+upgrades) to the control plane, itself HTTPS on `:8841` (every
+address); `glidex-ui --dev` runs the Vite dev server instead, whose
 proxy does the same. The installer runs it as `glidex-ui.service`.
 
 ## Control-plane layers
