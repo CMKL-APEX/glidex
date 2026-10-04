@@ -27,8 +27,16 @@ The installer builds the UI, copies `dist` to
 | `GLIDEX_UI_HOSTS` | `localhost`, `127.0.0.1`, `[::1]`, the host name and FQDN, the interface addresses (any port) | Allowed `Host` values, `host[:port]` comma-separated (a port pins it); setting it replaces the default. Anything else gets `421 Misdirected Request`, static files and `/api` alike (DNS rebinding). |
 | `GLIDEX_UI_TLS` | `auto` | `auto`: HTTPS (rustls with `ring`, HTTP/1.1) with `GLIDEX_UI_TLS_CERT`/`_KEY` if set, else a self-signed certificate generated on first start (security.md §5.1.1). `off`: plain HTTP, refused at startup unless every listen address is loopback. |
 | `GLIDEX_UI_TLS_CERT`, `GLIDEX_UI_TLS_KEY` | unset | PEM certificate chain and key to use instead of the self-signed one. The key may instead be the systemd credential `ui-tls-key` (`LoadCredential=`). |
-| `GLIDEX_API_SOCKET` | `/run/glidex-cp/ui.sock` | The control plane's UI socket, used when it exists. It only accepts the `glidex-ui` user. |
-| `GLIDEX_API_URL` | `https://127.0.0.1:8841` | The control plane over TCP when there is no socket, verified against the system store, `GLIDEX_API_CA_CERT` (a PEM file) and the control plane's published certificate (`/run/glidex-cp/tls.crt` or the hand-started run directory's, security.md §5.1.1). Setting it without `GLIDEX_API_SOCKET` skips the default socket (development against a scratch control plane; also the packaged unit until it runs as `glidex-ui`). |
+| `GLIDEX_API_SOCKET` | `/run/glidex-cp/ui.sock` | The control plane's UI socket. It only accepts the `glidex-ui` user. Set alone (the packaged unit), it is the only upstream: until it exists requests get `502`, never a TCP fallback. |
+| `GLIDEX_API_URL` | `https://127.0.0.1:8841` | The control plane over TCP, verified against the system store, `GLIDEX_API_CA_CERT` (a PEM file) and the control plane's published certificate (`/run/glidex-cp/tls.crt` or the hand-started run directory's, security.md §5.1.1). Set alone, it is the only upstream (development against a scratch control plane). With neither variable set, the default socket is used when it exists, else this default URL. |
+
+Invariant: the upstream and its trusted certificates are chosen **per
+request**, not at startup. Why: under systemd the UI starts in the same
+second as the control plane, which creates `ui.sock` and its certificate
+only once it is ready (generating a certificate takes about half a
+second); choosing at startup sent the UI to TCP for good, without the
+certificate it should trust. A trusted file is re-read when its
+modification time or size changes.
 
 On every proxied request it replaces (never appends to) `X-Forwarded-For`
 (the TCP peer), `X-Forwarded-Proto` (`https`, or `http` with TLS `off`) and

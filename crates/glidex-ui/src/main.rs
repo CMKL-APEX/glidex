@@ -7,9 +7,10 @@
 //!   console) included. This is what `glidex-ui.service` runs.
 //! - `glidex-ui --dev` runs the Vite dev server (hot reload) instead.
 //!
-//! Upstream: the control plane's `ui.sock` (`GLIDEX_API_SOCKET`, default
-//! `/run/glidex-cp/ui.sock`) when it exists, else `GLIDEX_API_URL`
-//! (default `https://127.0.0.1:8841`). The control plane accepts `ui.sock`
+//! Upstream, chosen per request: the control plane's `ui.sock`
+//! (`GLIDEX_API_SOCKET`, default `/run/glidex-cp/ui.sock`) when it exists,
+//! else `GLIDEX_API_URL` (default `https://127.0.0.1:8841`); an explicit
+//! socket alone never falls back to TCP (see `upstream_spec`). The control plane accepts `ui.sock`
 //! connections only from the `glidex-ui` user, and only from that peer
 //! trusts the `X-Forwarded-*` headers set here. Over TCP (development) the
 //! browser's session cookie is all it goes by.
@@ -202,40 +203,63 @@ async fn security_headers(State(hsts): State<bool>, req: Request, next: Next) ->
 
 // ---- proxy -----------------------------------------------------------------
 
-/// Where the control plane is.
+/// The control plane over TCP: `host`, `port` and whether it is `https://`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum UpstreamSpec {
-    Unix(PathBuf),
-    /// `host`, `port` and whether it is `https://`.
-    Tcp { host: String, port: u16, tls: bool },
+struct TcpSpec {
+    host: String,
+    port: u16,
+    tls: bool,
 }
 
-/// `GLIDEX_API_SOCKET` (or the default `ui.sock`) when it exists, else
-/// `GLIDEX_API_URL`. An explicit `GLIDEX_API_URL` without an explicit
-/// socket skips the default socket, so a development UI can point at a
-/// scratch control plane on a host that also runs glidex.
-fn choose_upstream(socket: Option<&str>, url: Option<&str>, exists: impl Fn(&Path) -> bool) -> Result<UpstreamSpec, String> {
-    let try_socket = socket.is_some() || url.is_none();
-    let path = PathBuf::from(socket.unwrap_or(DEFAULT_API_SOCKET));
-    if try_socket && exists(&path) {
-        return Ok(UpstreamSpec::Unix(path));
-    }
-    if socket.is_some() {
-        tracing::warn!("GLIDEX_API_SOCKET {} does not exist; using GLIDEX_API_URL", path.display());
-    }
-    let url = url.unwrap_or(DEFAULT_API_URL);
-    let api: Uri = url.parse().map_err(|e| format!("GLIDEX_API_URL: {}", e))?;
-    let tls = match api.scheme_str() {
-        Some("https") => true,
-        Some("http") => false,
-        _ => return Err("GLIDEX_API_URL must be https://host:port or http://host:port".into()),
+/// Where the control plane may be. Which one a request goes to is decided
+/// per request (`Upstream::send`), because the UI may start before the
+/// control plane has created `ui.sock` or published its certificate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct UpstreamSpec {
+    /// `ui.sock`, used whenever it exists.
+    socket: Option<PathBuf>,
+    /// Otherwise TCP.
+    tcp: Option<TcpSpec>,
+}
+
+/// - neither set (development): the default `ui.sock`, else
+///   `https://127.0.0.1:8841`;
+/// - `GLIDEX_API_SOCKET` alone (the packaged unit): that socket only. Until
+///   it exists requests get `502`; they never fall back to TCP, which is a
+///   different trust path (spec/security.md §5.6);
+/// - `GLIDEX_API_URL` alone: that URL only, skipping the default socket, so
+///   a development UI can point at a scratch control plane on a host that
+///   also runs glidex;
+/// - both: the socket when it exists, else the URL.
+fn upstream_spec(socket: Option<&str>, url: Option<&str>) -> Result<UpstreamSpec, String> {
+    let socket_path = match (socket, url) {
+        (Some(s), _) => Some(PathBuf::from(s)),
+        (None, None) => Some(PathBuf::from(DEFAULT_API_SOCKET)),
+        (None, Some(_)) => None,
     };
-    let host = api.host().ok_or("GLIDEX_API_URL has no host")?.to_string();
-    let port = api.port_u16().unwrap_or(if tls { 443 } else { 80 });
-    if !tls && !is_loopback_host(&host) {
-        return Err("GLIDEX_API_URL: plain http is only allowed to a loopback address; use https://".into());
-    }
-    Ok(UpstreamSpec::Tcp { host, port, tls })
+    let tcp_url = match (socket, url) {
+        (_, Some(u)) => Some(u),
+        (None, None) => Some(DEFAULT_API_URL),
+        (Some(_), None) => None,
+    };
+    let tcp = match tcp_url {
+        None => None,
+        Some(url) => {
+            let api: Uri = url.parse().map_err(|e| format!("GLIDEX_API_URL: {}", e))?;
+            let tls = match api.scheme_str() {
+                Some("https") => true,
+                Some("http") => false,
+                _ => return Err("GLIDEX_API_URL must be https://host:port or http://host:port".into()),
+            };
+            let host = api.host().ok_or("GLIDEX_API_URL has no host")?.to_string();
+            let port = api.port_u16().unwrap_or(if tls { 443 } else { 80 });
+            if !tls && !is_loopback_host(&host) {
+                return Err("GLIDEX_API_URL: plain http is only allowed to a loopback address; use https://".into());
+            }
+            Some(TcpSpec { host, port, tls })
+        }
+    };
+    Ok(UpstreamSpec { socket: socket_path, tcp })
 }
 
 fn is_loopback_host(h: &str) -> bool {
@@ -245,24 +269,68 @@ fn is_loopback_host(h: &str) -> bool {
 
 /// Trust for an `https://` upstream: the system store,
 /// `GLIDEX_API_CA_CERT`, and for a loopback host the local control plane's
-/// published certificate.
-fn upstream_tls(host: &str, ca: Option<String>) -> Result<glidex_tls::ClientTls, String> {
-    let mut extra: Vec<PathBuf> = ca.into_iter().map(PathBuf::from).collect();
-    if is_loopback_host(host) {
-        extra.extend(glidex_tls::published_certs());
+/// published certificate. Rebuilt whenever those files appear, change or
+/// go away, so a control plane that (re)generates its certificate after
+/// the UI started is trusted without restarting the UI.
+#[derive(Clone)]
+struct UpstreamTrust {
+    ca: Option<PathBuf>,
+    published: bool,
+    cache: Arc<std::sync::Mutex<Option<TrustCache>>>,
+}
+
+/// The files a client config was built from, and the config.
+type TrustCache = (Vec<FileStamp>, glidex_tls::ClientTls);
+
+/// A trusted file as last seen: path, modification time and length.
+type FileStamp = (PathBuf, Option<std::time::SystemTime>, Option<u64>);
+
+impl UpstreamTrust {
+    fn new(host: &str, ca: Option<PathBuf>) -> Self {
+        UpstreamTrust { ca, published: is_loopback_host(host), cache: Arc::default() }
     }
-    glidex_tls::ClientTls::new(&extra, &[b"http/1.1"]).map_err(|e| format!("GLIDEX_API_CA_CERT: {}", e))
+
+    fn files(&self) -> Vec<PathBuf> {
+        let mut v: Vec<PathBuf> = self.ca.iter().cloned().collect();
+        if self.published {
+            v.extend(glidex_tls::published_certs());
+        }
+        v
+    }
+
+    fn get(&self) -> Result<glidex_tls::ClientTls, String> {
+        let files = self.files();
+        let stamps: Vec<FileStamp> = files
+            .iter()
+            .map(|p| {
+                let m = std::fs::metadata(p).ok();
+                (p.clone(), m.as_ref().and_then(|m| m.modified().ok()), m.map(|m| m.len()))
+            })
+            .collect();
+        let mut cache = self.cache.lock().unwrap();
+        if let Some((seen, tls)) = cache.as_ref() {
+            if *seen == stamps {
+                return Ok(tls.clone());
+            }
+        }
+        let tls = glidex_tls::ClientTls::new(&files, &[b"http/1.1"]).map_err(|e| format!("GLIDEX_API_CA_CERT: {}", e))?;
+        *cache = Some((stamps, tls.clone()));
+        Ok(tls)
+    }
 }
 
 #[derive(Clone)]
-enum Upstream {
-    Tcp {
-        host: String,
-        port: u16,
-        tls: Option<glidex_tls::ClientTls>,
-        authority: HeaderValue,
-    },
-    Unix(PathBuf),
+struct TcpUpstream {
+    host: String,
+    port: u16,
+    tls: Option<UpstreamTrust>,
+    authority: HeaderValue,
+}
+
+#[derive(Clone)]
+struct Upstream {
+    socket: Option<PathBuf>,
+    tcp: Option<TcpUpstream>,
 }
 
 /// One HTTP/1.1 exchange over `io`, upgrades (the console) included.
@@ -283,41 +351,68 @@ where
 
 impl Upstream {
     fn new(spec: UpstreamSpec, ca: Option<String>) -> Result<Self, String> {
-        Ok(match spec {
-            UpstreamSpec::Unix(p) => Upstream::Unix(p),
-            UpstreamSpec::Tcp { host, port, tls } => {
+        let tcp = match spec.tcp {
+            None => None,
+            Some(TcpSpec { host, port, tls }) => {
                 let bare = host.trim_start_matches('[').trim_end_matches(']');
                 let authority = if bare.contains(':') { format!("[{}]:{}", bare, port) } else { format!("{}:{}", bare, port) };
-                Upstream::Tcp {
-                    tls: if tls { Some(upstream_tls(&host, ca)?) } else { None },
+                Some(TcpUpstream {
+                    tls: tls.then(|| UpstreamTrust::new(&host, ca.map(PathBuf::from))),
                     host: bare.to_string(),
                     port,
                     authority: HeaderValue::from_str(&authority).map_err(|e| e.to_string())?,
-                }
+                })
             }
-        })
+        };
+        Ok(Upstream { socket: spec.socket, tcp })
     }
 
+    fn describe_tcp(t: &TcpUpstream) -> String {
+        format!("{}://{}", if t.tls.is_some() { "https" } else { "http" }, t.authority.to_str().unwrap_or_default())
+    }
+
+    /// Both candidates, for the startup log.
     fn describe(&self) -> String {
-        match self {
-            Upstream::Tcp { tls, authority, .. } => {
-                format!("{}://{}", if tls.is_some() { "https" } else { "http" }, authority.to_str().unwrap_or_default())
-            }
-            Upstream::Unix(p) => format!("unix:{}", p.display()),
+        let s = self.socket.as_ref().map(|p| format!("unix:{}", p.display()));
+        let t = self.tcp.as_ref().map(Self::describe_tcp);
+        match (s, t) {
+            (Some(s), Some(t)) => format!("{} when it exists, else {}", s, t),
+            (Some(x), None) | (None, Some(x)) => x,
+            (None, None) => "nothing".into(),
+        }
+    }
+
+    /// Where this request goes: the socket if it exists now, else TCP.
+    fn target(&self) -> Result<Result<&Path, &TcpUpstream>, String> {
+        match (&self.socket, &self.tcp) {
+            (Some(p), _) if p.exists() => Ok(Ok(p)),
+            (_, Some(t)) => Ok(Err(t)),
+            (Some(p), None) => Err(format!("{} does not exist (is glidex-control-plane running?)", p.display())),
+            (None, None) => Err("no control plane configured".into()),
+        }
+    }
+
+    /// The URL or socket a request would go to now, for error messages.
+    fn describe_target(&self) -> String {
+        match self.target() {
+            Ok(Ok(p)) => format!("unix:{}", p.display()),
+            Ok(Err(t)) => Self::describe_tcp(t),
+            Err(_) => self.describe(),
         }
     }
 
     async fn send(&self, mut req: Request) -> Result<hyper::Response<hyper::body::Incoming>, String> {
         let path = upstream_path(req.uri());
         *req.uri_mut() = path.parse().map_err(|e| format!("{}", e))?;
-        match self {
-            Upstream::Tcp { host, port, tls, authority } => {
+        match self.target()? {
+            Err(TcpUpstream { host, port, tls, authority }) => {
                 req.headers_mut().insert(header::HOST, authority.clone());
                 let tcp = tokio::net::TcpStream::connect((host.as_str(), *port)).await.map_err(|e| e.to_string())?;
                 let _ = tcp.set_nodelay(true);
                 match tls {
                     None => exchange_on(tcp, req).await,
-                    Some(t) => {
+                    Some(trust) => {
+                        let t = trust.get()?;
                         let name = rustls_pki_types::ServerName::try_from(host.clone()).map_err(|e| e.to_string())?;
                         let s = glidex_tls::tokio_rustls::TlsConnector::from(t.config.clone())
                             .connect(name, tcp)
@@ -330,7 +425,7 @@ impl Upstream {
                     }
                 }
             }
-            Upstream::Unix(sock) => {
+            Ok(sock) => {
                 req.headers_mut().insert(header::HOST, HeaderValue::from_static("localhost"));
                 let stream = tokio::net::UnixStream::connect(sock).await.map_err(|e| e.to_string())?;
                 exchange_on(stream, req).await
@@ -406,7 +501,7 @@ async fn proxy_api(State(s): State<AppState>, mut req: Request) -> Response {
         Err(e) => {
             return (
                 StatusCode::BAD_GATEWAY,
-                format!("control plane unreachable at {}: {}", s.upstream.describe(), e),
+                format!("control plane unreachable at {}: {}", s.upstream.describe_target(), e),
             )
                 .into_response()
         }
@@ -617,7 +712,7 @@ async fn serve() -> Result<(), String> {
         Some(list) => parse_host_rules(&list)?,
         None => default_host_rules(&glidex_tls::LocalNames::discover()),
     };
-    let spec = choose_upstream(env("GLIDEX_API_SOCKET").as_deref(), env("GLIDEX_API_URL").as_deref(), |p| p.exists())?;
+    let spec = upstream_spec(env("GLIDEX_API_SOCKET").as_deref(), env("GLIDEX_API_URL").as_deref())?;
     let upstream = Upstream::new(spec, env("GLIDEX_API_CA_CERT"))?;
     let describe = upstream.describe();
     let hsts = cert.as_ref().is_some_and(|c| !c.self_signed);
@@ -850,19 +945,54 @@ mod tests {
 
     #[test]
     fn upstream_choice() {
-        let yes = |_: &Path| true;
-        let no = |_: &Path| false;
-        assert_eq!(choose_upstream(None, None, yes).unwrap(), UpstreamSpec::Unix(DEFAULT_API_SOCKET.into()));
-        let tcp = |host: &str, port, tls| UpstreamSpec::Tcp { host: host.into(), port, tls };
-        assert_eq!(choose_upstream(None, None, no).unwrap(), tcp("127.0.0.1", 8841, true));
-        assert_eq!(choose_upstream(Some("/s"), Some("https://h:1"), yes).unwrap(), UpstreamSpec::Unix("/s".into()));
-        assert_eq!(choose_upstream(Some("/s"), Some("https://h:1"), no).unwrap(), tcp("h", 1, true));
+        let tcp = |host: &str, port, tls| Some(TcpSpec { host: host.into(), port, tls });
+        let spec = |socket: Option<&str>, tcp| UpstreamSpec { socket: socket.map(PathBuf::from), tcp };
+        // Development: the default socket, else the default URL.
+        assert_eq!(upstream_spec(None, None).unwrap(), spec(Some(DEFAULT_API_SOCKET), tcp("127.0.0.1", 8841, true)));
+        // The packaged unit: the socket only, never TCP.
+        assert_eq!(upstream_spec(Some("/s"), None).unwrap(), spec(Some("/s"), None));
+        assert_eq!(upstream_spec(Some("/s"), Some("https://h:1")).unwrap(), spec(Some("/s"), tcp("h", 1, true)));
         // An explicit URL alone doesn't go through the default socket.
-        assert_eq!(choose_upstream(None, Some("http://127.0.0.1:1"), yes).unwrap(), tcp("127.0.0.1", 1, false));
-        assert_eq!(choose_upstream(None, Some("https://h"), no).unwrap(), tcp("h", 443, true));
+        assert_eq!(upstream_spec(None, Some("http://127.0.0.1:1")).unwrap(), spec(None, tcp("127.0.0.1", 1, false)));
+        assert_eq!(upstream_spec(None, Some("https://h")).unwrap(), spec(None, tcp("h", 443, true)));
         // Plain http only to loopback.
-        assert!(choose_upstream(None, Some("http://h:1"), no).is_err());
-        assert!(choose_upstream(None, Some("ftp://h:1"), no).is_err());
+        assert!(upstream_spec(None, Some("http://h:1")).is_err());
+        assert!(upstream_spec(None, Some("ftp://h:1")).is_err());
+    }
+
+    /// The UI may start before the control plane: a socket that appears
+    /// later is used from then on (it used to fall back to TCP for good).
+    #[tokio::test]
+    async fn socket_created_after_startup_is_used() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let sock = dir.path().join("ui.sock");
+        let up = Upstream::new(upstream_spec(Some(sock.to_str().unwrap()), None).unwrap(), None).unwrap();
+        let req = || Request::builder().uri("/api/health").body(Body::empty()).unwrap();
+        let e = up.send(req()).await.unwrap_err();
+        assert!(e.contains("does not exist"), "{e}");
+
+        let l = tokio::net::UnixListener::bind(&sock).unwrap();
+        tokio::spawn(async move { axum::serve(l, Router::new().fallback(|| async { "up" })).await.unwrap() });
+        let resp = up.send(req()).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    /// A trusted certificate file that appears or changes after startup is
+    /// picked up on the next request.
+    #[test]
+    fn upstream_trust_follows_the_file() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let names = local();
+        let a = glidex_tls::ensure_self_signed(&dir.path().join("a"), "a", &names).unwrap();
+        let b = glidex_tls::ensure_self_signed(&dir.path().join("b"), "b", &names).unwrap();
+        let ca = dir.path().join("ca.crt");
+        let trust = UpstreamTrust::new("h.example", Some(ca.clone()));
+        assert!(trust.get().is_err(), "missing file");
+        std::fs::copy(&a.cert, &ca).unwrap();
+        let t1 = trust.get().unwrap();
+        assert!(Arc::ptr_eq(&t1.config, &trust.get().unwrap().config), "cached while unchanged");
+        std::fs::write(&ca, [std::fs::read(&b.cert).unwrap(), std::fs::read(&a.cert).unwrap()].concat()).unwrap();
+        assert!(!Arc::ptr_eq(&t1.config, &trust.get().unwrap().config), "rebuilt after a change");
     }
 
     /// Raw HTTP/1.1 exchange with `addr`.
@@ -891,7 +1021,8 @@ mod tests {
         });
         tokio::spawn(async move { axum::serve(upstream, echo).await.unwrap() });
 
-        let state = AppState { upstream: Upstream::new(UpstreamSpec::Unix(sock), None).unwrap(), tls: false, hsts: false };
+        let spec = UpstreamSpec { socket: Some(sock), tcp: None };
+        let state = AppState { upstream: Upstream::new(spec, None).unwrap(), tls: false, hsts: false };
         let router = app(dir.path(), state, default_host_rules(&local()));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -944,7 +1075,7 @@ mod tests {
         let cp_port = cp_listener.local_addr().unwrap().port();
         let echo = Router::new().fallback(|req: Request| async move { format!("upstream path={}", req.uri()) });
         tokio::spawn(accept_loop(cp_listener, echo, Some(cp_acceptor), Router::new()));
-        let spec = UpstreamSpec::Tcp { host: "localhost".into(), port: cp_port, tls: true };
+        let spec = UpstreamSpec { socket: None, tcp: Some(TcpSpec { host: "localhost".into(), port: cp_port, tls: true }) };
         let upstream = Upstream::new(spec, Some(cp.cert.to_string_lossy().into_owned())).unwrap();
 
         let ui = glidex_tls::ensure_self_signed(&dir.path().join("ui"), "ui", &names).unwrap();
