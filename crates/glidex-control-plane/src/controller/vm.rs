@@ -122,6 +122,9 @@ impl VmManager {
         let Some(cur) = vms.get(id).cloned() else { return Ok(None) };
         status.observed_generation = read_gen;
         status.last_reconciled_at = crate::tenancy::now();
+        if status.phase != cur.status.phase {
+            status.phase_since = Some(status.last_reconciled_at);
+        }
         if cur.status == status && events.is_empty() {
             return Ok(Some(cur));
         }

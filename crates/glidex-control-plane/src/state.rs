@@ -261,6 +261,8 @@ pub struct VmManager {
     pub(crate) controllers_started: std::sync::atomic::AtomicBool,
     /// The controllers' tasks, aborted by `stop_controllers`.
     pub(crate) tasks: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    /// Resource usage metering (spec/metering.md), once started.
+    pub(crate) meter: std::sync::OnceLock<Arc<crate::metering::Meter>>,
     pub(crate) me: Weak<VmManager>,
 }
 
@@ -329,6 +331,7 @@ impl VmManager {
             netd_seen: std::sync::Mutex::new(None),
             controllers_started: std::sync::atomic::AtomicBool::new(false),
             tasks: std::sync::Mutex::new(Vec::new()),
+            meter: std::sync::OnceLock::new(),
             me: me.clone(),
         }))
     }

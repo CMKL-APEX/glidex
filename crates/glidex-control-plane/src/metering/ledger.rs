@@ -126,9 +126,10 @@ pub enum Flag {
     SourceProc,
 }
 
-/// `_peak` meters keep the maximum; every other meter is a sum (§2).
+/// `*_peak` and `*.peak` meters keep the maximum; every other meter is a
+/// sum (§2).
 pub fn is_max_meter(meter: &str) -> bool {
-    meter.ends_with("_peak")
+    meter.ends_with("_peak") || meter.ends_with(".peak")
 }
 
 /// One closed (or, when read back with [`Ledger::scan`], still open)
@@ -230,6 +231,8 @@ pub struct Round {
     settings: LedgerSettings,
     started_at: u64,
     cursors: HashMap<String, Option<Cursor>>,
+    /// Subjects (`kind/id`) whose cursors are all dropped at commit.
+    forgotten: BTreeSet<String>,
     acc: BTreeMap<(u64, String), HourAcc>,
     db: Arc<Database>,
     now: u64,
@@ -335,7 +338,8 @@ impl Round {
     pub fn gauge(&mut self, subject: &Subject, meter: &str, level: u64, at: u64) -> Result<(), MeteringError> {
         self.integrate(subject, meter, at)?;
         let key = format!("{}/{}", subject.key(), meter);
-        self.cursors.insert(key, Some(Cursor { reset_key: String::new(), value: level, at }));
+        let run = self.cursors.get(&key).cloned().flatten().map(|c| c.reset_key).unwrap_or_default();
+        self.set_gauge(&key, &run, level, at);
         Ok(())
     }
 
@@ -343,6 +347,79 @@ impl Round {
     pub fn gauge_end(&mut self, subject: &Subject, meter: &str, at: u64) -> Result<(), MeteringError> {
         self.integrate(subject, meter, at)?;
         self.cursors.insert(format!("{}/{}", subject.key(), meter), None);
+        Ok(())
+    }
+
+    /// A gauge whose level changed to `level` at `since` (a known
+    /// transition time, e.g. `status.phase_since`), read at `at`: the
+    /// old level is integrated up to `since`, the new one from there.
+    /// A `since` the cursor has already passed is ignored.
+    pub fn gauge_since(&mut self, subject: &Subject, meter: &str, level: u64, since: u64, at: u64) -> Result<(), MeteringError> {
+        let key = format!("{}/{}", subject.key(), meter);
+        if let Some(c) = self.cursor(&key)? {
+            if since > c.at && since < at && c.value != level {
+                self.gauge(subject, meter, level, since)?;
+            }
+        }
+        self.gauge(subject, meter, level, at)
+    }
+
+    /// A gauge that belongs to one *run* of its subject (an instance):
+    /// `run` identifies it, `run_start` is when it began (unix ms).
+    ///
+    /// - Same run as the cursor: like [`Self::gauge_since`].
+    /// - A different run: the old one is ended at `prev_end` (its exit
+    ///   time, if known and later than the last reading), and the new one
+    ///   accrues from `max(run_start, since)`, never from before metering
+    ///   started. Nothing accrues across the gap between the two, so a
+    ///   VM that stopped and relaunched while the control plane was down
+    ///   is not charged for the time it was off.
+    /// - First sight: as a new run with no predecessor.
+    #[allow(clippy::too_many_arguments)]
+    pub fn gauge_run(
+        &mut self,
+        subject: &Subject,
+        meter: &str,
+        run: &str,
+        run_start: u64,
+        level: u64,
+        since: u64,
+        at: u64,
+        prev_end: Option<u64>,
+    ) -> Result<(), MeteringError> {
+        let key = format!("{}/{}", subject.key(), meter);
+        match self.cursor(&key)? {
+            Some(c) if c.reset_key == run => self.gauge_since(subject, meter, level, since, at),
+            prev => {
+                if let Some(c) = prev {
+                    let end = prev_end.filter(|&e| e > c.at).unwrap_or(c.at);
+                    self.integrate(subject, meter, end)?;
+                }
+                let start = run_start.max(since).max(self.started_at).min(at);
+                self.set_gauge(&key, run, level, start);
+                self.integrate(subject, meter, at)?;
+                self.set_gauge(&key, run, level, at);
+                Ok(())
+            }
+        }
+    }
+
+    fn set_gauge(&mut self, key: &str, run: &str, level: u64, at: u64) {
+        self.cursors.insert(key.to_string(), Some(Cursor { reset_key: run.to_string(), value: level, at }));
+    }
+
+    /// The run a gauge's cursor belongs to, if any.
+    pub fn gauge_run_of(&mut self, subject: &Subject, meter: &str) -> Result<Option<String>, MeteringError> {
+        Ok(self.cursor(&format!("{}/{}", subject.key(), meter))?.map(|c| c.reset_key))
+    }
+
+    /// End a gauge at the time it really ended, if that is after the
+    /// last reading (`end` may be earlier than `now`, e.g. an exit time).
+    pub fn gauge_end_at(&mut self, subject: &Subject, meter: &str, end: u64) -> Result<(), MeteringError> {
+        let key = format!("{}/{}", subject.key(), meter);
+        if self.cursor(&key)?.is_some() {
+            self.gauge_end(subject, meter, end)?;
+        }
         Ok(())
     }
 
@@ -369,11 +446,12 @@ impl Round {
         self.acc(hour_of(at), subject).flags.insert(flag);
     }
 
-    /// Forget every cursor of a subject that is gone for good.
-    pub fn forget(&mut self, subject: &Subject, meters: &[&str]) {
-        for m in meters {
-            self.cursors.insert(format!("{}/{}", subject.key(), m), None);
-        }
+    /// Forget every cursor of a subject that is gone for good (`kind/id`,
+    /// as from [`Ledger::cursor_subjects`]). Nothing is integrated.
+    pub fn forget_subject(&mut self, subject_key: &str) {
+        let prefix = format!("{subject_key}/");
+        self.cursors.retain(|k, _| !k.starts_with(&prefix));
+        self.forgotten.insert(subject_key.to_string());
     }
 
     pub fn now(&self) -> u64 {
@@ -473,6 +551,13 @@ impl Ledger {
         Ok(self.meta_u64(META_STARTED_AT)?.unwrap_or(t))
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_started_at_for_test(&self, ms: u64) {
+        let txn = self.db.begin_write().unwrap();
+        txn.open_table(META).unwrap().insert(META_STARTED_AT, ms.to_string().as_bytes()).unwrap();
+        txn.commit().unwrap();
+    }
+
     /// End of the last closed hour (unix s); rows before it are final.
     pub fn complete_through(&self) -> Result<u64, MeteringError> {
         Ok(self.meta_u64(META_CLOSED_THROUGH)?.unwrap_or(0))
@@ -482,11 +567,30 @@ impl Ledger {
         self.meta_u64(META_LAST_ROUND)
     }
 
+    /// Subjects (`kind/id`) of the given kinds that have any cursor.
+    pub fn cursor_subjects(&self, kinds: &[SubjectKind]) -> Result<BTreeSet<String>, MeteringError> {
+        let txn = self.db.begin_read()?;
+        let table = txn.open_table(CURSORS)?;
+        let mut out = BTreeSet::new();
+        for kind in kinds {
+            let prefix = format!("{}/", kind.as_str());
+            for r in table.range(prefix.as_str()..format!("{}~", prefix).as_str())? {
+                let (k, _) = r?;
+                let mut parts = k.value().splitn(3, '/');
+                if let (Some(kind), Some(id)) = (parts.next(), parts.next()) {
+                    out.insert(format!("{kind}/{id}"));
+                }
+            }
+        }
+        Ok(out)
+    }
+
     pub fn begin_round(&self, now: u64) -> Result<Round, MeteringError> {
         Ok(Round {
             settings: self.settings,
             started_at: self.started_at()?,
             cursors: HashMap::new(),
+            forgotten: BTreeSet::new(),
             acc: BTreeMap::new(),
             db: self.db.clone(),
             now,
@@ -502,6 +606,16 @@ impl Ledger {
         let txn = self.db.begin_write()?;
         {
             let mut cursors = txn.open_table(CURSORS)?;
+            for subject in &round.forgotten {
+                let (from, to) = (format!("{subject}/"), format!("{subject}/~"));
+                let keys: Vec<String> = cursors
+                    .range(from.as_str()..to.as_str())?
+                    .map(|r| r.map(|(k, _)| k.value().to_string()))
+                    .collect::<Result<_, _>>()?;
+                for k in keys {
+                    cursors.remove(k.as_str())?;
+                }
+            }
             for (key, c) in &round.cursors {
                 match c {
                     Some(c) => {
@@ -614,11 +728,7 @@ mod tests {
         let db = Arc::new(Database::create(dir.path().join("t.db")).unwrap());
         let l = Ledger::new(db, LedgerSettings::from_secs(30, 120)).unwrap();
         // Pretend metering started long ago, so ZeroAt origins count.
-        {
-            let txn = l.db.begin_write().unwrap();
-            txn.open_table(META).unwrap().insert(META_STARTED_AT, b"0".as_slice()).unwrap();
-            txn.commit().unwrap();
-        }
+        l.set_started_at_for_test(0);
         (dir, l)
     }
 
@@ -693,11 +803,7 @@ mod tests {
     #[test]
     fn no_backfill_before_metering_started() {
         let (_d, l) = ledger();
-        {
-            let txn = l.db.begin_write().unwrap();
-            txn.open_table(META).unwrap().insert(META_STARTED_AT, (T0 + H).to_string().as_bytes()).unwrap();
-            txn.commit().unwrap();
-        }
+        l.set_started_at_for_test(T0 + H);
         let s = vm();
         let mut r = l.begin_round(T0 + H + 30_000).unwrap();
         // Launched before metering started: baseline only.
@@ -764,6 +870,58 @@ mod tests {
         l.commit(r).unwrap();
         assert_eq!(total(&l, "mem.alloc"), 2048 * 30 + 4096 * 30);
         assert_eq!(total(&l, "cpu.alloc"), 0);
+    }
+
+    #[test]
+    fn gauge_since_switches_level_at_the_transition() {
+        let (_d, l) = ledger();
+        let s = vm();
+        let mut r = l.begin_round(T0 + H).unwrap();
+        r.gauge(&s, "cpu.alloc", 4, T0).unwrap();
+        // Paused at +10 s, seen at +30 s: 4 vCPU × 10 s, then 0.
+        r.gauge_since(&s, "cpu.alloc", 0, T0 + 10_000, T0 + 30_000).unwrap();
+        // The same transition seen again: no double count.
+        r.gauge_since(&s, "cpu.alloc", 0, T0 + 10_000, T0 + 60_000).unwrap();
+        // Resumed at +70 s, seen at +90 s: 4 × 20 s.
+        r.gauge_since(&s, "cpu.alloc", 4, T0 + 70_000, T0 + 90_000).unwrap();
+        // Exited at +100 s, seen at +120 s.
+        r.gauge_end_at(&s, "cpu.alloc", T0 + 100_000).unwrap();
+        r.gauge_end_at(&s, "cpu.alloc", T0 + 120_000).unwrap(); // already ended
+        l.commit(r).unwrap();
+        assert_eq!(total(&l, "cpu.alloc"), 4 * 10 + 4 * 20 + 4 * 10);
+    }
+
+    #[test]
+    fn gauge_runs_do_not_accrue_across_a_restart_gap() {
+        let (_d, l) = ledger();
+        let s = vm();
+        let mut r = l.begin_round(T0 + H).unwrap();
+        // Instance i1 launched at T0, seen at +30 s.
+        r.gauge_run(&s, "mem.alloc", "i1", T0, 1024, T0, T0 + 30_000, None).unwrap();
+        r.gauge_run(&s, "mem.alloc", "i1", T0, 1024, T0, T0 + 60_000, None).unwrap();
+        // Control plane down; i1 exited at +100 s, i2 launched at +500 s;
+        // seen at +530 s. Charged: i1 to its exit, i2 from its launch.
+        r.gauge_run(&s, "mem.alloc", "i2", T0 + 500_000, 1024, T0 + 500_000, T0 + 530_000, Some(T0 + 100_000)).unwrap();
+        l.commit(r).unwrap();
+        assert_eq!(total(&l, "mem.alloc"), 1024 * 100 + 1024 * 30);
+    }
+
+    #[test]
+    fn forgotten_subjects_lose_their_cursors() {
+        let (_d, l) = ledger();
+        let a = Subject::new(SubjectKind::Disk, "a", "a", Some("p".into()));
+        let b = Subject::new(SubjectKind::Disk, "b", "b", Some("p".into()));
+        let mut r = l.begin_round(T0).unwrap();
+        r.gauge(&a, "disk.alloc", 1024, T0).unwrap();
+        r.gauge(&b, "disk.alloc", 1024, T0).unwrap();
+        l.commit(r).unwrap();
+        assert_eq!(l.cursor_subjects(&[SubjectKind::Disk]).unwrap(), ["disk/a".to_string(), "disk/b".to_string()].into());
+        let mut r = l.begin_round(T0 + 30_000).unwrap();
+        r.forget_subject("disk/a");
+        r.gauge(&b, "disk.alloc", 1024, T0 + 30_000).unwrap();
+        l.commit(r).unwrap();
+        assert_eq!(l.cursor_subjects(&[SubjectKind::Disk, SubjectKind::Vm]).unwrap(), ["disk/b".to_string()].into());
+        assert_eq!(total(&l, "disk.alloc"), 1024 * 30);
     }
 
     #[test]

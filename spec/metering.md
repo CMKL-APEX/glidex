@@ -226,10 +226,14 @@ traffic from addresses that are not reserved (§5.5).
 
 ### 5.1 CPU and memory: the VM cgroup
 
-The path is `/sys/fs/cgroup/<ControlGroup>`. Take `ControlGroup` once
-per instance from the unit's D-Bus `ControlGroup` property, rather than
-building the path, because the slice nesting could change. Reads need
-no polkit authorization.
+The path is `/sys/fs/cgroup/<path>`, where `<path>` comes from the
+shim's `/proc/<shim_pid>/cgroup` (`0::/glidex.slice/…`). It is not
+built by hand, because the slice nesting could change. The shim is the
+unit's main process, so this is the same answer as the unit's D-Bus
+`ControlGroup` property (M0), without a D-Bus round trip. The pid check
+is that the path's last component is this VM's unit
+(`glidex-vm@<id>.service`). A reused pid lives elsewhere and is not
+read. Reads need no authorization: cgroup files are world-readable.
 
 | File | Field | Meter |
 |---|---|---|
@@ -569,7 +573,7 @@ A cursor is `{subject, meter, reset_key, value, at}`. Reset keys:
 
 | Source | reset_key |
 |---|---|
-| cgroup | `instance_id` + the unit's `InvocationID` |
+| cgroup | `instance_id` + the shim's start time: one unit invocation, since the shim is its main process |
 | `/proc` (detached) | `instance_id` + hypervisor pid + starttime |
 | hypervisor counters | `instance_id` |
 | OVSDB port stats (VM, uplink, gateway ports) | OVS Interface `_uuid`. A re-created port is a new interface. |
@@ -1330,10 +1334,10 @@ go into §5 in the same style as [networking.md](networking.md) §0.
   synchronous `glidex-hv-client`) go through `spawn_blocking`, with a
   bounded join set (8 at a time). `meter_meta.started_at` and
   `last_round` are kept here.
-- **cgroup source** (§5.1): the `ControlGroup` property comes from the
-  systemd runner's zbus connection (`instance/runner.rs`) and is
-  cached per `instance_id` + `InvocationID`. It reads `cpu.stat` and
-  `memory.current`, with the hugepages rule.
+- **cgroup source** (§5.1): the cgroup comes from the shim's
+  `/proc/<pid>/cgroup` and must be this VM's unit. It reads `cpu.stat`
+  and `memory.current`, with the hugepages rule
+  (`metering/sources.rs`).
 - **`/proc` source** for `Runner::Detached`, flagged `source_proc`.
 - **Phases:** `vm.running` and `vm.paused`. `cpu.alloc` and
   `mem.alloc` come from `launch.json` (D11). `status.phase_since` is

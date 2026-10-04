@@ -211,6 +211,9 @@ async fn main() {
     // The control loops (§9): from here on the VM controller drives every
     // VM toward its desired state.
     vm_manager.start_controllers();
+    if let Err(e) = vm_manager.start_metering(&cfg.metering) {
+        tracing::warn!("metering not started: {}", e);
+    }
 
     print_status("Loading authorization policies");
     let auth = match auth::AuthService::new(vm_manager.database(), cfg.clone()) {

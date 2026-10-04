@@ -43,6 +43,7 @@ pub struct Config {
     pub audit: AuditConfig,
     pub reconcile: ReconcileConfig,
     pub console: ConsoleConfig,
+    pub metering: MeteringConfig,
 }
 
 impl Default for Config {
@@ -62,6 +63,7 @@ impl Default for Config {
             audit: AuditConfig::default(),
             reconcile: ReconcileConfig::default(),
             console: ConsoleConfig::default(),
+            metering: MeteringConfig::default(),
         }
     }
 }
@@ -325,6 +327,63 @@ impl Default for ConsoleConfig {
     }
 }
 
+/// Resource usage metering (spec/metering.md §11).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct MeteringConfig {
+    /// Sample at all. Off keeps the cursors: turning it back on resumes
+    /// without double counting (the gap is spread, §6.4).
+    pub enabled: bool,
+    /// Seconds between rounds; divides 300 so samples line up with the
+    /// 5-minute slots (§8.5.1).
+    pub sample_secs: u64,
+    /// Seconds between `qemu-img info` passes for `disk.stored` (§5.3).
+    pub storage_secs: u64,
+    /// An hour is closed this long after it ends (§6.5).
+    pub close_grace_secs: u64,
+    pub retention_days: u64,
+    pub retention_daily_days: u64,
+    pub retention_rate_days: u64,
+}
+
+impl Default for MeteringConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            sample_secs: 30,
+            storage_secs: 900,
+            close_grace_secs: 120,
+            retention_days: 400,
+            retention_daily_days: 1825,
+            retention_rate_days: 100,
+        }
+    }
+}
+
+impl MeteringConfig {
+    pub fn check(&self) -> Result<(), String> {
+        if !(10..=300).contains(&self.sample_secs) || 300 % self.sample_secs != 0 {
+            return Err("metering.sample_secs must be 10-300 and divide 300 (10, 12, 15, 20, 25, 30, 50, 60, 75, 100, 150, 300)".into());
+        }
+        if !(self.sample_secs..=86400).contains(&self.storage_secs) {
+            return Err("metering.storage_secs must be sample_secs-86400".into());
+        }
+        if self.close_grace_secs > 3600 || self.close_grace_secs < self.sample_secs {
+            return Err("metering.close_grace_secs must be sample_secs-3600".into());
+        }
+        if !(1..=3650).contains(&self.retention_days) {
+            return Err("metering.retention_days must be 1-3650".into());
+        }
+        if !(1..=3650).contains(&self.retention_daily_days) {
+            return Err("metering.retention_daily_days must be 1-3650".into());
+        }
+        if !(35..=400).contains(&self.retention_rate_days) {
+            return Err("metering.retention_rate_days must be 35-400".into());
+        }
+        Ok(())
+    }
+}
+
 impl Config {
     /// Load `GLIDEX_CONFIG` or the default path; a missing file is the
     /// defaults. `GLIDEX_LISTEN` (comma-separated) overrides `listen`.
@@ -370,6 +429,7 @@ impl Config {
         if !((1 << 20)..=(256 << 20)).contains(&self.console.log_max_bytes) {
             return Err("console.log_max_bytes must be 1 MiB-256 MiB".into());
         }
+        self.metering.check()?;
         self.check_listeners()
     }
 
@@ -407,6 +467,22 @@ pub fn credential(name: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn metering_ranges() {
+        let ok = MeteringConfig::default();
+        assert!(ok.check().is_ok());
+        for bad in [
+            MeteringConfig { sample_secs: 40, ..ok.clone() },  // does not divide 300
+            MeteringConfig { sample_secs: 5, ..ok.clone() },
+            MeteringConfig { close_grace_secs: 10, ..ok.clone() },
+            MeteringConfig { storage_secs: 20, ..ok.clone() },
+            MeteringConfig { retention_rate_days: 10, ..ok.clone() },
+        ] {
+            assert!(bad.check().is_err(), "{bad:?}");
+        }
+        assert!(MeteringConfig { sample_secs: 60, close_grace_secs: 60, ..ok }.check().is_ok());
+    }
 
     #[test]
     fn defaults_and_unknown_keys() {

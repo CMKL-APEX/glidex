@@ -356,6 +356,7 @@ the middle of a stop still knows the grace.
 pub struct VmStatus {
     pub common: StatusCommon,
     pub phase: VmPhase,
+    pub phase_since: Option<u64>,          // when `phase` last changed (unix s; metering.md §5.6)
     pub instance: Option<InstanceRef>,     // from the intent record until the instance is gone
     pub last_exit: Option<ExitRecord>,
     pub restart_count: u32,                // consecutive crash restarts
@@ -1110,6 +1111,11 @@ DeviceAllow=char-vfio rw
 DeviceAllow=/dev/net/tun rw
 DeviceAllow=/dev/vhost-net rw
 ```
+
+The unit also sets `IOAccounting=yes` and `MemoryAccounting=yes` for
+per-VM metering ([metering.md §5.1](metering.md#51-cpu-and-memory-the-vm-cgroup)).
+They go on the unit, not the slice: on a slice they only enable the
+controllers in its parent.
 
 `packaging/glidex-vms.slice`: `[Unit] Description=glidex VMs`, no limits
 (a place for site resource controls). No `[Install]` in either:

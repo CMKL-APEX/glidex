@@ -199,7 +199,11 @@ by later runs (flags override the saved values):
       /run/glidex-cp/vms/%i`), and `glidex-vms.slice`. Neither has an
       `[Install]` section and neither is enabled or started: only the
       control plane starts VM units, and relaunching VMs after a host
-      reboot is its job (D10).
+      reboot is its job (D10). When the template changes, running
+      `glidex-vm@*` units get `systemctl set-property --runtime <unit>
+      IOAccounting=yes MemoryAccounting=yes` after `daemon-reload`, so
+      metering sees their I/O without a restart
+      ([metering.md §5.1](metering.md#51-cpu-and-memory-the-vm-cgroup)).
     - `/etc/polkit-1/rules.d/50-glidex-vm.rules` (from
       `packaging/50-glidex-vm.rules.in`): the `glidex` user may `start`,
       `stop` and `kill` units named `glidex-vm@<uuid>.service`, and

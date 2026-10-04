@@ -44,5 +44,14 @@
     "on_host_boot": "resume",
     "host_shutdown_grace_secs": 60
   },
-  "console": { "log_max_bytes": 16777216 }
+  "console": { "log_max_bytes": 16777216 },
+  "metering": {
+    "enabled": true,
+    "sample_secs": 30,
+    "storage_secs": 900,
+    "close_grace_secs": 120,
+    "retention_days": 400,
+    "retention_daily_days": 1825,
+    "retention_rate_days": 100
+  }
 }
