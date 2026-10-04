@@ -759,6 +759,9 @@ per-project `net.bytes` (Σ over the project's NICs) and per-network
 - **NAT networks:** the month row also has `ext_bytes` and
   `internal_bytes` (derived as in §2 from the month's raw sums, not
   per hour), so a rate card can price internet traffic separately.
+- **Partial months:** `meter_meta.started_at` records when metering
+  first ran. A month that began before it, or that contains a period
+  with `enabled: false`, is returned with `partial: true` (§15.1).
 - **Month-to-date:** `GET /usage?granularity=month` for the current
   month returns closed hours plus the open hour as provisional. The UI
   shows it as "month to date".
@@ -1177,27 +1180,360 @@ spreads the gap like a downtime (§6.4).
 
 ## 14. Edits to existing documents
 
-| Document | Edit |
-|---|---|
-| [reconciliation.md](reconciliation.md) §8.4 | `instance.json` `exit.usage` (D12); the shim's polling of hypervisor counters. |
-| [reconciliation.md](reconciliation.md) §13.1 | `glidex-vms.slice`: `CPUAccounting=yes`, `MemoryAccounting=yes`, `IOAccounting=yes`. |
-| [reconciliation.md](reconciliation.md) §7.2 | `status.phase_since`; the controller requests a final meter sample before `detach_vm_port` / `release_vm`. |
-| [hypervisors.md](hypervisors.md) | CH `vm.counters` and QMP `query-blockstats` (including `*_total_time_ns`) in the client tables; CH block latency fields are not metered (D17), with the v53 findings; the device-id → disk mapping in `status.instance.disks`. |
-| [networking.md](networking.md) | Ops `port_stats` and `nat_counters` (read-only, not on `netd-ro.sock`); port roles `vm`/`uplink`/`gateway`; table `inet glidex_meter` with its incremental-update rule (D14); final sample before detach, `release_vm`, uplink change and bridge/NAT delete; host check for `ether saddr` in `forward`. |
-| [data-model.md](data-model.md) | Metering tables (§7). |
-| [rest-api.md](rest-api.md) | §9 routes, `stats` watch kind. |
-| [security.md](security.md) §7, §13 | `usage.read` group and actions; `metering` config section. |
-| [installer.md](installer.md) | Re-render `glidex-vms.slice` with accounting on; no new packages (`nft` and `ovs-vsctl` are already present). `uninstall` drops `inet glidex_meter` next to `inet glidex` (`uninstall.rs` `DropNftTable`). |
-| [cli.md](cli.md), [web-ui.md](web-ui.md) | §12. |
-| [README.md](README.md) | Index row. |
+Each edit lands in the PR that changes the behaviour (§15), not
+before it.
+
+| Document | Edit | PR |
+|---|---|---|
+| [README.md](README.md) | Index row | done |
+| [installer.md](installer.md) | Re-render `glidex-vms.slice` with accounting on; no new packages (`nft` and `ovs-vsctl` are already present) | M1.2 |
+| [reconciliation.md](reconciliation.md) §13.1 | `glidex-vms.slice`: `CPUAccounting=yes`, `MemoryAccounting=yes`, `IOAccounting=yes` | M1.2 |
+| [reconciliation.md](reconciliation.md) §7.2 | `status.phase_since` | M1.2 |
+| [reconciliation.md](reconciliation.md) §7.2 | The controllers request a final meter sample before `detach_vm_port`, `release_vm` and network deletion | M1.3 |
+| [data-model.md](data-model.md) | Metering tables (§7.1) | M1.1; `rate_5m`, `usage_monthly_rates` in M2.3 |
+| [networking.md](networking.md) | Op `port_stats` (read-only, not on `netd-ro.sock`); port roles `vm`/`uplink`/`gateway`; final sample before detach, `release_vm`, uplink change and bridge/NAT delete | M1.3 |
+| [networking.md](networking.md) | Table `inet glidex_meter` with its incremental-update rule (D14); op `nat_counters`; host check for `ether saddr` in `forward` | M1.4 |
+| [installer.md](installer.md) | `uninstall` drops `inet glidex_meter` next to `inet glidex` (`uninstall.rs` `DropNftTable`) | M1.4 |
+| [rest-api.md](rest-api.md) | `/usage`, `/vms/{id}/usage`, `/projects/{id}/usage`, `/disks/{id}/usage` | M1.5 |
+| [rest-api.md](rest-api.md) | `/usage/bandwidth`, `/usage/disk-io`, `/bandwidth` and `/io` series, `/stats`, `stats` watch kind | M2.4 |
+| [security.md](security.md) §7, §13 | `usage.read` group and the M1 actions; `metering` config section | M1.5 |
+| [security.md](security.md) §7 | Bandwidth, disk I/O and stats actions | M2.4 |
+| [cli.md](cli.md) | `usage` | M1.5 |
+| [cli.md](cli.md) | `usage bandwidth`, `usage disk-io`, `vm/network bandwidth`, `vm/disk io`, `vm stats` | M2.4 |
+| [hypervisors.md](hypervisors.md) | CH `vm.counters` and QMP `query-blockstats` (including `*_total_time_ns`) in the client tables; CH block latency fields not metered (D17), with the v53 findings; the device-id → disk mapping in `status.instance.disks` | M2.1 |
+| [reconciliation.md](reconciliation.md) §8.4 | `instance.json` `exit.usage` (D12); the shim's polling of hypervisor counters | M2.2 |
+| [web-ui.md](web-ui.md) | §12 pages, cards and charts | M2.6 |
 
 ## 15. Milestones
 
-| M | Scope |
-|---|---|
-| **M1** | Ledger, sampler, cursors, hourly close. CPU and memory (cgroup, plus `/proc` for detached), `vm.running/paused`, allocation meters, `disk.alloc`. Per-VM NIC and per-network bridge traffic via `port_stats`. NAT external/internal split via `inet glidex_meter` and `nat_counters`. Bandwidth average and 30-second peak meters (§8.5). Billing-month roll-up (§8.4). `GET /usage`, `/vms/{id}/usage`, `usage.read`. `gxctl usage`. Slice accounting. |
-| **M2** | Hypervisor disk counters (CH, QEMU) and IOPS meters. `disk.stored`. Shim exit snapshot (D12). `usage_daily` roll-up and retention. `/stats` and watch kind. 95th percentile: `rate_5m`, `usage_monthly_rates`, `GET /usage/bandwidth`, the `/bandwidth` series, graphs. Disk I/O: per-direction and total IOPS/MB/s peaks, latency counters, disk slots, `GET /usage/disk-io`, the `/io` series, disk graphs. UI Usage page and VM card. CSV export. |
-| **M3** | `io.stat` host-side meters exposed; `tz=` grouping for reports in other time zones. |
+### 15.1 Principles
+
+- **Each PR ships on its own.** Each one leaves `main` releasable and
+  is done when its tests (§13) pass in CI and, where marked *(host)*,
+  on a KVM host with both hypervisors.
+- **Additive storage.** New tables only. `SCHEMA_VERSION` doesn't
+  change. A downgrade ignores the tables (§7.1). No PR rewrites an
+  existing record format, except optional new fields (`phase_since`,
+  `exit.usage`, the device id in `status.instance.disks`), which old
+  readers skip.
+- **Off switch from the first PR that samples.** `metering.enabled`
+  (default `true` from M1.2) stops all sampling and leaves cursors in
+  place (§11). Re-enabling resumes without double-counting.
+- **No backfill.** Metering starts when the build that has it first
+  runs. `meter_meta.started_at` is written once. A billing month that
+  began before it is marked `partial: true` in every API response and
+  export (§8.4, §8.5.1, §8.6), so a first invoice can't be mistaken
+  for a full month.
+- **Ledger before sources, sources before API.** Correctness lives in
+  the ledger (D8). It lands first, as pure code with property tests,
+  so every later source plugs into a tested core.
+- **Host facts before code that relies on them.** Each check listed in
+  M0 is recorded in the spec (§5) before the PR that depends on it
+  merges.
+
+### 15.2 Dependency graph
+
+```
+M0 host checks ──────────────┬──────────────┬─────────────┐
+                             ▼              ▼             ▼
+M1.1 ledger ──► M1.2 service + VM ──► M1.3 ports ──► M1.4 NAT split
+                     │                    │               │
+                     └────────────► M1.5 query + API + CLI ◄┘
+                                          │
+            ┌────────────┬────────────────┼─────────────┐
+            ▼            ▼                ▼             ▼
+      M2.1 disk I/O  M2.5 disk.stored  M2.3 slots + p95 + roll-ups
+            │                              │
+            ▼                              ▼
+      M2.2 exit snapshot ───────────► M2.4 rate API + stats + CLI
+                                           │
+                                           ▼
+                                     M2.6 web UI
+                                           │
+                                           ▼
+                                     M3 io.stat, tz=, tuning
+```
+
+M1.3 and M1.4 can be worked on in parallel with M1.5 once M1.2 is in.
+M2.1, M2.3 and M2.5 are independent of each other.
+
+### 15.3 M0: host checks (no product code)
+
+Short experiments on a KVM host with the pinned versions. The results
+go into §5 in the same style as [networking.md](networking.md) §0.
+
+| Check | Result needed | Feeds |
+|---|---|---|
+| `ether saddr` matches in an `inet` `forward` chain for packets routed in from an OVS internal port | yes, so outbound keys on MAC + IP; no, so outbound keys on IP only (§5.5) | M1.4 |
+| Named counters survive `flush chain` plus re-adding rules in one `nft -f` transaction | yes (D14) | M1.4 |
+| OVSDB `Interface.statistics` exists and updates for tap, `dpdkvhostuserclient`, the bridge's internal port and each uplink kind (kernel, AF_XDP, DPDK) | every role in §5.4 has counters | M1.3 |
+| `IOAccounting=yes` on `glidex-vms.slice` makes `io` appear in `cgroup.subtree_control` and `io.stat` per VM unit, applied with `daemon-reload` without restarting running VMs | yes, or document "takes effect for VMs launched after the update" | M1.2 |
+| The unit's `ControlGroup` property over D-Bus, read as user `glidex` in the sandboxed control-plane unit | readable without polkit | M1.2 |
+| CH `vm.counters` device keys (`_disk<N>`) match the disk order glidex passes on argv; QEMU `qdev` ids match the `id=` glidex assigns | a stable mapping without guessing | M2.1 |
+| CH v53 block latency | **done** (2026-10-04): not usable (D17) | M2.1 |
+| QEMU `*_total_time_ns` | **done** (2026-10-04): present and cumulative | M2.1 |
+
+### 15.4 M1: core ledger, VM and network metering, usage API
+
+**M1.1: ledger core** (`metering/ledger.rs`, no wiring)
+
+- Tables `meter_cursors`, `meter_open`, `usage_hourly` and
+  `meter_meta`, declared and opened on the shared `Arc<Database>`, as
+  `ProjectStore::new` does.
+- `Cursor`, `HourAcc`, `UsageRecord`, `Subject` and `Flag` (§7.2).
+- `counter_delta` with every reset case (§6.2). Splitting a delta over
+  hours (§6.3). Gauge integration. The `max` meters.
+- Closing an hour and adjustment rows (§6.5). One `commit_round(txn,
+  …)` that writes deltas and cursors together (D8).
+- Range read: `usage_hourly` scan, filter, group, sum or max
+  (§8.1–§8.3).
+
+*Accept:*
+- Unit and property tests: the sum of the split parts equals the
+  delta; no double count when a commit fails; reset cases; close and
+  adjust; group and sum.
+- The tables can be created and reopened on an existing database
+  fixture from the current release.
+
+**M1.2: service, VM CPU and memory, allocation, disk allocation**
+
+- **Config:** the `metering` section in `config.rs` with `check`
+  ranges, including `sample_secs` dividing 300 and `billing_timezone`
+  being a whole-hour zone (§11). Mirror it in
+  `packaging/control-plane.json.example`.
+- **Service:** `Meter::start` (`metering/mod.rs`) is called from
+  `main.rs` after `start_controllers()`, and its tasks are joined into
+  `VmManager.tasks`. The sampler loop has a round budget of
+  `sample_secs / 2`. Blocking sources (sysfs, `/proc`, later the
+  synchronous `glidex-hv-client`) go through `spawn_blocking`, with a
+  bounded join set (8 at a time). `meter_meta.started_at` and
+  `last_round` are kept here.
+- **cgroup source** (§5.1): the `ControlGroup` property comes from the
+  systemd runner's zbus connection (`instance/runner.rs`) and is
+  cached per `instance_id` + `InvocationID`. It reads `cpu.stat` and
+  `memory.current`, with the hugepages rule.
+- **`/proc` source** for `Runner::Detached`, flagged `source_proc`.
+- **Phases:** `vm.running` and `vm.paused`. `cpu.alloc` and
+  `mem.alloc` come from `launch.json` (D11). `status.phase_since` is
+  written by the VM controller (`controller/vm.rs` `write_status`).
+- **Disks:** `disk.alloc` from the disk records (§5.3).
+- **Installer:** `glidex-vms.slice` gets `CPUAccounting=yes`,
+  `MemoryAccounting=yes` and `IOAccounting=yes`; `install_if_changed`
+  re-renders it and `systemd-analyze verify` checks it.
+
+*Accept:*
+- *(host)* `stress-ng --cpu 2` for 5 min gives `cpu.used` ≈ 10
+  core-minutes ±5%, on CH and on QEMU.
+- *(host)* Restart the control plane mid-run: totals are unchanged and
+  the gap is flagged `interpolated`.
+- *(host)* Pause and resume a VM: `cpu.alloc` stops while paused,
+  `mem.alloc` doesn't.
+- A detached-runner test VM is metered from `/proc`.
+
+**M1.3: network totals from bridge ports**
+
+- **netd:** `Op::PortStats` in `glidex-netd/src/proto.rs`, added to the
+  read-only set and refused on `netd-ro.sock`. `glidex-ovs` gets a
+  `vsctl::list(Interface, [_uuid, name, type, external_ids,
+  statistics])` helper and the role classification `vm`, `uplink`,
+  `gateway` (§5.4).
+- **Meters:** `net.*` per NIC (guest-view swap) and `bridge.*` per
+  network (Σ ingress, D7), with `_uuid` reset keys. Bandwidth
+  `*_kbps_peak` and the derived `mbps_avg` (§8.5).
+- **Final samples:** a `Meter::final_sample_vm(vm_id)` hook is called
+  by the VM controller before `detach_vm_port` and `release_vm`, and
+  by the network controller before `delete_bridge`, `delete_nat` and
+  uplink changes. The call is bounded at 2 s. Missing it costs at most
+  one interval and never blocks the controller.
+
+*Accept:*
+- `port_stats` parsing tests and the `netd-ro.sock` refusal test.
+- *(host)* `curl` 100 MiB through NAT; VM-to-VM `iperf` counts in both
+  NICs and once in `bridge.bytes` (D7); detach and re-attach mid-transfer
+  loses nothing.
+- *(host)* The same on a bridged network, for every uplink kind
+  available on the host.
+
+**M1.4: NAT external/internal split**
+
+- **`glidex-ovs`:** `nat::meter_script(nats, reservations)` builds the
+  `inet glidex_meter` table and chain (§5.5). It adds counters
+  idempotently, deletes only released counters, and never deletes the
+  table (D14). Golden tests next to the existing `nft_script` tests.
+- **netd:** the counters are applied whenever a reservation or NAT
+  changes, in the same place `apply_nft` runs. `Op::NatCounters`
+  returns L2-normalized bytes and the counter `handle`. Counters are
+  deleted on `release_vm` and `delete_nat`, after the final sample
+  (M1.3 hook).
+- **Meters:** `net.ext_*` and `bridge.ext_*`. The derived internal and
+  unattributed figures (§2, §5.5). Bridged and isolated networks leave
+  `ext_*` absent.
+- **Uninstall:** `DropNftTable` also drops `inet glidex_meter`.
+
+*Accept:*
+- Netd fake-`Exec` tests for D14: no counter is ever re-created or
+  deleted when another network or reservation changes.
+- *(host)* NAT transfer: `ext_rx` is within 1% of `rx`. VM-to-VM and
+  DNS traffic add 0 to `ext`. Adding a second NAT network during a
+  transfer doesn't drop counts. An unreserved address shows up as
+  unattributed.
+
+**M1.5: query, API, authorization, CLI, CSV**
+
+- `api/usage.rs` (or `metering/api.rs`): `GET /usage`,
+  `/vms/{id}/usage`, `/projects/{id}/usage` and `/disks/{id}/usage`
+  (§9.1–§9.2), `format=csv` with the `usage.export` audit entry, and
+  billing-month grouping in `billing_timezone` (§8.4), with
+  `complete_through`, `partial` and `revised_at`.
+- **Cedar:** the `usage.read` group, `readUsage`, `readProjectUsage`
+  and one concrete action per route in `glidex.cedarschema` and
+  `roles.cedar`. `every_route_maps_to_a_schema_action` must pass.
+- **gxctl:** `usage` (§12).
+
+*Accept:*
+- The security tests in §13: a cross-project read is `404`;
+  `readUsage` on `Host` sees deleted projects.
+- A CSV round trip: summing raw bytes equals the API total.
+- A billing month in `Asia/Bangkok` has exactly the expected hours.
+
+**M1 done when:** a site can bill CPU, memory, provisioned disk and
+network GiB (total, plus external and internal on NAT) per VM, network
+and project for a calendar month, from the API or CSV.
+
+### 15.5 M2: disk I/O, exit snapshot, percentiles, roll-ups, UI
+
+**M2.1: hypervisor disk counters**
+
+- **`glidex-hv-client`:**
+  - `ChClient::counters()` (`GET /vm.counters`) and
+    `QmpClient::query_blockstats()`, both returning typed per-device
+    structs.
+  - The CH `*_latency_*` fields are ignored, and the `u64::MAX`
+    sentinel is never surfaced (D17).
+  - QEMU `pflash` entries are skipped.
+- **Device mapping:** add the device id to `status.instance.disks`,
+  using the mapping M0 confirmed.
+- **Meters:** the `disk.*` ops, bytes and `*_time_ns` counters (QEMU
+  only), with read, write and total peaks for IOPS and kB/s (§5.2).
+  `instance_id` is the reset key.
+
+*Accept:*
+- Parser tests on recorded JSON, including the live captures from
+  2026-10-04.
+- *(host)* `fio` at 500 IOPS gives avg and peak ≈ 500. Latency is
+  present on QEMU and absent on CH.
+
+**M2.2: shim exit snapshot (D12)**
+
+- **`glidex-vm-shim`:**
+  - The shim polls the hypervisor counters every `sample_secs` (passed
+    in `launch.json`).
+  - After it reaps the hypervisor, it reads its own cgroup `cpu.stat`,
+    `memory.peak` and `io.stat`.
+  - It writes `exit.usage` in `instance.json` (`state.rs`
+    `ExitInfo`).
+- **Control plane:** the exit snapshot is consumed once per
+  `instance_id` when the VM controller records the exit (§6.4).
+
+*Accept:*
+- *(host)* Stop a VM between two samples: the tail is metered, and
+  CPU totals match the unit's `CPUUsageNSec` ±1%.
+- *(host)* A VM that ran and exited entirely while the control plane
+  was stopped is fully metered.
+
+**M2.3: 5-minute slots, percentiles and roll-ups**
+
+- **Slots:** the `rate_5m` table, with NIC/network and disk `SlotRow`s
+  (§7.1). Deltas are split into slots in the same `commit_round` as
+  the hours.
+- **p95 engine** (§8.5.1, §8.6): nearest rank, slot membership
+  (attached or existing), group sums slot by slot, and billable
+  figures (network: max(in, out); disk: total).
+- **Finalization:** `usage_monthly_rates` with `BandwidthMonth` and
+  `DiskIoMonth`. A month is finalized when it becomes final. Late
+  adjustments recompute it and set `revised_at`.
+- **Roll-up and retention:** `usage_daily`, and the daily retention
+  task for `usage_hourly`, `rate_5m` and `usage_daily` (§7.3).
+
+*Accept:*
+- The p95 unit tests in §13: group p95 below the sum of p95s; disk
+  total p95 is not the sum of the read and write p95s; slot counts per
+  month.
+- *(host)* The `iperf` 100 Mbps window and burst tests; the `fio`
+  mixed read/write test gives billable ≈ 1000.
+- Retention leaves `usage_monthly_rates` intact.
+
+**M2.4: rate APIs, live stats, CLI**
+
+- **Routes:** `GET /usage/bandwidth` and `/usage/disk-io`; the series
+  endpoints `/vms/{id}/bandwidth`, `/networks/{id}/bandwidth`,
+  `/vms/{id}/io` and `/disks/{id}/io`; `GET /vms/{id}/stats` and
+  `/networks/{id}/stats`; and the `stats` watch kind (§9.3–§9.4),
+  which needs `Kind` and `parse_kinds` in `api/watch.rs`.
+- **Cedar:** one action per route (§10).
+- **gxctl:** `usage bandwidth`, `usage disk-io`,
+  `vm|network bandwidth`, `vm|disk io` and `vm stats`.
+
+*Accept:* API tests for every route, including the authorization
+matrix, and `partial` and `revised_at` in the JSON.
+
+**M2.5: `disk.stored`**
+
+- A periodic `qemu-img info` task every `storage_secs`, with bounded
+  concurrency (2), skipping disks in `Creating`, `Resizing` or
+  `Failed`. Host-level `image.stored` is included (§5.3).
+
+*Accept:* a linked disk's stored size grows after guest writes while
+`disk.alloc` stays the same.
+
+**M2.6: web UI**
+
+- **Pages and cards:**
+  - the Usage page with Bandwidth and Disk I/O tabs, plus CSV download
+  - the VM detail Usage card, with bandwidth and disk I/O charts
+  - network detail charts
+  - columns on Disks, Networking and Projects
+- **Live data:** charts fed by the `stats` watch kind and the series
+  endpoints. Follow the `dataviz` skill for chart design.
+- **Gating:** nav and sections are shown by `useCan()`.
+
+*Accept:* Playwright specs in `crates/glidex-ui/e2e/tests/usage.spec.ts`:
+- the page renders for a viewer and for an auditor
+- a project member doesn't see other projects
+- CSV download works
+- CH disks show "latency not available"
+
+**M2 done when:** bandwidth and disk I/O can be billed on a 95th
+percentile per VM and project, users see their usage in the UI, and a
+VM's usage is complete even when it exits while the control plane is
+down.
+
+### 15.6 M3: host-side I/O, time zones, tuning
+
+- **`io.stat` meters:** expose the per-VM host-side `vmio.*` meters
+  (D4) in the API and the capacity view.
+- **Report time zones:** `tz=` grouping for reports outside
+  `billing_timezone`. Hours stay the atom, and whole-hour zones are
+  exact (§8.1).
+- **Tuning:** add the `usage_by_project` index if profiling a host
+  with 200 VMs and 13 months of data shows `GET /usage` scans over
+  200 ms. Add a load test for the sampler round budget with 200 VMs,
+  each with 2 NICs and 2 disks.
+
+*Accept:* the round finishes within `sample_secs / 2` at 200 VMs; the
+query p95 is under 200 ms for a month of one project.
+
+### 15.7 After M3
+
+These come from §16 and are scheduled separately, each with its own
+spec change:
+
+- CH cumulative latency upstream, then CH latency
+- port security, which hardens NAT attribution
+- provisioned IOPS and throughput tiers
+- a Prometheus exporter
+- latency histograms
+- splitting traffic on bridged networks
 
 ## 16. Open questions and future work
 
