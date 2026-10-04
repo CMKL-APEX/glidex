@@ -1241,7 +1241,7 @@ None. Earlier questions were answered and recorded as decisions 10–17 (§2).
 | Identity store, principals, sessions, tokens, tickets, audit (§5, §10) | `src/auth/mod.rs`, `src/auth/store.rs` |
 | OIDC (§5.4) | `src/auth/oidc.rs` |
 | API, route table, compound checks (§7.4, §7.7, §13) | `src/api/` |
-| Listeners, TLS (§5.1) | `src/serve.rs`, `src/config.rs`. **Not yet implemented:** the HTTPS / all-addresses defaults and self-signed certificates of §5.1 and §5.1.1; the code still defaults to loopback, plain HTTP, and refuses a non-loopback listener without a configured certificate. |
+| Listeners, TLS (§5.1, §5.1.1) | `src/serve.rs`, `src/config.rs`; certificates, listeners, local names and client trust shared with glidex-ui, gxctl and the installer in `crates/glidex-tls` |
 | Private VM runtime directories (§9) | `src/paths.rs` |
 | VM units, polkit rule, shim allowlist (§3, §9) | `packaging/glidex-vm@.service.in`, `packaging/50-glidex-vm.rules.in`, `crates/glidex-vm-shim/src/launch.rs`, `crates/glidex-install` (`install_vm_units`) |
 | PAM helper (§5.3) | `crates/glidex-authd` |

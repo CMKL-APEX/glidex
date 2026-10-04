@@ -231,7 +231,7 @@ pub async fn logout(client: &ApiClient, args: &[&str]) {
 }
 
 pub fn ui() {
-    let url = std::env::var("GLIDEX_UI_URL").ok().filter(|u| !u.is_empty()).unwrap_or_else(|| "http://localhost:5173".into());
+    let url = std::env::var("GLIDEX_UI_URL").ok().filter(|u| !u.is_empty()).unwrap_or_else(|| "https://localhost:5173".into());
     println!("Web UI: {}", url.cyan());
     println!("{} Log in there with your account (PAM or OIDC, whatever the site enables).", "Note:".dimmed());
 }

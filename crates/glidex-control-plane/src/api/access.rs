@@ -54,7 +54,7 @@ fn default_method() -> String {
 fn secure_transport(app: &AppState, headers: &HeaderMap, listener: Listener) -> bool {
     match listener {
         Listener::Ui => headers.get("x-forwarded-proto").and_then(|v| v.to_str().ok()) == Some("https"),
-        Listener::Tcp => app.auth.config.tls.is_some(),
+        Listener::Tcp => app.auth.config.tls.enabled(),
         Listener::Api => false,
     }
 }
@@ -123,7 +123,7 @@ pub async fn login(
     // Passwords only over TLS or from this host (spec §5.3).
     let local = match listener {
         Listener::Ui | Listener::Api => true,
-        Listener::Tcp => app.auth.config.tls.is_some() || addr.is_none_or(|a| a.0 .0.ip().is_loopback()),
+        Listener::Tcp => app.auth.config.tls.enabled() || addr.is_none_or(|a| a.0 .0.ip().is_loopback()),
     };
     if !local {
         return Err(err(StatusCode::FORBIDDEN, "tls_required", "password login needs TLS"));

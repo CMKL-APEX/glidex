@@ -41,6 +41,7 @@ zeroize = { version = "1", features = ["serde"] }
 jsonwebtoken = { version = "11", features = ["rust_crypto"] }
 base64 = "0.22"
 glidex-authd = { path = "../glidex-authd" }
+glidex-tls = { path = "../glidex-tls" }
 hyper = { version = "1", features = ["server", "client", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["server", "server-auto", "tokio", "service"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }

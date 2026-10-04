@@ -19,7 +19,7 @@ use std::sync::Arc;
 use tempfile::TempDir;
 use tower::ServiceExt;
 
-const ORIGIN: &str = "http://localhost:5173";
+const ORIGIN: &str = "https://localhost:5173";
 
 struct H {
     router: Router,
@@ -33,6 +33,7 @@ fn harness_with(f: impl FnOnce(&mut Config)) -> H {
     let manager = VmManager::with_db_path(dir.path().join("t.db")).unwrap();
     let mut cfg = Config::default();
     cfg.authz.policy_files_dir = dir.path().join("policies");
+    cfg.auth.allowed_origins = vec![ORIGIN.into()];
     f(&mut cfg);
     let auth = AuthService::new(manager.database(), cfg).unwrap();
     let app = Arc::new(App { manager, auth });

@@ -16,13 +16,12 @@ use std::fmt;
 use std::io;
 use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio_rustls::rustls;
 use zeroize::Zeroizing;
 
 /// TCP fallback when no socket exists and no `--url` was given.
-pub const DEFAULT_URL: &str = "http://localhost:8841";
+pub const DEFAULT_URL: &str = "https://localhost:8841";
 
 /// A connected byte stream: Unix socket, TCP, or TLS over TCP.
 pub trait Conn: AsyncRead + AsyncWrite + Unpin + Send {}
@@ -286,7 +285,7 @@ pub fn render_error(status: StatusCode, body: &[u8], tcp: bool) -> Failure {
 enum Endpoint {
     Unix(PathBuf),
     Tcp {
-        tls: Option<Arc<rustls::ClientConfig>>,
+        tls: Option<glidex_tls::ClientTls>,
         host: String,
         port: u16,
         /// Path prefix of `--url`, without a trailing slash.
@@ -317,36 +316,31 @@ fn is_loopback_host(h: &str) -> bool {
     h == "localhost" || h.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }
 
-/// Client TLS: the system's trust store plus `GLIDEX_CA_CERT` (a PEM
-/// file, for a self-signed control-plane certificate).
-fn tls_config() -> Result<Arc<rustls::ClientConfig>, String> {
-    use rustls_pki_types::pem::PemObject;
-    use rustls_pki_types::CertificateDer;
-    let mut roots = rustls::RootCertStore::empty();
-    for c in rustls_native_certs::load_native_certs().certs {
-        let _ = roots.add(c);
-    }
+/// Client TLS (spec/cli.md): the system's trust store, `GLIDEX_CA_CERT`
+/// (a PEM file, e.g. a copy of a remote control plane's self-signed
+/// certificate) and, for a loopback host, the local control plane's
+/// published certificate. There is no way to skip verification.
+fn tls_config(host: &str) -> Result<glidex_tls::ClientTls, String> {
+    let mut extra: Vec<PathBuf> = Vec::new();
     if let Some(ca) = std::env::var_os("GLIDEX_CA_CERT").filter(|v| !v.is_empty()) {
-        let ca = PathBuf::from(ca);
-        let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_file_iter(&ca)
-            .map_err(|e| format!("GLIDEX_CA_CERT {}: {}", ca.display(), e))?
-            .collect::<Result<_, _>>()
-            .map_err(|e| format!("GLIDEX_CA_CERT {}: {}", ca.display(), e))?;
-        for c in certs {
-            roots.add(c).map_err(|e| format!("GLIDEX_CA_CERT {}: {}", ca.display(), e))?;
-        }
+        extra.push(PathBuf::from(ca));
     }
-    if roots.is_empty() {
-        return Err("no trusted CA certificates found (install the system CA bundle or set GLIDEX_CA_CERT)".into());
+    if is_loopback_host(host) {
+        extra.extend(glidex_tls::published_certs());
     }
-    let provider = Arc::new(rustls::crypto::ring::default_provider());
-    let mut cfg = rustls::ClientConfig::builder_with_provider(provider)
-        .with_safe_default_protocol_versions()
-        .map_err(|e| e.to_string())?
-        .with_root_certificates(roots)
-        .with_no_client_auth();
-    cfg.alpn_protocols = vec![b"http/1.1".to_vec()];
-    Ok(Arc::new(cfg))
+    glidex_tls::ClientTls::new(&extra, &[b"http/1.1"]).map_err(|e| format!("GLIDEX_CA_CERT: {}", e))
+}
+
+/// A failed handshake, with what to do about an untrusted certificate.
+fn tls_error(target: &str, tls: &glidex_tls::ClientTls, e: io::Error) -> String {
+    match tls.rejected_fingerprint() {
+        Some(fp) => format!(
+            "TLS with {}: {}\n  the server's certificate has SHA-256 fingerprint {}\n  \
+             if that is the control plane's (it prints it at startup), save its certificate and set GLIDEX_CA_CERT to the file",
+            target, e, fp
+        ),
+        None => format!("TLS with {}: {}", target, e),
+    }
 }
 
 impl ApiClient {
@@ -370,7 +364,7 @@ impl ApiClient {
         let port = uri.port_u16().unwrap_or(if tls { 443 } else { 80 });
         let base = uri.path().trim_end_matches('/').to_string();
         Ok(ApiClient {
-            endpoint: Endpoint::Tcp { tls: if tls { Some(tls_config()?) } else { None }, host, port, base },
+            endpoint: Endpoint::Tcp { tls: if tls { Some(tls_config(&host)?) } else { None }, host, port, base },
             token: Mutex::new(token),
             project: Mutex::new(None),
         })
@@ -451,10 +445,10 @@ impl ApiClient {
                     Some(cfg) => {
                         let name = rustls_pki_types::ServerName::try_from(bare.to_string())
                             .map_err(|e| format!("{}: {}", host, e))?;
-                        let s = tokio_rustls::TlsConnector::from(cfg.clone())
+                        let s = tokio_rustls::TlsConnector::from(cfg.config.clone())
                             .connect(name, tcp)
                             .await
-                            .map_err(|e| format!("TLS with {}: {}", self.describe(), e))?;
+                            .map_err(|e| tls_error(&self.describe(), cfg, e))?;
                         Ok(Box::new(s))
                     }
                 }

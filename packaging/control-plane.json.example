@@ -1,10 +1,11 @@
 {
-  "listen": ["127.0.0.1:8841", "[::1]:8841"],
+  "listen": ["0.0.0.0:8841", "[::]:8841"],
+  "tls": "auto",
   "ui_user": "glidex-ui",
   "users_group": "glidex-users",
   "admin_group": "glidex-admin",
   "auth": {
-    "allowed_origins": ["http://localhost:5173", "http://127.0.0.1:5173", "http://[::1]:5173"],
+    "allowed_origins": [],
     "session": { "idle_minutes": 30, "absolute_hours": 12 },
     "tokens": { "default_days": 90, "max_days": 365 },
     "pam": {

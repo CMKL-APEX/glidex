@@ -33,6 +33,7 @@ group=$(id -gn)
 cat >"$e2e_home/control-plane.json" <<EOF
 {
   "listen": ["127.0.0.1:$port"],
+  "tls": "off",
   "api_socket": "$e2e_home/api.sock",
   "ui_socket": "$e2e_home/ui.sock",
   "admin_group": "$group",

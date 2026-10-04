@@ -19,10 +19,12 @@ SupplementaryGroups=@GROUPS@
 Environment=HOME=@HOME@
 WorkingDirectory=@HOME@
 ExecStart=@BIN@
-# Listens on loopback TCP and on /run/glidex-cp/{api,ui}.sock. Settings
-# (listeners, TLS, PAM, OIDC) are in /etc/glidex/control-plane.json; see
-# control-plane.json.example. A non-loopback listener needs TLS, or the
-# control plane refuses to start.
+# Serves HTTPS on every address, port 8841 (a self-signed certificate in
+# @HOME@/.glidex/tls unless one is configured; it publishes a copy as
+# /run/glidex-cp/tls.crt), and listens on /run/glidex-cp/{api,ui}.sock.
+# Settings (listeners, TLS, PAM, OIDC) are in /etc/glidex/control-plane.json;
+# see control-plane.json.example. Plain HTTP ("tls": "off") is refused
+# unless every listener is loopback.
 # Each VM runs in its own glidex-vm unit: stopping, restarting or upgrading
 # this service leaves them running (spec/reconciliation.md D1/D2).
 KillSignal=SIGTERM

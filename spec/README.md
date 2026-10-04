@@ -74,6 +74,7 @@ glidex/
     ├── glidex-ovs/                  # host networking library (OVS, NAT, VM ports)
     ├── glidex-netd/                 # root networking helper daemon + protocol client
     ├── glidex-authd/                # root PAM helper daemon (security.md §5.3) + client
+    ├── glidex-tls/                  # HTTPS listeners, self-signed certificates, client trust (security.md §5.1)
     ├── glidex-install/              # `cargo run -p glidex-install` bootstrapper
     └── glidex-ui/                   # Vite+React UI; the Rust bin serves it and proxies /api
 ```

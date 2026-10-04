@@ -1,23 +1,25 @@
 //! glidex-ui: the web UI (spec/web-ui.md, spec/security.md §5.6).
 //!
 //! - `glidex-ui` serves the built UI (`bun run build` → `ui/dist`, or
-//!   `GLIDEX_UI_DIR`) on `GLIDEX_UI_LISTEN` (default `127.0.0.1:5173`) and
+//!   `GLIDEX_UI_DIR`) over HTTPS on `GLIDEX_UI_LISTEN` (default every
+//!   address, port 5173) and
 //!   proxies `/api/*` to the control plane, WebSocket upgrades (the VM
 //!   console) included. This is what `glidex-ui.service` runs.
 //! - `glidex-ui --dev` runs the Vite dev server (hot reload) instead.
 //!
 //! Upstream: the control plane's `ui.sock` (`GLIDEX_API_SOCKET`, default
 //! `/run/glidex-cp/ui.sock`) when it exists, else `GLIDEX_API_URL`
-//! (default `http://127.0.0.1:8841`). The control plane accepts `ui.sock`
+//! (default `https://127.0.0.1:8841`). The control plane accepts `ui.sock`
 //! connections only from the `glidex-ui` user, and only from that peer
 //! trusts the `X-Forwarded-*` headers set here. Over TCP (development) the
 //! browser's session cookie is all it goes by.
 //!
 //! Browser protections (spec §5.6): a `Host` allowlist (`GLIDEX_UI_HOSTS`;
 //! anything else gets `421`, which blocks DNS rebinding), security headers
-//! on every response, and TLS (`GLIDEX_UI_TLS_CERT` + `GLIDEX_UI_TLS_KEY`
-//! or the `ui-tls-key` systemd credential), which a non-loopback
-//! `GLIDEX_UI_LISTEN` requires.
+//! on every response, and TLS (spec §5.1): `GLIDEX_UI_TLS_CERT` +
+//! `GLIDEX_UI_TLS_KEY` (or the `ui-tls-key` systemd credential), else a
+//! self-signed certificate. `GLIDEX_UI_TLS=off` serves plain HTTP, only on
+//! loopback addresses.
 
 use axum::body::Body;
 use axum::extract::{Request, State};
@@ -26,10 +28,7 @@ use axum::middleware::{from_fn_with_state, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::any;
 use axum::Router;
-use hyper_util::client::legacy::{connect::HttpConnector, Client};
-use hyper_util::rt::{TokioExecutor, TokioIo};
-use rustls_pki_types::pem::PemObject;
-use rustls_pki_types::{CertificateDer, PrivateKeyDer};
+use hyper_util::rt::TokioIo;
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -41,8 +40,8 @@ use tower::ServiceExt;
 use tower_http::services::{ServeDir, ServeFile};
 
 const DEFAULT_API_SOCKET: &str = "/run/glidex-cp/ui.sock";
-const DEFAULT_API_URL: &str = "http://127.0.0.1:8841";
-const DEFAULT_LISTEN: &str = "127.0.0.1:5173";
+const DEFAULT_API_URL: &str = "https://127.0.0.1:8841";
+const PORT: u16 = 5173;
 
 /// `Content-Security-Policy` of everything the UI serves. The built app
 /// is a module script plus stylesheets from `/assets`; xterm.js and React
@@ -70,11 +69,13 @@ async fn main() {
         Some("-h" | "--help") => {
             println!(
                 "Usage: glidex-ui [--dev]\n\n  (none)  serve the built UI\n  --dev   run the Vite dev server with hot reload\n\n\
-                 Environment:\n  GLIDEX_UI_DIR        built UI (default: ui/dist)\n  GLIDEX_UI_LISTEN     address (default {DEFAULT_LISTEN}; non-loopback needs TLS)\n  \
-                 GLIDEX_UI_HOSTS      allowed Host values, host[:port],... (default localhost,127.0.0.1,[::1])\n  \
-                 GLIDEX_UI_TLS_CERT   PEM certificate chain\n  GLIDEX_UI_TLS_KEY    PEM key (or the ui-tls-key systemd credential)\n  \
+                 Environment:\n  GLIDEX_UI_DIR        built UI (default: ui/dist)\n  GLIDEX_UI_LISTEN     addresses, comma-separated (default 0.0.0.0:{PORT},[::]:{PORT})\n  \
+                 GLIDEX_UI_HOSTS      allowed Host values, host[:port],... (default: this host's names and addresses)\n  \
+                 GLIDEX_UI_TLS        auto (HTTPS, default) or off (plain HTTP, loopback addresses only)\n  \
+                 GLIDEX_UI_TLS_CERT   PEM certificate chain (default: a self-signed one)\n  GLIDEX_UI_TLS_KEY    PEM key (or the ui-tls-key systemd credential)\n  \
                  GLIDEX_API_SOCKET    control plane ui.sock (default {DEFAULT_API_SOCKET}, used when it exists)\n  \
-                 GLIDEX_API_URL       control plane over TCP otherwise (default {DEFAULT_API_URL})"
+                 GLIDEX_API_URL       control plane over TCP otherwise (default {DEFAULT_API_URL})\n  \
+                 GLIDEX_API_CA_CERT   PEM file to trust for GLIDEX_API_URL (the local control plane's is trusted already)"
             );
             return;
         }
@@ -145,11 +146,9 @@ fn parse_host_rules(list: &str) -> Result<Vec<HostRule>, String> {
     Ok(rules)
 }
 
-fn default_host_rules() -> Vec<HostRule> {
-    ["localhost", "127.0.0.1", "[::1]"]
-        .into_iter()
-        .map(|h| HostRule { host: h.into(), port: None })
-        .collect()
+/// This host's names and addresses, any port (spec §5.6).
+fn default_host_rules(names: &glidex_tls::LocalNames) -> Vec<HostRule> {
+    names.hosts().into_iter().map(|host| HostRule { host, port: None }).collect()
 }
 
 fn host_allowed(rules: &[HostRule], host: &str) -> bool {
@@ -182,19 +181,22 @@ async fn host_check(State(rules): State<Arc<Vec<HostRule>>>, req: Request, next:
 
 // ---- response headers -------------------------------------------------------
 
-fn add_security_headers(h: &mut HeaderMap, tls: bool) {
+/// `hsts`: TLS with a configured certificate. Never with a self-signed
+/// one: browsers make certificate errors non-bypassable for an HSTS host
+/// (spec §5.1.1).
+fn add_security_headers(h: &mut HeaderMap, hsts: bool) {
     h.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static(CSP));
     h.insert(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
     h.insert(header::REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
     h.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
-    if tls {
+    if hsts {
         h.insert(header::STRICT_TRANSPORT_SECURITY, HeaderValue::from_static("max-age=31536000"));
     }
 }
 
-async fn security_headers(State(tls): State<bool>, req: Request, next: Next) -> Response {
+async fn security_headers(State(hsts): State<bool>, req: Request, next: Next) -> Response {
     let mut resp = next.run(req).await;
-    add_security_headers(resp.headers_mut(), tls);
+    add_security_headers(resp.headers_mut(), hsts);
     resp
 }
 
@@ -204,8 +206,8 @@ async fn security_headers(State(tls): State<bool>, req: Request, next: Next) -> 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum UpstreamSpec {
     Unix(PathBuf),
-    /// `host:port` of an `http://` URL.
-    Http(String),
+    /// `host`, `port` and whether it is `https://`.
+    Tcp { host: String, port: u16, tls: bool },
 }
 
 /// `GLIDEX_API_SOCKET` (or the default `ui.sock`) when it exists, else
@@ -223,64 +225,115 @@ fn choose_upstream(socket: Option<&str>, url: Option<&str>, exists: impl Fn(&Pat
     }
     let url = url.unwrap_or(DEFAULT_API_URL);
     let api: Uri = url.parse().map_err(|e| format!("GLIDEX_API_URL: {}", e))?;
-    let authority = api
-        .authority()
-        .filter(|_| api.scheme_str() == Some("http"))
-        .ok_or("GLIDEX_API_URL must be http://host:port")?;
-    Ok(UpstreamSpec::Http(authority.to_string()))
+    let tls = match api.scheme_str() {
+        Some("https") => true,
+        Some("http") => false,
+        _ => return Err("GLIDEX_API_URL must be https://host:port or http://host:port".into()),
+    };
+    let host = api.host().ok_or("GLIDEX_API_URL has no host")?.to_string();
+    let port = api.port_u16().unwrap_or(if tls { 443 } else { 80 });
+    if !tls && !is_loopback_host(&host) {
+        return Err("GLIDEX_API_URL: plain http is only allowed to a loopback address; use https://".into());
+    }
+    Ok(UpstreamSpec::Tcp { host, port, tls })
+}
+
+fn is_loopback_host(h: &str) -> bool {
+    let h = h.trim_start_matches('[').trim_end_matches(']');
+    h == "localhost" || h.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
+}
+
+/// Trust for an `https://` upstream: the system store,
+/// `GLIDEX_API_CA_CERT`, and for a loopback host the local control plane's
+/// published certificate.
+fn upstream_tls(host: &str, ca: Option<String>) -> Result<glidex_tls::ClientTls, String> {
+    let mut extra: Vec<PathBuf> = ca.into_iter().map(PathBuf::from).collect();
+    if is_loopback_host(host) {
+        extra.extend(glidex_tls::published_certs());
+    }
+    glidex_tls::ClientTls::new(&extra, &[b"http/1.1"]).map_err(|e| format!("GLIDEX_API_CA_CERT: {}", e))
 }
 
 #[derive(Clone)]
 enum Upstream {
     Tcp {
-        client: Client<HttpConnector, Body>,
-        /// `http://host:port`, without a trailing slash.
-        base: String,
+        host: String,
+        port: u16,
+        tls: Option<glidex_tls::ClientTls>,
         authority: HeaderValue,
     },
     Unix(PathBuf),
 }
 
+/// One HTTP/1.1 exchange over `io`, upgrades (the console) included.
+async fn exchange_on<I>(io: I, req: Request) -> Result<hyper::Response<hyper::body::Incoming>, String>
+where
+    I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    let (mut sender, conn) = hyper::client::conn::http1::handshake::<_, Body>(TokioIo::new(io))
+        .await
+        .map_err(|e| e.to_string())?;
+    tokio::spawn(async move {
+        if let Err(e) = conn.with_upgrades().await {
+            tracing::debug!("upstream connection: {}", e);
+        }
+    });
+    sender.send_request(req).await.map_err(|e| e.to_string())
+}
+
 impl Upstream {
-    fn new(spec: UpstreamSpec) -> Result<Self, String> {
+    fn new(spec: UpstreamSpec, ca: Option<String>) -> Result<Self, String> {
         Ok(match spec {
             UpstreamSpec::Unix(p) => Upstream::Unix(p),
-            UpstreamSpec::Http(authority) => Upstream::Tcp {
-                client: Client::builder(TokioExecutor::new()).build_http(),
-                base: format!("http://{}", authority),
-                authority: HeaderValue::from_str(&authority).map_err(|e| e.to_string())?,
-            },
+            UpstreamSpec::Tcp { host, port, tls } => {
+                let bare = host.trim_start_matches('[').trim_end_matches(']');
+                let authority = if bare.contains(':') { format!("[{}]:{}", bare, port) } else { format!("{}:{}", bare, port) };
+                Upstream::Tcp {
+                    tls: if tls { Some(upstream_tls(&host, ca)?) } else { None },
+                    host: bare.to_string(),
+                    port,
+                    authority: HeaderValue::from_str(&authority).map_err(|e| e.to_string())?,
+                }
+            }
         })
     }
 
     fn describe(&self) -> String {
         match self {
-            Upstream::Tcp { base, .. } => base.clone(),
+            Upstream::Tcp { tls, authority, .. } => {
+                format!("{}://{}", if tls.is_some() { "https" } else { "http" }, authority.to_str().unwrap_or_default())
+            }
             Upstream::Unix(p) => format!("unix:{}", p.display()),
         }
     }
 
     async fn send(&self, mut req: Request) -> Result<hyper::Response<hyper::body::Incoming>, String> {
         let path = upstream_path(req.uri());
+        *req.uri_mut() = path.parse().map_err(|e| format!("{}", e))?;
         match self {
-            Upstream::Tcp { client, base, authority } => {
-                *req.uri_mut() = format!("{}{}", base, path).parse().map_err(|e| format!("{}", e))?;
+            Upstream::Tcp { host, port, tls, authority } => {
                 req.headers_mut().insert(header::HOST, authority.clone());
-                client.request(req).await.map_err(|e| e.to_string())
+                let tcp = tokio::net::TcpStream::connect((host.as_str(), *port)).await.map_err(|e| e.to_string())?;
+                let _ = tcp.set_nodelay(true);
+                match tls {
+                    None => exchange_on(tcp, req).await,
+                    Some(t) => {
+                        let name = rustls_pki_types::ServerName::try_from(host.clone()).map_err(|e| e.to_string())?;
+                        let s = glidex_tls::tokio_rustls::TlsConnector::from(t.config.clone())
+                            .connect(name, tcp)
+                            .await
+                            .map_err(|e| match t.rejected_fingerprint() {
+                                Some(fp) => format!("TLS: {} (certificate SHA-256 {}; set GLIDEX_API_CA_CERT)", e, fp),
+                                None => format!("TLS: {}", e),
+                            })?;
+                        exchange_on(s, req).await
+                    }
+                }
             }
             Upstream::Unix(sock) => {
-                *req.uri_mut() = path.parse().map_err(|e| format!("{}", e))?;
                 req.headers_mut().insert(header::HOST, HeaderValue::from_static("localhost"));
                 let stream = tokio::net::UnixStream::connect(sock).await.map_err(|e| e.to_string())?;
-                let (mut sender, conn) = hyper::client::conn::http1::handshake::<_, Body>(TokioIo::new(stream))
-                    .await
-                    .map_err(|e| e.to_string())?;
-                tokio::spawn(async move {
-                    if let Err(e) = conn.with_upgrades().await {
-                        tracing::debug!("upstream connection: {}", e);
-                    }
-                });
-                sender.send_request(req).await.map_err(|e| e.to_string())
+                exchange_on(stream, req).await
             }
         }
     }
@@ -291,6 +344,8 @@ struct AppState {
     upstream: Upstream,
     /// The UI itself serves TLS.
     tls: bool,
+    /// ... with a configured certificate: send HSTS.
+    hsts: bool,
 }
 
 /// The TCP peer of a browser connection.
@@ -374,7 +429,7 @@ async fn proxy_api(State(s): State<AppState>, mut req: Request) -> Response {
 
 fn app(dist: &Path, state: AppState, hosts: Vec<HostRule>) -> Router {
     let index = dist.join("index.html");
-    let tls = state.tls;
+    let hsts = state.hsts;
     // Unknown paths get index.html: they are client-side routes.
     Router::new()
         .route("/api", any(proxy_api))
@@ -382,25 +437,23 @@ fn app(dist: &Path, state: AppState, hosts: Vec<HostRule>) -> Router {
         .fallback_service(ServeDir::new(dist).fallback(ServeFile::new(&index)))
         .with_state(state)
         .layer(from_fn_with_state(Arc::new(hosts), host_check))
-        .layer(from_fn_with_state(tls, security_headers))
+        .layer(from_fn_with_state(hsts, security_headers))
 }
 
 // ---- listener and TLS --------------------------------------------------------
 
-/// Refuse a non-loopback address without TLS (spec §5.1).
-fn check_listen(addr: &SocketAddr, tls: bool) -> Result<(), String> {
-    if tls || addr.ip().is_loopback() {
-        Ok(())
-    } else {
-        Err(format!(
-            "refusing to serve on {} without TLS: set GLIDEX_UI_TLS_CERT and GLIDEX_UI_TLS_KEY \
-             (or the ui-tls-key credential), or listen on a loopback address",
-            addr
-        ))
+/// Refuse plain HTTP on a non-loopback address (spec §5.1).
+fn check_listen(addrs: &[SocketAddr], tls: bool) -> Result<(), String> {
+    match addrs.iter().find(|a| !tls && !a.ip().is_loopback()) {
+        None => Ok(()),
+        Some(a) => Err(format!(
+            "refusing to serve plain HTTP on {}: GLIDEX_UI_TLS=off needs every GLIDEX_UI_LISTEN address on loopback",
+            a
+        )),
     }
 }
 
-/// The certificate and key paths, if TLS is configured.
+/// Configured certificate and key paths, if any.
 fn tls_paths(cert: Option<String>, key: Option<String>, credential: Option<PathBuf>) -> Result<Option<(PathBuf, PathBuf)>, String> {
     match (cert, key.map(PathBuf::from).or(credential)) {
         (None, None) => Ok(None),
@@ -410,27 +463,49 @@ fn tls_paths(cert: Option<String>, key: Option<String>, credential: Option<PathB
     }
 }
 
+/// `GLIDEX_UI_TLS`: `auto` (default) or `off`.
+fn tls_enabled(v: Option<String>) -> Result<bool, String> {
+    match v.as_deref() {
+        None | Some("auto") => Ok(true),
+        Some("off") => Ok(false),
+        Some(o) => Err(format!("GLIDEX_UI_TLS: '{}' is not auto or off", o)),
+    }
+}
+
 fn credential(name: &str) -> Option<PathBuf> {
     let p = PathBuf::from(std::env::var_os("CREDENTIALS_DIRECTORY")?).join(name);
     p.exists().then_some(p)
 }
 
-fn tls_acceptor(cert: &Path, key: &Path) -> Result<tokio_rustls::TlsAcceptor, String> {
-    let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_file_iter(cert)
-        .map_err(|e| format!("{}: {}", cert.display(), e))?
-        .collect::<Result<_, _>>()
-        .map_err(|e| format!("{}: {}", cert.display(), e))?;
-    let key = PrivateKeyDer::from_pem_file(key).map_err(|e| format!("{}: {}", key.display(), e))?;
-    let provider = Arc::new(tokio_rustls::rustls::crypto::ring::default_provider());
-    let mut cfg = tokio_rustls::rustls::ServerConfig::builder_with_provider(provider)
-        .with_safe_default_protocol_versions()
-        .map_err(|e| e.to_string())?
-        .with_no_client_auth()
-        .with_single_cert(certs, key)
-        .map_err(|e| format!("TLS: {}", e))?;
-    // HTTP/1.1 only: the console WebSocket needs it.
-    cfg.alpn_protocols = vec![b"http/1.1".to_vec()];
-    Ok(tokio_rustls::TlsAcceptor::from(Arc::new(cfg)))
+/// Where the self-signed certificate lives: `$STATE_DIRECTORY/tls`
+/// (systemd `StateDirectory=glidex-ui`), else `~/.glidex/ui-tls`.
+fn self_signed_dir() -> PathBuf {
+    if let Some(d) = std::env::var_os("STATE_DIRECTORY") {
+        let first = d.to_string_lossy().split(':').next().unwrap_or_default().to_string();
+        if !first.is_empty() {
+            return PathBuf::from(first).join("tls");
+        }
+    }
+    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+    home.join(".glidex").join("ui-tls")
+}
+
+/// The certificate the UI serves: configured, else self-signed.
+struct UiCert {
+    cert: PathBuf,
+    key: PathBuf,
+    self_signed: bool,
+    generated: bool,
+}
+
+fn ui_cert() -> Result<UiCert, String> {
+    match tls_paths(env("GLIDEX_UI_TLS_CERT"), env("GLIDEX_UI_TLS_KEY"), credential("ui-tls-key"))? {
+        Some((cert, key)) => Ok(UiCert { cert, key, self_signed: false, generated: false }),
+        None => {
+            let s = glidex_tls::ensure_self_signed(&self_signed_dir(), "ui", &glidex_tls::LocalNames::discover())?;
+            Ok(UiCert { cert: s.cert, key: s.key, self_signed: true, generated: s.generated })
+        }
+    }
 }
 
 async fn serve_conn<I>(io: I, router: Router, addr: SocketAddr)
@@ -450,7 +525,36 @@ where
     }
 }
 
-async fn accept_loop(listener: tokio::net::TcpListener, router: Router, tls: Option<tokio_rustls::TlsAcceptor>) {
+/// Plain HTTP on the HTTPS port: `308` to the same URL over `https://`
+/// (allowed `Host` values only; others get `421`).
+fn redirect_router(hosts: Arc<Vec<HostRule>>) -> Router {
+    Router::new()
+        .fallback(|req: Request| async move {
+            let host = request_host(&req).unwrap_or_default();
+            let pq = req.uri().path_and_query().map(|p| p.as_str()).unwrap_or("/").to_string();
+            let mut resp = match HeaderValue::from_str(&format!("https://{}{}", host, pq)) {
+                Ok(loc) => (StatusCode::PERMANENT_REDIRECT, [(header::LOCATION, loc)], "Use https://\n").into_response(),
+                Err(_) => StatusCode::BAD_REQUEST.into_response(),
+            };
+            add_security_headers(resp.headers_mut(), false);
+            resp
+        })
+        .layer(from_fn_with_state(hosts, host_check))
+}
+
+/// A TLS handshake starts with a handshake record (`0x16`); anything else
+/// on an HTTPS port is taken for plain HTTP.
+async fn is_tls(stream: &tokio::net::TcpStream) -> bool {
+    let mut b = [0u8; 1];
+    matches!(stream.peek(&mut b).await, Ok(1) if b[0] == 0x16)
+}
+
+async fn accept_loop(
+    listener: tokio::net::TcpListener,
+    router: Router,
+    tls: Option<tokio_rustls::TlsAcceptor>,
+    redirect: Router,
+) {
     loop {
         let (stream, addr) = match listener.accept().await {
             Ok(v) => v,
@@ -460,9 +564,16 @@ async fn accept_loop(listener: tokio::net::TcpListener, router: Router, tls: Opt
             }
         };
         let router = router.clone();
+        let redirect = redirect.clone();
         match tls.clone() {
             Some(acceptor) => {
                 tokio::spawn(async move {
+                    let sniff = tokio::time::timeout(std::time::Duration::from_secs(10), is_tls(&stream)).await;
+                    match sniff {
+                        Ok(true) => {}
+                        Ok(false) => return serve_conn(stream, redirect, addr).await,
+                        Err(_) => return tracing::debug!(%addr, "no request"),
+                    }
                     match tokio::time::timeout(std::time::Duration::from_secs(10), acceptor.accept(stream)).await {
                         Ok(Ok(s)) => serve_conn(s, router, addr).await,
                         Ok(Err(e)) => tracing::debug!(%addr, "TLS handshake failed: {}", e),
@@ -491,32 +602,59 @@ async fn serve() -> Result<(), String> {
             dist.join("index.html").display()
         ));
     }
-    let listen: SocketAddr = env("GLIDEX_UI_LISTEN")
-        .unwrap_or_else(|| DEFAULT_LISTEN.into())
-        .parse()
-        .map_err(|e| format!("GLIDEX_UI_LISTEN: {}", e))?;
-    let tls = match tls_paths(env("GLIDEX_UI_TLS_CERT"), env("GLIDEX_UI_TLS_KEY"), credential("ui-tls-key"))? {
-        Some((cert, key)) => Some(tls_acceptor(&cert, &key)?),
+    let listen = match env("GLIDEX_UI_LISTEN") {
+        Some(l) => glidex_tls::parse_addresses(&l, "GLIDEX_UI_LISTEN")?,
+        None => glidex_tls::all_addresses(PORT),
+    };
+    let tls_on = tls_enabled(env("GLIDEX_UI_TLS"))?;
+    check_listen(&listen, tls_on)?;
+    let cert = if tls_on { Some(ui_cert()?) } else { None };
+    let tls = match &cert {
+        Some(c) => Some(tokio_rustls::TlsAcceptor::from(glidex_tls::server_config(&c.cert, &c.key, &[b"http/1.1"])?)),
         None => None,
     };
-    check_listen(&listen, tls.is_some())?;
     let hosts = match env("GLIDEX_UI_HOSTS") {
         Some(list) => parse_host_rules(&list)?,
-        None => default_host_rules(),
+        None => default_host_rules(&glidex_tls::LocalNames::discover()),
     };
     let spec = choose_upstream(env("GLIDEX_API_SOCKET").as_deref(), env("GLIDEX_API_URL").as_deref(), |p| p.exists())?;
-    let upstream = Upstream::new(spec)?;
+    let upstream = Upstream::new(spec, env("GLIDEX_API_CA_CERT"))?;
     let describe = upstream.describe();
-    let router = app(&dist, AppState { upstream, tls: tls.is_some() }, hosts);
+    let hsts = cert.as_ref().is_some_and(|c| !c.self_signed);
+    let redirect = redirect_router(Arc::new(hosts.clone()));
+    let router = app(&dist, AppState { upstream, tls: tls_on, hsts }, hosts);
 
-    let listener = tokio::net::TcpListener::bind(listen)
-        .await
-        .map_err(|e| format!("bind {}: {}", listen, e))?;
-    let scheme = if tls.is_some() { "https" } else { "http" };
-    tracing::info!("GlideX UI on {}://{} (from {}, API {})", scheme, listen, dist.display(), describe);
-    tokio::select! {
-        _ = accept_loop(listener, router, tls) => {}
-        _ = shutdown_signal() => {}
+    let mut listeners = Vec::new();
+    for a in &listen {
+        match glidex_tls::bind(*a) {
+            Ok(l) => listeners.push(l),
+            Err(e) if glidex_tls::ipv6_unavailable(a, &e) => tracing::info!("IPv6 unavailable; not listening on {}", a),
+            Err(e) => return Err(format!("bind {}: {}", a, e)),
+        }
+    }
+    if listeners.is_empty() {
+        return Err("no usable GLIDEX_UI_LISTEN address".into());
+    }
+    let scheme = if tls_on { "https" } else { "http" };
+    for l in &listeners {
+        tracing::info!("GlideX UI on {}://{} (from {}, API {})", scheme, l.local_addr().map_err(|e| e.to_string())?, dist.display(), describe);
+    }
+    if let Some(c) = &cert {
+        tracing::info!(
+            cert = %c.cert.display(),
+            fingerprint = %glidex_tls::fingerprint(&c.cert)?,
+            self_signed = c.self_signed,
+            generated = c.generated,
+            "TLS certificate"
+        );
+    }
+    let loops: Vec<_> = listeners
+        .into_iter()
+        .map(|l| tokio::spawn(accept_loop(l, router.clone(), tls.clone(), redirect.clone())))
+        .collect();
+    shutdown_signal().await;
+    for l in loops {
+        l.abort();
     }
     Ok(())
 }
@@ -530,20 +668,40 @@ async fn shutdown_signal() {
     tracing::info!("Shutting down...");
 }
 
+/// Vite with hot reload, over HTTPS with the UI's certificate (configured
+/// or self-signed), proxying to the control plane it verifies against the
+/// published certificate (spec/web-ui.md).
 async fn run_dev_server() {
     let ui_path = ui_dir();
     tracing::info!("Starting UI dev server from {}", ui_path.display());
 
-    let mut child = Command::new("bun")
-        .arg("run")
-        .arg("dev")
-        .current_dir(&ui_path)
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .expect("Failed to start bun dev server. Is bun installed?");
+    let mut cmd = Command::new("bun");
+    cmd.arg("run").arg("dev").current_dir(&ui_path).stdout(Stdio::inherit()).stderr(Stdio::inherit());
+    let scheme = match tls_enabled(env("GLIDEX_UI_TLS")) {
+        Ok(true) => match ui_cert() {
+            Ok(c) => {
+                cmd.env("GLIDEX_UI_TLS_CERT", &c.cert).env("GLIDEX_UI_TLS_KEY", &c.key);
+                "https"
+            }
+            Err(e) => {
+                tracing::error!("TLS: {}", e);
+                std::process::exit(1);
+            }
+        },
+        Ok(false) => "http",
+        Err(e) => {
+            tracing::error!("{}", e);
+            std::process::exit(1);
+        }
+    };
+    if env("GLIDEX_API_CA_CERT").is_none() {
+        if let Some(p) = glidex_tls::published_certs().into_iter().next() {
+            cmd.env("GLIDEX_API_CA_CERT", p);
+        }
+    }
+    let mut child = cmd.spawn().expect("Failed to start bun dev server. Is bun installed?");
 
-    tracing::info!("GlideX UI available at http://localhost:5173");
+    tracing::info!("GlideX UI available at {}://localhost:{}", scheme, PORT);
 
     tokio::select! {
         status = child.wait() => {
@@ -587,9 +745,19 @@ mod tests {
         assert_eq!(split_host_port("user@host"), None);
     }
 
+    fn local() -> glidex_tls::LocalNames {
+        glidex_tls::LocalNames {
+            dns: vec!["glidex.example.org".into(), "localhost".into()],
+            ips: vec!["127.0.0.1".parse().unwrap(), "::1".parse().unwrap(), "10.0.0.5".parse().unwrap()],
+        }
+    }
+
     #[test]
     fn host_matching() {
-        let d = default_host_rules();
+        let d = default_host_rules(&local());
+        for ok in ["glidex.example.org:5173", "10.0.0.5", "[::1]"] {
+            assert!(host_allowed(&d, ok), "{ok}");
+        }
         for ok in ["localhost", "localhost:5173", "127.0.0.1:8080", "[::1]:5173", "LOCALHOST"] {
             assert!(host_allowed(&d, ok), "{ok}");
         }
@@ -639,7 +807,7 @@ mod tests {
     }
 
     #[test]
-    fn security_headers_and_hsts_only_under_tls() {
+    fn security_headers_and_hsts_only_with_a_configured_certificate() {
         let mut h = HeaderMap::new();
         add_security_headers(&mut h, false);
         assert!(h["content-security-policy"].to_str().unwrap().contains("frame-ancestors 'none'"));
@@ -652,17 +820,20 @@ mod tests {
     }
 
     #[test]
-    fn non_loopback_needs_tls() {
+    fn plain_http_only_on_loopback() {
         let lo: SocketAddr = "127.0.0.1:5173".parse().unwrap();
         let lo6: SocketAddr = "[::1]:5173".parse().unwrap();
         let any: SocketAddr = "0.0.0.0:5173".parse().unwrap();
         let lan: SocketAddr = "10.0.0.5:443".parse().unwrap();
-        assert!(check_listen(&lo, false).is_ok());
-        assert!(check_listen(&lo6, false).is_ok());
-        let e = check_listen(&any, false).unwrap_err();
-        assert!(e.contains("without TLS"), "{e}");
-        assert!(check_listen(&lan, false).is_err());
-        assert!(check_listen(&lan, true).is_ok());
+        assert!(check_listen(&[lo, lo6], false).is_ok());
+        let e = check_listen(&[lo, any], false).unwrap_err();
+        assert!(e.contains("plain HTTP"), "{e}");
+        assert!(check_listen(&[lan], false).is_err());
+        assert!(check_listen(&[lan, any], true).is_ok());
+        assert!(tls_enabled(None).unwrap());
+        assert!(tls_enabled(Some("auto".into())).unwrap());
+        assert!(!tls_enabled(Some("off".into())).unwrap());
+        assert!(tls_enabled(Some("on".into())).is_err());
     }
 
     #[test]
@@ -682,12 +853,16 @@ mod tests {
         let yes = |_: &Path| true;
         let no = |_: &Path| false;
         assert_eq!(choose_upstream(None, None, yes).unwrap(), UpstreamSpec::Unix(DEFAULT_API_SOCKET.into()));
-        assert_eq!(choose_upstream(None, None, no).unwrap(), UpstreamSpec::Http("127.0.0.1:8841".into()));
-        assert_eq!(choose_upstream(Some("/s"), Some("http://h:1"), yes).unwrap(), UpstreamSpec::Unix("/s".into()));
-        assert_eq!(choose_upstream(Some("/s"), Some("http://h:1"), no).unwrap(), UpstreamSpec::Http("h:1".into()));
+        let tcp = |host: &str, port, tls| UpstreamSpec::Tcp { host: host.into(), port, tls };
+        assert_eq!(choose_upstream(None, None, no).unwrap(), tcp("127.0.0.1", 8841, true));
+        assert_eq!(choose_upstream(Some("/s"), Some("https://h:1"), yes).unwrap(), UpstreamSpec::Unix("/s".into()));
+        assert_eq!(choose_upstream(Some("/s"), Some("https://h:1"), no).unwrap(), tcp("h", 1, true));
         // An explicit URL alone doesn't go through the default socket.
-        assert_eq!(choose_upstream(None, Some("http://h:1"), yes).unwrap(), UpstreamSpec::Http("h:1".into()));
-        assert!(choose_upstream(None, Some("https://h:1"), no).is_err());
+        assert_eq!(choose_upstream(None, Some("http://127.0.0.1:1"), yes).unwrap(), tcp("127.0.0.1", 1, false));
+        assert_eq!(choose_upstream(None, Some("https://h"), no).unwrap(), tcp("h", 443, true));
+        // Plain http only to loopback.
+        assert!(choose_upstream(None, Some("http://h:1"), no).is_err());
+        assert!(choose_upstream(None, Some("ftp://h:1"), no).is_err());
     }
 
     /// Raw HTTP/1.1 exchange with `addr`.
@@ -716,11 +891,11 @@ mod tests {
         });
         tokio::spawn(async move { axum::serve(upstream, echo).await.unwrap() });
 
-        let state = AppState { upstream: Upstream::new(UpstreamSpec::Unix(sock)).unwrap(), tls: false };
-        let router = app(dir.path(), state, default_host_rules());
+        let state = AppState { upstream: Upstream::new(UpstreamSpec::Unix(sock), None).unwrap(), tls: false, hsts: false };
+        let router = app(dir.path(), state, default_host_rules(&local()));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        tokio::spawn(accept_loop(listener, router, None));
+        tokio::spawn(accept_loop(listener, router, None, Router::new()));
 
         let out = exchange(
             addr,
@@ -751,5 +926,61 @@ mod tests {
             let out = exchange(addr, &format!("GET / HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n")).await;
             assert!(out.starts_with("HTTP/1.1 421"), "{out}");
         }
+    }
+
+    /// HTTPS with a self-signed certificate: served to a client that
+    /// trusts it, no HSTS, plain HTTP on the same port redirected, and an
+    /// https:// upstream verified against the control plane's certificate.
+    #[tokio::test]
+    async fn https_redirect_and_https_upstream() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("index.html"), "<html>ui</html>").unwrap();
+        let names = local();
+
+        // A fake control plane over HTTPS.
+        let cp = glidex_tls::ensure_self_signed(&dir.path().join("cp"), "cp", &names).unwrap();
+        let cp_acceptor = tokio_rustls::TlsAcceptor::from(glidex_tls::server_config(&cp.cert, &cp.key, &[b"http/1.1"]).unwrap());
+        let cp_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let cp_port = cp_listener.local_addr().unwrap().port();
+        let echo = Router::new().fallback(|req: Request| async move { format!("upstream path={}", req.uri()) });
+        tokio::spawn(accept_loop(cp_listener, echo, Some(cp_acceptor), Router::new()));
+        let spec = UpstreamSpec::Tcp { host: "localhost".into(), port: cp_port, tls: true };
+        let upstream = Upstream::new(spec, Some(cp.cert.to_string_lossy().into_owned())).unwrap();
+
+        let ui = glidex_tls::ensure_self_signed(&dir.path().join("ui"), "ui", &names).unwrap();
+        let acceptor = tokio_rustls::TlsAcceptor::from(glidex_tls::server_config(&ui.cert, &ui.key, &[b"http/1.1"]).unwrap());
+        let hosts = default_host_rules(&names);
+        let router = app(dir.path(), AppState { upstream, tls: true, hsts: false }, hosts.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(accept_loop(listener, router, Some(acceptor), redirect_router(Arc::new(hosts))));
+
+        // Plain HTTP: redirected; a foreign Host isn't.
+        let out = exchange(addr, "GET /vms?x=1 HTTP/1.1\r\nHost: glidex.example.org:5173\r\nConnection: close\r\n\r\n").await;
+        assert!(out.starts_with("HTTP/1.1 308"), "{out}");
+        assert!(out.to_ascii_lowercase().contains("location: https://glidex.example.org:5173/vms?x=1"), "{out}");
+        let out = exchange(addr, "GET / HTTP/1.1\r\nHost: evil.example\r\nConnection: close\r\n\r\n").await;
+        assert!(out.starts_with("HTTP/1.1 421"), "{out}");
+
+        // HTTPS, trusting the UI's certificate.
+        let client = glidex_tls::ClientTls::new(std::slice::from_ref(&ui.cert), &[b"http/1.1"]).unwrap();
+        let https = |path: &'static str| {
+            let client = client.clone();
+            async move {
+                let tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+                let name = rustls_pki_types::ServerName::try_from("localhost").unwrap();
+                let mut s = tokio_rustls::TlsConnector::from(client.config.clone()).connect(name, tcp).await.unwrap();
+                s.write_all(format!("GET {path} HTTP/1.1\r\nHost: localhost:5173\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
+                let mut out = String::new();
+                let _ = s.read_to_string(&mut out).await;
+                out
+            }
+        };
+        let out = https("/").await;
+        assert!(out.starts_with("HTTP/1.1 200"), "{out}");
+        assert!(out.contains("<html>ui</html>"), "{out}");
+        assert!(!out.to_ascii_lowercase().contains("strict-transport-security"), "{out}");
+        let out = https("/api/vms").await;
+        assert!(out.contains("upstream path=/vms"), "{out}");
     }
 }

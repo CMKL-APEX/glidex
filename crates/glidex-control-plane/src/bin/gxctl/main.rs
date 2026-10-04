@@ -34,7 +34,9 @@ struct Cli {
     socket: Option<PathBuf>,
 
     /// Use TCP instead (wins over --socket), e.g. https://glidex.example.org:8841. Sends the
-    /// token from GLIDEX_TOKEN or ~/.config/glidex/token (see `login`).
+    /// token from GLIDEX_TOKEN or ~/.config/glidex/token (see `login`). A self-signed
+    /// certificate is trusted through GLIDEX_CA_CERT (a PEM file), or automatically
+    /// for the local control plane.
     #[arg(short = 's', long, visible_alias = "server")]
     url: Option<String>,
 

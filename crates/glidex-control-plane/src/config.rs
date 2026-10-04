@@ -12,13 +12,19 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 pub const DEFAULT_CONFIG_PATH: &str = "/etc/glidex/control-plane.json";
+/// The control plane's TCP port.
+pub const DEFAULT_PORT: u16 = 8841;
+/// The web UI's port, for the default allowed origins.
+pub const UI_PORT: u16 = 5173;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct Config {
-    /// TCP listeners. Non-loopback addresses need `tls`.
+    /// TCP listeners. Default: every address, port 8841.
     pub listen: Vec<SocketAddr>,
-    pub tls: Option<TlsConfig>,
+    /// HTTPS on the TCP listeners (spec §5.1). Default: a self-signed
+    /// certificate.
+    pub tls: TlsSetting,
     /// Unix socket for local gxctl users (peer identity, spec §5.2).
     /// Default: `<run dir>/api.sock`.
     pub api_socket: Option<PathBuf>,
@@ -42,11 +48,8 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            listen: vec![
-                SocketAddr::from(([127, 0, 0, 1], 8841)),
-                SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, 8841)),
-            ],
-            tls: None,
+            listen: glidex_tls::all_addresses(DEFAULT_PORT),
+            tls: TlsSetting::Mode(TlsMode::Auto),
             api_socket: None,
             ui_socket: None,
             ui_user: "glidex-ui".into(),
@@ -63,7 +66,31 @@ impl Default for Config {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+/// `"auto"`, `"off"` or `{"cert": …, "key": …}`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(untagged)]
+pub enum TlsSetting {
+    Mode(TlsMode),
+    Files(TlsConfig),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TlsMode {
+    /// A self-signed certificate, generated on first start (spec §5.1.1).
+    Auto,
+    /// Plain HTTP: only when every listener is loopback.
+    Off,
+}
+
+impl TlsSetting {
+    /// Whether the TCP listeners serve HTTPS.
+    pub fn enabled(&self) -> bool {
+        *self != TlsSetting::Mode(TlsMode::Off)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TlsConfig {
     pub cert: PathBuf,
@@ -72,10 +99,12 @@ pub struct TlsConfig {
     pub key: Option<PathBuf>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct AuthConfig {
     /// Origins allowed on state-changing requests and WebSocket upgrades.
+    /// Empty (the default): `https://<h>:5173` for every name and address
+    /// of this host, filled in by `Config::load` (spec §5.6).
     pub allowed_origins: Vec<String>,
     pub session: SessionConfig,
     pub tokens: TokenConfig,
@@ -83,19 +112,6 @@ pub struct AuthConfig {
     pub oidc: OidcConfig,
 }
 
-impl Default for AuthConfig {
-    fn default() -> Self {
-        Self {
-            allowed_origins: ["http://localhost:5173", "http://127.0.0.1:5173", "http://[::1]:5173"]
-                .map(String::from)
-                .to_vec(),
-            session: SessionConfig::default(),
-            tokens: TokenConfig::default(),
-            pam: PamConfig::default(),
-            oidc: OidcConfig::default(),
-        }
-    }
-}
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields, default)]
@@ -294,16 +310,17 @@ impl Default for ConsoleConfig {
 impl Config {
     /// Load `GLIDEX_CONFIG` or the default path; a missing file is the
     /// defaults. `GLIDEX_LISTEN` (comma-separated) overrides `listen`.
+    /// Empty `auth.allowed_origins` become this host's UI origins.
     pub fn load() -> Result<Self, String> {
         let path = std::env::var_os("GLIDEX_CONFIG")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(DEFAULT_CONFIG_PATH));
         let mut cfg = Self::load_from(&path)?;
         if let Ok(list) = std::env::var("GLIDEX_LISTEN") {
-            cfg.listen = list
-                .split(',')
-                .map(|a| a.trim().parse::<SocketAddr>().map_err(|e| format!("GLIDEX_LISTEN {}: {}", a, e)))
-                .collect::<Result<_, _>>()?;
+            cfg.listen = glidex_tls::parse_addresses(&list, "GLIDEX_LISTEN")?;
+        }
+        if cfg.auth.allowed_origins.is_empty() {
+            cfg.auth.allowed_origins = glidex_tls::LocalNames::discover().origins(UI_PORT);
         }
         Ok(cfg)
     }
@@ -337,12 +354,12 @@ impl Config {
         self.check_listeners()
     }
 
-    /// Refuse a non-loopback listener without TLS (spec §5.1).
+    /// Refuse plain HTTP on a non-loopback listener (spec §5.1).
     pub fn check_listeners(&self) -> Result<(), String> {
-        if self.tls.is_none() {
+        if !self.tls.enabled() {
             if let Some(a) = self.listen.iter().find(|a| !a.ip().is_loopback()) {
                 return Err(format!(
-                    "refusing to listen on {} without TLS; set \"tls\" in {} or listen on loopback",
+                    "refusing to serve plain HTTP on {}: \"tls\": \"off\" needs every listener on loopback ({})",
                     a, DEFAULT_CONFIG_PATH
                 ));
             }
@@ -376,7 +393,8 @@ mod tests {
     fn defaults_and_unknown_keys() {
         let dir = tempfile::TempDir::new().unwrap();
         let missing = Config::load_from(&dir.path().join("none.json")).unwrap();
-        assert_eq!(missing.listen.len(), 2);
+        assert_eq!(missing.listen, glidex_tls::all_addresses(8841));
+        assert_eq!(missing.tls, TlsSetting::Mode(TlsMode::Auto));
         assert!(missing.check_listeners().is_ok());
         let p = dir.path().join("c.json");
         std::fs::write(&p, r#"{"auth": {"pam": {"jit": false}}}"#).unwrap();
@@ -431,7 +449,7 @@ mod tests {
         let c = parse(&block[a..b]).unwrap();
         assert_eq!(c.quotas.default.networks, Some(2));
         assert_eq!(c.authz.policy_history, 50);
-        assert!(c.tls.is_some());
+        assert_eq!(c.tls, TlsSetting::Mode(TlsMode::Auto));
     }
 
     /// The installer ships packaging/control-plane.json.example as
@@ -456,10 +474,25 @@ mod tests {
     }
 
     #[test]
-    fn non_loopback_needs_tls() {
+    fn plain_http_only_on_loopback() {
         let mut c = Config { listen: vec!["0.0.0.0:8841".parse().unwrap()], ..Default::default() };
-        assert!(c.check_listeners().is_err());
-        c.tls = Some(TlsConfig { cert: "/x".into(), key: None });
         assert!(c.check_listeners().is_ok());
+        c.tls = TlsSetting::Mode(TlsMode::Off);
+        assert!(c.check_listeners().is_err());
+        c.listen = vec!["127.0.0.1:8841".parse().unwrap(), "[::1]:8841".parse().unwrap()];
+        assert!(c.check_listeners().is_ok());
+    }
+
+    #[test]
+    fn tls_settings_parse() {
+        assert_eq!(parse(r#"{"tls": "auto"}"#).unwrap().tls, TlsSetting::Mode(TlsMode::Auto));
+        assert!(parse(r#"{"tls": "off"}"#).is_err());
+        assert_eq!(parse(r#"{"tls": "off", "listen": ["127.0.0.1:1"]}"#).unwrap().tls, TlsSetting::Mode(TlsMode::Off));
+        assert_eq!(
+            parse(r#"{"tls": {"cert": "/c"}}"#).unwrap().tls,
+            TlsSetting::Files(TlsConfig { cert: "/c".into(), key: None })
+        );
+        assert!(parse(r#"{"tls": "on"}"#).is_err());
+        assert!(parse(r#"{"tls": {"crt": "/c"}}"#).is_err());
     }
 }

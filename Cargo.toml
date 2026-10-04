@@ -8,6 +8,7 @@ members = [
     "crates/glidex-ui",
     "crates/glidex-hv-client",
     "crates/glidex-vm-shim",
+    "crates/glidex-tls",
 ]
 resolver = "2"
 

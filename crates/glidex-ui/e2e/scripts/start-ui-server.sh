@@ -13,6 +13,8 @@ binary="${CARGO_TARGET_DIR:-$repo/target}/debug/glidex-ui"
 
 export GLIDEX_UI_DIR="$repo/crates/glidex-ui/ui/dist"
 export GLIDEX_UI_LISTEN=127.0.0.1:$port
+# Plain HTTP on loopback (the only place it is allowed).
+export GLIDEX_UI_TLS=off
 export GLIDEX_API_URL=http://127.0.0.1:$api_port
 unset GLIDEX_API_SOCKET GLIDEX_UI_HOSTS GLIDEX_UI_TLS_CERT GLIDEX_UI_TLS_KEY
 exec "$binary"
