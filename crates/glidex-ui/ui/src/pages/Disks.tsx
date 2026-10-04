@@ -58,7 +58,8 @@ function CreateDiskForm({
   onCancel: () => void;
 }) {
   const { project } = useSession();
-  const ready = images.filter((i) => i.status.state === "ready");
+  // Firmware images are never a disk source.
+  const ready = images.filter((i) => i.status.state === "ready" && !i.deleting && i.kind !== "firmware");
   const [name, setName] = useState("");
   const [image, setImage] = useState(ready[0]?.id ?? "");
   const [size, setSize] = useState("");

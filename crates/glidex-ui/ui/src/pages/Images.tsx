@@ -336,7 +336,7 @@ export default function Images() {
               {f.hint && <div className="text-xs text-amber-700">Not installed: {f.hint}</div>}
             </div>
             {f.downloaded_image_id ? (
-              <span className="text-xs text-green-700">Downloaded</span>
+              <span className="text-xs text-green-700">{f.source === "host" ? "Imported" : "Downloaded"}</span>
             ) : (
               <button
                 className={pullClass}

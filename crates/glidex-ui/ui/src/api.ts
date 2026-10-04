@@ -303,6 +303,7 @@ export const listBridges = () => get<BridgeRecord[]>("/ovs/bridges");
 
 export const imageCatalog = () => get<CatalogItem[]>("/images/catalog");
 export const listImages = () => get<ImageInfo[]>("/images");
+export const getImage = (id: string) => get<ImageInfo>(`/images/${enc(id)}`);
 export const firmwareCatalog = () => get<FirmwareCatalogItem[]>("/images/firmware-catalog");
 export const pullImage = (req: {
   catalog?: string;

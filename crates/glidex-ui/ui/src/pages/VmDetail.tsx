@@ -19,6 +19,8 @@ export default function VmDetail() {
   const [error, setError] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
   const [events, setEvents] = useState<api.VmEvent[]>([]);
+  /** The firmware image's name, once looked up (the VM carries its id). */
+  const [firmwareName, setFirmwareName] = useState<string | null>(null);
 
   const fetchVm = useCallback(async () => {
     if (!id) return;
@@ -52,6 +54,11 @@ export default function VmDetail() {
     const t = setInterval(fetchVm, 2000);
     return () => clearInterval(t);
   }, [converging, live, fetchVm]);
+  useEffect(() => {
+    setFirmwareName(null);
+    if (!vm?.firmware) return;
+    api.getImage(vm.firmware).then((i) => setFirmwareName(i.name)).catch(() => setFirmwareName(null));
+  }, [vm?.firmware]);
   useEffect(() => {
     if (!id) return;
     api.vmEvents(id).then((r) => setEvents(r.events)).catch(() => setEvents([]));
@@ -199,6 +206,16 @@ export default function VmDetail() {
                   </Link>
                 </p>
               </div>
+              {vm.firmware && (
+                <div>
+                  <h3 className="text-sm font-medium text-gray-500">UEFI Firmware</h3>
+                  <p className="text-sm text-gray-700">
+                    <Link to="/images" className="font-mono text-sky-700 hover:underline" data-testid="vm-firmware">
+                      {firmwareName ?? vm.firmware}
+                    </Link>
+                  </p>
+                </div>
+              )}
               {vm.root_disk && (
                 <div>
                   <h3 className="text-sm font-medium text-gray-500">Root Disk</h3>

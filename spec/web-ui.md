@@ -295,8 +295,8 @@ only for Cloud-Hypervisor firmware boot, fed by `GET /credentials`.
 `pages/Images.tsx` shows two catalogs, each entry with a Pull button:
 cloud images (`GET /images/catalog`) and UEFI firmware
 (`GET /images/firmware-catalog`, [images.md](images.md#41-firmware-catalog);
-an entry copied from a host package says Import, and is disabled with
-the package to install when it isn't). Below, downloaded images in two
+an entry copied from a host package says Import (Imported once done),
+and is disabled with the package to install when it isn't). Below, downloaded images in two
 tables: cloud images (with their linked disks) and firmware (with its
 hypervisor and the VMs booting through it; Delete is disabled while any
 do). Each has a progress bar while downloading; an image being deleted
@@ -324,7 +324,9 @@ when one is ready. Its "UEFI Firmware" select lists the ready firmware
 images built for the chosen hypervisor, newest first (preselected, the
 server's default too), and follows a hypervisor change; with none it
 names the catalog entry to pull and the form won't submit. It sends
-`firmware` (the image id), never a host `firmware_path`.
+`firmware` (the image id), never a host `firmware_path`. `VmDetail`
+shows the VM's firmware image by name (`GET /images/{id}`), and the
+Disks page's create form never offers a firmware image as contents.
 
 ## Footer
 
