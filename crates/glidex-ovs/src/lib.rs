@@ -18,6 +18,7 @@ pub mod names;
 pub mod nat;
 pub mod net;
 pub mod source_build;
+pub mod stats;
 pub mod nic;
 pub mod uplink;
 pub mod vm_port;

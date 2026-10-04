@@ -368,7 +368,8 @@ fn status_socket_serves_only_status() {
     let mut client = Client::connect(&path).unwrap();
     let caps: HostCapabilities = client.call(Op::Probe, Duration::from_secs(5)).unwrap();
     assert!(caps.ovs_installed);
-    for op in [Op::ListBridges, Op::ListVmPorts, Op::SyncVms { running: vec![] }] {
+    // Traffic counters are tenant data (spec/metering.md §5.4).
+    for op in [Op::ListBridges, Op::ListVmPorts, Op::PortStats, Op::SyncVms { running: vec![] }] {
         match client.call_value(op, Duration::from_secs(5)) {
             Err(ClientError::Remote(body)) => assert_eq!(body.code, "permission_denied"),
             other => panic!("expected permission_denied, got {other:?}"),

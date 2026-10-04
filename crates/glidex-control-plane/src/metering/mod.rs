@@ -5,6 +5,7 @@
 //! meters. [`Meter`] runs the rounds.
 
 pub mod ledger;
+pub mod net;
 pub mod sampler;
 pub mod sources;
 
@@ -13,6 +14,8 @@ pub use ledger::{Delta, Flag, Ledger, LedgerSettings, MeteringError, Origin, Rou
 use crate::config::MeteringConfig;
 use crate::images::Disk;
 use crate::models::Vm;
+use crate::network::Network;
+use glidex_ovs::stats::BridgeStats;
 use redb::Database;
 use std::sync::Arc;
 use std::time::Duration;
@@ -41,16 +44,50 @@ impl Meter {
         &self.cfg
     }
 
-    /// One sampling round over snapshots of the VMs and disks (blocking:
-    /// sysfs, `/proc` and the database).
-    pub fn sample(&self, vms: &[Vm], disks: &[Disk], now: u64) -> Result<(), MeteringError> {
+    /// One sampling round over a snapshot (blocking: sysfs, `/proc` and
+    /// the database).
+    pub fn sample(&self, snap: &Snapshot, now: u64) -> Result<(), MeteringError> {
         let _one = self.round_lock.lock().unwrap_or_else(|e| e.into_inner());
-        let with_cursors = self.ledger.cursor_subjects(&[SubjectKind::Vm, SubjectKind::Disk])?;
+        // Without port counters (netd unreachable), NIC and network
+        // cursors are kept: the next round's deltas cover the gap.
+        let kinds: &[SubjectKind] = match snap.bridges {
+            Some(_) => &[SubjectKind::Vm, SubjectKind::Disk, SubjectKind::Nic, SubjectKind::Network],
+            None => &[SubjectKind::Vm, SubjectKind::Disk],
+        };
+        let with_cursors = self.ledger.cursor_subjects(kinds)?;
         let mut round = self.ledger.begin_round(now)?;
-        sampler::sample_vms(&mut round, vms, &self.host, now)?;
-        sampler::sample_disks(&mut round, disks, now)?;
-        sampler::forget_gone(&mut round, &with_cursors, vms, disks);
+        sampler::sample_vms(&mut round, &snap.vms, &self.host, now)?;
+        sampler::sample_disks(&mut round, &snap.disks, now)?;
+        if let Some(bridges) = &snap.bridges {
+            net::sample_ports(&mut round, bridges, &snap.vms, &snap.networks, now)?;
+        }
+        sampler::forget_gone(&mut round, &with_cursors, &snap.live_subjects());
         self.ledger.commit(round)
+    }
+}
+
+/// What one round reads.
+pub struct Snapshot {
+    pub vms: Vec<Vm>,
+    pub disks: Vec<Disk>,
+    pub networks: Vec<Network>,
+    /// Port counters from netd; `None` when it could not be asked.
+    pub bridges: Option<Vec<BridgeStats>>,
+}
+
+impl Snapshot {
+    /// `kind/id` of every subject that still exists.
+    fn live_subjects(&self) -> std::collections::BTreeSet<String> {
+        let mut live: std::collections::BTreeSet<String> = self.vms.iter().map(|v| format!("vm/{}", v.id)).collect();
+        live.extend(self.disks.iter().map(|d| format!("disk/{}", d.id)));
+        for v in &self.vms {
+            live.extend(v.status.nics.iter().map(|n| format!("nic/{}.{}", v.id, n.nic_index)));
+        }
+        live.extend(self.networks.iter().map(|n| format!("network/{}", n.name)));
+        if let Some(bridges) = &self.bridges {
+            live.extend(bridges.iter().map(|b| format!("network/bridge:{}", b.bridge)));
+        }
+        live
     }
 }
 
@@ -86,14 +123,9 @@ impl crate::state::VmManager {
             let period = meter.cfg.sample_secs.max(1) * 1000;
             loop {
                 tokio::time::sleep(until_next(now_ms(), period)).await;
-                let vms: Vec<Vm> = me.vms.read().await.values().cloned().collect();
-                let disks = me.images.list_disks();
-                let m = meter.clone();
                 let started = std::time::Instant::now();
-                match tokio::task::spawn_blocking(move || m.sample(&vms, &disks, now_ms())).await {
-                    Ok(Ok(())) => {}
-                    Ok(Err(e)) => tracing::warn!("metering round failed: {}", e),
-                    Err(e) => tracing::warn!("metering round panicked: {}", e),
+                if let Err(e) = me.meter_round(&meter).await {
+                    tracing::warn!("metering round failed: {}", e);
                 }
                 let took = started.elapsed();
                 if took > Duration::from_millis(period / 2) {
@@ -103,6 +135,39 @@ impl crate::state::VmManager {
         });
         self.tasks.lock().unwrap().push(task);
         Ok(())
+    }
+
+    /// Snapshot everything and run one round (port counters from netd).
+    async fn meter_round(&self, meter: &Arc<Meter>) -> Result<(), MeteringError> {
+        let vms: Vec<Vm> = self.vms.read().await.values().cloned().collect();
+        let disks = self.images.list_disks();
+        let networks = self.networks.list().unwrap_or_default();
+        let netd = self.netd.clone();
+        let m = meter.clone();
+        tokio::task::spawn_blocking(move || {
+            let bridges = match netd.call::<Vec<BridgeStats>>(glidex_netd::proto::Op::PortStats) {
+                Ok(b) => Some(b),
+                Err(e) => {
+                    tracing::debug!("metering: no port counters this round: {}", e);
+                    None
+                }
+            };
+            m.sample(&Snapshot { vms, disks, networks, bridges }, now_ms())
+        })
+        .await
+        .map_err(|e| MeteringError::Storage(format!("metering round panicked: {e}")))?
+    }
+
+    /// A final sample before ports or bridges go away (detach, release,
+    /// network deletion, uplink changes; spec/metering.md §5.4): bounded
+    /// at 2 s, and never an error. Missing it costs at most one interval.
+    pub async fn meter_final_sample(&self) {
+        let Some(meter) = self.meter().filter(|m| m.cfg.enabled) else { return };
+        match tokio::time::timeout(Duration::from_secs(2), self.meter_round(&meter)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => tracing::warn!("metering: final sample failed: {}", e),
+            Err(_) => tracing::warn!("metering: final sample timed out"),
+        }
     }
 
     /// The meter, once [`Self::start_metering`] ran.

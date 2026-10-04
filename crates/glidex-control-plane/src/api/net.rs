@@ -355,6 +355,7 @@ pub async fn delete_bridge(c: Caller, Path(name): Path<String>) -> Result<impl I
             name, net.name
         )))));
     }
+    c.manager().meter_final_sample().await;
     netd_blocking(&c, move |n, who| n.call_as::<serde_json::Value>(Op::DeleteBridge { name }, who)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -402,6 +403,7 @@ pub struct CommitRequest {
 pub async fn commit_uplink(c: Caller, Path((bridge, name)): Path<(String, String)>, Json(req): Json<CommitRequest>) -> Result<impl IntoResponse, ApiErr> {
     c.set_target(format!("uplink:{}/{}", bridge, name));
     c.require(Ent::Host, EntitySet::new())?;
+    c.manager().meter_final_sample().await;
     let res: UplinkResult =
         netd_blocking(&c, move |n, who| n.call_as(Op::CommitUplink { bridge, name, token: req.token }, who)).await?;
     Ok(Json(res))
@@ -410,6 +412,7 @@ pub async fn commit_uplink(c: Caller, Path((bridge, name)): Path<(String, String
 pub async fn delete_uplink(c: Caller, Path((bridge, name)): Path<(String, String)>) -> Result<impl IntoResponse, ApiErr> {
     c.set_target(format!("uplink:{}/{}", bridge, name));
     c.require(Ent::Host, EntitySet::new())?;
+    c.manager().meter_final_sample().await;
     netd_blocking(&c, move |n, who| n.call_as::<serde_json::Value>(Op::DeleteUplink { bridge, name }, who)).await?;
     Ok(StatusCode::NO_CONTENT)
 }

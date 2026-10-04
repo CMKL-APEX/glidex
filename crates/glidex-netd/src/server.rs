@@ -104,6 +104,7 @@ impl Netd {
             Op::ListNat => to_value(self.list_nat()?),
             Op::ListVmPorts => to_value(self.vm_ports()?),
             Op::ListUplinks => to_value(self.list_uplinks()?),
+            Op::PortStats => to_value(glidex_ovs::stats::bridge_stats(self.ex())?),
             Op::EnsureUplink(args) => to_value(self.ensure_uplink(args.spec, args.confirm)?),
             Op::CommitUplink { bridge, name, token } => to_value(self.commit_uplink(&bridge, &name, &token)?),
             Op::DeleteUplink { bridge, name } => self.delete_uplink(&bridge, &name).map(|_| Value::Null),

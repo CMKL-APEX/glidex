@@ -411,6 +411,10 @@ impl VmManager {
 
     /// Detach this VM's ports: all of them, or those `keep` rejects.
     pub(crate) async fn detach_ports(&self, vm_id: &str, st: &mut VmStatus, keep: Option<&(dyn Fn(&NicStatus) -> bool + Sync)>) -> Result<(), VmManagerError> {
+        // The ports' counters go with them: meter them first (metering §5.4).
+        if st.nics.iter().any(|n| !keep.is_some_and(|k| k(n))) {
+            self.meter_final_sample().await;
+        }
         let _ports = self.ports_lock.lock().await;
         let mut remaining = Vec::new();
         for nic in std::mem::take(&mut st.nics) {
@@ -919,6 +923,7 @@ impl VmManager {
         let has = |f: &str| vm.finalizers.iter().any(|x| x == f);
         // Ports and the VM's NAT reservations.
         if has(FINALIZER_PORTS) && (!vm.config().networks.is_empty() || !vm.status.nics.is_empty()) {
+            self.meter_final_sample().await;
             let _ports = self.ports_lock.lock().await;
             let netd = self.netd.clone();
             let id = vm.id.clone();

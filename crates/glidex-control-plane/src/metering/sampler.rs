@@ -106,16 +106,11 @@ pub fn sample_disks(round: &mut Round, disks: &[Disk], now: u64) -> Result<(), M
     Ok(())
 }
 
-/// Forget the cursors of VMs and disks that no longer exist. Nothing is
+/// Forget the cursors of subjects that no longer exist. Nothing is
 /// charged for the time since their last reading: when a record went
 /// away is unknown, and at most one interval is lost (§6.4).
-pub fn forget_gone(round: &mut Round, with_cursors: &BTreeSet<String>, vms: &[Vm], disks: &[Disk]) {
-    let live: BTreeSet<String> = vms
-        .iter()
-        .map(|v| format!("vm/{}", v.id))
-        .chain(disks.iter().map(|d| format!("disk/{}", d.id)))
-        .collect();
-    for key in with_cursors.difference(&live) {
+pub fn forget_gone(round: &mut Round, with_cursors: &BTreeSet<String>, live: &BTreeSet<String>) {
+    for key in with_cursors.difference(live) {
         round.forget_subject(key);
     }
 }
@@ -275,7 +270,7 @@ mod tests {
         // Gone: its cursors are forgotten.
         let with = l.cursor_subjects(&[SubjectKind::Disk, SubjectKind::Vm]).unwrap();
         let mut r = l.begin_round(T0 + 120_000).unwrap();
-        forget_gone(&mut r, &with, &[], &[]);
+        forget_gone(&mut r, &with, &BTreeSet::new());
         l.commit(r).unwrap();
         assert!(l.cursor_subjects(&[SubjectKind::Disk]).unwrap().is_empty());
     }

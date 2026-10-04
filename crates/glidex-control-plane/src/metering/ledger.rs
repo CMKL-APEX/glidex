@@ -283,6 +283,58 @@ impl Round {
         origin: Origin,
     ) -> Result<Option<Delta>, MeteringError> {
         let key = format!("{}/{}", subject.key(), meter);
+        self.counter_at_key(key, subject, meter, reset_key, value, at, origin)
+    }
+
+    /// One of several upstream counters that add up to one meter (e.g.
+    /// every port of a bridge into `bridge.bytes`): each `part` keeps its
+    /// own cursor and reset key.
+    #[allow(clippy::too_many_arguments)]
+    pub fn counter_part(
+        &mut self,
+        subject: &Subject,
+        meter: &str,
+        part: &str,
+        reset_key: &str,
+        value: u64,
+        at: u64,
+        origin: Origin,
+    ) -> Result<Option<Delta>, MeteringError> {
+        let key = format!("{}/{}#{}", subject.key(), meter, part);
+        self.counter_at_key(key, subject, meter, reset_key, value, at, origin)
+    }
+
+    /// Drop the cursors of a meter's parts that are not in `keep` (ports
+    /// that are gone).
+    pub fn prune_parts(&mut self, subject: &Subject, meter: &str, keep: &BTreeSet<String>) -> Result<(), MeteringError> {
+        let prefix = format!("{}/{}#", subject.key(), meter);
+        let txn = self.db.begin_read()?;
+        let table = txn.open_table(CURSORS)?;
+        let stored: Vec<String> = table
+            .range(prefix.as_str()..format!("{prefix}~").as_str())?
+            .map(|r| r.map(|(k, _)| k.value().to_string()))
+            .collect::<Result<_, _>>()?;
+        let known = self.cursors.keys().filter(|k| k.starts_with(&prefix)).cloned();
+        let all: BTreeSet<String> = stored.into_iter().chain(known).collect();
+        for k in all {
+            if !keep.contains(&k[prefix.len()..]) {
+                self.cursors.insert(k, None);
+            }
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn counter_at_key(
+        &mut self,
+        key: String,
+        subject: &Subject,
+        meter: &str,
+        reset_key: &str,
+        value: u64,
+        at: u64,
+        origin: Origin,
+    ) -> Result<Option<Delta>, MeteringError> {
         let prev = self.cursor(&key)?;
         let (amount, from, reset) = match &prev {
             Some(c) if c.reset_key == reset_key && value >= c.value => (value - c.value, c.at, false),
@@ -904,6 +956,29 @@ mod tests {
         r.gauge_run(&s, "mem.alloc", "i2", T0 + 500_000, 1024, T0 + 500_000, T0 + 530_000, Some(T0 + 100_000)).unwrap();
         l.commit(r).unwrap();
         assert_eq!(total(&l, "mem.alloc"), 1024 * 100 + 1024 * 30);
+    }
+
+    #[test]
+    fn counter_parts_add_into_one_meter_and_prune() {
+        let (_d, l) = ledger();
+        let net = Subject::new(SubjectKind::Network, "nat", "nat", Some("p".into()));
+        let mut r = l.begin_round(T0 + 60_000).unwrap();
+        for (part, v0, v1) in [("port-a", 100, 150), ("port-b", 1000, 1300)] {
+            r.counter_part(&net, "bridge.bytes", part, part, v0, T0, Origin::ZeroAt(T0)).unwrap();
+            r.counter_part(&net, "bridge.bytes", part, part, v1, T0 + 30_000, Origin::Unknown).unwrap();
+        }
+        l.commit(r).unwrap();
+        assert_eq!(total(&l, "bridge.bytes"), 1450);
+        // port-a went away: its cursor is dropped, port-b's is kept.
+        let mut r = l.begin_round(T0 + 90_000).unwrap();
+        r.prune_parts(&net, "bridge.bytes", &["port-b".to_string()].into()).unwrap();
+        r.counter_part(&net, "bridge.bytes", "port-b", "port-b", 1400, T0 + 60_000, Origin::Unknown).unwrap();
+        l.commit(r).unwrap();
+        assert_eq!(total(&l, "bridge.bytes"), 1550);
+        let r = l.begin_round(T0 + 91_000).unwrap();
+        let txn = r.db.begin_read().unwrap();
+        let keys: Vec<String> = txn.open_table(CURSORS).unwrap().iter().unwrap().map(|e| e.unwrap().0.value().to_string()).collect();
+        assert_eq!(keys, vec!["network/nat/bridge.bytes#port-b".to_string()]);
     }
 
     #[test]

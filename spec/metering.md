@@ -456,11 +456,27 @@ Interface on a glidex-managed bridge (`glidex-ovs` bridges, from
   `delete_uplink`) and `delete_bridge`. Those are rare admin
   operations, so a final sample is taken best-effort. If it is missed,
   the uncounted tail is at most `sample_secs` of traffic.
-- **Attribution.** `NicState.network` (`models.rs`) gives the NIC's
+- **Attribution.** `NicStatus.network` (`models.rs`) gives the NIC's
   network. A per-VM NIC row records `network` too, so per-VM traffic
   can be grouped by network (`group_by=network,vm`). Network rows
   carry the network's project, and host-level (admin) networks carry
   none.
+- **Shared bridges.** Several networks can share one bridge, each with
+  its own VLAN tag on its VM ports. The bridge totals are then
+  divided:
+  - Each network gets the ingress of **its own VM ports**.
+  - The shared ports (the uplink, or the gateway) go to a host-level
+    subject `network/bridge:<bridge>`, with no project.
+  - A bridge that no network uses is metered the same way.
+  - The per-network figure is still exact for what the VMs sent. What
+    arrived through the shared uplink can't be attributed to a VLAN
+    without per-port OpenFlow rules (§16).
+- **Implementation:** `glidex-ovs` `stats::bridge_stats` (three
+  `ovs-vsctl list` calls: Bridge, Port, Interface), netd
+  `Op::PortStats`, and `metering/net.rs`. Every port's counters have
+  their own cursor (a ledger *part*) inside the network's
+  `bridge.bytes`, keyed by the Interface `_uuid`. Parts of ports that
+  are gone are pruned.
 
 ### 5.5 NAT external counters: `inet glidex_meter`
 

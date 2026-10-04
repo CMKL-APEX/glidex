@@ -464,6 +464,7 @@ sends it with `call_as` / `call_value_as`; `call` sends none.
 | `hello` | all | `{protocol}` → versions |
 | `probe` | all | – → `HostCapabilities` |
 | `list_bridges` · `list_uplinks` · `list_nat` · `list_vm_ports` | full | – → records with live state |
+| `port_stats` | full (never the status socket) | – → per glidex bridge, every port's `role` (`vm`/`uplink`/`gateway`/`other`), VLAN `tag`, VM id and NIC, and OVS `rx`/`tx` bytes, packets and drops as OVS reports them. The `gateway` (internal) port is in the host's view ([metering.md §5.4](metering.md#54-network-bridge-port-counters)). Read-only. |
 | `install_ovs` | full | `{profile, source_build, confirm}` → `InstallReport` |
 | `init_dpdk` | full | `{socket_mem, pmd_cpu_mask, confirm}` → – |
 | `ensure_bridge` · `delete_bridge` | full | `BridgeSpec` · `{name}` |
