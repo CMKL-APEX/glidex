@@ -12,9 +12,13 @@ managed object alongside it:
 - **Disks** are writable volumes that VMs boot from or attach. A disk is
   either blank or cloned from an image, and glidex can grow or shrink it and
   extend its root partition.
+- **Firmware images** are images of kind `firmware`: the UEFI firmware a
+  VM boots a cloud image through, built for one hypervisor, pulled from a
+  firmware catalog or a URL ([§4.1](#41-firmware-catalog)). VMs name one
+  with `firmware` instead of a host `firmware_path` ([§7](#7-vm-integration)).
 
 Source: `crates/glidex-control-plane/src/images/`: `mod.rs` (records,
-`ImageManager`, `ImageError`), `catalog.rs`, `download.rs`, `disk.rs`,
+`ImageManager`, `ImageError`), `catalog.rs`, `firmware.rs`, `download.rs`, `disk.rs`,
 `partition.rs` and `qemu_img.rs`. `VmManager` (`state.rs`) owns the
 `ImageManager` and does every check that involves VMs. Since M3 of
 [reconciliation.md](reconciliation.md#10-disk-image-and-network-controllers),
@@ -53,7 +57,9 @@ Non-goals:
 ├── glidex.db                     # ReDB: vms, credentials, images, disks
 ├── images/
 │   ├── <image-id>.qcow2          # verified, chmod 0444
-│   └── <image-id>.qcow2.part     # in-flight download
+│   ├── <image-id>.qcow2.part     # in-flight download (firmware too)
+│   ├── <image-id>.fd             # firmware image, chmod 0444
+│   └── <image-id>.vars.fd        # its UEFI variable-store template (OVMF), 0444
 └── disks/
     └── <disk-id>.qcow2           # chmod 0600
 ```
@@ -88,6 +94,8 @@ is keyed by id, and the value is serde-JSON, as in
 pub struct Image {
     pub id: String,                 // UUIDv4
     pub name: String,               // unique, user-chosen; defaults to catalog key
+    pub kind: ImageKind,            // Disk (default: older records) | Firmware
+    pub hypervisor: Option<HypervisorType>, // what a firmware image is built for
     pub source: ImageSource,
     pub status: ImageStatus,
     pub format: DiskFormat,         // detected after download; always Qcow2 once Ready
@@ -106,6 +114,7 @@ pub struct Image {
 pub enum ImageSource {
     Catalog { key: String, url: String, version: String },
     Url { url: String, expected_sha256: Option<String> },
+    Firmware { key: String, url: String, version: String }, // url: download, or host file copied
 }
 
 pub enum ImageStatus {
@@ -229,6 +238,72 @@ vendor host, and the image is checked against it. The `version` recorded in
 checksum source for both architectures. Both are checked by
 `catalog::tests::every_entry_is_https_with_checksum_for_both_arches`. A
 URL resolved at download time (Fedora) is checked again.
+
+### 4.1 Firmware catalog
+
+`images/firmware.rs` holds the firmware a VM boots cloud images through:
+
+| Key | Hypervisor | Source |
+|---|---|---|
+| `cloudhv-edk2` | Cloud Hypervisor | `github.com/cloud-hypervisor/edk2/releases/download/ch-811ce5ea35/CLOUDHV.fd` (`CLOUDHV_EFI.fd` on aarch64), sha256 pinned |
+| `ovmf` | QEMU (x86_64) | the host's `ovmf` / `edk2-ovmf` package: the first OVMF code image found ([hypervisors.md](hypervisors.md#firmware-boot-1)) |
+| `ovmf-debian` | QEMU (x86_64) | Debian's `ovmf` 2025.02-8+deb13u1 from `snapshot.debian.org`, sha256 pinned; `OVMF_CODE_4M.fd` and `OVMF_VARS_4M.fd` unpacked, each pinned too |
+
+`GET /images/firmware-catalog` lists the entries this host can use, with
+`source` (`download`, `debian` or `host`), the URL or host file, the pinned
+`version`, `available` (a host entry needs its package; `hint` says which)
+and `downloaded_image_id`. `POST /images {"firmware": "<key>", name?}`
+pulls one as an image of kind `firmware`, named after the key by default:
+
+- a `download` entry is fetched through the §5 pipeline and checked
+  against its pinned digest. **Why pinned here, unlike cloud images:** one
+  tested firmware build is what guests should boot, as the installer
+  pins it ([installer.md](installer.md#uefi-firmware)); the two are bumped
+  together. When the installer's `~/.glidex/CLOUDHV.fd` has that digest,
+  it is copied instead and the image is `Ready` at once (offline
+  installs);
+- a `debian` entry downloads a pinned Debian package the same way, then
+  unpacks the code image and its variable-store template from it
+  (`firmware::extract_deb`: the `ar` container parsed by hand, then
+  `data.tar.xz` with the pure-Rust `lzma-rs` and `tar` crates, so no
+  `dpkg` is needed and any distro works), checks each against its own
+  pinned digest, and stores them like a host import. The URL is
+  snapshot.debian.org's, which keeps a file at its first-seen URL forever;
+  the archive's pool drops a version once a point release replaces it.
+  **Why Debian:** upstream EDK2 publishes no prebuilt OVMF, and nightly
+  builds can't be pinned. `sha256` of the image is the unpacked code
+  file's; the package's digest stays in `download.expected`. Never
+  auto-imported (it would download);
+- a `host` entry copies the code image and its variable-store template
+  (`<id>.vars.fd`) into the image directory, `0444`, `Ready` at once.
+  Not installed: `503 tool_unavailable`, naming the package.
+
+A firmware file can also come from any URL:
+`{"url": …, "sha256"?, "kind": "firmware", "hypervisor": "qemu"}`
+(the same URL rules). Firmware downloads skip `qemu-img`: they must be
+1 byte to 64 MiB, and are stored raw as `<id>.fd`. For QEMU,
+`vars_url` (and optional `vars_sha256`) names the variable-store template
+of a split OVMF build: fetched after the code file through the same
+client, stored as `<id>.vars.fd`, and a mismatch fails the image. The
+image is `verified` only when every file it is made of had a digest.
+Without a template, a QEMU VM maps the firmware with `-bios` (right for a
+combined `OVMF.fd`, but the guest's UEFI settings are not kept); image
+responses say which with `vars_template`.
+
+**Auto-import.** At startup (after `VmManager::initialize`, in `main`),
+`ImageManager::auto_import_firmware` pulls each entry that has a local
+source: the installer's `CLOUDHV.fd` with the pinned digest, or an
+installed OVMF. It never downloads. Each entry is marked done in the
+`image_meta` table (`firmware-auto-import/<key>`) once it is imported,
+or once a firmware image for its hypervisor already exists, and is never
+imported again, so an image the admin deleted stays deleted. An entry
+without a local source is not marked, and is tried again at the next
+start (OVMF installed later). So a fresh install boots image VMs without
+a manual pull.
+
+**Invariant.** A firmware image is never the source of a disk
+(`400 invalid_image`), and a VM only boots firmware built for its own
+hypervisor.
 
 ### Arbitrary URLs
 
@@ -564,6 +639,11 @@ default), but some do not (AlmaLinux sets `growpart` off in
   not reuse it and the catalog's `downloaded_image_id` ignores it. A
   stale writer (the download task, say) cannot clear the request or
   bring a deleted image back.
+- A firmware image is refused (`409 conflict`, naming them) while VMs
+  boot through it (`VmConfig.firmware_image`); `VmManager::delete_image`
+  checks under the VM-map read lock, which `create_vm` holds for writing
+  while it picks the image. Image responses list those VMs as
+  `used_by_vms`.
 - `GET /images/{id}` and `GET /disks/{id}` include `qemu-img info` output
   (virtual size, actual size, backing chain) and, for disks, the parsed
   partition table:
@@ -577,16 +657,26 @@ default), but some do not (AlmaLinux sets `growpart` off in
 | Field | Meaning |
 |---|---|
 | `image` | Image id or name. glidex records a linked root disk named `<vm-name>-root`, sized `root_disk_size_gib` (or the §6.1 default), extended offline, and owned by the VM (`owner`). The image may still be downloading. |
+| `firmware` | Firmware image id or name (§4.1) the VM boots through: `ready`, not being deleted, built for the VM's hypervisor. |
 | `root_disk` | Id or name of an existing, unattached disk to boot from. |
 | `data_disks` | Ids or names of extra unattached disks, attached in order after the root disk. |
 
 Exactly one of `rootfs_path`, `image` or `root_disk` must be given; anything
 else is `400 invalid_config`. With `image` or `root_disk` and no
-`kernel_image_path`, the VM boots through firmware, and `firmware_path`
-defaults to `default_firmware_path()`. A caller who brings a kernel keeps
-kernel boot, so QEMU can boot managed disks too. The root disk created for
+`kernel_image_path`, the VM boots through firmware: `firmware`, or by
+default the newest ready firmware image for its hypervisor
+(`400 invalid_config` naming the catalog when there is none). A caller
+who brings a kernel keeps kernel boot, so QEMU can boot managed disks
+too. `firmware_path` (a host file, `useHostPath`) still works and can't
+be combined with `firmware`. The root disk created for
 `image` is named `<vm-name>-root` (the VM name with invalid characters
 replaced by `-`), or `<vm-name>-<id prefix>` if that name is taken.
+
+`VmConfig` records the firmware image as `firmware_image` (id) and its
+file as `firmware_path`, so backends see one field either way; for QEMU
+the VM controller also fills the non-persisted `firmware_vars_template`
+from `<id>.vars.fd`. `VmResponse.firmware` is the image id. Both fields
+are immutable.
 
 `VmConfig` gains `root_disk: Option<String>`, `data_disks: Vec<String>`
 (disk ids) and `owns_root_disk: bool`. `rootfs_path` is still filled in,
@@ -625,8 +715,9 @@ Running or Paused VMs get `400 invalid_state` in v1.
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/images/catalog` | Catalog entries for this host's arch, each with `downloaded_image_id` if one exists |
+| `GET` | `/images/firmware-catalog` | Firmware catalog entries (§4.1), each with `available`, `hint` and `downloaded_image_id` |
 | `GET` | `/images` | List images |
-| `POST` | `/images` | `{catalog, name?}` or `{url, sha256?, name?}`. Returns `202` and an `Image` (`200` with the existing record if that catalog key is already downloading) |
+| `POST` | `/images` | `{catalog, name?}`, `{firmware, name?}` or `{url, sha256?, name?, kind?, hypervisor?, vars_url?, vars_sha256?}`. Returns `202` and an `Image` (`200` with the existing record if that catalog or firmware key is already downloading) |
 | `GET` | `/images/{id}` | Image, including download progress |
 | `DELETE` | `/images/{id}[?wait=N]` | Delete, or cancel a download (§6.6). `204`, or `202` with the image while the controller finishes; with `wait`, `200` once gone. `409` while a disk uses it |
 | `POST` | `/images/{id}/retry` | Download a failed image again (§5). Returns `202` |
@@ -641,8 +732,9 @@ Running or Paused VMs get `400 invalid_state` in v1.
 | `POST` | `/vms/{id}/disks` | Attach a data disk (stopped VM) |
 | `DELETE` | `/vms/{id}/disks/{disk}` | Detach a data disk (stopped VM) |
 
-Image responses carry `deleting: true` while a deletion is in progress
-(omitted otherwise).
+Image responses carry `kind` (`disk` | `firmware`), `hypervisor` (firmware
+only), `used_by_vms` (firmware in use) and `deleting: true` while a
+deletion is in progress (omitted otherwise).
 
 For images and disks, `{id}` path segments (and the `image`, `root_disk`,
 `data_disks` and `disk` request fields) accept an id or a unique name.
@@ -713,13 +805,18 @@ back to `on-boot` mode, saying so in `warnings`. Shrinking a GPT disk needs
 - **Uninstaller.** `~/.glidex/images` and `~/.glidex/disks` are part of
   `~/.glidex`, which is removed only with `--purge-user-data`. The help
   text says so. These hold user data, unlike the seed files in the VM's runtime directory.
-- **gxctl.** New `image catalog|list|pull|retry|rm` and
+- **gxctl.** `image catalog` lists the firmware catalog too, `image list`
+  shows each image's kind, and `image pull --firmware <key>` (or
+  `<url> --firmware-for <hypervisor> [--vars-url U] [--vars-sha256 H]`)
+  pulls firmware; `create` asks for
+  a firmware image instead of a path. New `image catalog|list|pull|retry|rm` and
   `disk list|show|create|resize|extend-root|rm` commands (the disk
   writes wait: create up to 300 s, resize and extend-root 120 s), and
   `delete <vm> --keep-disk`. `create` offers "image" as the boot disk
   source when images are downloaded ([cli.md](cli.md)).
-- **Web UI.** A new Images page (catalog with Pull buttons and progress
-  bars, then downloaded images) and a Disks page. `CreateVmForm` gets an
+- **Web UI.** A new Images page (cloud image and firmware catalogs with
+  Pull buttons and progress bars, then downloaded images and firmware) and
+  a Disks page; `CreateVmForm` picks a firmware image. `CreateVmForm` gets an
   image picker and a root-size field ([web-ui.md](web-ui.md)).
 - **`Cargo.toml`.** `reqwest` gains the `stream` feature, and `sha2`,
   `futures-util` and `tempfile` become regular dependencies.
@@ -757,7 +854,17 @@ missing.
   and raw, including shrink below the minimum (`min_size_bytes`) and below
   a linked disk's image; VMs from `image`, `root_disk` and `data_disks`;
   attach/detach; `keep_disk`; owned disk deleted with the VM; records
-  surviving a restart.
+  surviving a restart; firmware images (`firmware_images`: URL download
+  with `kind: firmware`, not a disk source, hypervisor match, in use
+  while a VM boots through it; an image VM refused until one exists;
+  `ovmf_firmware_is_imported_from_the_host_package`).
+  `firmware_download_with_a_vars_template`; `ovmf_debian_is_downloaded_and_unpacked`
+  (`#[ignore]`d: network).
+- **Unit:** `firmware::tests::unpacks_and_checks_deb_files` builds a `.deb`
+  (plain and xz data archives) and checks digests and missing files.
+- **Functional:** `firmware_boot_with_generated_cloud_init` (and the QEMU
+  one) boot through a firmware image pulled from the firmware catalog;
+  `GLIDEX_TEST_QEMU_FIRMWARE_KEY=ovmf-debian` boots Debian's OVMF.
 - **Functional (`#[ignore]`d, `catalog_image_boots_and_root_grows` in
   `tests/functional_tests.rs`):** pull `GLIDEX_TEST_CATALOG` (default
   `ubuntu-26.04`) from the vendor and create a VM with `image` and

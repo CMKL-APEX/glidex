@@ -48,11 +48,12 @@ The guest configuration the hypervisor needs to boot:
 - `vcpu_count: u8`
 - `mem_size_mib: u32`
 - `kernel_image_path: String` — empty when booting via firmware
-- `firmware_path: Option<String>` — UEFI firmware: normally
-  `~/.glidex/CLOUDHV.fd` as downloaded by `glidex-install` for
-  `cloudhypervisor`, or an OVMF code image for `qemu`
-  (`HypervisorType::default_firmware_path()`); when set, the guest boots
-  its disk's bootloader and the kernel fields are ignored.
+- `firmware_path: Option<String>` — UEFI firmware: normally the file of
+  a firmware image (`<image dir>/<id>.fd`, [images.md](images.md#7-vm-integration)),
+  else a host path given by an admin; when set, the guest boots its
+  disk's bootloader and the kernel fields are ignored.
+- `firmware_image: Option<String>` — the firmware image (id) behind
+  `firmware_path`; while set, the image can't be deleted.
 - `cloud_init_path: Option<String>` — NoCloud seed disk. `None` on a
   firmware boot → the VM controller regenerates a default seed
   (`cloud_init.rs`) at `Vm::default_cloud_init_path()` before every
@@ -177,8 +178,10 @@ sensible default `kernel_args` string (see `hypervisor/mod.rs`).
 - `kernel_args` — omitted → use
   `HypervisorType::default_kernel_args()` for the chosen backend.
 - `hypervisor` — omitted → `HypervisorType::default()` (currently `cloudhypervisor`).
-- `firmware_path` — omitted → direct kernel boot. `create_vm` rejects a
-  request that has neither a `kernel_image_path` nor a `firmware_path`.
+- `firmware` / `firmware_path` — omitted → direct kernel boot, except
+  that an `image` / `root_disk` VM without a kernel gets the newest
+  firmware image for its hypervisor. `create_vm` rejects a request that
+  ends up with neither a kernel nor firmware.
 - `vfio_devices` — omitted → empty list.
 - `power` — omitted → `stopped` (create, then start); `"running"`
   creates and starts in one call. `restart_policy`, `on_host_boot`,

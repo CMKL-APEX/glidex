@@ -1,20 +1,16 @@
 import { useRef, useEffect, useState, type FormEvent } from "react";
 import { listCredentials, listDisks, listImages, listNetworks } from "../api";
+import { Link } from "react-router-dom";
 import type { CreateVmRequest, CredentialInfo, DiskInfo, HypervisorType, ImageInfo, Network } from "../types";
-import { HYPERVISOR_LABELS, formatBytes, networkUsableBy } from "../types";
+import { HYPERVISOR_LABELS, firmwareFor, formatBytes, networkUsableBy } from "../types";
 import { useSession } from "../session";
 
 type BootMode = "firmware" | "kernel";
 
-/** Where each hypervisor's UEFI firmware usually lives. */
-const DEFAULT_FIRMWARE: Record<HypervisorType, string> = {
-  cloudhypervisor: "~/.glidex/CLOUDHV.fd",
-  qemu: "/usr/share/OVMF/OVMF_CODE_4M.fd",
-};
-
-const FIRMWARE_HINT: Record<HypervisorType, string> = {
-  cloudhypervisor: "Downloaded by glidex-install",
-  qemu: "OVMF code image from the ovmf / edk2-ovmf package",
+/** The firmware catalog entry to pull for each hypervisor (Images page). */
+const FIRMWARE_KEY: Record<HypervisorType, string> = {
+  cloudhypervisor: "cloudhv-edk2",
+  qemu: "ovmf",
 };
 /** Where a firmware-boot VM's root disk comes from (spec/images.md §7). */
 type RootSource = "image" | "disk" | "path";
@@ -32,7 +28,8 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
   const [memSizeMib, setMemSizeMib] = useState(512);
   const [hypervisor, setHypervisor] = useState<HypervisorType>("cloudhypervisor");
   const [bootMode, setBootMode] = useState<BootMode>("firmware");
-  const [firmwarePath, setFirmwarePath] = useState(DEFAULT_FIRMWARE.cloudhypervisor);
+  /** Firmware image id; "" until the images load (or none exists). */
+  const [firmwareImage, setFirmwareImage] = useState("");
   const [credential, setCredential] = useState("");
   // Set once the user picks a credential, so a late load never overrides it.
   const credentialChosen = useRef(false);
@@ -44,6 +41,7 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
   const [kernelArgs, setKernelArgs] = useState("");
   const [vfioDevices, setVfioDevices] = useState("");
   const [images, setImages] = useState<ImageInfo[]>([]);
+  const [firmwareImages, setFirmwareImages] = useState<ImageInfo[]>([]);
   const [freeDisks, setFreeDisks] = useState<DiskInfo[]>([]);
   const [rootSource, setRootSource] = useState<RootSource>("path");
   const [image, setImage] = useState("");
@@ -57,9 +55,10 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
 
   const firmware = bootMode === "firmware";
 
-  // Follow the hypervisor's default firmware unless the user typed one.
+  // Firmware is built for one hypervisor: pick the newest for the new one.
+  const firmwareChoices = firmwareFor(firmwareImages, hypervisor);
   const changeHypervisor = (next: HypervisorType) => {
-    if (firmwarePath === DEFAULT_FIRMWARE[hypervisor]) setFirmwarePath(DEFAULT_FIRMWARE[next]);
+    setFirmwareImage(firmwareFor(firmwareImages, next)[0]?.id ?? "");
     setHypervisor(next);
   };
 
@@ -85,8 +84,10 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
       .catch(() => setNetworks([]));
     listImages()
       .then((imgs) => {
-        const ready = imgs.filter((i) => i.status.state === "ready");
+        const ready = imgs.filter((i) => i.status.state === "ready" && !i.deleting && i.kind !== "firmware");
         setImages(ready);
+        setFirmwareImages(imgs);
+        setFirmwareImage((cur) => cur || (firmwareFor(imgs, "cloudhypervisor")[0]?.id ?? ""));
         if (ready.length > 0) {
           setImage(ready[0].id);
           setRootSource("image");
@@ -120,7 +121,7 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
         vcpu_count: vcpuCount,
         mem_size_mib: memSizeMib,
         kernel_image_path: firmware ? "" : kernelPath,
-        firmware_path: firmware ? firmwarePath : undefined,
+        firmware: firmware ? firmwareImage : undefined,
         credential: firmware && credential ? credential : undefined,
         networks:
           selectedNetworks.length > 0 ? selectedNetworks.map((network) => ({ network })) : undefined,
@@ -226,17 +227,34 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
         <>
           <div>
             <label className="block text-sm font-medium text-gray-700">
-              UEFI Firmware Path
+              UEFI Firmware
             </label>
-            <input
-              type="text"
-              className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-transparent"
+            <select
+              className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-transparent bg-white"
               required
-              value={firmwarePath}
-              onChange={(e) => setFirmwarePath(e.target.value)}
-            />
-            <p className="mt-1 text-xs text-gray-500">
-              {FIRMWARE_HINT[hypervisor]}
+              value={firmwareImage}
+              onChange={(e) => setFirmwareImage(e.target.value)}
+            >
+              {firmwareChoices.length === 0 && <option value="">No firmware image for {HYPERVISOR_LABELS[hypervisor]}</option>}
+              {firmwareChoices.map((i) => (
+                <option key={i.id} value={i.id}>
+                  {i.name}
+                  {i.source.kind === "firmware" && i.source.version ? ` (${i.source.version})` : ""}
+                </option>
+              ))}
+            </select>
+            <p className="mt-1 text-xs text-gray-500" data-testid="firmware-hint">
+              {firmwareChoices.length === 0 ? (
+                <>
+                  Pull <span className="font-mono">{FIRMWARE_KEY[hypervisor]}</span> from the firmware catalog on the{" "}
+                  <Link to="/images" className="text-sky-700 hover:underline">
+                    Images page
+                  </Link>{" "}
+                  first.
+                </>
+              ) : (
+                "A firmware image from the Images page, built for this hypervisor"
+              )}
             </p>
           </div>
 

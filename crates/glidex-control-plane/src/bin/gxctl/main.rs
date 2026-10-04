@@ -8,7 +8,6 @@ use clap::Parser;
 use client::{enc, ApiClient};
 use colored::Colorize;
 use console::{handle_connect, handle_log, restore_terminal};
-use glidex_control_plane::hypervisor::HypervisorType;
 use hyper::Method;
 use nix::sys::termios::{self, LocalFlags, SetArg};
 use rustyline::completion::{unescape, Completer, FilenameCompleter, Pair};
@@ -469,6 +468,8 @@ struct CreateVmRequest {
     mem_size_mib: u32,
     kernel_image_path: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    firmware: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     firmware_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     cloud_init_path: Option<String>,
@@ -660,10 +661,11 @@ fn image_status(img: &serde_json::Value) -> String {
 }
 
 async fn handle_image(client: &CliClient, args: &[&str]) {
-    let usage = "Usage: image catalog | list | pull <catalog-key|url> [--name N] [--sha256 H] | retry <name|id> | rm <name|id>";
+    let usage = "Usage: image catalog | list | pull <catalog-key|url> [--name N] [--sha256 H] [--firmware-for <cloudhypervisor|qemu> [--vars-url U] [--vars-sha256 H]] | pull --firmware <key> [--name N] | retry <name|id> | rm <name|id>";
     match args.first().copied().unwrap_or("list") {
         "catalog" => match client.request_json::<Vec<serde_json::Value>>(Method::GET, "/images/catalog", None).await {
             Ok(items) => {
+                println!("{}", "Cloud images (image pull <key>):".bold());
                 for i in items {
                     println!(
                         "  {:<14} {} {}{}",
@@ -672,6 +674,26 @@ async fn handle_image(client: &CliClient, args: &[&str]) {
                         i["release"].as_str().unwrap_or(""),
                         if i["downloaded_image_id"].is_null() { String::new() } else { " (downloaded)".green().to_string() }
                     );
+                }
+                if let Ok(fw) = client.request_json::<Vec<serde_json::Value>>(Method::GET, "/images/firmware-catalog", None).await {
+                    println!("{}", "UEFI firmware (image pull --firmware <key>):".bold());
+                    for i in fw {
+                        let note = if !i["downloaded_image_id"].is_null() {
+                            " (downloaded)".green().to_string()
+                        } else if let Some(h) = i["hint"].as_str() {
+                            format!(" ({})", h).yellow().to_string()
+                        } else {
+                            String::new()
+                        };
+                        println!(
+                            "  {:<14} {} [{}] {}{}",
+                            i["key"].as_str().unwrap_or("?").cyan(),
+                            i["name"].as_str().unwrap_or(""),
+                            i["hypervisor"].as_str().unwrap_or(""),
+                            i["version"].as_str().unwrap_or(""),
+                            note
+                        );
+                    }
                 }
             }
             Err(e) => println!("{} {}", "Error:".red(), e),
@@ -682,12 +704,17 @@ async fn handle_image(client: &CliClient, args: &[&str]) {
                 for i in imgs {
                     let src = &i["source"];
                     let from = match src["kind"].as_str() {
-                        Some("catalog") => format!("{} {}", src["key"].as_str().unwrap_or(""), src["version"].as_str().unwrap_or("")),
+                        Some("catalog") | Some("firmware") => format!("{} {}", src["key"].as_str().unwrap_or(""), src["version"].as_str().unwrap_or("")),
                         _ => src["url"].as_str().unwrap_or("").to_string(),
                     };
+                    let kind = match i["hypervisor"].as_str() {
+                        Some(h) if i["kind"] == "firmware" => format!("firmware/{}", h),
+                        _ => "disk".to_string(),
+                    };
                     println!(
-                        "  {:<20} {:<22} {:>9}  {}{}",
+                        "  {:<20} {:<20} {:<22} {:>9}  {}{}",
                         i["name"].as_str().unwrap_or("?").cyan(),
+                        kind,
                         image_status(&i),
                         format_bytes(i["virtual_size_bytes"].as_u64().unwrap_or(0)),
                         from.trim(),
@@ -698,15 +725,29 @@ async fn handle_image(client: &CliClient, args: &[&str]) {
             Err(e) => println!("{} {}", "Error:".red(), e),
         },
         "pull" => {
-            let Some(what) = args.get(1).filter(|a| !a.starts_with("--")) else {
+            let firmware = flag_value(args, "--firmware");
+            let Some(what) = firmware.or_else(|| args.get(1).copied().filter(|a| !a.starts_with("--"))) else {
                 println!("{}", usage.yellow());
                 return;
             };
-            let mut body = if what.contains("://") {
+            let mut body = if firmware.is_some() {
+                serde_json::json!({ "firmware": what })
+            } else if what.contains("://") {
                 serde_json::json!({ "url": what })
             } else {
                 serde_json::json!({ "catalog": what })
             };
+            if let Some(h) = flag_value(args, "--firmware-for") {
+                body["kind"] = serde_json::json!("firmware");
+                body["hypervisor"] = serde_json::json!(h);
+            }
+            // A split OVMF build's variable-store template (QEMU).
+            if let Some(u) = flag_value(args, "--vars-url") {
+                body["vars_url"] = serde_json::json!(u);
+            }
+            if let Some(h) = flag_value(args, "--vars-sha256") {
+                body["vars_sha256"] = serde_json::json!(h);
+            }
             if let Some(n) = flag_value(args, "--name") {
                 body["name"] = serde_json::json!(n);
             }
@@ -1102,6 +1143,8 @@ fn print_help() {
     println!("  {}     - Cloud images in the built-in catalog", "image catalog".cyan());
     println!("  {}        - List downloaded images", "image list".cyan());
     println!("  {} - Download and verify an image", "image pull <catalog-key|https-url> [--name N] [--sha256 H]".cyan());
+    println!("  {} - Pull UEFI firmware VMs boot through", "image pull --firmware <key> [--name N]".cyan());
+    println!("  {} - Download firmware (QEMU: with its variable store)", "image pull <url> --firmware-for <hv> [--vars-url U] [--vars-sha256 H]".cyan());
     println!("  {}   - Delete an image", "image rm <name|id>".cyan());
     println!("  {}         - List disks", "disk list".cyan());
     println!("  {}  - Disk details and partitions", "disk show <name|id>".cyan());
@@ -1586,38 +1629,39 @@ async fn handle_create(client: &CliClient) {
         }
     };
 
-    // A disk image boots through UEFI firmware by default: the CLOUDHV.fd
-    // glidex-install downloads into ~/.glidex, or the host's OVMF for QEMU.
-    let firmware_path = {
+    // A disk image boots through UEFI firmware: a firmware image built for
+    // the hypervisor (spec images.md §7), or a host path (admins only).
+    let (firmware, firmware_path) = {
         let ty = match hypervisor.as_deref() {
-            Some("qemu") => HypervisorType::Qemu,
-            _ => HypervisorType::CloudHypervisor,
+            Some("qemu") => "qemu",
+            _ => "cloudhypervisor",
         };
-        let default_firmware = ty
-            .default_firmware_path()
-            .filter(|p| p.exists())
-            .map(|p| p.to_string_lossy().into_owned());
-        let hint = default_firmware.as_deref().unwrap_or("none");
-        match prompt_path(&format!(
-            "UEFI firmware path ['none' for kernel boot] [{}]: ",
-            hint
-        ))
-        .as_str()
-        {
-            "" => default_firmware.map(|p| (p, true)),
-            "none" => None,
-            s => Some((s.to_string(), false)),
+        let ready: Vec<String> = client
+            .request_json::<Vec<serde_json::Value>>(Method::GET, "/images", None)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .rev() // newest first
+            .filter(|i| i["kind"] == "firmware" && i["hypervisor"] == ty && i["status"]["state"] == "ready" && i["deleting"] != true)
+            .filter_map(|i| i["name"].as_str().map(str::to_string))
+            .collect();
+        if ready.is_empty() {
+            let key = if ty == "qemu" { "ovmf" } else { "cloudhv-edk2" };
+            println!("{} no firmware image for {}; pull one with 'image pull --firmware {}' for firmware boot", "Note:".yellow(), ty, key);
+        }
+        let default = ready.first().cloned().unwrap_or_else(|| "none".to_string());
+        let options = if ready.is_empty() { String::new() } else { format!("{}, ", ready.join(", ")) };
+        match prompt_path(&format!("UEFI firmware [{}'none' for kernel boot, or a host path] [{}]: ", options, default)).as_str() {
+            "" if default == "none" => (None, None),
+            "" => (Some(default), None),
+            "none" => (None, None),
+            s if s.starts_with('/') => (None, Some(s.to_string())),
+            s => (Some(s.to_string()), None),
         }
     };
-    // Whether the firmware is just this machine's default: for an image or
-    // managed disk the server then picks its own (the control plane may run
-    // as another user, who can't read this user's ~/.glidex).
-    let (firmware_path, firmware_is_default) = match firmware_path {
-        Some((p, default)) => (Some(p), default),
-        None => (None, false),
-    };
+    let firmware_boot = firmware.is_some() || firmware_path.is_some();
 
-    let kernel_image_path = if firmware_path.is_some() {
+    let kernel_image_path = if firmware_boot {
         String::new()
     } else {
         let path = prompt_path("Kernel image path: ");
@@ -1632,13 +1676,13 @@ async fn handle_create(client: &CliClient) {
     // images.md §10); kernel boot takes a bare root filesystem image.
     let (mut rootfs_path, mut image, mut root_disk_size_gib, mut root_disk) = (String::new(), None, None, None);
     let mut choice = "path".to_string();
-    if firmware_path.is_some() {
+    if firmware_boot {
         let ready: Vec<String> = client
             .request_json::<Vec<serde_json::Value>>(Method::GET, "/images", None)
             .await
             .unwrap_or_default()
             .into_iter()
-            .filter(|i| i["status"]["state"] == "ready")
+            .filter(|i| i["status"]["state"] == "ready" && i["kind"] != "firmware")
             .filter_map(|i| i["name"].as_str().map(str::to_string))
             .collect();
         let default = if ready.is_empty() { "path" } else { "image" };
@@ -1679,7 +1723,7 @@ async fn handle_create(client: &CliClient) {
     if choice == "path" {
         // Firmware boot needs a disk with its own bootloader (e.g. a raw
         // distro cloud image); kernel boot takes a bare root filesystem image.
-        let rootfs_prompt = if firmware_path.is_some() {
+        let rootfs_prompt = if firmware_boot {
             "Disk image path (UEFI-bootable, e.g. a raw cloud image): "
         } else {
             "Root filesystem path: "
@@ -1694,14 +1738,14 @@ async fn handle_create(client: &CliClient) {
         s.split(',').map(|d| d.trim().to_string()).filter(|d| !d.is_empty()).collect::<Vec<_>>()
     });
 
-    let cloud_init_path = if firmware_path.is_some() {
+    let cloud_init_path = if firmware_boot {
         prompt_path_optional("cloud-init seed image (optional, default: auto-generated): ")
     } else {
         None
     };
 
     // A stored credential is provisioned through the generated seed only.
-    let credential = if firmware_path.is_some() && cloud_init_path.is_none() {
+    let credential = if firmware_boot && cloud_init_path.is_none() {
         let names: Vec<String> = client
             .list_credentials()
             .await
@@ -1731,7 +1775,7 @@ async fn handle_create(client: &CliClient) {
         None
     };
 
-    let kernel_args = if firmware_path.is_some() {
+    let kernel_args = if firmware_boot {
         None
     } else {
         prompt_optional("Kernel arguments (optional, default: root=/dev/vda reboot=k panic=1): ")
@@ -1785,11 +1829,8 @@ async fn handle_create(client: &CliClient) {
         vcpu_count,
         mem_size_mib,
         kernel_image_path,
-        firmware_path: if firmware_is_default && (image.is_some() || root_disk.is_some()) {
-            None
-        } else {
-            firmware_path
-        },
+        firmware,
+        firmware_path,
         cloud_init_path,
         credential,
         rootfs_path,

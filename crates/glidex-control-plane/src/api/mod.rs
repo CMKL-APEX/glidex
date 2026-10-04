@@ -153,6 +153,7 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         .add("DELETE", "/credentials/{username}", "deleteCredential", delete(storage::delete_credential))
         // ---- images and disks
         .add("GET", "/images/catalog", "readImage", get(storage::image_catalog))
+        .add("GET", "/images/firmware-catalog", "readImage", get(storage::firmware_catalog))
         .add("GET", "/images", "readImage", get(storage::list_images))
         .add("POST", "/images", "pullImage", post(storage::pull_image))
         .add("GET", "/images/{id}", "readImage", get(storage::get_image))

@@ -11,7 +11,10 @@
 //!   UEFI-bootable disk image. The firmware defaults to
 //!   `~/.glidex/CLOUDHV.fd` as downloaded by `glidex-install` (override with
 //!   `GLIDEX_TEST_FIRMWARE`), or the host's OVMF for QEMU (override with
-//!   `GLIDEX_TEST_QEMU_FIRMWARE`):
+//!   `GLIDEX_TEST_QEMU_FIRMWARE`). The firmware-boot tests boot through a
+//!   firmware image pulled from the firmware catalog instead:
+//!   `cloudhv-edk2`, and `ovmf` for QEMU (`GLIDEX_TEST_QEMU_FIRMWARE_KEY=
+//!   ovmf-debian` downloads Debian's):
 //!
 //!   ```sh
 //!   GLIDEX_TEST_IMAGE=~/ch/resolute-server-cloudimg-amd64.raw \
@@ -503,15 +506,40 @@ async fn qemu_firmware_boot_with_generated_cloud_init() {
     firmware_boot_e2e("qemu").await;
 }
 
-/// Boot a cloud image through UEFI with a generated seed and a stored
-/// credential, log in, pause/resume, then shut the guest down gracefully.
+/// Pull the hypervisor's firmware catalog entry as a firmware image: the
+/// installer's pinned CLOUDHV.fd or the host's OVMF is copied (else it is
+/// downloaded). `GLIDEX_TEST_QEMU_FIRMWARE_KEY` picks another QEMU entry
+/// (`ovmf-debian`). Returns its id.
+async fn pull_firmware_image(app: &Router, hypervisor: &str) -> String {
+    let qemu_key = std::env::var("GLIDEX_TEST_QEMU_FIRMWARE_KEY").unwrap_or_else(|_| "ovmf".into());
+    let key = if hypervisor == "qemu" { qemu_key.as_str() } else { "cloudhv-edk2" };
+    let (status, fw) = request(app, "POST", "/images", Some(json!({"firmware": key}))).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{fw}");
+    let id = fw["id"].as_str().unwrap().to_string();
+    let deadline = Instant::now() + Duration::from_secs(300);
+    loop {
+        let (_, fw) = request(app, "GET", &format!("/images/{id}"), None).await;
+        match fw["status"]["state"].as_str() {
+            Some("downloading" | "verifying") => assert!(Instant::now() < deadline, "firmware download timed out"),
+            _ => {
+                assert_eq!(fw["status"]["state"], "ready", "{fw}");
+                return id;
+            }
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
+
+/// Boot a cloud image through UEFI (a firmware image) with a generated
+/// seed and a stored credential, log in, pause/resume, then shut the guest
+/// down gracefully.
 async fn firmware_boot_e2e(hypervisor: &str) {
-    let firmware = test_firmware(hypervisor);
     let source_image = env_path("GLIDEX_TEST_IMAGE", None);
     assert!(Path::new("/dev/kvm").exists(), "/dev/kvm is required");
 
     let (app, manager, tmp) = create_running_app().await;
     let _guard = ShutdownGuard(Some(manager.clone()));
+    let firmware = pull_firmware_image(&app, hypervisor).await;
 
     // Work on a sparse copy so the source image is never modified.
     let rootfs = tmp.path().join("rootfs.raw");
@@ -541,7 +569,7 @@ async fn firmware_boot_e2e(hypervisor: &str) {
             "vcpu_count": 2,
             "mem_size_mib": 2048,
             "hypervisor": hypervisor,
-            "firmware_path": firmware,
+            "firmware": firmware,
             "rootfs_path": rootfs,
             "credential": username,
         })),
@@ -1220,8 +1248,8 @@ async fn catalog_image_boots_and_root_grows() {
     catalog_image_e2e("cloudhypervisor").await;
 }
 
-/// The same on QEMU, without a `firmware_path`: an `image` VM must get
-/// the host's OVMF by default.
+/// The same on QEMU: an `image` VM boots through the `ovmf` firmware
+/// image (the host's OVMF) by default.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "downloads a cloud image and boots it; needs network, KVM, QEMU, OVMF and qemu-img/qemu-io/sgdisk/growpart"]
 async fn qemu_catalog_image_boots_and_root_grows() {
@@ -1229,11 +1257,25 @@ async fn qemu_catalog_image_boots_and_root_grows() {
 }
 
 async fn catalog_image_e2e(hypervisor: &str) {
-    // QEMU relies on the server-side default firmware.
-    let firmware = (hypervisor != "qemu").then(|| test_firmware(hypervisor));
     let key = std::env::var("GLIDEX_TEST_CATALOG").unwrap_or_else(|_| "ubuntu-26.04".into());
     let (app, manager, _tmp) = create_running_app().await;
     let _guard = ShutdownGuard(Some(manager.clone()));
+
+    // The firmware the VM boots through by default (spec/images.md §7):
+    // copied from the installer's pinned file or the host's OVMF, or
+    // downloaded.
+    let fw_key = if hypervisor == "qemu" { "ovmf" } else { "cloudhv-edk2" };
+    let (status, fw) = request(&app, "POST", "/images", Some(json!({"firmware": fw_key}))).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{fw}");
+    let fw_id = fw["id"].as_str().unwrap().to_string();
+    let fw = loop {
+        let (_, fw) = request(&app, "GET", &format!("/images/{fw_id}"), None).await;
+        if !matches!(fw["status"]["state"].as_str(), Some("downloading" | "verifying")) {
+            break fw;
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    };
+    assert_eq!(fw["status"]["state"], "ready", "{fw}");
 
     let (status, img) = request(&app, "POST", "/images", Some(json!({"catalog": key}))).await;
     assert_eq!(status, StatusCode::ACCEPTED, "{img}");
@@ -1258,21 +1300,15 @@ async fn catalog_image_e2e(hypervisor: &str) {
     assert_eq!(status, StatusCode::CREATED, "{body}");
 
     let hostname = "gx-imgtest";
-    let mut spec = json!({
+    let spec = json!({
         "name": hostname, "vcpu_count": 2, "mem_size_mib": 2048, "hypervisor": hypervisor,
         "image": image_id, "root_disk_size_gib": 12, "credential": username,
     });
-    if let Some(firmware) = &firmware {
-        spec["firmware_path"] = json!(firmware);
-    }
     let (status, vm) = request(&app, "POST", "/vms", Some(spec)).await;
     assert_eq!(status, StatusCode::CREATED, "{vm}");
     let id = vm["id"].as_str().unwrap().to_string();
     let config = manager.get_vm(&id).await.unwrap().spec.config;
-    let expected = HypervisorType::Qemu.default_firmware_path().map(|p| p.to_string_lossy().into_owned());
-    if hypervisor == "qemu" {
-        assert_eq!(config.firmware_path, expected, "QEMU image VMs default to OVMF");
-    }
+    assert_eq!(config.firmware_image.as_deref(), Some(fw_id.as_str()), "image VMs default to the firmware image");
     let root = vm["root_disk"].as_str().unwrap().to_string();
     // glidex extended the root partition offline, before the first boot.
     assert!(vm.get("warnings").is_none(), "{vm}");

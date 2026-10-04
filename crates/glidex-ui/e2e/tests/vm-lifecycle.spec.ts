@@ -4,7 +4,7 @@
 // GLIDEX_TEST_IMAGE (a UEFI-bootable cloud image, copied first).
 import { existsSync, rmSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { api, bootPrerequisites, CLEAN_POWEROFF, del, E2E_HOME, expect, field, LABEL, test, testImage, vmCard } from "../fixtures";
+import { api, bootPrerequisites, CLEAN_POWEROFF, del, E2E_HOME, expect, field, firmwareImages, LABEL, test, testImage, vmCard } from "../fixtures";
 
 test("boots a cloud image and runs it from the UI", async ({ page, hypervisor }) => {
   test.setTimeout(10 * 60_000);
@@ -47,8 +47,9 @@ test("boots a cloud image and runs it from the UI", async ({ page, hypervisor })
       await field(page, "Hypervisor Backend").selectOption(hypervisor);
       await field(page, "vCPU Count").fill("2");
       await field(page, "Memory (MiB)").fill("2048");
-      // Firmware boot with the form's default firmware path.
+      // Firmware boot through the newest firmware image for the hypervisor.
       await expect(field(page, "Boot Mode")).toHaveValue("firmware");
+      await expect(field(page, "UEFI Firmware")).toHaveValue((await firmwareImages(hypervisor))[0].id);
       await field(page, "Boot Disk").selectOption("path");
       await field(page, "Disk Image Path").fill(disk);
       await field(page, "Login Credential").selectOption(username);

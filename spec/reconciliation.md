@@ -410,7 +410,7 @@ Phases:
 | `power`, `stop_grace_secs`, `restart_policy`, `on_host_boot` | at once |
 | `config.vfio_devices` | hot-plugged/unplugged while the guest is observed `Running`; while `Paused`, pending (`DevicesPending`) |
 | `config.data_disks`, `networks`, `vcpu_count`, `mem_size_mib`, `credential`, `kernel_args`, `hugepages` | next launch; `RestartRequired=True` meanwhile |
-| `hypervisor`, `kernel_image_path`, `firmware_path`, `rootfs_path`, `cloud_init_path`, `image`, `root_disk` | never: `400 invalid_config` ("immutable field") |
+| `hypervisor`, `kernel_image_path`, `firmware_path`, `firmware`, `rootfs_path`, `cloud_init_path`, `image`, `root_disk` | never: `400 invalid_config` ("immutable field") |
 
 `RestartRequired` compares the spec at `generation` with the spec at
 `instance.launched_generation`, ignoring the "at once" and hot-plug

@@ -251,10 +251,12 @@ Interactive `handle_create` asks, in order:
 4. Hypervisor choice: `cloudhypervisor | qemu`, default
    `cloudhypervisor`. Aliases: `ch`, `q`. Asked first
    because it decides which of the following prompts appear.
-5. UEFI firmware path. Defaults to the hypervisor's
-   `default_firmware_path()` (`~/.glidex/CLOUDHV.fd`, downloaded by
-   `glidex-install`, or the host's OVMF for QEMU) when that file exists,
-   otherwise no default; `none` selects kernel boot.
+5. UEFI firmware: a firmware image built for the hypervisor
+   ([images.md](images.md#41-firmware-catalog)), defaulting to the newest
+   ready one (sent as `firmware`); `none` selects kernel boot; an
+   absolute path is sent as `firmware_path` (needs `useHostPath`). With no
+   firmware image it says which to pull (`image pull --firmware
+   cloudhv-edk2` or `ovmf`) and defaults to `none`.
 6. Kernel image path (required, no default) — skipped for firmware
    boot.
 7. Boot disk. For firmware boot: `image` / `disk` / `path`, defaulting to

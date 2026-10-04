@@ -17,7 +17,7 @@ use std::sync::OnceLock;
 
 /// OVMF code images glidex looks for, in order: Debian/Ubuntu (`ovmf`),
 /// Fedora/RHEL (`edk2-ovmf`), Arch (`edk2-ovmf`).
-const OVMF_CODE_CANDIDATES: &[&str] = &[
+pub const OVMF_CODE_CANDIDATES: &[&str] = &[
     "/usr/share/OVMF/OVMF_CODE_4M.fd",
     "/usr/share/OVMF/OVMF_CODE.fd",
     "/usr/share/edk2/ovmf/OVMF_CODE.fd",
@@ -313,16 +313,18 @@ fn cpu_model_rejected(log: &str) -> bool {
 
 /// Map the firmware: OVMF code read-only, plus this VM's own variable
 /// store, copied from the pristine template on first boot (or when the
-/// template changed size, e.g. after a 2M -> 4M OVMF upgrade).
-fn prepare_firmware(code: &str, vars: &str) -> Result<Firmware, HypervisorError> {
+/// template changed size, e.g. after a 2M -> 4M OVMF upgrade). The
+/// template is the firmware image's own (`template`), else the one shipped
+/// next to the code file.
+fn prepare_firmware(code: &str, vars: &str, template: Option<&str>) -> Result<Firmware, HypervisorError> {
     let code_path = Path::new(code);
     if !code_path.exists() {
         return Err(HypervisorError::InvalidConfig(format!(
-            "UEFI firmware {} not found; install OVMF (ovmf / edk2-ovmf) or set firmware_path",
+            "UEFI firmware {} not found; pull the ovmf firmware image (Images > Firmware)",
             code
         )));
     }
-    let Some(template) = ovmf_vars_template(code_path) else {
+    let Some(template) = template.map(PathBuf::from).or_else(|| ovmf_vars_template(code_path)) else {
         return Ok(Firmware::Bios(code.to_string()));
     };
     let template_len = std::fs::metadata(&template)?.len();
@@ -332,6 +334,9 @@ fn prepare_firmware(code: &str, vars: &str) -> Result<Firmware, HypervisorError>
             std::fs::create_dir_all(dir)?;
         }
         std::fs::copy(&template, vars)?;
+        // The copy takes the template's mode, and a firmware image's
+        // template is read-only; the guest writes its own store.
+        std::fs::set_permissions(vars, std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
     }
     let name = code_path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
     let secure_boot = ["secboot", ".ms.", "snakeoil"].iter().any(|s| name.contains(s));
@@ -364,7 +369,7 @@ impl HypervisorDriver for QemuDriver {
                 let vars = config.firmware_vars_path.clone().ok_or_else(|| {
                     HypervisorError::InvalidConfig("firmware boot needs a firmware variable store path".into())
                 })?;
-                Some(prepare_firmware(code, &vars)?)
+                Some(prepare_firmware(code, &vars, config.firmware_vars_template.as_deref())?)
             }
             None => None,
         };
@@ -658,7 +663,7 @@ mod tests {
         let vars = dir.path().join("vm/vars.fd");
         let vars_s = vars.to_string_lossy().into_owned();
 
-        let fw = prepare_firmware(code.to_str().unwrap(), &vars_s).unwrap();
+        let fw = prepare_firmware(code.to_str().unwrap(), &vars_s, None).unwrap();
         assert_eq!(fw, Firmware::Pflash {
             code: code.to_string_lossy().into_owned(),
             vars: vars.to_string_lossy().into_owned(),
@@ -668,13 +673,32 @@ mod tests {
 
         // Variables the guest wrote survive the next boot.
         std::fs::write(&vars, b"BOOTVARS").unwrap();
-        prepare_firmware(code.to_str().unwrap(), &vars_s).unwrap();
+        prepare_firmware(code.to_str().unwrap(), &vars_s, None).unwrap();
         assert_eq!(std::fs::read(&vars).unwrap(), b"BOOTVARS");
 
         assert!(matches!(
-            prepare_firmware("/nonexistent/OVMF_CODE.fd", &vars_s),
+            prepare_firmware("/nonexistent/OVMF_CODE.fd", &vars_s, None),
             Err(HypervisorError::InvalidConfig(_))
         ));
+    }
+
+    /// A firmware image's own template (read-only, named by id) is used,
+    /// and the VM's copy of it is writable.
+    #[test]
+    fn firmware_image_template_is_copied_writable() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let code = dir.path().join("img.fd");
+        let template = dir.path().join("img.vars.fd");
+        std::fs::write(&code, b"code").unwrap();
+        std::fs::write(&template, b"pristine").unwrap();
+        std::fs::set_permissions(&template, std::fs::Permissions::from_mode(0o444)).unwrap();
+        let vars = dir.path().join("vm/vars.fd");
+        let vars_s = vars.to_string_lossy().into_owned();
+        let fw = prepare_firmware(code.to_str().unwrap(), &vars_s, Some(template.to_str().unwrap())).unwrap();
+        assert!(matches!(fw, Firmware::Pflash { .. }));
+        assert_eq!(std::fs::read(&vars).unwrap(), b"pristine");
+        assert_eq!(std::fs::metadata(&vars).unwrap().permissions().mode() & 0o777, 0o600);
     }
 
     #[test]

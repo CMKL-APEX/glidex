@@ -1,19 +1,25 @@
 // CreateVmForm per hypervisor: no VM is booted, so no KVM or image needed.
-import { api, DEFAULT_FIRMWARE, del, expect, field, FIRMWARE_HINT, LABEL, test, vmCard, type Hypervisor } from "../fixtures";
+import { api, del, ensureFirmware, expect, field, firmwareImages, FIRMWARE_KEY, LABEL, test, vmCard, type Hypervisor } from "../fixtures";
 
 const other = (hv: Hypervisor): Hypervisor => (hv === "qemu" ? "cloudhypervisor" : "qemu");
+
+// The form offers firmware images; make sure there is one to pick.
+test.beforeAll(async ({ hypervisor }) => {
+  await ensureFirmware(hypervisor);
+});
 
 test.beforeEach(async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "+ Create VM" }).click();
 });
 
-test("offers firmware boot with the hypervisor's own firmware", async ({ page, hypervisor }) => {
+test("offers firmware boot through the hypervisor's firmware image", async ({ page, hypervisor }) => {
+  const [newest] = await firmwareImages(hypervisor);
   await field(page, "Hypervisor Backend").selectOption(hypervisor);
   await expect(field(page, "Boot Mode")).toBeVisible();
   await expect(field(page, "Boot Mode")).toHaveValue("firmware");
-  await expect(field(page, "UEFI Firmware Path")).toHaveValue(DEFAULT_FIRMWARE[hypervisor]);
-  await expect(page.getByText(FIRMWARE_HINT[hypervisor])).toBeVisible();
+  await expect(field(page, "UEFI Firmware")).toHaveValue(newest.id);
+  await expect(page.getByTestId("firmware-hint")).toContainText("built for this hypervisor");
   await expect(page.getByText("Login Credential")).toBeVisible();
   if ((await api<unknown[]>("/networks")).length > 0) {
     await expect(page.getByText("Networks", { exact: true })).toBeVisible();
@@ -21,22 +27,27 @@ test("offers firmware boot with the hypervisor's own firmware", async ({ page, h
 
   await field(page, "Boot Mode").selectOption("kernel");
   await expect(page.getByText("Kernel Image Path")).toBeVisible();
-  await expect(page.getByText("UEFI Firmware Path")).toBeHidden();
+  await expect(page.getByText("UEFI Firmware", { exact: true })).toBeHidden();
   await expect(page.getByText("Login Credential")).toBeHidden();
 });
 
-test("follows the hypervisor's default firmware unless one was typed", async ({ page, hypervisor }) => {
+test("offers only firmware built for the chosen hypervisor", async ({ page, hypervisor }) => {
   const hv = field(page, "Hypervisor Backend");
-  const firmware = field(page, "UEFI Firmware Path");
+  const firmware = field(page, "UEFI Firmware");
+  const others = await firmwareImages(other(hypervisor));
   await hv.selectOption(other(hypervisor));
+  if (others.length > 0) {
+    await expect(firmware).toHaveValue(others[0].id);
+  } else {
+    // None: the form says which catalog entry to pull, and won't submit.
+    await expect(firmware).toHaveValue("");
+    await expect(page.getByTestId("firmware-hint")).toContainText(FIRMWARE_KEY[other(hypervisor)]);
+  }
+  const mine = (await firmwareImages(hypervisor)).map((i) => i.id);
   await hv.selectOption(hypervisor);
-  await expect(firmware).toHaveValue(DEFAULT_FIRMWARE[hypervisor]);
-  await hv.selectOption(other(hypervisor));
-  await expect(firmware).toHaveValue(DEFAULT_FIRMWARE[other(hypervisor)]);
-
-  await firmware.fill("/custom/fw.fd");
-  await hv.selectOption(hypervisor);
-  await expect(firmware).toHaveValue("/custom/fw.fd");
+  await expect(firmware).toHaveValue(mine[0]);
+  const offered = await firmware.locator("option").evaluateAll((os) => os.map((o) => (o as HTMLOptionElement).value));
+  expect(offered).toEqual(mine);
 });
 
 test.afterEach(async ({ hypervisor }) => {
@@ -58,10 +69,11 @@ test("submits hypervisor, firmware and networks", async ({ page, hypervisor }) =
     page.getByRole("button", { name: "Create VM", exact: true }).click(),
   ]);
   const body = request.postDataJSON();
+  expect(body.firmware_path).toBeUndefined();
   expect(body).toMatchObject({
     name: `form-${hypervisor}`,
     hypervisor,
-    firmware_path: DEFAULT_FIRMWARE[hypervisor],
+    firmware: (await firmwareImages(hypervisor))[0].id,
     kernel_image_path: "",
     rootfs_path: "/nonexistent/disk.img",
     restart_policy: "on_failure",

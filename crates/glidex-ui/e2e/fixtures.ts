@@ -18,14 +18,11 @@ export interface Options {
 export const API = `http://127.0.0.1:${process.env.E2E_API_PORT ?? 8851}`;
 export const E2E_HOME = process.env.GLIDEX_E2E_HOME ?? "/tmp/glidex-ui-e2e";
 
-/** What CreateVmForm fills in for each hypervisor. */
-export const DEFAULT_FIRMWARE: Record<Hypervisor, string> = {
-  cloudhypervisor: "~/.glidex/CLOUDHV.fd",
-  qemu: "/usr/share/OVMF/OVMF_CODE_4M.fd",
-};
-export const FIRMWARE_HINT: Record<Hypervisor, string> = {
-  cloudhypervisor: "Downloaded by glidex-install",
-  qemu: "OVMF code image from the ovmf / edk2-ovmf package",
+/** The firmware catalog entry each hypervisor's VMs boot through
+ * (spec/images.md §4.1). */
+export const FIRMWARE_KEY: Record<Hypervisor, string> = {
+  cloudhypervisor: "cloudhv-edk2",
+  qemu: "ovmf",
 };
 export const BINARY: Record<Hypervisor, string> = {
   cloudhypervisor: "cloud-hypervisor",
@@ -155,10 +152,40 @@ export async function bootPrerequisites(hypervisor: Hypervisor): Promise<string[
   else if (!existsSync(image)) missing.push(`${image} does not exist`);
   if (!existsSync("/dev/kvm")) missing.push("/dev/kvm is missing");
   if (!commandExists(BINARY[hypervisor])) missing.push(`${BINARY[hypervisor]} is not installed`);
-  const firmware = DEFAULT_FIRMWARE[hypervisor].replace("~", E2E_HOME);
-  if (!existsSync(firmware)) missing.push(`firmware ${firmware} is missing`);
+  try {
+    await ensureFirmware(hypervisor);
+  } catch (e) {
+    missing.push(e instanceof Error ? e.message : String(e));
+  }
   const status = await api("/ovs/status");
   if (status?.netd?.access !== "full") missing.push("glidex-netd is not usable (join the glidex group)");
   if (status?.host?.ovs_running !== true) missing.push("Open vSwitch is not running");
   return missing;
+}
+
+/** Ready firmware images for `hypervisor`, newest first: what CreateVmForm
+ * offers, and the first is what it preselects. */
+export async function firmwareImages(hypervisor: Hypervisor): Promise<any[]> {
+  return (await api<any[]>("/images"))
+    .filter((i) => i.kind === "firmware" && i.hypervisor === hypervisor && i.status.state === "ready" && !i.deleting)
+    .sort((a, b) => b.created_at - a.created_at);
+}
+
+/** A ready firmware image for `hypervisor`, pulled from the firmware
+ * catalog if there is none (the installer's pinned CLOUDHV.fd or the
+ * host's OVMF are copied; otherwise it is downloaded). */
+export async function ensureFirmware(hypervisor: Hypervisor): Promise<any> {
+  const have = await firmwareImages(hypervisor);
+  if (have.length > 0) return have[0];
+  const key = FIRMWARE_KEY[hypervisor];
+  let img = await api("/images", { method: "POST", body: { firmware: key } });
+  if (!img?.id) throw new Error(`firmware ${key} can't be pulled: ${img?.message ?? JSON.stringify(img)}`);
+  const deadline = Date.now() + 120_000;
+  while (img.status?.state === "downloading" || img.status?.state === "verifying") {
+    if (Date.now() > deadline) throw new Error(`firmware ${key} did not download in time`);
+    await new Promise((r) => setTimeout(r, 1000));
+    img = await api(`/images/${img.id}`);
+  }
+  if (img.status?.state !== "ready") throw new Error(`firmware ${key} is ${JSON.stringify(img.status)}`);
+  return img;
 }

@@ -7,6 +7,10 @@
 //! extended (`disk.rs`, `partition.rs`). All host tools are wrapped in
 //! `qemu_img.rs`.
 //!
+//! *Firmware* images (`firmware.rs`) are UEFI firmware files VMs boot
+//! through, pulled from the firmware catalog or a URL; they are images of
+//! kind `firmware` and never the source of a disk.
+//!
 //! Records live in the `images` and `disks` tables of the control plane's
 //! ReDB file; files live under `<dir>/images` and `<dir>/disks`, named by
 //! id only.
@@ -14,6 +18,7 @@
 pub mod catalog;
 pub mod disk;
 pub mod download;
+pub mod firmware;
 pub mod partition;
 pub mod qemu_img;
 
@@ -29,6 +34,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const IMAGES_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("images");
 pub const DISKS_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("disks");
+/// Image-module bookkeeping, e.g. which firmware was auto-imported once.
+pub const IMAGE_META_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("image_meta");
 
 pub use disk::{wanted_root_size, MaterializeOutcome};
 
@@ -99,6 +106,20 @@ pub fn now() -> u64 {
 pub enum ImageSource {
     Catalog { key: String, url: String, version: String },
     Url { url: String, expected_sha256: Option<String> },
+    /// A firmware catalog entry (`firmware.rs`): `url` is the pinned
+    /// download or, for a host package, the file it was copied from.
+    Firmware { key: String, url: String, version: String },
+}
+
+/// What an image is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ImageKind {
+    /// A bootable cloud image disks are cloned from (qcow2).
+    #[default]
+    Disk,
+    /// UEFI firmware a VM boots through (raw `.fd`).
+    Firmware,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -124,12 +145,24 @@ pub struct DownloadMeta {
     pub etag: Option<String>,
     #[serde(default)]
     pub last_modified: Option<String>,
+    /// A firmware download's UEFI variable-store template (QEMU), fetched
+    /// after the code file and stored as `<id>.vars.fd`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vars_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vars_sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Image {
     pub id: String,
     pub name: String,
+    /// Records from before firmware images load as disk images.
+    #[serde(default)]
+    pub kind: ImageKind,
+    /// The hypervisor a firmware image is built for; `None` for disk images.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hypervisor: Option<crate::hypervisor::HypervisorType>,
     pub source: ImageSource,
     pub status: ImageStatus,
     pub format: DiskFormat,
@@ -158,16 +191,36 @@ impl Image {
     /// published (catalog images always are).
     pub fn verified(&self) -> bool {
         match &self.source {
-            ImageSource::Catalog { .. } => true,
-            ImageSource::Url { expected_sha256, .. } => expected_sha256.is_some(),
+            // Pinned digests, or a host package its manager verified.
+            ImageSource::Catalog { .. } | ImageSource::Firmware { .. } => true,
+            // Every file it is made of was checked.
+            ImageSource::Url { expected_sha256, .. } => {
+                expected_sha256.is_some() && (self.download.vars_url.is_none() || self.download.vars_sha256.is_some())
+            }
         }
     }
 
     pub fn catalog_key(&self) -> Option<&str> {
         match &self.source {
             ImageSource::Catalog { key, .. } => Some(key),
-            ImageSource::Url { .. } => None,
+            ImageSource::Url { .. } | ImageSource::Firmware { .. } => None,
         }
+    }
+
+    pub fn firmware_key(&self) -> Option<&str> {
+        match &self.source {
+            ImageSource::Firmware { key, .. } => Some(key),
+            _ => None,
+        }
+    }
+
+    pub fn is_firmware(&self) -> bool {
+        self.kind == ImageKind::Firmware
+    }
+
+    /// Ready and not being deleted: usable by a new disk or VM.
+    pub fn usable(&self) -> bool {
+        self.status == ImageStatus::Ready && self.deletion_requested_at.is_none()
     }
 }
 
@@ -319,6 +372,20 @@ pub struct PullImageRequest {
     pub sha256: Option<String>,
     #[serde(default)]
     pub name: Option<String>,
+    /// Firmware catalog key (`firmware.rs`).
+    #[serde(default)]
+    pub firmware: Option<String>,
+    /// `firmware` with `url`: the download is UEFI firmware for this
+    /// hypervisor, not a cloud image.
+    #[serde(default)]
+    pub kind: Option<ImageKind>,
+    #[serde(default)]
+    pub hypervisor: Option<crate::hypervisor::HypervisorType>,
+    /// With a QEMU firmware `url`: its variable-store template.
+    #[serde(default)]
+    pub vars_url: Option<String>,
+    #[serde(default)]
+    pub vars_sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -382,6 +449,9 @@ pub enum ExtendOutcome {
 pub struct ImageResponse {
     pub id: String,
     pub name: String,
+    pub kind: ImageKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hypervisor: Option<crate::hypervisor::HypervisorType>,
     pub source: ImageSource,
     pub status: ImageStatus,
     pub format: DiskFormat,
@@ -394,6 +464,13 @@ pub struct ImageResponse {
     pub path: String,
     /// Linked disks that depend on this image.
     pub linked_disks: Vec<String>,
+    /// A firmware image carries a UEFI variable-store template (QEMU maps
+    /// code and a per-VM store; without one, `-bios`).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub vars_template: bool,
+    /// VMs that boot through this firmware image (filled in by `VmManager`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub used_by_vms: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub info: Option<qemu_img::ImgInfo>,
     /// Deletion requested and not finished yet.
@@ -445,6 +522,42 @@ pub struct CatalogItem {
     pub release: String,
     pub arch: Arch,
     pub url: String,
+    pub downloaded_image_id: Option<String>,
+}
+
+/// What the startup firmware auto-import did for one catalog entry.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AutoImport {
+    /// Imported as the named image.
+    Imported(String),
+    /// Done before (the marker is set): never again, even if deleted since.
+    AlreadyDone,
+    /// A firmware image for the hypervisor exists already.
+    HaveOne(String),
+    /// No local source (installer copy or host package) yet; tried again
+    /// at the next start.
+    NoLocalSource,
+    Failed(String),
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct FirmwareCatalogItem {
+    pub key: String,
+    pub name: String,
+    pub hypervisor: crate::hypervisor::HypervisorType,
+    pub arch: Arch,
+    /// `download` (pinned) or `host` (copied from the host's package).
+    pub source: &'static str,
+    /// The download URL, or the host file that would be copied.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub version: String,
+    /// Whether it can be pulled now (a host entry needs its package).
+    pub available: bool,
+    /// What to install when it isn't.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
     pub downloaded_image_id: Option<String>,
 }
 
@@ -576,6 +689,7 @@ impl ImageManager {
         let txn = db.begin_write().map_err(storage)?;
         txn.open_table(IMAGES_TABLE).map_err(storage)?;
         txn.open_table(DISKS_TABLE).map_err(storage)?;
+        txn.open_table(IMAGE_META_TABLE).map_err(storage)?;
         txn.commit().map_err(storage)?;
         mkdir_private(&settings.image_dir)?;
         mkdir_private(&settings.disk_dir)?;
@@ -624,9 +738,12 @@ impl ImageManager {
         let mut known = std::collections::HashSet::new();
         let images: Vec<Image> = self.images.read().unwrap().values().cloned().collect();
         for mut img in images {
-            known.insert(self.image_path(&img.id));
+            known.insert(self.image_file(&img));
             known.insert(self.part_path(&img.id));
-            let exists = self.image_path(&img.id).exists();
+            if img.is_firmware() {
+                known.insert(self.firmware_vars_template(&img.id));
+            }
+            let exists = self.image_file(&img).exists();
             let new_status = match &img.status {
                 ImageStatus::Ready | ImageStatus::Missing if !exists => Some(ImageStatus::Missing),
                 ImageStatus::Missing if exists => Some(ImageStatus::Ready),
@@ -670,8 +787,28 @@ impl ImageManager {
 
     // ---- paths -----------------------------------------------------------
 
+    /// A disk image's file.
     pub fn image_path(&self, id: &str) -> PathBuf {
         self.settings.image_dir.join(format!("{}.qcow2", id))
+    }
+
+    /// A firmware image's code file.
+    pub fn firmware_path(&self, id: &str) -> PathBuf {
+        self.settings.image_dir.join(format!("{}.fd", id))
+    }
+
+    /// The UEFI variable-store template stored with a firmware image
+    /// (OVMF), copied into each QEMU VM's own store on first boot.
+    pub fn firmware_vars_template(&self, id: &str) -> PathBuf {
+        self.settings.image_dir.join(format!("{}.vars.fd", id))
+    }
+
+    /// The file an image's record stands for.
+    pub fn image_file(&self, img: &Image) -> PathBuf {
+        match img.kind {
+            ImageKind::Disk => self.image_path(&img.id),
+            ImageKind::Firmware => self.firmware_path(&img.id),
+        }
     }
 
     pub fn part_path(&self, id: &str) -> PathBuf {
@@ -763,6 +900,18 @@ impl ImageManager {
         crate::store::ring(&self.bell);
     }
 
+    pub(crate) fn meta_get(&self, key: &str) -> Result<Option<Vec<u8>>, ImageError> {
+        let txn = self.db.begin_read().map_err(storage)?;
+        let t = txn.open_table(IMAGE_META_TABLE).map_err(storage)?;
+        Ok(t.get(key).map_err(storage)?.map(|v| v.value().to_vec()))
+    }
+
+    pub(crate) fn meta_put(&self, key: &str, value: &[u8]) -> Result<(), ImageError> {
+        let txn = self.db.begin_write().map_err(storage)?;
+        txn.open_table(IMAGE_META_TABLE).map_err(storage)?.insert(key, value).map_err(storage)?;
+        txn.commit().map_err(storage)
+    }
+
     // ---- lookup ------------------------------------------------------------
 
     pub fn list_images(&self) -> Vec<Image> {
@@ -835,13 +984,15 @@ impl ImageManager {
     // ---- responses -------------------------------------------------------------
 
     pub fn image_response(&self, img: &Image, with_info: bool) -> ImageResponse {
-        let path = self.image_path(&img.id);
-        let info = (with_info && img.status == ImageStatus::Ready)
+        let path = self.image_file(img);
+        let info = (with_info && img.status == ImageStatus::Ready && !img.is_firmware())
             .then(|| qemu_img::info(&path, Some(DiskFormat::Qcow2)).ok())
             .flatten();
         ImageResponse {
             id: img.id.clone(),
             name: img.name.clone(),
+            kind: img.kind,
+            hypervisor: img.hypervisor,
             source: img.source.clone(),
             status: img.status.clone(),
             format: img.format,
@@ -853,6 +1004,8 @@ impl ImageManager {
             verified: img.verified(),
             path: path.to_string_lossy().into_owned(),
             linked_disks: self.linked_disks(&img.id).into_iter().map(|d| d.name).collect(),
+            used_by_vms: Vec::new(),
+            vars_template: img.is_firmware() && self.firmware_vars_template(&img.id).exists(),
             info,
             deleting: img.deletion_requested_at.is_some(),
         }
@@ -917,11 +1070,59 @@ impl ImageManager {
                 url: img.url.to_string(),
                 downloaded_image_id: images
                     .values()
-                    .filter(|i| i.catalog_key() == Some(e.key) && i.status == ImageStatus::Ready && i.deletion_requested_at.is_none())
+                    .filter(|i| i.catalog_key() == Some(e.key) && i.usable())
                     .max_by_key(|i| i.created_at)
                     .map(|i| i.id.clone()),
             })
             .collect()
+    }
+
+    pub fn firmware_catalog(&self) -> Vec<FirmwareCatalogItem> {
+        let Some(arch) = Arch::host() else { return Vec::new() };
+        let images = self.images.read().unwrap();
+        firmware::FIRMWARE_CATALOG
+            .iter()
+            .filter(|e| e.supports(arch))
+            .map(|e| {
+                let (source, url, hint) = match e.source {
+                    firmware::FirmwareSource::Download { .. } => ("download", e.download_for(arch).map(|(u, _)| u.to_string()), None),
+                    firmware::FirmwareSource::Deb { .. } => ("debian", e.download_for(arch).map(|(u, _)| u.to_string()), None),
+                    firmware::FirmwareSource::Host { package, .. } => {
+                        let file = e.host_file();
+                        let hint = file.is_none().then(|| format!("install the {} package", package));
+                        ("host", file.map(|p| p.to_string_lossy().into_owned()), hint)
+                    }
+                };
+                FirmwareCatalogItem {
+                    key: e.key.to_string(),
+                    name: e.name.to_string(),
+                    hypervisor: e.hypervisor,
+                    arch,
+                    source,
+                    available: hint.is_none(),
+                    url,
+                    hint,
+                    version: e.version().to_string(),
+                    downloaded_image_id: images
+                        .values()
+                        .filter(|i| i.firmware_key() == Some(e.key) && i.usable())
+                        .max_by_key(|i| i.created_at)
+                        .map(|i| i.id.clone()),
+                }
+            })
+            .collect()
+    }
+
+    /// The firmware image a VM of `hypervisor` boots through when none is
+    /// named: the newest usable one built for it.
+    pub fn default_firmware(&self, hypervisor: crate::hypervisor::HypervisorType) -> Option<Image> {
+        self.images
+            .read()
+            .unwrap()
+            .values()
+            .filter(|i| i.is_firmware() && i.hypervisor == Some(hypervisor) && i.usable())
+            .max_by_key(|i| i.created_at)
+            .cloned()
     }
 
     // ---- images ------------------------------------------------------------------
@@ -979,7 +1180,11 @@ impl ImageManager {
             task.abort();
         }
         self.remove_image_record(&img.id)?;
-        for p in [self.image_path(&img.id), self.part_path(&img.id)] {
+        let files = match img.kind {
+            ImageKind::Disk => vec![self.image_path(&img.id), self.part_path(&img.id)],
+            ImageKind::Firmware => vec![self.firmware_path(&img.id), self.firmware_vars_template(&img.id), self.part_path(&img.id)],
+        };
+        for p in files {
             match std::fs::remove_file(&p) {
                 Ok(()) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -1035,6 +1240,8 @@ mod tests {
         let img = Image {
             id: "img-1".into(),
             name: "base".into(),
+            kind: ImageKind::Disk,
+            hypervisor: None,
             source: ImageSource::Url { url: "https://example.com/x.qcow2".into(), expected_sha256: None },
             status: ImageStatus::Ready,
             format: DiskFormat::Qcow2,

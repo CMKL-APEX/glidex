@@ -100,9 +100,13 @@ pub struct VmConfig {
     /// UEFI firmware: Cloud Hypervisor's `CLOUDHV.fd`, or an OVMF code
     /// image (`OVMF_CODE*.fd`) for QEMU. When set, the guest boots from its
     /// disk's bootloader and `kernel_image_path` / `kernel_args` are
-    /// ignored.
+    /// ignored. For a firmware image (`firmware_image`) this is the image's
+    /// file, so backends see one field either way.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub firmware_path: Option<String>,
+    /// Firmware image (id) the VM boots through; see spec/images.md §7.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub firmware_image: Option<String>,
     /// cloud-init NoCloud seed disk attached alongside the rootfs. For
     /// firmware boots without one, a default seed is generated at start
     /// time (see `cloud_init.rs`).
@@ -150,6 +154,10 @@ pub struct VmConfig {
     /// filled in by `start_vm`; never persisted.
     #[serde(skip)]
     pub firmware_vars_path: Option<String>,
+    /// The pristine variable store of a firmware image, filled in by
+    /// `start_vm`; never persisted. `None`: found next to the code file.
+    #[serde(skip)]
+    pub firmware_vars_template: Option<String>,
 }
 
 /// What a hypervisor needs to open one managed disk.
@@ -422,8 +430,12 @@ pub struct CreateVmRequest {
     pub mem_size_mib: u32,
     #[serde(default)]
     pub kernel_image_path: String,
+    /// Host path of UEFI firmware (needs `useHostPath`); prefer `firmware`.
     #[serde(default)]
     pub firmware_path: Option<String>,
+    /// Firmware image id/name to boot through.
+    #[serde(default)]
+    pub firmware: Option<String>,
     #[serde(default)]
     pub cloud_init_path: Option<String>,
     #[serde(default)]
@@ -464,6 +476,8 @@ pub struct CreateVmRequest {
 /// The managed-disk part of `CreateVmRequest`, resolved by `create_vm`.
 #[derive(Debug, Clone, Default)]
 pub struct DiskSelection {
+    /// Firmware image id/name.
+    pub firmware: Option<String>,
     pub image: Option<String>,
     pub root_disk_size_gib: Option<u64>,
     pub root_disk: Option<String>,
@@ -473,6 +487,7 @@ pub struct DiskSelection {
 impl CreateVmRequest {
     pub fn disk_selection(&self) -> DiskSelection {
         DiskSelection {
+            firmware: self.firmware.clone(),
             image: self.image.clone(),
             root_disk_size_gib: self.root_disk_size_gib,
             root_disk: self.root_disk.clone(),
@@ -489,6 +504,7 @@ impl From<CreateVmRequest> for VmConfig {
             mem_size_mib: req.mem_size_mib,
             kernel_image_path: expand_tilde(req.kernel_image_path),
             firmware_path: req.firmware_path.map(expand_tilde),
+            firmware_image: None,
             cloud_init_path: req.cloud_init_path.map(expand_tilde),
             credential: req.credential,
             rootfs_path: expand_tilde(req.rootfs_path),
@@ -505,6 +521,7 @@ impl From<CreateVmRequest> for VmConfig {
             owns_root_disk: false,
             root_disk_binding: None,
             firmware_vars_path: None,
+            firmware_vars_template: None,
             data_disk_bindings: Vec::new(),
         }
     }
@@ -543,6 +560,9 @@ pub struct VmResponse {
     pub credential: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub nics: Vec<NicState>,
+    /// Firmware image id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub firmware: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_disk: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -575,6 +595,7 @@ impl From<&Vm> for VmResponse {
             hypervisor: config.hypervisor,
             vfio_devices: config.vfio_devices.clone(),
             credential: config.credential.clone(),
+            firmware: config.firmware_image.clone(),
             root_disk: config.root_disk.clone(),
             data_disks: config.data_disks.clone(),
             warnings: Vec::new(),

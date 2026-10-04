@@ -4,6 +4,8 @@ import type {
   AuthMethods,
   Binding,
   CatalogItem,
+  FirmwareCatalogItem,
+  HypervisorType,
   CreateDiskRequest,
   CreatedToken,
   CreateTokenRequest,
@@ -301,8 +303,22 @@ export const listBridges = () => get<BridgeRecord[]>("/ovs/bridges");
 
 export const imageCatalog = () => get<CatalogItem[]>("/images/catalog");
 export const listImages = () => get<ImageInfo[]>("/images");
-export const pullImage = (req: { catalog?: string; url?: string; sha256?: string; name?: string }) =>
-  post<ImageInfo>("/images", req);
+export const getImage = (id: string) => get<ImageInfo>(`/images/${enc(id)}`);
+export const firmwareCatalog = () => get<FirmwareCatalogItem[]>("/images/firmware-catalog");
+export const pullImage = (req: {
+  catalog?: string;
+  /** Firmware catalog key. */
+  firmware?: string;
+  url?: string;
+  sha256?: string;
+  name?: string;
+  /** With `url`: the download is UEFI firmware for `hypervisor`. */
+  kind?: "firmware";
+  hypervisor?: HypervisorType;
+  /** With a QEMU firmware `url`: its UEFI variable-store template. */
+  vars_url?: string;
+  vars_sha256?: string;
+}) => post<ImageInfo>("/images", req);
 /** `undefined` when gone (204), else the image its controller is still deleting (202). */
 export const deleteImage = (id: string) => del<ImageInfo | undefined>(`/images/${enc(id)}`);
 /** Download a failed image again (spec/reconciliation.md D19). */

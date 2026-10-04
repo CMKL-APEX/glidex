@@ -113,10 +113,10 @@ pinned by unit tests in `cloud_hypervisor.rs`:
 ### Firmware boot
 
 The firmware is Cloud-Hypervisor's EDK2 build (`CLOUDHV.fd` release
-asset of <https://github.com/cloud-hypervisor/edk2>), downloaded by
-`glidex-install` to `default_firmware_path()` —
-`~/.glidex/CLOUDHV.fd` (`CLOUDHV_EFI.fd` on aarch64); see
-[installer.md](installer.md#uefi-firmware). It boots the bootloader on
+asset of <https://github.com/cloud-hypervisor/edk2>), the `cloudhv-edk2`
+firmware image ([images.md](images.md#41-firmware-catalog)): pinned, and
+copied from the installer's `~/.glidex/CLOUDHV.fd` (`CLOUDHV_EFI.fd` on
+aarch64, [installer.md](installer.md#uefi-firmware)) when that matches. It boots the bootloader on
 the rootfs disk, so `rootfs_path` must be a full, partitioned,
 UEFI-bootable image (e.g. a distro `*-server-cloudimg-amd64.img`, raw or
 qcow2, or a managed disk from [images.md](images.md)), not a bare ext4
@@ -238,15 +238,17 @@ Notes captured in code comments:
 
 ### Firmware boot
 
-`firmware_path` is an OVMF code image. Its default
-(`qemu::default_firmware_path`, used by `create_vm` for `image` /
-`root_disk` VMs and by `gxctl`) is the first of
-`/usr/share/OVMF/OVMF_CODE_4M.fd`, `/usr/share/OVMF/OVMF_CODE.fd`,
-`/usr/share/edk2/ovmf/OVMF_CODE.fd`, `/usr/share/edk2/x64/OVMF_CODE.4m.fd`,
-`/usr/share/edk2-ovmf/x64/OVMF_CODE.fd` that exists. `prepare_firmware`:
+`firmware_path` is an OVMF code image, normally the `ovmf` firmware
+image: a copy of the first of `/usr/share/OVMF/OVMF_CODE_4M.fd`,
+`/usr/share/OVMF/OVMF_CODE.fd`, `/usr/share/edk2/ovmf/OVMF_CODE.fd`,
+`/usr/share/edk2/x64/OVMF_CODE.4m.fd`,
+`/usr/share/edk2-ovmf/x64/OVMF_CODE.fd` that exists, with its variable
+store template (`<id>.vars.fd`). `prepare_firmware`:
 
-- finds the pristine variable store next to it (`CODE` → `VARS` in the
-  file name). Each VM gets its own copy at
+- takes the image's template (`VmConfig.firmware_vars_template`, filled
+  in by the VM controller), else the pristine variable store next to the
+  code file (`CODE` → `VARS` in the file name). The copy is made `0600`:
+  the template of a firmware image is read-only. Each VM gets its own copy at
   `<data dir>/firmware-vars/<vm id>.fd` (`VmConfig.firmware_vars_path`,
   filled in by the VM controller, never persisted), copied on first boot and
   again only if the template's size changed. Boot entries the guest

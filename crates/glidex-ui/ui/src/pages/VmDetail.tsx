@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import * as api from "../api";
 import type { VmResponse } from "../types";
@@ -8,7 +8,7 @@ import VmActions, { type VmAction } from "../components/VmActions";
 import VmStateBadge from "../components/VmStateBadge";
 import { Loading } from "../components/Loading";
 import { useSession } from "../session";
-import { useLiveRefresh } from "../live";
+import { useLive, useLiveRefresh } from "../live";
 
 export default function VmDetail() {
   const { id } = useParams<{ id: string }>();
@@ -19,9 +19,24 @@ export default function VmDetail() {
   const [error, setError] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
   const [events, setEvents] = useState<api.VmEvent[]>([]);
+  /** The firmware image's name, once looked up (the VM carries its id). */
+  const [firmwareName, setFirmwareName] = useState<string | null>(null);
+
+  // While a delete runs, follow the VM on the live stream instead of
+  // asking for it: once it is gone, a GET would 404 (handled, but logged
+  // by the browser) before the page navigates away.
+  const stream = useLive();
+  const streamRef = useRef(stream);
+  streamRef.current = stream;
+  const deleting = useRef(false);
 
   const fetchVm = useCallback(async () => {
     if (!id) return;
+    if (deleting.current) {
+      const seen = streamRef.current.vms.get(id);
+      if (seen) setVm(seen);
+      return;
+    }
     try {
       const data = await api.getVm(id);
       setVm(data);
@@ -53,6 +68,11 @@ export default function VmDetail() {
     return () => clearInterval(t);
   }, [converging, live, fetchVm]);
   useEffect(() => {
+    setFirmwareName(null);
+    if (!vm?.firmware) return;
+    api.getImage(vm.firmware).then((i) => setFirmwareName(i.name)).catch(() => setFirmwareName(null));
+  }, [vm?.firmware]);
+  useEffect(() => {
     if (!id) return;
     api.vmEvents(id).then((r) => setEvents(r.events)).catch(() => setEvents([]));
   }, [id, vm?.state, vm?.observed_generation]);
@@ -61,6 +81,7 @@ export default function VmDetail() {
     if (action === "delete" && !confirm(`Delete VM ${vm?.name ?? vmId}? A root disk created with it is deleted too.`)) return;
     setActionLoading(true);
     setError(null);
+    deleting.current = action === "delete";
     // The call waits for the controller (up to a minute); follow the VM
     // meanwhile.
     const peek = setTimeout(fetchVm, 500);
@@ -71,6 +92,7 @@ export default function VmDetail() {
         return;
       }
     } catch (e) {
+      deleting.current = false;
       setError(e instanceof Error ? e.message : "Action failed");
     } finally {
       clearTimeout(peek);
@@ -199,6 +221,16 @@ export default function VmDetail() {
                   </Link>
                 </p>
               </div>
+              {vm.firmware && (
+                <div>
+                  <h3 className="text-sm font-medium text-gray-500">UEFI Firmware</h3>
+                  <p className="text-sm text-gray-700">
+                    <Link to="/images" className="font-mono text-sky-700 hover:underline" data-testid="vm-firmware">
+                      {firmwareName ?? vm.firmware}
+                    </Link>
+                  </p>
+                </div>
+              )}
               {vm.root_disk && (
                 <div>
                   <h3 className="text-sm font-medium text-gray-500">Root Disk</h3>
