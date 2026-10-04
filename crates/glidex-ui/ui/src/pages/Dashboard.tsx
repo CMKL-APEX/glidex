@@ -43,28 +43,21 @@ export default function Dashboard() {
   }, [converging, fetchVms]);
 
   const handleAction = async (vmId: string, action: VmAction) => {
+    if (action === "delete") {
+      const name = vms?.find((v) => v.id === vmId)?.name ?? vmId;
+      if (!confirm(`Delete VM ${name}? A root disk created with it is deleted too.`)) return;
+    }
     setError(null);
+    // The call waits for the controller (up to a minute); show the VM's
+    // progress meanwhile instead of the state from before the click.
+    const peek = setTimeout(fetchVms, 500);
     try {
-      switch (action) {
-        case "start":
-          await api.startVm(vmId);
-          break;
-        case "shutdown":
-          await api.stopVm(vmId, 60);
-          break;
-        case "stop":
-          await api.stopVm(vmId);
-          break;
-        case "pause":
-          await api.pauseVm(vmId);
-          break;
-        case "delete":
-          await api.deleteVm(vmId);
-          break;
-      }
-      fetchVms();
+      await api.vmAction(vmId, action);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Action failed");
+    } finally {
+      clearTimeout(peek);
+      fetchVms();
     }
   };
 

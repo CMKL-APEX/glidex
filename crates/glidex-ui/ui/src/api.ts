@@ -39,6 +39,9 @@ import type {
 
 const API_BASE = "/api";
 
+/** Dispatched on `window` after every successful write. */
+export const CHANGED_EVENT = "glidex:changed";
+
 /** An API error that keeps the HTTP status, the machine-readable code and details. */
 export class ApiRequestError extends Error {
   status: number;
@@ -118,6 +121,11 @@ async function request<T>(method: string, path: string, body?: unknown, opts: Re
     }
   }
   if (!resp.ok) throw await errorOf(resp);
+  // A write may have started work for the controllers: let the activity
+  // indicator look again now rather than at its next poll.
+  if (method !== "GET" && method !== "HEAD" && /^\/(vms|disks|images|networks)\b/.test(path) && !path.includes("/console/")) {
+    window.dispatchEvent(new Event(CHANGED_EVENT));
+  }
   if (resp.status === 204) return undefined as T;
   const text = await resp.text();
   return (text ? JSON.parse(text) : undefined) as T;
@@ -210,6 +218,23 @@ export function stopVm(id: string, gracefulTimeoutSecs?: number): Promise<VmResp
 export const pauseVm = (id: string) => post<VmResponse>(`/vms/${enc(id)}/pause?wait=${WAIT_SECS}`);
 export const deleteVm = (id: string, keepDisk = false) =>
   del(`/vms/${enc(id)}?wait=${WAIT_SECS}${keepDisk ? "&keep_disk=true" : ""}`);
+
+/** One VM lifecycle action from the UI's buttons. `shutdown` presses the
+ * power button and stops the VM hard after 60 s. */
+export function vmAction(id: string, action: "start" | "shutdown" | "stop" | "pause" | "delete"): Promise<unknown> {
+  switch (action) {
+    case "start":
+      return startVm(id);
+    case "shutdown":
+      return stopVm(id, 60);
+    case "stop":
+      return stopVm(id);
+    case "pause":
+      return pauseVm(id);
+    case "delete":
+      return deleteVm(id);
+  }
+}
 
 /** A VM's event history: starts, exits, restarts, adoptions. */
 export interface VmEvent {

@@ -3,7 +3,8 @@ import * as api from "../api";
 import { ApiRequestError } from "../api";
 import { useCan, useSession } from "../session";
 import type { DiskInfo, ImageInfo, VmResponse } from "../types";
-import { formatBytes, notReady } from "../types";
+import { diskActivity, diskWaiting, formatBytes, notReady } from "../types";
+import { Spinner } from "../components/Activity";
 import Modal from "../components/Modal";
 import { LoadingCard } from "../components/Loading";
 
@@ -28,20 +29,13 @@ function resultNotes(d: DiskInfo): string[] {
   return notes;
 }
 
-/** Still changing: the list is polled until none is. */
-function settling(d: DiskInfo): boolean {
-  return (
-    d.status === "pending" || d.status === "creating" || d.status === "resizing" || d.status === "busy" ||
-    d.pending_size_bytes !== undefined || !!d.deleting
-  );
-}
-
 function DiskStatus({ d }: { d: DiskInfo }) {
   const why = notReady(d.conditions);
   const color = d.status === "failed" || d.status === "missing" ? "text-red-700" : d.status === "ready" ? "" : "text-sky-700";
   return (
     <div title={why ? `${why.reason}: ${why.message}` : undefined}>
-      <span className={color}>
+      <span className={`inline-flex items-center gap-1 ${color}`}>
+        {diskActivity(d) && !diskWaiting(d) && <Spinner />}
         {d.deleting ? "deleting" : d.status === "busy" ? `busy (${d.busy_op})` : d.status}
       </span>
       {d.pending_size_bytes !== undefined && (
@@ -235,12 +229,13 @@ export default function Disks() {
   }, [refresh]);
 
   // Poll while the disk controller is still working on one.
-  const busy = disks?.some(settling) ?? false;
+  const busy = disks?.some((d) => diskActivity(d) !== null && !diskWaiting(d)) ?? false;
+  const waiting = disks?.some(diskWaiting) ?? false;
   useEffect(() => {
-    if (!busy) return;
-    const id = setInterval(refresh, 2000);
+    if (!busy && !waiting) return;
+    const id = setInterval(refresh, busy ? 2000 : 15000);
     return () => clearInterval(id);
-  }, [busy, refresh]);
+  }, [busy, waiting, refresh]);
 
   const done = (d: DiskInfo) => {
     setNotes(resultNotes(d));

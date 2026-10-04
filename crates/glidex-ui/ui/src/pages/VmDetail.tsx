@@ -2,8 +2,10 @@ import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import * as api from "../api";
 import type { VmResponse } from "../types";
-import { stateColor, stateLabel, settled, notReadyReason, HYPERVISOR_LABELS } from "../types";
+import { describeExit, settled, notReadyReason, vmActivity, HYPERVISOR_LABELS } from "../types";
+import { ApiRequestError } from "../api";
 import VmActions, { type VmAction } from "../components/VmActions";
+import VmStateBadge from "../components/VmStateBadge";
 import { Loading } from "../components/Loading";
 import { useSession } from "../session";
 
@@ -24,6 +26,12 @@ export default function VmDetail() {
       setVm(data);
       setError(null);
     } catch (e) {
+      // Deleted (by this page's Delete, or elsewhere) while open.
+      if (e instanceof ApiRequestError && e.status === 404) {
+        setVm(null);
+        setError("This VM no longer exists.");
+        return;
+      }
       setError(e instanceof Error ? e.message : "Failed to load VM");
     } finally {
       setLoading(false);
@@ -47,33 +55,25 @@ export default function VmDetail() {
   }, [id, vm?.state, vm?.observed_generation]);
 
   const handleAction = async (vmId: string, action: VmAction) => {
+    if (action === "delete" && !confirm(`Delete VM ${vm?.name ?? vmId}? A root disk created with it is deleted too.`)) return;
     setActionLoading(true);
     setError(null);
+    // The call waits for the controller (up to a minute); follow the VM
+    // meanwhile.
+    const peek = setTimeout(fetchVm, 500);
     try {
-      switch (action) {
-        case "start":
-          await api.startVm(vmId);
-          break;
-        case "shutdown":
-          await api.stopVm(vmId, 60);
-          break;
-        case "stop":
-          await api.stopVm(vmId);
-          break;
-        case "pause":
-          await api.pauseVm(vmId);
-          break;
-        case "delete":
-          await api.deleteVm(vmId);
-          navigate("/");
-          return;
+      await api.vmAction(vmId, action);
+      if (action === "delete") {
+        navigate("/");
+        return;
       }
-      fetchVm();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Action failed");
     } finally {
+      clearTimeout(peek);
       setActionLoading(false);
     }
+    fetchVm();
   };
 
   return (
@@ -121,14 +121,20 @@ export default function VmDetail() {
               <h1 className="text-2xl font-bold text-gray-900">{vm.name}</h1>
               <p className="text-gray-500 font-mono text-sm mt-1">{vm.id}</p>
             </div>
-            <span
-              className={`px-3 py-1 text-sm font-medium text-white rounded-full ${stateColor(vm.state)}`}
-            >
-              {stateLabel(vm.state)}
-              {!settled(vm) && vm.desired_state ? ` → ${stateLabel(vm.desired_state)}` : ""}
-            </span>
+            <VmStateBadge vm={vm} large />
           </div>
 
+          {vmActivity(vm) && (
+            <div className="mb-6 p-3 bg-sky-50 border border-sky-200 rounded-lg text-sm text-sky-800">
+              <span className="font-medium">In progress:</span> {vmActivity(vm)}
+              {vm.desired_state && !vm.deleting && <> (desired state: {vm.desired_state})</>}. This page follows it.
+              {vm.generation !== undefined && vm.observed_generation !== undefined && vm.observed_generation < vm.generation && (
+                <span className="block text-xs text-sky-700 mt-1">
+                  Spec generation {vm.generation}; the controller has acted on {vm.observed_generation}.
+                </span>
+              )}
+            </div>
+          )}
           {notReadyReason(vm) && (
             <div className="mb-6 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-800 whitespace-pre-wrap">
               {notReadyReason(vm)}
@@ -196,6 +202,21 @@ export default function VmDetail() {
                   <p className="font-mono text-sm text-gray-700 break-all">{vm.root_disk}</p>
                 </div>
               )}
+              {vm.restart_policy && (
+                <div>
+                  <h3 className="text-sm font-medium text-gray-500">If it stops on its own</h3>
+                  <p className="text-sm text-gray-700">
+                    {vm.restart_policy === "on_failure" ? "Restarted after a crash" : "Left stopped"}
+                    {vm.on_host_boot && <>; after a host reboot: {vm.on_host_boot === "resume" ? "started again" : "left stopped"}</>}
+                  </p>
+                </div>
+              )}
+              {vm.last_exit && (
+                <div>
+                  <h3 className="text-sm font-medium text-gray-500">Last Exit</h3>
+                  <p className="text-sm text-gray-700 break-words">{describeExit(vm.last_exit)}</p>
+                </div>
+              )}
             </div>
           </div>
 
@@ -221,6 +242,7 @@ export default function VmDetail() {
                 vmId={vm.id}
                 state={vm.state}
                 desired={vm.desired_state}
+                deleting={vm.deleting}
                 onAction={handleAction}
                 loading={actionLoading}
               />

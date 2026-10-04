@@ -7,6 +7,8 @@ interface VmActionsProps {
   state: VmState;
   /** What the VM should be doing; a VM still trying to start can be stopped. */
   desired?: PowerState;
+  /** Being deleted: nothing to do but wait. */
+  deleting?: boolean;
   onAction: (vmId: string, action: VmAction) => void;
   loading?: boolean;
 }
@@ -15,9 +17,11 @@ export default function VmActions({
   vmId,
   state,
   desired,
+  deleting = false,
   onAction,
   loading = false,
 }: VmActionsProps) {
+  if (deleting) return <span className="text-sm text-gray-500">Being deleted…</span>;
   const canStart =
     state === "created" || state === "stopped" || state === "paused" || (state === "failed" && desired !== "running");
   const canStop =

@@ -12,9 +12,14 @@ export default function VmConsole() {
   const containerRef = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState<Status>("connecting");
   const [error, setError] = useState<string | null>(null);
+  // Bumped by Reconnect: the VM outlives the connection (a restart of the
+  // VM or of the control plane closes it), so connecting again picks up.
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     if (!id || !containerRef.current) return;
+    setStatus("connecting");
+    setError(null);
 
     const term = new Terminal({
       fontFamily: "Menlo, Monaco, Consolas, monospace",
@@ -107,7 +112,7 @@ export default function VmConsole() {
       term.element?.remove();
       setTimeout(() => term.dispose(), 0);
     };
-  }, [id]);
+  }, [id, attempt]);
 
   const statusColor =
     status === "connected"
@@ -140,8 +145,18 @@ export default function VmConsole() {
           </svg>
           Back to VM
         </Link>
-        <span className="text-sm text-gray-600">
-          Status: <span className={`font-medium ${statusColor}`}>{status}</span>
+        <span className="flex items-center gap-3 text-sm text-gray-600">
+          <span>
+            Status: <span className={`font-medium ${statusColor}`}>{status}</span>
+          </span>
+          {(status === "closed" || status === "error") && (
+            <button
+              className="px-3 py-1 text-xs font-medium text-white bg-sky-600 hover:bg-sky-700 rounded-lg"
+              onClick={() => setAttempt((a) => a + 1)}
+            >
+              Reconnect
+            </button>
+          )}
         </span>
       </div>
 

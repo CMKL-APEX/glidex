@@ -137,6 +137,9 @@ export default function Images() {
     try {
       await api.retryImage(img.id);
       refresh();
+      // The image controller restarts the download a moment later; until
+      // then the image still reads "failed" and nothing would poll.
+      setTimeout(refresh, 1000);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to retry the download");
     }

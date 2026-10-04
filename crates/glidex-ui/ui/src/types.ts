@@ -46,7 +46,13 @@ export interface VmResponse {
   desired_state?: PowerState;
   generation?: number;
   observed_generation?: number;
+  resource_version?: number;
   restart_required?: boolean;
+  /** Deletion requested; the controller is tearing it down. */
+  deleting?: boolean;
+  restart_policy?: "on_failure" | "never";
+  on_host_boot?: "resume" | "stop";
+  stop_grace_secs?: number;
   conditions?: Condition[];
   last_exit?: ExitRecord;
   vcpu_count: number;
@@ -231,6 +237,38 @@ export interface DiskInfo {
   warnings?: string[];
 }
 
+/** Still changing: the disk controller is working on it. */
+export function diskActivity(d: DiskInfo): string | null {
+  if (d.deleting) return "Deleting";
+  switch (d.status) {
+    case "pending":
+      return "Waiting for its image";
+    case "creating":
+      return "Creating";
+    case "resizing":
+      return "Resizing";
+    case "busy":
+      return d.busy_op ? `Busy (${d.busy_op})` : "Busy";
+  }
+  if (d.pending_size_bytes !== undefined) return "Resize waits for its VM to stop";
+  return null;
+}
+
+/** Waiting on something outside the control plane (a VM to stop), not
+ * working: worth showing, not worth polling fast for. */
+export function diskWaiting(d: DiskInfo): boolean {
+  return !d.deleting && d.phase === "ready" && d.status === "ready" && d.pending_size_bytes !== undefined;
+}
+
+/** A download or its verification in progress. */
+export function imageActivity(i: ImageInfo): string | null {
+  if (i.status.state === "downloading") {
+    const s = i.status;
+    return s.total_bytes ? `Downloading ${Math.floor((s.received_bytes * 100) / s.total_bytes)}%` : "Downloading";
+  }
+  return i.status.state === "verifying" ? "Verifying" : null;
+}
+
 /** The `Ready` condition when it isn't True: why an object hasn't converged. */
 export function notReady(conditions?: Condition[]): Condition | undefined {
   return conditions?.find((c) => c.kind === "Ready" && c.status !== "True");
@@ -317,12 +355,28 @@ export function stateColor(state: VmState): string {
 
 /** Whether the VM is where its desired state says (nothing to wait for). */
 export function settled(vm: VmResponse): boolean {
+  return vmActivity(vm) === null;
+}
+
+/** What the controller is still doing for a VM (spec/reconciliation.md
+ * §7.4), or `null` once it has converged. */
+export function vmActivity(vm: VmResponse): string | null {
+  if (vm.deleting) return "Deleting";
   const desired = vm.desired_state;
-  if (!desired) return true;
+  if (!desired) return null;
   const there =
     desired === "stopped" ? vm.state === "stopped" || vm.state === "created" : vm.state === desired;
+  if (!there) {
+    if (desired === "stopped") return "Stopping";
+    if (desired === "paused") return vm.state === "running" ? "Pausing" : "Starting";
+    return vm.state === "paused" ? "Resuming" : "Starting";
+  }
+  if (vm.generation !== undefined && vm.observed_generation !== undefined && vm.observed_generation < vm.generation) {
+    return "Applying changes";
+  }
   const ready = vm.conditions?.find((c) => c.kind === "Ready");
-  return there && (ready === undefined || ready.status === "True");
+  if (ready && ready.status !== "True") return "Reconciling";
+  return null;
 }
 
 /** What keeps the VM from its desired state (the `Ready` condition). */
@@ -330,6 +384,23 @@ export function notReadyReason(vm: VmResponse): string | null {
   const ready = vm.conditions?.find((c) => c.kind === "Ready");
   if (!ready || ready.status === "True") return null;
   return ready.message ? `${ready.reason}: ${ready.message}` : ready.reason;
+}
+
+/** "Crashed (exit 1) 5 min ago": the instance's last exit, for people. */
+export function describeExit(e: ExitRecord): string {
+  const cause: Record<string, string> = {
+    requested: "Stopped on request",
+    terminated: "Stopped by the host",
+    clean_exit: "Guest powered off",
+    crashed: "Crashed",
+    launch_failed: "Failed to launch",
+    host_reboot: "Host rebooted",
+    lost: "Lost",
+  };
+  const detail = e.signal !== undefined ? `signal ${e.signal}` : e.code !== undefined && e.code !== 0 ? `exit ${e.code}` : null;
+  return `${cause[e.cause] ?? e.cause}${detail ? ` (${detail})` : ""}, ${new Date(e.at * 1000).toLocaleString()}${
+    e.message ? `: ${e.message}` : ""
+  }`;
 }
 
 export function stateLabel(state: VmState): string {

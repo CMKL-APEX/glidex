@@ -101,7 +101,8 @@ ui/src/
 ├── types.ts                # API types and helpers
 ├── index.css               # Tailwind entry
 ├── components/
-│   ├── Header.tsx          # Nav (by capability), project selector, user, Log out, API health
+│   ├── Header.tsx          # Nav (by capability), activity, project selector, user, Log out, API health
+│   ├── Activity.tsx        # "N in progress" indicator and list; Spinner
 │   ├── ReauthDialog.tsx    # Step-up re-login, then retry
 │   ├── AddBindingForm.tsx  # Role + user/team picker for role links
 │   ├── ui.tsx              # Shared bits: cards, badges, binding table
@@ -109,11 +110,12 @@ ui/src/
 │   ├── Modal.tsx
 │   ├── CreateVmForm.tsx    # POST /vms form (boot mode, boot disk source, credential picker)
 │   ├── VmActions.tsx       # Start/Shut down/Stop/Pause/Delete buttons (Shut down: power button, 60 s)
-│   └── VmCard.tsx          # Dashboard VM row: state → desired, Ready reason
+│   ├── VmStateBadge.tsx    # State pill (→ desired) plus what the controller is still doing
+│   └── VmCard.tsx          # Dashboard VM row: state badge, Ready reason
 └── pages/
     ├── Dashboard.tsx       # List VMs, open create modal; polls while a VM converges
     ├── VmDetail.tsx        # VM details, Ready reason, restart notice, actions, events, Open Console link
-    ├── VmConsole.tsx       # xterm.js + console WebSocket
+    ├── VmConsole.tsx       # xterm.js + console WebSocket; Reconnect after it closes
     ├── Credentials.tsx     # List / add / edit / delete guest logins
     ├── Images.tsx          # Catalog (Pull), downloaded images with progress
     ├── Disks.tsx           # Disks: create, resize, extend root, delete, partitions
@@ -166,14 +168,25 @@ paused | stopping | stopped | failed | unknown`, `PowerState` is
 `generation`, `observed_generation`, `restart_required`, `conditions`
 and `last_exit`.
 
-- **`settled(vm)`**: the VM is where `desired_state` says (`created`
-  counts as `stopped`) and `Ready` is not false. Until then the state
-  badge reads `<state> → <desired>` (VmCard, VmDetail), and
-  `notReadyReason(vm)` (`Ready` reason and message) is shown under it.
+- **`vmActivity(vm)`**: what the controller is still doing, or `null`
+  once converged (`settled(vm)`): `Deleting` (`deleting`), `Starting`,
+  `Stopping`, `Pausing` or `Resuming` while the VM isn't where
+  `desired_state` says (`created` counts as `stopped`), `Applying
+  changes` while `observed_generation < generation`, and `Reconciling`
+  while `Ready` isn't true. `VmStateBadge` shows the state pill
+  (`<state> → <desired>` while moving) with a spinner and that text;
+  VmDetail adds an "In progress" box, and `notReadyReason(vm)` (`Ready`
+  reason and message) is shown under it. VmDetail also shows the restart
+  policies and the last exit (`describeExit`).
 - **Polling.** Dashboard and VmDetail re-fetch every 2 s while any VM
-  shown is not settled, and stop once everything is.
+  shown is not settled, and stop once everything is. A lifecycle call
+  waits for the controller (`?wait`), so the page also re-fetches 0.5 s
+  after sending it to show the progress meanwhile. A VM that disappears
+  while its page is open (deleted) says so instead of an error.
 - **Actions** (`VmActions`): Start is offered for `created`, `stopped`,
-  `paused`, and `failed` unless the VM is already meant to run; Stop is
+  `paused`, and `failed` unless the VM is already meant to run; a VM
+  being deleted shows no actions. Delete asks for confirmation (a root
+  disk created with the VM goes with it). Stop is
   offered while running or paused **or** whenever the desired state is
   not `stopped`, so a VM stuck starting or crash-looping can be stopped.
   `api.ts` sends `?wait=60` with start, pause, stop (at least the grace
@@ -183,6 +196,24 @@ and `last_exit`.
   start." while `restart_required`, and an **Events** list (newest
   first, warnings highlighted) from `GET /vms/{id}/events`, refreshed
   whenever the VM's state or observed generation changes.
+
+## Reconciliation activity
+
+Writes are carried out by the controllers after the API answers
+([reconciliation.md](reconciliation.md) D5), so the header's
+`Activity` shows whether any are still at work in the selected project:
+"Up to date", or a spinner with "N in progress" that opens a list (kind,
+name, what, linked to the object's page). It is built from
+`GET /vms`, `GET /disks` and `GET /images` with `vmActivity`,
+`diskActivity` (`Waiting for its image`, `Creating`, `Resizing`,
+`Busy (op)`, `Deleting`, or a resize waiting for its VM to stop) and
+`imageActivity` (downloading, verifying). It polls every 3 s while
+something is in progress and every 15 s otherwise; a disk resize that
+only waits for its VM to stop counts as idle for that. `api.ts`
+dispatches `glidex:changed` on `window` after every successful write to
+`/vms`, `/disks`, `/images` or `/networks`, and the indicator looks
+again half a second later. Changes made outside this browser show up at
+the next poll.
 
 ## Access-control pages
 
@@ -231,6 +262,8 @@ only for Cloud-Hypervisor firmware boot, fed by `GET /credentials`.
 `pages/Images.tsx` shows the catalog (`GET /images/catalog`) with a Pull
 button per entry, and downloaded images with a progress bar. It polls
 `GET /images` every 1.5 s while anything is downloading or verifying.
+A failed image has **Retry** (`POST /images/{id}/retry`); the page
+looks again a second later, when the controller has restarted it.
 "Download from URL" opens a form for `{url, sha256?, name?}`.
 `pages/Disks.tsx` lists disks with Resize / Extend root / Delete actions
 (Delete is disabled while the disk is attached), and clicking a name shows
@@ -272,7 +305,8 @@ WebSocket is implemented.
 `crates/glidex-ui/e2e/` is a Playwright suite that drives this UI against
 a scratch control plane (authentication on), for both hypervisors: login
 and session handling, CSRF, console tickets, glidex-ui's Host check and
-headers, the access-control pages, the create form, a full VM lifecycle
+headers, the access-control pages, the reconciliation activity indicator, the
+create form, a full VM lifecycle
 on a real guest (console login, pause/resume, Shut down) and the console
 page's teardown. See its [README](../crates/glidex-ui/e2e/README.md).
 
@@ -280,7 +314,8 @@ page's teardown. See its [README](../crates/glidex-ui/e2e/README.md).
 
 There is none beyond React's built-in hooks. Lists are fetched on
 mount and refreshed after mutations by re-calling the list
-endpoint, and VM pages poll while a VM converges (above). No global
+endpoint; VM and disk pages and the activity indicator poll while
+something converges (above). No global
 store, no query cache. If that becomes painful
 (polling, optimistic updates, cross-component invalidation) a
 lightweight option like TanStack Query is the natural upgrade.
