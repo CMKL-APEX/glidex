@@ -457,6 +457,12 @@ fn ensure_sudo() -> Result<()> {
     if is_root() || SUDO_READY.swap(true, Ordering::SeqCst) {
         return Ok(());
     }
+    // Passwordless sudo needs no prompt. `sudo -v` would still ask when
+    // sudoers also has a rule that needs a password (verifypw=all), which
+    // fails without a terminal.
+    if Command::new("sudo").args(["-n", "true"]).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success()) {
+        return Ok(());
+    }
     println!("{}", "Administrator access (sudo) is needed for system changes.".yellow());
     if let Err(e) = run("sudo", &["-v"]) {
         SUDO_READY.store(false, Ordering::SeqCst);
