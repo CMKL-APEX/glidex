@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import * as api from "../api";
 import type { VmResponse } from "../types";
@@ -8,7 +8,7 @@ import VmActions, { type VmAction } from "../components/VmActions";
 import VmStateBadge from "../components/VmStateBadge";
 import { Loading } from "../components/Loading";
 import { useSession } from "../session";
-import { useLiveRefresh } from "../live";
+import { useLive, useLiveRefresh } from "../live";
 
 export default function VmDetail() {
   const { id } = useParams<{ id: string }>();
@@ -22,8 +22,21 @@ export default function VmDetail() {
   /** The firmware image's name, once looked up (the VM carries its id). */
   const [firmwareName, setFirmwareName] = useState<string | null>(null);
 
+  // While a delete runs, follow the VM on the live stream instead of
+  // asking for it: once it is gone, a GET would 404 (handled, but logged
+  // by the browser) before the page navigates away.
+  const stream = useLive();
+  const streamRef = useRef(stream);
+  streamRef.current = stream;
+  const deleting = useRef(false);
+
   const fetchVm = useCallback(async () => {
     if (!id) return;
+    if (deleting.current) {
+      const seen = streamRef.current.vms.get(id);
+      if (seen) setVm(seen);
+      return;
+    }
     try {
       const data = await api.getVm(id);
       setVm(data);
@@ -68,6 +81,7 @@ export default function VmDetail() {
     if (action === "delete" && !confirm(`Delete VM ${vm?.name ?? vmId}? A root disk created with it is deleted too.`)) return;
     setActionLoading(true);
     setError(null);
+    deleting.current = action === "delete";
     // The call waits for the controller (up to a minute); follow the VM
     // meanwhile.
     const peek = setTimeout(fetchVm, 500);
@@ -78,6 +92,7 @@ export default function VmDetail() {
         return;
       }
     } catch (e) {
+      deleting.current = false;
       setError(e instanceof Error ? e.message : "Action failed");
     } finally {
       clearTimeout(peek);
