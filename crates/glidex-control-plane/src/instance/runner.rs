@@ -66,19 +66,38 @@ impl From<zbus::Error> for RunnerError {
     }
 }
 
+/// Whether this process runs as a `glidex-control-plane*.service` unit:
+/// `INVOCATION_ID` is set and its cgroup is such a unit. `INVOCATION_ID`
+/// alone is not enough: every service has it, so a control plane started
+/// from another one (a CI runner, a transient unit, a tool's session)
+/// would get the systemd runner, and its tests' VMs under `/tmp` refused.
+pub fn runs_as_control_plane_service() -> bool {
+    std::env::var_os("INVOCATION_ID").is_some()
+        && std::fs::read_to_string("/proc/self/cgroup").is_ok_and(|c| in_control_plane_unit(&c))
+}
+
+/// `/proc/self/cgroup` names a `glidex-control-plane*.service` (cgroup v2
+/// `0::/system.slice/glidex-control-plane.service`, or a v1 hierarchy).
+pub(crate) fn in_control_plane_unit(cgroup: &str) -> bool {
+    cgroup
+        .lines()
+        .filter_map(|l| l.splitn(3, ':').nth(2))
+        .any(|path| path.split('/').any(|unit| unit.starts_with("glidex-control-plane") && unit.ends_with(".service")))
+}
+
 pub enum Runner {
     Systemd(SystemdRunner),
     Detached(DetachedRunner),
 }
 
 impl Runner {
-    /// `auto` is systemd when the control plane itself runs under systemd
-    /// (`INVOCATION_ID` is set).
+    /// `auto` is systemd when this process is the control-plane service
+    /// (spec/reconciliation.md §8.8).
     pub fn new(kind: VmRunnerKind) -> Self {
         let systemd = match kind {
             VmRunnerKind::Systemd => true,
             VmRunnerKind::Detached => false,
-            VmRunnerKind::Auto => std::env::var_os("INVOCATION_ID").is_some(),
+            VmRunnerKind::Auto => runs_as_control_plane_service(),
         };
         if systemd {
             Runner::Systemd(SystemdRunner { conn: Mutex::new(None) })
@@ -349,5 +368,20 @@ impl DetachedRunner {
             let _ = child.wait();
         });
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn auto_picks_systemd_only_in_the_control_plane_unit() {
+        assert!(in_control_plane_unit("0::/system.slice/glidex-control-plane.service\n"));
+        assert!(in_control_plane_unit("12:pids:/system.slice/glidex-control-plane.service\n0::/x\n"));
+        // Other services: a CI runner, a transient unit, a user session.
+        assert!(!in_control_plane_unit("0::/system.slice/actions.runner.org-repo.service\n"));
+        assert!(!in_control_plane_unit("0::/user.slice/user-1000.slice/user@1000.service/app.slice/run-u12.service\n"));
+        assert!(!in_control_plane_unit("0::/system.slice/glidex-vm@abc.service\n"));
     }
 }

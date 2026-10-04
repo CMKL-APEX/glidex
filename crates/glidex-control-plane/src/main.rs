@@ -63,10 +63,11 @@ fn check_kvm_access() -> Result<(), String> {
     }
 }
 
-const DETACHED_IN_SANDBOX: &str = "The detached VM runner (reconcile.vm_runner \"detached\") runs hypervisors as \
-children of this process, but it runs with no_new_privs (the glidex-control-plane \
-unit's sandbox), which drops cloud-hypervisor's CAP_NET_ADMIN, and the unit closes \
-/dev/kvm. Use vm_runner \"auto\" or \"systemd\" under the installed unit.";
+const DETACHED_IN_SANDBOX: &str = "The detached VM runner (reconcile.vm_runner \"detached\", or \"auto\" outside a \
+glidex-control-plane*.service unit) runs hypervisors as children of this process, but it \
+runs with no_new_privs (a sandboxed unit), which drops cloud-hypervisor's CAP_NET_ADMIN, \
+and the unit closes /dev/kvm. Set vm_runner \"systemd\" (\"auto\" picks it in the \
+installed glidex-control-plane.service).";
 
 /// `Some(())` when this process runs with `no_new_privs`, as under the
 /// installed unit's sandbox.

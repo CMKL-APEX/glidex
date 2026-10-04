@@ -722,8 +722,13 @@ launch until a later resync can make it.
 
 ### 8.8 Runners
 
-`reconcile.vm_runner` = `auto` (default: `systemd` if `INVOCATION_ID`
-is set, else `detached`), `systemd`, or `detached`.
+`reconcile.vm_runner` = `auto` (default), `systemd`, or `detached`.
+`auto` is `systemd` when the control plane runs as its own service:
+`INVOCATION_ID` is set **and** `/proc/self/cgroup` names a
+`glidex-control-plane*.service` unit; else `detached`. `INVOCATION_ID`
+alone marks every service, so a control plane (or its test suite)
+started from another one, such as a CI runner or a transient unit, got
+the systemd runner and its VMs' paths under `/tmp` refused.
 
 **systemd.** One `zbus` connection to the system bus, opened at startup
 and re-opened on error (§9.4 orders it before adoption).
