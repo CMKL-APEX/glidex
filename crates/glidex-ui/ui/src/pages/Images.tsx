@@ -4,12 +4,14 @@ import type { CatalogItem, ImageInfo } from "../types";
 import { formatBytes } from "../types";
 import Modal from "../components/Modal";
 import { LoadingCard } from "../components/Loading";
+import { useLiveRefresh } from "../live";
 
 const inputClass =
   "mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-transparent";
 
 function StatusBadge({ image }: { image: ImageInfo }) {
   const s = image.status;
+  if (image.deleting) return <span className="text-xs text-gray-500">Deleting…</span>;
   switch (s.state) {
     case "downloading": {
       const pct = s.total_bytes ? Math.floor((s.received_bytes * 100) / s.total_bytes) : null;
@@ -102,13 +104,14 @@ export default function Images() {
     refresh();
   }, [refresh]);
 
-  // Poll while anything is downloading.
-  const busy = images?.some((i) => i.status.state === "downloading" || i.status.state === "verifying");
+  // Follow the live stream; without it, poll while anything is downloading.
+  const live = useLiveRefresh(["image", "disk"], refresh);
+  const busy = images?.some((i) => i.status.state === "downloading" || i.status.state === "verifying" || i.deleting);
   useEffect(() => {
-    if (!busy) return;
+    if (!busy || live) return;
     const id = setInterval(refresh, 1500);
     return () => clearInterval(id);
-  }, [busy, refresh]);
+  }, [busy, live, refresh]);
 
   const pull = async (key: string) => {
     setError(null);

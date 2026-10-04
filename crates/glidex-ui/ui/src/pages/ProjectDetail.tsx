@@ -2,7 +2,8 @@ import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import * as api from "../api";
 import type { Binding, Network, NetworkShare, ProjectView, Quotas } from "../types";
-import { PROJECT_ROLES, QUOTA_KEYS, QUOTA_LABELS, formatTime } from "../types";
+import { PROJECT_ROLES, QUOTA_KEYS, QUOTA_LABELS, formatTime, notReady } from "../types";
+import { useLiveRefresh } from "../live";
 import { Loading } from "../components/Loading";
 import AddBindingForm from "../components/AddBindingForm";
 import {
@@ -121,8 +122,13 @@ function NetworkRow({
           <span className="text-xs text-gray-500">
             {net.mode} on {net.bridge}
           </span>
+          {net.deletion_requested_at && (
+            <span className="ml-2 text-xs text-gray-500" title={notReady(net.conditions)?.message}>
+              deleting{notReady(net.conditions) ? ` (${notReady(net.conditions)!.reason})` : ""}
+            </span>
+          )}
         </div>
-        {manage && (
+        {manage && !net.deletion_requested_at && (
           <button
             className={dangerLink}
             onClick={() => confirm(`Delete network ${net.name}?`) && run(() => api.deleteNetwork(net.name))}
@@ -238,6 +244,8 @@ export default function ProjectDetail() {
   useEffect(() => {
     refresh();
   }, [refresh]);
+  // A network being deleted (waiting for netd, say) goes away by itself.
+  useLiveRefresh(["network"], refresh);
   const canReadBindings = can("readBindings");
   const canShare = can("listNetworkShares");
   useEffect(() => {

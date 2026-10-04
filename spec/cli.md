@@ -84,6 +84,7 @@ name (ids when `/projects` isn't readable).
 | `stop <name\|id> [--graceful [secs]] [--no-wait]` | `POST /vms/{id}/stop?wait=<w>[&graceful_timeout_secs=<secs>]` (power button first; default 60 s); `w` = max(60, secs + 20), at most 300 |
 | `pause <name\|id> [--no-wait]` | `POST /vms/{id}/pause?wait=60` |
 | `events <name\|id>` | `GET /vms/{id}/events`: time, actor, reason (warnings highlighted), message |
+| `watch [vms,disks,images,networks]` | `GET /watch?kinds=…` (default all): follow changes until Ctrl-C (below) |
 | `connect <name\|id>` | `GET /vms/{id}/console`, then the console WebSocket `GET /vms/{id}/console/ws` |
 | `log <name\|id>` | `GET /vms/{id}/console/log` (last 1 MiB) |
 | `delete <name\|id> [--keep-disk] [--no-wait]` | Confirmation prompt → `DELETE /vms/{id}?wait=60[&keep_disk=true]` |
@@ -99,7 +100,7 @@ name (ids when `/projects` isn't readable).
 | `image list` / `images` | `GET /images` |
 | `image pull <key\|url> [--name N] [--sha256 H]` | `POST /images`, then polls `GET /images/{id}` with a progress line until ready or failed (Ctrl-C stops watching only) |
 | `image retry <name\|id>` | `POST /images/{id}/retry`: download a failed image again (follow it with `image list`) |
-| `image rm <image>` | `DELETE /images/{id}` |
+| `image rm <image>` | `DELETE /images/{id}?wait=60`; prints `Image deleted:` once gone, else `Deleting:` with the reason it waits |
 | `disk list` / `disks` | `GET /disks`, attached VM shown by name |
 | `disk show <disk>` | `GET /disks/{id}`: path, backing file, partitions |
 | `disk create <name> [--size-gib N] [--image I] [--full] [--raw] [--no-extend]` | `POST /disks?wait=300` (it may wait for its image to download) |
@@ -108,7 +109,7 @@ name (ids when `/projects` isn't readable).
 | `disk rm <disk>` | Confirmation prompt → `DELETE /disks/{id}`; prints `Deleting:` instead of `Disk deleted:` when the server deferred it (`202`, an operation on the disk finishes first) |
 | `networks` / `network list` | `GET /networks` (project networks show their project) |
 | `network create <name> [--project P] [--subnet CIDR] [--mtu N]` | With `--project`: `POST /projects/{P}/networks` (NAT, generated bridge); without: as `network-add` |
-| `network rm <name>` | `DELETE /networks/{name}` |
+| `network rm <name>` / `network-rm` / `net-rm` | `DELETE /networks/{name}?wait=60`; prints `Network deleted:` once gone, else `Deleting: <name> (the control plane finishes it)` and `Waiting: <Ready reason>: <message>` (e.g. `NetdUnavailable`, `InUse`) |
 | `network share <net> <project-id>` | `POST /networks/{net}/shares {project}` (offer, valid 7 days) |
 | `network unshare <net> <project-id>` | `DELETE /networks/{net}/shares/{project}` |
 | `network shares <project>` | `GET /projects/{p}/network-shares` (offered / accepted) |
@@ -214,6 +215,19 @@ it has not converged (e.g. `ImageNotReady` while its image downloads,
 `ResizePending` / `ExtendRootPending` while a VM has it open). They have
 no `--no-wait`. `events` covers VMs only; disk, image and network events
 are on the API (`GET /{disks,images,networks}/{id}/events`).
+
+### `watch`
+
+`watch [kinds]` opens `GET /watch` ([rest-api.md](rest-api.md#live-stream-get-watch))
+and prints `Synced: N objects; changes follow`, then one line per
+change: `HH:MM:SS  <kind> <name> <what>`, where `what` is a VM's state
+(`state → desired` while they differ), a disk's status, an image's state
+(`downloading N%` while it downloads) or a network's phase, prefixed
+`deleting (…)` while it is being deleted and followed by
+` — <Ready reason>: <message>` while `Ready` isn't `True`. A removed
+object prints `deleted` in red. When the server ends the stream (after
+5 minutes, or a restart) it reconnects and prints only what really
+changed meanwhile. Ctrl-C stops it.
 
 `state → desired` (`format_vm_state`) is printed whenever the two
 differ, treating `created` as `stopped`; `failed` and `unknown` are

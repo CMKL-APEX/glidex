@@ -392,6 +392,10 @@ async fn disks_wait_for_their_image_and_notice_a_lost_file() {
     let (status, d) = request(&app, "POST", "/disks", Some(json!({"name": "early", "image": "slow", "size_bytes": 64 * MIB}))).await;
     assert_eq!(status, StatusCode::CREATED, "{d}");
     assert_eq!(d["status"], "pending", "{d}");
+    // The image can't be deleted from under a disk waiting for it.
+    let (status, e) = request(&app, "DELETE", "/images/slow", None).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{e}");
+    assert!(e["message"].as_str().unwrap().contains("early"), "{e}");
     let d = ready_disk(&app, "early").await;
     assert_eq!(d["size_bytes"], 64 * MIB);
     let reasons: Vec<String> = disk_events(&app, "early").await.into_iter().map(|e| e.0).collect();
@@ -591,4 +595,42 @@ async fn vms_create_attach_and_own_disks() {
     let (status, _) = request(&app, "GET", &format!("/disks/{root_id}"), None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert!(!root_path.exists());
+}
+
+/// Deleting an image is a request the image controller finishes
+/// (spec/reconciliation.md §6.3): a download in flight is cancelled and
+/// its files removed; the name is free again.
+#[tokio::test]
+async fn deleting_an_image_cancels_its_download() {
+    if !tools_present() {
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    let fx = fixtures(tmp.path());
+    let (base, _) = start_server(&fx).await;
+    let (app, _m) = create_app(tmp.path());
+
+    let (status, img) = request(&app, "POST", "/images", Some(json!({"url": format!("{base}/flaky-good.qcow2"), "name": "doomed"}))).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{img}");
+    let id = img["id"].as_str().unwrap().to_string();
+    let (status, body) = request(&app, "DELETE", "/images/doomed?wait=10", None).await;
+    assert!(matches!(status, StatusCode::NO_CONTENT | StatusCode::OK), "{status} {body}");
+    let (status, _) = request(&app, "GET", &format!("/images/{id}"), None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    // Give an aborted download a moment to have written, had it survived.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let (status, _) = request(&app, "GET", &format!("/images/{id}"), None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "not brought back by the download task");
+    let left: Vec<String> = std::fs::read_dir(tmp.path().join("images"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.contains(&id))
+        .collect();
+    assert!(left.is_empty(), "files left: {left:?}");
+    let (status, events) = request(&app, "GET", "/images", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(events.as_array().unwrap().iter().all(|i| i["name"] != "doomed"));
+
+    let img = pull_ready(&app, &base, "good.qcow2", "doomed", None).await;
+    assert_eq!(img["name"], "doomed", "the name is free again");
 }

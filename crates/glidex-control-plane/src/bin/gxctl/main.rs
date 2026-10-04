@@ -752,13 +752,137 @@ async fn handle_image(client: &CliClient, args: &[&str]) {
             None => println!("{}", usage.yellow()),
         },
         "rm" | "delete" => match args.get(1) {
-            Some(name) => match client.request_json::<()>(Method::DELETE, &format!("/images/{}", name), None).await {
-                Ok(()) => println!("{} {}", "Image deleted:".green(), name),
+            Some(name) => match client.request_json::<serde_json::Value>(Method::DELETE, &format!("/images/{}?wait=60", name), None).await {
+                Ok(v) => print_delete_result("Image", name, &v),
                 Err(e) => println!("{} {}", "Error:".red(), e),
             },
             None => println!("{}", usage.yellow()),
         },
         _ => println!("{}", usage.yellow()),
+    }
+}
+
+/// One line for an object from `/watch`: its name and what it is doing.
+fn watch_summary(kind: &str, o: &serde_json::Value) -> (String, String) {
+    let name = o["name"].as_str().unwrap_or("?").to_string();
+    let deleting = o["deleting"].as_bool().unwrap_or(false) || o["deletion_requested_at"].is_u64();
+    let mut what = match kind {
+        "vm" => {
+            let state = o["state"].as_str().unwrap_or("?");
+            match o["desired_state"].as_str() {
+                Some(d) if d != state && !(d == "stopped" && state == "created") => format!("{} → {}", state, d),
+                _ => state.to_string(),
+            }
+        }
+        "disk" => o["status"].as_str().unwrap_or("?").to_string(),
+        "image" => match o["status"]["state"].as_str().unwrap_or("?") {
+            "downloading" => match (o["status"]["received_bytes"].as_u64(), o["status"]["total_bytes"].as_u64()) {
+                (Some(r), Some(t)) if t > 0 => format!("downloading {}%", r * 100 / t),
+                _ => "downloading".to_string(),
+            },
+            s => s.to_string(),
+        },
+        _ => o["phase"].as_str().unwrap_or("ready").replace('_', " "),
+    };
+    if deleting {
+        what = format!("deleting ({})", what);
+    }
+    if let Some(c) = o["conditions"].as_array().into_iter().flatten().find(|c| c["kind"] == "Ready" && c["status"] != "True") {
+        what = format!("{} — {}: {}", what, c["reason"].as_str().unwrap_or(""), c["message"].as_str().unwrap_or(""));
+    }
+    (name, what)
+}
+
+/// `watch [kinds]` (spec/reconciliation.md §12.6): print changes to what
+/// the caller can see until Ctrl-C. Reconnects when the server ends a
+/// stream, printing only what changed meanwhile.
+async fn handle_watch(client: &ApiClient, args: &[&str]) {
+    let kinds = args.first().copied().unwrap_or("vms,disks,images,networks");
+    let path = format!("/watch?kinds={}", kinds);
+    // What was last printed per (kind, id), to skip repeats after a reconnect.
+    let mut last: std::collections::HashMap<(String, String), String> = std::collections::HashMap::new();
+    let mut synced_once = false;
+    println!("{} {} (Ctrl-C to stop)", "Watching".green(), kinds);
+    let watch = async {
+        loop {
+            let mut buf = String::new();
+            let mut ended = false;
+            let res = client
+                .stream(&path, |text| {
+                    buf.push_str(text);
+                    while let Some(end) = buf.find("\n\n") {
+                        let block: String = buf.drain(..end + 2).collect();
+                        let (mut event, mut data) = (String::new(), String::new());
+                        for line in block.lines() {
+                            if let Some(v) = line.strip_prefix("event:") {
+                                event = v.trim().to_string();
+                            } else if let Some(v) = line.strip_prefix("data:") {
+                                data.push_str(v.trim_start());
+                            }
+                        }
+                        let v: serde_json::Value = serde_json::from_str(&data).unwrap_or_default();
+                        let (kind, id) = (v["kind"].as_str().unwrap_or("").to_string(), v["id"].as_str().unwrap_or("").to_string());
+                        match event.as_str() {
+                            "synced" => {
+                                if !synced_once {
+                                    println!("{} {} objects; changes follow", "Synced:".green(), last.len());
+                                    synced_once = true;
+                                }
+                            }
+                            "expired" => ended = true,
+                            "added" | "modified" => {
+                                let (name, what) = watch_summary(&kind, &v["object"]);
+                                let line = format!("{:<8} {:<24} {}", kind, name, what);
+                                if last.get(&(kind.clone(), id.clone())) != Some(&line) {
+                                    if synced_once {
+                                        println!("{}  {}", chrono_now(), line);
+                                    }
+                                    last.insert((kind, id), line);
+                                }
+                            }
+                            "deleted" => {
+                                if let Some(prev) = last.remove(&(kind.clone(), id)) {
+                                    let name = prev.split_whitespace().nth(1).unwrap_or("?").to_string();
+                                    println!("{}  {:<8} {:<24} {}", chrono_now(), kind, name, "deleted".red());
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    !ended
+                })
+                .await;
+            if let Err(e) = res {
+                println!("{} {}", "Error:".red(), e.message);
+                return;
+            }
+            // The server ended the stream (lifetime, restart): follow on.
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
+    };
+    tokio::select! {
+        _ = watch => {}
+        _ = tokio::signal::ctrl_c() => println!(),
+    }
+}
+
+/// `HH:MM:SS` (UTC, like `events`), for `watch` lines.
+fn chrono_now() -> String {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let t = now % 86_400;
+    format!("{:02}:{:02}:{:02}", t / 3600, (t % 3600) / 60, t % 60)
+}
+
+/// After a `DELETE …?wait`: gone (no body), or still being deleted by its
+/// controller (spec/reconciliation.md §6.3), with the reason it waits.
+pub(crate) fn print_delete_result(kind: &str, name: &str, v: &serde_json::Value) {
+    if v.is_null() {
+        println!("{} {}", format!("{} deleted:", kind).green(), name);
+        return;
+    }
+    println!("{} {} (the control plane finishes it)", "Deleting:".yellow(), name);
+    if let Some(ready) = v["conditions"].as_array().into_iter().flatten().find(|c| c["kind"] == "Ready" && c["status"] != "True") {
+        println!("  {} {}: {}", "Waiting:".yellow(), ready["reason"].as_str().unwrap_or(""), ready["message"].as_str().unwrap_or(""));
     }
 }
 
@@ -946,6 +1070,7 @@ fn print_help() {
     println!("  {} - Connect to VM console (interactive)", "connect <name|id>".cyan());
     println!("  {}     - Show VM serial console log", "log <name|id>".cyan());
     println!("  {}  - What happened to a VM (starts, exits, restarts, adoptions)", "events <name|id>".cyan());
+    println!("  {}  - Follow VMs, disks, images and networks as they change (Ctrl-C stops)", "watch [vms,disks,images,networks]".cyan());
     println!("  {} - Delete a VM (and its own root disk)", "delete <name|id> [--keep-disk]".cyan());
     println!("  {}               - List host PCI devices", "pci".cyan());
     println!(
@@ -1220,7 +1345,7 @@ async fn handle_credential_update(client: &CliClient, username: &str, request: U
 
 /// REPL command names offered by Tab (aliases included).
 const COMMANDS: &[&str] = &[
-    "help", "exit", "quit", "list", "ls", "get", "create", "start", "stop", "pause", "events",
+    "help", "exit", "quit", "list", "ls", "get", "create", "start", "stop", "pause", "events", "watch",
     "connect", "console", "attach", "log", "logs", "delete", "rm", "pci", "pci-devices",
     "attach-device", "detach-device", "credentials", "creds", "credential-add",
     "credential-passwd", "credential-keys", "credential-rm", "networks", "network-add",
@@ -1959,6 +2084,8 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
             }
         }
 
+        "watch" => handle_watch(client, &parts[1..]).await,
+
         "log" | "logs" => {
             if parts.len() < 2 {
                 println!("{}", "Usage: log <name|id>".yellow());
@@ -2165,10 +2292,10 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
 
         "network-rm" | "net-rm" => match parts.get(1) {
             Some(name) => match client
-                .request_json::<()>(Method::DELETE, &format!("/networks/{}", name), None)
+                .request_json::<serde_json::Value>(Method::DELETE, &format!("/networks/{}?wait=60", name), None)
                 .await
             {
-                Ok(()) => println!("{} {}", "Network deleted:".green(), name),
+                Ok(v) => print_delete_result("Network", name, &v),
                 Err(e) => println!("{} {}", "Error:".red(), e),
             },
             None => println!("{}", "Usage: network-rm <name>".yellow()),

@@ -876,6 +876,18 @@ impl Authz {
    `[{action, resource}]` and returns booleans for the caller, so the
    UI can hide what the caller can't do. The server still checks every
    real request.
+9. **Live stream.** `GET /watch` (server-sent events,
+   [rest-api.md](rest-api.md#live-stream-get-watch)) needs only an
+   authenticated caller; each kind is filtered exactly like its list
+   endpoint (`readVm` / `readDisk` per item in visible projects,
+   `readImage` / `readNetwork` on `Host` with the network view of
+   `GET /networks`). The filter is re-evaluated on every change, not
+   once at connect, so a policy or role-link change applies to the next
+   event, and an object that stops being visible is sent as `deleted`.
+   A stream lasts at most 5 minutes, which bounds how long a revoked
+   session or token keeps receiving events; it also ends as soon as the
+   caller's access can't be resolved (e.g. the user was disabled). At
+   most 64 streams are open host-wide (`503 too_many_watchers`).
 
 ## 8. `glidex-netd`
 
@@ -1055,6 +1067,7 @@ New endpoints:
 | `GET/PUT/DELETE /projects/{id}/bindings` | `project.members` (project-role links only; cannot link system roles) |
 | `GET/PUT/DELETE /system/bindings` | `system.projects` (system-role and grant links on the host) |
 | `POST /authz/check` | authenticated (answers for the caller only) |
+| `GET /watch` | authenticated; each kind filtered like its list endpoint, on every change (§7.7) |
 | `GET /authz/policies`, `GET /authz/policies/{id}`, `GET /authz/policies/{id}/versions` | `policy.read` |
 | `PUT /authz/policies/{id}`, `DELETE /authz/policies/{id}`, `POST /authz/reload` | `policy.write` (step-up) |
 | `POST /authz/validate`, `POST /authz/simulate` | `policy.read` |

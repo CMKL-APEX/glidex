@@ -95,6 +95,8 @@ export interface Network {
   /** What the network controller last saw in netd (spec/reconciliation.md §10.3). */
   phase?: "pending" | "ready" | "degraded" | "netd_unavailable";
   conditions?: Condition[];
+  /** Deletion requested; the network controller is removing it (from netd, then the record). */
+  deletion_requested_at?: number;
 }
 
 /** Whether VMs of `project` may attach to `n` (mirrors base.network-grant). */
@@ -199,6 +201,8 @@ export interface ImageInfo {
   verified: boolean;
   path: string;
   linked_disks: string[];
+  /** Deletion requested; the image controller is removing it. */
+  deleting?: boolean;
 }
 
 export interface CatalogItem {
@@ -266,13 +270,21 @@ export function diskWaiting(d: DiskInfo): boolean {
   return !d.deleting && d.phase === "ready" && d.status === "ready" && d.pending_size_bytes !== undefined;
 }
 
-/** A download or its verification in progress. */
+/** A deletion, a download or its verification in progress. */
 export function imageActivity(i: ImageInfo): string | null {
+  if (i.deleting) return "Deleting";
   if (i.status.state === "downloading") {
     const s = i.status;
     return s.total_bytes ? `Downloading ${Math.floor((s.received_bytes * 100) / s.total_bytes)}%` : "Downloading";
   }
   return i.status.state === "verifying" ? "Verifying" : null;
+}
+
+/** A network deletion in progress (it waits for netd, or for a VM to leave). */
+export function networkActivity(n: Network): string | null {
+  if (!n.deletion_requested_at) return null;
+  const why = notReady(n.conditions);
+  return why && why.reason !== "Converged" ? `Deleting (${why.reason})` : "Deleting";
 }
 
 /** The `Ready` condition when it isn't True: why an object hasn't converged. */

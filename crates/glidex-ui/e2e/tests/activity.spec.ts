@@ -21,10 +21,9 @@ test("the header and the VM show what the controller is still doing", async ({ p
     method: "POST",
     body: { name: NAME, vcpu_count: 1, mem_size_mib: 256, kernel_image_path: "/nonexistent/vmlinux", rootfs_path: "/nonexistent/disk.img" },
   });
+  // Written outside this browser: it arrives over the live stream
+  // (GET /watch), with no reload and well before the 15 s idle poll.
   await api(`/vms/${vm.id}/start`, { method: "POST" });
-  // Written outside this browser: the header would see it at its next idle
-  // poll (15 s); look now.
-  await page.reload();
 
   const indicator = page.getByRole("button", { name: "Reconciling" });
   await expect(indicator).toContainText("1 in progress");

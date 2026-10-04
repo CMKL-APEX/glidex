@@ -802,6 +802,7 @@ pub struct Network {
     // older records load as `Ready`:
     pub phase: NetworkPhase,       // Ready | Degraded | NetdUnavailable
     pub conditions: Vec<Condition>,
+    pub deletion_requested_at: Option<u64>, // set by DELETE (§11.3); absent otherwise
 }
 
 pub struct NetworkAttachment {
@@ -850,6 +851,16 @@ calls `list_bridges` (and `list_nat` for NAT networks) and records a
 - A bridged network whose bridge is no longer a glidex bridge is
   reported; glidex never takes over a bridge on its own.
 
+**Deletion.** A network with `deletion_requested_at` is torn down
+instead. While a VM still uses it: `Ready=False/InUse`, phase
+`degraded`, retried every 10 s. Then, for a network glidex created (`owns_bridge`): netd
+`delete_nat` (NAT mode), then `delete_bridge` if netd still has the
+bridge; a bridged network only drops its record. With netd unreachable
+it waits (`netd_unavailable`, `Ready=Unknown/NetdUnavailable`); a netd
+error gives `Ready=False/DeleteFailed` (phase `degraded`, event
+`DeleteFailed`); both are
+retried every 30 s. Finally the record is removed (event `Deleted`).
+
 Only `phase` and `conditions` are written by the controller; grants and
 shares written meanwhile are kept. `GET /networks/{name}/events` returns
 the network's event ring.
@@ -863,7 +874,8 @@ the network's event ring.
 | `POST /ovs/dpdk-init` `{socket_mem, pmd_cpu_mask, confirm?}` | `init_dpdk` | 204 |
 | `GET` · `POST /ovs/bridges`, `DELETE /ovs/bridges/{name}` | `list_bridges` · `ensure_bridge` · `delete_bridge` | 200 · 201 · 204 |
 | `GET` · `POST /ovs/bridges/{b}/uplinks`, `DELETE …/{u}`, `POST …/{u}/commit {token}` | uplink ops | 200 · 201 or 202 (pending) · 204 · 200 |
-| `GET` · `POST /networks`, `DELETE /networks/{name}` | control-plane store (+ `ensure_bridge`/`ensure_nat` for NAT) | 200 · 201 · 204 |
+| `GET` · `POST /networks` | control-plane store (+ `ensure_bridge`/`ensure_nat` for NAT) | 200 · 201 |
+| `DELETE /networks/{name}[?wait=N]` | records `deletion_requested_at`; the controller calls `delete_nat`/`delete_bridge` (§11.2a) | 204 when gone at once, else 202 with the network; with `wait`, 200 once gone |
 | `POST /vms` with `networks` | validation only | 201 |
 
 Error mapping:
@@ -883,7 +895,10 @@ Error mapping:
 
 `create_vm` validation: unknown network (400); ≤ 8 attachments; a custom MAC must be unicast;
 VhostUser forces `memory.shared = true`. Deleting a network used by any
-VM → `409`.
+VM (spec or live NICs) → `409` (`deleteNetwork`, or `deleteProjectNetwork`
+for a project network). While a network is being deleted, attaching a VM
+to it is `400` ("network 'x' is being deleted") and creating one with
+the same name is `409` ("is being deleted; try again once it is gone").
 
 ### 11.4 VM lifecycle
 

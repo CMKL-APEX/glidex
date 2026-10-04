@@ -12,7 +12,7 @@ use axum::{
     Json,
 };
 
-fn manager_err(e: crate::state::VmManagerError) -> ApiErr {
+pub(crate) fn manager_err(e: crate::state::VmManagerError) -> ApiErr {
     super::error_to_response(e)
 }
 
@@ -121,13 +121,35 @@ pub async fn pull_image(c: Caller, Json(req): Json<PullImageRequest>) -> Result<
     Ok((status, Json(img)))
 }
 
-pub async fn delete_image(c: Caller, Path(id): Path<String>) -> Result<impl IntoResponse, ApiErr> {
+/// A deletion request the image controller finishes (spec/reconciliation.md
+/// §6.3): `204` when the image is gone at once (normally), else `202` with
+/// it; with `?wait`, `200` once it is gone.
+pub async fn delete_image(c: Caller, Path(id): Path<String>, Query(w): Query<WaitQuery>) -> Result<axum::response::Response, ApiErr> {
     let mut es = EntitySet::new();
     es.image(&id);
     c.set_target(format!("image:{}", id));
     c.require(Ent::Image(id.clone()), es)?;
-    c.manager().delete_image(&id).map_err(manager_err)?;
-    Ok(StatusCode::NO_CONTENT)
+    let m = c.manager();
+    let Some(still) = m.delete_image(&id).await.map_err(manager_err)? else {
+        return Ok(StatusCode::NO_CONTENT.into_response());
+    };
+    let id = still.id.clone();
+    deleted_reply(m, still, w.wait, || m.images.get_image(&id).ok().map(|i| m.images.image_response(&i, false))).await
+}
+
+/// The answer to a deletion still under way: `202` with the object, or
+/// with `?wait`, `200` once `look` finds it gone (`202` on timeout).
+pub(crate) async fn deleted_reply<T: serde::Serialize>(
+    m: &crate::state::VmManager,
+    still: T,
+    wait: Option<u64>,
+    look: impl FnMut() -> Option<T>,
+) -> Result<axum::response::Response, ApiErr> {
+    let Some(secs) = wait else { return Ok((StatusCode::ACCEPTED, Json(still)).into_response()) };
+    Ok(match m.wait_gone(std::time::Duration::from_secs(secs.min(300)), look).await {
+        None => StatusCode::OK.into_response(),
+        Some(t) => (StatusCode::ACCEPTED, Json(t)).into_response(),
+    })
 }
 
 // ---- disks -------------------------------------------------------------
@@ -172,7 +194,7 @@ pub async fn get_disk(c: Caller, Path(id): Path<String>) -> Result<impl IntoResp
 #[derive(Debug, serde::Deserialize, Default)]
 pub struct WaitQuery {
     #[serde(default)]
-    wait: Option<u64>,
+    pub(crate) wait: Option<u64>,
 }
 
 /// The answer to a disk write (spec/reconciliation.md §12.3): at once with

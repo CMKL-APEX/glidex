@@ -13,6 +13,7 @@ mod errors;
 mod net;
 mod storage;
 mod vms;
+mod watch;
 
 pub use errors::{error_to_response, ApiErr};
 
@@ -191,6 +192,8 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         .add("POST", "/ovs/bridges/{name}/uplinks/{uplink}/commit", "commitUplink", post(net::commit_uplink))
         .add("GET", "/pci-devices", "listPciDevices", get(net::list_pci_devices))
         .add("GET", "/system/reconcile", "readSystemStatus", get(vms::system_reconcile))
+        // Live changes; each kind filtered like its list endpoint.
+        .add("GET", "/watch", AUTHENTICATED, get(watch::watch))
         // ---- authentication
         .add("GET", "/health", PUBLIC, get(health_check))
         .add("GET", "/auth/methods", PUBLIC, get(access::methods))

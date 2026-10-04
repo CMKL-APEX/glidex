@@ -359,3 +359,51 @@ async fn project_networks_and_sharing() {
     let (status, _) = request(&h.app, "DELETE", &format!("/projects/{pa}"), None).await;
     assert_eq!(status, StatusCode::CONFLICT);
 }
+
+/// Deleting a network is a request the network controller finishes
+/// (spec/reconciliation.md §6.3, §10.3): with netd away it waits, says
+/// why, and keeps the network from new VMs; once netd is back, netd's NAT
+/// and bridge go, then the record.
+#[tokio::test(flavor = "multi_thread")]
+async fn network_deletion_waits_for_netd() {
+    let Harness { app, manager, exec, _dir: dir } = harness(true);
+    let (status, body) = request(&app, "POST", "/networks", Some(json!({"name": "lab", "mode": "nat"}))).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    drop(app);
+    drop(manager);
+
+    // The same database, with netd unreachable.
+    let away = dir.path().join("away");
+    std::fs::create_dir_all(&away).unwrap();
+    let manager = VmManager::with_db_path_and_netd(dir.path().join("cp.db"), Netd::new(&away)).unwrap();
+    let app = create_router(manager.clone());
+    let (status, net) = request(&app, "DELETE", "/networks/lab", None).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{net}");
+    assert!(net["deletion_requested_at"].is_u64(), "{net}");
+    assert_eq!(net["phase"], "netd_unavailable", "{net}");
+    assert_eq!(net["conditions"][0]["reason"], "NetdUnavailable", "{net}");
+    // No new VM may use it meanwhile.
+    let (status, body) = request(&app, "POST", "/vms", Some(vm("late", json!([{"network": "lab"}])))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body["message"].as_str().unwrap().contains("being deleted"), "{body}");
+    drop(app);
+    drop(manager);
+
+    // netd is back: the controller finishes the deletion.
+    let manager = VmManager::with_db_path_and_netd(dir.path().join("cp.db"), Netd::new(dir.path().join("run"))).unwrap();
+    let app = create_router(manager.clone());
+    manager.start_controllers();
+    let mut gone = false;
+    for _ in 0..100 {
+        let (status, _) = request(&app, "GET", "/networks/lab", None).await;
+        if status == StatusCode::NOT_FOUND {
+            gone = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(gone, "the network controller deleted it");
+    let calls = exec.calls();
+    assert!(calls.iter().any(|c| c.starts_with("ip addr del") || c.contains("gxbr-lab")), "{calls:#?}");
+    manager.stop_controllers().await;
+}

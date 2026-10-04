@@ -234,19 +234,39 @@ object rejects spec writes with `409 conflict`.
 |---|---|
 | VM | `vm.instance` (no live instance), `vm.ports` (netd `release_vm`), `vm.disks` (clear claims), `vm.owned-disk` (delete the owned root disk; left out with `?keep_disk=true`), `vm.runtime` (remove the runtime directory and firmware vars) |
 | Disk | `disk.file` (remove the file; a failure is logged and the file left as an orphan, images.md §6.5) |
-| Image | `image.download` (abort a running download, remove `.part`), `image.file` |
-| Network | `network.netd` (`delete_nat`, `delete_bridge` for networks glidex created) |
+| Image | `image.download` (abort a running download), `image.file` (remove the file and `.part`; one that can't be removed is logged and left as an orphan) |
+| Network | `network.netd` (`delete_nat`, then `delete_bridge` if netd still has it, for networks glidex created; a bridged network only drops its record) |
 
 Admission keeps today's refusals (`409` deleting an attached disk, an
 image with linked disks, a network in use): finalizers are for cleanup
 the deleter owns, never for waiting on other users.
 
-As built, only VMs carry a `finalizers` list. A disk delete sets
-`deletion_requested_at` and the disk controller removes the record, then
-the file (`204`, or `202` while an operation on it finishes). Images and
-networks are still deleted synchronously by the API (`delete_image`
-aborts a download and removes `.part`; `delete_network` calls netd's
-`delete_nat`/`delete_bridge` first).
+As built, only VMs carry a `finalizers` list. Disks, images and
+networks record the request as `deletion_requested_at`, and their
+controller runs the finalizers above in order and then removes the
+record:
+
+- **Disk**: the record, then the file (`204`, or `202` while an
+  operation on it finishes).
+- **Image**: the download is aborted, the record removed, then the files.
+  Admission also refuses (`409`) while a disk waits for the image
+  (pending or creating from it) or a clone from it is in progress.
+- **Network**: netd's NAT and bridge, then the record. It waits, with
+  the reason in `Ready`, while netd is unreachable
+  (`Unknown/NetdUnavailable`, phase `NetdUnavailable`, retried every
+  30 s), while netd refuses (`False/DeleteFailed`, event, every 30 s), or
+  while a VM still uses the network (`False/InUse`, every 10 s; admission
+  refuses that case, so it only follows a race).
+
+The API runs the controller's round inline, so a delete normally answers
+`204`; `202` with the object while it still waits; `?wait` as for VMs.
+A deleting image or network takes no new users: it can't be a new
+disk's source, be retried, or be attached to a VM (`400 … is being
+deleted`), and a create or pull with its name is refused (`409 … is
+being deleted`) until it is gone. Writers holding an older copy (the
+download task holds one for minutes) can't undo a deletion: an update
+keeps `deletion_requested_at`, and an update to a record that is gone is
+dropped instead of re-creating it.
 
 ### 6.4 Tables
 
@@ -256,7 +276,7 @@ Same ReDB file. Values are serde-JSON.
 |---|---|---|
 | `meta` (new) | `schema_version` | `2` (absent = 1, today's layout) |
 | `vms` | id | `{meta, spec, status}` envelope (`store::VmRecord`) |
-| `disks`, `images`, `networks` | id (network: name) | today's flat records, with the controller's fields added as serde-defaulted fields: disk `phase`, `create`, `resize`, `extend_root`, `applied_extend_root_seq`, `owner`, `deletion_requested_at`, `conditions`; image `retry_seq`, `applied_retry_seq`; network `phase`, `conditions`. Records written before them load as `Ready` |
+| `disks`, `images`, `networks` | id (network: name) | today's flat records, with the controller's fields added as serde-defaulted fields: disk `phase`, `create`, `resize`, `extend_root`, `applied_extend_root_seq`, `owner`, `deletion_requested_at`, `conditions`; image `retry_seq`, `applied_retry_seq`, `deletion_requested_at`; network `phase`, `conditions`, `deletion_requested_at`. Records written before them load as `Ready` |
 | `events` (new) | `<kind>/<id>` | ring of the last 50 `Event { at, actor, kind: Normal\|Warning, reason, message }` |
 
 Only the VM is nested. Disks, images and networks keep their flat shape
@@ -889,6 +909,8 @@ queue with "requeue after". `Failed` is not retried until
 disappears becomes `Missing` and is **never** re-downloaded: catalog
 URLs point at "current/latest", so a re-download would sit under linked
 overlays written against a different file.
+A deleting image (`deletion_requested_at`) is finished before anything
+else: the download aborted, the record removed, then the files (§6.3).
 
 ### 10.3 Network
 
@@ -927,6 +949,8 @@ D13 (`Ready` when the phase is `Ready` and spec and status agree).
 | `DELETE /vms/{id}[?keep_disk=true]` | deletion request | `deleteVm` |
 | `POST /disks/{id}/resize`, `/extend-root` | Disk spec writes | unchanged |
 | `POST /images/{id}/retry` (new) | bump `retry_seq` | `pullImage` |
+| `DELETE /images/{id}[?wait]`, `DELETE /networks/{name}[?wait]` | deletion request (§6.3) | `deleteImage`; `deleteNetwork` / `deleteProjectNetwork` (unchanged) |
+| `GET /watch[?kinds=…][&project=…]` (new) | live stream (§12.6) | any authenticated caller; each kind filtered as its list endpoint |
 | `GET /{vms,disks,images,networks}/{id}/events` (new) | event ring | `readVm` / `readDisk` / `readImage` / `readNetwork` |
 | `GET /system/reconcile` (new) | §12.5 | **`readSystemStatus` (new) on `Host::"local"`**, in the `host.read` group (with `readOvsStatus`, `listBridges`, …) |
 
@@ -997,6 +1021,44 @@ GET /vms/{id}/events
 ```
 
 `GET /health` stays public and unchanged.
+
+### 12.6 `GET /watch`
+
+A live stream of the objects the caller may list, as server-sent events
+(`text/event-stream`), so clients need not poll.
+
+- **Query.** `kinds` (comma-separated `vms`, `disks`, `images`,
+  `networks`, singular accepted; default all; unknown → `400 invalid`),
+  `project` (VMs and disks of that project only, as `?project=` on the
+  lists).
+- **Events.** On connect one `added` per visible object, then `synced`
+  (data `{}`). Then `added`, `modified`, `deleted` as objects change.
+  Data is `{"kind": "vm"|"disk"|"image"|"network", "id": "…", "object":
+  {…}}`, where `object` is exactly what the list endpoint returns for it
+  (`VmResponse`, `DiskResponse`, `ImageResponse`, the network view);
+  `deleted` carries no `object`. A keep-alive comment every 15 s.
+
+```
+event: modified
+data: {"kind":"vm","id":"<uuid>","object":{"name":"web-1","state":"starting","desired_state":"running",…}}
+```
+
+- **How.** Every store write (VM, disk, image, network, and image
+  download progress) rings a change bell (a `watch` channel that carries
+  no data; `?wait` waits on it too). Each stream re-lists with its
+  list endpoints' visibility rules when it rings, after 250 ms to
+  coalesce, and at least every 10 s, and sends the differences. So
+  authorization, including policy and membership changes, applies to
+  every event, and nothing is replayed from a log: a client that
+  reconnects gets a fresh snapshot.
+- **Limits.** A stream ends after 5 minutes with `event: expired`,
+  which bounds how long a revoked session keeps receiving events;
+  clients reconnect (EventSource does on its own). A stream also ends
+  when the caller's access can no longer be resolved. At most 64 streams
+  host-wide; more → `503 too_many_watchers` (poll instead).
+- **Clients.** The UI keeps one stream for the selected project and
+  refreshes pages from it, polling only while it is not connected
+  (web-ui.md). `gxctl watch` prints changes (cli.md).
 
 ## 13. systemd, polkit, installer
 
@@ -1214,7 +1276,7 @@ Differences from §10:
   unused). A lost bridge the network owns is re-created
   (`ensure_bridge`); a lost NAT and a dnsmasq that is not running are
   reported (`Degraded`), never re-created, because the NAT's subnet
-  lives only in netd. There is no `network.netd` finalizer (§6.3).
+  lives only in netd.
 - Port drift (§10.3) is checked in the VM controller's round for a
   running VM. netd `sync_vms` is sent only when some VM uses networks,
   at startup and when netd restarted (socket inode changed).
@@ -1249,10 +1311,15 @@ As built: M4. The control-plane unit sandbox of §13.3. The disk tools
 and the API test suites pass under its syscall filter, no_new_privs and
 address-family restrictions (run in a transient unit); the installed
 unit with the systemd runner on a KVM host is the remaining check.
-`watch` (SSE) is not built: clients poll, or use `?wait`.
 `GET /vms/{id}?view=full` requires `readSystemStatus` (`host.read`),
 because the stored record carries host paths, PIDs and the boot id that
 the flat view leaves out.
+
+As built after M4: `GET /watch` (§12.6), and image and network deletion
+through their controllers (§6.3, the `image.*` and `network.netd`
+finalizers): until then `delete_image` and `delete_network` ran
+synchronously in the API, and a network delete failed outright while
+netd was unreachable.
 
 ## 19. Testing
 

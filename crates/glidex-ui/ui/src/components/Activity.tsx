@@ -1,13 +1,15 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import * as api from "../api";
-import { diskActivity, diskWaiting, imageActivity, vmActivity } from "../types";
+import { diskActivity, diskWaiting, imageActivity, networkActivity, vmActivity } from "../types";
 import { useSession } from "../session";
+import { useLive } from "../live";
+import type { DiskInfo, ImageInfo, Network, VmResponse } from "../types";
 
 /** One object a controller is still working on. */
 interface Item {
   key: string;
-  kind: "VM" | "Disk" | "Image";
+  kind: "VM" | "Disk" | "Image" | "Net";
   name: string;
   what: string;
   to: string;
@@ -19,43 +21,60 @@ interface Item {
 const BUSY_MS = 3000;
 const IDLE_MS = 15000;
 
+function activityOf(
+  vms: Iterable<VmResponse>,
+  disks: Iterable<DiskInfo>,
+  images: Iterable<ImageInfo>,
+  networks: Iterable<Network>,
+): Item[] {
+  const found: Item[] = [];
+  for (const vm of vms) {
+    const what = vmActivity(vm);
+    if (what) found.push({ key: `vm/${vm.id}`, kind: "VM", name: vm.name, what, to: `/vms/${vm.id}` });
+  }
+  for (const d of disks) {
+    const what = diskActivity(d);
+    if (what) found.push({ key: `disk/${d.id}`, kind: "Disk", name: d.name, what, to: "/disks", waiting: diskWaiting(d) });
+  }
+  for (const i of images) {
+    const what = imageActivity(i);
+    if (what) found.push({ key: `image/${i.id}`, kind: "Image", name: i.name, what, to: "/images" });
+  }
+  for (const n of networks) {
+    const what = networkActivity(n);
+    // Waiting on netd is outside the control plane: shown, polled slowly.
+    if (what) found.push({ key: `net/${n.name}`, kind: "Net", name: n.name, what, to: "/networking", waiting: what !== "Deleting" });
+  }
+  return found;
+}
+
 /** What the controllers are still doing in the selected project (spec/
- * reconciliation.md: writes are carried out asynchronously). `null` until
- * the first look. */
+ * reconciliation.md: writes are carried out asynchronously). From the live
+ * stream when it is open, else by polling. `null` until the first look. */
 export function useActivity(): Item[] | null {
   const { project } = useSession();
-  const [items, setItems] = useState<Item[] | null>(null);
+  const stream = useLive();
+  const [polled, setPolled] = useState<Item[] | null>(null);
   const timer = useRef<number | undefined>(undefined);
 
   const look = useCallback(async () => {
-    const [vms, disks, images] = await Promise.all([
+    const [vms, disks, images, networks] = await Promise.all([
       api.listVms(project).catch(() => []),
       api.listDisks(project).catch(() => []),
       api.listImages().catch(() => []),
+      api.listNetworks().catch(() => []),
     ]);
-    const found: Item[] = [];
-    for (const vm of vms) {
-      const what = vmActivity(vm);
-      if (what) found.push({ key: `vm/${vm.id}`, kind: "VM", name: vm.name, what, to: `/vms/${vm.id}` });
-    }
-    for (const d of disks) {
-      const what = diskActivity(d);
-      if (what) found.push({ key: `disk/${d.id}`, kind: "Disk", name: d.name, what, to: "/disks", waiting: diskWaiting(d) });
-    }
-    for (const i of images) {
-      const what = imageActivity(i);
-      if (what) found.push({ key: `image/${i.id}`, kind: "Image", name: i.name, what, to: "/images" });
-    }
-    return found;
+    return activityOf(vms, disks, images, networks);
   }, [project]);
 
   useEffect(() => {
+    if (stream.live) return;
     let live = true;
     const run = async () => {
       window.clearTimeout(timer.current);
       const found = await look();
       if (!live) return;
-      setItems(found);
+      setPolled(found);
       timer.current = window.setTimeout(run, found.some((i) => !i.waiting) ? BUSY_MS : IDLE_MS);
     };
     // A write just happened: look again shortly (the controller picks it
@@ -71,9 +90,13 @@ export function useActivity(): Item[] | null {
       window.clearTimeout(timer.current);
       window.removeEventListener(api.CHANGED_EVENT, kick);
     };
-  }, [look]);
+  }, [look, stream.live]);
 
-  return items;
+  const streamed = useMemo(
+    () => (stream.live ? activityOf(stream.vms.values(), stream.disks.values(), stream.images.values(), stream.networks.values()) : null),
+    [stream.live, stream.vms, stream.disks, stream.images, stream.networks],
+  );
+  return streamed ?? polled;
 }
 
 /** The header's "N in progress" indicator, with the list on click. */

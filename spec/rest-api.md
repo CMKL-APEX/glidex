@@ -50,7 +50,7 @@ reported as `404`.
 | `DELETE` | `/credentials/{username}` | `delete_credential` | Delete; `409` while a VM uses it |
 | `GET` | `/images/catalog` | `image_catalog` | Built-in cloud images for this host's arch |
 | `GET` / `POST` | `/images` | `list_images` / `pull_image` | List; download + verify (`202`) |
-| `GET` / `DELETE` | `/images/{id}` | `get_image` / `delete_image` | Details + progress; delete or cancel (`409` while linked disks exist) |
+| `GET` / `DELETE` | `/images/{id}[?wait=N]` | `get_image` / `delete_image` | Details + progress; delete or cancel (`204`, or `202` while the image controller finishes; `409` while a disk uses it; below) |
 | `POST` | `/images/{id}/retry` | `retry_image` | Download a failed image again (`202`; needs `pullImage`) |
 | `GET` | `/images/{id}/events` | `image_events` | The image's last 50 events (`readImage`) |
 | `GET` / `POST` | `/disks[?wait=N]` | `list_disks` / `create_disk` | List; create blank or from an image (`201`, made by the disk controller; below) |
@@ -59,6 +59,8 @@ reported as `404`.
 | `POST` | `/disks/{id}/extend-root[?wait=N]` | `extend_root` | Grow the root partition, `offline` or `on-boot`; `202`, applied by the disk controller |
 | `GET` | `/disks/{id}/events` | `disk_events` | The disk's last 50 events (`readDisk`) |
 | `GET` | `/networks/{name}/events` | `network_events` | The network's last 50 events (`readNetwork`) |
+| `DELETE` | `/networks/{name}[?wait=N]` | `delete_network` | Delete (`204`, or `202` while the network controller tears it down; `409` while a VM uses it; below) |
+| `GET` | `/watch[?kinds=…][&project=…]` | `watch` | Live stream of VM, disk, image and network changes (server-sent events; below) |
 | `POST` | `/vms/{id}/disks` | `attach_disk` | Attach a data disk; on a running VM it takes effect at the next start (`restart_required`) |
 | `DELETE` | `/vms/{id}/disks/{disk}` | `detach_disk` | Detach a data disk; on a running VM at the next start, and the disk stays claimed until then |
 
@@ -153,8 +155,56 @@ the record is gone (normally at once), or `202` with the disk
 | `info`, `partition_table` | single-disk `GET` of a ready disk only |
 | `extend_root`, `warnings` | the outcome of an operation, when the response carries one |
 
+### Images and networks
+
+`DELETE /images/{id}` and `DELETE /networks/{name}` are admitted
+synchronously (`409 conflict` while a disk uses the image as its
+backing file, waits for it or clones from it; while any VM uses the
+network) and record `deletion_requested_at`; the image or network
+controller finishes the deletion. Both accept `?wait=<secs>`:
+
+| Outcome | Response |
+|---|---|
+| gone at once (the normal case for an image) | `204` |
+| no `wait`, still deleting | `202` with the image (`deleting: true`) or network (`deletion_requested_at`, `phase`, `conditions`) |
+| gone within `wait` | `200` |
+| timeout (e.g. netd unreachable) | `202` as above |
+
+While deleting, an image can't be the source of a new disk or be
+retried, and a network can't be attached to; recreating either under
+the same name is `409 conflict` until it is gone. Details:
+[images.md §8](images.md#8-rest-api), [networking.md](networking.md).
+
 Image, disk and network events (`GET /{images,disks}/{id}/events`,
 `GET /networks/{name}/events`) have the shape of the VM's below.
+
+## Live stream: `GET /watch`
+
+`GET /watch[?kinds=vms,disks,images,networks][&project=<id>]` answers
+`text/event-stream` (server-sent events). Any authenticated caller may
+open it; each kind is filtered exactly like its list endpoint (VMs by
+`readVm`, disks by `readDisk`, both in visible projects and narrowed by
+`project`; images need `readImage` and networks `readNetwork` on
+`Host`, with the view of `GET /networks`). `kinds` takes singular or
+plural names (default: all four); an unknown kind is `400 invalid`.
+
+| Event | Data |
+|---|---|
+| `added` | `{"kind": "vm\|disk\|image\|network", "id": "…", "object": {…}}`: one per visible object on connect, then for each new one |
+| `synced` | `{}`, once, after the initial `added` events |
+| `modified` | as `added`; `object` is exactly what the list endpoint returns |
+| `deleted` | `{"kind", "id"}` (no `object`): removed, or no longer visible |
+| `expired` | `{}`: the stream ends; reconnect for a fresh snapshot |
+
+A network's `id` is its name. Every store write rings a change bell;
+each stream then re-lists (changes within 250 ms go out together, and it
+re-lists every 10 s regardless) and sends the differences, so
+authorization, including policy changes, applies to every event. A
+keep-alive comment goes out every 15 s. A stream lasts at most
+5 minutes, then sends `expired` and closes (EventSource reconnects by
+itself); it also ends once the caller's access can no longer be resolved
+(e.g. the user was disabled). At most 64 streams are open host-wide;
+beyond that the call is `503 too_many_watchers` (poll instead).
 
 ## Payloads
 

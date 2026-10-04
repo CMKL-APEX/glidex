@@ -97,6 +97,7 @@ ui/src/
 ├── main.tsx                # ReactDOM.createRoot entrypoint
 ├── api.ts                  # Typed fetch wrappers: cookies, CSRF, 401 handling
 ├── session.tsx             # whoami, project selection, host capabilities, useCan()
+├── live.tsx                # LiveProvider: one EventSource on /api/watch; useLive(), useLiveRefresh()
 ├── hooks.ts                # useDirectory(): users and teams when listable
 ├── types.ts                # API types and helpers
 ├── index.css               # Tailwind entry
@@ -113,12 +114,13 @@ ui/src/
 │   ├── VmStateBadge.tsx    # State pill (→ desired) plus what the controller is still doing
 │   └── VmCard.tsx          # Dashboard VM row: state badge, Ready reason
 └── pages/
-    ├── Dashboard.tsx       # List VMs, open create modal; polls while a VM converges
+    ├── Dashboard.tsx       # List VMs, open create modal; follows the live stream (polls without it)
     ├── VmDetail.tsx        # VM details, Ready reason, restart notice, actions, events, Open Console link
     ├── VmConsole.tsx       # xterm.js + console WebSocket; Reconnect after it closes
     ├── Credentials.tsx     # List / add / edit / delete guest logins
     ├── Images.tsx          # Catalog (Pull), downloaded images with progress
     ├── Disks.tsx           # Disks: create, resize, extend root, delete, partitions
+    ├── Networking.tsx      # OVS status, bridges and uplinks, networks (networking.md §12)
     ├── Login.tsx           # PAM form and/or Sign in with SSO
     ├── Projects.tsx        # Projects with usage / quotas; create (system-admin)
     ├── ProjectDetail.tsx   # Members, quotas, project networks, shares
@@ -178,8 +180,9 @@ and `last_exit`.
   VmDetail adds an "In progress" box, and `notReadyReason(vm)` (`Ready`
   reason and message) is shown under it. VmDetail also shows the restart
   policies and the last exit (`describeExit`).
-- **Polling.** Dashboard and VmDetail re-fetch every 2 s while any VM
-  shown is not settled, and stop once everything is. A lifecycle call
+- **Refreshing.** Dashboard and VmDetail re-fetch when a VM changes on
+  the live stream (below). Without the stream they re-fetch every 2 s
+  while any VM shown is not settled, and stop once everything is. A lifecycle call
   waits for the controller (`?wait`), so the page also re-fetches 0.5 s
   after sending it to show the progress meanwhile. A VM that disappears
   while its page is open (deleted) says so instead of an error.
@@ -208,23 +211,41 @@ it now** (`power: "running"`; unchecked, the VM is created stopped).
 `onSubmit` returns a promise: a refused create keeps the form open,
 with what was typed and the error under it.
 
+## Live stream
+
+`LiveProvider` (`src/live.tsx`, around the routes in `App.tsx`) opens one
+`EventSource` on `/api/watch?project=<selected project>`
+([rest-api.md](rest-api.md#live-stream-get-watch)) for the whole app and
+keeps the latest copy of every VM, disk, image and network the user can
+see (`useLive()`); it is live once the snapshot has arrived (`synced`).
+When the server ends the stream (`expired`) or it errors, EventSource
+reconnects and the next snapshot replaces the maps.
+`useLiveRefresh(kinds, refresh)` re-runs a page's refresh (debounced
+300 ms) when an object of those kinds changes, and returns whether the
+stream is live. Dashboard and VmDetail follow `vm`, Disks `disk` and
+`vm`, Images `image` and `disk`, Networking `network`; each polls as
+before only while the stream isn't live (no EventSource, an old control
+plane, a buffering proxy, `503 too_many_watchers`).
+
 ## Reconciliation activity
 
 Writes are carried out by the controllers after the API answers
 ([reconciliation.md](reconciliation.md) D5), so the header's
 `Activity` shows whether any are still at work in the selected project:
 "Up to date", or a spinner with "N in progress" that opens a list (kind,
-name, what, linked to the object's page). It is built from
-`GET /vms`, `GET /disks` and `GET /images` with `vmActivity`,
+name, what, linked to the object's page). It is built with `vmActivity`,
 `diskActivity` (`Waiting for its image`, `Creating`, `Resizing`,
-`Busy (op)`, `Deleting`, or a resize waiting for its VM to stop) and
-`imageActivity` (downloading, verifying). It polls every 3 s while
-something is in progress and every 15 s otherwise; a disk resize that
-only waits for its VM to stop counts as idle for that. `api.ts`
-dispatches `glidex:changed` on `window` after every successful write to
-`/vms`, `/disks`, `/images` or `/networks`, and the indicator looks
-again half a second later. Changes made outside this browser show up at
-the next poll.
+`Busy (op)`, `Deleting`, or a resize waiting for its VM to stop),
+`imageActivity` (deleting, downloading, verifying) and `networkActivity`
+(`Deleting`, or `Deleting (<Ready reason>)` such as
+`Deleting (NetdUnavailable)`). While the live stream is open it is
+computed from the stream's maps. Otherwise it polls `GET /vms`,
+`/disks`, `/images` and `/networks` every 3 s while something is in
+progress and every 15 s otherwise; a disk resize that only waits for
+its VM to stop, and a network deletion waiting on something (netd, say),
+count as idle for that. `api.ts` dispatches `glidex:changed` on
+`window` after every successful write to `/vms`, `/disks`, `/images` or
+`/networks`, and the polling indicator looks again half a second later.
 
 ## Access-control pages
 
@@ -271,11 +292,19 @@ only for Cloud-Hypervisor firmware boot, fed by `GET /credentials`.
 ## Images and disks pages
 
 `pages/Images.tsx` shows the catalog (`GET /images/catalog`) with a Pull
-button per entry, and downloaded images with a progress bar. It polls
-`GET /images` every 1.5 s while anything is downloading or verifying.
+button per entry, and downloaded images with a progress bar; an image
+being deleted shows "Deleting…". It follows the live stream, or without
+it polls `GET /images` every 1.5 s while anything is downloading,
+verifying or being deleted. Delete doesn't wait (`204`, or `202` while
+the controller finishes); the page shows the progress.
 A failed image has **Retry** (`POST /images/{id}/retry`); the page
 looks again a second later, when the controller has restarted it.
 "Download from URL" opens a form for `{url, sha256?, name?}`.
+`pages/Networking.tsx`'s Status column shows a network's phase, or
+"deleting" (with the `Ready` message, reason on hover) while a deletion waits (netd
+unreachable, a VM still on it); like image deletes, network deletes
+don't wait (`204` or `202`). Without the live stream the page polls
+every 3 s while a network is being deleted.
 `pages/Disks.tsx` lists disks with Resize / Extend root / Delete actions
 (Delete is disabled while the disk is attached), and clicking a name shows
 its partition table (`GET /disks/{id}`). A refused shrink shows
@@ -325,9 +354,10 @@ page's teardown. See its [README](../crates/glidex-ui/e2e/README.md).
 
 There is none beyond React's built-in hooks. Lists are fetched on
 mount and refreshed after mutations by re-calling the list
-endpoint; VM and disk pages and the activity indicator poll while
-something converges (above). No global
-store, no query cache. If that becomes painful
+endpoint, and again when the live stream reports a change (above);
+without the stream, pages and the activity indicator poll while
+something converges. The stream's maps (`LiveProvider`) are the only
+shared state: no global store, no query cache. If that becomes painful
 (polling, optimistic updates, cross-component invalidation) a
 lightweight option like TanStack Query is the natural upgrade.
 

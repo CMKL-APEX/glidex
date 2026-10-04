@@ -21,6 +21,12 @@ impl VmManager {
     /// One round for image `id`.
     pub async fn reconcile_image(&self, id: &str) -> Next {
         let Ok(mut img) = self.images.get_image(id) else { return Ok(None) };
+        if img.deletion_requested_at.is_some() {
+            // The `image.download` and `image.file` finalizers (§6.3).
+            self.images.finish_image_delete(&img.id)?;
+            self.image_event(&img.id, EventKind::Normal, "Deleted", "");
+            return Ok(None);
+        }
         match img.status.clone() {
             ImageStatus::Downloading { .. } | ImageStatus::Verifying => {
                 if !self.images.download_running(&img.id) {
@@ -68,6 +74,9 @@ impl VmManager {
     /// `POST /images/{id}/retry`: download a failed image again (D19).
     pub fn retry_image(&self, key: &str) -> Result<crate::images::ImageResponse, VmManagerError> {
         let mut img = self.images.get_image(key)?;
+        if img.deletion_requested_at.is_some() {
+            return Err(crate::images::ImageError::InvalidImage(format!("image {} is being deleted", img.name)).into());
+        }
         if matches!(img.status, ImageStatus::Failed { .. }) {
             img.retry_seq = img.retry_seq.max(img.applied_retry_seq) + 1;
             self.images.put_image(&img)?;

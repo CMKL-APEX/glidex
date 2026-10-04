@@ -9,6 +9,7 @@ import type {
   PortType,
 } from "../types";
 import { notReady } from "../types";
+import { useLiveRefresh } from "../live";
 import Modal from "../components/Modal";
 import { LoadingCard } from "../components/Loading";
 
@@ -309,10 +310,12 @@ function AddNetworkForm({
 function NetworkStatus({ n }: { n: Network }) {
   const why = notReady(n.conditions);
   const phase = n.phase ?? "ready";
-  if (phase === "ready") return <span className="text-green-700">ready</span>;
+  if (phase === "ready" && !n.deletion_requested_at) return <span className="text-green-700">ready</span>;
   return (
     <div title={why ? `${why.reason}: ${why.message}` : undefined}>
-      <span className={phase === "degraded" ? "text-red-700" : "text-amber-700"}>{phase.replace("_", " ")}</span>
+      <span className={n.deletion_requested_at ? "text-gray-500" : phase === "degraded" ? "text-red-700" : "text-amber-700"}>
+        {n.deletion_requested_at ? "deleting" : phase.replace("_", " ")}
+      </span>
       {why?.message && <div className="text-gray-500 truncate max-w-xs">{why.message}</div>}
     </div>
   );
@@ -347,6 +350,15 @@ export default function Networking() {
   useEffect(() => {
     refresh();
   }, [refresh]);
+
+  // Follow the live stream; without it, poll while a network is deleting.
+  const live = useLiveRefresh(["network"], refresh);
+  const deleting = networks.some((n) => n.deletion_requested_at);
+  useEffect(() => {
+    if (!deleting || live) return;
+    const id = setInterval(refresh, 3000);
+    return () => clearInterval(id);
+  }, [deleting, live, refresh]);
 
   const remove = async (name: string) => {
     if (!confirm(`Delete network "${name}"?`)) return;

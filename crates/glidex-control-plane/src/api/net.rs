@@ -51,7 +51,7 @@ fn network_entities(n: &Network) -> (Ent, EntitySet) {
 /// Host networks, and project networks of (or shared with) projects the
 /// caller can see. Share offers are shown only to those who may manage
 /// the network's shares.
-fn network_view(c: &Caller, visible: &crate::auth::LinkedProjects, mut n: Network) -> Option<Network> {
+pub(crate) fn network_view(c: &Caller, visible: &crate::auth::LinkedProjects, mut n: Network) -> Option<Network> {
     if let Some(p) = &n.project {
         if !visible.contains(p) && !n.shares.iter().any(|s| visible.contains(s)) {
             return None;
@@ -140,7 +140,14 @@ pub async fn create_network(c: Caller, Json(body): Json<CreateHostNetwork>) -> R
     Ok((StatusCode::CREATED, Json(net)))
 }
 
-pub async fn delete_network(c: Caller, Path(name): Path<String>) -> Result<impl IntoResponse, ApiErr> {
+/// A deletion request the network controller finishes (spec/
+/// reconciliation.md §6.3): `204` when the network is gone at once, else
+/// `202` with it (netd unreachable, say); with `?wait`, `200` once gone.
+pub async fn delete_network(
+    c: Caller,
+    Path(name): Path<String>,
+    axum::extract::Query(w): axum::extract::Query<super::storage::WaitQuery>,
+) -> Result<axum::response::Response, ApiErr> {
     let n = c.manager().get_network(&name).map_err(manager_err)?;
     c.set_target(format!("network:{}", n.name));
     let (e, es) = network_entities(&n);
@@ -152,8 +159,16 @@ pub async fn delete_network(c: Caller, Path(name): Path<String>) -> Result<impl 
         }
         None => c.require(e, es)?,
     }
-    c.manager().delete_network(&name).await.map_err(manager_err)?;
-    Ok(StatusCode::NO_CONTENT)
+    let m = c.manager();
+    let Some(still) = m.delete_network(&name).await.map_err(manager_err)? else {
+        return Ok(StatusCode::NO_CONTENT.into_response());
+    };
+    let visible = c.visible_projects()?;
+    let Some(still) = network_view(&c, &visible, still) else { return Ok(StatusCode::ACCEPTED.into_response()) };
+    super::storage::deleted_reply(m, still, w.wait, || {
+        m.networks.get(&name).ok().flatten().and_then(|n| network_view(&c, &visible, n))
+    })
+    .await
 }
 
 #[derive(Deserialize)]

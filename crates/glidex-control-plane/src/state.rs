@@ -245,7 +245,8 @@ pub struct VmManager {
     pub(crate) runner: ArcSwap<Runner>,
     pub(crate) queue: Arc<WorkQueue>,
     /// Bumped on every VM write; `?wait` and tests watch it.
-    pub(crate) changed: tokio::sync::watch::Sender<u64>,
+    /// Rung after every write to a VM, disk, image or network.
+    pub(crate) changed: crate::store::Bell,
     /// Serializes "write `status.nics` + attach a port" with `sync_vms`, so
     /// a sync never detaches a port a reconcile is adding (D16).
     pub(crate) ports_lock: tokio::sync::Mutex<()>,
@@ -294,7 +295,8 @@ impl VmManager {
     pub fn with_db_path_and_netd(db_path: PathBuf, netd: Netd) -> Result<Arc<Self>, VmManagerError> {
         let store = VmStore::open(&db_path)?;
         let base = db_path.parent().map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
-        let images = ImageManager::new(store.database(), ImageSettings::from_env(&base))?;
+        let changed = crate::store::new_bell();
+        let images = ImageManager::new(store.database(), ImageSettings::from_env(&base), changed.clone())?;
         for ty in [HypervisorType::CloudHypervisor, HypervisorType::Qemu] {
             if !crate::hypervisor::driver(ty).is_available() {
                 tracing::warn!("Hypervisor {} binary {:?} not found — VMs configured for it will fail to start", ty, ty.binary_name());
@@ -303,9 +305,8 @@ impl VmManager {
         let settings = Settings::default();
         let runner = Runner::new(settings.runner);
         let credentials = CredentialStore::new(store.database())?;
-        let networks = NetworkStore::new(store.database())?;
+        let networks = NetworkStore::new(store.database(), changed.clone())?;
         let projects = ProjectStore::new(store.database())?;
-        let (changed, _) = tokio::sync::watch::channel(0u64);
         Ok(Arc::new_cyclic(|me| Self {
             vms: RwLock::new(HashMap::new()),
             credentials,
@@ -386,7 +387,7 @@ impl VmManager {
     }
 
     pub(crate) fn notify_changed(&self) {
-        self.changed.send_modify(|v| *v = v.wrapping_add(1));
+        crate::store::ring(&self.changed);
     }
 
     /// Persist `vm` (with `events`) and update the cache. The caller holds
@@ -508,6 +509,9 @@ impl VmManager {
                 None => return Err(invalid(format!("network not found: {}", att.network))),
                 Some(n) if !n.usable_by(project) => {
                     return Err(invalid(format!("network '{}' is not available to this project", att.network)))
+                }
+                Some(n) if n.deletion_requested_at.is_some() => {
+                    return Err(invalid(format!("network '{}' is being deleted", att.network)))
                 }
                 Some(_) => {}
             }
@@ -1162,6 +1166,22 @@ impl VmManager {
         }
     }
 
+    /// Wait (on the change bell) until `look` returns `None`, i.e. the
+    /// object is gone, or `timeout` passes; returns the last thing seen.
+    pub async fn wait_gone<T>(&self, timeout: Duration, mut look: impl FnMut() -> Option<T>) -> Option<T> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        let mut rx = self.changed.subscribe();
+        loop {
+            rx.borrow_and_update();
+            let seen = look()?;
+            // The bell, or a slow tick in case a change was missed.
+            let tick = tokio::time::Instant::now() + Duration::from_secs(1);
+            if tokio::time::timeout_at(deadline.min(tick), rx.changed()).await.is_err() && tokio::time::Instant::now() >= deadline {
+                return Some(seen);
+            }
+        }
+    }
+
     pub fn object_events(&self, kind: &str, id: &str) -> Result<Vec<Event>, VmManagerError> {
         Ok(self.store.events(&event_key(kind, id))?)
     }
@@ -1212,8 +1232,13 @@ impl VmManager {
         Ok((self.images.image_response(&img, false), created))
     }
 
-    pub fn delete_image(&self, key: &str) -> Result<(), VmManagerError> {
-        Ok(self.images.delete_image(key)?)
+    /// Delete an image (or cancel its download): refused while a disk
+    /// depends on it; otherwise a deletion request the image controller
+    /// finishes. `None` once gone, else the image still being deleted.
+    pub async fn delete_image(&self, key: &str) -> Result<Option<ImageResponse>, VmManagerError> {
+        let img = self.images.request_image_delete(key)?;
+        self.reconcile_image(&img.id).await?;
+        Ok(self.images.get_image(&img.id).ok().map(|i| self.images.image_response(&i, false)))
     }
 
     pub fn list_disks(&self) -> Vec<DiskResponse> {
@@ -1443,8 +1468,13 @@ impl VmManager {
     /// Create a network: host side in netd first, record only on success.
     pub async fn create_network(&self, req: CreateNetworkRequest) -> Result<Network, VmManagerError> {
         let net = req.to_network()?;
-        if self.networks.get(&net.name)?.is_some() {
-            return Err(NetError::Conflict(format!("network '{}' already exists", net.name)).into());
+        if let Some(other) = self.networks.get(&net.name)? {
+            return Err(NetError::Conflict(if other.deletion_requested_at.is_some() {
+                format!("network '{}' is being deleted; try again once it is gone", net.name)
+            } else {
+                format!("network '{}' already exists", net.name)
+            })
+            .into());
         }
         if let Some(other) = self.networks.list()?.into_iter().find(|n| n.bridge == net.bridge) {
             return Err(NetError::Conflict(format!("bridge '{}' already belongs to network '{}'", net.bridge, other.name)).into());
@@ -1484,32 +1514,40 @@ impl VmManager {
                 }
             }
         }
-        self.networks.put(&net)?;
+        self.networks.insert(&net)?;
         tracing::info!(network = %net.name, bridge = %net.bridge, mode = ?net.mode, "network created");
         self.queue.add(Key::Network(net.name.clone()));
         Ok(net)
     }
 
-    pub async fn delete_network(&self, name: &str) -> Result<(), VmManagerError> {
-        let net = self.get_network(name)?;
-        let vms = self.vms.read().await;
-        let users: Vec<String> = vms
-            .values()
+    /// VMs whose spec or live NICs use network `name`.
+    pub(crate) fn network_users(vms: &HashMap<String, Vm>, name: &str) -> Vec<String> {
+        vms.values()
             .filter(|vm| vm.config().networks.iter().any(|a| a.network == name) || vm.status.nics.iter().any(|n| n.network == name))
             .map(|vm| vm.name.clone())
-            .collect();
-        if !users.is_empty() {
-            return Err(NetError::Conflict(format!("network '{}' is used by VM(s): {}", name, users.join(", "))).into());
-        }
-        if net.owns_bridge {
-            if net.mode == NetworkMode::Nat {
-                self.netd.call::<serde_json::Value>(Op::DeleteNat { bridge: net.bridge.clone() })?;
+            .collect()
+    }
+
+    /// Delete a network: refused while a VM uses it; otherwise a deletion
+    /// request the network controller finishes (netd's NAT and bridge for a
+    /// network glidex created, then the record). Returns the network while
+    /// that is still under way (netd unreachable, say), `None` once gone.
+    pub async fn delete_network(&self, name: &str) -> Result<Option<Network>, VmManagerError> {
+        {
+            // Write lock: no VM may attach to it while it starts going away.
+            let vms = self.vms.write().await;
+            let mut net = self.get_network(name)?;
+            let users = Self::network_users(&vms, name);
+            if !users.is_empty() {
+                return Err(NetError::Conflict(format!("network '{}' is used by VM(s): {}", name, users.join(", "))).into());
             }
-            self.netd.call::<serde_json::Value>(Op::DeleteBridge { name: net.bridge.clone() })?;
+            if net.deletion_requested_at.is_none() {
+                net.deletion_requested_at = Some(tenancy::now());
+                self.networks.put(&net)?;
+            }
         }
-        self.networks.delete(name)?;
-        tracing::info!(network = %name, "network deleted");
-        Ok(())
+        self.reconcile_network(name).await?;
+        Ok(self.networks.get(name)?)
     }
 
     /// Create a host network usable by `grants` (or every project).

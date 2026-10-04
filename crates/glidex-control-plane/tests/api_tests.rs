@@ -944,3 +944,72 @@ async fn test_multiple_vms_persist() {
         assert!(names.contains(&"multi-vm-3"));
     }
 }
+
+/// One server-sent event: `(event, data)`.
+async fn next_sse(body: &mut Body, buf: &mut String) -> (String, Value) {
+    loop {
+        if let Some(end) = buf.find("\n\n") {
+            let block: String = buf.drain(..end + 2).collect();
+            let mut event = String::new();
+            let mut data = String::new();
+            for line in block.lines() {
+                if let Some(v) = line.strip_prefix("event:") {
+                    event = v.trim().to_string();
+                } else if let Some(v) = line.strip_prefix("data:") {
+                    data.push_str(v.trim_start());
+                }
+            }
+            if event.is_empty() {
+                continue; // keep-alive comment
+            }
+            return (event, serde_json::from_str(&data).unwrap_or(Value::Null));
+        }
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(10), body.frame())
+            .await
+            .expect("an event within 10 s")
+            .expect("stream open")
+            .unwrap();
+        if let Ok(bytes) = frame.into_data() {
+            buf.push_str(&String::from_utf8_lossy(&bytes));
+        }
+    }
+}
+
+/// `GET /watch` (spec/reconciliation.md §12.6): a snapshot, `synced`,
+/// then changes as they happen.
+#[tokio::test]
+async fn test_watch_streams_changes() {
+    let (app, _temp_dir) = create_test_app();
+    let before = create_simple_vm(&app, "watch-before").await;
+
+    let resp = app.clone().oneshot(Request::builder().uri("/watch?kinds=vms").body(Body::empty()).unwrap()).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(resp.headers()["content-type"], "text/event-stream");
+    let mut body = resp.into_body();
+    let mut buf = String::new();
+
+    let (ev, data) = next_sse(&mut body, &mut buf).await;
+    assert_eq!((ev.as_str(), data["kind"].as_str(), data["id"].as_str()), ("added", Some("vm"), Some(before.as_str())), "{data}");
+    assert_eq!(data["object"]["name"], "watch-before");
+    assert_eq!(next_sse(&mut body, &mut buf).await.0, "synced");
+
+    let id = create_simple_vm(&app, "watch-new").await;
+    let (ev, data) = next_sse(&mut body, &mut buf).await;
+    assert_eq!((ev.as_str(), data["id"].as_str()), ("added", Some(id.as_str())), "{data}");
+
+    let (status, _) = send(&app, "POST", format!("/vms/{}/stop?graceful_timeout_secs=7", id), None, &[]).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let (ev, data) = next_sse(&mut body, &mut buf).await;
+    assert_eq!((ev.as_str(), data["id"].as_str()), ("modified", Some(id.as_str())), "{data}");
+    assert_eq!(data["object"]["stop_grace_secs"], 7);
+
+    let (status, _) = send(&app, "DELETE", format!("/vms/{}", id), None, &[]).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (ev, data) = next_sse(&mut body, &mut buf).await;
+    assert_eq!((ev.as_str(), data["id"].as_str()), ("deleted", Some(id.as_str())), "{data}");
+    assert!(data.get("object").is_none());
+
+    // Unknown kinds are refused up front.
+    let (status, _) = send(&app, "GET", "/watch?kinds=pods".into(), None, &[]).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}

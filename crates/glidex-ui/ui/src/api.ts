@@ -272,7 +272,8 @@ export const deleteCredential = (username: string, project?: string | null) =>
 
 export const listNetworks = () => get<Network[]>("/networks");
 export const createNetwork = (req: CreateNetworkRequest) => post<Network>("/networks", req);
-export const deleteNetwork = (name: string) => del(`/networks/${enc(name)}`);
+/** `undefined` when gone (204), else the network its controller is still deleting (202). */
+export const deleteNetwork = (name: string) => del<Network | undefined>(`/networks/${enc(name)}`);
 export const createProjectNetwork = (project: string, req: CreateNetworkRequest) =>
   post<Network>(`/projects/${enc(project)}/networks`, req);
 export const offerNetworkShare = (network: string, project: string) =>
@@ -302,7 +303,8 @@ export const imageCatalog = () => get<CatalogItem[]>("/images/catalog");
 export const listImages = () => get<ImageInfo[]>("/images");
 export const pullImage = (req: { catalog?: string; url?: string; sha256?: string; name?: string }) =>
   post<ImageInfo>("/images", req);
-export const deleteImage = (id: string) => del(`/images/${enc(id)}`);
+/** `undefined` when gone (204), else the image its controller is still deleting (202). */
+export const deleteImage = (id: string) => del<ImageInfo | undefined>(`/images/${enc(id)}`);
 /** Download a failed image again (spec/reconciliation.md D19). */
 export const retryImage = (id: string) => post<ImageInfo>(`/images/${enc(id)}/retry`);
 

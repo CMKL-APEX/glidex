@@ -840,8 +840,8 @@ pub async fn network(client: &ApiClient, args: &[&str]) {
             }
         }
         "rm" | "delete" => match args.get(1) {
-            Some(name) => match client.request_json::<()>(Method::DELETE, &format!("/networks/{}", enc(name)), None).await {
-                Ok(()) => println!("{} {}", "Network deleted:".green(), name),
+            Some(name) => match client.request_json::<serde_json::Value>(Method::DELETE, &format!("/networks/{}?wait=60", enc(name)), None).await {
+                Ok(v) => crate::print_delete_result("Network", name, &v),
                 Err(e) => err(e),
             },
             None => usage(u),

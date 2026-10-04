@@ -9,6 +9,7 @@ import Modal from "../components/Modal";
 import CreateVmForm from "../components/CreateVmForm";
 import type { CreateVmRequest } from "../types";
 import { useCan, useSession } from "../session";
+import { useLiveRefresh } from "../live";
 
 export default function Dashboard() {
   const { project, projectName } = useSession();
@@ -34,13 +35,15 @@ export default function Dashboard() {
     fetchVms();
   }, [fetchVms]);
 
-  // While any VM is on its way to its desired state, follow it.
+  // Follow changes on the live stream; without it, poll while any VM is
+  // on its way to its desired state.
+  const live = useLiveRefresh(["vm"], fetchVms);
   const converging = (vms ?? []).some((vm) => !settled(vm));
   useEffect(() => {
-    if (!converging) return;
+    if (!converging || live) return;
     const t = setInterval(fetchVms, 2000);
     return () => clearInterval(t);
-  }, [converging, fetchVms]);
+  }, [converging, live, fetchVms]);
 
   const handleAction = async (vmId: string, action: VmAction) => {
     if (action === "delete") {

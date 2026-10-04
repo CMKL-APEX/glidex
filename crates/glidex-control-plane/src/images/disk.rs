@@ -108,6 +108,9 @@ impl ImageManager {
             }
             Some(key) => {
                 let img = self.get_image(key)?;
+                if img.deletion_requested_at.is_some() {
+                    return Err(ImageError::NotReady(format!("image {} is being deleted", img.name)));
+                }
                 match &img.status {
                     ImageStatus::Missing => return Err(ImageError::NotReady(format!("image {} is missing its file", img.name))),
                     // A disk would wait for it forever: retry it first.

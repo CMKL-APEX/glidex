@@ -5,6 +5,7 @@ import { useCan, useSession } from "../session";
 import type { DiskInfo, ImageInfo, VmResponse } from "../types";
 import { diskActivity, diskWaiting, formatBytes, notReady } from "../types";
 import { Spinner } from "../components/Activity";
+import { useLiveRefresh } from "../live";
 import Modal from "../components/Modal";
 import { LoadingCard } from "../components/Loading";
 
@@ -228,14 +229,16 @@ export default function Disks() {
     refresh();
   }, [refresh]);
 
-  // Poll while the disk controller is still working on one.
+  // Follow the live stream; without it, poll while the disk controller is
+  // still working on one.
+  const live = useLiveRefresh(["disk", "vm"], refresh);
   const busy = disks?.some((d) => diskActivity(d) !== null && !diskWaiting(d)) ?? false;
   const waiting = disks?.some(diskWaiting) ?? false;
   useEffect(() => {
-    if (!busy && !waiting) return;
+    if ((!busy && !waiting) || live) return;
     const id = setInterval(refresh, busy ? 2000 : 15000);
     return () => clearInterval(id);
-  }, [busy, waiting, refresh]);
+  }, [busy, waiting, live, refresh]);
 
   const done = (d: DiskInfo) => {
     setNotes(resultNotes(d));

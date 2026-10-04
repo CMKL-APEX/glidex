@@ -8,6 +8,7 @@ import VmActions, { type VmAction } from "../components/VmActions";
 import VmStateBadge from "../components/VmStateBadge";
 import { Loading } from "../components/Loading";
 import { useSession } from "../session";
+import { useLiveRefresh } from "../live";
 
 export default function VmDetail() {
   const { id } = useParams<{ id: string }>();
@@ -42,13 +43,15 @@ export default function VmDetail() {
     fetchVm();
   }, [fetchVm]);
 
-  // Follow the VM while it converges; refresh its history with it.
+  // Follow the VM on the live stream, or (without it) poll while it
+  // converges; its history is refreshed with it.
+  const live = useLiveRefresh(["vm"], fetchVm);
   const converging = vm !== null && !settled(vm);
   useEffect(() => {
-    if (!converging) return;
+    if (!converging || live) return;
     const t = setInterval(fetchVm, 2000);
     return () => clearInterval(t);
-  }, [converging, fetchVm]);
+  }, [converging, live, fetchVm]);
   useEffect(() => {
     if (!id) return;
     api.vmEvents(id).then((r) => setEvents(r.events)).catch(() => setEvents([]));

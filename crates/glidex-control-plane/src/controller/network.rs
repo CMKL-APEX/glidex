@@ -21,6 +21,9 @@ impl VmManager {
     /// One round for network `name`.
     pub async fn reconcile_network(&self, name: &str) -> Next {
         let Some(mut net) = self.networks.get(name)? else { return Ok(None) };
+        if net.deletion_requested_at.is_some() {
+            return self.finish_network_delete(net).await;
+        }
         let netd = self.netd.clone();
         let bridges = tokio::task::spawn_blocking(move || netd.call::<Vec<BridgeRecord>>(Op::ListBridges))
             .await
@@ -88,6 +91,55 @@ impl VmManager {
             net.phase = NetworkPhase::Degraded;
             self.set_network_status(net, NetworkPhase::Degraded, Tristate::False, "Degraded", msg, Duration::from_secs(30))
         }
+    }
+
+    /// The `network.netd` finalizer (spec/reconciliation.md §6.3): netd's
+    /// NAT, then its bridge, for a network glidex created; then the record.
+    /// A bridged network only drops its record (the bridge is the
+    /// administrator's). Waits, with the reason in `Ready`, while netd is
+    /// unreachable or a VM still uses the network.
+    async fn finish_network_delete(&self, net: crate::network::Network) -> Next {
+        let users = Self::network_users(&*self.vms.read().await, &net.name);
+        if !users.is_empty() {
+            let msg = format!("waiting for VM(s) to leave it: {}", users.join(", "));
+            return self.set_network_status(net, NetworkPhase::Degraded, Tristate::False, "InUse", msg, Duration::from_secs(10));
+        }
+        if net.owns_bridge {
+            let netd = self.netd.clone();
+            let (bridge, nat) = (net.bridge.clone(), net.mode == NetworkMode::Nat);
+            let done = tokio::task::spawn_blocking(move || -> Result<(), NetError> {
+                if nat {
+                    netd.call::<serde_json::Value>(Op::DeleteNat { bridge: bridge.clone() })?;
+                }
+                // Only a bridge netd still has: it refuses unknown ones.
+                if netd.call::<Vec<BridgeRecord>>(Op::ListBridges)?.iter().any(|b| b.spec.name == bridge) {
+                    netd.call::<serde_json::Value>(Op::DeleteBridge { name: bridge })?;
+                }
+                Ok(())
+            })
+            .await
+            .map_err(|e| VmManagerError::PersistenceError(e.to_string()))?;
+            match done {
+                Ok(()) => {}
+                Err(NetError::Unavailable(m)) => {
+                    return self.set_network_status(net, NetworkPhase::NetdUnavailable, Tristate::Unknown, "NetdUnavailable", m, Duration::from_secs(30));
+                }
+                Err(e) => {
+                    let msg = e.to_string();
+                    if !net.conditions.iter().any(|c| c.kind == "Ready" && c.reason == "DeleteFailed" && c.message == msg) {
+                        let _ = self.store.push_event(
+                            &event_key("network", &net.name),
+                            Event::new("controller", EventKind::Warning, "DeleteFailed", msg.clone()),
+                        );
+                    }
+                    return self.set_network_status(net, NetworkPhase::Degraded, Tristate::False, "DeleteFailed", msg, Duration::from_secs(30));
+                }
+            }
+        }
+        self.networks.delete(&net.name)?;
+        let _ = self.store.push_event(&event_key("network", &net.name), Event::new("controller", EventKind::Normal, "Deleted", ""));
+        tracing::info!(network = %net.name, "network deleted");
+        Ok(None)
     }
 
     fn set_network_status(

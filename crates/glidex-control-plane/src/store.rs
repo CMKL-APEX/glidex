@@ -11,6 +11,19 @@ use std::path::Path;
 use std::sync::Arc;
 use thiserror::Error;
 
+/// Rung after every write to a stored resource (VMs, disks, images,
+/// networks): `?wait` and `GET /watch` (spec/reconciliation.md §12.6)
+/// look again when it changes. Carries no data; listeners re-read.
+pub type Bell = Arc<tokio::sync::watch::Sender<u64>>;
+
+pub fn new_bell() -> Bell {
+    Arc::new(tokio::sync::watch::channel(0u64).0)
+}
+
+pub fn ring(bell: &Bell) {
+    bell.send_modify(|v| *v = v.wrapping_add(1));
+}
+
 const VMS_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("vms");
 const EVENTS_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("events");
 /// Shared with `tenancy` (same name and types).

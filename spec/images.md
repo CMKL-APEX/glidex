@@ -100,6 +100,7 @@ pub struct Image {
                                     // Last-Modified: what a resume needs
     pub retry_seq: u64,             // bumped by POST /images/{id}/retry (§5)
     pub applied_retry_seq: u64,     // the last retry the controller started
+    pub deletion_requested_at: Option<u64>, // set by DELETE; the controller finishes it (§6.6)
 }
 
 pub enum ImageSource {
@@ -286,9 +287,10 @@ again. Either way the hash is recomputed over the whole file before it is
 verified. A resumed download is never trusted on the strength of its tail
 bytes alone.
 
-**Cancel.** `DELETE /images/{id}` on a downloading image aborts the task,
-removes the `.part` file and deletes the record. A failed image keeps its
-record (with the reason) until it is deleted, so the failure stays visible.
+**Cancel.** `DELETE /images/{id}` on a downloading image is a deletion
+(§6.6): the image controller aborts the task, deletes the record and
+removes the `.part` file. A failed image keeps its record (with the
+reason) until it is deleted, so the failure stays visible.
 
 **Retry** (D19). A failed image is not downloaded again on its own.
 `POST /images/{id}/retry` bumps `retry_seq` and returns `202` with the
@@ -546,8 +548,22 @@ default), but some do not (AlmaLinux sets `growpart` off in
 
 ### 6.6 Images: delete and inspect
 
-- `DELETE /images/{id}` is refused with `409` while `Linked` disks
-  reference it (§3). It works whether or not `Full` clones exist.
+- `DELETE /images/{id}` is refused with `409 conflict` while a `Linked`
+  disk uses it as backing file (§3), a disk waits for it (`pending` or
+  `creating` from it), or a clone from it is in progress. It works
+  whether or not finished `Full` clones exist. Otherwise it records
+  `deletion_requested_at` (persisted) and the image controller finishes
+  it: abort a running download, remove the record, then the image file
+  and its `.part`. A file that cannot be removed is logged and left as
+  an orphan (§2). The call returns `204` once the image is gone (the
+  normal case: at once), else `202` with the image (`deleting: true`);
+  with `?wait=<secs>`, `200` once gone (`202` on timeout).
+- While it is being deleted, an image cannot be the source of a new disk
+  (`409`, "being deleted") or be retried; a pull with the same name is
+  `409` ("is being deleted; try again in a moment"); a catalog pull does
+  not reuse it and the catalog's `downloaded_image_id` ignores it. A
+  stale writer (the download task, say) cannot clear the request or
+  bring a deleted image back.
 - `GET /images/{id}` and `GET /disks/{id}` include `qemu-img info` output
   (virtual size, actual size, backing chain) and, for disks, the parsed
   partition table:
@@ -612,7 +628,7 @@ Running or Paused VMs get `400 invalid_state` in v1.
 | `GET` | `/images` | List images |
 | `POST` | `/images` | `{catalog, name?}` or `{url, sha256?, name?}`. Returns `202` and an `Image` (`200` with the existing record if that catalog key is already downloading) |
 | `GET` | `/images/{id}` | Image, including download progress |
-| `DELETE` | `/images/{id}` | Delete, or cancel a download. `409` while linked disks exist |
+| `DELETE` | `/images/{id}[?wait=N]` | Delete, or cancel a download (§6.6). `204`, or `202` with the image while the controller finishes; with `wait`, `200` once gone. `409` while a disk uses it |
 | `POST` | `/images/{id}/retry` | Download a failed image again (§5). Returns `202` |
 | `GET` | `/images/{id}/events` | The image's events |
 | `GET` | `/disks` | List disks |
@@ -624,6 +640,9 @@ Running or Paused VMs get `400 invalid_state` in v1.
 | `GET` | `/disks/{id}/events` | The disk's events |
 | `POST` | `/vms/{id}/disks` | Attach a data disk (stopped VM) |
 | `DELETE` | `/vms/{id}/disks/{disk}` | Detach a data disk (stopped VM) |
+
+Image responses carry `deleting: true` while a deletion is in progress
+(omitted otherwise).
 
 For images and disks, `{id}` path segments (and the `image`, `root_disk`,
 `data_disks` and `disk` request fields) accept an id or a unique name.

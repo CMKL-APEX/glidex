@@ -147,6 +147,10 @@ pub struct Image {
     pub retry_seq: u64,
     #[serde(default)]
     pub applied_retry_seq: u64,
+    /// Deletion requested; the image controller aborts the download,
+    /// removes the files, then the record (spec/reconciliation.md §6.3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deletion_requested_at: Option<u64>,
 }
 
 impl Image {
@@ -392,6 +396,9 @@ pub struct ImageResponse {
     pub linked_disks: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub info: Option<qemu_img::ImgInfo>,
+    /// Deletion requested and not finished yet.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub deleting: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -521,6 +528,7 @@ pub struct ImageManager {
     downloads: Arc<tokio::sync::Semaphore>,
     tasks: Mutex<HashMap<String, tokio::task::AbortHandle>>,
     http: reqwest::Client,
+    bell: crate::store::Bell,
 }
 
 /// Marks a disk busy for as long as it lives.
@@ -564,7 +572,7 @@ fn mkdir_private(dir: &Path) -> Result<(), ImageError> {
 }
 
 impl ImageManager {
-    pub fn new(db: Arc<Database>, settings: ImageSettings) -> Result<Arc<Self>, ImageError> {
+    pub fn new(db: Arc<Database>, settings: ImageSettings, bell: crate::store::Bell) -> Result<Arc<Self>, ImageError> {
         let txn = db.begin_write().map_err(storage)?;
         txn.open_table(IMAGES_TABLE).map_err(storage)?;
         txn.open_table(DISKS_TABLE).map_err(storage)?;
@@ -582,6 +590,7 @@ impl ImageManager {
             busy: Mutex::new(HashMap::new()),
             holds: Mutex::new(HashMap::new()),
             tasks: Mutex::new(HashMap::new()),
+            bell,
         };
         *mgr.images.write().unwrap() = mgr.load(IMAGES_TABLE)?;
         *mgr.disks.write().unwrap() = mgr.load(DISKS_TABLE)?;
@@ -675,28 +684,63 @@ impl ImageManager {
 
     // ---- persistence -------------------------------------------------------
 
+    /// Record a new image.
+    fn insert_image(&self, img: &Image) -> Result<(), ImageError> {
+        let mut cache = self.images.write().unwrap();
+        self.write_image(img)?;
+        cache.insert(img.id.clone(), img.clone());
+        drop(cache);
+        crate::store::ring(&self.bell);
+        Ok(())
+    }
+
+    /// Update an image. Writers hold copies (the download task does for
+    /// minutes), so two rules keep a deletion from being undone: an image
+    /// no longer recorded stays gone (the write is dropped), and a
+    /// requested deletion is kept.
     pub fn put_image(&self, img: &Image) -> Result<(), ImageError> {
+        let mut cache = self.images.write().unwrap();
+        let Some(current) = cache.get(&img.id) else { return Ok(()) };
+        let mut img = img.clone();
+        img.deletion_requested_at = img.deletion_requested_at.or(current.deletion_requested_at);
+        self.write_image(&img)?;
+        cache.insert(img.id.clone(), img);
+        drop(cache);
+        crate::store::ring(&self.bell);
+        Ok(())
+    }
+
+    fn write_image(&self, img: &Image) -> Result<(), ImageError> {
         let bytes = serde_json::to_vec(img).map_err(storage)?;
         let txn = self.db.begin_write().map_err(storage)?;
         txn.open_table(IMAGES_TABLE)
             .map_err(storage)?
             .insert(img.id.as_str(), bytes.as_slice())
             .map_err(storage)?;
-        txn.commit().map_err(storage)?;
-        self.images.write().unwrap().insert(img.id.clone(), img.clone());
-        Ok(())
+        txn.commit().map_err(storage)
     }
 
-    /// Update the cached record only (download progress between persists).
+    /// Update the cached record only (download progress between persists),
+    /// under the same rules as `put_image`.
     fn cache_image(&self, img: &Image) {
-        self.images.write().unwrap().insert(img.id.clone(), img.clone());
+        let mut cache = self.images.write().unwrap();
+        if let Some(current) = cache.get(&img.id) {
+            let mut img = img.clone();
+            img.deletion_requested_at = img.deletion_requested_at.or(current.deletion_requested_at);
+            cache.insert(img.id.clone(), img);
+            drop(cache);
+            crate::store::ring(&self.bell);
+        }
     }
 
     fn remove_image_record(&self, id: &str) -> Result<(), ImageError> {
+        let mut cache = self.images.write().unwrap();
         let txn = self.db.begin_write().map_err(storage)?;
         txn.open_table(IMAGES_TABLE).map_err(storage)?.remove(id).map_err(storage)?;
         txn.commit().map_err(storage)?;
-        self.images.write().unwrap().remove(id);
+        cache.remove(id);
+        drop(cache);
+        crate::store::ring(&self.bell);
         Ok(())
     }
 
@@ -711,10 +755,12 @@ impl ImageManager {
     /// After a transaction that wrote `d` (see `persistence::VmStore::commit`).
     pub fn cache_disk(&self, d: &Disk) {
         self.disks.write().unwrap().insert(d.id.clone(), d.clone());
+        crate::store::ring(&self.bell);
     }
 
     pub fn uncache_disk(&self, id: &str) {
         self.disks.write().unwrap().remove(id);
+        crate::store::ring(&self.bell);
     }
 
     // ---- lookup ------------------------------------------------------------
@@ -808,6 +854,7 @@ impl ImageManager {
             path: path.to_string_lossy().into_owned(),
             linked_disks: self.linked_disks(&img.id).into_iter().map(|d| d.name).collect(),
             info,
+            deleting: img.deletion_requested_at.is_some(),
         }
     }
 
@@ -870,7 +917,7 @@ impl ImageManager {
                 url: img.url.to_string(),
                 downloaded_image_id: images
                     .values()
-                    .filter(|i| i.catalog_key() == Some(e.key) && i.status == ImageStatus::Ready)
+                    .filter(|i| i.catalog_key() == Some(e.key) && i.status == ImageStatus::Ready && i.deletion_requested_at.is_none())
                     .max_by_key(|i| i.created_at)
                     .map(|i| i.id.clone()),
             })
@@ -879,12 +926,17 @@ impl ImageManager {
 
     // ---- images ------------------------------------------------------------------
 
-    /// Delete an image, or cancel its download. Refused while linked disks
-    /// depend on it.
-    pub fn delete_image(&self, key: &str) -> Result<(), ImageError> {
+    /// Request an image's deletion (or a download's cancellation); the
+    /// image controller finishes it (`finish_image_delete`). Refused while a
+    /// disk depends on it: a linked disk (its backing file), a disk waiting
+    /// for it, or a clone in progress.
+    pub fn request_image_delete(&self, key: &str) -> Result<Image, ImageError> {
         let img = self.get_image(key)?;
-        // Held across the check and the record removal, so a clone that
-        // starts now either sees the image gone or blocks the delete.
+        if img.deletion_requested_at.is_some() {
+            return Ok(img);
+        }
+        // Held across the check and the write, so a clone that starts now
+        // either sees the image deleting or blocks the delete.
         let holds = self.holds.lock().unwrap();
         if holds.contains_key(&img.id) {
             return Err(ImageError::InUse(format!("image {} is being cloned into a new disk", img.name)));
@@ -897,11 +949,36 @@ impl ImageManager {
                 linked.iter().map(|d| d.name.as_str()).collect::<Vec<_>>().join(", ")
             )));
         }
+        let waiting: Vec<String> = self
+            .disks
+            .read()
+            .unwrap()
+            .values()
+            .filter(|d| {
+                matches!(d.phase, DiskPhase::Pending | DiskPhase::Creating)
+                    && matches!(&d.origin, DiskOrigin::Image { image_id, .. } if *image_id == img.id)
+            })
+            .map(|d| d.name.clone())
+            .collect();
+        if !waiting.is_empty() {
+            return Err(ImageError::InUse(format!("disk(s) waiting for image {}: {}", img.name, waiting.join(", "))));
+        }
+        let mut img = img;
+        img.deletion_requested_at = Some(now());
+        self.put_image(&img)?;
+        drop(holds);
+        Ok(img)
+    }
+
+    /// The image controller's half of a deletion: stop the download, then
+    /// remove the record, then the files. A file that can't be removed is
+    /// left as an orphan (spec/images.md §2) and logged.
+    pub(crate) fn finish_image_delete(&self, id: &str) -> Result<(), ImageError> {
+        let img = self.get_image(id)?;
         if let Some(task) = self.tasks.lock().unwrap().remove(&img.id) {
             task.abort();
         }
         self.remove_image_record(&img.id)?;
-        drop(holds);
         for p in [self.image_path(&img.id), self.part_path(&img.id)] {
             match std::fs::remove_file(&p) {
                 Ok(()) => {}
@@ -954,7 +1031,7 @@ mod tests {
     fn image_cannot_be_deleted_while_a_clone_holds_it() {
         let dir = tempfile::tempdir().unwrap();
         let db = Arc::new(Database::create(dir.path().join("t.db")).unwrap());
-        let mgr = ImageManager::new(db, ImageSettings::from_env(dir.path())).unwrap();
+        let mgr = ImageManager::new(db, ImageSettings::from_env(dir.path()), crate::store::new_bell()).unwrap();
         let img = Image {
             id: "img-1".into(),
             name: "base".into(),
@@ -969,15 +1046,26 @@ mod tests {
             download: DownloadMeta::default(),
             retry_seq: 0,
             applied_retry_seq: 0,
+            deletion_requested_at: None,
         };
-        mgr.put_image(&img).unwrap();
+        mgr.insert_image(&img).unwrap();
         let hold = mgr.hold_image("img-1");
         let second = mgr.hold_image("img-1");
-        assert!(matches!(mgr.delete_image("base"), Err(ImageError::InUse(_))));
+        assert!(matches!(mgr.request_image_delete("base"), Err(ImageError::InUse(_))));
         drop(hold);
-        assert!(matches!(mgr.delete_image("base"), Err(ImageError::InUse(_))), "one hold left");
+        assert!(matches!(mgr.request_image_delete("base"), Err(ImageError::InUse(_))), "one hold left");
         drop(second);
-        mgr.delete_image("base").unwrap();
+        let img = mgr.request_image_delete("base").unwrap();
+        assert!(img.deletion_requested_at.is_some());
+        // A writer holding an older copy keeps the deletion.
+        let mut stale = img.clone();
+        stale.deletion_requested_at = None;
+        mgr.put_image(&stale).unwrap();
+        assert!(mgr.get_image("base").unwrap().deletion_requested_at.is_some());
+        mgr.finish_image_delete("img-1").unwrap();
+        assert!(matches!(mgr.get_image("base"), Err(ImageError::NotFound(_))));
+        // ...and can't bring it back.
+        mgr.put_image(&stale).unwrap();
         assert!(matches!(mgr.get_image("base"), Err(ImageError::NotFound(_))));
     }
 
