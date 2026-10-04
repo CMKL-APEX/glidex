@@ -11,6 +11,7 @@ pub mod network;
 pub mod pci;
 pub mod store;
 pub mod controller;
+pub mod metering;
 pub mod instance;
 pub mod state;
 pub mod tenancy;
