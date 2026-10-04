@@ -164,6 +164,12 @@ export interface CreateVmRequest {
   kernel_args?: string;
   hypervisor?: HypervisorType;
   vfio_devices?: string[];
+  /** Desired power state; default `stopped` (spec/reconciliation.md §7.4). */
+  power?: PowerState;
+  /** After a crash: restart (default) or leave it stopped. */
+  restart_policy?: "on_failure" | "never";
+  /** After a host reboot, if it should be running: start it again (default) or not. */
+  on_host_boot?: "resume" | "stop";
 }
 
 // ---- images and disks (spec/images.md) ------------------------------------

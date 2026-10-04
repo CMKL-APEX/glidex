@@ -20,7 +20,8 @@ const FIRMWARE_HINT: Record<HypervisorType, string> = {
 type RootSource = "image" | "disk" | "path";
 
 interface CreateVmFormProps {
-  onSubmit: (request: CreateVmRequest) => void;
+  /** Rejects with the error to show in the form. */
+  onSubmit: (request: CreateVmRequest) => Promise<void>;
   onCancel: () => void;
 }
 
@@ -49,6 +50,10 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
   const [rootSizeGib, setRootSizeGib] = useState("");
   const [rootDisk, setRootDisk] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [startNow, setStartNow] = useState(false);
+  const [restartPolicy, setRestartPolicy] = useState<"on_failure" | "never">("on_failure");
+  const [onHostBoot, setOnHostBoot] = useState<"resume" | "stop">("resume");
 
   const firmware = bootMode === "firmware";
 
@@ -99,33 +104,44 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
       .catch(() => setFreeDisks([]));
   }, [project, me.user?.display_name]);
 
-  const handleSubmit = (e: FormEvent) => {
+  const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     setSubmitting(true);
+    setSubmitError(null);
 
     const devices = vfioDevices
       .split(",")
       .map((d) => d.trim())
       .filter((d) => d.length > 0);
 
-    onSubmit({
-      name,
-      vcpu_count: vcpuCount,
-      mem_size_mib: memSizeMib,
-      kernel_image_path: firmware ? "" : kernelPath,
-      firmware_path: firmware ? firmwarePath : undefined,
-      credential: firmware && credential ? credential : undefined,
-      networks:
-        selectedNetworks.length > 0 ? selectedNetworks.map((network) => ({ network })) : undefined,
-      rootfs_path: !firmware || rootSource === "path" ? rootfsPath : undefined,
-      image: firmware && rootSource === "image" ? image : undefined,
-      root_disk_size_gib:
-        firmware && rootSource === "image" && rootSizeGib ? Number(rootSizeGib) : undefined,
-      root_disk: firmware && rootSource === "disk" ? rootDisk : undefined,
-      hypervisor,
-      kernel_args: !firmware && kernelArgs ? kernelArgs : undefined,
-      vfio_devices: devices.length > 0 ? devices : undefined,
-    });
+    try {
+      await onSubmit({
+        name,
+        vcpu_count: vcpuCount,
+        mem_size_mib: memSizeMib,
+        kernel_image_path: firmware ? "" : kernelPath,
+        firmware_path: firmware ? firmwarePath : undefined,
+        credential: firmware && credential ? credential : undefined,
+        networks:
+          selectedNetworks.length > 0 ? selectedNetworks.map((network) => ({ network })) : undefined,
+        rootfs_path: !firmware || rootSource === "path" ? rootfsPath : undefined,
+        image: firmware && rootSource === "image" ? image : undefined,
+        root_disk_size_gib:
+          firmware && rootSource === "image" && rootSizeGib ? Number(rootSizeGib) : undefined,
+        root_disk: firmware && rootSource === "disk" ? rootDisk : undefined,
+        hypervisor,
+        kernel_args: !firmware && kernelArgs ? kernelArgs : undefined,
+        vfio_devices: devices.length > 0 ? devices : undefined,
+        power: startNow ? "running" : undefined,
+        restart_policy: restartPolicy,
+        on_host_boot: onHostBoot,
+      });
+    } catch (err) {
+      // Keep the form (and what was typed) so it can be corrected.
+      setSubmitError(err instanceof Error ? err.message : "Failed to create VM");
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -433,6 +449,47 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
           Comma-separated VFIO device paths for GPU passthrough
         </p>
       </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div>
+          <label className="block text-sm font-medium text-gray-700">
+            If It Crashes
+          </label>
+          <select
+            className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg bg-white focus:ring-2 focus:ring-sky-500 focus:border-transparent"
+            value={restartPolicy}
+            onChange={(e) => setRestartPolicy(e.target.value as "on_failure" | "never")}
+          >
+            <option value="on_failure">Restart it (with backoff)</option>
+            <option value="never">Leave it stopped</option>
+          </select>
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700">
+            After a Host Reboot
+          </label>
+          <select
+            className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg bg-white focus:ring-2 focus:ring-sky-500 focus:border-transparent"
+            value={onHostBoot}
+            onChange={(e) => setOnHostBoot(e.target.value as "resume" | "stop")}
+          >
+            <option value="resume">Start it again if it was running</option>
+            <option value="stop">Leave it stopped</option>
+          </select>
+        </div>
+      </div>
+      <p className="-mt-2 text-xs text-gray-500">
+        A guest that shuts itself down stays stopped either way.
+      </p>
+
+      <label className="flex items-center gap-2 text-sm text-gray-700">
+        <input type="checkbox" checked={startNow} onChange={(e) => setStartNow(e.target.checked)} />
+        Start it now
+      </label>
+
+      {submitError && (
+        <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">{submitError}</div>
+      )}
 
       <div className="flex justify-end space-x-3 pt-4">
         <button

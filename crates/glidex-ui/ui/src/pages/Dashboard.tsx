@@ -61,15 +61,12 @@ export default function Dashboard() {
     }
   };
 
+  // Errors propagate to the form, which shows them and stays open.
   const handleCreate = async (request: CreateVmRequest) => {
     setError(null);
-    try {
-      await api.createVm({ ...request, project: project ?? undefined });
-      setShowCreateModal(false);
-      fetchVms();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to create VM");
-    }
+    await api.createVm({ ...request, project: project ?? undefined });
+    setShowCreateModal(false);
+    fetchVms();
   };
 
   return (

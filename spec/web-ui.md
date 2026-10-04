@@ -108,7 +108,7 @@ ui/src/
 │   ├── ui.tsx              # Shared bits: cards, badges, binding table
 │   ├── Loading.tsx
 │   ├── Modal.tsx
-│   ├── CreateVmForm.tsx    # POST /vms form (boot mode, boot disk source, credential picker)
+│   ├── CreateVmForm.tsx    # POST /vms form (boot mode, boot disk source, credential picker, restart behaviour, start now)
 │   ├── VmActions.tsx       # Start/Shut down/Stop/Pause/Delete buttons (Shut down: power button, 60 s)
 │   ├── VmStateBadge.tsx    # State pill (→ desired) plus what the controller is still doing
 │   └── VmCard.tsx          # Dashboard VM row: state badge, Ready reason
@@ -196,6 +196,17 @@ and `last_exit`.
   start." while `restart_required`, and an **Events** list (newest
   first, warnings highlighted) from `GET /vms/{id}/events`, refreshed
   whenever the VM's state or observed generation changes.
+
+## Create VM form
+
+Besides the config, `CreateVmForm` sets the VM's policies
+([reconciliation.md §7.4](reconciliation.md#74-defaults-and-api-projection)):
+**If It Crashes** (`restart_policy`: restart with backoff, the default,
+or leave it stopped), **After a Host Reboot** (`on_host_boot`: start it
+again if it was running, the default, or leave it stopped), and **Start
+it now** (`power: "running"`; unchecked, the VM is created stopped).
+`onSubmit` returns a promise: a refused create keeps the form open,
+with what was typed and the error under it.
 
 ## Reconciliation activity
 
