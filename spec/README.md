@@ -25,6 +25,7 @@ fresh reader cannot infer just by reading the source.
 | [cli.md](cli.md) | `gxctl` interactive CLI, command semantics, console attach loop |
 | [web-ui.md](web-ui.md) | Vite + React UI structure, routes, API client, dev-proxy |
 | [installer.md](installer.md) | `glidex-install` bootstrap flow and what it brings up |
+| [metering.md](metering.md) | Resource usage metering (design): CPU/memory/disk meters, per-VM and per-network traffic from OVS bridge ports with an external/internal split on NAT networks, billing-month totals 95th-percentile bandwidth and disk IOPS/throughput/latency, hourly exactly-once ledger, `/usage` API |
 | [security.md](security.md) | Authentication (peer uid, PAM, OIDC, tokens), projects/teams, Cedar authorization policies, netd policy, hardening (draft) |
 
 ## Goals
