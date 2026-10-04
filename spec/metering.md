@@ -247,12 +247,23 @@ Rules:
   controller is not delegated, so it cannot be read directly.
 - **Shared memory** (`shared=on`, memfd) is charged to the cgroup that
   touched it first, which is the hypervisor's. No adjustment is needed.
-- **`IOAccounting=yes`** must be set on `glidex-vms.slice` for `io.stat`
-  to exist. Today the io controller is not delegated: the slice's
-  `cgroup.subtree_control` is just `memory pids`. The installer adds it
-  (§14). `CPUAccounting=yes` and `MemoryAccounting=yes` are set too, to
-  make the dependency explicit, even though `cpu.stat` usage exists
-  without them on cgroup v2.
+- **`IOAccounting=yes`** goes on the **VM unit template**
+  (`glidex-vm@.service`), not on the slice. Verified 2026-10-04 on
+  systemd 259:
+  - On the slice, it enables `io` only in the *parent's*
+    `subtree_control` (`glidex.slice`). The slice's own stays `memory
+    pids`, and VM units get no `io.stat`.
+  - On a VM unit, it enables `io` in `glidex-vms.slice` for every
+    sibling. Running VMs got `io.stat` at once, with no restart.
+
+  So the installer sets it in the template, and applies it to running
+  units with `systemctl set-property --runtime <unit> IOAccounting=yes`
+  after `daemon-reload` (§14). `MemoryAccounting=yes` goes in the
+  template too.
+
+  `CPUAccounting=` is deprecated on this systemd ("ignoring
+  assignment"): CPU usage (`cpu.stat usage_usec`) is always available
+  on cgroup v2, so nothing is set for it.
 - **Detached runner** (dev runs and tests, `Runner::Detached`): there
   is no unit cgroup. CPU comes from
   `/proc/<hypervisor_pid>/stat` `utime+stime` (in ticks; × 10⁶ /
@@ -402,15 +413,29 @@ Interface on a glidex-managed bridge (`glidex-ovs` bridges, from
   (`vm_port.rs`). `uplink` is the bridged network's uplink port.
   `gateway` is the bridge's internal port, which holds the NAT gateway
   address. Isolated networks have only `vm` ports.
-- **Counters are as OVS reports them** (from the switch's point of
-  view). netd does not swap them. The meter does the mapping:
-  - **Per VM (`net.*`):** guest rx = port `tx`, guest tx = port `rx`.
-    For a tap that equals the kernel tap counters reversed.
-  - **Per network (`bridge.*`):** Σ over all ports of port `rx` (bytes
-    and packets the switch received on that port), which is frames
-    entering the bridge (D7). Frames dropped by OVS before forwarding
-    are in `rx` and are counted. That is acceptable, because they
-    crossed the port.
+- **Counter direction depends on the port type.** netd returns them
+  as OVS reports them, and the meter maps them per role:
+
+  | Port | OVS `rx` means | Guest/bridge mapping |
+  |---|---|---|
+  | `vm` (tap; vhost-user assumed the same, unverified) | switch received from the guest | guest tx = `rx`, guest rx = `tx` |
+  | `gateway` (`type=internal`) | **host** received from the bridge (host view, reversed) | bridge ingress = `tx` |
+  | `uplink` (system NIC, AF_XDP, DPDK; assumed switch view, unverified) | switch received from the wire | bridge ingress = `rx` |
+
+  - **Verified 2026-10-04** (OVS on the test host, NAT bridge
+    `gxbr-nat`):
+    - 20 pings of 1400 bytes from the host to a VM added about 28.9 KB
+      to the VM port's `tx` (switch → guest) and to the internal
+      port's **`tx`** (host → bridge).
+    - The replies added to the VM port's `rx` and the internal port's
+      `rx`.
+    - Over the bridge's lifetime, the internal port's `rx` (1.77 MB)
+      equals the sum of the VM ports' `rx` (1.74 MB, what the guests
+      sent towards the gateway).
+  - **Per network (`bridge.*`):** frames entering the bridge (D7) =
+    Σ `vm` `rx` + `gateway` `tx` + Σ `uplink` `rx`. Frames OVS drops
+    before forwarding are included. That is acceptable, because they
+    crossed a port.
 - **Freshness.** ovs-vswitchd refreshes `statistics` every 5 s
   (`other_config:stats-update-interval`), which is finer than the
   sampling period.
@@ -502,12 +527,9 @@ table inet glidex_meter {
   `handle` is its reset key (§6.2). A counter that is re-created after
   a host reboot, an nftables flush by an admin, or netd re-applying
   state on start gets a new handle and starts from 0.
-- **Host check needed before M1.** `ether saddr` matching in an `inet`
-  `forward` chain, for packets routed in from an OVS internal port,
-  must be verified on the pinned kernel, in the style of
-  [networking.md](networking.md) §0. If it doesn't hold, key outbound
-  on `ip saddr` alone. The attribution is then IP-only, which is the
-  same trust level as inbound.
+- **Host check (M0, done 2026-10-04).** `ether saddr` matches in an
+  `inet` `forward` chain for packets routed in from the bridge's
+  internal port, and named counters survive `flush chain` (§15.3).
 
 ### 5.6 Lifecycle: phases and time
 
@@ -1186,8 +1208,8 @@ before it.
 | Document | Edit | PR |
 |---|---|---|
 | [README.md](README.md) | Index row | done |
-| [installer.md](installer.md) | Re-render `glidex-vms.slice` with accounting on; no new packages (`nft` and `ovs-vsctl` are already present) | M1.2 |
-| [reconciliation.md](reconciliation.md) §13.1 | `glidex-vms.slice`: `CPUAccounting=yes`, `MemoryAccounting=yes`, `IOAccounting=yes` | M1.2 |
+| [installer.md](installer.md) | Re-render `glidex-vm@.service` with accounting on, and set it at runtime on running VM units; no new packages (`nft` and `ovs-vsctl` are already present) | M1.2 |
+| [reconciliation.md](reconciliation.md) §13.1 | `glidex-vm@.service`: `IOAccounting=yes`, `MemoryAccounting=yes` (not on the slice, §5.1) | M1.2 |
 | [reconciliation.md](reconciliation.md) §7.2 | `status.phase_since` | M1.2 |
 | [reconciliation.md](reconciliation.md) §7.2 | The controllers request a final meter sample before `detach_vm_port`, `release_vm` and network deletion | M1.3 |
 | [data-model.md](data-model.md) | Metering tables (§7.1) | M1.1; `rate_5m`, `usage_monthly_rates` in M2.3 |
@@ -1264,12 +1286,12 @@ go into §5 in the same style as [networking.md](networking.md) §0.
 
 | Check | Result needed | Feeds |
 |---|---|---|
-| `ether saddr` matches in an `inet` `forward` chain for packets routed in from an OVS internal port | yes, so outbound keys on MAC + IP; no, so outbound keys on IP only (§5.5) | M1.4 |
-| Named counters survive `flush chain` plus re-adding rules in one `nft -f` transaction | yes (D14) | M1.4 |
-| OVSDB `Interface.statistics` exists and updates for tap, `dpdkvhostuserclient`, the bridge's internal port and each uplink kind (kernel, AF_XDP, DPDK) | every role in §5.4 has counters | M1.3 |
-| `IOAccounting=yes` on `glidex-vms.slice` makes `io` appear in `cgroup.subtree_control` and `io.stat` per VM unit, applied with `daemon-reload` without restarting running VMs | yes, or document "takes effect for VMs launched after the update" | M1.2 |
-| The unit's `ControlGroup` property over D-Bus, read as user `glidex` in the sandboxed control-plane unit | readable without polkit | M1.2 |
-| CH `vm.counters` device keys (`_disk<N>`) match the disk order glidex passes on argv; QEMU `qdev` ids match the `id=` glidex assigns | a stable mapping without guessing | M2.1 |
+| `ether saddr` matches in an `inet` `forward` chain for packets routed in from an OVS internal port | **done** (2026-10-04): yes. The scratch table `inet glidex_m0test` (priority `filter + 10`, counters only) counted 3463 packets on a MAC + IP rule, the same as the IP-only and `iifname`-only rules. Outbound keys on MAC + IP. | M1.4 |
+| Named counters survive `flush chain` plus re-adding rules in one `nft -f` transaction | **done**: yes. The value (3463 packets) and the object handle (3) were unchanged, and `add counter` on an existing counter is a no-op (D14). | M1.4 |
+| OVSDB `Interface.statistics` exists and updates for tap, `dpdkvhostuserclient`, the bridge's internal port and each uplink kind (kernel, AF_XDP, DPDK) | **partly done**: tap and internal ports have counters, refreshed in at most 5 s. The internal port reports the host's view, reversed (§5.4). There are no vhost-user or uplink ports on the test host (DPDK is initialized, but unused), so these are still to be checked on a host that has them. | M1.3 |
+| `IOAccounting=` placement for per-VM `io.stat` without restarting VMs | **done**: on the VM unit template, not the slice. A runtime `set-property` on a running unit takes effect at once for every sibling. `CPUAccounting=` is deprecated (§5.1). | M1.2 |
+| The unit's `ControlGroup` property over D-Bus, read as user `glidex` | **done**: readable as `glidex` with no polkit (`busctl get-property`, outside the sandbox; the sandbox allows `AF_UNIX`) | M1.2 |
+| CH `vm.counters` device keys (`_disk<N>`) match the disk order glidex passes on argv; QEMU `qdev` ids match the `id=` glidex assigns | **done** for QEMU: `id=vd<i>` (`hypervisor/qemu.rs`), seen live as `/machine/peripheral/vd<i>/virtio-backend`. For CH, glidex passes no disk `id=`, so CH numbers disks `_disk0…` in argv order (seen live: `_disk0`, `_disk1`). The mapping is the index in the launched disk list, seed disk included. | M2.1 |
 | CH v53 block latency | **done** (2026-10-04): not usable (D17) | M2.1 |
 | QEMU `*_total_time_ns` | **done** (2026-10-04): present and cumulative | M2.1 |
 
@@ -1317,9 +1339,10 @@ go into §5 in the same style as [networking.md](networking.md) §0.
   `mem.alloc` come from `launch.json` (D11). `status.phase_since` is
   written by the VM controller (`controller/vm.rs` `write_status`).
 - **Disks:** `disk.alloc` from the disk records (§5.3).
-- **Installer:** `glidex-vms.slice` gets `CPUAccounting=yes`,
-  `MemoryAccounting=yes` and `IOAccounting=yes`; `install_if_changed`
-  re-renders it and `systemd-analyze verify` checks it.
+- **Installer:** `glidex-vm@.service` gets `IOAccounting=yes` and
+  `MemoryAccounting=yes` (§5.1, M0). After `daemon-reload`, running
+  `glidex-vm@*` units get `systemctl set-property --runtime <unit>
+  IOAccounting=yes`. `systemd-analyze verify` still checks the units.
 
 *Accept:*
 - *(host)* `stress-ng --cpu 2` for 5 min gives `cpu.used` ≈ 10
