@@ -24,6 +24,9 @@ pub struct UsageParams {
     from: Option<String>,
     #[serde(default)]
     to: Option<String>,
+    /// `YYYY-MM` in the billing time zone (instead of `from`/`to`).
+    #[serde(default)]
+    month: Option<String>,
     #[serde(default)]
     granularity: Option<String>,
     /// Comma-separated: project, vm, disk, nic, network.
@@ -155,6 +158,7 @@ fn respond(
     let meter = meter(c)?;
     let tz = query::parse_tz(p.tz.as_deref().unwrap_or(&meter.config().billing_timezone)).map_err(bad)?;
     let now = crate::metering::now_ms() / 1000;
+    let month = p.month.as_deref().map(|m| query::month_bounds(m, &tz)).transpose().map_err(bad)?;
     let to = match &p.to {
         Some(t) => query::parse_time(t).map_err(bad)?,
         None => now,
@@ -166,6 +170,7 @@ fn respond(
         None => query::bucket(now, Granularity::Month, &tz).0,
         Some(f) => query::parse_time(f).map_err(bad)? / 3600 * 3600,
     };
+    let (from, to) = month.unwrap_or((from, to));
     if to <= from {
         return Err(bad("`to` must be after `from`"));
     }

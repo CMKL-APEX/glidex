@@ -15,6 +15,7 @@ import Access from "./pages/Access";
 import Tokens from "./pages/Tokens";
 import Policies from "./pages/Policies";
 import Audit from "./pages/Audit";
+import Usage from "./pages/Usage";
 import { SessionProvider, useSession } from "./session";
 import { LiveProvider } from "./live";
 import { Loading } from "./components/Loading";
@@ -51,6 +52,7 @@ function Shell() {
             <Route path="/tokens" element={<Tokens />} />
             <Route path="/policies" element={<Policies />} />
             <Route path="/audit" element={<Audit />} />
+            <Route path="/usage" element={<Usage />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         </main>

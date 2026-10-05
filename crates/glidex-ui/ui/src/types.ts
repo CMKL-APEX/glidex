@@ -700,3 +700,91 @@ export function formatTime(secs: number | undefined | null): string {
   if (!secs) return "—";
   return new Date(secs * 1000).toLocaleString();
 }
+
+// ---- usage (spec/metering.md §9) ---------------------------------------------
+
+export interface Named {
+  id: string;
+  name: string;
+}
+
+export interface MeterValue {
+  raw: number;
+  value: number;
+  unit: string;
+}
+
+export type GroupKey = "project" | "vm" | "disk" | "nic" | "network";
+
+export interface UsageRow {
+  start: string;
+  end: string;
+  project?: Named;
+  vm?: Named;
+  disk?: Named;
+  nic?: Named;
+  network?: Named;
+  meters: Record<string, MeterValue>;
+  flags?: string[];
+}
+
+export interface UsageResponse {
+  from: string;
+  to: string;
+  granularity: string;
+  timezone: string;
+  group_by: GroupKey[];
+  rows: UsageRow[];
+  complete_through: string;
+  metering_started_at: string;
+}
+
+export interface RateRow {
+  project?: Named;
+  vm?: Named;
+  disk?: Named;
+  nic?: Named;
+  network?: Named;
+  avg?: Record<string, number | null>;
+  peak?: Record<string, number | null>;
+  p95?: Record<string, number | null>;
+  slots?: { counted: number; interpolated: number };
+  latency_source?: "counter" | "none";
+}
+
+export interface RateResponse {
+  month: string | null;
+  from: string;
+  to: string;
+  timezone: string;
+  final: boolean;
+  from_final_figures: boolean;
+  group_by: GroupKey[];
+  rows: RateRow[];
+}
+
+/** One 5-minute point of a series; keys depend on the series. */
+export type SeriesPoint = { slot: string } & Record<string, number | string>;
+
+export interface SeriesResponse {
+  from: string;
+  to: string;
+  points: SeriesPoint[];
+  p95?: Record<string, number | null | { counted: number; interpolated: number }>;
+  disks?: Record<string, SeriesResponse>;
+}
+
+export interface LiveEntry {
+  id: string;
+  name: string;
+  network?: string | null;
+  values: Record<string, number>;
+}
+
+export interface VmStats {
+  sampled_at: string | null;
+  resolution_secs: number;
+  vm: Record<string, number> | null;
+  nics: LiveEntry[];
+  disks: LiveEntry[];
+}

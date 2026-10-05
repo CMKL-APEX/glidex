@@ -6,6 +6,7 @@ import { describeExit, settled, notReadyReason, vmActivity, HYPERVISOR_LABELS } 
 import { ApiRequestError } from "../api";
 import VmActions, { type VmAction } from "../components/VmActions";
 import VmStateBadge from "../components/VmStateBadge";
+import VmUsage from "../components/VmUsage";
 import { Loading } from "../components/Loading";
 import { useSession } from "../session";
 import { useLive, useLiveRefresh } from "../live";
@@ -301,6 +302,11 @@ export default function VmDetail() {
                 Open Console
               </Link>
             </div>
+          </div>
+
+          <div className="pt-6 mt-6 border-t border-gray-100">
+            <h3 className="text-sm font-medium text-gray-500 mb-3">Usage</h3>
+            <VmUsage vmId={vm.id} hypervisor={vm.hypervisor} />
           </div>
 
           {events.length > 0 && (
