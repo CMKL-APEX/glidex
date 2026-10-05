@@ -155,6 +155,14 @@ struct Cursor {
     /// Counter: last raw reading. Gauge: level held since `at`.
     value: u64,
     at: u64,
+    /// Gauge: integrated `level × ms` not yet a whole unit (< 1000),
+    /// carried to the next interval so nothing is lost to rounding.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    rem: u64,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 /// Where a counter seen for the first time started from (§6.2).
@@ -350,7 +358,7 @@ impl Round {
                 _ => (0, at, false),
             },
         };
-        self.cursors.insert(key, Some(Cursor { reset_key: reset_key.to_string(), value, at }));
+        self.cursors.insert(key, Some(Cursor { reset_key: reset_key.to_string(), value, at, rem: 0 }));
         if amount == 0 && prev.is_none() {
             return Ok(None);
         }
@@ -376,7 +384,7 @@ impl Round {
                 let from = c.at.min(at);
                 let flag = (at - from > self.settings.gap_ms).then_some(Flag::Interpolated);
                 self.spread(subject, meter, value - c.value, from, at, flag);
-                self.cursors.insert(key, Some(Cursor { reset_key: reset_key.to_string(), value, at: at.max(c.at) }));
+                self.cursors.insert(key, Some(Cursor { reset_key: reset_key.to_string(), value, at: at.max(c.at), rem: 0 }));
             }
             // Already consumed, superseded, or never seen: nothing to add.
             _ => {}
@@ -456,8 +464,13 @@ impl Round {
         }
     }
 
+    /// Hold `level` from `at`, keeping the rounding remainder of the run.
     fn set_gauge(&mut self, key: &str, run: &str, level: u64, at: u64) {
-        self.cursors.insert(key.to_string(), Some(Cursor { reset_key: run.to_string(), value: level, at }));
+        let rem = match self.cursors.get(key) {
+            Some(Some(c)) if c.reset_key == run => c.rem,
+            _ => 0,
+        };
+        self.cursors.insert(key.to_string(), Some(Cursor { reset_key: run.to_string(), value: level, at, rem }));
     }
 
     /// The run a gauge's cursor belongs to, if any.
@@ -479,9 +492,13 @@ impl Round {
         let key = format!("{}/{}", subject.key(), meter);
         if let Some(c) = self.cursor(&key)? {
             if at > c.at {
-                let amount = ((c.value as u128 * (at - c.at) as u128) / 1000) as u64;
+                // level × ms, plus what the last interval left over.
+                let total = c.value as u128 * (at - c.at) as u128 + c.rem as u128;
+                let amount = (total / 1000) as u64;
                 let flag = (at - c.at > self.settings.gap_ms).then_some(Flag::Interpolated);
                 self.spread(subject, meter, amount, c.at, at, flag);
+                let rem = (total % 1000) as u64;
+                self.cursors.insert(key, Some(Cursor { at, rem, ..c }));
             }
         }
         Ok(())
@@ -922,6 +939,30 @@ mod tests {
         l.commit(r).unwrap();
         assert_eq!(total(&l, "mem.alloc"), 2048 * 30 + 4096 * 30);
         assert_eq!(total(&l, "cpu.alloc"), 0);
+    }
+
+    /// Found end to end (2026-10-05): rounds are ~30 s plus jitter, and a
+    /// level-1 gauge truncated each interval to whole seconds, losing up
+    /// to a second per round. The remainder is carried instead.
+    #[test]
+    fn gauges_lose_nothing_to_rounding() {
+        let (_d, l) = ledger();
+        let s = vm();
+        let mut rng = Rng(7);
+        let mut t = T0;
+        let mut r = l.begin_round(t).unwrap();
+        r.gauge_run(&s, "vm.running", "i1", T0, 1, T0, T0, None).unwrap();
+        for i in 0..400 {
+            t += 30_000 + rng.next() % 900; // 30 s + up to 0.9 s jitter
+            r.gauge_run(&s, "vm.running", "i1", T0, 1, T0, t, None).unwrap();
+            if i % 9 == 0 {
+                let mut next = l.begin_round(t).unwrap();
+                std::mem::swap(&mut r, &mut next);
+                l.commit(next).unwrap();
+            }
+        }
+        l.commit(r).unwrap();
+        assert_eq!(total(&l, "vm.running"), (t - T0) / 1000, "whole seconds of the span, none lost");
     }
 
     #[test]
