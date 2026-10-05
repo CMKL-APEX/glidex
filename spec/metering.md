@@ -1,9 +1,9 @@
 # Metering: resource usage records
 
-> Status: **M0 and M1 implemented** (2026-10-05, branch
-> `metering-m1`). Unit, integration and security tests pass, and so
-> do the KVM host acceptance runs on a deployed build (§15.4,
-> *As built*, 2026-10-05). M2 and M3 are design only.
+> Status: **M0, M1 and M2 implemented** (2026-10-05; branches
+> `metering-m1`, `metering-m2`). Unit, integration, security and
+> Playwright tests pass, and so do the KVM host acceptance runs on a
+> deployed build (§15.4 and §15.5, *As built*). M3 is design only.
 >
 > Built differently from the first draft, with the reasons in the
 > sections named: the cgroup is found from the shim's
@@ -247,7 +247,7 @@ read. Reads need no authorization: cgroup files are world-readable.
 | File | Field | Meter |
 |---|---|---|
 | `cpu.stat` | `usage_usec` (also `user_usec`, `system_usec` for the live view) | `cpu.used` |
-| `memory.current` | bytes | `mem.used`, `mem.peak` |
+| `memory.current` − `memory.stat inactive_file` | bytes | `mem.used`, `mem.peak` (working set: reclaimable page cache from buffered disk I/O is left out) |
 | `memory.stat` | `anon`, `file` (live view only) | n/a |
 | `io.stat` | `rbytes wbytes rios wios` per device, summed | `vmio.*` host-side secondary meters (D4) |
 
@@ -1629,6 +1629,26 @@ matrix, and `partial` and `revised_at` in the JSON.
 - a project member doesn't see other projects
 - CSV download works
 - CH disks show "latency not available"
+
+**As built: host acceptance, 2026-10-05.** Deployed with
+`glidex-install`. The VMs were restarted to run the new shim. Ten
+minutes of parallel load, compared with the fully loaded 5-minute
+slot:
+
+| Check | Result |
+|---|---|
+| `iperf -b 100M`, `v1` → `q2` (iperf: 105 Mbit/s) | `v1` tx = `q2` rx = 105.047 Mbps; p95 and billable 105.047; `ext_*` 0 |
+| `fio` 4k randread at 500 IOPS on `q2` (QEMU) | read 499.997 IOPS; 2.048 MB/s (= 500 × 4 KiB); read latency 0.087 ms (host side; fio, in the guest, saw 0.154 ms) |
+| `fio` randrw 700/300 IOPS on `v1` (CH) | read 700.0, write 300.4, billable p95 1000.4 (read + write, D16); no latency (D17) |
+| Exit snapshot: CPU load, stopped 20 s after a sample | metered `cpu.used` for the instance = the shim's `exit.usage.cpu_usage_usec` exactly (88 168 908 µs), 23.05 s of it from the snapshot's tail; the disk ids map the root disk only (the seed is unmanaged) |
+| Web UI | the VM card and the Usage page's three tabs, rendered with this data and reviewed |
+
+Fixed from the review: **memory is the working set.** On the host, a
+512 MiB CH VM had a `memory.current` of 913 MiB, 387 MiB of it
+`inactive_file`: page cache from its buffered disk I/O, charged to its
+cgroup. `mem.used` is now `memory.current − inactive_file` (519 MiB
+for that VM), and `mem.peak` no longer comes from the snapshot's
+`memory.peak`, which includes cache.
 
 **M2 done when:** bandwidth and disk I/O can be billed on a 95th
 percentile per VM and project, users see their usage in the UI, and a
