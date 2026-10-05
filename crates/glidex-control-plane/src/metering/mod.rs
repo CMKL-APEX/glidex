@@ -6,6 +6,7 @@
 
 pub mod ledger;
 pub mod net;
+pub mod query;
 pub mod sampler;
 pub mod sources;
 

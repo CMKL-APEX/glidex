@@ -459,6 +459,77 @@ async fn audit_records_decisions_without_secrets() {
     assert_eq!(s, StatusCode::FORBIDDEN);
 }
 
+/// Usage is tenant data (spec/metering.md §10): a viewer reads their own
+/// project's usage, another project's is not found, host auditors read
+/// everything, and a CSV export is audited although it is a read.
+#[tokio::test]
+async fn usage_is_project_scoped_and_exports_are_audited() {
+    use glidex_control_plane::metering::{Origin, Subject, SubjectKind};
+    let h = harness();
+    h.app.manager.start_metering(&Config::default().metering).unwrap();
+    let (pa, pb) = (h.project("pa"), h.project("pb"));
+    let meter = h.app.manager.meter().unwrap();
+    let now = glidex_control_plane::metering::now_ms();
+    let mut r = meter.ledger().begin_round(now).unwrap();
+    for (p, id) in [(&pa, "vm-a"), (&pb, "vm-b")] {
+        let s = Subject::new(SubjectKind::Vm, id, id, Some(p.clone()));
+        r.counter(&s, "cpu.used", "i1", 0, now - 60_000, Origin::Unknown).unwrap();
+        r.counter(&s, "cpu.used", "i1", 3_600_000_000, now - 30_000, Origin::Unknown).unwrap();
+    }
+    meter.ledger().commit(r).unwrap();
+
+    let (viewer, aud, nobody) = (h.user("viewer"), h.user("aud"), h.user("nobody"));
+    h.link("role.viewer", Ent::User(viewer.clone()), Ent::Project(pa.clone()));
+    h.link("role.auditor", Ent::User(aud.clone()), Ent::Host);
+    let (v, a, n) = (As::Bearer(h.token(&viewer)), As::Bearer(h.token(&aud)), As::Bearer(h.token(&nobody)));
+
+    let ids = |body: &Value| -> Vec<String> {
+        body["rows"].as_array().unwrap().iter().map(|r| r["project"]["id"].as_str().unwrap().to_string()).collect()
+    };
+    let (s, body, _) = h.call("GET", "/usage?project=pa&granularity=month", None, &v).await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    assert_eq!(ids(&body), vec![pa.clone()]);
+    assert_eq!(body["rows"][0]["project"]["name"], "pa");
+    assert_eq!(body["rows"][0]["meters"]["cpu.used"]["value"], 1.0);
+    assert_eq!(body["rows"][0]["meters"]["cpu.used"]["unit"], "core-hours");
+    // Without ?project: only the caller's own.
+    let (_, body, _) = h.call("GET", "/usage", None, &v).await;
+    assert_eq!(ids(&body), vec![pa.clone()]);
+    // Another project: not found, by both routes.
+    let (s, _, _) = h.call("GET", "/usage?project=pb", None, &v).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    let (s, _, _) = h.call("GET", &format!("/projects/{pb}/usage"), None, &v).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    // No links at all: forbidden.
+    let (s, _, _) = h.call("GET", "/usage", None, &n).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    // Host auditor: every project.
+    let (s, body, _) = h.call("GET", "/usage", None, &a).await;
+    assert_eq!(s, StatusCode::OK);
+    let mut all = ids(&body);
+    all.sort();
+    let mut want = vec![pa.clone(), pb.clone()];
+    want.sort();
+    assert_eq!(all, want);
+    // CSV: raw values, and an audit entry for the export.
+    let (s, _, headers) = h.call("GET", "/usage?project=pa&format=csv", None, &v).await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(headers[header::CONTENT_TYPE].to_str().unwrap().starts_with("text/csv"));
+    let (_, log, _) = h.call("GET", "/audit", None, &a).await;
+    let export = log
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["action"] == "readUsage" && e["details"]["export"] == "csv")
+        .expect("export audited");
+    assert_eq!((export["result"].as_str(), export["project"].as_str()), (Some("ok"), Some(pa.as_str())));
+    // The denied request of the user without links is audited too.
+    assert!(log.as_array().unwrap().iter().any(|e| e["action"] == "readUsage" && e["result"] == "denied"));
+    // Bad ranges.
+    let (s, body, _) = h.call("GET", "/usage?from=2020-01-01T00:00:00Z&to=2026-01-01T00:00:00Z", None, &a).await;
+    assert_eq!((s, body["error"].as_str()), (StatusCode::BAD_REQUEST, Some("range_too_large")));
+}
+
 // ---- PAM through an in-process glidex-authd -------------------------------
 
 mod pam {

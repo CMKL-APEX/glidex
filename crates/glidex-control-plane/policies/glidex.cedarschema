@@ -41,13 +41,13 @@ namespace Glidex {
   action "step-up";
 
   // Permission groups (spec §7.2).
-  action "project.read", "vm.read", "disk.read" in ["role.viewer"];
+  action "project.read", "vm.read", "disk.read", "usage.read" in ["role.viewer"];
   action "vm.operate", "vm.console" in ["role.operator"];
   action "vm.write", "disk.write", "credential.read", "credential.write",
          "network.use" in ["role.editor"];
   action "project.members", "network.manage", "network.share" in ["role.owner"];
   action "host.read" in ["role.auditor", "role.net-admin"];
-  action "policy.read", "system.audit" in ["role.auditor"];
+  action "policy.read", "system.audit", "system.usage" in ["role.auditor"];
   action "host.network", "host.devices" in ["role.net-admin"];
   action "host.network.critical" in ["host.network", "step-up"];
   action "image.manage" in ["role.image-admin"];
@@ -55,6 +55,16 @@ namespace Glidex {
   action "system.identity", "system.projects", "host.paths", "quota.exceed"
     in ["role.system-admin"];
   action "identity.read" in ["role.auditor", "system.identity"];
+
+  // ---- usage (spec/metering.md §10) ----------------------------------------
+  action readUsage in ["system.usage"]
+    appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
+  action readProjectUsage in ["usage.read"]
+    appliesTo { principal: [User, Token], resource: [Project], context: Ctx };
+  action readVmUsage in ["usage.read"]
+    appliesTo { principal: [User, Token], resource: [Vm], context: Ctx };
+  action readDiskUsage in ["usage.read"]
+    appliesTo { principal: [User, Token], resource: [Disk], context: Ctx };
 
   // ---- projects ----------------------------------------------------------
   action readProject, readBindings in ["project.read"]

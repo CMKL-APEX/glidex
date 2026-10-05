@@ -1171,6 +1171,10 @@ fn print_help() {
     println!("  {} - Teams", "team list | create <name> | add-member <team> <user> | remove-member <team> <user>".cyan());
     println!("  {} - Site Cedar policies", "policy list | show <id> | put <id> <file> [--disable] | delete <id> | validate <id> <file> | history <id>".cyan());
     println!("  {} - Audit log", "audit [--project P] [--since <unix-ms>] [--limit N] [--user U]".cyan());
+    println!(
+        "  {} - Resource usage (default: this billing month by project)",
+        "usage [--project P] [--from D] [--to D] [--by project,vm,disk,nic,network] [--granularity hour|day|month] [--meters m,…] [--tz Z] [--csv]".cyan()
+    );
     println!("  {} - Project networks", "network create <name> --project P | share <net> <project-id> | unshare <net> <project-id>".cyan());
     println!("  {} - Shares offered to a project", "network shares <p> | accept <p> <net> | leave <p> <net>".cyan());
     println!();
@@ -1397,7 +1401,7 @@ const COMMANDS: &[&str] = &[
     "network-rm", "bridges", "uplinks", "uplink-add", "uplink-rm", "ovs", "health",
     "image", "images", "disk", "disks", "whoami", "login", "logout", "ui", "token",
     "tokens", "project", "projects", "binding", "bindings", "system-binding", "user",
-    "users", "team", "teams", "policy", "policies", "audit", "network",
+    "users", "team", "teams", "policy", "policies", "audit", "usage", "network",
 ];
 
 /// Subcommands offered by Tab after these commands.
@@ -2330,6 +2334,7 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
         "team" | "teams" => admin::team(client, &parts[1..]).await,
         "policy" | "policies" => admin::policy(client, &parts[1..]).await,
         "audit" => admin::audit(client, &parts[1..]).await,
+        "usage" => admin::resource_usage(client, &parts[1..]).await,
 
         "network-add" | "net-add" => handle_network_add(client, &parts[1..]).await,
 

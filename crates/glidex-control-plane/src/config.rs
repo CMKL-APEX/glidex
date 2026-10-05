@@ -344,6 +344,9 @@ pub struct MeteringConfig {
     pub retention_days: u64,
     pub retention_daily_days: u64,
     pub retention_rate_days: u64,
+    /// Billing months are calendar months here: `UTC`, `±HH:00`, or an
+    /// IANA zone with a fixed whole-hour offset (§8.4).
+    pub billing_timezone: String,
 }
 
 impl Default for MeteringConfig {
@@ -356,6 +359,7 @@ impl Default for MeteringConfig {
             retention_days: 400,
             retention_daily_days: 1825,
             retention_rate_days: 100,
+            billing_timezone: "UTC".into(),
         }
     }
 }
@@ -380,6 +384,7 @@ impl MeteringConfig {
         if !(35..=400).contains(&self.retention_rate_days) {
             return Err("metering.retention_rate_days must be 35-400".into());
         }
+        crate::metering::query::parse_tz(&self.billing_timezone).map_err(|e| format!("metering.billing_timezone: {e}"))?;
         Ok(())
     }
 }
@@ -478,6 +483,7 @@ mod tests {
             MeteringConfig { close_grace_secs: 10, ..ok.clone() },
             MeteringConfig { storage_secs: 20, ..ok.clone() },
             MeteringConfig { retention_rate_days: 10, ..ok.clone() },
+            MeteringConfig { billing_timezone: "+05:30".into(), ..ok.clone() },
         ] {
             assert!(bad.check().is_err(), "{bad:?}");
         }
