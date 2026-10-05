@@ -34,13 +34,30 @@ pub struct Meter {
     /// One round at a time: a round and a final sample (M1.3) must not
     /// commit over each other's cursors (D8).
     round_lock: std::sync::Mutex<()>,
+    /// The latest live rates per subject, and when (unix ms) (§9.4).
+    live: std::sync::Mutex<std::collections::HashMap<String, LiveStats>>,
+}
+
+/// Rates of one subject from its last two samples (§9.4).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct LiveStats {
+    pub subject: Subject,
+    pub values: std::collections::BTreeMap<String, f64>,
+    pub sampled_at: u64,
 }
 
 impl Meter {
     pub fn new(db: Arc<Database>, cfg: MeteringConfig) -> Result<Self, MeteringError> {
         let ledger = Ledger::new(db, LedgerSettings::from_secs(cfg.sample_secs, cfg.close_grace_secs))?;
         let boot_id = glidex_vm_shim::util::boot_id().unwrap_or_default();
-        Ok(Self { ledger, cfg, host: sources::Host::default(), boot_id, round_lock: std::sync::Mutex::new(()) })
+        Ok(Self {
+            ledger,
+            cfg,
+            host: sources::Host::default(),
+            boot_id,
+            round_lock: std::sync::Mutex::new(()),
+            live: Default::default(),
+        })
     }
 
     pub fn ledger(&self) -> &Ledger {
@@ -72,7 +89,23 @@ impl Meter {
             net::sample_nat(&mut round, nat, &snap.vms, &snap.networks, &self.boot_id, now)?;
         }
         sampler::forget_gone(&mut round, &with_cursors, &snap.live_subjects());
-        self.ledger.commit(round)
+        let live = round.take_live();
+        self.ledger.commit(round)?;
+        let mut map = self.live.lock().unwrap_or_else(|e| e.into_inner());
+        // Subjects with no fresh rate this round (stopped, gone) drop out.
+        map.retain(|k, v| live.contains_key(k) || now.saturating_sub(v.sampled_at) < 2 * self.cfg.sample_secs * 1000);
+        for (k, (subject, values)) in live {
+            map.insert(k, LiveStats { subject, values, sampled_at: now });
+        }
+        Ok(())
+    }
+
+    /// Live rates of the subjects `keep` selects.
+    pub fn live_stats(&self, keep: impl Fn(&Subject) -> bool) -> Vec<LiveStats> {
+        let map = self.live.lock().unwrap_or_else(|e| e.into_inner());
+        let mut v: Vec<LiveStats> = map.values().filter(|l| keep(&l.subject)).cloned().collect();
+        v.sort_by(|a, b| (a.subject.kind, &a.subject.id).cmp(&(b.subject.kind, &b.subject.id)));
+        v
     }
 }
 

@@ -1077,6 +1077,21 @@ network detail page gets the same for its bridge
 added for the UI. It fires on every round, but only for VMs a client
 watches by id.
 
+**As built (M2.4).** Code: `api/rates.rs`. Four differences from the
+design:
+- **No `stats` watch kind.** Live stats change every round, and the
+  `/watch` stream carries object changes, so the UI polls
+  `GET /vms/{id}/stats` instead. Each round notes its rates in memory
+  (`Round::live`), and a subject drops out after two intervals without
+  a fresh rate.
+- **CSV columns.** `/usage/bandwidth` and `/usage/disk-io` take
+  `format=csv` (audited) with one column per JSON leaf.
+- **Final figures.** For a month whose slots have expired, they answer
+  from the stored monthly figures (`from_final_figures: true`), which
+  carry the p95 only.
+- **Averages** are over the slots the group was present in (§8.5.1),
+  so a VM that ran for a week is not averaged over the whole month.
+
 ## 10. Authorization
 
 New permission group `usage.read`, with concrete actions:

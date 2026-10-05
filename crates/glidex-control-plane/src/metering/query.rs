@@ -145,6 +145,24 @@ pub fn bucket(t: u64, g: Granularity, tz: &Tz) -> (u64, u64) {
     ((start - tz.offset_secs).max(0) as u64, (end - tz.offset_secs).max(0) as u64)
 }
 
+/// `[start, end)` (unix s) of the calendar month `YYYY-MM` in `tz`.
+pub fn month_bounds(month: &str, tz: &Tz) -> Result<(u64, u64), String> {
+    let bad = || format!("month must be YYYY-MM, not {month}");
+    let (y, m) = month.split_once('-').ok_or_else(bad)?;
+    let (y, m): (i64, u32) = (y.parse().map_err(|_| bad())?, m.parse().map_err(|_| bad())?);
+    if !(1..=12).contains(&m) || y < 1970 {
+        return Err(bad());
+    }
+    let start = days_from_civil(y, m, 1) * 86400 - tz.offset_secs;
+    Ok(bucket(start.max(0) as u64, Granularity::Month, tz))
+}
+
+/// `YYYY-MM` of the month containing `t` in `tz`.
+pub fn month_label(t: u64, tz: &Tz) -> String {
+    let (y, m, _) = civil_from_days((t as i64 + tz.offset_secs).div_euclid(86400));
+    format!("{y:04}-{m:02}")
+}
+
 /// `YYYY-MM-DDTHH:MM:SSZ`.
 pub fn rfc3339(t: u64) -> String {
     let (y, m, d) = civil_from_days((t / 86400) as i64);
@@ -447,6 +465,16 @@ mod tests {
         let (s, e) = bucket(t - 3600, Granularity::Month, &bkk);
         assert_eq!((e - s) / 3600, 744);
         assert_eq!(bucket(t, Granularity::Day, &Tz::utc()), (t - 17 * 3600, t + 7 * 3600));
+    }
+
+    #[test]
+    fn month_bounds_and_labels() {
+        let bkk = parse_tz("+07:00").unwrap();
+        let (s, e) = month_bounds("2026-10", &bkk).unwrap();
+        assert_eq!((rfc3339(s), rfc3339(e)), ("2026-09-30T17:00:00Z".into(), "2026-10-31T17:00:00Z".into()));
+        assert_eq!(month_label(s, &bkk), "2026-10");
+        assert_eq!(month_label(s, &Tz::utc()), "2026-09");
+        assert!(month_bounds("2026-13", &bkk).is_err() && month_bounds("Oct", &bkk).is_err());
     }
 
     #[test]

@@ -298,6 +298,8 @@ pub struct Round {
     forgotten: BTreeSet<String>,
     acc: BTreeMap<(u64, String), HourAcc>,
     slots: BTreeMap<(u64, String), SlotRow>,
+    /// Rates seen this round, for live stats (§9.4); not stored.
+    live: BTreeMap<String, (Subject, BTreeMap<String, f64>)>,
     db: Arc<Database>,
     now: u64,
 }
@@ -657,6 +659,18 @@ impl Round {
     pub fn now(&self) -> u64 {
         self.now
     }
+
+    /// Note a live rate of a subject (e.g. `rx_mbps`) for `GET …/stats`.
+    pub fn live(&mut self, subject: &Subject, name: &str, value: f64) {
+        let e = self.live.entry(subject.key()).or_insert_with(|| (subject.clone(), BTreeMap::new()));
+        e.0 = subject.clone();
+        e.1.insert(name.to_string(), (value * 1000.0).round() / 1000.0);
+    }
+
+    /// The live rates noted this round (taken before commit).
+    pub fn take_live(&mut self) -> BTreeMap<String, (Subject, BTreeMap<String, f64>)> {
+        std::mem::take(&mut self.live)
+    }
 }
 
 /// Split `amount` over `[from, to]` (ms) into periods of `period` ms:
@@ -798,6 +812,7 @@ impl Ledger {
             forgotten: BTreeSet::new(),
             acc: BTreeMap::new(),
             slots: BTreeMap::new(),
+            live: BTreeMap::new(),
             db: self.db.clone(),
             now,
         })

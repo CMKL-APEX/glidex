@@ -69,6 +69,9 @@ reported as `404`.
 | `DELETE` | `/vms/{id}/disks/{disk}` | `detach_disk` | Detach a data disk; on a running VM at the next start, and the disk stays claimed until then |
 | `GET` | `/usage[?project=&from=&to=&granularity=&group_by=&meters=&tz=&format=csv]` | `usage::usage` | Usage records ([metering.md §9.1](metering.md#91-get-usage)): hour/day/month buckets, grouped by project, VM, disk, NIC or network; host readers see every project, others their own (`404` for one they can't read) |
 | `GET` | `/projects/{id}/usage`, `/vms/{id}/usage[?include=disks]`, `/disks/{id}/usage` | `usage::*_usage` | The same, for one project, VM (and its NICs) or disk |
+| `GET` | `/usage/bandwidth`, `/usage/disk-io` `[?project=&month=YYYY-MM&group_by=&format=csv]` | `rates::bandwidth` / `disk_io` | Per billing month: average, 30-second peak and 5-minute 95th percentile (billable: network max(in, out), disk read+write) ([metering.md §9.3](metering.md#93-bandwidth)) |
+| `GET` | `/vms/{id}/bandwidth`, `/networks/{name}/bandwidth`, `/vms/{id}/io`, `/disks/{id}/io` `[?from=&to=&p95=true]` | `rates::*` | 5-minute series for graphs (default: the last 24 h; at most 31 days) |
+| `GET` | `/vms/{id}/stats`, `/networks/{name}/stats` | `rates::*_stats` | Current rates from the last two samples (CPU %, memory, Mbps, pps, IOPS, MB/s); not stored |
 
 Image and disk payloads, semantics and invariants are in
 [images.md](images.md#8-rest-api).

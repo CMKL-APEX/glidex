@@ -65,6 +65,19 @@ namespace Glidex {
     appliesTo { principal: [User, Token], resource: [Vm], context: Ctx };
   action readDiskUsage in ["usage.read"]
     appliesTo { principal: [User, Token], resource: [Disk], context: Ctx };
+  // Labels of host-or-project reports; handlers scope them like readUsage.
+  action readBandwidth, readDiskIoUsage in ["system.usage"]
+    appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
+  action readVmBandwidth, readVmIo in ["usage.read"]
+    appliesTo { principal: [User, Token], resource: [Vm], context: Ctx };
+  action readVmStats in ["vm.read"]
+    appliesTo { principal: [User, Token], resource: [Vm], context: Ctx };
+  action readDiskIo in ["usage.read"]
+    appliesTo { principal: [User, Token], resource: [Disk], context: Ctx };
+  // Traffic is tenant data: project networks for project members, host
+  // networks for host roles (auditor).
+  action readNetworkBandwidth, readNetworkStats in ["usage.read"]
+    appliesTo { principal: [User, Token], resource: [Network], context: Ctx };
 
   // ---- projects ----------------------------------------------------------
   action readProject, readBindings in ["project.read"]

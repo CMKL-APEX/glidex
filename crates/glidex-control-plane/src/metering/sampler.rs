@@ -88,11 +88,17 @@ fn sample_vm(round: &mut Round, vm: &Vm, disks: &[Disk], host: &Host, now: u64) 
         Runner::Systemd { .. } => format!("{run}/{}", inst.shim_starttime.unwrap_or(0)),
         Runner::Detached => format!("{run}/{}", inst.hypervisor_starttime.unwrap_or(0)),
     };
-    round.counter(&s, "cpu.used", &reset_key, u.cpu_usec, now, Origin::ZeroAt(launched))?;
+    if let Some(d) = round.counter(&s, "cpu.used", &reset_key, u.cpu_usec, now, Origin::ZeroAt(launched))? {
+        // µs of CPU per second of wall time = % of one core × 10⁴; per vCPU.
+        if let Some(usec_per_s) = d.rate(1) {
+            round.live(&s, "cpu_percent", usec_per_s as f64 / 1e4 / (c.vcpu_count.max(1) as f64));
+        }
+    }
     // Hugepage-backed guest RAM is not in memory.current (§5.1).
     let used_mib = u.memory_bytes / MIB + if c.hugepages { c.mem_size_mib as u64 } else { 0 };
     round.gauge_run(&s, "mem.used", run, launched, used_mib, now, now, prev_end)?;
     round.max(&s, "mem.peak", used_mib, now);
+    round.live(&s, "mem_used_mib", used_mib as f64);
     if u.from_proc {
         round.flag(&s, now, Flag::SourceProc);
     }
@@ -180,6 +186,17 @@ pub fn record_disk_io(
         }
         if let Some(t) = b.write_time_ns {
             round.counter(&s, "disk.write_time_ns", run, t, now, origin)?;
+        }
+        let rate = |d: Option<crate::metering::Delta>, f: u64| d.and_then(|d| d.rate(f));
+        for (name, v) in [
+            ("read_iops", rate(rops, 1000).map(|r| r as f64 / 1000.0)),
+            ("write_iops", rate(wops, 1000).map(|r| r as f64 / 1000.0)),
+            ("read_mbps", rate(rby, 1).map(|r| r as f64 / 1e6)),
+            ("write_mbps", rate(wby, 1).map(|r| r as f64 / 1e6)),
+        ] {
+            if let Some(v) = v {
+                round.live(&s, name, v);
+            }
         }
         // ops/s × 1000 and kB/s (§2), per direction and summed.
         for (meter, deltas, factor, div) in [

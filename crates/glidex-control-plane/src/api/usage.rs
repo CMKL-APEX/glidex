@@ -43,15 +43,15 @@ pub struct UsageParams {
     include: Option<String>,
 }
 
-fn bad(msg: impl Into<String>) -> ApiErr {
+pub(super) fn bad(msg: impl Into<String>) -> ApiErr {
     err(StatusCode::BAD_REQUEST, "invalid", msg)
 }
 
-fn list(s: &Option<String>) -> Vec<String> {
+pub(super) fn list(s: &Option<String>) -> Vec<String> {
     s.as_deref().unwrap_or("").split(',').map(str::trim).filter(|x| !x.is_empty()).map(String::from).collect()
 }
 
-fn meter(c: &Caller) -> Result<std::sync::Arc<crate::metering::Meter>, ApiErr> {
+pub(super) fn meter(c: &Caller) -> Result<std::sync::Arc<crate::metering::Meter>, ApiErr> {
     c.manager()
         .meter()
         .ok_or_else(|| err(StatusCode::SERVICE_UNAVAILABLE, "metering_unavailable", "metering is not running"))
@@ -60,7 +60,14 @@ fn meter(c: &Caller) -> Result<std::sync::Arc<crate::metering::Meter>, ApiErr> {
 /// `GET /usage`: host readers see every project (also deleted ones);
 /// everyone else the projects they may read usage of (§10).
 pub async fn usage(c: Caller, Query(p): Query<UsageParams>) -> Result<Response, ApiErr> {
-    let wanted = list(&p.project);
+    let projects = scope(&c, &p.project)?;
+    respond(&c, &p, projects, &[GroupKey::Project], |_| true)
+}
+
+/// The projects a usage request covers (§10): `None` = all (host
+/// readers only). Requested projects the caller can't read are `404`.
+pub(super) fn scope(c: &Caller, requested: &Option<String>) -> Result<Option<BTreeSet<String>>, ApiErr> {
+    let wanted = list(requested);
     let all = c.allowed("readUsage", Ent::Host, EntitySet::new());
     let mut projects: Option<BTreeSet<String>> = None;
     if !wanted.is_empty() {
@@ -91,7 +98,7 @@ pub async fn usage(c: Caller, Query(p): Query<UsageParams>) -> Result<Response, 
         }
         projects = Some(readable);
     }
-    respond(&c, &p, projects, &[GroupKey::Project], |_| true)
+    Ok(projects)
 }
 
 /// `GET /projects/{id}/usage`.
