@@ -7,6 +7,8 @@
 pub mod ledger;
 pub mod net;
 pub mod query;
+pub mod rates;
+pub mod retention;
 pub mod sampler;
 pub mod sources;
 
@@ -136,6 +138,15 @@ impl crate::state::VmManager {
                 let started = std::time::Instant::now();
                 if let Err(e) = me.meter_round(&meter).await {
                     tracing::warn!("metering round failed: {}", e);
+                }
+                // Daily upkeep; a no-op on every other round of the day.
+                let m = meter.clone();
+                let upkeep = tokio::task::spawn_blocking(move || {
+                    let tz = query::parse_tz(&m.cfg.billing_timezone).unwrap_or_else(|_| query::Tz::utc());
+                    retention::run(&m.ledger, &m.cfg, &tz, now_ms() / 1000)
+                });
+                if let Ok(Err(e)) = upkeep.await {
+                    tracing::warn!("metering upkeep failed: {}", e);
                 }
                 let took = started.elapsed();
                 if took > Duration::from_millis(period / 2) {

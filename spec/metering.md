@@ -938,6 +938,28 @@ hour add up exactly to the hour's `disk.*` counters.
   `revised_at` rule.
 - **Retention:** `rate_5m` disk rows follow `retention_rate_days`.
 
+**As built (M2.3).** Code: `metering/rates.rs`,
+`metering/retention.rs`, and `ledger.rs` (`rate_5m`, `usage_daily`,
+`usage_monthly_rates`). It differs from §8.5.1 and §8.6 in four ways:
+
+- **A slot counts when the subject was sampled in it**, i.e. while
+  its instance was running. A stopped VM's NIC port is detached on
+  this system, and its disks have no hypervisor counters, so
+  "attached but stopped" has no reading to count. Such time is left
+  out rather than counted as 0. That lowers neither p95 nor averages
+  for time the VM was off.
+- **Final figures are written once.** When a billing month is
+  complete, the daily upkeep writes one figure per grouping to
+  `usage_monthly_rates` (`bw/{nic,vm,project,network}`,
+  `io/{disk,vm,project}`). While a month's slots are still kept
+  (`retention_rate_days`), queries compute from the slots, so a late
+  adjustment shows up there. The stored figure is what remains after
+  the slots expire. It has no `revised_at`.
+- **Hours roll up into UTC days** after `retention_days`, and `scan`
+  returns those day rows for old ranges.
+- **Upkeep runs once a day**, after a sampling round: finalize, roll up,
+  then expire slots, days and monthly figures.
+
 ## 9. REST API
 
 All routes are added in `api/mod.rs` with one Cedar action each (§10).

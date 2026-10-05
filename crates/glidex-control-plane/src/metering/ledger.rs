@@ -20,6 +20,9 @@ const CURSORS: TableDefinition<&str, &[u8]> = TableDefinition::new("meter_cursor
 const OPEN: TableDefinition<&str, &[u8]> = TableDefinition::new("meter_open");
 const HOURLY: TableDefinition<&str, &[u8]> = TableDefinition::new("usage_hourly");
 const META: TableDefinition<&str, &[u8]> = TableDefinition::new("meter_meta");
+const RATE5: TableDefinition<&str, &[u8]> = TableDefinition::new("rate_5m");
+const DAILY: TableDefinition<&str, &[u8]> = TableDefinition::new("usage_daily");
+const MONTHLY_RATES: TableDefinition<&str, &[u8]> = TableDefinition::new("usage_monthly_rates");
 
 /// `meter_meta`: when metering first ran (unix ms), written once.
 const META_STARTED_AT: &str = "started_at";
@@ -29,6 +32,58 @@ const META_CLOSED_THROUGH: &str = "closed_through";
 const META_LAST_ROUND: &str = "last_round";
 
 pub const HOUR_MS: u64 = 3_600_000;
+/// The 95th-percentile slot (§8.5.1).
+pub const SLOT_MS: u64 = 300_000;
+pub const SLOTS_PER_HOUR: usize = 12;
+
+/// Meters kept per 5-minute slot as well as per hour (§8.5.1, §8.6).
+pub fn is_slotted(meter: &str) -> bool {
+    matches!(
+        meter,
+        "net.rx_bytes"
+            | "net.tx_bytes"
+            | "net.ext_rx_bytes"
+            | "net.ext_tx_bytes"
+            | "bridge.bytes"
+            | "bridge.ext_rx_bytes"
+            | "bridge.ext_tx_bytes"
+            | "disk.read_ops"
+            | "disk.write_ops"
+            | "disk.read_bytes"
+            | "disk.write_bytes"
+            | "disk.read_time_ns"
+            | "disk.write_time_ns"
+    )
+}
+
+/// One subject's twelve 5-minute slots of one hour (`rate_5m`, §7.1):
+/// per-slot deltas, and which slots it was sampled in.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SlotRow {
+    pub subject: Option<Subject>,
+    /// Bit i: the subject was sampled during slot i (it existed and ran).
+    pub present: u16,
+    /// Bit i: slot i holds a delta spread over a gap (§6.3).
+    #[serde(default)]
+    pub interpolated: u16,
+    pub series: BTreeMap<String, [u64; SLOTS_PER_HOUR]>,
+}
+
+impl SlotRow {
+    fn merge(&mut self, other: SlotRow) {
+        self.present |= other.present;
+        self.interpolated |= other.interpolated;
+        for (m, v) in other.series {
+            let e = self.series.entry(m).or_insert([0; SLOTS_PER_HOUR]);
+            for (a, b) in e.iter_mut().zip(v) {
+                *a = a.saturating_add(b);
+            }
+        }
+        if other.subject.is_some() {
+            self.subject = other.subject;
+        }
+    }
+}
 
 /// Project key segment for host-level subjects (images, host networks).
 const NO_PROJECT: &str = "-";
@@ -242,6 +297,7 @@ pub struct Round {
     /// Subjects (`kind/id`) whose cursors are all dropped at commit.
     forgotten: BTreeSet<String>,
     acc: BTreeMap<(u64, String), HourAcc>,
+    slots: BTreeMap<(u64, String), SlotRow>,
     db: Arc<Database>,
     now: u64,
 }
@@ -269,7 +325,38 @@ impl Round {
 
     /// Spread `amount` of `meter` over `[from, to]` into hour buckets in
     /// proportion to time (§6.3). The parts add up to `amount` exactly.
+    fn slot_row(&mut self, slot_start: u64, subject: &Subject) -> (&mut SlotRow, usize) {
+        let row = self.slots.entry((hour_of(slot_start), subject.key())).or_default();
+        row.subject = Some(subject.clone());
+        (row, ((slot_start % HOUR_MS) / SLOT_MS) as usize)
+    }
+
+    /// The subject was sampled over `(from, to]`: mark those slots.
+    fn mark_present(&mut self, subject: &Subject, from: u64, to: u64, interpolated: bool) {
+        let mut t = from.min(to) / SLOT_MS * SLOT_MS;
+        loop {
+            // A slot counts if any of (from, to] falls in it.
+            if t + SLOT_MS > from || t == to / SLOT_MS * SLOT_MS {
+                let (row, i) = self.slot_row(t, subject);
+                row.present |= 1 << i;
+                if interpolated {
+                    row.interpolated |= 1 << i;
+                }
+            }
+            if t + SLOT_MS > to.saturating_sub(1) {
+                break;
+            }
+            t += SLOT_MS;
+        }
+    }
+
     fn spread(&mut self, subject: &Subject, meter: &str, amount: u64, from: u64, to: u64, flag: Option<Flag>) {
+        if is_slotted(meter) {
+            for (slot, part) in split_by(amount, from, to, SLOT_MS) {
+                let (row, i) = self.slot_row(slot, subject);
+                row.series.entry(meter.to_string()).or_insert([0; SLOTS_PER_HOUR])[i] += part;
+            }
+        }
         for (hour, part) in split_hours(amount, from, to) {
             let acc = self.acc(hour, subject);
             acc.add(meter, part);
@@ -359,6 +446,10 @@ impl Round {
             },
         };
         self.cursors.insert(key, Some(Cursor { reset_key: reset_key.to_string(), value, at, rem: 0 }));
+        if is_slotted(meter) {
+            let from = if prev.is_some() { from.min(at) } else { at };
+            self.mark_present(subject, from, at, at - from > self.settings.gap_ms);
+        }
         if amount == 0 && prev.is_none() {
             return Ok(None);
         }
@@ -568,6 +659,31 @@ impl Round {
     }
 }
 
+/// Split `amount` over `[from, to]` (ms) into periods of `period` ms:
+/// `(period start ms, part)`. The parts always sum to `amount`.
+pub fn split_by(amount: u64, from: u64, to: u64, period: u64) -> Vec<(u64, u64)> {
+    if amount == 0 {
+        return Vec::new();
+    }
+    let start = |t: u64| t / period * period;
+    if to <= from || start(from) == start(to.saturating_sub(1)) {
+        return vec![(start(if to > from { to - 1 } else { to }), amount)];
+    }
+    let total = (to - from) as u128;
+    let (mut out, mut done, mut given, mut t) = (Vec::new(), 0u128, 0u64, from);
+    while t < to {
+        let end = (start(t) + period).min(to);
+        done += (end - t) as u128;
+        let cum = ((amount as u128 * done) / total) as u64;
+        if cum > given {
+            out.push((start(t), cum - given));
+            given = cum;
+        }
+        t = end;
+    }
+    out
+}
+
 /// Start of the UTC hour containing `ms`, in unix seconds.
 pub fn hour_of(ms: u64) -> u64 {
     ms / HOUR_MS * 3600
@@ -576,30 +692,7 @@ pub fn hour_of(ms: u64) -> u64 {
 /// Split `amount` over `[from, to]` (ms) into `(hour, part)` by overlap.
 /// The parts always sum to `amount`; an empty interval goes to `to`'s hour.
 pub fn split_hours(amount: u64, from: u64, to: u64) -> Vec<(u64, u64)> {
-    if amount == 0 {
-        return Vec::new();
-    }
-    if to <= from || hour_of(from) == hour_of(to.saturating_sub(1)) {
-        return vec![(hour_of(if to > from { to - 1 } else { to }), amount)];
-    }
-    let total = (to - from) as u128;
-    let mut out = Vec::new();
-    let mut done: u128 = 0;
-    let mut given: u64 = 0;
-    let mut t = from;
-    while t < to {
-        let end = ((t / HOUR_MS) + 1) * HOUR_MS;
-        let end = end.min(to);
-        done += (end - t) as u128;
-        // Cumulative rounding: part_i = ⌊amount·Σo/T⌋ − ⌊amount·Σo_prev/T⌋.
-        let cum = ((amount as u128 * done) / total) as u64;
-        if cum > given {
-            out.push((hour_of(t), cum - given));
-            given = cum;
-        }
-        t = end;
-    }
-    out
+    split_by(amount, from, to, HOUR_MS).into_iter().map(|(t, p)| (t / 1000, p)).collect()
 }
 
 fn hour_key(hour: u64, project: &str, subject_key: &str, seq: u16) -> String {
@@ -632,6 +725,9 @@ impl Ledger {
             let _ = txn.open_table(OPEN)?;
             let _ = txn.open_table(HOURLY)?;
             let _ = txn.open_table(META)?;
+            let _ = txn.open_table(RATE5)?;
+            let _ = txn.open_table(DAILY)?;
+            let _ = txn.open_table(MONTHLY_RATES)?;
         }
         txn.commit()?;
         Ok(Self { db, settings })
@@ -701,6 +797,7 @@ impl Ledger {
             cursors: HashMap::new(),
             forgotten: BTreeSet::new(),
             acc: BTreeMap::new(),
+            slots: BTreeMap::new(),
             db: self.db.clone(),
             now,
         })
@@ -775,6 +872,16 @@ impl Ledger {
                 let key = hour_key(hour, row.subject.project_key(), &row.subject.key(), seq);
                 hourly.insert(key.as_str(), serde_json::to_vec(&row)?.as_slice())?;
             }
+            let mut rate5 = txn.open_table(RATE5)?;
+            for ((hour, skey), row) in round.slots {
+                let k = open_key(hour, &skey);
+                let mut merged: SlotRow = match rate5.get(k.as_str())? {
+                    Some(v) => serde_json::from_slice(v.value())?,
+                    None => SlotRow::default(),
+                };
+                merged.merge(row);
+                rate5.insert(k.as_str(), serde_json::to_vec(&merged)?.as_slice())?;
+            }
             let mut meta = txn.open_table(META)?;
             meta.insert(META_LAST_ROUND, round.now.to_string().as_bytes())?;
             if close_to > closed_through {
@@ -800,6 +907,16 @@ impl Ledger {
                 out.push(row);
             }
         }
+        // Days rolled up from hours past retention (§7.3), as day rows.
+        let daily = txn.open_table(DAILY)?;
+        let day_from = from / 86400 * 86400;
+        for r in daily.range(format!("{day_from:010}/").as_str()..format!("{to:010}/").as_str())? {
+            let (_, v) = r?;
+            let row: UsageRecord = serde_json::from_slice(v.value())?;
+            if row.hour >= from && keep(&row.subject) {
+                out.push(row);
+            }
+        }
         let open = txn.open_table(OPEN)?;
         for r in open.range(format!("{from:010}/").as_str()..format!("{to:010}/").as_str())? {
             let (k, v) = r?;
@@ -808,6 +925,150 @@ impl Ledger {
             if keep(&subject) {
                 let hour = k.value().split('/').next().and_then(|h| h.parse().ok()).unwrap_or(0);
                 out.push(UsageRecord { hour, subject, seq: 0, meters: acc.meters, flags: acc.flags, written_at: 0 });
+            }
+        }
+        Ok(out)
+    }
+}
+
+impl Ledger {
+    /// Roll closed hourly rows of hours before `cutoff` (unix s) into one
+    /// row per subject and UTC day, and delete them (§7.3). Returns how
+    /// many hourly rows went.
+    pub fn roll_up_hours_before(&self, cutoff: u64) -> Result<usize, MeteringError> {
+        let cutoff = cutoff.min(self.complete_through()?) / 86400 * 86400;
+        let txn = self.db.begin_write()?;
+        let n;
+        {
+            let mut hourly = txn.open_table(HOURLY)?;
+            let old: Vec<(String, UsageRecord)> = hourly
+                .range(..format!("{cutoff:010}/").as_str())?
+                .map(|r| {
+                    let (k, v) = r?;
+                    Ok((k.value().to_string(), serde_json::from_slice(v.value())?))
+                })
+                .collect::<Result<_, MeteringError>>()?;
+            n = old.len();
+            let mut days: BTreeMap<String, UsageRecord> = BTreeMap::new();
+            for (_, r) in &old {
+                let day = r.hour / 86400 * 86400;
+                let key = format!("{day:010}/{}/{}", r.subject.project_key(), r.subject.key());
+                let d = days.entry(key).or_insert_with(|| UsageRecord {
+                    hour: day,
+                    subject: r.subject.clone(),
+                    seq: 0,
+                    meters: BTreeMap::new(),
+                    flags: BTreeSet::new(),
+                    written_at: r.written_at,
+                });
+                let mut acc = HourAcc { subject: None, meters: std::mem::take(&mut d.meters), flags: BTreeSet::new() };
+                for (m, v) in &r.meters {
+                    acc.add(m, *v);
+                }
+                d.meters = acc.meters;
+                d.flags.extend(r.flags.iter().cloned());
+                d.subject = r.subject.clone();
+            }
+            let mut daily = txn.open_table(DAILY)?;
+            for (k, mut d) in days {
+                // A day may already have a row (an adjustment rolled later).
+                if let Some(prev) = daily.get(k.as_str())? {
+                    let prev: UsageRecord = serde_json::from_slice(prev.value())?;
+                    let mut acc = HourAcc { subject: None, meters: prev.meters, flags: BTreeSet::new() };
+                    for (m, v) in &d.meters {
+                        acc.add(m, *v);
+                    }
+                    d.meters = acc.meters;
+                    d.flags.extend(prev.flags);
+                }
+                daily.insert(k.as_str(), serde_json::to_vec(&d)?.as_slice())?;
+            }
+            for (k, _) in old {
+                hourly.remove(k.as_str())?;
+            }
+        }
+        txn.commit()?;
+        Ok(n)
+    }
+
+    /// Delete rows keyed by time before `cutoff` (unix s) from `table`.
+    fn prune(&self, table: TableDefinition<&str, &[u8]>, cutoff: u64) -> Result<usize, MeteringError> {
+        let txn = self.db.begin_write()?;
+        let n;
+        {
+            let mut t = txn.open_table(table)?;
+            let keys: Vec<String> = t
+                .range(..format!("{cutoff:010}/").as_str())?
+                .map(|r| r.map(|(k, _)| k.value().to_string()))
+                .collect::<Result<_, _>>()?;
+            n = keys.len();
+            for k in keys {
+                t.remove(k.as_str())?;
+            }
+        }
+        txn.commit()?;
+        Ok(n)
+    }
+
+    pub fn prune_slots_before(&self, cutoff: u64) -> Result<usize, MeteringError> {
+        self.prune(RATE5, cutoff)
+    }
+
+    pub fn prune_daily_before(&self, cutoff: u64) -> Result<usize, MeteringError> {
+        self.prune(DAILY, cutoff)
+    }
+
+    /// Final figures of a billing month (`usage_monthly_rates`, §8.5.1):
+    /// `month_start` (unix s) keys them so pruning by time works.
+    pub fn put_month_rates(&self, month_start: u64, key: &str, value: &serde_json::Value) -> Result<(), MeteringError> {
+        let txn = self.db.begin_write()?;
+        txn.open_table(MONTHLY_RATES)?.insert(format!("{month_start:010}/{key}").as_str(), serde_json::to_vec(value)?.as_slice())?;
+        txn.commit()?;
+        Ok(())
+    }
+
+    /// `(key, value)` of a month's final figures whose key starts with `prefix`.
+    pub fn month_rates(&self, month_start: u64, prefix: &str) -> Result<Vec<(String, serde_json::Value)>, MeteringError> {
+        let txn = self.db.begin_read()?;
+        let t = txn.open_table(MONTHLY_RATES)?;
+        let from = format!("{month_start:010}/{prefix}");
+        let mut out = Vec::new();
+        for r in t.range(from.as_str()..format!("{from}~").as_str())? {
+            let (k, v) = r?;
+            out.push((k.value()[11..].to_string(), serde_json::from_slice(v.value())?));
+        }
+        Ok(out)
+    }
+
+    pub fn prune_month_rates_before(&self, cutoff: u64) -> Result<usize, MeteringError> {
+        self.prune(MONTHLY_RATES, cutoff)
+    }
+
+    /// A small value in `meter_meta` (finalized months, retention runs).
+    pub fn meta(&self, key: &str) -> Result<Option<String>, MeteringError> {
+        let txn = self.db.begin_read()?;
+        let t = txn.open_table(META)?;
+        Ok(t.get(key)?.map(|v| String::from_utf8_lossy(v.value()).into_owned()))
+    }
+
+    pub fn set_meta(&self, key: &str, value: &str) -> Result<(), MeteringError> {
+        let txn = self.db.begin_write()?;
+        txn.open_table(META)?.insert(key, value.as_bytes())?;
+        txn.commit()?;
+        Ok(())
+    }
+
+    /// Slot rows for hours in `[from, to)` (unix s): `(hour, row)`.
+    pub fn scan_slots(&self, from: u64, to: u64, keep: impl Fn(&Subject) -> bool) -> Result<Vec<(u64, SlotRow)>, MeteringError> {
+        let txn = self.db.begin_read()?;
+        let table = txn.open_table(RATE5)?;
+        let mut out = Vec::new();
+        for r in table.range(format!("{from:010}/").as_str()..format!("{to:010}/").as_str())? {
+            let (k, v) = r?;
+            let row: SlotRow = serde_json::from_slice(v.value())?;
+            if row.subject.as_ref().is_some_and(&keep) {
+                let hour = k.value().split('/').next().and_then(|h| h.parse().ok()).unwrap_or(0);
+                out.push((hour, row));
             }
         }
         Ok(out)
@@ -877,6 +1138,60 @@ mod tests {
             assert!(hours.windows(2).all(|w| w[0] < w[1]));
             assert!(hours.iter().all(|&h| h * 1000 >= hour_of(from) * 1000 && h * 1000 <= to));
         }
+    }
+
+    #[test]
+    fn slots_add_up_to_hours_and_mark_presence() {
+        let (_d, l) = ledger();
+        let mut s = vm();
+        s.kind = SubjectKind::Nic;
+        let mut rng = Rng(11);
+        let mut t = T0;
+        let mut v = 0;
+        let mut r = l.begin_round(t).unwrap();
+        r.counter(&s, "net.rx_bytes", "p", 0, t, Origin::ZeroAt(t)).unwrap();
+        for _ in 0..200 {
+            t += 30_000;
+            v += rng.next() % 1_000_000;
+            r.counter(&s, "net.rx_bytes", "p", v, t, Origin::Unknown).unwrap();
+        }
+        l.commit(r).unwrap();
+        let slots = l.scan_slots(0, u64::MAX / 10, |_| true).unwrap();
+        let slot_total: u64 = slots.iter().map(|(_, row)| row.series["net.rx_bytes"].iter().sum::<u64>()).sum();
+        assert_eq!(slot_total, v, "slots add up to the hours");
+        assert_eq!(slot_total, total(&l, "net.rx_bytes"));
+        // 200 × 30 s = 100 min = 20 slots, all present, none interpolated.
+        let present: u32 = slots.iter().map(|(_, row)| row.present.count_ones()).sum();
+        assert_eq!(present, 20);
+        assert!(slots.iter().all(|(_, row)| row.interpolated == 0));
+        // Gauges are not slotted.
+        assert!(slots.iter().all(|(_, row)| row.series.len() == 1));
+    }
+
+    #[test]
+    fn old_hours_roll_up_into_days_and_still_scan() {
+        let (_d, l) = ledger();
+        let s = vm();
+        let mut r = l.begin_round(T0).unwrap();
+        r.counter(&s, "cpu.used", "i", 0, T0, Origin::ZeroAt(T0)).unwrap();
+        // 30 hours of usage, 100 per hour, then everything closes.
+        for h in 1..=30u64 {
+            r.counter(&s, "cpu.used", "i", 100 * h, T0 + h * H, Origin::Unknown).unwrap();
+        }
+        r.max(&s, "mem.peak", 7, T0 + 2 * H);
+        r.now = T0 + 40 * H;
+        l.commit(r).unwrap();
+        let before = combine(&rows(&l));
+        let n = l.roll_up_hours_before((T0 + 40 * H) / 1000).unwrap();
+        assert!(n > 0);
+        let after = rows(&l);
+        // Whole UTC days before the cutoff are day rows; the rest stay hourly.
+        let cutoff_day = l.complete_through().unwrap() / 86400 * 86400;
+        assert!(after.iter().filter(|r| r.hour < cutoff_day).all(|r| r.hour % 86400 == 0));
+        assert!(after.iter().any(|r| r.hour >= cutoff_day && r.hour % 86400 != 0));
+        assert_eq!(combine(&after), before, "sums and maxima kept");
+        let days = after.iter().filter(|r| r.hour < cutoff_day).count();
+        assert_eq!(l.prune_daily_before(u64::MAX / 10).unwrap(), days);
     }
 
     #[test]

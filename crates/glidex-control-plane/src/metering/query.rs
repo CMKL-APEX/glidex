@@ -211,9 +211,8 @@ pub struct Named {
     pub name: String,
 }
 
-/// The value of one group key for a usage row, if it has one.
-fn key_of(r: &UsageRecord, k: GroupKey) -> Option<Named> {
-    let s = &r.subject;
+/// The value of one group key for a subject, if it has one.
+pub fn key_of(s: &super::ledger::Subject, k: GroupKey) -> Option<Named> {
     let named = |id: &str, name: &str| Some(Named { id: id.to_string(), name: name.to_string() });
     match (k, s.kind) {
         (GroupKey::Project, _) => s.project.as_ref().map(|p| Named { id: p.clone(), name: p.clone() }),
@@ -226,6 +225,18 @@ fn key_of(r: &UsageRecord, k: GroupKey) -> Option<Named> {
         (GroupKey::Network, SubjectKind::Nic) => s.network.as_deref().and_then(|n| named(n, n)),
         _ => None,
     }
+}
+
+/// A subject names itself; others (a disk's VM) only fill a gap.
+pub fn names_itself(k: GroupKey, kind: SubjectKind) -> bool {
+    matches!(
+        (k, kind),
+        (GroupKey::Project, _)
+            | (GroupKey::Vm, SubjectKind::Vm)
+            | (GroupKey::Disk, SubjectKind::Disk)
+            | (GroupKey::Nic, SubjectKind::Nic)
+            | (GroupKey::Network, SubjectKind::Network)
+    )
 }
 
 pub struct Query {
@@ -267,7 +278,7 @@ pub fn aggregate(records: &[UsageRecord], q: &Query) -> Vec<Row> {
     let mut groups: BTreeMap<(u64, Vec<Option<String>>), Row> = BTreeMap::new();
     for r in records.iter().filter(|r| r.hour >= q.from && r.hour < q.to) {
         let (start, end) = bucket(r.hour, q.granularity, &q.tz);
-        let keys: Vec<Option<Named>> = q.group_by.iter().map(|k| key_of(r, *k)).collect();
+        let keys: Vec<Option<Named>> = q.group_by.iter().map(|k| key_of(&r.subject, *k)).collect();
         let ids = keys.iter().map(|k| k.as_ref().map(|n| n.id.clone())).collect();
         let row = groups.entry((start, ids)).or_insert_with(|| Row {
             start,
@@ -277,17 +288,8 @@ pub fn aggregate(records: &[UsageRecord], q: &Query) -> Vec<Row> {
             flags: BTreeSet::new(),
         });
         for (k, v) in q.group_by.iter().zip(keys) {
-            // A subject names itself; others (a disk's VM) only fill a gap.
-            let own = matches!(
-                (k, r.subject.kind),
-                (GroupKey::Project, _)
-                    | (GroupKey::Vm, SubjectKind::Vm)
-                    | (GroupKey::Disk, SubjectKind::Disk)
-                    | (GroupKey::Nic, SubjectKind::Nic)
-                    | (GroupKey::Network, SubjectKind::Network)
-            );
             if let Some(v) = v {
-                if own || !row.keys.contains_key(k) {
+                if names_itself(*k, r.subject.kind) || !row.keys.contains_key(k) {
                     row.keys.insert(*k, v);
                 }
             }
