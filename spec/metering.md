@@ -1,6 +1,15 @@
 # Metering: resource usage records
 
-> Status: **design** (2026-10-04), not implemented. It changes the
+> Status: **M0 and M1 implemented** (2026-10-05, branch
+> `metering-m1`). Unit, integration and security tests pass. The KVM
+> host acceptance runs in §15.4 (marked *host*) are still to do on a
+> deployed build. M2 and M3 are design only.
+>
+> Built differently from the first draft, with the reasons in the
+> sections named: the cgroup is found from the shim's
+> `/proc/<pid>/cgroup` (§5.1); a bridge shared by several networks
+> splits its totals (§5.4); NAT counters are named by MAC (§5.5); CSV
+> export is in M1, not M2 (§15.4). It changes the
 > contracts in [reconciliation.md](reconciliation.md) §8.4 and §13.1,
 > [networking.md](networking.md), [hypervisors.md](hypervisors.md),
 > [data-model.md](data-model.md), [rest-api.md](rest-api.md),
