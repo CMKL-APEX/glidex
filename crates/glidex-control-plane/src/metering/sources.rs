@@ -80,6 +80,33 @@ impl Host {
     }
 }
 
+/// The managed disk at each launched disk index (`[root, data disks…,
+/// seed]`, both drivers): `None` for an unmanaged root and the seed.
+pub fn launched_disk_ids(spec: &serde_json::Value) -> Vec<Option<String>> {
+    let config = &spec["spec"]["config"];
+    let mut out = vec![config["root_disk"].as_str().map(str::to_string)];
+    out.extend(config["data_disks"].as_array().into_iter().flatten().map(|d| d.as_str().map(str::to_string)));
+    out
+}
+
+impl Host {
+    /// Per-disk block counters of a running instance, with the managed
+    /// disk id of each index, from its `launch.json` and its hypervisor
+    /// socket. `None` if the launch file is for another instance or the
+    /// hypervisor doesn't answer.
+    pub fn block_stats(&self, vm_id: &str, instance_id: &str) -> Option<(Vec<Option<String>>, Vec<glidex_hv_client::stats::BlockStats>)> {
+        use glidex_vm_shim::launch::{HypervisorKind, LaunchFile};
+        let paths = crate::paths::vm_paths(vm_id);
+        let launch = LaunchFile::read(&paths.launch).ok().filter(|l| l.instance_id == instance_id)?;
+        let stats = match launch.hypervisor {
+            HypervisorKind::CloudHypervisor => glidex_hv_client::ch::ChClient::new(&paths.api_socket).block_stats(),
+            HypervisorKind::Qemu => glidex_hv_client::qmp::QmpClient::new(&paths.api_socket).block_stats(),
+        }
+        .ok()?;
+        Some((launched_disk_ids(&launch.spec), stats))
+    }
+}
+
 fn read_u64(path: &Path) -> Option<u64> {
     std::fs::read_to_string(path).ok()?.trim().parse().ok()
 }

@@ -220,6 +220,8 @@ fn key_of(r: &UsageRecord, k: GroupKey) -> Option<Named> {
         (GroupKey::Vm, SubjectKind::Vm) => named(&s.id, &s.name),
         // A NIC's name is `<vm name>/nic<i>`.
         (GroupKey::Vm, SubjectKind::Nic) => s.vm_id.as_deref().and_then(|v| named(v, s.name.rsplit_once('/').map_or(&s.name, |x| x.0))),
+        // A disk counts towards the VM it is attached to (§8.6).
+        (GroupKey::Vm, SubjectKind::Disk) => s.vm_id.as_deref().and_then(|v| named(v, v)),
         (GroupKey::Disk, SubjectKind::Disk) | (GroupKey::Nic, SubjectKind::Nic) | (GroupKey::Network, SubjectKind::Network) => named(&s.id, &s.name),
         (GroupKey::Network, SubjectKind::Nic) => s.network.as_deref().and_then(|n| named(n, n)),
         _ => None,
@@ -275,8 +277,19 @@ pub fn aggregate(records: &[UsageRecord], q: &Query) -> Vec<Row> {
             flags: BTreeSet::new(),
         });
         for (k, v) in q.group_by.iter().zip(keys) {
+            // A subject names itself; others (a disk's VM) only fill a gap.
+            let own = matches!(
+                (k, r.subject.kind),
+                (GroupKey::Project, _)
+                    | (GroupKey::Vm, SubjectKind::Vm)
+                    | (GroupKey::Disk, SubjectKind::Disk)
+                    | (GroupKey::Nic, SubjectKind::Nic)
+                    | (GroupKey::Network, SubjectKind::Network)
+            );
             if let Some(v) = v {
-                row.keys.insert(*k, v);
+                if own || !row.keys.contains_key(k) {
+                    row.keys.insert(*k, v);
+                }
             }
         }
         for (m, v) in &r.meters {
@@ -335,6 +348,32 @@ pub fn derive(m: &mut BTreeMap<String, u64>, secs: u64) {
             add.push((avg, kbps));
         }
     }
+    // Disk I/O (§8.6): averages over the bucket, and op-weighted
+    // latency in µs (Σtime / Σops; none without ops or a time counter).
+    for (ops, avg) in [("disk.read_ops", "disk.read_iops_avg"), ("disk.write_ops", "disk.write_iops_avg")] {
+        if let Some(o) = get(m, ops) {
+            if let Some(v) = (o * 1000).checked_div(secs) {
+                add.push((avg, v));
+            }
+        }
+    }
+    if let Some(total) = sum2(m, "disk.read_ops", "disk.write_ops") {
+        if let Some(v) = (total * 1000).checked_div(secs) {
+            add.push(("disk.iops_avg", v));
+        }
+    }
+    for (by, avg) in [("disk.read_bytes", "disk.read_kBps_avg"), ("disk.write_bytes", "disk.write_kBps_avg")] {
+        if let Some(v) = get(m, by).and_then(|b| (b / 1000).checked_div(secs)) {
+            add.push((avg, v));
+        }
+    }
+    for (t, ops, lat) in [("disk.read_time_ns", "disk.read_ops", "disk.read_latency_us"), ("disk.write_time_ns", "disk.write_ops", "disk.write_latency_us")] {
+        if let (Some(t), Some(o)) = (get(m, t), get(m, ops)) {
+            if let Some(us) = (t / 1000).checked_div(o) {
+                add.push((lat, us));
+            }
+        }
+    }
     for (k, v) in add {
         m.insert(k.to_string(), v);
     }
@@ -351,6 +390,11 @@ pub fn present(meter: &str, raw: u64) -> (f64, &'static str) {
         "disk.alloc" | "disk.stored" => (r / 3600.0 / 1024.0, "GiB-hours"),
         "vm.running" | "vm.paused" => (r / 3600.0, "hours"),
         m if m.ends_with("bytes") => (r / (1u64 << 30) as f64, "GiB"),
+        m if m.ends_with("iops_peak") || m.ends_with("iops_avg") => (r / 1000.0, "IOPS"),
+        m if m.ends_with("kBps_peak") || m.ends_with("kBps_avg") => (r / 1000.0, "MB/s"),
+        m if m.ends_with("latency_us") => (r / 1000.0, "ms"),
+        m if m.ends_with("_ops") => (r, "ops"),
+        m if m.ends_with("_time_ns") => (r / 1e9, "s"),
         m if m.ends_with("_kbps_peak") || m.ends_with("_kbps_avg") => (r / 1000.0, "Mbps"),
         m if m.ends_with("pps_peak") => (r / 1000.0, "pps"),
         m if m.ends_with("packets") => (r, "packets"),
@@ -455,6 +499,17 @@ mod tests {
         assert_eq!(present("cpu.used", r.meters["cpu.used"]), (3.0, "core-hours"));
         assert_eq!(present("net.bytes", 4 << 30), (4.0, "GiB"));
         assert_eq!(present("net.rx_kbps_peak", 1500), (1.5, "Mbps"));
+        assert_eq!(present("disk.iops_peak", 500_000), (500.0, "IOPS"));
+        assert_eq!(present("disk.read_latency_us", 1_250), (1.25, "ms"));
+        let mut d: BTreeMap<String, u64> =
+            [("disk.read_ops", 1000), ("disk.write_ops", 500), ("disk.read_time_ns", 3_000_000_000), ("disk.read_bytes", 4_096_000)]
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect();
+        derive(&mut d, 100);
+        assert_eq!((d["disk.iops_avg"], d["disk.read_iops_avg"]), (15_000, 10_000), "15 and 10 IOPS");
+        assert_eq!(d["disk.read_latency_us"], 3_000, "3 s / 1000 ops = 3 ms");
+        assert!(!d.contains_key("disk.write_latency_us"), "no time counter, no latency");
         // Only some meters.
         let only = Query { meters: Some(["net.bytes".to_string()].into()), ..q };
         let rows = aggregate(&[rec(h0, SubjectKind::Nic, "x.0", "p1", &[("net.rx_bytes", 5)])], &only);

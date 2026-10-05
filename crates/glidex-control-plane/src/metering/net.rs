@@ -34,7 +34,7 @@ fn bridge_subject(bridge: &str) -> Subject {
 
 /// `(rate per second × factor)` of a sum of deltas over one interval,
 /// or `None` when they don't share it or it spans a gap (§8.5).
-fn summed_rate(deltas: &[Delta], factor: u64) -> Option<u64> {
+pub(crate) fn summed_rate(deltas: &[Delta], factor: u64) -> Option<u64> {
     let first = deltas.first()?;
     if deltas.iter().any(|d| d.from != first.from || d.to != first.to) {
         return None;

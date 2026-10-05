@@ -61,7 +61,7 @@ impl Meter {
         };
         let with_cursors = self.ledger.cursor_subjects(kinds)?;
         let mut round = self.ledger.begin_round(now)?;
-        sampler::sample_vms(&mut round, &snap.vms, &self.host, now)?;
+        sampler::sample_vms(&mut round, &snap.vms, &snap.disks, &self.host, now)?;
         sampler::sample_disks(&mut round, &snap.disks, now)?;
         if let Some(bridges) = &snap.bridges {
             net::sample_ports(&mut round, bridges, &snap.vms, &snap.networks, now)?;

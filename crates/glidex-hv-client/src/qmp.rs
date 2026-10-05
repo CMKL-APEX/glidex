@@ -92,6 +92,12 @@ impl QmpClient {
         }
     }
 
+    /// Per-disk block counters (`query-blockstats`; metering §5.2).
+    pub fn block_stats(&self) -> Result<Vec<crate::stats::BlockStats>, HvError> {
+        let v = self.execute(&serde_json::json!({ "execute": "query-blockstats" }))?;
+        Ok(crate::stats::parse_qmp_blockstats(&v))
+    }
+
     fn run(&self, name: &str) -> Result<(), HvError> {
         self.execute(&serde_json::json!({ "execute": name })).map(|_| ())
     }
