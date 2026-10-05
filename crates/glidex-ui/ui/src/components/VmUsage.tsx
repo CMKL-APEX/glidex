@@ -73,7 +73,7 @@ export default function VmUsage({ vmId, hypervisor }: { vmId: string; hypervisor
     <div>
       <div className="flex flex-wrap gap-2 mb-4" aria-live="polite">
         <Tile label="CPU (per vCPU)" value={stats?.vm?.cpu_percent} unit="%" />
-        <Tile label="Memory in use" value={stats?.vm?.mem_used_mib} unit="MiB" />
+        <Tile label="Memory (working set)" value={stats?.vm?.mem_used_mib} unit="MiB" />
         <Tile label="Network in" value={nicSum("rx_mbps")} unit="Mbps" />
         <Tile label="Network out" value={nicSum("tx_mbps")} unit="Mbps" />
         <Tile label="Disk read" value={diskSum("read_iops")} unit="IOPS" />
@@ -93,7 +93,7 @@ export default function VmUsage({ vmId, hypervisor }: { vmId: string; hypervisor
           { key: "tx_mbps", label: "Out", color: SERIES_COLORS[1] },
         ]}
         points={points(bw, ["rx_mbps", "tx_mbps"])}
-        reference={bwP95 !== null ? { value: bwP95, label: `p95 ${bwP95} Mbps` } : null}
+        reference={bwP95 !== null ? { value: bwP95, label: `p95 ${bwP95.toFixed(1)} Mbps` } : null}
       />
       <TimeChart
         title="Disk operations"
@@ -103,7 +103,7 @@ export default function VmUsage({ vmId, hypervisor }: { vmId: string; hypervisor
           { key: "write_iops", label: "Write", color: SERIES_COLORS[1] },
         ]}
         points={ioPoints}
-        reference={ioP95 !== null ? { value: ioP95, label: `p95 ${ioP95} IOPS` } : null}
+        reference={ioP95 !== null ? { value: ioP95, label: `p95 ${Math.round(ioP95)} IOPS` } : null}
       />
       {hasLatency ? (
         <TimeChart

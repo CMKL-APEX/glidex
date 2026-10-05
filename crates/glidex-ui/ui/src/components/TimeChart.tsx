@@ -210,7 +210,17 @@ export function TimeChart({
                     strokeWidth={1}
                     strokeDasharray="4 3"
                   />
-                  <text x={PAD.left + geo.w + 6} y={geo.y(reference.value) + 4} fontSize={11} fill={TEXT_SECONDARY}>
+                  {/* Inside the plot, just above the line, so it never clips. */}
+                  <text
+                    x={PAD.left + geo.w - 4}
+                    y={geo.y(reference.value) - 5}
+                    textAnchor="end"
+                    fontSize={11}
+                    fill={TEXT_SECONDARY}
+                    paintOrder="stroke"
+                    stroke="#fff"
+                    strokeWidth={3}
+                  >
                     {reference.label}
                   </text>
                 </g>

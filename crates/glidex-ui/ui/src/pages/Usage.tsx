@@ -19,17 +19,23 @@ const GROUPS: Record<Tab, GroupKey[]> = {
   "disk-io": ["project", "vm", "disk"],
 };
 
-/** The meters shown on the Usage tab, in billing order. */
+/** The meters shown on the Usage tab, in billing order. Traffic is per
+ * VM NIC, or, grouped by network, what crossed each network's bridge
+ * (the two views differ, spec/metering.md §2). */
 const USAGE_METERS: [string, string][] = [
   ["cpu.used", "CPU used"],
   ["cpu.alloc", "vCPUs allocated"],
   ["mem.alloc", "Memory allocated"],
   ["disk.alloc", "Disk provisioned"],
   ["disk.stored", "Disk stored"],
+  ["image.stored", "Images stored"],
   ["net.bytes", "Network"],
   ["net.ext_bytes", "of which internet"],
-  ["bridge.bytes", "Network traffic"],
+];
+const NETWORK_METERS: [string, string][] = [
+  ["bridge.bytes", "Traffic through the network"],
   ["bridge.ext_bytes", "of which internet"],
+  ["bridge.internal_bytes", "internal"],
 ];
 
 const th = "text-left px-3 py-2 font-medium text-gray-600 whitespace-nowrap";
@@ -52,11 +58,11 @@ function n(v: number | null | undefined, digits = 1): string {
 function Flags({ flags }: { flags?: string[] }) {
   if (!flags?.length) return null;
   const shown = flags.filter((f) => f !== "provisional");
-  return shown.length ? <span className="text-xs text-amber-700 ml-1">({shown.join(", ")})</span> : null;
+  return shown.length ? <span className="text-xs text-gray-400 ml-1">({shown.join(", ")})</span> : null;
 }
 
 function UsageTable({ data, group }: { data: UsageResponse; group: GroupKey }) {
-  const cols = USAGE_METERS.filter(([m]) => data.rows.some((r) => r.meters[m]));
+  const cols = (group === "network" ? NETWORK_METERS : USAGE_METERS).filter(([m]) => data.rows.some((r) => r.meters[m]));
   return (
     <table className="w-full text-sm">
       <thead className="bg-gray-50">

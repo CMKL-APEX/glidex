@@ -128,10 +128,8 @@ pub fn consume_exit(round: &mut Round, vm: &Vm, e: &crate::models::ExitRecord, d
         round.flag(&s, at, Flag::Interpolated);
         round.mark_run(&s, &e.instance_id);
     }
-    if let Some(peak) = u.memory_peak_bytes {
-        let c = vm.config();
-        round.max(&s, "mem.peak", peak / MIB + if c.hugepages { c.mem_size_mib as u64 } else { 0 }, at);
-    }
+    // `memory.peak` includes page cache, so it is not used for
+    // `mem.peak` (working set, §5.1); the samples are.
     let disks_at = u.disks_at.unwrap_or(at);
     for b in &u.disks {
         let Some(Some(id)) = e.disk_ids.get(b.index) else { continue };
@@ -391,7 +389,7 @@ mod tests {
         let t = totals(&l);
         assert_eq!(t["cpu.used"], 1_500_000, "1.0 s sampled + 0.5 s tail, once");
         assert_eq!(t["cpu.alloc"], 2 * 40, "seen live: allocation is not charged again at exit");
-        assert_eq!(t["mem.peak"], 900);
+        assert_eq!(t["mem.peak"], 512, "from the working-set samples, not the cgroup's cache-inclusive peak");
     }
 
     /// An instance that started and exited while the meter was down is
