@@ -1733,6 +1733,9 @@ fn install_services(changed: &Changes, invoking: Option<&str>, user_home: &Path)
     if cp_unit_changed || ui_unit_changed || authd_socket_changed || authd_service_changed || vm_units_changed {
         sudo(&argv(&["systemctl", "daemon-reload"]))?;
     }
+    if vm_units_changed {
+        apply_vm_accounting();
+    }
     enable_unit("glidex-authd.socket")?;
     enable_unit("glidex-control-plane.service")?;
     enable_unit("glidex-ui.service")?;
@@ -1844,6 +1847,30 @@ fn install_vm_units(root: &Path) -> Result<bool> {
         println!("{} systemd-analyze verify: {}", "Warning:".yellow(), e);
     }
     Ok(changed)
+}
+
+/// Running VMs keep the unit settings they started with: give them the
+/// template's accounting now, so metering sees their I/O without a
+/// restart (`--runtime`: gone at reboot, when the template applies).
+fn apply_vm_accounting() {
+    let Ok(out) = run_capture("systemctl", &["list-units", "glidex-vm@*", "--state=active", "--no-legend", "--plain"]) else {
+        return;
+    };
+    for unit in running_vm_units(&out) {
+        let r = sudo(&argv(&["systemctl", "set-property", "--runtime", &unit, "IOAccounting=yes", "MemoryAccounting=yes"]));
+        if let Err(e) = r {
+            println!("{} accounting for {}: {}", "Warning:".yellow(), unit, e);
+        }
+    }
+}
+
+/// Unit names from `systemctl list-units --no-legend --plain`.
+fn running_vm_units(list: &str) -> Vec<String> {
+    list.lines()
+        .filter_map(|l| l.split_whitespace().next())
+        .filter(|u| u.starts_with("glidex-vm@") && u.ends_with(".service"))
+        .map(String::from)
+        .collect()
 }
 
 fn render_polkit_rule(template: &str, user: &str) -> String {
@@ -2122,6 +2149,22 @@ mod tests {
         // Root runs (no invoking user) touch no human's groups.
         let root = UserState { member: None, ..upgraded };
         assert!(!cmd_lines(&root, "/bin/false").iter().any(|l| l.starts_with("usermod") || l.starts_with("gpasswd")));
+    }
+
+    #[test]
+    fn running_vm_units_from_systemctl() {
+        let out = "glidex-vm@93c3868e-726e-436b-afcd-95b9c90f6c38.service loaded active running glidex VM 93c3868e\n\
+                   glidex-vms.slice loaded active active glidex VMs\n";
+        assert_eq!(running_vm_units(out), vec!["glidex-vm@93c3868e-726e-436b-afcd-95b9c90f6c38.service".to_string()]);
+        assert!(running_vm_units("").is_empty());
+    }
+
+    #[test]
+    fn vm_unit_template_has_accounting() {
+        let t = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../packaging/glidex-vm@.service.in")).unwrap();
+        assert!(t.lines().any(|l| l == "IOAccounting=yes"));
+        assert!(t.lines().any(|l| l == "MemoryAccounting=yes"));
+        assert!(!t.contains("CPUAccounting"), "deprecated on systemd 259");
     }
 
     fn rendered_cp_unit() -> String {

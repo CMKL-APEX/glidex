@@ -808,6 +808,77 @@ pub async fn audit(client: &ApiClient, args: &[&str]) {
     }
 }
 
+/// `GET /usage` path from `usage` arguments (spec/metering.md §12).
+fn usage_path(args: &[&str], project: Option<String>) -> String {
+    let mut path = "/usage".to_string();
+    if let Some(p) = flag_value(args, "--project").map(str::to_string).or(project) {
+        path = client::add_query(&path, "project", &p);
+    }
+    let granularity = flag_value(args, "--granularity").unwrap_or("month");
+    path = client::add_query(&path, "granularity", granularity);
+    for (flag, key) in [("--from", "from"), ("--to", "to"), ("--by", "group_by"), ("--meters", "meters"), ("--tz", "tz")] {
+        if let Some(v) = flag_value(args, flag) {
+            path = client::add_query(&path, key, v);
+        }
+    }
+    if args.contains(&"--csv") {
+        path = client::add_query(&path, "format", "csv");
+    }
+    path
+}
+
+/// `usage [--from D] [--to D] [--by project|vm|disk|nic|network] [--granularity hour|day|month] [--meters m,…] [--tz Z] [--csv]`
+pub async fn resource_usage(client: &ApiClient, args: &[&str]) {
+    let path = usage_path(args, client.project());
+    if args.contains(&"--csv") {
+        match client.request_bytes(Method::GET, &path, None).await {
+            Ok(r) => print!("{}", String::from_utf8_lossy(&r.body)),
+            Err(e) => err(e.message),
+        }
+        return;
+    }
+    let v: Value = match client.request_json(Method::GET, &path, None).await {
+        Ok(v) => v,
+        Err(e) => return err(e),
+    };
+    println!(
+        "{} {} → {} ({}), complete through {}",
+        "Usage".bold(),
+        s(&v["from"]),
+        s(&v["to"]),
+        s(&v["timezone"]),
+        s(&v["complete_through"])
+    );
+    let rows = v["rows"].as_array().cloned().unwrap_or_default();
+    if rows.is_empty() {
+        println!("  No usage recorded.");
+        return;
+    }
+    let keys = v["group_by"].as_array().cloned().unwrap_or_default();
+    for r in rows {
+        let who: Vec<String> = keys
+            .iter()
+            .filter_map(|k| {
+                let k = k.as_str()?;
+                let n = &r[k];
+                n.is_object().then(|| format!("{}={}", k, n["name"].as_str().unwrap_or("?")))
+            })
+            .collect();
+        let flags: Vec<&str> = r["flags"].as_array().map(|f| f.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+        println!(
+            "\n  {} {} {}",
+            s(&r["start"]).dimmed(),
+            who.join(" ").cyan(),
+            if flags.is_empty() { String::new() } else { format!("[{}]", flags.join(", ")).yellow().to_string() }
+        );
+        if let Some(meters) = r["meters"].as_object() {
+            for (m, x) in meters {
+                println!("    {:<26} {:>16} {}", m, format!("{}", x["value"]), s(&x["unit"]));
+            }
+        }
+    }
+}
+
 // ---- project networks and sharing ------------------------------------------
 
 pub async fn network(client: &ApiClient, args: &[&str]) {
@@ -906,6 +977,14 @@ pub async fn network(client: &ApiClient, args: &[&str]) {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn usage_query_from_flags() {
+        let p = super::usage_path(&["--by", "vm,nic", "--from", "2026-10-01T00:00:00Z", "--csv"], Some("pa".into()));
+        assert!(p.starts_with("/usage?project=pa&granularity=month&from=2026-10-01T00%3A00%3A00Z&group_by=vm%2Cnic"), "{p}");
+        assert!(p.ends_with("&format=csv"), "{p}");
+        assert_eq!(super::usage_path(&["--granularity", "day"], None), "/usage?granularity=day");
+    }
     use super::*;
 
     #[test]

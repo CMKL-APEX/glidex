@@ -105,6 +105,7 @@ impl VmManager {
             return self.set_network_status(net, NetworkPhase::Degraded, Tristate::False, "InUse", msg, Duration::from_secs(10));
         }
         if net.owns_bridge {
+            self.meter_final_sample().await;
             let netd = self.netd.clone();
             let (bridge, nat) = (net.bridge.clone(), net.mode == NetworkMode::Nat);
             let done = tokio::task::spawn_blocking(move || -> Result<(), NetError> {

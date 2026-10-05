@@ -28,6 +28,11 @@ TimeoutStopSec=330
 # Restarting is the VM controller's decision, never systemd's.
 Restart=no
 Slice=glidex-vms.slice
+# Per-VM CPU, memory and I/O for metering (spec/metering.md §5.1). Set
+# here, not on the slice: on the slice it only enables the controllers
+# in the slice's parent. CPU usage needs no setting on cgroup v2.
+IOAccounting=yes
+MemoryAccounting=yes
 UMask=0077
 
 # The hypervisor sandbox (spec/security.md §9). No NoNewPrivileges= nor

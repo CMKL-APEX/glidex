@@ -199,7 +199,11 @@ by later runs (flags override the saved values):
       /run/glidex-cp/vms/%i`), and `glidex-vms.slice`. Neither has an
       `[Install]` section and neither is enabled or started: only the
       control plane starts VM units, and relaunching VMs after a host
-      reboot is its job (D10).
+      reboot is its job (D10). When the template changes, running
+      `glidex-vm@*` units get `systemctl set-property --runtime <unit>
+      IOAccounting=yes MemoryAccounting=yes` after `daemon-reload`, so
+      metering sees their I/O without a restart
+      ([metering.md §5.1](metering.md#51-cpu-and-memory-the-vm-cgroup)).
     - `/etc/polkit-1/rules.d/50-glidex-vm.rules` (from
       `packaging/50-glidex-vm.rules.in`): the `glidex` user may `start`,
       `stop` and `kill` units named `glidex-vm@<uuid>.service`, and
@@ -348,7 +352,8 @@ removed. Order:
    database: release VM ports, delete uplinks (moving migrated IPs back
    onto their NICs and restoring NIC drivers after DPDK), delete NAT
    networks and bridges. Then stop netd's dnsmasq processes and drop the
-   `inet glidex` nftables table.
+   `inet glidex` and `inet glidex_meter` nftables tables (the only place the
+   metering table is deleted, metering.md D14).
    **Invariant:** if the teardown fails (e.g. netd still running and
    holding the database), it stops before deleting netd's state, which is
    the only record of how to undo those host changes.

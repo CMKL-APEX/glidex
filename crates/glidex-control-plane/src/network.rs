@@ -333,6 +333,8 @@ impl Netd {
             Op::InitDpdk(_) => Duration::from_secs(5 * 60),
             // Covers netd's gateway check after an IP migration.
             Op::EnsureUplink(_) => Duration::from_secs(90),
+            // Metering asks every round; never hold a round for long.
+            Op::PortStats | Op::NatCounters => Duration::from_secs(5),
             _ => Duration::from_secs(30),
         }
     }

@@ -56,6 +56,13 @@ pub enum Op {
     ListNat,
     ListVmPorts,
     ListUplinks,
+    /// Traffic counters of every port on glidex bridges (metering,
+    /// spec/metering.md §5.4). Read-only, but not a status op: traffic
+    /// volumes are tenant data.
+    PortStats,
+    /// External-traffic counters of NAT networks, per network and per
+    /// reserved MAC (spec/metering.md §5.5). Read-only; full socket only.
+    NatCounters,
     InstallOvs(InstallRequest),
     InitDpdk(glidex_ovs::install::DpdkSettings),
     EnsureUplink(EnsureUplinkArgs),
@@ -87,6 +94,8 @@ impl Op {
                 | Op::ListNat
                 | Op::ListVmPorts
                 | Op::ListUplinks
+                | Op::PortStats
+                | Op::NatCounters
         )
     }
 
@@ -98,6 +107,8 @@ impl Op {
             Op::ListNat => "list_nat",
             Op::ListVmPorts => "list_vm_ports",
             Op::ListUplinks => "list_uplinks",
+            Op::PortStats => "port_stats",
+            Op::NatCounters => "nat_counters",
             Op::EnsureUplink(_) => "ensure_uplink",
             Op::CommitUplink { .. } => "commit_uplink",
             Op::DeleteUplink { .. } => "delete_uplink",
@@ -321,6 +332,8 @@ mod tests {
     fn classification() {
         assert!(Op::Probe.is_status() && !Op::Probe.is_mutating());
         assert!(!Op::ListBridges.is_status() && !Op::ListBridges.is_mutating());
+        assert!(!Op::PortStats.is_status() && !Op::PortStats.is_mutating());
+        assert!(!Op::NatCounters.is_status() && !Op::NatCounters.is_mutating());
         assert!(Op::SyncVms { running: vec![] }.is_mutating());
     }
 

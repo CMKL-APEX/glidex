@@ -155,6 +155,47 @@ fn attach_reserves_address_and_detach_keeps_it() {
     assert!(nats[0].state.reservations.is_empty());
 }
 
+/// Metering counters (spec/metering.md D14): attaching adds the VM's
+/// counters; releasing deletes only that VM's, never the table, and the
+/// NAT table rebuilds never touch `inet glidex_meter`.
+#[test]
+fn nat_meter_counters_follow_reservations_incrementally() {
+    let dir = TempDir::new().unwrap();
+    let exec = exec();
+    let (netd, _sup) = netd(exec.clone(), &dir);
+    setup_nat(&netd);
+    let mac = port_spec().mac.replace(':', "");
+    let meter_calls = |exec: &RecordingExec| -> Vec<String> {
+        exec.calls().into_iter().filter(|c| c.starts_with("nft -f - <<< add table inet glidex_meter")).collect()
+    };
+    assert_eq!(meter_calls(&exec).len(), 1, "ensure_nat adds the network's counters");
+    netd.handle(Op::AttachVmPort(port_spec()), &peer()).unwrap();
+    let after_attach = meter_calls(&exec).pop().unwrap();
+    assert!(after_attach.contains(&format!("add counter inet glidex_meter m_{mac}_out")), "{after_attach}");
+    assert!(!after_attach.contains("delete"), "{after_attach}");
+
+    // The counters now exist; releasing the VM deletes only its own.
+    let listed = format!(
+        r#"{{"nftables":[{{"counter":{{"family":"inet","name":"br_gxbr_nat_in","table":"glidex_meter","handle":2,"packets":0,"bytes":0}}}},
+            {{"counter":{{"family":"inet","name":"br_gxbr_nat_out","table":"glidex_meter","handle":3,"packets":0,"bytes":0}}}},
+            {{"counter":{{"family":"inet","name":"m_{mac}_in","table":"glidex_meter","handle":4,"packets":0,"bytes":0}}}},
+            {{"counter":{{"family":"inet","name":"m_{mac}_out","table":"glidex_meter","handle":5,"packets":0,"bytes":0}}}}]}}"#
+    );
+    exec.on("nft -j list counters table inet glidex_meter", Output::ok(listed));
+    netd.handle(Op::ReleaseVm { vm_id: VM.into() }, &peer()).unwrap();
+    let after_release = meter_calls(&exec).pop().unwrap();
+    let deletes: Vec<&str> = after_release.lines().filter(|l| l.starts_with("delete")).collect();
+    assert_eq!(
+        deletes,
+        vec![format!("delete counter inet glidex_meter m_{mac}_in"), format!("delete counter inet glidex_meter m_{mac}_out")]
+    );
+    assert!(exec.calls().iter().all(|c| !c.contains("delete table inet glidex_meter")));
+    // nat_counters reports the network's counters, normalized.
+    let counters: Vec<glidex_ovs::nat_meter::NatCounter> =
+        serde_json::from_value(netd.handle(Op::NatCounters, &peer()).unwrap()).unwrap();
+    assert_eq!(counters.len(), 2, "{counters:?}");
+}
+
 /// A deleted VM's dnsmasq lease outlives its reservation; the next VM must
 /// not be reserved that address (dnsmasq wouldn't hand it out). Deleting
 /// the network drops the lease file.
@@ -368,7 +409,8 @@ fn status_socket_serves_only_status() {
     let mut client = Client::connect(&path).unwrap();
     let caps: HostCapabilities = client.call(Op::Probe, Duration::from_secs(5)).unwrap();
     assert!(caps.ovs_installed);
-    for op in [Op::ListBridges, Op::ListVmPorts, Op::SyncVms { running: vec![] }] {
+    // Traffic counters are tenant data (spec/metering.md §5.4).
+    for op in [Op::ListBridges, Op::ListVmPorts, Op::PortStats, Op::NatCounters, Op::SyncVms { running: vec![] }] {
         match client.call_value(op, Duration::from_secs(5)) {
             Err(ClientError::Remote(body)) => assert_eq!(body.code, "permission_denied"),
             other => panic!("expected permission_denied, got {other:?}"),

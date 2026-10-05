@@ -157,6 +157,7 @@ name (ids when `/projects` isn't readable).
 | `policy history <id>` | `GET /authz/policies/{id}/versions` |
 | `policy reload` | `POST /authz/reload` |
 | `audit [--project P] [--since <unix-ms>] [--limit N] [--user U]` | `GET /audit?…` (`--project` defaults to the session project) |
+| `usage [--project P] [--from D] [--to D] [--by k,…] [--granularity hour\|day\|month] [--meters m,…] [--tz Z] [--csv]` | `GET /usage?…`: this billing month by project unless told otherwise; prints each bucket's meters in presentation units (core-hours, GiB, Mbps…), or the raw CSV with `--csv` ([metering.md §12](metering.md#12-cli-and-ui)) |
 
 Roles are written as `owner` or `role.owner` (a name with a `.` is
 taken as is, e.g. `grant.host-paths`). Principals are `user:<id>`,

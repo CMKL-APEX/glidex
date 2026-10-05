@@ -617,6 +617,8 @@ Rules for the schema:
 | `policy.read` · `policy.write` | host | List, validate and simulate policies · create, update and delete site policies (step-up) |
 | `quota.exceed` | host | Go over a project quota (§6.3) |
 | `system.identity` · `system.projects` · `system.audit` | host | Users, identities, teams, auth settings · projects, quotas, links in any project · `GET /audit` |
+| `usage.read` | project | Usage of the project, its VMs and disks (`readProjectUsage`, `readVmUsage`, `readDiskUsage`; [metering.md §10](metering.md#10-authorization)) |
+| `system.usage` | host | Usage of every project, deleted ones included (`readUsage`) |
 
 ### 7.3 Policies shipped with glidex
 
@@ -625,11 +627,11 @@ Rules for the schema:
 
 | Role | Link resource | Includes |
 |---|---|---|
-| `viewer` | project | `vm.read`, `disk.read` |
+| `viewer` | project | `vm.read`, `disk.read`, `usage.read` |
 | `operator` | project | viewer + `vm.operate`, `vm.console` |
 | `editor` | project | operator + `vm.write`, `disk.write`, `credential.*`, `network.use` |
 | `owner` | project | editor + `project.members`, `network.manage`, `network.share` (project NAT networks, §6.2) |
-| `auditor` | host | viewer in every project + `host.read`, `policy.read`, `system.audit`. Read-only; no consoles, no guest SSH keys. |
+| `auditor` | host | viewer in every project + `host.read`, `policy.read`, `system.audit`, `system.usage`. Read-only; no consoles, no guest SSH keys. |
 | `image-admin` | host | `image.manage` |
 | `net-admin` | host | `host.read`, `host.network` (including critical ops), `host.devices` |
 | `system-admin` | host | every role above, plus `system.identity`, `system.projects`, `policy.write`, `host.paths`, `quota.exceed` |
@@ -1057,6 +1059,8 @@ connect` uses the API's console WebSocket instead of the raw socket.
   logged only for an allowlist of non-secret fields.
 - `GET /audit?project=&user=&since=` needs `system.audit`, or
   `project.members` for that project's entries.
+- Usage exports (`GET /usage?format=csv`) are audited although they are
+  reads (`details.export = "csv"`): a bulk export of tenant data.
 
 ## 11. Bootstrap and migration
 
@@ -1120,9 +1124,16 @@ connect` uses the API's console WebSocket instead of the raw socket.
   "authz": { "policy_files_dir": "/etc/glidex/policies", "policy_history": 50 },
   "quotas": { "default": { "networks": 2 } },
   "pci": { "allow": [] },
-  "audit": { "retention_days": 90 }
+  "audit": { "retention_days": 90 },
+  "metering": { "enabled": true, "sample_secs": 30, "billing_timezone": "UTC" }
 }
 ```
+
+`metering` (all keys in `packaging/control-plane.json.example`,
+[metering.md §11](metering.md#11-configuration)): `sample_secs` must
+divide 300, and `billing_timezone` is `UTC`, `±HH:00` or an IANA zone
+with one fixed whole-hour offset. An invalid value stops the control
+plane at start.
 
 New endpoints:
 

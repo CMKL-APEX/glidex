@@ -12,6 +12,7 @@ mod access;
 mod errors;
 mod net;
 mod storage;
+mod usage;
 mod vms;
 mod watch;
 
@@ -74,6 +75,8 @@ struct AuditInfo {
     target: Option<String>,
     details: serde_json::Map<String, serde_json::Value>,
     denied: bool,
+    /// Audit this request even though it is a read (bulk exports).
+    always: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -247,7 +250,12 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         .add("POST", "/authz/validate", "validatePolicy", post(access::validate_policy))
         .add("POST", "/authz/simulate", "simulatePolicy", post(access::simulate_policy))
         .add("POST", "/authz/reload", "reloadPolicies", post(access::reload_policies))
-        .add("GET", "/audit", AUTHENTICATED, get(access::read_audit));
+        .add("GET", "/audit", AUTHENTICATED, get(access::read_audit))
+        // ---- usage (spec/metering.md §9)
+        .add("GET", "/usage", "readUsage", get(usage::usage))
+        .add("GET", "/projects/{id}/usage", "readProjectUsage", get(usage::project_usage))
+        .add("GET", "/vms/{id}/usage", "readVmUsage", get(usage::vm_usage))
+        .add("GET", "/disks/{id}/usage", "readDiskUsage", get(usage::disk_usage));
     (r.router, r.table)
 }
 
@@ -402,7 +410,7 @@ async fn audit_layer(State(app): State<AppState>, mut req: Request, next: Next) 
     let resp = next.run(req).await;
     let info = slot.0.lock().unwrap();
     let status = resp.status();
-    let audited = !safe || info.denied;
+    let audited = !safe || info.denied || info.always;
     // Public routes (logins) are audited by their handlers.
     if audited && action != PUBLIC && !app.auth.is_disabled() {
         let result = if info.denied {
@@ -554,6 +562,11 @@ impl Caller {
 
     pub fn set_target(&self, target: impl Into<String>) {
         self.audit.0.lock().unwrap().target = Some(target.into());
+    }
+
+    /// Write an audit entry for this request even if it is a read.
+    pub fn audit_always(&self) {
+        self.audit.0.lock().unwrap().always = true;
     }
 
     pub fn detail(&self, key: &str, value: serde_json::Value) {

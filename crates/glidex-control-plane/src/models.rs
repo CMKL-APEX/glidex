@@ -247,6 +247,10 @@ pub struct VmStatus {
     pub last_reconciled_at: u64,
     #[serde(default)]
     pub phase: VmPhase,
+    /// When `phase` last changed (unix s), for metering transitions
+    /// exactly (spec/metering.md §5.6). Absent in records from before it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase_since: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instance: Option<InstanceRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
