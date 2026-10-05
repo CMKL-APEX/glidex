@@ -11,6 +11,7 @@ pub mod rates;
 pub mod retention;
 pub mod sampler;
 pub mod sources;
+pub mod storage;
 
 pub use ledger::{Delta, Flag, Ledger, LedgerSettings, MeteringError, Origin, Round, Subject, SubjectKind, UsageRecord};
 
@@ -98,6 +99,20 @@ impl Meter {
             map.insert(k, LiveStats { subject, values, sampled_at: now });
         }
         Ok(())
+    }
+
+    /// A storage pass (§5.3): `disk.stored` from measured file sizes and
+    /// `image.stored` (blocking: the database).
+    pub fn sample_storage(&self, disks: &[(Disk, u64)], images: &[crate::images::Image], now: u64) -> Result<(), MeteringError> {
+        let _one = self.round_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let mut round = self.ledger.begin_round(now)?;
+        storage::record(&mut round, disks, images, now)?;
+        // Images that are gone: their cursors go with them.
+        let live: std::collections::BTreeSet<String> = images.iter().map(|i| format!("image/{}", i.id)).collect();
+        for key in self.ledger.cursor_subjects(&[SubjectKind::Image])?.difference(&live) {
+            round.forget_subject(key);
+        }
+        self.ledger.commit(round)
     }
 
     /// Live rates of the subjects `keep` selects.
@@ -188,6 +203,35 @@ impl crate::state::VmManager {
             }
         });
         self.tasks.lock().unwrap().push(task);
+        // Stored sizes, every storage_secs: `qemu-img info` opens the files.
+        let me = self.arc();
+        let meter = self.meter.get().cloned().expect("set above");
+        let storage = tokio::spawn(async move {
+            let period = meter.cfg.storage_secs.max(meter.cfg.sample_secs) * 1000;
+            loop {
+                tokio::time::sleep(until_next(now_ms(), period)).await;
+                let disks: Vec<Disk> = me.images.list_disks().into_iter().filter(storage::measurable).collect();
+                let images = me.images.list_images();
+                let paths: Vec<_> = disks.iter().map(|d| me.images.disk_path(d)).collect();
+                let m = meter.clone();
+                let done = tokio::task::spawn_blocking(move || {
+                    let measured: Vec<(Disk, u64)> = disks
+                        .into_iter()
+                        .zip(paths)
+                        .filter_map(|(d, p)| {
+                            let info = crate::images::qemu_img::info(&p, Some(d.format)).ok()?;
+                            Some((d, info.actual_size))
+                        })
+                        .collect();
+                    m.sample_storage(&measured, &images, now_ms())
+                })
+                .await;
+                if let Ok(Err(e)) = done {
+                    tracing::warn!("metering storage pass failed: {}", e);
+                }
+            }
+        });
+        self.tasks.lock().unwrap().push(storage);
         Ok(())
     }
 
