@@ -15,6 +15,7 @@ use crate::config::MeteringConfig;
 use crate::images::Disk;
 use crate::models::Vm;
 use crate::network::Network;
+use glidex_ovs::nat_meter::NatCounter;
 use glidex_ovs::stats::BridgeStats;
 use redb::Database;
 use std::sync::Arc;
@@ -25,6 +26,8 @@ pub struct Meter {
     ledger: Ledger,
     cfg: MeteringConfig,
     host: sources::Host,
+    /// This boot's id: NAT counter handles restart after a reboot.
+    boot_id: String,
     /// One round at a time: a round and a final sample (M1.3) must not
     /// commit over each other's cursors (D8).
     round_lock: std::sync::Mutex<()>,
@@ -33,7 +36,8 @@ pub struct Meter {
 impl Meter {
     pub fn new(db: Arc<Database>, cfg: MeteringConfig) -> Result<Self, MeteringError> {
         let ledger = Ledger::new(db, LedgerSettings::from_secs(cfg.sample_secs, cfg.close_grace_secs))?;
-        Ok(Self { ledger, cfg, host: sources::Host::default(), round_lock: std::sync::Mutex::new(()) })
+        let boot_id = glidex_vm_shim::util::boot_id().unwrap_or_default();
+        Ok(Self { ledger, cfg, host: sources::Host::default(), boot_id, round_lock: std::sync::Mutex::new(()) })
     }
 
     pub fn ledger(&self) -> &Ledger {
@@ -61,6 +65,9 @@ impl Meter {
         if let Some(bridges) = &snap.bridges {
             net::sample_ports(&mut round, bridges, &snap.vms, &snap.networks, now)?;
         }
+        if let Some(nat) = &snap.nat {
+            net::sample_nat(&mut round, nat, &snap.vms, &snap.networks, &self.boot_id, now)?;
+        }
         sampler::forget_gone(&mut round, &with_cursors, &snap.live_subjects());
         self.ledger.commit(round)
     }
@@ -73,6 +80,8 @@ pub struct Snapshot {
     pub networks: Vec<Network>,
     /// Port counters from netd; `None` when it could not be asked.
     pub bridges: Option<Vec<BridgeStats>>,
+    /// NAT external-traffic counters from netd (§5.5).
+    pub nat: Option<Vec<NatCounter>>,
 }
 
 impl Snapshot {
@@ -152,7 +161,10 @@ impl crate::state::VmManager {
                     None
                 }
             };
-            m.sample(&Snapshot { vms, disks, networks, bridges }, now_ms())
+            // Only with port counters: NIC and network cursors are kept
+            // or forgotten together (see `sample`).
+            let nat = bridges.as_ref().and_then(|_| netd.call::<Vec<NatCounter>>(glidex_netd::proto::Op::NatCounters).ok());
+            m.sample(&Snapshot { vms, disks, networks, bridges, nat }, now_ms())
         })
         .await
         .map_err(|e| MeteringError::Storage(format!("metering round panicked: {e}")))?

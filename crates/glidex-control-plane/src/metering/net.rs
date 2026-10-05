@@ -4,8 +4,12 @@
 use super::ledger::{Delta, MeteringError, Origin, Round, Subject, SubjectKind};
 use crate::models::Vm;
 use crate::network::Network;
+use glidex_ovs::nat_meter::{Direction, NatCounter};
 use glidex_ovs::stats::{BridgeStats, PortRole, PortStats};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+
+/// A network's bridge ports, each with where its counters start.
+type Ingress<'a> = (Subject, Vec<(&'a PortStats, Origin)>);
 
 /// The VM NIC subject: `<vm id>.<nic>`.
 pub fn nic_subject(vm: &Vm, nic: u8, network: Option<&str>) -> Subject {
@@ -44,7 +48,7 @@ pub fn sample_ports(round: &mut Round, bridges: &[BridgeStats], vms: &[Vm], netw
     for b in bridges {
         let nets: Vec<&Network> = networks.iter().filter(|n| n.bridge == b.bridge).collect();
         // Per-network ingress: subject → [(port, origin)].
-        let mut ingress: BTreeMap<String, (Subject, Vec<(&PortStats, Origin)>)> = BTreeMap::new();
+        let mut ingress: BTreeMap<String, Ingress> = BTreeMap::new();
         for p in &b.ports {
             let vm = match (p.role, p.vm_id.as_deref()) {
                 (PortRole::Vm, Some(vm_id)) => vms.get(vm_id).copied(),
@@ -73,6 +77,51 @@ pub fn sample_ports(round: &mut Round, bridges: &[BridgeStats], vms: &[Vm], netw
         }
         for (_, (subject, ports)) in ingress {
             sample_bridge(round, &subject, &ports, now)?;
+        }
+    }
+    Ok(())
+}
+
+/// External traffic of NAT networks (§5.5): per VM NIC by reserved MAC,
+/// and per network. `boot_id` makes counter handles unique across host
+/// reboots (a recreated table can reuse handle numbers).
+pub fn sample_nat(round: &mut Round, counters: &[NatCounter], vms: &[Vm], networks: &[Network], boot_id: &str, now: u64) -> Result<(), MeteringError> {
+    // MAC → (VM, NIC index, network).
+    let mut by_mac: HashMap<String, (&Vm, u8, &str)> = HashMap::new();
+    for vm in vms {
+        for n in &vm.status.nics {
+            by_mac.insert(n.mac.to_ascii_lowercase(), (vm, n.nic_index, n.network.as_str()));
+        }
+    }
+    for c in counters {
+        let reset = format!("{boot_id}/{}", c.handle);
+        let dir = match c.dir {
+            Direction::In => "rx",
+            Direction::Out => "tx",
+        };
+        match &c.mac {
+            Some(mac) => {
+                // A reservation whose VM isn't known (deleted): nobody to bill.
+                let Some((vm, nic, net)) = by_mac.get(&mac.to_ascii_lowercase()) else { continue };
+                let s = nic_subject(vm, *nic, Some(net));
+                let origin = vm.status.instance.as_ref().map_or(Origin::Unknown, |i| Origin::ZeroAt(i.launched_at * 1000));
+                let d = round.counter(&s, &format!("net.ext_{dir}_bytes"), &reset, c.bytes, now, origin)?;
+                round.counter(&s, &format!("net.ext_{dir}_packets"), &reset, c.packets, now, origin)?;
+                if let Some(kbps) = d.and_then(|d| d.rate(8)) {
+                    round.max(&s, &format!("net.ext_{dir}_kbps_peak"), kbps / 1000, now);
+                }
+            }
+            None => {
+                let s = match networks.iter().find(|n| n.bridge == c.bridge) {
+                    Some(n) => network_subject(n),
+                    None => bridge_subject(&c.bridge),
+                };
+                let d = round.counter(&s, &format!("bridge.ext_{dir}_bytes"), &reset, c.bytes, now, Origin::Unknown)?;
+                round.counter(&s, &format!("bridge.ext_{dir}_packets"), &reset, c.packets, now, Origin::Unknown)?;
+                if let Some(kbps) = d.and_then(|d| d.rate(8)) {
+                    round.max(&s, &format!("bridge.ext_{dir}_kbps_peak"), kbps / 1000, now);
+                }
+            }
         }
     }
     Ok(())
@@ -252,6 +301,34 @@ mod tests {
         assert_eq!(t["blue"]["bridge.bytes"], 200);
         assert_eq!(t["bridge:gxbr-up"]["bridge.bytes"], 500, "the shared uplink is host-level");
         assert_eq!(by_subject(&l)["bridge:gxbr-up"].len(), 3, "bytes, packets, peak");
+    }
+
+    #[test]
+    fn nat_external_counters_per_nic_and_network() {
+        let (_d, l) = setup();
+        let mut a = vm("a", &["nat"]);
+        a.status.nics[0].mac = "02:FF:EF:A5:E8:72".into();
+        let vms = [a];
+        let nets = [net("nat", "gxbr-nat", None)];
+        let snap = |vm_in: u64, br_in: u64, handle: u64| {
+            vec![
+                NatCounter { bridge: "gxbr-nat".into(), mac: Some("02:ff:ef:a5:e8:72".into()), dir: Direction::In, bytes: vm_in, packets: vm_in / 1000, handle },
+                NatCounter { bridge: "gxbr-nat".into(), mac: None, dir: Direction::In, bytes: br_in, packets: br_in / 1000, handle: handle + 10 },
+                // A reservation of a deleted VM: skipped.
+                NatCounter { bridge: "gxbr-nat".into(), mac: Some("02:00:00:00:00:99".into()), dir: Direction::Out, bytes: 5, packets: 1, handle: 7 },
+            ]
+        };
+        let mut r = l.begin_round(T0 + 90_000).unwrap();
+        sample_nat(&mut r, &snap(0, 0, 4), &vms, &nets, "boot1", T0 + 30_000).unwrap();
+        sample_nat(&mut r, &snap(3_000_000, 3_500_000, 4), &vms, &nets, "boot1", T0 + 60_000).unwrap();
+        // Host rebooted: same handle numbers, new boot id → counts from 0.
+        sample_nat(&mut r, &snap(1_000, 1_000, 4), &vms, &nets, "boot2", T0 + 90_000).unwrap();
+        l.commit(r).unwrap();
+        let t = by_subject(&l);
+        assert_eq!(t["a.0"]["net.ext_rx_bytes"], 3_001_000);
+        assert_eq!(t["a.0"]["net.ext_rx_kbps_peak"], 800);
+        assert_eq!(t["nat"]["bridge.ext_rx_bytes"], 3_501_000);
+        assert!(!t["a.0"].contains_key("net.ext_tx_bytes"));
     }
 
     #[test]

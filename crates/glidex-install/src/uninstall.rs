@@ -148,7 +148,8 @@ pub enum Step {
     NetworkTeardown(PathBuf),
     /// Stop dnsmasq processes started by glidex-netd.
     StopGlidexDnsmasq,
-    /// Drop netd's `inet glidex` nftables table if it's still there.
+    /// Drop netd's `inet glidex` and `inet glidex_meter` nftables tables
+    /// if they are still there.
     DropNftTable,
     /// Remove a file or a directory tree.
     Remove(PathBuf),
@@ -166,7 +167,11 @@ impl Step {
                 db.display()
             ),
             Step::StopGlidexDnsmasq => "stop dnsmasq processes started by glidex-netd".into(),
-            Step::DropNftTable => format!("drop nftables table inet {} if present", glidex_ovs::nat::NFT_TABLE),
+            Step::DropNftTable => format!(
+                "drop nftables tables inet {} and inet {} if present",
+                glidex_ovs::nat::NFT_TABLE,
+                glidex_ovs::nat_meter::METER_TABLE
+            ),
             Step::Remove(p) => format!("remove: {}", p.display()),
             Step::Write(p, _) => format!("rewrite: {}", p.display()),
             Step::Note(n) => format!("note: {}", n),
@@ -558,7 +563,10 @@ fn execute(step: &Step) -> Result<()> {
                 .spawn()
                 .context("nft")?;
             use std::io::Write as _;
-            child.stdin.take().expect("piped stdin").write_all(glidex_ovs::nat::nft_script(&[]).as_bytes())?;
+            // The metering table goes too: the only place it is deleted
+            // (spec/metering.md D14).
+            let script = glidex_ovs::nat::nft_script(&[]) + &glidex_ovs::nat_meter::drop_script();
+            child.stdin.take().expect("piped stdin").write_all(script.as_bytes())?;
             let status = child.wait()?;
             if !status.success() {
                 bail!("nft -f - exited with {}", status);
@@ -766,7 +774,7 @@ mod tests {
         assert!(pos("userdel glidex-ui") < pos("groupdel glidex-ui"));
         assert!(pos("tear down glidex networking") < pos("remove: /var/lib/glidex"));
         // The nft fallback runs after the teardown, as an idempotent script.
-        assert!(pos("tear down glidex networking") < pos("drop nftables table inet glidex if present"));
+        assert!(pos("tear down glidex networking") < pos("drop nftables tables inet glidex and inet glidex_meter if present"));
         assert!(!l.iter().any(|s| s.contains("nft delete table")), "{l:#?}");
         for needle in [
             "setcap -r /usr/local/bin/cloud-hypervisor",

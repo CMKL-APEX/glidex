@@ -152,8 +152,8 @@ mod tests {
         let (_d, h) = host();
         let hz = clock_ticks();
         // utime 300, stime 100 ticks; starttime 5555; comm with spaces and ')'.
-        let stat = format!("99 (qemu sys) x) S 1 99 99 0 -1 4194560 0 0 0 0 300 100 0 0 20 0 3 0 5555 0 0");
-        write(&h.proc_root.join("99/stat"), &stat);
+        let stat = "99 (qemu sys) x) S 1 99 99 0 -1 4194560 0 0 0 0 300 100 0 0 20 0 3 0 5555 0 0";
+        write(&h.proc_root.join("99/stat"), stat);
         write(&h.proc_root.join("99/status"), "Name:\tqemu\nVmRSS:\t  204800 kB\n");
         let u = h.proc_usage(99, Some(5555)).unwrap();
         assert_eq!(u, VmUsage { cpu_usec: 400 * 1_000_000 / hz, memory_bytes: 200 << 20, from_proc: true });

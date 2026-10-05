@@ -105,6 +105,7 @@ impl Netd {
             Op::ListVmPorts => to_value(self.vm_ports()?),
             Op::ListUplinks => to_value(self.list_uplinks()?),
             Op::PortStats => to_value(glidex_ovs::stats::bridge_stats(self.ex())?),
+            Op::NatCounters => to_value(glidex_ovs::nat_meter::nat_counters(self.ex(), &self.nats()?)?),
             Op::EnsureUplink(args) => to_value(self.ensure_uplink(args.spec, args.confirm)?),
             Op::CommitUplink { bridge, name, token } => to_value(self.commit_uplink(&bridge, &name, &token)?),
             Op::DeleteUplink { bridge, name } => self.delete_uplink(&bridge, &name).map(|_| Value::Null),
@@ -428,10 +429,19 @@ impl Netd {
             self.store.put(META, "ip_forward_set_by_glidex", &true)?;
         }
         nat::apply_nft(ex, all)?;
+        self.apply_meter(all);
         nat::apply_iptables(ex, all)?;
         nat::write_dnsmasq_files(ex, state)?;
         self.stop_stale_dnsmasq(state);
         self.supervisor.start(&state.bridge, state.dnsmasq_args())
+    }
+
+    /// Bring the metering counters in line with the NAT state (D14 in
+    /// spec/metering.md). Metering never fails a networking operation.
+    fn apply_meter(&self, all: &[NatState]) {
+        if let Err(e) = glidex_ovs::nat_meter::apply_meter(self.ex(), all) {
+            tracing::warn!("NAT metering counters not updated: {}", e);
+        }
     }
 
     /// A dnsmasq left over from a previous netd (e.g. killed without its
@@ -499,6 +509,7 @@ impl Netd {
         self.supervisor.stop(bridge);
         let rest: Vec<NatState> = self.nats()?.into_iter().filter(|n| n.bridge != bridge).collect();
         nat::apply_nft(self.ex(), &rest)?;
+        self.apply_meter(&rest);
         nat::apply_iptables(self.ex(), &rest)?;
         nat::remove_address(self.ex(), &state)?;
         nat::remove_dnsmasq_files(self.ex(), &state)?;
@@ -549,6 +560,7 @@ impl Netd {
                 nat::write_dnsmasq_files(self.ex(), &state)?;
                 self.store.put(NAT, &state.bridge, &state)?;
                 self.supervisor.reload(&state.bridge);
+                self.apply_meter(&self.nats()?);
                 Some(ip)
             }
             None => None,
@@ -624,6 +636,7 @@ impl Netd {
                 self.supervisor.reload(&state.bridge);
             }
         }
+        self.apply_meter(&self.nats()?);
         Ok(())
     }
 

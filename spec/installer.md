@@ -352,7 +352,8 @@ removed. Order:
    database: release VM ports, delete uplinks (moving migrated IPs back
    onto their NICs and restoring NIC drivers after DPDK), delete NAT
    networks and bridges. Then stop netd's dnsmasq processes and drop the
-   `inet glidex` nftables table.
+   `inet glidex` and `inet glidex_meter` nftables tables (the only place the
+   metering table is deleted, metering.md D14).
    **Invariant:** if the teardown fails (e.g. netd still running and
    holding the database), it stops before deleting netd's state, which is
    the only record of how to undo those host changes.

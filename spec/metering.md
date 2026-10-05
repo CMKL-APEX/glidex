@@ -485,17 +485,17 @@ netd owns a second nftables table, separate from the NAT table
 
 ```nft
 table inet glidex_meter {
-  counter vm_<vm8>_<nic>_out { }     # guest → beyond the gateway   (ext_tx)
-  counter vm_<vm8>_<nic>_in  { }     # beyond the gateway → guest   (ext_rx)
-  counter br_<bridge>_out    { }     # whole network, out           (bridge.ext_tx)
-  counter br_<bridge>_in     { }     # whole network, in            (bridge.ext_rx)
+  counter m_<mac hex>_out { }        # guest → beyond the gateway   (ext_tx)
+  counter m_<mac hex>_in  { }        # beyond the gateway → guest   (ext_rx)
+  counter br_<bridge>_out      { }     # whole network, out           (bridge.ext_tx)
+  counter br_<bridge>_in       { }     # whole network, in            (bridge.ext_rx)
 
   chain forward {
     type filter hook forward priority filter + 10; policy accept;
     iifname "<br>" counter name "br_<bridge>_out"
     oifname "<br>" counter name "br_<bridge>_in"
-    iifname "<br>" ether saddr <vm mac> ip saddr <reserved ip> counter name "vm_<vm8>_<nic>_out"
-    oifname "<br>" ip daddr <reserved ip> counter name "vm_<vm8>_<nic>_in"
+    iifname "<br>" ether saddr <vm mac> ip saddr <reserved ip> counter name "m_<mac hex>_out"
+    oifname "<br>" ip daddr <reserved ip> counter name "m_<mac hex>_in"
   }
 }
 ```
@@ -515,6 +515,13 @@ table inet glidex_meter {
   - A guest that uses an address it was not given still shows up in
     `br_*` but not in any `vm_*`. The difference is reported per
     network as `bridge.ext_unattributed_bytes` (derived).
+- **Naming.** Per-NIC counters are named by the reserved **MAC**
+  (`m_<12 hex>_<in|out>`), because netd's reservations are keyed by
+  MAC and the VM id can't be recovered from it. The control plane maps
+  MAC → (VM, NIC) through `status.nics[].mac`. Bridge names are
+  `[a-z0-9-]`, so `br_<bridge with - → _>` can't collide. The reset
+  key is the counter's object handle plus the host's boot id, because
+  a table re-created after a reboot can reuse handle numbers.
 - **Spoofing.** A guest that forges a neighbour's MAC and IP makes the
   neighbour pay. It also breaks the neighbour's connectivity (ARP and
   MAC learning conflicts), so this is noticeable. Port security, i.e.
