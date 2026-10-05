@@ -1,9 +1,9 @@
 # Metering: resource usage records
 
 > Status: **M0 and M1 implemented** (2026-10-05, branch
-> `metering-m1`). Unit, integration and security tests pass. The KVM
-> host acceptance runs in §15.4 (marked *host*) are still to do on a
-> deployed build. M2 and M3 are design only.
+> `metering-m1`). Unit, integration and security tests pass, and so
+> do the KVM host acceptance runs on a deployed build (§15.4,
+> *As built*, 2026-10-05). M2 and M3 are design only.
 >
 > Built differently from the first draft, with the reasons in the
 > sections named: the cgroup is found from the shim's
@@ -531,6 +531,13 @@ table inet glidex_meter {
   `[a-z0-9-]`, so `br_<bridge with - → _>` can't collide. The reset
   key is the counter's object handle plus the host's boot id, because
   a table re-created after a reboot can reuse handle numbers.
+- **Unattributed traffic on the VM's own port.** Traffic from an
+  address the VM was not given still crosses the VM's switch port. So
+  it is in that NIC's `net.rx_bytes`/`net.tx_bytes` but not in its
+  `net.ext_*`, and appears as *internal* for that VM. It is counted as
+  external only at network level (`bridge.ext_*`, unattributed).
+  Measured end to end: 10 MiB fetched from an unreserved source added
+  10.23 MiB to the network's external traffic and none to the VM's.
 - **Spoofing.** A guest that forges a neighbour's MAC and IP makes the
   neighbour pay. It also breaks the neighbour's connectivity (ARP and
   MAC learning conflicts), so this is noticeable. Port security, i.e.
@@ -1454,6 +1461,30 @@ go into §5 in the same style as [networking.md](networking.md) §0.
   `readUsage` on `Host` sees deleted projects.
 - A CSV round trip: summing raw bytes equals the API total.
 - A billing month in `Asia/Bangkok` has exactly the expected hours.
+
+**As built: host acceptance, 2026-10-05.** Run on this host
+(two Debian 13 guests, 1 vCPU each: `v1` on Cloud Hypervisor, `q2` on
+QEMU; NAT network `default`), deployed with `glidex-install`.
+
+| Check | Result |
+|---|---|
+| 300 s of CPU load in both guests | `cpu.used` vs cgroup `usage_usec` over the same window: CH +0.03%, QEMU +0.13% (about 1.02 cores) |
+| Control-plane restart during 180 s of load | +0.21% vs the cgroup: nothing lost or doubled |
+| 100 MB NAT download (`curl`) | `net.rx_bytes` +102.35 MiB (headers included); `net.ext_rx_bytes` 99.99% of it; `bridge.ext_rx_bytes` equal |
+| 200 MiB VM to VM (`iperf`) | sender tx +200.27, receiver rx +200.26, `bridge.bytes` +200.45 (once), all `ext_*` +0.00 |
+| Pause for 90 s | `vm.paused` +89 s; `cpu.alloc` stops; `mem.alloc` continues |
+| Second NAT network added and removed during a download | counters 6 → 8 → 6; the VM's counter never went backwards in 113 polls (D14) |
+| 300 DNS lookups through the gateway | no change to `ext_*` |
+| 10 MiB from an unreserved source address | +10.23 MiB unattributed at network level, none on the VM (§5.5) |
+| Pre-metering usage | not billed. Traffic after the start was billed: about 76 MB of package installs in each guest, 3 min after metering started. |
+
+It found one bug, now fixed: level × ms was truncated to whole units
+per round, so level-1 gauges (`vm.running`, 1-vCPU `cpu.alloc`) lost
+up to a second per round (11 s in 40 rounds). Cursors now carry the
+remainder; over 5 minutes afterwards, `vm.running` = 300 s and
+`mem.alloc` ÷ 512 = 299.998 s. Not run on this host, because it has
+no such setup: bridged and vhost-user ports, and detaching a NIC
+mid-transfer (covered by unit tests).
 
 **M1 done when:** a site can bill CPU, memory, provisioned disk and
 network GiB (total, plus external and internal on NAT) per VM, network
