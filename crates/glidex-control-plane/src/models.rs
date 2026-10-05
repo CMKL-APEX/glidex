@@ -344,6 +344,16 @@ pub struct ExitRecord {
     pub signal: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+    /// The shim's final counters (spec/metering.md D12), consumed once by
+    /// the meter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<glidex_vm_shim::state::ExitUsage>,
+    /// The managed disk at each launched disk index, for `usage.disks`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disk_ids: Vec<Option<String>>,
+    /// When the instance was launched (unix s); 0 in older records.
+    #[serde(default)]
+    pub launched_at: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

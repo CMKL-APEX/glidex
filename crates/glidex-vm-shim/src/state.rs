@@ -68,6 +68,28 @@ pub struct ExitInfo {
     /// For `LaunchFailed`: what the hypervisor printed.
     #[serde(default)]
     pub message: Option<String>,
+    /// Final counters for metering (spec/metering.md D12).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<ExitUsage>,
+}
+
+/// What the unit's cgroup and the hypervisor had counted when the
+/// hypervisor exited: the tail since the meter's last sample, which would
+/// otherwise be lost with the cgroup and the hypervisor's sockets.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExitUsage {
+    /// The unit cgroup's `cpu.stat usage_usec`, read after reaping.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_usage_usec: Option<u64>,
+    /// The unit cgroup's `memory.peak`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_peak_bytes: Option<u64>,
+    /// Block counters from the last successful poll (at `disks_at`, unix
+    /// ms), by launched disk index.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disks: Vec<glidex_hv_client::stats::BlockStats>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disks_at: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

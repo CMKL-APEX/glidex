@@ -47,10 +47,14 @@ fn sample_vm(round: &mut Round, vm: &Vm, disks: &[Disk], host: &Host, now: u64) 
         for m in VM_GAUGES {
             round.gauge_end_at(&s, m, end)?;
         }
+        if let Some(e) = &st.last_exit {
+            consume_exit(round, vm, e, disks)?;
+        }
         return Ok(());
     };
     let run = inst.instance_id.as_str();
     let launched = inst.launched_at * 1000;
+    round.mark_run(&s, run);
     // The exit time of the run before this one, if it is the one recorded.
     let prev_end = st.last_exit.as_ref().map(|e| e.at * 1000);
     let c = vm.config();
@@ -91,6 +95,56 @@ fn sample_vm(round: &mut Round, vm: &Vm, disks: &[Disk], host: &Host, now: u64) 
     round.max(&s, "mem.peak", used_mib, now);
     if u.from_proc {
         round.flag(&s, now, Flag::SourceProc);
+    }
+    Ok(())
+}
+
+/// The tail since the last sample, from the shim's exit snapshot (D12,
+/// §6.4): CPU, the memory peak and the disks' counters, each consumed
+/// once (`counter_final` adds nothing the second time).
+pub fn consume_exit(round: &mut Round, vm: &Vm, e: &crate::models::ExitRecord, disks: &[Disk]) -> Result<(), MeteringError> {
+    let Some(u) = &e.usage else { return Ok(()) };
+    let s = vm_subject(vm);
+    let at = e.at * 1000;
+    let launched = e.launched_at * 1000;
+    let seen = round.marked_run(&s)?.as_deref() == Some(e.instance_id.as_str());
+    if let Some(cpu) = u.cpu_usage_usec {
+        round.counter_exit(&s, "cpu.used", &e.instance_id, cpu, at, launched)?;
+    }
+    if !seen && launched > 0 {
+        // Never sampled live: charge its allocation from launch to exit,
+        // with the current sizing (pauses are unknown), once.
+        let c = vm.config();
+        for (m, level) in [("vm.running", 1), ("cpu.alloc", c.vcpu_count as u64), ("mem.alloc", c.mem_size_mib as u64)] {
+            round.gauge_run(&s, m, &e.instance_id, launched, level, launched, at, None)?;
+            round.gauge_end_at(&s, m, at)?;
+        }
+        round.flag(&s, at, Flag::Interpolated);
+        round.mark_run(&s, &e.instance_id);
+    }
+    if let Some(peak) = u.memory_peak_bytes {
+        let c = vm.config();
+        round.max(&s, "mem.peak", peak / MIB + if c.hugepages { c.mem_size_mib as u64 } else { 0 }, at);
+    }
+    let disks_at = u.disks_at.unwrap_or(at);
+    for b in &u.disks {
+        let Some(Some(id)) = e.disk_ids.get(b.index) else { continue };
+        let mut ds = match disks.iter().find(|d| &d.id == id) {
+            Some(d) => disk_subject(d),
+            None => Subject::new(SubjectKind::Disk, id.clone(), id.clone(), Some(vm.project.clone())),
+        };
+        ds.vm_id = Some(vm.id.clone());
+        let mut counters = vec![
+            ("disk.read_ops", b.read_ops),
+            ("disk.write_ops", b.write_ops),
+            ("disk.read_bytes", b.read_bytes),
+            ("disk.write_bytes", b.write_bytes),
+        ];
+        counters.extend(b.read_time_ns.map(|t| ("disk.read_time_ns", t)));
+        counters.extend(b.write_time_ns.map(|t| ("disk.write_time_ns", t)));
+        for (m, v) in counters {
+            round.counter_exit(&ds, m, &e.instance_id, v, disks_at, launched)?;
+        }
     }
     Ok(())
 }
@@ -294,6 +348,54 @@ mod tests {
         sample_vms(&mut r, std::slice::from_ref(&v), &[], &host, T0 + 120_000).unwrap();
         l.commit(r).unwrap();
         assert_eq!(totals(&l)["cpu.alloc"], 2 * 45);
+    }
+
+    /// D12: the shim's snapshot covers the tail between the last sample
+    /// and the exit, once.
+    #[test]
+    fn exit_snapshot_covers_the_tail_once() {
+        let (_dir, l, host) = setup();
+        let launched = T0 / 1000;
+        let mut v = vm("running", instance("i1", launched), serde_json::json!({}));
+        cgroup(&host, 1_000_000, 512 * MIB);
+        let mut r = l.begin_round(T0 + 30_000).unwrap();
+        sample_vms(&mut r, std::slice::from_ref(&v), &[], &host, T0 + 30_000).unwrap();
+        // Exits at +40 s having used 1.5 s of CPU in all; the cgroup is gone.
+        v.status.phase = VmPhase::Stopped;
+        v.status.instance = None;
+        v.status.last_exit = serde_json::from_value(serde_json::json!({
+            "at": launched + 40, "instance_id": "i1", "cause": "clean_exit",
+            "usage": { "cpu_usage_usec": 1_500_000, "memory_peak_bytes": 900u64 << 20 },
+        }))
+        .unwrap();
+        sample_vms(&mut r, std::slice::from_ref(&v), &[], &host, T0 + 60_000).unwrap();
+        sample_vms(&mut r, std::slice::from_ref(&v), &[], &host, T0 + 90_000).unwrap();
+        l.commit(r).unwrap();
+        let t = totals(&l);
+        assert_eq!(t["cpu.used"], 1_500_000, "1.0 s sampled + 0.5 s tail, once");
+        assert_eq!(t["cpu.alloc"], 2 * 40, "seen live: allocation is not charged again at exit");
+        assert_eq!(t["mem.peak"], 900);
+    }
+
+    /// An instance that started and exited while the meter was down is
+    /// charged from its snapshot: CPU in full, allocation launch → exit.
+    #[test]
+    fn unseen_instance_is_charged_from_its_snapshot() {
+        let (_dir, l, host) = setup();
+        let launched = T0 / 1000;
+        let mut v = vm("stopped", serde_json::Value::Null, serde_json::json!({}));
+        v.status.last_exit = serde_json::from_value(serde_json::json!({
+            "at": launched + 100, "instance_id": "i9", "cause": "clean_exit", "launched_at": launched,
+            "usage": { "cpu_usage_usec": 20_000_000 },
+        }))
+        .unwrap();
+        let mut r = l.begin_round(T0 + 200_000).unwrap();
+        sample_vms(&mut r, std::slice::from_ref(&v), &[], &host, T0 + 200_000).unwrap();
+        sample_vms(&mut r, std::slice::from_ref(&v), &[], &host, T0 + 230_000).unwrap();
+        l.commit(r).unwrap();
+        let t = totals(&l);
+        assert_eq!(t["cpu.used"], 20_000_000);
+        assert_eq!((t["cpu.alloc"], t["mem.alloc"], t["vm.running"]), (2 * 100, 1024 * 100, 100));
     }
 
     #[test]

@@ -33,6 +33,8 @@ pub struct Settings {
     pub log_max_bytes: u64,
     /// How long a hypervisor gets to answer on its socket (§8.1).
     pub ready_timeout_secs: u64,
+    /// The shim's block-counter poll for the exit snapshot (metering D12).
+    pub meter_poll_secs: u64,
 }
 
 impl Default for Settings {
@@ -51,6 +53,7 @@ impl Settings {
             host_shutdown_grace_secs: cfg.reconcile.host_shutdown_grace_secs,
             log_max_bytes: cfg.console.log_max_bytes,
             ready_timeout_secs: 30,
+            meter_poll_secs: if cfg.metering.enabled { cfg.metering.sample_secs } else { 0 },
         }
     }
 }

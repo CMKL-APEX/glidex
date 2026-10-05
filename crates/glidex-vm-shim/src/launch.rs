@@ -46,6 +46,10 @@ pub struct LaunchFile {
     /// `RestartRequired` comparison (§7.3). The shim ignores it.
     #[serde(default)]
     pub spec: serde_json::Value,
+    /// Poll the hypervisor's block counters this often for the exit
+    /// snapshot (spec/metering.md D12); 0 = never.
+    #[serde(default)]
+    pub meter_poll_secs: u64,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -184,6 +188,7 @@ mod tests {
             ready_timeout_secs: 5,
             host_shutdown_grace_secs: 0,
             spec: serde_json::Value::Null,
+            meter_poll_secs: 0,
         }
     }
 

@@ -377,19 +377,48 @@ impl Round {
 
     /// The last value of a counter run that has ended (an exit snapshot,
     /// D12): counts the tail since the cursor, under the old reset key.
-    pub fn counter_final(&mut self, subject: &Subject, meter: &str, reset_key: &str, value: u64, at: u64) -> Result<(), MeteringError> {
+    ///
+    /// `run` matches the cursor's reset key exactly or as its prefix
+    /// (`<run>/…`), so an exit record that knows only the instance finds
+    /// a key like `<instance>/<shim start time>`. Calling it again adds
+    /// nothing: it is consumed once.
+    pub fn counter_final(&mut self, subject: &Subject, meter: &str, run: &str, value: u64, at: u64) -> Result<(), MeteringError> {
         let key = format!("{}/{}", subject.key(), meter);
         match self.cursor(&key)? {
-            Some(c) if c.reset_key == reset_key && value >= c.value => {
-                let from = c.at.min(at);
-                let flag = (at - from > self.settings.gap_ms).then_some(Flag::Interpolated);
-                self.spread(subject, meter, value - c.value, from, at, flag);
-                self.cursors.insert(key, Some(Cursor { reset_key: reset_key.to_string(), value, at: at.max(c.at), rem: 0 }));
+            Some(c) if (c.reset_key == run || c.reset_key.starts_with(&format!("{run}/"))) && value >= c.value => {
+                if value > c.value {
+                    let from = c.at.min(at);
+                    let flag = (at - from > self.settings.gap_ms).then_some(Flag::Interpolated);
+                    self.spread(subject, meter, value - c.value, from, at, flag);
+                }
+                self.cursors.insert(key, Some(Cursor { value, at: at.max(c.at), ..c }));
             }
             // Already consumed, superseded, or never seen: nothing to add.
             _ => {}
         }
         Ok(())
+    }
+
+    /// The final value of a counter run at its exit (D12). If the run was
+    /// seen, this is [`Self::counter_final`]. If it never was (it started
+    /// and ended while the meter was down), it counts in full from
+    /// `launched` (unix ms), or only as a baseline if that was before
+    /// metering started. Returns whether the run was unseen and counted.
+    pub fn counter_exit(&mut self, subject: &Subject, meter: &str, run: &str, value: u64, at: u64, launched: u64) -> Result<bool, MeteringError> {
+        let key = format!("{}/{}", subject.key(), meter);
+        if let Some(c) = self.cursor(&key)? {
+            if c.reset_key == run || c.reset_key.starts_with(&format!("{run}/")) {
+                self.counter_final(subject, meter, run, value, at)?;
+                return Ok(false);
+            }
+        }
+        let counted = launched > 0 && launched >= self.started_at && launched <= at;
+        if counted && value > 0 {
+            let flag = (at - launched > self.settings.gap_ms).then_some(Flag::Interpolated);
+            self.spread(subject, meter, value, launched, at, flag);
+        }
+        self.cursors.insert(key, Some(Cursor { reset_key: run.to_string(), value, at, rem: 0 }));
+        Ok(counted)
     }
 
     /// A gauge level (§2): the level held since the previous reading is
@@ -471,6 +500,17 @@ impl Round {
             _ => 0,
         };
         self.cursors.insert(key.to_string(), Some(Cursor { reset_key: run.to_string(), value: level, at, rem }));
+    }
+
+    /// Remember that `run` of the subject was seen (a cursor with no
+    /// meter of its own).
+    pub fn mark_run(&mut self, subject: &Subject, run: &str) {
+        self.cursors.insert(format!("{}/_run", subject.key()), Some(Cursor { reset_key: run.to_string(), value: 0, at: self.now, rem: 0 }));
+    }
+
+    /// The run last marked with [`Self::mark_run`].
+    pub fn marked_run(&mut self, subject: &Subject) -> Result<Option<String>, MeteringError> {
+        Ok(self.cursor(&format!("{}/_run", subject.key()))?.map(|c| c.reset_key))
     }
 
     /// The run a gauge's cursor belongs to, if any.

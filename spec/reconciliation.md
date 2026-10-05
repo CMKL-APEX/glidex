@@ -649,9 +649,26 @@ Written by the shim, atomic tmp + rename, on every phase change:
   "phase": "launching | running | exited",
   "launched_at": 1791000000,
   "stop": { "requested_at": 1791000500, "grace_secs": 30, "deadline": 1791000530 },
-  "exit": { "at": 1791000520, "cause": "requested", "code": 0, "signal": null, "message": null }
+  "exit": { "at": 1791000520, "cause": "requested", "code": 0, "signal": null, "message": null,
+            "usage": { "cpu_usage_usec": 51234567, "memory_peak_bytes": 471859200,
+                       "disks": [{ "index": 0, "read_ops": 12826, "write_ops": 11432, "read_bytes": 464455168, "write_bytes": 1087837696 }],
+                       "disks_at": 1791000510123 } }
 }
 ```
+
+`exit.usage` is the metering exit snapshot ([metering.md D12](metering.md#3-decisions)):
+- **CPU and memory:** the unit cgroup's `cpu.stat usage_usec` and
+  `memory.peak`, read after the hypervisor was reaped. Only under the
+  systemd runner, whose cgroup is the VM's own.
+- **Disks:** the block counters from the shim's last poll. While the
+  instance runs, a thread polls them every `launch.json`
+  `meter_poll_secs` (the control plane's `metering.sample_secs`; 0
+  turns polling off).
+
+The VM controller copies the snapshot into `status.last_exit`, together
+with the launched disk ids and `launched_at`. `last_exit.at` is now the
+time the hypervisor exited according to the shim, not the time the
+controller noticed.
 
 ### 8.5 `shim.sock` protocol
 

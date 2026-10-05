@@ -34,6 +34,7 @@ fn launch_file(dir: &Path, argv: Vec<String>) -> LaunchFile {
         ready_timeout_secs: 10,
         host_shutdown_grace_secs: 1,
         spec: serde_json::Value::Null,
+        meter_poll_secs: 0,
     }
 }
 
