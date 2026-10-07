@@ -201,6 +201,21 @@ pub(crate) fn vm_disks(config: &VmConfig) -> Vec<VmDisk> {
         .collect()
 }
 
+/// Whether the host has enough unreserved 2 MiB hugepages to back a guest
+/// of `mem_mib`, leaving 25% (at least 256 MiB) for what OVS-DPDK and
+/// other guests are about to touch. `false` when they can't be read.
+pub(crate) fn hugepages_available_for(mem_mib: u32) -> bool {
+    let read = |f: &str| {
+        std::fs::read_to_string(format!("/sys/kernel/mm/hugepages/hugepages-2048kB/{}", f))
+            .ok()
+            .and_then(|s| s.trim().parse::<u64>().ok())
+    };
+    let (Some(free), resv) = (read("free_hugepages"), read("resv_hugepages").unwrap_or(0)) else { return false };
+    let spare_mib = free.saturating_sub(resv) * 2;
+    let mem = mem_mib as u64;
+    mem % 2 == 0 && spare_mib >= mem + (mem / 4).max(256)
+}
+
 /// vhost-user: OVS maps guest RAM, so it must be shared.
 pub(crate) fn needs_shared_memory(config: &VmConfig) -> bool {
     config

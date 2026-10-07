@@ -66,6 +66,33 @@ Each changed the implementation; the sections below already reflect them.
    262144 mbufs (~600 MB at MTU 1500); size hugepages for OVS *plus*
    hugepage-backed guests. `init_dpdk` now applies changed settings to an
    already-initialized OVS (restart, with confirmation).
+   **Jumbo frames:** at MTU 9000 OVS allocates a second fixed 262144-mbuf
+   mempool (~2.5 GB) beside the MTU 1500 one, so the installer reserves
+   6144 hugepages (capped at a third of RAM), `dpdk-socket-mem` up to 4096,
+   and warns below 3072 pages. With the old 4 GiB pool a second guest's
+   vhost-user memory mapping failed (`SET_MEM_TABLE`, ENOMEM).
+11. **Throughput tuning (`glidex_ovs::tuning`).** vhost-user VM-to-VM
+    speed is decided by five things, all now automatic:
+    - *PMD placement:* with no explicit `--pmd-cpu-mask`, one PMD per
+      physical core (first hyperthread only) on every NUMA node that has
+      hugepages, `ceil(cores/4)` per node (max 4); the first core of node 0
+      is reserved for the OS and OVS's other threads (`dpdk-lcore-mask`);
+      `isolcpus`/`nohz_full` cores are preferred. `dpdk-socket-mem` is split
+      per node (`1024,1024`), so ports on node N get a local mempool.
+    - *Userspace TSO:* `other_config:userspace-tso-enable=true` (needs the
+      restart `init_dpdk` already does). Without it guests exchange
+      MTU-sized frames (`tx_tcp_seg_offload=false` in the interface status).
+    - *Queues:* a vhost-user NIC defaults to `min(vCPUs, 4)` queue pairs
+      (tap stays 1); a single queue pins the NIC to one PMD.
+    - *Ring size:* 1024 descriptors (CH `queue_size`, QEMU
+      `rx/tx_queue_size`) instead of 256; 256 shows up as
+      `ovs_tx_failure_drops`/`ovs_tx_retries`.
+    - *Guest pages:* guests with a vhost-user NIC get hugepage-backed
+      memory when the host has 2 MiB pages to spare (free − reserved ≥
+      guest RAM + max(25%, 256 MiB)), even if `hugepages` wasn't set.
+    Verify with `ovs-appctl dpif-netdev/pmd-rxq-show` (every queue on a PMD
+    of its port's NUMA node) and `ovs-vsctl get Interface <port> status`
+    (`n_rxq`, `vring_*_size`, `tx_tcp_seg_offload=true`).
 10. **vhost-user guests were verified with hugepage-backed memory**
     (`hugepages: true`). memfd-only shared memory was not re-tested after
     fixing (8), so hugepages are the supported setup.
@@ -847,9 +874,10 @@ calls `list_bridges` (and `list_nat` for NAT networks) and records a
 - A bridge the network owns (`owns_bridge`, NAT and isolated networks)
   that netd lost, as a record or on the host, is re-created with
   `ensure_bridge` (event `BridgeRestored`).
-- A lost NAT is **reported, not re-created**: its subnet lives only in
-  netd, and a new one would renumber every VM on it. A dnsmasq that is
-  not running is reported too (netd restarts it in its own reconcile).
+- A lost NAT is re-created with `ensure_nat` (new subnet; event
+  `NatRestored`) **only while no VM uses the network**. With VMs on it it
+  is reported, not re-created: its subnet lives only in netd, and a new
+  one would renumber them. A dnsmasq that is not running is reported (netd restarts it in its own reconcile).
 - A bridged network whose bridge is no longer a glidex bridge is
   reported; glidex never takes over a bridge on its own.
 

@@ -145,17 +145,20 @@ by later runs (flags override the saved values):
 
     **Host settings** (no prompts):
     - `net.ipv4.ip_forward=1` for NAT networks.
-    - *dpdk profile:* `vm.nr_hugepages` — 2048 × 2 MiB (4 GiB: 2 GiB of
-      DPDK socket memory + 2 GiB for hugepage-backed vhost-user guests),
-      capped at a quarter of RAM and never lowered below what's already
-      reserved. Hosts that can't reach 1024 pages skip DPDK setup. The
+    - *dpdk profile:* `vm.nr_hugepages` — 6144 × 2 MiB (12 GiB: 4 GiB for
+      OVS-DPDK's mempools, which at MTU 9000 include a ~2.5 GiB jumbo pool
+      next to the ~0.8 GiB MTU 1500 one, + 8 GiB for hugepage-backed
+      vhost-user guests), capped at a third of RAM and never lowered below
+      what's already reserved. Hosts that can't reach 1024 pages skip DPDK
+      setup; below 3072 pages the installer warns that jumbo-frame
+      networks may not fit. The
       installer reads back what the kernel actually reserved (fragmented
       memory may give fewer; a reboot applies the persisted value).
     - *dpdk profile:* `vfio-pci` loaded now and at boot
       (`/etc/modules-load.d/glidex.conf`), for DPDK NIC uplinks; a missing
       IOMMU (`intel_iommu=on` / `amd_iommu=on`) is reported, not fixed.
     - *dpdk profile:* OVS-DPDK init (`dpdk-init`, `dpdk-socket-mem` =
-      min(pool/2, 2048) MiB, `--pmd-cpu-mask`); a no-op when already
+      min(pool/2, 4096) MiB, `--pmd-cpu-mask`); a no-op when already
       initialized that way. Restarting a vswitchd that has bridges needs
       `--allow-ovs-restart`.
 

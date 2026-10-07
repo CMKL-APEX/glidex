@@ -40,6 +40,10 @@ pub struct Network {
     pub vlan: Option<u16>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mtu: Option<u16>,
+    /// NAT networks: dnsmasq answers DNS as well as DHCP. Kept so a lost NAT
+    /// can be created again the way it was.
+    #[serde(default = "default_dns")]
+    pub dns: bool,
     /// The network created its bridge (and NAT) and removes them on delete.
     #[serde(default)]
     pub owns_bridge: bool,
@@ -69,6 +73,10 @@ pub struct Network {
     /// then this one (spec/reconciliation.md §6.3, §10.3).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deletion_requested_at: Option<u64>,
+}
+
+fn default_dns() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -281,6 +289,7 @@ impl CreateNetworkRequest {
             port_type: self.port_type,
             vlan: self.vlan,
             mtu: self.mtu,
+            dns: self.dns,
             owns_bridge: self.mode != NetworkMode::Bridged,
             created_at: now(),
             project: None,
