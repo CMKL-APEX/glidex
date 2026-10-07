@@ -247,10 +247,11 @@ pub fn ensure_ip_forward(exec: &dyn Exec) -> Result<bool, OvsError> {
 /// bridges, as one atomic `nft -f` script. Creating then deleting the
 /// table first makes the script valid whether or not the table exists.
 ///
-/// `isolated` are the bridges of isolated networks (`BridgeSpec::isolated`):
-/// they have no address on the host, but the kernel still gives them an
-/// IPv6 link-local one, so they are fenced off from the host and from
-/// forwarding entirely (security spec §8.4).
+/// `isolated` are the bridges of isolated networks (`BridgeSpec::isolated`),
+/// fenced off from the host and from forwarding entirely (security spec
+/// §8.4). netd leaves their host interface down, so they have no host
+/// address; the fence is defense in depth for when something brings it
+/// up and the kernel gives it an IPv6 link-local address.
 pub fn nft_script(nats: &[NatState], isolated: &[&str]) -> String {
     let mut s = format!(
         "table inet {t}\ndelete table inet {t}\n",
@@ -308,7 +309,7 @@ pub fn nft_script(nats: &[NatState], isolated: &[&str]) -> String {
     // reach nothing on the host. Other interfaces are left alone (policy
     // accept). The drop covers IPv6 too: glidex NAT networks are
     // IPv4-only, and link-local IPv6 is the only address an isolated
-    // bridge has.
+    // bridge can get (if its interface is brought up).
     s.push_str("  }\n  chain input {\n    type filter hook input priority filter; policy accept;\n");
     let nat_names: Vec<&str> = nats.iter().map(|n| n.bridge.as_str()).collect();
     if !nats.is_empty() {

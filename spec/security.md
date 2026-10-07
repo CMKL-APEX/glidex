@@ -992,13 +992,17 @@ may ask it for what.
    the per-bridge accepts). An `input` chain lets traffic in from NAT
    bridges only for DHCP (udp 67) and DNS (udp/tcp 53) to the gateway,
    and drops the rest. Project networks (§6.2) depend on this.
-   **Isolated networks** are fenced off completely. Their bridge has no
-   address on the host, but the kernel gives every bridge an IPv6
-   link-local address, which would otherwise let guests reach host
-   services listening on all addresses (the control plane, sshd). The
-   control plane marks their bridges `isolated` in `ensure_bridge`, and
-   `inet glidex` drops everything from them in `input`, and everything
-   to and from them in `forward`. netd refuses NAT and uplinks on an
+   **Isolated networks** are fenced off completely, as defense in depth.
+   netd never brings an isolated bridge's host interface up (only NAT
+   gateways and uplink IP migration do), so it has no address on the
+   host, not even IPv6 link-local, and guests have nothing on the host
+   to reach. Should anything else bring it up (NetworkManager,
+   systemd-networkd, an admin), the kernel would give it a link-local
+   address that host services listening on all addresses (the control
+   plane, sshd) answer on. The fence keeps that closed: the control
+   plane marks isolated networks' bridges `isolated` in `ensure_bridge`,
+   and `inet glidex` drops everything from them in `input`, and
+   everything to and from them in `forward`. netd refuses NAT and uplinks on an
    isolated bridge, and re-applies the fence at startup. The network
    controller marks bridges created before the flag existed.
 5. **Project networks need no new ops.** The control plane creates
@@ -1235,7 +1239,8 @@ resource`; turned into linked policies at load), `sessions`, `api_tokens`,
   - `grantNetwork` on a project network is still refused.
 - **NAT isolation (host test):** VMs on two NAT networks can't reach
   each other or host services other than DHCP/DNS. A VM on an isolated
-  network can't reach the host at all, including over IPv6 link-local.
+  network can't reach the host at all, including over IPv6 link-local
+  with the bridge's host interface brought up by hand.
 - **API tests:**
   - `401` without credentials;
   - `403` with a wrong role;

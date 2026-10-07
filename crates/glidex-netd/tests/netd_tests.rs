@@ -742,8 +742,8 @@ fn uncommitted_migrations_are_rolled_back_at_start() {
 }
 
 /// Isolated networks' bridges are fenced off from the host and from
-/// forwarding (security spec §8.4): their IPv6 link-local address is the
-/// only one they have, and guests must not reach host services through it.
+/// forwarding (security spec §8.4): defense in depth, should their host
+/// interface come up with an IPv6 link-local address.
 #[test]
 fn isolated_bridges_are_fenced_off_from_the_host() {
     let dir = TempDir::new().unwrap();
