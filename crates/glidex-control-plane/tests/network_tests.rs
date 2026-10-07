@@ -268,6 +268,40 @@ async fn network_controller_reports_the_phase() {
     h.manager.stop_controllers().await;
 }
 
+/// An isolated network's bridge is marked isolated in netd, which fences
+/// it off from the host (spec/security.md §8.4); bridges recorded before
+/// the flag existed are marked by the network controller.
+#[tokio::test(flavor = "multi_thread")]
+async fn isolated_networks_are_fenced_by_netd() {
+    use glidex_netd::proto::{BridgeRecord, Op};
+    use glidex_ovs::bridge::{BridgeSpec, Datapath};
+    let h = harness(true);
+    let netd = Netd::new(h._dir.path().join("run"));
+    let isolated = |name: &str| {
+        netd.call::<Vec<BridgeRecord>>(Op::ListBridges).unwrap().into_iter().find(|b| b.spec.name == name).map(|b| b.spec.isolated)
+    };
+
+    let (status, body) = request(&h.app, "POST", "/networks", Some(json!({"name": "iso", "mode": "isolated"}))).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let (status, body) = request(&h.app, "POST", "/networks", Some(json!({"name": "lab", "mode": "nat"}))).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(isolated("gxbr-iso"), Some(true));
+    assert_eq!(isolated("gxbr-lab"), Some(false), "NAT bridges are fenced by their NAT rules");
+
+    // A record from before the flag: the controller marks it.
+    let old = BridgeSpec { name: "gxbr-iso".into(), datapath: Datapath::System, mtu: None, adopt: false, isolated: false };
+    netd.call::<BridgeRecord>(Op::EnsureBridge(old)).unwrap();
+    assert_eq!(isolated("gxbr-iso"), Some(false));
+    h.manager.reconcile_network("iso").await.unwrap();
+    assert_eq!(isolated("gxbr-iso"), Some(true));
+    let (_, ev) = request(&h.app, "GET", "/networks/iso/events", None).await;
+    assert_eq!(ev["events"][0]["reason"], "BridgeUpdated", "{ev}");
+    // Then it is left alone.
+    h.manager.reconcile_network("iso").await.unwrap();
+    let (_, ev2) = request(&h.app, "GET", "/networks/iso/events", None).await;
+    assert_eq!(ev2["events"].as_array().unwrap().len(), ev["events"].as_array().unwrap().len(), "{ev2}");
+}
+
 /// netd lost its records (state database wiped): the NAT is created again
 /// while no VM uses the network, but only reported once one does, since a
 /// new subnet would renumber its VMs.

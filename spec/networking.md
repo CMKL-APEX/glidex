@@ -260,7 +260,8 @@ vector, never a shell string. `OvsVsctl` resolves to `ovs_bin_dir`
 
 ```rust
 pub enum Datapath { System, Netdev }
-pub struct BridgeSpec { pub name: String, pub datapath: Datapath, pub mtu: Option<u16>, pub adopt: bool }
+pub struct BridgeSpec { pub name: String, pub datapath: Datapath, pub mtu: Option<u16>, pub adopt: bool,
+                       pub isolated: bool } // isolated network: fenced off from the host (security.md §8.4)
 
 pub enum UplinkKind {
     Kernel { ifname: String },
@@ -873,7 +874,10 @@ calls `list_bridges` (and `list_nat` for NAT networks) and records a
 
 - A bridge the network owns (`owns_bridge`, NAT and isolated networks)
   that netd lost, as a record or on the host, is re-created with
-  `ensure_bridge` (event `BridgeRestored`).
+  `ensure_bridge` (event `BridgeRestored`). An isolated network's bridge
+  whose netd record lacks `isolated` (from before the flag) is ensured
+  again with it (event `BridgeUpdated`), so netd fences it
+  ([security.md §8.4](security.md)).
 - A lost NAT is re-created with `ensure_nat` (new subnet; event
   `NatRestored`) **only while no VM uses the network**. With VMs on it it
   is reported, not re-created: its subnet lives only in netd, and a new
@@ -1004,7 +1008,10 @@ a re-run with `--force`.
 UI: a **Networking** page (status panel with missing-capability hints
 and an Install OVS button; bridges with uplinks; networks), a
 confirmation dialog for `confirmation_required`, a networks multi-select
-in `CreateVmForm`, and NICs/IPs in `VmDetail`.
+in `CreateVmForm`, and NICs/IPs in `VmDetail`. The page also creates
+project networks ("Network for"), and without host rights lists the
+networks the selected project can use
+([web-ui.md](web-ui.md#images-and-disks-pages)).
 
 ## 13. `glidex-install`
 

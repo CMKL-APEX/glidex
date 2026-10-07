@@ -1602,6 +1602,8 @@ impl VmManager {
                     datapath,
                     mtu: net.mtu,
                     adopt: false,
+                    // netd fences an isolated network's bridge off from the host.
+                    isolated: net.mode == NetworkMode::Isolated,
                 }))?;
                 if net.mode == NetworkMode::Nat {
                     let res: Result<NatInfo, NetError> = self.netd.call(Op::EnsureNat(NatSpec {

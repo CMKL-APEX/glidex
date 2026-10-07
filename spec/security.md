@@ -369,7 +369,7 @@ selects TCP.
 | Guest credential | project | Key becomes `(project_id, username)`. |
 | Image | system | Shared, read-only library. Any authenticated user may list and use images; pulling and deleting need `image.manage`. |
 | Host network (NAT, bridged) | system, granted to projects | Created by `net-admin`; `grants: [project_id] \| "all"`. Project editors attach their VMs to granted networks only. Projects sharing a network share an L2 segment: give each project its own network when they must be isolated. |
-| Project network (NAT or isolated) | project | Created and deleted by the project's `owner` (`network.manage`), usable only by that project unless explicitly shared (§6.2.1); never opened to all projects or granted by `net-admin` (`base.project-network-private`). Constraints: NAT or isolated, no uplinks or bridged mode (bridged networks put guests on the host's LAN and need `host.network`); a NAT network's subnet is a free `/24` from netd's `nat_supernet` unless the owner picks a free one; the bridge name is generated (`gxp-<8 hex>`), not chosen by the user, and no VLAN can be set; the VM port is tap or vhost-user, as for host networks (vhost-user needs DPDK set up on the host, otherwise `422 unsupported_on_host`); delete is refused while a VM is attached. Counts against the `networks` quota. |
+| Project network (NAT or isolated) | project | Created and deleted by the project's `owner` (`network.manage`), usable only by that project unless explicitly shared (§6.2.1); never opened to all projects or granted by `net-admin` (`base.project-network-private`). Constraints: NAT or isolated, no uplinks or bridged mode (bridged networks put guests on the host's LAN and need `host.network`); an isolated network reaches neither the host nor other networks (§8.4); a NAT network's subnet is a free `/24` from netd's `nat_supernet` unless the owner picks a free one; the bridge name is generated (`gxp-<8 hex>`), not chosen by the user, and no VLAN can be set; the VM port is tap or vhost-user, as for host networks (vhost-user needs DPDK set up on the host, otherwise `422 unsupported_on_host`); delete is refused while a VM is attached. Counts against the `networks` quota. |
 | OVS bridges, uplinks, DPDK, OVS install | system | `host.network`. |
 | PCI devices (VFIO) | system, granted to projects | `/etc/glidex/control-plane.json` `pci.allow: [{bdf, projects}]`. A VM may only pass through BDFs granted to its project. |
 | Host paths | system | `host.paths` (§7.4). |
@@ -992,6 +992,15 @@ may ask it for what.
    the per-bridge accepts). An `input` chain lets traffic in from NAT
    bridges only for DHCP (udp 67) and DNS (udp/tcp 53) to the gateway,
    and drops the rest. Project networks (§6.2) depend on this.
+   **Isolated networks** are fenced off completely. Their bridge has no
+   address on the host, but the kernel gives every bridge an IPv6
+   link-local address, which would otherwise let guests reach host
+   services listening on all addresses (the control plane, sshd). The
+   control plane marks their bridges `isolated` in `ensure_bridge`, and
+   `inet glidex` drops everything from them in `input`, and everything
+   to and from them in `forward`. netd refuses NAT and uplinks on an
+   isolated bridge, and re-applies the fence at startup. The network
+   controller marks bridges created before the flag existed.
 5. **Project networks need no new ops.** The control plane creates
    them with `ensure_bridge` (and `ensure_nat` for NAT) like host
    networks; netd doesn't know about projects.
@@ -1212,8 +1221,11 @@ resource`; turned into linked policies at load), `sessions`, `api_tokens`,
   `owner` over quota gets `403`.
 - **PAM provisioning:** first login creates a user with no rights;
   `group_teams` sync adds and removes `source: pam` memberships.
-- **Project networks:** an owner creates one, it's unusable from
+- **Project networks:** an owner creates one (NAT or isolated, never
+  bridged; vhost-user only where DPDK is set up), it's unusable from
   another project, it counts against the quota;
+- **Isolated networks:** the bridge is marked `isolated` in netd and
+  fenced in `inet glidex`; NAT and uplinks on it are refused;
 - **Network sharing:**
   - an offer alone grants nothing;
   - after the target owner accepts, the target's editors can attach;
@@ -1222,7 +1234,8 @@ resource`; turned into linked policies at load), `sessions`, `api_tokens`,
   - an offer expires after 7 days;
   - `grantNetwork` on a project network is still refused.
 - **NAT isolation (host test):** VMs on two NAT networks can't reach
-  each other or host services other than DHCP/DNS.
+  each other or host services other than DHCP/DNS. A VM on an isolated
+  network can't reach the host at all, including over IPv6 link-local.
 - **API tests:**
   - `401` without credentials;
   - `403` with a wrong role;

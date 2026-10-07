@@ -40,8 +40,14 @@ impl VmManager {
         let record = bridges.iter().find(|b| b.spec.name == net.bridge);
         let mut problems: Vec<String> = Vec::new();
         match (net.mode, record) {
-            (NetworkMode::Nat | NetworkMode::Isolated, rec) if net.owns_bridge && rec.is_none_or(|r| r.live.is_none()) => {
-                // netd lost the bridge (record or on the host): ensure it.
+            (NetworkMode::Nat | NetworkMode::Isolated, rec)
+                if net.owns_bridge
+                    && rec.is_none_or(|r| r.live.is_none() || r.spec.isolated != (net.mode == NetworkMode::Isolated)) =>
+            {
+                // netd lost the bridge (record or on the host), or its
+                // record predates the isolated flag (security spec §8.4):
+                // ensure it.
+                let restore = rec.is_none_or(|r| r.live.is_none());
                 let spec = BridgeSpec {
                     name: net.bridge.clone(),
                     datapath: match net.port_type {
@@ -50,16 +56,23 @@ impl VmManager {
                     },
                     mtu: net.mtu,
                     adopt: false,
+                    isolated: net.mode == NetworkMode::Isolated,
                 };
                 let netd = self.netd.clone();
                 match tokio::task::spawn_blocking(move || netd.call::<BridgeRecord>(Op::EnsureBridge(spec)))
                     .await
                     .map_err(|e| VmManagerError::PersistenceError(e.to_string()))?
                 {
-                    Ok(_) => {
+                    Ok(_) if restore => {
                         let _ = self.store.push_event(
                             &event_key("network", &net.name),
                             Event::new("controller", EventKind::Warning, "BridgeRestored", format!("re-created bridge {}", net.bridge)),
+                        );
+                    }
+                    Ok(_) => {
+                        let _ = self.store.push_event(
+                            &event_key("network", &net.name),
+                            Event::new("controller", EventKind::Normal, "BridgeUpdated", format!("bridge {} marked as isolated in netd", net.bridge)),
                         );
                     }
                     Err(e) => problems.push(format!("bridge {}: {}", net.bridge, e)),
