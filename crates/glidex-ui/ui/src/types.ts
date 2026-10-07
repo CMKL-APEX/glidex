@@ -578,6 +578,9 @@ export interface Binding {
   resource: EntityRef;
   created_by: string;
   created_at: number;
+  /** The principal's display name (user), team or token name, for callers
+   * who may read the link but not list users or teams. */
+  principal_name?: string;
 }
 
 export const PROJECT_ROLES = ["role.viewer", "role.operator", "role.editor", "role.owner"] as const;

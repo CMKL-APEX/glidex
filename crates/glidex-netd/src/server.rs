@@ -153,9 +153,19 @@ impl Netd {
                 missing: vec!["ovs-vswitchd running".into()],
             });
         }
+        if spec.isolated && self.store.get::<NatState>(NAT, &spec.name)?.is_some() {
+            return Err(OvsError::conflict(format!("bridge '{}' is a NAT network, not an isolated one", spec.name)));
+        }
+        if spec.isolated && self.uplinks()?.iter().any(|u| u.spec.bridge == spec.name) {
+            return Err(OvsError::conflict(format!("bridge '{}' has uplinks; an isolated bridge can't", spec.name)));
+        }
+        let before = self.isolated_bridges()?;
         let live = bridge::ensure(self.ex(), &caps, &spec)?;
         // Stored after success only, so the store never claims more than OVS has.
         self.store.put(BRIDGES, &spec.name, &BridgeSpec { adopt: false, ..spec.clone() })?;
+        if self.isolated_bridges()? != before {
+            self.apply_firewall(&self.nats()?)?;
+        }
         tracing::info!(bridge = %spec.name, "bridge ensured");
         Ok(BridgeRecord {
             spec,
@@ -183,8 +193,12 @@ impl Netd {
                 users.join(", ")
             )));
         }
+        let was_isolated = self.store.get::<BridgeSpec>(BRIDGES, name)?.is_some_and(|b| b.isolated);
         bridge::delete(self.ex(), name)?;
         self.store.delete(BRIDGES, name)?;
+        if was_isolated {
+            self.apply_firewall(&self.nats()?)?;
+        }
         tracing::info!(bridge = %name, "bridge deleted");
         Ok(())
     }
@@ -193,6 +207,22 @@ impl Netd {
         self.store
             .get::<BridgeSpec>(BRIDGES, name)?
             .ok_or_else(|| OvsError::not_found(format!("glidex bridge '{}'", name)))
+    }
+
+    /// Bridges of isolated networks, sorted: fenced off in `inet glidex`.
+    fn isolated_bridges(&self) -> Result<Vec<String>, OvsError> {
+        let mut v: Vec<String> =
+            self.store.list::<BridgeSpec>(BRIDGES)?.into_iter().filter(|(_, b)| b.isolated).map(|(n, _)| n).collect();
+        v.sort();
+        Ok(v)
+    }
+
+    /// Rebuild `inet glidex` for `nats` and the isolated bridges (security
+    /// spec §8.4): one atomic script.
+    fn apply_firewall(&self, nats: &[NatState]) -> Result<(), OvsError> {
+        let isolated = self.isolated_bridges()?;
+        let names: Vec<&str> = isolated.iter().map(String::as_str).collect();
+        nat::apply_nft(self.ex(), nats, &names)
     }
 
     // ---- uplinks -------------------------------------------------------
@@ -223,7 +253,12 @@ impl Netd {
                 spec.bridge
             )));
         }
-        self.require_bridge(&spec.bridge)?;
+        if self.require_bridge(&spec.bridge)?.isolated {
+            return Err(OvsError::conflict(format!(
+                "bridge '{}' is an isolated network; uplinks go on a separate bridge",
+                spec.bridge
+            )));
+        }
         let key = store::uplink_key(&spec.bridge, &spec.name);
         if let Some(existing) = self.store.get::<UplinkRecord>(UPLINKS, &key)? {
             if existing.spec == spec {
@@ -428,7 +463,7 @@ impl Netd {
         if nat::ensure_ip_forward(ex)? {
             self.store.put(META, "ip_forward_set_by_glidex", &true)?;
         }
-        nat::apply_nft(ex, all)?;
+        self.apply_firewall(all)?;
         self.apply_meter(all);
         nat::apply_iptables(ex, all)?;
         nat::write_dnsmasq_files(ex, state)?;
@@ -480,7 +515,9 @@ impl Netd {
     }
 
     fn ensure_nat(&self, spec: NatSpec) -> Result<NatInfo, OvsError> {
-        self.require_bridge(&spec.bridge)?;
+        if self.require_bridge(&spec.bridge)?.isolated {
+            return Err(OvsError::conflict(format!("bridge '{}' is an isolated network, not a NAT one", spec.bridge)));
+        }
         let existing = self.store.get::<NatState>(NAT, &spec.bridge)?;
         let others: Vec<NatState> = self
             .nats()?
@@ -508,7 +545,7 @@ impl Netd {
         }
         self.supervisor.stop(bridge);
         let rest: Vec<NatState> = self.nats()?.into_iter().filter(|n| n.bridge != bridge).collect();
-        nat::apply_nft(self.ex(), &rest)?;
+        self.apply_firewall(&rest)?;
         self.apply_meter(&rest);
         nat::apply_iptables(self.ex(), &rest)?;
         nat::remove_address(self.ex(), &state)?;
@@ -706,6 +743,14 @@ impl Netd {
             match self.apply_nat(state, &nats) {
                 Ok(()) => report.repaired.push(format!("nat {}", state.bridge)),
                 Err(e) => report.errors.push(format!("nat {}: {}", state.bridge, e)),
+            }
+        }
+        // Without NAT networks nothing above rebuilt the table: fence the
+        // isolated bridges here.
+        if nats.is_empty() && !self.isolated_bridges().unwrap_or_default().is_empty() {
+            match self.apply_firewall(&[]) {
+                Ok(()) => report.repaired.push("isolated bridges fenced".into()),
+                Err(e) => report.errors.push(format!("isolated bridges: {}", e)),
             }
         }
         if let Ok(owned) = bridge::list_owned(ex) {

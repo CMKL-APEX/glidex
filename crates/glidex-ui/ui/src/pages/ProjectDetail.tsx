@@ -208,7 +208,6 @@ export default function ProjectDetail() {
   const [error, setError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [editingQuotas, setEditingQuotas] = useState(false);
-  const [newNetwork, setNewNetwork] = useState("");
 
   const allowed = useCan(CAPS.map((action) => ({ action, resource: { type: "Project" as const, id } })));
   const can = (c: Cap) => !!allowed?.[CAPS.indexOf(c)];
@@ -400,36 +399,12 @@ export default function ProjectDetail() {
           ))
         )}
         {can("createProjectNetwork") && (
-          <form
-            className="mt-4 flex items-end gap-2"
-            onSubmit={(e) => {
-              e.preventDefault();
-              run(
-                () => api.createProjectNetwork(project.id, { name: newNetwork.trim(), mode: "nat" }),
-                () => {
-                  setNewNetwork("");
-                  refresh();
-                },
-              );
-            }}
-          >
-            <div>
-              <label htmlFor="new-network" className="block text-sm font-medium text-gray-700">
-                New NAT network
-              </label>
-              <input
-                id="new-network"
-                className={inputClass}
-                required
-                placeholder="name"
-                value={newNetwork}
-                onChange={(e) => setNewNetwork(e.target.value)}
-              />
-            </div>
-            <button type="submit" className={primaryButton}>
-              Create
-            </button>
-          </form>
+          <p className="mt-4 text-sm">
+            <Link to={`/networking?new=${encodeURIComponent(project.id)}`} className="text-sky-700 hover:underline">
+              Create a project network
+            </Link>{" "}
+            <span className="text-gray-500">(NAT or isolated, on the Networking page)</span>
+          </p>
         )}
       </Card>
 

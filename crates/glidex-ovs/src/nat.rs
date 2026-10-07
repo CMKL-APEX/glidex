@@ -243,26 +243,40 @@ pub fn ensure_ip_forward(exec: &dyn Exec) -> Result<bool, OvsError> {
     Ok(true)
 }
 
-/// The whole `inet glidex` table for all NAT networks, as one atomic
-/// `nft -f` script. Creating then deleting the table first makes the
-/// script valid whether or not the table exists.
-pub fn nft_script(nats: &[NatState]) -> String {
+/// The whole `inet glidex` table for all NAT networks and isolated
+/// bridges, as one atomic `nft -f` script. Creating then deleting the
+/// table first makes the script valid whether or not the table exists.
+///
+/// `isolated` are the bridges of isolated networks (`BridgeSpec::isolated`),
+/// fenced off from the host and from forwarding entirely (security spec
+/// §8.4). netd leaves their host interface down, so they have no host
+/// address; the fence is defense in depth for when something brings it
+/// up and the kernel gives it an IPv6 link-local address.
+pub fn nft_script(nats: &[NatState], isolated: &[&str]) -> String {
     let mut s = format!(
         "table inet {t}\ndelete table inet {t}\n",
         t = NFT_TABLE
     );
-    if nats.is_empty() {
+    if nats.is_empty() && isolated.is_empty() {
         return s;
     }
     s.push_str(&format!("table inet {} {{\n", NFT_TABLE));
-    s.push_str("  chain postrouting {\n    type nat hook postrouting priority srcnat; policy accept;\n");
-    for n in nats {
-        s.push_str(&format!(
-            "    ip saddr {net} ip daddr != {net} masquerade\n",
-            net = n.subnet
-        ));
+    if !nats.is_empty() {
+        s.push_str("  chain postrouting {\n    type nat hook postrouting priority srcnat; policy accept;\n");
+        for n in nats {
+            s.push_str(&format!(
+                "    ip saddr {net} ip daddr != {net} masquerade\n",
+                net = n.subnet
+            ));
+        }
+        s.push_str("  }\n");
     }
-    s.push_str("  }\n  chain forward {\n    type filter hook forward priority filter; policy accept;\n");
+    s.push_str("  chain forward {\n    type filter hook forward priority filter; policy accept;\n");
+    // Isolated networks have no path out, and nothing is routed in.
+    if !isolated.is_empty() {
+        let iso = ifname_set(isolated);
+        s.push_str(&format!("    iifname {iso} drop\n    oifname {iso} drop\n"));
+    }
     // NAT networks are isolated from each other (security spec §8.4):
     // nothing is forwarded from one glidex NAT bridge to another. These
     // come before the accepts, which would otherwise let it through.
@@ -291,14 +305,18 @@ pub fn nft_script(nats: &[NatState]) -> String {
     // serves it) and ping on their gateway, plus replies to connections
     // the host opened. Everything else from a NAT bridge to a host
     // address (any of them, not just the gateway) is dropped, so host
-    // services stay out of the guests' reach. Other interfaces are left
-    // alone (policy accept). The drop covers IPv6 too: glidex NAT
-    // networks are IPv4-only.
-    let all: Vec<&str> = nats.iter().map(|n| n.bridge.as_str()).collect();
-    let all = ifname_set(&all);
+    // services stay out of the guests' reach. Guests on isolated bridges
+    // reach nothing on the host. Other interfaces are left alone (policy
+    // accept). The drop covers IPv6 too: glidex NAT networks are
+    // IPv4-only, and link-local IPv6 is the only address an isolated
+    // bridge can get (if its interface is brought up).
     s.push_str("  }\n  chain input {\n    type filter hook input priority filter; policy accept;\n");
-    s.push_str(&format!("    iifname {all} ct state established,related accept\n"));
-    s.push_str(&format!("    iifname {all} udp dport 67 accept\n"));
+    let nat_names: Vec<&str> = nats.iter().map(|n| n.bridge.as_str()).collect();
+    if !nats.is_empty() {
+        let all = ifname_set(&nat_names);
+        s.push_str(&format!("    iifname {all} ct state established,related accept\n"));
+        s.push_str(&format!("    iifname {all} udp dport 67 accept\n"));
+    }
     for n in nats {
         if n.dns {
             for proto in ["udp", "tcp"] {
@@ -313,7 +331,8 @@ pub fn nft_script(nats: &[NatState]) -> String {
             n.bridge, n.gateway
         ));
     }
-    s.push_str(&format!("    iifname {all} drop\n"));
+    let fenced: Vec<&str> = nat_names.iter().copied().chain(isolated.iter().copied()).collect();
+    s.push_str(&format!("    iifname {} drop\n", ifname_set(&fenced)));
     s.push_str("  }\n}\n");
     s
 }
@@ -324,8 +343,8 @@ fn ifname_set(names: &[&str]) -> String {
     format!("{{ {} }}", quoted.join(", "))
 }
 
-pub fn apply_nft(exec: &dyn Exec, nats: &[NatState]) -> Result<(), OvsError> {
-    exec.check(&Cmd::new(Program::Nft, ["-f", "-"]).stdin(nft_script(nats)))?;
+pub fn apply_nft(exec: &dyn Exec, nats: &[NatState], isolated: &[&str]) -> Result<(), OvsError> {
+    exec.check(&Cmd::new(Program::Nft, ["-f", "-"]).stdin(nft_script(nats, isolated)))?;
     Ok(())
 }
 
@@ -536,13 +555,13 @@ mod tests {
     #[test]
     fn nft_script_is_atomic_and_complete() {
         let a = NatState::new("gxbr-nat", net("10.88.0.0/24"), true).unwrap();
-        let script = nft_script(&[a]);
+        let script = nft_script(&[a], &[]);
         assert!(script.starts_with("table inet glidex\ndelete table inet glidex\n"));
         assert!(script.contains("ip saddr 10.88.0.0/24 ip daddr != 10.88.0.0/24 masquerade"));
         assert!(script.contains("iifname \"gxbr-nat\" ip saddr 10.88.0.0/24 accept"));
         assert!(!script.contains("oifname \"eth"), "no outgoing interface is pinned");
         assert!(!script.contains("oifname { "), "a single network has nothing to isolate from");
-        assert_eq!(nft_script(&[]), "table inet glidex\ndelete table inet glidex\n");
+        assert_eq!(nft_script(&[], &[]), "table inet glidex\ndelete table inet glidex\n");
     }
 
     #[test]
@@ -550,7 +569,7 @@ mod tests {
         let a = NatState::new("gxbr-nat", net("10.88.0.0/24"), true).unwrap();
         let b = NatState::new("gxbr-p1", net("10.88.1.0/24"), false).unwrap();
         let c = NatState::new("gxbr-p2", net("10.88.2.0/24"), true).unwrap();
-        let script = nft_script(&[a, b, c]);
+        let script = nft_script(&[a, b, c], &[]);
         let expected = r#"table inet glidex
 delete table inet glidex
 table inet glidex {
@@ -591,9 +610,41 @@ table inet glidex {
     }
 
     #[test]
+    fn nft_script_fences_isolated_bridges() {
+        // Isolated only: no NAT chains, nothing in or out.
+        let script = nft_script(&[], &["gxp-11111111"]);
+        assert_eq!(
+            script,
+            "table inet glidex\ndelete table inet glidex\ntable inet glidex {\n\
+             \x20 chain forward {\n    type filter hook forward priority filter; policy accept;\n\
+             \x20   iifname { \"gxp-11111111\" } drop\n    oifname { \"gxp-11111111\" } drop\n\
+             \x20 }\n  chain input {\n    type filter hook input priority filter; policy accept;\n\
+             \x20   iifname { \"gxp-11111111\" } drop\n  }\n}\n"
+        );
+        // With a NAT network: the isolated bridge gets no DHCP or replies,
+        // and is in the final drop with the NAT bridge.
+        let a = NatState::new("gxbr-nat", net("10.88.0.0/24"), true).unwrap();
+        let script = nft_script(&[a], &["gxp-11111111"]);
+        assert!(script.contains("    iifname { \"gxbr-nat\" } udp dport 67 accept\n"));
+        assert!(script.contains("    iifname { \"gxbr-nat\", \"gxp-11111111\" } drop\n  }\n}\n"));
+        let forward = &script[script.find("  chain forward").unwrap()..script.find("  chain input").unwrap()];
+        assert!(forward.find("oifname { \"gxp-11111111\" } drop").unwrap() < forward.find("ip saddr 10.88.0.0/24 accept").unwrap(), "drops come first");
+    }
+
+    /// Print the `inet glidex` scripts for `nft -c -f -` checks on a real
+    /// host (or `unshare -rn nft -f -` without root).
+    #[test]
+    #[ignore = "prints a script for nft -c"]
+    fn print_script_for_nft_check() {
+        let a = NatState::new("gxbr-nat", net("10.88.0.0/24"), true).unwrap();
+        print!("{}", nft_script(&[a], &["gxp-11111111", "gxbr-iso"]));
+        print!("{}", nft_script(&[], &["gxp-11111111"]));
+    }
+
+    #[test]
     fn nft_input_chain_for_one_network() {
         let a = NatState::new("gxbr-nat", net("10.88.0.0/24"), true).unwrap();
-        let script = nft_script(&[a]);
+        let script = nft_script(&[a], &[]);
         let input = &script[script.find("  chain input").unwrap()..];
         assert_eq!(
             input,

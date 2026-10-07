@@ -95,17 +95,19 @@ export interface Directory {
   teams: Team[];
 }
 
-export function principalName(e: EntityRef, dir: Directory): string {
+/** `known`: the name the server sent with the link, if any. */
+export function principalName(e: EntityRef, dir: Directory, known?: string): string {
   if (e.type === "User") {
     const u = dir.users.find((x) => x.id === e.id);
-    return u ? u.display_name : `user ${e.id.slice(0, 8)}`;
+    return u?.display_name ?? known ?? `user ${e.id.slice(0, 8)}`;
   }
   if (e.type === "Team") {
     if (e.id.startsWith("unix:")) return `team ${e.id}`;
     const t = dir.teams.find((x) => x.id === e.id);
-    return t ? `team ${t.name}` : `team ${e.id.slice(0, 8)}`;
+    const name = t?.name ?? known;
+    return name ? `team ${name}` : `team ${e.id.slice(0, 8)}`;
   }
-  if (e.type === "Token") return `token ${e.id.slice(0, 8)}`;
+  if (e.type === "Token") return known ? `token ${known}` : `token ${e.id.slice(0, 8)}`;
   return entityLabel(e);
 }
 
@@ -134,7 +136,7 @@ export function BindingTable({
         {bindings.map((b) => (
           <tr key={b.id} className="border-b border-gray-50">
             <td className="py-2" title={entityLabel(b.principal)}>
-              {principalName(b.principal, dir)}
+              {principalName(b.principal, dir, b.principal_name)}
             </td>
             <td className="py-2">
               <Badge kind="role">{roleLabel(b.template)}</Badge>

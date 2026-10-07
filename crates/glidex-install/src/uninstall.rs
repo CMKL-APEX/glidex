@@ -565,7 +565,7 @@ fn execute(step: &Step) -> Result<()> {
             use std::io::Write as _;
             // The metering table goes too: the only place it is deleted
             // (spec/metering.md D14).
-            let script = glidex_ovs::nat::nft_script(&[]) + &glidex_ovs::nat_meter::drop_script();
+            let script = glidex_ovs::nat::nft_script(&[], &[]) + &glidex_ovs::nat_meter::drop_script();
             child.stdin.take().expect("piped stdin").write_all(script.as_bytes())?;
             let status = child.wait()?;
             if !status.success() {

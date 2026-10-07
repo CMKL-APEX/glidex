@@ -75,7 +75,7 @@ fn port_spec() -> VmPortSpec {
 
 fn setup_nat(netd: &Netd) {
     netd.handle(
-        Op::EnsureBridge(BridgeSpec { name: "gxbr-nat".into(), datapath: Datapath::System, mtu: None, adopt: false }),
+        Op::EnsureBridge(BridgeSpec { name: "gxbr-nat".into(), datapath: Datapath::System, mtu: None, adopt: false, isolated: false }),
         &peer(),
     )
     .unwrap();
@@ -571,7 +571,7 @@ fn up_netd(exec: Arc<RecordingExec>, dir: &TempDir, commit_window: Duration) -> 
         ..Config::default()
     };
     let netd = Netd::new(exec, Arc::new(FakeSupervisor::default()), config).unwrap();
-    netd.handle(Op::EnsureBridge(BridgeSpec { name: "gxbr-up".into(), datapath: Datapath::System, mtu: None, adopt: false }), &peer()).unwrap();
+    netd.handle(Op::EnsureBridge(BridgeSpec { name: "gxbr-up".into(), datapath: Datapath::System, mtu: None, adopt: false, isolated: false }), &peer()).unwrap();
     netd
 }
 
@@ -688,7 +688,7 @@ fn dpdk_uplink_binds_and_restores_the_driver() {
     exec.file("/sys/bus/pci/devices/0000:41:00.0/uevent", "DRIVER=ixgbe\n");
     let sup = Arc::new(FakeSupervisor::default());
     let netd = Netd::new(exec.clone(), sup, Config { run_dir: dir.path().join("run"), state_path: dir.path().join("netd.db"), ..Config::default() }).unwrap();
-    netd.handle(Op::EnsureBridge(BridgeSpec { name: "gxbr-up".into(), datapath: Datapath::Netdev, mtu: None, adopt: false }), &peer()).unwrap();
+    netd.handle(Op::EnsureBridge(BridgeSpec { name: "gxbr-up".into(), datapath: Datapath::Netdev, mtu: None, adopt: false, isolated: false }), &peer()).unwrap();
 
     let spec = UplinkSpec { name: "up0".into(), bridge: "gxbr-up".into(), kind: UplinkKind::Dpdk { pci: "0000:41:00.0".into(), n_rxq: 2 }, migrate_ip: false };
     let res = ensure(&netd, spec, false).unwrap();
@@ -739,4 +739,47 @@ fn uncommitted_migrations_are_rolled_back_at_start() {
     let report = netd.reconcile_startup();
     assert!(report.repaired.iter().any(|r| r.contains("rolled back uncommitted uplink gxup0")), "{report:?}");
     assert!(exec.calls().contains(&"ip addr replace 192.0.2.10/24 dev gxup0".to_string()));
+}
+
+/// Isolated networks' bridges are fenced off from the host and from
+/// forwarding (security spec §8.4): defense in depth, should their host
+/// interface come up with an IPv6 link-local address.
+#[test]
+fn isolated_bridges_are_fenced_off_from_the_host() {
+    let dir = TempDir::new().unwrap();
+    let exec = exec();
+    let (netd, _sup) = netd(exec.clone(), &dir);
+    let bridge = |isolated: bool| {
+        Op::EnsureBridge(BridgeSpec { name: "gxbr-nat".into(), datapath: Datapath::System, mtu: None, adopt: false, isolated })
+    };
+    let last_nft = |exec: &RecordingExec| exec.calls().into_iter().rfind(|c| c.starts_with("nft -f - <<< table inet glidex\n"));
+    const DELETE_ONLY: &str = "nft -f - <<< table inet glidex\ndelete table inet glidex\n";
+
+    netd.handle(bridge(true), &peer()).unwrap();
+    let script = last_nft(&exec).expect("the fence is applied");
+    assert!(script.contains("    iifname { \"gxbr-nat\" } drop\n  }\n}\n"), "{script}");
+    assert!(script.contains("oifname { \"gxbr-nat\" } drop"), "nothing is forwarded to it: {script}");
+    assert!(!script.contains("masquerade") && !script.contains("dport 67"), "{script}");
+
+    // An isolated bridge takes neither NAT nor an uplink.
+    let nat = netd.handle(Op::EnsureNat(NatSpec { bridge: "gxbr-nat".into(), subnet: None, dns: true }), &peer());
+    assert_eq!(nat.unwrap_err().code(), "conflict");
+    let up = UplinkSpec { name: "gxup0".into(), bridge: "gxbr-nat".into(), kind: UplinkKind::Kernel { ifname: "gxup0".into() }, migrate_ip: false };
+    assert_eq!(ensure(&netd, up, false).unwrap_err().code(), "conflict");
+
+    // A restarted netd fences it again, with no NAT network to rebuild the table.
+    let calls_before = exec.calls().len();
+    drop(netd);
+    let (netd, _sup) = self::netd(exec.clone(), &dir);
+    let report = netd.reconcile_startup();
+    assert!(report.repaired.iter().any(|r| r == "isolated bridges fenced"), "{report:?}");
+    assert!(exec.calls()[calls_before..].iter().any(|c| c.contains("iifname { \"gxbr-nat\" } drop")));
+
+    // No longer isolated: the fence goes.
+    netd.handle(bridge(false), &peer()).unwrap();
+    assert_eq!(last_nft(&exec).as_deref(), Some(DELETE_ONLY));
+    // Deleting an isolated bridge removes its fence too.
+    netd.handle(bridge(true), &peer()).unwrap();
+    netd.handle(Op::DeleteBridge { name: "gxbr-nat".into() }, &peer()).unwrap();
+    assert_eq!(last_nft(&exec).as_deref(), Some(DELETE_ONLY));
 }

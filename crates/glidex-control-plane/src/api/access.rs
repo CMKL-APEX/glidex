@@ -911,6 +911,39 @@ fn check_principal_exists(c: &Caller, e: &Ent) -> Result<(), ApiErr> {
     }
 }
 
+/// A role link as listed: with its principal's name, so that whoever may
+/// read the links sees who they are without listing users or teams
+/// (host rights). Only the display name is added.
+#[derive(Serialize)]
+pub struct BindingView {
+    #[serde(flatten)]
+    record: auth::store::LinkRecord,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    principal_name: Option<String>,
+}
+
+fn with_names(c: &Caller, links: Vec<auth::store::LinkRecord>) -> Result<Vec<BindingView>, ApiErr> {
+    let s = &c.auth().store;
+    let mut tokens: Option<Vec<(String, auth::store::Token)>> = None;
+    links
+        .into_iter()
+        .map(|record| {
+            let principal_name = match &record.link.principal {
+                Ent::User(id) => s.user(id).map_err(store_err)?.map(|u| u.display_name),
+                Ent::Team(id) if !id.starts_with("unix:") => s.team(id).map_err(store_err)?.map(|t| t.name),
+                Ent::Token(id) => {
+                    if tokens.is_none() {
+                        tokens = Some(s.tokens().map_err(store_err)?);
+                    }
+                    tokens.as_ref().and_then(|ts| ts.iter().find(|(_, t)| &t.id == id)).map(|(_, t)| t.name.clone())
+                }
+                _ => None,
+            };
+            Ok(BindingView { record, principal_name })
+        })
+        .collect()
+}
+
 pub async fn list_bindings(c: Caller, Path(id): Path<String>) -> Result<impl IntoResponse, ApiErr> {
     let p = visible_project(&c, &id)?;
     let links: Vec<_> = c
@@ -921,7 +954,7 @@ pub async fn list_bindings(c: Caller, Path(id): Path<String>) -> Result<impl Int
         .into_iter()
         .filter(|l| l.link.resource == Ent::Project(p.id.clone()))
         .collect();
-    Ok(Json(links))
+    Ok(Json(with_names(&c, links)?))
 }
 
 pub async fn add_binding(c: Caller, Path(id): Path<String>, Json(body): Json<BindingBody>) -> Result<impl IntoResponse, ApiErr> {
@@ -955,7 +988,7 @@ pub async fn remove_binding(c: Caller, Path((id, link)): Path<(String, String)>)
 pub async fn list_system_bindings(c: Caller) -> Result<impl IntoResponse, ApiErr> {
     c.require(Ent::Host, EntitySet::new())?;
     let links: Vec<_> = c.auth().store.links().map_err(store_err)?.into_iter().filter(|l| l.link.resource == Ent::Host).collect();
-    Ok(Json(links))
+    Ok(Json(with_names(&c, links)?))
 }
 
 pub async fn add_system_binding(c: Caller, Json(body): Json<BindingBody>) -> Result<impl IntoResponse, ApiErr> {

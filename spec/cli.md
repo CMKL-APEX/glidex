@@ -114,7 +114,7 @@ name (ids when `/projects` isn't readable).
 | `disk extend-root <disk> [--on-boot]` | `POST /disks/{id}/extend-root?wait=120` |
 | `disk rm <disk>` | Confirmation prompt → `DELETE /disks/{id}`; prints `Deleting:` instead of `Disk deleted:` when the server deferred it (`202`, an operation on the disk finishes first) |
 | `networks` / `network list` | `GET /networks` (project networks show their project) |
-| `network create <name> [--project P] [--subnet CIDR] [--mtu N]` | With `--project`: `POST /projects/{P}/networks` (NAT, generated bridge); without: as `network-add` |
+| `network create <name> [--project P [--isolated] [--vhost-user]] [--subnet CIDR] [--mtu N]` | With `--project`: `POST /projects/{P}/networks` (NAT, or isolated with `--isolated`; tap ports, or vhost-user with `--vhost-user`; generated bridge); without: as `network-add` |
 | `network rm <name>` / `network-rm` / `net-rm` | `DELETE /networks/{name}?wait=60`; prints `Network deleted:` once gone, else `Deleting: <name> (the control plane finishes it)` and `Waiting: <Ready reason>: <message>` (e.g. `NetdUnavailable`, `InUse`) |
 | `network share <net> <project-id>` | `POST /networks/{net}/shares {project}` (offer, valid 7 days) |
 | `network unshare <net> <project-id>` | `DELETE /networks/{net}/shares/{project}` |

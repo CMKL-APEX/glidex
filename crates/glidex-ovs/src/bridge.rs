@@ -40,6 +40,11 @@ pub struct BridgeSpec {
     /// Take ownership of an existing untagged bridge (adds tags only).
     #[serde(default)]
     pub adopt: bool,
+    /// The bridge of an isolated network: fenced off from the host and
+    /// from forwarding in `inet glidex`, and never given an uplink
+    /// (security spec §8.4).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub isolated: bool,
 }
 
 impl BridgeSpec {
@@ -218,6 +223,7 @@ mod tests {
             datapath: Datapath::System,
             mtu: None,
             adopt: false,
+            isolated: false,
         }
     }
 

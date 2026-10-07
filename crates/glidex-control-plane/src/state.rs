@@ -1602,6 +1602,8 @@ impl VmManager {
                     datapath,
                     mtu: net.mtu,
                     adopt: false,
+                    // netd fences an isolated network's bridge off from the host.
+                    isolated: net.mode == NetworkMode::Isolated,
                 }))?;
                 if net.mode == NetworkMode::Nat {
                     let res: Result<NatInfo, NetError> = self.netd.call(Op::EnsureNat(NatSpec {
@@ -1681,9 +1683,9 @@ impl VmManager {
         Ok(net)
     }
 
-    /// Create a NAT network private to `project` (spec/security.md §6.2):
-    /// NAT only, generated bridge name, counted against the `networks`
-    /// quota.
+    /// Create a network private to `project` (spec/security.md §6.2):
+    /// NAT or isolated (no uplink), either port type, generated bridge
+    /// name, counted against the `networks` quota.
     pub async fn create_project_network(
         &self,
         project: &str,
@@ -1691,8 +1693,8 @@ impl VmManager {
         quota: QuotaMode,
     ) -> Result<(Network, Vec<QuotaOverrun>), VmManagerError> {
         let p = self.projects.get(project)?.ok_or_else(|| TenancyError::NotFound(project.to_string()))?;
-        if req.mode != NetworkMode::Nat {
-            return Err(NetError::Invalid("project networks are NAT networks".into()).into());
+        if req.mode == NetworkMode::Bridged {
+            return Err(NetError::Invalid("project networks are NAT or isolated; bridged networks are host networks".into()).into());
         }
         if req.bridge.is_some() || req.vlan.is_some() {
             return Err(NetError::Invalid("project networks choose their own bridge; bridge and vlan can't be set".into()).into());

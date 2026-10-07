@@ -268,6 +268,40 @@ async fn network_controller_reports_the_phase() {
     h.manager.stop_controllers().await;
 }
 
+/// An isolated network's bridge is marked isolated in netd, which fences
+/// it off from the host (spec/security.md §8.4); bridges recorded before
+/// the flag existed are marked by the network controller.
+#[tokio::test(flavor = "multi_thread")]
+async fn isolated_networks_are_fenced_by_netd() {
+    use glidex_netd::proto::{BridgeRecord, Op};
+    use glidex_ovs::bridge::{BridgeSpec, Datapath};
+    let h = harness(true);
+    let netd = Netd::new(h._dir.path().join("run"));
+    let isolated = |name: &str| {
+        netd.call::<Vec<BridgeRecord>>(Op::ListBridges).unwrap().into_iter().find(|b| b.spec.name == name).map(|b| b.spec.isolated)
+    };
+
+    let (status, body) = request(&h.app, "POST", "/networks", Some(json!({"name": "iso", "mode": "isolated"}))).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let (status, body) = request(&h.app, "POST", "/networks", Some(json!({"name": "lab", "mode": "nat"}))).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(isolated("gxbr-iso"), Some(true));
+    assert_eq!(isolated("gxbr-lab"), Some(false), "NAT bridges are fenced by their NAT rules");
+
+    // A record from before the flag: the controller marks it.
+    let old = BridgeSpec { name: "gxbr-iso".into(), datapath: Datapath::System, mtu: None, adopt: false, isolated: false };
+    netd.call::<BridgeRecord>(Op::EnsureBridge(old)).unwrap();
+    assert_eq!(isolated("gxbr-iso"), Some(false));
+    h.manager.reconcile_network("iso").await.unwrap();
+    assert_eq!(isolated("gxbr-iso"), Some(true));
+    let (_, ev) = request(&h.app, "GET", "/networks/iso/events", None).await;
+    assert_eq!(ev["events"][0]["reason"], "BridgeUpdated", "{ev}");
+    // Then it is left alone.
+    h.manager.reconcile_network("iso").await.unwrap();
+    let (_, ev2) = request(&h.app, "GET", "/networks/iso/events", None).await;
+    assert_eq!(ev2["events"].as_array().unwrap().len(), ev["events"].as_array().unwrap().len(), "{ev2}");
+}
+
 /// netd lost its records (state database wiped): the NAT is created again
 /// while no VM uses the network, but only reported once one does, since a
 /// new subnet would renumber its VMs.
@@ -338,8 +372,28 @@ async fn project_networks_and_sharing() {
     assert_eq!(status, StatusCode::CREATED, "{net}");
     assert_eq!(net["project"], pa);
     assert!(net["bridge"].as_str().unwrap().starts_with("gxp-"), "{net}");
-    // Project networks are NAT only and pick their own bridge.
-    let (status, _) = request(&h.app, "POST", &format!("/projects/{pa}/networks"), Some(json!({"name": "x", "mode": "isolated"}))).await;
+    // Project networks are NAT or isolated, never bridged, and pick their own bridge.
+    let (status, _) = request(&h.app, "POST", &format!("/projects/{pa}/networks"), Some(json!({"name": "x", "mode": "bridged"}))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, _) =
+        request(&h.app, "POST", &format!("/projects/{pa}/networks"), Some(json!({"name": "x", "mode": "nat", "bridge": "gxbr-mine"}))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let pc = h.manager.projects().create("pc", String::new(), None).unwrap().id;
+    let (status, iso) = request(&h.app, "POST", &format!("/projects/{pc}/networks"), Some(json!({"name": "iso", "mode": "isolated"}))).await;
+    assert_eq!(status, StatusCode::CREATED, "{iso}");
+    assert_eq!((iso["mode"].as_str(), iso["port_type"].as_str(), iso["project"].as_str()), (Some("isolated"), Some("tap"), Some(pc.as_str())));
+    // vhost-user is allowed too, but only where the host has DPDK (this one hasn't).
+    let (status, body) = request(
+        &h.app,
+        "POST",
+        &format!("/projects/{pc}/networks"),
+        Some(json!({"name": "iso-dpdk", "mode": "isolated", "port_type": "vhost_user"})),
+    )
+    .await;
+    assert_eq!((status, body["error"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("unsupported_on_host")), "{body}");
+    // An isolated network has no subnet to choose.
+    let (status, _) =
+        request(&h.app, "POST", &format!("/projects/{pc}/networks"), Some(json!({"name": "iso2", "mode": "isolated", "subnet": "10.99.0.0/24"}))).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     // Quota: 2 project networks by default.
     let req = |n: &str| serde_json::from_value(json!({"name": n, "mode": "nat"})).unwrap();

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { useSearchParams } from "react-router-dom";
 import * as api from "../api";
 import { ApiRequestError } from "../api";
 import type {
@@ -9,8 +10,8 @@ import type {
   PortType,
 } from "../types";
 import { networkUsableBy, notReady } from "../types";
-import { useSession } from "../session";
 import { useLiveRefresh } from "../live";
+import { useCan, useSession } from "../session";
 import Modal from "../components/Modal";
 import { LoadingCard } from "../components/Loading";
 
@@ -198,16 +199,25 @@ function InstallDialog({
   );
 }
 
+/** Where a new network goes: `""` is a host network (net-admin), else a
+ * project id (the project's owner; spec/security.md §6.2). */
+type Scope = { value: string; label: string };
+
 function AddNetworkForm({
   bridges,
+  scopes,
+  initialScope,
   onDone,
   onCancel,
 }: {
   bridges: BridgeRecord[];
+  scopes: Scope[];
+  initialScope: string;
   onDone: () => void;
   onCancel: () => void;
 }) {
   const [name, setName] = useState("");
+  const [scope, setScope] = useState(initialScope);
   const [mode, setMode] = useState<NetworkMode>("nat");
   const [portType, setPortType] = useState<PortType>("tap");
   const [subnet, setSubnet] = useState("");
@@ -216,19 +226,31 @@ function AddNetworkForm({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  // Project networks are NAT or isolated, on a bridge glidex names.
+  const project = scope !== "";
+  const pickScope = (s: string) => {
+    setScope(s);
+    if (s !== "" && mode === "bridged") setMode("nat");
+  };
+
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     setBusy(true);
     setError(null);
     try {
-      await api.createNetwork({
-        name,
-        mode,
-        port_type: portType,
-        subnet: mode === "nat" && subnet ? subnet : undefined,
-        bridge: bridge || undefined,
-        vlan: vlan ? Number(vlan) : undefined,
-      });
+      const subnetValue = mode === "nat" && subnet ? subnet : undefined;
+      if (project) {
+        await api.createProjectNetwork(scope, { name, mode, port_type: portType, subnet: subnetValue });
+      } else {
+        await api.createNetwork({
+          name,
+          mode,
+          port_type: portType,
+          subnet: subnetValue,
+          bridge: bridge || undefined,
+          vlan: vlan ? Number(vlan) : undefined,
+        });
+      }
       onDone();
     } catch (err) {
       setError(errorText(err));
@@ -239,6 +261,23 @@ function AddNetworkForm({
   return (
     <form onSubmit={submit} className="space-y-4">
       {error && <p className="text-sm text-red-600">{error}</p>}
+      <div>
+        <label htmlFor="network-scope" className="block text-sm font-medium text-gray-700">
+          Network for
+        </label>
+        <select id="network-scope" className={`${inputClass} bg-white`} value={scope} onChange={(e) => pickScope(e.target.value)}>
+          {scopes.map((s) => (
+            <option key={s.value} value={s.value}>
+              {s.label}
+            </option>
+          ))}
+        </select>
+        <p className="mt-1 text-xs text-gray-500">
+          {project
+            ? "Only this project's VMs can use it, unless you share it. NAT or isolated; counts against the project's network quota."
+            : "A host network: grant it to projects after creating it."}
+        </p>
+      </div>
       <div>
         <label className="block text-sm font-medium text-gray-700">Name</label>
         <input
@@ -257,7 +296,7 @@ function AddNetworkForm({
           <select className={`${inputClass} bg-white`} value={mode} onChange={(e) => setMode(e.target.value as NetworkMode)}>
             <option value="nat">NAT (DHCP + masquerade)</option>
             <option value="isolated">Isolated (VM-to-VM)</option>
-            <option value="bridged">Bridged (existing bridge)</option>
+            {!project && <option value="bridged">Bridged (existing bridge)</option>}
           </select>
         </div>
         <div>
@@ -274,27 +313,29 @@ function AddNetworkForm({
           <input className={inputClass} placeholder="auto: first free /24 in 10.88.0.0/16" value={subnet} onChange={(e) => setSubnet(e.target.value)} />
         </div>
       )}
-      <div className="grid grid-cols-2 gap-4">
-        <div>
-          <label className="block text-sm font-medium text-gray-700">
-            Bridge {mode === "bridged" ? "" : "(optional)"}
-          </label>
-          {mode === "bridged" ? (
-            <select className={`${inputClass} bg-white`} required value={bridge} onChange={(e) => setBridge(e.target.value)}>
-              <option value="">Select a glidex bridge</option>
-              {bridges.map((b) => (
-                <option key={b.spec.name} value={b.spec.name}>{b.spec.name}</option>
-              ))}
-            </select>
-          ) : (
-            <input className={inputClass} placeholder={`gxbr-${name || "<name>"}`} value={bridge} onChange={(e) => setBridge(e.target.value)} />
-          )}
+      {!project && (
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700">
+              Bridge {mode === "bridged" ? "" : "(optional)"}
+            </label>
+            {mode === "bridged" ? (
+              <select className={`${inputClass} bg-white`} required value={bridge} onChange={(e) => setBridge(e.target.value)}>
+                <option value="">Select a glidex bridge</option>
+                {bridges.map((b) => (
+                  <option key={b.spec.name} value={b.spec.name}>{b.spec.name}</option>
+                ))}
+              </select>
+            ) : (
+              <input className={inputClass} placeholder={`gxbr-${name || "<name>"}`} value={bridge} onChange={(e) => setBridge(e.target.value)} />
+            )}
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700">VLAN (optional)</label>
+            <input className={inputClass} type="number" min={1} max={4094} value={vlan} onChange={(e) => setVlan(e.target.value)} />
+          </div>
         </div>
-        <div>
-          <label className="block text-sm font-medium text-gray-700">VLAN (optional)</label>
-          <input className={inputClass} type="number" min={1} max={4094} value={vlan} onChange={(e) => setVlan(e.target.value)} />
-        </div>
-      </div>
+      )}
       <div className="flex justify-end space-x-3 pt-2">
         <button type="button" className="px-4 py-2 text-sm bg-gray-200 rounded-lg" onClick={onCancel}>
           Cancel
@@ -323,7 +364,15 @@ function NetworkStatus({ n }: { n: Network }) {
 }
 
 export default function Networking() {
-  const { project, projectName } = useSession();
+  const { host, projects, project, projectName } = useSession();
+  const [params, setParams] = useSearchParams();
+  // Projects whose owners may create (and delete) project networks.
+  const projectCan = useCan(projects.map((p) => ({ action: "createProjectNetwork", resource: { type: "Project" as const, id: p.id } })));
+  const ownProjects = projects.filter((_, i) => projectCan?.[i]);
+  const scopes: Scope[] = [
+    ...(host.createNetwork ? [{ value: "", label: "Host network" }] : []),
+    ...ownProjects.map((p) => ({ value: p.id, label: `Project ${projectName(p.id)}` })),
+  ];
   const [status, setStatus] = useState<OvsStatus | null>(null);
   // Host status (Open vSwitch, bridges) needs host.read. Without it the
   // page falls back to the networks the current project can use.
@@ -391,7 +440,26 @@ export default function Networking() {
     }
   };
 
-  const canManage = status?.netd.access === "full" && status.host?.ovs_running;
+  // Without the host status, the server decides whether netd can do it.
+  const netdReady = hostView === false || (status?.netd.access === "full" && !!status.host?.ovs_running);
+  const canAdd = netdReady && scopes.length > 0;
+  const canDelete = (n: Network) =>
+    netdReady && (n.project ? ownProjects.some((p) => p.id === n.project) : host.createNetwork);
+  // `?new=<project id>` (from a project's page) opens the form for that project.
+  const requested = params.get("new");
+  // Otherwise a host network when allowed, else the selected project.
+  const initialScope =
+    scopes.find((s) => s.value === requested)?.value ??
+    (host.createNetwork ? "" : (scopes.find((s) => s.value === project)?.value ?? scopes[0]?.value ?? ""));
+  useEffect(() => {
+    if (requested !== null && canAdd && scopes.some((s) => s.value === requested)) setAdding(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [requested, canAdd]);
+  const closeForm = () => {
+    setAdding(false);
+    if (requested !== null) setParams({}, { replace: true });
+  };
+  // Without host rights, a network is shown by how this project gets it.
   const scope = (n: Network) =>
     n.project ? (n.project === project ? "project" : `shared by ${projectName(n.project)}`) : "host";
 
@@ -406,7 +474,7 @@ export default function Networking() {
               : "Open vSwitch bridges and the networks VMs attach to."}
           </p>
         </div>
-        {canManage && (
+        {canAdd && (
           <button
             className="px-4 py-2 text-sm font-medium text-white bg-sky-600 hover:bg-sky-700 rounded-lg"
             onClick={() => setAdding(true)}
@@ -431,7 +499,7 @@ export default function Networking() {
           <thead className="bg-gray-50 text-gray-600 text-left">
             <tr>
               <th className="px-4 py-3 font-medium">Network</th>
-              {hostView === false && <th className="px-4 py-3 font-medium">Scope</th>}
+              <th className="px-4 py-3 font-medium">{hostView === false ? "Scope" : "Project"}</th>
               <th className="px-4 py-3 font-medium">Mode</th>
               <th className="px-4 py-3 font-medium">Bridge</th>
               <th className="px-4 py-3 font-medium">VM port</th>
@@ -451,7 +519,15 @@ export default function Networking() {
             {shown.map((n) => (
               <tr key={n.name}>
                 <td className="px-4 py-3 font-mono">{n.name}</td>
-                {hostView === false && <td className="px-4 py-3 text-gray-600">{scope(n)}</td>}
+                <td className="px-4 py-3">
+                  {hostView === false ? (
+                    <span className="text-gray-600">{scope(n)}</span>
+                  ) : n.project ? (
+                    projectName(n.project)
+                  ) : (
+                    <span className="text-gray-500">host</span>
+                  )}
+                </td>
                 <td className="px-4 py-3">{n.mode}</td>
                 <td className="px-4 py-3 font-mono">{n.bridge}</td>
                 <td className="px-4 py-3">{n.port_type === "vhost_user" ? "vhost-user" : "tap"}</td>
@@ -460,7 +536,7 @@ export default function Networking() {
                   <NetworkStatus n={n} />
                 </td>
                 <td className="px-4 py-3 text-right">
-                  {canManage && (
+                  {canDelete(n) && (
                     <button
                       className="px-3 py-1 text-xs font-medium text-red-700 bg-red-50 hover:bg-red-100 rounded-lg"
                       onClick={() => remove(n.name)}
@@ -502,12 +578,14 @@ export default function Networking() {
         />
       )}
       {adding && (
-        <Modal title="Add Network" onClose={() => setAdding(false)}>
+        <Modal title="Add Network" onClose={closeForm}>
           <AddNetworkForm
             bridges={bridges}
-            onCancel={() => setAdding(false)}
+            scopes={scopes}
+            initialScope={initialScope}
+            onCancel={closeForm}
             onDone={() => {
-              setAdding(false);
+              closeForm();
               refresh();
             }}
           />
