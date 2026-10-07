@@ -34,6 +34,10 @@ pub struct RateParams {
     /// Series endpoints: add the p95 over the range.
     #[serde(default)]
     p95: Option<bool>,
+    /// Months in this zone instead of `metering.billing_timezone`
+    /// (fixed whole-hour offsets only, §8.1).
+    #[serde(default)]
+    tz: Option<String>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -51,7 +55,7 @@ struct Range {
 }
 
 fn range(p: &RateParams, billing_tz: &str, max_days: u64, default_days: Option<u64>) -> Result<Range, ApiErr> {
-    let tz = query::parse_tz(billing_tz).map_err(bad)?;
+    let tz = query::parse_tz(p.tz.as_deref().unwrap_or(billing_tz)).map_err(bad)?;
     let now = crate::metering::now_ms() / 1000;
     let (from, to, month) = match (&p.month, &p.from, default_days) {
         (Some(m), _, _) => {
@@ -167,7 +171,7 @@ async fn report(c: Caller, p: RateParams, family: Family) -> Result<Response, Ap
     };
     let in_scope = |s: &Subject| s.kind == kind && projects.as_ref().is_none_or(|ps| s.project.as_ref().is_some_and(|x| ps.contains(x)));
     let storage = |e: crate::metering::MeteringError| err(StatusCode::INTERNAL_SERVER_ERROR, "persistence_error", e.to_string());
-    let slots: Vec<(u64, SlotRow)> = meter.ledger().scan_slots(r.from, r.to, in_scope).map_err(storage)?;
+    let slots: Vec<(u64, SlotRow)> = meter.ledger().scan_slots(r.from, r.to, projects.as_ref(), in_scope).map_err(storage)?;
     let groups = group_slots(&slots, r.from, r.to, &group_by);
     // Averages and peaks from the hourly rows, by the same groups.
     let records: Vec<_> = meter.ledger().scan(r.from, r.to, projects.as_ref()).map_err(storage)?.into_iter().filter(|x| in_scope(&x.subject)).collect();
@@ -303,12 +307,19 @@ pub async fn disk_io(c: Caller, Query(p): Query<RateParams>) -> Result<Response,
 }
 
 /// A 5-minute series for graphs (§9.3): `points`, and `p95` with `?p95=true`.
-fn series(c: &Caller, p: &RateParams, kind: SubjectKind, group_by: &[GroupKey], keep: impl Fn(&Subject) -> bool) -> Result<Value, ApiErr> {
+fn series(
+    c: &Caller,
+    p: &RateParams,
+    kind: SubjectKind,
+    project: Option<&str>,
+    group_by: &[GroupKey],
+    keep: impl Fn(&Subject) -> bool,
+) -> Result<Value, ApiErr> {
     let meter = meter(c)?;
     let r = range(p, &meter.config().billing_timezone, 31, Some(1))?;
     let rows = meter
         .ledger()
-        .scan_slots(r.from, r.to, |s| s.kind == kind && keep(s))
+        .scan_slots(r.from, r.to, project.map(|p| BTreeSet::from([p.to_string()])).as_ref(), |s| s.kind == kind && keep(s))
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, "persistence_error", e.to_string()))?;
     let groups = group_slots(&rows, r.from, r.to, group_by);
     let one = |g: &GroupSlots| {
@@ -362,24 +373,24 @@ fn visible_network(c: &Caller, name: &str) -> Result<crate::network::Network, Ap
 
 pub async fn vm_bandwidth(c: Caller, Path(id): Path<String>, Query(p): Query<RateParams>) -> Result<Response, ApiErr> {
     let vm = visible_vm(&c, &id).await?;
-    let v = series(&c, &p, SubjectKind::Nic, &[GroupKey::Vm], |s| s.vm_id.as_deref() == Some(vm.id.as_str()))?;
+    let v = series(&c, &p, SubjectKind::Nic, Some(&vm.project), &[GroupKey::Vm], |s| s.vm_id.as_deref() == Some(vm.id.as_str()))?;
     Ok(Json(v).into_response())
 }
 
 pub async fn network_bandwidth(c: Caller, Path(name): Path<String>, Query(p): Query<RateParams>) -> Result<Response, ApiErr> {
     let n = visible_network(&c, &name)?;
-    let v = series(&c, &p, SubjectKind::Network, &[GroupKey::Network], |s| s.id == n.name)?;
+    let v = series(&c, &p, SubjectKind::Network, n.project.as_deref(), &[GroupKey::Network], |s| s.id == n.name)?;
     Ok(Json(v).into_response())
 }
 
 pub async fn vm_io(c: Caller, Path(id): Path<String>, Query(p): Query<RateParams>) -> Result<Response, ApiErr> {
     let vm = visible_vm(&c, &id).await?;
     let on_vm = |s: &Subject| s.vm_id.as_deref() == Some(vm.id.as_str());
-    let mut v = series(&c, &p, SubjectKind::Disk, &[GroupKey::Vm], on_vm)?;
+    let mut v = series(&c, &p, SubjectKind::Disk, Some(&vm.project), &[GroupKey::Vm], on_vm)?;
     let mut disks = serde_json::Map::new();
     let ids: BTreeSet<String> = c.manager().list_disks().into_iter().filter(|d| d.attached_to.as_deref() == Some(vm.id.as_str())).map(|d| d.id).collect();
     for d in ids {
-        disks.insert(d.clone(), series(&c, &p, SubjectKind::Disk, &[GroupKey::Disk], |s| s.id == d)?);
+        disks.insert(d.clone(), series(&c, &p, SubjectKind::Disk, Some(&vm.project), &[GroupKey::Disk], |s| s.id == d)?);
     }
     v["disks"] = disks.into();
     Ok(Json(v).into_response())
@@ -387,7 +398,7 @@ pub async fn vm_io(c: Caller, Path(id): Path<String>, Query(p): Query<RateParams
 
 pub async fn disk_io_series(c: Caller, Path(id): Path<String>, Query(p): Query<RateParams>) -> Result<Response, ApiErr> {
     let d = visible_disk(&c, &id).await?;
-    let v = series(&c, &p, SubjectKind::Disk, &[GroupKey::Disk], |s| s.id == d.id)?;
+    let v = series(&c, &p, SubjectKind::Disk, Some(&d.project), &[GroupKey::Disk], |s| s.id == d.id)?;
     Ok(Json(v).into_response())
 }
 

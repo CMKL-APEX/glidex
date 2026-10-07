@@ -4,6 +4,8 @@
 //! usage rows; `sources` reads the host; `sampler` maps VMs and disks to
 //! meters. [`Meter`] runs the rounds.
 
+#[cfg(test)]
+mod bench;
 pub mod ledger;
 pub mod net;
 pub mod query;

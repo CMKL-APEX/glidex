@@ -1,9 +1,9 @@
 # Metering: resource usage records
 
-> Status: **M0, M1 and M2 implemented** (2026-10-05; branches
-> `metering-m1`, `metering-m2`). Unit, integration, security and
-> Playwright tests pass, and so do the KVM host acceptance runs on a
-> deployed build (§15.4 and §15.5, *As built*). M3 is design only.
+> Status: **M0–M3 implemented** (2026-10-05; branches `metering-m1`,
+> `-m2`, `-m3`). Unit, integration, security and Playwright tests pass,
+> and so do the KVM host acceptance runs on a deployed build (§15.4–§15.6,
+> *As built*). §15.7 lists what comes after.
 >
 > Built differently from the first draft, with the reasons in the
 > sections named: the cgroup is found from the shim's
@@ -98,6 +98,8 @@ Records store integers in the base unit. Hour figures such as
 | `disk.read_time_ns` / `disk.write_time_ns` | counter | disk | ns | avg latency (ms) | hypervisor block counters, where available (§5.2) |
 | `disk.read_iops_peak` / `disk.write_iops_peak` / `disk.iops_peak` | max | disk | ops/s ×1000 | IOPS | max rate over one sample interval: read, write, read+write |
 | `disk.read_kBps_peak` / `disk.write_kBps_peak` / `disk.kBps_peak` | max | disk | kB/s (10³ B/s) | MB/s | same, for throughput |
+| `vmio.read_bytes` / `vmio.write_bytes` | counter | VM | bytes | GiB | cgroup `io.stat` `rbytes`/`wbytes`, host side, for capacity only (D4, §5.1; M3) |
+| `vmio.read_ops` / `vmio.write_ops` | counter | VM | ops | ops | cgroup `io.stat` `rios`/`wios` (D4, §5.1; M3) |
 | `net.rx_bytes` / `net.tx_bytes` | counter | NIC | bytes | GiB | the VM's bridge port, OVSDB `Interface.statistics` |
 | `net.rx_packets` / `net.tx_packets` | counter | NIC | packets | packets, avg/peak pps | the VM's bridge port, OVSDB `Interface.statistics` |
 | `net.pps_peak` | max | NIC | packets/s ×1000 | pps | max (rx+tx) rate over one sample interval |
@@ -249,7 +251,7 @@ read. Reads need no authorization: cgroup files are world-readable.
 | `cpu.stat` | `usage_usec` (also `user_usec`, `system_usec` for the live view) | `cpu.used` |
 | `memory.current` − `memory.stat inactive_file` | bytes | `mem.used`, `mem.peak` (working set: reclaimable page cache from buffered disk I/O is left out) |
 | `memory.stat` | `anon`, `file` (live view only) | n/a |
-| `io.stat` | `rbytes wbytes rios wios` per device, summed | `vmio.*` host-side secondary meters (D4) |
+| `io.stat` | `rbytes wbytes rios wios`, summed over the top device of each stack | `vmio.*` host-side secondary meters (D4) |
 
 Rules:
 
@@ -277,6 +279,13 @@ Rules:
   `CPUAccounting=` is deprecated on this systemd ("ignoring
   assignment"): CPU usage (`cpu.stat usage_usec`) is always available
   on cgroup v2, so nothing is set for it.
+- **Device stacks in `io.stat`.** The same I/O is listed once per
+  layer it passes through: on this host, LVM `dm-0` (252:0) and the
+  NVMe disk under it (259:0). A device found by walking down another
+  listed device's `/sys/dev/block/<maj:min>/slaves`, including a
+  slave partition's whole disk, is not counted again
+  (`sources::Host::host_io`). Checked live: only the `dm-0` line
+  counts.
 - **Detached runner** (dev runs and tests, `Runner::Detached`): there
   is no unit cgroup. CPU comes from
   `/proc/<hypervisor_pid>/stat` `utime+stime` (in ticks; × 10⁶ /
@@ -700,16 +709,17 @@ serde-JSON values, and declared in `metering/ledger.rs`:
 | `usage_hourly` | `<hour:010>/<project>/<subject_kind>/<subject_id>/<seq:04>` | `UsageRecord` (§7.2) |
 | `usage_daily` | `<day>/<project>/<subject_kind>/<subject_id>` | `UsageRecord` summed (M2; written when a day closes) |
 | `usage_monthly_rates` | `<YYYY-MM>/<project>/<subject_kind>/<subject_id>` | `BandwidthMonth`: final p95/avg/peak for a billing month (§8.5) |
-| `rate_5m` | `<hour:010>/<subject_kind>/<subject_id>` | `SlotRow`: the hour's twelve 5-minute slots (§8.5) |
+| `rate_5m` | `<hour:010>/<project>/<subject_kind>/<subject_id>` | `SlotRow`: the hour's twelve 5-minute slots (§8.5) |
 | `meter_meta` | `schema`, `last_round`, `retention_done` | small values |
 
 `hour` is the hour's start in Unix seconds, zero-padded so that keys
-sort by time. The key order makes the main query, "project P over
-`[from, to)`", a range scan on hour followed by a filter on project.
-A secondary index `usage_by_project`
-(`<project>/<hour>/<kind>/<id>/<seq>` → `()`) is added only if
-profiling shows the scan matters. At about 50 VMs × 3 subjects × 24 h
-that is 3.6k rows a day.
+sort by time. With the project second in every time-keyed table (`usage_hourly`,
+`usage_daily`, `rate_5m`), the main query, "project P over
+`[from, to)`", is one key range per hour and project
+(`<hour>/<P>/` … `<hour>/<P>/~`). Other projects' rows are never read,
+and no secondary index is needed (§15.6). `rate_5m` keys written by
+M2 builds (`<hour>/<kind>/<id>`) are re-keyed once when the ledger
+opens.
 
 `SlotRow` holds **per-slot deltas**, not rates. Rates are derived when
 read, so no rounding is stored. Byte and time fields are `u64`: at
@@ -754,10 +764,12 @@ migration. Unknown meters pass through the API unchanged.
 
 ### 7.3 Retention
 
-`metering.retention_days` defaults to 400 (13 months, so a year can be
-compared with the year before). The range is 1–3650. A daily task
-deletes `usage_hourly` rows older than that, after M2 has rolled them
-into `usage_daily`. Daily rows are kept for `retention_daily_days`
+`metering.retention_days` defaults to 90; the range is 1–3650. A daily
+task rolls `usage_hourly` rows older than that into `usage_daily` and
+deletes them. Day rows start at midnight in `billing_timezone` (a
+whole number of hours from UTC), so old billing months still sum
+exactly. Only reports in another zone (`tz=`) lose hour precision
+there. It was 400 in the first draft; M3 measured the cost (§15.6). Daily rows are kept for `retention_daily_days`
 (default 1825). Cursors and open accumulators for subjects that no
 longer exist are deleted once their last hour is closed.
 
@@ -1137,7 +1149,7 @@ mirrored in `packaging/control-plane.json.example`:
   "sample_secs": 30,
   "storage_secs": 900,
   "close_grace_secs": 120,
-  "retention_days": 400,
+  "retention_days": 90,
   "retention_daily_days": 1825,
   "retention_rate_days": 100,
   "billing_timezone": "UTC"
@@ -1669,6 +1681,36 @@ down.
 
 *Accept:* the round finishes within `sample_secs / 2` at 200 VMs; the
 query p95 is under 200 ms for a month of one project.
+
+**As built (M3), 2026-10-05.**
+- **`vmio.*`:** the per-VM `io.stat` meters are summed over the top of
+  each device stack (§5.1). They appear in `/usage` and as "Host disk
+  I/O" columns on the Usage page.
+- **`tz=`:** accepted by `/usage` (since M1.5) and now by
+  `/usage/bandwidth` and `/usage/disk-io`, for months in another
+  whole-hour zone.
+- **Load test.** `metering/bench.rs`, run with `cargo test --release
+  --lib metering::bench -- --ignored --nocapture`
+  (`GLIDEX_BENCH_DAYS` shortens it): 200 VMs in 10 projects, 2 NICs
+  and 2 disks each, 10 networks, and a month of history with every
+  5-minute slot filled.
+
+  | | First build | With per-project key ranges |
+  |---|---|---|
+  | One sampling round | 41 ms | 39 ms (budget 15 s) |
+  | Usage query, one project, one month, by VM | 972 ms | **146 ms** (target 200 ms) |
+  | Bandwidth p95, one project, one month, by VM | 1.65 s | 254 ms |
+
+  The first build filtered rows by project after reading them. It
+  now reads only that project's key ranges (§7.1), so no
+  `usage_by_project` index is needed.
+- **Size.** One day for this fleet (1010 subjects) is 23k hourly rows
+  (387 B each, 8 MiB) and 19k slot rows (669 B each, 12 MiB). The redb
+  file grows about 3× the live data (copy-on-write pages), about 2 GiB
+  for the month. With the defaults (90 days hourly, 100 days of slots,
+  5 years of days), the steady state is about 2.5 GB of data for 200
+  VMs, roughly 12 MB per VM. Hourly retention dropped from 400 to 90
+  days for this reason (§7.3).
 
 ### 15.7 After M3
 

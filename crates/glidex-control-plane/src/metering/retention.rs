@@ -56,7 +56,7 @@ pub fn run(ledger: &Ledger, cfg: &MeteringConfig, tz: &Tz, now: u64) -> Result<(
         }
         let flag = format!("finalized/{start}");
         if ledger.meta(&flag)?.is_none() {
-            let slots = ledger.scan_slots(start, end, |_| true)?;
+            let slots = ledger.scan_slots(start, end, None, |_| true)?;
             for (key, value) in month_figures(&slots, start, end) {
                 ledger.put_month_rates(start, &key, &value)?;
             }
@@ -65,7 +65,7 @@ pub fn run(ledger: &Ledger, cfg: &MeteringConfig, tz: &Tz, now: u64) -> Result<(
         start = end;
     }
     // 2-4. Roll up and expire.
-    ledger.roll_up_hours_before(now.saturating_sub(cfg.retention_days * DAY))?;
+    ledger.roll_up_hours_before(now.saturating_sub(cfg.retention_days * DAY), tz.offset_secs)?;
     ledger.prune_slots_before(now.saturating_sub(cfg.retention_rate_days * DAY))?;
     ledger.prune_daily_before(now.saturating_sub(cfg.retention_daily_days * DAY))?;
     ledger.prune_month_rates_before(now.saturating_sub(cfg.retention_daily_days * DAY))?;
@@ -75,9 +75,43 @@ pub fn run(ledger: &Ledger, cfg: &MeteringConfig, tz: &Tz, now: u64) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::super::ledger::{LedgerSettings, Origin, Subject, HOUR_MS};
+    use super::super::query::Granularity;
     use super::*;
     use redb::Database;
     use std::sync::Arc;
+
+    /// Days roll up at the billing zone's midnight, so an old billing
+    /// month (here Bangkok, +07:00) still sums exactly.
+    #[test]
+    fn roll_up_keeps_billing_months_exact() {
+        use super::super::query::{aggregate, month_bounds, parse_tz, Query};
+        let dir = tempfile::TempDir::new().unwrap();
+        let l = Ledger::new(Arc::new(Database::create(dir.path().join("t.db")).unwrap()), LedgerSettings::from_secs(30, 120)).unwrap();
+        let bkk = parse_tz("+07:00").unwrap();
+        let (oct, nov) = month_bounds("2026-10", &bkk).unwrap();
+        l.set_started_at_for_test((oct - 2 * DAY) * 1000);
+        let s = Subject::new(SubjectKind::Vm, "vm", "vm", Some("p".into()));
+        // 1 unit per hour from two days before October to two days after.
+        let mut r = l.begin_round((nov + 3 * DAY) * 1000).unwrap();
+        let mut t = oct - 2 * DAY;
+        r.counter(&s, "cpu.used", "i", 0, t * 1000, Origin::ZeroAt(t * 1000)).unwrap();
+        let mut v = 0;
+        while t < nov + 2 * DAY {
+            t += 3600;
+            v += 1000;
+            r.counter(&s, "cpu.used", "i", v, t * 1000, Origin::Unknown).unwrap();
+        }
+        l.commit(r).unwrap();
+        let month = |l: &Ledger| {
+            let rows = l.scan(oct, nov, None).unwrap();
+            let q = Query { from: oct, to: nov, granularity: Granularity::Month, tz: bkk.clone(), group_by: vec![], meters: None, now: nov };
+            aggregate(&rows, &q).iter().map(|r| r.meters["cpu.used"]).sum::<u64>()
+        };
+        let before = month(&l);
+        assert_eq!(before, 744 * 1000, "31 days of hours");
+        l.roll_up_hours_before(nov + 2 * DAY, bkk.offset_secs).unwrap();
+        assert_eq!(month(&l), before, "exact after the roll-up");
+    }
 
     #[test]
     fn months_are_finalized_once_and_slots_expire() {
@@ -115,7 +149,7 @@ mod tests {
         run(&l, &cfg, &Tz::utc(), now).unwrap();
         // Long after: slots expire, the month's figures stay.
         run(&l, &cfg, &Tz::utc(), now + 200 * DAY).unwrap();
-        assert!(l.scan_slots(0, u64::MAX / 10, |_| true).unwrap().is_empty());
+        assert!(l.scan_slots(0, u64::MAX / 10, None, |_| true).unwrap().is_empty());
         assert_eq!(l.month_rates(sept, "bw/vm/").unwrap().len(), 1);
     }
 }

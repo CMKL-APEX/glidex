@@ -557,6 +557,11 @@ async fn usage_is_project_scoped_and_exports_are_audited() {
     assert!(headers[header::CONTENT_TYPE].to_str().unwrap().starts_with("text/csv"));
     let (s, body, _) = h.call("GET", "/usage/disk-io?group_by=nic", None, &a).await;
     assert_eq!(s, StatusCode::BAD_REQUEST, "{body}");
+    // Months in another whole-hour zone (`tz=`, §15.6); half-hour zones are refused.
+    let (s, body, _) = h.call("GET", "/usage/bandwidth?project=pa&tz=%2B07:00", None, &v).await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    let (s, body, _) = h.call("GET", "/usage/disk-io?project=pa&tz=%2B05:30", None, &v).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{body}");
 }
 
 // ---- PAM through an in-process glidex-authd -------------------------------

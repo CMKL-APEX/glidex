@@ -14,6 +14,19 @@ pub struct VmUsage {
     pub memory_bytes: u64,
     /// `true` when read from `/proc` rather than a cgroup (`source_proc`).
     pub from_proc: bool,
+    /// Host-side block I/O of the cgroup (`io.stat`), if accounted.
+    pub io: Option<HostIo>,
+}
+
+/// A cgroup's block I/O as the host sees it, after the page cache and
+/// including qcow2 metadata (`vmio.*`, D4): summed over the top device
+/// of each stack, so I/O through LVM isn't counted again on its disk.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct HostIo {
+    pub read_bytes: u64,
+    pub write_bytes: u64,
+    pub read_ops: u64,
+    pub write_ops: u64,
 }
 
 /// Root of the host's filesystems (`/` in production).
@@ -21,11 +34,13 @@ pub struct VmUsage {
 pub struct Host {
     pub proc_root: PathBuf,
     pub cgroup_root: PathBuf,
+    /// `/sys` (block device stacking for `io.stat`).
+    pub sys_root: PathBuf,
 }
 
 impl Default for Host {
     fn default() -> Self {
-        Self { proc_root: "/proc".into(), cgroup_root: "/sys/fs/cgroup".into() }
+        Self { proc_root: "/proc".into(), cgroup_root: "/sys/fs/cgroup".into(), sys_root: "/sys".into() }
     }
 }
 
@@ -57,7 +72,52 @@ impl Host {
             .ok()
             .and_then(|t| t.lines().find_map(|l| l.strip_prefix("inactive_file ")?.trim().parse::<u64>().ok()))
             .unwrap_or(0);
-        Some(VmUsage { cpu_usec, memory_bytes: current.saturating_sub(inactive_file), from_proc: false })
+        let io = std::fs::read_to_string(cgroup.join("io.stat")).ok().map(|t| self.host_io(&t));
+        Some(VmUsage { cpu_usec, memory_bytes: current.saturating_sub(inactive_file), from_proc: false, io })
+    }
+
+    /// Sum `io.stat` over devices that are not underneath another listed
+    /// device (a dm/md device's slaves, and a slave partition's disk).
+    pub fn host_io(&self, io_stat: &str) -> HostIo {
+        let lines: Vec<(&str, &str)> = io_stat.lines().filter_map(|l| l.split_once(' ')).collect();
+        let mut below: std::collections::BTreeSet<String> = Default::default();
+        let mut todo: Vec<String> = lines.iter().map(|(d, _)| d.to_string()).collect();
+        while let Some(dev) = todo.pop() {
+            let Ok(slaves) = std::fs::read_dir(self.sys_root.join("dev/block").join(&dev).join("slaves")) else { continue };
+            for slave in slaves.flatten() {
+                let name = slave.file_name().to_string_lossy().into_owned();
+                let class = self.sys_root.join("class/block").join(&name);
+                // The slave itself, and its whole disk if it is a partition.
+                let mut devs = vec![std::fs::read_to_string(class.join("dev")).unwrap_or_default()];
+                if class.join("partition").exists() {
+                    if let Ok(real) = std::fs::canonicalize(&class) {
+                        if let Some(parent) = real.parent() {
+                            devs.push(std::fs::read_to_string(parent.join("dev")).unwrap_or_default());
+                        }
+                    }
+                }
+                for d in devs.into_iter().map(|d| d.trim().to_string()).filter(|d| !d.is_empty()) {
+                    if below.insert(d.clone()) {
+                        todo.push(d);
+                    }
+                }
+            }
+        }
+        let mut out = HostIo::default();
+        for (dev, kv) in lines.into_iter().filter(|(d, _)| !below.contains(*d)) {
+            let _ = dev;
+            for (k, v) in kv.split_whitespace().filter_map(|f| f.split_once('=')) {
+                let v: u64 = v.parse().unwrap_or(0);
+                match k {
+                    "rbytes" => out.read_bytes += v,
+                    "wbytes" => out.write_bytes += v,
+                    "rios" => out.read_ops += v,
+                    "wios" => out.write_ops += v,
+                    _ => {}
+                }
+            }
+        }
+        out
     }
 
     /// CPU and memory of one process (a detached instance's hypervisor),
@@ -83,7 +143,7 @@ impl Host {
             .find_map(|l| l.strip_prefix("VmRSS:"))
             .and_then(|v| v.split_whitespace().next()?.parse().ok())
             .unwrap_or(0);
-        Some(VmUsage { cpu_usec: ticks * 1_000_000 / hz, memory_bytes: rss_kib * 1024, from_proc: true })
+        Some(VmUsage { cpu_usec: ticks * 1_000_000 / hz, memory_bytes: rss_kib * 1024, from_proc: true, io: None })
     }
 }
 
@@ -130,7 +190,7 @@ mod tests {
 
     fn host() -> (tempfile::TempDir, Host) {
         let dir = tempfile::TempDir::new().unwrap();
-        let host = Host { proc_root: dir.path().join("proc"), cgroup_root: dir.path().join("cg") };
+        let host = Host { proc_root: dir.path().join("proc"), cgroup_root: dir.path().join("cg"), sys_root: dir.path().join("sys") };
         (dir, host)
     }
 
@@ -148,7 +208,28 @@ mod tests {
         write(&cg.join("cpu.stat"), "usage_usec 123456789\nuser_usec 100000000\nsystem_usec 23456789\nnr_periods 0\n");
         write(&cg.join("memory.current"), "957349888\n"); // 913 MiB
         write(&cg.join("memory.stat"), "anon 540016640\nfile 405798912\ninactive_file 405798912\n"); // 387 MiB cache
-        assert_eq!(h.cgroup_usage(&cg), Some(VmUsage { cpu_usec: 123456789, memory_bytes: 526 << 20, from_proc: false }));
+        assert_eq!(h.cgroup_usage(&cg), Some(VmUsage { cpu_usec: 123456789, memory_bytes: 526 << 20, from_proc: false, io: None }));
+    }
+
+    /// This host's layout (2026-10-05): LVM `dm-0` (252:0) on
+    /// `nvme0n1p3`, a partition of `nvme0n1` (259:0); `io.stat` lists the
+    /// same I/O on both.
+    #[test]
+    fn host_io_counts_the_top_of_each_stack() {
+        let (_d, h) = host();
+        let sys = &h.sys_root;
+        std::fs::create_dir_all(sys.join("dev/block/252:0/slaves/nvme0n1p3")).unwrap();
+        std::fs::create_dir_all(sys.join("devices/nvme/nvme0n1/nvme0n1p3")).unwrap();
+        write(&sys.join("devices/nvme/nvme0n1/dev"), "259:0\n");
+        write(&sys.join("devices/nvme/nvme0n1/nvme0n1p3/dev"), "259:3\n");
+        write(&sys.join("devices/nvme/nvme0n1/nvme0n1p3/partition"), "3\n");
+        std::fs::create_dir_all(sys.join("class/block")).unwrap();
+        std::os::unix::fs::symlink(sys.join("devices/nvme/nvme0n1/nvme0n1p3"), sys.join("class/block/nvme0n1p3")).unwrap();
+        let stat = "259:0 rbytes=51646464 wbytes=239923200 rios=1471 wios=54429 dbytes=0 dios=0\n\
+                    252:0 rbytes=51646464 wbytes=239923200 rios=1471 wios=54380 dbytes=0 dios=0\n";
+        assert_eq!(h.host_io(stat), HostIo { read_bytes: 51646464, write_bytes: 239923200, read_ops: 1471, write_ops: 54380 });
+        // Two unrelated disks are both counted.
+        assert_eq!(h.host_io("8:0 rbytes=1 wbytes=2 rios=3 wios=4\n8:16 rbytes=10 wbytes=20 rios=30 wios=40\n").read_bytes, 11);
     }
 
     #[test]
@@ -175,7 +256,7 @@ mod tests {
             }
             let cg = h.cgroup_of(pid).expect("shim cgroup");
             let u = h.cgroup_usage(&cg).expect("cgroup usage");
-            println!("{}: cpu {} s, memory {} MiB", cg.file_name().unwrap().to_string_lossy(), u.cpu_usec / 1_000_000, u.memory_bytes >> 20);
+            println!("{}: cpu {} s, memory {} MiB, io {:?}", cg.file_name().unwrap().to_string_lossy(), u.cpu_usec / 1_000_000, u.memory_bytes >> 20, u.io);
             assert!(u.cpu_usec > 0 && u.memory_bytes > 0);
             seen += 1;
         }
@@ -191,7 +272,7 @@ mod tests {
         write(&h.proc_root.join("99/stat"), stat);
         write(&h.proc_root.join("99/status"), "Name:\tqemu\nVmRSS:\t  204800 kB\n");
         let u = h.proc_usage(99, Some(5555)).unwrap();
-        assert_eq!(u, VmUsage { cpu_usec: 400 * 1_000_000 / hz, memory_bytes: 200 << 20, from_proc: true });
+        assert_eq!(u, VmUsage { cpu_usec: 400 * 1_000_000 / hz, memory_bytes: 200 << 20, from_proc: true, io: None });
         assert_eq!(h.proc_usage(99, Some(1)), None, "pid reused");
         assert_eq!(h.proc_usage(100, None), None);
     }

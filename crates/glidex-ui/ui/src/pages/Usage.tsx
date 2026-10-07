@@ -31,6 +31,9 @@ const USAGE_METERS: [string, string][] = [
   ["image.stored", "Images stored"],
   ["net.bytes", "Network"],
   ["net.ext_bytes", "of which internet"],
+  // Host-side, after the page cache (capacity; spec/metering.md D4).
+  ["vmio.read_bytes", "Host disk I/O read"],
+  ["vmio.write_bytes", "Host disk I/O write"],
 ];
 const NETWORK_METERS: [string, string][] = [
   ["bridge.bytes", "Traffic through the network"],

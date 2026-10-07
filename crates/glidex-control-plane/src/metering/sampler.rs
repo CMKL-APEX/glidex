@@ -98,6 +98,17 @@ fn sample_vm(round: &mut Round, vm: &Vm, disks: &[Disk], host: &Host, now: u64) 
     let used_mib = u.memory_bytes / MIB + if c.hugepages { c.mem_size_mib as u64 } else { 0 };
     round.gauge_run(&s, "mem.used", run, launched, used_mib, now, now, prev_end)?;
     round.max(&s, "mem.peak", used_mib, now);
+    // Host-side I/O (D4): for capacity, next to the guest-level disk.*.
+    if let Some(io) = u.io {
+        for (m, v) in [
+            ("vmio.read_bytes", io.read_bytes),
+            ("vmio.write_bytes", io.write_bytes),
+            ("vmio.read_ops", io.read_ops),
+            ("vmio.write_ops", io.write_ops),
+        ] {
+            round.counter(&s, m, &reset_key, v, now, Origin::ZeroAt(launched))?;
+        }
+    }
     round.live(&s, "mem_used_mib", used_mib as f64);
     if u.from_proc {
         round.flag(&s, now, Flag::SourceProc);
@@ -286,7 +297,7 @@ mod tests {
         let db = Arc::new(Database::create(dir.path().join("t.db")).unwrap());
         let l = Ledger::new(db, LedgerSettings::from_secs(30, 120)).unwrap();
         l.set_started_at_for_test(0);
-        let host = Host { proc_root: dir.path().join("proc"), cgroup_root: dir.path().join("cg") };
+        let host = Host { proc_root: dir.path().join("proc"), cgroup_root: dir.path().join("cg"), sys_root: dir.path().join("sys") };
         (dir, l, host)
     }
 
