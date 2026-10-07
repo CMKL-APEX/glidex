@@ -122,7 +122,7 @@ pub async fn vm_usage(c: Caller, Path(id): Path<String>, Query(p): Query<UsagePa
     let (e, es) = vm_entities(&vm);
     c.require_visible("readVm", e, es, "VM")?;
     let disks: BTreeSet<String> = if list(&p.include).iter().any(|i| i == "disks") {
-        c.manager().list_disks().into_iter().filter(|d| d.attached_to.as_deref() == Some(vm.id.as_str())).map(|d| d.id).collect()
+        c.manager().attached_disk_ids(&vm.id)
     } else {
         BTreeSet::new()
     };

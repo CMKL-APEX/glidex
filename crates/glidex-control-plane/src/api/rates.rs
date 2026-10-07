@@ -377,8 +377,7 @@ pub async fn vm_io(c: Caller, Path(id): Path<String>, Query(p): Query<RateParams
     let on_vm = |s: &Subject| s.vm_id.as_deref() == Some(vm.id.as_str());
     let mut v = series(&c, &p, SubjectKind::Disk, &[GroupKey::Vm], on_vm)?;
     let mut disks = serde_json::Map::new();
-    let ids: BTreeSet<String> = c.manager().list_disks().into_iter().filter(|d| d.attached_to.as_deref() == Some(vm.id.as_str())).map(|d| d.id).collect();
-    for d in ids {
+    for d in c.manager().attached_disk_ids(&vm.id) {
         disks.insert(d.clone(), series(&c, &p, SubjectKind::Disk, &[GroupKey::Disk], |s| s.id == d)?);
     }
     v["disks"] = disks.into();
