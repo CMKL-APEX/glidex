@@ -21,6 +21,7 @@ fresh reader cannot infer just by reading the source.
 | [images.md](images.md) | Image catalog + verified download, managed disks: create/delete, grow/shrink, root-partition extend |
 | [credentials.md](credentials.md) | Credential store: guest logins for cloud-init, hashing, security rules |
 | [networking.md](networking.md) | VM networking: `glidex-ovs` + root `glidex-netd` — OVS install (distro or pinned source), bridges, uplinks with IP migration, NAT + DHCP, vhost-user/tap VM ports; host-test findings in §0 |
+| [dpu.md](dpu.md) | DPU integration (design): virtio-net ports on OVS-DOCA switched by glidex's own single-node OVN (NB/SB/northd as glidex-owned units, private CA, host chassis), a DPU agent, VFIO attach, `dpu_*`/`ovn_*` netd ops, DPU reinitialization from a BFB over rshim (§9.4), host OVS-DPDK vhost-user fallback on the same logical switch; hardware findings in §0 |
 | [console.md](console.md) | Console proxy in the shim, listener invariant, log append/rotation, WebSocket bridge, xterm |
 | [cli.md](cli.md) | `gxctl` interactive CLI, command semantics, console attach loop |
 | [web-ui.md](web-ui.md) | Vite + React UI structure, routes, API client, dev-proxy |
