@@ -6,10 +6,13 @@ import { api, del, expect, field, test } from "../fixtures";
 
 const PROJECT = "e2e-netproj";
 const NETWORK = "e2e-iso";
+const OWNER_NETWORK = "e2e-own";
 
 async function cleanup() {
-  const n = (await api<any[]>("/networks")).find((x) => x.name === NETWORK);
-  if (n) await del(`/networks/${NETWORK}?wait=30`);
+  for (const name of [NETWORK, OWNER_NETWORK]) {
+    if ((await api<any[]>("/networks")).some((x) => x.name === name)) await del(`/networks/${name}?wait=30`);
+  }
+  for (const t of (await api<any[]>("/tokens")).filter((t) => t.name === "e2e-net-owner")) await del(`/tokens/${t.id}`);
   const p = (await api<any[]>("/projects")).find((x) => x.name === PROJECT);
   if (p) await del(`/projects/${p.id}`);
 }
@@ -54,4 +57,53 @@ test("a project network is created from the Networking page", async ({ page }) =
   await page.goto("/networking");
   await page.getByRole("row", { name: new RegExp(NETWORK) }).getByRole("button", { name: "Delete" }).click();
   await expect(page.getByRole("row", { name: new RegExp(NETWORK) })).toHaveCount(0, { timeout: 30_000 });
+});
+
+// A project owner without host rights (a token narrowed to role.owner):
+// the OVS status is refused (host.read), and the page still lists and
+// creates the project's networks.
+test.describe("as a project owner", () => {
+  test.use({ ignoredConsoleErrors: /status of 403/ });
+
+  test("creates a project network without host rights", async ({ browser }) => {
+    const status = await api("/ovs/status");
+    test.skip(status?.netd?.access !== "full" || status?.host?.ovs_running !== true, "needs glidex-netd and a running Open vSwitch");
+    const project =
+      (await api<any[]>("/projects")).find((x) => x.name === PROJECT) ?? (await api("/projects", { method: "POST", body: { name: PROJECT } }));
+    const t = await api("/tokens", {
+      method: "POST",
+      body: { name: "e2e-net-owner", kind: "personal", expires_in_days: 1, roles: [{ role: "role.owner", project: project.id }] },
+    });
+    expect(t.token, JSON.stringify(t)).toBeTruthy();
+    const context = await browser.newContext({
+      storageState: { cookies: [], origins: [] },
+      extraHTTPHeaders: { Authorization: `Bearer ${t.token}` },
+    });
+    const page = await context.newPage();
+    const errors: string[] = [];
+    page.on("pageerror", (e) => errors.push(e.message));
+    page.on("dialog", (d) => d.accept()); // Delete confirms
+    try {
+      await page.goto("/networking");
+      await expect(page.getByRole("heading", { name: "Networking" })).toBeVisible();
+      await expect(page.getByText(/not allowed: readOvsStatus/)).toHaveCount(0);
+      await expect(page.getByText("Open vSwitch:")).toHaveCount(0);
+
+      // Only the owner's project is offered; no host network.
+      await page.getByRole("button", { name: "Add Network" }).click();
+      const scope = field(page, "Network for");
+      await expect(scope.locator("option")).toHaveText([`Project ${PROJECT}`]);
+      await page.getByPlaceholder("lab").fill(OWNER_NETWORK);
+      await page.getByRole("button", { name: "Create", exact: true }).click();
+      const row = page.getByRole("row", { name: new RegExp(OWNER_NETWORK) });
+      await expect(row).toContainText(PROJECT, { timeout: 30_000 });
+      await expect(row).toContainText("nat");
+
+      await row.getByRole("button", { name: "Delete" }).click();
+      await expect(page.getByRole("row", { name: new RegExp(OWNER_NETWORK) })).toHaveCount(0, { timeout: 30_000 });
+      expect(errors).toEqual([]);
+    } finally {
+      await context.close();
+    }
+  });
 });

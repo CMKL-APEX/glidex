@@ -356,8 +356,11 @@ checked per project). A project network offers NAT or isolated mode and
 tap or vhost-user ports, without bridge or VLAN, and is created with
 `POST /projects/{id}/networks`. The network table has a Project column
 (`host` for host networks), and Delete shows only for networks the caller
-may delete. The page reads `/ovs/bridges` only when allowed; a project
-owner without host rights still sees the networks.
+may delete. The OVS status (`readOvsStatus`) and `/ovs/bridges` are host
+details (`host.read`): when they are refused, the page hides the status
+panel and still lists the networks, and a project owner without host
+rights creates and deletes its project's networks; netd's readiness is
+then checked by the server.
 `pages/Networking.tsx`'s Status column shows a network's phase, or
 "deleting" (with the `Ready` message, reason on hover) while a deletion waits (netd
 unreachable, a VM still on it); like image deletes, network deletes

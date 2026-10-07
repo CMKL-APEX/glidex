@@ -374,6 +374,9 @@ export default function Networking() {
     ...ownProjects.map((p) => ({ value: p.id, label: `Project ${projectName(p.id)}` })),
   ];
   const [status, setStatus] = useState<OvsStatus | null>(null);
+  // The OVS status is a host detail (`readOvsStatus`, host.read): a
+  // project owner without it still sees and manages its networks.
+  const [statusHidden, setStatusHidden] = useState(false);
   const [networks, setNetworks] = useState<Network[]>([]);
   const [bridges, setBridges] = useState<BridgeRecord[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -382,9 +385,17 @@ export default function Networking() {
 
   const refresh = useCallback(async () => {
     try {
-      const s = await api.ovsStatus();
+      let s: OvsStatus | null = null;
+      try {
+        s = await api.ovsStatus();
+      } catch (e) {
+        if (!(e instanceof ApiRequestError && e.status === 403)) throw e;
+      }
       setStatus(s);
-      if (s.netd.access === "full") {
+      setStatusHidden(s === null);
+      if (s === null) {
+        setNetworks((await api.listNetworks()).sort((a, c) => a.name.localeCompare(c.name)));
+      } else if (s.netd.access === "full") {
         // Bridges are host details: a project owner may not read them.
         const [n, b] = await Promise.all([api.listNetworks(), api.listBridges().catch(() => [] as BridgeRecord[])]);
         n.sort((a, c) => a.name.localeCompare(c.name));
@@ -422,7 +433,8 @@ export default function Networking() {
     }
   };
 
-  const netdReady = status?.netd.access === "full" && !!status.host?.ovs_running;
+  // Without the status, the server decides whether netd can do it.
+  const netdReady = statusHidden || (status?.netd.access === "full" && !!status.host?.ovs_running);
   const canAdd = netdReady && scopes.length > 0;
   const canDelete = (n: Network) =>
     netdReady && (n.project ? ownProjects.some((p) => p.id === n.project) : host.createNetwork);
@@ -464,7 +476,7 @@ export default function Networking() {
         <div className="p-4 bg-red-50 border border-red-200 rounded-lg text-red-700">{error}</div>
       )}
 
-      {status === null ? (
+      {statusHidden ? null : status === null ? (
         <LoadingCard />
       ) : (
         <StatusPanel status={status} onInstall={() => setInstalling(true)} />
