@@ -1,9 +1,10 @@
 //! The network controller (spec/reconciliation.md §10.3): keeps netd's
 //! records in line with the control plane's networks. netd reconciles the
 //! host (OVS, nftables, dnsmasq) from its own records; this re-creates a
-//! bridge netd lost, and reports what is missing. A lost NAT is reported,
-//! not re-created: its subnet lives only in netd, and a new one would
-//! renumber every VM on it.
+//! bridge netd lost, and reports what is missing. A lost NAT is re-created
+//! only while no VM uses the network (netd's records were wiped, say):
+//! its subnet lives only in netd, and a new one would renumber every VM on
+//! it. With VMs on it, it is reported instead.
 
 use crate::controller::vm::set_cond;
 use crate::models::Tristate;
@@ -12,6 +13,7 @@ use crate::state::{VmManager, VmManagerError};
 use crate::store::{event_key, Event, EventKind};
 use glidex_netd::proto::{BridgeRecord, NatInfo, Op};
 use glidex_ovs::bridge::{BridgeSpec, Datapath};
+use glidex_ovs::nat::NatSpec;
 use glidex_ovs::vm_port::VmPortKind;
 use std::time::Duration;
 
@@ -74,7 +76,32 @@ impl VmManager {
                 .map_err(|e| VmManagerError::PersistenceError(e.to_string()))?
             {
                 Ok(nats) => match nats.iter().find(|n| n.state.bridge == net.bridge) {
-                    None => problems.push("netd has no NAT for it".into()),
+                    None => {
+                        let users = Self::network_users(&*self.vms.read().await, &net.name);
+                        if !net.owns_bridge || !users.is_empty() {
+                            problems.push("netd has no NAT for it".into());
+                        } else {
+                            let spec = NatSpec { bridge: net.bridge.clone(), subnet: None, dns: net.dns };
+                            let netd = self.netd.clone();
+                            match tokio::task::spawn_blocking(move || netd.call::<NatInfo>(Op::EnsureNat(spec)))
+                                .await
+                                .map_err(|e| VmManagerError::PersistenceError(e.to_string()))?
+                            {
+                                Ok(n) => {
+                                    let _ = self.store.push_event(
+                                        &event_key("network", &net.name),
+                                        Event::new(
+                                            "controller",
+                                            EventKind::Warning,
+                                            "NatRestored",
+                                            format!("netd had no NAT for {}; created {} (no VM uses the network)", net.bridge, n.state.subnet),
+                                        ),
+                                    );
+                                }
+                                Err(e) => problems.push(format!("netd has no NAT for it and creating one failed: {}", e)),
+                            }
+                        }
+                    }
                     Some(n) if n.state.dns && !n.dnsmasq_running => problems.push("its DHCP/DNS server (dnsmasq) is not running".into()),
                     Some(_) => {}
                 },

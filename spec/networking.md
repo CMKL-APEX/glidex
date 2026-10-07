@@ -874,9 +874,10 @@ calls `list_bridges` (and `list_nat` for NAT networks) and records a
 - A bridge the network owns (`owns_bridge`, NAT and isolated networks)
   that netd lost, as a record or on the host, is re-created with
   `ensure_bridge` (event `BridgeRestored`).
-- A lost NAT is **reported, not re-created**: its subnet lives only in
-  netd, and a new one would renumber every VM on it. A dnsmasq that is
-  not running is reported too (netd restarts it in its own reconcile).
+- A lost NAT is re-created with `ensure_nat` (new subnet; event
+  `NatRestored`) **only while no VM uses the network**. With VMs on it it
+  is reported, not re-created: its subnet lives only in netd, and a new
+  one would renumber them. A dnsmasq that is not running is reported (netd restarts it in its own reconcile).
 - A bridged network whose bridge is no longer a glidex bridge is
   reported; glidex never takes over a bridge on its own.
 
