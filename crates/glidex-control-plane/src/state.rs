@@ -1351,6 +1351,12 @@ impl VmManager {
         self.images.list_disks().iter().map(|d| self.images.disk_response(d, false)).collect()
     }
 
+    /// Ids of the disks attached to a VM, from the records alone (no
+    /// per-disk response or file check).
+    pub fn attached_disk_ids(&self, vm_id: &str) -> std::collections::BTreeSet<String> {
+        self.images.list_disks().into_iter().filter(|d| d.attached_to.as_deref() == Some(vm_id)).map(|d| d.id).collect()
+    }
+
     pub async fn get_disk(&self, key: &str) -> Result<DiskResponse, VmManagerError> {
         let d = self.images.get_disk(key)?;
         let mgr = self.images.clone();
