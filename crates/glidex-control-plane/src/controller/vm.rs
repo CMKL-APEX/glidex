@@ -100,6 +100,15 @@ async fn shim_call<T: Send + 'static>(
     .map_err(|e| e.to_string())?
 }
 
+/// Queue pairs for a NIC: the user's choice, else one per vCPU (up to 4)
+/// for vhost-user, where a single queue pins the NIC to one OVS PMD, else 1.
+fn nic_queue_pairs(requested: Option<u8>, kind: glidex_ovs::vm_port::VmPortKind, vcpus: u8) -> u8 {
+    requested.unwrap_or(match kind {
+        glidex_ovs::vm_port::VmPortKind::VhostUser => glidex_ovs::tuning::default_vhost_queue_pairs(vcpus as u32),
+        glidex_ovs::vm_port::VmPortKind::Tap => 1,
+    })
+}
+
 /// Outcome of a round: requeue after this long, or wait for an event.
 type Next = Result<Option<Duration>, VmManagerError>;
 
@@ -610,6 +619,12 @@ impl VmManager {
 
         // 5.2 the ports: record each in status before attaching it (D16).
         config.nic_bindings = self.attach_ports(vm, st).await.map_err(before_intent)?;
+        // vhost-user over 4 KiB guest pages makes OVS's PMDs take TLB
+        // misses on every packet; back the guest with hugepages when the
+        // host has them to spare.
+        if !config.hugepages && crate::hypervisor::needs_shared_memory(&config) {
+            config.hugepages = crate::hypervisor::hugepages_available_for(config.mem_size_mib);
+        }
 
         // 5.3 launch.json
         let instance_id = uuid::Uuid::new_v4().to_string();
@@ -713,7 +728,7 @@ impl VmManager {
                     *st = stored.status;
                 }
             }
-            let queue_pairs = att.queue_pairs.unwrap_or(1);
+            let queue_pairs = nic_queue_pairs(att.queue_pairs, net.port_type, vm.config().vcpu_count);
             let spec = VmPortSpec {
                 bridge: net.bridge.clone(),
                 vm_id: vm.id.clone(),
@@ -912,7 +927,7 @@ impl VmManager {
                 mac: nic.mac.clone(),
                 vlan: net.vlan,
                 mtu: net.mtu,
-                queue_pairs: att.queue_pairs.unwrap_or(1),
+                queue_pairs: nic_queue_pairs(att.queue_pairs, net.port_type, vm.config().vcpu_count),
             };
             let _ports = self.ports_lock.lock().await;
             let netd = self.netd.clone();

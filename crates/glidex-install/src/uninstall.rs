@@ -248,7 +248,7 @@ pub fn plan(host: &dyn HostView, opts: &Options, user_home: &Path) -> Vec<Step> 
     if opts.reset_dpdk && !opts.remove_ovs && host.exists(Path::new("/usr/bin/ovs-vsctl")) {
         steps.push(run(&[
             "ovs-vsctl", "--if-exists", "remove", "Open_vSwitch", ".", "other_config",
-            "dpdk-init", "dpdk-socket-mem", "pmd-cpu-mask",
+            "dpdk-init", "dpdk-socket-mem", "pmd-cpu-mask", "dpdk-lcore-mask", "pmd-auto-lb", "userspace-tso-enable",
         ]));
         steps.push(Step::Note(
             "restart Open vSwitch for the DPDK change to take effect (e.g. systemctl restart openvswitch-switch)".into(),
@@ -841,7 +841,7 @@ mod tests {
     fn reset_dpdk_only_when_keeping_ovs() {
         let opts = Options { reset_dpdk: true, ..Options::default() };
         let l = lines(&plan(&full_install(), &opts, Path::new("/home/alice")));
-        assert!(l.iter().any(|s| s.contains("remove Open_vSwitch . other_config dpdk-init dpdk-socket-mem pmd-cpu-mask")));
+        assert!(l.iter().any(|s| s.contains("remove Open_vSwitch . other_config dpdk-init dpdk-socket-mem pmd-cpu-mask dpdk-lcore-mask pmd-auto-lb userspace-tso-enable")));
     }
 
     #[test]

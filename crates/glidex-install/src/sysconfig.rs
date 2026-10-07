@@ -15,9 +15,16 @@ pub const IP_FORWARD: &str = "net.ipv4.ip_forward";
 pub const NR_HUGEPAGES: &str = "vm.nr_hugepages";
 const PREVIOUS: &str = "# glidex-previous: ";
 
-/// 2 MiB hugepages: 2 GiB for OVS-DPDK's mempools (found necessary in host
-/// testing) plus 2 GiB for hugepage-backed vhost-user guests.
-pub const DEFAULT_HUGEPAGES: u64 = 2048;
+/// 2 MiB hugepages: 4 GiB for OVS-DPDK's mempools plus 8 GiB for
+/// hugepage-backed vhost-user guests. At MTU 9000 OVS allocates a second,
+/// fixed 262144-mbuf mempool of about 2.5 GiB next to the ~0.8 GiB one for
+/// MTU 1500; a 4 GiB pool ran out as soon as a second guest started.
+pub const DEFAULT_HUGEPAGES: u64 = 6144;
+/// Below this the pool can't hold OVS's jumbo-frame mempools (about
+/// 3.3 GiB at MTU 9000) and a few guests; the installer warns.
+pub const JUMBO_HUGEPAGES: u64 = 3072;
+/// DPDK socket memory ceiling (MiB), enough to pre-allocate both mempools.
+pub const MAX_SOCKET_MEM_MB: u64 = 4096;
 /// Below this OVS-DPDK's default mempool doesn't fit.
 pub const MIN_HUGEPAGES: u64 = 1024;
 
@@ -94,18 +101,18 @@ pub fn merge(
     settings
 }
 
-/// Hugepages to reserve given total RAM: the default, capped at a quarter
+/// Hugepages to reserve given total RAM: the default, capped at a third
 /// of RAM, never lowering what's already reserved.
 pub fn hugepages_for(mem_total_kb: u64, already_reserved: u64) -> u64 {
-    let quarter = mem_total_kb / 4 / 2048;
-    DEFAULT_HUGEPAGES.min(quarter).max(already_reserved)
+    let third = mem_total_kb / 3 / 2048;
+    DEFAULT_HUGEPAGES.min(third).max(already_reserved)
 }
 
-/// DPDK socket memory (MiB) for a hugepage pool: half the pool, up to the
-/// 2048 MiB OVS needs; the rest stays free for guests.
+/// DPDK socket memory (MiB) for a hugepage pool: half the pool, up to
+/// [`MAX_SOCKET_MEM_MB`]; the rest stays free for guests.
 pub fn socket_mem_mb(hugepages: u64) -> u64 {
     // pages × 2 MiB ÷ 2 = `hugepages` MiB.
-    hugepages.min(2048)
+    hugepages.min(MAX_SOCKET_MEM_MB)
 }
 
 /// Uninstall: which settings to restore now, and which to keep in the
@@ -158,10 +165,12 @@ mod tests {
 
     #[test]
     fn hugepage_sizing() {
-        assert_eq!(hugepages_for(41_096 * 1024, 0), 2048, "40 GiB host: 4 GiB of hugepages");
-        assert_eq!(hugepages_for(8 * 1024 * 1024, 0), 1024, "8 GiB host: capped at a quarter");
-        assert_eq!(hugepages_for(41_096 * 1024, 4096), 4096, "never lower an existing reservation");
-        assert_eq!(socket_mem_mb(2048), 2048);
+        assert_eq!(hugepages_for(64 * 1024 * 1024, 0), 6144, "64 GiB host: 12 GiB of hugepages");
+        assert_eq!(hugepages_for(31_293 * 1024, 0), 5215, "31 GiB host: capped at a third");
+        assert_eq!(hugepages_for(4 * 1024 * 1024, 0), 682, "4 GiB host: capped at a third");
+        assert_eq!(hugepages_for(64 * 1024 * 1024, 8192), 8192, "never lower an existing reservation");
+        assert_eq!(socket_mem_mb(6144), 4096);
+        assert_eq!(socket_mem_mb(5215), 4096);
         assert_eq!(socket_mem_mb(1024), 1024);
         assert_eq!(mem_total_kb("MemTotal:       42082304 kB\nMemFree: 1 kB\n"), Some(42_082_304));
         assert_eq!(proc_path(IP_FORWARD), PathBuf::from("/proc/sys/net/ipv4/ip_forward"));

@@ -1388,6 +1388,12 @@ fn setup_networking(opts: &Options, changed: &Changes) -> Result<()> {
     let ch_binary = PathBuf::from(format!("{}/cloud-hypervisor", BIN_DIR));
     let probe = ProbeOptions { ch_binary: Some(ch_binary.clone()) };
     let req = InstallRequest { profile, source_build: false, confirm: opts.allow_ovs_restart };
+    // An OVS already set to dpdk-init=true (earlier run, or the host
+    // rebooted without the sysctl applied) aborts at start without
+    // hugepages, so they must be there before the install restarts it.
+    if profile == Profile::Dpdk {
+        reserve_hugepages()?;
+    }
     let mut ovs_ok = true;
     match install(&exec, &probe, &req) {
         Ok(report) => {
@@ -1441,6 +1447,19 @@ fn read_sysctl(key: &str) -> Option<String> {
 
 /// Persist and apply the kernel settings VM networking needs (see
 /// sysconfig.rs), then initialize OVS-DPDK for the dpdk profile.
+/// Reserve the dpdk profile's hugepages (persisted in the sysctl drop-in);
+/// a no-op when the host is too small. `configure_host` reports the result.
+fn reserve_hugepages() -> Result<()> {
+    use sysconfig::NR_HUGEPAGES;
+    let mem = fs::read_to_string("/proc/meminfo").ok().and_then(|m| sysconfig::mem_total_kb(&m)).unwrap_or(0);
+    let reserved = read_sysctl(NR_HUGEPAGES).and_then(|v| v.parse().ok()).unwrap_or(0);
+    let pages = sysconfig::hugepages_for(mem, reserved);
+    if pages >= sysconfig::MIN_HUGEPAGES {
+        write_sysctls(&[(NR_HUGEPAGES, pages.to_string())])?;
+    }
+    Ok(())
+}
+
 fn configure_host(
     profile: glidex_ovs::install::Profile,
     opts: &Options,
@@ -1479,6 +1498,12 @@ fn configure_host(
     // The kernel reserves what it can find contiguous memory for.
     let got: u64 = read_sysctl(NR_HUGEPAGES).and_then(|v| v.parse().ok()).unwrap_or(0);
     println!("{} {} hugepages ({} MiB)", "Reserved:".green(), got, got * 2);
+    if got < sysconfig::JUMBO_HUGEPAGES {
+        println!(
+            "{} {} hugepages is too few for jumbo-frame (MTU 9000) vhost-user networks: OVS-DPDK then needs ~3.3 GiB of mempools on top of the guests. Raise vm.nr_hugepages to at least {}.",
+            "Note:".yellow(), got, sysconfig::JUMBO_HUGEPAGES
+        );
+    }
     if got < sysconfig::MIN_HUGEPAGES {
         println!(
             "{} only {} hugepages could be reserved (memory is fragmented). Reboot to apply {}, then re-run the installer.",
@@ -1509,9 +1534,22 @@ fn configure_host(
         return Ok(());
     }
 
-    let socket_mem = sysconfig::socket_mem_mb(got);
+    let total_mem = sysconfig::socket_mem_mb(got);
+    // Without an explicit mask, spread PMDs and socket memory over the
+    // NUMA nodes that have hugepages (glidex_ovs::tuning).
+    let plan = glidex_ovs::tuning::plan(&glidex_ovs::tuning::read_topology(exec));
+    let (socket_mem, auto_plan) = match (&opts.pmd_cpu_mask, plan) {
+        (None, Some(p)) => (p.socket_mem(total_mem), Some(p)),
+        _ => (total_mem.to_string(), None),
+    };
+    if let Some(p) = &auto_plan {
+        println!(
+            "{} PMD threads on CPUs {:?} (mask {}), NUMA nodes {:?}; CPUs {:?} left for the OS and OVS's other threads",
+            "Plan:".green(), p.pmd_cpus, p.pmd_mask(), p.nodes, p.lcore_cpus
+        );
+    }
     let settings = DpdkSettings {
-        socket_mem: socket_mem.to_string(),
+        socket_mem: socket_mem.clone(),
         pmd_cpu_mask: opts.pmd_cpu_mask.clone(),
         confirm: opts.allow_ovs_restart,
     };

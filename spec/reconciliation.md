@@ -1302,9 +1302,10 @@ Differences from §10:
   still enforced by the download queue, not the work queue.
 - Networks: phases `Ready`, `Degraded`, `NetdUnavailable` (`Pending` is
   unused). A lost bridge the network owns is re-created
-  (`ensure_bridge`); a lost NAT and a dnsmasq that is not running are
-  reported (`Degraded`), never re-created, because the NAT's subnet
-  lives only in netd.
+  (`ensure_bridge`). A lost NAT is re-created (`ensure_nat`, event
+  `NatRestored`) when no VM uses the network; otherwise it, and a dnsmasq
+  that is not running, are reported (`Degraded`), because the NAT's
+  subnet lives only in netd and a new one would renumber the VMs.
 - Port drift (§10.3) is checked in the VM controller's round for a
   running VM. netd `sync_vms` is sent only when some VM uses networks,
   at startup and when netd restarted (socket inode changed).

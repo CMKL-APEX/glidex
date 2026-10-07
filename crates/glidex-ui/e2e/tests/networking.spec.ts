@@ -95,8 +95,9 @@ test.describe("as a project owner", () => {
       await expect(scope.locator("option")).toHaveText([`Project ${PROJECT}`]);
       await page.getByPlaceholder("lab").fill(OWNER_NETWORK);
       await page.getByRole("button", { name: "Create", exact: true }).click();
+      // Without host rights the table shows how the project gets a network.
       const row = page.getByRole("row", { name: new RegExp(OWNER_NETWORK) });
-      await expect(row).toContainText(PROJECT, { timeout: 30_000 });
+      await expect(row.getByRole("cell").nth(1)).toHaveText("project", { timeout: 30_000 });
       await expect(row).toContainText("nat");
 
       await row.getByRole("button", { name: "Delete" }).click();

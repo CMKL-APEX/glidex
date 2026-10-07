@@ -9,7 +9,7 @@ import type {
   OvsStatus,
   PortType,
 } from "../types";
-import { notReady } from "../types";
+import { networkUsableBy, notReady } from "../types";
 import { useLiveRefresh } from "../live";
 import { useCan, useSession } from "../session";
 import Modal from "../components/Modal";
@@ -364,7 +364,7 @@ function NetworkStatus({ n }: { n: Network }) {
 }
 
 export default function Networking() {
-  const { host, projects, project: selected, projectName } = useSession();
+  const { host, projects, project, projectName } = useSession();
   const [params, setParams] = useSearchParams();
   // Projects whose owners may create (and delete) project networks.
   const projectCan = useCan(projects.map((p) => ({ action: "createProjectNetwork", resource: { type: "Project" as const, id: p.id } })));
@@ -374,40 +374,47 @@ export default function Networking() {
     ...ownProjects.map((p) => ({ value: p.id, label: `Project ${projectName(p.id)}` })),
   ];
   const [status, setStatus] = useState<OvsStatus | null>(null);
-  // The OVS status is a host detail (`readOvsStatus`, host.read): a
-  // project owner without it still sees and manages its networks.
-  const [statusHidden, setStatusHidden] = useState(false);
+  // Host status (Open vSwitch, bridges) needs host.read. Without it the
+  // page falls back to the networks the current project can use.
+  // `null` until the first answer.
+  const [hostView, setHostView] = useState<boolean | null>(null);
   const [networks, setNetworks] = useState<Network[]>([]);
   const [bridges, setBridges] = useState<BridgeRecord[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [installing, setInstalling] = useState(false);
   const [adding, setAdding] = useState(false);
+  // Host admins see every network; others the ones their project can use.
+  const shown = hostView ? networks : networks.filter((n) => networkUsableBy(n, project));
 
   const refresh = useCallback(async () => {
-    try {
-      let s: OvsStatus | null = null;
-      try {
-        s = await api.ovsStatus();
-      } catch (e) {
-        if (!(e instanceof ApiRequestError && e.status === 403)) throw e;
-      }
-      setStatus(s);
-      setStatusHidden(s === null);
-      if (s === null) {
-        setNetworks((await api.listNetworks()).sort((a, c) => a.name.localeCompare(c.name)));
-      } else if (s.netd.access === "full") {
-        // Bridges are host details: a project owner may not read them.
-        const [n, b] = await Promise.all([api.listNetworks(), api.listBridges().catch(() => [] as BridgeRecord[])]);
-        n.sort((a, c) => a.name.localeCompare(c.name));
-        setNetworks(n);
-        setBridges(b);
-      } else {
-        setNetworks(await api.listNetworks());
-      }
-      setError(null);
-    } catch (e) {
-      setError(errorText(e));
+    // Independent requests: the host status being forbidden must not hide
+    // the network list.
+    const [nets, st] = await Promise.allSettled([api.listNetworks(), api.ovsStatus()]);
+    const errors: string[] = [];
+    if (nets.status === "fulfilled") {
+      setNetworks([...nets.value].sort((a, c) => a.name.localeCompare(c.name)));
+    } else {
+      errors.push(errorText(nets.reason));
     }
+    if (st.status === "fulfilled") {
+      setStatus(st.value);
+      setHostView(true);
+      if (st.value.netd.access === "full") {
+        try {
+          setBridges(await api.listBridges());
+        } catch (e) {
+          errors.push(errorText(e));
+        }
+      }
+    } else if (st.reason instanceof ApiRequestError && st.reason.status === 403) {
+      setStatus(null);
+      setBridges([]);
+      setHostView(false);
+    } else {
+      errors.push(errorText(st.reason));
+      setHostView((v) => v ?? false);
+    }
+    setError(errors.length ? errors.join("; ") : null);
   }, []);
 
   useEffect(() => {
@@ -416,7 +423,7 @@ export default function Networking() {
 
   // Follow the live stream; without it, poll while a network is deleting.
   const live = useLiveRefresh(["network"], refresh);
-  const deleting = networks.some((n) => n.deletion_requested_at);
+  const deleting = shown.some((n) => n.deletion_requested_at);
   useEffect(() => {
     if (!deleting || live) return;
     const id = setInterval(refresh, 3000);
@@ -433,8 +440,8 @@ export default function Networking() {
     }
   };
 
-  // Without the status, the server decides whether netd can do it.
-  const netdReady = statusHidden || (status?.netd.access === "full" && !!status.host?.ovs_running);
+  // Without the host status, the server decides whether netd can do it.
+  const netdReady = hostView === false || (status?.netd.access === "full" && !!status.host?.ovs_running);
   const canAdd = netdReady && scopes.length > 0;
   const canDelete = (n: Network) =>
     netdReady && (n.project ? ownProjects.some((p) => p.id === n.project) : host.createNetwork);
@@ -443,7 +450,7 @@ export default function Networking() {
   // Otherwise a host network when allowed, else the selected project.
   const initialScope =
     scopes.find((s) => s.value === requested)?.value ??
-    (host.createNetwork ? "" : (scopes.find((s) => s.value === selected)?.value ?? scopes[0]?.value ?? ""));
+    (host.createNetwork ? "" : (scopes.find((s) => s.value === project)?.value ?? scopes[0]?.value ?? ""));
   useEffect(() => {
     if (requested !== null && canAdd && scopes.some((s) => s.value === requested)) setAdding(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -452,6 +459,9 @@ export default function Networking() {
     setAdding(false);
     if (requested !== null) setParams({}, { replace: true });
   };
+  // Without host rights, a network is shown by how this project gets it.
+  const scope = (n: Network) =>
+    n.project ? (n.project === project ? "project" : `shared by ${projectName(n.project)}`) : "host";
 
   return (
     <div className="space-y-6">
@@ -459,7 +469,9 @@ export default function Networking() {
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Networking</h1>
           <p className="text-gray-500 mt-1">
-            Open vSwitch bridges and the networks VMs attach to.
+            {hostView === false
+              ? `Networks the project ${projectName(project)} can attach VMs to.`
+              : "Open vSwitch bridges and the networks VMs attach to."}
           </p>
         </div>
         {canAdd && (
@@ -476,10 +488,10 @@ export default function Networking() {
         <div className="p-4 bg-red-50 border border-red-200 rounded-lg text-red-700">{error}</div>
       )}
 
-      {statusHidden ? null : status === null ? (
+      {hostView === null ? (
         <LoadingCard />
       ) : (
-        <StatusPanel status={status} onInstall={() => setInstalling(true)} />
+        status && <StatusPanel status={status} onInstall={() => setInstalling(true)} />
       )}
 
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
@@ -487,7 +499,7 @@ export default function Networking() {
           <thead className="bg-gray-50 text-gray-600 text-left">
             <tr>
               <th className="px-4 py-3 font-medium">Network</th>
-              <th className="px-4 py-3 font-medium">Project</th>
+              <th className="px-4 py-3 font-medium">{hostView === false ? "Scope" : "Project"}</th>
               <th className="px-4 py-3 font-medium">Mode</th>
               <th className="px-4 py-3 font-medium">Bridge</th>
               <th className="px-4 py-3 font-medium">VM port</th>
@@ -497,17 +509,25 @@ export default function Networking() {
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100">
-            {networks.length === 0 && (
+            {shown.length === 0 && (
               <tr>
                 <td className="px-4 py-6 text-center text-gray-500" colSpan={8}>
-                  No networks yet.
+                  {hostView === false ? "No networks are available to this project." : "No networks yet."}
                 </td>
               </tr>
             )}
-            {networks.map((n) => (
+            {shown.map((n) => (
               <tr key={n.name}>
                 <td className="px-4 py-3 font-mono">{n.name}</td>
-                <td className="px-4 py-3">{n.project ? projectName(n.project) : <span className="text-gray-500">host</span>}</td>
+                <td className="px-4 py-3">
+                  {hostView === false ? (
+                    <span className="text-gray-600">{scope(n)}</span>
+                  ) : n.project ? (
+                    projectName(n.project)
+                  ) : (
+                    <span className="text-gray-500">host</span>
+                  )}
+                </td>
                 <td className="px-4 py-3">{n.mode}</td>
                 <td className="px-4 py-3 font-mono">{n.bridge}</td>
                 <td className="px-4 py-3">{n.port_type === "vhost_user" ? "vhost-user" : "tap"}</td>

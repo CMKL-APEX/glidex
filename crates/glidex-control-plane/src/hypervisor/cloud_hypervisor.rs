@@ -85,7 +85,11 @@ fn net_args(config: &VmConfig) -> Vec<String> {
                 VmPortBinding::Tap { ifname } => v.push_str(&format!(",tap={}", ifname)),
                 // OVS's dpdkvhostuserclient is the client, so CH serves.
                 VmPortBinding::VhostUser { socket } => {
-                    v.push_str(&format!(",vhost_user=on,socket={},vhost_mode=server", q(&socket.to_string_lossy())))
+                    v.push_str(&format!(
+                        ",vhost_user=on,socket={},vhost_mode=server,queue_size={}",
+                        q(&socket.to_string_lossy()),
+                        glidex_ovs::tuning::VHOST_QUEUE_SIZE
+                    ))
                 }
             }
             v
@@ -258,7 +262,7 @@ mod tests {
         let a = args(&c, "/s");
         assert_eq!(values(&a, "--net"), [
             "id=net0,mac=02:00:00:00:00:01,num_queues=2,tap=gxabc-0",
-            "id=net1,mac=02:00:00:00:00:02,num_queues=4,mtu=9000,vhost_user=on,socket=/run/glidex/vhost/x.net1.sock,vhost_mode=server",
+            "id=net1,mac=02:00:00:00:00:02,num_queues=4,mtu=9000,vhost_user=on,socket=/run/glidex/vhost/x.net1.sock,vhost_mode=server,queue_size=1024",
         ]);
         // vhost-user needs shared guest memory.
         assert_eq!(values(&a, "--memory"), ["size=1024M,shared=on,hugepages=on"]);

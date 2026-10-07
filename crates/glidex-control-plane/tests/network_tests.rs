@@ -268,6 +268,39 @@ async fn network_controller_reports_the_phase() {
     h.manager.stop_controllers().await;
 }
 
+/// netd lost its records (state database wiped): the NAT is created again
+/// while no VM uses the network, but only reported once one does, since a
+/// new subnet would renumber its VMs.
+#[tokio::test(flavor = "multi_thread")]
+async fn lost_nat_is_recreated_only_without_vms() {
+    use glidex_netd::proto::{NatInfo, Op};
+    let h = harness(true);
+    let netd = Netd::new(&h._dir.path().join("run"));
+    let nat_exists = || netd.call::<Vec<NatInfo>>(Op::ListNat).unwrap().iter().any(|n| n.state.bridge == "gxbr-lab");
+    let lose_nat = || {
+        netd.call::<Value>(Op::DeleteNat { bridge: "gxbr-lab".into() }).unwrap();
+    };
+
+    request(&h.app, "POST", "/networks", Some(json!({"name": "lab", "mode": "nat"}))).await;
+    assert!(nat_exists());
+
+    lose_nat();
+    assert!(!nat_exists());
+    h.manager.reconcile_network("lab").await.unwrap();
+    assert!(nat_exists(), "no VM uses it: the NAT is created again");
+    let (_, ev) = request(&h.app, "GET", "/networks/lab/events", None).await;
+    assert_eq!(ev["events"][0]["reason"], "NatRestored", "{ev}");
+
+    let (status, body) = request(&h.app, "POST", "/vms", Some(vm("v1", json!([{"network": "lab"}])))).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    lose_nat();
+    h.manager.reconcile_network("lab").await.unwrap();
+    assert!(!nat_exists(), "a VM uses it: not renumbered behind its back");
+    let (_, net) = request(&h.app, "GET", "/networks/lab", None).await;
+    assert_eq!(net["phase"], "degraded", "{net}");
+    assert_eq!(net["conditions"][0]["message"], "netd has no NAT for it", "{net}");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn netd_errors_map_to_rest() {
     // OVS not running: creating a network is unsupported on this host.

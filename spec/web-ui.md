@@ -355,9 +355,11 @@ whether a QEMU image has a variable store or is a single file.
 projects whose networks the caller manages (`createProjectNetwork`,
 checked per project). A project network offers NAT or isolated mode and
 tap or vhost-user ports, without bridge or VLAN, and is created with
-`POST /projects/{id}/networks`. The network table has a Project column
-(`host` for host networks), and Delete shows only for networks the caller
-may delete. The OVS status (`readOvsStatus`) and `/ovs/bridges` are host
+`POST /projects/{id}/networks`. For host admins the network table has a
+Project column (`host` for host networks); without host rights it lists
+the networks the selected project can use, with a Scope column
+(`project`, `shared by <project>` or `host`). Delete shows only for
+networks the caller may delete. The OVS status (`readOvsStatus`) and `/ovs/bridges` are host
 details (`host.read`): when they are refused, the page hides the status
 panel and still lists the networks, and a project owner without host
 rights creates and deletes its project's networks; netd's readiness is
