@@ -1388,6 +1388,12 @@ fn setup_networking(opts: &Options, changed: &Changes) -> Result<()> {
     let ch_binary = PathBuf::from(format!("{}/cloud-hypervisor", BIN_DIR));
     let probe = ProbeOptions { ch_binary: Some(ch_binary.clone()) };
     let req = InstallRequest { profile, source_build: false, confirm: opts.allow_ovs_restart };
+    // An OVS already set to dpdk-init=true (earlier run, or the host
+    // rebooted without the sysctl applied) aborts at start without
+    // hugepages, so they must be there before the install restarts it.
+    if profile == Profile::Dpdk {
+        reserve_hugepages()?;
+    }
     let mut ovs_ok = true;
     match install(&exec, &probe, &req) {
         Ok(report) => {
@@ -1441,6 +1447,19 @@ fn read_sysctl(key: &str) -> Option<String> {
 
 /// Persist and apply the kernel settings VM networking needs (see
 /// sysconfig.rs), then initialize OVS-DPDK for the dpdk profile.
+/// Reserve the dpdk profile's hugepages (persisted in the sysctl drop-in);
+/// a no-op when the host is too small. `configure_host` reports the result.
+fn reserve_hugepages() -> Result<()> {
+    use sysconfig::NR_HUGEPAGES;
+    let mem = fs::read_to_string("/proc/meminfo").ok().and_then(|m| sysconfig::mem_total_kb(&m)).unwrap_or(0);
+    let reserved = read_sysctl(NR_HUGEPAGES).and_then(|v| v.parse().ok()).unwrap_or(0);
+    let pages = sysconfig::hugepages_for(mem, reserved);
+    if pages >= sysconfig::MIN_HUGEPAGES {
+        write_sysctls(&[(NR_HUGEPAGES, pages.to_string())])?;
+    }
+    Ok(())
+}
+
 fn configure_host(
     profile: glidex_ovs::install::Profile,
     opts: &Options,
