@@ -190,6 +190,34 @@ async fn project_isolation_and_not_found() {
     assert!(s.is_client_error());
 }
 
+/// Members of a project are listed with their names, for callers who may
+/// read the project's links but not list users (spec/web-ui.md).
+#[tokio::test]
+async fn project_members_are_listed_with_names() {
+    let h = harness();
+    let pa = h.project("pa");
+    let (alice, bob) = (h.user("alice"), h.user("bob"));
+    h.link("role.owner", Ent::User(alice.clone()), Ent::Project(pa.clone()));
+    h.link("role.viewer", Ent::User(bob.clone()), Ent::Project(pa.clone()));
+    let v = As::Bearer(h.token(&bob));
+    let (s, _, _) = h.call("GET", "/users", None, &v).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "a viewer can't list users");
+    let (s, body, _) = h.call("GET", &format!("/projects/{pa}/bindings"), None, &v).await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    let mut names: Vec<(String, String)> = body
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| (b["principal"]["id"].as_str().unwrap().to_string(), b["principal_name"].as_str().unwrap_or("-").to_string()))
+        .collect();
+    names.sort();
+    let mut want = vec![(alice, "alice".to_string()), (bob, "bob".to_string())];
+    want.sort();
+    assert_eq!(names, want);
+    // Nothing else about the user comes with the link.
+    assert!(body[0].get("email").is_none() && body[0]["principal"].get("email").is_none(), "{body}");
+}
+
 #[tokio::test]
 async fn host_paths_need_a_grant() {
     let h = harness();

@@ -274,7 +274,8 @@ count as idle for that. `api.ts` dispatches `glidex:changed` on
   with `updateProject`), members (`GET/POST/DELETE /projects/{id}/bindings`,
   roles viewer / operator / editor / owner = `role.*`; principals picked
   from the user and team lists when the caller may list them, else typed
-  as ids), project networks (delete, offer to a project id, unshare /
+  as ids; the table names each principal from the link's `principal_name`
+  when the lists can't be read), project networks (delete, offer to a project id, unshare /
   withdraw; "Create a project network" links to the Networking page with
   the project chosen, `/networking?new=<id>`) and networks shared with the
   project (`GET /projects/{id}/network-shares`, accept, leave).

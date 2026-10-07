@@ -1150,6 +1150,11 @@ New endpoints:
 | `POST/PATCH/DELETE /projects` (quotas included) | `system.projects` |
 | `GET/PUT/DELETE /projects/{id}/bindings` | `project.members` (project-role links only; cannot link system roles) |
 | `GET/PUT/DELETE /system/bindings` | `system.projects` (system-role and grant links on the host) |
+
+Listed links carry `principal_name`: the user's display name, or the team's
+or token's name. Whoever may read a project's links sees who its members
+are without `identity.read` (listing users and teams). Nothing else about
+the principal is included.
 | `POST /authz/check` | authenticated (answers for the caller only) |
 | `GET /watch` | authenticated; each kind filtered like its list endpoint, on every change (§7.7) |
 | `GET /authz/policies`, `GET /authz/policies/{id}`, `GET /authz/policies/{id}/versions` | `policy.read` |
