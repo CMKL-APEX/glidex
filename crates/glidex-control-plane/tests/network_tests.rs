@@ -305,8 +305,28 @@ async fn project_networks_and_sharing() {
     assert_eq!(status, StatusCode::CREATED, "{net}");
     assert_eq!(net["project"], pa);
     assert!(net["bridge"].as_str().unwrap().starts_with("gxp-"), "{net}");
-    // Project networks are NAT only and pick their own bridge.
-    let (status, _) = request(&h.app, "POST", &format!("/projects/{pa}/networks"), Some(json!({"name": "x", "mode": "isolated"}))).await;
+    // Project networks are NAT or isolated, never bridged, and pick their own bridge.
+    let (status, _) = request(&h.app, "POST", &format!("/projects/{pa}/networks"), Some(json!({"name": "x", "mode": "bridged"}))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, _) =
+        request(&h.app, "POST", &format!("/projects/{pa}/networks"), Some(json!({"name": "x", "mode": "nat", "bridge": "gxbr-mine"}))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let pc = h.manager.projects().create("pc", String::new(), None).unwrap().id;
+    let (status, iso) = request(&h.app, "POST", &format!("/projects/{pc}/networks"), Some(json!({"name": "iso", "mode": "isolated"}))).await;
+    assert_eq!(status, StatusCode::CREATED, "{iso}");
+    assert_eq!((iso["mode"].as_str(), iso["port_type"].as_str(), iso["project"].as_str()), (Some("isolated"), Some("tap"), Some(pc.as_str())));
+    // vhost-user is allowed too, but only where the host has DPDK (this one hasn't).
+    let (status, body) = request(
+        &h.app,
+        "POST",
+        &format!("/projects/{pc}/networks"),
+        Some(json!({"name": "iso-dpdk", "mode": "isolated", "port_type": "vhost_user"})),
+    )
+    .await;
+    assert_eq!((status, body["error"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("unsupported_on_host")), "{body}");
+    // An isolated network has no subnet to choose.
+    let (status, _) =
+        request(&h.app, "POST", &format!("/projects/{pc}/networks"), Some(json!({"name": "iso2", "mode": "isolated", "subnet": "10.99.0.0/24"}))).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     // Quota: 2 project networks by default.
     let req = |n: &str| serde_json::from_value(json!({"name": n, "mode": "nat"})).unwrap();

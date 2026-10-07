@@ -274,8 +274,9 @@ count as idle for that. `api.ts` dispatches `glidex:changed` on
   with `updateProject`), members (`GET/POST/DELETE /projects/{id}/bindings`,
   roles viewer / operator / editor / owner = `role.*`; principals picked
   from the user and team lists when the caller may list them, else typed
-  as ids), project NAT networks (`POST /projects/{id}/networks`, delete,
-  offer to a project id, unshare / withdraw) and networks shared with the
+  as ids), project networks (delete, offer to a project id, unshare /
+  withdraw; "Create a project network" links to the Networking page with
+  the project chosen, `/networking?new=<id>`) and networks shared with the
   project (`GET /projects/{id}/network-shares`, accept, leave).
 - **Access** — users (identities, default project, disable / enable),
   teams (create, delete, add / remove manual members; `pam` / `oidc`
@@ -348,6 +349,15 @@ type (cloud image, or UEFI firmware for a chosen hypervisor: `kind:
 "firmware"`, `hypervisor`); QEMU firmware also takes an optional variable
 store URL and sha256 (`vars_url`, `vars_sha256`). The firmware table says
 whether a QEMU image has a variable store or is a single file.
+`pages/Networking.tsx` creates both kinds of network with one form.
+"Network for" picks a host network (with `createNetwork`) or one of the
+projects whose networks the caller manages (`createProjectNetwork`,
+checked per project). A project network offers NAT or isolated mode and
+tap or vhost-user ports, without bridge or VLAN, and is created with
+`POST /projects/{id}/networks`. The network table has a Project column
+(`host` for host networks), and Delete shows only for networks the caller
+may delete. The page reads `/ovs/bridges` only when allowed; a project
+owner without host rights still sees the networks.
 `pages/Networking.tsx`'s Status column shows a network's phase, or
 "deleting" (with the `Ready` message, reason on hover) while a deletion waits (netd
 unreachable, a VM still on it); like image deletes, network deletes

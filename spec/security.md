@@ -43,7 +43,7 @@ bullets of [networking.md §14](networking.md#14-security).
 | 11 | Roles | A small shipped set that grows only for real needs: project `viewer`, `operator`, `editor`, `owner`; host `auditor`, `image-admin`, `net-admin`, `system-admin` (§7.3). |
 | 12 | Quotas | `system-admin` may exceed project quotas (`quota.exceed`); every overrun is audited (§6.3). |
 | 13 | PAM provisioning | PAM users are **created on first login** when they pass `pam.allowed_groups` (§5.3). |
-| 14 | Project networks | Project `owner`s create and delete **NAT networks private to their project**, without `net-admin` (§6.2). |
+| 14 | Project networks | Project `owner`s create and delete **NAT or isolated networks private to their project**, with tap or vhost-user ports, without `net-admin` (§6.2). Bridged networks stay host networks. |
 | 15 | Step-up window | **10 minutes** for host-wide network changes and policy writes (`base.step-up`). |
 | 16 | Sharing project networks | A project network is private unless **both** projects agree explicitly: the network's owner offers it, the receiving project's owner accepts. Either side can end it (§6.2.1). |
 | 17 | Policy change control | Site policy changes need step-up and are audited; **no two-person approval**. |
@@ -369,7 +369,7 @@ selects TCP.
 | Guest credential | project | Key becomes `(project_id, username)`. |
 | Image | system | Shared, read-only library. Any authenticated user may list and use images; pulling and deleting need `image.manage`. |
 | Host network (NAT, bridged) | system, granted to projects | Created by `net-admin`; `grants: [project_id] \| "all"`. Project editors attach their VMs to granted networks only. Projects sharing a network share an L2 segment: give each project its own network when they must be isolated. |
-| Project network (NAT only) | project | Created and deleted by the project's `owner` (`network.manage`), usable only by that project unless explicitly shared (§6.2.1); never opened to all projects or granted by `net-admin` (`base.project-network-private`). Constraints: NAT only, no uplinks or bridged mode; the subnet is a free `/24` from netd's `nat_supernet`; the bridge name is generated (`gxp-<8 hex>`), not chosen by the user; delete is refused while a VM is attached. Counts against the `networks` quota. |
+| Project network (NAT or isolated) | project | Created and deleted by the project's `owner` (`network.manage`), usable only by that project unless explicitly shared (§6.2.1); never opened to all projects or granted by `net-admin` (`base.project-network-private`). Constraints: NAT or isolated, no uplinks or bridged mode (bridged networks put guests on the host's LAN and need `host.network`); a NAT network's subnet is a free `/24` from netd's `nat_supernet` unless the owner picks a free one; the bridge name is generated (`gxp-<8 hex>`), not chosen by the user, and no VLAN can be set; the VM port is tap or vhost-user, as for host networks (vhost-user needs DPDK set up on the host, otherwise `422 unsupported_on_host`); delete is refused while a VM is attached. Counts against the `networks` quota. |
 | OVS bridges, uplinks, DPDK, OVS install | system | `host.network`. |
 | PCI devices (VFIO) | system, granted to projects | `/etc/glidex/control-plane.json` `pci.allow: [{bdf, projects}]`. A VM may only pass through BDFs granted to its project. |
 | Host paths | system | `host.paths` (§7.4). |
@@ -606,7 +606,7 @@ Rules for the schema:
 | `credential.read` · `credential.write` | project | Guest credentials (SSH keys are only returned with `credential.read`) |
 | `network.use` | project | Attach VMs to networks granted to the project |
 | `project.members` | project | Role links and service-account tokens in the project |
-| `network.manage` | project | Create and delete the project's own NAT networks |
+| `network.manage` | project | Create and delete the project's own NAT and isolated networks |
 | `network.share` | project | Offer and end shares of the project's networks; accept and leave shares offered to the project (§6.2.1) |
 | `host.read` | host | OVS status, bridges, uplinks, `GET /pci-devices`, `GET /system/reconcile` (`readSystemStatus`) |
 | `host.network` | host | Host networks (create, delete, grant), bridges, uplinks |
@@ -630,7 +630,7 @@ Rules for the schema:
 | `viewer` | project | `vm.read`, `disk.read`, `usage.read` |
 | `operator` | project | viewer + `vm.operate`, `vm.console` |
 | `editor` | project | operator + `vm.write`, `disk.write`, `credential.*`, `network.use` |
-| `owner` | project | editor + `project.members`, `network.manage`, `network.share` (project NAT networks, §6.2) |
+| `owner` | project | editor + `project.members`, `network.manage`, `network.share` (project networks, §6.2) |
 | `auditor` | host | viewer in every project + `host.read`, `policy.read`, `system.audit`, `system.usage`. Read-only; no consoles, no guest SSH keys. |
 | `image-admin` | host | `image.manage` |
 | `net-admin` | host | `host.read`, `host.network` (including critical ops), `host.devices` |
@@ -993,8 +993,8 @@ may ask it for what.
    bridges only for DHCP (udp 67) and DNS (udp/tcp 53) to the gateway,
    and drops the rest. Project networks (§6.2) depend on this.
 5. **Project networks need no new ops.** The control plane creates
-   them with `ensure_bridge` and `ensure_nat` like host networks; netd
-   doesn't know about projects.
+   them with `ensure_bridge` (and `ensure_nat` for NAT) like host
+   networks; netd doesn't know about projects.
 6. The status socket (`netd-ro.sock`, `hello` and `probe`) is unchanged.
 
 ## 9. Process and host hardening

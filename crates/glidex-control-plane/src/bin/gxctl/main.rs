@@ -1181,7 +1181,7 @@ fn print_help() {
     );
     println!("  {} - A VM's current CPU, memory, NIC and disk rates", "stats <vm>".cyan());
     println!("  {} - 5-minute series with the 95th percentile", "bandwidth <vm> | --network N · io <vm> | --disk D · compute <vm>".cyan());
-    println!("  {} - Project networks", "network create <name> --project P | share <net> <project-id> | unshare <net> <project-id>".cyan());
+    println!("  {} - Project networks", "network create <name> --project P [--isolated] [--vhost-user] | share <net> <project-id> | unshare <net> <project-id>".cyan());
     println!("  {} - Shares offered to a project", "network shares <p> | accept <p> <net> | leave <p> <net>".cyan());
     println!();
     println!("  {}              - Show this help", "help".cyan());

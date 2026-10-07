@@ -1030,17 +1030,18 @@ pub async fn series(client: &ApiClient, what: &str, args: &[&str]) {
 // ---- project networks and sharing ------------------------------------------
 
 pub async fn network(client: &ApiClient, args: &[&str]) {
-    let u = "Usage: network list | create <name> [--project P] [--subnet CIDR] ... | rm <name> | share <net> <project-id> | unshare <net> <project-id> | shares <project> | accept <project> <net> | leave <project> <net>";
+    let u = "Usage: network list | create <name> [--project P [--isolated] [--vhost-user]] [--subnet CIDR] ... | rm <name> | share <net> <project-id> | unshare <net> <project-id> | shares <project> | accept <project> <net> | leave <project> <net>";
     match args.first().copied().unwrap_or("list") {
         "list" | "ls" => crate::list_networks(client).await,
         "create" | "add" => {
             let project = flag_value(args, "--project");
             match project {
-                // Project networks: NAT only, the bridge is generated.
+                // Project networks: NAT or isolated, the bridge is generated.
                 Some(p) => {
                     let pos = positional(&args[1..], &["--project", "--subnet", "--mtu"]);
                     let Some(name) = pos.first() else { return usage(u) };
-                    let mut body = json!({ "name": name, "mode": "nat" });
+                    let mode = if has_flag(args, "--isolated") { "isolated" } else { "nat" };
+                    let mut body = json!({ "name": name, "mode": mode });
                     if let Some(s) = flag_value(args, "--subnet") {
                         body["subnet"] = json!(s);
                     }
@@ -1051,7 +1052,14 @@ pub async fn network(client: &ApiClient, args: &[&str]) {
                         body["port_type"] = json!("vhost_user");
                     }
                     match client.request_json::<Value>(Method::POST, &format!("/projects/{}/networks", enc(p)), Some(body)).await {
-                        Ok(n) => println!("{} {} (NAT on {}, project {})", "Network created:".green(), s(&n["name"]).yellow(), s(&n["bridge"]), p),
+                        Ok(n) => println!(
+                            "{} {} ({} on {}, project {})",
+                            "Network created:".green(),
+                            s(&n["name"]).yellow(),
+                            if mode == "nat" { "NAT" } else { "isolated" },
+                            s(&n["bridge"]),
+                            p
+                        ),
                         Err(e) => err(e),
                     }
                 }
