@@ -66,6 +66,11 @@ Each changed the implementation; the sections below already reflect them.
    262144 mbufs (~600 MB at MTU 1500); size hugepages for OVS *plus*
    hugepage-backed guests. `init_dpdk` now applies changed settings to an
    already-initialized OVS (restart, with confirmation).
+   **Jumbo frames:** at MTU 9000 OVS allocates a second fixed 262144-mbuf
+   mempool (~2.5 GB) beside the MTU 1500 one, so the installer reserves
+   6144 hugepages (capped at a third of RAM), `dpdk-socket-mem` up to 4096,
+   and warns below 3072 pages. With the old 4 GiB pool a second guest's
+   vhost-user memory mapping failed (`SET_MEM_TABLE`, ENOMEM).
 11. **Throughput tuning (`glidex_ovs::tuning`).** vhost-user VM-to-VM
     speed is decided by five things, all now automatic:
     - *PMD placement:* with no explicit `--pmd-cpu-mask`, one PMD per

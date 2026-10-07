@@ -1479,6 +1479,12 @@ fn configure_host(
     // The kernel reserves what it can find contiguous memory for.
     let got: u64 = read_sysctl(NR_HUGEPAGES).and_then(|v| v.parse().ok()).unwrap_or(0);
     println!("{} {} hugepages ({} MiB)", "Reserved:".green(), got, got * 2);
+    if got < sysconfig::JUMBO_HUGEPAGES {
+        println!(
+            "{} {} hugepages is too few for jumbo-frame (MTU 9000) vhost-user networks: OVS-DPDK then needs ~3.3 GiB of mempools on top of the guests. Raise vm.nr_hugepages to at least {}.",
+            "Note:".yellow(), got, sysconfig::JUMBO_HUGEPAGES
+        );
+    }
     if got < sysconfig::MIN_HUGEPAGES {
         println!(
             "{} only {} hugepages could be reserved (memory is fragmented). Reboot to apply {}, then re-run the installer.",
