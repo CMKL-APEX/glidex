@@ -1,9 +1,9 @@
 # Metering: resource usage records
 
-> Status: **M0 and M1 implemented** (2026-10-05, branch
-> `metering-m1`). Unit, integration and security tests pass, and so
-> do the KVM host acceptance runs on a deployed build (§15.4,
-> *As built*, 2026-10-05). M2 and M3 are design only.
+> Status: **M0, M1 and M2 implemented** (2026-10-05; branches
+> `metering-m1`, `metering-m2`). Unit, integration, security and
+> Playwright tests pass, and so do the KVM host acceptance runs on a
+> deployed build (§15.4 and §15.5, *As built*). M3 is design only.
 >
 > Built differently from the first draft, with the reasons in the
 > sections named: the cgroup is found from the shim's
@@ -247,7 +247,7 @@ read. Reads need no authorization: cgroup files are world-readable.
 | File | Field | Meter |
 |---|---|---|
 | `cpu.stat` | `usage_usec` (also `user_usec`, `system_usec` for the live view) | `cpu.used` |
-| `memory.current` | bytes | `mem.used`, `mem.peak` |
+| `memory.current` − `memory.stat inactive_file` | bytes | `mem.used`, `mem.peak` (working set: reclaimable page cache from buffered disk I/O is left out) |
 | `memory.stat` | `anon`, `file` (live view only) | n/a |
 | `io.stat` | `rbytes wbytes rios wios` per device, summed | `vmio.*` host-side secondary meters (D4) |
 
@@ -938,6 +938,28 @@ hour add up exactly to the hour's `disk.*` counters.
   `revised_at` rule.
 - **Retention:** `rate_5m` disk rows follow `retention_rate_days`.
 
+**As built (M2.3).** Code: `metering/rates.rs`,
+`metering/retention.rs`, and `ledger.rs` (`rate_5m`, `usage_daily`,
+`usage_monthly_rates`). It differs from §8.5.1 and §8.6 in four ways:
+
+- **A slot counts when the subject was sampled in it**, i.e. while
+  its instance was running. A stopped VM's NIC port is detached on
+  this system, and its disks have no hypervisor counters, so
+  "attached but stopped" has no reading to count. Such time is left
+  out rather than counted as 0. That lowers neither p95 nor averages
+  for time the VM was off.
+- **Final figures are written once.** When a billing month is
+  complete, the daily upkeep writes one figure per grouping to
+  `usage_monthly_rates` (`bw/{nic,vm,project,network}`,
+  `io/{disk,vm,project}`). While a month's slots are still kept
+  (`retention_rate_days`), queries compute from the slots, so a late
+  adjustment shows up there. The stored figure is what remains after
+  the slots expire. It has no `revised_at`.
+- **Hours roll up into UTC days** after `retention_days`, and `scan`
+  returns those day rows for old ranges.
+- **Upkeep runs once a day**, after a sampling round: finalize, roll up,
+  then expire slots, days and monthly figures.
+
 ## 9. REST API
 
 All routes are added in `api/mod.rs` with one Cedar action each (§10).
@@ -1054,6 +1076,21 @@ network detail page gets the same for its bridge
 (`GET /networks/{id}/stats`). Under `GET /watch` a new kind `stats` is
 added for the UI. It fires on every round, but only for VMs a client
 watches by id.
+
+**As built (M2.4).** Code: `api/rates.rs`. Four differences from the
+design:
+- **No `stats` watch kind.** Live stats change every round, and the
+  `/watch` stream carries object changes, so the UI polls
+  `GET /vms/{id}/stats` instead. Each round notes its rates in memory
+  (`Round::live`), and a subject drops out after two intervals without
+  a fresh rate.
+- **CSV columns.** `/usage/bandwidth` and `/usage/disk-io` take
+  `format=csv` (audited) with one column per JSON leaf.
+- **Final figures.** For a month whose slots have expired, they answer
+  from the stored monthly figures (`from_final_figures: true`), which
+  carry the p95 only.
+- **Averages** are over the slots the group was present in (§8.5.1),
+  so a VM that ran for a week is not averaged over the whole month.
 
 ## 10. Authorization
 
@@ -1592,6 +1629,26 @@ matrix, and `partial` and `revised_at` in the JSON.
 - a project member doesn't see other projects
 - CSV download works
 - CH disks show "latency not available"
+
+**As built: host acceptance, 2026-10-05.** Deployed with
+`glidex-install`. The VMs were restarted to run the new shim. Ten
+minutes of parallel load, compared with the fully loaded 5-minute
+slot:
+
+| Check | Result |
+|---|---|
+| `iperf -b 100M`, `v1` → `q2` (iperf: 105 Mbit/s) | `v1` tx = `q2` rx = 105.047 Mbps; p95 and billable 105.047; `ext_*` 0 |
+| `fio` 4k randread at 500 IOPS on `q2` (QEMU) | read 499.997 IOPS; 2.048 MB/s (= 500 × 4 KiB); read latency 0.087 ms (host side; fio, in the guest, saw 0.154 ms) |
+| `fio` randrw 700/300 IOPS on `v1` (CH) | read 700.0, write 300.4, billable p95 1000.4 (read + write, D16); no latency (D17) |
+| Exit snapshot: CPU load, stopped 20 s after a sample | metered `cpu.used` for the instance = the shim's `exit.usage.cpu_usage_usec` exactly (88 168 908 µs), 23.05 s of it from the snapshot's tail; the disk ids map the root disk only (the seed is unmanaged) |
+| Web UI | the VM card and the Usage page's three tabs, rendered with this data and reviewed |
+
+Fixed from the review: **memory is the working set.** On the host, a
+512 MiB CH VM had a `memory.current` of 913 MiB, 387 MiB of it
+`inactive_file`: page cache from its buffered disk I/O, charged to its
+cgroup. `mem.used` is now `memory.current − inactive_file` (519 MiB
+for that VM), and `mem.peak` no longer comes from the snapshot's
+`memory.peak`, which includes cache.
 
 **M2 done when:** bandwidth and disk I/O can be billed on a 95th
 percentile per VM and project, users see their usage in the UI, and a

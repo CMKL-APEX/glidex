@@ -37,6 +37,10 @@ import type {
   VmResponse,
   WhoAmI,
   ApiError,
+  RateResponse,
+  SeriesResponse,
+  UsageResponse,
+  VmStats,
 } from "./types";
 
 const API_BASE = "/api";
@@ -393,3 +397,32 @@ export function readAudit(q: { project?: string; user?: string; since?: number; 
   const s = p.toString();
   return get<AuditEntry[]>(`/audit${s ? `?${s}` : ""}`);
 }
+
+// ---- usage (spec/metering.md §9) ---------------------------------------------
+
+export interface UsageQuery {
+  project?: string;
+  from?: string;
+  to?: string;
+  month?: string;
+  granularity?: "hour" | "day" | "month";
+  group_by?: string;
+  meters?: string;
+}
+
+function usageQuery(q: UsageQuery, extra: Record<string, string> = {}): string {
+  const p = new URLSearchParams();
+  for (const [k, v] of Object.entries({ ...q, ...extra })) if (v) p.set(k, String(v));
+  const s = p.toString();
+  return s ? `?${s}` : "";
+}
+
+export const getUsage = (q: UsageQuery) => get<UsageResponse>(`/usage${usageQuery(q)}`);
+export const getBandwidth = (q: UsageQuery) => get<RateResponse>(`/usage/bandwidth${usageQuery(q)}`);
+export const getDiskIo = (q: UsageQuery) => get<RateResponse>(`/usage/disk-io${usageQuery(q)}`);
+/** A same-origin link that downloads the CSV export (sent with the session cookie). */
+export const usageCsvUrl = (kind: "usage" | "bandwidth" | "disk-io", q: UsageQuery) =>
+  `${API_BASE}/usage${kind === "usage" ? "" : `/${kind}`}${usageQuery(q, { format: "csv" })}`;
+export const getVmBandwidth = (id: string) => get<SeriesResponse>(`/vms/${enc(id)}/bandwidth?p95=true`);
+export const getVmIo = (id: string) => get<SeriesResponse>(`/vms/${enc(id)}/io?p95=true`);
+export const getVmStats = (id: string) => get<VmStats>(`/vms/${enc(id)}/stats`);

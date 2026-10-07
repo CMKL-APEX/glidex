@@ -24,6 +24,9 @@ pub struct UsageParams {
     from: Option<String>,
     #[serde(default)]
     to: Option<String>,
+    /// `YYYY-MM` in the billing time zone (instead of `from`/`to`).
+    #[serde(default)]
+    month: Option<String>,
     #[serde(default)]
     granularity: Option<String>,
     /// Comma-separated: project, vm, disk, nic, network.
@@ -43,15 +46,15 @@ pub struct UsageParams {
     include: Option<String>,
 }
 
-fn bad(msg: impl Into<String>) -> ApiErr {
+pub(super) fn bad(msg: impl Into<String>) -> ApiErr {
     err(StatusCode::BAD_REQUEST, "invalid", msg)
 }
 
-fn list(s: &Option<String>) -> Vec<String> {
+pub(super) fn list(s: &Option<String>) -> Vec<String> {
     s.as_deref().unwrap_or("").split(',').map(str::trim).filter(|x| !x.is_empty()).map(String::from).collect()
 }
 
-fn meter(c: &Caller) -> Result<std::sync::Arc<crate::metering::Meter>, ApiErr> {
+pub(super) fn meter(c: &Caller) -> Result<std::sync::Arc<crate::metering::Meter>, ApiErr> {
     c.manager()
         .meter()
         .ok_or_else(|| err(StatusCode::SERVICE_UNAVAILABLE, "metering_unavailable", "metering is not running"))
@@ -60,7 +63,14 @@ fn meter(c: &Caller) -> Result<std::sync::Arc<crate::metering::Meter>, ApiErr> {
 /// `GET /usage`: host readers see every project (also deleted ones);
 /// everyone else the projects they may read usage of (§10).
 pub async fn usage(c: Caller, Query(p): Query<UsageParams>) -> Result<Response, ApiErr> {
-    let wanted = list(&p.project);
+    let projects = scope(&c, &p.project)?;
+    respond(&c, &p, projects, &[GroupKey::Project], |_| true)
+}
+
+/// The projects a usage request covers (§10): `None` = all (host
+/// readers only). Requested projects the caller can't read are `404`.
+pub(super) fn scope(c: &Caller, requested: &Option<String>) -> Result<Option<BTreeSet<String>>, ApiErr> {
+    let wanted = list(requested);
     let all = c.allowed("readUsage", Ent::Host, EntitySet::new());
     let mut projects: Option<BTreeSet<String>> = None;
     if !wanted.is_empty() {
@@ -91,7 +101,7 @@ pub async fn usage(c: Caller, Query(p): Query<UsageParams>) -> Result<Response, 
         }
         projects = Some(readable);
     }
-    respond(&c, &p, projects, &[GroupKey::Project], |_| true)
+    Ok(projects)
 }
 
 /// `GET /projects/{id}/usage`.
@@ -112,7 +122,7 @@ pub async fn vm_usage(c: Caller, Path(id): Path<String>, Query(p): Query<UsagePa
     let (e, es) = vm_entities(&vm);
     c.require_visible("readVm", e, es, "VM")?;
     let disks: BTreeSet<String> = if list(&p.include).iter().any(|i| i == "disks") {
-        c.manager().list_disks().into_iter().filter(|d| d.attached_to.as_deref() == Some(vm.id.as_str())).map(|d| d.id).collect()
+        c.manager().attached_disk_ids(&vm.id)
     } else {
         BTreeSet::new()
     };
@@ -148,6 +158,7 @@ fn respond(
     let meter = meter(c)?;
     let tz = query::parse_tz(p.tz.as_deref().unwrap_or(&meter.config().billing_timezone)).map_err(bad)?;
     let now = crate::metering::now_ms() / 1000;
+    let month = p.month.as_deref().map(|m| query::month_bounds(m, &tz)).transpose().map_err(bad)?;
     let to = match &p.to {
         Some(t) => query::parse_time(t).map_err(bad)?,
         None => now,
@@ -159,6 +170,7 @@ fn respond(
         None => query::bucket(now, Granularity::Month, &tz).0,
         Some(f) => query::parse_time(f).map_err(bad)? / 3600 * 3600,
     };
+    let (from, to) = month.unwrap_or((from, to));
     if to <= from {
         return Err(bad("`to` must be after `from`"));
     }

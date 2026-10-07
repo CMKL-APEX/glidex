@@ -246,8 +246,8 @@ All values are serde-JSON.
 The same file also holds `credentials`, `networks`, `images`, `disks`
 ([images.md](images.md#3-data-model)) and the tenancy and auth tables.
 Disks, images and networks are not envelopes yet (M3).
-Metering adds `meter_cursors`, `meter_open`, `usage_hourly` and
-`meter_meta` ([metering.md §7.1](metering.md#71-tables), written only by
+Metering adds `meter_cursors`, `meter_open`, `usage_hourly`,
+`meter_meta`, `rate_5m`, `usage_daily` and `usage_monthly_rates` ([metering.md §7.1](metering.md#71-tables), written only by
 the meter, one transaction per sampling round). These are new tables, so
 `schema_version` stays 2 and older builds ignore them.
 `VmStore::commit` writes a VM, the disks whose claims it changes and its

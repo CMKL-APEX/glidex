@@ -165,6 +165,7 @@ ui/src/
 | `/tokens` | `Tokens` |
 | `/policies` | `Policies` (shown with `readPolicy`) |
 | `/audit` | `Audit` (shown with `readAudit`, or to project owners for their projects) |
+| `/usage` | `Usage` (shown with `readUsage`, or to anyone with a project role, for their projects) |
 | `*` | `NotFound` |
 
 Without a session every path shows the login page.
@@ -295,6 +296,24 @@ count as idle for that. `api.ts` dispatches `glidex:changed` on
   version: `409 conflict`, `409 would_lock_out` and `422` validator
   messages are shown), **Delete** (`?version=`), and **History**
   (`/versions`, loadable into the editor).
+- **Usage** ([metering.md §12](metering.md#12-cli-and-ui)) —
+  Usage, Bandwidth and Disk I/O tabs over one billing month (`month=`).
+  The filters sit in one row: month, project (all projects for host
+  readers), and group by. Each tab is a table (totals in presentation
+  units; average, 30-second peak, p95 and billable p95), with a
+  `Download CSV` link to the same view's export.
+- **VM detail, Usage** (`components/VmUsage.tsx`) — tiles for the
+  current rates (`GET /vms/{id}/stats`, polled every 30 s), and the
+  last 24 h of network Mbps and disk IOPS with a dashed p95 line. Disk
+  latency gets its own small chart, never a second axis, or a "not
+  available" note on Cloud Hypervisor.
+- **Charts** (`components/TimeChart.tsx`) — plain SVG, no chart
+  library:
+  - one y axis and 2 px lines in categorical slots 1–2 of the
+    validated reference palette (blue, orange);
+  - a legend plus end labels, with text in text colours;
+  - breaks where the VM wasn't running;
+  - a crosshair tooltip, and a table view toggle.
 - **Audit** — `GET /audit` newest first, filtered by project, user and
   since; a row expands to request id, determining policies and details.
 

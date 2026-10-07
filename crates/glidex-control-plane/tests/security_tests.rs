@@ -528,6 +528,35 @@ async fn usage_is_project_scoped_and_exports_are_audited() {
     // Bad ranges.
     let (s, body, _) = h.call("GET", "/usage?from=2020-01-01T00:00:00Z&to=2026-01-01T00:00:00Z", None, &a).await;
     assert_eq!((s, body["error"].as_str()), (StatusCode::BAD_REQUEST, Some("range_too_large")));
+
+    // Bandwidth (§9.3): 10 Mbps for 10 minutes on a NIC in each project.
+    let t0 = now / 300_000 * 300_000 - 900_000;
+    let mut r = meter.ledger().begin_round(t0 + 600_000).unwrap();
+    for (p, id) in [(&pa, "vm-a"), (&pb, "vm-b")] {
+        let mut nic = Subject::new(SubjectKind::Nic, format!("{id}.0"), format!("{id}/nic0"), Some(p.clone()));
+        nic.vm_id = Some(id.to_string());
+        r.counter(&nic, "net.rx_bytes", "port", 0, t0, Origin::Unknown).unwrap();
+        for i in 1..=20u64 {
+            r.counter(&nic, "net.rx_bytes", "port", i * 37_500_000, t0 + i * 30_000, Origin::Unknown).unwrap();
+        }
+    }
+    meter.ledger().commit(r).unwrap();
+    let (s, body, _) = h.call("GET", "/usage/bandwidth?project=pa&group_by=vm", None, &v).await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    let rows = body["rows"].as_array().unwrap();
+    assert_eq!(rows.len(), 1, "{body}");
+    assert_eq!(rows[0]["vm"]["id"], "vm-a");
+    assert_eq!(rows[0]["p95"]["rx_mbps"], 10.0);
+    assert_eq!(rows[0]["slots"]["counted"], 2);
+    let (s, _, _) = h.call("GET", "/usage/bandwidth?project=pb", None, &v).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    let (_, body, _) = h.call("GET", "/usage/bandwidth?group_by=project", None, &a).await;
+    assert_eq!(body["rows"].as_array().unwrap().len(), 2, "auditor sees both projects");
+    let (s, _, headers) = h.call("GET", "/usage/bandwidth?project=pa&format=csv", None, &v).await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(headers[header::CONTENT_TYPE].to_str().unwrap().starts_with("text/csv"));
+    let (s, body, _) = h.call("GET", "/usage/disk-io?group_by=nic", None, &a).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{body}");
 }
 
 // ---- PAM through an in-process glidex-authd -------------------------------

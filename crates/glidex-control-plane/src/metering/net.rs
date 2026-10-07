@@ -34,7 +34,7 @@ fn bridge_subject(bridge: &str) -> Subject {
 
 /// `(rate per second × factor)` of a sum of deltas over one interval,
 /// or `None` when they don't share it or it spans a gap (§8.5).
-fn summed_rate(deltas: &[Delta], factor: u64) -> Option<u64> {
+pub(crate) fn summed_rate(deltas: &[Delta], factor: u64) -> Option<u64> {
     let first = deltas.first()?;
     if deltas.iter().any(|d| d.from != first.from || d.to != first.to) {
         return None;
@@ -109,6 +109,7 @@ pub fn sample_nat(round: &mut Round, counters: &[NatCounter], vms: &[Vm], networ
                 round.counter(&s, &format!("net.ext_{dir}_packets"), &reset, c.packets, now, origin)?;
                 if let Some(kbps) = d.and_then(|d| d.rate(8)) {
                     round.max(&s, &format!("net.ext_{dir}_kbps_peak"), kbps / 1000, now);
+                    round.live(&s, &format!("ext_{dir}_mbps"), kbps as f64 / 1e6);
                 }
             }
             None => {
@@ -120,6 +121,7 @@ pub fn sample_nat(round: &mut Round, counters: &[NatCounter], vms: &[Vm], networ
                 round.counter(&s, &format!("bridge.ext_{dir}_packets"), &reset, c.packets, now, Origin::Unknown)?;
                 if let Some(kbps) = d.and_then(|d| d.rate(8)) {
                     round.max(&s, &format!("bridge.ext_{dir}_kbps_peak"), kbps / 1000, now);
+                    round.live(&s, &format!("ext_{dir}_mbps"), kbps as f64 / 1e6);
                 }
             }
         }
@@ -136,9 +138,16 @@ fn sample_nic(round: &mut Round, vm: &Vm, nic: u8, network: Option<&str>, p: &Po
     let txp = round.counter(&s, "net.tx_packets", &p.uuid, p.rx_packets, now, origin)?;
     if let Some(kbps) = rx.and_then(|d| d.rate(8)) {
         round.max(&s, "net.rx_kbps_peak", kbps / 1000, now);
+        round.live(&s, "rx_mbps", kbps as f64 / 1e6);
     }
     if let Some(kbps) = tx.and_then(|d| d.rate(8)) {
         round.max(&s, "net.tx_kbps_peak", kbps / 1000, now);
+        round.live(&s, "tx_mbps", kbps as f64 / 1e6);
+    }
+    for (name, d) in [("rx_pps", rxp), ("tx_pps", txp)] {
+        if let Some(pps) = d.and_then(|d| d.rate(1)) {
+            round.live(&s, name, pps as f64);
+        }
     }
     if let Some(pps) = summed_rate(&[rxp, txp].into_iter().flatten().collect::<Vec<_>>(), 1000) {
         round.max(&s, "net.pps_peak", pps, now);
@@ -160,6 +169,7 @@ fn sample_bridge(round: &mut Round, s: &Subject, ports: &[(&PortStats, Origin)],
     round.prune_parts(s, "bridge.packets", &keep)?;
     if let Some(kbps) = summed_rate(&bytes, 8) {
         round.max(s, "bridge.kbps_peak", kbps / 1000, now);
+        round.live(s, "mbps", kbps as f64 / 1e6);
     }
     Ok(())
 }

@@ -122,6 +122,14 @@ impl ChClient {
         Ok(parse_vm_info(&v))
     }
 
+    /// Per-disk block counters (`GET /vm.counters`; metering §5.2).
+    pub fn block_stats(&self) -> Result<Vec<crate::stats::BlockStats>, HvError> {
+        let body = self.expect_success("GET", "/vm.counters", None)?;
+        let v: serde_json::Value = serde_json::from_str(body.as_deref().unwrap_or("{}"))
+            .map_err(|e| HvError::Api(format!("vm.counters: {}", e)))?;
+        Ok(crate::stats::parse_ch_counters(&v))
+    }
+
     pub fn pause(&self) -> Result<(), HvError> {
         self.expect_success("PUT", "/vm.pause", None).map(|_| ())
     }

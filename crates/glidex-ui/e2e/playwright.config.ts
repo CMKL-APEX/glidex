@@ -5,7 +5,7 @@ const apiPort = Number(process.env.E2E_API_PORT ?? 8851);
 const uiPort = Number(process.env.E2E_UI_PORT ?? 5174);
 
 // Specs that don't depend on a hypervisor.
-const uiSpecs = /(console|auth|access|credentials|activity|footer)\.spec\.ts/;
+const uiSpecs = /(console|auth|access|credentials|activity|footer|usage)\.spec\.ts/;
 
 export default defineConfig<Options>({
   testDir: "./tests",

@@ -21,6 +21,7 @@ const HOST_ACTIONS = [
   "readPolicy",
   "writePolicy",
   "readAudit",
+  "readUsage",
   "manageAnyTokens",
   "createNetwork",
 ] as const;

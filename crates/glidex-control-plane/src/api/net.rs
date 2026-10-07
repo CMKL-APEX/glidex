@@ -40,7 +40,7 @@ where
         .map_err(|e| error_to_response(VmManagerError::Network(e)))
 }
 
-fn network_entities(n: &Network) -> (Ent, EntitySet) {
+pub(crate) fn network_entities(n: &Network) -> (Ent, EntitySet) {
     let mut es = EntitySet::new();
     let e = add_network(&mut es, n);
     (e, es)

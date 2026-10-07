@@ -829,6 +829,11 @@ fn usage_path(args: &[&str], project: Option<String>) -> String {
 
 /// `usage [--from D] [--to D] [--by project|vm|disk|nic|network] [--granularity hour|day|month] [--meters m,…] [--tz Z] [--csv]`
 pub async fn resource_usage(client: &ApiClient, args: &[&str]) {
+    match args.first() {
+        Some(&"bandwidth") => return rate_report(client, "/usage/bandwidth", &args[1..]).await,
+        Some(&"disk-io") => return rate_report(client, "/usage/disk-io", &args[1..]).await,
+        _ => {}
+    }
     let path = usage_path(args, client.project());
     if args.contains(&"--csv") {
         match client.request_bytes(Method::GET, &path, None).await {
@@ -876,6 +881,136 @@ pub async fn resource_usage(client: &ApiClient, args: &[&str]) {
                 println!("    {:<26} {:>16} {}", m, format!("{}", x["value"]), s(&x["unit"]));
             }
         }
+    }
+}
+
+/// `usage bandwidth|disk-io [--month YYYY-MM] [--by k,…] [--project P] [--csv]` (§9.3).
+async fn rate_report(client: &ApiClient, base: &str, args: &[&str]) {
+    let mut path = base.to_string();
+    if let Some(p) = flag_value(args, "--project").map(str::to_string).or_else(|| client.project()) {
+        path = client::add_query(&path, "project", &p);
+    }
+    for (flag, key) in [("--month", "month"), ("--by", "group_by"), ("--from", "from"), ("--to", "to")] {
+        if let Some(v) = flag_value(args, flag) {
+            path = client::add_query(&path, key, v);
+        }
+    }
+    if args.contains(&"--csv") {
+        match client.request_bytes(Method::GET, &client::add_query(&path, "format", "csv"), None).await {
+            Ok(r) => print!("{}", String::from_utf8_lossy(&r.body)),
+            Err(e) => err(e.message),
+        }
+        return;
+    }
+    let v: Value = match client.request_json(Method::GET, &path, None).await {
+        Ok(v) => v,
+        Err(e) => return err(e),
+    };
+    let period = v["month"].as_str().map(str::to_string).unwrap_or_else(|| format!("{} → {}", s(&v["from"]), s(&v["to"])));
+    println!(
+        "{} {} ({}){}",
+        if base.ends_with("disk-io") { "Disk I/O" } else { "Bandwidth" }.bold(),
+        period,
+        s(&v["timezone"]),
+        if v["final"].as_bool() == Some(true) { "" } else { ", month to date" }
+    );
+    let rows = v["rows"].as_array().cloned().unwrap_or_default();
+    if rows.is_empty() {
+        println!("  Nothing recorded.");
+        return;
+    }
+    let keys = v["group_by"].as_array().cloned().unwrap_or_default();
+    for r in rows {
+        let who: Vec<String> = keys
+            .iter()
+            .filter_map(|k| {
+                let k = k.as_str()?;
+                r[k].is_object().then(|| format!("{}={}", k, r[k]["name"].as_str().unwrap_or("?")))
+            })
+            .collect();
+        println!("\n  {}  {}", who.join(" ").cyan(), format!("({} slots of 5 min)", r["slots"]["counted"]).dimmed());
+        for part in ["avg", "peak", "p95"] {
+            if let Some(o) = r[part].as_object() {
+                let vals: Vec<String> = o
+                    .iter()
+                    .filter(|(k, v)| !v.is_null() && *k != "resolution_secs")
+                    .map(|(k, v)| format!("{k}={v}"))
+                    .collect();
+                let label = match part {
+                    "peak" => "30-second peak",
+                    "p95" => "95th percentile",
+                    _ => "average",
+                };
+                println!("    {:<16} {}", label, vals.join("  "));
+            }
+        }
+        if r["latency_source"] == "none" {
+            println!("    {}", "latency not available (Cloud Hypervisor)".dimmed());
+        }
+    }
+}
+
+/// `stats <vm>`: the latest rates (§9.4).
+pub async fn stats(client: &ApiClient, args: &[&str]) {
+    let Some(vm) = args.first() else { return err("Usage: stats <vm>") };
+    let id = match client.resolve_vm(vm).await {
+        Ok(id) => id,
+        Err(e) => return err(e),
+    };
+    let v: Value = match client.request_json(Method::GET, &format!("/vms/{}/stats", enc(&id)), None).await {
+        Ok(v) => v,
+        Err(e) => return err(e),
+    };
+    if v["sampled_at"].is_null() {
+        println!("No recent sample (is the VM running?).");
+        return;
+    }
+    println!("{} sampled at {} (over {} s)", vm.bold(), s(&v["sampled_at"]), v["resolution_secs"]);
+    let line = |label: &str, o: &Value| {
+        if let Some(o) = o.as_object() {
+            let vals: Vec<String> = o.iter().map(|(k, x)| format!("{k}={x}")).collect();
+            println!("  {:<24} {}", label, vals.join("  "));
+        }
+    };
+    line("vm", &v["vm"]);
+    for kind in ["nics", "disks"] {
+        for x in v[kind].as_array().cloned().unwrap_or_default() {
+            line(x["name"].as_str().unwrap_or("?"), &x["values"]);
+        }
+    }
+}
+
+/// `bandwidth <vm> | --network <net>` and `io <vm> | --disk <disk>`:
+/// the 5-minute series with its p95 (§9.3).
+pub async fn series(client: &ApiClient, what: &str, args: &[&str]) {
+    let path = match (what, flag_value(args, "--network"), flag_value(args, "--disk"), args.first()) {
+        ("bandwidth", Some(n), _, _) => format!("/networks/{}/bandwidth", enc(n)),
+        ("io", _, Some(d), _) => format!("/disks/{}/io", enc(d)),
+        (_, None, None, Some(vm)) if !vm.starts_with("--") => match client.resolve_vm(vm).await {
+            Ok(id) => format!("/vms/{}/{}", enc(&id), if what == "io" { "io" } else { "bandwidth" }),
+            Err(e) => return err(e),
+        },
+        _ => return err(format!("Usage: {what} <vm> | {} [--from D] [--to D]", if what == "io" { "--disk <disk>" } else { "--network <net>" })),
+    };
+    let mut path = client::add_query(&path, "p95", "true");
+    for (flag, key) in [("--from", "from"), ("--to", "to")] {
+        if let Some(v) = flag_value(args, flag) {
+            path = client::add_query(&path, key, v);
+        }
+    }
+    let v: Value = match client.request_json(Method::GET, &path, None).await {
+        Ok(v) => v,
+        Err(e) => return err(e),
+    };
+    let points = v["points"].as_array().cloned().unwrap_or_default();
+    println!("{} → {}  ({} points of 5 min)", s(&v["from"]), s(&v["to"]), points.len());
+    for p in &points {
+        let vals: Vec<String> = p.as_object().into_iter().flatten().filter(|(k, _)| *k != "slot").map(|(k, x)| format!("{k}={x}")).collect();
+        println!("  {}  {}", s(&p["slot"]).dimmed(), vals.join("  "));
+    }
+    if let Some(o) = v["p95"].as_object() {
+        let vals: Vec<String> = o.iter().filter(|(k, x)| !x.is_null() && *k != "slots").map(|(k, x)| format!("{k}={x}")).collect();
+        println!("  {} {}", "95th percentile:".bold(), vals.join("  "));
     }
 }
 

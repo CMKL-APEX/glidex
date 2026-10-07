@@ -617,8 +617,8 @@ Rules for the schema:
 | `policy.read` · `policy.write` | host | List, validate and simulate policies · create, update and delete site policies (step-up) |
 | `quota.exceed` | host | Go over a project quota (§6.3) |
 | `system.identity` · `system.projects` · `system.audit` | host | Users, identities, teams, auth settings · projects, quotas, links in any project · `GET /audit` |
-| `usage.read` | project | Usage of the project, its VMs and disks (`readProjectUsage`, `readVmUsage`, `readDiskUsage`; [metering.md §10](metering.md#10-authorization)) |
-| `system.usage` | host | Usage of every project, deleted ones included (`readUsage`) |
+| `usage.read` | project | Usage of the project, its VMs and disks (`readProjectUsage`, `readVmUsage`, `readDiskUsage`, `readVmBandwidth`, `readVmIo`, `readDiskIo`), and of its networks (`readNetworkBandwidth`, `readNetworkStats`; host networks need a host role such as auditor) ([metering.md §10](metering.md#10-authorization)) |
+| `system.usage` | host | Usage of every project, deleted ones included (`readUsage`, `readBandwidth`, `readDiskIoUsage`) |
 
 ### 7.3 Policies shipped with glidex
 

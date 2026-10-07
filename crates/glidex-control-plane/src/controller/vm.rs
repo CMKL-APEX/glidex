@@ -305,9 +305,15 @@ impl VmManager {
     /// §7.5: the instance is gone; record why and act on it.
     async fn finish_exit(&self, vm: &Vm, mut st: VmStatus, inst: InstanceRef, file: Option<InstanceFile>, boot: &str, mut events: Vec<Event>) -> Next {
         let now = crate::tenancy::now();
+        // When it really exited (the shim's record), not when we noticed:
+        // metering ends allocation there (spec/metering.md §6.4).
+        let mut exited_at = now;
+        let mut usage = None;
         let (cause, code, signal, message) = if inst.boot_id != boot {
             (ExitCause::HostReboot, None, None, None)
         } else if let Some(e) = file.as_ref().and_then(|f| f.exit.clone()) {
+            exited_at = e.at.min(now);
+            usage = e.usage;
             (e.cause, e.code, e.signal, e.message)
         } else if file.is_none() {
             // An intent whose launch never happened.
@@ -317,7 +323,25 @@ impl VmManager {
             (ExitCause::Lost, None, None, Some("the shim died without recording how the hypervisor ended".into()))
         };
         let shim_died = cause == ExitCause::Lost && file.is_some();
-        st.last_exit = Some(ExitRecord { at: now, instance_id: inst.instance_id.clone(), cause, code, signal, message: message.clone() });
+        let disk_ids = match &usage {
+            Some(u) if !u.disks.is_empty() => glidex_vm_shim::LaunchFile::read(&crate::paths::vm_paths(&vm.id).launch)
+                .ok()
+                .filter(|l| l.instance_id == inst.instance_id)
+                .map(|l| crate::metering::sources::launched_disk_ids(&l.spec))
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        st.last_exit = Some(ExitRecord {
+            at: exited_at,
+            instance_id: inst.instance_id.clone(),
+            cause,
+            code,
+            signal,
+            message: message.clone(),
+            usage,
+            disk_ids,
+            launched_at: inst.launched_at,
+        });
         st.instance = None;
         st.phase = VmPhase::Stopped;
         st.stop_deadline = None;
@@ -611,6 +635,7 @@ impl VmManager {
             ready_timeout_secs: settings.ready_timeout_secs,
             host_shutdown_grace_secs: settings.host_shutdown_grace_secs,
             spec: serde_json::json!({ "generation": vm.generation, "spec": vm.spec }),
+            meter_poll_secs: settings.meter_poll_secs,
         };
         launch.write(&paths.launch).map_err(|e| before_intent(HypervisorError::ProcessStart(e)))?;
 

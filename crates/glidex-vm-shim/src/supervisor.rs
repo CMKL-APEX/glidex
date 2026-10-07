@@ -10,7 +10,7 @@ use crate::launch::{allowed_binaries, HypervisorKind, LaunchFile};
 use crate::proto::{self, HelloResult, Op, Request, Response, MAX_LINE};
 use crate::proxy::{LogWriter, Proxy};
 use crate::state::{ExitCause, ExitInfo, InstanceFile, Phase, StopInfo, INSTANCE_VERSION};
-use crate::util::{boot_id, now, proc_starttime};
+use crate::util::{boot_id, now, now_ms, proc_starttime};
 use glidex_hv_client::{ch::ChClient, qmp::QmpClient, GuestState};
 use nix::pty::{openpty, OpenptyResult};
 use nix::sys::signal::{kill, signal, SigHandler, Signal};
@@ -25,6 +25,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// Exit status: released normally.
@@ -101,6 +102,9 @@ struct StopState {
     cause: ExitCause,
 }
 
+/// Block counters from one poll, and when (unix ms).
+type DiskPoll = (Vec<glidex_hv_client::stats::BlockStats>, u64);
+
 struct Supervisor {
     launch: LaunchFile,
     instance_path: PathBuf,
@@ -114,6 +118,10 @@ struct Supervisor {
     kill_cause: Option<ExitCause>,
     /// Release as soon as the hypervisor is gone (SIGTERM).
     auto_release: bool,
+    /// The last block counters and when (unix ms), from the poller.
+    disk_poll: Arc<Mutex<Option<DiskPoll>>>,
+    /// Tells the poller to stop.
+    poll_stop: Arc<AtomicBool>,
 }
 
 impl Supervisor {
@@ -143,6 +151,8 @@ impl Supervisor {
             kill_at: None,
             kill_cause: None,
             auto_release: false,
+            disk_poll: Arc::new(Mutex::new(None)),
+            poll_stop: Arc::new(AtomicBool::new(false)),
         };
         s.save();
         Ok(s)
@@ -174,7 +184,9 @@ impl Supervisor {
             cause.as_str(),
             detail
         ));
-        self.instance.exit = Some(ExitInfo { at: now(), cause, code, signal: sig, message });
+        self.poll_stop.store(true, Ordering::SeqCst);
+        let usage = self.exit_usage();
+        self.instance.exit = Some(ExitInfo { at: now(), cause, code, signal: sig, message, usage });
         self.instance.phase = Phase::Exited;
         self.save();
     }
@@ -274,6 +286,7 @@ impl Supervisor {
                 if self.ready() {
                     self.instance.phase = Phase::Running;
                     self.save();
+                    self.start_disk_poller();
                     return;
                 }
                 if Instant::now() >= deadline {
@@ -293,6 +306,59 @@ impl Supervisor {
                 std::thread::sleep(Duration::from_millis(100));
             }
         }
+    }
+
+    /// Poll the hypervisor's block counters every `meter_poll_secs` on a
+    /// thread of its own, so a slow answer never holds up supervision.
+    fn start_disk_poller(&self) {
+        let secs = self.launch.meter_poll_secs;
+        if secs == 0 {
+            return;
+        }
+        let (sock, kind) = (self.launch.api_socket.clone(), self.launch.hypervisor);
+        let (out, stop) = (self.disk_poll.clone(), self.poll_stop.clone());
+        let _ = std::thread::Builder::new().name("disk-poll".into()).spawn(move || {
+            while !stop.load(Ordering::SeqCst) {
+                let stats = match kind {
+                    HypervisorKind::CloudHypervisor => ChClient::new(&sock).block_stats(),
+                    HypervisorKind::Qemu => QmpClient::new(&sock).block_stats(),
+                };
+                if let Ok(s) = stats {
+                    *out.lock().unwrap_or_else(|e| e.into_inner()) = Some((s, now_ms()));
+                }
+                for _ in 0..secs * 10 {
+                    if stop.load(Ordering::SeqCst) {
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            }
+        });
+    }
+
+    /// The exit snapshot (D12): this unit's cgroup counters, read after
+    /// the hypervisor was reaped (the cgroup still holds what it used),
+    /// and the last block counters. Only under the systemd runner: a
+    /// detached shim's cgroup is not the VM's own.
+    fn exit_usage(&self) -> Option<crate::state::ExitUsage> {
+        let mut u = crate::state::ExitUsage::default();
+        let unit = format!("glidex-vm@{}.service", self.launch.vm_id);
+        let cgroup = std::fs::read_to_string("/proc/self/cgroup")
+            .ok()
+            .and_then(|t| t.lines().find_map(|l| l.strip_prefix("0::").map(|p| p.trim().to_string())))
+            .filter(|p| p.ends_with(&unit))
+            .map(|p| Path::new("/sys/fs/cgroup").join(p.trim_start_matches('/')));
+        if let Some(cg) = cgroup {
+            u.cpu_usage_usec = std::fs::read_to_string(cg.join("cpu.stat"))
+                .ok()
+                .and_then(|t| t.lines().find_map(|l| l.strip_prefix("usage_usec ")?.trim().parse().ok()));
+            u.memory_peak_bytes = std::fs::read_to_string(cg.join("memory.peak")).ok().and_then(|t| t.trim().parse().ok());
+        }
+        if let Some((disks, at)) = self.disk_poll.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            u.disks = disks;
+            u.disks_at = Some(at);
+        }
+        (u != crate::state::ExitUsage::default()).then_some(u)
     }
 
     /// Whether the hypervisor's own socket answers.

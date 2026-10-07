@@ -31,6 +31,7 @@ export default function Header() {
     { to: "/access", label: "Access", show: host.listUsers || host.listTeams || host.readSystemBindings },
     { to: "/tokens", label: "Tokens", show: !me.token },
     { to: "/policies", label: "Policies", show: host.readPolicy },
+    { to: "/usage", label: "Usage", show: host.readUsage || me.project_roles.length > 0 },
     { to: "/audit", label: "Audit", show: host.readAudit || ownsAProject },
   ].filter((n) => n.show);
 

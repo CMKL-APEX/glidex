@@ -12,6 +12,7 @@ mod access;
 mod errors;
 mod net;
 mod storage;
+mod rates;
 mod usage;
 mod vms;
 mod watch;
@@ -255,7 +256,15 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         .add("GET", "/usage", "readUsage", get(usage::usage))
         .add("GET", "/projects/{id}/usage", "readProjectUsage", get(usage::project_usage))
         .add("GET", "/vms/{id}/usage", "readVmUsage", get(usage::vm_usage))
-        .add("GET", "/disks/{id}/usage", "readDiskUsage", get(usage::disk_usage));
+        .add("GET", "/disks/{id}/usage", "readDiskUsage", get(usage::disk_usage))
+        .add("GET", "/usage/bandwidth", "readBandwidth", get(rates::bandwidth))
+        .add("GET", "/usage/disk-io", "readDiskIoUsage", get(rates::disk_io))
+        .add("GET", "/vms/{id}/bandwidth", "readVmBandwidth", get(rates::vm_bandwidth))
+        .add("GET", "/vms/{id}/io", "readVmIo", get(rates::vm_io))
+        .add("GET", "/vms/{id}/stats", "readVmStats", get(rates::vm_stats))
+        .add("GET", "/disks/{id}/io", "readDiskIo", get(rates::disk_io_series))
+        .add("GET", "/networks/{name}/bandwidth", "readNetworkBandwidth", get(rates::network_bandwidth))
+        .add("GET", "/networks/{name}/stats", "readNetworkStats", get(rates::network_stats));
     (r.router, r.table)
 }
 

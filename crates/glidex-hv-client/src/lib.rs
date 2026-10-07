@@ -9,6 +9,7 @@
 
 pub mod ch;
 pub mod qmp;
+pub mod stats;
 
 use std::time::Duration;
 

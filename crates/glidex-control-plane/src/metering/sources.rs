@@ -9,7 +9,8 @@ use std::path::{Path, PathBuf};
 pub struct VmUsage {
     /// Cumulative CPU time, µs.
     pub cpu_usec: u64,
-    /// Memory in use, bytes (excluding hugepages, §5.1).
+    /// Working set, bytes: `memory.current` minus reclaimable page cache
+    /// (`inactive_file`), excluding hugepages (§5.1).
     pub memory_bytes: u64,
     /// `true` when read from `/proc` rather than a cgroup (`source_proc`).
     pub from_proc: bool,
@@ -49,8 +50,14 @@ impl Host {
     pub fn cgroup_usage(&self, cgroup: &Path) -> Option<VmUsage> {
         let cpu = std::fs::read_to_string(cgroup.join("cpu.stat")).ok()?;
         let cpu_usec = cpu.lines().find_map(|l| l.strip_prefix("usage_usec "))?.trim().parse().ok()?;
-        let memory_bytes = read_u64(&cgroup.join("memory.current")).unwrap_or(0);
-        Some(VmUsage { cpu_usec, memory_bytes, from_proc: false })
+        // Buffered disk I/O charges host page cache to the VM's cgroup;
+        // the reclaimable part is not memory the VM holds.
+        let current = read_u64(&cgroup.join("memory.current")).unwrap_or(0);
+        let inactive_file = std::fs::read_to_string(cgroup.join("memory.stat"))
+            .ok()
+            .and_then(|t| t.lines().find_map(|l| l.strip_prefix("inactive_file ")?.trim().parse::<u64>().ok()))
+            .unwrap_or(0);
+        Some(VmUsage { cpu_usec, memory_bytes: current.saturating_sub(inactive_file), from_proc: false })
     }
 
     /// CPU and memory of one process (a detached instance's hypervisor),
@@ -77,6 +84,33 @@ impl Host {
             .and_then(|v| v.split_whitespace().next()?.parse().ok())
             .unwrap_or(0);
         Some(VmUsage { cpu_usec: ticks * 1_000_000 / hz, memory_bytes: rss_kib * 1024, from_proc: true })
+    }
+}
+
+/// The managed disk at each launched disk index (`[root, data disks…,
+/// seed]`, both drivers): `None` for an unmanaged root and the seed.
+pub fn launched_disk_ids(spec: &serde_json::Value) -> Vec<Option<String>> {
+    let config = &spec["spec"]["config"];
+    let mut out = vec![config["root_disk"].as_str().map(str::to_string)];
+    out.extend(config["data_disks"].as_array().into_iter().flatten().map(|d| d.as_str().map(str::to_string)));
+    out
+}
+
+impl Host {
+    /// Per-disk block counters of a running instance, with the managed
+    /// disk id of each index, from its `launch.json` and its hypervisor
+    /// socket. `None` if the launch file is for another instance or the
+    /// hypervisor doesn't answer.
+    pub fn block_stats(&self, vm_id: &str, instance_id: &str) -> Option<(Vec<Option<String>>, Vec<glidex_hv_client::stats::BlockStats>)> {
+        use glidex_vm_shim::launch::{HypervisorKind, LaunchFile};
+        let paths = crate::paths::vm_paths(vm_id);
+        let launch = LaunchFile::read(&paths.launch).ok().filter(|l| l.instance_id == instance_id)?;
+        let stats = match launch.hypervisor {
+            HypervisorKind::CloudHypervisor => glidex_hv_client::ch::ChClient::new(&paths.api_socket).block_stats(),
+            HypervisorKind::Qemu => glidex_hv_client::qmp::QmpClient::new(&paths.api_socket).block_stats(),
+        }
+        .ok()?;
+        Some((launched_disk_ids(&launch.spec), stats))
     }
 }
 
@@ -112,8 +146,9 @@ mod tests {
         let cg = h.cgroup_of(42).unwrap();
         assert_eq!(cg, h.cgroup_root.join("glidex.slice/glidex-vms.slice/glidex-vm@abc.service"));
         write(&cg.join("cpu.stat"), "usage_usec 123456789\nuser_usec 100000000\nsystem_usec 23456789\nnr_periods 0\n");
-        write(&cg.join("memory.current"), "536870912\n");
-        assert_eq!(h.cgroup_usage(&cg), Some(VmUsage { cpu_usec: 123456789, memory_bytes: 512 << 20, from_proc: false }));
+        write(&cg.join("memory.current"), "957349888\n"); // 913 MiB
+        write(&cg.join("memory.stat"), "anon 540016640\nfile 405798912\ninactive_file 405798912\n"); // 387 MiB cache
+        assert_eq!(h.cgroup_usage(&cg), Some(VmUsage { cpu_usec: 123456789, memory_bytes: 526 << 20, from_proc: false }));
     }
 
     #[test]

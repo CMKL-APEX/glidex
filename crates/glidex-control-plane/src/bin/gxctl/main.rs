@@ -1175,6 +1175,12 @@ fn print_help() {
         "  {} - Resource usage (default: this billing month by project)",
         "usage [--project P] [--from D] [--to D] [--by project,vm,disk,nic,network] [--granularity hour|day|month] [--meters m,…] [--tz Z] [--csv]".cyan()
     );
+    println!(
+        "  {} - Average, 30-second peak and 95th percentile per billing month",
+        "usage bandwidth|disk-io [--month YYYY-MM] [--by project,vm,nic,network|disk] [--csv]".cyan()
+    );
+    println!("  {} - A VM's current CPU, memory, NIC and disk rates", "stats <vm>".cyan());
+    println!("  {} - 5-minute series with the 95th percentile", "bandwidth <vm> | --network N · io <vm> | --disk D".cyan());
     println!("  {} - Project networks", "network create <name> --project P | share <net> <project-id> | unshare <net> <project-id>".cyan());
     println!("  {} - Shares offered to a project", "network shares <p> | accept <p> <net> | leave <p> <net>".cyan());
     println!();
@@ -1401,7 +1407,7 @@ const COMMANDS: &[&str] = &[
     "network-rm", "bridges", "uplinks", "uplink-add", "uplink-rm", "ovs", "health",
     "image", "images", "disk", "disks", "whoami", "login", "logout", "ui", "token",
     "tokens", "project", "projects", "binding", "bindings", "system-binding", "user",
-    "users", "team", "teams", "policy", "policies", "audit", "usage", "network",
+    "users", "team", "teams", "policy", "policies", "audit", "usage", "stats", "bandwidth", "io", "network",
 ];
 
 /// Subcommands offered by Tab after these commands.
@@ -2335,6 +2341,9 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
         "policy" | "policies" => admin::policy(client, &parts[1..]).await,
         "audit" => admin::audit(client, &parts[1..]).await,
         "usage" => admin::resource_usage(client, &parts[1..]).await,
+        "stats" => admin::stats(client, &parts[1..]).await,
+        "bandwidth" => admin::series(client, "bandwidth", &parts[1..]).await,
+        "io" => admin::series(client, "io", &parts[1..]).await,
 
         "network-add" | "net-add" => handle_network_add(client, &parts[1..]).await,
 
