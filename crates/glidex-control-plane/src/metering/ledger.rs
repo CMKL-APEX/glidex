@@ -36,11 +36,16 @@ pub const HOUR_MS: u64 = 3_600_000;
 pub const SLOT_MS: u64 = 300_000;
 pub const SLOTS_PER_HOUR: usize = 12;
 
-/// Meters kept per 5-minute slot as well as per hour (§8.5.1, §8.6).
+/// Meters kept per 5-minute slot as well as per hour (§8.5.1, §8.6,
+/// §8.7).
 pub fn is_slotted(meter: &str) -> bool {
     matches!(
         meter,
-        "net.rx_bytes"
+        "cpu.used"
+            | "cpu.alloc"
+            | "mem.used"
+            | "mem.alloc"
+            | "net.rx_bytes"
             | "net.tx_bytes"
             | "net.ext_rx_bytes"
             | "net.ext_tx_bytes"

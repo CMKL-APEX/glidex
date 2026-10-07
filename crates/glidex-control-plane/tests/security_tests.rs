@@ -562,6 +562,23 @@ async fn usage_is_project_scoped_and_exports_are_audited() {
     assert_eq!(s, StatusCode::OK, "{body}");
     let (s, body, _) = h.call("GET", "/usage/disk-io?project=pa&tz=%2B05:30", None, &v).await;
     assert_eq!(s, StatusCode::BAD_REQUEST, "{body}");
+
+    // CPU and memory (§8.7), from the VMs' cpu.used slots above.
+    let (s, body, _) = h.call("GET", "/usage/compute?project=pa&group_by=vm", None, &v).await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    let rows = body["rows"].as_array().unwrap();
+    assert_eq!(rows.len(), 1, "{body}");
+    assert_eq!(rows[0]["vm"]["id"], "vm-a");
+    assert!(rows[0]["p95"]["cpu_cores"].as_f64().unwrap() > 0.0, "{body}");
+    assert!(rows[0]["p95"]["cpu_percent"].is_null(), "no allocation recorded: no utilization");
+    let (s, _, _) = h.call("GET", "/usage/compute?project=pb", None, &v).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    let (_, body, _) = h.call("GET", "/usage/compute?group_by=project", None, &a).await;
+    assert_eq!(body["rows"].as_array().unwrap().len(), 2, "auditor sees both projects");
+    let (s, _, _) = h.call("GET", "/usage/compute", None, &n).await;
+    assert_ne!(s, StatusCode::OK, "no role, no usage");
+    let (s, body, _) = h.call("GET", "/usage/compute?group_by=disk", None, &a).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{body}");
 }
 
 // ---- PAM through an in-process glidex-authd -------------------------------

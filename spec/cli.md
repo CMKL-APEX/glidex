@@ -157,9 +157,9 @@ name (ids when `/projects` isn't readable).
 | `policy history <id>` | `GET /authz/policies/{id}/versions` |
 | `policy reload` | `POST /authz/reload` |
 | `audit [--project P] [--since <unix-ms>] [--limit N] [--user U]` | `GET /audit?…` (`--project` defaults to the session project) |
-| `usage bandwidth\|disk-io [--month YYYY-MM] [--by k,…] [--project P] [--csv]` | `GET /usage/bandwidth` / `/usage/disk-io`: average, 30-second peak and 95th percentile per group |
+| `usage bandwidth\|disk-io\|compute [--month YYYY-MM] [--by k,…] [--project P] [--csv]` | `GET /usage/bandwidth` / `/usage/disk-io` / `/usage/compute`: average, 30-second peak and 95th percentile per group |
 | `stats <vm>` | `GET /vms/{id}/stats`: current CPU, memory, NIC and disk rates |
-| `bandwidth <vm> \| --network N`, `io <vm> \| --disk D` `[--from D] [--to D]` | The 5-minute series and its 95th percentile |
+| `bandwidth <vm> \| --network N`, `io <vm> \| --disk D`, `compute <vm>` `[--from D] [--to D]` | The 5-minute series and its 95th percentile |
 | `usage [--project P] [--from D] [--to D] [--by k,…] [--granularity hour\|day\|month] [--meters m,…] [--tz Z] [--csv]` | `GET /usage?…`: this billing month by project unless told otherwise; prints each bucket's meters in presentation units (core-hours, GiB, Mbps…), or the raw CSV with `--csv` ([metering.md §12](metering.md#12-cli-and-ui)) |
 
 Roles are written as `owner` or `role.owner` (a name with a `.` is

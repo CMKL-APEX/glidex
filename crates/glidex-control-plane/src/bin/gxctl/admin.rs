@@ -832,6 +832,7 @@ pub async fn resource_usage(client: &ApiClient, args: &[&str]) {
     match args.first() {
         Some(&"bandwidth") => return rate_report(client, "/usage/bandwidth", &args[1..]).await,
         Some(&"disk-io") => return rate_report(client, "/usage/disk-io", &args[1..]).await,
+        Some(&"compute") => return rate_report(client, "/usage/compute", &args[1..]).await,
         _ => {}
     }
     let path = usage_path(args, client.project());
@@ -884,7 +885,7 @@ pub async fn resource_usage(client: &ApiClient, args: &[&str]) {
     }
 }
 
-/// `usage bandwidth|disk-io [--month YYYY-MM] [--by k,…] [--project P] [--csv]` (§9.3).
+/// `usage bandwidth|disk-io|compute [--month YYYY-MM] [--by k,…] [--project P] [--csv]` (§9.3).
 async fn rate_report(client: &ApiClient, base: &str, args: &[&str]) {
     let mut path = base.to_string();
     if let Some(p) = flag_value(args, "--project").map(str::to_string).or_else(|| client.project()) {
@@ -909,7 +910,12 @@ async fn rate_report(client: &ApiClient, base: &str, args: &[&str]) {
     let period = v["month"].as_str().map(str::to_string).unwrap_or_else(|| format!("{} → {}", s(&v["from"]), s(&v["to"])));
     println!(
         "{} {} ({}){}",
-        if base.ends_with("disk-io") { "Disk I/O" } else { "Bandwidth" }.bold(),
+        match base.rsplit('/').next() {
+            Some("disk-io") => "Disk I/O",
+            Some("compute") => "CPU and memory",
+            _ => "Bandwidth",
+        }
+        .bold(),
         period,
         s(&v["timezone"]),
         if v["final"].as_bool() == Some(true) { "" } else { ", month to date" }
@@ -980,17 +986,24 @@ pub async fn stats(client: &ApiClient, args: &[&str]) {
     }
 }
 
-/// `bandwidth <vm> | --network <net>` and `io <vm> | --disk <disk>`:
-/// the 5-minute series with its p95 (§9.3).
+/// `bandwidth <vm> | --network <net>`, `io <vm> | --disk <disk>` and
+/// `compute <vm>`: the 5-minute series with its p95 (§9.3).
 pub async fn series(client: &ApiClient, what: &str, args: &[&str]) {
     let path = match (what, flag_value(args, "--network"), flag_value(args, "--disk"), args.first()) {
         ("bandwidth", Some(n), _, _) => format!("/networks/{}/bandwidth", enc(n)),
         ("io", _, Some(d), _) => format!("/disks/{}/io", enc(d)),
         (_, None, None, Some(vm)) if !vm.starts_with("--") => match client.resolve_vm(vm).await {
-            Ok(id) => format!("/vms/{}/{}", enc(&id), if what == "io" { "io" } else { "bandwidth" }),
+            Ok(id) => format!("/vms/{}/{what}", enc(&id)),
             Err(e) => return err(e),
         },
-        _ => return err(format!("Usage: {what} <vm> | {} [--from D] [--to D]", if what == "io" { "--disk <disk>" } else { "--network <net>" })),
+        _ => {
+            let alt = match what {
+                "io" => " | --disk <disk>",
+                "bandwidth" => " | --network <net>",
+                _ => "",
+            };
+            return err(format!("Usage: {what} <vm>{alt} [--from D] [--to D]"));
+        }
     };
     let mut path = client::add_query(&path, "p95", "true");
     for (flag, key) in [("--from", "from"), ("--to", "to")] {

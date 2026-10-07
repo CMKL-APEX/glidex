@@ -30,22 +30,30 @@ function Tile({ label, value, unit }: { label: string; value: number | null | un
 }
 
 /** VM detail "Usage" card (spec/metering.md §12): current rates and the
- * last 24 h of bandwidth and disk I/O with their 95th percentiles. */
+ * last 24 h of CPU, memory, bandwidth and disk I/O with their 95th
+ * percentiles. */
 export default function VmUsage({ vmId, hypervisor }: { vmId: string; hypervisor: string }) {
   const [stats, setStats] = useState<VmStats | null>(null);
   const [bw, setBw] = useState<SeriesResponse | null>(null);
   const [io, setIo] = useState<SeriesResponse | null>(null);
+  const [cm, setCm] = useState<SeriesResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let live = true;
     const load = async () => {
       try {
-        const [s, b, i] = await Promise.all([api.getVmStats(vmId), api.getVmBandwidth(vmId), api.getVmIo(vmId)]);
+        const [s, b, i, c] = await Promise.all([
+          api.getVmStats(vmId),
+          api.getVmBandwidth(vmId),
+          api.getVmIo(vmId),
+          api.getVmCompute(vmId),
+        ]);
         if (!live) return;
         setStats(s);
         setBw(b);
         setIo(i);
+        setCm(c);
         setError(null);
       } catch (e) {
         if (live) setError(e instanceof api.ApiRequestError && e.status === 503 ? "Metering is not running." : String(e));
@@ -65,6 +73,8 @@ export default function VmUsage({ vmId, hypervisor }: { vmId: string; hypervisor
   const diskSum = (k: string) => stats?.disks.reduce((a, d) => a + (d.values[k] ?? 0), 0) ?? null;
   const bwP95 = num(bw?.p95?.billable_mbps);
   const ioP95 = num(io?.p95?.billable_iops);
+  const cpuP95 = num(cm?.p95?.cpu_percent);
+  const memP95 = num(cm?.p95?.mem_mib);
   const ioPoints = points(io, ["read_iops", "write_iops"]);
   const latPoints = points(io, ["read_latency_ms", "write_latency_ms"]);
   const hasLatency = latPoints.some((p) => p.values.read_latency_ms !== undefined || p.values.write_latency_ms !== undefined);
@@ -85,6 +95,20 @@ export default function VmUsage({ vmId, hypervisor }: { vmId: string; hypervisor
           : "No current sample (the VM isn't running, or metering hasn't sampled it yet)."}{" "}
         Charts: 5-minute averages over the last 24 h; the dashed line is the 95th percentile.
       </p>
+      <TimeChart
+        title="CPU (of allocated vCPUs)"
+        unit="%"
+        series={[{ key: "cpu_percent", label: "CPU", color: SERIES_COLORS[0] }]}
+        points={points(cm, ["cpu_percent"])}
+        reference={cpuP95 !== null ? { value: cpuP95, label: `p95 ${cpuP95.toFixed(1)} %` } : null}
+      />
+      <TimeChart
+        title="Memory (working set)"
+        unit="MiB"
+        series={[{ key: "mem_mib", label: "Used", color: SERIES_COLORS[0] }]}
+        points={points(cm, ["mem_mib"])}
+        reference={memP95 !== null ? { value: memP95, label: `p95 ${Math.round(memP95)} MiB` } : null}
+      />
       <TimeChart
         title="Network"
         unit="Mbps"

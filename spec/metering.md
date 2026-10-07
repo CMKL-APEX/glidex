@@ -3,7 +3,9 @@
 > Status: **M0–M3 implemented** (2026-10-05; branches `metering-m1`,
 > `-m2`, `-m3`). Unit, integration, security and Playwright tests pass,
 > and so do the KVM host acceptance runs on a deployed build (§15.4–§15.6,
-> *As built*). §15.7 lists what comes after.
+> *As built*). **M4** (CPU and memory rates, §8.7) is built and
+> unit-tested, but has no host acceptance run yet (§15.7). §15.8 lists
+> what comes after.
 >
 > Built differently from the first draft, with the reasons in the
 > sections named: the cgroup is found from the shim's
@@ -91,6 +93,7 @@ Records store integers in the base unit. Hour figures such as
 | `mem.used` | gauge × time | VM | MiB·s | MiB-hours | cgroup `memory.current` (+ hugepages, §5.1) |
 | `mem.alloc` | gauge × time | VM | MiB·s | MiB-hours | `launch.json` `mem_size_mib` × live time |
 | `mem.peak` | max | VM | MiB | MiB | max of `memory.current` samples in the hour |
+| `cpu.cores_peak` | max | VM | cores ×1000 | cores | max CPU rate over one sample interval, `Δcpu.used / Δt` (M4, §8.7) |
 | `disk.alloc` | gauge × time | disk | MiB·s | GiB-hours | `Disk.size_bytes` (provisioned) |
 | `disk.stored` | gauge × time | disk | MiB·s | GiB-hours | `qemu-img info` `actual-size` (§5.3) |
 | `disk.read_ops` / `disk.write_ops` | counter | disk | ops | ops, avg/p95 IOPS | hypervisor block counters |
@@ -193,6 +196,7 @@ traffic from addresses that are not reserved (§5.5).
 | D15 | **95th-percentile bandwidth** uses 5-minute slots built from the same counter deltas as the volume meters, and is computed per billing month with the nearest-rank method on max(in, out). Group figures are the p95 of the **summed** slot series, never a sum of p95s. | 5-minute 95th percentile on the larger direction is the industry convention for burstable billing, so customers can check the figures against their own tools. Building slots from the ledger's deltas keeps one source of truth: a slot's bytes always add up to the hour's bytes. The p95 of a sum is what the group actually consumed at once. Summing p95s over-bills, because peaks don't line up. |
 | D16 | **Disk I/O uses the 5-minute slot design of D15**, but its billable p95 is on **read+write combined** (total IOPS, total MB/s), not on the larger direction. Average latency is **op-weighted**: Σtime / Σops. | Reads and writes share one device and one queue, and IOPS and throughput caps (cloud disk tiers, `fio` reports, CH and QEMU throttling) are on the total. Network links are full duplex, so there the larger direction is the bottleneck. An average of per-slot averages would let idle slots outweigh busy ones. |
 | D17 | **No disk latency for Cloud Hypervisor VMs** until CH exports a cumulative latency counter. QEMU VMs get latency from `*_total_time_ns`. | CH v53's latency fields are a lifetime running mean that stops moving after about 10⁷ requests, plus lifetime min/max (§5.2). Neither gives a correct average for an hour, a 5-minute slot or a billing month. A wrong latency figure is worse than none. |
+| D18 | **CPU and memory rates use the 5-minute slot design of D15.** `cpu.used`, `cpu.alloc`, `mem.used` and `mem.alloc` get slots, and **utilization** is `used ÷ allocated` per slot, from the group's sums. Slots with no allocation (a paused VM has no `cpu.alloc`) have no utilization, rather than 0 %. | The slots already hold the same deltas as the hourly meters, so this needs no new collector. p95 cores and p95 % show sustained load without the noise of one busy 30 s. A group's utilization is the ratio of its sums, so a large idle VM and a small busy one don't average to a figure neither of them has. |
 | D14 | The meter counters live in **their own table**, and netd changes them **incrementally**. It never deletes the table. The NAT table `inet glidex` is still rebuilt atomically, unchanged. | Deleting a table resets its counters. Named counter objects survive `flush chain`. Keeping them out of `inet glidex` means NAT changes never lose usage, so netd needs no "carry the base across rebuilds" bookkeeping. |
 | D7 | Network totals come from **bridge ingress** (Σ rx, from the switch's view, over every port), not from Σ of VM NIC meters. | Every frame enters a bridge exactly once, so ingress counts it once. That includes broadcast and VM-to-VM frames. Summing the VM NICs would count VM-to-VM traffic twice. |
 | D8 | The ledger is **hourly, UTC, immutable once closed**, with a per-source **cursor** written in the same transaction as the deltas it produced. | Without that one transaction, a crash between "record delta" and "advance cursor" would count the delta twice or never. UTC hours stay simple across DST and time zones. Days and months are roll-ups (§8.3). |
@@ -950,6 +954,41 @@ hour add up exactly to the hour's `disk.*` counters.
   `revised_at` rule.
 - **Retention:** `rate_5m` disk rows follow `retention_rate_days`.
 
+### 8.7 CPU and memory: cores, MiB and utilization (D18, M4)
+
+The same machinery again (§8.5.1): the deltas of `cpu.used` (µs of
+CPU), `cpu.alloc` (vCPU·s), `mem.used` and `mem.alloc` (MiB·s) are
+split into each VM's 5-minute slots, in the same transaction as the
+hours. The gauges are integrated as in §2, so a slot's `mem.used` is
+the MiB held × the seconds in the slot.
+
+| Figure | Definition |
+|---|---|
+| **Average cores** | `Σcpu.used / seconds / 10⁶`, over the seconds the VM was sampled (as §8.5), with average vCPUs `Σcpu.alloc / seconds` beside it |
+| **Average CPU %** | `Σcpu.used / (Σcpu.alloc × 10⁶) × 100` |
+| **Average memory** | `Σmem.used / seconds` MiB, with average allocated `Σmem.alloc / seconds` |
+| **Average memory %** | `Σmem.used / Σmem.alloc × 100` |
+| **30-second peaks** | `cpu.cores_peak` (cores) and `mem.peak` (MiB, the largest working-set sample) |
+| **95th percentile** | per slot, `cores = cpu.used / 300 / 10⁶`, `MiB = mem.used / 300`, `CPU % = cpu.used / (cpu.alloc × 10⁶) × 100` and `memory % = mem.used / mem.alloc × 100`, nearest rank (§8.5.1) |
+
+- **Which slots count.** Slots in which the VM was sampled (the
+  `cpu.used` counter marks them), as for NICs and disks in M2.3. The
+  utilization series leave out slots with no allocation.
+- **Groups.** VM and project. Members are added slot by slot, then
+  the p95 is taken (D15). Utilization is the ratio of the sums. A
+  group's 30-second peak is its largest member's peak, as for
+  bandwidth (§9.3), not a sum.
+- **Over 100 %.** `cpu.used` and `mem.used` come from the VM's cgroup,
+  which includes the hypervisor's own threads and memory (D3). A VM
+  whose guest is flat out can show a little over 100 % CPU, and a
+  512 MiB guest showed 519 MiB working set (§15.5). The figures are not
+  capped: they are what the host spent.
+- **Finality.** Months are finalized with the other rates
+  (`cm/vm`, `cm/project` in `usage_monthly_rates`), p95 only.
+- **Before M4** VMs had no slot rows. Months before the upgrade have no
+  CPU and memory rates. Their volumes (`cpu.used`, `mem.used`) are in
+  the hourly rows as before.
+
 **As built (M2.3).** Code: `metering/rates.rs`,
 `metering/retention.rs`, and `ledger.rs` (`rate_5m`, `usage_daily`,
 `usage_monthly_rates`). It differs from §8.5.1 and §8.6 in four ways:
@@ -1078,10 +1117,33 @@ read_latency_ms?, write_latency_ms?}]`, with a maximum of 31 days.
 derived meters `disk.iops_avg`, `disk.mbps_avg` and
 `disk.latency_ms_avg`.
 
+**`GET /usage/compute`** (M4): billing-month CPU and memory (§8.7).
+It takes the same query as `/usage/bandwidth`, with `group_by` ⊆
+{`project`, `vm`}.
+
+```json
+{
+  "month": "2026-10", "timezone": "UTC", "final": false,
+  "rows": [
+    { "project": "p-…", "vm": {"id": "…", "name": "web-1"},
+      "avg":  {"cpu_cores": 0.84, "vcpus": 2.0, "cpu_percent": 42.0,
+               "mem_mib": 1310.0, "mem_alloc_mib": 2048.0, "mem_percent": 64.0},
+      "peak": {"cpu_cores": 1.97, "mem_mib": 1702, "resolution_secs": 30},
+      "p95":  {"cpu_cores": 1.62, "cpu_percent": 81.0, "mem_mib": 1650.0, "mem_percent": 80.6},
+      "slots": {"counted": 8928, "interpolated": 0} }
+  ]
+}
+```
+
+**`GET /vms/{id}/compute`** returns the 5-minute series:
+`[{slot, cpu_cores, cpu_percent?, mem_mib, mem_percent?}]`, at most 31
+days. `p95=true` adds the p95 figures.
+
 ### 9.4 Live rates: `GET /vms/{id}/stats`
 
 These come from the last two samples in memory and are not stored:
-CPU % per vCPU, memory used and peak, disk read/write IOPS, MB/s
+CPU % per vCPU and cores used (`cpu_cores`, M4), memory used and peak
+and its share of the allocation (`mem_percent`, M4), disk read/write IOPS, MB/s
 and average latency per disk over the last interval, rx/tx pps and Mbit/s per NIC (split into external and
 internal on NAT networks), and `sampled_at`. The
 network detail page gets the same for its bridge
@@ -1126,6 +1188,12 @@ those actions. Disk I/O works the same way:
 - `GET /vms/{id}/io` → `readVmIo` (with `readVmStats`)
 - `GET /disks/{id}/io` → `readDiskIo`, granted to whoever can read the
   disk
+
+CPU and memory too (M4):
+- `GET /usage/compute` → `readComputeUsage` (with `readUsage` /
+  `readProjectUsage`)
+- `GET /vms/{id}/compute` → `readVmCompute` (in `usage.read`; the
+  handler also needs the VM to be visible, `readVm`)
 
 Like `read_audit` (`api/access.rs`): `readUsage` on `Host` reads
 everything, including `image.stored` and rows of deleted projects.
@@ -1181,6 +1249,8 @@ spreads the gap like a downtime (§6.4).
 | `vm bandwidth <vm> [--from D] [--to D]`, `network bandwidth <net> …` | 5-minute series as a text table, with the p95. |
 | `usage disk-io [--month YYYY-MM] [--by project\|vm\|disk] [--csv]` | `GET /usage/disk-io`. Avg IOPS, MB/s and latency, 30-second peaks, and read, write and billable p95. |
 | `disk io <disk> [--from D] [--to D]`, `vm io <vm> …` | 5-minute IOPS, MB/s and latency series, with the billable p95. |
+| `usage compute [--month YYYY-MM] [--by project\|vm] [--csv]` | `GET /usage/compute` (M4). Avg, 30-second peak and p95 of cores and MiB, and utilization. |
+| `compute <vm> [--from D] [--to D]` | 5-minute CPU and memory series, with the p95 (M4). |
 | `vm stats <vm>` | `GET /vms/{id}/stats`. Prints one screen of current rates. |
 | `vm usage <vm> [...]`, `disk usage <disk> [...]` | per-subject shortcuts |
 
@@ -1207,6 +1277,10 @@ spreads the gap like a downtime (§6.4).
   showing `GET /usage/bandwidth` per project or VM.
 - **Projects** shows billing-month-to-date usage (including GiB
   transferred) next to the quotas.
+- **CPU and memory graphs** (M4). VM detail gets a 5-minute CPU %
+  chart and a memory (MiB) chart, each with its p95 line, above the
+  network chart. The Usage page gets a "CPU & memory" tab showing
+  `GET /usage/compute` per project or VM.
 
 ## 13. Testing
 
@@ -1712,7 +1786,34 @@ query p95 is under 200 ms for a month of one project.
   VMs, roughly 12 MB per VM. Hourly retention dropped from 400 to 90
   days for this reason (§7.3).
 
-### 15.7 After M3
+### 15.7 M4: CPU and memory rates
+
+- **Slots** for `cpu.used`, `cpu.alloc`, `mem.used` and `mem.alloc`,
+  and the `cpu.cores_peak` meter (§2, §8.7, D18).
+- **Figures:** `compute_p95` next to the bandwidth and disk ones;
+  monthly `cm/vm` and `cm/project`.
+- **Routes:** `GET /usage/compute`, `GET /vms/{id}/compute`, with
+  `readComputeUsage` and `readVmCompute` (§9.3, §10); live `cpu_cores`
+  and `mem_percent` in `/vms/{id}/stats`.
+- **gxctl:** `usage compute`, `compute <vm>`. **UI:** the Usage tab
+  and the VM detail charts (§12).
+
+*Accept:*
+- Unit tests: a project's p95 cores is of the summed series (two VMs
+  busy in turn give 1.5 cores, not 3); paused slots have no CPU %.
+- API tests: `/usage/compute` scoping, the auditor's view, and
+  `group_by` validation.
+- *(host)* `stress-ng --cpu 1` in a 2-vCPU VM for 10 minutes gives
+  p95 ≈ 1 core and ≈ 50 %. A guest that holds 1 GiB of a 2 GiB VM
+  gives memory ≈ 50 %.
+
+**As built (M4), 2026-10-07.** The unit and API tests above pass. The
+load test (`metering/bench.rs`) now also times the CPU and memory p95:
+20 ms for one project's VMs over 2 days of history, about the same as
+bandwidth. A round still takes 49 ms. VM slot rows add about 20 % to
+`rate_5m`. **The host acceptance run is still to do.**
+
+### 15.8 After M4
 
 These come from §16 and are scheduled separately, each with its own
 spec change:

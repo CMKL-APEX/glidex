@@ -3,13 +3,13 @@
 
 use super::ledger::{Ledger, MeteringError, SlotRow, SubjectKind};
 use super::query::{bucket, Granularity, GroupKey, Tz};
-use super::rates::{bandwidth_p95, disk_io_p95, group_slots};
+use super::rates::{bandwidth_p95, compute_p95, disk_io_p95, group_slots};
 use crate::config::MeteringConfig;
 
 const DAY: u64 = 86400;
 
 /// The groupings whose final figures are kept per billing month.
-const GROUPINGS: [(&str, SubjectKind, &[GroupKey]); 7] = [
+const GROUPINGS: [(&str, SubjectKind, &[GroupKey]); 9] = [
     ("bw/nic", SubjectKind::Nic, &[GroupKey::Project, GroupKey::Nic]),
     ("bw/vm", SubjectKind::Nic, &[GroupKey::Project, GroupKey::Vm]),
     ("bw/project", SubjectKind::Nic, &[GroupKey::Project]),
@@ -17,6 +17,8 @@ const GROUPINGS: [(&str, SubjectKind, &[GroupKey]); 7] = [
     ("io/disk", SubjectKind::Disk, &[GroupKey::Project, GroupKey::Disk]),
     ("io/vm", SubjectKind::Disk, &[GroupKey::Project, GroupKey::Vm]),
     ("io/project", SubjectKind::Disk, &[GroupKey::Project]),
+    ("cm/vm", SubjectKind::Vm, &[GroupKey::Project, GroupKey::Vm]),
+    ("cm/project", SubjectKind::Vm, &[GroupKey::Project]),
 ];
 
 /// Final 95th percentiles of one billing month `[start, end)`, one
@@ -28,10 +30,10 @@ pub fn month_figures(slots: &[(u64, SlotRow)], start: u64, end: u64) -> Vec<(Str
             slots.iter().filter(|(_, r)| r.subject.as_ref().is_some_and(|s| s.kind == kind)).cloned().collect();
         for (ids, g) in group_slots(&rows, start, end, group_by) {
             let ids: Vec<String> = ids.into_iter().map(|i| i.unwrap_or_else(|| "-".into())).collect();
-            let p95 = if kind == SubjectKind::Disk {
-                serde_json::to_value(disk_io_p95(&g))
-            } else {
-                serde_json::to_value(bandwidth_p95(&g, kind))
+            let p95 = match kind {
+                SubjectKind::Disk => serde_json::to_value(disk_io_p95(&g)),
+                SubjectKind::Vm => serde_json::to_value(compute_p95(&g)),
+                _ => serde_json::to_value(bandwidth_p95(&g, kind)),
             }
             .unwrap_or_default();
             out.push((format!("{name}/{}", ids.join("/")), serde_json::json!({ "keys": g.keys, "p95": p95 })));

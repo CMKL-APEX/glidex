@@ -92,6 +92,9 @@ fn sample_vm(round: &mut Round, vm: &Vm, disks: &[Disk], host: &Host, now: u64) 
         // µs of CPU per second of wall time = % of one core × 10⁴; per vCPU.
         if let Some(usec_per_s) = d.rate(1) {
             round.live(&s, "cpu_percent", usec_per_s as f64 / 1e4 / (c.vcpu_count.max(1) as f64));
+            round.live(&s, "cpu_cores", usec_per_s as f64 / 1e6);
+            // Cores × 1000 over one sample interval (§2, §8.7).
+            round.max(&s, "cpu.cores_peak", usec_per_s / 1000, now);
         }
     }
     // Hugepage-backed guest RAM is not in memory.current (§5.1).
@@ -110,6 +113,9 @@ fn sample_vm(round: &mut Round, vm: &Vm, disks: &[Disk], host: &Host, now: u64) 
         }
     }
     round.live(&s, "mem_used_mib", used_mib as f64);
+    if c.mem_size_mib > 0 {
+        round.live(&s, "mem_percent", used_mib as f64 * 100.0 / c.mem_size_mib as f64);
+    }
     if u.from_proc {
         round.flag(&s, now, Flag::SourceProc);
     }

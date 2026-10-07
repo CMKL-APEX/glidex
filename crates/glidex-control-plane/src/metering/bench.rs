@@ -5,7 +5,7 @@
 
 use super::ledger::{Ledger, LedgerSettings, Origin, Subject, SubjectKind, HOUR_MS};
 use super::query::{self, GroupKey, Granularity};
-use super::rates::{bandwidth_p95, group_slots};
+use super::rates::{bandwidth_p95, compute_p95, group_slots};
 use redb::Database;
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -145,6 +145,13 @@ fn load_targets() {
     let bw = start.elapsed();
     assert_eq!(p95.len(), VMS / PROJECTS);
     println!("bandwidth p95, one project, one month by VM: {bw:?} ({} slots each)", p95[0].slots.counted);
+
+    let start = Instant::now();
+    let slots = l.scan_slots(from, to, Some(&only), |s| s.kind == SubjectKind::Vm).unwrap();
+    let groups = group_slots(&slots, from, to, &[GroupKey::Vm]);
+    let cm: Vec<_> = groups.values().map(compute_p95).collect();
+    println!("CPU and memory p95, one project, one month by VM: {:?} ({} slots each)", start.elapsed(), cm[0].slots.counted);
+    assert_eq!(cm.len(), VMS / PROJECTS);
 
     assert!(round.as_millis() < 15_000, "round within sample_secs / 2");
     assert!(times[2].as_millis() < 200, "usage query under 200 ms (median {:?})", times[2]);

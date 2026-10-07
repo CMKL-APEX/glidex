@@ -12,6 +12,11 @@ test("the Usage page shows each tab and exports CSV", async ({ page }) => {
   await page.getByRole("tab", { name: "Disk I/O" }).click();
   await expect(page.getByRole("option", { name: "disk" })).toHaveCount(1);
   await expect(page.getByRole("option", { name: "nic" })).toHaveCount(0);
+  // CPU and memory (§8.7): by project or VM only.
+  await page.getByRole("tab", { name: "CPU & memory" }).click();
+  await expect(page.getByText(/Month to date|Final|Nothing recorded/).first()).toBeVisible();
+  await expect(page.getByRole("option", { name: "disk" })).toHaveCount(0);
+  await page.getByRole("tab", { name: "Disk I/O" }).click();
 
   // The CSV link downloads with the session cookie.
   const [download] = await Promise.all([page.waitForEvent("download"), page.getByRole("link", { name: "Download CSV" }).click()]);
