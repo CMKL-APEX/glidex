@@ -166,11 +166,11 @@ mod tests {
     #[test]
     fn hugepage_sizing() {
         assert_eq!(hugepages_for(64 * 1024 * 1024, 0), 6144, "64 GiB host: 12 GiB of hugepages");
-        assert_eq!(hugepages_for(31_293 * 1024, 0), 5338, "31 GiB host: capped at a third");
+        assert_eq!(hugepages_for(31_293 * 1024, 0), 5215, "31 GiB host: capped at a third");
         assert_eq!(hugepages_for(4 * 1024 * 1024, 0), 682, "4 GiB host: capped at a third");
         assert_eq!(hugepages_for(64 * 1024 * 1024, 8192), 8192, "never lower an existing reservation");
         assert_eq!(socket_mem_mb(6144), 4096);
-        assert_eq!(socket_mem_mb(5338), 4096);
+        assert_eq!(socket_mem_mb(5215), 4096);
         assert_eq!(socket_mem_mb(1024), 1024);
         assert_eq!(mem_total_kb("MemTotal:       42082304 kB\nMemFree: 1 kB\n"), Some(42_082_304));
         assert_eq!(proc_path(IP_FORWARD), PathBuf::from("/proc/sys/net/ipv4/ip_forward"));
