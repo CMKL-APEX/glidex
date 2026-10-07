@@ -356,7 +356,7 @@ impl Default for MeteringConfig {
             sample_secs: 30,
             storage_secs: 900,
             close_grace_secs: 120,
-            retention_days: 400,
+            retention_days: 90,
             retention_daily_days: 1825,
             retention_rate_days: 100,
             billing_timezone: "UTC".into(),

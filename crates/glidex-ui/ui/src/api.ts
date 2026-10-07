@@ -420,9 +420,11 @@ function usageQuery(q: UsageQuery, extra: Record<string, string> = {}): string {
 export const getUsage = (q: UsageQuery) => get<UsageResponse>(`/usage${usageQuery(q)}`);
 export const getBandwidth = (q: UsageQuery) => get<RateResponse>(`/usage/bandwidth${usageQuery(q)}`);
 export const getDiskIo = (q: UsageQuery) => get<RateResponse>(`/usage/disk-io${usageQuery(q)}`);
+export const getCompute = (q: UsageQuery) => get<RateResponse>(`/usage/compute${usageQuery(q)}`);
 /** A same-origin link that downloads the CSV export (sent with the session cookie). */
-export const usageCsvUrl = (kind: "usage" | "bandwidth" | "disk-io", q: UsageQuery) =>
+export const usageCsvUrl = (kind: "usage" | "bandwidth" | "disk-io" | "compute", q: UsageQuery) =>
   `${API_BASE}/usage${kind === "usage" ? "" : `/${kind}`}${usageQuery(q, { format: "csv" })}`;
 export const getVmBandwidth = (id: string) => get<SeriesResponse>(`/vms/${enc(id)}/bandwidth?p95=true`);
 export const getVmIo = (id: string) => get<SeriesResponse>(`/vms/${enc(id)}/io?p95=true`);
+export const getVmCompute = (id: string) => get<SeriesResponse>(`/vms/${enc(id)}/compute?p95=true`);
 export const getVmStats = (id: string) => get<VmStats>(`/vms/${enc(id)}/stats`);

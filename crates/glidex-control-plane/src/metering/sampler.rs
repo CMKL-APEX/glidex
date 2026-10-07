@@ -92,13 +92,30 @@ fn sample_vm(round: &mut Round, vm: &Vm, disks: &[Disk], host: &Host, now: u64) 
         // µs of CPU per second of wall time = % of one core × 10⁴; per vCPU.
         if let Some(usec_per_s) = d.rate(1) {
             round.live(&s, "cpu_percent", usec_per_s as f64 / 1e4 / (c.vcpu_count.max(1) as f64));
+            round.live(&s, "cpu_cores", usec_per_s as f64 / 1e6);
+            // Cores × 1000 over one sample interval (§2, §8.7).
+            round.max(&s, "cpu.cores_peak", usec_per_s / 1000, now);
         }
     }
     // Hugepage-backed guest RAM is not in memory.current (§5.1).
     let used_mib = u.memory_bytes / MIB + if c.hugepages { c.mem_size_mib as u64 } else { 0 };
     round.gauge_run(&s, "mem.used", run, launched, used_mib, now, now, prev_end)?;
     round.max(&s, "mem.peak", used_mib, now);
+    // Host-side I/O (D4): for capacity, next to the guest-level disk.*.
+    if let Some(io) = u.io {
+        for (m, v) in [
+            ("vmio.read_bytes", io.read_bytes),
+            ("vmio.write_bytes", io.write_bytes),
+            ("vmio.read_ops", io.read_ops),
+            ("vmio.write_ops", io.write_ops),
+        ] {
+            round.counter(&s, m, &reset_key, v, now, Origin::ZeroAt(launched))?;
+        }
+    }
     round.live(&s, "mem_used_mib", used_mib as f64);
+    if c.mem_size_mib > 0 {
+        round.live(&s, "mem_percent", used_mib as f64 * 100.0 / c.mem_size_mib as f64);
+    }
     if u.from_proc {
         round.flag(&s, now, Flag::SourceProc);
     }
@@ -286,7 +303,7 @@ mod tests {
         let db = Arc::new(Database::create(dir.path().join("t.db")).unwrap());
         let l = Ledger::new(db, LedgerSettings::from_secs(30, 120)).unwrap();
         l.set_started_at_for_test(0);
-        let host = Host { proc_root: dir.path().join("proc"), cgroup_root: dir.path().join("cg") };
+        let host = Host { proc_root: dir.path().join("proc"), cgroup_root: dir.path().join("cg"), sys_root: dir.path().join("sys") };
         (dir, l, host)
     }
 

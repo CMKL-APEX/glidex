@@ -1,10 +1,11 @@
-//! Bandwidth, disk I/O and live rates (spec/metering.md §9.3–§9.4).
+//! Bandwidth, disk I/O, CPU and memory, and live rates (spec/metering.md
+//! §9.3–§9.4).
 
 use super::usage::{bad, list, meter, scope};
 use super::{err, vm_entities, ApiErr, Caller};
 use crate::metering::ledger::{SlotRow, Subject, SubjectKind};
 use crate::metering::query::{self, GroupKey, Granularity, Named};
-use crate::metering::rates::{bandwidth_p95, disk_io_p95, group_slots, series_points, GroupSlots};
+use crate::metering::rates::{bandwidth_p95, compute_p95, disk_io_p95, group_slots, series_points, GroupSlots, SeriesKind};
 use axum::{
     extract::{Path, Query},
     http::{header, StatusCode},
@@ -34,12 +35,17 @@ pub struct RateParams {
     /// Series endpoints: add the p95 over the range.
     #[serde(default)]
     p95: Option<bool>,
+    /// Months in this zone instead of `metering.billing_timezone`
+    /// (fixed whole-hour offsets only, §8.1).
+    #[serde(default)]
+    tz: Option<String>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
 enum Family {
     Bandwidth,
     DiskIo,
+    Compute,
 }
 
 struct Range {
@@ -51,7 +57,7 @@ struct Range {
 }
 
 fn range(p: &RateParams, billing_tz: &str, max_days: u64, default_days: Option<u64>) -> Result<Range, ApiErr> {
-    let tz = query::parse_tz(billing_tz).map_err(bad)?;
+    let tz = query::parse_tz(p.tz.as_deref().unwrap_or(billing_tz)).map_err(bad)?;
     let now = crate::metering::now_ms() / 1000;
     let (from, to, month) = match (&p.month, &p.from, default_days) {
         (Some(m), _, _) => {
@@ -124,6 +130,20 @@ fn avg_and_peak(family: Family, kind: SubjectKind, meters: &BTreeMap<String, u64
                     "ext_tx_mbps": peak("net.ext_tx_kbps_peak", 1000.0),
                     "resolution_secs": sample_secs }),
         ),
+        (Family::Compute, _) => {
+            let ratio = |u: Option<u64>, a: Option<u64>, scale: f64| match (u, a) {
+                (Some(u), Some(a)) if a > 0 => Some(r3(u as f64 * 100.0 / (a as f64 * scale))),
+                _ => None,
+            };
+            (
+                json!({ "cpu_cores": per_s(g("cpu.used"), 1e6), "vcpus": per_s(g("cpu.alloc"), 1.0),
+                        "cpu_percent": ratio(g("cpu.used"), g("cpu.alloc"), 1e6),
+                        "mem_mib": per_s(g("mem.used"), 1.0), "mem_alloc_mib": per_s(g("mem.alloc"), 1.0),
+                        "mem_percent": ratio(g("mem.used"), g("mem.alloc"), 1.0) }),
+                json!({ "cpu_cores": peak("cpu.cores_peak", 1000.0), "mem_mib": peak("mem.peak", 1.0),
+                        "resolution_secs": sample_secs }),
+            )
+        }
         (Family::DiskIo, _) => {
             let lat = |t: &str, o: &str| match (g(t), g(o)) {
                 (Some(t), Some(o)) if o > 0 => Some(r3(t as f64 / o as f64 / 1e6)),
@@ -143,7 +163,7 @@ fn avg_and_peak(family: Family, kind: SubjectKind, meters: &BTreeMap<String, u64
     }
 }
 
-/// `GET /usage/bandwidth` and `/usage/disk-io` (§9.3).
+/// `GET /usage/bandwidth`, `/usage/disk-io` and `/usage/compute` (§9.3).
 async fn report(c: Caller, p: RateParams, family: Family) -> Result<Response, ApiErr> {
     let projects = scope(&c, &p.project)?;
     let meter = meter(&c)?;
@@ -152,6 +172,7 @@ async fn report(c: Caller, p: RateParams, family: Family) -> Result<Response, Ap
     let allowed: &[GroupKey] = match family {
         Family::Bandwidth => &[GroupKey::Project, GroupKey::Vm, GroupKey::Nic, GroupKey::Network],
         Family::DiskIo => &[GroupKey::Project, GroupKey::Vm, GroupKey::Disk],
+        Family::Compute => &[GroupKey::Project, GroupKey::Vm],
     };
     let mut group_by: Vec<GroupKey> = list(&p.group_by).iter().map(|g| g.parse()).collect::<Result<_, _>>().map_err(bad)?;
     if group_by.is_empty() {
@@ -162,12 +183,13 @@ async fn report(c: Caller, p: RateParams, family: Family) -> Result<Response, Ap
     }
     let kind = match family {
         Family::DiskIo => SubjectKind::Disk,
+        Family::Compute => SubjectKind::Vm,
         Family::Bandwidth if group_by.contains(&GroupKey::Network) => SubjectKind::Network,
         Family::Bandwidth => SubjectKind::Nic,
     };
     let in_scope = |s: &Subject| s.kind == kind && projects.as_ref().is_none_or(|ps| s.project.as_ref().is_some_and(|x| ps.contains(x)));
     let storage = |e: crate::metering::MeteringError| err(StatusCode::INTERNAL_SERVER_ERROR, "persistence_error", e.to_string());
-    let slots: Vec<(u64, SlotRow)> = meter.ledger().scan_slots(r.from, r.to, in_scope).map_err(storage)?;
+    let slots: Vec<(u64, SlotRow)> = meter.ledger().scan_slots(r.from, r.to, projects.as_ref(), in_scope).map_err(storage)?;
     let groups = group_slots(&slots, r.from, r.to, &group_by);
     // Averages and peaks from the hourly rows, by the same groups.
     let records: Vec<_> = meter.ledger().scan(r.from, r.to, projects.as_ref()).map_err(storage)?.into_iter().filter(|x| in_scope(&x.subject)).collect();
@@ -205,6 +227,12 @@ async fn report(c: Caller, p: RateParams, family: Family) -> Result<Response, Ap
                 o.insert("slots".into(), slots);
                 o.insert("latency_source".into(), source.into());
             }
+            Family::Compute => {
+                let mut c = serde_json::to_value(compute_p95(g)).unwrap_or_default();
+                let slots = c.as_object_mut().and_then(|m| m.remove("slots")).unwrap_or_default();
+                o.insert("p95".into(), c);
+                o.insert("slots".into(), slots);
+            }
         }
         rows.push(o.into());
     }
@@ -219,6 +247,8 @@ async fn report(c: Caller, p: RateParams, family: Family) -> Result<Response, Ap
             (Family::DiskIo, Some(GroupKey::Disk)) => Some("io/disk"),
             (Family::DiskIo, Some(GroupKey::Vm)) => Some("io/vm"),
             (Family::DiskIo, Some(GroupKey::Project)) => Some("io/project"),
+            (Family::Compute, Some(GroupKey::Vm)) => Some("cm/vm"),
+            (Family::Compute, Some(GroupKey::Project)) => Some("cm/project"),
             _ => None,
         };
         if let Some(gname) = grouping {
@@ -302,23 +332,40 @@ pub async fn disk_io(c: Caller, Query(p): Query<RateParams>) -> Result<Response,
     report(c, p, Family::DiskIo).await
 }
 
+pub async fn compute(c: Caller, Query(p): Query<RateParams>) -> Result<Response, ApiErr> {
+    report(c, p, Family::Compute).await
+}
+
 /// A 5-minute series for graphs (§9.3): `points`, and `p95` with `?p95=true`.
-fn series(c: &Caller, p: &RateParams, kind: SubjectKind, group_by: &[GroupKey], keep: impl Fn(&Subject) -> bool) -> Result<Value, ApiErr> {
+fn series(
+    c: &Caller,
+    p: &RateParams,
+    kind: SubjectKind,
+    project: Option<&str>,
+    group_by: &[GroupKey],
+    keep: impl Fn(&Subject) -> bool,
+) -> Result<Value, ApiErr> {
     let meter = meter(c)?;
     let r = range(p, &meter.config().billing_timezone, 31, Some(1))?;
     let rows = meter
         .ledger()
-        .scan_slots(r.from, r.to, |s| s.kind == kind && keep(s))
+        .scan_slots(r.from, r.to, project.map(|p| BTreeSet::from([p.to_string()])).as_ref(), |s| s.kind == kind && keep(s))
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, "persistence_error", e.to_string()))?;
     let groups = group_slots(&rows, r.from, r.to, group_by);
     let one = |g: &GroupSlots| {
-        let mut o = json!({ "points": series_points(g, kind == SubjectKind::Disk) });
+        let skind = match kind {
+            SubjectKind::Disk => SeriesKind::Disk,
+            SubjectKind::Vm => SeriesKind::Compute,
+            _ => SeriesKind::Network,
+        };
+        let mut o = json!({ "points": series_points(g, skind) });
         if p.p95 == Some(true) {
-            o["p95"] = if kind == SubjectKind::Disk {
-                serde_json::to_value(disk_io_p95(g)).unwrap_or_default()
-            } else {
-                serde_json::to_value(bandwidth_p95(g, kind)).unwrap_or_default()
-            };
+            o["p95"] = match skind {
+                SeriesKind::Disk => serde_json::to_value(disk_io_p95(g)),
+                SeriesKind::Compute => serde_json::to_value(compute_p95(g)),
+                SeriesKind::Network => serde_json::to_value(bandwidth_p95(g, kind)),
+            }
+            .unwrap_or_default();
         }
         o
     };
@@ -362,31 +409,37 @@ fn visible_network(c: &Caller, name: &str) -> Result<crate::network::Network, Ap
 
 pub async fn vm_bandwidth(c: Caller, Path(id): Path<String>, Query(p): Query<RateParams>) -> Result<Response, ApiErr> {
     let vm = visible_vm(&c, &id).await?;
-    let v = series(&c, &p, SubjectKind::Nic, &[GroupKey::Vm], |s| s.vm_id.as_deref() == Some(vm.id.as_str()))?;
+    let v = series(&c, &p, SubjectKind::Nic, Some(&vm.project), &[GroupKey::Vm], |s| s.vm_id.as_deref() == Some(vm.id.as_str()))?;
     Ok(Json(v).into_response())
 }
 
 pub async fn network_bandwidth(c: Caller, Path(name): Path<String>, Query(p): Query<RateParams>) -> Result<Response, ApiErr> {
     let n = visible_network(&c, &name)?;
-    let v = series(&c, &p, SubjectKind::Network, &[GroupKey::Network], |s| s.id == n.name)?;
+    let v = series(&c, &p, SubjectKind::Network, n.project.as_deref(), &[GroupKey::Network], |s| s.id == n.name)?;
     Ok(Json(v).into_response())
 }
 
 pub async fn vm_io(c: Caller, Path(id): Path<String>, Query(p): Query<RateParams>) -> Result<Response, ApiErr> {
     let vm = visible_vm(&c, &id).await?;
     let on_vm = |s: &Subject| s.vm_id.as_deref() == Some(vm.id.as_str());
-    let mut v = series(&c, &p, SubjectKind::Disk, &[GroupKey::Vm], on_vm)?;
+    let mut v = series(&c, &p, SubjectKind::Disk, Some(&vm.project), &[GroupKey::Vm], on_vm)?;
     let mut disks = serde_json::Map::new();
     for d in c.manager().attached_disk_ids(&vm.id) {
-        disks.insert(d.clone(), series(&c, &p, SubjectKind::Disk, &[GroupKey::Disk], |s| s.id == d)?);
+        disks.insert(d.clone(), series(&c, &p, SubjectKind::Disk, Some(&vm.project), &[GroupKey::Disk], |s| s.id == d)?);
     }
     v["disks"] = disks.into();
     Ok(Json(v).into_response())
 }
 
+pub async fn vm_compute(c: Caller, Path(id): Path<String>, Query(p): Query<RateParams>) -> Result<Response, ApiErr> {
+    let vm = visible_vm(&c, &id).await?;
+    let v = series(&c, &p, SubjectKind::Vm, Some(&vm.project), &[GroupKey::Vm], |s| s.id == vm.id)?;
+    Ok(Json(v).into_response())
+}
+
 pub async fn disk_io_series(c: Caller, Path(id): Path<String>, Query(p): Query<RateParams>) -> Result<Response, ApiErr> {
     let d = visible_disk(&c, &id).await?;
-    let v = series(&c, &p, SubjectKind::Disk, &[GroupKey::Disk], |s| s.id == d.id)?;
+    let v = series(&c, &p, SubjectKind::Disk, Some(&d.project), &[GroupKey::Disk], |s| s.id == d.id)?;
     Ok(Json(v).into_response())
 }
 

@@ -5,18 +5,20 @@ import { LoadingCard } from "../components/Loading";
 import { ErrorBanner, PageHeader, errorMessage, selectClass } from "../components/ui";
 import { useSession } from "../session";
 
-type Tab = "usage" | "bandwidth" | "disk-io";
+type Tab = "usage" | "bandwidth" | "disk-io" | "compute";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "usage", label: "Usage" },
   { id: "bandwidth", label: "Bandwidth" },
   { id: "disk-io", label: "Disk I/O" },
+  { id: "compute", label: "CPU & memory" },
 ];
 
 const GROUPS: Record<Tab, GroupKey[]> = {
   usage: ["project", "vm", "disk", "network"],
   bandwidth: ["project", "vm", "nic", "network"],
   "disk-io": ["project", "vm", "disk"],
+  compute: ["project", "vm"],
 };
 
 /** The meters shown on the Usage tab, in billing order. Traffic is per
@@ -31,6 +33,9 @@ const USAGE_METERS: [string, string][] = [
   ["image.stored", "Images stored"],
   ["net.bytes", "Network"],
   ["net.ext_bytes", "of which internet"],
+  // Host-side, after the page cache (capacity; spec/metering.md D4).
+  ["vmio.read_bytes", "Host disk I/O read"],
+  ["vmio.write_bytes", "Host disk I/O write"],
 ];
 const NETWORK_METERS: [string, string][] = [
   ["bridge.bytes", "Traffic through the network"],
@@ -173,6 +178,51 @@ function DiskIoTable({ data, group }: { data: RateResponse; group: GroupKey }) {
   );
 }
 
+/** CPU and memory (spec/metering.md §8.7): cores and MiB used, and
+ * utilization against what was allocated. */
+function ComputeTable({ data, group }: { data: RateResponse; group: GroupKey }) {
+  return (
+    <table className="w-full text-sm">
+      <thead className="bg-gray-50">
+        <tr>
+          <th className={th}>{group}</th>
+          <th className={`${th} text-right`}>Avg cores (of vCPUs)</th>
+          <th className={`${th} text-right`}>30-s peak cores</th>
+          <th className={`${th} text-right`}>p95 cores</th>
+          <th className={`${th} text-right`}>CPU avg / p95</th>
+          <th className={`${th} text-right`}>Avg memory (of allocated)</th>
+          <th className={`${th} text-right`}>Peak memory</th>
+          <th className={`${th} text-right`}>p95 memory</th>
+          <th className={`${th} text-right`}>Memory avg / p95</th>
+        </tr>
+      </thead>
+      <tbody>
+        {data.rows.map((r: RateRow, i) => (
+          <tr key={i} className="border-t border-gray-100">
+            <td className={td}>{who(r, group)}</td>
+            <td className={tdNum}>
+              {n(r.avg?.cpu_cores, 2)} <span className="text-xs text-gray-500">of {n(r.avg?.vcpus)}</span>
+            </td>
+            <td className={tdNum}>{n(r.peak?.cpu_cores, 2)}</td>
+            <td className={`${tdNum} font-medium`}>{n(r.p95?.cpu_cores, 2)}</td>
+            <td className={tdNum}>
+              {n(r.avg?.cpu_percent)} / {n(r.p95?.cpu_percent)} %
+            </td>
+            <td className={tdNum}>
+              {n(r.avg?.mem_mib, 0)} <span className="text-xs text-gray-500">of {n(r.avg?.mem_alloc_mib, 0)} MiB</span>
+            </td>
+            <td className={tdNum}>{n(r.peak?.mem_mib, 0)} MiB</td>
+            <td className={`${tdNum} font-medium`}>{n(r.p95?.mem_mib, 0)} MiB</td>
+            <td className={tdNum}>
+              {n(r.avg?.mem_percent)} / {n(r.p95?.mem_percent)} %
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
 /** Usage for a billing month (spec/metering.md §12): totals, bandwidth
  * and disk I/O, grouped, with a CSV download of the same view. */
 export default function Usage() {
@@ -196,7 +246,9 @@ export default function Usage() {
     const load =
       tab === "usage"
         ? api.getUsage({ ...q, granularity: "month" }).then((u) => live && setUsage(u))
-        : (tab === "bandwidth" ? api.getBandwidth(q) : api.getDiskIo(q)).then((r) => live && setRates(r));
+        : (tab === "bandwidth" ? api.getBandwidth(q) : tab === "disk-io" ? api.getDiskIo(q) : api.getCompute(q)).then(
+            (r) => live && setRates(r),
+          );
     load.catch((e) => live && setError(errorMessage(e)));
     return () => {
       live = false;
@@ -273,13 +325,18 @@ export default function Usage() {
             <UsageTable data={usage!} group={g} />
           ) : tab === "bandwidth" ? (
             <BandwidthTable data={rates!} group={g} />
-          ) : (
+          ) : tab === "disk-io" ? (
             <DiskIoTable data={rates!} group={g} />
+          ) : (
+            <ComputeTable data={rates!} group={g} />
           )}
           {tab !== "usage" && (
             <p className="px-3 py-2 text-xs text-gray-500 border-t border-gray-100">
               Peaks are the busiest 30 seconds; p95 is the 95th percentile of 5-minute averages over the slots the{" "}
-              {g} was running. Billable: the larger of in and out for bandwidth, read + write for disks.
+              {g} was running.{" "}
+              {tab === "compute"
+                ? "Utilization is used ÷ allocated; it includes the hypervisor's own overhead, so it can pass 100 %."
+                : "Billable: the larger of in and out for bandwidth, read + write for disks."}
             </p>
           )}
         </div>

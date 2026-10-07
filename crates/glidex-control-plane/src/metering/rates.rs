@@ -156,15 +156,80 @@ pub fn disk_io_p95(g: &GroupSlots) -> DiskIoP95 {
     }
 }
 
+/// 95th percentiles of CPU and memory for a group of VMs (§8.7, D18):
+/// cores and MiB used, and utilization (used ÷ allocated) per slot, of
+/// the group's sums slot by slot.
+#[derive(Debug, Serialize, PartialEq)]
+pub struct ComputeP95 {
+    pub cpu_cores: Option<f64>,
+    pub cpu_percent: Option<f64>,
+    pub mem_mib: Option<f64>,
+    pub mem_percent: Option<f64>,
+    pub slots: SlotCounts,
+}
+
+/// Utilization of one slot × 1000 (so 37.5 % is 37 500): `used` per
+/// `alloc`, with `scale` turning the units into a percentage. `None`
+/// when nothing was allocated (a paused VM has no `cpu.alloc`).
+fn percent_milli(used: u64, alloc: u64, scale: u128) -> Option<u64> {
+    (alloc > 0).then(|| (used as u128 * 100_000 / (alloc as u128 * scale)) as u64)
+}
+
+/// CPU % of one slot: µs of CPU over vCPU·s × 10⁶.
+fn cpu_percent_milli(s: &BTreeMap<String, u64>) -> Option<u64> {
+    percent_milli(s.get("cpu.used").copied().unwrap_or(0), s.get("cpu.alloc").copied().unwrap_or(0), 1_000_000)
+}
+
+/// Memory % of one slot: MiB·s used over MiB·s allocated.
+fn mem_percent_milli(s: &BTreeMap<String, u64>) -> Option<u64> {
+    percent_milli(s.get("mem.used").copied().unwrap_or(0), s.get("mem.alloc").copied().unwrap_or(0), 1)
+}
+
+pub fn compute_p95(g: &GroupSlots) -> ComputeP95 {
+    let has = |m: &str| g.slots.values().any(|s| s.contains_key(m));
+    let get = |s: &BTreeMap<String, u64>, m: &str| s.get(m).copied().unwrap_or(0);
+    let pct = |f: fn(&BTreeMap<String, u64>) -> Option<u64>| {
+        let v: Vec<u64> = g.slots.values().filter_map(f).collect();
+        p95(&v).map(|x| round3(x as f64 / 1000.0))
+    };
+    ComputeP95 {
+        cpu_cores: has("cpu.used").then(|| p95(&g.series(|s| get(s, "cpu.used"))).map(|u| round3(u as f64 / SLOT_SECS as f64 / 1e6))).flatten(),
+        cpu_percent: pct(cpu_percent_milli),
+        mem_mib: has("mem.used").then(|| p95(&g.series(|s| get(s, "mem.used"))).map(|m| round3(m as f64 / SLOT_SECS as f64))).flatten(),
+        mem_percent: pct(mem_percent_milli),
+        slots: SlotCounts { counted: g.slots.len(), interpolated: g.interpolated.len() },
+    }
+}
+
+/// Which rates a series shows (§9.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeriesKind {
+    Network,
+    Disk,
+    Compute,
+}
+
 /// The 5-minute series of a group, for graphs: slot start → rates.
-pub fn series_points(g: &GroupSlots, disk: bool) -> Vec<serde_json::Value> {
+pub fn series_points(g: &GroupSlots, kind: SeriesKind) -> Vec<serde_json::Value> {
     g.slots
         .iter()
         .map(|(start, s)| {
             let get = |m: &str| s.get(m).copied();
             let mut o = serde_json::Map::new();
             o.insert("slot".into(), super::query::rfc3339(*start).into());
-            if disk {
+            if kind == SeriesKind::Compute {
+                if let Some(u) = get("cpu.used") {
+                    o.insert("cpu_cores".into(), round3(u as f64 / SLOT_SECS as f64 / 1e6).into());
+                }
+                if let Some(m) = get("mem.used") {
+                    o.insert("mem_mib".into(), round3(m as f64 / SLOT_SECS as f64).into());
+                }
+                for (k, v) in [("cpu_percent", cpu_percent_milli(s)), ("mem_percent", mem_percent_milli(s))] {
+                    if let Some(v) = v {
+                        o.insert(k.into(), round3(v as f64 / 1000.0).into());
+                    }
+                }
+            } else if kind == SeriesKind::Disk {
                 for (m, k) in [("disk.read_ops", "read_iops"), ("disk.write_ops", "write_iops")] {
                     o.insert(k.into(), round3(get(m).unwrap_or(0) as f64 / SLOT_SECS as f64).into());
                 }
@@ -270,6 +335,41 @@ mod tests {
         let io = disk_io_p95(g.values().next().unwrap());
         assert_eq!((io.read_iops, io.write_iops, io.billable_iops), (Some(700.0), Some(300.0), Some(700.0)));
         assert_ne!(io.billable_iops.unwrap(), io.read_iops.unwrap() + io.write_iops.unwrap(), "not the sum of p95s");
+    }
+
+    #[test]
+    fn compute_p95_sums_vms_and_skips_unallocated_slots() {
+        // Two 2-vCPU VMs: one busy (1.5 cores) in slots 0-5, the other in
+        // 6-11. Each slot: 1.5 cores of 4 allocated = 37.5 %.
+        let busy = 450_000_000u64; // 1.5 cores × 300 s, in µs
+        let alloc = [600u64; 12]; // 2 vCPU × 300 s
+        let mut a = [0u64; 12];
+        let mut b = [0u64; 12];
+        for i in 0..12 {
+            if i < 6 { a[i] = busy } else { b[i] = busy }
+        }
+        let mem = [512 * 300u64; 12]; // 512 MiB held
+        let mem_alloc = [1024 * 300u64; 12];
+        let rows = vec![
+            (0, row(SubjectKind::Vm, "a", Some("a"), 0xfff, &[("cpu.used", a), ("cpu.alloc", alloc), ("mem.used", mem), ("mem.alloc", mem_alloc)])),
+            (0, row(SubjectKind::Vm, "b", Some("b"), 0xfff, &[("cpu.used", b), ("cpu.alloc", alloc), ("mem.used", mem), ("mem.alloc", mem_alloc)])),
+        ];
+        let g = group_slots(&rows, 0, 3600, &[GroupKey::Project]);
+        let c = compute_p95(g.values().next().unwrap());
+        // The project never uses more than 1.5 cores at once (not 3, D15).
+        assert_eq!((c.cpu_cores, c.cpu_percent), (Some(1.5), Some(37.5)));
+        assert_eq!((c.mem_mib, c.mem_percent), (Some(1024.0), Some(50.0)));
+        // Paused (no cpu.alloc) slots have no CPU utilization, not 0 %.
+        let mut paused = alloc;
+        paused[..11].fill(0);
+        let rows = vec![(0, row(SubjectKind::Vm, "a", Some("a"), 0xfff, &[("cpu.used", [300_000; 12]), ("cpu.alloc", paused)]))];
+        let g = group_slots(&rows, 0, 3600, &[GroupKey::Vm]);
+        let c = compute_p95(g.values().next().unwrap());
+        assert_eq!(c.cpu_percent, Some(0.05), "only the allocated slot: 1 ms/s of 2 vCPUs");
+        assert_eq!(c.mem_percent, None, "no memory meters");
+        let p = series_points(g.values().next().unwrap(), SeriesKind::Compute);
+        assert_eq!(p[0].get("cpu_percent"), None);
+        assert_eq!(p[11]["cpu_cores"], 0.001);
     }
 
     #[test]

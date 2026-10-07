@@ -36,11 +36,16 @@ pub const HOUR_MS: u64 = 3_600_000;
 pub const SLOT_MS: u64 = 300_000;
 pub const SLOTS_PER_HOUR: usize = 12;
 
-/// Meters kept per 5-minute slot as well as per hour (§8.5.1, §8.6).
+/// Meters kept per 5-minute slot as well as per hour (§8.5.1, §8.6,
+/// §8.7).
 pub fn is_slotted(meter: &str) -> bool {
     matches!(
         meter,
-        "net.rx_bytes"
+        "cpu.used"
+            | "cpu.alloc"
+            | "mem.used"
+            | "mem.alloc"
+            | "net.rx_bytes"
             | "net.tx_bytes"
             | "net.ext_rx_bytes"
             | "net.ext_tx_bytes"
@@ -709,6 +714,30 @@ pub fn split_hours(amount: u64, from: u64, to: u64) -> Vec<(u64, u64)> {
     split_by(amount, from, to, HOUR_MS).into_iter().map(|(t, p)| (t / 1000, p)).collect()
 }
 
+/// Key ranges for time-prefixed keys `<t:010>/<project>/…` over `[from,
+/// to)`: one range, or, for a few named projects, one per period and
+/// project, so other projects' rows are never read (§15.6).
+fn ranges(from: u64, to: u64, period: u64, projects: Option<&BTreeSet<String>>) -> Vec<(String, String)> {
+    match projects {
+        Some(ps) if ps.len() <= 64 => {
+            let mut out = Vec::new();
+            let mut t = from / period * period;
+            while t < to {
+                for p in ps {
+                    out.push((format!("{t:010}/{p}/"), format!("{t:010}/{p}/~")));
+                }
+                t += period;
+            }
+            out
+        }
+        _ => vec![(format!("{:010}/", from / period * period), format!("{to:010}/"))],
+    }
+}
+
+fn slot_key(hour: u64, subject: &Subject) -> String {
+    format!("{hour:010}/{}/{}", subject.project_key(), subject.key())
+}
+
 fn hour_key(hour: u64, project: &str, subject_key: &str, seq: u16) -> String {
     format!("{hour:010}/{project}/{subject_key}/{seq:04}")
 }
@@ -744,7 +773,9 @@ impl Ledger {
             let _ = txn.open_table(MONTHLY_RATES)?;
         }
         txn.commit()?;
-        Ok(Self { db, settings })
+        let l = Self { db, settings };
+        l.rekey_slots()?;
+        Ok(l)
     }
 
     fn meta_u64(&self, key: &str) -> Result<Option<u64>, MeteringError> {
@@ -768,6 +799,25 @@ impl Ledger {
         }
         txn.commit()?;
         Ok(self.meta_u64(META_STARTED_AT)?.unwrap_or(t))
+    }
+
+    /// Rows and key + value bytes per metering table (benchmarks).
+    #[cfg(test)]
+    pub(crate) fn table_sizes(&self) -> Vec<(&'static str, usize, usize)> {
+        let txn = self.db.begin_read().unwrap();
+        [("meter_cursors", CURSORS), ("meter_open", OPEN), ("usage_hourly", HOURLY), ("rate_5m", RATE5), ("usage_daily", DAILY)]
+            .into_iter()
+            .map(|(name, t)| {
+                let t = txn.open_table(t).unwrap();
+                let (mut n, mut bytes) = (0, 0);
+                for r in t.iter().unwrap() {
+                    let (k, v) = r.unwrap();
+                    n += 1;
+                    bytes += k.value().len() + v.value().len();
+                }
+                (name, n, bytes)
+            })
+            .collect()
     }
 
     #[cfg(test)]
@@ -888,8 +938,9 @@ impl Ledger {
                 hourly.insert(key.as_str(), serde_json::to_vec(&row)?.as_slice())?;
             }
             let mut rate5 = txn.open_table(RATE5)?;
-            for ((hour, skey), row) in round.slots {
-                let k = open_key(hour, &skey);
+            for ((hour, _), row) in round.slots {
+                let Some(subject) = &row.subject else { continue };
+                let k = slot_key(hour, subject);
                 let mut merged: SlotRow = match rate5.get(k.as_str())? {
                     Some(v) => serde_json::from_slice(v.value())?,
                     None => SlotRow::default(),
@@ -915,21 +966,27 @@ impl Ledger {
         let txn = self.db.begin_read()?;
         let mut out = Vec::new();
         let hourly = txn.open_table(HOURLY)?;
-        for r in hourly.range(format!("{from:010}/").as_str()..format!("{to:010}/").as_str())? {
-            let (_, v) = r?;
-            let row: UsageRecord = serde_json::from_slice(v.value())?;
-            if keep(&row.subject) {
-                out.push(row);
+        for (a, b) in ranges(from, to, 3600, projects) {
+            for r in hourly.range(a.as_str()..b.as_str())? {
+                let (_, v) = r?;
+                let row: UsageRecord = serde_json::from_slice(v.value())?;
+                if row.hour >= from && keep(&row.subject) {
+                    out.push(row);
+                }
             }
         }
         // Days rolled up from hours past retention (§7.3), as day rows.
         let daily = txn.open_table(DAILY)?;
-        let day_from = from / 86400 * 86400;
-        for r in daily.range(format!("{day_from:010}/").as_str()..format!("{to:010}/").as_str())? {
-            let (_, v) = r?;
-            let row: UsageRecord = serde_json::from_slice(v.value())?;
-            if row.hour >= from && keep(&row.subject) {
-                out.push(row);
+        if daily.first()?.is_some_and(|(k, _)| k.value() < format!("{to:010}/").as_str()) {
+            // Day rows start at a whole hour (the billing zone's midnight).
+            for (a, b) in ranges(from.saturating_sub(86400), to, 3600, projects) {
+                for r in daily.range(a.as_str()..b.as_str())? {
+                    let (_, v) = r?;
+                    let row: UsageRecord = serde_json::from_slice(v.value())?;
+                    if row.hour >= from && keep(&row.subject) {
+                        out.push(row);
+                    }
+                }
             }
         }
         let open = txn.open_table(OPEN)?;
@@ -948,10 +1005,13 @@ impl Ledger {
 
 impl Ledger {
     /// Roll closed hourly rows of hours before `cutoff` (unix s) into one
-    /// row per subject and UTC day, and delete them (§7.3). Returns how
-    /// many hourly rows went.
-    pub fn roll_up_hours_before(&self, cutoff: u64) -> Result<usize, MeteringError> {
-        let cutoff = cutoff.min(self.complete_through()?) / 86400 * 86400;
+    /// row per subject and day, and delete them (§7.3). Days start at
+    /// midnight `offset_secs` from UTC (the billing time zone's), so
+    /// billing months stay exact after the roll-up. Returns how many
+    /// hourly rows went.
+    pub fn roll_up_hours_before(&self, cutoff: u64, offset_secs: i64) -> Result<usize, MeteringError> {
+        let day_of = |t: u64| ((t as i64 + offset_secs).div_euclid(86400) * 86400 - offset_secs).max(0) as u64;
+        let cutoff = day_of(cutoff.min(self.complete_through()?));
         let txn = self.db.begin_write()?;
         let n;
         {
@@ -966,7 +1026,7 @@ impl Ledger {
             n = old.len();
             let mut days: BTreeMap<String, UsageRecord> = BTreeMap::new();
             for (_, r) in &old {
-                let day = r.hour / 86400 * 86400;
+                let day = day_of(r.hour);
                 let key = format!("{day:010}/{}/{}", r.subject.project_key(), r.subject.key());
                 let d = days.entry(key).or_insert_with(|| UsageRecord {
                     hour: day,
@@ -1073,20 +1133,62 @@ impl Ledger {
         Ok(())
     }
 
-    /// Slot rows for hours in `[from, to)` (unix s): `(hour, row)`.
-    pub fn scan_slots(&self, from: u64, to: u64, keep: impl Fn(&Subject) -> bool) -> Result<Vec<(u64, SlotRow)>, MeteringError> {
+    /// Slot rows for hours in `[from, to)` (unix s): `(hour, row)`, of
+    /// `projects` only (`None`: all) and those `keep` accepts.
+    pub fn scan_slots(
+        &self,
+        from: u64,
+        to: u64,
+        projects: Option<&BTreeSet<String>>,
+        keep: impl Fn(&Subject) -> bool,
+    ) -> Result<Vec<(u64, SlotRow)>, MeteringError> {
         let txn = self.db.begin_read()?;
         let table = txn.open_table(RATE5)?;
         let mut out = Vec::new();
-        for r in table.range(format!("{from:010}/").as_str()..format!("{to:010}/").as_str())? {
-            let (k, v) = r?;
-            let row: SlotRow = serde_json::from_slice(v.value())?;
-            if row.subject.as_ref().is_some_and(&keep) {
-                let hour = k.value().split('/').next().and_then(|h| h.parse().ok()).unwrap_or(0);
-                out.push((hour, row));
+        for (a, b) in ranges(from, to, 3600, projects) {
+            for r in table.range(a.as_str()..b.as_str())? {
+                let (k, v) = r?;
+                let hour: u64 = k.value().split('/').next().and_then(|h| h.parse().ok()).unwrap_or(0);
+                if hour < from {
+                    continue;
+                }
+                let row: SlotRow = serde_json::from_slice(v.value())?;
+                if row.subject.as_ref().is_some_and(&keep) {
+                    out.push((hour, row));
+                }
             }
         }
         Ok(out)
+    }
+
+    /// Slot rows written by M2 builds were keyed `<hour>/<kind>/<id>`:
+    /// re-key them `<hour>/<project>/<kind>/<id>`. Idempotent.
+    fn rekey_slots(&self) -> Result<usize, MeteringError> {
+        let kinds = ["vm", "disk", "nic", "network", "image"];
+        let txn = self.db.begin_write()?;
+        let mut n = 0;
+        {
+            let mut t = txn.open_table(RATE5)?;
+            let old: Vec<(String, SlotRow)> = t
+                .iter()?
+                .filter_map(|r| {
+                    let (k, v) = r.ok()?;
+                    let key = k.value().to_string();
+                    let second = key.split('/').nth(1)?;
+                    kinds.contains(&second).then(|| Some((key.clone(), serde_json::from_slice(v.value()).ok()?)))?
+                })
+                .collect();
+            for (key, row) in old {
+                let hour: u64 = key.split('/').next().and_then(|h| h.parse().ok()).unwrap_or(0);
+                t.remove(key.as_str())?;
+                if let Some(subject) = &row.subject {
+                    t.insert(slot_key(hour, subject).as_str(), serde_json::to_vec(&row)?.as_slice())?;
+                    n += 1;
+                }
+            }
+        }
+        txn.commit()?;
+        Ok(n)
     }
 }
 
@@ -1171,7 +1273,7 @@ mod tests {
             r.counter(&s, "net.rx_bytes", "p", v, t, Origin::Unknown).unwrap();
         }
         l.commit(r).unwrap();
-        let slots = l.scan_slots(0, u64::MAX / 10, |_| true).unwrap();
+        let slots = l.scan_slots(0, u64::MAX / 10, None, |_| true).unwrap();
         let slot_total: u64 = slots.iter().map(|(_, row)| row.series["net.rx_bytes"].iter().sum::<u64>()).sum();
         assert_eq!(slot_total, v, "slots add up to the hours");
         assert_eq!(slot_total, total(&l, "net.rx_bytes"));
@@ -1181,6 +1283,27 @@ mod tests {
         assert!(slots.iter().all(|(_, row)| row.interpolated == 0));
         // Gauges are not slotted.
         assert!(slots.iter().all(|(_, row)| row.series.len() == 1));
+    }
+
+    #[test]
+    fn m2_slot_keys_are_rekeyed_with_the_project() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("t.db");
+        let s = vm();
+        {
+            let db = Arc::new(Database::create(&path).unwrap());
+            let _ = Ledger::new(db.clone(), LedgerSettings::from_secs(30, 120)).unwrap();
+            // A row as M2 wrote it: `<hour>/<kind>/<id>`.
+            let row = SlotRow { subject: Some(s.clone()), present: 1, interpolated: 0, series: BTreeMap::new() };
+            let txn = db.begin_write().unwrap();
+            txn.open_table(RATE5).unwrap().insert(format!("{:010}/vm/vm-1", T0 / 1000).as_str(), serde_json::to_vec(&row).unwrap().as_slice()).unwrap();
+            txn.commit().unwrap();
+        }
+        let l = Ledger::new(Arc::new(Database::create(&path).unwrap()), LedgerSettings::from_secs(30, 120)).unwrap();
+        let only: BTreeSet<String> = ["p1".to_string()].into();
+        let rows = l.scan_slots(T0 / 1000, T0 / 1000 + 3600, Some(&only), |_| true).unwrap();
+        assert_eq!(rows.len(), 1, "found under its project");
+        assert_eq!(l.rekey_slots().unwrap(), 0, "idempotent");
     }
 
     #[test]
@@ -1197,7 +1320,7 @@ mod tests {
         r.now = T0 + 40 * H;
         l.commit(r).unwrap();
         let before = combine(&rows(&l));
-        let n = l.roll_up_hours_before((T0 + 40 * H) / 1000).unwrap();
+        let n = l.roll_up_hours_before((T0 + 40 * H) / 1000, 0).unwrap();
         assert!(n > 0);
         let after = rows(&l);
         // Whole UTC days before the cutoff are day rows; the rest stay hourly.
