@@ -289,6 +289,11 @@ fn nic_args(nic: &NicBinding, vhost_net: bool) -> Vec<(&'static str, String)> {
         }
     }
     let mut device = format!("virtio-net-pci,netdev={},id=dev-{},mac={}", id, id, nic.mac);
+    if matches!(nic.binding, VmPortBinding::VhostUser { .. }) {
+        // Deeper rings absorb bursts between OVS's polls (default 256).
+        let n = glidex_ovs::tuning::VHOST_QUEUE_SIZE;
+        device.push_str(&format!(",rx_queue_size={},tx_queue_size={}", n, n));
+    }
     if let Some(mtu) = nic.mtu {
         device.push_str(&format!(",host_mtu={}", mtu));
     }
@@ -597,7 +602,7 @@ mod tests {
         assert!(values(&args, "-object").contains(&"memory-backend-memfd,id=mem,size=1024M,share=on"));
         assert_eq!(values(&args, "-chardev"), ["socket,id=chr-net0,path=/run/glidex/vhost/x.net0.sock,server=on,wait=off"]);
         assert_eq!(values(&args, "-netdev"), ["vhost-user,id=net0,chardev=chr-net0,queues=2"]);
-        assert!(values(&args, "-device").contains(&"virtio-net-pci,netdev=net0,id=dev-net0,mac=02:00:00:00:00:01,mq=on,vectors=6"));
+        assert!(values(&args, "-device").contains(&"virtio-net-pci,netdev=net0,id=dev-net0,mac=02:00:00:00:00:01,rx_queue_size=1024,tx_queue_size=1024,mq=on,vectors=6"));
     }
 
     #[test]

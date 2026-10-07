@@ -66,6 +66,28 @@ Each changed the implementation; the sections below already reflect them.
    262144 mbufs (~600 MB at MTU 1500); size hugepages for OVS *plus*
    hugepage-backed guests. `init_dpdk` now applies changed settings to an
    already-initialized OVS (restart, with confirmation).
+11. **Throughput tuning (`glidex_ovs::tuning`).** vhost-user VM-to-VM
+    speed is decided by five things, all now automatic:
+    - *PMD placement:* with no explicit `--pmd-cpu-mask`, one PMD per
+      physical core (first hyperthread only) on every NUMA node that has
+      hugepages, `ceil(cores/4)` per node (max 4); the first core of node 0
+      is reserved for the OS and OVS's other threads (`dpdk-lcore-mask`);
+      `isolcpus`/`nohz_full` cores are preferred. `dpdk-socket-mem` is split
+      per node (`1024,1024`), so ports on node N get a local mempool.
+    - *Userspace TSO:* `other_config:userspace-tso-enable=true` (needs the
+      restart `init_dpdk` already does). Without it guests exchange
+      MTU-sized frames (`tx_tcp_seg_offload=false` in the interface status).
+    - *Queues:* a vhost-user NIC defaults to `min(vCPUs, 4)` queue pairs
+      (tap stays 1); a single queue pins the NIC to one PMD.
+    - *Ring size:* 1024 descriptors (CH `queue_size`, QEMU
+      `rx/tx_queue_size`) instead of 256; 256 shows up as
+      `ovs_tx_failure_drops`/`ovs_tx_retries`.
+    - *Guest pages:* guests with a vhost-user NIC get hugepage-backed
+      memory when the host has 2 MiB pages to spare (free − reserved ≥
+      guest RAM + max(25%, 256 MiB)), even if `hugepages` wasn't set.
+    Verify with `ovs-appctl dpif-netdev/pmd-rxq-show` (every queue on a PMD
+    of its port's NUMA node) and `ovs-vsctl get Interface <port> status`
+    (`n_rxq`, `vring_*_size`, `tx_tcp_seg_offload=true`).
 10. **vhost-user guests were verified with hugepage-backed memory**
     (`hugepages: true`). memfd-only shared memory was not re-tested after
     fixing (8), so hugepages are the supported setup.

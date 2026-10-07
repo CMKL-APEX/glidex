@@ -1509,9 +1509,22 @@ fn configure_host(
         return Ok(());
     }
 
-    let socket_mem = sysconfig::socket_mem_mb(got);
+    let total_mem = sysconfig::socket_mem_mb(got);
+    // Without an explicit mask, spread PMDs and socket memory over the
+    // NUMA nodes that have hugepages (glidex_ovs::tuning).
+    let plan = glidex_ovs::tuning::plan(&glidex_ovs::tuning::read_topology(exec));
+    let (socket_mem, auto_plan) = match (&opts.pmd_cpu_mask, plan) {
+        (None, Some(p)) => (p.socket_mem(total_mem), Some(p)),
+        _ => (total_mem.to_string(), None),
+    };
+    if let Some(p) = &auto_plan {
+        println!(
+            "{} PMD threads on CPUs {:?} (mask {}), NUMA nodes {:?}; CPUs {:?} left for the OS and OVS's other threads",
+            "Plan:".green(), p.pmd_cpus, p.pmd_mask(), p.nodes, p.lcore_cpus
+        );
+    }
     let settings = DpdkSettings {
-        socket_mem: socket_mem.to_string(),
+        socket_mem: socket_mem.clone(),
         pmd_cpu_mask: opts.pmd_cpu_mask.clone(),
         confirm: opts.allow_ovs_restart,
     };

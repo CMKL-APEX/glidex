@@ -363,11 +363,8 @@ pub fn init_dpdk(exec: &dyn Exec, probe_opts: &ProbeOptions, s: &DpdkSettings) -
         .ok()
         .and_then(|rows| rows.first().map(|r| r.map("other_config")))
         .unwrap_or_default();
-    let wanted_mask = s.pmd_cpu_mask.as_deref();
-    if caps.dpdk_initialized
-        && current.get("dpdk-socket-mem").map(String::as_str) == Some(s.socket_mem.as_str())
-        && wanted_mask.map_or(true, |m| current.get("pmd-cpu-mask").map(String::as_str) == Some(m))
-    {
+    let wanted = dpdk_config(exec, s);
+    if caps.dpdk_initialized && wanted.iter().all(|(k, v)| current.get(*k) == Some(v)) {
         return Ok(());
     }
     if caps.hugepages.iter().all(|h| h.total == 0) {
@@ -385,16 +382,8 @@ pub fn init_dpdk(exec: &dyn Exec, probe_opts: &ProbeOptions, s: &DpdkSettings) -
     let family = detect_distro(exec)?.family.ok_or_else(|| OvsError::Unsupported {
         missing: vec!["supported distro".into()],
     })?;
-    let mut args = vec![
-        "set".to_string(),
-        "Open_vSwitch".into(),
-        ".".into(),
-        "other_config:dpdk-init=true".into(),
-        format!("other_config:dpdk-socket-mem={}", s.socket_mem),
-    ];
-    if let Some(mask) = &s.pmd_cpu_mask {
-        args.push(format!("other_config:pmd-cpu-mask={}", mask));
-    }
+    let mut args = vec!["set".to_string(), "Open_vSwitch".into(), ".".into(), "other_config:dpdk-init=true".into()];
+    args.extend(wanted.iter().map(|(k, v)| format!("other_config:{}={}", k, v)));
     crate::vsctl::run(exec, args)?;
     exec.check(&Cmd::new(Program::Systemctl, ["restart", service_for(family)]).timeout(Duration::from_secs(120)))?;
     // DPDK EAL init happens in the restarted daemon; trust OVSDB, not the restart.
@@ -408,6 +397,37 @@ pub fn init_dpdk(exec: &dyn Exec, probe_opts: &ProbeOptions, s: &DpdkSettings) -
     Err(OvsError::Unsupported {
         missing: vec!["dpdk initialized (is the dpdk profile installed and are hugepages free? see the ovs-vswitchd log)".into()],
     })
+}
+
+/// The `other_config` keys DPDK mode wants (besides `dpdk-init`), as
+/// `(key, value)`. An explicit `pmd_cpu_mask` wins; otherwise the PMD and
+/// non-PMD (lcore) CPUs come from `tuning::plan`, and are left to OVS's
+/// defaults when the topology can't be read.
+///
+/// `userspace-tso-enable` lets vhost-user guests send and receive large
+/// TSO segments instead of MTU-sized frames: without it every 1500-byte
+/// frame between two VMs is processed separately, which is what holds
+/// VM-to-VM throughput down. `pmd-auto-lb` rebalances queues across PMDs
+/// by load, which only matters with more than one.
+fn dpdk_config(exec: &dyn Exec, s: &DpdkSettings) -> Vec<(&'static str, String)> {
+    let mut v = vec![("dpdk-socket-mem", s.socket_mem.clone()), ("userspace-tso-enable", "true".to_string())];
+    let plan = crate::tuning::plan(&crate::tuning::read_topology(exec));
+    let pmds = match (&s.pmd_cpu_mask, &plan) {
+        (Some(mask), _) => {
+            v.push(("pmd-cpu-mask", mask.clone()));
+            crate::tuning::mask_cpu_count(mask)
+        }
+        (None, Some(p)) => {
+            v.push(("pmd-cpu-mask", p.pmd_mask()));
+            v.push(("dpdk-lcore-mask", p.lcore_mask()));
+            p.pmd_cpus.len()
+        }
+        (None, None) => 0,
+    };
+    if pmds > 1 {
+        v.push(("pmd-auto-lb", "true".to_string()));
+    }
+    v
 }
 
 #[cfg(test)]
@@ -453,7 +473,7 @@ mod tests {
         exec.on("ovs-vsctl list-br", Output::ok("br-int\n"));
         init_dpdk(&exec, &ProbeOptions::default(), &DpdkSettings { confirm: true, ..ok }).unwrap();
         let calls = exec.calls();
-        assert!(calls.contains(&"ovs-vsctl set Open_vSwitch . other_config:dpdk-init=true other_config:dpdk-socket-mem=1024,1024 other_config:pmd-cpu-mask=0x6".to_string()), "{calls:#?}");
+        assert!(calls.contains(&"ovs-vsctl set Open_vSwitch . other_config:dpdk-init=true other_config:dpdk-socket-mem=1024,1024 other_config:userspace-tso-enable=true other_config:pmd-cpu-mask=0x6 other_config:pmd-auto-lb=true".to_string()), "{calls:#?}");
         assert!(calls.contains(&"systemctl restart openvswitch-switch".to_string()));
     }
 
@@ -480,7 +500,7 @@ mod tests {
         exec.file("/etc/os-release", UBUNTU);
         exec.on("ovs-vsctl --version", Output::ok("ovs-vsctl (Open vSwitch) 3.7.1\n"));
         exec.on("ovs-vsctl --format=json --columns=iface_types", Output::ok(initialized.clone()));
-        exec.on("ovs-vsctl --format=json --columns=other_config", Output::ok(r#"{"data":[[["map",[["dpdk-init","true"],["dpdk-socket-mem","1024"]]]]],"headings":["other_config"]}"#));
+        exec.on("ovs-vsctl --format=json --columns=other_config", Output::ok(r#"{"data":[[["map",[["dpdk-init","true"],["dpdk-socket-mem","1024"],["userspace-tso-enable","true"]]]]],"headings":["other_config"]}"#));
         exec.file("/sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages", "2048\n");
         let same = DpdkSettings { socket_mem: "1024".into(), pmd_cpu_mask: None, confirm: false };
         init_dpdk(&exec, &ProbeOptions::default(), &same).unwrap();
@@ -490,6 +510,31 @@ mod tests {
         init_dpdk(&exec, &ProbeOptions::default(), &more).unwrap();
         let calls = exec.calls();
         assert!(calls.iter().any(|c| c.contains("other_config:dpdk-socket-mem=2048")), "{calls:#?}");
+        assert!(calls.contains(&"systemctl restart openvswitch-switch".to_string()));
+    }
+
+    #[test]
+    fn dpdk_without_tso_is_reconfigured_with_auto_pmd_placement() {
+        let exec = RecordingExec::new();
+        exec.file("/etc/os-release", UBUNTU);
+        exec.on("ovs-vsctl --version", Output::ok("ovs-vsctl (Open vSwitch) 3.7.1\n"));
+        exec.on("ovs-vsctl --format=json --columns=iface_types", Output::ok(OVS_DPDK_ROW.replace("false]]", "true]]")));
+        exec.on("ovs-vsctl --format=json --columns=other_config", Output::ok(r#"{"data":[[["map",[["dpdk-init","true"],["dpdk-socket-mem","1024"]]]]],"headings":["other_config"]}"#));
+        exec.file("/sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages", "2048\n");
+        // 8 cores, no SMT, one NUMA node.
+        exec.file("/sys/devices/system/cpu/online", "0-7\n");
+        exec.file("/sys/devices/system/node/online", "0\n");
+        exec.file("/sys/devices/system/node/node0/cpulist", "0-7\n");
+        for c in 0..8 {
+            let b = format!("/sys/devices/system/cpu/cpu{}/topology", c);
+            exec.file(&format!("{}/core_id", b), &format!("{}\n", c));
+            exec.file(&format!("{}/physical_package_id", b), "0\n");
+            exec.file(&format!("{}/thread_siblings_list", b), &format!("{}\n", c));
+        }
+        let s = DpdkSettings { socket_mem: "1024".into(), pmd_cpu_mask: None, confirm: true };
+        init_dpdk(&exec, &ProbeOptions::default(), &s).unwrap();
+        let calls = exec.calls();
+        assert!(calls.contains(&"ovs-vsctl set Open_vSwitch . other_config:dpdk-init=true other_config:dpdk-socket-mem=1024 other_config:userspace-tso-enable=true other_config:pmd-cpu-mask=0x6 other_config:dpdk-lcore-mask=0x1 other_config:pmd-auto-lb=true".to_string()), "{calls:#?}");
         assert!(calls.contains(&"systemctl restart openvswitch-switch".to_string()));
     }
 
