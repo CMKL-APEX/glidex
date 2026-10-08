@@ -590,6 +590,13 @@ impl VmManager {
         tokio::spawn(async move { me.cache_sync().await });
     }
 
+    /// Stop this host's cluster runtime and forget it (a rejoin starts a new one).
+    pub async fn detach_cluster(&self) {
+        if let Some(c) = self.cluster.swap(None) {
+            c.stop().await;
+        }
+    }
+
     /// Keep `vms` equal to the `vms` table as entries are applied (a
     /// follower's cache changes when the leader's write reaches it).
     async fn cache_sync(self: Arc<Self>) {

@@ -139,6 +139,21 @@ impl ClusterNode {
             .map_err(|e| StoreError::Io(std::io::Error::other(e.to_string())))
     }
 
+    /// Take members out of the group altogether (not left behind as learners):
+    /// voters first, by joint consensus, then whatever is still a learner.
+    pub async fn remove_members(&self, ids: BTreeSet<RaftId>) -> Result<(), StoreError> {
+        let io = |e: String| StoreError::Io(std::io::Error::other(e));
+        let voting: BTreeSet<RaftId> = ids.intersection(&self.voters()).copied().collect();
+        if !voting.is_empty() {
+            self.raft.change_membership(openraft::ChangeMembers::RemoveVoters(voting), false).await.map_err(|e| io(e.to_string()))?;
+        }
+        let learning: BTreeSet<RaftId> = ids.intersection(&self.learners()).copied().collect();
+        if !learning.is_empty() {
+            self.raft.change_membership(openraft::ChangeMembers::RemoveNodes(learning), false).await.map_err(|e| io(e.to_string()))?;
+        }
+        Ok(())
+    }
+
     pub fn voters(&self) -> BTreeSet<RaftId> {
         self.raft.metrics().borrow().membership_config.membership().voter_ids().collect()
     }

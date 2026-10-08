@@ -62,3 +62,68 @@ pub async fn drain(c: Caller, Path(id): Path<String>) -> Result<impl IntoRespons
 pub async fn undrain(c: Caller, Path(id): Path<String>) -> Result<impl IntoResponse, ApiErr> {
     Ok(Json(set_drain(&c, &id, false).await?))
 }
+
+fn member_err(e: crate::cluster::membership::MemberError) -> ApiErr {
+    use crate::cluster::membership::MemberError as M;
+    match e {
+        M::NotFound(m) => err(StatusCode::NOT_FOUND, "not_found", format!("node {m} not found")),
+        M::Conflict(m) => err(StatusCode::CONFLICT, "conflict", m),
+        M::Invalid(m) => err(StatusCode::BAD_REQUEST, "invalid", m),
+        M::NotLeader => err(StatusCode::MISDIRECTED_REQUEST, "not_leader", "this is not the leader; the request was not forwarded"),
+        M::Failed(m) => err(StatusCode::INTERNAL_SERVER_ERROR, "internal", m),
+    }
+}
+
+#[derive(serde::Deserialize, Default)]
+pub struct MemberBody {
+    #[serde(default)]
+    force: bool,
+    #[serde(default)]
+    fenced: bool,
+    #[serde(default = "yes")]
+    raft_intact: bool,
+    #[serde(default)]
+    ttl_secs: Option<u64>,
+}
+
+fn yes() -> bool {
+    true
+}
+
+fn body(b: Option<Json<MemberBody>>) -> MemberBody {
+    b.map(|b| b.0).unwrap_or_default()
+}
+
+async fn member_op<F, Fut>(c: &Caller, id: &str, action: &'static str, f: F) -> Result<Json<serde_json::Value>, ApiErr>
+where
+    F: FnOnce(std::sync::Arc<crate::state::VmManager>) -> Fut,
+    Fut: std::future::Future<Output = Result<serde_json::Value, crate::cluster::membership::MemberError>>,
+{
+    c.require(Ent::Cluster, EntitySet::new())?;
+    c.set_target(format!("node:{id}"));
+    // Membership operations are always audited (§12.4).
+    c.audit_always();
+    let _ = action;
+    f(c.app.manager.clone()).await.map(Json).map_err(member_err)
+}
+
+pub async fn remove(c: Caller, Path(id): Path<String>, b: Option<Json<MemberBody>>) -> Result<impl IntoResponse, ApiErr> {
+    let b = body(b);
+    member_op(&c, &id.clone(), "removeNode", |m| async move { m.remove_node(&id, b.force).await }).await
+}
+
+pub async fn forget(c: Caller, Path(id): Path<String>, b: Option<Json<MemberBody>>) -> Result<impl IntoResponse, ApiErr> {
+    let b = body(b);
+    member_op(&c, &id.clone(), "forgetNode", |m| async move { m.forget_node(&id, b.fenced, b.force).await }).await
+}
+
+pub async fn purge(c: Caller, Path(id): Path<String>) -> Result<impl IntoResponse, ApiErr> {
+    member_op(&c, &id.clone(), "purgeNode", |m| async move { m.purge_node(&id).await }).await
+}
+
+pub async fn rejoin_token(c: Caller, Path(id): Path<String>, b: Option<Json<MemberBody>>) -> Result<impl IntoResponse, ApiErr> {
+    let b = body(b);
+    let by = c.actor();
+    let ttl = b.ttl_secs.unwrap_or(3600).clamp(60, 7 * 86400);
+    member_op(&c, &id.clone(), "createRejoinToken", |m| async move { m.rejoin_token(&id, b.raft_intact, ttl, &by).await }).await
+}

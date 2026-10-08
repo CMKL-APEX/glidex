@@ -465,3 +465,65 @@ mod central_tests {
         assert!(ensure_central(&exec, &bad, &certs(), dir).is_err());
     }
 }
+
+const NB_CTL: &str = "/var/run/ovn/ovnnb_db.ctl";
+const SB_CTL: &str = "/var/run/ovn/ovnsb_db.ctl";
+const SB_SOCK: &str = "unix:/var/run/ovn/ovnsb_db.sock";
+
+/// The id of the server at `address` in the output of `cluster/status`:
+/// `    7bd6 (7bd6 at ssl:192.0.2.11:6643) next_index=…`.
+fn cluster_server_id(status: &str, address: &str) -> Option<String> {
+    status.lines().skip_while(|l| !l.starts_with("Servers:")).skip(1).find_map(|l| {
+        let l = l.trim();
+        let (id, rest) = l.split_once(' ')?;
+        (rest.contains(&format!("ssl:{address}:")) || rest.contains(&format!("ssl:[{address}]:"))).then(|| id.to_string())
+    })
+}
+
+/// Take the host at `address` out of OVN (§5.5 steps 3–4), run on a
+/// remaining server: kick it from the NB and SB clusters if it was a
+/// server, and delete its chassis. Idempotent: a member already gone is fine.
+pub fn forget_member(exec: &dyn Exec, address: &str, chassis: &str, server: bool) -> Result<(), OvsError> {
+    if server {
+        for (ctl, db) in [(NB_CTL, "OVN_Northbound"), (SB_CTL, "OVN_Southbound")] {
+            let out = exec.check(&Cmd::new(Program::OvsAppctl, ["-t", ctl, "cluster/status", db]))?;
+            if let Some(id) = cluster_server_id(&String::from_utf8_lossy(&out.stdout), address) {
+                exec.check(&Cmd::new(Program::OvsAppctl, ["-t", ctl, "cluster/kick", db, id.as_str()]))?;
+            }
+        }
+    }
+    exec.check(&Cmd::new(Program::OvnSbctl, [&format!("--db={SB_SOCK}"), "--if-exists", "chassis-del", chassis]))?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod forget_tests {
+    use super::*;
+    use crate::exec::{Output, RecordingExec};
+
+    const STATUS: &str = "Name: OVN_Northbound\nServer ID: 7bd6 (7bd6aaaa)\nServers:\n    7bd6 (7bd6 at ssl:192.0.2.11:6643) (self) next_index=3 match_index=9\n    c5e1 (c5e1 at ssl:192.0.2.12:6643) next_index=10 match_index=9\n";
+
+    #[test]
+    fn a_server_is_kicked_from_both_clusters_and_its_chassis_deleted() {
+        let exec = RecordingExec::new();
+        exec.on("ovs-appctl -t /var/run/ovn/ovnnb_db.ctl cluster/status OVN_Northbound", Output::ok(STATUS));
+        exec.on("ovs-appctl -t /var/run/ovn/ovnsb_db.ctl cluster/status OVN_Southbound", Output::ok(&STATUS.replace("Northbound", "Southbound").replace("6643", "6644")));
+        forget_member(&exec, "192.0.2.12", "node-1", true).unwrap();
+        let calls = exec.calls();
+        assert!(calls.contains(&"ovs-appctl -t /var/run/ovn/ovnnb_db.ctl cluster/kick OVN_Northbound c5e1".to_string()), "{calls:?}");
+        assert!(calls.contains(&"ovs-appctl -t /var/run/ovn/ovnsb_db.ctl cluster/kick OVN_Southbound c5e1".to_string()), "{calls:?}");
+        assert!(calls.contains(&"ovn-sbctl --db=unix:/var/run/ovn/ovnsb_db.sock --if-exists chassis-del node-1".to_string()), "{calls:?}");
+    }
+
+    #[test]
+    fn an_agent_only_loses_its_chassis_and_a_member_already_gone_is_fine() {
+        let exec = RecordingExec::new();
+        forget_member(&exec, "192.0.2.50", "agent-1", false).unwrap();
+        assert_eq!(exec.calls(), vec!["ovn-sbctl --db=unix:/var/run/ovn/ovnsb_db.sock --if-exists chassis-del agent-1".to_string()]);
+        let exec = RecordingExec::new();
+        exec.on("ovs-appctl -t /var/run/ovn/ovnnb_db.ctl cluster/status OVN_Northbound", Output::ok(STATUS));
+        exec.on("ovs-appctl -t /var/run/ovn/ovnsb_db.ctl cluster/status OVN_Southbound", Output::ok(STATUS));
+        forget_member(&exec, "192.0.2.99", "gone", true).unwrap();
+        assert!(!exec.calls().iter().any(|c| c.contains("cluster/kick")), "{:?}", exec.calls());
+    }
+}

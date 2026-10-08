@@ -33,6 +33,10 @@ impl Cluster {
                 if leader {
                     let c = me.clone();
                     let _ = tokio::task::spawn_blocking(move || c.liveness_round()).await;
+                    // A removal that was interrupted finishes on whoever leads now.
+                    if let Err(e) = me.finish_raft_removals().await {
+                        tracing::warn!("finishing a membership removal: {}", e);
+                    }
                 }
             }
         });

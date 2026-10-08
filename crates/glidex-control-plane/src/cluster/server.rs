@@ -27,6 +27,7 @@ pub fn router(c: Arc<Cluster>) -> Router {
         .route("/cluster/v1/ca", get(get_ca).put(put_ca))
         .route("/cluster/v1/join", post(join))
         .route("/cluster/v1/join/ready", post(join_ready))
+        .route("/cluster/v1/rejoin", post(rejoin))
         .route("/cluster/v1/read-index", post(read_index))
         .route("/cluster/v1/status", get(status))
         .route("/cluster/v1/list", get(node_list))
@@ -131,6 +132,17 @@ pub struct JoinResponse {
     pub node_id: String,
     pub cert_pem: String,
     pub trust_pem: String,
+    /// Rejoin only: the node's Raft state can't be trusted, so it must start
+    /// from nothing and come back as a learner (D18).
+    #[serde(default)]
+    pub raft_fresh: bool,
+    /// Rejoin only: what the cluster knows the node as.
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub role: Option<NodeRole>,
+    #[serde(default)]
+    pub raft_id: Option<u64>,
 }
 
 /// §5.2 step 3: check the token, sign the certificate, record the node.
@@ -191,7 +203,83 @@ async fn join(State(c): Ctx, Json(req): Json<JoinRequest>) -> Response {
     })
     .await;
     match out {
-        Ok(Ok(node_id)) => Json(JoinResponse { cluster_id, node_id, cert_pem, trust_pem }).into_response(),
+        Ok(Ok(node_id)) => Json(JoinResponse { cluster_id, node_id, cert_pem, trust_pem, raft_fresh: false, name: None, role: None, raft_id: None }).into_response(),
+        Ok(Err(e)) => fail(StatusCode::CONFLICT, "conflict", e),
+        Err(e) => fail(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()),
+    }
+}
+
+/// §5.7: a repaired host, or one whose certificate expired or `node.db` was
+/// lost, comes back as the same node: a new certificate for the same id.
+async fn rejoin(State(c): Ctx, Json(req): Json<JoinRequest>) -> Response {
+    let Some(node) = &c.node else { return fail(StatusCode::CONFLICT, "not_a_server", "this node does not take joins") };
+    if !node.is_leader() {
+        return not_leader(&c);
+    }
+    let Some(ca) = c.signing_ca() else { return fail(StatusCode::INTERNAL_SERVER_ERROR, "internal", "this server holds no CA key") };
+    let db = c.db.clone();
+    let token = req.token.clone();
+    let consumed = tokio::task::spawn_blocking(move || super::tokens::consume(&db, &token)).await;
+    let (target, raft_intact) = match consumed {
+        Ok(Ok(rec)) => match rec.kind {
+            super::tokens::TokenKind::Rejoin { node, raft_intact } => (node, raft_intact),
+            _ => return fail(StatusCode::FORBIDDEN, "invalid_token", "this is a join token, not a rejoin token"),
+        },
+        Ok(Err(e)) => return fail(StatusCode::FORBIDDEN, "invalid_token", e.to_string()),
+        Err(e) => return fail(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()),
+    };
+    if req.node_id != target {
+        return fail(StatusCode::FORBIDDEN, "invalid_token", "this token is for another node");
+    }
+    let store = crate::node::NodeStore::new(c.db.clone());
+    let mut rec = match store.get(&target) {
+        Ok(Some(n)) => n,
+        _ => return fail(StatusCode::NOT_FOUND, "not_found", "no such node"),
+    };
+    if !matches!(rec.status.phase, crate::node::NodePhase::Active | crate::node::NodePhase::Draining | crate::node::NodePhase::Forgotten) {
+        return fail(StatusCode::CONFLICT, "conflict", format!("the node is {:?}: its id is retired", rec.status.phase));
+    }
+    let server = rec.spec.role == NodeRole::Server;
+    let (cert_pem, info) = match ca.sign_node(&req.csr, &target, server, super::pki::NODE_VALIDITY_DAYS) {
+        Ok(v) => v,
+        Err(e) => return fail(StatusCode::BAD_REQUEST, "invalid_csr", e.to_string()),
+    };
+    // D18: a voter that lost its log must not vote again as itself. It leaves
+    // the group here, and comes back through the learner path.
+    let raft_fresh = server && !raft_intact;
+    if raft_fresh {
+        if let (Some(rid), Some(raft)) = (rec.status.raft_id, &c.node) {
+            if let Err(e) = raft.remove_members([rid].into_iter().collect()).await {
+                return fail(StatusCode::SERVICE_UNAVAILABLE, "rejoin_failed", format!("could not remove the old voter: {e}"));
+            }
+        }
+    }
+    let was_forgotten = rec.status.phase == crate::node::NodePhase::Forgotten;
+    if was_forgotten {
+        rec.status.phase = crate::node::NodePhase::Active;
+        rec.spec.unschedulable = false;
+    }
+    rec.status.advertise = Some(req.advertise);
+    rec.status.tunnel_ip = req.tunnel_ip.or(rec.status.tunnel_ip);
+    rec.status.ready = crate::models::Tristate::Unknown;
+    rec.status.ready_reason = Some("Rejoining".into());
+    rec.meta.resource_version += 1;
+    let trust_pem = c.files.read(c.files.trust()).unwrap_or_default();
+    let db = c.db.clone();
+    let cluster_id = c.identity.cluster_id.clone();
+    let (name, role, raft_id) = (rec.spec.name.clone(), rec.spec.role, rec.status.raft_id);
+    let r = tokio::task::spawn_blocking(move || {
+        db.write(Origin::Api, |tx| -> Result<(), JoinWriteError> {
+            tx.open_table(TableId::Nodes.definition())?.insert(&rec.meta.id, serde_json::to_vec(&rec)?.as_slice())?;
+            tx.open_table(TableId::IssuedCerts.definition())?
+                .insert(&info.serial, serde_json::to_vec(&json!({ "node": info.node_id, "kind": "node", "issuer": info.issuer_fingerprint, "not_after": info.not_after }))?.as_slice())?;
+            Ok(())
+        })
+        .map_err(|e| e.0)
+    })
+    .await;
+    match r {
+        Ok(Ok(())) => Json(JoinResponse { cluster_id, node_id: target, cert_pem, trust_pem, raft_fresh, name: Some(name), role: Some(role), raft_id }).into_response(),
         Ok(Err(e)) => fail(StatusCode::CONFLICT, "conflict", e),
         Err(e) => fail(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()),
     }

@@ -149,7 +149,16 @@ impl Cluster {
         });
         let (stop, stop_rx) = tokio::sync::watch::channel(false);
         let cluster = Arc::new(Cluster { identity, files, db, node, tls: tls.clone(), client, config, ca: Mutex::new(ca), api: OnceLock::new(), stop, barrier: Arc::new(Barrier::default()), log, liveness: Default::default(), handlers: OnceLock::new() });
-        let listener = tokio::net::TcpListener::bind(listen).await.map_err(|e| ClusterError::Other(format!("cannot listen on {listen}: {e}")))?;
+        // A runtime that was just stopped may still hold the port for a moment.
+        let mut bound = tokio::net::TcpListener::bind(listen).await;
+        for _ in 0..50 {
+            if bound.is_ok() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            bound = tokio::net::TcpListener::bind(listen).await;
+        }
+        let listener = bound.map_err(|e| ClusterError::Other(format!("cannot listen on {listen}: {e}")))?;
         let router = super::server::router(cluster.clone());
         tokio::spawn(super::net::serve(listener, tls, router, stop_rx));
         if let Some(n) = &cluster.node {

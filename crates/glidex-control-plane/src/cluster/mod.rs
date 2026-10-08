@@ -14,3 +14,4 @@ pub use runtime::{Cluster, ClusterError};
 pub mod sync;
 pub mod agent;
 pub mod lifecycle;
+pub mod membership;

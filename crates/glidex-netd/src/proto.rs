@@ -88,6 +88,9 @@ pub enum Op {
     LeaveOvn { confirm: bool },
     /// Run this server's part of OVN's databases (`ovn-central`).
     EnsureOvnCentral(EnsureOvnCentralArgs),
+    /// Take a departed member out of OVN (kick it from the NB/SB clusters,
+    /// delete its chassis). Run on a remaining server.
+    ForgetOvnMember(ForgetOvnMemberArgs),
 }
 
 impl Op {
@@ -140,6 +143,7 @@ impl Op {
             Op::OvnStatus => "ovn_status",
             Op::LeaveOvn { .. } => "leave_ovn",
             Op::EnsureOvnCentral(_) => "ensure_ovn_central",
+            Op::ForgetOvnMember(_) => "forget_ovn_member",
         }
     }
 }
@@ -268,6 +272,16 @@ pub struct EnsureOvnChassisArgs {
 pub struct EnsureOvnCentralArgs {
     pub spec: glidex_ovs::ovn::CentralSpec,
     pub certs: glidex_ovs::ovn::ChassisCerts,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ForgetOvnMemberArgs {
+    /// The member's address in OVN's cluster (its advertise IP).
+    pub address: String,
+    /// Its chassis name (the node id).
+    pub chassis: String,
+    /// Whether it ran NB/SB databases.
+    pub server: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -225,6 +225,10 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         .add("GET", "/nodes/{id}", "readNode", get(nodes::get_node))
         .add("POST", "/nodes/{id}/drain", "drainNode", post(nodes::drain))
         .add("POST", "/nodes/{id}/undrain", "undrainNode", post(nodes::undrain))
+        .add("POST", "/nodes/{id}/remove", "removeNode", post(nodes::remove))
+        .add("POST", "/nodes/{id}/forget", "forgetNode", post(nodes::forget))
+        .add("POST", "/nodes/{id}/purge", "purgeNode", post(nodes::purge))
+        .add("POST", "/nodes/{id}/rejoin-token", "createRejoinToken", post(nodes::rejoin_token))
         // Live changes; each kind filtered like its list endpoint.
         .add("GET", "/watch", AUTHENTICATED, get(watch::watch))
         // ---- authentication

@@ -332,6 +332,127 @@ pub async fn join(manager: &Arc<VmManager>, cfg: &crate::config::Config, opts: J
     Ok(json!({ "cluster_id": identity.cluster_id, "node_id": node_id, "role": opts.role, "promoted": promoted }))
 }
 
+pub struct RejoinOptions {
+    pub server: SocketAddr,
+    pub token: String,
+    /// The node's id, for a host that lost its cluster files.
+    pub node_id: Option<String>,
+    pub advertise: Option<SocketAddr>,
+    pub tunnel_ip: Option<IpAddr>,
+    pub listen: Option<SocketAddr>,
+}
+
+/// §5.7: come back as the same node, with a new certificate. A server whose
+/// Raft state can't be trusted (D18) starts it from nothing and returns as a
+/// learner; one whose state is intact simply resumes.
+pub async fn rejoin(manager: &Arc<VmManager>, cfg: &crate::config::Config, opts: RejoinOptions) -> Result<Value, ClusterError> {
+    let files = Files::beside(manager.db_path());
+    let old = files.load_identity()?;
+    let node_id = opts.node_id.clone().or_else(|| old.as_ref().map(|i| i.node_id.clone())).ok_or_else(|| other("this host has no cluster identity: pass the node id from `gxctl node rejoin-token`"))?;
+    let (_, _, ca_hash) = tokens::parse(&opts.token).map_err(other)?;
+    let server = opts.server.to_string();
+    let ca_pem = net::fetch_ca_untrusted(&server).await?;
+    let got = pki::public_key_fingerprint(&ca_pem)?;
+    if got != ca_hash {
+        return Err(other(format!("the server's CA ({}…) is not the one the token names ({}…): refusing to rejoin", &got[..12], &ca_hash[..12])));
+    }
+    let trusting = net::client_trusting(&ca_pem)?;
+    let ccfg = cfg.cluster.clone();
+    let advertise = match (opts.advertise, &old) {
+        (Some(a), _) => a,
+        (None, Some(i)) => i.advertise,
+        (None, None) => resolve_advertise(None, &ccfg)?,
+    };
+    let listen = opts.listen.unwrap_or(ccfg.listen);
+    let key = NodeKey::generate()?;
+    let csr = key.csr(&[advertise.ip()], &[])?;
+    let tunnel_ip = opts.tunnel_ip.or_else(|| old.as_ref().and_then(|i| i.tunnel_ip));
+    let req = JoinRequest {
+        token: opts.token.clone(),
+        csr,
+        name: old.as_ref().map(|i| i.name.clone()).unwrap_or_default(),
+        role: old.as_ref().map(|i| i.role).unwrap_or(NodeRole::Server),
+        node_id: node_id.clone(),
+        raft_id: old.as_ref().map(|i| i.raft_id).unwrap_or_else(|| raft_id_of(&node_id)),
+        advertise,
+        tunnel_ip,
+    };
+    let body = Bytes::from(serde_json::to_vec(&req).map_err(other)?);
+    let mut target = server.clone();
+    let mut resp = None;
+    for _ in 0..2 {
+        let r = trusting.request(&target, hyper::Method::POST, "/cluster/v1/rejoin", &[("content-type", "application/json".into())], body.clone()).await?;
+        if r.status == hyper::StatusCode::MISDIRECTED_REQUEST {
+            let v: Value = serde_json::from_slice(&r.body).unwrap_or_default();
+            match v["leader"].as_str() {
+                Some(l) if l != target => {
+                    target = l.to_string();
+                    continue;
+                }
+                _ => return Err(other("the cluster has no leader right now; try again")),
+            }
+        }
+        if !r.status.is_success() {
+            let v: Value = serde_json::from_slice(&r.body).unwrap_or_default();
+            return Err(other(format!("{}: {}", r.status, v["message"].as_str().unwrap_or("the rejoin was refused"))));
+        }
+        resp = Some(r);
+        break;
+    }
+    let resp: JoinResponse = serde_json::from_slice(&resp.ok_or_else(|| other("no answer from the cluster"))?.body).map_err(other)?;
+    if pki::public_key_fingerprint(&resp.trust_pem)? != ca_hash {
+        return Err(other("the cluster sent a different CA than the token names"));
+    }
+    let role = resp.role.unwrap_or(req.role);
+    let raft_id = resp.raft_id.unwrap_or(req.raft_id);
+    let identity = Identity {
+        cluster_id: resp.cluster_id.clone(),
+        node_id: node_id.clone(),
+        raft_id,
+        name: resp.name.clone().unwrap_or_else(|| req.name.clone()),
+        role,
+        advertise,
+        tunnel_ip: tunnel_ip.or(Some(advertise.ip())),
+        ca_fingerprint: ca_hash.to_string(),
+        seeds: vec![target.clone()],
+    };
+    // The old runtime goes before its files change.
+    manager.detach_cluster().await;
+    files.save_node_cert(&resp.cert_pem, &key.key_pem(), &resp.trust_pem)?;
+    files.save_identity(&identity)?;
+    crate::authz::set_identity(&identity.cluster_id, &identity.node_id);
+    crate::authz::set_local_account_scope((!ccfg.shared_local_accounts).then(|| node_id.clone()));
+    let db = manager.database();
+    if resp.raft_fresh {
+        let raft_dir = files.raft();
+        if raft_dir.exists() {
+            std::fs::remove_dir_all(&raft_dir).map_err(other)?;
+        }
+        reset_raft_meta(&db)?;
+    }
+    let cluster = Cluster::start(db, files.clone(), identity.clone(), ccfg, listen).await?;
+    if role == NodeRole::Server && resp.raft_fresh {
+        let r = cluster.client.request_timeout(&target, hyper::Method::POST, "/cluster/v1/join/ready", &[], Bytes::new(), Duration::from_secs(900)).await;
+        match r {
+            Ok(r) if r.status.is_success() => {}
+            Ok(r) => {
+                cluster.stop().await;
+                return Err(other(format!("the leader refused to add this node back: {} {}", r.status, String::from_utf8_lossy(&r.body))));
+            }
+            Err(e) => {
+                cluster.stop().await;
+                return Err(other(format!("could not reach the leader: {e}")));
+            }
+        }
+        if let Some(n) = &cluster.node {
+            let _ = n.wait_for_leader(Duration::from_secs(20)).await;
+        }
+    }
+    manager.attach_cluster(cluster);
+    manager.reload_vms().await;
+    Ok(json!({ "cluster_id": identity.cluster_id, "node_id": node_id, "role": role, "raft_fresh": resp.raft_fresh }))
+}
+
 /// A join token for a new node (§5.2). `by` is recorded.
 pub fn join_token(cluster: &Cluster, role: NodeRole, ttl_secs: u64, allow_import: bool, by: &str) -> Result<String, ClusterError> {
     tokens::create(&cluster.db, TokenKind::Join { role, allow_import }, ttl_secs, &cluster.identity.ca_fingerprint, by).map_err(other)

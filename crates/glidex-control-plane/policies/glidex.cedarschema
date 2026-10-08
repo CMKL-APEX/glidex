@@ -187,6 +187,9 @@ namespace Glidex {
     appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
   action createJoinToken, promoteNode, snapshotCluster in ["host.cluster.critical"]
     appliesTo { principal: [User, Token], resource: [Cluster], context: Ctx };
+  // Membership (spec/clustering.md §5.5-5.7).
+  action removeNode, forgetNode, purgeNode, createRejoinToken in ["host.cluster.critical"]
+    appliesTo { principal: [User, Token], resource: [Cluster], context: Ctx };
 
   // ---- nodes (spec/clustering.md §7) -------------------------------------
   action listNodes in ["host.read"]

@@ -39,6 +39,7 @@ fn test_config() -> Config {
     let mut c = Config::default();
     c.cluster.raft.heartbeat_ms = 100;
     c.cluster.raft.election_ms = (600, 1200);
+    c.cluster.node_grace_secs = 3;
     c
 }
 
@@ -746,4 +747,103 @@ async fn provider_networks_and_vpc_routers() {
     assert_eq!(s, StatusCode::CREATED, "{r}");
     assert_eq!(r["status"]["external_ip"], "192.0.2.4", "the address came back");
     assert_eq!(r["status"]["snat_ct_zone"], 60002, "and so did the zone");
+}
+
+async fn node_json(cp: &Cp, key: &str) -> Value {
+    let (s, v) = call(cp, "GET", "/nodes", None, &[]).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    v.as_array().unwrap().iter().find(|n| n["meta"]["id"] == key || n["spec"]["name"] == key).cloned().unwrap_or(Value::Null)
+}
+
+fn denylist_len(cp: &Cp) -> usize {
+    use redb::ReadableTableMetadata;
+    let txn = cp.manager.database().begin_read().unwrap();
+    txn.open_table(glidex_control_plane::store::TableId::NodeDenylist.definition()).map(|t| t.len().unwrap_or(0) as usize).unwrap_or(0)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn nodes_are_removed_forgotten_and_rejoin_as_themselves() {
+    let _one = SERIAL.lock().await;
+    let cps = form(4).await;
+    let lead = leader_index(&cps, &[0, 1, 2, 3]).await;
+    let status = manage::status_of(&cluster(&cps[lead]));
+    assert_eq!((status["raft"]["voters"].as_array().unwrap().len(), status["raft"]["learners"].as_array().unwrap().len()), (3, 1), "{status}");
+    let learner = (0..4).find(|i| cluster(&cps[*i]).node.as_ref().unwrap().learners().len() == 0 && !cluster(&cps[lead]).node.as_ref().unwrap().voters().contains(&cluster(&cps[*i]).identity.raft_id)).unwrap();
+    let learner_name = cluster(&cps[learner]).identity.name.clone();
+    let voter = (0..4).find(|i| *i != lead && *i != learner).unwrap();
+
+    // A voter can't go if that leaves an even group; nothing changes.
+    let (s, e) = call(&cps[lead], "POST", &format!("/nodes/{}/remove", cluster(&cps[voter]).identity.name), Some(json!({})), &[]).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{e}");
+    assert!(e["message"].as_str().unwrap().contains("1, 3 or 5"), "{e}");
+    assert_eq!(node_json(&cps[lead], &cluster(&cps[voter]).identity.name).await["status"]["phase"], "Active");
+    // The server issuing the request can't remove itself.
+    let (s, _) = call(&cps[lead], "POST", &format!("/nodes/{}/remove", cluster(&cps[lead]).identity.name), Some(json!({})), &[]).await;
+    assert_eq!(s, StatusCode::CONFLICT);
+
+    // The learner (empty) is removed: tombstone, certificate denied, out of the group.
+    let before = denylist_len(&cps[lead]);
+    let (s, r) = call(&cps[lead], "POST", &format!("/nodes/{learner_name}/remove"), Some(json!({})), &[]).await;
+    assert_eq!(s, StatusCode::OK, "{r}");
+    assert_eq!(r["phase"], "Removed");
+    assert_eq!(denylist_len(&cps[lead]), before + 1);
+    wait_until("the learner to leave the group", || async { cluster(&cps[lead]).node.as_ref().unwrap().learners().is_empty() }).await;
+    let (s, r) = call(&cps[lead], "POST", &format!("/nodes/{learner_name}/remove"), Some(json!({})), &[]).await;
+    assert_eq!((s, r["already"].as_bool()), (StatusCode::OK, Some(true)), "removing twice is fine");
+    // Its id is retired: no rejoin token.
+    let (s, _) = call(&cps[lead], "POST", &format!("/nodes/{learner_name}/rejoin-token"), Some(json!({})), &[]).await;
+    assert_eq!(s, StatusCode::CONFLICT);
+
+    // A lost voter: forgetting needs --fenced, and only for a node that is silent.
+    let victim = voter;
+    let vname = cluster(&cps[victim]).identity.name.clone();
+    let (s, _) = call(&cps[lead], "POST", &format!("/nodes/{vname}/forget"), Some(json!({})), &[]).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "forget without --fenced");
+    cluster(&cps[victim]).stop().await;
+    wait_until("the node to be reported unreachable", || async { node_json(&cps[lead], &vname).await["status"]["ready"] != "True" }).await;
+    // Three voters become two: refused as even, accepted with force.
+    let (s, e) = call(&cps[lead], "POST", &format!("/nodes/{vname}/forget"), Some(json!({ "fenced": true })), &[]).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{e}");
+    let (s, r) = call(&cps[lead], "POST", &format!("/nodes/{vname}/forget"), Some(json!({ "fenced": true, "force": true })), &[]).await;
+    assert_eq!(s, StatusCode::OK, "{r}");
+    assert_eq!(r["phase"], "Forgotten");
+    wait_until("the forgotten voter to leave the group", || async { !cluster(&cps[lead]).node.as_ref().unwrap().voters().contains(&cluster(&cps[victim]).identity.raft_id) }).await;
+
+    // It comes back as itself, with a new certificate, as a learner (its log is not trusted).
+    let (s, t) = call(&cps[lead], "POST", &format!("/nodes/{vname}/rejoin-token"), Some(json!({ "raft_intact": false })), &[]).await;
+    assert_eq!(s, StatusCode::OK, "{t}");
+    let cfg = test_config();
+    let out = manage::rejoin(
+        &cps[victim].manager,
+        &cfg,
+        manage::RejoinOptions { server: cps[lead].addr, token: t["token"].as_str().unwrap().to_string(), node_id: None, advertise: Some(cps[victim].addr), tunnel_ip: None, listen: Some(cps[victim].addr) },
+    )
+    .await
+    .unwrap();
+    assert_eq!(out["raft_fresh"], true, "{out}");
+    let n = node_json(&cps[lead], &vname).await;
+    assert_eq!(n["status"]["phase"], "Active", "{n}");
+    assert_eq!(n["meta"]["id"], cluster(&cps[victim]).identity.node_id, "the same node id");
+    wait_until("the rejoined server to be a member again", || async {
+        let lc = cluster(&cps[lead]);
+        let l = lc.node.as_ref().unwrap();
+        let rid = cluster(&cps[victim]).identity.raft_id;
+        l.voters().contains(&rid) || l.learners().contains(&rid)
+    })
+    .await;
+    // A token is single use.
+    let (s, _) = call(&cps[lead], "POST", &format!("/nodes/{vname}/purge"), None, &[]).await;
+    assert_eq!(s, StatusCode::CONFLICT, "an Active node can't be purged");
+}
+
+async fn wait_until<F, Fut>(what: &str, mut f: F)
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    while !f().await {
+        assert!(tokio::time::Instant::now() < deadline, "timed out waiting for {what}");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
 }

@@ -189,6 +189,11 @@ impl Netd {
                 let changed = glidex_ovs::ovn::ensure_central(self.ex(), &args.spec, &args.certs, &self.config.ovn_dir)?;
                 to_value(serde_json::json!({ "changed": changed }))
             }
+            Op::ForgetOvnMember(a) => {
+                glidex_ovs::ovn::forget_member(self.ex(), &a.address, &a.chassis, a.server)?;
+                tracing::info!(chassis = %a.chassis, "forgot OVN member");
+                Ok(Value::Null)
+            }
             Op::OvnStatus => to_value(glidex_ovs::ovn::status(self.ex())?),
             Op::LeaveOvn { confirm } => {
                 glidex_ovs::ovn::leave(self.ex(), confirm, &self.config.ovn_dir)?;
