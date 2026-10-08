@@ -653,7 +653,7 @@ async fn cluster_networks_get_a_subnet_and_vms_get_addresses_that_go_when_they_d
     let d = server.manager.__desired_ovn_for_tests().await.unwrap();
     assert_eq!(d.networks.len(), 2);
     assert_eq!(d.ports.len(), 2);
-    assert!(d.ports.iter().all(|p| p.chassis.as_deref() == Some(server.manager.local_node_id().as_str()) && p.ip.is_some()));
+    assert!(d.ports.iter().all(|p| p.chassis.as_deref() == Some(glidex_ovs::ovn::chassis_name(&server.manager.local_node_id()).as_str()) && p.ip.is_some()));
     assert!(d.edge.is_some() && !d.node_addresses.is_empty());
 
     // A network in use can't go; a VM that goes frees its address.
@@ -900,7 +900,7 @@ async fn the_ca_rotates_and_every_node_renews_before_the_old_one_is_retired() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn a_node_detaches_with_its_vms_and_the_cluster_lets_go() {
-    use glidex_control_plane::cluster::departure::{finish_pending, pending_db, receipt_file};
+    use glidex_control_plane::cluster::departure::{finish_pending, pending_db, pending_sha_file, receipt_file};
     let _one = SERIAL.lock().await;
     let cfg = test_config();
     let server = new_cp();
@@ -952,6 +952,7 @@ async fn a_node_detaches_with_its_vms_and_the_cluster_lets_go() {
     let fresh = tempfile::tempdir().unwrap();
     std::fs::copy(pending_db(&dir), pending_db(fresh.path())).unwrap();
     std::fs::copy(receipt_file(&dir), receipt_file(fresh.path())).unwrap();
+    std::fs::copy(pending_sha_file(&dir), pending_sha_file(fresh.path())).unwrap();
     std::fs::create_dir_all(fresh.path().join("cluster")).unwrap();
     std::fs::copy(dir.join("cluster/ca.crt"), fresh.path().join("cluster/ca.crt")).unwrap();
     std::fs::write(fresh.path().join("glidex.db"), b"the old cluster cache").unwrap();
@@ -971,6 +972,14 @@ async fn a_node_detaches_with_its_vms_and_the_cluster_lets_go() {
     std::fs::create_dir_all(other.path().join("cluster")).unwrap();
     std::fs::copy(dir.join("cluster/ca.crt"), other.path().join("cluster/ca.crt")).unwrap();
     assert!(finish_pending(&other.path().join("glidex.db")).is_err());
+    // Nor is a pending database other than the bundle the receipt names.
+    let third = tempfile::tempdir().unwrap();
+    std::fs::copy(pending_db(&dir), pending_db(third.path())).unwrap();
+    std::fs::copy(receipt_file(&dir), receipt_file(third.path())).unwrap();
+    std::fs::write(pending_sha_file(third.path()), "0".repeat(64)).unwrap();
+    std::fs::create_dir_all(third.path().join("cluster")).unwrap();
+    std::fs::copy(dir.join("cluster/ca.crt"), third.path().join("cluster/ca.crt")).unwrap();
+    assert!(finish_pending(&third.path().join("glidex.db")).is_err());
 }
 
 fn agent_state_dir(cp: &Cp) -> std::path::PathBuf {
@@ -1034,7 +1043,7 @@ async fn a_node_that_left_on_its_own_is_forgotten_as_departed_and_its_bundle_can
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn a_detached_host_imports_into_another_cluster_with_its_vm_after_approval() {
-    use glidex_control_plane::cluster::departure::{finish_pending, pending_db, receipt_file};
+    use glidex_control_plane::cluster::departure::{finish_pending, pending_db, pending_sha_file, receipt_file};
     let _one = SERIAL.lock().await;
     let cfg = test_config();
 
@@ -1060,6 +1069,7 @@ async fn a_detached_host_imports_into_another_cluster_with_its_vm_after_approval
     let fresh = tempfile::tempdir().unwrap();
     std::fs::copy(pending_db(&dir), pending_db(fresh.path())).unwrap();
     std::fs::copy(receipt_file(&dir), receipt_file(fresh.path())).unwrap();
+    std::fs::copy(pending_sha_file(&dir), pending_sha_file(fresh.path())).unwrap();
     std::fs::create_dir_all(fresh.path().join("cluster")).unwrap();
     std::fs::copy(dir.join("cluster/ca.crt"), fresh.path().join("cluster/ca.crt")).unwrap();
     std::fs::write(fresh.path().join("glidex.db"), b"old").unwrap();
@@ -1125,7 +1135,7 @@ async fn a_detached_host_imports_into_another_cluster_with_its_vm_after_approval
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn the_last_node_dissolves_the_cluster_and_keeps_everything() {
-    use glidex_control_plane::cluster::departure::{finish_pending, pending_db, receipt_file};
+    use glidex_control_plane::cluster::departure::{finish_pending, pending_db, pending_sha_file, receipt_file};
     let _one = SERIAL.lock().await;
     let cfg = test_config();
     let a = new_cp();
@@ -1155,6 +1165,7 @@ async fn the_last_node_dissolves_the_cluster_and_keeps_everything() {
     let fresh = tempfile::tempdir().unwrap();
     std::fs::copy(pending_db(&dir), pending_db(fresh.path())).unwrap();
     std::fs::copy(receipt_file(&dir), receipt_file(fresh.path())).unwrap();
+    std::fs::copy(pending_sha_file(&dir), pending_sha_file(fresh.path())).unwrap();
     std::fs::create_dir_all(fresh.path().join("cluster")).unwrap();
     std::fs::copy(dir.join("cluster/ca.crt"), fresh.path().join("cluster/ca.crt")).unwrap();
     std::fs::write(fresh.path().join("glidex.db"), b"old").unwrap();

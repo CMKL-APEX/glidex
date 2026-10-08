@@ -244,6 +244,27 @@ fn summarize(rows: &[Row]) -> Summary {
     Summary { vms: n(TableId::Vms), disks: n(TableId::Disks), images: n(TableId::Images), networks: n(TableId::Networks), credentials: n(TableId::Credentials), projects: n(TableId::Projects) }
 }
 
+/// The tables an import may bring rows for: resources only (§5.9). Access
+/// data (users, links, identities), certificates, nodes and anything else
+/// a host could send are refused before anything is staged.
+const IMPORT_TABLES: [TableId; 8] = [TableId::Vms, TableId::Events, TableId::Disks, TableId::Networks, TableId::Images, TableId::ImageMeta, TableId::Credentials, TableId::Projects];
+
+fn check_import_rows(b: &Bundle) -> Result<(), ImportError> {
+    let vms: BTreeSet<&str> = b.rows.iter().filter(|r| r.table == TableId::Vms as u16).map(|r| r.key.as_str()).collect();
+    for r in &b.rows {
+        let Some(t) = TableId::from_id(r.table).filter(|t| IMPORT_TABLES.contains(t)) else {
+            return Err(ImportError::Invalid(format!("an import can't bring rows of table {}", r.table)));
+        };
+        let v: Value = serde_json::from_str(&r.value).map_err(|_| ImportError::Invalid(format!("row {} is not JSON", r.key)))?;
+        match t {
+            TableId::Events if !r.key.strip_prefix("vm/").is_some_and(|id| vms.contains(id)) => return Err(ImportError::Invalid(format!("events {} are not of an imported VM", r.key))),
+            TableId::Networks if v["scope"] == "cluster" => return Err(ImportError::Invalid(format!("network {} is a cluster network", r.key))),
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 /// What the host sends to ask for an import.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImportRequest {
@@ -266,6 +287,7 @@ impl Cluster {
     /// Step 3 (leader): consume the token, check, and stage. Returns the plan id
     /// and the secret the host polls with.
     pub fn create_import_plan(&self, req: ImportRequest) -> Result<(ImportPlan, String), ImportError> {
+        check_import_rows(&req.bundle)?;
         let rec = tokens::consume(&self.db, &req.token).map_err(|e| ImportError::Invalid(e.to_string()))?;
         match rec.kind {
             TokenKind::Join { role: NodeRole::Agent, allow_import: true } => {}
@@ -350,39 +372,55 @@ impl Cluster {
 
     /// Steps 4–5: validate against the cluster as it is now, then one write.
     pub fn approve_import(&self, plan_id: &str, mappings: ImportMappings) -> Result<ImportPlan, ImportError> {
-        let mut p = read_plan(&self.db, plan_id).ok_or_else(|| ImportError::NotFound(plan_id.into()))?;
+        let p = read_plan(&self.db, plan_id).ok_or_else(|| ImportError::NotFound(plan_id.into()))?;
         if p.state != "pending" {
             return Err(ImportError::Conflict(format!("the plan is {}", p.state)));
-        }
-        if crate::tenancy::now() > p.expires_at {
-            return Err(ImportError::Conflict("the plan expired".into()));
-        }
-        let rows = read_rows(&self.db, &p);
-        let res = resolve(&self.db, &rows, &mappings);
-        if !res.problems.is_empty() {
-            p.problems = res.problems.clone();
-            p.mappings = mappings;
-            let _ = self.put_plan(&p);
-            return Err(ImportError::Conflict(format!("the import can't go ahead: {}", res.problems.join("; "))));
         }
         let ca = self.signing_ca().ok_or_else(|| failed("this server holds no CA key"))?;
         let (cert_pem, info) = ca.sign_node(&p.csr, &p.node_id, false, super::pki::NODE_VALIDITY_DAYS).map_err(|e| ImportError::Invalid(e.to_string()))?;
         let trust_pem = self.ca_state().map(|s| s.trust_pem).or_else(|| self.files.read(self.files.trust()).ok()).unwrap_or_default();
-        let live = rewrite(rows, &res, &mappings, &p.node_id);
-        let mut node = Node::new(&p.node_id, NodeSpec { name: p.name.clone(), role: NodeRole::Agent, unschedulable: false, labels: Default::default() });
-        node.status.advertise = Some(p.advertise);
-        node.status.tunnel_ip = p.tunnel_ip.or(Some(p.advertise.ip()));
-        // Draining until the node confirms (§5.9 step 5): its own report makes it Active.
-        node.status.phase = crate::node::NodePhase::Draining;
-        node.spec.unschedulable = true;
-        p.state = "committed".into();
-        p.mappings = mappings;
-        p.problems.clear();
-        p.result = Some(json!({ "cluster_id": self.identity.cluster_id, "cert_pem": cert_pem, "trust_pem": trust_pem }));
-        let (plan2, chunks) = (p.clone(), p.chunks);
-        self.db
-            .write(Origin::Api, |tx| -> Result<(), crate::store::StoreError> {
+        let cluster_id = self.identity.cluster_id.clone();
+        // Validated and committed in one write, against the state of that write:
+        // an expiry, a reject or another import can't land in between.
+        let refused = std::cell::RefCell::new(None::<(ImportError, Option<ImportPlan>)>);
+        let done = self
+            .db
+            .write(Origin::Api, |tx| -> Result<Option<ImportPlan>, crate::store::StoreError> {
                 let io = |e: serde_json::Error| crate::store::StoreError::Io(std::io::Error::other(e.to_string()));
+                let mut p: ImportPlan = match tx.open_table(TableId::Meta.definition())?.get(plan_key(plan_id).as_str())?.and_then(|v| serde_json::from_slice(v.value()).ok()) {
+                    Some(p) => p,
+                    None => {
+                        *refused.borrow_mut() = Some((ImportError::NotFound(plan_id.into()), None));
+                        return Ok(None);
+                    }
+                };
+                if p.state != "pending" {
+                    *refused.borrow_mut() = Some((ImportError::Conflict(format!("the plan is {}", p.state)), None));
+                    return Ok(None);
+                }
+                if crate::tenancy::now() > p.expires_at {
+                    *refused.borrow_mut() = Some((ImportError::Conflict("the plan expired".into()), None));
+                    return Ok(None);
+                }
+                let rows = read_rows(&self.db, &p);
+                let res = resolve(&self.db, &rows, &mappings);
+                if !res.problems.is_empty() {
+                    p.problems = res.problems.clone();
+                    p.mappings = mappings.clone();
+                    *refused.borrow_mut() = Some((ImportError::Conflict(format!("the import can't go ahead: {}", res.problems.join("; "))), Some(p)));
+                    return Ok(None);
+                }
+                let live = rewrite(rows, &res, &mappings, &p.node_id);
+                let mut node = Node::new(&p.node_id, NodeSpec { name: p.name.clone(), role: NodeRole::Agent, unschedulable: false, labels: Default::default() });
+                node.status.advertise = Some(p.advertise);
+                node.status.tunnel_ip = p.tunnel_ip.or(Some(p.advertise.ip()));
+                // Draining until the node confirms (§5.9 step 5): its own report makes it Active.
+                node.status.phase = crate::node::NodePhase::Draining;
+                node.spec.unschedulable = true;
+                p.state = "committed".into();
+                p.mappings = mappings.clone();
+                p.problems.clear();
+                p.result = Some(json!({ "cluster_id": cluster_id, "cert_pem": cert_pem, "trust_pem": trust_pem }));
                 tx.open_table(TableId::Nodes.definition())?.insert(node.meta.id.as_str(), serde_json::to_vec(&node).map_err(io)?.as_slice())?;
                 tx.open_table(TableId::IssuedCerts.definition())?
                     .insert(info.serial.as_str(), serde_json::to_vec(&json!({ "node": info.node_id, "kind": "node", "issuer": info.issuer_fingerprint, "not_after": info.not_after })).map_err(io)?.as_slice())?;
@@ -391,34 +429,72 @@ impl Cluster {
                     tx.open_table(t.definition())?.insert(r.key.as_str(), r.value.as_bytes())?;
                 }
                 let mut meta = tx.open_table(TableId::Meta.definition())?;
-                for n in 0..chunks {
-                    meta.remove(chunk_key(&plan2.plan, n).as_str())?;
+                for n in 0..p.chunks {
+                    meta.remove(chunk_key(&p.plan, n).as_str())?;
                 }
-                meta.insert(plan_key(&plan2.plan).as_str(), serde_json::to_vec(&plan2).map_err(io)?.as_slice())?;
-                Ok(())
+                meta.insert(plan_key(&p.plan).as_str(), serde_json::to_vec(&p).map_err(io)?.as_slice())?;
+                Ok(Some(p))
             })
             .map_err(failed)?;
+        if let Some((e, plan)) = refused.into_inner() {
+            if let Some(plan) = plan {
+                let _ = self.put_plan(&plan);
+            }
+            return Err(e);
+        }
+        let p = done.ok_or_else(|| failed("the import was not committed"))?;
         tracing::warn!(node = %p.name, vms = p.summary.vms, "an import was approved and committed");
         Ok(p)
     }
 
     pub fn reject_import(&self, plan_id: &str) -> Result<(), ImportError> {
-        let mut p = read_plan(&self.db, plan_id).ok_or_else(|| ImportError::NotFound(plan_id.into()))?;
-        if p.state != "pending" {
-            return Err(ImportError::Conflict(format!("the plan is {}", p.state)));
-        }
-        p.state = "rejected".into();
-        let chunks = p.chunks;
+        let refused = std::cell::RefCell::new(None::<ImportError>);
         self.db
             .write(Origin::Api, |tx| -> Result<(), crate::store::StoreError> {
                 let mut meta = tx.open_table(TableId::Meta.definition())?;
-                for n in 0..chunks {
+                let cur: Option<ImportPlan> = meta.get(plan_key(plan_id).as_str())?.and_then(|v| serde_json::from_slice(v.value()).ok());
+                let Some(mut p) = cur else {
+                    *refused.borrow_mut() = Some(ImportError::NotFound(plan_id.into()));
+                    return Ok(());
+                };
+                // Re-read inside the write: an approval may have committed since.
+                if p.state != "pending" {
+                    *refused.borrow_mut() = Some(ImportError::Conflict(format!("the plan is {}", p.state)));
+                    return Ok(());
+                }
+                p.state = "rejected".into();
+                for n in 0..p.chunks {
                     meta.remove(chunk_key(plan_id, n).as_str())?;
                 }
                 meta.insert(plan_key(plan_id).as_str(), serde_json::to_vec(&p).map_err(|e| crate::store::StoreError::Io(std::io::Error::other(e.to_string())))?.as_slice())?;
                 Ok(())
             })
-            .map_err(failed)
+            .map_err(failed)?;
+        match refused.into_inner() {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
+    }
+
+    /// What approving with `mappings` amounts to (§12.2): the existing projects
+    /// the import merges into, and whether it creates projects.
+    pub fn plan_destinations(&self, plan_id: &str, mappings: &ImportMappings) -> Result<(Vec<String>, bool), ImportError> {
+        let p = read_plan(&self.db, plan_id).ok_or_else(|| ImportError::NotFound(plan_id.into()))?;
+        let rows = read_rows(&self.db, &p);
+        let res = resolve(&self.db, &rows, mappings);
+        let merged: BTreeSet<String> = res.pmap.iter().filter(|(src, _)| !res.new_projects.contains_key(*src)).map(|(_, dest)| dest.clone()).collect();
+        Ok((merged.into_iter().collect(), !res.new_projects.is_empty()))
+    }
+
+    /// The host gave up waiting (§5.9): reject the plan if it is still
+    /// pending; if it already committed, say so, so the host switches anyway.
+    pub fn cancel_import(&self, plan_id: &str, secret: &str) -> Result<Option<ImportPlan>, ImportError> {
+        let p = self.poll_import(plan_id, secret).ok_or_else(|| ImportError::NotFound(plan_id.into()))?;
+        match self.reject_import(plan_id) {
+            Ok(()) => Ok(None),
+            Err(ImportError::Conflict(_)) => Ok(read_plan(&self.db, &p.plan).filter(|p| p.state == "committed")),
+            Err(e) => Err(e),
+        }
     }
 
     /// Leader: a plan past its time is rejected and its staged rows dropped.
@@ -491,7 +567,9 @@ fn rewrite(rows: Vec<Row>, res: &Resolved, m: &ImportMappings, node: &str) -> Ve
                     None => continue,
                 }
             }
-            _ => {}
+            Some(TableId::Events) | Some(TableId::Images) | Some(TableId::ImageMeta) => {}
+            // Nothing else is imported (checked at staging; again here).
+            _ => continue,
         }
         out.push(Row { table: r.table, key, value: v.to_string() });
     }
@@ -500,4 +578,33 @@ fn rewrite(rows: Vec<Row>, res: &Resolved, m: &ImportMappings, node: &str) -> Ve
 
 pub fn is_pending(p: &ImportPlan) -> bool {
     p.state == "pending"
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bundle(rows: Vec<(TableId, &str, Value)>) -> Bundle {
+        Bundle {
+            plan: "p".into(),
+            node: "local".into(),
+            rows: rows.into_iter().map(|(t, k, v)| Row { table: t as u16, key: k.into(), value: v.to_string() }).collect(),
+            vm_ids: vec![],
+            disk_ids: vec![],
+            image_ids: vec![],
+            mapped: Default::default(),
+            dropped_networks: vec![],
+        }
+    }
+
+    #[test]
+    fn an_import_brings_resources_and_nothing_else() {
+        let vm = json!({ "meta": { "project": "p1" } });
+        assert!(check_import_rows(&bundle(vec![(TableId::Vms, "v1", vm.clone()), (TableId::Events, "vm/v1", json!([]))])).is_ok());
+        for (t, k) in [(TableId::Users, "u1"), (TableId::PolicyLinks, "l1"), (TableId::IssuedCerts, "s"), (TableId::Nodes, "n"), (TableId::CaBundle, "state"), (TableId::Meta, "default_project")] {
+            assert!(check_import_rows(&bundle(vec![(t, k, json!({}))])).is_err(), "{t:?} must be refused");
+        }
+        assert!(check_import_rows(&bundle(vec![(TableId::Events, "vm/someone-else", json!([]))])).is_err(), "events of a VM it doesn't bring");
+        assert!(check_import_rows(&bundle(vec![(TableId::Networks, "n", json!({ "scope": "cluster" }))])).is_err());
+    }
 }

@@ -2662,6 +2662,16 @@ impl crate::cluster::runtime::NodeHandlers for HandlersOf {
         p.exists().then_some(p)
     }
 
+    fn left_ovn<'a>(&'a self, node: &'a crate::node::Node) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+            if let Some(m) = self.0.upgrade() {
+                if let Err(e) = m.leave_ovn_membership(node, true).await {
+                    tracing::warn!(node = %node.spec.name, "taking a departed node out of OVN: {}", e);
+                }
+            }
+        })
+    }
+
     fn departed(&self) {
         if crate::cluster::departure::EXIT_ON_DEPARTURE.load(std::sync::atomic::Ordering::Relaxed) {
             // The service manager starts it again, and startup finishes the switch.

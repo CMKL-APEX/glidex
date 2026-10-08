@@ -314,7 +314,10 @@ struct Options {
     /// Let OVS installs / DPDK init restart ovs-vswitchd while it has
     /// bridges (interrupts their traffic). Never saved.
     allow_ovs_restart: bool,
-    /// Install OVN's packages (`ovn-host`, and `ovn-central` on servers) too.
+    /// Install OVN (`ovn-host`, `ovn-central` unless joining as an agent, and
+    /// `conntrack` for gateway metering): cluster networks need it on every
+    /// node (spec/clustering.md §10.1). Its services stay off until the host
+    /// is in a cluster that enables OVN. Default on; `--no-ovn` skips it.
     ovn: bool,
     /// Join a cluster once installed (spec/clustering.md §5.2). Never saved:
     /// it holds a one-time token's source.
@@ -350,7 +353,7 @@ impl Default for Options {
             ovs_profile: OvsProfile::Dpdk,
             pmd_cpu_mask: None,
             allow_ovs_restart: false,
-            ovn: false,
+            ovn: true,
             join: None,
             leave: false,
             offline: false,
@@ -370,6 +373,7 @@ impl Options {
                 "services" => o.services = v == "true",
                 "ovs_profile" => o.ovs_profile = OvsProfile::parse(v).unwrap_or(OvsProfile::Dpdk),
                 "pmd_cpu_mask" => o.pmd_cpu_mask = (!v.is_empty()).then(|| v.to_string()),
+                "ovn" => o.ovn = v == "true",
                 _ => {}
             }
         }
@@ -390,6 +394,7 @@ impl Options {
                 }
                 "--allow-ovs-restart" => o.allow_ovs_restart = true,
                 "--ovn" => o.ovn = true,
+                "--no-ovn" => o.ovn = false,
                 "--join" => {
                     let server = value("--join")?;
                     o.join.get_or_insert_with(|| JoinOptions { role: "agent".into(), ..Default::default() }).server = server;
@@ -437,12 +442,13 @@ impl Options {
     fn render(&self) -> String {
         format!(
             "# Written by glidex-install: the choices re-runs reuse (flags override).\n\
-             qemu={}\nnetworking={}\nservices={}\novs_profile={}\npmd_cpu_mask={}\n",
+             qemu={}\nnetworking={}\nservices={}\novs_profile={}\npmd_cpu_mask={}\novn={}\n",
             self.qemu,
             self.networking,
             self.services,
             self.ovs_profile.name(),
-            self.pmd_cpu_mask.as_deref().unwrap_or("")
+            self.pmd_cpu_mask.as_deref().unwrap_or(""),
+            self.ovn
         )
     }
 
@@ -468,7 +474,8 @@ fn print_help() {
          \x20     --ovs-profile P        dpdk (default; reserves hugepages) or kernel\n\
          \x20     --pmd-cpu-mask MASK    OVS-DPDK PMD CPU mask, hex (\"auto\" to clear)\n\
          \x20     --allow-ovs-restart    allow restarting ovs-vswitchd while it has bridges\n\
-         \x20     --ovn                  also install OVN (ovn-host; ovn-central on servers)\n\
+         \x20     --no-ovn               skip OVN (cluster networks need it; default: installed,\n\
+         \x20                            its services off until the host is in a cluster)\n\
          \x20     --qemu, --networking, --services   undo an earlier --no-*\n\n\
          Joining a cluster (spec/clustering.md §5.2); the token comes from\n\
          `gxctl cluster join-token` on a server, read from a file (mode 0600)\n\
@@ -500,6 +507,7 @@ fn print_plan(opts: &Options) {
     println!("  - Cloud-Hypervisor {} and its UEFI firmware ({})", CLOUD_HYPERVISOR_VERSION, EDK2_FIRMWARE_VERSION);
     println!("  - glidex binaries in {}, web UI in {}", BIN_DIR, UI_ASSET_DIR);
     println!("  - QEMU + OVMF: {}", on(opts.qemu));
+    println!("  - OVN for cluster networks (services off until clustered): {}", on(opts.networking && opts.ovn));
     println!(
         "  - VM networking (Open vSwitch {}, glidex-netd): {}",
         opts.ovs_profile.name(),
@@ -802,15 +810,36 @@ const NETWORKING_DEPS: &[Dep] = &[dep(Probe::Cmd("setcap"), ["libcap2-bin", "lib
 /// northd). 26.03 or newer; Ubuntu 26.04 ships it.
 const OVN_HOST_DEPS: &[Dep] = &[dep(Probe::Cmd("ovn-controller"), ["ovn-host", "ovn", "ovn-host"])];
 const OVN_CENTRAL_DEPS: &[Dep] = &[dep(Probe::Cmd("ovn-northd"), ["ovn-central", "ovn-central", "ovn"])];
+/// The `conntrack` tool: a gateway node meters external traffic from router
+/// SNAT zones with it (spec/clustering.md §13.3).
+const CONNTRACK_DEPS: &[Dep] = &[dep(Probe::Cmd("conntrack"), ["conntrack", "conntrack-tools", "conntrack-tools"])];
+
+/// The systemd units the OVN packages bring. A Debian/Ubuntu install starts
+/// them at once; on a host that isn't in a cluster they would only run empty
+/// databases, so they are stopped until netd starts what a cluster needs
+/// (`ensure_ovn_chassis`, `ensure_ovn_central`).
+const OVN_UNITS: &[&str] = &["ovn-host", "ovn-controller", "ovn-central", "ovn-northd", "ovn-ovsdb-server-nb", "ovn-ovsdb-server-sb"];
+
+/// The units to stop after this run installed OVN: only when OVN was just
+/// installed (an OVN the admin had before is theirs) and the host is in no
+/// cluster yet.
+fn ovn_units_to_quiesce(just_installed: &[&str], in_cluster: bool) -> Vec<&'static str> {
+    let ovn = just_installed.iter().any(|p| p.starts_with("ovn"));
+    if !ovn || in_cluster {
+        return Vec::new();
+    }
+    OVN_UNITS.to_vec()
+}
 
 fn wanted_deps(opts: &Options, platform: &Platform) -> Vec<Dep> {
     let mut deps = BASE_DEPS.to_vec();
-    // OVN is for hosts that join a cluster (or are asked to with --ovn).
-    if opts.networking && (opts.join.is_some() || opts.ovn) {
+    // OVN on every node (servers also run its databases), unless --no-ovn.
+    if opts.networking && opts.ovn {
         deps.extend_from_slice(OVN_HOST_DEPS);
         if opts.join.as_ref().map_or(true, |j| j.role == "server") {
             deps.extend_from_slice(OVN_CENTRAL_DEPS);
         }
+        deps.extend_from_slice(CONNTRACK_DEPS);
     }
     if opts.qemu && platform.arch == "x86_64" {
         deps.extend_from_slice(QEMU_DEPS);
@@ -980,6 +1009,15 @@ fn install_system_packages(opts: &Options, platform: &Platform) -> Result<()> {
     }
     for cmd in package_commands(manager, &missing, &update) {
         sudo(&cmd)?;
+    }
+    let in_cluster = Path::new(SERVICE_HOME).join(".glidex/cluster/identity.json").exists();
+    let quiet = ovn_units_to_quiesce(&missing, in_cluster);
+    if !quiet.is_empty() {
+        // Units a distribution doesn't have are skipped: disable each on its own.
+        for unit in &quiet {
+            let _ = sudo(&argv(&["systemctl", "disable", "--now", unit]));
+        }
+        println!("{} OVN is installed with its services off; a cluster turns on what it needs.", "Note:".yellow());
     }
     Ok(())
 }
@@ -2284,6 +2322,34 @@ mod tests {
         assert_eq!(names("apt-get", &all, &arm), ["libcap2-bin"], "QEMU support is x86_64 only");
         let minimal = Options { qemu: false, networking: false, ..Options::default() };
         assert!(names("apt-get", &minimal, &x86).is_empty());
+    }
+
+    #[test]
+    fn ovn_comes_with_networking_unless_skipped_and_agents_get_no_databases() {
+        let x86 = Platform { os: "linux", arch: "x86_64" };
+        let names = |o: &Options| pkgs("apt-get", &wanted_deps(o, &x86), &["ovn-controller", "ovn-northd", "conntrack"], &[]).0;
+        let all = Options::default();
+        for p in ["ovn-host", "ovn-central", "conntrack"] {
+            assert!(names(&all).contains(&p), "{p} in {:?}", names(&all));
+        }
+        let agent = Options { join: Some(JoinOptions { server: "s:8842".into(), role: "agent".into(), ..Default::default() }), ..Options::default() };
+        assert!(names(&agent).contains(&"ovn-host") && !names(&agent).contains(&"ovn-central"));
+        let skipped = Options { ovn: false, ..Options::default() };
+        assert!(!names(&skipped).iter().any(|p| p.starts_with("ovn") || *p == "conntrack"));
+        let no_net = Options { networking: false, ..Options::default() };
+        assert!(!names(&no_net).iter().any(|p| p.starts_with("ovn")));
+        // The choice is remembered.
+        let o = Options::parse(None, &["--no-ovn".to_string()]).unwrap();
+        assert!(!o.ovn);
+        assert!(!Options::parse(Some(&o.render()), &[]).unwrap().ovn);
+        assert!(Options::parse(Some("qemu=true\n"), &[]).unwrap().ovn, "a file from before OVN was a choice installs it");
+    }
+
+    #[test]
+    fn freshly_installed_ovn_is_stopped_until_the_host_is_clustered() {
+        assert_eq!(ovn_units_to_quiesce(&["ovn-host", "ovn-central"], false), OVN_UNITS.to_vec());
+        assert!(ovn_units_to_quiesce(&["ovn-host"], true).is_empty(), "a cluster member keeps them");
+        assert!(ovn_units_to_quiesce(&["clang"], false).is_empty(), "an OVN the admin had is theirs");
     }
 
     #[test]

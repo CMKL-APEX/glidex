@@ -31,6 +31,7 @@ pub fn router(c: Arc<Cluster>) -> Router {
         .route("/cluster/v1/renew", post(renew))
         .route("/cluster/v1/import", post(import_create))
         .route("/cluster/v1/import/{plan}", get(import_poll))
+        .route("/cluster/v1/import/{plan}/cancel", post(import_cancel))
         .route("/cluster/v1/departure/{plan}", get(departure_get))
         .route("/cluster/v1/departure/{plan}/ack", post(departure_ack))
         .route("/cluster/v1/read-index", post(read_index))
@@ -95,15 +96,19 @@ struct CaKey {
 /// §5.8.2 step 2: the departing node fetches its bundle (or, after the
 /// commit, its receipt). Only that node may.
 async fn departure_get(State(c): Ctx, p: Option<Extension<PeerCert>>, axum::extract::Path(plan_id): axum::extract::Path<String>) -> Response {
-    let peer = match peer(&c, p, false) {
-        Ok(p) => p,
-        Err(r) => return r,
-    };
+    let Some(Extension(peer)) = p else { return fail(StatusCode::UNAUTHORIZED, "unauthenticated", "a node certificate is required") };
     let Some(node) = &c.node else { return fail(StatusCode::CONFLICT, "not_a_server", "ask a server") };
     if !node.is_leader() {
         return not_leader(&c);
     }
     let Some(plan) = super::departure::read_plan(&c.db, &plan_id).filter(|p| p.node == peer.node_id) else { return fail(StatusCode::NOT_FOUND, "not_found", "no such plan") };
+    // The commit revokes the node's certificate; it must still be able to
+    // collect its receipt if the answer to its acknowledgement was lost.
+    if let Err(why) = c.check_peer(&peer) {
+        if !(plan.state == "committed" && c.was_issued(&peer.serial)) {
+            return fail(StatusCode::UNAUTHORIZED, "unauthenticated", why);
+        }
+    }
     match plan.state.as_str() {
         "committed" => Json(json!({ "state": "committed", "receipt": plan.receipt })).into_response(),
         "frozen" => {
@@ -145,6 +150,24 @@ async fn import_poll(State(c): Ctx, headers: HeaderMap, axum::extract::Path(plan
     match c.poll_import(&plan_id, secret) {
         Some(p) => Json(json!({ "state": p.state, "problems": p.problems, "summary": p.summary, "result": p.result })).into_response(),
         None => fail(StatusCode::NOT_FOUND, "not_found", "no such plan"),
+    }
+}
+
+/// The host stopped waiting: withdraw the plan, unless it already committed
+/// (then the answer carries the result and the host switches after all).
+async fn import_cancel(State(c): Ctx, headers: HeaderMap, axum::extract::Path(plan_id): axum::extract::Path<String>) -> Response {
+    let Some(node) = &c.node else { return fail(StatusCode::CONFLICT, "not_a_server", "ask a server") };
+    if !node.is_leader() {
+        return not_leader(&c);
+    }
+    let secret = headers.get("x-import-secret").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+    let me = c.clone();
+    match tokio::task::spawn_blocking(move || me.cancel_import(&plan_id, &secret)).await {
+        Ok(Ok(None)) => Json(json!({ "state": "rejected" })).into_response(),
+        Ok(Ok(Some(p))) => Json(json!({ "state": p.state, "result": p.result })).into_response(),
+        Ok(Err(super::import::ImportError::NotFound(_))) => fail(StatusCode::NOT_FOUND, "not_found", "no such plan"),
+        Ok(Err(e)) => fail(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()),
+        Err(e) => fail(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()),
     }
 }
 
@@ -228,7 +251,7 @@ async fn put_ca(State(c): Ctx, p: Option<Extension<PeerCert>>, Json(b): Json<CaK
     }
     if let Some(cert) = &b.cert_pem {
         // A rotation: a new CA, whose certificate matches the key it came with.
-        return match super::pki::Ca::from_pem(cert, &b.key_pem).map_err(|e| e.to_string()).and_then(|ca| c.install_signing_ca(ca).map_err(|e| e.to_string())) {
+        return match super::pki::Ca::from_pem(cert, &b.key_pem).map_err(|e| e.to_string()).and_then(|ca| c.stage_next_ca(&ca).map_err(|e| e.to_string())) {
             Ok(()) => StatusCode::NO_CONTENT.into_response(),
             Err(e) => fail(StatusCode::BAD_REQUEST, "invalid", e),
         };
@@ -277,6 +300,9 @@ pub struct JoinResponse {
     /// from nothing and come back as a learner (D18).
     #[serde(default)]
     pub raft_fresh: bool,
+    /// Rejoin only: the server is outside the Raft group and comes back as a learner.
+    #[serde(default)]
+    pub rejoin_raft: bool,
     /// Rejoin only: what the cluster knows the node as.
     #[serde(default)]
     pub name: Option<String>,
@@ -344,7 +370,7 @@ async fn join(State(c): Ctx, Json(req): Json<JoinRequest>) -> Response {
     })
     .await;
     match out {
-        Ok(Ok(node_id)) => Json(JoinResponse { cluster_id, node_id, cert_pem, trust_pem, raft_fresh: false, name: None, role: None, raft_id: None }).into_response(),
+        Ok(Ok(node_id)) => Json(JoinResponse { cluster_id, node_id, cert_pem, trust_pem, raft_fresh: false, rejoin_raft: false, name: None, role: None, raft_id: None }).into_response(),
         Ok(Err(e)) => fail(StatusCode::CONFLICT, "conflict", e),
         Err(e) => fail(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()),
     }
@@ -360,7 +386,16 @@ async fn rejoin(State(c): Ctx, Json(req): Json<JoinRequest>) -> Response {
     let Some(ca) = c.signing_ca() else { return fail(StatusCode::INTERNAL_SERVER_ERROR, "internal", "this server holds no CA key") };
     let db = c.db.clone();
     let token = req.token.clone();
-    let consumed = tokio::task::spawn_blocking(move || super::tokens::consume(&db, &token)).await;
+    let for_node = req.node_id.clone();
+    // Checked before it is used up: a request for another node doesn't burn it.
+    let consumed = tokio::task::spawn_blocking(move || {
+        let rec = super::tokens::peek(&db, &token)?;
+        if !matches!(&rec.kind, super::tokens::TokenKind::Rejoin { node, .. } if *node == for_node) {
+            return Ok(rec);
+        }
+        super::tokens::consume(&db, &token)
+    })
+    .await;
     let (target, raft_intact) = match consumed {
         Ok(Ok(rec)) => match rec.kind {
             super::tokens::TokenKind::Rejoin { node, raft_intact } => (node, raft_intact),
@@ -405,13 +440,19 @@ async fn rejoin(State(c): Ctx, Json(req): Json<JoinRequest>) -> Response {
     rec.status.ready = crate::models::Tristate::Unknown;
     rec.status.ready_reason = Some("Rejoining".into());
     rec.meta.resource_version += 1;
-    let trust_pem = c.files.read(c.files.trust()).unwrap_or_default();
+    let trust_pem = c.ca_state().map(|s| s.trust_pem).or_else(|| c.files.read(c.files.trust()).ok()).unwrap_or_default();
     let db = c.db.clone();
     let cluster_id = c.identity.cluster_id.clone();
     let (name, role, raft_id) = (rec.spec.name.clone(), rec.spec.role, rec.status.raft_id);
+    // A server outside the group (forgotten, or its log not trusted) comes back
+    // through the learner path, which also hands it the CA key.
+    let member = raft_id.is_some_and(|rid| node.voters().contains(&rid) || node.learners().contains(&rid));
+    let rejoin_raft = server && (raft_fresh || !member);
     let r = tokio::task::spawn_blocking(move || {
         db.write(Origin::Api, |tx| -> Result<(), JoinWriteError> {
             tx.open_table(TableId::Nodes.definition())?.insert(&rec.meta.id, serde_json::to_vec(&rec)?.as_slice())?;
+            // Its old certificates stop working: the new one replaces them (§5.7).
+            Cluster::deny_certs(tx, &rec.meta.id, "replaced at rejoin")?;
             tx.open_table(TableId::IssuedCerts.definition())?
                 .insert(&info.serial, serde_json::to_vec(&json!({ "node": info.node_id, "kind": "node", "issuer": info.issuer_fingerprint, "not_after": info.not_after }))?.as_slice())?;
             Ok(())
@@ -420,7 +461,7 @@ async fn rejoin(State(c): Ctx, Json(req): Json<JoinRequest>) -> Response {
     })
     .await;
     match r {
-        Ok(Ok(())) => Json(JoinResponse { cluster_id, node_id: target, cert_pem, trust_pem, raft_fresh, name: Some(name), role: Some(role), raft_id }).into_response(),
+        Ok(Ok(())) => Json(JoinResponse { cluster_id, node_id: target, cert_pem, trust_pem, raft_fresh, rejoin_raft, name: Some(name), role: Some(role), raft_id }).into_response(),
         Ok(Err(e)) => fail(StatusCode::CONFLICT, "conflict", e),
         Err(e) => fail(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()),
     }

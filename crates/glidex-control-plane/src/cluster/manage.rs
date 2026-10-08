@@ -271,7 +271,7 @@ pub async fn join(manager: &Arc<VmManager>, cfg: &crate::config::Config, opts: J
         break;
     }
     let resp: JoinResponse = serde_json::from_slice(&resp.ok_or_else(|| other("no answer from the cluster"))?.body).map_err(other)?;
-    if pki::public_key_fingerprint(&resp.trust_pem)? != ca_hash {
+    if !pki::bundle_has(&resp.trust_pem, ca_hash) {
         return Err(other("the cluster sent a different CA than the token names"));
     }
 
@@ -400,7 +400,7 @@ pub async fn rejoin(manager: &Arc<VmManager>, cfg: &crate::config::Config, opts:
         break;
     }
     let resp: JoinResponse = serde_json::from_slice(&resp.ok_or_else(|| other("no answer from the cluster"))?.body).map_err(other)?;
-    if pki::public_key_fingerprint(&resp.trust_pem)? != ca_hash {
+    if !pki::bundle_has(&resp.trust_pem, ca_hash) {
         return Err(other("the cluster sent a different CA than the token names"));
     }
     let role = resp.role.unwrap_or(req.role);
@@ -431,7 +431,7 @@ pub async fn rejoin(manager: &Arc<VmManager>, cfg: &crate::config::Config, opts:
         reset_raft_meta(&db)?;
     }
     let cluster = Cluster::start(db, files.clone(), identity.clone(), ccfg, listen).await?;
-    if role == NodeRole::Server && resp.raft_fresh {
+    if role == NodeRole::Server && (resp.raft_fresh || resp.rejoin_raft) {
         let r = cluster.client.request_timeout(&target, hyper::Method::POST, "/cluster/v1/join/ready", &[], Bytes::new(), Duration::from_secs(900)).await;
         match r {
             Ok(r) if r.status.is_success() => {}
@@ -722,14 +722,24 @@ pub async fn join_import(manager: &Arc<VmManager>, cfg: &crate::config::Config, 
             }
         }
         if tokio::time::Instant::now() >= deadline {
-            return Err(other(format!("not approved yet (plan {plan}): this host is unchanged; ask an administrator to run `gxctl node import approve {plan}`")));
+            // Withdraw the plan so it can't commit behind this host's back; if it
+            // committed in the meantime, go ahead and switch.
+            let r = trusting.request(&target, hyper::Method::POST, &format!("/cluster/v1/import/{plan}/cancel"), &[("x-import-secret", secret.clone())], Bytes::new()).await?;
+            let v: Value = serde_json::from_slice(&r.body).unwrap_or_default();
+            if r.status.is_success() && v["state"] == "committed" {
+                break v["result"].clone();
+            }
+            if !r.status.is_success() {
+                return Err(other(format!("not approved in time, and the plan {plan} could not be withdrawn ({}): ask an administrator to reject it before using this host's VMs elsewhere", r.status)));
+            }
+            return Err(other(format!("not approved in time: the plan {plan} was withdrawn and this host is unchanged")));
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
     };
     let cert_pem = result["cert_pem"].as_str().ok_or_else(|| other("no certificate in the answer"))?.to_string();
     let trust_pem = result["trust_pem"].as_str().unwrap_or(&ca_pem).to_string();
     let cluster_id = result["cluster_id"].as_str().unwrap_or("").to_string();
-    if pki::public_key_fingerprint(&trust_pem)? != ca_hash && !trust_pem.contains(ca_pem.trim()) {
+    if !pki::bundle_has(&trust_pem, ca_hash) {
         return Err(other("the cluster sent a different CA than the token names"));
     }
     // Switch (§5.9 step 6): keep the standalone records, then work from the cluster.
@@ -750,13 +760,11 @@ pub async fn join_import(manager: &Arc<VmManager>, cfg: &crate::config::Config, 
     files.save_identity(&identity)?;
     crate::authz::set_identity(&identity.cluster_id, &identity.node_id);
     crate::authz::set_local_account_scope((!ccfg.shared_local_accounts).then(|| node_id.clone()));
-    let cluster = match Cluster::start(manager.database(), files.clone(), identity.clone(), ccfg, listen).await {
-        Ok(c) => c,
-        Err(e) => {
-            files.delete_all();
-            return Err(e);
-        }
-    };
+    // The cluster owns the records now: keep the identity even if the runtime
+    // can't start here, so a restart of the control plane comes up as the node.
+    let cluster = Cluster::start(manager.database(), files.clone(), identity.clone(), ccfg, listen)
+        .await
+        .map_err(|e| other(format!("the import committed, but the node role did not start ({e}); restart the control plane to finish")))?;
     manager.attach_cluster(cluster);
     manager.reload_vms().await;
     Ok(json!({ "cluster_id": cluster_id, "node_id": node_id, "plan": plan, "backup": backup.display().to_string() }))

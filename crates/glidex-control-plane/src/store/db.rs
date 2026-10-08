@@ -677,6 +677,9 @@ impl Db {
         if &magic != DUMP_MAGIC {
             return Err(StoreError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, "not a glidex snapshot")));
         }
+        // Its contents no longer follow from its own write sets: the replay
+        // check (GLIDEX_CHECK_WRITE_SETS) has nothing to compare it with.
+        self.journal.lock().unwrap().take();
         let txn = self.inner.begin_write()?;
         for &id in TableId::ALL.iter().filter(|t| !t.is_local()) {
             txn.delete_table(id.definition())?;

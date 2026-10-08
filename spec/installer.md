@@ -498,3 +498,15 @@ running control plane to join (`gxctl cluster join`, with the token on its
 standard input). The token comes from `gxctl cluster join-token` on a server;
 it is read from a file (refused unless mode 0600) or stdin, never from argv.
 An agent host's UI service is disabled: its servers serve the API and UI.
+
+## OVN
+
+With networking, the installer also installs OVN for cluster networks
+(spec/clustering.md §10.1): `ovn-host` on every host, `ovn-central` unless the
+run joins as an agent, and `conntrack` for gateway metering. `--no-ovn` skips
+them and is remembered in `install.conf`. When this run installed OVN and the
+host is in no cluster, OVN's services are stopped and disabled: Debian and
+Ubuntu start them on install, and a standalone host would only run empty
+databases. glidex-netd starts what a cluster needs (`ovn-host` for the
+chassis, `ovn-central` on servers).
+

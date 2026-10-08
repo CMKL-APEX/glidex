@@ -333,3 +333,9 @@ mod sign_tests {
         assert!(verify_bytes(&format!("{}\n{}", other.cert_pem, ca.cert_pem), b"plan p1 bundle abc", &sig));
     }
 }
+
+/// Whether the CA with fingerprint `fp` is one of `trust_pem`'s (during a
+/// rotation the bundle holds the old and the new CA, in either order).
+pub fn bundle_has(trust_pem: &str, fp: &str) -> bool {
+    pem_bundle_ders(trust_pem).unwrap_or_default().iter().any(|d| parse_x509_certificate(d).is_ok_and(|(_, c)| hex(&Sha256::digest(c.public_key().raw)) == fp))
+}

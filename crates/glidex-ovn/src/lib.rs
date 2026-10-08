@@ -325,15 +325,18 @@ pub fn sync(nb: &Nb, desired: &Desired) -> Result<SyncReport, OvsError> {
             .filter_map(|r| r.str("name"))
             .filter(|n| n.contains("-rt-") && n.ends_with(lr.trim_start_matches("gxr-")))
             .collect();
-        let mut cmds = vec![vec![s("--if-exists"), s("lr-del"), lr.clone()], vec![s("--if-exists"), s("ha-chassis-group-del"), lr.clone()]];
+        let mut cmds = vec![vec![s("--if-exists"), s("lr-del"), lr.clone()]];
         cmds.extend(ext_ports.into_iter().map(|p| vec![s("--if-exists"), s("lsp-del"), p]));
         nb.txn(cmds)?;
+        // The router's gateway port referred to the group until the router went.
+        nb.txn(vec![vec![s("--if-exists"), s("destroy"), s("HA_Chassis_Group"), lr.clone()]])?;
         report.changed.push(format!("removed router {lr}"));
     }
 
     // No edge wanted: take down the one glidex made.
     if desired.edge.is_none() && have_routers.contains(EDGE) {
-        nb.txn(vec![vec![s("--if-exists"), s("lr-del"), EDGE.into()], vec![s("--if-exists"), s("ha-chassis-group-del"), EDGE.into()]])?;
+        nb.txn(vec![vec![s("--if-exists"), s("lr-del"), EDGE.into()]])?;
+        nb.txn(vec![vec![s("--if-exists"), s("destroy"), s("HA_Chassis_Group"), EDGE.into()]])?;
         for sw in switches.iter().filter_map(|r| r.str("name")).filter(|n| n.starts_with("gx-ext-")) {
             nb.txn(vec![vec![s("--if-exists"), s("ls-del"), sw]])?;
         }
@@ -518,7 +521,8 @@ fn ensure_gateway(nb: &Nb, g: &Gateway, desired: &Desired, have_switches: &BTree
         have.sort_by_key(|x| std::cmp::Reverse(x.1));
         ha_ok = have == want;
         if !ha_ok {
-            nb.txn(vec![vec![s("--if-exists"), s("ha-chassis-group-del"), g.group.clone()]])?;
+            // The gateway port refers to the group: let go of it in the same transaction.
+            nb.txn(vec![vec![s("--if-exists"), s("clear"), s("Logical_Router_Port"), g.lrp.clone(), s("ha_chassis_group")], vec![s("--if-exists"), s("destroy"), s("HA_Chassis_Group"), g.group.clone()]])?;
         }
     }
     if !ha_ok {
@@ -534,7 +538,9 @@ fn ensure_gateway(nb: &Nb, g: &Gateway, desired: &Desired, have_switches: &BTree
         report.changed.push(format!("{} gateway chassis", g.router));
     }
     // Isolation (§11.2): guests reach neither each other's networks nor any node.
-    let policies = nb.find("Logical_Router_Policy", &["priority", "match", "action"], &[])?;
+    // Policy rows don't name their router: only this router's count.
+    let mine: String = nb.find("Logical_Router", &["policies"], &[format!("name={}", g.router)])?.first().and_then(|r| r.0.get("policies").map(|v| v.to_string())).unwrap_or_default();
+    let policies: Vec<Row> = nb.find("Logical_Router_Policy", &["_uuid", "priority", "match", "action"], &[])?.into_iter().filter(|p| uuid(p, "_uuid").is_some_and(|u| mine.contains(&u))).collect();
     let has = |prio: i64, m: &str| policies.iter().any(|p| p.int("priority") == Some(prio) && p.str("match").as_deref() == Some(m));
     let nodes_match = format!("ip4.dst == ${NODES_SET}");
     let mut cmds = Vec::new();
@@ -610,7 +616,8 @@ fn ensure_network(nb: &Nb, n: &NetworkSpec, desired: &Desired, have_switches: &B
         let cidr = n.cidr.map(|c| format!("{}/{}", c.network(), c.prefix())).unwrap_or_default();
         match rows.first() {
             None => {
-                cmds.push([vec![s("dhcp-options-create"), cidr], ids(&[(NETWORK_KEY, &n.name)])].concat());
+                // `dhcp-options-create` takes external_ids keys bare (`key=value`).
+                cmds.push(vec![s("dhcp-options-create"), cidr, format!("{OWNER_KEY}={OWNER_VALUE}"), format!("{NETWORK_KEY}={}", n.name)]);
             }
             Some(r) => {
                 let have = r.map("options");

@@ -78,6 +78,27 @@ pub fn parse(token: &str) -> Result<(&str, &str, &str), TokenError> {
     }
 }
 
+/// Check a token without using it up.
+pub fn peek(db: &Db, token: &str) -> Result<JoinToken, TokenError> {
+    let (id, secret, _) = parse(token)?;
+    let txn = db.begin_read().map_err(|e| TokenError::Storage(e.to_string()))?;
+    let t = txn.open_table(TableId::JoinTokens.definition())?;
+    let rec: JoinToken = match t.get(id)? {
+        Some(v) => serde_json::from_slice(v.value())?,
+        None => return Err(TokenError::Invalid),
+    };
+    if !crate::auth::constant_eq(&rec.sha256, &digest(secret)) {
+        return Err(TokenError::Invalid);
+    }
+    if rec.used_at.is_some() {
+        return Err(TokenError::Used);
+    }
+    if now() > rec.expires_at {
+        return Err(TokenError::Expired);
+    }
+    Ok(rec)
+}
+
 /// Check a token and mark it used, in one write. `used_at` makes it single
 /// use even if two joins race (writes are serialized).
 pub fn consume(db: &Db, token: &str) -> Result<JoinToken, TokenError> {

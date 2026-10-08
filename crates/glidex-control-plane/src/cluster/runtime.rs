@@ -34,6 +34,11 @@ pub trait NodeHandlers: Send + Sync {
     /// This node's departure committed and its receipt is on disk: the
     /// process should restart as a standalone host (§5.8.2 step 4).
     fn departed(&self) {}
+    /// A node left the cluster with its resources: take it out of OVN
+    /// (NB/SB clusters, chassis), as a removal does.
+    fn left_ovn<'a>(&'a self, _node: &'a crate::node::Node) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        Box::pin(async {})
+    }
 }
 
 pub struct Cluster {
@@ -53,6 +58,9 @@ pub struct Cluster {
     /// Servers only: recent applied write sets for watches.
     pub(crate) log: Option<Arc<super::sync::WriteLog>>,
     pub(crate) liveness: super::sync::Liveness,
+    /// One CA operation at a time (rotation, retirement); and when the last
+    /// rotation attempt failed, so a retry waits a while.
+    pub(crate) ca_op: tokio::sync::Mutex<Option<std::time::Instant>>,
 }
 
 /// Raft messages over mTLS HTTP/2.
@@ -151,7 +159,7 @@ impl Cluster {
             l
         });
         let (stop, stop_rx) = tokio::sync::watch::channel(false);
-        let cluster = Arc::new(Cluster { identity, files, db, node, tls: tls.clone(), client, config, ca: Mutex::new(ca), api: OnceLock::new(), stop, barrier: Arc::new(Barrier::default()), log, liveness: Default::default(), handlers: OnceLock::new() });
+        let cluster = Arc::new(Cluster { identity, files, db, node, tls: tls.clone(), client, config, ca: Mutex::new(ca), api: OnceLock::new(), stop, barrier: Arc::new(Barrier::default()), log, liveness: Default::default(), handlers: OnceLock::new(), ca_op: tokio::sync::Mutex::new(None) });
         // A runtime that was just stopped may still hold the port for a moment.
         let mut bound = tokio::net::TcpListener::bind(listen).await;
         for _ in 0..50 {
@@ -279,6 +287,13 @@ impl Cluster {
     /// Verify a peer's certificate against what the leader issued (D20) and
     /// the deny list: a certificate the CA signed but the cluster never
     /// issued is refused.
+    /// Whether this cluster ever issued the certificate with `serial`.
+    pub fn was_issued(&self, serial: &str) -> bool {
+        use redb::ReadableTable;
+        let Ok(txn) = self.db.begin_read() else { return false };
+        txn.open_table(crate::store::TableId::IssuedCerts.definition()).ok().is_some_and(|t| t.get(serial).ok().flatten().is_some())
+    }
+
     pub fn check_peer(&self, peer: &PeerCert) -> Result<(), &'static str> {
         use redb::{ReadableTable, ReadableTableMetadata};
         let Ok(txn) = self.db.begin_read() else { return Err("store unavailable") };

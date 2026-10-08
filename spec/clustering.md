@@ -120,6 +120,7 @@ Non-goals for this revision (each in §18):
 | 8842/tcp | HTTPS, mTLS (cluster CA) | all nodes | Raft (servers), write forwarding, watch, status writes, heartbeats, console and stats relay (§8.4) |
 | 6641/tcp, 6642/tcp | OVSDB over SSL | servers ↔ OVN clients | OVN NB (control plane, northd) and SB (northd, ovn-controller) |
 | 6643/tcp, 6644/tcp | OVSDB Raft over SSL | servers | NB and SB database clustering |
+| 6648/tcp | OVSDB over SSL, no RBAC role | servers ↔ servers | SB for `ovn-northd`, which must reach the SB leader; the chassis listener on 6642 only grants the `ovn-controller` role. Keep it from agents (firewall), as for 6643/6644 |
 | 6081/udp | Geneve | all nodes | overlay traffic |
 
 The installer still doesn't touch the firewall (README). `gxctl cluster
@@ -1700,7 +1701,7 @@ real database. Everything marked "(verify)" below is syntax or behaviour of OVN
 - **Certificates**: a node's own certificate is its OVN client certificate,
   for `ovn-controller`, `ovn-northd`, the databases and `ovn-nbctl`. (The plan
   has separate chassis and database certificates; OVN checks only the CA.)
-- **Installer**: `--ovn`, or `--join`, installs `ovn-host`, and `ovn-central`
+- **Installer** (superseded: OVN is now installed by default, see the validation notes below): `--ovn`, or `--join`, installs `ovn-host`, and `ovn-central`
   on servers.
 - Not yet: the NB daemon supervised by the control plane (commands connect
   per call), OVN-aware `move_vm_port` (C8), provider networks and VPC routers
@@ -1763,4 +1764,49 @@ Deviations and not done:
 - Image records come in as their own records (as the spec says); disks keep backing files in place.
 - Staged import rows are chunked at 1 MiB, but the commit is one Raft entry holding every live row: a very large import can exceed `max_payload`. Metering history and audit records are not imported (D19).
 - The import host's NIC IP reservations for mapped networks are not made (no node-network to cluster-network mapping on import).
+
+### Validation against real OVN and conntrack (after C8)
+
+Run on Ubuntu 26.04 with OVN 26.03.0 and conntrack 1.4.9, with no OVN or kernel state touched outside throwaway sandboxes:
+
+- `glidex-ovn` `sync` against a real northbound database, with a real `ovn-northd` compiling it (`crates/glidex-ovn/tests/real_nb.rs`, ignored; `GLIDEX_TEST_NB`, `GLIDEX_TEST_SB`, `GLIDEX_TEST_NORTHD_LOG`). It covers isolated, NAT, VPC-routed and provider networks, VM ports, the edge, VPC routers, idempotence, removal and northd's logical flows. Bugs it found:
+  - `ha-chassis-group-del` has no `--if-exists`, so groups are now removed with `destroy`.
+  - A gateway port still refers to its group, so the reference is cleared first, and a router is deleted before its group, in separate transactions.
+  - `dhcp-options-create` takes bare `key=value` pairs, so every sync used to make a new, unmatched DHCP row.
+  - Router policies were checked across all routers, so a VPC router never got its `gx_nodes` drop.
+- The OVN databases with glidex's `ovn-ctl` options and cluster certificates (`crates/glidex-control-plane/tests/real_ovn.rs`, ignored; it starts its own servers on 127.0.0.1 and 127.0.0.2). It checks SSL with cluster certificates, refusal of certificates from another CA, two servers forming the NB/SB Raft clusters over SSL, `ovn-northd` making flows, and SB RBAC. Bugs it found:
+  - Raft ran over plain TCP: `--db-*-cluster-local/remote-proto=ssl` were missing.
+  - No client listener existed at all: `ovn-ctl` only makes the Raft ones. `ensure_central` now sets the `Connection` rows: NB `pssl:6641`; SB `role=ovn-controller` on `pssl:6642` and no role on `pssl:6648`. These commands use `--no-leader-only`.
+  - `ovn-northd` requires the cluster leader, so it can't use the local socket of a follower. It now talks to every server: NB on 6641 and SB on 6648.
+  - SB RBAC requires the chassis name to equal the certificate's CN, so a node's chassis is now `node:<id>` (`chassis_name`) everywhere: the chassis itself, `requested-chassis`, HA chassis groups and `chassis-del`.
+  - The databases listen on the server's advertised address, not on whichever server address matched its tunnel IP.
+- Packaging: `ovn-controller.service` is static on Debian/Ubuntu, so `enable --now` of it did nothing across reboots. The chassis now enables `ovn-host`, which wants the controller, and leaving disables `ovn-host`.
+- Conntrack: real `conntrack -L` and `-E` output from a gateway namespace that SNATs a VM in zone 60001 is now a unit test (`real_kernel_output_is_read_as_the_vms_traffic`). `conntrack -E` writing to a pipe is block-buffered, so the event reader runs it under `stdbuf -oL`.
+- Installer: OVN (`ovn-host`, `ovn-central` unless joining as an agent, and `conntrack`) is installed by default with networking, `--no-ovn` skips it, and the choice is saved. When the installer itself installed OVN on a host in no cluster, OVN's services are disabled and stopped, since netd starts what a cluster needs. A real run on this host installed the packages, left every OVN unit inactive and disabled, and restarted the glidex services on the new build.
+- Not exercised for real: `ensure_ovn_chassis` on a host's own OVS and `br-int`, an `ovn-controller` binding a VM port, and Geneve between two hosts. They need a second host or changes to this host's live OVS.
+
+Review fixes (C7/C8):
+
+- Departure:
+  - The node can fetch its receipt after the commit revoked its certificate, if the issued certificate's plan committed.
+  - The pending database is rewritten whenever the bundle changes, and its hash is stored beside it.
+  - `finish_pending` checks the receipt's node and bundle hash against that file.
+  - The commit re-checks the plan and rebuilds the bundle inside its own write.
+  - An abort can't overwrite a commit.
+  - A departed server is taken out of OVN and rotates the CA.
+- Import:
+  - Only resource tables are accepted: VMs, their events, disks, node networks, images, credentials and projects.
+  - Approval validates and commits in one write, and so does rejection.
+  - A host that stops waiting withdraws its plan, and switches if the plan committed meanwhile.
+  - A runtime that fails to start after the commit keeps its identity.
+  - The approver needs `createVm`, `createDisk` and `createCredential` on each project merged into, `createProject` when projects are created, and `exceedQuota` with `--over-quota`.
+- Rejoin:
+  - The token is checked before it is used up.
+  - The node's old certificates are deny-listed.
+  - A server outside the Raft group comes back through `join/ready` even with intact Raft state, which also gives it the CA key.
+- CA rotation:
+  - Servers stage a new key and switch only when the replicated state names it.
+  - The leader rotates whenever a server was retired after the current CA started signing, retrying a minute apart, and a new leader resumes.
+  - Rotation and retirement take one lock, and retirement re-checks the state inside its write.
+- Replay check: `install_dump` stops journaling, because an installed snapshot can't be rebuilt from the database's own write sets.
 

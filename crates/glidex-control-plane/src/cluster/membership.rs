@@ -112,8 +112,10 @@ impl Cluster {
         }
         let me = self.clone();
         tokio::spawn(async move {
+            // The leader's CA tick retries this until it works (and resumes it
+            // on a new leader): a failure here is only a delay.
             if let Err(e) = me.rotate_ca(None).await {
-                tracing::warn!("rotating the CA after a server left: {}", e);
+                tracing::warn!("rotating the CA after a server left (the leader will retry): {}", e);
             }
         });
     }
@@ -344,7 +346,7 @@ impl VmManager {
         }
         let Some(addr) = n.status.advertise else { return Ok(()) };
         let netd = self.netd.clone();
-        let (ip, chassis, server) = (addr.ip().to_string(), n.meta.id.clone(), n.spec.role == NodeRole::Server);
+        let (ip, chassis, server) = (addr.ip().to_string(), glidex_ovs::ovn::chassis_name(&n.meta.id), n.spec.role == NodeRole::Server);
         tokio::task::spawn_blocking(move || netd.call::<()>(glidex_netd::proto::Op::ForgetOvnMember(glidex_netd::proto::ForgetOvnMemberArgs { address: ip, chassis, server })))
             .await
             .map_err(failed)?

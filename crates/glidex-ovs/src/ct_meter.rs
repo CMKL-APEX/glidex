@@ -218,7 +218,9 @@ pub fn spawn_event_reader(meter: Arc<CtMeter>) {
     use std::io::{BufRead, BufReader};
     use std::process::{Command, Stdio};
     let _ = std::thread::Builder::new().name("ct-events".into()).spawn(move || loop {
-        let child = Command::new(Program::Conntrack.name()).args(["-E", "-e", "DESTROY", "-f", "ipv4", "-o", "extended,id"]).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn();
+        // `stdbuf -oL`: conntrack's output to a pipe is block-buffered, which would
+        // hold events back (and lose them if the reader dies).
+        let child = Command::new("stdbuf").args(["-oL", Program::Conntrack.name(), "-E", "-e", "DESTROY", "-f", "ipv4", "-o", "extended,id"]).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn();
         match child {
             Ok(mut c) => {
                 if let Some(out) = c.stdout.take() {
@@ -264,6 +266,35 @@ mod tests {
         assert_eq!(e(icmp).id, 99);
         // Accounting off: no counters, not an entry.
         assert!(parse_line("ipv4 2 tcp 6 10 ESTABLISHED src=10.0.0.1 dst=10.0.0.2 sport=1 dport=2 src=10.0.0.2 dst=10.0.0.1 sport=2 dport=1 zone=60001 id=1").is_none());
+    }
+
+    /// Lines captured from a real kernel (6.x, conntrack 1.4.9): a VM at
+    /// 10.89.0.5 behind a gateway that SNATs to 192.0.2.3 in zone 60001.
+    const REAL_DUMP: &str = "ipv4     2 tcp      6 431999 ESTABLISHED src=10.89.0.5 dst=192.0.2.9 sport=39002 dport=7777 packets=6 bytes=5320 src=192.0.2.9 dst=192.0.2.3 sport=7777 dport=39002 packets=5 bytes=20268 [ASSURED] mark=0 zone=60001 use=1 id=2633247977
+ipv4     2 icmp     1 16 src=10.89.0.5 dst=192.0.2.9 type=8 code=0 id=3135 packets=1 bytes=84 src=192.0.2.9 dst=192.0.2.3 type=0 code=0 id=3135 packets=1 bytes=84 mark=0 zone=60001 use=1 id=3022691322
+ipv4     2 tcp      6 118 TIME_WAIT src=10.89.0.5 dst=192.0.2.9 sport=38986 dport=7777 packets=11 bytes=1580 src=192.0.2.9 dst=192.0.2.3 sport=7777 dport=38986 packets=9 bytes=100476 [ASSURED] mark=0 zone=60001 use=1 id=3424708189
+ipv4     2 tcp      6 311075 ESTABLISHED src=100.97.160.61 dst=100.85.237.99 sport=53370 dport=5173 src=100.85.237.99 dst=100.97.160.61 sport=5173 dport=53370 [ASSURED] mark=0 use=1 id=1618850431";
+    const REAL_LATER: &str = "ipv4     2 tcp      6 117 TIME_WAIT src=10.89.0.5 dst=192.0.2.9 sport=39002 dport=7777 packets=8 bytes=5424 src=192.0.2.9 dst=192.0.2.3 sport=7777 dport=39002 packets=6 bytes=20320 [ASSURED] mark=0 zone=60001 use=1 id=2633247977";
+    const REAL_DESTROY: &str = "[DESTROY] ipv4     2 icmp     1 28 src=10.89.0.5 dst=192.0.2.9 type=8 code=0 id=3436 packets=1 bytes=84 src=192.0.2.9 dst=192.0.2.3 type=0 code=0 id=3436 packets=1 bytes=84 zone=60001 id=1397733811 [USERSPACE] portid=3141236042";
+
+    #[test]
+    fn real_kernel_output_is_read_as_the_vms_traffic() {
+        let entries: Vec<CtEntry> = REAL_DUMP.lines().filter_map(parse_line).collect();
+        // The zone-0 entry without counters (accounting off for it) is not one.
+        assert_eq!(entries.len(), 3);
+        assert!(entries.iter().all(|e| e.vm.to_string() == "10.89.0.5" && e.zone == 60001));
+        let big = entries.iter().find(|e| e.id == 3424708189).unwrap();
+        assert_eq!((big.tx_bytes, big.rx_bytes), (1580, 100476), "the download is the reply direction");
+        let m = CtMeter::new((60000, 60010), None);
+        m.ingest_dump(&entries);
+        m.ingest_dump(&REAL_LATER.lines().filter_map(parse_line).collect::<Vec<_>>());
+        m.ingest_destroy(REAL_DESTROY);
+        let c = &m.counters().counters[0];
+        // 5424 + 84 + 1580 + 84 bytes out, plus 14 per packet (8 + 1 + 11 + 1).
+        assert_eq!(c.tx_packets, 21);
+        assert_eq!(c.tx_bytes, 5424 + 84 + 1580 + 84 + 21 * 14);
+        assert_eq!(c.rx_packets, 6 + 1 + 9 + 1);
+        assert_eq!(c.rx_bytes, 20320 + 84 + 100476 + 84 + 17 * 14);
     }
 
     #[test]

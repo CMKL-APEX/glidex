@@ -324,6 +324,18 @@ pub fn receipt_file(state_dir: &Path) -> PathBuf {
     state_dir.join("glidex.db.departure-receipt")
 }
 
+/// The SHA-256 of the bundle the pending database was written from.
+pub fn pending_sha_file(state_dir: &Path) -> PathBuf {
+    state_dir.join("glidex.db.standalone-pending.sha256")
+}
+
+fn discard_pending(state_dir: &Path) {
+    if !receipt_file(state_dir).exists() {
+        let _ = std::fs::remove_file(pending_db(state_dir));
+        let _ = std::fs::remove_file(pending_sha_file(state_dir));
+    }
+}
+
 impl Cluster {
     fn state_dir(&self) -> PathBuf {
         self.files.dir.parent().unwrap_or(Path::new(".")).to_path_buf()
@@ -337,28 +349,44 @@ impl Cluster {
     /// Phase 3 (leader): the node holds the bundle it was sent, so the cluster
     /// lets go of its objects and signs the receipt, all in one write.
     pub async fn commit_departure(self: &Arc<Self>, plan_id: &str, sha: &str) -> Result<Receipt, DepartureError> {
-        let mut plan = read_plan(&self.db, plan_id).ok_or_else(|| DepartureError::NotFound(plan_id.into()))?;
+        let plan = read_plan(&self.db, plan_id).ok_or_else(|| DepartureError::NotFound(plan_id.into()))?;
         if plan.state == "committed" {
             return plan.receipt.ok_or_else(|| failed("committed without a receipt"));
         }
-        if plan.state != "frozen" {
-            return Err(DepartureError::Conflict(format!("the plan is {}", plan.state)));
-        }
-        let bundle = build_bundle(&self.db, plan_id, &plan.node, &plan.options);
-        if bundle.sha256() != sha {
-            return Err(DepartureError::Conflict("the node's objects changed after the bundle was taken; abort and detach again".into()));
-        }
         let ca = self.signing_ca().ok_or_else(|| failed("this server holds no CA key"))?;
-        let revision = self.db.revision();
-        let signature = ca.sign_bytes(&Receipt::payload(plan_id, &plan.node, sha, revision)).map_err(failed)?;
-        let receipt = Receipt { plan: plan_id.into(), node: plan.node.clone(), bundle_sha256: sha.into(), revision, signature };
-        plan.state = "committed".into();
-        plan.receipt = Some(receipt.clone());
+        let leaving = NodeStore::new(self.db.clone()).get(&plan.node).map_err(failed)?;
         let node_id = plan.node.clone();
-        let (ids, plan2) = (bundle.clone(), plan.clone());
-        self.db
-            .write(Origin::Api, |tx| -> Result<(), crate::store::StoreError> {
+        // Everything is checked inside the write: no other write lands between
+        // the checks and the commit (an abort, an expiry, a status write).
+        let refused = std::cell::RefCell::new(None::<DepartureError>);
+        let receipt = self
+            .db
+            .write(Origin::Api, |tx| -> Result<Option<Receipt>, crate::store::StoreError> {
                 let io = |e: serde_json::Error| crate::store::StoreError::Io(std::io::Error::other(e.to_string()));
+                let mut plan: Plan = match tx.open_table(TableId::Meta.definition())?.get(plan_key(plan_id).as_str())?.and_then(|v| serde_json::from_slice(v.value()).ok()) {
+                    Some(p) => p,
+                    None => {
+                        *refused.borrow_mut() = Some(DepartureError::NotFound(plan_id.into()));
+                        return Ok(None);
+                    }
+                };
+                if plan.state == "committed" {
+                    return Ok(plan.receipt);
+                }
+                if plan.state != "frozen" {
+                    *refused.borrow_mut() = Some(DepartureError::Conflict(format!("the plan is {}", plan.state)));
+                    return Ok(None);
+                }
+                let ids = build_bundle(&self.db, plan_id, &plan.node, &plan.options);
+                if ids.sha256() != sha {
+                    *refused.borrow_mut() = Some(DepartureError::Conflict("the node's objects changed after the bundle was taken; the node fetches it again".into()));
+                    return Ok(None);
+                }
+                let revision = self.db.revision();
+                let signature = ca.sign_bytes(&Receipt::payload(plan_id, &plan.node, sha, revision)).map_err(|e| crate::store::StoreError::Io(std::io::Error::other(e.to_string())))?;
+                let receipt = Receipt { plan: plan_id.into(), node: plan.node.clone(), bundle_sha256: sha.into(), revision, signature };
+                plan.state = "committed".into();
+                plan.receipt = Some(receipt.clone());
                 {
                     let mut vms = tx.open_table(TableId::Vms.definition())?;
                     let mut events = tx.open_table(TableId::Events.definition())?;
@@ -374,7 +402,9 @@ impl Cluster {
                     for r in ids.rows.iter().filter(|r| r.table == TableId::Networks as u16) {
                         nets.remove(r.key.as_str())?;
                     }
-                    // Its images' cache entries go with it (the catalog records stay).
+                    // Its VMs' addresses on cluster networks; their logical ports
+                    // leave OVN with the next network-controller pass (they are no
+                    // longer in the plan).
                     let mut res = tx.open_table(TableId::IpamReservations.definition())?;
                     let stale: Vec<String> = res
                         .iter()?
@@ -388,22 +418,36 @@ impl Cluster {
                 }
                 {
                     let mut nodes = tx.open_table(TableId::Nodes.definition())?;
-                    let Some(mut n): Option<Node> = nodes.get(node_id.as_str())?.and_then(|v| serde_json::from_slice(v.value()).ok()) else { return Ok(()) };
-                    n.status.phase = NodePhase::Departed;
-                    n.status.ready = Tristate::Unknown;
-                    n.status.ready_reason = Some("Departed".into());
-                    n.status.departed_ids = ids.vm_ids.iter().chain(&ids.disk_ids).chain(&ids.image_ids).cloned().collect();
-                    n.spec.unschedulable = true;
-                    n.meta.resource_version += 1;
-                    nodes.insert(node_id.as_str(), serde_json::to_vec(&n).map_err(io)?.as_slice())?;
+                    let cur: Option<Node> = nodes.get(node_id.as_str())?.and_then(|v| serde_json::from_slice(v.value()).ok());
+                    if let Some(mut n) = cur {
+                        n.status.phase = NodePhase::Departed;
+                        n.status.ready = Tristate::Unknown;
+                        n.status.ready_reason = Some("Departed".into());
+                        n.status.departed_ids = ids.vm_ids.iter().chain(&ids.disk_ids).chain(&ids.image_ids).cloned().collect();
+                        n.spec.unschedulable = true;
+                        n.meta.resource_version += 1;
+                        nodes.insert(node_id.as_str(), serde_json::to_vec(&n).map_err(io)?.as_slice())?;
+                    }
                 }
                 Cluster::deny_certs_pub(tx, &node_id, "departed")?;
-                write_plan(tx, &plan2)?;
-                Ok(())
+                write_plan(tx, &plan)?;
+                Ok(Some(receipt))
             })
             .map_err(failed)?;
+        if let Some(e) = refused.into_inner() {
+            return Err(e);
+        }
+        let receipt = receipt.ok_or_else(|| failed("committed without a receipt"))?;
+        // The cluster-side steps of §5.5 for what left: Raft, OVN membership,
+        // and a CA rotation if it was a server (it held the key).
         let _ = self.finish_raft_removals().await;
-        tracing::warn!(node = %plan.node, "node departed with its resources");
+        if let Some(n) = leaving {
+            if let Some(h) = self.handlers.get() {
+                h.left_ovn(&n).await;
+            }
+            self.rotate_after_server_left(&n);
+        }
+        tracing::warn!(node = %node_id, "node departed with its resources");
         Ok(receipt)
     }
 
@@ -413,31 +457,36 @@ impl Cluster {
     pub async fn departure_tick(&self) -> Option<Receipt> {
         let me = &self.identity.node_id;
         let state_dir = self.state_dir();
-        // A pending database whose plan was aborted is discarded.
-        let plan = NodeStore::new(self.db.clone()).get(me).ok().flatten().filter(|n| n.status.phase == NodePhase::Departing).and_then(|_| plans(&self.db).into_iter().find(|p| &p.node == me && p.state != "aborted"));
-        let Some(plan) = plan else {
-            if pending_db(&state_dir).exists() && !receipt_file(&state_dir).exists() {
-                let _ = std::fs::remove_file(pending_db(&state_dir));
-            }
-            return None;
-        };
         if receipt_file(&state_dir).exists() {
             return None;
         }
+        // Whatever this node's phase looks like from here: once the cluster has
+        // committed, its certificate is revoked and its cache stops following,
+        // so the plan, not the phase, says whether there is anything to do.
+        let Some(plan) = plans(&self.db).into_iter().find(|p| &p.node == me && p.state != "aborted") else {
+            discard_pending(&state_dir);
+            return None;
+        };
         let path = format!("/cluster/v1/departure/{}", plan.plan);
         let reply = self.get_any(&path).await.ok()?;
+        if reply.status == hyper::StatusCode::GONE {
+            // Aborted or expired at the leader.
+            discard_pending(&state_dir);
+            return None;
+        }
         let v: Value = serde_json::from_slice(&reply.body).ok()?;
         if let Some(r) = v.get("receipt").filter(|r| !r.is_null()).and_then(|r| serde_json::from_value::<Receipt>(r.clone()).ok()) {
             return self.keep_receipt(&state_dir, r);
         }
         let bundle: Bundle = serde_json::from_value(v.get("bundle")?.clone()).ok()?;
         let sha = bundle.sha256();
-        let pending = pending_db(&state_dir);
-        if !pending.exists() {
-            if let Err(e) = write_standalone_db(&pending, &bundle) {
+        // The file on disk is always the bundle being acknowledged.
+        if std::fs::read_to_string(pending_sha_file(&state_dir)).ok().as_deref() != Some(sha.as_str()) || !pending_db(&state_dir).exists() {
+            if let Err(e) = write_standalone_db(&pending_db(&state_dir), &bundle) {
                 tracing::warn!("writing the departure bundle: {}", e);
                 return None;
             }
+            pki::write_private(&pending_sha_file(&state_dir), sha.as_bytes()).ok()?;
         }
         let r = self.post_any(&format!("{path}/ack"), json!({ "sha256": sha }).to_string().into()).await.ok()?;
         if !r.status.is_success() {
@@ -497,7 +546,14 @@ pub fn abort_plan(db: &Db, plan_id: &str) -> Result<(), DepartureError> {
         return Err(DepartureError::Conflict("the departure already committed".into()));
     }
     plan.state = "aborted".into();
-    db.write(Origin::Api, |tx| -> Result<(), crate::store::StoreError> {
+    let committed = std::cell::Cell::new(false);
+    let r = db.write(Origin::Api, |tx| -> Result<(), crate::store::StoreError> {
+        // Re-read inside the write: a commit may have landed since.
+        let now: Option<Plan> = tx.open_table(TableId::Meta.definition())?.get(plan_key(plan_id).as_str())?.and_then(|v| serde_json::from_slice(v.value()).ok());
+        if now.as_ref().is_some_and(|p| p.state == "committed") {
+            committed.set(true);
+            return Ok(());
+        }
         write_plan(tx, &plan)?;
         let mut nodes = tx.open_table(TableId::Nodes.definition())?;
         let cur = nodes.get(plan.node.as_str())?.and_then(|v| serde_json::from_slice::<Node>(v.value()).ok());
@@ -510,8 +566,12 @@ pub fn abort_plan(db: &Db, plan_id: &str) -> Result<(), DepartureError> {
             }
         }
         Ok(())
-    })
-    .map_err(failed)
+    });
+    r.map_err(failed)?;
+    if committed.get() {
+        return Err(DepartureError::Conflict("the departure already committed".into()));
+    }
+    Ok(())
 }
 
 impl Cluster {
@@ -669,8 +729,19 @@ pub fn finish_pending(db_path: &Path) -> Result<bool, DepartureError> {
     if !r.verify(&trust) {
         return Err(DepartureError::Invalid("the departure receipt does not verify".into()));
     }
+    // The receipt must be for this node and for the very bundle on disk.
+    if let Some(id) = files.load_identity().map_err(failed)? {
+        if id.node_id != r.node {
+            return Err(DepartureError::Invalid("the departure receipt is for another node".into()));
+        }
+    }
+    let sha = std::fs::read_to_string(pending_sha_file(&dir)).map_err(|_| DepartureError::Invalid("the pending database has no recorded bundle hash".into()))?;
+    if sha.trim() != r.bundle_sha256 {
+        return Err(DepartureError::Invalid("the pending database is not the bundle the receipt names".into()));
+    }
     switch_to_standalone(db_path, &pending)?;
     let _ = std::fs::remove_file(receipt_path);
+    let _ = std::fs::remove_file(pending_sha_file(&dir));
     Ok(true)
 }
 
@@ -722,6 +793,7 @@ impl Cluster {
         let opts = DetachOptions { map_networks: BTreeMap::new(), with_access: true };
         let bundle = build_bundle(&self.db, "dissolve", &me, &opts);
         write_standalone_db(&pending_db(&dir), &bundle)?;
+        pki::write_private(&pending_sha_file(&dir), bundle.sha256().as_bytes()).map_err(failed)?;
         let ca = self.signing_ca().ok_or_else(|| failed("this server holds no CA key"))?;
         let revision = self.db.revision();
         let sha = bundle.sha256();

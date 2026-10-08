@@ -68,7 +68,11 @@ pub struct OvnStatus {
 
 impl ChassisSpec {
     pub fn validate(&self) -> Result<(), OvsError> {
-        validate_name("chassis", &self.chassis, 64)?;
+        // `node:<id>`: the CN of the node's certificate, as SB RBAC wants.
+        match self.chassis.strip_prefix("node:") {
+            Some(id) => validate_name("chassis", id, 64)?,
+            None => validate_name("chassis", &self.chassis, 64)?,
+        }
         if self.sb_remotes.is_empty() {
             return Err(OvsError::invalid("at least one southbound remote is needed"));
         }
@@ -171,7 +175,10 @@ pub fn ensure_chassis(exec: &dyn Exec, spec: &ChassisSpec, certs: &ChassisCerts,
 
     // ovn-controller: start it; restart only when its certificates changed
     // (it keeps forwarding on the flows it installed while it restarts).
-    exec.check(&Cmd::new(Program::Systemctl, ["enable", "--now", "ovn-controller"]))?;
+    // `ovn-controller.service` is static (Debian/Ubuntu): `ovn-host` is what is
+    // enabled, and it wants the controller.
+    exec.check(&Cmd::new(Program::Systemctl, ["enable", "--now", "ovn-host"]))?;
+    exec.check(&Cmd::new(Program::Systemctl, ["start", "ovn-controller"]))?;
     if changed {
         exec.check(&Cmd::new(Program::Systemctl, ["try-reload-or-restart", "ovn-controller"]))?;
     }
@@ -217,7 +224,8 @@ pub fn leave(exec: &dyn Exec, confirm: bool, dir: &Path) -> Result<(), OvsError>
     if let Some((vm, nic, port)) = owned.iter().find(|(_, _, p)| list_br_int_ports(exec).map(|l| l.contains(p)).unwrap_or(false)) {
         return Err(OvsError::Conflict { message: format!("VM {vm} nic {nic} ({port}) is on br-int: move or detach it first") });
     }
-    exec.check(&Cmd::new(Program::Systemctl, ["disable", "--now", "ovn-controller"]))?;
+    exec.check(&Cmd::new(Program::Systemctl, ["disable", "--now", "ovn-host"]))?;
+    exec.check(&Cmd::new(Program::Systemctl, ["stop", "ovn-controller"]))?;
     for k in ["system-id", "ovn-remote", "ovn-encap-type", "ovn-encap-ip", "ovn-bridge-mappings", CHASSIS_TAG] {
         vsctl::run(exec, vec!["--if-exists".into(), "remove".into(), "open_vswitch".into(), ".".into(), "external_ids".into(), k.into()])?;
     }
@@ -277,7 +285,7 @@ mod tests {
         ] {
             assert!(set.contains(want), "{set}");
         }
-        assert!(calls.contains(&"systemctl enable --now ovn-controller".to_string()));
+        assert!(calls.contains(&"systemctl enable --now ovn-host".to_string()) && calls.contains(&"systemctl start ovn-controller".to_string()));
         assert!(calls.contains(&"systemctl try-reload-or-restart ovn-controller".to_string()), "new certificates restart it");
         assert_eq!(exec.read_file(&dir.join("chassis.key")).unwrap(), "KEY");
         // Again, with the same certificates: no restart.
@@ -329,6 +337,10 @@ pub const NB_PORT: u16 = 6641;
 pub const SB_PORT: u16 = 6642;
 pub const NB_RAFT_PORT: u16 = 6643;
 pub const SB_RAFT_PORT: u16 = 6644;
+/// The SB listener without an RBAC role, for `ovn-northd` on the servers
+/// (it must reach the SB leader, wherever that is). Servers only: the
+/// firewall should keep it from agents, as for the Raft ports.
+pub const SB_NORTHD_PORT: u16 = 6648;
 
 /// This server's part of OVN's own Raft groups (§4: the northbound and
 /// southbound databases, separate from glidex's).
@@ -359,18 +371,26 @@ pub fn central_opts(spec: &CentralSpec, dir: &Path) -> String {
         format!("--db-sb-port={SB_PORT}"),
         format!("--db-nb-cluster-local-addr={}", spec.local_ip),
         format!("--db-nb-cluster-local-port={NB_RAFT_PORT}"),
+        // Raft between the servers over SSL too (the default is plain TCP).
+        "--db-nb-cluster-local-proto=ssl".to_string(),
+        "--db-sb-cluster-local-proto=ssl".to_string(),
         format!("--db-sb-cluster-local-addr={}", spec.local_ip),
         format!("--db-sb-cluster-local-port={SB_RAFT_PORT}"),
         "--db-nb-create-insecure-remote=no".to_string(),
         "--db-sb-create-insecure-remote=no".to_string(),
+        // northd follows the leader, so it talks to every server; the SB's
+        // chassis listener only grants the `ovn-controller` role, so northd
+        // has a listener of its own.
         format!("--ovn-northd-nb-db={}", remote_list(&spec.servers, NB_PORT)),
-        format!("--ovn-northd-sb-db={}", remote_list(&spec.servers, SB_PORT)),
+        format!("--ovn-northd-sb-db={}", remote_list(&spec.servers, SB_NORTHD_PORT)),
     ];
     if let Some(j) = spec.join {
         o.push(format!("--db-nb-cluster-remote-addr={j}"));
         o.push(format!("--db-nb-cluster-remote-port={NB_RAFT_PORT}"));
         o.push(format!("--db-sb-cluster-remote-addr={j}"));
         o.push(format!("--db-sb-cluster-remote-port={SB_RAFT_PORT}"));
+        o.push("--db-nb-cluster-remote-proto=ssl".to_string());
+        o.push("--db-sb-cluster-remote-proto=ssl".to_string());
     }
     for (what, flag) in [("nb-db", "ovn-nb-db"), ("sb-db", "ovn-sb-db"), ("northd", "ovn-northd")] {
         let _ = what;
@@ -379,6 +399,28 @@ pub fn central_opts(spec: &CentralSpec, dir: &Path) -> String {
         o.push(format!("--{flag}-ssl-ca-cert={}", ca.display()));
     }
     format!("OVN_CTL_OPTS=\"{}\"\n", o.join(" "))
+}
+
+/// Where Debian's `ovn-ctl` puts the local database sockets.
+pub const CENTRAL_NB_SOCK: &str = "/var/run/ovn/ovnnb_db.sock";
+pub const CENTRAL_SB_SOCK: &str = "/var/run/ovn/ovnsb_db.sock";
+
+/// The listeners clients reach (§11.1): `ovn-ctl` only makes the Raft
+/// listeners; the client ones come from each database's `Connection` table,
+/// which is replicated, so setting it on any member is enough. The NB is for
+/// the control plane; the SB's role limits a chassis to its own rows (its
+/// certificate's CN must be its chassis name).
+pub fn central_connection_cmds(nb_sock: &str, sb_sock: &str) -> Vec<Cmd> {
+    vec![
+        // `--no-leader-only`: this member may be a follower; it forwards the write.
+        Cmd::new(Program::OvnNbctl, [format!("--db=unix:{nb_sock}"), "--no-leader-only".into(), "--timeout=20".into(), "set-connection".into(), format!("pssl:{NB_PORT}")]),
+        Cmd::new(Program::OvnSbctl, [format!("--db=unix:{sb_sock}"), "--no-leader-only".into(), "--timeout=20".into(), "set-connection".into(), "role=ovn-controller".into(), format!("pssl:{SB_PORT}"), "role=".into(), format!("pssl:{SB_NORTHD_PORT}")]),
+    ]
+}
+
+/// The chassis name of a node: its certificate's CN, as SB RBAC requires.
+pub fn chassis_name(node_id: &str) -> String {
+    format!("node:{node_id}")
 }
 
 /// Make this host run `ovn-central` (the NB and SB databases and northd) as
@@ -409,7 +451,12 @@ pub fn ensure_central(exec: &dyn Exec, spec: &CentralSpec, certs: &ChassisCerts,
     if !active {
         exec.check(&Cmd::new(Program::Systemctl, ["start", "ovn-central"]))?;
     } else if changed {
+        // PartOf= carries the restart to the NB, SB and northd units.
         exec.check(&Cmd::new(Program::Systemctl, ["restart", "ovn-central"]))?;
+    }
+    // The client listeners (idempotent: the same rows each time).
+    for cmd in central_connection_cmds(CENTRAL_NB_SOCK, CENTRAL_SB_SOCK) {
+        exec.check(&cmd)?;
     }
     Ok(changed)
 }
@@ -431,11 +478,12 @@ mod central_tests {
     fn the_first_server_makes_the_clusters_and_later_ones_join() {
         let first = central_opts(&spec(None), Path::new("/etc/glidex/ovn"));
         assert!(first.contains("--db-nb-cluster-local-addr=192.0.2.12") && !first.contains("cluster-remote"), "{first}");
-        assert!(first.contains("--ovn-northd-nb-db=ssl:192.0.2.11:6641,ssl:192.0.2.12:6641"), "{first}");
+        assert!(first.contains("--ovn-northd-sb-db=ssl:192.0.2.11:6648,ssl:192.0.2.12:6648") && first.contains("--db-nb-cluster-local-proto=ssl"), "{first}");
         assert!(first.contains("--db-nb-create-insecure-remote=no"));
         let later = central_opts(&spec(Some("192.0.2.11")), Path::new("/etc/glidex/ovn"));
         assert!(later.contains("--db-nb-cluster-remote-addr=192.0.2.11 --db-nb-cluster-remote-port=6643"), "{later}");
         assert!(later.contains("--db-sb-cluster-remote-addr=192.0.2.11 --db-sb-cluster-remote-port=6644"), "{later}");
+        assert!(later.contains("--db-sb-cluster-remote-proto=ssl"), "{later}");
         assert!(later.contains("--ovn-sb-db-ssl-ca-cert=/etc/glidex/ovn/ca.crt"), "{later}");
     }
 
@@ -446,6 +494,7 @@ mod central_tests {
         exec.on("systemctl is-active --quiet ovn-central", Output::failed(3, ""));
         assert!(ensure_central(&exec, &spec(None), &certs(), dir).unwrap());
         assert!(exec.calls().contains(&"systemctl start ovn-central".to_string()), "{:?}", exec.calls());
+        assert!(exec.calls().iter().any(|c| c.contains("ovn-sbctl --db=unix:/var/run/ovn/ovnsb_db.sock --no-leader-only --timeout=20 set-connection role=ovn-controller pssl:6642 role= pssl:6648")), "{:?}", exec.calls());
         // The same again, running: nothing to do.
         let exec2 = RecordingExec::new();
         for (f, d) in [("chassis.key", "K"), ("chassis.crt", "C"), ("ca.crt", "A")] {
@@ -492,7 +541,7 @@ pub fn forget_member(exec: &dyn Exec, address: &str, chassis: &str, server: bool
             }
         }
     }
-    exec.check(&Cmd::new(Program::OvnSbctl, [&format!("--db={SB_SOCK}"), "--if-exists", "chassis-del", chassis]))?;
+    exec.check(&Cmd::new(Program::OvnSbctl, [&format!("--db={SB_SOCK}"), "--no-leader-only", "--if-exists", "chassis-del", chassis]))?;
     Ok(())
 }
 
@@ -512,14 +561,14 @@ mod forget_tests {
         let calls = exec.calls();
         assert!(calls.contains(&"ovs-appctl -t /var/run/ovn/ovnnb_db.ctl cluster/kick OVN_Northbound c5e1".to_string()), "{calls:?}");
         assert!(calls.contains(&"ovs-appctl -t /var/run/ovn/ovnsb_db.ctl cluster/kick OVN_Southbound c5e1".to_string()), "{calls:?}");
-        assert!(calls.contains(&"ovn-sbctl --db=unix:/var/run/ovn/ovnsb_db.sock --if-exists chassis-del node-1".to_string()), "{calls:?}");
+        assert!(calls.contains(&"ovn-sbctl --db=unix:/var/run/ovn/ovnsb_db.sock --no-leader-only --if-exists chassis-del node-1".to_string()), "{calls:?}");
     }
 
     #[test]
     fn an_agent_only_loses_its_chassis_and_a_member_already_gone_is_fine() {
         let exec = RecordingExec::new();
         forget_member(&exec, "192.0.2.50", "agent-1", false).unwrap();
-        assert_eq!(exec.calls(), vec!["ovn-sbctl --db=unix:/var/run/ovn/ovnsb_db.sock --if-exists chassis-del agent-1".to_string()]);
+        assert_eq!(exec.calls(), vec!["ovn-sbctl --db=unix:/var/run/ovn/ovnsb_db.sock --no-leader-only --if-exists chassis-del agent-1".to_string()]);
         let exec = RecordingExec::new();
         exec.on("ovs-appctl -t /var/run/ovn/ovnnb_db.ctl cluster/status OVN_Northbound", Output::ok(STATUS));
         exec.on("ovs-appctl -t /var/run/ovn/ovnsb_db.ctl cluster/status OVN_Southbound", Output::ok(STATUS));

@@ -84,7 +84,7 @@ impl VmManager {
                     Some(r.ip)
                 };
                 let Ok(lport) = glidex_ovs::names::port_name(&vm.id, i as u8) else { continue };
-                d.ports.push(PortSpec { network: a.network.clone(), lport, mac: mac.to_ascii_lowercase(), ip, vm_id: vm.id.clone(), nic: i as u8, chassis: Some(p.node.clone()) });
+                d.ports.push(PortSpec { network: a.network.clone(), lport, mac: mac.to_ascii_lowercase(), ip, vm_id: vm.id.clone(), nic: i as u8, chassis: Some(glidex_ovs::ovn::chassis_name(&p.node)) });
             }
         }
         drop(vms);
@@ -94,12 +94,12 @@ impl VmManager {
                 let gateway_nodes = e
                     .gateway_nodes
                     .iter()
-                    .filter_map(|w| nodes.iter().find(|n| &n.meta.id == w || &n.spec.name == w).map(|n| n.meta.id.clone()))
+                    .filter_map(|w| nodes.iter().find(|n| (&n.meta.id == w || &n.spec.name == w) && !n.status.phase.is_tombstone()).map(|n| glidex_ovs::ovn::chassis_name(&n.meta.id)))
                     .collect();
                 // The shared edge keeps the first zone of the range, routers the rest.
                 let zones = ovn.snat_ct_zones.unwrap_or((60000, 64999));
                 d.edge = Some(EdgeSpec { physnet: e.physnet.clone(), external_ip: ext, external_prefix: cidr.prefix(), gateway: gw, gateway_nodes, snat_ct_zone: Some(zones.0) });
-                let resolve = |names: &[String]| -> Vec<String> { names.iter().filter_map(|w| nodes.iter().find(|n| &n.meta.id == w || &n.spec.name == w).map(|n| n.meta.id.clone())).collect() };
+                let resolve = |names: &[String]| -> Vec<String> { names.iter().filter_map(|w| nodes.iter().find(|n| (&n.meta.id == w || &n.spec.name == w) && !n.status.phase.is_tombstone()).map(|n| glidex_ovs::ovn::chassis_name(&n.meta.id))).collect() };
                 for r in crate::router::list(&self.store.database()).map_err(crate::state::router_err)? {
                     let external = match (r.spec.external, r.status.external_ip) {
                         (true, Some(ip)) => Some(glidex_ovn::ExternalSpec {
@@ -231,6 +231,8 @@ impl VmManager {
         by_age.sort_by_key(|(_, _, t)| t.0);
         let first = by_age.first().map(|(id, ip, _)| (id.clone(), *ip));
         let is_server = cluster.role() == crate::node::NodeRole::Server;
+        // The databases listen on this server's advertised address (the one the others know).
+        let own_ip = cluster.identity.advertise.ip();
         let all_ips: Vec<IpAddr> = servers.iter().map(|(_, ip, _)| *ip).collect();
         let sb_remotes: Vec<String> = all_ips.iter().map(|ip| format!("ssl:{ip}:{}", glidex_ovs::ovn::SB_PORT)).collect();
         let bridge_mappings = nodes.iter().find(|n| n.meta.id == me).map(|n| n.status.features.physnets.clone()).unwrap_or_default();
@@ -238,7 +240,7 @@ impl VmManager {
             use glidex_netd::proto::{EnsureOvnCentralArgs, EnsureOvnChassisArgs, Op};
             if is_server {
                 let join = first.as_ref().filter(|(id, _)| *id != me).map(|(_, ip)| *ip);
-                let local = cluster_local_ip(&all_ips, tunnel);
+                let local = cluster_local_ip(&all_ips, own_ip);
                 let spec = glidex_ovs::ovn::CentralSpec { local_ip: local, join, servers: all_ips.clone() };
                 netd.call::<serde_json::Value>(Op::EnsureOvnCentral(EnsureOvnCentralArgs { spec, certs: certs.clone() })).map_err(|e| e.to_string())?;
             }
@@ -247,7 +249,7 @@ impl VmManager {
                 (_, Ok(caps)) if caps.get("dpdk_initialized").and_then(|v| v.as_bool()).unwrap_or(false) => glidex_ovs::bridge::Datapath::Netdev,
                 _ => glidex_ovs::bridge::Datapath::System,
             };
-            let spec = glidex_ovs::ovn::ChassisSpec { chassis: me.clone(), sb_remotes, encap_ip: tunnel, bridge_mappings, datapath };
+            let spec = glidex_ovs::ovn::ChassisSpec { chassis: glidex_ovs::ovn::chassis_name(&me), sb_remotes, encap_ip: tunnel, bridge_mappings, datapath };
             let st: glidex_ovs::ovn::OvnStatus = netd.call(Op::EnsureOvnChassis(EnsureOvnChassisArgs { spec, certs })).map_err(|e| e.to_string())?;
             Ok(st.datapath)
         })

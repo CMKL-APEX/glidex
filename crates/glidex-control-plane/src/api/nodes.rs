@@ -218,8 +218,23 @@ pub async fn approve_import(c: Caller, Path(plan): Path<String>, b: Option<Json<
     c.audit_always();
     let cl = import_cluster(&c)?;
     let b = b.map(|b| b.0).unwrap_or_default();
-    let by = c.actor();
-    let _ = by;
+    // The approver must be able to add these resources by hand (§12.2): write
+    // rights on every project it merges into, project creation for new ones,
+    // and exceeding quotas when asked to.
+    if !b.dry_run {
+        let (merged, creates) = cl.plan_destinations(&plan, &b.mappings).map_err(import_err)?;
+        for p in &merged {
+            for action in ["createVm", "createDisk", "createCredential"] {
+                c.require_action(action, Ent::Project(p.clone()), super::project_entities(p), &[])?;
+            }
+            if b.mappings.over_quota {
+                c.require_action("exceedQuota", Ent::Project(p.clone()), super::project_entities(p), &[])?;
+            }
+        }
+        if creates {
+            c.require_action("createProject", Ent::Cluster, EntitySet::new(), &[])?;
+        }
+    }
     let r = tokio::task::spawn_blocking(move || if b.dry_run { cl.check_import(&plan, b.mappings) } else { cl.approve_import(&plan, b.mappings) }).await;
     match r {
         Ok(r) => r.map(|p| Json(plan_view(&p))).map_err(import_err),

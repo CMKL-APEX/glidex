@@ -35,7 +35,7 @@ fn an_isolated_network_is_a_switch_with_dhcp_and_no_router() {
     let calls = exec.calls().join("\n");
     assert!(calls.contains("--may-exist ls-add gx-lab"), "{calls}");
     assert!(calls.contains("set Logical_Switch gx-lab external_ids:glidex-owner=glidex external_ids:glidex-network=lab"), "{calls}");
-    assert!(calls.contains("dhcp-options-create 10.89.3.0/24 external_ids:glidex-owner=glidex external_ids:glidex-network=lab"), "{calls}");
+    assert!(calls.contains("dhcp-options-create 10.89.3.0/24 glidex-owner=glidex glidex-network=lab"), "{calls}");
     assert!(!calls.contains("lrp-add") && !calls.contains("lr-nat-add"), "an isolated network has no router: {calls}");
 }
 
@@ -218,7 +218,7 @@ fn a_vpc_router_that_left_the_plan_is_removed_with_its_port() {
     );
     sync(&Nb::new(&exec, conn()), &Desired::default()).unwrap();
     let calls = exec.calls().join("\n");
-    assert!(calls.contains("--if-exists lr-del gxr-r9") && calls.contains("--if-exists ha-chassis-group-del gxr-r9"), "{calls}");
+    assert!(calls.contains("--if-exists lr-del gxr-r9") && calls.contains("--if-exists destroy HA_Chassis_Group gxr-r9"), "{calls}");
     assert!(calls.contains("--if-exists lsp-del gx-ext-uplink-rt-r9"), "{calls}");
     assert!(!calls.contains("lsp-del gx-ext-uplink-rt-r1"), "{calls}");
 }

@@ -88,6 +88,44 @@ impl Cluster {
         self.reload_tls()
     }
 
+    fn next_key_path(&self) -> std::path::PathBuf {
+        self.files.ca_key().with_extension("key.next")
+    }
+
+    fn next_cert_path(&self) -> std::path::PathBuf {
+        self.files.dir.join("ca-next.crt")
+    }
+
+    /// Step 1 on a server: keep the new CA beside the current one. It only
+    /// becomes the signing CA once the replicated state names it, so a
+    /// rotation that fails half way leaves every server signing as before.
+    pub fn stage_next_ca(&self, ca: &Ca) -> Result<(), ClusterError> {
+        pki::write_private(&self.next_key_path(), ca.key_pem().as_bytes())?;
+        pki::write_private(&self.next_cert_path(), ca.cert_pem.as_bytes())?;
+        Ok(())
+    }
+
+    /// When the state names the staged CA as the signing one, switch to it.
+    fn activate_next(&self, st: &CaState) {
+        let current = self.signing_ca().and_then(|c| c.public_key_fingerprint().ok());
+        if current.as_deref() == Some(st.signing_fp.as_str()) {
+            return;
+        }
+        let (Ok(key), Ok(cert)) = (std::fs::read_to_string(self.next_key_path()), std::fs::read_to_string(self.next_cert_path())) else { return };
+        let Ok(ca) = Ca::from_pem(&cert, &key) else { return };
+        if ca.public_key_fingerprint().ok().as_deref() != Some(st.signing_fp.as_str()) {
+            return;
+        }
+        match self.install_signing_ca(ca) {
+            Ok(()) => {
+                let _ = std::fs::remove_file(self.next_key_path());
+                let _ = std::fs::remove_file(self.next_cert_path());
+                tracing::info!("this server signs with the new CA");
+            }
+            Err(e) => tracing::warn!("switching to the new CA: {}", e),
+        }
+    }
+
     fn reload_tls(&self) -> Result<(), ClusterError> {
         let m = TlsMaterial::from_pem(&self.files.read(self.files.cert())?, &self.files.read(self.files.key())?, &self.files.read(self.files.trust())?)?;
         self.tls.reload(m)?;
@@ -96,6 +134,13 @@ impl Cluster {
 
     /// Steps 1–2 (leader): a new CA, its key to every server, then trust both.
     pub async fn rotate_ca(&self, grace_secs: Option<u64>) -> Result<Value, ClusterError> {
+        let mut last = self.ca_op.lock().await;
+        let r = self.rotate_ca_locked(grace_secs).await;
+        *last = r.is_err().then(std::time::Instant::now);
+        r
+    }
+
+    async fn rotate_ca_locked(&self, grace_secs: Option<u64>) -> Result<Value, ClusterError> {
         let node = self.node.as_ref().ok_or_else(|| other("only a server rotates the CA"))?;
         if !node.is_leader() {
             return Err(other("this is not the leader"));
@@ -111,10 +156,10 @@ impl Cluster {
                 return Err(other(format!("{} did not take the new CA key: {}", n.spec.name, r.status)));
             }
         }
+        self.stage_next_ca(&new)?;
         let prev = self.ca_state();
         let old_bundle = prev.as_ref().map(|s| s.trust_pem.clone()).unwrap_or_else(|| self.files.read(self.files.trust()).unwrap_or_default());
         let old_fps: Vec<String> = pki::pem_bundle_ders(&old_bundle)?.iter().filter_map(|d| pki::public_key_fingerprint(&pem_of(d)).ok()).collect();
-        self.install_signing_ca(new.clone())?;
         let now = crate::tenancy::now();
         let grace = grace_secs.unwrap_or(self.config.ca_rotation_grace_secs);
         let st = CaState {
@@ -125,6 +170,8 @@ impl Cluster {
             retire_at: Some(now + grace),
         };
         self.write_state(&st)?;
+        // Every server (this one first) switches once it sees the state.
+        self.activate_next(&st);
         tracing::warn!(new_ca = %&new_fp[..12], "CA rotation started");
         Ok(json!({ "signing_ca": new_fp, "retiring": st.retiring.len(), "retire_at": st.retire_at }))
     }
@@ -133,6 +180,9 @@ impl Cluster {
     /// servers drop an old key once nothing is retiring (step 4).
     pub fn trust_sync(&self) {
         let Some(st) = self.ca_state() else { return };
+        if self.node.is_some() {
+            self.activate_next(&st);
+        }
         let have = self.files.read(self.files.trust()).unwrap_or_default();
         if normalize(&have) != normalize(&st.trust_pem) {
             if let Err(e) = pki::write_private(&self.files.trust(), st.trust_pem.as_bytes()).map_err(other).and_then(|_| self.reload_tls()) {
@@ -211,6 +261,19 @@ impl Cluster {
         if !node.is_leader() {
             return;
         }
+        // A server that left since the last rotation started holds the key:
+        // rotate, and keep retrying (a minute apart) until it works.
+        if self.rotation_due() {
+            let recent = self.ca_op.lock().await.is_some_and(|t| t.elapsed() < Duration::from_secs(60));
+            if !recent {
+                match self.rotate_ca(None).await {
+                    Ok(_) => tracing::warn!("rotated the CA after a server left"),
+                    Err(e) => tracing::warn!("rotating the CA after a server left (will retry): {}", e),
+                }
+            }
+            return;
+        }
+        let _one = self.ca_op.lock().await;
         let Some(st) = self.ca_state() else {
             self.maybe_rotate_for_expiry().await;
             return;
@@ -238,10 +301,38 @@ impl Cluster {
         if let Some(own) = self.signing_ca() {
             next.trust_pem = own.cert_pem.clone();
         }
-        match self.write_state(&next) {
-            Ok(()) => tracing::warn!("CA rotation finished: the old CA is no longer trusted"),
+        // Only if the state is still the one this decision was made on.
+        let r = self.db.write(Origin::Api, |tx| -> Result<bool, crate::store::StoreError> {
+            let mut t = tx.open_table(TableId::CaBundle.definition())?;
+            let cur: Option<CaState> = t.get(STATE_KEY)?.and_then(|v| serde_json::from_slice(v.value()).ok());
+            if cur.as_ref() != Some(&st) {
+                return Ok(false);
+            }
+            t.insert(STATE_KEY, serde_json::to_vec(&next).map_err(|e| crate::store::StoreError::Io(std::io::Error::other(e.to_string())))?.as_slice())?;
+            Ok(true)
+        });
+        match r {
+            Ok(true) => tracing::warn!("CA rotation finished: the old CA is no longer trusted"),
+            Ok(false) => {}
             Err(e) => tracing::warn!("retiring the old CA: {}", e),
         }
+    }
+
+    /// Whether a server was retired (removed, forgotten, departed) after the
+    /// current CA started signing: it may hold the key (§12.5).
+    fn rotation_due(&self) -> bool {
+        let since = self.ca_state().map(|s| s.started_at).unwrap_or(0);
+        let nodes = NodeStore::new(self.db.clone()).list().unwrap_or_default();
+        let Ok(txn) = self.db.begin_read() else { return false };
+        let Ok(t) = txn.open_table(TableId::NodeDenylist.definition()) else { return false };
+        let Ok(it) = t.iter() else { return false };
+        let rows: Vec<Value> = it.flatten().filter_map(|(_, v)| serde_json::from_slice::<Value>(v.value()).ok()).collect();
+        rows.iter().any(|d| {
+            let at = d["at"].as_u64().unwrap_or(0);
+            let node = d["node"].as_str().unwrap_or("");
+            // Certificates replaced at a rejoin are no reason: the node is still a member.
+            at >= since && d["why"] != "replaced at rejoin" && nodes.iter().any(|n| n.meta.id == node && n.spec.role == NodeRole::Server && n.status.phase.is_tombstone())
+        })
     }
 
     fn own_issuer_is(&self, fp: &str) -> bool {
