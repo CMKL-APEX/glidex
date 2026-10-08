@@ -64,6 +64,14 @@ reported as `404`.
 | `GET` | `/disks/{id}/events` | `disk_events` | The disk's last 50 events (`readDisk`) |
 | `GET` | `/networks/{name}/events` | `network_events` | The network's last 50 events (`readNetwork`) |
 | `DELETE` | `/networks/{name}[?wait=N]` | `delete_network` | Delete (`204`, or `202` while the network controller tears it down; `409` while a VM uses it; below) |
+| `GET` / `POST` | `/projects/{id}/routers` | `list_routers` / `create_router` | VPC routers of a project; create one (`201`; `409 external_pool_exhausted`; quotas `routers`, `external_ips`; [clustering.md §11.2a](clustering.md#112a-vpc-routers)) |
+| `GET` / `DELETE` | `/projects/{id}/routers/{name}` | `get_router` / `delete_router` | Details; delete (`204`; `409` while a network is attached) |
+| `GET` | `/cluster/status[?ports=true]` | `cluster::status` | Raft group, nodes with version and feature level, CA rotation, and TCP reachability of the cluster ports from the serving server |
+| `POST` | `/cluster/{init,join,import,rejoin,leave,dissolve,rotate-ca,promote,join-tokens}` | `cluster::*` | Forming, joining (with `import` for a host with resources), leaving and operating a cluster ([clustering.md §5](clustering.md#5-cluster-lifecycle), [runbook](cluster-runbook.md)) |
+| `GET` | `/cluster/snapshot` | `cluster::snapshot` | A consistent snapshot of the replicated store (0600 material; always audited) |
+| `GET` | `/nodes`, `/nodes/{id}` | `nodes::list` / `get_node` | Nodes and their phase, capacity and features |
+| `POST` | `/nodes/{id}/{drain,undrain,remove,forget,purge,rejoin-token,detach}` | `nodes::*` | Node lifecycle (`409` with the reason when refused; `detach` takes `map_networks`, `with_access`, `abort`, `departed`) |
+| `GET` / `POST` | `/imports`, `/imports/{plan}`, `/imports/{plan}/{approve,reject}` | `nodes::*_import` | Import plans: show, approve with mappings (`dry_run` checks only), reject |
 | `GET` | `/watch[?kinds=…][&project=…]` | `watch` | Live stream of VM, disk, image and network changes (server-sent events; below) |
 | `POST` | `/vms/{id}/disks` | `attach_disk` | Attach a data disk; on a running VM it takes effect at the next start (`restart_required`) |
 | `DELETE` | `/vms/{id}/disks/{disk}` | `detach_disk` | Detach a data disk; on a running VM at the next start, and the disk stays claimed until then |

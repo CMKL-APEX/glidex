@@ -26,6 +26,7 @@ fresh reader cannot infer just by reading the source.
 | [web-ui.md](web-ui.md) | Vite + React UI structure, routes, API client, dev-proxy |
 | [installer.md](installer.md) | `glidex-install` bootstrap flow and what it brings up |
 | [metering.md](metering.md) | Resource usage metering (design): CPU/memory/disk meters, per-VM and per-network traffic from OVS bridge ports with an external/internal split on NAT networks, billing-month totals 95th-percentile bandwidth and disk IOPS/throughput/latency, hourly exactly-once ledger, `/usage` API |
+| [cluster-runbook.md](cluster-runbook.md) | Operating a cluster: removing, forgetting and rejoining nodes, rotating the CA, rolling upgrades, recovering a lost quorum |
 | [clustering.md](clustering.md) | Multi-host clusters (design): control-plane store replicated with embedded Raft (leader-computed write sets), server and node roles, node lifecycle (remove, forget, rejoin, leave with VMs and import them into another cluster), scheduler with sticky local-storage placement, cluster networks on OVN (isolated, NAT via an HA edge router or per-project VPC routers, provider), cluster IPAM, node PKI with CA rotation, conntrack-based external metering, scale envelope |
 | [security.md](security.md) | Authentication (peer uid, PAM, OIDC, tokens), projects/teams, Cedar authorization policies, netd policy, hardening (draft) |
 
