@@ -51,7 +51,7 @@ fn a_nat_network_is_routed_through_the_edge_with_snat_and_the_isolation_policies
         Output::ok(r#"{"data":[[["uuid","g1"]]],"headings":["_uuid"]}"#),
     );
     let d = Desired {
-        edge: Some(EdgeSpec { physnet: "uplink".into(), external_ip: "192.0.2.50".parse().unwrap(), external_prefix: 24, gateway: "192.0.2.1".parse().unwrap(), gateway_nodes: vec!["n1".into(), "n2".into()] }),
+        edge: Some(EdgeSpec { physnet: "uplink".into(), external_ip: "192.0.2.50".parse().unwrap(), external_prefix: 24, gateway: "192.0.2.1".parse().unwrap(), gateway_nodes: vec!["n1".into(), "n2".into()], snat_ct_zone: Some(60001) }),
         networks: vec![net("web", NetKind::Nat, "10.89.1.0/24")],
         node_addresses: vec!["192.0.2.11".parse().unwrap(), "192.0.2.12".parse().unwrap()],
         nat_supernet: Some("10.89.0.0/16".parse().unwrap()),
@@ -78,6 +78,7 @@ fn a_nat_network_is_routed_through_the_edge_with_snat_and_the_isolation_policies
         "10.89.1.1/24",
         "lsp-set-options gx-web-rt router-port=gx-lrp-web",
         "--may-exist lr-nat-add gx-edge snat 192.0.2.50 10.89.1.0/24",
+        "set Logical_Router gx-edge options:snat-ct-zone=60001",
     ] {
         assert!(calls.contains(want), "missing {want:?} in:\n{calls}");
     }
@@ -161,4 +162,63 @@ fn macs_are_stable_and_locally_administered() {
     assert_ne!(a, derived_mac("gxr:db"));
     assert!(a.starts_with("02:"));
     glidex_ovs::names::validate_mac(&a).unwrap();
+}
+
+#[test]
+fn a_vpc_router_has_its_own_address_gateway_group_and_isolation() {
+    let exec = RecordingExec::new();
+    exec.on("ovn-nbctl --db=", empty(r#"["name"]"#));
+    let ext = ExternalSpec { physnet: "uplink".into(), external_ip: "192.0.2.64".parse().unwrap(), external_prefix: 24, gateway: "192.0.2.1".parse().unwrap(), gateway_nodes: vec!["n2".into()], snat_ct_zone: Some(60002) };
+    let mut a = net("app", NetKind::Nat, "10.89.7.0/24");
+    a.router = Some("r1".into());
+    let mut b = net("db", NetKind::Nat, "10.89.8.0/24");
+    b.router = Some("r1".into());
+    let d = Desired {
+        routers: vec![RouterSpec { name: "r1".into(), external: Some(ext) }],
+        networks: vec![a, b],
+        node_addresses: vec!["192.0.2.11".parse().unwrap()],
+        nat_supernet: Some("10.89.0.0/16".parse().unwrap()),
+        ..Default::default()
+    };
+    let find_group = "ovn-nbctl --db=ssl:192.0.2.11:6641,ssl:192.0.2.12:6641 -p /k -c /c -C /ca --format=json --columns=_uuid find HA_Chassis_Group";
+    exec.on(find_group, Output::ok(r#"{"data":[[["uuid","g9"]]],"headings":["_uuid"]}"#));
+    sync(&Nb::new(&exec, conn()), &d).unwrap();
+    let calls = exec.calls().join("\n");
+    for want in [
+        "create Address_Set name=gx_r_r1_nets addresses=\"10.89.7.0/24\",\"10.89.8.0/24\"",
+        "--may-exist lr-add gxr-r1",
+        "--may-exist lrp-add gxr-r1 gxr-r1-ext",
+        "192.0.2.64/24",
+        "set Logical_Router gxr-r1 options:snat-ct-zone=60002",
+        "ha-chassis-group-add-chassis gxr-r1 n2 100",
+        "--may-exist lr-policy-add gxr-r1 1100 ip4.dst == $gx_nodes drop",
+        "--may-exist lr-policy-add gxr-r1 1000 ip4.dst == $gx_nat_supernet && ip4.dst != $gx_r_r1_nets drop",
+        "--may-exist lrp-add gxr-r1 gx-lrp-app",
+        "--may-exist lrp-add gxr-r1 gx-lrp-db",
+        "--may-exist lr-nat-add gxr-r1 snat 192.0.2.64 10.89.7.0/24",
+        "--may-exist lr-nat-add gxr-r1 snat 192.0.2.64 10.89.8.0/24",
+    ] {
+        assert!(calls.contains(want), "missing {want:?} in:\n{calls}");
+    }
+    // The shared edge isn't involved.
+    assert!(!calls.contains("lr-add gx-edge"), "{calls}");
+}
+
+#[test]
+fn a_vpc_router_that_left_the_plan_is_removed_with_its_port() {
+    let exec = RecordingExec::new();
+    exec.on("ovn-nbctl --db=", empty(r#"["name"]"#));
+    exec.on(
+        "ovn-nbctl --db=ssl:192.0.2.11:6641,ssl:192.0.2.12:6641 -p /k -c /c -C /ca --format=json --columns=name,external_ids find Logical_Router",
+        Output::ok(r#"{"data":[["gxr-r9",["map",[["glidex-owner","glidex"]]]]],"headings":["name","external_ids"]}"#),
+    );
+    exec.on(
+        "ovn-nbctl --db=ssl:192.0.2.11:6641,ssl:192.0.2.12:6641 -p /k -c /c -C /ca --format=json --columns=name find Logical_Switch_Port",
+        Output::ok(r#"{"data":[["gx-ext-uplink-rt-r9"],["gx-ext-uplink-rt-r1"]],"headings":["name"]}"#),
+    );
+    sync(&Nb::new(&exec, conn()), &Desired::default()).unwrap();
+    let calls = exec.calls().join("\n");
+    assert!(calls.contains("--if-exists lr-del gxr-r9") && calls.contains("--if-exists ha-chassis-group-del gxr-r9"), "{calls}");
+    assert!(calls.contains("--if-exists lsp-del gx-ext-uplink-rt-r9"), "{calls}");
+    assert!(!calls.contains("lsp-del gx-ext-uplink-rt-r1"), "{calls}");
 }

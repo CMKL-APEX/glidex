@@ -50,6 +50,12 @@ pub struct Network {
     /// The node of a `scope: node` network.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node: Option<String>,
+    /// Cluster networks on a physical network: its name (the VLAN is `vlan`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub physnet: Option<String>,
+    /// The VPC router a NAT cluster network is on; `None`: the shared edge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub router: Option<String>,
     pub bridge: String,
     pub mode: NetworkMode,
     pub port_type: VmPortKind,
@@ -150,6 +156,13 @@ pub struct CreateNetworkRequest {
     /// cluster's, when OVN is enabled, else the node's.
     #[serde(default)]
     pub scope: Option<NetworkScope>,
+    /// A provider network (cluster scope, mode bridged): the physical
+    /// network it sits on (§11.2).
+    #[serde(default)]
+    pub physnet: Option<String>,
+    /// A VPC router to attach a NAT network to (§11.2a); immutable.
+    #[serde(default)]
+    pub router: Option<String>,
 }
 
 fn default_port_type() -> VmPortKind {
@@ -316,6 +329,8 @@ impl CreateNetworkRequest {
             name: self.name.clone(),
             scope: NetworkScope::Node,
             node: Some(crate::authz::node_id()),
+            physnet: None,
+            router: None,
             bridge,
             mode: self.mode,
             port_type: self.port_type,
@@ -430,6 +445,8 @@ mod tests {
             mtu: None,
             dns: true,
             scope: None,
+            physnet: None,
+            router: None,
         }
     }
 

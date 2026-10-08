@@ -1705,3 +1705,9 @@ real database. Everything marked "(verify)" below is syntax or behaviour of OVN
 - Not yet: the NB daemon supervised by the control plane (commands connect
   per call), OVN-aware `move_vm_port` (C8), provider networks and VPC routers
   (C6).
+
+### C6 (partial): provider networks and VPC router objects
+
+Done: provider networks (`mode: bridged` + `physnet`, optional `vlan`, no IPAM; scheduler filters nodes by `features.physnets` from `ovn.bridge_mappings`), and glidex-ovn gateway generalisation (`ensure_gateway` serves the shared edge and per-project routers `gxr-<id>` with HA chassis group, isolation policies, SNAT and `snat-ct-zone`; routers dropped from the plan are removed). All tested by command-line recording only, not against real OVN.
+
+Not yet done: the `routers`/`ipam_external` tables, `/routers` API and quotas, external pool allocation, and conntrack-based external metering.

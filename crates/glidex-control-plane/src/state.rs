@@ -451,6 +451,13 @@ impl VmManager {
                 .filter_map(|n| n.node.clone())
                 .collect(),
             vfio: c.vfio_devices.clone(),
+            physnets: c
+                .networks
+                .iter()
+                .filter_map(|a| nets.iter().find(|n| n.name == a.network))
+                .filter(|n| n.scope == crate::network::NetworkScope::Cluster)
+                .filter_map(|n| n.physnet.clone())
+                .collect(),
             vhost_user_on_cluster: c
                 .networks
                 .iter()
@@ -474,8 +481,10 @@ impl VmManager {
             let c = &self.reserved.load();
             crate::node::Resources { cpus: c.cpus, memory_mib: c.memory_mib, hugepages: Default::default() }
         };
+        let mut probe = crate::node::SelfProbe::detect(&reserved);
+        probe.features.physnets = self.ovn.load().bridge_mappings.clone();
         self.nodes
-            .ensure_self(&self.local_node_id(), crate::node::SelfProbe::detect(&reserved))
+            .ensure_self(&self.local_node_id(), probe)
             .map(|_| ())
             .map_err(|e| VmManagerError::PersistenceError(e.to_string()))
     }
@@ -1963,26 +1972,49 @@ impl VmManager {
         if !self.ovn_enabled() {
             return Err(NetError::Invalid("cluster networks need OVN: enable cluster.ovn on a cluster".into()).into());
         }
-        if req.mode == NetworkMode::Bridged {
-            return Err(NetError::Invalid("a provider network is made with a physnet (a later feature); cluster networks are NAT or isolated".into()).into());
+        let provider = req.mode == NetworkMode::Bridged;
+        if provider && req.physnet.is_none() {
+            return Err(NetError::Invalid("a provider network (mode bridged) needs a physnet: the physical network it sits on".into()).into());
         }
-        if req.bridge.is_some() || req.vlan.is_some() {
-            return Err(NetError::Invalid("a cluster network has no bridge or VLAN of its own".into()).into());
+        if !provider && (req.physnet.is_some() || req.vlan.is_some()) {
+            return Err(NetError::Invalid("physnet and vlan belong to provider networks (mode bridged)".into()).into());
+        }
+        if req.bridge.is_some() {
+            return Err(NetError::Invalid("a cluster network has no bridge of its own".into()).into());
+        }
+        if provider && req.subnet.is_some() {
+            return Err(NetError::Invalid("a provider network's addresses come from its LAN".into()).into());
+        }
+        if req.router.is_some() && req.mode != NetworkMode::Nat {
+            return Err(NetError::Invalid("only a NAT network attaches to a VPC router".into()).into());
         }
         // The subnet comes from the IPAM below; `to_network` only checks the rest.
         if req.mode == NetworkMode::Nat && self.ovn.load().edge.is_none() {
             return Err(NetError::Invalid("a NAT cluster network needs cluster.ovn.edge (the external address and gateway nodes)".into()).into());
         }
-        let mut net = CreateNetworkRequest { subnet: None, ..req.clone() }.to_network()?;
+        let mut net = CreateNetworkRequest { subnet: None, bridge: Some("br-int".into()), vlan: None, physnet: None, ..req.clone() }.to_network()?;
+        net.vlan = req.vlan;
+        net.physnet = req.physnet.clone();
+        net.router = req.router.clone();
         net.scope = crate::network::NetworkScope::Cluster;
         net.node = None;
         net.bridge = glidex_ovs::ovn::BR_INT.to_string();
         net.owns_bridge = false;
         let ovn = self.ovn.load_full();
         // Guest MTU: the underlay minus Geneve's overhead (§11.6).
-        net.mtu = Some(req.mtu.unwrap_or(ovn.underlay_mtu.unwrap_or(1500).saturating_sub(58)));
+        net.mtu = if provider { req.mtu } else { Some(req.mtu.unwrap_or(ovn.underlay_mtu.unwrap_or(1500).saturating_sub(58))) };
         if self.networks.get(&net.name)?.is_some() {
             return Err(NetError::Conflict(format!("network '{}' already exists", net.name)).into());
+        }
+        if provider {
+            if let Some(v) = req.vlan {
+                if !(1..=4094).contains(&v) {
+                    return Err(NetError::Invalid("vlan must be 1-4094".into()).into());
+                }
+            }
+            self.networks.insert(&net)?;
+            tracing::info!(network = %net.name, physnet = ?net.physnet, vlan = ?net.vlan, "provider network created");
+            return Ok(net);
         }
         let supernet: glidex_ovs::net::Ipv4Net = ovn.nat_supernet.as_deref().unwrap_or("10.89.0.0/16").parse().map_err(|e: glidex_ovs::OvsError| NetError::Invalid(e.to_string()))?;
         let node_nat: glidex_ovs::net::Ipv4Net = glidex_ovs::nat::DEFAULT_SUPERNET.parse().map_err(|e: glidex_ovs::OvsError| NetError::Invalid(e.to_string()))?;
@@ -2007,7 +2039,7 @@ impl VmManager {
             .networks
             .iter()
             .enumerate()
-            .filter(|(_, a)| nets.iter().any(|n| n.name == a.network && n.scope == crate::network::NetworkScope::Cluster))
+            .filter(|(_, a)| nets.iter().any(|n| n.name == a.network && n.scope == crate::network::NetworkScope::Cluster && n.mode != NetworkMode::Bridged))
             .filter_map(|(i, a)| Some((a.network.clone(), a.mac.clone().or_else(|| glidex_ovs::names::mac_address(&vm.id, i as u8).ok())?, vm.id.clone(), i as u8)))
             .collect()
     }
@@ -2261,6 +2293,8 @@ impl VmManager {
                 mtu: None,
                 dns: true,
                 scope: Some(network::NetworkScope::Cluster),
+                physnet: None,
+                router: None,
             };
             let default_project = self.default_project_id();
             return self.create_host_network(req, vec![default_project], false).await.map(Some);
@@ -2283,6 +2317,8 @@ impl VmManager {
             mtu: None,
             dns: true,
             scope: Some(network::NetworkScope::Node),
+            physnet: None,
+            router: None,
         };
         let default_project = self.default_project_id();
         self.create_host_network(req, vec![default_project], false).await.map(Some)

@@ -66,6 +66,9 @@ pub struct OvnConfig {
     pub edge: Option<EdgeConfig>,
     pub snat_ct_zones: Option<(u16, u16)>,
     pub dns_servers: Vec<IpAddr>,
+    /// Provider networks this node reaches: physnet → glidex bridge (§11.3).
+    /// Per node: each host's file says which of its bridges is which physical network.
+    pub bridge_mappings: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

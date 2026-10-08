@@ -182,6 +182,9 @@ pub struct EdgeSpec {
     pub gateway: Ipv4Addr,
     /// Chassis (node ids), highest priority first.
     pub gateway_nodes: Vec<String>,
+    /// The edge's conntrack zone for SNAT (§13.3).
+    #[serde(default)]
+    pub snat_ct_zone: Option<u16>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -200,6 +203,9 @@ pub struct PortSpec {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Desired {
     pub edge: Option<EdgeSpec>,
+    /// VPC routers (§11.2a).
+    #[serde(default)]
+    pub routers: Vec<RouterSpec>,
     pub networks: Vec<NetworkSpec>,
     pub ports: Vec<PortSpec>,
     /// Every node's addresses: guests may not reach them (§11.2).
@@ -292,7 +298,37 @@ pub fn sync(nb: &Nb, desired: &Desired) -> Result<SyncReport, OvsError> {
 
     // The edge: provider switch, router, gateway port, HA group, policies, route.
     if let Some(e) = &desired.edge {
-        ensure_edge(nb, e, desired, &have_switches, &have_routers, &mut report)?;
+        let on_edge: Vec<&NetworkSpec> = desired.networks.iter().filter(|n| n.router.is_none()).collect();
+        ensure_gateway(nb, &edge_gateway(e), desired, &have_switches, &have_routers, &on_edge, &mut report)?;
+    }
+    // VPC routers: each its own gateway (or none), and an address set of its networks.
+    let mut want_routers: BTreeSet<String> = BTreeSet::new();
+    for r in &desired.routers {
+        want_routers.insert(r.lr());
+        let mine: Vec<&NetworkSpec> = desired.networks.iter().filter(|n| n.router.as_deref() == Some(r.name.as_str())).collect();
+        let nets: BTreeSet<String> = mine.iter().filter_map(|n| n.cidr).map(|c| format!("{}/{}", c.network(), c.prefix())).collect();
+        address_set(nb, &r.nets_set(), &nets, &mut report)?;
+        match &r.external {
+            Some(ext) => ensure_gateway(nb, &vpc_gateway(r, ext), desired, &have_switches, &have_routers, &mine, &mut report)?,
+            None => {
+                if !have_routers.contains(&r.lr()) {
+                    nb.txn(vec![vec![s("--may-exist"), s("lr-add"), r.lr()], [vec![s("set"), s("Logical_Router"), r.lr()], ids(&[("glidex-role", "vpc")])].concat()])?;
+                    report.changed.push(format!("router {}", r.lr()));
+                }
+            }
+        }
+    }
+    for lr in routers.iter().filter_map(|r| r.str("name")).filter(|n| n.starts_with("gxr-") && !want_routers.contains(n)) {
+        let ext_ports: Vec<String> = nb
+            .find("Logical_Switch_Port", &["name"], &[format!("external_ids:{OWNER_KEY}={OWNER_VALUE}")])?
+            .iter()
+            .filter_map(|r| r.str("name"))
+            .filter(|n| n.contains("-rt-") && n.ends_with(lr.trim_start_matches("gxr-")))
+            .collect();
+        let mut cmds = vec![vec![s("--if-exists"), s("lr-del"), lr.clone()], vec![s("--if-exists"), s("ha-chassis-group-del"), lr.clone()]];
+        cmds.extend(ext_ports.into_iter().map(|p| vec![s("--if-exists"), s("lsp-del"), p]));
+        nb.txn(cmds)?;
+        report.changed.push(format!("removed router {lr}"));
     }
 
     // No edge wanted: take down the one glidex made.
@@ -355,9 +391,82 @@ pub fn sync(nb: &Nb, desired: &Desired) -> Result<SyncReport, OvsError> {
     Ok(report)
 }
 
-fn ensure_edge(nb: &Nb, e: &EdgeSpec, desired: &Desired, have_switches: &BTreeSet<String>, have_routers: &BTreeSet<String>, report: &mut SyncReport) -> Result<(), OvsError> {
+/// A router's way out: its address on the provider network and where it runs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExternalSpec {
+    pub physnet: String,
+    pub external_ip: Ipv4Addr,
+    pub external_prefix: u8,
+    pub gateway: Ipv4Addr,
+    /// Chassis (node ids), highest priority first.
+    pub gateway_nodes: Vec<String>,
+    /// `options:snat-ct-zone`: the conntrack zone of its SNAT, for metering (§13.3).
+    pub snat_ct_zone: Option<u16>,
+}
+
+/// A project's own router (§11.2a). `external: None` is a router that only
+/// joins its networks.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RouterSpec {
+    pub name: String,
+    pub external: Option<ExternalSpec>,
+}
+
+impl RouterSpec {
+    pub fn lr(&self) -> String {
+        format!("gxr-{}", self.name)
+    }
+    pub fn nets_set(&self) -> String {
+        format!("gx_r_{}_nets", self.name.replace('-', "_"))
+    }
+}
+
+/// What distinguishes the shared edge from a VPC router in the shared code.
+struct Gateway {
+    router: String,
+    group: String,
+    lrp: String,
+    lsp: String,
+    seed: String,
+    ext: ExternalSpec,
+    /// The match of the supernet policy: the edge drops all of it, a VPC
+    /// router all but its own networks.
+    supernet_match: String,
+    role: &'static str,
+}
+
+fn edge_gateway(e: &EdgeSpec) -> Gateway {
+    Gateway {
+        router: EDGE.into(),
+        group: EDGE.into(),
+        lrp: "gx-edge-ext".into(),
+        lsp: format!("gx-ext-{}-rt", e.physnet),
+        seed: "gxr:edge".into(),
+        ext: ExternalSpec { physnet: e.physnet.clone(), external_ip: e.external_ip, external_prefix: e.external_prefix, gateway: e.gateway, gateway_nodes: e.gateway_nodes.clone(), snat_ct_zone: e.snat_ct_zone },
+        supernet_match: format!("ip4.dst == ${SUPERNET_SET}"),
+        role: "edge",
+    }
+}
+
+fn vpc_gateway(r: &RouterSpec, ext: &ExternalSpec) -> Gateway {
+    Gateway {
+        router: r.lr(),
+        group: r.lr(),
+        lrp: format!("{}-ext", r.lr()),
+        lsp: format!("gx-ext-{}-rt-{}", ext.physnet, r.name),
+        seed: format!("gxr:vpc:{}", r.name),
+        ext: ext.clone(),
+        supernet_match: format!("ip4.dst == ${SUPERNET_SET} && ip4.dst != ${}", r.nets_set()),
+        role: "vpc",
+    }
+}
+
+/// Bring one gateway router, its provider-side port, HA chassis group,
+/// isolation policies and SNAT rules to what `desired` says.
+fn ensure_gateway(nb: &Nb, g: &Gateway, desired: &Desired, have_switches: &BTreeSet<String>, have_routers: &BTreeSet<String>, nets: &[&NetworkSpec], report: &mut SyncReport) -> Result<(), OvsError> {
+    let e = &g.ext;
     let ext = format!("gx-ext-{}", e.physnet);
-    let ext_mac = derived_mac("gxr:edge");
+    let ext_mac = derived_mac(&g.seed);
     if !have_switches.contains(&ext) {
         nb.txn(vec![
             vec![s("--may-exist"), s("ls-add"), ext.clone()],
@@ -370,73 +479,82 @@ fn ensure_edge(nb: &Nb, e: &EdgeSpec, desired: &Desired, have_switches: &BTreeSe
         ])?;
         report.changed.push(format!("provider switch {ext}"));
     }
-    if !have_routers.contains(EDGE) {
-        nb.txn(vec![
-            vec![s("--may-exist"), s("lr-add"), EDGE.into()],
-            [vec![s("set"), s("Logical_Router"), EDGE.into()], ids(&[("glidex-role", "edge")])].concat(),
-            vec![s("--may-exist"), s("lrp-add"), EDGE.into(), "gx-edge-ext".into(), ext_mac.clone(), format!("{}/{}", e.external_ip, e.external_prefix)],
-            [vec![s("set"), s("Logical_Router_Port"), "gx-edge-ext".into()], ids(&[])].concat(),
-            vec![s("--may-exist"), s("lsp-add"), ext.clone(), format!("{ext}-rt")],
-            vec![s("lsp-set-type"), format!("{ext}-rt"), s("router")],
-            vec![s("lsp-set-addresses"), format!("{ext}-rt"), s("router")],
-            vec![s("lsp-set-options"), format!("{ext}-rt"), s("router-port=gx-edge-ext")],
-            [vec![s("set"), s("Logical_Switch_Port"), format!("{ext}-rt")], ids(&[])].concat(),
-            vec![s("--may-exist"), s("lr-route-add"), EDGE.into(), s("0.0.0.0/0"), e.gateway.to_string()],
-        ])?;
-        report.changed.push("edge router".into());
+    if !have_routers.contains(&g.router) {
+        let mut cmds = vec![
+            vec![s("--may-exist"), s("lr-add"), g.router.clone()],
+            [vec![s("set"), s("Logical_Router"), g.router.clone()], ids(&[("glidex-role", g.role)])].concat(),
+            vec![s("--may-exist"), s("lrp-add"), g.router.clone(), g.lrp.clone(), ext_mac.clone(), format!("{}/{}", e.external_ip, e.external_prefix)],
+            [vec![s("set"), s("Logical_Router_Port"), g.lrp.clone()], ids(&[])].concat(),
+            vec![s("--may-exist"), s("lsp-add"), ext.clone(), g.lsp.clone()],
+            vec![s("lsp-set-type"), g.lsp.clone(), s("router")],
+            vec![s("lsp-set-addresses"), g.lsp.clone(), s("router")],
+            vec![s("lsp-set-options"), g.lsp.clone(), format!("router-port={}", g.lrp)],
+            [vec![s("set"), s("Logical_Switch_Port"), g.lsp.clone()], ids(&[])].concat(),
+            vec![s("--may-exist"), s("lr-route-add"), g.router.clone(), s("0.0.0.0/0"), e.gateway.to_string()],
+        ];
+        if let Some(z) = e.snat_ct_zone {
+            cmds.push(vec![s("set"), s("Logical_Router"), g.router.clone(), format!("options:snat-ct-zone={z}")]);
+        }
+        nb.txn(cmds)?;
+        report.changed.push(format!("router {}", g.router));
+    } else if let Some(z) = e.snat_ct_zone {
+        let rows = nb.find("Logical_Router", &["name", "options"], &[format!("name={}", g.router)])?;
+        if rows.first().map(|r| r.map("options").get("snat-ct-zone").cloned()) != Some(Some(z.to_string())) {
+            nb.txn(vec![vec![s("set"), s("Logical_Router"), g.router.clone(), format!("options:snat-ct-zone={z}")]])?;
+            report.changed.push(format!("{} conntrack zone", g.router));
+        }
     }
     // HA gateway group: chassis in priority order, rebuilt when the list changes.
-    let groups = nb.find("HA_Chassis_Group", &["_uuid", "name", "external_ids", "ha_chassis"], &[format!("name={EDGE}")])?;
+    let groups = nb.find("HA_Chassis_Group", &["_uuid", "name", "external_ids", "ha_chassis"], &[format!("name={}", g.group)])?;
     let mut ha_ok = false;
-    if let Some(g) = groups.first() {
+    if let Some(grp) = groups.first() {
         let members = nb.find("HA_Chassis", &["_uuid", "chassis_name", "priority"], &[])?;
         let want: Vec<(String, i64)> = e.gateway_nodes.iter().enumerate().map(|(i, c)| (c.clone(), 100 - i as i64)).collect();
         let mut have: Vec<(String, i64)> = members
             .iter()
-            .filter(|m| uuid(m, "_uuid").is_some_and(|u| g.0.get("ha_chassis").map(|v| v.to_string().contains(&u)).unwrap_or(false)))
+            .filter(|m| uuid(m, "_uuid").is_some_and(|u| grp.0.get("ha_chassis").map(|v| v.to_string().contains(&u)).unwrap_or(false)))
             .filter_map(|m| Some((m.str("chassis_name")?, m.int("priority")?)))
             .collect();
         have.sort_by_key(|x| std::cmp::Reverse(x.1));
         ha_ok = have == want;
         if !ha_ok {
-            nb.txn(vec![vec![s("--if-exists"), s("ha-chassis-group-del"), EDGE.into()]])?;
+            nb.txn(vec![vec![s("--if-exists"), s("ha-chassis-group-del"), g.group.clone()]])?;
         }
     }
     if !ha_ok {
-        let mut cmds = vec![vec![s("ha-chassis-group-add"), EDGE.into()]];
+        let mut cmds = vec![vec![s("ha-chassis-group-add"), g.group.clone()]];
         for (i, c) in e.gateway_nodes.iter().enumerate() {
-            cmds.push(vec![s("ha-chassis-group-add-chassis"), EDGE.into(), c.clone(), (100 - i as i64).to_string()]);
+            cmds.push(vec![s("ha-chassis-group-add-chassis"), g.group.clone(), c.clone(), (100 - i as i64).to_string()]);
         }
-        cmds.push([vec![s("set"), s("HA_Chassis_Group"), EDGE.into()], ids(&[])].concat());
+        cmds.push([vec![s("set"), s("HA_Chassis_Group"), g.group.clone()], ids(&[])].concat());
         nb.txn(cmds)?;
         // The gateway port follows the group.
-        let uuid = nb.find("HA_Chassis_Group", &["_uuid"], &[format!("name={EDGE}")])?.first().and_then(|r| uuid(r, "_uuid")).ok_or_else(|| err("ha chassis group was not created"))?;
-        nb.txn(vec![vec![s("set"), s("Logical_Router_Port"), "gx-edge-ext".into(), format!("ha_chassis_group={uuid}")]])?;
-        report.changed.push("edge gateway chassis".into());
+        let uuid = nb.find("HA_Chassis_Group", &["_uuid"], &[format!("name={}", g.group)])?.first().and_then(|r| uuid(r, "_uuid")).ok_or_else(|| err("ha chassis group was not created"))?;
+        nb.txn(vec![vec![s("set"), s("Logical_Router_Port"), g.lrp.clone(), format!("ha_chassis_group={uuid}")]])?;
+        report.changed.push(format!("{} gateway chassis", g.router));
     }
     // Isolation (§11.2): guests reach neither each other's networks nor any node.
     let policies = nb.find("Logical_Router_Policy", &["priority", "match", "action"], &[])?;
     let has = |prio: i64, m: &str| policies.iter().any(|p| p.int("priority") == Some(prio) && p.str("match").as_deref() == Some(m));
     let nodes_match = format!("ip4.dst == ${NODES_SET}");
-    let supernet_match = format!("ip4.dst == ${SUPERNET_SET}");
     let mut cmds = Vec::new();
     if !desired.node_addresses.is_empty() && !has(1100, &nodes_match) {
-        cmds.push(vec![s("--may-exist"), s("lr-policy-add"), EDGE.into(), s("1100"), nodes_match, s("drop")]);
+        cmds.push(vec![s("--may-exist"), s("lr-policy-add"), g.router.clone(), s("1100"), nodes_match, s("drop")]);
     }
-    if desired.nat_supernet.is_some() && !has(1000, &supernet_match) {
-        cmds.push(vec![s("--may-exist"), s("lr-policy-add"), EDGE.into(), s("1000"), supernet_match, s("drop")]);
+    if desired.nat_supernet.is_some() && !has(1000, &g.supernet_match) {
+        cmds.push(vec![s("--may-exist"), s("lr-policy-add"), g.router.clone(), s("1000"), g.supernet_match.clone(), s("drop")]);
     }
     if !cmds.is_empty() {
         nb.txn(cmds)?;
-        report.changed.push("edge isolation policies".into());
+        report.changed.push(format!("{} isolation policies", g.router));
     }
-    // The shared external address, per NAT network on the edge.
+    // The router's external address, per NAT network on it.
     let nats = nb.find("NAT", &["external_ip", "logical_ip", "type"], &[])?;
-    for n in desired.networks.iter().filter(|n| n.kind == NetKind::Nat && n.router.is_none()) {
+    for n in nets.iter().filter(|n| n.kind == NetKind::Nat) {
         let Some(cidr) = n.cidr else { continue };
         let logical = format!("{}/{}", cidr.network(), cidr.prefix());
         if !nats.iter().any(|x| x.str("logical_ip").as_deref() == Some(logical.as_str()) && x.str("type").as_deref() == Some("snat")) {
-            nb.txn(vec![vec![s("--may-exist"), s("lr-nat-add"), EDGE.into(), s("snat"), e.external_ip.to_string(), logical]])?;
+            nb.txn(vec![vec![s("--may-exist"), s("lr-nat-add"), g.router.clone(), s("snat"), e.external_ip.to_string(), logical]])?;
             report.changed.push(format!("snat {}", n.name));
         }
     }

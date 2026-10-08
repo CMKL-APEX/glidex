@@ -22,6 +22,8 @@ pub struct Request {
     pub net_nodes: Vec<String>,
     /// PCI addresses of VFIO devices.
     pub vfio: Vec<String>,
+    /// Physical networks (provider networks) the VM's NICs sit on.
+    pub physnets: Vec<String>,
     /// A NIC on a cluster network is vhost-user: `br-int` must be userspace.
     pub vhost_user_on_cluster: bool,
 }
@@ -58,6 +60,11 @@ fn failing(n: &Node, load: Load, req: &Request, cfg: &SchedulerConfig) -> Option
     }
     if !req.hypervisor.is_empty() && !n.status.features.hypervisors.iter().any(|h| *h == req.hypervisor) {
         return Some(format!("{} is not installed", req.hypervisor));
+    }
+    for p in &req.physnets {
+        if !n.status.features.physnets.contains_key(p) {
+            return Some(format!("it does not reach physical network {p}"));
+        }
     }
     if req.vhost_user_on_cluster && n.status.features.br_int_datapath.as_deref() != Some("netdev") {
         return Some("br-int is not on the userspace (netdev) datapath".into());
@@ -209,6 +216,24 @@ mod tests {
         r = req(1, 512);
         r.disk_nodes = vec![Some("plain".into()), Some("gpu".into())];
         assert!(schedule(&r, &nodes, &cfg()).is_err(), "disks on two nodes fit nowhere");
+    }
+
+    #[test]
+    fn provider_networks_need_a_node_that_reaches_the_physnet() {
+        let mut lan = node("lan", 8, 8192);
+        lan.status.features.physnets.insert("lan".into(), "gxbr-lan".into());
+        let plain = node("plain", 8, 8192);
+        let nodes = vec![(plain, Load::default()), (lan, Load::default())];
+        let mut r = req(1, 512);
+        r.physnets = vec!["lan".into()];
+        assert_eq!(schedule(&r, &nodes, &cfg()).unwrap(), "lan");
+        r.physnets = vec!["dmz".into()];
+        let err = schedule(&r, &nodes, &cfg()).unwrap_err();
+        assert!(err.iter().all(|(_, why)| why.contains("physical network dmz")), "{err:?}");
+        // vhost-user on a cluster network wants the userspace datapath.
+        let mut r = req(1, 512);
+        r.vhost_user_on_cluster = true;
+        assert!(schedule(&r, &nodes, &cfg()).is_err());
     }
 
     #[test]

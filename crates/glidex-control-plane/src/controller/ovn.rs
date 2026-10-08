@@ -36,17 +36,21 @@ impl VmManager {
         let reservations = crate::ipam::list_reservations(&self.store.database()).map_err(|e| crate::state::VmManagerError::PersistenceError(e.to_string()))?;
         let mut d = Desired::default();
         for n in self.networks.list()?.into_iter().filter(|n| n.scope == NetworkScope::Cluster && n.deletion_requested_at.is_none()) {
-            let Some(sub) = subnets.iter().find(|s| s.network == n.name) else { continue };
+            let sub = subnets.iter().find(|s| s.network == n.name);
+            if sub.is_none() && n.mode != NetworkMode::Bridged {
+                continue;
+            }
             d.networks.push(NetworkSpec {
                 name: n.name.clone(),
-                kind: match n.mode {
-                    NetworkMode::Nat => NetKind::Nat,
+                kind: match (&n.mode, &n.physnet) {
+                    (NetworkMode::Bridged, Some(p)) => NetKind::Provider { physnet: p.clone(), vlan: n.vlan },
+                    (NetworkMode::Nat, _) => NetKind::Nat,
                     _ => NetKind::Isolated,
                 },
-                cidr: sub.cidr.parse().ok(),
+                cidr: sub.and_then(|s| s.cidr.parse().ok()),
                 dns: ovn.dns_servers.clone(),
                 mtu: n.mtu.unwrap_or(1442),
-                router: None,
+                router: n.router.clone(),
             });
         }
         let vms = self.vms.read().await;
@@ -58,9 +62,15 @@ impl VmManager {
                 }
                 let mac = a.mac.clone().or_else(|| glidex_ovs::names::mac_address(&vm.id, i as u8).ok());
                 let Some(mac) = mac else { continue };
-                let Some(r) = reservations.iter().find(|r| r.network == a.network && r.mac.eq_ignore_ascii_case(&mac)) else { continue };
+                let provider = d.networks.iter().any(|n| n.name == a.network && matches!(n.kind, NetKind::Provider { .. }));
+                let ip = if provider {
+                    None
+                } else {
+                    let Some(r) = reservations.iter().find(|r| r.network == a.network && r.mac.eq_ignore_ascii_case(&mac)) else { continue };
+                    Some(r.ip)
+                };
                 let Ok(lport) = glidex_ovs::names::port_name(&vm.id, i as u8) else { continue };
-                d.ports.push(PortSpec { network: a.network.clone(), lport, mac: mac.to_ascii_lowercase(), ip: Some(r.ip), vm_id: vm.id.clone(), nic: i as u8, chassis: Some(p.node.clone()) });
+                d.ports.push(PortSpec { network: a.network.clone(), lport, mac: mac.to_ascii_lowercase(), ip, vm_id: vm.id.clone(), nic: i as u8, chassis: Some(p.node.clone()) });
             }
         }
         drop(vms);
@@ -72,7 +82,7 @@ impl VmManager {
                     .iter()
                     .filter_map(|w| nodes.iter().find(|n| &n.meta.id == w || &n.spec.name == w).map(|n| n.meta.id.clone()))
                     .collect();
-                d.edge = Some(EdgeSpec { physnet: e.physnet.clone(), external_ip: ext, external_prefix: cidr.prefix(), gateway: gw, gateway_nodes });
+                d.edge = Some(EdgeSpec { physnet: e.physnet.clone(), external_ip: ext, external_prefix: cidr.prefix(), gateway: gw, gateway_nodes, snat_ct_zone: None });
             }
         }
         d.node_addresses = nodes

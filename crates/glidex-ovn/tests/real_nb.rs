@@ -19,7 +19,7 @@ fn sync_makes_the_objects_and_is_idempotent() {
     let conn = NbConn { db: vec![db], key: "".into(), cert: "".into(), ca: "".into(), daemon: None };
     let nb = Nb::new(&exec, conn);
     let desired = Desired {
-        edge: Some(EdgeSpec { physnet: "uplink".into(), external_ip: "192.0.2.50".parse().unwrap(), external_prefix: 24, gateway: "192.0.2.1".parse().unwrap(), gateway_nodes: vec!["chassis-a".into(), "chassis-b".into()] }),
+        edge: Some(EdgeSpec { physnet: "uplink".into(), external_ip: "192.0.2.50".parse().unwrap(), external_prefix: 24, gateway: "192.0.2.1".parse().unwrap(), gateway_nodes: vec!["chassis-a".into(), "chassis-b".into()], snat_ct_zone: None }),
         networks: vec![
             NetworkSpec { name: "gxtest-iso".into(), kind: NetKind::Isolated, cidr: Some("10.89.250.0/24".parse().unwrap()), dns: vec![], mtu: 1442, router: None },
             NetworkSpec { name: "gxtest-nat".into(), kind: NetKind::Nat, cidr: Some("10.89.251.0/24".parse().unwrap()), dns: vec!["192.0.2.53".parse().unwrap()], mtu: 1442, router: None },
@@ -27,6 +27,7 @@ fn sync_makes_the_objects_and_is_idempotent() {
         ports: vec![PortSpec { network: "gxtest-iso".into(), lport: "gxtest-0".into(), mac: "52:54:00:aa:bb:cc".into(), ip: Some("10.89.250.2".parse().unwrap()), vm_id: "vm-test".into(), nic: 0, chassis: Some("chassis-a".into()) }],
         node_addresses: vec!["192.0.2.11".parse().unwrap()],
         nat_supernet: Some("10.89.0.0/16".parse().unwrap()),
+        routers: vec![],
     };
     let first = sync(&nb, &desired).unwrap();
     assert!(!first.changed.is_empty());
