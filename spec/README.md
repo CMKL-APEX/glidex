@@ -26,6 +26,7 @@ fresh reader cannot infer just by reading the source.
 | [web-ui.md](web-ui.md) | Vite + React UI structure, routes, API client, dev-proxy |
 | [installer.md](installer.md) | `glidex-install` bootstrap flow and what it brings up |
 | [metering.md](metering.md) | Resource usage metering (design): CPU/memory/disk meters, per-VM and per-network traffic from OVS bridge ports with an external/internal split on NAT networks, billing-month totals 95th-percentile bandwidth and disk IOPS/throughput/latency, hourly exactly-once ledger, `/usage` API |
+| [clustering.md](clustering.md) | Multi-host clusters (design): control-plane store replicated with embedded Raft (leader-computed write sets), server and node roles, node lifecycle (remove, forget, rejoin, leave with VMs and import them into another cluster), scheduler with sticky local-storage placement, cluster networks on OVN (isolated, NAT via an HA edge router, provider), cluster IPAM, node PKI and authorization, metering shipped per node |
 | [security.md](security.md) | Authentication (peer uid, PAM, OIDC, tokens), projects/teams, Cedar authorization policies, netd policy, hardening (draft) |
 
 ## Goals
@@ -53,7 +54,9 @@ fresh reader cannot infer just by reading the source.
 
 ## Non-goals
 
-- Clustering / multi-host orchestration.
+- Clustering / multi-host orchestration. Planned in
+  [clustering.md](clustering.md); this non-goal is lifted when its
+  milestones land.
 - Built-in identity provider. Users authenticate with local accounts
   (PAM, peer credentials) or an external OIDC IdP; authorization is
   Cedar policy. See [security.md](security.md).
