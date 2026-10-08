@@ -86,6 +86,7 @@ tables! {
     Rate5m = 23 => "rate_5m",
     UsageDaily = 24 => "usage_daily",
     UsageMonthlyRates = 25 => "usage_monthly_rates",
+    Nodes = 26 => "nodes",
 }
 
 impl Serialize for TableId {
@@ -561,7 +562,7 @@ mod tests {
     #[test]
     fn table_ids_are_stable() {
         // Append-only (§6.6): these numbers are on disk in Raft logs.
-        assert_eq!((TableId::Vms as u16, TableId::Audit as u16, TableId::UsageMonthlyRates as u16), (1, 4, 25));
+        assert_eq!((TableId::Vms as u16, TableId::Audit as u16, TableId::UsageMonthlyRates as u16, TableId::Nodes as u16), (1, 4, 25, 26));
         for &t in TableId::ALL {
             assert_eq!(TableId::from_name(t.name()), Some(t));
             assert_eq!(TableId::from_id(t as u16), Some(t));

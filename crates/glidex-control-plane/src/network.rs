@@ -31,9 +31,25 @@ pub enum NetworkMode {
     Isolated,
 }
 
+/// Where a network exists (spec/clustering.md D10): on one node (today's OVS
+/// bridges), or across the cluster (OVN, milestone C5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum NetworkScope {
+    #[default]
+    Node,
+    Cluster,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Network {
     pub name: String,
+    /// `node`: the bridge, NAT and leases are on `node` only.
+    #[serde(default)]
+    pub scope: NetworkScope,
+    /// The node of a `scope: node` network.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
     pub bridge: String,
     pub mode: NetworkMode,
     pub port_type: VmPortKind,
@@ -288,6 +304,8 @@ impl CreateNetworkRequest {
         }
         Ok(Network {
             name: self.name.clone(),
+            scope: NetworkScope::Node,
+            node: Some(crate::authz::node_id()),
             bridge,
             mode: self.mode,
             port_type: self.port_type,

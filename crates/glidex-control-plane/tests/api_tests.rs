@@ -1013,3 +1013,53 @@ async fn test_watch_streams_changes() {
     let (status, _) = send(&app, "GET", "/watch?kinds=pods".into(), None, &[]).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
+
+// ---- nodes (spec/clustering.md C1) ------------------------------------------
+
+async fn call(app: &axum::Router, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
+    let mut b = Request::builder().method(method).uri(uri);
+    let body = match body {
+        Some(v) => {
+            b = b.header("content-type", "application/json");
+            Body::from(v.to_string())
+        }
+        None => Body::empty(),
+    };
+    let resp = app.clone().oneshot(b.body(body).unwrap()).await.unwrap();
+    let status = resp.status();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+}
+
+#[tokio::test]
+async fn a_standalone_host_is_one_node_and_places_vms_on_it() {
+    let dir = TempDir::new().unwrap();
+    let manager = VmManager::with_db_path(dir.path().join("glidex.db")).unwrap();
+    manager.initialize().await.unwrap();
+    let app = create_router(manager);
+
+    let (status, nodes) = call(&app, "GET", "/nodes", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let nodes = nodes.as_array().unwrap();
+    assert_eq!(nodes.len(), 1, "{nodes:?}");
+    assert_eq!(nodes[0]["meta"]["id"], "local");
+    assert_eq!(nodes[0]["status"]["phase"], "Active");
+    assert!(nodes[0]["status"]["capacity"]["cpus"].as_u64().unwrap() >= 1);
+
+    let (status, one) = call(&app, "GET", "/nodes/local", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(one["spec"]["role"], "Server");
+    let (status, _) = call(&app, "GET", "/nodes/nope", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let (status, vm) = call(
+        &app,
+        "POST",
+        "/vms",
+        Some(json!({ "name": "placed", "vcpu_count": 1, "mem_size_mib": 256, "hypervisor": "cloudhypervisor",
+                     "firmware_path": "/f.fd", "rootfs_path": "/r.raw" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{vm}");
+    assert_eq!(vm["node"], "local");
+}

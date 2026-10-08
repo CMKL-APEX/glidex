@@ -130,7 +130,9 @@ pub struct VmSpec {
 }
 ```
 
-`VmStatus` holds `observed_generation`, `conditions`, `phase`,
+`VmStatus` holds `placement` (`{node, at}`: the node the VM runs on,
+set once and kept for its life; `local` on a standalone host,
+[clustering.md §9.1](clustering.md#91-scheduler)), `observed_generation`, `conditions`, `phase`,
 `instance` (an `InstanceRef`: instance id, runner, boot id,
 `launched_generation`, claimed disks and devices, shim and hypervisor
 pid + start time), `last_exit`, crash/launch backoff counters,
@@ -241,7 +243,8 @@ All values are serde-JSON.
 |---|---|---|
 | `vms` | VM id | `VmRecord` = `{meta, spec, status}` |
 | `events` | `vm/<id>` | ring of the last 50 `Event {at, actor, kind, reason, message}` |
-| `meta` | `schema_version` | `2` (absent = schema 1, flat `Vm` records) |
+| `nodes` | node id | `Node` = `{meta, spec, status}`: a standalone host has one, `local` ([clustering.md §7](clustering.md#7-nodes)) |
+| `meta` | `schema_version` | `3` (`2` = envelopes, no nodes; absent = schema 1, flat `Vm` records) |
 
 The same file also holds `credentials`, `networks`, `images`, `disks`
 ([images.md](images.md#3-data-model)) and the tenancy and auth tables.
@@ -259,6 +262,17 @@ We chose JSON (not bincode / postcard) because on-disk records are
 rarely migrated and human-inspectable disk state is useful when
 debugging. Performance is not a concern at the numbers of VMs
 a single host actually runs.
+
+**Migration (schema 2 → 3,** `VmStore::migrate`, one transaction). Every VM
+gets `status.placement.node = local`, every disk `node = local`, every
+network `scope: node` with `node = local`; role links whose resource was
+the `Host` now name the `Cluster` (clustering.md §12.2); the `nodes` table
+gets the `local` row. A second run changes nothing.
+
+Every table write goes through `store::Db` (`Db::begin`/`Db::write`),
+which records each `put` and `delete` as a write set
+([clustering.md §6.1](clustering.md#61-store-api-milestone-c0)); CI
+forbids `begin_write` outside `store/`.
 
 **Migration (schema 1 → 2,** `VmStore::migrate`, at startup, one
 transaction). Each flat record becomes an envelope with `spec.power =

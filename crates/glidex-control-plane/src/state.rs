@@ -259,6 +259,8 @@ pub struct VmManager {
     /// netd's socket identity at the last port sync (restart detection).
     pub(crate) netd_seen: std::sync::Mutex<Option<(u64, u64)>>,
     pub(crate) controllers_started: std::sync::atomic::AtomicBool,
+    nodes: crate::node::NodeStore,
+    roles: std::sync::Mutex<crate::node::Roles>,
     /// The controllers' tasks, aborted by `stop_controllers`.
     pub(crate) tasks: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
     /// Resource usage metering (spec/metering.md), once started.
@@ -312,6 +314,7 @@ impl VmManager {
         let credentials = CredentialStore::new(store.database())?;
         let networks = NetworkStore::new(store.database())?;
         let projects = ProjectStore::new(store.database())?;
+        let nodes = crate::node::NodeStore::new(store.database());
         Ok(Arc::new_cyclic(|me| Self {
             vms: RwLock::new(HashMap::new()),
             credentials,
@@ -330,6 +333,8 @@ impl VmManager {
             orphans: std::sync::Mutex::new(Vec::new()),
             netd_seen: std::sync::Mutex::new(None),
             controllers_started: std::sync::atomic::AtomicBool::new(false),
+            nodes,
+            roles: std::sync::Mutex::new(crate::node::Roles::STANDALONE),
             tasks: std::sync::Mutex::new(Vec::new()),
             meter: std::sync::OnceLock::new(),
             me: me.clone(),
@@ -342,6 +347,20 @@ impl VmManager {
         let s = Settings::from_config(cfg);
         self.runner.store(Arc::new(Runner::new(s.runner)));
         self.settings.store(Arc::new(s));
+    }
+
+    /// The nodes of the cluster; a standalone host has one, `local`.
+    pub fn nodes(&self) -> &crate::node::NodeStore {
+        &self.nodes
+    }
+
+    /// Which halves of the control plane this process runs (D4).
+    pub fn roles(&self) -> crate::node::Roles {
+        *self.roles.lock().unwrap()
+    }
+
+    pub fn set_roles(&self, roles: crate::node::Roles) {
+        *self.roles.lock().unwrap() = roles;
     }
 
     pub fn settings(&self) -> Arc<Settings> {
@@ -368,6 +387,9 @@ impl VmManager {
         if migrated > 0 {
             tracing::info!(count = migrated, "migrated VM records to the desired-state schema");
         }
+        self.nodes
+            .ensure_self(&crate::authz::node_id(), crate::node::SelfProbe::detect(&crate::node::Resources::default()))
+            .map_err(|e| VmManagerError::PersistenceError(e.to_string()))?;
         let persisted = self.store.load_all()?;
         self.images.initialize();
         {
@@ -648,6 +670,8 @@ impl VmManager {
 
         let mut vm = Vm::new(name, config);
         vm.project = project.to_string();
+        // One node until the scheduler places VMs (C4).
+        vm.status.placement = Some(crate::models::Placement { node: crate::authz::node_id(), at: crate::tenancy::now() });
         vm.spec.power = power;
         vm.spec.restart_policy = opts.restart_policy.unwrap_or_default();
         vm.spec.on_host_boot = opts.on_host_boot.unwrap_or(self.settings().on_host_boot);

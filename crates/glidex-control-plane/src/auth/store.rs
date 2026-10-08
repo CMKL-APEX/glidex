@@ -99,6 +99,22 @@ impl Identity {
     pub fn key(provider: &str, subject: &str) -> String {
         format!("{}:{}", provider, subject)
     }
+
+    /// `unix` and `pam` identities are names on one host, not global
+    /// (spec/clustering.md D13).
+    pub fn is_host_local(&self) -> bool {
+        self.provider == "unix" || self.provider == "pam"
+    }
+
+    /// The subject of a host-local identity scoped to `node`: `alice@<node>`.
+    pub fn scoped_subject(name: &str, node: &str) -> String {
+        format!("{}@{}", name, node)
+    }
+
+    /// Split `alice@<node>` into the name and the node.
+    pub fn split_scoped(subject: &str) -> Option<(&str, &str)> {
+        subject.rsplit_once('@')
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -218,6 +234,12 @@ pub struct AuditEntry {
 /// Versions of a site policy kept by default (spec §7.6).
 pub const POLICY_HISTORY: usize = 50;
 
+enum Rekey {
+    Keep,
+    Drop,
+    To(String),
+}
+
 pub struct IdentityStore {
     db: Arc<Db>,
     audit_seq: std::sync::atomic::AtomicU64,
@@ -319,6 +341,54 @@ impl IdentityStore {
 
     pub fn put_identity(&self, i: &Identity) -> Result<(), StoreError> {
         put(&self.db, IDENTITIES, &Identity::key(&i.provider, &i.subject), i)
+    }
+
+    /// D13, at `gxctl cluster init`: re-key every unscoped `unix:` and
+    /// `pam:` identity to `<name>@<node>`, in one write. Returns how many
+    /// were re-keyed.
+    pub fn scope_local_identities(&self, node: &str) -> Result<usize, StoreError> {
+        self.rekey_local_identities(|i| match Identity::split_scoped(&i.subject) {
+            Some(_) => Rekey::Keep,
+            None => Rekey::To(Identity::scoped_subject(&i.subject, node)),
+        })
+    }
+
+    /// The inverse, when `node` leaves with its resources (§5.8.1): its
+    /// identities become plain names again, and those scoped to other nodes
+    /// are dropped.
+    pub fn unscope_local_identities(&self, node: &str) -> Result<usize, StoreError> {
+        self.rekey_local_identities(|i| match Identity::split_scoped(&i.subject) {
+            Some((name, n)) if n == node => Rekey::To(name.to_string()),
+            Some(_) => Rekey::Drop,
+            None => Rekey::Keep,
+        })
+    }
+
+    fn rekey_local_identities(&self, f: impl Fn(&Identity) -> Rekey) -> Result<usize, StoreError> {
+        self.db.write(crate::store::Origin::Auth, |tx| {
+            let mut t = tx.open_table(IDENTITIES)?;
+            let mut moves = Vec::new();
+            for r in t.iter()? {
+                let (k, v) = r?;
+                let Ok(i) = serde_json::from_slice::<Identity>(v.value()) else { continue };
+                if !i.is_host_local() {
+                    continue;
+                }
+                match f(&i) {
+                    Rekey::Keep => {}
+                    Rekey::Drop => moves.push((k.value().to_string(), None)),
+                    Rekey::To(subject) => moves.push((k.value().to_string(), Some(Identity { subject, ..i }))),
+                }
+            }
+            let n = moves.len();
+            for (old, new) in moves {
+                t.remove(&old)?;
+                if let Some(i) = new {
+                    t.insert(&Identity::key(&i.provider, &i.subject), serde_json::to_vec(&i)?.as_slice())?;
+                }
+            }
+            Ok(n)
+        })
     }
 
     pub fn remove_identity(&self, provider: &str, subject: &str) -> Result<bool, StoreError> {
@@ -661,6 +731,32 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let db = Arc::new(Db::create(dir.path().join("i.db")).unwrap());
         (IdentityStore::new(db).unwrap(), dir)
+    }
+
+    #[test]
+    fn local_identities_are_scoped_to_a_node_and_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Arc::new(Db::create(dir.path().join("i.db")).unwrap());
+        let s = IdentityStore::new(db).unwrap();
+        let alice = s.user_for_identity("unix", "alice", "alice", None, true).unwrap().unwrap();
+        let bob = s.user_for_identity("pam", "bob", "bob", None, true).unwrap().unwrap();
+        let sso = s.user_for_identity("oidc:https://idp", "carol", "carol", None, true).unwrap().unwrap();
+        assert_eq!(s.scope_local_identities("n1").unwrap(), 2);
+        assert!(s.identity("unix", "alice").unwrap().is_none());
+        assert_eq!(s.identity("unix", "alice@n1").unwrap().unwrap().user_id, alice.id);
+        assert_eq!(s.identity("pam", "bob@n1").unwrap().unwrap().user_id, bob.id);
+        // OIDC identities are global and untouched.
+        assert_eq!(s.identity("oidc:https://idp", "carol").unwrap().unwrap().user_id, sso.id);
+        // Idempotent.
+        assert_eq!(s.scope_local_identities("n1").unwrap(), 0);
+        // Another node's identity appears (a second host's alice).
+        let other = Identity { provider: "unix".into(), subject: "dave@n2".into(), user_id: alice.id.clone(), email: None, created_at: 1 };
+        s.put_identity(&other).unwrap();
+        // Leaving with n1's resources: n1's names are plain again, n2's are dropped.
+        assert_eq!(s.unscope_local_identities("n1").unwrap(), 3);
+        assert_eq!(s.identity("unix", "alice").unwrap().unwrap().user_id, alice.id);
+        assert_eq!(s.identity("pam", "bob").unwrap().unwrap().user_id, bob.id);
+        assert!(s.identity("unix", "dave@n2").unwrap().is_none());
     }
 
     #[test]

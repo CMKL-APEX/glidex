@@ -113,14 +113,14 @@ async fn snapshot(c: &Caller, kinds: &[Kind], only: Option<&str>) -> Result<View
                 }
             }
             Kind::Image => {
-                if c.allowed("readImage", Ent::Host, EntitySet::new()) {
+                if c.allowed("readImage", Ent::Cluster, EntitySet::new()) {
                     for img in m.list_images().await {
                         view.insert((Kind::Image, img.id.clone()), serde_json::to_value(&img).unwrap_or_default());
                     }
                 }
             }
             Kind::Network => {
-                if c.allowed("readNetwork", Ent::Host, EntitySet::new()) {
+                if c.allowed("readNetwork", Ent::Cluster, EntitySet::new()) {
                     for n in m.list_networks().map_err(super::storage::manager_err)? {
                         if let Some(n) = network_view(c, &visible, n) {
                             view.insert((Kind::Network, n.name.clone()), serde_json::to_value(&n).unwrap_or_default());

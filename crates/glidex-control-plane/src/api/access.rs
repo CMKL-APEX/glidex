@@ -78,7 +78,7 @@ fn whoami_json(app: &AppState, p: &Principal) -> Result<serde_json::Value, ApiEr
     let mut host_roles: Vec<String> = Vec::new();
     for l in &links {
         match &l.link.resource {
-            Ent::Host => host_roles.push(l.link.template.clone()),
+            Ent::Cluster => host_roles.push(l.link.template.clone()),
             Ent::Project(id) => project_roles.push(serde_json::json!({
                 "project": id,
                 "project_name": projects.get(id).ok().flatten().map(|p| p.name),
@@ -394,7 +394,7 @@ pub struct CheckItem {
 }
 
 fn host_ent() -> Ent {
-    Ent::Host
+    Ent::Cluster
 }
 
 #[derive(Deserialize)]
@@ -406,7 +406,7 @@ pub struct CheckBody {
 async fn resource_entities(c: &Caller, e: &Ent) -> Option<EntitySet> {
     let m = c.manager();
     Some(match e {
-        Ent::Host => EntitySet::new(),
+        Ent::Cluster | Ent::Host | Ent::Node(_) => EntitySet::new(),
         Ent::Project(id) => {
             m.projects().get(id).ok().flatten()?;
             super::project_entities(id)
@@ -501,7 +501,7 @@ fn self_entities(c: &Caller) -> (Ent, EntitySet) {
 }
 
 pub async fn list_tokens(c: Caller) -> Result<impl IntoResponse, ApiErr> {
-    let all = c.allowed("manageAnyTokens", Ent::Host, EntitySet::new());
+    let all = c.allowed("manageAnyTokens", Ent::Cluster, EntitySet::new());
     let links = c.auth().store.links().map_err(store_err)?;
     let mut out = Vec::new();
     for (_, t) in c.auth().store.tokens().map_err(store_err)? {
@@ -549,7 +549,7 @@ pub async fn create_token(c: Caller, Json(body): Json<CreateToken>) -> Result<im
             Some(p) => Ent::Project(c.target_project(Some(p))?),
             None => match &kind {
                 TokenKind::ServiceAccount { project } => Ent::Project(project.clone()),
-                TokenKind::Personal { .. } => Ent::Host,
+                TokenKind::Personal { .. } => Ent::Cluster,
             },
         };
         match c.auth().add_link(&r.role, Ent::Token(token.id.clone()), resource, &by) {
@@ -579,7 +579,7 @@ pub async fn revoke_token(c: Caller, Path(id): Path<String>) -> Result<impl Into
             }
             _ => false,
         }
-        || c.allowed("manageAnyTokens", Ent::Host, EntitySet::new());
+        || c.allowed("manageAnyTokens", Ent::Cluster, EntitySet::new());
     if !ok {
         return Err(err(StatusCode::NOT_FOUND, "not_found", "token not found"));
     }
@@ -597,7 +597,7 @@ struct UserView {
 }
 
 pub async fn list_users(c: Caller) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Host, EntitySet::new())?;
+    c.require(Ent::Cluster, EntitySet::new())?;
     let s = &c.auth().store;
     let out: Vec<UserView> = s
         .users()
@@ -626,7 +626,7 @@ fn valid_provider(p: &str) -> bool {
 }
 
 pub async fn create_user(c: Caller, Json(body): Json<CreateUser>) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Host, EntitySet::new())?;
+    c.require(Ent::Cluster, EntitySet::new())?;
     let s = &c.auth().store;
     for i in &body.identities {
         if !valid_provider(&i.provider) || i.subject.is_empty() {
@@ -663,7 +663,7 @@ pub struct UpdateUser {
 }
 
 pub async fn update_user(c: Caller, Path(id): Path<String>, Json(body): Json<UpdateUser>) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Host, EntitySet::new())?;
+    c.require(Ent::Cluster, EntitySet::new())?;
     c.set_target(format!("user:{}", id));
     let s = &c.auth().store;
     let mut u = s.user(&id).map_err(store_err)?.ok_or_else(|| err(StatusCode::NOT_FOUND, "not_found", "user not found"))?;
@@ -684,7 +684,7 @@ pub async fn update_user(c: Caller, Path(id): Path<String>, Json(body): Json<Upd
 }
 
 pub async fn link_identity(c: Caller, Path(id): Path<String>, Json(body): Json<IdentityRef>) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Host, EntitySet::new())?;
+    c.require(Ent::Cluster, EntitySet::new())?;
     c.set_target(format!("user:{}", id));
     let s = &c.auth().store;
     s.user(&id).map_err(store_err)?.ok_or_else(|| err(StatusCode::NOT_FOUND, "not_found", "user not found"))?;
@@ -700,7 +700,7 @@ pub async fn link_identity(c: Caller, Path(id): Path<String>, Json(body): Json<I
 }
 
 pub async fn unlink_identity(c: Caller, Path((id, key)): Path<(String, String)>) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Host, EntitySet::new())?;
+    c.require(Ent::Cluster, EntitySet::new())?;
     c.set_target(format!("user:{}", id));
     let s = &c.auth().store;
     let found = s.identities_of(&id).map_err(store_err)?.into_iter().find(|i| Identity::key(&i.provider, &i.subject) == key);
@@ -710,7 +710,7 @@ pub async fn unlink_identity(c: Caller, Path((id, key)): Path<(String, String)>)
 }
 
 pub async fn list_teams(c: Caller) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Host, EntitySet::new())?;
+    c.require(Ent::Cluster, EntitySet::new())?;
     Ok(Json(c.auth().store.teams().map_err(store_err)?))
 }
 
@@ -728,7 +728,7 @@ fn valid_team_name(name: &str) -> Result<(), ApiErr> {
 }
 
 pub async fn create_team(c: Caller, Json(body): Json<TeamBody>) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Host, EntitySet::new())?;
+    c.require(Ent::Cluster, EntitySet::new())?;
     valid_team_name(&body.name)?;
     let s = &c.auth().store;
     if s.team_by_name(&body.name).map_err(store_err)?.is_some() {
@@ -746,7 +746,7 @@ fn team(c: &Caller, id: &str) -> Result<Team, ApiErr> {
 }
 
 pub async fn update_team(c: Caller, Path(id): Path<String>, Json(body): Json<TeamBody>) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Host, EntitySet::new())?;
+    c.require(Ent::Cluster, EntitySet::new())?;
     valid_team_name(&body.name)?;
     let mut t = team(&c, &id)?;
     t.name = body.name;
@@ -755,7 +755,7 @@ pub async fn update_team(c: Caller, Path(id): Path<String>, Json(body): Json<Tea
 }
 
 pub async fn delete_team(c: Caller, Path(id): Path<String>) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Host, EntitySet::new())?;
+    c.require(Ent::Cluster, EntitySet::new())?;
     team(&c, &id)?;
     c.auth().store.remove_team(&id).map_err(store_err)?;
     c.auth().forget_entity(&Ent::Team(id)).map_err(auth_error)?;
@@ -763,7 +763,7 @@ pub async fn delete_team(c: Caller, Path(id): Path<String>) -> Result<impl IntoR
 }
 
 pub async fn add_member(c: Caller, Path((id, user)): Path<(String, String)>) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Host, EntitySet::new())?;
+    c.require(Ent::Cluster, EntitySet::new())?;
     let mut t = team(&c, &id)?;
     c.auth().store.user(&user).map_err(store_err)?.ok_or_else(|| err(StatusCode::NOT_FOUND, "not_found", "user not found"))?;
     if !t.members.iter().any(|m| m.user_id == user && m.source == MemberSource::Manual) {
@@ -774,7 +774,7 @@ pub async fn add_member(c: Caller, Path((id, user)): Path<(String, String)>) -> 
 }
 
 pub async fn remove_member(c: Caller, Path((id, user)): Path<(String, String)>) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Host, EntitySet::new())?;
+    c.require(Ent::Cluster, EntitySet::new())?;
     let mut t = team(&c, &id)?;
     t.members.retain(|m| m.user_id != user);
     c.auth().store.put_team(&t).map_err(store_err)?;
@@ -815,7 +815,7 @@ pub struct CreateProject {
 }
 
 pub async fn create_project(c: Caller, Json(body): Json<CreateProject>) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Host, EntitySet::new())?;
+    c.require(Ent::Cluster, EntitySet::new())?;
     // Without explicit quotas a project gets the site default (spec §6.3).
     let quotas = body.quotas.unwrap_or_else(|| c.auth().config.quotas.default.clone());
     let p = c
@@ -986,28 +986,28 @@ pub async fn remove_binding(c: Caller, Path((id, link)): Path<(String, String)>)
 }
 
 pub async fn list_system_bindings(c: Caller) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Host, EntitySet::new())?;
-    let links: Vec<_> = c.auth().store.links().map_err(store_err)?.into_iter().filter(|l| l.link.resource == Ent::Host).collect();
+    c.require(Ent::Cluster, EntitySet::new())?;
+    let links: Vec<_> = c.auth().store.links().map_err(store_err)?.into_iter().filter(|l| l.link.resource == Ent::Cluster).collect();
     Ok(Json(with_names(&c, links)?))
 }
 
 pub async fn add_system_binding(c: Caller, Json(body): Json<BindingBody>) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Host, EntitySet::new())?;
+    c.require(Ent::Cluster, EntitySet::new())?;
     if !authz::HOST_ROLES.contains(&body.role.as_str()) {
         return Err(err(StatusCode::BAD_REQUEST, "invalid", "only host roles and grants are given on the host"));
     }
     check_principal_exists(&c, &body.principal)?;
     c.detail("role", serde_json::json!(body.role));
     c.detail("principal", serde_json::json!(body.principal));
-    let l = c.auth().add_link(&body.role, body.principal, Ent::Host, c.p.user_id().unwrap_or("-")).map_err(auth_error)?;
+    let l = c.auth().add_link(&body.role, body.principal, Ent::Cluster, c.p.user_id().unwrap_or("-")).map_err(auth_error)?;
     Ok((StatusCode::CREATED, Json(l)))
 }
 
 pub async fn remove_system_binding(c: Caller, Path(link): Path<String>) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Host, EntitySet::new())?;
+    c.require(Ent::Cluster, EntitySet::new())?;
     let found = c.auth().store.links().map_err(store_err)?.into_iter().find(|l| l.link.id == link);
     match found {
-        Some(l) if l.link.resource == Ent::Host => {
+        Some(l) if l.link.resource == Ent::Cluster => {
             c.detail("link", serde_json::json!(l.link));
             c.auth().remove_link(&link).map_err(auth_error)?;
             Ok(StatusCode::NO_CONTENT)
@@ -1029,7 +1029,7 @@ struct PolicyListing {
 }
 
 pub async fn list_policies(c: Caller) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Host, EntitySet::new())?;
+    c.require(Ent::Cluster, EntitySet::new())?;
     Ok(Json(PolicyListing {
         policies: c.auth().engine.listing(),
         site: c.auth().store.site_policies().map_err(store_err)?,
@@ -1037,7 +1037,7 @@ pub async fn list_policies(c: Caller) -> Result<impl IntoResponse, ApiErr> {
 }
 
 pub async fn get_policy(c: Caller, Path(id): Path<String>) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Host, EntitySet::new())?;
+    c.require(Ent::Cluster, EntitySet::new())?;
     if let Some(p) = c.auth().store.site_policy(&id).map_err(store_err)? {
         return Ok(Json(serde_json::json!({ "source": "site", "policy": p })));
     }
@@ -1048,7 +1048,7 @@ pub async fn get_policy(c: Caller, Path(id): Path<String>) -> Result<impl IntoRe
 }
 
 pub async fn policy_versions(c: Caller, Path(id): Path<String>) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Host, EntitySet::new())?;
+    c.require(Ent::Cluster, EntitySet::new())?;
     Ok(Json(c.auth().store.site_policy_versions(&id).map_err(store_err)?))
 }
 
@@ -1093,7 +1093,7 @@ fn lock_out_check(c: &Caller, set: &cedar_policy::PolicySet) -> Result<(), ApiEr
     if c.p.is_break_glass() {
         return Ok(());
     }
-    let d = c.auth().authorize_in(Some(set), &c.p, "writePolicy", Ent::Host, EntitySet::new(), &[]);
+    let d = c.auth().authorize_in(Some(set), &c.p, "writePolicy", Ent::Cluster, EntitySet::new(), &[]);
     if d.allowed {
         Ok(())
     } else {
@@ -1117,7 +1117,7 @@ fn yes() -> bool {
 }
 
 pub async fn put_policy(c: Caller, Path(id): Path<String>, Json(body): Json<PutPolicy>) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Host, EntitySet::new())?;
+    c.require(Ent::Cluster, EntitySet::new())?;
     c.set_target(format!("policy:{}", id));
     if body.text.len() > MAX_POLICY_BYTES {
         return Err(err(StatusCode::PAYLOAD_TOO_LARGE, "invalid_policy", "a policy is at most 64 KiB"));
@@ -1148,7 +1148,7 @@ pub struct VersionQuery {
 }
 
 pub async fn delete_policy(c: Caller, Path(id): Path<String>, Query(q): Query<VersionQuery>) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Host, EntitySet::new())?;
+    c.require(Ent::Cluster, EntitySet::new())?;
     c.set_target(format!("policy:{}", id));
     let change = PolicyChange { id: id.clone(), text: None, description: None, enabled: None, delete: true };
     let (links, site) = candidate_inputs(&c, &[change])?;
@@ -1166,7 +1166,7 @@ pub struct ValidateBody {
 }
 
 pub async fn validate_policy(c: Caller, Json(body): Json<ValidateBody>) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Host, EntitySet::new())?;
+    c.require(Ent::Cluster, EntitySet::new())?;
     match c.auth().engine.validate_site_policy(&body.id, &body.text) {
         Ok(()) => Ok(Json(serde_json::json!({ "valid": true }))),
         Err(authz::AuthzError::Validation(errors)) => Ok(Json(serde_json::json!({ "valid": false, "errors": errors }))),
@@ -1190,7 +1190,7 @@ pub struct SimulateBody {
 }
 
 pub async fn simulate_policy(c: Caller, Json(body): Json<SimulateBody>) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Host, EntitySet::new())?;
+    c.require(Ent::Cluster, EntitySet::new())?;
     if body.requests.len() > 100 {
         return Err(err(StatusCode::BAD_REQUEST, "invalid", "at most 100 requests"));
     }
@@ -1222,7 +1222,7 @@ pub async fn simulate_policy(c: Caller, Json(body): Json<SimulateBody>) -> Resul
 }
 
 pub async fn reload_policies(c: Caller) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Host, EntitySet::new())?;
+    c.require(Ent::Cluster, EntitySet::new())?;
     c.auth().reload_policies().map_err(auth_error)?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1243,7 +1243,7 @@ pub struct AuditQuery {
 }
 
 pub async fn read_audit(c: Caller, Query(q): Query<AuditQuery>) -> Result<impl IntoResponse, ApiErr> {
-    let all = c.allowed("readAudit", Ent::Host, EntitySet::new());
+    let all = c.allowed("readAudit", Ent::Cluster, EntitySet::new());
     let project = match &q.project {
         Some(p) => Some(c.target_project(Some(p))?),
         None => None,
@@ -1252,7 +1252,7 @@ pub async fn read_audit(c: Caller, Query(q): Query<AuditQuery>) -> Result<impl I
         // Project owners read their project's entries.
         match &project {
             Some(p) => c.require_action("readProjectAudit", Ent::Project(p.clone()), super::project_entities(p), &[])?,
-            None => c.require_action("readAudit", Ent::Host, EntitySet::new(), &[])?,
+            None => c.require_action("readAudit", Ent::Cluster, EntitySet::new(), &[])?,
         }
     }
     let limit = q.limit.unwrap_or(500).min(5000);

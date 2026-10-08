@@ -182,6 +182,14 @@ export default function VmDetail() {
                   {HYPERVISOR_LABELS[vm.hypervisor] ?? vm.hypervisor}
                 </p>
               </div>
+              {vm.node && (
+                <div>
+                  <h3 className="text-sm font-medium text-gray-500">Node</h3>
+                  <p className="text-lg font-semibold text-gray-900">
+                    {vm.node}
+                  </p>
+                </div>
+              )}
               <div>
                 <h3 className="text-sm font-medium text-gray-500">
                   vCPU Count

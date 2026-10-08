@@ -332,6 +332,10 @@ pub struct Disk {
     pub deletion_requested_at: Option<u64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub conditions: Vec<crate::models::Condition>,
+    /// The node holding the disk's file (spec/clustering.md §9.2). `None`
+    /// until the disk is bound, at creation or at its first VM (D6).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
 }
 
 impl Disk {
@@ -355,6 +359,7 @@ impl Disk {
             owner: None,
             deletion_requested_at: None,
             conditions: Vec::new(),
+            node: None,
         }
     }
 

@@ -11,6 +11,7 @@
 mod access;
 mod errors;
 mod net;
+mod nodes;
 mod storage;
 mod rates;
 mod usage;
@@ -197,6 +198,9 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         .add("POST", "/ovs/bridges/{name}/uplinks/{uplink}/commit", "commitUplink", post(net::commit_uplink))
         .add("GET", "/pci-devices", "listPciDevices", get(net::list_pci_devices))
         .add("GET", "/system/reconcile", "readSystemStatus", get(vms::system_reconcile))
+        // ---- nodes (spec/clustering.md §7)
+        .add("GET", "/nodes", "listNodes", get(nodes::list))
+        .add("GET", "/nodes/{id}", "readNode", get(nodes::get_node))
         // Live changes; each kind filtered like its list endpoint.
         .add("GET", "/watch", AUTHENTICATED, get(watch::watch))
         // ---- authentication
@@ -629,7 +633,7 @@ impl Caller {
     pub fn note_overruns(&self, over: &[crate::tenancy::QuotaOverrun]) {
         if !over.is_empty() {
             self.detail("quota_exceeded", serde_json::json!(over));
-            let d = self.app.auth.authorize(&self.p, "exceedQuota", Ent::Host, EntitySet::new(), &[]);
+            let d = self.app.auth.authorize(&self.p, "exceedQuota", Ent::Cluster, EntitySet::new(), &[]);
             let mut a = self.audit.0.lock().unwrap();
             a.policies.extend(d.policies);
         }

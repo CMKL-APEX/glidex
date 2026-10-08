@@ -471,18 +471,23 @@ namespace Glidex {
   type ProjectCtx = { auth: Auth, project: Project };
   type NetworkCtx = { auth: Auth, network: Network };
 
-  entity Host;                                    // one: Host::"local"
+  // A standalone host is a cluster of one: Host::"local" in Cluster::"local"
+  // (clustering.md §12.2). System roles link to the Cluster and so cover
+  // every host; host-specific actions (OVS, uplinks, PCI devices, host
+  // paths) take the node's Host, so a grant can be limited to one node.
+  entity Cluster;
+  entity Host in [Cluster];
   entity Team;
   entity User in [Team] { disabled: Bool };
   entity Token { owner?: User, expired: Bool };   // personal (owner) or service account
-  entity Project in [Host];
+  entity Project in [Cluster];
   entity Vm in [Project] { project: Project };
   entity Disk in [Project] { project: Project };
   entity Credential in [Project] { project: Project };
-  entity Image in [Host];
-  // Host networks: parent Host, no `project`. Project networks: parent Project.
+  entity Image in [Cluster];
+  // Host networks: parent Cluster, no `project`. Project networks: parent Project.
   // shares: projects that accepted a share of a project network (§6.2.1).
-  entity Network in [Host, Project] {
+  entity Network in [Cluster, Project] {
     project?: Project, all_projects: Bool, grants: Set<Project>, shares: Set<Project>,
   };
   entity PciDevice in [Host] { grants: Set<Project> };
@@ -564,10 +569,15 @@ namespace Glidex {
   action readImage, readNetwork
     appliesTo { principal: [User, Token], resource: [Image, Network], context: Ctx };
   action pullImage, deleteImage in ["image.manage"]
-    appliesTo { principal: [User, Token], resource: [Host, Image], context: Ctx };
+    appliesTo { principal: [User, Token], resource: [Cluster, Image], context: Ctx };
   action readPolicy, validatePolicy, simulatePolicy in ["policy.read"]
-    appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
+    appliesTo { principal: [User, Token], resource: [Cluster], context: Ctx };
   action writePolicy, deletePolicy in ["policy.write"]
+    appliesTo { principal: [User, Token], resource: [Cluster], context: Ctx };
+  // Nodes (clustering.md §7): the list is cluster-wide, one node is a Host.
+  action listNodes in ["host.read"]
+    appliesTo { principal: [User, Token], resource: [Cluster], context: Ctx };
+  action readNode in ["host.read"]
     appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
   // … disks, credentials, projects, teams, users, tokens, audit: same pattern.
 }
@@ -647,9 +657,10 @@ cleanly.
 
 **Role templates** (`policies/roles.cedar`). A role assignment is a
 *template-linked policy*: `?principal` is a `User`, `Team` or `Token`,
-and `?resource` is a `Project` (project roles) or `Host::"local"`
-(host roles). Because `Project in Host`, a link on the host covers
-every project.
+and `?resource` is a `Project` (project roles), the `Cluster` (system
+roles) or a `Host` (a host-specific role such as `net-admin` on one
+node). Because `Project in Cluster` and `Host in Cluster`, a link on the
+cluster covers every project and every host.
 
 ```cedar
 @id("role.viewer")
@@ -673,7 +684,7 @@ permit (principal in ?principal, action in Glidex::Action::"host.paths", resourc
 ```
 
 The control plane only links project roles to a `Project`, and host
-roles and grants to `Host::"local"`. Linking needs `project.members`
+roles and grants to the `Cluster` (or, for host-specific roles, a `Host`). Linking needs `project.members`
 (project roles, in that project) or `system.projects` (anything).
 
 **Base policies** (`policies/base.cedar`). These are the invariants and
@@ -767,7 +778,7 @@ allow.**
 
 | API call | Cedar requests |
 |---|---|
-| `POST /vms` | `createVm` on the Project; `useDisk` on each data disk; `useCredential` on each credential; `attachNetwork` on the Project and `useNetwork` on each network if any; `usePciDevice` on each VFIO device; `useHostPath` on `Host::"local"` if any path is outside managed directories; `readImage` on the boot image |
+| `POST /vms` | `createVm` on the Project; `useDisk` on each data disk; `useCredential` on each credential; `attachNetwork` on the Project and `useNetwork` on each network if any; `usePciDevice` on each VFIO device; `useHostPath` on the node's `Host` if any path is outside managed directories; `readImage` on the boot image |
 | `POST /vms/{id}/disks` | `attachDisk` on the Vm; `useDisk` on the Disk |
 | `POST /vms/{id}/devices` | `attachDevice` on the Vm; `usePciDevice` on the device |
 | `PATCH /vms/{id}` | `readVm` first (else `404`), then one request per *changed* field: `power` → `startVm` / `pauseVm` / `stopVm`; added `vfio_devices` → `attachDevice` + `usePciDevice` on each, removed → `detachDevice`; added `data_disks` → `attachDisk` + `useDisk` on each, removed → `detachDisk`; added `networks` → `attachNetwork` + `useNetwork` on each, removed → `detachNetwork`; `credential` → `updateVm` (+ `useCredential` unless removed); `restart_policy`, `on_host_boot`, `stop_grace_secs`, `vcpu_count`, `mem_size_mib`, `kernel_args`, `hugepages` → `updateVm`. Immutable fields are refused (`400`) before any of these. |

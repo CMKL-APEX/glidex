@@ -13,18 +13,23 @@ namespace Glidex {
   type ProjectCtx = { auth: Auth, project: Project };
   type NetworkCtx = { auth: Auth, network: Network };
 
-  entity Host;                                    // one: Host::"local"
+  // A standalone host is a cluster of one: Host::"local" in Cluster::"local".
+  // System roles link to the Cluster and so cover every host; host-specific
+  // actions (OVS, uplinks, PCI devices, host paths) take the node's Host, so
+  // a grant can be limited to one node (spec/clustering.md §12.2).
+  entity Cluster;
+  entity Host in [Cluster];
   entity Team;
   entity User in [Team] { disabled: Bool };
   entity Token { owner?: User, expired: Bool };   // personal (owner) or service account
-  entity Project in [Host];
+  entity Project in [Cluster];
   entity Vm in [Project] { project: Project };
   entity Disk in [Project] { project: Project };
   entity Credential in [Project] { project: Project };
-  entity Image in [Host];
-  // Host networks: parent Host, no `project`. Project networks: parent Project.
+  entity Image in [Cluster];
+  // Host networks: parent Cluster, no `project`. Project networks: parent Project.
   // shares: projects that accepted a share of a project network.
-  entity Network in [Host, Project] {
+  entity Network in [Cluster, Project] {
     project?: Project, all_projects: Bool, grants: Set<Project>, shares: Set<Project>,
   };
   entity PciDevice in [Host] { grants: Set<Project> };
@@ -58,7 +63,7 @@ namespace Glidex {
 
   // ---- usage (spec/metering.md §10) ----------------------------------------
   action readUsage in ["system.usage"]
-    appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
+    appliesTo { principal: [User, Token], resource: [Cluster], context: Ctx };
   action readProjectUsage in ["usage.read"]
     appliesTo { principal: [User, Token], resource: [Project], context: Ctx };
   action readVmUsage in ["usage.read"]
@@ -67,7 +72,7 @@ namespace Glidex {
     appliesTo { principal: [User, Token], resource: [Disk], context: Ctx };
   // Labels of host-or-project reports; handlers scope them like readUsage.
   action readBandwidth, readDiskIoUsage, readComputeUsage in ["system.usage"]
-    appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
+    appliesTo { principal: [User, Token], resource: [Cluster], context: Ctx };
   action readVmBandwidth, readVmIo, readVmCompute in ["usage.read"]
     appliesTo { principal: [User, Token], resource: [Vm], context: Ctx };
   action readVmStats in ["vm.read"]
@@ -87,9 +92,9 @@ namespace Glidex {
   action updateProject, deleteProject in ["system.projects"]
     appliesTo { principal: [User, Token], resource: [Project], context: Ctx };
   action createProject, manageSystemBindings in ["system.projects"]
-    appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
+    appliesTo { principal: [User, Token], resource: [Cluster], context: Ctx };
   action readSystemBindings in ["policy.read"]
-    appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
+    appliesTo { principal: [User, Token], resource: [Cluster], context: Ctx };
   action exceedQuota in ["quota.exceed"]
     appliesTo { principal: [User, Token], resource: [Project], context: Ctx };
 
@@ -165,25 +170,31 @@ namespace Glidex {
          deleteBridge in ["host.network.critical"]
     appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
 
+  // ---- nodes (spec/clustering.md §7) -------------------------------------
+  action listNodes in ["host.read"]
+    appliesTo { principal: [User, Token], resource: [Cluster], context: Ctx };
+  action readNode in ["host.read"]
+    appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
+
   // ---- images ------------------------------------------------------------
   action readImage, readNetwork
-    appliesTo { principal: [User, Token], resource: [Host, Image, Network], context: Ctx };
+    appliesTo { principal: [User, Token], resource: [Cluster, Image, Network], context: Ctx };
   action pullImage in ["image.manage"]
-    appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
+    appliesTo { principal: [User, Token], resource: [Cluster], context: Ctx };
   action deleteImage in ["image.manage"]
     appliesTo { principal: [User, Token], resource: [Image], context: Ctx };
 
   // ---- identity, tokens, audit, policies ---------------------------------
   action listUsers, listTeams in ["identity.read"]
-    appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
+    appliesTo { principal: [User, Token], resource: [Cluster], context: Ctx };
   action manageUsers, manageTeams, manageAnyTokens in ["system.identity"]
-    appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
+    appliesTo { principal: [User, Token], resource: [Cluster], context: Ctx };
   action manageOwnTokens
     appliesTo { principal: [User, Token], resource: [User], context: Ctx };
   action readAudit in ["system.audit"]
-    appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
+    appliesTo { principal: [User, Token], resource: [Cluster], context: Ctx };
   action readPolicy, validatePolicy, simulatePolicy in ["policy.read"]
-    appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
+    appliesTo { principal: [User, Token], resource: [Cluster], context: Ctx };
   action writePolicy, deletePolicy, reloadPolicies in ["policy.write"]
-    appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
+    appliesTo { principal: [User, Token], resource: [Cluster], context: Ctx };
 }

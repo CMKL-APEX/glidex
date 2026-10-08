@@ -377,7 +377,7 @@ impl AuthService {
         let mut made = Vec::new();
         for name in members {
             let Some(u) = self.store.user_for_identity("unix", name, name, None, true)? else { continue };
-            self.add_link("role.system-admin", Ent::User(u.id.clone()), Ent::Host, "bootstrap")?;
+            self.add_link("role.system-admin", Ent::User(u.id.clone()), Ent::Cluster, "bootstrap")?;
             self.add_link("role.owner", Ent::User(u.id.clone()), Ent::Project(default_project.into()), "bootstrap")?;
             made.push(name.clone());
         }
@@ -754,7 +754,7 @@ impl AuthService {
         let project_role = authz::PROJECT_ROLES.contains(&template);
         let host_role = authz::HOST_ROLES.contains(&template);
         match (&resource, project_role, host_role) {
-            (Ent::Project(_), true, _) | (Ent::Host, _, true) => {}
+            (Ent::Project(_), true, _) | (Ent::Cluster, _, true) => {}
             _ => {
                 return Err(AuthError::Invalid(format!(
                     "{} can't be linked to {}: project roles link to a project, host roles to the host",
@@ -824,7 +824,7 @@ impl AuthService {
                 continue;
             }
             match l.link.resource {
-                Ent::Host => return Ok(LinkedProjects::All),
+                Ent::Cluster => return Ok(LinkedProjects::All),
                 Ent::Project(id) => projects.push(id),
                 _ => {}
             }
@@ -986,12 +986,12 @@ mod tests {
         let (s, _d) = svc();
         let p = user_principal(&s, "net");
         let uid = p.user_id().unwrap().to_string();
-        s.add_link("role.net-admin", Ent::User(uid.clone()), Ent::Host, "t").unwrap();
+        s.add_link("role.net-admin", Ent::User(uid.clone()), Ent::Cluster, "t").unwrap();
         let (secret, tok) = s.create_token("t", TokenKind::Personal { owner: uid.clone() }, &uid, None).unwrap();
         let tp = s.token_principal(&secret, Transport::Tcp, None).unwrap().unwrap();
         let d = s.authorize(&tp, "installOvs", Ent::Host, EntitySet::new(), &[]);
         assert!(d.denied_by("base.step-up"), "{:?}", d);
-        s.add_link("role.net-admin", Ent::Token(tok.id), Ent::Host, "t").unwrap();
+        s.add_link("role.net-admin", Ent::Token(tok.id), Ent::Cluster, "t").unwrap();
         let tp = s.token_principal(&secret, Transport::Tcp, None).unwrap().unwrap();
         assert!(s.authorize(&tp, "installOvs", Ent::Host, EntitySet::new(), &[]).allowed);
     }
@@ -1030,7 +1030,7 @@ mod tests {
         assert_eq!(s.bootstrap_with(&["root2".into()], "pdefault").unwrap(), vec!["root2"]);
         let links = s.store.links().unwrap();
         assert_eq!(links.len(), 2);
-        assert!(links.iter().any(|l| l.link.template == "role.system-admin" && l.link.resource == Ent::Host));
+        assert!(links.iter().any(|l| l.link.template == "role.system-admin" && l.link.resource == Ent::Cluster));
         // A PAM login of the same name is the same user.
         let u = s.store.user_for_identity("pam", "root2", "root2", None, true).unwrap().unwrap();
         assert!(links.iter().all(|l| l.link.principal == Ent::User(u.id.clone())));
@@ -1055,9 +1055,9 @@ mod tests {
     #[test]
     fn link_rules() {
         let (s, _d) = svc();
-        assert!(s.add_link("role.owner", Ent::User("u".into()), Ent::Host, "t").is_err());
+        assert!(s.add_link("role.owner", Ent::User("u".into()), Ent::Cluster, "t").is_err());
         assert!(s.add_link("role.net-admin", Ent::User("u".into()), Ent::Project("p".into()), "t").is_err());
-        assert!(s.add_link("role.nope", Ent::User("u".into()), Ent::Host, "t").is_err());
+        assert!(s.add_link("role.nope", Ent::User("u".into()), Ent::Cluster, "t").is_err());
         let a = s.add_link("role.viewer", Ent::Team("t".into()), Ent::Project("p".into()), "t").unwrap();
         let b = s.add_link("role.viewer", Ent::Team("t".into()), Ent::Project("p".into()), "t").unwrap();
         assert_eq!(a.link.id, b.link.id, "idempotent");

@@ -132,7 +132,7 @@ async fn project_isolation_and_not_found() {
     let (pa, pb) = (h.project("pa"), h.project("pb"));
     let (alice, bob, carol) = (h.user("alice"), h.user("bob"), h.user("carol"));
     h.link("role.editor", Ent::User(alice.clone()), Ent::Project(pa.clone()));
-    h.link("grant.host-paths", Ent::User(alice.clone()), Ent::Host);
+    h.link("grant.host-paths", Ent::User(alice.clone()), Ent::Cluster);
     h.link("role.editor", Ent::User(bob.clone()), Ent::Project(pb.clone()));
     h.link("role.viewer", Ent::User(carol.clone()), Ent::Project(pa.clone()));
     let (a, b, c) = (As::Bearer(h.token(&alice)), As::Bearer(h.token(&bob)), As::Bearer(h.token(&carol)));
@@ -146,7 +146,7 @@ async fn project_isolation_and_not_found() {
     let (s, _, _) = h.call("GET", &format!("/vms/{id}?view=full"), None, &c).await;
     assert_eq!(s, StatusCode::FORBIDDEN);
     let aud = h.user("aud");
-    h.link("role.auditor", Ent::User(aud.clone()), Ent::Host);
+    h.link("role.auditor", Ent::User(aud.clone()), Ent::Cluster);
     let (s, full, _) = h.call("GET", &format!("/vms/{id}?view=full"), None, &As::Bearer(h.token(&aud))).await;
     assert_eq!(s, StatusCode::OK, "{full}");
     assert_eq!(full["spec"]["power"], "stopped", "{full}");
@@ -171,7 +171,7 @@ async fn project_isolation_and_not_found() {
     assert_eq!(s, StatusCode::FORBIDDEN);
 
     // Same VM name is fine in another project.
-    h.link("grant.host-paths", Ent::User(bob.clone()), Ent::Host);
+    h.link("grant.host-paths", Ent::User(bob.clone()), Ent::Cluster);
     let (s, v, _) = h.call("POST", "/vms", Some(vm_body("v1", "pb")), &b).await;
     assert_eq!(s, StatusCode::CREATED, "{v}");
 
@@ -231,7 +231,7 @@ async fn host_paths_need_a_grant() {
     // VFIO paths must be PCI devices, and need a grant.
     let mut body = vm_body("v", "pa");
     body["vfio_devices"] = json!(["/dev/sda"]);
-    h.link("grant.host-paths", Ent::User(alice.clone()), Ent::Host);
+    h.link("grant.host-paths", Ent::User(alice.clone()), Ent::Cluster);
     let (s, _, _) = h.call("POST", "/vms", Some(body.clone()), &a).await;
     assert_eq!(s, StatusCode::BAD_REQUEST);
     body["vfio_devices"] = json!(["/sys/bus/pci/devices/0000:41:00.0"]);
@@ -245,8 +245,8 @@ async fn quotas_are_enforced_and_system_admin_may_exceed() {
     let pa = h.project("pa");
     let (owner, admin) = (h.user("owner"), h.user("admin"));
     h.link("role.owner", Ent::User(owner.clone()), Ent::Project(pa.clone()));
-    h.link("grant.host-paths", Ent::User(owner.clone()), Ent::Host);
-    h.link("role.system-admin", Ent::User(admin.clone()), Ent::Host);
+    h.link("grant.host-paths", Ent::User(owner.clone()), Ent::Cluster);
+    h.link("role.system-admin", Ent::User(admin.clone()), Ent::Cluster);
     let (o, a) = (As::Bearer(h.token(&owner)), As::Bearer(h.token(&admin)));
 
     let (s, _, _) = h.call("PATCH", &format!("/projects/{pa}"), Some(json!({"quotas": {"vms": 1}})), &o).await;
@@ -274,7 +274,7 @@ async fn quotas_are_enforced_and_system_admin_may_exceed() {
 async fn host_network_changes_need_a_recent_login() {
     let h = harness();
     let n = h.user("net");
-    h.link("role.net-admin", Ent::User(n.clone()), Ent::Host);
+    h.link("role.net-admin", Ent::User(n.clone()), Ent::Cluster);
     let fresh = h.session(&n);
     let As::Cookie(cookie, csrf, origin) = fresh.clone() else { unreachable!() };
     let hash = auth::sha256_hex(cookie.as_bytes());
@@ -379,7 +379,7 @@ async fn site_policies_api_and_break_glass() {
     });
     let pa = h.project("pa");
     let (admin, alice) = (h.user("admin"), h.user("alice"));
-    h.link("role.system-admin", Ent::User(admin.clone()), Ent::Host);
+    h.link("role.system-admin", Ent::User(admin.clone()), Ent::Cluster);
     h.link("role.viewer", Ent::User(alice.clone()), Ent::Project(pa.clone()));
     let a = h.session(&admin);
     let al = As::Bearer(h.token(&alice));
@@ -466,7 +466,7 @@ async fn audit_records_decisions_without_secrets() {
     let pa = h.project("pa");
     let (u, aud) = (h.user("u"), h.user("aud"));
     h.link("role.editor", Ent::User(u.clone()), Ent::Project(pa.clone()));
-    h.link("role.auditor", Ent::User(aud.clone()), Ent::Host);
+    h.link("role.auditor", Ent::User(aud.clone()), Ent::Cluster);
     let t = h.token(&u);
     let ut = As::Bearer(t.clone());
     let pw = "super-secret-password-123";
@@ -508,7 +508,7 @@ async fn usage_is_project_scoped_and_exports_are_audited() {
 
     let (viewer, aud, nobody) = (h.user("viewer"), h.user("aud"), h.user("nobody"));
     h.link("role.viewer", Ent::User(viewer.clone()), Ent::Project(pa.clone()));
-    h.link("role.auditor", Ent::User(aud.clone()), Ent::Host);
+    h.link("role.auditor", Ent::User(aud.clone()), Ent::Cluster);
     let (v, a, n) = (As::Bearer(h.token(&viewer)), As::Bearer(h.token(&aud)), As::Bearer(h.token(&nobody)));
 
     let ids = |body: &Value| -> Vec<String> {
@@ -1017,7 +1017,7 @@ async fn site_default_quotas_apply_to_new_projects() {
     use glidex_control_plane::tenancy::Quotas;
     let h = harness_with(|c| c.quotas.default = Quotas { vms: Some(1), networks: Some(2), ..Default::default() });
     let admin = h.user("admin");
-    h.link("role.system-admin", Ent::User(admin.clone()), Ent::Host);
+    h.link("role.system-admin", Ent::User(admin.clone()), Ent::Cluster);
     let a = As::Bearer(h.token(&admin));
 
     // No quotas in the request: the site default.
@@ -1036,7 +1036,7 @@ async fn site_default_quotas_apply_to_new_projects() {
     let lab = p["id"].as_str().unwrap().to_string();
     let owner = h.user("owner");
     h.link("role.owner", Ent::User(owner.clone()), Ent::Project(lab.clone()));
-    h.link("grant.host-paths", Ent::User(owner.clone()), Ent::Host);
+    h.link("grant.host-paths", Ent::User(owner.clone()), Ent::Cluster);
     let o = As::Bearer(h.token(&owner));
     let (s, v, _) = h.call("POST", "/vms", Some(vm_body("v1", "lab")), &o).await;
     assert_eq!(s, StatusCode::CREATED, "{v}");

@@ -67,7 +67,7 @@ pub(crate) fn network_view(c: &Caller, visible: &crate::auth::LinkedProjects, mu
 }
 
 pub async fn list_networks(c: Caller) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Host, EntitySet::new())?;
+    c.require(Ent::Cluster, EntitySet::new())?;
     let visible = c.visible_projects()?;
     let nets: Vec<Network> = c
         .manager()

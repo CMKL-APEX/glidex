@@ -48,6 +48,12 @@ export default function VmCard({ vm, onAction }: VmCardProps) {
             {HYPERVISOR_LABELS[vm.hypervisor] ?? vm.hypervisor}
           </span>
         </div>
+        {vm.node && (
+          <div>
+            <span className="text-gray-500">Node:</span>
+            <span className="ml-2 font-medium text-gray-900">{vm.node}</span>
+          </div>
+        )}
         <div>
           <span className="text-gray-500">Memory:</span>
           <span className="ml-2 font-medium text-gray-900">

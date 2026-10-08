@@ -8,6 +8,7 @@ pub mod hypervisor;
 pub mod images;
 pub mod models;
 pub mod network;
+pub mod node;
 pub mod pci;
 pub mod store;
 pub mod controller;

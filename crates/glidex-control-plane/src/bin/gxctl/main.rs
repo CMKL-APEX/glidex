@@ -104,6 +104,9 @@ struct VmResponse {
     vfio_devices: Vec<String>,
     #[serde(default)]
     nics: Vec<NicInfo>,
+    /// The node the VM is placed on (spec/clustering.md §9.1).
+    #[serde(default)]
+    node: Option<String>,
 }
 
 /// A `list` row: the project shown by name when it's known.
@@ -113,9 +116,37 @@ struct VmRow {
     name: String,
     project: String,
     state: String,
+    node: String,
     vcpu_count: u8,
     mem_size_mib: u32,
     hypervisor: String,
+}
+
+/// A `nodes` row.
+#[derive(Tabled)]
+struct NodeRow {
+    id: String,
+    name: String,
+    role: String,
+    phase: String,
+    ready: String,
+    cpus: u64,
+    memory_mib: u64,
+}
+
+impl NodeRow {
+    fn from_json(n: &serde_json::Value) -> NodeRow {
+        let text = |v: &serde_json::Value| v.as_str().unwrap_or("").to_string();
+        NodeRow {
+            id: text(&n["meta"]["id"]),
+            name: text(&n["spec"]["name"]),
+            role: text(&n["spec"]["role"]),
+            phase: text(&n["status"]["phase"]),
+            ready: text(&n["status"]["ready"]),
+            cpus: n["status"]["capacity"]["cpus"].as_u64().unwrap_or(0),
+            memory_mib: n["status"]["capacity"]["memory_mib"].as_u64().unwrap_or(0),
+        }
+    }
 }
 
 /// Project names by id (best effort: an empty map when not allowed).
@@ -1115,6 +1146,7 @@ fn print_help() {
     println!("  {}  - What happened to a VM (starts, exits, restarts, adoptions)", "events <name|id>".cyan());
     println!("  {}  - Follow VMs, disks, images and networks as they change (Ctrl-C stops)", "watch [vms,disks,images,networks]".cyan());
     println!("  {} - Delete a VM (and its own root disk)", "delete <name|id> [--keep-disk]".cyan());
+    println!("  {}             - List the cluster's nodes (a standalone host has one)", "nodes".cyan());
     println!("  {}               - List host PCI devices", "pci".cyan());
     println!(
         "  {}     - Show detailed info (incl. sysfs path) for one device",
@@ -1401,7 +1433,7 @@ async fn handle_credential_update(client: &CliClient, username: &str, request: U
 /// REPL command names offered by Tab (aliases included).
 const COMMANDS: &[&str] = &[
     "help", "exit", "quit", "list", "ls", "get", "create", "start", "stop", "pause", "events", "watch",
-    "connect", "console", "attach", "log", "logs", "delete", "rm", "pci", "pci-devices",
+    "connect", "console", "attach", "log", "logs", "delete", "rm", "pci", "pci-devices", "nodes", "node",
     "attach-device", "detach-device", "credentials", "creds", "credential-add",
     "credential-passwd", "credential-keys", "credential-rm", "networks", "network-add",
     "network-rm", "bridges", "uplinks", "uplink-add", "uplink-rm", "ovs", "health",
@@ -1964,6 +1996,7 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
                         .map(|vm| VmRow {
                             state: plain_vm_state(&vm),
                             project: names.get(&vm.project).cloned().unwrap_or(vm.project),
+                            node: vm.node.unwrap_or_default(),
                             id: vm.id,
                             name: vm.name,
                             vcpu_count: vm.vcpu_count,
@@ -2179,6 +2212,21 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
                 }
             } else {
                 println!("Cancelled");
+            }
+        }
+
+        "nodes" | "node" => {
+            let path = match parts.get(1) {
+                Some(id) => format!("/nodes/{}", id),
+                None => "/nodes".to_string(),
+            };
+            match client.request_json::<serde_json::Value>(Method::GET, &path, None).await {
+                Ok(v) if v.is_array() => {
+                    let rows: Vec<NodeRow> = v.as_array().unwrap().iter().map(NodeRow::from_json).collect();
+                    println!("{}", Table::new(rows));
+                }
+                Ok(v) => println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default()),
+                Err(e) => println!("{} {}", "Error:".red(), e),
             }
         }
 

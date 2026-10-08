@@ -55,6 +55,8 @@ export interface VmResponse {
   stop_grace_secs?: number;
   conditions?: Condition[];
   last_exit?: ExitRecord;
+  /** The node the VM is placed on (spec/clustering.md §9.1). */
+  node?: string;
   vcpu_count: number;
   mem_size_mib: number;
   hypervisor: HypervisorType;

@@ -59,12 +59,27 @@ impl Settings {
 }
 
 impl VmManager {
-    /// Start the workers, the resync loop and the exit watches (§9.4 step
-    /// 5). Idempotent.
+    /// Start the controllers of the roles this process runs (spec/clustering.md
+    /// D4): the node role (workers, resync, exit watches) and the server role
+    /// (cluster controllers). Idempotent.
     pub fn start_controllers(&self) {
         if self.controllers_started.swap(true, Ordering::SeqCst) {
             return;
         }
+        let roles = self.roles();
+        let mut tasks = Vec::new();
+        if roles.node {
+            tasks.extend(self.node_role_tasks());
+        }
+        if roles.server {
+            tasks.extend(self.server_role_tasks());
+        }
+        self.tasks.lock().unwrap().extend(tasks);
+    }
+
+    /// The node role: VM, disk and image controllers for the objects on this
+    /// host (§8.1), as they have always run.
+    fn node_role_tasks(&self) -> Vec<tokio::task::JoinHandle<()>> {
         let me = self.arc();
         let mut tasks = Vec::new();
         for _ in 0..self.settings().workers.max(1) {
@@ -82,7 +97,14 @@ impl VmManager {
                 me.watch_instance(&id).await;
             }
         }));
-        self.tasks.lock().unwrap().extend(tasks);
+        tasks
+    }
+
+    /// The server role: controllers that run only where the API runs. The
+    /// scheduler (C4), node lifecycle (C3) and network controller (C5) are
+    /// added here, each gated on holding leadership.
+    fn server_role_tasks(&self) -> Vec<tokio::task::JoinHandle<()>> {
+        Vec::new()
     }
 
     /// Every object the controllers own.
