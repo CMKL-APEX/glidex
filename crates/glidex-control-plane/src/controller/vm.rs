@@ -152,6 +152,16 @@ impl VmManager {
         self.put_locked(&mut vms, vm, events).map(Some)
     }
 
+    /// Write a harmless status change, to exercise a node's write path
+    /// (tests of partitions and the outbox).
+    #[doc(hidden)]
+    pub async fn __touch_status_for_tests(&self, id: &str) -> Result<(), VmManagerError> {
+        let Some(vm) = self.vm(id).await else { return Err(VmManagerError::VmNotFound(id.into())) };
+        let mut st = vm.status.clone();
+        st.launch_failures += 1;
+        self.write_status(id, vm.generation, st, vec![]).await.map(|_| ())
+    }
+
     /// D12: `spec.power = Stopped` after an exit nobody asked for, unless
     /// the user changed the spec since it was observed.
     async fn stop_spec_after_exit(&self, id: &str, observed_gen: u64, actor: &str, reason: &str, message: String) -> Result<(), VmManagerError> {
@@ -193,6 +203,10 @@ impl VmManager {
     /// One round for VM `id` (§9.1).
     pub async fn reconcile_vm(&self, id: &str) -> Next {
         let Some(vm) = self.vm(id).await else { return Ok(None) };
+        // Another node's VM: that node's controller owns it (spec/clustering.md §8.1).
+        if !self.is_local(&vm) {
+            return Ok(None);
+        }
         let gen = vm.generation;
         let mut st = vm.status.clone();
         let mut events: Vec<Event> = Vec::new();

@@ -131,7 +131,66 @@ fn main() -> Result<()> {
         install_services(&changed, user.as_deref(), &user_home)?;
     }
     opts.save(saved.as_deref())?;
+    if let Some(j) = &opts.join {
+        join_cluster(j)?;
+    }
     print_usage(&opts);
+    Ok(())
+}
+
+/// Read a join token from `file` (which must be private) or stdin.
+fn read_join_token(file: Option<&str>) -> Result<String> {
+    use std::io::Read;
+    use std::os::unix::fs::PermissionsExt;
+    let raw = match file {
+        Some(p) => {
+            let mode = fs::metadata(p).with_context(|| p.to_string())?.permissions().mode();
+            if mode & 0o077 != 0 {
+                bail!("{p} is readable by other users: chmod 600 it (a join token is a credential)");
+            }
+            fs::read_to_string(p).with_context(|| p.to_string())?
+        }
+        None => {
+            let mut s = String::new();
+            std::io::stdin().read_to_string(&mut s)?;
+            s
+        }
+    };
+    let t = raw.trim().to_string();
+    if t.is_empty() {
+        bail!("no join token given: pass --token-file FILE or pipe it on stdin");
+    }
+    Ok(t)
+}
+
+/// Ask the running control plane to join (`gxctl cluster join`), handing it
+/// the token on its standard input.
+fn join_cluster(j: &JoinOptions) -> Result<()> {
+    use std::io::Write;
+    section("Joining the cluster");
+    let token = read_join_token(j.token_file.as_deref())?;
+    for _ in 0..30 {
+        if Path::new(API_SOCKET).exists() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+    let mut args = vec!["cluster".to_string(), "join".into(), "--server".into(), j.server.clone(), "--role".into(), j.role.clone()];
+    if let Some(a) = &j.advertise {
+        args.extend(["--advertise".into(), a.clone()]);
+    }
+    if let Some(n) = &j.name {
+        args.extend(["--name".into(), n.clone()]);
+    }
+    let mut child = Command::new(format!("{}/gxctl", BIN_DIR)).args(&args).stdin(std::process::Stdio::piped()).spawn().context("running gxctl")?;
+    child.stdin.take().context("gxctl stdin")?.write_all(token.as_bytes())?;
+    if !child.wait()?.success() {
+        bail!("joining the cluster failed (see above); the host is still a working standalone host");
+    }
+    // An agent serves no API or UI of its own: its servers do.
+    if j.role == "agent" {
+        let _ = sudo(&argv(&["systemctl", "disable", "--now", "glidex-ui.service"]));
+    }
     Ok(())
 }
 
@@ -204,6 +263,19 @@ struct Options {
     /// Let OVS installs / DPDK init restart ovs-vswitchd while it has
     /// bridges (interrupts their traffic). Never saved.
     allow_ovs_restart: bool,
+    /// Join a cluster once installed (spec/clustering.md §5.2). Never saved:
+    /// it holds a one-time token's source.
+    join: Option<JoinOptions>,
+}
+
+/// `--join <server:8842> [--role server|agent] [--token-file F] [--advertise A] [--node-name N]`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct JoinOptions {
+    server: String,
+    role: String,
+    token_file: Option<String>,
+    advertise: Option<String>,
+    name: Option<String>,
 }
 
 impl Default for Options {
@@ -215,6 +287,7 @@ impl Default for Options {
             ovs_profile: OvsProfile::Dpdk,
             pmd_cpu_mask: None,
             allow_ovs_restart: false,
+            join: None,
         }
     }
 }
@@ -250,11 +323,34 @@ impl Options {
                     o.pmd_cpu_mask = (!m.is_empty() && m != "auto").then_some(m);
                 }
                 "--allow-ovs-restart" => o.allow_ovs_restart = true,
+                "--join" => {
+                    let server = value("--join")?;
+                    o.join.get_or_insert_with(|| JoinOptions { role: "agent".into(), ..Default::default() }).server = server;
+                }
+                "--role" => {
+                    let r = value("--role")?;
+                    if r != "server" && r != "agent" {
+                        bail!("--role is 'server' or 'agent'");
+                    }
+                    o.join.get_or_insert_with(JoinOptions::default).role = r;
+                }
+                // The token never goes on the command line: a file (mode 0600) or stdin.
+                "--token-file" => o.join.get_or_insert_with(JoinOptions::default).token_file = Some(value("--token-file")?),
+                "--advertise" => o.join.get_or_insert_with(JoinOptions::default).advertise = Some(value("--advertise")?),
+                "--node-name" => o.join.get_or_insert_with(JoinOptions::default).name = Some(value("--node-name")?),
                 "-h" | "--help" => {
                     print_help();
                     std::process::exit(0);
                 }
                 other => bail!("unknown option '{}' (see --help)", other),
+            }
+        }
+        if let Some(j) = &mut o.join {
+            if j.server.is_empty() {
+                bail!("--role, --token-file, --advertise and --node-name go with --join <server:8842>");
+            }
+            if j.role.is_empty() {
+                j.role = "agent".into();
             }
         }
         Ok(o)
@@ -294,7 +390,15 @@ fn print_help() {
          \x20     --ovs-profile P        dpdk (default; reserves hugepages) or kernel\n\
          \x20     --pmd-cpu-mask MASK    OVS-DPDK PMD CPU mask, hex (\"auto\" to clear)\n\
          \x20     --allow-ovs-restart    allow restarting ovs-vswitchd while it has bridges\n\
-         \x20     --qemu, --networking, --services   undo an earlier --no-*"
+         \x20     --qemu, --networking, --services   undo an earlier --no-*\n\n\
+         Joining a cluster (spec/clustering.md §5.2); the token comes from\n\
+         `gxctl cluster join-token` on a server, read from a file (mode 0600)\n\
+         or standard input, never from the command line:\n\
+         \x20     --join SERVER:8842     join the cluster this server belongs to\n\
+         \x20     --role ROLE            agent (default: VMs only) or server\n\
+         \x20     --token-file FILE      read the token from FILE (default: stdin)\n\
+         \x20     --advertise IP:PORT    the address other nodes use for this one\n\
+         \x20     --node-name NAME       default: this host's name"
     );
 }
 

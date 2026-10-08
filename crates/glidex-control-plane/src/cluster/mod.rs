@@ -11,3 +11,6 @@ pub mod runtime;
 pub mod server;
 pub mod manage;
 pub use runtime::{Cluster, ClusterError};
+pub mod sync;
+pub mod agent;
+pub mod lifecycle;

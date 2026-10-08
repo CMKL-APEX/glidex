@@ -139,6 +139,7 @@ pub async fn init(manager: &Arc<VmManager>, cfg: &crate::config::Config, opts: I
         advertise,
         tunnel_ip: opts.tunnel_ip.or(Some(advertise.ip())),
         ca_fingerprint: ca.public_key_fingerprint()?,
+        seeds: Vec::new(),
     };
 
     // 3. Re-key host-scoped data in a single write (§5.1 step 4). A failure
@@ -282,6 +283,7 @@ pub async fn join(manager: &Arc<VmManager>, cfg: &crate::config::Config, opts: J
         advertise,
         tunnel_ip: opts.tunnel_ip.or(Some(advertise.ip())),
         ca_fingerprint: ca_hash.to_string(),
+        seeds: vec![target.clone()],
     };
     files.save_node_cert(&resp.cert_pem, &key.key_pem(), &resp.trust_pem)?;
     files.save_identity(&identity)?;

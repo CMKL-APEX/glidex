@@ -20,6 +20,9 @@ pub struct Identity {
     pub tunnel_ip: Option<IpAddr>,
     /// SHA-256 of the cluster CA's public key.
     pub ca_fingerprint: String,
+    /// Servers to ask first (a node, before its cache lists the others).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub seeds: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -155,6 +158,7 @@ mod tests {
             advertise: "192.0.2.11:8842".parse().unwrap(),
             tunnel_ip: None,
             ca_fingerprint: "ab".into(),
+            seeds: vec![],
         };
         files.save_identity(&id).unwrap();
         assert_eq!(files.load_identity().unwrap(), Some(id));

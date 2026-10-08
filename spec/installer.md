@@ -488,3 +488,13 @@ Downloads are done by shelling to `curl`, not by pulling in a HTTP
 stack. What is downloaded and then run is pinned by version and sha256
 (`download_verified`): the firmware, rustup-init and Bun.
 Cloud-Hypervisor is fetched by pinned release tag over HTTPS. The installer itself is therefore small and fast to build.
+
+
+## Joining a cluster (spec/clustering.md)
+
+`glidex-install --join SERVER:8842 [--role agent|server] [--token-file FILE]
+[--advertise IP:PORT] [--node-name NAME]` installs as usual, then asks the
+running control plane to join (`gxctl cluster join`, with the token on its
+standard input). The token comes from `gxctl cluster join-token` on a server;
+it is read from a file (refused unless mode 0600) or stdin, never from argv.
+An agent host's UI service is disabled: its servers serve the API and UI.

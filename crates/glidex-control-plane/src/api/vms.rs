@@ -208,6 +208,7 @@ pub async fn create(c: Caller, Query(w): Query<WaitQuery>, Json(req): Json<Creat
         restart_policy: req.restart_policy,
         on_host_boot: req.on_host_boot,
         stop_grace_secs: req.stop_grace_secs,
+        node: req.node.clone(),
     };
     let config = VmConfig::from(req);
     let quota = c.quota_mode(&project);
@@ -494,6 +495,14 @@ pub async fn console_ws(c: Caller, Path(id): Path<String>, Query(q): Query<Ticke
     {
         return err(StatusCode::FORBIDDEN, "ticket_required", "open the console with a fresh ticket").into_response();
     }
+    // A VM on another node: the console is relayed through that node (§8.4).
+    if let Some(addr) = c.manager().remote_node_addr(&vm) {
+        let Some(cluster) = c.manager().cluster() else { return err(StatusCode::SERVICE_UNAVAILABLE, "unavailable", "no cluster").into_response() };
+        return match cluster.client.upgrade(&addr, &format!("/cluster/v1/vms/{}/console", vm.id)).await {
+            Ok(stream) => ws.on_upgrade(move |socket| bridge_stream(socket, stream)),
+            Err(e) => err(StatusCode::BAD_GATEWAY, "node_unreachable", format!("the VM's node can't be reached: {e}")).into_response(),
+        };
+    }
     let console_path = vm.paths().console_socket;
     ws.on_upgrade(move |socket| bridge_console(socket, console_path))
 }
@@ -511,7 +520,12 @@ async fn bridge_console(mut ws: WebSocket, console_path: String) {
             return;
         }
     };
-    let (mut unix_rx, mut unix_tx) = unix.into_split();
+    bridge_stream(ws, unix).await
+}
+
+/// The same, over any byte stream (a local socket, or a node relay).
+pub(crate) async fn bridge_stream<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(mut ws: WebSocket, stream: S) {
+    let (mut unix_rx, mut unix_tx) = tokio::io::split(stream);
     let mut buf = [0u8; 4096];
 
     loop {
@@ -564,10 +578,32 @@ pub async fn console_log(c: Caller, Path(id): Path<String>, Query(q): Query<LogQ
     let (vm, _, _) = visible_vm(&c, &id).await?;
     const CAP: u64 = 1 << 20;
     let tail = q.tail_bytes.unwrap_or(CAP).min(CAP);
+    if let Some(addr) = c.manager().remote_node_addr(&vm) {
+        let Some(cluster) = c.manager().cluster() else { return Err(err(StatusCode::SERVICE_UNAVAILABLE, "unavailable", "no cluster")) };
+        let path = format!("/cluster/v1/vms/{}/console-log?tail_bytes={}&previous={}", vm.id, tail, q.previous);
+        let r = cluster.client.request(&addr, axum::http::Method::GET, &path, &[], bytes::Bytes::new()).await.map_err(|e| err(StatusCode::BAD_GATEWAY, "node_unreachable", e.to_string()))?;
+        return if r.status.is_success() {
+            Ok(([(axum::http::header::CONTENT_TYPE, "application/octet-stream")], r.body.to_vec()).into_response())
+        } else {
+            Err(err(r.status, "not_found", "no console log"))
+        };
+    }
     let paths = vm.paths();
     let path = if q.previous { paths.previous_log() } else { paths.log };
     let previous = q.previous;
-    let bytes = tokio::task::spawn_blocking(move || -> std::io::Result<Option<Vec<u8>>> {
+    let bytes = read_log_tail(path, tail, previous)
+        .await
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, "internal", format!("console log: {}", e)))?;
+    match bytes {
+        Some(b) => Ok(([(axum::http::header::CONTENT_TYPE, "application/octet-stream")], b).into_response()),
+        None => Err(err(StatusCode::NOT_FOUND, "not_found", "no rotated console log")),
+    }
+}
+
+/// The last `tail` bytes of a console log; `None` for a rotated log that
+/// doesn't exist.
+pub(crate) async fn read_log_tail(path: String, tail: u64, previous: bool) -> std::io::Result<Option<Vec<u8>>> {
+    tokio::task::spawn_blocking(move || -> std::io::Result<Option<Vec<u8>>> {
         use std::io::{Read, Seek, SeekFrom};
         let mut f = match std::fs::File::open(&path) {
             Ok(f) => f,
@@ -581,12 +617,7 @@ pub async fn console_log(c: Caller, Path(id): Path<String>, Query(q): Query<LogQ
         Ok(Some(buf))
     })
     .await
-    .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()))?
-    .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, "internal", format!("console log: {}", e)))?;
-    match bytes {
-        Some(b) => Ok(([(axum::http::header::CONTENT_TYPE, "application/octet-stream")], b).into_response()),
-        None => Err(err(StatusCode::NOT_FOUND, "not_found", "no rotated console log")),
-    }
+    .map_err(std::io::Error::other)?
 }
 
 pub async fn attach_device(c: Caller, Path(id): Path<String>, Query(w): Query<WaitQuery>, Json(req): Json<DeviceRequest>) -> Result<Response, ApiErr> {

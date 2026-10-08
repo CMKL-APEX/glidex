@@ -1574,3 +1574,55 @@ only tests do).
   `glidex-control-plane --force-new-cluster [--from <snapshot>]`.
 - Not yet: feature-level gating (the level is written as 1), certificate
   renewal and rotation (C7), rejoin (C7), agents running the node role (C3).
+
+### C3 Node role over the network
+
+- **Cache and watch** (`cluster::agent`, `cluster::sync`). An agent's
+  database is a *mirror* (`Db::set_mirror`): `GET /cluster/v1/list` fills it,
+  `GET /cluster/v1/watch?from=` (long poll, 20 s) brings the changes. A server
+  keeps the last 20,000 applied write sets in memory; older → `410`, re-list.
+  A node receives shared catalogs (projects, images, networks, nodes, image
+  caches), and only *its own* VMs, disks, events and credentials
+  (`sync::filter_for`).
+- **Status writes** go to the leader as write sets
+  (`POST /cluster/v1/status-write`), checked inside the write
+  (`sync::check_status_write`): a VM's `status` only (resource_version +1; D12's
+  `spec.power = stopped` with a generation bump); a disk's and network's status;
+  events of its own objects; its image caches; its own node record. Anything
+  else is refused with `409`, and the node lists again.
+- **Outbox**: when no server answers, the write set is stored in the local
+  `raft_meta` table, applied to the cache at once (the VM keeps being
+  reconciled), and sent in order when a server is back; the stream never
+  overwrites a key with a queued write. A refused entry is dropped and the
+  cache re-listed.
+- **Liveness** (`cluster::lifecycle`): heartbeats every 5 s to the leader's
+  memory; a node silent for `node_grace_secs` becomes `Ready=Unknown`
+  (reason `NodeUnreachable`) and so do its VMs (condition and event);
+  returning writes `Ready=True`. A new leader gives every node a fresh grace.
+- **Placement** until the scheduler (C4): the node that handled the create,
+  or `node` in the create request (id or name).
+- **Controllers** act only on what is placed or bound on their node
+  (`VmManager::is_local`); `sync_vms`, adoption and metering likewise.
+- **Relays** (§8.4): `console/log`, `stats` and the console WebSocket of a VM
+  on another node go server → node (`/cluster/v1/vms/{id}/…`; the console
+  is an HTTP/1.1 upgrade carrying raw bytes). Authorization is the first
+  server's.
+- **Image caches** (`controller::image_cache`): `image_caches/<image>/<node>`.
+  A node that needs an image (a disk bound to it, or a VM's firmware) copies
+  the file from a node holding a ready copy and checks it against the record's
+  `sha256`. The plan has each node download from the source; copying from a
+  holder keeps a single pull. Deleting an image waits for every node to drop
+  its copy.
+- **Ledger shipping** (§13.1): with a cluster, the meter samples into a
+  node-local ledger (`meter.db`) and every minute ships its closed hourly
+  rows and slot rows (`POST /cluster/v1/ledger`). The leader merges them
+  once (`ledger_inbox`, next free sequence number per subject and hour); the
+  cluster ledger is complete only as far as the slowest live node has closed.
+  A host that metered before it joined keeps its cursors (moved into the local
+  ledger).
+- **Agent installs**: `glidex-install --join SERVER:8842 [--role agent|server]
+  [--token-file F] [--advertise A] [--node-name N]`; the token is read from a
+  file (0600) or stdin. An agent runs the node role and the node API
+  (:8842) only: no REST API or UI of its own.
+- Not yet: the leader-side scheduler (C4), `spec.node` as a field of the VM
+  spec (C4), D14's break-glass rule on agents (they serve no API).

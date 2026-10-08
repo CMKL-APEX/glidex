@@ -96,6 +96,8 @@ tables! {
     NodeDenylist = 29 => "node_denylist",
     IssuedCerts = 30 => "issued_certs",
     CaBundle = 31 => "ca_bundle",
+    ImageCaches = 32 => "image_caches",
+    LedgerInbox = 33 => "ledger_inbox",
 }
 
 impl Serialize for TableId {
@@ -182,6 +184,8 @@ pub struct WriteSet {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Applied {
     pub revision: u64,
+    /// What was applied (a watch serves these to nodes, §6.5).
+    pub ws: Arc<WriteSet>,
     pub tables: SmallVec<[TableId; 4]>,
     pub keys: Vec<(TableId, Vec<u8>)>,
 }
@@ -194,6 +198,10 @@ pub enum Consistency {
 
 #[derive(Error, Debug)]
 pub enum StoreError {
+    /// A node's write was refused by the leader (the object changed, or isn't
+    /// the node's to write).
+    #[error("refused by the cluster: {0}")]
+    Refused(String),
     #[error("Database error: {0}")]
     Database(#[from] redb::DatabaseError),
     #[error("Transaction error: {0}")]
@@ -221,6 +229,7 @@ const DUMP_END: u16 = 0xFFFF;
 /// Keys of the local `raft_meta` table.
 pub const LAST_APPLIED: &str = "last_applied";
 pub const LAST_MEMBERSHIP: &str = "last_membership";
+pub const MIRROR_REVISION: &str = "mirror_revision";
 
 fn read_local(txn: &ReadTransaction, key: &str) -> Result<Option<Vec<u8>>, StoreError> {
     use redb::ReadableTable;
@@ -286,15 +295,24 @@ impl Tx<'_> {
     pub fn commit(self) -> Result<(), StoreError> {
         let Tx { db, origin, txn, ops, _lane } = self;
         let ops = ops.into_inner();
-        let replicator = match &*db.mode.lock().unwrap() {
-            Mode::Local => None,
-            Mode::Replicated(r) => Some(r.clone()),
+        let (replicator, mirror) = match &*db.mode.lock().unwrap() {
+            Mode::Local => (None, None),
+            Mode::Replicated(r) => (Some(r.clone()), None),
+            Mode::Mirror(m) => (None, Some(m.clone())),
         };
         if ops.is_empty() {
             let _ = txn.abort();
             return Ok(());
         }
         let ws = WriteSet { format: WRITE_SET_FORMAT, origin, ops };
+        if let Some(m) = mirror {
+            let _ = txn.abort();
+            return match m.submit(&ws)? {
+                Submitted::Acked(_) => Ok(()),
+                // The leader is out of reach: carry on from the cache.
+                Submitted::Queued => db.apply(&ws, db.revision(), |_| Ok(())),
+            };
+        }
         match replicator {
             None => {
                 txn.commit()?;
@@ -378,9 +396,26 @@ pub trait Forwarder: Send + Sync {
     fn call(&self, op: &str, args: serde_json::Value) -> Result<serde_json::Value, StoreError>;
 }
 
+/// A node's cache of the cluster store (§8.2): writes go to the leader, and
+/// come back through the watch.
+pub trait Mirror: Send + Sync {
+    /// Send `ws` to the leader. `Acked(index)`: it was applied there as entry
+    /// `index` and the cache has caught up with it. `Queued`: the leader can't
+    /// be reached; the write set is kept to send later and the caller applies
+    /// it to the cache now.
+    fn submit(&self, ws: &WriteSet) -> Result<Submitted, StoreError>;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Submitted {
+    Acked(u64),
+    Queued,
+}
+
 enum Mode {
     Local,
     Replicated(Arc<dyn Replicator>),
+    Mirror(Arc<dyn Mirror>),
 }
 
 /// The control-plane database.
@@ -456,7 +491,18 @@ impl Db {
         match &*self.mode.lock().unwrap() {
             Mode::Local => true,
             Mode::Replicated(r) => r.can_write(),
+            // A node's writes are status for the leader to accept; setup is the leader's.
+            Mode::Mirror(_) => false,
         }
+    }
+
+    /// Make this database a node's cache of the cluster store.
+    pub fn set_mirror(&self, m: Arc<dyn Mirror>) {
+        *self.mode.lock().unwrap() = Mode::Mirror(m);
+    }
+
+    pub fn is_mirror(&self) -> bool {
+        matches!(&*self.mode.lock().unwrap(), Mode::Mirror(_))
     }
 
     pub fn set_forwarder(&self, f: Arc<dyn Forwarder>) {
@@ -501,8 +547,8 @@ impl Db {
     pub fn begin(&self, origin: Origin) -> Result<Tx<'_>, StoreError> {
         let lane = self.lane.lock().unwrap_or_else(|p| p.into_inner());
         let replicator = match &*self.mode.lock().unwrap() {
-            Mode::Local => None,
             Mode::Replicated(r) => Some(r.clone()),
+            _ => None,
         };
         if let Some(r) = replicator {
             r.before_write()?;
@@ -565,7 +611,7 @@ impl Db {
             keys.push((op.table(), op.key().to_vec()));
         }
         ring(&self.bell);
-        let _ = self.applied.send(Applied { revision, tables, keys });
+        let _ = self.applied.send(Applied { revision, ws: Arc::new(ws), tables, keys });
     }
 
     /// Start recording every committed write set (the replay test, §15).
@@ -655,6 +701,57 @@ impl Db {
         self.revision.store(revision, Ordering::Release);
         ring(&self.bell);
         Ok(())
+    }
+
+    /// Write a row of the local `raft_meta` table (not replicated).
+    pub fn put_local(&self, key: &str, value: &[u8]) -> Result<(), StoreError> {
+        let txn = self.inner.begin_write()?;
+        txn.open_table(TableId::RaftMeta.definition())?.insert(key, value)?;
+        txn.commit()?;
+        Ok(())
+    }
+
+    pub fn delete_local(&self, key: &str) -> Result<(), StoreError> {
+        let txn = self.inner.begin_write()?;
+        txn.open_table(TableId::RaftMeta.definition())?.remove(key)?;
+        txn.commit()?;
+        Ok(())
+    }
+
+    /// Remember how far a node's cache has caught up (set from the local
+    /// `raft_meta` at start).
+    pub fn set_revision(&self, rev: u64) {
+        self.revision.store(rev, Ordering::Release);
+    }
+
+    /// A node's cache: replace every replicated table with `ws`'s puts, in one
+    /// transaction, at `revision` (§6.5 list).
+    pub fn install_ops(&self, ws: &WriteSet, revision: u64) -> Result<(), StoreError> {
+        let txn = self.inner.begin_write()?;
+        for &id in TableId::ALL.iter().filter(|t| !t.is_local()) {
+            txn.delete_table(id.definition())?;
+            txn.open_table(id.definition())?;
+        }
+        for op in &ws.ops {
+            if let Op::Put { table, key, value } = op {
+                let key = std::str::from_utf8(key).map_err(|_| StoreError::UnknownTable("non-utf8 key".into()))?;
+                txn.open_table(table.definition())?.insert(key, value.as_slice())?;
+            }
+        }
+        txn.open_table(TableId::RaftMeta.definition())?.insert(MIRROR_REVISION, revision.to_string().as_bytes())?;
+        txn.commit()?;
+        self.revision.store(revision, Ordering::Release);
+        ring(&self.bell);
+        let _ = self.applied.send(Applied { revision, ws: Arc::new(ws.clone()), tables: TableId::ALL.iter().copied().filter(|t| !t.is_local()).collect(), keys: Vec::new() });
+        Ok(())
+    }
+
+    /// The revision a node's cache had reached when it last stopped.
+    pub fn stored_mirror_revision(&self) -> u64 {
+        use redb::ReadableTable;
+        let Ok(txn) = self.inner.begin_read() else { return 0 };
+        let Ok(t) = txn.open_table(TableId::RaftMeta.definition()) else { return 0 };
+        t.get(MIRROR_REVISION).ok().flatten().and_then(|v| String::from_utf8(v.value().to_vec()).ok()).and_then(|s| s.parse().ok()).unwrap_or(0)
     }
 
     /// Replay `journal` into an empty database at `path`.

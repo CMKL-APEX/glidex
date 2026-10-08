@@ -23,6 +23,9 @@ impl VmManager {
     /// One round for network `name`.
     pub async fn reconcile_network(&self, name: &str) -> Next {
         let Some(mut net) = self.networks.get(name)? else { return Ok(None) };
+        if net.node.as_deref().is_some_and(|n| n != self.local_node_id()) {
+            return Ok(None);
+        }
         if net.deletion_requested_at.is_some() {
             return self.finish_network_delete(net).await;
         }

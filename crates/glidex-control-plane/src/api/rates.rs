@@ -447,8 +447,25 @@ pub async fn disk_io_series(c: Caller, Path(id): Path<String>, Query(p): Query<R
 /// and its disks, from the last two samples (not stored).
 pub async fn vm_stats(c: Caller, Path(id): Path<String>) -> Result<Response, ApiErr> {
     let vm = visible_vm(&c, &id).await?;
+    // A VM on another node: its live rates are that node's (§8.4).
+    if let Some(addr) = c.manager().remote_node_addr(&vm) {
+        let Some(cluster) = c.manager().cluster() else { return Err(err(StatusCode::SERVICE_UNAVAILABLE, "unavailable", "no cluster")) };
+        let r = cluster
+            .client
+            .request(&addr, axum::http::Method::GET, &format!("/cluster/v1/vms/{}/stats", vm.id), &[], bytes::Bytes::new())
+            .await
+            .map_err(|e| err(StatusCode::BAD_GATEWAY, "node_unreachable", e.to_string()))?;
+        let v: Value = serde_json::from_slice(&r.body).map_err(|e| err(StatusCode::BAD_GATEWAY, "bad_gateway", e.to_string()))?;
+        return if r.status.is_success() { Ok(Json(v).into_response()) } else { Err(err(r.status, "unavailable", "the node has no stats for it")) };
+    }
     let meter = meter(&c)?;
-    let live = meter.live_stats(|s| (s.kind == SubjectKind::Vm && s.id == vm.id) || s.vm_id.as_deref() == Some(vm.id.as_str()));
+    Ok(Json(live_vm_stats(&meter, &vm.id)).into_response())
+}
+
+/// The latest rates of a VM, its NICs and its disks (also what a node tells
+/// the server that relays them).
+pub(crate) fn live_vm_stats(meter: &crate::metering::Meter, vm_id: &str) -> Value {
+    let live = meter.live_stats(|s| (s.kind == SubjectKind::Vm && s.id == vm_id) || s.vm_id.as_deref() == Some(vm_id));
     let pick = |kind: SubjectKind| -> Vec<Value> {
         live.iter()
             .filter(|l| l.subject.kind == kind)
@@ -457,14 +474,13 @@ pub async fn vm_stats(c: Caller, Path(id): Path<String>) -> Result<Response, Api
     };
     let vm_values = live.iter().find(|l| l.subject.kind == SubjectKind::Vm).map(|l| json!(l.values));
     let at = live.iter().map(|l| l.sampled_at).max();
-    Ok(Json(json!({
+    json!({
         "sampled_at": at.map(|t| query::rfc3339(t / 1000)),
         "resolution_secs": meter.config().sample_secs,
         "vm": vm_values,
         "nics": pick(SubjectKind::Nic),
         "disks": pick(SubjectKind::Disk),
-    }))
-    .into_response())
+    })
 }
 
 /// `GET /networks/{name}/stats` (§9.4).

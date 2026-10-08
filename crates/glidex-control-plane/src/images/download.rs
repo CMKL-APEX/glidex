@@ -158,6 +158,11 @@ fn hash_file(path: &Path, hashers: &mut Hashers) -> std::io::Result<u64> {
     }
 }
 
+/// SHA-256 of a file, hex.
+pub fn sha256_path(path: &Path) -> Result<String, ImageError> {
+    sha256_file(path)
+}
+
 fn sha256_file(path: &Path) -> Result<String, ImageError> {
     let mut h = Hashers::new(None);
     hash_file(path, &mut h).map_err(|e| ImageError::Io(format!("{}: {}", path.display(), e)))?;

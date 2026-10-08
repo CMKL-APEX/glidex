@@ -189,6 +189,11 @@ impl ImageManager {
                     return Err(ImageError::NotReady(format!("image {} is not ready ({:?})", img.name, img.status)));
                 }
                 let image_path = self.image_path(&img.id);
+                // On a node of a cluster the catalog says Ready before this
+                // node's copy has arrived (spec/clustering.md §9.2).
+                if !image_path.exists() {
+                    return Err(ImageError::NotReady(format!("image {} has not been copied to this node yet", img.name)));
+                }
                 let image_size = img.virtual_size_bytes;
                 if let Some(s) = spec.size_bytes.filter(|s| *s < image_size) {
                     return Err(too_small(s, &img.name, image_size));

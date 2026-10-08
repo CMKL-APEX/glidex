@@ -29,6 +29,15 @@ pub fn router(c: Arc<Cluster>) -> Router {
         .route("/cluster/v1/join/ready", post(join_ready))
         .route("/cluster/v1/read-index", post(read_index))
         .route("/cluster/v1/status", get(status))
+        .route("/cluster/v1/list", get(node_list))
+        .route("/cluster/v1/watch", get(node_watch))
+        .route("/cluster/v1/heartbeat", post(heartbeat))
+        .route("/cluster/v1/status-write", post(status_write))
+        .route("/cluster/v1/ledger", post(ledger_ship))
+        .route("/cluster/v1/vms/{id}/console", get(relay_console))
+        .route("/cluster/v1/vms/{id}/console-log", get(relay_console_log))
+        .route("/cluster/v1/vms/{id}/stats", get(relay_stats))
+        .route("/cluster/v1/images/{id}/file", get(image_file))
         .route("/cluster/v1/raw", post(raw_write))
         .route("/cluster/v1/auth", post(auth_call))
         .route("/raft/append", post(raft_append))
@@ -425,4 +434,231 @@ async fn auth_call(State(c): Ctx, p: Option<Extension<PeerCert>>, Json(call): Js
         Ok(Err(e)) => fail(StatusCode::BAD_REQUEST, "bad_request", e),
         Err(e) => fail(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()),
     }
+}
+
+/// The caller's own node id; nodes only ever ask about themselves.
+fn caller(c: &Cluster, p: Option<Extension<PeerCert>>) -> Result<PeerCert, Response> {
+    peer(c, p, false)
+}
+
+/// `GET /cluster/v1/list`: everything this node is entitled to (§6.5).
+async fn node_list(State(c): Ctx, p: Option<Extension<PeerCert>>) -> Response {
+    let me = match caller(&c, p) {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    if let Err(e) = c.read_barrier().await {
+        return fail(StatusCode::SERVICE_UNAVAILABLE, "cluster_unavailable", e);
+    }
+    let db = c.db.clone();
+    let node = me.node_id.clone();
+    let out = tokio::task::spawn_blocking(move || {
+        // The revision first: the data is at least that new, and a watch
+        // from it replays whatever the data already includes.
+        let revision = db.revision();
+        super::sync::snapshot_for(&db, &node).map(|ws| (revision, ws))
+    })
+    .await;
+    match out {
+        Ok(Ok((revision, ws))) => Json(json!({ "revision": revision, "ws": ws })).into_response(),
+        Ok(Err(e)) => fail(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()),
+        Err(e) => fail(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()),
+    }
+}
+
+#[derive(Deserialize)]
+struct WatchQuery {
+    from: u64,
+    #[serde(default)]
+    wait_secs: Option<u64>,
+}
+
+/// `GET /cluster/v1/watch?from=<revision>`: the changes after `from` that
+/// concern the caller; waits for some when there are none. `410` when `from`
+/// is older than this server remembers: list again.
+async fn node_watch(State(c): Ctx, p: Option<Extension<PeerCert>>, axum::extract::Query(q): axum::extract::Query<WatchQuery>) -> Response {
+    let me = match caller(&c, p) {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    let Some(log) = c.log.clone() else { return fail(StatusCode::CONFLICT, "not_a_server", "not a server") };
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(q.wait_secs.unwrap_or(20).min(60));
+    let mut rx = log.subscribe();
+    loop {
+        match log.after(q.from, 500) {
+            None => return fail(StatusCode::GONE, "gone", "that revision is older than this server remembers: list again"),
+            Some((upto, entries)) => {
+                let mut out = Vec::new();
+                for (index, ws) in entries {
+                    let f = super::sync::filter_for(&c.db, &me.node_id, &ws);
+                    if !f.ops.is_empty() {
+                        out.push(json!({ "index": index, "ws": f }));
+                    }
+                }
+                if !out.is_empty() || upto > q.from || tokio::time::Instant::now() >= deadline {
+                    return Json(json!({ "revision": upto, "entries": out })).into_response();
+                }
+            }
+        }
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let _ = tokio::time::timeout(left, rx.changed()).await;
+    }
+}
+
+/// `POST /cluster/v1/heartbeat` (§7.2): leader only, kept in memory.
+async fn heartbeat(State(c): Ctx, p: Option<Extension<PeerCert>>) -> Response {
+    let me = match caller(&c, p) {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    if !c.node.as_ref().is_some_and(|n| n.is_leader()) {
+        return not_leader(&c);
+    }
+    c.liveness.beat(&me.node_id);
+    Json(json!({ "revision": c.db.revision() })).into_response()
+}
+
+/// `POST /cluster/v1/status-write` (§8.3): a node's write set, checked.
+async fn status_write(State(c): Ctx, p: Option<Extension<PeerCert>>, Json(ws): Json<crate::store::WriteSet>) -> Response {
+    let me = match caller(&c, p) {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    if !c.node.as_ref().is_some_and(|n| n.is_leader()) {
+        return not_leader(&c);
+    }
+    let cc = c.clone();
+    let node = me.node_id.clone();
+    let r = tokio::task::spawn_blocking(move || cc.apply_status_write(&node, ws)).await;
+    match r {
+        Ok(Ok(())) => Json(json!({ "index": c.db.revision() })).into_response(),
+        Ok(Err(m)) => {
+            tracing::warn!(node = %me.node_id, "refused a status write: {}", m);
+            fail(StatusCode::CONFLICT, "refused", m)
+        }
+        Err(e) => fail(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()),
+    }
+}
+
+/// A VM of this node, for a relay (§8.4): only a server may ask, and only
+/// about a VM placed here.
+fn relay_target(c: &Cluster, p: Option<Extension<PeerCert>>, id: &str) -> Result<(), Response> {
+    peer(c, p, true)?;
+    match get_vm_placement(&c.db, id) {
+        Some(n) if n == c.identity.node_id => Ok(()),
+        _ => Err(fail(StatusCode::NOT_FOUND, "not_found", "no such VM on this node")),
+    }
+}
+
+fn get_vm_placement(db: &crate::store::Db, id: &str) -> Option<String> {
+    use redb::ReadableTable;
+    let txn = db.begin_read().ok()?;
+    let t = txn.open_table(TableId::Vms.definition()).ok()?;
+    let v: serde_json::Value = serde_json::from_slice(t.get(id).ok()??.value()).ok()?;
+    v.pointer("/status/placement/node")?.as_str().map(String::from)
+}
+
+/// The console as a raw stream: the server relays it to the browser.
+async fn relay_console(State(c): Ctx, p: Option<Extension<PeerCert>>, axum::extract::Path(id): axum::extract::Path<String>, mut req: Request) -> Response {
+    if let Err(r) = relay_target(&c, p, &id) {
+        return r;
+    }
+    let Some(on) = req.extensions_mut().remove::<hyper::upgrade::OnUpgrade>() else {
+        return fail(StatusCode::BAD_REQUEST, "bad_request", "this endpoint upgrades the connection");
+    };
+    let sock = crate::paths::vm_paths(&id).console_socket;
+    tokio::spawn(async move {
+        let Ok(up) = on.await else { return };
+        let Ok(mut unix) = tokio::net::UnixStream::connect(&sock).await else { return };
+        let mut up = hyper_util::rt::TokioIo::new(up);
+        let _ = tokio::io::copy_bidirectional(&mut up, &mut unix).await;
+    });
+    Response::builder()
+        .status(StatusCode::SWITCHING_PROTOCOLS)
+        .header("connection", "upgrade")
+        .header("upgrade", "glidex-stream")
+        .body(Body::empty())
+        .unwrap()
+}
+
+#[derive(Deserialize)]
+struct LogQ {
+    #[serde(default)]
+    tail_bytes: Option<u64>,
+    #[serde(default)]
+    previous: bool,
+}
+
+async fn relay_console_log(State(c): Ctx, p: Option<Extension<PeerCert>>, axum::extract::Path(id): axum::extract::Path<String>, axum::extract::Query(q): axum::extract::Query<LogQ>) -> Response {
+    if let Err(r) = relay_target(&c, p, &id) {
+        return r;
+    }
+    let paths = crate::paths::vm_paths(&id);
+    let path = if q.previous { paths.previous_log() } else { paths.log };
+    let tail = q.tail_bytes.unwrap_or(1 << 20).min(1 << 20);
+    match crate::api::read_log_tail(path, tail, q.previous).await {
+        Ok(Some(b)) => (StatusCode::OK, [("content-type", "application/octet-stream")], b).into_response(),
+        Ok(None) => fail(StatusCode::NOT_FOUND, "not_found", "no rotated console log"),
+        Err(e) => fail(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()),
+    }
+}
+
+async fn relay_stats(State(c): Ctx, p: Option<Extension<PeerCert>>, axum::extract::Path(id): axum::extract::Path<String>) -> Response {
+    if let Err(r) = relay_target(&c, p, &id) {
+        return r;
+    }
+    match c.handlers.get().and_then(|h| h.vm_stats(&id)) {
+        Some(v) => Json(v).into_response(),
+        None => fail(StatusCode::SERVICE_UNAVAILABLE, "unavailable", "metering is not running on this node"),
+    }
+}
+
+/// `POST /cluster/v1/ledger` (§13.1): a node's closed hours, merged once.
+async fn ledger_ship(State(c): Ctx, p: Option<Extension<PeerCert>>, Json(e): Json<crate::metering::ledger::Export>) -> Response {
+    let me = match caller(&c, p) {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    if !c.node.as_ref().is_some_and(|n| n.is_leader()) {
+        return not_leader(&c);
+    }
+    let db = c.db.clone();
+    let node = me.node_id.clone();
+    let r = tokio::task::spawn_blocking(move || crate::metering::Ledger::attach(db).import(&node, &e)).await;
+    match r {
+        Ok(Ok(n)) => Json(json!({ "merged": n })).into_response(),
+        Ok(Err(e)) => fail(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()),
+        Err(e) => fail(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()),
+    }
+}
+
+#[derive(Deserialize)]
+struct PartQ {
+    #[serde(default)]
+    part: Option<String>,
+}
+
+/// A copy of an image file, for a node that needs one (§9.2). The image
+/// library is shared, so any node of the cluster may ask.
+async fn image_file(State(c): Ctx, p: Option<Extension<PeerCert>>, axum::extract::Path(id): axum::extract::Path<String>, axum::extract::Query(q): axum::extract::Query<PartQ>) -> Response {
+    use tokio::io::AsyncReadExt;
+    if let Err(r) = caller(&c, p) {
+        return r;
+    }
+    let Some(path) = c.handlers.get().and_then(|h| h.image_file(&id, q.part.as_deref().unwrap_or("main"))) else {
+        return fail(StatusCode::NOT_FOUND, "not_found", "this node has no such file");
+    };
+    let Ok(f) = tokio::fs::File::open(&path).await else { return fail(StatusCode::NOT_FOUND, "not_found", "this node has no such file") };
+    let stream = futures_util::stream::unfold(f, |mut f| async move {
+        let mut buf = vec![0u8; 256 * 1024];
+        match f.read(&mut buf).await {
+            Ok(0) => None,
+            Ok(n) => {
+                buf.truncate(n);
+                Some((Ok::<_, std::io::Error>(bytes::Bytes::from(buf)), f))
+            }
+            Err(e) => Some((Err(e), f)),
+        }
+    });
+    Response::builder().status(StatusCode::OK).header("content-type", "application/octet-stream").body(Body::from_stream(stream)).unwrap()
 }

@@ -25,7 +25,16 @@ pub enum ClusterError {
     Other(String),
 }
 
+/// What a node's own manager answers when a server relays a request to it.
+pub trait NodeHandlers: Send + Sync {
+    fn vm_stats(&self, vm_id: &str) -> Option<serde_json::Value>;
+    /// A file of image `id` this node holds (`main`, or a firmware `vars`
+    /// template).
+    fn image_file(&self, id: &str, part: &str) -> Option<std::path::PathBuf>;
+}
+
 pub struct Cluster {
+    pub(crate) handlers: OnceLock<Arc<dyn NodeHandlers>>,
     pub identity: Identity,
     pub files: Files,
     pub db: Arc<Db>,
@@ -38,6 +47,9 @@ pub struct Cluster {
     pub(crate) api: OnceLock<axum::Router>,
     stop: tokio::sync::watch::Sender<bool>,
     barrier: Arc<Barrier>,
+    /// Servers only: recent applied write sets for watches.
+    pub(crate) log: Option<Arc<super::sync::WriteLog>>,
+    pub(crate) liveness: super::sync::Liveness,
 }
 
 /// Raft messages over mTLS HTTP/2.
@@ -130,8 +142,13 @@ impl Cluster {
             NodeRole::Agent => None,
         };
         let ca = files.load_ca()?;
+        let log = node.is_some().then(|| {
+            let l = super::sync::WriteLog::new(20_000);
+            l.follow(&db);
+            l
+        });
         let (stop, stop_rx) = tokio::sync::watch::channel(false);
-        let cluster = Arc::new(Cluster { identity, files, db, node, tls: tls.clone(), client, config, ca: Mutex::new(ca), api: OnceLock::new(), stop, barrier: Arc::new(Barrier::default()) });
+        let cluster = Arc::new(Cluster { identity, files, db, node, tls: tls.clone(), client, config, ca: Mutex::new(ca), api: OnceLock::new(), stop, barrier: Arc::new(Barrier::default()), log, liveness: Default::default(), handlers: OnceLock::new() });
         let listener = tokio::net::TcpListener::bind(listen).await.map_err(|e| ClusterError::Other(format!("cannot listen on {listen}: {e}")))?;
         let router = super::server::router(cluster.clone());
         tokio::spawn(super::net::serve(listener, tls, router, stop_rx));
@@ -139,6 +156,7 @@ impl Cluster {
             n.replicate();
             cluster.db.set_forwarder(Arc::new(LeaderForwarder { cluster: Arc::downgrade(&cluster), runtime: tokio::runtime::Handle::current() }));
         }
+        cluster.start_lifecycle();
         Ok(cluster)
     }
 
@@ -160,6 +178,10 @@ impl Cluster {
         let _ = self.api.set(router);
     }
 
+    pub(crate) fn stop_rx(&self) -> tokio::sync::watch::Receiver<bool> {
+        self.stop.subscribe()
+    }
+
     pub fn shutdown(&self) {
         let _ = self.stop.send(true);
     }
@@ -169,6 +191,22 @@ impl Cluster {
         if let Some(n) = &self.node {
             n.shutdown().await;
         }
+    }
+
+    /// POST to the leader as a server (following one "not the leader").
+    pub async fn post_leader(&self, path: &str, body: Bytes) -> Result<super::net::Reply, String> {
+        let mut addr = self.leader_addr().ok_or("no leader")?;
+        for _ in 0..2 {
+            let r = self.client.request_timeout(&addr, hyper::Method::POST, path, &[("content-type", "application/json".into())], body.clone(), Duration::from_secs(30)).await.map_err(|e| e.to_string())?;
+            if r.status == hyper::StatusCode::MISDIRECTED_REQUEST {
+                if let Some(l) = serde_json::from_slice::<serde_json::Value>(&r.body).ok().and_then(|v| v["leader"].as_str().map(String::from)) {
+                    addr = l;
+                    continue;
+                }
+            }
+            return Ok(r);
+        }
+        Err("no leader".into())
     }
 
     pub fn signing_ca(&self) -> Option<Ca> {

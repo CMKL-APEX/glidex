@@ -61,6 +61,12 @@ pub enum VmManagerError {
     PreconditionFailed { expected: u64, actual: u64 },
 }
 
+impl From<crate::store::StoreError> for VmManagerError {
+    fn from(e: crate::store::StoreError) -> Self {
+        VmManagerError::PersistenceError(e.to_string())
+    }
+}
+
 impl std::fmt::Display for VmManagerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -153,6 +159,8 @@ pub struct VmOptions {
     pub restart_policy: Option<RestartPolicy>,
     pub on_host_boot: Option<HostBootPolicy>,
     pub stop_grace_secs: Option<u32>,
+    /// Pin the VM to a node (id or name).
+    pub node: Option<String>,
 }
 
 /// `PATCH /vms/{id}`: a JSON merge patch of `spec` (§12.1). Immutable
@@ -266,10 +274,13 @@ pub struct VmManager {
     cluster: arc_swap::ArcSwapOption<crate::cluster::Cluster>,
     /// The API router, handed to the cluster for forwarded requests.
     api_router: std::sync::OnceLock<axum::Router>,
+    node_link: std::sync::OnceLock<Arc<crate::cluster::agent::NodeLink>>,
     /// The controllers' tasks, aborted by `stop_controllers`.
     pub(crate) tasks: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
     /// Resource usage metering (spec/metering.md), once started.
-    pub(crate) meter: std::sync::OnceLock<Arc<crate::metering::Meter>>,
+    pub(crate) meter: arc_swap::ArcSwapOption<crate::metering::Meter>,
+    pub(crate) meter_tasks: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    pub(crate) metering_cfg: std::sync::Mutex<Option<crate::config::MeteringConfig>>,
     pub(crate) me: Weak<VmManager>,
 }
 
@@ -374,8 +385,11 @@ impl VmManager {
             db_path,
             cluster: arc_swap::ArcSwapOption::empty(),
             api_router: std::sync::OnceLock::new(),
+            node_link: std::sync::OnceLock::new(),
             tasks: std::sync::Mutex::new(Vec::new()),
-            meter: std::sync::OnceLock::new(),
+            meter: arc_swap::ArcSwapOption::empty(),
+            meter_tasks: std::sync::Mutex::new(Vec::new()),
+            metering_cfg: std::sync::Mutex::new(None),
             me: me.clone(),
         });
         if let Some(c) = cluster {
@@ -398,6 +412,39 @@ impl VmManager {
             || !self.images.list_disks().is_empty()
             || self.networks.list().map(|n| !n.is_empty()).unwrap_or(false)
             || self.credentials.list(None).map(|c| !c.is_empty()).unwrap_or(false)
+    }
+
+    /// The image and disk records and files of this host.
+    pub fn images(&self) -> &Arc<ImageManager> {
+        &self.images
+    }
+
+    /// This host's node id: its cluster identity, else the standalone `local`.
+    pub fn local_node_id(&self) -> String {
+        match self.cluster() {
+            Some(c) => c.identity.node_id.clone(),
+            None => crate::authz::node_id(),
+        }
+    }
+
+    /// Whether `vm` runs here. A VM without a placement is this host's (a
+    /// record from before nodes).
+    /// The node API address of the node `vm` runs on, if that is not this one.
+    pub fn remote_node_addr(&self, vm: &Vm) -> Option<String> {
+        if self.is_local(vm) {
+            return None;
+        }
+        let node = vm.status.placement.as_ref()?.node.clone();
+        self.nodes.get(&node).ok().flatten().and_then(|n| n.status.advertise).map(|a| a.to_string())
+    }
+
+    pub(crate) fn is_local(&self, vm: &Vm) -> bool {
+        vm.status.placement.as_ref().is_none_or(|p| p.node == self.local_node_id())
+    }
+
+    /// An agent's link to the servers, once it has one.
+    pub fn node_link(&self) -> Option<&Arc<crate::cluster::agent::NodeLink>> {
+        self.node_link.get()
     }
 
     pub fn db_path(&self) -> &std::path::Path {
@@ -424,7 +471,16 @@ impl VmManager {
         if let Some(r) = self.api_router.get() {
             cluster.set_api(r.clone());
         }
+        let _ = cluster.handlers.set(Arc::new(HandlersOf(self.me.clone())));
+        if cluster.identity.role == crate::node::NodeRole::Agent {
+            // An agent runs the node role only, from a cache of the store.
+            self.set_roles(crate::node::Roles { node: true, server: false });
+            let link = crate::cluster::agent::NodeLink::start(cluster.clone(), self.database(), cluster.identity.seeds.clone());
+            let _ = self.node_link.set(link);
+        }
         self.cluster.store(Some(cluster));
+        // The meter now samples into a node-local ledger and ships it.
+        self.restart_metering();
         let me = self.arc();
         tokio::spawn(async move { me.cache_sync().await });
     }
@@ -435,6 +491,8 @@ impl VmManager {
         let mut rx = self.store.database().subscribe();
         loop {
             match rx.recv().await {
+                // A cache re-list replaces everything: no keys to say which.
+                Ok(a) if a.keys.is_empty() => self.reload_vms().await,
                 Ok(a) if a.tables.contains(&crate::store::TableId::Vms) => {
                     let keys: Vec<String> = a.keys.iter().filter(|(t, _)| *t == crate::store::TableId::Vms).filter_map(|(_, k)| String::from_utf8(k.clone()).ok()).collect();
                     self.refresh_vms(&keys).await;
@@ -832,7 +890,21 @@ impl VmManager {
         let mut vm = Vm::new(name, config);
         vm.project = project.to_string();
         // One node until the scheduler places VMs (C4).
-        vm.status.placement = Some(crate::models::Placement { node: crate::authz::node_id(), at: crate::tenancy::now() });
+        let node = match &opts.node {
+            None => self.local_node_id(),
+            Some(want) => {
+                let nodes = self.nodes.list().map_err(|e| VmManagerError::PersistenceError(e.to_string()))?;
+                let n = nodes
+                    .iter()
+                    .find(|n| (&n.meta.id == want || &n.spec.name == want) && !n.status.phase.is_tombstone())
+                    .ok_or_else(|| invalid(format!("no node {want}")))?;
+                if !n.status.phase.schedulable() || n.spec.unschedulable {
+                    return Err(invalid(format!("node {} takes no new VMs", n.spec.name)));
+                }
+                n.meta.id.clone()
+            }
+        };
+        vm.status.placement = Some(crate::models::Placement { node, at: crate::tenancy::now() });
         vm.spec.power = power;
         vm.spec.restart_policy = opts.restart_policy.unwrap_or_default();
         vm.spec.on_host_boot = opts.on_host_boot.unwrap_or(self.settings().on_host_boot);
@@ -2217,4 +2289,26 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T, ImageError> +
 /// Size in GiB, rounded up.
 fn gib_ceil(bytes: u64) -> u64 {
     bytes.div_ceil(1 << 30)
+}
+
+/// The node-side answers to relayed requests, backed by the manager.
+struct HandlersOf(Weak<VmManager>);
+
+impl crate::cluster::runtime::NodeHandlers for HandlersOf {
+    fn vm_stats(&self, vm_id: &str) -> Option<serde_json::Value> {
+        let m = self.0.upgrade()?;
+        let meter = m.meter()?;
+        Some(crate::api::live_vm_stats(&meter, vm_id))
+    }
+
+    fn image_file(&self, id: &str, part: &str) -> Option<std::path::PathBuf> {
+        let m = self.0.upgrade()?;
+        let img = m.images.get_image(id).ok()?;
+        let p = match (part, img.kind) {
+            ("main", _) => m.images.image_file(&img),
+            ("vars", crate::images::ImageKind::Firmware) => m.images.firmware_vars_template(&img.id),
+            _ => return None,
+        };
+        p.exists().then_some(p)
+    }
 }

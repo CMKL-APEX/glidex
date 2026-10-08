@@ -28,7 +28,12 @@ use std::time::Duration;
 
 /// The meter: one ledger, sampled every `sample_secs`.
 pub struct Meter {
+    /// What the API reads: the cluster-wide ledger (the replicated store in a
+    /// cluster, the only database otherwise).
     ledger: Ledger,
+    /// In a cluster, where this node's own rounds are written, before they are
+    /// shipped to the leader (spec/clustering.md §13.1).
+    local: Option<Ledger>,
     cfg: MeteringConfig,
     host: sources::Host,
     /// This boot's id: NAT counter handles restart after a reboot.
@@ -54,6 +59,7 @@ impl Meter {
         let boot_id = glidex_vm_shim::util::boot_id().unwrap_or_default();
         Ok(Self {
             ledger,
+            local: None,
             cfg,
             host: sources::Host::default(),
             boot_id,
@@ -62,8 +68,25 @@ impl Meter {
         })
     }
 
+    /// A node of a cluster: sample into `local`, ship to the leader, read
+    /// the cluster's ledger from `central`.
+    pub fn new_clustered(central: Arc<crate::store::Db>, local: Arc<crate::store::Db>, cfg: MeteringConfig) -> Result<Self, MeteringError> {
+        let mut m = Self::new(central, cfg.clone())?;
+        m.local = Some(Ledger::new(local, LedgerSettings::from_secs(cfg.sample_secs, cfg.close_grace_secs))?);
+        Ok(m)
+    }
+
     pub fn ledger(&self) -> &Ledger {
         &self.ledger
+    }
+
+    /// Where rounds are written.
+    pub fn writer(&self) -> &Ledger {
+        self.local.as_ref().unwrap_or(&self.ledger)
+    }
+
+    pub fn local_ledger(&self) -> Option<&Ledger> {
+        self.local.as_ref()
     }
 
     pub fn config(&self) -> &MeteringConfig {
@@ -80,8 +103,8 @@ impl Meter {
             Some(_) => &[SubjectKind::Vm, SubjectKind::Disk, SubjectKind::Nic, SubjectKind::Network],
             None => &[SubjectKind::Vm, SubjectKind::Disk],
         };
-        let with_cursors = self.ledger.cursor_subjects(kinds)?;
-        let mut round = self.ledger.begin_round(now)?;
+        let with_cursors = self.writer().cursor_subjects(kinds)?;
+        let mut round = self.writer().begin_round(now)?;
         sampler::sample_vms(&mut round, &snap.vms, &snap.disks, &self.host, now)?;
         sampler::sample_disks(&mut round, &snap.disks, now)?;
         if let Some(bridges) = &snap.bridges {
@@ -92,7 +115,7 @@ impl Meter {
         }
         sampler::forget_gone(&mut round, &with_cursors, &snap.live_subjects());
         let live = round.take_live();
-        self.ledger.commit(round)?;
+        self.writer().commit(round)?;
         let mut map = self.live.lock().unwrap_or_else(|e| e.into_inner());
         // Subjects with no fresh rate this round (stopped, gone) drop out.
         map.retain(|k, v| live.contains_key(k) || now.saturating_sub(v.sampled_at) < 2 * self.cfg.sample_secs * 1000);
@@ -106,14 +129,14 @@ impl Meter {
     /// `image.stored` (blocking: the database).
     pub fn sample_storage(&self, disks: &[(Disk, u64)], images: &[crate::images::Image], now: u64) -> Result<(), MeteringError> {
         let _one = self.round_lock.lock().unwrap_or_else(|e| e.into_inner());
-        let mut round = self.ledger.begin_round(now)?;
+        let mut round = self.writer().begin_round(now)?;
         storage::record(&mut round, disks, images, now)?;
         // Images that are gone: their cursors go with them.
         let live: std::collections::BTreeSet<String> = images.iter().map(|i| format!("image/{}", i.id)).collect();
-        for key in self.ledger.cursor_subjects(&[SubjectKind::Image])?.difference(&live) {
+        for key in self.writer().cursor_subjects(&[SubjectKind::Image])?.difference(&live) {
             round.forget_subject(key);
         }
-        self.ledger.commit(round)
+        self.writer().commit(round)
     }
 
     /// Live rates of the subjects `keep` selects.
@@ -167,18 +190,57 @@ pub fn until_next(now: u64, period_ms: u64) -> Duration {
 }
 
 impl crate::state::VmManager {
-    /// Open the meter and, when enabled, start its sampling loop with the
-    /// controllers' tasks. Idempotent; call after `start_controllers`.
+    /// Open the meter and, when enabled, start its sampling loop. Idempotent;
+    /// call after `start_controllers`.
     pub fn start_metering(&self, cfg: &MeteringConfig) -> Result<(), MeteringError> {
-        if self.meter.get().is_some() {
+        if self.meter.load().is_some() {
             return Ok(());
         }
-        let meter = Arc::new(Meter::new(self.store.database(), cfg.clone())?);
-        let _ = self.meter.set(meter.clone());
+        *self.metering_cfg.lock().unwrap() = Some(cfg.clone());
+        self.spawn_meter(cfg)
+    }
+
+    /// Build the meter anew: after this host joined or formed a cluster, its
+    /// rounds go to a node-local ledger that is shipped (§13.1).
+    pub(crate) fn restart_metering(&self) {
+        let Some(cfg) = self.metering_cfg.lock().unwrap().clone() else { return };
+        for t in std::mem::take(&mut *self.meter_tasks.lock().unwrap()) {
+            t.abort();
+        }
+        self.meter.store(None);
+        if let Err(e) = self.spawn_meter(&cfg) {
+            tracing::warn!("metering not restarted: {}", e);
+        }
+    }
+
+    fn build_meter(&self, cfg: &MeteringConfig) -> Result<Meter, MeteringError> {
+        let central = self.store.database();
+        if self.cluster().is_none() {
+            return Meter::new(central, cfg.clone());
+        }
+        let local = Arc::new(crate::store::Db::create(self.data_dir.join("meter.db")).map_err(|e| MeteringError::Storage(e.to_string()))?);
+        let meter = Meter::new_clustered(central.clone(), local.clone(), cfg.clone())?;
+        // A host that metered before it joined brings its cursors along, so
+        // nothing is counted twice or lost (D8).
+        if let Some(l) = meter.local_ledger() {
+            if l.is_empty_of_state()? && central.can_write() {
+                let old = meter.ledger().node_state()?;
+                if !old.cursors.is_empty() || !old.open.is_empty() {
+                    l.put_node_state(&old)?;
+                    meter.ledger().clear_node_state(&old)?;
+                }
+            }
+        }
+        Ok(meter)
+    }
+
+    fn spawn_meter(&self, cfg: &MeteringConfig) -> Result<(), MeteringError> {
+        let meter = Arc::new(self.build_meter(cfg)?);
+        self.meter.store(Some(meter.clone()));
         if !cfg.enabled {
             return Ok(());
         }
-        meter.ledger.started_at()?;
+        meter.writer().started_at()?;
         let me = self.arc();
         let task = tokio::spawn(async move {
             let period = meter.cfg.sample_secs.max(1) * 1000;
@@ -188,14 +250,16 @@ impl crate::state::VmManager {
                 if let Err(e) = me.meter_round(&meter).await {
                     tracing::warn!("metering round failed: {}", e);
                 }
-                // Daily upkeep; a no-op on every other round of the day.
-                let m = meter.clone();
-                let upkeep = tokio::task::spawn_blocking(move || {
-                    let tz = query::parse_tz(&m.cfg.billing_timezone).unwrap_or_else(|_| query::Tz::utc());
-                    retention::run(&m.ledger, &m.cfg, &tz, now_ms() / 1000)
-                });
-                if let Ok(Err(e)) = upkeep.await {
-                    tracing::warn!("metering upkeep failed: {}", e);
+                // Daily upkeep of the cluster-wide ledger, where it can be written.
+                if meter.ledger.can_write() {
+                    let m = meter.clone();
+                    let upkeep = tokio::task::spawn_blocking(move || {
+                        let tz = query::parse_tz(&m.cfg.billing_timezone).unwrap_or_else(|_| query::Tz::utc());
+                        retention::run(&m.ledger, &m.cfg, &tz, now_ms() / 1000)
+                    });
+                    if let Ok(Err(e)) = upkeep.await {
+                        tracing::warn!("metering upkeep failed: {}", e);
+                    }
                 }
                 let took = started.elapsed();
                 if took > Duration::from_millis(period / 2) {
@@ -203,16 +267,18 @@ impl crate::state::VmManager {
                 }
             }
         });
-        self.tasks.lock().unwrap().push(task);
+        self.meter_tasks.lock().unwrap().push(task);
         // Stored sizes, every storage_secs: `qemu-img info` opens the files.
         let me = self.arc();
-        let meter = self.meter.get().cloned().expect("set above");
+        let meter = self.meter.load_full().expect("stored above");
+        let for_storage = meter.clone();
         let storage = tokio::spawn(async move {
+            let meter = for_storage;
             let period = meter.cfg.storage_secs.max(meter.cfg.sample_secs) * 1000;
             loop {
                 tokio::time::sleep(until_next(now_ms(), period)).await;
-                let disks: Vec<Disk> = me.images.list_disks().into_iter().filter(storage::measurable).collect();
-                let images = me.images.list_images();
+                let disks: Vec<Disk> = me.images.list_disks().into_iter().filter(|d| storage::measurable(d) && d.node.as_deref().is_none_or(|n| n == me.local_node_id())).collect();
+                let images = if meter.ledger.can_write() { me.images.list_images() } else { Vec::new() };
                 let paths: Vec<_> = disks.iter().map(|d| me.images.disk_path(d)).collect();
                 let m = meter.clone();
                 let done = tokio::task::spawn_blocking(move || {
@@ -232,13 +298,52 @@ impl crate::state::VmManager {
                 }
             }
         });
-        self.tasks.lock().unwrap().push(storage);
+        self.meter_tasks.lock().unwrap().push(storage);
+        if meter.local.is_some() {
+            let me = self.arc();
+            let m = meter.clone();
+            let ship = tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(Duration::from_secs(60)).await;
+                    if let Err(e) = me.ship_ledger(&m).await {
+                        tracing::warn!("shipping usage to the leader: {}", e);
+                    }
+                }
+            });
+            self.meter_tasks.lock().unwrap().push(ship);
+        }
         Ok(())
+    }
+
+    /// Send this node's closed hours to the leader; once it has them, forget
+    /// them locally (§13.1: at-least-once shipping, idempotent merge).
+    pub async fn ship_ledger(&self, meter: &Arc<Meter>) -> Result<(), String> {
+        let Some(local) = meter.local_ledger() else { return Ok(()) };
+        let export = local.export().map_err(|e| e.to_string())?;
+        let node = self.local_node_id();
+        let cluster = self.cluster().ok_or("not in a cluster")?;
+        let leader_here = cluster.is_leader();
+        if leader_here {
+            let central = meter.ledger().clone_handle();
+            let (n, e) = (node.clone(), export.clone());
+            tokio::task::spawn_blocking(move || central.import(&n, &e)).await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())?;
+        } else {
+            let body = bytes::Bytes::from(serde_json::to_vec(&export).map_err(|e| e.to_string())?);
+            let reply = match self.node_link() {
+                Some(link) => link.post_leader("/cluster/v1/ledger", body).await?,
+                None => cluster.post_leader("/cluster/v1/ledger", body).await?,
+            };
+            if !reply.status.is_success() {
+                return Err(format!("the leader answered {}", reply.status));
+            }
+        }
+        let local = meter.local_ledger().expect("checked");
+        local.ack_export(&export).map_err(|e| e.to_string())
     }
 
     /// Snapshot everything and run one round (port counters from netd).
     async fn meter_round(&self, meter: &Arc<Meter>) -> Result<(), MeteringError> {
-        let vms: Vec<Vm> = self.vms.read().await.values().cloned().collect();
+        let vms: Vec<Vm> = self.vms.read().await.values().filter(|v| self.is_local(v)).cloned().collect();
         let disks = self.images.list_disks();
         let networks = self.networks.list().unwrap_or_default();
         let netd = self.netd.clone();
@@ -274,7 +379,7 @@ impl crate::state::VmManager {
 
     /// The meter, once [`Self::start_metering`] ran.
     pub fn meter(&self) -> Option<Arc<Meter>> {
-        self.meter.get().cloned()
+        self.meter.load_full()
     }
 }
 

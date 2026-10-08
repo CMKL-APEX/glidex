@@ -1186,6 +1186,236 @@ impl Ledger {
     }
 }
 
+/// What a node ships to the leader (spec/clustering.md §13.1): its closed
+/// hourly rows, its 5-minute slot rows, and how far it has closed.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Export {
+    pub started_at_ms: u64,
+    pub closed_through: u64,
+    pub hourly: Vec<(String, UsageRecord)>,
+    pub slots: Vec<(String, SlotRow)>,
+}
+
+/// A node's slots of hours this far behind its closing point stay locally,
+/// where late samples may still merge into them.
+const SLOT_KEEP_SECS: u64 = 3 * 3600;
+/// `ledger_inbox` rows older than this are forgotten (a retransmission
+/// can't be this late).
+const INBOX_KEEP_SECS: u64 = 7 * 86400;
+
+impl Ledger {
+    pub fn can_write(&self) -> bool {
+        self.db.can_write()
+    }
+
+    /// Another handle on the same database.
+    pub fn clone_handle(&self) -> Ledger {
+        Ledger { db: self.db.clone(), settings: self.settings }
+    }
+
+    /// A ledger on a database that other code owns the upkeep of: no
+    /// migrations. For merging shipped rows.
+    pub fn attach(db: Arc<Db>) -> Self {
+        Self { db, settings: LedgerSettings::from_secs(30, 120) }
+    }
+
+    /// Everything a node has not yet shipped: every closed hourly row it still
+    /// holds (shipped rows are deleted, see [`ack_export`](Self::ack_export))
+    /// and the slot rows of closed hours.
+    pub fn export(&self) -> Result<Export, MeteringError> {
+        let closed = self.complete_through()?;
+        let txn = self.db.begin_read()?;
+        let mut hourly = Vec::new();
+        for r in txn.open_table(HOURLY)?.iter()? {
+            let (k, v) = r?;
+            hourly.push((k.value().to_string(), serde_json::from_slice(v.value())?));
+        }
+        let mut slots = Vec::new();
+        for r in txn.open_table(RATE5)?.iter()? {
+            let (k, v) = r?;
+            let hour: u64 = k.value().split('/').next().and_then(|h| h.parse().ok()).unwrap_or(u64::MAX);
+            if hour < closed {
+                slots.push((k.value().to_string(), serde_json::from_slice(v.value())?));
+            }
+        }
+        Ok(Export { started_at_ms: self.meta_u64(META_STARTED_AT)?.unwrap_or(0), closed_through: closed, hourly, slots })
+    }
+
+    /// The leader has `e`: forget the hourly rows, and slots too old to change.
+    pub fn ack_export(&self, e: &Export) -> Result<(), MeteringError> {
+        let txn = self.db.begin(crate::store::Origin::Metering)?;
+        {
+            let mut h = txn.open_table(HOURLY)?;
+            for (k, _) in &e.hourly {
+                h.remove(k.as_str())?;
+            }
+            let cutoff = e.closed_through.saturating_sub(SLOT_KEEP_SECS);
+            let mut r = txn.open_table(RATE5)?;
+            let old: Vec<String> = r
+                .range(..format!("{cutoff:010}/").as_str())?
+                .map(|x| x.map(|(k, _)| k.value().to_string()))
+                .collect::<Result<_, _>>()?;
+            for k in old {
+                r.remove(k.as_str())?;
+            }
+        }
+        txn.commit()?;
+        Ok(())
+    }
+
+    /// On the leader: merge what `node` shipped, exactly once. A row already
+    /// in `ledger_inbox` is skipped; a new hourly row takes the next free
+    /// sequence number for its subject and hour; slot rows replace (a node is
+    /// the only writer of its subjects). Completeness (`closed_through`) is
+    /// the least any live node has closed.
+    pub fn import(&self, node: &str, e: &Export) -> Result<usize, MeteringError> {
+        let now = now_ms() / 1000;
+        let mut added = 0;
+        self.db.write(crate::store::Origin::Metering, |tx| -> Result<(), MeteringError> {
+            let mut inbox = tx.open_table(crate::store::TableId::LedgerInbox.definition())?;
+            let mut hourly = tx.open_table(HOURLY)?;
+            for (k, row) in &e.hourly {
+                let ik = format!("{node}/{k}");
+                if inbox.get(ik.as_str())?.is_some() {
+                    continue;
+                }
+                let prefix = format!("{:010}/{}/{}/", row.hour, row.subject.project_key(), row.subject.key());
+                let seq = match hourly.range(prefix.as_str()..format!("{prefix}~").as_str())?.next_back() {
+                    Some(r) => {
+                        let (k, _) = r?;
+                        k.value().rsplit('/').next().and_then(|s| s.parse::<u16>().ok()).map_or(0, |s| s + 1)
+                    }
+                    None => 0,
+                };
+                let mut row = row.clone();
+                row.seq = seq;
+                hourly.insert(hour_key(row.hour, row.subject.project_key(), &row.subject.key(), seq).as_str(), serde_json::to_vec(&row)?.as_slice())?;
+                inbox.insert(ik.as_str(), now.to_string().as_bytes())?;
+                added += 1;
+            }
+            let mut slots = tx.open_table(RATE5)?;
+            for (k, row) in &e.slots {
+                slots.insert(k.as_str(), serde_json::to_vec(row)?.as_slice())?;
+            }
+            inbox.insert(format!("cursor/{node}").as_str(), serde_json::to_vec(&(e.closed_through, e.started_at_ms, now))?.as_slice())?;
+            // Forget old duplicates guards.
+            let cutoff = now.saturating_sub(INBOX_KEEP_SECS);
+            let old: Vec<String> = inbox
+                .iter()?
+                .filter_map(|r| r.ok())
+                .filter(|(k, v)| !k.value().starts_with("cursor/") && std::str::from_utf8(v.value()).ok().and_then(|s| s.parse::<u64>().ok()).is_some_and(|t| t < cutoff))
+                .map(|(k, _)| k.value().to_string())
+                .collect();
+            for k in old {
+                inbox.remove(k.as_str())?;
+            }
+            // Completeness: the least any live node has closed.
+            let live: BTreeSet<String> = {
+                let nodes = tx.open_table(crate::store::TableId::Nodes.definition())?;
+                nodes
+                    .iter()?
+                    .filter_map(|r| r.ok())
+                    .filter_map(|(k, v)| {
+                        let n: crate::node::Node = serde_json::from_slice(v.value()).ok()?;
+                        (!n.status.phase.is_tombstone()).then(|| k.value().to_string())
+                    })
+                    .collect()
+            };
+            let mut closed = u64::MAX;
+            let mut started = u64::MAX;
+            let mut reported = BTreeSet::new();
+            for r in inbox.range("cursor/".."cursor0")? {
+                let (k, v) = r?;
+                let id = k.value().trim_start_matches("cursor/").to_string();
+                if live.contains(&id) {
+                    let (c, s, _): (u64, u64, u64) = serde_json::from_slice(v.value())?;
+                    closed = closed.min(c);
+                    if s > 0 {
+                        started = started.min(s);
+                    }
+                    reported.insert(id);
+                }
+            }
+            // A live node that has not reported yet may hold hours: not complete.
+            if live.iter().any(|n| !reported.contains(n)) {
+                closed = 0;
+            }
+            let mut meta = tx.open_table(META)?;
+            if closed != u64::MAX {
+                meta.insert(META_CLOSED_THROUGH, closed.to_string().as_bytes())?;
+            }
+            if started != u64::MAX {
+                meta.insert(META_STARTED_AT, started.to_string().as_bytes())?;
+            }
+            Ok(())
+        })?;
+        Ok(added)
+    }
+}
+
+/// A node's own sampling state: cursors, open hours, and when it began.
+#[derive(Debug, Clone, Default)]
+pub struct NodeState {
+    pub cursors: Vec<(String, Vec<u8>)>,
+    pub open: Vec<(String, Vec<u8>)>,
+    pub meta: Vec<(String, Vec<u8>)>,
+}
+
+impl Ledger {
+    pub fn is_empty_of_state(&self) -> Result<bool, MeteringError> {
+        let txn = self.db.begin_read()?;
+        Ok(txn.open_table(CURSORS)?.iter()?.next().is_none() && txn.open_table(OPEN)?.iter()?.next().is_none())
+    }
+
+    pub fn node_state(&self) -> Result<NodeState, MeteringError> {
+        let txn = self.db.begin_read()?;
+        let rows = |t: crate::store::Def| -> Result<Vec<(String, Vec<u8>)>, MeteringError> {
+            let t = txn.open_table(t)?;
+            let mut v = Vec::new();
+            for r in t.iter()? {
+                let (k, val) = r?;
+                v.push((k.value().to_string(), val.value().to_vec()));
+            }
+            Ok(v)
+        };
+        let meta = rows(META)?.into_iter().filter(|(k, _)| matches!(k.as_str(), META_STARTED_AT | META_LAST_ROUND)).collect();
+        Ok(NodeState { cursors: rows(CURSORS)?, open: rows(OPEN)?, meta })
+    }
+
+    pub fn put_node_state(&self, st: &NodeState) -> Result<(), MeteringError> {
+        let txn = self.db.begin(crate::store::Origin::Metering)?;
+        {
+            let (mut c, mut o, mut m) = (txn.open_table(CURSORS)?, txn.open_table(OPEN)?, txn.open_table(META)?);
+            for (k, v) in &st.cursors {
+                c.insert(k.as_str(), v.as_slice())?;
+            }
+            for (k, v) in &st.open {
+                o.insert(k.as_str(), v.as_slice())?;
+            }
+            for (k, v) in &st.meta {
+                m.insert(k.as_str(), v.as_slice())?;
+            }
+        }
+        txn.commit()?;
+        Ok(())
+    }
+
+    pub fn clear_node_state(&self, st: &NodeState) -> Result<(), MeteringError> {
+        let txn = self.db.begin(crate::store::Origin::Metering)?;
+        {
+            let (mut c, mut o) = (txn.open_table(CURSORS)?, txn.open_table(OPEN)?);
+            for (k, _) in &st.cursors {
+                c.remove(k.as_str())?;
+            }
+            for (k, _) in &st.open {
+                o.remove(k.as_str())?;
+            }
+        }
+        txn.commit()?;
+        Ok(())
+    }
+}
+
 /// Fold rows into one meter map: sums, or maxima for `_peak` meters.
 pub fn combine<'a>(rows: impl IntoIterator<Item = &'a UsageRecord>) -> BTreeMap<String, u64> {
     let mut acc = HourAcc::default();
@@ -1367,6 +1597,63 @@ mod tests {
         assert_eq!(r.counter(&s, "cpu.used", "i1", 10_099, T0 + H + 60_000, Origin::Unknown).unwrap().unwrap().amount, 100);
         l.commit(r).unwrap();
         assert_eq!(total(&l, "cpu.used"), 100);
+    }
+
+    /// §13.1: what nodes ship merges once, whatever is retransmitted, and the
+    /// cluster ledger is complete only as far as its slowest node.
+    #[test]
+    fn shipped_hours_merge_exactly_once() {
+        let central_dir = tempfile::TempDir::new().unwrap();
+        let central_db = Arc::new(Db::create(central_dir.path().join("c.db")).unwrap());
+        let central = Ledger::attach(central_db.clone());
+        for id in ["a", "b"] {
+            let n = crate::node::Node::new(id, crate::node::NodeSpec { name: id.into(), role: crate::node::NodeRole::Server, unschedulable: false, labels: Default::default() });
+            crate::node::NodeStore::new(central_db.clone()).put(&n).unwrap();
+        }
+        let node = |name: &str, vm: &str| {
+            let (d, l) = ledger();
+            let s = Subject::new(SubjectKind::Vm, vm, vm, Some("p1".into()));
+            let mut r = l.begin_round(T0).unwrap();
+            r.counter(&s, "cpu.used", "run", 0, T0, Origin::ZeroAt(T0)).unwrap();
+            r.counter(&s, "cpu.used", "run", 1000, T0 + 30_000, Origin::Unknown).unwrap();
+            l.commit(r).unwrap();
+            let mut r = l.begin_round(T0 + 10 * H).unwrap(); // closes the hour
+            r.counter(&s, "cpu.used", "run", 1500, T0 + 10 * H, Origin::Unknown).unwrap();
+            l.commit(r).unwrap();
+            (name.to_string(), d, l, s)
+        };
+        let (na, _da, la, _sa) = node("a", "vm-a");
+        let (nb, _db, lb, _sb) = node("b", "vm-b");
+        let ea = la.export().unwrap();
+        assert!(!ea.hourly.is_empty());
+        assert_eq!(central.import(&na, &ea).unwrap(), ea.hourly.len());
+        // The acknowledgement was lost: the same rows arrive again.
+        assert_eq!(central.import(&na, &ea).unwrap(), 0);
+        la.ack_export(&ea).unwrap();
+        assert!(la.export().unwrap().hourly.is_empty(), "shipped rows are forgotten locally");
+        let before = central.scan(0, u64::MAX / 10, None).unwrap();
+        let sum = |rows: &[UsageRecord]| rows.iter().map(|r| r.meters.get("cpu.used").copied().unwrap_or(0)).sum::<u64>();
+        let sum_of = |e: &Export| e.hourly.iter().map(|(_, r)| r.meters.get("cpu.used").copied().unwrap_or(0)).sum::<u64>();
+        assert!(sum_of(&ea) > 0);
+        assert_eq!(sum(&before), sum_of(&ea));
+
+        // Until b has shipped, the ledger is complete only to what b has closed (nothing).
+        assert_eq!(central.complete_through().unwrap(), 0);
+        let eb = lb.export().unwrap();
+        central.import(&nb, &eb).unwrap();
+        assert_eq!(central.complete_through().unwrap(), ea.closed_through.min(eb.closed_through));
+        assert_eq!(sum(&central.scan(0, u64::MAX / 10, None).unwrap()), sum_of(&ea) + sum_of(&eb));
+
+        // A late adjustment for the same subject and hour is a new row, not a replacement.
+        let mut r = la.begin_round(T0 + 11 * H).unwrap();
+        let s = Subject::new(SubjectKind::Vm, "vm-a", "vm-a", Some("p1".into()));
+        r.counter(&s, "cpu.used", "run", 1700, T0 + 11 * H, Origin::Unknown).unwrap();
+        la.commit(r).unwrap();
+        let e2 = la.export().unwrap();
+        central.import(&na, &e2).unwrap();
+        assert_eq!(sum(&central.scan(0, u64::MAX / 10, None).unwrap()), sum_of(&ea) + sum_of(&eb) + sum_of(&e2));
+        assert!(sum_of(&e2) > 0);
+        assert!(central.scan(0, u64::MAX / 10, None).unwrap().iter().all(|r| r.written_at > 0));
     }
 
     #[test]

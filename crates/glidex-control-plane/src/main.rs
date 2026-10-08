@@ -181,6 +181,16 @@ async fn main() {
 
     // Load VMs and adopt the instances still running (spec/reconciliation.md
     // §9.4): nothing is launched or stopped before every VM was observed.
+    // An agent starts from its cache: wait for it to be listed so that "not
+    // listed yet" is never read as "no VMs" (networking.md §7.7).
+    if let Some(link) = vm_manager.node_link() {
+        print_status("Waiting for the cluster");
+        if link.wait_ready(std::time::Duration::from_secs(20)).await {
+            println!("OK");
+        } else {
+            println!("NO SERVER (running from the cache)");
+        }
+    }
     print_status("Loading VMs");
     if let Err(e) = vm_manager.initialize().await {
         println!("FAILED");
@@ -234,6 +244,15 @@ async fn main() {
     vm_manager.start_controllers();
     if let Err(e) = vm_manager.start_metering(&cfg.metering) {
         tracing::warn!("metering not started: {}", e);
+    }
+
+    // An agent has no API or UI of its own: the servers' are the cluster's
+    // (spec/clustering.md §4).
+    if vm_manager.node_link().is_some() {
+        println!("  Agent node: serving VMs for the cluster; node API on {}", vm_manager.cluster().map(|c| c.identity.advertise.to_string()).unwrap_or_default());
+        println!("  Press Ctrl+C to shutdown");
+        shutdown_signal().await;
+        return;
     }
 
     print_status("Loading authorization policies");

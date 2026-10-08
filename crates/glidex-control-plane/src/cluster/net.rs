@@ -79,6 +79,12 @@ impl TlsMaterial {
         Ok(Arc::new(cfg))
     }
 
+    fn client_config_h1(&self) -> Result<Arc<ClientConfig>, NetError> {
+        let mut cfg = (*self.client_config()?).clone();
+        cfg.alpn_protocols = vec![b"http/1.1".to_vec()];
+        Ok(Arc::new(cfg))
+    }
+
     fn client_config(&self) -> Result<Arc<ClientConfig>, NetError> {
         let mut cfg = ClientConfig::builder_with_provider(provider())
             .with_safe_default_protocol_versions()
@@ -117,17 +123,21 @@ impl ServerCertVerifier for AcceptAny {
 pub struct ClusterTls {
     server: ArcSwap<ServerConfig>,
     client: ArcSwap<ClientConfig>,
+    /// The same identity speaking HTTP/1.1, for connections that upgrade
+    /// into a raw byte stream (console relay).
+    client_h1: ArcSwap<ClientConfig>,
     material: ArcSwap<TlsMaterial>,
 }
 
 impl ClusterTls {
     pub fn new(m: TlsMaterial) -> Result<Arc<ClusterTls>, NetError> {
-        Ok(Arc::new(ClusterTls { server: ArcSwap::new(m.server_config()?), client: ArcSwap::new(m.client_config()?), material: ArcSwap::from_pointee(m) }))
+        Ok(Arc::new(ClusterTls { server: ArcSwap::new(m.server_config()?), client: ArcSwap::new(m.client_config()?), client_h1: ArcSwap::new(m.client_config_h1()?), material: ArcSwap::from_pointee(m) }))
     }
 
     pub fn reload(&self, m: TlsMaterial) -> Result<(), NetError> {
         self.server.store(m.server_config()?);
         self.client.store(m.client_config()?);
+        self.client_h1.store(m.client_config_h1()?);
         self.material.store(Arc::new(m));
         Ok(())
     }
@@ -235,6 +245,64 @@ impl PeerClient {
             }
         }
         unreachable!()
+    }
+
+    /// GET `path` into the file `dest`, streamed. Returns the status; the file
+    /// is written only for `200`.
+    pub async fn get_to_file(&self, addr: &str, path: &str, dest: &std::path::Path) -> Result<u16, NetError> {
+        use tokio::io::AsyncWriteExt;
+        let ce = |e: &dyn std::fmt::Display| NetError::Connect(addr.to_string(), e.to_string());
+        let sock: SocketAddr = addr.parse().map_err(|e| ce(&e))?;
+        let tcp = tokio::net::TcpStream::connect(sock).await.map_err(|e| ce(&e))?;
+        let tls = tokio_rustls::TlsConnector::from(self.tls.config()).connect(ServerName::IpAddress(sock.ip().into()), tcp).await.map_err(|e| ce(&e))?;
+        let (mut sender, conn) = hyper::client::conn::http2::handshake(TokioExecutor::new(), TokioIo::new(tls)).await.map_err(|e| ce(&e))?;
+        tokio::spawn(async move {
+            let _ = conn.await;
+        });
+        let req = Request::builder().uri(format!("https://{addr}{path}")).body(Full::new(Bytes::new())).map_err(|e| NetError::Other(e.to_string()))?;
+        let resp = sender.send_request(req).await.map_err(|e| NetError::Request(addr.to_string(), e.to_string()))?;
+        let status = resp.status().as_u16();
+        let mut body = resp.into_body();
+        if status != 200 {
+            let _ = body.collect().await;
+            return Ok(status);
+        }
+        let mut f = tokio::fs::File::create(dest).await.map_err(|e| NetError::Other(e.to_string()))?;
+        while let Some(frame) = body.frame().await {
+            let frame = frame.map_err(|e| NetError::Request(addr.to_string(), e.to_string()))?;
+            if let Some(d) = frame.data_ref() {
+                f.write_all(d).await.map_err(|e| NetError::Other(e.to_string()))?;
+            }
+        }
+        f.sync_all().await.map_err(|e| NetError::Other(e.to_string()))?;
+        Ok(200)
+    }
+
+    /// Open a raw byte stream to `path` on `addr` by upgrading an HTTP/1.1
+    /// request (`Upgrade: glidex-stream`). Used to relay consoles.
+    pub async fn upgrade(&self, addr: &str, path: &str) -> Result<TokioIo<hyper::upgrade::Upgraded>, NetError> {
+        let ClientTls::Node(t) = &self.tls else { return Err(NetError::Other("not a cluster node".into())) };
+        let ce = |e: &dyn std::fmt::Display| NetError::Connect(addr.to_string(), e.to_string());
+        let sock: SocketAddr = addr.parse().map_err(|e| ce(&e))?;
+        let tcp = tokio::time::timeout(self.timeout, tokio::net::TcpStream::connect(sock)).await.map_err(|_| ce(&"timed out"))?.map_err(|e| ce(&e))?;
+        let tls = tokio_rustls::TlsConnector::from(t.client_h1.load_full()).connect(ServerName::IpAddress(sock.ip().into()), tcp).await.map_err(|e| ce(&e))?;
+        let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(tls)).await.map_err(|e| ce(&e))?;
+        tokio::spawn(async move {
+            let _ = conn.with_upgrades().await;
+        });
+        let req = Request::builder()
+            .uri(format!("https://{addr}{path}"))
+            .header(hyper::header::HOST, addr)
+            .header(hyper::header::CONNECTION, "upgrade")
+            .header(hyper::header::UPGRADE, "glidex-stream")
+            .body(Full::new(Bytes::new()))
+            .map_err(|e| NetError::Other(e.to_string()))?;
+        let resp = sender.send_request(req).await.map_err(|e| NetError::Request(addr.to_string(), e.to_string()))?;
+        if resp.status() != StatusCode::SWITCHING_PROTOCOLS {
+            return Err(NetError::Request(addr.to_string(), format!("status {}", resp.status())));
+        }
+        let up = hyper::upgrade::on(resp).await.map_err(|e| NetError::Request(addr.to_string(), e.to_string()))?;
+        Ok(TokioIo::new(up))
     }
 
     /// POST a file as the request body, streamed (snapshots).

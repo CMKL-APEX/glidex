@@ -497,6 +497,9 @@ pub struct CreateVmRequest {
     pub on_host_boot: Option<HostBootPolicy>,
     #[serde(default)]
     pub stop_grace_secs: Option<u32>,
+    /// Run on this node (id or name): `spec.node`, spec/clustering.md §9.1.
+    #[serde(default)]
+    pub node: Option<String>,
 }
 
 /// The managed-disk part of `CreateVmRequest`, resolved by `create_vm`.

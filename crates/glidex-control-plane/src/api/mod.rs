@@ -16,6 +16,8 @@ mod net;
 mod nodes;
 mod storage;
 mod rates;
+pub(crate) use rates::live_vm_stats;
+pub(crate) use vms::read_log_tail;
 mod usage;
 mod vms;
 mod watch;

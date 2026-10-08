@@ -8,6 +8,7 @@
 
 pub mod disk;
 pub mod image;
+pub mod image_cache;
 pub mod network;
 pub mod queue;
 pub mod startup;
@@ -92,7 +93,7 @@ impl VmManager {
             for key in me.all_keys().await {
                 me.queue.add(key);
             }
-            let ids: Vec<String> = me.vms.read().await.keys().cloned().collect();
+            let ids: Vec<String> = me.vms.read().await.values().filter(|v| me.is_local(v)).map(|v| v.id.clone()).collect();
             for id in ids {
                 me.watch_instance(&id).await;
             }
@@ -109,11 +110,12 @@ impl VmManager {
 
     /// Every object the controllers own.
     async fn all_keys(&self) -> Vec<Key> {
-        let mut keys: Vec<Key> = self.vms.read().await.keys().cloned().map(Key::Vm).collect();
-        keys.extend(self.images.list_disks().into_iter().map(|d| Key::Disk(d.id)));
+        let me = self.local_node_id();
+        let mut keys: Vec<Key> = self.vms.read().await.values().filter(|v| self.is_local(v)).map(|v| Key::Vm(v.id.clone())).collect();
+        keys.extend(self.images.list_disks().into_iter().filter(|d| d.node.as_deref().is_none_or(|n| n == me)).map(|d| Key::Disk(d.id)));
         keys.extend(self.images.list_images().into_iter().map(|i| Key::Image(i.id)));
         if let Ok(nets) = self.networks.list() {
-            keys.extend(nets.into_iter().map(|n| Key::Network(n.name)));
+            keys.extend(nets.into_iter().filter(|n| n.node.as_deref().is_none_or(|x| x == me)).map(|n| Key::Network(n.name)));
         }
         keys
     }
@@ -195,8 +197,8 @@ impl VmManager {
         let _ports = self.ports_lock.lock().await;
         let (running, networked) = {
             let vms = self.vms.read().await;
-            let running: Vec<String> = vms.values().filter(|vm| !vm.status.nics.is_empty()).map(|vm| vm.id.clone()).collect();
-            let networked = vms.values().any(|vm| !vm.config().networks.is_empty() || !vm.status.nics.is_empty());
+            let running: Vec<String> = vms.values().filter(|vm| self.is_local(vm) && !vm.status.nics.is_empty()).map(|vm| vm.id.clone()).collect();
+            let networked = vms.values().any(|vm| self.is_local(vm) && (!vm.config().networks.is_empty() || !vm.status.nics.is_empty()));
             (running, networked)
         };
         *self.netd_seen.lock().unwrap() = self.netd.socket_identity();
