@@ -260,9 +260,21 @@ fn get<T: DeserializeOwned>(
     })
 }
 
+fn table_id(table: crate::store::Def) -> crate::store::TableId {
+    use redb::TableHandle;
+    crate::store::TableId::from_name(table.name()).expect("a known table")
+}
+
 fn put<T: Serialize>(db: &Db, table: crate::store::Def, key: &str, value: &T) -> Result<(), StoreError> {
     let bytes = serde_json::to_vec(value)?;
-    let txn = db.begin(crate::store::Origin::Auth)?;
+    let txn = match db.begin(crate::store::Origin::Auth) {
+        Ok(t) => t,
+        // A follower authenticating someone (a session, a user): the leader writes.
+        Err(crate::store::StoreError::NotLeader { .. }) => {
+            return Ok(db.forward_raw(vec![crate::store::Op::Put { table: table_id(table), key: key.as_bytes().to_vec(), value: bytes }])?)
+        }
+        Err(e) => return Err(e.into()),
+    };
     {
         let mut t = txn.open_table(table)?;
         t.insert(key, bytes.as_slice())?;
@@ -272,7 +284,14 @@ fn put<T: Serialize>(db: &Db, table: crate::store::Def, key: &str, value: &T) ->
 }
 
 fn remove(db: &Db, table: crate::store::Def, key: &str) -> Result<bool, StoreError> {
-    let txn = db.begin(crate::store::Origin::Auth)?;
+    let txn = match db.begin(crate::store::Origin::Auth) {
+        Ok(t) => t,
+        Err(crate::store::StoreError::NotLeader { .. }) => {
+            db.forward_raw(vec![crate::store::Op::Delete { table: table_id(table), key: key.as_bytes().to_vec() }])?;
+            return Ok(true);
+        }
+        Err(e) => return Err(e.into()),
+    };
     let existed = {
         let mut t = txn.open_table(table)?;
         let existed = t.remove(key)?.is_some();
@@ -295,11 +314,6 @@ fn list<T: DeserializeOwned>(db: &Db, table: crate::store::Def) -> Result<Vec<(S
 
 impl IdentityStore {
     pub fn new(db: Arc<Db>) -> Result<Self, StoreError> {
-        let txn = db.begin(crate::store::Origin::Auth)?;
-        for t in [USERS, IDENTITIES, TEAMS, LINKS, SESSIONS, TOKENS, SITE_POLICIES, SITE_POLICY_VERSIONS, AUDIT] {
-            let _ = txn.open_table(t)?;
-        }
-        txn.commit()?;
         Ok(Self { db, audit_seq: Default::default(), policy_history: POLICY_HISTORY.into() })
     }
 
@@ -411,6 +425,12 @@ impl IdentityStore {
         }
         if !create {
             return Ok(None);
+        }
+        // A follower: the leader creates the user and identity, once, however
+        // many servers see this person log in at the same moment.
+        if !self.db.can_write() && self.db.is_replicated() {
+            let v = self.db.forward_call("identity", serde_json::json!({ "provider": provider, "subject": subject, "display_name": display_name, "email": email }))?;
+            return Ok(serde_json::from_value(v)?);
         }
         let twin = match provider {
             "pam" => self.identity("unix", subject)?,

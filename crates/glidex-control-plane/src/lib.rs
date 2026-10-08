@@ -1,6 +1,7 @@
 pub mod api;
 pub mod auth;
 pub mod authz;
+pub mod cluster;
 pub mod config;
 pub mod cloud_init;
 pub mod credentials;

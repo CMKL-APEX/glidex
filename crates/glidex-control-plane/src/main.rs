@@ -109,6 +109,27 @@ async fn main() {
         );
     }
 
+    // `--force-new-cluster [--from <snapshot>]` (spec/clustering.md §5.12): recovery, then exit.
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--force-new-cluster") {
+        let from = args.iter().position(|a| a == "--from").and_then(|i| args.get(i + 1)).map(std::path::PathBuf::from);
+        let cfg = config::Config::load().unwrap_or_else(|e| {
+            eprintln!("{e}");
+            std::process::exit(1);
+        });
+        let db = state::VmManager::default_db_path_pub();
+        match glidex_control_plane::cluster::manage::force_new_cluster(&db, from.as_deref(), &cfg.cluster).await {
+            Ok(()) => {
+                println!("A new single-voter cluster was started from {}. Start the control plane; re-join the other servers with fresh state.", from.map(|f| f.display().to_string()).unwrap_or_else(|| db.display().to_string()));
+                return;
+            }
+            Err(e) => {
+                eprintln!("force-new-cluster failed: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     // Configuration and identity (spec/security.md §5, §13). A bad config
     // file stops startup rather than falling back to defaults.
     print_status("Loading configuration");
@@ -124,7 +145,7 @@ async fn main() {
 
     // Create VM manager with persistence
     print_status("Opening database");
-    let vm_manager = match state::VmManager::new() {
+    let vm_manager = match state::VmManager::open_default(&cfg).await {
         Ok(manager) => manager,
         Err(e) => {
             println!("FAILED");
@@ -224,17 +245,25 @@ async fn main() {
             std::process::exit(1);
         }
     };
-    if let Err(e) = vm_manager.projects().adopt_default_quotas(&cfg.quotas.default) {
-        println!("WARNING (default project quotas: {})", e);
+    // Only a node that can write does first-start setup; a cluster's other
+    // servers find it in the replicated data.
+    if vm_manager.database().can_write() {
+        if let Err(e) = vm_manager.projects().adopt_default_quotas(&cfg.quotas.default) {
+            println!("WARNING (default project quotas: {})", e);
+        }
+        match auth.bootstrap(&vm_manager.default_project_id()) {
+            Ok(made) if !made.is_empty() => println!("OK (administrators: {})", made.join(", ")),
+            Ok(_) => println!("OK"),
+            Err(e) => println!("WARNING (bootstrap: {})", e),
+        }
+    } else {
+        println!("OK (follower: setup is the leader's)");
     }
-    match auth.bootstrap(&vm_manager.default_project_id()) {
-        Ok(made) if !made.is_empty() => println!("OK (administrators: {})", made.join(", ")),
-        Ok(_) => println!("OK"),
-        Err(e) => println!("WARNING (bootstrap: {})", e),
-    }
+    auth.watch_policies();
 
-    let app = api::router(Arc::new(api::App { manager: vm_manager, auth }))
-        .layer(TraceLayer::new_for_http());
+    let router = api::router(Arc::new(api::App { manager: vm_manager.clone(), auth }));
+    vm_manager.set_api_router(router.clone());
+    let app = router.layer(TraceLayer::new_for_http());
 
     let tls = match serve::tls_setup(&cfg.tls) {
         Ok(t) => t,

@@ -52,6 +52,10 @@ namespace Glidex {
          "network.use" in ["role.editor"];
   action "project.members", "network.manage", "network.share" in ["role.owner"];
   action "host.read" in ["role.auditor", "role.net-admin"];
+  // Cluster membership and recovery (spec/clustering.md §12.2). Tokens, joins
+  // and snapshots are secrets or irreversible, so they need a recent login.
+  action "host.cluster" in ["role.system-admin"];
+  action "host.cluster.critical" in ["host.cluster", "step-up"];
   action "policy.read", "system.audit", "system.usage" in ["role.auditor"];
   action "host.network", "host.devices" in ["role.net-admin"];
   action "host.network.critical" in ["host.network", "step-up"];
@@ -169,6 +173,14 @@ namespace Glidex {
   action installOvs, initDpdk, confirmUplink, commitUplink, deleteUplink,
          deleteBridge in ["host.network.critical"]
     appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
+
+  // ---- cluster (spec/clustering.md §5) ---------------------------------------
+  action readCluster in ["host.read"]
+    appliesTo { principal: [User, Token], resource: [Cluster], context: Ctx };
+  action initCluster, joinCluster in ["host.cluster.critical"]
+    appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
+  action createJoinToken, promoteNode, snapshotCluster in ["host.cluster.critical"]
+    appliesTo { principal: [User, Token], resource: [Cluster], context: Ctx };
 
   // ---- nodes (spec/clustering.md §7) -------------------------------------
   action listNodes in ["host.read"]

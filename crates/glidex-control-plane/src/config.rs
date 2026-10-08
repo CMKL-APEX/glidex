@@ -44,6 +44,8 @@ pub struct Config {
     pub reconcile: ReconcileConfig,
     pub console: ConsoleConfig,
     pub metering: MeteringConfig,
+    /// Clustering tunables (spec/clustering.md §10.2).
+    pub cluster: crate::cluster::config::ClusterConfig,
 }
 
 impl Default for Config {
@@ -64,6 +66,7 @@ impl Default for Config {
             reconcile: ReconcileConfig::default(),
             console: ConsoleConfig::default(),
             metering: MeteringConfig::default(),
+            cluster: Default::default(),
         }
     }
 }
@@ -435,6 +438,7 @@ impl Config {
             return Err("console.log_max_bytes must be 1 MiB-256 MiB".into());
         }
         self.metering.check()?;
+        self.cluster.check()?;
         self.check_listeners()
     }
 

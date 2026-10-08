@@ -12,7 +12,7 @@ use std::sync::Arc;
 use thiserror::Error;
 
 mod db;
-pub use db::{Def, new_bell, ring, Applied, Bell, Consistency, Db, Op, Origin, RecTable, Replicator, StoreError, TableId, Tx, WriteSet, MAX_WRITE_SET_BYTES, WRITE_SET_FORMAT};
+pub use db::{Def, Forwarder, SnapshotView, LAST_APPLIED, LAST_MEMBERSHIP, new_bell, ring, Applied, Bell, Consistency, Db, Op, Origin, RecTable, Replicator, StoreError, TableId, Tx, WriteSet, MAX_WRITE_SET_BYTES, WRITE_SET_FORMAT};
 
 const VMS_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("vms");
 const EVENTS_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("events");

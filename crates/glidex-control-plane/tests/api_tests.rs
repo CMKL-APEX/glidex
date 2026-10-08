@@ -1048,7 +1048,7 @@ async fn a_standalone_host_is_one_node_and_places_vms_on_it() {
 
     let (status, one) = call(&app, "GET", "/nodes/local", None).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(one["spec"]["role"], "Server");
+    assert_eq!(one["spec"]["role"], "server");
     let (status, _) = call(&app, "GET", "/nodes/nope", None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 

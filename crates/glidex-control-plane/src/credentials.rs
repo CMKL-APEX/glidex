@@ -243,11 +243,6 @@ pub struct CredentialStore {
 
 impl CredentialStore {
     pub fn new(db: Arc<Db>) -> Result<Self, CredentialError> {
-        let txn = db.begin(crate::store::Origin::Api)?;
-        {
-            let _ = txn.open_table(CREDENTIALS_TABLE)?;
-        }
-        txn.commit()?;
         Ok(Self { db })
     }
 

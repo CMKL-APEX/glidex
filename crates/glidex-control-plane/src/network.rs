@@ -210,9 +210,6 @@ pub struct NetworkStore {
 
 impl NetworkStore {
     pub fn new(db: Arc<Db>) -> Result<Self, NetError> {
-        let txn = db.begin(crate::store::Origin::Network).map_err(storage)?;
-        txn.open_table(NETWORKS_TABLE).map_err(storage)?;
-        txn.commit().map_err(storage)?;
         Ok(Self { db, write: std::sync::Mutex::new(()) })
     }
 

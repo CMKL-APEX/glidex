@@ -46,6 +46,26 @@ pub fn set_identity(cluster: &str, node: &str) {
     *identity_cell().write().unwrap() = (cluster.to_string(), node.to_string());
 }
 
+fn account_scope_cell() -> &'static std::sync::RwLock<Option<String>> {
+    static S: std::sync::OnceLock<std::sync::RwLock<Option<String>>> = std::sync::OnceLock::new();
+    S.get_or_init(|| std::sync::RwLock::new(None))
+}
+
+/// D13: in a cluster, `unix:` and `pam:` identities are scoped to the node
+/// they were seen on (`alice@<node>`), unless the site manages local
+/// accounts centrally (`cluster.shared_local_accounts`).
+pub fn set_local_account_scope(node: Option<String>) {
+    *account_scope_cell().write().unwrap() = node;
+}
+
+/// The subject a local login name has in the identity store.
+pub fn local_subject(name: &str) -> String {
+    match &*account_scope_cell().read().unwrap() {
+        Some(node) => format!("{name}@{node}"),
+        None => name.to_string(),
+    }
+}
+
 pub fn cluster_id() -> String {
     identity_cell().read().unwrap().0.clone()
 }

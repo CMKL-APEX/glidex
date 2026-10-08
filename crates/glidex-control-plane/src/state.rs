@@ -261,6 +261,11 @@ pub struct VmManager {
     pub(crate) controllers_started: std::sync::atomic::AtomicBool,
     nodes: crate::node::NodeStore,
     roles: std::sync::Mutex<crate::node::Roles>,
+    db_path: PathBuf,
+    /// This host's cluster membership, once it has one (spec/clustering.md).
+    cluster: arc_swap::ArcSwapOption<crate::cluster::Cluster>,
+    /// The API router, handed to the cluster for forwarded requests.
+    api_router: std::sync::OnceLock<axum::Router>,
     /// The controllers' tasks, aborted by `stop_controllers`.
     pub(crate) tasks: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
     /// Resource usage metering (spec/metering.md), once started.
@@ -301,6 +306,37 @@ impl VmManager {
     /// As `with_db_path`, talking to the glidex-netd at `netd`.
     pub fn with_db_path_and_netd(db_path: PathBuf, netd: Netd) -> Result<Arc<Self>, VmManagerError> {
         let store = VmStore::open(&db_path)?;
+        Self::build(db_path, store, netd, None)
+    }
+
+    /// As [`with_db_path_and_netd`](Self::with_db_path_and_netd), for a host
+    /// that may be in a cluster: if it has a cluster identity, its Raft
+    /// member is started before anything touches the store, so no write ever
+    /// bypasses the log (spec/clustering.md §6.1).
+    pub async fn open(db_path: PathBuf, netd: Netd, cfg: &crate::config::Config) -> Result<Arc<Self>, VmManagerError> {
+        let store = VmStore::open(&db_path)?;
+        let files = crate::cluster::identity::Files::beside(&db_path);
+        let cluster = match files.load_identity().map_err(|e| VmManagerError::PersistenceError(e.to_string()))? {
+            Some(identity) => {
+                crate::authz::set_identity(&identity.cluster_id, &identity.node_id);
+                crate::authz::set_local_account_scope((!cfg.cluster.shared_local_accounts).then(|| identity.node_id.clone()));
+                let listen = cfg.cluster.listen;
+                let c = crate::cluster::Cluster::start(store.database(), files, identity, cfg.cluster.clone(), listen)
+                    .await
+                    .map_err(|e| VmManagerError::PersistenceError(format!("cluster: {e}")))?;
+                // A restarting node waits briefly for a leader; without one the
+                // control plane still comes up and serves stale reads.
+                if c.wait_for_leader(std::time::Duration::from_secs(10)).await.is_none() {
+                    tracing::warn!("no cluster leader yet: serving local, possibly stale, state until a quorum is back");
+                }
+                Some(c)
+            }
+            None => None,
+        };
+        Self::build(db_path, store, netd, cluster)
+    }
+
+    fn build(db_path: PathBuf, store: VmStore, netd: Netd, cluster: Option<Arc<crate::cluster::Cluster>>) -> Result<Arc<Self>, VmManagerError> {
         let base = db_path.parent().map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
         let changed = store.database().bell();
         let images = ImageManager::new(store.database(), ImageSettings::from_env(&base))?;
@@ -315,7 +351,7 @@ impl VmManager {
         let networks = NetworkStore::new(store.database())?;
         let projects = ProjectStore::new(store.database())?;
         let nodes = crate::node::NodeStore::new(store.database());
-        Ok(Arc::new_cyclic(|me| Self {
+        let mgr = Arc::new_cyclic(|me| Self {
             vms: RwLock::new(HashMap::new()),
             credentials,
             networks,
@@ -335,10 +371,17 @@ impl VmManager {
             controllers_started: std::sync::atomic::AtomicBool::new(false),
             nodes,
             roles: std::sync::Mutex::new(crate::node::Roles::STANDALONE),
+            db_path,
+            cluster: arc_swap::ArcSwapOption::empty(),
+            api_router: std::sync::OnceLock::new(),
             tasks: std::sync::Mutex::new(Vec::new()),
             meter: std::sync::OnceLock::new(),
             me: me.clone(),
-        }))
+        });
+        if let Some(c) = cluster {
+            mgr.attach_cluster(c);
+        }
+        Ok(mgr)
     }
 
     /// Apply `control-plane.json`'s `reconcile` and `console` sections.
@@ -347,6 +390,108 @@ impl VmManager {
         let s = Settings::from_config(cfg);
         self.runner.store(Arc::new(Runner::new(s.runner)));
         self.settings.store(Arc::new(s));
+    }
+
+    /// Whether this host has any VM, disk, network or credential record.
+    pub async fn has_resources(&self) -> bool {
+        !self.vms.read().await.is_empty()
+            || !self.images.list_disks().is_empty()
+            || self.networks.list().map(|n| !n.is_empty()).unwrap_or(false)
+            || self.credentials.list(None).map(|c| !c.is_empty()).unwrap_or(false)
+    }
+
+    pub fn db_path(&self) -> &std::path::Path {
+        &self.db_path
+    }
+
+    /// This host's cluster membership, if it is in a cluster.
+    pub fn cluster(&self) -> Option<Arc<crate::cluster::Cluster>> {
+        self.cluster.load_full()
+    }
+
+    /// Record the API router, so a cluster started now or later can serve
+    /// forwarded requests with it.
+    pub fn set_api_router(&self, router: axum::Router) {
+        if let Some(c) = self.cluster() {
+            c.set_api(router.clone());
+        }
+        let _ = self.api_router.set(router);
+    }
+
+    /// Take part in `cluster`: keep the in-memory VM cache in step with what
+    /// the log applies, and give the cluster the API for forwarded requests.
+    pub fn attach_cluster(&self, cluster: Arc<crate::cluster::Cluster>) {
+        if let Some(r) = self.api_router.get() {
+            cluster.set_api(r.clone());
+        }
+        self.cluster.store(Some(cluster));
+        let me = self.arc();
+        tokio::spawn(async move { me.cache_sync().await });
+    }
+
+    /// Keep `vms` equal to the `vms` table as entries are applied (a
+    /// follower's cache changes when the leader's write reaches it).
+    async fn cache_sync(self: Arc<Self>) {
+        let mut rx = self.store.database().subscribe();
+        loop {
+            match rx.recv().await {
+                Ok(a) if a.tables.contains(&crate::store::TableId::Vms) => {
+                    let keys: Vec<String> = a.keys.iter().filter(|(t, _)| *t == crate::store::TableId::Vms).filter_map(|(_, k)| String::from_utf8(k.clone()).ok()).collect();
+                    self.refresh_vms(&keys).await;
+                }
+                Ok(a) => {
+                    for table in [crate::store::TableId::Images, crate::store::TableId::Disks] {
+                        if a.tables.contains(&table) {
+                            let keys: Vec<String> = a.keys.iter().filter(|(t, _)| *t == table).filter_map(|(_, k)| String::from_utf8(k.clone()).ok()).collect();
+                            self.images.sync_keys(table, &keys);
+                        }
+                    }
+                    if a.tables.contains(&crate::store::TableId::Images) || a.tables.contains(&crate::store::TableId::Disks) {
+                        self.notify_changed();
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => self.reload_vms().await,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+            }
+        }
+    }
+
+    async fn refresh_vms(&self, ids: &[String]) {
+        let Ok(all) = self.store.load_all() else { return };
+        let mut vms = self.vms.write().await;
+        for id in ids {
+            match all.iter().find(|v| &v.id == id) {
+                Some(v) => {
+                    if vms.get(id) != Some(v) {
+                        vms.insert(id.clone(), v.clone());
+                        self.queue.add(crate::controller::queue::Key::Vm(id.clone()));
+                    }
+                }
+                None => {
+                    vms.remove(id);
+                }
+            }
+        }
+        drop(vms);
+        self.notify_changed();
+    }
+
+    /// Replace the cache with the table's contents (after a snapshot, or a
+    /// missed notification).
+    pub async fn reload_vms(&self) {
+        let Ok(all) = self.store.load_all() else { return };
+        let mut vms = self.vms.write().await;
+        *vms = all.into_iter().map(|v| (v.id.clone(), v)).collect();
+        drop(vms);
+        self.images.reload_all();
+        self.notify_changed();
+    }
+
+    /// Bring the store to the current schema (what `initialize` does first),
+    /// for operations that need it before the controllers run.
+    pub fn migrate_schema(&self) -> Result<(), VmManagerError> {
+        self.store.migrate(self.settings().on_host_boot)?;
+        Ok(())
     }
 
     /// The nodes of the cluster; a standalone host has one, `local`.
@@ -375,6 +520,15 @@ impl VmManager {
         self.me.upgrade().expect("VmManager is alive")
     }
 
+    /// As [`open`](Self::open), at the default database path.
+    pub async fn open_default(cfg: &crate::config::Config) -> Result<Arc<Self>, VmManagerError> {
+        Self::open(Self::default_db_path(), Netd::from_env(), cfg).await
+    }
+
+    pub fn default_db_path_pub() -> PathBuf {
+        Self::default_db_path()
+    }
+
     /// Get the default database path (~/.glidex/glidex.db)
     fn default_db_path() -> PathBuf {
         dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")).join(".glidex").join("glidex.db")
@@ -383,27 +537,34 @@ impl VmManager {
     /// Load the store (migrating it, §6.6), adopt running instances
     /// (§9.4 steps 1-4). [`Self::start_controllers`] then starts the loops.
     pub async fn initialize(&self) -> Result<(), VmManagerError> {
-        let migrated = self.store.migrate(self.settings().on_host_boot)?;
-        if migrated > 0 {
-            tracing::info!(count = migrated, "migrated VM records to the desired-state schema");
+        // In a cluster only the leader writes, and a follower finds all of
+        // this already done in the replicated data.
+        let writable = self.store.database().can_write();
+        if writable {
+            let migrated = self.store.migrate(self.settings().on_host_boot)?;
+            if migrated > 0 {
+                tracing::info!(count = migrated, "migrated VM records to the desired-state schema");
+            }
+            self.nodes
+                .ensure_self(&crate::authz::node_id(), crate::node::SelfProbe::detect(&crate::node::Resources::default()))
+                .map_err(|e| VmManagerError::PersistenceError(e.to_string()))?;
         }
-        self.nodes
-            .ensure_self(&crate::authz::node_id(), crate::node::SelfProbe::detect(&crate::node::Resources::default()))
-            .map_err(|e| VmManagerError::PersistenceError(e.to_string()))?;
         let persisted = self.store.load_all()?;
         self.images.initialize();
         {
             let default_project = self.projects.default_project_id();
             let mut vms = self.vms.write().await;
             for mut vm in persisted {
-                if vm.project.is_empty() {
+                if vm.project.is_empty() && writable {
                     vm.project = default_project.clone();
                     self.store.save(&vm)?;
                 }
                 vms.insert(vm.id.clone(), vm);
             }
         }
-        self.adopt_into_default_project()?;
+        if writable {
+            self.adopt_into_default_project()?;
+        }
         self.adopt_instances().await;
         Ok(())
     }
@@ -1826,6 +1987,9 @@ impl VmManager {
 
     /// Create the `default` NAT network if netd is usable and it's missing.
     pub async fn ensure_default_network(&self) -> Result<Option<Network>, VmManagerError> {
+        if !self.store.database().can_write() {
+            return Ok(None);
+        }
         if self.networks.get(network::DEFAULT_NETWORK)?.is_some() {
             return Ok(None);
         }

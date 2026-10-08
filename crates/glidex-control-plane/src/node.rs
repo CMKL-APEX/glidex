@@ -12,6 +12,7 @@ use std::sync::Arc;
 pub const LOCAL_NODE: &str = "local";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
 pub enum NodeRole {
     /// Raft voter or learner, API, scheduler and cluster controllers, plus
     /// the node role.
@@ -122,6 +123,9 @@ pub struct NodeStatus {
     pub ready_reason: Option<String>,
     #[serde(default)]
     pub observed_generation: u64,
+    /// The member's Raft id (servers), see `cluster::raft::raft_id_of`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raft_id: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub advertise: Option<SocketAddr>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -167,6 +171,7 @@ impl Node {
                 ready: crate::models::Tristate::True,
                 ready_reason: None,
                 observed_generation: 1,
+                raft_id: None,
                 advertise: None,
                 tunnel_ip: None,
                 versions: Versions { glidex: env!("CARGO_PKG_VERSION").into(), ..Default::default() },

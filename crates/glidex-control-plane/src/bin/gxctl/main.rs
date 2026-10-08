@@ -1146,6 +1146,7 @@ fn print_help() {
     println!("  {}  - What happened to a VM (starts, exits, restarts, adoptions)", "events <name|id>".cyan());
     println!("  {}  - Follow VMs, disks, images and networks as they change (Ctrl-C stops)", "watch [vms,disks,images,networks]".cyan());
     println!("  {} - Delete a VM (and its own root disk)", "delete <name|id> [--keep-disk]".cyan());
+    println!("  {} <init|join|join-token|status|promote|snapshot> - Form or inspect the cluster", "cluster".cyan());
     println!("  {}             - List the cluster's nodes (a standalone host has one)", "nodes".cyan());
     println!("  {}               - List host PCI devices", "pci".cyan());
     println!(
@@ -1433,7 +1434,7 @@ async fn handle_credential_update(client: &CliClient, username: &str, request: U
 /// REPL command names offered by Tab (aliases included).
 const COMMANDS: &[&str] = &[
     "help", "exit", "quit", "list", "ls", "get", "create", "start", "stop", "pause", "events", "watch",
-    "connect", "console", "attach", "log", "logs", "delete", "rm", "pci", "pci-devices", "nodes", "node",
+    "connect", "console", "attach", "log", "logs", "delete", "rm", "pci", "pci-devices", "nodes", "node", "cluster",
     "attach-device", "detach-device", "credentials", "creds", "credential-add",
     "credential-passwd", "credential-keys", "credential-rm", "networks", "network-add",
     "network-rm", "bridges", "uplinks", "uplink-add", "uplink-rm", "ovs", "health",
@@ -1447,6 +1448,7 @@ const SUBCOMMANDS: &[(&str, &[&str])] = &[
     ("image", &["catalog", "list", "pull", "rm"]),
     ("disk", &["list", "show", "create", "resize", "extend-root", "rm"]),
     ("ovs", &["status", "install", "dpdk-init"]),
+    ("cluster", &["init", "join", "join-token", "status", "promote", "snapshot"]),
     ("login", &["--oidc", "--token"]),
     ("logout", &["--revoke"]),
     ("token", &["list", "create", "revoke"]),
@@ -2377,6 +2379,7 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
 
         "network" | "net" => admin::network(client, &parts[1..]).await,
         "whoami" => admin::whoami(client).await,
+        "cluster" => admin::cluster(client, &parts[1..]).await,
         "login" => admin::login(client, &parts[1..]).await,
         "logout" => admin::logout(client, &parts[1..]).await,
         "ui" => admin::ui(),

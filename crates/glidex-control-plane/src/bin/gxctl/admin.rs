@@ -1159,3 +1159,123 @@ mod tests {
         assert_eq!(positional(&["--project", "lab", "net1"], &["--project"]), vec!["net1"]);
     }
 }
+
+// ---- cluster (spec/clustering.md §5) ---------------------------------------
+
+/// A token read from a 0600 file or stdin, never from argv.
+fn read_token(args: &[&str]) -> Result<Zeroizing<String>, String> {
+    use std::io::Read;
+    let raw = match flag_value(args, "--token-file") {
+        Some(p) => {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(p).map_err(|e| format!("{p}: {e}"))?.permissions().mode();
+            if mode & 0o077 != 0 {
+                return Err(format!("{p} is readable by others; chmod 600 it"));
+            }
+            std::fs::read_to_string(p).map_err(|e| format!("{p}: {e}"))?
+        }
+        None => {
+            let mut s = String::new();
+            std::io::stdin().read_to_string(&mut s).map_err(|e| e.to_string())?;
+            s
+        }
+    };
+    let t = raw.trim().to_string();
+    if t.is_empty() {
+        return Err("no token given (pass --token-file <file> or pipe it on stdin)".into());
+    }
+    Ok(Zeroizing::new(t))
+}
+
+pub async fn cluster(client: &ApiClient, args: &[&str]) {
+    match args.first().copied() {
+        Some("init") => {
+            if !has_flag(args, "--force") {
+                return usage("Usage: cluster init [--advertise <ip:port>] [--tunnel-ip <ip>] --force\n  Turns this host into a cluster of one and re-keys its records. It keeps a backup but can't be undone.");
+            }
+            let body = json!({ "advertise": flag_value(args, "--advertise"), "tunnel_ip": flag_value(args, "--tunnel-ip"), "force": true });
+            match client.request_json::<Value>(Method::POST, "/cluster/init", Some(body)).await {
+                Ok(v) => {
+                    println!("{} cluster {} (this node: {})", "Created".green(), s(&v["cluster_id"]), s(&v["node_id"]));
+                    println!("  Backup:      {}", s(&v["backup"]));
+                    println!("  CA SHA-256:  {}", s(&v["ca_fingerprint"]));
+                }
+                Err(e) => err(e),
+            }
+        }
+        Some("join") => {
+            let Some(server) = flag_value(args, "--server") else {
+                return usage("Usage: cluster join --server <ip:8842> [--role server|agent] [--advertise <ip:port>] [--name <name>] [--token-file <file>]\n  The token is read from the file or stdin, never from the command line.");
+            };
+            let token = match read_token(args) {
+                Ok(t) => t,
+                Err(e) => return err(e),
+            };
+            let body = json!({ "server": server, "token": token.as_str(), "role": flag_value(args, "--role").unwrap_or("server"),
+                "advertise": flag_value(args, "--advertise"), "tunnel_ip": flag_value(args, "--tunnel-ip"), "name": flag_value(args, "--name") });
+            match client.request_json::<Value>(Method::POST, "/cluster/join", Some(body)).await {
+                Ok(v) => println!("{} cluster {} as node {}", "Joined".green(), s(&v["cluster_id"]), s(&v["node_id"])),
+                Err(e) => err(e),
+            }
+        }
+        Some("join-token") => {
+            let body = json!({ "role": flag_value(args, "--role").unwrap_or("agent"),
+                "ttl_secs": flag_value(args, "--ttl").and_then(|t| t.trim_end_matches('h').parse::<u64>().ok().map(|h| h * 3600)),
+                "allow_import": has_flag(args, "--allow-import") });
+            match client.request_json::<Value>(Method::POST, "/cluster/join-tokens", Some(body)).await {
+                Ok(v) => {
+                    println!("{}", s(&v["token"]));
+                    eprintln!("Shown once. Valid {} s; for a {} node. Servers: {}", v["ttl_secs"], s(&v["role"]), v["servers"].as_array().map(|a| a.iter().map(|x| s(x)).collect::<Vec<_>>().join(", ")).unwrap_or_default());
+                }
+                Err(e) => err(e),
+            }
+        }
+        Some("status") | None => match client.request_json::<Value>(Method::GET, "/cluster/status", None).await {
+            Ok(v) => {
+                if v["clustered"] == false {
+                    println!("This host is standalone (not in a cluster).");
+                    return;
+                }
+                println!("Cluster {}  node {} ({}, {})", s(&v["cluster_id"]), s(&v["name"]), s(&v["role"]), s(&v["advertise"]));
+                let r = &v["raft"];
+                if !r.is_null() {
+                    println!("  Raft: {} term {}  leader: {}  applied {}  last log {}", s(&r["state"]), r["term"], if r["leader"].is_null() { "none".into() } else { format!("{} ({})", s(&r["leader"]["name"]), s(&r["leader"]["address"])) }, r["last_applied"], r["last_log_index"]);
+                    for (kind, key) in [("voter", "voters"), ("learner", "learners")] {
+                        for m in r[key].as_array().into_iter().flatten() {
+                            println!("    {kind:<8} {}  {}", s(&m["name"]), s(&m["address"]));
+                        }
+                    }
+                }
+                for n in v["nodes"].as_array().into_iter().flatten() {
+                    println!("  node {:<16} {:<7} {}  {}", s(&n["name"]), s(&n["role"]), s(&n["phase"]), s(&n["advertise"]));
+                }
+            }
+            Err(e) => err(e),
+        },
+        Some("promote") => {
+            let nodes: Vec<&str> = positional(&args[1..], &[]);
+            if nodes.is_empty() {
+                return usage("Usage: cluster promote <node>… [--force]");
+            }
+            match client.request_json::<Value>(Method::POST, "/cluster/promote", Some(json!({ "nodes": nodes, "force": has_flag(args, "--force") }))).await {
+                Ok(v) => println!("{} {} voters", "OK".green(), v["voters"]),
+                Err(e) => err(e),
+            }
+        }
+        Some("snapshot") => {
+            let Some(file) = args.get(1) else { return usage("Usage: cluster snapshot <file>") };
+            match client.request_bytes(Method::GET, "/cluster/snapshot", None).await {
+                Ok(r) => {
+                    use std::os::unix::fs::OpenOptionsExt;
+                    use std::io::Write;
+                    match std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(file).and_then(|mut f| f.write_all(&r.body)) {
+                        Ok(()) => println!("{} {} ({} bytes, 0600: it holds credential and token hashes; store it like the database)", "Wrote".green(), file, r.body.len()),
+                        Err(e) => err(format!("{file}: {e}")),
+                    }
+                }
+                Err(e) => err(e.message),
+            }
+        }
+        Some(other) => usage(&format!("Unknown cluster command '{other}'. Try: init, join, join-token, status, promote, snapshot")),
+    }
+}

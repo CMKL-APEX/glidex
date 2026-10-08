@@ -9,7 +9,9 @@
 #![allow(clippy::result_large_err)] // handlers return (StatusCode, Json<ApiError>), as before
 
 mod access;
+mod cluster;
 mod errors;
+pub mod gate;
 mod net;
 mod nodes;
 mod storage;
@@ -52,7 +54,14 @@ pub enum Listener {
     Api,
     /// `ui.sock`: glidex-ui proxying browsers.
     Ui,
+    /// A request another server authenticated and forwarded over :8842
+    /// (spec/clustering.md §6.4); the principal comes from its header.
+    Cluster,
 }
+
+/// The server that forwarded a request.
+#[derive(Debug, Clone)]
+pub struct ForwardedBy(pub String);
 
 /// Peer uid of a Unix-socket connection.
 #[derive(Debug, Clone, Copy)]
@@ -105,7 +114,7 @@ pub fn create_router(manager: Arc<VmManager>) -> Router {
 
 pub fn router(app: AppState) -> Router {
     let (r, _) = routes(&app);
-    r.layer(from_fn_with_state(app.clone(), authenticate)).with_state(app)
+    r.layer(from_fn_with_state(app.clone(), gate::cluster_gate)).layer(from_fn_with_state(app.clone(), authenticate)).with_state(app)
 }
 
 /// Every route with its action, for tests and documentation.
@@ -198,6 +207,13 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         .add("POST", "/ovs/bridges/{name}/uplinks/{uplink}/commit", "commitUplink", post(net::commit_uplink))
         .add("GET", "/pci-devices", "listPciDevices", get(net::list_pci_devices))
         .add("GET", "/system/reconcile", "readSystemStatus", get(vms::system_reconcile))
+        // ---- cluster (spec/clustering.md §5)
+        .add("POST", "/cluster/init", "initCluster", post(cluster::init))
+        .add("POST", "/cluster/join", "joinCluster", post(cluster::join))
+        .add("GET", "/cluster/status", "readCluster", get(cluster::status))
+        .add("POST", "/cluster/join-tokens", "createJoinToken", post(cluster::create_token))
+        .add("POST", "/cluster/promote", "promoteNode", post(cluster::promote))
+        .add("GET", "/cluster/snapshot", "snapshotCluster", get(cluster::snapshot))
         // ---- nodes (spec/clustering.md §7)
         .add("GET", "/nodes", "listNodes", get(nodes::list))
         .add("GET", "/nodes/{id}", "readNode", get(nodes::get_node))
@@ -316,7 +332,7 @@ fn client_ip(parts_ext: &axum::http::Extensions, headers: &HeaderMap, listener: 
             .and_then(|v| v.split(',').next())
             .and_then(|v| v.trim().parse().ok()),
         Listener::Tcp => parts_ext.get::<ClientAddr>().map(|a| a.0.ip()),
-        Listener::Api => None,
+        Listener::Api | Listener::Cluster => None,
     }
 }
 
@@ -333,7 +349,8 @@ async fn authenticate(State(app): State<AppState>, mut req: Request, next: Next)
     // on every WebSocket upgrade.
     let origin = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()).map(String::from);
     if let Some(o) = &origin {
-        if (!safe || websocket) && !app.auth.config.auth.origin_allowed(o) {
+        // A forwarded request was checked by the server that took it.
+        if listener != Listener::Cluster && (!safe || websocket) && !app.auth.config.auth.origin_allowed(o) {
             return plain_error(StatusCode::FORBIDDEN, "origin_not_allowed", "this origin may not use the API");
         }
     }
@@ -352,6 +369,7 @@ async fn authenticate(State(app): State<AppState>, mut req: Request, next: Next)
                 },
                 None => Ok(None),
             },
+            Listener::Cluster => gate::forwarded_principal(&headers),
             Listener::Ui | Listener::Tcp => {
                 if listener == Listener::Ui && !ui_peer_ok(&app, req.extensions().get::<PeerUid>()) {
                     return plain_error(StatusCode::FORBIDDEN, "forbidden", "only glidex-ui may use this socket");

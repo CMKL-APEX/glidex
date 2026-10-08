@@ -192,14 +192,10 @@ pub struct ProjectStore {
 impl ProjectStore {
     /// Open the tables and make sure the default project exists.
     pub fn new(db: Arc<Db>) -> Result<Self, TenancyError> {
-        let txn = db.begin(crate::store::Origin::Api)?;
-        {
-            let _ = txn.open_table(PROJECTS_TABLE)?;
-            let _ = txn.open_table(META_TABLE)?;
-        }
-        txn.commit()?;
         let store = Self { db };
-        if store.meta(META_DEFAULT_PROJECT)?.is_none() {
+        // A follower finds the default project in the replicated data; a
+        // node that can't write now leaves it to the leader.
+        if store.meta(META_DEFAULT_PROJECT)?.is_none() && store.db.can_write() {
             let p = Project {
                 id: uuid::Uuid::new_v4().to_string(),
                 name: DEFAULT_PROJECT_NAME.into(),

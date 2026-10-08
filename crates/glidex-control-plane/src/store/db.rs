@@ -55,6 +55,9 @@ pub type Def = TableDefinition<'static, &'static str, &'static [u8]>;
             pub fn name(self) -> &'static str { match self { $(TableId::$variant => $name),+ } }
             pub fn from_name(name: &str) -> Option<TableId> { match name { $($name => Some(TableId::$variant),)+ _ => None } }
             pub fn from_id(id: u16) -> Option<TableId> { match id { $($id => Some(TableId::$variant),)+ _ => None } }
+            /// Not replicated: each replica's own bookkeeping, left out of
+            /// snapshots and database comparisons.
+            pub fn is_local(self) -> bool { matches!(self, TableId::RaftMeta) }
             pub fn definition(self) -> TableDefinition<'static, &'static str, &'static [u8]> { TableDefinition::new(self.name()) }
         }
     };
@@ -87,6 +90,12 @@ tables! {
     UsageDaily = 24 => "usage_daily",
     UsageMonthlyRates = 25 => "usage_monthly_rates",
     Nodes = 26 => "nodes",
+    // Local to each replica: last_applied, last_membership (§6.2).
+    RaftMeta = 27 => "raft_meta",
+    JoinTokens = 28 => "join_tokens",
+    NodeDenylist = 29 => "node_denylist",
+    IssuedCerts = 30 => "issued_certs",
+    CaBundle = 31 => "ca_bundle",
 }
 
 impl Serialize for TableId {
@@ -102,11 +111,37 @@ impl<'de> Deserialize<'de> for TableId {
     }
 }
 
+/// Bytes as base64 text: write sets travel as JSON (log, transport), where
+/// a `Vec<u8>` would cost four bytes per byte.
+mod b64 {
+    use base64::Engine;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(v: &Vec<u8>, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&base64::engine::general_purpose::STANDARD_NO_PAD.encode(v))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
+        let t = String::deserialize(d)?;
+        base64::engine::general_purpose::STANDARD_NO_PAD.decode(t).map_err(serde::de::Error::custom)
+    }
+}
+
 /// One change to one key.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Op {
-    Put { table: TableId, key: Vec<u8>, value: Vec<u8> },
-    Delete { table: TableId, key: Vec<u8> },
+    Put {
+        table: TableId,
+        #[serde(with = "b64")]
+        key: Vec<u8>,
+        #[serde(with = "b64")]
+        value: Vec<u8>,
+    },
+    Delete {
+        table: TableId,
+        #[serde(with = "b64")]
+        key: Vec<u8>,
+    },
 }
 
 impl Op {
@@ -179,6 +214,51 @@ pub enum StoreError {
     UnknownTable(String),
     #[error("unsupported write-set format {0}")]
     Format(u16),
+}
+
+const DUMP_MAGIC: &[u8; 8] = b"GXSNAP1\n";
+const DUMP_END: u16 = 0xFFFF;
+/// Keys of the local `raft_meta` table.
+pub const LAST_APPLIED: &str = "last_applied";
+pub const LAST_MEMBERSHIP: &str = "last_membership";
+
+fn read_local(txn: &ReadTransaction, key: &str) -> Result<Option<Vec<u8>>, StoreError> {
+    use redb::ReadableTable;
+    Ok(txn.open_table(TableId::RaftMeta.definition())?.get(key)?.map(|v| v.value().to_vec()))
+}
+
+/// A read transaction over the replicated tables with the Raft position it
+/// corresponds to.
+pub struct SnapshotView {
+    txn: ReadTransaction,
+    pub last_applied: Option<Vec<u8>>,
+    pub last_membership: Option<Vec<u8>>,
+}
+
+impl SnapshotView {
+    /// Stream every replicated table (key order, table order) to `w`. The
+    /// size is bounded by one read transaction, not by memory.
+    pub fn write_to(&self, w: &mut dyn std::io::Write) -> Result<u64, StoreError> {
+        use redb::ReadableTable;
+        let mut n = 0u64;
+        w.write_all(DUMP_MAGIC)?;
+        for &id in TableId::ALL.iter().filter(|t| !t.is_local()) {
+            let t = self.txn.open_table(id.definition())?;
+            for r in t.iter()? {
+                let (k, v) = r?;
+                let (k, v) = (k.value().as_bytes(), v.value());
+                w.write_all(&(id as u16).to_le_bytes())?;
+                w.write_all(&(k.len() as u32).to_le_bytes())?;
+                w.write_all(&(v.len() as u32).to_le_bytes())?;
+                w.write_all(k)?;
+                w.write_all(v)?;
+                n += 1;
+            }
+        }
+        w.write_all(&DUMP_END.to_le_bytes())?;
+        w.flush()?;
+        Ok(n)
+    }
 }
 
 /// Largest write set a replicated store accepts (§6.2).
@@ -273,6 +353,29 @@ pub trait Replicator: Send + Sync {
     /// Propose `ws`; return once it is committed **and applied locally**
     /// (the replicator calls [`Db::apply`] itself).
     fn propose(&self, db: &Db, ws: WriteSet) -> Result<u64, StoreError>;
+
+    /// Called with the write lane held, before a write starts: refuse on a
+    /// follower, and on a new leader wait until it has applied everything
+    /// committed before it (D3: a write must read exactly the state its
+    /// write set will apply to).
+    fn before_write(&self) -> Result<(), StoreError> {
+        Ok(())
+    }
+
+    /// Whether a write would be accepted right now (this node leads).
+    fn can_write(&self) -> bool {
+        true
+    }
+}
+
+/// How a follower gets a *simple* write done by the leader (spec/clustering.md
+/// §6.4): identity bookkeeping that every server does while authenticating,
+/// such as creating a user on first login or recording a session. It can't be
+/// a closure (the leader must run it against its state), so it is either raw
+/// puts and deletes in a few tables, or a named operation.
+pub trait Forwarder: Send + Sync {
+    fn write_raw(&self, ops: Vec<Op>) -> Result<(), StoreError>;
+    fn call(&self, op: &str, args: serde_json::Value) -> Result<serde_json::Value, StoreError>;
 }
 
 enum Mode {
@@ -291,6 +394,7 @@ pub struct Db {
     lane: Mutex<()>,
     /// Every committed write set, in order, when journaling is on (tests).
     journal: Mutex<Option<Vec<WriteSet>>>,
+    forwarder: Mutex<Option<Arc<dyn Forwarder>>>,
 }
 
 impl Db {
@@ -310,6 +414,7 @@ impl Db {
             mode: Mutex::new(Mode::Local),
             lane: Mutex::new(()),
             journal: Mutex::new(None),
+            forwarder: Mutex::new(None),
         };
         // The replay check (§15): journal every write of this database.
         // A database that already holds data can't be rebuilt from its
@@ -344,6 +449,48 @@ impl Db {
         self.applied.subscribe()
     }
 
+    /// Whether a write would be accepted now: always on a standalone host,
+    /// on the leader of a cluster. Startup work that writes (default
+    /// records, migrations) is skipped, not failed, when it can't.
+    pub fn can_write(&self) -> bool {
+        match &*self.mode.lock().unwrap() {
+            Mode::Local => true,
+            Mode::Replicated(r) => r.can_write(),
+        }
+    }
+
+    pub fn set_forwarder(&self, f: Arc<dyn Forwarder>) {
+        *self.forwarder.lock().unwrap() = Some(f);
+    }
+
+    /// Have the leader apply `ops`, when this node can't write itself.
+    pub fn forward_raw(&self, ops: Vec<Op>) -> Result<(), StoreError> {
+        let f = self.forwarder.lock().unwrap().clone();
+        match f {
+            Some(f) => f.write_raw(ops),
+            None => Err(StoreError::NotLeader { leader: None }),
+        }
+    }
+
+    pub fn forward_call(&self, op: &str, args: serde_json::Value) -> Result<serde_json::Value, StoreError> {
+        let f = self.forwarder.lock().unwrap().clone();
+        match f {
+            Some(f) => f.call(op, args),
+            None => Err(StoreError::NotLeader { leader: None }),
+        }
+    }
+
+    pub fn is_replicated(&self) -> bool {
+        matches!(&*self.mode.lock().unwrap(), Mode::Replicated(_))
+    }
+
+    /// Run `f` while no write is in progress or can start: for copying the
+    /// database file (§5.1 step 1).
+    pub fn quiesce<R>(&self, f: impl FnOnce() -> R) -> R {
+        let _lane = self.lane.lock().unwrap_or_else(|p| p.into_inner());
+        f()
+    }
+
     /// Switch to replicated writes (C2).
     pub fn set_replicator(&self, r: Arc<dyn Replicator>) {
         *self.mode.lock().unwrap() = Mode::Replicated(r);
@@ -353,6 +500,13 @@ impl Db {
     /// write lane until committed or dropped.
     pub fn begin(&self, origin: Origin) -> Result<Tx<'_>, StoreError> {
         let lane = self.lane.lock().unwrap_or_else(|p| p.into_inner());
+        let replicator = match &*self.mode.lock().unwrap() {
+            Mode::Local => None,
+            Mode::Replicated(r) => Some(r.clone()),
+        };
+        if let Some(r) = replicator {
+            r.before_write()?;
+        }
         let txn = self.inner.begin_write()?;
         Ok(Tx { db: self, origin, txn, ops: RefCell::new(Vec::new()), _lane: lane })
     }
@@ -392,7 +546,9 @@ impl Db {
         also(&txn)?;
         txn.commit()?;
         self.revision.store(revision, Ordering::Release);
-        self.published(revision, ws.clone());
+        if !ws.ops.is_empty() {
+            self.published(revision, ws.clone());
+        }
         Ok(())
     }
 
@@ -426,7 +582,7 @@ impl Db {
         use redb::ReadableTable;
         let txn = self.inner.begin_read()?;
         let mut out = Vec::new();
-        for &id in TableId::ALL {
+        for &id in TableId::ALL.iter().filter(|t| !t.is_local()) {
             let rows = match txn.open_table(id.definition()) {
                 Ok(t) => {
                     let mut rows = Vec::new();
@@ -444,6 +600,61 @@ impl Db {
             }
         }
         Ok(out)
+    }
+
+    /// A consistent view of the replicated tables, for a snapshot (§6.2):
+    /// `last_applied` is read in the same transaction as the data it
+    /// describes.
+    pub fn snapshot_view(&self) -> Result<SnapshotView, StoreError> {
+        let txn = self.inner.begin_read()?;
+        let last_applied = read_local(&txn, LAST_APPLIED)?;
+        let last_membership = read_local(&txn, LAST_MEMBERSHIP)?;
+        Ok(SnapshotView { txn, last_applied, last_membership })
+    }
+
+    /// Replace every replicated table with the contents of a snapshot
+    /// stream, in one transaction; `also` runs inside it (the state machine
+    /// records `last_applied` there).
+    pub fn install_dump(
+        &self,
+        r: &mut dyn std::io::Read,
+        revision: u64,
+        also: impl FnOnce(&redb::WriteTransaction) -> Result<(), StoreError>,
+    ) -> Result<(), StoreError> {
+        use std::io::Read;
+        let mut magic = [0u8; 8];
+        r.read_exact(&mut magic)?;
+        if &magic != DUMP_MAGIC {
+            return Err(StoreError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, "not a glidex snapshot")));
+        }
+        let txn = self.inner.begin_write()?;
+        for &id in TableId::ALL.iter().filter(|t| !t.is_local()) {
+            txn.delete_table(id.definition())?;
+            txn.open_table(id.definition())?;
+        }
+        loop {
+            let mut head = [0u8; 2];
+            r.read_exact(&mut head)?;
+            let table = u16::from_le_bytes(head);
+            if table == DUMP_END {
+                break;
+            }
+            let id = TableId::from_id(table).ok_or_else(|| StoreError::UnknownTable(format!("id {table}")))?;
+            let mut lens = [0u8; 8];
+            r.read_exact(&mut lens)?;
+            let (kl, vl) = (u32::from_le_bytes(lens[..4].try_into().unwrap()) as usize, u32::from_le_bytes(lens[4..].try_into().unwrap()) as usize);
+            let mut key = vec![0u8; kl];
+            let mut value = vec![0u8; vl];
+            r.read_exact(&mut key)?;
+            r.read_exact(&mut value)?;
+            let key = String::from_utf8(key).map_err(|_| StoreError::UnknownTable("non-utf8 key".into()))?;
+            txn.open_table(id.definition())?.insert(key.as_str(), value.as_slice())?;
+        }
+        also(&txn)?;
+        txn.commit()?;
+        self.revision.store(revision, Ordering::Release);
+        ring(&self.bell);
+        Ok(())
     }
 
     /// Replay `journal` into an empty database at `path`.

@@ -1,6 +1,6 @@
 # Clustering: replicated control plane (Raft) and cluster networks (OVN)
 
-> Status: **design, not implemented** (2026-10-08). It lifts the
+> Status: **being implemented** (2026-10-08); §20 records what each landed milestone does and where it differs from this text. It lifts the
 > "Clustering / multi-host orchestration" non-goal in
 > [README.md](README.md) for the scope in §2. It changes contracts in
 > [architecture.md](architecture.md), [reconciliation.md](reconciliation.md),
@@ -1519,3 +1519,58 @@ Items still marked **(verify)** are host checks inside their milestones:
 mapping on-demand snapshots onto openraft (§6.2, C2); OVN CA-file reload
 (§12.5, C7); `snat-ct-zone`, conntrack events and zone allocation
 (§13.3, C6); Cloud Hypervisor vhost-user migration (§18).
+
+## 20. Implementation notes
+
+What shipped, and where the code departs from the plan above. Each
+milestone adds its notes here.
+
+### C0 Store API
+
+`store::Db` with `Db::begin`/`Db::write` (a `Tx` records every put/delete
+as a `WriteSet`). Tables are the closed `TableId` enum (append-only).
+`GLIDEX_CHECK_WRITE_SETS=1 cargo test` replays every database a test opens
+and compares dumps (§6.1 invariant); `scripts/lint-store-writes.sh` forbids
+`begin_write` outside `store/`. The change bell now belongs to the `Db`.
+
+### C1 Node identity
+
+Schema 3 (`nodes` table, `status.placement`, `Disk.node`,
+`Network.scope`/`node`). Cedar has `Cluster` and per-node `Host` entities;
+system roles link to the cluster, host-specific actions take a `Host`.
+`authz::set_identity` holds this process's cluster and node ids (a
+process-wide value: several control planes in one process share it, which
+only tests do).
+
+### C2 Raft
+
+- `openraft` 0.9.25 with `generic-snapshot-data`. Log in `raft/log.redb`,
+  state machine = `glidex.db` (`raft_meta` holds `last_applied` and
+  `last_membership`, applied in the entry's own transaction).
+- **Snapshots** are not periodic copies. A snapshot is a ReDB read
+  transaction held from the moment it is asked for; it is streamed to a file
+  and over HTTP only when a follower needs it (§6.2 "(verify)": resolved).
+  `ClusterNode::seal_baseline` purges the log at init so a new member always
+  starts from a snapshot of the database (state that predates the log).
+- **mTLS** (`cluster::net`): HTTP/2 over rustls, trust = the cluster CA only;
+  a joining host pins the CA by the hash in its token. `issued_certs` is
+  enforced once a node has data (a node that has never synced has an empty
+  registry and must accept the leader's first messages).
+- **Writes on followers** are forwarded whole (`/fwd/…`, principal in
+  `X-Glidex-Principal`); reads wait for a batched ReadIndex
+  (`api::gate`). Authentication writes done by every server (sessions, JIT
+  users, audit) go to the leader as raw writes or named operations
+  (`/cluster/v1/raw`, `/cluster/v1/auth`, restricted to the auth tables).
+- The cluster identity lives in `<state dir>/cluster/` (`identity.json`,
+  `node.crt`, `node.key`, `ca.crt`, `ca.key`), not in
+  `/etc/glidex/control-plane.json`: the unprivileged control plane can't
+  write `/etc`. The CA key is a 0600 file there (or the
+  `cluster-ca-key` systemd credential when the installer provides one);
+  `systemd-creds encrypt` needs root and moves to the installer in C7.
+- Voters change in pairs: a join adds a learner, and two learners are
+  promoted together when the voter count stays odd (`gxctl cluster promote`
+  for the rest).
+- `gxctl cluster init|join|join-token|status|promote|snapshot`;
+  `glidex-control-plane --force-new-cluster [--from <snapshot>]`.
+- Not yet: feature-level gating (the level is written as 1), certificate
+  renewal and rotation (C7), rejoin (C7), agents running the node role (C3).

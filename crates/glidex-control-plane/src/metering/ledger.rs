@@ -764,19 +764,11 @@ impl Ledger {
     /// Open (creating if needed) the metering tables (§7.1). New tables
     /// only: `SCHEMA_VERSION` is unchanged.
     pub fn new(db: Arc<Db>, settings: LedgerSettings) -> Result<Self, MeteringError> {
-        let txn = db.begin(crate::store::Origin::Metering)?;
-        {
-            let _ = txn.open_table(CURSORS)?;
-            let _ = txn.open_table(OPEN)?;
-            let _ = txn.open_table(HOURLY)?;
-            let _ = txn.open_table(META)?;
-            let _ = txn.open_table(RATE5)?;
-            let _ = txn.open_table(DAILY)?;
-            let _ = txn.open_table(MONTHLY_RATES)?;
-        }
-        txn.commit()?;
+        let can_write = db.can_write();
         let l = Self { db, settings };
-        l.rekey_slots()?;
+        if can_write {
+            l.rekey_slots()?;
+        }
         Ok(l)
     }
 

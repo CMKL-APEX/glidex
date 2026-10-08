@@ -48,7 +48,7 @@ pub enum AuthError {
     Authz(#[from] authz::AuthzError),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Method {
     Peer,
@@ -70,14 +70,14 @@ impl Method {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Transport {
     Unix,
     Tcp,
 }
 
 /// Who is making a request, and how they proved it.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Principal {
     /// The user; `None` for service-account tokens.
     pub user: Option<User>,
@@ -350,6 +350,29 @@ impl AuthService {
     }
 
     /// Rebuild and publish the policy set from storage.
+    /// Keep the policy set in step with links and site policies applied from
+    /// the replicated log (spec/clustering.md §6.5), so a role granted
+    /// through one server counts on every other.
+    pub fn watch_policies(self: &Arc<Self>) {
+        let me = self.clone();
+        let mut rx = self.store.database().subscribe();
+        tokio::spawn(async move {
+            use crate::store::TableId;
+            loop {
+                let relevant = match rx.recv().await {
+                    Ok(a) => a.tables.iter().any(|t| matches!(t, TableId::PolicyLinks | TableId::SitePolicies)),
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => true,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                };
+                if relevant {
+                    if let Err(e) = me.reload_policies() {
+                        tracing::warn!("reloading policies: {}", e);
+                    }
+                }
+            }
+        });
+    }
+
     pub fn reload_policies(&self) -> Result<(), AuthError> {
         let (links, site) = self.policy_inputs()?;
         self.engine.install(&links, &site)?;
@@ -376,7 +399,7 @@ impl AuthService {
         }
         let mut made = Vec::new();
         for name in members {
-            let Some(u) = self.store.user_for_identity("unix", name, name, None, true)? else { continue };
+            let Some(u) = self.store.user_for_identity("unix", &authz::local_subject(name), name, None, true)? else { continue };
             self.add_link("role.system-admin", Ent::User(u.id.clone()), Ent::Cluster, "bootstrap")?;
             self.add_link("role.owner", Ent::User(u.id.clone()), Ent::Project(default_project.into()), "bootstrap")?;
             made.push(name.clone());
@@ -468,7 +491,7 @@ impl AuthService {
         if !member {
             return Ok(None);
         }
-        let Some(u) = self.store.user_for_identity("unix", &user.name, &user.name, None, true)? else {
+        let Some(u) = self.store.user_for_identity("unix", &authz::local_subject(&user.name), &user.name, None, true)? else {
             return Ok(None);
         };
         let mut teams = self.store.teams_of(&u.id)?;
@@ -687,7 +710,7 @@ impl AuthService {
         }
         let user = self
             .store
-            .user_for_identity("pam", username, username, None, cfg.jit)?
+            .user_for_identity("pam", &authz::local_subject(username), username, None, cfg.jit)?
             .ok_or(AuthError::Denied)?;
         if user.disabled {
             return Err(AuthError::Denied);

@@ -697,11 +697,6 @@ fn mkdir_private(dir: &Path) -> Result<(), ImageError> {
 
 impl ImageManager {
     pub fn new(db: Arc<Db>, settings: ImageSettings) -> Result<Arc<Self>, ImageError> {
-        let txn = db.begin(crate::store::Origin::Images).map_err(storage)?;
-        txn.open_table(IMAGES_TABLE).map_err(storage)?;
-        txn.open_table(DISKS_TABLE).map_err(storage)?;
-        txn.open_table(IMAGE_META_TABLE).map_err(storage)?;
-        txn.commit().map_err(storage)?;
         mkdir_private(&settings.image_dir)?;
         mkdir_private(&settings.disk_dir)?;
 
@@ -738,6 +733,55 @@ impl ImageManager {
             }
         }
         Ok(out)
+    }
+
+    /// Bring the in-memory records in step with the table after entries were
+    /// applied from the replicated log (spec/clustering.md §6.5): `keys` are
+    /// the ids that changed in `table`.
+    pub fn sync_keys(&self, table: crate::store::TableId, keys: &[String]) {
+        use crate::store::TableId;
+        let Ok(txn) = self.db.begin_read() else { return };
+        let Ok(t) = txn.open_table(table.definition()) else { return };
+        for k in keys {
+            let raw = t.get(k.as_str()).ok().flatten().map(|v| v.value().to_vec());
+            match table {
+                TableId::Images => {
+                    let rec = raw.and_then(|b| serde_json::from_slice::<Image>(&b).ok());
+                    let mut m = self.images.write().unwrap();
+                    match rec {
+                        Some(r) => {
+                            m.insert(k.clone(), r);
+                        }
+                        None => {
+                            m.remove(k);
+                        }
+                    }
+                }
+                TableId::Disks => {
+                    let rec = raw.and_then(|b| serde_json::from_slice::<Disk>(&b).ok());
+                    let mut m = self.disks.write().unwrap();
+                    match rec {
+                        Some(r) => {
+                            m.insert(k.clone(), r);
+                        }
+                        None => {
+                            m.remove(k);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Reload every record (after a snapshot install).
+    pub fn reload_all(&self) {
+        if let Ok(m) = self.load(IMAGES_TABLE) {
+            *self.images.write().unwrap() = m;
+        }
+        if let Ok(m) = self.load(DISKS_TABLE) {
+            *self.disks.write().unwrap() = m;
+        }
     }
 
     /// Reconcile records with files and resume interrupted downloads.
