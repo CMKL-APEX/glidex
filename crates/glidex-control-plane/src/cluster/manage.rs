@@ -455,7 +455,7 @@ pub async fn rejoin(manager: &Arc<VmManager>, cfg: &crate::config::Config, opts:
 
 /// A join token for a new node (§5.2). `by` is recorded.
 pub fn join_token(cluster: &Cluster, role: NodeRole, ttl_secs: u64, allow_import: bool, by: &str) -> Result<String, ClusterError> {
-    tokens::create(&cluster.db, TokenKind::Join { role, allow_import }, ttl_secs, &cluster.identity.ca_fingerprint, by).map_err(other)
+    tokens::create(&cluster.db, TokenKind::Join { role, allow_import }, ttl_secs, &cluster.signing_fp(), by).map_err(other)
 }
 
 /// What `gxctl cluster status` shows.
@@ -485,7 +485,8 @@ pub fn status_of(c: &Cluster) -> Value {
         "name": c.identity.name,
         "role": c.identity.role,
         "advertise": c.identity.advertise.to_string(),
-        "ca_fingerprint": c.identity.ca_fingerprint,
+        "ca_fingerprint": c.signing_fp(),
+        "ca": c.ca_state().map(|s| json!({ "signing": s.signing_fp, "retiring": s.retiring, "retire_at": s.retire_at, "started_at": s.started_at })),
         "raft": raft,
         "nodes": nodes.iter().map(|n| json!({
             "id": n.meta.id, "name": n.spec.name, "role": n.spec.role, "phase": n.status.phase,

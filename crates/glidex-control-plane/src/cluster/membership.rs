@@ -103,6 +103,22 @@ impl Cluster {
     }
 }
 
+impl Cluster {
+    /// A server that leaves takes a copy of the CA key (§12.5): rotate, in the
+    /// background, so the request doesn't wait on every server.
+    pub fn rotate_after_server_left(self: &Arc<Self>, n: &Node) {
+        if n.spec.role != NodeRole::Server {
+            return;
+        }
+        let me = self.clone();
+        tokio::spawn(async move {
+            if let Err(e) = me.rotate_ca(None).await {
+                tracing::warn!("rotating the CA after a server left: {}", e);
+            }
+        });
+    }
+}
+
 impl VmManager {
     fn member_cluster(&self) -> Result<Arc<Cluster>, MemberError> {
         let c = self.cluster().ok_or_else(|| MemberError::Invalid("this host is not part of a cluster".into()))?;
@@ -175,6 +191,7 @@ impl VmManager {
         let denied = self.write_tombstone(&c, &id, NodePhase::Removed, "removed", false)?;
         // The Raft side may need a moment (the leader itself can be going).
         let _ = c.finish_raft_removals().await;
+        c.rotate_after_server_left(&n);
         Ok(json!({ "node": n.spec.name, "phase": NodePhase::Removed, "denied_certificates": denied, "server": n.spec.role == NodeRole::Server }))
     }
 
@@ -255,6 +272,7 @@ impl VmManager {
         let lost = crate::cluster::sync::node_vms(&self.database(), &n.meta.id).len();
         let denied = self.write_tombstone(&c, &n.meta.id, NodePhase::Forgotten, "forgotten", true)?;
         let _ = c.finish_raft_removals().await;
+        c.rotate_after_server_left(&n);
         Ok(json!({ "node": n.spec.name, "phase": NodePhase::Forgotten, "lost_vms": lost, "denied_certificates": denied }))
     }
 
@@ -314,7 +332,7 @@ impl VmManager {
         if n.meta.id == c.identity.node_id {
             return Err(MemberError::Conflict("this is the server issuing the token".into()));
         }
-        let token = tokens::create(&c.db, TokenKind::Rejoin { node: n.meta.id.clone(), raft_intact }, ttl_secs, &c.identity.ca_fingerprint, by).map_err(failed)?;
+        let token = tokens::create(&c.db, TokenKind::Rejoin { node: n.meta.id.clone(), raft_intact }, ttl_secs, &c.signing_fp(), by).map_err(failed)?;
         Ok(json!({ "token": token, "node": n.spec.name, "node_id": n.meta.id, "raft_intact": raft_intact, "ttl_secs": ttl_secs }))
     }
 

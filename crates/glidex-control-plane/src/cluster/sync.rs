@@ -121,7 +121,7 @@ pub fn node_vms(db: &Db, node: &str) -> Vec<(String, Value)> {
 }
 
 /// Tables a node receives in full: catalogs and names that hold no secrets.
-const SHARED: [TableId; 7] = [TableId::Projects, TableId::Meta, TableId::Images, TableId::Networks, TableId::Nodes, TableId::ImageMeta, TableId::ImageCaches];
+const SHARED: [TableId; 8] = [TableId::Projects, TableId::Meta, TableId::Images, TableId::Networks, TableId::Nodes, TableId::ImageMeta, TableId::ImageCaches, TableId::CaBundle];
 
 /// The part of `ws` a node may see: shared catalogs, and the VMs, disks,
 /// events and credentials that are its own. Deletions of keys in its tables

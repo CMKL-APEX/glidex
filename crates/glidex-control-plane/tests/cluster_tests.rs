@@ -847,3 +847,43 @@ where
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn the_ca_rotates_and_every_node_renews_before_the_old_one_is_retired() {
+    let _one = SERIAL.lock().await;
+    let cps = form(3).await;
+    let lead = leader_index(&cps, &[0, 1, 2]).await;
+    let old_fp = cluster(&cps[lead]).signing_fp();
+    let (s, r) = call(&cps[lead], "POST", "/cluster/rotate-ca", Some(json!({})), &[]).await;
+    assert_eq!(s, StatusCode::OK, "{r}");
+    let new_fp = r["signing_ca"].as_str().unwrap().to_string();
+    assert_ne!(new_fp, old_fp);
+    // Tokens pin the new CA from now on.
+    assert_eq!(cluster(&cps[lead]).signing_fp(), new_fp);
+    // Every node ends up trusting only the new CA, with a certificate it signed.
+    wait_until("the old CA to be retired everywhere", || async {
+        cps.iter().all(|cp| {
+            let c = cluster(cp);
+            let trust = c.files.read(c.files.trust()).unwrap_or_default();
+            let fps: Vec<String> = glidex_control_plane::cluster::pki::pem_bundle_ders(&trust).unwrap().iter().map(|d| glidex_control_plane::cluster::pki::issuer_of(d, &trust).unwrap_or_default()).collect();
+            fps == vec![new_fp.clone()] && c.ca_state().is_some_and(|s| s.retiring.is_empty())
+        })
+    })
+    .await;
+    // Nothing broke: a write still goes through, from any node, and the CA's old key is gone.
+    let (s, _) = create_project(&cps[(lead + 1) % 3], "after-rotation").await;
+    assert_eq!(s, StatusCode::CREATED);
+    for cp in &cps {
+        let c = cluster(cp);
+        assert!(!c.files.ca_key().with_extension("key.old").exists());
+        let cert = c.files.read(c.files.cert()).unwrap();
+        let der = glidex_control_plane::cluster::pki::pem_bundle_ders(&cert).unwrap().remove(0);
+        assert_eq!(glidex_control_plane::cluster::pki::issuer_of(&der, &c.files.read(c.files.trust()).unwrap()).as_deref(), Some(new_fp.as_str()));
+    }
+    // A node can still join, pinned to the new CA.
+    let cfg = test_config();
+    let extra = new_cp();
+    let token = manage::join_token(&cluster(&cps[lead]), NodeRole::Server, 600, false, "test").unwrap();
+    assert!(token.ends_with(&new_fp));
+    manage::join(&extra.manager, &cfg, JoinOptions { server: cps[lead].addr, token, role: NodeRole::Server, advertise: Some(extra.addr), tunnel_ip: None, name: Some("cp4".into()), listen: Some(extra.addr) }).await.unwrap();
+}

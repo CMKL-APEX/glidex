@@ -59,7 +59,7 @@ percent-encoding = "2"
 async-trait = "0.1"
 openraft = { version = "=0.9.25", features = ["serde", "storage-v2", "generic-snapshot-data"] }
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring", "x509-parser"] }
-x509-parser = "0.18"
+x509-parser = { version = "0.18", features = ["verify"] }
 time = "0.3"
 
 [dev-dependencies]

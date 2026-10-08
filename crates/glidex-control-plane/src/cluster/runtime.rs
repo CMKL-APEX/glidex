@@ -166,6 +166,7 @@ impl Cluster {
             cluster.db.set_forwarder(Arc::new(LeaderForwarder { cluster: Arc::downgrade(&cluster), runtime: tokio::runtime::Handle::current() }));
         }
         cluster.start_lifecycle();
+        cluster.start_ca_tasks();
         Ok(cluster)
     }
 

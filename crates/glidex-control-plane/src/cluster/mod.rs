@@ -15,3 +15,4 @@ pub mod sync;
 pub mod agent;
 pub mod lifecycle;
 pub mod membership;
+pub mod rotation;

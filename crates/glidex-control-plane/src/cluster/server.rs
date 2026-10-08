@@ -28,6 +28,7 @@ pub fn router(c: Arc<Cluster>) -> Router {
         .route("/cluster/v1/join", post(join))
         .route("/cluster/v1/join/ready", post(join_ready))
         .route("/cluster/v1/rejoin", post(rejoin))
+        .route("/cluster/v1/renew", post(renew))
         .route("/cluster/v1/read-index", post(read_index))
         .route("/cluster/v1/status", get(status))
         .route("/cluster/v1/list", get(node_list))
@@ -73,7 +74,8 @@ fn not_leader(c: &Cluster) -> Response {
 
 async fn get_ca(State(c): Ctx) -> Response {
     match c.files.read(c.files.trust()) {
-        Ok(t) => (StatusCode::OK, [("content-type", "application/x-pem-file")], t).into_response(),
+        // The signing CA first: that is the one a token pins.
+        Ok(t) => (StatusCode::OK, [("content-type", "application/x-pem-file")], c.ca_state().map(|s| s.trust_pem).unwrap_or(t)).into_response(),
         Err(e) => fail(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()),
     }
 }
@@ -81,6 +83,53 @@ async fn get_ca(State(c): Ctx) -> Response {
 #[derive(Deserialize)]
 struct CaKey {
     key_pem: String,
+    /// A rotation sends the new CA's certificate with its key (§12.5 step 1).
+    #[serde(default)]
+    cert_pem: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct RenewRequest {
+    csr: String,
+}
+
+/// §12.5 step 3 and expiry: a node with a valid certificate gets a new one
+/// for the same node id from the signing CA.
+async fn renew(State(c): Ctx, p: Option<Extension<PeerCert>>, Json(req): Json<RenewRequest>) -> Response {
+    let peer = match peer(&c, p, false) {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    let Some(node) = &c.node else { return fail(StatusCode::CONFLICT, "not_a_server", "this node does not sign certificates") };
+    if !node.is_leader() {
+        return not_leader(&c);
+    }
+    let Some(ca) = c.signing_ca() else { return fail(StatusCode::INTERNAL_SERVER_ERROR, "internal", "this server holds no CA key") };
+    match crate::node::NodeStore::new(c.db.clone()).get(&peer.node_id) {
+        Ok(Some(n)) if !n.status.phase.is_tombstone() => {}
+        _ => return fail(StatusCode::FORBIDDEN, "forbidden", "this node is not a member"),
+    }
+    let (cert_pem, info) = match ca.sign_node(&req.csr, &peer.node_id, peer.server, super::pki::NODE_VALIDITY_DAYS) {
+        Ok(v) => v,
+        Err(e) => return fail(StatusCode::BAD_REQUEST, "invalid_csr", e.to_string()),
+    };
+    let db = c.db.clone();
+    let r = tokio::task::spawn_blocking(move || {
+        db.write(Origin::Api, |tx| -> Result<(), JoinWriteError> {
+            tx.open_table(TableId::IssuedCerts.definition())?
+                .insert(&info.serial, serde_json::to_vec(&json!({ "node": info.node_id, "kind": "node", "issuer": info.issuer_fingerprint, "not_after": info.not_after }))?.as_slice())?;
+            Ok(())
+        })
+        .map_err(|e| e.0)
+    })
+    .await;
+    // The bundle to install comes with the certificate, so a node that missed the replicated row can still verify it.
+    let trust = c.ca_state().map(|s| s.trust_pem).or_else(|| c.files.read(c.files.trust()).ok()).unwrap_or_default();
+    match r {
+        Ok(Ok(())) => Json(json!({ "cert_pem": cert_pem, "trust_pem": trust })).into_response(),
+        Ok(Err(e)) => fail(StatusCode::CONFLICT, "conflict", e),
+        Err(e) => fail(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()),
+    }
 }
 
 /// A new server receives the CA key from the leader (D20). It never goes
@@ -91,6 +140,13 @@ async fn put_ca(State(c): Ctx, p: Option<Extension<PeerCert>>, Json(b): Json<CaK
     }
     if c.role() != NodeRole::Server {
         return fail(StatusCode::CONFLICT, "not_a_server", "agents never hold the CA key");
+    }
+    if let Some(cert) = &b.cert_pem {
+        // A rotation: a new CA, whose certificate matches the key it came with.
+        return match super::pki::Ca::from_pem(cert, &b.key_pem).map_err(|e| e.to_string()).and_then(|ca| c.install_signing_ca(ca).map_err(|e| e.to_string())) {
+            Ok(()) => StatusCode::NO_CONTENT.into_response(),
+            Err(e) => fail(StatusCode::BAD_REQUEST, "invalid", e),
+        };
     }
     let trust = match c.files.read(c.files.trust()) {
         Ok(t) => t,

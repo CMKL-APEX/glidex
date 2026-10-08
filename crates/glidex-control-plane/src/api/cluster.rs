@@ -131,7 +131,7 @@ pub async fn create_token(c: Caller, Json(b): Json<TokenBody>) -> Result<impl In
         .filter(|n| n.spec.role == NodeRole::Server && !n.status.phase.is_tombstone())
         .filter_map(|n| n.status.advertise.map(|a| a.to_string()))
         .collect();
-    Ok((StatusCode::CREATED, Json(json!({ "token": token, "role": role, "ttl_secs": ttl, "servers": servers, "ca_fingerprint": cl.identity.ca_fingerprint }))))
+    Ok((StatusCode::CREATED, Json(json!({ "token": token, "role": role, "ttl_secs": ttl, "servers": servers, "ca_fingerprint": cl.signing_fp() }))))
 }
 
 #[derive(Deserialize)]
@@ -146,6 +146,22 @@ pub async fn promote(c: Caller, Json(b): Json<PromoteBody>) -> Result<impl IntoR
     let cl = require_cluster(&c)?;
     let out = manage::promote(&cl, &b.nodes, b.force).await.map_err(cluster_err)?;
     c.set_target("cluster".to_string());
+    Ok(Json(out))
+}
+
+#[derive(Deserialize, Default)]
+pub struct RotateBody {
+    #[serde(default)]
+    grace_secs: Option<u64>,
+}
+
+/// `gxctl cluster rotate-ca [--grace <secs>]` (§12.5).
+pub async fn rotate_ca(c: Caller, b: Option<Json<RotateBody>>) -> Result<impl IntoResponse, ApiErr> {
+    c.require(Ent::Cluster, EntitySet::new())?;
+    let cl = require_cluster(&c)?;
+    c.set_target("cluster".to_string());
+    c.audit_always();
+    let out = cl.rotate_ca(b.and_then(|b| b.0.grace_secs)).await.map_err(cluster_err)?;
     Ok(Json(out))
 }
 

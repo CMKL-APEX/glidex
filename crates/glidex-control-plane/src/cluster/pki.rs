@@ -281,3 +281,15 @@ mod tests {
         assert_eq!(s.len(), 20);
     }
 }
+
+/// The fingerprint of the CA in `trust_pem` that signed `leaf_der`.
+pub fn issuer_of(leaf_der: &[u8], trust_pem: &str) -> Option<String> {
+    let (_, leaf) = parse_x509_certificate(leaf_der).ok()?;
+    for der in pem_bundle_ders(trust_pem).ok()? {
+        let Ok((_, ca)) = parse_x509_certificate(&der) else { continue };
+        if leaf.verify_signature(Some(ca.public_key())).is_ok() {
+            return Some(hex(&Sha256::digest(ca.public_key().raw)));
+        }
+    }
+    None
+}
