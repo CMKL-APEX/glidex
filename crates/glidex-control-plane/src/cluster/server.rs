@@ -29,6 +29,8 @@ pub fn router(c: Arc<Cluster>) -> Router {
         .route("/cluster/v1/join/ready", post(join_ready))
         .route("/cluster/v1/rejoin", post(rejoin))
         .route("/cluster/v1/renew", post(renew))
+        .route("/cluster/v1/departure/{plan}", get(departure_get))
+        .route("/cluster/v1/departure/{plan}/ack", post(departure_ack))
         .route("/cluster/v1/read-index", post(read_index))
         .route("/cluster/v1/status", get(status))
         .route("/cluster/v1/list", get(node_list))
@@ -86,6 +88,57 @@ struct CaKey {
     /// A rotation sends the new CA's certificate with its key (§12.5 step 1).
     #[serde(default)]
     cert_pem: Option<String>,
+}
+
+/// §5.8.2 step 2: the departing node fetches its bundle (or, after the
+/// commit, its receipt). Only that node may.
+async fn departure_get(State(c): Ctx, p: Option<Extension<PeerCert>>, axum::extract::Path(plan_id): axum::extract::Path<String>) -> Response {
+    let peer = match peer(&c, p, false) {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    let Some(node) = &c.node else { return fail(StatusCode::CONFLICT, "not_a_server", "ask a server") };
+    if !node.is_leader() {
+        return not_leader(&c);
+    }
+    let Some(plan) = super::departure::read_plan(&c.db, &plan_id).filter(|p| p.node == peer.node_id) else { return fail(StatusCode::NOT_FOUND, "not_found", "no such plan") };
+    match plan.state.as_str() {
+        "committed" => Json(json!({ "state": "committed", "receipt": plan.receipt })).into_response(),
+        "frozen" => {
+            let db = c.db.clone();
+            let b = tokio::task::spawn_blocking(move || super::departure::build_bundle(&db, &plan.plan, &plan.node, &plan.options)).await;
+            match b {
+                Ok(b) => Json(json!({ "state": "frozen", "bundle": b })).into_response(),
+                Err(e) => fail(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()),
+            }
+        }
+        s => fail(StatusCode::GONE, "aborted", format!("the plan is {s}")),
+    }
+}
+
+#[derive(Deserialize)]
+struct AckBody {
+    sha256: String,
+}
+
+/// §5.8.2 step 3: the node holds the bundle; the cluster commits.
+async fn departure_ack(State(c): Ctx, p: Option<Extension<PeerCert>>, axum::extract::Path(plan_id): axum::extract::Path<String>, Json(b): Json<AckBody>) -> Response {
+    let peer = match peer(&c, p, false) {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    let Some(node) = &c.node else { return fail(StatusCode::CONFLICT, "not_a_server", "ask a server") };
+    if !node.is_leader() {
+        return not_leader(&c);
+    }
+    if super::departure::read_plan(&c.db, &plan_id).is_none_or(|p| p.node != peer.node_id) {
+        return fail(StatusCode::NOT_FOUND, "not_found", "no such plan");
+    }
+    match c.commit_departure(&plan_id, &b.sha256).await {
+        Ok(r) => Json(r).into_response(),
+        Err(super::departure::DepartureError::Conflict(m)) => fail(StatusCode::CONFLICT, "conflict", m),
+        Err(e) => fail(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()),
+    }
 }
 
 #[derive(Deserialize)]

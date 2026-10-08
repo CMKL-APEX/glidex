@@ -31,6 +31,9 @@ pub trait NodeHandlers: Send + Sync {
     /// A file of image `id` this node holds (`main`, or a firmware `vars`
     /// template).
     fn image_file(&self, id: &str, part: &str) -> Option<std::path::PathBuf>;
+    /// This node's departure committed and its receipt is on disk: the
+    /// process should restart as a standalone host (§5.8.2 step 4).
+    fn departed(&self) {}
 }
 
 pub struct Cluster {
@@ -167,6 +170,7 @@ impl Cluster {
         }
         cluster.start_lifecycle();
         cluster.start_ca_tasks();
+        cluster.start_departure_tasks();
         Ok(cluster)
     }
 

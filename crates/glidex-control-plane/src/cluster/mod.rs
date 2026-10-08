@@ -16,3 +16,4 @@ pub mod agent;
 pub mod lifecycle;
 pub mod membership;
 pub mod rotation;
+pub mod departure;

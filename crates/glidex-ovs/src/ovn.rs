@@ -507,7 +507,7 @@ mod forget_tests {
     fn a_server_is_kicked_from_both_clusters_and_its_chassis_deleted() {
         let exec = RecordingExec::new();
         exec.on("ovs-appctl -t /var/run/ovn/ovnnb_db.ctl cluster/status OVN_Northbound", Output::ok(STATUS));
-        exec.on("ovs-appctl -t /var/run/ovn/ovnsb_db.ctl cluster/status OVN_Southbound", Output::ok(&STATUS.replace("Northbound", "Southbound").replace("6643", "6644")));
+        exec.on("ovs-appctl -t /var/run/ovn/ovnsb_db.ctl cluster/status OVN_Southbound", Output::ok(STATUS.replace("Northbound", "Southbound").replace("6643", "6644").as_str()));
         forget_member(&exec, "192.0.2.12", "node-1", true).unwrap();
         let calls = exec.calls();
         assert!(calls.contains(&"ovs-appctl -t /var/run/ovn/ovnnb_db.ctl cluster/kick OVN_Northbound c5e1".to_string()), "{calls:?}");

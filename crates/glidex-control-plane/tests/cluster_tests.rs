@@ -768,72 +768,76 @@ async fn nodes_are_removed_forgotten_and_rejoin_as_themselves() {
     let lead = leader_index(&cps, &[0, 1, 2, 3]).await;
     let status = manage::status_of(&cluster(&cps[lead]));
     assert_eq!((status["raft"]["voters"].as_array().unwrap().len(), status["raft"]["learners"].as_array().unwrap().len()), (3, 1), "{status}");
-    let learner = (0..4).find(|i| cluster(&cps[*i]).node.as_ref().unwrap().learners().len() == 0 && !cluster(&cps[lead]).node.as_ref().unwrap().voters().contains(&cluster(&cps[*i]).identity.raft_id)).unwrap();
-    let learner_name = cluster(&cps[learner]).identity.name.clone();
+    let lc = cluster(&cps[lead]);
+    let learner = (0..4).find(|i| !lc.node.as_ref().unwrap().voters().contains(&cluster(&cps[*i]).identity.raft_id)).unwrap();
+    let lname = cluster(&cps[learner]).identity.name.clone();
     let voter = (0..4).find(|i| *i != lead && *i != learner).unwrap();
+    let vname = cluster(&cps[voter]).identity.name.clone();
 
     // A voter can't go if that leaves an even group; nothing changes.
-    let (s, e) = call(&cps[lead], "POST", &format!("/nodes/{}/remove", cluster(&cps[voter]).identity.name), Some(json!({})), &[]).await;
+    let (s, e) = call(&cps[lead], "POST", &format!("/nodes/{vname}/remove"), Some(json!({})), &[]).await;
     assert_eq!(s, StatusCode::CONFLICT, "{e}");
     assert!(e["message"].as_str().unwrap().contains("1, 3 or 5"), "{e}");
-    assert_eq!(node_json(&cps[lead], &cluster(&cps[voter]).identity.name).await["status"]["phase"], "Active");
-    // The server issuing the request can't remove itself.
+    assert_eq!(node_json(&cps[lead], &vname).await["status"]["phase"], "Active");
+    // The server issuing the request can't remove itself, and an active node can't be purged.
     let (s, _) = call(&cps[lead], "POST", &format!("/nodes/{}/remove", cluster(&cps[lead]).identity.name), Some(json!({})), &[]).await;
     assert_eq!(s, StatusCode::CONFLICT);
+    let (s, _) = call(&cps[lead], "POST", &format!("/nodes/{vname}/purge"), None, &[]).await;
+    assert_eq!(s, StatusCode::CONFLICT, "an Active node can't be purged");
 
-    // The learner (empty) is removed: tombstone, certificate denied, out of the group.
-    let before = denylist_len(&cps[lead]);
-    let (s, r) = call(&cps[lead], "POST", &format!("/nodes/{learner_name}/remove"), Some(json!({})), &[]).await;
-    assert_eq!(s, StatusCode::OK, "{r}");
-    assert_eq!(r["phase"], "Removed");
-    assert_eq!(denylist_len(&cps[lead]), before + 1);
-    wait_until("the learner to leave the group", || async { cluster(&cps[lead]).node.as_ref().unwrap().learners().is_empty() }).await;
-    let (s, r) = call(&cps[lead], "POST", &format!("/nodes/{learner_name}/remove"), Some(json!({})), &[]).await;
-    assert_eq!((s, r["already"].as_bool()), (StatusCode::OK, Some(true)), "removing twice is fine");
-    // Its id is retired: no rejoin token.
-    let (s, _) = call(&cps[lead], "POST", &format!("/nodes/{learner_name}/rejoin-token"), Some(json!({})), &[]).await;
-    assert_eq!(s, StatusCode::CONFLICT);
-
-    // A lost voter: forgetting needs --fenced, and only for a node that is silent.
-    let victim = voter;
-    let vname = cluster(&cps[victim]).identity.name.clone();
-    let (s, _) = call(&cps[lead], "POST", &format!("/nodes/{vname}/forget"), Some(json!({})), &[]).await;
+    // A lost learner: forgetting needs --fenced, and only for a node that has gone silent.
+    let (s, _) = call(&cps[lead], "POST", &format!("/nodes/{lname}/forget"), Some(json!({})), &[]).await;
     assert_eq!(s, StatusCode::BAD_REQUEST, "forget without --fenced");
-    cluster(&cps[victim]).stop().await;
-    wait_until("the node to be reported unreachable", || async { node_json(&cps[lead], &vname).await["status"]["ready"] != "True" }).await;
-    // Three voters become two: refused as even, accepted with force.
-    let (s, e) = call(&cps[lead], "POST", &format!("/nodes/{vname}/forget"), Some(json!({ "fenced": true })), &[]).await;
-    assert_eq!(s, StatusCode::CONFLICT, "{e}");
-    let (s, r) = call(&cps[lead], "POST", &format!("/nodes/{vname}/forget"), Some(json!({ "fenced": true, "force": true })), &[]).await;
+    cluster(&cps[learner]).stop().await;
+    wait_until("the node to be reported unreachable", || async { node_json(&cps[lead], &lname).await["status"]["ready"] != "True" }).await;
+    let before = denylist_len(&cps[lead]);
+    let (s, r) = call(&cps[lead], "POST", &format!("/nodes/{lname}/forget"), Some(json!({ "fenced": true })), &[]).await;
     assert_eq!(s, StatusCode::OK, "{r}");
     assert_eq!(r["phase"], "Forgotten");
-    wait_until("the forgotten voter to leave the group", || async { !cluster(&cps[lead]).node.as_ref().unwrap().voters().contains(&cluster(&cps[victim]).identity.raft_id) }).await;
+    assert_eq!(denylist_len(&cps[lead]), before + 1, "its certificate is revoked");
+    wait_until("the forgotten learner to leave the group", || async { !cluster(&cps[lead]).node.as_ref().unwrap().learners().contains(&cluster(&cps[learner]).identity.raft_id) }).await;
 
-    // It comes back as itself, with a new certificate, as a learner (its log is not trusted).
-    let (s, t) = call(&cps[lead], "POST", &format!("/nodes/{vname}/rejoin-token"), Some(json!({ "raft_intact": false })), &[]).await;
+    // It comes back as itself, with a new certificate, starting its Raft state afresh (D18).
+    let (s, t) = call(&cps[lead], "POST", &format!("/nodes/{lname}/rejoin-token"), Some(json!({ "raft_intact": false })), &[]).await;
     assert_eq!(s, StatusCode::OK, "{t}");
     let cfg = test_config();
     let out = manage::rejoin(
-        &cps[victim].manager,
+        &cps[learner].manager,
         &cfg,
-        manage::RejoinOptions { server: cps[lead].addr, token: t["token"].as_str().unwrap().to_string(), node_id: None, advertise: Some(cps[victim].addr), tunnel_ip: None, listen: Some(cps[victim].addr) },
+        manage::RejoinOptions { server: cps[lead].addr, token: t["token"].as_str().unwrap().to_string(), node_id: None, advertise: Some(cps[learner].addr), tunnel_ip: None, listen: Some(cps[learner].addr) },
     )
     .await
     .unwrap();
     assert_eq!(out["raft_fresh"], true, "{out}");
-    let n = node_json(&cps[lead], &vname).await;
+    let n = node_json(&cps[lead], &lname).await;
     assert_eq!(n["status"]["phase"], "Active", "{n}");
-    assert_eq!(n["meta"]["id"], cluster(&cps[victim]).identity.node_id, "the same node id");
+    assert_eq!(n["meta"]["id"], cluster(&cps[learner]).identity.node_id, "the same node id");
     wait_until("the rejoined server to be a member again", || async {
-        let lc = cluster(&cps[lead]);
-        let l = lc.node.as_ref().unwrap();
-        let rid = cluster(&cps[victim]).identity.raft_id;
+        let c = cluster(&cps[lead]);
+        let rid = cluster(&cps[learner]).identity.raft_id;
+        let l = c.node.as_ref().unwrap();
         l.voters().contains(&rid) || l.learners().contains(&rid)
     })
     .await;
-    // A token is single use.
-    let (s, _) = call(&cps[lead], "POST", &format!("/nodes/{vname}/purge"), None, &[]).await;
-    assert_eq!(s, StatusCode::CONFLICT, "an Active node can't be purged");
+
+    // An empty node is removed: tombstone, certificate denied, out of the group; twice is fine.
+    let before = denylist_len(&cps[lead]);
+    let (s, r) = call(&cps[lead], "POST", &format!("/nodes/{lname}/remove"), Some(json!({})), &[]).await;
+    assert_eq!(s, StatusCode::OK, "{r}");
+    assert_eq!(r["phase"], "Removed");
+    assert!(denylist_len(&cps[lead]) > before);
+    wait_until("the removed node to leave the group", || async {
+        let c = cluster(&cps[lead]);
+        let rid = cluster(&cps[learner]).identity.raft_id;
+        let l = c.node.as_ref().unwrap();
+        !l.voters().contains(&rid) && !l.learners().contains(&rid)
+    })
+    .await;
+    let (s, r) = call(&cps[lead], "POST", &format!("/nodes/{lname}/remove"), Some(json!({})), &[]).await;
+    assert_eq!((s, r["already"].as_bool()), (StatusCode::OK, Some(true)), "removing twice is fine");
+    // Its id is retired: no rejoin token.
+    let (s, _) = call(&cps[lead], "POST", &format!("/nodes/{lname}/rejoin-token"), Some(json!({})), &[]).await;
+    assert_eq!(s, StatusCode::CONFLICT);
 }
 
 async fn wait_until<F, Fut>(what: &str, mut f: F)
@@ -892,4 +896,138 @@ async fn the_ca_rotates_and_every_node_renews_before_the_old_one_is_retired() {
     let token = manage::join_token(&cluster(&cps[lead]), NodeRole::Server, 600, false, "test").unwrap();
     assert!(token.ends_with(&new_fp));
     manage::join(&extra.manager, &cfg, JoinOptions { server: cps[lead].addr, token, role: NodeRole::Server, advertise: Some(extra.addr), tunnel_ip: None, name: Some("cp4".into()), listen: Some(extra.addr) }).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn a_node_detaches_with_its_vms_and_the_cluster_lets_go() {
+    use glidex_control_plane::cluster::departure::{finish_pending, pending_db, receipt_file};
+    let _one = SERIAL.lock().await;
+    let cfg = test_config();
+    let server = new_cp();
+    manage::init(&server.manager, &cfg, InitOptions { advertise: Some(server.addr), tunnel_ip: None, listen: Some(server.addr) }).await.unwrap();
+    server.manager.initialize().await.unwrap();
+    let agent = new_cp();
+    let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test").unwrap();
+    manage::join(&agent.manager, &cfg, JoinOptions { server: server.addr, token, role: NodeRole::Agent, advertise: Some(agent.addr), tunnel_ip: None, name: Some("agent1".into()), listen: Some(agent.addr) })
+        .await
+        .unwrap();
+    let link = agent.manager.node_link().expect("an agent has a link").clone();
+    assert!(link.wait_ready(Duration::from_secs(20)).await);
+    agent.manager.initialize().await.unwrap();
+    agent.manager.start_controllers();
+    let (s, vm) = call(&server, "POST", "/vms", Some(vm_body("travels", "agent1")), &[]).await;
+    assert_eq!(s, StatusCode::CREATED, "{vm}");
+    let id = vm["id"].as_str().unwrap().to_string();
+    wait_for("the agent to be ready", || async { node_json(&server, "agent1").await["status"]["ready"] == "True" }).await;
+
+    // Mapping to a network that isn't a node network of it is refused; nothing freezes.
+    let (s, e) = call(&server, "POST", "/nodes/agent1/detach", Some(json!({ "map_networks": { "nope": "nada" } })), &[]).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{e}");
+    assert_eq!(node_json(&server, "agent1").await["status"]["phase"], "Active");
+
+    // An abort returns the node to Active.
+    let (s, p) = call(&server, "POST", "/nodes/agent1/detach", Some(json!({ "timeout_secs": 600 })), &[]).await;
+    assert_eq!(s, StatusCode::OK, "{p}");
+    assert_eq!(p["vms"], 1);
+    let (s, a) = call(&server, "POST", "/nodes/agent1/detach", Some(json!({ "abort": true })), &[]).await;
+    assert_eq!(s, StatusCode::OK, "{a}");
+    assert_eq!(node_json(&server, "agent1").await["status"]["phase"], "Active");
+    assert!(!pending_db(&agent_state_dir(&agent)).exists() || { wait_until("the pending database to go", || async { !pending_db(&agent_state_dir(&agent)).exists() }).await; true });
+
+    // The real thing: the node writes its bundle, the cluster commits and signs a receipt.
+    let (s, p) = call(&server, "POST", "/nodes/agent1/detach", Some(json!({})), &[]).await;
+    assert_eq!(s, StatusCode::OK, "{p}");
+    let dir = agent_state_dir(&agent);
+    wait_until("the receipt", || async { receipt_file(&dir).exists() }).await;
+    let n = node_json(&server, "agent1").await;
+    assert_eq!(n["status"]["phase"], "Departed", "{n}");
+    assert!(n["status"]["departed_ids"].as_array().unwrap().iter().any(|x| *x == id.as_str()), "{n}");
+    let (s, _) = call(&server, "GET", &format!("/vms/{id}"), None, &[]).await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "the cluster forgot the VM");
+    // The departed node's id is retired: no rejoin token.
+    let (s, _) = call(&server, "POST", "/nodes/agent1/rejoin-token", Some(json!({})), &[]).await;
+    assert_eq!(s, StatusCode::CONFLICT);
+
+    // Restart standalone (on a copy of what the node left on disk): the host owns the VM, as `local`.
+    let fresh = tempfile::tempdir().unwrap();
+    std::fs::copy(pending_db(&dir), pending_db(fresh.path())).unwrap();
+    std::fs::copy(receipt_file(&dir), receipt_file(fresh.path())).unwrap();
+    std::fs::create_dir_all(fresh.path().join("cluster")).unwrap();
+    std::fs::copy(dir.join("cluster/ca.crt"), fresh.path().join("cluster/ca.crt")).unwrap();
+    std::fs::write(fresh.path().join("glidex.db"), b"the old cluster cache").unwrap();
+    assert!(finish_pending(&fresh.path().join("glidex.db")).unwrap());
+    assert!(!fresh.path().join("cluster").exists(), "identity, certificates and the CA key are gone");
+    let standalone = VmManager::with_db_path(fresh.path().join("glidex.db")).unwrap();
+    standalone.initialize().await.unwrap();
+    let vms = standalone.list_vms().await;
+    assert_eq!(vms.len(), 1, "{vms:?}");
+    assert_eq!((vms[0].id.as_str(), vms[0].status.placement.as_ref().map(|p| p.node.as_str())), (id.as_str(), Some("local")));
+    // A receipt that isn't the cluster's is not honoured.
+    let other = tempfile::tempdir().unwrap();
+    std::fs::copy(pending_db(&dir), pending_db(other.path())).unwrap();
+    let mut r: Value = serde_json::from_slice(&std::fs::read(receipt_file(&dir)).unwrap()).unwrap();
+    r["revision"] = json!(1);
+    std::fs::write(receipt_file(other.path()), r.to_string()).unwrap();
+    std::fs::create_dir_all(other.path().join("cluster")).unwrap();
+    std::fs::copy(dir.join("cluster/ca.crt"), other.path().join("cluster/ca.crt")).unwrap();
+    assert!(finish_pending(&other.path().join("glidex.db")).is_err());
+}
+
+fn agent_state_dir(cp: &Cp) -> std::path::PathBuf {
+    cp.manager.db_path().parent().unwrap().to_path_buf()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn a_node_that_left_on_its_own_is_forgotten_as_departed_and_its_bundle_can_be_built_offline() {
+    use glidex_control_plane::cluster::departure::{offline_detach, pending_db};
+    let _one = SERIAL.lock().await;
+    let cfg = test_config();
+    let server = new_cp();
+    manage::init(&server.manager, &cfg, InitOptions { advertise: Some(server.addr), tunnel_ip: None, listen: Some(server.addr) }).await.unwrap();
+    server.manager.initialize().await.unwrap();
+    let agent = new_cp();
+    let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test").unwrap();
+    manage::join(&agent.manager, &cfg, JoinOptions { server: server.addr, token, role: NodeRole::Agent, advertise: Some(agent.addr), tunnel_ip: None, name: Some("agent1".into()), listen: Some(agent.addr) })
+        .await
+        .unwrap();
+    let link = agent.manager.node_link().expect("an agent has a link").clone();
+    assert!(link.wait_ready(Duration::from_secs(20)).await);
+    agent.manager.initialize().await.unwrap();
+    let (s, vm) = call(&server, "POST", "/vms", Some(vm_body("left-behind", "agent1")), &[]).await;
+    assert_eq!(s, StatusCode::CREATED, "{vm}");
+    let id = vm["id"].as_str().unwrap().to_string();
+    wait_for("the VM in the agent's cache", || async { agent.manager.list_vms().await.iter().any(|v| v.id == id) }).await;
+
+    // The cluster can't tell a departed node from a partitioned one while it is still reporting.
+    let (s, _) = call(&server, "POST", "/nodes/agent1/detach", Some(json!({ "departed": true })), &[]).await;
+    assert_eq!(s, StatusCode::CONFLICT);
+
+    // The host builds its bundle from its cache (what the installer's offline path does).
+    // Run on a copy of its files: the live manager still has the database open.
+    let state = agent_state_dir(&agent);
+    let copy = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(copy.path().join("cluster")).unwrap();
+    for f in ["identity.json", "ca.crt", "node.key", "node.crt"] {
+        std::fs::copy(state.join("cluster").join(f), copy.path().join("cluster").join(f)).unwrap();
+    }
+    let snap = copy.path().join("snap");
+    manage::export_snapshot(&agent.manager.database(), &snap).unwrap();
+    let db = glidex_control_plane::store::Db::create(copy.path().join("glidex.db")).unwrap();
+    db.install_dump(&mut std::io::BufReader::new(std::fs::File::open(&snap).unwrap()), 0, |_| Ok(())).unwrap();
+    drop(db);
+    let bundle = offline_detach(&copy.path().join("glidex.db")).unwrap();
+    assert_eq!(bundle.vm_ids, vec![id.clone()]);
+    assert!(!copy.path().join("cluster").exists() && !pending_db(copy.path()).exists(), "switched and cleaned up");
+    let standalone = VmManager::with_db_path(copy.path().join("glidex.db")).unwrap();
+    standalone.initialize().await.unwrap();
+    assert_eq!(standalone.list_vms().await.len(), 1);
+
+    // Now the agent really is gone: the cluster records that it left, not that it was lost.
+    cluster(&agent).stop().await;
+    wait_until("the node to be silent", || async { node_json(&server, "agent1").await["status"]["ready"] != "True" }).await;
+    let (s, r) = call(&server, "POST", "/nodes/agent1/detach", Some(json!({ "departed": true })), &[]).await;
+    assert_eq!(s, StatusCode::OK, "{r}");
+    assert_eq!((r["phase"].as_str(), r["vms"].as_u64()), (Some("Departed"), Some(1)));
+    let (s, _) = call(&server, "GET", &format!("/vms/{id}"), None, &[]).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
 }

@@ -127,3 +127,47 @@ pub async fn rejoin_token(c: Caller, Path(id): Path<String>, b: Option<Json<Memb
     let ttl = b.ttl_secs.unwrap_or(3600).clamp(60, 7 * 86400);
     member_op(&c, &id.clone(), "createRejoinToken", |m| async move { m.rejoin_token(&id, b.raft_intact, ttl, &by).await }).await
 }
+
+fn departure_err(e: crate::cluster::departure::DepartureError) -> ApiErr {
+    use crate::cluster::departure::DepartureError as D;
+    match e {
+        D::NotFound(m) => err(StatusCode::NOT_FOUND, "not_found", format!("{m} not found")),
+        D::Conflict(m) => err(StatusCode::CONFLICT, "conflict", m),
+        D::Invalid(m) => err(StatusCode::BAD_REQUEST, "invalid", m),
+        D::Failed(m) => err(StatusCode::INTERNAL_SERVER_ERROR, "internal", m),
+    }
+}
+
+#[derive(serde::Deserialize, Default)]
+pub struct DetachBody {
+    #[serde(flatten)]
+    options: crate::cluster::departure::DetachOptions,
+    #[serde(default)]
+    timeout_secs: Option<u64>,
+    #[serde(default)]
+    abort: bool,
+    /// `forget --departed`: the node left on its own.
+    #[serde(default)]
+    departed: bool,
+}
+
+/// `POST /nodes/{id}/detach`: freeze the node and start the handover (§5.8.2);
+/// with `abort`, return it to `Active`; with `departed`, record that it left
+/// by itself (§5.8.3).
+pub async fn detach(c: Caller, Path(id): Path<String>, b: Option<Json<DetachBody>>) -> Result<impl IntoResponse, ApiErr> {
+    c.require(Ent::Cluster, EntitySet::new())?;
+    c.set_target(format!("node:{id}"));
+    c.audit_always();
+    let b = b.map(|b| b.0).unwrap_or_default();
+    let m = c.app.manager.clone();
+    if b.departed {
+        return m.forget_departed(&id).await.map(Json).map_err(departure_err);
+    }
+    if b.abort {
+        let node = m.nodes().list().map_err(store_err)?.into_iter().find(|n| n.meta.id == id || n.spec.name == id).ok_or_else(|| err(StatusCode::NOT_FOUND, "not_found", format!("node {id} not found")))?;
+        let plan = crate::cluster::departure::plans(&m.database()).into_iter().find(|p| p.node == node.meta.id && p.state == "frozen").ok_or_else(|| err(StatusCode::NOT_FOUND, "not_found", "no detach is under way for that node"))?;
+        crate::cluster::departure::abort_plan(&m.database(), &plan.plan).map_err(departure_err)?;
+        return Ok(Json(serde_json::json!({ "node": node.spec.name, "aborted": plan.plan })));
+    }
+    m.start_detach(&id, b.options, b.timeout_secs).await.map(Json).map_err(departure_err)
+}

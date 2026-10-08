@@ -1455,7 +1455,7 @@ const SUBCOMMANDS: &[(&str, &[&str])] = &[
     ("disk", &["list", "show", "create", "resize", "extend-root", "rm"]),
     ("ovs", &["status", "install", "dpdk-init"]),
     ("cluster", &["init", "join", "join-token", "status", "promote", "snapshot", "rotate-ca", "rejoin", "leave"]),
-    ("node", &["drain", "undrain", "remove", "forget", "purge", "rejoin-token"]),
+    ("node", &["drain", "undrain", "remove", "forget", "purge", "rejoin-token", "detach"]),
     ("login", &["--oidc", "--token"]),
     ("logout", &["--revoke"]),
     ("token", &["list", "create", "revoke"]),
@@ -2245,13 +2245,24 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
                 Err(e) => println!("{} {}", "Error:".red(), e),
             }
         }
-        "nodes" | "node" if matches!(parts.get(1), Some(&"remove") | Some(&"forget") | Some(&"purge") | Some(&"rejoin-token")) => {
+        "nodes" | "node" if matches!(parts.get(1), Some(&"remove") | Some(&"forget") | Some(&"purge") | Some(&"rejoin-token") | Some(&"detach")) => {
             let Some(id) = parts.get(2).filter(|a| !a.starts_with("--")) else {
                 println!("{}", format!("Usage: node {} <node> [--force] [--fenced] [--raft-lost]", parts[1]).yellow());
                 return true;
             };
             let rest = &parts[3..];
+            let mut maps = serde_json::Map::new();
+            for m in flag_values(rest, "--map-network") {
+                if let Some((a, b)) = m.split_once('=') {
+                    maps.insert(a.to_string(), b.into());
+                }
+            }
             let body = serde_json::json!({
+                "map_networks": maps,
+                "with_access": has_flag(rest, "--with-access"),
+                "abort": has_flag(rest, "--abort"),
+                "departed": has_flag(rest, "--departed"),
+                "timeout_secs": flag_value(rest, "--timeout").and_then(|t| t.parse::<u64>().ok()),
                 "force": has_flag(rest, "--force"),
                 "fenced": has_flag(rest, "--fenced"),
                 "raft_intact": !has_flag(rest, "--raft-lost"),

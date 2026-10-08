@@ -47,7 +47,7 @@ fn resolve(nodes: &[Node], key: &str) -> Result<Node, MemberError> {
 
 impl Cluster {
     /// Deny-list every certificate issued to `node` (it can no longer connect).
-    fn deny_certs(tx: &crate::store::Tx<'_>, node: &str, why: &str) -> Result<usize, crate::store::StoreError> {
+    pub(crate) fn deny_certs(tx: &crate::store::Tx<'_>, node: &str, why: &str) -> Result<usize, crate::store::StoreError> {
         let io = |e: serde_json::Error| crate::store::StoreError::Io(std::io::Error::other(e.to_string()));
         let serials: Vec<String> = {
             let t = tx.open_table(TableId::IssuedCerts.definition())?;
@@ -67,7 +67,7 @@ impl Cluster {
     }
 
     /// Whether the voters left after `leaving` go may still elect and commit (§5.5 step 2).
-    fn check_voter_leaves(&self, leaving: u64, force: bool) -> Result<(), MemberError> {
+    pub(crate) fn check_voter_leaves(&self, leaving: u64, force: bool) -> Result<(), MemberError> {
         let Some(node) = &self.node else { return Ok(()) };
         let voters = node.voters();
         if !voters.contains(&leaving) {
@@ -138,7 +138,7 @@ impl VmManager {
 
     /// The gateway groups (the edge's and VPC routers') that losing `node`
     /// would empty while NAT networks still need them (§5.5 step 1).
-    fn gateway_blocker(&self, node: &Node) -> Option<String> {
+    pub(crate) fn gateway_blocker(&self, node: &Node) -> Option<String> {
         let ovn = self.ovn.load_full();
         if !ovn.enabled {
             return None;
@@ -338,7 +338,7 @@ impl VmManager {
 
     /// Hook for the OVN side of leaving (§5.5 steps 3–4): kick the node from
     /// the NB/SB clusters and delete its chassis. A no-op without OVN.
-    async fn leave_ovn_membership(&self, n: &Node, _unreachable: bool) -> Result<(), MemberError> {
+    pub(crate) async fn leave_ovn_membership(&self, n: &Node, _unreachable: bool) -> Result<(), MemberError> {
         if !self.ovn_enabled() {
             return Ok(());
         }

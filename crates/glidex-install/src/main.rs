@@ -98,7 +98,7 @@ fn main() -> Result<()> {
     let saved = fs::read_to_string(INSTALL_CONF).ok();
     let opts = Options::parse(saved.as_deref(), &args)?;
     if opts.leave {
-        return leave_cluster();
+        return if opts.offline { leave_offline() } else { leave_cluster() };
     }
     print_banner();
 
@@ -176,6 +176,30 @@ fn leave_cluster() -> Result<()> {
         bail!("leaving failed (see above); the host is unchanged");
     }
     let _ = sudo(&argv(&["systemctl", "restart", "glidex-control-plane.service"]));
+    let _ = sudo(&argv(&["systemctl", "enable", "--now", "glidex-ui.service"]));
+    Ok(())
+}
+
+/// `--leave --keep-resources --offline` (§5.8.3): with no server reachable,
+/// build the standalone database from this node's cache. Asks first: what the
+/// cluster changed since the node last synced is not in it.
+fn leave_offline() -> Result<()> {
+    section("Leaving the cluster offline, keeping this host's VMs");
+    println!("{}", "This builds a standalone database from this node's cache. Changes made in the cluster since it last synced are not included, and this node's cluster identity and key are destroyed.".yellow());
+    print!("Type 'yes' to continue: ");
+    std::io::Write::flush(&mut std::io::stdout())?;
+    let mut answer = String::new();
+    std::io::stdin().read_line(&mut answer)?;
+    if answer.trim() != "yes" {
+        bail!("cancelled; nothing changed");
+    }
+    let _ = sudo(&argv(&["systemctl", "stop", "glidex-control-plane.service"]));
+    let ok = Command::new(format!("{}/glidex-control-plane", BIN_DIR)).arg("--detach-offline").status().context("running glidex-control-plane")?.success();
+    if !ok {
+        let _ = sudo(&argv(&["systemctl", "start", "glidex-control-plane.service"]));
+        bail!("the offline detach failed (see above); the host is unchanged");
+    }
+    sudo(&argv(&["systemctl", "start", "glidex-control-plane.service"]))?;
     let _ = sudo(&argv(&["systemctl", "enable", "--now", "glidex-ui.service"]));
     Ok(())
 }
@@ -294,6 +318,9 @@ struct Options {
     join: Option<JoinOptions>,
     /// `--leave`: this host's node was removed; go back to standalone (§5.5).
     leave: bool,
+    /// `--keep-resources --offline` with `--leave`: take this host's VMs along
+    /// while no server can be reached (§5.8.3).
+    offline: bool,
 }
 
 /// `--join <server:8842> [--role server|agent] [--token-file F] [--advertise A] [--node-name N]`.
@@ -321,6 +348,7 @@ impl Default for Options {
             ovn: false,
             join: None,
             leave: false,
+            offline: false,
         }
     }
 }
@@ -369,6 +397,8 @@ impl Options {
                 }
                 "--node-id" => o.join.get_or_insert_with(JoinOptions::default).node_id = Some(value("--node-id")?),
                 "--leave" => o.leave = true,
+                "--keep-resources" => {}
+                "--offline" => o.offline = true,
                 "--role" => {
                     let r = value("--role")?;
                     if r != "server" && r != "agent" {
@@ -446,7 +476,9 @@ fn print_help() {
          node (§5.7) with a token from `gxctl node rejoin-token`:\n\
          \x20     --rejoin SERVER:8842   rejoin as the same node (--token-file, --node-id ID)\n\
          A host whose node a server removed leaves the cluster (§5.5):\n\
-         \x20     --leave                go back to a standalone host"
+         \x20     --leave                go back to a standalone host\n\
+         \x20     --leave --keep-resources --offline   leave with this host's VMs when no\n\
+         \x20                            server can be reached (§5.8.3)"
     );
 }
 

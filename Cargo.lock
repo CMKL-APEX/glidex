@@ -1369,6 +1369,7 @@ dependencies = [
  "rcgen",
  "redb",
  "reqwest",
+ "ring",
  "rsa",
  "rustls-native-certs",
  "rustls-pki-types",

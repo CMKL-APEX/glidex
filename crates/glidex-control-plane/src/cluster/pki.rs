@@ -86,6 +86,17 @@ impl Ca {
         &self.key_pem
     }
 
+    /// Sign `msg` with the CA key (ECDSA P-256, ASN.1): a departure receipt
+    /// (§5.8.2) proves to the node that the cluster committed.
+    pub fn sign_bytes(&self, msg: &[u8]) -> Result<String, PkiError> {
+        use ring::signature::{EcdsaKeyPair, ECDSA_P256_SHA256_ASN1_SIGNING};
+        let key = KeyPair::from_pem(&self.key_pem)?;
+        let rng = ring::rand::SystemRandom::new();
+        let pair = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &key.serialize_der(), &rng).map_err(|e| PkiError::Invalid(e.to_string()))?;
+        let sig = pair.sign(&rng, msg).map_err(|e| PkiError::Invalid(e.to_string()))?;
+        Ok(hex(sig.as_ref()))
+    }
+
     /// SHA-256 of the CA's public key (SPKI DER), lower-case hex: what a join
     /// token pins (§5.2).
     pub fn public_key_fingerprint(&self) -> Result<String, PkiError> {
@@ -292,4 +303,33 @@ pub fn issuer_of(leaf_der: &[u8], trust_pem: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Whether `sig_hex` is a signature of `msg` by one of the CAs of `trust_pem`.
+pub fn verify_bytes(trust_pem: &str, msg: &[u8], sig_hex: &str) -> bool {
+    use ring::signature::{UnparsedPublicKey, ECDSA_P256_SHA256_ASN1};
+    let Some(sig) = (0..sig_hex.len() / 2).map(|i| u8::from_str_radix(&sig_hex[2 * i..2 * i + 2], 16).ok()).collect::<Option<Vec<u8>>>() else { return false };
+    let Ok(ders) = pem_bundle_ders(trust_pem) else { return false };
+    ders.iter().any(|der| {
+        let Ok((_, ca)) = parse_x509_certificate(der) else { return false };
+        UnparsedPublicKey::new(&ECDSA_P256_SHA256_ASN1, ca.public_key().subject_public_key.data.as_ref()).verify(msg, &sig).is_ok()
+    })
+}
+
+#[cfg(test)]
+mod sign_tests {
+    use super::*;
+
+    #[test]
+    fn a_receipt_signature_verifies_against_the_ca_and_nothing_else() {
+        let ca = Ca::generate("c").unwrap();
+        let other = Ca::generate("c").unwrap();
+        let sig = ca.sign_bytes(b"plan p1 bundle abc").unwrap();
+        assert!(verify_bytes(&ca.cert_pem, b"plan p1 bundle abc", &sig));
+        assert!(!verify_bytes(&ca.cert_pem, b"plan p1 bundle abd", &sig));
+        assert!(!verify_bytes(&other.cert_pem, b"plan p1 bundle abc", &sig));
+        assert!(!verify_bytes(&ca.cert_pem, b"x", "zz"));
+        // Either CA of a bundle in the middle of a rotation will do.
+        assert!(verify_bytes(&format!("{}\n{}", other.cert_pem, ca.cert_pem), b"plan p1 bundle abc", &sig));
+    }
 }

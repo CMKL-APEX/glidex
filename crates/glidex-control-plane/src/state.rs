@@ -340,6 +340,12 @@ impl VmManager {
     /// member is started before anything touches the store, so no write ever
     /// bypasses the log (spec/clustering.md §6.1).
     pub async fn open(db_path: PathBuf, netd: Netd, cfg: &crate::config::Config) -> Result<Arc<Self>, VmManagerError> {
+        // A departure that committed before the last restart finishes first (§5.8.2).
+        match crate::cluster::departure::finish_pending(&db_path) {
+            Ok(true) => tracing::warn!("finished leaving the cluster: this host is standalone and owns its VMs"),
+            Ok(false) => {}
+            Err(e) => tracing::error!("a pending departure could not be finished: {}", e),
+        }
         let store = VmStore::open(&db_path)?;
         let files = crate::cluster::identity::Files::beside(&db_path);
         let cluster = match files.load_identity().map_err(|e| VmManagerError::PersistenceError(e.to_string()))? {
@@ -595,6 +601,16 @@ impl VmManager {
     pub async fn detach_cluster(&self) {
         if let Some(c) = self.cluster.swap(None) {
             c.stop().await;
+            // Its Raft log is open until every holder lets go: wait for them, so a
+            // runtime started next can open the same files.
+            let weak = Arc::downgrade(&c);
+            drop(c);
+            for _ in 0..100 {
+                if weak.strong_count() == 0 {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
         }
     }
 
@@ -2644,5 +2660,14 @@ impl crate::cluster::runtime::NodeHandlers for HandlersOf {
             _ => return None,
         };
         p.exists().then_some(p)
+    }
+
+    fn departed(&self) {
+        if crate::cluster::departure::EXIT_ON_DEPARTURE.load(std::sync::atomic::Ordering::Relaxed) {
+            // The service manager starts it again, and startup finishes the switch.
+            tracing::warn!("restarting to continue as a standalone host");
+            // A non-zero status: the unit restarts on failure.
+            std::process::exit(75);
+        }
     }
 }

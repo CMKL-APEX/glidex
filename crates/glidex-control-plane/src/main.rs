@@ -130,6 +130,23 @@ async fn main() {
         }
     }
 
+    // `--detach-offline` (spec/clustering.md §5.8.3): leave with this host's resources
+    // while no server can be reached, then exit. Run with the service stopped.
+    if args.iter().any(|a| a == "--detach-offline") {
+        let db = state::VmManager::default_db_path_pub();
+        match glidex_control_plane::cluster::departure::offline_detach(&db) {
+            Ok(b) => {
+                println!("Detached: {} VM(s), {} disk(s) kept; this host's cluster identity and key are gone. Start the control plane: it is standalone.", b.vm_ids.len(), b.disk_ids.len());
+                println!("Changes made in the cluster since this node last synced are not included. On a server, run `gxctl node detach <node> --departed` so the cluster lets go (it rotates its CA).");
+                return;
+            }
+            Err(e) => {
+                eprintln!("detach failed: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     // Configuration and identity (spec/security.md §5, §13). A bad config
     // file stops startup rather than falling back to defaults.
     print_status("Loading configuration");
@@ -142,6 +159,8 @@ async fn main() {
         }
     };
     println!("OK");
+
+    glidex_control_plane::cluster::departure::EXIT_ON_DEPARTURE.store(true, std::sync::atomic::Ordering::Relaxed);
 
     // Create VM manager with persistence
     print_status("Opening database");

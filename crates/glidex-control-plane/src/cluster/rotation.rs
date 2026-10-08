@@ -269,12 +269,16 @@ impl Cluster {
             let mut stop = me.stop_rx();
             loop {
                 tokio::select! { _ = tick.tick() => {}, _ = stop.changed() => return }
-                let c = me.clone();
-                let _ = tokio::task::spawn_blocking(move || c.trust_sync()).await;
-                if let Err(e) = me.renew_if_needed().await {
-                    tracing::debug!("certificate renewal: {}", e);
-                }
-                me.ca_leader_tick().await;
+                // A stop cancels work in flight: a runtime being replaced must let go of its files.
+                let round = async {
+                    let c = me.clone();
+                    let _ = tokio::task::spawn_blocking(move || c.trust_sync()).await;
+                    if let Err(e) = me.renew_if_needed().await {
+                        tracing::debug!("certificate renewal: {}", e);
+                    }
+                    me.ca_leader_tick().await;
+                };
+                tokio::select! { _ = round => {}, _ = stop.changed() => return }
             }
         });
     }
