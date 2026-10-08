@@ -700,6 +700,42 @@ pub fn offline_detach(db_path: &Path) -> Result<Bundle, DepartureError> {
     Ok(bundle)
 }
 
+impl Cluster {
+    /// `gxctl cluster dissolve` (§5.10): the last node of a cluster becomes a
+    /// standalone host that keeps everything the cluster held. A final snapshot of
+    /// the store is kept (0600); the departure is committed by this node itself,
+    /// with a receipt signed by its own CA key, and finished at the next start.
+    pub async fn dissolve(self: &Arc<Self>) -> Result<Value, DepartureError> {
+        let node = self.node.as_ref().ok_or_else(|| DepartureError::Invalid("only a server can dissolve a cluster".into()))?;
+        if !node.is_leader() {
+            return Err(DepartureError::Conflict("this is not the leader".into()));
+        }
+        let nodes = NodeStore::new(self.db.clone()).list().map_err(failed)?;
+        let others: Vec<String> = nodes.iter().filter(|n| n.meta.id != self.identity.node_id && !n.status.phase.is_tombstone()).map(|n| n.spec.name.clone()).collect();
+        if !others.is_empty() {
+            return Err(DepartureError::Conflict(format!("other nodes are still members: {}; detach or remove them first", others.join(", "))));
+        }
+        let dir = self.state_dir();
+        let snap = dir.join("glidex.db.final-snapshot");
+        super::manage::export_snapshot(&self.db, &snap).map_err(failed)?;
+        let me = self.identity.node_id.clone();
+        let opts = DetachOptions { map_networks: BTreeMap::new(), with_access: true };
+        let bundle = build_bundle(&self.db, "dissolve", &me, &opts);
+        write_standalone_db(&pending_db(&dir), &bundle)?;
+        let ca = self.signing_ca().ok_or_else(|| failed("this server holds no CA key"))?;
+        let revision = self.db.revision();
+        let sha = bundle.sha256();
+        let signature = ca.sign_bytes(&Receipt::payload("dissolve", &me, &sha, revision)).map_err(failed)?;
+        let receipt = Receipt { plan: "dissolve".into(), node: me.clone(), bundle_sha256: sha, revision, signature };
+        pki::write_private(&receipt_file(&dir), &serde_json::to_vec(&receipt).map_err(failed)?).map_err(failed)?;
+        tracing::warn!("this cluster is dissolved: restart the control plane to continue as a standalone host");
+        if let Some(h) = self.handlers.get() {
+            h.departed();
+        }
+        Ok(json!({ "node": self.identity.name, "vms": bundle.vm_ids.len(), "disks": bundle.disk_ids.len(), "snapshot": snap.display().to_string() }))
+    }
+}
+
 /// Run on every node: take part in a departure.
 impl Cluster {
     pub fn start_departure_tasks(self: &Arc<Self>) {
@@ -712,6 +748,7 @@ impl Cluster {
                 let round = async {
                     if me.is_leader() {
                         me.expire_departures();
+                        me.expire_imports();
                     }
                     if me.departure_tick().await.is_some() {
                         tracing::warn!("this node's departure committed: restart the control plane to continue as a standalone host");

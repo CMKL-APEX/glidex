@@ -29,6 +29,8 @@ pub fn router(c: Arc<Cluster>) -> Router {
         .route("/cluster/v1/join/ready", post(join_ready))
         .route("/cluster/v1/rejoin", post(rejoin))
         .route("/cluster/v1/renew", post(renew))
+        .route("/cluster/v1/import", post(import_create))
+        .route("/cluster/v1/import/{plan}", get(import_poll))
         .route("/cluster/v1/departure/{plan}", get(departure_get))
         .route("/cluster/v1/departure/{plan}/ack", post(departure_ack))
         .route("/cluster/v1/read-index", post(read_index))
@@ -113,6 +115,36 @@ async fn departure_get(State(c): Ctx, p: Option<Extension<PeerCert>>, axum::extr
             }
         }
         s => fail(StatusCode::GONE, "aborted", format!("the plan is {s}")),
+    }
+}
+
+/// §5.9 step 3: a standalone host asks to import its resources. Nothing is
+/// committed: the answer is a plan that waits for an administrator.
+async fn import_create(State(c): Ctx, Json(req): Json<super::import::ImportRequest>) -> Response {
+    let Some(node) = &c.node else { return fail(StatusCode::CONFLICT, "not_a_server", "this node does not take imports") };
+    if !node.is_leader() {
+        return not_leader(&c);
+    }
+    let me = c.clone();
+    match tokio::task::spawn_blocking(move || me.create_import_plan(req)).await {
+        Ok(Ok((plan, secret))) => Json(json!({ "plan": plan.plan, "secret": secret, "summary": plan.summary, "problems": plan.problems, "expires_at": plan.expires_at })).into_response(),
+        Ok(Err(super::import::ImportError::Conflict(m))) => fail(StatusCode::CONFLICT, "conflict", m),
+        Ok(Err(super::import::ImportError::Invalid(m))) => fail(StatusCode::FORBIDDEN, "invalid_token", m),
+        Ok(Err(e)) => fail(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()),
+        Err(e) => fail(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()),
+    }
+}
+
+/// The host polls its plan with the secret it was given.
+async fn import_poll(State(c): Ctx, headers: HeaderMap, axum::extract::Path(plan_id): axum::extract::Path<String>) -> Response {
+    let Some(node) = &c.node else { return fail(StatusCode::CONFLICT, "not_a_server", "ask a server") };
+    if !node.is_leader() {
+        return not_leader(&c);
+    }
+    let secret = headers.get("x-import-secret").and_then(|v| v.to_str().ok()).unwrap_or("");
+    match c.poll_import(&plan_id, secret) {
+        Some(p) => Json(json!({ "state": p.state, "problems": p.problems, "summary": p.summary, "result": p.result })).into_response(),
+        None => fail(StatusCode::NOT_FOUND, "not_found", "no such plan"),
     }
 }
 

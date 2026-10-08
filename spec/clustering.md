@@ -1744,3 +1744,23 @@ Deviations and not done:
 - `cluster/leave` by the departing server itself is not used; the leader kicks it.
 - Not done: the scale run and figures for §4.1, `pci.allow[].node`, `glidex-install --reset`, `--seal-ca-key`, certificate renewal under load, a rolling-upgrade test with two builds, and the recovery exercise on a test cluster (the runbook describes it; `--force-new-cluster` is tested, the OVN half is not).
 
+### C8: detach and import
+
+Built (tests in `cluster_tests.rs`, `netd_tests.rs`):
+
+- **Detach online** (`cluster/departure.rs`, `POST /nodes/{id}/detach`): freeze (one write: node `Departing`, plan in `meta` as `departure/<id>`), the node fetches `GET /cluster/v1/departure/<plan>`, writes `glidex.db.standalone-pending` (0600, fsynced) and acknowledges with the bundle's SHA-256, the leader rebuilds the bundle, refuses if it changed, and commits in one write (objects removed, reservations freed, node `Departed` with `departed_ids`, certificates deny-listed, receipt signed by the cluster CA). The node verifies the receipt, and at the next start `finish_pending` swaps the databases and removes its cluster identity, certificates, CA key and Raft log. `--abort` and the `cluster.detach_freeze_secs` deadline return the node to `Active` and discard the pending database. Cluster networks are mapped (`--map-network a=b`, the NIC's attachment is renamed) or let go (attachment removed, `RestartRequired=True/NetworkRemoved`).
+- **Detach offline** (`glidex-control-plane --detach-offline`, `glidex-install --leave --keep-resources --offline`): the bundle comes from the node's cache, the private key is deleted, the databases are swapped. **`forget --departed`** (`POST /nodes/{id}/detach {"departed": true}`) removes the node's objects, marks it `Departed` and rotates the CA if it was a server.
+- **Import** (`cluster/import.rs`, `gxctl cluster join --import`, `gxctl node import list|show|approve|reject`, `glidex-install --join … --import`): the host uploads its records as a bundle with its CSR (token needs `--allow-import`, agents only); the leader makes a plan, stages the rows in `meta` chunks of at most 1 MiB, checks ids (a clash is fine only for ids in a `Departed` node's `departed_ids`), project names, network names, credential names and quotas, and waits. Approval takes the mappings (`--project src=existing|src=new:name`, `--network a=b`, `--credential project/user=new`, `--over-quota`, `--dry-run`), validates again, then one write creates the node, signs its certificate and makes the rows live (projects that exist are merged into). The host polls with a secret, keeps its standalone records as `glidex.db.pre-join-<ts>` (a snapshot), and starts the node role. Rejecting or the `cluster.import_plan_ttl_secs` expiry discards the plan and its rows.
+- **`move_vm_port`** (netd op, `vm_port::unplug`): moves a port between `br-int` and a glidex bridge without recreating the tap.
+- **`cluster dissolve`** (`gxctl cluster dissolve --force`): the last node writes a final snapshot (`glidex.db.final-snapshot`, 0600), builds its own bundle with access data, signs a receipt with its CA key and finishes at the next start.
+- Round trip tested: an agent with a VM detaches from cluster A, the host opens as a standalone host with the VM, and imports into cluster B after an approval that has to map a clashing project name.
+
+Deviations and not done:
+
+- A server can't detach itself online (as for removal). Spec writes to a `Departing` node's objects are not refused with `409 node_departing`; instead the commit refuses if the node's objects changed after the bundle was taken (the SHA-256 differs), and the administrator detaches again.
+- `--with-access` on detach copies the project's role links and the users, teams and identities they name verbatim; identity keys scoped to the departing node (D13) are not re-keyed. Import refuses nothing about access data but does not take it: only resources are imported.
+- `move_vm_port` is not called by the switch yet: mapped NICs are renamed in the records and the guest keeps its device, but the port stays on `br-int` until the VM restarts. `leave_ovn` runs in `gxctl cluster leave` but not in the offline detach.
+- Image records come in as their own records (as the spec says); disks keep backing files in place.
+- Staged import rows are chunked at 1 MiB, but the commit is one Raft entry holding every live row: a very large import can exceed `max_payload`. Metering history and audit records are not imported (D19).
+- The import host's NIC IP reservations for mapped networks are not made (no node-network to cluster-network mapping on import).
+

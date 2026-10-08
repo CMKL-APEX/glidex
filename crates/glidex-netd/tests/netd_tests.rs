@@ -800,3 +800,27 @@ fn ct_external_counters_turn_accounting_on_account_and_persist() {
     assert!(ex.calls().iter().any(|c| c == "sysctl -w net.netfilter.nf_conntrack_acct=1"), "{:?}", ex.calls());
     assert!(!Op::CtExternalCounters.is_status() && !Op::CtExternalCounters.is_mutating());
 }
+
+#[test]
+fn a_port_moves_between_bridges_without_recreating_its_tap() {
+    let dir = TempDir::new().unwrap();
+    let ex = exec();
+    let (netd, _) = netd(ex.clone(), &dir);
+    setup_nat(&netd);
+    let mut spec = port_spec();
+    netd.handle(Op::AttachVmPort(spec.clone()), &peer()).unwrap();
+    let tap_adds = |ex: &RecordingExec| ex.calls().iter().filter(|c| c.starts_with("ip tuntap add")).count();
+    assert_eq!(tap_adds(&ex), 1);
+    // The tap exists on the host now.
+    ex.file("/sys/class/net/gx1a2b3c4d-0", "");
+    // To br-int as an OVN port: the old OVS port goes, the new one comes, the tap stays.
+    spec.bridge = "br-int".into();
+    spec.ovn_lport = Some("gx1a2b3c4d-0".into());
+    ex.on("ovs-vsctl --format=json --columns=name,external_ids,type find Interface", Output::ok(OWNED_IF));
+    ex.on("ovs-vsctl --format=json --columns=name,datapath_type,external_ids,ports find Bridge", Output::ok(r#"{"data":[["br-int","system",["map",[["glidex-owner","glidex"],["glidex-role","bridge"]]],["set",[]]]],"headings":["name","datapath_type","external_ids","ports"]}"#));
+    netd.handle(Op::MoveVmPort(spec), &peer()).unwrap();
+    let calls = ex.calls();
+    assert!(calls.iter().any(|c| c.contains("--if-exists del-port")), "{calls:?}");
+    assert_eq!(tap_adds(&ex), 1, "the tap was not recreated: {calls:?}");
+    assert!(!calls.iter().any(|c| c.starts_with("ip link del")), "{calls:?}");
+}

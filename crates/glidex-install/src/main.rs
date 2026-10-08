@@ -224,6 +224,9 @@ fn join_cluster(j: &JoinOptions) -> Result<()> {
     if let Some(n) = &j.node_id {
         args.extend(["--node-id".into(), n.clone()]);
     }
+    if j.import {
+        args.push("--import".into());
+    }
     if let Some(a) = &j.advertise {
         args.extend(["--advertise".into(), a.clone()]);
     }
@@ -328,6 +331,8 @@ struct Options {
 struct JoinOptions {
     /// Come back as the same node (`--rejoin`, §5.7) instead of joining as a new one.
     rejoin: bool,
+    /// `--import`: bring this host's VMs, disks and networks into the cluster (§5.9).
+    import: bool,
     node_id: Option<String>,
     server: String,
     role: String,
@@ -395,6 +400,7 @@ impl Options {
                     j.server = server;
                     j.rejoin = true;
                 }
+                "--import" => o.join.get_or_insert_with(JoinOptions::default).import = true,
                 "--node-id" => o.join.get_or_insert_with(JoinOptions::default).node_id = Some(value("--node-id")?),
                 "--leave" => o.leave = true,
                 "--keep-resources" => {}
@@ -472,6 +478,9 @@ fn print_help() {
          \x20     --token-file FILE      read the token from FILE (default: stdin)\n\
          \x20     --advertise IP:PORT    the address other nodes use for this one\n\
          \x20     --node-name NAME       default: this host's name\n\n\
+         A standalone host with VMs brings them along (§5.9; nothing is committed until\n\
+         an administrator approves the plan on a server, `gxctl node import`):\n\
+         \x20     --import               with --join: import this host's resources\n\n\
          A repaired host, or one whose certificate expired, comes back as the same\n\
          node (§5.7) with a token from `gxctl node rejoin-token`:\n\
          \x20     --rejoin SERVER:8842   rejoin as the same node (--token-file, --node-id ID)\n\

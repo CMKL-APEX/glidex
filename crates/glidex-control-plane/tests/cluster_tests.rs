@@ -1031,3 +1031,135 @@ async fn a_node_that_left_on_its_own_is_forgotten_as_departed_and_its_bundle_can
     let (s, _) = call(&server, "GET", &format!("/vms/{id}"), None, &[]).await;
     assert_eq!(s, StatusCode::NOT_FOUND);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn a_detached_host_imports_into_another_cluster_with_its_vm_after_approval() {
+    use glidex_control_plane::cluster::departure::{finish_pending, pending_db, receipt_file};
+    let _one = SERIAL.lock().await;
+    let cfg = test_config();
+
+    // Cluster A, an agent with a VM on it, and the agent detaching with it.
+    let a = new_cp();
+    manage::init(&a.manager, &cfg, InitOptions { advertise: Some(a.addr), tunnel_ip: None, listen: Some(a.addr) }).await.unwrap();
+    a.manager.initialize().await.unwrap();
+    let agent = new_cp();
+    let token = manage::join_token(&cluster(&a), NodeRole::Agent, 600, false, "test").unwrap();
+    manage::join(&agent.manager, &cfg, JoinOptions { server: a.addr, token, role: NodeRole::Agent, advertise: Some(agent.addr), tunnel_ip: None, name: Some("mover".into()), listen: Some(agent.addr) }).await.unwrap();
+    let link = agent.manager.node_link().expect("an agent has a link").clone();
+    assert!(link.wait_ready(Duration::from_secs(20)).await);
+    agent.manager.initialize().await.unwrap();
+    let (s, vm) = call(&a, "POST", "/vms", Some(vm_body("traveller", "mover")), &[]).await;
+    assert_eq!(s, StatusCode::CREATED, "{vm}");
+    let id = vm["id"].as_str().unwrap().to_string();
+    let src_project = vm["project"].as_str().unwrap().to_string();
+    wait_for("the agent to be ready", || async { node_json(&a, "mover").await["status"]["ready"] == "True" }).await;
+    let (s, p) = call(&a, "POST", "/nodes/mover/detach", Some(json!({})), &[]).await;
+    assert_eq!(s, StatusCode::OK, "{p}");
+    let dir = agent_state_dir(&agent);
+    wait_until("the receipt", || async { receipt_file(&dir).exists() }).await;
+    let fresh = tempfile::tempdir().unwrap();
+    std::fs::copy(pending_db(&dir), pending_db(fresh.path())).unwrap();
+    std::fs::copy(receipt_file(&dir), receipt_file(fresh.path())).unwrap();
+    std::fs::create_dir_all(fresh.path().join("cluster")).unwrap();
+    std::fs::copy(dir.join("cluster/ca.crt"), fresh.path().join("cluster/ca.crt")).unwrap();
+    std::fs::write(fresh.path().join("glidex.db"), b"old").unwrap();
+    assert!(finish_pending(&fresh.path().join("glidex.db")).unwrap());
+    let host = VmManager::with_db_path(fresh.path().join("glidex.db")).unwrap();
+    host.initialize().await.unwrap();
+    assert_eq!(host.list_vms().await.len(), 1);
+
+    // Cluster B takes it in, if an administrator approves.
+    let b = new_cp();
+    manage::init(&b.manager, &cfg, InitOptions { advertise: Some(b.addr), tunnel_ip: None, listen: Some(b.addr) }).await.unwrap();
+    b.manager.initialize().await.unwrap();
+    let plain = manage::join_token(&cluster(&b), NodeRole::Agent, 600, false, "test").unwrap();
+    let host_addr: SocketAddr = format!("127.0.0.1:{}", free_port()).parse().unwrap();
+    let refused = manage::join_import(&host, &cfg, manage::ImportOptions { server: b.addr, token: plain, advertise: Some(host_addr), tunnel_ip: None, name: Some("imported".into()), listen: Some(host_addr), wait: Duration::from_secs(5) }).await;
+    assert!(refused.is_err(), "a token without --allow-import can't import");
+    assert!(host.cluster().is_none(), "the host is untouched");
+    let token = manage::join_token(&cluster(&b), NodeRole::Agent, 600, true, "test").unwrap();
+    let (h2, cfg2, b_addr) = (host.clone(), cfg.clone(), b.addr);
+    let join = tokio::spawn(async move {
+        manage::join_import(&h2, &cfg2, manage::ImportOptions { server: b_addr, token, advertise: Some(host_addr), tunnel_ip: None, name: Some("imported".into()), listen: Some(host_addr), wait: Duration::from_secs(90) }).await
+    });
+    // The plan appears, with the checks it failed: B has its own project called "default".
+    wait_until("the import plan", || async {
+        let (_, v) = call(&b, "GET", "/imports", None, &[]).await;
+        v.as_array().is_some_and(|a| !a.is_empty())
+    })
+    .await;
+    let (_, listed) = call(&b, "GET", "/imports", None, &[]).await;
+    let plan = listed.as_array().unwrap()[0].clone();
+    let pid = plan["plan"].as_str().unwrap().to_string();
+    assert_eq!(plan["state"], "pending");
+    assert_eq!(plan["summary"]["vms"], 1, "{plan}");
+    assert!(plan["problems"].as_array().unwrap().iter().any(|p| p.as_str().unwrap().contains("exists with another id")), "{plan}");
+    let (s, e) = call(&b, "POST", &format!("/imports/{pid}/approve"), Some(json!({})), &[]).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{e}");
+    let (s, _) = call(&b, "GET", &format!("/vms/{id}"), None, &[]).await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "nothing is live before approval");
+    // Merge into B's default project; a dry run says it would work.
+    let mapping = json!({ "projects": { src_project.clone(): "default" } });
+    let (s, d) = call(&b, "POST", &format!("/imports/{pid}/approve"), Some(json!({ "projects": { src_project.clone(): "default" }, "dry_run": true })), &[]).await;
+    assert_eq!(s, StatusCode::OK, "{d}");
+    assert!(d["problems"].as_array().unwrap().is_empty(), "{d}");
+    let (s, done) = call(&b, "POST", &format!("/imports/{pid}/approve"), Some(mapping), &[]).await;
+    assert_eq!(s, StatusCode::OK, "{done}");
+    assert_eq!(done["state"], "committed");
+    let out = join.await.unwrap().unwrap();
+    // The VM is the cluster's now, with its id, placed on the new node, in B's default project.
+    let (s, v) = call(&b, "GET", &format!("/vms/{id}"), None, &[]).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["node"], out["node_id"], "{v}");
+    let (_, projects) = call(&b, "GET", "/projects", None, &[]).await;
+    let default_id = projects.as_array().unwrap().iter().find(|p| p["name"] == "default").unwrap()["id"].clone();
+    assert_eq!(v["project"], default_id, "merged into the existing project: {v}");
+    let n = node_json(&b, "imported").await;
+    assert_eq!(n["spec"]["role"], "agent", "{n}");
+    assert!(host.cluster().is_some(), "the host is a node of B now");
+    assert!(std::path::Path::new(out["backup"].as_str().unwrap()).exists(), "its standalone records were kept");
+    // The plan can't be approved twice.
+    let (s, _) = call(&b, "POST", &format!("/imports/{pid}/approve"), Some(json!({})), &[]).await;
+    assert_eq!(s, StatusCode::CONFLICT);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn the_last_node_dissolves_the_cluster_and_keeps_everything() {
+    use glidex_control_plane::cluster::departure::{finish_pending, pending_db, receipt_file};
+    let _one = SERIAL.lock().await;
+    let cfg = test_config();
+    let a = new_cp();
+    manage::init(&a.manager, &cfg, InitOptions { advertise: Some(a.addr), tunnel_ip: None, listen: Some(a.addr) }).await.unwrap();
+    a.manager.initialize().await.unwrap();
+    let (s, vm) = call(&a, "POST", "/vms", Some(vm_unpinned("keeper")), &[]).await;
+    assert_eq!(s, StatusCode::CREATED, "{vm}");
+    let id = vm["id"].as_str().unwrap().to_string();
+    wait_for("the VM to be placed", || async { call(&a, "GET", &format!("/vms/{id}"), None, &[]).await.1["node"].is_string() }).await;
+    // It needs confirmation, and refuses while another node is a member.
+    let (s, _) = call(&a, "POST", "/cluster/dissolve", Some(json!({})), &[]).await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    let agent = new_cp();
+    let token = manage::join_token(&cluster(&a), NodeRole::Agent, 600, false, "test").unwrap();
+    manage::join(&agent.manager, &cfg, JoinOptions { server: a.addr, token, role: NodeRole::Agent, advertise: Some(agent.addr), tunnel_ip: None, name: Some("other".into()), listen: Some(agent.addr) }).await.unwrap();
+    let (s, e) = call(&a, "POST", "/cluster/dissolve", Some(json!({ "force": true })), &[]).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{e}");
+    assert!(e["message"].as_str().unwrap().contains("other"), "{e}");
+    let (s, _) = call(&a, "POST", "/nodes/other/remove", Some(json!({})), &[]).await;
+    assert_eq!(s, StatusCode::OK);
+    // Now it ends: a final snapshot, and a standalone database with the VM.
+    let (s, d) = call(&a, "POST", "/cluster/dissolve", Some(json!({ "force": true })), &[]).await;
+    assert_eq!(s, StatusCode::OK, "{d}");
+    assert_eq!(d["vms"], 1);
+    let dir = agent_state_dir(&a);
+    assert!(std::path::Path::new(d["snapshot"].as_str().unwrap()).exists());
+    let fresh = tempfile::tempdir().unwrap();
+    std::fs::copy(pending_db(&dir), pending_db(fresh.path())).unwrap();
+    std::fs::copy(receipt_file(&dir), receipt_file(fresh.path())).unwrap();
+    std::fs::create_dir_all(fresh.path().join("cluster")).unwrap();
+    std::fs::copy(dir.join("cluster/ca.crt"), fresh.path().join("cluster/ca.crt")).unwrap();
+    std::fs::write(fresh.path().join("glidex.db"), b"old").unwrap();
+    assert!(finish_pending(&fresh.path().join("glidex.db")).unwrap());
+    let host = VmManager::with_db_path(fresh.path().join("glidex.db")).unwrap();
+    host.initialize().await.unwrap();
+    assert_eq!(host.list_vms().await.iter().map(|v| v.id.as_str()).collect::<Vec<_>>(), vec![id.as_str()]);
+}

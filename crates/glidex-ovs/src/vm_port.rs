@@ -195,6 +195,21 @@ pub fn attach(
     Ok(binding)
 }
 
+/// Take a port out of OVS but keep its tap (or vhost-user socket): the first
+/// half of moving it to another bridge (spec/clustering.md §11.3,
+/// `move_vm_port`). The hypervisor keeps its device; OVS reconnects a
+/// vhost-user client port by itself. Idempotent; refuses a port glidex didn't tag.
+pub fn unplug(exec: &dyn Exec, vm_id: &str, nic_index: u8) -> Result<(), OvsError> {
+    let port = names::port_name(vm_id, nic_index)?;
+    if let Some(row) = vsctl::find_by_name(exec, "Interface", &port, &["name", "external_ids", "type"])? {
+        if !row.owned_by_glidex() {
+            return Err(OvsError::not_owned(format!("interface '{}'", port)));
+        }
+        vsctl::run(exec, vec!["--if-exists".into(), "del-port".into(), port])?;
+    }
+    Ok(())
+}
+
 /// Remove the port, its tap and its socket. Idempotent; refuses to touch
 /// a port of that name that glidex didn't tag.
 pub fn detach(exec: &dyn Exec, vm_id: &str, nic_index: u8) -> Result<(), OvsError> {

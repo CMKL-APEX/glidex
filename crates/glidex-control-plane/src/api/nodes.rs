@@ -171,3 +171,67 @@ pub async fn detach(c: Caller, Path(id): Path<String>, b: Option<Json<DetachBody
     }
     m.start_detach(&id, b.options, b.timeout_secs).await.map(Json).map_err(departure_err)
 }
+
+fn import_err(e: crate::cluster::import::ImportError) -> ApiErr {
+    use crate::cluster::import::ImportError as I;
+    match e {
+        I::NotFound(m) => err(StatusCode::NOT_FOUND, "not_found", format!("{m} not found")),
+        I::Conflict(m) => err(StatusCode::CONFLICT, "conflict", m),
+        I::Invalid(m) => err(StatusCode::BAD_REQUEST, "invalid", m),
+        I::Failed(m) => err(StatusCode::INTERNAL_SERVER_ERROR, "internal", m),
+    }
+}
+
+fn import_cluster(c: &Caller) -> Result<std::sync::Arc<crate::cluster::Cluster>, ApiErr> {
+    c.manager().cluster().ok_or_else(|| err(StatusCode::CONFLICT, "not_clustered", "this host is not part of a cluster"))
+}
+
+/// What an administrator sees of a plan: no CSR, no poll hash.
+fn plan_view(p: &crate::cluster::import::ImportPlan) -> serde_json::Value {
+    serde_json::json!({ "plan": p.plan, "state": p.state, "node": p.name, "node_id": p.node_id, "advertise": p.advertise.to_string(), "summary": p.summary, "problems": p.problems, "mappings": p.mappings, "created_by": p.created_by, "created_at": p.created_at, "expires_at": p.expires_at })
+}
+
+pub async fn list_imports(c: Caller) -> Result<impl IntoResponse, ApiErr> {
+    c.require(Ent::Cluster, EntitySet::new())?;
+    let cl = import_cluster(&c)?;
+    Ok(Json(crate::cluster::import::plans(&cl.db).iter().map(plan_view).collect::<Vec<_>>()))
+}
+
+pub async fn get_import(c: Caller, Path(plan): Path<String>) -> Result<impl IntoResponse, ApiErr> {
+    c.require(Ent::Cluster, EntitySet::new())?;
+    let cl = import_cluster(&c)?;
+    crate::cluster::import::read_plan(&cl.db, &plan).map(|p| Json(plan_view(&p))).ok_or_else(|| err(StatusCode::NOT_FOUND, "not_found", format!("plan {plan} not found")))
+}
+
+#[derive(serde::Deserialize, Default)]
+pub struct ApproveBody {
+    #[serde(flatten)]
+    mappings: crate::cluster::import::ImportMappings,
+    /// Check the mappings without committing.
+    #[serde(default)]
+    dry_run: bool,
+}
+
+pub async fn approve_import(c: Caller, Path(plan): Path<String>, b: Option<Json<ApproveBody>>) -> Result<impl IntoResponse, ApiErr> {
+    c.require(Ent::Cluster, EntitySet::new())?;
+    c.set_target(format!("import:{plan}"));
+    c.audit_always();
+    let cl = import_cluster(&c)?;
+    let b = b.map(|b| b.0).unwrap_or_default();
+    let by = c.actor();
+    let _ = by;
+    let r = tokio::task::spawn_blocking(move || if b.dry_run { cl.check_import(&plan, b.mappings) } else { cl.approve_import(&plan, b.mappings) }).await;
+    match r {
+        Ok(r) => r.map(|p| Json(plan_view(&p))).map_err(import_err),
+        Err(e) => Err(err(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string())),
+    }
+}
+
+pub async fn reject_import(c: Caller, Path(plan): Path<String>) -> Result<impl IntoResponse, ApiErr> {
+    c.require(Ent::Cluster, EntitySet::new())?;
+    c.set_target(format!("import:{plan}"));
+    c.audit_always();
+    let cl = import_cluster(&c)?;
+    tokio::task::spawn_blocking(move || cl.reject_import(&plan)).await.map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()))?.map_err(import_err)?;
+    Ok(StatusCode::NO_CONTENT)
+}

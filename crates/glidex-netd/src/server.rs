@@ -171,6 +171,7 @@ impl Netd {
             Op::EnsureNat(spec) => to_value(self.ensure_nat(spec)?),
             Op::DeleteNat { bridge } => self.delete_nat(&bridge).map(|_| Value::Null),
             Op::AttachVmPort(spec) => to_value(self.attach(spec, peer.uid)?),
+            Op::MoveVmPort(spec) => to_value(self.move_port(spec, peer.uid)?),
             Op::DetachVmPort { vm_id, nic_index } => {
                 self.detach(&vm_id, nic_index, peer.uid).map(|_| Value::Null)
             }
@@ -685,6 +686,20 @@ impl Netd {
         self.store.put(VM_PORTS, &key, &record)?;
         tracing::info!(port = %port, vm = %record.spec.vm_id, ?ipv4, "VM port attached");
         Ok(AttachResult { port, binding, ipv4 })
+    }
+
+    /// §11.3 `move_vm_port`: unplug from the old bridge, keeping the tap or
+    /// socket, then attach to the new one (a NAT bridge reserves an address).
+    fn move_port(&self, spec: VmPortSpec, owner_uid: u32) -> Result<AttachResult, OvsError> {
+        spec.validate()?;
+        let key = store::vm_port_key(&spec.vm_id, spec.nic_index);
+        let old = self.store.get::<VmPortRecord>(VM_PORTS, &key)?.ok_or_else(|| OvsError::not_found(format!("port {}", spec.port_name().unwrap_or_default())))?;
+        Self::check_owner(&old, owner_uid)?;
+        if old.spec.bridge != spec.bridge {
+            vm_port::unplug(self.ex(), &spec.vm_id, spec.nic_index)?;
+            self.store.delete(VM_PORTS, &key)?;
+        }
+        self.attach(spec, owner_uid)
     }
 
     /// A port belongs to the uid that attached it (security spec §8.2);

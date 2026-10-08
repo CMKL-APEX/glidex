@@ -77,6 +77,10 @@ pub enum Op {
     DeleteNat { bridge: String },
     AttachVmPort(VmPortSpec),
     DetachVmPort { vm_id: String, nic_index: u8 },
+    /// Move a VM port to another bridge (`br-int` and a glidex bridge, either
+    /// way) without recreating its tap or socket (spec/clustering.md §11.3).
+    /// The spec names the new bridge (and `ovn_lport` for `br-int`).
+    MoveVmPort(VmPortSpec),
     /// The VM is being deleted: free its NAT reservations too.
     ReleaseVm { vm_id: String },
     SyncVms { running: Vec<String> },
@@ -137,6 +141,7 @@ impl Op {
             Op::DeleteNat { .. } => "delete_nat",
             Op::AttachVmPort(_) => "attach_vm_port",
             Op::DetachVmPort { .. } => "detach_vm_port",
+            Op::MoveVmPort(_) => "move_vm_port",
             Op::ReleaseVm { .. } => "release_vm",
             Op::SyncVms { .. } => "sync_vms",
             Op::EnsureOvnChassis(_) => "ensure_ovn_chassis",

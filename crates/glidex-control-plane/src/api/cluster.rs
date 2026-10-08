@@ -95,6 +95,50 @@ pub async fn join(c: Caller, Json(b): Json<JoinBody>) -> Result<impl IntoRespons
 }
 
 #[derive(Deserialize)]
+pub struct ImportJoinBody {
+    server: String,
+    token: String,
+    #[serde(default)]
+    advertise: Option<String>,
+    #[serde(default)]
+    tunnel_ip: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
+    /// How long to wait for an administrator (default a day).
+    #[serde(default)]
+    wait_secs: Option<u64>,
+}
+
+/// `gxctl cluster join --import`: join with this host's resources (§5.9). The
+/// plan waits for approval on a server; this host works as it is until then.
+pub async fn import_join(c: Caller, Json(b): Json<ImportJoinBody>) -> Result<impl IntoResponse, ApiErr> {
+    let mut es = EntitySet::new();
+    es.host(&crate::authz::node_id());
+    c.require(Ent::Host, es)?;
+    let server = b.server.parse().map_err(|_| err(StatusCode::BAD_REQUEST, "invalid", "server must be <ip>:<port> of a cluster node (port 8842)"))?;
+    let opts = manage::ImportOptions {
+        server,
+        token: b.token,
+        advertise: parse_addr("advertise", &b.advertise)?,
+        tunnel_ip: parse_ip(&b.tunnel_ip)?,
+        name: b.name,
+        listen: None,
+        wait: std::time::Duration::from_secs(b.wait_secs.unwrap_or(86400)),
+    };
+    let cfg = c.app.auth.config.clone();
+    let m = c.app.manager.clone();
+    c.set_target("cluster".to_string());
+    c.audit_always();
+    tokio::spawn(async move {
+        match manage::join_import(&m, &cfg, opts).await {
+            Ok(v) => tracing::warn!("import finished: {}", v),
+            Err(e) => tracing::error!("import failed: {}", e),
+        }
+    });
+    Ok((StatusCode::ACCEPTED, Json(json!({ "waiting": true, "message": "the import plan waits for approval on a server: `gxctl node import list`; this host keeps working as it is until then" }))))
+}
+
+#[derive(Deserialize)]
 pub struct RejoinBody {
     server: String,
     token: String,
@@ -119,6 +163,18 @@ pub async fn rejoin(c: Caller, Json(b): Json<RejoinBody>) -> Result<impl IntoRes
     c.set_target("cluster".to_string());
     c.audit_always();
     Ok(Json(out))
+}
+
+/// `gxctl cluster dissolve`: the last node leaves with everything (§5.10).
+pub async fn dissolve(c: Caller, b: Option<Json<serde_json::Value>>) -> Result<impl IntoResponse, ApiErr> {
+    c.require(Ent::Cluster, EntitySet::new())?;
+    if !b.is_some_and(|b| b.0["force"] == true) {
+        return Err(err(StatusCode::CONFLICT, "confirmation_required", "this ends the cluster and turns this host into a standalone host with everything it held; it keeps a final snapshot: confirm with --force"));
+    }
+    let cl = require_cluster(&c)?;
+    c.set_target("cluster".to_string());
+    c.audit_always();
+    cl.dissolve().await.map(Json).map_err(|e| err(StatusCode::CONFLICT, "cluster_error", e.to_string()))
 }
 
 /// `gxctl cluster leave`: this host's node was removed; go back to standalone.

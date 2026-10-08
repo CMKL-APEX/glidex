@@ -183,15 +183,17 @@ namespace Glidex {
   // ---- cluster (spec/clustering.md §5) ---------------------------------------
   action readCluster in ["host.read"]
     appliesTo { principal: [User, Token], resource: [Cluster], context: Ctx };
-  action initCluster, joinCluster, rejoinCluster, leaveCluster in ["host.cluster.critical"]
+  action initCluster, joinCluster, importCluster, rejoinCluster, leaveCluster in ["host.cluster.critical"]
     appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
   action createJoinToken, promoteNode, snapshotCluster in ["host.cluster.critical"]
     appliesTo { principal: [User, Token], resource: [Cluster], context: Ctx };
   // Membership (spec/clustering.md §5.5-5.7).
-  action removeNode, forgetNode, purgeNode, createRejoinToken, rotateCa, detachNode in ["host.cluster.critical"]
+  action removeNode, forgetNode, purgeNode, createRejoinToken, rotateCa, detachNode, approveImport, rejectImport, dissolveCluster in ["host.cluster.critical"]
     appliesTo { principal: [User, Token], resource: [Cluster], context: Ctx };
 
   // ---- nodes (spec/clustering.md §7) -------------------------------------
+  action listImports, readImport in ["host.read"]
+    appliesTo { principal: [User, Token], resource: [Cluster], context: Ctx };
   action listNodes in ["host.read"]
     appliesTo { principal: [User, Token], resource: [Cluster], context: Ctx };
   action readNode in ["host.read"]

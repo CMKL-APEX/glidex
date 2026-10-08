@@ -1211,6 +1211,14 @@ pub async fn cluster(client: &ApiClient, args: &[&str]) {
                 Ok(t) => t,
                 Err(e) => return err(e),
             };
+            if has_flag(args, "--import") {
+                let body = json!({ "server": server, "token": token.as_str(), "advertise": flag_value(args, "--advertise"), "tunnel_ip": flag_value(args, "--tunnel-ip"), "name": flag_value(args, "--name") });
+                match client.request_json::<Value>(Method::POST, "/cluster/import", Some(body)).await {
+                    Ok(v) => println!("{} {}", "Waiting:".green(), s(&v["message"])),
+                    Err(e) => err(e),
+                }
+                return;
+            }
             let body = json!({ "server": server, "token": token.as_str(), "role": flag_value(args, "--role").unwrap_or("server"),
                 "advertise": flag_value(args, "--advertise"), "tunnel_ip": flag_value(args, "--tunnel-ip"), "name": flag_value(args, "--name") });
             match client.request_json::<Value>(Method::POST, "/cluster/join", Some(body)).await {
@@ -1287,6 +1295,15 @@ pub async fn cluster(client: &ApiClient, args: &[&str]) {
                 Err(e) => err(e),
             }
         }
+        Some("dissolve") => {
+            if !has_flag(args, "--force") {
+                return usage("Usage: cluster dissolve --force\n  The last node ends the cluster and becomes a standalone host with everything it held. Other nodes must have left. A final snapshot is kept.");
+            }
+            match client.request_json::<Value>(Method::POST, "/cluster/dissolve", Some(json!({ "force": true }))).await {
+                Ok(v) => println!("{} {} VM(s), {} disk(s) kept; snapshot {}. Restart the control plane to continue standalone.", "Dissolved:".green(), v["vms"], v["disks"], s(&v["snapshot"])),
+                Err(e) => err(e),
+            }
+        }
         Some("leave") => match client.request_json::<Value>(Method::POST, "/cluster/leave", Some(json!({}))).await {
             Ok(v) => println!("{} {}: {}", "Left".green(), s(&v["left"]), s(&v["restart"])),
             Err(e) => err(e),
@@ -1312,6 +1329,6 @@ pub async fn cluster(client: &ApiClient, args: &[&str]) {
                 Err(e) => err(e.message),
             }
         }
-        Some(other) => usage(&format!("Unknown cluster command '{other}'. Try: init, join, join-token, status, promote, snapshot, rotate-ca, rejoin, leave")),
+        Some(other) => usage(&format!("Unknown cluster command '{other}'. Try: init, join, join-token, status, promote, snapshot, rotate-ca, rejoin, leave, dissolve")),
     }
 }

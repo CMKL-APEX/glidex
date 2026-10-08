@@ -1454,8 +1454,8 @@ const SUBCOMMANDS: &[(&str, &[&str])] = &[
     ("image", &["catalog", "list", "pull", "rm"]),
     ("disk", &["list", "show", "create", "resize", "extend-root", "rm"]),
     ("ovs", &["status", "install", "dpdk-init"]),
-    ("cluster", &["init", "join", "join-token", "status", "promote", "snapshot", "rotate-ca", "rejoin", "leave"]),
-    ("node", &["drain", "undrain", "remove", "forget", "purge", "rejoin-token", "detach"]),
+    ("cluster", &["init", "join", "join-token", "status", "promote", "snapshot", "rotate-ca", "rejoin", "leave", "dissolve"]),
+    ("node", &["drain", "undrain", "remove", "forget", "purge", "rejoin-token", "detach", "import"]),
     ("login", &["--oidc", "--token"]),
     ("logout", &["--revoke"]),
     ("token", &["list", "create", "revoke"]),
@@ -2242,6 +2242,37 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
                     let r = &v["remaining"];
                     println!("  still on it: {} VMs, {} disks, {} networks", r["vms"].as_array().map_or(0, |a| a.len()), r["disks"].as_array().map_or(0, |a| a.len()), r["networks"].as_array().map_or(0, |a| a.len()));
                 }
+                Err(e) => println!("{} {}", "Error:".red(), e),
+            }
+        }
+        "nodes" | "node" if parts.get(1) == Some(&"import") => {
+            let rest = &parts[2..];
+            let sub = rest.first().copied().unwrap_or("list");
+            let plan = rest.get(1).copied().filter(|a| !a.starts_with("--"));
+            let map_of = |flag: &str| {
+                let mut m = serde_json::Map::new();
+                for v in flag_values(rest, flag) {
+                    if let Some((a, b)) = v.split_once('=') {
+                        m.insert(a.to_string(), b.into());
+                    }
+                }
+                m
+            };
+            let result = match (sub, plan) {
+                ("list", _) => client.request_json::<serde_json::Value>(Method::GET, "/imports", None).await,
+                ("show", Some(p)) => client.request_json::<serde_json::Value>(Method::GET, &format!("/imports/{p}"), None).await,
+                ("approve", Some(p)) => {
+                    let body = serde_json::json!({ "projects": map_of("--project"), "networks": map_of("--network"), "credentials": map_of("--credential"), "over_quota": has_flag(rest, "--over-quota"), "dry_run": has_flag(rest, "--dry-run") });
+                    client.request_json::<serde_json::Value>(Method::POST, &format!("/imports/{p}/approve"), Some(body)).await
+                }
+                ("reject", Some(p)) => client.request_json::<serde_json::Value>(Method::POST, &format!("/imports/{p}/reject"), Some(serde_json::json!({}))).await.or_else(|e| if e.to_string().is_empty() { Ok(serde_json::Value::Null) } else { Err(e) }),
+                _ => {
+                    println!("{}", "Usage: node import list | show <plan> | approve <plan> [--project src=existing|src=new:name] [--network a=b] [--credential proj/user=new] [--over-quota] [--dry-run] | reject <plan>".yellow());
+                    return true;
+                }
+            };
+            match result {
+                Ok(v) => println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default()),
                 Err(e) => println!("{} {}", "Error:".red(), e),
             }
         }

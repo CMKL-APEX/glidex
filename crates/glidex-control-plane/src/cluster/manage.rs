@@ -642,3 +642,122 @@ pub async fn leave(manager: &Arc<VmManager>) -> Result<Value, ClusterError> {
     files.delete_all();
     Ok(json!({ "left": name, "restart": "restart the control plane: it starts again as a standalone host" }))
 }
+
+pub struct ImportOptions {
+    pub server: SocketAddr,
+    pub token: String,
+    pub advertise: Option<SocketAddr>,
+    pub tunnel_ip: Option<IpAddr>,
+    pub name: Option<String>,
+    pub listen: Option<SocketAddr>,
+    /// Give up waiting for approval after this long.
+    pub wait: Duration,
+}
+
+/// §5.9: join a cluster and bring this host's resources in. The host stays a
+/// working standalone host until the plan is approved and committed.
+pub async fn join_import(manager: &Arc<VmManager>, cfg: &crate::config::Config, opts: ImportOptions) -> Result<Value, ClusterError> {
+    let files = Files::beside(manager.db_path());
+    if manager.cluster().is_some() || files.exists() {
+        return Err(other("this host is already part of a cluster"));
+    }
+    let (_, _, ca_hash) = tokens::parse(&opts.token).map_err(other)?;
+    let server = opts.server.to_string();
+    let ca_pem = net::fetch_ca_untrusted(&server).await?;
+    let got = pki::public_key_fingerprint(&ca_pem)?;
+    if got != ca_hash {
+        return Err(other(format!("the server's CA ({}…) is not the one the token names ({}…): refusing to join", &got[..12], &ca_hash[..12])));
+    }
+    let trusting = net::client_trusting(&ca_pem)?;
+    let ccfg = cfg.cluster.clone();
+    let advertise = resolve_advertise(opts.advertise, &ccfg)?;
+    let listen = opts.listen.unwrap_or(ccfg.listen);
+    let node_id = uuid::Uuid::new_v4().to_string();
+    let raft_id = raft_id_of(&node_id);
+    let name = opts.name.unwrap_or_else(hostname);
+    let key = NodeKey::generate()?;
+    let csr = key.csr(&[advertise.ip()], &[])?;
+    // The host's own records, as a bundle (ids kept).
+    let bundle = super::departure::build_bundle(&manager.database(), "import", crate::node::LOCAL_NODE, &Default::default());
+    let req = super::import::ImportRequest { token: opts.token.clone(), csr, name: name.clone(), node_id: node_id.clone(), raft_id, advertise, tunnel_ip: opts.tunnel_ip, bundle };
+    let body = Bytes::from(serde_json::to_vec(&req).map_err(other)?);
+    let mut target = server.clone();
+    let mut created = None;
+    for _ in 0..2 {
+        let r = trusting.request_timeout(&target, hyper::Method::POST, "/cluster/v1/import", &[("content-type", "application/json".into())], body.clone(), Duration::from_secs(120)).await?;
+        if r.status == hyper::StatusCode::MISDIRECTED_REQUEST {
+            let v: Value = serde_json::from_slice(&r.body).unwrap_or_default();
+            match v["leader"].as_str() {
+                Some(l) if l != target => {
+                    target = l.to_string();
+                    continue;
+                }
+                _ => return Err(other("the cluster has no leader right now; try again")),
+            }
+        }
+        if !r.status.is_success() {
+            let v: Value = serde_json::from_slice(&r.body).unwrap_or_default();
+            return Err(other(format!("{}: {}", r.status, v["message"].as_str().unwrap_or("the import was refused"))));
+        }
+        created = Some(serde_json::from_slice::<Value>(&r.body).map_err(other)?);
+        break;
+    }
+    let created = created.ok_or_else(|| other("no answer from the cluster"))?;
+    let (plan, secret) = (created["plan"].as_str().unwrap_or("").to_string(), created["secret"].as_str().unwrap_or("").to_string());
+    tracing::warn!(plan = %plan, "import plan created; waiting for a cluster administrator to approve it: `gxctl node import show {plan}`");
+    // Wait for the decision. The host works as a standalone host meanwhile.
+    let deadline = tokio::time::Instant::now() + opts.wait;
+    let result = loop {
+        let r = trusting.request(&target, hyper::Method::GET, &format!("/cluster/v1/import/{plan}"), &[("x-import-secret", secret.clone())], Bytes::new()).await?;
+        if r.status.is_success() {
+            let v: Value = serde_json::from_slice(&r.body).map_err(other)?;
+            match v["state"].as_str() {
+                Some("committed") => break v["result"].clone(),
+                Some("rejected") => return Err(other("the import was rejected or expired; this host is unchanged")),
+                _ => {}
+            }
+        } else if r.status == hyper::StatusCode::MISDIRECTED_REQUEST {
+            if let Some(l) = serde_json::from_slice::<Value>(&r.body).ok().and_then(|v| v["leader"].as_str().map(String::from)) {
+                target = l;
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(other(format!("not approved yet (plan {plan}): this host is unchanged; ask an administrator to run `gxctl node import approve {plan}`")));
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    };
+    let cert_pem = result["cert_pem"].as_str().ok_or_else(|| other("no certificate in the answer"))?.to_string();
+    let trust_pem = result["trust_pem"].as_str().unwrap_or(&ca_pem).to_string();
+    let cluster_id = result["cluster_id"].as_str().unwrap_or("").to_string();
+    if pki::public_key_fingerprint(&trust_pem)? != ca_hash && !trust_pem.contains(ca_pem.trim()) {
+        return Err(other("the cluster sent a different CA than the token names"));
+    }
+    // Switch (§5.9 step 6): keep the standalone records, then work from the cluster.
+    let backup = files.dir.parent().unwrap_or(std::path::Path::new(".")).join(format!("glidex.db.pre-join-{}", crate::tenancy::now()));
+    export_snapshot(&manager.database(), &backup)?;
+    let identity = Identity {
+        cluster_id: cluster_id.clone(),
+        node_id: node_id.clone(),
+        raft_id,
+        name,
+        role: NodeRole::Agent,
+        advertise,
+        tunnel_ip: opts.tunnel_ip.or(Some(advertise.ip())),
+        ca_fingerprint: ca_hash.to_string(),
+        seeds: vec![target.clone()],
+    };
+    files.save_node_cert(&cert_pem, &key.key_pem(), &trust_pem)?;
+    files.save_identity(&identity)?;
+    crate::authz::set_identity(&identity.cluster_id, &identity.node_id);
+    crate::authz::set_local_account_scope((!ccfg.shared_local_accounts).then(|| node_id.clone()));
+    let cluster = match Cluster::start(manager.database(), files.clone(), identity.clone(), ccfg, listen).await {
+        Ok(c) => c,
+        Err(e) => {
+            files.delete_all();
+            return Err(e);
+        }
+    };
+    manager.attach_cluster(cluster);
+    manager.reload_vms().await;
+    Ok(json!({ "cluster_id": cluster_id, "node_id": node_id, "plan": plan, "backup": backup.display().to_string() }))
+}
