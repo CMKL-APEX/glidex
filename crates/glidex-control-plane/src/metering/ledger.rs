@@ -10,7 +10,8 @@
 //! Times are unix **milliseconds** inside the ledger; hours are keyed by
 //! their start in unix **seconds** (§7.1).
 
-use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
+use crate::store::Db;
+use redb::{ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
@@ -109,6 +110,7 @@ macro_rules! storage_from {
     )*};
 }
 storage_from!(
+    crate::store::StoreError,
     redb::DatabaseError,
     redb::TransactionError,
     redb::TableError,
@@ -305,7 +307,7 @@ pub struct Round {
     slots: BTreeMap<(u64, String), SlotRow>,
     /// Rates seen this round, for live stats (§9.4); not stored.
     live: BTreeMap<String, (Subject, BTreeMap<String, f64>)>,
-    db: Arc<Database>,
+    db: Arc<Db>,
     now: u64,
 }
 
@@ -754,15 +756,15 @@ fn now_ms() -> u64 {
 }
 
 pub struct Ledger {
-    db: Arc<Database>,
+    db: Arc<Db>,
     settings: LedgerSettings,
 }
 
 impl Ledger {
     /// Open (creating if needed) the metering tables (§7.1). New tables
     /// only: `SCHEMA_VERSION` is unchanged.
-    pub fn new(db: Arc<Database>, settings: LedgerSettings) -> Result<Self, MeteringError> {
-        let txn = db.begin_write()?;
+    pub fn new(db: Arc<Db>, settings: LedgerSettings) -> Result<Self, MeteringError> {
+        let txn = db.begin(crate::store::Origin::Metering)?;
         {
             let _ = txn.open_table(CURSORS)?;
             let _ = txn.open_table(OPEN)?;
@@ -790,7 +792,7 @@ impl Ledger {
             return Ok(t);
         }
         let t = now_ms();
-        let txn = self.db.begin_write()?;
+        let txn = self.db.begin(crate::store::Origin::Metering)?;
         {
             let mut table = txn.open_table(META)?;
             if table.get(META_STARTED_AT)?.is_none() {
@@ -822,7 +824,7 @@ impl Ledger {
 
     #[cfg(test)]
     pub(crate) fn set_started_at_for_test(&self, ms: u64) {
-        let txn = self.db.begin_write().unwrap();
+        let txn = self.db.begin(crate::store::Origin::Metering).unwrap();
         txn.open_table(META).unwrap().insert(META_STARTED_AT, ms.to_string().as_bytes()).unwrap();
         txn.commit().unwrap();
     }
@@ -874,7 +876,7 @@ impl Ledger {
         let closed_through = self.complete_through()?;
         let close_to = hour_of(round.now.saturating_sub(self.settings.close_grace_ms));
         let written_at = round.now / 1000;
-        let txn = self.db.begin_write()?;
+        let txn = self.db.begin(crate::store::Origin::Metering)?;
         {
             let mut cursors = txn.open_table(CURSORS)?;
             for subject in &round.forgotten {
@@ -1012,7 +1014,7 @@ impl Ledger {
     pub fn roll_up_hours_before(&self, cutoff: u64, offset_secs: i64) -> Result<usize, MeteringError> {
         let day_of = |t: u64| ((t as i64 + offset_secs).div_euclid(86400) * 86400 - offset_secs).max(0) as u64;
         let cutoff = day_of(cutoff.min(self.complete_through()?));
-        let txn = self.db.begin_write()?;
+        let txn = self.db.begin(crate::store::Origin::Metering)?;
         let n;
         {
             let mut hourly = txn.open_table(HOURLY)?;
@@ -1067,8 +1069,8 @@ impl Ledger {
     }
 
     /// Delete rows keyed by time before `cutoff` (unix s) from `table`.
-    fn prune(&self, table: TableDefinition<&str, &[u8]>, cutoff: u64) -> Result<usize, MeteringError> {
-        let txn = self.db.begin_write()?;
+    fn prune(&self, table: crate::store::Def, cutoff: u64) -> Result<usize, MeteringError> {
+        let txn = self.db.begin(crate::store::Origin::Metering)?;
         let n;
         {
             let mut t = txn.open_table(table)?;
@@ -1096,7 +1098,7 @@ impl Ledger {
     /// Final figures of a billing month (`usage_monthly_rates`, §8.5.1):
     /// `month_start` (unix s) keys them so pruning by time works.
     pub fn put_month_rates(&self, month_start: u64, key: &str, value: &serde_json::Value) -> Result<(), MeteringError> {
-        let txn = self.db.begin_write()?;
+        let txn = self.db.begin(crate::store::Origin::Metering)?;
         txn.open_table(MONTHLY_RATES)?.insert(format!("{month_start:010}/{key}").as_str(), serde_json::to_vec(value)?.as_slice())?;
         txn.commit()?;
         Ok(())
@@ -1127,7 +1129,7 @@ impl Ledger {
     }
 
     pub fn set_meta(&self, key: &str, value: &str) -> Result<(), MeteringError> {
-        let txn = self.db.begin_write()?;
+        let txn = self.db.begin(crate::store::Origin::Metering)?;
         txn.open_table(META)?.insert(key, value.as_bytes())?;
         txn.commit()?;
         Ok(())
@@ -1165,7 +1167,7 @@ impl Ledger {
     /// re-key them `<hour>/<project>/<kind>/<id>`. Idempotent.
     fn rekey_slots(&self) -> Result<usize, MeteringError> {
         let kinds = ["vm", "disk", "nic", "network", "image"];
-        let txn = self.db.begin_write()?;
+        let txn = self.db.begin(crate::store::Origin::Metering)?;
         let mut n = 0;
         {
             let mut t = txn.open_table(RATE5)?;
@@ -1212,7 +1214,7 @@ mod tests {
 
     fn ledger() -> (tempfile::TempDir, Ledger) {
         let dir = tempfile::TempDir::new().unwrap();
-        let db = Arc::new(Database::create(dir.path().join("t.db")).unwrap());
+        let db = Arc::new(Db::create(dir.path().join("t.db")).unwrap());
         let l = Ledger::new(db, LedgerSettings::from_secs(30, 120)).unwrap();
         // Pretend metering started long ago, so ZeroAt origins count.
         l.set_started_at_for_test(0);
@@ -1291,15 +1293,15 @@ mod tests {
         let path = dir.path().join("t.db");
         let s = vm();
         {
-            let db = Arc::new(Database::create(&path).unwrap());
+            let db = Arc::new(Db::create(&path).unwrap());
             let _ = Ledger::new(db.clone(), LedgerSettings::from_secs(30, 120)).unwrap();
             // A row as M2 wrote it: `<hour>/<kind>/<id>`.
             let row = SlotRow { subject: Some(s.clone()), present: 1, interpolated: 0, series: BTreeMap::new() };
-            let txn = db.begin_write().unwrap();
+            let txn = db.begin(crate::store::Origin::Metering).unwrap();
             txn.open_table(RATE5).unwrap().insert(format!("{:010}/vm/vm-1", T0 / 1000).as_str(), serde_json::to_vec(&row).unwrap().as_slice()).unwrap();
             txn.commit().unwrap();
         }
-        let l = Ledger::new(Arc::new(Database::create(&path).unwrap()), LedgerSettings::from_secs(30, 120)).unwrap();
+        let l = Ledger::new(Arc::new(Db::create(&path).unwrap()), LedgerSettings::from_secs(30, 120)).unwrap();
         let only: BTreeSet<String> = ["p1".to_string()].into();
         let rows = l.scan_slots(T0 / 1000, T0 / 1000 + 3600, Some(&only), |_| true).unwrap();
         assert_eq!(rows.len(), 1, "found under its project");
@@ -1580,7 +1582,7 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("t.db");
         {
-            let db = Arc::new(Database::create(&path).unwrap());
+            let db = Arc::new(Db::create(&path).unwrap());
             let l = Ledger::new(db, LedgerSettings::from_secs(30, 0)).unwrap();
             l.started_at().unwrap();
             let mut r = l.begin_round(T0 + 2 * H).unwrap();
@@ -1591,7 +1593,7 @@ mod tests {
             }
             l.commit(r).unwrap();
         }
-        let db = Arc::new(Database::create(&path).unwrap());
+        let db = Arc::new(Db::create(&path).unwrap());
         let l = Ledger::new(db, LedgerSettings::from_secs(30, 0)).unwrap();
         let only: BTreeSet<String> = ["p2".to_string()].into();
         let rows = l.scan(T0 / 1000, (T0 + H) / 1000, Some(&only)).unwrap();

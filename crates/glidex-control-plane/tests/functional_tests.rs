@@ -213,9 +213,10 @@ async fn legacy_firecracker_records_are_skipped_on_load() {
 
     // Rewrite one record the way an older build would have stored it.
     {
-        use redb::{Database, ReadableDatabase, TableDefinition};
+        use glidex_control_plane::store::{Db, Origin};
+        use redb::TableDefinition;
         const VMS: TableDefinition<&str, &[u8]> = TableDefinition::new("vms");
-        let database = Database::create(&db).unwrap();
+        let database = Db::create(&db).unwrap();
         let mut record: Value = {
             let txn = database.begin_read().unwrap();
             let table = txn.open_table(VMS).unwrap();
@@ -223,7 +224,7 @@ async fn legacy_firecracker_records_are_skipped_on_load() {
             serde_json::from_slice(bytes.value()).unwrap()
         };
         record["spec"]["config"]["hypervisor"] = json!("firecracker");
-        let txn = database.begin_write().unwrap();
+        let txn = database.begin(Origin::System).unwrap();
         {
             let mut table = txn.open_table(VMS).unwrap();
             let bytes = serde_json::to_vec(&record).unwrap();

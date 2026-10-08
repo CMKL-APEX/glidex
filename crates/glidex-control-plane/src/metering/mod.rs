@@ -23,7 +23,6 @@ use crate::models::Vm;
 use crate::network::Network;
 use glidex_ovs::nat_meter::NatCounter;
 use glidex_ovs::stats::BridgeStats;
-use redb::Database;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -50,7 +49,7 @@ pub struct LiveStats {
 }
 
 impl Meter {
-    pub fn new(db: Arc<Database>, cfg: MeteringConfig) -> Result<Self, MeteringError> {
+    pub fn new(db: Arc<crate::store::Db>, cfg: MeteringConfig) -> Result<Self, MeteringError> {
         let ledger = Ledger::new(db, LedgerSettings::from_secs(cfg.sample_secs, cfg.close_grace_secs))?;
         let boot_id = glidex_vm_shim::util::boot_id().unwrap_or_default();
         Ok(Self {

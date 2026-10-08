@@ -6,7 +6,8 @@
 //! of their value.
 
 use crate::authz::{Ent, Link};
-use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
+use crate::store::Db;
+use redb::{ReadableTable, TableDefinition};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -51,6 +52,7 @@ macro_rules! storage_from {
     )*};
 }
 storage_from!(
+    crate::store::StoreError,
     redb::TransactionError,
     redb::TableError,
     redb::StorageError,
@@ -217,15 +219,15 @@ pub struct AuditEntry {
 pub const POLICY_HISTORY: usize = 50;
 
 pub struct IdentityStore {
-    db: Arc<Database>,
+    db: Arc<Db>,
     audit_seq: std::sync::atomic::AtomicU64,
     /// Versions kept per site policy (config `authz.policy_history`).
     policy_history: std::sync::atomic::AtomicUsize,
 }
 
 fn get<T: DeserializeOwned>(
-    db: &Database,
-    table: TableDefinition<&str, &[u8]>,
+    db: &Db,
+    table: crate::store::Def,
     key: &str,
 ) -> Result<Option<T>, StoreError> {
     let txn = db.begin_read()?;
@@ -236,9 +238,9 @@ fn get<T: DeserializeOwned>(
     })
 }
 
-fn put<T: Serialize>(db: &Database, table: TableDefinition<&str, &[u8]>, key: &str, value: &T) -> Result<(), StoreError> {
+fn put<T: Serialize>(db: &Db, table: crate::store::Def, key: &str, value: &T) -> Result<(), StoreError> {
     let bytes = serde_json::to_vec(value)?;
-    let txn = db.begin_write()?;
+    let txn = db.begin(crate::store::Origin::Auth)?;
     {
         let mut t = txn.open_table(table)?;
         t.insert(key, bytes.as_slice())?;
@@ -247,8 +249,8 @@ fn put<T: Serialize>(db: &Database, table: TableDefinition<&str, &[u8]>, key: &s
     Ok(())
 }
 
-fn remove(db: &Database, table: TableDefinition<&str, &[u8]>, key: &str) -> Result<bool, StoreError> {
-    let txn = db.begin_write()?;
+fn remove(db: &Db, table: crate::store::Def, key: &str) -> Result<bool, StoreError> {
+    let txn = db.begin(crate::store::Origin::Auth)?;
     let existed = {
         let mut t = txn.open_table(table)?;
         let existed = t.remove(key)?.is_some();
@@ -258,7 +260,7 @@ fn remove(db: &Database, table: TableDefinition<&str, &[u8]>, key: &str) -> Resu
     Ok(existed)
 }
 
-fn list<T: DeserializeOwned>(db: &Database, table: TableDefinition<&str, &[u8]>) -> Result<Vec<(String, T)>, StoreError> {
+fn list<T: DeserializeOwned>(db: &Db, table: crate::store::Def) -> Result<Vec<(String, T)>, StoreError> {
     let txn = db.begin_read()?;
     let t = txn.open_table(table)?;
     let mut out = Vec::new();
@@ -270,8 +272,8 @@ fn list<T: DeserializeOwned>(db: &Database, table: TableDefinition<&str, &[u8]>)
 }
 
 impl IdentityStore {
-    pub fn new(db: Arc<Database>) -> Result<Self, StoreError> {
-        let txn = db.begin_write()?;
+    pub fn new(db: Arc<Db>) -> Result<Self, StoreError> {
+        let txn = db.begin(crate::store::Origin::Auth)?;
         for t in [USERS, IDENTITIES, TEAMS, LINKS, SESSIONS, TOKENS, SITE_POLICIES, SITE_POLICY_VERSIONS, AUDIT] {
             let _ = txn.open_table(t)?;
         }
@@ -283,7 +285,7 @@ impl IdentityStore {
         self.policy_history.store(n.max(1), std::sync::atomic::Ordering::Relaxed);
     }
 
-    pub fn database(&self) -> Arc<Database> {
+    pub fn database(&self) -> Arc<Db> {
         self.db.clone()
     }
 
@@ -524,7 +526,7 @@ impl IdentityStore {
         new: Option<(&str, &str, bool)>,
         author: &str,
     ) -> Result<Option<SitePolicy>, StoreError> {
-        let txn = self.db.begin_write()?;
+        let txn = self.db.begin(crate::store::Origin::Auth)?;
         let result = {
             let mut t = txn.open_table(SITE_POLICIES)?;
             let current: Option<SitePolicy> = match t.get(id)? {
@@ -633,7 +635,7 @@ impl IdentityStore {
 
     /// Delete entries older than `before` (unix millis).
     pub fn prune_audit(&self, before: u64) -> Result<usize, StoreError> {
-        let txn = self.db.begin_write()?;
+        let txn = self.db.begin(crate::store::Origin::Auth)?;
         let n = {
             let mut t = txn.open_table(AUDIT)?;
             let end = format!("{:016}", before);
@@ -657,7 +659,7 @@ mod tests {
 
     fn store() -> (IdentityStore, tempfile::TempDir) {
         let dir = tempfile::TempDir::new().unwrap();
-        let db = Arc::new(Database::create(dir.path().join("i.db")).unwrap());
+        let db = Arc::new(Db::create(dir.path().join("i.db")).unwrap());
         (IdentityStore::new(db).unwrap(), dir)
     }
 

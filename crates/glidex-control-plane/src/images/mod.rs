@@ -24,7 +24,8 @@ pub mod qemu_img;
 
 use catalog::{Arch, HashAlgo};
 use qemu_img::DiskFormat;
-use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition, WriteTransaction};
+use crate::store::Db;
+use redb::{ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::os::unix::fs::DirBuilderExt;
@@ -88,6 +89,12 @@ impl ImageError {
             ImageError::Io(m) => ImageError::Io(format!("{}: {}", prefix, m)),
             other => other,
         }
+    }
+}
+
+impl From<crate::store::StoreError> for ImageError {
+    fn from(e: crate::store::StoreError) -> Self {
+        ImageError::Storage(e.to_string())
     }
 }
 
@@ -630,7 +637,7 @@ pub fn validate_name(kind: &str, name: &str) -> Result<(), ImageError> {
 }
 
 pub struct ImageManager {
-    db: Arc<Database>,
+    db: Arc<Db>,
     pub settings: ImageSettings,
     images: RwLock<HashMap<String, Image>>,
     disks: RwLock<HashMap<String, Disk>>,
@@ -641,7 +648,6 @@ pub struct ImageManager {
     downloads: Arc<tokio::sync::Semaphore>,
     tasks: Mutex<HashMap<String, tokio::task::AbortHandle>>,
     http: reqwest::Client,
-    bell: crate::store::Bell,
 }
 
 /// Marks a disk busy for as long as it lives.
@@ -685,8 +691,8 @@ fn mkdir_private(dir: &Path) -> Result<(), ImageError> {
 }
 
 impl ImageManager {
-    pub fn new(db: Arc<Database>, settings: ImageSettings, bell: crate::store::Bell) -> Result<Arc<Self>, ImageError> {
-        let txn = db.begin_write().map_err(storage)?;
+    pub fn new(db: Arc<Db>, settings: ImageSettings) -> Result<Arc<Self>, ImageError> {
+        let txn = db.begin(crate::store::Origin::Images).map_err(storage)?;
         txn.open_table(IMAGES_TABLE).map_err(storage)?;
         txn.open_table(DISKS_TABLE).map_err(storage)?;
         txn.open_table(IMAGE_META_TABLE).map_err(storage)?;
@@ -704,7 +710,6 @@ impl ImageManager {
             busy: Mutex::new(HashMap::new()),
             holds: Mutex::new(HashMap::new()),
             tasks: Mutex::new(HashMap::new()),
-            bell,
         };
         *mgr.images.write().unwrap() = mgr.load(IMAGES_TABLE)?;
         *mgr.disks.write().unwrap() = mgr.load(DISKS_TABLE)?;
@@ -827,7 +832,6 @@ impl ImageManager {
         self.write_image(img)?;
         cache.insert(img.id.clone(), img.clone());
         drop(cache);
-        crate::store::ring(&self.bell);
         Ok(())
     }
 
@@ -843,13 +847,12 @@ impl ImageManager {
         self.write_image(&img)?;
         cache.insert(img.id.clone(), img);
         drop(cache);
-        crate::store::ring(&self.bell);
         Ok(())
     }
 
     fn write_image(&self, img: &Image) -> Result<(), ImageError> {
         let bytes = serde_json::to_vec(img).map_err(storage)?;
-        let txn = self.db.begin_write().map_err(storage)?;
+        let txn = self.db.begin(crate::store::Origin::Images).map_err(storage)?;
         txn.open_table(IMAGES_TABLE)
             .map_err(storage)?
             .insert(img.id.as_str(), bytes.as_slice())
@@ -866,23 +869,21 @@ impl ImageManager {
             img.deletion_requested_at = img.deletion_requested_at.or(current.deletion_requested_at);
             cache.insert(img.id.clone(), img);
             drop(cache);
-            crate::store::ring(&self.bell);
         }
     }
 
     fn remove_image_record(&self, id: &str) -> Result<(), ImageError> {
         let mut cache = self.images.write().unwrap();
-        let txn = self.db.begin_write().map_err(storage)?;
+        let txn = self.db.begin(crate::store::Origin::Images).map_err(storage)?;
         txn.open_table(IMAGES_TABLE).map_err(storage)?.remove(id).map_err(storage)?;
         txn.commit().map_err(storage)?;
         cache.remove(id);
         drop(cache);
-        crate::store::ring(&self.bell);
         Ok(())
     }
 
     pub fn put_disk(&self, d: &Disk) -> Result<(), ImageError> {
-        let txn = self.db.begin_write().map_err(storage)?;
+        let txn = self.db.begin(crate::store::Origin::Images).map_err(storage)?;
         write_disk(&txn, d)?;
         txn.commit().map_err(storage)?;
         self.cache_disk(d);
@@ -892,12 +893,10 @@ impl ImageManager {
     /// After a transaction that wrote `d` (see `persistence::VmStore::commit`).
     pub fn cache_disk(&self, d: &Disk) {
         self.disks.write().unwrap().insert(d.id.clone(), d.clone());
-        crate::store::ring(&self.bell);
     }
 
     pub fn uncache_disk(&self, id: &str) {
         self.disks.write().unwrap().remove(id);
-        crate::store::ring(&self.bell);
     }
 
     pub(crate) fn meta_get(&self, key: &str) -> Result<Option<Vec<u8>>, ImageError> {
@@ -907,7 +906,7 @@ impl ImageManager {
     }
 
     pub(crate) fn meta_put(&self, key: &str, value: &[u8]) -> Result<(), ImageError> {
-        let txn = self.db.begin_write().map_err(storage)?;
+        let txn = self.db.begin(crate::store::Origin::Images).map_err(storage)?;
         txn.open_table(IMAGE_META_TABLE).map_err(storage)?.insert(key, value).map_err(storage)?;
         txn.commit().map_err(storage)
     }
@@ -1198,7 +1197,7 @@ impl ImageManager {
 
 /// Write a disk record inside a caller's transaction, so it can commit
 /// together with the VM that references it.
-pub fn write_disk(txn: &WriteTransaction, d: &Disk) -> Result<(), ImageError> {
+pub fn write_disk(txn: &crate::store::Tx<'_>, d: &Disk) -> Result<(), ImageError> {
     let bytes = serde_json::to_vec(d).map_err(storage)?;
     txn.open_table(DISKS_TABLE)
         .map_err(storage)?
@@ -1207,7 +1206,7 @@ pub fn write_disk(txn: &WriteTransaction, d: &Disk) -> Result<(), ImageError> {
     Ok(())
 }
 
-pub fn delete_disk_record(txn: &WriteTransaction, id: &str) -> Result<(), ImageError> {
+pub fn delete_disk_record(txn: &crate::store::Tx<'_>, id: &str) -> Result<(), ImageError> {
     txn.open_table(DISKS_TABLE).map_err(storage)?.remove(id).map_err(storage)?;
     Ok(())
 }
@@ -1235,8 +1234,8 @@ mod tests {
     #[test]
     fn image_cannot_be_deleted_while_a_clone_holds_it() {
         let dir = tempfile::tempdir().unwrap();
-        let db = Arc::new(Database::create(dir.path().join("t.db")).unwrap());
-        let mgr = ImageManager::new(db, ImageSettings::from_env(dir.path()), crate::store::new_bell()).unwrap();
+        let db = Arc::new(Db::create(dir.path().join("t.db")).unwrap());
+        let mgr = ImageManager::new(db, ImageSettings::from_env(dir.path())).unwrap();
         let img = Image {
             id: "img-1".into(),
             name: "base".into(),

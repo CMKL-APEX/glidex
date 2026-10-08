@@ -259,7 +259,7 @@ pub fn constant_eq(a: &str, b: &str) -> bool {
 }
 
 impl AuthService {
-    pub fn new(db: Arc<redb::Database>, config: Config) -> Result<Arc<Self>, AuthError> {
+    pub fn new(db: Arc<crate::store::Db>, config: Config) -> Result<Arc<Self>, AuthError> {
         config.check().map_err(AuthError::Invalid)?;
         let svc = Arc::new(Self {
             store: IdentityStore::new(db)?,
@@ -277,7 +277,7 @@ impl AuthService {
 
     /// Authentication off: every request is the break-glass system user.
     /// For embedding and tests only; the binary never uses it.
-    pub fn disabled(db: Arc<redb::Database>) -> Result<Arc<Self>, AuthError> {
+    pub fn disabled(db: Arc<crate::store::Db>) -> Result<Arc<Self>, AuthError> {
         let mut config = Config::default();
         // Embedding and tests never read the host's policy files.
         config.authz.policy_files_dir = std::path::PathBuf::new();
@@ -928,7 +928,7 @@ mod tests {
 
     fn svc() -> (Arc<AuthService>, tempfile::TempDir) {
         let dir = tempfile::TempDir::new().unwrap();
-        let db = Arc::new(redb::Database::create(dir.path().join("a.db")).unwrap());
+        let db = Arc::new(crate::store::Db::create(dir.path().join("a.db")).unwrap());
         let cfg = Config { authz: crate::config::AuthzConfig { policy_files_dir: dir.path().join("policies"), ..Default::default() }, ..Default::default() };
         (AuthService::new(db, cfg).unwrap(), dir)
     }
@@ -1011,7 +1011,7 @@ mod tests {
     #[test]
     fn pam_user_requires_allowed_group_and_syncs_teams() {
         let dir = tempfile::TempDir::new().unwrap();
-        let db = Arc::new(redb::Database::create(dir.path().join("a.db")).unwrap());
+        let db = Arc::new(crate::store::Db::create(dir.path().join("a.db")).unwrap());
         let mut cfg = Config { authz: crate::config::AuthzConfig { policy_files_dir: dir.path().join("p"), ..Default::default() }, ..Default::default() };
         cfg.auth.pam.group_teams.insert("lab-unix".into(), "lab".into());
         let s = AuthService::new(db, cfg).unwrap();

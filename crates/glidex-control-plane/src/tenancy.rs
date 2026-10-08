@@ -5,7 +5,8 @@
 //! the `meta` table records the id of the `default` project and which
 //! one-time migrations have run.
 
-use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
+use crate::store::Db;
+use redb::{ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use thiserror::Error;
@@ -45,6 +46,7 @@ macro_rules! storage_from {
     )*};
 }
 storage_from!(
+    crate::store::StoreError,
     redb::TransactionError,
     redb::TableError,
     redb::StorageError,
@@ -184,13 +186,13 @@ pub fn now() -> u64 {
 }
 
 pub struct ProjectStore {
-    db: Arc<Database>,
+    db: Arc<Db>,
 }
 
 impl ProjectStore {
     /// Open the tables and make sure the default project exists.
-    pub fn new(db: Arc<Database>) -> Result<Self, TenancyError> {
-        let txn = db.begin_write()?;
+    pub fn new(db: Arc<Db>) -> Result<Self, TenancyError> {
+        let txn = db.begin(crate::store::Origin::Api)?;
         {
             let _ = txn.open_table(PROJECTS_TABLE)?;
             let _ = txn.open_table(META_TABLE)?;
@@ -241,7 +243,7 @@ impl ProjectStore {
     }
 
     pub fn set_meta(&self, key: &str, value: &[u8]) -> Result<(), TenancyError> {
-        let txn = self.db.begin_write()?;
+        let txn = self.db.begin(crate::store::Origin::Api)?;
         {
             let mut table = txn.open_table(META_TABLE)?;
             table.insert(key, value)?;
@@ -284,7 +286,7 @@ impl ProjectStore {
 
     pub fn put(&self, p: &Project) -> Result<(), TenancyError> {
         let bytes = serde_json::to_vec(p)?;
-        let txn = self.db.begin_write()?;
+        let txn = self.db.begin(crate::store::Origin::Api)?;
         {
             let mut table = txn.open_table(PROJECTS_TABLE)?;
             table.insert(p.id.as_str(), bytes.as_slice())?;
@@ -313,7 +315,7 @@ impl ProjectStore {
         if id == self.default_project_id() {
             return Err(TenancyError::Invalid("the default project can't be deleted".into()));
         }
-        let txn = self.db.begin_write()?;
+        let txn = self.db.begin(crate::store::Origin::Api)?;
         {
             let mut table = txn.open_table(PROJECTS_TABLE)?;
             if table.remove(id)?.is_none() {
@@ -331,7 +333,7 @@ mod tests {
 
     fn store() -> (ProjectStore, tempfile::TempDir) {
         let dir = tempfile::TempDir::new().unwrap();
-        let db = Arc::new(Database::create(dir.path().join("p.db")).unwrap());
+        let db = Arc::new(Db::create(dir.path().join("p.db")).unwrap());
         (ProjectStore::new(db).unwrap(), dir)
     }
 

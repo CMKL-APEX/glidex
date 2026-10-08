@@ -178,7 +178,7 @@ fn sample_bridge(round: &mut Round, s: &Subject, ports: &[(&PortStats, Origin)],
 mod tests {
     use super::super::ledger::{combine, Ledger, LedgerSettings, HOUR_MS};
     use super::*;
-    use redb::Database;
+    use crate::store::Db;
     use std::sync::Arc;
 
     const T0: u64 = 1_791_000_000 / 3600 * HOUR_MS;
@@ -239,7 +239,7 @@ mod tests {
 
     fn setup() -> (tempfile::TempDir, Ledger) {
         let dir = tempfile::TempDir::new().unwrap();
-        let db = Arc::new(Database::create(dir.path().join("t.db")).unwrap());
+        let db = Arc::new(Db::create(dir.path().join("t.db")).unwrap());
         let l = Ledger::new(db, LedgerSettings::from_secs(30, 120)).unwrap();
         l.set_started_at_for_test(0);
         (dir, l)

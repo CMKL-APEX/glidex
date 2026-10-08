@@ -261,7 +261,7 @@ pub fn forget_gone(round: &mut Round, with_cursors: &BTreeSet<String>, live: &BT
 mod tests {
     use super::super::ledger::{combine, Ledger, LedgerSettings, HOUR_MS};
     use super::*;
-    use redb::Database;
+    use crate::store::Db;
     use std::path::Path;
     use std::sync::Arc;
 
@@ -300,7 +300,7 @@ mod tests {
     /// full), and an empty fake host.
     fn setup() -> (tempfile::TempDir, Ledger, Host) {
         let dir = tempfile::TempDir::new().unwrap();
-        let db = Arc::new(Database::create(dir.path().join("t.db")).unwrap());
+        let db = Arc::new(Db::create(dir.path().join("t.db")).unwrap());
         let l = Ledger::new(db, LedgerSettings::from_secs(30, 120)).unwrap();
         l.set_started_at_for_test(0);
         let host = Host { proc_root: dir.path().join("proc"), cgroup_root: dir.path().join("cg"), sys_root: dir.path().join("sys") };

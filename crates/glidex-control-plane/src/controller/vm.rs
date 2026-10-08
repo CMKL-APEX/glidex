@@ -109,6 +109,10 @@ fn nic_queue_pairs(requested: Option<u8>, kind: glidex_ovs::vm_port::VmPortKind,
     })
 }
 
+/// How stale `status.last_reconciled_at` may get before an otherwise
+/// unchanged status is written to refresh it.
+const RECONCILED_STAMP_SECS: u64 = 600;
+
 /// Outcome of a round: requeue after this long, or wait for an event.
 type Next = Result<Option<Duration>, VmManagerError>;
 
@@ -129,14 +133,19 @@ impl VmManager {
     pub(crate) async fn write_status(&self, id: &str, read_gen: u64, mut status: VmStatus, events: Vec<Event>) -> Result<Option<Vm>, VmManagerError> {
         let mut vms = self.vms.write().await;
         let Some(cur) = vms.get(id).cloned() else { return Ok(None) };
+        // spec/clustering.md §4.1: a round that observes nothing new writes
+        // nothing, so `last_reconciled_at` is left out of the comparison and
+        // stamped only with another change, or at most every 10 minutes.
+        let now = crate::tenancy::now();
         status.observed_generation = read_gen;
-        status.last_reconciled_at = crate::tenancy::now();
+        status.last_reconciled_at = cur.status.last_reconciled_at;
         if status.phase != cur.status.phase {
-            status.phase_since = Some(status.last_reconciled_at);
+            status.phase_since = Some(now);
         }
-        if cur.status == status && events.is_empty() {
+        if cur.status == status && events.is_empty() && now.saturating_sub(cur.status.last_reconciled_at) < RECONCILED_STAMP_SECS {
             return Ok(Some(cur));
         }
+        status.last_reconciled_at = now;
         let mut vm = cur;
         vm.status = status;
         vm.resource_version += 1;
@@ -1053,5 +1062,33 @@ mod tests {
     #[test]
     fn crash_backoff_is_10s_doubling_to_5min() {
         assert_eq!([1, 2, 3, 5, 6, 30].map(crash_delay), [10, 20, 40, 160, 300, 300]);
+    }
+
+    /// spec/clustering.md §4.1 / C0: an idle VM causes no store write across
+    /// ten resync rounds.
+    #[tokio::test]
+    async fn an_unchanged_status_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = VmManager::with_db_path(dir.path().join("glidex.db")).unwrap();
+        let config: crate::models::VmConfig = serde_json::from_value(serde_json::json!({
+            "vcpu_count": 1, "mem_size_mib": 512, "rootfs_path": "/r", "kernel_args": "", "firmware_path": "/f.fd"
+        }))
+        .unwrap();
+        let vm = manager.create_vm("idle".into(), config).await.unwrap();
+        let cur = manager.get_vm(&vm.id).await.unwrap();
+        // The first write stamps `last_reconciled_at`.
+        manager.write_status(&vm.id, cur.generation, cur.status.clone(), vec![]).await.unwrap();
+        let db = manager.database();
+        let before = db.revision();
+        for _ in 0..10 {
+            let cur = manager.get_vm(&vm.id).await.unwrap();
+            manager.write_status(&vm.id, cur.generation, cur.status.clone(), vec![]).await.unwrap();
+        }
+        assert_eq!(db.revision(), before, "ten idle rounds wrote to the store");
+        // A real change is written.
+        let mut changed = manager.get_vm(&vm.id).await.unwrap().status;
+        changed.never_started = !changed.never_started;
+        manager.write_status(&vm.id, vm.generation, changed, vec![]).await.unwrap();
+        assert_eq!(db.revision(), before + 1);
     }
 }

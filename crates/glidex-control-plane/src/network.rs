@@ -6,7 +6,8 @@ use glidex_netd::proto::{ErrorBody, OnBehalfOf, Op, FULL_SOCKET_NAME, STATUS_SOC
 use glidex_ovs::names::{validate_name, MAX_IFNAME};
 use glidex_ovs::net::Ipv4Net;
 use glidex_ovs::vm_port::VmPortKind;
-use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
+use crate::store::Db;
+use redb::{ReadableTable, TableDefinition};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -167,6 +168,12 @@ impl From<ClientError> for NetError {
     }
 }
 
+impl From<crate::store::StoreError> for NetError {
+    fn from(e: crate::store::StoreError) -> Self {
+        NetError::Storage(e.to_string())
+    }
+}
+
 fn storage(e: impl std::fmt::Display) -> NetError {
     NetError::Storage(e.to_string())
 }
@@ -180,18 +187,17 @@ fn now() -> u64 {
 
 /// The control plane's `networks` table.
 pub struct NetworkStore {
-    db: Arc<Database>,
-    bell: crate::store::Bell,
+    db: Arc<Db>,
     /// Serializes writes, so `put`'s read-modify-write keeps a deletion.
     write: std::sync::Mutex<()>,
 }
 
 impl NetworkStore {
-    pub fn new(db: Arc<Database>, bell: crate::store::Bell) -> Result<Self, NetError> {
-        let txn = db.begin_write().map_err(storage)?;
+    pub fn new(db: Arc<Db>) -> Result<Self, NetError> {
+        let txn = db.begin(crate::store::Origin::Network).map_err(storage)?;
         txn.open_table(NETWORKS_TABLE).map_err(storage)?;
         txn.commit().map_err(storage)?;
-        Ok(Self { db, bell, write: std::sync::Mutex::new(()) })
+        Ok(Self { db, write: std::sync::Mutex::new(()) })
     }
 
     /// Record a new network.
@@ -233,25 +239,23 @@ impl NetworkStore {
 
     fn write_record(&self, net: &Network) -> Result<(), NetError> {
         let bytes = serde_json::to_vec(net).map_err(storage)?;
-        let txn = self.db.begin_write().map_err(storage)?;
+        let txn = self.db.begin(crate::store::Origin::Network).map_err(storage)?;
         {
             let mut t = txn.open_table(NETWORKS_TABLE).map_err(storage)?;
             t.insert(net.name.as_str(), bytes.as_slice()).map_err(storage)?;
         }
         txn.commit().map_err(storage)?;
-        crate::store::ring(&self.bell);
         Ok(())
     }
 
     pub fn delete(&self, name: &str) -> Result<(), NetError> {
         let _w = self.write.lock().unwrap();
-        let txn = self.db.begin_write().map_err(storage)?;
+        let txn = self.db.begin(crate::store::Origin::Network).map_err(storage)?;
         {
             let mut t = txn.open_table(NETWORKS_TABLE).map_err(storage)?;
             t.remove(name).map_err(storage)?;
         }
         txn.commit().map_err(storage)?;
-        crate::store::ring(&self.bell);
         Ok(())
     }
 }

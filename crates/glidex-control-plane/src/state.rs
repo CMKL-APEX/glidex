@@ -300,8 +300,8 @@ impl VmManager {
     pub fn with_db_path_and_netd(db_path: PathBuf, netd: Netd) -> Result<Arc<Self>, VmManagerError> {
         let store = VmStore::open(&db_path)?;
         let base = db_path.parent().map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
-        let changed = crate::store::new_bell();
-        let images = ImageManager::new(store.database(), ImageSettings::from_env(&base), changed.clone())?;
+        let changed = store.database().bell();
+        let images = ImageManager::new(store.database(), ImageSettings::from_env(&base))?;
         for ty in [HypervisorType::CloudHypervisor, HypervisorType::Qemu] {
             if !crate::hypervisor::driver(ty).is_available() {
                 tracing::warn!("Hypervisor {} binary {:?} not found — VMs configured for it will fail to start", ty, ty.binary_name());
@@ -310,7 +310,7 @@ impl VmManager {
         let settings = Settings::default();
         let runner = Runner::new(settings.runner);
         let credentials = CredentialStore::new(store.database())?;
-        let networks = NetworkStore::new(store.database(), changed.clone())?;
+        let networks = NetworkStore::new(store.database())?;
         let projects = ProjectStore::new(store.database())?;
         Ok(Arc::new_cyclic(|me| Self {
             vms: RwLock::new(HashMap::new()),
@@ -1825,7 +1825,7 @@ impl VmManager {
     }
 
     /// The control-plane database (shared with the identity store).
-    pub fn database(&self) -> Arc<redb::Database> {
+    pub fn database(&self) -> Arc<crate::store::Db> {
         self.store.database()
     }
 

@@ -5,24 +5,14 @@
 
 use crate::images::{self, Disk, ImageError};
 use crate::models::{HostBootPolicy, PowerState, RestartPolicy, Vm, VmConfig, VmPhase, VmSpec, VmStatus};
-use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition, WriteTransaction};
+use redb::{ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::Arc;
 use thiserror::Error;
 
-/// Rung after every write to a stored resource (VMs, disks, images,
-/// networks): `?wait` and `GET /watch` (spec/reconciliation.md §12.6)
-/// look again when it changes. Carries no data; listeners re-read.
-pub type Bell = Arc<tokio::sync::watch::Sender<u64>>;
-
-pub fn new_bell() -> Bell {
-    Arc::new(tokio::sync::watch::channel(0u64).0)
-}
-
-pub fn ring(bell: &Bell) {
-    bell.send_modify(|v| *v = v.wrapping_add(1));
-}
+mod db;
+pub use db::{Def, new_bell, ring, Applied, Bell, Consistency, Db, Op, Origin, RecTable, Replicator, StoreError, TableId, Tx, WriteSet, MAX_WRITE_SET_BYTES, WRITE_SET_FORMAT};
 
 const VMS_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("vms");
 const EVENTS_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("events");
@@ -40,6 +30,8 @@ pub const EVENTS_PER_OBJECT: usize = 50;
 pub enum PersistenceError {
     #[error("Database error: {0}")]
     Database(#[from] redb::DatabaseError),
+    #[error("{0}")]
+    Store(#[from] StoreError),
     #[error("Transaction error: {0}")]
     Transaction(#[from] redb::TransactionError),
     #[error("Table error: {0}")]
@@ -172,7 +164,7 @@ pub struct Commit<'a> {
 }
 
 pub struct VmStore {
-    db: Arc<Database>,
+    db: Arc<Db>,
 }
 
 impl VmStore {
@@ -182,20 +174,13 @@ impl VmStore {
         if let Some(parent) = path.as_ref().parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let db = Database::create(path.as_ref())?;
+        let db = Db::create(path.as_ref())?;
         // The database also holds credential hashes (credentials.rs), so
         // keep it readable by the control-plane user only.
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(path.as_ref(), std::fs::Permissions::from_mode(0o600))?;
         }
-        let write_txn = db.begin_write()?;
-        {
-            let _ = write_txn.open_table(VMS_TABLE)?;
-            let _ = write_txn.open_table(EVENTS_TABLE)?;
-            let _ = write_txn.open_table(META_TABLE)?;
-        }
-        write_txn.commit()?;
         let store = Self { db: Arc::new(db) };
         if let Some(v) = store.schema_version()? {
             if v > SCHEMA_VERSION {
@@ -205,7 +190,7 @@ impl VmStore {
         Ok(store)
     }
 
-    pub fn database(&self) -> Arc<Database> {
+    pub fn database(&self) -> Arc<Db> {
         self.db.clone()
     }
 
@@ -224,7 +209,7 @@ impl VmStore {
         if self.schema_version()?.is_some() {
             return Ok(0);
         }
-        let txn = self.db.begin_write()?;
+        let txn = self.db.begin(crate::store::Origin::Controller)?;
         let count;
         {
             let mut table = txn.open_table(VMS_TABLE)?;
@@ -285,7 +270,7 @@ impl VmStore {
 
     /// Apply a `Commit` in a single write transaction.
     pub fn commit(&self, c: Commit<'_>) -> Result<(), PersistenceError> {
-        let write_txn = self.db.begin_write()?;
+        let write_txn = self.db.begin(crate::store::Origin::Controller)?;
         {
             let mut table = write_txn.open_table(VMS_TABLE)?;
             if let Some(vm) = c.put_vm {
@@ -316,7 +301,7 @@ impl VmStore {
 
     /// Append to an object's event ring on its own.
     pub fn push_event(&self, key: &str, event: Event) -> Result<(), PersistenceError> {
-        let txn = self.db.begin_write()?;
+        let txn = self.db.begin(crate::store::Origin::Controller)?;
         push_event(&txn, key, event)?;
         txn.commit()?;
         Ok(())
@@ -334,7 +319,7 @@ impl VmStore {
 
     /// Drop an object's events (when it is deleted).
     pub fn delete_events(&self, key: &str) -> Result<(), PersistenceError> {
-        let txn = self.db.begin_write()?;
+        let txn = self.db.begin(crate::store::Origin::Controller)?;
         {
             let mut t = txn.open_table(EVENTS_TABLE)?;
             t.remove(key)?;
@@ -349,7 +334,7 @@ const AUDIT_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("audit");
 
 /// An audit line for a write the control plane made on its own (the VM
 /// controller's `spec.power = Stopped`, spec/reconciliation.md §6.2).
-pub fn audit_system(db: &Database, actor: &str, action: &str, project: &str, target: &str, details: serde_json::Value) {
+pub fn audit_system(db: &Db, actor: &str, action: &str, project: &str, target: &str, details: serde_json::Value) {
     let time = crate::auth::store::now_millis();
     let entry = crate::auth::store::AuditEntry {
         time,
@@ -370,7 +355,7 @@ pub fn audit_system(db: &Database, actor: &str, action: &str, project: &str, tar
     // `s`: never collides with auth::store's all-digit sequence keys.
     let key = format!("{:016}-s{:07}", time, seq % 10_000_000);
     let write = || -> Result<(), PersistenceError> {
-        let txn = db.begin_write()?;
+        let txn = db.begin(crate::store::Origin::Controller)?;
         {
             let mut t = txn.open_table(AUDIT_TABLE)?;
             t.insert(key.as_str(), serde_json::to_vec(&entry)?.as_slice())?;
@@ -384,7 +369,7 @@ pub fn audit_system(db: &Database, actor: &str, action: &str, project: &str, tar
 }
 
 /// Append `event` to the ring at `key` inside `txn`.
-pub fn push_event(txn: &WriteTransaction, key: &str, event: Event) -> Result<(), PersistenceError> {
+pub fn push_event(txn: &Tx<'_>, key: &str, event: Event) -> Result<(), PersistenceError> {
     let mut t = txn.open_table(EVENTS_TABLE)?;
     let mut ring: Vec<Event> = match t.get(key)? {
         Some(v) => serde_json::from_slice(v.value()).unwrap_or_default(),
@@ -413,7 +398,7 @@ mod tests {
     }
 
     fn put_raw(store: &VmStore, id: &str, v: &serde_json::Value) {
-        let txn = store.db.begin_write().unwrap();
+        let txn = store.db.begin(crate::store::Origin::Controller).unwrap();
         {
             let mut t = txn.open_table(VMS_TABLE).unwrap();
             t.insert(id, serde_json::to_vec(v).unwrap().as_slice()).unwrap();
@@ -450,7 +435,7 @@ mod tests {
         let path = dir.path().join("db");
         {
             let store = VmStore::open(&path).unwrap();
-            let txn = store.db.begin_write().unwrap();
+            let txn = store.db.begin(crate::store::Origin::Controller).unwrap();
             {
                 let mut t = txn.open_table(META_TABLE).unwrap();
                 t.insert(SCHEMA_KEY, b"3".as_slice()).unwrap();
