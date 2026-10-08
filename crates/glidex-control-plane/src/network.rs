@@ -187,6 +187,8 @@ pub enum NetError {
     NotFound(String),
     #[error("{0}")]
     Conflict(String),
+    #[error("the external address pool has no free address")]
+    ExternalPoolExhausted,
     #[error("network storage error: {0}")]
     Storage(String),
 }

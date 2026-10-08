@@ -63,6 +63,9 @@ pub enum Op {
     /// External-traffic counters of NAT networks, per network and per
     /// reserved MAC (spec/metering.md §5.5). Read-only; full socket only.
     NatCounters,
+    /// Cumulative external-traffic counters of router SNAT zones, from
+    /// conntrack accounting (spec/clustering.md §13.3). Read-only; full socket only.
+    CtExternalCounters,
     InstallOvs(InstallRequest),
     InitDpdk(glidex_ovs::install::DpdkSettings),
     EnsureUplink(EnsureUplinkArgs),
@@ -104,6 +107,7 @@ impl Op {
                 | Op::ListUplinks
                 | Op::PortStats
                 | Op::NatCounters
+                | Op::CtExternalCounters
                 | Op::OvnStatus
         )
     }
@@ -118,6 +122,7 @@ impl Op {
             Op::ListUplinks => "list_uplinks",
             Op::PortStats => "port_stats",
             Op::NatCounters => "nat_counters",
+            Op::CtExternalCounters => "ct_external_counters",
             Op::EnsureUplink(_) => "ensure_uplink",
             Op::CommitUplink { .. } => "commit_uplink",
             Op::DeleteUplink { .. } => "delete_uplink",

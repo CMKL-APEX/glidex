@@ -1,9 +1,11 @@
 //! Network meters from bridge-port counters (spec/metering.md §5.4):
 //! per VM NIC (`net.*`) and per network (`bridge.*`).
 
-use super::ledger::{Delta, MeteringError, Origin, Round, Subject, SubjectKind};
+use super::ledger::{Delta, Flag, MeteringError, Origin, Round, Subject, SubjectKind};
 use crate::models::Vm;
 use crate::network::Network;
+use crate::ipam::Reservation;
+use glidex_ovs::ct_meter::CtCounters;
 use glidex_ovs::nat_meter::{Direction, NatCounter};
 use glidex_ovs::stats::{BridgeStats, PortRole, PortStats};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -18,6 +20,11 @@ pub fn nic_subject(vm: &Vm, nic: u8, network: Option<&str>) -> Subject {
     s.nic = Some(nic as u32);
     s.network = network.map(str::to_string);
     s
+}
+
+/// A cluster network on a physical network (mode bridged on OVN).
+pub fn is_provider(n: &Network) -> bool {
+    n.scope == crate::network::NetworkScope::Cluster && n.physnet.is_some()
 }
 
 fn network_subject(n: &Network) -> Subject {
@@ -76,6 +83,11 @@ pub fn sample_ports(round: &mut Round, bridges: &[BridgeStats], vms: &[Vm], netw
             ingress.entry(owner.id.clone()).or_insert_with(|| (owner, Vec::new())).1.push((p, origin));
         }
         for (_, (subject, ports)) in ingress {
+            // A provider network has no total of its own (§13.2).
+            if let Some(n) = nets.iter().find(|n| n.name == subject.id && is_provider(n)) {
+                round.flag(&network_subject(n), now, Flag::NetworkTotalUnavailable);
+                continue;
+            }
             sample_bridge(round, &subject, &ports, now)?;
         }
     }
@@ -124,6 +136,51 @@ pub fn sample_nat(round: &mut Round, counters: &[NatCounter], vms: &[Vm], networ
                     round.live(&s, &format!("ext_{dir}_mbps"), kbps as f64 / 1e6);
                 }
             }
+        }
+    }
+    Ok(())
+}
+
+/// External traffic on OVN networks (spec/clustering.md §13.2–13.3), from
+/// the conntrack counters of this node's router zones. A VM's address
+/// gives its NIC and network (the cluster IPAM). The counters here are
+/// whatever this node's gateways carry; the cluster ledger sums sources.
+///
+/// A network's total counts every byte once, where it enters the VMs'
+/// address space: Σ VM-port tx (`sample_ports`, on each VM's node) plus
+/// the external inbound counted here.
+pub fn sample_ct(round: &mut Round, ct: &CtCounters, new_gap: bool, reservations: &[Reservation], vms: &[Vm], networks: &[Network], now: u64) -> Result<(), MeteringError> {
+    let by_ip: HashMap<std::net::Ipv4Addr, &Reservation> = reservations.iter().map(|r| (r.ip, r)).collect();
+    // `epoch` is the reset key: a collector that lost its totals starts a new run.
+    let reset = ct.epoch.to_string();
+    for c in &ct.counters {
+        let Some(r) = c.ip.and_then(|ip| by_ip.get(&ip)) else { continue };
+        let part = format!("ct/{}/{}", c.zone, c.ip.map(|i| i.to_string()).unwrap_or_default());
+        let dirs = [("tx", c.tx_bytes, c.tx_packets), ("rx", c.rx_bytes, c.rx_packets)];
+        if let Some(vm) = vms.iter().find(|v| v.id == r.vm_id) {
+            let s = nic_subject(vm, r.nic, Some(&r.network));
+            for (dir, bytes, packets) in dirs {
+                let d = round.counter_part(&s, &format!("net.ext_{dir}_bytes"), &part, &reset, bytes, now, Origin::Unknown)?;
+                round.counter_part(&s, &format!("net.ext_{dir}_packets"), &part, &reset, packets, now, Origin::Unknown)?;
+                if let Some(kbps) = d.and_then(|d| d.rate(8)) {
+                    round.max(&s, &format!("net.ext_{dir}_kbps_peak"), kbps / 1000, now);
+                    round.live(&s, &format!("ext_{dir}_mbps"), kbps as f64 / 1e6);
+                }
+            }
+            if new_gap {
+                round.flag(&s, now, Flag::ExtGap);
+            }
+        }
+        let Some(n) = networks.iter().find(|n| n.name == r.network).filter(|n| !is_provider(n)) else { continue };
+        let s = network_subject(n);
+        for (dir, bytes, packets) in dirs {
+            round.counter_part(&s, &format!("bridge.ext_{dir}_bytes"), &part, &reset, bytes, now, Origin::Unknown)?;
+            round.counter_part(&s, &format!("bridge.ext_{dir}_packets"), &part, &reset, packets, now, Origin::Unknown)?;
+        }
+        // The inbound bytes entered the network's address space here.
+        round.counter_part(&s, "bridge.bytes", &part, &reset, c.rx_bytes, now, Origin::Unknown)?;
+        if new_gap {
+            round.flag(&s, now, Flag::ExtGap);
         }
     }
     Ok(())
@@ -354,5 +411,76 @@ mod tests {
         sample_ports(&mut r, &one("p2", 70), &vms, &nets, T0 + 90_000).unwrap();
         l.commit(r).unwrap();
         assert_eq!(by_subject(&l)["a.0"]["net.rx_bytes"], 570);
+    }
+
+    fn cluster_net(name: &str, physnet: Option<&str>) -> Network {
+        serde_json::from_value(serde_json::json!({
+            "name": name, "bridge": "br-int", "mode": if physnet.is_some() { "bridged" } else { "nat" }, "port_type": "tap",
+            "scope": "cluster", "physnet": physnet, "created_at": 0, "project": "p1",
+        }))
+        .unwrap()
+    }
+
+    fn ct(epoch: u64, gaps: u64, tx: u64, rx: u64) -> CtCounters {
+        CtCounters {
+            epoch,
+            gaps,
+            counters: vec![glidex_ovs::ct_meter::CtCounter { zone: 60001, ip: Some("10.89.0.5".parse().unwrap()), tx_bytes: tx, tx_packets: tx / 100, rx_bytes: rx, rx_packets: rx / 100 }],
+        }
+    }
+
+    fn flags(l: &Ledger, subject: &str) -> BTreeSet<Flag> {
+        l.scan(0, u64::MAX / 10, None).unwrap().into_iter().filter(|r| r.subject.id == subject).flat_map(|r| r.flags).collect()
+    }
+
+    /// The gateway counts a VM that runs elsewhere: per NIC by address, and the
+    /// network total gets the external inbound on top of the VM ports' tx.
+    #[test]
+    fn conntrack_counters_give_nic_external_meters_and_the_networks_inbound() {
+        let (_d, l) = setup();
+        let vms = [vm("a", &["web"])];
+        let nets = [cluster_net("web", None)];
+        let res = [Reservation { network: "web".into(), mac: "02:00:00:00:00:01".into(), ip: "10.89.0.5".parse().unwrap(), vm_id: "a".into(), nic: 0 }];
+        let mut r = l.begin_round(T0 + 90_000).unwrap();
+        sample_ct(&mut r, &ct(7, 0, 1000, 5000), false, &res, &vms, &nets, T0 + 30_000).unwrap();
+        sample_ct(&mut r, &ct(7, 0, 4000, 9000), false, &res, &vms, &nets, T0 + 60_000).unwrap();
+        // The collector lost its totals: a new epoch counts from zero, flagged.
+        sample_ct(&mut r, &ct(8, 0, 200, 300), false, &res, &vms, &nets, T0 + 90_000).unwrap();
+        l.commit(r).unwrap();
+        let t = by_subject(&l);
+        assert_eq!(t["a.0"]["net.ext_tx_bytes"], 3200);
+        assert_eq!(t["a.0"]["net.ext_rx_bytes"], 4300);
+        assert_eq!(t["web"]["bridge.ext_rx_bytes"], 4300);
+        assert_eq!(t["web"]["bridge.bytes"], 4300, "external inbound is part of the network's total");
+        // An address nobody holds any more has nobody to bill.
+        let mut r = l.begin_round(T0 + 120_000).unwrap();
+        sample_ct(&mut r, &ct(8, 0, 9, 9), false, &[], &vms, &nets, T0 + 120_000).unwrap();
+    }
+
+    #[test]
+    fn a_collector_gap_flags_the_hour_and_provider_networks_have_no_total() {
+        let (_d, l) = setup();
+        let vms = [vm("a", &["web"]), vm("b", &["lan"])];
+        let nets = [cluster_net("web", None), cluster_net("lan", Some("lan"))];
+        let res = [Reservation { network: "web".into(), mac: "02:00:00:00:00:01".into(), ip: "10.89.0.5".parse().unwrap(), vm_id: "a".into(), nic: 0 }];
+        let mut r = l.begin_round(T0 + 60_000).unwrap();
+        sample_ct(&mut r, &ct(7, 0, 100, 100), false, &res, &vms, &nets, T0 + 30_000).unwrap();
+        sample_ct(&mut r, &ct(7, 1, 200, 200), true, &res, &vms, &nets, T0 + 60_000).unwrap();
+        // Ports of both networks on br-int: only the NAT network gets a total.
+        // What a guest sends enters the switch: OVS rx.
+        let stats = |uuid: &str, vm: &str, sent: u64| BridgeStats { bridge: "br-int".into(), ports: vec![port(uuid, PortRole::Vm, Some((vm, 0)), sent, 0)] };
+        let mut both = stats("pa", "a", 0);
+        both.ports.push(port("pb", PortRole::Vm, Some(("b", 0)), 0, 0));
+        sample_ports(&mut r, &[both], &vms, &nets, T0 + 30_000).unwrap();
+        let mut both = stats("pa", "a", 1000);
+        both.ports.push(port("pb", PortRole::Vm, Some(("b", 0)), 2000, 0));
+        sample_ports(&mut r, &[both], &vms, &nets, T0 + 60_000).unwrap();
+        l.commit(r).unwrap();
+        assert!(flags(&l, "a.0").contains(&Flag::ExtGap) && flags(&l, "web").contains(&Flag::ExtGap));
+        let t = by_subject(&l);
+        assert_eq!(t["web"]["bridge.bytes"], 1000 + 100, "ports' tx plus external inbound");
+        assert!(!t.get("lan").is_some_and(|m| m.contains_key("bridge.bytes")), "{:?}", t.get("lan"));
+        assert!(flags(&l, "lan").contains(&Flag::NetworkTotalUnavailable));
+        assert_eq!(t["b.0"]["net.tx_bytes"], 2000, "per-VM meters remain");
     }
 }

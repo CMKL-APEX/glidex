@@ -24,6 +24,8 @@ pub enum Program {
     OvnSbctl,
     Ip,
     Nft,
+    /// Conntrack accounting of router SNAT zones (spec/clustering.md §13.3).
+    Conntrack,
     Iptables,
     Sysctl,
     AptGet,
@@ -56,6 +58,7 @@ impl Program {
             Program::OvnSbctl => "ovn-sbctl",
             Program::Ip => "ip",
             Program::Nft => "nft",
+            Program::Conntrack => "conntrack",
             Program::Iptables => "iptables",
             Program::Sysctl => "sysctl",
             Program::AptGet => "apt-get",

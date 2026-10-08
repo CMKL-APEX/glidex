@@ -520,12 +520,12 @@ mod tests {
     #[test]
     fn quota_defaults() {
         use crate::tenancy::Quotas;
-        // Nothing configured: 2 project networks, everything else unlimited.
+        // Nothing configured: 2 project networks, 1 router with 1 external address, everything else unlimited.
         let c = parse("{}").unwrap();
-        assert_eq!(c.quotas.default, Quotas { networks: Some(2), ..Default::default() });
+        assert_eq!(c.quotas.default, Quotas { networks: Some(2), routers: Some(1), external_ips: Some(1), ..Default::default() });
         // Partial: omitted networks keeps 2.
         let c = parse(r#"{"quotas": {"default": {"vms": 10, "disk_gib": 500}}}"#).unwrap();
-        assert_eq!(c.quotas.default, Quotas { vms: Some(10), disk_gib: Some(500), networks: Some(2), ..Default::default() });
+        assert_eq!(c.quotas.default, Quotas { vms: Some(10), disk_gib: Some(500), networks: Some(2), routers: Some(1), external_ips: Some(1), ..Default::default() });
         // null is unlimited.
         let c = parse(r#"{"quotas": {"default": {"networks": null}}}"#).unwrap();
         assert_eq!(c.quotas.default.networks, None);

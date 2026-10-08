@@ -12,6 +12,7 @@ pub mod models;
 pub mod network;
 pub mod node;
 pub mod pci;
+pub mod router;
 pub mod store;
 pub mod controller;
 pub mod metering;

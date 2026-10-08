@@ -28,6 +28,20 @@ impl VmManager {
         Some(NbConn { db: servers, key: cluster.files.key(), cert: cluster.files.cert(), ca: cluster.files.trust(), daemon: None })
     }
 
+    /// Whether this node is a gateway of the shared edge or of a VPC router
+    /// (it then carries SNAT connections to meter, §13.3).
+    pub(crate) fn is_ovn_gateway(&self) -> bool {
+        if !self.ovn_enabled() {
+            return false;
+        }
+        let me = self.local_node_id();
+        let ovn = self.ovn.load_full();
+        let nodes = self.nodes().list().unwrap_or_default();
+        let is_me = |w: &String| w == &me || nodes.iter().any(|n| &n.spec.name == w && n.meta.id == me);
+        ovn.edge.as_ref().is_some_and(|e| e.gateway_nodes.iter().any(is_me))
+            || crate::router::list(&self.store.database()).unwrap_or_default().iter().any(|r| r.spec.gateway_nodes.iter().flatten().any(is_me))
+    }
+
     /// What the northbound database should say right now.
     pub(crate) async fn desired_ovn(&self) -> Result<Desired, crate::state::VmManagerError> {
         let ovn = self.ovn.load_full();
@@ -82,7 +96,24 @@ impl VmManager {
                     .iter()
                     .filter_map(|w| nodes.iter().find(|n| &n.meta.id == w || &n.spec.name == w).map(|n| n.meta.id.clone()))
                     .collect();
-                d.edge = Some(EdgeSpec { physnet: e.physnet.clone(), external_ip: ext, external_prefix: cidr.prefix(), gateway: gw, gateway_nodes, snat_ct_zone: None });
+                // The shared edge keeps the first zone of the range, routers the rest.
+                let zones = ovn.snat_ct_zones.unwrap_or((60000, 64999));
+                d.edge = Some(EdgeSpec { physnet: e.physnet.clone(), external_ip: ext, external_prefix: cidr.prefix(), gateway: gw, gateway_nodes, snat_ct_zone: Some(zones.0) });
+                let resolve = |names: &[String]| -> Vec<String> { names.iter().filter_map(|w| nodes.iter().find(|n| &n.meta.id == w || &n.spec.name == w).map(|n| n.meta.id.clone())).collect() };
+                for r in crate::router::list(&self.store.database()).map_err(crate::state::router_err)? {
+                    let external = match (r.spec.external, r.status.external_ip) {
+                        (true, Some(ip)) => Some(glidex_ovn::ExternalSpec {
+                            physnet: e.physnet.clone(),
+                            external_ip: ip,
+                            external_prefix: cidr.prefix(),
+                            gateway: gw,
+                            gateway_nodes: r.spec.gateway_nodes.as_deref().map(resolve).unwrap_or_else(|| d.edge.as_ref().map(|x| x.gateway_nodes.clone()).unwrap_or_default()),
+                            snat_ct_zone: r.status.snat_ct_zone,
+                        }),
+                        _ => None,
+                    };
+                    d.routers.push(glidex_ovn::RouterSpec { name: r.id.clone(), external });
+                }
             }
         }
         d.node_addresses = nodes

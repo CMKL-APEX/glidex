@@ -203,6 +203,46 @@ pub async fn create_project_network(
     Ok((StatusCode::CREATED, Json(net)))
 }
 
+// ---- VPC routers (spec/clustering.md §11.2a) ------------------------------
+
+pub async fn list_routers(c: Caller, Path(project): Path<String>) -> Result<impl IntoResponse, ApiErr> {
+    let project = c.target_project(Some(&project))?;
+    c.set_project(&project);
+    c.require(Ent::Project(project.clone()), super::project_entities(&project))?;
+    Ok(Json(c.manager().list_routers(&project).map_err(manager_err)?))
+}
+
+pub async fn get_router(c: Caller, Path((project, name)): Path<(String, String)>) -> Result<impl IntoResponse, ApiErr> {
+    let project = c.target_project(Some(&project))?;
+    c.set_project(&project);
+    c.require(Ent::Project(project.clone()), super::project_entities(&project))?;
+    Ok(Json(c.manager().get_router(&project, &name).map_err(manager_err)?))
+}
+
+pub async fn create_router(c: Caller, Path(project): Path<String>, Json(spec): Json<crate::router::RouterSpec>) -> Result<impl IntoResponse, ApiErr> {
+    let project = c.target_project(Some(&project))?;
+    c.set_project(&project);
+    c.set_target(format!("router:{}", spec.name));
+    c.require(Ent::Project(project.clone()), super::project_entities(&project))?;
+    // The external pool and the gateway nodes are site resources.
+    if spec.external_ip.is_some() || spec.gateway_nodes.is_some() {
+        c.require_action("createNetwork", Ent::Host, EntitySet::new(), &[])?;
+    }
+    let quota = c.quota_mode(&project);
+    let (r, over) = c.manager().create_router(&project, spec, quota).await.map_err(manager_err)?;
+    c.note_overruns(&over);
+    Ok((StatusCode::CREATED, Json(r)))
+}
+
+pub async fn delete_router(c: Caller, Path((project, name)): Path<(String, String)>) -> Result<impl IntoResponse, ApiErr> {
+    let project = c.target_project(Some(&project))?;
+    c.set_project(&project);
+    c.set_target(format!("router:{name}"));
+    c.require(Ent::Project(project.clone()), super::project_entities(&project))?;
+    c.manager().delete_router(&project, &name).await.map_err(manager_err)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 // ---- sharing project networks (spec §6.2.1) -------------------------------
 
 #[derive(Deserialize)]

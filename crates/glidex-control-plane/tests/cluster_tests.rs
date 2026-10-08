@@ -663,3 +663,87 @@ async fn cluster_networks_get_a_subnet_and_vms_get_addresses_that_go_when_they_d
     server.manager.clone().reconcile_ovn().await;
     assert_eq!(glidex_control_plane::ipam::list_reservations(&server.manager.database()).unwrap().len(), 1);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn provider_networks_and_vpc_routers() {
+    use glidex_control_plane::cluster::config::EdgeConfig;
+    let _one = SERIAL.lock().await;
+    let mut cfg = test_config();
+    cfg.cluster.ovn.enabled = true;
+    cfg.cluster.ovn.edge = Some(EdgeConfig {
+        physnet: "uplink".into(),
+        external_cidr: "192.0.2.0/29".into(),
+        gateway: "192.0.2.1".parse().unwrap(),
+        external_ip: "192.0.2.2".parse().unwrap(),
+        external_pool: Some("192.0.2.0/29".into()),
+        gateway_nodes: vec!["cp1".into()],
+    });
+    cfg.cluster.ovn.bridge_mappings.insert("lan".into(), "br-lan".into());
+    let server = new_cp();
+    server.manager.configure(&cfg);
+    manage::init(&server.manager, &cfg, InitOptions { advertise: Some(server.addr), tunnel_ip: None, listen: Some(server.addr) }).await.unwrap();
+    server.manager.initialize().await.unwrap();
+
+    // Provider networks: a physnet is required, a subnet isn't allowed, vlan is checked.
+    let mk = |name: &str, extra: serde_json::Value| {
+        let mut b = json!({ "name": name, "mode": "bridged", "port_type": "tap", "scope": "cluster" });
+        b.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        b
+    };
+    let (s, _) = call(&server, "POST", "/networks", Some(mk("p0", json!({}))), &[]).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let (s, _) = call(&server, "POST", "/networks", Some(mk("p0", json!({ "physnet": "lan", "subnet": "10.1.0.0/24" }))), &[]).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let (s, _) = call(&server, "POST", "/networks", Some(mk("p0", json!({ "physnet": "lan", "vlan": 5000 }))), &[]).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let (s, n) = call(&server, "POST", "/networks", Some(mk("p1", json!({ "physnet": "lan", "vlan": 30 }))), &[]).await;
+    assert_eq!(s, StatusCode::CREATED, "{n}");
+    let d = server.manager.__desired_ovn_for_tests().await.unwrap();
+    assert!(d.networks.iter().any(|n| n.name == "p1" && matches!(&n.kind, glidex_ovn::NetKind::Provider { physnet, vlan: Some(30) } if physnet == "lan")));
+    assert!(glidex_control_plane::ipam::list_subnets(&server.manager.database()).unwrap().is_empty(), "a provider network takes no subnet");
+
+    // VPC routers: one per project by default, an external address each.
+    let (s, r) = call(&server, "POST", "/projects/default/routers", Some(json!({ "name": "r1" })), &[]).await;
+    assert_eq!(s, StatusCode::CREATED, "{r}");
+    assert_eq!(r["status"]["external_ip"], "192.0.2.3");
+    assert_eq!(r["status"]["snat_ct_zone"], 60001);
+    // The site's pool (.3-.6 here, the gateway and edge take .1 and .2) runs out; the admin is
+    // allowed past quota, so the pool is what stops it.
+    for n in ["r2", "r3", "r4"] {
+        let (s, r) = call(&server, "POST", "/projects/default/routers", Some(json!({ "name": n })), &[]).await;
+        assert_eq!(s, StatusCode::CREATED, "{r}");
+    }
+    let (s, e) = call(&server, "POST", "/projects/default/routers", Some(json!({ "name": "r5" })), &[]).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{e}");
+    assert_eq!(e["error"], "external_pool_exhausted", "{e}");
+    let (s, _) = call(&server, "POST", "/projects/default/routers", Some(json!({ "name": "r1", "external": false })), &[]).await;
+    assert_eq!(s, StatusCode::CONFLICT);
+
+    // A NAT network on the router: by name, and the plan shows the router and its zone.
+    let (s, n) = call(&server, "POST", "/projects/default/networks", Some(json!({ "name": "app", "mode": "nat", "port_type": "tap", "scope": "cluster", "router": "r1" })), &[]).await;
+    assert_eq!(s, StatusCode::CREATED, "{n}");
+    let (s, n) = call(&server, "POST", "/projects/default/networks", Some(json!({ "name": "bad", "mode": "nat", "port_type": "tap", "scope": "cluster", "router": "nope" })), &[]).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{n}");
+    let d = server.manager.__desired_ovn_for_tests().await.unwrap();
+    assert_eq!(d.routers.len(), 4);
+    let r1 = d.routers.iter().find(|r| r.external.as_ref().is_some_and(|e| e.external_ip.to_string() == "192.0.2.3")).unwrap();
+    let ext = r1.external.as_ref().unwrap();
+    assert_eq!(ext.snat_ct_zone, Some(60001));
+    assert_eq!(d.edge.as_ref().unwrap().snat_ct_zone, Some(60000));
+    assert!(d.networks.iter().any(|n| n.name == "app" && n.router.as_deref() == Some(r1.name.as_str())));
+
+    // A router with a network on it can't go, not even while that network is only on its way out.
+    let (s, _) = call(&server, "DELETE", "/projects/default/routers/r1", None, &[]).await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    let (s, _) = call(&server, "DELETE", "/networks/app", None, &[]).await;
+    assert!(s.is_success(), "{s}");
+    let (s, e) = call(&server, "DELETE", "/projects/default/routers/r1", None, &[]).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{e}");
+    // One with nothing on it goes, and its address is free again.
+    let (s, _) = call(&server, "DELETE", "/projects/default/routers/r2", None, &[]).await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let (s, r) = call(&server, "POST", "/projects/default/routers", Some(json!({ "name": "r6" })), &[]).await;
+    assert_eq!(s, StatusCode::CREATED, "{r}");
+    assert_eq!(r["status"]["external_ip"], "192.0.2.4", "the address came back");
+    assert_eq!(r["status"]["snat_ct_zone"], 60002, "and so did the zone");
+}

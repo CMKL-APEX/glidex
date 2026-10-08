@@ -47,6 +47,10 @@ pub enum IpamError {
     NoSubnet(String),
     #[error("{0}")]
     Invalid(String),
+    #[error("the external address pool has no free address")]
+    ExternalPoolFull,
+    #[error("external address {0} is taken")]
+    ExternalTaken(Ipv4Addr),
 }
 
 macro_rules! storage_from {
@@ -164,6 +168,54 @@ pub fn release(tx: &Tx<'_>, network: &str, mac: &str) -> Result<(), IpamError> {
     Ok(())
 }
 
+/// An address of the external pool for `router` (§11.2a): the requested one
+/// if free, else the lowest free one. `exclude` are addresses the site
+/// already uses (the shared edge, the gateway). Idempotent per router.
+pub fn allocate_external(tx: &Tx<'_>, router: &str, requested: Option<Ipv4Addr>, pool: Ipv4Net, exclude: &[Ipv4Addr]) -> Result<Ipv4Addr, IpamError> {
+    let mut t = tx.open_table(TableId::IpamExternal.definition())?;
+    let mut used = std::collections::BTreeSet::new();
+    for r in t.iter()? {
+        let (k, v) = r?;
+        let owner: String = serde_json::from_slice(v.value())?;
+        let ip: Ipv4Addr = k.value().parse().map_err(|_| IpamError::Storage(format!("bad address key {}", k.value())))?;
+        if owner == router {
+            return Ok(ip);
+        }
+        used.insert(u32::from(ip));
+    }
+    used.extend(exclude.iter().map(|a| u32::from(*a)));
+    let (lo, hi) = (pool.host(1).map(u32::from), pool.last_host().map(u32::from));
+    let (Some(lo), Some(hi)) = (lo, hi) else { return Err(IpamError::Invalid("the external pool is too small".into())) };
+    let ip = match requested {
+        Some(a) => {
+            if !(lo..=hi).contains(&u32::from(a)) {
+                return Err(IpamError::Invalid(format!("{a} is outside the external pool")));
+            }
+            if used.contains(&u32::from(a)) {
+                return Err(IpamError::ExternalTaken(a));
+            }
+            a
+        }
+        None => (lo..=hi).find(|a| !used.contains(a)).map(Ipv4Addr::from).ok_or(IpamError::ExternalPoolFull)?,
+    };
+    t.insert(ip.to_string().as_str(), serde_json::to_vec(router)?.as_slice())?;
+    Ok(ip)
+}
+
+pub fn free_external(tx: &Tx<'_>, router: &str) -> Result<(), IpamError> {
+    let mut t = tx.open_table(TableId::IpamExternal.definition())?;
+    let keys: Vec<String> = t
+        .iter()?
+        .filter_map(|r| r.ok())
+        .filter(|(_, v)| serde_json::from_slice::<String>(v.value()).map(|o| o == router).unwrap_or(false))
+        .map(|(k, _)| k.value().to_string())
+        .collect();
+    for k in keys {
+        t.remove(k.as_str())?;
+    }
+    Ok(())
+}
+
 pub fn list_subnets(db: &Db) -> Result<Vec<Subnet>, IpamError> {
     let txn = db.begin_read()?;
     let t = txn.open_table(TableId::IpamSubnets.definition())?;
@@ -219,6 +271,27 @@ mod tests {
         // Freeing makes room again.
         db.write(Origin::Network, |tx| free_subnet(tx, "a")).unwrap();
         assert_eq!(w("d", None).unwrap().cidr, "10.89.0.0/24");
+    }
+
+    #[test]
+    fn external_addresses_come_from_the_pool_once_each() {
+        let (_d, db) = db();
+        let pool: Ipv4Net = "192.0.2.240/29".parse().unwrap();
+        let edge: Ipv4Addr = "192.0.2.241".parse().unwrap();
+        let a = |r: &str, req: Option<&str>| db.write(Origin::Api, |tx| allocate_external(tx, r, req.map(|x| x.parse().unwrap()), pool, &[edge]));
+        let r1 = a("r1", None).unwrap();
+        assert_eq!(r1, "192.0.2.242".parse::<Ipv4Addr>().unwrap(), "the edge's own address is skipped");
+        assert_eq!(a("r1", None).unwrap(), r1, "idempotent per router");
+        assert!(matches!(a("r2", Some("192.0.2.242")), Err(IpamError::ExternalTaken(_))));
+        assert!(matches!(a("r2", Some("192.0.2.1")), Err(IpamError::Invalid(_))));
+        assert_eq!(a("r2", Some("192.0.2.245")).unwrap(), "192.0.2.245".parse::<Ipv4Addr>().unwrap());
+        // .242 .243 .244 .245 .246 are assignable (.241 is the edge's).
+        a("r3", None).unwrap();
+        a("r4", None).unwrap();
+        a("r5", None).unwrap();
+        assert!(matches!(a("r6", None), Err(IpamError::ExternalPoolFull)));
+        db.write(Origin::Api, |tx| free_external(tx, "r1")).unwrap();
+        assert_eq!(a("r6", None).unwrap(), r1, "a freed address is reused");
     }
 
     #[test]

@@ -154,6 +154,11 @@ namespace Glidex {
     appliesTo { principal: [User, Token], resource: [Project], context: Ctx };
   action deleteProjectNetwork in ["network.manage"]
     appliesTo { principal: [User, Token], resource: [Network], context: Ctx };
+  // VPC routers (spec/clustering.md §11.2a), on the owning project.
+  action createRouter, deleteRouter in ["network.manage"]
+    appliesTo { principal: [User, Token], resource: [Project], context: Ctx };
+  action readRouter in ["project.read"]
+    appliesTo { principal: [User, Token], resource: [Project], context: Ctx };
   // Source side, on the network; context.project is the target project.
   action offerNetworkShare, unshareNetwork in ["network.share"]
     appliesTo { principal: [User, Token], resource: [Network], context: ProjectCtx };

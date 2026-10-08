@@ -1706,8 +1706,21 @@ real database. Everything marked "(verify)" below is syntax or behaviour of OVN
   per call), OVN-aware `move_vm_port` (C8), provider networks and VPC routers
   (C6).
 
-### C6 (partial): provider networks and VPC router objects
+### C6: provider networks, VPC routers and metering on OVN
 
-Done: provider networks (`mode: bridged` + `physnet`, optional `vlan`, no IPAM; scheduler filters nodes by `features.physnets` from `ovn.bridge_mappings`), and glidex-ovn gateway generalisation (`ensure_gateway` serves the shared edge and per-project routers `gxr-<id>` with HA chassis group, isolation policies, SNAT and `snat-ct-zone`; routers dropped from the plan are removed). All tested by command-line recording only, not against real OVN.
+Built:
 
-Not yet done: the `routers`/`ipam_external` tables, `/routers` API and quotas, external pool allocation, and conntrack-based external metering.
+- **Provider networks:** `mode: bridged` + `physnet` (+ optional `vlan`), no IPAM. The scheduler places VMs only on nodes whose `ovn.bridge_mappings` has the physnet (`features.physnets`).
+- **VPC routers:** tables `routers` (36) and `ipam_external` (37); API `GET|POST /projects/{id}/routers`, `GET|DELETE /projects/{id}/routers/{name}` with Cedar actions `createRouter`/`deleteRouter` (`network.manage`) and `readRouter` (`project.read`). Explicit `external_ip`/`gateway_nodes` need `host.network` (checked as `createNetwork` on `Host`). A router's id is 8 hex characters; `gxr-<id>` is its OVN router and a network's `router` holds the id (the request names it). Quotas `routers` and `external_ips` (default 1 each) are checked in the admission write; the pool, the zone and the record are written in one transaction, so a full pool (`409 external_pool_exhausted`) leaves nothing behind. Zones: the edge keeps the first of `ovn.snat_ct_zones`, routers take the lowest free one after it. Deleting a router is refused while any network, including one still being deleted, names it.
+- **glidex-ovn:** one `ensure_gateway` serves the shared edge and every VPC router (provider-side port, HA chassis group, `gx_nodes` and supernet drop policies, SNAT, `snat-ct-zone`); the supernet policy of a VPC router exempts its own `gx_r_<id>_nets`. Routers that left the plan are removed with their provider-side ports.
+- **External metering (D22):** `glidex_ovs::ct_meter` keeps cumulative per-(zone, address) counters from a conntrack dump per round plus `DESTROY` events, with per-connection baselines, L2 normalization, persistence before reporting, an `epoch` and a count of `gaps`. netd op `ct_external_counters` (read-only, full socket) turns `nf_conntrack_acct` on at first use. Metering turns them into `net.ext_*` per NIC and `bridge.ext_*` per network, adds the inbound bytes to the network's `bridge.bytes`, and flags `ext_gap`. Provider networks get no network total and the flag `network_total_unavailable`.
+
+Not exercised against real OVN or a real kernel conntrack: command lines, parsing, planning, accounting arithmetic and the metering rules are unit-tested; §13.3's "to check on a real host" list is still open.
+
+Deviations and limits:
+
+- Deleting a router is immediate: its record and address go at once and its OVN objects at the next network-controller pass (not a `deletion_requested_at` round trip). The router status has no `active_gateway` yet (it needs the southbound database).
+- A VM's external counters start at the first round that sees them (`Origin::Unknown`), not at launch, because the collector's totals are keyed by address and an address can pass between VMs. At most one round's external traffic of a new VM is lost.
+- netd's zone range comes from its own file (`ct_zones`, default 60000–64999) and must match `ovn.snat_ct_zones`; the installer is meant to write both.
+- The `DESTROY` reader and the `conntrack` dump use the `conntrack` CLI, not netlink in-process.
+- Gateway nodes with `br_int_datapath = system` are not yet enforced when a router is created.

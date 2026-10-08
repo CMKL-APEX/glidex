@@ -43,6 +43,8 @@ pub struct Meter {
     round_lock: std::sync::Mutex<()>,
     /// The latest live rates per subject, and when (unix ms) (§9.4).
     live: std::sync::Mutex<std::collections::HashMap<String, LiveStats>>,
+    /// The conntrack collector's `(epoch, gaps)` at the last round.
+    ct_gaps: std::sync::Mutex<Option<(u64, u64)>>,
 }
 
 /// Rates of one subject from its last two samples (§9.4).
@@ -65,6 +67,7 @@ impl Meter {
             boot_id,
             round_lock: std::sync::Mutex::new(()),
             live: Default::default(),
+            ct_gaps: Default::default(),
         })
     }
 
@@ -113,6 +116,13 @@ impl Meter {
         if let Some(nat) = &snap.nat {
             net::sample_nat(&mut round, nat, &snap.vms, &snap.networks, &self.boot_id, now)?;
         }
+        if let (Some(ct), true) = (&snap.ct, snap.bridges.is_some()) {
+            // A restart of the collector since the last round is a gap in what it saw.
+            let mut last = self.ct_gaps.lock().unwrap_or_else(|e| e.into_inner());
+            let new_gap = matches!(*last, Some((epoch, gaps)) if epoch == ct.counters.epoch && ct.counters.gaps > gaps);
+            *last = Some((ct.counters.epoch, ct.counters.gaps));
+            net::sample_ct(&mut round, &ct.counters, new_gap, &ct.reservations, &ct.vms, &snap.networks, now)?;
+        }
         sampler::forget_gone(&mut round, &with_cursors, &snap.live_subjects());
         let live = round.take_live();
         self.writer().commit(round)?;
@@ -157,6 +167,16 @@ pub struct Snapshot {
     pub bridges: Option<Vec<BridgeStats>>,
     /// NAT external-traffic counters from netd (§5.5).
     pub nat: Option<Vec<NatCounter>>,
+    /// External-traffic counters of this node's router zones, on a gateway (§13.3).
+    pub ct: Option<CtSnapshot>,
+}
+
+/// What metering needs to turn conntrack counters into subjects.
+pub struct CtSnapshot {
+    pub counters: glidex_ovs::ct_meter::CtCounters,
+    pub reservations: Vec<crate::ipam::Reservation>,
+    /// Every VM of the cluster: a gateway counts VMs that run elsewhere.
+    pub vms: Vec<Vm>,
 }
 
 impl Snapshot {
@@ -164,7 +184,7 @@ impl Snapshot {
     fn live_subjects(&self) -> std::collections::BTreeSet<String> {
         let mut live: std::collections::BTreeSet<String> = self.vms.iter().map(|v| format!("vm/{}", v.id)).collect();
         live.extend(self.disks.iter().map(|d| format!("disk/{}", d.id)));
-        for v in &self.vms {
+        for v in self.vms.iter().chain(self.ct.iter().flat_map(|c| c.vms.iter())) {
             live.extend(v.status.nics.iter().map(|n| format!("nic/{}.{}", v.id, n.nic_index)));
         }
         live.extend(self.networks.iter().map(|n| format!("network/{}", n.name)));
@@ -348,6 +368,13 @@ impl crate::state::VmManager {
         let networks = self.networks.list().unwrap_or_default();
         let netd = self.netd.clone();
         let m = meter.clone();
+        // A gateway of OVN routers counts external traffic of every VM behind it.
+        let ct_inputs = if self.is_ovn_gateway() {
+            let all: Vec<Vm> = self.vms.read().await.values().cloned().collect();
+            crate::ipam::list_reservations(&self.store.database()).ok().map(|r| (r, all))
+        } else {
+            None
+        };
         tokio::task::spawn_blocking(move || {
             let bridges = match netd.call::<Vec<BridgeStats>>(glidex_netd::proto::Op::PortStats) {
                 Ok(b) => Some(b),
@@ -359,7 +386,17 @@ impl crate::state::VmManager {
             // Only with port counters: NIC and network cursors are kept
             // or forgotten together (see `sample`).
             let nat = bridges.as_ref().and_then(|_| netd.call::<Vec<NatCounter>>(glidex_netd::proto::Op::NatCounters).ok());
-            m.sample(&Snapshot { vms, disks, networks, bridges, nat }, now_ms())
+            let ct = ct_inputs.and_then(|(reservations, all_vms)| {
+                bridges.as_ref()?;
+                match netd.call::<glidex_ovs::ct_meter::CtCounters>(glidex_netd::proto::Op::CtExternalCounters) {
+                    Ok(counters) => Some(CtSnapshot { counters, reservations, vms: all_vms }),
+                    Err(e) => {
+                        tracing::debug!("metering: no external counters this round: {}", e);
+                        None
+                    }
+                }
+            });
+            m.sample(&Snapshot { vms, disks, networks, bridges, nat, ct }, now_ms())
         })
         .await
         .map_err(|e| MeteringError::Storage(format!("metering round panicked: {e}")))?

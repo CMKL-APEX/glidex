@@ -10,6 +10,7 @@
 //! nftables table, files under its own directories).
 
 pub mod bridge;
+pub mod ct_meter;
 pub mod exec;
 pub mod host;
 pub mod install;

@@ -186,6 +186,13 @@ pub enum Flag {
     Incomplete { lost_secs: u64 },
     /// CPU and memory came from `/proc` instead of a cgroup (§5.1).
     SourceProc,
+    /// The conntrack collector of a router's gateway was down while
+    /// connections could open and close: external traffic may be short
+    /// (spec/clustering.md §13.3).
+    ExtGap,
+    /// A provider network has per-VM meters but no network total: its
+    /// `localnet` port is shared by every network on the physnet (§13.2).
+    NetworkTotalUnavailable,
 }
 
 /// `*_peak` and `*.peak` meters keep the maximum; every other meter is a

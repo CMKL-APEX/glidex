@@ -784,3 +784,19 @@ fn isolated_bridges_are_fenced_off_from_the_host() {
     netd.handle(Op::DeleteBridge { name: "gxbr-nat".into() }, &peer()).unwrap();
     assert_eq!(last_nft(&exec).as_deref(), Some(DELETE_ONLY));
 }
+
+#[test]
+fn ct_external_counters_turn_accounting_on_account_and_persist() {
+    let dir = TempDir::new().unwrap();
+    let ex = exec();
+    let (netd, _) = netd(ex.clone(), &dir);
+    ex.on(
+        "conntrack -L -f ipv4 -o extended,id",
+        Output::ok("ipv4 2 tcp 6 431999 ESTABLISHED src=10.89.0.5 dst=203.0.113.9 sport=1 dport=80 packets=2 bytes=200 src=203.0.113.9 dst=192.0.2.3 sport=80 dport=1 packets=2 bytes=400 [ASSURED] mark=0 zone=60001 use=1 id=5\nipv4 2 tcp 6 10 ESTABLISHED src=10.0.0.1 dst=10.0.0.2 sport=1 dport=2 packets=1 bytes=60 src=10.0.0.2 dst=10.0.0.1 sport=2 dport=1 packets=1 bytes=60 mark=0 zone=7 use=1 id=6"),
+    );
+    let c: glidex_ovs::ct_meter::CtCounters = serde_json::from_value(netd.handle(Op::CtExternalCounters, &peer()).unwrap()).unwrap();
+    assert_eq!(c.counters.len(), 1, "only router zones are metered");
+    assert_eq!((c.counters[0].tx_bytes, c.counters[0].rx_bytes), (200 + 2 * 14, 400 + 2 * 14));
+    assert!(ex.calls().iter().any(|c| c == "sysctl -w net.netfilter.nf_conntrack_acct=1"), "{:?}", ex.calls());
+    assert!(!Op::CtExternalCounters.is_status() && !Op::CtExternalCounters.is_mutating());
+}

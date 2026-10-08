@@ -61,6 +61,18 @@ pub enum VmManagerError {
     PreconditionFailed { expected: u64, actual: u64 },
 }
 
+pub(crate) fn router_err(e: crate::router::RouterError) -> VmManagerError {
+    use crate::router::RouterError as R;
+    VmManagerError::Network(match e {
+        R::NotFound(m) => NetError::NotFound(m),
+        R::Invalid(m) => NetError::Invalid(m),
+        R::Conflict(m) => NetError::Conflict(m),
+        R::PoolExhausted => NetError::ExternalPoolExhausted,
+        R::NoZone => NetError::Conflict(e.to_string()),
+        R::Storage(m) => NetError::Storage(m),
+    })
+}
+
 impl From<crate::store::StoreError> for VmManagerError {
     fn from(e: crate::store::StoreError) -> Self {
         VmManagerError::PersistenceError(e.to_string())
@@ -1988,6 +2000,11 @@ impl VmManager {
         if req.router.is_some() && req.mode != NetworkMode::Nat {
             return Err(NetError::Invalid("only a NAT network attaches to a VPC router".into()).into());
         }
+        if let Some(id) = &req.router {
+            if crate::router::get(&self.store.database(), id).map_err(router_err)?.is_none() {
+                return Err(NetError::Invalid(format!("router {id} not found")).into());
+            }
+        }
         // The subnet comes from the IPAM below; `to_network` only checks the rest.
         if req.mode == NetworkMode::Nat && self.ovn.load().edge.is_none() {
             return Err(NetError::Invalid("a NAT cluster network needs cluster.ovn.edge (the external address and gateway nodes)".into()).into());
@@ -2146,6 +2163,9 @@ impl VmManager {
                 return Err(TenancyError::NotFound(g.clone()).into());
             }
         }
+        if req.router.is_some() {
+            return Err(NetError::Invalid("a VPC router belongs to a project: attach project networks to it".into()).into());
+        }
         let mut net = self.create_network(req).await?;
         net.grants = grants;
         net.all_projects = all_projects;
@@ -2169,17 +2189,76 @@ impl VmManager {
         if req.bridge.is_some() || req.vlan.is_some() {
             return Err(NetError::Invalid("project networks choose their own bridge; bridge and vlan can't be set".into()).into());
         }
+        if let Some(name) = req.router.clone() {
+            // By name in the project; the record holds the router's id.
+            let r = crate::router::find(&self.store.database(), project, &name).map_err(router_err)?.ok_or_else(|| NetError::Invalid(format!("router '{name}' not found in this project")))?;
+            req.router = Some(r.id);
+        }
         let vms = self.vms.write().await;
         let mut bypassed = Vec::new();
         let usage = self.usage_locked(project, &vms)?;
         Self::apply_quota(&p.quotas, &usage, &Delta { networks: 1, ..Default::default() }, quota, &mut bypassed)?;
         let id = uuid::Uuid::new_v4().simple().to_string();
-        req.bridge = Some(format!("gxp-{}", &id[..8]));
+        // Cluster networks have no bridge of their own: they sit on br-int.
+        if !(req.scope == Some(crate::network::NetworkScope::Cluster) || (req.scope.is_none() && self.ovn_enabled())) {
+            req.bridge = Some(format!("gxp-{}", &id[..8]));
+        }
         let mut net = self.create_network(req).await?;
         net.project = Some(project.to_string());
         self.networks.put(&net)?;
         drop(vms);
         Ok((net, bypassed))
+    }
+
+    // ---- VPC routers (spec/clustering.md §11.2a) -------------------------
+
+    pub fn list_routers(&self, project: &str) -> Result<Vec<crate::router::Router>, VmManagerError> {
+        Ok(crate::router::list(&self.store.database()).map_err(router_err)?.into_iter().filter(|r| r.project == project).collect())
+    }
+
+    pub fn get_router(&self, project: &str, name: &str) -> Result<crate::router::Router, VmManagerError> {
+        crate::router::find(&self.store.database(), project, name).map_err(router_err)?.ok_or_else(|| NetError::NotFound(format!("router {name}")).into())
+    }
+
+    /// Create a router, counting it (and its external address) against the
+    /// project's quotas in the same admission write as the address.
+    pub async fn create_router(&self, project: &str, spec: crate::router::RouterSpec, quota: QuotaMode) -> Result<(crate::router::Router, Vec<QuotaOverrun>), VmManagerError> {
+        if !self.ovn_enabled() {
+            return Err(NetError::Invalid("VPC routers need OVN: enable cluster.ovn on a cluster".into()).into());
+        }
+        let p = self.projects.get(project)?.ok_or_else(|| TenancyError::NotFound(project.to_string()))?;
+        let ovn = self.ovn.load_full();
+        let edge = ovn.edge.as_ref();
+        let pool: Option<glidex_ovs::net::Ipv4Net> = edge.and_then(|e| e.external_pool.as_deref()).and_then(|p| p.parse().ok());
+        let mut exclude = Vec::new();
+        if let Some(e) = edge {
+            exclude.extend([e.external_ip, e.gateway].into_iter().filter_map(|a| match a {
+                std::net::IpAddr::V4(a) => Some(a),
+                _ => None,
+            }));
+        }
+        let vms = self.vms.write().await;
+        let mut bypassed = Vec::new();
+        let usage = self.usage_locked(project, &vms)?;
+        Self::apply_quota(&p.quotas, &usage, &Delta { routers: 1, external_ips: spec.external as u64, ..Default::default() }, quota, &mut bypassed)?;
+        let site = crate::router::Site { pool, exclude: &exclude, zones: ovn.snat_ct_zones.unwrap_or((60000, 64999)) };
+        let r = crate::router::create(&self.store.database(), project, spec, &site).map_err(router_err)?;
+        drop(vms);
+        tracing::info!(router = %r.id, project, external_ip = ?r.status.external_ip, "VPC router created");
+        Ok((r, bypassed))
+    }
+
+    /// Delete a router: refused while networks are attached. Its OVN
+    /// objects go with the next network-controller pass.
+    pub async fn delete_router(&self, project: &str, name: &str) -> Result<(), VmManagerError> {
+        let r = self.get_router(project, name)?;
+        // The VM lock keeps a network from attaching while it goes.
+        let _vms = self.vms.write().await;
+        if let Some(n) = self.networks.list()?.iter().find(|n| n.router.as_deref() == Some(r.id.as_str())) {
+            return Err(NetError::Conflict(format!("router '{name}' still has network '{}' attached", n.name)).into());
+        }
+        crate::router::delete(&self.store.database(), &r.id).map_err(router_err)?;
+        Ok(())
     }
 
     /// Set which projects may use a host network.
@@ -2448,6 +2527,10 @@ impl VmManager {
         }
         u.disk_gib = self.images.list_disks().iter().filter(|d| d.project == project).map(|d| gib_ceil(d.size_bytes)).sum();
         u.networks = self.networks.list()?.iter().filter(|n| n.project.as_deref() == Some(project)).count() as u64;
+        for r in crate::router::list(&self.store.database()).map_err(router_err)?.iter().filter(|r| r.project == project) {
+            u.routers += 1;
+            u.external_ips += r.status.external_ip.is_some() as u64;
+        }
         Ok(u)
     }
 
@@ -2492,6 +2575,9 @@ impl VmManager {
         }
         if let Some(n) = self.networks.list()?.iter().find(|n| n.project.as_deref() == Some(project)) {
             return Ok(Some(format!("network {}", n.name)));
+        }
+        if let Some(r) = crate::router::list(&self.store.database()).map_err(router_err)?.iter().find(|r| r.project == project) {
+            return Ok(Some(format!("router {}", r.spec.name)));
         }
         Ok(None)
     }

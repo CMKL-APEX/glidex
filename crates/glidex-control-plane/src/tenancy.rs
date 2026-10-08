@@ -71,16 +71,26 @@ pub struct Quotas {
     /// Project networks (spec §6.2).
     #[serde(default = "default_network_quota")]
     pub networks: Option<u64>,
+    /// VPC routers (spec/clustering.md §11.2a).
+    #[serde(default = "default_router_quota")]
+    pub routers: Option<u64>,
+    /// Addresses of the site's external pool, one per VPC router with a gateway.
+    #[serde(default = "default_router_quota")]
+    pub external_ips: Option<u64>,
 }
 
 fn default_network_quota() -> Option<u64> {
     Some(2)
 }
 
+fn default_router_quota() -> Option<u64> {
+    Some(1)
+}
+
 impl Quotas {
     /// Defaults for a new project: unlimited, except 2 project networks.
     pub fn new_project() -> Self {
-        Quotas { networks: default_network_quota(), ..Default::default() }
+        Quotas { networks: default_network_quota(), routers: default_router_quota(), external_ips: default_router_quota(), ..Default::default() }
     }
 }
 
@@ -93,6 +103,8 @@ pub struct Usage {
     pub disk_gib: u64,
     pub running_vms: u64,
     pub networks: u64,
+    pub routers: u64,
+    pub external_ips: u64,
 }
 
 /// One limit that a request would go over.
@@ -131,6 +143,8 @@ pub struct Delta {
     pub disk_gib: u64,
     pub running_vms: u64,
     pub networks: u64,
+    pub routers: u64,
+    pub external_ips: u64,
 }
 
 /// Limits `delta` would exceed on top of `usage`.
@@ -149,6 +163,8 @@ pub fn overruns(quotas: &Quotas, usage: &Usage, delta: &Delta) -> Vec<QuotaOverr
     check("disk_gib", quotas.disk_gib, usage.disk_gib, delta.disk_gib);
     check("running_vms", quotas.running_vms, usage.running_vms, delta.running_vms);
     check("networks", quotas.networks, usage.networks, delta.networks);
+    check("routers", quotas.routers, usage.routers, delta.routers);
+    check("external_ips", quotas.external_ips, usage.external_ips, delta.external_ips);
     out
 }
 
@@ -382,5 +398,19 @@ mod tests {
         assert!(overruns(&q, &u, &Delta::default()).is_empty());
         // Unlimited when None.
         assert!(overruns(&Quotas { networks: None, ..Default::default() }, &u, &Delta { networks: 9, ..Default::default() }).is_empty());
+    }
+
+    #[test]
+    fn router_quotas_default_to_one_each() {
+        let q = Quotas::new_project();
+        assert_eq!((q.routers, q.external_ips), (Some(1), Some(1)));
+        let u = Usage { routers: 1, external_ips: 1, ..Default::default() };
+        let o = overruns(&q, &u, &Delta { routers: 1, external_ips: 1, ..Default::default() });
+        assert_eq!(o.iter().map(|o| o.resource).collect::<Vec<_>>(), ["routers", "external_ips"]);
+        // An internal router counts only against `routers`.
+        let o = overruns(&q, &Usage::default(), &Delta { routers: 1, ..Default::default() });
+        assert!(o.is_empty());
+        let none: Quotas = serde_json::from_str("{}").unwrap();
+        assert_eq!((none.routers, none.external_ips), (Some(1), Some(1)), "records from before the router quotas get the default");
     }
 }

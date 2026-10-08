@@ -1023,7 +1023,7 @@ async fn site_default_quotas_apply_to_new_projects() {
     // No quotas in the request: the site default.
     let (s, p, _) = h.call("POST", "/projects", Some(json!({"name": "lab"})), &a).await;
     assert_eq!(s, StatusCode::CREATED, "{p}");
-    assert_eq!(p["quotas"], json!({"vms": 1, "vcpus": null, "memory_mib": null, "disk_gib": null, "running_vms": null, "networks": 2}));
+    assert_eq!(p["quotas"], json!({"vms": 1, "vcpus": null, "memory_mib": null, "disk_gib": null, "running_vms": null, "networks": 2, "routers": null, "external_ips": null}));
     // Explicit quotas win.
     let (s, q, _) = h.call("POST", "/projects", Some(json!({"name": "big", "quotas": {"vms": 10}})), &a).await;
     assert_eq!(s, StatusCode::CREATED, "{q}");

@@ -39,6 +39,8 @@ pub struct Config {
     pub admin_group: String,
     /// Which ops each group may send on the full sockets.
     pub policy: auth::Policy,
+    /// Router SNAT zones to meter; the same range as `ovn.snat_ct_zones`.
+    pub ct_zones: (u16, u16),
 }
 
 impl Default for Config {
@@ -54,6 +56,7 @@ impl Default for Config {
             gateway_check: Duration::from_secs(20),
             admin_group: "glidex-admin".into(),
             policy: auth::default_policy("glidex", "glidex-admin"),
+            ct_zones: (60000, 64999),
         }
     }
 }
@@ -65,6 +68,10 @@ pub struct Netd {
     pub config: Config,
     /// Serializes every host-changing operation.
     mutate: Mutex<()>,
+    /// Conntrack counters of router zones, built on first use from the saved state.
+    ct: Mutex<Option<Arc<glidex_ovs::ct_meter::CtMeter>>>,
+    /// Whether the collector follows conntrack events itself (the daemon: yes, tests: no).
+    ct_events: std::sync::atomic::AtomicBool,
 }
 
 fn to_value<T: serde::Serialize>(v: T) -> Result<Value, OvsError> {
@@ -87,7 +94,38 @@ impl Netd {
             store,
             config,
             mutate: Mutex::new(()),
+            ct: Mutex::new(None),
+            ct_events: false.into(),
         })
+    }
+
+    /// The conntrack collector; the first call turns accounting on.
+    fn ct_meter(&self) -> Result<Arc<glidex_ovs::ct_meter::CtMeter>, OvsError> {
+        let mut g = self.ct.lock().unwrap();
+        if let Some(m) = g.as_ref() {
+            return Ok(m.clone());
+        }
+        if glidex_ovs::ct_meter::ensure_accounting(self.ex())? {
+            self.store.put(META, "ct_acct_set_by_glidex", &true)?;
+        }
+        let saved: Option<String> = self.store.get(META, "ct_counters")?;
+        let m = Arc::new(glidex_ovs::ct_meter::CtMeter::new(self.config.ct_zones, saved.as_deref()));
+        if self.ct_events.load(std::sync::atomic::Ordering::Relaxed) {
+            glidex_ovs::ct_meter::spawn_event_reader(m.clone());
+        }
+        *g = Some(m.clone());
+        Ok(m)
+    }
+
+    /// The daemon follows conntrack `DESTROY` events from the first
+    /// collection on, and from startup on a node that collected before.
+    pub fn enable_ct_events(&self) {
+        self.ct_events.store(true, std::sync::atomic::Ordering::Relaxed);
+        if self.store.get::<String>(META, "ct_counters").ok().flatten().is_some() {
+            if let Err(e) = self.ct_meter() {
+                tracing::warn!("conntrack counters: {}", e);
+            }
+        }
     }
 
     fn ex(&self) -> &dyn Exec {
@@ -109,6 +147,11 @@ impl Netd {
             Op::ListUplinks => to_value(self.list_uplinks()?),
             Op::PortStats => to_value(glidex_ovs::stats::bridge_stats(self.ex())?),
             Op::NatCounters => to_value(glidex_ovs::nat_meter::nat_counters(self.ex(), &self.nats()?)?),
+            Op::CtExternalCounters => {
+                let m = self.ct_meter()?;
+                // Persist before reporting, so what metering saw can't go backwards.
+                to_value(glidex_ovs::ct_meter::collect(self.ex(), &m, |s| self.store.put(META, "ct_counters", &s.to_string()))?)
+            }
             Op::EnsureUplink(args) => to_value(self.ensure_uplink(args.spec, args.confirm)?),
             Op::CommitUplink { bridge, name, token } => to_value(self.commit_uplink(&bridge, &name, &token)?),
             Op::DeleteUplink { bridge, name } => self.delete_uplink(&bridge, &name).map(|_| Value::Null),
