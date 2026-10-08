@@ -219,6 +219,8 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         // ---- nodes (spec/clustering.md §7)
         .add("GET", "/nodes", "listNodes", get(nodes::list))
         .add("GET", "/nodes/{id}", "readNode", get(nodes::get_node))
+        .add("POST", "/nodes/{id}/drain", "drainNode", post(nodes::drain))
+        .add("POST", "/nodes/{id}/undrain", "undrainNode", post(nodes::undrain))
         // Live changes; each kind filtered like its list endpoint.
         .add("GET", "/watch", AUTHENTICATED, get(watch::watch))
         // ---- authentication

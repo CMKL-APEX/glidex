@@ -10,6 +10,7 @@ pub mod disk;
 pub mod image;
 pub mod image_cache;
 pub mod network;
+pub mod placement;
 pub mod queue;
 pub mod startup;
 pub mod vm;
@@ -89,6 +90,15 @@ impl VmManager {
         }
         let m = me.clone();
         tasks.push(tokio::spawn(async move { m.resync_loop().await }));
+        // What this node reports about itself, refreshed every ten minutes.
+        let m = me.clone();
+        tasks.push(tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(600)).await;
+                let m2 = m.clone();
+                let _ = tokio::task::spawn_blocking(move || m2.report_self()).await;
+            }
+        }));
         tasks.push(tokio::spawn(async move {
             for key in me.all_keys().await {
                 me.queue.add(key);
@@ -105,14 +115,22 @@ impl VmManager {
     /// scheduler (C4), node lifecycle (C3) and network controller (C5) are
     /// added here, each gated on holding leadership.
     fn server_role_tasks(&self) -> Vec<tokio::task::JoinHandle<()>> {
-        Vec::new()
+        // The scheduler: places VMs that wait for a node, again as nodes and
+        // capacity change (a pass is cheap when nothing waits).
+        let me = self.arc();
+        vec![tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                me.place_pending().await;
+            }
+        })]
     }
 
     /// Every object the controllers own.
     async fn all_keys(&self) -> Vec<Key> {
         let me = self.local_node_id();
         let mut keys: Vec<Key> = self.vms.read().await.values().filter(|v| self.is_local(v)).map(|v| Key::Vm(v.id.clone())).collect();
-        keys.extend(self.images.list_disks().into_iter().filter(|d| d.node.as_deref().is_none_or(|n| n == me)).map(|d| Key::Disk(d.id)));
+        keys.extend(self.images.list_disks().into_iter().filter(|d| self.is_local_disk(d)).map(|d| Key::Disk(d.id)));
         keys.extend(self.images.list_images().into_iter().map(|i| Key::Image(i.id)));
         if let Ok(nets) = self.networks.list() {
             keys.extend(nets.into_iter().filter(|n| n.node.as_deref().is_none_or(|x| x == me)).map(|n| Key::Network(n.name)));

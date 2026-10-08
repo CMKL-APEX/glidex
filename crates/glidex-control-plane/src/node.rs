@@ -138,6 +138,10 @@ pub struct NodeStatus {
     pub allocatable: Resources,
     #[serde(default)]
     pub features: NodeFeatures,
+    /// BDFs of the host's PCI devices (what `GET /pci-devices` reports): the
+    /// scheduler places a VM with VFIO devices where they exist.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pci_devices: Vec<String>,
     /// Last `Ready` transition write only (D7).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub heartbeat: Option<u64>,
@@ -178,6 +182,7 @@ impl Node {
                 capacity: Resources::default(),
                 allocatable: Resources::default(),
                 features: NodeFeatures::default(),
+                pci_devices: Vec::new(),
                 heartbeat: None,
             },
         }
@@ -251,11 +256,18 @@ impl NodeStore {
             return Err(NodeError::NameTaken(n.spec.name.clone()));
         }
         let bytes = serde_json::to_vec(n)?;
-        self.db.write(Origin::Controller, |tx| -> Result<(), NodeError> {
+        let r = self.db.write(Origin::Controller, |tx| -> Result<(), NodeError> {
             let mut t = tx.open_table(TableId::Nodes.definition())?;
             t.insert(n.meta.id.as_str(), bytes.as_slice())?;
             Ok(())
-        })
+        });
+        match r {
+            // A follower server reporting on itself: the leader writes it.
+            Err(NodeError::Store(StoreError::NotLeader { .. })) => {
+                Ok(self.db.forward_raw(vec![crate::store::Op::Put { table: TableId::Nodes, key: n.meta.id.as_bytes().to_vec(), value: bytes }])?)
+            }
+            other => other,
+        }
     }
 
     /// Make sure the implicit node of this host exists, and refresh what a
@@ -270,6 +282,7 @@ impl NodeStore {
         node.status.capacity = probe.capacity;
         node.status.allocatable = probe.allocatable;
         node.status.features = probe.features;
+        node.status.pci_devices = probe.pci_devices;
         node.status.versions.glidex = env!("CARGO_PKG_VERSION").into();
         if node != before || self.get(id)?.is_none() {
             node.meta.resource_version += 1;
@@ -286,6 +299,7 @@ pub struct SelfProbe {
     pub capacity: Resources,
     pub allocatable: Resources,
     pub features: NodeFeatures,
+    pub pci_devices: Vec<String>,
 }
 
 impl SelfProbe {
@@ -337,6 +351,7 @@ impl SelfProbe {
             iommu: std::fs::read_dir("/sys/kernel/iommu_groups").map(|mut d| d.next().is_some()).unwrap_or(false),
             ..Default::default()
         };
-        SelfProbe { name, capacity, allocatable, features }
+        let pci_devices = crate::pci::scan_pci_devices().into_iter().map(|d| d.address).collect();
+        SelfProbe { name, capacity, allocatable, features, pci_devices }
     }
 }

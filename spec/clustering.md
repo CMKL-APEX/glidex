@@ -1626,3 +1626,29 @@ only tests do).
   (:8842) only: no REST API or UI of its own.
 - Not yet: the leader-side scheduler (C4), `spec.node` as a field of the VM
   spec (C4), D14's break-glass rule on agents (they serve no API).
+
+### C4 Scheduler
+
+- `scheduler::schedule` is a pure function over node records and loads
+  (§9.1 filters: pin, phase and drain, `Ready`, CPU and memory with
+  `cluster.scheduler` overcommit, hugepages, hypervisor, VFIO device present on
+  the node, disks bound to one node, node networks on one node; score: least
+  allocated by `max(cpu, memory)`, fewest VMs, name). Unit tests over node
+  fixtures.
+- It runs at admission (`create_vm_with`, under the VM write lock) and, for a
+  VM that no node fits, the VM is created *without* a placement and
+  `Scheduled=False/Unschedulable` carries each node's reason; the leader's
+  placement loop (3 s) retries, so draining, capacity and node changes unstick
+  it. A VM without a placement is nobody's in a cluster. A standalone host is
+  its own node and needs no scheduling.
+- `spec.node` (an id; the create request takes an id or a name) is the pin.
+  Disks bind at creation (`node` in `POST /disks`) or to the node of their
+  first VM; a VM and its disks always share a node.
+- Every node reports capacity, hypervisors, PCI devices and versions to its own
+  `nodes` record at start and every ten minutes (a status write; a follower
+  server's goes to the leader through the raw-write endpoint, limited to its
+  own record).
+- `gxctl node drain|undrain <node>` (`POST /nodes/{id}/drain|undrain`, action
+  `node.drain` under `role.system-admin`) lists what is still on the node.
+- Not yet: `pci.allow[].node` (VFIO grants per node), the `br_int_datapath`
+  filter (C5) and provider-network physnet filter (C6).

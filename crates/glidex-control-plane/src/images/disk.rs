@@ -143,8 +143,8 @@ impl ImageManager {
             origin,
         );
         disk.phase = DiskPhase::Pending;
-        // One node until the scheduler binds disks at first use (C4).
-        disk.node = Some(crate::authz::node_id());
+        // Bound now when asked, else to the first VM's node (§9.2).
+        disk.node = req.node.clone();
         disk.create = Some(DiskCreateSpec { size_bytes: size, extend_root: req.extend_root });
         Ok(disk)
     }

@@ -73,8 +73,7 @@ impl VmManager {
 
     /// Whether anything on this node needs `img`'s file.
     async fn needs_image_here(&self, img: &Image) -> bool {
-        let me = self.local_node_id();
-        let disks = self.images.list_disks().into_iter().any(|d| d.node.as_deref().is_none_or(|n| n == me) && matches!(&d.origin, crate::images::DiskOrigin::Image { image_id, .. } if *image_id == img.id));
+        let disks = self.images.list_disks().into_iter().any(|d| self.is_local_disk(&d) && matches!(&d.origin, crate::images::DiskOrigin::Image { image_id, .. } if *image_id == img.id));
         if disks {
             return true;
         }

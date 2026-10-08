@@ -420,6 +420,10 @@ pub struct CreateDiskRequest {
     pub format: Option<DiskFormat>,
     #[serde(default)]
     pub extend_root: Option<bool>,
+    /// Bind the disk to a node now (id or name); otherwise it binds to the
+    /// node of the first VM that uses it (spec/clustering.md §9.2).
+    #[serde(default)]
+    pub node: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]

@@ -2217,6 +2217,27 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
             }
         }
 
+        "nodes" | "node" if matches!(parts.get(1), Some(&"drain") | Some(&"undrain")) => {
+            let Some(id) = parts.get(2) else {
+                println!("{}", format!("Usage: node {} <node>", parts[1]).yellow());
+                return true;
+            };
+            // Accept a node's name as well as its id.
+            let nodes: serde_json::Value = client.request_json(Method::GET, "/nodes", None).await.unwrap_or_default();
+            let found = nodes.as_array().into_iter().flatten().find(|n| n["meta"]["id"] == *id || n["spec"]["name"] == *id).and_then(|n| n["meta"]["id"].as_str().map(String::from));
+            let Some(nid) = found else {
+                println!("{} no node {}", "Error:".red(), id);
+                return true;
+            };
+            match client.request_json::<serde_json::Value>(Method::POST, &format!("/nodes/{}/{}", nid, parts[1]), None).await {
+                Ok(v) => {
+                    println!("{} {} is now {}", "OK".green(), v["node"].as_str().unwrap_or(""), v["phase"].as_str().unwrap_or(""));
+                    let r = &v["remaining"];
+                    println!("  still on it: {} VMs, {} disks, {} networks", r["vms"].as_array().map_or(0, |a| a.len()), r["disks"].as_array().map_or(0, |a| a.len()), r["networks"].as_array().map_or(0, |a| a.len()));
+                }
+                Err(e) => println!("{} {}", "Error:".red(), e),
+            }
+        }
         "nodes" | "node" => {
             let path = match parts.get(1) {
                 Some(id) => format!("/nodes/{}", id),

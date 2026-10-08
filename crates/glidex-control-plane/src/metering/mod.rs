@@ -277,7 +277,7 @@ impl crate::state::VmManager {
             let period = meter.cfg.storage_secs.max(meter.cfg.sample_secs) * 1000;
             loop {
                 tokio::time::sleep(until_next(now_ms(), period)).await;
-                let disks: Vec<Disk> = me.images.list_disks().into_iter().filter(|d| storage::measurable(d) && d.node.as_deref().is_none_or(|n| n == me.local_node_id())).collect();
+                let disks: Vec<Disk> = me.images.list_disks().into_iter().filter(|d| storage::measurable(d) && me.is_local_disk(d)).collect();
                 let images = if meter.ledger.can_write() { me.images.list_images() } else { Vec::new() };
                 let paths: Vec<_> = disks.iter().map(|d| me.images.disk_path(d)).collect();
                 let m = meter.clone();

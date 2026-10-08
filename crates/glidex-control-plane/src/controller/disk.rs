@@ -28,7 +28,7 @@ impl VmManager {
     /// One round for disk `id`.
     pub async fn reconcile_disk(&self, id: &str) -> Next {
         let Ok(disk) = self.images.get_disk(id) else { return Ok(None) };
-        if disk.node.as_deref().is_some_and(|n| n != self.local_node_id()) {
+        if !self.is_local_disk(&disk) {
             return Ok(None);
         }
 

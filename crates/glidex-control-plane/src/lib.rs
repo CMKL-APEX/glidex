@@ -17,5 +17,6 @@ pub mod metering;
 pub mod instance;
 pub mod state;
 pub mod tenancy;
+pub mod scheduler;
 pub mod serve;
 pub mod paths;

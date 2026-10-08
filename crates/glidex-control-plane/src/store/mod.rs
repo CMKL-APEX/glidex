@@ -330,6 +330,7 @@ impl VmStore {
                 n.status.capacity = probe.capacity;
                 n.status.allocatable = probe.allocatable;
                 n.status.features = probe.features;
+                n.status.pci_devices = probe.pci_devices;
                 nodes.insert(local, serde_json::to_vec(&n)?.as_slice())?;
             }
             let mut meta = txn.open_table(META_TABLE)?;

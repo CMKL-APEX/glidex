@@ -55,6 +55,7 @@ namespace Glidex {
   // Cluster membership and recovery (spec/clustering.md §12.2). Tokens, joins
   // and snapshots are secrets or irreversible, so they need a recent login.
   action "host.cluster" in ["role.system-admin"];
+  action "node.drain" in ["role.system-admin"];
   action "host.cluster.critical" in ["host.cluster", "step-up"];
   action "policy.read", "system.audit", "system.usage" in ["role.auditor"];
   action "host.network", "host.devices" in ["role.net-admin"];
@@ -186,6 +187,8 @@ namespace Glidex {
   action listNodes in ["host.read"]
     appliesTo { principal: [User, Token], resource: [Cluster], context: Ctx };
   action readNode in ["host.read"]
+    appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
+  action drainNode, undrainNode in ["node.drain"]
     appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
 
   // ---- images ------------------------------------------------------------

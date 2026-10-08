@@ -390,6 +390,7 @@ async fn a_silent_node_is_unreachable_not_gone() {
         .unwrap();
     let link = agent.manager.node_link().unwrap().clone();
     assert!(link.wait_ready(Duration::from_secs(20)).await);
+    agent.manager.initialize().await.unwrap();
     let (s, vm) = call(&server, "POST", "/vms", Some(vm_body("quiet", "agent1")), &[]).await;
     assert_eq!(s, StatusCode::CREATED, "{vm}");
     let id = vm["id"].as_str().unwrap().to_string();
@@ -421,6 +422,7 @@ async fn a_server_relays_the_console_log_of_a_vm_on_an_agent() {
         .await
         .unwrap();
     assert!(agent.manager.node_link().unwrap().wait_ready(Duration::from_secs(20)).await);
+    agent.manager.initialize().await.unwrap();
     let (s, vm) = call(&server, "POST", "/vms", Some(vm_body("chatty", "agent1")), &[]).await;
     assert_eq!(s, StatusCode::CREATED, "{vm}");
     let id = vm["id"].as_str().unwrap().to_string();
@@ -506,6 +508,97 @@ async fn a_node_copies_an_image_it_needs_from_a_holder_and_checks_it() {
     wait_for("both copies recorded", || async {
         let c = server.manager.image_caches(img_id);
         c.len() == 2 && c.iter().all(|(_, r)| r.phase == glidex_control_plane::controller::image_cache::CachePhase::Ready)
+    })
+    .await;
+}
+
+fn vm_unpinned(name: &str) -> Value {
+    json!({ "name": name, "vcpu_count": 1, "mem_size_mib": 64, "hypervisor": "cloudhypervisor",
+            "firmware_path": "/path/to/CLOUDHV.fd", "rootfs_path": "/path/to/disk.raw" })
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn the_scheduler_spreads_vms_honours_pins_and_disks_and_explains_itself() {
+    let _one = SERIAL.lock().await;
+    let cfg = test_config();
+    let server = new_cp();
+    server.manager.configure(&cfg);
+    manage::init(&server.manager, &cfg, InitOptions { advertise: Some(server.addr), tunnel_ip: None, listen: Some(server.addr) }).await.unwrap();
+    server.manager.initialize().await.unwrap();
+    server.manager.start_controllers();
+    let mut agents = Vec::new();
+    for i in 1..=2 {
+        let a = new_cp();
+        let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test").unwrap();
+        manage::join(&a.manager, &cfg, JoinOptions { server: server.addr, token, role: NodeRole::Agent, advertise: Some(a.addr), tunnel_ip: None, name: Some(format!("agent{i}")), listen: Some(a.addr) })
+            .await
+            .unwrap();
+        assert!(a.manager.node_link().unwrap().wait_ready(Duration::from_secs(20)).await);
+        a.manager.initialize().await.unwrap();
+        agents.push(a);
+    }
+    let ids: Vec<String> = {
+        let (_, n) = call(&server, "GET", "/nodes", None, &[]).await;
+        n.as_array().unwrap().iter().map(|n| n["meta"]["id"].as_str().unwrap().to_string()).collect()
+    };
+    assert_eq!(ids.len(), 3);
+
+    // Six VMs spread two to a node (same capacity: fewest VMs, then name).
+    let mut placed = std::collections::HashMap::<String, u32>::new();
+    for i in 0..6 {
+        let (s, vm) = call(&server, "POST", "/vms", Some(vm_unpinned(&format!("vm{i}"))), &[]).await;
+        assert_eq!(s, StatusCode::CREATED, "{vm}");
+        *placed.entry(vm["node"].as_str().expect("placed").to_string()).or_default() += 1;
+    }
+    assert_eq!(placed.len(), 3, "{placed:?}");
+    assert!(placed.values().all(|n| *n == 2), "{placed:?}");
+
+    // A disk bound to agent2 pulls its VM there.
+    let a2 = agents[1].manager.local_node_id();
+    let (_, projects) = call(&server, "GET", "/projects", None, &[]).await;
+    let project = projects.as_array().unwrap()[0]["id"].as_str().unwrap().to_string();
+    let disk = json!({ "id": "dd", "name": "dd", "project": project, "format": "qcow2", "size_bytes": 1048576, "origin": { "kind": "blank" }, "created_at": 1, "phase": "ready", "node": a2 });
+    server
+        .manager
+        .database()
+        .write(glidex_control_plane::store::Origin::Api, |tx| -> Result<(), glidex_control_plane::store::StoreError> {
+            tx.open_table(glidex_control_plane::store::TableId::Disks.definition())?.insert("dd", disk.to_string().as_bytes())?;
+            Ok(())
+        })
+        .unwrap();
+    let mut body = vm_unpinned("with-disk");
+    body["data_disks"] = json!(["dd"]);
+    let (s, vm) = call(&server, "POST", "/vms", Some(body), &[]).await;
+    assert_eq!(s, StatusCode::CREATED, "{vm}");
+    assert_eq!(vm["node"], a2.as_str());
+
+    // Pin to a node and it goes there; a pin on a drained node waits;
+    // with every node drained a VM waits and says why, then is placed.
+    let (s, vm) = call(&server, "POST", "/vms", Some(vm_body("pinned", "agent1")), &[]).await;
+    assert_eq!(s, StatusCode::CREATED, "{vm}");
+    assert_eq!(vm["node"], agents[0].manager.local_node_id().as_str());
+    for id in &ids {
+        let (s, v) = call(&server, "POST", &format!("/nodes/{id}/drain"), None, &[]).await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert!(v["remaining"]["vms"].is_array());
+    }
+    let (s, vm) = call(&server, "POST", "/vms", Some(vm_body("refused", "agent1")), &[]).await;
+    assert_eq!(s, StatusCode::CREATED, "{vm}");
+    assert!(vm["node"].is_null(), "a pin on a drained node waits: {vm}");
+    let (s, _) = call(&server, "DELETE", &format!("/vms/{}", vm["id"].as_str().unwrap()), None, &[]).await;
+    assert!(s.is_success());
+    let (s, vm) = call(&server, "POST", "/vms", Some(vm_unpinned("waits")), &[]).await;
+    assert_eq!(s, StatusCode::CREATED, "{vm}");
+    assert!(vm["node"].is_null(), "{vm}");
+    let waiting = vm["conditions"].as_array().unwrap().iter().find(|c| c["kind"] == "Scheduled").cloned().unwrap();
+    assert_eq!(waiting["reason"], "Unschedulable");
+    assert!(waiting["message"].as_str().unwrap().contains("draining"), "{waiting}");
+    let id = vm["id"].as_str().unwrap().to_string();
+    let (s, _) = call(&server, "POST", &format!("/nodes/{}/undrain", ids[0]), None, &[]).await;
+    assert_eq!(s, StatusCode::OK);
+    wait_for("the waiting VM to be placed", || async {
+        let (_, v) = call(&server, "GET", &format!("/vms/{id}"), None, &[]).await;
+        v["node"].as_str() == Some(ids[0].as_str())
     })
     .await;
 }

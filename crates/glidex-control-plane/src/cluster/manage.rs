@@ -82,7 +82,8 @@ pub fn rekey_node(db: &Db, from: &str, to: &str, new_node: Option<Node>) -> Resu
         })?;
         for t in [TableId::Disks, TableId::Networks] {
             fix(t, &|j| {
-                if j["node"] == from {
+                // A standalone host's disk with no node is its own.
+                if j["node"] == from || (t == TableId::Disks && j["node"].is_null() && from == crate::node::LOCAL_NODE) {
                     j["node"] = to.into();
                     return true;
                 }

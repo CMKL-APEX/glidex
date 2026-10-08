@@ -368,13 +368,16 @@ join_err!(crate::store::StoreError, redb::TableError, redb::StorageError, serde_
 const RAW_TABLES: [TableId; 6] = [TableId::Sessions, TableId::ApiTokens, TableId::Audit, TableId::Users, TableId::Identities, TableId::Teams];
 
 async fn raw_write(State(c): Ctx, p: Option<Extension<PeerCert>>, Json(ops): Json<Vec<crate::store::Op>>) -> Response {
-    if let Err(r) = peer(&c, p, true) {
-        return r;
-    }
+    let me = match peer(&c, p, true) {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
     if !c.node.as_ref().is_some_and(|n| n.is_leader()) {
         return not_leader(&c);
     }
-    if let Some(op) = ops.iter().find(|o| !RAW_TABLES.contains(&o.table())) {
+    // A server may also report on itself: its own node record, nothing else of `nodes`.
+    let own_node = |o: &crate::store::Op| o.table() == TableId::Nodes && o.key() == me.node_id.as_bytes();
+    if let Some(op) = ops.iter().find(|o| !RAW_TABLES.contains(&o.table()) && !own_node(o)) {
         return fail(StatusCode::FORBIDDEN, "forbidden", format!("a server may not write {} this way", op.table().name()));
     }
     let db = c.db.clone();

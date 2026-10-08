@@ -234,6 +234,9 @@ pub struct VmSpec {
     /// Power-button wait when glidex stops the VM; 0 = stop hard.
     #[serde(default)]
     pub stop_grace_secs: u32,
+    /// Pin the VM to this node (id), spec/clustering.md §9.1. Immutable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
 }
 
 /// Where a VM runs (spec/clustering.md §9.1): set once, by the scheduler,
@@ -398,6 +401,7 @@ impl Vm {
                 restart_policy: RestartPolicy::OnFailure,
                 on_host_boot: HostBootPolicy::Resume,
                 stop_grace_secs: 0,
+                node: None,
             },
             status: VmStatus { never_started: true, ..Default::default() },
         }

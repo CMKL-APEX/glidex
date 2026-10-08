@@ -267,6 +267,8 @@ pub struct VmManager {
     /// netd's socket identity at the last port sync (restart detection).
     pub(crate) netd_seen: std::sync::Mutex<Option<(u64, u64)>>,
     pub(crate) controllers_started: std::sync::atomic::AtomicBool,
+    sched: ArcSwap<crate::cluster::config::SchedulerConfig>,
+    reserved: ArcSwap<crate::cluster::config::NodeReserved>,
     nodes: crate::node::NodeStore,
     roles: std::sync::Mutex<crate::node::Roles>,
     db_path: PathBuf,
@@ -380,6 +382,8 @@ impl VmManager {
             orphans: std::sync::Mutex::new(Vec::new()),
             netd_seen: std::sync::Mutex::new(None),
             controllers_started: std::sync::atomic::AtomicBool::new(false),
+            sched: ArcSwap::from_pointee(Default::default()),
+            reserved: ArcSwap::from_pointee(Default::default()),
             nodes,
             roles: std::sync::Mutex::new(crate::node::Roles::STANDALONE),
             db_path,
@@ -404,6 +408,47 @@ impl VmManager {
         let s = Settings::from_config(cfg);
         self.runner.store(Arc::new(Runner::new(s.runner)));
         self.settings.store(Arc::new(s));
+        self.sched.store(Arc::new(cfg.cluster.scheduler.clone()));
+        self.reserved.store(Arc::new(cfg.cluster.node_reserved.clone()));
+    }
+
+    /// Where `req` goes, from the nodes' records and what each already carries.
+    pub(crate) fn pick_node(&self, vms: &HashMap<String, Vm>, req: &crate::scheduler::Request) -> Result<String, Vec<(String, String)>> {
+        let nodes = self.nodes.list().unwrap_or_default();
+        let loads = crate::scheduler::loads(
+            vms.values().filter_map(|v| v.status.placement.as_ref().map(|p| (p.node.clone(), v.config().vcpu_count as u64, v.config().mem_size_mib as u64))),
+        );
+        let views: Vec<_> = nodes.into_iter().filter(|n| !n.status.phase.is_tombstone()).map(|n| {
+            let l = loads.get(&n.meta.id).copied().unwrap_or_default();
+            (n, l)
+        }).collect();
+        crate::scheduler::schedule(req, &views, &self.sched.load())
+    }
+
+    /// What `vm` asks of a node, given the disks it uses.
+    pub(crate) fn sched_request_pub(&self, vm: &Vm, disks: &[Disk]) -> crate::scheduler::Request {
+        self.sched_request(vm, disks)
+    }
+
+    fn sched_request(&self, vm: &Vm, disks: &[Disk]) -> crate::scheduler::Request {
+        let c = vm.config();
+        let nets = self.networks.list().unwrap_or_default();
+        crate::scheduler::Request {
+            vcpus: c.vcpu_count as u32,
+            mem_mib: c.mem_size_mib as u64,
+            hypervisor: c.hypervisor.to_string(),
+            hugepages: c.hugepages,
+            pin: vm.spec.node.clone(),
+            disk_nodes: disks.iter().map(|d| d.node.clone()).collect(),
+            net_nodes: c
+                .networks
+                .iter()
+                .filter_map(|a| nets.iter().find(|n| n.name == a.network))
+                .filter(|n| n.scope == crate::network::NetworkScope::Node)
+                .filter_map(|n| n.node.clone())
+                .collect(),
+            vfio: c.vfio_devices.clone(),
+        }
     }
 
     /// Whether this host has any VM, disk, network or credential record.
@@ -412,6 +457,24 @@ impl VmManager {
             || !self.images.list_disks().is_empty()
             || self.networks.list().map(|n| !n.is_empty()).unwrap_or(false)
             || self.credentials.list(None).map(|c| !c.is_empty()).unwrap_or(false)
+    }
+
+    /// Refresh this node's own record with what the host has now. Writes
+    /// nothing when nothing changed.
+    pub fn report_self(&self) -> Result<(), VmManagerError> {
+        let reserved = {
+            let c = &self.reserved.load();
+            crate::node::Resources { cpus: c.cpus, memory_mib: c.memory_mib, hugepages: Default::default() }
+        };
+        self.nodes
+            .ensure_self(&self.local_node_id(), crate::node::SelfProbe::detect(&reserved))
+            .map(|_| ())
+            .map_err(|e| VmManagerError::PersistenceError(e.to_string()))
+    }
+
+    /// Every network record.
+    pub fn networks_list(&self) -> Vec<Network> {
+        self.networks.list().unwrap_or_default()
     }
 
     /// The image and disk records and files of this host.
@@ -439,7 +502,20 @@ impl VmManager {
     }
 
     pub(crate) fn is_local(&self, vm: &Vm) -> bool {
-        vm.status.placement.as_ref().is_none_or(|p| p.node == self.local_node_id())
+        match &vm.status.placement {
+            Some(p) => p.node == self.local_node_id(),
+            // A record from before nodes is this host's; in a cluster a VM
+            // without a placement is nobody's until the scheduler places it.
+            None => self.cluster().is_none(),
+        }
+    }
+
+    /// Whether this node owns `disk`'s file: bound here, or (standalone) unbound.
+    pub(crate) fn is_local_disk(&self, disk: &Disk) -> bool {
+        match &disk.node {
+            Some(n) => *n == self.local_node_id(),
+            None => self.cluster().is_none(),
+        }
     }
 
     /// An agent's link to the servers, once it has one.
@@ -603,9 +679,10 @@ impl VmManager {
             if migrated > 0 {
                 tracing::info!(count = migrated, "migrated VM records to the desired-state schema");
             }
-            self.nodes
-                .ensure_self(&crate::authz::node_id(), crate::node::SelfProbe::detect(&crate::node::Resources::default()))
-                .map_err(|e| VmManagerError::PersistenceError(e.to_string()))?;
+        }
+        // Every node says what it has (capacity, devices, hypervisors).
+        if let Err(e) = self.report_self() {
+            tracing::warn!("could not report this node: {}", e);
         }
         let persisted = self.store.load_all()?;
         self.images.initialize();
@@ -889,22 +966,15 @@ impl VmManager {
 
         let mut vm = Vm::new(name, config);
         vm.project = project.to_string();
-        // One node until the scheduler places VMs (C4).
-        let node = match &opts.node {
-            None => self.local_node_id(),
-            Some(want) => {
-                let nodes = self.nodes.list().map_err(|e| VmManagerError::PersistenceError(e.to_string()))?;
-                let n = nodes
-                    .iter()
-                    .find(|n| (&n.meta.id == want || &n.spec.name == want) && !n.status.phase.is_tombstone())
-                    .ok_or_else(|| invalid(format!("no node {want}")))?;
-                if !n.status.phase.schedulable() || n.spec.unschedulable {
-                    return Err(invalid(format!("node {} takes no new VMs", n.spec.name)));
-                }
-                n.meta.id.clone()
-            }
-        };
-        vm.status.placement = Some(crate::models::Placement { node, at: crate::tenancy::now() });
+        // `spec.node`: an optional pin, by id or name.
+        if let Some(want) = &opts.node {
+            let nodes = self.nodes.list().map_err(|e| VmManagerError::PersistenceError(e.to_string()))?;
+            let n = nodes
+                .iter()
+                .find(|n| (&n.meta.id == want || &n.spec.name == want) && !n.status.phase.is_tombstone())
+                .ok_or_else(|| invalid(format!("no node {want}")))?;
+            vm.spec.node = Some(n.meta.id.clone());
+        }
         vm.spec.power = power;
         vm.spec.restart_policy = opts.restart_policy.unwrap_or_default();
         vm.spec.on_host_boot = opts.on_host_boot.unwrap_or(self.settings().on_host_boot);
@@ -973,6 +1043,33 @@ impl VmManager {
                     "disk {} is waiting for an on-boot root partition grow, but this VM uses a custom cloud_init_path; enable growpart in that seed",
                     d.name
                 ));
+            }
+        }
+
+        // Where it runs, decided once (D6). A standalone host is its own node.
+        if self.cluster().is_none() {
+            let node = vm.spec.node.clone().unwrap_or_else(|| self.local_node_id());
+            if node != self.local_node_id() {
+                return Err(invalid("this host is not part of a cluster: no other node to run on"));
+            }
+            vm.status.placement = Some(crate::models::Placement { node, at: crate::tenancy::now() });
+        } else {
+            let req = self.sched_request(&vm, &disks);
+            match self.pick_node(&vms, &req) {
+                Ok(node) => {
+                    vm.status.placement = Some(crate::models::Placement { node, at: crate::tenancy::now() });
+                    crate::controller::vm::set_cond(&mut vm.status.conditions, "Scheduled", crate::models::Tristate::True, "Scheduled", "");
+                }
+                // Created without a placement; the leader keeps trying.
+                Err(refused) => crate::controller::vm::set_cond(&mut vm.status.conditions, "Scheduled", crate::models::Tristate::False, "Unschedulable", crate::scheduler::explain(&refused)),
+            }
+        }
+        if let Some(p) = &vm.status.placement {
+            for d in &mut disks {
+                d.node.get_or_insert_with(|| p.node.clone());
+            }
+            if let Some(c) = created.as_mut() {
+                c.node.get_or_insert_with(|| p.node.clone());
             }
         }
 
@@ -1244,9 +1341,20 @@ impl VmManager {
                         return Err(invalid(format!("disk {} listed twice", d.name)));
                     }
                     ids.push(d.id.clone());
-                    if d.attached_to.as_deref() != Some(vm_id) {
+                    // A disk is a local file: it goes where its VM is (D6).
+                    let vm_node = cur.status.placement.as_ref().map(|p| p.node.clone());
+                    if let (Some(dn), Some(vn)) = (&d.node, &vm_node) {
+                        if dn != vn {
+                            return Err(invalid(format!("disk {} is on another node than the VM", d.name)));
+                        }
+                    }
+                    let needs_bind = d.node.is_none() && vm_node.is_some();
+                    if d.attached_to.as_deref() != Some(vm_id) || needs_bind {
                         let mut d = d;
                         d.attached_to = Some(vm_id.to_string());
+                        if needs_bind {
+                            d.node = vm_node;
+                        }
                         disk_writes.push(d);
                     }
                 }
