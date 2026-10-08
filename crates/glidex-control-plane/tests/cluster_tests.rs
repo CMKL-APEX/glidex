@@ -854,6 +854,12 @@ async fn the_ca_rotates_and_every_node_renews_before_the_old_one_is_retired() {
     let cps = form(3).await;
     let lead = leader_index(&cps, &[0, 1, 2]).await;
     let old_fp = cluster(&cps[lead]).signing_fp();
+    // Status shows the feature level and whether the ports answer.
+    let (s, st) = call(&cps[lead], "GET", "/cluster/status?ports=true", None, &[]).await;
+    assert_eq!(s, StatusCode::OK, "{st}");
+    assert_eq!(st["ports"].as_array().unwrap().len(), 2, "{st}");
+    assert!(st["ports"].as_array().unwrap().iter().all(|p| p["reachable"] == true), "{st}");
+    assert!(st["feature_level"].as_u64().unwrap() >= 1);
     let (s, r) = call(&cps[lead], "POST", "/cluster/rotate-ca", Some(json!({})), &[]).await;
     assert_eq!(s, StatusCode::OK, "{r}");
     let new_fp = r["signing_ca"].as_str().unwrap().to_string();

@@ -1724,3 +1724,23 @@ Deviations and limits:
 - netd's zone range comes from its own file (`ct_zones`, default 60000–64999) and must match `ovn.snat_ct_zones`; the installer is meant to write both.
 - The `DESTROY` reader and the `conntrack` dump use the `conntrack` CLI, not netlink in-process.
 - Gateway nodes with `br_int_datapath = system` are not yet enforced when a router is created.
+
+### C7: operations and membership
+
+Built (tests in `cluster_tests.rs`, `ovn.rs`, `ct_meter`):
+
+- **Membership** (`cluster/membership.rs`, API `POST /nodes/{id}/{remove,forget,purge,rejoin-token}`, Cedar `removeNode`, `forgetNode`, `purgeNode`, `createRejoinToken` in `host.cluster.critical`): remove refuses a node that holds VMs, disks or node networks, is the last gateway of a router or the edge, or would break the Raft rules of §5.5 (majority of the old group; odd unless `--force`). One write retires the node and deny-lists its certificates; the Raft side is finished by a leader loop that removes any tombstoned server still in the group, so a leader that dies half way is replaced by one that completes it. Forget needs `--fenced`, a node that has stopped reporting, and marks its VMs `Ready=False/Lost`. Purge deletes a forgotten node's VM, disk and node-network records and makes it `Removed`.
+- **Rejoin** (`POST /cluster/v1/rejoin`, `gxctl cluster rejoin`, `glidex-install --rejoin`): single-use token bound to a node id; a new certificate for the same id; with `--raft-lost` (D18) the leader removes the old voter, the host wipes its Raft state and returns as a learner through the join path.
+- **OVN membership:** netd op `forget_ovn_member` kicks a departed server from the NB and SB clusters (`cluster/kick`, by address) and deletes its chassis. The edge's gateway list drops tombstoned nodes by itself because the plan filters them.
+- **CA rotation and renewal** (`cluster/rotation.rs`, `gxctl cluster rotate-ca`): `ca_bundle` holds the trust bundle, the signing CA and the CAs being retired. Servers receive the new key by `PUT /cluster/v1/ca` (with its certificate), every node installs the replicated bundle, renews by CSR (`POST /cluster/v1/renew`) when its issuer is not the signing CA or it expires within 30 days, and the leader retires old CAs when every node has renewed or the grace has passed. A server leaving triggers a rotation; so does a CA within a year of expiry. Tokens pin the signing CA.
+- **Feature level:** each server reports `features.feature_level`; the leader raises `meta.feature_level` to the minimum across servers (never down). Nothing uses a level above 1 yet.
+- **`cluster status`:** versions, feature level, CA rotation, and `?ports=true` TCP reachability from the serving server to every other node's 8842 (and 6641-6644 with OVN).
+- **UI:** a Cluster page (nodes, drain/undrain, Raft, CA, port gaps). **CLI:** `gxctl node remove|forget|purge|rejoin-token`, `gxctl cluster rejoin|leave|rotate-ca`. **Installer:** `--rejoin`, `--node-id`, `--leave`. **Runbook:** `spec/cluster-runbook.md`.
+
+Deviations and not done:
+
+- A server cannot remove itself: run the removal on another server (openraft 0.9 has no leadership transfer, and the request would die with the leader).
+- OVN CA files and netd certificates are not rotated by this step: a node's own certificate still doubles as its OVN certificate (C5), and netd is not told when the bundle changes. OVN's window therefore stays open until a node re-runs `ensure_ovn_chassis`.
+- `cluster/leave` by the departing server itself is not used; the leader kicks it.
+- Not done: the scale run and figures for §4.1, `pci.allow[].node`, `glidex-install --reset`, `--seal-ca-key`, certificate renewal under load, a rolling-upgrade test with two builds, and the recovery exercise on a test cluster (the runbook describes it; `--force-new-cluster` is tested, the OVN half is not).
+

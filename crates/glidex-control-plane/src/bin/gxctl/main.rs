@@ -1454,7 +1454,8 @@ const SUBCOMMANDS: &[(&str, &[&str])] = &[
     ("image", &["catalog", "list", "pull", "rm"]),
     ("disk", &["list", "show", "create", "resize", "extend-root", "rm"]),
     ("ovs", &["status", "install", "dpdk-init"]),
-    ("cluster", &["init", "join", "join-token", "status", "promote", "snapshot"]),
+    ("cluster", &["init", "join", "join-token", "status", "promote", "snapshot", "rotate-ca", "rejoin", "leave"]),
+    ("node", &["drain", "undrain", "remove", "forget", "purge", "rejoin-token"]),
     ("login", &["--oidc", "--token"]),
     ("logout", &["--revoke"]),
     ("token", &["list", "create", "revoke"]),
@@ -2241,6 +2242,27 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
                     let r = &v["remaining"];
                     println!("  still on it: {} VMs, {} disks, {} networks", r["vms"].as_array().map_or(0, |a| a.len()), r["disks"].as_array().map_or(0, |a| a.len()), r["networks"].as_array().map_or(0, |a| a.len()));
                 }
+                Err(e) => println!("{} {}", "Error:".red(), e),
+            }
+        }
+        "nodes" | "node" if matches!(parts.get(1), Some(&"remove") | Some(&"forget") | Some(&"purge") | Some(&"rejoin-token")) => {
+            let Some(id) = parts.get(2).filter(|a| !a.starts_with("--")) else {
+                println!("{}", format!("Usage: node {} <node> [--force] [--fenced] [--raft-lost]", parts[1]).yellow());
+                return true;
+            };
+            let rest = &parts[3..];
+            let body = serde_json::json!({
+                "force": has_flag(rest, "--force"),
+                "fenced": has_flag(rest, "--fenced"),
+                "raft_intact": !has_flag(rest, "--raft-lost"),
+            });
+            // The node's name goes in the path as it is: the server resolves names too.
+            match client.request_json::<serde_json::Value>(Method::POST, &format!("/nodes/{}/{}", id, parts[1]), Some(body)).await {
+                Ok(v) if parts[1] == "rejoin-token" => {
+                    println!("{}", v["token"].as_str().unwrap_or(""));
+                    eprintln!("Shown once, for node {} ({}). On the host, as root: glidex-install --rejoin <server:8842>, token on stdin.{}", v["node"].as_str().unwrap_or(""), v["node_id"].as_str().unwrap_or(""), if v["raft_intact"] == false { " Its Raft state will be started afresh." } else { "" });
+                }
+                Ok(v) => println!("{} {}", "OK".green(), serde_json::to_string(&v).unwrap_or_default()),
                 Err(e) => println!("{} {}", "Error:".red(), e),
             }
         }

@@ -97,6 +97,9 @@ fn main() -> Result<()> {
     }
     let saved = fs::read_to_string(INSTALL_CONF).ok();
     let opts = Options::parse(saved.as_deref(), &args)?;
+    if opts.leave {
+        return leave_cluster();
+    }
     print_banner();
 
     let platform = detect_platform()?;
@@ -163,6 +166,20 @@ fn read_join_token(file: Option<&str>) -> Result<String> {
     Ok(t)
 }
 
+/// `--leave`: ask the control plane to leave the cluster. It refuses until a
+/// server has removed this node (`gxctl node remove`): local root has no
+/// cluster rights to start a removal.
+fn leave_cluster() -> Result<()> {
+    section("Leaving the cluster");
+    let ok = Command::new(format!("{}/gxctl", BIN_DIR)).args(["cluster", "leave"]).status().context("running gxctl")?.success();
+    if !ok {
+        bail!("leaving failed (see above); the host is unchanged");
+    }
+    let _ = sudo(&argv(&["systemctl", "restart", "glidex-control-plane.service"]));
+    let _ = sudo(&argv(&["systemctl", "enable", "--now", "glidex-ui.service"]));
+    Ok(())
+}
+
 /// Ask the running control plane to join (`gxctl cluster join`), handing it
 /// the token on its standard input.
 fn join_cluster(j: &JoinOptions) -> Result<()> {
@@ -175,11 +192,18 @@ fn join_cluster(j: &JoinOptions) -> Result<()> {
         }
         std::thread::sleep(std::time::Duration::from_secs(1));
     }
-    let mut args = vec!["cluster".to_string(), "join".into(), "--server".into(), j.server.clone(), "--role".into(), j.role.clone()];
+    let mut args = if j.rejoin {
+        vec!["cluster".to_string(), "rejoin".into(), "--server".into(), j.server.clone()]
+    } else {
+        vec!["cluster".to_string(), "join".into(), "--server".into(), j.server.clone(), "--role".into(), j.role.clone()]
+    };
+    if let Some(n) = &j.node_id {
+        args.extend(["--node-id".into(), n.clone()]);
+    }
     if let Some(a) = &j.advertise {
         args.extend(["--advertise".into(), a.clone()]);
     }
-    if let Some(n) = &j.name {
+    if let Some(n) = j.name.as_ref().filter(|_| !j.rejoin) {
         args.extend(["--name".into(), n.clone()]);
     }
     let mut child = Command::new(format!("{}/gxctl", BIN_DIR)).args(&args).stdin(std::process::Stdio::piped()).spawn().context("running gxctl")?;
@@ -268,11 +292,16 @@ struct Options {
     /// Join a cluster once installed (spec/clustering.md §5.2). Never saved:
     /// it holds a one-time token's source.
     join: Option<JoinOptions>,
+    /// `--leave`: this host's node was removed; go back to standalone (§5.5).
+    leave: bool,
 }
 
 /// `--join <server:8842> [--role server|agent] [--token-file F] [--advertise A] [--node-name N]`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 struct JoinOptions {
+    /// Come back as the same node (`--rejoin`, §5.7) instead of joining as a new one.
+    rejoin: bool,
+    node_id: Option<String>,
     server: String,
     role: String,
     token_file: Option<String>,
@@ -291,6 +320,7 @@ impl Default for Options {
             allow_ovs_restart: false,
             ovn: false,
             join: None,
+            leave: false,
         }
     }
 }
@@ -331,6 +361,14 @@ impl Options {
                     let server = value("--join")?;
                     o.join.get_or_insert_with(|| JoinOptions { role: "agent".into(), ..Default::default() }).server = server;
                 }
+                "--rejoin" => {
+                    let server = value("--rejoin")?;
+                    let j = o.join.get_or_insert_with(|| JoinOptions { role: "agent".into(), ..Default::default() });
+                    j.server = server;
+                    j.rejoin = true;
+                }
+                "--node-id" => o.join.get_or_insert_with(JoinOptions::default).node_id = Some(value("--node-id")?),
+                "--leave" => o.leave = true,
                 "--role" => {
                     let r = value("--role")?;
                     if r != "server" && r != "agent" {
@@ -403,7 +441,12 @@ fn print_help() {
          \x20     --role ROLE            agent (default: VMs only) or server\n\
          \x20     --token-file FILE      read the token from FILE (default: stdin)\n\
          \x20     --advertise IP:PORT    the address other nodes use for this one\n\
-         \x20     --node-name NAME       default: this host's name"
+         \x20     --node-name NAME       default: this host's name\n\n\
+         A repaired host, or one whose certificate expired, comes back as the same\n\
+         node (§5.7) with a token from `gxctl node rejoin-token`:\n\
+         \x20     --rejoin SERVER:8842   rejoin as the same node (--token-file, --node-id ID)\n\
+         A host whose node a server removed leaves the cluster (§5.5):\n\
+         \x20     --leave                go back to a standalone host"
     );
 }
 

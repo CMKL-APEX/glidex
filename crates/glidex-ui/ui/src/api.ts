@@ -428,3 +428,39 @@ export const getVmBandwidth = (id: string) => get<SeriesResponse>(`/vms/${enc(id
 export const getVmIo = (id: string) => get<SeriesResponse>(`/vms/${enc(id)}/io?p95=true`);
 export const getVmCompute = (id: string) => get<SeriesResponse>(`/vms/${enc(id)}/compute?p95=true`);
 export const getVmStats = (id: string) => get<VmStats>(`/vms/${enc(id)}/stats`);
+
+// ---- cluster (spec/clustering.md §5, §7) ----------------------------------
+
+export interface ClusterNodeRow {
+  id: string;
+  name: string;
+  role: string;
+  phase: string;
+  advertise: string | null;
+  version?: string;
+  feature_level?: number;
+  ready?: string;
+}
+
+export interface ClusterStatus {
+  clustered?: boolean;
+  cluster_id?: string;
+  name?: string;
+  feature_level?: number;
+  ca_fingerprint?: string;
+  ca?: { signing: string; retiring: string[]; retire_at: number | null } | null;
+  raft?: {
+    state: string;
+    term: number;
+    leader: { name: string | null; address: string | null } | null;
+    voters: { name: string | null; address: string | null }[];
+    learners: { name: string | null; address: string | null }[];
+    last_applied: number | null;
+    last_log_index: number | null;
+  } | null;
+  nodes: ClusterNodeRow[];
+  ports?: { node: string; port: number; proto: string; reachable: boolean }[];
+}
+
+export const clusterStatus = () => get<ClusterStatus>("/cluster/status?ports=true");
+export const drainNode = (id: string, drain: boolean) => post<unknown>(`/nodes/${enc(id)}/${drain ? "drain" : "undrain"}`);

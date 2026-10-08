@@ -94,14 +94,65 @@ pub async fn join(c: Caller, Json(b): Json<JoinBody>) -> Result<impl IntoRespons
     Ok((StatusCode::CREATED, Json(out)))
 }
 
+#[derive(Deserialize)]
+pub struct RejoinBody {
+    server: String,
+    token: String,
+    #[serde(default)]
+    node_id: Option<String>,
+    #[serde(default)]
+    advertise: Option<String>,
+    #[serde(default)]
+    tunnel_ip: Option<String>,
+}
+
+/// `gxctl cluster rejoin`: come back as the same node (§5.7).
+pub async fn rejoin(c: Caller, Json(b): Json<RejoinBody>) -> Result<impl IntoResponse, ApiErr> {
+    let mut es = EntitySet::new();
+    es.host(&crate::authz::node_id());
+    c.require(Ent::Host, es)?;
+    let server = b.server.parse().map_err(|_| err(StatusCode::BAD_REQUEST, "invalid", "server must be <ip>:<port> of a cluster node (port 8842)"))?;
+    let opts = manage::RejoinOptions { server, token: b.token, node_id: b.node_id, advertise: parse_addr("advertise", &b.advertise)?, tunnel_ip: parse_ip(&b.tunnel_ip)?, listen: None };
+    let cfg = c.app.auth.config.clone();
+    let out = manage::rejoin(&c.app.manager.clone(), &cfg, opts).await.map_err(cluster_err)?;
+    c.auth().reload_policies().map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()))?;
+    c.set_target("cluster".to_string());
+    c.audit_always();
+    Ok(Json(out))
+}
+
+/// `gxctl cluster leave`: this host's node was removed; go back to standalone.
+pub async fn leave(c: Caller) -> Result<impl IntoResponse, ApiErr> {
+    let mut es = EntitySet::new();
+    es.host(&crate::authz::node_id());
+    c.require(Ent::Host, es)?;
+    c.set_target("cluster".to_string());
+    c.audit_always();
+    let out = manage::leave(&c.app.manager.clone()).await.map_err(cluster_err)?;
+    Ok(Json(out))
+}
+
 fn require_cluster(c: &Caller) -> Result<std::sync::Arc<crate::cluster::Cluster>, ApiErr> {
     c.manager().cluster().ok_or_else(|| err(StatusCode::CONFLICT, "not_clustered", "this host is not part of a cluster: run `gxctl cluster init` or join one"))
 }
 
-pub async fn status(c: Caller) -> Result<impl IntoResponse, ApiErr> {
+#[derive(Deserialize, Default)]
+pub struct StatusQuery {
+    #[serde(default)]
+    ports: bool,
+}
+
+pub async fn status(c: Caller, axum::extract::Query(q): axum::extract::Query<StatusQuery>) -> Result<impl IntoResponse, ApiErr> {
     c.require(Ent::Cluster, EntitySet::new())?;
     match c.manager().cluster() {
-        Some(cl) => Ok(Json(manage::status_of(&cl))),
+        Some(cl) => {
+            let mut v = manage::status_of(&cl);
+            // Port checks open connections to every node: opt in (`?ports=true`).
+            if q.ports {
+                v["ports"] = json!(manage::port_checks(&cl, c.manager().ovn_enabled()).await);
+            }
+            Ok(Json(v))
+        }
         None => Ok(Json(json!({ "clustered": false, "nodes": c.manager().nodes().list().unwrap_or_default().iter().map(|n| json!({ "id": n.meta.id, "name": n.spec.name, "role": n.spec.role, "phase": n.status.phase })).collect::<Vec<_>>() }))),
     }
 }

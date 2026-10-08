@@ -100,7 +100,15 @@ pub struct NodeFeatures {
     /// Provider networks this node maps: physnet → bridge (§11.3).
     #[serde(default)]
     pub physnets: BTreeMap<String, String>,
+    /// The highest write-set format and schema this build uses (§6.6).
+    #[serde(default)]
+    pub feature_level: u32,
 }
+
+/// What this build supports. A new write-set format or schema migration
+/// raises it, and is used only once the cluster's level (the minimum over
+/// its servers) has reached it.
+pub const FEATURE_LEVEL: u32 = 1;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Versions {

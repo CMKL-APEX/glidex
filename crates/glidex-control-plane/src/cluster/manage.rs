@@ -486,11 +486,13 @@ pub fn status_of(c: &Cluster) -> Value {
         "role": c.identity.role,
         "advertise": c.identity.advertise.to_string(),
         "ca_fingerprint": c.signing_fp(),
+        "feature_level": c.feature_level(),
         "ca": c.ca_state().map(|s| json!({ "signing": s.signing_fp, "retiring": s.retiring, "retire_at": s.retire_at, "started_at": s.started_at })),
         "raft": raft,
         "nodes": nodes.iter().map(|n| json!({
             "id": n.meta.id, "name": n.spec.name, "role": n.spec.role, "phase": n.status.phase,
             "advertise": n.status.advertise.map(|a| a.to_string()), "raft_id": n.status.raft_id,
+            "version": n.status.versions.glidex, "feature_level": n.status.features.feature_level, "ready": n.status.ready,
         })).collect::<Vec<_>>(),
     })
 }
@@ -594,4 +596,49 @@ fn reset_raft_meta(db: &Db) -> Result<(), ClusterError> {
         Ok(())
     })
     .map_err(other)
+}
+
+/// One reachability check, from this server's side (§4): can it open a TCP
+/// connection to a node's port? UDP (Geneve) can't be probed this way and
+/// isn't listed.
+pub async fn port_checks(c: &Cluster, ovn: bool) -> Vec<Value> {
+    let nodes = NodeStore::new(c.db.clone()).list().unwrap_or_default();
+    let mut jobs = Vec::new();
+    for n in nodes.iter().filter(|n| !n.status.phase.is_tombstone() && n.meta.id != c.identity.node_id) {
+        let Some(adv) = n.status.advertise else { continue };
+        let mut ports = vec![adv.port()];
+        if ovn && n.spec.role == NodeRole::Server {
+            ports.extend([glidex_ovs::ovn::NB_PORT, glidex_ovs::ovn::SB_PORT, glidex_ovs::ovn::NB_RAFT_PORT, glidex_ovs::ovn::SB_RAFT_PORT]);
+        }
+        for p in ports {
+            let (name, addr) = (n.spec.name.clone(), SocketAddr::new(adv.ip(), p));
+            jobs.push(async move {
+                let ok = matches!(tokio::time::timeout(Duration::from_secs(2), tokio::net::TcpStream::connect(addr)).await, Ok(Ok(_)));
+                json!({ "node": name, "port": addr.port(), "proto": "tcp", "reachable": ok })
+            });
+        }
+    }
+    futures_util::future::join_all(jobs).await
+}
+
+/// §5.5 step 3: `gxctl cluster leave` on the host of a node the cluster has
+/// removed. Local root has no cluster rights to start a removal (D14), so it
+/// refuses until the node's record says `Removed` (or `Departed`).
+pub async fn leave(manager: &Arc<VmManager>) -> Result<Value, ClusterError> {
+    let c = manager.cluster().ok_or_else(|| other("this host is not part of a cluster"))?;
+    let phase = NodeStore::new(c.db.clone()).get(&c.identity.node_id).map_err(other)?.map(|n| n.status.phase);
+    match phase {
+        Some(crate::node::NodePhase::Removed) | Some(crate::node::NodePhase::Departed) => {}
+        Some(p) => return Err(other(format!("this node is {p:?}: run `gxctl node remove {}` on a server first", c.identity.name))),
+        None => return Err(other("the cluster has no record of this node (is it up to date?)")),
+    }
+    if manager.ovn_enabled() {
+        let netd = manager.netd().clone();
+        let _ = tokio::task::spawn_blocking(move || netd.call::<()>(glidex_netd::proto::Op::LeaveOvn { confirm: true })).await;
+    }
+    manager.detach_cluster().await;
+    let files = Files::beside(manager.db_path());
+    let name = c.identity.name.clone();
+    files.delete_all();
+    Ok(json!({ "left": name, "restart": "restart the control plane: it starts again as a standalone host" }))
 }

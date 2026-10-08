@@ -32,7 +32,11 @@ impl Cluster {
                 was_leader = leader;
                 if leader {
                     let c = me.clone();
-                    let _ = tokio::task::spawn_blocking(move || c.liveness_round()).await;
+                    let _ = tokio::task::spawn_blocking(move || {
+                        c.liveness_round();
+                        c.feature_level_round();
+                    })
+                    .await;
                     // A removal that was interrupted finishes on whoever leads now.
                     if let Err(e) = me.finish_raft_removals().await {
                         tracing::warn!("finishing a membership removal: {}", e);
@@ -40,6 +44,32 @@ impl Cluster {
                 }
             }
         });
+    }
+
+    /// The cluster's feature level is the lowest any server reports; it only
+    /// goes up (§6.6). New formats are used once it reaches them.
+    fn feature_level_round(&self) {
+        let Ok(nodes) = crate::node::NodeStore::new(self.db.clone()).list() else { return };
+        let servers = nodes.iter().filter(|n| n.spec.role == crate::node::NodeRole::Server && !n.status.phase.is_tombstone());
+        let Some(min) = servers.map(|n| n.status.features.feature_level).min() else { return };
+        let cur = self.feature_level();
+        if min > cur {
+            let r = self.db.write(Origin::Controller, |tx| -> Result<(), crate::store::StoreError> {
+                tx.open_table(TableId::Meta.definition())?.insert("feature_level", min.to_string().as_bytes())?;
+                Ok(())
+            });
+            match r {
+                Ok(()) => tracing::info!(from = cur, to = min, "cluster feature level raised"),
+                Err(e) => tracing::warn!("raising the feature level: {}", e),
+            }
+        }
+    }
+
+    /// The level every server supports; 1 before anything was written.
+    pub fn feature_level(&self) -> u32 {
+        let Ok(txn) = self.db.begin_read() else { return 1 };
+        let Ok(t) = txn.open_table(TableId::Meta.definition()) else { return 1 };
+        t.get("feature_level").ok().flatten().and_then(|v| std::str::from_utf8(v.value()).ok().and_then(|s| s.parse().ok())).unwrap_or(1)
     }
 
     fn liveness_round(&self) {

@@ -183,7 +183,7 @@ namespace Glidex {
   // ---- cluster (spec/clustering.md §5) ---------------------------------------
   action readCluster in ["host.read"]
     appliesTo { principal: [User, Token], resource: [Cluster], context: Ctx };
-  action initCluster, joinCluster in ["host.cluster.critical"]
+  action initCluster, joinCluster, rejoinCluster, leaveCluster in ["host.cluster.critical"]
     appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
   action createJoinToken, promoteNode, snapshotCluster in ["host.cluster.critical"]
     appliesTo { principal: [User, Token], resource: [Cluster], context: Ctx };

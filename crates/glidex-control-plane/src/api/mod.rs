@@ -219,6 +219,8 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         .add("GET", "/cluster/status", "readCluster", get(cluster::status))
         .add("POST", "/cluster/join-tokens", "createJoinToken", post(cluster::create_token))
         .add("POST", "/cluster/promote", "promoteNode", post(cluster::promote))
+        .add("POST", "/cluster/rejoin", "rejoinCluster", post(cluster::rejoin))
+        .add("POST", "/cluster/leave", "leaveCluster", post(cluster::leave))
         .add("POST", "/cluster/rotate-ca", "rotateCa", post(cluster::rotate_ca))
         .add("GET", "/cluster/snapshot", "snapshotCluster", get(cluster::snapshot))
         // ---- nodes (spec/clustering.md §7)

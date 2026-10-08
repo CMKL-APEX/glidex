@@ -33,6 +33,7 @@ export default function Header() {
     { to: "/policies", label: "Policies", show: host.readPolicy },
     { to: "/usage", label: "Usage", show: host.readUsage || me.project_roles.length > 0 },
     { to: "/audit", label: "Audit", show: host.readAudit || ownsAProject },
+    { to: "/cluster", label: "Cluster", show: host.readCluster },
   ].filter((n) => n.show);
 
   const who = me.user?.display_name ?? me.token?.name ?? "unknown";

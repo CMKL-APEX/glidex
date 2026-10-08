@@ -1230,7 +1230,7 @@ pub async fn cluster(client: &ApiClient, args: &[&str]) {
                 Err(e) => err(e),
             }
         }
-        Some("status") | None => match client.request_json::<Value>(Method::GET, "/cluster/status", None).await {
+        Some("status") | None => match client.request_json::<Value>(Method::GET, "/cluster/status?ports=true", None).await {
             Ok(v) => {
                 if v["clustered"] == false {
                     println!("This host is standalone (not in a cluster).");
@@ -1247,7 +1247,18 @@ pub async fn cluster(client: &ApiClient, args: &[&str]) {
                     }
                 }
                 for n in v["nodes"].as_array().into_iter().flatten() {
-                    println!("  node {:<16} {:<7} {}  {}", s(&n["name"]), s(&n["role"]), s(&n["phase"]), s(&n["advertise"]));
+                    println!("  node {:<16} {:<7} {:<10} {}  v{} level {}", s(&n["name"]), s(&n["role"]), s(&n["phase"]), s(&n["advertise"]), s(&n["version"]), n["feature_level"]);
+                }
+                println!("  Feature level: {}", v["feature_level"]);
+                if !v["ca"].is_null() {
+                    println!("  CA rotation: signing {}…, {} old CA(s) still trusted", s(&v["ca"]["signing"]).chars().take(12).collect::<String>(), v["ca"]["retiring"].as_array().map_or(0, |a| a.len()));
+                }
+                let gaps: Vec<&Value> = v["ports"].as_array().into_iter().flatten().filter(|p| p["reachable"] == false).collect();
+                for p in &gaps {
+                    println!("  {} port {}/{} on {} is not reachable from {}", "!".yellow(), p["port"], s(&p["proto"]), s(&p["node"]), s(&v["name"]));
+                }
+                if gaps.is_empty() && v["ports"].is_array() {
+                    println!("  Ports: every checked port answers");
                 }
             }
             Err(e) => err(e),
@@ -1259,6 +1270,31 @@ pub async fn cluster(client: &ApiClient, args: &[&str]) {
             }
             match client.request_json::<Value>(Method::POST, "/cluster/promote", Some(json!({ "nodes": nodes, "force": has_flag(args, "--force") }))).await {
                 Ok(v) => println!("{} {} voters", "OK".green(), v["voters"]),
+                Err(e) => err(e),
+            }
+        }
+        Some("rejoin") => {
+            let Some(server) = flag_value(args, "--server") else {
+                return usage("Usage: cluster rejoin --server <ip:8842> [--node-id <id>] [--advertise <ip:port>] [--token-file <file>]\n  Comes back as the same node. The token is from `gxctl node rejoin-token` and is read from the file or stdin.");
+            };
+            let token = match read_token(args) {
+                Ok(t) => t,
+                Err(e) => return err(e),
+            };
+            let body = json!({ "server": server, "token": token.as_str(), "node_id": flag_value(args, "--node-id"), "advertise": flag_value(args, "--advertise"), "tunnel_ip": flag_value(args, "--tunnel-ip") });
+            match client.request_json::<Value>(Method::POST, "/cluster/rejoin", Some(body)).await {
+                Ok(v) => println!("{} node {} (Raft state {})", "Rejoined".green(), s(&v["node_id"]), if v["raft_fresh"] == true { "started afresh" } else { "kept" }),
+                Err(e) => err(e),
+            }
+        }
+        Some("leave") => match client.request_json::<Value>(Method::POST, "/cluster/leave", Some(json!({}))).await {
+            Ok(v) => println!("{} {}: {}", "Left".green(), s(&v["left"]), s(&v["restart"])),
+            Err(e) => err(e),
+        },
+        Some("rotate-ca") => {
+            let body = json!({ "grace_secs": flag_value(args, "--grace").and_then(|g| g.parse::<u64>().ok()) });
+            match client.request_json::<Value>(Method::POST, "/cluster/rotate-ca", Some(body)).await {
+                Ok(v) => println!("{} new CA {}; {} old CA(s) retire when every node renewed (or at {})", "Rotating".green(), s(&v["signing_ca"]), v["retiring"], s(&v["retire_at"])),
                 Err(e) => err(e),
             }
         }
@@ -1276,6 +1312,6 @@ pub async fn cluster(client: &ApiClient, args: &[&str]) {
                 Err(e) => err(e.message),
             }
         }
-        Some(other) => usage(&format!("Unknown cluster command '{other}'. Try: init, join, join-token, status, promote, snapshot")),
+        Some(other) => usage(&format!("Unknown cluster command '{other}'. Try: init, join, join-token, status, promote, snapshot, rotate-ca, rejoin, leave")),
     }
 }

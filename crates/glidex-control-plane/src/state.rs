@@ -495,6 +495,7 @@ impl VmManager {
         };
         let mut probe = crate::node::SelfProbe::detect(&reserved);
         probe.features.physnets = self.ovn.load().bridge_mappings.clone();
+        probe.features.feature_level = crate::node::FEATURE_LEVEL;
         self.nodes
             .ensure_self(&self.local_node_id(), probe)
             .map(|_| ())

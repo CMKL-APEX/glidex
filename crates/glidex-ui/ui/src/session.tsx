@@ -24,6 +24,7 @@ const HOST_ACTIONS = [
   "readUsage",
   "manageAnyTokens",
   "createNetwork",
+  "readCluster",
 ] as const;
 
 export type HostAction = (typeof HOST_ACTIONS)[number];
