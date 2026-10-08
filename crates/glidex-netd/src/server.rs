@@ -24,6 +24,8 @@ use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone)]
 pub struct Config {
+    /// Where the chassis keeps its OVN certificates.
+    pub ovn_dir: PathBuf,
     pub run_dir: PathBuf,
     pub state_path: PathBuf,
     pub group: String,
@@ -42,6 +44,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            ovn_dir: PathBuf::from(glidex_ovs::ovn::CERT_DIR),
             run_dir: PathBuf::from(DEFAULT_RUN_DIR),
             state_path: PathBuf::from("/var/lib/glidex/netd.db"),
             group: "glidex".into(),
@@ -130,6 +133,25 @@ impl Netd {
             }
             Op::ReleaseVm { vm_id } => self.release_vm(&vm_id, peer.uid).map(|_| Value::Null),
             Op::SyncVms { running } => to_value(self.sync_vms(&running)?),
+            Op::EnsureOvnChassis(args) => {
+                let caps = host::probe(self.ex(), &self.config.probe);
+                if !caps.ovs_running {
+                    return Err(OvsError::Unsupported { missing: vec!["ovs-vswitchd running".into()] });
+                }
+                let st = glidex_ovs::ovn::ensure_chassis(self.ex(), &args.spec, &args.certs, &self.config.ovn_dir)?;
+                tracing::info!(chassis = %args.spec.chassis, "OVN chassis ensured");
+                to_value(st)
+            }
+            Op::EnsureOvnCentral(args) => {
+                let changed = glidex_ovs::ovn::ensure_central(self.ex(), &args.spec, &args.certs, &self.config.ovn_dir)?;
+                to_value(serde_json::json!({ "changed": changed }))
+            }
+            Op::OvnStatus => to_value(glidex_ovs::ovn::status(self.ex())?),
+            Op::LeaveOvn { confirm } => {
+                glidex_ovs::ovn::leave(self.ex(), confirm, &self.config.ovn_dir)?;
+                tracing::info!("left OVN");
+                Ok(Value::Null)
+            }
         }
     }
 
@@ -568,7 +590,10 @@ impl Netd {
 
     fn attach(&self, spec: VmPortSpec, owner_uid: u32) -> Result<AttachResult, OvsError> {
         spec.validate()?;
-        self.require_bridge(&spec.bridge)?;
+        // br-int is OVN's, not a glidex bridge record (§11.3).
+        if spec.ovn_lport.is_none() {
+            self.require_bridge(&spec.bridge)?;
+        }
         let key = store::vm_port_key(&spec.vm_id, spec.nic_index);
         if let Some(existing) = self.store.get::<VmPortRecord>(VM_PORTS, &key)? {
             if existing.spec.bridge != spec.bridge {

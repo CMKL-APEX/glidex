@@ -98,6 +98,8 @@ tables! {
     CaBundle = 31 => "ca_bundle",
     ImageCaches = 32 => "image_caches",
     LedgerInbox = 33 => "ledger_inbox",
+    IpamSubnets = 34 => "ipam_subnets",
+    IpamReservations = 35 => "ipam_reservations",
 }
 
 impl Serialize for TableId {

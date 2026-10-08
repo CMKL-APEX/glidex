@@ -22,6 +22,8 @@ pub struct Request {
     pub net_nodes: Vec<String>,
     /// PCI addresses of VFIO devices.
     pub vfio: Vec<String>,
+    /// A NIC on a cluster network is vhost-user: `br-int` must be userspace.
+    pub vhost_user_on_cluster: bool,
 }
 
 /// What a node already carries: every VM placed on it, running or not.
@@ -56,6 +58,9 @@ fn failing(n: &Node, load: Load, req: &Request, cfg: &SchedulerConfig) -> Option
     }
     if !req.hypervisor.is_empty() && !n.status.features.hypervisors.iter().any(|h| *h == req.hypervisor) {
         return Some(format!("{} is not installed", req.hypervisor));
+    }
+    if req.vhost_user_on_cluster && n.status.features.br_int_datapath.as_deref() != Some("netdev") {
+        return Some("br-int is not on the userspace (netdev) datapath".into());
     }
     for d in &req.vfio {
         if !n.status.pci_devices.iter().any(|p| p.eq_ignore_ascii_case(d)) {

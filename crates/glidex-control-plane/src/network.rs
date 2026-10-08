@@ -146,6 +146,10 @@ pub struct CreateNetworkRequest {
     pub mtu: Option<u16>,
     #[serde(default = "default_true")]
     pub dns: bool,
+    /// `cluster` (OVN) or `node` (an OVS bridge on one host). Default: the
+    /// cluster's, when OVN is enabled, else the node's.
+    #[serde(default)]
+    pub scope: Option<NetworkScope>,
 }
 
 fn default_port_type() -> VmPortKind {
@@ -214,6 +218,15 @@ impl NetworkStore {
     }
 
     /// Record a new network.
+    /// Remove a record (its network is gone everywhere).
+    pub fn remove(&self, name: &str) -> Result<(), NetError> {
+        let _w = self.write.lock().unwrap();
+        self.db.write(crate::store::Origin::Network, |tx| -> Result<(), NetError> {
+            tx.open_table(NETWORKS_TABLE).map_err(storage)?.remove(name).map_err(storage)?;
+            Ok(())
+        })
+    }
+
     pub fn insert(&self, net: &Network) -> Result<(), NetError> {
         let _w = self.write.lock().unwrap();
         self.write_record(net)
@@ -416,6 +429,7 @@ mod tests {
             vlan: None,
             mtu: None,
             dns: true,
+            scope: None,
         }
     }
 

@@ -1,0 +1,11 @@
+[package]
+name = "glidex-ovn"
+version.workspace = true
+edition.workspace = true
+description = "OVN northbound management for glidex cluster networks"
+
+[dependencies]
+glidex-ovs = { path = "../glidex-ovs" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }

@@ -58,6 +58,9 @@ pub struct NodeReserved {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct OvnConfig {
+    /// Cluster networks on OVN (spec/clustering.md §11). Off until OVN is
+    /// installed on the servers and the chassis.
+    pub enabled: bool,
     pub underlay_mtu: Option<u16>,
     pub nat_supernet: Option<String>,
     pub edge: Option<EdgeConfig>,

@@ -280,7 +280,7 @@ fn has_flag(args: &[&str], flag: &str) -> bool {
 
 async fn handle_network_add(client: &CliClient, args: &[&str]) {
     let Some(name) = args.first().filter(|a| !a.starts_with("--")) else {
-        println!("{}", "Usage: network-add <name> [--nat [--subnet CIDR] | --isolated | --bridged <bridge>] [--vhost-user] [--vlan N] [--bridge NAME]".yellow());
+        println!("{}", "Usage: network-add <name> [--nat [--subnet CIDR] | --isolated | --bridged <bridge>] [--vhost-user] [--vlan N] [--bridge NAME] [--cluster | --node]".yellow());
         return;
     };
     let (mode, bridge) = if let Some(b) = flag_value(args, "--bridged") {
@@ -297,6 +297,12 @@ async fn handle_network_add(client: &CliClient, args: &[&str]) {
     });
     if let Some(b) = bridge {
         body["bridge"] = serde_json::json!(b);
+    }
+    // Cluster (OVN) or one node's bridge; default: the cluster's when OVN is enabled.
+    if has_flag(args, "--cluster") {
+        body["scope"] = serde_json::json!("cluster");
+    } else if has_flag(args, "--node") {
+        body["scope"] = serde_json::json!("node");
     }
     if let Some(s) = flag_value(args, "--subnet") {
         body["subnet"] = serde_json::json!(s);

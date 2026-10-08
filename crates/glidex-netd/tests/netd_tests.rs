@@ -70,6 +70,7 @@ fn port_spec() -> VmPortSpec {
         vlan: None,
         mtu: None,
         queue_pairs: 1,
+        ovn_lport: None,
     }
 }
 

@@ -113,6 +113,24 @@ fn nic_queue_pairs(requested: Option<u8>, kind: glidex_ovs::vm_port::VmPortKind,
 /// unchanged status is written to refresh it.
 const RECONCILED_STAMP_SECS: u64 = 600;
 
+/// The port a NIC gets: on its network's bridge, or, on a cluster network,
+/// on `br-int` as the logical port OVN knows (spec/clustering.md §11.3, §11.5).
+fn port_spec(vm_id: &str, net: &crate::network::Network, nic: u8, mac: String, queue_pairs: u8) -> VmPortSpec {
+    let cluster = net.scope == crate::network::NetworkScope::Cluster;
+    VmPortSpec {
+        bridge: if cluster { glidex_ovs::ovn::BR_INT.to_string() } else { net.bridge.clone() },
+        vm_id: vm_id.to_string(),
+        nic_index: nic,
+        kind: net.port_type,
+        mac,
+        // The logical switch decides VLANs on a cluster network.
+        vlan: if cluster { None } else { net.vlan },
+        mtu: net.mtu,
+        queue_pairs,
+        ovn_lport: cluster.then(|| glidex_ovs::names::port_name(vm_id, nic).unwrap_or_default()),
+    }
+}
+
 /// Outcome of a round: requeue after this long, or wait for an event.
 type Next = Result<Option<Duration>, VmManagerError>;
 
@@ -725,6 +743,25 @@ impl VmManager {
         }
     }
 
+    /// Poll `ovn_status` until every port in `lports` has `ovn-installed`,
+    /// for up to 10 s (§11.5 step 2).
+    async fn wait_ovn_installed(&self, lports: &[String]) -> bool {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let netd = self.netd.clone();
+            let st = blocking(move || netd.call::<glidex_ovs::ovn::OvnStatus>(Op::OvnStatus)).await;
+            if let Ok(Ok(st)) = st {
+                if lports.iter().all(|p| st.ports.iter().any(|x| &x.lport == p && x.ovn_installed)) {
+                    return true;
+                }
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
     /// Attach (or re-attach: netd is idempotent) every NIC of the spec,
     /// first detaching ports the spec no longer has. Each port is written
     /// to `status.nics` before netd attaches it.
@@ -752,16 +789,7 @@ impl VmManager {
                 }
             }
             let queue_pairs = nic_queue_pairs(att.queue_pairs, net.port_type, vm.config().vcpu_count);
-            let spec = VmPortSpec {
-                bridge: net.bridge.clone(),
-                vm_id: vm.id.clone(),
-                nic_index: i as u8,
-                kind: net.port_type,
-                mac: mac.clone(),
-                vlan: net.vlan,
-                mtu: net.mtu,
-                queue_pairs,
-            };
+            let spec = port_spec(&vm.id, &net, i as u8, mac.clone(), queue_pairs);
             let netd = self.netd.clone();
             let res: AttachResult = blocking(move || netd.call(Op::AttachVmPort(spec))).await??;
             if let Some(n) = st.nics.iter_mut().find(|n| n.nic_index as usize == i) {
@@ -770,6 +798,23 @@ impl VmManager {
                 n.port_ok = true;
             }
             out.push(NicBinding { id: format!("net{}", i), mac, binding: res.binding, queue_pairs, mtu: net.mtu });
+        }
+        // Ports on OVN networks carry traffic once ovn-controller has their
+        // flows (§11.5): wait a little, then launch anyway and say so.
+        let lports: Vec<String> = networks
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| self.networks.get(&a.network).ok().flatten().is_some_and(|n| n.scope == crate::network::NetworkScope::Cluster))
+            .filter_map(|(i, _)| glidex_ovs::names::port_name(&vm.id, i as u8).ok())
+            .collect();
+        if !lports.is_empty() {
+            if self.wait_ovn_installed(&lports).await {
+                if st.conditions.iter().any(|c| c.kind == "NetworkReady" && c.reason == "PortNotInstalled") {
+                    set_cond(&mut st.conditions, "NetworkReady", Tristate::True, "Ready", "");
+                }
+            } else {
+                set_cond(&mut st.conditions, "NetworkReady", Tristate::False, "PortNotInstalled", "OVN has not installed the port's flows yet; traffic starts when it does");
+            }
         }
         Ok(out)
     }
@@ -942,16 +987,7 @@ impl VmManager {
                 continue;
             }
             let Some(att) = vm.config().networks.get(nic.nic_index as usize) else { continue };
-            let spec = VmPortSpec {
-                bridge: net.bridge.clone(),
-                vm_id: vm.id.clone(),
-                nic_index: nic.nic_index,
-                kind: net.port_type,
-                mac: nic.mac.clone(),
-                vlan: net.vlan,
-                mtu: net.mtu,
-                queue_pairs: nic_queue_pairs(att.queue_pairs, net.port_type, vm.config().vcpu_count),
-            };
+            let spec = port_spec(&vm.id, &net, nic.nic_index, nic.mac.clone(), nic_queue_pairs(att.queue_pairs, net.port_type, vm.config().vcpu_count));
             let _ports = self.ports_lock.lock().await;
             let netd = self.netd.clone();
             match blocking(move || netd.call::<AttachResult>(Op::AttachVmPort(spec))).await? {

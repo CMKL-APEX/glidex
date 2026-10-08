@@ -53,6 +53,8 @@ pub enum PersistenceError {
     NewerSchema(u32),
     #[error("{0}")]
     Disk(#[from] ImageError),
+    #[error("{0}")]
+    Ipam(String),
 }
 
 /// `meta` of every resource (§6.1).
@@ -164,6 +166,9 @@ pub struct Commit<'a> {
     pub put_disks: Vec<&'a Disk>,
     pub delete_disks: Vec<&'a str>,
     pub events: Vec<(String, Event)>,
+    /// Addresses to reserve on cluster networks, in the same write:
+    /// `(network, mac, vm id, nic)` (spec/clustering.md §11.4).
+    pub reserve_ips: Vec<(String, String, String, u8)>,
 }
 
 pub struct VmStore {
@@ -380,6 +385,9 @@ impl VmStore {
         }
         for id in c.delete_disks {
             images::delete_disk_record(&write_txn, id)?;
+        }
+        for (network, mac, vm_id, nic) in &c.reserve_ips {
+            crate::ipam::reserve(&write_txn, network, mac, vm_id, *nic).map_err(|e| PersistenceError::Ipam(e.to_string()))?;
         }
         for (key, event) in c.events {
             if c.delete_vm.is_some_and(|id| key == event_key("vm", id)) {

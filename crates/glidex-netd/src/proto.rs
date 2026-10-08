@@ -77,6 +77,14 @@ pub enum Op {
     /// The VM is being deleted: free its NAT reservations too.
     ReleaseVm { vm_id: String },
     SyncVms { running: Vec<String> },
+    /// Make this host an OVN chassis (spec/clustering.md §11.3).
+    EnsureOvnChassis(EnsureOvnChassisArgs),
+    /// Read-only: the chassis, `ovn-controller` and which ports have flows.
+    OvnStatus,
+    /// Stop being a chassis. Refused while a glidex VM port is on `br-int`.
+    LeaveOvn { confirm: bool },
+    /// Run this server's part of OVN's databases (`ovn-central`).
+    EnsureOvnCentral(EnsureOvnCentralArgs),
 }
 
 impl Op {
@@ -96,6 +104,7 @@ impl Op {
                 | Op::ListUplinks
                 | Op::PortStats
                 | Op::NatCounters
+                | Op::OvnStatus
         )
     }
 
@@ -122,6 +131,10 @@ impl Op {
             Op::DetachVmPort { .. } => "detach_vm_port",
             Op::ReleaseVm { .. } => "release_vm",
             Op::SyncVms { .. } => "sync_vms",
+            Op::EnsureOvnChassis(_) => "ensure_ovn_chassis",
+            Op::OvnStatus => "ovn_status",
+            Op::LeaveOvn { .. } => "leave_ovn",
+            Op::EnsureOvnCentral(_) => "ensure_ovn_central",
         }
     }
 }
@@ -238,6 +251,18 @@ pub struct EnsureUplinkArgs {
     /// Required to take over a NIC the host is using (CLI `--force`).
     #[serde(default)]
     pub confirm: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnsureOvnChassisArgs {
+    pub spec: glidex_ovs::ovn::ChassisSpec,
+    pub certs: glidex_ovs::ovn::ChassisCerts,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnsureOvnCentralArgs {
+    pub spec: glidex_ovs::ovn::CentralSpec,
+    pub certs: glidex_ovs::ovn::ChassisCerts,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -7,6 +7,7 @@ pub mod cloud_init;
 pub mod credentials;
 pub mod hypervisor;
 pub mod images;
+pub mod ipam;
 pub mod models;
 pub mod network;
 pub mod node;

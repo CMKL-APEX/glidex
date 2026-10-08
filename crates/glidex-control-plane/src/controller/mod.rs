@@ -10,6 +10,7 @@ pub mod disk;
 pub mod image;
 pub mod image_cache;
 pub mod network;
+pub mod ovn;
 pub mod placement;
 pub mod queue;
 pub mod startup;
@@ -90,6 +91,14 @@ impl VmManager {
         }
         let m = me.clone();
         tasks.push(tokio::spawn(async move { m.resync_loop().await }));
+        // This node as an OVN chassis (and a server's part of ovn-central).
+        let m = me.clone();
+        tasks.push(tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                m.ensure_ovn_node().await;
+            }
+        }));
         // What this node reports about itself, refreshed every ten minutes.
         let m = me.clone();
         tasks.push(tokio::spawn(async move {
@@ -118,12 +127,22 @@ impl VmManager {
         // The scheduler: places VMs that wait for a node, again as nodes and
         // capacity change (a pass is cheap when nothing waits).
         let me = self.arc();
-        vec![tokio::spawn(async move {
-            loop {
-                tokio::time::sleep(Duration::from_secs(3)).await;
-                me.place_pending().await;
-            }
-        })]
+        let m2 = me.clone();
+        vec![
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(Duration::from_secs(3)).await;
+                    me.place_pending().await;
+                }
+            }),
+            // The cluster network controller (§11): OVN's northbound database.
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    m2.reconcile_ovn().await;
+                }
+            }),
+        ]
     }
 
     /// Every object the controllers own.

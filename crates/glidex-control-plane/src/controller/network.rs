@@ -26,6 +26,10 @@ impl VmManager {
         if net.node.as_deref().is_some_and(|n| n != self.local_node_id()) {
             return Ok(None);
         }
+        // A cluster network is the leader's (OVN), not any node's bridge.
+        if net.scope == crate::network::NetworkScope::Cluster {
+            return Ok(None);
+        }
         if net.deletion_requested_at.is_some() {
             return self.finish_network_delete(net).await;
         }

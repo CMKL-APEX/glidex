@@ -263,6 +263,8 @@ struct Options {
     /// Let OVS installs / DPDK init restart ovs-vswitchd while it has
     /// bridges (interrupts their traffic). Never saved.
     allow_ovs_restart: bool,
+    /// Install OVN's packages (`ovn-host`, and `ovn-central` on servers) too.
+    ovn: bool,
     /// Join a cluster once installed (spec/clustering.md §5.2). Never saved:
     /// it holds a one-time token's source.
     join: Option<JoinOptions>,
@@ -287,6 +289,7 @@ impl Default for Options {
             ovs_profile: OvsProfile::Dpdk,
             pmd_cpu_mask: None,
             allow_ovs_restart: false,
+            ovn: false,
             join: None,
         }
     }
@@ -323,6 +326,7 @@ impl Options {
                     o.pmd_cpu_mask = (!m.is_empty() && m != "auto").then_some(m);
                 }
                 "--allow-ovs-restart" => o.allow_ovs_restart = true,
+                "--ovn" => o.ovn = true,
                 "--join" => {
                     let server = value("--join")?;
                     o.join.get_or_insert_with(|| JoinOptions { role: "agent".into(), ..Default::default() }).server = server;
@@ -390,6 +394,7 @@ fn print_help() {
          \x20     --ovs-profile P        dpdk (default; reserves hugepages) or kernel\n\
          \x20     --pmd-cpu-mask MASK    OVS-DPDK PMD CPU mask, hex (\"auto\" to clear)\n\
          \x20     --allow-ovs-restart    allow restarting ovs-vswitchd while it has bridges\n\
+         \x20     --ovn                  also install OVN (ovn-host; ovn-central on servers)\n\
          \x20     --qemu, --networking, --services   undo an earlier --no-*\n\n\
          Joining a cluster (spec/clustering.md §5.2); the token comes from\n\
          `gxctl cluster join-token` on a server, read from a file (mode 0600)\n\
@@ -708,8 +713,21 @@ const QEMU_DEPS: &[Dep] = &[
 /// `setcap`, for cloud-hypervisor's CAP_NET_ADMIN (tap devices).
 const NETWORKING_DEPS: &[Dep] = &[dep(Probe::Cmd("setcap"), ["libcap2-bin", "libcap", "libcap"])];
 
+/// OVN (spec/clustering.md §10.1): every node runs `ovn-host`
+/// (`ovn-controller`); a server also runs `ovn-central` (the databases and
+/// northd). 26.03 or newer; Ubuntu 26.04 ships it.
+const OVN_HOST_DEPS: &[Dep] = &[dep(Probe::Cmd("ovn-controller"), ["ovn-host", "ovn", "ovn-host"])];
+const OVN_CENTRAL_DEPS: &[Dep] = &[dep(Probe::Cmd("ovn-northd"), ["ovn-central", "ovn-central", "ovn"])];
+
 fn wanted_deps(opts: &Options, platform: &Platform) -> Vec<Dep> {
     let mut deps = BASE_DEPS.to_vec();
+    // OVN is for hosts that join a cluster (or are asked to with --ovn).
+    if opts.networking && (opts.join.is_some() || opts.ovn) {
+        deps.extend_from_slice(OVN_HOST_DEPS);
+        if opts.join.as_ref().map_or(true, |j| j.role == "server") {
+            deps.extend_from_slice(OVN_CENTRAL_DEPS);
+        }
+    }
     if opts.qemu && platform.arch == "x86_64" {
         deps.extend_from_slice(QEMU_DEPS);
     }

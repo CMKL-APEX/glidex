@@ -602,3 +602,64 @@ async fn the_scheduler_spreads_vms_honours_pins_and_disks_and_explains_itself() 
     })
     .await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn cluster_networks_get_a_subnet_and_vms_get_addresses_that_go_when_they_do() {
+    use glidex_control_plane::cluster::config::EdgeConfig;
+    let _one = SERIAL.lock().await;
+    let mut cfg = test_config();
+    cfg.cluster.ovn.enabled = true;
+    cfg.cluster.ovn.edge = Some(EdgeConfig {
+        physnet: "uplink".into(),
+        external_cidr: "192.0.2.0/24".into(),
+        gateway: "192.0.2.1".parse().unwrap(),
+        external_ip: "192.0.2.50".parse().unwrap(),
+        external_pool: None,
+        gateway_nodes: vec!["cp1".into()],
+    });
+    let server = new_cp();
+    server.manager.configure(&cfg);
+    manage::init(&server.manager, &cfg, InitOptions { advertise: Some(server.addr), tunnel_ip: None, listen: Some(server.addr) }).await.unwrap();
+    server.manager.initialize().await.unwrap();
+
+    // A cluster network: br-int, the underlay MTU minus Geneve, a /24 from the supernet.
+    let (s, n) = call(&server, "POST", "/networks", Some(json!({ "name": "web", "mode": "nat", "port_type": "tap", "scope": "cluster" })), &[]).await;
+    assert_eq!(s, StatusCode::CREATED, "{n}");
+    assert_eq!((n["scope"].as_str(), n["bridge"].as_str(), n["mtu"].as_u64()), (Some("cluster"), Some("br-int"), Some(1442)));
+    let (s, n2) = call(&server, "POST", "/networks", Some(json!({ "name": "lab", "mode": "isolated", "port_type": "tap", "scope": "cluster", "subnet": "10.89.200.0/24" })), &[]).await;
+    assert_eq!(s, StatusCode::CREATED, "{n2}");
+    // Overlap and the node NAT range are refused.
+    let (s, _) = call(&server, "POST", "/networks", Some(json!({ "name": "bad", "mode": "isolated", "port_type": "tap", "scope": "cluster", "subnet": "10.89.200.128/25" })), &[]).await;
+    assert_ne!(s, StatusCode::CREATED);
+    let (s, _) = call(&server, "POST", "/networks", Some(json!({ "name": "bad2", "mode": "isolated", "port_type": "tap", "scope": "cluster", "subnet": "10.88.9.0/24" })), &[]).await;
+    assert_ne!(s, StatusCode::CREATED);
+
+    // VMs on it get stable addresses at placement.
+    let mut body = vm_unpinned("a");
+    body["networks"] = json!([{ "network": "web" }]);
+    let (s, a) = call(&server, "POST", "/vms", Some(body.clone()), &[]).await;
+    assert_eq!(s, StatusCode::CREATED, "{a}");
+    body["name"] = json!("b");
+    let (s, b) = call(&server, "POST", "/vms", Some(body), &[]).await;
+    assert_eq!(s, StatusCode::CREATED, "{b}");
+    let res = glidex_control_plane::ipam::list_reservations(&server.manager.database()).unwrap();
+    assert_eq!(res.len(), 2);
+    let ips: std::collections::BTreeSet<_> = res.iter().map(|r| r.ip.to_string()).collect();
+    assert_eq!(ips.len(), 2);
+    assert!(ips.iter().all(|ip| ip.starts_with("10.89.0.")), "{ips:?}");
+
+    // The plan for OVN has the switch, its subnet, both ports bound to the VM's node, and the edge.
+    let d = server.manager.__desired_ovn_for_tests().await.unwrap();
+    assert_eq!(d.networks.len(), 2);
+    assert_eq!(d.ports.len(), 2);
+    assert!(d.ports.iter().all(|p| p.chassis.as_deref() == Some(server.manager.local_node_id().as_str()) && p.ip.is_some()));
+    assert!(d.edge.is_some() && !d.node_addresses.is_empty());
+
+    // A network in use can't go; a VM that goes frees its address.
+    let (s, _) = call(&server, "DELETE", "/networks/web", None, &[]).await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    let (s, _) = call(&server, "DELETE", &format!("/vms/{}", a["id"].as_str().unwrap()), None, &[]).await;
+    assert!(s.is_success());
+    server.manager.clone().reconcile_ovn().await;
+    assert_eq!(glidex_control_plane::ipam::list_reservations(&server.manager.database()).unwrap().len(), 1);
+}

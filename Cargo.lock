@@ -1351,6 +1351,7 @@ dependencies = [
  "glidex-authd",
  "glidex-hv-client",
  "glidex-netd",
+ "glidex-ovn",
  "glidex-ovs",
  "glidex-tls",
  "glidex-vm-shim",
@@ -1433,6 +1434,16 @@ dependencies = [
  "thiserror 1.0.69",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "glidex-ovn"
+version = "0.1.0"
+dependencies = [
+ "glidex-ovs",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
 ]
 
 [[package]]

@@ -1652,3 +1652,56 @@ only tests do).
   `node.drain` under `role.system-admin`) lists what is still on the node.
 - Not yet: `pci.allow[].node` (VFIO grants per node), the `br_int_datapath`
   filter (C5) and provider-network physnet filter (C6).
+
+### C5 OVN foundation
+
+Written without an OVN host to run on: what is tested is every command line
+(recorded `ovn-nbctl`, `ovs-vsctl` and `systemctl` calls), the planning and the
+IPAM. §15's OVN end-to-end tests 1–4 still have to be run on three hosts, and
+`glidex-ovn/tests/real_nb.rs` (ignored) checks the northbound syntax against a
+real database. Everything marked "(verify)" below is syntax or behaviour of OVN
+26.03 taken from its manual pages.
+
+- **`glidex-ovn`**: `Nb` runs `ovn-nbctl` (directly with `--db`/`-p/-c/-C`, or
+  through a `--detach` daemon via `OVN_NB_DAEMON`); `sync(Desired)` makes the
+  database say it and touches only rows with `external_ids:glidex-owner`. Per
+  network a switch `gx-<name>`, DHCP options (router, DNS, MTU, server id), and
+  for NAT a router port with the gateway address, a router-type switch port
+  and an SNAT rule on `gx-edge`. The edge is a provider switch (`localnet`), a
+  router with a gateway port and default route, an HA chassis group in the
+  configured order, and the two isolation policies of §11.2 over the
+  `gx_nodes` and `gx_nat_supernet` address sets. A VM port gets addresses and
+  **port security** (its MAC and reserved address only), `requested-chassis`
+  and its network's DHCP options. Ports and networks that left the plan are
+  deleted.
+- **IPAM** (`ipam`, tables `ipam_subnets`, `ipam_reservations`): a /24 from
+  `ovn.nat_supernet` (default 10.89.0.0/16, never overlapping the node NAT
+  range), or the requested subnet; reservations are made in the same write as
+  the VM's placement (create, or the scheduler's) and live as long as the NIC
+  (garbage-collected by the leader: the plan's `vm.ipam` finalizer).
+- **Networks** have `scope: cluster` (default when `cluster.ovn.enabled`):
+  `bridge: br-int`, MTU = underlay − 58, no per-node controller. NAT needs
+  `cluster.ovn.edge`. On a fresh cluster with an edge, the default network is
+  the cluster NAT network `default`, else `cluster-default` (§11.7).
+- **netd** gains `ensure_ovn_chassis`, `ovn_status`, `leave_ovn`,
+  `ensure_ovn_central`, and `ovn_lport` on `attach_vm_port` (`br-int` takes
+  only OVN ports; an OVN port only `br-int`). `ensure_chassis` sets
+  `Open_vSwitch` external ids, `set-ssl`, `br-int` (datapath as asked, refused
+  to flip with VM ports on it), and enables `ovn-controller` (restarted only
+  when its certificates changed). `ensure_central` writes `OVN_CTL_OPTS` in
+  `/etc/default/ovn-central` for the Raft groups: the oldest server creates
+  the clusters, the others join it; it restarts the service only on change.
+- **Controllers**: every node ensures its chassis (and a server its
+  `ovn-central`) every 30 s; the leader's network controller syncs the
+  northbound database every 5 s. The VM controller waits up to 10 s for
+  `ovn-installed` and launches anyway with `NetworkReady=False/PortNotInstalled`.
+  Nodes record `br_int_datapath`; the scheduler places vhost-user NICs on
+  cluster networks only where it is `netdev`.
+- **Certificates**: a node's own certificate is its OVN client certificate,
+  for `ovn-controller`, `ovn-northd`, the databases and `ovn-nbctl`. (The plan
+  has separate chassis and database certificates; OVN checks only the CA.)
+- **Installer**: `--ovn`, or `--join`, installs `ovn-host`, and `ovn-central`
+  on servers.
+- Not yet: the NB daemon supervised by the control plane (commands connect
+  per call), OVN-aware `move_vm_port` (C8), provider networks and VPC routers
+  (C6).

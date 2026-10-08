@@ -269,6 +269,7 @@ pub struct VmManager {
     pub(crate) controllers_started: std::sync::atomic::AtomicBool,
     sched: ArcSwap<crate::cluster::config::SchedulerConfig>,
     reserved: ArcSwap<crate::cluster::config::NodeReserved>,
+    pub(crate) ovn: ArcSwap<crate::cluster::config::OvnConfig>,
     nodes: crate::node::NodeStore,
     roles: std::sync::Mutex<crate::node::Roles>,
     db_path: PathBuf,
@@ -384,6 +385,7 @@ impl VmManager {
             controllers_started: std::sync::atomic::AtomicBool::new(false),
             sched: ArcSwap::from_pointee(Default::default()),
             reserved: ArcSwap::from_pointee(Default::default()),
+            ovn: ArcSwap::from_pointee(Default::default()),
             nodes,
             roles: std::sync::Mutex::new(crate::node::Roles::STANDALONE),
             db_path,
@@ -410,6 +412,7 @@ impl VmManager {
         self.settings.store(Arc::new(s));
         self.sched.store(Arc::new(cfg.cluster.scheduler.clone()));
         self.reserved.store(Arc::new(cfg.cluster.node_reserved.clone()));
+        self.ovn.store(Arc::new(cfg.cluster.ovn.clone()));
     }
 
     /// Where `req` goes, from the nodes' records and what each already carries.
@@ -448,6 +451,11 @@ impl VmManager {
                 .filter_map(|n| n.node.clone())
                 .collect(),
             vfio: c.vfio_devices.clone(),
+            vhost_user_on_cluster: c
+                .networks
+                .iter()
+                .filter_map(|a| nets.iter().find(|n| n.name == a.network))
+                .any(|n| n.scope == crate::network::NetworkScope::Cluster && n.port_type == glidex_ovs::vm_port::VmPortKind::VhostUser),
         }
     }
 
@@ -1075,10 +1083,12 @@ impl VmManager {
 
         // The VM, its disks' claims and its first event in one transaction.
         let ev = Event::new(actor, EventKind::Normal, "Created", format!("desired state {}", power_name(power)));
+        let reserve_ips = if vm.status.placement.is_some() { self.cluster_nics(&vm) } else { Vec::new() };
         let commit = Commit {
             put_vm: Some(&vm),
             put_disks: disks.iter().collect(),
             events: vec![(event_key("vm", &vm.id), ev)],
+            reserve_ips,
             ..Default::default()
         };
         self.store.commit(commit)?;
@@ -1942,8 +1952,71 @@ impl VmManager {
         Ok(self.networks.get(name)?.ok_or_else(|| NetError::NotFound(name.to_string()))?)
     }
 
+    /// Whether networks are cluster networks (OVN) unless they say otherwise.
+    pub fn ovn_enabled(&self) -> bool {
+        self.cluster().is_some() && self.ovn.load().enabled
+    }
+
+    /// A cluster network (§11.2): a subnet from the cluster IPAM and a record;
+    /// the leader's network controller makes the OVN objects.
+    async fn create_cluster_network(&self, req: CreateNetworkRequest) -> Result<Network, VmManagerError> {
+        if !self.ovn_enabled() {
+            return Err(NetError::Invalid("cluster networks need OVN: enable cluster.ovn on a cluster".into()).into());
+        }
+        if req.mode == NetworkMode::Bridged {
+            return Err(NetError::Invalid("a provider network is made with a physnet (a later feature); cluster networks are NAT or isolated".into()).into());
+        }
+        if req.bridge.is_some() || req.vlan.is_some() {
+            return Err(NetError::Invalid("a cluster network has no bridge or VLAN of its own".into()).into());
+        }
+        // The subnet comes from the IPAM below; `to_network` only checks the rest.
+        if req.mode == NetworkMode::Nat && self.ovn.load().edge.is_none() {
+            return Err(NetError::Invalid("a NAT cluster network needs cluster.ovn.edge (the external address and gateway nodes)".into()).into());
+        }
+        let mut net = CreateNetworkRequest { subnet: None, ..req.clone() }.to_network()?;
+        net.scope = crate::network::NetworkScope::Cluster;
+        net.node = None;
+        net.bridge = glidex_ovs::ovn::BR_INT.to_string();
+        net.owns_bridge = false;
+        let ovn = self.ovn.load_full();
+        // Guest MTU: the underlay minus Geneve's overhead (§11.6).
+        net.mtu = Some(req.mtu.unwrap_or(ovn.underlay_mtu.unwrap_or(1500).saturating_sub(58)));
+        if self.networks.get(&net.name)?.is_some() {
+            return Err(NetError::Conflict(format!("network '{}' already exists", net.name)).into());
+        }
+        let supernet: glidex_ovs::net::Ipv4Net = ovn.nat_supernet.as_deref().unwrap_or("10.89.0.0/16").parse().map_err(|e: glidex_ovs::OvsError| NetError::Invalid(e.to_string()))?;
+        let node_nat: glidex_ovs::net::Ipv4Net = glidex_ovs::nat::DEFAULT_SUPERNET.parse().map_err(|e: glidex_ovs::OvsError| NetError::Invalid(e.to_string()))?;
+        let name = net.name.clone();
+        let requested = req.subnet;
+        self.store.database().write(crate::store::Origin::Network, |tx| crate::ipam::allocate_subnet(tx, &name, requested, supernet, &[node_nat])).map_err(|e| match e {
+            crate::ipam::IpamError::Overlap(..) | crate::ipam::IpamError::Invalid(_) => VmManagerError::Network(NetError::Invalid(e.to_string())),
+            e => VmManagerError::PersistenceError(e.to_string()),
+        })?;
+        if let Err(e) = self.networks.insert(&net) {
+            let _ = self.store.database().write(crate::store::Origin::Network, |tx| crate::ipam::free_subnet(tx, &name));
+            return Err(e.into());
+        }
+        tracing::info!(network = %net.name, mode = ?net.mode, "cluster network created");
+        Ok(net)
+    }
+
+    /// Reservations to make for `vm`'s NICs on cluster networks.
+    pub(crate) fn cluster_nics(&self, vm: &Vm) -> Vec<(String, String, String, u8)> {
+        let nets = self.networks.list().unwrap_or_default();
+        vm.config()
+            .networks
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| nets.iter().any(|n| n.name == a.network && n.scope == crate::network::NetworkScope::Cluster))
+            .filter_map(|(i, a)| Some((a.network.clone(), a.mac.clone().or_else(|| glidex_ovs::names::mac_address(&vm.id, i as u8).ok())?, vm.id.clone(), i as u8)))
+            .collect()
+    }
+
     /// Create a network: host side in netd first, record only on success.
     pub async fn create_network(&self, req: CreateNetworkRequest) -> Result<Network, VmManagerError> {
+        if req.scope == Some(crate::network::NetworkScope::Cluster) || (req.scope.is_none() && self.ovn_enabled()) {
+            return self.create_cluster_network(req).await;
+        }
         let net = req.to_network()?;
         if let Some(other) = self.networks.get(&net.name)? {
             return Err(NetError::Conflict(if other.deletion_requested_at.is_some() {
@@ -2170,6 +2243,28 @@ impl VmManager {
         if !self.store.database().can_write() {
             return Ok(None);
         }
+        // On a cluster with OVN and an edge, the default network is a cluster
+        // network: `default` on a fresh cluster, `cluster-default` where the
+        // host's own `default` already exists (§11.7).
+        if self.ovn_enabled() && self.ovn.load().edge.is_some() {
+            let name = if self.networks.get(network::DEFAULT_NETWORK)?.is_some() { "cluster-default" } else { network::DEFAULT_NETWORK };
+            if self.networks.get(name)?.is_some() {
+                return Ok(None);
+            }
+            let req = CreateNetworkRequest {
+                name: name.into(),
+                mode: NetworkMode::Nat,
+                port_type: VmPortKind::Tap,
+                bridge: None,
+                subnet: None,
+                vlan: None,
+                mtu: None,
+                dns: true,
+                scope: Some(network::NetworkScope::Cluster),
+            };
+            let default_project = self.default_project_id();
+            return self.create_host_network(req, vec![default_project], false).await.map(Some);
+        }
         if self.networks.get(network::DEFAULT_NETWORK)?.is_some() {
             return Ok(None);
         }
@@ -2187,6 +2282,7 @@ impl VmManager {
             vlan: None,
             mtu: None,
             dns: true,
+            scope: Some(network::NetworkScope::Node),
         };
         let default_project = self.default_project_id();
         self.create_host_network(req, vec![default_project], false).await.map(Some)

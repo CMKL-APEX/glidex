@@ -33,7 +33,7 @@ impl VmManager {
                         d.node.get_or_insert_with(|| node.clone());
                     }
                     let ev = Event::new("scheduler", EventKind::Normal, "Scheduled", format!("placed on node {node}"));
-                    let commit = Commit { put_vm: Some(&vm), put_disks: disks.iter().collect(), events: vec![(event_key("vm", &vm.id), ev)], ..Default::default() };
+                    let commit = Commit { put_vm: Some(&vm), put_disks: disks.iter().collect(), events: vec![(event_key("vm", &vm.id), ev)], reserve_ips: self.cluster_nics(&vm), ..Default::default() };
                     if let Err(e) = self.store.commit(commit) {
                         tracing::warn!(vm = %vm.name, "recording a placement: {}", e);
                         continue;

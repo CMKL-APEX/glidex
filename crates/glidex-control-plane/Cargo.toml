@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 glidex-ovs = { path = "../glidex-ovs" }
+glidex-ovn = { path = "../glidex-ovn" }
 glidex-netd = { path = "../glidex-netd" }
 glidex-hv-client = { path = "../glidex-hv-client" }
 glidex-vm-shim = { path = "../glidex-vm-shim" }
