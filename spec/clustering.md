@@ -32,9 +32,9 @@ installation glidex already manages.
 
 Goals:
 
-- A cluster of **1–20 hosts**: 1, 3 or 5 **server** hosts (Raft
-  voters, API, cluster controllers) and any number of **agent-only**
-  hosts.
+- A cluster of **up to 50 hosts and 2,000 VMs** (§4.1): 1, 3 or 5
+  **server** hosts (Raft voters, API, cluster controllers), the rest
+  **agent-only** hosts.
 - **No new external database.** The replicated store is part of the
   control-plane binary.
 - **Management survives losing a minority of servers.** VMs keep
@@ -77,15 +77,18 @@ Non-goals for this revision (each in §18):
 | D8 | **No automatic failover of VMs.** A node that stops heartbeating makes its VMs `Ready=Unknown/NodeUnreachable`. Nothing is restarted elsewhere. | A partitioned node may still run its VMs (reconciliation.md D1). Starting copies elsewhere would put two writers on one disk the moment storage is shared, and with local disks there is nothing to start from anyway. |
 | D9 | **OVN for cluster networks**, on the OVS each host already runs. The leader's network controller writes the OVN **northbound** database. netd on each host only joins the host to OVN and plugs VM ports into `br-int`. | OVN provides the overlay, logical switches and routers, DHCP, SNAT gateway high availability, port security, and (later) multi-chassis port binding for live migration (§18). The NB database is a network service reached over TLS, so the unprivileged control plane can write it, while netd keeps owning everything privileged on the host. |
 | D10 | **Today's OVS networks remain, as `scope: node`.** OVS bridges with nftables NAT and dnsmasq keep working on each host. New networks in a cluster default to `scope: cluster` (OVN). Converting a node network to a cluster network is out of scope. | Converting means renumbering running VMs (networking.md §11.2a explains why a NAT subnet is never re-created under VMs). Node networks also stay useful for DPDK-only or host-local setups. |
-| D11 | **NAT egress is centralized on an HA gateway chassis group:** one cluster **edge router** with SNAT, active on one gateway node, with standby nodes ready to take over. | Distributed SNAT needs an external IP per VM. Centralized SNAT needs one IP for the whole cluster, gives every NAT network a stable egress address, and is OVN's standard high-availability gateway pattern. |
+| D11 | **NAT egress is centralized on HA gateway chassis groups.** By default NAT networks share one cluster **edge router** (`gx-edge`). A project can instead create a **VPC router** (§11.2a) with its own external IP and gateway group, and attach several networks to it. Each router's SNAT is active on one gateway node, with standby nodes ready to take over. | Distributed SNAT needs an external IP per VM. Centralized SNAT needs one IP per router, gives every network a stable egress address, and is OVN's standard high-availability gateway pattern. The shared edge costs one external IP for the whole cluster; VPC routers give tenants their own egress address and routing between their own networks, at one external IP each. |
 | D12 | **IPAM belongs to the control plane.** Subnets and per-NIC reservations live in the cluster store and are written into OVN port `addresses`. OVN's dynamic addressing is not used. | One source of truth that survives restarts and future live migration, and serves the security rules (port security, address sets). |
 | D13 | **Local accounts are host-scoped.** `unix:` and `pam:` identities carry the node they were seen on, unless the site sets `cluster.shared_local_accounts: true` (accounts managed centrally, e.g. SSSD/LDAP). | `alice` on host 1 is not necessarily `alice` on host 2. Without this, any local user on any host could act as a same-named user elsewhere. |
 | D14 | **Break-glass is honoured on server hosts only.** On an agent-only host, local root and `glidex-admin` get no cluster admin rights through `api.sock`. | Root on a server host already holds the whole database. Root on an agent host holds only its own VMs, and must not be able to escalate to the cluster. |
-| D15 | **No eBPF datapath** (decision record). | OVS/OVN covers every port type glidex uses (tap, vhost-user, DPDK and AF_XDP uplinks) under one model. An eBPF datapath would cover tap only, so glidex would maintain two datapaths. It brings no migration or performance gain for tap VMs. eBPF stays a debugging tool (`retis`, `pwru`), plus an optional tc counter if OVN metering proves too coarse (§13.3). |
+| D15 | **No eBPF datapath** (decision record). | OVS/OVN covers every port type glidex uses (tap, vhost-user, DPDK and AF_XDP uplinks) under one model. An eBPF datapath would cover tap only, so glidex would maintain two datapaths. It brings no migration or performance gain for tap VMs. eBPF stays a debugging tool (`retis`, `pwru`); external traffic on OVN is metered with conntrack accounting (D22), not eBPF. |
 | D16 | **Resources change cluster only by an explicit handover.** Leaving with resources (detach) and joining with them (import) are two-phase: the losing side freezes, the gaining side commits, and only a commit (a signed receipt for detach, the approval write for import) lets either side act as owner. | At every instant each VM and disk is owned by exactly one database. A half-done move must never leave two control planes both entitled to start or delete a VM (reconciliation.md D8). |
 | D17 | **An import needs the target's approval; a token alone can't bring resources in.** Membership and the imported records commit in one write. | A join token proves the host may join, not that its projects, names, credentials and quota use are acceptable to the target. Committing them together means there is never a member with half its resources, or resources with no member. |
 | D18 | **A server that lost its consensus state never rejoins as the same voter**, for glidex's Raft and for OVN's NB/SB clusters alike. It is removed and re-added as a learner. | A voter must remember its vote; with an empty log it could vote twice in one term and elect two leaders. |
 | D19 | **Ids travel, names are mapped, history stays.** VM, disk and image ids are kept on detach and import; project, network and credential names are mapped when they collide; audit and metering history stay in the database where they were recorded. | Disk and image files are named by id, and `Linked` disks are qcow2 overlays whose backing file is the image file (images.md §3), so changing ids would mean rewriting files under running VMs. Names are only labels (images.md §2). Usage and audit belong to the operator who recorded them; carrying them over would double-report in the target. |
+| D20 | **Every server holds the cluster CA key, and the CA is rotated whenever a server leaves** (removed, forgotten or departed) or on demand (§12.5). Until the old CA is retired, a leaf certificate is accepted only if the leader issued it (`issued_certs`). | Any server can sign joins and renewals, so losing one server never stops certificate issuance. A server that leaves takes a copy of the key with it; rotation makes that copy worthless, and the issued-certificate check means it can't mint usable glidex certificates in the meantime. |
+| D21 | **VPC routers are opt-in, per project** (§11.2a). Networks attached to the same VPC router route to each other; different routers, and the shared edge, are isolated from each other. Subnets still come from one cluster IPAM (no overlapping CIDRs in this revision). | Tenants get their own egress address and multi-subnet routing without giving up the isolation of §11.2. One address space keeps port security, metering by address and future peering simple. |
+| D22 | **External traffic on OVN is metered from conntrack accounting in each router's SNAT zone** on the gateway node (§13.2), not from OVN flow statistics. | A connection is external exactly when it is SNATed, which is metering.md D6's definition. OVN exposes no counters on logical objects; OpenFlow statistics by cookie are ambiguous (32-bit cookie prefixes, cookie 0 for conjunctive flows), reset when flows are reinstalled, and depend on how the pipeline is laid out in each OVN version. |
 
 ## 4. Topology
 
@@ -128,6 +131,41 @@ the same server hosts and fail the same way: both need a majority of
 servers. They are kept separate on purpose. glidex never stores its own
 state in OVSDB, and OVN never reads the glidex store.
 
+### 4.1 Scale envelope
+
+What this architecture is sized for, and what limits it. Figures are
+estimates from the measured metering sizes (metering.md §15.6) and
+typical NVMe and LAN latencies; C2 and C3 measure them (§15).
+
+| Dimension | Designed for | Ceiling | What limits it |
+|---|---|---|---|
+| Hosts | 50 | ~100 | The leader alone serves watches, heartbeats (one every 5 s per node), forwarded writes and console relays. OVN is not the limit: the Geneve mesh is n(n−1)/2 tunnels (4,950 at 100 hosts), and OVN runs at that size. |
+| VMs | 2,000 | ~5,000 | The **replicated database on every server**: metering history is about 12 MB per VM at steady state (metering.md §15.6), so 24 GB at 2,000 VMs and 60 GB at 5,000, on each server. Snapshot installs and the network controller's full NB diff per round grow with it. |
+| Sustained writes | ~5–20 per second at 2,000 VMs | ~150–300 per second | One write lane (D3). Each write waits for the leader's and a majority's log `fsync` plus the ReDB commit: about 3–8 ms on NVMe in a LAN. |
+| Bursts | creating 500 VMs (~5–10 writes each) takes 20–40 s of write lane | | Same lane; admission stays correct, callers see latency. |
+| Reads | grow with the number of servers | | ReadIndex round trips are batched by the leader (§6.4). |
+| Metering shipping | ~4.5 MB per hour per 1,000 VMs (about 5 hourly rows of 387 B and 4 slot rows of 669 B per VM per hour) | | Negligible: a couple of 4 MiB entries per hour (§13.1). |
+| Snapshot install on a new server | 24 GB: ~3 min at 1 GbE, ~30 s at 10 GbE | | Network, then disk. Snapshots are built on demand (§6.2), never periodically. |
+
+**Required for these numbers** (both part of C0):
+
+- **Status is written only when it changes.** Today
+  `VmManager::write_status` (`controller/vm.rs:129`) stamps
+  `last_reconciled_at` *before* it checks whether the status changed,
+  so every resync round (`reconcile.resync_secs`, default 30 s) writes
+  every VM. Under Raft that would be N/30 replicated writes per second
+  (67 per second at 2,000 VMs) carrying nothing. `last_reconciled_at`
+  is excluded from the comparison and written with another change, or
+  at most every 10 minutes.
+- **OVN NB writes go through `ovn-nbctl` in daemon mode** (§11.1), so a
+  command doesn't re-download the NB tables it needs every time.
+
+**Beyond the ceiling**, in order: move metering history out of the
+replicated store (a per-server ledger fed by the same shipped hours, or
+an external time-series store), serve watches from followers, pipeline
+the write lane (D3), and replace `ovn-nbctl` with a native OVSDB client
+that applies incremental updates.
+
 ## 5. Cluster lifecycle
 
 ### 5.1 Init
@@ -141,10 +179,13 @@ while any controller round is in flight.
    It undoes an init that went wrong (§5.12); leaving the cluster later
    is a detach (§5.8).
 2. **PKI:** generate the cluster CA (P-256, 10 years) and keep its key
-   as the systemd credential `cluster-ca-key` on server hosts only.
+   as the encrypted systemd credential `cluster-ca-key`
+   (`systemd-creds encrypt`, bound to the host key, and to the TPM2 when
+   there is one). Every server holds it (D20); agents never do.
    Generate this node's certificate (`CN=node:<node-id>`,
    SAN = advertise address, 1 year, renewed at two thirds of its life
-   through the API). Built on `glidex-tls`.
+   through the API) and record its serial in `issued_certs`. Built on
+   `glidex-tls`.
 3. **Store:** generate the cluster id and this node's id (UUIDv4). Open
    the Raft log (`raft/log.redb`). Create the initial snapshot from the
    current `glidex.db` at index 0, with membership = {this node, voter}.
@@ -179,7 +220,12 @@ Init doesn't touch VMs: they keep running and are adopted as usual
 4. **Server joins** add the node as a Raft **learner**. Once its log
    has caught up, it is promoted to voter. Promotion is refused if it
    would leave the cluster with an even number of voters, unless the
-   administrator passes `--force` (§5.11).
+   administrator passes `--force` (§5.11). The leader then sends the CA
+   key to the new server over mTLS (`PUT /cluster/v1/ca`, server
+   certificates only), which stores it as its own encrypted
+   `cluster-ca-key` credential (D20). The key never goes through the
+   Raft log, so it is never in a snapshot or in `gxctl cluster snapshot`
+   output.
 
 A fresh host can also join without ever being standalone: the installer
 skips creating a local database. A host that **already has resources**
@@ -255,6 +301,8 @@ authenticate; it rejoins with its own identity (§5.7).
    4. **Chassis:** `ovn-sbctl chassis-del <node id>`.
    5. **Record:** one write: node `Removed`, certificate serial on
       `node_denylist`.
+   6. **CA rotation:** if the node was a server, the leader starts a CA
+      rotation (§12.5), since the node held the CA key.
 3. On the host, `glidex-install --leave` (or `gxctl cluster leave` there,
    run as root) stops the node role, asks netd to `leave_ovn` (§11.3),
    deletes the certificate, key and `node.db`, and removes the `cluster`
@@ -272,7 +320,8 @@ The administrator asserts it is powered off and will not come back by
 itself. One write makes it `Forgotten`, deny-lists its certificate and
 marks its VMs `Lost` (records kept: they can be deleted, or re-placed
 once shared storage exists, §18). The cluster-side steps of §5.5 (gateway, Raft,
-OVN membership with `cluster/kick`, chassis) are applied to it. A dead
+OVN membership with `cluster/kick`, chassis, and CA rotation for a
+server, whose disk may still hold the key) are applied to it. A dead
 server can only be forgotten while the other voters still form a
 majority; otherwise see §5.12. `gxctl node purge <node>` drops a
 `Forgotten` tombstone's `Lost` VMs and disks and makes it `Removed`.
@@ -378,17 +427,20 @@ exactly one side:
    the cluster store, IPAM reservations freed, node `Departed` with
    `departed_ids`, certificate deny-listed. The response carries a
    **departure receipt** (plan id, bundle hash, revision) signed with
-   the cluster CA.
+   the cluster CA. If the node was a server, the leader then starts a
+   CA rotation (§12.5).
 4. **Switch** (node): with the receipt in hand, it moves NICs as
    planned, renames the pending database to `glidex.db` (the old
-   `node.db` is deleted), removes the `cluster` section and its
-   certificate, and restarts standalone. It adopts its running VMs as
+   `node.db` is deleted), removes the `cluster` section, its
+   certificate and, on a server, its `cluster-ca-key` credential, and
+   restarts standalone. It adopts its running VMs as
    after any restart. Its metering cursors carry on in the new
    database's ledger, so nothing is counted twice or lost.
 
-Before step 3 commits, `gxctl node detach --abort <node>` (or a timeout,
-default 10 min) returns the node to `Active` and the node discards the
-pending database. After a crash between 3 and 4 the node finds the
+Before step 3 commits, `gxctl node detach --abort <node>` (or a timeout:
+`cluster.detach_freeze_secs`, default 600, or `--timeout` on the
+command) returns the node to `Active` and the node discards the pending
+database. After a crash between 3 and 4 the node finds the
 pending database and the receipt on disk and finishes step 4; a pending
 database **without** a receipt is only finished once the leader confirms
 the commit (`GET /cluster/v1/departure/<plan>`), so the node never
@@ -404,13 +456,17 @@ objects of §5.8.1 except `--with-access` data (a node never caches
 users or links). The installer prints the revision the cache is at,
 warns that changes made in the cluster since then are not included,
 asks for confirmation, then performs step 4 of §5.8.2 and destroys the
-node's private key so its old identity can never be used again.
+node's private key so its old identity can never be used again. A
+server also deletes its `cluster-ca-key` credential. The cluster can't
+know that happened, so `forget --departed` of a server always rotates
+the CA (§12.5).
 
 The cluster still has the records. Its administrator runs
 `gxctl node forget <node> --departed`: one write makes the node
 `Departed` (not `Forgotten`: the VMs are not lost, they left), removes
 its objects, frees their reservations and logical ports, and applies the
-cluster-side steps of §5.5. Until then the cluster shows the node as
+cluster-side steps of §5.5 (including CA rotation for a server). Until
+then the cluster shows the node as
 unreachable and keeps its VMs as `Unknown`, which is correct: it cannot
 tell a departed node from a partitioned one.
 
@@ -446,7 +502,7 @@ running throughout.
    | Project names | refused when a project of that name exists | `--project <src>=<existing>` (merge into it) or `--project <src>=new:<name>` |
    | Network names (unique cluster-wide) | refused on conflict | `--network <src>=<new name>`; VM attachments are rewritten to match |
    | Credential names (unique per project) | refused on conflict | `--credential <project>/<src>=<new name>`; VM references rewritten |
-   | Images | each imported as its own record, even if the catalog has the same checksum | none: `Linked` disks use the image file as their qcow2 backing file, so the image id can't change; duplicates can be cleaned up later |
+   | Images | each imported as its own record, even if the catalog has the same checksum | none: `Linked` disks use the image file as their qcow2 backing file, so the image id can't change; duplicates stay separate until a shared image store exists (§18) |
    | Quotas of the target projects | refused if the import exceeds them | `--over-quota`: accepted, projects marked over quota as when an admin lowers a quota |
    | Node networks | stay `scope: node` on the new node | `--map-network <node-net>=<cluster-net>`: NICs move to the cluster network (`move_vm_port` to `br-int`, a new reservation; addresses change as in §5.8.1) |
    | `--with-access` identities | mapped by identity key, re-keyed to the new node id (D13); refused if a user with the same identity exists but differs | `--link-users`: map to the existing user |
@@ -472,7 +528,8 @@ running throughout.
    (the networking.md §7.7 invariant), so no port is dropped in between.
    Mapped NICs are moved. The node confirms and becomes `Active`.
 
-`gxctl node import reject <plan>` (or expiry, default 24 h) discards the
+`gxctl node import reject <plan>` (or expiry: `cluster.import_plan_ttl_secs`,
+default 86400, or `--plan-ttl` on `join-token --allow-import`) discards the
 plan and the staged records; the host stays standalone, untouched.
 Metering history and audit records are **not** imported (D19); export
 them first (`GET /usage` CSV, audit export) if they matter.
@@ -573,7 +630,7 @@ exactly that.
 | Entry size | ≤ 4 MiB; larger write sets are refused with `StoreError::TooLarge` (none exist today: images and disks are files, not values) |
 | Transport | HTTPS on :8842, mTLS, server certificates only; `POST /raft/{append,vote,snapshot}` |
 | Timeouts | heartbeat 250 ms, election 1–2 s (LAN); `cluster.raft.*` settings |
-| Snapshots | every 10 000 entries or 64 MiB of log, whichever comes first; the log is purged up to the snapshot |
+| Snapshots | **built on demand, never periodically**: the state machine is already durable in ReDB, so a snapshot is a stream of one ReDB read transaction (with `last_applied` read in the same transaction) when a follower is too far behind or a learner joins. The log keeps the last 10 000 entries (`raft.log_keep_entries`) after every voter has applied them. A periodic full copy of a database of tens of GB (§4.1) would cost more than it saves. How this maps onto openraft's snapshot builder is checked in C2 **(verify)** |
 | fsync | log entries are fsynced before an ack; state-machine applies are durable through ReDB's commit |
 
 Because applying an entry and advancing `last_applied` are one
@@ -592,6 +649,10 @@ transaction, a crash never applies an entry twice or skips one.
 | `node_denylist` | certificate serial | `{node, at}` |
 | `ipam_subnets` | network id | `{cidr, gateway, pool}` (§11.4) |
 | `ipam_reservations` | `network/mac` | `{ip, vm_id, nic}` |
+| `routers` | router id | `Object<RouterSpec, RouterStatus>` (§11.2a) |
+| `ipam_external` | external IP | `{router}`: addresses taken from `ovn.edge.external_pool` |
+| `issued_certs` | certificate serial | `{node, kind: node \| ovn-chassis \| ovn-db \| nb-client, issuer, not_after}` (D20) |
+| `ca_bundle` | `current` | trusted CA certificates (public only) and rotation state (§12.5) |
 | `image_caches` | `image/node` | `{phase, bytes, verified_at}` (§9.2) |
 | `ledger_inbox` | `node/subject/meter/hour` | shipped hourly rows (§13.1) |
 
@@ -818,11 +879,24 @@ changes. Placement is never changed by the scheduler afterwards (D6).
 | server | the `cluster` config section, the `cluster-ca-key` credential, `ovn-central` (NB, SB, `ovn-northd`), `ovn-host` |
 | agent | the `cluster` config section, `ovn-host` |
 
-Minimum **OVN 24.03 LTS**. That covers the HA chassis groups used
-here, and the multi-chassis port binding needed for live migration
-later (§18). Ubuntu 26.04's packaged version should be checked
-**(verify)**. `ovn-host` uses the host's OVS, so the OVS profile
-(kernel or DPDK) is unchanged.
+**OVN 26.03** (checked 2026-10-08): Ubuntu 26.04 ships `ovn-central`,
+`ovn-host` and `ovn-common` **26.03.0-2** in `resolute/main`, depending
+on `openvswitch-switch (>= 2.17.0~)`, so they run on the archive's OVS
+3.7.1. The man pages of that version document everything this design
+uses: HA chassis groups, `requested-chassis` with `activation-strategy`
+(live migration, §18), `options:snat-ct-zone` on routers (§13.2), and
+the `dynamic-routing-*` options (BGP, §18). glidex pins **26.03 as the
+minimum** and installs the distro packages. OVN branches an LTS every
+two years and the previous LTS was 24.03, so 26.03 should be the
+current LTS; confirm on ovn.org's LTS page when pinning.
+
+No OVN source build is needed, including on hosts that use the pinned
+OVS source build (networking.md §6.3). That build stops and disables
+the distro OVS service but leaves its package installed, so the
+`ovn-host` dependency still resolves. It uses `--localstatedir=/var`, so
+`ovn-controller` finds OVSDB at the usual
+`/var/run/openvswitch/db.sock`. `ovn-host` uses the host's OVS, so the
+OVS profile (kernel or DPDK) is unchanged.
 
 ### 10.2 Configuration
 
@@ -836,19 +910,34 @@ later (§18). Ubuntu 26.04's packaged version should be checked
   "tunnel_ip": "192.0.2.11",
   "node_grace_secs": 40,
   "shared_local_accounts": false,
-  "raft": { "heartbeat_ms": 250, "election_ms": [1000, 2000], "snapshot_entries": 10000 },
+  "raft": { "heartbeat_ms": 250, "election_ms": [1000, 2000], "log_keep_entries": 10000 },
   "scheduler": { "cpu_overcommit": 4.0, "memory_overcommit": 1.0 },
   "node_reserved": { "cpus": 1, "memory_mib": 2048 },
+  "detach_freeze_secs": 600,
+  "import_plan_ttl_secs": 86400,
+  "ca_rotation_grace_secs": 604800,
   "ovn": {
     "underlay_mtu": 1500,
     "nat_supernet": "10.89.0.0/16",
-    "edge": { "physnet": "uplink", "external_cidr": "192.0.2.0/24", "external_ip": "192.0.2.50", "gateway": "192.0.2.1", "gateway_nodes": ["h1", "h2", "h3"] },
+    "edge": {
+      "physnet": "uplink", "external_cidr": "192.0.2.0/24", "gateway": "192.0.2.1",
+      "external_ip": "192.0.2.50",
+      "external_pool": "192.0.2.64/26",
+      "gateway_nodes": ["h1", "h2", "h3"]
+    },
+    "snat_ct_zones": [60000, 64999],
     "dns_servers": ["192.0.2.53"]
   }
 }
 ```
 
-Without a `cluster` section the host is standalone (D5). The
+Without a `cluster` section the host is standalone (D5).
+`detach_freeze_secs`, `import_plan_ttl_secs` and `ca_rotation_grace_secs`
+are the defaults; `gxctl node detach --timeout`, `join-token
+--plan-ttl` and `cluster rotate-ca --grace` override them per operation.
+`external_ip` is the shared edge's address; `external_pool` holds the
+addresses given to VPC routers (§11.2a). Neither may overlap the other or
+the gateway. The
 addresses above are documentation examples (RFC 5737).
 
 ## 11. OVN networks
@@ -861,13 +950,18 @@ addresses above are documentation examples (RFC 5737).
   **glidex modifies or deletes only NB rows it owns.**
 - Names: logical switch `gx-<network id>`, port `gx-<vm8>-<i>`
   (the tap name, so `iface-id` = port name), edge router `gx-edge`,
-  address sets `gx_nodes` and `gx_nat_supernet`.
+  VPC routers `gxr-<router id>`, address sets `gx_nodes`,
+  `gx_nat_supernet` and, per VPC router, `gx_r_<router8>_nets`.
 - The leader's network controller writes NB through `ovn-nbctl
   --db=ssl:<servers> --format=json`, with commands chained by `--` so
   each change is **one NB transaction**. It uses a client certificate
   from the cluster CA (credential `ovn-nb-client`). This lives in a new
   library crate, `glidex-ovn`, mirroring how `glidex-ovs` wraps
-  `ovs-vsctl`. A native OVSDB JSON-RPC client is a later change.
+  `ovs-vsctl`. `ovn-nbctl` runs in **daemon mode** (`ovn-nbctl
+  --detach`, commands sent with `OVN_NB_DAEMON` set), started and
+  supervised by the control plane on the leader. It keeps an in-memory
+  replica of NB, so a command doesn't re-download the tables it needs
+  each time (§4.1). A native OVSDB JSON-RPC client is a later change.
 - **Reconcile:** each round, the controller diffs the desired NB rows
   (from networks, IPAM and placements) against the NB rows glidex owns,
   and applies the difference. It reports, and never deletes, NB rows
@@ -878,11 +972,12 @@ addresses above are documentation examples (RFC 5737).
 | Mode (`scope: cluster`) | OVN objects | Notes |
 |---|---|---|
 | **isolated** | one logical switch; DHCP options with no router | No path to the host: `br-int` has no host address, so the networking.md/security.md §8.4 fence holds by construction. |
-| **nat** | logical switch, plus a router port on `gx-edge` (gateway `.1` of the subnet); DHCP options (router, DNS = `ovn.dns_servers`, MTU); SNAT `subnet → edge.external_ip` | `gx-edge` has one gateway port on the provider switch of `edge.physnet`, scheduled on an **HA chassis group** of `edge.gateway_nodes` (D11). |
+| **nat** | logical switch, plus a router port on `gx-edge`, or on the network's VPC router when it has one (§11.2a), with gateway `.1` of the subnet; DHCP options (router, DNS = `ovn.dns_servers`, MTU); SNAT `subnet → <router's external IP>` | Each router has one gateway port on the provider switch of `edge.physnet`, scheduled on an **HA chassis group** of `edge.gateway_nodes` or the VPC router's own gateway nodes (D11). Gateway nodes must have `br_int_datapath = system` (§13.2). |
 | **provider** (bridged, optional VLAN) | logical switch with a `localnet` port `network_name=<physnet>`, `tag=<vlan>` | Guests use the LAN's own DHCP. Port security is MAC-only (no reservation to enforce). Nodes declare which physnets they map (§11.3). |
 
 **Isolation on `gx-edge`.** The rules use the OVN address sets from
-§11.1 (`gx_nodes`, `gx_nat_supernet`).
+§11.1 (`gx_nodes`, `gx_nat_supernet`). VPC routers use the same rules
+with one exception (§11.2a).
 
 | Rule (logical router policy) | Effect |
 |---|---|
@@ -895,6 +990,59 @@ handled before policy routing, so they still work.
 **Shared networks** (security.md §6.2.1) keep their meaning. Sharing
 grants attach rights; it never routes between networks.
 
+### 11.2a VPC routers
+
+A **VPC router** is a project-owned logical router. NAT networks
+attached to it route to each other and share its egress. It is an
+alternative to the shared `gx-edge`, not a replacement (D21).
+
+```rust
+pub struct RouterSpec {
+    pub name: String,                     // [a-z0-9-], ≤ 32, unique per project
+    pub external: bool,                   // has a gateway: SNAT to the outside (default true)
+    pub external_ip: Option<Ipv4Addr>,    // None: next free address of ovn.edge.external_pool
+    pub gateway_nodes: Option<Vec<NodeId>>, // None: ovn.edge.gateway_nodes
+}
+pub struct RouterStatus {
+    pub common: StatusCommon,             // Ready, observed_generation
+    pub external_ip: Option<Ipv4Addr>,    // the address actually reserved (ipam_external)
+    pub snat_ct_zone: Option<u16>,        // from ovn.snat_ct_zones (§13.2)
+    pub active_gateway: Option<NodeId>,   // where SNAT runs now
+}
+// Network gains: pub router: Option<String>   // nat mode, scope cluster; immutable after create
+```
+
+| Router | OVN objects |
+|---|---|
+| `external: true` | logical router `gxr-<id>` with a gateway port on the `edge.physnet` provider switch holding `external_ip`; an HA chassis group of its gateway nodes; one SNAT entry per attached network (`subnet → external_ip`); `options:snat-ct-zone` from `ovn.snat_ct_zones`; a default route to `edge.gateway` |
+| `external: false` | logical router only: its networks route to each other and reach nothing else |
+
+**Isolation.** Each VPC router gets the `gx_nodes` drop, and instead of
+`gx-edge`'s supernet drop it gets
+`ip4.dst == $gx_nat_supernet && ip4.dst != $gx_r_<router8>_nets` →
+**drop**, where `gx_r_<router8>_nets` lists its own networks' subnets.
+Its networks therefore reach each other, but not other VPCs, not
+networks on `gx-edge`, and not glidex hosts. Other routers' subnets can
+only be reached through their external IP, which only accepts replies
+(SNAT, no DNAT). Floating IPs and port forwarding are later work (§18).
+
+**Rules.**
+
+- Created and deleted by a project's `network.manage` holders
+  (security.md §7.2). Choosing `external_ip` or `gateway_nodes`
+  explicitly needs `host.network`, because both are site resources.
+- New quotas: `routers` (default 1 per project) and `external_ips`
+  (default 1). They are checked in the same admission write that
+  reserves the address in `ipam_external` (reconciliation.md D5). The
+  external pool is a site resource, and running out of it is
+  `409 external_pool_exhausted`.
+- A network's `router` is set at creation and immutable. Subnets come
+  from the cluster IPAM as for any NAT network (§11.4, no overlap).
+  Deleting a router is refused while networks are attached.
+- The network controller (§11.1) owns routers like networks: it creates,
+  repairs and deletes `gxr-*` rows, and reports `Ready` with the active
+  gateway.
+
 ### 11.3 Hosts joining OVN (netd)
 
 New netd ops, all on the full socket under the existing policy (§7.2 of
@@ -906,6 +1054,7 @@ networking.md):
 | `ovn_status` | – → `{controller_running, sb_connected, br_int, ports: [{lport, ovn_installed}]}` | Read-only. |
 | `leave_ovn` | `{confirm}` → – | Removes the glidex `external_ids` from `Open_vSwitch`, stops and disables `ovn-controller`, deletes the OVN certificates. Refused while a glidex VM port is on `br-int` (move or detach it first). `br-int` itself is left in place, as OVN leaves it. |
 | `move_vm_port` | `{vm_id, nic_index, to_bridge, ovn_lport?}` → binding (+ `ipv4` on a NAT bridge) | Moves a VM port between `br-int` and a glidex bridge (either way) **without recreating the tap or vhost-user socket**: `del-port` then `add-port` with the new `external_ids` (and `iface-id` when `ovn_lport` is set), MTU re-applied, NAT reservation taken on the new bridge, the stored `vm_ports` record updated in the same step. The hypervisor keeps its tap fd; OVS reconnects a vhost-user client port by itself. Both bridges must have the same datapath type for vhost-user. Owner check as `detach_vm_port`. |
+| `ct_external_counters` | – → per `(zone, VM address)`: `ext_tx`/`ext_rx` bytes and packets (L2-normalized), `epoch` | Read-only, full socket only. Gateway nodes (§13.3): conntrack accounting in glidex's SNAT zones, cumulative and persisted. |
 
 - Provider physnets map to glidex bridges that netd already manages,
   with uplinks and IP migration (networking.md §8). OVN only gets the
@@ -978,7 +1127,7 @@ are unique cluster-wide.
 
 | Asset | Where | Protection |
 |---|---|---|
-| Cluster CA key | server hosts | systemd credential, root-only; used only for signing CSRs and renewals |
+| Cluster CA key | every server host (D20) | encrypted systemd credential (`systemd-creds`, host key and TPM2 when present); sent only server-to-server over mTLS (§5.2), never through Raft or snapshots; used only for signing CSRs and renewals; rotated when a server leaves (§12.5) |
 | Node certificate and key | every host | `/var/lib/glidex-control-plane/cluster/` 0600, owned by the `glidex` user |
 | OVN certificates | every host (netd), servers (NB/SB) | `/etc/glidex/ovn/` 0600 root; NB client certificate as a control-plane credential |
 | Join and rejoin tokens | shown once | stored as SHA-256; single-use; TTL; read by the installer from stdin or a file only; `allow_import` and rejoin node id are part of the token record, not of what the host claims |
@@ -1037,7 +1186,59 @@ Every forwarded request is audited on the leader with the original
 principal and `forwarded_by`. Node status writes are audited as
 `system:node:<id>` only when they change `spec.power` (reconciliation.md
 D12) or fail authorization. Cluster membership operations and
-`--force-new-cluster` are always audited.
+`--force-new-cluster` are always audited, and so is every step of a CA
+rotation (§12.5).
+
+### 12.5 CA rotation
+
+Every server holds the CA key (D20), so **a server that leaves takes a
+copy of it**, whether it was removed (§5.5), forgotten (its disk may be
+recovered, §5.6) or departed (§5.8, including offline). The leader
+therefore rotates the CA:
+
+- **automatically**, after the leave of any server commits;
+- **on demand**, with `gxctl cluster rotate-ca [--grace <secs>]`
+  (`host.cluster`, step-up), e.g. on suspected compromise;
+- **before expiry**, starting one year before the CA's `not_after`.
+
+Steps, each recorded in `ca_bundle` so a new leader resumes where the
+old one stopped:
+
+1. **New CA.** The leader generates a new CA key and certificate, and
+   sends the key to every remaining server (`PUT /cluster/v1/ca`), which
+   stores it as `cluster-ca-key` beside the old one. The rotation waits
+   until every server has acknowledged.
+2. **Trust both.** One write sets the trust bundle to {old, new}. Every
+   node installs it for :8842. netd installs it as the CA file of OVN
+   (`ovn-controller`; and, on servers, the NB/SB `ovsdb-server`s and
+   `ovn-northd`). The OVN processes are restarted if they don't reload
+   CA files on their own **(verify)**: ovn-controller keeps forwarding
+   on installed flows across a restart (§14).
+3. **Re-issue.** Every node renews its node certificate, and netd its OVN
+   certificates, by CSR. They are signed with the new CA and recorded in
+   `issued_certs`. Nodes report their certificates' issuer in their
+   status.
+4. **Retire the old CA.** Once every `Ready` node reports only new-CA
+   certificates, or after `ca_rotation_grace_secs` (default 7 days),
+   one write sets the bundle to {new}. Nodes then stop accepting
+   old-CA certificates, and every server deletes the old key. A node
+   still on the old CA (unreachable during the whole rotation) can't
+   connect any more; it comes back with a rejoin token (§5.7).
+
+**During the window**, glidex's own port (:8842) accepts a leaf
+certificate only if its serial is in `issued_certs` and not in
+`node_denylist`. A departed server can sign certificates with the old
+key, but none of them is in the registry, so they don't work on :8842,
+even before step 4. OVN's SSL connections check only the CA, so for OVN
+the window stays open until step 4. SB role-based access limits a
+chassis to its own rows, and `requested-chassis` keeps the port bindings
+of glidex VMs on their own nodes (§11.5). Steps 1–3 are fast; the grace
+period only exists for unreachable nodes, so an administrator who wants
+the OVN window closed at once runs `rotate-ca --grace 0` and lets those
+nodes rejoin.
+
+If another server leaves during a rotation, the rotation restarts from
+step 1 with a fresh CA: the new key has been exposed too.
 
 ## 13. Metering in a cluster
 
@@ -1065,26 +1266,78 @@ every 30 s with nothing but cursors in it. Instead:
 - **Per-VM NIC meters:** unchanged. OVS `Interface.statistics` of the
   tap or vhost-user port, now on `br-int` (`port_stats` matches
   `iface-id` to a VM).
-- **Per-network totals:** metering.md D7 counts "bridge ingress", which
-  doesn't exist for a network that spans hosts. On OVN networks the
-  network total is **Σ VM-port tx** (traffic entering the network from
-  VMs) **+ edge ingress** (traffic entering from the router or
-  localnet), read on the active gateway node.
-  *How* to read edge ingress per network is open: per-flow counters on
-  the gateway chassis (`ovs-ofctl dump-flows br-int` by OVN flow
-  cookie) or an OVN-level counter **(verify)** (O3).
-- **External/internal split** (metering.md D6) uses nftables on the
-  host's forward path, which OVN traffic never crosses. On OVN NAT
-  networks the split is read at `gx-edge`. Until that is built and
-  verified, OVN NAT networks report totals without a split, and the
-  ledger flags them `split_unavailable`, rather than reporting wrong
-  numbers (same principle as metering.md D17).
+- **External/internal split** (metering.md D6): from **conntrack
+  accounting in each router's SNAT zone** (D22, §13.3). Outbound bytes of
+  a connection SNATed for VM address A are A's `ext_tx`; its reply bytes
+  are A's `ext_rx`. Everything else a VM sends or receives is internal.
+- **Per-network totals:** metering.md D7 counts bridge ingress, and a
+  network that spans hosts has no single bridge. On OVN NAT and isolated
+  networks the total is **Σ VM-port tx + Σ external inbound** (the
+  conntrack reply bytes of the network's VMs). Every byte is counted
+  once, where it entered the network's VMs' address space: traffic
+  between two networks of one VPC router counts in the sender's network
+  only, so the totals of a VPC's networks add up without double
+  counting, as D7 intends for bridges.
+- **Provider networks** report per-VM meters only, with no network total
+  and no split (flag `network_total_unavailable`). The `localnet` patch
+  port is shared by every provider network on the same physnet, so no
+  per-network source exists. A wrong total is worse than none
+  (metering.md D17).
 
-### 13.3 Fallback
+### 13.3 Why conntrack, and how (O3)
 
-If O3 turns out to have no workable OVN-side counter, the fallback is a
-small tc program on each gateway node's localnet interface, counting
-per source subnet. That is the only eBPF D15 allows.
+Findings from the OVN 26.03 documentation (`ovn-nb(5)`, `ovn-sb(5)`,
+`ovn-northd(8)`, `ovn-architecture(7)`):
+
+| Candidate | Finding | Verdict |
+|---|---|---|
+| Counters on NB/SB objects | None exist. Router policies, NAT entries, ACLs and ports have no byte or packet counters. | not available |
+| IPFIX sampling (`Sample`, `Sample_Collector`, ACL `sample_new`/`sample_est`) | Probability up to 65535/65535 (every packet), exported as IPFIX through OVS. At 100 % that is one export per packet on the datapath. | too costly for billing |
+| OpenFlow statistics per logical flow | `ovn-controller` sets each OpenFlow flow's cookie to the first 32 bits of its logical flow's UUID, which is "not necessarily unique"; conjunctive-match flows all use cookie 0. Counters reset when flows are reinstalled (recompute, upgrade). Per-network egress could come from the per-NAT-entry flows of the router's SNAT stage. Per-VM ingress could come from the per-address flows of ARP/ND resolution (`outport == P && reg0 == A`), but on a VPC router those also count traffic routed between its own networks. The layout changes between OVN versions. | rejected as primary |
+| **Conntrack in the router's SNAT zone** | Every SNATed connection is committed in the router's SNAT zone on the chassis that runs it: the active gateway, since `snat` entries on a distributed gateway port are chassis-resident (`is_chassis_resident(cr-…)`). The original tuple holds the VM's address. With accounting on, each entry carries bytes and packets for both directions. `options:snat-ct-zone` lets glidex fix the zone per router. | **chosen** (D22) |
+
+**Design.**
+
+- The network controller gives each router (the shared edge and every
+  VPC router) a zone from `ovn.snat_ct_zones` (default 60000–64999) and
+  sets `options:snat-ct-zone`.
+- Gateway nodes need `br_int_datapath = system` (the kernel datapath
+  uses netfilter conntrack, which has netlink events). OVS's userspace
+  conntrack has no equivalent. Edge configuration and VPC router
+  creation refuse other gateway nodes.
+- netd on a gateway node sets `net.netfilter.nf_conntrack_acct=1`
+  (recorded like `ip_forward`, networking.md §10; it adds a small
+  extension to every conntrack entry on the host). It then keeps
+  per-(zone, VM address, direction) **cumulative** counters:
+  - it subscribes to conntrack `DESTROY` events (netlink, in-process;
+    the `conntrack` CLI is only for debugging) to capture the final
+    counters of closed connections;
+  - it dumps the glidex zones once per metering round to account live
+    connections, as deltas against each connection's last seen counters
+    (keyed by conntrack id).
+- New read-only netd op **`ct_external_counters`** (full socket, never
+  the status socket, like `nat_counters`). It returns the cumulative
+  counters, L2-normalized like `nat_counters` (+14 bytes per packet),
+  with an epoch for metering's reset rule. Before replying, netd
+  persists the totals and per-connection baselines to its database, so
+  the counters stay monotonic across netd restarts.
+- **Known gap:** a connection that opens and closes entirely while netd
+  is down is never seen. The metering ledger flags the hour
+  (`ext_gap`), as for other collection gaps (metering.md §6.4).
+- **Gateway failover** resets connections anyway (§14). Each node's
+  counters are a separate metering source, `(node, zone)`, and the
+  cluster ledger sums them per VM.
+- **Floating IPs** (later, §18) would SNAT on the VM's own chassis. The
+  same collector then runs on every node, with no change to the
+  design.
+- **To check on a real host in C6 (verify):**
+  - `snat-ct-zone` is honoured for routers with a distributed gateway
+    port, not only for gateway routers;
+  - `DESTROY` events carry the counters of entries OVS committed;
+  - zones from `snat_ct_zones` don't clash with the zones
+    `ovn-controller` allocates for itself;
+  - per-VM `ext_*` within 1 % of an `iperf3`/`curl` byte count through
+    NAT.
 
 ## 14. Failure behaviour
 
@@ -1098,6 +1351,10 @@ per source subnet. That is the only eBPF D15 allows.
 | Node crashes during a detach | Before commit: node stays `Departing`, the plan times out back to `Active`. After commit: the node finishes the switch from its receipt (§5.8.2) | automatic |
 | Leader changes during an import | The plan and staged records are in the store; approval or commit is retried by the new leader; nothing is live until the commit write (D17) | automatic |
 | Host loses its Raft or OVN database file | It must not rejoin as the same voter (D18) | Rejoin as a learner (§5.7) |
+| A server leaves (any way) | CA rotation starts (§12.5); certificates still work throughout steps 1–3 | automatic; unreachable nodes rejoin after step 4 |
+| Leader changes during a CA rotation | `ca_bundle` records the step; the new leader resumes it | automatic |
+| netd down on the active gateway | NAT keeps working (OVN); connections that open and close meanwhile are not metered (`ext_gap`, §13.3) | automatic |
+| External pool exhausted | VPC router creation fails with `409 external_pool_exhausted`; existing routers unaffected | site enlarges `ovn.edge.external_pool` |
 | Active gateway node dies | OVN fails SNAT over to the next chassis in the HA group; connections through it are cut, the gateway address stays the same | automatic |
 | OVN NB/SB quorum lost | Existing flows keep forwarding (`ovn-controller` keeps its last state); network changes and new ports wait (`NetworkReady=False/OvnUnavailable`) | as for the glidex store |
 | netd restart on a node | as today (networking.md §7.7); `br-int` ports and `iface-id`s are preserved | automatic |
@@ -1158,6 +1415,24 @@ per source subnet. That is the only eBPF D15 allows.
 - **Round trip:** detach a node from cluster A, import it into cluster
   B, detach it from B and import it back into A (accepted through A's
   `departed_ids`).
+- **CA rotation (§12.5):** remove a server; rotation completes with no
+  failed request; a certificate signed with the old key by the removed
+  server (simulated) is refused on :8842 before and after step 4; an
+  unreachable agent is cut off at step 4 and rejoins; a leader kill at
+  each step resumes; OVN keeps forwarding across the CA switch.
+- **VPC routers (§11.2a):** two networks on one VPC router reach each
+  other; neither reaches a network on `gx-edge`, another VPC, or a host;
+  egress leaves from the router's own external IP; gateway failover
+  keeps that IP; quotas and pool exhaustion refuse creation.
+- **External metering on OVN (§13.3):** per-VM `ext_*` and network
+  totals within 1 % of `iperf3`/`curl` byte counts, for the shared edge
+  and a VPC router; a netd restart in the middle of a long transfer
+  loses nothing; a short connection made while netd is stopped is
+  flagged `ext_gap`.
+- **Scale (§4.1):** a synthetic load of 2,000 VMs on 50 simulated nodes
+  (fake netd, real Raft on three hosts): steady-state write rate, write
+  latency per entry, leader CPU, database size, and snapshot install
+  time, recorded in this document.
 
 ## 16. Edits to existing documents
 
@@ -1167,10 +1442,10 @@ per source subnet. That is the only eBPF D15 allows.
 | architecture.md | Roles (§4), the `Store` layer, node role and watch; single-host picture stays as the standalone case. |
 | reconciliation.md | §6.2 status writes through the leader (§8.3); §9.4 startup per role; D8 cluster form (§8.2); finalizer `vm.ipam`. |
 | data-model.md | `status.placement`, `Disk.node`, `Network.scope`/`node`, `nodes` and `ipam_*` tables. |
-| networking.md | netd ops `ensure_ovn_chassis`, `ovn_status`, `leave_ovn`, `move_vm_port`; `ovn_lport` on `attach_vm_port`; ownership on `br-int`; §11 network modes by scope. |
-| security.md | §5.2 break-glass on servers only (D14); identity keys (D13); §7 `Host`/`Cluster` entities, `host.cluster`, node authorization (§12.3); §8.4 isolation on OVN (§11.2). |
+| networking.md | netd ops `ensure_ovn_chassis`, `ovn_status`, `leave_ovn`, `move_vm_port`, `ct_external_counters` (and `nf_conntrack_acct` on gateways); `ovn_lport` on `attach_vm_port`; ownership on `br-int`; §11 network modes by scope. |
+| security.md | §5.2 break-glass on servers only (D14); identity keys (D13); §7 `Host`/`Cluster` entities, `host.cluster`, node authorization (§12.3); §8.4 isolation on OVN and VPC routers (§11.2, §11.2a); §6.3 quotas `routers` and `external_ips`; CA on every server and rotation (D20, §12.5). |
 | images.md | Per-node image caches; disk binding (§9.2). |
-| metering.md | §5.4–5.5 on OVN networks, node-local accumulation and shipping (§13); `split_unavailable` flag. |
+| metering.md | §5.4–5.5 on OVN networks: conntrack-based split (D22, §13.3), network totals, provider networks without totals; node-local accumulation and shipping (§13.1); flags `ext_gap`, `network_total_unavailable`. |
 | installer.md | `--join [--import]`, `--rejoin`, `--leave [--keep-resources [--offline]]`, `--reset`, token from stdin or `--token-file`; roles and OVN packages; `cluster init` backup; refusing a plain join on a host with resources. |
 | rest-api.md, cli.md, web-ui.md | `/cluster/*`, `/nodes`, `gxctl cluster init\|leave\|dissolve\|status\|snapshot\|join-token`, `gxctl node drain\|undrain\|remove\|forget\|purge\|rejoin-token\|detach\|promote\|import show\|approve\|reject`; a Cluster page with node phases and pending detaches and imports; `503 cluster_unavailable`, `409 node_departing`, `X-Glidex-Consistency`. |
 | control-plane config | `cluster` section (§10.2); `pci.allow[].node`. |
@@ -1182,14 +1457,14 @@ passing in CI. C0 and C1 change nothing for standalone users.
 
 | # | Scope | Acceptance |
 |---|---|---|
-| **C0** Store API | `Store`, `Tx`, write sets; all 40 `begin_write` sites moved; `Local` implementation; `subscribe` replaces the `Bell` | Every existing test passes; write-set replay test (§15); a `grep` lint in CI forbids `begin_write` outside `store/`. |
+| **C0** Store API | `Store`, `Tx`, write sets; all 40 `begin_write` sites moved; `Local` implementation; `subscribe` replaces the `Bell`; status written only on change (§4.1) | Every existing test passes; write-set replay test (§15); a `grep` lint in CI forbids `begin_write` outside `store/`; an idle VM causes no store write across ten resync rounds. |
 | **C1** Node identity in the model | `nodes` table with one implicit node `local`; `status.placement`, `Disk.node`, `Network.scope`; `Host::"<node>"` + `Cluster`; identity re-keying code (D13); role split inside the process (node and server controller sets) | Schema migration test from the current schema; API and UI show the node; Cedar tests for host- vs cluster-scoped actions. |
 | **C2** Raft | `openraft` with ReDB log and state machine; mTLS transport; `cluster init`, join tokens and CSR signing, learners and voters, forwarding, ReadIndex reads, snapshots, `cluster snapshot`, `--force-new-cluster`, feature level | §15 Raft and linearizability tests; three control planes on one machine (separate directories and ports) survive killing the leader with writes continuing. |
 | **C3** Node role over the network | watch, node cache and outbox, status writes (§8.3), heartbeats and liveness, console/stats relay, image caches, ledger shipping; agent-only installs | Two hosts: a VM created on the server runs on the agent; agent restart adopts its VMs; with servers unreachable, the agent's VMs keep running and the outbox drains on reconnect; ledger totals equal the single-host run of the same workload. |
 | **C4** Scheduler | filters and score (§9.1), sticky placement, `spec.node`, disk binding, drain | Unit tests over node fixtures; e2e: VMs fill two nodes by capacity; a VM with a node-bound disk lands on that node; `Unschedulable` explains why. |
-| **C5** OVN foundation | `ovn-central`/`ovn-host` install, OVN PKI, `ensure_ovn_chassis`, `glidex-ovn` crate, cluster IPAM, isolated and NAT networks on `gx-edge` with an HA gateway, port security, DHCP and MTU, cluster `default` network | §15 OVN e2e tests 1–4. |
-| **C6** Provider networks and metering on OVN | localnet with VLAN tags, physnet mapping onto netd bridges, scheduler physnet filter; §13.2 meters with O3 resolved | e2e test 5; per-VM and per-network meters on OVN networks within 1 % of an `iperf3` byte count. |
-| **C7** Operations and membership | node phases (§5.3), drain, remove, forget, purge, rejoin with D18; rolling upgrades with feature-level gating, certificate renewal, `cluster status` port checks, Cluster page in the UI, runbook (recovery of both Raft groups) | §15 upgrade and membership tests; certificate renewal under load; documented recovery exercised on the test cluster. |
+| **C5** OVN foundation | `ovn-central`/`ovn-host` 26.03 install, OVN PKI, `ensure_ovn_chassis`, `glidex-ovn` crate with `ovn-nbctl` in daemon mode, cluster IPAM, isolated and NAT networks on `gx-edge` with an HA gateway, port security, DHCP and MTU, cluster `default` network | §15 OVN e2e tests 1–4. |
+| **C6** Provider networks, VPC routers and metering on OVN | localnet with VLAN tags, physnet mapping onto netd bridges, scheduler physnet filter; VPC routers, external pool, `routers`/`external_ips` quotas (§11.2a); `snat-ct-zone`, `ct_external_counters`, network totals (§13.2–13.3), with the host checks of §13.3 done first | e2e test 5; §15 VPC router and external metering tests. |
+| **C7** Operations and membership | node phases (§5.3), drain, remove, forget, purge, rejoin with D18; CA on every server and rotation (§12.5); rolling upgrades with feature-level gating, certificate renewal, `cluster status` port checks, Cluster page in the UI, runbook (recovery of both Raft groups) | §15 upgrade, membership and CA rotation tests; §15 scale run with figures recorded in §4.1; certificate renewal under load; documented recovery exercised on the test cluster. |
 | **C8** Detach and import | departure bundle, two-phase detach with receipt, offline detach and `forget --departed`, import plans with checks and mappings, approval, staged commit, `move_vm_port`, `leave_ovn`, `cluster dissolve` | §15 detach, import and round-trip tests, all with running VMs. |
 
 Dependencies: C0 → C1 → C2 → C3 → C4. C5 needs C3 (node role) and
@@ -1220,16 +1495,27 @@ cluster networks (no `move_vm_port` mapping) need only C7 without C5.
 - **Keeping addresses across a detach or import** for NICs on mapped
   networks (e.g. moving a cluster subnet with its VMs), instead of
   re-addressing them (§5.8.1).
+- **A shared image store**, which also deduplicates images imported
+  with the same checksum (§5.9).
+- **Floating IPs and port forwarding** on VPC routers (`dnat_and_snat`),
+  overlapping CIDRs between VPCs (D21), and peering between VPCs.
+- **Metering history outside the replicated store**, follower-served
+  watches and the other steps past the §4.1 ceiling.
 
-## 19. Open questions
+## 19. Resolved questions
 
-| # | Question |
-|---|---|
-| O1 | Should the cluster CA key live on every server (any server can sign) or only on the first (simpler, but signing stops if it is lost)? Current text: every server. |
-| O2 | Is OVN 24.03+ what Ubuntu 26.04 ships, or does the pinned source build (networking.md §6.3) need an OVN component? |
-| O3 | Per-network edge ingress and the external/internal split on `gx-edge`: which OVN counter, read where (§13.2)? |
-| O4 | Should NAT networks be able to have their own egress IP (a router per network) in addition to the shared `gx-edge`? |
-| O5 | Upper bound on agent count before watch fan-out from a single leader needs follower-served watches. 20 hosts is far from it; measure in C3. |
-| O6 | On import, should images whose checksum matches a target catalog image be merged once no `Linked` disk uses the imported copy, or always kept as separate records (D19)? |
-| O7 | Should a detach be able to take resources that are *not* on the node (e.g. a project's credentials no local VM references) for a host that will form a new cluster? Current text: only what its VMs reference. |
-| O8 | Default expiry of a pending import plan (24 h) and of a frozen detach (10 min): long enough for a human approval, short enough not to block the node? |
+| # | Question | Resolution |
+|---|---|---|
+| O1 | Where does the cluster CA key live? | On **every server**, as an encrypted credential, and **rotated whenever a server leaves** (D20, §5.2, §12.5). |
+| O2 | Which OVN does Ubuntu 26.04 ship? | **26.03.0-2** in `resolute/main`, built for the archive's OVS 3.7.1; it documents every OVN feature used here. Minimum pinned to 26.03; no OVN source build (§10.1). |
+| O3 | How to meter edge ingress and the external split on OVN? | **Conntrack accounting in each router's SNAT zone** on the gateway node (D22, §13.2–13.3). OVN has no counters on logical objects; IPFIX sampling and OpenFlow cookie statistics were rejected. Host checks listed in §13.3. |
+| O4 | Own egress per network? | **VPC routers**: opt-in, per project, several networks each, own external IP and gateway group (D11, D21, §11.2a). |
+| O5 | What scale does this architecture support? | **Designed for 50 hosts and 2,000 VMs; ceiling about 100 hosts and 5,000 VMs**, limited by the replicated metering history and the single leader (§4.1). Requires status writes only on change and `ovn-nbctl` in daemon mode (C0, C5). |
+| O6 | Merge imported images with matching checksums? | **No, kept separate** for now; deduplication comes with a shared image store (§5.9, §18). |
+| O7 | What does a detach take? | **Only what its VMs reference** (§5.8.1), unchanged. |
+| O8 | Detach freeze and import plan expiry? | **Defaults kept** (10 min, 24 h), now **configurable**: `cluster.detach_freeze_secs`, `cluster.import_plan_ttl_secs`, with per-operation overrides (§10.2). |
+
+Items still marked **(verify)** are host checks inside their milestones:
+mapping on-demand snapshots onto openraft (§6.2, C2); OVN CA-file reload
+(§12.5, C7); `snat-ct-zone`, conntrack events and zone allocation
+(§13.3, C6); Cloud Hypervisor vhost-user migration (§18).
