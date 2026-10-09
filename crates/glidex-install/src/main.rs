@@ -107,11 +107,16 @@ fn main() -> Result<()> {
     print_plan(&opts);
 
     install_system_packages(&opts, &platform)?;
-    let cargo = install_rust(&platform)?;
-    let bun = install_bun(&platform)?;
-    check_kvm();
-    build_project(&cargo, &opts)?;
-    build_ui(&bun)?;
+    if opts.prebuilt {
+        check_prebuilt(&opts)?;
+        check_kvm();
+    } else {
+        let cargo = install_rust(&platform)?;
+        let bun = install_bun(&platform)?;
+        check_kvm();
+        build_project(&cargo, &opts)?;
+        build_ui(&bun)?;
+    }
 
     let user = invoking_user();
     let user_home = invoking_user_home(&user)?;
@@ -324,6 +329,11 @@ struct Options {
     join: Option<JoinOptions>,
     /// `--leave`: this host's node was removed; go back to standalone (§5.5).
     leave: bool,
+    /// `--prebuilt`: install the binaries and UI already in this workspace's
+    /// `target/release` and `crates/glidex-ui/ui/dist` (built on another host
+    /// with the same OS) instead of installing Rust and Bun and building.
+    /// Never saved.
+    prebuilt: bool,
     /// `--keep-resources --offline` with `--leave`: take this host's VMs along
     /// while no server can be reached (§5.8.3).
     offline: bool,
@@ -357,6 +367,7 @@ impl Default for Options {
             join: None,
             leave: false,
             offline: false,
+            prebuilt: false,
         }
     }
 }
@@ -408,6 +419,7 @@ impl Options {
                 "--import" => o.join.get_or_insert_with(JoinOptions::default).import = true,
                 "--node-id" => o.join.get_or_insert_with(JoinOptions::default).node_id = Some(value("--node-id")?),
                 "--leave" => o.leave = true,
+                "--prebuilt" => o.prebuilt = true,
                 "--keep-resources" => {}
                 "--offline" => o.offline = true,
                 "--role" => {
@@ -476,7 +488,9 @@ fn print_help() {
          \x20     --allow-ovs-restart    allow restarting ovs-vswitchd while it has bridges\n\
          \x20     --no-ovn               skip OVN (cluster networks need it; default: installed,\n\
          \x20                            its services off until the host is in a cluster)\n\
-         \x20     --qemu, --networking, --services   undo an earlier --no-*\n\n\
+         \x20     --qemu, --networking, --services   undo an earlier --no-*\n\
+         \x20     --prebuilt             use the binaries already in target/release (and the\n\
+         \x20                            built UI) instead of installing Rust and building\n\n\
          Joining a cluster (spec/clustering.md §5.2); the token comes from\n\
          `gxctl cluster join-token` on a server, read from a file (mode 0600)\n\
          or standard input, never from the command line:\n\
@@ -684,6 +698,16 @@ fn sudo(args: &[String]) -> Result<()> {
     } else {
         ensure_sudo()?;
         run("sudo", &refs)
+    }
+}
+
+/// A command's output, run as root; `None` if it failed.
+fn run_capture_sudo(args: &[&str]) -> Option<String> {
+    if is_root() {
+        run_capture(args[0], &args[1..]).ok()
+    } else {
+        ensure_sudo().ok()?;
+        run_capture("sudo", args).ok()
     }
 }
 
@@ -1016,6 +1040,13 @@ fn install_system_packages(opts: &Options, platform: &Platform) -> Result<()> {
         // Units a distribution doesn't have are skipped: disable each on its own.
         for unit in &quiet {
             let _ = sudo(&argv(&["systemctl", "disable", "--now", unit]));
+        }
+        // ovn-controller made br-int when the package started it. Empty, it is
+        // only in the way (the OVS setup below won't restart OVS while a bridge
+        // exists); a cluster makes it again (ensure_ovn_chassis).
+        let ports = run_capture_sudo(&["ovs-vsctl", "list-ports", "br-int"]);
+        if ports.as_deref().is_some_and(|p| p.trim().is_empty()) {
+            let _ = sudo(&argv(&["ovs-vsctl", "--if-exists", "del-br", "br-int"]));
         }
         println!("{} OVN is installed with its services off; a cluster turns on what it needs.", "Note:".yellow());
     }
@@ -1355,6 +1386,22 @@ fn build_project(cargo: &str, opts: &Options) -> Result<()> {
     section("Building glidex");
     run_in(cargo, &build_args(opts), &workspace_root())?;
     println!("{}", "Build successful".green());
+    Ok(())
+}
+
+/// `--prebuilt`: everything `install_binaries` and `install_ui_assets` take
+/// must already be there.
+fn check_prebuilt(opts: &Options) -> Result<()> {
+    section("Prebuilt glidex");
+    let release = target_dir().join("release");
+    let missing: Vec<String> = binaries(opts).into_iter().filter(|b| !release.join(b).exists()).map(String::from).collect();
+    if !missing.is_empty() {
+        bail!("--prebuilt: {} not found in {}; build them first (cargo build --release)", missing.join(", "), release.display());
+    }
+    if !workspace_root().join("crates/glidex-ui/ui/dist/index.html").exists() {
+        bail!("--prebuilt: the web UI is not built (crates/glidex-ui/ui/dist)");
+    }
+    println!("{} binaries from {}", "Using:".green(), release.display());
     Ok(())
 }
 

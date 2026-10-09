@@ -225,7 +225,7 @@ pub async fn join(manager: &Arc<VmManager>, cfg: &crate::config::Config, opts: J
     // A plain join refuses a host with resources: it could only abandon or
     // duplicate them (§5.2).
     if manager.has_resources().await {
-        return Err(other("this host has VMs, disks, networks or credentials: a plain join would abandon them (importing them is a later feature)"));
+        return Err(other("this host has VMs, disks, networks or credentials: a plain join would abandon them; join with --import to bring them along"));
     }
     let (_, _, ca_hash) = tokens::parse(&opts.token).map_err(other)?;
     let server = opts.server.to_string();
@@ -286,6 +286,11 @@ pub async fn join(manager: &Arc<VmManager>, cfg: &crate::config::Config, opts: J
         ca_fingerprint: ca_hash.to_string(),
         seeds: vec![target.clone()],
     };
+    // The host's own stock `default` network goes: from now on the cluster's
+    // records are this node's.
+    if let Err(e) = manager.drop_stock_default_network().await {
+        tracing::warn!("removing this host's stock default network: {}", e);
+    }
     files.save_node_cert(&resp.cert_pem, &key.key_pem(), &resp.trust_pem)?;
     files.save_identity(&identity)?;
     crate::authz::set_identity(&identity.cluster_id, &identity.node_id);
@@ -329,6 +334,7 @@ pub async fn join(manager: &Arc<VmManager>, cfg: &crate::config::Config, opts: J
     }
     manager.attach_cluster(cluster);
     manager.reload_vms().await;
+    report_after_joining(manager).await;
     Ok(json!({ "cluster_id": identity.cluster_id, "node_id": node_id, "role": opts.role, "promoted": promoted }))
 }
 
@@ -450,6 +456,7 @@ pub async fn rejoin(manager: &Arc<VmManager>, cfg: &crate::config::Config, opts:
     }
     manager.attach_cluster(cluster);
     manager.reload_vms().await;
+    report_after_joining(manager).await;
     Ok(json!({ "cluster_id": identity.cluster_id, "node_id": node_id, "role": role, "raft_fresh": resp.raft_fresh }))
 }
 
@@ -767,5 +774,24 @@ pub async fn join_import(manager: &Arc<VmManager>, cfg: &crate::config::Config, 
         .map_err(|e| other(format!("the import committed, but the node role did not start ({e}); restart the control plane to finish")))?;
     manager.attach_cluster(cluster);
     manager.reload_vms().await;
+    report_after_joining(manager).await;
     Ok(json!({ "cluster_id": cluster_id, "node_id": node_id, "plan": plan, "backup": backup.display().to_string() }))
+}
+
+/// A node that just joined reports its capacity and features at once, not
+/// at the next ten-minute refresh: the scheduler can't place VMs on it before.
+async fn report_after_joining(manager: &Arc<VmManager>) {
+    // An agent reports through its cache: once that holds its own record.
+    if let Some(link) = manager.node_link() {
+        if !link.wait_ready(Duration::from_secs(30)).await {
+            tracing::warn!("this node's cache is not ready yet; it reports itself at the next refresh");
+            return;
+        }
+    }
+    let m = manager.clone();
+    match tokio::task::spawn_blocking(move || m.report_self()).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => tracing::warn!("reporting this node after joining: {}", e),
+        Err(e) => tracing::warn!("reporting this node after joining: {}", e),
+    }
 }

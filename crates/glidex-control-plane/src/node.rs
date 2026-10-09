@@ -282,9 +282,18 @@ impl NodeStore {
     /// node reports about itself (capacity, features, versions). Writes
     /// nothing when nothing changed (§4.1).
     pub fn ensure_self(&self, id: &str, probe: SelfProbe) -> Result<Node, NodeError> {
+        self.report_self(id, probe, true).map(|n| n.expect("created"))
+    }
+
+    /// Update this node's own record with what the host has now. `create`:
+    /// make the record when there is none (a standalone host). A cluster
+    /// member never does: its record is the cluster's (join wrote it), and a
+    /// cache that hasn't received it yet must not replace it with a guess.
+    pub fn report_self(&self, id: &str, probe: SelfProbe, create: bool) -> Result<Option<Node>, NodeError> {
         let mut node = match self.get(id)? {
             Some(n) => n,
-            None => Node::new(id, NodeSpec { name: probe.name.clone(), role: NodeRole::Server, unschedulable: false, labels: BTreeMap::new() }),
+            None if create => Node::new(id, NodeSpec { name: probe.name.clone(), role: NodeRole::Server, unschedulable: false, labels: BTreeMap::new() }),
+            None => return Ok(None),
         };
         let before = node.clone();
         node.status.capacity = probe.capacity;
@@ -296,7 +305,7 @@ impl NodeStore {
             node.meta.resource_version += 1;
             self.put(&node)?;
         }
-        Ok(node)
+        Ok(Some(node))
     }
 }
 

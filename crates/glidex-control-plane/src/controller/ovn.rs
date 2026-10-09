@@ -266,7 +266,8 @@ impl VmManager {
                     }
                 }
             }
-            Ok(Err(e)) => tracing::debug!("OVN on this node: {}", e),
+            // A node that can't become a chassis can't run VMs on cluster networks.
+            Ok(Err(e)) => tracing::warn!("making this node an OVN chassis: {}", e),
             Err(e) => tracing::warn!("OVN node task: {}", e),
         }
     }

@@ -1387,6 +1387,13 @@ Findings from the OVN 26.03 documentation (`ovn-nb(5)`, `ovn-sb(5)`,
   3. Two NAT networks can't reach each other.
   4. Port security drops a guest that changes its MAC or IP.
   5. Provider network on a VLAN via `localnet`.
+  Test 1 runs as `crates/glidex-e2e` (`nested_cluster`, ignored): two
+  VMs of this host's glidex, each with a fresh glidex installed
+  (`glidex-install --prebuilt --ovs-profile kernel`), cluster init/join
+  with OVN, one guest per host on an isolated cluster network pinging
+  the other; it checks each `Port_Binding` on its host's chassis and
+  `up`, `ovn-installed` on both ports, and Geneve packet counters
+  rising on both hosts. See §20 for what it found.
 - **Upgrade:** a rolling upgrade from N−1 to N with VMs running and
   writes continuing.
 - **Membership (§5.5–5.7):** remove an empty agent and an empty server
@@ -1810,3 +1817,36 @@ Review fixes (C7/C8):
   - Rotation and retirement take one lock, and retirement re-checks the state inside its write.
 - Replay check: `install_dump` stops journaling, because an installed snapshot can't be rebuilt from the database's own write sets.
 
+### Nested e2e test (`crates/glidex-e2e`)
+
+`cargo test -p glidex-e2e --test nested_cluster -- --ignored --nocapture`
+on a glidex host with nested KVM and a ready `ubuntu-26.04` image; about
+4 minutes once the release binaries are built. It makes only
+`gxe2e-<tag>-*` VMs and a `gxe2e<tag>` credential and deletes them at
+the end (`GLIDEX_E2E_KEEP=1` keeps them). Bugs it found, now fixed:
+
+- A fresh host could not join: its auto-created `default` NAT network
+  counted as a resource. The stock default network is ignored by the
+  check and dropped on join.
+- The installer's freshly installed `ovn-host` created `br-int`, and
+  the OVS step then refused to touch the switch. An empty `br-int` is
+  deleted when the OVN units are quiesced.
+- An agent's capacity stayed 0 after joining: the link's `ready` watch
+  used `send`, which drops the value without receivers. All watches
+  that carry state use `send_replace`; the node reports itself once the
+  link is ready (without recreating a record the cache lacks).
+- Replicated images and disks were never acted on by an agent until a
+  restart, and a write set holding a VM *and* its root disk (every VM
+  create) refreshed only the VM: the agent's VM waited forever on
+  "disk not found". `cache_sync` now syncs images and disks, then VMs,
+  and queues their controllers.
+- The API's pull and the image controller's resume started two
+  downloads of one image into one `.part` file; one failed and marked
+  the finished image `Failed`. `spawn_download` checks and records the
+  task under one lock, and a failure no longer overwrites a finished
+  image.
+- `/disks` showed remote disks as missing (it checked the local file);
+  it now reports the disk's phase and its node.
+- Known, not fixed: on an agent, the local API's PAM login fails ("a
+  node may not write users"): an agent cannot record the user. Use a
+  server's API.
