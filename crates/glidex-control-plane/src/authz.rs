@@ -414,6 +414,8 @@ struct Sets {
 pub struct Engine {
     schema: Schema,
     sets: ArcSwap<Sets>,
+    /// Bumped on every install: clients re-run their capability checks.
+    generation: std::sync::atomic::AtomicU64,
 }
 
 /// Parse `src` into policies and templates re-registered under their
@@ -451,6 +453,7 @@ impl Engine {
                 base_only: PolicySet::new(),
                 sources: HashMap::new(),
             }),
+            generation: std::sync::atomic::AtomicU64::new(0),
         };
         engine.install(&[], &[])?;
         Ok(engine)
@@ -511,7 +514,13 @@ impl Engine {
         let (full, sources) = self.build_inner(links, site)?;
         let (base_only, _) = self.base_set()?;
         self.sets.store(Arc::new(Sets { full, base_only, sources }));
+        self.generation.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         Ok(())
+    }
+
+    /// How many times policies and links were installed.
+    pub fn generation(&self) -> u64 {
+        self.generation.load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// Decide `q` against the published set. Principals in the

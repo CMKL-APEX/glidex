@@ -255,6 +255,7 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         .add("POST", "/auth/session", AUTHENTICATED, post(access::peer_session))
         .add("GET", "/auth/whoami", AUTHENTICATED, get(access::whoami))
         .add("POST", "/authz/check", AUTHENTICATED, post(access::authz_check))
+        .add("POST", "/authz/allowed", AUTHENTICATED, post(access::authz_allowed))
         // ---- tokens
         .add("GET", "/tokens", AUTHENTICATED, get(access::list_tokens))
         .add("POST", "/tokens", AUTHENTICATED, post(access::create_token))

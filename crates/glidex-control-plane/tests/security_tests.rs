@@ -1155,3 +1155,46 @@ async fn control_plane_json_drives_the_service() {
     std::fs::write(&cfg_path, r#"{"quotas": {"default": {"network": 4}}}"#).unwrap();
     assert!(Config::load_from(&cfg_path).is_err(), "typos stop the control plane");
 }
+
+#[tokio::test]
+async fn allowed_lists_the_actions_per_resource_and_agrees_with_check() {
+    let h = harness();
+    let admin = h.user("ada");
+    h.link("role.system-admin", Ent::User(admin.clone()), Ent::Cluster);
+    let plain = h.user("pat");
+    let p = h.project("p1");
+    let actions = json!(["createProject", "drainNode", "createVm", "listNodes"]);
+    let resources = json!([{ "type": "Cluster" }, { "type": "Host" }, { "type": "Node", "id": "other-node" }, { "type": "Project", "id": p }]);
+    let body = json!({ "actions": actions, "resources": resources });
+
+    let a = h.session(&admin);
+    let (s, v, _) = h.call("POST", "/authz/allowed", Some(body.clone()), &a).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let allowed = v["allowed"].as_array().unwrap();
+    let names = |i: usize| -> Vec<String> { allowed[i].as_array().unwrap().iter().map(|x| x.as_str().unwrap().to_string()).collect() };
+    assert_eq!(names(0), ["createProject", "listNodes"], "only actions that apply to Cluster");
+    assert_eq!(names(1), ["drainNode"], "this host");
+    // Another node's host sits under the cluster too, so a cluster-wide
+    // grant covers it.
+    assert_eq!(names(2), ["drainNode"], "another node");
+    assert_eq!(names(3), ["createVm"]);
+
+    // Item by item, the same answers as /authz/check.
+    for (ri, r) in resources.as_array().unwrap().iter().enumerate() {
+        for act in actions.as_array().unwrap() {
+            let (_, c, _) = h.call("POST", "/authz/check", Some(json!({ "checks": [{ "action": act, "resource": r }] })), &a).await;
+            let one = c["results"][0]["allowed"].as_bool().unwrap();
+            assert_eq!(one, names(ri).iter().any(|n| n == act.as_str().unwrap()), "{act} on {r}");
+        }
+    }
+
+    let (s, v, _) = h.call("POST", "/authz/allowed", Some(body), &h.session(&plain)).await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(v["allowed"].as_array().unwrap().iter().all(|x| x.as_array().unwrap().is_empty()), "{v}");
+
+    let (s, v, _) = h.call("POST", "/authz/allowed", Some(json!({ "actions": ["noSuchAction"], "resources": [] })), &a).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    let many: Vec<Value> = (0..501).map(|i| json!({ "type": "Vm", "id": i.to_string() })).collect();
+    let (s, _, _) = h.call("POST", "/authz/allowed", Some(json!({ "actions": ["readVm"], "resources": many })), &a).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+}

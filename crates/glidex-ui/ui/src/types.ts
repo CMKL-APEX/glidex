@@ -804,3 +804,55 @@ export interface VmStats {
   nics: LiveEntry[];
   disks: LiveEntry[];
 }
+
+// ---- nodes (spec/clustering.md §7) -------------------------------------------
+
+export type NodePhase = "Active" | "Draining" | "Departing" | "Departed" | "Removed" | "Forgotten";
+export type Tristate = "True" | "False" | "Unknown";
+
+export interface NodeResources {
+  cpus: number;
+  memory_mib: number;
+  hugepages?: Record<string, number>;
+}
+
+/** A node record as `GET /nodes` and the live stream send it. */
+export interface NodeRecord {
+  meta: { id: string; name: string; created_at: number; generation: number; resource_version: number };
+  spec: { name: string; role: "server" | "agent"; unschedulable: boolean; labels: Record<string, string> };
+  status: {
+    phase: NodePhase;
+    ready: Tristate;
+    ready_reason?: string;
+    raft_id?: number;
+    advertise?: string;
+    tunnel_ip?: string;
+    versions: { glidex: string; ovs?: string; ovn?: string };
+    capacity: NodeResources;
+    allocatable: NodeResources;
+    features?: { kvm: boolean; hypervisors: string[]; dpdk?: boolean; iommu?: boolean; br_int_datapath?: string; physnets?: Record<string, string> };
+    pci_devices?: string[];
+    heartbeat?: number;
+    departed_ids?: string[];
+  };
+}
+
+/** A node is gone for good (kept as a record only). */
+export function isTombstone(phase: NodePhase): boolean {
+  return phase === "Departed" || phase === "Removed" || phase === "Forgotten";
+}
+
+/** An import plan as `GET /imports` and the live stream send it (clustering.md §5.9). */
+export interface ImportPlanView {
+  plan: string;
+  state: string;
+  node: string;
+  node_id: string;
+  advertise: string;
+  summary: { vms: number; disks: number; images: number; networks: number; credentials: number; projects: number };
+  problems: string[];
+  mappings: { projects: Record<string, string>; networks: Record<string, string>; credentials: Record<string, string>; over_quota: boolean };
+  created_by: string;
+  created_at: number;
+  expires_at: number;
+}

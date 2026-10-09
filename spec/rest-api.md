@@ -197,17 +197,25 @@ Image, disk and network events (`GET /{images,disks}/{id}/events`,
 
 ## Live stream: `GET /watch`
 
-`GET /watch[?kinds=vms,disks,images,networks][&project=<id>]` answers
+`GET /watch[?kinds=vms,disks,images,networks,nodes,imports,cluster,policy][&project=<id>]` answers
 `text/event-stream` (server-sent events). Any authenticated caller may
 open it; each kind is filtered exactly like its list endpoint (VMs by
 `readVm`, disks by `readDisk`, both in visible projects and narrowed by
 `project`; images need `readImage` and networks `readNetwork` on
 `Host`, with the view of `GET /networks`). `kinds` takes singular or
-plural names (default: all four); an unknown kind is `400 invalid`.
+plural names (default: the four above); an unknown kind is `400 invalid`.
+Asked for by name only (spec/clustering-ui.md §3.7):
+
+| Kind | Sent to | `id`, `object` |
+|---|---|---|
+| `node` | `listNodes` on `Cluster` | node id, the record of `GET /nodes/{id}` |
+| `import` | `listImports` on `Cluster` (clustered hosts) | plan id, the view of `GET /imports/{plan}` |
+| `cluster` | `readCluster` on `Cluster` (clustered hosts) | cluster id, `GET /cluster/status` without port checks and without the Raft indexes that move on every write |
+| `policy` | everyone | `policy`, `{"generation": n}`: changes whenever policies or role links are installed, so clients re-run their capability checks |
 
 | Event | Data |
 |---|---|
-| `added` | `{"kind": "vm\|disk\|image\|network", "id": "…", "object": {…}}`: one per visible object on connect, then for each new one |
+| `added` | `{"kind": "vm\|disk\|image\|network\|node\|import\|cluster\|policy", "id": "…", "object": {…}}`: one per visible object on connect, then for each new one |
 | `synced` | `{}`, once, after the initial `added` events |
 | `modified` | as `added`; `object` is exactly what the list endpoint returns |
 | `deleted` | `{"kind", "id"}` (no `object`): removed, or no longer visible |

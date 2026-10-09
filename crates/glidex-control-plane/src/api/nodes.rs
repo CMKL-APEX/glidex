@@ -187,7 +187,7 @@ fn import_cluster(c: &Caller) -> Result<std::sync::Arc<crate::cluster::Cluster>,
 }
 
 /// What an administrator sees of a plan: no CSR, no poll hash.
-fn plan_view(p: &crate::cluster::import::ImportPlan) -> serde_json::Value {
+pub(crate) fn plan_view(p: &crate::cluster::import::ImportPlan) -> serde_json::Value {
     serde_json::json!({ "plan": p.plan, "state": p.state, "node": p.name, "node_id": p.node_id, "advertise": p.advertise.to_string(), "summary": p.summary, "problems": p.problems, "mappings": p.mappings, "created_by": p.created_by, "created_at": p.created_at, "expires_at": p.expires_at })
 }
 

@@ -30,6 +30,23 @@ const HOST_ACTION_RESOURCE = {
   manageAnyTokens: "Cluster",
   createNetwork: "Host",
   readCluster: "Cluster",
+  // Cluster operations (spec/clustering-ui.md §3.1).
+  listNodes: "Cluster",
+  removeNode: "Cluster",
+  forgetNode: "Cluster",
+  purgeNode: "Cluster",
+  createRejoinToken: "Cluster",
+  detachNode: "Cluster",
+  promoteNode: "Cluster",
+  createJoinToken: "Cluster",
+  listImports: "Cluster",
+  approveImport: "Cluster",
+  rejectImport: "Cluster",
+  rotateCa: "Cluster",
+  dissolveCluster: "Cluster",
+  snapshotCluster: "Cluster",
+  initCluster: "Host",
+  leaveCluster: "Host",
 } as const satisfies Record<string, SingletonEntityType>;
 
 export type HostAction = keyof typeof HOST_ACTION_RESOURCE;
@@ -45,6 +62,8 @@ export interface Session {
   projectName: (id: string | null | undefined) => string;
   host: Record<HostAction, boolean>;
   refresh: () => Promise<void>;
+  /** Re-run the host capability checks only (after a policy change). */
+  refreshCapabilities: () => Promise<void>;
   logout: () => Promise<void>;
 }
 
@@ -73,6 +92,14 @@ export function useCan(checks: { action: string; resource: EntityRef }[]): boole
     };
   }, [key]);
   return result && result.key === key ? result.allowed : null;
+}
+
+/** What the caller may do host- and cluster-wide; all false if the check fails. */
+async function hostCapabilities(): Promise<Record<HostAction, boolean>> {
+  const allowed = await api
+    .checkAccess(HOST_ACTIONS.map((action) => ({ action, resource: { type: HOST_ACTION_RESOURCE[action] } })))
+    .catch(() => HOST_ACTIONS.map(() => false));
+  return Object.fromEntries(HOST_ACTIONS.map((a, i) => [a, allowed[i]])) as Record<HostAction, boolean>;
 }
 
 const noHost = Object.fromEntries(HOST_ACTIONS.map((a) => [a, false])) as Record<HostAction, boolean>;
@@ -108,13 +135,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       }
       return;
     }
-    const [projects, allowed] = await Promise.all([
-      api.listProjects().catch(() => [] as ProjectView[]),
-      api.checkAccess(HOST_ACTIONS.map((action) => ({ action, resource: { type: HOST_ACTION_RESOURCE[action] } }))).catch(() =>
-        HOST_ACTIONS.map(() => false),
-      ),
-    ]);
-    const host = Object.fromEntries(HOST_ACTIONS.map((a, i) => [a, allowed[i]])) as Record<HostAction, boolean>;
+    const [projects, host] = await Promise.all([api.listProjects().catch(() => [] as ProjectView[]), hostCapabilities()]);
     setProject((current) => {
       const known = (id: string | null | undefined) => !!id && projects.some((p) => p.id === id);
       if (known(current)) return current;
@@ -124,6 +145,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       return projects[0]?.id ?? null;
     });
     setState({ kind: "ready", me, methods, projects, host });
+  }, []);
+
+  const refreshCapabilities = useCallback(async () => {
+    const host = await hostCapabilities();
+    setState((s) => (s.kind === "ready" ? { ...s, host } : s));
   }, []);
 
   useEffect(() => {
@@ -163,12 +189,13 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         }
       },
       refresh: load,
+      refreshCapabilities,
       logout: async () => {
         await api.logout().catch(() => {});
         setState({ kind: "anonymous", methods: state.methods });
       },
     };
-  }, [state, project, load]);
+  }, [state, project, load, refreshCapabilities]);
 
   let body: ReactNode;
   switch (state.kind) {

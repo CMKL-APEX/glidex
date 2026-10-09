@@ -503,7 +503,13 @@ pub struct CheckBody {
 async fn resource_entities(c: &Caller, e: &Ent) -> Option<EntitySet> {
     let m = c.manager();
     Some(match e {
-        Ent::Cluster | Ent::Host | Ent::Node(_) => EntitySet::new(),
+        Ent::Cluster => EntitySet::new(),
+        // A node's host sits under the cluster: links on the cluster cover it.
+        Ent::Host | Ent::Node(_) => {
+            let mut es = EntitySet::new();
+            es.host(&e.id());
+            es
+        }
         Ent::Project(id) => {
             m.projects().get(id).ok().flatten()?;
             super::project_entities(id)
@@ -558,6 +564,50 @@ pub async fn authz_check(c: Caller, Json(body): Json<CheckBody>) -> Result<impl 
         out.push(serde_json::json!({ "allowed": allowed }));
     }
     Ok(Json(serde_json::json!({ "results": out })))
+}
+
+#[derive(Deserialize)]
+pub struct AllowedBody {
+    actions: Vec<String>,
+    resources: Vec<Ent>,
+}
+
+const MAX_ALLOWED_ACTIONS: usize = 50;
+const MAX_ALLOWED_RESOURCES: usize = 500;
+
+/// `POST /authz/allowed` (spec/clustering-ui.md §3.5): for each resource,
+/// the actions the caller may take on it. An action that doesn't apply to
+/// the resource's type (the schema's `appliesTo`) is left out; an unknown
+/// action is an error, so a typo in a client fails loudly.
+pub async fn authz_allowed(c: Caller, Json(body): Json<AllowedBody>) -> Result<impl IntoResponse, ApiErr> {
+    if body.actions.len() > MAX_ALLOWED_ACTIONS || body.resources.len() > MAX_ALLOWED_RESOURCES {
+        return Err(err(StatusCode::BAD_REQUEST, "invalid", format!("at most {MAX_ALLOWED_ACTIONS} actions and {MAX_ALLOWED_RESOURCES} resources")));
+    }
+    let schema = c.auth().engine.schema();
+    // action → the resource types it applies to.
+    let mut applies: Vec<(&str, Vec<String>)> = Vec::with_capacity(body.actions.len());
+    for a in &body.actions {
+        let uid: cedar_policy::EntityUid = format!("Glidex::Action::{:?}", a).parse().map_err(|_| err(StatusCode::BAD_REQUEST, "invalid", format!("bad action name {a}")))?;
+        let Some(types) = schema.resources_for_action(&uid) else {
+            return Err(err(StatusCode::BAD_REQUEST, "invalid", format!("unknown action {a}")));
+        };
+        applies.push((a.as_str(), types.map(|t| t.basename().to_string()).collect()));
+    }
+    let mut out = Vec::with_capacity(body.resources.len());
+    for r in &body.resources {
+        let ty = r.type_name();
+        let candidates: Vec<&str> = applies.iter().filter(|(_, ts)| ts.iter().any(|t| t == ty)).map(|(a, _)| *a).collect();
+        if candidates.is_empty() {
+            out.push(Vec::new());
+            continue;
+        }
+        let ok = match resource_entities(&c, r).await {
+            Some(es) => candidates.into_iter().filter(|a| c.allowed(a, r.clone(), es.clone())).map(String::from).collect(),
+            None => Vec::new(),
+        };
+        out.push(ok);
+    }
+    Ok(Json(serde_json::json!({ "allowed": out })))
 }
 
 // ---- tokens --------------------------------------------------------------

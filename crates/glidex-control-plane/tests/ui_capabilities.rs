@@ -44,6 +44,7 @@ fn ui_host_actions() -> Vec<(String, String)> {
     let start = src.find("const HOST_ACTION_RESOURCE = {").expect("HOST_ACTION_RESOURCE in session.tsx");
     let body = &src[start..];
     let body = &body[body.find('{').unwrap() + 1..body.find("} as const").expect("HOST_ACTION_RESOURCE ends with `} as const`")];
+    let body: String = body.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
     body.split(',')
         .filter_map(|e| e.split_once(':'))
         .map(|(a, t)| (a.trim().to_string(), t.trim().trim_matches('"').to_string()))

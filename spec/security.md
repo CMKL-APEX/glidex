@@ -984,7 +984,12 @@ impl Authz {
 8. **UI capability checks.** `POST /authz/check` takes
    `[{action, resource}]` and returns booleans for the caller, so the
    UI can hide what the caller can't do. The server still checks every
-   real request.
+   real request. `POST /authz/allowed` answers many at once:
+   `{actions, resources}` → `{allowed: [[action…] per resource]}`,
+   leaving out actions whose `appliesTo` doesn't list the resource's
+   type; an unknown action is `400`; at most 50 actions × 500 resources
+   (spec/clustering-ui.md §3.5). A `Host` or `Node` resource gets the
+   cluster as parent, so a link on the cluster covers every node's host.
 9. **Live stream.** `GET /watch` (server-sent events,
    [rest-api.md](rest-api.md#live-stream-get-watch)) needs only an
    authenticated caller; each kind is filtered exactly like its list

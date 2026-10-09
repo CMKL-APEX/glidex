@@ -1,5 +1,7 @@
 //! `GET /watch` (spec/reconciliation.md §12.6): a live stream of the VMs,
 //! disks, images and networks the caller may list, as server-sent events.
+//! On request (`kinds=`) also the cluster's nodes, import plans, a cluster
+//! summary and a policy marker (spec/clustering-ui.md §3.7).
 //!
 //! On connect the stream sends every visible object (`added`), then
 //! `synced`; afterwards `added`, `modified` and `deleted` as they change.
@@ -34,7 +36,8 @@ const RESYNC: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Deserialize, Default)]
 pub struct WatchQuery {
-    /// Comma-separated `vms,disks,images,networks` (default: all).
+    /// Comma-separated `vms,disks,images,networks` (the default) and
+    /// `nodes,imports,cluster,policy`.
     #[serde(default)]
     kinds: Option<String>,
     /// Only this project's VMs and disks (like `?project=` on the lists).
@@ -48,6 +51,10 @@ enum Kind {
     Disk,
     Image,
     Network,
+    Node,
+    Import,
+    Cluster,
+    Policy,
 }
 
 impl Kind {
@@ -57,6 +64,10 @@ impl Kind {
             Kind::Disk => "disk",
             Kind::Image => "image",
             Kind::Network => "network",
+            Kind::Node => "node",
+            Kind::Import => "import",
+            Kind::Cluster => "cluster",
+            Kind::Policy => "policy",
         }
     }
 }
@@ -70,7 +81,11 @@ fn parse_kinds(s: Option<&str>) -> Result<Vec<Kind>, ApiErr> {
             "disk" | "disks" => Kind::Disk,
             "image" | "images" => Kind::Image,
             "network" | "networks" => Kind::Network,
-            other => return Err(err(StatusCode::BAD_REQUEST, "invalid", format!("unknown kind '{}' (vms, disks, images, networks)", other))),
+            "node" | "nodes" => Kind::Node,
+            "import" | "imports" => Kind::Import,
+            "cluster" => Kind::Cluster,
+            "policy" => Kind::Policy,
+            other => return Err(err(StatusCode::BAD_REQUEST, "invalid", format!("unknown kind '{}' (vms, disks, images, networks, nodes, imports, cluster, policy)", other))),
         };
         if !out.contains(&kind) {
             out.push(kind);
@@ -128,9 +143,43 @@ async fn snapshot(c: &Caller, kinds: &[Kind], only: Option<&str>) -> Result<View
                     }
                 }
             }
+            Kind::Node => {
+                if c.allowed("listNodes", Ent::Cluster, EntitySet::new()) {
+                    for n in m.nodes().list().unwrap_or_default() {
+                        view.insert((Kind::Node, n.meta.id.clone()), serde_json::to_value(&n).unwrap_or_default());
+                    }
+                }
+            }
+            Kind::Import => {
+                if let Some(cl) = m.cluster().filter(|_| c.allowed("listImports", Ent::Cluster, EntitySet::new())) {
+                    for p in crate::cluster::import::plans(&cl.db) {
+                        view.insert((Kind::Import, p.plan.clone()), super::nodes::plan_view(&p));
+                    }
+                }
+            }
+            Kind::Cluster => {
+                if let Some(cl) = m.cluster().filter(|_| c.allowed("readCluster", Ent::Cluster, EntitySet::new())) {
+                    view.insert((Kind::Cluster, cl.identity.cluster_id.clone()), cluster_summary(&cl));
+                }
+            }
+            Kind::Policy => {
+                view.insert((Kind::Policy, "policy".into()), serde_json::json!({ "generation": c.auth().engine.generation() }));
+            }
         }
     }
     Ok(view)
+}
+
+/// `cluster status` without what changes on every write (applied and log
+/// indexes, replication progress), so the stream only speaks on real changes.
+fn cluster_summary(cl: &crate::cluster::Cluster) -> serde_json::Value {
+    let mut v = crate::cluster::manage::status_of(cl);
+    if let Some(r) = v.get_mut("raft").and_then(|r| r.as_object_mut()) {
+        for k in ["last_applied", "last_log_index", "purged", "replication"] {
+            r.remove(k);
+        }
+    }
+    v
 }
 
 fn event(kind: &str, k: Kind, id: &str, object: Option<&serde_json::Value>) -> Event {
