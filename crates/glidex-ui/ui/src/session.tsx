@@ -4,30 +4,36 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import * as api from "./api";
 import { ApiRequestError } from "./api";
-import type { AuthMethods, EntityRef, ProjectView, WhoAmI } from "./types";
+import type { AuthMethods, EntityRef, ProjectView, SingletonEntityType, WhoAmI } from "./types";
 import Login from "./pages/Login";
 import ReauthDialog from "./components/ReauthDialog";
 import { Loading } from "./components/Loading";
 
-/** Host-wide capabilities the UI shows or hides pages for. */
-const HOST_ACTIONS = [
-  "createProject",
-  "listUsers",
-  "manageUsers",
-  "listTeams",
-  "manageTeams",
-  "readSystemBindings",
-  "manageSystemBindings",
-  "readPolicy",
-  "writePolicy",
-  "readAudit",
-  "readUsage",
-  "manageAnyTokens",
-  "createNetwork",
-  "readCluster",
-] as const;
+/** Host-wide capabilities the UI shows or hides pages for, each with the
+ * resource type it is checked on, as `appliesTo` in
+ * policies/glidex.cedarschema has it: cluster-wide actions take `Cluster`,
+ * the host's own networking `Host`. A check on a type the schema doesn't
+ * list is never allowed, so a wrong entry hides the page from everyone
+ * (tests/ui_capabilities.rs in glidex-control-plane compares the two). */
+const HOST_ACTION_RESOURCE = {
+  createProject: "Cluster",
+  listUsers: "Cluster",
+  manageUsers: "Cluster",
+  listTeams: "Cluster",
+  manageTeams: "Cluster",
+  readSystemBindings: "Cluster",
+  manageSystemBindings: "Cluster",
+  readPolicy: "Cluster",
+  writePolicy: "Cluster",
+  readAudit: "Cluster",
+  readUsage: "Cluster",
+  manageAnyTokens: "Cluster",
+  createNetwork: "Host",
+  readCluster: "Cluster",
+} as const satisfies Record<string, SingletonEntityType>;
 
-export type HostAction = (typeof HOST_ACTIONS)[number];
+export type HostAction = keyof typeof HOST_ACTION_RESOURCE;
+const HOST_ACTIONS = Object.keys(HOST_ACTION_RESOURCE) as HostAction[];
 
 export interface Session {
   me: WhoAmI;
@@ -104,7 +110,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     }
     const [projects, allowed] = await Promise.all([
       api.listProjects().catch(() => [] as ProjectView[]),
-      api.checkAccess(HOST_ACTIONS.map((action) => ({ action, resource: { type: "Host" as const } }))).catch(() =>
+      api.checkAccess(HOST_ACTIONS.map((action) => ({ action, resource: { type: HOST_ACTION_RESOURCE[action] } }))).catch(() =>
         HOST_ACTIONS.map(() => false),
       ),
     ]);

@@ -469,7 +469,9 @@ export function stateLabel(state: VmState): string {
 
 /** A Cedar entity reference, as the API serializes it. */
 export type EntityType =
+  | "Cluster"
   | "Host"
+  | "Node"
   | "User"
   | "Team"
   | "Token"
@@ -481,10 +483,19 @@ export type EntityType =
   | "Network"
   | "PciDevice";
 
-export type EntityRef = { type: "Host" } | { type: Exclude<EntityType, "Host">; id: string };
+/** Entity types that take no id: the cluster, and the host serving the request. */
+export type SingletonEntityType = "Cluster" | "Host";
+
+/** `Cluster` is the root of everything cluster-wide (projects, identity,
+ * policy); `Host` is the node serving the request and `Node` another node. */
+export type EntityRef = { type: SingletonEntityType } | { type: Exclude<EntityType, SingletonEntityType>; id: string };
+
+export function isSingleton(t: EntityType): t is SingletonEntityType {
+  return t === "Cluster" || t === "Host";
+}
 
 export function entityLabel(e: EntityRef): string {
-  return e.type === "Host" ? "Host" : `${e.type}:${e.id}`;
+  return "id" in e ? `${e.type}:${e.id}` : e.type;
 }
 
 export interface AuthMethods {
