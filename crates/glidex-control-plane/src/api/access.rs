@@ -94,7 +94,7 @@ fn whoami_json(app: &AppState, p: &Principal) -> Result<serde_json::Value, ApiEr
     host_roles.dedup();
     Ok(serde_json::json!({
         "user": p.user,
-        "token": p.token.as_ref().map(|t| serde_json::json!({ "id": t.id, "name": t.name })),
+        "token": p.token.as_ref().map(|t| serde_json::json!({ "id": t.id, "name": t.name, "device": t.device, "client": t.client })),
         "method": p.method,
         "teams": p.teams,
         "break_glass": p.is_break_glass(),
@@ -166,6 +166,95 @@ pub async fn peer_session(c: Caller) -> Result<impl IntoResponse, ApiErr> {
     let (cookie, csrf) = c.auth().create_session(&user, Method::Pam).map_err(auth_error)?;
     c.set_target(format!("user:{}", user.id));
     Ok(Json(serde_json::json!({ "cookie_name": auth::SESSION_COOKIE, "cookie": cookie, "csrf": csrf })))
+}
+
+/// The host's identity for client profiles (spec/gxctl-auth.md §7.1):
+/// static after start. The fingerprint is public information — the server
+/// logs it at every start (security.md §5.1.1) — and lets gxctl tell a
+/// genuine untrusted self-signed certificate from a proxy that terminated
+/// TLS in front of it.
+pub async fn server_info(State(app): State<AppState>) -> impl IntoResponse {
+    let fingerprint = match &app.auth.config.tls {
+        crate::config::TlsSetting::Mode(crate::config::TlsMode::Off) => None,
+        crate::config::TlsSetting::Mode(crate::config::TlsMode::Auto) => {
+            glidex_tls::fingerprint(&crate::serve::self_signed_dir().join("cp.crt")).ok()
+        }
+        crate::config::TlsSetting::Files(f) => glidex_tls::fingerprint(&f.cert).ok(),
+    };
+    let identity = crate::cluster::identity::Files::beside(app.manager.db_path()).load_identity().ok().flatten();
+    let name = app.auth.config.server_name.clone().or_else(glidex_tls::hostname).unwrap_or_else(|| "glidex".into());
+    Json(serde_json::json!({
+        "cluster_id": identity.as_ref().map(|i| i.cluster_id.clone()),
+        "node_id": identity.as_ref().map(|i| i.node_id.clone()),
+        "cluster_name": name,
+        "version": env!("CARGO_PKG_VERSION"),
+        "fingerprint": fingerprint,
+        "methods": {
+            "pam": app.auth.config.auth.pam.enabled,
+            "oidc": app.auth.oidc.enabled(),
+            "disabled": app.auth.is_disabled(),
+        },
+    }))
+}
+
+#[derive(Deserialize)]
+pub struct PamTokenBody {
+    username: String,
+    password: Zeroizing<String>,
+    #[serde(default)]
+    token_name: Option<String>,
+    #[serde(default)]
+    device: Option<String>,
+    #[serde(default)]
+    client: Option<String>,
+    #[serde(default)]
+    days: Option<u64>,
+}
+
+/// CLI/CI token login (spec/gxctl-auth.md §7.3): PAM credentials in, a
+/// personal bearer token out. Same authd path, rate limits, fixed delay
+/// and JIT provisioning as `POST /auth/login`; the answer is a token
+/// because the CLI and CI carry tokens while sessions stay the browser's
+/// half of §5.5.
+pub async fn pam_token(
+    State(app): State<AppState>,
+    Extension(rid): Extension<RequestId>,
+    listener: Option<Extension<Listener>>,
+    addr: Option<Extension<ClientAddr>>,
+    Json(body): Json<PamTokenBody>,
+) -> Result<impl IntoResponse, ApiErr> {
+    let listener = listener.map(|l| l.0).unwrap_or(Listener::Tcp);
+    if !app.auth.config.auth.pam.enabled {
+        return Err(err(StatusCode::UNAUTHORIZED, "unauthenticated", "PAM logins are off: set auth.pam.enabled in control-plane.json"));
+    }
+    // Passwords only over TLS or from this host (spec §5.3), the same rule as `login`.
+    let local = match listener {
+        Listener::Ui | Listener::Api | Listener::Cluster => true,
+        Listener::Tcp => app.auth.config.tls.enabled() || addr.is_none_or(|a| a.0 .0.ip().is_loopback()),
+    };
+    if !local {
+        return Err(err(StatusCode::FORBIDDEN, "tls_required", "password token logins need TLS"));
+    }
+    let a = app.clone();
+    let username = body.username.clone();
+    let password = body.password;
+    let result = tokio::task::spawn_blocking(move || a.auth.login_pam(&username, &password))
+        .await
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()))?;
+    let user = match result {
+        Ok(u) => u,
+        Err(e) => {
+            audit_login(&app, None, &rid.0, "pam-token", "denied", &body.username);
+            return Err(auth_error(e));
+        }
+    };
+    let name = body.token_name.unwrap_or_else(|| "gxctl".into());
+    let (secret, token) = app
+        .auth
+        .create_token(&name, TokenKind::Personal { owner: user.id.clone() }, &user.id, body.days, body.device.as_deref(), body.client.as_deref())
+        .map_err(auth_error)?;
+    audit_login(&app, None, &rid.0, "pam-token", "ok", &user.id);
+    Ok(Json(serde_json::json!({ "token": secret, "token_id": token.id, "expires_at": token.expires_at, "user": user })))
 }
 
 pub async fn logout(c: Caller, listener: Option<Extension<Listener>>, headers: HeaderMap) -> Result<Response, ApiErr> {
@@ -363,6 +452,12 @@ pub struct DevicePoll {
     device_code: String,
     #[serde(default)]
     token_name: Option<String>,
+    /// What the minting gxctl profile says about its device and build;
+    /// stored redacted-for-display, never checked (spec/gxctl-auth.md §7.2).
+    #[serde(default)]
+    device: Option<String>,
+    #[serde(default)]
+    client: Option<String>,
 }
 
 /// Lifetime of the token gxctl gets from a device login.
@@ -380,7 +475,7 @@ pub async fn oidc_device_poll(State(app): State<AppState>, Extension(rid): Exten
     let name = body.token_name.unwrap_or_else(|| "gxctl".into());
     let (secret, token) = app
         .auth
-        .create_token(&name, TokenKind::Personal { owner: user.id.clone() }, &user.id, Some(DEVICE_TOKEN_DAYS))
+        .create_token(&name, TokenKind::Personal { owner: user.id.clone() }, &user.id, Some(DEVICE_TOKEN_DAYS), body.device.as_deref(), body.client.as_deref())
         .map_err(auth_error)?;
     audit_login(&app, None, &rid.0, "oidc-device", "ok", &user.id);
     Ok(Json(serde_json::json!({ "status": "ok", "token": secret, "expires_at": token.expires_at, "user": user })).into_response())
@@ -488,6 +583,12 @@ pub struct CreateToken {
     /// Links for the token itself (narrowing a personal token).
     #[serde(default)]
     roles: Vec<RoleRef>,
+    /// What the creating client says it is; display only, never checked
+    /// (spec/gxctl-auth.md §7.2).
+    #[serde(default)]
+    device: Option<String>,
+    #[serde(default)]
+    client: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -543,7 +644,7 @@ pub async fn create_token(c: Caller, Json(body): Json<CreateToken>) -> Result<im
         c.require_action("manageOwnTokens", e, es, &[])?;
         TokenKind::Personal { owner: by.clone() }
     };
-    let (secret, token) = c.auth().create_token(&body.name, kind.clone(), &by, body.expires_in_days).map_err(auth_error)?;
+    let (secret, token) = c.auth().create_token(&body.name, kind.clone(), &by, body.expires_in_days, body.device.as_deref(), body.client.as_deref()).map_err(auth_error)?;
     c.set_target(format!("token:{}", token.id));
     let mut roles = Vec::new();
     for r in &body.roles {

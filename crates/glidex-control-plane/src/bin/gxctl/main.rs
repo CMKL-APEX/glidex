@@ -2,6 +2,7 @@
 
 mod admin;
 mod client;
+mod config;
 mod console;
 
 use clap::Parser;
@@ -40,6 +41,15 @@ struct Cli {
     #[arg(short = 's', long, visible_alias = "server")]
     url: Option<String>,
 
+    /// Use this profile from ~/.config/glidex/config.json (created by
+    /// `gxctl auth login`) instead of its `current` one: it decides the
+    /// target URLs, the TLS trust and the credential. `--url` then still
+    /// overrides the target for this run only, keeping the profile's
+    /// trust; the credential goes along only if the host is one the
+    /// profile itself dials.
+    #[arg(long, env = "GLIDEX_PROFILE")]
+    profile: Option<String>,
+
     /// Project (id or name) for creates, lists and name lookups;
     /// default: your default project (`project use`).
     #[arg(short, long, env = "GLIDEX_PROJECT")]
@@ -51,10 +61,18 @@ struct Cli {
     command: Vec<String>,
 }
 
-/// Pick the transport (spec/cli.md "Transport"): `--url` → TCP with a
-/// token; else `--socket` / `GLIDEX_SOCKET` / the first existing default
-/// socket; else TCP to localhost.
+/// Pick the transport (spec/cli.md "Transport") under gxctl-auth.md §3's
+/// ladder: a profile — from `--profile`/`GLIDEX_PROFILE` or the file's
+/// `current` — decides target, trust and credential; with none, today's
+/// behaviour exactly: `--url` → TCP, else `--socket`/`GLIDEX_SOCKET`/the
+/// first existing default socket, else TCP to localhost.
 fn build_client(cli: &Cli) -> Result<ApiClient, String> {
+    let cfg = config::load()?;
+    if let Some(cfg) = cfg.as_ref().filter(|c| c.has_any()) {
+        if let Some(sel) = config::select(cfg, cli.profile.as_deref())? {
+            return profile_client(cli, &sel);
+        }
+    }
     let tcp = |url: &str| -> Result<ApiClient, String> {
         let token = match client::load_token() {
             Ok(t) => t,
@@ -79,6 +97,73 @@ fn build_client(cli: &Cli) -> Result<ApiClient, String> {
         }
     };
     c.set_project(cli.project.clone());
+    Ok(c)
+}
+
+/// A profile is in effect: it decides the endpoints and the trust; the
+/// environment still tops the credential (scripts pinning `GLIDEX_TOKEN`
+/// keep working unchanged), and an ad-hoc `--url` carries a credential
+/// only when its host is one the profile itself dials — so debugging at
+/// another address cannot leak the prod token (§3's closing note).
+fn profile_client(cli: &Cli, sel: &config::Selected) -> Result<ApiClient, String> {
+    let p = sel.profile;
+    let urls: Vec<String> = match &cli.url {
+        Some(u) => vec![u.clone()],
+        None => p.url.clone(),
+    };
+    let dials_known = urls.iter().all(|u| p.url.iter().any(|pu| config::url_host(pu) == config::url_host(u)));
+    let mut token = client::token_from_env();
+    if token.is_none() && dials_known {
+        token = p.credential()?;
+    }
+    if token.is_none() && !dials_known {
+        // The point of the rule, said out loud once per run.
+        eprintln!("note: --url dials a host outside profile '{}'; no credential is sent to it", sel.name);
+    }
+    let loopback_only = urls.iter().all(|u| client::is_loopback_host(&config::url_host(u)));
+    if token.is_none() && loopback_only {
+        // The legacy token file is the implicit localhost profile's
+        // credential (§3.5); `auth login` folds a copy into the profile,
+        // and until then the banner says where the credential came from.
+        token = config::legacy_token()?;
+        if token.is_some() {
+            eprintln!("note: credential from ~/.config/glidex/token (legacy); 'gxctl auth login --profile {}' folds it into the profile", sel.name);
+        }
+    }
+    // The CI-only one-run grant (§5.4): never when the profile carries
+    // pins or a CA — those are the operator's decision, removable only
+    // through `auth trust remove` — and never for a login, which reads
+    // its own flags, not this environment.
+    let mut tls = p.tls.clone();
+    if !tls.insecure && tls.pins.is_empty() && tls.ca_file.is_none() && tls.ca_pem.is_none() {
+        if let Ok(v) = std::env::var("GLIDEX_TLS_INSECURE") {
+            if v.trim() == "1" {
+                tls.insecure = true;
+            }
+        }
+    }
+    if tls.insecure {
+        // The bypass's loud line, before this invocation's first request
+        // (§5.4) — every run, not just the ones that notice it.
+        eprintln!("{} UNVERIFIED TLS: the certificate of {} was not checked — a network attacker can read your token", "Warning:".red(), urls.join(", "));
+    }
+    let mut banner = format!("profile '{}' · {}", sel.name, if tls.insecure { "UNVERIFIED".to_string() } else { p.trust_mode() });
+    if let Some(c) = p.cluster_name.as_ref().or(p.cluster_id.as_ref()) {
+        banner.push_str(&format!(" · cluster {c}"));
+    }
+    if let Some(id) = &p.identity {
+        if let Some(tn) = id.token_name.as_ref() {
+            banner.push_str(&format!(" · token {tn}"));
+        }
+    }
+    let c = ApiClient::tcp_multi(
+        &urls,
+        token,
+        Some(&tls),
+        Some(client::ProfileCtx { name: sel.name.clone(), path: config::file().unwrap_or_else(|| PathBuf::from("")), banner }),
+        Some(client::Binding { profile: sel.name.clone(), cluster_id: p.cluster_id.clone() }),
+    )?;
+    c.set_project(cli.project.clone().or_else(|| p.project.clone()));
     Ok(c)
 }
 
@@ -1199,6 +1284,7 @@ fn print_help() {
     println!("  {}            - Who you are: method, teams, roles", "whoami".cyan());
     println!("  {} - Log in over TCP (OIDC device flow or a pasted token)", "login --oidc | --token".cyan());
     println!("  {} - Forget the saved token", "logout [--revoke]".cyan());
+    println!("  {} - Login profiles for remote control planes: target, trust and token of a server, under a name", "auth login | logout [--revoke] | status | use <P> | profiles | trust list|fetch|remove".cyan());
     println!("  {}                - Print the web UI address", "ui".cyan());
     println!("  {} - Access tokens", "token list | create <name> [--days N] [--service-account] [--role R[@P]] | revoke <id>".cyan());
     println!("  {} - Projects", "project list | show <p> | create <name> [--description D] | delete <p>".cyan());
@@ -1447,6 +1533,7 @@ const COMMANDS: &[&str] = &[
     "image", "images", "disk", "disks", "whoami", "login", "logout", "ui", "token",
     "tokens", "project", "projects", "binding", "bindings", "system-binding", "user",
     "users", "team", "teams", "policy", "policies", "audit", "usage", "stats", "bandwidth", "io", "compute", "network",
+    "auth",
 ];
 
 /// Subcommands offered by Tab after these commands.
@@ -1458,6 +1545,7 @@ const SUBCOMMANDS: &[(&str, &[&str])] = &[
     ("node", &["drain", "undrain", "remove", "forget", "purge", "rejoin-token", "detach", "import"]),
     ("login", &["--oidc", "--token"]),
     ("logout", &["--revoke"]),
+    ("auth", &["login", "logout", "status", "use", "profiles", "trust", "token", "whoami"]),
     ("token", &["list", "create", "revoke"]),
     ("project", &["list", "show", "create", "delete", "quota", "use"]),
     ("binding", &["list", "add", "remove"]),
@@ -2471,6 +2559,7 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
         "network" | "net" => admin::network(client, &parts[1..]).await,
         "whoami" => admin::whoami(client).await,
         "cluster" => admin::cluster(client, &parts[1..]).await,
+        "auth" => admin::auth(client, &parts[1..]).await,
         "login" => admin::login(client, &parts[1..]).await,
         "logout" => admin::logout(client, &parts[1..]).await,
         "ui" => admin::ui(),
@@ -2586,6 +2675,14 @@ async fn main() {
             std::process::exit(2);
         }
     };
+    // A profile-bound run checks itself against the cluster it claims
+    // before any command runs (§4.1): the binding mismatch is a wall
+    // between the operator and a repurposed or hostile machine, so not
+    // even a one-shot command slips past it.
+    if let Err(e) = client.preflight().await {
+        eprintln!("{} {}", "Error:".red(), e);
+        std::process::exit(2);
+    }
 
     if !cli.command.is_empty() {
         handle_words(&cli.command, &client).await;
@@ -2607,10 +2704,18 @@ async fn main() {
     );
 
     println!("Connected to: {}", client.describe().yellow());
+    if let Some(b) = client.profile_banner() {
+        // Which cluster `delete vm` points at, at a glance (§6.2).
+        println!("{} {}", "Profile:".dimmed(), b.cyan());
+    }
     if client.is_unix() {
         println!("{} identified by your Unix user (see 'whoami')", "Auth:".dimmed());
     } else if !client.has_token() {
-        println!("{} no token; run 'login --oidc' or 'login --token' (or set GLIDEX_TOKEN)", "Auth:".dimmed());
+        if client.profile_banner().is_some() {
+            println!("{} no token in this profile; run 'auth login'", "Auth:".dimmed());
+        } else {
+            println!("{} no token; run 'login --oidc' or 'login --token' (or set GLIDEX_TOKEN)", "Auth:".dimmed());
+        }
     }
     if let Some(p) = client.project() {
         println!("Project: {}", p.cyan());

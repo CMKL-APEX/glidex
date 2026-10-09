@@ -26,7 +26,7 @@ const MAX_FORWARDED_BODY: usize = 32 << 20;
 
 /// Routes that need no cluster at all.
 fn needs_no_barrier(path: &str) -> bool {
-    path == "/health" || path == "/auth/methods"
+    path == "/health" || path == "/auth/methods" || path == "/auth/server-info"
 }
 
 /// Routes about *this host*: they act on its netd, PCI bus or controllers

@@ -59,7 +59,7 @@ impl H {
     }
 
     fn token(&self, user: &str) -> String {
-        self.app.auth.create_token("t", TokenKind::Personal { owner: user.into() }, user, None).unwrap().0
+        self.app.auth.create_token("t", TokenKind::Personal { owner: user.into() }, user, None, None, None).unwrap().0
     }
 
     fn session(&self, user: &str) -> As {
@@ -731,6 +731,77 @@ async fn pam_login_without_jit_needs_a_provisioned_user() {
     h.user("bob");
     let (s, _, _) = h.call("POST", "/auth/login", Some(body), &As::Nobody).await;
     assert_eq!(s, StatusCode::OK);
+}
+
+fn fake_authd(dir: &TempDir) -> std::path::PathBuf {
+    use glidex_authd::authenticator::Account;
+    let sock = dir.path().join("auth.sock");
+    let accounts = [("bob".to_string(), Account { uid: 1, groups: vec!["glidex-users".into()] })].into_iter().collect();
+    let cfg = glidex_authd::config::Config { failure_delay: std::time::Duration::from_millis(1), ..Default::default() };
+    let authd = Arc::new(glidex_authd::server::Authd::new(cfg, Some(nix::unistd::getuid().as_raw()), Arc::new(pam::FakePam), Arc::new(pam::FakeAccounts(accounts))));
+    let l = glidex_authd::server::bind(&sock, 0o600, None).unwrap();
+    std::thread::spawn(move || authd.serve(l));
+    sock
+}
+
+#[tokio::test]
+async fn pam_token_exchanges_credentials_for_a_personal_token() {
+    // spec/gxctl-auth.md §7.3: the CLI/CI login path.
+    let dir = TempDir::new().unwrap();
+    let sock = fake_authd(&dir);
+    let h = harness_with(|c| {
+        c.auth.pam.authd_socket = sock.clone();
+    });
+    let body = json!({"username": "bob", "password": "wrong"});
+    let (s, _, _) = h.call("POST", "/auth/token", Some(body), &As::Nobody).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED, "wrong password");
+    let body = json!({"username": "bob", "password": "bob-password", "token_name": "gxctl@lab", "device": "laptop-7", "client": "gxctl/1.0"});
+    let (s, v, _) = h.call("POST", "/auth/token", Some(body), &As::Nobody).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let secret = v["token"].as_str().unwrap().to_string();
+    assert!(secret.starts_with("gxt_"), "{secret}");
+    // The token acts as bob and carries the claimed device strings (display only).
+    let (_, who, _) = h.call("GET", "/auth/whoami", None, &As::Bearer(secret.clone())).await;
+    assert_eq!(who["user"]["display_name"], "bob");
+    assert_eq!(who["token"]["name"], "gxctl@lab");
+    assert_eq!(who["token"]["device"], "laptop-7");
+    // Revocation takes it down.
+    let id = v["token_id"].as_str().unwrap().to_string();
+    h.app.auth.revoke_token(&id).unwrap();
+    let (s, _, _) = h.call("GET", "/auth/whoami", None, &As::Bearer(secret)).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    // The login is audited without the secret.
+    let entries = h.app.auth.store.audit(0, 100, |e| e.action == "login").unwrap();
+    assert!(entries.iter().any(|e| e.result == "ok" && e.details["method"] == "pam-token"), "{entries:?}");
+    assert!(!serde_json::to_string(&entries).unwrap().contains("bob-password"));
+}
+
+#[tokio::test]
+async fn pam_token_needs_pam_enabled() {
+    let h = harness_with(|c| {
+        c.auth.pam.enabled = false;
+    });
+    let (s, v, _) = h.call("POST", "/auth/token", Some(json!({"username": "bob", "password": "x"})), &As::Nobody).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    assert!(v["message"].as_str().unwrap().contains("auth.pam.enabled"), "{v}");
+}
+
+#[tokio::test]
+async fn server_info_is_public_and_describes_the_host() {
+    // spec/gxctl-auth.md §7.1.
+    let h = harness_with(|c| {
+        c.server_name = Some("lab-cp".into());
+        c.auth.pam.enabled = false;
+    });
+    let (s, v, _) = h.call("GET", "/auth/server-info", None, &As::Nobody).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(v["cluster_name"], "lab-cp");
+    assert!(v["version"].as_str().is_some_and(|v| !v.is_empty()));
+    assert_eq!(v["methods"]["pam"], false);
+    assert_eq!(v["methods"]["oidc"], false);
+    // No cluster formed and tls auto without a certificate on disk yet:
+    // the fields are absent rather than invented.
+    assert!(v["cluster_id"].is_null(), "{v}");
 }
 
 // ---- OIDC against a mock IdP ---------------------------------------------

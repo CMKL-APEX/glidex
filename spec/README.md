@@ -29,6 +29,7 @@ fresh reader cannot infer just by reading the source.
 | [cluster-runbook.md](cluster-runbook.md) | Operating a cluster: removing, forgetting and rejoining nodes, rotating the CA, rolling upgrades, recovering a lost quorum |
 | [clustering.md](clustering.md) | Multi-host clusters (design): control-plane store replicated with embedded Raft (leader-computed write sets), server and node roles, node lifecycle (remove, forget, rejoin, leave with VMs and import them into another cluster), scheduler with sticky local-storage placement, cluster networks on OVN (isolated, NAT via an HA edge router or per-project VPC routers, provider), cluster IPAM, node PKI with CA rotation, conntrack-based external metering, scale envelope |
 | [security.md](security.md) | Authentication (peer uid, PAM, OIDC, tokens), projects/teams, Cedar authorization policies, netd policy, hardening (draft) |
+| [gxctl-auth.md](gxctl-auth.md) | `gxctl auth login` and its config file (`~/.config/glidex/config.json`): login profiles per server/cluster, TLS trust ladder with fingerprint pinning (TOFU) for self-signed control planes, the contained `insecure` bypass, identity generation and administration, server-side additions (`/auth/server-info`, `/auth/token`) |
 
 ## Goals
 

@@ -47,6 +47,7 @@ bullets of [networking.md §14](networking.md#14-security).
 | 15 | Step-up window | **10 minutes** for host-wide network changes and policy writes (`base.step-up`). |
 | 16 | Sharing project networks | A project network is private unless **both** projects agree explicitly: the network's owner offers it, the receiving project's owner accepts. Either side can end it (§6.2.1). |
 | 17 | Policy change control | Site policy changes need step-up and are audited; **no two-person approval**. |
+| 18 | Client trust | Self-signed control planes are accepted by **pinning the leaf certificate's SHA-256**, trusted on first use at `gxctl auth login` (TOFU); chain, dates and name keep verifying against the pinned certificate. A verify-nothing mode exists only as an explicitly confirmed, per-profile, loudly marked escape hatch ([gxctl-auth.md §5](gxctl-auth.md)). |
 
 ## 3. Threat model
 
@@ -117,8 +118,8 @@ to `glidex-users` and `glidex-admin` (bootstrap, §11).
 
 Every request ends up with a **principal**: `{user_id, auth_method,
 authenticated_at, session_id | token_id, source}`. Requests without one
-get `401` (except `GET /health`, `GET /auth/methods`, and the login and
-OIDC endpoints).
+get `401` (except `GET /health`, `GET /auth/methods`, `GET /auth/server-info`,
+and the login and OIDC endpoints).
 
 ### 5.1 Transports
 
@@ -185,8 +186,15 @@ redirect: API clients should be told, not silently upgraded.
 - The control plane copies its certificate (never the key) to
   `<run dir>/tls.crt` (`/run/glidex-cp/tls.crt`, `0644`). gxctl and the
   UI's TCP fallback trust that file when it exists (local clients get
-  verified TLS with no setup); remote gxctl uses `GLIDEX_CA_CERT`
-  ([cli.md](cli.md)).
+  verified TLS with no setup); remote gxctl trusts the profile's
+  `ca_file`/`ca_pem`/`pins` — including the SHA-256 fingerprint of the
+  self-signed certificate pinned on first use at `gxctl auth login`
+  ([gxctl-auth.md §5](gxctl-auth.md)) — or `GLIDEX_CA_CERT` per
+  invocation ([cli.md](cli.md)). Pinning is sound precisely because of
+  the stability invariant above: the fingerprint a user compared against
+  a second channel stays valid for the certificate's lifetime. There is
+  no verify-nothing default; `insecure` profiles are opt-in, confirmed
+  and warned on every run (decision 18).
 - `Strict-Transport-Security` is sent only with a configured
   certificate, never with a self-signed one: browsers make certificate
   errors non-bypassable for an HSTS host, which would lock users out of
@@ -264,6 +272,15 @@ selects TCP.
   only lines that look like public keys. The control plane exposes it
   as `GET /users/me/ssh-keys` for the caller's own local (PAM/Unix)
   account only, to prefill new guest credentials.
+- **CLI/CI token login:** `POST /auth/token`
+  (`{username, password, token_name?, device?, client?, days?}`)
+  authenticates through the same authd path as `POST /auth/login` —
+  same rate limits, fixed delay, `allowed_groups`, JIT provisioning and
+  `group_teams` sync — but mints a **bearer token** instead of a
+  browser session (sessions stay the browser's half of §5.5; the CLI
+  and CI carry tokens). TLS only, the password is zeroized after use,
+  and `pam.enabled` off answers `401` naming the config key
+  ([gxctl-auth.md §7.3](gxctl-auth.md)).
 
 ### 5.4 OIDC
 
@@ -312,6 +329,12 @@ selects TCP.
 - Required expiry: default 90 days, maximum 365. `last_used_at` and
   `last_used_from` are recorded.
 - Sent as `Authorization: Bearer gxt_…`.
+- Personal tokens minted by a login flow (`gxctl auth login`: the OIDC
+  device flow, `POST /auth/token`) arrive named `gxctl@<profile>` with
+  `device` and `client` metadata recorded next to `last_used_from` and
+  the same expiry clamp as `POST /tokens` — so `token list`/`revoke`
+  can pick out one laptop's credential. The metadata is display and
+  audit only, never checked ([gxctl-auth.md §7.2](gxctl-auth.md)).
 
 ### 5.6 `glidex-ui` and browser protections
 
@@ -1072,6 +1095,10 @@ connect` uses the API's console WebSocket instead of the raw socket.
   login, token create/revoke, role link change, and policy reload. It goes to the journal
   (`SYSLOG_IDENTIFIER=glidex-audit`) and to an `audit` ReDB table kept
   for 90 days (`audit.retention_days`).
+- `auth.login` entries (browser session, `POST /auth/token`, device-flow
+  token mint — `gxctl auth login` is the usual source) carry the
+  method, the client-claimed `device`/`client` strings (display only,
+  attestation would be theatre), and the client IP. Never the secret.
 - Fields: `time`, `request_id`, `principal` (user id, display name,
   method, token or session id prefix), `source` (peer uid or client IP),
   `action` (Cedar action or netd op), `project`, `target`, `result`,
@@ -1123,6 +1150,7 @@ connect` uses the API's console WebSocket instead of the raw socket.
 {
   "listen": ["0.0.0.0:8841", "[::]:8841"],
   "tls": "auto",
+  "server_name": "lab-cp",
   "auth": {
     "allowed_origins": ["https://glidex.example.org:5173"],
     "session": { "idle_minutes": 30, "absolute_hours": 12 },
@@ -1152,6 +1180,10 @@ connect` uses the API's console WebSocket instead of the raw socket.
   "metering": { "enabled": true, "sample_secs": 30, "billing_timezone": "UTC" }
 }
 ```
+
+`server_name` is the display name `GET /auth/server-info` reports
+(defaults to the host name; clients show it in profiles and banners);
+`packaging/control-plane.json.example` carries it too.
 
 `metering` (all keys in `packaging/control-plane.json.example`,
 [metering.md §11](metering.md#11-configuration)): `sample_secs` must
@@ -1193,6 +1225,8 @@ the principal is included.
 | `PATCH /users/me` (`{default_project}`) | authenticated |
 | `GET /users/me/ssh-keys` | authenticated (the caller's own local account only; `available: false` with a reason otherwise) |
 | `POST /auth/oidc/device`, `POST /auth/oidc/device/poll` | none (device grant for gxctl; returns a 1-day personal token) |
+| `GET /auth/server-info` | none (cluster id/name, node id, version, own certificate fingerprint, login methods — what client profiles bind to; [gxctl-auth.md §7.1](gxctl-auth.md)) |
+| `POST /auth/token` | none (PAM credentials → personal bearer token, authd rate limits, TLS only; §5.3) |
 | `POST /vms/{id}/console/ticket` | `vm.console` |
 | `GET /audit` | §10 |
 
@@ -1269,6 +1303,16 @@ resource`; turned into linked policies at load), `sessions`, `api_tokens`,
 - **OIDC:** against a local mock IdP. Cases: wrong `aud`, `iss`,
   `nonce`, expired token, unknown `kid` refresh, `alg: none` refused,
   group-to-team sync.
+- **Client trust (gxctl, mock server with an rcgen certificate):** a
+  self-signed certificate is accepted only after `--pin` or an
+  interactive TOFU `y`; a pin change is a hard error, never a
+  re-prompt; `insecure` without the typed confirmation phrase is a
+  config error; `GLIDEX_TLS_INSECURE=1` cannot override existing pins;
+  a `cluster_id` mismatch against the profile refuses the request; a
+  TLS-terminating proxy is caught by the `server-info` fingerprint
+  cross-check. Plus the profile-file refusals and the
+  `GLIDEX_TOKEN`/profile/`token_command` precedence matrix
+  ([gxctl-auth.md §11](gxctl-auth.md)).
 - **UI e2e:** login, CSRF header, console via ticket, a foreign `Host` is refused.
 
 ## 15. Milestones
@@ -1301,6 +1345,7 @@ None. Earlier questions were answered and recorded as decisions 10–17 (§2).
 | VM units, polkit rule, shim allowlist (§3, §9) | `packaging/glidex-vm@.service.in`, `packaging/50-glidex-vm.rules.in`, `crates/glidex-vm-shim/src/launch.rs`, `crates/glidex-install` (`install_vm_units`) |
 | PAM helper (§5.3) | `crates/glidex-authd` |
 | netd ownership, policy, admin socket, audit context, NAT isolation (§8) | `crates/glidex-netd`, `crates/glidex-ovs/src/nat.rs` |
+| Login profiles, trust ladder and client trust ([gxctl-auth.md](gxctl-auth.md), decision 18) | **implemented** — G1–G5 landed: profile file `bin/gxctl/config.rs`, ladder `glidex_tls::Trust`/`ClientTls::with_trust`, failover + binding preflight `bin/gxctl/client.rs`, `auth` family `bin/gxctl/admin.rs`, server halves `api/access.rs` (`server_info`, `pam_token`) + `auth::create_token` device/client stamp |
 | Tests (§14) | `tests/security_tests.rs`, `tests/network_tests.rs`, unit tests in each module, `crates/glidex-authd/tests`, `crates/glidex-netd/tests` |
 
 Still to verify on a real host: the generated nftables rules (§8.4),

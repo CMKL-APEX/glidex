@@ -91,6 +91,11 @@ pub struct LocalNames {
     pub ips: Vec<IpAddr>,
 }
 
+/// The host name as the kernel knows it; `None` when there is none.
+pub fn hostname() -> Option<String> {
+    nix::unistd::gethostname().ok().and_then(|h| h.into_string().ok()).filter(|h| !h.is_empty())
+}
+
 impl LocalNames {
     /// Read them now. Never fails: what can't be found is left out.
     pub fn discover() -> Self {
@@ -398,12 +403,60 @@ pub fn trustworthy(path: &Path, euid: u32, glidex_uid: Option<u32>) -> bool {
 
 // ---- client trust -----------------------------------------------------------
 
-/// A client config that remembers the fingerprint of the last
-/// certificate it rejected, for error messages.
+/// The certificate trust one gxctl login profile asks for
+/// (spec/gxctl-auth.md §5.1), fed to [`ClientTls::with_trust`].
+#[derive(Debug, Clone, Default)]
+pub struct Trust {
+    /// PEM files trusted next to the system store. Their access control is
+    /// the caller's job, same as for `ca_pem`.
+    pub ca_files: Vec<PathBuf>,
+    /// Inline PEM text, for profiles that carry the CA with them.
+    pub ca_pem: Option<String>,
+    /// Leaf-certificate SHA-256 fingerprints the user accepted on first
+    /// use, in [`Trust::normalize_pin`] shape. A pin substitutes nothing:
+    /// dates, the handshake signature, and (unless `verify_host` is off)
+    /// the name keep being checked (gxctl-auth.md A4).
+    pub pins: Vec<String>,
+    /// Match the certificate's SANs against the dialed name. Only profiles
+    /// with a pin may turn this off, for dialing an address that never
+    /// made it into the certificate; regenerating the certificate is the
+    /// better fix (gxctl-auth.md §2.2).
+    pub verify_host: bool,
+    /// Verify nothing, for a profile whose owner typed the host name to
+    /// confirm (`i_understand`, gxctl-auth.md A9). rustls still binds the
+    /// handshake signature to the presented certificate; the caller prints
+    /// the loud warning. Audit this field's use before shipping code that
+    /// reaches it.
+    pub insecure: bool,
+}
+
+impl Trust {
+    /// A fingerprint in any shape an operator pastes it (`SHA256/AB:CD:…`,
+    /// `ab cd …`, bare hex) reduced to 64 lowercase hex digits; `None`
+    /// when it is not one.
+    pub fn normalize_pin(s: &str) -> Option<String> {
+        // Text up to a tag separator (`sha256/`) is dropped whole, so its
+        // hex-looking digits cannot inflate the count; every non-hex
+        // character left is a separator.
+        let low = s.trim().to_lowercase();
+        let body = match low.chars().position(|c| c == '/') {
+            Some(i) => &low[i + 1..],
+            None => &low[..],
+        };
+        let hex: String = body.chars().filter(|c| c.is_ascii_hexdigit()).collect();
+        if hex.len() == 64 { Some(hex) } else { None }
+    }
+}
+
+/// A client config that remembers the fingerprint of the last certificate
+/// it accepted and of the last it rejected — for error messages, the
+/// first-use trust prompt, and cross-checking what a server claims about
+/// itself (spec/gxctl-auth.md §5.2).
 #[derive(Clone)]
 pub struct ClientTls {
     pub config: Arc<rustls::ClientConfig>,
     rejected: Arc<Mutex<Option<String>>>,
+    accepted: Arc<Mutex<Option<String>>>,
 }
 
 impl std::fmt::Debug for ClientTls {
@@ -416,16 +469,55 @@ impl ClientTls {
     /// Trust the system store plus every certificate in `extra` (PEM
     /// files), offering `alpn`.
     pub fn new(extra: &[PathBuf], alpn: &[&[u8]]) -> Result<Self, String> {
-        let mut roots = rustls::RootCertStore::empty();
-        for c in rustls_native_certs::load_native_certs().certs {
-            let _ = roots.add(c);
+        Self::with_trust(&Trust { ca_files: extra.into_iter().cloned().collect(), verify_host: true, ..Default::default() }, alpn)
+    }
+
+    /// gxctl's trust ladder (spec/gxctl-auth.md §5.1), one rung stricter
+    /// than the last and each entered only where the profile says so:
+    ///
+    /// 1. WebPKI against the system store, `ca_files` and `ca_pem`.
+    /// 2. `pins`: a leaf whose fingerprint the user accepted on first use
+    ///    (TOFU). rustls verifies the chain up to the pinned leaf itself —
+    ///    a self-signed certificate is its own trust anchor, the same
+    ///    mechanism the published certificate uses today — plus the dates
+    ///    and, unless `verify_host` is off, the name. Pins pin a *leaf*;
+    ///    a CA-issued chain belongs in `ca_files`, not in a pin.
+    /// 3. `insecure`: nothing, and the caller shouted first.
+    ///
+    /// No rung is ever skipped silently: a pin accepts only a byte-exact
+    /// fingerprint match, and only after WebPKI itself refused the peer.
+    pub fn with_trust(t: &Trust, alpn: &[&[u8]]) -> Result<Self, String> {
+        if t.pins.is_empty() && !t.verify_host && !t.insecure {
+            // The loader validates this too; guarding here keeps any
+            // caller from assembling the combination by accident.
+            return Err("tls.verify_host=false only applies alongside a pin".into());
         }
-        for p in extra {
-            for c in load_certs(p)? {
-                roots.add(c).map_err(|e| format!("{}: {}", p.display(), e))?;
+        let mut roots = rustls::RootCertStore::empty();
+        let mut list: Vec<CertificateDer<'static>> = Vec::new();
+        for c in rustls_native_certs::load_native_certs().certs {
+            if roots.add(c.clone()).is_ok() {
+                list.push(c);
             }
         }
-        if roots.is_empty() {
+        for p in &t.ca_files {
+            for c in load_certs(p)? {
+                roots.add(c.clone()).map_err(|e| format!("{}: {}", p.display(), e))?;
+                list.push(c);
+            }
+        }
+        if let Some(pem) = &t.ca_pem {
+            let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_slice_iter(pem.as_bytes())
+                .collect::<Result<_, _>>()
+                .map_err(|e| format!("tls.ca_pem: {e}"))?;
+            if certs.is_empty() {
+                return Err("tls.ca_pem: no certificate".into());
+            }
+            for c in certs {
+                roots.add(c.clone()).map_err(|e| format!("tls.ca_pem: {e}"))?;
+                list.push(c);
+            }
+        }
+        if roots.is_empty() && t.pins.is_empty() && !t.insecure {
             return Err("no trusted CA certificates found (install the system CA bundle or give a certificate file)".into());
         }
         let provider = Arc::new(rustls::crypto::ring::default_provider());
@@ -433,7 +525,16 @@ impl ClientTls {
             .build()
             .map_err(|e| e.to_string())?;
         let rejected = Arc::new(Mutex::new(None));
-        let verifier = Arc::new(Recording { inner, rejected: rejected.clone() });
+        let accepted = Arc::new(Mutex::new(None));
+        let verifier = Arc::new(Ladder {
+            inner,
+            roots: list,
+            pins: t.pins.iter().filter_map(|p| Trust::normalize_pin(p)).collect(),
+            verify_host: t.verify_host,
+            insecure: t.insecure,
+            rejected: rejected.clone(),
+            accepted: accepted.clone(),
+        });
         let mut cfg = rustls::ClientConfig::builder_with_provider(provider)
             .with_safe_default_protocol_versions()
             .map_err(|e| e.to_string())?
@@ -441,24 +542,74 @@ impl ClientTls {
             .with_custom_certificate_verifier(verifier)
             .with_no_client_auth();
         cfg.alpn_protocols = alpn.iter().map(|p| p.to_vec()).collect();
-        Ok(ClientTls { config: Arc::new(cfg), rejected })
+        Ok(ClientTls { config: Arc::new(cfg), rejected, accepted })
     }
 
     /// Fingerprint of the last certificate that failed verification.
     pub fn rejected_fingerprint(&self) -> Option<String> {
         self.rejected.lock().unwrap().clone()
     }
+
+    /// Fingerprint of the last certificate that was accepted, to compare
+    /// against what `GET /auth/server-info` claims (spec/gxctl-auth.md
+    /// §7.1): a proxy terminating TLS in front of the cluster shows its
+    /// own certificate, and the two fingerprints then disagree.
+    pub fn accepted_fingerprint(&self) -> Option<String> {
+        self.accepted.lock().unwrap().clone()
+    }
 }
 
-/// The WebPKI verifier, recording what it rejects. It never accepts
-/// anything the WebPKI verifier refuses.
+/// The trust ladder as rustls sees it: the audited WebPKI verifier decides
+/// first, and a profile's pins may only rescue a certificate WebPKI refused,
+/// and only after it has been re-verified against everything a pin is
+/// meant to substitute for nothing.
 #[derive(Debug)]
-struct Recording {
+struct Ladder {
+    /// WebPKI over the system store plus the profile's roots: the normal
+    /// path, and the owner of the handshake-signature checks the pins and
+    /// the bypass keep delegating.
     inner: Arc<rustls::client::WebPkiServerVerifier>,
+    /// The same roots as a list, so a pin hit can rebuild the store with
+    /// the presented leaf added to them.
+    roots: Vec<CertificateDer<'static>>,
+    pins: Vec<String>,
+    verify_host: bool,
+    insecure: bool,
     rejected: Arc<Mutex<Option<String>>>,
+    accepted: Arc<Mutex<Option<String>>>,
 }
 
-impl rustls::client::danger::ServerCertVerifier for Recording {
+impl Ladder {
+    /// A pinned leaf becomes one more trust anchor of a throwaway WebPKI
+    /// build, so chain, dates and name stay checked by rustls's own
+    /// audited code — the fingerprint answers "which key", not "is it
+    /// valid". Fails closed for leaves that are not their own issuer:
+    /// pin is a TOFU device for self-signed certificates, and CA-issued
+    /// chains belong in `ca_files`.
+    fn verify_pinned(
+        &self,
+        end_entity: &CertificateDer<'_>,
+        intermediates: &[CertificateDer<'_>],
+        server_name: &ServerName<'_>,
+        ocsp_response: &[u8],
+        now: UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        use rustls::client::danger::ServerCertVerifier; // the trait whose method the field access reaches
+        let mut store = rustls::RootCertStore::empty();
+        for c in &self.roots {
+            let _ = store.add(c.clone());
+        }
+        store
+            .add(CertificateDer::from(end_entity.to_vec()))
+            .map_err(|_| rustls::Error::InvalidCertificate(rustls::CertificateError::BadEncoding))?;
+        let one_shot = rustls::client::WebPkiServerVerifier::builder_with_provider(Arc::new(store), Arc::new(rustls::crypto::ring::default_provider()))
+            .build()
+            .map_err(|e| rustls::Error::General(format!("pinned verifier: {e}")))?;
+        one_shot.verify_server_cert(end_entity, intermediates, server_name, ocsp_response, now)
+    }
+}
+
+impl rustls::client::danger::ServerCertVerifier for Ladder {
     fn verify_server_cert(
         &self,
         end_entity: &CertificateDer<'_>,
@@ -467,9 +618,43 @@ impl rustls::client::danger::ServerCertVerifier for Recording {
         ocsp_response: &[u8],
         now: UnixTime,
     ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
-        self.inner
-            .verify_server_cert(end_entity, intermediates, server_name, ocsp_response, now)
-            .inspect_err(|_| *self.rejected.lock().unwrap() = Some(fingerprint_der(end_entity)))
+        let fp = fingerprint_der(end_entity);
+        if self.insecure {
+            // "nothing is checked" is the promise `insecure` makes
+            // (gxctl-auth.md A9): the profile got there by its owner
+            // typing the host name, and the caller warns loudly. The
+            // handshake signature below still ties the peer to this
+            // certificate, so the answer cannot be replayed by a
+            // bystander who merely knows the token.
+            *self.accepted.lock().unwrap() = Some(fp);
+            return Ok(rustls::client::danger::ServerCertVerified::assertion());
+        }
+        let pinned = Trust::normalize_pin(&fp).is_some_and(|f| self.pins.contains(&f));
+        if pinned && !self.verify_host {
+            // The peer matched a fingerprint the owner approved; the one
+            // check rustls would run that the profile waived is the
+            // name, and the rest it must keep: dates (A4 — a pin never
+            // relaxes them), verified here because WebPKI, which owns
+            // them, cannot be asked to skip the name as well.
+            check_validity(end_entity, now)?;
+            *self.accepted.lock().unwrap() = Some(fp);
+            return Ok(rustls::client::danger::ServerCertVerified::assertion());
+        }
+        let attempt = if pinned {
+            self.verify_pinned(end_entity, intermediates, server_name, ocsp_response, now)
+        } else {
+            self.inner.verify_server_cert(end_entity, intermediates, server_name, ocsp_response, now)
+        };
+        match attempt {
+            Ok(v) => {
+                *self.accepted.lock().unwrap() = Some(fp);
+                Ok(v)
+            }
+            Err(e) => {
+                *self.rejected.lock().unwrap() = Some(fp);
+                Err(e)
+            }
+        }
     }
 
     fn verify_tls12_signature(
@@ -493,6 +678,19 @@ impl rustls::client::danger::ServerCertVerifier for Recording {
     fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
         self.inner.supported_verify_schemes()
     }
+}
+
+/// The validity window of a certificate that was accepted by fingerprint
+/// rather than by chain: the one thing WebPKI is skipped for together
+/// with the name, so it is checked directly (gxctl-auth.md A4).
+fn check_validity(der: &CertificateDer<'_>, now: UnixTime) -> Result<(), rustls::Error> {
+    let (_, x) = x509_parser::parse_x509_certificate(der).map_err(|_| rustls::Error::InvalidCertificate(rustls::CertificateError::BadEncoding))?;
+    let v = x.validity();
+    let now = now.as_secs() as i64;
+    if v.not_before.timestamp() > now || v.not_after.timestamp() < now {
+        return Err(rustls::Error::InvalidCertificate(rustls::CertificateError::Expired));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -636,5 +834,113 @@ mod tests {
         let untrusted = ClientTls::new(&[o.cert], &[]).unwrap();
         assert!(connect(untrusted.clone()).await.is_err());
         assert_eq!(untrusted.rejected_fingerprint(), Some(fingerprint(&s.cert).unwrap()));
+    }
+
+    /// A server nobody trusts until once: the fingerprint the owner
+    /// confirmed on first use (in pasted shape) lets it through, while
+    /// WebPKI alone still refuses it, and a wrong pin stays refused with
+    /// the observed fingerprint on record for the prompt (spec/gxctl-auth.md
+    /// §5.2).
+    #[tokio::test]
+    async fn pin_accepts_after_first_use_trust() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let tmp = tempfile::TempDir::new().unwrap();
+        let s = ensure_self_signed(&tmp.path().join("tls"), "cp", &names()).unwrap();
+        let fp = fingerprint(&s.cert).unwrap();
+        let acceptor = tokio_rustls::TlsAcceptor::from(server_config(&s.cert, &s.key, &[]).unwrap());
+        let v4 = bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let port = v4.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            loop {
+                let (tcp, _) = v4.accept().await.unwrap();
+                let acceptor = acceptor.clone();
+                tokio::spawn(async move {
+                    if let Ok(mut t) = acceptor.accept(tcp).await {
+                        let _ = t.write_all(b"hi").await;
+                        let _ = t.shutdown().await;
+                    }
+                });
+            }
+        });
+        let connect = |tls: ClientTls| async move {
+            let tcp = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+            let name = ServerName::try_from("localhost").unwrap();
+            let mut t = tokio_rustls::TlsConnector::from(tls.config.clone()).connect(name, tcp).await?;
+            let mut out = String::new();
+            t.read_to_string(&mut out).await?;
+            Ok::<_, io::Error>(out)
+        };
+        // Pasted the way a browser shows it, tag and all.
+        let pinned = ClientTls::with_trust(&Trust { pins: vec![format!("SHA256/{fp}")], verify_host: true, ..Default::default() }, &[]).unwrap();
+        assert_eq!(connect(pinned.clone()).await.unwrap(), "hi");
+        assert_eq!(pinned.accepted_fingerprint(), Some(fp.clone()));
+        // Without the pin the same server is still untrusted: the pin, not
+        // convenience, is what decides.
+        let bare = ClientTls::with_trust(&Trust { ca_files: vec![], verify_host: true, ..Default::default() }, &[]);
+        if let Ok(bare) = bare {
+            // (a host with a populated system store still won't know this
+            // certificate; the assertion below holds either way)
+            assert!(connect(bare.clone()).await.is_err());
+            assert_eq!(bare.rejected_fingerprint(), Some(fp.clone()));
+        }
+        // A pin for a different certificate rescues nothing.
+        let o = ensure_self_signed(&tmp.path().join("other"), "x", &names()).unwrap();
+        let wrong = ClientTls::with_trust(&Trust { pins: vec![fingerprint(&o.cert).unwrap()], verify_host: true, ..Default::default() }, &[]).unwrap();
+        assert!(connect(wrong.clone()).await.is_err());
+        assert_eq!(wrong.rejected_fingerprint(), Some(fp), "the prompt needs the observed fingerprint");
+    }
+
+    /// The name check runs on pinned certificates too, and only the
+    /// profile's `verify_host: false` waives it — together with the pin,
+    /// never alone (gxctl-auth.md A4, §2.2).
+    #[tokio::test]
+    async fn pinned_certificates_still_meet_the_name_or_an_explicit_waiver() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let tmp = tempfile::TempDir::new().unwrap();
+        let s = ensure_self_signed(&tmp.path().join("tls"), "cp", &names()).unwrap();
+        let fp = fingerprint(&s.cert).unwrap();
+        let acceptor = tokio_rustls::TlsAcceptor::from(server_config(&s.cert, &s.key, &[]).unwrap());
+        let v4 = bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let port = v4.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            loop {
+                let (tcp, _) = v4.accept().await.unwrap();
+                let acceptor = acceptor.clone();
+                tokio::spawn(async move {
+                    if let Ok(mut t) = acceptor.accept(tcp).await {
+                        let _ = t.write_all(b"hi").await;
+                        let _ = t.shutdown().await;
+                    }
+                });
+            }
+        });
+        let connect = |tls: ClientTls, name: &'static str| async move {
+            let tcp = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+            let name = ServerName::try_from(name).unwrap();
+            let mut t = tokio_rustls::TlsConnector::from(tls.config.clone()).connect(name, tcp).await?;
+            let mut out = String::new();
+            t.read_to_string(&mut out).await?;
+            Ok::<_, io::Error>(out)
+        };
+        let pin = Trust { pins: vec![fp.clone()], verify_host: true, ..Default::default() };
+        let strict = ClientTls::with_trust(&pin, &[]).unwrap();
+        assert!(connect(strict.clone(), "nope.example").await.is_err(), "a pin is not a name");
+        assert_eq!(strict.rejected_fingerprint(), Some(fp.clone()));
+        let waived = ClientTls::with_trust(&Trust { verify_host: false, ..pin.clone() }, &[]).unwrap();
+        assert_eq!(connect(waived, "nope.example").await.unwrap(), "hi", "the waiver is the profile's, and only with a pin");
+        // Without the pin, waiving the name is refused at construction.
+        assert!(ClientTls::with_trust(&Trust { verify_host: false, ..Default::default() }, &[]).is_err());
+    }
+
+    #[test]
+    fn pins_normalize_from_whatever_the_browser_showed() {
+        let upper = "A1B2C3D4".repeat(8);
+        let hex = upper.to_lowercase();
+        let colons = "a1:b2:c3:d4:".repeat(8);
+        assert_eq!(Trust::normalize_pin(&format!("SHA256/{colons}")), Some(hex.clone()));
+        assert_eq!(Trust::normalize_pin(&colons), Some(hex.clone()));
+        assert_eq!(Trust::normalize_pin(&format!("{hex}  ")), Some(hex.clone()));
+        assert_eq!(Trust::normalize_pin("sha256/deadbeef"), None);
+        assert_eq!(Trust::normalize_pin(&hex[..62]), None);
     }
 }

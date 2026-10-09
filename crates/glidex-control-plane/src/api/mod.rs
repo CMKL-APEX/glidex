@@ -244,7 +244,9 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         // ---- authentication
         .add("GET", "/health", PUBLIC, get(health_check))
         .add("GET", "/auth/methods", PUBLIC, get(access::methods))
+        .add("GET", "/auth/server-info", PUBLIC, get(access::server_info))
         .add("POST", "/auth/login", PUBLIC, post(access::login))
+        .add("POST", "/auth/token", PUBLIC, post(access::pam_token))
         .add("GET", "/auth/oidc/start", PUBLIC, get(access::oidc_start))
         .add("GET", "/auth/oidc/callback", PUBLIC, get(access::oidc_callback))
         .add("POST", "/auth/oidc/device", PUBLIC, post(access::oidc_device_start))
@@ -768,7 +770,7 @@ mod tests {
         let public: Vec<_> = table.iter().filter(|r| r.action == PUBLIC).map(|r| r.path).collect();
         assert_eq!(
             public,
-            ["/health", "/auth/methods", "/auth/login", "/auth/oidc/start", "/auth/oidc/callback", "/auth/oidc/device", "/auth/oidc/device/poll"]
+            ["/health", "/auth/methods", "/auth/server-info", "/auth/login", "/auth/token", "/auth/oidc/start", "/auth/oidc/callback", "/auth/oidc/device", "/auth/oidc/device/poll"]
         );
     }
 

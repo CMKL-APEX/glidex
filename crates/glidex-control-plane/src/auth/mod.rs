@@ -25,6 +25,14 @@ pub const SESSION_COOKIE: &str = "gx_session";
 /// Header carrying the session's CSRF value on cookie-authenticated writes.
 pub const CSRF_HEADER: &str = "x-glidex-csrf";
 pub const TOKEN_PREFIX: &str = "gxt_";
+/// Clean a client-claimed `device` / `client` string for storage: one
+/// trimmed line, ≤ 128 characters, no control characters; `None` on
+/// anything else. Display and audit only — never an authorization input
+/// (spec/gxctl-auth.md §7.2).
+fn stamp(s: Option<&str>) -> Option<String> {
+    let s = s.map(str::trim).filter(|s| !s.is_empty() && !s.chars().any(char::is_control) && s.len() <= 128)?;
+    Some(s.to_string())
+}
 /// How long a console ticket stays valid (spec §5.6).
 pub const TICKET_SECS: u64 = 30;
 /// `age_secs` for principals that can never satisfy step-up.
@@ -723,12 +731,17 @@ impl AuthService {
     // ---- tokens ---------------------------------------------------------
 
     /// Create a token; returns its secret (shown once) and record.
+    /// `device` / `client` are what a `gxctl auth login` client says it is;
+    /// stored redacted for display and audit only, never trusted
+    /// (spec/gxctl-auth.md §7.2).
     pub fn create_token(
         &self,
         name: &str,
         kind: TokenKind,
         created_by: &str,
         days: Option<u64>,
+        device: Option<&str>,
+        client: Option<&str>,
     ) -> Result<(String, Token), AuthError> {
         let cfg = &self.config.auth.tokens;
         let days = days.unwrap_or(cfg.default_days);
@@ -749,6 +762,8 @@ impl AuthService {
             expires_at: now + days * 86400,
             last_used_at: None,
             last_used_from: None,
+            device: stamp(device),
+            client: stamp(client),
         };
         self.store.put_token(&sha256_hex(secret.as_bytes()), &t)?;
         Ok((secret, t))
@@ -983,7 +998,7 @@ mod tests {
         let p = user_principal(&s, "alice");
         let uid = p.user_id().unwrap().to_string();
         s.add_link("role.editor", Ent::User(uid.clone()), Ent::Project("pa".into()), "t").unwrap();
-        let (secret, tok) = s.create_token("ci", TokenKind::Personal { owner: uid.clone() }, &uid, None).unwrap();
+        let (secret, tok) = s.create_token("ci", TokenKind::Personal { owner: uid.clone() }, &uid, None, None, None).unwrap();
         let mut es = EntitySet::new();
         es.in_project(Ent::Vm("v".into()), "pa");
         // Unnarrowed: acts as the owner.
@@ -1010,7 +1025,7 @@ mod tests {
         let p = user_principal(&s, "net");
         let uid = p.user_id().unwrap().to_string();
         s.add_link("role.net-admin", Ent::User(uid.clone()), Ent::Cluster, "t").unwrap();
-        let (secret, tok) = s.create_token("t", TokenKind::Personal { owner: uid.clone() }, &uid, None).unwrap();
+        let (secret, tok) = s.create_token("t", TokenKind::Personal { owner: uid.clone() }, &uid, None, None, None).unwrap();
         let tp = s.token_principal(&secret, Transport::Tcp, None).unwrap().unwrap();
         let d = s.authorize(&tp, "installOvs", Ent::Host, EntitySet::new(), &[]);
         assert!(d.denied_by("base.step-up"), "{:?}", d);

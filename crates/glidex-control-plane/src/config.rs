@@ -25,6 +25,9 @@ pub struct Config {
     /// HTTPS on the TCP listeners (spec §5.1). Default: a self-signed
     /// certificate.
     pub tls: TlsSetting,
+    /// Display name `GET /auth/server-info` reports and gxctl shows in
+    /// profile banners (spec/gxctl-auth.md §7.1). Default: the host name.
+    pub server_name: Option<String>,
     /// Unix socket for local gxctl users (peer identity, spec §5.2).
     /// Default: `<run dir>/api.sock`.
     pub api_socket: Option<PathBuf>,
@@ -53,6 +56,7 @@ impl Default for Config {
         Self {
             listen: glidex_tls::all_addresses(DEFAULT_PORT),
             tls: TlsSetting::Mode(TlsMode::Auto),
+            server_name: None,
             api_socket: None,
             ui_socket: None,
             ui_user: "glidex-ui".into(),

@@ -2,10 +2,13 @@
 //! spec/cli.md "Access control").
 
 use crate::client::{self, enc, format_entity, parse_principal, parse_role_ref, role_name, ApiClient};
+use crate::config;
 use crate::{flag_value, flag_values, format_unix_time, has_flag, project_names, prompt, prompt_hidden};
 use colored::Colorize;
 use hyper::{Method, StatusCode};
 use serde_json::{json, Value};
+use std::io::IsTerminal;
+use std::path::PathBuf;
 use zeroize::Zeroizing;
 
 fn err(e: impl std::fmt::Display) {
@@ -139,6 +142,13 @@ pub async fn login(client: &ApiClient, args: &[&str]) {
 
 /// OAuth device flow through the control plane (spec §5.4).
 async fn device_login(client: &ApiClient) -> Option<Zeroizing<String>> {
+    device_login_named(client, "gxctl", None, None).await
+}
+
+/// The same flow for the login family, with the token named for its
+/// profile and the `device`/`client` metadata stamped so `auth token list`
+/// and the audit trail say which machine and which gxctl asked (A8).
+async fn device_login_named(client: &ApiClient, token_name: &str, device: Option<&str>, client_id: Option<&str>) -> Option<Zeroizing<String>> {
     let start: Value = match client.request_json(Method::POST, "/auth/oidc/device", Some(json!({}))).await {
         Ok(v) => v,
         Err(e) => {
@@ -156,7 +166,13 @@ async fn device_login(client: &ApiClient) -> Option<Zeroizing<String>> {
     }
     println!("Waiting for you to finish (Ctrl-C to cancel)...");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(expires);
-    let body = json!({ "device_code": code, "token_name": "gxctl" });
+    let mut body = json!({ "device_code": code, "token_name": token_name });
+    if let Some(d) = device {
+        body["device"] = json!(d);
+    }
+    if let Some(c) = client_id {
+        body["client"] = json!(c);
+    }
     while std::time::Instant::now() < deadline {
         tokio::select! {
             _ = tokio::time::sleep(std::time::Duration::from_secs(interval)) => {}
@@ -196,6 +212,666 @@ async fn device_login(client: &ApiClient) -> Option<Zeroizing<String>> {
     }
     err("the login code expired; run 'login --oidc' again");
     None
+}
+
+// ---- auth: login profiles (spec/gxctl-auth.md §6) ---------------------------
+
+/// `auth login|logout|status|use|profiles|token|trust|whoami` — the
+/// profile generator and manager of gxctl-auth.md §6. The legacy
+/// `login`/`logout`/`whoami`/`token` commands above stay as aliases for
+/// what they were; this family adds the file of named profiles.
+pub async fn auth(client: &ApiClient, args: &[&str]) {
+    match args.first().copied().unwrap_or("") {
+        "login" => auth_login(client, &args[1..]).await,
+        "logout" => auth_logout(client, &args[1..]).await,
+        "status" => auth_status(client, &args[1..]).await,
+        "use" => auth_use(&args[1..]),
+        "profiles" => auth_profiles(&args[1..]),
+        "trust" => auth_trust(&args[1..]).await,
+        "token" | "tokens" => token(client, &args[1..]).await,
+        "whoami" => whoami(client).await,
+        _ => usage("Usage: auth login [--url U]… [--profile P] [--oidc | --token | --pam-user U] [--pin sha256/…] [--insecure] [--rebind] [--use] [--name N] [--days N] | logout [--revoke] [--keep-token] | status | use P | profiles [--all] | trust list|fetch|remove [--all] | token … | whoami"),
+    }
+}
+
+/// `auth trust fetch` asks an unverified bootstrap connection what the
+/// server says its own fingerprint is, so the TOFU prompt can show whether
+/// the certificate we were handed agrees with what the server claims
+/// (§5.2): a proxy terminating TLS in front presents its own certificate,
+/// the ladder rejects it, and the two numbers disagree. The probe carries
+/// no credential — server-info is public information, the answer to be
+/// compared before any token exists on that connection.
+async fn tofu_verdict(urls: &[String]) -> String {
+    let trust = config::Tls { insecure: true, ..Default::default() };
+    match ApiClient::tcp_multi(urls, None, Some(&trust), None, None) {
+        Ok(c) => match c.server_info().await {
+            Ok(v) => match v["fingerprint"].as_str() {
+                Some(claim) => {
+                    let seen = c.accepted_fingerprint();
+                    let same = match (glidex_tls::Trust::normalize_pin(claim), seen.as_deref()) {
+                        (Some(c), Some(s)) => glidex_tls::Trust::normalize_pin(s).is_some_and(|n| n.as_str() == c.as_str()),
+                        _ => false,
+                    };
+                    if same {
+                        format!("it matches what we are being handed ({})", claim)
+                    } else {
+                        format!("IT DOES NOT MATCH: the server says {claim}, the certificate in front of it is {}", seen.unwrap_or_else(|| "?".into()))
+                    }
+                }
+                None => "the server did not say (an older control plane?)".into(),
+            },
+            Err(_) => "the server did not answer the unverified probe".into(),
+        },
+        Err(_) => "the unverified probe could not connect".into(),
+    }
+}
+
+async fn auth_login(session: &ApiClient, args: &[&str]) {
+    let mut urls: Vec<String> = flag_values(args, "--url").into_iter().chain(flag_values(args, "--server").into_iter()).map(|u| (*u).to_string()).collect();
+    let mut name = flag_value(args, "--profile").map(|s| s.to_string());
+    let rebind = has_flag(args, "--rebind");
+    let non_interactive = has_flag(args, "--non-interactive") || !std::io::stdin().is_terminal();
+    let pin_arg = flag_value(args, "--pin").map(|s| s.to_string());
+    let pam_user = flag_value(args, "--pam-user").map(|s| s.to_string());
+
+    let cfg = match config::load() {
+        Ok(c) => c,
+        Err(e) => return err(e),
+    };
+    let known = || cfg.as_ref().map(|c| c.list()).unwrap_or_else(|| "no profiles yet".into());
+
+    // §6.1.1 — target and profile: a named profile, the `--url` target, or
+    // the live current one. With nothing to go on, ask which server, never
+    // guess.
+    if name.is_none() && urls.is_empty() {
+        match config::profile_of(&cfg, None) {
+            Some((n, p)) => {
+                name = Some(n.clone());
+                urls = p.url.clone();
+            }
+            None => return usage(&format!("which server? give --url https://host:8841 or --profile P; the file knows: {}", known())),
+        }
+    }
+    let pair: Option<(&String, &config::Profile)> = if let Some(n) = &name {
+        match config::profile_of(&cfg, Some(n)) {
+            Some(p) => Some(p),
+            None if !urls.is_empty() => None, // a new profile, named, dialling the given target
+            None => return err(format!("profile '{n}' does not exist yet and no --url was given; there is nothing to log in to")),
+        }
+    } else if !urls.is_empty() {
+        // `--url` without `--profile`: refresh the profile that already
+        // dials exactly this host; anything else is a new profile and the
+        // operator must say so with --save (no defaults are guessed,
+        // §6.1.1).
+        match cfg.as_ref().and_then(|c| c.profiles.iter().find(|(_, p)| urls.iter().all(|u| p.url.iter().any(|pu| config::url_host(pu) == config::url_host(u))))) {
+            Some(p) => Some(p),
+            None => {
+                if !has_flag(args, "--save") {
+                    return usage("which profile? this target is new to the file: pass --profile NAME, or --save to record it as a new profile named for its host");
+                }
+                let host = config::url_host(&urls[0]);
+                let mut n: String = host.chars().take_while(|c| matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | '-')).collect();
+                n = n.trim_matches('-').to_string();
+                if n.is_empty() {
+                    n = host;
+                }
+                name = Some(n);
+                None
+            }
+        }
+    } else {
+        config::profile_of(&cfg, None)
+    };
+    let existing = pair.map(|(k, p)| (k.clone(), p.clone()));
+    let name = match &name {
+        Some(n) => n.clone(),
+        None => return err("no profile in effect; pass --profile"),
+    };
+    if urls.is_empty() {
+        urls = match pair {
+            Some((_, p)) => p.url.clone(),
+            None => return err(format!("profile '{name}' is new and lists no urls; give --url https://host:8841")),
+        };
+    }
+
+    // Trust carries over a refresh untouched (§6.2: profile, pins and CA
+    // stay); --rebind wipes the pins because a rotating-ca or re-init
+    // legitimately changes them, and the TOFU path below re-establishes.
+    let mut tls = existing.as_ref().map(|(_, p)| p.tls.clone()).unwrap_or_default();
+    if rebind {
+        tls.pins.clear();
+        tls.insecure = false;
+        tls.i_understand = None;
+    }
+    if let Some(p) = &pin_arg {
+        if glidex_tls::Trust::normalize_pin(p).is_none() {
+            return err(format!("{p} is not a fingerprint; gxctl prints them as sha256/AB:CD:… — paste that line"));
+        }
+        tls.pins = vec![p.clone()];
+    }
+    let host = config::url_host(&urls[0]);
+    if has_flag(args, "--insecure") {
+        // The bypass exists only as its typed confirmation (§5.4) — and a
+        // confirmation cannot be typed into a pipe: CI passes --pin, or the
+        // one-run GLIDEX_TLS_INSECURE=1 for throwaway rigs, never this.
+        if non_interactive {
+            return err("--insecure needs a typed confirmation and stdin is not a terminal; trust the exact certificate instead: --pin sha256/<fingerprint>");
+        }
+        println!("{}", "The connection will verify NO certificate: anyone on the path can read your token and everything you send. This is for hardware labs whose switches cannot present a certificate at all.".red().bold());
+        let typed = prompt(&format!("type '{host}' to accept unverified TLS for this profile: "));
+        if typed.trim() != host {
+            return err("confirmation not typed — nothing is saved and nothing is unverified");
+        }
+        tls.insecure = true;
+        tls.i_understand = Some(host.clone());
+    }
+
+    // §6.1.2 connect, through the ladder; nothing is authenticated yet, so
+    // the token cannot leak on a rejected certificate — there is no token
+    // on this connection at all.
+    let mut asked = false;
+    let mut reached: Option<(ApiClient, Value)> = None;
+    // Bounded: the TOFU prompt runs at most once; a second rejection means
+    // the fresh pin does not fit and there is nothing left to ask.
+    for _ in 0..2 {
+        let c = match ApiClient::tcp_multi(&urls, None, Some(&tls), None, None) {
+            Ok(c) => c,
+            Err(e) => return err(e),
+        };
+        match c.server_info().await {
+            Ok(v) => {
+                reached = Some((c, v));
+                break;
+            }
+            Err(e) => match c.rejected_fingerprint() {
+                // The server refused us for some reason that is not the
+                // certificate (down, refused, timed out): say it plainly.
+                None => return err(e),
+                Some(fp) => {
+                    if !tls.pins.is_empty() && !asked {
+                        // §5.3: a pinned certificate that changed is a hard
+                        // error — never a re-prompt.
+                        return err(format!(
+                            "the certificate of {host} is SHA-256 {fp}, which is not among profile '{name}'s pins ({}).\n  the control plane regenerates its certificate only in narrow cases ('cluster rotate-ca', a re-init): confirm the change through a second channel, then\n  gxctl auth login --profile {name} --pin sha256/<new fingerprint> --rebind",
+                            tls.pins.join(", ")
+                        ));
+                    }
+                    if asked || pin_arg.is_some() {
+                        return err(format!("the pin did not rescue the connection: {e}"));
+                    }
+                    if non_interactive {
+                        // A TTY-less login never silently pins (§5.2): the
+                        // operator must have seen the fingerprint somewhere.
+                        return err(format!(
+                            "{e}\n  if that is the control plane's certificate, trust this exact one:\n  gxctl auth login --profile {name} --url '{}' --pin sha256/{}",
+                            urls[0],
+                            fp.to_lowercase()
+                        ));
+                    }
+                    let verdict = tofu_verdict(&urls).await;
+                    println!("the certificate of {host} is not trusted by this system:");
+                    println!("  SHA-256 {fp}   (the control plane prints this line at startup)");
+                    println!("  reported by the server as its own: {verdict}");
+                    if !verdict.starts_with("it matches") {
+                        println!("{}", "  the two do not agree — check with the operator of the other channel before trusting this".red());
+                    }
+                    if !prompt(&format!("Trust this exact certificate for profile '{name}'? [y/N]: ")).to_lowercase().starts_with('y') {
+                        return err("the certificate was not trusted; nothing was saved and no token was requested");
+                    }
+                    tls.pins = vec![glidex_tls::Trust::normalize_pin(&fp).unwrap_or(fp.to_lowercase())];
+                    asked = true;
+                }
+            },
+        }
+    }
+    let (cl, info) = match reached {
+        Some(x) => x,
+        None => return err(format!("{host} never answered over a trusted connection")),
+    };
+
+    // §6.1.3 the cluster binding: the profile answers for one cluster,
+    // and this says whether the machine in front does too.
+    let claimed = info["cluster_id"].as_str().map(str::to_string);
+    let expect = existing.as_ref().and_then(|(_, p)| p.cluster_id.clone());
+    if let (Some(want), Some(got)) = (&expect, &claimed) {
+        if want != got {
+            if !rebind {
+                return err(format!(
+                    "refusing to log in to a machine that is not the cluster this profile knows: profile '{name}' is bound to cluster {want}, but {} answers for {got}.\n  a machine was repurposed, or the profile is stale.\n  if you mean it: re-run with --rebind",
+                    cl.describe()
+                ));
+            }
+            println!("{} rebinding profile '{name}':", "Warning:".yellow());
+            println!("   cluster was {want}, now {got}");
+            println!("   pins were {} (the server now reports {})", if tls.pins.is_empty() { "(none left by --rebind)".into() } else { tls.pins.join(", ") }, info["fingerprint"].as_str().unwrap_or("?"));
+        }
+    } else if expect.is_some() && claimed.is_none() && !rebind {
+        println!("{} the server does not report a cluster id (pre-cluster or older build); nothing new is bound", "Note:".dimmed());
+    }
+    if has_flag(args, "--oidc") && info["methods"]["oidc"] == json!(false) {
+        return err("this control plane has OIDC logins off: set auth.oidc in control-plane.json, or log in with --pam-user / a piped --token");
+    }
+
+    // §6.1.4 prove the credential. The token name says which profile minted
+    // it, so `auth token list` on the server reads as an audit trail.
+    let token_name = flag_value(args, "--name").map(|s| s.to_string()).unwrap_or_else(|| format!("gxctl@{name}"));
+    let device_tag = glidex_tls::hostname().unwrap_or_else(|| "device".to_string());
+    let client_tag = format!("gxctl/{}", env!("CARGO_PKG_VERSION"));
+    let (credential, method_hint) = if has_flag(args, "--oidc") {
+        match device_login_named(&cl, &token_name, Some(&device_tag), Some(&client_tag)).await {
+            Some(t) => (t, "oidc"),
+            None => return,
+        }
+    } else if let Some(user) = &pam_user {
+        // The password goes to the prompt, never to argv or the environment;
+        // a pipe gets no password prompt at all (§6.1.7) — CI pipes tokens,
+        // not passwords.
+        if non_interactive {
+            return err("--pam-user needs a terminal for the hidden password (CI: pipe an existing token to 'auth login --token' on a trusted rig)");
+        }
+        let pw = prompt_hidden(&format!("Password for {user}@{host}: "));
+        if pw.trim().is_empty() {
+            return err("no password given");
+        }
+        let mut body = json!({ "username": user, "password": pw.trim().to_string(), "token_name": token_name, "device": device_tag, "client": client_tag });
+        if let Some(d) = flag_value(args, "--days").and_then(|d| d.parse::<u64>().ok()) {
+            body["days"] = json!(d);
+        }
+        match cl.send(Method::POST, "/auth/token", Some(&body)).await {
+            Ok(r) if r.status.is_success() => {
+                let v: Value = serde_json::from_slice(&r.body).unwrap_or(Value::Null);
+                match v["token"].as_str() {
+                    Some(t) => (Zeroizing::new(t.to_string()), "pam"),
+                    None => {
+                        err("the control plane returned no token");
+                        return;
+                    }
+                }
+            }
+            Ok(r) => {
+                err(client::render_error(r.status, &r.body, true));
+                return;
+            }
+            Err(e) => {
+                err(e);
+                return;
+            }
+        }
+    } else if has_flag(args, "--token") {
+        // One read from stdin, TTY or not (§6.1.7): scripted logins pipe the
+        // token, interactive ones type it hidden.
+        let raw = if std::io::stdin().is_terminal() {
+            prompt_hidden("Access token (input hidden): ")
+        } else {
+            let mut line = String::new();
+            let _ = std::io::stdin().read_line(&mut line);
+            line
+        };
+        let t = raw.trim();
+        if t.is_empty() {
+            return err("no token given");
+        }
+        (Zeroizing::new(t.to_string()), "token")
+    } else if let Some((_, p)) = &existing {
+        // Silent reuse (§6.1.4): the profile already had a credential and
+        // the server just confirmed it answers for the same cluster — a
+        // re-login is not a reason to mint a second token.
+        match p.credential() {
+            Ok(Some(t)) => (t, p.identity.as_ref().and_then(|i| i.method.as_deref()).unwrap_or("token")),
+            // §3.5: logging in to the implicit localhost keeps working —
+            // the legacy token file is that profile's credential, folded in
+            // as a copy the moment the profile is written.
+            Ok(None) if urls.iter().all(|u| client::is_loopback_host(&config::url_host(u))) => match config::legacy_token() {
+                Ok(Some(t)) => (t, "token"),
+                Ok(None) => return usage(&format!("profile '{name}' has no credential: --oidc, --token (piped or prompted) or --pam-user USER")),
+                Err(e) => return err(e),
+            },
+            Ok(None) => return usage(&format!("profile '{name}' has no credential: --oidc, --token (piped or prompted) or --pam-user USER")),
+            Err(e) => return err(e),
+        }
+    } else {
+        return usage("give a credential: --oidc, --token (piped or prompted), or --pam-user USER");
+    };
+    let _ = method_hint;
+
+    // §6.1.5 check it before anything is written — whoami on the answered,
+    // verified connection, with the candidate as its only secret.
+    cl.set_token(Some(credential.clone()));
+    let w = match cl.request_json::<Value>(Method::GET, "/auth/whoami", None).await {
+        Ok(w) => w,
+        Err(e) => return err(format!("the credential was not accepted: {e}")),
+    };
+    if let (Some(claim), Some(seen)) = (info["fingerprint"].as_str(), cl.accepted_fingerprint()) {
+        let agrees = glidex_tls::Trust::normalize_pin(claim).is_some_and(|c| glidex_tls::Trust::normalize_pin(&seen).is_some_and(|s| s == c));
+        if !agrees {
+            return err(format!("the answer came over a connection presenting a different certificate than the server claims as its own (we saw {seen}, the server says {claim}) — something is terminating TLS in front of {}", cl.describe()));
+        }
+    }
+    // Display-only metadata, copied from the checked answer (§2.2): the
+    // server stamped and sanitized it at creation; gxctl never parses it.
+    let identity = config::Identity {
+        method: w["method"].as_str().map(str::to_string),
+        user: w["user"]["display_name"].as_str().map(str::to_string),
+        token_id: w["token"]["id"].as_str().map(str::to_string),
+        token_name: w["token"]["name"].as_str().map(str::to_string),
+        logged_in_at: Some(client::now_secs()),
+    };
+    let who = w["user"]["display_name"].as_str().unwrap_or("service account").to_string();
+
+    // §6.1.6 merge-write the file (never clobber what the callback does
+    // not touch); the token goes out of here into the 0600 file only.
+    let is_new = existing.is_none();
+    let use_now = has_flag(args, "--use");
+    let claimed_c = claimed.clone();
+    let server_name = info["cluster_name"].as_str().map(str::to_string);
+    let urls_w = urls.clone();
+    let tls_w = tls.clone();
+    let identity_w = identity.clone();
+    let secret = credential.as_str().to_string();
+    let name_w = name.clone();
+    let mut made_current = false;
+    if let Err(e) = config::edit(cfg, |c| {
+        let mut p = c.profiles.get(&name_w).cloned().unwrap_or_default();
+        p.url = urls_w;
+        p.cluster_id = claimed_c;
+        p.cluster_name = server_name;
+        p.tls = tls_w;
+        p.token = Some(secret);
+        // token_command is left exactly as it was: a site-wide helper
+        // outranks this stored copy at request time (§2.2), and logging in
+        // with a flag does not delete the site's answer.
+        p.identity = Some(identity_w);
+        if is_new {
+            p.added_at = Some(client::now_secs());
+        }
+        if use_now || c.current.is_none() {
+            // --use, or being the file's first profile: something must be
+            // current for the next bare invocation to find it (§3.2).
+            c.current = Some(name_w.clone());
+            made_current = true;
+        }
+        c.profiles.insert(name_w.clone(), p);
+    }) {
+        return err(e);
+    }
+    let path = config::file().unwrap_or_else(|| PathBuf::from("(nowhere)"));
+    println!("{} logged in as {} to {}", "OK:".green(), who.yellow(), cl.describe());
+    println!("{} token saved to {} (mode 0600) — profile '{name}', anyone who can read that file can act as {who}", "Note:".yellow(), path.display());
+    if made_current {
+        println!("{} profile '{name}' is now current", "Info:".dimmed());
+    }
+    if session.profile_name().is_some_and(|n| n == name) {
+        println!("{} this session keeps the credential it started with; start gxctl again to pick up the saved one", "Note:".dimmed());
+    }
+}
+
+async fn auth_logout(client: &ApiClient, args: &[&str]) {
+    let cfg = match config::load() {
+        Ok(c) => c,
+        Err(e) => return err(e),
+    };
+    let want = flag_value(args, "--profile");
+    let name = match config::profile_of(&cfg, want) {
+        Some((n, _)) => n.clone(),
+        None => {
+            println!("{}", if want.is_some() { format!("no profile '{}' in the file", want.unwrap_or("")) } else { "no profile is in effect here (log in first: gxctl auth login --url … --profile P --save)".into() });
+            return;
+        }
+    };
+    let token_id = config::profile_of(&cfg, want).and_then(|(_, p)| p.identity.as_ref()).and_then(|i| i.token_id.clone());
+    if has_flag(args, "--revoke") {
+        let id = match &token_id {
+            Some(id) => id.clone(),
+            None => return err(format!("profile '{name}' has no server-side token id on record — nothing to revoke; the credential can still be struck from the server's side ('token revoke', or the admin)")),
+        };
+        // The delete is signed as the token itself; the server allows a
+        // principal to strike its own token. A failure here aborts the
+        // logout: clearing the file while the token lives would hide a
+        // working credential, not remove one.
+        if let Err(e) = client.request_json::<()>(Method::DELETE, &format!("/tokens/{}", enc(id.as_str())), None).await {
+            return err(format!("the server did not revoke the token: {e}"));
+        }
+        println!("{} token {id} revoked on {}", "OK:".green(), client.describe());
+    }
+    if has_flag(args, "--keep-token") {
+        println!("the profile keeps its credential (--keep-token); this session ends with the process");
+        return;
+    }
+    if let Err(e) = config::edit(cfg, |c| {
+        if let Some(p) = c.profiles.get_mut(&name) {
+            p.token = None;
+        }
+    }) {
+        return err(e);
+    }
+    println!("{} profile '{name}': credential removed (the target, pins and CA stay)", "OK:".green());
+}
+
+async fn auth_status(client: &ApiClient, args: &[&str]) {
+    let cfg = match config::load() {
+        Ok(c) => c,
+        Err(e) => return err(e),
+    };
+    // The profile this session runs under if one does; else the one asked
+    // for; else the file's current (§6.2).
+    let want = flag_value(args, "--profile");
+    let pair = config::profile_of(&cfg, want).or_else(|| match client.profile_name() { Some(n) => config::profile_of(&cfg, Some(&n)), None => None });
+    let (name, p) = match pair {
+        Some(x) => x,
+        None => return println!("no profiles yet — log in: gxctl auth login --url https://host:8841 --profile P --save"),
+    };
+    let current = cfg.as_ref().and_then(|c| c.current.as_deref()).is_some_and(|c| c == name);
+    println!("{} profile '{name}'{}", "Profile:".dimmed(), if current { " (current)" } else { "" });
+    println!("   dials:  {}", p.url.join(", "));
+    println!("   cluster: {}", match (&p.cluster_name, &p.cluster_id) {
+        (Some(n), Some(id)) => format!("{n} ({id})"),
+        (None, Some(id)) => id.clone(),
+        (Some(n), None) => format!("{n} (never verified)"),
+        (None, None) => "never verified".into(),
+    });
+    let mut trust = p.trust_mode();
+    if p.tls.insecure {
+        trust.push_str("  — this profile verifies NOTHING (typed confirmation)");
+    }
+    println!("   trust:  {trust}");
+    match &p.identity {
+        Some(i) => println!(
+            "   token:  {} ({}){}",
+            i.token_name.as_deref().unwrap_or("?"),
+            i.user.as_deref().or(i.method.as_deref()).unwrap_or("?"),
+            i.logged_in_at.map(|t| format!(", since {}", format_unix_time(t))).unwrap_or_default()
+        ),
+        None => println!("   token:  (none — run 'auth login --profile {name}')"),
+    }
+    if let Some(lu) = &p.last_used {
+        println!("   used:   {}{}", lu.url.as_deref().unwrap_or("?"), lu.at.map(|t| format!(" at {}", format_unix_time(t))).unwrap_or_default());
+    }
+    if !client.is_unix() && client.profile_name().is_some() {
+        match client.server_info().await {
+            Ok(v) => println!(
+                "   server: {} {} reachable (pam {}, oidc {})",
+                v["cluster_name"].as_str().unwrap_or("?"),
+                v["version"].as_str().unwrap_or("?"),
+                if v["methods"]["pam"] == json!(true) { "on" } else { "off" },
+                if v["methods"]["oidc"] == json!(true) { "on" } else { "off" }
+            ),
+            Err(e) => println!("   server: not reachable now ({e})"),
+        }
+    }
+}
+
+fn auth_use(args: &[&str]) {
+    let cfg = match config::load() {
+        Ok(c) => c,
+        Err(e) => return err(e),
+    };
+    if cfg.as_ref().is_none_or(|c| !c.has_any()) {
+        return println!("there is no config file yet (log in first: gxctl auth login --url … --profile P --save)");
+    }
+    let Some(target) = args.first() else {
+        return usage("Usage: auth use <profile|->   ('-' clears the current profile for this user)");
+    };
+    let target = target.to_string();
+    if target == "-" {
+        if let Err(e) = config::edit(cfg, |c| c.current = None) {
+            return err(e);
+        }
+        return println!("no profile is current now; gxctl asks for --profile when it needs a target");
+    }
+    if config::profile_of(&cfg, Some(&target)).is_none() {
+        let list = cfg.as_ref().map(|c| c.list()).unwrap_or_else(|| "none".into());
+        return err(format!("unknown profile '{target}'; the file knows: {list}"));
+    }
+    if let Err(e) = config::edit(cfg, |c| c.current = Some(target.clone())) {
+        return err(e);
+    }
+    println!("{} profile '{target}' is current; bare invocations use its target, trust and token unless --profile says otherwise", "OK:".green());
+}
+
+fn auth_profiles(args: &[&str]) {
+    let cfg = match config::load() {
+        Ok(c) => c,
+        Err(e) => return err(e),
+    };
+    let Some(c) = cfg.as_ref() else {
+        return println!("no config file yet (log in first: gxctl auth login --url … --profile P --save)");
+    };
+    if c.profiles.is_empty() {
+        return println!("the file exists but holds no profiles (log in: gxctl auth login --url … --profile P --save)");
+    }
+    let all = has_flag(args, "--all");
+    let current = c.current.as_deref();
+    println!("{:<2} {:<16} {:<38} {:<22} TOKEN", "", "PROFILE", "TARGET", "TRUST");
+    for (n, p) in &c.profiles {
+        let is_cur = current.is_some_and(|x| *x == *n);
+        if !all && !is_cur {
+            continue;
+        }
+        let mut target = p.url.first().cloned().unwrap_or_else(|| "(no url)".into());
+        if p.url.len() > 1 {
+            target.push_str(&format!(" (+{})", p.url.len() - 1));
+        }
+        println!(
+            "{:<2} {:<16} {:<38} {:<22} {}",
+            if is_cur { "*" } else { "" },
+            n,
+            target,
+            p.trust_mode(),
+            p.identity.as_ref().and_then(|i| i.token_name.as_deref()).unwrap_or("-")
+        );
+    }
+    if !all && c.profiles.len() > 1 {
+        println!("{}", "run 'auth profiles --all' to see every profile in the file".dimmed());
+    }
+}
+
+async fn auth_trust(args: &[&str]) {
+    let cfg = match config::load() {
+        Ok(c) => c,
+        Err(e) => return err(e),
+    };
+    let want = flag_value(args, "--profile");
+    let Some((name, p)) = config::profile_of(&cfg, want) else {
+        return err("no profile to manage: name one with --profile or log one in");
+    };
+    let name = name.clone();
+    let p = p.clone();
+    match args.get(1).copied().unwrap_or("list") {
+        "list" => {
+            if p.tls.pins.is_empty() {
+                println!("profile '{name}': no pins; the system store and the profile's CA decide");
+            }
+            for pin in &p.tls.pins {
+                println!("  pin {pin}");
+            }
+            if let Some(f) = &p.tls.ca_file {
+                println!("  ca file {}", f.display());
+            }
+            if p.tls.ca_pem.is_some() {
+                println!("  ca pem (embedded, {} bytes)", p.tls.ca_pem.as_ref().map(|s| s.len()).unwrap_or(0));
+            }
+            if p.tls.insecure {
+                println!("{}", format!("  UNVERIFIED — this profile checks nothing, by typed confirmation: {}", p.tls.i_understand.as_deref().unwrap_or("?")).red());
+            }
+        }
+        "fetch" => {
+            // Re-read the published fingerprint without connecting anything
+            // else (§5.3): the profile's own trust decides whether the
+            // ladder is content, and the server's claim is checked against
+            // what we actually saw.
+            let cl = match ApiClient::tcp_multi(&p.url, None, Some(&p.tls), None, None) {
+                Ok(c) => c,
+                Err(e) => return err(e),
+            };
+            match cl.server_info().await {
+                Ok(v) => {
+                    let claim = v["fingerprint"].as_str().unwrap_or("(the server does not say)");
+                    let seen = cl.accepted_fingerprint();
+                    let agrees = match (&seen, glidex_tls::Trust::normalize_pin(claim)) {
+                        (Some(s), Some(c)) => glidex_tls::Trust::normalize_pin(s).is_some_and(|n| n.as_str() == c.as_str()),
+                        _ => false,
+                    };
+                    println!("{} {claim}", "server claims:".dimmed());
+                    println!("{} {seen:?}", "we were handed:".dimmed());
+                    if agrees {
+                        let which = glidex_tls::Trust::normalize_pin(claim).and_then(|c| p.tls.pins.iter().position(|pin| glidex_tls::Trust::normalize_pin(pin).is_some_and(|n| n.as_str() == c.as_str()))).map(|i| format!("pin #{} of the profile matches", i + 1));
+                        println!("{}", which.unwrap_or_else(|| "the certificate is trusted (through the system store or the profile's CA)".into()).green());
+                    } else {
+                        println!("{}", "MISMATCH: what the server claims and what the connection presented are different certificates — a proxy may be terminating TLS here. The control plane regenerates its certificate only in narrow cases (rotate-ca, re-init): confirm with its operator through another channel before trusting this".red().bold());
+                    }
+                }
+                Err(e) => err(format!("the profile's trust refused or could not reach the server: {e}")),
+            }
+        }
+        "remove" => {
+            if has_flag(args, "--all") {
+                let mut what = format!("{} pin(s)", p.tls.pins.len());
+                if p.tls.ca_file.is_some() || p.tls.ca_pem.is_some() {
+                    what.push_str(" and the CA additions");
+                }
+                if p.tls.insecure {
+                    what.push_str(" and the unverified bypass");
+                }
+                if !std::io::stdin().is_terminal() && !has_flag(args, "--yes") {
+                    return err("--all clears everything the profile adds to trust; confirm interactively or pass --yes");
+                }
+                if std::io::stdin().is_terminal() && !prompt(&format!("Remove {what} from profile '{name}'? [y/N]: ")).to_lowercase().starts_with('y') {
+                    return;
+                }
+                if let Err(e) = config::edit(cfg, |c| {
+                    if let Some(pf) = c.profiles.get_mut(&name) {
+                        pf.tls.pins.clear();
+                        pf.tls.ca_file = None;
+                        pf.tls.ca_pem = None;
+                        pf.tls.insecure = false;
+                        pf.tls.i_understand = None;
+                    }
+                }) {
+                    return err(e);
+                }
+                println!("{} profile '{name}': trust is the system store alone again", "OK:".green());
+            } else if let Some(pin) = args.get(2) {
+                let want = glidex_tls::Trust::normalize_pin(pin);
+                let Some(want) = want else {
+                    return err(format!("{pin} is not a fingerprint (sha256/<64 hex>, as gxctl prints it)"));
+                };
+                let mut gone = false;
+                if let Err(e) = config::edit(cfg, |c| {
+                    if let Some(pf) = c.profiles.get_mut(&name) {
+                        let before = pf.tls.pins.len();
+                        pf.tls.pins.retain(|x| glidex_tls::Trust::normalize_pin(x).is_none_or(|n| n.as_str() != want.as_str()));
+                        gone = pf.tls.pins.len() != before;
+                    }
+                }) {
+                    return err(e);
+                }
+                println!("{}", if gone { format!("{} pin removed from profile '{name}'", "OK:".green()) } else { format!("profile '{name}' had no such pin") });
+            } else {
+                return usage("Usage: auth trust remove <sha256/pin> | auth trust remove --all [--yes]");
+            }
+        }
+        _ => usage("Usage: auth trust list | fetch | remove <sha256/pin> | remove --all [--yes]"),
+    }
 }
 
 pub async fn logout(client: &ApiClient, args: &[&str]) {

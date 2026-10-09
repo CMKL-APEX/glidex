@@ -183,6 +183,14 @@ pub struct Token {
     pub last_used_at: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_used_from: Option<String>,
+    /// Device the minting client claimed (`gxctl auth login`); display and
+    /// audit only, never checked (spec/gxctl-auth.md §7.2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<String>,
+    /// Client build that minted the token (`gxctl/<version>`); display and
+    /// audit only, never checked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
