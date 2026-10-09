@@ -21,6 +21,8 @@ struct FileConfig {
     gateway_check_secs: Option<u64>,
     admin_group: Option<String>,
     policy: Option<auth::Policy>,
+    /// Router SNAT zones to meter (`ovn.snat_ct_zones` of the control plane).
+    ct_zones: Option<(u16, u16)>,
 }
 
 fn find_in_path(name: &str) -> Option<PathBuf> {
@@ -75,6 +77,9 @@ fn main() {
     if let Some(p) = file.state_path {
         config.state_path = p;
     }
+    if let Some(z) = file.ct_zones {
+        config.ct_zones = z;
+    }
     config.probe.ch_binary = find_in_path("cloud-hypervisor");
     if let Some(s) = file.commit_window_secs {
         config.commit_window = std::time::Duration::from_secs(s);
@@ -120,6 +125,7 @@ fn main() {
             Some(nix::unistd::Gid::from_raw(gid)),
         );
     }
+    netd.enable_ct_events();
     let report = netd.reconcile_startup();
     if let Some(gid) = group_gid {
         // reconcile_startup created the vhost dir; hand it to the group.

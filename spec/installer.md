@@ -34,6 +34,7 @@ by later runs (flags override the saved values):
 | `--ovs-profile dpdk\|kernel` | OVS flavour (default `dpdk`, which reserves hugepages) |
 | `--pmd-cpu-mask MASK` | OVS-DPDK PMD CPU mask (`auto` clears it) |
 | `--allow-ovs-restart` | allow restarting an ovs-vswitchd that has bridges (interrupts their traffic) |
+| `--prebuilt` | use the release binaries and web UI already built in this checkout: no Rust or Bun toolchain, no build (never saved; the nested e2e test uses it) |
 
 ## Inputs it discovers
 
@@ -489,3 +490,25 @@ Downloads are done by shelling to `curl`, not by pulling in a HTTP
 stack. What is downloaded and then run is pinned by version and sha256
 (`download_verified`): the firmware, rustup-init and Bun.
 Cloud-Hypervisor is fetched by pinned release tag over HTTPS. The installer itself is therefore small and fast to build.
+
+
+## Joining a cluster (spec/clustering.md)
+
+`glidex-install --join SERVER:8842 [--role agent|server] [--token-file FILE]
+[--advertise IP:PORT] [--node-name NAME]` installs as usual, then asks the
+running control plane to join (`gxctl cluster join`, with the token on its
+standard input). The token comes from `gxctl cluster join-token` on a server;
+it is read from a file (refused unless mode 0600) or stdin, never from argv.
+An agent host's UI service is disabled: its servers serve the API and UI.
+
+## OVN
+
+With networking, the installer also installs OVN for cluster networks
+(spec/clustering.md §10.1): `ovn-host` on every host, `ovn-central` unless the
+run joins as an agent, and `conntrack` for gateway metering. `--no-ovn` skips
+them and is remembered in `install.conf`. When this run installed OVN and the
+host is in no cluster, OVN's services are stopped and disabled: Debian and
+Ubuntu start them on install, and a standalone host would only run empty
+databases. glidex-netd starts what a cluster needs (`ovn-host` for the
+chassis, `ovn-central` on servers).
+

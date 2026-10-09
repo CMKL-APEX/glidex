@@ -28,6 +28,9 @@ impl VmManager {
     /// One round for disk `id`.
     pub async fn reconcile_disk(&self, id: &str) -> Next {
         let Ok(disk) = self.images.get_disk(id) else { return Ok(None) };
+        if !self.is_local_disk(&disk) {
+            return Ok(None);
+        }
 
         // Deletion: record first, then the file (images.md §6.5).
         if disk.deletion_requested_at.is_some() {

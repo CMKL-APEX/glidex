@@ -25,6 +25,14 @@ pub const SESSION_COOKIE: &str = "gx_session";
 /// Header carrying the session's CSRF value on cookie-authenticated writes.
 pub const CSRF_HEADER: &str = "x-glidex-csrf";
 pub const TOKEN_PREFIX: &str = "gxt_";
+/// Clean a client-claimed `device` / `client` string for storage: one
+/// trimmed line, ≤ 128 characters, no control characters; `None` on
+/// anything else. Display and audit only — never an authorization input
+/// (spec/gxctl-auth.md §7.2).
+fn stamp(s: Option<&str>) -> Option<String> {
+    let s = s.map(str::trim).filter(|s| !s.is_empty() && !s.chars().any(char::is_control) && s.len() <= 128)?;
+    Some(s.to_string())
+}
 /// How long a console ticket stays valid (spec §5.6).
 pub const TICKET_SECS: u64 = 30;
 /// `age_secs` for principals that can never satisfy step-up.
@@ -48,7 +56,7 @@ pub enum AuthError {
     Authz(#[from] authz::AuthzError),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Method {
     Peer,
@@ -70,14 +78,14 @@ impl Method {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Transport {
     Unix,
     Tcp,
 }
 
 /// Who is making a request, and how they proved it.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Principal {
     /// The user; `None` for service-account tokens.
     pub user: Option<User>,
@@ -259,7 +267,7 @@ pub fn constant_eq(a: &str, b: &str) -> bool {
 }
 
 impl AuthService {
-    pub fn new(db: Arc<redb::Database>, config: Config) -> Result<Arc<Self>, AuthError> {
+    pub fn new(db: Arc<crate::store::Db>, config: Config) -> Result<Arc<Self>, AuthError> {
         config.check().map_err(AuthError::Invalid)?;
         let svc = Arc::new(Self {
             store: IdentityStore::new(db)?,
@@ -277,8 +285,12 @@ impl AuthService {
 
     /// Authentication off: every request is the break-glass system user.
     /// For embedding and tests only; the binary never uses it.
-    pub fn disabled(db: Arc<redb::Database>) -> Result<Arc<Self>, AuthError> {
-        let mut config = Config::default();
+    pub fn disabled(db: Arc<crate::store::Db>) -> Result<Arc<Self>, AuthError> {
+        Self::disabled_with(db, Config::default())
+    }
+
+    /// As [`disabled`](Self::disabled), with the rest of `config` (tests).
+    pub fn disabled_with(db: Arc<crate::store::Db>, mut config: Config) -> Result<Arc<Self>, AuthError> {
         // Embedding and tests never read the host's policy files.
         config.authz.policy_files_dir = std::path::PathBuf::new();
         let svc = Arc::new(Self {
@@ -350,6 +362,29 @@ impl AuthService {
     }
 
     /// Rebuild and publish the policy set from storage.
+    /// Keep the policy set in step with links and site policies applied from
+    /// the replicated log (spec/clustering.md §6.5), so a role granted
+    /// through one server counts on every other.
+    pub fn watch_policies(self: &Arc<Self>) {
+        let me = self.clone();
+        let mut rx = self.store.database().subscribe();
+        tokio::spawn(async move {
+            use crate::store::TableId;
+            loop {
+                let relevant = match rx.recv().await {
+                    Ok(a) => a.tables.iter().any(|t| matches!(t, TableId::PolicyLinks | TableId::SitePolicies)),
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => true,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                };
+                if relevant {
+                    if let Err(e) = me.reload_policies() {
+                        tracing::warn!("reloading policies: {}", e);
+                    }
+                }
+            }
+        });
+    }
+
     pub fn reload_policies(&self) -> Result<(), AuthError> {
         let (links, site) = self.policy_inputs()?;
         self.engine.install(&links, &site)?;
@@ -376,8 +411,8 @@ impl AuthService {
         }
         let mut made = Vec::new();
         for name in members {
-            let Some(u) = self.store.user_for_identity("unix", name, name, None, true)? else { continue };
-            self.add_link("role.system-admin", Ent::User(u.id.clone()), Ent::Host, "bootstrap")?;
+            let Some(u) = self.store.user_for_identity("unix", &authz::local_subject(name), name, None, true)? else { continue };
+            self.add_link("role.system-admin", Ent::User(u.id.clone()), Ent::Cluster, "bootstrap")?;
             self.add_link("role.owner", Ent::User(u.id.clone()), Ent::Project(default_project.into()), "bootstrap")?;
             made.push(name.clone());
         }
@@ -468,7 +503,7 @@ impl AuthService {
         if !member {
             return Ok(None);
         }
-        let Some(u) = self.store.user_for_identity("unix", &user.name, &user.name, None, true)? else {
+        let Some(u) = self.store.user_for_identity("unix", &authz::local_subject(&user.name), &user.name, None, true)? else {
             return Ok(None);
         };
         let mut teams = self.store.teams_of(&u.id)?;
@@ -687,7 +722,7 @@ impl AuthService {
         }
         let user = self
             .store
-            .user_for_identity("pam", username, username, None, cfg.jit)?
+            .user_for_identity("pam", &authz::local_subject(username), username, None, cfg.jit)?
             .ok_or(AuthError::Denied)?;
         if user.disabled {
             return Err(AuthError::Denied);
@@ -700,12 +735,17 @@ impl AuthService {
     // ---- tokens ---------------------------------------------------------
 
     /// Create a token; returns its secret (shown once) and record.
+    /// `device` / `client` are what a `gxctl auth login` client says it is;
+    /// stored redacted for display and audit only, never trusted
+    /// (spec/gxctl-auth.md §7.2).
     pub fn create_token(
         &self,
         name: &str,
         kind: TokenKind,
         created_by: &str,
         days: Option<u64>,
+        device: Option<&str>,
+        client: Option<&str>,
     ) -> Result<(String, Token), AuthError> {
         let cfg = &self.config.auth.tokens;
         let days = days.unwrap_or(cfg.default_days);
@@ -726,6 +766,8 @@ impl AuthService {
             expires_at: now + days * 86400,
             last_used_at: None,
             last_used_from: None,
+            device: stamp(device),
+            client: stamp(client),
         };
         self.store.put_token(&sha256_hex(secret.as_bytes()), &t)?;
         Ok((secret, t))
@@ -754,7 +796,7 @@ impl AuthService {
         let project_role = authz::PROJECT_ROLES.contains(&template);
         let host_role = authz::HOST_ROLES.contains(&template);
         match (&resource, project_role, host_role) {
-            (Ent::Project(_), true, _) | (Ent::Host, _, true) => {}
+            (Ent::Project(_), true, _) | (Ent::Cluster, _, true) => {}
             _ => {
                 return Err(AuthError::Invalid(format!(
                     "{} can't be linked to {}: project roles link to a project, host roles to the host",
@@ -824,7 +866,7 @@ impl AuthService {
                 continue;
             }
             match l.link.resource {
-                Ent::Host => return Ok(LinkedProjects::All),
+                Ent::Cluster => return Ok(LinkedProjects::All),
                 Ent::Project(id) => projects.push(id),
                 _ => {}
             }
@@ -928,7 +970,7 @@ mod tests {
 
     fn svc() -> (Arc<AuthService>, tempfile::TempDir) {
         let dir = tempfile::TempDir::new().unwrap();
-        let db = Arc::new(redb::Database::create(dir.path().join("a.db")).unwrap());
+        let db = Arc::new(crate::store::Db::create(dir.path().join("a.db")).unwrap());
         let cfg = Config { authz: crate::config::AuthzConfig { policy_files_dir: dir.path().join("policies"), ..Default::default() }, ..Default::default() };
         (AuthService::new(db, cfg).unwrap(), dir)
     }
@@ -960,7 +1002,7 @@ mod tests {
         let p = user_principal(&s, "alice");
         let uid = p.user_id().unwrap().to_string();
         s.add_link("role.editor", Ent::User(uid.clone()), Ent::Project("pa".into()), "t").unwrap();
-        let (secret, tok) = s.create_token("ci", TokenKind::Personal { owner: uid.clone() }, &uid, None).unwrap();
+        let (secret, tok) = s.create_token("ci", TokenKind::Personal { owner: uid.clone() }, &uid, None, None, None).unwrap();
         let mut es = EntitySet::new();
         es.in_project(Ent::Vm("v".into()), "pa");
         // Unnarrowed: acts as the owner.
@@ -986,12 +1028,12 @@ mod tests {
         let (s, _d) = svc();
         let p = user_principal(&s, "net");
         let uid = p.user_id().unwrap().to_string();
-        s.add_link("role.net-admin", Ent::User(uid.clone()), Ent::Host, "t").unwrap();
-        let (secret, tok) = s.create_token("t", TokenKind::Personal { owner: uid.clone() }, &uid, None).unwrap();
+        s.add_link("role.net-admin", Ent::User(uid.clone()), Ent::Cluster, "t").unwrap();
+        let (secret, tok) = s.create_token("t", TokenKind::Personal { owner: uid.clone() }, &uid, None, None, None).unwrap();
         let tp = s.token_principal(&secret, Transport::Tcp, None).unwrap().unwrap();
         let d = s.authorize(&tp, "installOvs", Ent::Host, EntitySet::new(), &[]);
         assert!(d.denied_by("base.step-up"), "{:?}", d);
-        s.add_link("role.net-admin", Ent::Token(tok.id), Ent::Host, "t").unwrap();
+        s.add_link("role.net-admin", Ent::Token(tok.id), Ent::Cluster, "t").unwrap();
         let tp = s.token_principal(&secret, Transport::Tcp, None).unwrap().unwrap();
         assert!(s.authorize(&tp, "installOvs", Ent::Host, EntitySet::new(), &[]).allowed);
     }
@@ -1011,7 +1053,7 @@ mod tests {
     #[test]
     fn pam_user_requires_allowed_group_and_syncs_teams() {
         let dir = tempfile::TempDir::new().unwrap();
-        let db = Arc::new(redb::Database::create(dir.path().join("a.db")).unwrap());
+        let db = Arc::new(crate::store::Db::create(dir.path().join("a.db")).unwrap());
         let mut cfg = Config { authz: crate::config::AuthzConfig { policy_files_dir: dir.path().join("p"), ..Default::default() }, ..Default::default() };
         cfg.auth.pam.group_teams.insert("lab-unix".into(), "lab".into());
         let s = AuthService::new(db, cfg).unwrap();
@@ -1030,7 +1072,7 @@ mod tests {
         assert_eq!(s.bootstrap_with(&["root2".into()], "pdefault").unwrap(), vec!["root2"]);
         let links = s.store.links().unwrap();
         assert_eq!(links.len(), 2);
-        assert!(links.iter().any(|l| l.link.template == "role.system-admin" && l.link.resource == Ent::Host));
+        assert!(links.iter().any(|l| l.link.template == "role.system-admin" && l.link.resource == Ent::Cluster));
         // A PAM login of the same name is the same user.
         let u = s.store.user_for_identity("pam", "root2", "root2", None, true).unwrap().unwrap();
         assert!(links.iter().all(|l| l.link.principal == Ent::User(u.id.clone())));
@@ -1055,9 +1097,9 @@ mod tests {
     #[test]
     fn link_rules() {
         let (s, _d) = svc();
-        assert!(s.add_link("role.owner", Ent::User("u".into()), Ent::Host, "t").is_err());
+        assert!(s.add_link("role.owner", Ent::User("u".into()), Ent::Cluster, "t").is_err());
         assert!(s.add_link("role.net-admin", Ent::User("u".into()), Ent::Project("p".into()), "t").is_err());
-        assert!(s.add_link("role.nope", Ent::User("u".into()), Ent::Host, "t").is_err());
+        assert!(s.add_link("role.nope", Ent::User("u".into()), Ent::Cluster, "t").is_err());
         let a = s.add_link("role.viewer", Ent::Team("t".into()), Ent::Project("p".into()), "t").unwrap();
         let b = s.add_link("role.viewer", Ent::Team("t".into()), Ent::Project("p".into()), "t").unwrap();
         assert_eq!(a.link.id, b.link.id, "idempotent");

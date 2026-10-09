@@ -109,6 +109,44 @@ async fn main() {
         );
     }
 
+    // `--force-new-cluster [--from <snapshot>]` (spec/clustering.md §5.12): recovery, then exit.
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--force-new-cluster") {
+        let from = args.iter().position(|a| a == "--from").and_then(|i| args.get(i + 1)).map(std::path::PathBuf::from);
+        let cfg = config::Config::load().unwrap_or_else(|e| {
+            eprintln!("{e}");
+            std::process::exit(1);
+        });
+        let db = state::VmManager::default_db_path_pub();
+        match glidex_control_plane::cluster::manage::force_new_cluster(&db, from.as_deref(), &cfg.cluster).await {
+            Ok(()) => {
+                println!("A new single-voter cluster was started from {}. Start the control plane; re-join the other servers with fresh state.", from.map(|f| f.display().to_string()).unwrap_or_else(|| db.display().to_string()));
+                return;
+            }
+            Err(e) => {
+                eprintln!("force-new-cluster failed: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    // `--detach-offline` (spec/clustering.md §5.8.3): leave with this host's resources
+    // while no server can be reached, then exit. Run with the service stopped.
+    if args.iter().any(|a| a == "--detach-offline") {
+        let db = state::VmManager::default_db_path_pub();
+        match glidex_control_plane::cluster::departure::offline_detach(&db) {
+            Ok(b) => {
+                println!("Detached: {} VM(s), {} disk(s) kept; this host's cluster identity and key are gone. Start the control plane: it is standalone.", b.vm_ids.len(), b.disk_ids.len());
+                println!("Changes made in the cluster since this node last synced are not included. On a server, run `gxctl node detach <node> --departed` so the cluster lets go (it rotates its CA).");
+                return;
+            }
+            Err(e) => {
+                eprintln!("detach failed: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     // Configuration and identity (spec/security.md §5, §13). A bad config
     // file stops startup rather than falling back to defaults.
     print_status("Loading configuration");
@@ -122,9 +160,11 @@ async fn main() {
     };
     println!("OK");
 
+    glidex_control_plane::cluster::departure::EXIT_ON_DEPARTURE.store(true, std::sync::atomic::Ordering::Relaxed);
+
     // Create VM manager with persistence
     print_status("Opening database");
-    let vm_manager = match state::VmManager::new() {
+    let vm_manager = match state::VmManager::open_default(&cfg).await {
         Ok(manager) => manager,
         Err(e) => {
             println!("FAILED");
@@ -160,6 +200,16 @@ async fn main() {
 
     // Load VMs and adopt the instances still running (spec/reconciliation.md
     // §9.4): nothing is launched or stopped before every VM was observed.
+    // An agent starts from its cache: wait for it to be listed so that "not
+    // listed yet" is never read as "no VMs" (networking.md §7.7).
+    if let Some(link) = vm_manager.node_link() {
+        print_status("Waiting for the cluster");
+        if link.wait_ready(std::time::Duration::from_secs(20)).await {
+            println!("OK");
+        } else {
+            println!("NO SERVER (running from the cache)");
+        }
+    }
     print_status("Loading VMs");
     if let Err(e) = vm_manager.initialize().await {
         println!("FAILED");
@@ -215,6 +265,15 @@ async fn main() {
         tracing::warn!("metering not started: {}", e);
     }
 
+    // An agent has no API or UI of its own: the servers' are the cluster's
+    // (spec/clustering.md §4).
+    if vm_manager.node_link().is_some() {
+        println!("  Agent node: serving VMs for the cluster; node API on {}", vm_manager.cluster().map(|c| c.identity.advertise.to_string()).unwrap_or_default());
+        println!("  Press Ctrl+C to shutdown");
+        shutdown_signal().await;
+        return;
+    }
+
     print_status("Loading authorization policies");
     let auth = match auth::AuthService::new(vm_manager.database(), cfg.clone()) {
         Ok(a) => a,
@@ -224,17 +283,25 @@ async fn main() {
             std::process::exit(1);
         }
     };
-    if let Err(e) = vm_manager.projects().adopt_default_quotas(&cfg.quotas.default) {
-        println!("WARNING (default project quotas: {})", e);
+    // Only a node that can write does first-start setup; a cluster's other
+    // servers find it in the replicated data.
+    if vm_manager.database().can_write() {
+        if let Err(e) = vm_manager.projects().adopt_default_quotas(&cfg.quotas.default) {
+            println!("WARNING (default project quotas: {})", e);
+        }
+        match auth.bootstrap(&vm_manager.default_project_id()) {
+            Ok(made) if !made.is_empty() => println!("OK (administrators: {})", made.join(", ")),
+            Ok(_) => println!("OK"),
+            Err(e) => println!("WARNING (bootstrap: {})", e),
+        }
+    } else {
+        println!("OK (follower: setup is the leader's)");
     }
-    match auth.bootstrap(&vm_manager.default_project_id()) {
-        Ok(made) if !made.is_empty() => println!("OK (administrators: {})", made.join(", ")),
-        Ok(_) => println!("OK"),
-        Err(e) => println!("WARNING (bootstrap: {})", e),
-    }
+    auth.watch_policies();
 
-    let app = api::router(Arc::new(api::App { manager: vm_manager, auth }))
-        .layer(TraceLayer::new_for_http());
+    let router = api::router(Arc::new(api::App { manager: vm_manager.clone(), auth }));
+    vm_manager.set_api_router(router.clone());
+    let app = router.layer(TraceLayer::new_for_http());
 
     let tls = match serve::tls_setup(&cfg.tls) {
         Ok(t) => t,

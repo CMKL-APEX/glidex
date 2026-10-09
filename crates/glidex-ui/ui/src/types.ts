@@ -55,6 +55,10 @@ export interface VmResponse {
   stop_grace_secs?: number;
   conditions?: Condition[];
   last_exit?: ExitRecord;
+  /** The node the VM is placed on (spec/clustering.md §9.1). */
+  node?: string;
+  /** That node's name (spec/clustering-ui.md §9). */
+  node_name?: string;
   vcpu_count: number;
   mem_size_mib: number;
   hypervisor: HypervisorType;
@@ -94,6 +98,11 @@ export interface Network {
   /** Projects that accepted a share of this project network. */
   shares?: string[];
   share_offers?: { project: string; offered_by: string; offered_at: number; expires_at: number }[];
+  /** `cluster`: an OVN network every node can use; `node`: an OVS bridge on `node` (spec/clustering.md §11). */
+  scope?: "cluster" | "node";
+  node?: string;
+  physnet?: string;
+  router?: string;
   /** What the network controller last saw in netd (spec/reconciliation.md §10.3). */
   phase?: "pending" | "ready" | "degraded" | "netd_unavailable";
   conditions?: Condition[];
@@ -115,6 +124,10 @@ export interface CreateNetworkRequest {
   bridge?: string;
   subnet?: string;
   vlan?: number;
+  /** `cluster` (OVN) or `node`; the server's default is the cluster's when OVN is on. */
+  scope?: "cluster" | "node";
+  /** A provider network (cluster scope, bridged): its physical network. */
+  physnet?: string;
 }
 
 export interface Combination {
@@ -280,6 +293,9 @@ export interface DiskInfo {
   busy_op?: string;
   path: string;
   project?: string;
+  /** The node holding the disk's file (spec/clustering.md §9.2). */
+  node?: string;
+  node_name?: string;
   created_at: number;
   partition_table?: { kind: "gpt" | "mbr"; partitions: PartitionInfo[]; free_tail_bytes: number };
   warnings?: string[];
@@ -436,6 +452,19 @@ export function vmActivity(vm: VmResponse): string | null {
 }
 
 /** What keeps the VM from its desired state (the `Ready` condition). */
+/** The VM's node stopped reporting (spec/clustering.md §7.2): its last
+ * known state is shown, but the VM may still be running. */
+export function nodeUnreachable(vm: VmResponse): boolean {
+  return vm.conditions?.some((c) => c.kind === "Ready" && c.status === "Unknown" && c.reason === "NodeUnreachable") ?? false;
+}
+
+/** Why the scheduler hasn't placed the VM, when it hasn't. */
+export function unscheduledReason(vm: VmResponse): string | null {
+  const s = vm.conditions?.find((c) => c.kind === "Scheduled");
+  if (!s || s.status !== "False") return null;
+  return s.message || s.reason;
+}
+
 export function notReadyReason(vm: VmResponse): string | null {
   const ready = vm.conditions?.find((c) => c.kind === "Ready");
   if (!ready || ready.status === "True") return null;
@@ -467,7 +496,9 @@ export function stateLabel(state: VmState): string {
 
 /** A Cedar entity reference, as the API serializes it. */
 export type EntityType =
+  | "Cluster"
   | "Host"
+  | "Node"
   | "User"
   | "Team"
   | "Token"
@@ -479,10 +510,19 @@ export type EntityType =
   | "Network"
   | "PciDevice";
 
-export type EntityRef = { type: "Host" } | { type: Exclude<EntityType, "Host">; id: string };
+/** Entity types that take no id: the cluster, and the host serving the request. */
+export type SingletonEntityType = "Cluster" | "Host";
+
+/** `Cluster` is the root of everything cluster-wide (projects, identity,
+ * policy); `Host` is the node serving the request and `Node` another node. */
+export type EntityRef = { type: SingletonEntityType } | { type: Exclude<EntityType, SingletonEntityType>; id: string };
+
+export function isSingleton(t: EntityType): t is SingletonEntityType {
+  return t === "Cluster" || t === "Host";
+}
 
 export function entityLabel(e: EntityRef): string {
-  return e.type === "Host" ? "Host" : `${e.type}:${e.id}`;
+  return "id" in e ? `${e.type}:${e.id}` : e.type;
 }
 
 export interface AuthMethods {
@@ -790,4 +830,56 @@ export interface VmStats {
   vm: Record<string, number> | null;
   nics: LiveEntry[];
   disks: LiveEntry[];
+}
+
+// ---- nodes (spec/clustering.md §7) -------------------------------------------
+
+export type NodePhase = "Active" | "Draining" | "Departing" | "Departed" | "Removed" | "Forgotten";
+export type Tristate = "True" | "False" | "Unknown";
+
+export interface NodeResources {
+  cpus: number;
+  memory_mib: number;
+  hugepages?: Record<string, number>;
+}
+
+/** A node record as `GET /nodes` and the live stream send it. */
+export interface NodeRecord {
+  meta: { id: string; name: string; created_at: number; generation: number; resource_version: number };
+  spec: { name: string; role: "server" | "agent"; unschedulable: boolean; labels: Record<string, string> };
+  status: {
+    phase: NodePhase;
+    ready: Tristate;
+    ready_reason?: string;
+    raft_id?: number;
+    advertise?: string;
+    tunnel_ip?: string;
+    versions: { glidex: string; ovs?: string; ovn?: string };
+    capacity: NodeResources;
+    allocatable: NodeResources;
+    features?: { kvm: boolean; hypervisors: string[]; dpdk?: boolean; iommu?: boolean; br_int_datapath?: string; physnets?: Record<string, string> };
+    pci_devices?: string[];
+    heartbeat?: number;
+    departed_ids?: string[];
+  };
+}
+
+/** A node is gone for good (kept as a record only). */
+export function isTombstone(phase: NodePhase): boolean {
+  return phase === "Departed" || phase === "Removed" || phase === "Forgotten";
+}
+
+/** An import plan as `GET /imports` and the live stream send it (clustering.md §5.9). */
+export interface ImportPlanView {
+  plan: string;
+  state: string;
+  node: string;
+  node_id: string;
+  advertise: string;
+  summary: { vms: number; disks: number; images: number; networks: number; credentials: number; projects: number };
+  problems: string[];
+  mappings: { projects: Record<string, string>; networks: Record<string, string>; credentials: Record<string, string>; over_quota: boolean };
+  created_by: string;
+  created_at: number;
+  expires_at: number;
 }

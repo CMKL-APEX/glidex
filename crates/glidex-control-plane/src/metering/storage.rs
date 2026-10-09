@@ -35,13 +35,13 @@ pub fn record(round: &mut Round, disks: &[(Disk, u64)], images: &[Image], now: u
 mod tests {
     use super::super::ledger::{combine, Ledger, LedgerSettings, HOUR_MS};
     use super::*;
-    use redb::Database;
+    use crate::store::Db;
     use std::sync::Arc;
 
     #[test]
     fn stored_sizes_are_held_between_passes() {
         let dir = tempfile::TempDir::new().unwrap();
-        let l = Ledger::new(Arc::new(Database::create(dir.path().join("t.db")).unwrap()), LedgerSettings::from_secs(30, 120)).unwrap();
+        let l = Ledger::new(Arc::new(Db::create(dir.path().join("t.db")).unwrap()), LedgerSettings::from_secs(30, 120)).unwrap();
         l.set_started_at_for_test(0);
         let t0 = 1_791_000_000 / 3600 * HOUR_MS;
         let d: Disk = serde_json::from_value(serde_json::json!({

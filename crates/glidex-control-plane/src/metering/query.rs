@@ -288,6 +288,8 @@ fn flag_name(f: &Flag) -> &'static str {
         Flag::Reset => "reset",
         Flag::Incomplete { .. } => "incomplete",
         Flag::SourceProc => "source_proc",
+        Flag::ExtGap => "ext_gap",
+        Flag::NetworkTotalUnavailable => "network_total_unavailable",
     }
 }
 

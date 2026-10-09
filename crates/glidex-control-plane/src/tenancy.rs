@@ -5,7 +5,8 @@
 //! the `meta` table records the id of the `default` project and which
 //! one-time migrations have run.
 
-use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
+use crate::store::Db;
+use redb::{ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use thiserror::Error;
@@ -45,6 +46,7 @@ macro_rules! storage_from {
     )*};
 }
 storage_from!(
+    crate::store::StoreError,
     redb::TransactionError,
     redb::TableError,
     redb::StorageError,
@@ -69,16 +71,26 @@ pub struct Quotas {
     /// Project networks (spec §6.2).
     #[serde(default = "default_network_quota")]
     pub networks: Option<u64>,
+    /// VPC routers (spec/clustering.md §11.2a).
+    #[serde(default = "default_router_quota")]
+    pub routers: Option<u64>,
+    /// Addresses of the site's external pool, one per VPC router with a gateway.
+    #[serde(default = "default_router_quota")]
+    pub external_ips: Option<u64>,
 }
 
 fn default_network_quota() -> Option<u64> {
     Some(2)
 }
 
+fn default_router_quota() -> Option<u64> {
+    Some(1)
+}
+
 impl Quotas {
     /// Defaults for a new project: unlimited, except 2 project networks.
     pub fn new_project() -> Self {
-        Quotas { networks: default_network_quota(), ..Default::default() }
+        Quotas { networks: default_network_quota(), routers: default_router_quota(), external_ips: default_router_quota(), ..Default::default() }
     }
 }
 
@@ -91,6 +103,8 @@ pub struct Usage {
     pub disk_gib: u64,
     pub running_vms: u64,
     pub networks: u64,
+    pub routers: u64,
+    pub external_ips: u64,
 }
 
 /// One limit that a request would go over.
@@ -129,6 +143,8 @@ pub struct Delta {
     pub disk_gib: u64,
     pub running_vms: u64,
     pub networks: u64,
+    pub routers: u64,
+    pub external_ips: u64,
 }
 
 /// Limits `delta` would exceed on top of `usage`.
@@ -147,6 +163,8 @@ pub fn overruns(quotas: &Quotas, usage: &Usage, delta: &Delta) -> Vec<QuotaOverr
     check("disk_gib", quotas.disk_gib, usage.disk_gib, delta.disk_gib);
     check("running_vms", quotas.running_vms, usage.running_vms, delta.running_vms);
     check("networks", quotas.networks, usage.networks, delta.networks);
+    check("routers", quotas.routers, usage.routers, delta.routers);
+    check("external_ips", quotas.external_ips, usage.external_ips, delta.external_ips);
     out
 }
 
@@ -184,20 +202,16 @@ pub fn now() -> u64 {
 }
 
 pub struct ProjectStore {
-    db: Arc<Database>,
+    db: Arc<Db>,
 }
 
 impl ProjectStore {
     /// Open the tables and make sure the default project exists.
-    pub fn new(db: Arc<Database>) -> Result<Self, TenancyError> {
-        let txn = db.begin_write()?;
-        {
-            let _ = txn.open_table(PROJECTS_TABLE)?;
-            let _ = txn.open_table(META_TABLE)?;
-        }
-        txn.commit()?;
+    pub fn new(db: Arc<Db>) -> Result<Self, TenancyError> {
         let store = Self { db };
-        if store.meta(META_DEFAULT_PROJECT)?.is_none() {
+        // A follower finds the default project in the replicated data; a
+        // node that can't write now leaves it to the leader.
+        if store.meta(META_DEFAULT_PROJECT)?.is_none() && store.db.can_write() {
             let p = Project {
                 id: uuid::Uuid::new_v4().to_string(),
                 name: DEFAULT_PROJECT_NAME.into(),
@@ -241,7 +255,7 @@ impl ProjectStore {
     }
 
     pub fn set_meta(&self, key: &str, value: &[u8]) -> Result<(), TenancyError> {
-        let txn = self.db.begin_write()?;
+        let txn = self.db.begin(crate::store::Origin::Api)?;
         {
             let mut table = txn.open_table(META_TABLE)?;
             table.insert(key, value)?;
@@ -284,7 +298,7 @@ impl ProjectStore {
 
     pub fn put(&self, p: &Project) -> Result<(), TenancyError> {
         let bytes = serde_json::to_vec(p)?;
-        let txn = self.db.begin_write()?;
+        let txn = self.db.begin(crate::store::Origin::Api)?;
         {
             let mut table = txn.open_table(PROJECTS_TABLE)?;
             table.insert(p.id.as_str(), bytes.as_slice())?;
@@ -313,7 +327,7 @@ impl ProjectStore {
         if id == self.default_project_id() {
             return Err(TenancyError::Invalid("the default project can't be deleted".into()));
         }
-        let txn = self.db.begin_write()?;
+        let txn = self.db.begin(crate::store::Origin::Api)?;
         {
             let mut table = txn.open_table(PROJECTS_TABLE)?;
             if table.remove(id)?.is_none() {
@@ -331,7 +345,7 @@ mod tests {
 
     fn store() -> (ProjectStore, tempfile::TempDir) {
         let dir = tempfile::TempDir::new().unwrap();
-        let db = Arc::new(Database::create(dir.path().join("p.db")).unwrap());
+        let db = Arc::new(Db::create(dir.path().join("p.db")).unwrap());
         (ProjectStore::new(db).unwrap(), dir)
     }
 
@@ -384,5 +398,19 @@ mod tests {
         assert!(overruns(&q, &u, &Delta::default()).is_empty());
         // Unlimited when None.
         assert!(overruns(&Quotas { networks: None, ..Default::default() }, &u, &Delta { networks: 9, ..Default::default() }).is_empty());
+    }
+
+    #[test]
+    fn router_quotas_default_to_one_each() {
+        let q = Quotas::new_project();
+        assert_eq!((q.routers, q.external_ips), (Some(1), Some(1)));
+        let u = Usage { routers: 1, external_ips: 1, ..Default::default() };
+        let o = overruns(&q, &u, &Delta { routers: 1, external_ips: 1, ..Default::default() });
+        assert_eq!(o.iter().map(|o| o.resource).collect::<Vec<_>>(), ["routers", "external_ips"]);
+        // An internal router counts only against `routers`.
+        let o = overruns(&q, &Usage::default(), &Delta { routers: 1, ..Default::default() });
+        assert!(o.is_empty());
+        let none: Quotas = serde_json::from_str("{}").unwrap();
+        assert_eq!((none.routers, none.external_ips), (Some(1), Some(1)), "records from before the router quotas get the default");
     }
 }

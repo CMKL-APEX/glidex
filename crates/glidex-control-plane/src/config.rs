@@ -25,6 +25,9 @@ pub struct Config {
     /// HTTPS on the TCP listeners (spec §5.1). Default: a self-signed
     /// certificate.
     pub tls: TlsSetting,
+    /// Display name `GET /auth/server-info` reports and gxctl shows in
+    /// profile banners (spec/gxctl-auth.md §7.1). Default: the host name.
+    pub server_name: Option<String>,
     /// Unix socket for local gxctl users (peer identity, spec §5.2).
     /// Default: `<run dir>/api.sock`.
     pub api_socket: Option<PathBuf>,
@@ -44,6 +47,8 @@ pub struct Config {
     pub reconcile: ReconcileConfig,
     pub console: ConsoleConfig,
     pub metering: MeteringConfig,
+    /// Clustering tunables (spec/clustering.md §10.2).
+    pub cluster: crate::cluster::config::ClusterConfig,
 }
 
 impl Default for Config {
@@ -51,6 +56,7 @@ impl Default for Config {
         Self {
             listen: glidex_tls::all_addresses(DEFAULT_PORT),
             tls: TlsSetting::Mode(TlsMode::Auto),
+            server_name: None,
             api_socket: None,
             ui_socket: None,
             ui_user: "glidex-ui".into(),
@@ -64,6 +70,7 @@ impl Default for Config {
             reconcile: ReconcileConfig::default(),
             console: ConsoleConfig::default(),
             metering: MeteringConfig::default(),
+            cluster: Default::default(),
         }
     }
 }
@@ -435,6 +442,7 @@ impl Config {
             return Err("console.log_max_bytes must be 1 MiB-256 MiB".into());
         }
         self.metering.check()?;
+        self.cluster.check()?;
         self.check_listeners()
     }
 
@@ -516,12 +524,12 @@ mod tests {
     #[test]
     fn quota_defaults() {
         use crate::tenancy::Quotas;
-        // Nothing configured: 2 project networks, everything else unlimited.
+        // Nothing configured: 2 project networks, 1 router with 1 external address, everything else unlimited.
         let c = parse("{}").unwrap();
-        assert_eq!(c.quotas.default, Quotas { networks: Some(2), ..Default::default() });
+        assert_eq!(c.quotas.default, Quotas { networks: Some(2), routers: Some(1), external_ips: Some(1), ..Default::default() });
         // Partial: omitted networks keeps 2.
         let c = parse(r#"{"quotas": {"default": {"vms": 10, "disk_gib": 500}}}"#).unwrap();
-        assert_eq!(c.quotas.default, Quotas { vms: Some(10), disk_gib: Some(500), networks: Some(2), ..Default::default() });
+        assert_eq!(c.quotas.default, Quotas { vms: Some(10), disk_gib: Some(500), networks: Some(2), routers: Some(1), external_ips: Some(1), ..Default::default() });
         // null is unlimited.
         let c = parse(r#"{"quotas": {"default": {"networks": null}}}"#).unwrap();
         assert_eq!(c.quotas.default.networks, None);

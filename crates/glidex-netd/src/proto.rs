@@ -63,6 +63,9 @@ pub enum Op {
     /// External-traffic counters of NAT networks, per network and per
     /// reserved MAC (spec/metering.md §5.5). Read-only; full socket only.
     NatCounters,
+    /// Cumulative external-traffic counters of router SNAT zones, from
+    /// conntrack accounting (spec/clustering.md §13.3). Read-only; full socket only.
+    CtExternalCounters,
     InstallOvs(InstallRequest),
     InitDpdk(glidex_ovs::install::DpdkSettings),
     EnsureUplink(EnsureUplinkArgs),
@@ -74,9 +77,24 @@ pub enum Op {
     DeleteNat { bridge: String },
     AttachVmPort(VmPortSpec),
     DetachVmPort { vm_id: String, nic_index: u8 },
+    /// Move a VM port to another bridge (`br-int` and a glidex bridge, either
+    /// way) without recreating its tap or socket (spec/clustering.md §11.3).
+    /// The spec names the new bridge (and `ovn_lport` for `br-int`).
+    MoveVmPort(VmPortSpec),
     /// The VM is being deleted: free its NAT reservations too.
     ReleaseVm { vm_id: String },
     SyncVms { running: Vec<String> },
+    /// Make this host an OVN chassis (spec/clustering.md §11.3).
+    EnsureOvnChassis(EnsureOvnChassisArgs),
+    /// Read-only: the chassis, `ovn-controller` and which ports have flows.
+    OvnStatus,
+    /// Stop being a chassis. Refused while a glidex VM port is on `br-int`.
+    LeaveOvn { confirm: bool },
+    /// Run this server's part of OVN's databases (`ovn-central`).
+    EnsureOvnCentral(EnsureOvnCentralArgs),
+    /// Take a departed member out of OVN (kick it from the NB/SB clusters,
+    /// delete its chassis). Run on a remaining server.
+    ForgetOvnMember(ForgetOvnMemberArgs),
 }
 
 impl Op {
@@ -96,6 +114,8 @@ impl Op {
                 | Op::ListUplinks
                 | Op::PortStats
                 | Op::NatCounters
+                | Op::CtExternalCounters
+                | Op::OvnStatus
         )
     }
 
@@ -109,6 +129,7 @@ impl Op {
             Op::ListUplinks => "list_uplinks",
             Op::PortStats => "port_stats",
             Op::NatCounters => "nat_counters",
+            Op::CtExternalCounters => "ct_external_counters",
             Op::EnsureUplink(_) => "ensure_uplink",
             Op::CommitUplink { .. } => "commit_uplink",
             Op::DeleteUplink { .. } => "delete_uplink",
@@ -120,8 +141,14 @@ impl Op {
             Op::DeleteNat { .. } => "delete_nat",
             Op::AttachVmPort(_) => "attach_vm_port",
             Op::DetachVmPort { .. } => "detach_vm_port",
+            Op::MoveVmPort(_) => "move_vm_port",
             Op::ReleaseVm { .. } => "release_vm",
             Op::SyncVms { .. } => "sync_vms",
+            Op::EnsureOvnChassis(_) => "ensure_ovn_chassis",
+            Op::OvnStatus => "ovn_status",
+            Op::LeaveOvn { .. } => "leave_ovn",
+            Op::EnsureOvnCentral(_) => "ensure_ovn_central",
+            Op::ForgetOvnMember(_) => "forget_ovn_member",
         }
     }
 }
@@ -238,6 +265,28 @@ pub struct EnsureUplinkArgs {
     /// Required to take over a NIC the host is using (CLI `--force`).
     #[serde(default)]
     pub confirm: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnsureOvnChassisArgs {
+    pub spec: glidex_ovs::ovn::ChassisSpec,
+    pub certs: glidex_ovs::ovn::ChassisCerts,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnsureOvnCentralArgs {
+    pub spec: glidex_ovs::ovn::CentralSpec,
+    pub certs: glidex_ovs::ovn::ChassisCerts,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ForgetOvnMemberArgs {
+    /// The member's address in OVN's cluster (its advertise IP).
+    pub address: String,
+    /// Its chassis name (the node id).
+    pub chassis: String,
+    /// Whether it ran NB/SB databases.
+    pub server: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

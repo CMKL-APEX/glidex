@@ -2,6 +2,7 @@
 members = [
     "crates/glidex-control-plane",
     "crates/glidex-ovs",
+    "crates/glidex-ovn",
     "crates/glidex-install",
     "crates/glidex-netd",
     "crates/glidex-authd",
@@ -9,6 +10,7 @@ members = [
     "crates/glidex-hv-client",
     "crates/glidex-vm-shim",
     "crates/glidex-tls",
+    "crates/glidex-e2e",
 ]
 resolver = "2"
 

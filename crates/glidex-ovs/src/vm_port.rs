@@ -30,6 +30,11 @@ pub struct VmPortSpec {
     pub mtu: Option<u16>,
     #[serde(default = "default_queue_pairs")]
     pub queue_pairs: u8,
+    /// A port on an OVN network: the logical port this interface is
+    /// (`external_ids:iface-id`); `bridge` must be `br-int`
+    /// (spec/clustering.md §11.3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ovn_lport: Option<String>,
 }
 
 fn default_queue_pairs() -> u8 {
@@ -48,6 +53,17 @@ impl VmPortSpec {
             if !(1..=4094).contains(&vlan) {
                 return Err(OvsError::invalid("vlan must be 1-4094"));
             }
+        }
+        if let Some(l) = &self.ovn_lport {
+            validate_name("ovn_lport", l, 63)?;
+            if self.bridge != crate::ovn::BR_INT {
+                return Err(OvsError::invalid("an OVN port goes on br-int"));
+            }
+            if self.vlan.is_some() {
+                return Err(OvsError::invalid("an OVN port has no VLAN tag: the logical switch decides"));
+            }
+        } else if self.bridge == crate::ovn::BR_INT {
+            return Err(OvsError::invalid("br-int is OVN's: give ovn_lport"));
         }
         if !(1..=8).contains(&self.queue_pairs) {
             return Err(OvsError::invalid("queue_pairs must be 1-8"));
@@ -152,6 +168,9 @@ pub fn attach(
         args.push(format!("mtu_request={}", mtu));
     }
     args.extend(tags);
+    if let Some(l) = &spec.ovn_lport {
+        args.push(format!("external_ids:iface-id={l}"));
+    }
     if let Some(vlan) = spec.vlan {
         args.extend([
             "--".to_string(),
@@ -174,6 +193,21 @@ pub fn attach(
         exec.check(&Cmd::new(Program::Ip, ["link", "set", "dev", port.as_str(), "up"]))?;
     }
     Ok(binding)
+}
+
+/// Take a port out of OVS but keep its tap (or vhost-user socket): the first
+/// half of moving it to another bridge (spec/clustering.md §11.3,
+/// `move_vm_port`). The hypervisor keeps its device; OVS reconnects a
+/// vhost-user client port by itself. Idempotent; refuses a port glidex didn't tag.
+pub fn unplug(exec: &dyn Exec, vm_id: &str, nic_index: u8) -> Result<(), OvsError> {
+    let port = names::port_name(vm_id, nic_index)?;
+    if let Some(row) = vsctl::find_by_name(exec, "Interface", &port, &["name", "external_ids", "type"])? {
+        if !row.owned_by_glidex() {
+            return Err(OvsError::not_owned(format!("interface '{}'", port)));
+        }
+        vsctl::run(exec, vec!["--if-exists".into(), "del-port".into(), port])?;
+    }
+    Ok(())
 }
 
 /// Remove the port, its tap and its socket. Idempotent; refuses to touch
@@ -236,6 +270,7 @@ mod tests {
             vlan: None,
             mtu: None,
             queue_pairs: 1,
+            ovn_lport: None,
         }
     }
 
@@ -249,6 +284,23 @@ mod tests {
         assert!(calls.contains(&"ip tuntap add dev gx1a2b3c4d-0 mode tap user 1000".to_string()), "{calls:?}");
         assert_eq!(calls.last().map(String::as_str), Some("ip link set dev gx1a2b3c4d-0 up"), "{calls:?}");
         assert!(calls.contains(&format!("ovs-vsctl --may-exist add-port gxbr-nat gx1a2b3c4d-0 -- set Interface gx1a2b3c4d-0 external_ids:glidex-owner=glidex external_ids:glidex-role=vm external_ids:glidex-vm-id={VM} external_ids:glidex-nic=0 -- set Port gx1a2b3c4d-0 tag=10")), "{calls:?}");
+    }
+
+    #[test]
+    fn an_ovn_port_goes_on_br_int_with_its_iface_id() {
+        let exec = RecordingExec::new();
+        exec.on(
+            "ovs-vsctl --format=json --columns=name,datapath_type,external_ids,ports find Bridge name=br-int",
+            Output::ok(r#"{"data":[["br-int","system",["map",[["glidex-owner","glidex"]]],["set",[]]]],"headings":["name","datapath_type","external_ids","ports"]}"#),
+        );
+        let s = VmPortSpec { bridge: "br-int".into(), ovn_lport: Some("gx-1a2b3c4d-0".into()), mtu: Some(1442), ..spec(VmPortKind::Tap) };
+        attach(&exec, &HostCapabilities::default(), &s, 1000).unwrap();
+        let add = exec.calls().into_iter().find(|c| c.contains("add-port br-int")).unwrap();
+        assert!(add.contains("external_ids:iface-id=gx-1a2b3c4d-0") && add.contains("mtu_request=1442"), "{add}");
+        // br-int takes only OVN ports, and an OVN port only br-int.
+        assert!(VmPortSpec { ovn_lport: None, ..s.clone() }.validate().is_err());
+        assert!(VmPortSpec { bridge: "gxbr-nat".into(), ..s.clone() }.validate().is_err());
+        assert!(VmPortSpec { vlan: Some(5), ..s }.validate().is_err());
     }
 
     #[test]

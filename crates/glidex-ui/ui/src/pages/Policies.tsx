@@ -11,7 +11,7 @@ import type {
   SitePolicy,
   SitePolicyVersion,
 } from "../types";
-import { formatTime } from "../types";
+import { formatTime, isSingleton } from "../types";
 import { Loading } from "../components/Loading";
 import Modal from "../components/Modal";
 import { Badge, Card, ErrorBanner, PageHeader, errorMessage, inputClass, primaryButton, secondaryButton } from "../components/ui";
@@ -32,7 +32,7 @@ const ACTIONS = [
   "readAudit", "readPolicy", "writePolicy", "installOvs", "readOvsStatus",
 ];
 
-const RESOURCE_TYPES: EntityType[] = ["Host", "Project", "Vm", "Disk", "Credential", "Network", "Image", "PciDevice", "User"];
+const RESOURCE_TYPES: EntityType[] = ["Cluster", "Host", "Node", "Project", "Vm", "Disk", "Credential", "Network", "Image", "PciDevice", "User"];
 const SOURCES: PolicySource[] = ["base", "role", "link", "site", "file"];
 
 const NEW_TEMPLATE = (id: string) => `@id("${id}")
@@ -73,7 +73,7 @@ function RequestBuilder({ requests, onChange }: { requests: SimulationRequest[];
 
   const add = () => {
     if (!pid.trim() || !action.trim()) return;
-    const resource: EntityRef = rtype === "Host" ? { type: "Host" } : { type: rtype, id: rid.trim() };
+    const resource: EntityRef = isSingleton(rtype) ? { type: rtype } : { type: rtype, id: rid.trim() };
     onChange([...requests, { principal: { type: ptype, id: pid.trim() }, action: action.trim(), resource }]);
   };
 
@@ -130,8 +130,8 @@ function RequestBuilder({ requests, onChange }: { requests: SimulationRequest[];
           <label className="block text-xs text-gray-500">Resource id</label>
           <input
             className="w-full px-2 py-1 border border-gray-300 rounded-lg font-mono disabled:bg-gray-100"
-            disabled={rtype === "Host"}
-            value={rtype === "Host" ? "local" : rid}
+            disabled={isSingleton(rtype)}
+            value={rtype === "Cluster" ? "" : rtype === "Host" ? "this host" : rid}
             onChange={(e) => setRid(e.target.value)}
           />
         </div>

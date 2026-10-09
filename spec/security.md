@@ -47,6 +47,7 @@ bullets of [networking.md §14](networking.md#14-security).
 | 15 | Step-up window | **10 minutes** for host-wide network changes and policy writes (`base.step-up`). |
 | 16 | Sharing project networks | A project network is private unless **both** projects agree explicitly: the network's owner offers it, the receiving project's owner accepts. Either side can end it (§6.2.1). |
 | 17 | Policy change control | Site policy changes need step-up and are audited; **no two-person approval**. |
+| 18 | Client trust | Self-signed control planes are accepted by **pinning the leaf certificate's SHA-256**, trusted on first use at `gxctl auth login` (TOFU); chain, dates and name keep verifying against the pinned certificate. A verify-nothing mode exists only as an explicitly confirmed, per-profile, loudly marked escape hatch ([gxctl-auth.md §5](gxctl-auth.md)). |
 
 ## 3. Threat model
 
@@ -117,8 +118,8 @@ to `glidex-users` and `glidex-admin` (bootstrap, §11).
 
 Every request ends up with a **principal**: `{user_id, auth_method,
 authenticated_at, session_id | token_id, source}`. Requests without one
-get `401` (except `GET /health`, `GET /auth/methods`, and the login and
-OIDC endpoints).
+get `401` (except `GET /health`, `GET /auth/methods`, `GET /auth/server-info`,
+and the login and OIDC endpoints).
 
 ### 5.1 Transports
 
@@ -185,8 +186,15 @@ redirect: API clients should be told, not silently upgraded.
 - The control plane copies its certificate (never the key) to
   `<run dir>/tls.crt` (`/run/glidex-cp/tls.crt`, `0644`). gxctl and the
   UI's TCP fallback trust that file when it exists (local clients get
-  verified TLS with no setup); remote gxctl uses `GLIDEX_CA_CERT`
-  ([cli.md](cli.md)).
+  verified TLS with no setup); remote gxctl trusts the profile's
+  `ca_file`/`ca_pem`/`pins` — including the SHA-256 fingerprint of the
+  self-signed certificate pinned on first use at `gxctl auth login`
+  ([gxctl-auth.md §5](gxctl-auth.md)) — or `GLIDEX_CA_CERT` per
+  invocation ([cli.md](cli.md)). Pinning is sound precisely because of
+  the stability invariant above: the fingerprint a user compared against
+  a second channel stays valid for the certificate's lifetime. There is
+  no verify-nothing default; `insecure` profiles are opt-in, confirmed
+  and warned on every run (decision 18).
 - `Strict-Transport-Security` is sent only with a configured
   certificate, never with a self-signed one: browsers make certificate
   errors non-bypassable for an HSTS host, which would lock users out of
@@ -264,6 +272,15 @@ selects TCP.
   only lines that look like public keys. The control plane exposes it
   as `GET /users/me/ssh-keys` for the caller's own local (PAM/Unix)
   account only, to prefill new guest credentials.
+- **CLI/CI token login:** `POST /auth/token`
+  (`{username, password, token_name?, device?, client?, days?}`)
+  authenticates through the same authd path as `POST /auth/login` —
+  same rate limits, fixed delay, `allowed_groups`, JIT provisioning and
+  `group_teams` sync — but mints a **bearer token** instead of a
+  browser session (sessions stay the browser's half of §5.5; the CLI
+  and CI carry tokens). TLS only, the password is zeroized after use,
+  and `pam.enabled` off answers `401` naming the config key
+  ([gxctl-auth.md §7.3](gxctl-auth.md)).
 
 ### 5.4 OIDC
 
@@ -312,6 +329,12 @@ selects TCP.
 - Required expiry: default 90 days, maximum 365. `last_used_at` and
   `last_used_from` are recorded.
 - Sent as `Authorization: Bearer gxt_…`.
+- Personal tokens minted by a login flow (`gxctl auth login`: the OIDC
+  device flow, `POST /auth/token`) arrive named `gxctl@<profile>` with
+  `device` and `client` metadata recorded next to `last_used_from` and
+  the same expiry clamp as `POST /tokens` — so `token list`/`revoke`
+  can pick out one laptop's credential. The metadata is display and
+  audit only, never checked ([gxctl-auth.md §7.2](gxctl-auth.md)).
 
 ### 5.6 `glidex-ui` and browser protections
 
@@ -471,18 +494,23 @@ namespace Glidex {
   type ProjectCtx = { auth: Auth, project: Project };
   type NetworkCtx = { auth: Auth, network: Network };
 
-  entity Host;                                    // one: Host::"local"
+  // A standalone host is a cluster of one: Host::"local" in Cluster::"local"
+  // (clustering.md §12.2). System roles link to the Cluster and so cover
+  // every host; host-specific actions (OVS, uplinks, PCI devices, host
+  // paths) take the node's Host, so a grant can be limited to one node.
+  entity Cluster;
+  entity Host in [Cluster];
   entity Team;
   entity User in [Team] { disabled: Bool };
   entity Token { owner?: User, expired: Bool };   // personal (owner) or service account
-  entity Project in [Host];
+  entity Project in [Cluster];
   entity Vm in [Project] { project: Project };
   entity Disk in [Project] { project: Project };
   entity Credential in [Project] { project: Project };
-  entity Image in [Host];
-  // Host networks: parent Host, no `project`. Project networks: parent Project.
+  entity Image in [Cluster];
+  // Host networks: parent Cluster, no `project`. Project networks: parent Project.
   // shares: projects that accepted a share of a project network (§6.2.1).
-  entity Network in [Host, Project] {
+  entity Network in [Cluster, Project] {
     project?: Project, all_projects: Bool, grants: Set<Project>, shares: Set<Project>,
   };
   entity PciDevice in [Host] { grants: Set<Project> };
@@ -564,10 +592,15 @@ namespace Glidex {
   action readImage, readNetwork
     appliesTo { principal: [User, Token], resource: [Image, Network], context: Ctx };
   action pullImage, deleteImage in ["image.manage"]
-    appliesTo { principal: [User, Token], resource: [Host, Image], context: Ctx };
+    appliesTo { principal: [User, Token], resource: [Cluster, Image], context: Ctx };
   action readPolicy, validatePolicy, simulatePolicy in ["policy.read"]
-    appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
+    appliesTo { principal: [User, Token], resource: [Cluster], context: Ctx };
   action writePolicy, deletePolicy in ["policy.write"]
+    appliesTo { principal: [User, Token], resource: [Cluster], context: Ctx };
+  // Nodes (clustering.md §7): the list is cluster-wide, one node is a Host.
+  action listNodes in ["host.read"]
+    appliesTo { principal: [User, Token], resource: [Cluster], context: Ctx };
+  action readNode in ["host.read"]
     appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
   // … disks, credentials, projects, teams, users, tokens, audit: same pattern.
 }
@@ -647,9 +680,10 @@ cleanly.
 
 **Role templates** (`policies/roles.cedar`). A role assignment is a
 *template-linked policy*: `?principal` is a `User`, `Team` or `Token`,
-and `?resource` is a `Project` (project roles) or `Host::"local"`
-(host roles). Because `Project in Host`, a link on the host covers
-every project.
+and `?resource` is a `Project` (project roles), the `Cluster` (system
+roles) or a `Host` (a host-specific role such as `net-admin` on one
+node). Because `Project in Cluster` and `Host in Cluster`, a link on the
+cluster covers every project and every host.
 
 ```cedar
 @id("role.viewer")
@@ -673,7 +707,7 @@ permit (principal in ?principal, action in Glidex::Action::"host.paths", resourc
 ```
 
 The control plane only links project roles to a `Project`, and host
-roles and grants to `Host::"local"`. Linking needs `project.members`
+roles and grants to the `Cluster` (or, for host-specific roles, a `Host`). Linking needs `project.members`
 (project roles, in that project) or `system.projects` (anything).
 
 **Base policies** (`policies/base.cedar`). These are the invariants and
@@ -767,7 +801,7 @@ allow.**
 
 | API call | Cedar requests |
 |---|---|
-| `POST /vms` | `createVm` on the Project; `useDisk` on each data disk; `useCredential` on each credential; `attachNetwork` on the Project and `useNetwork` on each network if any; `usePciDevice` on each VFIO device; `useHostPath` on `Host::"local"` if any path is outside managed directories; `readImage` on the boot image |
+| `POST /vms` | `createVm` on the Project; `useDisk` on each data disk; `useCredential` on each credential; `attachNetwork` on the Project and `useNetwork` on each network if any; `usePciDevice` on each VFIO device; `useHostPath` on the node's `Host` if any path is outside managed directories; `readImage` on the boot image |
 | `POST /vms/{id}/disks` | `attachDisk` on the Vm; `useDisk` on the Disk |
 | `POST /vms/{id}/devices` | `attachDevice` on the Vm; `usePciDevice` on the device |
 | `PATCH /vms/{id}` | `readVm` first (else `404`), then one request per *changed* field: `power` → `startVm` / `pauseVm` / `stopVm`; added `vfio_devices` → `attachDevice` + `usePciDevice` on each, removed → `detachDevice`; added `data_disks` → `attachDisk` + `useDisk` on each, removed → `detachDisk`; added `networks` → `attachNetwork` + `useNetwork` on each, removed → `detachNetwork`; `credential` → `updateVm` (+ `useCredential` unless removed); `restart_policy`, `on_host_boot`, `stop_grace_secs`, `vcpu_count`, `mem_size_mib`, `kernel_args`, `hugepages` → `updateVm`. Immutable fields are refused (`400`) before any of these. |
@@ -950,7 +984,12 @@ impl Authz {
 8. **UI capability checks.** `POST /authz/check` takes
    `[{action, resource}]` and returns booleans for the caller, so the
    UI can hide what the caller can't do. The server still checks every
-   real request.
+   real request. `POST /authz/allowed` answers many at once:
+   `{actions, resources}` → `{allowed: [[action…] per resource]}`,
+   leaving out actions whose `appliesTo` doesn't list the resource's
+   type; an unknown action is `400`; at most 50 actions × 500 resources
+   (spec/clustering-ui.md §3.5). A `Host` or `Node` resource gets the
+   cluster as parent, so a link on the cluster covers every node's host.
 9. **Live stream.** `GET /watch` (server-sent events,
    [rest-api.md](rest-api.md#live-stream-get-watch)) needs only an
    authenticated caller; each kind is filtered exactly like its list
@@ -1063,6 +1102,10 @@ connect` uses the API's console WebSocket instead of the raw socket.
   login, token create/revoke, role link change, and policy reload. It goes to the journal
   (`SYSLOG_IDENTIFIER=glidex-audit`) and to an `audit` ReDB table kept
   for 90 days (`audit.retention_days`).
+- `auth.login` entries (browser session, `POST /auth/token`, device-flow
+  token mint — `gxctl auth login` is the usual source) carry the
+  method, the client-claimed `device`/`client` strings (display only,
+  attestation would be theatre), and the client IP. Never the secret.
 - Fields: `time`, `request_id`, `principal` (user id, display name,
   method, token or session id prefix), `source` (peer uid or client IP),
   `action` (Cedar action or netd op), `project`, `target`, `result`,
@@ -1114,6 +1157,7 @@ connect` uses the API's console WebSocket instead of the raw socket.
 {
   "listen": ["0.0.0.0:8841", "[::]:8841"],
   "tls": "auto",
+  "server_name": "lab-cp",
   "auth": {
     "allowed_origins": ["https://glidex.example.org:5173"],
     "session": { "idle_minutes": 30, "absolute_hours": 12 },
@@ -1143,6 +1187,10 @@ connect` uses the API's console WebSocket instead of the raw socket.
   "metering": { "enabled": true, "sample_secs": 30, "billing_timezone": "UTC" }
 }
 ```
+
+`server_name` is the display name `GET /auth/server-info` reports
+(defaults to the host name; clients show it in profiles and banners);
+`packaging/control-plane.json.example` carries it too.
 
 `metering` (all keys in `packaging/control-plane.json.example`,
 [metering.md §11](metering.md#11-configuration)): `sample_secs` must
@@ -1184,6 +1232,8 @@ the principal is included.
 | `PATCH /users/me` (`{default_project}`) | authenticated |
 | `GET /users/me/ssh-keys` | authenticated (the caller's own local account only; `available: false` with a reason otherwise) |
 | `POST /auth/oidc/device`, `POST /auth/oidc/device/poll` | none (device grant for gxctl; returns a 1-day personal token) |
+| `GET /auth/server-info` | none (cluster id/name, node id, version, own certificate fingerprint, login methods — what client profiles bind to; [gxctl-auth.md §7.1](gxctl-auth.md)) |
+| `POST /auth/token` | none (PAM credentials → personal bearer token, authd rate limits, TLS only; §5.3) |
 | `POST /vms/{id}/console/ticket` | `vm.console` |
 | `GET /audit` | §10 |
 
@@ -1260,6 +1310,16 @@ resource`; turned into linked policies at load), `sessions`, `api_tokens`,
 - **OIDC:** against a local mock IdP. Cases: wrong `aud`, `iss`,
   `nonce`, expired token, unknown `kid` refresh, `alg: none` refused,
   group-to-team sync.
+- **Client trust (gxctl, mock server with an rcgen certificate):** a
+  self-signed certificate is accepted only after `--pin` or an
+  interactive TOFU `y`; a pin change is a hard error, never a
+  re-prompt; `insecure` without the typed confirmation phrase is a
+  config error; `GLIDEX_TLS_INSECURE=1` cannot override existing pins;
+  a `cluster_id` mismatch against the profile refuses the request; a
+  TLS-terminating proxy is caught by the `server-info` fingerprint
+  cross-check. Plus the profile-file refusals and the
+  `GLIDEX_TOKEN`/profile/`token_command` precedence matrix
+  ([gxctl-auth.md §11](gxctl-auth.md)).
 - **UI e2e:** login, CSRF header, console via ticket, a foreign `Host` is refused.
 
 ## 15. Milestones
@@ -1292,6 +1352,7 @@ None. Earlier questions were answered and recorded as decisions 10–17 (§2).
 | VM units, polkit rule, shim allowlist (§3, §9) | `packaging/glidex-vm@.service.in`, `packaging/50-glidex-vm.rules.in`, `crates/glidex-vm-shim/src/launch.rs`, `crates/glidex-install` (`install_vm_units`) |
 | PAM helper (§5.3) | `crates/glidex-authd` |
 | netd ownership, policy, admin socket, audit context, NAT isolation (§8) | `crates/glidex-netd`, `crates/glidex-ovs/src/nat.rs` |
+| Login profiles, trust ladder and client trust ([gxctl-auth.md](gxctl-auth.md), decision 18) | **implemented** — G1–G5 landed: profile file `bin/gxctl/config.rs`, ladder `glidex_tls::Trust`/`ClientTls::with_trust`, failover + binding preflight `bin/gxctl/client.rs`, `auth` family `bin/gxctl/admin.rs`, server halves `api/access.rs` (`server_info`, `pam_token`) + `auth::create_token` device/client stamp |
 | Tests (§14) | `tests/security_tests.rs`, `tests/network_tests.rs`, unit tests in each module, `crates/glidex-authd/tests`, `crates/glidex-netd/tests` |
 
 Still to verify on a real host: the generated nftables rules (§8.4),

@@ -79,7 +79,7 @@ mod tests {
     use super::super::ledger::{LedgerSettings, Origin, Subject, HOUR_MS};
     use super::super::query::Granularity;
     use super::*;
-    use redb::Database;
+    use crate::store::Db;
     use std::sync::Arc;
 
     /// Days roll up at the billing zone's midnight, so an old billing
@@ -88,7 +88,7 @@ mod tests {
     fn roll_up_keeps_billing_months_exact() {
         use super::super::query::{aggregate, month_bounds, parse_tz, Query};
         let dir = tempfile::TempDir::new().unwrap();
-        let l = Ledger::new(Arc::new(Database::create(dir.path().join("t.db")).unwrap()), LedgerSettings::from_secs(30, 120)).unwrap();
+        let l = Ledger::new(Arc::new(Db::create(dir.path().join("t.db")).unwrap()), LedgerSettings::from_secs(30, 120)).unwrap();
         let bkk = parse_tz("+07:00").unwrap();
         let (oct, nov) = month_bounds("2026-10", &bkk).unwrap();
         l.set_started_at_for_test((oct - 2 * DAY) * 1000);
@@ -118,7 +118,7 @@ mod tests {
     #[test]
     fn months_are_finalized_once_and_slots_expire() {
         let dir = tempfile::TempDir::new().unwrap();
-        let db = Arc::new(Database::create(dir.path().join("t.db")).unwrap());
+        let db = Arc::new(Db::create(dir.path().join("t.db")).unwrap());
         let l = Ledger::new(db, LedgerSettings::from_secs(30, 120)).unwrap();
         // 2026-09-30T23:00Z: the last hour of September.
         let t0 = 1_790_809_200_000u64;

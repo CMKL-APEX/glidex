@@ -96,17 +96,17 @@ pub async fn delete_credential(c: Caller, Path(username): Path<String>, Query(q)
 // ---- images (a shared, read-only library) --------------------------------
 
 pub async fn image_catalog(c: Caller) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Host, EntitySet::new())?;
+    c.require(Ent::Cluster, EntitySet::new())?;
     Ok(Json(c.manager().image_catalog()))
 }
 
 pub async fn list_images(c: Caller) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Host, EntitySet::new())?;
+    c.require(Ent::Cluster, EntitySet::new())?;
     Ok(Json(c.manager().list_images().await))
 }
 
 pub async fn firmware_catalog(c: Caller) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Host, EntitySet::new())?;
+    c.require(Ent::Cluster, EntitySet::new())?;
     Ok(Json(c.manager().firmware_catalog()))
 }
 
@@ -119,7 +119,7 @@ pub async fn get_image(c: Caller, Path(id): Path<String>) -> Result<impl IntoRes
 
 /// `202` for a new download, `200` for one already in flight.
 pub async fn pull_image(c: Caller, Json(req): Json<PullImageRequest>) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Host, EntitySet::new())?;
+    c.require(Ent::Cluster, EntitySet::new())?;
     let (img, created) = c.manager().pull_image(req).await.map_err(manager_err)?;
     c.set_target(format!("image:{}", img.id));
     let status = if created { StatusCode::ACCEPTED } else { StatusCode::OK };
@@ -300,7 +300,7 @@ pub async fn image_events(c: Caller, Path(id): Path<String>) -> Result<impl Into
 
 /// `POST /images/{id}/retry` (`pullImage`): download a failed image again.
 pub async fn retry_image(c: Caller, Path(id): Path<String>) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Host, EntitySet::new())?;
+    c.require(Ent::Cluster, EntitySet::new())?;
     c.set_target(format!("image:{}", id));
     Ok((StatusCode::ACCEPTED, Json(c.manager().retry_image(&id).map_err(manager_err)?)))
 }

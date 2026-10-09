@@ -6,7 +6,8 @@ use glidex_netd::proto::{ErrorBody, OnBehalfOf, Op, FULL_SOCKET_NAME, STATUS_SOC
 use glidex_ovs::names::{validate_name, MAX_IFNAME};
 use glidex_ovs::net::Ipv4Net;
 use glidex_ovs::vm_port::VmPortKind;
-use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
+use crate::store::Db;
+use redb::{ReadableTable, TableDefinition};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -30,9 +31,31 @@ pub enum NetworkMode {
     Isolated,
 }
 
+/// Where a network exists (spec/clustering.md D10): on one node (today's OVS
+/// bridges), or across the cluster (OVN, milestone C5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum NetworkScope {
+    #[default]
+    Node,
+    Cluster,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Network {
     pub name: String,
+    /// `node`: the bridge, NAT and leases are on `node` only.
+    #[serde(default)]
+    pub scope: NetworkScope,
+    /// The node of a `scope: node` network.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
+    /// Cluster networks on a physical network: its name (the VLAN is `vlan`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub physnet: Option<String>,
+    /// The VPC router a NAT cluster network is on; `None`: the shared edge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub router: Option<String>,
     pub bridge: String,
     pub mode: NetworkMode,
     pub port_type: VmPortKind,
@@ -129,6 +152,17 @@ pub struct CreateNetworkRequest {
     pub mtu: Option<u16>,
     #[serde(default = "default_true")]
     pub dns: bool,
+    /// `cluster` (OVN) or `node` (an OVS bridge on one host). Default: the
+    /// cluster's, when OVN is enabled, else the node's.
+    #[serde(default)]
+    pub scope: Option<NetworkScope>,
+    /// A provider network (cluster scope, mode bridged): the physical
+    /// network it sits on (§11.2).
+    #[serde(default)]
+    pub physnet: Option<String>,
+    /// A VPC router to attach a NAT network to (§11.2a); immutable.
+    #[serde(default)]
+    pub router: Option<String>,
 }
 
 fn default_port_type() -> VmPortKind {
@@ -153,6 +187,8 @@ pub enum NetError {
     NotFound(String),
     #[error("{0}")]
     Conflict(String),
+    #[error("the external address pool has no free address")]
+    ExternalPoolExhausted,
     #[error("network storage error: {0}")]
     Storage(String),
 }
@@ -164,6 +200,12 @@ impl From<ClientError> for NetError {
             ClientError::Protocol(m) => NetError::Protocol(m),
             ClientError::Remote(body) => NetError::Netd(body),
         }
+    }
+}
+
+impl From<crate::store::StoreError> for NetError {
+    fn from(e: crate::store::StoreError) -> Self {
+        NetError::Storage(e.to_string())
     }
 }
 
@@ -180,21 +222,26 @@ fn now() -> u64 {
 
 /// The control plane's `networks` table.
 pub struct NetworkStore {
-    db: Arc<Database>,
-    bell: crate::store::Bell,
+    db: Arc<Db>,
     /// Serializes writes, so `put`'s read-modify-write keeps a deletion.
     write: std::sync::Mutex<()>,
 }
 
 impl NetworkStore {
-    pub fn new(db: Arc<Database>, bell: crate::store::Bell) -> Result<Self, NetError> {
-        let txn = db.begin_write().map_err(storage)?;
-        txn.open_table(NETWORKS_TABLE).map_err(storage)?;
-        txn.commit().map_err(storage)?;
-        Ok(Self { db, bell, write: std::sync::Mutex::new(()) })
+    pub fn new(db: Arc<Db>) -> Result<Self, NetError> {
+        Ok(Self { db, write: std::sync::Mutex::new(()) })
     }
 
     /// Record a new network.
+    /// Remove a record (its network is gone everywhere).
+    pub fn remove(&self, name: &str) -> Result<(), NetError> {
+        let _w = self.write.lock().unwrap();
+        self.db.write(crate::store::Origin::Network, |tx| -> Result<(), NetError> {
+            tx.open_table(NETWORKS_TABLE).map_err(storage)?.remove(name).map_err(storage)?;
+            Ok(())
+        })
+    }
+
     pub fn insert(&self, net: &Network) -> Result<(), NetError> {
         let _w = self.write.lock().unwrap();
         self.write_record(net)
@@ -233,25 +280,23 @@ impl NetworkStore {
 
     fn write_record(&self, net: &Network) -> Result<(), NetError> {
         let bytes = serde_json::to_vec(net).map_err(storage)?;
-        let txn = self.db.begin_write().map_err(storage)?;
+        let txn = self.db.begin(crate::store::Origin::Network).map_err(storage)?;
         {
             let mut t = txn.open_table(NETWORKS_TABLE).map_err(storage)?;
             t.insert(net.name.as_str(), bytes.as_slice()).map_err(storage)?;
         }
         txn.commit().map_err(storage)?;
-        crate::store::ring(&self.bell);
         Ok(())
     }
 
     pub fn delete(&self, name: &str) -> Result<(), NetError> {
         let _w = self.write.lock().unwrap();
-        let txn = self.db.begin_write().map_err(storage)?;
+        let txn = self.db.begin(crate::store::Origin::Network).map_err(storage)?;
         {
             let mut t = txn.open_table(NETWORKS_TABLE).map_err(storage)?;
             t.remove(name).map_err(storage)?;
         }
         txn.commit().map_err(storage)?;
-        crate::store::ring(&self.bell);
         Ok(())
     }
 }
@@ -284,6 +329,10 @@ impl CreateNetworkRequest {
         }
         Ok(Network {
             name: self.name.clone(),
+            scope: NetworkScope::Node,
+            node: Some(crate::authz::node_id()),
+            physnet: None,
+            router: None,
             bridge,
             mode: self.mode,
             port_type: self.port_type,
@@ -397,6 +446,9 @@ mod tests {
             vlan: None,
             mtu: None,
             dns: true,
+            scope: None,
+            physnet: None,
+            router: None,
         }
     }
 

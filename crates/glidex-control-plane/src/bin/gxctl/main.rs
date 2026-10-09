@@ -2,6 +2,7 @@
 
 mod admin;
 mod client;
+mod config;
 mod console;
 
 use clap::Parser;
@@ -40,6 +41,15 @@ struct Cli {
     #[arg(short = 's', long, visible_alias = "server")]
     url: Option<String>,
 
+    /// Use this profile from ~/.config/glidex/config.json (created by
+    /// `gxctl auth login`) instead of its `current` one: it decides the
+    /// target URLs, the TLS trust and the credential. `--url` then still
+    /// overrides the target for this run only, keeping the profile's
+    /// trust; the credential goes along only if the host is one the
+    /// profile itself dials.
+    #[arg(long, env = "GLIDEX_PROFILE")]
+    profile: Option<String>,
+
     /// Project (id or name) for creates, lists and name lookups;
     /// default: your default project (`project use`).
     #[arg(short, long, env = "GLIDEX_PROJECT")]
@@ -51,10 +61,18 @@ struct Cli {
     command: Vec<String>,
 }
 
-/// Pick the transport (spec/cli.md "Transport"): `--url` → TCP with a
-/// token; else `--socket` / `GLIDEX_SOCKET` / the first existing default
-/// socket; else TCP to localhost.
+/// Pick the transport (spec/cli.md "Transport") under gxctl-auth.md §3's
+/// ladder: a profile — from `--profile`/`GLIDEX_PROFILE` or the file's
+/// `current` — decides target, trust and credential; with none, today's
+/// behaviour exactly: `--url` → TCP, else `--socket`/`GLIDEX_SOCKET`/the
+/// first existing default socket, else TCP to localhost.
 fn build_client(cli: &Cli) -> Result<ApiClient, String> {
+    let cfg = config::load()?;
+    if let Some(cfg) = cfg.as_ref().filter(|c| c.has_any()) {
+        if let Some(sel) = config::select(cfg, cli.profile.as_deref())? {
+            return profile_client(cli, &sel);
+        }
+    }
     let tcp = |url: &str| -> Result<ApiClient, String> {
         let token = match client::load_token() {
             Ok(t) => t,
@@ -82,6 +100,73 @@ fn build_client(cli: &Cli) -> Result<ApiClient, String> {
     Ok(c)
 }
 
+/// A profile is in effect: it decides the endpoints and the trust; the
+/// environment still tops the credential (scripts pinning `GLIDEX_TOKEN`
+/// keep working unchanged), and an ad-hoc `--url` carries a credential
+/// only when its host is one the profile itself dials — so debugging at
+/// another address cannot leak the prod token (§3's closing note).
+fn profile_client(cli: &Cli, sel: &config::Selected) -> Result<ApiClient, String> {
+    let p = sel.profile;
+    let urls: Vec<String> = match &cli.url {
+        Some(u) => vec![u.clone()],
+        None => p.url.clone(),
+    };
+    let dials_known = urls.iter().all(|u| p.url.iter().any(|pu| config::url_host(pu) == config::url_host(u)));
+    let mut token = client::token_from_env();
+    if token.is_none() && dials_known {
+        token = p.credential()?;
+    }
+    if token.is_none() && !dials_known {
+        // The point of the rule, said out loud once per run.
+        eprintln!("note: --url dials a host outside profile '{}'; no credential is sent to it", sel.name);
+    }
+    let loopback_only = urls.iter().all(|u| client::is_loopback_host(&config::url_host(u)));
+    if token.is_none() && loopback_only {
+        // The legacy token file is the implicit localhost profile's
+        // credential (§3.5); `auth login` folds a copy into the profile,
+        // and until then the banner says where the credential came from.
+        token = config::legacy_token()?;
+        if token.is_some() {
+            eprintln!("note: credential from ~/.config/glidex/token (legacy); 'gxctl auth login --profile {}' folds it into the profile", sel.name);
+        }
+    }
+    // The CI-only one-run grant (§5.4): never when the profile carries
+    // pins or a CA — those are the operator's decision, removable only
+    // through `auth trust remove` — and never for a login, which reads
+    // its own flags, not this environment.
+    let mut tls = p.tls.clone();
+    if !tls.insecure && tls.pins.is_empty() && tls.ca_file.is_none() && tls.ca_pem.is_none() {
+        if let Ok(v) = std::env::var("GLIDEX_TLS_INSECURE") {
+            if v.trim() == "1" {
+                tls.insecure = true;
+            }
+        }
+    }
+    if tls.insecure {
+        // The bypass's loud line, before this invocation's first request
+        // (§5.4) — every run, not just the ones that notice it.
+        eprintln!("{} UNVERIFIED TLS: the certificate of {} was not checked — a network attacker can read your token", "Warning:".red(), urls.join(", "));
+    }
+    let mut banner = format!("profile '{}' · {}", sel.name, if tls.insecure { "UNVERIFIED".to_string() } else { p.trust_mode() });
+    if let Some(c) = p.cluster_name.as_ref().or(p.cluster_id.as_ref()) {
+        banner.push_str(&format!(" · cluster {c}"));
+    }
+    if let Some(id) = &p.identity {
+        if let Some(tn) = id.token_name.as_ref() {
+            banner.push_str(&format!(" · token {tn}"));
+        }
+    }
+    let c = ApiClient::tcp_multi(
+        &urls,
+        token,
+        Some(&tls),
+        Some(client::ProfileCtx { name: sel.name.clone(), path: config::file().unwrap_or_else(|| PathBuf::from("")), banner }),
+        Some(client::Binding { profile: sel.name.clone(), cluster_id: p.cluster_id.clone() }),
+    )?;
+    c.set_project(cli.project.clone().or_else(|| p.project.clone()));
+    Ok(c)
+}
+
 #[derive(Debug, Deserialize)]
 struct VmResponse {
     id: String,
@@ -104,6 +189,9 @@ struct VmResponse {
     vfio_devices: Vec<String>,
     #[serde(default)]
     nics: Vec<NicInfo>,
+    /// The node the VM is placed on (spec/clustering.md §9.1).
+    #[serde(default)]
+    node: Option<String>,
 }
 
 /// A `list` row: the project shown by name when it's known.
@@ -113,9 +201,37 @@ struct VmRow {
     name: String,
     project: String,
     state: String,
+    node: String,
     vcpu_count: u8,
     mem_size_mib: u32,
     hypervisor: String,
+}
+
+/// A `nodes` row.
+#[derive(Tabled)]
+struct NodeRow {
+    id: String,
+    name: String,
+    role: String,
+    phase: String,
+    ready: String,
+    cpus: u64,
+    memory_mib: u64,
+}
+
+impl NodeRow {
+    fn from_json(n: &serde_json::Value) -> NodeRow {
+        let text = |v: &serde_json::Value| v.as_str().unwrap_or("").to_string();
+        NodeRow {
+            id: text(&n["meta"]["id"]),
+            name: text(&n["spec"]["name"]),
+            role: text(&n["spec"]["role"]),
+            phase: text(&n["status"]["phase"]),
+            ready: text(&n["status"]["ready"]),
+            cpus: n["status"]["capacity"]["cpus"].as_u64().unwrap_or(0),
+            memory_mib: n["status"]["capacity"]["memory_mib"].as_u64().unwrap_or(0),
+        }
+    }
 }
 
 /// Project names by id (best effort: an empty map when not allowed).
@@ -249,7 +365,7 @@ fn has_flag(args: &[&str], flag: &str) -> bool {
 
 async fn handle_network_add(client: &CliClient, args: &[&str]) {
     let Some(name) = args.first().filter(|a| !a.starts_with("--")) else {
-        println!("{}", "Usage: network-add <name> [--nat [--subnet CIDR] | --isolated | --bridged <bridge>] [--vhost-user] [--vlan N] [--bridge NAME]".yellow());
+        println!("{}", "Usage: network-add <name> [--nat [--subnet CIDR] | --isolated | --bridged <bridge>] [--vhost-user] [--vlan N] [--bridge NAME] [--cluster | --node]".yellow());
         return;
     };
     let (mode, bridge) = if let Some(b) = flag_value(args, "--bridged") {
@@ -266,6 +382,12 @@ async fn handle_network_add(client: &CliClient, args: &[&str]) {
     });
     if let Some(b) = bridge {
         body["bridge"] = serde_json::json!(b);
+    }
+    // Cluster (OVN) or one node's bridge; default: the cluster's when OVN is enabled.
+    if has_flag(args, "--cluster") {
+        body["scope"] = serde_json::json!("cluster");
+    } else if has_flag(args, "--node") {
+        body["scope"] = serde_json::json!("node");
     }
     if let Some(s) = flag_value(args, "--subnet") {
         body["subnet"] = serde_json::json!(s);
@@ -1115,6 +1237,8 @@ fn print_help() {
     println!("  {}  - What happened to a VM (starts, exits, restarts, adoptions)", "events <name|id>".cyan());
     println!("  {}  - Follow VMs, disks, images and networks as they change (Ctrl-C stops)", "watch [vms,disks,images,networks]".cyan());
     println!("  {} - Delete a VM (and its own root disk)", "delete <name|id> [--keep-disk]".cyan());
+    println!("  {} <init|join|join-token|status|promote|snapshot> - Form or inspect the cluster", "cluster".cyan());
+    println!("  {}             - List the cluster's nodes (a standalone host has one)", "nodes".cyan());
     println!("  {}               - List host PCI devices", "pci".cyan());
     println!(
         "  {}     - Show detailed info (incl. sysfs path) for one device",
@@ -1160,6 +1284,7 @@ fn print_help() {
     println!("  {}            - Who you are: method, teams, roles", "whoami".cyan());
     println!("  {} - Log in over TCP (OIDC device flow or a pasted token)", "login --oidc | --token".cyan());
     println!("  {} - Forget the saved token", "logout [--revoke]".cyan());
+    println!("  {} - Login profiles for remote control planes: target, trust and token of a server, under a name", "auth login | logout [--revoke] | status | use <P> | profiles | trust list|fetch|remove".cyan());
     println!("  {}                - Print the web UI address", "ui".cyan());
     println!("  {} - Access tokens", "token list | create <name> [--days N] [--service-account] [--role R[@P]] | revoke <id>".cyan());
     println!("  {} - Projects", "project list | show <p> | create <name> [--description D] | delete <p>".cyan());
@@ -1401,13 +1526,14 @@ async fn handle_credential_update(client: &CliClient, username: &str, request: U
 /// REPL command names offered by Tab (aliases included).
 const COMMANDS: &[&str] = &[
     "help", "exit", "quit", "list", "ls", "get", "create", "start", "stop", "pause", "events", "watch",
-    "connect", "console", "attach", "log", "logs", "delete", "rm", "pci", "pci-devices",
+    "connect", "console", "attach", "log", "logs", "delete", "rm", "pci", "pci-devices", "nodes", "node", "cluster",
     "attach-device", "detach-device", "credentials", "creds", "credential-add",
     "credential-passwd", "credential-keys", "credential-rm", "networks", "network-add",
     "network-rm", "bridges", "uplinks", "uplink-add", "uplink-rm", "ovs", "health",
     "image", "images", "disk", "disks", "whoami", "login", "logout", "ui", "token",
     "tokens", "project", "projects", "binding", "bindings", "system-binding", "user",
     "users", "team", "teams", "policy", "policies", "audit", "usage", "stats", "bandwidth", "io", "compute", "network",
+    "auth",
 ];
 
 /// Subcommands offered by Tab after these commands.
@@ -1415,8 +1541,11 @@ const SUBCOMMANDS: &[(&str, &[&str])] = &[
     ("image", &["catalog", "list", "pull", "rm"]),
     ("disk", &["list", "show", "create", "resize", "extend-root", "rm"]),
     ("ovs", &["status", "install", "dpdk-init"]),
+    ("cluster", &["init", "join", "join-token", "status", "promote", "snapshot", "rotate-ca", "rejoin", "leave", "dissolve"]),
+    ("node", &["drain", "undrain", "remove", "forget", "purge", "rejoin-token", "detach", "import"]),
     ("login", &["--oidc", "--token"]),
     ("logout", &["--revoke"]),
+    ("auth", &["login", "logout", "status", "use", "profiles", "trust", "token", "whoami"]),
     ("token", &["list", "create", "revoke"]),
     ("project", &["list", "show", "create", "delete", "quota", "use"]),
     ("binding", &["list", "add", "remove"]),
@@ -1964,6 +2093,7 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
                         .map(|vm| VmRow {
                             state: plain_vm_state(&vm),
                             project: names.get(&vm.project).cloned().unwrap_or(vm.project),
+                            node: vm.node.unwrap_or_default(),
                             id: vm.id,
                             name: vm.name,
                             vcpu_count: vm.vcpu_count,
@@ -2182,6 +2312,105 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
             }
         }
 
+        "nodes" | "node" if matches!(parts.get(1), Some(&"drain") | Some(&"undrain")) => {
+            let Some(id) = parts.get(2) else {
+                println!("{}", format!("Usage: node {} <node>", parts[1]).yellow());
+                return true;
+            };
+            // Accept a node's name as well as its id.
+            let nodes: serde_json::Value = client.request_json(Method::GET, "/nodes", None).await.unwrap_or_default();
+            let found = nodes.as_array().into_iter().flatten().find(|n| n["meta"]["id"] == *id || n["spec"]["name"] == *id).and_then(|n| n["meta"]["id"].as_str().map(String::from));
+            let Some(nid) = found else {
+                println!("{} no node {}", "Error:".red(), id);
+                return true;
+            };
+            match client.request_json::<serde_json::Value>(Method::POST, &format!("/nodes/{}/{}", nid, parts[1]), None).await {
+                Ok(v) => {
+                    println!("{} {} is now {}", "OK".green(), v["node"].as_str().unwrap_or(""), v["phase"].as_str().unwrap_or(""));
+                    let r = &v["remaining"];
+                    println!("  still on it: {} VMs, {} disks, {} networks", r["vms"].as_array().map_or(0, |a| a.len()), r["disks"].as_array().map_or(0, |a| a.len()), r["networks"].as_array().map_or(0, |a| a.len()));
+                }
+                Err(e) => println!("{} {}", "Error:".red(), e),
+            }
+        }
+        "nodes" | "node" if parts.get(1) == Some(&"import") => {
+            let rest = &parts[2..];
+            let sub = rest.first().copied().unwrap_or("list");
+            let plan = rest.get(1).copied().filter(|a| !a.starts_with("--"));
+            let map_of = |flag: &str| {
+                let mut m = serde_json::Map::new();
+                for v in flag_values(rest, flag) {
+                    if let Some((a, b)) = v.split_once('=') {
+                        m.insert(a.to_string(), b.into());
+                    }
+                }
+                m
+            };
+            let result = match (sub, plan) {
+                ("list", _) => client.request_json::<serde_json::Value>(Method::GET, "/imports", None).await,
+                ("show", Some(p)) => client.request_json::<serde_json::Value>(Method::GET, &format!("/imports/{p}"), None).await,
+                ("approve", Some(p)) => {
+                    let body = serde_json::json!({ "projects": map_of("--project"), "networks": map_of("--network"), "credentials": map_of("--credential"), "over_quota": has_flag(rest, "--over-quota"), "dry_run": has_flag(rest, "--dry-run") });
+                    client.request_json::<serde_json::Value>(Method::POST, &format!("/imports/{p}/approve"), Some(body)).await
+                }
+                ("reject", Some(p)) => client.request_json::<serde_json::Value>(Method::POST, &format!("/imports/{p}/reject"), Some(serde_json::json!({}))).await.or_else(|e| if e.to_string().is_empty() { Ok(serde_json::Value::Null) } else { Err(e) }),
+                _ => {
+                    println!("{}", "Usage: node import list | show <plan> | approve <plan> [--project src=existing|src=new:name] [--network a=b] [--credential proj/user=new] [--over-quota] [--dry-run] | reject <plan>".yellow());
+                    return true;
+                }
+            };
+            match result {
+                Ok(v) => println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default()),
+                Err(e) => println!("{} {}", "Error:".red(), e),
+            }
+        }
+        "nodes" | "node" if matches!(parts.get(1), Some(&"remove") | Some(&"forget") | Some(&"purge") | Some(&"rejoin-token") | Some(&"detach")) => {
+            let Some(id) = parts.get(2).filter(|a| !a.starts_with("--")) else {
+                println!("{}", format!("Usage: node {} <node> [--force] [--fenced] [--raft-lost]", parts[1]).yellow());
+                return true;
+            };
+            let rest = &parts[3..];
+            let mut maps = serde_json::Map::new();
+            for m in flag_values(rest, "--map-network") {
+                if let Some((a, b)) = m.split_once('=') {
+                    maps.insert(a.to_string(), b.into());
+                }
+            }
+            let body = serde_json::json!({
+                "map_networks": maps,
+                "with_access": has_flag(rest, "--with-access"),
+                "abort": has_flag(rest, "--abort"),
+                "departed": has_flag(rest, "--departed"),
+                "timeout_secs": flag_value(rest, "--timeout").and_then(|t| t.parse::<u64>().ok()),
+                "force": has_flag(rest, "--force"),
+                "fenced": has_flag(rest, "--fenced"),
+                "raft_intact": !has_flag(rest, "--raft-lost"),
+            });
+            // The node's name goes in the path as it is: the server resolves names too.
+            match client.request_json::<serde_json::Value>(Method::POST, &format!("/nodes/{}/{}", id, parts[1]), Some(body)).await {
+                Ok(v) if parts[1] == "rejoin-token" => {
+                    println!("{}", v["token"].as_str().unwrap_or(""));
+                    eprintln!("Shown once, for node {} ({}). On the host, as root: glidex-install --rejoin <server:8842>, token on stdin.{}", v["node"].as_str().unwrap_or(""), v["node_id"].as_str().unwrap_or(""), if v["raft_intact"] == false { " Its Raft state will be started afresh." } else { "" });
+                }
+                Ok(v) => println!("{} {}", "OK".green(), serde_json::to_string(&v).unwrap_or_default()),
+                Err(e) => println!("{} {}", "Error:".red(), e),
+            }
+        }
+        "nodes" | "node" => {
+            let path = match parts.get(1) {
+                Some(id) => format!("/nodes/{}", id),
+                None => "/nodes".to_string(),
+            };
+            match client.request_json::<serde_json::Value>(Method::GET, &path, None).await {
+                Ok(v) if v.is_array() => {
+                    let rows: Vec<NodeRow> = v.as_array().unwrap().iter().map(NodeRow::from_json).collect();
+                    println!("{}", Table::new(rows));
+                }
+                Ok(v) => println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default()),
+                Err(e) => println!("{} {}", "Error:".red(), e),
+            }
+        }
+
         "pci" | "pci-devices" => match client.list_pci_devices().await {
             Ok(devices) => {
                 if devices.is_empty() {
@@ -2329,6 +2558,8 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
 
         "network" | "net" => admin::network(client, &parts[1..]).await,
         "whoami" => admin::whoami(client).await,
+        "cluster" => admin::cluster(client, &parts[1..]).await,
+        "auth" => admin::auth(client, &parts[1..]).await,
         "login" => admin::login(client, &parts[1..]).await,
         "logout" => admin::logout(client, &parts[1..]).await,
         "ui" => admin::ui(),
@@ -2444,6 +2675,14 @@ async fn main() {
             std::process::exit(2);
         }
     };
+    // A profile-bound run checks itself against the cluster it claims
+    // before any command runs (§4.1): the binding mismatch is a wall
+    // between the operator and a repurposed or hostile machine, so not
+    // even a one-shot command slips past it.
+    if let Err(e) = client.preflight().await {
+        eprintln!("{} {}", "Error:".red(), e);
+        std::process::exit(2);
+    }
 
     if !cli.command.is_empty() {
         handle_words(&cli.command, &client).await;
@@ -2465,10 +2704,18 @@ async fn main() {
     );
 
     println!("Connected to: {}", client.describe().yellow());
+    if let Some(b) = client.profile_banner() {
+        // Which cluster `delete vm` points at, at a glance (§6.2).
+        println!("{} {}", "Profile:".dimmed(), b.cyan());
+    }
     if client.is_unix() {
         println!("{} identified by your Unix user (see 'whoami')", "Auth:".dimmed());
     } else if !client.has_token() {
-        println!("{} no token; run 'login --oidc' or 'login --token' (or set GLIDEX_TOKEN)", "Auth:".dimmed());
+        if client.profile_banner().is_some() {
+            println!("{} no token in this profile; run 'auth login'", "Auth:".dimmed());
+        } else {
+            println!("{} no token; run 'login --oidc' or 'login --token' (or set GLIDEX_TOKEN)", "Auth:".dimmed());
+        }
     }
     if let Some(p) = client.project() {
         println!("Project: {}", p.cyan());

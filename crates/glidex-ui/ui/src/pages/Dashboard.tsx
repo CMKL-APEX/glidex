@@ -10,6 +10,8 @@ import CreateVmForm from "../components/CreateVmForm";
 import type { CreateVmRequest } from "../types";
 import { useCan, useSession } from "../session";
 import { useLiveRefresh } from "../live";
+import { useNodes } from "../nodes";
+import { selectClass } from "../components/ui";
 
 export default function Dashboard() {
   const { project, projectName } = useSession();
@@ -17,6 +19,8 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const nodes = useNodes();
+  const [nodeFilter, setNodeFilter] = useState("");
   const [canCreate] = useCan(project ? [{ action: "createVm", resource: { type: "Project", id: project } }] : []) ?? [];
 
   const fetchVms = useCallback(async () => {
@@ -107,6 +111,30 @@ export default function Dashboard() {
         </div>
       )}
 
+      {(() => {
+        // In a cluster, narrow the list to one node.
+        const placed = [...new Set((vms ?? []).map((v) => v.node).filter((n): n is string => !!n))];
+        if (!nodes.clustered || placed.length < 2) return null;
+        return (
+          <div className="mb-4 flex items-center gap-2 text-sm">
+            <label htmlFor="vm-node-filter" className="text-gray-600">
+              Node
+            </label>
+            <select id="vm-node-filter" className={`${selectClass} w-auto`} value={nodeFilter} onChange={(e) => setNodeFilter(e.target.value)}>
+              <option value="">All nodes</option>
+              {placed
+                .map((id) => ({ id, name: vms?.find((v) => v.node === id)?.node_name ?? nodes.name(id) }))
+                .sort((a, b) => a.name.localeCompare(b.name))
+                .map((n) => (
+                  <option key={n.id} value={n.id}>
+                    {n.name}
+                  </option>
+                ))}
+            </select>
+          </div>
+        );
+      })()}
+
       {loading ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           <LoadingCard />
@@ -115,9 +143,11 @@ export default function Dashboard() {
         </div>
       ) : vms && vms.length > 0 ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {vms.map((vm) => (
-            <VmCard key={vm.id} vm={vm} onAction={handleAction} />
-          ))}
+          {vms
+            .filter((vm) => !nodeFilter || vm.node === nodeFilter)
+            .map((vm) => (
+              <VmCard key={vm.id} vm={vm} onAction={handleAction} />
+            ))}
         </div>
       ) : vms && vms.length === 0 ? (
         <div className="text-center py-12">

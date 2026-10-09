@@ -24,6 +24,8 @@ use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone)]
 pub struct Config {
+    /// Where the chassis keeps its OVN certificates.
+    pub ovn_dir: PathBuf,
     pub run_dir: PathBuf,
     pub state_path: PathBuf,
     pub group: String,
@@ -37,11 +39,14 @@ pub struct Config {
     pub admin_group: String,
     /// Which ops each group may send on the full sockets.
     pub policy: auth::Policy,
+    /// Router SNAT zones to meter; the same range as `ovn.snat_ct_zones`.
+    pub ct_zones: (u16, u16),
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
+            ovn_dir: PathBuf::from(glidex_ovs::ovn::CERT_DIR),
             run_dir: PathBuf::from(DEFAULT_RUN_DIR),
             state_path: PathBuf::from("/var/lib/glidex/netd.db"),
             group: "glidex".into(),
@@ -51,6 +56,7 @@ impl Default for Config {
             gateway_check: Duration::from_secs(20),
             admin_group: "glidex-admin".into(),
             policy: auth::default_policy("glidex", "glidex-admin"),
+            ct_zones: (60000, 64999),
         }
     }
 }
@@ -62,6 +68,10 @@ pub struct Netd {
     pub config: Config,
     /// Serializes every host-changing operation.
     mutate: Mutex<()>,
+    /// Conntrack counters of router zones, built on first use from the saved state.
+    ct: Mutex<Option<Arc<glidex_ovs::ct_meter::CtMeter>>>,
+    /// Whether the collector follows conntrack events itself (the daemon: yes, tests: no).
+    ct_events: std::sync::atomic::AtomicBool,
 }
 
 fn to_value<T: serde::Serialize>(v: T) -> Result<Value, OvsError> {
@@ -84,7 +94,38 @@ impl Netd {
             store,
             config,
             mutate: Mutex::new(()),
+            ct: Mutex::new(None),
+            ct_events: false.into(),
         })
+    }
+
+    /// The conntrack collector; the first call turns accounting on.
+    fn ct_meter(&self) -> Result<Arc<glidex_ovs::ct_meter::CtMeter>, OvsError> {
+        let mut g = self.ct.lock().unwrap();
+        if let Some(m) = g.as_ref() {
+            return Ok(m.clone());
+        }
+        if glidex_ovs::ct_meter::ensure_accounting(self.ex())? {
+            self.store.put(META, "ct_acct_set_by_glidex", &true)?;
+        }
+        let saved: Option<String> = self.store.get(META, "ct_counters")?;
+        let m = Arc::new(glidex_ovs::ct_meter::CtMeter::new(self.config.ct_zones, saved.as_deref()));
+        if self.ct_events.load(std::sync::atomic::Ordering::Relaxed) {
+            glidex_ovs::ct_meter::spawn_event_reader(m.clone());
+        }
+        *g = Some(m.clone());
+        Ok(m)
+    }
+
+    /// The daemon follows conntrack `DESTROY` events from the first
+    /// collection on, and from startup on a node that collected before.
+    pub fn enable_ct_events(&self) {
+        self.ct_events.store(true, std::sync::atomic::Ordering::Relaxed);
+        if self.store.get::<String>(META, "ct_counters").ok().flatten().is_some() {
+            if let Err(e) = self.ct_meter() {
+                tracing::warn!("conntrack counters: {}", e);
+            }
+        }
     }
 
     fn ex(&self) -> &dyn Exec {
@@ -106,6 +147,11 @@ impl Netd {
             Op::ListUplinks => to_value(self.list_uplinks()?),
             Op::PortStats => to_value(glidex_ovs::stats::bridge_stats(self.ex())?),
             Op::NatCounters => to_value(glidex_ovs::nat_meter::nat_counters(self.ex(), &self.nats()?)?),
+            Op::CtExternalCounters => {
+                let m = self.ct_meter()?;
+                // Persist before reporting, so what metering saw can't go backwards.
+                to_value(glidex_ovs::ct_meter::collect(self.ex(), &m, |s| self.store.put(META, "ct_counters", &s.to_string()))?)
+            }
             Op::EnsureUplink(args) => to_value(self.ensure_uplink(args.spec, args.confirm)?),
             Op::CommitUplink { bridge, name, token } => to_value(self.commit_uplink(&bridge, &name, &token)?),
             Op::DeleteUplink { bridge, name } => self.delete_uplink(&bridge, &name).map(|_| Value::Null),
@@ -125,11 +171,36 @@ impl Netd {
             Op::EnsureNat(spec) => to_value(self.ensure_nat(spec)?),
             Op::DeleteNat { bridge } => self.delete_nat(&bridge).map(|_| Value::Null),
             Op::AttachVmPort(spec) => to_value(self.attach(spec, peer.uid)?),
+            Op::MoveVmPort(spec) => to_value(self.move_port(spec, peer.uid)?),
             Op::DetachVmPort { vm_id, nic_index } => {
                 self.detach(&vm_id, nic_index, peer.uid).map(|_| Value::Null)
             }
             Op::ReleaseVm { vm_id } => self.release_vm(&vm_id, peer.uid).map(|_| Value::Null),
             Op::SyncVms { running } => to_value(self.sync_vms(&running)?),
+            Op::EnsureOvnChassis(args) => {
+                let caps = host::probe(self.ex(), &self.config.probe);
+                if !caps.ovs_running {
+                    return Err(OvsError::Unsupported { missing: vec!["ovs-vswitchd running".into()] });
+                }
+                let st = glidex_ovs::ovn::ensure_chassis(self.ex(), &args.spec, &args.certs, &self.config.ovn_dir)?;
+                tracing::info!(chassis = %args.spec.chassis, "OVN chassis ensured");
+                to_value(st)
+            }
+            Op::EnsureOvnCentral(args) => {
+                let changed = glidex_ovs::ovn::ensure_central(self.ex(), &args.spec, &args.certs, &self.config.ovn_dir)?;
+                to_value(serde_json::json!({ "changed": changed }))
+            }
+            Op::ForgetOvnMember(a) => {
+                glidex_ovs::ovn::forget_member(self.ex(), &a.address, &a.chassis, a.server)?;
+                tracing::info!(chassis = %a.chassis, "forgot OVN member");
+                Ok(Value::Null)
+            }
+            Op::OvnStatus => to_value(glidex_ovs::ovn::status(self.ex())?),
+            Op::LeaveOvn { confirm } => {
+                glidex_ovs::ovn::leave(self.ex(), confirm, &self.config.ovn_dir)?;
+                tracing::info!("left OVN");
+                Ok(Value::Null)
+            }
         }
     }
 
@@ -570,7 +641,10 @@ impl Netd {
 
     fn attach(&self, spec: VmPortSpec, owner_uid: u32) -> Result<AttachResult, OvsError> {
         spec.validate()?;
-        self.require_bridge(&spec.bridge)?;
+        // br-int is OVN's, not a glidex bridge record (§11.3).
+        if spec.ovn_lport.is_none() {
+            self.require_bridge(&spec.bridge)?;
+        }
         let key = store::vm_port_key(&spec.vm_id, spec.nic_index);
         if let Some(existing) = self.store.get::<VmPortRecord>(VM_PORTS, &key)? {
             if existing.spec.bridge != spec.bridge {
@@ -614,6 +688,20 @@ impl Netd {
         self.store.put(VM_PORTS, &key, &record)?;
         tracing::info!(port = %port, vm = %record.spec.vm_id, ?ipv4, "VM port attached");
         Ok(AttachResult { port, binding, ipv4 })
+    }
+
+    /// §11.3 `move_vm_port`: unplug from the old bridge, keeping the tap or
+    /// socket, then attach to the new one (a NAT bridge reserves an address).
+    fn move_port(&self, spec: VmPortSpec, owner_uid: u32) -> Result<AttachResult, OvsError> {
+        spec.validate()?;
+        let key = store::vm_port_key(&spec.vm_id, spec.nic_index);
+        let old = self.store.get::<VmPortRecord>(VM_PORTS, &key)?.ok_or_else(|| OvsError::not_found(format!("port {}", spec.port_name().unwrap_or_default())))?;
+        Self::check_owner(&old, owner_uid)?;
+        if old.spec.bridge != spec.bridge {
+            vm_port::unplug(self.ex(), &spec.vm_id, spec.nic_index)?;
+            self.store.delete(VM_PORTS, &key)?;
+        }
+        self.attach(spec, owner_uid)
     }
 
     /// A port belongs to the uid that attached it (security spec §8.2);

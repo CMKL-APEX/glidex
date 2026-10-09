@@ -97,6 +97,9 @@ fn main() -> Result<()> {
     }
     let saved = fs::read_to_string(INSTALL_CONF).ok();
     let opts = Options::parse(saved.as_deref(), &args)?;
+    if opts.leave {
+        return if opts.offline { leave_offline() } else { leave_cluster() };
+    }
     print_banner();
 
     let platform = detect_platform()?;
@@ -104,11 +107,16 @@ fn main() -> Result<()> {
     print_plan(&opts);
 
     install_system_packages(&opts, &platform)?;
-    let cargo = install_rust(&platform)?;
-    let bun = install_bun(&platform)?;
-    check_kvm();
-    build_project(&cargo, &opts)?;
-    build_ui(&bun)?;
+    if opts.prebuilt {
+        check_prebuilt(&opts)?;
+        check_kvm();
+    } else {
+        let cargo = install_rust(&platform)?;
+        let bun = install_bun(&platform)?;
+        check_kvm();
+        build_project(&cargo, &opts)?;
+        build_ui(&bun)?;
+    }
 
     let user = invoking_user();
     let user_home = invoking_user_home(&user)?;
@@ -131,7 +139,114 @@ fn main() -> Result<()> {
         install_services(&changed, user.as_deref(), &user_home)?;
     }
     opts.save(saved.as_deref())?;
+    if let Some(j) = &opts.join {
+        join_cluster(j)?;
+    }
     print_usage(&opts);
+    Ok(())
+}
+
+/// Read a join token from `file` (which must be private) or stdin.
+fn read_join_token(file: Option<&str>) -> Result<String> {
+    use std::io::Read;
+    use std::os::unix::fs::PermissionsExt;
+    let raw = match file {
+        Some(p) => {
+            let mode = fs::metadata(p).with_context(|| p.to_string())?.permissions().mode();
+            if mode & 0o077 != 0 {
+                bail!("{p} is readable by other users: chmod 600 it (a join token is a credential)");
+            }
+            fs::read_to_string(p).with_context(|| p.to_string())?
+        }
+        None => {
+            let mut s = String::new();
+            std::io::stdin().read_to_string(&mut s)?;
+            s
+        }
+    };
+    let t = raw.trim().to_string();
+    if t.is_empty() {
+        bail!("no join token given: pass --token-file FILE or pipe it on stdin");
+    }
+    Ok(t)
+}
+
+/// `--leave`: ask the control plane to leave the cluster. It refuses until a
+/// server has removed this node (`gxctl node remove`): local root has no
+/// cluster rights to start a removal.
+fn leave_cluster() -> Result<()> {
+    section("Leaving the cluster");
+    let ok = Command::new(format!("{}/gxctl", BIN_DIR)).args(["cluster", "leave"]).status().context("running gxctl")?.success();
+    if !ok {
+        bail!("leaving failed (see above); the host is unchanged");
+    }
+    let _ = sudo(&argv(&["systemctl", "restart", "glidex-control-plane.service"]));
+    let _ = sudo(&argv(&["systemctl", "enable", "--now", "glidex-ui.service"]));
+    Ok(())
+}
+
+/// `--leave --keep-resources --offline` (§5.8.3): with no server reachable,
+/// build the standalone database from this node's cache. Asks first: what the
+/// cluster changed since the node last synced is not in it.
+fn leave_offline() -> Result<()> {
+    section("Leaving the cluster offline, keeping this host's VMs");
+    println!("{}", "This builds a standalone database from this node's cache. Changes made in the cluster since it last synced are not included, and this node's cluster identity and key are destroyed.".yellow());
+    print!("Type 'yes' to continue: ");
+    std::io::Write::flush(&mut std::io::stdout())?;
+    let mut answer = String::new();
+    std::io::stdin().read_line(&mut answer)?;
+    if answer.trim() != "yes" {
+        bail!("cancelled; nothing changed");
+    }
+    let _ = sudo(&argv(&["systemctl", "stop", "glidex-control-plane.service"]));
+    let ok = Command::new(format!("{}/glidex-control-plane", BIN_DIR)).arg("--detach-offline").status().context("running glidex-control-plane")?.success();
+    if !ok {
+        let _ = sudo(&argv(&["systemctl", "start", "glidex-control-plane.service"]));
+        bail!("the offline detach failed (see above); the host is unchanged");
+    }
+    sudo(&argv(&["systemctl", "start", "glidex-control-plane.service"]))?;
+    let _ = sudo(&argv(&["systemctl", "enable", "--now", "glidex-ui.service"]));
+    Ok(())
+}
+
+/// Ask the running control plane to join (`gxctl cluster join`), handing it
+/// the token on its standard input.
+fn join_cluster(j: &JoinOptions) -> Result<()> {
+    use std::io::Write;
+    section("Joining the cluster");
+    let token = read_join_token(j.token_file.as_deref())?;
+    for _ in 0..30 {
+        if Path::new(API_SOCKET).exists() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+    let mut args = if j.rejoin {
+        vec!["cluster".to_string(), "rejoin".into(), "--server".into(), j.server.clone()]
+    } else {
+        vec!["cluster".to_string(), "join".into(), "--server".into(), j.server.clone(), "--role".into(), j.role.clone()]
+    };
+    if let Some(n) = &j.node_id {
+        args.extend(["--node-id".into(), n.clone()]);
+    }
+    if j.import {
+        args.push("--import".into());
+    }
+    if let Some(a) = &j.advertise {
+        args.extend(["--advertise".into(), a.clone()]);
+    }
+    if let Some(n) = j.name.as_ref().filter(|_| !j.rejoin) {
+        args.extend(["--name".into(), n.clone()]);
+    }
+    let mut child = Command::new(format!("{}/gxctl", BIN_DIR)).args(&args).stdin(std::process::Stdio::piped()).spawn().context("running gxctl")?;
+    child.stdin.take().context("gxctl stdin")?.write_all(token.as_bytes())?;
+    if !child.wait()?.success() {
+        bail!("joining the cluster failed (see above); the host is still a working standalone host");
+    }
+    // An agent serves no API or UI of its own: its servers do.
+    if j.role == "agent" {
+        let _ = sudo(&argv(&["systemctl", "disable", "--now", "glidex-ui.service"]));
+    }
     Ok(())
 }
 
@@ -204,6 +319,39 @@ struct Options {
     /// Let OVS installs / DPDK init restart ovs-vswitchd while it has
     /// bridges (interrupts their traffic). Never saved.
     allow_ovs_restart: bool,
+    /// Install OVN (`ovn-host`, `ovn-central` unless joining as an agent, and
+    /// `conntrack` for gateway metering): cluster networks need it on every
+    /// node (spec/clustering.md §10.1). Its services stay off until the host
+    /// is in a cluster that enables OVN. Default on; `--no-ovn` skips it.
+    ovn: bool,
+    /// Join a cluster once installed (spec/clustering.md §5.2). Never saved:
+    /// it holds a one-time token's source.
+    join: Option<JoinOptions>,
+    /// `--leave`: this host's node was removed; go back to standalone (§5.5).
+    leave: bool,
+    /// `--prebuilt`: install the binaries and UI already in this workspace's
+    /// `target/release` and `crates/glidex-ui/ui/dist` (built on another host
+    /// with the same OS) instead of installing Rust and Bun and building.
+    /// Never saved.
+    prebuilt: bool,
+    /// `--keep-resources --offline` with `--leave`: take this host's VMs along
+    /// while no server can be reached (§5.8.3).
+    offline: bool,
+}
+
+/// `--join <server:8842> [--role server|agent] [--token-file F] [--advertise A] [--node-name N]`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct JoinOptions {
+    /// Come back as the same node (`--rejoin`, §5.7) instead of joining as a new one.
+    rejoin: bool,
+    /// `--import`: bring this host's VMs, disks and networks into the cluster (§5.9).
+    import: bool,
+    node_id: Option<String>,
+    server: String,
+    role: String,
+    token_file: Option<String>,
+    advertise: Option<String>,
+    name: Option<String>,
 }
 
 impl Default for Options {
@@ -215,6 +363,11 @@ impl Default for Options {
             ovs_profile: OvsProfile::Dpdk,
             pmd_cpu_mask: None,
             allow_ovs_restart: false,
+            ovn: true,
+            join: None,
+            leave: false,
+            offline: false,
+            prebuilt: false,
         }
     }
 }
@@ -231,6 +384,7 @@ impl Options {
                 "services" => o.services = v == "true",
                 "ovs_profile" => o.ovs_profile = OvsProfile::parse(v).unwrap_or(OvsProfile::Dpdk),
                 "pmd_cpu_mask" => o.pmd_cpu_mask = (!v.is_empty()).then(|| v.to_string()),
+                "ovn" => o.ovn = v == "true",
                 _ => {}
             }
         }
@@ -250,11 +404,48 @@ impl Options {
                     o.pmd_cpu_mask = (!m.is_empty() && m != "auto").then_some(m);
                 }
                 "--allow-ovs-restart" => o.allow_ovs_restart = true,
+                "--ovn" => o.ovn = true,
+                "--no-ovn" => o.ovn = false,
+                "--join" => {
+                    let server = value("--join")?;
+                    o.join.get_or_insert_with(|| JoinOptions { role: "agent".into(), ..Default::default() }).server = server;
+                }
+                "--rejoin" => {
+                    let server = value("--rejoin")?;
+                    let j = o.join.get_or_insert_with(|| JoinOptions { role: "agent".into(), ..Default::default() });
+                    j.server = server;
+                    j.rejoin = true;
+                }
+                "--import" => o.join.get_or_insert_with(JoinOptions::default).import = true,
+                "--node-id" => o.join.get_or_insert_with(JoinOptions::default).node_id = Some(value("--node-id")?),
+                "--leave" => o.leave = true,
+                "--prebuilt" => o.prebuilt = true,
+                "--keep-resources" => {}
+                "--offline" => o.offline = true,
+                "--role" => {
+                    let r = value("--role")?;
+                    if r != "server" && r != "agent" {
+                        bail!("--role is 'server' or 'agent'");
+                    }
+                    o.join.get_or_insert_with(JoinOptions::default).role = r;
+                }
+                // The token never goes on the command line: a file (mode 0600) or stdin.
+                "--token-file" => o.join.get_or_insert_with(JoinOptions::default).token_file = Some(value("--token-file")?),
+                "--advertise" => o.join.get_or_insert_with(JoinOptions::default).advertise = Some(value("--advertise")?),
+                "--node-name" => o.join.get_or_insert_with(JoinOptions::default).name = Some(value("--node-name")?),
                 "-h" | "--help" => {
                     print_help();
                     std::process::exit(0);
                 }
                 other => bail!("unknown option '{}' (see --help)", other),
+            }
+        }
+        if let Some(j) = &mut o.join {
+            if j.server.is_empty() {
+                bail!("--role, --token-file, --advertise and --node-name go with --join <server:8842>");
+            }
+            if j.role.is_empty() {
+                j.role = "agent".into();
             }
         }
         Ok(o)
@@ -263,12 +454,13 @@ impl Options {
     fn render(&self) -> String {
         format!(
             "# Written by glidex-install: the choices re-runs reuse (flags override).\n\
-             qemu={}\nnetworking={}\nservices={}\novs_profile={}\npmd_cpu_mask={}\n",
+             qemu={}\nnetworking={}\nservices={}\novs_profile={}\npmd_cpu_mask={}\novn={}\n",
             self.qemu,
             self.networking,
             self.services,
             self.ovs_profile.name(),
-            self.pmd_cpu_mask.as_deref().unwrap_or("")
+            self.pmd_cpu_mask.as_deref().unwrap_or(""),
+            self.ovn
         )
     }
 
@@ -294,7 +486,29 @@ fn print_help() {
          \x20     --ovs-profile P        dpdk (default; reserves hugepages) or kernel\n\
          \x20     --pmd-cpu-mask MASK    OVS-DPDK PMD CPU mask, hex (\"auto\" to clear)\n\
          \x20     --allow-ovs-restart    allow restarting ovs-vswitchd while it has bridges\n\
-         \x20     --qemu, --networking, --services   undo an earlier --no-*"
+         \x20     --no-ovn               skip OVN (cluster networks need it; default: installed,\n\
+         \x20                            its services off until the host is in a cluster)\n\
+         \x20     --qemu, --networking, --services   undo an earlier --no-*\n\
+         \x20     --prebuilt             use the binaries already in target/release (and the\n\
+         \x20                            built UI) instead of installing Rust and building\n\n\
+         Joining a cluster (spec/clustering.md §5.2); the token comes from\n\
+         `gxctl cluster join-token` on a server, read from a file (mode 0600)\n\
+         or standard input, never from the command line:\n\
+         \x20     --join SERVER:8842     join the cluster this server belongs to\n\
+         \x20     --role ROLE            agent (default: VMs only) or server\n\
+         \x20     --token-file FILE      read the token from FILE (default: stdin)\n\
+         \x20     --advertise IP:PORT    the address other nodes use for this one\n\
+         \x20     --node-name NAME       default: this host's name\n\n\
+         A standalone host with VMs brings them along (§5.9; nothing is committed until\n\
+         an administrator approves the plan on a server, `gxctl node import`):\n\
+         \x20     --import               with --join: import this host's resources\n\n\
+         A repaired host, or one whose certificate expired, comes back as the same\n\
+         node (§5.7) with a token from `gxctl node rejoin-token`:\n\
+         \x20     --rejoin SERVER:8842   rejoin as the same node (--token-file, --node-id ID)\n\
+         A host whose node a server removed leaves the cluster (§5.5):\n\
+         \x20     --leave                go back to a standalone host\n\
+         \x20     --leave --keep-resources --offline   leave with this host's VMs when no\n\
+         \x20                            server can be reached (§5.8.3)"
     );
 }
 
@@ -307,6 +521,7 @@ fn print_plan(opts: &Options) {
     println!("  - Cloud-Hypervisor {} and its UEFI firmware ({})", CLOUD_HYPERVISOR_VERSION, EDK2_FIRMWARE_VERSION);
     println!("  - glidex binaries in {}, web UI in {}", BIN_DIR, UI_ASSET_DIR);
     println!("  - QEMU + OVMF: {}", on(opts.qemu));
+    println!("  - OVN for cluster networks (services off until clustered): {}", on(opts.networking && opts.ovn));
     println!(
         "  - VM networking (Open vSwitch {}, glidex-netd): {}",
         opts.ovs_profile.name(),
@@ -486,6 +701,16 @@ fn sudo(args: &[String]) -> Result<()> {
     }
 }
 
+/// A command's output, run as root; `None` if it failed.
+fn run_capture_sudo(args: &[&str]) -> Option<String> {
+    if is_root() {
+        run_capture(args[0], &args[1..]).ok()
+    } else {
+        ensure_sudo().ok()?;
+        run_capture("sudo", args).ok()
+    }
+}
+
 fn argv(v: &[&str]) -> Vec<String> {
     v.iter().map(|x| x.to_string()).collect()
 }
@@ -604,8 +829,42 @@ const QEMU_DEPS: &[Dep] = &[
 /// `setcap`, for cloud-hypervisor's CAP_NET_ADMIN (tap devices).
 const NETWORKING_DEPS: &[Dep] = &[dep(Probe::Cmd("setcap"), ["libcap2-bin", "libcap", "libcap"])];
 
+/// OVN (spec/clustering.md §10.1): every node runs `ovn-host`
+/// (`ovn-controller`); a server also runs `ovn-central` (the databases and
+/// northd). 26.03 or newer; Ubuntu 26.04 ships it.
+const OVN_HOST_DEPS: &[Dep] = &[dep(Probe::Cmd("ovn-controller"), ["ovn-host", "ovn", "ovn-host"])];
+const OVN_CENTRAL_DEPS: &[Dep] = &[dep(Probe::Cmd("ovn-northd"), ["ovn-central", "ovn-central", "ovn"])];
+/// The `conntrack` tool: a gateway node meters external traffic from router
+/// SNAT zones with it (spec/clustering.md §13.3).
+const CONNTRACK_DEPS: &[Dep] = &[dep(Probe::Cmd("conntrack"), ["conntrack", "conntrack-tools", "conntrack-tools"])];
+
+/// The systemd units the OVN packages bring. A Debian/Ubuntu install starts
+/// them at once; on a host that isn't in a cluster they would only run empty
+/// databases, so they are stopped until netd starts what a cluster needs
+/// (`ensure_ovn_chassis`, `ensure_ovn_central`).
+const OVN_UNITS: &[&str] = &["ovn-host", "ovn-controller", "ovn-central", "ovn-northd", "ovn-ovsdb-server-nb", "ovn-ovsdb-server-sb"];
+
+/// The units to stop after this run installed OVN: only when OVN was just
+/// installed (an OVN the admin had before is theirs) and the host is in no
+/// cluster yet.
+fn ovn_units_to_quiesce(just_installed: &[&str], in_cluster: bool) -> Vec<&'static str> {
+    let ovn = just_installed.iter().any(|p| p.starts_with("ovn"));
+    if !ovn || in_cluster {
+        return Vec::new();
+    }
+    OVN_UNITS.to_vec()
+}
+
 fn wanted_deps(opts: &Options, platform: &Platform) -> Vec<Dep> {
     let mut deps = BASE_DEPS.to_vec();
+    // OVN on every node (servers also run its databases), unless --no-ovn.
+    if opts.networking && opts.ovn {
+        deps.extend_from_slice(OVN_HOST_DEPS);
+        if opts.join.as_ref().map_or(true, |j| j.role == "server") {
+            deps.extend_from_slice(OVN_CENTRAL_DEPS);
+        }
+        deps.extend_from_slice(CONNTRACK_DEPS);
+    }
     if opts.qemu && platform.arch == "x86_64" {
         deps.extend_from_slice(QEMU_DEPS);
     }
@@ -774,6 +1033,22 @@ fn install_system_packages(opts: &Options, platform: &Platform) -> Result<()> {
     }
     for cmd in package_commands(manager, &missing, &update) {
         sudo(&cmd)?;
+    }
+    let in_cluster = Path::new(SERVICE_HOME).join(".glidex/cluster/identity.json").exists();
+    let quiet = ovn_units_to_quiesce(&missing, in_cluster);
+    if !quiet.is_empty() {
+        // Units a distribution doesn't have are skipped: disable each on its own.
+        for unit in &quiet {
+            let _ = sudo(&argv(&["systemctl", "disable", "--now", unit]));
+        }
+        // ovn-controller made br-int when the package started it. Empty, it is
+        // only in the way (the OVS setup below won't restart OVS while a bridge
+        // exists); a cluster makes it again (ensure_ovn_chassis).
+        let ports = run_capture_sudo(&["ovs-vsctl", "list-ports", "br-int"]);
+        if ports.as_deref().is_some_and(|p| p.trim().is_empty()) {
+            let _ = sudo(&argv(&["ovs-vsctl", "--if-exists", "del-br", "br-int"]));
+        }
+        println!("{} OVN is installed with its services off; a cluster turns on what it needs.", "Note:".yellow());
     }
     Ok(())
 }
@@ -1111,6 +1386,22 @@ fn build_project(cargo: &str, opts: &Options) -> Result<()> {
     section("Building glidex");
     run_in(cargo, &build_args(opts), &workspace_root())?;
     println!("{}", "Build successful".green());
+    Ok(())
+}
+
+/// `--prebuilt`: everything `install_binaries` and `install_ui_assets` take
+/// must already be there.
+fn check_prebuilt(opts: &Options) -> Result<()> {
+    section("Prebuilt glidex");
+    let release = target_dir().join("release");
+    let missing: Vec<String> = binaries(opts).into_iter().filter(|b| !release.join(b).exists()).map(String::from).collect();
+    if !missing.is_empty() {
+        bail!("--prebuilt: {} not found in {}; build them first (cargo build --release)", missing.join(", "), release.display());
+    }
+    if !workspace_root().join("crates/glidex-ui/ui/dist/index.html").exists() {
+        bail!("--prebuilt: the web UI is not built (crates/glidex-ui/ui/dist)");
+    }
+    println!("{} binaries from {}", "Using:".green(), release.display());
     Ok(())
 }
 
@@ -2078,6 +2369,34 @@ mod tests {
         assert_eq!(names("apt-get", &all, &arm), ["libcap2-bin"], "QEMU support is x86_64 only");
         let minimal = Options { qemu: false, networking: false, ..Options::default() };
         assert!(names("apt-get", &minimal, &x86).is_empty());
+    }
+
+    #[test]
+    fn ovn_comes_with_networking_unless_skipped_and_agents_get_no_databases() {
+        let x86 = Platform { os: "linux", arch: "x86_64" };
+        let names = |o: &Options| pkgs("apt-get", &wanted_deps(o, &x86), &["ovn-controller", "ovn-northd", "conntrack"], &[]).0;
+        let all = Options::default();
+        for p in ["ovn-host", "ovn-central", "conntrack"] {
+            assert!(names(&all).contains(&p), "{p} in {:?}", names(&all));
+        }
+        let agent = Options { join: Some(JoinOptions { server: "s:8842".into(), role: "agent".into(), ..Default::default() }), ..Options::default() };
+        assert!(names(&agent).contains(&"ovn-host") && !names(&agent).contains(&"ovn-central"));
+        let skipped = Options { ovn: false, ..Options::default() };
+        assert!(!names(&skipped).iter().any(|p| p.starts_with("ovn") || *p == "conntrack"));
+        let no_net = Options { networking: false, ..Options::default() };
+        assert!(!names(&no_net).iter().any(|p| p.starts_with("ovn")));
+        // The choice is remembered.
+        let o = Options::parse(None, &["--no-ovn".to_string()]).unwrap();
+        assert!(!o.ovn);
+        assert!(!Options::parse(Some(&o.render()), &[]).unwrap().ovn);
+        assert!(Options::parse(Some("qemu=true\n"), &[]).unwrap().ovn, "a file from before OVN was a choice installs it");
+    }
+
+    #[test]
+    fn freshly_installed_ovn_is_stopped_until_the_host_is_clustered() {
+        assert_eq!(ovn_units_to_quiesce(&["ovn-host", "ovn-central"], false), OVN_UNITS.to_vec());
+        assert!(ovn_units_to_quiesce(&["ovn-host"], true).is_empty(), "a cluster member keeps them");
+        assert!(ovn_units_to_quiesce(&["clang"], false).is_empty(), "an OVN the admin had is theirs");
     }
 
     #[test]

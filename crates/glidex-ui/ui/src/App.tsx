@@ -15,10 +15,12 @@ import Access from "./pages/Access";
 import Tokens from "./pages/Tokens";
 import Policies from "./pages/Policies";
 import Audit from "./pages/Audit";
+import Cluster from "./pages/Cluster";
 import Usage from "./pages/Usage";
 import { SessionProvider, useSession } from "./session";
 import { LiveProvider } from "./live";
 import { Loading } from "./components/Loading";
+import ClusterBanner from "./components/ClusterBanner";
 
 // The console pulls in xterm; load it only when a console is opened.
 const VmConsole = lazy(() => import("./pages/VmConsole"));
@@ -29,6 +31,7 @@ function Shell() {
     <LiveProvider>
       <div className="min-h-screen flex flex-col">
         <Header />
+        <ClusterBanner />
         {/* Remount the pages when the project changes: they list its resources. */}
         <main key={project ?? "-"} className="container mx-auto px-4 py-8 flex-1">
           <Routes>
@@ -52,6 +55,7 @@ function Shell() {
             <Route path="/tokens" element={<Tokens />} />
             <Route path="/policies" element={<Policies />} />
             <Route path="/audit" element={<Audit />} />
+            <Route path="/cluster" element={<Cluster />} />
             <Route path="/usage" element={<Usage />} />
             <Route path="*" element={<NotFound />} />
           </Routes>

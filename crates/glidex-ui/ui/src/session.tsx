@@ -4,29 +4,53 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import * as api from "./api";
 import { ApiRequestError } from "./api";
-import type { AuthMethods, EntityRef, ProjectView, WhoAmI } from "./types";
+import type { AuthMethods, EntityRef, ProjectView, SingletonEntityType, WhoAmI } from "./types";
 import Login from "./pages/Login";
 import ReauthDialog from "./components/ReauthDialog";
 import { Loading } from "./components/Loading";
 
-/** Host-wide capabilities the UI shows or hides pages for. */
-const HOST_ACTIONS = [
-  "createProject",
-  "listUsers",
-  "manageUsers",
-  "listTeams",
-  "manageTeams",
-  "readSystemBindings",
-  "manageSystemBindings",
-  "readPolicy",
-  "writePolicy",
-  "readAudit",
-  "readUsage",
-  "manageAnyTokens",
-  "createNetwork",
-] as const;
+/** Host-wide capabilities the UI shows or hides pages for, each with the
+ * resource type it is checked on, as `appliesTo` in
+ * policies/glidex.cedarschema has it: cluster-wide actions take `Cluster`,
+ * the host's own networking `Host`. A check on a type the schema doesn't
+ * list is never allowed, so a wrong entry hides the page from everyone
+ * (tests/ui_capabilities.rs in glidex-control-plane compares the two). */
+const HOST_ACTION_RESOURCE = {
+  createProject: "Cluster",
+  listUsers: "Cluster",
+  manageUsers: "Cluster",
+  listTeams: "Cluster",
+  manageTeams: "Cluster",
+  readSystemBindings: "Cluster",
+  manageSystemBindings: "Cluster",
+  readPolicy: "Cluster",
+  writePolicy: "Cluster",
+  readAudit: "Cluster",
+  readUsage: "Cluster",
+  manageAnyTokens: "Cluster",
+  createNetwork: "Host",
+  readCluster: "Cluster",
+  // Cluster operations (spec/clustering-ui.md §3.1).
+  listNodes: "Cluster",
+  removeNode: "Cluster",
+  forgetNode: "Cluster",
+  purgeNode: "Cluster",
+  createRejoinToken: "Cluster",
+  detachNode: "Cluster",
+  promoteNode: "Cluster",
+  createJoinToken: "Cluster",
+  listImports: "Cluster",
+  approveImport: "Cluster",
+  rejectImport: "Cluster",
+  rotateCa: "Cluster",
+  dissolveCluster: "Cluster",
+  snapshotCluster: "Cluster",
+  initCluster: "Host",
+  leaveCluster: "Host",
+} as const satisfies Record<string, SingletonEntityType>;
 
-export type HostAction = (typeof HOST_ACTIONS)[number];
+export type HostAction = keyof typeof HOST_ACTION_RESOURCE;
+const HOST_ACTIONS = Object.keys(HOST_ACTION_RESOURCE) as HostAction[];
 
 export interface Session {
   me: WhoAmI;
@@ -38,6 +62,8 @@ export interface Session {
   projectName: (id: string | null | undefined) => string;
   host: Record<HostAction, boolean>;
   refresh: () => Promise<void>;
+  /** Re-run the host capability checks only (after a policy change). */
+  refreshCapabilities: () => Promise<void>;
   logout: () => Promise<void>;
 }
 
@@ -66,6 +92,14 @@ export function useCan(checks: { action: string; resource: EntityRef }[]): boole
     };
   }, [key]);
   return result && result.key === key ? result.allowed : null;
+}
+
+/** What the caller may do host- and cluster-wide; all false if the check fails. */
+async function hostCapabilities(): Promise<Record<HostAction, boolean>> {
+  const allowed = await api
+    .checkAccess(HOST_ACTIONS.map((action) => ({ action, resource: { type: HOST_ACTION_RESOURCE[action] } })))
+    .catch(() => HOST_ACTIONS.map(() => false));
+  return Object.fromEntries(HOST_ACTIONS.map((a, i) => [a, allowed[i]])) as Record<HostAction, boolean>;
 }
 
 const noHost = Object.fromEntries(HOST_ACTIONS.map((a) => [a, false])) as Record<HostAction, boolean>;
@@ -101,13 +135,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       }
       return;
     }
-    const [projects, allowed] = await Promise.all([
-      api.listProjects().catch(() => [] as ProjectView[]),
-      api.checkAccess(HOST_ACTIONS.map((action) => ({ action, resource: { type: "Host" as const } }))).catch(() =>
-        HOST_ACTIONS.map(() => false),
-      ),
-    ]);
-    const host = Object.fromEntries(HOST_ACTIONS.map((a, i) => [a, allowed[i]])) as Record<HostAction, boolean>;
+    const [projects, host] = await Promise.all([api.listProjects().catch(() => [] as ProjectView[]), hostCapabilities()]);
     setProject((current) => {
       const known = (id: string | null | undefined) => !!id && projects.some((p) => p.id === id);
       if (known(current)) return current;
@@ -117,6 +145,11 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       return projects[0]?.id ?? null;
     });
     setState({ kind: "ready", me, methods, projects, host });
+  }, []);
+
+  const refreshCapabilities = useCallback(async () => {
+    const host = await hostCapabilities();
+    setState((s) => (s.kind === "ready" ? { ...s, host } : s));
   }, []);
 
   useEffect(() => {
@@ -156,12 +189,13 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         }
       },
       refresh: load,
+      refreshCapabilities,
       logout: async () => {
         await api.logout().catch(() => {});
         setState({ kind: "anonymous", methods: state.methods });
       },
     };
-  }, [state, project, load]);
+  }, [state, project, load, refreshCapabilities]);
 
   let body: ReactNode;
   switch (state.kind) {

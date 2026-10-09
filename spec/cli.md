@@ -18,6 +18,8 @@ See [security.md](security.md) §5.1, §5.2, §5.5.
 | `--socket <path>` / `GLIDEX_SOCKET` | HTTP over this Unix socket. |
 | *(default)* | The first existing socket of `/run/glidex-cp/api.sock` (systemd unit), `$XDG_RUNTIME_DIR/glidex/api.sock`, `/tmp/glidex-<euid>/api.sock` (a control plane started by hand, `paths::run_dir`). |
 | `--url http(s)://host:port[/prefix]` (`-s`, alias `--server`) | TCP instead; wins over `--socket`. Plain `http://` is refused unless the host is loopback, so a token never crosses the network in clear text. |
+| `--profile P` (`GLIDEX_PROFILE`) | Use the named profile from `~/.config/glidex/config.json` — the file `auth login` generates, holding target URLs, cluster binding, TLS trust and the token together ([gxctl-auth.md](gxctl-auth.md)). |
+| `GLIDEX_CONFIG` | Path to the profile file; empty disables reading it, which is what CI should set. |
 | *(no socket, no `--url`)* | TCP to `https://localhost:8841`. |
 | `--project <id\|name>` (`-p`) / `GLIDEX_PROJECT` | Project for this session (below). |
 | `gxctl [options] <command…>` | Run one REPL command and exit (`gxctl list`, `gxctl --url https://cp:8841 login --oidc`). |
@@ -33,7 +35,10 @@ See [security.md](security.md) §5.1, §5.2, §5.5.
   read a token file that group or others can access, or that another
   user owns, and says so. The token is never printed (except once by
   `token create`), logged, put in a URL or shown by `Debug`; the header
-  is marked sensitive.
+  is marked sensitive. Once the config file of [gxctl-auth.md §3](gxctl-auth.md)
+  exists, the credential comes from the selected profile and
+  `~/.config/glidex/token` is the legacy fallback — the credential of
+  the implicit `localhost` profile.
 - **TLS** (`https://`): rustls with the `ring` provider, trusting the
   system store (`rustls-native-certs`), plus `GLIDEX_CA_CERT` (a PEM
   file: a copy of a remote control plane's self-signed certificate),
@@ -42,7 +47,11 @@ See [security.md](security.md) §5.1, §5.2, §5.5.
   directory) when it exists, so `https://localhost` works with no
   setup. There is no option to skip verification; an unverified
   certificate is an error that names `GLIDEX_CA_CERT` and the
-  fingerprint the server sent. HTTP/1.1 only.
+  fingerprint the server sent. HTTP/1.1 only. The profile-based trust
+  ladder — `ca_file`/`ca_pem`, TOFU-pinned `pins` for self-signed
+  certificates, and the explicit `insecure` last resort — is designed
+  in [gxctl-auth.md §5](gxctl-auth.md); until it lands, the above is
+  the whole trust story.
 - **Implementation:** `ApiClient` (`client.rs`) opens one connection per
   request (`tokio::net::UnixStream`, `TcpStream`, or `tokio-rustls` over
   it) and runs a hyper 1 `client::conn::http1` handshake on it. Every
@@ -62,6 +71,12 @@ validation errors). Special cases:
 | `401 unauthenticated` on TCP | `not logged in: … (run gxctl login --oidc / --token, or set GLIDEX_TOKEN)` |
 | `403 *` | `permission denied (<code>): <message>` |
 | non-JSON body | `HTTP <status>: <body>` |
+| profile ↔ server `cluster_id` differ| hard error quoting both ids and the `auth login --rebind` fix ([gxctl-auth.md §4.3](gxctl-auth.md)) |
+| pinned fingerprint no longer matches| hard error with old vs new fingerprint and `auth trust fetch`; never a silent re-pin |
+| profile file unreadable / bad| the token-file refusal wording, or path + parser message; `GLIDEX_CONFIG=` ignores the file |
+
+The full table of profile-mode errors, including the `token_command`
+helper and all-endpoints-down cases, is [gxctl-auth.md §8](gxctl-auth.md).
 
 ### Projects
 
@@ -134,6 +149,10 @@ name (ids when `/projects` isn't readable).
 | `login --token` | TCP only. Reads a token from stdin with echo off, checks it with `whoami`, saves it |
 | `login` on the Unix socket | Prints that no login is needed |
 | `logout [--revoke]` | Deletes the token file (`--revoke`: `DELETE /tokens/{id}` for the current token first) |
+| `auth login [--profile P] (--url U… \| --server U…) [--oidc \| --token \| --pam-user U] [--pin sha256/…] [--insecure] [--rebind] [--use] [--save] [--name N] [--days N] [--non-interactive]`| The `auth` group is the canonical surface; `login`, `logout`, `token …` and `whoami` remain as aliases. Connects to the chosen target (TOFU-pinning an untrusted certificate with confirmation or `--pin`), binds the profile to the server's `cluster_id`, proves the credential with `whoami`, and merges it into `config.json` (`0600`) — this is the command that **generates the config file**. Flags per [gxctl-auth.md §6.1](gxctl-auth.md). |
+| `auth logout [--profile P] [--revoke] [--keep-token]`| Drops the profile's credential (`--revoke` deletes that token server-side first, by `identity.token_id`); pins and CA stay, so a later `login` needs only the credential |
+| `auth status` / `auth use P` / `auth profiles`| Where am I: target, cluster, trust mode, token and expiry (also the REPL banner); set / clear `current`; list profiles |
+| `auth trust list\|fetch\|remove`| Manage a profile's pinned fingerprints; `fetch` compares the server's claim without sending anything else |
 | `ui` | Prints the web UI URL (`GLIDEX_UI_URL`, default `https://localhost:5173`) |
 | `token list` | `GET /tokens` |
 | `token create <name> [--days N] [--service-account [--project P]] [--role ROLE[@PROJECT]]…` | `POST /tokens {name, expires_in_days, kind, project, roles}`; prints the secret once with a warning |

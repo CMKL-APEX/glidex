@@ -9,10 +9,16 @@
 #![allow(clippy::result_large_err)] // handlers return (StatusCode, Json<ApiError>), as before
 
 mod access;
+mod cluster;
 mod errors;
+pub mod gate;
 mod net;
+mod nodes;
 mod storage;
 mod rates;
+pub mod relay;
+pub(crate) use rates::live_vm_stats;
+pub(crate) use vms::read_log_tail;
 mod usage;
 mod vms;
 mod watch;
@@ -51,7 +57,34 @@ pub enum Listener {
     Api,
     /// `ui.sock`: glidex-ui proxying browsers.
     Ui,
+    /// A request another server authenticated and forwarded over :8842
+    /// (spec/clustering.md §6.4); the principal comes from its header.
+    Cluster,
+    /// A browser request an agent's UI socket relayed over :8842
+    /// (spec/clustering-ui.md §3.6): authenticated here like `Ui`, with the
+    /// Origin already checked by the agent.
+    Relay,
 }
+
+/// The node that relayed a UI request (`Listener::Relay`).
+#[derive(Debug, Clone)]
+pub struct RelayedBy(pub String);
+
+/// A relayed host-local request meant for this other node's host: the
+/// route's action is authorized here on that node's `Host`, then the
+/// request runs there (spec/clustering-ui.md §3.6).
+#[derive(Debug, Clone)]
+pub struct RemoteHost(pub String);
+
+/// A host-local request a server authorized for this host: the route's
+/// action on `Host` is allowed without asking this node's policies (an
+/// agent has none).
+#[derive(Debug, Clone)]
+pub struct PreAuthorized(pub String);
+
+/// The server that forwarded a request.
+#[derive(Debug, Clone)]
+pub struct ForwardedBy(pub String);
 
 /// Peer uid of a Unix-socket connection.
 #[derive(Debug, Clone, Copy)]
@@ -104,7 +137,10 @@ pub fn create_router(manager: Arc<VmManager>) -> Router {
 
 pub fn router(app: AppState) -> Router {
     let (r, _) = routes(&app);
-    r.layer(from_fn_with_state(app.clone(), authenticate)).with_state(app)
+    r.layer(from_fn_with_state(app.clone(), gate::cluster_gate))
+        .layer(from_fn_with_state(app.clone(), authenticate))
+        .layer(from_fn_with_state(app.clone(), relay::ui_relay))
+        .with_state(app)
 }
 
 /// Every route with its action, for tests and documentation.
@@ -122,6 +158,7 @@ impl Routes<'_> {
     fn add(mut self, method: &'static str, path: &'static str, action: &'static str, mr: MethodRouter<AppState>) -> Self {
         self.table.push(RouteSpec { method, path, action });
         let mr: MethodRouter<AppState> = mr
+            .layer::<_, std::convert::Infallible>(from_fn_with_state(self.app.clone(), relay::remote_host))
             .layer::<_, std::convert::Infallible>(from_fn_with_state(self.app.clone(), audit_layer))
             .layer::<_, std::convert::Infallible>(Extension(RouteAction(action)));
         self.router = self.router.route(path, mr);
@@ -181,6 +218,10 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         .add("POST", "/networks/{name}/shares", "offerNetworkShare", post(net::offer_share))
         .add("DELETE", "/networks/{name}/shares/{project}", "unshareNetwork", delete(net::unshare))
         .add("POST", "/projects/{id}/networks", "createProjectNetwork", post(net::create_project_network))
+        .add("GET", "/projects/{id}/routers", "readRouter", get(net::list_routers))
+        .add("POST", "/projects/{id}/routers", "createRouter", post(net::create_router))
+        .add("GET", "/projects/{id}/routers/{name}", "readRouter", get(net::get_router))
+        .add("DELETE", "/projects/{id}/routers/{name}", "deleteRouter", delete(net::delete_router))
         .add("GET", "/projects/{id}/network-shares", "listNetworkShares", get(net::list_shares))
         .add("POST", "/projects/{id}/network-shares/{network}/accept", "acceptNetworkShare", post(net::accept_share))
         .add("DELETE", "/projects/{id}/network-shares/{network}", "leaveNetworkShare", delete(net::leave_share))
@@ -197,12 +238,40 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         .add("POST", "/ovs/bridges/{name}/uplinks/{uplink}/commit", "commitUplink", post(net::commit_uplink))
         .add("GET", "/pci-devices", "listPciDevices", get(net::list_pci_devices))
         .add("GET", "/system/reconcile", "readSystemStatus", get(vms::system_reconcile))
+        // ---- cluster (spec/clustering.md §5)
+        .add("POST", "/cluster/init", "initCluster", post(cluster::init))
+        .add("POST", "/cluster/join", "joinCluster", post(cluster::join))
+        .add("GET", "/cluster/status", "readCluster", get(cluster::status))
+        .add("POST", "/cluster/join-tokens", "createJoinToken", post(cluster::create_token))
+        .add("POST", "/cluster/promote", "promoteNode", post(cluster::promote))
+        .add("POST", "/cluster/import", "importCluster", post(cluster::import_join))
+        .add("POST", "/cluster/rejoin", "rejoinCluster", post(cluster::rejoin))
+        .add("POST", "/cluster/dissolve", "dissolveCluster", post(cluster::dissolve))
+        .add("POST", "/cluster/leave", "leaveCluster", post(cluster::leave))
+        .add("POST", "/cluster/rotate-ca", "rotateCa", post(cluster::rotate_ca))
+        .add("GET", "/cluster/snapshot", "snapshotCluster", get(cluster::snapshot))
+        // ---- nodes (spec/clustering.md §7)
+        .add("GET", "/nodes", "listNodes", get(nodes::list))
+        .add("GET", "/nodes/{id}", "readNode", get(nodes::get_node))
+        .add("POST", "/nodes/{id}/drain", "drainNode", post(nodes::drain))
+        .add("POST", "/nodes/{id}/undrain", "undrainNode", post(nodes::undrain))
+        .add("POST", "/nodes/{id}/remove", "removeNode", post(nodes::remove))
+        .add("POST", "/nodes/{id}/forget", "forgetNode", post(nodes::forget))
+        .add("POST", "/nodes/{id}/detach", "detachNode", post(nodes::detach))
+        .add("GET", "/imports", "listImports", get(nodes::list_imports))
+        .add("GET", "/imports/{plan}", "readImport", get(nodes::get_import))
+        .add("POST", "/imports/{plan}/approve", "approveImport", post(nodes::approve_import))
+        .add("POST", "/imports/{plan}/reject", "rejectImport", post(nodes::reject_import))
+        .add("POST", "/nodes/{id}/purge", "purgeNode", post(nodes::purge))
+        .add("POST", "/nodes/{id}/rejoin-token", "createRejoinToken", post(nodes::rejoin_token))
         // Live changes; each kind filtered like its list endpoint.
         .add("GET", "/watch", AUTHENTICATED, get(watch::watch))
         // ---- authentication
         .add("GET", "/health", PUBLIC, get(health_check))
         .add("GET", "/auth/methods", PUBLIC, get(access::methods))
+        .add("GET", "/auth/server-info", PUBLIC, get(access::server_info))
         .add("POST", "/auth/login", PUBLIC, post(access::login))
+        .add("POST", "/auth/token", PUBLIC, post(access::pam_token))
         .add("GET", "/auth/oidc/start", PUBLIC, get(access::oidc_start))
         .add("GET", "/auth/oidc/callback", PUBLIC, get(access::oidc_callback))
         .add("POST", "/auth/oidc/device", PUBLIC, post(access::oidc_device_start))
@@ -211,6 +280,7 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         .add("POST", "/auth/session", AUTHENTICATED, post(access::peer_session))
         .add("GET", "/auth/whoami", AUTHENTICATED, get(access::whoami))
         .add("POST", "/authz/check", AUTHENTICATED, post(access::authz_check))
+        .add("POST", "/authz/allowed", AUTHENTICATED, post(access::authz_allowed))
         // ---- tokens
         .add("GET", "/tokens", AUTHENTICATED, get(access::list_tokens))
         .add("POST", "/tokens", AUTHENTICATED, post(access::create_token))
@@ -306,13 +376,13 @@ fn bearer(headers: &HeaderMap) -> Option<String> {
 /// Client IP: the TCP peer, or (only from glidex-ui) X-Forwarded-For.
 fn client_ip(parts_ext: &axum::http::Extensions, headers: &HeaderMap, listener: Listener) -> Option<IpAddr> {
     match listener {
-        Listener::Ui => headers
+        Listener::Ui | Listener::Relay => headers
             .get("x-forwarded-for")
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.split(',').next())
             .and_then(|v| v.trim().parse().ok()),
         Listener::Tcp => parts_ext.get::<ClientAddr>().map(|a| a.0.ip()),
-        Listener::Api => None,
+        Listener::Api | Listener::Cluster => None,
     }
 }
 
@@ -329,7 +399,8 @@ async fn authenticate(State(app): State<AppState>, mut req: Request, next: Next)
     // on every WebSocket upgrade.
     let origin = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()).map(String::from);
     if let Some(o) = &origin {
-        if (!safe || websocket) && !app.auth.config.auth.origin_allowed(o) {
+        // A forwarded or relayed request was checked by the node that took it.
+        if !matches!(listener, Listener::Cluster | Listener::Relay) && (!safe || websocket) && !app.auth.config.auth.origin_allowed(o) {
             return plain_error(StatusCode::FORBIDDEN, "origin_not_allowed", "this origin may not use the API");
         }
     }
@@ -348,7 +419,8 @@ async fn authenticate(State(app): State<AppState>, mut req: Request, next: Next)
                 },
                 None => Ok(None),
             },
-            Listener::Ui | Listener::Tcp => {
+            Listener::Cluster => gate::forwarded_principal(&headers),
+            Listener::Ui | Listener::Tcp | Listener::Relay => {
                 if listener == Listener::Ui && !ui_peer_ok(&app, req.extensions().get::<PeerUid>()) {
                     return plain_error(StatusCode::FORBIDDEN, "forbidden", "only glidex-ui may use this socket");
                 }
@@ -456,6 +528,8 @@ pub struct Caller {
     pub app: AppState,
     pub request_id: String,
     audit: AuditSlot,
+    /// The action a server authorized on this host (`PreAuthorized`).
+    pre: Option<String>,
 }
 
 impl FromRequestParts<AppState> for Caller {
@@ -470,6 +544,7 @@ impl FromRequestParts<AppState> for Caller {
         Ok(Caller {
             p,
             action: parts.extensions.get::<RouteAction>().map(|a| a.0).unwrap_or(AUTHENTICATED),
+            pre: parts.extensions.get::<PreAuthorized>().map(|p| p.0.clone()),
             app: app.clone(),
             request_id: parts.extensions.get::<RequestId>().map(|r| r.0.clone()).unwrap_or_default(),
             audit: parts.extensions.get::<AuditSlot>().cloned().unwrap_or_default(),
@@ -499,8 +574,16 @@ impl Caller {
     }
 
     /// Ask Cedar, recording the decision for the audit entry.
+    /// A server's decision for this host (`PreAuthorized`), when it covers `action` on `resource`.
+    fn pre_authorized(&self, action: &str, resource: &Ent) -> Option<Decision> {
+        (self.pre.as_deref() == Some(action) && *resource == Ent::Host).then(|| Decision { allowed: true, policies: vec!["server-authorized".into()], errors: Vec::new() })
+    }
+
     pub fn decide(&self, action: &str, resource: Ent, es: EntitySet, extra: &[(&'static str, Ent)]) -> Decision {
-        let d = self.app.auth.authorize(&self.p, action, resource, es, extra);
+        let d = match self.pre_authorized(action, &resource) {
+            Some(d) => d,
+            None => self.app.auth.authorize(&self.p, action, resource, es, extra),
+        };
         let mut a = self.audit.0.lock().unwrap();
         for p in &d.policies {
             if !a.policies.contains(p) {
@@ -514,6 +597,9 @@ impl Caller {
     }
 
     pub fn allowed(&self, action: &str, resource: Ent, es: EntitySet) -> bool {
+        if self.pre_authorized(action, &resource).is_some() {
+            return true;
+        }
         self.app.auth.authorize(&self.p, action, resource, es, &[]).allowed
     }
 
@@ -629,7 +715,7 @@ impl Caller {
     pub fn note_overruns(&self, over: &[crate::tenancy::QuotaOverrun]) {
         if !over.is_empty() {
             self.detail("quota_exceeded", serde_json::json!(over));
-            let d = self.app.auth.authorize(&self.p, "exceedQuota", Ent::Host, EntitySet::new(), &[]);
+            let d = self.app.auth.authorize(&self.p, "exceedQuota", Ent::Cluster, EntitySet::new(), &[]);
             let mut a = self.audit.0.lock().unwrap();
             a.policies.extend(d.policies);
         }
@@ -724,7 +810,7 @@ mod tests {
         let public: Vec<_> = table.iter().filter(|r| r.action == PUBLIC).map(|r| r.path).collect();
         assert_eq!(
             public,
-            ["/health", "/auth/methods", "/auth/login", "/auth/oidc/start", "/auth/oidc/callback", "/auth/oidc/device", "/auth/oidc/device/poll"]
+            ["/health", "/auth/methods", "/auth/server-info", "/auth/login", "/auth/token", "/auth/oidc/start", "/auth/oidc/callback", "/auth/oidc/device", "/auth/oidc/device/poll"]
         );
     }
 

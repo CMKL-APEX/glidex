@@ -1,6 +1,7 @@
 // Role templates (spec/security.md §7.3). A role assignment is a link of
 // one of these: ?principal is a User, Team or Token; ?resource is a
-// Project (project roles) or Host::"local" (host roles and grants).
+// Project (project roles), Cluster (system roles) or a Host (host-specific
+// roles and grants).
 
 @id("role.viewer")
 permit (principal in ?principal, action in Glidex::Action::"role.viewer", resource in ?resource);

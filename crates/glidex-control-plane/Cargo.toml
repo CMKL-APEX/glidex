@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 glidex-ovs = { path = "../glidex-ovs" }
+glidex-ovn = { path = "../glidex-ovn" }
 glidex-netd = { path = "../glidex-netd" }
 glidex-hv-client = { path = "../glidex-hv-client" }
 glidex-vm-shim = { path = "../glidex-vm-shim" }
@@ -26,11 +27,14 @@ tabled = "0.17"
 nix = { version = "0.29", features = ["term", "fs", "process"] }
 libc = "0.2"
 redb = "3"
+smallvec = "1"
 dirs = "6"
 sha-crypt = "0.6.0"
 getrandom = "0.3"
 sha2 = "0.11"
+ring = "0.17"
 futures-util = "0.3"
+bytes = "1"
 # Unpacking the pinned Debian OVMF package (images/firmware.rs)
 tar = { version = "0.4", default-features = false }
 lzma-rs = "0.3"
@@ -52,6 +56,12 @@ http-body-util = "0.1"
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }
 rustls-native-certs = "0.8"
 percent-encoding = "2"
+# Replicated control plane (spec/clustering.md D1); pinned, upgrades reviewed like the CH/OVS pins.
+async-trait = "0.1"
+openraft = { version = "=0.9.25", features = ["serde", "storage-v2", "generic-snapshot-data"] }
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring", "x509-parser"] }
+x509-parser = { version = "0.18", features = ["verify"] }
+time = "0.3"
 
 [dev-dependencies]
 rsa = "0.9"

@@ -8,7 +8,10 @@
 
 pub mod disk;
 pub mod image;
+pub mod image_cache;
 pub mod network;
+pub mod ovn;
+pub mod placement;
 pub mod queue;
 pub mod startup;
 pub mod vm;
@@ -59,12 +62,27 @@ impl Settings {
 }
 
 impl VmManager {
-    /// Start the workers, the resync loop and the exit watches (§9.4 step
-    /// 5). Idempotent.
+    /// Start the controllers of the roles this process runs (spec/clustering.md
+    /// D4): the node role (workers, resync, exit watches) and the server role
+    /// (cluster controllers). Idempotent.
     pub fn start_controllers(&self) {
         if self.controllers_started.swap(true, Ordering::SeqCst) {
             return;
         }
+        let roles = self.roles();
+        let mut tasks = Vec::new();
+        if roles.node {
+            tasks.extend(self.node_role_tasks());
+        }
+        if roles.server {
+            tasks.extend(self.server_role_tasks());
+        }
+        self.tasks.lock().unwrap().extend(tasks);
+    }
+
+    /// The node role: VM, disk and image controllers for the objects on this
+    /// host (§8.1), as they have always run.
+    fn node_role_tasks(&self) -> Vec<tokio::task::JoinHandle<()>> {
         let me = self.arc();
         let mut tasks = Vec::new();
         for _ in 0..self.settings().workers.max(1) {
@@ -73,25 +91,68 @@ impl VmManager {
         }
         let m = me.clone();
         tasks.push(tokio::spawn(async move { m.resync_loop().await }));
+        // This node as an OVN chassis (and a server's part of ovn-central).
+        let m = me.clone();
+        tasks.push(tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                m.ensure_ovn_node().await;
+            }
+        }));
+        // What this node reports about itself, refreshed every ten minutes.
+        let m = me.clone();
+        tasks.push(tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(600)).await;
+                let m2 = m.clone();
+                let _ = tokio::task::spawn_blocking(move || m2.report_self()).await;
+            }
+        }));
         tasks.push(tokio::spawn(async move {
             for key in me.all_keys().await {
                 me.queue.add(key);
             }
-            let ids: Vec<String> = me.vms.read().await.keys().cloned().collect();
+            let ids: Vec<String> = me.vms.read().await.values().filter(|v| me.is_local(v)).map(|v| v.id.clone()).collect();
             for id in ids {
                 me.watch_instance(&id).await;
             }
         }));
-        self.tasks.lock().unwrap().extend(tasks);
+        tasks
+    }
+
+    /// The server role: controllers that run only where the API runs. The
+    /// scheduler (C4), node lifecycle (C3) and network controller (C5) are
+    /// added here, each gated on holding leadership.
+    fn server_role_tasks(&self) -> Vec<tokio::task::JoinHandle<()>> {
+        // The scheduler: places VMs that wait for a node, again as nodes and
+        // capacity change (a pass is cheap when nothing waits).
+        let me = self.arc();
+        let m2 = me.clone();
+        vec![
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(Duration::from_secs(3)).await;
+                    me.place_pending().await;
+                }
+            }),
+            // The cluster network controller (§11): OVN's northbound database.
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    m2.reconcile_ovn().await;
+                }
+            }),
+        ]
     }
 
     /// Every object the controllers own.
     async fn all_keys(&self) -> Vec<Key> {
-        let mut keys: Vec<Key> = self.vms.read().await.keys().cloned().map(Key::Vm).collect();
-        keys.extend(self.images.list_disks().into_iter().map(|d| Key::Disk(d.id)));
+        let me = self.local_node_id();
+        let mut keys: Vec<Key> = self.vms.read().await.values().filter(|v| self.is_local(v)).map(|v| Key::Vm(v.id.clone())).collect();
+        keys.extend(self.images.list_disks().into_iter().filter(|d| self.is_local_disk(d)).map(|d| Key::Disk(d.id)));
         keys.extend(self.images.list_images().into_iter().map(|i| Key::Image(i.id)));
         if let Ok(nets) = self.networks.list() {
-            keys.extend(nets.into_iter().map(|n| Key::Network(n.name)));
+            keys.extend(nets.into_iter().filter(|n| n.node.as_deref().is_none_or(|x| x == me)).map(|n| Key::Network(n.name)));
         }
         keys
     }
@@ -173,8 +234,8 @@ impl VmManager {
         let _ports = self.ports_lock.lock().await;
         let (running, networked) = {
             let vms = self.vms.read().await;
-            let running: Vec<String> = vms.values().filter(|vm| !vm.status.nics.is_empty()).map(|vm| vm.id.clone()).collect();
-            let networked = vms.values().any(|vm| !vm.config().networks.is_empty() || !vm.status.nics.is_empty());
+            let running: Vec<String> = vms.values().filter(|vm| self.is_local(vm) && !vm.status.nics.is_empty()).map(|vm| vm.id.clone()).collect();
+            let networked = vms.values().any(|vm| self.is_local(vm) && (!vm.config().networks.is_empty() || !vm.status.nics.is_empty()));
             (running, networked)
         };
         *self.netd_seen.lock().unwrap() = self.netd.socket_identity();
