@@ -779,6 +779,13 @@ Limits, returned in `UplinkState.warnings`:
    nftables table; removed with the last NAT network or when nothing
    drops. The unit is ordered `After=docker.service` so the chain exists
    at boot.
+   **iptables INPUT drop:** likewise for traffic to the host. When
+   iptables' `INPUT` policy is DROP (ufw's default-deny), netd maintains
+   chain `GLIDEX-INPUT` with the same accepts as the `inet glidex` input
+   chain (DHCP, DNS when served, ping on the gateway) and one jump to it
+   at the top of `INPUT`. Nothing broader is accepted; the nftables drop
+   still covers the rest from the bridges. Rebuilt and removed together
+   with `GLIDEX-FORWARD`. The unit is also ordered `After=ufw.service`.
 5. **dnsmasq**, a supervised child of netd (restarted if it exits):
    `dnsmasq --keep-in-foreground --conf-file=/run/glidex/dnsmasq/<br>.conf`
    with:
@@ -806,7 +813,8 @@ subnet, and network `default` (tap). Failure is logged, not fatal.
 
 **Firewalls:** `probe` reports active `ufw`/`firewalld`; a drop in their
 forward chains still wins over `inet glidex`. (A plain iptables FORWARD
-DROP, Docker's included, is handled by `GLIDEX-FORWARD` above.) `GET /ovs/status` shows
+DROP, Docker's included, is handled by `GLIDEX-FORWARD`, and an
+`INPUT` DROP such as ufw's default-deny by `GLIDEX-INPUT`, above.) `GET /ovs/status` shows
 the command needed to allow the NAT subnet **(verify)**.
 
 ## 11. Control plane

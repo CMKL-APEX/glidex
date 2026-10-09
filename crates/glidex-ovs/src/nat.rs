@@ -18,6 +18,9 @@ pub const NFT_TABLE: &str = "glidex";
 /// glidex's chain in iptables' `filter` table, for hosts whose FORWARD
 /// policy would otherwise drop NAT traffic (see [`apply_iptables`]).
 pub const IPT_CHAIN: &str = "GLIDEX-FORWARD";
+/// glidex's `INPUT` counterpart of [`IPT_CHAIN`], for hosts whose iptables
+/// `INPUT` policy drops guest DHCP/DNS/ping (ufw's default-deny).
+pub const IPT_INPUT_CHAIN: &str = "GLIDEX-INPUT";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NatSpec {
@@ -424,6 +427,66 @@ pub fn apply_iptables(exec: &dyn Exec, nats: &[NatState]) -> Result<(), OvsError
     Ok(())
 }
 
+/// Whether iptables' `INPUT` policy drops host-bound traffic (ufw's
+/// default-deny, among others). An accept in `inet glidex` can't overrule
+/// that drop, so [`IPT_INPUT_CHAIN`] has to be hooked into `INPUT`.
+pub fn iptables_input_drops(exec: &dyn Exec) -> bool {
+    exec.run(&Cmd::new(Program::Iptables, ["-w", "-S", "INPUT"]))
+        .ok()
+        .filter(|o| o.status == 0)
+        .is_some_and(|o| o.stdout_str().lines().any(|l| l.trim() == "-P INPUT DROP"))
+}
+
+/// The `-A` rules of [`IPT_INPUT_CHAIN`]: the same accepts as the
+/// `inet glidex` input chain (DHCP, DNS when served, ping on the gateway),
+/// nothing broader. The nftables drop still covers everything else from
+/// the bridges.
+pub fn iptables_input_rules(nats: &[NatState]) -> Vec<Vec<String>> {
+    let mut rules: Vec<Vec<String>> = vec![];
+    for n in nats {
+        let (br, gw) = (n.bridge.as_str(), n.gateway.to_string());
+        rules.push(["-i", br, "-p", "udp", "--dport", "67", "-j", "ACCEPT"].map(String::from).to_vec());
+        if n.dns {
+            for proto in ["udp", "tcp"] {
+                rules.push(["-i", br, "-d", &gw, "-p", proto, "--dport", "53", "-j", "ACCEPT"].map(String::from).to_vec());
+            }
+        }
+        rules.push(
+            ["-i", br, "-d", &gw, "-p", "icmp", "--icmp-type", "echo-request", "-j", "ACCEPT"]
+                .map(String::from)
+                .to_vec(),
+        );
+    }
+    rules
+        .into_iter()
+        .map(|r| ["-w", "-A", IPT_INPUT_CHAIN].map(String::from).into_iter().chain(r).collect())
+        .collect()
+}
+
+/// Bring [`IPT_INPUT_CHAIN`] in line with `nats`: rebuilt and jumped to
+/// from the top of `INPUT` when its policy drops, removed (chain and jump)
+/// otherwise or once no NAT networks remain.
+pub fn apply_iptables_input(exec: &dyn Exec, nats: &[NatState]) -> Result<(), OvsError> {
+    let ipt = |args: &[&str]| Cmd::new(Program::Iptables, args.iter().copied());
+    let ok = |cmd: Cmd| exec.run(&cmd).is_ok_and(|o| o.status == 0);
+    if nats.is_empty() || !iptables_input_drops(exec) {
+        ok(ipt(&["-w", "-D", "INPUT", "-j", IPT_INPUT_CHAIN]));
+        ok(ipt(&["-w", "-F", IPT_INPUT_CHAIN]));
+        ok(ipt(&["-w", "-X", IPT_INPUT_CHAIN]));
+        return Ok(());
+    }
+    if !ok(ipt(&["-w", "-F", IPT_INPUT_CHAIN])) {
+        exec.check(&ipt(&["-w", "-N", IPT_INPUT_CHAIN]))?;
+    }
+    for rule in iptables_input_rules(nats) {
+        exec.check(&Cmd::new(Program::Iptables, rule))?;
+    }
+    if !ok(ipt(&["-w", "-C", "INPUT", "-j", IPT_INPUT_CHAIN])) {
+        exec.check(&ipt(&["-w", "-I", "INPUT", "1", "-j", IPT_INPUT_CHAIN]))?;
+    }
+    Ok(())
+}
+
 /// Write the dnsmasq config and hosts file (the process is supervised by
 /// netd).
 pub fn write_dnsmasq_files(exec: &dyn Exec, state: &NatState) -> Result<(), OvsError> {
@@ -700,6 +763,50 @@ table inet glidex {
         exec.on("iptables -w -S DOCKER-USER", Output::ok("-N DOCKER-USER\n"));
         apply_iptables(&exec, &[a]).unwrap();
         assert!(!exec.calls().iter().any(|c| c.contains(" -N ") || c.contains(" -I ")), "{:#?}", exec.calls());
+    }
+
+    #[test]
+    fn apply_iptables_input_behind_ufw() {
+        let a = NatState::new("gxbr-nat", net("10.88.0.0/24"), true).unwrap();
+        let exec = RecordingExec::new();
+        exec.on("iptables -w -S INPUT", Output::ok("-P INPUT DROP\n-A INPUT -j ufw-before-input\n"));
+        exec.on("iptables -w -F GLIDEX-INPUT", Output::failed(1, "No chain"));
+        exec.on("iptables -w -C INPUT", Output::failed(1, "Bad rule"));
+        apply_iptables_input(&exec, &[a.clone()]).unwrap();
+        let calls = exec.calls();
+        let after_detect: Vec<&str> = calls.iter().skip(1).map(String::as_str).collect();
+        assert_eq!(after_detect, [
+            "iptables -w -F GLIDEX-INPUT",
+            "iptables -w -N GLIDEX-INPUT",
+            "iptables -w -A GLIDEX-INPUT -i gxbr-nat -p udp --dport 67 -j ACCEPT",
+            "iptables -w -A GLIDEX-INPUT -i gxbr-nat -d 10.88.0.1 -p udp --dport 53 -j ACCEPT",
+            "iptables -w -A GLIDEX-INPUT -i gxbr-nat -d 10.88.0.1 -p tcp --dport 53 -j ACCEPT",
+            "iptables -w -A GLIDEX-INPUT -i gxbr-nat -d 10.88.0.1 -p icmp --icmp-type echo-request -j ACCEPT",
+            "iptables -w -C INPUT -j GLIDEX-INPUT",
+            "iptables -w -I INPUT 1 -j GLIDEX-INPUT",
+        ]);
+
+        // Re-applying keeps the existing chain and jump.
+        let exec = RecordingExec::new();
+        exec.on("iptables -w -S INPUT", Output::ok("-P INPUT DROP\n"));
+        apply_iptables_input(&exec, &[a.clone()]).unwrap();
+        assert!(!exec.calls().iter().any(|c| c.contains(" -N ") || c.contains(" -I ")), "{:#?}", exec.calls());
+
+        // INPUT accepts, or no NAT networks left: the chain and jump go.
+        for (nats, input) in [(vec![a], "-P INPUT ACCEPT\n"), (vec![], "-P INPUT DROP\n")] {
+            let exec = RecordingExec::new();
+            exec.on("iptables -w -S INPUT", Output::ok(input));
+            apply_iptables_input(&exec, &nats).unwrap();
+            let calls = exec.calls();
+            for c in [
+                "iptables -w -D INPUT -j GLIDEX-INPUT",
+                "iptables -w -F GLIDEX-INPUT",
+                "iptables -w -X GLIDEX-INPUT",
+            ] {
+                assert!(calls.iter().any(|x| x == c), "missing {c}: {calls:#?}");
+            }
+            assert!(!calls.iter().any(|c| c.contains(" -A ")), "{calls:#?}");
+        }
     }
 
     #[test]
