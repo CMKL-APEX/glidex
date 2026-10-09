@@ -275,6 +275,9 @@ async fn a_new_cluster_starts_from_a_snapshot() {
         std::fs::copy(src.join(f), dst.join(f)).unwrap();
     }
     manage::force_new_cluster(&db_path, Some(&snap), &cfg.cluster).await.unwrap();
+    // Not the default :8842: the machine running the tests may be a cluster node itself.
+    let mut cfg = cfg.clone();
+    cfg.cluster.listen = format!("127.0.0.1:{}", free_port()).parse().unwrap();
     let manager = VmManager::open(db_path, glidex_control_plane::network::Netd::from_env(), &cfg).await.unwrap();
     let router = create_router(manager.clone());
     manager.set_api_router(router.clone());
@@ -327,7 +330,7 @@ async fn a_vm_placed_on_an_agent_is_that_agents_and_its_status_comes_back() {
     assert_eq!(s, StatusCode::CREATED, "{vm}");
     let id = vm["id"].as_str().unwrap().to_string();
     let agent_node = agent.manager.local_node_id();
-    assert_eq!(vm["node"], agent_node.as_str());
+    assert_eq!(vm["node"], agent_node.as_str(), "{vm}");
     wait_for("the VM in the agent's cache", || async { agent.manager.list_vms().await.iter().any(|v| v.id == id) }).await;
     // ... but not in the server's own work: the server's controller leaves it alone.
     assert!(!server.manager.list_vms().await.is_empty());

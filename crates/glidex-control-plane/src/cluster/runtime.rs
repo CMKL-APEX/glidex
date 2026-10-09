@@ -205,7 +205,7 @@ impl Cluster {
     }
 
     pub fn shutdown(&self) {
-        let _ = self.stop.send(true);
+        self.stop.send_replace(true);
     }
 
     pub async fn stop(&self) {

@@ -34,6 +34,7 @@ by later runs (flags override the saved values):
 | `--ovs-profile dpdk\|kernel` | OVS flavour (default `dpdk`, which reserves hugepages) |
 | `--pmd-cpu-mask MASK` | OVS-DPDK PMD CPU mask (`auto` clears it) |
 | `--allow-ovs-restart` | allow restarting an ovs-vswitchd that has bridges (interrupts their traffic) |
+| `--prebuilt` | use the release binaries and web UI already built in this checkout: no Rust or Bun toolchain, no build (never saved; the nested e2e test uses it) |
 
 ## Inputs it discovers
 

@@ -488,8 +488,24 @@ impl VmManager {
     pub async fn has_resources(&self) -> bool {
         !self.vms.read().await.is_empty()
             || !self.images.list_disks().is_empty()
-            || self.networks.list().map(|n| !n.is_empty()).unwrap_or(false)
+            || self.networks.list().map(|n| n.iter().any(|n| !Self::is_stock_default(n))).unwrap_or(false)
             || self.credentials.list(None).map(|c| !c.is_empty()).unwrap_or(false)
+    }
+
+    /// The `default` NAT network the host made for itself at first start
+    /// (`ensure_default_network`): not something a join would abandon.
+    fn is_stock_default(n: &Network) -> bool {
+        n.name == network::DEFAULT_NETWORK && n.bridge == network::DEFAULT_BRIDGE && n.scope == network::NetworkScope::Node && n.project.is_none()
+    }
+
+    /// Before a plain join: take down the stock `default` network (its bridge
+    /// and NAT on the host), which the cluster's records would otherwise leave
+    /// behind as an orphan. No VM can use it: `has_resources` said none exist.
+    pub async fn drop_stock_default_network(&self) -> Result<(), VmManagerError> {
+        if let Some(n) = self.networks.get(network::DEFAULT_NETWORK)?.filter(Self::is_stock_default) {
+            self.delete_network(&n.name).await?;
+        }
+        Ok(())
     }
 
     /// Refresh this node's own record with what the host has now. Writes
@@ -503,7 +519,7 @@ impl VmManager {
         probe.features.physnets = self.ovn.load().bridge_mappings.clone();
         probe.features.feature_level = crate::node::FEATURE_LEVEL;
         self.nodes
-            .ensure_self(&self.local_node_id(), probe)
+            .report_self(&self.local_node_id(), probe, self.cluster().is_none())
             .map(|_| ())
             .map_err(|e| VmManagerError::PersistenceError(e.to_string()))
     }
@@ -622,19 +638,44 @@ impl VmManager {
             match rx.recv().await {
                 // A cache re-list replaces everything: no keys to say which.
                 Ok(a) if a.keys.is_empty() => self.reload_vms().await,
-                Ok(a) if a.tables.contains(&crate::store::TableId::Vms) => {
-                    let keys: Vec<String> = a.keys.iter().filter(|(t, _)| *t == crate::store::TableId::Vms).filter_map(|(_, k)| String::from_utf8(k.clone()).ok()).collect();
-                    self.refresh_vms(&keys).await;
-                }
+                // One write set may hold several tables (a VM is created with
+                // its root disk): images and disks first, so the VM
+                // controller finds the disk the VM waits for.
                 Ok(a) => {
                     for table in [crate::store::TableId::Images, crate::store::TableId::Disks] {
                         if a.tables.contains(&table) {
                             let keys: Vec<String> = a.keys.iter().filter(|(t, _)| *t == table).filter_map(|(_, k)| String::from_utf8(k.clone()).ok()).collect();
                             self.images.sync_keys(table, &keys);
+                            // What arrived from elsewhere (the leader, a node's
+                            // cache) is this node's controllers' work too: an
+                            // image to copy here, a disk to make here, and the
+                            // VM waiting for that disk.
+                            for k in &keys {
+                                match table {
+                                    crate::store::TableId::Images => self.queue.add(crate::controller::queue::Key::Image(k.clone())),
+                                    _ => {
+                                        self.queue.add(crate::controller::queue::Key::Disk(k.clone()));
+                                        if let Some(vm) = self.images.get_disk(k).ok().and_then(|d| d.attached_to) {
+                                            self.queue.add(crate::controller::queue::Key::Vm(vm));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // A copy of an image becoming ready on some node: nodes
+                    // waiting to fetch it can go now.
+                    for (_, k) in a.keys.iter().filter(|(t, _)| *t == crate::store::TableId::ImageCaches) {
+                        if let Some(image) = String::from_utf8_lossy(k).split('/').next() {
+                            self.queue.add(crate::controller::queue::Key::Image(image.to_string()));
                         }
                     }
                     if a.tables.contains(&crate::store::TableId::Images) || a.tables.contains(&crate::store::TableId::Disks) {
                         self.notify_changed();
+                    }
+                    if a.tables.contains(&crate::store::TableId::Vms) {
+                        let keys: Vec<String> = a.keys.iter().filter(|(t, _)| *t == crate::store::TableId::Vms).filter_map(|(_, k)| String::from_utf8(k.clone()).ok()).collect();
+                        self.refresh_vms(&keys).await;
                     }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => self.reload_vms().await,

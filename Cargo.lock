@@ -1398,6 +1398,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "glidex-e2e"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
 name = "glidex-hv-client"
 version = "0.1.0"
 dependencies = [

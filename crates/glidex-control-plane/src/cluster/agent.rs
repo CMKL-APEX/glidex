@@ -56,7 +56,7 @@ impl NodeLink {
         });
         db.set_revision(db.stored_mirror_revision());
         if db.revision() > 0 {
-            let _ = link.ready.send(true);
+            link.ready.send_replace(true);
         }
         link.load_outbox();
         db.set_mirror(link.clone());
@@ -78,7 +78,7 @@ impl NodeLink {
     }
 
     pub fn stop(&self) {
-        let _ = self.stop.send(true);
+        self.stop.send_replace(true);
     }
 
     pub fn set_partitioned(&self, on: bool) {
@@ -173,7 +173,7 @@ impl NodeLink {
                 match self.list().await {
                     Ok(()) => {
                         listed = true;
-                        let _ = self.ready.send(true);
+                        self.ready.send_replace(true);
                     }
                     Err(e) => {
                         tracing::warn!("cannot list the cluster store ({}); running from the cache", e);

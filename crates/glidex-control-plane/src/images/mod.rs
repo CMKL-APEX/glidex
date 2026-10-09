@@ -503,6 +503,9 @@ pub struct DiskResponse {
     pub size_bytes: u64,
     pub origin: DiskOrigin,
     pub attached_to: Option<String>,
+    /// The node holding the file (spec/clustering.md §9.2); absent until bound.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
     pub pending_growpart: bool,
     /// `pending`, `creating`, `ready`, `resizing`, `busy`, `missing` or
     /// `failed`.
@@ -1074,10 +1077,12 @@ impl ImageManager {
             DiskPhase::Failed => "failed",
             _ if busy_op.is_some() => "busy",
             DiskPhase::Resizing => "resizing",
-            _ if !path.exists() => "missing",
+            // The node holding the file says so (its disk controller sets
+            // `Missing`); the server answering may not have the file at all.
+            DiskPhase::Missing => "missing",
             _ => "ready",
         };
-        let (info, table) = if with_detail && status == "ready" {
+        let (info, table) = if with_detail && status == "ready" && path.exists() {
             (
                 qemu_img::info(&path, Some(d.format)).ok(),
                 partition::read_table(&path, d.format, d.size_bytes).ok().flatten(),
@@ -1093,6 +1098,7 @@ impl ImageManager {
             size_bytes: d.size_bytes,
             origin: d.origin.clone(),
             attached_to: d.attached_to.clone(),
+            node: d.node.clone(),
             pending_growpart: d.pending_growpart,
             status: status.to_string(),
             phase: d.phase,
