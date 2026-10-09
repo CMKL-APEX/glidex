@@ -89,6 +89,17 @@ impl NodeLink {
         self.connected.load(Ordering::Acquire)
     }
 
+    /// Record whether a server answers; a change is logged, with why.
+    fn set_connected(&self, up: bool, why: &str) {
+        if self.connected.swap(up, Ordering::AcqRel) != up {
+            if up {
+                tracing::info!(server = why, "reached the cluster servers");
+            } else {
+                tracing::warn!("lost the cluster servers: {}", why);
+            }
+        }
+    }
+
     /// The servers this node knows: the ones it was given and the ones in its cache.
     fn candidates(&self) -> Vec<String> {
         let mut v = self.servers.lock().unwrap().clone();
@@ -117,9 +128,10 @@ impl NodeLink {
     /// "not the leader" answers. `Err(None)`: nobody could be reached.
     async fn to_leader(&self, method: hyper::Method, path: &str, body: Bytes, timeout: Duration) -> Result<super::net::Reply, Option<super::net::Reply>> {
         if self.partitioned.load(Ordering::Acquire) {
-            self.connected.store(false, Ordering::Release);
+            self.set_connected(false, "partitioned");
             return Err(None);
         }
+        let mut last = String::from("no server known");
         let mut tried = HashSet::new();
         let mut queue: Vec<String> = self.candidates();
         while let Some(addr) = queue.first().cloned() {
@@ -135,13 +147,13 @@ impl NodeLink {
                 }
                 Ok(r) => {
                     self.prefer(&addr);
-                    self.connected.store(true, Ordering::Release);
+                    self.set_connected(true, &addr);
                     return Ok(r);
                 }
-                Err(_) => {}
+                Err(e) => last = format!("{path}: {e}"),
             }
         }
-        self.connected.store(false, Ordering::Release);
+        self.set_connected(false, &last);
         Err(None)
     }
 
@@ -210,14 +222,18 @@ impl NodeLink {
         if self.partitioned.load(Ordering::Acquire) {
             return Err(());
         }
+        let mut last = String::from("no server known");
         for addr in self.candidates() {
-            if let Ok(r) = self.cluster.client.request_timeout(&addr, hyper::Method::GET, path, &[], Bytes::new(), Duration::from_secs(40)).await {
-                self.prefer(&addr);
-                self.connected.store(true, Ordering::Release);
-                return Ok(r);
+            match self.cluster.client.request_timeout(&addr, hyper::Method::GET, path, &[], Bytes::new(), Duration::from_secs(40)).await {
+                Ok(r) => {
+                    self.prefer(&addr);
+                    self.set_connected(true, &addr);
+                    return Ok(r);
+                }
+                Err(e) => last = format!("{path}: {e}"),
             }
         }
-        self.connected.store(false, Ordering::Release);
+        self.set_connected(false, &last);
         Err(())
     }
 

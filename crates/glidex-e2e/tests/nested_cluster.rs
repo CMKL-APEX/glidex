@@ -260,8 +260,9 @@ fn a_nested_two_node_cluster_binds_vm_ports_and_carries_traffic_over_geneve() {
                 let events = inner.call("GET", &format!("/vms/{id}/events"), None).1;
                 let disks = inner.call("GET", "/disks", None).1;
                 let images = inner.call("GET", "/images", None).1;
-                let logs = h2.run("sudo journalctl -u glidex-control-plane --no-pager -n 60 | cut -c1-300");
-                format!("vm: {vm}\nevents: {events}\ndisks: {disks}\nimages: {images}\nh2 log:\n{}", String::from_utf8_lossy(&logs.stdout))
+                let nodes = inner.call("GET", "/nodes", None).1;
+                let log = |h: &Ssh| String::from_utf8_lossy(&h.run(LOG_PROBLEMS).stdout).into_owned();
+                format!("vm: {vm}\nevents: {events}\ndisks: {disks}\nimages: {images}\nnodes: {nodes}\nh1 log:\n{}\nh2 log:\n{}", log(&h1), log(&h2))
             },
         );
     }
@@ -294,6 +295,10 @@ fn a_nested_two_node_cluster_binds_vm_ports_and_carries_traffic_over_geneve() {
     }
     drop(outer);
 }
+
+/// The control plane's warnings, errors and cluster-link changes, newest last.
+const LOG_PROBLEMS: &str =
+    "sudo journalctl -u glidex-control-plane --no-pager -o short-iso | grep -E 'WARN|ERROR|cluster servers|liveness|disk created|image (ready|copied)' | grep -v ovn_dbctl | tail -n 80 | cut -c1-300";
 
 fn tempfile_dir(tag: &str) -> std::path::PathBuf {
     let d = std::env::temp_dir().join(format!("glidex-e2e-{tag}"));
