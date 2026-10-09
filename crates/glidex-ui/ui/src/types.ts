@@ -57,6 +57,8 @@ export interface VmResponse {
   last_exit?: ExitRecord;
   /** The node the VM is placed on (spec/clustering.md §9.1). */
   node?: string;
+  /** That node's name (spec/clustering-ui.md §9). */
+  node_name?: string;
   vcpu_count: number;
   mem_size_mib: number;
   hypervisor: HypervisorType;
@@ -96,6 +98,11 @@ export interface Network {
   /** Projects that accepted a share of this project network. */
   shares?: string[];
   share_offers?: { project: string; offered_by: string; offered_at: number; expires_at: number }[];
+  /** `cluster`: an OVN network every node can use; `node`: an OVS bridge on `node` (spec/clustering.md §11). */
+  scope?: "cluster" | "node";
+  node?: string;
+  physnet?: string;
+  router?: string;
   /** What the network controller last saw in netd (spec/reconciliation.md §10.3). */
   phase?: "pending" | "ready" | "degraded" | "netd_unavailable";
   conditions?: Condition[];
@@ -117,6 +124,10 @@ export interface CreateNetworkRequest {
   bridge?: string;
   subnet?: string;
   vlan?: number;
+  /** `cluster` (OVN) or `node`; the server's default is the cluster's when OVN is on. */
+  scope?: "cluster" | "node";
+  /** A provider network (cluster scope, bridged): its physical network. */
+  physnet?: string;
 }
 
 export interface Combination {
@@ -282,6 +293,9 @@ export interface DiskInfo {
   busy_op?: string;
   path: string;
   project?: string;
+  /** The node holding the disk's file (spec/clustering.md §9.2). */
+  node?: string;
+  node_name?: string;
   created_at: number;
   partition_table?: { kind: "gpt" | "mbr"; partitions: PartitionInfo[]; free_tail_bytes: number };
   warnings?: string[];
@@ -438,6 +452,19 @@ export function vmActivity(vm: VmResponse): string | null {
 }
 
 /** What keeps the VM from its desired state (the `Ready` condition). */
+/** The VM's node stopped reporting (spec/clustering.md §7.2): its last
+ * known state is shown, but the VM may still be running. */
+export function nodeUnreachable(vm: VmResponse): boolean {
+  return vm.conditions?.some((c) => c.kind === "Ready" && c.status === "Unknown" && c.reason === "NodeUnreachable") ?? false;
+}
+
+/** Why the scheduler hasn't placed the VM, when it hasn't. */
+export function unscheduledReason(vm: VmResponse): string | null {
+  const s = vm.conditions?.find((c) => c.kind === "Scheduled");
+  if (!s || s.status !== "False") return null;
+  return s.message || s.reason;
+}
+
 export function notReadyReason(vm: VmResponse): string | null {
   const ready = vm.conditions?.find((c) => c.kind === "Ready");
   if (!ready || ready.status === "True") return null;

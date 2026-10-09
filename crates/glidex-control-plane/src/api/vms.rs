@@ -53,13 +53,20 @@ fn if_match(headers: &HeaderMap) -> Result<Option<u64>, ApiErr> {
     }
 }
 
+/// A VM as the API shows it, with its node's name.
+pub(crate) fn vm_response(c: &Caller, vm: &Vm) -> VmResponse {
+    let mut r = VmResponse::from(vm);
+    r.node_name = r.node.as_deref().and_then(|n| c.manager().nodes().get(n).ok().flatten()).map(|n| n.spec.name);
+    r
+}
+
 /// The response to a spec write: `202` (or `ok` for a create) at once, or
 /// with `?wait`, after the controller decided: converged → `ok`, failed →
 /// the error the call would have returned synchronously (D20), timeout →
 /// `202`.
 async fn respond(c: &Caller, vm: Vm, wait: Option<u64>, ok: StatusCode, warnings: Vec<String>) -> Response {
     let body = |vm: &Vm| {
-        let mut r = VmResponse::from(vm);
+        let mut r = vm_response(c, vm);
         r.warnings = warnings.clone();
         Json(r)
     };
@@ -104,7 +111,7 @@ pub async fn list(c: Caller, Query(q): Query<ProjectFilter>) -> Result<impl Into
         }
         let (e, es) = vm_entities(&vm);
         if c.allowed("readVm", e, es) {
-            out.push(VmResponse::from(&vm));
+            out.push(vm_response(&c, &vm));
         }
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
@@ -238,7 +245,7 @@ pub async fn get_one(c: Caller, Path(id): Path<String>, Query(q): Query<ViewQuer
         c.require_action("readSystemStatus", Ent::Host, EntitySet::new(), &[])?;
         return Ok(Json(serde_json::to_value(&vm).unwrap_or_default()).into_response());
     }
-    Ok(Json(VmResponse::from(&vm)).into_response())
+    Ok(Json(vm_response(&c, &vm)).into_response())
 }
 
 #[derive(serde::Deserialize, Default)]
@@ -260,14 +267,14 @@ pub async fn delete_one(c: Caller, Path(id): Path<String>, Query(q): Query<Delet
     let Some(secs) = q.wait else {
         let vm = c.manager().get_vm(&id).await.ok();
         return Ok(match vm {
-            Some(vm) => (StatusCode::ACCEPTED, Json(VmResponse::from(&vm))).into_response(),
+            Some(vm) => (StatusCode::ACCEPTED, Json(vm_response(&c, &vm))).into_response(),
             None => StatusCode::NO_CONTENT.into_response(),
         });
     };
     let gen = c.manager().get_vm(&id).await.map(|v| v.generation).unwrap_or(0);
     match c.manager().wait_converged(&id, gen, Duration::from_secs(secs.min(MAX_WAIT_SECS))).await {
         Waited::Gone | Waited::TimedOut(None) => Ok(StatusCode::OK.into_response()),
-        Waited::Decided(vm) | Waited::TimedOut(Some(vm)) => Ok((StatusCode::ACCEPTED, Json(VmResponse::from(&*vm))).into_response()),
+        Waited::Decided(vm) | Waited::TimedOut(Some(vm)) => Ok((StatusCode::ACCEPTED, Json(vm_response(&c, &vm))).into_response()),
     }
 }
 

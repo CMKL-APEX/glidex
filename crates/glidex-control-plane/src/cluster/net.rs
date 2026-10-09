@@ -247,6 +247,70 @@ impl PeerClient {
         unreachable!()
     }
 
+    /// One request whose answer is streamed back rather than collected (the
+    /// UI relay: event streams, large downloads). Only connecting has a
+    /// time limit.
+    pub async fn request_stream(&self, addr: &str, method: Method, path: &str, headers: &[(&str, String)], body: Bytes) -> Result<hyper::Response<hyper::body::Incoming>, NetError> {
+        for attempt in 0..2 {
+            let pooled = self.conns.lock().unwrap().get(addr).cloned();
+            let mut sender = match pooled {
+                Some(s) if !s.is_closed() => s,
+                _ => {
+                    let s = self.connect(addr, self.tls.config()).await?;
+                    self.conns.lock().unwrap().insert(addr.to_string(), s.clone());
+                    s
+                }
+            };
+            let mut req = Request::builder().method(method.clone()).uri(format!("https://{addr}{path}"));
+            for (k, v) in headers {
+                req = req.header(*k, v.as_str());
+            }
+            let req = req.body(Full::new(body.clone())).map_err(|e| NetError::Other(e.to_string()))?;
+            match tokio::time::timeout(self.timeout, sender.send_request(req)).await {
+                Ok(Ok(r)) => return Ok(r),
+                Ok(Err(e)) => {
+                    self.conns.lock().unwrap().remove(addr);
+                    if attempt == 1 || !e.is_closed() && !e.is_canceled() {
+                        return Err(NetError::Request(addr.to_string(), e.to_string()));
+                    }
+                }
+                Err(_) => {
+                    self.conns.lock().unwrap().remove(addr);
+                    return Err(NetError::Request(addr.to_string(), "timed out".into()));
+                }
+            }
+        }
+        unreachable!()
+    }
+
+    /// An HTTP/1.1 request that may switch protocols (a WebSocket relayed
+    /// for the UI): the response's status and headers, and the upgraded
+    /// stream when it is `101`.
+    pub async fn upgrade_with(&self, addr: &str, method: Method, path: &str, headers: &[(&str, String)]) -> Result<(StatusCode, hyper::HeaderMap, Bytes, Option<TokioIo<hyper::upgrade::Upgraded>>), NetError> {
+        let ClientTls::Node(t) = &self.tls else { return Err(NetError::Other("not a cluster node".into())) };
+        let ce = |e: &dyn std::fmt::Display| NetError::Connect(addr.to_string(), e.to_string());
+        let sock: SocketAddr = addr.parse().map_err(|e| ce(&e))?;
+        let tcp = tokio::time::timeout(self.timeout, tokio::net::TcpStream::connect(sock)).await.map_err(|_| ce(&"timed out"))?.map_err(|e| ce(&e))?;
+        let tls = tokio_rustls::TlsConnector::from(t.client_h1.load_full()).connect(ServerName::IpAddress(sock.ip().into()), tcp).await.map_err(|e| ce(&e))?;
+        let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(tls)).await.map_err(|e| ce(&e))?;
+        tokio::spawn(async move {
+            let _ = conn.with_upgrades().await;
+        });
+        let mut req = Request::builder().method(method).uri(format!("https://{addr}{path}")).header(hyper::header::HOST, addr);
+        for (k, v) in headers {
+            req = req.header(*k, v.as_str());
+        }
+        let req = req.body(Full::new(Bytes::new())).map_err(|e| NetError::Other(e.to_string()))?;
+        let resp = sender.send_request(req).await.map_err(|e| NetError::Request(addr.to_string(), e.to_string()))?;
+        let (status, headers) = (resp.status(), resp.headers().clone());
+        if status != StatusCode::SWITCHING_PROTOCOLS {
+            let body = resp.into_body().collect().await.map(|b| b.to_bytes()).unwrap_or_default();
+            return Ok((status, headers, body, None));
+        }
+        let up = hyper::upgrade::on(resp).await.map_err(|e| NetError::Request(addr.to_string(), e.to_string()))?;
+        Ok((status, headers, Bytes::new(), Some(TokioIo::new(up))))
+    }
+
     /// GET `path` into the file `dest`, streamed. Returns the status; the file
     /// is written only for `200`.
     pub async fn get_to_file(&self, addr: &str, path: &str, dest: &std::path::Path) -> Result<u16, NetError> {

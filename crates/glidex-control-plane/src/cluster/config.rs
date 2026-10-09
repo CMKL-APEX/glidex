@@ -30,6 +30,10 @@ pub struct ClusterConfig {
     pub import_plan_ttl_secs: u64,
     pub ca_rotation_grace_secs: u64,
     pub ovn: OvnConfig,
+    /// On an agent, relay the web UI's requests to a server, which
+    /// authenticates them (spec/clustering-ui.md §3.6). Off: the agent's UI
+    /// socket answers `421` with the servers to use instead.
+    pub ui_relay: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -98,6 +102,7 @@ impl Default for ClusterConfig {
             import_plan_ttl_secs: 86400,
             ca_rotation_grace_secs: 604800,
             ovn: OvnConfig::default(),
+            ui_relay: true,
         }
     }
 }

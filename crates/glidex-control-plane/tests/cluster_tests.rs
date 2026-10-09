@@ -1177,3 +1177,85 @@ async fn the_last_node_dissolves_the_cluster_and_keeps_everything() {
     host.initialize().await.unwrap();
     assert_eq!(host.list_vms().await.iter().map(|v| v.id.as_str()).collect::<Vec<_>>(), vec![id.as_str()]);
 }
+
+/// The UI socket of an agent with `ui_user` set to whoever runs the test,
+/// so the relay's peer check passes.
+fn agent_ui_router(cp: &Cp, relay: bool) -> axum::Router {
+    let mut cfg = Config::default();
+    cfg.ui_user = nix::unistd::User::from_uid(nix::unistd::getuid()).unwrap().unwrap().name;
+    cfg.cluster.ui_relay = relay;
+    let auth = glidex_control_plane::auth::AuthService::disabled_with(cp.manager.database(), cfg).unwrap();
+    glidex_control_plane::api::router(Arc::new(glidex_control_plane::api::App { manager: cp.manager.clone(), auth }))
+}
+
+async fn via_ui(router: &axum::Router, method: &str, uri: &str) -> (StatusCode, axum::http::HeaderMap, Value) {
+    let mut req = Request::builder().method(method).uri(uri).body(Body::empty()).unwrap();
+    req.extensions_mut().insert(glidex_control_plane::api::Listener::Ui);
+    req.extensions_mut().insert(glidex_control_plane::api::PeerUid(nix::unistd::getuid().as_raw()));
+    let resp = router.clone().oneshot(req).await.unwrap();
+    let (status, headers) = (resp.status(), resp.headers().clone());
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    (status, headers, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+}
+
+/// spec/clustering-ui.md §3.6: an agent's UI socket relays to a server, which
+/// answers; a host-local path comes back to run on the agent; a relay may not
+/// carry a principal; with the relay off the agent points at the servers.
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn an_agents_ui_is_relayed_to_a_server_and_host_paths_run_on_the_agent() {
+    let _one = SERIAL.lock().await;
+    let cfg = test_config();
+    let server = new_cp();
+    manage::init(&server.manager, &cfg, InitOptions { advertise: Some(server.addr), tunnel_ip: None, listen: Some(server.addr) }).await.unwrap();
+    server.manager.initialize().await.unwrap();
+    let agent = new_cp();
+    let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test").unwrap();
+    manage::join(&agent.manager, &cfg, JoinOptions { server: server.addr, token, role: NodeRole::Agent, advertise: Some(agent.addr), tunnel_ip: None, name: Some("agent1".into()), listen: Some(agent.addr) })
+        .await
+        .unwrap();
+    assert!(agent.manager.node_link().unwrap().wait_ready(Duration::from_secs(20)).await);
+    agent.manager.initialize().await.unwrap();
+    let server_id = cluster(&server).identity.node_id.clone();
+    let agent_id = cluster(&agent).identity.node_id.clone();
+    let ui = agent_ui_router(&agent, true);
+
+    // Cluster-wide reads are the server's.
+    let (s, h, v) = via_ui(&ui, "GET", "/cluster/status").await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["node_id"], server_id.as_str(), "the server answered: {v}");
+    assert_eq!(h["x-glidex-served-by"], server_id.as_str());
+    let (s, _, v) = via_ui(&ui, "GET", "/nodes").await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(v.as_array().unwrap().len(), 2, "{v}");
+
+    // Host-local paths are about the agent's host and run there.
+    let (s, h, v) = via_ui(&ui, "GET", "/system/reconcile").await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(h["x-glidex-served-by"], agent_id.as_str(), "ran on the agent");
+
+    // A relay can't vouch for anyone.
+    let r = cluster(&agent)
+        .client
+        .request(&server.addr.to_string(), axum::http::Method::GET, "/cluster/v1/ui/vms", &[("x-glidex-principal", "e30=".to_string())], bytes::Bytes::new())
+        .await
+        .unwrap();
+    assert_eq!(r.status, StatusCode::FORBIDDEN);
+    // Nor may a node send another node's host what it authorized (servers only).
+    let r = cluster(&agent)
+        .client
+        .request(&server.addr.to_string(), axum::http::Method::GET, "/cluster/v1/host/system/reconcile", &[("x-glidex-authorized", "readSystemStatus".to_string())], bytes::Bytes::new())
+        .await
+        .unwrap();
+    assert_eq!(r.status, StatusCode::FORBIDDEN);
+
+    // Relay off: the agent names the servers instead.
+    let off = agent_ui_router(&agent, false);
+    let (s, _, v) = via_ui(&off, "GET", "/vms").await;
+    assert_eq!(s, StatusCode::MISDIRECTED_REQUEST, "{v}");
+    assert!(v["message"].as_str().unwrap().contains(&server.addr.to_string()), "{v}");
+
+    // A server's own UI socket is not relayed.
+    let (s, h, _) = via_ui(&agent_ui_router(&server, true), "GET", "/cluster/status").await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(h.get("x-glidex-served-by").is_none());
+}

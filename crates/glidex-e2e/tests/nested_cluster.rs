@@ -293,7 +293,81 @@ fn a_nested_two_node_cluster_binds_vm_ports_and_carries_traffic_over_geneve() {
     for (b, a, host) in [(before.0, after.0, "h1"), (before.1, after.1, "h2")] {
         assert!(a.0 > b.0 && a.1 > b.1, "{host}: the Geneve tunnel carried nothing: {b:?} -> {a:?}");
     }
+
+    step("the agent's web UI is relayed to the server (spec/clustering-ui.md §3.6)");
+    check_agent_ui(&h1, &h2, &credential, &keydir, &n1, &n2, &format!("gxe2e-{tag}-h2"));
     drop(outer);
+}
+
+/// One request to a glidex-ui from this host: (status, headers, body). The
+/// body goes through stdin, so a password never reaches a command line.
+fn ui_curl(jar: &std::path::Path, base: &str, method: &str, path: &str, body: Option<&Value>, stream_secs: Option<u32>) -> (u16, String, String) {
+    let mut c = Command::new("curl");
+    c.args(["-s", "-k", "-i", "-X", method, "-b"]).arg(jar).arg("-c").arg(jar).args(["-H", &format!("Origin: {base}")]);
+    if let Some(t) = stream_secs {
+        c.args(["-N", "--max-time", &t.to_string()]);
+    } else {
+        c.args(["--max-time", "30"]);
+    }
+    if body.is_some() {
+        c.args(["-H", "content-type: application/json", "--data-binary", "@-"]);
+    }
+    c.arg(format!("{base}{path}")).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+    let mut child = c.spawn().expect("curl");
+    {
+        use std::io::Write;
+        let mut stdin = child.stdin.take().unwrap();
+        if let Some(b) = body {
+            stdin.write_all(b.to_string().as_bytes()).unwrap();
+        }
+    }
+    let out = child.wait_with_output().unwrap();
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    let (head, rest) = text.split_once("\r\n\r\n").unwrap_or((&text, ""));
+    let status = head.split_whitespace().nth(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+    (status, head.to_ascii_lowercase(), rest.to_string())
+}
+
+fn header<'a>(head: &'a str, name: &str) -> Option<&'a str> {
+    head.lines().find_map(|l| l.strip_prefix(&format!("{name}: "))).map(str::trim)
+}
+
+/// Log in through h2's (the agent's) glidex-ui as the test's user, made a PAM
+/// user with a throwaway password on h1 (the server that authenticates).
+fn check_agent_ui(h1: &Ssh, h2: &Ssh, user: &str, dir: &std::path::Path, n1: &str, n2: &str, h2_name: &str) {
+    let password = uuid::Uuid::new_v4().simple().to_string();
+    let out = h1.run_with_input("sudo chpasswd", format!("{user}:{password}\n").as_bytes());
+    assert!(out.status.success(), "setting a login password on h1");
+    let base = format!("https://{}:5173", h2.host);
+    let jar = dir.join("ui-cookies");
+    wait_for("h2's web UI", Duration::from_secs(60), || (ui_curl(&jar, &base, "GET", "/api/health", None, None).0 == 200).then_some(()));
+
+    let (s, _, body) = ui_curl(&jar, &base, "POST", "/api/auth/login", Some(&json!({ "method": "pam", "username": user, "password": password })), None);
+    drop(password);
+    assert_eq!(s, 200, "PAM login through the agent's UI: {}", body.chars().take(300).collect::<String>());
+
+    let (s, head, body) = ui_curl(&jar, &base, "GET", "/api/cluster/status", None, None);
+    assert_eq!(s, 200, "{body}");
+    let v: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["node_id"], n1, "cluster reads are the server's");
+    assert_eq!(header(&head, "x-glidex-served-by"), Some(n1));
+
+    let (s, head, _) = ui_curl(&jar, &base, "GET", "/api/system/reconcile", None, None);
+    assert_eq!(s, 200);
+    assert_eq!(header(&head, "x-glidex-served-by"), Some(n2), "host-local reads run on the agent");
+
+    let (s, _, body) = ui_curl(&jar, &base, "GET", "/api/vms", None, None);
+    assert_eq!(s, 200, "{body}");
+    let vms: Value = serde_json::from_str(&body).unwrap();
+    let b = vms.as_array().unwrap().iter().find(|v| v["name"] == "e2e-b").expect("e2e-b listed");
+    assert_eq!(b["node"], n2);
+    assert_eq!(b["node_name"], h2_name);
+
+    // The live stream comes through the relay as it happens, not at the end.
+    let (s, _, body) = ui_curl(&jar, &base, "GET", "/api/watch?kinds=nodes,cluster,policy", None, Some(8));
+    assert_eq!(s, 200);
+    assert!(body.contains("event: synced") && body.contains("\"kind\":\"node\""), "watch through the relay: {}", body.chars().take(400).collect::<String>());
+    let _ = std::fs::remove_file(&jar);
 }
 
 /// The control plane's warnings, errors and cluster-link changes, newest last.

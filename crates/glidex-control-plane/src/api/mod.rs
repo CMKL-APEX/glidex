@@ -16,6 +16,7 @@ mod net;
 mod nodes;
 mod storage;
 mod rates;
+pub mod relay;
 pub(crate) use rates::live_vm_stats;
 pub(crate) use vms::read_log_tail;
 mod usage;
@@ -59,7 +60,27 @@ pub enum Listener {
     /// A request another server authenticated and forwarded over :8842
     /// (spec/clustering.md §6.4); the principal comes from its header.
     Cluster,
+    /// A browser request an agent's UI socket relayed over :8842
+    /// (spec/clustering-ui.md §3.6): authenticated here like `Ui`, with the
+    /// Origin already checked by the agent.
+    Relay,
 }
+
+/// The node that relayed a UI request (`Listener::Relay`).
+#[derive(Debug, Clone)]
+pub struct RelayedBy(pub String);
+
+/// A relayed host-local request meant for this other node's host: the
+/// route's action is authorized here on that node's `Host`, then the
+/// request runs there (spec/clustering-ui.md §3.6).
+#[derive(Debug, Clone)]
+pub struct RemoteHost(pub String);
+
+/// A host-local request a server authorized for this host: the route's
+/// action on `Host` is allowed without asking this node's policies (an
+/// agent has none).
+#[derive(Debug, Clone)]
+pub struct PreAuthorized(pub String);
 
 /// The server that forwarded a request.
 #[derive(Debug, Clone)]
@@ -116,7 +137,10 @@ pub fn create_router(manager: Arc<VmManager>) -> Router {
 
 pub fn router(app: AppState) -> Router {
     let (r, _) = routes(&app);
-    r.layer(from_fn_with_state(app.clone(), gate::cluster_gate)).layer(from_fn_with_state(app.clone(), authenticate)).with_state(app)
+    r.layer(from_fn_with_state(app.clone(), gate::cluster_gate))
+        .layer(from_fn_with_state(app.clone(), authenticate))
+        .layer(from_fn_with_state(app.clone(), relay::ui_relay))
+        .with_state(app)
 }
 
 /// Every route with its action, for tests and documentation.
@@ -134,6 +158,7 @@ impl Routes<'_> {
     fn add(mut self, method: &'static str, path: &'static str, action: &'static str, mr: MethodRouter<AppState>) -> Self {
         self.table.push(RouteSpec { method, path, action });
         let mr: MethodRouter<AppState> = mr
+            .layer::<_, std::convert::Infallible>(from_fn_with_state(self.app.clone(), relay::remote_host))
             .layer::<_, std::convert::Infallible>(from_fn_with_state(self.app.clone(), audit_layer))
             .layer::<_, std::convert::Infallible>(Extension(RouteAction(action)));
         self.router = self.router.route(path, mr);
@@ -351,7 +376,7 @@ fn bearer(headers: &HeaderMap) -> Option<String> {
 /// Client IP: the TCP peer, or (only from glidex-ui) X-Forwarded-For.
 fn client_ip(parts_ext: &axum::http::Extensions, headers: &HeaderMap, listener: Listener) -> Option<IpAddr> {
     match listener {
-        Listener::Ui => headers
+        Listener::Ui | Listener::Relay => headers
             .get("x-forwarded-for")
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.split(',').next())
@@ -374,8 +399,8 @@ async fn authenticate(State(app): State<AppState>, mut req: Request, next: Next)
     // on every WebSocket upgrade.
     let origin = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()).map(String::from);
     if let Some(o) = &origin {
-        // A forwarded request was checked by the server that took it.
-        if listener != Listener::Cluster && (!safe || websocket) && !app.auth.config.auth.origin_allowed(o) {
+        // A forwarded or relayed request was checked by the node that took it.
+        if !matches!(listener, Listener::Cluster | Listener::Relay) && (!safe || websocket) && !app.auth.config.auth.origin_allowed(o) {
             return plain_error(StatusCode::FORBIDDEN, "origin_not_allowed", "this origin may not use the API");
         }
     }
@@ -395,7 +420,7 @@ async fn authenticate(State(app): State<AppState>, mut req: Request, next: Next)
                 None => Ok(None),
             },
             Listener::Cluster => gate::forwarded_principal(&headers),
-            Listener::Ui | Listener::Tcp => {
+            Listener::Ui | Listener::Tcp | Listener::Relay => {
                 if listener == Listener::Ui && !ui_peer_ok(&app, req.extensions().get::<PeerUid>()) {
                     return plain_error(StatusCode::FORBIDDEN, "forbidden", "only glidex-ui may use this socket");
                 }
@@ -503,6 +528,8 @@ pub struct Caller {
     pub app: AppState,
     pub request_id: String,
     audit: AuditSlot,
+    /// The action a server authorized on this host (`PreAuthorized`).
+    pre: Option<String>,
 }
 
 impl FromRequestParts<AppState> for Caller {
@@ -517,6 +544,7 @@ impl FromRequestParts<AppState> for Caller {
         Ok(Caller {
             p,
             action: parts.extensions.get::<RouteAction>().map(|a| a.0).unwrap_or(AUTHENTICATED),
+            pre: parts.extensions.get::<PreAuthorized>().map(|p| p.0.clone()),
             app: app.clone(),
             request_id: parts.extensions.get::<RequestId>().map(|r| r.0.clone()).unwrap_or_default(),
             audit: parts.extensions.get::<AuditSlot>().cloned().unwrap_or_default(),
@@ -546,8 +574,16 @@ impl Caller {
     }
 
     /// Ask Cedar, recording the decision for the audit entry.
+    /// A server's decision for this host (`PreAuthorized`), when it covers `action` on `resource`.
+    fn pre_authorized(&self, action: &str, resource: &Ent) -> Option<Decision> {
+        (self.pre.as_deref() == Some(action) && *resource == Ent::Host).then(|| Decision { allowed: true, policies: vec!["server-authorized".into()], errors: Vec::new() })
+    }
+
     pub fn decide(&self, action: &str, resource: Ent, es: EntitySet, extra: &[(&'static str, Ent)]) -> Decision {
-        let d = self.app.auth.authorize(&self.p, action, resource, es, extra);
+        let d = match self.pre_authorized(action, &resource) {
+            Some(d) => d,
+            None => self.app.auth.authorize(&self.p, action, resource, es, extra),
+        };
         let mut a = self.audit.0.lock().unwrap();
         for p in &d.policies {
             if !a.policies.contains(p) {
@@ -561,6 +597,9 @@ impl Caller {
     }
 
     pub fn allowed(&self, action: &str, resource: Ent, es: EntitySet) -> bool {
+        if self.pre_authorized(action, &resource).is_some() {
+            return true;
+        }
         self.app.auth.authorize(&self.p, action, resource, es, &[]).allowed
     }
 

@@ -204,7 +204,9 @@ open it; each kind is filtered exactly like its list endpoint (VMs by
 `project`; images need `readImage` and networks `readNetwork` on
 `Host`, with the view of `GET /networks`). `kinds` takes singular or
 plural names (default: the four above); an unknown kind is `400 invalid`.
-Asked for by name only (spec/clustering-ui.md §3.7):
+VM and disk objects (here and in their endpoints) carry `node` and
+`node_name`, the name of the node they are on, for callers who can't list
+nodes. Asked for by name only (spec/clustering-ui.md §3.7):
 
 | Kind | Sent to | `id`, `object` |
 |---|---|---|

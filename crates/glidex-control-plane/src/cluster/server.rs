@@ -47,6 +47,9 @@ pub fn router(c: Arc<Cluster>) -> Router {
         .route("/cluster/v1/images/{id}/file", get(image_file))
         .route("/cluster/v1/raw", post(raw_write))
         .route("/cluster/v1/auth", post(auth_call))
+        .route("/cluster/v1/ui", axum::routing::any(ui_relayed))
+        .route("/cluster/v1/ui/{*rest}", axum::routing::any(ui_relayed))
+        .route("/cluster/v1/host/{*rest}", axum::routing::any(host_authorized))
         .route("/raft/append", post(raft_append))
         .route("/raft/vote", post(raft_vote))
         .route("/raft/snapshot", post(raft_snapshot))
@@ -622,6 +625,51 @@ async fn forwarded(State(c): Ctx, p: Option<Extension<PeerCert>>, mut req: Reque
         Ok(r) => r.map(Body::new),
         Err(never) => match never {},
     }
+}
+
+/// `/cluster/v1/ui/<path>`: a browser request a node's UI socket relayed
+/// (spec/clustering-ui.md §3.6). Any node may relay; this server
+/// authenticates the request itself, as if the browser had come here.
+async fn ui_relayed(State(c): Ctx, p: Option<Extension<PeerCert>>, mut req: Request) -> Response {
+    let peer = match peer(&c, p, false) {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    if c.node.is_none() {
+        return fail(StatusCode::MISDIRECTED_REQUEST, "not_a_server", "only a server serves relayed UI requests");
+    }
+    if let Err(r) = crate::api::relay::accept_relayed(&mut req, &peer.node_id, &c.identity.node_id) {
+        return r;
+    }
+    serve_marked(&c, req).await
+}
+
+/// Run `req` through this node's API; the answer says which node ran it,
+/// unless an inner hop already did.
+async fn serve_marked(c: &Cluster, req: Request) -> Response {
+    let Some(api) = c.api.get() else { return fail(StatusCode::SERVICE_UNAVAILABLE, "unavailable", "the API is not up yet") };
+    let mut r = match api.clone().oneshot(req).await {
+        Ok(r) => r.map(Body::new),
+        Err(never) => match never {},
+    };
+    if !r.headers().contains_key(crate::api::relay::SERVED_BY_HEADER) {
+        if let Ok(v) = axum::http::HeaderValue::from_str(&c.identity.node_id) {
+            r.headers_mut().insert(crate::api::relay::SERVED_BY_HEADER, v);
+        }
+    }
+    r
+}
+
+/// `/cluster/v1/host/<path>`: a host-local request a server authorized for
+/// this node's host (spec/clustering-ui.md §3.6). Servers only.
+async fn host_authorized(State(c): Ctx, p: Option<Extension<PeerCert>>, mut req: Request) -> Response {
+    if let Err(r) = peer(&c, p, true) {
+        return r;
+    }
+    if let Err(r) = crate::api::relay::accept_authorized(&mut req) {
+        return r;
+    }
+    serve_marked(&c, req).await
 }
 
 /// Any error of recording a joining node, as text.

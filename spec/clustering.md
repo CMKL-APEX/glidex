@@ -917,6 +917,7 @@ OVS profile (kernel or DPDK) is unchanged.
   "detach_freeze_secs": 600,
   "import_plan_ttl_secs": 86400,
   "ca_rotation_grace_secs": 604800,
+  "ui_relay": true,
   "ovn": {
     "underlay_mtu": 1500,
     "nat_supernet": "10.89.0.0/16",
@@ -932,7 +933,10 @@ OVS profile (kernel or DPDK) is unchanged.
 }
 ```
 
-Without a `cluster` section the host is standalone (D5).
+Without a `cluster` section the host is standalone (D5). `ui_relay`
+(agents) relays the web UI's requests to a server, which authenticates
+them; off, the agent's UI answers `421` with the servers to use
+(spec/clustering-ui.md §3.6).
 `detach_freeze_secs`, `import_plan_ttl_secs` and `ca_rotation_grace_secs`
 are the defaults; `gxctl node detach --timeout`, `join-token
 --plan-ttl` and `cluster rotate-ca --grace` override them per operation.

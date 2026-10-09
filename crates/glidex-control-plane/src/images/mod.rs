@@ -506,6 +506,9 @@ pub struct DiskResponse {
     /// The node holding the file (spec/clustering.md §9.2); absent until bound.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub node: Option<String>,
+    /// That node's name (spec/clustering-ui.md §9).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub node_name: Option<String>,
     pub pending_growpart: bool,
     /// `pending`, `creating`, `ready`, `resizing`, `busy`, `missing` or
     /// `failed`.
@@ -1099,6 +1102,7 @@ impl ImageManager {
             origin: d.origin.clone(),
             attached_to: d.attached_to.clone(),
             node: d.node.clone(),
+            node_name: d.node.as_deref().and_then(|n| crate::node::NodeStore::new(self.db.clone()).get(n).ok().flatten()).map(|n| n.spec.name),
             pending_growpart: d.pending_growpart,
             status: status.to_string(),
             phase: d.phase,

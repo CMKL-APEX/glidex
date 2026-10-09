@@ -111,7 +111,7 @@ async fn snapshot(c: &Caller, kinds: &[Kind], only: Option<&str>) -> Result<View
                     }
                     let (e, es) = vm_entities(&vm);
                     if c.allowed("readVm", e, es) {
-                        let v = serde_json::to_value(crate::models::VmResponse::from(&vm)).unwrap_or_default();
+                        let v = serde_json::to_value(super::vms::vm_response(c, &vm)).unwrap_or_default();
                         view.insert((Kind::Vm, vm.id.clone()), v);
                     }
                 }

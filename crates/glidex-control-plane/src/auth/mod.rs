@@ -286,7 +286,11 @@ impl AuthService {
     /// Authentication off: every request is the break-glass system user.
     /// For embedding and tests only; the binary never uses it.
     pub fn disabled(db: Arc<crate::store::Db>) -> Result<Arc<Self>, AuthError> {
-        let mut config = Config::default();
+        Self::disabled_with(db, Config::default())
+    }
+
+    /// As [`disabled`](Self::disabled), with the rest of `config` (tests).
+    pub fn disabled_with(db: Arc<crate::store::Db>, mut config: Config) -> Result<Arc<Self>, AuthError> {
         // Embedding and tests never read the host's policy files.
         config.authz.policy_files_dir = std::path::PathBuf::new();
         let svc = Arc::new(Self {

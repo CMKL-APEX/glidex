@@ -587,6 +587,10 @@ pub struct VmResponse {
     /// The node the VM is placed on (spec/clustering.md §9.1).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node: Option<String>,
+    /// That node's name, for callers who can't list nodes
+    /// (spec/clustering-ui.md §9). Filled in by the API.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_name: Option<String>,
     pub vcpu_count: u8,
     pub mem_size_mib: u32,
     pub hypervisor: HypervisorType,
@@ -627,6 +631,7 @@ impl From<&Vm> for VmResponse {
             stop_grace_secs: vm.spec.stop_grace_secs,
             deleting: vm.deletion_requested_at.is_some(),
             node: vm.status.placement.as_ref().map(|p| p.node.clone()),
+            node_name: None,
             vcpu_count: config.vcpu_count,
             mem_size_mib: config.mem_size_mib,
             hypervisor: config.hypervisor,

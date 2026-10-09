@@ -109,7 +109,7 @@ async fn forward(_app: &AppState, cluster: std::sync::Arc<crate::cluster::Cluste
     let listener = parts.extensions.get::<Listener>().copied().unwrap_or(Listener::Tcp);
     let secure = match listener {
         Listener::Tcp => true,
-        Listener::Ui => parts.headers.get("x-forwarded-proto").and_then(|v| v.to_str().ok()) == Some("https"),
+        Listener::Ui | Listener::Relay => parts.headers.get("x-forwarded-proto").and_then(|v| v.to_str().ok()) == Some("https"),
         _ => false,
     };
     headers.push(("x-glidex-secure", secure.to_string()));

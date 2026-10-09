@@ -100,6 +100,11 @@ impl NodeLink {
         }
     }
 
+    /// The servers to try, the one that answered last first.
+    pub fn servers(&self) -> Vec<String> {
+        self.candidates()
+    }
+
     /// The servers this node knows: the ones it was given and the ones in its cache.
     fn candidates(&self) -> Vec<String> {
         let mut v = self.servers.lock().unwrap().clone();

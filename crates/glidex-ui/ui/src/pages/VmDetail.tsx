@@ -2,7 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import * as api from "../api";
 import type { VmResponse } from "../types";
-import { describeExit, settled, notReadyReason, vmActivity, HYPERVISOR_LABELS } from "../types";
+import { describeExit, settled, nodeUnreachable, notReadyReason, unscheduledReason, vmActivity, HYPERVISOR_LABELS } from "../types";
+import NodeName from "../components/NodeName";
 import { ApiRequestError } from "../api";
 import VmActions, { type VmAction } from "../components/VmActions";
 import VmStateBadge from "../components/VmStateBadge";
@@ -161,10 +162,21 @@ export default function VmDetail() {
               )}
             </div>
           )}
-          {notReadyReason(vm) && (
-            <div className="mb-6 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-800 whitespace-pre-wrap">
-              {notReadyReason(vm)}
+          {nodeUnreachable(vm) ? (
+            <div className="mb-6 p-3 bg-gray-50 border border-gray-300 rounded-lg text-sm text-gray-800">
+              Its node, <NodeName id={vm.node} name={vm.node_name} />, stopped reporting. The VM may still be running; what is shown is its
+              last known state. Nothing is restarted elsewhere.
             </div>
+          ) : unscheduledReason(vm) ? (
+            <div className="mb-6 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-800 whitespace-pre-wrap">
+              <span className="font-medium">Waiting for a node:</span> {unscheduledReason(vm)}
+            </div>
+          ) : (
+            notReadyReason(vm) && (
+              <div className="mb-6 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-800 whitespace-pre-wrap">
+                {notReadyReason(vm)}
+              </div>
+            )
           )}
           {vm.restart_required && (
             <div className="mb-6 p-3 bg-sky-50 border border-sky-200 rounded-lg text-sm text-sky-800">
@@ -186,7 +198,7 @@ export default function VmDetail() {
                 <div>
                   <h3 className="text-sm font-medium text-gray-500">Node</h3>
                   <p className="text-lg font-semibold text-gray-900">
-                    {vm.node}
+                    <NodeName id={vm.node} name={vm.node_name} />
                   </p>
                 </div>
               )}
@@ -290,6 +302,7 @@ export default function VmDetail() {
                 onAction={handleAction}
                 loading={actionLoading}
               />
+              {!nodeUnreachable(vm) && (
               <Link
                 to={`/vms/${vm.id}/console`}
                 className="inline-flex items-center px-3 py-2 text-sm font-medium text-white bg-gray-800 hover:bg-gray-900 rounded-lg"
@@ -309,6 +322,7 @@ export default function VmDetail() {
                 </svg>
                 Open Console
               </Link>
+              )}
             </div>
           </div>
 

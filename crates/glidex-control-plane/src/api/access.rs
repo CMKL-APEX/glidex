@@ -53,7 +53,7 @@ fn default_method() -> String {
 /// Whether cookies should be `Secure`: the browser reached us over TLS.
 fn secure_transport(app: &AppState, headers: &HeaderMap, listener: Listener) -> bool {
     match listener {
-        Listener::Ui => headers.get("x-forwarded-proto").and_then(|v| v.to_str().ok()) == Some("https"),
+        Listener::Ui | Listener::Relay => headers.get("x-forwarded-proto").and_then(|v| v.to_str().ok()) == Some("https"),
         Listener::Tcp => app.auth.config.tls.enabled(),
         Listener::Api => false,
         // A forwarded login: the first server saw how the browser connected.
@@ -124,7 +124,7 @@ pub async fn login(
     }
     // Passwords only over TLS or from this host (spec §5.3).
     let local = match listener {
-        Listener::Ui | Listener::Api | Listener::Cluster => true,
+        Listener::Ui | Listener::Api | Listener::Cluster | Listener::Relay => true,
         Listener::Tcp => app.auth.config.tls.enabled() || addr.is_none_or(|a| a.0 .0.ip().is_loopback()),
     };
     if !local {
@@ -229,7 +229,7 @@ pub async fn pam_token(
     }
     // Passwords only over TLS or from this host (spec §5.3), the same rule as `login`.
     let local = match listener {
-        Listener::Ui | Listener::Api | Listener::Cluster => true,
+        Listener::Ui | Listener::Api | Listener::Cluster | Listener::Relay => true,
         Listener::Tcp => app.auth.config.tls.enabled() || addr.is_none_or(|a| a.0 .0.ip().is_loopback()),
     };
     if !local {
