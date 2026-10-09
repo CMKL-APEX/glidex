@@ -126,6 +126,30 @@ fn nat_passes_dockers_forward_drop() {
     }
 }
 
+#[test]
+fn nat_passes_ufws_input_drop() {
+    let dir = TempDir::new().unwrap();
+    let exec = exec();
+    exec.on("iptables -w -S INPUT", Output::ok("-P INPUT DROP\n"));
+    exec.on("iptables -w -C INPUT -j GLIDEX-INPUT", Output::failed(1, "Bad rule"));
+    let (netd, _sup) = netd(exec.clone(), &dir);
+    setup_nat(&netd);
+    let calls = exec.calls();
+    for c in [
+        "iptables -w -A GLIDEX-INPUT -i gxbr-nat -p udp --dport 67 -j ACCEPT",
+        "iptables -w -I INPUT 1 -j GLIDEX-INPUT",
+    ] {
+        assert!(calls.iter().any(|x| x == c), "missing {c}: {calls:#?}");
+    }
+
+    // Deleting the last NAT network takes the chain and its jump out again.
+    netd.handle(Op::DeleteNat { bridge: "gxbr-nat".into() }, &peer()).unwrap();
+    let calls = exec.calls();
+    for c in ["iptables -w -D INPUT -j GLIDEX-INPUT", "iptables -w -X GLIDEX-INPUT"] {
+        assert!(calls.iter().any(|x| x == c), "missing {c}: {calls:#?}");
+    }
+}
+
 use glidex_netd::supervisor::Supervisor;
 
 #[test]

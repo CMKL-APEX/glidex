@@ -1025,7 +1025,9 @@ may ask it for what.
    (`iifname "gx*" oifname "gx*" iifname != oifname drop`, placed before
    the per-bridge accepts). An `input` chain lets traffic in from NAT
    bridges only for DHCP (udp 67) and DNS (udp/tcp 53) to the gateway,
-   and drops the rest. Project networks (§6.2) depend on this.
+   and drops the rest. Project networks (§6.2) depend on this. Where
+   iptables' `INPUT` also drops (ufw), netd's `GLIDEX-INPUT` chain
+   accepts exactly the same traffic and no more.
    **Isolated networks** are fenced off completely, as defense in depth.
    netd never brings an isolated bridge's host interface up (only NAT
    gateways and uplink IP migration do), so it has no address on the

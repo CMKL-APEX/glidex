@@ -169,7 +169,8 @@ by later runs (flags override the saved values):
     pre-glidex value rather than glidex's own. Firewall managers are not
     touched: ufw or firewalld dropping forwarded traffic must allow the NAT
     subnets. A plain iptables FORWARD DROP (e.g. Docker's) is handled by
-    netd's `GLIDEX-FORWARD` chain (networking.md §10).
+    netd's `GLIDEX-FORWARD` chain, and an `INPUT` DROP (ufw's default-deny)
+    by its `GLIDEX-INPUT` chain (networking.md §10).
 12. **Configuration** *(with services)*:
     - `/etc/pam.d/glidex` from `packaging/glidex.pam` (`@include
       common-auth` / `common-account`; `auth/account include system-auth`

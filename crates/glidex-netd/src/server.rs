@@ -537,6 +537,7 @@ impl Netd {
         self.apply_firewall(all)?;
         self.apply_meter(all);
         nat::apply_iptables(ex, all)?;
+        nat::apply_iptables_input(ex, all)?;
         nat::write_dnsmasq_files(ex, state)?;
         self.stop_stale_dnsmasq(state);
         self.supervisor.start(&state.bridge, state.dnsmasq_args())
@@ -619,6 +620,7 @@ impl Netd {
         self.apply_firewall(&rest)?;
         self.apply_meter(&rest);
         nat::apply_iptables(self.ex(), &rest)?;
+        nat::apply_iptables_input(self.ex(), &rest)?;
         nat::remove_address(self.ex(), &state)?;
         nat::remove_dnsmasq_files(self.ex(), &state)?;
         self.store.delete(NAT, bridge)?;
