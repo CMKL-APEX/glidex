@@ -46,10 +46,11 @@ Cluster page (C7: nodes, drain/undrain, Raft, port gaps):
    It shows the command to run with the token read from a file or stdin
    (`gxctl cluster join --server … --token-file <file>`), never one with
    the token on the command line.
-4. **Works on any server.** The UI may be served by any server (C§6:
-   "Clients and the UI may use any server"). Nothing assumes the serving
-   host is the leader; requests the leader must handle are forwarded by
-   the server.
+4. **Works on any node.** The UI may be served by any server (C§6.4:
+   "Clients and the UI may use any server"); nothing assumes the serving
+   host is the leader. On an agent, the UI's requests are relayed whole
+   to a server, which authenticates them (§3.6): an agent never
+   authenticates users or vouches for a principal.
 5. **Degrades to a standalone host.** With `clustered: false` every
    cluster element is hidden or replaced by the standalone wording; no
    page breaks.
@@ -80,15 +81,16 @@ schema's `appliesTo` doesn't list; it needs no change beyond the table.
 **Per-node actions.** `drainNode` and `undrainNode` apply to a node's
 own `Host` (the server checks `Ent::host_of(id)`), so a site can grant
 draining per node. They are not in the session table: the Cluster and
-Node pages check them per row with `useCan`, on `{type: "Host"}` for the
-serving node and `{type: "Node", id}` for the others. Any later
+Node pages ask for them per row with one `POST /authz/allowed` call
+(§3.5), on `{type: "Host"}` for the serving node and `{type: "Node", id}`
+for the others. Any later
 host-specific action (uplinks, PCI devices) follows the same rule.
 
 ### 3.2 Node directory
 
-`useNodes()` (like `useDirectory()`): `GET /nodes` once per session and
-every 10 s while a page that uses it is mounted, giving
-`id → { name, role, phase, ready, advertise }`. `nodeName(id)` returns the
+`useNodes()` (like `useDirectory()`): the `node` objects of the live
+stream (§3.7), giving `id → { name, role, phase, ready, advertise }`;
+`GET /nodes` only while the stream isn't live. `nodeName(id)` returns the
 name, or the first 8 characters of the id when the caller can't list
 nodes (`listNodes` denied) — see §9 `node_name` for the proper fix. The
 node serving the UI is marked "(this node)" (`node_id` of `GET /cluster/status`).
@@ -103,8 +105,10 @@ node serving the UI is marked "(this node)" (`node_id` of `GET /cluster/status`)
 - `503 cluster_unavailable` (no quorum): no retry; a global banner
   "The cluster has no leader; changes are refused until a majority of
   servers is back. Reads may be stale." that clears on the next success.
-- `X-Glidex-Consistency: stale` on a read: a small "may be out of date"
-  marker on the page header.
+- While the banner is up, reads are retried with
+  `X-Glidex-Consistency: local` (C§6.4); a page showing such a read
+  (its response carries `X-Glidex-Revision`) is marked "may be out of
+  date".
 
 ### 3.4 Confirm dialog
 
@@ -113,7 +117,108 @@ consequence text, a field that must equal `typeToConfirm`, and a
 destructive button disabled until it does. It retries once after a
 `401 reauth_required` through the existing `ReauthDialog`.
 
-### 3.5 Routes
+### 3.5 Capability queries
+
+Pages that list many objects with per-row actions (the node table, the
+VM list on a Node page) ask once per page instead of one `/authz/check`
+item per row and action:
+
+`POST /authz/allowed` (authenticated; new, §9):
+
+```json
+{ "actions": ["drainNode", "undrainNode", "removeNode"],
+  "resources": [{ "type": "Host" }, { "type": "Node", "id": "3f5d…" }] }
+```
+→
+```json
+{ "allowed": [["drainNode", "undrainNode"], ["drainNode"]] }
+```
+
+`allowed[i]` lists the actions permitted on `resources[i]`. An action
+whose schema `appliesTo` doesn't include the resource's type is left out
+(not an error), so one query can cover mixed actions. The server loads
+each resource's entities once and evaluates every action against them.
+Limits: 50 actions × 500 resources per call (`400 invalid` beyond).
+Unknown actions answer `400`, so a typo in the UI fails loudly instead of
+hiding a button. `useAllowed(actions, resources)` wraps it and re-runs
+when the live stream reports a policy change (`policy` kind, §3.7).
+
+`/authz/check` stays for single checks and the session's capability
+table (§3.1).
+
+### 3.6 The UI on an agent
+
+An agent has no users, sessions or tokens: the auth tables replicate to
+servers only (C§8.2, `sync::filter_for`), and an agent may not write them
+(the nested e2e test found PAM logins on an agent failing with "a node
+may not write users"). So an agent's control plane does not serve the UI
+socket's requests itself; it **relays** them:
+
+```
+browser ─HTTPS─▶ glidex-ui (agent) ─ui.sock─▶ control plane (agent)
+   ─:8842 mTLS, agent cert─▶ server: POST|GET… /cluster/v1/ui/<path>
+   ─▶ the server's API router, authenticated as if the browser had come
+      to it (cookie, CSRF, PAM login on the server's authd)
+```
+
+- **New :8842 route** `/cluster/v1/ui/{*path}`, accepted from node
+  certificates (agents and servers). The request goes through the
+  server's normal API stack — authentication, CSRF, authorization,
+  forwarding to the leader for writes — exactly as a request arriving on
+  its own UI socket. The relaying node adds `X-Glidex-Via-Node: <id>`
+  and `X-Forwarded-For` (the browser's address, from glidex-ui); both
+  are recorded in audit and never used for authorization. It must not
+  carry `X-Glidex-Principal` (refused if present): an agent can't vouch
+  for anyone.
+- **Which server**: the agent's preferred server (the one its
+  NodeLink reached last), then the others in order. A session is valid
+  on every server (sessions replicate among servers), so failover keeps
+  the user logged in. WebSockets (console) are relayed the same way;
+  the server then relays the console to the VM's node as it does now
+  (C§8.4).
+- **Host-local paths** (`/ovs`, `/pci-devices`, `/system/*`, the paths
+  `api::gate::is_host_local` lists) asked from the agent's UI mean the
+  agent's host. The agent marks them `X-Glidex-Target-Node: <self>`; the
+  server authenticates and authorizes them on `Host::"<agent>"`, then
+  sends them to the agent over the existing node relay (server
+  certificate, C§8.4), where they run. The agent accepts such relayed
+  host-local requests only from a server certificate, with the
+  server-verified principal.
+- **Unreachable servers**: the agent answers `503 cluster_unavailable`
+  ("this node can't reach a server; log in on a server: <list>"); the
+  UI shows its banner (§3.3). Nothing falls back to authenticating
+  locally.
+- **Trust**: a compromised agent sees what its users type into its UI
+  (including a PAM password at login), as any compromised host does;
+  it gains nothing beyond that, because the server authenticates every
+  relayed request itself. Sites that don't want logins on agents can turn
+  the relay off (`cluster.ui_relay = false` in the agent's
+  control-plane.json); the agent then answers `421` with the server
+  list.
+- `gxctl` on an agent's API socket (peer uid) is not covered: a server
+  can't verify a Unix uid of another host. `gxctl` users on agents log in
+  to a server (`gxctl auth login`, spec/gxctl-auth.md). This matches C D14:
+  break-glass through `api.sock` gives no cluster rights on an agent.
+
+### 3.7 Live updates
+
+The UI's live stream (`GET /watch`, web-ui.md *Live stream*) gains kinds,
+each sent only to callers allowed to list it, with the same
+re-list-on-change rule as the existing kinds:
+
+| Kind | Visible with | Object |
+|---|---|---|
+| `node` | `listNodes` on Cluster | the node record (spec, status: phase, ready, capacity, allocatable, versions, departure step) |
+| `import` | `listImports` on Cluster | the import plan view (`GET /imports/{plan}`) |
+| `cluster` | `readCluster` on Cluster | one object: leader, term, voters, learners, CA state (no port checks: those stay opt-in on `/cluster/status?ports=true`) |
+| `policy` | any authenticated caller | `{revision}` when policies or role links change, so pages re-run their capability queries |
+
+The Cluster page, the Node page, the node directory, the imports list
+and the CA card follow these kinds through `useLiveRefresh`; they poll
+(10 s) only while the stream isn't live, as the existing pages do. On an
+agent the stream is relayed like any request (§3.6).
+
+### 3.8 Routes
 
 | Path | Component |
 |---|---|
@@ -315,14 +420,16 @@ All need a read-only server endpoint (§9 `GET /cluster/ovn`,
 | CA expiry (`not_after`) and the trust bundle in `/cluster/status` `ca` (which has `signing`, `retiring`, `retire_at`, `started_at` today), and each node's certificate issuer and expiry | U4 §7.6 | |
 | Detach progress in node status (`departure: {plan, step}`) | U3 §6.4 | |
 | `GET /cluster/ovn`, `GET /networks/{name}/ovn` | U5 | Read-only; the same permission as `GET /cluster/status` / `GET /networks/{name}`. |
-| Agent login | U1 | An agent's API cannot record a PAM user ("a node may not write users", found by the nested e2e test). Either forward identity writes to the leader or have the agent's UI redirect to a server; until then the UI on an agent says "log in on a server: <list>". |
+| UI relay on agents: `/cluster/v1/ui/{*path}` on servers, the agent's UI socket relaying to it, host-local paths sent back through the node relay, `cluster.ui_relay` | U1 | §3.6 |
+| `POST /authz/allowed` | U0 | §3.5 |
+| Watch kinds `node`, `import`, `cluster`, `policy` | U0 | §3.7 |
 
 ## 10. Milestones
 
 | Milestone | Content | Done when |
 |---|---|---|
-| **U0** Shared pieces | §3: capability table entries, `useNodes`, 503 handling, `ConfirmDialog`, routes; web-ui.md route table | Unit tests for retry/backoff; `ui_capabilities.rs` passes with the new entries |
-| **U1** Cluster awareness | §4 + `node_name` (§9) + agent-login message | Playwright: two-node mock shows nodes on VMs/disks/networks; nested e2e: VM on the agent visible with node, console through the relay |
+| **U0** Shared pieces | §3.1–3.5, 3.7, 3.8: capability table entries, `POST /authz/allowed`, watch kinds, `useNodes`, 503 handling, `ConfirmDialog`, routes; web-ui.md route table | Unit tests for retry/backoff; `ui_capabilities.rs` passes with the new entries; `/authz/allowed` agrees with `/authz/check` item by item (property test); a policy change reaches an open page through the `policy` kind |
+| **U1** Cluster awareness | §4 + `node_name` (§9) + the agent UI relay (§3.6) | Playwright: two-node mock shows nodes on VMs/disks/networks; nested e2e: log in to the UI on the agent (h2), see the VM there with its node, open its console; with the servers unreachable the agent's UI answers `503` and never authenticates locally |
 | **U2** Placement and capacity | §5 + preview, copies, usage by node (§9) | Create a VM on a chosen node; refusal reasons shown; image copies visible during a copy |
 | **U3** Cluster page and membership | §6, §7.1–7.4 (imports included, C§16) | Playwright with a mocked cluster for every dialog; nested e2e: drain, remove an empty agent, rejoin token shown once |
 | **U4** Lifecycle and CA | §7.5–7.8 | Init a standalone host from the UI in the nested e2e; CA rotation progress on a two-node cluster |
@@ -341,17 +448,27 @@ about a day each; U2–U5 a few days each.
 - **Secrets**: a test that after the join-token dialog closes, the token
   appears in no `localStorage`/`sessionStorage` key, URL, or console
   message.
-- **Capabilities**: `ui_capabilities.rs` (schema ↔ UI table).
+- **Capabilities**: `ui_capabilities.rs` (schema ↔ UI table);
+  `/authz/allowed` against `/authz/check` for random actions and
+  resources.
+- **Relay** (control-plane tests, in-process cluster): a relayed request
+  carrying `X-Glidex-Principal` is refused; a relayed login creates the
+  session on the server; a host-local path from the agent's UI runs on
+  the agent and is authorized on `Host::"<agent>"`; `ui_relay = false`
+  answers `421`.
 - **Nested cluster** (`crates/glidex-e2e`): extend
   `nested_cluster` with a UI smoke step (glidex-ui on h1: log in, see
   both nodes, the agent's VM with its node).
 
-## 12. Open questions
+## 12. Resolved questions
 
-1. Should the UI on an agent proxy to a server instead of its local
-   control plane? (Simplest fix for agent login and stale reads.)
-2. Live updates: keep 10 s polling, or use the watch API for nodes and
-   imports?
-3. Per-node checks cost one `/authz/check` item per node and action;
-   with many nodes, batch them per page (the endpoint takes up to 200)
-   or add a server-side "actions allowed on these nodes" query?
+1. **The UI on an agent** relays to a server rather than serving from
+   the agent's local control plane (§3.6). It fixes agent logins (the
+   agent has no auth tables and may not write them) without letting an
+   agent vouch for principals, and keeps reads linearizable.
+2. **Live updates** use the watch stream (`GET /watch` kinds `node`,
+   `import`, `cluster`, `policy`, §3.7); polling stays only as the
+   fallback when the stream isn't live.
+3. **Per-row capability checks** use a server-side query,
+   `POST /authz/allowed` (§3.5), one call per page instead of one check
+   per row and action.
