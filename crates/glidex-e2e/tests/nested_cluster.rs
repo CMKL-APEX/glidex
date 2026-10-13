@@ -294,6 +294,30 @@ fn a_nested_two_node_cluster_binds_vm_ports_and_carries_traffic_over_geneve() {
         assert!(a.0 > b.0 && a.1 > b.1, "{host}: the Geneve tunnel carried nothing: {b:?} -> {a:?}");
     }
 
+    step("cluster views the UI uses, against real OVN (spec/clustering-ui.md §5, §8)");
+    let ovn = inner.ok("GET", "/cluster/ovn", None);
+    assert_eq!(ovn["enabled"], true, "{ovn}");
+    for db in ["nb", "sb"] {
+        let ms = ovn[db].as_array().unwrap();
+        assert!(ms.iter().all(|m| m["reachable"] == true) && ms.iter().filter(|m| m["leader"] == true).count() == 1, "{db}: {ovn}");
+    }
+    let chassis = ovn["chassis"].as_array().unwrap();
+    for (n, ip) in [(&n1, &h1.host), (&n2, &h2.host)] {
+        let c = chassis.iter().find(|c| c["node"] == n.as_str()).unwrap_or_else(|| panic!("chassis of {n}: {ovn}"));
+        assert!(c["encaps"].as_array().unwrap().iter().any(|e| e.as_str() == Some(&format!("geneve {ip}"))), "{c}");
+    }
+    let net = inner.ok("GET", "/networks/e2e-net/ovn", None);
+    for ((name, _), node) in guests.iter().zip([&n1, &n2]) {
+        let p = net["ports"].as_array().unwrap().iter().find(|p| p["vm"]["name"] == *name).unwrap_or_else(|| panic!("{name}'s port: {net}"));
+        assert_eq!(p["bound"]["node"], node.as_str(), "{p}");
+    }
+    let img = inner.ok("GET", &format!("/images/{}", env("GLIDEX_E2E_GUEST_IMAGE", "debian-13")), None);
+    let copies = img["copies"].as_array().unwrap();
+    assert!(copies.len() == 2 && copies.iter().all(|c| c["state"] == "ready"), "image copies: {img}");
+    let pv = inner.ok("POST", "/scheduler/preview", Some(&json!({ "vcpu_count": 1, "mem_size_mib": 256 })));
+    assert_eq!(pv["nodes"].as_array().unwrap().len(), 2, "{pv}");
+    assert!(pv["pick"].is_string(), "{pv}");
+
     step("the agent's web UI is relayed to the server (spec/clustering-ui.md §3.6)");
     check_agent_ui(&h1, &h2, &credential, &keydir, &n1, &n2, &format!("gxe2e-{tag}-h2"));
     drop(outer);

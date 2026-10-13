@@ -689,3 +689,5 @@ fn ensure_port(nb: &Nb, p: &PortSpec, desired: &Desired, have: Option<&Row>, rep
 
 #[cfg(test)]
 mod tests;
+
+pub mod view;

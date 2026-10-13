@@ -15,6 +15,7 @@ import { useCan, useSession } from "../session";
 import Modal from "../components/Modal";
 import { LoadingCard } from "../components/Loading";
 import NodeName from "../components/NodeName";
+import { NetworkOvnDialog } from "../components/OvnViews";
 import { useNodes } from "../nodes";
 
 const inputClass =
@@ -504,6 +505,7 @@ export default function Networking() {
     if (requested !== null) setParams({}, { replace: true });
   };
   const { clustered } = useNodes();
+  const [ovnOf, setOvnOf] = useState<string | null>(null);
   // Without host rights, a network is shown by how this project gets it.
   const scope = (n: Network) =>
     n.project ? (n.project === project ? "project" : `shared by ${projectName(n.project)}`) : "host";
@@ -576,7 +578,13 @@ export default function Networking() {
                 </td>
                 {clustered && (
                   <td className="px-4 py-3 text-xs">
-                    {n.scope === "cluster" ? <span className="text-gray-700">every node</span> : <NodeName id={n.node} />}
+                    {n.scope === "cluster" ? (
+                      <button className="text-sky-700 hover:underline" onClick={() => setOvnOf(n.name)} title="Ports, bindings and router on OVN">
+                        every node
+                      </button>
+                    ) : (
+                      <NodeName id={n.node} />
+                    )}
                   </td>
                 )}
                 <td className="px-4 py-3">{n.mode === "bridged" && n.physnet ? `provider (${n.physnet})` : n.mode}</td>
@@ -642,6 +650,7 @@ export default function Networking() {
           />
         </Modal>
       )}
+      {ovnOf && <NetworkOvnDialog name={ovnOf} onClose={() => setOvnOf(null)} />}
     </div>
   );
 }

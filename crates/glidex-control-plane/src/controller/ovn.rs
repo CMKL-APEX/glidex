@@ -288,3 +288,120 @@ mod chrono_like {
     #[derive(Debug, Clone, Copy)]
     pub struct Stamp(pub u64);
 }
+
+/// Read-only views of OVN for the web UI (spec/clustering-ui.md §8).
+impl VmManager {
+    /// `ssl:<ip>:<port>` of every server, for the NB (`6641`) or SB (`6642`) database.
+    fn ovn_endpoints(&self, port: u16) -> Vec<String> {
+        self.nodes()
+            .list()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|n| n.spec.role == crate::node::NodeRole::Server && !n.status.phase.is_tombstone())
+            .filter_map(|n| n.status.advertise.map(|a| format!("ssl:{}:{port}", a.ip())))
+            .collect()
+    }
+
+    /// A chassis name (`node:<id>`) as `{chassis, node, node_name}`.
+    fn chassis_json(&self, chassis: &str) -> serde_json::Value {
+        let node = chassis.strip_prefix("node:").map(String::from);
+        let name = node.as_deref().and_then(|n| self.nodes().get(n).ok().flatten()).map(|n| n.spec.name);
+        serde_json::json!({ "chassis": chassis, "node": node, "node_name": name })
+    }
+
+    /// `GET /cluster/ovn`: who serves the OVN databases and who leads, the
+    /// chassis, and each router's gateway.
+    pub async fn ovn_overview(&self) -> Result<serde_json::Value, crate::state::VmManagerError> {
+        if !self.ovn_enabled() {
+            return Ok(serde_json::json!({ "enabled": false }));
+        }
+        let Some(conn) = self.nb_conn() else { return Ok(serde_json::json!({ "enabled": true, "servers": 0 })) };
+        let (nb, sb) = (self.ovn_endpoints(glidex_ovs::ovn::NB_PORT), self.ovn_endpoints(glidex_ovs::ovn::SB_PORT));
+        let (nb2, sb2) = (nb.clone(), sb.clone());
+        let r = tokio::task::spawn_blocking(move || {
+            let exec = SystemExec::new();
+            let nb_members = glidex_ovn::view::members(&exec, glidex_ovs::exec::Program::OvnNbctl, &conn, &nb2);
+            let sb_members = glidex_ovn::view::members(&exec, glidex_ovs::exec::Program::OvnSbctl, &conn, &sb2);
+            let chassis = glidex_ovn::view::chassis(&exec, &conn, &sb2);
+            let gateways = glidex_ovn::view::gateways(&exec, &conn, &nb2, &sb2);
+            (nb_members, sb_members, chassis, gateways)
+        })
+        .await
+        .map_err(|e| crate::state::VmManagerError::PersistenceError(e.to_string()))?;
+        let (nb_members, sb_members, chassis, gateways) = r;
+        let chassis: Vec<serde_json::Value> = chassis
+            .unwrap_or_default()
+            .into_iter()
+            .map(|c| {
+                let mut v = self.chassis_json(&c.name);
+                v["hostname"] = serde_json::json!(c.hostname);
+                v["encaps"] = serde_json::json!(c.encaps);
+                v["nb_cfg_timestamp"] = serde_json::json!(c.nb_cfg_timestamp);
+                v
+            })
+            .collect();
+        let gateways: Vec<serde_json::Value> = gateways
+            .unwrap_or_default()
+            .into_iter()
+            .map(|g| {
+                serde_json::json!({
+                    "router": g.router,
+                    "active": g.active.as_deref().map(|c| self.chassis_json(c)),
+                    "candidates": g.candidates.iter().map(|(c, p)| { let mut v = self.chassis_json(c); v["priority"] = serde_json::json!(p); v }).collect::<Vec<_>>(),
+                })
+            })
+            .collect();
+        Ok(serde_json::json!({ "enabled": true, "nb": nb_members, "sb": sb_members, "chassis": chassis, "gateways": gateways }))
+    }
+
+    /// `GET /networks/{name}/ovn`: a cluster network's switch, its ports and
+    /// where they are bound, and its router.
+    pub async fn network_ovn(&self, net: &crate::network::Network) -> Result<serde_json::Value, crate::state::VmManagerError> {
+        if net.scope != NetworkScope::Cluster || !self.ovn_enabled() {
+            return Err(crate::hypervisor::HypervisorError::InvalidConfig(format!("{} is not an OVN network", net.name)).into());
+        }
+        let Some(conn) = self.nb_conn() else { return Err(crate::hypervisor::HypervisorError::InvalidConfig("no OVN server is known".into()).into()) };
+        let (nb, sb) = (self.ovn_endpoints(glidex_ovs::ovn::NB_PORT), self.ovn_endpoints(glidex_ovs::ovn::SB_PORT));
+        let switch = format!("gx-{}", net.name);
+        let router = match (&net.mode, &net.router) {
+            (NetworkMode::Nat, Some(r)) => Some(format!("gxr-{r}")),
+            (NetworkMode::Nat, None) => Some(glidex_ovn::EDGE.to_string()),
+            _ => None,
+        };
+        let (sw, rt) = (switch.clone(), router.clone());
+        let (ports, nat, gws) = tokio::task::spawn_blocking(move || {
+            let exec = SystemExec::new();
+            let ports = glidex_ovn::view::switch_ports(&exec, &conn, &nb, &sb, &sw);
+            let nat = rt.as_deref().map(|r| glidex_ovn::view::router_nat(&exec, &conn, &nb, r));
+            let gws = rt.as_ref().map(|_| glidex_ovn::view::gateways(&exec, &conn, &nb, &sb));
+            (ports, nat, gws)
+        })
+        .await
+        .map_err(|e| crate::state::VmManagerError::PersistenceError(e.to_string()))?;
+        let ports = ports.map_err(|e| crate::state::VmManagerError::PersistenceError(format!("reading OVN: {e}")))?;
+        let vms = self.list_vms().await;
+        let ports: Vec<serde_json::Value> = ports
+            .into_iter()
+            .map(|p| {
+                // VM ports are `gx<first 8 of the VM id>-<nic>`.
+                let vm = p.name.strip_prefix("gx").and_then(|r| r.split_once('-')).and_then(|(pre, _)| vms.iter().find(|v| v.id.starts_with(pre)));
+                serde_json::json!({
+                    "name": p.name, "kind": p.kind, "addresses": p.addresses, "up": p.up,
+                    "bound": p.chassis.as_deref().map(|c| self.chassis_json(c)),
+                    "vm": vm.map(|v| serde_json::json!({ "id": v.id, "name": v.name })),
+                })
+            })
+            .collect();
+        let gateway = gws.and_then(|g| g.ok()).and_then(|g| g.into_iter().find(|g| Some(&g.router) == router.as_ref()));
+        Ok(serde_json::json!({
+            "switch": switch,
+            "ports": ports,
+            "router": router.map(|r| serde_json::json!({
+                "name": r,
+                "nat": nat.and_then(|n| n.ok()).unwrap_or_default(),
+                "active_gateway": gateway.as_ref().and_then(|g| g.active.as_deref()).map(|c| self.chassis_json(c)),
+                "gateway_candidates": gateway.map(|g| g.candidates.iter().map(|(c, p)| { let mut v = self.chassis_json(c); v["priority"] = serde_json::json!(p); v }).collect::<Vec<_>>()).unwrap_or_default(),
+            })),
+        }))
+    }
+}

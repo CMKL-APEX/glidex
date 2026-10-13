@@ -211,7 +211,7 @@ function ProjectMapping({ source, projects, value, onChange }: { source: { id: s
       <span>
         {source.name} <span className="font-mono text-xs text-gray-400">{source.id.slice(0, 8)}</span>
       </span>
-      <select className={selectClass} value={isNew ? "__new" : value} onChange={(e) => onChange(e.target.value === "__new" ? `new:${source.name}` : e.target.value)}>
+      <select aria-label={`Where ${source.name} goes`} className={selectClass} value={isNew ? "__new" : value} onChange={(e) => onChange(e.target.value === "__new" ? `new:${source.name}` : e.target.value)}>
         <option value="">as is (a new project if it isn't here)</option>
         {projects.map((p) => (
           <option key={p.id} value={p.id}>

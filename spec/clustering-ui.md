@@ -1,12 +1,19 @@
 # Cluster operations in the web UI (implementation plan)
 
-Status: U0–U4 **implemented** (`/authz/allowed`, the cluster watch
+Status: U0–U5 **implemented** (`/authz/allowed`, the cluster watch
 kinds, the shared UI pieces, the agent UI relay, node awareness in the
 existing pages, `node_name`; the scheduler preview and placement choice,
 the Node page, image copies, usage by node; the Cluster page with every
 membership operation, join and rejoin tokens, imports with the mapping
 editor, detaches, the CA card with rotation, the snapshot download,
-initialize, leave and dissolve); U5 planned.
+initialize, leave and dissolve; the OVN views); tested in-process, with
+Playwright against a mocked cluster (`crates/glidex-ui/e2e/tests/cluster.spec.ts`)
+and end to end on the nested cluster (`crates/glidex-e2e`).
+
+The OVN views leave out the `ovn-controller` catch-up time unless OVN
+reports one: glidex doesn't wait for the hypervisors, so `nb_cfg` (and
+`Chassis_Private.nb_cfg_timestamp`) stays 0. Per-pair tunnel state (BFD)
+is not shown; the nested test checks the tunnels on the hosts.
 
 Found on the way: `POST /cluster/leave` was not host-local, so a
 follower forwarded it to the leader (and an agent's relay would have

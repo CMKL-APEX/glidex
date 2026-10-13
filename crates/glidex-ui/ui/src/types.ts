@@ -908,6 +908,30 @@ export interface ImportMappings {
   over_quota: boolean;
 }
 
+/** A chassis or node reference in OVN views. */
+export interface ChassisRef {
+  chassis: string;
+  node: string | null;
+  node_name: string | null;
+  priority?: number;
+}
+
+/** `GET /cluster/ovn` (spec/clustering-ui.md §8). */
+export interface OvnOverview {
+  enabled: boolean;
+  nb?: { address: string; reachable: boolean; leader: boolean }[];
+  sb?: { address: string; reachable: boolean; leader: boolean }[];
+  chassis?: (ChassisRef & { hostname: string; encaps: string[]; nb_cfg_timestamp: number | null })[];
+  gateways?: { router: string; active: ChassisRef | null; candidates: ChassisRef[] }[];
+}
+
+/** `GET /networks/{name}/ovn`. */
+export interface NetworkOvn {
+  switch: string;
+  ports: { name: string; kind: string; addresses: string[]; up: boolean | null; bound: ChassisRef | null; vm: { id: string; name: string } | null }[];
+  router: { name: string; nat: string[]; active_gateway: ChassisRef | null; gateway_candidates: ChassisRef[] } | null;
+}
+
 /** A detach (`GET /departures`, clustering.md §5.8). */
 export interface Departure {
   plan: string;

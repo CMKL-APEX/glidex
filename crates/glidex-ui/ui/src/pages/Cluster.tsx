@@ -13,6 +13,7 @@ import AddNodeDialog from "../components/AddNodeDialog";
 import { Badge, Card, ErrorBanner, PageHeader, errorMessage, primaryButton } from "../components/ui";
 import { PHASE_KIND } from "./NodeDetail";
 import { ClusterCa, DangerZone, InitCluster } from "../components/ClusterLifecycle";
+import { OvnCard, useOvnOverview } from "../components/OvnViews";
 
 /** Port checks open connections to every node: not on every change. */
 const PORTS_EVERY_MS = 60_000;
@@ -40,6 +41,7 @@ export default function Cluster() {
   const [imports, setImports] = useState(live.imports);
   const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
+  const ovn = useOvnOverview(host.readCluster && status?.clustered !== false && !!status);
 
   const loadStatus = useCallback(async () => {
     try {
@@ -278,6 +280,7 @@ export default function Cluster() {
         </Card>
       )}
 
+      <OvnCard ovn={ovn.ovn} error={ovn.error} />
       <ClusterCa status={summary} nodes={current} onDone={refreshAll} />
       <DangerZone status={summary} onDone={refreshAll} />
 

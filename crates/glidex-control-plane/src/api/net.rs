@@ -89,6 +89,23 @@ pub async fn get_network(c: Caller, Path(name): Path<String>) -> Result<impl Int
         .ok_or_else(|| err(StatusCode::NOT_FOUND, "not_found", format!("network not found: {}", name)))
 }
 
+/// `GET /networks/{name}/ovn` (spec/clustering-ui.md §8): a cluster network
+/// as OVN has it. Whoever may see the network may see this.
+pub async fn network_ovn(c: Caller, Path(name): Path<String>) -> Result<impl IntoResponse, ApiErr> {
+    let n = c.manager().get_network(&name).map_err(manager_err)?;
+    let (e, es) = network_entities(&n);
+    c.require(e, es)?;
+    let visible = c.visible_projects()?;
+    let n = network_view(&c, &visible, n).ok_or_else(|| err(StatusCode::NOT_FOUND, "not_found", format!("network not found: {}", name)))?;
+    Ok(Json(c.manager().network_ovn(&n).await.map_err(manager_err)?))
+}
+
+/// `GET /cluster/ovn` (spec/clustering-ui.md §8): the OVN databases, chassis and gateways.
+pub async fn cluster_ovn(c: Caller) -> Result<impl IntoResponse, ApiErr> {
+    c.require(crate::authz::Ent::Cluster, crate::authz::EntitySet::new())?;
+    Ok(Json(c.manager().ovn_overview().await.map_err(manager_err)?))
+}
+
 pub async fn network_events(c: Caller, Path(name): Path<String>) -> Result<impl IntoResponse, ApiErr> {
     let n = c.manager().get_network(&name).map_err(manager_err)?;
     let (e, es) = network_entities(&n);

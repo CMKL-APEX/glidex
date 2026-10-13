@@ -167,6 +167,8 @@ ui/src/
 | `/audit` | `Audit` (shown with `readAudit`, or to project owners for their projects) |
 | `/usage` | `Usage` (shown with `readUsage`, or to anyone with a project role, for their projects) |
 | `/cluster` | `Cluster` (shown with `readCluster`; spec/clustering-ui.md §6) |
+| `/cluster/nodes/:id` | `NodeDetail` (spec/clustering-ui.md §5.2) |
+| `/cluster/imports/:plan` | `ImportPlan` (spec/clustering-ui.md §7.4) |
 | `*` | `NotFound` |
 
 Without a session every path shows the login page.
@@ -178,7 +180,10 @@ answered `503 leader_changed` is sent again after 250 ms, 500 ms and
 1 s. `503 cluster_unavailable` raises the *no leader* banner
 (`ClusterBanner`, from the `glidex:cluster` window event); a read is
 then retried with `X-Glidex-Consistency: local` and the banner says
-what is shown may be out of date. The next normal answer clears it.
+what is shown may be out of date. A read that went through the cluster
+(it carries `X-Glidex-Revision`) or a successful write clears it;
+host-local reads and capability queries, which answer without a leader,
+don't.
 
 `ui/src/api.ts` sends every call through one `request()` helper:
 `credentials: "same-origin"`, `X-Glidex-CSRF` on non-GET requests, and

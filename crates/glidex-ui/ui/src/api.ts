@@ -47,6 +47,8 @@ import type {
   ImportMappings,
   ImportPlanView,
   IssuedToken,
+  NetworkOvn,
+  OvnOverview,
 } from "./types";
 
 const API_BASE = "/api";
@@ -178,8 +180,14 @@ async function request<T>(method: string, path: string, body?: unknown, opts: Re
       }
     }
   }
-  // A real answer means a leader is back; a local read means it isn't yet.
-  if (resp.ok) setAvailability(stale ? { available: false, stale: true } : { available: true, stale: false });
+  // A local read means there is still no leader. A read that went through
+  // the cluster (it carries the revision) or a write that succeeded means
+  // one is back; host-local reads succeed either way, so they don't count.
+  if (resp.ok) {
+    if (stale) setAvailability({ available: false, stale: true });
+    // A POST that only asks (capability checks) is a read here.
+    else if ((!read && !opts.idempotent) || resp.headers.has("x-glidex-revision")) setAvailability({ available: true, stale: false });
+  }
   if (resp.status === 401) {
     let err = await errorOf(resp);
     if (err.code === "reauth_required" && (await reauthenticate())) {
@@ -571,6 +579,8 @@ export const promoteNodes = (nodes: string[], force = false) => post<Record<stri
 export const detachNode = (id: string, req: { map_networks: Record<string, string>; with_access: boolean }) => post<Record<string, unknown>>(`/nodes/${enc(id)}/detach`, req);
 export const abortDetach = (id: string) => post<Record<string, unknown>>(`/nodes/${enc(id)}/detach`, { abort: true });
 export const listDepartures = () => get<Departure[]>("/departures");
+export const clusterOvn = () => get<OvnOverview>("/cluster/ovn");
+export const networkOvn = (name: string) => get<NetworkOvn>(`/networks/${enc(name)}/ovn`);
 
 // ---- cluster lifecycle (spec/clustering-ui.md §7.5–7.8) ---------------------------
 

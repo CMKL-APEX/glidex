@@ -6,6 +6,8 @@ import { formatBytes, formatTime, stateLabel } from "../types";
 import { useLive, useLiveRefresh } from "../live";
 import { useNodes } from "../nodes";
 import NodeActions from "../components/NodeActions";
+import { NodeOvnCard } from "../components/OvnViews";
+import { useSession } from "../session";
 import { LoadingCard } from "../components/Loading";
 import { Badge, Card, ErrorBanner, PageHeader, errorMessage } from "../components/ui";
 
@@ -46,6 +48,7 @@ export default function NodeDetail() {
   const { id = "" } = useParams<{ id: string }>();
   const live = useLive();
   const dir = useNodes();
+  const { host } = useSession();
   const [polled, setPolled] = useState<NodeRecord | null>(null);
   const [vms, setVms] = useState<VmResponse[] | null>(null);
   const [disks, setDisks] = useState<DiskInfo[]>([]);
@@ -197,6 +200,8 @@ export default function NodeDetail() {
           </dl>
         </Card>
       </div>
+
+      {host.readCluster && <NodeOvnCard node={id} />}
 
       <Card title={`VMs (${(vms ?? []).length})`}>
         {vms === null ? (
