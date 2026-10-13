@@ -70,9 +70,10 @@ reported as `404`.
 | `GET` | `/cluster/status[?ports=true]` | `cluster::status` | Raft group, nodes with version and feature level, CA rotation, and TCP reachability of the cluster ports from the serving server |
 | `POST` | `/cluster/{init,join,import,rejoin,leave,dissolve,rotate-ca,promote,join-tokens}` | `cluster::*` | Forming, joining (with `import` for a host with resources), leaving and operating a cluster ([clustering.md §5](clustering.md#5-cluster-lifecycle), [runbook](cluster-runbook.md)) |
 | `GET` | `/cluster/snapshot` | `cluster::snapshot` | A consistent snapshot of the replicated store (0600 material; always audited) |
+| `GET` | `/departures` | `nodes::list_departures` | Detaches with their state (`frozen`, `committed`, `aborted`), node, mapped networks and whether the node acknowledged (`readCluster`) |
 | `GET` | `/nodes`, `/nodes/{id}` | `nodes::list` / `get_node` | Nodes and their phase, capacity and features (image responses carry `copies: [{node, node_name, state, bytes, error?}]` in a cluster: each node's copy of the file) |
 | `POST` | `/nodes/{id}/{drain,undrain,remove,forget,purge,rejoin-token,detach}` | `nodes::*` | Node lifecycle (`409` with the reason when refused; `detach` takes `map_networks`, `with_access`, `abort`, `departed`) |
-| `GET` / `POST` | `/imports`, `/imports/{plan}`, `/imports/{plan}/{approve,reject}` | `nodes::*_import` | Import plans: show, approve with mappings (`dry_run` checks only), reject |
+| `GET` / `POST` | `/imports`, `/imports/{plan}`, `/imports/{plan}/{approve,reject}` | `nodes::*_import` | Import plans: show (one plan also lists its `sources`: projects, node networks, credentials and VMs it brings), approve with mappings (`dry_run` checks only), reject |
 | `GET` | `/watch[?kinds=…][&project=…]` | `watch` | Live stream of VM, disk, image and network changes (server-sent events; below) |
 | `POST` | `/vms/{id}/disks` | `attach_disk` | Attach a data disk; on a running VM it takes effect at the next start (`restart_required`) |
 | `DELETE` | `/vms/{id}/disks/{disk}` | `detach_disk` | Detach a data disk; on a running VM at the next start, and the disk stays claimed until then |
@@ -212,7 +213,7 @@ nodes. Asked for by name only (spec/clustering-ui.md §3.7):
 | Kind | Sent to | `id`, `object` |
 |---|---|---|
 | `node` | `listNodes` on `Cluster` | node id, the record of `GET /nodes/{id}` |
-| `import` | `listImports` on `Cluster` (clustered hosts) | plan id, the view of `GET /imports/{plan}` |
+| `import` | `listImports` on `Cluster` (clustered hosts) | plan id, the view of `GET /imports` (without `sources`) |
 | `cluster` | `readCluster` on `Cluster` (clustered hosts) | cluster id, `GET /cluster/status` without port checks and without the Raft indexes that move on every write |
 | `policy` | everyone | `policy`, `{"generation": n}`: changes whenever policies or role links are installed, so clients re-run their capability checks |
 

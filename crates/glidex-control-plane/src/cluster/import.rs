@@ -123,6 +123,20 @@ fn read_rows(db: &Db, plan: &ImportPlan) -> Vec<Row> {
     (0..plan.chunks).filter_map(|n| t.get(chunk_key(&plan.plan, n).as_str()).ok().flatten()).filter_map(|v| serde_json::from_slice::<Vec<Row>>(v.value()).ok()).flatten().collect()
 }
 
+/// What a plan brings that may need a new name here (the mapping editor,
+/// spec/clustering-ui.md §7.4): its projects, node networks and credentials.
+pub fn sources(db: &Db, plan: &ImportPlan) -> Value {
+    let rows = read_rows(db, plan);
+    let projects: Vec<Value> = table_rows(&rows, TableId::Projects).into_iter().map(|(id, p)| serde_json::json!({ "id": id, "name": p["name"] })).collect();
+    let networks: Vec<Value> = table_rows(&rows, TableId::Networks).into_iter().map(|(name, n)| serde_json::json!({ "name": name, "mode": n["mode"] })).collect();
+    let credentials: Vec<Value> = table_rows(&rows, TableId::Credentials)
+        .into_iter()
+        .map(|(key, c)| serde_json::json!({ "key": key, "project": c["project"], "username": c["username"] }))
+        .collect();
+    let vms: Vec<Value> = table_rows(&rows, TableId::Vms).into_iter().map(|(id, v)| serde_json::json!({ "id": id, "name": v["meta"]["name"], "project": v["meta"]["project"] })).collect();
+    serde_json::json!({ "projects": projects, "networks": networks, "credentials": credentials, "vms": vms })
+}
+
 fn table_rows(rows: &[Row], t: TableId) -> Vec<(String, Value)> {
     rows.iter().filter(|r| r.table == t as u16).filter_map(|r| Some((r.key.clone(), serde_json::from_str(&r.value).ok()?))).collect()
 }

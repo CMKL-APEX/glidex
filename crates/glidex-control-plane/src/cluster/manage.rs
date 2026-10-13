@@ -466,8 +466,35 @@ pub fn join_token(cluster: &Cluster, role: NodeRole, ttl_secs: u64, allow_import
 }
 
 /// What `gxctl cluster status` shows.
+/// The newest certificate issued to each node: (issuer fingerprint, not_after).
+fn node_certs(c: &Cluster) -> std::collections::BTreeMap<String, (String, i64)> {
+    let mut out: std::collections::BTreeMap<String, (String, i64)> = std::collections::BTreeMap::new();
+    let Ok(txn) = c.db.begin_read() else { return out };
+    let Ok(t) = txn.open_table(crate::store::TableId::IssuedCerts.definition()) else { return out };
+    use redb::ReadableTable;
+    for (_, v) in t.iter().into_iter().flatten().flatten() {
+        let Ok(v) = serde_json::from_slice::<Value>(v.value()) else { continue };
+        let (Some(node), Some(issuer), Some(not_after)) = (v["node"].as_str(), v["issuer"].as_str(), v["not_after"].as_i64()) else { continue };
+        let e = out.entry(node.to_string()).or_insert((issuer.to_string(), not_after));
+        if not_after > e.1 {
+            *e = (issuer.to_string(), not_after);
+        }
+    }
+    out
+}
+
+/// When the signing CA's certificate expires, where this server holds it.
+fn ca_not_after(c: &Cluster) -> Option<i64> {
+    let ca = c.signing_ca()?;
+    let der = super::pki::pem_bundle_ders(&ca.cert_pem).ok()?.into_iter().next()?;
+    let (_, cert) = x509_parser::parse_x509_certificate(&der).ok()?;
+    Some(cert.validity().not_after.timestamp())
+}
+
 pub fn status_of(c: &Cluster) -> Value {
     let nodes = NodeStore::new(c.db.clone()).list().unwrap_or_default();
+    let certs = node_certs(c);
+    let signing = c.signing_fp();
     let name_of = |raft_id: u64| nodes.iter().find(|n| n.status.raft_id == Some(raft_id)).map(|n| n.spec.name.clone());
     let addr_of = |raft_id: u64| nodes.iter().find(|n| n.status.raft_id == Some(raft_id)).and_then(|n| n.status.advertise).map(|a| a.to_string());
     let raft = c.node.as_ref().map(|n| {
@@ -494,12 +521,15 @@ pub fn status_of(c: &Cluster) -> Value {
         "advertise": c.identity.advertise.to_string(),
         "ca_fingerprint": c.signing_fp(),
         "feature_level": c.feature_level(),
-        "ca": c.ca_state().map(|s| json!({ "signing": s.signing_fp, "retiring": s.retiring, "retire_at": s.retire_at, "started_at": s.started_at })),
+        "ca": c.ca_state().map(|s| json!({ "signing": s.signing_fp, "retiring": s.retiring, "retire_at": s.retire_at, "started_at": s.started_at, "not_after": ca_not_after(c) }))
+            .or_else(|| Some(json!({ "signing": signing, "retiring": [], "retire_at": null, "started_at": null, "not_after": ca_not_after(c) }))),
         "raft": raft,
         "nodes": nodes.iter().map(|n| json!({
             "id": n.meta.id, "name": n.spec.name, "role": n.spec.role, "phase": n.status.phase,
             "advertise": n.status.advertise.map(|a| a.to_string()), "raft_id": n.status.raft_id,
             "version": n.status.versions.glidex, "feature_level": n.status.features.feature_level, "ready": n.status.ready,
+            // Its newest certificate: signed by the current CA, and until when.
+            "cert": certs.get(&n.meta.id).map(|(issuer, not_after)| json!({ "current_ca": *issuer == signing, "not_after": not_after })),
         })).collect::<Vec<_>>(),
     })
 }

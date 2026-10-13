@@ -32,7 +32,7 @@ fn needs_no_barrier(path: &str) -> bool {
 /// Routes about *this host*: they act on its netd, PCI bus or controllers
 /// and are never forwarded.
 fn is_host_local(path: &str) -> bool {
-    path.starts_with("/ovs") || path.starts_with("/pci-devices") || path.starts_with("/system/") || matches!(path, "/cluster/init" | "/cluster/join" | "/cluster/snapshot")
+    path.starts_with("/ovs") || path.starts_with("/pci-devices") || path.starts_with("/system/") || matches!(path, "/cluster/init" | "/cluster/join" | "/cluster/snapshot" | "/cluster/leave")
 }
 
 pub fn principal_header(p: &Principal) -> Option<String> {

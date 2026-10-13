@@ -71,7 +71,8 @@ const PASS_RESPONSE: [&str; 12] = [
 /// Paths about one host that an agent's UI means for the agent itself.
 /// (`/system/bindings` are the cluster's role links, not the host's.)
 pub fn is_remote_host_path(path: &str) -> bool {
-    path.starts_with("/ovs/") || path == "/pci-devices" || path == "/system/reconcile"
+    // `leave` is this host leaving, not the server it is relayed to.
+    path.starts_with("/ovs/") || path == "/pci-devices" || path == "/system/reconcile" || path == "/cluster/leave"
 }
 
 fn copy_headers(from: &HeaderMap, names: &[&'static str]) -> Vec<(&'static str, String)> {
@@ -254,6 +255,21 @@ pub fn accept_relayed(req: &mut Request, peer_node: &str, self_node: &str) -> Re
     req.extensions_mut().insert(Listener::Relay);
     req.extensions_mut().insert(super::RelayedBy(peer_node.to_string()));
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn host_paths_are_the_hosts_own_and_role_links_are_the_clusters() {
+        for p in ["/ovs/status", "/ovs/bridges/br0/uplinks", "/pci-devices", "/system/reconcile", "/cluster/leave"] {
+            assert!(is_remote_host_path(p), "{p}");
+        }
+        for p in ["/system/bindings", "/vms", "/cluster/status", "/cluster/dissolve", "/ovsx"] {
+            assert!(!is_remote_host_path(p), "{p}");
+        }
+    }
 }
 
 /// On an agent, `/cluster/v1/host/<path>` from a server: a host-local

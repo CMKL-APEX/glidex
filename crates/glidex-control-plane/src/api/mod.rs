@@ -260,6 +260,7 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         .add("POST", "/nodes/{id}/forget", "forgetNode", post(nodes::forget))
         .add("POST", "/nodes/{id}/detach", "detachNode", post(nodes::detach))
         .add("GET", "/imports", "listImports", get(nodes::list_imports))
+        .add("GET", "/departures", "readCluster", get(nodes::list_departures))
         .add("GET", "/imports/{plan}", "readImport", get(nodes::get_import))
         .add("POST", "/imports/{plan}/approve", "approveImport", post(nodes::approve_import))
         .add("POST", "/imports/{plan}/reject", "rejectImport", post(nodes::reject_import))

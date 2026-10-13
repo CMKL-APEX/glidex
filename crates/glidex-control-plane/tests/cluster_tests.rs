@@ -892,6 +892,9 @@ async fn the_ca_rotates_and_every_node_renews_before_the_old_one_is_retired() {
     assert_eq!(st["ports"].as_array().unwrap().len(), 2, "{st}");
     assert!(st["ports"].as_array().unwrap().iter().all(|p| p["reachable"] == true), "{st}");
     assert!(st["feature_level"].as_u64().unwrap() >= 1);
+    // The CA's expiry and each node's certificate (spec/clustering-ui.md §7.6).
+    assert!(st["ca"]["not_after"].as_i64().unwrap() > 0, "{st}");
+    assert!(st["nodes"].as_array().unwrap().iter().all(|n| n["cert"]["current_ca"] == true && n["cert"]["not_after"].as_i64().unwrap() > 0), "{st}");
     let (s, r) = call(&cps[lead], "POST", "/cluster/rotate-ca", Some(json!({})), &[]).await;
     assert_eq!(s, StatusCode::OK, "{r}");
     let new_fp = r["signing_ca"].as_str().unwrap().to_string();
@@ -906,6 +909,12 @@ async fn the_ca_rotates_and_every_node_renews_before_the_old_one_is_retired() {
             let fps: Vec<String> = glidex_control_plane::cluster::pki::pem_bundle_ders(&trust).unwrap().iter().map(|d| glidex_control_plane::cluster::pki::issuer_of(d, &trust).unwrap_or_default()).collect();
             fps == vec![new_fp.clone()] && c.ca_state().is_some_and(|s| s.retiring.is_empty())
         })
+    })
+    .await;
+    // Every node is now on the new CA as status sees it.
+    wait_until("status to show every node renewed", || async {
+        let (_, st) = call(&cps[lead], "GET", "/cluster/status", None, &[]).await;
+        st["nodes"].as_array().is_some_and(|ns| ns.iter().all(|n| n["cert"]["current_ca"] == true))
     })
     .await;
     // Nothing broke: a write still goes through, from any node, and the CA's old key is gone.
@@ -969,6 +978,12 @@ async fn a_node_detaches_with_its_vms_and_the_cluster_lets_go() {
     wait_until("the receipt", || async { receipt_file(&dir).exists() }).await;
     let n = node_json(&server, "agent1").await;
     assert_eq!(n["status"]["phase"], "Departed", "{n}");
+    // The detaches are listed with their state (spec/clustering-ui.md §6).
+    let (s, deps) = call(&server, "GET", "/departures", None, &[]).await;
+    assert_eq!(s, StatusCode::OK, "{deps}");
+    let deps = deps.as_array().unwrap();
+    assert!(deps.iter().any(|d| d["node_name"] == "agent1" && d["state"] == "committed" && d["acknowledged"] == true), "{deps:?}");
+    assert!(deps.iter().any(|d| d["state"] == "aborted"), "{deps:?}");
     assert!(n["status"]["departed_ids"].as_array().unwrap().iter().any(|x| *x == id.as_str()), "{n}");
     let (s, _) = call(&server, "GET", &format!("/vms/{id}"), None, &[]).await;
     assert_eq!(s, StatusCode::NOT_FOUND, "the cluster forgot the VM");
@@ -1132,6 +1147,11 @@ async fn a_detached_host_imports_into_another_cluster_with_its_vm_after_approval
     assert_eq!(plan["state"], "pending");
     assert_eq!(plan["summary"]["vms"], 1, "{plan}");
     assert!(plan["problems"].as_array().unwrap().iter().any(|p| p.as_str().unwrap().contains("exists with another id")), "{plan}");
+    // One plan's view says what it brings, for the mapping editor (spec/clustering-ui.md §7.4).
+    let (s, one) = call(&b, "GET", &format!("/imports/{pid}"), None, &[]).await;
+    assert_eq!(s, StatusCode::OK, "{one}");
+    assert!(one["sources"]["projects"].as_array().unwrap().iter().any(|p| p["id"] == src_project.as_str()), "{one}");
+    assert_eq!(one["sources"]["vms"].as_array().unwrap().len(), 1, "{one}");
     let (s, e) = call(&b, "POST", &format!("/imports/{pid}/approve"), Some(json!({})), &[]).await;
     assert_eq!(s, StatusCode::CONFLICT, "{e}");
     let (s, _) = call(&b, "GET", &format!("/vms/{id}"), None, &[]).await;

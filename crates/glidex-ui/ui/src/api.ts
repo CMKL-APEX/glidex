@@ -43,6 +43,10 @@ import type {
   VmStats,
   NodeRecord,
   PlacementPreview,
+  Departure,
+  ImportMappings,
+  ImportPlanView,
+  IssuedToken,
 } from "./types";
 
 const API_BASE = "/api";
@@ -512,6 +516,8 @@ export interface ClusterNodeRow {
   version?: string;
   feature_level?: number;
   ready?: string;
+  /** Its newest certificate: signed by the current CA, and until when. */
+  cert?: { current_ca: boolean; not_after: number } | null;
 }
 
 export interface ClusterStatus {
@@ -524,7 +530,7 @@ export interface ClusterStatus {
   advertise?: string;
   feature_level?: number;
   ca_fingerprint?: string;
-  ca?: { signing: string; retiring: string[]; retire_at: number | null; started_at?: number | null } | null;
+  ca?: { signing: string; retiring: string[]; retire_at: number | null; started_at?: number | null; not_after?: number | null } | null;
   raft?: {
     state: string;
     term: number;
@@ -553,4 +559,30 @@ export interface PreviewRequest {
 /** Where a VM would go, node by node (spec/clustering-ui.md §5.1). */
 export const previewPlacement = (req: PreviewRequest) => query<PlacementPreview>("/scheduler/preview", req);
 export const getNode = (id: string) => get<NodeRecord>(`/nodes/${enc(id)}`);
+
+// ---- membership (spec/clustering-ui.md §7) ---------------------------------------
+
+export const createJoinToken = (req: { role: "agent" | "server"; ttl_secs: number; allow_import: boolean }) => post<IssuedToken>("/cluster/join-tokens", req);
+export const removeNode = (id: string, force = false) => post<Record<string, unknown>>(`/nodes/${enc(id)}/remove`, { force });
+export const forgetNode = (id: string, fenced: boolean, force = false) => post<Record<string, unknown>>(`/nodes/${enc(id)}/forget`, { fenced, force });
+export const purgeNode = (id: string) => post<Record<string, unknown>>(`/nodes/${enc(id)}/purge`);
+export const rejoinToken = (id: string, req: { raft_intact: boolean; ttl_secs: number }) => post<IssuedToken>(`/nodes/${enc(id)}/rejoin-token`, req);
+export const promoteNodes = (nodes: string[], force = false) => post<Record<string, unknown>>("/cluster/promote", { nodes, force });
+export const detachNode = (id: string, req: { map_networks: Record<string, string>; with_access: boolean }) => post<Record<string, unknown>>(`/nodes/${enc(id)}/detach`, req);
+export const abortDetach = (id: string) => post<Record<string, unknown>>(`/nodes/${enc(id)}/detach`, { abort: true });
+export const listDepartures = () => get<Departure[]>("/departures");
+
+// ---- cluster lifecycle (spec/clustering-ui.md §7.5–7.8) ---------------------------
+
+export const initCluster = (req: { advertise?: string; tunnel_ip?: string }) => post<Record<string, unknown>>("/cluster/init", { ...req, force: true });
+export const rotateCa = (grace_secs?: number) => post<Record<string, unknown>>("/cluster/rotate-ca", grace_secs ? { grace_secs } : {});
+export const dissolveCluster = () => post<Record<string, unknown>>("/cluster/dissolve", { force: true });
+export const leaveCluster = () => post<Record<string, unknown>>("/cluster/leave");
+/** A same-origin link that downloads the cluster snapshot (with the session cookie). */
+export const clusterSnapshotUrl = () => `${API_BASE}/cluster/snapshot`;
+export const listImports = () => get<ImportPlanView[]>("/imports");
+export const getImport = (plan: string) => get<ImportPlanView>(`/imports/${enc(plan)}`);
+export const checkImport = (plan: string, m: ImportMappings) => post<ImportPlanView>(`/imports/${enc(plan)}/approve`, { ...m, dry_run: true });
+export const approveImport = (plan: string, m: ImportMappings) => post<ImportPlanView>(`/imports/${enc(plan)}/approve`, m);
+export const rejectImport = (plan: string) => post<ImportPlanView>(`/imports/${enc(plan)}/reject`);
 export const drainNode = (id: string, drain: boolean) => post<unknown>(`/nodes/${enc(id)}/${drain ? "drain" : "undrain"}`);

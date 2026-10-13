@@ -1,9 +1,17 @@
 # Cluster operations in the web UI (implementation plan)
 
-Status: U0–U2 **implemented** (`/authz/allowed`, the cluster watch
+Status: U0–U4 **implemented** (`/authz/allowed`, the cluster watch
 kinds, the shared UI pieces, the agent UI relay, node awareness in the
 existing pages, `node_name`; the scheduler preview and placement choice,
-the Node page, image copies, usage by node); U3–U5 planned. It extends [web-ui.md](web-ui.md) for
+the Node page, image copies, usage by node; the Cluster page with every
+membership operation, join and rejoin tokens, imports with the mapping
+editor, detaches, the CA card with rotation, the snapshot download,
+initialize, leave and dissolve); U5 planned.
+
+Found on the way: `POST /cluster/leave` was not host-local, so a
+follower forwarded it to the leader (and an agent's relay would have
+sent it to a server): the wrong host would have left. It now always runs
+on the host it was asked of. It extends [web-ui.md](web-ui.md) for
 the multi-host clusters of [clustering.md](clustering.md) (referred to as
 "C§n" below). The REST endpoints it uses are in C§16 and `api/mod.rs`;
 where the UI needs something the API does not yet give, the server

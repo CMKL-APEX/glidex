@@ -893,6 +893,46 @@ export function isTombstone(phase: NodePhase): boolean {
   return phase === "Departed" || phase === "Removed" || phase === "Forgotten";
 }
 
+/** What one import plan brings (`GET /imports/{plan}`), for the mapping editor. */
+export interface ImportSources {
+  projects: { id: string; name: string }[];
+  networks: { name: string; mode: string }[];
+  credentials: { key: string; project: string; username: string }[];
+  vms: { id: string; name: string; project: string }[];
+}
+
+export interface ImportMappings {
+  projects: Record<string, string>;
+  networks: Record<string, string>;
+  credentials: Record<string, string>;
+  over_quota: boolean;
+}
+
+/** A detach (`GET /departures`, clustering.md §5.8). */
+export interface Departure {
+  plan: string;
+  node: string;
+  node_name?: string;
+  /** `frozen`, `committed` or `aborted`. */
+  state: string;
+  started_at: number;
+  deadline: number;
+  map_networks: Record<string, string>;
+  with_access: boolean;
+  acknowledged: boolean;
+}
+
+/** A join or rejoin token, shown once (spec/clustering-ui.md §2.3). */
+export interface IssuedToken {
+  token: string;
+  role?: string;
+  ttl_secs: number;
+  servers?: string[];
+  ca_fingerprint?: string;
+  node?: string;
+  node_id?: string;
+}
+
 /** An import plan as `GET /imports` and the live stream send it (clustering.md §5.9). */
 export interface ImportPlanView {
   plan: string;
@@ -902,7 +942,9 @@ export interface ImportPlanView {
   advertise: string;
   summary: { vms: number; disks: number; images: number; networks: number; credentials: number; projects: number };
   problems: string[];
-  mappings: { projects: Record<string, string>; networks: Record<string, string>; credentials: Record<string, string>; over_quota: boolean };
+  mappings: ImportMappings;
+  /** Only on `GET /imports/{plan}`. */
+  sources?: ImportSources;
   created_by: string;
   created_at: number;
   expires_at: number;

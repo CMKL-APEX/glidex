@@ -16,6 +16,7 @@ export default function ConfirmDialog({
   onConfirm,
   onClose,
   children,
+  forceWhen,
 }: {
   title: string;
   consequence: ReactNode;
@@ -23,8 +24,11 @@ export default function ConfirmDialog({
   typeToConfirm?: string;
   actionLabel: string;
   danger?: boolean;
-  /** Resolves when done (the dialog closes); throws to show the error. */
-  onConfirm: () => Promise<void>;
+  /** Resolves when done (the dialog closes); throws to show the error.
+   * `force` is set once the server asked for it and the user agreed. */
+  onConfirm: (force: boolean) => Promise<void>;
+  /** The refusals that `gxctl` would let through with `--force`. */
+  forceWhen?: (message: string) => boolean;
   onClose: () => void;
   /** Extra fields (options) between the consequence and the confirmation. */
   children?: ReactNode;
@@ -32,16 +36,20 @@ export default function ConfirmDialog({
   const [typed, setTyped] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [forceable, setForceable] = useState(false);
+  const [force, setForce] = useState(false);
   const ready = !typeToConfirm || typed.trim() === typeToConfirm;
 
   const go = async () => {
     setBusy(true);
     setError(null);
     try {
-      await onConfirm();
+      await onConfirm(force);
       onClose();
     } catch (e) {
-      setError(errorMessage(e));
+      const m = errorMessage(e);
+      setError(m);
+      if (forceWhen?.(m)) setForceable(true);
     } finally {
       setBusy(false);
     }
@@ -71,12 +79,18 @@ export default function ConfirmDialog({
           </div>
         )}
         <ErrorBanner error={error} onDismiss={() => setError(null)} />
+        {forceable && (
+          <label className="flex items-start gap-2 text-red-700">
+            <input type="checkbox" className="mt-1" checked={force} onChange={(e) => setForce(e.target.checked)} />
+            <span>Do it anyway (what the server asked to confirm with --force).</span>
+          </label>
+        )}
         <div className="flex justify-end gap-2">
           <button className={secondaryButton} onClick={onClose} disabled={busy}>
             Cancel
           </button>
           <button className={button} onClick={go} disabled={!ready || busy}>
-            {busy ? "Working..." : actionLabel}
+            {busy ? "Working..." : force ? `${actionLabel} anyway` : actionLabel}
           </button>
         </div>
       </div>

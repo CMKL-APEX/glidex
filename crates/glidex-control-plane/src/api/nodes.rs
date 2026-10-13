@@ -200,7 +200,31 @@ pub async fn list_imports(c: Caller) -> Result<impl IntoResponse, ApiErr> {
 pub async fn get_import(c: Caller, Path(plan): Path<String>) -> Result<impl IntoResponse, ApiErr> {
     c.require(Ent::Cluster, EntitySet::new())?;
     let cl = import_cluster(&c)?;
-    crate::cluster::import::read_plan(&cl.db, &plan).map(|p| Json(plan_view(&p))).ok_or_else(|| err(StatusCode::NOT_FOUND, "not_found", format!("plan {plan} not found")))
+    let p = crate::cluster::import::read_plan(&cl.db, &plan).ok_or_else(|| err(StatusCode::NOT_FOUND, "not_found", format!("plan {plan} not found")))?;
+    let mut v = plan_view(&p);
+    // One plan's view also says what it brings, for the mapping editor.
+    v["sources"] = crate::cluster::import::sources(&cl.db, &p);
+    Ok(Json(v))
+}
+
+/// `GET /departures` (spec/clustering-ui.md §6): detaches, in progress or
+/// done, with their step.
+pub async fn list_departures(c: Caller) -> Result<impl IntoResponse, ApiErr> {
+    c.require(Ent::Cluster, EntitySet::new())?;
+    let cl = import_cluster(&c)?;
+    let names: std::collections::BTreeMap<String, String> = c.manager().nodes().list().unwrap_or_default().into_iter().map(|n| (n.meta.id, n.spec.name)).collect();
+    let out: Vec<serde_json::Value> = crate::cluster::departure::plans(&cl.db)
+        .into_iter()
+        .map(|p| {
+            serde_json::json!({
+                "plan": p.plan, "node": p.node, "node_name": names.get(&p.node), "state": p.state,
+                "started_at": p.started_at, "deadline": p.deadline,
+                "map_networks": p.options.map_networks, "with_access": p.options.with_access,
+                "acknowledged": p.receipt.is_some(),
+            })
+        })
+        .collect();
+    Ok(Json(out))
 }
 
 #[derive(serde::Deserialize, Default)]
