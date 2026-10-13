@@ -194,11 +194,18 @@ fn a_nested_two_node_cluster_binds_vm_ports_and_carries_traffic_over_geneve() {
     }
     h1.check(&format!("gxctl cluster init --advertise {}:8842 --force", h1.host));
     let token = h1.check("gxctl cluster join-token --role agent 2>/dev/null");
+    // Through the installer, as an agent host is set up for real: it must
+    // leave the agent's web UI on (spec/clustering-ui.md §3.6).
+    let root = workspace_root().display().to_string();
     let joined = h2.run_with_input(
-        &format!("umask 077 && cat > ~/join.token && gxctl cluster join --server {}:8842 --role agent --advertise {}:8842 --token-file ~/join.token; s=$?; rm -f ~/join.token; exit $s", h1.host, h2.host),
+        &format!(
+            "umask 077 && cat > ~/join.token && sudo {root}/target/release/glidex-install --prebuilt --join {}:8842 --role agent --advertise {}:8842 --token-file ~/join.token; s=$?; rm -f ~/join.token; exit $s",
+            h1.host, h2.host
+        ),
         token.trim().as_bytes(),
     );
     assert!(joined.status.success(), "join: {}{}", String::from_utf8_lossy(&joined.stdout), String::from_utf8_lossy(&joined.stderr));
+    assert_eq!(h2.check("systemctl is-enabled glidex-ui; systemctl is-active glidex-ui").split_whitespace().collect::<Vec<_>>(), ["enabled", "active"], "the agent keeps its UI");
     let inner = Api::Remote(&h1);
     let nodes = wait_for_or("both nodes Ready with their capacity", Duration::from_secs(180), || {
         let v = inner.ok("GET", "/nodes", None);

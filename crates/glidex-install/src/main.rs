@@ -243,9 +243,10 @@ fn join_cluster(j: &JoinOptions) -> Result<()> {
     if !child.wait()?.success() {
         bail!("joining the cluster failed (see above); the host is still a working standalone host");
     }
-    // An agent serves no API or UI of its own: its servers do.
+    // An agent keeps its web UI: its control plane relays the UI's requests
+    // to a server, which authenticates them (spec/clustering-ui.md §3.6).
     if j.role == "agent" {
-        let _ = sudo(&argv(&["systemctl", "disable", "--now", "glidex-ui.service"]));
+        println!("{} the web UI here is served through the cluster's servers (log in with a server's users)", "Note:".green());
     }
     Ok(())
 }

@@ -1640,7 +1640,8 @@ only tests do).
 - **Agent installs**: `glidex-install --join SERVER:8842 [--role agent|server]
   [--token-file F] [--advertise A] [--node-name N]`; the token is read from a
   file (0600) or stdin. An agent runs the node role and the node API
-  (:8842) only: no REST API or UI of its own.
+  (:8842); its web UI relays to a server, which authenticates and answers
+  (spec/clustering-ui.md §3.6), so the installer keeps `glidex-ui` on.
 - Not yet: the leader-side scheduler (C4), `spec.node` as a field of the VM
   spec (C4), D14's break-glass rule on agents (they serve no API).
 

@@ -499,7 +499,10 @@ Cloud-Hypervisor is fetched by pinned release tag over HTTPS. The installer itse
 running control plane to join (`gxctl cluster join`, with the token on its
 standard input). The token comes from `gxctl cluster join-token` on a server;
 it is read from a file (refused unless mode 0600) or stdin, never from argv.
-An agent host's UI service is disabled: its servers serve the API and UI.
+An agent host keeps its UI service: its control plane relays the UI's
+requests to a server, which authenticates them (spec/clustering-ui.md
+§3.6; `cluster.ui_relay = false` turns that off). Agents an older installer
+switched off get the UI back on the next run.
 
 ## OVN
 
