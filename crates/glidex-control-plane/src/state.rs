@@ -435,15 +435,35 @@ impl VmManager {
 
     /// Where `req` goes, from the nodes' records and what each already carries.
     pub(crate) fn pick_node(&self, vms: &HashMap<String, Vm>, req: &crate::scheduler::Request) -> Result<String, Vec<(String, String)>> {
+        crate::scheduler::schedule(req, &self.node_loads(vms), &self.sched.load())
+    }
+
+    /// Every node that may take VMs, with what is placed on it.
+    fn node_loads(&self, vms: &HashMap<String, Vm>) -> Vec<(crate::node::Node, crate::scheduler::Load)> {
         let nodes = self.nodes.list().unwrap_or_default();
         let loads = crate::scheduler::loads(
             vms.values().filter_map(|v| v.status.placement.as_ref().map(|p| (p.node.clone(), v.config().vcpu_count as u64, v.config().mem_size_mib as u64))),
         );
-        let views: Vec<_> = nodes.into_iter().filter(|n| !n.status.phase.is_tombstone()).map(|n| {
-            let l = loads.get(&n.meta.id).copied().unwrap_or_default();
-            (n, l)
-        }).collect();
-        crate::scheduler::schedule(req, &views, &self.sched.load())
+        nodes
+            .into_iter()
+            .filter(|n| !n.status.phase.is_tombstone())
+            .map(|n| {
+                let l = loads.get(&n.meta.id).copied().unwrap_or_default();
+                (n, l)
+            })
+            .collect()
+    }
+
+    /// Where a VM of `config` (pinned to `pin`, using `data_disks`) could go,
+    /// node by node, the scheduler's choice first (spec/clustering-ui.md §5.1).
+    pub async fn preview_placement(&self, config: &VmConfig, pin: Option<String>, data_disks: &[String]) -> Result<Vec<crate::scheduler::NodeFit>, VmManagerError> {
+        let mut disks = Vec::new();
+        for key in data_disks {
+            disks.push(self.images.get_disk(key)?);
+        }
+        let req = self.sched_request_for(config, pin, &disks);
+        let vms = self.vms.read().await;
+        Ok(crate::scheduler::evaluate(&req, &self.node_loads(&vms), &self.sched.load()))
     }
 
     /// What `vm` asks of a node, given the disks it uses.
@@ -452,14 +472,17 @@ impl VmManager {
     }
 
     fn sched_request(&self, vm: &Vm, disks: &[Disk]) -> crate::scheduler::Request {
-        let c = vm.config();
+        self.sched_request_for(vm.config(), vm.spec.node.clone(), disks)
+    }
+
+    fn sched_request_for(&self, c: &VmConfig, pin: Option<String>, disks: &[Disk]) -> crate::scheduler::Request {
         let nets = self.networks.list().unwrap_or_default();
         crate::scheduler::Request {
             vcpus: c.vcpu_count as u32,
             mem_mib: c.mem_size_mib as u64,
             hypervisor: c.hypervisor.to_string(),
             hugepages: c.hugepages,
-            pin: vm.spec.node.clone(),
+            pin,
             disk_nodes: disks.iter().map(|d| d.node.clone()).collect(),
             net_nodes: c
                 .networks
@@ -1759,7 +1782,33 @@ impl VmManager {
         if r.kind == images::ImageKind::Firmware {
             r.used_by_vms = Self::firmware_users(&*self.vms.read().await, &r.id);
         }
+        r.copies = self.image_copies(&r.id);
         r
+    }
+
+    /// Each node's copy of image `id`, in a cluster.
+    fn image_copies(&self, id: &str) -> Vec<images::ImageCopy> {
+        if self.cluster().is_none() {
+            return Vec::new();
+        }
+        let mut out: Vec<images::ImageCopy> = self
+            .image_caches(id)
+            .into_iter()
+            .map(|(node, row)| images::ImageCopy {
+                node_name: self.nodes.get(&node).ok().flatten().map(|n| n.spec.name),
+                node,
+                state: match row.phase {
+                    crate::controller::image_cache::CachePhase::Downloading => "downloading",
+                    crate::controller::image_cache::CachePhase::Ready => "ready",
+                    crate::controller::image_cache::CachePhase::Failed => "failed",
+                }
+                .to_string(),
+                bytes: row.bytes,
+                error: row.error,
+            })
+            .collect();
+        out.sort_by(|a, b| a.node_name.cmp(&b.node_name));
+        out
     }
 
     pub async fn list_images(&self) -> Vec<ImageResponse> {
@@ -1772,6 +1821,7 @@ impl VmManager {
                 if i.is_firmware() {
                     r.used_by_vms = Self::firmware_users(&vms, &i.id);
                 }
+                r.copies = self.image_copies(&i.id);
                 r
             })
             .collect()

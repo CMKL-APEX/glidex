@@ -164,6 +164,46 @@ fn names_host_path(req: &CreateVmRequest) -> bool {
     !req.kernel_image_path.is_empty() || !req.rootfs_path.is_empty() || req.cloud_init_path.is_some() || req.firmware_path.is_some()
 }
 
+/// `POST /scheduler/preview` (spec/clustering-ui.md §5.1): where a VM would
+/// go, node by node, before it is created.
+#[derive(serde::Deserialize)]
+pub struct PreviewBody {
+    #[serde(default)]
+    project: Option<String>,
+    vcpu_count: u8,
+    mem_size_mib: u32,
+    #[serde(default)]
+    hypervisor: Option<String>,
+    #[serde(default)]
+    hugepages: bool,
+    /// Pin: a node id or name.
+    #[serde(default)]
+    node: Option<String>,
+    #[serde(default)]
+    networks: Vec<crate::models::NetworkAttachment>,
+    #[serde(default)]
+    vfio_devices: Vec<String>,
+    #[serde(default)]
+    data_disks: Vec<String>,
+}
+
+pub async fn preview(c: Caller, Json(b): Json<PreviewBody>) -> Result<Response, ApiErr> {
+    // Whoever may create a VM in the project may see where it would fit.
+    let project = c.target_project(b.project.as_deref())?;
+    c.require_action("createVm", Ent::Project(project.clone()), super::project_entities(&project), &[])?;
+    let mut cfg = serde_json::json!({
+        "vcpu_count": b.vcpu_count, "mem_size_mib": b.mem_size_mib, "rootfs_path": "", "kernel_args": "",
+        "hugepages": b.hugepages, "networks": b.networks, "vfio_devices": b.vfio_devices,
+    });
+    if let Some(h) = &b.hypervisor {
+        cfg["hypervisor"] = serde_json::json!(h);
+    }
+    let config: VmConfig = serde_json::from_value(cfg).map_err(|e| err(StatusCode::BAD_REQUEST, "invalid", e.to_string()))?;
+    let fits = c.manager().preview_placement(&config, b.node.clone(), &b.data_disks).await.map_err(super::storage::manager_err)?;
+    let pick = fits.first().filter(|f| f.refused.is_none()).map(|f| f.id.clone());
+    Ok(Json(serde_json::json!({ "pick": pick, "nodes": fits })).into_response())
+}
+
 pub async fn create(c: Caller, Query(w): Query<WaitQuery>, Json(req): Json<CreateVmRequest>) -> Result<Response, ApiErr> {
     let project = c.target_project(req.project.as_deref())?;
     c.set_project(&project);

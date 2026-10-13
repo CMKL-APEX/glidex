@@ -191,6 +191,7 @@ fn respond(
     let started_at = ledger.started_at().map_err(storage)? / 1000;
     let names: BTreeMap<String, String> =
         c.manager().projects().list().unwrap_or_default().into_iter().map(|p| (p.id, p.name)).collect();
+    let node_names: BTreeMap<String, String> = c.manager().nodes().list().unwrap_or_default().into_iter().map(|n| (n.meta.id, n.spec.name)).collect();
     for row in &mut rows {
         if row.start < started_at {
             row.flags.insert("partial".into());
@@ -198,6 +199,11 @@ fn respond(
         if let Some(pr) = row.keys.get_mut(&GroupKey::Project) {
             if let Some(n) = names.get(&pr.id) {
                 pr.name = n.clone();
+            }
+        }
+        if let Some(nd) = row.keys.get_mut(&GroupKey::Node) {
+            if let Some(n) = node_names.get(&nd.id) {
+                nd.name = n.clone();
             }
         }
     }

@@ -158,11 +158,16 @@ pub struct Subject {
     pub nic: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub network: Option<String>,
+    /// The node it was on (a VM's placement, a disk's or a node network's
+    /// node), for usage by node (spec/clustering-ui.md §5.4). Not part of
+    /// its key: a subject doesn't move.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
 }
 
 impl Subject {
     pub fn new(kind: SubjectKind, id: impl Into<String>, name: impl Into<String>, project: Option<String>) -> Self {
-        Self { kind, id: id.into(), name: name.into(), project, vm_id: None, nic: None, network: None }
+        Self { kind, id: id.into(), name: name.into(), project, vm_id: None, nic: None, network: None, node: None }
     }
 
     fn key(&self) -> String {

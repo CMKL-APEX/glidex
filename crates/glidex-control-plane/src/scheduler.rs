@@ -87,26 +87,70 @@ fn failing(n: &Node, load: Load, req: &Request, cfg: &SchedulerConfig) -> Option
     None
 }
 
-/// The node a VM goes to, or why each node refused it. Least allocated by
-/// `max(cpu share, memory share)`, then fewest VMs, then name, so the answer
-/// is deterministic.
-pub fn schedule(req: &Request, nodes: &[(Node, Load)], cfg: &SchedulerConfig) -> Result<String, Vec<(String, String)>> {
-    let mut fits: Vec<(f64, u64, &str, &str)> = Vec::new();
-    let mut refused = Vec::new();
-    for (n, load) in nodes {
-        match failing(n, *load, req, cfg) {
-            None => {
-                let cpu = (load.vcpus + req.vcpus as u64) as f64 / (n.status.allocatable.cpus.max(1) as f64);
-                let mem = (load.mem_mib + req.mem_mib) as f64 / (n.status.allocatable.memory_mib.max(1) as f64);
-                fits.push((cpu.max(mem), load.vms, n.spec.name.as_str(), n.meta.id.as_str()));
+/// One node's answer to a request (`POST /scheduler/preview`,
+/// spec/clustering-ui.md §5.1).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct NodeFit {
+    pub id: String,
+    pub name: String,
+    /// Why the VM can't go there; `None`: it fits.
+    pub refused: Option<String>,
+    /// What VMs placed there already take, and what may be taken (allocatable
+    /// times the overcommit ratios).
+    pub vcpus_taken: u64,
+    pub vcpus_capacity: u64,
+    pub mem_mib_taken: u64,
+    pub mem_mib_capacity: u64,
+    pub vms: u64,
+    /// `max(cpu share, memory share)` after placing: lower is preferred.
+    #[serde(skip)]
+    score: f64,
+}
+
+/// Every node's answer to `req`, in the order the scheduler prefers them:
+/// those that fit by least allocated (`max(cpu share, memory share)`), then
+/// fewest VMs, then name; then those that don't, by name.
+pub fn evaluate(req: &Request, nodes: &[(Node, Load)], cfg: &SchedulerConfig) -> Vec<NodeFit> {
+    let mut out: Vec<NodeFit> = nodes
+        .iter()
+        .map(|(n, load)| {
+            let cpu = (load.vcpus + req.vcpus as u64) as f64 / (n.status.allocatable.cpus.max(1) as f64);
+            let mem = (load.mem_mib + req.mem_mib) as f64 / (n.status.allocatable.memory_mib.max(1) as f64);
+            NodeFit {
+                id: n.meta.id.clone(),
+                name: n.spec.name.clone(),
+                refused: failing(n, *load, req, cfg),
+                vcpus_taken: load.vcpus,
+                vcpus_capacity: (n.status.allocatable.cpus as f64 * cfg.cpu_overcommit) as u64,
+                mem_mib_taken: load.mem_mib,
+                mem_mib_capacity: (n.status.allocatable.memory_mib as f64 * cfg.memory_overcommit) as u64,
+                vms: load.vms,
+                score: cpu.max(mem),
             }
-            Some(why) => refused.push((n.spec.name.clone(), why)),
+        })
+        .collect();
+    out.sort_by(|a, b| {
+        a.refused
+            .is_some()
+            .cmp(&b.refused.is_some())
+            .then(if a.refused.is_none() { a.score.partial_cmp(&b.score).unwrap_or(std::cmp::Ordering::Equal) } else { std::cmp::Ordering::Equal })
+            .then(a.vms.cmp(&b.vms))
+            .then(a.name.cmp(&b.name))
+    });
+    out
+}
+
+/// The node a VM goes to, or why each node refused it (the first of
+/// [`evaluate`], so the answer is deterministic).
+pub fn schedule(req: &Request, nodes: &[(Node, Load)], cfg: &SchedulerConfig) -> Result<String, Vec<(String, String)>> {
+    let all = evaluate(req, nodes, cfg);
+    match all.first() {
+        Some(f) if f.refused.is_none() => Ok(f.id.clone()),
+        _ => {
+            let mut refused: Vec<(String, String)> = all.into_iter().filter_map(|f| f.refused.map(|r| (f.name, r))).collect();
+            refused.sort_by(|a, b| a.0.cmp(&b.0));
+            Err(refused)
         }
-    }
-    fits.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal).then(a.1.cmp(&b.1)).then(a.2.cmp(b.2)));
-    match fits.first() {
-        Some(f) => Ok(f.3.to_string()),
-        None => Err(refused),
     }
 }
 
@@ -165,6 +209,24 @@ mod tests {
         assert_eq!(schedule(&req(2, 1024), &nodes, &cfg()).unwrap(), "a", "equal load, equal count: by name");
         let nodes = vec![(node("a", 8, 16384), Load { vcpus: 4, mem_mib: 4096, vms: 5 }), (node("b", 8, 16384), Load { vcpus: 4, mem_mib: 4096, vms: 2 })];
         assert_eq!(schedule(&req(2, 1024), &nodes, &cfg()).unwrap(), "b", "equal load: fewer VMs");
+    }
+
+    #[test]
+    fn the_preview_lists_every_node_the_choice_first_and_refusals_last() {
+        let mut full = node("full", 1, 1024);
+        full.status.allocatable.memory_mib = 100;
+        let nodes = vec![
+            (full, Load::default()),
+            (node("busy", 8, 16384), Load { vcpus: 8, mem_mib: 8192, vms: 4 }),
+            (node("idle", 8, 16384), Load::default()),
+        ];
+        let all = evaluate(&req(2, 1024), &nodes, &cfg());
+        let names: Vec<&str> = all.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, ["idle", "busy", "full"]);
+        assert!(all[0].refused.is_none() && all[1].refused.is_none());
+        assert!(all[2].refused.as_deref().unwrap().contains("memory"));
+        assert_eq!((all[1].vcpus_taken, all[1].vcpus_capacity, all[1].vms), (8, 32, 4), "capacity is allocatable times the overcommit");
+        assert_eq!(schedule(&req(2, 1024), &nodes, &cfg()).unwrap(), all[0].id, "the scheduler takes the preview's first");
     }
 
     #[test]

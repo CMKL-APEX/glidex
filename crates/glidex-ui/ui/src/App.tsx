@@ -16,6 +16,7 @@ import Tokens from "./pages/Tokens";
 import Policies from "./pages/Policies";
 import Audit from "./pages/Audit";
 import Cluster from "./pages/Cluster";
+import NodeDetail from "./pages/NodeDetail";
 import Usage from "./pages/Usage";
 import { SessionProvider, useSession } from "./session";
 import { LiveProvider } from "./live";
@@ -56,6 +57,7 @@ function Shell() {
             <Route path="/policies" element={<Policies />} />
             <Route path="/audit" element={<Audit />} />
             <Route path="/cluster" element={<Cluster />} />
+            <Route path="/cluster/nodes/:id" element={<NodeDetail />} />
             <Route path="/usage" element={<Usage />} />
             <Route path="*" element={<NotFound />} />
           </Routes>

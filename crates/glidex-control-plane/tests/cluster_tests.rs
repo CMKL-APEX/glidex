@@ -514,6 +514,13 @@ async fn a_node_copies_an_image_it_needs_from_a_holder_and_checks_it() {
         c.len() == 2 && c.iter().all(|(_, r)| r.phase == glidex_control_plane::controller::image_cache::CachePhase::Ready)
     })
     .await;
+    // The image says where its copies are (spec/clustering-ui.md §5.3).
+    let (s, v) = call(&server, "GET", &format!("/images/{img_id}"), None, &[]).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let copies = v["copies"].as_array().expect("copies");
+    assert_eq!(copies.len(), 2, "{v}");
+    assert!(copies.iter().all(|c| c["state"] == "ready" && c["bytes"] == data.len()), "{v}");
+    assert!(copies.iter().any(|c| c["node_name"] == "agent1"), "{v}");
 }
 
 fn vm_unpinned(name: &str) -> Value {
@@ -556,6 +563,24 @@ async fn the_scheduler_spreads_vms_honours_pins_and_disks_and_explains_itself() 
     }
     assert_eq!(placed.len(), 3, "{placed:?}");
     assert!(placed.values().all(|n| *n == 2), "{placed:?}");
+
+    // The preview (spec/clustering-ui.md §5.1) answers for every node, the
+    // scheduler's choice first, and agrees with where a VM then goes.
+    let (s, pv) = call(&server, "POST", "/scheduler/preview", Some(json!({ "vcpu_count": 1, "mem_size_mib": 64, "hypervisor": "cloudhypervisor" })), &[]).await;
+    assert_eq!(s, StatusCode::OK, "{pv}");
+    let nodes = pv["nodes"].as_array().unwrap();
+    assert_eq!(nodes.len(), 3, "{pv}");
+    assert!(nodes.iter().all(|n| n["refused"].is_null() && n["vms"] == 2 && n["vcpus_capacity"].as_u64().unwrap() > 0), "{pv}");
+    assert_eq!(pv["pick"], nodes[0]["id"]);
+    let (s, pinned) = call(&server, "POST", "/scheduler/preview", Some(json!({ "vcpu_count": 1, "mem_size_mib": 64, "node": "agent2" })), &[]).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(pinned["nodes"][0]["name"], "agent2", "{pinned}");
+    assert!(pinned["nodes"].as_array().unwrap()[1..].iter().all(|n| n["refused"].as_str().unwrap().contains("pinned")), "{pinned}");
+    let (s, vm) = call(&server, "POST", "/vms", Some(vm_unpinned("as-previewed")), &[]).await;
+    assert_eq!(s, StatusCode::CREATED, "{vm}");
+    assert_eq!(vm["node"], pv["pick"], "the preview's pick is where it goes");
+    let (s, _) = call(&server, "DELETE", &format!("/vms/{}", vm["id"].as_str().unwrap()), None, &[]).await;
+    assert!(s.is_success());
 
     // A disk bound to agent2 pulls its VM there.
     let a2 = agents[1].manager.local_node_id();

@@ -171,6 +171,7 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         // ---- VMs
         .add("GET", "/vms", "listVms", get(vms::list))
         .add("POST", "/vms", "createVm", post(vms::create))
+        .add("POST", "/scheduler/preview", AUTHENTICATED, post(vms::preview))
         .add("GET", "/vms/{id}", "readVm", get(vms::get_one))
         .add("DELETE", "/vms/{id}", "deleteVm", delete(vms::delete_one))
         .add("PATCH", "/vms/{id}", "updateVm", axum::routing::patch(vms::patch_one))

@@ -462,6 +462,19 @@ pub enum ExtendOutcome {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct ImageCopy {
+    pub node: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub node_name: Option<String>,
+    /// `downloading`, `ready` or `failed`.
+    pub state: String,
+    /// Bytes copied so far (all of them once ready).
+    pub bytes: u64,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub error: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct ImageResponse {
     pub id: String,
     pub name: String,
@@ -487,6 +500,10 @@ pub struct ImageResponse {
     /// VMs that boot through this firmware image (filled in by `VmManager`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub used_by_vms: Vec<String>,
+    /// In a cluster, each node's copy of the file (spec/clustering.md §9.2,
+    /// spec/clustering-ui.md §5.3; filled in by `VmManager`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub copies: Vec<ImageCopy>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub info: Option<qemu_img::ImgInfo>,
     /// Deletion requested and not finished yet.
@@ -1063,6 +1080,7 @@ impl ImageManager {
             path: path.to_string_lossy().into_owned(),
             linked_disks: self.linked_disks(&img.id).into_iter().map(|d| d.name).collect(),
             used_by_vms: Vec::new(),
+            copies: Vec::new(),
             vars_template: img.is_firmware() && self.firmware_vars_template(&img.id).exists(),
             info,
             deleting: img.deletion_requested_at.is_some(),

@@ -19,6 +19,7 @@ pub fn nic_subject(vm: &Vm, nic: u8, network: Option<&str>) -> Subject {
     s.vm_id = Some(vm.id.clone());
     s.nic = Some(nic as u32);
     s.network = network.map(str::to_string);
+    s.node = vm.status.placement.as_ref().map(|p| p.node.clone());
     s
 }
 
@@ -30,6 +31,8 @@ pub fn is_provider(n: &Network) -> bool {
 fn network_subject(n: &Network) -> Subject {
     let mut s = Subject::new(SubjectKind::Network, n.name.clone(), n.name.clone(), n.project.clone());
     s.network = Some(n.name.clone());
+    // A cluster network spans the nodes; a node network is on one.
+    s.node = n.node.clone();
     s
 }
 

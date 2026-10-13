@@ -190,6 +190,28 @@ export interface CreateVmRequest {
   restart_policy?: "on_failure" | "never";
   /** After a host reboot, if it should be running: start it again (default) or not. */
   on_host_boot?: "resume" | "stop";
+  /** Run on this node (id or name); default: the scheduler picks (spec/clustering.md §9.1). */
+  node?: string;
+}
+
+/** One node's answer to `POST /scheduler/preview` (spec/clustering-ui.md §5.1). */
+export interface NodeFit {
+  id: string;
+  name: string;
+  /** Why the VM can't go there; null: it fits. */
+  refused: string | null;
+  vcpus_taken: number;
+  vcpus_capacity: number;
+  mem_mib_taken: number;
+  mem_mib_capacity: number;
+  vms: number;
+}
+
+export interface PlacementPreview {
+  /** The node the scheduler would pick, if any fits. */
+  pick: string | null;
+  /** Every node, the scheduler's preference first. */
+  nodes: NodeFit[];
 }
 
 // ---- images and disks (spec/images.md) ------------------------------------
@@ -230,6 +252,8 @@ export interface ImageInfo {
   vars_template?: boolean;
   /** VMs booting through this firmware image. */
   used_by_vms?: string[];
+  /** In a cluster, each node's copy of the file (spec/clustering-ui.md §5.3). */
+  copies?: { node: string; node_name?: string; state: "downloading" | "ready" | "failed"; bytes: number; error?: string }[];
   /** Deletion requested; the image controller is removing it. */
   deleting?: boolean;
 }
@@ -757,7 +781,7 @@ export interface MeterValue {
   unit: string;
 }
 
-export type GroupKey = "project" | "vm" | "disk" | "nic" | "network";
+export type GroupKey = "project" | "vm" | "disk" | "nic" | "network" | "node";
 
 export interface UsageRow {
   start: string;

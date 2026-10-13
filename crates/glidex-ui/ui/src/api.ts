@@ -42,6 +42,7 @@ import type {
   UsageResponse,
   VmStats,
   NodeRecord,
+  PlacementPreview,
 } from "./types";
 
 const API_BASE = "/api";
@@ -539,5 +540,17 @@ export interface ClusterStatus {
 
 export const clusterStatus = () => get<ClusterStatus>("/cluster/status?ports=true");
 export const listNodes = () => get<NodeRecord[]>("/nodes");
+export interface PreviewRequest {
+  project?: string;
+  vcpu_count: number;
+  mem_size_mib: number;
+  hypervisor?: string;
+  node?: string;
+  networks?: { network: string }[];
+  vfio_devices?: string[];
+  data_disks?: string[];
+}
+/** Where a VM would go, node by node (spec/clustering-ui.md §5.1). */
+export const previewPlacement = (req: PreviewRequest) => query<PlacementPreview>("/scheduler/preview", req);
 export const getNode = (id: string) => get<NodeRecord>(`/nodes/${enc(id)}`);
 export const drainNode = (id: string, drain: boolean) => post<unknown>(`/nodes/${enc(id)}/${drain ? "drain" : "undrain"}`);

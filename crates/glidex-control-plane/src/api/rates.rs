@@ -83,14 +83,17 @@ fn range(p: &RateParams, billing_tz: &str, max_days: u64, default_days: Option<u
     Ok(Range { from, to, month, tz, now })
 }
 
+/// Display names of projects and nodes, by id (the ids don't collide).
 fn names(c: &Caller) -> BTreeMap<String, String> {
-    c.manager().projects().list().unwrap_or_default().into_iter().map(|p| (p.id, p.name)).collect()
+    let mut m: BTreeMap<String, String> = c.manager().projects().list().unwrap_or_default().into_iter().map(|p| (p.id, p.name)).collect();
+    m.extend(c.manager().nodes().list().unwrap_or_default().into_iter().map(|n| (n.meta.id, n.spec.name)));
+    m
 }
 
 fn keys_json(keys: &BTreeMap<GroupKey, Named>, names: &BTreeMap<String, String>, out: &mut serde_json::Map<String, Value>) {
     for (k, v) in keys {
         let mut n = v.clone();
-        if *k == GroupKey::Project {
+        if matches!(k, GroupKey::Project | GroupKey::Node) {
             if let Some(name) = names.get(&n.id) {
                 n.name = name.clone();
             }
@@ -170,9 +173,9 @@ async fn report(c: Caller, p: RateParams, family: Family) -> Result<Response, Ap
     let cfg = meter.config().clone();
     let r = range(&p, &cfg.billing_timezone, 100, None)?;
     let allowed: &[GroupKey] = match family {
-        Family::Bandwidth => &[GroupKey::Project, GroupKey::Vm, GroupKey::Nic, GroupKey::Network],
-        Family::DiskIo => &[GroupKey::Project, GroupKey::Vm, GroupKey::Disk],
-        Family::Compute => &[GroupKey::Project, GroupKey::Vm],
+        Family::Bandwidth => &[GroupKey::Project, GroupKey::Vm, GroupKey::Nic, GroupKey::Network, GroupKey::Node],
+        Family::DiskIo => &[GroupKey::Project, GroupKey::Vm, GroupKey::Disk, GroupKey::Node],
+        Family::Compute => &[GroupKey::Project, GroupKey::Vm, GroupKey::Node],
     };
     let mut group_by: Vec<GroupKey> = list(&p.group_by).iter().map(|g| g.parse()).collect::<Result<_, _>>().map_err(bad)?;
     if group_by.is_empty() {

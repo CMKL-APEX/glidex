@@ -18,6 +18,7 @@ pub fn record(round: &mut Round, disks: &[(Disk, u64)], images: &[Image], now: u
     for (d, actual) in disks {
         let mut s = Subject::new(SubjectKind::Disk, d.id.clone(), d.name.clone(), (!d.project.is_empty()).then(|| d.project.clone()));
         s.vm_id = d.attached_to.clone();
+        s.node = d.node.clone();
         round.gauge_run(&s, "disk.stored", "disk", d.created_at * 1000, actual.div_ceil(MIB), 0, now, None)?;
     }
     for i in images {
