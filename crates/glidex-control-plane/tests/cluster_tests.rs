@@ -1400,3 +1400,70 @@ async fn a_file_enabled_cluster_moves_to_the_setting() {
     assert_eq!((v["source"].as_str(), v["enabled"].as_bool()), (Some("cluster"), Some(true)), "{v}");
     assert_eq!(v["settings"]["updated_by"], "file");
 }
+
+/// spec/clustering.md §11.6, §13.2: a node's br-int datapath is a setting;
+/// gateway nodes must map the edge's physical network and run br-int on the
+/// kernel datapath, and the API says which step is missing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn gateway_nodes_need_the_physnet_and_the_kernel_datapath() {
+    use glidex_control_plane::store::{Origin, TableId};
+    let _one = SERIAL.lock().await;
+    let cfg = test_config();
+    let server = new_cp();
+    server.manager.configure(&cfg);
+    manage::init(&server.manager, &cfg, InitOptions { advertise: Some(server.addr), tunnel_ip: None, listen: Some(server.addr) }).await.unwrap();
+    server.manager.initialize().await.unwrap();
+    let id = server.manager.local_node_id();
+    let name = node_json(&server, &id).await["spec"]["name"].as_str().unwrap().to_string();
+    // What the node reports: OVN installed, DPDK running, no physical network mapped yet.
+    let report = |physnets: Value, dpdk: bool| {
+        let db = server.manager.database();
+        let raw = {
+            let txn = db.begin_read().unwrap();
+            let t = txn.open_table(TableId::Nodes.definition()).unwrap();
+            let v = t.get(id.as_str()).unwrap().unwrap();
+            v.value().to_vec()
+        };
+        let mut n: Value = serde_json::from_slice(&raw).unwrap();
+        n["status"]["versions"]["ovn"] = json!("24.03.2");
+        n["status"]["features"]["ovn_central"] = json!(true);
+        n["status"]["features"]["physnets"] = physnets;
+        n["status"]["features"]["dpdk"] = json!(dpdk);
+        db.write(Origin::Api, |tx| -> Result<(), glidex_control_plane::store::StoreError> {
+            tx.open_table(TableId::Nodes.definition())?.insert(id.as_str(), n.to_string().as_bytes())?;
+            Ok(())
+        })
+        .unwrap();
+    };
+    let edge = json!({ "physnet": "uplink", "external_cidr": "192.0.2.0/24", "gateway": "192.0.2.1", "external_ip": "192.0.2.50", "gateway_nodes": [name] });
+    let put_edge = || call(&server, "PUT", "/cluster/settings/ovn", Some(json!({ "enabled": true, "edge": edge.clone() })), &[]);
+
+    report(json!({}), true);
+    let (s, v) = put_edge().await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert!(v["message"].as_str().unwrap().contains("doesn't map physical network uplink"), "{v}");
+
+    // Mapped, but DPDK runs and the setting is auto: br-int would be userspace.
+    report(json!({ "uplink": "gxbr-up" }), true);
+    let (s, v) = put_edge().await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert!(v["message"].as_str().unwrap().contains("userspace datapath"), "{v}");
+
+    // The node's setting decides: system, then the edge is accepted.
+    let (s, v) = call(&server, "PUT", &format!("/nodes/{id}/ovn"), Some(json!({ "br_int_datapath": "system" })), &[]).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!((v["br_int_datapath"].as_str(), v["wanted"].as_str()), (Some("system"), Some("system")), "{v}");
+    assert_eq!(node_json(&server, &id).await["spec"]["br_int_datapath"], "system");
+    let (s, v) = put_edge().await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+
+    // A gateway node can't go back to the userspace datapath...
+    let (s, v) = call(&server, "PUT", &format!("/nodes/{id}/ovn"), Some(json!({ "br_int_datapath": "netdev" })), &[]).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert_eq!(v["error"], "gateway_node", "{v}");
+    // ...and the userspace datapath needs DPDK anywhere.
+    report(json!({ "uplink": "gxbr-up" }), false);
+    let (s, v) = call(&server, "PUT", &format!("/nodes/{id}/ovn"), Some(json!({ "br_int_datapath": "netdev" })), &[]).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert_eq!(v["error"], "dpdk_not_running", "{v}");
+}

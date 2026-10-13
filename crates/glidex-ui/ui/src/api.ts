@@ -52,6 +52,7 @@ import type {
   OvnSettings,
   OvnSettingsView,
   NodeTunnels,
+  BrIntDatapath,
 } from "./types";
 
 const API_BASE = "/api";
@@ -570,6 +571,8 @@ export interface PreviewRequest {
 /** Where a VM would go, node by node (spec/clustering-ui.md §5.1). */
 export const previewPlacement = (req: PreviewRequest) => query<PlacementPreview>("/scheduler/preview", req);
 export const getNode = (id: string) => get<NodeRecord>(`/nodes/${enc(id)}`);
+/** A node's br-int datapath (spec/clustering.md §11.6). */
+export const setNodeBrInt = (id: string, br_int_datapath: BrIntDatapath) => put<Record<string, unknown>>(`/nodes/${enc(id)}/ovn`, { br_int_datapath });
 
 // ---- membership (spec/clustering-ui.md §7) ---------------------------------------
 

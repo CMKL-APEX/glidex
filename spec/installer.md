@@ -31,7 +31,7 @@ by later runs (flags override the saved values):
 | `--no-qemu` / `--qemu` | skip / include QEMU and OVMF |
 | `--no-networking` / `--networking` | skip / include OVS, glidex-netd and host settings |
 | `--no-services` / `--services` | skip / include the users and groups, glidex-authd, the service configuration and the systemd units |
-| `--ovs-profile dpdk\|kernel` | OVS flavour (default `dpdk`, which reserves hugepages) |
+| `--ovs-profile kernel\|dpdk` | OVS flavour (default `kernel`; `dpdk` reserves hugepages and PMD cores). A host installed with `dpdk` keeps it on re-runs (saved in `install.conf`) |
 | `--pmd-cpu-mask MASK` | OVS-DPDK PMD CPU mask (`auto` clears it) |
 | `--allow-ovs-restart` | allow restarting an ovs-vswitchd that has bridges (interrupts their traffic) |
 | `--prebuilt` | use the release binaries and web UI already built in this checkout: no Rust or Bun toolchain, no build (never saved; the nested e2e test uses it) |
@@ -133,7 +133,7 @@ by later runs (flags override the saved values):
 10. **UEFI firmware** — see below; into the invoking user's
     `~/.glidex` and, with services, the service user's.
 11. **VM networking** *(unless `--no-networking`)* — installs Open
-    vSwitch through `glidex-ovs` (`dpdk` profile by default, or `kernel`,
+    vSwitch through `glidex-ovs` (`kernel` profile by default, or `dpdk`,
     via sudo; this also pulls in `dnsmasq` and `nftables`). If that
     would restart a vswitchd that has bridges, it is skipped with a note
     unless `--allow-ovs-restart`. Then the host settings below, then

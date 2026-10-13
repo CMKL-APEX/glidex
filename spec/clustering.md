@@ -1122,6 +1122,15 @@ networking.md):
   networking.md §0 findings 7–11 (hugepages, mempool driver, PMD
   placement, TSO). Nodes report `br_int_datapath`, and the scheduler
   filters on it (§9.1).
+- Which datapath `br-int` gets is a per-node setting, `spec.br_int_datapath`
+  (`PUT /nodes/{id}/ovn`, action `configureNode` on that node's `Host`):
+  `auto` (the default) is `netdev` where OVS runs DPDK, else `system`;
+  `system` and `netdev` force it. A DPDK host set to `system` can carry a
+  gateway (§13.2) and still use DPDK on its node networks; only vhost-user
+  NICs on cluster networks need `netdev`. Refused: `netdev` without DPDK,
+  `netdev` on a gateway node, `system` while vhost-user VMs on cluster
+  networks are placed there. The node switches within its next OVN round;
+  netd refuses while VM ports are on `br-int`.
 
 ### 11.7 Default network
 
@@ -1741,7 +1750,9 @@ Deviations and limits:
 - A VM's external counters start at the first round that sees them (`Origin::Unknown`), not at launch, because the collector's totals are keyed by address and an address can pass between VMs. At most one round's external traffic of a new VM is lost.
 - netd's zone range comes from its own file (`ct_zones`, default 60000–64999) and must match `ovn.snat_ct_zones`; the installer is meant to write both.
 - The `DESTROY` reader and the `conntrack` dump use the `conntrack` CLI, not netlink in-process.
-- Gateway nodes with `br_int_datapath = system` are not yet enforced when a router is created.
+- Gateway nodes are checked (the edge's physical network mapped, `br-int`
+  wanted on `system`) when the edge is set and when a VPC router names its
+  own gateway nodes.
 
 ### C7: operations and membership
 

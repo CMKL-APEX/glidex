@@ -595,6 +595,10 @@ impl VmManager {
         let mut probe = crate::node::SelfProbe::detect(&reserved);
         probe.features.physnets = self.ovn.load().bridge_mappings.clone();
         probe.features.feature_level = crate::node::FEATURE_LEVEL;
+        // Whether OVS runs DPDK here: what `auto` picks br-int's datapath by.
+        if let (_, Ok(caps)) = self.netd.probe() {
+            probe.features.dpdk = caps.get("dpdk_initialized").and_then(|v| v.as_bool()).unwrap_or(false);
+        }
         self.nodes
             .report_self(&self.local_node_id(), probe, self.cluster().is_none())
             .map(|_| ())

@@ -274,3 +274,100 @@ pub async fn reject_import(c: Caller, Path(plan): Path<String>) -> Result<impl I
     tokio::task::spawn_blocking(move || cl.reject_import(&plan)).await.map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()))?.map_err(import_err)?;
     Ok(StatusCode::NO_CONTENT)
 }
+
+/// Every node (id or name) that carries an OVN gateway: the shared edge's
+/// and each VPC router's (or the edge's, for a router without its own).
+pub(crate) fn gateway_node_keys(c: &Caller) -> Vec<(String, String)> {
+    let m = c.manager();
+    let edge: Vec<String> = m.ovn.load().edge.as_ref().map(|e| e.gateway_nodes.clone()).unwrap_or_default();
+    let mut out: Vec<(String, String)> = edge.iter().map(|g| (g.clone(), "the shared edge (gx-edge)".to_string())).collect();
+    for r in crate::router::list(&m.database()).unwrap_or_default() {
+        if !r.spec.external {
+            continue;
+        }
+        for g in r.spec.gateway_nodes.clone().unwrap_or_else(|| edge.clone()) {
+            out.push((g, format!("router {}", r.spec.name)));
+        }
+    }
+    out
+}
+
+#[derive(serde::Deserialize)]
+pub struct NodeOvnBody {
+    br_int_datapath: crate::node::BrIntDatapath,
+}
+
+/// `PUT /nodes/{id}/ovn` (`configureNode` on the node's host): the node's
+/// `br-int` datapath (spec/clustering.md §11.6). The node applies it within
+/// its next OVN round; netd refuses to flip a `br-int` with VM ports on it.
+pub async fn put_node_ovn(c: Caller, Path(id): Path<String>, Json(b): Json<NodeOvnBody>) -> Result<impl IntoResponse, ApiErr> {
+    let mut es = EntitySet::new();
+    es.host(&id);
+    c.require(Ent::host_of(&id), es)?;
+    c.set_target(format!("node:{id}"));
+    c.audit_always();
+    let m = c.manager();
+    let store = m.nodes();
+    let mut n = store.get(&id).map_err(store_err)?.ok_or_else(|| err(StatusCode::NOT_FOUND, "not_found", format!("node {id} not found")))?;
+    use crate::node::BrIntDatapath as D;
+    let mut want = n.clone();
+    want.spec.br_int_datapath = b.br_int_datapath;
+    let wanted = want.wanted_br_int();
+    if b.br_int_datapath == D::Netdev && !n.status.features.dpdk {
+        return Err(err(StatusCode::CONFLICT, "dpdk_not_running", format!("{}: OVS doesn't run DPDK there; the userspace datapath needs it (install with --ovs-profile dpdk)", n.spec.name)));
+    }
+    if wanted == "netdev" {
+        // A gateway's SNAT is metered from kernel conntrack (§13.2).
+        if let Some((_, what)) = gateway_node_keys(&c).into_iter().find(|(g, _)| *g == n.meta.id || *g == n.spec.name) {
+            return Err(err(StatusCode::CONFLICT, "gateway_node", format!("{} is a gateway node of {what}; gateways need br-int on the kernel (system) datapath", n.spec.name)));
+        }
+    }
+    if wanted == "system" {
+        // vhost-user NICs on cluster networks need the userspace datapath.
+        let nets = m.networks_list();
+        let blocking: Vec<String> = m
+            .list_vms()
+            .await
+            .into_iter()
+            .filter(|v| v.status.placement.as_ref().is_some_and(|p| p.node == n.meta.id))
+            .filter(|v| {
+                v.config().networks.iter().any(|a| {
+                    nets.iter().any(|x| x.name == a.network && x.scope == crate::network::NetworkScope::Cluster && x.port_type == glidex_ovs::vm_port::VmPortKind::VhostUser)
+                })
+            })
+            .map(|v| v.name.clone())
+            .collect();
+        if !blocking.is_empty() {
+            return Err(err(StatusCode::CONFLICT, "vhost_user_vms", format!("{} runs VMs with vhost-user NICs on cluster networks, which need the userspace datapath: {}", n.spec.name, blocking.join(", "))));
+        }
+    }
+    if n.spec.br_int_datapath != b.br_int_datapath {
+        n.spec.br_int_datapath = b.br_int_datapath;
+        n.meta.generation += 1;
+        n.meta.resource_version += 1;
+        store.put(&n).map_err(store_err)?;
+    }
+    Ok(Json(serde_json::json!({ "node": n.spec.name, "br_int_datapath": n.spec.br_int_datapath, "wanted": n.wanted_br_int(), "current": n.status.features.br_int_datapath })))
+}
+
+/// Whether `keys` (node ids or names) can carry an OVN gateway on `physnet`:
+/// each maps that physical network and wants `br-int` on the kernel datapath
+/// (spec/clustering.md §11.2, §13.2). The reason when not.
+pub(crate) fn check_gateway_nodes(nodes: &[crate::node::Node], keys: &[String], physnet: &str) -> Result<(), String> {
+    for k in keys {
+        let Some(n) = nodes.iter().find(|n| n.meta.id == *k || n.spec.name == *k) else { return Err(format!("no node {k}")) };
+        if !n.status.features.physnets.contains_key(physnet) {
+            return Err(format!(
+                "{} doesn't map physical network {physnet}: add it to cluster.ovn.bridge_mappings in that node's control-plane.json (a bridge with the uplink) and restart its control plane",
+                n.spec.name
+            ));
+        }
+        if n.wanted_br_int() != "system" {
+            return Err(format!(
+                "{} runs br-int on the userspace datapath; a gateway needs the kernel (system) datapath, which its external traffic is metered from: set its br-int datapath to system first",
+                n.spec.name
+            ));
+        }
+    }
+    Ok(())
+}

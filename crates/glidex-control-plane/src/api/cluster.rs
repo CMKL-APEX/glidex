@@ -390,6 +390,9 @@ pub async fn put_ovn_settings(c: Caller, Json(b): Json<OvnSettingsBody>) -> Resu
         updated_at: crate::tenancy::now(),
     };
     next.validate(|w| nodes.iter().any(|n| n.meta.id == w || n.spec.name == w)).map_err(|m| err(StatusCode::BAD_REQUEST, "invalid", m))?;
+    if let (true, Some(e)) = (next.enabled, &next.edge) {
+        super::nodes::check_gateway_nodes(&nodes, &e.gateway_nodes, &e.physnet).map_err(|m| err(StatusCode::CONFLICT, "gateway_not_ready", m))?;
+    }
     if next.enabled {
         let missing: Vec<String> = nodes.iter().filter_map(|n| ovn_missing(n).map(|why| format!("{}: {why}", n.spec.name))).collect();
         if !missing.is_empty() {

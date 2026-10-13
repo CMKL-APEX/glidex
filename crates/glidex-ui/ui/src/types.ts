@@ -870,7 +870,14 @@ export interface NodeResources {
 /** A node record as `GET /nodes` and the live stream send it. */
 export interface NodeRecord {
   meta: { id: string; name: string; created_at: number; generation: number; resource_version: number };
-  spec: { name: string; role: "server" | "agent"; unschedulable: boolean; labels: Record<string, string> };
+  spec: {
+    name: string;
+    role: "server" | "agent";
+    unschedulable: boolean;
+    labels: Record<string, string>;
+    /** `auto` (absent): `netdev` where DPDK runs, else `system` (spec/clustering.md §11.6). */
+    br_int_datapath?: BrIntDatapath;
+  };
   status: {
     phase: NodePhase;
     ready: Tristate;
@@ -886,6 +893,15 @@ export interface NodeRecord {
     heartbeat?: number;
     departed_ids?: string[];
   };
+}
+
+export type BrIntDatapath = "auto" | "system" | "netdev";
+
+/** What a node's `br-int` datapath should be, by its setting. */
+export function wantedBrInt(n: NodeRecord): "system" | "netdev" {
+  const s = n.spec.br_int_datapath ?? "auto";
+  if (s === "system" || s === "netdev") return s;
+  return n.status.features?.dpdk ? "netdev" : "system";
 }
 
 /** A node is gone for good (kept as a record only). */

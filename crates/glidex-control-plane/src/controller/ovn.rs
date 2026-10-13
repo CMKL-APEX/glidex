@@ -237,6 +237,7 @@ impl VmManager {
         let all_ips: Vec<IpAddr> = servers.iter().map(|(_, ip, _)| *ip).collect();
         let sb_remotes: Vec<String> = all_ips.iter().map(|ip| format!("ssl:{ip}:{}", glidex_ovs::ovn::SB_PORT)).collect();
         let bridge_mappings = nodes.iter().find(|n| n.meta.id == me).map(|n| n.status.features.physnets.clone()).unwrap_or_default();
+        let setting = nodes.iter().find(|n| n.meta.id == me).map(|n| n.spec.br_int_datapath).unwrap_or_default();
         let res = tokio::task::spawn_blocking(move || -> Result<Option<String>, String> {
             use glidex_netd::proto::{EnsureOvnCentralArgs, EnsureOvnChassisArgs, Op};
             if is_server {
@@ -245,10 +246,14 @@ impl VmManager {
                 let spec = glidex_ovs::ovn::CentralSpec { local_ip: local, join, servers: all_ips.clone() };
                 netd.call::<serde_json::Value>(Op::EnsureOvnCentral(EnsureOvnCentralArgs { spec, certs: certs.clone() })).map_err(|e| e.to_string())?;
             }
-            // `br-int`'s datapath: userspace where DPDK runs (vhost-user needs it).
-            let datapath = match netd.probe() {
-                (_, Ok(caps)) if caps.get("dpdk_initialized").and_then(|v| v.as_bool()).unwrap_or(false) => glidex_ovs::bridge::Datapath::Netdev,
-                _ => glidex_ovs::bridge::Datapath::System,
+            // `br-int`'s datapath: the node's setting; `auto` is userspace
+            // where DPDK runs (vhost-user needs it), else the kernel's.
+            let dpdk = matches!(netd.probe(), (_, Ok(caps)) if caps.get("dpdk_initialized").and_then(|v| v.as_bool()).unwrap_or(false));
+            let datapath = match setting {
+                crate::node::BrIntDatapath::System => glidex_ovs::bridge::Datapath::System,
+                crate::node::BrIntDatapath::Netdev => glidex_ovs::bridge::Datapath::Netdev,
+                crate::node::BrIntDatapath::Auto if dpdk => glidex_ovs::bridge::Datapath::Netdev,
+                crate::node::BrIntDatapath::Auto => glidex_ovs::bridge::Datapath::System,
             };
             let spec = glidex_ovs::ovn::ChassisSpec { chassis: glidex_ovs::ovn::chassis_name(&me), sb_remotes, encap_ip: tunnel, bridge_mappings, datapath };
             let st: glidex_ovs::ovn::OvnStatus = netd.call(Op::EnsureOvnChassis(EnsureOvnChassisArgs { spec, certs })).map_err(|e| e.to_string())?;

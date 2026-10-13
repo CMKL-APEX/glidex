@@ -53,6 +53,42 @@ pub struct NodeSpec {
     pub unschedulable: bool,
     #[serde(default)]
     pub labels: BTreeMap<String, String>,
+    /// The datapath of this node's `br-int` (spec/clustering.md §11.6):
+    /// `auto` (the default) is `netdev` where DPDK runs, else `system`.
+    #[serde(default, skip_serializing_if = "BrIntDatapath::is_auto")]
+    pub br_int_datapath: BrIntDatapath,
+}
+
+/// What an administrator chose for a node's `br-int` datapath.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BrIntDatapath {
+    #[default]
+    Auto,
+    /// The kernel datapath: what a gateway node needs (its SNAT is metered
+    /// from kernel conntrack, §13.2). Tap VM ports only.
+    System,
+    /// The userspace (DPDK) datapath: vhost-user VM ports on cluster networks.
+    Netdev,
+}
+
+impl BrIntDatapath {
+    pub fn is_auto(&self) -> bool {
+        *self == BrIntDatapath::Auto
+    }
+}
+
+impl Node {
+    /// The datapath this node's `br-int` should have: its setting, or for
+    /// `auto`, `netdev` where DPDK runs.
+    pub fn wanted_br_int(&self) -> &'static str {
+        match self.spec.br_int_datapath {
+            BrIntDatapath::System => "system",
+            BrIntDatapath::Netdev => "netdev",
+            BrIntDatapath::Auto if self.status.features.dpdk => "netdev",
+            BrIntDatapath::Auto => "system",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -296,13 +332,16 @@ impl NodeStore {
     pub fn report_self(&self, id: &str, probe: SelfProbe, create: bool) -> Result<Option<Node>, NodeError> {
         let mut node = match self.get(id)? {
             Some(n) => n,
-            None if create => Node::new(id, NodeSpec { name: probe.name.clone(), role: NodeRole::Server, unschedulable: false, labels: BTreeMap::new() }),
+            None if create => Node::new(id, NodeSpec { name: probe.name.clone(), role: NodeRole::Server, unschedulable: false, labels: BTreeMap::new(), br_int_datapath: Default::default() }),
             None => return Ok(None),
         };
         let before = node.clone();
         node.status.capacity = probe.capacity;
         node.status.allocatable = probe.allocatable;
+        // The OVN loop records br-int's datapath; the probe can't see it.
+        let br_int = node.status.features.br_int_datapath.take();
         node.status.features = probe.features;
+        node.status.features.br_int_datapath = br_int;
         node.status.pci_devices = probe.pci_devices;
         node.status.versions.glidex = env!("CARGO_PKG_VERSION").into();
         node.status.versions.ovn = probe.ovn_version;

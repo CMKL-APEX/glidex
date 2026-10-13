@@ -203,6 +203,9 @@ namespace Glidex {
     appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
   action drainNode, undrainNode in ["node.drain"]
     appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
+  // A node's own OVN options, e.g. its br-int datapath (spec/clustering.md §11.6).
+  action configureNode in ["host.cluster.critical"]
+    appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
 
   // ---- images ------------------------------------------------------------
   action readImage, readNetwork

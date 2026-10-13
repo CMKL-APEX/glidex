@@ -361,7 +361,9 @@ impl Default for Options {
             qemu: true,
             networking: true,
             services: true,
-            ovs_profile: OvsProfile::Dpdk,
+            // The kernel datapath: no hugepages or dedicated cores, and an
+            // OVN br-int that can carry a gateway (spec/clustering.md §13.2).
+            ovs_profile: OvsProfile::Kernel,
             pmd_cpu_mask: None,
             allow_ovs_restart: false,
             ovn: true,
@@ -383,7 +385,7 @@ impl Options {
                 "qemu" => o.qemu = v == "true",
                 "networking" => o.networking = v == "true",
                 "services" => o.services = v == "true",
-                "ovs_profile" => o.ovs_profile = OvsProfile::parse(v).unwrap_or(OvsProfile::Dpdk),
+                "ovs_profile" => o.ovs_profile = OvsProfile::parse(v).unwrap_or(OvsProfile::Kernel),
                 "pmd_cpu_mask" => o.pmd_cpu_mask = (!v.is_empty()).then(|| v.to_string()),
                 "ovn" => o.ovn = v == "true",
                 _ => {}
@@ -484,7 +486,7 @@ fn print_help() {
          \x20     --no-qemu              skip QEMU and OVMF (Cloud Hypervisor only)\n\
          \x20     --no-networking        skip Open vSwitch, glidex-netd and host settings\n\
          \x20     --no-services          don't install the systemd units, users and groups\n\
-         \x20     --ovs-profile P        dpdk (default; reserves hugepages) or kernel\n\
+         \x20     --ovs-profile P        kernel (default) or dpdk (reserves hugepages and PMD cores)\n\
          \x20     --pmd-cpu-mask MASK    OVS-DPDK PMD CPU mask, hex (\"auto\" to clear)\n\
          \x20     --allow-ovs-restart    allow restarting ovs-vswitchd while it has bridges\n\
          \x20     --no-ovn               skip OVN (cluster networks need it; default: installed,\n\
@@ -2297,6 +2299,10 @@ mod tests {
         let o = Options::parse(None, &[]).unwrap();
         assert_eq!(o, Options::default());
         assert!(o.qemu && o.networking && o.services);
+        assert_eq!(o.ovs_profile, OvsProfile::Kernel, "kernel by default");
+        // A host installed with DPDK keeps it on re-runs.
+        let dpdk = Options::parse(None, &args(&["--ovs-profile", "dpdk"])).unwrap();
+        assert_eq!(Options::parse(Some(&dpdk.render()), &[]).unwrap().ovs_profile, OvsProfile::Dpdk);
 
         let o = Options::parse(None, &args(&["--no-qemu", "--ovs-profile", "kernel", "--pmd-cpu-mask", "0x6"])).unwrap();
         let saved = o.render();

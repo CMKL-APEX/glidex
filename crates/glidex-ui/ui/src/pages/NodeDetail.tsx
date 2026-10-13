@@ -2,7 +2,9 @@ import { useCallback, useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import * as api from "../api";
 import type { DiskInfo, NodeRecord, VmResponse } from "../types";
-import { formatBytes, formatTime, stateLabel } from "../types";
+import { formatBytes, formatTime, stateLabel, wantedBrInt } from "../types";
+import BrIntDialog from "../components/BrIntDialog";
+import { hostOf, useAllowed } from "../nodes";
 import { useLive, useLiveRefresh } from "../live";
 import { useNodes } from "../nodes";
 import NodeActions from "../components/NodeActions";
@@ -53,6 +55,10 @@ export default function NodeDetail() {
   const [vms, setVms] = useState<VmResponse[] | null>(null);
   const [disks, setDisks] = useState<DiskInfo[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [brIntOpen, setBrIntOpen] = useState(false);
+  const nodeHost = hostOf(id, dir.self);
+  const canConf = useAllowed(["configureNode"], [nodeHost]);
+  const canConfigure = !!canConf?.(nodeHost, "configureNode");
 
   const load = useCallback(async () => {
     try {
@@ -161,12 +167,20 @@ export default function NodeDetail() {
             <dd>
               {s.features?.kvm ? "yes" : "no"} / {s.features?.iommu ? "yes" : "no"} / {s.features?.dpdk ? "yes" : "no"}
             </dd>
-            {s.features?.br_int_datapath && (
-              <>
-                <dt className="text-gray-500">br-int datapath</dt>
-                <dd>{s.features.br_int_datapath}</dd>
-              </>
-            )}
+            <dt className="text-gray-500">br-int datapath</dt>
+            <dd>
+              {s.features?.br_int_datapath ?? <span className="text-gray-400">not a chassis</span>}
+              <span className="text-gray-500">
+                {" "}
+                (setting: {node.spec.br_int_datapath ?? "auto"}
+                {s.features?.br_int_datapath && s.features.br_int_datapath !== wantedBrInt(node) ? `; moving to ${wantedBrInt(node)}` : ""})
+              </span>
+              {canConfigure && (
+                <button className="ml-2 text-sky-700 hover:underline" onClick={() => setBrIntOpen(true)}>
+                  Change…
+                </button>
+              )}
+            </dd>
             {Object.keys(s.features?.physnets ?? {}).length > 0 && (
               <>
                 <dt className="text-gray-500">Physical networks</dt>
@@ -202,6 +216,17 @@ export default function NodeDetail() {
       </div>
 
       {host.readCluster && <NodeOvnCard node={id} />}
+
+      {brIntOpen && (
+        <BrIntDialog
+          node={node}
+          onClose={() => setBrIntOpen(false)}
+          onDone={() => {
+            setBrIntOpen(false);
+            load();
+          }}
+        />
+      )}
 
       <Card title={`VMs (${(vms ?? []).length})`}>
         {vms === null ? (
