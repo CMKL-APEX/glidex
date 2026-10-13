@@ -32,6 +32,7 @@ reported as `404`.
 | `GET` | `/health` | `health_check` | Liveness probe |
 | `GET` | `/vms` | `list` | List VMs |
 | `POST` | `/vms` | `create` | Create a new VM (desired state `stopped` unless `power` says otherwise) |
+| `POST` | `/scheduler/preview` | `vms::preview` | Where a VM would go: `{vcpu_count, mem_size_mib, hypervisor?, node?, networks?, vfio_devices?, data_disks?, project?}` → `{pick, nodes: [{id, name, refused, vcpus_taken, vcpus_capacity, mem_mib_taken, mem_mib_capacity, vms}]}`, the scheduler's preference first; needs `createVm` on the project (spec/clustering-ui.md §5.1) |
 | `GET` | `/vms/{id}[?view=full]` | `get_one` | Get a VM by id; `view=full` returns the stored `{meta, spec, status}` record instead of the flat `VmResponse`; it also needs `readSystemStatus` (`host.read`), since the record carries host paths, PIDs and the boot id |
 | `PATCH` | `/vms/{id}` | `patch_one` | JSON merge patch of the VM's spec (below) |
 | `DELETE` | `/vms/{id}[?keep_disk=true]` | `delete_one` | Request deletion; the controller stops the VM and cleans up (below) |
@@ -69,7 +70,7 @@ reported as `404`.
 | `GET` | `/cluster/status[?ports=true]` | `cluster::status` | Raft group, nodes with version and feature level, CA rotation, and TCP reachability of the cluster ports from the serving server |
 | `POST` | `/cluster/{init,join,import,rejoin,leave,dissolve,rotate-ca,promote,join-tokens}` | `cluster::*` | Forming, joining (with `import` for a host with resources), leaving and operating a cluster ([clustering.md §5](clustering.md#5-cluster-lifecycle), [runbook](cluster-runbook.md)) |
 | `GET` | `/cluster/snapshot` | `cluster::snapshot` | A consistent snapshot of the replicated store (0600 material; always audited) |
-| `GET` | `/nodes`, `/nodes/{id}` | `nodes::list` / `get_node` | Nodes and their phase, capacity and features |
+| `GET` | `/nodes`, `/nodes/{id}` | `nodes::list` / `get_node` | Nodes and their phase, capacity and features (image responses carry `copies: [{node, node_name, state, bytes, error?}]` in a cluster: each node's copy of the file) |
 | `POST` | `/nodes/{id}/{drain,undrain,remove,forget,purge,rejoin-token,detach}` | `nodes::*` | Node lifecycle (`409` with the reason when refused; `detach` takes `map_networks`, `with_access`, `abort`, `departed`) |
 | `GET` / `POST` | `/imports`, `/imports/{plan}`, `/imports/{plan}/{approve,reject}` | `nodes::*_import` | Import plans: show, approve with mappings (`dry_run` checks only), reject |
 | `GET` | `/watch[?kinds=…][&project=…]` | `watch` | Live stream of VM, disk, image and network changes (server-sent events; below) |

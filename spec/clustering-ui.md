@@ -1,8 +1,9 @@
 # Cluster operations in the web UI (implementation plan)
 
-Status: U0 and U1 **implemented** (`/authz/allowed`, the cluster watch
+Status: U0–U2 **implemented** (`/authz/allowed`, the cluster watch
 kinds, the shared UI pieces, the agent UI relay, node awareness in the
-existing pages, `node_name`); U2–U5 planned. It extends [web-ui.md](web-ui.md) for
+existing pages, `node_name`; the scheduler preview and placement choice,
+the Node page, image copies, usage by node); U3–U5 planned. It extends [web-ui.md](web-ui.md) for
 the multi-host clusters of [clustering.md](clustering.md) (referred to as
 "C§n" below). The REST endpoints it uses are in C§16 and `api/mod.rs`;
 where the UI needs something the API does not yet give, the server
