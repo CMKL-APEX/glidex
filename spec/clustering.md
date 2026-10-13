@@ -933,7 +933,12 @@ OVS profile (kernel or DPDK) is unchanged.
 }
 ```
 
-Without a `cluster` section the host is standalone (D5). `ui_relay`
+Without a `cluster` section the host is standalone (D5). The `ovn`
+options other than `bridge_mappings` are a cluster setting since
+spec/clustering-ui.md §8a (`PUT /cluster/settings/ovn`, the Cluster
+page): once it is written, the file's cluster-wide `ovn` fields are
+ignored (with a warning), and a cluster that enabled OVN in its files has
+its leader write the setting from its own file. `ui_relay`
 (agents) relays the web UI's requests to a server, which authenticates
 them; off, the agent's UI answers `421` with the servers to use
 (spec/clustering-ui.md §3.6).

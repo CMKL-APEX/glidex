@@ -99,11 +99,13 @@ impl VmManager {
                 m.ensure_ovn_node().await;
             }
         }));
-        // What this node reports about itself, refreshed every ten minutes.
+        // What this node reports about itself, refreshed every two minutes.
         let m = me.clone();
         tasks.push(tokio::spawn(async move {
             loop {
-                tokio::time::sleep(Duration::from_secs(600)).await;
+                // Often enough that installing OVN (or a hypervisor) on a
+                // host shows up soon; nothing is written unless it changed.
+                tokio::time::sleep(Duration::from_secs(120)).await;
                 let m2 = m.clone();
                 let _ = tokio::task::spawn_blocking(move || m2.report_self()).await;
             }
@@ -139,6 +141,7 @@ impl VmManager {
             tokio::spawn(async move {
                 loop {
                     tokio::time::sleep(Duration::from_secs(5)).await;
+                    m2.migrate_ovn_settings();
                     m2.reconcile_ovn().await;
                 }
             }),

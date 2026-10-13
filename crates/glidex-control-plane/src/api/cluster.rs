@@ -311,3 +311,101 @@ fn tokio_util_stream(f: tokio::fs::File, dir: tempfile::TempDir) -> impl futures
         }
     })
 }
+
+// ---- OVN as a cluster setting (spec/clustering-ui.md §8a) -----------------
+
+/// Why a node can't take part in OVN yet, if it can't.
+fn ovn_missing(n: &crate::node::Node) -> Option<String> {
+    if n.status.versions.ovn.is_none() {
+        return Some("OVN is not installed (ovn-controller)".into());
+    }
+    if n.spec.role == NodeRole::Server && !n.status.features.ovn_central {
+        return Some("OVN's central part is not installed (ovn-northd)".into());
+    }
+    None
+}
+
+/// What `GET /cluster/settings/ovn` answers to someone who may read the cluster.
+fn ovn_view(c: &Caller) -> serde_json::Value {
+    let m = c.manager();
+    let settings = m.ovn_settings();
+    let source = if settings.is_some() { "cluster" } else if m.ovn.load().enabled { "file" } else { "none" };
+    let shown = settings.clone().unwrap_or_else(|| crate::ovn_settings::OvnSettings::from_file(&m.ovn.load()));
+    let nodes: Vec<serde_json::Value> = m
+        .nodes()
+        .list()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|n| !n.status.phase.is_tombstone())
+        .map(|n| json!({ "id": n.meta.id, "name": n.spec.name, "role": n.spec.role, "ovn_version": n.status.versions.ovn, "ovn_central": n.status.features.ovn_central, "missing": ovn_missing(&n) }))
+        .collect();
+    let cluster_networks: Vec<String> = m.networks_list().into_iter().filter(|n| n.scope == crate::network::NetworkScope::Cluster).map(|n| n.name).collect();
+    json!({ "enabled": m.ovn_enabled(), "clustered": m.cluster().is_some(), "source": source, "settings": shown, "nodes": nodes, "cluster_networks": cluster_networks })
+}
+
+/// `GET /cluster/settings/ovn`: whether the cluster runs on OVN (anyone signed
+/// in: the network form needs it), and the options and node readiness (with
+/// `readCluster`).
+pub async fn get_ovn_settings(c: Caller) -> Result<impl IntoResponse, ApiErr> {
+    if c.allowed("readCluster", Ent::Cluster, EntitySet::new()) {
+        return Ok(Json(ovn_view(&c)));
+    }
+    Ok(Json(json!({ "enabled": c.manager().ovn_enabled() })))
+}
+
+#[derive(Deserialize)]
+pub struct OvnSettingsBody {
+    enabled: bool,
+    #[serde(default)]
+    underlay_mtu: Option<u16>,
+    #[serde(default)]
+    nat_supernet: Option<String>,
+    #[serde(default)]
+    edge: Option<crate::cluster::config::EdgeConfig>,
+    #[serde(default)]
+    snat_ct_zones: Option<(u16, u16)>,
+    #[serde(default)]
+    dns_servers: Vec<std::net::IpAddr>,
+}
+
+/// `PUT /cluster/settings/ovn` (`configureOvn`): turn OVN on or off for the
+/// whole cluster and set its options. Every node follows without a restart.
+pub async fn put_ovn_settings(c: Caller, Json(b): Json<OvnSettingsBody>) -> Result<impl IntoResponse, ApiErr> {
+    c.require(Ent::Cluster, EntitySet::new())?;
+    c.set_target("cluster:ovn".to_string());
+    c.audit_always();
+    let m = c.manager();
+    if m.cluster().is_none() {
+        return Err(err(StatusCode::CONFLICT, "not_clustered", "OVN runs cluster networks: make this host a cluster first"));
+    }
+    let nodes: Vec<crate::node::Node> = m.nodes().list().unwrap_or_default().into_iter().filter(|n| !n.status.phase.is_tombstone()).collect();
+    let next = crate::ovn_settings::OvnSettings {
+        enabled: b.enabled,
+        underlay_mtu: b.underlay_mtu,
+        nat_supernet: b.nat_supernet.filter(|s| !s.trim().is_empty()),
+        edge: b.edge,
+        snat_ct_zones: b.snat_ct_zones,
+        dns_servers: b.dns_servers,
+        updated_by: c.actor(),
+        updated_at: crate::tenancy::now(),
+    };
+    next.validate(|w| nodes.iter().any(|n| n.meta.id == w || n.spec.name == w)).map_err(|m| err(StatusCode::BAD_REQUEST, "invalid", m))?;
+    if next.enabled {
+        let missing: Vec<String> = nodes.iter().filter_map(|n| ovn_missing(n).map(|why| format!("{}: {why}", n.spec.name))).collect();
+        if !missing.is_empty() {
+            return Err(err(
+                StatusCode::CONFLICT,
+                "ovn_not_installed",
+                format!("every node needs OVN first (run `sudo glidex-install --ovn` there): {}", missing.join("; ")),
+            ));
+        }
+    } else {
+        let nets: Vec<String> = m.networks_list().into_iter().filter(|n| n.scope == crate::network::NetworkScope::Cluster).map(|n| n.name).collect();
+        if !nets.is_empty() {
+            return Err(err(StatusCode::CONFLICT, "cluster_networks_exist", format!("delete the cluster networks first: {}", nets.join(", "))));
+        }
+    }
+    crate::ovn_settings::write(&m.database(), &next).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, "persistence_error", e.to_string()))?;
+    m.apply_ovn_settings();
+    Ok(Json(ovn_view(&c)))
+}

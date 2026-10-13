@@ -1,6 +1,6 @@
 # Cluster operations in the web UI (implementation plan)
 
-Status: U0–U5 **implemented** (`/authz/allowed`, the cluster watch
+Status: U0–U7 **implemented** (`/authz/allowed`, the cluster watch
 kinds, the shared UI pieces, the agent UI relay, node awareness in the
 existing pages, `node_name`; the scheduler preview and placement choice,
 the Node page, image copies, usage by node; the Cluster page with every

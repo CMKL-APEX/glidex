@@ -100,6 +100,12 @@ pub async fn network_ovn(c: Caller, Path(name): Path<String>) -> Result<impl Int
     Ok(Json(c.manager().network_ovn(&n).await.map_err(manager_err)?))
 }
 
+/// `GET /cluster/ovn/tunnels` (spec/clustering-ui.md §8b): each node's tunnels.
+pub async fn cluster_ovn_tunnels(c: Caller) -> Result<impl IntoResponse, ApiErr> {
+    c.require(crate::authz::Ent::Cluster, crate::authz::EntitySet::new())?;
+    Ok(Json(c.manager().ovn_tunnels().await))
+}
+
 /// `GET /cluster/ovn` (spec/clustering-ui.md §8): the OVN databases, chassis and gateways.
 pub async fn cluster_ovn(c: Caller) -> Result<impl IntoResponse, ApiErr> {
     c.require(crate::authz::Ent::Cluster, crate::authz::EntitySet::new())?;

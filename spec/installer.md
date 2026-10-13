@@ -510,5 +510,8 @@ them and is remembered in `install.conf`. When this run installed OVN and the
 host is in no cluster, OVN's services are stopped and disabled: Debian and
 Ubuntu start them on install, and a standalone host would only run empty
 databases. glidex-netd starts what a cluster needs (`ovn-host` for the
-chassis, `ovn-central` on servers).
+chassis, `ovn-central` on servers). Installing OVN doesn't turn it on: that is
+a cluster setting, from the Cluster page or `PUT /cluster/settings/ovn`
+(spec/clustering-ui.md §8a), refused until every node reports OVN
+installed.
 

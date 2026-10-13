@@ -10,6 +10,7 @@ pub mod images;
 pub mod ipam;
 pub mod models;
 pub mod network;
+pub mod ovn_settings;
 pub mod node;
 pub mod pci;
 pub mod router;

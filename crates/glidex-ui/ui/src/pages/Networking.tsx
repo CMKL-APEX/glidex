@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import * as api from "../api";
 import { ApiRequestError } from "../api";
 import type {
@@ -231,8 +231,19 @@ function AddNetworkForm({
   const [busy, setBusy] = useState(false);
   // In a cluster: one OVN network for every node, or a bridge on this node.
   const nodes = useNodes();
+  const { host } = useSession();
+  // Cluster networks need OVN on (spec/clustering-ui.md §8a): ask once.
+  const [ovnOn, setOvnOn] = useState<boolean | null>(null);
+  useEffect(() => {
+    if (!nodes.clustered) return;
+    api
+      .getOvnSettings()
+      .then((v) => setOvnOn(v.enabled))
+      .catch(() => setOvnOn(false));
+  }, [nodes.clustered]);
   const [span, setSpan] = useState<"cluster" | "node">("cluster");
-  const clusterWide = nodes.clustered && span === "cluster";
+  const canSpan = nodes.clustered && ovnOn === true;
+  const clusterWide = canSpan && span === "cluster";
 
   // Project networks are NAT or isolated, on a bridge glidex names.
   const project = scope !== "";
@@ -248,7 +259,7 @@ function AddNetworkForm({
     try {
       // Cluster networks get an address range for isolated mode too (cluster IPAM).
       const subnetValue = (mode === "nat" || (clusterWide && mode === "isolated")) && subnet ? subnet : undefined;
-      const scopeValue = nodes.clustered ? span : undefined;
+      const scopeValue = nodes.clustered ? (canSpan ? span : "node") : undefined;
       if (project) {
         await api.createProjectNetwork(scope, { name, mode, port_type: portType, subnet: subnetValue, scope: scopeValue });
       } else {
@@ -290,7 +301,19 @@ function AddNetworkForm({
             : "A host network: grant it to projects after creating it."}
         </p>
       </div>
-      {nodes.clustered && (
+      {nodes.clustered && ovnOn === false && (
+        <p className="text-xs text-gray-600 bg-gray-50 border border-gray-200 rounded-lg p-2">
+          This network is for this node only. Networks that span every node need OVN, which is off for this cluster
+          {host.configureOvn ? (
+            <>
+              : turn it on from the <Link to="/cluster" className="text-sky-700 hover:underline">Cluster page</Link>.
+            </>
+          ) : (
+            "; an administrator can turn it on."
+          )}
+        </p>
+      )}
+      {canSpan && (
         <div>
           <label htmlFor="network-span" className="block text-sm font-medium text-gray-700">
             Spans

@@ -190,6 +190,9 @@ namespace Glidex {
   // Membership (spec/clustering.md §5.5-5.7).
   action removeNode, forgetNode, purgeNode, createRejoinToken, rotateCa, detachNode, approveImport, rejectImport, dissolveCluster in ["host.cluster.critical"]
     appliesTo { principal: [User, Token], resource: [Cluster], context: Ctx };
+  // OVN as a cluster setting (spec/clustering-ui.md §8a).
+  action configureOvn in ["host.cluster.critical"]
+    appliesTo { principal: [User, Token], resource: [Cluster], context: Ctx };
 
   // ---- nodes (spec/clustering.md §7) -------------------------------------
   action listImports, readImport in ["host.read"]

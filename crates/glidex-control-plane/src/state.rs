@@ -281,7 +281,13 @@ pub struct VmManager {
     pub(crate) controllers_started: std::sync::atomic::AtomicBool,
     sched: ArcSwap<crate::cluster::config::SchedulerConfig>,
     reserved: ArcSwap<crate::cluster::config::NodeReserved>,
+    /// What this host runs OVN with: the cluster setting (if written) over
+    /// the file's per-host part (spec/clustering-ui.md §8a).
     pub(crate) ovn: ArcSwap<crate::cluster::config::OvnConfig>,
+    /// `cluster.ovn` as this host's file has it.
+    ovn_file: ArcSwap<crate::cluster::config::OvnConfig>,
+    /// The file's cluster-wide OVN fields were reported as ignored.
+    ovn_file_warned: std::sync::atomic::AtomicBool,
     nodes: crate::node::NodeStore,
     roles: std::sync::Mutex<crate::node::Roles>,
     db_path: PathBuf,
@@ -404,6 +410,8 @@ impl VmManager {
             sched: ArcSwap::from_pointee(Default::default()),
             reserved: ArcSwap::from_pointee(Default::default()),
             ovn: ArcSwap::from_pointee(Default::default()),
+            ovn_file: ArcSwap::from_pointee(Default::default()),
+            ovn_file_warned: std::sync::atomic::AtomicBool::new(false),
             nodes,
             roles: std::sync::Mutex::new(crate::node::Roles::STANDALONE),
             db_path,
@@ -430,7 +438,53 @@ impl VmManager {
         self.settings.store(Arc::new(s));
         self.sched.store(Arc::new(cfg.cluster.scheduler.clone()));
         self.reserved.store(Arc::new(cfg.cluster.node_reserved.clone()));
-        self.ovn.store(Arc::new(cfg.cluster.ovn.clone()));
+        self.ovn_file.store(Arc::new(cfg.cluster.ovn.clone()));
+        self.apply_ovn_settings();
+    }
+
+    /// Recompute the OVN configuration from the cluster setting and the
+    /// file (at start, and whenever the setting changes).
+    pub fn apply_ovn_settings(&self) {
+        let file = self.ovn_file.load_full();
+        let next = match crate::ovn_settings::read(&self.store.database()) {
+            Some(s) => {
+                let from_file = crate::ovn_settings::OvnSettings::from_file(&file);
+                let file_says_something = from_file.enabled || from_file.edge.is_some() || from_file.nat_supernet.is_some() || !from_file.dns_servers.is_empty();
+                if file_says_something && !s.same_options(&from_file) && !self.ovn_file_warned.swap(true, std::sync::atomic::Ordering::AcqRel) {
+                    tracing::warn!("control-plane.json's cluster.ovn options are ignored: the cluster's OVN setting decides (spec/clustering-ui.md §8a); only bridge_mappings is read from the file");
+                }
+                s.effective(&file)
+            }
+            None => (*file).clone(),
+        };
+        if *self.ovn.load_full() != next {
+            if self.ovn.load().enabled != next.enabled {
+                tracing::info!(enabled = next.enabled, "OVN setting changed");
+            }
+            self.ovn.store(Arc::new(next));
+        }
+    }
+
+    /// The cluster's OVN setting, if one was written.
+    pub fn ovn_settings(&self) -> Option<crate::ovn_settings::OvnSettings> {
+        crate::ovn_settings::read(&self.store.database())
+    }
+
+    /// On the leader of a cluster enabled the old way (the file), write the
+    /// setting from the file once, so every node follows it.
+    pub fn migrate_ovn_settings(&self) {
+        if self.cluster().is_none() || !self.store.database().can_write() || self.ovn_settings().is_some() {
+            return;
+        }
+        let file = self.ovn_file.load_full();
+        if !file.enabled {
+            return;
+        }
+        let s = crate::ovn_settings::OvnSettings::from_file(&file);
+        match crate::ovn_settings::write(&self.store.database(), &s) {
+            Ok(()) => tracing::info!("wrote the cluster's OVN setting from this server's control-plane.json"),
+            Err(e) => tracing::warn!("writing the cluster's OVN setting: {}", e),
+        }
     }
 
     /// Where `req` goes, from the nodes' records and what each already carries.
@@ -660,7 +714,10 @@ impl VmManager {
         loop {
             match rx.recv().await {
                 // A cache re-list replaces everything: no keys to say which.
-                Ok(a) if a.keys.is_empty() => self.reload_vms().await,
+                Ok(a) if a.keys.is_empty() => {
+                    self.apply_ovn_settings();
+                    self.reload_vms().await
+                }
                 // One write set may hold several tables (a VM is created with
                 // its root disk): images and disks first, so the VM
                 // controller finds the disk the VM waits for.
@@ -696,12 +753,18 @@ impl VmManager {
                     if a.tables.contains(&crate::store::TableId::Images) || a.tables.contains(&crate::store::TableId::Disks) {
                         self.notify_changed();
                     }
+                    if a.keys.iter().any(|(t, k)| crate::ovn_settings::is_key(*t, k)) {
+                        self.apply_ovn_settings();
+                    }
                     if a.tables.contains(&crate::store::TableId::Vms) {
                         let keys: Vec<String> = a.keys.iter().filter(|(t, _)| *t == crate::store::TableId::Vms).filter_map(|(_, k)| String::from_utf8(k.clone()).ok()).collect();
                         self.refresh_vms(&keys).await;
                     }
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => self.reload_vms().await,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                    self.apply_ovn_settings();
+                    self.reload_vms().await
+                }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
             }
         }
@@ -2751,6 +2814,13 @@ impl crate::cluster::runtime::NodeHandlers for HandlersOf {
             _ => return None,
         };
         p.exists().then_some(p)
+    }
+
+    fn ovn_status<'a>(&'a self) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send + 'a>> {
+        Box::pin(async move {
+            let m = self.0.upgrade().ok_or("shutting down")?;
+            m.local_ovn_status().await
+        })
     }
 
     fn left_ovn<'a>(&'a self, node: &'a crate::node::Node) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {

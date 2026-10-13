@@ -103,6 +103,10 @@ pub struct NodeFeatures {
     /// The highest write-set format and schema this build uses (§6.6).
     #[serde(default)]
     pub feature_level: u32,
+    /// OVN's central part (`ovn-northd`) is installed: this server can hold
+    /// OVN's databases (spec/clustering-ui.md §8a).
+    #[serde(default)]
+    pub ovn_central: bool,
 }
 
 /// What this build supports. A new write-set format or schema migration
@@ -301,6 +305,7 @@ impl NodeStore {
         node.status.features = probe.features;
         node.status.pci_devices = probe.pci_devices;
         node.status.versions.glidex = env!("CARGO_PKG_VERSION").into();
+        node.status.versions.ovn = probe.ovn_version;
         if node != before || self.get(id)?.is_none() {
             node.meta.resource_version += 1;
             self.put(&node)?;
@@ -317,6 +322,18 @@ pub struct SelfProbe {
     pub allocatable: Resources,
     pub features: NodeFeatures,
     pub pci_devices: Vec<String>,
+    /// `ovn-controller`'s version, when OVN is installed.
+    pub ovn_version: Option<String>,
+}
+
+/// The first line of `<program> --version` (`ovn-controller 24.03.2`), its
+/// second word; `None` when the program isn't installed.
+fn program_version(program: &str) -> Option<String> {
+    let out = std::process::Command::new(program).arg("--version").stdin(std::process::Stdio::null()).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&out.stdout).lines().next()?.split_whitespace().nth(1).map(String::from)
 }
 
 impl SelfProbe {
@@ -366,9 +383,10 @@ impl SelfProbe {
             kvm: std::path::Path::new("/dev/kvm").exists(),
             hypervisors,
             iommu: std::fs::read_dir("/sys/kernel/iommu_groups").map(|mut d| d.next().is_some()).unwrap_or(false),
+            ovn_central: program_version("ovn-northd").is_some(),
             ..Default::default()
         };
         let pci_devices = crate::pci::scan_pci_devices().into_iter().map(|d| d.address).collect();
-        SelfProbe { name, capacity, allocatable, features, pci_devices }
+        SelfProbe { name, capacity, allocatable, features, pci_devices, ovn_version: program_version("ovn-controller") }
     }
 }

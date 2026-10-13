@@ -49,6 +49,9 @@ import type {
   IssuedToken,
   NetworkOvn,
   OvnOverview,
+  OvnSettings,
+  OvnSettingsView,
+  NodeTunnels,
 } from "./types";
 
 const API_BASE = "/api";
@@ -580,6 +583,9 @@ export const detachNode = (id: string, req: { map_networks: Record<string, strin
 export const abortDetach = (id: string) => post<Record<string, unknown>>(`/nodes/${enc(id)}/detach`, { abort: true });
 export const listDepartures = () => get<Departure[]>("/departures");
 export const clusterOvn = () => get<OvnOverview>("/cluster/ovn");
+export const clusterTunnels = () => get<{ enabled: boolean; nodes?: NodeTunnels[] }>("/cluster/ovn/tunnels");
+export const getOvnSettings = () => get<OvnSettingsView>("/cluster/settings/ovn");
+export const putOvnSettings = (s: Omit<OvnSettings, "updated_by" | "updated_at">) => put<OvnSettingsView>("/cluster/settings/ovn", s);
 export const networkOvn = (name: string) => get<NetworkOvn>(`/networks/${enc(name)}/ovn`);
 
 // ---- cluster lifecycle (spec/clustering-ui.md §7.5–7.8) ---------------------------

@@ -1304,3 +1304,99 @@ async fn an_agents_ui_is_relayed_to_a_server_and_host_paths_run_on_the_agent() {
     assert_eq!(s, StatusCode::OK);
     assert!(h.get("x-glidex-served-by").is_none());
 }
+
+/// spec/clustering-ui.md §8a: OVN as a cluster setting. Enabling is refused
+/// while a node lacks OVN, reaches an agent without a restart, and can't be
+/// undone while a cluster network exists; a cluster enabled by its file is
+/// moved to the setting by the leader.
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn ovn_is_a_cluster_setting_every_node_follows() {
+    use glidex_control_plane::store::{Origin, TableId};
+    let _one = SERIAL.lock().await;
+    let cfg = test_config();
+    let server = new_cp();
+    server.manager.configure(&cfg);
+    manage::init(&server.manager, &cfg, InitOptions { advertise: Some(server.addr), tunnel_ip: None, listen: Some(server.addr) }).await.unwrap();
+    server.manager.initialize().await.unwrap();
+    let agent = new_cp();
+    agent.manager.configure(&cfg);
+    let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test").unwrap();
+    manage::join(&agent.manager, &cfg, JoinOptions { server: server.addr, token, role: NodeRole::Agent, advertise: Some(agent.addr), tunnel_ip: None, name: Some("agent1".into()), listen: Some(agent.addr) })
+        .await
+        .unwrap();
+    assert!(agent.manager.node_link().unwrap().wait_ready(Duration::from_secs(20)).await);
+    agent.manager.initialize().await.unwrap();
+
+    let (s, v) = call(&server, "GET", "/cluster/settings/ovn", None, &[]).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!((v["enabled"].as_bool(), v["source"].as_str()), (Some(false), Some("none")), "{v}");
+
+    // The nodes report whether OVN is installed; one that says it isn't blocks enabling.
+    let set_ovn = |cp: &Cp, id: &str, version: Option<&str>, central: bool| {
+        let db = cp.manager.database();
+        let raw = {
+            let txn = db.begin_read().unwrap();
+            let t = txn.open_table(TableId::Nodes.definition()).unwrap();
+            let v = t.get(id).unwrap().unwrap();
+            v.value().to_vec()
+        };
+        let mut n: Value = serde_json::from_slice(&raw).unwrap();
+        n["status"]["versions"]["ovn"] = json!(version);
+        n["status"]["features"]["ovn_central"] = json!(central);
+        db.write(Origin::Api, |tx| -> Result<(), glidex_control_plane::store::StoreError> {
+            tx.open_table(TableId::Nodes.definition())?.insert(id, n.to_string().as_bytes())?;
+            Ok(())
+        })
+        .unwrap();
+    };
+    let (sid, aid) = (server.manager.local_node_id(), agent.manager.local_node_id());
+    set_ovn(&server, &sid, Some("24.03.2"), true);
+    set_ovn(&server, &aid, None, false);
+    let (s, v) = call(&server, "PUT", "/cluster/settings/ovn", Some(json!({ "enabled": true })), &[]).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert!(v["message"].as_str().unwrap().contains("agent1"), "{v}");
+    set_ovn(&server, &aid, Some("24.03.2"), false);
+
+    // A bad edge is refused before anything is written.
+    let edge = json!({ "physnet": "uplink", "external_cidr": "192.0.2.0/24", "gateway": "198.51.100.1", "external_ip": "192.0.2.50", "gateway_nodes": ["agent1"] });
+    let (s, v) = call(&server, "PUT", "/cluster/settings/ovn", Some(json!({ "enabled": true, "edge": edge })), &[]).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+
+    // On: written once, followed by the agent without a restart.
+    let (s, v) = call(&server, "PUT", "/cluster/settings/ovn", Some(json!({ "enabled": true, "dns_servers": ["192.0.2.53"] })), &[]).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!((v["enabled"].as_bool(), v["source"].as_str()), (Some(true), Some("cluster")), "{v}");
+    assert!(server.manager.ovn_enabled());
+    wait_for("the agent to follow the setting", || async { agent.manager.ovn_enabled() }).await;
+
+    // Off is refused while a cluster network exists.
+    let (s, n) = call(&server, "POST", "/networks", Some(json!({ "name": "c-net", "mode": "isolated", "scope": "cluster", "subnet": "10.89.40.0/24" })), &[]).await;
+    assert_eq!(s, StatusCode::CREATED, "{n}");
+    let (s, v) = call(&server, "PUT", "/cluster/settings/ovn", Some(json!({ "enabled": false })), &[]).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert!(v["message"].as_str().unwrap().contains("c-net"), "{v}");
+
+    // Anyone signed in may ask whether OVN is on (the network form does).
+    let (s, v) = call(&agent, "GET", "/cluster/settings/ovn", None, &[]).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["enabled"], true);
+}
+
+/// A cluster that enabled OVN in its servers' files keeps it: the leader
+/// writes the setting from its file.
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn a_file_enabled_cluster_moves_to_the_setting() {
+    let _one = SERIAL.lock().await;
+    let mut cfg = test_config();
+    cfg.cluster.ovn.enabled = true;
+    let server = new_cp();
+    server.manager.configure(&cfg);
+    manage::init(&server.manager, &cfg, InitOptions { advertise: Some(server.addr), tunnel_ip: None, listen: Some(server.addr) }).await.unwrap();
+    server.manager.initialize().await.unwrap();
+    let (_, v) = call(&server, "GET", "/cluster/settings/ovn", None, &[]).await;
+    assert_eq!(v["source"], "file", "{v}");
+    server.manager.migrate_ovn_settings();
+    let (_, v) = call(&server, "GET", "/cluster/settings/ovn", None, &[]).await;
+    assert_eq!((v["source"].as_str(), v["enabled"].as_bool()), (Some("cluster"), Some(true)), "{v}");
+    assert_eq!(v["settings"]["updated_by"], "file");
+}

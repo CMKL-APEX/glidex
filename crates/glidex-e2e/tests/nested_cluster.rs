@@ -187,9 +187,8 @@ fn a_nested_two_node_cluster_binds_vm_ports_and_carries_traffic_over_geneve() {
         assert_eq!(h.check("systemctl is-active ovn-central ovn-host || true").split_whitespace().collect::<Vec<_>>(), ["inactive", "inactive"]);
     }
 
-    step("inner: h1 inits a cluster with OVN, h2 joins as an agent");
+    step("inner: h1 inits a cluster, h2 joins as an agent");
     for h in [&h1, &h2] {
-        h.check(r#"echo '{"cluster":{"ovn":{"enabled":true}}}' | sudo install -m 0640 -o root -g glidex /dev/stdin /etc/glidex/control-plane.json && sudo systemctl restart glidex-control-plane"#);
         let api = Api::Remote(h);
         wait_for("the inner control plane", Duration::from_secs(60), || (api.call("GET", "/nodes", None).0 == 200).then_some(()));
     }
@@ -208,6 +207,17 @@ fn a_nested_two_node_cluster_binds_vm_ports_and_carries_traffic_over_geneve() {
     }, || format!("nodes: {}", inner.call("GET", "/nodes", None).1));
     let node_of = |name: &str| nodes.iter().find(|n| n["spec"]["name"] == name).map(|n| n["meta"]["id"].as_str().unwrap().to_string()).unwrap();
     let (n1, n2) = (node_of(&format!("gxe2e-{tag}-h1")), node_of(&format!("gxe2e-{tag}-h2")));
+
+    // OVN is a cluster setting (spec/clustering-ui.md §8a): turned on through
+    // the API, no config file and no restart; every node follows.
+    step("inner: OVN turned on for the cluster through the API");
+    let ovn = wait_for_or("both nodes to report OVN installed", Duration::from_secs(180), || {
+        let v = inner.ok("GET", "/cluster/settings/ovn", None);
+        v["nodes"].as_array().is_some_and(|ns| ns.len() == 2 && ns.iter().all(|n| n["missing"].is_null())).then_some(v)
+    }, || format!("{}", inner.call("GET", "/cluster/settings/ovn", None).1));
+    assert_eq!(ovn["enabled"], false, "{ovn}");
+    let on = inner.ok("PUT", "/cluster/settings/ovn", Some(&json!({ "enabled": true })));
+    assert_eq!((on["enabled"].as_bool(), on["source"].as_str()), (Some(true), Some("cluster")), "{on}");
 
     step("inner: both hosts become OVN chassis, with a Geneve tunnel");
     let (c1, c2) = (format!("node:{n1}"), format!("node:{n2}"));
@@ -314,6 +324,17 @@ fn a_nested_two_node_cluster_binds_vm_ports_and_carries_traffic_over_geneve() {
     let img = inner.ok("GET", &format!("/images/{}", env("GLIDEX_E2E_GUEST_IMAGE", "debian-13")), None);
     let copies = img["copies"].as_array().unwrap();
     assert!(copies.len() == 2 && copies.iter().all(|c| c["state"] == "ready"), "image copies: {img}");
+    // Each node's Geneve tunnel to the other, from its own Open vSwitch (§8b).
+    let tun = inner.ok("GET", "/cluster/ovn/tunnels", None);
+    let per = tun["nodes"].as_array().unwrap_or_else(|| panic!("{tun}"));
+    for (me, peer) in [(&n1, &n2), (&n2, &n1)] {
+        let n = per.iter().find(|x| x["node"] == me.as_str()).unwrap_or_else(|| panic!("{me}: {tun}"));
+        assert_eq!(n["answered"], true, "{n}");
+        let t = n["tunnels"].as_array().unwrap().iter().find(|t| t["peer"]["node"] == peer.as_str()).unwrap_or_else(|| panic!("{me} → {peer}: {n}"));
+        assert_eq!(t["state"], "present", "{t}");
+        assert!(t["rx_packets"].as_u64().unwrap() > 0 && t["tx_packets"].as_u64().unwrap() > 0, "the ping went through it: {t}");
+        assert!(n["missing"].as_array().unwrap().is_empty(), "{n}");
+    }
     let pv = inner.ok("POST", "/scheduler/preview", Some(&json!({ "vcpu_count": 1, "mem_size_mib": 256 })));
     assert_eq!(pv["nodes"].as_array().unwrap().len(), 2, "{pv}");
     assert!(pv["pick"].is_string(), "{pv}");

@@ -39,6 +39,10 @@ pub trait NodeHandlers: Send + Sync {
     fn left_ovn<'a>(&'a self, _node: &'a crate::node::Node) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
         Box::pin(async {})
     }
+    /// This node's OVN chassis and tunnels from its netd (spec/clustering-ui.md §8b).
+    fn ovn_status<'a>(&'a self) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send + 'a>> {
+        Box::pin(async { Err("not available".to_string()) })
+    }
 }
 
 pub struct Cluster {

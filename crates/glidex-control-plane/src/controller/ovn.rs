@@ -209,6 +209,7 @@ impl VmManager {
     /// part of `ovn-central`. Idempotent; called every half minute.
     pub async fn ensure_ovn_node(&self) {
         if !self.ovn_enabled() {
+            self.leave_ovn_if_turned_off().await;
             return;
         }
         let Some(cluster) = self.cluster() else { return };
@@ -287,6 +288,33 @@ mod chrono_like {
     /// A creation time, ordered.
     #[derive(Debug, Clone, Copy)]
     pub struct Stamp(pub u64);
+}
+
+impl VmManager {
+    /// The cluster turned OVN off (spec/clustering-ui.md §8a): stop being a
+    /// chassis. Only when the cluster setting says so, so a host that never
+    /// used OVN is left alone; netd refuses while a VM port is on `br-int`.
+    async fn leave_ovn_if_turned_off(&self) {
+        if self.cluster().is_none() || !self.ovn_settings().is_some_and(|s| !s.enabled) {
+            return;
+        }
+        let netd = self.netd.clone();
+        let r = tokio::task::spawn_blocking(move || -> Result<bool, String> {
+            let st: glidex_ovs::ovn::OvnStatus = netd.call(glidex_netd::proto::Op::OvnStatus).map_err(|e| e.to_string())?;
+            if st.chassis.is_none() && !st.controller_running {
+                return Ok(false);
+            }
+            netd.call::<serde_json::Value>(glidex_netd::proto::Op::LeaveOvn { confirm: true }).map_err(|e| e.to_string())?;
+            Ok(true)
+        })
+        .await;
+        match r {
+            Ok(Ok(true)) => tracing::info!("left OVN: the cluster turned it off"),
+            Ok(Ok(false)) => {}
+            Ok(Err(e)) => tracing::warn!("leaving OVN (the cluster turned it off): {}", e),
+            Err(e) => tracing::warn!("leaving OVN: {}", e),
+        }
+    }
 }
 
 /// Read-only views of OVN for the web UI (spec/clustering-ui.md §8).
@@ -403,5 +431,100 @@ impl VmManager {
                 "gateway_candidates": gateway.map(|g| g.candidates.iter().map(|(c, p)| { let mut v = self.chassis_json(c); v["priority"] = serde_json::json!(p); v }).collect::<Vec<_>>()).unwrap_or_default(),
             })),
         }))
+    }
+}
+
+/// Tunnel status (spec/clustering-ui.md §8b): each node's Geneve tunnels as
+/// its Open vSwitch sees them, gathered on request.
+impl VmManager {
+    /// This node's OVN chassis and tunnels, from its netd.
+    pub async fn local_ovn_status(&self) -> Result<serde_json::Value, String> {
+        let netd = self.netd.clone();
+        tokio::task::spawn_blocking(move || netd.call::<serde_json::Value>(glidex_netd::proto::Op::OvnStatus).map_err(|e| e.to_string()))
+            .await
+            .map_err(|e| e.to_string())?
+    }
+
+    /// `GET /cluster/ovn/tunnels`: every live node's tunnels, matched to the
+    /// peer they lead to, the peers a node has no tunnel to, and the nodes
+    /// that didn't answer.
+    pub async fn ovn_tunnels(&self) -> serde_json::Value {
+        use serde_json::json;
+        if !self.ovn_enabled() {
+            return json!({ "enabled": false });
+        }
+        let Some(cluster) = self.cluster() else { return json!({ "enabled": false }) };
+        let me = self.local_node_id();
+        let nodes: Vec<crate::node::Node> = self.nodes().list().unwrap_or_default().into_iter().filter(|n| !n.status.phase.is_tombstone()).collect();
+        // A tunnel's remote_ip is the peer's tunnel address (its advertise address by default).
+        let endpoint = |n: &crate::node::Node| n.status.tunnel_ip.or(n.status.advertise.map(|a| a.ip())).map(|ip| ip.to_string());
+        let asks = nodes.iter().map(|n| {
+            let cluster = cluster.clone();
+            let id = n.meta.id.clone();
+            let addr = n.status.advertise.map(|a| a.to_string());
+            let local = id == me;
+            async move {
+                let r: Result<serde_json::Value, String> = if local {
+                    self.local_ovn_status().await
+                } else {
+                    match addr {
+                        None => Err("no address".into()),
+                        Some(a) => match cluster.client.request_timeout(&a, hyper::Method::GET, "/cluster/v1/ovn-status", &[], bytes::Bytes::new(), std::time::Duration::from_secs(4)).await {
+                            Ok(r) if r.status.is_success() => serde_json::from_slice(&r.body).map_err(|e| e.to_string()),
+                            Ok(r) => Err(format!("answered {}", r.status)),
+                            Err(e) => Err(e.to_string()),
+                        },
+                    }
+                };
+                (id, r)
+            }
+        });
+        let answers = futures_util::future::join_all(asks).await;
+        let out: Vec<serde_json::Value> = nodes
+            .iter()
+            .zip(answers)
+            .map(|(n, (_, r))| {
+                let base = json!({ "node": n.meta.id, "node_name": n.spec.name });
+                let st = match r {
+                    Ok(v) => v,
+                    Err(e) => return json!({ "node": n.meta.id, "node_name": n.spec.name, "answered": false, "error": e }),
+                };
+                let tunnels: Vec<serde_json::Value> = st["tunnels"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|t| {
+                        let ip = t["remote_ip"].as_str().unwrap_or("").to_string();
+                        let peer = nodes.iter().find(|p| p.meta.id != n.meta.id && endpoint(p).as_deref() == Some(ip.as_str()));
+                        let state = if t["error"].is_string() {
+                            "error"
+                        } else if t["bfd_state"].as_str().is_some_and(|s| s != "up") {
+                            "bfd_down"
+                        } else {
+                            "present"
+                        };
+                        let mut v = t.clone();
+                        v["state"] = json!(state);
+                        v["peer"] = json!(peer.map(|p| json!({ "node": p.meta.id, "node_name": p.spec.name })));
+                        v
+                    })
+                    .collect();
+                let missing: Vec<serde_json::Value> = nodes
+                    .iter()
+                    .filter(|p| p.meta.id != n.meta.id)
+                    .filter(|p| !tunnels.iter().any(|t| t["peer"]["node"] == p.meta.id.as_str()))
+                    .map(|p| json!({ "node": p.meta.id, "node_name": p.spec.name }))
+                    .collect();
+                let mut v = base;
+                v["answered"] = json!(true);
+                v["chassis"] = st["chassis"].clone();
+                v["controller_running"] = st["controller_running"].clone();
+                v["tunnels"] = json!(tunnels);
+                v["missing"] = json!(missing);
+                v
+            })
+            .collect();
+        json!({ "enabled": true, "nodes": out })
     }
 }

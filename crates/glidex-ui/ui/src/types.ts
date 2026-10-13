@@ -916,6 +916,39 @@ export interface ChassisRef {
   priority?: number;
 }
 
+/** The shared edge of NAT cluster networks (spec/clustering.md §11.2). */
+export interface OvnEdge {
+  physnet: string;
+  external_cidr: string;
+  gateway: string;
+  external_ip: string;
+  external_pool?: string | null;
+  gateway_nodes: string[];
+}
+
+/** The cluster's OVN setting (spec/clustering-ui.md §8a). */
+export interface OvnSettings {
+  enabled: boolean;
+  underlay_mtu?: number | null;
+  nat_supernet?: string | null;
+  edge?: OvnEdge | null;
+  snat_ct_zones?: [number, number] | null;
+  dns_servers?: string[];
+  updated_by?: string;
+  updated_at?: number;
+}
+
+/** `GET /cluster/settings/ovn`: `enabled` for everyone, the rest with `readCluster`. */
+export interface OvnSettingsView {
+  enabled: boolean;
+  clustered?: boolean;
+  /** `cluster`: the setting; `file`: control-plane.json (not moved yet); `none`. */
+  source?: "cluster" | "file" | "none";
+  settings?: OvnSettings;
+  nodes?: { id: string; name: string; role: string; ovn_version: string | null; ovn_central: boolean; missing: string | null }[];
+  cluster_networks?: string[];
+}
+
 /** `GET /cluster/ovn` (spec/clustering-ui.md §8). */
 export interface OvnOverview {
   enabled: boolean;
@@ -923,6 +956,32 @@ export interface OvnOverview {
   sb?: { address: string; reachable: boolean; leader: boolean }[];
   chassis?: (ChassisRef & { hostname: string; encaps: string[]; nb_cfg_timestamp: number | null })[];
   gateways?: { router: string; active: ChassisRef | null; candidates: ChassisRef[] }[];
+}
+
+/** One node's tunnels (`GET /cluster/ovn/tunnels`, spec/clustering-ui.md §8b). */
+export interface NodeTunnels {
+  node: string;
+  node_name: string;
+  answered: boolean;
+  error?: string;
+  chassis?: string | null;
+  controller_running?: boolean;
+  tunnels?: {
+    name: string;
+    remote_ip: string;
+    /** `present`, `error` (OVS couldn't set it up) or `bfd_down`. */
+    state: "present" | "error" | "bfd_down";
+    error?: string;
+    bfd_state?: string;
+    bfd_diagnostic?: string;
+    rx_packets: number;
+    tx_packets: number;
+    rx_bytes: number;
+    tx_bytes: number;
+    peer: { node: string; node_name: string } | null;
+  }[];
+  /** Other nodes it has no tunnel to. */
+  missing?: { node: string; node_name: string }[];
 }
 
 /** `GET /networks/{name}/ovn`. */

@@ -64,6 +64,57 @@ pub struct OvnStatus {
     pub br_int: bool,
     pub datapath: Option<String>,
     pub ports: Vec<OvnPort>,
+    /// The Geneve tunnels `ovn-controller` made to the other chassis
+    /// (spec/clustering-ui.md §8b).
+    #[serde(default)]
+    pub tunnels: Vec<Tunnel>,
+}
+
+/// One tunnel interface, as Open vSwitch sees it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Tunnel {
+    pub name: String,
+    /// The peer's tunnel endpoint (`options:remote_ip`).
+    pub remote_ip: String,
+    /// What OVS says went wrong setting it up.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// `bfd_status:state` (`up`, `down`, …) where OVN runs BFD on it
+    /// (towards gateway chassis); `None` without BFD.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bfd_state: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bfd_diagnostic: Option<String>,
+    pub rx_packets: u64,
+    pub tx_packets: u64,
+    pub rx_bytes: u64,
+    pub tx_bytes: u64,
+}
+
+/// Every Geneve interface with its state and counters.
+fn tunnels(exec: &dyn Exec) -> Result<Vec<Tunnel>, OvsError> {
+    let mut out: Vec<Tunnel> = vsctl::list(exec, "Interface", &["name", "type", "options", "error", "bfd_status", "statistics"])?
+        .into_iter()
+        .filter(|r| r.str("type").as_deref() == Some("geneve"))
+        .filter_map(|r| {
+            let stats = r.map("statistics");
+            let stat = |k: &str| stats.get(k).and_then(|v| v.parse().ok()).unwrap_or(0);
+            let bfd = r.map("bfd_status");
+            Some(Tunnel {
+                name: r.str("name")?,
+                remote_ip: r.map("options").get("remote_ip").cloned().unwrap_or_default(),
+                error: r.str("error").filter(|e| !e.is_empty()),
+                bfd_state: bfd.get("state").cloned(),
+                bfd_diagnostic: bfd.get("diagnostic").cloned().filter(|d| !d.is_empty() && d != "No Diagnostic"),
+                rx_packets: stat("rx_packets"),
+                tx_packets: stat("tx_packets"),
+                rx_bytes: stat("rx_bytes"),
+                tx_bytes: stat("tx_bytes"),
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| a.remote_ip.cmp(&b.remote_ip));
+    Ok(out)
 }
 
 impl ChassisSpec {
@@ -210,6 +261,7 @@ pub fn status(exec: &dyn Exec) -> Result<OvnStatus, OvsError> {
         br_int: br.is_some(),
         datapath: br.and_then(|b| b.str("datapath_type")).map(|d| if d.is_empty() { "system".into() } else { d }),
         ports,
+        tunnels: tunnels(exec)?,
     })
 }
 
@@ -263,6 +315,28 @@ mod tests {
         Output::ok(r#"{"data":[],"headings":["name","datapath_type","external_ids","ports"]}"#)
     }
 
+    const TUNNELS: &str = "ovs-vsctl --format=json --columns=name,type,options,error,bfd_status,statistics list Interface";
+
+    #[test]
+    fn tunnels_come_with_their_peer_state_and_counters() {
+        let exec = RecordingExec::new();
+        exec.on(
+            TUNNELS,
+            Output::ok(
+                r#"{"data":[
+                ["ovn-node-1-0","geneve",["map",[["csum","true"],["key","flow"],["remote_ip","192.0.2.12"]]],["set",[]],["map",[["diagnostic","Control Detection Time Expired"],["state","down"]]],["map",[["rx_bytes",500],["rx_packets",7],["tx_bytes",600],["tx_packets",8]]]],
+                ["gx1234-0","","map",["set",[]],["map",[]],["map",[]]],
+                ["ovn-node-2-0","geneve",["map",[["remote_ip","192.0.2.11"]]],"could not add network device",["map",[]],["map",[]]]
+                ],"headings":["name","type","options","error","bfd_status","statistics"]}"#,
+            ),
+        );
+        let t = tunnels(&exec).unwrap();
+        assert_eq!(t.len(), 2, "{t:?}");
+        assert_eq!((t[0].remote_ip.as_str(), t[0].error.as_deref(), t[0].bfd_state.as_deref()), ("192.0.2.11", Some("could not add network device"), None));
+        assert_eq!((t[1].remote_ip.as_str(), t[1].bfd_state.as_deref(), t[1].bfd_diagnostic.as_deref()), ("192.0.2.12", Some("down"), Some("Control Detection Time Expired")));
+        assert_eq!((t[1].rx_packets, t[1].tx_packets, t[1].rx_bytes, t[1].tx_bytes), (7, 8, 500, 600));
+    }
+
     #[test]
     fn joining_sets_the_chassis_and_starts_the_controller() {
         let exec = RecordingExec::new();
@@ -270,6 +344,7 @@ mod tests {
         exec.on("ovs-vsctl --format=json --columns=name,datapath_type,external_ids find Bridge", Output::ok(r#"{"data":[["br-int","system",["map",[]]]],"headings":["name","datapath_type","external_ids"]}"#));
         exec.on("ovs-vsctl --format=json --columns=external_ids list Open_vSwitch", Output::ok(r#"{"data":[],"headings":["external_ids"]}"#));
         exec.on("ovs-vsctl --format=json --columns=name,external_ids list Interface", Output::ok(r#"{"data":[],"headings":["name","external_ids"]}"#));
+        exec.on(TUNNELS, Output::ok(r#"{"data":[],"headings":["name","type","options","error","bfd_status","statistics"]}"#));
         let dir = Path::new("/etc/glidex/ovn");
         ensure_chassis(&exec, &spec(), &certs(), dir).unwrap();
         let calls = exec.calls();
@@ -294,6 +369,7 @@ mod tests {
         exec2.on("ovs-vsctl --format=json --columns=name,datapath_type,external_ids find Bridge", Output::ok(r#"{"data":[["br-int","system",["map",[]]]],"headings":["name","datapath_type","external_ids"]}"#));
         exec2.on("ovs-vsctl --format=json --columns=external_ids list Open_vSwitch", Output::ok(r#"{"data":[],"headings":["external_ids"]}"#));
         exec2.on("ovs-vsctl --format=json --columns=name,external_ids list Interface", Output::ok(r#"{"data":[],"headings":["name","external_ids"]}"#));
+        exec2.on(TUNNELS, Output::ok(r#"{"data":[],"headings":["name","type","options","error","bfd_status","statistics"]}"#));
         for (f, d) in [("chassis.key", "KEY"), ("chassis.crt", "CERT"), ("ca.crt", "CA")] {
             exec2.file(&dir.join(f).display().to_string(), d);
         }

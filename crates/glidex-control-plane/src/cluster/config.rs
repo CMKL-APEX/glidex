@@ -59,7 +59,7 @@ pub struct NodeReserved {
 }
 
 /// OVN settings (milestone C5); parsed now so one file serves every build.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct OvnConfig {
     /// Cluster networks on OVN (spec/clustering.md §11). Off until OVN is
@@ -75,7 +75,7 @@ pub struct OvnConfig {
     pub bridge_mappings: std::collections::BTreeMap<String, String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct EdgeConfig {
     pub physnet: String,

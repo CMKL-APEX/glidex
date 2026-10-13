@@ -47,6 +47,7 @@ const HOST_ACTION_RESOURCE = {
   snapshotCluster: "Cluster",
   initCluster: "Host",
   leaveCluster: "Host",
+  configureOvn: "Cluster",
 } as const satisfies Record<string, SingletonEntityType>;
 
 export type HostAction = keyof typeof HOST_ACTION_RESOURCE;

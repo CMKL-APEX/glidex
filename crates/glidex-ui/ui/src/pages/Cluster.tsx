@@ -13,7 +13,9 @@ import AddNodeDialog from "../components/AddNodeDialog";
 import { Badge, Card, ErrorBanner, PageHeader, errorMessage, primaryButton } from "../components/ui";
 import { PHASE_KIND } from "./NodeDetail";
 import { ClusterCa, DangerZone, InitCluster } from "../components/ClusterLifecycle";
-import { OvnCard, useOvnOverview } from "../components/OvnViews";
+import { OvnCard, TunnelMatrix, useOvnOverview, useTunnels } from "../components/OvnViews";
+import { OvnOff, OvnSettingsDialog } from "../components/OvnSettings";
+import type { OvnSettingsView } from "../types";
 
 /** Port checks open connections to every node: not on every change. */
 const PORTS_EVERY_MS = 60_000;
@@ -41,7 +43,27 @@ export default function Cluster() {
   const [imports, setImports] = useState(live.imports);
   const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
-  const ovn = useOvnOverview(host.readCluster && status?.clustered !== false && !!status);
+  // OVN: the setting (§8a) and what OVN says now; looked at again after a change.
+  const [ovnTick, setOvnTick] = useState(0);
+  const [ovnView, setOvnView] = useState<OvnSettingsView | null>(null);
+  const [ovnSettingsOpen, setOvnSettingsOpen] = useState(false);
+  const clusteredNow = !!status && status.clustered !== false;
+  const ovn = useOvnOverview(host.readCluster && clusteredNow && !!ovnView?.enabled, ovnTick);
+  const tunnels = useTunnels(host.readCluster && clusteredNow && !!ovnView?.enabled, ovnTick);
+  useEffect(() => {
+    if (!host.readCluster || !clusteredNow) return;
+    api
+      .getOvnSettings()
+      .then(setOvnView)
+      .catch(() => {});
+  }, [host.readCluster, clusteredNow, ovnTick]);
+  // While OVN rolls out (enabled, some node not a chassis yet), look again.
+  const rolling = !!ovnView?.enabled && !!ovn.ovn?.enabled && (ovn.ovn.chassis ?? []).length < dir.nodes.size - [...dir.nodes.values()].filter((n) => isTombstone(n.status.phase)).length;
+  useEffect(() => {
+    if (!rolling) return;
+    const t = window.setTimeout(() => setOvnTick((x) => x + 1), 10_000);
+    return () => window.clearTimeout(t);
+  }, [rolling, ovnTick]);
 
   const loadStatus = useCallback(async () => {
     try {
@@ -280,7 +302,24 @@ export default function Cluster() {
         </Card>
       )}
 
-      <OvnCard ovn={ovn.ovn} error={ovn.error} />
+      {ovnView && !ovnView.enabled && <OvnOff view={ovnView} onDone={() => setOvnTick((x) => x + 1)} />}
+      {ovnView?.enabled && (
+        <OvnCard
+          ovn={ovn.ovn}
+          error={ovn.error}
+          nodes={current.map((n) => ({ id: n.meta.id, name: n.spec.name }))}
+          actions={
+            host.configureOvn && (
+              <button className="px-3 py-1.5 text-sm bg-gray-100 hover:bg-gray-200 rounded-lg" onClick={() => setOvnSettingsOpen(true)}>
+                OVN settings…
+              </button>
+            )
+          }
+        >
+          <TunnelMatrix nodes={tunnels.nodes} error={tunnels.error} onRefresh={() => setOvnTick((x) => x + 1)} />
+        </OvnCard>
+      )}
+      {ovnSettingsOpen && ovnView && <OvnSettingsDialog view={ovnView} onClose={() => setOvnSettingsOpen(false)} onDone={() => setOvnTick((x) => x + 1)} />}
       <ClusterCa status={summary} nodes={current} onDone={refreshAll} />
       <DangerZone status={summary} onDone={refreshAll} />
 

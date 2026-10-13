@@ -47,6 +47,7 @@ pub fn router(c: Arc<Cluster>) -> Router {
         .route("/cluster/v1/images/{id}/file", get(image_file))
         .route("/cluster/v1/raw", post(raw_write))
         .route("/cluster/v1/auth", post(auth_call))
+        .route("/cluster/v1/ovn-status", get(ovn_status))
         .route("/cluster/v1/ui", axum::routing::any(ui_relayed))
         .route("/cluster/v1/ui/{*rest}", axum::routing::any(ui_relayed))
         .route("/cluster/v1/host/{*rest}", axum::routing::any(host_authorized))
@@ -624,6 +625,19 @@ async fn forwarded(State(c): Ctx, p: Option<Extension<PeerCert>>, mut req: Reque
     match api.clone().oneshot(req).await {
         Ok(r) => r.map(Body::new),
         Err(never) => match never {},
+    }
+}
+
+/// `GET /cluster/v1/ovn-status`: this node's OVN chassis and tunnels as its
+/// Open vSwitch sees them (spec/clustering-ui.md §8b). Servers only.
+async fn ovn_status(State(c): Ctx, p: Option<Extension<PeerCert>>) -> Response {
+    if let Err(r) = peer(&c, p, true) {
+        return r;
+    }
+    let Some(h) = c.handlers.get() else { return fail(StatusCode::SERVICE_UNAVAILABLE, "unavailable", "not up yet") };
+    match h.ovn_status().await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => fail(StatusCode::BAD_GATEWAY, "netd_error", e),
     }
 }
 
