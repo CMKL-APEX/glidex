@@ -427,6 +427,94 @@ from a file and changes the host's identity.
 All need a read-only server endpoint (§9 `GET /cluster/ovn`,
 `GET /networks/{name}/ovn`); the UI never talks to OVN.
 
+## 8a. Turning OVN on from the UI (U6)
+
+Until now OVN is a per-host setting: `cluster.ovn` in each node's
+`/etc/glidex/control-plane.json`, read at start. Whether a cluster has
+OVN is a decision about the whole cluster, and a file per host can
+disagree with itself. It becomes a **cluster setting**, replicated like
+the catalogs, with an Enable button on the Cluster page.
+
+**Where it lives.** `Meta` key `ovn_settings` (replicated to every node,
+agents included, C§8.2):
+
+```json
+{ "enabled": true, "underlay_mtu": 1500, "nat_supernet": "10.89.0.0/16",
+  "dns_servers": ["192.0.2.53"], "snat_ct_zones": [60000, 64999],
+  "edge": { "physnet": "uplink", "external_cidr": "192.0.2.0/24", "gateway": "192.0.2.1",
+            "external_ip": "192.0.2.50", "external_pool": "192.0.2.64/26",
+            "gateway_nodes": ["h1", "h2"] },
+  "updated_by": "api:<user>", "updated_at": 1790000000 }
+```
+
+What is per host stays in the file: `bridge_mappings` (which local
+bridge is which physical network).
+
+**Precedence.** The setting, once written, is what the cluster uses for
+every cluster-wide field. A file that still has cluster-wide `ovn`
+fields:
+- with no setting written yet: the leader writes the setting from its
+  own file once (a cluster enabled the old way keeps working, with no
+  restart);
+- after that: ignored, with one warning at start naming the fields.
+
+**Enabling** (`PUT /cluster/settings/ovn`, new action `configureOvn` on
+`Cluster`, in `host.cluster.critical`: system administrators, recent
+login, always audited). Refused (`409`) when a node that is not gone
+lacks OVN: every node must report `versions.ovn` (`ovn-controller` is
+installed) and every server `features.ovn_central` (`ovn-northd` is).
+The message names the nodes and the fix (`sudo glidex-install --ovn`
+there). Nodes report both in their status from now on.
+
+**Rollout.** Nothing restarts. Each node's existing OVN loop (every
+controller resync) reads the setting from its replica: servers start
+their part of `ovn-central` (the oldest server creates the databases,
+the others join it), every node becomes a chassis. The Cluster page's
+OVN card (§8) shows the progress: databases with a leader, then each
+node's chassis. Cluster networks may be created once the setting is on;
+they work on a node once its chassis is registered.
+
+**Edge.** The shared edge for NAT cluster networks (physical network,
+external range, gateway, external IP and pool, gateway nodes) is part of
+the same setting and validated as the file is today. Isolated and
+provider networks need no edge.
+
+**Disabling** is refused while any cluster network exists (`409` naming
+them). Once off, each node leaves OVN (netd `LeaveOvn`, refused by netd
+while a glidex VM port is on `br-int`); the databases' files are kept.
+
+**UI.** The Cluster page's OVN card has **Enable OVN…** when off
+(listing nodes that can't yet, with the install command), and **OVN
+settings…** when on (the edge form; **Disable** when no cluster network
+exists). The network form offers "Every node (OVN)" only while the
+setting is on, and otherwise says how to turn it on.
+
+## 8b. Tunnel status (U7)
+
+OVN's databases say each node is a chassis with a tunnel endpoint; only
+Open vSwitch on each host knows whether the Geneve tunnel to each other
+node is there and moving traffic. Each node reports its own tunnels on
+request, not into the replicated store (counters change constantly):
+
+- netd's `OvnStatus` gains `tunnels`: every `type: geneve` interface
+  with its `remote_ip`, OVS `error` (a tunnel OVS could not set up),
+  `bfd_status` (state, diagnostic) where OVN runs BFD (towards gateway
+  chassis only), and `statistics` (rx/tx packets and bytes);
+- the node API gains `GET /cluster/v1/ovn-status` (servers only): that
+  answer;
+- `GET /cluster/ovn/tunnels` (`readCluster`) asks every live node at
+  once (a few seconds each) and returns, per node, its tunnels matched
+  to the peer node by tunnel address, the peers it has no tunnel to, and
+  the nodes that didn't answer.
+
+What it can say: a **missing** tunnel (the peer isn't a chassis, or an
+endpoint is wrong) and a tunnel OVS reports an **error** for are faults;
+BFD **down** towards a gateway is a fault; otherwise a tunnel is
+**present**, with its counters. Rising counters show traffic, but an
+idle tunnel between nodes whose VMs don't talk stays at 0, so 0 is not a
+fault. The UI shows the matrix on the Cluster page's OVN card, and the
+node's tunnels with counters on the Node page.
+
 ## 9. Server additions
 
 | Addition | For | Notes |
@@ -452,6 +540,8 @@ All need a read-only server endpoint (§9 `GET /cluster/ovn`,
 | **U3** Cluster page and membership | §6, §7.1–7.4 (imports included, C§16) | Playwright with a mocked cluster for every dialog; nested e2e: drain, remove an empty agent, rejoin token shown once |
 | **U4** Lifecycle and CA | §7.5–7.8 | Init a standalone host from the UI in the nested e2e; CA rotation progress on a two-node cluster |
 | **U5** OVN views | §8 + endpoints | Node page shows the Geneve tunnel the nested e2e test checks |
+| **U6** OVN as a cluster setting | §8a | In-process: enabling refused without OVN installed, the setting reaches an agent, precedence over files; nested e2e: OVN enabled from the API after the cluster forms (no config file) and both nodes become chassis without a restart |
+| **U7** Tunnel status | §8b | netd unit tests on recorded `ovs-vsctl` output; nested e2e: each node reports a present tunnel to the other, with counters that rise with the guests' ping |
 
 Order: U0 → U1 → U2 (5.1–5.2) → U3 → U4 → U2 (5.3–5.4) → U5. U0+U1 are
 about a day each; U2–U5 a few days each.
