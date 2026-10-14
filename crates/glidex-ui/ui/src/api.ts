@@ -15,6 +15,8 @@ import type {
   BridgeRecord,
   CreateNetworkRequest,
   Network,
+  Router,
+  RouterSpec,
   NetworkShare,
   OvsStatus,
   CreateCredentialRequest,
@@ -373,6 +375,9 @@ export const createNetwork = (req: CreateNetworkRequest) => post<Network>("/netw
 export const deleteNetwork = (name: string) => del<Network | undefined>(`/networks/${enc(name)}`);
 export const createProjectNetwork = (project: string, req: CreateNetworkRequest) =>
   post<Network>(`/projects/${enc(project)}/networks`, req);
+export const listRouters = (project: string) => get<Router[]>(`/projects/${enc(project)}/routers`);
+export const createRouter = (project: string, spec: RouterSpec) => post<Router>(`/projects/${enc(project)}/routers`, spec);
+export const deleteRouter = (project: string, name: string) => del<void>(`/projects/${enc(project)}/routers/${enc(name)}`);
 export const offerNetworkShare = (network: string, project: string) =>
   post<void>(`/networks/${enc(network)}/shares`, { project });
 export const unshareNetwork = (network: string, project: string) =>

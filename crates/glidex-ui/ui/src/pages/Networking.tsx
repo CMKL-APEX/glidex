@@ -6,6 +6,7 @@ import type {
   BridgeRecord,
   Network,
   NetworkMode,
+  Router,
   OvsStatus,
   PortType,
 } from "../types";
@@ -211,12 +212,15 @@ function AddNetworkForm({
   bridges,
   scopes,
   initialScope,
+  initialRouter = "",
   onDone,
   onCancel,
 }: {
   bridges: BridgeRecord[];
   scopes: Scope[];
   initialScope: string;
+  /** A project's router to put a NAT network on (from its Routers card). */
+  initialRouter?: string;
   onDone: () => void;
   onCancel: () => void;
 }) {
@@ -228,6 +232,10 @@ function AddNetworkForm({
   const [bridge, setBridge] = useState("");
   const [vlan, setVlan] = useState("");
   const [physnet, setPhysnet] = useState("");
+  // A project NAT network spanning the nodes: the shared edge (""), or one of
+  // the project's routers (spec/clustering.md §11.2a).
+  const [router, setRouter] = useState(initialRouter);
+  const [routers, setRouters] = useState<Router[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   // In a cluster: one OVN network for every node, or a bridge on this node.
@@ -252,6 +260,21 @@ function AddNetworkForm({
 
   // Project networks are NAT or isolated, on a bridge glidex names.
   const project = scope !== "";
+  const routable = project && clusterWide && mode === "nat";
+  useEffect(() => {
+    if (!project || !canSpan) {
+      setRouters([]);
+      return;
+    }
+    api
+      .listRouters(scope)
+      .then(setRouters)
+      .catch(() => setRouters([]));
+  }, [project, canSpan, scope]);
+  // A router of another project doesn't follow a change of project.
+  useEffect(() => {
+    if (router && routers.length && !routers.some((r) => r.spec.name === router)) setRouter("");
+  }, [routers, router]);
   const pickScope = (s: string) => {
     setScope(s);
     if (s !== "" && mode === "bridged") setMode("nat");
@@ -266,7 +289,7 @@ function AddNetworkForm({
       const subnetValue = (mode === "nat" || (clusterWide && mode === "isolated")) && subnet ? subnet : undefined;
       const scopeValue = nodes.clustered ? (canSpan ? span : "node") : undefined;
       if (project) {
-        await api.createProjectNetwork(scope, { name, mode, port_type: portType, subnet: subnetValue, scope: scopeValue });
+        await api.createProjectNetwork(scope, { name, mode, port_type: portType, subnet: subnetValue, scope: scopeValue, router: routable && router ? router : undefined });
       } else {
         await api.createNetwork({
           name,
@@ -372,6 +395,27 @@ function AddNetworkForm({
             value={subnet}
             onChange={(e) => setSubnet(e.target.value)}
           />
+        </div>
+      )}
+      {routable && routers.length > 0 && (
+        <div>
+          <label htmlFor="network-router" className="block text-sm font-medium text-gray-700">
+            Leaves through
+          </label>
+          <select id="network-router" className={`${inputClass} bg-white`} value={router} onChange={(e) => setRouter(e.target.value)}>
+            <option value="">The cluster's shared edge</option>
+            {routers.map((r) => (
+              <option key={r.id} value={r.spec.name}>
+                Router {r.spec.name}
+                {r.spec.external ? (r.status.external_ip ? ` (${r.status.external_ip})` : "") : " (internal only)"}
+              </option>
+            ))}
+          </select>
+          <p className="mt-1 text-xs text-gray-500">
+            {router
+              ? "It reaches the router's other networks, and leaves with the router's address. Fixed once created."
+              : "Like every NAT network on the edge: reaches no other network, leaves with the edge's address."}
+          </p>
         </div>
       )}
       {clusterWide && mode === "nat" && !edgeSet && (
@@ -668,6 +712,7 @@ export default function Networking() {
             bridges={bridges}
             scopes={scopes}
             initialScope={initialScope}
+            initialRouter={params.get("router") ?? ""}
             onCancel={closeForm}
             onDone={() => {
               closeForm();

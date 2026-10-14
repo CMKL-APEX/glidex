@@ -487,8 +487,11 @@ map it and run `br-int` on the kernel datapath, servers first, at most
 three; the external network and gateway from the host address an uplink
 moved onto that bridge (nodes report it as `bridge_addrs`, at once after
 an uplink change); as the edge address the highest address in that
-network no node or gateway uses, flagged as a guess to check on the LAN.
-`notes` say what couldn't be worked out and what to do (map a physical
+network no node or gateway uses, flagged as a guess to check on the LAN;
+and as the pool for VPC routers (§8d) the highest `/29` of that network
+that holds none of those, a guess too. An existing edge opened in the
+form gets its empty fields filled the same way, with only the notes about
+what was filled. `notes` say what couldn't be worked out and what to do (map a physical
 network, set a node's `br-int` to kernel, move the host's address onto
 the bridge). Verified on the nested cluster: the suggestion, saved as is,
 carried a guest's traffic from the other node out to the LAN's router.
@@ -543,6 +546,34 @@ Found while testing it end to end: agents served no UI socket after a
 restart (only a runtime join kept it), and relayed requests carried the
 relay route's own path parameter into the API, breaking every handler
 with one (`/ovs/bridges/{name}/uplinks`, `/nodes/{id}`, …). Both fixed.
+
+## 8d. A project's own routers
+
+VPC routers (clustering.md §11.2a) give a project's NAT networks their
+own way out instead of the shared edge. The UI:
+
+- **Project page, Routers card** (`readRouter`, shown while OVN is on):
+  each router with its outside address (or *internal only*), its gateway
+  nodes and the active one (from `GET /cluster/ovn`'s `gateways`, for
+  `readCluster`), and the project networks on it. **New router**
+  (`createRouter`): a name, and *reaches outside*, offered only when the
+  edge has a pool (`GET /cluster/settings/ovn` says `vpc_pool` to anyone
+  signed in); otherwise the router only joins its networks. A specific
+  address and gateway nodes are site resources, so those fields are
+  offered only with `createNetwork` on the Host. **Delete** is disabled
+  while networks are on the router. Each router links to the network
+  form with itself chosen.
+- **Network form**: a project NAT network that spans the nodes gets
+  *Leaves through*: the shared edge, or one of the project's routers
+  (fixed once created).
+- **Project networks** say which way each NAT network leaves (*via
+  router r1*, *via the shared edge*), and the quotas show `routers` and
+  `external_ips`.
+
+Verified on the nested cluster: with the suggested pool, a router in the
+default project took an address from it, and a guest on a network on that
+router reached the LAN's router; on the gateway node's wire the ping left
+with the router's address, not the shared edge's.
 
 ## 9. Server additions
 

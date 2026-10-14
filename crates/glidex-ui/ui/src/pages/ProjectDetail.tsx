@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import * as api from "../api";
-import type { Binding, Network, NetworkShare, ProjectView, Quotas } from "../types";
+import type { Binding, Network, NetworkShare, ProjectView, Quotas, Router } from "../types";
 import { PROJECT_ROLES, QUOTA_KEYS, QUOTA_LABELS, formatTime, notReady } from "../types";
 import { useLiveRefresh } from "../live";
 import { Loading } from "../components/Loading";
@@ -20,6 +20,7 @@ import {
 import { UsageCell } from "./Projects";
 import { useCan, useSession } from "../session";
 import { useDirectory } from "../hooks";
+import RoutersCard from "../components/RoutersCard";
 
 const CAPS = [
   "readBindings",
@@ -28,6 +29,8 @@ const CAPS = [
   "deleteProject",
   "createProjectNetwork",
   "listNetworkShares",
+  "createRouter",
+  "readRouter",
 ] as const;
 type Cap = (typeof CAPS)[number];
 
@@ -89,6 +92,7 @@ function QuotaEditor({ quotas, onSave, onCancel }: { quotas: Quotas; onSave: (q:
 
 function NetworkRow({
   net,
+  routers,
   manage,
   share,
   projectName,
@@ -96,6 +100,7 @@ function NetworkRow({
   onError,
 }: {
   net: Network;
+  routers: Router[];
   manage: boolean;
   share: boolean;
   projectName: (id: string) => string;
@@ -120,7 +125,9 @@ function NetworkRow({
         <div>
           <span className="font-medium text-gray-900">{net.name}</span>{" "}
           <span className="text-xs text-gray-500">
-            {net.mode} on {net.bridge}
+            {net.mode} on {net.scope === "cluster" ? "OVN" : net.bridge}
+            {net.scope === "cluster" && net.mode === "nat" &&
+              (net.router ? ` · leaves via router ${routers.find((r) => r.id === net.router)?.spec.name ?? net.router}` : " · leaves via the shared edge")}
           </span>
           {net.deletion_requested_at && (
             <span className="ml-2 text-xs text-gray-500" title={notReady(net.conditions)?.message}>
@@ -205,6 +212,7 @@ export default function ProjectDetail() {
   const [bindings, setBindings] = useState<Binding[] | null>(null);
   const [networks, setNetworks] = useState<Network[]>([]);
   const [shares, setShares] = useState<NetworkShare[] | null>(null);
+  const [routers, setRouters] = useState<Router[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [editingQuotas, setEditingQuotas] = useState(false);
@@ -224,6 +232,11 @@ export default function ProjectDetail() {
       .listNetworks()
       .then((ns) => setNetworks(ns.filter((n) => n.project === id)))
       .catch(() => setNetworks([]));
+    // Names of the routers the networks leave through (none without OVN).
+    api
+      .listRouters(id)
+      .then(setRouters)
+      .catch(() => setRouters([]));
   }, [id]);
 
   const refreshBindings = useCallback(() => {
@@ -341,7 +354,7 @@ export default function ProjectDetail() {
             }}
           />
         ) : (
-          <div className="grid grid-cols-2 md:grid-cols-6 gap-4">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             {QUOTA_KEYS.map((k) => (
               <div key={k}>
                 <div className="text-xs text-gray-500">{QUOTA_LABELS[k]}</div>
@@ -390,6 +403,7 @@ export default function ProjectDetail() {
             <NetworkRow
               key={n.name}
               net={n}
+              routers={routers}
               manage={can("createProjectNetwork")}
               share={canShare}
               projectName={projectName}
@@ -407,6 +421,8 @@ export default function ProjectDetail() {
           </p>
         )}
       </Card>
+
+      {can("readRouter") && <RoutersCard project={project.id} networks={networks} manage={can("createRouter")} onChanged={refresh} />}
 
       {canShare && (
         <Card title="Networks shared with this project">

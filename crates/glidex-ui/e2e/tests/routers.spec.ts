@@ -1,0 +1,154 @@
+// A project's VPC routers in the UI (spec/clustering.md §11.2a): the
+// Routers card on the project page and the router choice in the network
+// form. The scratch control plane is standalone, so OVN, the routers and
+// two nodes are mocked; the project is real.
+import type { Page, Route } from "@playwright/test";
+import { api, del, expect, field, test } from "../fixtures";
+
+test.use({ ignoredConsoleErrors: /Failed to load resource/ });
+
+const PROJECT = "e2e-routers";
+
+async function cleanup() {
+  const p = (await api<any[]>("/projects")).find((x) => x.name === PROJECT);
+  if (p) await del(`/projects/${p.id}`);
+}
+test.beforeAll(cleanup);
+test.afterAll(cleanup);
+
+const json = (r: Route, v: unknown, status = 200) => r.fulfill({ status, contentType: "application/json", body: JSON.stringify(v) });
+
+function node(id: string, name: string) {
+  return {
+    meta: { id, name, created_at: 1790000000, generation: 1, resource_version: 1 },
+    spec: { name, role: "server", unschedulable: false, labels: {} },
+    status: { phase: "Active", ready: "True", versions: { glidex: "0.1.0" }, capacity: { cpus: 8, memory_mib: 16384 }, allocatable: { cpus: 7, memory_mib: 14336 }, features: {} },
+  };
+}
+
+type Seen = { method: string; path: string; body: any }[];
+
+/** OVN on with a router pool, two nodes, and a project's routers kept in memory. */
+async function mockOvn(page: Page, project: string, pool = true): Promise<Seen> {
+  const seen: Seen = [];
+  const routers: any[] = [{ id: "a1b2c3d4", project, spec: { name: "r1", external: true, external_ip: null, gateway_nodes: null }, status: { external_ip: "192.0.2.240", snat_ct_zone: 60001 }, created_at: 1790000000 }];
+  await page.route("**/api/watch*", (r) => json(r, { error: "too_many_watchers", message: "poll" }, 503));
+  await page.route("**/api/nodes", (r) => json(r, [node("11111111-1111-4111-8111-111111111111", "s1"), node("22222222-2222-4222-8222-222222222222", "s2")]));
+  await page.route("**/api/cluster/settings/ovn", (r) => json(r, { enabled: true, edge: true, vpc_pool: pool }));
+  await page.route("**/api/cluster/ovn", (r) =>
+    json(r, { enabled: true, nb: [], sb: [], chassis: [], gateways: [{ router: "gxr-a1b2c3d4", active: { chassis: "node:1", node: "1", node_name: "s1" }, candidates: [] }] }),
+  );
+  await page.route(`**/api/projects/${project}/routers`, async (r) => {
+    const req = r.request();
+    if (req.method() === "POST") {
+      const body = req.postDataJSON();
+      seen.push({ method: "POST", path: "routers", body });
+      const made = { id: "e5f6a7b8", project, spec: body, status: { external_ip: body.external ? "192.0.2.241" : null, snat_ct_zone: null }, created_at: 1790000001 };
+      routers.push(made);
+      return json(r, made, 201);
+    }
+    return json(r, routers);
+  });
+  await page.route(`**/api/projects/${project}/routers/*`, async (r) => {
+    const name = decodeURIComponent(new URL(r.request().url()).pathname.split("/").pop()!);
+    seen.push({ method: r.request().method(), path: `routers/${name}`, body: null });
+    routers.splice(routers.findIndex((x) => x.spec.name === name), 1);
+    return r.fulfill({ status: 204 });
+  });
+  // The project's NAT network on r1 (the networks list is otherwise real).
+  await page.route("**/api/networks", async (r) => {
+    if (r.request().method() !== "GET") return r.continue();
+    // The page may have moved on (to the Networking page) meanwhile.
+    const real = await r
+      .fetch()
+      .then((x) => x.json())
+      .catch(() => null);
+    if (real === null) return;
+    return json(r, [...real, { name: "app", scope: "cluster", mode: "nat", bridge: "br-int", port_type: "tap", project, router: "a1b2c3d4", grants: [], shares: [], phase: "ready" }]);
+  });
+  await page.route(`**/api/projects/${project}/networks`, async (r) => {
+    seen.push({ method: "POST", path: "networks", body: r.request().postDataJSON() });
+    return json(r, { name: "db", scope: "cluster", mode: "nat", bridge: "br-int", project }, 201);
+  });
+  return seen;
+}
+
+test("a project's routers: listed with their address and gateway, created and deleted", async ({ page }) => {
+  const project = await api("/projects", { method: "POST", body: { name: PROJECT } });
+  const seen = await mockOvn(page, project.id);
+  await page.goto(`/projects/${project.id}`);
+
+  const card = page.locator("table").filter({ hasText: "Outside address" });
+  const r1 = card.getByRole("row", { name: /r1/ });
+  await expect(r1).toContainText("192.0.2.240");
+  await expect(r1).toContainText("on s1");
+  await expect(r1).toContainText("app");
+  // A router with networks can't go.
+  await expect(r1.getByRole("button", { name: "Delete" })).toBeDisabled();
+  // The network says which way it leaves.
+  await expect(page.getByText(/leaves via router r1/)).toBeVisible();
+  // The router quotas are shown with the others.
+  await expect(page.getByText("External IPs")).toBeVisible();
+
+  await page.getByRole("button", { name: "New router" }).click();
+  await page.getByLabel("Name").fill("r2");
+  await expect(page.getByLabel("Reaches outside", { exact: false })).toBeChecked();
+  await page.getByRole("button", { name: "Create", exact: true }).click();
+  const r2 = card.getByRole("row", { name: /r2/ });
+  await expect(r2).toContainText("192.0.2.241");
+  const created = seen.find((s) => s.path === "routers")!.body;
+  expect(created.name).toBe("r2");
+  expect(created.external).toBe(true);
+
+  await r2.getByRole("button", { name: "Delete" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Delete" }).click();
+  await expect(card.getByRole("row", { name: /r2/ })).toHaveCount(0);
+  expect(seen.some((s) => s.method === "DELETE" && s.path === "routers/r2")).toBe(true);
+});
+
+test("without a pool a router can only join its networks", async ({ page }) => {
+  const project = await api("/projects", { method: "POST", body: { name: `${PROJECT}-np` } });
+  try {
+    const seen = await mockOvn(page, project.id, false);
+    await page.goto(`/projects/${project.id}`);
+    await page.getByRole("button", { name: "New router" }).click();
+    const outside = page.getByLabel("Reaches outside", { exact: false });
+    await expect(outside).not.toBeChecked();
+    await expect(outside).toBeDisabled();
+    await expect(page.getByText(/no pool of addresses for routers/)).toBeVisible();
+    await page.getByLabel("Name").fill("inner");
+    await page.getByRole("button", { name: "Create", exact: true }).click();
+    await expect(page.getByRole("row", { name: /inner/ })).toContainText("internal only");
+    expect(seen.find((s) => s.path === "routers")!.body.external).toBe(false);
+  } finally {
+    await del(`/projects/${project.id}`);
+  }
+});
+
+test("a network made from a router's card goes on that router", async ({ page }) => {
+  const project = await api("/projects", { method: "POST", body: { name: `${PROJECT}-net` } });
+  try {
+    const seen = await mockOvn(page, project.id);
+    // The form opens where netd can make networks (none on the scratch host).
+    await page.route("**/api/ovs/status", async (r) => {
+      const real = await r
+        .fetch()
+        .then((x) => x.json())
+        .catch(() => null);
+      if (real === null) return;
+      return json(r, { ...real, netd: { ...(real.netd ?? {}), access: "full" }, host: { ...(real.host ?? {}), ovs_running: true } });
+    });
+    await page.goto(`/projects/${project.id}`);
+    await page.getByRole("link", { name: "+ network on r1" }).click();
+    await expect(page).toHaveURL(/\/networking/);
+    await expect(field(page, "Network for")).toHaveValue(project.id);
+    await expect(field(page, "Leaves through")).toHaveValue("r1");
+    // The shared edge is the other choice.
+    await expect(field(page, "Leaves through").locator("option")).toHaveText([/shared edge/, /Router r1 \(192\.0\.2\.240\)/]);
+    await page.getByPlaceholder("lab").fill("db");
+    await page.getByRole("button", { name: "Create", exact: true }).click();
+    await expect.poll(() => seen.find((s) => s.path === "networks")?.body).toMatchObject({ name: "db", mode: "nat", scope: "cluster", router: "r1" });
+  } finally {
+    await del(`/projects/${project.id}`);
+  }
+});
