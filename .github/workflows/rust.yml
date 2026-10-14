@@ -13,6 +13,9 @@ jobs:
   build:
 
     runs-on: ubuntu-26.04
+    # A full run takes about 10 minutes; a test that hangs fails the job
+    # instead of holding the runner for GitHub's 6 hours.
+    timeout-minutes: 45
 
     steps:
     - uses: actions/checkout@v7

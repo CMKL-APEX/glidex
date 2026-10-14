@@ -43,7 +43,33 @@ fn test_config() -> Config {
     c
 }
 
+/// Nodes report the hypervisors they find on `PATH`, and the scheduler only
+/// places a VM where its hypervisor is. These tests never launch one, so on
+/// a machine without them (a CI runner) stand-ins on `PATH` are enough; a
+/// machine that has them keeps its own.
+fn hypervisors_on_path() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        use std::os::unix::fs::PermissionsExt;
+        let missing: Vec<&str> = ["cloud-hypervisor", "qemu-system-x86_64"].into_iter().filter(|b| glidex_control_plane::hypervisor::resolve_binary(b).is_none()).collect();
+        if missing.is_empty() {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("glidex-cluster-tests-bin-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for b in missing {
+            let p = dir.join(b);
+            std::fs::write(&p, "#!/bin/sh\necho 'a stand-in for the cluster tests' >&2\nexit 1\n").unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        let joined = std::env::join_paths(std::iter::once(dir).chain(std::env::split_paths(&path))).unwrap();
+        std::env::set_var("PATH", joined);
+    });
+}
+
 fn new_cp() -> Cp {
+    hypervisors_on_path();
     let _ = tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::from_default_env()).with_test_writer().try_init();
     let dir = tempfile::tempdir().unwrap();
     let manager = VmManager::with_db_path(dir.path().join("glidex.db")).unwrap();
