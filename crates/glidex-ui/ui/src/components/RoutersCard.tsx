@@ -111,6 +111,69 @@ function NewRouterDialog({ project, pool, onClose, onDone }: { project: string; 
   );
 }
 
+/** Put existing NAT networks of the project on `router`: they then reach
+ * each other through it, and leave with its address. */
+function AttachDialog({ project, router, routers, candidates, onClose, onDone }: { project: string; router: Router; routers: Router[]; candidates: Network[]; onClose: () => void; onDone: () => void }) {
+  const [picked, setPicked] = useState<string[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const via = (n: Network) => (n.router ? `router ${routers.find((r) => r.id === n.router)?.spec.name ?? n.router}` : "the shared edge");
+
+  const attach = async () => {
+    setBusy(true);
+    setError(null);
+    const done: string[] = [];
+    try {
+      for (const n of picked) {
+        await api.setNetworkRouter(project, n, router.spec.name);
+        done.push(n);
+      }
+      onDone();
+      onClose();
+    } catch (e) {
+      setError(`${done.length ? `Attached ${done.join(", ")}; ` : ""}${errorMessage(e)}`);
+      if (done.length) onDone();
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal title={`Attach networks to ${router.spec.name}`} onClose={onClose}>
+      <div className="space-y-4 text-sm">
+        <ErrorBanner error={error} onDismiss={() => setError(null)} />
+        {candidates.length === 0 ? (
+          <p className="text-gray-500">No other NAT network of this project spans the nodes. Isolated and node networks can't go on a router.</p>
+        ) : (
+          <ul className="space-y-1">
+            {candidates.map((n) => (
+              <li key={n.name}>
+                <label className="flex items-center gap-2">
+                  <input type="checkbox" checked={picked.includes(n.name)} onChange={(e) => setPicked(e.target.checked ? [...picked, n.name] : picked.filter((x) => x !== n.name))} />
+                  <span className="font-mono">{n.name}</span>
+                  <span className="text-xs text-gray-500">now via {via(n)}</span>
+                </label>
+              </li>
+            ))}
+          </ul>
+        )}
+        <p className="text-xs text-gray-600 bg-gray-50 border border-gray-200 rounded-lg p-2">
+          The networks reach every network on {router.spec.name}, and{" "}
+          {router.spec.external ? `leave with its address ${router.status.external_ip ?? ""}` : "no longer reach outside (the router is internal only)"}. VMs keep
+          their addresses and gateway; connections they have open through the old way out are cut.
+        </p>
+        <div className="flex justify-end gap-2">
+          <button className={secondaryButton} onClick={onClose}>
+            Cancel
+          </button>
+          <button className={primaryButton} disabled={busy || picked.length === 0} onClick={attach}>
+            {busy ? "Attaching..." : picked.length > 1 ? `Attach ${picked.length} networks` : "Attach"}
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 /** A project's VPC routers (spec/clustering.md §11.2a): its own way out,
  * instead of the shared edge, for the NAT networks attached to it. */
 export default function RoutersCard({ project, networks, manage, onChanged }: { project: string; networks: Network[]; manage: boolean; onChanged?: () => void }) {
@@ -122,6 +185,8 @@ export default function RoutersCard({ project, networks, manage, onChanged }: { 
   const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [removing, setRemoving] = useState<Router | null>(null);
+  const [attaching, setAttaching] = useState<Router | null>(null);
+  const [detaching, setDetaching] = useState<Network | null>(null);
 
   const load = useCallback(() => {
     api
@@ -156,6 +221,8 @@ export default function RoutersCard({ project, networks, manage, onChanged }: { 
   // Routers exist only on OVN.
   if (!ovn) return null;
   const attached = (r: Router) => networks.filter((n) => n.router === r.id);
+  // What can go on `r`: the project's other NAT networks that span the nodes.
+  const candidates = (r: Router) => networks.filter((n) => n.scope === "cluster" && n.mode === "nat" && n.router !== r.id && !n.deletion_requested_at);
   const active = (r: Router) => overview?.gateways?.find((g) => g.router === `gxr-${r.id}`)?.active;
 
   return (
@@ -207,9 +274,22 @@ export default function RoutersCard({ project, networks, manage, onChanged }: { 
                     )}
                   </td>
                   <td className="py-2">
-                    {nets.length ? nets.map((n) => n.name).join(", ") : <span className="text-gray-400">none</span>}
+                    {nets.length === 0 && <span className="text-gray-400">none</span>}
+                    {nets.map((n) => (
+                      <div key={n.name}>
+                        <span className="font-mono">{n.name}</span>
+                        {manage && (
+                          <button className="ml-2 text-xs text-red-600 hover:underline" onClick={() => setDetaching(n)}>
+                            Detach
+                          </button>
+                        )}
+                      </div>
+                    ))}
                     {manage && (
-                      <div>
+                      <div className="space-x-3">
+                        <button className="text-xs text-sky-700 hover:underline" onClick={() => setAttaching(r)}>
+                          Attach network…
+                        </button>
                         <Link
                           to={`/networking?new=${encodeURIComponent(project)}&router=${encodeURIComponent(r.spec.name)}`}
                           className="text-xs text-sky-700 hover:underline"
@@ -224,7 +304,7 @@ export default function RoutersCard({ project, networks, manage, onChanged }: { 
                       <button
                         className={dangerLink}
                         disabled={nets.length > 0}
-                        title={nets.length ? `Delete its networks first: ${nets.map((n) => n.name).join(", ")}` : ""}
+                        title={nets.length ? `Detach or delete its networks first: ${nets.map((n) => n.name).join(", ")}` : ""}
                         onClick={() => setRemoving(r)}
                       >
                         Delete
@@ -236,6 +316,21 @@ export default function RoutersCard({ project, networks, manage, onChanged }: { 
             })}
           </tbody>
         </table>
+      )}
+      {attaching && routers && (
+        <AttachDialog project={project} router={attaching} routers={routers} candidates={candidates(attaching)} onClose={() => setAttaching(null)} onDone={changed} />
+      )}
+      {detaching && (
+        <ConfirmDialog
+          title={`Detach ${detaching.name}`}
+          consequence={`${detaching.name} goes back to the cluster's shared edge: it no longer reaches the router's other networks, and leaves with the edge's address. VMs keep their addresses; open connections are cut.`}
+          actionLabel="Detach"
+          onConfirm={async () => {
+            await api.setNetworkRouter(project, detaching.name, null);
+            changed();
+          }}
+          onClose={() => setDetaching(null)}
+        />
       )}
       {adding && <NewRouterDialog project={project} pool={pool} onClose={() => setAdding(false)} onDone={changed} />}
       {removing && (

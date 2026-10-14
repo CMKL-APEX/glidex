@@ -635,6 +635,17 @@ fn ensure_network(nb: &Nb, n: &NetworkSpec, desired: &Desired, have_switches: &B
             let router = n.router.clone().map(|r| format!("gxr-{r}")).unwrap_or_else(|| EDGE.to_string());
             let lrp = format!("gx-lrp-{}", n.name);
             let lsp = format!("{sw}-rt");
+            // A network moved to another router (or back to the edge): its
+            // port leaves the old one first (`--may-exist` won't move it).
+            if !new {
+                if let Some(port) = nb.find("Logical_Router_Port", &["_uuid"], &[format!("name={lrp}")])?.first().and_then(|r| uuid(r, "_uuid")) {
+                    let owner = nb.find("Logical_Router", &["name", "ports"], &[])?.into_iter().find(|r| r.0.get("ports").is_some_and(|p| p.to_string().contains(&port))).and_then(|r| r.str("name"));
+                    if owner.as_deref().is_some_and(|o| o != router) {
+                        nb.txn(vec![vec![s("--if-exists"), s("lrp-del"), lrp.clone()]])?;
+                        report.changed.push(format!("network {} moved to {router}", n.name));
+                    }
+                }
+            }
             cmds.extend([
                 vec![s("--may-exist"), s("lrp-add"), router.clone(), lrp.clone(), n.router_mac(), format!("{}/{}", gw, cidr.prefix())],
                 [vec![s("set"), s("Logical_Router_Port"), lrp.clone()], ids(&[(NETWORK_KEY, &n.name)])].concat(),

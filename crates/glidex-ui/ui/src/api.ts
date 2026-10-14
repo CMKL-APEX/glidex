@@ -378,6 +378,9 @@ export const createProjectNetwork = (project: string, req: CreateNetworkRequest)
 export const listRouters = (project: string) => get<Router[]>(`/projects/${enc(project)}/routers`);
 export const createRouter = (project: string, spec: RouterSpec) => post<Router>(`/projects/${enc(project)}/routers`, spec);
 export const deleteRouter = (project: string, name: string) => del<void>(`/projects/${enc(project)}/routers/${enc(name)}`);
+/** Put an existing NAT network on one of the project's routers, or (`null`) back on the shared edge. */
+export const setNetworkRouter = (project: string, network: string, router: string | null) =>
+  put<Network>(`/projects/${enc(project)}/networks/${enc(network)}/router`, { router });
 export const offerNetworkShare = (network: string, project: string) =>
   post<void>(`/networks/${enc(network)}/shares`, { project });
 export const unshareNetwork = (network: string, project: string) =>

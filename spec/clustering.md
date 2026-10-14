@@ -1023,7 +1023,7 @@ pub struct RouterStatus {
     pub snat_ct_zone: Option<u16>,        // from ovn.snat_ct_zones (§13.2)
     pub active_gateway: Option<NodeId>,   // where SNAT runs now
 }
-// Network gains: pub router: Option<String>   // nat mode, scope cluster; immutable after create
+// Network gains: pub router: Option<String>   // nat mode, scope cluster; movable (clustering-ui.md §8d)
 ```
 
 | Router | OVN objects |
@@ -1050,7 +1050,10 @@ only be reached through their external IP, which only accepts replies
   reserves the address in `ipam_external` (reconciliation.md D5). The
   external pool is a site resource, and running out of it is
   `409 external_pool_exhausted`.
-- A network's `router` is set at creation and immutable. Subnets come
+- A network's `router` is set at creation, and the project can move the
+  network to another of its routers or back to the shared edge
+  (`PUT /projects/{id}/networks/{name}/router`; the gateway address and
+  MAC stay, so VMs keep working). Subnets come
   from the cluster IPAM as for any NAT network (§11.4, no overlap).
   Deleting a router is refused while networks are attached.
 - The network controller (§11.1) owns routers like networks: it creates,

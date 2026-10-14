@@ -278,3 +278,43 @@ fn the_snat_rule_of_a_deleted_network_goes_with_it() {
     assert!(!calls.contains("lr-nat-add"), "the live network's rule is already there: {calls}");
     assert!(rep.changed.iter().any(|c| c == "removed snat 10.89.9.0/24"), "{rep:?}");
 }
+
+#[test]
+fn a_network_moved_to_a_router_takes_its_port_off_the_edge() {
+    let exec = RecordingExec::new();
+    exec.on("ovn-nbctl --db=", empty(r#"["name"]"#));
+    let pre = "ovn-nbctl --db=ssl:192.0.2.11:6641,ssl:192.0.2.12:6641 -p /k -c /c -C /ca --format=json";
+    let sw = r#"{"data":[["gx-web",["map",[["glidex-owner","glidex"],["glidex-network","web"]]],["map",[]]]],"headings":["name","external_ids","other_config"]}"#;
+    exec.on(&format!("{pre} --columns=name,external_ids,other_config find Logical_Switch"), Output::ok(sw));
+    exec.on(&format!("{pre} --columns=_uuid find Logical_Router_Port"), Output::ok(r#"{"data":[[["uuid","lrp-web"]]],"headings":["_uuid"]}"#));
+    // The port is still on the edge.
+    exec.on(
+        &format!("{pre} --columns=name,ports find Logical_Router"),
+        Output::ok(r#"{"data":[["gx-edge",["set",[["uuid","lrp-ext"],["uuid","lrp-web"]]]],["gxr-r1",["set",[]]]],"headings":["name","ports"]}"#),
+    );
+    let mut web = net("web", NetKind::Nat, "10.89.1.0/24");
+    web.router = Some("r1".into());
+    let d = Desired { routers: vec![RouterSpec { name: "r1".into(), external: None }], networks: vec![web], ..Default::default() };
+    let rep = sync(&Nb::new(&exec, conn()), &d).unwrap();
+    let calls = exec.calls().join("\n");
+    let del = calls.find("--if-exists lrp-del gx-lrp-web").unwrap_or_else(|| panic!("{calls}"));
+    let add = calls.find("--may-exist lrp-add gxr-r1 gx-lrp-web").unwrap_or_else(|| panic!("{calls}"));
+    assert!(del < add, "off the edge, then onto the router: {calls}");
+    assert!(rep.changed.iter().any(|c| c == "network web moved to gxr-r1"), "{rep:?}");
+}
+
+#[test]
+fn a_network_already_on_its_router_stays() {
+    let exec = RecordingExec::new();
+    exec.on("ovn-nbctl --db=", empty(r#"["name"]"#));
+    let pre = "ovn-nbctl --db=ssl:192.0.2.11:6641,ssl:192.0.2.12:6641 -p /k -c /c -C /ca --format=json";
+    let sw = r#"{"data":[["gx-web",["map",[["glidex-owner","glidex"],["glidex-network","web"]]],["map",[]]]],"headings":["name","external_ids","other_config"]}"#;
+    exec.on(&format!("{pre} --columns=name,external_ids,other_config find Logical_Switch"), Output::ok(sw));
+    exec.on(&format!("{pre} --columns=_uuid find Logical_Router_Port"), Output::ok(r#"{"data":[[["uuid","lrp-web"]]],"headings":["_uuid"]}"#));
+    exec.on(&format!("{pre} --columns=name,ports find Logical_Router"), Output::ok(r#"{"data":[["gxr-r1",["set",[["uuid","lrp-web"]]]]],"headings":["name","ports"]}"#));
+    let mut web = net("web", NetKind::Nat, "10.89.1.0/24");
+    web.router = Some("r1".into());
+    let d = Desired { routers: vec![RouterSpec { name: "r1".into(), external: None }], networks: vec![web], ..Default::default() };
+    sync(&Nb::new(&exec, conn()), &d).unwrap();
+    assert!(!exec.calls().join("\n").contains("lrp-del"), "{:?}", exec.calls());
+}

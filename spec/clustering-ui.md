@@ -562,10 +562,18 @@ own way out instead of the shared edge. The UI:
   address and gateway nodes are site resources, so those fields are
   offered only with `createNetwork` on the Host. **Delete** is disabled
   while networks are on the router. Each router links to the network
-  form with itself chosen.
+  form with itself chosen, and **Attach network…** puts existing NAT
+  networks of the project (on the shared edge or another router) on it;
+  each attached network has **Detach** (back to the shared edge).
 - **Network form**: a project NAT network that spans the nodes gets
-  *Leaves through*: the shared edge, or one of the project's routers
-  (fixed once created).
+  *Leaves through*: the shared edge, or one of the project's routers.
+- **Moving a network** (`PUT /projects/{id}/networks/{name}/router`,
+  `{router: name | null}`, action `createRouter`): only the project's own
+  NAT networks that span the nodes. The network keeps its gateway address
+  and MAC, so VMs keep their addresses and gateway; the network
+  controller takes its router port off the old router and puts it on the
+  new one, and its SNAT follows. Connections open through the old way out
+  are cut.
 - **Project networks** say which way each NAT network leaves (*via
   router r1*, *via the shared edge*), and the quotas show `routers` and
   `external_ips`.

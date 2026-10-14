@@ -2453,6 +2453,32 @@ impl VmManager {
         Ok(())
     }
 
+    /// Put an existing NAT network of `project` on one of its routers, or
+    /// (`None`) back on the shared edge. The network keeps its gateway
+    /// address and MAC, so its VMs keep working; the network controller
+    /// moves its router port and SNAT on its next pass.
+    pub async fn set_network_router(&self, project: &str, network: &str, router: Option<&str>) -> Result<Network, VmManagerError> {
+        // The VM lock keeps a router from going while a network attaches.
+        let _vms = self.vms.write().await;
+        let mut net = self.networks.get(network)?.filter(|n| n.project.as_deref() == Some(project)).ok_or_else(|| NetError::NotFound(network.to_string()))?;
+        if net.scope != network::NetworkScope::Cluster || net.mode != NetworkMode::Nat {
+            return Err(NetError::Invalid(format!("only a NAT network that spans the nodes goes on a router; '{network}' is {:?} on {:?} scope", net.mode, net.scope).to_lowercase()).into());
+        }
+        if net.deletion_requested_at.is_some() {
+            return Err(NetError::Conflict(format!("network '{network}' is being deleted")).into());
+        }
+        let id = match router {
+            Some(name) => Some(crate::router::find(&self.store.database(), project, name).map_err(router_err)?.ok_or_else(|| NetError::Invalid(format!("router '{name}' not found in this project")))?.id),
+            None => None,
+        };
+        if net.router != id {
+            tracing::info!(network, from = ?net.router, to = ?id, "network moves router");
+            net.router = id;
+            self.networks.put(&net)?;
+        }
+        Ok(net)
+    }
+
     /// Set which projects may use a host network.
     pub fn grant_network(&self, name: &str, grants: Vec<String>, all_projects: bool) -> Result<Network, VmManagerError> {
         let mut net = self.get_network(name)?;

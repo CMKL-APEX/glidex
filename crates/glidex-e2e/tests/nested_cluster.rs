@@ -435,6 +435,33 @@ fn a_nested_two_node_cluster_binds_vm_ports_and_carries_traffic_over_geneve() {
         c.contains(&rip).then_some(c)
     });
     eprintln!("on h2: {}", cap.trim());
+
+    // An existing network moves onto the router: its port leaves the edge,
+    // and its guests then reach the router's other networks.
+    step("an existing network attached to the router reaches the router's other network");
+    let d_ip = line.split("my address:").nth(1).and_then(|s| s.split_whitespace().next()).unwrap_or_default().to_string();
+    inner.ok("POST", &format!("/projects/{project}/networks"), Some(&json!({ "name": "e2e-p2", "mode": "nat", "port_type": "tap", "scope": "cluster" })));
+    let nb = |args: &str| h1.check(&format!("sudo ovn-nbctl --no-leader-only --db=unix:/var/run/ovn/ovnnb_db.sock {args}"));
+    let rlr = format!("gxr-{}", r["id"].as_str().unwrap());
+    wait_for("e2e-p2's port on the edge", Duration::from_secs(60), || nb("lrp-list gx-edge").contains("gx-lrp-e2e-p2").then_some(()));
+    inner.ok("PUT", &format!("/projects/{project}/networks/e2e-p2/router"), Some(&json!({ "router": "e2e-r" })));
+    wait_for("e2e-p2's port on the router", Duration::from_secs(60), || {
+        (nb(&format!("lrp-list {rlr}")).contains("gx-lrp-e2e-p2") && !nb("lrp-list gx-edge").contains("gx-lrp-e2e-p2")).then_some(())
+    });
+    let out = h2.run_with_input("sudo sh -s", ping_seed_script("e2e-e", &d_ip, "/var/lib/gxe2e/seed-e.img").as_bytes());
+    assert!(out.status.success(), "seed: {}", String::from_utf8_lossy(&out.stderr));
+    let vm = inner.ok("POST", "/vms", Some(&json!({
+        "name": "e2e-e", "vcpu_count": 1, "mem_size_mib": 768, "image": env("GLIDEX_E2E_GUEST_IMAGE", "debian-13"), "firmware": "cloudhv-edk2",
+        "cloud_init_path": "/var/lib/gxe2e/seed-e.img", "hypervisor": "cloudhypervisor", "node": n2,
+        "networks": [{ "network": "e2e-p2" }], "kernel_image_path": "", "rootfs_path": "", "power": "running",
+    })));
+    let eid = vm["id"].as_str().unwrap().to_string();
+    let line = wait_for("e2e-e to report its ping to e2e-d", Duration::from_secs(600), || {
+        let out = h1.run(&format!("curl -s --unix-socket {API_SOCKET} http://glidex/vms/{eid}/console/log"));
+        String::from_utf8_lossy(&out.stdout).replace('\r', "").lines().find(|l| l.contains("GXE2E-PING-")).map(String::from)
+    });
+    eprintln!("e2e-e: {line}");
+    assert!(line.contains("GXE2E-PING-OK"), "across the router: {line}");
     drop(outer);
 }
 

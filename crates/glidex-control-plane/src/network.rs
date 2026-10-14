@@ -160,7 +160,8 @@ pub struct CreateNetworkRequest {
     /// network it sits on (§11.2).
     #[serde(default)]
     pub physnet: Option<String>,
-    /// A VPC router to attach a NAT network to (§11.2a); immutable.
+    /// A VPC router to attach a NAT network to (§11.2a); moved later with
+    /// `PUT /projects/{id}/networks/{name}/router`.
     #[serde(default)]
     pub router: Option<String>,
 }
