@@ -340,7 +340,7 @@ fn ovn_view(c: &Caller) -> serde_json::Value {
         .map(|n| json!({ "id": n.meta.id, "name": n.spec.name, "role": n.spec.role, "ovn_version": n.status.versions.ovn, "ovn_central": n.status.features.ovn_central, "missing": ovn_missing(&n) }))
         .collect();
     let cluster_networks: Vec<String> = m.networks_list().into_iter().filter(|n| n.scope == crate::network::NetworkScope::Cluster).map(|n| n.name).collect();
-    json!({ "enabled": m.ovn_enabled(), "edge": m.ovn.load().edge.is_some(), "clustered": m.cluster().is_some(), "source": source, "settings": shown, "nodes": nodes, "cluster_networks": cluster_networks })
+    json!({ "enabled": m.ovn_enabled(), "edge": m.ovn.load().edge.is_some(), "vpc_pool": vpc_pool(c), "clustered": m.cluster().is_some(), "source": source, "settings": shown, "nodes": nodes, "cluster_networks": cluster_networks })
 }
 
 /// `GET /cluster/settings/ovn`: whether the cluster runs on OVN (anyone signed
@@ -350,8 +350,14 @@ pub async fn get_ovn_settings(c: Caller) -> Result<impl IntoResponse, ApiErr> {
     if c.allowed("readCluster", Ent::Cluster, EntitySet::new()) {
         return Ok(Json(ovn_view(&c)));
     }
-    // Whether NAT networks can span the nodes is no secret: forms need it.
-    Ok(Json(json!({ "enabled": c.manager().ovn_enabled(), "edge": c.manager().ovn.load().edge.is_some() })))
+    // Whether NAT networks can span the nodes, and whether a project's own
+    // router can reach outside, are no secret: forms need them.
+    Ok(Json(json!({ "enabled": c.manager().ovn_enabled(), "edge": c.manager().ovn.load().edge.is_some(), "vpc_pool": vpc_pool(&c) })))
+}
+
+/// Whether VPC routers can have an external address: the edge has a pool.
+fn vpc_pool(c: &Caller) -> bool {
+    c.manager().ovn.load().edge.as_ref().is_some_and(|e| e.external_pool.is_some())
 }
 
 #[derive(Deserialize)]
@@ -459,7 +465,7 @@ pub fn suggest_edge(nodes: &[crate::node::Node]) -> serde_json::Value {
         let (ip, prefix): (Ipv4Addr, u8) = (ip.parse().ok()?, prefix.parse().ok()?);
         Some((ip, prefix, a.gateway.clone(), n.spec.name.clone(), bridge.clone()))
     });
-    let (mut cidr, mut gateway, mut external_ip) = (String::new(), String::new(), String::new());
+    let (mut cidr, mut gateway, mut external_ip, mut external_pool) = (String::new(), String::new(), String::new(), String::new());
     match &lan {
         Some((ip, prefix, gw, from, bridge)) if *prefix <= 30 => {
             let mask: u32 = if *prefix == 0 { 0 } else { u32::MAX << (32 - prefix) };
@@ -490,6 +496,16 @@ pub fn suggest_edge(nodes: &[crate::node::Node]) -> serde_json::Value {
             if let Some(free) = (net + 1..broadcast).rev().find(|h| !taken.contains(h)) {
                 external_ip = Ipv4Addr::from(free).to_string();
                 notes.push(format!("The edge address {external_ip} is a guess (the highest address no node uses): make sure no other device on {cidr} has it."));
+                taken.push(free);
+            }
+            // VPC routers' addresses: the highest /29 (8 addresses) nothing
+            // here uses, on a LAN big enough to spare one.
+            if *prefix <= 26 {
+                let block = (net..broadcast).step_by(8).rev().find(|b| b + 7 <= broadcast && *b != net && b + 7 != broadcast && !taken.iter().any(|t| (*b..=b + 7).contains(t)));
+                if let Some(b) = block {
+                    external_pool = format!("{}/29", Ipv4Addr::from(b));
+                    notes.push(format!("The pool for VPC routers {external_pool} is a guess too: its 8 addresses must be free on {cidr}, ideally outside its DHCP range."));
+                }
             }
         }
         Some((_, prefix, _, from, bridge)) => notes.push(format!("{from}'s {bridge} is on a /{prefix}: too small for an edge address; fill in the LAN.")),
@@ -502,7 +518,7 @@ pub fn suggest_edge(nodes: &[crate::node::Node]) -> serde_json::Value {
     json!({
         "edge": {
             "physnet": physnet, "external_cidr": cidr, "gateway": gateway, "external_ip": external_ip,
-            "external_pool": null, "gateway_nodes": gateways.iter().map(|n| n.spec.name.clone()).collect::<Vec<_>>(),
+            "external_pool": (!external_pool.is_empty()).then_some(external_pool), "gateway_nodes": gateways.iter().map(|n| n.spec.name.clone()).collect::<Vec<_>>(),
         },
         "complete": complete,
         "notes": notes,
@@ -539,6 +555,8 @@ mod edge_tests {
         assert_eq!(e["external_cidr"], "192.0.2.0/24");
         assert_eq!(e["gateway"], "192.0.2.1");
         assert_eq!(e["external_ip"], "192.0.2.254", "the highest address no node uses");
+        // .248/29 holds the edge address and the broadcast: the next /29 down.
+        assert_eq!(e["external_pool"], "192.0.2.240/29");
         assert_eq!(e["gateway_nodes"], serde_json::json!(["h1"]), "h2 runs br-int on userspace (DPDK)");
         assert_eq!(v["complete"], true);
         let notes = v["notes"].to_string();

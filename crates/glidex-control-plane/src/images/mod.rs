@@ -655,6 +655,13 @@ pub fn parse_size(s: &str) -> Option<u64> {
 }
 
 /// Names of images and disks: what users type in CLIs and URLs.
+/// An id as a file name: anything but letters, digits, `-` and `_` becomes
+/// `_`, so an id can never name a path outside its directory. Generated ids
+/// (UUIDs) are unchanged.
+fn safe_stem(id: &str) -> String {
+    id.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect()
+}
+
 pub fn validate_name(kind: &str, name: &str) -> Result<(), ImageError> {
     let ok = !name.is_empty()
         && name.len() <= 64
@@ -870,18 +877,18 @@ impl ImageManager {
 
     /// A disk image's file.
     pub fn image_path(&self, id: &str) -> PathBuf {
-        self.settings.image_dir.join(format!("{}.qcow2", id))
+        self.settings.image_dir.join(format!("{}.qcow2", safe_stem(id)))
     }
 
     /// A firmware image's code file.
     pub fn firmware_path(&self, id: &str) -> PathBuf {
-        self.settings.image_dir.join(format!("{}.fd", id))
+        self.settings.image_dir.join(format!("{}.fd", safe_stem(id)))
     }
 
     /// The UEFI variable-store template stored with a firmware image
     /// (OVMF), copied into each QEMU VM's own store on first boot.
     pub fn firmware_vars_template(&self, id: &str) -> PathBuf {
-        self.settings.image_dir.join(format!("{}.vars.fd", id))
+        self.settings.image_dir.join(format!("{}.vars.fd", safe_stem(id)))
     }
 
     /// The file an image's record stands for.
@@ -893,11 +900,11 @@ impl ImageManager {
     }
 
     pub fn part_path(&self, id: &str) -> PathBuf {
-        self.settings.image_dir.join(format!("{}.qcow2.part", id))
+        self.settings.image_dir.join(format!("{}.qcow2.part", safe_stem(id)))
     }
 
     pub fn disk_path(&self, d: &Disk) -> PathBuf {
-        self.settings.disk_dir.join(format!("{}.{}", d.id, d.format.extension()))
+        self.settings.disk_dir.join(format!("{}.{}", safe_stem(&d.id), d.format.extension()))
     }
 
     // ---- persistence -------------------------------------------------------

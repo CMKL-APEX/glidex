@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import * as api from "../api";
 import type { OvnEdge, OvnSettings, OvnSettingsView } from "../types";
 import { formatTime } from "../types";
@@ -82,6 +82,8 @@ export function OvnSettingsDialog({ view, onClose, onDone }: { view: OvnSettings
   const s = view.settings ?? { enabled: true };
   const [edgeOn, setEdgeOn] = useState(!!s.edge);
   const [edge, setEdge] = useState<OvnEdge>(s.edge ?? emptyEdge);
+  const edgeRef = useRef(edge);
+  edgeRef.current = edge;
   const [dns, setDns] = useState((s.dns_servers ?? []).join(", "));
   const [supernet, setSupernet] = useState(s.nat_supernet ?? "");
   const [mtu, setMtu] = useState(s.underlay_mtu ? String(s.underlay_mtu) : "");
@@ -95,30 +97,37 @@ export function OvnSettingsDialog({ view, onClose, onDone }: { view: OvnSettings
   const suggest = useCallback(async (overwrite: boolean) => {
     try {
       const d = await api.getEdgeDefaults();
-      setEdge((cur) => {
+      const filled: string[] = [];
+      const cur = edgeRef.current;
+      {
         const pick = <K extends keyof OvnEdge>(k: K): OvnEdge[K] => {
           const mine = cur[k];
           const empty = mine === undefined || mine === null || mine === "" || (Array.isArray(mine) && mine.length === 0);
-          return overwrite || empty ? d.edge[k] : mine;
+          if (!(overwrite || empty)) return mine;
+          const v = d.edge[k];
+          if (typeof v === "string" && v) filled.push(v);
+          return v;
         };
-        return {
+        setEdge({
           physnet: pick("physnet"),
           external_cidr: pick("external_cidr"),
           gateway: pick("gateway"),
           external_ip: pick("external_ip"),
           external_pool: pick("external_pool") ?? "",
           gateway_nodes: pick("gateway_nodes"),
-        };
-      });
-      setNotes(d.notes);
+        });
+      }
+      // Only what concerns a value filled in now (an existing edge keeps its own).
+      setNotes(overwrite ? d.notes : d.notes.filter((n) => filled.some((v) => n.includes(v))));
     } catch (e) {
       setNotes([`No suggestions: ${errorMessage(e)}`]);
     }
   }, []);
-  // A new edge starts from the suggestions.
+  // A new edge starts from the suggestions; an existing one gets its empty
+  // fields filled (the VPC router pool, say).
   useEffect(() => {
-    if (edgeOn && !s.edge) suggest(false);
-  }, [edgeOn, s.edge, suggest]);
+    if (edgeOn) suggest(false);
+  }, [edgeOn, suggest]);
   const networks = view.cluster_networks ?? [];
 
   const body = (enabled: boolean): Omit<OvnSettings, "updated_by" | "updated_at"> => ({
