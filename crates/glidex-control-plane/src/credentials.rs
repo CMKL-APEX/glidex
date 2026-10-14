@@ -410,11 +410,11 @@ mod tests {
         let (store, _dir) = store();
         let cred = store.create("p", req("alice", Some("correct horse"))).unwrap();
         let hash = cred.password_hash.clone().unwrap();
-        assert!(hash.starts_with("$6$"), "{hash}");
+        assert!(hash.starts_with("$6$"), "a SHA-512 crypt hash");
         // glibc only reads 16 salt characters; a longer salt in the string
         // makes every guest login fail (see hash_password).
         let salt = hash.split('$').find(|p| !p.is_empty() && *p != "6" && !p.starts_with("rounds=")).unwrap();
-        assert_eq!(salt.len(), 16, "{hash}");
+        assert_eq!(salt.len(), 16, "a 16-character salt");
         assert!(!hash.contains("correct horse"));
 
         let stored = store.get("p", "alice").unwrap();
@@ -430,9 +430,9 @@ mod tests {
         let (store, _dir) = store();
         let cred = store.create("p", req("bob", Some("s3cret-pass"))).unwrap();
         let debug = format!("{:?}", cred);
-        assert!(!debug.contains("$6$"), "{debug}");
+        assert!(!debug.contains("$6$"), "the hash is redacted");
         let debug = format!("{:?}", req("bob", Some("s3cret-pass")));
-        assert!(!debug.contains("s3cret-pass"), "{debug}");
+        assert!(!debug.contains("s3cret-pass"), "the password is redacted");
     }
 
     #[test]
