@@ -57,6 +57,16 @@ fn if_match(headers: &HeaderMap) -> Result<Option<u64>, ApiErr> {
 pub(crate) fn vm_response(c: &Caller, vm: &Vm) -> VmResponse {
     let mut r = VmResponse::from(vm);
     r.node_name = r.node.as_deref().and_then(|n| c.manager().nodes().get(n).ok().flatten()).map(|n| n.spec.name);
+    // On OVN networks netd hands out no address: OVN's DHCP serves the
+    // control plane's reservation, which is then the NIC's address. The
+    // reservations are in the cluster store, so this is filled here, not by
+    // the controller on the VM's node (an agent doesn't hold them).
+    if r.nics.iter().any(|n| n.ipv4.is_none()) {
+        let res = crate::ipam::list_reservations(&c.manager().store.database()).unwrap_or_default();
+        for (i, nic) in r.nics.iter_mut().enumerate().filter(|(_, n)| n.ipv4.is_none()) {
+            nic.ipv4 = res.iter().find(|x| x.vm_id == vm.id && x.nic as usize == i && x.network == nic.network).map(|x| x.ip);
+        }
+    }
     r
 }
 

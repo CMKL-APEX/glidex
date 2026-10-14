@@ -297,6 +297,10 @@ fn a_nested_two_node_cluster_binds_vm_ports_and_carries_traffic_over_geneve() {
         });
         eprintln!("{name}: {line}");
         assert!(line.contains("GXE2E-PING-OK"), "{name}: {line}");
+        // The address glidex shows is the one OVN's DHCP gave the guest.
+        let mine = line.split("my address:").nth(1).and_then(|s| s.split_whitespace().next()).unwrap_or_default().to_string();
+        let vm = inner.ok("GET", &format!("/vms/{id}"), None);
+        assert_eq!(vm["nics"][0]["ipv4"].as_str(), Some(mine.as_str()), "{name}: {vm}");
     }
 
     step("each port is bound to its own host's chassis, up and installed");
