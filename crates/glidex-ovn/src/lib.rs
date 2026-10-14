@@ -432,8 +432,11 @@ struct Gateway {
     lsp: String,
     seed: String,
     ext: ExternalSpec,
-    /// The match of the supernet policy: the edge drops all of it, a VPC
-    /// router all but its own networks.
+    /// The match of the supernet policy: from a guest network, the edge drops
+    /// all of it, a VPC router all but its own networks. Only from a guest
+    /// network: policies see replies after un-SNAT, addressed to a guest
+    /// (`inport` can't be negated in OVN). The provider switch's ACL keeps
+    /// everything else from outside out.
     supernet_match: String,
     role: &'static str,
 }
@@ -446,7 +449,7 @@ fn edge_gateway(e: &EdgeSpec) -> Gateway {
         lsp: format!("gx-ext-{}-rt", e.physnet),
         seed: "gxr:edge".into(),
         ext: ExternalSpec { physnet: e.physnet.clone(), external_ip: e.external_ip, external_prefix: e.external_prefix, gateway: e.gateway, gateway_nodes: e.gateway_nodes.clone(), snat_ct_zone: e.snat_ct_zone },
-        supernet_match: format!("ip4.dst == ${SUPERNET_SET}"),
+        supernet_match: format!("ip4.src == ${SUPERNET_SET} && ip4.dst == ${SUPERNET_SET}"),
         role: "edge",
     }
 }
@@ -459,7 +462,7 @@ fn vpc_gateway(r: &RouterSpec, ext: &ExternalSpec) -> Gateway {
         lsp: format!("gx-ext-{}-rt-{}", ext.physnet, r.name),
         seed: format!("gxr:vpc:{}", r.name),
         ext: ext.clone(),
-        supernet_match: format!("ip4.dst == ${SUPERNET_SET} && ip4.dst != ${}", r.nets_set()),
+        supernet_match: format!("ip4.src == ${SUPERNET_SET} && ip4.dst == ${SUPERNET_SET} && ip4.dst != ${}", r.nets_set()),
         role: "vpc",
     }
 }
@@ -543,16 +546,42 @@ fn ensure_gateway(nb: &Nb, g: &Gateway, desired: &Desired, have_switches: &BTree
     let policies: Vec<Row> = nb.find("Logical_Router_Policy", &["_uuid", "priority", "match", "action"], &[])?.into_iter().filter(|p| uuid(p, "_uuid").is_some_and(|u| mine.contains(&u))).collect();
     let has = |prio: i64, m: &str| policies.iter().any(|p| p.int("priority") == Some(prio) && p.str("match").as_deref() == Some(m));
     let nodes_match = format!("ip4.dst == ${NODES_SET}");
-    let mut cmds = Vec::new();
-    if !desired.node_addresses.is_empty() && !has(1100, &nodes_match) {
-        cmds.push(vec![s("--may-exist"), s("lr-policy-add"), g.router.clone(), s("1100"), nodes_match, s("drop")]);
+    let mut want: Vec<(i64, String)> = Vec::new();
+    if !desired.node_addresses.is_empty() {
+        want.push((1100, nodes_match));
     }
-    if desired.nat_supernet.is_some() && !has(1000, &g.supernet_match) {
-        cmds.push(vec![s("--may-exist"), s("lr-policy-add"), g.router.clone(), s("1000"), g.supernet_match.clone(), s("drop")]);
+    if desired.nat_supernet.is_some() {
+        want.push((1000, g.supernet_match.clone()));
+    }
+    let mut cmds = Vec::new();
+    // Rows at our priorities that we no longer want (an older match).
+    for p in &policies {
+        let (Some(prio), Some(m), Some(u)) = (p.int("priority"), p.str("match"), uuid(p, "_uuid")) else { continue };
+        if (prio == 1000 || prio == 1100) && !want.iter().any(|(wp, wm)| *wp == prio && *wm == m) {
+            cmds.push(vec![s("--if-exists"), s("lr-policy-del"), g.router.clone(), u]);
+        }
+    }
+    for (prio, m) in &want {
+        if !has(*prio, m) {
+            cmds.push(vec![s("--may-exist"), s("lr-policy-add"), g.router.clone(), prio.to_string(), m.clone(), s("drop")]);
+        }
     }
     if !cmds.is_empty() {
         nb.txn(cmds)?;
         report.changed.push(format!("{} isolation policies", g.router));
+    }
+    // Nothing from the provider network straight to a guest subnet: only
+    // replies to a router's external address come in (the node NAT's
+    // `ct state established,related`). Checked on the provider switch, before
+    // un-SNAT turns a reply's destination into a guest's.
+    if desired.nat_supernet.is_some() {
+        let acl_match = format!("inport == \"{ext}-ln\" && ip4.dst == ${SUPERNET_SET}");
+        let sw_acls: String = nb.find("Logical_Switch", &["acls"], &[format!("name={ext}")])?.first().and_then(|r| r.0.get("acls").map(|v| v.to_string())).unwrap_or_default();
+        let acls = nb.find("ACL", &["_uuid", "match"], &[])?;
+        if !acls.iter().any(|a| a.str("match").as_deref() == Some(acl_match.as_str()) && uuid(a, "_uuid").is_some_and(|u| sw_acls.contains(&u))) {
+            nb.txn(vec![vec![s("acl-add"), ext.clone(), s("from-lport"), s("1000"), acl_match, s("drop")]])?;
+            report.changed.push(format!("{ext} inbound filter"));
+        }
     }
     // The router's external address, per NAT network on it.
     let nats = nb.find("NAT", &["external_ip", "logical_ip", "type"], &[])?;

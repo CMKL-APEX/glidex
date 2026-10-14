@@ -991,8 +991,12 @@ with one exception (§11.2a).
 
 | Rule (logical router policy) | Effect |
 |---|---|
-| `ip4.dst == $gx_nat_supernet` → **drop** | NAT networks can't reach each other. Traffic within a subnet is switched and never reaches the router, so one rule isolates every NAT network. |
+| `ip4.src == $gx_nat_supernet && ip4.dst == $gx_nat_supernet` → **drop** | NAT networks can't reach each other. Traffic within a subnet is switched and never reaches the router, so one rule isolates every NAT network. It names the source too because policies run after un-SNAT: a reply from outside is by then addressed to a guest, and must pass. (`inport != …` would say it better, but OVN refuses to negate `inport`, and northd then drops the flow without a word.) |
 | `ip4.dst == $gx_nodes` → **drop**, higher priority | Guests can't reach glidex hosts through SNAT. `gx_nodes` holds every node's advertise, tunnel and LAN addresses. This keeps security.md §8.4's "the host answers only DHCP, DNS, ping": in OVN, DHCP is answered by OVN itself and DNS by the site resolvers. |
+| ACL on the provider switch `gx-ext-<physnet>`: `from-lport`, `inport == "gx-ext-<physnet>-ln" && ip4.dst == $gx_nat_supernet` → **drop** | Nothing from the LAN reaches a guest directly, even with a route to the supernet: only replies to a router's external address come in, as with the node NAT's `ct state established,related`. On the switch, before un-SNAT, a reply is still addressed to the external IP. Stateless, so the provider switch needs no conntrack. |
+
+The supernet is `ovn.nat_supernet`, or `10.89.0.0/16` when unset (the
+range cluster subnets are allocated from either way).
 
 Packets addressed to the router itself (ping to the gateway) are
 handled before policy routing, so they still work.
@@ -1029,7 +1033,7 @@ pub struct RouterStatus {
 
 **Isolation.** Each VPC router gets the `gx_nodes` drop, and instead of
 `gx-edge`'s supernet drop it gets
-`ip4.dst == $gx_nat_supernet && ip4.dst != $gx_r_<router8>_nets` →
+`ip4.src == $gx_nat_supernet && ip4.dst == $gx_nat_supernet && ip4.dst != $gx_r_<router8>_nets` →
 **drop**, where `gx_r_<router8>_nets` lists its own networks' subnets.
 Its networks therefore reach each other, but not other VPCs, not
 networks on `gx-edge`, and not glidex hosts. Other routers' subnets can

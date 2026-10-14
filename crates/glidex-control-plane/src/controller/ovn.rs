@@ -124,7 +124,9 @@ impl VmManager {
             .collect::<std::collections::BTreeSet<IpAddr>>()
             .into_iter()
             .collect();
-        d.nat_supernet = ovn.nat_supernet.as_deref().and_then(|s| s.parse().ok());
+        // The supernet subnets come from (create_cluster_network's default):
+        // isolation holds whether or not it was set.
+        d.nat_supernet = ovn.nat_supernet.as_deref().unwrap_or("10.89.0.0/16").parse().ok();
         Ok(d)
     }
 

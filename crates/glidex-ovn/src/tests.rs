@@ -73,7 +73,8 @@ fn a_nat_network_is_routed_through_the_edge_with_snat_and_the_isolation_policies
         "ha-chassis-group-add-chassis gx-edge n2 99",
         "set Logical_Router_Port gx-edge-ext ha_chassis_group=g1",
         "--may-exist lr-policy-add gx-edge 1100 ip4.dst == $gx_nodes drop",
-        "--may-exist lr-policy-add gx-edge 1000 ip4.dst == $gx_nat_supernet drop",
+        "--may-exist lr-policy-add gx-edge 1000 ip4.src == $gx_nat_supernet && ip4.dst == $gx_nat_supernet drop",
+        "acl-add gx-ext-uplink from-lport 1000 inport == \"gx-ext-uplink-ln\" && ip4.dst == $gx_nat_supernet drop",
         "--may-exist lrp-add gx-edge gx-lrp-web",
         "10.89.1.1/24",
         "lsp-set-options gx-web-rt router-port=gx-lrp-web",
@@ -83,7 +84,7 @@ fn a_nat_network_is_routed_through_the_edge_with_snat_and_the_isolation_policies
         assert!(calls.contains(want), "missing {want:?} in:\n{calls}");
     }
     // The node policy outranks the supernet policy.
-    assert!(calls.find("1100").unwrap() < calls.find("1000 ip4.dst").unwrap());
+    assert!(calls.find("1100").unwrap() < calls.find("1000 ip4.src").unwrap());
 }
 
 #[test]
@@ -192,7 +193,7 @@ fn a_vpc_router_has_its_own_address_gateway_group_and_isolation() {
         "set Logical_Router gxr-r1 options:snat-ct-zone=60002",
         "ha-chassis-group-add-chassis gxr-r1 n2 100",
         "--may-exist lr-policy-add gxr-r1 1100 ip4.dst == $gx_nodes drop",
-        "--may-exist lr-policy-add gxr-r1 1000 ip4.dst == $gx_nat_supernet && ip4.dst != $gx_r_r1_nets drop",
+        "--may-exist lr-policy-add gxr-r1 1000 ip4.src == $gx_nat_supernet && ip4.dst == $gx_nat_supernet && ip4.dst != $gx_r_r1_nets drop",
         "--may-exist lrp-add gxr-r1 gx-lrp-app",
         "--may-exist lrp-add gxr-r1 gx-lrp-db",
         "--may-exist lr-nat-add gxr-r1 snat 192.0.2.64 10.89.7.0/24",
@@ -221,4 +222,33 @@ fn a_vpc_router_that_left_the_plan_is_removed_with_its_port() {
     assert!(calls.contains("--if-exists lr-del gxr-r9") && calls.contains("--if-exists destroy HA_Chassis_Group gxr-r9"), "{calls}");
     assert!(calls.contains("--if-exists lsp-del gx-ext-uplink-rt-r9"), "{calls}");
     assert!(!calls.contains("lsp-del gx-ext-uplink-rt-r1"), "{calls}");
+}
+
+#[test]
+fn replies_from_outside_reach_guests_and_an_older_policy_is_replaced() {
+    // Before, the supernet drop matched replies after un-SNAT too.
+    let exec = RecordingExec::new();
+    exec.on("ovn-nbctl --db=", empty(r#"["name"]"#));
+    let pre = "ovn-nbctl --db=ssl:192.0.2.11:6641,ssl:192.0.2.12:6641 -p /k -c /c -C /ca --format=json";
+    exec.on(&format!("{pre} --columns=name,external_ids find Logical_Router"), Output::ok(r#"{"data":[["gx-edge",["map",[["glidex-owner","glidex"]]]]],"headings":["name","external_ids"]}"#));
+    exec.on(&format!("{pre} --columns=policies find Logical_Router"), Output::ok(r#"{"data":[[["set",[["uuid","p-old"],["uuid","p-nodes"]]]]],"headings":["policies"]}"#));
+    exec.on(
+        &format!("{pre} --columns=_uuid,priority,match,action find Logical_Router_Policy"),
+        Output::ok(r#"{"data":[[["uuid","p-old"],1000,"ip4.dst == $gx_nat_supernet","drop"],[["uuid","p-nodes"],1100,"ip4.dst == $gx_nodes","drop"]],"headings":["_uuid","priority","match","action"]}"#),
+    );
+    exec.on(&format!("{pre} --columns=_uuid find HA_Chassis_Group"), Output::ok(r#"{"data":[[["uuid","g1"]]],"headings":["_uuid"]}"#));
+    let d = Desired {
+        edge: Some(EdgeSpec { physnet: "uplink".into(), external_ip: "192.0.2.50".parse().unwrap(), external_prefix: 24, gateway: "192.0.2.1".parse().unwrap(), gateway_nodes: vec!["n1".into()], snat_ct_zone: None }),
+        networks: vec![net("web", NetKind::Nat, "10.89.1.0/24")],
+        node_addresses: vec!["192.0.2.11".parse().unwrap()],
+        nat_supernet: Some("10.89.0.0/16".parse().unwrap()),
+        ..Default::default()
+    };
+    sync(&Nb::new(&exec, conn()), &d).unwrap();
+    let calls = exec.calls().join("\n");
+    assert!(calls.contains("--if-exists lr-policy-del gx-edge p-old"), "{calls}");
+    assert!(!calls.contains("lr-policy-del gx-edge p-nodes"), "the node policy is still right: {calls}");
+    assert!(!calls.contains("lr-policy-add gx-edge 1100"), "{calls}");
+    assert!(calls.contains("lr-policy-add gx-edge 1000 ip4.src == $gx_nat_supernet && ip4.dst == $gx_nat_supernet drop"), "{calls}");
+    assert!(calls.contains("acl-add gx-ext-uplink from-lport 1000"), "unsolicited traffic stays out: {calls}");
 }
