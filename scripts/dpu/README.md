@@ -9,7 +9,7 @@ open questions the spec lists, and produces the raw command output that the
 | Script | Does | Changes anything? |
 |---|---|---|
 | `dpu-probe.sh` | collects the §9.2 capability fields as JSON; `--fixtures DIR` also saves every raw output, scrubbed | no |
-| `dpu-prepare.sh` | the §9.3 sequence as idempotent shell; `--check` / `--dry-run` first | only with `--yes` |
+| `dpu-prepare.sh` | the §9.3 sequence as idempotent shell; `--check` / `--dry-run` first; `--virtio-net` also clears the stock SF 0 for the controller (finding 29) | only with `--yes` |
 | `test-hook.sh` | offline test of the `bf.cfg` hook against a real seed; no hardware | no |
 | `bfcfg.sh` | the `bf.cfg` generator (sourced by the two above) | – |
 | `dpu-reinit.sh` | generates `bf.cfg`, runs `bfb-install` over rshim, records timings and before/after pictures | **destructive**, only with `--yes` |

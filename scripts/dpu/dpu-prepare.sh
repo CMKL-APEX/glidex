@@ -23,6 +23,11 @@
 #   --ovn-bridge-mappings M  chassis: ovn-bridge-mappings (e.g. externalnet:ovsbr1)
 #   --ssl-key/--ssl-cert/--ssl-ca PATH   OVS TLS files already on the DPU
 #   --stop-local-central     stop+disable a DPU-local OVN central (never uninstalls)
+#   --virtio-net             make the DPU ready for virtio-net-controller (needs
+#                            the firmware values active): remove the stock SF 0
+#                            from the bridge and the DPU, keep /etc/mellanox/
+#                            mlnx-sf.conf from recreating it, and restart a
+#                            controller that cannot serve (spec §0 finding 29)
 #
 # What it deliberately does not do: firmware (mlxconfig), resets, anything
 # on the host. Restarting ovs-vswitchd drops the phy bridge's internal-port
@@ -35,7 +40,8 @@ here="$(cd "$(dirname "$0")" && pwd)"
 . "$here/lib.sh"
 
 HUGE=1024; PMD=0xc0; PHY=ovsbr1; INT=""; UCIDR=""; UGW=""; PERSIST=0; YES=0
-OVN_REMOTE=""; ENCAP=""; BMAP=""; SSL_KEY=""; SSL_CERT=""; SSL_CA=""; STOP_CENTRAL=0
+OVN_REMOTE=""; ENCAP=""; BMAP=""; SSL_KEY=""; SSL_CERT=""; SSL_CA=""; STOP_CENTRAL=0; VIRTIO=0
+IP2=/opt/mellanox/iproute2/sbin; SF_CONF=/etc/mellanox/mlnx-sf.conf; STOCK_SF_NETDEV=""
 HP_2M=/sys/kernel/mm/hugepages/hugepages-2048kB
 HP_512M=/sys/kernel/mm/hugepages/hugepages-524288kB
 HP_DIR=/hugepages-2M
@@ -57,8 +63,9 @@ while [ $# -gt 0 ]; do
     --ssl-cert)             SSL_CERT="${2:?}"; shift 2 ;;
     --ssl-ca)               SSL_CA="${2:?}"; shift 2 ;;
     --stop-local-central)   STOP_CENTRAL=1; shift ;;
+    --virtio-net)           VIRTIO=1; shift ;;
     --yes)                  YES=1; shift ;;
-    -h|--help)              sed -n '2,36p' "$0"; exit 0 ;;
+    -h|--help)              sed -n '2,42p' "$0"; exit 0 ;;
     *)                      die "unknown option: $1" ;;
   esac
 done
@@ -120,6 +127,37 @@ if [ "$need_restart" = 1 ]; then
   if [ "$DRY_RUN" = 0 ]; then sleep 8; fi
 else ok "no restart needed"; fi
 
+# ------------------------------------------------- 3b. virtio-net controller
+step "3b. virtio-net-controller prerequisites"
+if [ "$VIRTIO" = 1 ]; then
+  fw="$(rd mlxconfig -d 03:00.0 q VIRTIO_NET_EMULATION_ENABLE | awk '$1=="VIRTIO_NET_EMULATION_ENABLE"{print $2}')"
+  case "$fw" in
+    True*) ok "VIRTIO_NET_EMULATION_ENABLE is active" ;;
+    *) warn "VIRTIO_NET_EMULATION_ENABLE is '${fw:-unreadable}': firmware is not active (§9.1); skipping" ; VIRTIO=0 ;;
+  esac
+fi
+if [ "$VIRTIO" = 1 ]; then
+  # The controller creates its own SFs (sf_num 1000+) and fails to start
+  # (`Failed to init IB port, err(-2)`) while the image's SF 0 exists.
+  sf_line="$(rd "$IP2/mlxdevm" port show | awk '/flavour pcisf/ && / sfnum 0 /{print; exit}')"
+  if [ -n "$sf_line" ]; then
+    sf_port="${sf_line%%: *}"                                   # pci/0000:03:00.0/229408
+    STOCK_SF_NETDEV="$(printf '%s\n' "$sf_line" | sed -n 's/.* netdev \([^ ]*\) .*/\1/p')"
+    sf_dev="${sf_port#pci/}"; sf_dev="${sf_dev%/*}"
+    [ -z "$STOCK_SF_NETDEV" ] || mut "remove the stock SF's netdev $STOCK_SF_NETDEV from its bridge" ovs-vsctl --if-exists del-port "$STOCK_SF_NETDEV"
+    mut "delete the stock SF 0 ($sf_port)" env "PATH=$IP2:/usr/sbin:/usr/bin:/sbin:/bin" mlnx-sf --action delete --device "$sf_dev" --sfindex "$sf_port"
+  else ok "no stock SF 0"; fi
+  if [ -n "$(rd_sh "grep -s -E '^[^#]*--sfnum 0( |\$)' $SF_CONF")" ]; then
+    mut_sh "keep $SF_CONF from recreating SF 0 at boot (backup: $SF_CONF.glidex-bak)" \
+      "cp -n $SF_CONF $SF_CONF.glidex-bak && sed -i '/^[^#]*--sfnum 0\( \|\$\)/s/^/# glidex-disabled: /' $SF_CONF"
+  else ok "$SF_CONF does not create SF 0"; fi
+  if rd virtnet list | grep -q '"controller"'; then ok "virtnet list answers"
+  else
+    mut "restart virtio-net-controller (virtnet list does not answer)" systemctl restart virtio-net-controller
+    if [ "$DRY_RUN" = 0 ]; then sleep 8; fi
+  fi
+else skip "no --virtio-net"; fi
+
 # ------------------------------------------------------------- 4. bridges/ports
 step "4. bridges and ports on the doca datapath"
 [ "$(rd_sh "ovs-vsctl br-exists $PHY && echo yes")" = yes ] || die "bridge $PHY does not exist on the DPU (give --phy-bridge)"
@@ -131,6 +169,7 @@ bridge_doca() {
 }
 bridge_doca "$PHY"
 for p in $(rd ovs-vsctl list-ports "$PHY"); do
+  [ -n "$STOCK_SF_NETDEV" ] && [ "$p" = "$STOCK_SF_NETDEV" ] && { skip "port $p (stock SF, removed in 3b)"; continue; }
   t="$(ovs_get Interface "$p" type)"
   case "$t" in
     doca) ok "port $p type=doca" ;;
@@ -203,6 +242,10 @@ for b in "$PHY" ${INT:+"$INT"}; do
 done
 errs="$(rd ovs-vsctl --columns=name,error list Interface | awk '/^error/ && $3!="[]"{c++} END{print c+0}')"
 [ "$errs" = 0 ] && ok "no interface reports an error" || { warn "$errs interface(s) report an error"; rc=1; }
+if [ "$VIRTIO" = 1 ]; then
+  pfs="$(rd virtnet list | grep -c '"function_type": *"static PF"')"
+  [ "$pfs" -ge 1 ] && ok "virtnet list answers: $pfs static PF(s)" || { warn "virtnet list shows no static PF"; rc=1; }
+fi
 log "pmd threads: $(rd ovs-appctl dpif-netdev/pmd-stats-show | grep -c '^pmd thread')"
 log "(re-run with --check: it must report 0 changes)"
 CHANGED_SUMMARY=$CHANGED
