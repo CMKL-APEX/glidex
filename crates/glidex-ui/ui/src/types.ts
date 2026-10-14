@@ -979,6 +979,8 @@ export interface OvnSettings {
 /** `GET /cluster/settings/ovn`: `enabled` for everyone, the rest with `readCluster`. */
 export interface OvnSettingsView {
   enabled: boolean;
+  /** The shared edge for NAT networks spanning the nodes is set. */
+  edge?: boolean;
   clustered?: boolean;
   /** `cluster`: the setting; `file`: control-plane.json (not moved yet); `none`. */
   source?: "cluster" | "file" | "none";

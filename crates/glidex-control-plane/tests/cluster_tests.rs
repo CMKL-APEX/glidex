@@ -1386,6 +1386,10 @@ async fn ovn_is_a_cluster_setting_every_node_follows() {
     let (s, v) = call(&agent, "GET", "/cluster/settings/ovn", None, &[]).await;
     assert_eq!(s, StatusCode::OK, "{v}");
     assert_eq!(v["enabled"], true);
+    assert_eq!(v["edge"], false, "no shared edge yet: NAT networks can't span the nodes");
+    let (s, v) = call(&server, "POST", "/networks", Some(json!({ "name": "c-nat", "mode": "nat", "scope": "cluster" })), &[]).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    assert!(v["message"].as_str().unwrap().contains("OVN settings"), "says where to set it: {v}");
 }
 
 /// A cluster that enabled OVN in its servers' files keeps it: the leader

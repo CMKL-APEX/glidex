@@ -340,7 +340,7 @@ fn ovn_view(c: &Caller) -> serde_json::Value {
         .map(|n| json!({ "id": n.meta.id, "name": n.spec.name, "role": n.spec.role, "ovn_version": n.status.versions.ovn, "ovn_central": n.status.features.ovn_central, "missing": ovn_missing(&n) }))
         .collect();
     let cluster_networks: Vec<String> = m.networks_list().into_iter().filter(|n| n.scope == crate::network::NetworkScope::Cluster).map(|n| n.name).collect();
-    json!({ "enabled": m.ovn_enabled(), "clustered": m.cluster().is_some(), "source": source, "settings": shown, "nodes": nodes, "cluster_networks": cluster_networks })
+    json!({ "enabled": m.ovn_enabled(), "edge": m.ovn.load().edge.is_some(), "clustered": m.cluster().is_some(), "source": source, "settings": shown, "nodes": nodes, "cluster_networks": cluster_networks })
 }
 
 /// `GET /cluster/settings/ovn`: whether the cluster runs on OVN (anyone signed
@@ -350,7 +350,8 @@ pub async fn get_ovn_settings(c: Caller) -> Result<impl IntoResponse, ApiErr> {
     if c.allowed("readCluster", Ent::Cluster, EntitySet::new()) {
         return Ok(Json(ovn_view(&c)));
     }
-    Ok(Json(json!({ "enabled": c.manager().ovn_enabled() })))
+    // Whether NAT networks can span the nodes is no secret: forms need it.
+    Ok(Json(json!({ "enabled": c.manager().ovn_enabled(), "edge": c.manager().ovn.load().edge.is_some() })))
 }
 
 #[derive(Deserialize)]

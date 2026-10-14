@@ -2189,7 +2189,7 @@ impl VmManager {
         }
         // The subnet comes from the IPAM below; `to_network` only checks the rest.
         if req.mode == NetworkMode::Nat && self.ovn.load().edge.is_none() {
-            return Err(NetError::Invalid("a NAT cluster network needs cluster.ovn.edge (the external address and gateway nodes)".into()).into());
+            return Err(NetError::Invalid("a NAT network that spans every node needs the cluster's shared edge (its external address and gateway nodes), which isn't set: an administrator sets it on the Cluster page under OVN settings (PUT /cluster/settings/ovn). Meanwhile use an isolated network, or a NAT network on this node only (scope node)".into()).into());
         }
         let mut net = CreateNetworkRequest { subnet: None, bridge: Some("br-int".into()), vlan: None, physnet: None, ..req.clone() }.to_network()?;
         net.vlan = req.vlan;

@@ -130,7 +130,7 @@ pub fn create(db: &Db, project: &str, spec: RouterSpec, site: &Site<'_>) -> Resu
         }
         let (mut external_ip, mut zone) = (None, None);
         if spec.external {
-            let pool = site.pool.ok_or_else(|| RouterError::Invalid("external routers need cluster.ovn.edge.external_pool".into()))?;
+            let pool = site.pool.ok_or_else(|| RouterError::Invalid("external routers need a pool of external addresses: the shared edge's external_pool (Cluster page, OVN settings)".into()))?;
             external_ip = Some(ipam::allocate_external(tx, &id, spec.external_ip, pool, site.exclude).map_err(|e| match e {
                 IpamError::ExternalPoolFull => RouterError::PoolExhausted,
                 IpamError::ExternalTaken(a) => RouterError::Conflict(format!("external address {a} is taken")),

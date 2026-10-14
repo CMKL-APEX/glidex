@@ -152,7 +152,7 @@ impl VmManager {
         let routers = crate::router::list(&self.database()).unwrap_or_default();
         if let Some(e) = &ovn.edge {
             if e.gateway_nodes.iter().any(is_it) && !e.gateway_nodes.iter().any(lives) && nat_networks {
-                return Some("it is the only gateway of the shared edge router; add another gateway node to cluster.ovn.edge first".into());
+                return Some("it is the only gateway of the shared edge router; add another gateway node to the shared edge first (Cluster page, OVN settings)".into());
             }
         }
         for r in routers {

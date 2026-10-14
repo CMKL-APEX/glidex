@@ -235,11 +235,15 @@ function AddNetworkForm({
   const { host } = useSession();
   // Cluster networks need OVN on (spec/clustering-ui.md §8a): ask once.
   const [ovnOn, setOvnOn] = useState<boolean | null>(null);
+  const [edgeSet, setEdgeSet] = useState(false);
   useEffect(() => {
     if (!nodes.clustered) return;
     api
       .getOvnSettings()
-      .then((v) => setOvnOn(v.enabled))
+      .then((v) => {
+        setOvnOn(v.enabled);
+        setEdgeSet(!!v.edge);
+      })
       .catch(() => setOvnOn(false));
   }, [nodes.clustered]);
   const [span, setSpan] = useState<"cluster" | "node">("cluster");
@@ -370,6 +374,19 @@ function AddNetworkForm({
           />
         </div>
       )}
+      {clusterWide && mode === "nat" && !edgeSet && (
+        <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-2">
+          A NAT network that spans every node leaves through the cluster's shared edge, which isn't set yet
+          {host.configureOvn ? (
+            <>
+              : set it on the <Link to="/cluster" className="text-sky-700 hover:underline">Cluster page</Link> under OVN settings.
+            </>
+          ) : (
+            "; an administrator sets it."
+          )}{" "}
+          Meanwhile choose Isolated, or Spans: this node only.
+        </p>
+      )}
       {clusterWide && mode === "bridged" && (
         <div className="grid grid-cols-2 gap-4">
           <div>
@@ -409,7 +426,7 @@ function AddNetworkForm({
         <button type="button" className="px-4 py-2 text-sm bg-gray-200 rounded-lg" onClick={onCancel}>
           Cancel
         </button>
-        <button type="submit" disabled={busy} className="px-4 py-2 text-sm text-white bg-sky-600 hover:bg-sky-700 rounded-lg disabled:opacity-50">
+        <button type="submit" disabled={busy || (clusterWide && mode === "nat" && !edgeSet)} className="px-4 py-2 text-sm text-white bg-sky-600 hover:bg-sky-700 rounded-lg disabled:opacity-50">
           {busy ? "Creating..." : "Create"}
         </button>
       </div>
