@@ -869,7 +869,7 @@ async fn nodes_are_removed_forgotten_and_rejoin_as_themselves() {
     )
     .await
     .unwrap();
-    assert_eq!(out["raft_fresh"], true, "{out}");
+    assert_eq!(out["raft_fresh"], true, "the rejoin starts Raft afresh");
     let n = node_json(&cps[lead], &lname).await;
     assert_eq!(n["status"]["phase"], "Active", "{n}");
     assert_eq!(n["meta"]["id"], cluster(&cps[learner]).identity.node_id, "the same node id");

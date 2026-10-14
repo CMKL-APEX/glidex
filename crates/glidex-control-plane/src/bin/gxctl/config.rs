@@ -325,7 +325,7 @@ pub fn load_from(path: &Path) -> Result<Option<Config>, String> {
     }
     let euid = nix::unistd::geteuid().as_raw();
     if meta.uid() != euid {
-        return Err(format!("refusing to read {}: it is owned by uid {}, not you", path.display(), meta.uid()));
+        return Err(format!("refusing to read {}: it is owned by another user, not you", path.display()));
     }
     let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {}", path.display(), e))?;
     // Deny-unknown-fields plus the validation below are the promise that

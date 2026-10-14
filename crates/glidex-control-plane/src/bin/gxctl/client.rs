@@ -82,7 +82,7 @@ pub fn read_token_file(path: &Path) -> Result<Option<Zeroizing<String>>, String>
     }
     let euid = nix::unistd::geteuid().as_raw();
     if meta.uid() != euid {
-        return Err(format!("refusing to use the token in {}: it is owned by uid {}, not you", path.display(), meta.uid()));
+        return Err(format!("refusing to use the token in {}: it is owned by another user, not you", path.display()));
     }
     let text = Zeroizing::new(std::fs::read_to_string(path).map_err(|e| format!("{}: {}", path.display(), e))?);
     let t = text.trim();
