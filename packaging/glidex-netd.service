@@ -7,7 +7,7 @@ Wants=network-online.target openvswitch-switch.service openvswitch.service glide
 After=network-online.target openvswitch-switch.service openvswitch.service ovs-vswitchd.service glidex-ovs-vswitchd.service
 # Docker sets iptables FORWARD to DROP; start after it so DOCKER-USER
 # exists when the NAT pass-through is restored (ignored without Docker).
-After=docker.service
+After=docker.service ufw.service
 Before=glidex-control-plane.service
 
 [Service]

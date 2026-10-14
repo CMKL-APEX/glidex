@@ -166,11 +166,24 @@ ui/src/
 | `/policies` | `Policies` (shown with `readPolicy`) |
 | `/audit` | `Audit` (shown with `readAudit`, or to project owners for their projects) |
 | `/usage` | `Usage` (shown with `readUsage`, or to anyone with a project role, for their projects) |
+| `/cluster` | `Cluster` (shown with `readCluster`; spec/clustering-ui.md §6) |
+| `/cluster/nodes/:id` | `NodeDetail` (spec/clustering-ui.md §5.2) |
+| `/cluster/imports/:plan` | `ImportPlan` (spec/clustering-ui.md §7.4) |
 | `*` | `NotFound` |
 
 Without a session every path shows the login page.
 
 ## API client
+
+Cluster behaviour (spec/clustering-ui.md §3.3): an idempotent request
+answered `503 leader_changed` is sent again after 250 ms, 500 ms and
+1 s. `503 cluster_unavailable` raises the *no leader* banner
+(`ClusterBanner`, from the `glidex:cluster` window event); a read is
+then retried with `X-Glidex-Consistency: local` and the banner says
+what is shown may be out of date. A read that went through the cluster
+(it carries `X-Glidex-Revision`) or a successful write clears it;
+host-local reads and capability queries, which answer without a leader,
+don't.
 
 `ui/src/api.ts` sends every call through one `request()` helper:
 `credentials: "same-origin"`, `X-Glidex-CSRF` on non-GET requests, and
@@ -233,10 +246,14 @@ with what was typed and the error under it.
 ## Live stream
 
 `LiveProvider` (`src/live.tsx`, around the routes in `App.tsx`) opens one
-`EventSource` on `/api/watch?project=<selected project>`
+`EventSource` on `/api/watch?kinds=…&project=<selected project>`
 ([rest-api.md](rest-api.md#live-stream-get-watch)) for the whole app and
 keeps the latest copy of every VM, disk, image and network the user can
-see (`useLive()`); it is live once the snapshot has arrived (`synced`).
+see (`useLive()`), and the cluster kinds: nodes, import plans, the
+cluster summary and the policy marker (spec/clustering-ui.md §3.7). A
+change of the policy marker re-runs the session's capability checks
+(`refreshCapabilities`) and every `useAllowed` query. It is live once
+the snapshot has arrived (`synced`).
 When the server ends the stream (`expired`) or it errors, EventSource
 reconnects and the next snapshot replaces the maps.
 `useLiveRefresh(kinds, refresh)` re-runs a page's refresh (debounced

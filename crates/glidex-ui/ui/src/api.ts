@@ -41,6 +41,21 @@ import type {
   SeriesResponse,
   UsageResponse,
   VmStats,
+  NodeRecord,
+  PlacementPreview,
+  Departure,
+  ImportMappings,
+  ImportPlanView,
+  IssuedToken,
+  NetworkOvn,
+  OvnOverview,
+  OvnSettings,
+  OvnSettingsView,
+  OvnEdge,
+  NodeTunnels,
+  BrIntDatapath,
+  UplinkKind,
+  UplinkResult,
 } from "./types";
 
 const API_BASE = "/api";
@@ -97,16 +112,51 @@ async function errorOf(resp: Response): Promise<ApiRequestError> {
 interface RequestOptions {
   /** Don't treat a 401 as the end of the session (whoami, login). */
   quiet401?: boolean;
+  /** Safe to send again after `503 leader_changed` (GET, PUT and DELETE are). */
+  idempotent?: boolean;
 }
+
+// ---- cluster availability (spec/clustering-ui.md §3.3) ------------------------
+
+/** Dispatched on `window` when the cluster's availability as seen by the API
+ * changes: `detail.available` false after `503 cluster_unavailable` (no
+ * leader), true again on the next answer that isn't. `detail.stale` marks a
+ * read answered from this server's own copy (`X-Glidex-Consistency: local`). */
+export const CLUSTER_EVENT = "glidex:cluster";
+
+export interface ClusterAvailability {
+  available: boolean;
+  stale: boolean;
+}
+
+let availability: ClusterAvailability = { available: true, stale: false };
+
+export function clusterAvailability(): ClusterAvailability {
+  return availability;
+}
+
+function setAvailability(next: ClusterAvailability) {
+  if (next.available === availability.available && next.stale === availability.stale) return;
+  availability = next;
+  window.dispatchEvent(new CustomEvent<ClusterAvailability>(CLUSTER_EVENT, { detail: next }));
+}
+
+/** Backoff before each retry after `503 leader_changed`. */
+const LEADER_RETRY_MS = [250, 500, 1000];
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** One API call: same-origin cookies, the CSRF header on writes, and the
  * 401 handling. A step-up (`reauth_required`) asks the user to log in
  * again, then retries once. */
 async function request<T>(method: string, path: string, body?: unknown, opts: RequestOptions = {}): Promise<T> {
-  const send = () => {
+  const read = method === "GET" || method === "HEAD";
+  const idempotent = opts.idempotent ?? (read || method === "PUT" || method === "DELETE");
+  const send = (local = false) => {
     const headers: Record<string, string> = {};
     if (body !== undefined) headers["Content-Type"] = "application/json";
-    if (method !== "GET" && method !== "HEAD" && csrf) headers["X-Glidex-CSRF"] = csrf;
+    if (!read && csrf) headers["X-Glidex-CSRF"] = csrf;
+    if (local) headers["X-Glidex-Consistency"] = "local";
     return fetch(`${API_BASE}${path}`, {
       method,
       headers,
@@ -115,6 +165,36 @@ async function request<T>(method: string, path: string, body?: unknown, opts: Re
     });
   };
   let resp = await send();
+  // A leader election: the request reached no leader. Safe ones go again.
+  for (let i = 0; resp.status === 503 && idempotent && i < LEADER_RETRY_MS.length; i++) {
+    const code = await resp.clone().json().then((b: ApiError) => b.error).catch(() => "");
+    if (code !== "leader_changed") break;
+    await sleep(LEADER_RETRY_MS[i]);
+    resp = await send();
+  }
+  let stale = false;
+  if (resp.status === 503) {
+    const code = await resp.clone().json().then((b: ApiError) => b.error).catch(() => "");
+    if (code === "cluster_unavailable") {
+      setAvailability({ available: false, stale: availability.stale });
+      // No quorum: a read can still come from this server's own copy.
+      if (read) {
+        const local = await send(true);
+        if (local.ok) {
+          resp = local;
+          stale = true;
+        }
+      }
+    }
+  }
+  // A local read means there is still no leader. A read that went through
+  // the cluster (it carries the revision) or a write that succeeded means
+  // one is back; host-local reads succeed either way, so they don't count.
+  if (resp.ok) {
+    if (stale) setAvailability({ available: false, stale: true });
+    // A POST that only asks (capability checks) is a read here.
+    else if ((!read && !opts.idempotent) || resp.headers.has("x-glidex-revision")) setAvailability({ available: true, stale: false });
+  }
   if (resp.status === 401) {
     let err = await errorOf(resp);
     if (err.code === "reauth_required" && (await reauthenticate())) {
@@ -139,6 +219,8 @@ async function request<T>(method: string, path: string, body?: unknown, opts: Re
 
 const get = <T>(path: string) => request<T>("GET", path);
 const post = <T>(path: string, body?: unknown) => request<T>("POST", path, body ?? {});
+/** A POST that only reads (capability checks): retried after a leader change. */
+const query = <T>(path: string, body: unknown) => request<T>("POST", path, body, { idempotent: true });
 const put = <T>(path: string, body?: unknown) => request<T>("PUT", path, body ?? {});
 const patch = <T>(path: string, body: unknown) => request<T>("PATCH", path, body);
 const del = <T = void>(path: string) => request<T>("DELETE", path);
@@ -187,8 +269,17 @@ export const updateMe = (body: { default_project: string | null }) => patch<User
 /** Capability checks for the caller (spec §7.7): one boolean per check. */
 export async function checkAccess(checks: { action: string; resource: EntityRef }[]): Promise<boolean[]> {
   if (checks.length === 0) return [];
-  const r = await post<{ results: { allowed: boolean }[] }>("/authz/check", { checks });
+  const r = await query<{ results: { allowed: boolean }[] }>("/authz/check", { checks });
   return r.results.map((x) => x.allowed);
+}
+
+/** The actions allowed on each resource, in one call (spec/clustering-ui.md
+ * §3.5): `result[i]` lists those of `actions` allowed on `resources[i]`. An
+ * action that doesn't apply to a resource's type is left out. */
+export async function allowedActions(actions: string[], resources: EntityRef[]): Promise<string[][]> {
+  if (actions.length === 0 || resources.length === 0) return resources.map(() => []);
+  const r = await query<{ allowed: string[][] }>("/authz/allowed", { actions, resources });
+  return r.allowed;
 }
 
 // ---- VMs --------------------------------------------------------------------
@@ -302,6 +393,15 @@ export const installOvs = (profile: "kernel" | "dpdk", confirm: boolean) =>
   });
 
 export const listBridges = () => get<BridgeRecord[]>("/ovs/bridges");
+export const createBridge = (name: string, datapath: "system" | "netdev") => post<BridgeRecord>("/ovs/bridges", { name, datapath });
+export const deleteBridge = (name: string) => del(`/ovs/bridges/${enc(name)}`);
+export const listUplinks = (bridge: string) => get<UplinkResult[]>(`/ovs/bridges/${enc(bridge)}/uplinks`);
+/** Add an uplink; with `migrate_ip` the host's address moves to the bridge and must be committed. */
+export const addUplink = (bridge: string, body: { name: string; migrate_ip: boolean; confirm: boolean; accept_dhcp: boolean } & UplinkKind) =>
+  post<UplinkResult>(`/ovs/bridges/${enc(bridge)}/uplinks`, body);
+export const commitUplink = (bridge: string, name: string, token: string) => post<UplinkResult>(`/ovs/bridges/${enc(bridge)}/uplinks/${enc(name)}/commit`, { token });
+export const reapplyUplink = (bridge: string, name: string) => post<UplinkResult>(`/ovs/bridges/${enc(bridge)}/uplinks/${enc(name)}/reapply`);
+export const deleteUplink = (bridge: string, name: string) => del(`/ovs/bridges/${enc(bridge)}/uplinks/${enc(name)}`);
 
 // ---- images and disks ---------------------------------------------------------
 
@@ -428,3 +528,96 @@ export const getVmBandwidth = (id: string) => get<SeriesResponse>(`/vms/${enc(id
 export const getVmIo = (id: string) => get<SeriesResponse>(`/vms/${enc(id)}/io?p95=true`);
 export const getVmCompute = (id: string) => get<SeriesResponse>(`/vms/${enc(id)}/compute?p95=true`);
 export const getVmStats = (id: string) => get<VmStats>(`/vms/${enc(id)}/stats`);
+
+// ---- cluster (spec/clustering.md §5, §7) ----------------------------------
+
+export interface ClusterNodeRow {
+  id: string;
+  name: string;
+  role: string;
+  phase: string;
+  advertise: string | null;
+  version?: string;
+  feature_level?: number;
+  ready?: string;
+  /** Its newest certificate: signed by the current CA, and until when. */
+  cert?: { current_ca: boolean; not_after: number } | null;
+}
+
+export interface ClusterStatus {
+  clustered?: boolean;
+  cluster_id?: string;
+  /** The node that answered (the one serving this UI). */
+  node_id?: string;
+  name?: string;
+  role?: string;
+  advertise?: string;
+  feature_level?: number;
+  ca_fingerprint?: string;
+  ca?: { signing: string; retiring: string[]; retire_at: number | null; started_at?: number | null; not_after?: number | null } | null;
+  raft?: {
+    state: string;
+    term: number;
+    leader: { name: string | null; address: string | null } | null;
+    voters: { name: string | null; address: string | null }[];
+    learners: { name: string | null; address: string | null }[];
+    last_applied: number | null;
+    last_log_index: number | null;
+  } | null;
+  nodes: ClusterNodeRow[];
+  ports?: { node: string; port: number; proto: string; reachable: boolean }[];
+}
+
+export const clusterStatus = () => get<ClusterStatus>("/cluster/status?ports=true");
+export const listNodes = () => get<NodeRecord[]>("/nodes");
+export interface PreviewRequest {
+  project?: string;
+  vcpu_count: number;
+  mem_size_mib: number;
+  hypervisor?: string;
+  node?: string;
+  networks?: { network: string }[];
+  vfio_devices?: string[];
+  data_disks?: string[];
+}
+/** Where a VM would go, node by node (spec/clustering-ui.md §5.1). */
+export const previewPlacement = (req: PreviewRequest) => query<PlacementPreview>("/scheduler/preview", req);
+export const getNode = (id: string) => get<NodeRecord>(`/nodes/${enc(id)}`);
+/** A node's br-int datapath (spec/clustering.md §11.6). */
+export const setNodeBrInt = (id: string, br_int_datapath: BrIntDatapath) => put<Record<string, unknown>>(`/nodes/${enc(id)}/ovn`, { br_int_datapath });
+/** A node's physical networks: physnet → bridge (replaces its own; the file's stay). */
+export const setNodeMappings = (id: string, bridge_mappings: Record<string, string>) => put<Record<string, unknown>>(`/nodes/${enc(id)}/ovn`, { bridge_mappings });
+
+// ---- membership (spec/clustering-ui.md §7) ---------------------------------------
+
+export const createJoinToken = (req: { role: "agent" | "server"; ttl_secs: number; allow_import: boolean }) => post<IssuedToken>("/cluster/join-tokens", req);
+export const removeNode = (id: string, force = false) => post<Record<string, unknown>>(`/nodes/${enc(id)}/remove`, { force });
+export const forgetNode = (id: string, fenced: boolean, force = false) => post<Record<string, unknown>>(`/nodes/${enc(id)}/forget`, { fenced, force });
+export const purgeNode = (id: string) => post<Record<string, unknown>>(`/nodes/${enc(id)}/purge`);
+export const rejoinToken = (id: string, req: { raft_intact: boolean; ttl_secs: number }) => post<IssuedToken>(`/nodes/${enc(id)}/rejoin-token`, req);
+export const promoteNodes = (nodes: string[], force = false) => post<Record<string, unknown>>("/cluster/promote", { nodes, force });
+export const detachNode = (id: string, req: { map_networks: Record<string, string>; with_access: boolean }) => post<Record<string, unknown>>(`/nodes/${enc(id)}/detach`, req);
+export const abortDetach = (id: string) => post<Record<string, unknown>>(`/nodes/${enc(id)}/detach`, { abort: true });
+export const listDepartures = () => get<Departure[]>("/departures");
+export const clusterOvn = () => get<OvnOverview>("/cluster/ovn");
+export const clusterTunnels = () => get<{ enabled: boolean; nodes?: NodeTunnels[] }>("/cluster/ovn/tunnels");
+/** A shared edge that should work for this cluster, from what nodes report (spec/clustering-ui.md §8a). */
+export const getEdgeDefaults = () => get<{ edge: OvnEdge; complete: boolean; notes: string[] }>("/cluster/settings/ovn/edge-defaults");
+export const getOvnSettings = () => get<OvnSettingsView>("/cluster/settings/ovn");
+export const putOvnSettings = (s: Omit<OvnSettings, "updated_by" | "updated_at">) => put<OvnSettingsView>("/cluster/settings/ovn", s);
+export const networkOvn = (name: string) => get<NetworkOvn>(`/networks/${enc(name)}/ovn`);
+
+// ---- cluster lifecycle (spec/clustering-ui.md §7.5–7.8) ---------------------------
+
+export const initCluster = (req: { advertise?: string; tunnel_ip?: string }) => post<Record<string, unknown>>("/cluster/init", { ...req, force: true });
+export const rotateCa = (grace_secs?: number) => post<Record<string, unknown>>("/cluster/rotate-ca", grace_secs ? { grace_secs } : {});
+export const dissolveCluster = () => post<Record<string, unknown>>("/cluster/dissolve", { force: true });
+export const leaveCluster = () => post<Record<string, unknown>>("/cluster/leave");
+/** A same-origin link that downloads the cluster snapshot (with the session cookie). */
+export const clusterSnapshotUrl = () => `${API_BASE}/cluster/snapshot`;
+export const listImports = () => get<ImportPlanView[]>("/imports");
+export const getImport = (plan: string) => get<ImportPlanView>(`/imports/${enc(plan)}`);
+export const checkImport = (plan: string, m: ImportMappings) => post<ImportPlanView>(`/imports/${enc(plan)}/approve`, { ...m, dry_run: true });
+export const approveImport = (plan: string, m: ImportMappings) => post<ImportPlanView>(`/imports/${enc(plan)}/approve`, m);
+export const rejectImport = (plan: string) => post<ImportPlanView>(`/imports/${enc(plan)}/reject`);
+export const drainNode = (id: string, drain: boolean) => post<unknown>(`/nodes/${enc(id)}/${drain ? "drain" : "undrain"}`);

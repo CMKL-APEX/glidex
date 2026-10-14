@@ -1013,3 +1013,90 @@ async fn test_watch_streams_changes() {
     let (status, _) = send(&app, "GET", "/watch?kinds=pods".into(), None, &[]).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
+
+/// The cluster kinds of `GET /watch` (spec/clustering-ui.md §3.7): nodes and
+/// the policy marker come on request; a standalone host has no cluster
+/// summary or import plans to send.
+#[tokio::test]
+async fn test_watch_streams_nodes_and_the_policy_marker() {
+    let dir = TempDir::new().unwrap();
+    let manager = VmManager::with_db_path(dir.path().join("glidex.db")).unwrap();
+    manager.initialize().await.unwrap();
+    let app = create_router(manager);
+    let resp = app.clone().oneshot(Request::builder().uri("/watch?kinds=nodes,imports,cluster,policy").body(Body::empty()).unwrap()).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let mut body = resp.into_body();
+    let mut buf = String::new();
+    let mut node = None;
+    let mut policy = false;
+    loop {
+        let (ev, data) = next_sse(&mut body, &mut buf).await;
+        if ev == "synced" {
+            break;
+        }
+        assert_eq!(ev, "added", "{data}");
+        match data["kind"].as_str() {
+            Some("node") => node = data["id"].as_str().map(String::from),
+            Some("policy") => policy = data["object"]["generation"].is_u64(),
+            other => panic!("unexpected kind {other:?} on a standalone host: {data}"),
+        }
+    }
+    let node = node.expect("this host's node");
+    assert!(policy, "the policy marker");
+
+    let (status, v) = send(&app, "POST", format!("/nodes/{node}/drain"), None, &[]).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    let (ev, data) = next_sse(&mut body, &mut buf).await;
+    assert_eq!((ev.as_str(), data["kind"].as_str(), data["id"].as_str()), ("modified", Some("node"), Some(node.as_str())), "{data}");
+    assert_eq!(data["object"]["status"]["phase"], "Draining");
+}
+
+// ---- nodes (spec/clustering.md C1) ------------------------------------------
+
+async fn call(app: &axum::Router, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
+    let mut b = Request::builder().method(method).uri(uri);
+    let body = match body {
+        Some(v) => {
+            b = b.header("content-type", "application/json");
+            Body::from(v.to_string())
+        }
+        None => Body::empty(),
+    };
+    let resp = app.clone().oneshot(b.body(body).unwrap()).await.unwrap();
+    let status = resp.status();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+}
+
+#[tokio::test]
+async fn a_standalone_host_is_one_node_and_places_vms_on_it() {
+    let dir = TempDir::new().unwrap();
+    let manager = VmManager::with_db_path(dir.path().join("glidex.db")).unwrap();
+    manager.initialize().await.unwrap();
+    let app = create_router(manager);
+
+    let (status, nodes) = call(&app, "GET", "/nodes", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let nodes = nodes.as_array().unwrap();
+    assert_eq!(nodes.len(), 1, "{nodes:?}");
+    assert_eq!(nodes[0]["meta"]["id"], "local");
+    assert_eq!(nodes[0]["status"]["phase"], "Active");
+    assert!(nodes[0]["status"]["capacity"]["cpus"].as_u64().unwrap() >= 1);
+
+    let (status, one) = call(&app, "GET", "/nodes/local", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(one["spec"]["role"], "server");
+    let (status, _) = call(&app, "GET", "/nodes/nope", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let (status, vm) = call(
+        &app,
+        "POST",
+        "/vms",
+        Some(json!({ "name": "placed", "vcpu_count": 1, "mem_size_mib": 256, "hypervisor": "cloudhypervisor",
+                     "firmware_path": "/f.fd", "rootfs_path": "/r.raw" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{vm}");
+    assert_eq!(vm["node"], "local");
+}

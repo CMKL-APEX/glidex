@@ -1,6 +1,7 @@
 import { Link } from "react-router-dom";
 import type { VmResponse } from "../types";
-import { notReadyReason, HYPERVISOR_LABELS } from "../types";
+import { nodeUnreachable, notReadyReason, HYPERVISOR_LABELS } from "../types";
+import NodeName from "./NodeName";
 import VmActions, { type VmAction } from "./VmActions";
 import VmStateBadge from "./VmStateBadge";
 
@@ -11,8 +12,9 @@ interface VmCardProps {
 
 export default function VmCard({ vm, onAction }: VmCardProps) {
   const vfioCount = (vm.vfio_devices ?? []).length;
-  // Only a live guest has a console worth opening.
-  const hasConsole = !vm.deleting && (vm.state === "running" || vm.state === "paused");
+  const unreachable = nodeUnreachable(vm);
+  // Only a live guest has a console worth opening, on a node that answers.
+  const hasConsole = !vm.deleting && !unreachable && (vm.state === "running" || vm.state === "paused");
 
   return (
     <div className="bg-white rounded-xl shadow-md p-6 border border-gray-100 hover:shadow-lg transition-shadow duration-200">
@@ -23,11 +25,19 @@ export default function VmCard({ vm, onAction }: VmCardProps) {
               {vm.name}
             </h3>
             <VmStateBadge vm={vm} />
+            {unreachable && (
+              <span
+                className="px-2 py-1 text-xs font-medium rounded-full bg-gray-200 text-gray-700"
+                title="Its node stopped reporting; the VM may still be running. Nothing is restarted elsewhere."
+              >
+                node unreachable
+              </span>
+            )}
           </div>
           <p className="mt-1 text-sm text-gray-500 font-mono truncate">
             {vm.id}
           </p>
-          {notReadyReason(vm) && (
+          {!unreachable && notReadyReason(vm) && (
             <p className="mt-1 text-xs text-amber-700 truncate" title={notReadyReason(vm) ?? ""}>
               {notReadyReason(vm)}
             </p>
@@ -48,6 +58,12 @@ export default function VmCard({ vm, onAction }: VmCardProps) {
             {HYPERVISOR_LABELS[vm.hypervisor] ?? vm.hypervisor}
           </span>
         </div>
+        {vm.node && (
+          <div>
+            <span className="text-gray-500">Node:</span>
+            <NodeName id={vm.node} name={vm.node_name} className="ml-2 font-medium text-gray-900" />
+          </div>
+        )}
         <div>
           <span className="text-gray-500">Memory:</span>
           <span className="ml-2 font-medium text-gray-900">

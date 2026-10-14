@@ -31,9 +31,10 @@ by later runs (flags override the saved values):
 | `--no-qemu` / `--qemu` | skip / include QEMU and OVMF |
 | `--no-networking` / `--networking` | skip / include OVS, glidex-netd and host settings |
 | `--no-services` / `--services` | skip / include the users and groups, glidex-authd, the service configuration and the systemd units |
-| `--ovs-profile dpdk\|kernel` | OVS flavour (default `dpdk`, which reserves hugepages) |
+| `--ovs-profile kernel\|dpdk` | OVS flavour (default `kernel`; `dpdk` reserves hugepages and PMD cores). A host installed with `dpdk` keeps it on re-runs (saved in `install.conf`) |
 | `--pmd-cpu-mask MASK` | OVS-DPDK PMD CPU mask (`auto` clears it) |
 | `--allow-ovs-restart` | allow restarting an ovs-vswitchd that has bridges (interrupts their traffic) |
+| `--prebuilt` | use the release binaries and web UI already built in this checkout: no Rust or Bun toolchain, no build (never saved; the nested e2e test uses it) |
 
 ## Inputs it discovers
 
@@ -132,7 +133,7 @@ by later runs (flags override the saved values):
 10. **UEFI firmware** — see below; into the invoking user's
     `~/.glidex` and, with services, the service user's.
 11. **VM networking** *(unless `--no-networking`)* — installs Open
-    vSwitch through `glidex-ovs` (`dpdk` profile by default, or `kernel`,
+    vSwitch through `glidex-ovs` (`kernel` profile by default, or `dpdk`,
     via sudo; this also pulls in `dnsmasq` and `nftables`). If that
     would restart a vswitchd that has bridges, it is skipped with a note
     unless `--allow-ovs-restart`. Then the host settings below, then
@@ -169,7 +170,8 @@ by later runs (flags override the saved values):
     pre-glidex value rather than glidex's own. Firewall managers are not
     touched: ufw or firewalld dropping forwarded traffic must allow the NAT
     subnets. A plain iptables FORWARD DROP (e.g. Docker's) is handled by
-    netd's `GLIDEX-FORWARD` chain (networking.md §10).
+    netd's `GLIDEX-FORWARD` chain, and an `INPUT` DROP (ufw's default-deny)
+    by its `GLIDEX-INPUT` chain (networking.md §10).
 12. **Configuration** *(with services)*:
     - `/etc/pam.d/glidex` from `packaging/glidex.pam` (`@include
       common-auth` / `common-account`; `auth/account include system-auth`
@@ -488,3 +490,31 @@ Downloads are done by shelling to `curl`, not by pulling in a HTTP
 stack. What is downloaded and then run is pinned by version and sha256
 (`download_verified`): the firmware, rustup-init and Bun.
 Cloud-Hypervisor is fetched by pinned release tag over HTTPS. The installer itself is therefore small and fast to build.
+
+
+## Joining a cluster (spec/clustering.md)
+
+`glidex-install --join SERVER:8842 [--role agent|server] [--token-file FILE]
+[--advertise IP:PORT] [--node-name NAME]` installs as usual, then asks the
+running control plane to join (`gxctl cluster join`, with the token on its
+standard input). The token comes from `gxctl cluster join-token` on a server;
+it is read from a file (refused unless mode 0600) or stdin, never from argv.
+An agent host keeps its UI service: its control plane relays the UI's
+requests to a server, which authenticates them (spec/clustering-ui.md
+§3.6; `cluster.ui_relay = false` turns that off). Agents an older installer
+switched off get the UI back on the next run.
+
+## OVN
+
+With networking, the installer also installs OVN for cluster networks
+(spec/clustering.md §10.1): `ovn-host` on every host, `ovn-central` unless the
+run joins as an agent, and `conntrack` for gateway metering. `--no-ovn` skips
+them and is remembered in `install.conf`. When this run installed OVN and the
+host is in no cluster, OVN's services are stopped and disabled: Debian and
+Ubuntu start them on install, and a standalone host would only run empty
+databases. glidex-netd starts what a cluster needs (`ovn-host` for the
+chassis, `ovn-central` on servers). Installing OVN doesn't turn it on: that is
+a cluster setting, from the Cluster page or `PUT /cluster/settings/ovn`
+(spec/clustering-ui.md §8a), refused until every node reports OVN
+installed.
+

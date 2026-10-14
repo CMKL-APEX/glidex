@@ -94,6 +94,10 @@ pub fn error_to_response(error: VmManagerError) -> (StatusCode, Json<ApiError>) 
             StatusCode::CONFLICT,
             Json(ApiError::new("conflict", error.to_string())),
         ),
+        VmManagerError::Network(NetError::ExternalPoolExhausted) => (
+            StatusCode::CONFLICT,
+            Json(ApiError::new("external_pool_exhausted", error.to_string())),
+        ),
         VmManagerError::Network(NetError::Storage(_)) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ApiError::new("persistence_error", error.to_string())),

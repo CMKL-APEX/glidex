@@ -24,7 +24,8 @@ pub mod qemu_img;
 
 use catalog::{Arch, HashAlgo};
 use qemu_img::DiskFormat;
-use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition, WriteTransaction};
+use crate::store::Db;
+use redb::{ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::os::unix::fs::DirBuilderExt;
@@ -88,6 +89,12 @@ impl ImageError {
             ImageError::Io(m) => ImageError::Io(format!("{}: {}", prefix, m)),
             other => other,
         }
+    }
+}
+
+impl From<crate::store::StoreError> for ImageError {
+    fn from(e: crate::store::StoreError) -> Self {
+        ImageError::Storage(e.to_string())
     }
 }
 
@@ -325,6 +332,10 @@ pub struct Disk {
     pub deletion_requested_at: Option<u64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub conditions: Vec<crate::models::Condition>,
+    /// The node holding the disk's file (spec/clustering.md §9.2). `None`
+    /// until the disk is bound, at creation or at its first VM (D6).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
 }
 
 impl Disk {
@@ -348,6 +359,7 @@ impl Disk {
             owner: None,
             deletion_requested_at: None,
             conditions: Vec::new(),
+            node: None,
         }
     }
 
@@ -408,6 +420,10 @@ pub struct CreateDiskRequest {
     pub format: Option<DiskFormat>,
     #[serde(default)]
     pub extend_root: Option<bool>,
+    /// Bind the disk to a node now (id or name); otherwise it binds to the
+    /// node of the first VM that uses it (spec/clustering.md §9.2).
+    #[serde(default)]
+    pub node: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -446,6 +462,19 @@ pub enum ExtendOutcome {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct ImageCopy {
+    pub node: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub node_name: Option<String>,
+    /// `downloading`, `ready` or `failed`.
+    pub state: String,
+    /// Bytes copied so far (all of them once ready).
+    pub bytes: u64,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub error: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct ImageResponse {
     pub id: String,
     pub name: String,
@@ -471,6 +500,10 @@ pub struct ImageResponse {
     /// VMs that boot through this firmware image (filled in by `VmManager`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub used_by_vms: Vec<String>,
+    /// In a cluster, each node's copy of the file (spec/clustering.md §9.2,
+    /// spec/clustering-ui.md §5.3; filled in by `VmManager`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub copies: Vec<ImageCopy>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub info: Option<qemu_img::ImgInfo>,
     /// Deletion requested and not finished yet.
@@ -487,6 +520,12 @@ pub struct DiskResponse {
     pub size_bytes: u64,
     pub origin: DiskOrigin,
     pub attached_to: Option<String>,
+    /// The node holding the file (spec/clustering.md §9.2); absent until bound.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
+    /// That node's name (spec/clustering-ui.md §9).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub node_name: Option<String>,
     pub pending_growpart: bool,
     /// `pending`, `creating`, `ready`, `resizing`, `busy`, `missing` or
     /// `failed`.
@@ -616,6 +655,13 @@ pub fn parse_size(s: &str) -> Option<u64> {
 }
 
 /// Names of images and disks: what users type in CLIs and URLs.
+/// An id as a file name: anything but letters, digits, `-` and `_` becomes
+/// `_`, so an id can never name a path outside its directory. Generated ids
+/// (UUIDs) are unchanged.
+fn safe_stem(id: &str) -> String {
+    id.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect()
+}
+
 pub fn validate_name(kind: &str, name: &str) -> Result<(), ImageError> {
     let ok = !name.is_empty()
         && name.len() <= 64
@@ -630,7 +676,7 @@ pub fn validate_name(kind: &str, name: &str) -> Result<(), ImageError> {
 }
 
 pub struct ImageManager {
-    db: Arc<Database>,
+    db: Arc<Db>,
     pub settings: ImageSettings,
     images: RwLock<HashMap<String, Image>>,
     disks: RwLock<HashMap<String, Disk>>,
@@ -641,7 +687,6 @@ pub struct ImageManager {
     downloads: Arc<tokio::sync::Semaphore>,
     tasks: Mutex<HashMap<String, tokio::task::AbortHandle>>,
     http: reqwest::Client,
-    bell: crate::store::Bell,
 }
 
 /// Marks a disk busy for as long as it lives.
@@ -685,12 +730,7 @@ fn mkdir_private(dir: &Path) -> Result<(), ImageError> {
 }
 
 impl ImageManager {
-    pub fn new(db: Arc<Database>, settings: ImageSettings, bell: crate::store::Bell) -> Result<Arc<Self>, ImageError> {
-        let txn = db.begin_write().map_err(storage)?;
-        txn.open_table(IMAGES_TABLE).map_err(storage)?;
-        txn.open_table(DISKS_TABLE).map_err(storage)?;
-        txn.open_table(IMAGE_META_TABLE).map_err(storage)?;
-        txn.commit().map_err(storage)?;
+    pub fn new(db: Arc<Db>, settings: ImageSettings) -> Result<Arc<Self>, ImageError> {
         mkdir_private(&settings.image_dir)?;
         mkdir_private(&settings.disk_dir)?;
 
@@ -704,7 +744,6 @@ impl ImageManager {
             busy: Mutex::new(HashMap::new()),
             holds: Mutex::new(HashMap::new()),
             tasks: Mutex::new(HashMap::new()),
-            bell,
         };
         *mgr.images.write().unwrap() = mgr.load(IMAGES_TABLE)?;
         *mgr.disks.write().unwrap() = mgr.load(DISKS_TABLE)?;
@@ -728,6 +767,55 @@ impl ImageManager {
             }
         }
         Ok(out)
+    }
+
+    /// Bring the in-memory records in step with the table after entries were
+    /// applied from the replicated log (spec/clustering.md §6.5): `keys` are
+    /// the ids that changed in `table`.
+    pub fn sync_keys(&self, table: crate::store::TableId, keys: &[String]) {
+        use crate::store::TableId;
+        let Ok(txn) = self.db.begin_read() else { return };
+        let Ok(t) = txn.open_table(table.definition()) else { return };
+        for k in keys {
+            let raw = t.get(k.as_str()).ok().flatten().map(|v| v.value().to_vec());
+            match table {
+                TableId::Images => {
+                    let rec = raw.and_then(|b| serde_json::from_slice::<Image>(&b).ok());
+                    let mut m = self.images.write().unwrap();
+                    match rec {
+                        Some(r) => {
+                            m.insert(k.clone(), r);
+                        }
+                        None => {
+                            m.remove(k);
+                        }
+                    }
+                }
+                TableId::Disks => {
+                    let rec = raw.and_then(|b| serde_json::from_slice::<Disk>(&b).ok());
+                    let mut m = self.disks.write().unwrap();
+                    match rec {
+                        Some(r) => {
+                            m.insert(k.clone(), r);
+                        }
+                        None => {
+                            m.remove(k);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Reload every record (after a snapshot install).
+    pub fn reload_all(&self) {
+        if let Ok(m) = self.load(IMAGES_TABLE) {
+            *self.images.write().unwrap() = m;
+        }
+        if let Ok(m) = self.load(DISKS_TABLE) {
+            *self.disks.write().unwrap() = m;
+        }
     }
 
     /// Reconcile records with files and resume interrupted downloads.
@@ -789,18 +877,18 @@ impl ImageManager {
 
     /// A disk image's file.
     pub fn image_path(&self, id: &str) -> PathBuf {
-        self.settings.image_dir.join(format!("{}.qcow2", id))
+        self.settings.image_dir.join(format!("{}.qcow2", safe_stem(id)))
     }
 
     /// A firmware image's code file.
     pub fn firmware_path(&self, id: &str) -> PathBuf {
-        self.settings.image_dir.join(format!("{}.fd", id))
+        self.settings.image_dir.join(format!("{}.fd", safe_stem(id)))
     }
 
     /// The UEFI variable-store template stored with a firmware image
     /// (OVMF), copied into each QEMU VM's own store on first boot.
     pub fn firmware_vars_template(&self, id: &str) -> PathBuf {
-        self.settings.image_dir.join(format!("{}.vars.fd", id))
+        self.settings.image_dir.join(format!("{}.vars.fd", safe_stem(id)))
     }
 
     /// The file an image's record stands for.
@@ -812,11 +900,11 @@ impl ImageManager {
     }
 
     pub fn part_path(&self, id: &str) -> PathBuf {
-        self.settings.image_dir.join(format!("{}.qcow2.part", id))
+        self.settings.image_dir.join(format!("{}.qcow2.part", safe_stem(id)))
     }
 
     pub fn disk_path(&self, d: &Disk) -> PathBuf {
-        self.settings.disk_dir.join(format!("{}.{}", d.id, d.format.extension()))
+        self.settings.disk_dir.join(format!("{}.{}", safe_stem(&d.id), d.format.extension()))
     }
 
     // ---- persistence -------------------------------------------------------
@@ -827,7 +915,6 @@ impl ImageManager {
         self.write_image(img)?;
         cache.insert(img.id.clone(), img.clone());
         drop(cache);
-        crate::store::ring(&self.bell);
         Ok(())
     }
 
@@ -843,13 +930,12 @@ impl ImageManager {
         self.write_image(&img)?;
         cache.insert(img.id.clone(), img);
         drop(cache);
-        crate::store::ring(&self.bell);
         Ok(())
     }
 
     fn write_image(&self, img: &Image) -> Result<(), ImageError> {
         let bytes = serde_json::to_vec(img).map_err(storage)?;
-        let txn = self.db.begin_write().map_err(storage)?;
+        let txn = self.db.begin(crate::store::Origin::Images).map_err(storage)?;
         txn.open_table(IMAGES_TABLE)
             .map_err(storage)?
             .insert(img.id.as_str(), bytes.as_slice())
@@ -866,23 +952,21 @@ impl ImageManager {
             img.deletion_requested_at = img.deletion_requested_at.or(current.deletion_requested_at);
             cache.insert(img.id.clone(), img);
             drop(cache);
-            crate::store::ring(&self.bell);
         }
     }
 
     fn remove_image_record(&self, id: &str) -> Result<(), ImageError> {
         let mut cache = self.images.write().unwrap();
-        let txn = self.db.begin_write().map_err(storage)?;
+        let txn = self.db.begin(crate::store::Origin::Images).map_err(storage)?;
         txn.open_table(IMAGES_TABLE).map_err(storage)?.remove(id).map_err(storage)?;
         txn.commit().map_err(storage)?;
         cache.remove(id);
         drop(cache);
-        crate::store::ring(&self.bell);
         Ok(())
     }
 
     pub fn put_disk(&self, d: &Disk) -> Result<(), ImageError> {
-        let txn = self.db.begin_write().map_err(storage)?;
+        let txn = self.db.begin(crate::store::Origin::Images).map_err(storage)?;
         write_disk(&txn, d)?;
         txn.commit().map_err(storage)?;
         self.cache_disk(d);
@@ -892,12 +976,10 @@ impl ImageManager {
     /// After a transaction that wrote `d` (see `persistence::VmStore::commit`).
     pub fn cache_disk(&self, d: &Disk) {
         self.disks.write().unwrap().insert(d.id.clone(), d.clone());
-        crate::store::ring(&self.bell);
     }
 
     pub fn uncache_disk(&self, id: &str) {
         self.disks.write().unwrap().remove(id);
-        crate::store::ring(&self.bell);
     }
 
     pub(crate) fn meta_get(&self, key: &str) -> Result<Option<Vec<u8>>, ImageError> {
@@ -907,7 +989,7 @@ impl ImageManager {
     }
 
     pub(crate) fn meta_put(&self, key: &str, value: &[u8]) -> Result<(), ImageError> {
-        let txn = self.db.begin_write().map_err(storage)?;
+        let txn = self.db.begin(crate::store::Origin::Images).map_err(storage)?;
         txn.open_table(IMAGE_META_TABLE).map_err(storage)?.insert(key, value).map_err(storage)?;
         txn.commit().map_err(storage)
     }
@@ -1005,6 +1087,7 @@ impl ImageManager {
             path: path.to_string_lossy().into_owned(),
             linked_disks: self.linked_disks(&img.id).into_iter().map(|d| d.name).collect(),
             used_by_vms: Vec::new(),
+            copies: Vec::new(),
             vars_template: img.is_firmware() && self.firmware_vars_template(&img.id).exists(),
             info,
             deleting: img.deletion_requested_at.is_some(),
@@ -1022,10 +1105,12 @@ impl ImageManager {
             DiskPhase::Failed => "failed",
             _ if busy_op.is_some() => "busy",
             DiskPhase::Resizing => "resizing",
-            _ if !path.exists() => "missing",
+            // The node holding the file says so (its disk controller sets
+            // `Missing`); the server answering may not have the file at all.
+            DiskPhase::Missing => "missing",
             _ => "ready",
         };
-        let (info, table) = if with_detail && status == "ready" {
+        let (info, table) = if with_detail && status == "ready" && path.exists() {
             (
                 qemu_img::info(&path, Some(d.format)).ok(),
                 partition::read_table(&path, d.format, d.size_bytes).ok().flatten(),
@@ -1041,6 +1126,8 @@ impl ImageManager {
             size_bytes: d.size_bytes,
             origin: d.origin.clone(),
             attached_to: d.attached_to.clone(),
+            node: d.node.clone(),
+            node_name: d.node.as_deref().and_then(|n| crate::node::NodeStore::new(self.db.clone()).get(n).ok().flatten()).map(|n| n.spec.name),
             pending_growpart: d.pending_growpart,
             status: status.to_string(),
             phase: d.phase,
@@ -1198,7 +1285,7 @@ impl ImageManager {
 
 /// Write a disk record inside a caller's transaction, so it can commit
 /// together with the VM that references it.
-pub fn write_disk(txn: &WriteTransaction, d: &Disk) -> Result<(), ImageError> {
+pub fn write_disk(txn: &crate::store::Tx<'_>, d: &Disk) -> Result<(), ImageError> {
     let bytes = serde_json::to_vec(d).map_err(storage)?;
     txn.open_table(DISKS_TABLE)
         .map_err(storage)?
@@ -1207,7 +1294,7 @@ pub fn write_disk(txn: &WriteTransaction, d: &Disk) -> Result<(), ImageError> {
     Ok(())
 }
 
-pub fn delete_disk_record(txn: &WriteTransaction, id: &str) -> Result<(), ImageError> {
+pub fn delete_disk_record(txn: &crate::store::Tx<'_>, id: &str) -> Result<(), ImageError> {
     txn.open_table(DISKS_TABLE).map_err(storage)?.remove(id).map_err(storage)?;
     Ok(())
 }
@@ -1235,8 +1322,8 @@ mod tests {
     #[test]
     fn image_cannot_be_deleted_while_a_clone_holds_it() {
         let dir = tempfile::tempdir().unwrap();
-        let db = Arc::new(Database::create(dir.path().join("t.db")).unwrap());
-        let mgr = ImageManager::new(db, ImageSettings::from_env(dir.path()), crate::store::new_bell()).unwrap();
+        let db = Arc::new(Db::create(dir.path().join("t.db")).unwrap());
+        let mgr = ImageManager::new(db, ImageSettings::from_env(dir.path())).unwrap();
         let img = Image {
             id: "img-1".into(),
             name: "base".into(),

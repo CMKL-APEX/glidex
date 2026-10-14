@@ -4,6 +4,16 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import * as api from "../api";
+import { nodeUnreachable } from "../types";
+
+/** When the console fails: its node may be the reason (spec/clustering-ui.md §4). */
+async function whyFailed(id: string, fallback: string): Promise<string> {
+  const vm = await api.getVm(id).catch(() => null);
+  if (vm && nodeUnreachable(vm)) {
+    return `Its node${vm.node_name ? `, ${vm.node_name},` : ""} stopped reporting: the console can't be reached until the node is back. The VM may still be running.`;
+  }
+  return fallback;
+}
 
 type Status = "connecting" | "connected" | "closed" | "error";
 
@@ -70,12 +80,12 @@ export default function VmConsole() {
         sock.onclose = (ev) => {
           setStatus("closed");
           if (ev.code !== 1000 && ev.code !== 1005) {
-            setError(`WebSocket closed (code ${ev.code})`);
+            whyFailed(id, `WebSocket closed (code ${ev.code})`).then((m) => !disposed && setError(m));
           }
         };
         sock.onerror = () => {
           setStatus("error");
-          setError("WebSocket connection error");
+          whyFailed(id, "WebSocket connection error").then((m) => !disposed && setError(m));
         };
         sock.onmessage = (ev) => {
           if (typeof ev.data === "string") {
@@ -88,7 +98,7 @@ export default function VmConsole() {
       .catch((e) => {
         if (disposed) return;
         setStatus("error");
-        setError(e instanceof Error ? e.message : String(e));
+        whyFailed(id, e instanceof Error ? e.message : String(e)).then((m) => !disposed && setError(m));
       });
 
     return () => {

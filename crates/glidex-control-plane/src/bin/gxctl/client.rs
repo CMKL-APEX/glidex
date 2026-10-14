@@ -126,15 +126,22 @@ pub fn delete_token_file(path: &Path) -> Result<bool, String> {
 
 /// The token for TCP: `GLIDEX_TOKEN`, else the token file.
 pub fn load_token() -> Result<Option<Zeroizing<String>>, String> {
-    if let Ok(t) = std::env::var("GLIDEX_TOKEN") {
-        let t = Zeroizing::new(t);
-        if !t.trim().is_empty() {
-            return Ok(Some(Zeroizing::new(t.trim().to_string())));
-        }
+    if let Some(t) = token_from_env() {
+        return Ok(Some(t));
     }
     match token_path() {
         Some(p) => read_token_file(&p),
         None => Ok(None),
+    }
+}
+
+/// Just the `GLIDEX_TOKEN` environment variable — the top of the
+/// credential ladder (gxctl-auth.md §3.4) when a profile, not the legacy
+/// file, is in effect.
+pub fn token_from_env() -> Option<Zeroizing<String>> {
+    match std::env::var("GLIDEX_TOKEN") {
+        Ok(t) if !t.trim().is_empty() => Some(Zeroizing::new(t.trim().to_string())),
+        _ => None,
     }
 }
 
@@ -281,16 +288,42 @@ pub fn render_error(status: StatusCode, body: &[u8], tcp: bool) -> Failure {
 
 // ---- the client ------------------------------------------------------------
 
+/// One TCP endpoint of a profile: any node of the same cluster serves the
+/// API (clustering.md §8), and the profile lists the ones that should.
+#[derive(Clone)]
+pub struct TcpEp {
+    pub tls: Option<glidex_tls::ClientTls>,
+    pub host: String,
+    pub port: u16,
+    /// Path prefix of the URL, without a trailing slash.
+    pub base: String,
+    /// As given, for errors and for the `last_used` hint (§4.2).
+    pub url: String,
+}
+
 #[derive(Clone)]
 enum Endpoint {
     Unix(PathBuf),
-    Tcp {
-        tls: Option<glidex_tls::ClientTls>,
-        host: String,
-        port: u16,
-        /// Path prefix of `--url`, without a trailing slash.
-        base: String,
-    },
+    /// Never empty; ordered `last_used` first (§4.2).
+    Tcp(Vec<TcpEp>),
+}
+
+/// Where the file-backed profile behind this client lives, so a failover
+/// can rewrite `last_used` and the banner can name the profile (the
+/// token's name is never part of it).
+pub struct ProfileCtx {
+    pub name: String,
+    pub path: PathBuf,
+    /// The §6.2 banner tail, composed once by `build_client`:
+    /// `profile 'lab' · cluster lab · system+pinned(1) · token gxctl@lab`.
+    pub banner: String,
+}
+
+/// What the profile claims about the cluster, checked against
+/// `/auth/server-info` before the first command (§4.1).
+pub struct Binding {
+    pub profile: String,
+    pub cluster_id: Option<String>,
 }
 
 pub struct Response {
@@ -302,6 +335,14 @@ pub struct ApiClient {
     endpoint: Endpoint,
     token: Mutex<Option<Zeroizing<String>>>,
     project: Mutex<Option<String>>,
+    /// Which of a multi-endpoint profile answered last; failover walks
+    /// forward from it (§4.2).
+    ep: Mutex<usize>,
+    profile: Option<ProfileCtx>,
+    binding: Option<Binding>,
+    /// The TLS config of the connection that last succeeded, to read the
+    /// accepted fingerprint off for the proxy cross-check (§5.2).
+    last_tls: Mutex<Option<glidex_tls::ClientTls>>,
 }
 
 impl fmt::Debug for ApiClient {
@@ -311,24 +352,46 @@ impl fmt::Debug for ApiClient {
     }
 }
 
-fn is_loopback_host(h: &str) -> bool {
+pub fn is_loopback_host(h: &str) -> bool {
     let h = h.trim_start_matches('[').trim_end_matches(']');
     h == "localhost" || h.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }
 
-/// Client TLS (spec/cli.md): the system's trust store, `GLIDEX_CA_CERT`
-/// (a PEM file, e.g. a copy of a remote control plane's self-signed
-/// certificate) and, for a loopback host, the local control plane's
-/// published certificate. There is no way to skip verification.
-fn tls_config(host: &str) -> Result<glidex_tls::ClientTls, String> {
-    let mut extra: Vec<PathBuf> = Vec::new();
+/// The TLS config for one endpoint: today's ladder (system store,
+/// `GLIDEX_CA_CERT`, the published certificate on loopback) extended with
+/// the profile's roots and first-use pins (spec/gxctl-auth.md §5.1).
+/// `insecure` is the declared bypass, reached only through a profile the
+/// owner confirmed with the host name typed (§5.4) or the CI-only
+/// `GLIDEX_TLS_INSECURE`; every other failure keeps verification total.
+fn tls_config_for(host: &str, tls: Option<&crate::config::Tls>) -> Result<glidex_tls::ClientTls, String> {
+    let mut t = glidex_tls::Trust { verify_host: true, ..Default::default() };
     if let Some(ca) = std::env::var_os("GLIDEX_CA_CERT").filter(|v| !v.is_empty()) {
-        extra.push(PathBuf::from(ca));
+        t.ca_files.push(PathBuf::from(ca));
+    }
+    if let Some(p) = tls {
+        t.pins = p.pins.clone();
+        t.verify_host = p.verify_host;
+        t.insecure = p.insecure;
+        t.ca_pem = p.ca_pem.clone();
+        if let Some(f) = &p.ca_file {
+            // A file someone else could have planted must not become a CA
+            // (§2.1): owner and mode are checked before it joins the store.
+            let euid = nix::unistd::geteuid().as_raw();
+            if !glidex_tls::trustworthy(f, euid, None) {
+                return Err(format!("{}: a CA file must be yours, not group or world writable, and in a directory only you can write", f.display()));
+            }
+            t.ca_files.push(f.clone());
+        }
     }
     if is_loopback_host(host) {
-        extra.extend(glidex_tls::published_certs());
+        t.ca_files.extend(glidex_tls::published_certs());
     }
-    glidex_tls::ClientTls::new(&extra, &[b"http/1.1"]).map_err(|e| format!("GLIDEX_CA_CERT: {}", e))
+    // `with_trust` reproduces the classic path when the profile adds
+    // nothing (A9): same store, same refusal of an empty world, and —
+    // cli.md's invariant — there is no configuration that skips
+    // verification except the audited `insecure` the profile can only
+    // have reached by typing the host name.
+    glidex_tls::ClientTls::with_trust(&t, &[b"http/1.1"])
 }
 
 /// A failed handshake, with what to do about an untrusted certificate.
@@ -336,38 +399,106 @@ fn tls_error(target: &str, tls: &glidex_tls::ClientTls, e: io::Error) -> String 
     match tls.rejected_fingerprint() {
         Some(fp) => format!(
             "TLS with {}: {}\n  the server's certificate has SHA-256 fingerprint {}\n  \
-             if that is the control plane's (it prints it at startup), save its certificate and set GLIDEX_CA_CERT to the file",
-            target, e, fp
+             if that is the control plane's (it prints it at startup), save its certificate and set GLIDEX_CA_CERT to the file\n  \
+             or, from a login profile, trust this exact certificate: gxctl auth login … --pin sha256/{}",
+            target, e, fp, fp.to_lowercase()
         ),
         None => format!("TLS with {}: {}", target, e),
     }
 }
 
+fn parse_tcp_ep(url: &str, tls: Option<&crate::config::Tls>) -> Result<TcpEp, String> {
+    let uri: Uri = url.parse().map_err(|e| format!("--url {}: {}", url, e))?;
+    let secure = match uri.scheme_str() {
+        Some("https") => true,
+        Some("http") => false,
+        _ => return Err(format!("--url {}: use http:// or https://", url)),
+    };
+    let host = uri.host().ok_or_else(|| format!("--url {}: no host", url))?.to_string();
+    if !secure && !is_loopback_host(&host) {
+        return Err(format!("--url {}: plain http is only allowed to localhost; use https://", url));
+    }
+    let port = uri.port_u16().unwrap_or(if secure { 443 } else { 80 });
+    let base = uri.path().trim_end_matches('/').to_string();
+    Ok(TcpEp {
+        tls: if secure { Some(tls_config_for(&host, tls)?) } else { None },
+        host,
+        port,
+        base,
+        url: url.to_string(),
+    })
+}
+
+fn ep_desc(ep: &TcpEp) -> String {
+    format!("{}://{}:{}{}", if ep.tls.is_some() { "https" } else { "http" }, ep.host, ep.port, ep.base)
+}
+
+pub fn now_secs() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
 impl ApiClient {
     pub fn unix(path: PathBuf) -> Self {
-        ApiClient { endpoint: Endpoint::Unix(path), token: Mutex::new(None), project: Mutex::new(None) }
+        ApiClient {
+            endpoint: Endpoint::Unix(path),
+            token: Mutex::new(None),
+            project: Mutex::new(None),
+            ep: Mutex::new(0),
+            profile: None,
+            binding: None,
+            last_tls: Mutex::new(None),
+        }
     }
 
     /// `http://` or `https://` URL. A token is never sent in clear text
     /// off the loopback interface.
     pub fn tcp(url: &str, token: Option<Zeroizing<String>>) -> Result<Self, String> {
-        let uri: Uri = url.parse().map_err(|e| format!("--url {}: {}", url, e))?;
-        let tls = match uri.scheme_str() {
-            Some("https") => true,
-            Some("http") => false,
-            _ => return Err(format!("--url {}: use http:// or https://", url)),
-        };
-        let host = uri.host().ok_or_else(|| format!("--url {}: no host", url))?.to_string();
-        if !tls && !is_loopback_host(&host) {
-            return Err(format!("--url {}: plain http is only allowed to localhost; use https://", url));
+        let urls: Vec<String> = vec![url.to_string()];
+        Self::tcp_multi(&urls, token, None, None, None)
+    }
+
+    /// A profile's client: every URL is one endpoint of the same cluster
+    /// (A7), dialed in order with the `last_used` hint first, 5 s each
+    /// (§4.2). `tls` is the profile's trust; `profile` lets a failover
+    /// record what answered; `binding` arms the cluster check (§4.1).
+    pub fn tcp_multi(urls: &[String], token: Option<Zeroizing<String>>, tls: Option<&crate::config::Tls>, profile: Option<ProfileCtx>, binding: Option<Binding>) -> Result<Self, String> {
+        if urls.is_empty() {
+            return Err("no url to dial: the profile lists none (give --url or re-run 'auth login')".into());
         }
-        let port = uri.port_u16().unwrap_or(if tls { 443 } else { 80 });
-        let base = uri.path().trim_end_matches('/').to_string();
+        let mut eps: Vec<TcpEp> = Vec::new();
+        for url in urls {
+            eps.push(parse_tcp_ep(url, tls)?);
+        }
+        // The endpoint that answered last time is tried first (A7); a
+        // config that cannot be read now costs nothing here, so the hint
+        // is read best-effort.
+        if let Some(ctx) = &profile {
+            let hint = crate::config::load_from(&ctx.path).ok().flatten().and_then(|c| c.profiles.get(&ctx.name).and_then(|p| p.last_used.as_ref()).and_then(|l| l.url.clone()));
+            if let Some(hint) = hint {
+                if let Some(i) = eps.iter().position(|e| e.url == hint) {
+                    let ep = eps.remove(i);
+                    eps.insert(0, ep);
+                }
+            }
+        }
         Ok(ApiClient {
-            endpoint: Endpoint::Tcp { tls: if tls { Some(tls_config(&host)?) } else { None }, host, port, base },
+            endpoint: Endpoint::Tcp(eps),
             token: Mutex::new(token),
             project: Mutex::new(None),
+            ep: Mutex::new(0),
+            profile,
+            binding,
+            last_tls: Mutex::new(None),
         })
+    }
+
+    fn ep(&self) -> Option<&TcpEp> {
+        match &self.endpoint {
+            // The list is never empty (tcp_multi refuses that case), so
+            // the remainder is always defined.
+            Endpoint::Tcp(eps) => eps.get(*self.ep.lock().unwrap() % eps.len()),
+            Endpoint::Unix(_) => None,
+        }
     }
 
     pub fn is_unix(&self) -> bool {
@@ -378,10 +509,27 @@ impl ApiClient {
     pub fn describe(&self) -> String {
         match &self.endpoint {
             Endpoint::Unix(p) => format!("unix:{}", p.display()),
-            Endpoint::Tcp { tls, host, port, base } => {
-                format!("{}://{}:{}{}", if tls.is_some() { "https" } else { "http" }, host, port, base)
-            }
+            Endpoint::Tcp(eps) => eps.iter().map(ep_desc).collect::<Vec<_>>().join(", "),
         }
+    }
+
+    /// The §6.2 banner tail of a profile-backed client, if one is.
+    pub fn profile_banner(&self) -> Option<String> {
+        self.profile.as_ref().map(|p| p.banner.clone())
+    }
+
+    pub fn profile_name(&self) -> Option<String> {
+        self.profile.as_ref().map(|p| p.name.clone())
+    }
+
+    /// The fingerprints the last TLS attempt's ladder recorded: accepted on
+    /// success, rejected on an untrusted certificate (§5.2 needs both).
+    pub fn accepted_fingerprint(&self) -> Option<String> {
+        self.last_tls.lock().unwrap().as_ref().and_then(|t| t.accepted_fingerprint())
+    }
+
+    pub fn rejected_fingerprint(&self) -> Option<String> {
+        self.last_tls.lock().unwrap().as_ref().and_then(|t| t.rejected_fingerprint())
     }
 
     pub fn has_token(&self) -> bool {
@@ -416,6 +564,13 @@ impl ApiClient {
         }
     }
 
+    /// One connection, walked across the profile's endpoints in order
+    /// (§4.2): the first that answers wins and is remembered as
+    /// `last_used`. Authorization failures are answers too — 401/403
+    /// never failover, so a firewalled node cannot turn "token revoked"
+    /// into three confusing errors against other servers; only transport
+    /// failures move to the next endpoint. All down: one error listing
+    /// each URL and its reason.
     pub async fn connect(&self) -> Result<Box<dyn Conn>, String> {
         match &self.endpoint {
             Endpoint::Unix(p) => match tokio::net::UnixStream::connect(p).await {
@@ -432,52 +587,170 @@ impl ApiClient {
                     _ => format!("cannot reach the control plane at {}: {}", p.display(), e),
                 }),
             },
-            Endpoint::Tcp { tls, host, port, .. } => {
-                let bare = host.trim_start_matches('[').trim_end_matches(']');
-                let addr = if bare.contains(':') { format!("[{}]:{}", bare, port) } else { format!("{}:{}", bare, port) };
-                let tcp = tokio::time::timeout(std::time::Duration::from_secs(10), tokio::net::TcpStream::connect(&addr))
-                    .await
-                    .map_err(|_| format!("cannot reach the control plane at {}: timed out", self.describe()))?
-                    .map_err(|e| format!("cannot reach the control plane at {}: {}", self.describe(), e))?;
-                let _ = tcp.set_nodelay(true);
-                match tls {
-                    None => Ok(Box::new(tcp)),
-                    Some(cfg) => {
-                        let name = rustls_pki_types::ServerName::try_from(bare.to_string())
-                            .map_err(|e| format!("{}: {}", host, e))?;
-                        let s = tokio_rustls::TlsConnector::from(cfg.config.clone())
-                            .connect(name, tcp)
-                            .await
-                            .map_err(|e| tls_error(&self.describe(), cfg, e))?;
-                        Ok(Box::new(s))
+            Endpoint::Tcp(eps) => {
+                let first = *self.ep.lock().unwrap() % eps.len();
+                let mut errs: Vec<String> = Vec::new();
+                for k in 0..eps.len() {
+                    let i = (first + k) % eps.len();
+                    match self.connect_one(&eps[i], eps.len() == 1).await {
+                        Ok(c) => {
+                            if i != first {
+                                self.promote(i);
+                            }
+                            return Ok(c);
+                        }
+                        Err(e) => errs.push(format!("{}: {e}", ep_desc(&eps[i]))),
                     }
                 }
+                Err(if errs.len() == 1 {
+                    errs.remove(0)
+                } else {
+                    format!("no endpoint of this profile answered:\n  {}", errs.join("\n  "))
+                })
             }
         }
     }
 
+    async fn connect_one(&self, ep: &TcpEp, sole: bool) -> Result<Box<dyn Conn>, String> {
+        let bare = ep.host.trim_start_matches('[').trim_end_matches(']');
+        let addr = if bare.contains(':') { format!("[{}]:{}", bare, ep.port) } else { format!("{}:{}", bare, ep.port) };
+        // Today's single-endpoint dial keeps its 10 s; a profile's list
+        // gets 5 s each so walking the cluster stays quick (§4.2).
+        let secs = if sole { 10 } else { 5 };
+        let tcp = tokio::time::timeout(std::time::Duration::from_secs(secs), tokio::net::TcpStream::connect(&addr))
+            .await
+            .map_err(|_| format!("cannot reach the control plane at {}: timed out", self.describe()))?
+            .map_err(|e| format!("cannot reach the control plane at {}: {}", self.describe(), e))?;
+        let _ = tcp.set_nodelay(true);
+        match &ep.tls {
+            None => Ok(Box::new(tcp)),
+            Some(cfg) => {
+                let name = rustls_pki_types::ServerName::try_from(bare.to_string())
+                    .map_err(|e| format!("{}: {}", ep.host, e))?;
+                // Named before the handshake so the fingerprints the ladder
+                // recorded — accepted or rejected — are readable whichever
+                // way the attempt went (the TOFU prompt and §5.3 need the
+                // rejected one).
+                *self.last_tls.lock().unwrap() = Some(cfg.clone());
+                let s = tokio_rustls::TlsConnector::from(cfg.config.clone())
+                    .connect(name, tcp)
+                    .await
+                    .map_err(|e| tls_error(&self.describe(), cfg, e))?;
+                Ok(Box::new(s))
+            }
+        }
+    }
+
+    /// The winner of a failover becomes the starting point and the
+    /// `last_used` hint; a config write that cannot happen now costs
+    /// nothing, so the metadata note is best-effort (§4.2).
+    fn promote(&self, i: usize) {
+        *self.ep.lock().unwrap() = i;
+        let ctx = match &self.profile {
+            Some(c) => c,
+            None => return,
+        };
+        let url = match &self.endpoint {
+            Endpoint::Tcp(eps) => eps[i].url.clone(),
+            Endpoint::Unix(_) => return,
+        };
+        let mut cfg = match crate::config::load_from(&ctx.path) {
+            Ok(Some(c)) => c,
+            _ => return,
+        };
+        if let Some(p) = cfg.profiles.get_mut(&ctx.name) {
+            p.last_used = Some(crate::config::LastUsed { at: Some(now_secs()), url: Some(url) });
+            let _ = crate::config::save_to(&ctx.path, &cfg);
+        }
+    }
+
     fn host_header(&self) -> String {
-        match &self.endpoint {
-            Endpoint::Unix(_) => "localhost".into(),
-            Endpoint::Tcp { host, port, .. } => format!("{}:{}", host, port),
+        match self.ep() {
+            None => "localhost".into(),
+            Some(e) => format!("{}:{}", e.host, e.port),
         }
     }
 
     fn full_path(&self, path: &str) -> String {
-        match &self.endpoint {
-            Endpoint::Unix(_) => path.to_string(),
-            Endpoint::Tcp { base, .. } => format!("{}{}", base, path),
+        match self.ep() {
+            None => path.to_string(),
+            Some(e) => format!("{}{}", e.base, path),
         }
     }
 
     /// `ws://` / `wss://` URL of an API path, for the WebSocket handshake
     /// over a stream from [`connect`](Self::connect).
     pub fn ws_url(&self, path: &str) -> String {
-        let scheme = match &self.endpoint {
-            Endpoint::Tcp { tls: Some(_), .. } => "wss",
-            _ => "ws",
-        };
+        let scheme = if self.ep().is_some_and(|e| e.tls.is_some()) { "wss" } else { "ws" };
         format!("{}://{}{}", scheme, self.host_header(), self.full_path(path))
+    }
+
+    /// `GET /auth/server-info` (spec/gxctl-auth.md §7.1), asked without
+    /// credentials: the token, if any, is set aside so the answer is the
+    /// unauthenticated one every client sees.
+    pub async fn server_info(&self) -> Result<serde_json::Value, Failure> {
+        let saved = self.token.lock().unwrap().take();
+        let r = self.send(Method::GET, "/auth/server-info", None).await;
+        *self.token.lock().unwrap() = saved;
+        let resp = r?;
+        if !resp.status.is_success() {
+            return Err(render_error(resp.status, &resp.body, !self.is_unix()));
+        }
+        serde_json::from_slice(&resp.body).map_err(|e| Failure::transport(format!("server-info: {e}")))
+    }
+
+    /// Before the first command of a profile run: the cluster binding
+    /// (§4.1). A server-info that cannot be reached is a warning, not a
+    /// wall — an older control plane has no such route, and gxctl must
+    /// keep working across a rolling upgrade. What *is* a wall: a bound
+    /// `cluster_id` the answer disagrees with (§4.3), and a server whose
+    /// own fingerprint claim disagrees with the certificate we connected
+    /// to — that is a proxy terminating TLS in front of the cluster
+    /// (§5.2), never something to prompt through.
+    pub async fn preflight(&self) -> Result<(), String> {
+        if self.is_unix() {
+            return Ok(());
+        }
+        let b = match &self.binding {
+            Some(b) => b,
+            None => return Ok(()),
+        };
+        let v = match self.server_info().await {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("Warning: server-info unreachable ({e}); continuing without the cluster check");
+                return Ok(());
+            }
+        };
+        if let (Some(want), Some(got)) = (b.cluster_id.as_deref(), v["cluster_id"].as_str()) {
+            if want != got {
+                return Err(format!(
+                    "refusing to continue: profile '{}' is bound to cluster {} but {} answers for {}.\n  A machine was repurposed, or the profile is stale.\n  Re-point with: gxctl auth login --profile {} --rebind",
+                    b.profile,
+                    want,
+                    self.describe(),
+                    got,
+                    b.profile
+                ));
+            }
+        }
+        let seen = self.last_tls.lock().unwrap().as_ref().and_then(|t| t.accepted_fingerprint());
+        if let (Some(claimed), Some(seen)) = (v["fingerprint"].as_str(), seen.as_deref()) {
+            let same = glidex_tls::Trust::normalize_pin(claimed).is_some_and(|c| glidex_tls::Trust::normalize_pin(seen).is_some_and(|s| c == s));
+            if !same {
+                return Err(format!(
+                    "the TLS in front of {} does not match its own claim: the certificate we connected to has SHA-256 {seen}, the server reports {claimed} — something is terminating TLS before the control plane",
+                    self.describe()
+                ));
+            }
+        }
+        if let Some(got) = v["version"].as_str() {
+            let mine = env!("CARGO_PKG_VERSION");
+            if got != mine {
+                eprintln!("Warning: {} runs version {got}, this gxctl is {mine} (fine across a rolling upgrade)", self.describe());
+            }
+        }
+        Ok(())
     }
 
     /// `Authorization` for TCP requests, marked sensitive.
@@ -718,5 +991,140 @@ mod tests {
         assert!(!format!("{:?}", c).contains("gxt_s"));
         assert!(c.auth_header().unwrap().is_sensitive());
         assert!(ApiClient::unix("/x".into()).auth_header().is_none());
+    }
+
+    /// A stand-in control plane over TLS: accepts every connection, answers
+    /// every request with the canned body. Enough to exercise failover and
+    /// preflight without a hyper server; deliberately dumb, it never even
+    /// reads the request (TCP buffers it, the answer flows back over).
+    fn canned_tls_server(cert: &Path, key: &Path, body: Vec<u8>) -> u16 {
+        let acceptor = tokio_rustls::TlsAcceptor::from(glidex_tls::server_config(cert, key, &[]).unwrap());
+        let l = glidex_tls::bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let port = l.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            loop {
+                let (tcp, _) = l.accept().await.unwrap();
+                let acceptor = acceptor.clone();
+                let body = body.clone();
+                tokio::spawn(async move {
+                    if let Ok(mut t) = acceptor.accept(tcp).await {
+                        use tokio::io::AsyncWriteExt;
+                        let _ = t.write_all(&body).await;
+                        let _ = t.shutdown().await;
+                    }
+                });
+            }
+        });
+        port
+    }
+
+    fn canned(body: &str) -> Vec<u8> {
+        format!("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}", body.len()).as_bytes().to_vec()
+    }
+
+    fn lab() -> (tempfile::TempDir, glidex_tls::SelfSigned, String) {
+        let dir = tempfile::TempDir::new().unwrap();
+        let ss = glidex_tls::ensure_self_signed(dir.path(), "cp", &Default::default()).unwrap();
+        let fp = glidex_tls::fingerprint(&ss.cert).unwrap();
+        (dir, ss, fp)
+    }
+
+    #[tokio::test]
+    async fn failover_walks_the_list_and_remembers_the_winner() {
+        let (dir, ss, fp) = lab();
+        let live = canned_tls_server(&ss.cert, &ss.key, canned("{}"));
+        let tls = crate::config::Tls { pins: vec![fp], verify_host: false, ..Default::default() };
+        let path = dir.path().join("config.json");
+        let mut cfg = crate::config::Config::default();
+        cfg.profiles.insert(
+            "t".into(),
+            crate::config::Profile {
+                url: vec![format!("https://127.0.0.1:1"), format!("https://127.0.0.1:{live}")],
+                tls: tls.clone(),
+                ..Default::default()
+            },
+        );
+        crate::config::save_to(&path, &cfg).unwrap();
+        let urls: Vec<String> = cfg.profiles.get("t").unwrap().url.clone();
+        let c = ApiClient::tcp_multi(&urls, None, Some(&tls), Some(ProfileCtx { name: "t".into(), path: path.clone(), banner: String::new() }), None).unwrap();
+        assert_eq!(c.describe(), format!("https://127.0.0.1:1, https://127.0.0.1:{live}"));
+        // The dead endpoint answers "connection refused" and the walk moves
+        // on without waiting out its timeout (§4.2).
+        let r = c.send(Method::GET, "/vms", None).await.unwrap();
+        assert!(r.status.is_success(), "{:?}", r.status);
+        // And the winner becomes the starting point for the next run —
+        // metadata only, so losing it would cost nothing.
+        let back = crate::config::load_from(&path).unwrap().unwrap();
+        assert_eq!(back.profiles.get("t").unwrap().last_used.as_ref().and_then(|l| l.url.clone()), Some(format!("https://127.0.0.1:{live}")));
+    }
+
+    #[tokio::test]
+    async fn preflight_refuses_a_machine_that_answers_for_another_cluster() {
+        let (dir, ss, fp) = lab();
+        // §4.3: a bound profile and a disagreeing server-info is a wall.
+        let port = canned_tls_server(&ss.cert, &ss.key, canned(r#"{"cluster_id":"bbb","cluster_name":"lab","version":"0.1.0","fingerprint":null,"methods":{}}"#));
+        let tls = crate::config::Tls { pins: vec![fp.clone()], verify_host: false, ..Default::default() };
+        let mk = |bound: Option<&str>| ApiClient::tcp_multi(&[format!("https://127.0.0.1:{port}")], None, Some(&tls), None, Some(Binding { profile: "t".into(), cluster_id: bound.map(|b| b.to_string()) })).unwrap();
+        let e = mk(Some("aaa")).preflight().await.unwrap_err();
+        assert!(e.contains("answers for bbb") && e.contains("--rebind"), "{e}");
+        // Never verified: nothing to disagree with (§4.1: the server may be
+        // reinitialised, the profile must not invent a binding).
+        assert!(mk(None).preflight().await.is_ok());
+        // The claimed fingerprint must be the certificate we were handed:
+        // a proxy terminating TLS presents its own, and the two disagree
+        // (§5.2). A wrong claim is a hard stop; the honest one passes.
+        let liar = canned_tls_server(&ss.cert, &ss.key, canned(r#"{"cluster_id":null,"cluster_name":"x","version":"0.1.0","fingerprint":"AB:CD:EF:AB:CD:EF:AB:CD:EF:AB:CD:EF:AB:CD:EF:AB:CD:EF:AB:CD:EF:AB:CD:EF:AB:CD:EF:AB:CD","methods":{}}"#));
+        let c = ApiClient::tcp_multi(&[format!("https://127.0.0.1:{liar}")], None, Some(&tls), None, Some(Binding { profile: "t".into(), cluster_id: None })).unwrap();
+        let e = c.preflight().await.unwrap_err();
+        assert!(e.contains("terminating TLS"), "{e}");
+        let honest = canned_tls_server(&ss.cert, &ss.key, canned(&format!(r#"{{"cluster_id":null,"cluster_name":"x","version":"0.1.0","fingerprint":"{fp}","methods":{{}}"#)));
+        let c = ApiClient::tcp_multi(&[format!("https://127.0.0.1:{honest}")], None, Some(&tls), None, Some(Binding { profile: "t".into(), cluster_id: None })).unwrap();
+        assert!(c.preflight().await.is_ok());
+        let _ = dir;
+    }
+
+    #[tokio::test]
+    async fn no_configuration_reaches_for_an_untrusted_certificate() {
+        let (dir, ss, fp) = lab();
+        let port = canned_tls_server(&ss.cert, &ss.key, canned("{}"));
+        // The plain profile: system store only. Our lab certificate is in
+        // nobody's store, so the ladder refuses it and records the
+        // fingerprint for the prompt and for the error (§5.2).
+        let c = ApiClient::tcp_multi(&[format!("https://127.0.0.1:{port}")], None, Some(&crate::config::Tls::default()), None, None).unwrap();
+        let e = match c.send(Method::GET, "/vms", None).await {
+            Ok(r) => panic!("the untrusted certificate was accepted (status {})", r.status),
+            Err(e) => e,
+        };
+        assert!(e.message.contains("SHA-256"), "{e}");
+        assert_eq!(c.rejected_fingerprint().as_deref(), Some(fp.as_str()));
+        // The pin converts the refusal into a pass — same bytes, decided
+        // by the operator, and dates and the handshake signature are still
+        // verified (glidex-tls tests cover that depth; here: the wiring).
+        let tls = crate::config::Tls { pins: vec![fp.clone()], verify_host: false, ..Default::default() };
+        let c = ApiClient::tcp_multi(&[format!("https://127.0.0.1:{port}")], None, Some(&tls), None, None).unwrap();
+        assert!(c.send(Method::GET, "/vms", None).await.unwrap().status.is_success());
+        assert_eq!(c.accepted_fingerprint().as_deref(), Some(fp.as_str()));
+        // The declared bypass accepts anything — which is exactly why
+        // getting to it needs a typed host name (§5.4, enforced by the
+        // config loader's validation, not by this transport layer).
+        let tls = crate::config::Tls { insecure: true, ..Default::default() };
+        let c = ApiClient::tcp_multi(&[format!("https://127.0.0.1:{port}")], None, Some(&tls), None, None).unwrap();
+        assert!(c.send(Method::GET, "/vms", None).await.unwrap().status.is_success());
+        let _ = dir;
+    }
+
+    #[tokio::test]
+    async fn server_info_travels_without_credentials() {
+        let (dir, ss, fp) = lab();
+        let port = canned_tls_server(&ss.cert, &ss.key, canned(r#"{"cluster_id":"c1","cluster_name":"lab","version":"0.1.0","fingerprint":null,"methods":{"pam":true,"oidc":false}}"#));
+        let tls = crate::config::Tls { pins: vec![fp], verify_host: false, ..Default::default() };
+        let c = ApiClient::tcp_multi(&[format!("https://127.0.0.1:{port}")], Some(Zeroizing::new("gxt_secret".into())), Some(&tls), None, None).unwrap();
+        let v = c.server_info().await.unwrap();
+        assert_eq!(v["cluster_id"].as_str(), Some("c1"));
+        // The token stays off the probe — the invariant that the TOFU
+        // bootstrap leans on: nothing authenticated rides a connection that
+        // has not passed the ladder.
+        assert!(c.has_token());
+        let _ = dir;
     }
 }

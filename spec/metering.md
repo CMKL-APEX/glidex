@@ -791,7 +791,11 @@ each closed billing month's per-subject p95 figures are written to
 ### 8.1 Dimensions
 
 `group_by` ⊆ {`project`, `vm`, `disk`, `nic`, `network`,
-`hypervisor`} × `granularity` ∈ {`hour`, `day`, `month`}. Granularity
+`hypervisor`, `node`} × `granularity` ∈ {`hour`, `day`, `month`}. `node`
+(in a cluster) groups by the node a subject was on: a VM's and its NICs'
+placement, a disk's node, a node network's node; subjects record it as
+`node`, which is not part of their key. The rate endpoints accept it too
+(spec/clustering-ui.md §5.4). Granularity
 is in UTC by default. `tz=<IANA>` regroups the hourly rows into local
 days and months at query time, which works because hours are the atom.
 
@@ -1062,7 +1066,7 @@ a disk.
 Query: `project` (as in §9.1), `month=YYYY-MM` (default: the current
 billing month, provisional until final) or `from`/`to` (whole hours,
 maximum 100 days, within `retention_rate_days`), `group_by` ⊆
-{`project`, `vm`, `nic`, `network`}, `format=json|csv`.
+{`project`, `vm`, `nic`, `network`, `node`}, `format=json|csv`.
 
 ```json
 {

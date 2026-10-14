@@ -234,11 +234,26 @@ pub struct VmSpec {
     /// Power-button wait when glidex stops the VM; 0 = stop hard.
     #[serde(default)]
     pub stop_grace_secs: u32,
+    /// Pin the VM to this node (id), spec/clustering.md §9.1. Immutable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
+}
+
+/// Where a VM runs (spec/clustering.md §9.1): set once, by the scheduler,
+/// and kept for the VM's life (D6).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Placement {
+    pub node: String,
+    pub at: u64,
 }
 
 /// `status`: written only by the VM controller.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct VmStatus {
+    /// The node this VM is placed on. A standalone host is one implicit
+    /// node (`local`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placement: Option<Placement>,
     #[serde(default)]
     pub observed_generation: u64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -386,6 +401,7 @@ impl Vm {
                 restart_policy: RestartPolicy::OnFailure,
                 on_host_boot: HostBootPolicy::Resume,
                 stop_grace_secs: 0,
+                node: None,
             },
             status: VmStatus { never_started: true, ..Default::default() },
         }
@@ -485,6 +501,9 @@ pub struct CreateVmRequest {
     pub on_host_boot: Option<HostBootPolicy>,
     #[serde(default)]
     pub stop_grace_secs: Option<u32>,
+    /// Run on this node (id or name): `spec.node`, spec/clustering.md §9.1.
+    #[serde(default)]
+    pub node: Option<String>,
 }
 
 /// The managed-disk part of `CreateVmRequest`, resolved by `create_vm`.
@@ -565,6 +584,13 @@ pub struct VmResponse {
     pub stop_grace_secs: u32,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub deleting: bool,
+    /// The node the VM is placed on (spec/clustering.md §9.1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
+    /// That node's name, for callers who can't list nodes
+    /// (spec/clustering-ui.md §9). Filled in by the API.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_name: Option<String>,
     pub vcpu_count: u8,
     pub mem_size_mib: u32,
     pub hypervisor: HypervisorType,
@@ -604,6 +630,8 @@ impl From<&Vm> for VmResponse {
             on_host_boot: vm.spec.on_host_boot,
             stop_grace_secs: vm.spec.stop_grace_secs,
             deleting: vm.deletion_requested_at.is_some(),
+            node: vm.status.placement.as_ref().map(|p| p.node.clone()),
+            node_name: None,
             vcpu_count: config.vcpu_count,
             mem_size_mib: config.mem_size_mib,
             hypervisor: config.hypervisor,

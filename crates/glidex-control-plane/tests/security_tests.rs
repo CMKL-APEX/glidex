@@ -59,7 +59,7 @@ impl H {
     }
 
     fn token(&self, user: &str) -> String {
-        self.app.auth.create_token("t", TokenKind::Personal { owner: user.into() }, user, None).unwrap().0
+        self.app.auth.create_token("t", TokenKind::Personal { owner: user.into() }, user, None, None, None).unwrap().0
     }
 
     fn session(&self, user: &str) -> As {
@@ -132,7 +132,7 @@ async fn project_isolation_and_not_found() {
     let (pa, pb) = (h.project("pa"), h.project("pb"));
     let (alice, bob, carol) = (h.user("alice"), h.user("bob"), h.user("carol"));
     h.link("role.editor", Ent::User(alice.clone()), Ent::Project(pa.clone()));
-    h.link("grant.host-paths", Ent::User(alice.clone()), Ent::Host);
+    h.link("grant.host-paths", Ent::User(alice.clone()), Ent::Cluster);
     h.link("role.editor", Ent::User(bob.clone()), Ent::Project(pb.clone()));
     h.link("role.viewer", Ent::User(carol.clone()), Ent::Project(pa.clone()));
     let (a, b, c) = (As::Bearer(h.token(&alice)), As::Bearer(h.token(&bob)), As::Bearer(h.token(&carol)));
@@ -146,7 +146,7 @@ async fn project_isolation_and_not_found() {
     let (s, _, _) = h.call("GET", &format!("/vms/{id}?view=full"), None, &c).await;
     assert_eq!(s, StatusCode::FORBIDDEN);
     let aud = h.user("aud");
-    h.link("role.auditor", Ent::User(aud.clone()), Ent::Host);
+    h.link("role.auditor", Ent::User(aud.clone()), Ent::Cluster);
     let (s, full, _) = h.call("GET", &format!("/vms/{id}?view=full"), None, &As::Bearer(h.token(&aud))).await;
     assert_eq!(s, StatusCode::OK, "{full}");
     assert_eq!(full["spec"]["power"], "stopped", "{full}");
@@ -171,7 +171,7 @@ async fn project_isolation_and_not_found() {
     assert_eq!(s, StatusCode::FORBIDDEN);
 
     // Same VM name is fine in another project.
-    h.link("grant.host-paths", Ent::User(bob.clone()), Ent::Host);
+    h.link("grant.host-paths", Ent::User(bob.clone()), Ent::Cluster);
     let (s, v, _) = h.call("POST", "/vms", Some(vm_body("v1", "pb")), &b).await;
     assert_eq!(s, StatusCode::CREATED, "{v}");
 
@@ -231,7 +231,7 @@ async fn host_paths_need_a_grant() {
     // VFIO paths must be PCI devices, and need a grant.
     let mut body = vm_body("v", "pa");
     body["vfio_devices"] = json!(["/dev/sda"]);
-    h.link("grant.host-paths", Ent::User(alice.clone()), Ent::Host);
+    h.link("grant.host-paths", Ent::User(alice.clone()), Ent::Cluster);
     let (s, _, _) = h.call("POST", "/vms", Some(body.clone()), &a).await;
     assert_eq!(s, StatusCode::BAD_REQUEST);
     body["vfio_devices"] = json!(["/sys/bus/pci/devices/0000:41:00.0"]);
@@ -245,8 +245,8 @@ async fn quotas_are_enforced_and_system_admin_may_exceed() {
     let pa = h.project("pa");
     let (owner, admin) = (h.user("owner"), h.user("admin"));
     h.link("role.owner", Ent::User(owner.clone()), Ent::Project(pa.clone()));
-    h.link("grant.host-paths", Ent::User(owner.clone()), Ent::Host);
-    h.link("role.system-admin", Ent::User(admin.clone()), Ent::Host);
+    h.link("grant.host-paths", Ent::User(owner.clone()), Ent::Cluster);
+    h.link("role.system-admin", Ent::User(admin.clone()), Ent::Cluster);
     let (o, a) = (As::Bearer(h.token(&owner)), As::Bearer(h.token(&admin)));
 
     let (s, _, _) = h.call("PATCH", &format!("/projects/{pa}"), Some(json!({"quotas": {"vms": 1}})), &o).await;
@@ -274,7 +274,7 @@ async fn quotas_are_enforced_and_system_admin_may_exceed() {
 async fn host_network_changes_need_a_recent_login() {
     let h = harness();
     let n = h.user("net");
-    h.link("role.net-admin", Ent::User(n.clone()), Ent::Host);
+    h.link("role.net-admin", Ent::User(n.clone()), Ent::Cluster);
     let fresh = h.session(&n);
     let As::Cookie(cookie, csrf, origin) = fresh.clone() else { unreachable!() };
     let hash = auth::sha256_hex(cookie.as_bytes());
@@ -379,7 +379,7 @@ async fn site_policies_api_and_break_glass() {
     });
     let pa = h.project("pa");
     let (admin, alice) = (h.user("admin"), h.user("alice"));
-    h.link("role.system-admin", Ent::User(admin.clone()), Ent::Host);
+    h.link("role.system-admin", Ent::User(admin.clone()), Ent::Cluster);
     h.link("role.viewer", Ent::User(alice.clone()), Ent::Project(pa.clone()));
     let a = h.session(&admin);
     let al = As::Bearer(h.token(&alice));
@@ -466,7 +466,7 @@ async fn audit_records_decisions_without_secrets() {
     let pa = h.project("pa");
     let (u, aud) = (h.user("u"), h.user("aud"));
     h.link("role.editor", Ent::User(u.clone()), Ent::Project(pa.clone()));
-    h.link("role.auditor", Ent::User(aud.clone()), Ent::Host);
+    h.link("role.auditor", Ent::User(aud.clone()), Ent::Cluster);
     let t = h.token(&u);
     let ut = As::Bearer(t.clone());
     let pw = "super-secret-password-123";
@@ -508,7 +508,7 @@ async fn usage_is_project_scoped_and_exports_are_audited() {
 
     let (viewer, aud, nobody) = (h.user("viewer"), h.user("aud"), h.user("nobody"));
     h.link("role.viewer", Ent::User(viewer.clone()), Ent::Project(pa.clone()));
-    h.link("role.auditor", Ent::User(aud.clone()), Ent::Host);
+    h.link("role.auditor", Ent::User(aud.clone()), Ent::Cluster);
     let (v, a, n) = (As::Bearer(h.token(&viewer)), As::Bearer(h.token(&aud)), As::Bearer(h.token(&nobody)));
 
     let ids = |body: &Value| -> Vec<String> {
@@ -731,6 +731,77 @@ async fn pam_login_without_jit_needs_a_provisioned_user() {
     h.user("bob");
     let (s, _, _) = h.call("POST", "/auth/login", Some(body), &As::Nobody).await;
     assert_eq!(s, StatusCode::OK);
+}
+
+fn fake_authd(dir: &TempDir) -> std::path::PathBuf {
+    use glidex_authd::authenticator::Account;
+    let sock = dir.path().join("auth.sock");
+    let accounts = [("bob".to_string(), Account { uid: 1, groups: vec!["glidex-users".into()] })].into_iter().collect();
+    let cfg = glidex_authd::config::Config { failure_delay: std::time::Duration::from_millis(1), ..Default::default() };
+    let authd = Arc::new(glidex_authd::server::Authd::new(cfg, Some(nix::unistd::getuid().as_raw()), Arc::new(pam::FakePam), Arc::new(pam::FakeAccounts(accounts))));
+    let l = glidex_authd::server::bind(&sock, 0o600, None).unwrap();
+    std::thread::spawn(move || authd.serve(l));
+    sock
+}
+
+#[tokio::test]
+async fn pam_token_exchanges_credentials_for_a_personal_token() {
+    // spec/gxctl-auth.md §7.3: the CLI/CI login path.
+    let dir = TempDir::new().unwrap();
+    let sock = fake_authd(&dir);
+    let h = harness_with(|c| {
+        c.auth.pam.authd_socket = sock.clone();
+    });
+    let body = json!({"username": "bob", "password": "wrong"});
+    let (s, _, _) = h.call("POST", "/auth/token", Some(body), &As::Nobody).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED, "wrong password");
+    let body = json!({"username": "bob", "password": "bob-password", "token_name": "gxctl@lab", "device": "laptop-7", "client": "gxctl/1.0"});
+    let (s, v, _) = h.call("POST", "/auth/token", Some(body), &As::Nobody).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let secret = v["token"].as_str().unwrap().to_string();
+    assert!(secret.starts_with("gxt_"), "{secret}");
+    // The token acts as bob and carries the claimed device strings (display only).
+    let (_, who, _) = h.call("GET", "/auth/whoami", None, &As::Bearer(secret.clone())).await;
+    assert_eq!(who["user"]["display_name"], "bob");
+    assert_eq!(who["token"]["name"], "gxctl@lab");
+    assert_eq!(who["token"]["device"], "laptop-7");
+    // Revocation takes it down.
+    let id = v["token_id"].as_str().unwrap().to_string();
+    h.app.auth.revoke_token(&id).unwrap();
+    let (s, _, _) = h.call("GET", "/auth/whoami", None, &As::Bearer(secret)).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    // The login is audited without the secret.
+    let entries = h.app.auth.store.audit(0, 100, |e| e.action == "login").unwrap();
+    assert!(entries.iter().any(|e| e.result == "ok" && e.details["method"] == "pam-token"), "{entries:?}");
+    assert!(!serde_json::to_string(&entries).unwrap().contains("bob-password"));
+}
+
+#[tokio::test]
+async fn pam_token_needs_pam_enabled() {
+    let h = harness_with(|c| {
+        c.auth.pam.enabled = false;
+    });
+    let (s, v, _) = h.call("POST", "/auth/token", Some(json!({"username": "bob", "password": "x"})), &As::Nobody).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    assert!(v["message"].as_str().unwrap().contains("auth.pam.enabled"), "{v}");
+}
+
+#[tokio::test]
+async fn server_info_is_public_and_describes_the_host() {
+    // spec/gxctl-auth.md §7.1.
+    let h = harness_with(|c| {
+        c.server_name = Some("lab-cp".into());
+        c.auth.pam.enabled = false;
+    });
+    let (s, v, _) = h.call("GET", "/auth/server-info", None, &As::Nobody).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(v["cluster_name"], "lab-cp");
+    assert!(v["version"].as_str().is_some_and(|v| !v.is_empty()));
+    assert_eq!(v["methods"]["pam"], false);
+    assert_eq!(v["methods"]["oidc"], false);
+    // No cluster formed and tls auto without a certificate on disk yet:
+    // the fields are absent rather than invented.
+    assert!(v["cluster_id"].is_null(), "{v}");
 }
 
 // ---- OIDC against a mock IdP ---------------------------------------------
@@ -1017,13 +1088,13 @@ async fn site_default_quotas_apply_to_new_projects() {
     use glidex_control_plane::tenancy::Quotas;
     let h = harness_with(|c| c.quotas.default = Quotas { vms: Some(1), networks: Some(2), ..Default::default() });
     let admin = h.user("admin");
-    h.link("role.system-admin", Ent::User(admin.clone()), Ent::Host);
+    h.link("role.system-admin", Ent::User(admin.clone()), Ent::Cluster);
     let a = As::Bearer(h.token(&admin));
 
     // No quotas in the request: the site default.
     let (s, p, _) = h.call("POST", "/projects", Some(json!({"name": "lab"})), &a).await;
     assert_eq!(s, StatusCode::CREATED, "{p}");
-    assert_eq!(p["quotas"], json!({"vms": 1, "vcpus": null, "memory_mib": null, "disk_gib": null, "running_vms": null, "networks": 2}));
+    assert_eq!(p["quotas"], json!({"vms": 1, "vcpus": null, "memory_mib": null, "disk_gib": null, "running_vms": null, "networks": 2, "routers": null, "external_ips": null}));
     // Explicit quotas win.
     let (s, q, _) = h.call("POST", "/projects", Some(json!({"name": "big", "quotas": {"vms": 10}})), &a).await;
     assert_eq!(s, StatusCode::CREATED, "{q}");
@@ -1036,7 +1107,7 @@ async fn site_default_quotas_apply_to_new_projects() {
     let lab = p["id"].as_str().unwrap().to_string();
     let owner = h.user("owner");
     h.link("role.owner", Ent::User(owner.clone()), Ent::Project(lab.clone()));
-    h.link("grant.host-paths", Ent::User(owner.clone()), Ent::Host);
+    h.link("grant.host-paths", Ent::User(owner.clone()), Ent::Cluster);
     let o = As::Bearer(h.token(&owner));
     let (s, v, _) = h.call("POST", "/vms", Some(vm_body("v1", "lab")), &o).await;
     assert_eq!(s, StatusCode::CREATED, "{v}");
@@ -1083,4 +1154,47 @@ async fn control_plane_json_drives_the_service() {
     assert!(AuthService::new(manager.database(), bad).is_err());
     std::fs::write(&cfg_path, r#"{"quotas": {"default": {"network": 4}}}"#).unwrap();
     assert!(Config::load_from(&cfg_path).is_err(), "typos stop the control plane");
+}
+
+#[tokio::test]
+async fn allowed_lists_the_actions_per_resource_and_agrees_with_check() {
+    let h = harness();
+    let admin = h.user("ada");
+    h.link("role.system-admin", Ent::User(admin.clone()), Ent::Cluster);
+    let plain = h.user("pat");
+    let p = h.project("p1");
+    let actions = json!(["createProject", "drainNode", "createVm", "listNodes"]);
+    let resources = json!([{ "type": "Cluster" }, { "type": "Host" }, { "type": "Node", "id": "other-node" }, { "type": "Project", "id": p }]);
+    let body = json!({ "actions": actions, "resources": resources });
+
+    let a = h.session(&admin);
+    let (s, v, _) = h.call("POST", "/authz/allowed", Some(body.clone()), &a).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let allowed = v["allowed"].as_array().unwrap();
+    let names = |i: usize| -> Vec<String> { allowed[i].as_array().unwrap().iter().map(|x| x.as_str().unwrap().to_string()).collect() };
+    assert_eq!(names(0), ["createProject", "listNodes"], "only actions that apply to Cluster");
+    assert_eq!(names(1), ["drainNode"], "this host");
+    // Another node's host sits under the cluster too, so a cluster-wide
+    // grant covers it.
+    assert_eq!(names(2), ["drainNode"], "another node");
+    assert_eq!(names(3), ["createVm"]);
+
+    // Item by item, the same answers as /authz/check.
+    for (ri, r) in resources.as_array().unwrap().iter().enumerate() {
+        for act in actions.as_array().unwrap() {
+            let (_, c, _) = h.call("POST", "/authz/check", Some(json!({ "checks": [{ "action": act, "resource": r }] })), &a).await;
+            let one = c["results"][0]["allowed"].as_bool().unwrap();
+            assert_eq!(one, names(ri).iter().any(|n| n == act.as_str().unwrap()), "{act} on {r}");
+        }
+    }
+
+    let (s, v, _) = h.call("POST", "/authz/allowed", Some(body), &h.session(&plain)).await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(v["allowed"].as_array().unwrap().iter().all(|x| x.as_array().unwrap().is_empty()), "{v}");
+
+    let (s, v, _) = h.call("POST", "/authz/allowed", Some(json!({ "actions": ["noSuchAction"], "resources": [] })), &a).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    let many: Vec<Value> = (0..501).map(|i| json!({ "type": "Vm", "id": i.to_string() })).collect();
+    let (s, _, _) = h.call("POST", "/authz/allowed", Some(json!({ "actions": ["readVm"], "resources": many })), &a).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
 }

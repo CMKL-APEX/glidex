@@ -30,8 +30,49 @@ pub const ROLES_SRC: &str = include_str!("../policies/roles.cedar");
 const RESERVED_PREFIXES: [&str; 4] = ["base.", "role.", "grant.", "link."];
 const SITE_PREFIX: &str = "site.";
 
-/// The one host entity.
-pub const HOST_ID: &str = "local";
+/// Ids of this process's host (node) and cluster entities. A standalone
+/// host is a cluster of one: `Host::"local"` in `Cluster::"local"`. After
+/// `gxctl cluster init` they are the node and cluster UUIDs
+/// (spec/clustering.md §12.2).
+pub const LOCAL_ID: &str = "local";
+
+fn identity_cell() -> &'static std::sync::RwLock<(String, String)> {
+    static IDS: std::sync::OnceLock<std::sync::RwLock<(String, String)>> = std::sync::OnceLock::new();
+    IDS.get_or_init(|| std::sync::RwLock::new((LOCAL_ID.to_string(), LOCAL_ID.to_string())))
+}
+
+/// Set once at startup, from the node's identity.
+pub fn set_identity(cluster: &str, node: &str) {
+    *identity_cell().write().unwrap() = (cluster.to_string(), node.to_string());
+}
+
+fn account_scope_cell() -> &'static std::sync::RwLock<Option<String>> {
+    static S: std::sync::OnceLock<std::sync::RwLock<Option<String>>> = std::sync::OnceLock::new();
+    S.get_or_init(|| std::sync::RwLock::new(None))
+}
+
+/// D13: in a cluster, `unix:` and `pam:` identities are scoped to the node
+/// they were seen on (`alice@<node>`), unless the site manages local
+/// accounts centrally (`cluster.shared_local_accounts`).
+pub fn set_local_account_scope(node: Option<String>) {
+    *account_scope_cell().write().unwrap() = node;
+}
+
+/// The subject a local login name has in the identity store.
+pub fn local_subject(name: &str) -> String {
+    match &*account_scope_cell().read().unwrap() {
+        Some(node) => format!("{name}@{node}"),
+        None => name.to_string(),
+    }
+}
+
+pub fn cluster_id() -> String {
+    identity_cell().read().unwrap().0.clone()
+}
+
+pub fn node_id() -> String {
+    identity_cell().read().unwrap().1.clone()
+}
 
 /// Team whose members (root, `glidex-admin` on api.sock) are break-glass
 /// principals: allowed everything by `base.break-glass` and evaluated
@@ -52,7 +93,14 @@ pub enum AuthzError {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(tag = "type", content = "id")]
 pub enum Ent {
+    /// The cluster: the root of everything cluster-wide (projects, images,
+    /// identity). System roles link here and so cover every host.
+    Cluster,
+    /// This process's host. Host-specific actions (OVS, uplinks, PCI
+    /// devices, host paths) take it, so a site can grant them per node.
     Host,
+    /// Another node's host.
+    Node(String),
     User(String),
     Team(String),
     Token(String),
@@ -66,9 +114,19 @@ pub enum Ent {
 }
 
 impl Ent {
+    /// The `Host` entity of node `id`.
+    pub fn host_of(id: &str) -> Ent {
+        if id == node_id() {
+            Ent::Host
+        } else {
+            Ent::Node(id.to_string())
+        }
+    }
+
     pub fn type_name(&self) -> &'static str {
         match self {
-            Ent::Host => "Host",
+            Ent::Cluster => "Cluster",
+            Ent::Host | Ent::Node(_) => "Host",
             Ent::User(_) => "User",
             Ent::Team(_) => "Team",
             Ent::Token(_) => "Token",
@@ -82,10 +140,13 @@ impl Ent {
         }
     }
 
-    pub fn id(&self) -> &str {
+    pub fn id(&self) -> std::borrow::Cow<'_, str> {
+        use std::borrow::Cow;
         match self {
-            Ent::Host => HOST_ID,
-            Ent::User(s)
+            Ent::Cluster => Cow::Owned(cluster_id()),
+            Ent::Host => Cow::Owned(node_id()),
+            Ent::Node(s)
+            | Ent::User(s)
             | Ent::Team(s)
             | Ent::Token(s)
             | Ent::Project(s)
@@ -94,14 +155,16 @@ impl Ent {
             | Ent::Credential(s)
             | Ent::Image(s)
             | Ent::Network(s)
-            | Ent::PciDevice(s) => s,
+            | Ent::PciDevice(s) => Cow::Borrowed(s),
         }
     }
 
     pub fn from_parts(ty: &str, id: &str) -> Option<Ent> {
         let id = id.to_string();
         Some(match ty {
-            "Host" => Ent::Host,
+            "Cluster" => Ent::Cluster,
+            "Host" if id == node_id() => Ent::Host,
+            "Host" => Ent::Node(id),
             "User" => Ent::User(id),
             "Team" => Ent::Team(id),
             "Token" => Ent::Token(id),
@@ -150,7 +213,8 @@ pub struct EntitySet {
 impl EntitySet {
     pub fn new() -> Self {
         let mut s = Self::default();
-        s.add(Ent::Host, json!({}), vec![]);
+        s.add(Ent::Cluster, json!({}), vec![]);
+        s.add(Ent::Host, json!({}), vec![Ent::Cluster]);
         s
     }
 
@@ -164,8 +228,13 @@ impl EntitySet {
         self.entities.contains_key(e)
     }
 
+    /// The `Host` entity of node `id`, in the cluster.
+    pub fn host(&mut self, id: &str) -> &mut Self {
+        self.add(Ent::host_of(id), json!({}), vec![Ent::Cluster])
+    }
+
     pub fn project(&mut self, id: &str) -> &mut Self {
-        self.add(Ent::Project(id.into()), json!({}), vec![Ent::Host])
+        self.add(Ent::Project(id.into()), json!({}), vec![Ent::Cluster])
     }
 
     pub fn team(&mut self, id: &str) -> &mut Self {
@@ -199,7 +268,7 @@ impl EntitySet {
     }
 
     pub fn image(&mut self, id: &str) -> &mut Self {
-        self.add(Ent::Image(id.into()), json!({}), vec![Ent::Host])
+        self.add(Ent::Image(id.into()), json!({}), vec![Ent::Cluster])
     }
 
     pub fn network(
@@ -220,7 +289,7 @@ impl EntitySet {
                 attrs["project"] = Ent::Project(p.into()).json_ref();
                 Ent::Project(p.into())
             }
-            None => Ent::Host,
+            None => Ent::Cluster,
         };
         self.add(Ent::Network(name.into()), attrs, vec![parent])
     }
@@ -345,6 +414,8 @@ struct Sets {
 pub struct Engine {
     schema: Schema,
     sets: ArcSwap<Sets>,
+    /// Bumped on every install: clients re-run their capability checks.
+    generation: std::sync::atomic::AtomicU64,
 }
 
 /// Parse `src` into policies and templates re-registered under their
@@ -382,6 +453,7 @@ impl Engine {
                 base_only: PolicySet::new(),
                 sources: HashMap::new(),
             }),
+            generation: std::sync::atomic::AtomicU64::new(0),
         };
         engine.install(&[], &[])?;
         Ok(engine)
@@ -442,7 +514,13 @@ impl Engine {
         let (full, sources) = self.build_inner(links, site)?;
         let (base_only, _) = self.base_set()?;
         self.sets.store(Arc::new(Sets { full, base_only, sources }));
+        self.generation.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         Ok(())
+    }
+
+    /// How many times policies and links were installed.
+    pub fn generation(&self) -> u64 {
+        self.generation.load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// Decide `q` against the published set. Principals in the
@@ -618,13 +696,42 @@ mod tests {
 
     #[test]
     fn host_link_covers_projects_and_roles_nest() {
-        let e = engine_with(&[link("link.a", "role.auditor", Ent::User("aud".into()), Ent::Host)]);
+        let e = engine_with(&[link("link.a", "role.auditor", Ent::User("aud".into()), Ent::Cluster)]);
         let mut es = base_entities();
         es.user("aud", false, &[]).in_project(Ent::Vm("v".into()), "pb");
         let q = |a: &str| Query::new(Ent::User("aud".into()), a, Ent::Vm("v".into()), auth(0), es.clone());
         assert!(e.check(&q("readVm")).allowed);
         assert!(!e.check(&q("startVm")).allowed);
         assert!(!e.check(&q("openConsole")).allowed);
+    }
+
+    /// C1 acceptance: host-specific grants cover one node, cluster grants
+    /// cover every node and the cluster-wide actions.
+    #[test]
+    fn host_and_cluster_scopes() {
+        let e = engine_with(&[
+            link("link.h", "role.net-admin", Ent::User("hostadm".into()), Ent::Node("n2".into())),
+            link("link.c", "role.net-admin", Ent::User("clusteradm".into()), Ent::Cluster),
+            link("link.a", "role.auditor", Ent::User("aud".into()), Ent::Node("n2".into())),
+        ]);
+        let mut es = base_entities();
+        es.user("hostadm", false, &[]).user("clusteradm", false, &[]).user("aud", false, &[]);
+        es.host(LOCAL_ID).host("n2");
+        let q = |who: &str, action: &str, res: Ent| Query::new(Ent::User(who.into()), action, res, auth(0), es.clone());
+        // A grant on n2's host covers n2 only.
+        assert!(e.check(&q("hostadm", "installOvs", Ent::Node("n2".into()))).allowed);
+        assert!(!e.check(&q("hostadm", "installOvs", Ent::Host)).allowed, "the local host is another node");
+        // A cluster grant covers every host.
+        assert!(e.check(&q("clusteradm", "installOvs", Ent::Host)).allowed);
+        assert!(e.check(&q("clusteradm", "installOvs", Ent::Node("n2".into()))).allowed);
+        // Cluster-wide actions need a cluster grant: a host grant isn't one.
+        assert!(!e.check(&q("aud", "listNodes", Ent::Cluster)).allowed);
+        assert!(e.check(&q("aud", "readNode", Ent::Node("n2".into()))).allowed);
+        assert!(!e.check(&q("aud", "readNode", Ent::Host)).allowed);
+        // Host roles say nothing about projects.
+        let mut es2 = es.clone();
+        es2.in_project(Ent::Vm("v".into()), "pa");
+        assert!(!e.check(&Query::new(Ent::User("aud".into()), "readVm", Ent::Vm("v".into()), auth(0), es2)).allowed);
     }
 
     #[test]
@@ -656,7 +763,7 @@ mod tests {
         let e = engine_with(&[
             link("link.1", "role.owner", Ent::User("o".into()), Ent::Project("pa".into())),
             link("link.2", "role.editor", Ent::User("o".into()), Ent::Project("pb".into())),
-            link("link.3", "role.net-admin", Ent::User("n".into()), Ent::Host),
+            link("link.3", "role.net-admin", Ent::User("n".into()), Ent::Cluster),
         ]);
         let mut es = base_entities();
         es.user("o", false, &[]).user("n", false, &[]);
@@ -687,7 +794,7 @@ mod tests {
     fn quota_exceed_is_system_admin_only() {
         let e = engine_with(&[
             link("link.o", "role.owner", Ent::User("o".into()), Ent::Project("pa".into())),
-            link("link.s", "role.system-admin", Ent::User("s".into()), Ent::Host),
+            link("link.s", "role.system-admin", Ent::User("s".into()), Ent::Cluster),
         ]);
         let mut es = base_entities();
         es.user("o", false, &[]).user("s", false, &[]);

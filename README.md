@@ -39,9 +39,9 @@ sandboxed systemd unit under the `glidex` system user (data in
 and taken out of `glidex` if an earlier install put you there; log out
 and back in afterwards. Defaults need no config file;
 `/etc/glidex/control-plane.json.example` lists the settings. Re-run it
-to update. `--no-qemu`, `--no-networking`, `--no-services` and
-`--ovs-profile kernel` opt out (remembered for later runs; `--help` for
-all). It needs Linux with KVM (`/dev/kvm`). See
+to update. `--no-qemu`, `--no-networking` and `--no-services` opt out;
+Open vSwitch uses the kernel datapath unless `--ovs-profile dpdk`
+(choices are remembered for later runs; `--help` for all). It needs Linux with KVM (`/dev/kvm`). See
 [spec/installer.md](spec/installer.md).
 
 ## Run

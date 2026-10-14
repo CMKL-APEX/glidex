@@ -69,9 +69,19 @@ Reading top-to-bottom inside `crates/glidex-control-plane/src/`:
   (bumping `generation`) together with an event. Holds no process
   handles; host actions on VMs (hypervisors, VM ports) happen in the
   controller, never on the request path.
-- **`store.rs`** — `VmStore`: the `vms` table as `{meta, spec, status}`
-  envelopes, the `events` rings, the schema version and its migration
+- **`store/`** — `Db` (`store/db.rs`): the only way to write the ReDB
+  database. A write is a `Tx` that records every `put`/`delete`, so the
+  change is a `WriteSet` a replicated store can propose to Raft
+  ([clustering.md §6.1](clustering.md#61-store-api-milestone-c0)); it
+  also owns the change bell and `subscribe`. `VmStore` (`store/mod.rs`):
+  the `vms` table as `{meta, spec, status}` envelopes, the `events`
+  rings, the schema version and its migration
   ([data-model.md](data-model.md#persistence-schema)).
+- **`node.rs`** — `Node`, `NodeStore` and `Roles`: the `nodes` table
+  (one implicit node `local` on a standalone host) and which halves of
+  the control plane run in the process: the node role (VM, disk and image
+  controllers) and the server role (API, cluster controllers)
+  ([clustering.md D4](clustering.md#3-decisions)).
 - **`controller/`** — the work queue (`queue.rs`), the VM controller
   (`vm.rs`, one reconcile per VM at a time) and startup adoption
   (`startup.rs`). The only writer of VM `status`.

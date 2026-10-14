@@ -55,6 +55,10 @@ export interface VmResponse {
   stop_grace_secs?: number;
   conditions?: Condition[];
   last_exit?: ExitRecord;
+  /** The node the VM is placed on (spec/clustering.md §9.1). */
+  node?: string;
+  /** That node's name (spec/clustering-ui.md §9). */
+  node_name?: string;
   vcpu_count: number;
   mem_size_mib: number;
   hypervisor: HypervisorType;
@@ -94,6 +98,11 @@ export interface Network {
   /** Projects that accepted a share of this project network. */
   shares?: string[];
   share_offers?: { project: string; offered_by: string; offered_at: number; expires_at: number }[];
+  /** `cluster`: an OVN network every node can use; `node`: an OVS bridge on `node` (spec/clustering.md §11). */
+  scope?: "cluster" | "node";
+  node?: string;
+  physnet?: string;
+  router?: string;
   /** What the network controller last saw in netd (spec/reconciliation.md §10.3). */
   phase?: "pending" | "ready" | "degraded" | "netd_unavailable";
   conditions?: Condition[];
@@ -115,6 +124,10 @@ export interface CreateNetworkRequest {
   bridge?: string;
   subnet?: string;
   vlan?: number;
+  /** `cluster` (OVN) or `node`; the server's default is the cluster's when OVN is on. */
+  scope?: "cluster" | "node";
+  /** A provider network (cluster scope, bridged): its physical network. */
+  physnet?: string;
 }
 
 export interface Combination {
@@ -148,6 +161,26 @@ export interface BridgeRecord {
   live?: { ports: string[] } | null;
 }
 
+/** How an uplink attaches the NIC (networking.md §8). */
+export type UplinkKind =
+  | { kind: "kernel"; ifname: string }
+  | { kind: "afxdp"; ifname: string; xdp_mode?: string; n_rxq?: number }
+  | { kind: "dpdk"; pci: string; n_rxq?: number };
+
+/** An uplink as netd keeps it (`GET /ovs/bridges/{b}/uplinks`). */
+export interface UplinkResult {
+  record: {
+    spec: { name: string; bridge: string; migrate_ip: boolean } & UplinkKind;
+    /** The host's address was moved; commit with `token` before `deadline`. */
+    pending?: { token: string; deadline: number } | null;
+    /** Re-applying at start failed and was rolled back: the NIC has its own address again. */
+    boot_rollback?: { at: number; reason: string } | null;
+    accept_dhcp?: boolean;
+  };
+  phase: "active" | "pending_commit";
+  live: { error?: string; link_state?: string; warnings?: string[] };
+}
+
 export interface CreateVmRequest {
   name: string;
   /** Project id or name; default: the caller's default project. */
@@ -177,6 +210,28 @@ export interface CreateVmRequest {
   restart_policy?: "on_failure" | "never";
   /** After a host reboot, if it should be running: start it again (default) or not. */
   on_host_boot?: "resume" | "stop";
+  /** Run on this node (id or name); default: the scheduler picks (spec/clustering.md §9.1). */
+  node?: string;
+}
+
+/** One node's answer to `POST /scheduler/preview` (spec/clustering-ui.md §5.1). */
+export interface NodeFit {
+  id: string;
+  name: string;
+  /** Why the VM can't go there; null: it fits. */
+  refused: string | null;
+  vcpus_taken: number;
+  vcpus_capacity: number;
+  mem_mib_taken: number;
+  mem_mib_capacity: number;
+  vms: number;
+}
+
+export interface PlacementPreview {
+  /** The node the scheduler would pick, if any fits. */
+  pick: string | null;
+  /** Every node, the scheduler's preference first. */
+  nodes: NodeFit[];
 }
 
 // ---- images and disks (spec/images.md) ------------------------------------
@@ -217,6 +272,8 @@ export interface ImageInfo {
   vars_template?: boolean;
   /** VMs booting through this firmware image. */
   used_by_vms?: string[];
+  /** In a cluster, each node's copy of the file (spec/clustering-ui.md §5.3). */
+  copies?: { node: string; node_name?: string; state: "downloading" | "ready" | "failed"; bytes: number; error?: string }[];
   /** Deletion requested; the image controller is removing it. */
   deleting?: boolean;
 }
@@ -280,6 +337,9 @@ export interface DiskInfo {
   busy_op?: string;
   path: string;
   project?: string;
+  /** The node holding the disk's file (spec/clustering.md §9.2). */
+  node?: string;
+  node_name?: string;
   created_at: number;
   partition_table?: { kind: "gpt" | "mbr"; partitions: PartitionInfo[]; free_tail_bytes: number };
   warnings?: string[];
@@ -436,6 +496,19 @@ export function vmActivity(vm: VmResponse): string | null {
 }
 
 /** What keeps the VM from its desired state (the `Ready` condition). */
+/** The VM's node stopped reporting (spec/clustering.md §7.2): its last
+ * known state is shown, but the VM may still be running. */
+export function nodeUnreachable(vm: VmResponse): boolean {
+  return vm.conditions?.some((c) => c.kind === "Ready" && c.status === "Unknown" && c.reason === "NodeUnreachable") ?? false;
+}
+
+/** Why the scheduler hasn't placed the VM, when it hasn't. */
+export function unscheduledReason(vm: VmResponse): string | null {
+  const s = vm.conditions?.find((c) => c.kind === "Scheduled");
+  if (!s || s.status !== "False") return null;
+  return s.message || s.reason;
+}
+
 export function notReadyReason(vm: VmResponse): string | null {
   const ready = vm.conditions?.find((c) => c.kind === "Ready");
   if (!ready || ready.status === "True") return null;
@@ -467,7 +540,9 @@ export function stateLabel(state: VmState): string {
 
 /** A Cedar entity reference, as the API serializes it. */
 export type EntityType =
+  | "Cluster"
   | "Host"
+  | "Node"
   | "User"
   | "Team"
   | "Token"
@@ -479,10 +554,19 @@ export type EntityType =
   | "Network"
   | "PciDevice";
 
-export type EntityRef = { type: "Host" } | { type: Exclude<EntityType, "Host">; id: string };
+/** Entity types that take no id: the cluster, and the host serving the request. */
+export type SingletonEntityType = "Cluster" | "Host";
+
+/** `Cluster` is the root of everything cluster-wide (projects, identity,
+ * policy); `Host` is the node serving the request and `Node` another node. */
+export type EntityRef = { type: SingletonEntityType } | { type: Exclude<EntityType, SingletonEntityType>; id: string };
+
+export function isSingleton(t: EntityType): t is SingletonEntityType {
+  return t === "Cluster" || t === "Host";
+}
 
 export function entityLabel(e: EntityRef): string {
-  return e.type === "Host" ? "Host" : `${e.type}:${e.id}`;
+  return "id" in e ? `${e.type}:${e.id}` : e.type;
 }
 
 export interface AuthMethods {
@@ -717,7 +801,7 @@ export interface MeterValue {
   unit: string;
 }
 
-export type GroupKey = "project" | "vm" | "disk" | "nic" | "network";
+export type GroupKey = "project" | "vm" | "disk" | "nic" | "network" | "node";
 
 export interface UsageRow {
   start: string;
@@ -790,4 +874,201 @@ export interface VmStats {
   vm: Record<string, number> | null;
   nics: LiveEntry[];
   disks: LiveEntry[];
+}
+
+// ---- nodes (spec/clustering.md §7) -------------------------------------------
+
+export type NodePhase = "Active" | "Draining" | "Departing" | "Departed" | "Removed" | "Forgotten";
+export type Tristate = "True" | "False" | "Unknown";
+
+export interface NodeResources {
+  cpus: number;
+  memory_mib: number;
+  hugepages?: Record<string, number>;
+}
+
+/** A node record as `GET /nodes` and the live stream send it. */
+export interface NodeRecord {
+  meta: { id: string; name: string; created_at: number; generation: number; resource_version: number };
+  spec: {
+    name: string;
+    role: "server" | "agent";
+    unschedulable: boolean;
+    labels: Record<string, string>;
+    /** `auto` (absent): `netdev` where DPDK runs, else `system` (spec/clustering.md §11.6). */
+    br_int_datapath?: BrIntDatapath;
+    /** physnet → bridge set through the API (the host's file may add more). */
+    bridge_mappings?: Record<string, string>;
+  };
+  status: {
+    phase: NodePhase;
+    ready: Tristate;
+    ready_reason?: string;
+    raft_id?: number;
+    advertise?: string;
+    tunnel_ip?: string;
+    versions: { glidex: string; ovs?: string; ovn?: string };
+    capacity: NodeResources;
+    allocatable: NodeResources;
+    features?: { kvm: boolean; hypervisors: string[]; dpdk?: boolean; iommu?: boolean; br_int_datapath?: string; physnets?: Record<string, string> };
+    pci_devices?: string[];
+    heartbeat?: number;
+    departed_ids?: string[];
+  };
+}
+
+export type BrIntDatapath = "auto" | "system" | "netdev";
+
+/** What a node's `br-int` datapath should be, by its setting. */
+export function wantedBrInt(n: NodeRecord): "system" | "netdev" {
+  const s = n.spec.br_int_datapath ?? "auto";
+  if (s === "system" || s === "netdev") return s;
+  return n.status.features?.dpdk ? "netdev" : "system";
+}
+
+/** A node is gone for good (kept as a record only). */
+export function isTombstone(phase: NodePhase): boolean {
+  return phase === "Departed" || phase === "Removed" || phase === "Forgotten";
+}
+
+/** What one import plan brings (`GET /imports/{plan}`), for the mapping editor. */
+export interface ImportSources {
+  projects: { id: string; name: string }[];
+  networks: { name: string; mode: string }[];
+  credentials: { key: string; project: string; username: string }[];
+  vms: { id: string; name: string; project: string }[];
+}
+
+export interface ImportMappings {
+  projects: Record<string, string>;
+  networks: Record<string, string>;
+  credentials: Record<string, string>;
+  over_quota: boolean;
+}
+
+/** A chassis or node reference in OVN views. */
+export interface ChassisRef {
+  chassis: string;
+  node: string | null;
+  node_name: string | null;
+  priority?: number;
+}
+
+/** The shared edge of NAT cluster networks (spec/clustering.md §11.2). */
+export interface OvnEdge {
+  physnet: string;
+  external_cidr: string;
+  gateway: string;
+  external_ip: string;
+  external_pool?: string | null;
+  gateway_nodes: string[];
+}
+
+/** The cluster's OVN setting (spec/clustering-ui.md §8a). */
+export interface OvnSettings {
+  enabled: boolean;
+  underlay_mtu?: number | null;
+  nat_supernet?: string | null;
+  edge?: OvnEdge | null;
+  snat_ct_zones?: [number, number] | null;
+  dns_servers?: string[];
+  updated_by?: string;
+  updated_at?: number;
+}
+
+/** `GET /cluster/settings/ovn`: `enabled` for everyone, the rest with `readCluster`. */
+export interface OvnSettingsView {
+  enabled: boolean;
+  /** The shared edge for NAT networks spanning the nodes is set. */
+  edge?: boolean;
+  clustered?: boolean;
+  /** `cluster`: the setting; `file`: control-plane.json (not moved yet); `none`. */
+  source?: "cluster" | "file" | "none";
+  settings?: OvnSettings;
+  nodes?: { id: string; name: string; role: string; ovn_version: string | null; ovn_central: boolean; missing: string | null }[];
+  cluster_networks?: string[];
+}
+
+/** `GET /cluster/ovn` (spec/clustering-ui.md §8). */
+export interface OvnOverview {
+  enabled: boolean;
+  nb?: { address: string; reachable: boolean; leader: boolean }[];
+  sb?: { address: string; reachable: boolean; leader: boolean }[];
+  chassis?: (ChassisRef & { hostname: string; encaps: string[]; nb_cfg_timestamp: number | null })[];
+  gateways?: { router: string; active: ChassisRef | null; candidates: ChassisRef[] }[];
+}
+
+/** One node's tunnels (`GET /cluster/ovn/tunnels`, spec/clustering-ui.md §8b). */
+export interface NodeTunnels {
+  node: string;
+  node_name: string;
+  answered: boolean;
+  error?: string;
+  chassis?: string | null;
+  controller_running?: boolean;
+  tunnels?: {
+    name: string;
+    remote_ip: string;
+    /** `present`, `error` (OVS couldn't set it up) or `bfd_down`. */
+    state: "present" | "error" | "bfd_down";
+    error?: string;
+    bfd_state?: string;
+    bfd_diagnostic?: string;
+    rx_packets: number;
+    tx_packets: number;
+    rx_bytes: number;
+    tx_bytes: number;
+    peer: { node: string; node_name: string } | null;
+  }[];
+  /** Other nodes it has no tunnel to. */
+  missing?: { node: string; node_name: string }[];
+}
+
+/** `GET /networks/{name}/ovn`. */
+export interface NetworkOvn {
+  switch: string;
+  ports: { name: string; kind: string; addresses: string[]; up: boolean | null; bound: ChassisRef | null; vm: { id: string; name: string } | null }[];
+  router: { name: string; nat: string[]; active_gateway: ChassisRef | null; gateway_candidates: ChassisRef[] } | null;
+}
+
+/** A detach (`GET /departures`, clustering.md §5.8). */
+export interface Departure {
+  plan: string;
+  node: string;
+  node_name?: string;
+  /** `frozen`, `committed` or `aborted`. */
+  state: string;
+  started_at: number;
+  deadline: number;
+  map_networks: Record<string, string>;
+  with_access: boolean;
+  acknowledged: boolean;
+}
+
+/** A join or rejoin token, shown once (spec/clustering-ui.md §2.3). */
+export interface IssuedToken {
+  token: string;
+  role?: string;
+  ttl_secs: number;
+  servers?: string[];
+  ca_fingerprint?: string;
+  node?: string;
+  node_id?: string;
+}
+
+/** An import plan as `GET /imports` and the live stream send it (clustering.md §5.9). */
+export interface ImportPlanView {
+  plan: string;
+  state: string;
+  node: string;
+  node_id: string;
+  advertise: string;
+  summary: { vms: number; disks: number; images: number; networks: number; credentials: number; projects: number };
+  problems: string[];
+  mappings: ImportMappings;
+  /** Only on `GET /imports/{plan}`. */
+  sources?: ImportSources;
+  created_by: string;
+  created_at: number;
+  expires_at: number;
 }

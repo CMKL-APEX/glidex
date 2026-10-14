@@ -10,6 +10,7 @@
 //! nftables table, files under its own directories).
 
 pub mod bridge;
+pub mod ct_meter;
 pub mod exec;
 pub mod host;
 pub mod install;
@@ -22,6 +23,7 @@ pub mod source_build;
 pub mod stats;
 pub mod tuning;
 pub mod nic;
+pub mod ovn;
 pub mod uplink;
 pub mod vm_port;
 pub mod vsctl;

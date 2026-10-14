@@ -1,0 +1,10 @@
+[package]
+name = "glidex-e2e"
+version.workspace = true
+edition.workspace = true
+description = "End-to-end tests that drive real glidex installations (nested in VMs of this host's glidex)"
+publish = false
+
+[dependencies]
+serde_json = { workspace = true }
+uuid = { workspace = true }
