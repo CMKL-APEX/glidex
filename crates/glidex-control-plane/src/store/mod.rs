@@ -488,7 +488,6 @@ pub fn push_event(txn: &Tx<'_>, key: &str, event: Event) -> Result<(), Persisten
 #[cfg(test)]
 mod tests {
     use super::*;
-    use redb::ReadableTable as _;
 
     fn legacy(id: &str, state: &str) -> serde_json::Value {
         serde_json::json!({

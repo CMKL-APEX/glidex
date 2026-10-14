@@ -6,13 +6,13 @@
 use super::net::PeerCert;
 use super::raft::{Rpc, SnapshotHandle};
 use super::runtime::Cluster;
-use crate::node::{Node, NodeRole, NodeSpec, NodeStatus};
+use crate::node::{Node, NodeRole, NodeSpec};
 use crate::store::{Origin, TableId};
 use axum::body::Body;
 use axum::extract::{Request, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post, put};
+use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -644,7 +644,7 @@ async fn ovn_status(State(c): Ctx, p: Option<Extension<PeerCert>>) -> Response {
 /// `/cluster/v1/ui/<path>`: a browser request a node's UI socket relayed
 /// (spec/clustering-ui.md §3.6). Any node may relay; this server
 /// authenticates the request itself, as if the browser had come here.
-async fn ui_relayed(State(c): Ctx, p: Option<Extension<PeerCert>>, mut req: Request) -> Response {
+async fn ui_relayed(State(c): Ctx, p: Option<Extension<PeerCert>>, req: Request) -> Response {
     let peer = match peer(&c, p, false) {
         Ok(p) => p,
         Err(r) => return r,
@@ -691,7 +691,7 @@ async fn serve_marked(c: &Cluster, req: Request) -> Response {
 
 /// `/cluster/v1/host/<path>`: a host-local request a server authorized for
 /// this node's host (spec/clustering-ui.md §3.6). Servers only.
-async fn host_authorized(State(c): Ctx, p: Option<Extension<PeerCert>>, mut req: Request) -> Response {
+async fn host_authorized(State(c): Ctx, p: Option<Extension<PeerCert>>, req: Request) -> Response {
     if let Err(r) = peer(&c, p, true) {
         return r;
     }
@@ -902,7 +902,6 @@ fn relay_target(c: &Cluster, p: Option<Extension<PeerCert>>, id: &str) -> Result
 }
 
 fn get_vm_placement(db: &crate::store::Db, id: &str) -> Option<String> {
-    use redb::ReadableTable;
     let txn = db.begin_read().ok()?;
     let t = txn.open_table(TableId::Vms.definition()).ok()?;
     let v: serde_json::Value = serde_json::from_slice(t.get(id).ok()??.value()).ok()?;

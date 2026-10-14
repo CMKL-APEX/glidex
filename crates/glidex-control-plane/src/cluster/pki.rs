@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 use std::net::IpAddr;
 use std::path::Path;
 use thiserror::Error;
-use x509_parser::prelude::{parse_x509_certificate, X509Certificate};
+use x509_parser::prelude::parse_x509_certificate;
 
 pub const CA_VALIDITY_DAYS: i64 = 3650;
 pub const NODE_VALIDITY_DAYS: i64 = 365;
