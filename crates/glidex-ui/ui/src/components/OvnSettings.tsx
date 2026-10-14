@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import * as api from "../api";
 import type { OvnEdge, OvnSettings, OvnSettingsView } from "../types";
 import { formatTime } from "../types";
@@ -88,7 +88,37 @@ export function OvnSettingsDialog({ view, onClose, onDone }: { view: OvnSettings
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [disabling, setDisabling] = useState(false);
+  const [notes, setNotes] = useState<string[]>([]);
   const nodes = view.nodes ?? [];
+
+  // Suggested values for the cluster: fill what is empty (or everything, on request).
+  const suggest = useCallback(async (overwrite: boolean) => {
+    try {
+      const d = await api.getEdgeDefaults();
+      setEdge((cur) => {
+        const pick = <K extends keyof OvnEdge>(k: K): OvnEdge[K] => {
+          const mine = cur[k];
+          const empty = mine === undefined || mine === null || mine === "" || (Array.isArray(mine) && mine.length === 0);
+          return overwrite || empty ? d.edge[k] : mine;
+        };
+        return {
+          physnet: pick("physnet"),
+          external_cidr: pick("external_cidr"),
+          gateway: pick("gateway"),
+          external_ip: pick("external_ip"),
+          external_pool: pick("external_pool") ?? "",
+          gateway_nodes: pick("gateway_nodes"),
+        };
+      });
+      setNotes(d.notes);
+    } catch (e) {
+      setNotes([`No suggestions: ${errorMessage(e)}`]);
+    }
+  }, []);
+  // A new edge starts from the suggestions.
+  useEffect(() => {
+    if (edgeOn && !s.edge) suggest(false);
+  }, [edgeOn, s.edge, suggest]);
   const networks = view.cluster_networks ?? [];
 
   const body = (enabled: boolean): Omit<OvnSettings, "updated_by" | "updated_at"> => ({
@@ -141,6 +171,21 @@ export function OvnSettingsDialog({ view, onClose, onDone }: { view: OvnSettings
           <input type="checkbox" checked={edgeOn} onChange={(e) => setEdgeOn(e.target.checked)} />
           Shared edge for NAT cluster networks
         </label>
+        {edgeOn && (
+          <div className="flex items-center justify-between text-xs">
+            <span className="text-gray-500">Prefilled from what the nodes report; edit anything.</span>
+            <button className="text-sky-700 hover:underline" onClick={() => suggest(true)}>
+              Suggest values
+            </button>
+          </div>
+        )}
+        {edgeOn && notes.length > 0 && (
+          <ul className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-2 list-disc pl-5 space-y-1">
+            {notes.map((n) => (
+              <li key={n}>{n}</li>
+            ))}
+          </ul>
+        )}
         {edgeOn && (
           <div className="grid grid-cols-2 gap-3">
             {field("Physical network", edge.physnet, (v) => setEdge({ ...edge, physnet: v }), "uplink")}

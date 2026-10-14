@@ -51,6 +51,7 @@ import type {
   OvnOverview,
   OvnSettings,
   OvnSettingsView,
+  OvnEdge,
   NodeTunnels,
   BrIntDatapath,
   UplinkKind,
@@ -600,6 +601,8 @@ export const abortDetach = (id: string) => post<Record<string, unknown>>(`/nodes
 export const listDepartures = () => get<Departure[]>("/departures");
 export const clusterOvn = () => get<OvnOverview>("/cluster/ovn");
 export const clusterTunnels = () => get<{ enabled: boolean; nodes?: NodeTunnels[] }>("/cluster/ovn/tunnels");
+/** A shared edge that should work for this cluster, from what nodes report (spec/clustering-ui.md §8a). */
+export const getEdgeDefaults = () => get<{ edge: OvnEdge; complete: boolean; notes: string[] }>("/cluster/settings/ovn/edge-defaults");
 export const getOvnSettings = () => get<OvnSettingsView>("/cluster/settings/ovn");
 export const putOvnSettings = (s: Omit<OvnSettings, "updated_by" | "updated_at">) => put<OvnSettingsView>("/cluster/settings/ovn", s);
 export const networkOvn = (name: string) => get<NetworkOvn>(`/networks/${enc(name)}/ovn`);

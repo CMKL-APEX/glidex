@@ -599,6 +599,15 @@ impl VmManager {
         if let (_, Ok(caps)) = self.netd.probe() {
             probe.features.dpdk = caps.get("dpdk_initialized").and_then(|v| v.as_bool()).unwrap_or(false);
         }
+        // The address each migrated uplink carries on its bridge.
+        if let Ok(ups) = self.netd.call::<Vec<glidex_netd::proto::UplinkResult>>(Op::ListUplinks) {
+            for u in ups.into_iter().filter(|u| u.record.boot_rollback.is_none() && u.record.pending.is_none()) {
+                let Some(snap) = &u.record.snapshot else { continue };
+                if let Some(a) = snap.addresses.iter().find(|a| a.split('/').next().is_some_and(|ip| ip.parse::<std::net::Ipv4Addr>().is_ok())) {
+                    probe.features.bridge_addrs.insert(u.record.spec.bridge.clone(), crate::node::BridgeAddr { address: a.clone(), gateway: snap.default_gateway().map(String::from) });
+                }
+            }
+        }
         self.nodes
             .report_self(&self.local_node_id(), probe, self.cluster().is_none())
             .map(|_| ())

@@ -459,6 +459,7 @@ pub async fn create_uplink(c: Caller, Path(bridge): Path<String>, Json(req): Jso
         accept_dhcp: req.accept_dhcp,
     };
     let res: UplinkResult = netd_blocking(&c, move |n, who| n.call_as(Op::EnsureUplink(args), who)).await?;
+    report_soon(&c);
     // 202: the IP migration must still be committed within the window.
     let status = match res.phase {
         UplinkPhase::PendingCommit => StatusCode::ACCEPTED,
@@ -478,6 +479,7 @@ pub async fn commit_uplink(c: Caller, Path((bridge, name)): Path<(String, String
     c.manager().meter_final_sample().await;
     let res: UplinkResult =
         netd_blocking(&c, move |n, who| n.call_as(Op::CommitUplink { bridge, name, token: req.token }, who)).await?;
+    report_soon(&c);
     Ok(Json(res))
 }
 
@@ -489,6 +491,7 @@ pub async fn reapply_uplink(c: Caller, Path((bridge, name)): Path<(String, Strin
     // It moves the host's IP again: as a confirmed uplink, step-up.
     c.require_action("confirmUplink", Ent::Host, EntitySet::new(), &[])?;
     let res: UplinkResult = netd_blocking(&c, move |n, who| n.call_as(Op::ReapplyUplink { bridge, name }, who)).await?;
+    report_soon(&c);
     let status = match res.phase {
         UplinkPhase::PendingCommit => StatusCode::ACCEPTED,
         UplinkPhase::Active => StatusCode::OK,
@@ -496,11 +499,23 @@ pub async fn reapply_uplink(c: Caller, Path((bridge, name)): Path<(String, Strin
     Ok((status, Json(res)))
 }
 
+/// This node's uplinks changed: report what it has now (the shared edge's
+/// defaults read it), without waiting for the next periodic report.
+fn report_soon(c: &Caller) {
+    let m = c.app.manager.clone();
+    tokio::task::spawn_blocking(move || {
+        if let Err(e) = m.report_self() {
+            tracing::warn!("reporting this node after an uplink change: {}", e);
+        }
+    });
+}
+
 pub async fn delete_uplink(c: Caller, Path((bridge, name)): Path<(String, String)>) -> Result<impl IntoResponse, ApiErr> {
     c.set_target(format!("uplink:{}/{}", bridge, name));
     c.require(Ent::Host, EntitySet::new())?;
     c.manager().meter_final_sample().await;
     netd_blocking(&c, move |n, who| n.call_as::<serde_json::Value>(Op::DeleteUplink { bridge, name }, who)).await?;
+    report_soon(&c);
     Ok(StatusCode::NO_CONTENT)
 }
 

@@ -249,6 +249,7 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         .add("GET", "/cluster/ovn/tunnels", "readCluster", get(net::cluster_ovn_tunnels))
         .add("GET", "/cluster/settings/ovn", AUTHENTICATED, get(cluster::get_ovn_settings))
         .add("PUT", "/cluster/settings/ovn", "configureOvn", axum::routing::put(cluster::put_ovn_settings))
+        .add("GET", "/cluster/settings/ovn/edge-defaults", "readCluster", get(cluster::edge_defaults))
         .add("POST", "/cluster/join-tokens", "createJoinToken", post(cluster::create_token))
         .add("POST", "/cluster/promote", "promoteNode", post(cluster::promote))
         .add("POST", "/cluster/import", "importCluster", post(cluster::import_join))

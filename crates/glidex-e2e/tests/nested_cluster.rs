@@ -355,6 +355,38 @@ fn a_nested_two_node_cluster_binds_vm_ports_and_carries_traffic_over_geneve() {
 
     step("the agent's only NIC on a bridge with its address, through its UI, survives a reboot");
     check_single_nic_uplink_survives_a_reboot(&h2, &ui);
+
+    // spec/clustering-ui.md §8a: the agent's uplink bridge as the physical
+    // network, the suggested shared edge taken as is, and a guest on the
+    // other node reaching the LAN's router through it (Geneve, then SNAT on h2).
+    step("the suggested shared edge carries a NAT network's traffic out");
+    inner.ok("PUT", &format!("/nodes/{n2}/ovn"), Some(&json!({ "bridge_mappings": { "uplink": "gxbr-up" } })));
+    let lan_gw = h2.check("ip -j route show default | python3 -c 'import json,sys; print(json.load(sys.stdin)[0][\"gateway\"])'").trim().to_string();
+    let d = wait_for_or("a complete edge suggestion", Duration::from_secs(60), || {
+        let d = inner.ok("GET", "/cluster/settings/ovn/edge-defaults", None);
+        (d["complete"] == true).then_some(d)
+    }, || format!("{}", inner.call("GET", "/cluster/settings/ovn/edge-defaults", None).1));
+    assert_eq!(d["edge"]["gateway_nodes"], json!([format!("gxe2e-{tag}-h2")]), "{d}");
+    assert_eq!(d["edge"]["gateway"], lan_gw.as_str(), "{d}");
+    eprintln!("edge suggested: {}", d["edge"]);
+    inner.ok("PUT", "/cluster/settings/ovn", Some(&json!({ "enabled": true, "edge": d["edge"] })));
+    inner.ok("POST", "/networks", Some(&json!({ "name": "e2e-nat", "mode": "nat", "port_type": "tap", "scope": "cluster" })));
+    h1.check("sudo mkdir -p /var/lib/gxe2e && sudo chmod 0755 /var/lib/gxe2e");
+    let out = h1.run_with_input("sudo sh -s", ping_seed_script("e2e-c", &lan_gw, "/var/lib/gxe2e/seed-c.img").as_bytes());
+    assert!(out.status.success(), "seed: {}", String::from_utf8_lossy(&out.stderr));
+    let vm = inner.ok("POST", "/vms", Some(&json!({
+        "name": "e2e-c", "vcpu_count": 1, "mem_size_mib": 768, "image": env("GLIDEX_E2E_GUEST_IMAGE", "debian-13"), "firmware": "cloudhv-edk2",
+        "cloud_init_path": "/var/lib/gxe2e/seed-c.img", "hypervisor": "cloudhypervisor", "node": n1,
+        "networks": [{ "network": "e2e-nat" }], "kernel_image_path": "", "rootfs_path": "", "power": "running",
+    })));
+    let id = vm["id"].as_str().unwrap().to_string();
+    let line = wait_for("e2e-c to report its ping to the LAN router", Duration::from_secs(600), || {
+        let out = h1.run(&format!("curl -s --unix-socket {API_SOCKET} http://glidex/vms/{id}/console/log"));
+        let log = String::from_utf8_lossy(&out.stdout).replace('\r', "");
+        log.lines().find(|l| l.contains("GXE2E-PING-")).map(String::from)
+    });
+    eprintln!("e2e-c: {line}");
+    assert!(line.contains("GXE2E-PING-OK"), "through the edge: {line}");
     drop(outer);
 }
 

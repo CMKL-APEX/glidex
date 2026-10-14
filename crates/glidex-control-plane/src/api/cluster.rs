@@ -413,3 +413,149 @@ pub async fn put_ovn_settings(c: Caller, Json(b): Json<OvnSettingsBody>) -> Resu
     m.apply_ovn_settings();
     Ok(Json(ovn_view(&c)))
 }
+
+/// `GET /cluster/settings/ovn/edge-defaults` (spec/clustering-ui.md §8a): a
+/// shared edge that should work for this cluster, from what the nodes
+/// report, and notes on what couldn't be worked out. Nothing is written.
+pub async fn edge_defaults(c: Caller) -> Result<impl IntoResponse, ApiErr> {
+    c.require_action("readCluster", Ent::Cluster, EntitySet::new(), &[])?;
+    let nodes: Vec<crate::node::Node> = c.manager().nodes().list().unwrap_or_default().into_iter().filter(|n| !n.status.phase.is_tombstone()).collect();
+    Ok(Json(suggest_edge(&nodes)))
+}
+
+/// The suggestion itself (pure, for tests).
+pub fn suggest_edge(nodes: &[crate::node::Node]) -> serde_json::Value {
+    use std::collections::BTreeMap;
+    use std::net::Ipv4Addr;
+    let mut notes: Vec<String> = Vec::new();
+    // The physical network most nodes map; "uplink" when none does.
+    let mut count: BTreeMap<&str, usize> = BTreeMap::new();
+    for n in nodes {
+        for p in n.status.features.physnets.keys() {
+            *count.entry(p.as_str()).or_default() += 1;
+        }
+    }
+    let physnet = count.iter().max_by(|a, b| a.1.cmp(b.1).then(b.0.cmp(a.0))).map(|(p, _)| p.to_string());
+    if physnet.is_none() {
+        notes.push("No node maps a physical network yet: on a node's page, map one (e.g. uplink) to a bridge that has the uplink NIC.".into());
+    }
+    let physnet = physnet.unwrap_or_else(|| "uplink".to_string());
+    // Gateway nodes: those that map it and run br-int on the kernel datapath, servers first.
+    let mapping: Vec<&crate::node::Node> = nodes.iter().filter(|n| n.status.features.physnets.contains_key(&physnet)).collect();
+    let mut gateways: Vec<&crate::node::Node> = mapping.iter().copied().filter(|n| n.wanted_br_int() == "system").collect();
+    gateways.sort_by(|a, b| (a.spec.role != NodeRole::Server).cmp(&(b.spec.role != NodeRole::Server)).then(a.spec.name.cmp(&b.spec.name)));
+    gateways.truncate(3);
+    for n in mapping.iter().filter(|n| n.wanted_br_int() != "system") {
+        notes.push(format!("{} maps {physnet} but runs br-int on the userspace datapath; set it to kernel on its page to make it a gateway node.", n.spec.name));
+    }
+    if gateways.is_empty() && !mapping.is_empty() {
+        notes.push("No node can carry the edge yet (see above).".into());
+    }
+    // The LAN: from the host address an uplink moved onto the mapped bridge.
+    let lan = gateways.iter().chain(mapping.iter()).find_map(|n| {
+        let bridge = n.status.features.physnets.get(&physnet)?;
+        let a = n.status.features.bridge_addrs.get(bridge)?;
+        let (ip, prefix) = a.address.split_once('/')?;
+        let (ip, prefix): (Ipv4Addr, u8) = (ip.parse().ok()?, prefix.parse().ok()?);
+        Some((ip, prefix, a.gateway.clone(), n.spec.name.clone(), bridge.clone()))
+    });
+    let (mut cidr, mut gateway, mut external_ip) = (String::new(), String::new(), String::new());
+    match &lan {
+        Some((ip, prefix, gw, from, bridge)) if *prefix <= 30 => {
+            let mask: u32 = if *prefix == 0 { 0 } else { u32::MAX << (32 - prefix) };
+            let net = u32::from(*ip) & mask;
+            let broadcast = net | !mask;
+            cidr = format!("{}/{}", Ipv4Addr::from(net), prefix);
+            match gw {
+                Some(g) => gateway = g.clone(),
+                None => notes.push(format!("{from}'s {bridge} has no default gateway: fill in the LAN's router.")),
+            }
+            // The highest host address nothing here uses (nodes, the gateway).
+            let mut taken: Vec<u32> = vec![u32::from(*ip)];
+            if let Ok(g) = gateway.parse::<Ipv4Addr>() {
+                taken.push(u32::from(g));
+            }
+            for n in nodes {
+                for a in n.status.features.bridge_addrs.values() {
+                    if let Some(Ok(x)) = a.address.split('/').next().map(|s| s.parse::<Ipv4Addr>()) {
+                        taken.push(u32::from(x));
+                    }
+                }
+                for x in [n.status.advertise.map(|a| a.ip()), n.status.tunnel_ip].into_iter().flatten() {
+                    if let std::net::IpAddr::V4(v4) = x {
+                        taken.push(u32::from(v4));
+                    }
+                }
+            }
+            if let Some(free) = (net + 1..broadcast).rev().find(|h| !taken.contains(h)) {
+                external_ip = Ipv4Addr::from(free).to_string();
+                notes.push(format!("The edge address {external_ip} is a guess (the highest address no node uses): make sure no other device on {cidr} has it."));
+            }
+        }
+        Some((_, prefix, _, from, bridge)) => notes.push(format!("{from}'s {bridge} is on a /{prefix}: too small for an edge address; fill in the LAN.")),
+        None if !mapping.is_empty() => notes.push(format!(
+            "No node carries the host's address on its {physnet} bridge, so the LAN isn't known: add the uplink with \"move the host's address\", or fill in the external network, gateway and edge address."
+        )),
+        None => {}
+    }
+    let complete = !physnet.is_empty() && !gateways.is_empty() && !cidr.is_empty() && !gateway.is_empty() && !external_ip.is_empty();
+    json!({
+        "edge": {
+            "physnet": physnet, "external_cidr": cidr, "gateway": gateway, "external_ip": external_ip,
+            "external_pool": null, "gateway_nodes": gateways.iter().map(|n| n.spec.name.clone()).collect::<Vec<_>>(),
+        },
+        "complete": complete,
+        "notes": notes,
+    })
+}
+
+#[cfg(test)]
+mod edge_tests {
+    use super::suggest_edge;
+    use crate::node::{BridgeAddr, Node, NodeRole, NodeSpec};
+
+    fn node(name: &str, role: NodeRole, mapped: bool, dpdk: bool, addr: Option<(&str, Option<&str>)>) -> Node {
+        let mut n = Node::new(name, NodeSpec { name: name.into(), role, unschedulable: false, labels: Default::default(), br_int_datapath: Default::default(), bridge_mappings: Default::default() });
+        if mapped {
+            n.status.features.physnets.insert("uplink".into(), "gxbr-up".into());
+        }
+        n.status.features.dpdk = dpdk;
+        if let Some((a, gw)) = addr {
+            n.status.features.bridge_addrs.insert("gxbr-up".into(), BridgeAddr { address: a.into(), gateway: gw.map(String::from) });
+        }
+        n
+    }
+
+    #[test]
+    fn the_edge_comes_from_the_mapped_bridges_address() {
+        let nodes = vec![
+            node("h2", NodeRole::Agent, true, true, Some(("192.0.2.11/24", Some("192.0.2.1")))),
+            node("h1", NodeRole::Server, true, false, Some(("192.0.2.10/24", Some("192.0.2.1")))),
+            node("h3", NodeRole::Agent, false, false, None),
+        ];
+        let v = suggest_edge(&nodes);
+        let e = &v["edge"];
+        assert_eq!(e["physnet"], "uplink");
+        assert_eq!(e["external_cidr"], "192.0.2.0/24");
+        assert_eq!(e["gateway"], "192.0.2.1");
+        assert_eq!(e["external_ip"], "192.0.2.254", "the highest address no node uses");
+        assert_eq!(e["gateway_nodes"], serde_json::json!(["h1"]), "h2 runs br-int on userspace (DPDK)");
+        assert_eq!(v["complete"], true);
+        let notes = v["notes"].to_string();
+        assert!(notes.contains("h2 maps uplink but runs br-int on the userspace datapath"), "{notes}");
+        assert!(notes.contains("is a guess"), "{notes}");
+    }
+
+    #[test]
+    fn without_a_mapping_it_says_what_to_do_first() {
+        let v = suggest_edge(&[node("h1", NodeRole::Server, false, false, None)]);
+        assert_eq!(v["edge"]["physnet"], "uplink");
+        assert_eq!(v["complete"], false);
+        assert!(v["notes"].to_string().contains("No node maps a physical network"), "{v}");
+        // Mapped but the address was never moved onto the bridge: the LAN is unknown.
+        let v = suggest_edge(&[node("h1", NodeRole::Server, true, false, None)]);
+        assert_eq!(v["edge"]["gateway_nodes"], serde_json::json!(["h1"]));
+        assert_eq!(v["edge"]["external_cidr"], "");
+        assert!(v["notes"].to_string().contains("LAN isn't known"), "{v}");
+    }
+}

@@ -148,6 +148,19 @@ pub struct NodeFeatures {
     /// OVN's databases (spec/clustering-ui.md §8a).
     #[serde(default)]
     pub ovn_central: bool,
+    /// The host address an uplink moved onto each bridge, and the default
+    /// gateway through it: what the shared edge's defaults are made from
+    /// (spec/clustering-ui.md §8a).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub bridge_addrs: BTreeMap<String, BridgeAddr>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BridgeAddr {
+    /// `addr/prefix` (IPv4).
+    pub address: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gateway: Option<String>,
 }
 
 /// What this build supports. A new write-set format or schema migration

@@ -479,6 +479,20 @@ external range, gateway, external IP and pool, gateway nodes) is part of
 the same setting and validated as the file is today. Isolated and
 provider networks need no edge.
 
+**Defaults for the edge.** `GET /cluster/settings/ovn/edge-defaults`
+(`readCluster`) suggests a complete edge from what nodes report, and the
+OVN settings form starts a new edge from it (**Suggest values** fills it
+again): the physical network most nodes map; as gateway nodes those that
+map it and run `br-int` on the kernel datapath, servers first, at most
+three; the external network and gateway from the host address an uplink
+moved onto that bridge (nodes report it as `bridge_addrs`, at once after
+an uplink change); as the edge address the highest address in that
+network no node or gateway uses, flagged as a guess to check on the LAN.
+`notes` say what couldn't be worked out and what to do (map a physical
+network, set a node's `br-int` to kernel, move the host's address onto
+the bridge). Verified on the nested cluster: the suggestion, saved as is,
+carried a guest's traffic from the other node out to the LAN's router.
+
 **Disabling** is refused while any cluster network exists (`409` naming
 them). Once off, each node leaves OVN (netd `LeaveOvn`, refused by netd
 while a glidex VM port is on `br-int`); the databases' files are kept.
