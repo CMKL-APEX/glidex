@@ -260,7 +260,7 @@ function AddNetworkForm({
 
   // Project networks are NAT or isolated, on a bridge glidex names.
   const project = scope !== "";
-  const routable = project && clusterWide && mode === "nat";
+  const routable = project && clusterWide && (mode === "nat" || mode === "isolated");
   useEffect(() => {
     if (!project || !canSpan) {
       setRouters([]);
@@ -400,10 +400,10 @@ function AddNetworkForm({
       {routable && routers.length > 0 && (
         <div>
           <label htmlFor="network-router" className="block text-sm font-medium text-gray-700">
-            Leaves through
+            {mode === "isolated" ? "Routed through" : "Leaves through"}
           </label>
           <select id="network-router" className={`${inputClass} bg-white`} value={router} onChange={(e) => setRouter(e.target.value)}>
-            <option value="">The cluster's shared edge</option>
+            <option value="">{mode === "isolated" ? "Not routed (isolated)" : "The cluster's shared edge"}</option>
             {routers.map((r) => (
               <option key={r.id} value={r.spec.name}>
                 Router {r.spec.name}
@@ -413,8 +413,10 @@ function AddNetworkForm({
           </select>
           <p className="mt-1 text-xs text-gray-500">
             {router
-              ? "It reaches the router's other networks, and leaves with the router's address. Fixed once created."
-              : "Like every NAT network on the edge: reaches no other network, leaves with the edge's address."}
+              ? "It reaches the router's other networks, and leaves with the router's address (if the router has one). It can be moved later from the project's Routers card."
+              : mode === "isolated"
+                ? "Its VMs reach only each other."
+                : "Like every NAT network on the edge: reaches no other network, leaves with the edge's address."}
           </p>
         </div>
       )}

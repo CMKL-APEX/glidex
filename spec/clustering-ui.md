@@ -562,14 +562,22 @@ own way out instead of the shared edge. The UI:
   address and gateway nodes are site resources, so those fields are
   offered only with `createNetwork` on the Host. **Delete** is disabled
   while networks are on the router. Each router links to the network
-  form with itself chosen, and **Attach network…** puts existing NAT
-  networks of the project (on the shared edge or another router) on it;
-  each attached network has **Detach** (back to the shared edge).
+  form with itself chosen, and **Attach network…** puts existing NAT or
+  isolated networks of the project (on the shared edge, another router,
+  or not routed) on it; each attached network has **Detach** (a NAT
+  network back to the shared edge, an isolated one isolated again).
 - **Network form**: a project NAT network that spans the nodes gets
-  *Leaves through*: the shared edge, or one of the project's routers.
+  *Leaves through* (the shared edge, or one of the project's routers), an
+  isolated one *Routed through* (not routed, or one of them).
 - **Moving a network** (`PUT /projects/{id}/networks/{name}/router`,
   `{router: name | null}`, action `createRouter`): only the project's own
-  NAT networks that span the nodes. The network keeps its gateway address
+  NAT or isolated networks that span the nodes. An isolated network on a
+  router keeps `mode: isolated` but is routed there exactly like a NAT
+  network (a router port at its `.1`, which the cluster IPAM already keeps
+  free, the gateway in its DHCP options, and SNAT if the router has an
+  address); running VMs learn the gateway at their next DHCP renewal (the
+  lease is an hour) or reboot. Detached, the port and the gateway go and
+  it is isolated again. The network keeps its gateway address
   and MAC, so VMs keep their addresses and gateway; the network
   controller takes its router port off the old router and puts it on the
   new one, and its SNAT follows. Connections open through the old way out

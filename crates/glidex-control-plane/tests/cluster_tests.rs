@@ -770,11 +770,20 @@ async fn provider_networks_and_vpc_routers() {
     assert!(d.networks.iter().any(|n| n.name == "web" && n.router.as_deref() == Some(r1.name.as_str())), "on r1");
     let (s, e) = call(&server, "PUT", "/projects/default/networks/web/router", Some(json!({ "router": "nope" })), &[]).await;
     assert_eq!(s, StatusCode::BAD_REQUEST, "{e}");
-    // Only a NAT network that spans the nodes, of this project.
+    // An isolated network goes on a router too, routed there like a NAT
+    // one, and is isolated again once it leaves.
     let (s, n) = call(&server, "POST", "/projects/default/networks", Some(json!({ "name": "iso", "mode": "isolated", "port_type": "tap", "scope": "cluster" })), &[]).await;
     assert_eq!(s, StatusCode::CREATED, "{n}");
-    let (s, e) = call(&server, "PUT", "/projects/default/networks/iso/router", Some(json!({ "router": "r1" })), &[]).await;
-    assert_eq!(s, StatusCode::BAD_REQUEST, "{e}");
+    let kind = |d: &glidex_ovn::Desired| d.networks.iter().find(|n| n.name == "iso").map(|n| (n.kind.clone(), n.router.clone())).unwrap();
+    assert_eq!(kind(&server.manager.__desired_ovn_for_tests().await.unwrap()), (glidex_ovn::NetKind::Isolated, None));
+    let (s, n) = call(&server, "PUT", "/projects/default/networks/iso/router", Some(json!({ "router": "r1" })), &[]).await;
+    assert_eq!(s, StatusCode::OK, "{n}");
+    assert_eq!(n["mode"], "isolated", "its mode stays: {n}");
+    assert_eq!(kind(&server.manager.__desired_ovn_for_tests().await.unwrap()), (glidex_ovn::NetKind::Nat, Some(r1.name.clone())));
+    let (s, n) = call(&server, "PUT", "/projects/default/networks/iso/router", Some(json!({ "router": null })), &[]).await;
+    assert_eq!(s, StatusCode::OK, "{n}");
+    assert_eq!(kind(&server.manager.__desired_ovn_for_tests().await.unwrap()), (glidex_ovn::NetKind::Isolated, None));
+    // Only the project's own networks that span the nodes.
     let (s, e) = call(&server, "PUT", "/projects/default/networks/p1/router", Some(json!({ "router": "r1" })), &[]).await;
     assert_eq!(s, StatusCode::NOT_FOUND, "a host network isn't the project's: {e}");
     let (s, n) = call(&server, "PUT", "/projects/default/networks/web/router", Some(json!({ "router": null })), &[]).await;

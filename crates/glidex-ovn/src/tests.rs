@@ -318,3 +318,26 @@ fn a_network_already_on_its_router_stays() {
     sync(&Nb::new(&exec, conn()), &d).unwrap();
     assert!(!exec.calls().join("\n").contains("lrp-del"), "{:?}", exec.calls());
 }
+
+#[test]
+fn an_isolated_network_off_its_router_loses_the_port_and_the_gateway() {
+    let exec = RecordingExec::new();
+    exec.on("ovn-nbctl --db=", empty(r#"["name"]"#));
+    let pre = "ovn-nbctl --db=ssl:192.0.2.11:6641,ssl:192.0.2.12:6641 -p /k -c /c -C /ca --format=json";
+    let sw = r#"{"data":[["gx-lab",["map",[["glidex-owner","glidex"],["glidex-network","lab"]]],["map",[]]]],"headings":["name","external_ids","other_config"]}"#;
+    exec.on(&format!("{pre} --columns=name,external_ids,other_config find Logical_Switch"), Output::ok(sw));
+    exec.on(&format!("{pre} --columns=_uuid find Logical_Router_Port"), Output::ok(r#"{"data":[[["uuid","lrp-lab"]]],"headings":["_uuid"]}"#));
+    // DHCP still hands out the router's gateway.
+    let lab = net("lab", NetKind::Isolated, "10.89.3.0/24");
+    let dhcp = format!(
+        r#"{{"data":[[["uuid","aaaa"],["map",[["lease_time","3600"],["server_id","10.89.3.1"],["router","10.89.3.1"],["server_mac","{}"],["mtu","1442"],["dns_server","{{192.0.2.53}}"]]]]],"headings":["_uuid","options"]}}"#,
+        lab.router_mac()
+    );
+    exec.on(&format!("{pre} --columns=_uuid,options find DHCP_Options"), Output::ok(dhcp));
+    let rep = sync(&Nb::new(&exec, conn()), &Desired { networks: vec![lab], ..Default::default() }).unwrap();
+    let calls = exec.calls().join("\n");
+    assert!(calls.contains("--if-exists lrp-del gx-lrp-lab -- --if-exists lsp-del gx-lab-rt"), "{calls}");
+    assert!(calls.contains("dhcp-options-set-options aaaa"), "the gateway leaves DHCP: {calls}");
+    assert!(!calls.contains("router=10.89.3.1"), "{calls}");
+    assert!(rep.changed.iter().any(|c| c == "network lab isolated again"), "{rep:?}");
+}

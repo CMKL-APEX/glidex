@@ -128,6 +128,7 @@ function NetworkRow({
             {net.mode} on {net.scope === "cluster" ? "OVN" : net.bridge}
             {net.scope === "cluster" && net.mode === "nat" &&
               (net.router ? ` · leaves via router ${routers.find((r) => r.id === net.router)?.spec.name ?? net.router}` : " · leaves via the shared edge")}
+            {net.scope === "cluster" && net.mode === "isolated" && net.router && ` · routed via router ${routers.find((r) => r.id === net.router)?.spec.name ?? net.router}`}
           </span>
           {net.deletion_requested_at && (
             <span className="ml-2 text-xs text-gray-500" title={notReady(net.conditions)?.message}>

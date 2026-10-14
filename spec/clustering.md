@@ -1023,7 +1023,7 @@ pub struct RouterStatus {
     pub snat_ct_zone: Option<u16>,        // from ovn.snat_ct_zones (§13.2)
     pub active_gateway: Option<NodeId>,   // where SNAT runs now
 }
-// Network gains: pub router: Option<String>   // nat mode, scope cluster; movable (clustering-ui.md §8d)
+// Network gains: pub router: Option<String>   // nat or isolated, scope cluster; movable (clustering-ui.md §8d)
 ```
 
 | Router | OVN objects |

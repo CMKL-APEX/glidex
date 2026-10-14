@@ -60,6 +60,7 @@ async function mockOvn(page: Page, project: string, pool = true): Promise<Seen> 
   const nets: any[] = [
     { name: "app", scope: "cluster", mode: "nat", bridge: "br-int", port_type: "tap", project, router: "a1b2c3d4", grants: [], shares: [], phase: "ready" },
     { name: "web", scope: "cluster", mode: "nat", bridge: "br-int", port_type: "tap", project, router: null, grants: [], shares: [], phase: "ready" },
+    { name: "lab", scope: "cluster", mode: "isolated", bridge: "br-int", port_type: "tap", project, router: null, grants: [], shares: [], phase: "ready" },
   ];
   await page.route("**/api/networks", async (r) => {
     if (r.request().method() !== "GET") return r.continue();
@@ -177,10 +178,10 @@ test("existing networks attach to a router and detach back to the edge", async (
     await r1.getByRole("button", { name: "Attach network…" }).click();
     const dialog = page.getByRole("dialog", { name: "Attach networks to r1" });
     // Only what isn't on r1 yet, and where it is now.
-    await expect(dialog.getByRole("checkbox")).toHaveCount(1);
+    await expect(dialog.getByRole("checkbox")).toHaveCount(2);
     await expect(dialog).toContainText("now via the shared edge");
     await expect(dialog).toContainText("leave with its address 192.0.2.240");
-    await dialog.getByRole("checkbox").check();
+    await dialog.getByRole("checkbox", { name: /web/ }).check();
     await dialog.getByRole("button", { name: "Attach" }).click();
     await expect(dialog).toHaveCount(0);
     expect(seen.find((s) => s.path === "networks/web/router")?.body).toEqual({ router: "r1" });
@@ -193,6 +194,34 @@ test("existing networks attach to a router and detach back to the edge", async (
     await page.getByRole("dialog").getByRole("button", { name: "Detach" }).click();
     await expect.poll(() => seen.find((s) => s.path === "networks/app/router")?.body).toEqual({ router: null });
     await expect(page.getByText(/app.*leaves via the shared edge/)).toBeVisible();
+  } finally {
+    await del(`/projects/${project.id}`);
+  }
+});
+
+test("an isolated network attaches to a router and is isolated again when detached", async ({ page }) => {
+  const project = await api("/projects", { method: "POST", body: { name: `${PROJECT}-iso` } });
+  try {
+    const seen = await mockOvn(page, project.id);
+    await page.goto(`/projects/${project.id}`);
+    const r1 = page.locator("table").filter({ hasText: "Outside address" }).getByRole("row", { name: /r1/ });
+    await r1.getByRole("button", { name: "Attach network…" }).click();
+    const dialog = page.getByRole("dialog", { name: "Attach networks to r1" });
+    await expect(dialog.getByRole("checkbox", { name: /lab/ }).locator("..")).toContainText("isolated now");
+    // Running VMs learn the new gateway later: said before it happens.
+    await expect(dialog.getByText(/DHCP lease renews/)).toHaveCount(0);
+    await dialog.getByRole("checkbox", { name: /lab/ }).check();
+    await expect(dialog.getByText(/DHCP lease renews/)).toBeVisible();
+    await dialog.getByRole("button", { name: "Attach" }).click();
+    await expect(dialog).toHaveCount(0);
+    expect(seen.find((s) => s.path === "networks/lab/router")?.body).toEqual({ router: "r1" });
+    await expect(page.getByText(/lab.*routed via router r1/)).toBeVisible();
+
+    await r1.getByText("lab", { exact: true }).locator("..").getByRole("button", { name: "Detach" }).click();
+    await expect(page.getByRole("dialog")).toContainText("isolated again");
+    await page.getByRole("dialog").getByRole("button", { name: "Detach" }).click();
+    await expect.poll(() => seen.filter((s) => s.path === "networks/lab/router").pop()?.body).toEqual({ router: null });
+    await expect(page.getByText(/routed via router r1/)).toHaveCount(0);
   } finally {
     await del(`/projects/${project.id}`);
   }

@@ -2189,8 +2189,8 @@ impl VmManager {
         if provider && req.subnet.is_some() {
             return Err(NetError::Invalid("a provider network's addresses come from its LAN".into()).into());
         }
-        if req.router.is_some() && req.mode != NetworkMode::Nat {
-            return Err(NetError::Invalid("only a NAT network attaches to a VPC router".into()).into());
+        if req.router.is_some() && req.mode == NetworkMode::Bridged {
+            return Err(NetError::Invalid("only a NAT or isolated network attaches to a VPC router".into()).into());
         }
         if let Some(id) = &req.router {
             if crate::router::get(&self.store.database(), id).map_err(router_err)?.is_none() {
@@ -2453,16 +2453,19 @@ impl VmManager {
         Ok(())
     }
 
-    /// Put an existing NAT network of `project` on one of its routers, or
-    /// (`None`) back on the shared edge. The network keeps its gateway
+    /// Put an existing NAT or isolated network of `project` on one of its
+    /// routers, or (`None`) back on the shared edge (an isolated network:
+    /// back to no router). The network keeps its gateway
     /// address and MAC, so its VMs keep working; the network controller
     /// moves its router port and SNAT on its next pass.
     pub async fn set_network_router(&self, project: &str, network: &str, router: Option<&str>) -> Result<Network, VmManagerError> {
         // The VM lock keeps a router from going while a network attaches.
         let _vms = self.vms.write().await;
         let mut net = self.networks.get(network)?.filter(|n| n.project.as_deref() == Some(project)).ok_or_else(|| NetError::NotFound(network.to_string()))?;
-        if net.scope != network::NetworkScope::Cluster || net.mode != NetworkMode::Nat {
-            return Err(NetError::Invalid(format!("only a NAT network that spans the nodes goes on a router; '{network}' is {:?} on {:?} scope", net.mode, net.scope).to_lowercase()).into());
+        // An isolated network on a router is routed like a NAT one there,
+        // and isolated again once it leaves.
+        if net.scope != network::NetworkScope::Cluster || net.mode == NetworkMode::Bridged {
+            return Err(NetError::Invalid(format!("only a NAT or isolated network that spans the nodes goes on a router; '{network}' is {:?} on {:?} scope", net.mode, net.scope).to_lowercase()).into());
         }
         if net.deletion_requested_at.is_some() {
             return Err(NetError::Conflict(format!("network '{network}' is being deleted")).into());

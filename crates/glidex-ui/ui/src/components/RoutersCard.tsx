@@ -117,7 +117,9 @@ function AttachDialog({ project, router, routers, candidates, onClose, onDone }:
   const [picked, setPicked] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const via = (n: Network) => (n.router ? `router ${routers.find((r) => r.id === n.router)?.spec.name ?? n.router}` : "the shared edge");
+  const via = (n: Network) =>
+    n.router ? `now via router ${routers.find((r) => r.id === n.router)?.spec.name ?? n.router}` : n.mode === "isolated" ? "isolated now" : "now via the shared edge";
+  const isolated = candidates.filter((n) => n.mode === "isolated" && !n.router && picked.includes(n.name));
 
   const attach = async () => {
     setBusy(true);
@@ -142,7 +144,7 @@ function AttachDialog({ project, router, routers, candidates, onClose, onDone }:
       <div className="space-y-4 text-sm">
         <ErrorBanner error={error} onDismiss={() => setError(null)} />
         {candidates.length === 0 ? (
-          <p className="text-gray-500">No other NAT network of this project spans the nodes. Isolated and node networks can't go on a router.</p>
+          <p className="text-gray-500">No other NAT or isolated network of this project spans the nodes. Node networks can't go on a router.</p>
         ) : (
           <ul className="space-y-1">
             {candidates.map((n) => (
@@ -150,7 +152,7 @@ function AttachDialog({ project, router, routers, candidates, onClose, onDone }:
                 <label className="flex items-center gap-2">
                   <input type="checkbox" checked={picked.includes(n.name)} onChange={(e) => setPicked(e.target.checked ? [...picked, n.name] : picked.filter((x) => x !== n.name))} />
                   <span className="font-mono">{n.name}</span>
-                  <span className="text-xs text-gray-500">now via {via(n)}</span>
+                  <span className="text-xs text-gray-500">{via(n)}</span>
                 </label>
               </li>
             ))}
@@ -161,6 +163,13 @@ function AttachDialog({ project, router, routers, candidates, onClose, onDone }:
           {router.spec.external ? `leave with its address ${router.status.external_ip ?? ""}` : "no longer reach outside (the router is internal only)"}. VMs keep
           their addresses and gateway; connections they have open through the old way out are cut.
         </p>
+        {isolated.length > 0 && (
+          <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-2">
+            {isolated.map((n) => n.name).join(", ")} {isolated.length > 1 ? "are" : "is"} isolated now: attached, {isolated.length > 1 ? "they get" : "it gets"} a
+            gateway (the subnet's .1). Running VMs learn it when their DHCP lease renews (within about 30 minutes) or when they restart their network or reboot;
+            new VMs at once.
+          </p>
+        )}
         <div className="flex justify-end gap-2">
           <button className={secondaryButton} onClick={onClose}>
             Cancel
@@ -221,8 +230,9 @@ export default function RoutersCard({ project, networks, manage, onChanged }: { 
   // Routers exist only on OVN.
   if (!ovn) return null;
   const attached = (r: Router) => networks.filter((n) => n.router === r.id);
-  // What can go on `r`: the project's other NAT networks that span the nodes.
-  const candidates = (r: Router) => networks.filter((n) => n.scope === "cluster" && n.mode === "nat" && n.router !== r.id && !n.deletion_requested_at);
+  // What can go on `r`: the project's other NAT and isolated networks that span the nodes.
+  const candidates = (r: Router) =>
+    networks.filter((n) => n.scope === "cluster" && (n.mode === "nat" || n.mode === "isolated") && n.router !== r.id && !n.deletion_requested_at);
   const active = (r: Router) => overview?.gateways?.find((g) => g.router === `gxr-${r.id}`)?.active;
 
   return (
@@ -323,7 +333,11 @@ export default function RoutersCard({ project, networks, manage, onChanged }: { 
       {detaching && (
         <ConfirmDialog
           title={`Detach ${detaching.name}`}
-          consequence={`${detaching.name} goes back to the cluster's shared edge: it no longer reaches the router's other networks, and leaves with the edge's address. VMs keep their addresses; open connections are cut.`}
+          consequence={
+            detaching.mode === "isolated"
+              ? `${detaching.name} is isolated again: its VMs reach only each other. Its gateway goes away; VMs keep their addresses.`
+              : `${detaching.name} goes back to the cluster's shared edge: it no longer reaches the router's other networks, and leaves with the edge's address. VMs keep their addresses; open connections are cut.`
+          }
           actionLabel="Detach"
           onConfirm={async () => {
             await api.setNetworkRouter(project, detaching.name, null);

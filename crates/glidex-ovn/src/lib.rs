@@ -656,6 +656,13 @@ fn ensure_network(nb: &Nb, n: &NetworkSpec, desired: &Desired, have_switches: &B
                 [vec![s("set"), s("Logical_Switch_Port"), lsp], ids(&[(NETWORK_KEY, &n.name)])].concat(),
             ]);
         }
+    } else if n.kind == NetKind::Isolated && !new {
+        // Isolated again (it left a project's router): no router port.
+        let lrp = format!("gx-lrp-{}", n.name);
+        if !nb.find("Logical_Router_Port", &["_uuid"], &[format!("name={lrp}")])?.is_empty() {
+            nb.txn(vec![vec![s("--if-exists"), s("lrp-del"), lrp], vec![s("--if-exists"), s("lsp-del"), format!("{sw}-rt")]])?;
+            report.changed.push(format!("network {} isolated again", n.name));
+        }
     }
     let was = report.changed.len();
     // DHCP: one options row per network, created once, updated when it differs.
@@ -670,7 +677,8 @@ fn ensure_network(nb: &Nb, n: &NetworkSpec, desired: &Desired, have_switches: &B
             }
             Some(r) => {
                 let have = r.map("options");
-                let ok = want.iter().all(|kv| kv.split_once('=').is_some_and(|(k, v)| have.get(k).map(|x| x.replace(' ', "")) == Some(v.replace(' ', ""))));
+                // Exactly these: a gateway an isolated network no longer has goes too.
+                let ok = have.len() == want.len() && want.iter().all(|kv| kv.split_once('=').is_some_and(|(k, v)| have.get(k).map(|x| x.replace(' ', "")) == Some(v.replace(' ', ""))));
                 if !ok {
                     cmds.push([vec![s("dhcp-options-set-options"), uuid(r, "_uuid").unwrap_or_default()], want.clone()].concat());
                 }
