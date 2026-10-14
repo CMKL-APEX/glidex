@@ -241,6 +241,7 @@ pub fn seconds_left(cert: &NodeCert) -> i64 {
 pub fn write_private(path: &Path, data: &[u8]) -> Result<(), PkiError> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
+    let path = &crate::paths::checked_path(path).map_err(PkiError::Invalid)?;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }

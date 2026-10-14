@@ -337,6 +337,8 @@ impl VmManager {
 
     /// As `with_db_path`, talking to the glidex-netd at `netd`.
     pub fn with_db_path_and_netd(db_path: PathBuf, netd: Netd) -> Result<Arc<Self>, VmManagerError> {
+        // The cluster files live beside it (paths::file_in).
+        crate::paths::checked_path(&db_path).map_err(VmManagerError::PersistenceError)?;
         let store = VmStore::open(&db_path)?;
         Self::build(db_path, store, netd, None)
     }
@@ -346,6 +348,7 @@ impl VmManager {
     /// member is started before anything touches the store, so no write ever
     /// bypasses the log (spec/clustering.md §6.1).
     pub async fn open(db_path: PathBuf, netd: Netd, cfg: &crate::config::Config) -> Result<Arc<Self>, VmManagerError> {
+        crate::paths::checked_path(&db_path).map_err(VmManagerError::PersistenceError)?;
         // A departure that committed before the last restart finishes first (§5.8.2).
         match crate::cluster::departure::finish_pending(&db_path) {
             Ok(true) => tracing::warn!("finished leaving the cluster: this host is standalone and owns its VMs"),

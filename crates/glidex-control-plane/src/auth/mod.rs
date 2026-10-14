@@ -319,6 +319,7 @@ impl AuthService {
         if dir.as_os_str().is_empty() {
             return Ok(out);
         }
+        let dir = &crate::paths::checked_path(dir).map_err(|e| AuthError::Invalid(format!("authz.policy_files_dir {e}")))?;
         let entries = match std::fs::read_dir(dir) {
             Ok(e) => e,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(out),

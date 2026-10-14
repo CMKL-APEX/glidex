@@ -81,7 +81,7 @@ impl Drop for TempFile {
 
 impl ImageManager {
     fn temp_path(&self, id: &str, what: &str, format: DiskFormat) -> TempFile {
-        let p = self.settings.disk_dir.join(format!(".{}.{}.{}", id, what, format.extension()));
+        let p = crate::paths::file_in(&self.settings.disk_dir, &format!(".{}.{}.{}", super::safe_stem(id), what, format.extension()));
         let _ = std::fs::remove_file(&p);
         TempFile(Some(p))
     }

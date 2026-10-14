@@ -425,6 +425,9 @@ impl Config {
 
     /// Refuse values that parse but make no sense.
     pub fn check(&self) -> Result<(), String> {
+        if !self.authz.policy_files_dir.as_os_str().is_empty() {
+            crate::paths::checked_path(&self.authz.policy_files_dir).map_err(|e| format!("authz.policy_files_dir {e}"))?;
+        }
         if !(1..=1000).contains(&self.authz.policy_history) {
             return Err("authz.policy_history must be 1-1000".into());
         }

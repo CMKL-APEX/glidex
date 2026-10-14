@@ -37,24 +37,24 @@ impl Files {
     }
 
     pub fn identity(&self) -> PathBuf {
-        self.dir.join("identity.json")
+        crate::paths::file_in(&self.dir, "identity.json")
     }
     pub fn cert(&self) -> PathBuf {
-        self.dir.join("node.crt")
+        crate::paths::file_in(&self.dir, "node.crt")
     }
     pub fn key(&self) -> PathBuf {
-        self.dir.join("node.key")
+        crate::paths::file_in(&self.dir, "node.key")
     }
     /// The trust bundle: public CA certificates only.
     pub fn trust(&self) -> PathBuf {
-        self.dir.join("ca.crt")
+        crate::paths::file_in(&self.dir, "ca.crt")
     }
     /// Servers only (D20).
     pub fn ca_key(&self) -> PathBuf {
-        self.dir.join("ca.key")
+        crate::paths::file_in(&self.dir, "ca.key")
     }
     pub fn raft(&self) -> PathBuf {
-        self.dir.join("raft")
+        crate::paths::file_in(&self.dir, "raft")
     }
 
     pub fn exists(&self) -> bool {
@@ -80,7 +80,7 @@ impl Files {
     }
 
     pub fn read(&self, p: PathBuf) -> Result<String, PkiError> {
-        Ok(std::fs::read_to_string(p)?)
+        Ok(std::fs::read_to_string(crate::paths::checked_path(&p).map_err(PkiError::Invalid)?)?)
     }
 
     /// The CA key, from a systemd credential when the installer provides one

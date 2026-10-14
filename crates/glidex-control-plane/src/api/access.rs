@@ -551,7 +551,7 @@ pub async fn authz_check(c: Caller, Json(body): Json<CheckBody>) -> Result<impl 
         return Err(err(StatusCode::BAD_REQUEST, "invalid", "at most 200 checks"));
     }
     let schema_actions: Vec<String> = c.auth().engine.schema().actions().map(|a| a.id().unescaped().to_string()).collect();
-    let mut out = Vec::with_capacity(body.checks.len());
+    let mut out = Vec::new();
     for item in &body.checks {
         if !schema_actions.contains(&item.action) {
             out.push(serde_json::json!({ "allowed": false, "error": "unknown action" }));

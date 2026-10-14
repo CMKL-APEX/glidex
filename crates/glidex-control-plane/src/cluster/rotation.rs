@@ -93,7 +93,7 @@ impl Cluster {
     }
 
     fn next_cert_path(&self) -> std::path::PathBuf {
-        self.files.dir.join("ca-next.crt")
+        crate::paths::file_in(&self.files.dir, "ca-next.crt")
     }
 
     /// Step 1 on a server: keep the new CA beside the current one. It only

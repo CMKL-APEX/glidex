@@ -658,7 +658,7 @@ pub fn parse_size(s: &str) -> Option<u64> {
 /// An id as a file name: anything but letters, digits, `-` and `_` becomes
 /// `_`, so an id can never name a path outside its directory. Generated ids
 /// (UUIDs) are unchanged.
-fn safe_stem(id: &str) -> String {
+pub(crate) fn safe_stem(id: &str) -> String {
     id.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect()
 }
 
@@ -731,6 +731,10 @@ fn mkdir_private(dir: &Path) -> Result<(), ImageError> {
 
 impl ImageManager {
     pub fn new(db: Arc<Db>, settings: ImageSettings) -> Result<Arc<Self>, ImageError> {
+        // Every image and disk path is built under these (paths::file_in).
+        for dir in [&settings.image_dir, &settings.disk_dir] {
+            crate::paths::checked_path(dir).map_err(ImageError::Io)?;
+        }
         mkdir_private(&settings.image_dir)?;
         mkdir_private(&settings.disk_dir)?;
 
@@ -877,18 +881,18 @@ impl ImageManager {
 
     /// A disk image's file.
     pub fn image_path(&self, id: &str) -> PathBuf {
-        self.settings.image_dir.join(format!("{}.qcow2", safe_stem(id)))
+        crate::paths::file_in(&self.settings.image_dir, &format!("{}.qcow2", safe_stem(id)))
     }
 
     /// A firmware image's code file.
     pub fn firmware_path(&self, id: &str) -> PathBuf {
-        self.settings.image_dir.join(format!("{}.fd", safe_stem(id)))
+        crate::paths::file_in(&self.settings.image_dir, &format!("{}.fd", safe_stem(id)))
     }
 
     /// The UEFI variable-store template stored with a firmware image
     /// (OVMF), copied into each QEMU VM's own store on first boot.
     pub fn firmware_vars_template(&self, id: &str) -> PathBuf {
-        self.settings.image_dir.join(format!("{}.vars.fd", safe_stem(id)))
+        crate::paths::file_in(&self.settings.image_dir, &format!("{}.vars.fd", safe_stem(id)))
     }
 
     /// The file an image's record stands for.
@@ -900,11 +904,11 @@ impl ImageManager {
     }
 
     pub fn part_path(&self, id: &str) -> PathBuf {
-        self.settings.image_dir.join(format!("{}.qcow2.part", safe_stem(id)))
+        crate::paths::file_in(&self.settings.image_dir, &format!("{}.qcow2.part", safe_stem(id)))
     }
 
     pub fn disk_path(&self, d: &Disk) -> PathBuf {
-        self.settings.disk_dir.join(format!("{}.{}", safe_stem(&d.id), d.format.extension()))
+        crate::paths::file_in(&self.settings.disk_dir, &format!("{}.{}", safe_stem(&d.id), d.format.extension()))
     }
 
     // ---- persistence -------------------------------------------------------
