@@ -84,7 +84,9 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
         // Only networks this project may attach to.
         const nets = all.filter((n) => networkUsableBy(n, project));
         setNetworks(nets);
+        // A network named `default`, else the project's only one.
         if (nets.some((n) => n.name === "default")) setSelectedNetworks(["default"]);
+        else if (nets.length === 1) setSelectedNetworks([nets[0].name]);
       })
       .catch(() => setNetworks([]));
     listImages()
@@ -447,6 +449,11 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
         </>
       )}
 
+      {networks.length === 0 && (
+        <p className="text-sm text-gray-500">
+          No networks this project can use: the VM will have no NIC. Create one on the Networking page first.
+        </p>
+      )}
       {networks.length > 0 && (
         <div>
           <label className="block text-sm font-medium text-gray-700">

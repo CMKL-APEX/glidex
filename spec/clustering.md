@@ -1142,11 +1142,11 @@ networking.md):
 
 ### 11.7 Default network
 
-On a **fresh** cluster with an `ovn.edge` configured, the leader
-creates the cluster NAT network `default`. On a cluster converted from
-a standalone host, `default` already exists as that host's node network
-(D10), so the cluster network is named `cluster-default`. Network names
-are unique cluster-wide.
+glidex creates no default network, node or cluster: an automatic one
+came back after every restart once deleted, and which networks a cluster
+has is the administrator's choice. Network names are unique
+cluster-wide; a `default` network made by an older version stays as it
+is.
 
 ## 12. Security
 
@@ -1716,8 +1716,7 @@ real database. Everything marked "(verify)" below is syntax or behaviour of OVN
   (garbage-collected by the leader: the plan's `vm.ipam` finalizer).
 - **Networks** have `scope: cluster` (default when `cluster.ovn.enabled`):
   `bridge: br-int`, MTU = underlay − 58, no per-node controller. NAT needs
-  `cluster.ovn.edge`. On a fresh cluster with an edge, the default network is
-  the cluster NAT network `default`, else `cluster-default` (§11.7).
+  `cluster.ovn.edge`. No cluster network is created automatically (§11.7).
 - **netd** gains `ensure_ovn_chassis`, `ovn_status`, `leave_ovn`,
   `ensure_ovn_central`, and `ovn_lport` on `attach_vm_port` (`br-int` takes
   only OVN ports; an OVN port only `br-int`). `ensure_chassis` sets

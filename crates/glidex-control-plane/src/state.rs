@@ -569,8 +569,9 @@ impl VmManager {
             || self.credentials.list(None).map(|c| !c.is_empty()).unwrap_or(false)
     }
 
-    /// The `default` NAT network the host made for itself at first start
-    /// (`ensure_default_network`): not something a join would abandon.
+    /// The `default` NAT network older versions made for a host at first
+    /// start (glidex no longer creates one): not something a join would
+    /// abandon.
     fn is_stock_default(n: &Network) -> bool {
         n.name == network::DEFAULT_NETWORK && n.bridge == network::DEFAULT_BRIDGE && n.scope == network::NetworkScope::Node && n.project.is_none()
     }
@@ -2538,60 +2539,6 @@ impl VmManager {
         }
         self.networks.put(&net)?;
         Ok(())
-    }
-
-    /// Create the `default` NAT network if netd is usable and it's missing.
-    pub async fn ensure_default_network(&self) -> Result<Option<Network>, VmManagerError> {
-        if !self.store.database().can_write() {
-            return Ok(None);
-        }
-        // On a cluster with OVN and an edge, the default network is a cluster
-        // network: `default` on a fresh cluster, `cluster-default` where the
-        // host's own `default` already exists (§11.7).
-        if self.ovn_enabled() && self.ovn.load().edge.is_some() {
-            let name = if self.networks.get(network::DEFAULT_NETWORK)?.is_some() { "cluster-default" } else { network::DEFAULT_NETWORK };
-            if self.networks.get(name)?.is_some() {
-                return Ok(None);
-            }
-            let req = CreateNetworkRequest {
-                name: name.into(),
-                mode: NetworkMode::Nat,
-                port_type: VmPortKind::Tap,
-                bridge: None,
-                subnet: None,
-                vlan: None,
-                mtu: None,
-                dns: true,
-                scope: Some(network::NetworkScope::Cluster),
-                physnet: None,
-                router: None,
-            };
-            let default_project = self.default_project_id();
-            return self.create_host_network(req, vec![default_project], false).await.map(Some);
-        }
-        if self.networks.get(network::DEFAULT_NETWORK)?.is_some() {
-            return Ok(None);
-        }
-        let (access, caps) = self.netd.probe();
-        let running = caps.ok().and_then(|c| c.get("ovs_running").and_then(|v| v.as_bool())).unwrap_or(false);
-        if access != network::NetdAccess::Full || !running {
-            return Ok(None);
-        }
-        let req = CreateNetworkRequest {
-            name: network::DEFAULT_NETWORK.into(),
-            mode: NetworkMode::Nat,
-            port_type: VmPortKind::Tap,
-            bridge: Some(network::DEFAULT_BRIDGE.into()),
-            subnet: None,
-            vlan: None,
-            mtu: None,
-            dns: true,
-            scope: Some(network::NetworkScope::Node),
-            physnet: None,
-            router: None,
-        };
-        let default_project = self.default_project_id();
-        self.create_host_network(req, vec![default_project], false).await.map(Some)
     }
 
     /// The control-plane database (shared with the identity store).

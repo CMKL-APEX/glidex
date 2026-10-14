@@ -245,17 +245,15 @@ async fn main() {
 
     // Networking is optional: without glidex-netd, VMs just have no NICs.
     print_status("Checking networking");
-    match vm_manager.ensure_default_network().await {
-        Ok(Some(net)) => println!("OK (created network '{}' on {})", net.name, net.bridge),
-        Ok(None) => match vm_manager.netd().probe() {
-            (network::NetdAccess::Full, Ok(_)) => println!("OK"),
-            (network::NetdAccess::Status, Ok(_)) => {
-                println!("LIMITED (not in the glidex group; status only)")
-            }
-            (_, Err(e)) => println!("UNAVAILABLE ({})", e),
-            (network::NetdAccess::None, Ok(_)) => println!("UNAVAILABLE"),
-        },
-        Err(e) => println!("WARNING (default network: {})", e),
+    // No network is made for the administrator: they create the ones they
+    // want (node or cluster networks).
+    match vm_manager.netd().probe() {
+        (network::NetdAccess::Full, Ok(_)) => println!("OK"),
+        (network::NetdAccess::Status, Ok(_)) => {
+            println!("LIMITED (not in the glidex group; status only)")
+        }
+        (_, Err(e)) => println!("UNAVAILABLE ({})", e),
+        (network::NetdAccess::None, Ok(_)) => println!("UNAVAILABLE"),
     }
 
     // The control loops (§9): from here on the VM controller drives every

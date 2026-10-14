@@ -822,10 +822,11 @@ and came back reachable with the address re-applied.
    ```
    `<br>.hosts` holds one `<mac>,<ip>` line per attached VM port.
 
-**Default network:** at control-plane start, if netd is reachable, OVS
-is installed, and no network named `default` exists, the control plane
-creates it: bridge `gxbr-nat` (`system`), `ensure_nat` with the default
-subnet, and network `default` (tap). Failure is logged, not fatal.
+**No default network:** neither the installer nor the control plane
+creates a network; the administrator creates the ones they want. A
+network named `default` is only a convention: the VM form preselects it
+(else a project's only network), and `gxctl create` offers it. Hosts set
+up by older versions keep the `default` network (`gxbr-nat`) they made.
 
 **Firewalls:** `probe` reports active `ufw`/`firewalld`; a drop in their
 forward chains still wins over `inet glidex`. (A plain iptables FORWARD
