@@ -236,7 +236,6 @@ pub const LAST_MEMBERSHIP: &str = "last_membership";
 pub const MIRROR_REVISION: &str = "mirror_revision";
 
 fn read_local(txn: &ReadTransaction, key: &str) -> Result<Option<Vec<u8>>, StoreError> {
-    use redb::ReadableTable;
     Ok(txn.open_table(TableId::RaftMeta.definition())?.get(key)?.map(|v| v.value().to_vec()))
 }
 
@@ -671,7 +670,6 @@ impl Db {
         revision: u64,
         also: impl FnOnce(&redb::WriteTransaction) -> Result<(), StoreError>,
     ) -> Result<(), StoreError> {
-        use std::io::Read;
         let mut magic = [0u8; 8];
         r.read_exact(&mut magic)?;
         if &magic != DUMP_MAGIC {
@@ -755,7 +753,6 @@ impl Db {
 
     /// The revision a node's cache had reached when it last stopped.
     pub fn stored_mirror_revision(&self) -> u64 {
-        use redb::ReadableTable;
         let Ok(txn) = self.inner.begin_read() else { return 0 };
         let Ok(t) = txn.open_table(TableId::RaftMeta.definition()) else { return 0 };
         t.get(MIRROR_REVISION).ok().flatten().and_then(|v| String::from_utf8(v.value().to_vec()).ok()).and_then(|s| s.parse().ok()).unwrap_or(0)

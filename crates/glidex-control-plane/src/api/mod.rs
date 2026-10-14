@@ -220,6 +220,7 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         .add("POST", "/networks/{name}/shares", "offerNetworkShare", post(net::offer_share))
         .add("DELETE", "/networks/{name}/shares/{project}", "unshareNetwork", delete(net::unshare))
         .add("POST", "/projects/{id}/networks", "createProjectNetwork", post(net::create_project_network))
+        .add("PUT", "/projects/{id}/networks/{name}/router", "createRouter", put(net::set_network_router))
         .add("GET", "/projects/{id}/routers", "readRouter", get(net::list_routers))
         .add("POST", "/projects/{id}/routers", "createRouter", post(net::create_router))
         .add("GET", "/projects/{id}/routers/{name}", "readRouter", get(net::get_router))

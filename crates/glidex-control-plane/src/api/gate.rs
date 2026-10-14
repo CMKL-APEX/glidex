@@ -17,7 +17,6 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use base64::Engine;
 use bytes::Bytes;
-use http_body_util::BodyExt;
 
 pub const PRINCIPAL_HEADER: &str = "x-glidex-principal";
 pub const CONSISTENCY_HEADER: &str = "x-glidex-consistency";

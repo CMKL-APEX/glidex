@@ -31,6 +31,28 @@ pub fn run_dir() -> PathBuf {
     PathBuf::from(format!("/tmp/glidex-{}", nix::unistd::geteuid()))
 }
 
+/// A path the control plane keeps its own files under: UTF-8, with no
+/// `..` anywhere, so it can't climb out of the directory it names. The
+/// check is on the text, so it also refuses a name like `a..b`.
+pub fn checked_path(path: &Path) -> Result<PathBuf, String> {
+    let Some(s) = path.to_str() else {
+        return Err(format!("{}: not UTF-8", path.display()));
+    };
+    if s.contains("..") {
+        return Err(format!("{s}: may not contain '..'"));
+    }
+    Ok(PathBuf::from(s))
+}
+
+/// `dir/name` for one of the control plane's own files. `dir` passed
+/// [`checked_path`] when it was configured and `name` is one this code
+/// builds, so a path that fails the check is a bug: this panics rather
+/// than touch a file outside `dir`.
+pub fn file_in(dir: &Path, name: &str) -> PathBuf {
+    assert!(!name.contains('/'), "{name:?} is not a file name");
+    checked_path(&dir.join(name)).unwrap_or_else(|e| panic!("{e}"))
+}
+
 pub fn vm_dir(vm_id: &str) -> PathBuf {
     run_dir().join("vms").join(vm_id)
 }
@@ -121,6 +143,25 @@ mod tests {
         std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o755)).unwrap();
         ensure_private_dir(&d).unwrap();
         assert_eq!(std::fs::metadata(&d).unwrap().mode() & 0o777, 0o700);
+    }
+
+    #[test]
+    fn checked_paths_stay_put() {
+        assert_eq!(checked_path(Path::new("/var/lib/glidex/images")).unwrap(), Path::new("/var/lib/glidex/images"));
+        assert!(checked_path(Path::new("/var/lib/glidex/../../etc")).is_err());
+        assert_eq!(file_in(Path::new("/d"), "x.qcow2"), Path::new("/d/x.qcow2"));
+    }
+
+    #[test]
+    #[should_panic]
+    fn file_in_refuses_a_climb() {
+        file_in(Path::new("/d"), "..");
+    }
+
+    #[test]
+    #[should_panic]
+    fn file_in_refuses_a_subpath() {
+        file_in(Path::new("/d"), "a/b");
     }
 
     #[test]

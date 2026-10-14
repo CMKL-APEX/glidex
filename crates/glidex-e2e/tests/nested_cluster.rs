@@ -391,6 +391,89 @@ fn a_nested_two_node_cluster_binds_vm_ports_and_carries_traffic_over_geneve() {
     });
     eprintln!("e2e-c: {line}");
     assert!(line.contains("GXE2E-PING-OK"), "through the edge: {line}");
+
+    // spec/clustering.md §11.2a: the suggestion also gave the edge a pool;
+    // a project's own router takes an address from it, and its network's
+    // traffic leaves with that address, not the shared edge's.
+    step("a project's own router carries its network out with its own address");
+    // Room on h1 for one more guest (it has e2e-a and e2e-c).
+    inner.ok("DELETE", &format!("/vms/{id}"), None);
+    wait_for("e2e-c gone", Duration::from_secs(120), || (inner.call("GET", &format!("/vms/{id}"), None).0 == 404).then_some(()));
+    let pool = d["edge"]["external_pool"].as_str().unwrap_or_else(|| panic!("no pool suggested: {d}")).to_string();
+    let project = inner.ok("GET", "/projects", None).as_array().unwrap().iter().find(|p| p["name"] == "default").unwrap()["id"].as_str().unwrap().to_string();
+    let r = inner.ok("POST", &format!("/projects/{project}/routers"), Some(&json!({ "name": "e2e-r" })));
+    let rip = r["status"]["external_ip"].as_str().unwrap_or_else(|| panic!("no address: {r}")).to_string();
+    eprintln!("router e2e-r: {rip} from {pool}");
+    assert_ne!(rip, d["edge"]["external_ip"].as_str().unwrap_or_default(), "{r}");
+    inner.ok("POST", &format!("/projects/{project}/networks"), Some(&json!({ "name": "e2e-vpc", "mode": "nat", "port_type": "tap", "scope": "cluster", "router": "e2e-r" })));
+    // On the gateway's wire: the ping, from the router's address.
+    h2.check(&format!("sudo sh -c 'timeout 600 tcpdump -lni any -c 1 \"icmp and src host {rip}\" > /tmp/gxe2e-vpc.cap 2>/dev/null &'"));
+    let out = h1.run_with_input("sudo sh -s", ping_seed_script("e2e-d", &lan_gw, "/var/lib/gxe2e/seed-d.img").as_bytes());
+    assert!(out.status.success(), "seed: {}", String::from_utf8_lossy(&out.stderr));
+    let vm = inner.ok("POST", "/vms", Some(&json!({
+        "name": "e2e-d", "vcpu_count": 1, "mem_size_mib": 768, "image": env("GLIDEX_E2E_GUEST_IMAGE", "debian-13"), "firmware": "cloudhv-edk2",
+        "cloud_init_path": "/var/lib/gxe2e/seed-d.img", "hypervisor": "cloudhypervisor", "node": n1,
+        "networks": [{ "network": "e2e-vpc" }], "kernel_image_path": "", "rootfs_path": "", "power": "running",
+    })));
+    let id = vm["id"].as_str().unwrap().to_string();
+    let console = |id: &str| String::from_utf8_lossy(&h1.run(&format!("curl -s --unix-socket {API_SOCKET} http://glidex/vms/{id}/console/log")).stdout).replace('\r', "");
+    let line = wait_for_or(
+        "e2e-d to report its ping through its router",
+        Duration::from_secs(600),
+        || console(&id).lines().find(|l| l.contains("GXE2E-PING-")).map(String::from),
+        || {
+            let tail: Vec<String> = console(&id).lines().rev().take(40).map(String::from).collect::<Vec<_>>().into_iter().rev().collect();
+            let nb = h1.run("sudo ovn-nbctl --no-leader-only --db=unix:/var/run/ovn/ovnnb_db.sock show; for r in $(sudo ovn-nbctl --no-leader-only --db=unix:/var/run/ovn/ovnnb_db.sock --bare --columns=name list logical_router); do echo \"== $r\"; sudo ovn-nbctl --no-leader-only --db=unix:/var/run/ovn/ovnnb_db.sock lr-policy-list $r; sudo ovn-nbctl --no-leader-only --db=unix:/var/run/ovn/ovnnb_db.sock lr-nat-list $r; sudo ovn-nbctl --no-leader-only --db=unix:/var/run/ovn/ovnnb_db.sock lr-route-list $r; done");
+            let sbp = sb(&h1, "--columns=logical_port,chassis,up list port_binding");
+            format!("vm: {}\nconsole tail:\n{}\nnb:\n{}\nsb ports:\n{sbp}", inner.call("GET", &format!("/vms/{id}"), None).1, tail.join("\n"), String::from_utf8_lossy(&nb.stdout))
+        },
+    );
+    eprintln!("e2e-d: {line}");
+    assert!(line.contains("GXE2E-PING-OK"), "through its router: {line}");
+    let cap = wait_for("the ping on h2's wire", Duration::from_secs(30), || {
+        let c = h2.check("cat /tmp/gxe2e-vpc.cap");
+        c.contains(&rip).then_some(c)
+    });
+    eprintln!("on h2: {}", cap.trim());
+
+    // An existing network moves onto the router: its port leaves the edge,
+    // and its guests then reach the router's other networks.
+    step("existing networks attach to the router: a NAT one moves off the edge, an isolated one gets routed");
+    let d_ip = line.split("my address:").nth(1).and_then(|s| s.split_whitespace().next()).unwrap_or_default().to_string();
+    let nb = |args: &str| h1.check(&format!("sudo ovn-nbctl --no-leader-only --db=unix:/var/run/ovn/ovnnb_db.sock {args}"));
+    let rlr = format!("gxr-{}", r["id"].as_str().unwrap());
+    // A NAT network on the edge: its port moves to the router.
+    inner.ok("POST", &format!("/projects/{project}/networks"), Some(&json!({ "name": "e2e-p2", "mode": "nat", "port_type": "tap", "scope": "cluster" })));
+    wait_for("e2e-p2's port on the edge", Duration::from_secs(60), || nb("lrp-list gx-edge").contains("gx-lrp-e2e-p2").then_some(()));
+    inner.ok("PUT", &format!("/projects/{project}/networks/e2e-p2/router"), Some(&json!({ "router": "e2e-r" })));
+    wait_for("e2e-p2's port on the router", Duration::from_secs(60), || {
+        (nb(&format!("lrp-list {rlr}")).contains("gx-lrp-e2e-p2") && !nb("lrp-list gx-edge").contains("gx-lrp-e2e-p2")).then_some(())
+    });
+    // An isolated network: no router port until it is attached; then a guest
+    // on it, on the other node, reaches the router's other network.
+    inner.ok("POST", &format!("/projects/{project}/networks"), Some(&json!({ "name": "e2e-p3", "mode": "isolated", "port_type": "tap", "scope": "cluster" })));
+    wait_for("e2e-p3's switch", Duration::from_secs(60), || nb("ls-list").contains("gx-e2e-p3").then_some(()));
+    assert!(!nb(&format!("lrp-list {rlr}")).contains("gx-lrp-e2e-p3"));
+    inner.ok("PUT", &format!("/projects/{project}/networks/e2e-p3/router"), Some(&json!({ "router": "e2e-r" })));
+    let dhcp_router = || nb("--bare --columns=options find DHCP_Options external_ids:glidex-network=e2e-p3").contains("router=");
+    wait_for("e2e-p3 routed: a port on the router, a gateway in DHCP", Duration::from_secs(60), || (nb(&format!("lrp-list {rlr}")).contains("gx-lrp-e2e-p3") && dhcp_router()).then_some(()));
+    let out = h2.run_with_input("sudo sh -s", ping_seed_script("e2e-e", &d_ip, "/var/lib/gxe2e/seed-e.img").as_bytes());
+    assert!(out.status.success(), "seed: {}", String::from_utf8_lossy(&out.stderr));
+    let vm = inner.ok("POST", "/vms", Some(&json!({
+        "name": "e2e-e", "vcpu_count": 1, "mem_size_mib": 768, "image": env("GLIDEX_E2E_GUEST_IMAGE", "debian-13"), "firmware": "cloudhv-edk2",
+        "cloud_init_path": "/var/lib/gxe2e/seed-e.img", "hypervisor": "cloudhypervisor", "node": n2,
+        "networks": [{ "network": "e2e-p3" }], "kernel_image_path": "", "rootfs_path": "", "power": "running",
+    })));
+    let eid = vm["id"].as_str().unwrap().to_string();
+    let line = wait_for("e2e-e to report its ping to e2e-d", Duration::from_secs(600), || {
+        let out = h1.run(&format!("curl -s --unix-socket {API_SOCKET} http://glidex/vms/{eid}/console/log"));
+        String::from_utf8_lossy(&out.stdout).replace('\r', "").lines().find(|l| l.contains("GXE2E-PING-")).map(String::from)
+    });
+    eprintln!("e2e-e: {line}");
+    assert!(line.contains("GXE2E-PING-OK"), "from an isolated network, across the router: {line}");
+    // Detached, it is isolated again: no port on the router, no gateway.
+    inner.ok("PUT", &format!("/projects/{project}/networks/e2e-p3/router"), Some(&json!({ "router": null })));
+    wait_for("e2e-p3 isolated again", Duration::from_secs(60), || (!nb(&format!("lrp-list {rlr}")).contains("gx-lrp-e2e-p3") && !dhcp_router()).then_some(()));
     drop(outer);
 }
 

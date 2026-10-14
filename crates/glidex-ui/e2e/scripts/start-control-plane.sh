@@ -29,7 +29,9 @@ if [ -e "$HOME/.glidex/CLOUDHV.fd" ]; then
   ln -s "$HOME/.glidex/CLOUDHV.fd" "$e2e_home/.glidex/CLOUDHV.fd"
 fi
 
-group=$(id -gn)
+# GLIDEX_E2E_GROUP: when run under another primary group (sg glidex, for
+# glidex-netd), the group that makes you the scratch admin.
+group=${GLIDEX_E2E_GROUP:-$(id -gn)}
 cat >"$e2e_home/control-plane.json" <<EOF
 {
   "listen": ["127.0.0.1:$port"],

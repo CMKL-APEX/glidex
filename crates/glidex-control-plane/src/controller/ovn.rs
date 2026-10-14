@@ -59,6 +59,9 @@ impl VmManager {
                 kind: match (&n.mode, &n.physnet) {
                     (NetworkMode::Bridged, Some(p)) => NetKind::Provider { physnet: p.clone(), vlan: n.vlan },
                     (NetworkMode::Nat, _) => NetKind::Nat,
+                    // An isolated network on a project's router is routed
+                    // there like a NAT network (clustering-ui.md §8d).
+                    (NetworkMode::Isolated, _) if n.router.is_some() => NetKind::Nat,
                     _ => NetKind::Isolated,
                 },
                 cidr: sub.and_then(|s| s.cidr.parse().ok()),

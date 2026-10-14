@@ -128,6 +128,26 @@ export interface CreateNetworkRequest {
   scope?: "cluster" | "node";
   /** A provider network (cluster scope, bridged): its physical network. */
   physnet?: string;
+  /** A project NAT network on one of the project's VPC routers (by name). */
+  router?: string;
+}
+
+/** A project's VPC router (spec/clustering.md §11.2a). */
+export interface RouterSpec {
+  name: string;
+  /** Reaches outside: an address from the edge's pool, SNAT. */
+  external: boolean;
+  external_ip?: string | null;
+  gateway_nodes?: string[] | null;
+}
+
+export interface Router {
+  /** Short id; networks record it, OVN calls the router `gxr-<id>`. */
+  id: string;
+  project: string;
+  spec: RouterSpec;
+  status: { external_ip: string | null; snat_ct_zone: number | null };
+  created_at: number;
 }
 
 export interface Combination {
@@ -615,11 +635,14 @@ export interface Quotas {
   disk_gib: number | null;
   running_vms: number | null;
   networks: number | null;
+  /** VPC routers, and those with an external address (spec/clustering.md §11.2a). */
+  routers: number | null;
+  external_ips: number | null;
 }
 
 export type Usage = { [K in keyof Quotas]: number };
 
-export const QUOTA_KEYS: (keyof Quotas)[] = ["vms", "running_vms", "vcpus", "memory_mib", "disk_gib", "networks"];
+export const QUOTA_KEYS: (keyof Quotas)[] = ["vms", "running_vms", "vcpus", "memory_mib", "disk_gib", "networks", "routers", "external_ips"];
 
 export const QUOTA_LABELS: Record<keyof Quotas, string> = {
   vms: "VMs",
@@ -628,6 +651,8 @@ export const QUOTA_LABELS: Record<keyof Quotas, string> = {
   memory_mib: "Memory (MiB)",
   disk_gib: "Disk (GiB)",
   networks: "Networks",
+  routers: "Routers",
+  external_ips: "External IPs",
 };
 
 export interface Project {
@@ -981,6 +1006,8 @@ export interface OvnSettingsView {
   enabled: boolean;
   /** The shared edge for NAT networks spanning the nodes is set. */
   edge?: boolean;
+  /** The edge has a pool of addresses for VPC routers that reach outside. */
+  vpc_pool?: boolean;
   clustered?: boolean;
   /** `cluster`: the setting; `file`: control-plane.json (not moved yet); `none`. */
   source?: "cluster" | "file" | "none";

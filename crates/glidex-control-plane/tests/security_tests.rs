@@ -759,7 +759,7 @@ async fn pam_token_exchanges_credentials_for_a_personal_token() {
     let (s, v, _) = h.call("POST", "/auth/token", Some(body), &As::Nobody).await;
     assert_eq!(s, StatusCode::OK, "{v}");
     let secret = v["token"].as_str().unwrap().to_string();
-    assert!(secret.starts_with("gxt_"), "{secret}");
+    assert!(secret.starts_with("gxt_"), "a gxt_ token");
     // The token acts as bob and carries the claimed device strings (display only).
     let (_, who, _) = h.call("GET", "/auth/whoami", None, &As::Bearer(secret.clone())).await;
     assert_eq!(who["user"]["display_name"], "bob");

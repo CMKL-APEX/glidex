@@ -262,6 +262,22 @@ pub async fn create_router(c: Caller, Path(project): Path<String>, Json(spec): J
     Ok((StatusCode::CREATED, Json(r)))
 }
 
+#[derive(Deserialize)]
+pub struct NetworkRouterBody {
+    /// A router of the project by name; `null`: the shared edge.
+    router: Option<String>,
+}
+
+/// `PUT /projects/{id}/networks/{name}/router`: put an existing NAT network
+/// on one of the project's routers, or back on the shared edge.
+pub async fn set_network_router(c: Caller, Path((project, name)): Path<(String, String)>, Json(b): Json<NetworkRouterBody>) -> Result<impl IntoResponse, ApiErr> {
+    let project = c.target_project(Some(&project))?;
+    c.set_project(&project);
+    c.set_target(format!("network:{name}"));
+    c.require(Ent::Project(project.clone()), super::project_entities(&project))?;
+    Ok(Json(c.manager().set_network_router(&project, &name, b.router.as_deref()).await.map_err(manager_err)?))
+}
+
 pub async fn delete_router(c: Caller, Path((project, name)): Path<(String, String)>) -> Result<impl IntoResponse, ApiErr> {
     let project = c.target_project(Some(&project))?;
     c.set_project(&project);

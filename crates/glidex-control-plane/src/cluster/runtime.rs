@@ -293,13 +293,12 @@ impl Cluster {
     /// issued is refused.
     /// Whether this cluster ever issued the certificate with `serial`.
     pub fn was_issued(&self, serial: &str) -> bool {
-        use redb::ReadableTable;
         let Ok(txn) = self.db.begin_read() else { return false };
         txn.open_table(crate::store::TableId::IssuedCerts.definition()).ok().is_some_and(|t| t.get(serial).ok().flatten().is_some())
     }
 
     pub fn check_peer(&self, peer: &PeerCert) -> Result<(), &'static str> {
-        use redb::{ReadableTable, ReadableTableMetadata};
+        use redb::ReadableTableMetadata;
         let Ok(txn) = self.db.begin_read() else { return Err("store unavailable") };
         let denied = txn.open_table(crate::store::TableId::NodeDenylist.definition()).ok().is_some_and(|t| t.get(peer.serial.as_str()).ok().flatten().is_some());
         if denied {

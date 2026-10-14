@@ -18,6 +18,23 @@ A Rust control plane for KVM virtual machines on
   vhost-user NICs
 - **Console**: serial console in the browser or `gxctl`, logged to disk,
   shared by any number of clients
+- **Projects and access**: projects with quotas and members, Cedar
+  policies, API tokens and OIDC, an audit log
+- **Clustering**: many hosts as one. Servers keep the cluster's state in a
+  Raft-replicated store; agents only run VMs. Nodes join with a one-time
+  token over mutual TLS (the cluster's own CA, rotated without downtime);
+  a scheduler places VMs and explains its choice; nodes drain, leave and
+  rejoin; a standalone host's VMs and disks can be imported into a
+  cluster, and a node detached with its resources. Every node serves the
+  web UI and relays it to a server
+- **Cluster networks on OVN**: networks that span every node, with
+  Geneve tunnels between them (and their status in the UI). NAT networks
+  leave through a shared edge on failover gateway nodes, with defaults
+  suggested from what the nodes report; a project can have its own
+  routers, each with its own outside address, and attach NAT or isolated
+  networks to them. Host uplinks, physical networks and each node's
+  `br-int` datapath are set from the UI, and an uplink that took the
+  host's address is re-applied, or rolled back, safely at boot
 
 ## Install
 
@@ -101,7 +118,7 @@ api -X POST https://localhost:8841/images -H 'Content-Type: application/json' -d
 api -X POST https://localhost:8841/vms -H 'Content-Type: application/json' -d '{
   "name": "my-vm", "vcpu_count": 2, "mem_size_mib": 2048,
   "hypervisor": "qemu", "image": "ubuntu-26.04", "root_disk_size_gib": 20,
-  "credential": "alice", "networks": [{"network": "default"}]
+  "credential": "alice", "networks": [{"network": "lab"}]
 }'
 api -X POST https://localhost:8841/vms/<id>/start
 api -X POST 'https://localhost:8841/vms/<id>/stop?graceful_timeout_secs=60'
@@ -121,8 +138,37 @@ api -X POST 'https://localhost:8841/vms/<id>/stop?graceful_timeout_secs=60'
 - Without a stored credential, the guest user is `cloud` with the
   `~/.ssh/*.pub` keys of the user the control plane runs as (none for the
   `glidex` service user, so add a credential). `cloud_init_path` replaces the generated seed.
-- Networks: `default` (NAT) is created when glidex-netd is available; add
-  more with `gxctl network-add` or the web UI's Networking page.
+- Networks: glidex creates none by itself. Add one first with
+  `gxctl network-add` or the web UI's Networking page (e.g. a NAT network
+  `lab`); a network named `default` is preselected in the VM form.
+
+## A cluster
+
+Every host gets glidex from the installer as above (with OVN, unless
+`--no-ovn`). On the first host:
+
+```bash
+gxctl cluster init --force            # this host becomes a cluster of one (a server)
+umask 077; gxctl cluster join-token --role agent > join.token   # shown once
+```
+
+Copy `join.token` to the next host over a secure channel (mode 0600), then
+there:
+
+```bash
+cargo run -p glidex-install -- --join <first-host>:8842 --token-file join.token
+```
+
+The token is read from a file or stdin, never from the command line, and
+used once. `--role server` adds a server (run three for a quorum), and
+`--import` (with a token made with `--allow-import`) brings the host's
+existing VMs and disks along once an administrator approves the plan. The web UI's Cluster page shows the
+nodes, adds more (`gxctl cluster status`, `gxctl node …` from the CLI),
+and turns OVN on for networks that span the nodes: its OVN settings
+suggest the shared edge (physical network, gateway nodes, the LAN's
+addresses) from what the nodes report. A project's routers are on its
+project page. See [spec/clustering.md](spec/clustering.md) and
+[spec/clustering-ui.md](spec/clustering-ui.md).
 
 More in [spec/cli.md](spec/cli.md), [spec/rest-api.md](spec/rest-api.md),
 [spec/images.md](spec/images.md), [spec/credentials.md](spec/credentials.md)
@@ -139,10 +185,17 @@ GLIDEX_TEST_IMAGE=~/images/ubuntu-cloudimg.img \
 
 # Web UI in headless Chromium, both hypervisors (-H ch / -H qemu for one):
 scripts/dev/ui-e2e.sh -i ~/images/ubuntu-cloudimg.img
+
+# A two-node cluster with OVN, nested in VMs of this host's glidex
+# (nested KVM, ~9 GiB; GLIDEX_E2E_NETWORK names a node NAT network the
+# host can reach, if there is no `default`):
+cargo test -p glidex-e2e --test nested_cluster -- --ignored --nocapture
 ```
 
 The boot, NAT, vhost-user and catalog tests run on both hypervisors
-(`qemu_*` variants). Some need more setup: `GLIDEX_TEST_DPDK=1` with
+(`qemu_*` variants). The network tests need `glidex-netd`'s full access,
+which only the `glidex` group has (the installer takes you out of it): run
+them with it, e.g. `sudo -u $USER -g glidex env PATH=$PATH HOME=$HOME cargo test …`. Some need more setup: `GLIDEX_TEST_DPDK=1` with
 OVS-DPDK for vhost-user, and a fake LAN (`sudo scripts/dev/fake-lan-setup.sh`,
 `GLIDEX_TEST_LAN=1`) for the uplink tests. See [crates/glidex-ui/e2e/README.md](crates/glidex-ui/e2e/README.md)
 for the UI suite.
@@ -154,6 +207,8 @@ crates/
   glidex-control-plane/   server (REST API, VM state, hypervisor backends) and gxctl
   glidex-netd/            root helper for host networking
   glidex-ovs/             Open vSwitch, NAT, uplinks and VM ports
+  glidex-ovn/             OVN northbound: cluster networks, the edge, routers
+  glidex-e2e/             cluster end-to-end tests (nested VMs)
   glidex-install/         installer / uninstaller
   glidex-ui/ui/           web UI (Vite + React)
   glidex-ui/e2e/          web UI end-to-end tests (Playwright)

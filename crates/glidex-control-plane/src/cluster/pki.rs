@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 use std::net::IpAddr;
 use std::path::Path;
 use thiserror::Error;
-use x509_parser::prelude::{parse_x509_certificate, X509Certificate};
+use x509_parser::prelude::parse_x509_certificate;
 
 pub const CA_VALIDITY_DAYS: i64 = 3650;
 pub const NODE_VALIDITY_DAYS: i64 = 365;
@@ -241,6 +241,7 @@ pub fn seconds_left(cert: &NodeCert) -> i64 {
 pub fn write_private(path: &Path, data: &[u8]) -> Result<(), PkiError> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
+    let path = &crate::paths::checked_path(path).map_err(PkiError::Invalid)?;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }

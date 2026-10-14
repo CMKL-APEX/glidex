@@ -99,24 +99,22 @@ export function OvnSettingsDialog({ view, onClose, onDone }: { view: OvnSettings
       const d = await api.getEdgeDefaults();
       const filled: string[] = [];
       const cur = edgeRef.current;
-      {
-        const pick = <K extends keyof OvnEdge>(k: K): OvnEdge[K] => {
-          const mine = cur[k];
-          const empty = mine === undefined || mine === null || mine === "" || (Array.isArray(mine) && mine.length === 0);
-          if (!(overwrite || empty)) return mine;
-          const v = d.edge[k];
-          if (typeof v === "string" && v) filled.push(v);
-          return v;
-        };
-        setEdge({
-          physnet: pick("physnet"),
-          external_cidr: pick("external_cidr"),
-          gateway: pick("gateway"),
-          external_ip: pick("external_ip"),
-          external_pool: pick("external_pool") ?? "",
-          gateway_nodes: pick("gateway_nodes"),
-        });
-      }
+      const pick = <K extends keyof OvnEdge>(k: K): OvnEdge[K] => {
+        const mine = cur[k];
+        const empty = mine === undefined || mine === null || mine === "" || (Array.isArray(mine) && mine.length === 0);
+        if (!(overwrite || empty)) return mine;
+        const v = d.edge[k];
+        if (typeof v === "string" && v) filled.push(v);
+        return v;
+      };
+      setEdge({
+        physnet: pick("physnet"),
+        external_cidr: pick("external_cidr"),
+        gateway: pick("gateway"),
+        external_ip: pick("external_ip"),
+        external_pool: pick("external_pool") ?? "",
+        gateway_nodes: pick("gateway_nodes"),
+      });
       // Only what concerns a value filled in now (an existing edge keeps its own).
       setNotes(overwrite ? d.notes : d.notes.filter((n) => filled.some((v) => n.includes(v))));
     } catch (e) {

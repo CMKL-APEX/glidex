@@ -814,7 +814,7 @@ impl ImageManager {
                 streamed_sha256
             }
             "raw" => {
-                let converted = self.settings.image_dir.join(format!("{}.qcow2.conv.part", id));
+                let converted = crate::paths::file_in(&self.settings.image_dir, &format!("{}.qcow2.conv.part", super::safe_stem(&id)));
                 let _ = std::fs::remove_file(&converted);
                 qemu_img::convert(&part, DiskFormat::Raw, &converted, DiskFormat::Qcow2)?;
                 std::fs::rename(&converted, &part).map_err(|e| ImageError::Io(e.to_string()))?;

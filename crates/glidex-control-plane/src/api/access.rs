@@ -551,7 +551,7 @@ pub async fn authz_check(c: Caller, Json(body): Json<CheckBody>) -> Result<impl 
         return Err(err(StatusCode::BAD_REQUEST, "invalid", "at most 200 checks"));
     }
     let schema_actions: Vec<String> = c.auth().engine.schema().actions().map(|a| a.id().unescaped().to_string()).collect();
-    let mut out = Vec::with_capacity(body.checks.len());
+    let mut out = Vec::new();
     for item in &body.checks {
         if !schema_actions.contains(&item.action) {
             out.push(serde_json::json!({ "allowed": false, "error": "unknown action" }));
@@ -585,7 +585,7 @@ pub async fn authz_allowed(c: Caller, Json(body): Json<AllowedBody>) -> Result<i
     }
     let schema = c.auth().engine.schema();
     // action → the resource types it applies to.
-    let mut applies: Vec<(&str, Vec<String>)> = Vec::with_capacity(body.actions.len().min(MAX_ALLOWED_ACTIONS));
+    let mut applies: Vec<(&str, Vec<String>)> = Vec::new();
     for a in &body.actions {
         let uid: cedar_policy::EntityUid = format!("Glidex::Action::{:?}", a).parse().map_err(|_| err(StatusCode::BAD_REQUEST, "invalid", format!("bad action name {a}")))?;
         let Some(types) = schema.resources_for_action(&uid) else {
@@ -593,7 +593,7 @@ pub async fn authz_allowed(c: Caller, Json(body): Json<AllowedBody>) -> Result<i
         };
         applies.push((a.as_str(), types.map(|t| t.basename().to_string()).collect()));
     }
-    let mut out = Vec::with_capacity(body.resources.len().min(MAX_ALLOWED_RESOURCES));
+    let mut out = Vec::new();
     for r in &body.resources {
         let ty = r.type_name();
         let candidates: Vec<&str> = applies.iter().filter(|(_, ts)| ts.iter().any(|t| t == ty)).map(|(a, _)| *a).collect();

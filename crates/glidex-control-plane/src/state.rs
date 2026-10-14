@@ -337,6 +337,8 @@ impl VmManager {
 
     /// As `with_db_path`, talking to the glidex-netd at `netd`.
     pub fn with_db_path_and_netd(db_path: PathBuf, netd: Netd) -> Result<Arc<Self>, VmManagerError> {
+        // The cluster files live beside it (paths::file_in).
+        crate::paths::checked_path(&db_path).map_err(VmManagerError::PersistenceError)?;
         let store = VmStore::open(&db_path)?;
         Self::build(db_path, store, netd, None)
     }
@@ -346,6 +348,7 @@ impl VmManager {
     /// member is started before anything touches the store, so no write ever
     /// bypasses the log (spec/clustering.md §6.1).
     pub async fn open(db_path: PathBuf, netd: Netd, cfg: &crate::config::Config) -> Result<Arc<Self>, VmManagerError> {
+        crate::paths::checked_path(&db_path).map_err(VmManagerError::PersistenceError)?;
         // A departure that committed before the last restart finishes first (§5.8.2).
         match crate::cluster::departure::finish_pending(&db_path) {
             Ok(true) => tracing::warn!("finished leaving the cluster: this host is standalone and owns its VMs"),
@@ -2189,8 +2192,8 @@ impl VmManager {
         if provider && req.subnet.is_some() {
             return Err(NetError::Invalid("a provider network's addresses come from its LAN".into()).into());
         }
-        if req.router.is_some() && req.mode != NetworkMode::Nat {
-            return Err(NetError::Invalid("only a NAT network attaches to a VPC router".into()).into());
+        if req.router.is_some() && req.mode == NetworkMode::Bridged {
+            return Err(NetError::Invalid("only a NAT or isolated network attaches to a VPC router".into()).into());
         }
         if let Some(id) = &req.router {
             if crate::router::get(&self.store.database(), id).map_err(router_err)?.is_none() {
@@ -2451,6 +2454,35 @@ impl VmManager {
         }
         crate::router::delete(&self.store.database(), &r.id).map_err(router_err)?;
         Ok(())
+    }
+
+    /// Put an existing NAT or isolated network of `project` on one of its
+    /// routers, or (`None`) back on the shared edge (an isolated network:
+    /// back to no router). The network keeps its gateway
+    /// address and MAC, so its VMs keep working; the network controller
+    /// moves its router port and SNAT on its next pass.
+    pub async fn set_network_router(&self, project: &str, network: &str, router: Option<&str>) -> Result<Network, VmManagerError> {
+        // The VM lock keeps a router from going while a network attaches.
+        let _vms = self.vms.write().await;
+        let mut net = self.networks.get(network)?.filter(|n| n.project.as_deref() == Some(project)).ok_or_else(|| NetError::NotFound(network.to_string()))?;
+        // An isolated network on a router is routed like a NAT one there,
+        // and isolated again once it leaves.
+        if net.scope != network::NetworkScope::Cluster || net.mode == NetworkMode::Bridged {
+            return Err(NetError::Invalid(format!("only a NAT or isolated network that spans the nodes goes on a router; '{network}' is {:?} on {:?} scope", net.mode, net.scope).to_lowercase()).into());
+        }
+        if net.deletion_requested_at.is_some() {
+            return Err(NetError::Conflict(format!("network '{network}' is being deleted")).into());
+        }
+        let id = match router {
+            Some(name) => Some(crate::router::find(&self.store.database(), project, name).map_err(router_err)?.ok_or_else(|| NetError::Invalid(format!("router '{name}' not found in this project")))?.id),
+            None => None,
+        };
+        if net.router != id {
+            tracing::info!(network, from = ?net.router, to = ?id, "network moves router");
+            net.router = id;
+            self.networks.put(&net)?;
+        }
+        Ok(net)
     }
 
     /// Set which projects may use a host network.
