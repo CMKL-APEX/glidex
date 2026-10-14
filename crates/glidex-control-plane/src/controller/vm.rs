@@ -109,6 +109,28 @@ fn nic_queue_pairs(requested: Option<u8>, kind: glidex_ovs::vm_port::VmPortKind,
     })
 }
 
+/// How stale `status.last_reconciled_at` may get before an otherwise
+/// unchanged status is written to refresh it.
+const RECONCILED_STAMP_SECS: u64 = 600;
+
+/// The port a NIC gets: on its network's bridge, or, on a cluster network,
+/// on `br-int` as the logical port OVN knows (spec/clustering.md §11.3, §11.5).
+fn port_spec(vm_id: &str, net: &crate::network::Network, nic: u8, mac: String, queue_pairs: u8) -> VmPortSpec {
+    let cluster = net.scope == crate::network::NetworkScope::Cluster;
+    VmPortSpec {
+        bridge: if cluster { glidex_ovs::ovn::BR_INT.to_string() } else { net.bridge.clone() },
+        vm_id: vm_id.to_string(),
+        nic_index: nic,
+        kind: net.port_type,
+        mac,
+        // The logical switch decides VLANs on a cluster network.
+        vlan: if cluster { None } else { net.vlan },
+        mtu: net.mtu,
+        queue_pairs,
+        ovn_lport: cluster.then(|| glidex_ovs::names::port_name(vm_id, nic).unwrap_or_default()),
+    }
+}
+
 /// Outcome of a round: requeue after this long, or wait for an event.
 type Next = Result<Option<Duration>, VmManagerError>;
 
@@ -129,18 +151,33 @@ impl VmManager {
     pub(crate) async fn write_status(&self, id: &str, read_gen: u64, mut status: VmStatus, events: Vec<Event>) -> Result<Option<Vm>, VmManagerError> {
         let mut vms = self.vms.write().await;
         let Some(cur) = vms.get(id).cloned() else { return Ok(None) };
+        // spec/clustering.md §4.1: a round that observes nothing new writes
+        // nothing, so `last_reconciled_at` is left out of the comparison and
+        // stamped only with another change, or at most every 10 minutes.
+        let now = crate::tenancy::now();
         status.observed_generation = read_gen;
-        status.last_reconciled_at = crate::tenancy::now();
+        status.last_reconciled_at = cur.status.last_reconciled_at;
         if status.phase != cur.status.phase {
-            status.phase_since = Some(status.last_reconciled_at);
+            status.phase_since = Some(now);
         }
-        if cur.status == status && events.is_empty() {
+        if cur.status == status && events.is_empty() && now.saturating_sub(cur.status.last_reconciled_at) < RECONCILED_STAMP_SECS {
             return Ok(Some(cur));
         }
+        status.last_reconciled_at = now;
         let mut vm = cur;
         vm.status = status;
         vm.resource_version += 1;
         self.put_locked(&mut vms, vm, events).map(Some)
+    }
+
+    /// Write a harmless status change, to exercise a node's write path
+    /// (tests of partitions and the outbox).
+    #[doc(hidden)]
+    pub async fn __touch_status_for_tests(&self, id: &str) -> Result<(), VmManagerError> {
+        let Some(vm) = self.vm(id).await else { return Err(VmManagerError::VmNotFound(id.into())) };
+        let mut st = vm.status.clone();
+        st.launch_failures += 1;
+        self.write_status(id, vm.generation, st, vec![]).await.map(|_| ())
     }
 
     /// D12: `spec.power = Stopped` after an exit nobody asked for, unless
@@ -184,6 +221,10 @@ impl VmManager {
     /// One round for VM `id` (§9.1).
     pub async fn reconcile_vm(&self, id: &str) -> Next {
         let Some(vm) = self.vm(id).await else { return Ok(None) };
+        // Another node's VM: that node's controller owns it (spec/clustering.md §8.1).
+        if !self.is_local(&vm) {
+            return Ok(None);
+        }
         let gen = vm.generation;
         let mut st = vm.status.clone();
         let mut events: Vec<Event> = Vec::new();
@@ -702,6 +743,25 @@ impl VmManager {
         }
     }
 
+    /// Poll `ovn_status` until every port in `lports` has `ovn-installed`,
+    /// for up to 10 s (§11.5 step 2).
+    async fn wait_ovn_installed(&self, lports: &[String]) -> bool {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let netd = self.netd.clone();
+            let st = blocking(move || netd.call::<glidex_ovs::ovn::OvnStatus>(Op::OvnStatus)).await;
+            if let Ok(Ok(st)) = st {
+                if lports.iter().all(|p| st.ports.iter().any(|x| &x.lport == p && x.ovn_installed)) {
+                    return true;
+                }
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
     /// Attach (or re-attach: netd is idempotent) every NIC of the spec,
     /// first detaching ports the spec no longer has. Each port is written
     /// to `status.nics` before netd attaches it.
@@ -729,16 +789,7 @@ impl VmManager {
                 }
             }
             let queue_pairs = nic_queue_pairs(att.queue_pairs, net.port_type, vm.config().vcpu_count);
-            let spec = VmPortSpec {
-                bridge: net.bridge.clone(),
-                vm_id: vm.id.clone(),
-                nic_index: i as u8,
-                kind: net.port_type,
-                mac: mac.clone(),
-                vlan: net.vlan,
-                mtu: net.mtu,
-                queue_pairs,
-            };
+            let spec = port_spec(&vm.id, &net, i as u8, mac.clone(), queue_pairs);
             let netd = self.netd.clone();
             let res: AttachResult = blocking(move || netd.call(Op::AttachVmPort(spec))).await??;
             if let Some(n) = st.nics.iter_mut().find(|n| n.nic_index as usize == i) {
@@ -747,6 +798,23 @@ impl VmManager {
                 n.port_ok = true;
             }
             out.push(NicBinding { id: format!("net{}", i), mac, binding: res.binding, queue_pairs, mtu: net.mtu });
+        }
+        // Ports on OVN networks carry traffic once ovn-controller has their
+        // flows (§11.5): wait a little, then launch anyway and say so.
+        let lports: Vec<String> = networks
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| self.networks.get(&a.network).ok().flatten().is_some_and(|n| n.scope == crate::network::NetworkScope::Cluster))
+            .filter_map(|(i, _)| glidex_ovs::names::port_name(&vm.id, i as u8).ok())
+            .collect();
+        if !lports.is_empty() {
+            if self.wait_ovn_installed(&lports).await {
+                if st.conditions.iter().any(|c| c.kind == "NetworkReady" && c.reason == "PortNotInstalled") {
+                    set_cond(&mut st.conditions, "NetworkReady", Tristate::True, "Ready", "");
+                }
+            } else {
+                set_cond(&mut st.conditions, "NetworkReady", Tristate::False, "PortNotInstalled", "OVN has not installed the port's flows yet; traffic starts when it does");
+            }
         }
         Ok(out)
     }
@@ -919,16 +987,7 @@ impl VmManager {
                 continue;
             }
             let Some(att) = vm.config().networks.get(nic.nic_index as usize) else { continue };
-            let spec = VmPortSpec {
-                bridge: net.bridge.clone(),
-                vm_id: vm.id.clone(),
-                nic_index: nic.nic_index,
-                kind: net.port_type,
-                mac: nic.mac.clone(),
-                vlan: net.vlan,
-                mtu: net.mtu,
-                queue_pairs: nic_queue_pairs(att.queue_pairs, net.port_type, vm.config().vcpu_count),
-            };
+            let spec = port_spec(&vm.id, &net, nic.nic_index, nic.mac.clone(), nic_queue_pairs(att.queue_pairs, net.port_type, vm.config().vcpu_count));
             let _ports = self.ports_lock.lock().await;
             let netd = self.netd.clone();
             match blocking(move || netd.call::<AttachResult>(Op::AttachVmPort(spec))).await? {
@@ -1053,5 +1112,33 @@ mod tests {
     #[test]
     fn crash_backoff_is_10s_doubling_to_5min() {
         assert_eq!([1, 2, 3, 5, 6, 30].map(crash_delay), [10, 20, 40, 160, 300, 300]);
+    }
+
+    /// spec/clustering.md §4.1 / C0: an idle VM causes no store write across
+    /// ten resync rounds.
+    #[tokio::test]
+    async fn an_unchanged_status_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = VmManager::with_db_path(dir.path().join("glidex.db")).unwrap();
+        let config: crate::models::VmConfig = serde_json::from_value(serde_json::json!({
+            "vcpu_count": 1, "mem_size_mib": 512, "rootfs_path": "/r", "kernel_args": "", "firmware_path": "/f.fd"
+        }))
+        .unwrap();
+        let vm = manager.create_vm("idle".into(), config).await.unwrap();
+        let cur = manager.get_vm(&vm.id).await.unwrap();
+        // The first write stamps `last_reconciled_at`.
+        manager.write_status(&vm.id, cur.generation, cur.status.clone(), vec![]).await.unwrap();
+        let db = manager.database();
+        let before = db.revision();
+        for _ in 0..10 {
+            let cur = manager.get_vm(&vm.id).await.unwrap();
+            manager.write_status(&vm.id, cur.generation, cur.status.clone(), vec![]).await.unwrap();
+        }
+        assert_eq!(db.revision(), before, "ten idle rounds wrote to the store");
+        // A real change is written.
+        let mut changed = manager.get_vm(&vm.id).await.unwrap().status;
+        changed.never_started = !changed.never_started;
+        manager.write_status(&vm.id, vm.generation, changed, vec![]).await.unwrap();
+        assert_eq!(db.revision(), before + 1);
     }
 }

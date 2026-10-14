@@ -1,6 +1,7 @@
 {
   "listen": ["0.0.0.0:8841", "[::]:8841"],
   "tls": "auto",
+  "server_name": "lab-cp",
   "ui_user": "glidex-ui",
   "users_group": "glidex-users",
   "admin_group": "glidex-admin",

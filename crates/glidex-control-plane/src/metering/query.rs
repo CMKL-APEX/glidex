@@ -207,6 +207,8 @@ pub enum GroupKey {
     Disk,
     Nic,
     Network,
+    /// The node a subject was on (spec/clustering-ui.md §5.4).
+    Node,
 }
 
 impl std::str::FromStr for GroupKey {
@@ -218,7 +220,8 @@ impl std::str::FromStr for GroupKey {
             "disk" => Ok(Self::Disk),
             "nic" => Ok(Self::Nic),
             "network" => Ok(Self::Network),
-            _ => Err(format!("group_by: unknown key {s} (project, vm, disk, nic, network)")),
+            "node" => Ok(Self::Node),
+            _ => Err(format!("group_by: unknown key {s} (project, vm, disk, nic, network, node)")),
         }
     }
 }
@@ -241,6 +244,7 @@ pub fn key_of(s: &super::ledger::Subject, k: GroupKey) -> Option<Named> {
         (GroupKey::Vm, SubjectKind::Disk) => s.vm_id.as_deref().and_then(|v| named(v, v)),
         (GroupKey::Disk, SubjectKind::Disk) | (GroupKey::Nic, SubjectKind::Nic) | (GroupKey::Network, SubjectKind::Network) => named(&s.id, &s.name),
         (GroupKey::Network, SubjectKind::Nic) => s.network.as_deref().and_then(|n| named(n, n)),
+        (GroupKey::Node, _) => s.node.as_deref().and_then(|n| named(n, n)),
         _ => None,
     }
 }
@@ -250,6 +254,7 @@ pub fn names_itself(k: GroupKey, kind: SubjectKind) -> bool {
     matches!(
         (k, kind),
         (GroupKey::Project, _)
+            | (GroupKey::Node, _)
             | (GroupKey::Vm, SubjectKind::Vm)
             | (GroupKey::Disk, SubjectKind::Disk)
             | (GroupKey::Nic, SubjectKind::Nic)
@@ -288,6 +293,8 @@ fn flag_name(f: &Flag) -> &'static str {
         Flag::Reset => "reset",
         Flag::Incomplete { .. } => "incomplete",
         Flag::SourceProc => "source_proc",
+        Flag::ExtGap => "ext_gap",
+        Flag::NetworkTotalUnavailable => "network_total_unavailable",
     }
 }
 
@@ -520,6 +527,12 @@ mod tests {
         assert_eq!(rows.len(), 2);
         let r = &rows[0];
         assert_eq!(r.keys[&GroupKey::Vm], Named { id: "vm1".into(), name: "web-1".into() });
+        // Usage by node (spec/clustering-ui.md §5.4): any subject that says where it was.
+        let mut s = Subject::new(SubjectKind::Disk, "d1", "d1", Some("p".into()));
+        assert_eq!(key_of(&s, GroupKey::Node), None);
+        s.node = Some("n1".into());
+        assert_eq!(key_of(&s, GroupKey::Node), Some(Named { id: "n1".into(), name: "n1".into() }));
+        assert_eq!("node".parse::<GroupKey>(), Ok(GroupKey::Node));
         assert_eq!(r.meters["cpu.used"], 10_800_000_000);
         assert_eq!(r.meters["mem.peak"], 768, "peaks take the max");
         assert_eq!(r.meters["net.bytes"], 4 << 30);

@@ -6,7 +6,7 @@
 use super::ledger::{Ledger, LedgerSettings, Origin, Subject, SubjectKind, HOUR_MS};
 use super::query::{self, GroupKey, Granularity};
 use super::rates::{bandwidth_p95, compute_p95, group_slots};
-use redb::Database;
+use crate::store::Db;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Instant;
@@ -77,7 +77,7 @@ fn load_targets() {
     // On disk, not /tmp (often a RAM-backed tmpfs).
     let dir = tempfile::TempDir::new_in(concat!(env!("CARGO_MANIFEST_DIR"), "/../../target")).unwrap();
     let path = dir.path().join("bench.db");
-    let l = Ledger::new(Arc::new(Database::create(&path).unwrap()), LedgerSettings::from_secs(30, 120)).unwrap();
+    let l = Ledger::new(Arc::new(Db::create(&path).unwrap()), LedgerSettings::from_secs(30, 120)).unwrap();
     l.set_started_at_for_test(T0);
     let f = fleet();
     let t0 = T0;

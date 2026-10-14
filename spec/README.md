@@ -26,7 +26,11 @@ fresh reader cannot infer just by reading the source.
 | [web-ui.md](web-ui.md) | Vite + React UI structure, routes, API client, dev-proxy |
 | [installer.md](installer.md) | `glidex-install` bootstrap flow and what it brings up |
 | [metering.md](metering.md) | Resource usage metering (design): CPU/memory/disk meters, per-VM and per-network traffic from OVS bridge ports with an external/internal split on NAT networks, billing-month totals 95th-percentile bandwidth and disk IOPS/throughput/latency, hourly exactly-once ledger, `/usage` API |
+| [cluster-runbook.md](cluster-runbook.md) | Operating a cluster: removing, forgetting and rejoining nodes, rotating the CA, rolling upgrades, recovering a lost quorum |
+| [clustering.md](clustering.md) | Multi-host clusters (design): control-plane store replicated with embedded Raft (leader-computed write sets), server and node roles, node lifecycle (remove, forget, rejoin, leave with VMs and import them into another cluster), scheduler with sticky local-storage placement, cluster networks on OVN (isolated, NAT via an HA edge router or per-project VPC routers, provider), cluster IPAM, node PKI with CA rotation, conntrack-based external metering, scale envelope |
+| [clustering-ui.md](clustering-ui.md) | Cluster operations in the web UI (plan): capability checks on the right resource type, node awareness in existing pages, placement and capacity, the Cluster page with membership, imports, CA and lifecycle operations, OVN views, the server additions they need, milestones U0–U5 |
 | [security.md](security.md) | Authentication (peer uid, PAM, OIDC, tokens), projects/teams, Cedar authorization policies, netd policy, hardening (draft) |
+| [gxctl-auth.md](gxctl-auth.md) | `gxctl auth login` and its config file (`~/.config/glidex/config.json`): login profiles per server/cluster, TLS trust ladder with fingerprint pinning (TOFU) for self-signed control planes, the contained `insecure` bypass, identity generation and administration, server-side additions (`/auth/server-info`, `/auth/token`) |
 
 ## Goals
 
@@ -53,7 +57,9 @@ fresh reader cannot infer just by reading the source.
 
 ## Non-goals
 
-- Clustering / multi-host orchestration.
+- Clustering / multi-host orchestration. Planned in
+  [clustering.md](clustering.md); this non-goal is lifted when its
+  milestones land.
 - Built-in identity provider. Users authenticate with local accounts
   (PAM, peer credentials) or an external OIDC IdP; authorization is
   Cedar policy. See [security.md](security.md).

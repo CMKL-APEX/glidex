@@ -198,6 +198,7 @@ function ImageTable({ images, firmware, onRetry, onRemove }: TableProps) {
                 )}
                 <td className="px-4 py-3">
                   <StatusBadge image={img} />
+                  <Copies img={img} />
                 </td>
                 <td className="px-4 py-3">
                   {firmware
@@ -236,6 +237,33 @@ function ImageTable({ images, firmware, onRetry, onRemove }: TableProps) {
         </tbody>
       </table>
     </div>
+  );
+}
+
+/** Where the image's file is, in a cluster: one line per node's copy. */
+function Copies({ img }: { img: ImageInfo }) {
+  const copies = img.copies ?? [];
+  if (copies.length === 0) return null;
+  const ready = copies.filter((c) => c.state === "ready").length;
+  return (
+    <details className="mt-1 text-xs text-gray-600">
+      <summary className="cursor-pointer">
+        on {ready} node{ready === 1 ? "" : "s"}
+        {ready < copies.length ? `, ${copies.length - ready} copying or failed` : ""}
+      </summary>
+      <ul className="mt-1 space-y-0.5">
+        {copies.map((c) => (
+          <li key={c.node}>
+            <span className="font-medium">{c.node_name ?? c.node.slice(0, 8)}</span>:{" "}
+            {c.state === "ready"
+              ? "ready"
+              : c.state === "downloading"
+                ? `copying${img.file_size_bytes ? ` (${Math.min(100, Math.round((c.bytes / img.file_size_bytes) * 100))} %)` : ""}`
+                : <span className="text-red-600">failed{c.error ? `: ${c.error}` : ""}</span>}
+          </li>
+        ))}
+      </ul>
+    </details>
   );
 }
 

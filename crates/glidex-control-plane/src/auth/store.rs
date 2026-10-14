@@ -6,7 +6,8 @@
 //! of their value.
 
 use crate::authz::{Ent, Link};
-use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
+use crate::store::Db;
+use redb::{ReadableTable, TableDefinition};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -51,6 +52,7 @@ macro_rules! storage_from {
     )*};
 }
 storage_from!(
+    crate::store::StoreError,
     redb::TransactionError,
     redb::TableError,
     redb::StorageError,
@@ -96,6 +98,22 @@ pub struct Identity {
 impl Identity {
     pub fn key(provider: &str, subject: &str) -> String {
         format!("{}:{}", provider, subject)
+    }
+
+    /// `unix` and `pam` identities are names on one host, not global
+    /// (spec/clustering.md D13).
+    pub fn is_host_local(&self) -> bool {
+        self.provider == "unix" || self.provider == "pam"
+    }
+
+    /// The subject of a host-local identity scoped to `node`: `alice@<node>`.
+    pub fn scoped_subject(name: &str, node: &str) -> String {
+        format!("{}@{}", name, node)
+    }
+
+    /// Split `alice@<node>` into the name and the node.
+    pub fn split_scoped(subject: &str) -> Option<(&str, &str)> {
+        subject.rsplit_once('@')
     }
 }
 
@@ -165,6 +183,14 @@ pub struct Token {
     pub last_used_at: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_used_from: Option<String>,
+    /// Device the minting client claimed (`gxctl auth login`); display and
+    /// audit only, never checked (spec/gxctl-auth.md §7.2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<String>,
+    /// Client build that minted the token (`gxctl/<version>`); display and
+    /// audit only, never checked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -216,16 +242,22 @@ pub struct AuditEntry {
 /// Versions of a site policy kept by default (spec §7.6).
 pub const POLICY_HISTORY: usize = 50;
 
+enum Rekey {
+    Keep,
+    Drop,
+    To(String),
+}
+
 pub struct IdentityStore {
-    db: Arc<Database>,
+    db: Arc<Db>,
     audit_seq: std::sync::atomic::AtomicU64,
     /// Versions kept per site policy (config `authz.policy_history`).
     policy_history: std::sync::atomic::AtomicUsize,
 }
 
 fn get<T: DeserializeOwned>(
-    db: &Database,
-    table: TableDefinition<&str, &[u8]>,
+    db: &Db,
+    table: crate::store::Def,
     key: &str,
 ) -> Result<Option<T>, StoreError> {
     let txn = db.begin_read()?;
@@ -236,9 +268,21 @@ fn get<T: DeserializeOwned>(
     })
 }
 
-fn put<T: Serialize>(db: &Database, table: TableDefinition<&str, &[u8]>, key: &str, value: &T) -> Result<(), StoreError> {
+fn table_id(table: crate::store::Def) -> crate::store::TableId {
+    use redb::TableHandle;
+    crate::store::TableId::from_name(table.name()).expect("a known table")
+}
+
+fn put<T: Serialize>(db: &Db, table: crate::store::Def, key: &str, value: &T) -> Result<(), StoreError> {
     let bytes = serde_json::to_vec(value)?;
-    let txn = db.begin_write()?;
+    let txn = match db.begin(crate::store::Origin::Auth) {
+        Ok(t) => t,
+        // A follower authenticating someone (a session, a user): the leader writes.
+        Err(crate::store::StoreError::NotLeader { .. }) => {
+            return Ok(db.forward_raw(vec![crate::store::Op::Put { table: table_id(table), key: key.as_bytes().to_vec(), value: bytes }])?)
+        }
+        Err(e) => return Err(e.into()),
+    };
     {
         let mut t = txn.open_table(table)?;
         t.insert(key, bytes.as_slice())?;
@@ -247,8 +291,15 @@ fn put<T: Serialize>(db: &Database, table: TableDefinition<&str, &[u8]>, key: &s
     Ok(())
 }
 
-fn remove(db: &Database, table: TableDefinition<&str, &[u8]>, key: &str) -> Result<bool, StoreError> {
-    let txn = db.begin_write()?;
+fn remove(db: &Db, table: crate::store::Def, key: &str) -> Result<bool, StoreError> {
+    let txn = match db.begin(crate::store::Origin::Auth) {
+        Ok(t) => t,
+        Err(crate::store::StoreError::NotLeader { .. }) => {
+            db.forward_raw(vec![crate::store::Op::Delete { table: table_id(table), key: key.as_bytes().to_vec() }])?;
+            return Ok(true);
+        }
+        Err(e) => return Err(e.into()),
+    };
     let existed = {
         let mut t = txn.open_table(table)?;
         let existed = t.remove(key)?.is_some();
@@ -258,7 +309,7 @@ fn remove(db: &Database, table: TableDefinition<&str, &[u8]>, key: &str) -> Resu
     Ok(existed)
 }
 
-fn list<T: DeserializeOwned>(db: &Database, table: TableDefinition<&str, &[u8]>) -> Result<Vec<(String, T)>, StoreError> {
+fn list<T: DeserializeOwned>(db: &Db, table: crate::store::Def) -> Result<Vec<(String, T)>, StoreError> {
     let txn = db.begin_read()?;
     let t = txn.open_table(table)?;
     let mut out = Vec::new();
@@ -270,12 +321,7 @@ fn list<T: DeserializeOwned>(db: &Database, table: TableDefinition<&str, &[u8]>)
 }
 
 impl IdentityStore {
-    pub fn new(db: Arc<Database>) -> Result<Self, StoreError> {
-        let txn = db.begin_write()?;
-        for t in [USERS, IDENTITIES, TEAMS, LINKS, SESSIONS, TOKENS, SITE_POLICIES, SITE_POLICY_VERSIONS, AUDIT] {
-            let _ = txn.open_table(t)?;
-        }
-        txn.commit()?;
+    pub fn new(db: Arc<Db>) -> Result<Self, StoreError> {
         Ok(Self { db, audit_seq: Default::default(), policy_history: POLICY_HISTORY.into() })
     }
 
@@ -283,7 +329,7 @@ impl IdentityStore {
         self.policy_history.store(n.max(1), std::sync::atomic::Ordering::Relaxed);
     }
 
-    pub fn database(&self) -> Arc<Database> {
+    pub fn database(&self) -> Arc<Db> {
         self.db.clone()
     }
 
@@ -319,6 +365,54 @@ impl IdentityStore {
         put(&self.db, IDENTITIES, &Identity::key(&i.provider, &i.subject), i)
     }
 
+    /// D13, at `gxctl cluster init`: re-key every unscoped `unix:` and
+    /// `pam:` identity to `<name>@<node>`, in one write. Returns how many
+    /// were re-keyed.
+    pub fn scope_local_identities(&self, node: &str) -> Result<usize, StoreError> {
+        self.rekey_local_identities(|i| match Identity::split_scoped(&i.subject) {
+            Some(_) => Rekey::Keep,
+            None => Rekey::To(Identity::scoped_subject(&i.subject, node)),
+        })
+    }
+
+    /// The inverse, when `node` leaves with its resources (§5.8.1): its
+    /// identities become plain names again, and those scoped to other nodes
+    /// are dropped.
+    pub fn unscope_local_identities(&self, node: &str) -> Result<usize, StoreError> {
+        self.rekey_local_identities(|i| match Identity::split_scoped(&i.subject) {
+            Some((name, n)) if n == node => Rekey::To(name.to_string()),
+            Some(_) => Rekey::Drop,
+            None => Rekey::Keep,
+        })
+    }
+
+    fn rekey_local_identities(&self, f: impl Fn(&Identity) -> Rekey) -> Result<usize, StoreError> {
+        self.db.write(crate::store::Origin::Auth, |tx| {
+            let mut t = tx.open_table(IDENTITIES)?;
+            let mut moves = Vec::new();
+            for r in t.iter()? {
+                let (k, v) = r?;
+                let Ok(i) = serde_json::from_slice::<Identity>(v.value()) else { continue };
+                if !i.is_host_local() {
+                    continue;
+                }
+                match f(&i) {
+                    Rekey::Keep => {}
+                    Rekey::Drop => moves.push((k.value().to_string(), None)),
+                    Rekey::To(subject) => moves.push((k.value().to_string(), Some(Identity { subject, ..i }))),
+                }
+            }
+            let n = moves.len();
+            for (old, new) in moves {
+                t.remove(&old)?;
+                if let Some(i) = new {
+                    t.insert(&Identity::key(&i.provider, &i.subject), serde_json::to_vec(&i)?.as_slice())?;
+                }
+            }
+            Ok(n)
+        })
+    }
+
     pub fn remove_identity(&self, provider: &str, subject: &str) -> Result<bool, StoreError> {
         remove(&self.db, IDENTITIES, &Identity::key(provider, subject))
     }
@@ -339,6 +433,12 @@ impl IdentityStore {
         }
         if !create {
             return Ok(None);
+        }
+        // A follower: the leader creates the user and identity, once, however
+        // many servers see this person log in at the same moment.
+        if !self.db.can_write() && self.db.is_replicated() {
+            let v = self.db.forward_call("identity", serde_json::json!({ "provider": provider, "subject": subject, "display_name": display_name, "email": email }))?;
+            return Ok(serde_json::from_value(v)?);
         }
         let twin = match provider {
             "pam" => self.identity("unix", subject)?,
@@ -524,7 +624,7 @@ impl IdentityStore {
         new: Option<(&str, &str, bool)>,
         author: &str,
     ) -> Result<Option<SitePolicy>, StoreError> {
-        let txn = self.db.begin_write()?;
+        let txn = self.db.begin(crate::store::Origin::Auth)?;
         let result = {
             let mut t = txn.open_table(SITE_POLICIES)?;
             let current: Option<SitePolicy> = match t.get(id)? {
@@ -633,7 +733,7 @@ impl IdentityStore {
 
     /// Delete entries older than `before` (unix millis).
     pub fn prune_audit(&self, before: u64) -> Result<usize, StoreError> {
-        let txn = self.db.begin_write()?;
+        let txn = self.db.begin(crate::store::Origin::Auth)?;
         let n = {
             let mut t = txn.open_table(AUDIT)?;
             let end = format!("{:016}", before);
@@ -657,8 +757,34 @@ mod tests {
 
     fn store() -> (IdentityStore, tempfile::TempDir) {
         let dir = tempfile::TempDir::new().unwrap();
-        let db = Arc::new(Database::create(dir.path().join("i.db")).unwrap());
+        let db = Arc::new(Db::create(dir.path().join("i.db")).unwrap());
         (IdentityStore::new(db).unwrap(), dir)
+    }
+
+    #[test]
+    fn local_identities_are_scoped_to_a_node_and_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Arc::new(Db::create(dir.path().join("i.db")).unwrap());
+        let s = IdentityStore::new(db).unwrap();
+        let alice = s.user_for_identity("unix", "alice", "alice", None, true).unwrap().unwrap();
+        let bob = s.user_for_identity("pam", "bob", "bob", None, true).unwrap().unwrap();
+        let sso = s.user_for_identity("oidc:https://idp", "carol", "carol", None, true).unwrap().unwrap();
+        assert_eq!(s.scope_local_identities("n1").unwrap(), 2);
+        assert!(s.identity("unix", "alice").unwrap().is_none());
+        assert_eq!(s.identity("unix", "alice@n1").unwrap().unwrap().user_id, alice.id);
+        assert_eq!(s.identity("pam", "bob@n1").unwrap().unwrap().user_id, bob.id);
+        // OIDC identities are global and untouched.
+        assert_eq!(s.identity("oidc:https://idp", "carol").unwrap().unwrap().user_id, sso.id);
+        // Idempotent.
+        assert_eq!(s.scope_local_identities("n1").unwrap(), 0);
+        // Another node's identity appears (a second host's alice).
+        let other = Identity { provider: "unix".into(), subject: "dave@n2".into(), user_id: alice.id.clone(), email: None, created_at: 1 };
+        s.put_identity(&other).unwrap();
+        // Leaving with n1's resources: n1's names are plain again, n2's are dropped.
+        assert_eq!(s.unscope_local_identities("n1").unwrap(), 3);
+        assert_eq!(s.identity("unix", "alice").unwrap().unwrap().user_id, alice.id);
+        assert_eq!(s.identity("pam", "bob").unwrap().unwrap().user_id, bob.id);
+        assert!(s.identity("unix", "dave@n2").unwrap().is_none());
     }
 
     #[test]

@@ -9,7 +9,8 @@
 //! Records live in the `credentials` table of the control plane's ReDB
 //! file, next to the `vms` table.
 
-use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
+use crate::store::Db;
+use redb::{ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 use sha_crypt::{PasswordHasher, ShaCrypt};
 use std::sync::Arc;
@@ -57,6 +58,7 @@ macro_rules! storage_err {
     )*};
 }
 storage_err!(
+    crate::store::StoreError,
     redb::TransactionError,
     redb::TableError,
     redb::StorageError,
@@ -236,16 +238,11 @@ fn now() -> u64 {
 }
 
 pub struct CredentialStore {
-    db: Arc<Database>,
+    db: Arc<Db>,
 }
 
 impl CredentialStore {
-    pub fn new(db: Arc<Database>) -> Result<Self, CredentialError> {
-        let txn = db.begin_write()?;
-        {
-            let _ = txn.open_table(CREDENTIALS_TABLE)?;
-        }
-        txn.commit()?;
+    pub fn new(db: Arc<Db>) -> Result<Self, CredentialError> {
         Ok(Self { db })
     }
 
@@ -293,7 +290,7 @@ impl CredentialStore {
         };
 
         let k = key(project, &credential.username);
-        let txn = self.db.begin_write()?;
+        let txn = self.db.begin(crate::store::Origin::Api)?;
         {
             let mut table = txn.open_table(CREDENTIALS_TABLE)?;
             if table.get(k.as_str())?.is_some() {
@@ -316,7 +313,7 @@ impl CredentialStore {
         let ssh_keys = req.ssh_authorized_keys.map(validate_ssh_keys).transpose()?;
 
         let k = key(project, username);
-        let txn = self.db.begin_write()?;
+        let txn = self.db.begin(crate::store::Origin::Api)?;
         let credential = {
             let mut table = txn.open_table(CREDENTIALS_TABLE)?;
             let mut credential: Credential = {
@@ -346,7 +343,7 @@ impl CredentialStore {
     }
 
     pub fn delete(&self, project: &str, username: &str) -> Result<(), CredentialError> {
-        let txn = self.db.begin_write()?;
+        let txn = self.db.begin(crate::store::Origin::Api)?;
         {
             let mut table = txn.open_table(CREDENTIALS_TABLE)?;
             if table.remove(key(project, username).as_str())?.is_none() {
@@ -360,7 +357,7 @@ impl CredentialStore {
     /// Move credentials from before projects (keyed by username alone)
     /// into `project`. Returns how many moved.
     pub fn adopt_unscoped(&self, project: &str) -> Result<usize, CredentialError> {
-        let txn = self.db.begin_write()?;
+        let txn = self.db.begin(crate::store::Origin::Api)?;
         let moved = {
             let mut table = txn.open_table(CREDENTIALS_TABLE)?;
             let mut old = Vec::new();
@@ -396,7 +393,7 @@ mod tests {
 
     fn store() -> (CredentialStore, tempfile::TempDir) {
         let dir = tempfile::TempDir::new().unwrap();
-        let db = Arc::new(Database::create(dir.path().join("c.db")).unwrap());
+        let db = Arc::new(Db::create(dir.path().join("c.db")).unwrap());
         (CredentialStore::new(db).unwrap(), dir)
     }
 
@@ -413,11 +410,11 @@ mod tests {
         let (store, _dir) = store();
         let cred = store.create("p", req("alice", Some("correct horse"))).unwrap();
         let hash = cred.password_hash.clone().unwrap();
-        assert!(hash.starts_with("$6$"), "{hash}");
+        assert!(hash.starts_with("$6$"), "a SHA-512 crypt hash");
         // glibc only reads 16 salt characters; a longer salt in the string
         // makes every guest login fail (see hash_password).
         let salt = hash.split('$').find(|p| !p.is_empty() && *p != "6" && !p.starts_with("rounds=")).unwrap();
-        assert_eq!(salt.len(), 16, "{hash}");
+        assert_eq!(salt.len(), 16, "a 16-character salt");
         assert!(!hash.contains("correct horse"));
 
         let stored = store.get("p", "alice").unwrap();
@@ -433,9 +430,9 @@ mod tests {
         let (store, _dir) = store();
         let cred = store.create("p", req("bob", Some("s3cret-pass"))).unwrap();
         let debug = format!("{:?}", cred);
-        assert!(!debug.contains("$6$"), "{debug}");
+        assert!(!debug.contains("$6$"), "the hash is redacted");
         let debug = format!("{:?}", req("bob", Some("s3cret-pass")));
-        assert!(!debug.contains("s3cret-pass"), "{debug}");
+        assert!(!debug.contains("s3cret-pass"), "the password is redacted");
     }
 
     #[test]

@@ -32,6 +32,7 @@ reported as `404`.
 | `GET` | `/health` | `health_check` | Liveness probe |
 | `GET` | `/vms` | `list` | List VMs |
 | `POST` | `/vms` | `create` | Create a new VM (desired state `stopped` unless `power` says otherwise) |
+| `POST` | `/scheduler/preview` | `vms::preview` | Where a VM would go: `{vcpu_count, mem_size_mib, hypervisor?, node?, networks?, vfio_devices?, data_disks?, project?}` → `{pick, nodes: [{id, name, refused, vcpus_taken, vcpus_capacity, mem_mib_taken, mem_mib_capacity, vms}]}`, the scheduler's preference first; needs `createVm` on the project (spec/clustering-ui.md §5.1) |
 | `GET` | `/vms/{id}[?view=full]` | `get_one` | Get a VM by id; `view=full` returns the stored `{meta, spec, status}` record instead of the flat `VmResponse`; it also needs `readSystemStatus` (`host.read`), since the record carries host paths, PIDs and the boot id |
 | `PATCH` | `/vms/{id}` | `patch_one` | JSON merge patch of the VM's spec (below) |
 | `DELETE` | `/vms/{id}[?keep_disk=true]` | `delete_one` | Request deletion; the controller stops the VM and cleans up (below) |
@@ -64,6 +65,23 @@ reported as `404`.
 | `GET` | `/disks/{id}/events` | `disk_events` | The disk's last 50 events (`readDisk`) |
 | `GET` | `/networks/{name}/events` | `network_events` | The network's last 50 events (`readNetwork`) |
 | `DELETE` | `/networks/{name}[?wait=N]` | `delete_network` | Delete (`204`, or `202` while the network controller tears it down; `409` while a VM uses it; below) |
+| `GET` / `POST` | `/projects/{id}/routers` | `list_routers` / `create_router` | VPC routers of a project; create one (`201`; `409 external_pool_exhausted`; quotas `routers`, `external_ips`; [clustering.md §11.2a](clustering.md#112a-vpc-routers)) |
+| `GET` / `DELETE` | `/projects/{id}/routers/{name}` | `get_router` / `delete_router` | Details; delete (`204`; `409` while a network is attached) |
+| `PUT` | `/projects/{id}/networks/{name}/router` | `set_network_router` | Put an existing NAT or isolated cluster network of the project on one of its routers, `{"router": "<name>"}`, or back on the shared edge (an isolated one: not routed), `{"router": null}` (`createRouter`; `400` for another kind of network or an unknown router, `404` for a network that isn't the project's; [clustering-ui.md §8d](clustering-ui.md#8d-a-projects-own-routers)) |
+| `GET` | `/cluster/status[?ports=true]` | `cluster::status` | Raft group, nodes with version and feature level, CA rotation, and TCP reachability of the cluster ports from the serving server |
+| `POST` | `/cluster/{init,join,import,rejoin,leave,dissolve,rotate-ca,promote,join-tokens}` | `cluster::*` | Forming, joining (with `import` for a host with resources), leaving and operating a cluster ([clustering.md §5](clustering.md#5-cluster-lifecycle), [runbook](cluster-runbook.md)) |
+| `GET` | `/cluster/snapshot` | `cluster::snapshot` | A consistent snapshot of the replicated store (0600 material; always audited) |
+| `GET` / `PUT` | `/cluster/settings/ovn` | `cluster::{get,put}_ovn_settings` | OVN as a cluster setting (spec/clustering-ui.md §8a). `GET`: `{enabled, edge, vpc_pool}` for anyone signed in (whether the shared edge is set, and has a pool for VPC routers); with `readCluster` also `source` (`cluster`, `file`, `none`), `settings`, each node's OVN readiness (`missing`) and the cluster networks. `PUT` (`configureOvn`, recent login, audited): `{enabled, edge?, dns_servers?, nat_supernet?, underlay_mtu?, snat_ct_zones?}`; `400` for options that don't fit together, `409 ovn_not_installed` naming nodes without OVN, `409 cluster_networks_exist` when turning it off with cluster networks left. Every node follows without a restart |
+| `GET` | `/cluster/settings/ovn/edge-defaults` | `cluster::edge_defaults` | A suggested shared edge for this cluster (`readCluster`): `{edge, complete, notes}`, the edge with a pool for VPC routers when the LAN has room (spec/clustering-ui.md §8a) |
+| `GET` | `/cluster/ovn/tunnels` | `net::cluster_ovn_tunnels` | Each node's Geneve tunnels from its own Open vSwitch (`readCluster`): per node `answered`, `tunnels` (`peer`, `remote_ip`, `state`: `present` / `error` / `bfd_down`, OVS `error`, BFD state and diagnostic, rx/tx packets and bytes) and `missing` peers (spec/clustering-ui.md §8b) |
+| `GET` | `/cluster/ovn` | `net::cluster_ovn` | OVN as it is now (`readCluster`): NB and SB members (reachable, leader), chassis (node, tunnel endpoints), each router's HA gateway (active chassis, candidates by priority); `{"enabled": false}` without OVN (spec/clustering-ui.md §8) |
+| `GET` | `/networks/{name}/ovn` | `net::network_ovn` | A cluster network on OVN (`readNetwork`, the network's visibility): its switch, ports (VM, addresses, the chassis each is bound to) and router (NAT rules, active gateway) |
+| `POST` | `/ovs/bridges/{b}/uplinks/{u}/reapply` | `net::reapply_uplink` | Set up again an uplink netd rolled back at start (`confirmUplink`, recent login): `202` pending commit, as when added (networking.md §8.5). `POST /ovs/bridges/{b}/uplinks` takes `accept_dhcp` |
+| `PUT` | `/nodes/{id}/ovn` | `nodes::put_node_ovn` | A node's `br-int` datapath, `{br_int_datapath: auto\|system\|netdev}`, and/or its physical networks `{bridge_mappings: {physnet: bridge}}` (replaces the node's own; the file's still count, the setting wins; no restart) (`configureNode` on its `Host`, recent login, audited); `409 dpdk_not_running`, `409 gateway_node`, `409 vhost_user_vms` (clustering.md §11.6) |
+| `GET` | `/departures` | `nodes::list_departures` | Detaches with their state (`frozen`, `committed`, `aborted`), node, mapped networks and whether the node acknowledged (`readCluster`) |
+| `GET` | `/nodes`, `/nodes/{id}` | `nodes::list` / `get_node` | Nodes and their phase, capacity and features (image responses carry `copies: [{node, node_name, state, bytes, error?}]` in a cluster: each node's copy of the file) |
+| `POST` | `/nodes/{id}/{drain,undrain,remove,forget,purge,rejoin-token,detach}` | `nodes::*` | Node lifecycle (`409` with the reason when refused; `detach` takes `map_networks`, `with_access`, `abort`, `departed`) |
+| `GET` / `POST` | `/imports`, `/imports/{plan}`, `/imports/{plan}/{approve,reject}` | `nodes::*_import` | Import plans: show (one plan also lists its `sources`: projects, node networks, credentials and VMs it brings), approve with mappings (`dry_run` checks only), reject |
 | `GET` | `/watch[?kinds=…][&project=…]` | `watch` | Live stream of VM, disk, image and network changes (server-sent events; below) |
 | `POST` | `/vms/{id}/disks` | `attach_disk` | Attach a data disk; on a running VM it takes effect at the next start (`restart_required`) |
 | `DELETE` | `/vms/{id}/disks/{disk}` | `detach_disk` | Detach a data disk; on a running VM at the next start, and the disk stays claimed until then |
@@ -189,17 +207,27 @@ Image, disk and network events (`GET /{images,disks}/{id}/events`,
 
 ## Live stream: `GET /watch`
 
-`GET /watch[?kinds=vms,disks,images,networks][&project=<id>]` answers
+`GET /watch[?kinds=vms,disks,images,networks,nodes,imports,cluster,policy][&project=<id>]` answers
 `text/event-stream` (server-sent events). Any authenticated caller may
 open it; each kind is filtered exactly like its list endpoint (VMs by
 `readVm`, disks by `readDisk`, both in visible projects and narrowed by
 `project`; images need `readImage` and networks `readNetwork` on
 `Host`, with the view of `GET /networks`). `kinds` takes singular or
-plural names (default: all four); an unknown kind is `400 invalid`.
+plural names (default: the four above); an unknown kind is `400 invalid`.
+VM and disk objects (here and in their endpoints) carry `node` and
+`node_name`, the name of the node they are on, for callers who can't list
+nodes. Asked for by name only (spec/clustering-ui.md §3.7):
+
+| Kind | Sent to | `id`, `object` |
+|---|---|---|
+| `node` | `listNodes` on `Cluster` | node id, the record of `GET /nodes/{id}` |
+| `import` | `listImports` on `Cluster` (clustered hosts) | plan id, the view of `GET /imports` (without `sources`) |
+| `cluster` | `readCluster` on `Cluster` (clustered hosts) | cluster id, `GET /cluster/status` without port checks and without the Raft indexes that move on every write |
+| `policy` | everyone | `policy`, `{"generation": n}`: changes whenever policies or role links are installed, so clients re-run their capability checks |
 
 | Event | Data |
 |---|---|
-| `added` | `{"kind": "vm\|disk\|image\|network", "id": "…", "object": {…}}`: one per visible object on connect, then for each new one |
+| `added` | `{"kind": "vm\|disk\|image\|network\|node\|import\|cluster\|policy", "id": "…", "object": {…}}`: one per visible object on connect, then for each new one |
 | `synced` | `{}`, once, after the initial `added` events |
 | `modified` | as `added`; `object` is exactly what the list endpoint returns |
 | `deleted` | `{"kind", "id"}` (no `object`): removed, or no longer visible |

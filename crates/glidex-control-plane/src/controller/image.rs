@@ -20,12 +20,29 @@ impl VmManager {
 
     /// One round for image `id`.
     pub async fn reconcile_image(&self, id: &str) -> Next {
-        let Ok(mut img) = self.images.get_image(id) else { return Ok(None) };
+        let Ok(mut img) = self.images.get_image(id) else {
+            return Ok(None);
+        };
+        let leads = self.store.database().can_write();
         if img.deletion_requested_at.is_some() {
+            // Every node's copy goes first (§9.2); the record is the leader's to remove.
+            if self.cluster().is_some() {
+                self.drop_image_cache(&img)?;
+                if !leads {
+                    return Ok(None);
+                }
+                if self.image_caches(&img.id).iter().any(|(n, _)| *n != self.local_node_id()) {
+                    return Ok(Some(Duration::from_secs(5)));
+                }
+            }
             // The `image.download` and `image.file` finalizers (§6.3).
             self.images.finish_image_delete(&img.id)?;
             self.image_event(&img.id, EventKind::Normal, "Deleted", "");
             return Ok(None);
+        }
+        // A node that doesn't write the catalog keeps only its copy.
+        if !leads {
+            return self.reconcile_image_cache(&img).await;
         }
         match img.status.clone() {
             ImageStatus::Downloading { .. } | ImageStatus::Verifying => {
@@ -46,11 +63,18 @@ impl VmManager {
             }
             ImageStatus::Failed { .. } => Ok(None),
             ImageStatus::Ready => {
+                if self.cluster().is_some() && !self.images.image_file(&img).exists() && self.image_caches(&img.id).iter().any(|(n, r)| *n != self.local_node_id() && r.phase == crate::controller::image_cache::CachePhase::Ready) {
+                    // Another node has the file: this leader fetches it only if it needs it.
+                    return self.reconcile_image_cache(&img).await;
+                }
                 if !self.images.image_file(&img).exists() {
                     img.status = ImageStatus::Missing;
                     self.images.put_image(&img)?;
                     self.image_event(&img.id, EventKind::Warning, "FileMissing", "the image's file is gone; it is not downloaded again");
                     return Ok(None);
+                }
+                if self.cluster().is_some() {
+                    self.reconcile_image_cache(&img).await?;
                 }
                 // Disks waiting for it.
                 for d in self.images.list_disks() {

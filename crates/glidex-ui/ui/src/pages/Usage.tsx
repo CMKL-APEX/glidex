@@ -4,6 +4,7 @@ import type { GroupKey, Named, RateResponse, RateRow, UsageResponse, UsageRow } 
 import { LoadingCard } from "../components/Loading";
 import { ErrorBanner, PageHeader, errorMessage, selectClass } from "../components/ui";
 import { useSession } from "../session";
+import { useNodes } from "../nodes";
 
 type Tab = "usage" | "bandwidth" | "disk-io" | "compute";
 
@@ -235,7 +236,10 @@ export default function Usage() {
   const [rates, setRates] = useState<RateResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const g = GROUPS[tab].includes(group) ? group : "project";
+  // In a cluster, any view can also be split by node (spec/clustering-ui.md §5.4).
+  const { clustered } = useNodes();
+  const groups: GroupKey[] = clustered ? [...GROUPS[tab], "node"] : GROUPS[tab];
+  const g = groups.includes(group) ? group : "project";
   const q: api.UsageQuery = { project: project || undefined, month, group_by: g };
 
   useEffect(() => {
@@ -298,7 +302,7 @@ export default function Usage() {
         <label className="text-sm text-gray-600">
           Group by
           <select value={g} onChange={(e) => setGroup(e.target.value as GroupKey)} className={`${selectClass} block`}>
-            {GROUPS[tab].map((k) => (
+            {groups.map((k) => (
               <option key={k} value={k}>
                 {k}
               </option>

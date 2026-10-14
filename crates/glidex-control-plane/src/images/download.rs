@@ -158,6 +158,11 @@ fn hash_file(path: &Path, hashers: &mut Hashers) -> std::io::Result<u64> {
     }
 }
 
+/// SHA-256 of a file, hex.
+pub fn sha256_path(path: &Path) -> Result<String, ImageError> {
+    sha256_file(path)
+}
+
 fn sha256_file(path: &Path) -> Result<String, ImageError> {
     let mut h = Hashers::new(None);
     hash_file(path, &mut h).map_err(|e| ImageError::Io(format!("{}: {}", path.display(), e)))?;
@@ -422,7 +427,15 @@ impl ImageManager {
         self.tasks.lock().unwrap().contains_key(id)
     }
 
+    /// Start downloading image `id` unless a download for it already runs.
+    /// The check and the record share the lock: the API that queues a pull
+    /// and the controller that resumes one race for the same image, and two
+    /// downloads into one `.part` file fail each other.
     pub(crate) fn spawn_download(self: &Arc<Self>, id: String) {
+        let mut tasks = self.tasks.lock().unwrap();
+        if tasks.contains_key(&id) {
+            return;
+        }
         let mgr = self.clone();
         let task_id = id.clone();
         let handle = tokio::spawn(async move {
@@ -431,13 +444,15 @@ impl ImageManager {
             if let Err(e) = result {
                 tracing::warn!(image = %task_id, "image download failed: {}", e);
                 let _ = std::fs::remove_file(mgr.part_path(&task_id));
-                if let Ok(mut img) = mgr.get_image(&task_id) {
+                // Only a download still in progress fails; never one that finished.
+                if let Some(mut img) = mgr.get_image(&task_id).ok().filter(|i| matches!(i.status, ImageStatus::Downloading { .. } | ImageStatus::Verifying)) {
                     img.status = ImageStatus::Failed { reason: e.to_string() };
                     let _ = mgr.put_image(&img);
                 }
             }
         });
-        self.tasks.lock().unwrap().insert(id, handle.abort_handle());
+        // Still under the lock, so the task's own removal comes after this.
+        tasks.insert(id, handle.abort_handle());
     }
 
     async fn run_download(self: &Arc<Self>, id: &str) -> Result<(), ImageError> {
@@ -799,7 +814,7 @@ impl ImageManager {
                 streamed_sha256
             }
             "raw" => {
-                let converted = self.settings.image_dir.join(format!("{}.qcow2.conv.part", id));
+                let converted = crate::paths::file_in(&self.settings.image_dir, &format!("{}.qcow2.conv.part", super::safe_stem(&id)));
                 let _ = std::fs::remove_file(&converted);
                 qemu_img::convert(&part, DiskFormat::Raw, &converted, DiskFormat::Qcow2)?;
                 std::fs::rename(&converted, &part).map_err(|e| ImageError::Io(e.to_string()))?;

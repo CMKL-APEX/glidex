@@ -67,7 +67,7 @@ pub(crate) fn network_view(c: &Caller, visible: &crate::auth::LinkedProjects, mu
 }
 
 pub async fn list_networks(c: Caller) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Host, EntitySet::new())?;
+    c.require(Ent::Cluster, EntitySet::new())?;
     let visible = c.visible_projects()?;
     let nets: Vec<Network> = c
         .manager()
@@ -87,6 +87,29 @@ pub async fn get_network(c: Caller, Path(name): Path<String>) -> Result<impl Int
     network_view(&c, &visible, n)
         .map(Json)
         .ok_or_else(|| err(StatusCode::NOT_FOUND, "not_found", format!("network not found: {}", name)))
+}
+
+/// `GET /networks/{name}/ovn` (spec/clustering-ui.md §8): a cluster network
+/// as OVN has it. Whoever may see the network may see this.
+pub async fn network_ovn(c: Caller, Path(name): Path<String>) -> Result<impl IntoResponse, ApiErr> {
+    let n = c.manager().get_network(&name).map_err(manager_err)?;
+    let (e, es) = network_entities(&n);
+    c.require(e, es)?;
+    let visible = c.visible_projects()?;
+    let n = network_view(&c, &visible, n).ok_or_else(|| err(StatusCode::NOT_FOUND, "not_found", format!("network not found: {}", name)))?;
+    Ok(Json(c.manager().network_ovn(&n).await.map_err(manager_err)?))
+}
+
+/// `GET /cluster/ovn/tunnels` (spec/clustering-ui.md §8b): each node's tunnels.
+pub async fn cluster_ovn_tunnels(c: Caller) -> Result<impl IntoResponse, ApiErr> {
+    c.require(crate::authz::Ent::Cluster, crate::authz::EntitySet::new())?;
+    Ok(Json(c.manager().ovn_tunnels().await))
+}
+
+/// `GET /cluster/ovn` (spec/clustering-ui.md §8): the OVN databases, chassis and gateways.
+pub async fn cluster_ovn(c: Caller) -> Result<impl IntoResponse, ApiErr> {
+    c.require(crate::authz::Ent::Cluster, crate::authz::EntitySet::new())?;
+    Ok(Json(c.manager().ovn_overview().await.map_err(manager_err)?))
 }
 
 pub async fn network_events(c: Caller, Path(name): Path<String>) -> Result<impl IntoResponse, ApiErr> {
@@ -201,6 +224,67 @@ pub async fn create_project_network(
     let (net, over) = c.manager().create_project_network(&project, req, quota).await.map_err(manager_err)?;
     c.note_overruns(&over);
     Ok((StatusCode::CREATED, Json(net)))
+}
+
+// ---- VPC routers (spec/clustering.md §11.2a) ------------------------------
+
+pub async fn list_routers(c: Caller, Path(project): Path<String>) -> Result<impl IntoResponse, ApiErr> {
+    let project = c.target_project(Some(&project))?;
+    c.set_project(&project);
+    c.require(Ent::Project(project.clone()), super::project_entities(&project))?;
+    Ok(Json(c.manager().list_routers(&project).map_err(manager_err)?))
+}
+
+pub async fn get_router(c: Caller, Path((project, name)): Path<(String, String)>) -> Result<impl IntoResponse, ApiErr> {
+    let project = c.target_project(Some(&project))?;
+    c.set_project(&project);
+    c.require(Ent::Project(project.clone()), super::project_entities(&project))?;
+    Ok(Json(c.manager().get_router(&project, &name).map_err(manager_err)?))
+}
+
+pub async fn create_router(c: Caller, Path(project): Path<String>, Json(spec): Json<crate::router::RouterSpec>) -> Result<impl IntoResponse, ApiErr> {
+    let project = c.target_project(Some(&project))?;
+    c.set_project(&project);
+    c.set_target(format!("router:{}", spec.name));
+    c.require(Ent::Project(project.clone()), super::project_entities(&project))?;
+    // The external pool and the gateway nodes are site resources.
+    if spec.external_ip.is_some() || spec.gateway_nodes.is_some() {
+        c.require_action("createNetwork", Ent::Host, EntitySet::new(), &[])?;
+    }
+    // Its own gateway nodes must be able to carry it (spec/clustering.md §11.2a).
+    if let (true, Some(gws), Some(edge)) = (spec.external, spec.gateway_nodes.as_ref(), c.manager().ovn.load().edge.clone()) {
+        let nodes = c.manager().nodes().list().unwrap_or_default();
+        super::nodes::check_gateway_nodes(&nodes, gws, &edge.physnet).map_err(|m| err(StatusCode::CONFLICT, "gateway_not_ready", m))?;
+    }
+    let quota = c.quota_mode(&project);
+    let (r, over) = c.manager().create_router(&project, spec, quota).await.map_err(manager_err)?;
+    c.note_overruns(&over);
+    Ok((StatusCode::CREATED, Json(r)))
+}
+
+#[derive(Deserialize)]
+pub struct NetworkRouterBody {
+    /// A router of the project by name; `null`: the shared edge.
+    router: Option<String>,
+}
+
+/// `PUT /projects/{id}/networks/{name}/router`: put an existing NAT network
+/// on one of the project's routers, or back on the shared edge.
+pub async fn set_network_router(c: Caller, Path((project, name)): Path<(String, String)>, Json(b): Json<NetworkRouterBody>) -> Result<impl IntoResponse, ApiErr> {
+    let project = c.target_project(Some(&project))?;
+    c.set_project(&project);
+    c.set_target(format!("network:{name}"));
+    c.require(Ent::Project(project.clone()), super::project_entities(&project))?;
+    Ok(Json(c.manager().set_network_router(&project, &name, b.router.as_deref()).await.map_err(manager_err)?))
+}
+
+pub async fn delete_router(c: Caller, Path((project, name)): Path<(String, String)>) -> Result<impl IntoResponse, ApiErr> {
+    let project = c.target_project(Some(&project))?;
+    c.set_project(&project);
+    c.set_target(format!("router:{name}"));
+    c.require(Ent::Project(project.clone()), super::project_entities(&project))?;
+    c.manager().delete_router(&project, &name).await.map_err(manager_err)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 // ---- sharing project networks (spec §6.2.1) -------------------------------
@@ -375,6 +459,9 @@ pub struct CreateUplinkRequest {
     migrate_ip: bool,
     #[serde(default)]
     confirm: bool,
+    /// Migrate a DHCP-managed address anyway (it may only last until the lease ends).
+    #[serde(default)]
+    accept_dhcp: bool,
 }
 
 pub async fn create_uplink(c: Caller, Path(bridge): Path<String>, Json(req): Json<CreateUplinkRequest>) -> Result<impl IntoResponse, ApiErr> {
@@ -385,8 +472,10 @@ pub async fn create_uplink(c: Caller, Path(bridge): Path<String>, Json(req): Jso
     let args = EnsureUplinkArgs {
         spec: UplinkSpec { name: req.name, bridge, kind: req.kind, migrate_ip: req.migrate_ip },
         confirm: req.confirm,
+        accept_dhcp: req.accept_dhcp,
     };
     let res: UplinkResult = netd_blocking(&c, move |n, who| n.call_as(Op::EnsureUplink(args), who)).await?;
+    report_soon(&c);
     // 202: the IP migration must still be committed within the window.
     let status = match res.phase {
         UplinkPhase::PendingCommit => StatusCode::ACCEPTED,
@@ -406,7 +495,35 @@ pub async fn commit_uplink(c: Caller, Path((bridge, name)): Path<(String, String
     c.manager().meter_final_sample().await;
     let res: UplinkResult =
         netd_blocking(&c, move |n, who| n.call_as(Op::CommitUplink { bridge, name, token: req.token }, who)).await?;
+    report_soon(&c);
     Ok(Json(res))
+}
+
+/// `POST /ovs/bridges/{b}/uplinks/{u}/reapply`: set up again an uplink netd
+/// rolled back at start (the gateway check failed there): a fresh snapshot,
+/// the gateway check and a commit window, as when it was first added.
+pub async fn reapply_uplink(c: Caller, Path((bridge, name)): Path<(String, String)>) -> Result<impl IntoResponse, ApiErr> {
+    c.set_target(format!("uplink:{}/{}", bridge, name));
+    // It moves the host's IP again: as a confirmed uplink, step-up.
+    c.require_action("confirmUplink", Ent::Host, EntitySet::new(), &[])?;
+    let res: UplinkResult = netd_blocking(&c, move |n, who| n.call_as(Op::ReapplyUplink { bridge, name }, who)).await?;
+    report_soon(&c);
+    let status = match res.phase {
+        UplinkPhase::PendingCommit => StatusCode::ACCEPTED,
+        UplinkPhase::Active => StatusCode::OK,
+    };
+    Ok((status, Json(res)))
+}
+
+/// This node's uplinks changed: report what it has now (the shared edge's
+/// defaults read it), without waiting for the next periodic report.
+fn report_soon(c: &Caller) {
+    let m = c.app.manager.clone();
+    tokio::task::spawn_blocking(move || {
+        if let Err(e) = m.report_self() {
+            tracing::warn!("reporting this node after an uplink change: {}", e);
+        }
+    });
 }
 
 pub async fn delete_uplink(c: Caller, Path((bridge, name)): Path<(String, String)>) -> Result<impl IntoResponse, ApiErr> {
@@ -414,6 +531,7 @@ pub async fn delete_uplink(c: Caller, Path((bridge, name)): Path<(String, String
     c.require(Ent::Host, EntitySet::new())?;
     c.manager().meter_final_sample().await;
     netd_blocking(&c, move |n, who| n.call_as::<serde_json::Value>(Op::DeleteUplink { bridge, name }, who)).await?;
+    report_soon(&c);
     Ok(StatusCode::NO_CONTENT)
 }
 

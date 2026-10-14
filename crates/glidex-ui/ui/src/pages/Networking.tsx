@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import * as api from "../api";
 import { ApiRequestError } from "../api";
 import type {
   BridgeRecord,
   Network,
   NetworkMode,
+  Router,
   OvsStatus,
   PortType,
 } from "../types";
@@ -14,6 +15,10 @@ import { useLiveRefresh } from "../live";
 import { useCan, useSession } from "../session";
 import Modal from "../components/Modal";
 import { LoadingCard } from "../components/Loading";
+import NodeName from "../components/NodeName";
+import { NetworkOvnDialog } from "../components/OvnViews";
+import BridgesCard from "../components/BridgesCard";
+import { useNodes } from "../nodes";
 
 const inputClass =
   "mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-transparent";
@@ -207,12 +212,15 @@ function AddNetworkForm({
   bridges,
   scopes,
   initialScope,
+  initialRouter = "",
   onDone,
   onCancel,
 }: {
   bridges: BridgeRecord[];
   scopes: Scope[];
   initialScope: string;
+  /** A project's router to put a NAT network on (from its Routers card). */
+  initialRouter?: string;
   onDone: () => void;
   onCancel: () => void;
 }) {
@@ -223,11 +231,50 @@ function AddNetworkForm({
   const [subnet, setSubnet] = useState("");
   const [bridge, setBridge] = useState("");
   const [vlan, setVlan] = useState("");
+  const [physnet, setPhysnet] = useState("");
+  // A project NAT network spanning the nodes: the shared edge (""), or one of
+  // the project's routers (spec/clustering.md §11.2a).
+  const [router, setRouter] = useState(initialRouter);
+  const [routers, setRouters] = useState<Router[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // In a cluster: one OVN network for every node, or a bridge on this node.
+  const nodes = useNodes();
+  const { host } = useSession();
+  // Cluster networks need OVN on (spec/clustering-ui.md §8a): ask once.
+  const [ovnOn, setOvnOn] = useState<boolean | null>(null);
+  const [edgeSet, setEdgeSet] = useState(false);
+  useEffect(() => {
+    if (!nodes.clustered) return;
+    api
+      .getOvnSettings()
+      .then((v) => {
+        setOvnOn(v.enabled);
+        setEdgeSet(!!v.edge);
+      })
+      .catch(() => setOvnOn(false));
+  }, [nodes.clustered]);
+  const [span, setSpan] = useState<"cluster" | "node">("cluster");
+  const canSpan = nodes.clustered && ovnOn === true;
+  const clusterWide = canSpan && span === "cluster";
 
   // Project networks are NAT or isolated, on a bridge glidex names.
   const project = scope !== "";
+  const routable = project && clusterWide && (mode === "nat" || mode === "isolated");
+  useEffect(() => {
+    if (!project || !canSpan) {
+      setRouters([]);
+      return;
+    }
+    api
+      .listRouters(scope)
+      .then(setRouters)
+      .catch(() => setRouters([]));
+  }, [project, canSpan, scope]);
+  // A router of another project doesn't follow a change of project.
+  useEffect(() => {
+    if (router && routers.length && !routers.some((r) => r.spec.name === router)) setRouter("");
+  }, [routers, router]);
   const pickScope = (s: string) => {
     setScope(s);
     if (s !== "" && mode === "bridged") setMode("nat");
@@ -238,17 +285,21 @@ function AddNetworkForm({
     setBusy(true);
     setError(null);
     try {
-      const subnetValue = mode === "nat" && subnet ? subnet : undefined;
+      // Cluster networks get an address range for isolated mode too (cluster IPAM).
+      const subnetValue = (mode === "nat" || (clusterWide && mode === "isolated")) && subnet ? subnet : undefined;
+      const scopeValue = nodes.clustered ? (canSpan ? span : "node") : undefined;
       if (project) {
-        await api.createProjectNetwork(scope, { name, mode, port_type: portType, subnet: subnetValue });
+        await api.createProjectNetwork(scope, { name, mode, port_type: portType, subnet: subnetValue, scope: scopeValue, router: routable && router ? router : undefined });
       } else {
         await api.createNetwork({
           name,
           mode,
           port_type: portType,
           subnet: subnetValue,
-          bridge: bridge || undefined,
+          scope: scopeValue,
+          bridge: clusterWide ? undefined : bridge || undefined,
           vlan: vlan ? Number(vlan) : undefined,
+          physnet: clusterWide && mode === "bridged" ? physnet : undefined,
         });
       }
       onDone();
@@ -278,6 +329,34 @@ function AddNetworkForm({
             : "A host network: grant it to projects after creating it."}
         </p>
       </div>
+      {nodes.clustered && ovnOn === false && (
+        <p className="text-xs text-gray-600 bg-gray-50 border border-gray-200 rounded-lg p-2">
+          This network is for this node only. Networks that span every node need OVN, which is off for this cluster
+          {host.configureOvn ? (
+            <>
+              : turn it on from the <Link to="/cluster" className="text-sky-700 hover:underline">Cluster page</Link>.
+            </>
+          ) : (
+            "; an administrator can turn it on."
+          )}
+        </p>
+      )}
+      {canSpan && (
+        <div>
+          <label htmlFor="network-span" className="block text-sm font-medium text-gray-700">
+            Spans
+          </label>
+          <select id="network-span" className={`${inputClass} bg-white`} value={span} onChange={(e) => setSpan(e.target.value as "cluster" | "node")}>
+            <option value="cluster">Every node (cluster network on OVN)</option>
+            <option value="node">This node only (a bridge here)</option>
+          </select>
+          <p className="mt-1 text-xs text-gray-500">
+            {span === "cluster"
+              ? "VMs on any node can use it; traffic between nodes goes through Geneve tunnels."
+              : "Only VMs placed on the node serving this page can use it."}
+          </p>
+        </div>
+      )}
       <div>
         <label className="block text-sm font-medium text-gray-700">Name</label>
         <input
@@ -296,7 +375,7 @@ function AddNetworkForm({
           <select className={`${inputClass} bg-white`} value={mode} onChange={(e) => setMode(e.target.value as NetworkMode)}>
             <option value="nat">NAT (DHCP + masquerade)</option>
             <option value="isolated">Isolated (VM-to-VM)</option>
-            {!project && <option value="bridged">Bridged (existing bridge)</option>}
+            {!project && <option value="bridged">{clusterWide ? "Provider (a physical network)" : "Bridged (existing bridge)"}</option>}
           </select>
         </div>
         <div>
@@ -307,13 +386,66 @@ function AddNetworkForm({
           </select>
         </div>
       </div>
-      {mode === "nat" && (
+      {(mode === "nat" || (clusterWide && mode === "isolated")) && (
         <div>
           <label className="block text-sm font-medium text-gray-700">Subnet (optional)</label>
-          <input className={inputClass} placeholder="auto: first free /24 in 10.88.0.0/16" value={subnet} onChange={(e) => setSubnet(e.target.value)} />
+          <input
+            className={inputClass}
+            placeholder={clusterWide ? "auto: a free range from the cluster's pool" : "auto: first free /24 in 10.88.0.0/16"}
+            value={subnet}
+            onChange={(e) => setSubnet(e.target.value)}
+          />
         </div>
       )}
-      {!project && (
+      {routable && routers.length > 0 && (
+        <div>
+          <label htmlFor="network-router" className="block text-sm font-medium text-gray-700">
+            {mode === "isolated" ? "Routed through" : "Leaves through"}
+          </label>
+          <select id="network-router" className={`${inputClass} bg-white`} value={router} onChange={(e) => setRouter(e.target.value)}>
+            <option value="">{mode === "isolated" ? "Not routed (isolated)" : "The cluster's shared edge"}</option>
+            {routers.map((r) => (
+              <option key={r.id} value={r.spec.name}>
+                Router {r.spec.name}
+                {r.spec.external ? (r.status.external_ip ? ` (${r.status.external_ip})` : "") : " (internal only)"}
+              </option>
+            ))}
+          </select>
+          <p className="mt-1 text-xs text-gray-500">
+            {router
+              ? "It reaches the router's other networks, and leaves with the router's address (if the router has one). It can be moved later from the project's Routers card."
+              : mode === "isolated"
+                ? "Its VMs reach only each other."
+                : "Like every NAT network on the edge: reaches no other network, leaves with the edge's address."}
+          </p>
+        </div>
+      )}
+      {clusterWide && mode === "nat" && !edgeSet && (
+        <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-2">
+          A NAT network that spans every node leaves through the cluster's shared edge, which isn't set yet
+          {host.configureOvn ? (
+            <>
+              : set it on the <Link to="/cluster" className="text-sky-700 hover:underline">Cluster page</Link> under OVN settings.
+            </>
+          ) : (
+            "; an administrator sets it."
+          )}{" "}
+          Meanwhile choose Isolated, or Spans: this node only.
+        </p>
+      )}
+      {clusterWide && mode === "bridged" && (
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700">Physical network</label>
+            <input className={inputClass} required placeholder="physnet1" value={physnet} onChange={(e) => setPhysnet(e.target.value)} />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700">VLAN (optional)</label>
+            <input className={inputClass} type="number" min={1} max={4094} value={vlan} onChange={(e) => setVlan(e.target.value)} />
+          </div>
+        </div>
+      )}
+      {!project && !clusterWide && (
         <div className="grid grid-cols-2 gap-4">
           <div>
             <label className="block text-sm font-medium text-gray-700">
@@ -340,7 +472,7 @@ function AddNetworkForm({
         <button type="button" className="px-4 py-2 text-sm bg-gray-200 rounded-lg" onClick={onCancel}>
           Cancel
         </button>
-        <button type="submit" disabled={busy} className="px-4 py-2 text-sm text-white bg-sky-600 hover:bg-sky-700 rounded-lg disabled:opacity-50">
+        <button type="submit" disabled={busy || (clusterWide && mode === "nat" && !edgeSet)} className="px-4 py-2 text-sm text-white bg-sky-600 hover:bg-sky-700 rounded-lg disabled:opacity-50">
           {busy ? "Creating..." : "Create"}
         </button>
       </div>
@@ -459,6 +591,8 @@ export default function Networking() {
     setAdding(false);
     if (requested !== null) setParams({}, { replace: true });
   };
+  const { clustered } = useNodes();
+  const [ovnOf, setOvnOf] = useState<string | null>(null);
   // Without host rights, a network is shown by how this project gets it.
   const scope = (n: Network) =>
     n.project ? (n.project === project ? "project" : `shared by ${projectName(n.project)}`) : "host";
@@ -500,6 +634,7 @@ export default function Networking() {
             <tr>
               <th className="px-4 py-3 font-medium">Network</th>
               <th className="px-4 py-3 font-medium">{hostView === false ? "Scope" : "Project"}</th>
+              {clustered && <th className="px-4 py-3 font-medium">Spans</th>}
               <th className="px-4 py-3 font-medium">Mode</th>
               <th className="px-4 py-3 font-medium">Bridge</th>
               <th className="px-4 py-3 font-medium">VM port</th>
@@ -511,7 +646,7 @@ export default function Networking() {
           <tbody className="divide-y divide-gray-100">
             {shown.length === 0 && (
               <tr>
-                <td className="px-4 py-6 text-center text-gray-500" colSpan={8}>
+                <td className="px-4 py-6 text-center text-gray-500" colSpan={clustered ? 9 : 8}>
                   {hostView === false ? "No networks are available to this project." : "No networks yet."}
                 </td>
               </tr>
@@ -528,8 +663,19 @@ export default function Networking() {
                     <span className="text-gray-500">host</span>
                   )}
                 </td>
-                <td className="px-4 py-3">{n.mode}</td>
-                <td className="px-4 py-3 font-mono">{n.bridge}</td>
+                {clustered && (
+                  <td className="px-4 py-3 text-xs">
+                    {n.scope === "cluster" ? (
+                      <button className="text-sky-700 hover:underline" onClick={() => setOvnOf(n.name)} title="Ports, bindings and router on OVN">
+                        every node
+                      </button>
+                    ) : (
+                      <NodeName id={n.node} />
+                    )}
+                  </td>
+                )}
+                <td className="px-4 py-3">{n.mode === "bridged" && n.physnet ? `provider (${n.physnet})` : n.mode}</td>
+                <td className="px-4 py-3 font-mono">{n.scope === "cluster" ? <span className="text-gray-400">OVN</span> : n.bridge}</td>
                 <td className="px-4 py-3">{n.port_type === "vhost_user" ? "vhost-user" : "tap"}</td>
                 <td className="px-4 py-3">{n.vlan ?? "—"}</td>
                 <td className="px-4 py-3 text-xs">
@@ -551,22 +697,7 @@ export default function Networking() {
         </table>
       </div>
 
-      {bridges.length > 0 && (
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 text-sm">
-          <h2 className="font-medium text-gray-700 mb-2">glidex bridges</h2>
-          <ul className="space-y-1">
-            {bridges.map((b) => (
-              <li key={b.spec.name} className="font-mono">
-                {b.spec.name}{" "}
-                <span className="text-gray-500">
-                  ({b.spec.datapath}
-                  {b.live ? `, ${b.live.ports.length} ports` : ", missing on host"})
-                </span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
+      {hostView && <BridgesCard bridges={bridges} onChanged={refresh} />}
 
       {installing && (
         <InstallDialog
@@ -583,6 +714,7 @@ export default function Networking() {
             bridges={bridges}
             scopes={scopes}
             initialScope={initialScope}
+            initialRouter={params.get("router") ?? ""}
             onCancel={closeForm}
             onDone={() => {
               closeForm();
@@ -591,6 +723,7 @@ export default function Networking() {
           />
         </Modal>
       )}
+      {ovnOf && <NetworkOvnDialog name={ovnOf} onClose={() => setOvnOf(null)} />}
     </div>
   );
 }

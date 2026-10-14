@@ -71,7 +71,7 @@ pub async fn usage(c: Caller, Query(p): Query<UsageParams>) -> Result<Response, 
 /// readers only). Requested projects the caller can't read are `404`.
 pub(super) fn scope(c: &Caller, requested: &Option<String>) -> Result<Option<BTreeSet<String>>, ApiErr> {
     let wanted = list(requested);
-    let all = c.allowed("readUsage", Ent::Host, EntitySet::new());
+    let all = c.allowed("readUsage", Ent::Cluster, EntitySet::new());
     let mut projects: Option<BTreeSet<String>> = None;
     if !wanted.is_empty() {
         let mut set = BTreeSet::new();
@@ -97,7 +97,7 @@ pub(super) fn scope(c: &Caller, requested: &Option<String>) -> Result<Option<BTr
             .filter(|id| c.allowed("readProjectUsage", Ent::Project(id.clone()), project_entities(id)))
             .collect();
         if readable.is_empty() {
-            c.require_action("readUsage", Ent::Host, EntitySet::new(), &[])?;
+            c.require_action("readUsage", Ent::Cluster, EntitySet::new(), &[])?;
         }
         projects = Some(readable);
     }
@@ -191,6 +191,7 @@ fn respond(
     let started_at = ledger.started_at().map_err(storage)? / 1000;
     let names: BTreeMap<String, String> =
         c.manager().projects().list().unwrap_or_default().into_iter().map(|p| (p.id, p.name)).collect();
+    let node_names: BTreeMap<String, String> = c.manager().nodes().list().unwrap_or_default().into_iter().map(|n| (n.meta.id, n.spec.name)).collect();
     for row in &mut rows {
         if row.start < started_at {
             row.flags.insert("partial".into());
@@ -198,6 +199,11 @@ fn respond(
         if let Some(pr) = row.keys.get_mut(&GroupKey::Project) {
             if let Some(n) = names.get(&pr.id) {
                 pr.name = n.clone();
+            }
+        }
+        if let Some(nd) = row.keys.get_mut(&GroupKey::Node) {
+            if let Some(n) = node_names.get(&nd.id) {
+                nd.name = n.clone();
             }
         }
     }

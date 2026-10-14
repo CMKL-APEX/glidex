@@ -4,6 +4,8 @@ import { Link } from "react-router-dom";
 import type { CreateVmRequest, CredentialInfo, DiskInfo, HypervisorType, ImageInfo, Network } from "../types";
 import { HYPERVISOR_LABELS, firmwareFor, formatBytes, networkUsableBy } from "../types";
 import { useSession } from "../session";
+import { useNodes } from "../nodes";
+import PlacementPicker from "./PlacementPicker";
 
 type BootMode = "firmware" | "kernel";
 
@@ -52,6 +54,9 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
   const [startNow, setStartNow] = useState(false);
   const [restartPolicy, setRestartPolicy] = useState<"on_failure" | "never">("on_failure");
   const [onHostBoot, setOnHostBoot] = useState<"resume" | "stop">("resume");
+  // In a cluster: automatic placement ("") or a node.
+  const nodes = useNodes();
+  const [node, setNode] = useState("");
 
   const firmware = bootMode === "firmware";
 
@@ -79,7 +84,9 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
         // Only networks this project may attach to.
         const nets = all.filter((n) => networkUsableBy(n, project));
         setNetworks(nets);
+        // A network named `default`, else the project's only one.
         if (nets.some((n) => n.name === "default")) setSelectedNetworks(["default"]);
+        else if (nets.length === 1) setSelectedNetworks([nets[0].name]);
       })
       .catch(() => setNetworks([]));
     listImages()
@@ -136,6 +143,7 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
         power: startNow ? "running" : undefined,
         restart_policy: restartPolicy,
         on_host_boot: onHostBoot,
+        node: nodes.clustered && node ? node : undefined,
       });
     } catch (err) {
       // Keep the form (and what was typed) so it can be corrected.
@@ -208,6 +216,24 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
           />
         </div>
       </div>
+
+      {nodes.clustered && (
+        <PlacementPicker
+          request={{
+            project: project ?? undefined,
+            vcpu_count: vcpuCount,
+            mem_size_mib: memSizeMib,
+            hypervisor,
+            networks: selectedNetworks.map((network) => ({ network })),
+            vfio_devices: vfioDevices
+              .split(",")
+              .map((d) => d.trim())
+              .filter((d) => d.length > 0),
+          }}
+          value={node}
+          onChange={setNode}
+        />
+      )}
 
       <div>
         <label className="block text-sm font-medium text-gray-700">
@@ -423,6 +449,11 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
         </>
       )}
 
+      {networks.length === 0 && (
+        <p className="text-sm text-gray-500">
+          No networks this project can use: the VM will have no NIC. Create one on the Networking page first.
+        </p>
+      )}
       {networks.length > 0 && (
         <div>
           <label className="block text-sm font-medium text-gray-700">

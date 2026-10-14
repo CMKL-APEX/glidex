@@ -13,13 +13,23 @@ const VM_GAUGES: [&str; 5] = ["vm.running", "vm.paused", "cpu.alloc", "mem.alloc
 const MIB: u64 = 1 << 20;
 
 pub fn vm_subject(vm: &Vm) -> Subject {
-    Subject::new(SubjectKind::Vm, vm.id.clone(), vm.name.clone(), Some(vm.project.clone()))
+    let mut s = Subject::new(SubjectKind::Vm, vm.id.clone(), vm.name.clone(), Some(vm.project.clone()));
+    s.node = vm.status.placement.as_ref().map(|p| p.node.clone());
+    s
 }
 
 fn disk_subject(d: &Disk) -> Subject {
     let mut s = Subject::new(SubjectKind::Disk, d.id.clone(), d.name.clone(), (!d.project.is_empty()).then(|| d.project.clone()));
     // The VM it is attached to, so VM totals can include its disks (§8.6).
     s.vm_id = d.attached_to.clone();
+    s.node = d.node.clone();
+    s
+}
+
+/// A disk the VM uses that has no record (yet): on the VM's node.
+fn unrecorded_disk(vm: &Vm, id: &str) -> Subject {
+    let mut s = Subject::new(SubjectKind::Disk, id.to_string(), id.to_string(), Some(vm.project.clone()));
+    s.node = vm.status.placement.as_ref().map(|p| p.node.clone());
     s
 }
 
@@ -152,7 +162,7 @@ pub fn consume_exit(round: &mut Round, vm: &Vm, e: &crate::models::ExitRecord, d
         let Some(Some(id)) = e.disk_ids.get(b.index) else { continue };
         let mut ds = match disks.iter().find(|d| &d.id == id) {
             Some(d) => disk_subject(d),
-            None => Subject::new(SubjectKind::Disk, id.clone(), id.clone(), Some(vm.project.clone())),
+            None => unrecorded_disk(vm, id),
         };
         ds.vm_id = Some(vm.id.clone());
         let mut counters = vec![
@@ -188,7 +198,7 @@ pub fn record_disk_io(
         let Some(Some(id)) = ids.get(b.index) else { continue }; // unmanaged root, seed
         let mut s = match disks.iter().find(|d| &d.id == id) {
             Some(d) => disk_subject(d),
-            None => Subject::new(SubjectKind::Disk, id.clone(), id.clone(), Some(vm.project.clone())),
+            None => unrecorded_disk(vm, id),
         };
         s.vm_id = Some(vm.id.clone());
         let origin = Origin::ZeroAt(launched);
@@ -261,7 +271,7 @@ pub fn forget_gone(round: &mut Round, with_cursors: &BTreeSet<String>, live: &BT
 mod tests {
     use super::super::ledger::{combine, Ledger, LedgerSettings, HOUR_MS};
     use super::*;
-    use redb::Database;
+    use crate::store::Db;
     use std::path::Path;
     use std::sync::Arc;
 
@@ -300,7 +310,7 @@ mod tests {
     /// full), and an empty fake host.
     fn setup() -> (tempfile::TempDir, Ledger, Host) {
         let dir = tempfile::TempDir::new().unwrap();
-        let db = Arc::new(Database::create(dir.path().join("t.db")).unwrap());
+        let db = Arc::new(Db::create(dir.path().join("t.db")).unwrap());
         let l = Ledger::new(db, LedgerSettings::from_secs(30, 120)).unwrap();
         l.set_started_at_for_test(0);
         let host = Host { proc_root: dir.path().join("proc"), cgroup_root: dir.path().join("cg"), sys_root: dir.path().join("sys") };

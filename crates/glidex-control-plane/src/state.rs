@@ -61,6 +61,24 @@ pub enum VmManagerError {
     PreconditionFailed { expected: u64, actual: u64 },
 }
 
+pub(crate) fn router_err(e: crate::router::RouterError) -> VmManagerError {
+    use crate::router::RouterError as R;
+    VmManagerError::Network(match e {
+        R::NotFound(m) => NetError::NotFound(m),
+        R::Invalid(m) => NetError::Invalid(m),
+        R::Conflict(m) => NetError::Conflict(m),
+        R::PoolExhausted => NetError::ExternalPoolExhausted,
+        R::NoZone => NetError::Conflict(e.to_string()),
+        R::Storage(m) => NetError::Storage(m),
+    })
+}
+
+impl From<crate::store::StoreError> for VmManagerError {
+    fn from(e: crate::store::StoreError) -> Self {
+        VmManagerError::PersistenceError(e.to_string())
+    }
+}
+
 impl std::fmt::Display for VmManagerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -153,6 +171,8 @@ pub struct VmOptions {
     pub restart_policy: Option<RestartPolicy>,
     pub on_host_boot: Option<HostBootPolicy>,
     pub stop_grace_secs: Option<u32>,
+    /// Pin the VM to a node (id or name).
+    pub node: Option<String>,
 }
 
 /// `PATCH /vms/{id}`: a JSON merge patch of `spec` (§12.1). Immutable
@@ -259,10 +279,29 @@ pub struct VmManager {
     /// netd's socket identity at the last port sync (restart detection).
     pub(crate) netd_seen: std::sync::Mutex<Option<(u64, u64)>>,
     pub(crate) controllers_started: std::sync::atomic::AtomicBool,
+    sched: ArcSwap<crate::cluster::config::SchedulerConfig>,
+    reserved: ArcSwap<crate::cluster::config::NodeReserved>,
+    /// What this host runs OVN with: the cluster setting (if written) over
+    /// the file's per-host part (spec/clustering-ui.md §8a).
+    pub(crate) ovn: ArcSwap<crate::cluster::config::OvnConfig>,
+    /// `cluster.ovn` as this host's file has it.
+    ovn_file: ArcSwap<crate::cluster::config::OvnConfig>,
+    /// The file's cluster-wide OVN fields were reported as ignored.
+    ovn_file_warned: std::sync::atomic::AtomicBool,
+    nodes: crate::node::NodeStore,
+    roles: std::sync::Mutex<crate::node::Roles>,
+    db_path: PathBuf,
+    /// This host's cluster membership, once it has one (spec/clustering.md).
+    cluster: arc_swap::ArcSwapOption<crate::cluster::Cluster>,
+    /// The API router, handed to the cluster for forwarded requests.
+    api_router: std::sync::OnceLock<axum::Router>,
+    node_link: std::sync::OnceLock<Arc<crate::cluster::agent::NodeLink>>,
     /// The controllers' tasks, aborted by `stop_controllers`.
     pub(crate) tasks: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
     /// Resource usage metering (spec/metering.md), once started.
-    pub(crate) meter: std::sync::OnceLock<Arc<crate::metering::Meter>>,
+    pub(crate) meter: arc_swap::ArcSwapOption<crate::metering::Meter>,
+    pub(crate) meter_tasks: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    pub(crate) metering_cfg: std::sync::Mutex<Option<crate::config::MeteringConfig>>,
     pub(crate) me: Weak<VmManager>,
 }
 
@@ -298,10 +337,50 @@ impl VmManager {
 
     /// As `with_db_path`, talking to the glidex-netd at `netd`.
     pub fn with_db_path_and_netd(db_path: PathBuf, netd: Netd) -> Result<Arc<Self>, VmManagerError> {
+        // The cluster files live beside it (paths::file_in).
+        crate::paths::checked_path(&db_path).map_err(VmManagerError::PersistenceError)?;
         let store = VmStore::open(&db_path)?;
+        Self::build(db_path, store, netd, None)
+    }
+
+    /// As [`with_db_path_and_netd`](Self::with_db_path_and_netd), for a host
+    /// that may be in a cluster: if it has a cluster identity, its Raft
+    /// member is started before anything touches the store, so no write ever
+    /// bypasses the log (spec/clustering.md §6.1).
+    pub async fn open(db_path: PathBuf, netd: Netd, cfg: &crate::config::Config) -> Result<Arc<Self>, VmManagerError> {
+        crate::paths::checked_path(&db_path).map_err(VmManagerError::PersistenceError)?;
+        // A departure that committed before the last restart finishes first (§5.8.2).
+        match crate::cluster::departure::finish_pending(&db_path) {
+            Ok(true) => tracing::warn!("finished leaving the cluster: this host is standalone and owns its VMs"),
+            Ok(false) => {}
+            Err(e) => tracing::error!("a pending departure could not be finished: {}", e),
+        }
+        let store = VmStore::open(&db_path)?;
+        let files = crate::cluster::identity::Files::beside(&db_path);
+        let cluster = match files.load_identity().map_err(|e| VmManagerError::PersistenceError(e.to_string()))? {
+            Some(identity) => {
+                crate::authz::set_identity(&identity.cluster_id, &identity.node_id);
+                crate::authz::set_local_account_scope((!cfg.cluster.shared_local_accounts).then(|| identity.node_id.clone()));
+                let listen = cfg.cluster.listen;
+                let c = crate::cluster::Cluster::start(store.database(), files, identity, cfg.cluster.clone(), listen)
+                    .await
+                    .map_err(|e| VmManagerError::PersistenceError(format!("cluster: {e}")))?;
+                // A restarting node waits briefly for a leader; without one the
+                // control plane still comes up and serves stale reads.
+                if c.wait_for_leader(std::time::Duration::from_secs(10)).await.is_none() {
+                    tracing::warn!("no cluster leader yet: serving local, possibly stale, state until a quorum is back");
+                }
+                Some(c)
+            }
+            None => None,
+        };
+        Self::build(db_path, store, netd, cluster)
+    }
+
+    fn build(db_path: PathBuf, store: VmStore, netd: Netd, cluster: Option<Arc<crate::cluster::Cluster>>) -> Result<Arc<Self>, VmManagerError> {
         let base = db_path.parent().map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
-        let changed = crate::store::new_bell();
-        let images = ImageManager::new(store.database(), ImageSettings::from_env(&base), changed.clone())?;
+        let changed = store.database().bell();
+        let images = ImageManager::new(store.database(), ImageSettings::from_env(&base))?;
         for ty in [HypervisorType::CloudHypervisor, HypervisorType::Qemu] {
             if !crate::hypervisor::driver(ty).is_available() {
                 tracing::warn!("Hypervisor {} binary {:?} not found — VMs configured for it will fail to start", ty, ty.binary_name());
@@ -310,9 +389,10 @@ impl VmManager {
         let settings = Settings::default();
         let runner = Runner::new(settings.runner);
         let credentials = CredentialStore::new(store.database())?;
-        let networks = NetworkStore::new(store.database(), changed.clone())?;
+        let networks = NetworkStore::new(store.database())?;
         let projects = ProjectStore::new(store.database())?;
-        Ok(Arc::new_cyclic(|me| Self {
+        let nodes = crate::node::NodeStore::new(store.database());
+        let mgr = Arc::new_cyclic(|me| Self {
             vms: RwLock::new(HashMap::new()),
             credentials,
             networks,
@@ -330,10 +410,27 @@ impl VmManager {
             orphans: std::sync::Mutex::new(Vec::new()),
             netd_seen: std::sync::Mutex::new(None),
             controllers_started: std::sync::atomic::AtomicBool::new(false),
+            sched: ArcSwap::from_pointee(Default::default()),
+            reserved: ArcSwap::from_pointee(Default::default()),
+            ovn: ArcSwap::from_pointee(Default::default()),
+            ovn_file: ArcSwap::from_pointee(Default::default()),
+            ovn_file_warned: std::sync::atomic::AtomicBool::new(false),
+            nodes,
+            roles: std::sync::Mutex::new(crate::node::Roles::STANDALONE),
+            db_path,
+            cluster: arc_swap::ArcSwapOption::empty(),
+            api_router: std::sync::OnceLock::new(),
+            node_link: std::sync::OnceLock::new(),
             tasks: std::sync::Mutex::new(Vec::new()),
-            meter: std::sync::OnceLock::new(),
+            meter: arc_swap::ArcSwapOption::empty(),
+            meter_tasks: std::sync::Mutex::new(Vec::new()),
+            metering_cfg: std::sync::Mutex::new(None),
             me: me.clone(),
-        }))
+        });
+        if let Some(c) = cluster {
+            mgr.attach_cluster(c);
+        }
+        Ok(mgr)
     }
 
     /// Apply `control-plane.json`'s `reconcile` and `console` sections.
@@ -342,6 +439,404 @@ impl VmManager {
         let s = Settings::from_config(cfg);
         self.runner.store(Arc::new(Runner::new(s.runner)));
         self.settings.store(Arc::new(s));
+        self.sched.store(Arc::new(cfg.cluster.scheduler.clone()));
+        self.reserved.store(Arc::new(cfg.cluster.node_reserved.clone()));
+        self.ovn_file.store(Arc::new(cfg.cluster.ovn.clone()));
+        self.apply_ovn_settings();
+    }
+
+    /// Recompute the OVN configuration from the cluster setting and the
+    /// file (at start, and whenever the setting changes).
+    pub fn apply_ovn_settings(&self) {
+        let file = self.ovn_file.load_full();
+        let next = match crate::ovn_settings::read(&self.store.database()) {
+            Some(s) => {
+                let from_file = crate::ovn_settings::OvnSettings::from_file(&file);
+                let file_says_something = from_file.enabled || from_file.edge.is_some() || from_file.nat_supernet.is_some() || !from_file.dns_servers.is_empty();
+                if file_says_something && !s.same_options(&from_file) && !self.ovn_file_warned.swap(true, std::sync::atomic::Ordering::AcqRel) {
+                    tracing::warn!("control-plane.json's cluster.ovn options are ignored: the cluster's OVN setting decides (spec/clustering-ui.md §8a); only bridge_mappings is read from the file");
+                }
+                s.effective(&file)
+            }
+            None => (*file).clone(),
+        };
+        if *self.ovn.load_full() != next {
+            if self.ovn.load().enabled != next.enabled {
+                tracing::info!(enabled = next.enabled, "OVN setting changed");
+            }
+            self.ovn.store(Arc::new(next));
+        }
+    }
+
+    /// The cluster's OVN setting, if one was written.
+    pub fn ovn_settings(&self) -> Option<crate::ovn_settings::OvnSettings> {
+        crate::ovn_settings::read(&self.store.database())
+    }
+
+    /// On the leader of a cluster enabled the old way (the file), write the
+    /// setting from the file once, so every node follows it.
+    pub fn migrate_ovn_settings(&self) {
+        if self.cluster().is_none() || !self.store.database().can_write() || self.ovn_settings().is_some() {
+            return;
+        }
+        let file = self.ovn_file.load_full();
+        if !file.enabled {
+            return;
+        }
+        let s = crate::ovn_settings::OvnSettings::from_file(&file);
+        match crate::ovn_settings::write(&self.store.database(), &s) {
+            Ok(()) => tracing::info!("wrote the cluster's OVN setting from this server's control-plane.json"),
+            Err(e) => tracing::warn!("writing the cluster's OVN setting: {}", e),
+        }
+    }
+
+    /// Where `req` goes, from the nodes' records and what each already carries.
+    pub(crate) fn pick_node(&self, vms: &HashMap<String, Vm>, req: &crate::scheduler::Request) -> Result<String, Vec<(String, String)>> {
+        crate::scheduler::schedule(req, &self.node_loads(vms), &self.sched.load())
+    }
+
+    /// Every node that may take VMs, with what is placed on it.
+    fn node_loads(&self, vms: &HashMap<String, Vm>) -> Vec<(crate::node::Node, crate::scheduler::Load)> {
+        let nodes = self.nodes.list().unwrap_or_default();
+        let loads = crate::scheduler::loads(
+            vms.values().filter_map(|v| v.status.placement.as_ref().map(|p| (p.node.clone(), v.config().vcpu_count as u64, v.config().mem_size_mib as u64))),
+        );
+        nodes
+            .into_iter()
+            .filter(|n| !n.status.phase.is_tombstone())
+            .map(|n| {
+                let l = loads.get(&n.meta.id).copied().unwrap_or_default();
+                (n, l)
+            })
+            .collect()
+    }
+
+    /// Where a VM of `config` (pinned to `pin`, using `data_disks`) could go,
+    /// node by node, the scheduler's choice first (spec/clustering-ui.md §5.1).
+    pub async fn preview_placement(&self, config: &VmConfig, pin: Option<String>, data_disks: &[String]) -> Result<Vec<crate::scheduler::NodeFit>, VmManagerError> {
+        let mut disks = Vec::new();
+        for key in data_disks {
+            disks.push(self.images.get_disk(key)?);
+        }
+        let req = self.sched_request_for(config, pin, &disks);
+        let vms = self.vms.read().await;
+        Ok(crate::scheduler::evaluate(&req, &self.node_loads(&vms), &self.sched.load()))
+    }
+
+    /// What `vm` asks of a node, given the disks it uses.
+    pub(crate) fn sched_request_pub(&self, vm: &Vm, disks: &[Disk]) -> crate::scheduler::Request {
+        self.sched_request(vm, disks)
+    }
+
+    fn sched_request(&self, vm: &Vm, disks: &[Disk]) -> crate::scheduler::Request {
+        self.sched_request_for(vm.config(), vm.spec.node.clone(), disks)
+    }
+
+    fn sched_request_for(&self, c: &VmConfig, pin: Option<String>, disks: &[Disk]) -> crate::scheduler::Request {
+        let nets = self.networks.list().unwrap_or_default();
+        crate::scheduler::Request {
+            vcpus: c.vcpu_count as u32,
+            mem_mib: c.mem_size_mib as u64,
+            hypervisor: c.hypervisor.to_string(),
+            hugepages: c.hugepages,
+            pin,
+            disk_nodes: disks.iter().map(|d| d.node.clone()).collect(),
+            net_nodes: c
+                .networks
+                .iter()
+                .filter_map(|a| nets.iter().find(|n| n.name == a.network))
+                .filter(|n| n.scope == crate::network::NetworkScope::Node)
+                .filter_map(|n| n.node.clone())
+                .collect(),
+            vfio: c.vfio_devices.clone(),
+            physnets: c
+                .networks
+                .iter()
+                .filter_map(|a| nets.iter().find(|n| n.name == a.network))
+                .filter(|n| n.scope == crate::network::NetworkScope::Cluster)
+                .filter_map(|n| n.physnet.clone())
+                .collect(),
+            vhost_user_on_cluster: c
+                .networks
+                .iter()
+                .filter_map(|a| nets.iter().find(|n| n.name == a.network))
+                .any(|n| n.scope == crate::network::NetworkScope::Cluster && n.port_type == glidex_ovs::vm_port::VmPortKind::VhostUser),
+        }
+    }
+
+    /// Whether this host has any VM, disk, network or credential record.
+    pub async fn has_resources(&self) -> bool {
+        !self.vms.read().await.is_empty()
+            || !self.images.list_disks().is_empty()
+            || self.networks.list().map(|n| n.iter().any(|n| !Self::is_stock_default(n))).unwrap_or(false)
+            || self.credentials.list(None).map(|c| !c.is_empty()).unwrap_or(false)
+    }
+
+    /// The `default` NAT network older versions made for a host at first
+    /// start (glidex no longer creates one): not something a join would
+    /// abandon.
+    fn is_stock_default(n: &Network) -> bool {
+        n.name == network::DEFAULT_NETWORK && n.bridge == network::DEFAULT_BRIDGE && n.scope == network::NetworkScope::Node && n.project.is_none()
+    }
+
+    /// Before a plain join: take down the stock `default` network (its bridge
+    /// and NAT on the host), which the cluster's records would otherwise leave
+    /// behind as an orphan. No VM can use it: `has_resources` said none exist.
+    pub async fn drop_stock_default_network(&self) -> Result<(), VmManagerError> {
+        if let Some(n) = self.networks.get(network::DEFAULT_NETWORK)?.filter(Self::is_stock_default) {
+            self.delete_network(&n.name).await?;
+        }
+        Ok(())
+    }
+
+    /// Refresh this node's own record with what the host has now. Writes
+    /// nothing when nothing changed.
+    pub fn report_self(&self) -> Result<(), VmManagerError> {
+        let reserved = {
+            let c = &self.reserved.load();
+            crate::node::Resources { cpus: c.cpus, memory_mib: c.memory_mib, hugepages: Default::default() }
+        };
+        let mut probe = crate::node::SelfProbe::detect(&reserved);
+        probe.features.physnets = self.ovn.load().bridge_mappings.clone();
+        probe.features.feature_level = crate::node::FEATURE_LEVEL;
+        // Whether OVS runs DPDK here: what `auto` picks br-int's datapath by.
+        if let (_, Ok(caps)) = self.netd.probe() {
+            probe.features.dpdk = caps.get("dpdk_initialized").and_then(|v| v.as_bool()).unwrap_or(false);
+        }
+        // The address each migrated uplink carries on its bridge.
+        if let Ok(ups) = self.netd.call::<Vec<glidex_netd::proto::UplinkResult>>(Op::ListUplinks) {
+            for u in ups.into_iter().filter(|u| u.record.boot_rollback.is_none() && u.record.pending.is_none()) {
+                let Some(snap) = &u.record.snapshot else { continue };
+                if let Some(a) = snap.addresses.iter().find(|a| a.split('/').next().is_some_and(|ip| ip.parse::<std::net::Ipv4Addr>().is_ok())) {
+                    probe.features.bridge_addrs.insert(u.record.spec.bridge.clone(), crate::node::BridgeAddr { address: a.clone(), gateway: snap.default_gateway().map(String::from) });
+                }
+            }
+        }
+        self.nodes
+            .report_self(&self.local_node_id(), probe, self.cluster().is_none())
+            .map(|_| ())
+            .map_err(|e| VmManagerError::PersistenceError(e.to_string()))
+    }
+
+    /// Every network record.
+    pub fn networks_list(&self) -> Vec<Network> {
+        self.networks.list().unwrap_or_default()
+    }
+
+    /// The image and disk records and files of this host.
+    pub fn images(&self) -> &Arc<ImageManager> {
+        &self.images
+    }
+
+    /// This host's node id: its cluster identity, else the standalone `local`.
+    pub fn local_node_id(&self) -> String {
+        match self.cluster() {
+            Some(c) => c.identity.node_id.clone(),
+            None => crate::authz::node_id(),
+        }
+    }
+
+    /// Whether `vm` runs here. A VM without a placement is this host's (a
+    /// record from before nodes).
+    /// The node API address of the node `vm` runs on, if that is not this one.
+    pub fn remote_node_addr(&self, vm: &Vm) -> Option<String> {
+        if self.is_local(vm) {
+            return None;
+        }
+        let node = vm.status.placement.as_ref()?.node.clone();
+        self.nodes.get(&node).ok().flatten().and_then(|n| n.status.advertise).map(|a| a.to_string())
+    }
+
+    pub(crate) fn is_local(&self, vm: &Vm) -> bool {
+        match &vm.status.placement {
+            Some(p) => p.node == self.local_node_id(),
+            // A record from before nodes is this host's; in a cluster a VM
+            // without a placement is nobody's until the scheduler places it.
+            None => self.cluster().is_none(),
+        }
+    }
+
+    /// Whether this node owns `disk`'s file: bound here, or (standalone) unbound.
+    pub(crate) fn is_local_disk(&self, disk: &Disk) -> bool {
+        match &disk.node {
+            Some(n) => *n == self.local_node_id(),
+            None => self.cluster().is_none(),
+        }
+    }
+
+    /// An agent's link to the servers, once it has one.
+    pub fn node_link(&self) -> Option<&Arc<crate::cluster::agent::NodeLink>> {
+        self.node_link.get()
+    }
+
+    pub fn db_path(&self) -> &std::path::Path {
+        &self.db_path
+    }
+
+    /// This host's cluster membership, if it is in a cluster.
+    pub fn cluster(&self) -> Option<Arc<crate::cluster::Cluster>> {
+        self.cluster.load_full()
+    }
+
+    /// Record the API router, so a cluster started now or later can serve
+    /// forwarded requests with it.
+    pub fn set_api_router(&self, router: axum::Router) {
+        if let Some(c) = self.cluster() {
+            c.set_api(router.clone());
+        }
+        let _ = self.api_router.set(router);
+    }
+
+    /// Take part in `cluster`: keep the in-memory VM cache in step with what
+    /// the log applies, and give the cluster the API for forwarded requests.
+    pub fn attach_cluster(&self, cluster: Arc<crate::cluster::Cluster>) {
+        if let Some(r) = self.api_router.get() {
+            cluster.set_api(r.clone());
+        }
+        let _ = cluster.handlers.set(Arc::new(HandlersOf(self.me.clone())));
+        if cluster.identity.role == crate::node::NodeRole::Agent {
+            // An agent runs the node role only, from a cache of the store.
+            self.set_roles(crate::node::Roles { node: true, server: false });
+            let link = crate::cluster::agent::NodeLink::start(cluster.clone(), self.database(), cluster.identity.seeds.clone());
+            let _ = self.node_link.set(link);
+        }
+        self.cluster.store(Some(cluster));
+        // The meter now samples into a node-local ledger and ships it.
+        self.restart_metering();
+        let me = self.arc();
+        tokio::spawn(async move { me.cache_sync().await });
+    }
+
+    /// Stop this host's cluster runtime and forget it (a rejoin starts a new one).
+    pub async fn detach_cluster(&self) {
+        if let Some(c) = self.cluster.swap(None) {
+            c.stop().await;
+            // Its Raft log is open until every holder lets go: wait for them, so a
+            // runtime started next can open the same files.
+            let weak = Arc::downgrade(&c);
+            drop(c);
+            for _ in 0..100 {
+                if weak.strong_count() == 0 {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        }
+    }
+
+    /// Keep `vms` equal to the `vms` table as entries are applied (a
+    /// follower's cache changes when the leader's write reaches it).
+    async fn cache_sync(self: Arc<Self>) {
+        let mut rx = self.store.database().subscribe();
+        loop {
+            match rx.recv().await {
+                // A cache re-list replaces everything: no keys to say which.
+                Ok(a) if a.keys.is_empty() => {
+                    self.apply_ovn_settings();
+                    self.reload_vms().await
+                }
+                // One write set may hold several tables (a VM is created with
+                // its root disk): images and disks first, so the VM
+                // controller finds the disk the VM waits for.
+                Ok(a) => {
+                    for table in [crate::store::TableId::Images, crate::store::TableId::Disks] {
+                        if a.tables.contains(&table) {
+                            let keys: Vec<String> = a.keys.iter().filter(|(t, _)| *t == table).filter_map(|(_, k)| String::from_utf8(k.clone()).ok()).collect();
+                            self.images.sync_keys(table, &keys);
+                            // What arrived from elsewhere (the leader, a node's
+                            // cache) is this node's controllers' work too: an
+                            // image to copy here, a disk to make here, and the
+                            // VM waiting for that disk.
+                            for k in &keys {
+                                match table {
+                                    crate::store::TableId::Images => self.queue.add(crate::controller::queue::Key::Image(k.clone())),
+                                    _ => {
+                                        self.queue.add(crate::controller::queue::Key::Disk(k.clone()));
+                                        if let Some(vm) = self.images.get_disk(k).ok().and_then(|d| d.attached_to) {
+                                            self.queue.add(crate::controller::queue::Key::Vm(vm));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // A copy of an image becoming ready on some node: nodes
+                    // waiting to fetch it can go now.
+                    for (_, k) in a.keys.iter().filter(|(t, _)| *t == crate::store::TableId::ImageCaches) {
+                        if let Some(image) = String::from_utf8_lossy(k).split('/').next() {
+                            self.queue.add(crate::controller::queue::Key::Image(image.to_string()));
+                        }
+                    }
+                    if a.tables.contains(&crate::store::TableId::Images) || a.tables.contains(&crate::store::TableId::Disks) {
+                        self.notify_changed();
+                    }
+                    if a.keys.iter().any(|(t, k)| crate::ovn_settings::is_key(*t, k)) {
+                        self.apply_ovn_settings();
+                    }
+                    if a.tables.contains(&crate::store::TableId::Vms) {
+                        let keys: Vec<String> = a.keys.iter().filter(|(t, _)| *t == crate::store::TableId::Vms).filter_map(|(_, k)| String::from_utf8(k.clone()).ok()).collect();
+                        self.refresh_vms(&keys).await;
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                    self.apply_ovn_settings();
+                    self.reload_vms().await
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+            }
+        }
+    }
+
+    async fn refresh_vms(&self, ids: &[String]) {
+        let Ok(all) = self.store.load_all() else { return };
+        let mut vms = self.vms.write().await;
+        for id in ids {
+            match all.iter().find(|v| &v.id == id) {
+                Some(v) => {
+                    if vms.get(id) != Some(v) {
+                        vms.insert(id.clone(), v.clone());
+                        self.queue.add(crate::controller::queue::Key::Vm(id.clone()));
+                    }
+                }
+                None => {
+                    vms.remove(id);
+                }
+            }
+        }
+        drop(vms);
+        self.notify_changed();
+    }
+
+    /// Replace the cache with the table's contents (after a snapshot, or a
+    /// missed notification).
+    pub async fn reload_vms(&self) {
+        let Ok(all) = self.store.load_all() else { return };
+        let mut vms = self.vms.write().await;
+        *vms = all.into_iter().map(|v| (v.id.clone(), v)).collect();
+        drop(vms);
+        self.images.reload_all();
+        self.notify_changed();
+    }
+
+    /// Bring the store to the current schema (what `initialize` does first),
+    /// for operations that need it before the controllers run.
+    pub fn migrate_schema(&self) -> Result<(), VmManagerError> {
+        self.store.migrate(self.settings().on_host_boot)?;
+        Ok(())
+    }
+
+    /// The nodes of the cluster; a standalone host has one, `local`.
+    pub fn nodes(&self) -> &crate::node::NodeStore {
+        &self.nodes
+    }
+
+    /// Which halves of the control plane this process runs (D4).
+    pub fn roles(&self) -> crate::node::Roles {
+        *self.roles.lock().unwrap()
+    }
+
+    pub fn set_roles(&self, roles: crate::node::Roles) {
+        *self.roles.lock().unwrap() = roles;
     }
 
     pub fn settings(&self) -> Arc<Settings> {
@@ -356,6 +851,15 @@ impl VmManager {
         self.me.upgrade().expect("VmManager is alive")
     }
 
+    /// As [`open`](Self::open), at the default database path.
+    pub async fn open_default(cfg: &crate::config::Config) -> Result<Arc<Self>, VmManagerError> {
+        Self::open(Self::default_db_path(), Netd::from_env(), cfg).await
+    }
+
+    pub fn default_db_path_pub() -> PathBuf {
+        Self::default_db_path()
+    }
+
     /// Get the default database path (~/.glidex/glidex.db)
     fn default_db_path() -> PathBuf {
         dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")).join(".glidex").join("glidex.db")
@@ -364,9 +868,18 @@ impl VmManager {
     /// Load the store (migrating it, §6.6), adopt running instances
     /// (§9.4 steps 1-4). [`Self::start_controllers`] then starts the loops.
     pub async fn initialize(&self) -> Result<(), VmManagerError> {
-        let migrated = self.store.migrate(self.settings().on_host_boot)?;
-        if migrated > 0 {
-            tracing::info!(count = migrated, "migrated VM records to the desired-state schema");
+        // In a cluster only the leader writes, and a follower finds all of
+        // this already done in the replicated data.
+        let writable = self.store.database().can_write();
+        if writable {
+            let migrated = self.store.migrate(self.settings().on_host_boot)?;
+            if migrated > 0 {
+                tracing::info!(count = migrated, "migrated VM records to the desired-state schema");
+            }
+        }
+        // Every node says what it has (capacity, devices, hypervisors).
+        if let Err(e) = self.report_self() {
+            tracing::warn!("could not report this node: {}", e);
         }
         let persisted = self.store.load_all()?;
         self.images.initialize();
@@ -374,14 +887,16 @@ impl VmManager {
             let default_project = self.projects.default_project_id();
             let mut vms = self.vms.write().await;
             for mut vm in persisted {
-                if vm.project.is_empty() {
+                if vm.project.is_empty() && writable {
                     vm.project = default_project.clone();
                     self.store.save(&vm)?;
                 }
                 vms.insert(vm.id.clone(), vm);
             }
         }
-        self.adopt_into_default_project()?;
+        if writable {
+            self.adopt_into_default_project()?;
+        }
         self.adopt_instances().await;
         Ok(())
     }
@@ -648,6 +1163,15 @@ impl VmManager {
 
         let mut vm = Vm::new(name, config);
         vm.project = project.to_string();
+        // `spec.node`: an optional pin, by id or name.
+        if let Some(want) = &opts.node {
+            let nodes = self.nodes.list().map_err(|e| VmManagerError::PersistenceError(e.to_string()))?;
+            let n = nodes
+                .iter()
+                .find(|n| (&n.meta.id == want || &n.spec.name == want) && !n.status.phase.is_tombstone())
+                .ok_or_else(|| invalid(format!("no node {want}")))?;
+            vm.spec.node = Some(n.meta.id.clone());
+        }
         vm.spec.power = power;
         vm.spec.restart_policy = opts.restart_policy.unwrap_or_default();
         vm.spec.on_host_boot = opts.on_host_boot.unwrap_or(self.settings().on_host_boot);
@@ -719,12 +1243,41 @@ impl VmManager {
             }
         }
 
+        // Where it runs, decided once (D6). A standalone host is its own node.
+        if self.cluster().is_none() {
+            let node = vm.spec.node.clone().unwrap_or_else(|| self.local_node_id());
+            if node != self.local_node_id() {
+                return Err(invalid("this host is not part of a cluster: no other node to run on"));
+            }
+            vm.status.placement = Some(crate::models::Placement { node, at: crate::tenancy::now() });
+        } else {
+            let req = self.sched_request(&vm, &disks);
+            match self.pick_node(&vms, &req) {
+                Ok(node) => {
+                    vm.status.placement = Some(crate::models::Placement { node, at: crate::tenancy::now() });
+                    crate::controller::vm::set_cond(&mut vm.status.conditions, "Scheduled", crate::models::Tristate::True, "Scheduled", "");
+                }
+                // Created without a placement; the leader keeps trying.
+                Err(refused) => crate::controller::vm::set_cond(&mut vm.status.conditions, "Scheduled", crate::models::Tristate::False, "Unschedulable", crate::scheduler::explain(&refused)),
+            }
+        }
+        if let Some(p) = &vm.status.placement {
+            for d in &mut disks {
+                d.node.get_or_insert_with(|| p.node.clone());
+            }
+            if let Some(c) = created.as_mut() {
+                c.node.get_or_insert_with(|| p.node.clone());
+            }
+        }
+
         // The VM, its disks' claims and its first event in one transaction.
         let ev = Event::new(actor, EventKind::Normal, "Created", format!("desired state {}", power_name(power)));
+        let reserve_ips = if vm.status.placement.is_some() { self.cluster_nics(&vm) } else { Vec::new() };
         let commit = Commit {
             put_vm: Some(&vm),
             put_disks: disks.iter().collect(),
             events: vec![(event_key("vm", &vm.id), ev)],
+            reserve_ips,
             ..Default::default()
         };
         self.store.commit(commit)?;
@@ -987,9 +1540,20 @@ impl VmManager {
                         return Err(invalid(format!("disk {} listed twice", d.name)));
                     }
                     ids.push(d.id.clone());
-                    if d.attached_to.as_deref() != Some(vm_id) {
+                    // A disk is a local file: it goes where its VM is (D6).
+                    let vm_node = cur.status.placement.as_ref().map(|p| p.node.clone());
+                    if let (Some(dn), Some(vn)) = (&d.node, &vm_node) {
+                        if dn != vn {
+                            return Err(invalid(format!("disk {} is on another node than the VM", d.name)));
+                        }
+                    }
+                    let needs_bind = d.node.is_none() && vm_node.is_some();
+                    if d.attached_to.as_deref() != Some(vm_id) || needs_bind {
                         let mut d = d;
                         d.attached_to = Some(vm_id.to_string());
+                        if needs_bind {
+                            d.node = vm_node;
+                        }
                         disk_writes.push(d);
                     }
                 }
@@ -1298,7 +1862,33 @@ impl VmManager {
         if r.kind == images::ImageKind::Firmware {
             r.used_by_vms = Self::firmware_users(&*self.vms.read().await, &r.id);
         }
+        r.copies = self.image_copies(&r.id);
         r
+    }
+
+    /// Each node's copy of image `id`, in a cluster.
+    fn image_copies(&self, id: &str) -> Vec<images::ImageCopy> {
+        if self.cluster().is_none() {
+            return Vec::new();
+        }
+        let mut out: Vec<images::ImageCopy> = self
+            .image_caches(id)
+            .into_iter()
+            .map(|(node, row)| images::ImageCopy {
+                node_name: self.nodes.get(&node).ok().flatten().map(|n| n.spec.name),
+                node,
+                state: match row.phase {
+                    crate::controller::image_cache::CachePhase::Downloading => "downloading",
+                    crate::controller::image_cache::CachePhase::Ready => "ready",
+                    crate::controller::image_cache::CachePhase::Failed => "failed",
+                }
+                .to_string(),
+                bytes: row.bytes,
+                error: row.error,
+            })
+            .collect();
+        out.sort_by(|a, b| a.node_name.cmp(&b.node_name));
+        out
     }
 
     pub async fn list_images(&self) -> Vec<ImageResponse> {
@@ -1311,6 +1901,7 @@ impl VmManager {
                 if i.is_firmware() {
                     r.used_by_vms = Self::firmware_users(&vms, &i.id);
                 }
+                r.copies = self.image_copies(&i.id);
                 r
             })
             .collect()
@@ -1577,8 +2168,99 @@ impl VmManager {
         Ok(self.networks.get(name)?.ok_or_else(|| NetError::NotFound(name.to_string()))?)
     }
 
+    /// Whether networks are cluster networks (OVN) unless they say otherwise.
+    pub fn ovn_enabled(&self) -> bool {
+        self.cluster().is_some() && self.ovn.load().enabled
+    }
+
+    /// A cluster network (§11.2): a subnet from the cluster IPAM and a record;
+    /// the leader's network controller makes the OVN objects.
+    async fn create_cluster_network(&self, req: CreateNetworkRequest) -> Result<Network, VmManagerError> {
+        if !self.ovn_enabled() {
+            return Err(NetError::Invalid("cluster networks need OVN: enable cluster.ovn on a cluster".into()).into());
+        }
+        let provider = req.mode == NetworkMode::Bridged;
+        if provider && req.physnet.is_none() {
+            return Err(NetError::Invalid("a provider network (mode bridged) needs a physnet: the physical network it sits on".into()).into());
+        }
+        if !provider && (req.physnet.is_some() || req.vlan.is_some()) {
+            return Err(NetError::Invalid("physnet and vlan belong to provider networks (mode bridged)".into()).into());
+        }
+        if req.bridge.is_some() {
+            return Err(NetError::Invalid("a cluster network has no bridge of its own".into()).into());
+        }
+        if provider && req.subnet.is_some() {
+            return Err(NetError::Invalid("a provider network's addresses come from its LAN".into()).into());
+        }
+        if req.router.is_some() && req.mode == NetworkMode::Bridged {
+            return Err(NetError::Invalid("only a NAT or isolated network attaches to a VPC router".into()).into());
+        }
+        if let Some(id) = &req.router {
+            if crate::router::get(&self.store.database(), id).map_err(router_err)?.is_none() {
+                return Err(NetError::Invalid(format!("router {id} not found")).into());
+            }
+        }
+        // The subnet comes from the IPAM below; `to_network` only checks the rest.
+        if req.mode == NetworkMode::Nat && self.ovn.load().edge.is_none() {
+            return Err(NetError::Invalid("a NAT network that spans every node needs the cluster's shared edge (its external address and gateway nodes), which isn't set: an administrator sets it on the Cluster page under OVN settings (PUT /cluster/settings/ovn). Meanwhile use an isolated network, or a NAT network on this node only (scope node)".into()).into());
+        }
+        let mut net = CreateNetworkRequest { subnet: None, bridge: Some("br-int".into()), vlan: None, physnet: None, ..req.clone() }.to_network()?;
+        net.vlan = req.vlan;
+        net.physnet = req.physnet.clone();
+        net.router = req.router.clone();
+        net.scope = crate::network::NetworkScope::Cluster;
+        net.node = None;
+        net.bridge = glidex_ovs::ovn::BR_INT.to_string();
+        net.owns_bridge = false;
+        let ovn = self.ovn.load_full();
+        // Guest MTU: the underlay minus Geneve's overhead (§11.6).
+        net.mtu = if provider { req.mtu } else { Some(req.mtu.unwrap_or(ovn.underlay_mtu.unwrap_or(1500).saturating_sub(58))) };
+        if self.networks.get(&net.name)?.is_some() {
+            return Err(NetError::Conflict(format!("network '{}' already exists", net.name)).into());
+        }
+        if provider {
+            if let Some(v) = req.vlan {
+                if !(1..=4094).contains(&v) {
+                    return Err(NetError::Invalid("vlan must be 1-4094".into()).into());
+                }
+            }
+            self.networks.insert(&net)?;
+            tracing::info!(network = %net.name, physnet = ?net.physnet, vlan = ?net.vlan, "provider network created");
+            return Ok(net);
+        }
+        let supernet: glidex_ovs::net::Ipv4Net = ovn.nat_supernet.as_deref().unwrap_or("10.89.0.0/16").parse().map_err(|e: glidex_ovs::OvsError| NetError::Invalid(e.to_string()))?;
+        let node_nat: glidex_ovs::net::Ipv4Net = glidex_ovs::nat::DEFAULT_SUPERNET.parse().map_err(|e: glidex_ovs::OvsError| NetError::Invalid(e.to_string()))?;
+        let name = net.name.clone();
+        let requested = req.subnet;
+        self.store.database().write(crate::store::Origin::Network, |tx| crate::ipam::allocate_subnet(tx, &name, requested, supernet, &[node_nat])).map_err(|e| match e {
+            crate::ipam::IpamError::Overlap(..) | crate::ipam::IpamError::Invalid(_) => VmManagerError::Network(NetError::Invalid(e.to_string())),
+            e => VmManagerError::PersistenceError(e.to_string()),
+        })?;
+        if let Err(e) = self.networks.insert(&net) {
+            let _ = self.store.database().write(crate::store::Origin::Network, |tx| crate::ipam::free_subnet(tx, &name));
+            return Err(e.into());
+        }
+        tracing::info!(network = %net.name, mode = ?net.mode, "cluster network created");
+        Ok(net)
+    }
+
+    /// Reservations to make for `vm`'s NICs on cluster networks.
+    pub(crate) fn cluster_nics(&self, vm: &Vm) -> Vec<(String, String, String, u8)> {
+        let nets = self.networks.list().unwrap_or_default();
+        vm.config()
+            .networks
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| nets.iter().any(|n| n.name == a.network && n.scope == crate::network::NetworkScope::Cluster && n.mode != NetworkMode::Bridged))
+            .filter_map(|(i, a)| Some((a.network.clone(), a.mac.clone().or_else(|| glidex_ovs::names::mac_address(&vm.id, i as u8).ok())?, vm.id.clone(), i as u8)))
+            .collect()
+    }
+
     /// Create a network: host side in netd first, record only on success.
     pub async fn create_network(&self, req: CreateNetworkRequest) -> Result<Network, VmManagerError> {
+        if req.scope == Some(crate::network::NetworkScope::Cluster) || (req.scope.is_none() && self.ovn_enabled()) {
+            return self.create_cluster_network(req).await;
+        }
         let net = req.to_network()?;
         if let Some(other) = self.networks.get(&net.name)? {
             return Err(NetError::Conflict(if other.deletion_requested_at.is_some() {
@@ -1676,6 +2358,9 @@ impl VmManager {
                 return Err(TenancyError::NotFound(g.clone()).into());
             }
         }
+        if req.router.is_some() {
+            return Err(NetError::Invalid("a VPC router belongs to a project: attach project networks to it".into()).into());
+        }
         let mut net = self.create_network(req).await?;
         net.grants = grants;
         net.all_projects = all_projects;
@@ -1699,17 +2384,105 @@ impl VmManager {
         if req.bridge.is_some() || req.vlan.is_some() {
             return Err(NetError::Invalid("project networks choose their own bridge; bridge and vlan can't be set".into()).into());
         }
+        if let Some(name) = req.router.clone() {
+            // By name in the project; the record holds the router's id.
+            let r = crate::router::find(&self.store.database(), project, &name).map_err(router_err)?.ok_or_else(|| NetError::Invalid(format!("router '{name}' not found in this project")))?;
+            req.router = Some(r.id);
+        }
         let vms = self.vms.write().await;
         let mut bypassed = Vec::new();
         let usage = self.usage_locked(project, &vms)?;
         Self::apply_quota(&p.quotas, &usage, &Delta { networks: 1, ..Default::default() }, quota, &mut bypassed)?;
         let id = uuid::Uuid::new_v4().simple().to_string();
-        req.bridge = Some(format!("gxp-{}", &id[..8]));
+        // Cluster networks have no bridge of their own: they sit on br-int.
+        if !(req.scope == Some(crate::network::NetworkScope::Cluster) || (req.scope.is_none() && self.ovn_enabled())) {
+            req.bridge = Some(format!("gxp-{}", &id[..8]));
+        }
         let mut net = self.create_network(req).await?;
         net.project = Some(project.to_string());
         self.networks.put(&net)?;
         drop(vms);
         Ok((net, bypassed))
+    }
+
+    // ---- VPC routers (spec/clustering.md §11.2a) -------------------------
+
+    pub fn list_routers(&self, project: &str) -> Result<Vec<crate::router::Router>, VmManagerError> {
+        Ok(crate::router::list(&self.store.database()).map_err(router_err)?.into_iter().filter(|r| r.project == project).collect())
+    }
+
+    pub fn get_router(&self, project: &str, name: &str) -> Result<crate::router::Router, VmManagerError> {
+        crate::router::find(&self.store.database(), project, name).map_err(router_err)?.ok_or_else(|| NetError::NotFound(format!("router {name}")).into())
+    }
+
+    /// Create a router, counting it (and its external address) against the
+    /// project's quotas in the same admission write as the address.
+    pub async fn create_router(&self, project: &str, spec: crate::router::RouterSpec, quota: QuotaMode) -> Result<(crate::router::Router, Vec<QuotaOverrun>), VmManagerError> {
+        if !self.ovn_enabled() {
+            return Err(NetError::Invalid("VPC routers need OVN: enable cluster.ovn on a cluster".into()).into());
+        }
+        let p = self.projects.get(project)?.ok_or_else(|| TenancyError::NotFound(project.to_string()))?;
+        let ovn = self.ovn.load_full();
+        let edge = ovn.edge.as_ref();
+        let pool: Option<glidex_ovs::net::Ipv4Net> = edge.and_then(|e| e.external_pool.as_deref()).and_then(|p| p.parse().ok());
+        let mut exclude = Vec::new();
+        if let Some(e) = edge {
+            exclude.extend([e.external_ip, e.gateway].into_iter().filter_map(|a| match a {
+                std::net::IpAddr::V4(a) => Some(a),
+                _ => None,
+            }));
+        }
+        let vms = self.vms.write().await;
+        let mut bypassed = Vec::new();
+        let usage = self.usage_locked(project, &vms)?;
+        Self::apply_quota(&p.quotas, &usage, &Delta { routers: 1, external_ips: spec.external as u64, ..Default::default() }, quota, &mut bypassed)?;
+        let site = crate::router::Site { pool, exclude: &exclude, zones: ovn.snat_ct_zones.unwrap_or((60000, 64999)) };
+        let r = crate::router::create(&self.store.database(), project, spec, &site).map_err(router_err)?;
+        drop(vms);
+        tracing::info!(router = %r.id, project, external_ip = ?r.status.external_ip, "VPC router created");
+        Ok((r, bypassed))
+    }
+
+    /// Delete a router: refused while networks are attached. Its OVN
+    /// objects go with the next network-controller pass.
+    pub async fn delete_router(&self, project: &str, name: &str) -> Result<(), VmManagerError> {
+        let r = self.get_router(project, name)?;
+        // The VM lock keeps a network from attaching while it goes.
+        let _vms = self.vms.write().await;
+        if let Some(n) = self.networks.list()?.iter().find(|n| n.router.as_deref() == Some(r.id.as_str())) {
+            return Err(NetError::Conflict(format!("router '{name}' still has network '{}' attached", n.name)).into());
+        }
+        crate::router::delete(&self.store.database(), &r.id).map_err(router_err)?;
+        Ok(())
+    }
+
+    /// Put an existing NAT or isolated network of `project` on one of its
+    /// routers, or (`None`) back on the shared edge (an isolated network:
+    /// back to no router). The network keeps its gateway
+    /// address and MAC, so its VMs keep working; the network controller
+    /// moves its router port and SNAT on its next pass.
+    pub async fn set_network_router(&self, project: &str, network: &str, router: Option<&str>) -> Result<Network, VmManagerError> {
+        // The VM lock keeps a router from going while a network attaches.
+        let _vms = self.vms.write().await;
+        let mut net = self.networks.get(network)?.filter(|n| n.project.as_deref() == Some(project)).ok_or_else(|| NetError::NotFound(network.to_string()))?;
+        // An isolated network on a router is routed like a NAT one there,
+        // and isolated again once it leaves.
+        if net.scope != network::NetworkScope::Cluster || net.mode == NetworkMode::Bridged {
+            return Err(NetError::Invalid(format!("only a NAT or isolated network that spans the nodes goes on a router; '{network}' is {:?} on {:?} scope", net.mode, net.scope).to_lowercase()).into());
+        }
+        if net.deletion_requested_at.is_some() {
+            return Err(NetError::Conflict(format!("network '{network}' is being deleted")).into());
+        }
+        let id = match router {
+            Some(name) => Some(crate::router::find(&self.store.database(), project, name).map_err(router_err)?.ok_or_else(|| NetError::Invalid(format!("router '{name}' not found in this project")))?.id),
+            None => None,
+        };
+        if net.router != id {
+            tracing::info!(network, from = ?net.router, to = ?id, "network moves router");
+            net.router = id;
+            self.networks.put(&net)?;
+        }
+        Ok(net)
     }
 
     /// Set which projects may use a host network.
@@ -1800,32 +2573,8 @@ impl VmManager {
         Ok(())
     }
 
-    /// Create the `default` NAT network if netd is usable and it's missing.
-    pub async fn ensure_default_network(&self) -> Result<Option<Network>, VmManagerError> {
-        if self.networks.get(network::DEFAULT_NETWORK)?.is_some() {
-            return Ok(None);
-        }
-        let (access, caps) = self.netd.probe();
-        let running = caps.ok().and_then(|c| c.get("ovs_running").and_then(|v| v.as_bool())).unwrap_or(false);
-        if access != network::NetdAccess::Full || !running {
-            return Ok(None);
-        }
-        let req = CreateNetworkRequest {
-            name: network::DEFAULT_NETWORK.into(),
-            mode: NetworkMode::Nat,
-            port_type: VmPortKind::Tap,
-            bridge: Some(network::DEFAULT_BRIDGE.into()),
-            subnet: None,
-            vlan: None,
-            mtu: None,
-            dns: true,
-        };
-        let default_project = self.default_project_id();
-        self.create_host_network(req, vec![default_project], false).await.map(Some)
-    }
-
     /// The control-plane database (shared with the identity store).
-    pub fn database(&self) -> Arc<redb::Database> {
+    pub fn database(&self) -> Arc<crate::store::Db> {
         self.store.database()
     }
 
@@ -1948,6 +2697,10 @@ impl VmManager {
         }
         u.disk_gib = self.images.list_disks().iter().filter(|d| d.project == project).map(|d| gib_ceil(d.size_bytes)).sum();
         u.networks = self.networks.list()?.iter().filter(|n| n.project.as_deref() == Some(project)).count() as u64;
+        for r in crate::router::list(&self.store.database()).map_err(router_err)?.iter().filter(|r| r.project == project) {
+            u.routers += 1;
+            u.external_ips += r.status.external_ip.is_some() as u64;
+        }
         Ok(u)
     }
 
@@ -1993,6 +2746,9 @@ impl VmManager {
         if let Some(n) = self.networks.list()?.iter().find(|n| n.project.as_deref() == Some(project)) {
             return Ok(Some(format!("network {}", n.name)));
         }
+        if let Some(r) = crate::router::list(&self.store.database()).map_err(router_err)?.iter().find(|r| r.project == project) {
+            return Ok(Some(format!("router {}", r.spec.name)));
+        }
         Ok(None)
     }
 
@@ -2029,4 +2785,52 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T, ImageError> +
 /// Size in GiB, rounded up.
 fn gib_ceil(bytes: u64) -> u64 {
     bytes.div_ceil(1 << 30)
+}
+
+/// The node-side answers to relayed requests, backed by the manager.
+struct HandlersOf(Weak<VmManager>);
+
+impl crate::cluster::runtime::NodeHandlers for HandlersOf {
+    fn vm_stats(&self, vm_id: &str) -> Option<serde_json::Value> {
+        let m = self.0.upgrade()?;
+        let meter = m.meter()?;
+        Some(crate::api::live_vm_stats(&meter, vm_id))
+    }
+
+    fn image_file(&self, id: &str, part: &str) -> Option<std::path::PathBuf> {
+        let m = self.0.upgrade()?;
+        let img = m.images.get_image(id).ok()?;
+        let p = match (part, img.kind) {
+            ("main", _) => m.images.image_file(&img),
+            ("vars", crate::images::ImageKind::Firmware) => m.images.firmware_vars_template(&img.id),
+            _ => return None,
+        };
+        p.exists().then_some(p)
+    }
+
+    fn ovn_status<'a>(&'a self) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send + 'a>> {
+        Box::pin(async move {
+            let m = self.0.upgrade().ok_or("shutting down")?;
+            m.local_ovn_status().await
+        })
+    }
+
+    fn left_ovn<'a>(&'a self, node: &'a crate::node::Node) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+            if let Some(m) = self.0.upgrade() {
+                if let Err(e) = m.leave_ovn_membership(node, true).await {
+                    tracing::warn!(node = %node.spec.name, "taking a departed node out of OVN: {}", e);
+                }
+            }
+        })
+    }
+
+    fn departed(&self) {
+        if crate::cluster::departure::EXIT_ON_DEPARTURE.load(std::sync::atomic::Ordering::Relaxed) {
+            // The service manager starts it again, and startup finishes the switch.
+            tracing::warn!("restarting to continue as a standalone host");
+            // A non-zero status: the unit restarts on failure.
+            std::process::exit(75);
+        }
+    }
 }

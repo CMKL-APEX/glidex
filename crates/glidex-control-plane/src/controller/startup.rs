@@ -13,7 +13,7 @@ impl VmManager {
     /// §9.4 steps 2-4. No VM is launched, stopped or changed on the host
     /// here; only what is observed is recorded.
     pub(crate) async fn adopt_instances(&self) {
-        let ids: Vec<String> = self.vms.read().await.keys().cloned().collect();
+        let ids: Vec<String> = self.vms.read().await.values().filter(|v| self.is_local(v)).map(|v| v.id.clone()).collect();
         let mut adopted = 0;
         for id in &ids {
             let Some(vm) = self.vm(id).await else { continue };

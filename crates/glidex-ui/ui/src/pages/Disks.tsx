@@ -8,6 +8,8 @@ import { Spinner } from "../components/Activity";
 import { useLiveRefresh } from "../live";
 import Modal from "../components/Modal";
 import { LoadingCard } from "../components/Loading";
+import NodeName from "../components/NodeName";
+import { useNodes } from "../nodes";
 
 const inputClass =
   "mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-transparent";
@@ -210,6 +212,7 @@ function ResizeForm({ disk, onDone, onCancel }: { disk: DiskInfo; onDone: (d: Di
 
 export default function Disks() {
   const { project } = useSession();
+  const nodes = useNodes();
   const [canCreate] = useCan(project ? [{ action: "createDisk", resource: { type: "Project", id: project } }] : []) ?? [];
   const [disks, setDisks] = useState<DiskInfo[] | null>(null);
   const [images, setImages] = useState<ImageInfo[]>([]);
@@ -305,6 +308,7 @@ export default function Disks() {
                 <th className="px-4 py-3 font-medium">Format</th>
                 <th className="px-4 py-3 font-medium">Origin</th>
                 <th className="px-4 py-3 font-medium">Attached to</th>
+                {nodes.clustered && <th className="px-4 py-3 font-medium">Node</th>}
                 <th className="px-4 py-3 font-medium">Status</th>
                 <th className="px-4 py-3" />
               </tr>
@@ -323,6 +327,11 @@ export default function Disks() {
                     {d.origin.kind === "image" ? `${imageName(d.origin.image_id)} (${d.origin.mode})` : "blank"}
                   </td>
                   <td className="px-4 py-3 font-mono text-xs">{vmName(d.attached_to) ?? "—"}</td>
+                  {nodes.clustered && (
+                    <td className="px-4 py-3 text-xs">
+                      {d.node ? <NodeName id={d.node} name={d.node_name} /> : <span className="text-gray-400" title="Bound to a node by its first VM">unbound</span>}
+                    </td>
+                  )}
                   <td className="px-4 py-3 text-xs">
                     <DiskStatus d={d} />
                   </td>

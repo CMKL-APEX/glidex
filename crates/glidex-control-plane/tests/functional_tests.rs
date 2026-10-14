@@ -213,9 +213,10 @@ async fn legacy_firecracker_records_are_skipped_on_load() {
 
     // Rewrite one record the way an older build would have stored it.
     {
-        use redb::{Database, ReadableDatabase, TableDefinition};
+        use glidex_control_plane::store::{Db, Origin};
+        use redb::TableDefinition;
         const VMS: TableDefinition<&str, &[u8]> = TableDefinition::new("vms");
-        let database = Database::create(&db).unwrap();
+        let database = Db::create(&db).unwrap();
         let mut record: Value = {
             let txn = database.begin_read().unwrap();
             let table = txn.open_table(VMS).unwrap();
@@ -223,7 +224,7 @@ async fn legacy_firecracker_records_are_skipped_on_load() {
             serde_json::from_slice(bytes.value()).unwrap()
         };
         record["spec"]["config"]["hypervisor"] = json!("firecracker");
-        let txn = database.begin_write().unwrap();
+        let txn = database.begin(Origin::System).unwrap();
         {
             let mut table = txn.open_table(VMS).unwrap();
             let bytes = serde_json::to_vec(&record).unwrap();
@@ -421,6 +422,21 @@ impl Console {
             .set_read_timeout(Some(Duration::from_millis(200)))
             .unwrap();
         Self { stream, buf: Vec::new() }
+    }
+
+    /// Drop what the console replays to a new client (the recent history,
+    /// sent at once: a previous boot's prompts would match): read until it
+    /// has been quiet for half a second.
+    fn skip_history(&mut self) {
+        let mut chunk = [0u8; 4096];
+        let mut quiet_since = Instant::now();
+        while quiet_since.elapsed() < Duration::from_millis(500) {
+            match self.stream.read(&mut chunk) {
+                Ok(n) if n > 0 => quiet_since = Instant::now(),
+                _ => {}
+            }
+        }
+        self.buf.clear();
     }
 
     /// Wait until `needle` appears in output received since the last match,
@@ -1083,6 +1099,16 @@ async fn require_lan_and_netd(app: &Router) {
     assert_eq!(status["host"]["ovs_running"], true, "{status}");
 }
 
+/// The uplink tests own their bridge. Never touch one that carries anything
+/// but the test's own fake-LAN NIC (a host's real uplink, say): its
+/// pre-cleanup deletes the bridge.
+async fn refuse_foreign_bridge(app: &Router, bridge: &str, own: &str) {
+    let (_, list) = request(app, "GET", "/ovs/bridges", None).await;
+    let Some(b) = list.as_array().and_then(|l| l.iter().find(|b| b["spec"]["name"] == bridge)) else { return };
+    let ports: Vec<&str> = b["live"]["ports"].as_array().into_iter().flatten().filter_map(|p| p["name"].as_str().or(p.as_str())).filter(|p| *p != bridge && *p != own).collect();
+    assert!(ports.is_empty(), "bridge {bridge} exists with other ports {ports:?}: not the test's, refusing to touch it");
+}
+
 /// M6 acceptance: kernel uplink on an in-use NIC with IP migration —
 /// refused, rolled back without commit, committed, VM on the LAN, restored.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1091,18 +1117,19 @@ async fn bridged_uplink_e2e() {
     let (app, manager, tmp) = create_running_app().await;
     let _guard = ShutdownGuard(Some(manager.clone()));
     require_lan_and_netd(&app).await;
+    refuse_foreign_bridge(&app, "gxbr-e2eup", "gxup0").await;
     // Leftovers from an interrupted run.
     request(&app, "DELETE", "/networks/lan", None).await;
-    request(&app, "DELETE", "/ovs/bridges/gxbr-up/uplinks/gxup0", None).await;
-    request(&app, "DELETE", "/ovs/bridges/gxbr-up", None).await;
+    request(&app, "DELETE", "/ovs/bridges/gxbr-e2eup/uplinks/gxup0", None).await;
+    request(&app, "DELETE", "/ovs/bridges/gxbr-e2eup", None).await;
     assert!(host_ip(&["-4", "-o", "addr", "show", "dev", "gxup0"]).contains("192.0.2.10/24"), "gxup0 should hold 192.0.2.10");
 
-    let (st, body) = request(&app, "POST", "/ovs/bridges", Some(json!({"name": "gxbr-up", "datapath": "system"}))).await;
+    let (st, body) = request(&app, "POST", "/ovs/bridges", Some(json!({"name": "gxbr-e2eup", "datapath": "system"}))).await;
     assert_eq!(st, StatusCode::CREATED, "{body}");
     let uplink = json!({"name": "gxup0", "kind": "kernel", "ifname": "gxup0"});
 
     // 1. In use by the host: refused without migrate_ip + confirm.
-    let (st, body) = request(&app, "POST", "/ovs/bridges/gxbr-up/uplinks", Some(uplink.clone())).await;
+    let (st, body) = request(&app, "POST", "/ovs/bridges/gxbr-e2eup/uplinks", Some(uplink.clone())).await;
     assert_eq!(st, StatusCode::CONFLICT, "{body}");
     assert_eq!(body["error"], "host_interface_in_use");
     assert!(body["details"]["reasons"].as_array().unwrap().iter().any(|r| r == "has_addresses"), "{body}");
@@ -1111,14 +1138,14 @@ async fn bridged_uplink_e2e() {
     let mut migrate = uplink.clone();
     migrate["migrate_ip"] = json!(true);
     migrate["confirm"] = json!(true);
-    let (st, body) = request(&app, "POST", "/ovs/bridges/gxbr-up/uplinks", Some(migrate.clone())).await;
+    let (st, body) = request(&app, "POST", "/ovs/bridges/gxbr-e2eup/uplinks", Some(migrate.clone())).await;
     assert_eq!(st, StatusCode::ACCEPTED, "{body}");
-    assert!(host_ip(&["-4", "-o", "addr", "show", "dev", "gxbr-up"]).contains("192.0.2.10/24"), "address moved to the bridge");
+    assert!(host_ip(&["-4", "-o", "addr", "show", "dev", "gxbr-e2eup"]).contains("192.0.2.10/24"), "address moved to the bridge");
     assert!(Command::new("ping").args(["-c", "1", "-W", "2", "192.0.2.1"]).status().unwrap().success(), "LAN reachable through the bridge");
     // netd deletes the record as the last rollback step, so wait for that.
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
     loop {
-        let (_, list) = request(&app, "GET", "/ovs/bridges/gxbr-up/uplinks", None).await;
+        let (_, list) = request(&app, "GET", "/ovs/bridges/gxbr-e2eup/uplinks", None).await;
         if list.as_array().unwrap().is_empty() {
             break;
         }
@@ -1129,16 +1156,16 @@ async fn bridged_uplink_e2e() {
     assert!(host_ip(&["-4", "route", "show", "198.51.100.0/24"]).contains("dev gxup0"), "route restored");
 
     // 3. Migrated and committed.
-    let (st, body) = request(&app, "POST", "/ovs/bridges/gxbr-up/uplinks", Some(migrate)).await;
+    let (st, body) = request(&app, "POST", "/ovs/bridges/gxbr-e2eup/uplinks", Some(migrate)).await;
     assert_eq!(st, StatusCode::ACCEPTED, "{body}");
     let token = body["record"]["pending"]["token"].as_str().unwrap().to_string();
-    let (st, body) = request(&app, "POST", "/ovs/bridges/gxbr-up/uplinks/gxup0/commit", Some(json!({"token": token}))).await;
+    let (st, body) = request(&app, "POST", "/ovs/bridges/gxbr-e2eup/uplinks/gxup0/commit", Some(json!({"token": token}))).await;
     assert_eq!(st, StatusCode::OK, "{body}");
     assert_eq!(body["phase"], "active");
-    assert!(host_ip(&["-4", "route", "show", "198.51.100.0/24"]).contains("dev gxbr-up"), "route moved");
+    assert!(host_ip(&["-4", "route", "show", "198.51.100.0/24"]).contains("dev gxbr-e2eup"), "route moved");
 
     // 4. A VM on the bridged network gets a LAN address and reaches the LAN and the host.
-    let (st, body) = request(&app, "POST", "/networks", Some(json!({"name": "lan", "mode": "bridged", "bridge": "gxbr-up"}))).await;
+    let (st, body) = request(&app, "POST", "/networks", Some(json!({"name": "lan", "mode": "bridged", "bridge": "gxbr-e2eup"}))).await;
     assert_eq!(st, StatusCode::CREATED, "{body}");
     boot_and_check(&app, &tmp, "lan", "gx-lantest", json!({}), vec![
         ("ip -4 -o addr | grep -q ' 192.0.2.1[0-9][0-9]/24 ' && echo GX_$((60+1))_LAN_DHCP".into(), "GX_61_LAN_DHCP".into()),
@@ -1149,11 +1176,11 @@ async fn bridged_uplink_e2e() {
     // 5. Cleanup restores the NIC.
     let (st, _) = request(&app, "DELETE", "/networks/lan", None).await;
     assert_eq!(st, StatusCode::NO_CONTENT);
-    let (st, body) = request(&app, "DELETE", "/ovs/bridges/gxbr-up/uplinks/gxup0", None).await;
+    let (st, body) = request(&app, "DELETE", "/ovs/bridges/gxbr-e2eup/uplinks/gxup0", None).await;
     assert_eq!(st, StatusCode::NO_CONTENT, "{body}");
     assert!(host_ip(&["-4", "-o", "addr", "show", "dev", "gxup0"]).contains("192.0.2.10/24"), "address back on gxup0");
     assert!(host_ip(&["-4", "route", "show", "198.51.100.0/24"]).contains("dev gxup0"), "route back on gxup0");
-    let (st, _) = request(&app, "DELETE", "/ovs/bridges/gxbr-up", None).await;
+    let (st, _) = request(&app, "DELETE", "/ovs/bridges/gxbr-e2eup", None).await;
     assert_eq!(st, StatusCode::NO_CONTENT);
 }
 
@@ -1165,19 +1192,20 @@ async fn afxdp_uplink_e2e() {
     let (app, manager, tmp) = create_running_app().await;
     let _guard = ShutdownGuard(Some(manager.clone()));
     require_lan_and_netd(&app).await;
+    refuse_foreign_bridge(&app, "gxbr-e2exdp", "gxup1").await;
     request(&app, "DELETE", "/networks/xdp", None).await;
-    request(&app, "DELETE", "/ovs/bridges/gxbr-xdp/uplinks/gxup1", None).await;
-    request(&app, "DELETE", "/ovs/bridges/gxbr-xdp", None).await;
+    request(&app, "DELETE", "/ovs/bridges/gxbr-e2exdp/uplinks/gxup1", None).await;
+    request(&app, "DELETE", "/ovs/bridges/gxbr-e2exdp", None).await;
 
-    let (st, body) = request(&app, "POST", "/ovs/bridges", Some(json!({"name": "gxbr-xdp", "datapath": "netdev"}))).await;
+    let (st, body) = request(&app, "POST", "/ovs/bridges", Some(json!({"name": "gxbr-e2exdp", "datapath": "netdev"}))).await;
     assert_eq!(st, StatusCode::CREATED, "{body}");
-    let (st, body) = request(&app, "POST", "/ovs/bridges/gxbr-xdp/uplinks", Some(json!({
+    let (st, body) = request(&app, "POST", "/ovs/bridges/gxbr-e2exdp/uplinks", Some(json!({
         "name": "gxup1", "kind": "afxdp", "ifname": "gxup1", "xdp_mode": "generic"
     }))).await;
     assert_eq!(st, StatusCode::CREATED, "{body}");
     assert!(body["live"]["error"].is_null(), "AF_XDP port error: {body}");
 
-    let (st, body) = request(&app, "POST", "/networks", Some(json!({"name": "xdp", "mode": "bridged", "bridge": "gxbr-xdp"}))).await;
+    let (st, body) = request(&app, "POST", "/networks", Some(json!({"name": "xdp", "mode": "bridged", "bridge": "gxbr-e2exdp"}))).await;
     assert_eq!(st, StatusCode::CREATED, "{body}");
     boot_and_check(&app, &tmp, "xdp", "gx-xdptest", json!({}), vec![
         ("ip -4 -o addr | grep -q ' 198.18.0.1[0-9][0-9]/24 ' && echo GX_$((70+1))_XDP_DHCP".into(), "GX_71_XDP_DHCP".into()),
@@ -1185,9 +1213,9 @@ async fn afxdp_uplink_e2e() {
     ]).await;
 
     request(&app, "DELETE", "/networks/xdp", None).await;
-    let (st, _) = request(&app, "DELETE", "/ovs/bridges/gxbr-xdp/uplinks/gxup1", None).await;
+    let (st, _) = request(&app, "DELETE", "/ovs/bridges/gxbr-e2exdp/uplinks/gxup1", None).await;
     assert_eq!(st, StatusCode::NO_CONTENT);
-    let (st, _) = request(&app, "DELETE", "/ovs/bridges/gxbr-xdp", None).await;
+    let (st, _) = request(&app, "DELETE", "/ovs/bridges/gxbr-e2exdp", None).await;
     assert_eq!(st, StatusCode::NO_CONTENT);
 }
 
@@ -1312,7 +1340,15 @@ async fn catalog_image_e2e(hypervisor: &str) {
     let root = vm["root_disk"].as_str().unwrap().to_string();
     // glidex extended the root partition offline, before the first boot.
     assert!(vm.get("warnings").is_none(), "{vm}");
-    let (_, disk) = request(&app, "GET", &format!("/disks/{root}"), None).await;
+    // The disk controller makes the disk after the create returns.
+    let mut disk = Value::Null;
+    for _ in 0..240 {
+        disk = request(&app, "GET", &format!("/disks/{root}"), None).await.1;
+        if disk["busy_op"].is_null() && disk["phase"] != "pending" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
     assert_eq!(disk["partition_table"]["free_tail_bytes"], 0, "{disk}");
 
     // Boot, log in, and check the root filesystem against `min_gib`.
@@ -1325,6 +1361,8 @@ async fn catalog_image_e2e(hypervisor: &str) {
             let console_path = glidex_control_plane::paths::vm_paths(&id).console_socket;
             tokio::task::spawn_blocking(move || {
                 let mut console = Console::connect(&console_path);
+                // The first boot's prompts are in the history at the second.
+                console.skip_history();
                 console.expect(&format!("{hostname} login: "), Duration::from_secs(400));
                 console.send(&format!("{username}\r"));
                 console.expect("Password: ", Duration::from_secs(30));
@@ -1346,9 +1384,13 @@ async fn catalog_image_e2e(hypervisor: &str) {
 
     boot_and_check(11, "GX_ROOT12").await;
 
-    let (status, d) = request(&app, "POST", &format!("/disks/{root}/resize"), Some(json!({"size_gib": 16}))).await;
+    // Applied by the disk controller: `?wait` answers once it has (200).
+    let (status, d) = request(&app, "POST", &format!("/disks/{root}/resize?wait=120"), Some(json!({"size_gib": 16}))).await;
     assert_eq!(status, StatusCode::OK, "{d}");
-    assert_eq!(d["extend_root"], "grown", "{d}");
+    // Grown, root partition included (offline: nothing left for the boot);
+    // the guest's own view of it is checked next.
+    assert_eq!(d["size_bytes"], 16u64 << 30, "{d}");
+    assert_eq!(d["pending_growpart"], false, "{d}");
 
     boot_and_check(15, "GX_ROOT16").await;
 

@@ -24,6 +24,8 @@ use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone)]
 pub struct Config {
+    /// Where the chassis keeps its OVN certificates.
+    pub ovn_dir: PathBuf,
     pub run_dir: PathBuf,
     pub state_path: PathBuf,
     pub group: String,
@@ -37,11 +39,14 @@ pub struct Config {
     pub admin_group: String,
     /// Which ops each group may send on the full sockets.
     pub policy: auth::Policy,
+    /// Router SNAT zones to meter; the same range as `ovn.snat_ct_zones`.
+    pub ct_zones: (u16, u16),
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
+            ovn_dir: PathBuf::from(glidex_ovs::ovn::CERT_DIR),
             run_dir: PathBuf::from(DEFAULT_RUN_DIR),
             state_path: PathBuf::from("/var/lib/glidex/netd.db"),
             group: "glidex".into(),
@@ -51,6 +56,7 @@ impl Default for Config {
             gateway_check: Duration::from_secs(20),
             admin_group: "glidex-admin".into(),
             policy: auth::default_policy("glidex", "glidex-admin"),
+            ct_zones: (60000, 64999),
         }
     }
 }
@@ -62,6 +68,10 @@ pub struct Netd {
     pub config: Config,
     /// Serializes every host-changing operation.
     mutate: Mutex<()>,
+    /// Conntrack counters of router zones, built on first use from the saved state.
+    ct: Mutex<Option<Arc<glidex_ovs::ct_meter::CtMeter>>>,
+    /// Whether the collector follows conntrack events itself (the daemon: yes, tests: no).
+    ct_events: std::sync::atomic::AtomicBool,
 }
 
 fn to_value<T: serde::Serialize>(v: T) -> Result<Value, OvsError> {
@@ -84,7 +94,38 @@ impl Netd {
             store,
             config,
             mutate: Mutex::new(()),
+            ct: Mutex::new(None),
+            ct_events: false.into(),
         })
+    }
+
+    /// The conntrack collector; the first call turns accounting on.
+    fn ct_meter(&self) -> Result<Arc<glidex_ovs::ct_meter::CtMeter>, OvsError> {
+        let mut g = self.ct.lock().unwrap();
+        if let Some(m) = g.as_ref() {
+            return Ok(m.clone());
+        }
+        if glidex_ovs::ct_meter::ensure_accounting(self.ex())? {
+            self.store.put(META, "ct_acct_set_by_glidex", &true)?;
+        }
+        let saved: Option<String> = self.store.get(META, "ct_counters")?;
+        let m = Arc::new(glidex_ovs::ct_meter::CtMeter::new(self.config.ct_zones, saved.as_deref()));
+        if self.ct_events.load(std::sync::atomic::Ordering::Relaxed) {
+            glidex_ovs::ct_meter::spawn_event_reader(m.clone());
+        }
+        *g = Some(m.clone());
+        Ok(m)
+    }
+
+    /// The daemon follows conntrack `DESTROY` events from the first
+    /// collection on, and from startup on a node that collected before.
+    pub fn enable_ct_events(&self) {
+        self.ct_events.store(true, std::sync::atomic::Ordering::Relaxed);
+        if self.store.get::<String>(META, "ct_counters").ok().flatten().is_some() {
+            if let Err(e) = self.ct_meter() {
+                tracing::warn!("conntrack counters: {}", e);
+            }
+        }
     }
 
     fn ex(&self) -> &dyn Exec {
@@ -106,7 +147,13 @@ impl Netd {
             Op::ListUplinks => to_value(self.list_uplinks()?),
             Op::PortStats => to_value(glidex_ovs::stats::bridge_stats(self.ex())?),
             Op::NatCounters => to_value(glidex_ovs::nat_meter::nat_counters(self.ex(), &self.nats()?)?),
-            Op::EnsureUplink(args) => to_value(self.ensure_uplink(args.spec, args.confirm)?),
+            Op::CtExternalCounters => {
+                let m = self.ct_meter()?;
+                // Persist before reporting, so what metering saw can't go backwards.
+                to_value(glidex_ovs::ct_meter::collect(self.ex(), &m, |s| self.store.put(META, "ct_counters", &s.to_string()))?)
+            }
+            Op::EnsureUplink(args) => to_value(self.ensure_uplink(args.spec, args.confirm, args.accept_dhcp)?),
+            Op::ReapplyUplink { bridge, name } => to_value(self.reapply_uplink_after_rollback(&bridge, &name)?),
             Op::CommitUplink { bridge, name, token } => to_value(self.commit_uplink(&bridge, &name, &token)?),
             Op::DeleteUplink { bridge, name } => self.delete_uplink(&bridge, &name).map(|_| Value::Null),
             Op::InstallOvs(req) => {
@@ -125,11 +172,36 @@ impl Netd {
             Op::EnsureNat(spec) => to_value(self.ensure_nat(spec)?),
             Op::DeleteNat { bridge } => self.delete_nat(&bridge).map(|_| Value::Null),
             Op::AttachVmPort(spec) => to_value(self.attach(spec, peer.uid)?),
+            Op::MoveVmPort(spec) => to_value(self.move_port(spec, peer.uid)?),
             Op::DetachVmPort { vm_id, nic_index } => {
                 self.detach(&vm_id, nic_index, peer.uid).map(|_| Value::Null)
             }
             Op::ReleaseVm { vm_id } => self.release_vm(&vm_id, peer.uid).map(|_| Value::Null),
             Op::SyncVms { running } => to_value(self.sync_vms(&running)?),
+            Op::EnsureOvnChassis(args) => {
+                let caps = host::probe(self.ex(), &self.config.probe);
+                if !caps.ovs_running {
+                    return Err(OvsError::Unsupported { missing: vec!["ovs-vswitchd running".into()] });
+                }
+                let st = glidex_ovs::ovn::ensure_chassis(self.ex(), &args.spec, &args.certs, &self.config.ovn_dir)?;
+                tracing::info!(chassis = %args.spec.chassis, "OVN chassis ensured");
+                to_value(st)
+            }
+            Op::EnsureOvnCentral(args) => {
+                let changed = glidex_ovs::ovn::ensure_central(self.ex(), &args.spec, &args.certs, &self.config.ovn_dir)?;
+                to_value(serde_json::json!({ "changed": changed }))
+            }
+            Op::ForgetOvnMember(a) => {
+                glidex_ovs::ovn::forget_member(self.ex(), &a.address, &a.chassis, a.server)?;
+                tracing::info!(chassis = %a.chassis, "forgot OVN member");
+                Ok(Value::Null)
+            }
+            Op::OvnStatus => to_value(glidex_ovs::ovn::status(self.ex())?),
+            Op::LeaveOvn { confirm } => {
+                glidex_ovs::ovn::leave(self.ex(), confirm, &self.config.ovn_dir)?;
+                tracing::info!("left OVN");
+                Ok(Value::Null)
+            }
         }
     }
 
@@ -245,7 +317,7 @@ impl Netd {
             .collect()
     }
 
-    fn ensure_uplink(&self, spec: uplink::UplinkSpec, confirm: bool) -> Result<UplinkResult, OvsError> {
+    fn ensure_uplink(&self, spec: uplink::UplinkSpec, confirm: bool, accept_dhcp: bool) -> Result<UplinkResult, OvsError> {
         spec.validate()?;
         if self.store.get::<NatState>(NAT, &spec.bridge)?.is_some() {
             return Err(OvsError::conflict(format!(
@@ -297,6 +369,13 @@ impl Netd {
                     });
                 }
                 if c.reasons.iter().any(|r| r == "dhcp_managed") {
+                    // The DHCP client stays on the NIC: the moved address may
+                    // go when the lease ends, taking the host with it.
+                    if !accept_dhcp {
+                        return Err(OvsError::conflict(format!(
+                            "{ifname}'s address is DHCP-managed: moved to the bridge it may only last until the lease expires. Give it a static address first, or accept that explicitly (accept_dhcp)"
+                        )));
+                    }
                     warnings.push(format!(
                         "{} is DHCP-managed: the migrated address lasts until the lease expires",
                         ifname
@@ -337,6 +416,8 @@ impl Netd {
             orig_driver: orig_driver.clone(),
             snapshot: None,
             pending: None,
+            boot_rollback: None,
+            accept_dhcp,
         };
         if let Some(snap) = snapshot.filter(|s| !s.addresses.is_empty()) {
             let rollback = |netd: &Netd, reason: String| -> OvsError {
@@ -570,7 +651,10 @@ impl Netd {
 
     fn attach(&self, spec: VmPortSpec, owner_uid: u32) -> Result<AttachResult, OvsError> {
         spec.validate()?;
-        self.require_bridge(&spec.bridge)?;
+        // br-int is OVN's, not a glidex bridge record (§11.3).
+        if spec.ovn_lport.is_none() {
+            self.require_bridge(&spec.bridge)?;
+        }
         let key = store::vm_port_key(&spec.vm_id, spec.nic_index);
         if let Some(existing) = self.store.get::<VmPortRecord>(VM_PORTS, &key)? {
             if existing.spec.bridge != spec.bridge {
@@ -614,6 +698,20 @@ impl Netd {
         self.store.put(VM_PORTS, &key, &record)?;
         tracing::info!(port = %port, vm = %record.spec.vm_id, ?ipv4, "VM port attached");
         Ok(AttachResult { port, binding, ipv4 })
+    }
+
+    /// §11.3 `move_vm_port`: unplug from the old bridge, keeping the tap or
+    /// socket, then attach to the new one (a NAT bridge reserves an address).
+    fn move_port(&self, spec: VmPortSpec, owner_uid: u32) -> Result<AttachResult, OvsError> {
+        spec.validate()?;
+        let key = store::vm_port_key(&spec.vm_id, spec.nic_index);
+        let old = self.store.get::<VmPortRecord>(VM_PORTS, &key)?.ok_or_else(|| OvsError::not_found(format!("port {}", spec.port_name().unwrap_or_default())))?;
+        Self::check_owner(&old, owner_uid)?;
+        if old.spec.bridge != spec.bridge {
+            vm_port::unplug(self.ex(), &spec.vm_id, spec.nic_index)?;
+            self.store.delete(VM_PORTS, &key)?;
+        }
+        self.attach(spec, owner_uid)
     }
 
     /// A port belongs to the uid that attached it (security spec §8.2);
@@ -735,6 +833,10 @@ impl Netd {
                 }
                 continue;
             }
+            if let Some(b) = &record.boot_rollback {
+                report.errors.push(format!("uplink {}: held off the bridge since a rollback at start ({}); re-apply or delete it", record.spec.name, b.reason));
+                continue;
+            }
             match self.reapply_uplink(&record) {
                 Ok(()) => report.repaired.push(format!("uplink {}", record.spec.name)),
                 Err(e) => report.errors.push(format!("uplink {}: {}", record.spec.name, e)),
@@ -776,17 +878,55 @@ impl Netd {
 impl Netd {
     /// Startup: DPDK NICs back on vfio-pci (spec decision 5), port present,
     /// and IP migrations re-applied (the host's own config returns on boot).
+    ///
+    /// A migrated address is re-applied with the first setup's safety: if
+    /// moving it fails, or the default gateway doesn't answer through the
+    /// bridge, the NIC gets its own configuration back, the uplink stays off
+    /// the bridge, and the record says why (`boot_rollback`), so the host
+    /// stays reachable.
     fn reapply_uplink(&self, record: &UplinkRecord) -> Result<(), OvsError> {
         if let UplinkKind::Dpdk { pci, .. } = &record.spec.kind {
             if nic::pci_driver(self.ex(), pci)?.as_deref() != Some("vfio-pci") {
                 nic::bind_driver(self.ex(), pci, "vfio-pci")?;
             }
         }
-        uplink::add_port(self.ex(), &record.spec, record.orig_driver.as_deref())?;
-        if let Some(snap) = &record.snapshot {
-            ipmigrate::apply(self.ex(), snap, &record.spec.bridge)?;
+        let Some(snap) = &record.snapshot else {
+            return uplink::add_port(self.ex(), &record.spec, record.orig_driver.as_deref());
+        };
+        let failed = match uplink::add_port(self.ex(), &record.spec, record.orig_driver.as_deref()).and_then(|_| ipmigrate::apply(self.ex(), snap, &record.spec.bridge)) {
+            Err(e) => Some(format!("moving the address failed: {e}")),
+            Ok(()) => snap
+                .default_gateway()
+                .filter(|gw| !ipmigrate::gateway_reachable(self.ex(), gw, &record.spec.bridge, self.config.gateway_check))
+                .map(|gw| format!("default gateway {gw} did not answer through {}", record.spec.bridge)),
+        };
+        let Some(reason) = failed else { return Ok(()) };
+        let _ = ipmigrate::restore(self.ex(), snap, &record.spec.bridge);
+        let _ = uplink::del_port(self.ex(), &record.spec.name);
+        let mut held = record.clone();
+        held.boot_rollback = Some(BootRollback { at: unix_now(), reason: reason.clone() });
+        self.store.put(UPLINKS, &store::uplink_key(&record.spec.bridge, &record.spec.name), &held)?;
+        tracing::error!(uplink = %record.spec.name, %reason, "IP migration rolled back at start; the NIC has its own address again");
+        Err(OvsError::MigrationRolledBack { reason })
+    }
+
+    /// `ensure_uplink_reapply`: set up an uplink held since a rollback at
+    /// start, as if new (a fresh snapshot of the NIC, the gateway check, a
+    /// commit window). Its record stays as it was if that fails.
+    fn reapply_uplink_after_rollback(&self, bridge: &str, name: &str) -> Result<UplinkResult, OvsError> {
+        let key = store::uplink_key(bridge, name);
+        let record = self.store.get::<UplinkRecord>(UPLINKS, &key)?.ok_or_else(|| OvsError::not_found(format!("uplink '{name}' on '{bridge}'")))?;
+        if record.boot_rollback.is_none() {
+            return Err(OvsError::conflict(format!("uplink '{name}' is not held: it is on the bridge already")));
         }
-        Ok(())
+        self.store.delete(UPLINKS, &key)?;
+        match self.ensure_uplink(record.spec.clone(), true, record.accept_dhcp) {
+            Ok(r) => Ok(r),
+            Err(e) => {
+                let _ = self.store.put(UPLINKS, &key, &record);
+                Err(e)
+            }
+        }
     }
 }
 

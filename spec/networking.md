@@ -698,8 +698,24 @@ Limits, returned in `UplinkState.warnings`:
   NIC's config at boot; netd re-runs the migration at start (§7.7).
   Persistent netplan/NetworkManager changes are out of scope.
 - **DHCP-managed NICs:** the lease client stays on the NIC, so the
-  migrated address lasts only until lease expiry **(verify)**. Allowed
-  with `confirm`, with a warning.
+  migrated address lasts only until lease expiry **(verify)**. Refused
+  unless the request also says `accept_dhcp: true` (CLI `--accept-dhcp`,
+  a checkbox in the UI); then allowed with a warning.
+
+**Re-applying at start, safely.** netd's start-up (§7.7) moves a
+committed migration again with the first setup's check: if moving the
+address fails, or the default gateway doesn't answer through the bridge
+within `gateway_check_secs`, it restores the NIC's snapshot (address,
+routes), takes the NIC off the bridge, and keeps the record with
+`boot_rollback: {at, reason}`. The host stays reachable on its own
+address; what used the bridge (bridged and provider networks, an OVN
+edge there) is out until an administrator re-applies it
+(`POST /ovs/bridges/{b}/uplinks/{u}/reapply`, op
+`ensure_uplink_reapply`: a fresh snapshot, the gateway check and a commit
+window, as when first added) or deletes it. Later starts leave a held
+uplink alone. Verified end to end on the nested cluster: a host's only
+NIC moved onto a bridge through the agent's web UI, the host rebooted,
+and came back reachable with the address re-applied.
 
 ## 9. VM ports
 
@@ -806,10 +822,11 @@ Limits, returned in `UplinkState.warnings`:
    ```
    `<br>.hosts` holds one `<mac>,<ip>` line per attached VM port.
 
-**Default network:** at control-plane start, if netd is reachable, OVS
-is installed, and no network named `default` exists, the control plane
-creates it: bridge `gxbr-nat` (`system`), `ensure_nat` with the default
-subnet, and network `default` (tap). Failure is logged, not fatal.
+**No default network:** neither the installer nor the control plane
+creates a network; the administrator creates the ones they want. A
+network named `default` is only a convention: the VM form preselects it
+(else a project's only network), and `gxctl create` offers it. Hosts set
+up by older versions keep the `default` network (`gxbr-nat`) they made.
 
 **Firewalls:** `probe` reports active `ufw`/`firewalld`; a drop in their
 forward chains still wins over `inet glidex`. (A plain iptables FORWARD
@@ -1006,7 +1023,7 @@ Without attachments the current "DHCP on `en*`" stays.
 | `ovs install [--profile kernel\|dpdk] [--source] [--force]` | `POST /ovs/install` |
 | `ovs dpdk-init --socket-mem 2048 --pmd-cpu-mask 0x4 [--force]` | `POST /ovs/dpdk-init` |
 | `bridges` · `bridge-add <name> [--netdev]` · `bridge-rm <name>` | bridges |
-| `uplink-add <bridge> <name> (--kernel <if> \| --afxdp <if> [--xdp-mode m] \| --dpdk <bdf>) [--migrate-ip] [--force]` · `uplink-rm <bridge> <name>` | uplinks; auto-commit after a successful `health` |
+| `uplink-add <bridge> <name> (--kernel <if> \| --afxdp <if> [--xdp-mode m] \| --dpdk <bdf>) [--migrate-ip] [--force] [--accept-dhcp]` · `uplink-reapply <bridge> <name>` · `uplink-rm <bridge> <name>` | uplinks; auto-commit after a successful `health` |
 | `networks` · `network-add <name> (--nat [--subnet s] \| --bridged <bridge> \| --isolated) [--vhost-user] [--vlan n]` · `network-rm <name>` | networks |
 | `create` | new prompt: networks (comma list, default `default`) |
 
