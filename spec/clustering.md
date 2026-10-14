@@ -1590,7 +1590,8 @@ milestone adds its notes here.
 as a `WriteSet`). Tables are the closed `TableId` enum (append-only).
 `GLIDEX_CHECK_WRITE_SETS=1 cargo test` replays every database a test opens
 and compares dumps (§6.1 invariant); `scripts/lint-store-writes.sh` forbids
-`begin_write` outside `store/`. The change bell now belongs to the `Db`.
+`begin_write` outside `store/` (except the Raft log, which has its own
+file, §6.2). The change bell now belongs to the `Db`.
 
 ### C1 Node identity
 
