@@ -203,3 +203,20 @@ test.describe("without a leader", () => {
     await expect(page.getByRole("alert")).toContainText("out of date");
   });
 });
+
+test("OVN settings stay reachable when OVN's state can't be read", async ({ page }) => {
+  await mockCluster(page);
+  const json = (r: Route, v: unknown, status = 200) => r.fulfill({ status, contentType: "application/json", body: JSON.stringify(v) });
+  await page.route("**/api/cluster/settings/ovn", (r) =>
+    json(r, { enabled: true, source: "cluster", settings: { enabled: true, dns_servers: [] }, nodes: [], cluster_networks: [] }),
+  );
+  await page.route("**/api/cluster/ovn", (r) => json(r, { error: "unavailable", message: "northbound database not reachable" }, 503));
+  await page.route("**/api/cluster/ovn/tunnels", (r) => json(r, { enabled: true, nodes: [] }));
+  await page.route("**/api/cluster/settings/ovn/edge-defaults", (r) =>
+    json(r, { edge: { physnet: "uplink", external_cidr: "", gateway: "", external_ip: "", external_pool: null, gateway_nodes: [] }, complete: false, notes: [] }),
+  );
+  await page.goto("/cluster");
+  await expect(page.getByText(/OVN's state couldn't be read/)).toBeVisible();
+  await page.getByRole("button", { name: "OVN settings…" }).click();
+  await expect(page.getByRole("heading", { name: "OVN settings" })).toBeVisible();
+});

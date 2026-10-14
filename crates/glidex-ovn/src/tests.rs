@@ -252,3 +252,29 @@ fn replies_from_outside_reach_guests_and_an_older_policy_is_replaced() {
     assert!(calls.contains("lr-policy-add gx-edge 1000 ip4.src == $gx_nat_supernet && ip4.dst == $gx_nat_supernet drop"), "{calls}");
     assert!(calls.contains("acl-add gx-ext-uplink from-lport 1000"), "unsolicited traffic stays out: {calls}");
 }
+
+#[test]
+fn the_snat_rule_of_a_deleted_network_goes_with_it() {
+    let exec = RecordingExec::new();
+    exec.on("ovn-nbctl --db=", empty(r#"["name"]"#));
+    let pre = "ovn-nbctl --db=ssl:192.0.2.11:6641,ssl:192.0.2.12:6641 -p /k -c /c -C /ca --format=json";
+    exec.on(&format!("{pre} --columns=name,external_ids find Logical_Router"), Output::ok(r#"{"data":[["gx-edge",["map",[["glidex-owner","glidex"]]]]],"headings":["name","external_ids"]}"#));
+    exec.on(&format!("{pre} --columns=nat find Logical_Router"), Output::ok(r#"{"data":[[["set",[["uuid","n-web"],["uuid","n-old"]]]]],"headings":["nat"]}"#));
+    // Another router's rule for the same old subnet is not ours to remove.
+    exec.on(
+        &format!("{pre} --columns=_uuid,external_ip,logical_ip,type find NAT"),
+        Output::ok(r#"{"data":[[["uuid","n-web"],"192.0.2.50","10.89.1.0/24","snat"],[["uuid","n-old"],"192.0.2.50","10.89.9.0/24","snat"],[["uuid","n-vpc"],"192.0.2.64","10.89.7.0/24","snat"]],"headings":["_uuid","external_ip","logical_ip","type"]}"#),
+    );
+    exec.on(&format!("{pre} --columns=_uuid find HA_Chassis_Group"), Output::ok(r#"{"data":[[["uuid","g1"]]],"headings":["_uuid"]}"#));
+    let d = Desired {
+        edge: Some(EdgeSpec { physnet: "uplink".into(), external_ip: "192.0.2.50".parse().unwrap(), external_prefix: 24, gateway: "192.0.2.1".parse().unwrap(), gateway_nodes: vec!["n1".into()], snat_ct_zone: None }),
+        networks: vec![net("web", NetKind::Nat, "10.89.1.0/24")],
+        ..Default::default()
+    };
+    let rep = sync(&Nb::new(&exec, conn()), &d).unwrap();
+    let calls = exec.calls().join("\n");
+    assert!(calls.contains("--if-exists lr-nat-del gx-edge snat 10.89.9.0/24"), "{calls}");
+    assert!(!calls.contains("lr-nat-del gx-edge snat 10.89.1.0/24") && !calls.contains("10.89.7.0/24"), "{calls}");
+    assert!(!calls.contains("lr-nat-add"), "the live network's rule is already there: {calls}");
+    assert!(rep.changed.iter().any(|c| c == "removed snat 10.89.9.0/24"), "{rep:?}");
+}

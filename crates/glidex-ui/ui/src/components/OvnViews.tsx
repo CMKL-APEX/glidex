@@ -47,8 +47,22 @@ export function useOvnOverview(enabled: boolean, tick = 0): { ovn: OvnOverview |
 
 /** The OVN databases, chassis and gateways (spec/clustering-ui.md §8). */
 export function OvnCard({ ovn, error, actions, nodes = [], children }: { ovn: OvnOverview | null; error: string | null; actions?: ReactNode; nodes?: { id: string; name: string }[]; children?: ReactNode }) {
-  if (error) return null;
-  if (!ovn || !ovn.enabled) return null;
+  // The card (and its settings button) stays whatever OVN says right now.
+  if (error) {
+    return (
+      <Card title="OVN" actions={actions}>
+        <p className="text-sm text-red-700">OVN's state couldn't be read: {error}</p>
+        {children}
+      </Card>
+    );
+  }
+  if (!ovn || !ovn.enabled) {
+    return (
+      <Card title="OVN" actions={actions}>
+        <p className="text-sm text-gray-500">{ovn ? "OVN is on; nodes are starting it." : "Reading OVN's state…"}</p>
+      </Card>
+    );
+  }
   // Nodes not yet a chassis: OVN was just turned on, or one is in trouble.
   const joining = nodes.filter((n) => !(ovn.chassis ?? []).some((c) => c.node === n.id));
   // Only meaningful once something advanced nb_cfg (a client waiting for the hypervisors).

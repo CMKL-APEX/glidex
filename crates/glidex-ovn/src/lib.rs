@@ -584,13 +584,22 @@ fn ensure_gateway(nb: &Nb, g: &Gateway, desired: &Desired, have_switches: &BTree
         }
     }
     // The router's external address, per NAT network on it.
-    let nats = nb.find("NAT", &["external_ip", "logical_ip", "type"], &[])?;
-    for n in nets.iter().filter(|n| n.kind == NetKind::Nat) {
-        let Some(cidr) = n.cidr else { continue };
-        let logical = format!("{}/{}", cidr.network(), cidr.prefix());
+    // NAT rows don't name their router either: only this router's count.
+    let mine: String = nb.find("Logical_Router", &["nat"], &[format!("name={}", g.router)])?.first().and_then(|r| r.0.get("nat").map(|v| v.to_string())).unwrap_or_default();
+    let nats: Vec<Row> = nb.find("NAT", &["_uuid", "external_ip", "logical_ip", "type"], &[])?.into_iter().filter(|x| uuid(x, "_uuid").is_some_and(|u| mine.contains(&u))).collect();
+    let wanted: BTreeSet<String> = nets.iter().filter(|n| n.kind == NetKind::Nat).filter_map(|n| n.cidr).map(|c| format!("{}/{}", c.network(), c.prefix())).collect();
+    for logical in &wanted {
         if !nats.iter().any(|x| x.str("logical_ip").as_deref() == Some(logical.as_str()) && x.str("type").as_deref() == Some("snat")) {
-            nb.txn(vec![vec![s("--may-exist"), s("lr-nat-add"), g.router.clone(), s("snat"), e.external_ip.to_string(), logical]])?;
-            report.changed.push(format!("snat {}", n.name));
+            nb.txn(vec![vec![s("--may-exist"), s("lr-nat-add"), g.router.clone(), s("snat"), e.external_ip.to_string(), logical.clone()]])?;
+            report.changed.push(format!("snat {logical}"));
+        }
+    }
+    // Rules of networks that left this router (deleted ones).
+    for x in &nats {
+        let (Some(t), Some(logical)) = (x.str("type"), x.str("logical_ip")) else { continue };
+        if t == "snat" && !wanted.contains(&logical) {
+            nb.txn(vec![vec![s("--if-exists"), s("lr-nat-del"), g.router.clone(), s("snat"), logical.clone()]])?;
+            report.changed.push(format!("removed snat {logical}"));
         }
     }
     Ok(())
