@@ -84,6 +84,14 @@ fn two_servers_form_the_ovn_database_clusters_with_glidex_options() {
     let root = tempfile::tempdir().unwrap();
     let ca = Ca::generate("test-cluster").unwrap();
     let ips: [std::net::IpAddr; 2] = ["127.0.0.1".parse().unwrap(), "127.0.0.2".parse().unwrap()];
+    // The servers take OVN's fixed ports: on a host that is itself an OVN
+    // server (listening on every address), the test would talk to that one.
+    for port in [glidex_ovs::ovn::NB_PORT, glidex_ovs::ovn::SB_PORT] {
+        assert!(
+            std::net::TcpListener::bind((ips[0], port)).is_ok(),
+            "port {port} is taken on this host (an OVN server of its own?): run this test on a host without one"
+        );
+    }
     let mut dirs = Vec::new();
     for (i, ip) in ips.iter().enumerate() {
         let d = root.path().join(format!("s{i}"));
