@@ -515,6 +515,21 @@ idle tunnel between nodes whose VMs don't talk stays at 0, so 0 is not a
 fault. The UI shows the matrix on the Cluster page's OVN card, and the
 node's tunnels with counters on the Node page.
 
+## 8c. Uplinks from the UI, safe across reboots
+
+The Networking page manages the host's bridges and uplinks (new bridge,
+add uplink with "move the host's address", commit once the API answers,
+re-apply a held uplink, remove), and the Node page a node's physical
+networks. netd re-applies a migrated address at start with the gateway
+check and rolls back to the NIC's own address if it fails
+(networking.md §8.5). Through an agent's UI these run on the agent (§3.6;
+the server also passes `confirmUplink` when the caller holds it).
+
+Found while testing it end to end: agents served no UI socket after a
+restart (only a runtime join kept it), and relayed requests carried the
+relay route's own path parameter into the API, breaking every handler
+with one (`/ovs/bridges/{name}/uplinks`, `/nodes/{id}`, …). Both fixed.
+
 ## 9. Server additions
 
 | Addition | For | Notes |

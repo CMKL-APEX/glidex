@@ -443,6 +443,9 @@ pub struct CreateUplinkRequest {
     migrate_ip: bool,
     #[serde(default)]
     confirm: bool,
+    /// Migrate a DHCP-managed address anyway (it may only last until the lease ends).
+    #[serde(default)]
+    accept_dhcp: bool,
 }
 
 pub async fn create_uplink(c: Caller, Path(bridge): Path<String>, Json(req): Json<CreateUplinkRequest>) -> Result<impl IntoResponse, ApiErr> {
@@ -453,6 +456,7 @@ pub async fn create_uplink(c: Caller, Path(bridge): Path<String>, Json(req): Jso
     let args = EnsureUplinkArgs {
         spec: UplinkSpec { name: req.name, bridge, kind: req.kind, migrate_ip: req.migrate_ip },
         confirm: req.confirm,
+        accept_dhcp: req.accept_dhcp,
     };
     let res: UplinkResult = netd_blocking(&c, move |n, who| n.call_as(Op::EnsureUplink(args), who)).await?;
     // 202: the IP migration must still be committed within the window.
@@ -475,6 +479,21 @@ pub async fn commit_uplink(c: Caller, Path((bridge, name)): Path<(String, String
     let res: UplinkResult =
         netd_blocking(&c, move |n, who| n.call_as(Op::CommitUplink { bridge, name, token: req.token }, who)).await?;
     Ok(Json(res))
+}
+
+/// `POST /ovs/bridges/{b}/uplinks/{u}/reapply`: set up again an uplink netd
+/// rolled back at start (the gateway check failed there): a fresh snapshot,
+/// the gateway check and a commit window, as when it was first added.
+pub async fn reapply_uplink(c: Caller, Path((bridge, name)): Path<(String, String)>) -> Result<impl IntoResponse, ApiErr> {
+    c.set_target(format!("uplink:{}/{}", bridge, name));
+    // It moves the host's IP again: as a confirmed uplink, step-up.
+    c.require_action("confirmUplink", Ent::Host, EntitySet::new(), &[])?;
+    let res: UplinkResult = netd_blocking(&c, move |n, who| n.call_as(Op::ReapplyUplink { bridge, name }, who)).await?;
+    let status = match res.phase {
+        UplinkPhase::PendingCommit => StatusCode::ACCEPTED,
+        UplinkPhase::Active => StatusCode::OK,
+    };
+    Ok((status, Json(res)))
 }
 
 pub async fn delete_uplink(c: Caller, Path((bridge, name)): Path<(String, String)>) -> Result<impl IntoResponse, ApiErr> {

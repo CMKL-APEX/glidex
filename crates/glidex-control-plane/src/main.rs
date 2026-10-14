@@ -265,12 +265,35 @@ async fn main() {
         tracing::warn!("metering not started: {}", e);
     }
 
-    // An agent has no API or UI of its own: the servers' are the cluster's
-    // (spec/clustering.md §4).
+    // An agent has no API of its own: the servers' is the cluster's
+    // (spec/clustering.md §4). Its UI socket relays the web UI's requests to
+    // a server, which authenticates them (spec/clustering-ui.md §3.6).
     if vm_manager.node_link().is_some() {
         println!("  Agent node: serving VMs for the cluster; node API on {}", vm_manager.cluster().map(|c| c.identity.advertise.to_string()).unwrap_or_default());
+        let mut servers = Vec::new();
+        let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+        match auth::AuthService::new(vm_manager.database(), cfg.clone()) {
+            Ok(auth) => {
+                let router = api::router(Arc::new(api::App { manager: vm_manager.clone(), auth }));
+                vm_manager.set_api_router(router.clone());
+                let app = router.layer(TraceLayer::new_for_http());
+                let ui_sock = cfg.ui_socket_path();
+                match serve::bind_unix(&ui_sock) {
+                    Ok(l) => {
+                        println!("  Listening on {} (Ui, relayed to the servers)", ui_sock.display());
+                        servers.push(tokio::spawn(serve::serve_unix(l, app, api::Listener::Ui, stop_rx.clone())));
+                    }
+                    Err(e) => eprintln!("  Warning: cannot listen on {}: {}", ui_sock.display(), e),
+                }
+            }
+            Err(e) => eprintln!("  Warning: the web UI relay is off: {}", e),
+        }
         println!("  Press Ctrl+C to shutdown");
         shutdown_signal().await;
+        let _ = stop_tx.send(true);
+        for s in servers {
+            let _ = s.await;
+        }
         return;
     }
 

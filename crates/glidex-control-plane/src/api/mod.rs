@@ -80,7 +80,7 @@ pub struct RemoteHost(pub String);
 /// action on `Host` is allowed without asking this node's policies (an
 /// agent has none).
 #[derive(Debug, Clone)]
-pub struct PreAuthorized(pub String);
+pub struct PreAuthorized(pub Vec<String>);
 
 /// The server that forwarded a request.
 #[derive(Debug, Clone)]
@@ -238,6 +238,7 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         .add("POST", "/ovs/bridges/{name}/uplinks", "ensureUplink", post(net::create_uplink))
         .add("DELETE", "/ovs/bridges/{name}/uplinks/{uplink}", "deleteUplink", delete(net::delete_uplink))
         .add("POST", "/ovs/bridges/{name}/uplinks/{uplink}/commit", "commitUplink", post(net::commit_uplink))
+        .add("POST", "/ovs/bridges/{name}/uplinks/{uplink}/reapply", "confirmUplink", post(net::reapply_uplink))
         .add("GET", "/pci-devices", "listPciDevices", get(net::list_pci_devices))
         .add("GET", "/system/reconcile", "readSystemStatus", get(vms::system_reconcile))
         // ---- cluster (spec/clustering.md §5)
@@ -536,8 +537,8 @@ pub struct Caller {
     pub app: AppState,
     pub request_id: String,
     audit: AuditSlot,
-    /// The action a server authorized on this host (`PreAuthorized`).
-    pre: Option<String>,
+    /// The actions a server authorized on this host (`PreAuthorized`).
+    pre: Vec<String>,
 }
 
 impl FromRequestParts<AppState> for Caller {
@@ -552,7 +553,7 @@ impl FromRequestParts<AppState> for Caller {
         Ok(Caller {
             p,
             action: parts.extensions.get::<RouteAction>().map(|a| a.0).unwrap_or(AUTHENTICATED),
-            pre: parts.extensions.get::<PreAuthorized>().map(|p| p.0.clone()),
+            pre: parts.extensions.get::<PreAuthorized>().map(|p| p.0.clone()).unwrap_or_default(),
             app: app.clone(),
             request_id: parts.extensions.get::<RequestId>().map(|r| r.0.clone()).unwrap_or_default(),
             audit: parts.extensions.get::<AuditSlot>().cloned().unwrap_or_default(),
@@ -584,7 +585,7 @@ impl Caller {
     /// Ask Cedar, recording the decision for the audit entry.
     /// A server's decision for this host (`PreAuthorized`), when it covers `action` on `resource`.
     fn pre_authorized(&self, action: &str, resource: &Ent) -> Option<Decision> {
-        (self.pre.as_deref() == Some(action) && *resource == Ent::Host).then(|| Decision { allowed: true, policies: vec!["server-authorized".into()], errors: Vec::new() })
+        (self.pre.iter().any(|a| a == action) && *resource == Ent::Host).then(|| Decision { allowed: true, policies: vec!["server-authorized".into()], errors: Vec::new() })
     }
 
     pub fn decide(&self, action: &str, resource: Ent, es: EntitySet, extra: &[(&'static str, Ent)]) -> Decision {

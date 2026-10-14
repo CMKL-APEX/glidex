@@ -70,6 +70,9 @@ pub enum Op {
     InitDpdk(glidex_ovs::install::DpdkSettings),
     EnsureUplink(EnsureUplinkArgs),
     CommitUplink { bridge: String, name: String, token: String },
+    /// Set up again an uplink rolled back at start, with the first setup's
+    /// safety: gateway check, then a commit window.
+    ReapplyUplink { bridge: String, name: String },
     DeleteUplink { bridge: String, name: String },
     EnsureBridge(BridgeSpec),
     DeleteBridge { name: String },
@@ -132,6 +135,7 @@ impl Op {
             Op::CtExternalCounters => "ct_external_counters",
             Op::EnsureUplink(_) => "ensure_uplink",
             Op::CommitUplink { .. } => "commit_uplink",
+            Op::ReapplyUplink { .. } => "ensure_uplink_reapply",
             Op::DeleteUplink { .. } => "delete_uplink",
             Op::InstallOvs(_) => "install_ovs",
             Op::InitDpdk(_) => "init_dpdk",
@@ -265,6 +269,10 @@ pub struct EnsureUplinkArgs {
     /// Required to take over a NIC the host is using (CLI `--force`).
     #[serde(default)]
     pub confirm: bool,
+    /// Migrate a DHCP-managed NIC's address anyway: it may only last until
+    /// the lease expires (the DHCP client stays on the NIC).
+    #[serde(default)]
+    pub accept_dhcp: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -307,6 +315,20 @@ pub struct UplinkRecord {
     pub snapshot: Option<Snapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending: Option<Pending>,
+    /// Re-applying it at start failed and was rolled back: the NIC has its
+    /// own address again and the uplink stays off the bridge until it is
+    /// re-applied (`ensure_uplink_reapply`) or deleted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub boot_rollback: Option<BootRollback>,
+    /// It was set up accepting a DHCP-managed address (re-applied the same way).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub accept_dhcp: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BootRollback {
+    pub at: u64,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -4,6 +4,7 @@ import * as api from "../api";
 import type { DiskInfo, NodeRecord, VmResponse } from "../types";
 import { formatBytes, formatTime, stateLabel, wantedBrInt } from "../types";
 import BrIntDialog from "../components/BrIntDialog";
+import MappingsDialog from "../components/MappingsDialog";
 import { hostOf, useAllowed } from "../nodes";
 import { useLive, useLiveRefresh } from "../live";
 import { useNodes } from "../nodes";
@@ -56,6 +57,7 @@ export default function NodeDetail() {
   const [disks, setDisks] = useState<DiskInfo[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [brIntOpen, setBrIntOpen] = useState(false);
+  const [mapsOpen, setMapsOpen] = useState(false);
   const nodeHost = hostOf(id, dir.self);
   const canConf = useAllowed(["configureNode"], [nodeHost]);
   const canConfigure = !!canConf?.(nodeHost, "configureNode");
@@ -181,16 +183,17 @@ export default function NodeDetail() {
                 </button>
               )}
             </dd>
-            {Object.keys(s.features?.physnets ?? {}).length > 0 && (
-              <>
-                <dt className="text-gray-500">Physical networks</dt>
-                <dd>
-                  {Object.entries(s.features!.physnets!)
-                    .map(([p, b]) => `${p} (${b})`)
-                    .join(", ")}
-                </dd>
-              </>
-            )}
+            <dt className="text-gray-500">Physical networks</dt>
+            <dd>
+              {Object.entries(s.features?.physnets ?? {})
+                .map(([p, b]) => `${p} (${b})`)
+                .join(", ") || <span className="text-gray-400">none</span>}
+              {canConfigure && (
+                <button className="ml-2 text-sky-700 hover:underline" onClick={() => setMapsOpen(true)}>
+                  Change…
+                </button>
+              )}
+            </dd>
             <dt className="text-gray-500">PCI devices</dt>
             <dd>{s.pci_devices?.length ?? 0}</dd>
             <dt className="text-gray-500">Joined</dt>
@@ -217,6 +220,16 @@ export default function NodeDetail() {
 
       {host.readCluster && <NodeOvnCard node={id} />}
 
+      {mapsOpen && (
+        <MappingsDialog
+          node={node}
+          onClose={() => setMapsOpen(false)}
+          onDone={() => {
+            setMapsOpen(false);
+            load();
+          }}
+        />
+      )}
       {brIntOpen && (
         <BrIntDialog
           node={node}

@@ -1122,6 +1122,10 @@ networking.md):
   networking.md §0 findings 7–11 (hugepages, mempool driver, PMD
   placement, TSO). Nodes report `br_int_datapath`, and the scheduler
   filters on it (§9.1).
+- Which physical networks a node reaches is `spec.bridge_mappings` too
+  (`PUT /nodes/{id}/ovn`, the Node page), merged over the host file's
+  `cluster.ovn.bridge_mappings` and applied without a restart; a gateway
+  node can't drop the edge's physical network.
 - Which datapath `br-int` gets is a per-node setting, `spec.br_int_datapath`
   (`PUT /nodes/{id}/ovn`, action `configureNode` on that node's `Host`):
   `auto` (the default) is `netdev` where OVS runs DPDK, else `system`;

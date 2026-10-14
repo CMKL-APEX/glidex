@@ -161,6 +161,26 @@ export interface BridgeRecord {
   live?: { ports: string[] } | null;
 }
 
+/** How an uplink attaches the NIC (networking.md §8). */
+export type UplinkKind =
+  | { kind: "kernel"; ifname: string }
+  | { kind: "afxdp"; ifname: string; xdp_mode?: string; n_rxq?: number }
+  | { kind: "dpdk"; pci: string; n_rxq?: number };
+
+/** An uplink as netd keeps it (`GET /ovs/bridges/{b}/uplinks`). */
+export interface UplinkResult {
+  record: {
+    spec: { name: string; bridge: string; migrate_ip: boolean } & UplinkKind;
+    /** The host's address was moved; commit with `token` before `deadline`. */
+    pending?: { token: string; deadline: number } | null;
+    /** Re-applying at start failed and was rolled back: the NIC has its own address again. */
+    boot_rollback?: { at: number; reason: string } | null;
+    accept_dhcp?: boolean;
+  };
+  phase: "active" | "pending_commit";
+  live: { error?: string; link_state?: string; warnings?: string[] };
+}
+
 export interface CreateVmRequest {
   name: string;
   /** Project id or name; default: the caller's default project. */
@@ -877,6 +897,8 @@ export interface NodeRecord {
     labels: Record<string, string>;
     /** `auto` (absent): `netdev` where DPDK runs, else `system` (spec/clustering.md §11.6). */
     br_int_datapath?: BrIntDatapath;
+    /** physnet → bridge set through the API (the host's file may add more). */
+    bridge_mappings?: Record<string, string>;
   };
   status: {
     phase: NodePhase;

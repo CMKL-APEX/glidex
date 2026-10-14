@@ -408,7 +408,7 @@ async fn handle_network_add(client: &CliClient, args: &[&str]) {
 }
 
 async fn handle_uplink_add(client: &CliClient, args: &[&str]) {
-    let usage = "Usage: uplink-add <bridge> (--kernel <if> | --afxdp <if> [--xdp-mode best_effort|native|native_with_zerocopy|generic] [--rxq N] | --dpdk <bdf> --name <port> [--rxq N]) [--migrate-ip] [--force]";
+    let usage = "Usage: uplink-add <bridge> (--kernel <if> | --afxdp <if> [--xdp-mode best_effort|native|native_with_zerocopy|generic] [--rxq N] | --dpdk <bdf> --name <port> [--rxq N]) [--migrate-ip] [--force] [--accept-dhcp]";
     let Some(bridge) = args.first().filter(|a| !a.starts_with("--")) else {
         println!("{}", usage.yellow());
         return;
@@ -431,11 +431,14 @@ async fn handle_uplink_add(client: &CliClient, args: &[&str]) {
     };
     body["migrate_ip"] = serde_json::json!(has_flag(args, "--migrate-ip"));
     body["confirm"] = serde_json::json!(has_flag(args, "--force"));
+    body["accept_dhcp"] = serde_json::json!(has_flag(args, "--accept-dhcp"));
     let path = format!("/ovs/bridges/{}/uplinks", bridge);
     let res = match client.request_json::<serde_json::Value>(Method::POST, &path, Some(body)).await {
         Ok(r) => r,
         Err(e) => {
-            if e.contains("host_interface_in_use") {
+            if e.contains("DHCP-managed") {
+                println!("{} {}\n  Give the NIC a static address first, or re-run with --accept-dhcp to move it anyway.", "Error:".red(), e);
+            } else if e.contains("host_interface_in_use") {
                 println!("{} {}\n  The NIC is in use by the host. Re-run with --migrate-ip --force to move its IP configuration onto the bridge (rolled back automatically if the gateway stops answering or this CLI can't confirm).", "Error:".red(), e);
             } else {
                 println!("{} {}", "Error:".red(), e);
@@ -443,6 +446,12 @@ async fn handle_uplink_add(client: &CliClient, args: &[&str]) {
             return;
         }
     };
+    finish_uplink(client, bridge, res).await;
+}
+
+/// After an uplink was added or re-applied: commit a moved IP once the API
+/// still answers (netd rolls it back otherwise).
+async fn finish_uplink(client: &CliClient, bridge: &str, res: serde_json::Value) {
     let name = res["record"]["spec"]["name"].as_str().unwrap_or("?").to_string();
     for w in res["live"]["warnings"].as_array().into_iter().flatten() {
         println!("{} {}", "Warning:".yellow(), w.as_str().unwrap_or(""));
@@ -1262,7 +1271,8 @@ fn print_help() {
     println!("  {}  - Delete a network", "network-rm <name>".cyan());
     println!("  {}           - List glidex OVS bridges", "bridges".cyan());
     println!("  {}  - List a bridge's uplinks", "uplinks <bridge>".cyan());
-    println!("  {} - Add an uplink (kernel/AF_XDP/DPDK)", "uplink-add <bridge> --kernel <if> [--migrate-ip] [--force]".cyan());
+    println!("  {} - Add an uplink (kernel/AF_XDP/DPDK)", "uplink-add <bridge> --kernel <if> [--migrate-ip] [--force] [--accept-dhcp]".cyan());
+    println!("  {} - Set up again an uplink rolled back at start", "uplink-reapply <bridge> <name>".cyan());
     println!("  {} - Remove an uplink, restoring the NIC", "uplink-rm <bridge> <name>".cyan());
     println!("  {}        - Host networking status", "ovs status".cyan());
     println!("  {} - Install Open vSwitch", "ovs install [--profile kernel|dpdk] [--force]".cyan());
@@ -1529,7 +1539,7 @@ const COMMANDS: &[&str] = &[
     "connect", "console", "attach", "log", "logs", "delete", "rm", "pci", "pci-devices", "nodes", "node", "cluster",
     "attach-device", "detach-device", "credentials", "creds", "credential-add",
     "credential-passwd", "credential-keys", "credential-rm", "networks", "network-add",
-    "network-rm", "bridges", "uplinks", "uplink-add", "uplink-rm", "ovs", "health",
+    "network-rm", "bridges", "uplinks", "uplink-add", "uplink-reapply", "uplink-rm", "ovs", "health",
     "image", "images", "disk", "disks", "whoami", "login", "logout", "ui", "token",
     "tokens", "project", "projects", "binding", "bindings", "system-binding", "user",
     "users", "team", "teams", "policy", "policies", "audit", "usage", "stats", "bandwidth", "io", "compute", "network",
@@ -2634,6 +2644,18 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
         },
 
         "uplink-add" => handle_uplink_add(client, &parts[1..]).await,
+
+        // A migration netd rolled back at start (spec/clustering-ui.md):
+        // set it up again with the gateway check and commit.
+        "uplink-reapply" => match (parts.get(1), parts.get(2)) {
+            (Some(bridge), Some(name)) => {
+                match client.request_json::<serde_json::Value>(Method::POST, &format!("/ovs/bridges/{}/uplinks/{}/reapply", bridge, name), Some(serde_json::json!({}))).await {
+                    Ok(res) => finish_uplink(client, bridge, res).await,
+                    Err(e) => println!("{} {}", "Error:".red(), e),
+                }
+            }
+            _ => println!("{}", "Usage: uplink-reapply <bridge> <name>".yellow()),
+        },
 
         "uplink-rm" => match (parts.get(1), parts.get(2)) {
             (Some(bridge), Some(name)) => match client

@@ -190,7 +190,7 @@ async fn run_on_host(app: &AppState, node: &str, action: &'static str, req: Requ
     let p = req.extensions().get::<Principal>().cloned().ok_or_else(|| err(StatusCode::UNAUTHORIZED, "unauthenticated", "authentication required"))?;
     let mut es = EntitySet::new();
     es.host(node);
-    let d = app.auth.authorize(&p, action, Ent::host_of(node), es, &[]);
+    let d = app.auth.authorize(&p, action, Ent::host_of(node), es.clone(), &[]);
     if let Some(slot) = req.extensions().get::<super::AuditSlot>() {
         let mut a = slot.0.lock().unwrap();
         a.policies.extend(d.policies.iter().cloned());
@@ -214,7 +214,15 @@ async fn run_on_host(app: &AppState, node: &str, action: &'static str, req: Requ
     let body = axum::body::to_bytes(body, MAX_RELAYED_BODY).await.map_err(|_| err(StatusCode::PAYLOAD_TOO_LARGE, "too_large", "request body too large"))?;
     let pq = parts.uri.path_and_query().map(|p| p.as_str().to_string()).unwrap_or_else(|| parts.uri.path().to_string());
     let mut headers = copy_headers(&parts.headers, &["content-type", "accept", "x-request-id"]);
-    headers.push((AUTHORIZED_HEADER, action.to_string()));
+    // Some handlers ask for a second action on the host (a confirmed uplink
+    // moves its IP: `confirmUplink`); pass those the caller holds as well.
+    let mut authorized = vec![action.to_string()];
+    for extra in related_actions(action) {
+        if app.auth.authorize(&p, extra, Ent::host_of(node), es.clone(), &[]).allowed {
+            authorized.push(extra.to_string());
+        }
+    }
+    headers.push((AUTHORIZED_HEADER, authorized.join(",")));
     if let Some(h) = super::gate::principal_header(&p) {
         headers.push((super::gate::PRINCIPAL_HEADER, h));
     }
@@ -227,6 +235,14 @@ async fn run_on_host(app: &AppState, node: &str, action: &'static str, req: Requ
     *resp.status_mut() = r.status;
     respond_headers(&mut resp, &r.headers);
     Ok(resp)
+}
+
+/// Actions a route's handler may check besides the route's own.
+fn related_actions(action: &str) -> &'static [&'static str] {
+    match action {
+        "ensureUplink" => &["confirmUplink"],
+        _ => &[],
+    }
 }
 
 /// On a server, `/cluster/v1/ui/<path>` from a node: the browser request it
@@ -286,6 +302,6 @@ pub fn accept_authorized(req: &mut Request) -> Result<(), Response> {
     }
     *req.uri_mut() = uri;
     req.extensions_mut().insert(Listener::Cluster);
-    req.extensions_mut().insert(PreAuthorized(action));
+    req.extensions_mut().insert(PreAuthorized(action.split(',').map(str::trim).filter(|a| !a.is_empty()).map(String::from).collect()));
     Ok(())
 }

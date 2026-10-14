@@ -53,6 +53,8 @@ import type {
   OvnSettingsView,
   NodeTunnels,
   BrIntDatapath,
+  UplinkKind,
+  UplinkResult,
 } from "./types";
 
 const API_BASE = "/api";
@@ -390,6 +392,15 @@ export const installOvs = (profile: "kernel" | "dpdk", confirm: boolean) =>
   });
 
 export const listBridges = () => get<BridgeRecord[]>("/ovs/bridges");
+export const createBridge = (name: string, datapath: "system" | "netdev") => post<BridgeRecord>("/ovs/bridges", { name, datapath });
+export const deleteBridge = (name: string) => del(`/ovs/bridges/${enc(name)}`);
+export const listUplinks = (bridge: string) => get<UplinkResult[]>(`/ovs/bridges/${enc(bridge)}/uplinks`);
+/** Add an uplink; with `migrate_ip` the host's address moves to the bridge and must be committed. */
+export const addUplink = (bridge: string, body: { name: string; migrate_ip: boolean; confirm: boolean; accept_dhcp: boolean } & UplinkKind) =>
+  post<UplinkResult>(`/ovs/bridges/${enc(bridge)}/uplinks`, body);
+export const commitUplink = (bridge: string, name: string, token: string) => post<UplinkResult>(`/ovs/bridges/${enc(bridge)}/uplinks/${enc(name)}/commit`, { token });
+export const reapplyUplink = (bridge: string, name: string) => post<UplinkResult>(`/ovs/bridges/${enc(bridge)}/uplinks/${enc(name)}/reapply`);
+export const deleteUplink = (bridge: string, name: string) => del(`/ovs/bridges/${enc(bridge)}/uplinks/${enc(name)}`);
 
 // ---- images and disks ---------------------------------------------------------
 
@@ -573,6 +584,8 @@ export const previewPlacement = (req: PreviewRequest) => query<PlacementPreview>
 export const getNode = (id: string) => get<NodeRecord>(`/nodes/${enc(id)}`);
 /** A node's br-int datapath (spec/clustering.md §11.6). */
 export const setNodeBrInt = (id: string, br_int_datapath: BrIntDatapath) => put<Record<string, unknown>>(`/nodes/${enc(id)}/ovn`, { br_int_datapath });
+/** A node's physical networks: physnet → bridge (replaces its own; the file's stay). */
+export const setNodeMappings = (id: string, bridge_mappings: Record<string, string>) => put<Record<string, unknown>>(`/nodes/${enc(id)}/ovn`, { bridge_mappings });
 
 // ---- membership (spec/clustering-ui.md §7) ---------------------------------------
 

@@ -294,7 +294,24 @@ pub(crate) fn gateway_node_keys(c: &Caller) -> Vec<(String, String)> {
 
 #[derive(serde::Deserialize)]
 pub struct NodeOvnBody {
-    br_int_datapath: crate::node::BrIntDatapath,
+    #[serde(default)]
+    br_int_datapath: Option<crate::node::BrIntDatapath>,
+    /// physnet → bridge: replaces the node's own mappings (the file's stay).
+    #[serde(default)]
+    bridge_mappings: Option<std::collections::BTreeMap<String, String>>,
+}
+
+/// A physical network or bridge name: what OVS's `ovn-bridge-mappings` and a
+/// Linux interface name accept.
+fn valid_mapping(physnet: &str, bridge: &str) -> Result<(), String> {
+    let ok = |s: &str, max: usize| !s.is_empty() && s.len() <= max && s.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c));
+    if !ok(physnet, 64) {
+        return Err(format!("physical network '{physnet}': letters, digits, - _ . (at most 64)"));
+    }
+    if !ok(bridge, 15) {
+        return Err(format!("bridge '{bridge}': letters, digits, - _ . (at most 15, an interface name)"));
+    }
+    Ok(())
 }
 
 /// `PUT /nodes/{id}/ovn` (`configureNode` on the node's host): the node's
@@ -310,10 +327,25 @@ pub async fn put_node_ovn(c: Caller, Path(id): Path<String>, Json(b): Json<NodeO
     let store = m.nodes();
     let mut n = store.get(&id).map_err(store_err)?.ok_or_else(|| err(StatusCode::NOT_FOUND, "not_found", format!("node {id} not found")))?;
     use crate::node::BrIntDatapath as D;
+    if let Some(maps) = &b.bridge_mappings {
+        for (p, br) in maps {
+            valid_mapping(p, br).map_err(|m| err(StatusCode::BAD_REQUEST, "invalid", m))?;
+        }
+        // A gateway still needs the edge's (or its router's) physical network.
+        if let Some(edge) = m.ovn.load().edge.clone() {
+            let still_mapped = maps.contains_key(&edge.physnet) || (n.status.features.physnets.contains_key(&edge.physnet) && !n.spec.bridge_mappings.contains_key(&edge.physnet));
+            if !still_mapped {
+                if let Some((_, what)) = gateway_node_keys(&c).into_iter().find(|(g, _)| *g == n.meta.id || *g == n.spec.name) {
+                    return Err(err(StatusCode::CONFLICT, "gateway_node", format!("{} is a gateway node of {what}, which needs physical network {}", n.spec.name, edge.physnet)));
+                }
+            }
+        }
+    }
+    let datapath = b.br_int_datapath.unwrap_or(n.spec.br_int_datapath);
     let mut want = n.clone();
-    want.spec.br_int_datapath = b.br_int_datapath;
+    want.spec.br_int_datapath = datapath;
     let wanted = want.wanted_br_int();
-    if b.br_int_datapath == D::Netdev && !n.status.features.dpdk {
+    if b.br_int_datapath == Some(D::Netdev) && !n.status.features.dpdk {
         return Err(err(StatusCode::CONFLICT, "dpdk_not_running", format!("{}: OVS doesn't run DPDK there; the userspace datapath needs it (install with --ovs-profile dpdk)", n.spec.name)));
     }
     if wanted == "netdev" {
@@ -341,13 +373,26 @@ pub async fn put_node_ovn(c: Caller, Path(id): Path<String>, Json(b): Json<NodeO
             return Err(err(StatusCode::CONFLICT, "vhost_user_vms", format!("{} runs VMs with vhost-user NICs on cluster networks, which need the userspace datapath: {}", n.spec.name, blocking.join(", "))));
         }
     }
-    if n.spec.br_int_datapath != b.br_int_datapath {
-        n.spec.br_int_datapath = b.br_int_datapath;
+    let before = n.clone();
+    n.spec.br_int_datapath = datapath;
+    if let Some(maps) = b.bridge_mappings {
+        // What the node reaches: its file's mappings (what it reported
+        // beyond its old setting) and the new setting over them, at once,
+        // so gateway checks see it before the node reports again.
+        let old = std::mem::replace(&mut n.spec.bridge_mappings, maps);
+        let mut physnets: std::collections::BTreeMap<String, String> = n.status.features.physnets.clone().into_iter().filter(|(p, br)| old.get(p) != Some(br)).collect();
+        physnets.extend(n.spec.bridge_mappings.clone());
+        n.status.features.physnets = physnets;
+    }
+    if n != before {
         n.meta.generation += 1;
         n.meta.resource_version += 1;
         store.put(&n).map_err(store_err)?;
     }
-    Ok(Json(serde_json::json!({ "node": n.spec.name, "br_int_datapath": n.spec.br_int_datapath, "wanted": n.wanted_br_int(), "current": n.status.features.br_int_datapath })))
+    Ok(Json(serde_json::json!({
+        "node": n.spec.name, "br_int_datapath": n.spec.br_int_datapath, "wanted": n.wanted_br_int(), "current": n.status.features.br_int_datapath,
+        "bridge_mappings": n.spec.bridge_mappings, "physnets": n.status.features.physnets,
+    })))
 }
 
 /// Whether `keys` (node ids or names) can carry an OVN gateway on `physnet`:

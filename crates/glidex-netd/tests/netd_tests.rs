@@ -605,7 +605,7 @@ fn kernel_uplink(migrate: bool) -> UplinkSpec {
 }
 
 fn ensure(netd: &Netd, spec: UplinkSpec, confirm: bool) -> Result<UplinkResult, glidex_ovs::OvsError> {
-    netd.handle(Op::EnsureUplink(EnsureUplinkArgs { spec, confirm }), &peer())
+    netd.handle(Op::EnsureUplink(EnsureUplinkArgs { spec, confirm, accept_dhcp: false }), &peer())
         .map(|v| serde_json::from_value(v).unwrap())
 }
 
@@ -745,6 +745,76 @@ fn committed_migrations_are_reapplied_at_start() {
     let calls = exec.calls();
     assert!(calls.iter().any(|c| c.starts_with("ovs-vsctl --may-exist add-port gxbr-up gxup0")));
     assert!(calls.contains(&"ip addr replace 192.0.2.10/24 dev gxbr-up".to_string()));
+}
+
+fn restarted(exec: Arc<RecordingExec>, dir: &TempDir) -> Netd {
+    Netd::new(exec, Arc::new(FakeSupervisor::default()), Config {
+        run_dir: dir.path().join("run"),
+        state_path: dir.path().join("netd.db"),
+        gateway_check: Duration::from_millis(300),
+        ..Config::default()
+    })
+    .unwrap()
+}
+
+fn uplinks(netd: &Netd) -> Vec<UplinkResult> {
+    serde_json::from_value(netd.handle(Op::ListUplinks, &peer()).unwrap()).unwrap()
+}
+
+/// A migration that fails when re-applied at start is rolled back so the host
+/// keeps its address, held until re-applied, and re-applied with the first
+/// setup's gateway check and commit window.
+#[test]
+fn a_migration_that_fails_at_start_is_rolled_back_held_and_reapplied() {
+    let dir = TempDir::new().unwrap();
+    {
+        let netd = up_netd(uplink_exec(true, true), &dir, Duration::from_secs(60));
+        let token = ensure(&netd, kernel_uplink(true), true).unwrap().record.pending.unwrap().token;
+        netd.handle(Op::CommitUplink { bridge: "gxbr-up".into(), name: "gxup0".into(), token }, &peer()).unwrap();
+    }
+    // The next boot: the gateway doesn't answer through the bridge.
+    let exec = uplink_exec(true, false);
+    let netd = restarted(exec.clone(), &dir);
+    let report = netd.reconcile_startup();
+    assert!(report.errors.iter().any(|e| e.contains("gxup0") && e.contains("did not answer")), "{report:?}");
+    let calls = exec.calls();
+    assert!(calls.contains(&"ip addr replace 192.0.2.10/24 dev gxup0".to_string()), "the NIC has its address back: {calls:?}");
+    assert!(calls.iter().any(|c| c.contains("del-port") && c.contains("gxup0")), "off the bridge: {calls:?}");
+    let held = uplinks(&netd).into_iter().find(|u| u.record.spec.name == "gxup0").expect("the record stays");
+    assert!(held.record.boot_rollback.as_ref().is_some_and(|b| b.reason.contains("did not answer")), "{:?}", held.record);
+    drop(netd);
+
+    // Another boot leaves it alone: held until someone re-applies it.
+    let exec = uplink_exec(true, true);
+    let netd = restarted(exec.clone(), &dir);
+    let report = netd.reconcile_startup();
+    assert!(report.errors.iter().any(|e| e.contains("held off the bridge")), "{report:?}");
+    assert!(!exec.calls().iter().any(|c| c.starts_with("ovs-vsctl --may-exist add-port gxbr-up gxup0")), "not re-added");
+
+    // Re-applied: a fresh migration, pending a commit like the first time.
+    let r: UplinkResult = serde_json::from_value(netd.handle(Op::ReapplyUplink { bridge: "gxbr-up".into(), name: "gxup0".into() }, &peer()).unwrap()).unwrap();
+    assert_eq!(r.phase, UplinkPhase::PendingCommit);
+    assert!(r.record.boot_rollback.is_none());
+    let err = netd.handle(Op::ReapplyUplink { bridge: "gxbr-up".into(), name: "gxup0".into() }, &peer()).unwrap_err();
+    assert_eq!(err.code(), "conflict", "only a held uplink is re-applied");
+}
+
+/// A DHCP-managed address is moved only when that is accepted explicitly.
+#[test]
+fn a_dhcp_managed_address_needs_an_explicit_yes() {
+    let dir = TempDir::new().unwrap();
+    let exec = uplink_exec(true, true);
+    exec.file("/sys/class/net/gxup0/ifindex", "3\n");
+    exec.file("/run/systemd/netif/leases/3", "ADDRESS=192.0.2.10\n");
+    let netd = up_netd(exec, &dir, Duration::from_secs(60));
+    let err = ensure(&netd, kernel_uplink(true), true).unwrap_err();
+    assert!(err.to_string().contains("DHCP-managed"), "{err}");
+    let r: UplinkResult = serde_json::from_value(
+        netd.handle(Op::EnsureUplink(EnsureUplinkArgs { spec: kernel_uplink(true), confirm: true, accept_dhcp: true }), &peer()).unwrap(),
+    )
+    .unwrap();
+    assert!(r.record.accept_dhcp);
+    assert!(r.live.warnings.iter().any(|w| w.contains("DHCP")), "{:?}", r.live.warnings);
 }
 
 #[test]

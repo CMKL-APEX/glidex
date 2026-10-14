@@ -359,7 +359,7 @@ async fn join(State(c): Ctx, Json(req): Json<JoinRequest>) -> Response {
         if existing.iter().any(|n| n.status.raft_id == Some(rec.raft_id)) {
             return Err("that Raft id is taken".to_string());
         }
-        let mut n = Node::new(&rec.node_id, NodeSpec { name: rec.name.clone(), role: rec.role, unschedulable: false, labels: Default::default(), br_int_datapath: Default::default() });
+        let mut n = Node::new(&rec.node_id, NodeSpec { name: rec.name.clone(), role: rec.role, unschedulable: false, labels: Default::default(), br_int_datapath: Default::default(), bridge_mappings: Default::default() });
         n.status.advertise = Some(rec.advertise);
         n.status.tunnel_ip = rec.tunnel_ip.or(Some(rec.advertise.ip()));
         n.status.raft_id = (rec.role == NodeRole::Server).then_some(rec.raft_id);
@@ -652,10 +652,25 @@ async fn ui_relayed(State(c): Ctx, p: Option<Extension<PeerCert>>, mut req: Requ
     if c.node.is_none() {
         return fail(StatusCode::MISDIRECTED_REQUEST, "not_a_server", "only a server serves relayed UI requests");
     }
+    let mut req = fresh(req);
     if let Err(r) = crate::api::relay::accept_relayed(&mut req, &peer.node_id, &c.identity.node_id) {
         return r;
     }
     serve_marked(&c, req).await
+}
+
+/// The same request without what this router added (the matched route's
+/// path parameters): the API router matches it again from scratch, and its
+/// handlers' `Path` extractors would otherwise see this route's `{*rest}`
+/// too. A connection upgrade (WebSocket) carries over.
+fn fresh(req: Request) -> Request {
+    let (mut parts, body) = req.into_parts();
+    let upgrade = parts.extensions.remove::<hyper::upgrade::OnUpgrade>();
+    parts.extensions = axum::http::Extensions::new();
+    if let Some(u) = upgrade {
+        parts.extensions.insert(u);
+    }
+    Request::from_parts(parts, body)
 }
 
 /// Run `req` through this node's API; the answer says which node ran it,
@@ -680,6 +695,7 @@ async fn host_authorized(State(c): Ctx, p: Option<Extension<PeerCert>>, mut req:
     if let Err(r) = peer(&c, p, true) {
         return r;
     }
+    let mut req = fresh(req);
     if let Err(r) = crate::api::relay::accept_authorized(&mut req) {
         return r;
     }

@@ -16,6 +16,7 @@ import Modal from "../components/Modal";
 import { LoadingCard } from "../components/Loading";
 import NodeName from "../components/NodeName";
 import { NetworkOvnDialog } from "../components/OvnViews";
+import BridgesCard from "../components/BridgesCard";
 import { useNodes } from "../nodes";
 
 const inputClass =
@@ -633,22 +634,7 @@ export default function Networking() {
         </table>
       </div>
 
-      {bridges.length > 0 && (
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 text-sm">
-          <h2 className="font-medium text-gray-700 mb-2">glidex bridges</h2>
-          <ul className="space-y-1">
-            {bridges.map((b) => (
-              <li key={b.spec.name} className="font-mono">
-                {b.spec.name}{" "}
-                <span className="text-gray-500">
-                  ({b.spec.datapath}
-                  {b.live ? `, ${b.live.ports.length} ports` : ", missing on host"})
-                </span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
+      {hostView && <BridgesCard bridges={bridges} onChanged={refresh} />}
 
       {installing && (
         <InstallDialog

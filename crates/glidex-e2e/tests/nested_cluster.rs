@@ -22,6 +22,7 @@
 //! ```
 //!
 //! `GLIDEX_E2E_KEEP=1` leaves the VMs running for a look afterwards;
+//! `GLIDEX_E2E_PROJECT` (outer project, default `default`),
 //! `GLIDEX_E2E_API`, `GLIDEX_E2E_IMAGE` (host image, default ubuntu-26.04),
 //! `GLIDEX_E2E_GUEST_IMAGE` (default debian-13), `GLIDEX_E2E_NETWORK` (the
 //! outer network the hosts use, default `default`) override the defaults.
@@ -58,7 +59,7 @@ impl Drop for Outer {
             let _ = self.api.call("POST", &format!("/vms/{id}/stop?wait=60"), Some(&json!({})));
             let _ = self.api.call("DELETE", &format!("/vms/{id}?wait=120"), None);
         }
-        let _ = self.api.call("DELETE", &format!("/credentials/{}", self.credential), None);
+        let _ = self.api.call("DELETE", &format!("/credentials/{}?project={}", self.credential, env("GLIDEX_E2E_PROJECT", "default")), None);
         let _ = std::fs::remove_dir_all(&self.keydir);
     }
 }
@@ -88,6 +89,7 @@ fn make_host(api: &Api, name: &str, credential: &str, key: &std::path::Path) -> 
         "firmware": "cloudhv-edk2",
         "root_disk_size_gib": 30,
         "credential": credential,
+        "project": env("GLIDEX_E2E_PROJECT", "default"),
         "hypervisor": "cloudhypervisor",
         "networks": [{ "network": env("GLIDEX_E2E_NETWORK", "default") }],
         "kernel_image_path": "",
@@ -162,7 +164,9 @@ fn a_nested_two_node_cluster_binds_vm_ports_and_carries_traffic_over_geneve() {
     let keydir = tempfile_dir(&tag);
     let (key, public) = ssh_keypair(&keydir);
     let credential = format!("gxe2e{tag}");
-    outer_api.ok("POST", "/credentials", Some(&json!({ "username": credential, "ssh_authorized_keys": [public] })));
+    // In a named project: the caller's default project is whatever they last
+    // picked in the UI, and may not reach the outer network.
+    outer_api.ok("POST", "/credentials", Some(&json!({ "username": credential, "ssh_authorized_keys": [public], "project": env("GLIDEX_E2E_PROJECT", "default") })));
     let mut outer = Outer { api: Api::Local(api_path.clone().into()), vms: Vec::new(), credential: credential.clone(), keydir: keydir.clone(), keep };
     let (id1, h1) = make_host(&outer_api, &format!("gxe2e-{tag}-h1"), &credential, &key);
     outer.vms.push(id1);
@@ -347,15 +351,26 @@ fn a_nested_two_node_cluster_binds_vm_ports_and_carries_traffic_over_geneve() {
     assert!(pv["pick"].is_string(), "{pv}");
 
     step("the agent's web UI is relayed to the server (spec/clustering-ui.md §3.6)");
-    check_agent_ui(&h1, &h2, &credential, &keydir, &n1, &n2, &format!("gxe2e-{tag}-h2"));
+    let ui = check_agent_ui(&h1, &h2, &credential, &keydir, &n1, &n2, &format!("gxe2e-{tag}-h2"));
+
+    step("the agent's only NIC on a bridge with its address, through its UI, survives a reboot");
+    check_single_nic_uplink_survives_a_reboot(&h2, &ui);
     drop(outer);
 }
 
 /// One request to a glidex-ui from this host: (status, headers, body). The
 /// body goes through stdin, so a password never reaches a command line.
 fn ui_curl(jar: &std::path::Path, base: &str, method: &str, path: &str, body: Option<&Value>, stream_secs: Option<u32>) -> (u16, String, String) {
+    ui_curl_csrf(jar, base, method, path, body, stream_secs, None)
+}
+
+/// As `ui_curl`, with the session's CSRF value (writes need it).
+fn ui_curl_csrf(jar: &std::path::Path, base: &str, method: &str, path: &str, body: Option<&Value>, stream_secs: Option<u32>, csrf: Option<&str>) -> (u16, String, String) {
     let mut c = Command::new("curl");
     c.args(["-s", "-k", "-i", "-X", method, "-b"]).arg(jar).arg("-c").arg(jar).args(["-H", &format!("Origin: {base}")]);
+    if let Some(x) = csrf {
+        c.args(["-H", &format!("X-Glidex-CSRF: {x}")]);
+    }
     if let Some(t) = stream_secs {
         c.args(["-N", "--max-time", &t.to_string()]);
     } else {
@@ -386,7 +401,7 @@ fn header<'a>(head: &'a str, name: &str) -> Option<&'a str> {
 
 /// Log in through h2's (the agent's) glidex-ui as the test's user, made a PAM
 /// user with a throwaway password on h1 (the server that authenticates).
-fn check_agent_ui(h1: &Ssh, h2: &Ssh, user: &str, dir: &std::path::Path, n1: &str, n2: &str, h2_name: &str) {
+fn check_agent_ui(h1: &Ssh, h2: &Ssh, user: &str, dir: &std::path::Path, n1: &str, n2: &str, h2_name: &str) -> (std::path::PathBuf, String, String) {
     let password = uuid::Uuid::new_v4().simple().to_string();
     let out = h1.run_with_input("sudo chpasswd", format!("{user}:{password}\n").as_bytes());
     assert!(out.status.success(), "setting a login password on h1");
@@ -397,6 +412,7 @@ fn check_agent_ui(h1: &Ssh, h2: &Ssh, user: &str, dir: &std::path::Path, n1: &st
     let (s, _, body) = ui_curl(&jar, &base, "POST", "/api/auth/login", Some(&json!({ "method": "pam", "username": user, "password": password })), None);
     drop(password);
     assert_eq!(s, 200, "PAM login through the agent's UI: {}", body.chars().take(300).collect::<String>());
+    let csrf = serde_json::from_str::<Value>(&body).ok().and_then(|v| v["csrf"].as_str().map(String::from)).unwrap_or_default();
 
     let (s, head, body) = ui_curl(&jar, &base, "GET", "/api/cluster/status", None, None);
     assert_eq!(s, 200, "{body}");
@@ -419,7 +435,44 @@ fn check_agent_ui(h1: &Ssh, h2: &Ssh, user: &str, dir: &std::path::Path, n1: &st
     let (s, _, body) = ui_curl(&jar, &base, "GET", "/api/watch?kinds=nodes,cluster,policy", None, Some(8));
     assert_eq!(s, 200);
     assert!(body.contains("event: synced") && body.contains("\"kind\":\"node\""), "watch through the relay: {}", body.chars().take(400).collect::<String>());
-    let _ = std::fs::remove_file(&jar);
+    (jar, base, csrf)
+}
+
+/// spec/clustering-ui.md (uplinks): through the agent's UI, put its only NIC
+/// on a bridge with its address, reboot it, and find it reachable with the
+/// address re-applied on the bridge (netd's start-up re-apply).
+fn check_single_nic_uplink_survives_a_reboot(h2: &Ssh, ui: &(std::path::PathBuf, String, String)) {
+    let (jar, base, csrf) = ui;
+    let nic = h2.check("ip -j route show default | python3 -c 'import json,sys; print(json.load(sys.stdin)[0][\"dev\"])'").trim().to_string();
+    let addr = h2.check(&format!("ip -4 -j addr show dev {nic} | python3 -c 'import json,sys; print(json.load(sys.stdin)[0][\"addr_info\"][0][\"local\"])'")).trim().to_string();
+    let (s, _, b) = ui_curl_csrf(jar, base, "POST", "/api/ovs/bridges", Some(&json!({ "name": "gxbr-up", "datapath": "system" })), None, Some(csrf));
+    assert!(s == 200 || s == 201, "bridge on the agent: {s} {b}");
+    // A DHCP-managed address is refused unless accepted (the nested VMs use DHCP).
+    let body = json!({ "name": nic, "kind": "kernel", "ifname": nic, "migrate_ip": true, "confirm": true });
+    let (s, _, b) = ui_curl_csrf(jar, base, "POST", "/api/ovs/bridges/gxbr-up/uplinks", Some(&body), None, Some(csrf));
+    assert_eq!(s, 409, "a DHCP address needs an explicit yes: {b}");
+    let mut body = body;
+    body["accept_dhcp"] = json!(true);
+    let (s, _, b) = ui_curl_csrf(jar, base, "POST", "/api/ovs/bridges/gxbr-up/uplinks", Some(&body), None, Some(csrf));
+    assert_eq!(s, 202, "pending commit: {b}");
+    let res: Value = serde_json::from_str(&b).unwrap();
+    let token = res["record"]["pending"]["token"].as_str().unwrap().to_string();
+    let (s, _, b) = ui_curl_csrf(jar, base, "POST", &format!("/api/ovs/bridges/gxbr-up/uplinks/{nic}/commit"), Some(&json!({ "token": token })), None, Some(csrf));
+    assert_eq!(s, 200, "commit: {b}");
+    assert!(h2.check("ip -4 -j addr show dev gxbr-up").contains(&addr), "the address is on the bridge");
+
+    let _ = h2.run("sudo systemctl reboot");
+    std::thread::sleep(Duration::from_secs(15));
+    wait_for("h2 back after the reboot", Duration::from_secs(300), || h2.reachable().then_some(()));
+    wait_for("netd to re-apply the address on the bridge", Duration::from_secs(120), || h2.check("ip -4 -j addr show dev gxbr-up || true").contains(&addr).then_some(()));
+    let up = h2.check("sudo ovs-vsctl list-ports gxbr-up");
+    assert!(up.lines().any(|l| l.trim() == nic), "{nic} is back on the bridge: {up}");
+    wait_for("h2's UI", Duration::from_secs(120), || (ui_curl(jar, base, "GET", "/api/health", None, None).0 == 200).then_some(()));
+    let (s, _, b) = ui_curl(jar, base, "GET", "/api/ovs/bridges/gxbr-up/uplinks", None, None);
+    assert_eq!(s, 200, "{b}");
+    let list: Value = serde_json::from_str(&b).unwrap();
+    assert!(list[0]["record"]["boot_rollback"].is_null(), "not held: {list}");
+    let _ = std::fs::remove_file(jar);
 }
 
 /// The control plane's warnings, errors and cluster-link changes, newest last.

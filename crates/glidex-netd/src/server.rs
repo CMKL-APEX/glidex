@@ -152,7 +152,8 @@ impl Netd {
                 // Persist before reporting, so what metering saw can't go backwards.
                 to_value(glidex_ovs::ct_meter::collect(self.ex(), &m, |s| self.store.put(META, "ct_counters", &s.to_string()))?)
             }
-            Op::EnsureUplink(args) => to_value(self.ensure_uplink(args.spec, args.confirm)?),
+            Op::EnsureUplink(args) => to_value(self.ensure_uplink(args.spec, args.confirm, args.accept_dhcp)?),
+            Op::ReapplyUplink { bridge, name } => to_value(self.reapply_uplink_after_rollback(&bridge, &name)?),
             Op::CommitUplink { bridge, name, token } => to_value(self.commit_uplink(&bridge, &name, &token)?),
             Op::DeleteUplink { bridge, name } => self.delete_uplink(&bridge, &name).map(|_| Value::Null),
             Op::InstallOvs(req) => {
@@ -316,7 +317,7 @@ impl Netd {
             .collect()
     }
 
-    fn ensure_uplink(&self, spec: uplink::UplinkSpec, confirm: bool) -> Result<UplinkResult, OvsError> {
+    fn ensure_uplink(&self, spec: uplink::UplinkSpec, confirm: bool, accept_dhcp: bool) -> Result<UplinkResult, OvsError> {
         spec.validate()?;
         if self.store.get::<NatState>(NAT, &spec.bridge)?.is_some() {
             return Err(OvsError::conflict(format!(
@@ -368,6 +369,13 @@ impl Netd {
                     });
                 }
                 if c.reasons.iter().any(|r| r == "dhcp_managed") {
+                    // The DHCP client stays on the NIC: the moved address may
+                    // go when the lease ends, taking the host with it.
+                    if !accept_dhcp {
+                        return Err(OvsError::conflict(format!(
+                            "{ifname}'s address is DHCP-managed: moved to the bridge it may only last until the lease expires. Give it a static address first, or accept that explicitly (accept_dhcp)"
+                        )));
+                    }
                     warnings.push(format!(
                         "{} is DHCP-managed: the migrated address lasts until the lease expires",
                         ifname
@@ -408,6 +416,8 @@ impl Netd {
             orig_driver: orig_driver.clone(),
             snapshot: None,
             pending: None,
+            boot_rollback: None,
+            accept_dhcp,
         };
         if let Some(snap) = snapshot.filter(|s| !s.addresses.is_empty()) {
             let rollback = |netd: &Netd, reason: String| -> OvsError {
@@ -823,6 +833,10 @@ impl Netd {
                 }
                 continue;
             }
+            if let Some(b) = &record.boot_rollback {
+                report.errors.push(format!("uplink {}: held off the bridge since a rollback at start ({}); re-apply or delete it", record.spec.name, b.reason));
+                continue;
+            }
             match self.reapply_uplink(&record) {
                 Ok(()) => report.repaired.push(format!("uplink {}", record.spec.name)),
                 Err(e) => report.errors.push(format!("uplink {}: {}", record.spec.name, e)),
@@ -864,17 +878,55 @@ impl Netd {
 impl Netd {
     /// Startup: DPDK NICs back on vfio-pci (spec decision 5), port present,
     /// and IP migrations re-applied (the host's own config returns on boot).
+    ///
+    /// A migrated address is re-applied with the first setup's safety: if
+    /// moving it fails, or the default gateway doesn't answer through the
+    /// bridge, the NIC gets its own configuration back, the uplink stays off
+    /// the bridge, and the record says why (`boot_rollback`), so the host
+    /// stays reachable.
     fn reapply_uplink(&self, record: &UplinkRecord) -> Result<(), OvsError> {
         if let UplinkKind::Dpdk { pci, .. } = &record.spec.kind {
             if nic::pci_driver(self.ex(), pci)?.as_deref() != Some("vfio-pci") {
                 nic::bind_driver(self.ex(), pci, "vfio-pci")?;
             }
         }
-        uplink::add_port(self.ex(), &record.spec, record.orig_driver.as_deref())?;
-        if let Some(snap) = &record.snapshot {
-            ipmigrate::apply(self.ex(), snap, &record.spec.bridge)?;
+        let Some(snap) = &record.snapshot else {
+            return uplink::add_port(self.ex(), &record.spec, record.orig_driver.as_deref());
+        };
+        let failed = match uplink::add_port(self.ex(), &record.spec, record.orig_driver.as_deref()).and_then(|_| ipmigrate::apply(self.ex(), snap, &record.spec.bridge)) {
+            Err(e) => Some(format!("moving the address failed: {e}")),
+            Ok(()) => snap
+                .default_gateway()
+                .filter(|gw| !ipmigrate::gateway_reachable(self.ex(), gw, &record.spec.bridge, self.config.gateway_check))
+                .map(|gw| format!("default gateway {gw} did not answer through {}", record.spec.bridge)),
+        };
+        let Some(reason) = failed else { return Ok(()) };
+        let _ = ipmigrate::restore(self.ex(), snap, &record.spec.bridge);
+        let _ = uplink::del_port(self.ex(), &record.spec.name);
+        let mut held = record.clone();
+        held.boot_rollback = Some(BootRollback { at: unix_now(), reason: reason.clone() });
+        self.store.put(UPLINKS, &store::uplink_key(&record.spec.bridge, &record.spec.name), &held)?;
+        tracing::error!(uplink = %record.spec.name, %reason, "IP migration rolled back at start; the NIC has its own address again");
+        Err(OvsError::MigrationRolledBack { reason })
+    }
+
+    /// `ensure_uplink_reapply`: set up an uplink held since a rollback at
+    /// start, as if new (a fresh snapshot of the NIC, the gateway check, a
+    /// commit window). Its record stays as it was if that fails.
+    fn reapply_uplink_after_rollback(&self, bridge: &str, name: &str) -> Result<UplinkResult, OvsError> {
+        let key = store::uplink_key(bridge, name);
+        let record = self.store.get::<UplinkRecord>(UPLINKS, &key)?.ok_or_else(|| OvsError::not_found(format!("uplink '{name}' on '{bridge}'")))?;
+        if record.boot_rollback.is_none() {
+            return Err(OvsError::conflict(format!("uplink '{name}' is not held: it is on the bridge already")));
         }
-        Ok(())
+        self.store.delete(UPLINKS, &key)?;
+        match self.ensure_uplink(record.spec.clone(), true, record.accept_dhcp) {
+            Ok(r) => Ok(r),
+            Err(e) => {
+                let _ = self.store.put(UPLINKS, &key, &record);
+                Err(e)
+            }
+        }
     }
 }
 

@@ -1273,6 +1273,12 @@ async fn an_agents_ui_is_relayed_to_a_server_and_host_paths_run_on_the_agent() {
     assert_eq!(s, StatusCode::OK);
     assert_eq!(v.as_array().unwrap().len(), 2, "{v}");
 
+    // Routes with path parameters work through the relay (the relay's own
+    // route parameter must not reach the API's handlers).
+    let (s, _, v) = via_ui(&ui, "GET", &format!("/nodes/{agent_id}")).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["meta"]["id"], agent_id.as_str());
+
     // Host-local paths are about the agent's host and run there.
     let (s, h, v) = via_ui(&ui, "GET", "/system/reconcile").await;
     assert_eq!(s, StatusCode::OK, "{v}");
@@ -1443,8 +1449,13 @@ async fn gateway_nodes_need_the_physnet_and_the_kernel_datapath() {
     assert_eq!(s, StatusCode::CONFLICT, "{v}");
     assert!(v["message"].as_str().unwrap().contains("doesn't map physical network uplink"), "{v}");
 
-    // Mapped, but DPDK runs and the setting is auto: br-int would be userspace.
-    report(json!({ "uplink": "gxbr-up" }), true);
+    // Mapped through the API (no file, no restart), but DPDK runs and the
+    // setting is auto: br-int would be userspace.
+    let (s, v) = call(&server, "PUT", &format!("/nodes/{id}/ovn"), Some(json!({ "bridge_mappings": { "uplink": "gxbr-up" } })), &[]).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["physnets"]["uplink"], "gxbr-up", "{v}");
+    let (s, v) = call(&server, "PUT", &format!("/nodes/{id}/ovn"), Some(json!({ "bridge_mappings": { "bad name": "x" } })), &[]).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
     let (s, v) = put_edge().await;
     assert_eq!(s, StatusCode::CONFLICT, "{v}");
     assert!(v["message"].as_str().unwrap().contains("userspace datapath"), "{v}");
@@ -1457,7 +1468,11 @@ async fn gateway_nodes_need_the_physnet_and_the_kernel_datapath() {
     let (s, v) = put_edge().await;
     assert_eq!(s, StatusCode::OK, "{v}");
 
-    // A gateway node can't go back to the userspace datapath...
+    // A gateway node keeps its physical network...
+    let (s, v) = call(&server, "PUT", &format!("/nodes/{id}/ovn"), Some(json!({ "bridge_mappings": {} })), &[]).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert!(v["message"].as_str().unwrap().contains("needs physical network uplink"), "{v}");
+    // ...and can't go back to the userspace datapath...
     let (s, v) = call(&server, "PUT", &format!("/nodes/{id}/ovn"), Some(json!({ "br_int_datapath": "netdev" })), &[]).await;
     assert_eq!(s, StatusCode::CONFLICT, "{v}");
     assert_eq!(v["error"], "gateway_node", "{v}");

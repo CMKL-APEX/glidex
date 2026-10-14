@@ -57,6 +57,11 @@ pub struct NodeSpec {
     /// `auto` (the default) is `netdev` where DPDK runs, else `system`.
     #[serde(default, skip_serializing_if = "BrIntDatapath::is_auto")]
     pub br_int_datapath: BrIntDatapath,
+    /// Physical networks this node reaches: physnet → glidex bridge with the
+    /// uplink (§11.3). Set through the API; the host's file
+    /// (`cluster.ovn.bridge_mappings`) still counts, and this wins per physnet.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub bridge_mappings: BTreeMap<String, String>,
 }
 
 /// What an administrator chose for a node's `br-int` datapath.
@@ -332,7 +337,7 @@ impl NodeStore {
     pub fn report_self(&self, id: &str, probe: SelfProbe, create: bool) -> Result<Option<Node>, NodeError> {
         let mut node = match self.get(id)? {
             Some(n) => n,
-            None if create => Node::new(id, NodeSpec { name: probe.name.clone(), role: NodeRole::Server, unschedulable: false, labels: BTreeMap::new(), br_int_datapath: Default::default() }),
+            None if create => Node::new(id, NodeSpec { name: probe.name.clone(), role: NodeRole::Server, unschedulable: false, labels: BTreeMap::new(), br_int_datapath: Default::default(), bridge_mappings: Default::default() }),
             None => return Ok(None),
         };
         let before = node.clone();
@@ -342,6 +347,10 @@ impl NodeStore {
         let br_int = node.status.features.br_int_datapath.take();
         node.status.features = probe.features;
         node.status.features.br_int_datapath = br_int;
+        // The file's mappings, and the node's own setting over them.
+        for (p, b) in &node.spec.bridge_mappings {
+            node.status.features.physnets.insert(p.clone(), b.clone());
+        }
         node.status.pci_devices = probe.pci_devices;
         node.status.versions.glidex = env!("CARGO_PKG_VERSION").into();
         node.status.versions.ovn = probe.ovn_version;

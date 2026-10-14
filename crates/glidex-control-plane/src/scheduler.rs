@@ -185,7 +185,7 @@ mod tests {
     use crate::node::{NodeRole, NodeSpec, Resources};
 
     fn node(id: &str, cpus: u32, mem: u64) -> Node {
-        let mut n = Node::new(id, NodeSpec { name: id.into(), role: NodeRole::Agent, unschedulable: false, labels: Default::default(), br_int_datapath: Default::default() });
+        let mut n = Node::new(id, NodeSpec { name: id.into(), role: NodeRole::Agent, unschedulable: false, labels: Default::default(), br_int_datapath: Default::default(), bridge_mappings: Default::default() });
         n.status.allocatable = Resources { cpus, memory_mib: mem, hugepages: Default::default() };
         n.status.features.hypervisors = vec!["cloudhypervisor".into(), "qemu".into()];
         n
