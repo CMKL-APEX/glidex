@@ -1535,7 +1535,29 @@ cluster networks (no `move_vm_port` mapping) need only C7 without C5.
 - **A shared image store**, which also deduplicates images imported
   with the same checksum (§5.9).
 - **Floating IPs and port forwarding** on VPC routers (`dnat_and_snat`),
-  overlapping CIDRs between VPCs (D21), and peering between VPCs.
+  and overlapping CIDRs between VPCs (D21).
+- **Router peering and a transit gateway.** Today a network has one
+  router (§11.2a, clustering-ui.md §8d), and networks on different routers
+  can't reach each other. Two ways to join them, both keeping one gateway
+  per network so guests change nothing:
+  - *Peering*: two VPC routers joined by a small transit logical switch
+    (a router port on each, addresses from a link range outside the NAT
+    supernet), a static route on each to the other's networks, and each
+    router's supernet drop policy exempting the peer's `gx_r_*_nets`. Across
+    projects both owners agree, like a network share (security.md §6.2.1).
+    Not transitive.
+  - *Transit gateway*: a hub logical router that many VPC routers attach
+    to, with a route table per attachment saying which routers reach
+    which, for hub-and-spoke and shared-services layouts.
+
+  Open points: whether peered traffic bypasses SNAT (it should: the
+  routes stay inside OVN, return traffic is symmetric because each
+  network has one gateway), overlapping subnets (refused while D21
+  holds), and how the Routers card shows peerings. Considered and not
+  preferred: a network on several routers at once (a second router port
+  at another address, with DHCP classless static routes, option 121,
+  for the other router's networks). Guests only learn those routes at
+  their next lease, and egress through two routers breaks SNAT symmetry.
 - **Metering history outside the replicated store**, follower-served
   watches and the other steps past the §4.1 ceiling.
 
