@@ -1088,6 +1088,66 @@ fn agent_state_dir(cp: &Cp) -> std::path::PathBuf {
     cp.manager.db_path().parent().unwrap().to_path_buf()
 }
 
+/// A copy of a node's files, as the host has them: identity, certificates
+/// and its cache. The live manager keeps the database open.
+fn copy_node_files(cp: &Cp) -> tempfile::TempDir {
+    let state = agent_state_dir(cp);
+    let copy = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(copy.path().join("cluster")).unwrap();
+    for f in ["identity.json", "ca.crt", "node.key", "node.crt"] {
+        std::fs::copy(state.join("cluster").join(f), copy.path().join("cluster").join(f)).unwrap();
+    }
+    let snap = copy.path().join("snap");
+    manage::export_snapshot(&cp.manager.database(), &snap).unwrap();
+    let db = glidex_control_plane::store::Db::create(copy.path().join("glidex.db")).unwrap();
+    db.install_dump(&mut std::io::BufReader::new(std::fs::File::open(&snap).unwrap()), 0, |_| Ok(())).unwrap();
+    copy
+}
+
+/// A removed agent has no API of its own (the servers refuse it), so it
+/// leaves offline: only once the cluster confirms the removal (§5.5 step 3).
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn a_removed_agent_leaves_offline_once_a_server_confirms_it() {
+    let _one = SERIAL.lock().await;
+    let cfg = test_config();
+    let server = new_cp();
+    manage::init(&server.manager, &cfg, InitOptions { advertise: Some(server.addr), tunnel_ip: None, listen: Some(server.addr) }).await.unwrap();
+    server.manager.initialize().await.unwrap();
+    let agent = new_cp();
+    let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test").unwrap();
+    manage::join(&agent.manager, &cfg, JoinOptions { server: server.addr, token, role: NodeRole::Agent, advertise: Some(agent.addr), tunnel_ip: None, name: Some("agent1".into()), listen: Some(agent.addr) })
+        .await
+        .unwrap();
+    assert!(agent.manager.node_link().unwrap().wait_ready(Duration::from_secs(20)).await);
+    agent.manager.initialize().await.unwrap();
+    // Its cache says Active, as a host's does when the removal's write
+    // (which also revoked its certificate) never reached it.
+    let before = copy_node_files(&agent);
+
+    // Still a member: local root can't make it leave (D14).
+    let e = manage::leave_removed_offline(&before.path().join("glidex.db")).await.unwrap_err();
+    assert!(e.to_string().contains("still has this node as a member"), "{e}");
+    assert!(before.path().join("cluster/identity.json").exists(), "nothing changed");
+
+    let (s, r) = call(&server, "POST", "/nodes/agent1/remove", Some(json!({})), &[]).await;
+    assert_eq!(s, StatusCode::OK, "{r}");
+    // The servers now refuse the node, and say why.
+    let r = cluster(&agent).client.request_timeout(&server.addr.to_string(), hyper::Method::GET, "/cluster/v1/list", &[], bytes::Bytes::new(), Duration::from_secs(10)).await.unwrap();
+    let body: Value = serde_json::from_slice(&r.body).unwrap();
+    assert_eq!((r.status, body["error"].as_str()), (StatusCode::UNAUTHORIZED, Some("node_removed")), "{body}");
+    assert!(body["message"].as_str().unwrap().contains("glidex-install --leave"), "{body}");
+
+    // Offline, from the stale cache: a server confirms it, and the host is standalone and empty.
+    let (name, confirmed) = manage::leave_removed_offline(&before.path().join("glidex.db")).await.unwrap();
+    assert_eq!(name, "agent1");
+    assert!(confirmed.contains("refuses its certificate as revoked"), "{confirmed}");
+    assert!(!before.path().join("cluster").exists(), "identity, certificates and key are gone");
+    let standalone = VmManager::with_db_path(before.path().join("glidex.db")).unwrap();
+    standalone.initialize().await.unwrap();
+    assert!(standalone.cluster().is_none());
+    assert!(standalone.list_vms().await.is_empty());
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn a_node_that_left_on_its_own_is_forgotten_as_departed_and_its_bundle_can_be_built_offline() {
     use glidex_control_plane::cluster::departure::{offline_detach, pending_db};
@@ -1115,17 +1175,7 @@ async fn a_node_that_left_on_its_own_is_forgotten_as_departed_and_its_bundle_can
 
     // The host builds its bundle from its cache (what the installer's offline path does).
     // Run on a copy of its files: the live manager still has the database open.
-    let state = agent_state_dir(&agent);
-    let copy = tempfile::tempdir().unwrap();
-    std::fs::create_dir_all(copy.path().join("cluster")).unwrap();
-    for f in ["identity.json", "ca.crt", "node.key", "node.crt"] {
-        std::fs::copy(state.join("cluster").join(f), copy.path().join("cluster").join(f)).unwrap();
-    }
-    let snap = copy.path().join("snap");
-    manage::export_snapshot(&agent.manager.database(), &snap).unwrap();
-    let db = glidex_control_plane::store::Db::create(copy.path().join("glidex.db")).unwrap();
-    db.install_dump(&mut std::io::BufReader::new(std::fs::File::open(&snap).unwrap()), 0, |_| Ok(())).unwrap();
-    drop(db);
+    let copy = copy_node_files(&agent);
     let bundle = offline_detach(&copy.path().join("glidex.db")).unwrap();
     assert_eq!(bundle.vm_ids, vec![id.clone()]);
     assert!(!copy.path().join("cluster").exists() && !pending_db(copy.path()).exists(), "switched and cleaned up");

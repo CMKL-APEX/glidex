@@ -474,6 +474,43 @@ fn a_nested_two_node_cluster_binds_vm_ports_and_carries_traffic_over_geneve() {
     // Detached, it is isolated again: no port on the router, no gateway.
     inner.ok("PUT", &format!("/projects/{project}/networks/e2e-p3/router"), Some(&json!({ "router": null })));
     wait_for("e2e-p3 isolated again", Duration::from_secs(60), || (!nb(&format!("lrp-list {rlr}")).contains("gx-lrp-e2e-p3") && !dhcp_router()).then_some(()));
+
+    // spec/clustering.md §5.5: the agent is removed from the cluster's side,
+    // and its host leaves on its own (an agent has no API of its own, and
+    // the servers refuse it once removed): standalone, local login, out of OVN.
+    step("a removed agent leaves the cluster and is a standalone host again");
+    // Empty it first: no VM, and nothing that needs it as a gateway.
+    let vms = inner.ok("GET", "/vms", None);
+    for v in vms.as_array().unwrap() {
+        inner.ok("DELETE", &format!("/vms/{}", v["id"].as_str().unwrap()), None);
+    }
+    wait_for("no VMs left", Duration::from_secs(180), || inner.ok("GET", "/vms", None).as_array().unwrap().is_empty().then_some(()));
+    let nets = inner.ok("GET", "/networks", None);
+    for n in nets.as_array().unwrap() {
+        inner.call("DELETE", &format!("/networks/{}", n["name"].as_str().unwrap()), None);
+    }
+    wait_for("no networks left", Duration::from_secs(180), || inner.ok("GET", "/networks", None).as_array().unwrap().is_empty().then_some(()));
+    inner.ok("DELETE", &format!("/projects/{project}/routers/e2e-r"), None);
+    inner.ok("PUT", "/cluster/settings/ovn", Some(&json!({ "enabled": true, "edge": null })));
+    let chassis2 = format!("node:{n2}");
+    let removed = inner.call("POST", &format!("/nodes/{n2}/remove"), Some(&json!({})));
+    assert_eq!(removed.0, 200, "remove {n2}: {}", removed.1);
+    // On the host: the installer leaves offline, once a server confirms it.
+    let out = h2.run(&format!("{root}/target/release/glidex-install --leave 2>&1", root = shell_quote(&workspace_root().display().to_string())));
+    let log = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(out.status.success(), "glidex-install --leave on h2:\n{log}");
+    eprintln!("{}", log.lines().filter(|l| l.contains("Left the cluster") || l.contains("OVN chassis")).collect::<Vec<_>>().join("\n"));
+    let status = wait_for("h2's own API", Duration::from_secs(60), || {
+        let o = h2.run("gxctl cluster status 2>&1");
+        let t = String::from_utf8_lossy(&o.stdout).into_owned();
+        t.contains("standalone").then_some(t)
+    });
+    eprintln!("h2: {}", status.trim());
+    assert!(String::from_utf8_lossy(&h2.run("gxctl whoami 2>&1").stdout).contains("Break-glass"), "local login works again on h2");
+    let ids = h2.check("sudo ovs-vsctl get open . external_ids");
+    assert!(!ids.contains("ovn-remote") && !ids.contains("system-id"), "h2 left OVN: {ids}");
+    assert!(!h2.run("systemctl is-active --quiet ovn-controller").status.success(), "ovn-controller stopped on h2");
+    wait_for("h2's chassis gone from the cluster", Duration::from_secs(120), || (!sb(&h1, "--bare --columns=name list Chassis").contains(&chassis2)).then_some(()));
     drop(outer);
 }
 

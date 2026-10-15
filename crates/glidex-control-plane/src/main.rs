@@ -130,12 +130,31 @@ async fn main() {
         }
     }
 
+    // `--leave-removed` (spec/clustering.md §5.5 step 3): a node the cluster
+    // removed becomes a standalone host, without its API (an agent's goes to
+    // the servers, which refuse it now). Run with the service stopped.
+    if args.iter().any(|a| a == "--leave-removed") {
+        let db = state::VmManager::default_db_path_pub();
+        match glidex_control_plane::cluster::manage::leave_removed_offline(&db).await {
+            Ok((name, confirmed)) => {
+                leave_ovn();
+                println!("Left the cluster as {name} ({confirmed}): this host's cluster identity and key are gone. Start the control plane: it is standalone.");
+                return;
+            }
+            Err(e) => {
+                eprintln!("leaving failed, nothing changed: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     // `--detach-offline` (spec/clustering.md §5.8.3): leave with this host's resources
     // while no server can be reached, then exit. Run with the service stopped.
     if args.iter().any(|a| a == "--detach-offline") {
         let db = state::VmManager::default_db_path_pub();
         match glidex_control_plane::cluster::departure::offline_detach(&db) {
             Ok(b) => {
+                leave_ovn();
                 println!("Detached: {} VM(s), {} disk(s) kept; this host's cluster identity and key are gone. Start the control plane: it is standalone.", b.vm_ids.len(), b.disk_ids.len());
                 println!("Changes made in the cluster since this node last synced are not included. On a server, run `gxctl node detach <node> --departed` so the cluster lets go (it rotates its CA).");
                 return;
@@ -440,4 +459,16 @@ async fn shutdown_signal() {
 
     println!();
     tracing::info!("Shutdown signal received; VMs keep running");
+}
+
+/// After an offline leave: stop being an OVN chassis (netd `LeaveOvn`), or
+/// the host's `ovn-controller` keeps registering with the cluster it left.
+/// netd refuses while a VM port is still on `br-int` (a VM kept by an
+/// offline detach): it is only a warning then.
+fn leave_ovn() {
+    let netd = network::Netd::from_env();
+    match netd.call::<serde_json::Value>(glidex_netd::proto::Op::LeaveOvn { confirm: true }) {
+        Ok(_) => println!("This host is no longer an OVN chassis."),
+        Err(e) => eprintln!("Warning: still an OVN chassis ({e}); stop ovn-controller once nothing is on br-int."),
+    }
 }
