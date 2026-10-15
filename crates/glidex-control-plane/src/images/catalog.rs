@@ -17,6 +17,22 @@ pub enum Arch {
 }
 
 impl Arch {
+    /// As records and nodes spell it (`x86_64`, `aarch64`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Arch::X86_64 => "x86_64",
+            Arch::Aarch64 => "aarch64",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Arch> {
+        match s {
+            "x86_64" | "amd64" => Some(Arch::X86_64),
+            "aarch64" | "arm64" => Some(Arch::Aarch64),
+            _ => None,
+        }
+    }
+
     pub fn host() -> Option<Arch> {
         match std::env::consts::ARCH {
             "x86_64" => Some(Arch::X86_64),

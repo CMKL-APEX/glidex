@@ -95,9 +95,23 @@ pub async fn delete_credential(c: Caller, Path(username): Path<String>, Query(q)
 
 // ---- images (a shared, read-only library) --------------------------------
 
-pub async fn image_catalog(c: Caller) -> Result<impl IntoResponse, ApiErr> {
+#[derive(serde::Deserialize, Default)]
+pub struct ArchQuery {
+    /// `x86_64` or `aarch64` (default: this host's), spec/clustering.md §9.2.1.
+    #[serde(default)]
+    arch: Option<String>,
+}
+
+fn arch_of(q: &ArchQuery) -> Result<Option<crate::images::catalog::Arch>, ApiErr> {
+    q.arch
+        .as_deref()
+        .map(|a| crate::images::catalog::Arch::parse(a).ok_or_else(|| super::err(StatusCode::BAD_REQUEST, "invalid", format!("unknown arch {a}: x86_64 or aarch64"))))
+        .transpose()
+}
+
+pub async fn image_catalog(c: Caller, axum::extract::Query(q): axum::extract::Query<ArchQuery>) -> Result<impl IntoResponse, ApiErr> {
     c.require(Ent::Cluster, EntitySet::new())?;
-    Ok(Json(c.manager().image_catalog()))
+    Ok(Json(c.manager().image_catalog(arch_of(&q)?)))
 }
 
 pub async fn list_images(c: Caller) -> Result<impl IntoResponse, ApiErr> {
@@ -105,9 +119,9 @@ pub async fn list_images(c: Caller) -> Result<impl IntoResponse, ApiErr> {
     Ok(Json(c.manager().list_images().await))
 }
 
-pub async fn firmware_catalog(c: Caller) -> Result<impl IntoResponse, ApiErr> {
+pub async fn firmware_catalog(c: Caller, axum::extract::Query(q): axum::extract::Query<ArchQuery>) -> Result<impl IntoResponse, ApiErr> {
     c.require(Ent::Cluster, EntitySet::new())?;
-    Ok(Json(c.manager().firmware_catalog()))
+    Ok(Json(c.manager().firmware_catalog(arch_of(&q)?)))
 }
 
 pub async fn get_image(c: Caller, Path(id): Path<String>) -> Result<impl IntoResponse, ApiErr> {
@@ -299,6 +313,27 @@ pub async fn image_events(c: Caller, Path(id): Path<String>) -> Result<impl Into
 }
 
 /// `POST /images/{id}/retry` (`pullImage`): download a failed image again.
+#[derive(serde::Deserialize)]
+pub struct CopyBody {
+    /// A node id or name.
+    node: String,
+}
+
+/// `POST /images/{id}/copies`: keep a copy on a node ahead of need
+/// (spec/clustering.md §9.2.2).
+pub async fn add_image_copy(c: Caller, Path(id): Path<String>, Json(b): Json<CopyBody>) -> Result<impl IntoResponse, ApiErr> {
+    c.require(Ent::Cluster, EntitySet::new())?;
+    c.set_target(format!("image:{}", id));
+    Ok((StatusCode::ACCEPTED, Json(c.manager().add_image_copy(&id, &b.node).await.map_err(manager_err)?)))
+}
+
+/// `DELETE /images/{id}/copies/{node}`: let a node's copy go (§9.2.2).
+pub async fn remove_image_copy(c: Caller, Path((id, node)): Path<(String, String)>) -> Result<impl IntoResponse, ApiErr> {
+    c.require(Ent::Cluster, EntitySet::new())?;
+    c.set_target(format!("image:{}", id));
+    Ok((StatusCode::ACCEPTED, Json(c.manager().remove_image_copy(&id, &node).await.map_err(manager_err)?)))
+}
+
 pub async fn retry_image(c: Caller, Path(id): Path<String>) -> Result<impl IntoResponse, ApiErr> {
     c.require(Ent::Cluster, EntitySet::new())?;
     c.set_target(format!("image:{}", id));

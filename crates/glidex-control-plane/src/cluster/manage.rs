@@ -148,7 +148,7 @@ pub async fn init(manager: &Arc<VmManager>, cfg: &crate::config::Config, opts: I
     let nodes = NodeStore::new(db.clone());
     let mut me = match nodes.get(crate::node::LOCAL_NODE).map_err(other)? {
         Some(n) => n,
-        None => Node::new(crate::node::LOCAL_NODE, NodeSpec { name: identity.name.clone(), role: NodeRole::Server, unschedulable: false, labels: Default::default(), br_int_datapath: Default::default(), bridge_mappings: Default::default() }),
+        None => Node::new(crate::node::LOCAL_NODE, NodeSpec { name: identity.name.clone(), role: NodeRole::Server, unschedulable: false, labels: Default::default(), br_int_datapath: Default::default(), bridge_mappings: Default::default(), drop_spare_files_before: None }),
     };
     me.meta.id = node_id.clone();
     me.meta.name = identity.name.clone();

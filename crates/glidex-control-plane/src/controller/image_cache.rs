@@ -70,6 +70,88 @@ impl VmManager {
         })
     }
 
+    /// A node a copy may go to or leave (§9.2.2): known and not a tombstone.
+    pub(crate) fn copy_node(&self, key: &str) -> Result<crate::node::Node, crate::images::ImageError> {
+        let nodes = self.nodes().list().unwrap_or_default();
+        let n = nodes
+            .into_iter()
+            .find(|n| n.meta.id == key || n.spec.name == key)
+            .ok_or_else(|| crate::images::ImageError::NotFound(format!("node {key}")))?;
+        if n.status.phase.is_tombstone() {
+            return Err(crate::images::ImageError::InUse(format!("node {} is {:?}", n.spec.name, n.status.phase)));
+        }
+        Ok(n)
+    }
+
+    /// What on `node` needs `img` (a disk from it, a VM booting through it).
+    async fn users_on(&self, img: &Image, node: &str) -> Vec<String> {
+        let mut out: Vec<String> = self
+            .images
+            .list_disks()
+            .into_iter()
+            .filter(|d| d.node.as_deref() == Some(node) && matches!(&d.origin, crate::images::DiskOrigin::Image { image_id, .. } if *image_id == img.id))
+            .map(|d| format!("disk {}", d.name))
+            .collect();
+        out.extend(
+            self.vms
+                .read()
+                .await
+                .values()
+                .filter(|v| v.status.placement.as_ref().map(|p| p.node.as_str()) == Some(node) && v.config().firmware_image.as_deref() == Some(img.id.as_str()))
+                .map(|v| format!("VM {}", v.name)),
+        );
+        out
+    }
+
+    /// `POST /images/{id}/copies`: keep a copy on `node` ahead of need.
+    pub async fn add_image_copy(&self, key: &str, node: &str) -> Result<crate::images::ImageResponse, VmManagerError> {
+        use crate::images::ImageError;
+        if self.cluster().is_none() {
+            return Err(ImageError::InvalidImage("copies on nodes are for a cluster".into()).into());
+        }
+        let mut img = self.images.get_image(key)?;
+        if img.deletion_requested_at.is_some() {
+            return Err(ImageError::InUse(format!("image {} is being deleted", img.name)).into());
+        }
+        let n = self.copy_node(node)?;
+        if !n.status.features.runs_arch(img.arch.as_str()) {
+            return Err(ImageError::InUse(format!("{} is {}, image {} is {}", n.spec.name, n.status.features.arch, img.name, img.arch.as_str())).into());
+        }
+        img.release.retain(|r| *r != n.meta.id);
+        if !img.pinned.contains(&n.meta.id) {
+            img.pinned.push(n.meta.id.clone());
+        }
+        self.images.put_image(&img)?;
+        self.queue.add(crate::controller::queue::Key::Image(img.id.clone()));
+        Ok(self.images.image_response(&img, false))
+    }
+
+    /// `DELETE /images/{id}/copies/{node}`: let `node`'s copy go. Refused
+    /// while the node needs it, or when it is the last ready copy.
+    pub async fn remove_image_copy(&self, key: &str, node: &str) -> Result<crate::images::ImageResponse, VmManagerError> {
+        use crate::images::ImageError;
+        let mut img = self.images.get_image(key)?;
+        let id = self.nodes().list().unwrap_or_default().into_iter().find(|n| n.meta.id == node || n.spec.name == node).map(|n| n.meta.id).unwrap_or_else(|| node.to_string());
+        let users = self.users_on(&img, &id).await;
+        if !users.is_empty() {
+            return Err(ImageError::InUse(format!("that node needs it: {}", users.join(", "))).into());
+        }
+        let caches = self.image_caches(&img.id);
+        if !caches.iter().any(|(n, _)| *n == id) && !img.pinned.contains(&id) {
+            return Err(ImageError::NotFound(format!("no copy of {} on {node}", img.name)).into());
+        }
+        if !caches.iter().any(|(n, r)| *n != id && r.phase == CachePhase::Ready) {
+            return Err(ImageError::InUse(format!("it is the last ready copy of {}: delete the image instead", img.name)).into());
+        }
+        img.pinned.retain(|p| *p != id);
+        if !img.release.contains(&id) {
+            img.release.push(id);
+        }
+        self.images.put_image(&img)?;
+        self.queue.add(crate::controller::queue::Key::Image(img.id.clone()));
+        Ok(self.images.image_response(&img, false))
+    }
+
     /// Whether anything on this node needs `img`'s file.
     async fn needs_image_here(&self, img: &Image) -> bool {
         let disks = self.images.list_disks().into_iter().any(|d| self.is_local_disk(&d) && matches!(&d.origin, crate::images::DiskOrigin::Image { image_id, .. } if *image_id == img.id));
@@ -100,7 +182,29 @@ impl VmManager {
     /// records its own copy.
     pub(crate) async fn reconcile_image_cache(&self, img: &Image) -> Next {
         let me = self.local_node_id();
-        let have = self.image_files(img).iter().filter(|(p, _)| *p == "main").all(|(_, f)| f.exists());
+        // Asked to let this copy go (§9.2.2), and nothing here needs it.
+        if img.release.contains(&me) && !self.needs_image_here(img).await {
+            if self.image_caches(&img.id).iter().any(|(n, _)| *n == me) || self.images.image_file(img).exists() {
+                tracing::info!(image = %img.name, "dropping this node's copy, as asked");
+                self.drop_image_cache(img)?;
+            }
+            return Ok(None);
+        }
+        let mut have = self.image_files(img).iter().filter(|(p, _)| *p == "main").all(|(_, f)| f.exists());
+        // A file this node already has for it, unrecorded (a host that
+        // joined, §9.2.3): adopted, whether or not it is needed here.
+        if !have && matches!(img.status, ImageStatus::Ready) {
+            let (m, size, sha) = (self.images.clone(), img.file_size_bytes, img.sha256.clone());
+            if let Ok(Some(spare)) = tokio::task::spawn_blocking(move || m.find_spare(size, &sha)).await {
+                match self.images.adopt_spare(&spare, &img.id, img.kind) {
+                    Ok(()) => {
+                        tracing::info!(image = %img.name, file = %spare.display(), "adopted a file this node already had");
+                        have = true;
+                    }
+                    Err(e) => tracing::warn!(image = %img.name, "adopting {}: {}", spare.display(), e),
+                }
+            }
+        }
         let row = self.image_caches(&img.id).into_iter().find(|(n, _)| *n == me).map(|(_, r)| r);
         if have {
             if row.as_ref().is_none_or(|r| r.phase != CachePhase::Ready) {
@@ -109,7 +213,7 @@ impl VmManager {
             }
             return Ok(None);
         }
-        if !matches!(img.status, ImageStatus::Ready) || !self.needs_image_here(img).await {
+        if !matches!(img.status, ImageStatus::Ready) || !(img.pinned.contains(&me) || self.needs_image_here(img).await) {
             return Ok(None);
         }
         let Some(holder) = self.holder_of(img) else {
@@ -170,6 +274,32 @@ impl VmManager {
                 Ok(Some(Duration::from_secs(30)))
             }
         }
+    }
+
+    /// The leader's part of §9.2.2: a released node whose copy is gone
+    /// leaves `release`; with `keep_server_copy: false`, once a pinned node
+    /// has a ready copy, copies that nothing needs nor pins are released.
+    /// Returns whether to look again soon.
+    pub(crate) async fn tend_image_copies(&self, img: &mut Image) -> Result<bool, VmManagerError> {
+        let caches = self.image_caches(&img.id);
+        let mut changed = false;
+        let before = img.release.len();
+        img.release.retain(|n| caches.iter().any(|(c, _)| c == n));
+        changed |= img.release.len() != before;
+        let pinned_ready = img.pinned.iter().any(|p| caches.iter().any(|(n, r)| n == p && r.phase == CachePhase::Ready));
+        if !img.keep_server_copy && pinned_ready {
+            for (n, r) in &caches {
+                if r.phase == CachePhase::Ready && !img.pinned.contains(n) && !img.release.contains(n) && self.users_on(img, n).await.is_empty() {
+                    img.release.push(n.clone());
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            self.images.put_image(img)?;
+        }
+        let pending = !img.release.is_empty() || img.pinned.iter().any(|p| !caches.iter().any(|(n, r)| n == p && r.phase == CachePhase::Ready));
+        Ok(pending)
     }
 
     /// A deleted image: this node removes its copy and its row.

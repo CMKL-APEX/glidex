@@ -225,6 +225,21 @@ fn a_nested_two_node_cluster_binds_vm_ports_and_carries_traffic_over_geneve() {
     });
     let said = String::from_utf8_lossy(&h2.run("gxctl whoami 2>&1").stdout).into_owned();
     assert!(said.contains("cluster agent") && said.contains("gxctl auth login"), "gxctl on h2: {said}");
+    // h2 imported its firmware while standalone; the join left that file
+    // unrecorded. It is the same pinned build as the cluster's, so h2
+    // adopts it as its copy, and reports nothing left over (clustering.md §9.2.3).
+    wait_for_or(
+        "h2's firmware adopted as the cluster's",
+        Duration::from_secs(180),
+        || {
+            let imgs = inner.ok("GET", "/images", None);
+            let fw = imgs.as_array()?.iter().find(|i| i["kind"] == "firmware" && i["source"]["key"] == "cloudhv-edk2")?.clone();
+            let on_h2 = fw["copies"].as_array()?.iter().any(|c| c["node"] == n2.as_str() && c["state"] == "ready");
+            let spare = inner.ok("GET", &format!("/nodes/{n2}"), None)["status"]["features"]["spare_image_files"].as_array().map(|a| a.len()).unwrap_or(0);
+            (on_h2 && spare == 0).then_some(())
+        },
+        || format!("images: {}\nh2: {}", inner.call("GET", "/images", None).1, inner.call("GET", &format!("/nodes/{n2}"), None).1["status"]["features"]),
+    );
 
     // OVN is a cluster setting (spec/clustering-ui.md §8a): turned on through
     // the API, no config file and no restart; every node follows.
@@ -492,6 +507,18 @@ fn a_nested_two_node_cluster_binds_vm_ports_and_carries_traffic_over_geneve() {
         inner.ok("DELETE", &format!("/vms/{}", v["id"].as_str().unwrap()), None);
     }
     wait_for("no VMs left", Duration::from_secs(180), || inner.ok("GET", "/vms", None).as_array().unwrap().is_empty().then_some(()));
+    // Copies on chosen nodes (clustering.md §9.2.2): h1 lets its copy of the
+    // guest image go (h2 has one), then gets it back from h2.
+    let guest_img = inner.ok("GET", "/images", None).as_array().unwrap().iter().find(|i| i["kind"] == "disk").map(|i| i["id"].as_str().unwrap().to_string()).expect("the guest image");
+    let copy_on = |node: &str| -> Option<String> {
+        let v = inner.ok("GET", &format!("/images/{guest_img}"), None);
+        v["copies"].as_array()?.iter().find(|c| c["node"] == node).map(|c| c["state"].as_str().unwrap_or_default().to_string())
+    };
+    wait_for("h2's copy of the guest image", Duration::from_secs(60), || (copy_on(&n2).as_deref() == Some("ready")).then_some(()));
+    inner.ok("DELETE", &format!("/images/{guest_img}/copies/{n1}"), None);
+    wait_for("h1's copy gone", Duration::from_secs(120), || copy_on(&n1).is_none().then_some(()));
+    inner.ok("POST", &format!("/images/{guest_img}/copies"), Some(&json!({ "node": n1 })));
+    wait_for("h1's copy back, from h2", Duration::from_secs(600), || (copy_on(&n1).as_deref() == Some("ready")).then_some(()));
     let nets = inner.ok("GET", "/networks", None);
     for n in nets.as_array().unwrap() {
         inner.call("DELETE", &format!("/networks/{}", n["name"].as_str().unwrap()), None);

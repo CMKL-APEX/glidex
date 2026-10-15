@@ -413,10 +413,11 @@ export const deleteUplink = (bridge: string, name: string) => del(`/ovs/bridges/
 
 // ---- images and disks ---------------------------------------------------------
 
-export const imageCatalog = () => get<CatalogItem[]>("/images/catalog");
+/** The cloud image catalog for `arch` (default: the server's). */
+export const imageCatalog = (arch?: string) => get<CatalogItem[]>(`/images/catalog${arch ? `?arch=${enc(arch)}` : ""}`);
 export const listImages = () => get<ImageInfo[]>("/images");
 export const getImage = (id: string) => get<ImageInfo>(`/images/${enc(id)}`);
-export const firmwareCatalog = () => get<FirmwareCatalogItem[]>("/images/firmware-catalog");
+export const firmwareCatalog = (arch?: string) => get<FirmwareCatalogItem[]>(`/images/firmware-catalog${arch ? `?arch=${enc(arch)}` : ""}`);
 export const pullImage = (req: {
   catalog?: string;
   /** Firmware catalog key. */
@@ -430,7 +431,17 @@ export const pullImage = (req: {
   /** With a QEMU firmware `url`: its UEFI variable-store template. */
   vars_url?: string;
   vars_sha256?: string;
+  /** In a cluster (spec/clustering.md §9.2.1–2): the architecture, nodes
+   * that get a copy, and whether the server keeps its own. */
+  arch?: string;
+  nodes?: string[];
+  keep_server_copy?: boolean;
 }) => post<ImageInfo>("/images", req);
+/** Keep a copy on a node ahead of need, or let one go (§9.2.2). */
+export const addImageCopy = (id: string, node: string) => post<ImageInfo>(`/images/${enc(id)}/copies`, { node });
+export const removeImageCopy = (id: string, node: string) => del<ImageInfo>(`/images/${enc(id)}/copies/${enc(node)}`);
+/** The node deletes the unrecorded image files it reported (§9.2.3). */
+export const deleteSpareImageFiles = (node: string) => post<{ node: string; files: number; bytes: number }>(`/nodes/${enc(node)}/spare-image-files/delete`, {});
 /** `undefined` when gone (204), else the image its controller is still deleting (202). */
 export const deleteImage = (id: string) => del<ImageInfo | undefined>(`/images/${enc(id)}`);
 /** Download a failed image again (spec/reconciliation.md D19). */
@@ -592,6 +603,8 @@ export interface PreviewRequest {
   networks?: { network: string }[];
   vfio_devices?: string[];
   data_disks?: string[];
+  /** The root disk's image: its architecture counts (spec/clustering.md §9.2.1). */
+  image?: string;
 }
 /** Where a VM would go, node by node (spec/clustering-ui.md §5.1). */
 export const previewPlacement = (req: PreviewRequest) => query<PlacementPreview>("/scheduler/preview", req);

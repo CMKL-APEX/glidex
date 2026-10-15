@@ -62,6 +62,11 @@ pub struct NodeSpec {
     /// (`cluster.ovn.bridge_mappings`) still counts, and this wins per physnet.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub bridge_mappings: BTreeMap<String, String>,
+    /// Delete the unrecorded image files the node reported that are older
+    /// than this (seconds; spec/clustering.md §9.2.3). The node applies
+    /// each value once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drop_spare_files_before: Option<u64>,
 }
 
 /// What an administrator chose for a node's `br-int` datapath.
@@ -153,6 +158,21 @@ pub struct NodeFeatures {
     /// (spec/clustering-ui.md §8a).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub bridge_addrs: BTreeMap<String, BridgeAddr>,
+    /// `x86_64` or `aarch64` (spec/clustering.md §9.2.1); empty from a
+    /// node of an older version, which counts as matching anything.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub arch: String,
+    /// Files in the node's image directory that no image record names
+    /// (spec/clustering.md §9.2.3).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub spare_image_files: Vec<crate::images::spare::SpareFile>,
+}
+
+impl NodeFeatures {
+    /// Whether a VM of `arch` may run here (an unknown arch matches).
+    pub fn runs_arch(&self, arch: &str) -> bool {
+        self.arch.is_empty() || arch.is_empty() || self.arch == arch
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -350,7 +370,7 @@ impl NodeStore {
     pub fn report_self(&self, id: &str, probe: SelfProbe, create: bool) -> Result<Option<Node>, NodeError> {
         let mut node = match self.get(id)? {
             Some(n) => n,
-            None if create => Node::new(id, NodeSpec { name: probe.name.clone(), role: NodeRole::Server, unschedulable: false, labels: BTreeMap::new(), br_int_datapath: Default::default(), bridge_mappings: Default::default() }),
+            None if create => Node::new(id, NodeSpec { name: probe.name.clone(), role: NodeRole::Server, unschedulable: false, labels: BTreeMap::new(), br_int_datapath: Default::default(), bridge_mappings: Default::default(), drop_spare_files_before: None }),
             None => return Ok(None),
         };
         let before = node.clone();
@@ -445,6 +465,7 @@ impl SelfProbe {
             hypervisors,
             iommu: std::fs::read_dir("/sys/kernel/iommu_groups").map(|mut d| d.next().is_some()).unwrap_or(false),
             ovn_central: program_version("ovn-northd").is_some(),
+            arch: crate::images::catalog::Arch::host().map(|a| a.as_str().to_string()).unwrap_or_default(),
             ..Default::default()
         };
         let pci_devices = crate::pci::scan_pci_devices().into_iter().map(|d| d.address).collect();

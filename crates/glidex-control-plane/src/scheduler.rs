@@ -26,6 +26,9 @@ pub struct Request {
     pub physnets: Vec<String>,
     /// A NIC on a cluster network is vhost-user: `br-int` must be userspace.
     pub vhost_user_on_cluster: bool,
+    /// The VM's architecture (its image's, else its firmware's); empty:
+    /// none (spec/clustering.md §9.2.1).
+    pub arch: String,
 }
 
 /// What a node already carries: every VM placed on it, running or not.
@@ -60,6 +63,9 @@ fn failing(n: &Node, load: Load, req: &Request, cfg: &SchedulerConfig) -> Option
     }
     if !req.hypervisor.is_empty() && !n.status.features.hypervisors.iter().any(|h| *h == req.hypervisor) {
         return Some(format!("{} is not installed", req.hypervisor));
+    }
+    if !n.status.features.runs_arch(&req.arch) {
+        return Some(format!("it is {}; the VM's image is {}", n.status.features.arch, req.arch));
     }
     for p in &req.physnets {
         if !n.status.features.physnets.contains_key(p) {
@@ -185,7 +191,7 @@ mod tests {
     use crate::node::{NodeRole, NodeSpec, Resources};
 
     fn node(id: &str, cpus: u32, mem: u64) -> Node {
-        let mut n = Node::new(id, NodeSpec { name: id.into(), role: NodeRole::Agent, unschedulable: false, labels: Default::default(), br_int_datapath: Default::default(), bridge_mappings: Default::default() });
+        let mut n = Node::new(id, NodeSpec { name: id.into(), role: NodeRole::Agent, unschedulable: false, labels: Default::default(), br_int_datapath: Default::default(), bridge_mappings: Default::default(), drop_spare_files_before: None });
         n.status.allocatable = Resources { cpus, memory_mib: mem, hugepages: Default::default() };
         n.status.features.hypervisors = vec!["cloudhypervisor".into(), "qemu".into()];
         n
@@ -197,6 +203,26 @@ mod tests {
 
     fn cfg() -> SchedulerConfig {
         SchedulerConfig { cpu_overcommit: 4.0, memory_overcommit: 1.0 }
+    }
+
+    #[test]
+    fn a_vm_runs_only_on_nodes_of_its_architecture() {
+        let mut x86 = node("x86", 8, 16384);
+        x86.status.features.arch = "x86_64".into();
+        let mut arm = node("arm", 64, 131072);
+        arm.status.features.arch = "aarch64".into();
+        let old = node("old", 8, 16384); // an older node: no arch reported
+        let nodes = vec![(x86, Load::default()), (arm, Load::default()), (old, Load::default())];
+        let mut r = req(2, 1024);
+        r.arch = "x86_64".into();
+        let fits = evaluate(&r, &nodes, &cfg());
+        let refused = |id: &str| fits.iter().find(|f| f.id == id).unwrap().refused.clone();
+        assert_eq!(refused("arm").as_deref(), Some("it is aarch64; the VM's image is x86_64"));
+        assert_eq!(refused("x86"), None);
+        assert_eq!(refused("old"), None, "a node that reports no arch matches");
+        // A VM without an image or firmware has no architecture.
+        r.arch = String::new();
+        assert!(evaluate(&r, &nodes, &cfg()).iter().all(|f| f.refused.is_none()));
     }
 
     #[test]

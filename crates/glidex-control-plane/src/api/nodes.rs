@@ -416,3 +416,20 @@ pub(crate) fn check_gateway_nodes(nodes: &[crate::node::Node], keys: &[String], 
     }
     Ok(())
 }
+
+/// `POST /nodes/{id}/spare-image-files/delete` (`pullImage` on the
+/// cluster): the node deletes the unrecorded image files it has reported
+/// (spec/clustering.md §9.2.3), at its next report.
+pub async fn delete_spare_image_files(c: Caller, Path(id): Path<String>) -> Result<impl IntoResponse, ApiErr> {
+    c.require(Ent::Cluster, EntitySet::new())?;
+    c.set_target(format!("node:{id}"));
+    c.audit_always();
+    let store = c.manager().nodes();
+    let mut n = store.get(&id).map_err(store_err)?.ok_or_else(|| err(StatusCode::NOT_FOUND, "not_found", format!("node {id} not found")))?;
+    let files = n.status.features.spare_image_files.clone();
+    n.spec.drop_spare_files_before = Some(crate::tenancy::now() + 1);
+    n.meta.generation += 1;
+    n.meta.resource_version += 1;
+    store.put(&n).map_err(store_err)?;
+    Ok((StatusCode::ACCEPTED, Json(serde_json::json!({ "node": n.spec.name, "files": files.len(), "bytes": files.iter().map(|f| f.bytes).sum::<u64>() }))))
+}

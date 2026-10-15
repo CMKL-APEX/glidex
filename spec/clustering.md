@@ -938,8 +938,9 @@ refers to:
   copy, before any copy from a holder. It does so for every matching
   image, not only those it needs, so a joining node's firmware and
   common images count as copies at once.
-- **The rest** are reported in `status.spare_image_files` (name, bytes,
-  mtime) and shown on the Node page, with *Delete unrecorded files*:
+- **The rest** are reported in `status.features.spare_image_files`
+  (name, bytes, mtime; at the node's report, or at once after its own
+  record changes) and shown on the Node page, with *Delete unrecorded files*:
   `POST /nodes/{id}/spare-image-files/delete` (`pullImage` on the
   cluster) records `spec.drop_spare_files_before` (now); the node deletes
   the spare files it has reported whose mtime is older, once (it keeps

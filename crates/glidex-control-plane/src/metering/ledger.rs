@@ -1619,7 +1619,7 @@ mod tests {
         let central_db = Arc::new(Db::create(central_dir.path().join("c.db")).unwrap());
         let central = Ledger::attach(central_db.clone());
         for id in ["a", "b"] {
-            let n = crate::node::Node::new(id, crate::node::NodeSpec { name: id.into(), role: crate::node::NodeRole::Server, unschedulable: false, labels: Default::default(), br_int_datapath: Default::default(), bridge_mappings: Default::default() });
+            let n = crate::node::Node::new(id, crate::node::NodeSpec { name: id.into(), role: crate::node::NodeRole::Server, unschedulable: false, labels: Default::default(), br_int_datapath: Default::default(), bridge_mappings: Default::default(), drop_spare_files_before: None });
             crate::node::NodeStore::new(central_db.clone()).put(&n).unwrap();
         }
         let node = |name: &str, vm: &str| {

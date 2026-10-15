@@ -513,12 +513,15 @@ impl VmManager {
 
     /// Where a VM of `config` (pinned to `pin`, using `data_disks`) could go,
     /// node by node, the scheduler's choice first (spec/clustering-ui.md §5.1).
-    pub async fn preview_placement(&self, config: &VmConfig, pin: Option<String>, data_disks: &[String]) -> Result<Vec<crate::scheduler::NodeFit>, VmManagerError> {
+    pub async fn preview_placement(&self, config: &VmConfig, pin: Option<String>, data_disks: &[String], image: Option<&str>) -> Result<Vec<crate::scheduler::NodeFit>, VmManagerError> {
         let mut disks = Vec::new();
         for key in data_disks {
             disks.push(self.images.get_disk(key)?);
         }
-        let req = self.sched_request_for(config, pin, &disks);
+        let mut req = self.sched_request_for(config, pin, &disks);
+        if let Some(key) = image {
+            req.arch = self.images.get_image(key)?.arch.as_str().to_string();
+        }
         let vms = self.vms.read().await;
         Ok(crate::scheduler::evaluate(&req, &self.node_loads(&vms), &self.sched.load()))
     }
@@ -561,7 +564,19 @@ impl VmManager {
                 .iter()
                 .filter_map(|a| nets.iter().find(|n| n.name == a.network))
                 .any(|n| n.scope == crate::network::NetworkScope::Cluster && n.port_type == glidex_ovs::vm_port::VmPortKind::VhostUser),
+            arch: self.vm_arch(c, disks).map(|a| a.as_str().to_string()).unwrap_or_default(),
         }
+    }
+
+    /// A VM's architecture (spec/clustering.md §9.2.1): that of the image a
+    /// disk of it comes from, else of its firmware image; `None` for one
+    /// with neither (direct kernel boot).
+    pub(crate) fn vm_arch(&self, c: &VmConfig, disks: &[Disk]) -> Option<crate::images::catalog::Arch> {
+        let from_disk = disks.iter().find_map(|d| match &d.origin {
+            crate::images::DiskOrigin::Image { image_id, .. } => self.images.get_image(image_id).ok().map(|i| i.arch),
+            _ => None,
+        });
+        from_disk.or_else(|| c.firmware_image.as_deref().and_then(|f| self.images.get_image(f).ok()).map(|i| i.arch))
     }
 
     /// Whether this host has any VM, disk, network or credential record.
@@ -597,6 +612,12 @@ impl VmManager {
             crate::node::Resources { cpus: c.cpus, memory_mib: c.memory_mib, hugepages: Default::default() }
         };
         let mut probe = crate::node::SelfProbe::detect(&reserved);
+        // Unrecorded image files (spec/clustering.md §9.2.3): deleted when
+        // asked (once per request), the rest reported.
+        if let Some(before) = self.nodes.get(&self.local_node_id()).ok().flatten().and_then(|n| n.spec.drop_spare_files_before) {
+            self.images.drop_spare_files(before);
+        }
+        probe.features.spare_image_files = self.images.spare_files();
         probe.features.physnets = self.ovn.load().bridge_mappings.clone();
         probe.features.feature_level = crate::node::FEATURE_LEVEL;
         // Whether OVS runs DPDK here: what `auto` picks br-int's datapath by.
@@ -759,6 +780,19 @@ impl VmManager {
                                 }
                             }
                         }
+                    }
+                    // This node's own record changed (a request to delete its
+                    // unrecorded image files, spec/clustering.md §9.2.3):
+                    // report now rather than at the next interval.
+                    let me = self.local_node_id();
+                    if a.keys.iter().any(|(t, k)| *t == crate::store::TableId::Nodes && k.as_slice() == me.as_bytes()) {
+                        let m = self.clone();
+                        tokio::task::spawn_blocking(move || {
+                            let wanted = m.nodes.get(&m.local_node_id()).ok().flatten().and_then(|n| n.spec.drop_spare_files_before);
+                            if wanted.is_some_and(|w| m.images.spare_drop_pending(w)) {
+                                let _ = m.report_self();
+                            }
+                        });
                     }
                     // A copy of an image becoming ready on some node: nodes
                     // waiting to fetch it can go now.
@@ -1088,24 +1122,40 @@ impl VmManager {
         if sel.firmware.is_some() && config.firmware_path.is_some() {
             return Err(invalid("give firmware (an image) or firmware_path, not both"));
         }
+        // The VM's architecture: its root disk's image's (§9.2.1).
+        let root_arch = match (&sel.image, &sel.root_disk) {
+            (Some(key), _) => Some(self.images.get_image(key)?.arch),
+            (None, Some(key)) => match self.images.get_disk(key)?.origin {
+                crate::images::DiskOrigin::Image { image_id, .. } => self.images.get_image(&image_id).ok().map(|i| i.arch),
+                _ => None,
+            },
+            _ => None,
+        };
         // A managed root disk is a cloud image: firmware boot unless the
         // caller brought a kernel, through the newest firmware image for
-        // the hypervisor unless one is named.
+        // the hypervisor and the VM's architecture unless one is named.
         let firmware = match &sel.firmware {
             Some(key) => Some(self.images.get_image(key)?),
             None if (sel.image.is_some() || sel.root_disk.is_some())
                 && config.kernel_image_path.is_empty()
                 && config.firmware_path.is_none() =>
             {
-                Some(self.images.default_firmware(config.hypervisor).ok_or_else(|| {
+                Some(self.images.default_firmware(config.hypervisor, root_arch).ok_or_else(|| {
                     invalid(format!(
-                        "no firmware image for {}: pull one from the firmware catalog (GET /images/firmware-catalog), or give kernel_image_path",
-                        config.hypervisor
+                        "no firmware image for {}{}: pull one from the firmware catalog (GET /images/firmware-catalog){}, or give kernel_image_path",
+                        config.hypervisor,
+                        root_arch.map(|a| format!(" on {}", a.as_str())).unwrap_or_default(),
+                        root_arch.map(|a| format!(" with arch {}", a.as_str())).unwrap_or_default(),
                     ))
                 })?)
             }
             None => None,
         };
+        if let (Some(fw), Some(a)) = (&firmware, root_arch) {
+            if fw.arch != a {
+                return Err(invalid(format!("firmware {} is {}, the root disk's image is {}: they must match", fw.name, fw.arch.as_str(), a.as_str())));
+            }
+        }
         if config.vcpu_count == 0 {
             return Err(invalid("vcpu_count must be greater than 0"));
         }
@@ -1838,8 +1888,8 @@ impl VmManager {
 
     // ---- images and disks (spec/images.md) -----------------------------
 
-    pub fn image_catalog(&self) -> Vec<CatalogItem> {
-        self.images.catalog()
+    pub fn image_catalog(&self, arch: Option<crate::images::catalog::Arch>) -> Vec<CatalogItem> {
+        self.images.catalog(arch)
     }
 
     /// Import the firmware available locally, once per catalog entry
@@ -1850,11 +1900,11 @@ impl VmManager {
 
     /// The firmware image VMs of `hypervisor` boot through by default.
     pub fn default_firmware_name(&self, hypervisor: crate::hypervisor::HypervisorType) -> Option<String> {
-        self.images.default_firmware(hypervisor).map(|i| i.name)
+        self.images.default_firmware(hypervisor, crate::images::catalog::Arch::host()).map(|i| i.name)
     }
 
-    pub fn firmware_catalog(&self) -> Vec<images::FirmwareCatalogItem> {
-        self.images.firmware_catalog()
+    pub fn firmware_catalog(&self, arch: Option<crate::images::catalog::Arch>) -> Vec<images::FirmwareCatalogItem> {
+        self.images.firmware_catalog(arch)
     }
 
     /// An image response with the VMs booting through it.
@@ -1885,8 +1935,22 @@ impl VmManager {
                 .to_string(),
                 bytes: row.bytes,
                 error: row.error,
+                pinned: false,
             })
             .collect();
+        // Copies wanted on chosen nodes, and copies asked to go (§9.2.2).
+        if let Ok(img) = self.images.get_image(id) {
+            for c in out.iter_mut() {
+                c.pinned = img.pinned.contains(&c.node);
+                if img.release.contains(&c.node) {
+                    c.state = "releasing".into();
+                }
+            }
+            let missing: Vec<&String> = img.pinned.iter().filter(|p| !out.iter().any(|c| c.node == **p)).collect();
+            for p in missing {
+                out.push(images::ImageCopy { node_name: self.nodes.get(p).ok().flatten().map(|n| n.spec.name), node: p.clone(), state: "wanted".into(), bytes: 0, error: String::new(), pinned: true });
+            }
+        }
         out.sort_by(|a, b| a.node_name.cmp(&b.node_name));
         out
     }
@@ -1914,7 +1978,27 @@ impl VmManager {
         Ok(self.with_users(r).await)
     }
 
-    pub async fn pull_image(&self, req: PullImageRequest) -> Result<(ImageResponse, bool), VmManagerError> {
+    pub async fn pull_image(&self, mut req: PullImageRequest) -> Result<(ImageResponse, bool), VmManagerError> {
+        // In a cluster: copies on chosen nodes, and their architecture (§9.2.1–2).
+        if !req.nodes.is_empty() || req.keep_server_copy == Some(false) {
+            if self.cluster().is_none() {
+                return Err(ImageError::InvalidImage("nodes and keep_server_copy are for a cluster".into()).into());
+            }
+            if req.nodes.is_empty() {
+                return Err(ImageError::InvalidImage("keep_server_copy: false needs nodes to keep the copies".into()).into());
+            }
+            let nodes: Vec<crate::node::Node> = req.nodes.iter().map(|n| self.copy_node(n)).collect::<Result<_, _>>()?;
+            let archs: std::collections::BTreeSet<&str> = nodes.iter().map(|n| n.status.features.arch.as_str()).filter(|a| !a.is_empty()).collect();
+            if archs.len() > 1 {
+                return Err(ImageError::InvalidImage(format!("the nodes are of different architectures ({}): pull once per architecture", archs.into_iter().collect::<Vec<_>>().join(", "))).into());
+            }
+            match (&req.arch, archs.first()) {
+                (Some(a), Some(n)) if a != n => return Err(ImageError::InvalidImage(format!("arch {a}, but the nodes are {n}")).into()),
+                (None, Some(n)) => req.arch = Some(n.to_string()),
+                _ => {}
+            }
+            req.nodes = nodes.into_iter().map(|n| n.meta.id).collect();
+        }
         let (img, created) = self.images.pull_image(req).await?;
         Ok((self.images.image_response(&img, false), created))
     }

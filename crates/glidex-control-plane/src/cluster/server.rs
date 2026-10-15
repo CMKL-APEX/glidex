@@ -374,7 +374,7 @@ async fn join(State(c): Ctx, Json(req): Json<JoinRequest>) -> Response {
         if existing.iter().any(|n| n.status.raft_id == Some(rec.raft_id)) {
             return Err("that Raft id is taken".to_string());
         }
-        let mut n = Node::new(&rec.node_id, NodeSpec { name: rec.name.clone(), role: rec.role, unschedulable: false, labels: Default::default(), br_int_datapath: Default::default(), bridge_mappings: Default::default() });
+        let mut n = Node::new(&rec.node_id, NodeSpec { name: rec.name.clone(), role: rec.role, unschedulable: false, labels: Default::default(), br_int_datapath: Default::default(), bridge_mappings: Default::default(), drop_spare_files_before: None });
         n.status.advertise = Some(rec.advertise);
         n.status.tunnel_ip = rec.tunnel_ip.or(Some(rec.advertise.ip()));
         n.status.raft_id = (rec.role == NodeRole::Server).then_some(rec.raft_id);

@@ -16,6 +16,7 @@
 //! id only.
 
 pub mod catalog;
+pub mod spare;
 pub mod disk;
 pub mod download;
 pub mod firmware;
@@ -191,6 +192,26 @@ pub struct Image {
     /// removes the files, then the record (spec/reconciliation.md §6.3).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deletion_requested_at: Option<u64>,
+    /// Nodes that keep a copy whether or not they need it
+    /// (spec/clustering.md §9.2.2).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pinned: Vec<String>,
+    /// Nodes asked to drop their copy; the leader clears a node once its
+    /// copy is gone (§9.2.2).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub release: Vec<String>,
+    /// `false`: a copy nothing needs nor pins goes once a pinned node has
+    /// one (the downloading server's, §9.2.2).
+    #[serde(default = "keep_copies", skip_serializing_if = "is_true")]
+    pub keep_server_copy: bool,
+}
+
+fn keep_copies() -> bool {
+    true
+}
+
+fn is_true(b: &bool) -> bool {
+    *b
 }
 
 impl Image {
@@ -398,6 +419,17 @@ pub struct PullImageRequest {
     pub vars_url: Option<String>,
     #[serde(default)]
     pub vars_sha256: Option<String>,
+    /// `x86_64` or `aarch64`; default: the host's, or in a cluster that of
+    /// `nodes` (spec/clustering.md §9.2.1).
+    #[serde(default)]
+    pub arch: Option<String>,
+    /// In a cluster: nodes (ids or names) that get a copy once downloaded
+    /// (§9.2.2). Resolved to ids before the download starts.
+    #[serde(default)]
+    pub nodes: Vec<String>,
+    /// `false`: the server's copy goes once one of `nodes` has one.
+    #[serde(default)]
+    pub keep_server_copy: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -466,12 +498,16 @@ pub struct ImageCopy {
     pub node: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub node_name: Option<String>,
-    /// `downloading`, `ready` or `failed`.
+    /// `downloading`, `ready` or `failed`; `wanted` (pinned, not started)
+    /// or `releasing` (asked to go, spec/clustering.md §9.2.2).
     pub state: String,
     /// Bytes copied so far (all of them once ready).
     pub bytes: u64,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub error: String,
+    /// Kept whether or not the node needs it (§9.2.2).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub pinned: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -865,7 +901,8 @@ impl ImageManager {
             if let Ok(rd) = std::fs::read_dir(dir) {
                 for entry in rd.flatten() {
                     let p = entry.path();
-                    if !known.contains(&p) {
+                    let index = p.file_name().is_some_and(|n| n == "spare-index.json");
+                    if !known.contains(&p) && !index {
                         tracing::warn!(path = %p.display(), "file without a glidex record left in place");
                     }
                 }
@@ -1149,8 +1186,9 @@ impl ImageManager {
         }
     }
 
-    pub fn catalog(&self) -> Vec<CatalogItem> {
-        let Some(arch) = Arch::host() else { return Vec::new() };
+    /// The cloud image catalog for `arch` (default: the host's).
+    pub fn catalog(&self, arch: Option<Arch>) -> Vec<CatalogItem> {
+        let Some(arch) = arch.or_else(Arch::host) else { return Vec::new() };
         let images = self.images.read().unwrap();
         catalog::for_arch(arch)
             .map(|(e, img)| CatalogItem {
@@ -1161,15 +1199,16 @@ impl ImageManager {
                 url: img.url.to_string(),
                 downloaded_image_id: images
                     .values()
-                    .filter(|i| i.catalog_key() == Some(e.key) && i.usable())
+                    .filter(|i| i.catalog_key() == Some(e.key) && i.arch == arch && i.usable())
                     .max_by_key(|i| i.created_at)
                     .map(|i| i.id.clone()),
             })
             .collect()
     }
 
-    pub fn firmware_catalog(&self) -> Vec<FirmwareCatalogItem> {
-        let Some(arch) = Arch::host() else { return Vec::new() };
+    /// The firmware catalog for `arch` (default: the host's).
+    pub fn firmware_catalog(&self, arch: Option<Arch>) -> Vec<FirmwareCatalogItem> {
+        let Some(arch) = arch.or_else(Arch::host) else { return Vec::new() };
         let images = self.images.read().unwrap();
         firmware::FIRMWARE_CATALOG
             .iter()
@@ -1196,7 +1235,7 @@ impl ImageManager {
                     version: e.version().to_string(),
                     downloaded_image_id: images
                         .values()
-                        .filter(|i| i.firmware_key() == Some(e.key) && i.usable())
+                        .filter(|i| i.firmware_key() == Some(e.key) && i.arch == arch && i.usable())
                         .max_by_key(|i| i.created_at)
                         .map(|i| i.id.clone()),
                 }
@@ -1205,13 +1244,14 @@ impl ImageManager {
     }
 
     /// The firmware image a VM of `hypervisor` boots through when none is
-    /// named: the newest usable one built for it.
-    pub fn default_firmware(&self, hypervisor: crate::hypervisor::HypervisorType) -> Option<Image> {
+    /// named: the newest usable one built for it, for `arch` when the VM
+    /// has one (spec/clustering.md §9.2.1).
+    pub fn default_firmware(&self, hypervisor: crate::hypervisor::HypervisorType, arch: Option<catalog::Arch>) -> Option<Image> {
         self.images
             .read()
             .unwrap()
             .values()
-            .filter(|i| i.is_firmware() && i.hypervisor == Some(hypervisor) && i.usable())
+            .filter(|i| i.is_firmware() && i.hypervisor == Some(hypervisor) && i.usable() && arch.is_none_or(|a| i.arch == a))
             .max_by_key(|i| i.created_at)
             .cloned()
     }
@@ -1345,6 +1385,9 @@ mod tests {
             retry_seq: 0,
             applied_retry_seq: 0,
             deletion_requested_at: None,
+            pinned: Vec::new(),
+            release: Vec::new(),
+            keep_server_copy: true,
         };
         mgr.insert_image(&img).unwrap();
         let hold = mgr.hold_image("img-1");

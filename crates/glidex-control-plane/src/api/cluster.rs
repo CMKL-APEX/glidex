@@ -559,7 +559,7 @@ mod edge_tests {
     use crate::node::{BridgeAddr, Node, NodeRole, NodeSpec};
 
     fn node(name: &str, role: NodeRole, mapped: bool, dpdk: bool, addr: Option<(&str, Option<&str>)>) -> Node {
-        let mut n = Node::new(name, NodeSpec { name: name.into(), role, unschedulable: false, labels: Default::default(), br_int_datapath: Default::default(), bridge_mappings: Default::default() });
+        let mut n = Node::new(name, NodeSpec { name: name.into(), role, unschedulable: false, labels: Default::default(), br_int_datapath: Default::default(), bridge_mappings: Default::default(), drop_spare_files_before: None });
         if mapped {
             n.status.features.physnets.insert("uplink".into(), "gxbr-up".into());
         }
