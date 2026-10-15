@@ -54,7 +54,9 @@ reported as `404`.
 | `PUT` | `/credentials/{username}` | `update_credential` | Change password and/or replace SSH keys |
 | `DELETE` | `/credentials/{username}` | `delete_credential` | Delete; `409` while a VM uses it |
 | `GET` | `/images/catalog` | `image_catalog` | Built-in cloud images for this host's arch |
-| `GET` / `POST` | `/images` | `list_images` / `pull_image` | List; download + verify (`202`) |
+| `GET` / `POST` | `/images` | `list_images` / `pull_image` | List; download + verify (`202`). In a cluster `POST` also takes `arch` (default: that of `nodes`, else the answering server's), `nodes` (copies placed once downloaded) and `keep_server_copy` (default `true`) (clustering.md §9.2.1–2) |
+| `POST` / `DELETE` | `/images/{id}/copies[/{node}]` | `add_image_copy` / `remove_image_copy` | Keep a copy on a node ahead of need (`{node}`; `409` for another architecture), or let one go (`409` while the node needs it or it is the last ready copy); `pullImage` (clustering.md §9.2.2) |
+| `POST` | `/nodes/{id}/spare-image-files/delete` | `delete_spare_image_files` | The node deletes the unrecorded image files it has reported (`pullImage`; clustering.md §9.2.3) |
 | `GET` / `DELETE` | `/images/{id}[?wait=N]` | `get_image` / `delete_image` | Details + progress; delete or cancel (`204`, or `202` while the image controller finishes; `409` while a disk uses it; below) |
 | `POST` | `/images/{id}/retry` | `retry_image` | Download a failed image again (`202`; needs `pullImage`) |
 | `GET` | `/images/{id}/events` | `image_events` | The image's last 50 events (`readImage`) |

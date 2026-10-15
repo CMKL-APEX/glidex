@@ -879,6 +879,73 @@ changes. Placement is never changed by the scheduler afterwards (D6).
   hold on each node.
 - **Quotas** stay cluster-wide, in the same admission write as today.
 
+#### 9.2.1 Architectures
+
+A cluster may mix `x86_64` and `aarch64` nodes. An image record has one
+`arch`; a VM runs only where it matches.
+
+- **Nodes** report `status.features.arch` (`x86_64` | `aarch64`). A node
+  of an older version reports none and counts as matching anything.
+- **A VM's architecture** is that of the image its root disk comes from,
+  else of its firmware image; a VM with neither (direct kernel boot)
+  has none. Create refuses an image and a firmware of different
+  architectures (`400`). The default firmware (none named) is the newest
+  usable one for the hypervisor *and* the VM's architecture.
+- **Scheduler:** a node of another architecture is refused, with the
+  reason (`it is aarch64; the VM's image is x86_64`), in placement and in
+  `POST /scheduler/preview`.
+- **Pull:** `POST /images` takes `arch` (default: the architecture of the
+  `nodes` it names, which must agree, else the answering server's). The
+  catalog picks that architecture's artifact; the download itself runs on
+  the leader whatever its own architecture (it only stores a file). Image
+  names stay unique: a catalog or firmware pull whose default name (its
+  key) is taken by an image of another architecture is named
+  `<key>-<arch>` (`ubuntu-26.04-aarch64`).
+
+#### 9.2.2 Copies on chosen nodes
+
+Copies follow need (a disk or VM bound to the node, §9.2); an
+administrator can also place them ahead of time or let one go:
+
+- `Image.pinned: [node]`: nodes that keep a copy whether or not they
+  need it. `POST /images` takes `nodes` (pin them once downloaded) and
+  `keep_server_copy` (default `true`; `false` releases the downloading
+  server's copy once a pinned node has a ready one).
+  `POST /images/{id}/copies {node}` pins one later; refused (`409`) for a
+  node of another architecture, or a tombstone.
+- `Image.release: [node]`: nodes asked to drop their copy.
+  `DELETE /images/{id}/copies/{node}` unpins it and asks it to drop;
+  refused (`409`) while that node needs the image, or when its copy is
+  the last ready one. The node removes its files and its
+  `image_caches` row; the leader then clears it from `release`.
+- Both are written by servers only (`pullImage` on the cluster, as for
+  pull and retry); nodes act on them through the image-cache controller,
+  which already runs on every node.
+
+#### 9.2.3 Files a node already has
+
+A host that joins, or a node whose cluster later gains an image it
+already holds, shouldn't download it again, nor keep files nothing
+refers to:
+
+- **Spare files** are files in a node's image directory that name no
+  image record (images.md §2: never deleted on their own). Each node
+  indexes them (`images/spare-index.json`: name, size, mtime, SHA-256,
+  hashed in the background once per file).
+- **Reuse:** a node adopts a spare file whose size and SHA-256 match a
+  ready image of its architecture: it renames it to the image's file
+  name (a firmware's variables template with it) and records a `Ready`
+  copy, before any copy from a holder. It does so for every matching
+  image, not only those it needs, so a joining node's firmware and
+  common images count as copies at once.
+- **The rest** are reported in `status.spare_image_files` (name, bytes,
+  mtime) and shown on the Node page, with *Delete unrecorded files*:
+  `POST /nodes/{id}/spare-image-files/delete` (`pullImage` on the
+  cluster) records `spec.drop_spare_files_before` (now); the node deletes
+  the spare files it has reported whose mtime is older, once (it keeps
+  the last value it applied). A plain join proceeds and reports them;
+  `--import` brings a host's images in as records instead (§5.9).
+
 ## 10. Installation
 
 ### 10.1 Roles and packages
