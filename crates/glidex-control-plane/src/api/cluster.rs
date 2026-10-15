@@ -198,11 +198,12 @@ pub struct StatusQuery {
     ports: bool,
 }
 
-pub async fn status(c: Caller, axum::extract::Query(q): axum::extract::Query<StatusQuery>) -> Result<impl IntoResponse, ApiErr> {
+pub async fn status(c: Caller, via: Option<axum::Extension<super::RelayedBy>>, axum::extract::Query(q): axum::extract::Query<StatusQuery>) -> Result<impl IntoResponse, ApiErr> {
     c.require(Ent::Cluster, EntitySet::new())?;
     match c.manager().cluster() {
         Some(cl) => {
-            let mut v = manage::status_of(&cl);
+            // Through a node's UI, "this node" is that node.
+            let mut v = manage::status_seen_from(&cl, via.as_ref().map(|v| v.0 .0.as_str()));
             // Port checks open connections to every node: opt in (`?ports=true`).
             if q.ports {
                 v["ports"] = json!(manage::port_checks(&cl, c.manager().ovn_enabled()).await);

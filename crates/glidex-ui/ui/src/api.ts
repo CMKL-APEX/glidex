@@ -555,11 +555,14 @@ export interface ClusterNodeRow {
 export interface ClusterStatus {
   clustered?: boolean;
   cluster_id?: string;
-  /** The node that answered (the one serving this UI). */
+  /** The node serving this UI (through an agent's UI: that agent). */
   node_id?: string;
   name?: string;
   role?: string;
   advertise?: string;
+  /** The server that answered, when it isn't the node serving this UI
+   * (an agent relays its UI to a server, spec/clustering-ui.md §3.6). */
+  served_by?: { node_id: string; name: string };
   feature_level?: number;
   ca_fingerprint?: string;
   ca?: { signing: string; retiring: string[]; retire_at: number | null; started_at?: number | null; not_after?: number | null } | null;
@@ -577,6 +580,8 @@ export interface ClusterStatus {
 }
 
 export const clusterStatus = () => get<ClusterStatus>("/cluster/status?ports=true");
+/** The summary without the port checks (which connect to every node). */
+export const clusterSummary = () => get<ClusterStatus>("/cluster/status");
 export const listNodes = () => get<NodeRecord[]>("/nodes");
 export interface PreviewRequest {
   project?: string;

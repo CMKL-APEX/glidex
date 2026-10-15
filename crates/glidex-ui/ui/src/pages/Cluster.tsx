@@ -168,7 +168,7 @@ export default function Cluster() {
         <div className="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-800">
           {gaps.map((g) => (
             <div key={`${g.node}:${g.port}`}>
-              Port {g.port}/{g.proto} on {g.node} does not answer from {status.name}.
+              Port {g.port}/{g.proto} on {g.node} does not answer from {status.served_by?.name ?? status.name}.
             </div>
           ))}
         </div>
@@ -293,6 +293,7 @@ export default function Cluster() {
       {raft && (
         <Card title="Raft">
           <p className="text-sm text-gray-700">
+            {summary.served_by ? `${summary.served_by.name} is ` : ""}
             {raft.state}, term {raft.term}, leader {raft.leader?.name ?? "none"}
           </p>
           <p className="text-sm text-gray-500 mt-1">

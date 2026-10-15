@@ -1373,11 +1373,16 @@ async fn an_agents_ui_is_relayed_to_a_server_and_host_paths_run_on_the_agent() {
     let agent_id = cluster(&agent).identity.node_id.clone();
     let ui = agent_ui_router(&agent, true);
 
-    // Cluster-wide reads are the server's.
+    // Cluster-wide reads are the server's; "this node" is the one whose UI it is.
     let (s, h, v) = via_ui(&ui, "GET", "/cluster/status").await;
     assert_eq!(s, StatusCode::OK, "{v}");
-    assert_eq!(v["node_id"], server_id.as_str(), "the server answered: {v}");
-    assert_eq!(h["x-glidex-served-by"], server_id.as_str());
+    assert_eq!(h["x-glidex-served-by"], server_id.as_str(), "the server answered");
+    assert_eq!((v["node_id"].as_str(), v["name"].as_str(), v["role"].as_str()), (Some(agent_id.as_str()), Some("agent1"), Some("agent")), "{v}");
+    assert_eq!(v["served_by"]["node_id"], server_id.as_str(), "{v}");
+    // Asked directly, the server is "this node".
+    let (_, v) = call(&server, "GET", "/cluster/status", None, &[]).await;
+    assert_eq!(v["node_id"], server_id.as_str(), "{v}");
+    assert!(v.get("served_by").is_none(), "{v}");
     let (s, _, v) = via_ui(&ui, "GET", "/nodes").await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(v.as_array().unwrap().len(), 2, "{v}");
