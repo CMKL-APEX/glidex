@@ -220,3 +220,31 @@ test("OVN settings stay reachable when OVN's state can't be read", async ({ page
   await page.getByRole("button", { name: "OVN settings…" }).click();
   await expect(page.getByRole("heading", { name: "OVN settings" })).toBeVisible();
 });
+
+test("through an agent's UI, the agent is this node and the Raft card names the server", async ({ page }) => {
+  await mockCluster(page);
+  // What a server answers for a request the agent's UI socket relayed.
+  await page.route("**/api/cluster/status*", (r) =>
+    r.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        cluster_id: CLUSTER,
+        node_id: A1,
+        name: "a1",
+        role: "agent",
+        served_by: { node_id: S1, name: "s1" },
+        feature_level: 1,
+        ca_fingerprint: "ab".repeat(32),
+        ca: { signing: "ab".repeat(32), retiring: [], retire_at: null, not_after: 2000000000 },
+        raft: { state: "Leader", term: 3, leader: { name: "s1", address: "192.0.2.11:8842" }, voters: [{ name: "s1", address: "192.0.2.11:8842" }], learners: [] },
+        nodes: [],
+        ports: [],
+      }),
+    }),
+  );
+  await page.goto("/cluster");
+  await expect(page.getByRole("row", { name: /a1/ })).toContainText("(this node)");
+  await expect(page.getByRole("row", { name: /s1/ })).not.toContainText("(this node)");
+  await expect(page.getByText("s1 is Leader, term 3")).toBeVisible();
+});

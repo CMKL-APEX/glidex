@@ -491,6 +491,23 @@ fn ca_not_after(c: &Cluster) -> Option<i64> {
     Some(cert.validity().not_after.timestamp())
 }
 
+/// The summary as the node `viewer` sees it: a request a node's UI socket
+/// relayed (spec/clustering-ui.md §3.6) is about that node, so "this node"
+/// (`node_id`, `name`, `role`, `advertise`) is the relaying one; `served_by`
+/// names the server that answered. Without a viewer, or for this server
+/// itself, it is [`status_of`].
+pub fn status_seen_from(c: &Cluster, viewer: Option<&str>) -> Value {
+    let mut v = status_of(c);
+    let Some(id) = viewer.filter(|id| *id != c.identity.node_id) else { return v };
+    let Ok(Some(n)) = NodeStore::new(c.db.clone()).get(id) else { return v };
+    v["served_by"] = json!({ "node_id": c.identity.node_id, "name": c.identity.name });
+    v["node_id"] = json!(n.meta.id);
+    v["name"] = json!(n.spec.name);
+    v["role"] = json!(n.spec.role);
+    v["advertise"] = json!(n.status.advertise.map(|a| a.to_string()));
+    v
+}
+
 pub fn status_of(c: &Cluster) -> Value {
     let nodes = NodeStore::new(c.db.clone()).list().unwrap_or_default();
     let certs = node_certs(c);

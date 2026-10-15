@@ -43,8 +43,22 @@ export function useNodes(): NodeDirectory {
     };
   }, [live.live, host.listNodes]);
 
+  // Which node serves this UI: from the stream's summary, else asked once.
+  const [polledSelf, setPolledSelf] = useState<string | null>(null);
+  useEffect(() => {
+    if (live.live || !host.readCluster) return;
+    let stop = false;
+    api
+      .clusterSummary()
+      .then((s) => !stop && setPolledSelf(s.node_id ?? null))
+      .catch(() => {});
+    return () => {
+      stop = true;
+    };
+  }, [live.live, host.readCluster]);
+
   const nodes = live.live ? live.nodes : (polled ?? new Map<string, NodeRecord>());
-  const self = cluster?.node_id ?? null;
+  const self = cluster?.node_id ?? (live.live ? null : polledSelf);
   return useMemo(
     () => ({
       nodes,
