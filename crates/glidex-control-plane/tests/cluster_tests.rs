@@ -549,6 +549,14 @@ async fn image_copies_go_where_they_are_wanted_and_spare_files_are_used() {
     })
     .await;
 
+    // A host that left and joined again: a tombstone has the same name, and
+    // the live node is the one a name means.
+    let store = glidex_control_plane::node::NodeStore::new(server.manager.database());
+    let mut ghost = store.get(&cluster(&agent).identity.node_id).unwrap().unwrap();
+    ghost.meta.id = "00000000-dead-4000-8000-000000000000".into();
+    ghost.status.phase = glidex_control_plane::node::NodePhase::Removed;
+    store.put(&ghost).unwrap();
+
     // Another architecture: not copied there, and not placed there (§9.2.1).
     let (s, e) = call(&server, "POST", "/images/img-other/copies", Some(json!({ "node": "agent1" })), &[]).await;
     assert_eq!(s, StatusCode::CONFLICT, "{e}");
@@ -947,7 +955,10 @@ async fn provider_networks_and_vpc_routers() {
 async fn node_json(cp: &Cp, key: &str) -> Value {
     let (s, v) = call(cp, "GET", "/nodes", None, &[]).await;
     assert_eq!(s, StatusCode::OK, "{v}");
-    v.as_array().unwrap().iter().find(|n| n["meta"]["id"] == key || n["spec"]["name"] == key).cloned().unwrap_or(Value::Null)
+    let all = v.as_array().unwrap();
+    // The live node a name means, before a tombstone of the same name.
+    let live = |n: &&Value| !matches!(n["status"]["phase"].as_str(), Some("Removed" | "Departed" | "Forgotten"));
+    all.iter().find(|n| n["meta"]["id"] == key).or_else(|| all.iter().filter(live).find(|n| n["spec"]["name"] == key)).or_else(|| all.iter().find(|n| n["spec"]["name"] == key)).cloned().unwrap_or(Value::Null)
 }
 
 fn denylist_len(cp: &Cp) -> usize {

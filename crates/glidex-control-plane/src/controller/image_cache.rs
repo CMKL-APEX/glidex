@@ -72,15 +72,16 @@ impl VmManager {
 
     /// A node a copy may go to or leave (§9.2.2): known and not a tombstone.
     pub(crate) fn copy_node(&self, key: &str) -> Result<crate::node::Node, crate::images::ImageError> {
-        let nodes = self.nodes().list().unwrap_or_default();
-        let n = nodes
-            .into_iter()
-            .find(|n| n.meta.id == key || n.spec.name == key)
-            .ok_or_else(|| crate::images::ImageError::NotFound(format!("node {key}")))?;
-        if n.status.phase.is_tombstone() {
-            return Err(crate::images::ImageError::InUse(format!("node {} is {:?}", n.spec.name, n.status.phase)));
+        // A name may also be a tombstone's (a host that left and joined
+        // again): the live node is the one meant.
+        let matching: Vec<crate::node::Node> = self.nodes().list().unwrap_or_default().into_iter().filter(|n| n.meta.id == key || n.spec.name == key).collect();
+        if let Some(n) = matching.iter().find(|n| !n.status.phase.is_tombstone()) {
+            return Ok(n.clone());
         }
-        Ok(n)
+        match matching.first() {
+            Some(n) => Err(crate::images::ImageError::InUse(format!("node {} is {:?}", n.spec.name, n.status.phase))),
+            None => Err(crate::images::ImageError::NotFound(format!("node {key}"))),
+        }
     }
 
     /// What on `node` needs `img` (a disk from it, a VM booting through it).
@@ -131,7 +132,13 @@ impl VmManager {
     pub async fn remove_image_copy(&self, key: &str, node: &str) -> Result<crate::images::ImageResponse, VmManagerError> {
         use crate::images::ImageError;
         let mut img = self.images.get_image(key)?;
-        let id = self.nodes().list().unwrap_or_default().into_iter().find(|n| n.meta.id == node || n.spec.name == node).map(|n| n.meta.id).unwrap_or_else(|| node.to_string());
+        let nodes = self.nodes().list().unwrap_or_default();
+        let id = nodes
+            .iter()
+            .find(|n| n.meta.id == node)
+            .or_else(|| nodes.iter().find(|n| n.spec.name == node && !n.status.phase.is_tombstone()))
+            .map(|n| n.meta.id.clone())
+            .unwrap_or_else(|| node.to_string());
         let users = self.users_on(&img, &id).await;
         if !users.is_empty() {
             return Err(ImageError::InUse(format!("that node needs it: {}", users.join(", "))).into());
