@@ -88,10 +88,29 @@ pub async fn join(c: Caller, Json(b): Json<JoinBody>) -> Result<impl IntoRespons
         listen: None,
     };
     let cfg = c.app.auth.config.clone();
-    let out = manage::join(&c.app.manager.clone(), &cfg, opts).await.map_err(cluster_err)?;
+    let mut out = manage::join(&c.app.manager.clone(), &cfg, opts).await.map_err(cluster_err)?;
     c.auth().reload_policies().map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()))?;
     c.set_target("cluster".to_string());
+    if let Some(note) = restart_as_agent(&c.app.manager) {
+        out["restart"] = json!(note);
+    }
     Ok((StatusCode::CREATED, Json(out)))
+}
+
+/// A host that just became an agent comes back in agent mode: an agent has
+/// no API of its own (spec/clustering-ui.md §3.6), and this process still
+/// serves the standalone one, whose logins the cluster refuses. Under
+/// systemd it restarts itself once this answer is out; by hand, it says so.
+fn restart_as_agent(m: &std::sync::Arc<crate::state::VmManager>) -> Option<&'static str> {
+    m.node_link()?;
+    if !crate::restart::supervised() {
+        return Some("restart the control plane: it runs as a cluster agent from then on");
+    }
+    tokio::spawn(async {
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        crate::restart::request("this host is now a cluster agent");
+    });
+    Some("the control plane restarts as a cluster agent in a moment")
 }
 
 #[derive(Deserialize)]
@@ -131,7 +150,12 @@ pub async fn import_join(c: Caller, Json(b): Json<ImportJoinBody>) -> Result<imp
     c.audit_always();
     tokio::spawn(async move {
         match manage::join_import(&m, &cfg, opts).await {
-            Ok(v) => tracing::warn!("import finished: {}", v),
+            Ok(v) => {
+                tracing::warn!("import finished: {}", v);
+                if let Some(note) = restart_as_agent(&m) {
+                    tracing::warn!("{note}");
+                }
+            }
             Err(e) => tracing::error!("import failed: {}", e),
         }
     });
@@ -158,10 +182,13 @@ pub async fn rejoin(c: Caller, Json(b): Json<RejoinBody>) -> Result<impl IntoRes
     let server = b.server.parse().map_err(|_| err(StatusCode::BAD_REQUEST, "invalid", "server must be <ip>:<port> of a cluster node (port 8842)"))?;
     let opts = manage::RejoinOptions { server, token: b.token, node_id: b.node_id, advertise: parse_addr("advertise", &b.advertise)?, tunnel_ip: parse_ip(&b.tunnel_ip)?, listen: None };
     let cfg = c.app.auth.config.clone();
-    let out = manage::rejoin(&c.app.manager.clone(), &cfg, opts).await.map_err(cluster_err)?;
+    let mut out = manage::rejoin(&c.app.manager.clone(), &cfg, opts).await.map_err(cluster_err)?;
     c.auth().reload_policies().map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()))?;
     c.set_target("cluster".to_string());
     c.audit_always();
+    if let Some(note) = restart_as_agent(&c.app.manager) {
+        out["restart"] = json!(note);
+    }
     Ok(Json(out))
 }
 

@@ -92,6 +92,9 @@ fn build_client(cli: &Cli) -> Result<ApiClient, String> {
             );
             match client::select_socket(cli.socket.clone(), &candidates, client::is_socket) {
                 Some(p) => ApiClient::unix(p),
+                // A UI socket but no API socket: a cluster agent, which has
+                // no API of its own (spec/clustering-ui.md §3.6).
+                None if client::is_socket(std::path::Path::new(client::AGENT_UI_SOCKET)) => return Err(client::AGENT_HINT.into()),
                 None => tcp(client::DEFAULT_URL)?,
             }
         }

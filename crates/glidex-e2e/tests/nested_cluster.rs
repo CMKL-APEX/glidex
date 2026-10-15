@@ -218,6 +218,13 @@ fn a_nested_two_node_cluster_binds_vm_ports_and_carries_traffic_over_geneve() {
     }, || format!("nodes: {}", inner.call("GET", "/nodes", None).1));
     let node_of = |name: &str| nodes.iter().find(|n| n["spec"]["name"] == name).map(|n| n["meta"]["id"].as_str().unwrap().to_string()).unwrap();
     let (n1, n2) = (node_of(&format!("gxe2e-{tag}-h1")), node_of(&format!("gxe2e-{tag}-h2")));
+    // The agent restarted into agent mode (spec/clustering-ui.md §3.6): its
+    // UI socket only, no API of its own; gxctl there says where to log in.
+    wait_for("h2 in agent mode (no api.sock)", Duration::from_secs(60), || {
+        (h2.run("test -S /run/glidex-cp/ui.sock && ! test -e /run/glidex-cp/api.sock").status.success()).then_some(())
+    });
+    let said = String::from_utf8_lossy(&h2.run("gxctl whoami 2>&1").stdout).into_owned();
+    assert!(said.contains("cluster agent") && said.contains("gxctl auth login"), "gxctl on h2: {said}");
 
     // OVN is a cluster setting (spec/clustering-ui.md §8a): turned on through
     // the API, no config file and no restart; every node follows.
@@ -573,8 +580,10 @@ fn check_agent_ui(h1: &Ssh, h2: &Ssh, user: &str, dir: &std::path::Path, n1: &st
     let (s, head, body) = ui_curl(&jar, &base, "GET", "/api/cluster/status", None, None);
     assert_eq!(s, 200, "{body}");
     let v: Value = serde_json::from_str(&body).unwrap();
-    assert_eq!(v["node_id"], n1, "cluster reads are the server's");
-    assert_eq!(header(&head, "x-glidex-served-by"), Some(n1));
+    // The server answers, about the node whose UI it is ("this node").
+    assert_eq!(header(&head, "x-glidex-served-by"), Some(n1), "cluster reads are the server's");
+    assert_eq!(v["node_id"], n2, "this node is the agent: {v}");
+    assert_eq!(v["served_by"]["node_id"], n1, "{v}");
 
     let (s, head, _) = ui_curl(&jar, &base, "GET", "/api/system/reconcile", None, None);
     assert_eq!(s, 200);

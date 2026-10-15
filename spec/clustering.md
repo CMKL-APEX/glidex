@@ -1909,6 +1909,8 @@ the end (`GLIDEX_E2E_KEEP=1` keeps them). Bugs it found, now fixed:
   image.
 - `/disks` showed remote disks as missing (it checked the local file);
   it now reports the disk's phase and its node.
-- Known, not fixed: on an agent, the local API's PAM login fails ("a
-  node may not write users"): an agent cannot record the user. Use a
-  server's API.
+- On an agent, a login through its local API was refused ("a node may
+  not write users": an agent cannot record the user) and showed as a 500.
+  A host that becomes an agent now restarts into agent mode, which has no
+  local API, and the refusal answers `403 agent_no_local_api` naming a
+  server to log in to (spec/clustering-ui.md §3.6).

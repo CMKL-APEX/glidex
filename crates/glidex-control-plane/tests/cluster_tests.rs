@@ -1379,6 +1379,25 @@ async fn an_agents_ui_is_relayed_to_a_server_and_host_paths_run_on_the_agent() {
     assert_eq!(h["x-glidex-served-by"], server_id.as_str(), "the server answered");
     assert_eq!((v["node_id"].as_str(), v["name"].as_str(), v["role"].as_str()), (Some(agent_id.as_str()), Some("agent1"), Some("agent")), "{v}");
     assert_eq!(v["served_by"]["node_id"], server_id.as_str(), "{v}");
+    // The agent's own API socket (a host that joined without restarting):
+    // the cluster won't record a Unix user of another host, so a local login
+    // says where to log in instead of failing with a 500.
+    let mut cfg = Config::default();
+    let group = nix::unistd::Group::from_gid(nix::unistd::getgid()).unwrap().unwrap().name;
+    (cfg.users_group, cfg.admin_group) = (group.clone(), group);
+    let no_site_policies = tempfile::tempdir().unwrap();
+    cfg.authz.policy_files_dir = no_site_policies.path().to_path_buf();
+    let auth = glidex_control_plane::auth::AuthService::new(agent.manager.database(), cfg).unwrap();
+    let api = glidex_control_plane::api::router(Arc::new(glidex_control_plane::api::App { manager: agent.manager.clone(), auth }));
+    let mut req = Request::builder().uri("/cluster/status").body(Body::empty()).unwrap();
+    req.extensions_mut().insert(glidex_control_plane::api::Listener::Api);
+    req.extensions_mut().insert(glidex_control_plane::api::PeerUid(nix::unistd::getuid().as_raw()));
+    let resp = api.oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body: Value = serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap_or(Value::Null);
+    assert_eq!((status, body["error"].as_str()), (StatusCode::FORBIDDEN, Some("agent_no_local_api")), "{body}");
+    assert!(body["message"].as_str().unwrap().contains("gxctl auth login https://127.0.0.1:8841"), "{body}");
+
     // Asked directly, the server is "this node".
     let (_, v) = call(&server, "GET", "/cluster/status", None, &[]).await;
     assert_eq!(v["node_id"], server_id.as_str(), "{v}");

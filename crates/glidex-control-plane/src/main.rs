@@ -287,6 +287,9 @@ async fn main() {
     // a server, which authenticates them (spec/clustering-ui.md §3.6).
     if vm_manager.node_link().is_some() {
         println!("  Agent node: serving VMs for the cluster; node API on {}", vm_manager.cluster().map(|c| c.identity.advertise.to_string()).unwrap_or_default());
+        // A standalone process before a restart into agent mode left its
+        // API socket: gone, so gxctl finds no API here and says where to log in.
+        let _ = std::fs::remove_file(cfg.api_socket_path());
         let mut servers = Vec::new();
         let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
         match auth::AuthService::new(vm_manager.database(), cfg.clone()) {
@@ -432,6 +435,10 @@ async fn main() {
     for s in servers {
         let _ = s.await;
     }
+    // Asked to come back in another mode (now a cluster agent).
+    if glidex_control_plane::restart::is_requested() {
+        std::process::exit(glidex_control_plane::restart::EXIT_CODE);
+    }
 }
 
 async fn shutdown_signal() {
@@ -455,6 +462,7 @@ async fn shutdown_signal() {
     tokio::select! {
         _ = ctrl_c => {},
         _ = terminate => {},
+        _ = glidex_control_plane::restart::requested() => {},
     }
 
     println!();
