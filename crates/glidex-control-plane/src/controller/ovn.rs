@@ -153,11 +153,13 @@ impl VmManager {
                 return;
             }
         };
+        let sb_conn = conn.clone();
         let r = tokio::task::spawn_blocking(move || {
             let exec = SystemExec::new();
             glidex_ovn::sync(&glidex_ovn::Nb::new(&exec, conn), &desired)
         })
         .await;
+        self.forget_stale_chassis(sb_conn).await;
         match r {
             Ok(Ok(rep)) => {
                 if !rep.changed.is_empty() {
@@ -167,6 +169,31 @@ impl VmManager {
             }
             Ok(Err(e)) => tracing::warn!("OVN northbound sync: {}", e),
             Err(e) => tracing::warn!("OVN sync task: {}", e),
+        }
+    }
+
+    /// Chassis of nodes that are no longer members. Removal deletes a node's
+    /// chassis, but a removed node whose `ovn-controller` still runs registers
+    /// it again: its OVN certificate is the cluster CA's, and OVN doesn't read
+    /// glidex's deny-list. The leader deletes them again, about once a minute.
+    async fn forget_stale_chassis(&self, conn: NbConn) {
+        static LAST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let now = crate::tenancy::now();
+        if now.saturating_sub(LAST.load(std::sync::atomic::Ordering::Relaxed)) < 60 {
+            return;
+        }
+        LAST.store(now, std::sync::atomic::Ordering::Relaxed);
+        let sb = self.ovn_endpoints(glidex_ovs::ovn::SB_PORT);
+        let Ok(Ok(chassis)) = tokio::task::spawn_blocking(move || glidex_ovn::view::chassis(&SystemExec::new(), &conn, &sb)).await else { return };
+        let names: Vec<String> = chassis.into_iter().map(|c| c.name).collect();
+        for (chassis, node) in stale_chassis(&names, &self.nodes().list().unwrap_or_default()) {
+            let netd = self.netd.clone();
+            let args = glidex_netd::proto::ForgetOvnMemberArgs { address: String::new(), chassis: chassis.clone(), server: false };
+            match tokio::task::spawn_blocking(move || netd.call::<()>(glidex_netd::proto::Op::ForgetOvnMember(args))).await {
+                Ok(Ok(())) => tracing::warn!(node, chassis, "deleted the OVN chassis of a node that is no longer a member: its ovn-controller still runs (on it: `sudo glidex-install --leave`)"),
+                Ok(Err(e)) => tracing::warn!(node, chassis, "deleting a stale OVN chassis: {}", e),
+                Err(e) => tracing::warn!("deleting a stale OVN chassis: {}", e),
+            }
         }
     }
 
@@ -536,5 +563,38 @@ impl VmManager {
             })
             .collect();
         json!({ "enabled": true, "nodes": out })
+    }
+}
+
+/// The glidex chassis (`node:<id>`) whose node is a tombstone (removed,
+/// forgotten, departed), with the node's name. A chassis of a node the
+/// cluster doesn't know is left alone (one joining, say).
+pub(crate) fn stale_chassis(chassis: &[String], nodes: &[crate::node::Node]) -> Vec<(String, String)> {
+    chassis
+        .iter()
+        .filter_map(|c| {
+            let id = c.strip_prefix("node:")?;
+            let n = nodes.iter().find(|n| n.meta.id == id)?;
+            n.status.phase.is_tombstone().then(|| (c.clone(), n.spec.name.clone()))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod stale_chassis_tests {
+    use super::stale_chassis;
+    use crate::node::{Node, NodePhase, NodeRole, NodeSpec};
+
+    fn node(id: &str, name: &str, phase: NodePhase) -> Node {
+        let mut n = Node::new(id, NodeSpec { name: name.into(), role: NodeRole::Agent, unschedulable: false, labels: Default::default(), br_int_datapath: Default::default(), bridge_mappings: Default::default() });
+        n.status.phase = phase;
+        n
+    }
+
+    #[test]
+    fn only_chassis_of_nodes_that_left_go() {
+        let nodes = [node("a", "live", NodePhase::Active), node("b", "removed", NodePhase::Removed), node("c", "forgotten", NodePhase::Forgotten), node("d", "draining", NodePhase::Draining)];
+        let chassis = ["node:a", "node:b", "node:c", "node:d", "node:unknown", "not-glidex"].map(String::from);
+        assert_eq!(stale_chassis(&chassis, &nodes), vec![("node:b".to_string(), "removed".to_string()), ("node:c".to_string(), "forgotten".to_string())]);
     }
 }

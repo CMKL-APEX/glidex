@@ -302,7 +302,7 @@ impl Cluster {
         let Ok(txn) = self.db.begin_read() else { return Err("store unavailable") };
         let denied = txn.open_table(crate::store::TableId::NodeDenylist.definition()).ok().is_some_and(|t| t.get(peer.serial.as_str()).ok().flatten().is_some());
         if denied {
-            return Err("certificate revoked");
+            return Err(super::server::REVOKED);
         }
         // A node that has not received its first snapshot has an empty
         // registry and holds nothing to protect; it must still be able to

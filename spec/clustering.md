@@ -304,15 +304,23 @@ authenticate; it rejoins with its own identity (§5.7).
       `node_denylist`.
    6. **CA rotation:** if the node was a server, the leader starts a CA
       rotation (§12.5), since the node held the CA key.
-3. On the host, `glidex-install --leave` (or `gxctl cluster leave` there,
-   run as root) stops the node role, asks netd to `leave_ovn` (§11.3),
-   deletes the certificate, key and `node.db`, and removes the `cluster`
-   section. The host is then an empty standalone host, or can be
-   uninstalled. It refuses until step 2 has committed (it checks its
-   node's phase is `Removed`), and points to `gxctl node remove`: local
-   root on a host has no cluster rights to start a removal (D14). A host
-   whose cluster is gone for good uses the offline path of §5.8.3
-   instead.
+3. On the host, `glidex-install --leave` makes it an empty standalone
+   host. It works offline, with the control plane stopped
+   (`glidex-control-plane --leave-removed`, run as the service user): an
+   agent has no API of its own, and once removed the servers refuse it,
+   so `gxctl cluster leave` can't reach it. It refuses until step 2 has
+   committed: the node's cached record says `Removed` (or `Departed`,
+   `Forgotten`), or, when the write that removed it never reached the
+   node, a server answers the node's certificate with `401 node_removed`
+   (servers name a revoked certificate so, and say to run this). Local
+   root on a host still has no cluster rights to start a removal (D14).
+   Then it asks netd to `leave_ovn` (§11.3) and deletes the identity,
+   certificates and key. A host whose cluster is gone for good uses the
+   offline path of §5.8.3 instead; it leaves OVN the same way.
+   A removed node whose `ovn-controller` keeps running registers its
+   chassis again (its OVN certificate is the cluster CA's): the leader
+   deletes the chassis of tombstoned nodes about once a minute, with a
+   warning naming the node.
 
 ### 5.6 Lost nodes: forget
 
