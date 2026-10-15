@@ -216,7 +216,14 @@ browser ─HTTPS─▶ glidex-ui (agent) ─ui.sock─▶ control plane (agent)
 - `gxctl` on an agent's API socket (peer uid) is not covered: a server
   can't verify a Unix uid of another host. `gxctl` users on agents log in
   to a server (`gxctl auth login`, spec/gxctl-auth.md). This matches C D14:
-  break-glass through `api.sock` gives no cluster rights on an agent.
+  break-glass through `api.sock` gives no cluster rights on an agent. An
+  agent serves no `api.sock`; a host that becomes one (join, rejoin or an
+  approved import, through its API) restarts its control plane into agent
+  mode once it has answered (exit code 75, `Restart=on-failure`; started
+  by hand, it says to restart). Until then, a local login that the
+  cluster refuses answers `403 agent_no_local_api` with the servers to
+  log in to, and `gxctl` on a host with only a UI socket says the same
+  instead of trying `localhost:8841`.
 
 ### 3.7 Live updates
 
