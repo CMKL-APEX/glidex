@@ -1095,6 +1095,8 @@ T2–T7 get their own task lists when T1 lands; per-protocol code under
 - **GPUs, DPUs and other server-attached accelerators**: modelling,
   scheduling and granting them to tenants; today's PCI grants (D25)
   stay.
+- **Federation between fleets**: for now a tenant or directory that
+  wants clusters of several fleets registers in each (D37).
 - **Consolidated billing** per fleet account: usage reported by the
   account's clusters and tenants (metering.md) gathered at the fleet,
   priced and invoiced per account.
@@ -1128,8 +1130,6 @@ T2–T7 get their own task lists when T1 lands; per-protocol code under
     owns its registrations (D38).
 12. **Approval defaults:** one approval per directory and per operator
     tenant; their user tenants and clusters need no second one (D36).
+13. **Fleets of fleets:** later (§20); registering in several fleets
+    covers it until then.
 
-## 22. Open questions
-
-1. **Fleets of fleets.** A tenant can register in several fleets
-   (D37), so no federation between fleets is designed. Is that enough?
