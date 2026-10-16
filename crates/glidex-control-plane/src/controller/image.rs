@@ -92,6 +92,12 @@ impl VmManager {
                     img.status = ImageStatus::Ready;
                     self.images.put_image(&img)?;
                     self.image_event(&img.id, EventKind::Normal, "FileFound", "the image's file is back");
+                } else if self.cluster().is_some() && self.image_caches(&img.id).iter().any(|(n, r)| *n != self.local_node_id() && r.phase == crate::controller::image_cache::CachePhase::Ready) {
+                    // Another node has it (§9.2.2).
+                    img.status = ImageStatus::Ready;
+                    self.images.put_image(&img)?;
+                    self.image_event(&img.id, EventKind::Normal, "FileFound", "another node has a copy");
+                    return Ok(Some(Duration::from_secs(1)));
                 }
                 Ok(None)
             }

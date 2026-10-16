@@ -916,7 +916,10 @@ impl VmManager {
             tracing::warn!("could not report this node: {}", e);
         }
         let persisted = self.store.load_all()?;
-        self.images.initialize();
+        // A copy on another node is where the file is, not a missing one.
+        let me = self.local_node_id();
+        let clustered = self.cluster().is_some();
+        self.images.initialize(|img| clustered && self.image_caches(&img.id).iter().any(|(n, r)| *n != me && r.phase == crate::controller::image_cache::CachePhase::Ready));
         {
             let default_project = self.projects.default_project_id();
             let mut vms = self.vms.write().await;

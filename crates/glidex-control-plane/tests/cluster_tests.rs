@@ -573,6 +573,12 @@ async fn image_copies_go_where_they_are_wanted_and_spare_files_are_used() {
     assert_eq!(s, StatusCode::ACCEPTED, "{e}");
     let server_file = server.manager.images().image_path("img-here");
     wait_until("the server's copy to go", || async { !server_file.exists() && server.manager.image_caches("img-here").len() == 1 }).await;
+    // Another node has the only copy: the image is ready, not missing, even
+    // after a restart checked the server's own files.
+    let mut img = server.manager.images().get_image("img-here").unwrap();
+    img.status = glidex_control_plane::images::ImageStatus::Missing;
+    server.manager.images().put_image(&img).unwrap();
+    wait_until("the image ready again", || async { server.manager.images().get_image("img-here").unwrap().status == glidex_control_plane::images::ImageStatus::Ready }).await;
     let (s, e) = call(&server, "DELETE", "/images/img-here/copies/agent1", None, &[]).await;
     assert_eq!(s, StatusCode::CONFLICT, "{e}");
     assert!(e["message"].as_str().unwrap().contains("last ready copy"), "{e}");

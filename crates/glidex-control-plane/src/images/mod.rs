@@ -860,8 +860,9 @@ impl ImageManager {
 
     /// Reconcile records with files and resume interrupted downloads.
     /// Never deletes anything: orphans are only logged, and records whose
-    /// file is gone are marked missing (spec §2).
-    pub fn initialize(self: &Arc<Self>) {
+    /// file is gone are marked missing (spec §2), unless `held_elsewhere`
+    /// says another node has a ready copy (clustering.md §9.2.2).
+    pub fn initialize(self: &Arc<Self>, held_elsewhere: impl Fn(&Image) -> bool) {
         let mut resume = Vec::new();
         let mut known = std::collections::HashSet::new();
         let images: Vec<Image> = self.images.read().unwrap().values().cloned().collect();
@@ -873,6 +874,7 @@ impl ImageManager {
             }
             let exists = self.image_file(&img).exists();
             let new_status = match &img.status {
+                ImageStatus::Ready if !exists && held_elsewhere(&img) => None,
                 ImageStatus::Ready | ImageStatus::Missing if !exists => Some(ImageStatus::Missing),
                 ImageStatus::Missing if exists => Some(ImageStatus::Ready),
                 ImageStatus::Downloading { .. } | ImageStatus::Verifying => {
