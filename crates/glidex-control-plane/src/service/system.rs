@@ -5,7 +5,8 @@ use super::{Call, ServiceResult};
 use crate::api::{auth_error, App};
 use crate::auth::Principal;
 use crate::authz::Ent;
-use glidex_api::proto::glidex::system::v1::{EntityRef, GetServerInfoResponse, LoginMethods, ProjectRole, WhoAmIResponse};
+use glidex_api::proto::glidex::api::v1::EntityRef;
+use glidex_api::proto::glidex::system::v1::{GetServerInfoResponse, LoginMethods, ProjectRole, WhoAmIResponse};
 
 /// `GetServerInfo` / `GET /auth/server-info` (spec/gxctl-auth.md §7.1):
 /// what client login profiles bind to. Public.

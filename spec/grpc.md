@@ -265,8 +265,13 @@ equivalent test suite; until then it stays WebSocket.
 
 ## 10. gxctl
 
-- `gxctl` uses the generated `connectrpc` clients from `glidex-api`
-  (gRPC protocol) for ported families, REST for the rest. The profile file, the TLS trust ladder, fingerprint pins and
+- `gxctl` uses the generated `connectrpc` clients from `glidex-api` for
+  ported families, REST for the rest. They speak the **Connect protocol**
+  (binary protobuf) through `client::RpcTransport`, which sends them over
+  gxctl's own HTTP/1.1 connection: Connect's unary calls are plain POSTs,
+  so `api.sock` with peer identity, the TLS trust ladder and pins, and the
+  token all work unchanged. Streaming families will need gRPC over
+  HTTP/2 (G4). The profile file, the TLS trust ladder, fingerprint pins and
   `token_command` ([gxctl-auth.md](gxctl-auth.md)) are unchanged: the
   gRPC channel is built from the same `glidex_tls::ClientTls`.
 - Local `gxctl` talks gRPC over `api.sock` (h2c), so peer identity works
@@ -343,8 +348,10 @@ equivalent test suite; until then it stays WebSocket.
 | CI (G-D9) | `.github/workflows/rust.yml` job `proto` |
 | Tests | `tests/rpc_tests.rs`; `cluster_tests.rs::rpc_reads_are_answered_by_the_server_that_takes_them`; unit tests in `api/rpc` and `glidex-api` |
 
-Not yet exercised: forwarding a **write** RPC with its trailers (G0 has
-no write RPC; the first is `TenantService.Create` in tenancy.md T0, whose
-tests cover it), reflection, the TypeScript generation check (starts with
-G4, when the UI first uses Connect-ES).
+Forwarding a **write** RPC with its trailers is covered since T0
+(`cluster_tests.rs::rpc_writes_on_a_follower_reach_the_leader_with_their_trailers`,
+which fails if the forward drops trailers), and gxctl's generated clients
+over api.sock by `gxctl` `rpc_clients_over_the_unix_socket`. Not yet
+exercised: reflection, the TypeScript generation check (starts with G4,
+when the UI first uses Connect-ES).
 

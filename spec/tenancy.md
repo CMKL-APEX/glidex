@@ -1,6 +1,6 @@
 # Tenants, directories and operators (design)
 
-Status: **design**, nothing implemented. Builds on
+Status: **design**; T0 is implemented (§23). Builds on
 [security.md](security.md) §5–§7 (authentication, projects and teams,
 Cedar) and [clustering.md](clustering.md) §12 (cluster authorization).
 It lifts the "federation and SCIM provisioning" item of
@@ -497,14 +497,15 @@ How links reach:
 ```cedar
 // D1, D15: a tenant's resources are its members'; the directory owner
 // may be linked in; an operator reaches what runs on its cluster.
+// `context.tenant` is the tenant owning the resource, which the control
+// plane fills in for every request (a request has one resource).
 @id("base.tenant-boundary")
 forbid (principal, action in Glidex::Action::"tenant-scoped", resource)
 unless {
-  (resource is Glidex::Tenant && principal in resource) ||
-  (resource has tenant && (
-     principal in resource.tenant ||
-     principal in resource.tenant.directory.owner ||
-     (context has cluster && principal in context.cluster.operator && resource in context.cluster)))
+  context has tenant && (
+    principal in context.tenant ||
+    principal in context.tenant.directory.owner ||
+    (context has cluster && principal in context.cluster.operator && resource in context.cluster))
 };
 
 // D4: a cluster's hosts belong to its operator.
@@ -537,7 +538,7 @@ unless { resource has fleet && principal.fleets.contains(resource.fleet) };
 // A suspended tenant's resources can't be acted on by its members.
 @id("base.tenant-suspended")
 forbid (principal, action in Glidex::Action::"tenant-scoped", resource)
-when { resource has tenant && resource.tenant.suspended && principal in resource.tenant };
+when { context has tenant && context.tenant.suspended && principal in context.tenant };
 
 // D25: project networks are shared within one tenant only.
 @id("base.share-same-tenant")
@@ -603,7 +604,7 @@ deletes.
 | `directory-auditor` | directory | `directory.read` |
 | `fleet-admin` | fleet | `fleet.registry`: accounts and their registry rights, approving and suspending registrations, `fleet_labels`, the fleet's settings; members of the fleet directory's owner tenant only |
 | `account-admin` | account (a tenant of the fleet's directory) | `account.register` (create registrations and claim codes, within the account's rights), members, the account's connector; `tenant-admin` of the account |
-| `directory-admin` | directory | `directory-auditor`, `directory.tenants` (tenants, operator flags, self tags, domains, delegation links, fleet registrations), `directory.connectors`, `directory.users`, `directory.policy`; owner members only (D7) |
+| `directory-admin` | directory | `directory-auditor` (which reads every tenant of the directory, its members and bindings), `directory.tenants` (tenants, operator flags, self tags, domains, a tenant's members and bindings so its first admin can be named, fleet registrations), `directory.connectors`, `directory.users`, `directory.policy`; owner members only (D7) |
 
 ## 11. Operators, directory owners and tenants
 
@@ -1132,4 +1133,47 @@ T2–T7 get their own task lists when T1 lands; per-protocol code under
     tenant; their user tenants and clusters need no second one (D36).
 13. **Fleets of fleets:** later (§20); registering in several fleets
     covers it until then.
+
+## 23. Implementation status
+
+T0 is implemented on one host: a cluster that hosts directory `local`,
+operated and owned by tenant `admin`, with tenant `default` holding the
+projects from before tenants.
+
+| Spec | Code |
+|---|---|
+| Directory, tenants, admissions, explicit members; tables and scopes (§4) | `src/tenants.rs`; `store/db.rs` (`Directories`…`TenantMembers`, `TableId::scope()`); `Project.tenant_id` in `src/tenancy.rs` |
+| Schema, markers on every action, base policies, tenant and directory roles (§10) | `policies/`; `authz.rs` (`Tenant`, `Directory` entities, `every_action_has_exactly_one_marker`, `tenancy_boundaries`) |
+| Tenancy context and memberships for every decision | `auth/mod.rs::complete_tenancy` (project tenants, tenant attributes, operator and admissions, memberships from members and links, `context.cluster`/`directory`/`tenant`) |
+| Link boundary for host roles (D4) | `auth/mod.rs::is_member`; `api/access.rs::add_system_binding` (`422 not_operator_member`) |
+| Admission on allocation (`useCluster`, D9) and tenant caps (D19) | `api/mod.rs::Caller::require_admitted` in VM, disk, network and router creates and VM starts; `state.rs::apply_quotas` (`403 tenant_quota_exceeded`) |
+| Migration (§16 steps 1–4, 6–7) | `TenantStore::new` (bootstrap), `AuthService::migrate_tenancy`, `make_administrator`; bootstrap of fresh installs |
+| Tenant and admission API on both transports (§14, §14.1) | protos `glidex/tenancy/v1/tenancy.proto`; `src/service/tenancy.rs`; REST `api/tenants.rs`; RPC `api/rpc/tenancy.rs` |
+| gxctl `tenant`, `admission` on the generated connectrpc clients | `bin/gxctl/tenancy.rs`, `client::RpcTransport` |
+| UI | capability checks on `Directory`/`Tenant` (`session.tsx`) |
+| Tests | `tests/tenancy_tests.rs`; `cluster_tests.rs::rpc_writes_on_a_follower_reach_the_leader_with_their_trailers`; gxctl `rpc_clients_over_the_unix_socket`; unit tests in `authz.rs`, `tenants.rs`, `auth/mod.rs` |
+
+Decided while building:
+- **`Project in [Cluster, Tenant]`**, resources `in [Project]`: the
+  cluster is the one deciding the request, so a cluster role covers the
+  projects using that cluster as this cluster sees them. Each cluster only
+  holds its own resources, so this reaches nothing elsewhere (§10.1 keeps
+  the multi-cluster wording).
+- **The resource's tenant is in the context** (`context.tenant`), which
+  keeps the boundary one rule for every resource type.
+- **Directory admins read and bootstrap tenants** of their directory
+  (members, bindings), but act inside one only through a delegated
+  tenant role (D15).
+- **Step-up** applies to deleting tenants and to admissions; a personal
+  token acting as its owner never counts as a recent login
+  (security.md §7.5).
+
+Not yet in T0, next to do:
+- the UI's Tenants and Admissions pages, and a tenant column in lists;
+- `tenant_grants` on host networks and PCI devices (D23);
+- per-cluster project quotas (on one cluster, a project's quotas are its
+  quotas for this cluster);
+- moving guest credentials' table to directory scope (marked, not yet
+  separated) and names unique per tenant for disks and project networks
+  (projects already are).
 

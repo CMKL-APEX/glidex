@@ -573,7 +573,7 @@ export type EntityType =
   | "Credential"
   | "Image"
   | "Network"
-  | "PciDevice";
+  | "PciDevice" | "Tenant" | "Directory";
 
 /** Entity types that take no id: the cluster, and the host serving the request. */
 export type SingletonEntityType = "Cluster" | "Host";

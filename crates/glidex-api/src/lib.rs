@@ -68,7 +68,9 @@ mod tests {
         assert_eq!(o.rest, Some(("GET", "/auth/server-info")));
         let w = operation("/glidex.system.v1.SystemService/WhoAmI").unwrap();
         assert_eq!(w.rest, None);
-        assert_eq!(services(), vec!["glidex.system.v1.SystemService"]);
+        assert_eq!(services(), vec!["glidex.system.v1.SystemService", "glidex.tenancy.v1.TenantService", "glidex.tenancy.v1.AdmissionService"]);
+        let w = operation("/glidex.tenancy.v1.TenantService/CreateTenant").unwrap();
+        assert_eq!((w.action, w.kind, w.rest), ("createTenant", Kind::Write, Some(("POST", "/tenants"))));
     }
 
     #[test]

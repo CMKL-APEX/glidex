@@ -111,6 +111,9 @@ pub enum Ent {
     Image(String),
     Network(String),
     PciDevice(String),
+    /// spec/tenancy.md §10.1.
+    Tenant(String),
+    Directory(String),
 }
 
 impl Ent {
@@ -137,6 +140,8 @@ impl Ent {
             Ent::Image(_) => "Image",
             Ent::Network(_) => "Network",
             Ent::PciDevice(_) => "PciDevice",
+            Ent::Tenant(_) => "Tenant",
+            Ent::Directory(_) => "Directory",
         }
     }
 
@@ -155,7 +160,9 @@ impl Ent {
             | Ent::Credential(s)
             | Ent::Image(s)
             | Ent::Network(s)
-            | Ent::PciDevice(s) => Cow::Borrowed(s),
+            | Ent::PciDevice(s)
+            | Ent::Tenant(s)
+            | Ent::Directory(s) => Cow::Borrowed(s),
         }
     }
 
@@ -175,6 +182,8 @@ impl Ent {
             "Image" => Ent::Image(id),
             "Network" => Ent::Network(id),
             "PciDevice" => Ent::PciDevice(id),
+            "Tenant" => Ent::Tenant(id),
+            "Directory" => Ent::Directory(id),
             _ => return None,
         })
     }
@@ -211,11 +220,96 @@ pub struct EntitySet {
 }
 
 impl EntitySet {
+    /// The cluster and this host, with the defaults of a host that is its
+    /// own directory (tenant `admin` owns it and operates the cluster).
+    /// `AuthService` replaces them with the stored tenants before deciding.
     pub fn new() -> Self {
         let mut s = Self::default();
-        s.add(Ent::Cluster, json!({}), vec![]);
+        let admin = crate::tenants::ADMIN_TENANT;
+        s.directory(crate::tenants::LOCAL_DIRECTORY, admin);
+        s.tenant(admin, crate::tenants::LOCAL_DIRECTORY, true, true, false, true);
+        s.cluster(admin, &[admin.to_string()]);
         s.add(Ent::Host, json!({}), vec![Ent::Cluster]);
         s
+    }
+
+    pub fn directory(&mut self, id: &str, owner: &str) -> &mut Self {
+        self.add(Ent::Directory(id.into()), json!({ "owner": Ent::Tenant(owner.into()).json_ref() }), vec![])
+    }
+
+    /// A tenant; `here` is whether it may allocate on this cluster (its
+    /// `clusters` opt-ins, spec/tenancy.md D9).
+    pub fn tenant(&mut self, id: &str, directory: &str, owns_directory: bool, operator: bool, suspended: bool, here: bool) -> &mut Self {
+        let clusters = if here { vec![Ent::Cluster.json_ref()] } else { Vec::new() };
+        self.add(
+            Ent::Tenant(id.into()),
+            json!({
+                "directory": Ent::Directory(directory.into()).json_ref(),
+                "owns_directory": owns_directory,
+                "operator": operator,
+                "suspended": suspended,
+                "clusters": clusters,
+            }),
+            vec![Ent::Directory(directory.into())],
+        )
+    }
+
+    pub fn cluster(&mut self, operator: &str, admitted: &[String]) -> &mut Self {
+        let admitted: Vec<Value> = admitted.iter().map(|t| Ent::Tenant(t.clone()).json_ref()).collect();
+        self.add(Ent::Cluster, json!({ "operator": Ent::Tenant(operator.into()).json_ref(), "admitted": admitted }), vec![])
+    }
+
+    /// Projects in the set.
+    pub fn projects(&self) -> Vec<String> {
+        self.entities.keys().filter_map(|e| if let Ent::Project(id) = e { Some(id.clone()) } else { None }).collect()
+    }
+
+    /// Users in the set.
+    pub fn users(&self) -> Vec<String> {
+        self.entities.keys().filter_map(|e| if let Ent::User(id) = e { Some(id.clone()) } else { None }).collect()
+    }
+
+    /// Tenants in the set.
+    pub fn tenants(&self) -> Vec<String> {
+        self.entities.keys().filter_map(|e| if let Ent::Tenant(id) = e { Some(id.clone()) } else { None }).collect()
+    }
+
+    /// Give a project its tenant (attribute and parent).
+    pub fn set_project_tenant(&mut self, project: &str, tenant: &str) -> &mut Self {
+        let t = Ent::Tenant(tenant.into());
+        self.add(Ent::Project(project.into()), json!({ "tenant": t.json_ref() }), vec![Ent::Cluster, t])
+    }
+
+    /// Make `e` (a user, team or token) a member of `tenants`.
+    pub fn add_parents(&mut self, e: &Ent, tenants: &[String]) -> &mut Self {
+        if let Some((_, parents)) = self.entities.get_mut(e) {
+            for t in tenants {
+                let t = Ent::Tenant(t.clone());
+                if !parents.contains(&t) {
+                    parents.push(t);
+                }
+            }
+        }
+        self
+    }
+
+    /// The first `Project` among `e` and its ancestors.
+    pub fn project_of(&self, e: &Ent) -> Option<String> {
+        let mut todo = vec![e.clone()];
+        let mut seen = Vec::new();
+        while let Some(x) = todo.pop() {
+            if let Ent::Project(id) = &x {
+                return Some(id.clone());
+            }
+            if seen.contains(&x) {
+                continue;
+            }
+            if let Some((_, parents)) = self.entities.get(&x) {
+                todo.extend(parents.iter().cloned());
+            }
+            seen.push(x);
+        }
+        None
     }
 
     /// Add (or replace) an entity with its attributes and parents.
@@ -233,8 +327,16 @@ impl EntitySet {
         self.add(Ent::host_of(id), json!({}), vec![Ent::Cluster])
     }
 
+    /// A project, in the `default` tenant until `AuthService` gives it its own.
     pub fn project(&mut self, id: &str) -> &mut Self {
-        self.add(Ent::Project(id.into()), json!({}), vec![Ent::Cluster])
+        if self.contains(&Ent::Project(id.into())) {
+            return self;
+        }
+        let d = crate::tenants::DEFAULT_TENANT;
+        if !self.contains(&Ent::Tenant(d.into())) {
+            self.tenant(d, crate::tenants::LOCAL_DIRECTORY, false, false, false, true);
+        }
+        self.set_project_tenant(id, d)
     }
 
     pub fn team(&mut self, id: &str) -> &mut Self {
@@ -646,6 +748,11 @@ pub fn check_site_id(id: &str) -> Result<(), AuthzError> {
 
 /// Role templates and the resource kind each may be linked to.
 pub const PROJECT_ROLES: [&str; 4] = ["role.viewer", "role.operator", "role.editor", "role.owner"];
+/// Roles linked on a `Tenant` and on a `Directory` (spec/tenancy.md §10.5).
+pub const TENANT_ROLES: [&str; 2] = ["role.tenant-admin", "role.tenant-auditor"];
+pub const DIRECTORY_ROLES: [&str; 2] = ["role.directory-admin", "role.directory-auditor"];
+/// Marker groups; every concrete action is in exactly one.
+pub const MARKERS: [&str; 4] = ["tenant-scoped", "host-scoped", "directory-scoped", "shared"];
 pub const HOST_ROLES: [&str; 5] =
     ["role.auditor", "role.image-admin", "role.net-admin", "role.system-admin", "grant.host-paths"];
 
@@ -655,6 +762,27 @@ mod tests {
 
     fn auth(age: i64) -> AuthContext {
         AuthContext { method: "pam".into(), transport: "tcp".into(), age_secs: age, source_ip: None }
+    }
+
+    /// A query as `AuthService` would make it on a host that is its own
+    /// directory: every user a member of `default` and of the operator
+    /// `admin`, with the cluster, directory and resource tenant in context.
+    fn tq(p: Ent, a: &str, r: Ent, auth: AuthContext, mut es: EntitySet) -> Query {
+        for u in es.users() {
+            es.add_parents(&Ent::User(u), &["default".into(), "admin".into()]);
+        }
+        let tenant = match &r {
+            Ent::Tenant(t) => Some(t.clone()),
+            _ => es.project_of(&r).map(|_| "default".to_string()),
+        };
+        if !es.contains(&Ent::Tenant("default".into())) {
+            es.tenant("default", "local", false, false, false, true);
+        }
+        let mut q = Query::new(p, a, r, auth, es).with("cluster", Ent::Cluster).with("directory", Ent::Directory("local".into()));
+        if let Some(t) = tenant {
+            q = q.with("tenant", Ent::Tenant(t));
+        }
+        q
     }
 
     fn link(id: &str, t: &str, p: Ent, r: Ent) -> Link {
@@ -673,12 +801,77 @@ mod tests {
         es
     }
 
+    /// spec/tenancy.md §10.1: every concrete action is in exactly one
+    /// marker group, so base.cedar bounds every request by one of the
+    /// tenant, operator or directory rules (or none, for `shared`).
+    #[test]
+    fn every_action_has_exactly_one_marker() {
+        let e = Engine::new().unwrap();
+        let ents = e.schema().action_entities().unwrap();
+        let mut checked = 0;
+        for a in e.schema().actions() {
+            let name = a.id().unescaped().to_string();
+            // Groups and roles are quoted names with dots or dashes.
+            if name.contains('.') || name.contains('-') || MARKERS.contains(&name.as_str()) {
+                continue;
+            }
+            let anc: Vec<String> = ents.ancestors(a).map(|i| i.map(|u| u.id().unescaped().to_string()).collect()).unwrap_or_default();
+            let markers: Vec<&String> = anc.iter().filter(|g| MARKERS.contains(&g.as_str())).collect();
+            assert_eq!(markers.len(), 1, "{name}: markers {markers:?}");
+            checked += 1;
+        }
+        assert!(checked > 130, "{checked}");
+    }
+
+    /// The tenancy boundaries themselves, on the engine (spec/tenancy.md §17).
+    #[test]
+    fn tenancy_boundaries() {
+        let e = engine_with(&[
+            link("link.o", "role.owner", Ent::User("bob".into()), Ent::Project("pb".into())),
+            link("link.n", "role.net-admin", Ent::User("bob".into()), Ent::Cluster),
+            link("link.d", "role.directory-admin", Ent::User("bob".into()), Ent::Directory("local".into())),
+        ]);
+        // pb in tenant lab; bob a member of lab only.
+        let mut es = EntitySet::new();
+        es.tenant("lab", "local", false, false, false, true).tenant("acme", "local", false, false, false, false);
+        es.set_project_tenant("pb", "lab").set_project_tenant("pa", "acme");
+        es.in_project(Ent::Vm("vb".into()), "pb").in_project(Ent::Vm("va".into()), "pa");
+        es.user("bob", false, &[]);
+        es.add_parents(&Ent::User("bob".into()), &["lab".into()]);
+        let ctx = |q: Query, t: &str| q.with("cluster", Ent::Cluster).with("directory", Ent::Directory("local".into())).with("tenant", Ent::Tenant(t.into()));
+        let bob = |a: &str, r: Ent| Query::new(Ent::User("bob".into()), a, r, auth(0), es.clone());
+        assert!(e.check(&ctx(bob("startVm", Ent::Vm("vb".into())), "lab")).allowed);
+        // A role on the wrong tenant's project still hands out nothing.
+        let e2 = engine_with(&[link("link.x", "role.owner", Ent::User("bob".into()), Ent::Project("pa".into()))]);
+        let d = e2.check(&ctx(bob("startVm", Ent::Vm("va".into())), "acme"));
+        assert!(d.denied_by("base.tenant-boundary"), "{d:?}");
+        // Host roles need the operator (admin); directory roles the owner (admin).
+        let d = e.check(&bob("installOvs", Ent::Host).with("cluster", Ent::Cluster).with("directory", Ent::Directory("local".into())));
+        assert!(d.denied_by("base.host-operator"), "{d:?}");
+        let d = e.check(&bob("manageUsers", Ent::Directory("local".into())).with("cluster", Ent::Cluster).with("directory", Ent::Directory("local".into())));
+        assert!(d.denied_by("base.directory-owner"), "{d:?}");
+        // Admission: lab is admitted here (in `admitted` and opted in), acme isn't.
+        es.cluster("admin", &["admin".into(), "lab".into()]);
+        let place = |p: &str| {
+            Query::new(Ent::User("bob".into()), "useCluster", Ent::Cluster, auth(0), es.clone())
+                .with("cluster", Ent::Cluster)
+                .with("directory", Ent::Directory("local".into()))
+                .with("project", Ent::Project(p.into()))
+        };
+        assert!(e.check(&place("pb")).allowed);
+        assert!(e.check(&place("pa")).denied_by("base.admission"));
+        // A suspended tenant's members can't act on its resources.
+        es.tenant("lab", "local", false, false, true, true);
+        let d = e.check(&ctx(Query::new(Ent::User("bob".into()), "startVm", Ent::Vm("vb".into()), auth(0), es.clone()), "lab"));
+        assert!(d.denied_by("base.tenant-suspended"), "{d:?}");
+    }
+
     #[test]
     fn shipped_policies_validate_strictly() {
         let e = Engine::new().unwrap();
         let listing = e.listing();
         assert!(listing.iter().any(|p| p.id == "base.step-up" && p.source == PolicySource::Base));
-        assert_eq!(listing.iter().filter(|p| p.template).count(), 9);
+        assert_eq!(listing.iter().filter(|p| p.template).count(), 13);
     }
 
     #[test]
@@ -687,7 +880,7 @@ mod tests {
         let mut es = base_entities();
         es.user("alice", false, &["t".into()]).user("bob", false, &[]);
         es.in_project(Ent::Vm("v".into()), "pa");
-        let q = |who: &str| Query::new(Ent::User(who.into()), "startVm", Ent::Vm("v".into()), auth(0), es.clone());
+        let q = |who: &str| tq(Ent::User(who.into()), "startVm", Ent::Vm("v".into()), auth(0), es.clone());
         let d = e.check(&q("alice"));
         assert!(d.allowed, "{:?}", d);
         assert_eq!(d.policies, vec!["link.1"]);
@@ -699,7 +892,7 @@ mod tests {
         let e = engine_with(&[link("link.a", "role.auditor", Ent::User("aud".into()), Ent::Cluster)]);
         let mut es = base_entities();
         es.user("aud", false, &[]).in_project(Ent::Vm("v".into()), "pb");
-        let q = |a: &str| Query::new(Ent::User("aud".into()), a, Ent::Vm("v".into()), auth(0), es.clone());
+        let q = |a: &str| tq(Ent::User("aud".into()), a, Ent::Vm("v".into()), auth(0), es.clone());
         assert!(e.check(&q("readVm")).allowed);
         assert!(!e.check(&q("startVm")).allowed);
         assert!(!e.check(&q("openConsole")).allowed);
@@ -717,7 +910,7 @@ mod tests {
         let mut es = base_entities();
         es.user("hostadm", false, &[]).user("clusteradm", false, &[]).user("aud", false, &[]);
         es.host(LOCAL_ID).host("n2");
-        let q = |who: &str, action: &str, res: Ent| Query::new(Ent::User(who.into()), action, res, auth(0), es.clone());
+        let q = |who: &str, action: &str, res: Ent| tq(Ent::User(who.into()), action, res, auth(0), es.clone());
         // A grant on n2's host covers n2 only.
         assert!(e.check(&q("hostadm", "installOvs", Ent::Node("n2".into()))).allowed);
         assert!(!e.check(&q("hostadm", "installOvs", Ent::Host)).allowed, "the local host is another node");
@@ -731,7 +924,7 @@ mod tests {
         // Host roles say nothing about projects.
         let mut es2 = es.clone();
         es2.in_project(Ent::Vm("v".into()), "pa");
-        assert!(!e.check(&Query::new(Ent::User("aud".into()), "readVm", Ent::Vm("v".into()), auth(0), es2)).allowed);
+        assert!(!e.check(&tq(Ent::User("aud".into()), "readVm", Ent::Vm("v".into()), auth(0), es2)).allowed);
     }
 
     #[test]
@@ -739,7 +932,7 @@ mod tests {
         let e = engine_with(&[link("link.n", "role.net-admin", Ent::User("n".into()), Ent::Host)]);
         let mut es = base_entities();
         es.user("n", false, &[]);
-        let q = |age| Query::new(Ent::User("n".into()), "installOvs", Ent::Host, auth(age), es.clone());
+        let q = |age| tq(Ent::User("n".into()), "installOvs", Ent::Host, auth(age), es.clone());
         assert!(e.check(&q(600)).allowed);
         let d = e.check(&q(601));
         assert!(d.denied_by("base.step-up"), "{:?}", d);
@@ -753,7 +946,7 @@ mod tests {
         ]);
         let mut es = base_entities();
         es.user("u", true, &[]).token("t", None, true);
-        let q = |p: Ent| Query::new(p, "readProject", Ent::Project("pa".into()), auth(0), es.clone());
+        let q = |p: Ent| tq(p, "readProject", Ent::Project("pa".into()), auth(0), es.clone());
         assert!(e.check(&q(Ent::User("u".into()))).denied_by("base.disabled-user"));
         assert!(e.check(&q(Ent::Token("t".into()))).denied_by("base.expired-token"));
     }
@@ -772,7 +965,7 @@ mod tests {
         es.network("shared", Some("pa"), false, &[], &["pb".into()]);
         es.network("hostnet", None, false, &["pa".into()], &[]);
         let q = |p: &str, a: &str, r: Ent, proj: &str| {
-            Query::new(Ent::User(p.into()), a, r, auth(0), es.clone()).with("project", Ent::Project(proj.into()))
+            tq(Ent::User(p.into()), a, r, auth(0), es.clone()).with("project", Ent::Project(proj.into()))
         };
         assert!(e.check(&q("o", "useDisk", Ent::Disk("d".into()), "pa")).allowed);
         assert!(e.check(&q("o", "useDisk", Ent::Disk("d".into()), "pb")).denied_by("base.same-project"));
@@ -782,7 +975,7 @@ mod tests {
         assert!(e.check(&q("o", "useNetwork", Ent::Network("shared".into()), "pb")).allowed);
         assert!(e.check(&q("n", "useNetwork", Ent::Network("hostnet".into()), "pb")).denied_by("base.network-grant"));
         // Project networks can't be granted, only shared.
-        let g = Query::new(Ent::User("n".into()), "grantNetwork", Ent::Network("pnet".into()), auth(0), es.clone());
+        let g = tq(Ent::User("n".into()), "grantNetwork", Ent::Network("pnet".into()), auth(0), es.clone());
         assert!(e.check(&g).denied_by("base.project-network-private"));
         let offer = q("o", "offerNetworkShare", Ent::Network("pnet".into()), "pb");
         assert!(e.check(&offer).allowed);
@@ -798,7 +991,7 @@ mod tests {
         ]);
         let mut es = base_entities();
         es.user("o", false, &[]).user("s", false, &[]);
-        let q = |p: &str| Query::new(Ent::User(p.into()), "exceedQuota", Ent::Project("pa".into()), auth(0), es.clone());
+        let q = |p: &str| tq(Ent::User(p.into()), "exceedQuota", Ent::Project("pa".into()), auth(0), es.clone());
         assert!(!e.check(&q("o")).allowed);
         assert!(e.check(&q("s")).allowed);
     }
@@ -815,7 +1008,7 @@ mod tests {
         e.install(&links, &site).unwrap();
         let mut es = base_entities();
         es.user("o", false, &[]).user("root", false, &[BREAK_GLASS_TEAM.into()]);
-        let q = |p: &str| Query::new(Ent::User(p.into()), "readProject", Ent::Project("pa".into()), auth(0), es.clone());
+        let q = |p: &str| tq(Ent::User(p.into()), "readProject", Ent::Project("pa".into()), auth(0), es.clone());
         assert!(e.check(&q("o")).denied_by("site.lockdown"));
         let d = e.check(&q("root"));
         assert!(d.allowed && d.policies == vec!["base.break-glass"], "{:?}", d);
@@ -857,7 +1050,7 @@ mod tests {
         set.add(bad).unwrap();
         let mut es = base_entities();
         es.user("o", false, &[]);
-        let q = Query::new(Ent::User("o".into()), "readProject", Ent::Project("pa".into()), auth(0), es);
+        let q = tq(Ent::User("o".into()), "readProject", Ent::Project("pa".into()), auth(0), es);
         let d = e.check_with(&set, &q);
         assert!(!d.allowed);
         assert!(!d.errors.is_empty());
@@ -877,7 +1070,7 @@ mod tests {
         let q = |ip: &str| {
             let mut a = auth(0);
             a.source_ip = Some(ip.parse().unwrap());
-            Query::new(Ent::User("o".into()), "openConsole", Ent::Vm("v".into()), a, es.clone())
+            tq(Ent::User("o".into()), "openConsole", Ent::Vm("v".into()), a, es.clone())
         };
         assert!(e.check(&q("10.1.2.3")).allowed);
         assert!(e.check(&q("192.0.2.1")).denied_by("site.campus"));
@@ -888,7 +1081,7 @@ mod tests {
         let e = Engine::new().unwrap();
         let mut es = base_entities();
         es.user("a", false, &[]).user("b", false, &[]);
-        let q = |r: &str| Query::new(Ent::User("a".into()), "manageOwnTokens", Ent::User(r.into()), auth(0), es.clone());
+        let q = |r: &str| tq(Ent::User("a".into()), "manageOwnTokens", Ent::User(r.into()), auth(0), es.clone());
         assert!(e.check(&q("a")).allowed);
         assert!(!e.check(&q("b")).allowed);
     }

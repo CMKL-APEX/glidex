@@ -9,6 +9,7 @@
 //! builds the [`Call`], runs the service function and audits the result.
 
 mod system;
+mod tenancy;
 
 use super::{write_audit, AppState, Caller, Listener, RequestId, PUBLIC};
 use crate::auth::Principal;
@@ -47,6 +48,7 @@ pub(crate) fn is_local(path: &str) -> bool {
 pub(crate) fn routes(app: &AppState) -> Router<AppState> {
     let connect = connectrpc::Router::new();
     let connect = system::register(app, connect);
+    let connect = tenancy::register(app, connect);
     let (connect, _health) = connectrpc_health::install_static(connect, glidex_api::services());
     let svc = ConnectRpcService::new(connect)
         .with_limits(Limits::default().with_max_message_size(MAX_MESSAGE).with_max_request_body_size(MAX_MESSAGE + 5))

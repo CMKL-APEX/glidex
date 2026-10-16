@@ -220,6 +220,7 @@ pub async fn create_project_network(
     c.set_project(&project);
     c.set_target(format!("network:{}", req.name));
     c.require(Ent::Project(project.clone()), super::project_entities(&project))?;
+    c.require_admitted(&project)?;
     let quota = c.quota_mode(&project);
     let (net, over) = c.manager().create_project_network(&project, req, quota).await.map_err(manager_err)?;
     c.note_overruns(&over);
@@ -247,6 +248,7 @@ pub async fn create_router(c: Caller, Path(project): Path<String>, Json(spec): J
     c.set_project(&project);
     c.set_target(format!("router:{}", spec.name));
     c.require(Ent::Project(project.clone()), super::project_entities(&project))?;
+    c.require_admitted(&project)?;
     // The external pool and the gateway nodes are site resources.
     if spec.external_ip.is_some() || spec.gateway_nodes.is_some() {
         c.require_action("createNetwork", Ent::Host, EntitySet::new(), &[])?;

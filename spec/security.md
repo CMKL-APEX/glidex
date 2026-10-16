@@ -374,6 +374,14 @@ selects TCP.
 
 ## 6. Tenancy model
 
+Tenants now sit above projects: every project belongs to one tenant,
+users and teams to a directory, and a cluster's host roles to members of
+its operator tenant ([tenancy.md](tenancy.md), T0 implemented). What
+follows still holds inside a tenant. Role changes (tenancy.md §10.5):
+`system-admin` no longer covers users, teams and project creation; those
+are `directory-admin` (on the `Directory`) and `tenant-admin` (on a
+`Tenant`), and the migration gives existing system administrators both.
+
 ### 6.1 Entities
 
 | Entity | Key | Notes |

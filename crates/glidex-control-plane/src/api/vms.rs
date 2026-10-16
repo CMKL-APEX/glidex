@@ -224,6 +224,7 @@ pub async fn create(c: Caller, Query(w): Query<WaitQuery>, Json(req): Json<Creat
     let pent = Ent::Project(project.clone());
     let pes = super::project_entities(&project);
     c.require(pent.clone(), pes.clone())?;
+    c.require_admitted(&project)?;
     let with_project: &[(&'static str, Ent)] = &[("project", pent.clone())];
 
     let sel = req.disk_selection();
@@ -334,6 +335,9 @@ pub async fn delete_one(c: Caller, Path(id): Path<String>, Query(q): Query<Delet
 
 async fn set_power(c: Caller, id: String, power: PowerState, grace: Option<u32>, wait: Option<u64>, headers: &HeaderMap) -> Result<Response, ApiErr> {
     let (vm, _, _) = visible_vm(&c, &id).await?;
+    if power == PowerState::Running {
+        c.require_admitted(&vm.project)?;
+    }
     let quota = c.quota_mode(&vm.project);
     let (vm, over) = c
         .manager()
@@ -397,6 +401,9 @@ pub async fn patch_one(
                 PowerState::Stopped => "stopVm",
             };
             c.require_action(action, e.clone(), es.clone(), &[])?;
+            if p == PowerState::Running {
+                c.require_admitted(&project)?;
+            }
         }
     }
     update |= patch.restart_policy.is_some_and(|r| r != vm.spec.restart_policy)

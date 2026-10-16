@@ -69,6 +69,16 @@ impl H {
     }
 
     fn link(&self, role: &str, principal: Ent, resource: Ent) {
+        // As the API and the migration do (spec/tenancy.md D4, §16): host
+        // roles go to members of the operator tenant, and a system admin of
+        // a host that is its own directory also administers the directory
+        // and both tenants.
+        if matches!(resource, Ent::Cluster | Ent::Host | Ent::Node(_)) && role != "grant.host-paths" {
+            self.app.auth.tenants.add_member(glidex_control_plane::tenants::ADMIN_TENANT, principal.clone(), "test").unwrap();
+        }
+        if role == "role.system-admin" {
+            self.app.auth.make_administrator(&principal, "test").unwrap();
+        }
         self.app.auth.add_link(role, principal, resource, "test").unwrap();
     }
 
@@ -1164,7 +1174,7 @@ async fn allowed_lists_the_actions_per_resource_and_agrees_with_check() {
     let plain = h.user("pat");
     let p = h.project("p1");
     let actions = json!(["createProject", "drainNode", "createVm", "listNodes"]);
-    let resources = json!([{ "type": "Cluster" }, { "type": "Host" }, { "type": "Node", "id": "other-node" }, { "type": "Project", "id": p }]);
+    let resources = json!([{ "type": "Cluster" }, { "type": "Host" }, { "type": "Node", "id": "other-node" }, { "type": "Project", "id": p }, { "type": "Tenant", "id": "default" }]);
     let body = json!({ "actions": actions, "resources": resources });
 
     let a = h.session(&admin);
@@ -1172,12 +1182,14 @@ async fn allowed_lists_the_actions_per_resource_and_agrees_with_check() {
     assert_eq!(s, StatusCode::OK, "{v}");
     let allowed = v["allowed"].as_array().unwrap();
     let names = |i: usize| -> Vec<String> { allowed[i].as_array().unwrap().iter().map(|x| x.as_str().unwrap().to_string()).collect() };
-    assert_eq!(names(0), ["createProject", "listNodes"], "only actions that apply to Cluster");
+    assert_eq!(names(0), ["listNodes"], "only actions that apply to Cluster");
     assert_eq!(names(1), ["drainNode"], "this host");
     // Another node's host sits under the cluster too, so a cluster-wide
     // grant covers it.
     assert_eq!(names(2), ["drainNode"], "another node");
     assert_eq!(names(3), ["createVm"]);
+    // Projects are created in a tenant (spec/tenancy.md D1).
+    assert_eq!(names(4), ["createProject"]);
 
     // Item by item, the same answers as /authz/check.
     for (ri, r) in resources.as_array().unwrap().iter().enumerate() {

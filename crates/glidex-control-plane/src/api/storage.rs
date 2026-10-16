@@ -251,6 +251,7 @@ pub async fn create_disk(c: Caller, Query(w): Query<WaitQuery>, Json(req): Json<
     let project = c.target_project(req.project.as_deref())?;
     c.set_project(&project);
     c.require(Ent::Project(project.clone()), super::project_entities(&project))?;
+    c.require_admitted(&project)?;
     if let Some(image) = &req.image {
         let mut es = EntitySet::new();
         es.image(image);

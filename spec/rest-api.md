@@ -96,6 +96,32 @@ reported as `404`.
 Image and disk payloads, semantics and invariants are in
 [images.md](images.md#8-rest-api).
 
+Tenants and admissions ([tenancy.md](tenancy.md) §14) are REST twins of
+`glidex.tenancy.v1`: their bodies are the proto messages as JSON
+(`snake_case` names, enum values by proto name, timestamps RFC 3339), and
+the same operations are served as RPCs ([grpc.md](grpc.md)):
+
+| Method | Path | RPC | Purpose |
+|---|---|---|---|
+| `GET` | `/tenants[?page_size&page_token]` | `TenantService.ListTenants` | Every tenant for directory readers, otherwise the caller's own |
+| `POST` | `/tenants` | `CreateTenant` | `{slug, display_name?, operator?}` (`directory.tenants`) |
+| `GET` / `PATCH` / `DELETE` | `/tenants/{id}` | `GetTenant` / `UpdateTenant` / `DeleteTenant` | By id or slug; delete refuses `409 tenant_in_use` while projects exist, and needs a recent login |
+| `POST` | `/tenants/{id}/suspend`, `/resume` | `SuspendTenant` / `ResumeTenant` | A suspended tenant's members can't act on its resources |
+| `GET` / `POST` | `/tenants/{id}/members` | `ListMembers` / `AddMember` | Explicit members (`{principal: {type, id}}`) |
+| `DELETE` | `/tenants/{id}/members/{user:<id>\|team:<id>}` | `RemoveMember` | |
+| `GET` / `POST` | `/tenants/{id}/bindings` | `ListBindings` / `AddBinding` | Tenant roles: `role.tenant-admin`, `role.tenant-auditor` |
+| `DELETE` | `/tenants/{id}/bindings/{link}` | `RemoveBinding` | |
+| `GET` | `/admissions` | `AdmissionService.ListAdmissions` | The cluster operator's (`listAdmissions`) |
+| `PUT` / `DELETE` | `/admissions/{tenant}` | `SetAdmission` / `RemoveAdmission` | `{cap?, suspended?}`; needs a recent login |
+
+`POST /projects` takes `tenant` (id or slug, default `default`) and needs
+`createProject` on that tenant. Creating a VM, disk, project network or
+router, and starting a VM, also need the project's tenant admitted here:
+`403 not_admitted` otherwise; going over the admission's cap is `403
+tenant_quota_exceeded`. Granting a host role through `/system/bindings`
+needs the principal to be a member of the operator tenant: `422
+not_operator_member` otherwise.
+
 Handlers live in `crates/glidex-control-plane/src/api/` (VM routes in
 `api/vms.rs`; the route table with each route's Cedar action in
 `api/mod.rs`).

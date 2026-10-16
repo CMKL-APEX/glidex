@@ -806,6 +806,27 @@ impl ApiClient {
         Ok(Response { status, body })
     }
 
+    /// A transport for the generated RPC clients of `glidex-api`
+    /// (spec/grpc.md §10): one connection, made like every other request
+    /// (api.sock with peer identity, or TLS with the profile's trust and
+    /// token), speaking the Connect protocol, whose unary calls are plain
+    /// HTTP/1.1 POSTs.
+    pub async fn rpc_transport(&self) -> Result<RpcTransport, Failure> {
+        let stream = self.connect().await.map_err(Failure::transport)?;
+        let (sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
+            .await
+            .map_err(|e| Failure::transport(format!("connection to {}: {}", self.describe(), e)))?;
+        tokio::spawn(async move {
+            let _ = conn.await;
+        });
+        Ok(RpcTransport {
+            sender: std::sync::Arc::new(tokio::sync::Mutex::new(sender)),
+            prefix: self.full_path(""),
+            host: self.host_header(),
+            auth: self.auth_header(),
+        })
+    }
+
     /// A streaming GET (`/watch`): `on_text` gets the body as it arrives and
     /// returns false to stop. Returns when the server ends the stream.
     pub async fn stream(&self, path: &str, mut on_text: impl FnMut(&str) -> bool) -> Result<(), Failure> {
@@ -1134,3 +1155,58 @@ mod tests {
         let _ = dir;
     }
 }
+
+/// See [`ApiClient::rpc_transport`].
+#[derive(Clone)]
+pub struct RpcTransport {
+    sender: std::sync::Arc<tokio::sync::Mutex<hyper::client::conn::http1::SendRequest<connectrpc::client::ClientBody>>>,
+    prefix: String,
+    host: String,
+    auth: Option<HeaderValue>,
+}
+
+#[derive(Debug)]
+pub struct RpcTransportError(String);
+
+impl fmt::Display for RpcTransportError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for RpcTransportError {}
+
+impl RpcTransport {
+    /// The client configuration to go with it: Connect, binary protobuf.
+    pub fn config(&self) -> connectrpc::client::ClientConfig {
+        connectrpc::client::ClientConfig::new(Uri::from_static("http://glidex"))
+    }
+}
+
+impl connectrpc::client::ClientTransport for RpcTransport {
+    type ResponseBody = hyper::body::Incoming;
+    type Error = RpcTransportError;
+
+    fn send(
+        &self,
+        request: Request<connectrpc::client::ClientBody>,
+    ) -> futures_util::future::BoxFuture<'static, Result<hyper::Response<Self::ResponseBody>, Self::Error>> {
+        let t = self.clone();
+        Box::pin(async move {
+            let (mut parts, body) = request.into_parts();
+            let path = parts.uri.path_and_query().map(|p| p.as_str().to_string()).unwrap_or_default();
+            parts.uri = format!("{}{}", t.prefix, path).parse().map_err(|e| RpcTransportError(format!("bad path: {e}")))?;
+            parts.headers.insert(HOST, HeaderValue::from_str(&t.host).map_err(|e| RpcTransportError(e.to_string()))?);
+            if let Some(a) = &t.auth {
+                parts.headers.insert(AUTHORIZATION, a.clone());
+            }
+            let mut sender = t.sender.lock().await;
+            sender.ready().await.map_err(|e| RpcTransportError(format!("connection: {e}")))?;
+            sender
+                .send_request(Request::from_parts(parts, body))
+                .await
+                .map_err(|e| RpcTransportError(format!("request failed: {e}")))
+        })
+    }
+}
+

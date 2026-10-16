@@ -4,6 +4,7 @@ mod admin;
 mod client;
 mod config;
 mod console;
+mod tenancy;
 
 use clap::Parser;
 use client::{enc, ApiClient};
@@ -2577,6 +2578,8 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
         "logout" => admin::logout(client, &parts[1..]).await,
         "ui" => admin::ui(),
         "token" | "tokens" => admin::token(client, &parts[1..]).await,
+        "tenant" | "tenants" => tenancy::tenant(client, &parts[1..]).await,
+        "admission" | "admissions" => tenancy::admission(client, &parts[1..]).await,
         "project" | "projects" => admin::project(client, &parts[1..]).await,
         "binding" | "bindings" => admin::binding(client, &parts[1..]).await,
         "system-binding" => admin::system_binding(client, &parts[1..]).await,
@@ -3037,6 +3040,41 @@ mod tests {
         let e = client.request_bytes(Method::GET, "/vms/nope/console/log", None).await.err().unwrap();
         assert_eq!(e.status, Some(hyper::StatusCode::NOT_FOUND));
 
+        let _ = stop.send(true);
+    }
+
+    /// The generated connectrpc clients over gxctl's own connection
+    /// (spec/grpc.md §10): the Connect protocol on api.sock.
+    #[tokio::test]
+    async fn rpc_clients_over_the_unix_socket() {
+        use glidex_api::proto::glidex::tenancy::v1::*;
+        let (_dir, sock, stop) = serve_temp().await;
+        let client = ApiClient::unix(sock);
+        let t = client.rpc_transport().await.unwrap();
+        let tenants = TenantServiceClient::new(t.clone(), t.config());
+        let created = tenants
+            .create_tenant(CreateTenantRequest { slug: "acme".into(), display_name: "Acme".into(), ..Default::default() })
+            .await
+            .unwrap()
+            .into_owned();
+        let acme = created.tenant.as_option().unwrap().id.clone();
+        // The same connection carries the next call.
+        let list = tenants.list_tenants(ListTenantsRequest::default()).await.unwrap().into_owned();
+        assert_eq!(list.tenants.iter().map(|t| t.slug.as_str()).collect::<Vec<_>>(), ["acme", "admin", "default"]);
+        let admissions = AdmissionServiceClient::new(t.clone(), t.config());
+        let a = admissions
+            .set_admission(SetAdmissionRequest { tenant: "acme".into(), cap: Quotas { vms: Some(3), ..Default::default() }.into(), ..Default::default() })
+            .await
+            .unwrap()
+            .into_owned();
+        assert_eq!(a.admission.as_option().unwrap().cap.as_option().unwrap().vms, Some(3));
+        // Errors arrive as connectrpc errors with the server's code.
+        let e = tenants.create_tenant(CreateTenantRequest { slug: "acme".into(), ..Default::default() }).await.unwrap_err();
+        assert_eq!(e.code, connectrpc::ErrorCode::Aborted);
+        let e = tenants.get_tenant(GetTenantRequest { id: "nope".into(), ..Default::default() }).await.unwrap_err();
+        assert_eq!(e.code, connectrpc::ErrorCode::NotFound);
+        let got = tenants.get_tenant(GetTenantRequest { id: acme, ..Default::default() }).await.unwrap().into_owned();
+        assert_eq!(got.tenant.as_option().unwrap().display_name, "Acme");
         let _ = stop.send(true);
     }
 

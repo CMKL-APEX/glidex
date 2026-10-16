@@ -172,11 +172,19 @@ pub fn overruns(quotas: &Quotas, usage: &Usage, delta: &Delta) -> Vec<QuotaOverr
 pub struct Project {
     pub id: String,
     pub name: String,
+    /// The tenant owning it (spec/tenancy.md D1); records from before
+    /// tenants belong to `default`.
+    #[serde(default = "default_tenant")]
+    pub tenant_id: String,
     #[serde(default)]
     pub description: String,
     #[serde(default = "Quotas::new_project")]
     pub quotas: Quotas,
     pub created_at: u64,
+}
+
+fn default_tenant() -> String {
+    crate::tenants::DEFAULT_TENANT.to_string()
 }
 
 pub fn validate_project_name(name: &str) -> Result<(), TenancyError> {
@@ -215,6 +223,7 @@ impl ProjectStore {
             let p = Project {
                 id: uuid::Uuid::new_v4().to_string(),
                 name: DEFAULT_PROJECT_NAME.into(),
+                tenant_id: default_tenant(),
                 description: "Created at install; holds resources from before projects existed.".into(),
                 quotas: Quotas::new_project(),
                 created_at: now(),
@@ -308,13 +317,20 @@ impl ProjectStore {
     }
 
     pub fn create(&self, name: &str, description: String, quotas: Option<Quotas>) -> Result<Project, TenancyError> {
+        self.create_in(&default_tenant(), name, description, quotas)
+    }
+
+    /// A new project of `tenant`; names are unique per tenant
+    /// (spec/tenancy.md D24).
+    pub fn create_in(&self, tenant: &str, name: &str, description: String, quotas: Option<Quotas>) -> Result<Project, TenancyError> {
         validate_project_name(name)?;
-        if self.list()?.iter().any(|p| p.name == name) {
+        if self.list()?.iter().any(|p| p.name == name && p.tenant_id == tenant) {
             return Err(TenancyError::AlreadyExists(name.to_string()));
         }
         let p = Project {
             id: uuid::Uuid::new_v4().to_string(),
             name: name.to_string(),
+            tenant_id: tenant.to_string(),
             description,
             quotas: quotas.unwrap_or_else(Quotas::new_project),
             created_at: now(),

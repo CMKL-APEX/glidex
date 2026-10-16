@@ -157,8 +157,12 @@ name (ids when `/projects` isn't readable).
 | `token list` | `GET /tokens` |
 | `token create <name> [--days N] [--service-account [--project P]] [--role ROLE[@PROJECT]]…` | `POST /tokens {name, expires_in_days, kind, project, roles}`; prints the secret once with a warning |
 | `token revoke <id>` | `DELETE /tokens/{id}` |
+| `tenant list` / `show <t>` / `create <slug> [--name N] [--operator]` / `rename <t> <name>` / `suspend <t>` / `resume <t>` / `delete <t>` | `TenantService` RPCs (spec/tenancy.md §14) through the generated connectrpc client, Connect protocol over gxctl's own connection (api.sock or pinned TLS) |
+| `tenant members <t>` / `add-member <t> <principal>` / `remove-member <t> <principal>` | `TenantService.ListMembers` / `AddMember` / `RemoveMember` (explicit members; role links on the tenant and its projects make members too) |
+| `tenant bindings <t>` / `bind <t> <tenant-admin\|tenant-auditor> <principal>` / `unbind <t> <link>` | `TenantService.ListBindings` / `AddBinding` / `RemoveBinding` |
+| `admission list` / `set <tenant> [key=value…\|unlimited] [--suspend\|--resume]` / `remove <tenant>` | `AdmissionService` RPCs: which tenants this cluster admits and their caps (spec/tenancy.md D9, D19) |
 | `project list` / `show <p>` | `GET /projects`, `GET /projects/{p}` (quotas and usage) |
-| `project create <name> [--description D]` | `POST /projects` |
+| `project create <name> [--description D]` | `POST /projects` (in tenant `default` unless the body names `tenant`) |
 | `project delete <p>` | Confirmation → `DELETE /projects/{p}` |
 | `project quota <p> [key=value…]` | Without edits: show. With: `GET` the current quotas, apply the edits (`vms`, `vcpus`, `memory_mib`, `disk_gib`, `running_vms`, `networks`; `none` = unlimited) and `PATCH /projects/{p} {"quotas": …}` (the server replaces the whole set) |
 | `project use <p>` | `PATCH /users/me {"default_project": p}` (`-`/`none` clears). Where the server has no profile (service-account token, auth disabled) the project is used for this session only |

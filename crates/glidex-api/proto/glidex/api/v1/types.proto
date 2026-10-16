@@ -1,0 +1,11 @@
+// Types shared by several services.
+syntax = "proto3";
+
+package glidex.api.v1;
+
+// A Cedar entity, as REST's `{"type": "Team", "id": "…"}`.
+message EntityRef {
+  string type = 1;
+  // Absent for singletons (`Cluster`, `Host`).
+  optional string id = 2;
+}
