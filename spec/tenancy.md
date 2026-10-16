@@ -31,7 +31,11 @@ organizations that **operate** it, and lets each keep its own identity.
   register their clusters. A cluster in a fleet can admit tenants by
   policy, e.g. "any user tenant registered in this fleet", instead of
   one offer per tenant. A cluster belongs to at most one fleet and can
-  move to another; a fleet holds no users or projects.
+  move to another. A fleet has its **own directory**: fleet admins and
+  the fleet's users (the tenant admins and cluster operators who
+  register things) log in there, each organization with an **account**
+  that owns its registrations (and, later, its consolidated billing).
+  It holds none of the registered tenants' users or projects.
 - A directory runs on a glidex control plane, the organization's own
   (it need run no VMs) or one an operator **hosts** for it, kept apart
   from every other directory on that host; operators can offer this
@@ -102,11 +106,12 @@ organizations that **operate** it, and lets each keep its own identity.
 | D30 | No SAML | Connectors speak OIDC/OAuth 2.0, LDAP, PAM and SCIM only; a SAML-only IdP connects through an OIDC front. | Every IdP listed offers OIDC; XML signature verification is a long-running source of bypasses. |
 | D31 | Creating tenants and directories | A directory's owner creates its tenants. A host's operator creates the directories it hosts, each with its owner tenant and a first-admin invitation. No self-service signup. | Signup would need abuse controls and defaults nobody asked for. |
 | D32 | Upgrade | An existing host becomes a cluster hosting one directory; tenant `admin` owns the directory and operates the cluster; existing projects move to tenant `default` in the same directory (so existing users keep one login), admitted on the cluster (§16). | The tenant boundary holds from the first start, and nothing a user does today changes. |
-| D33 | Fleets broker trust | A **fleet** is a registry run by a fleet operator: registered directories (issuer and key pins), tenants (with their kind and the fleet's labels) and clusters (endpoint, CA pin, operator, admission terms). Members follow it on a signed feed. It holds no users, teams, projects or credentials, and nobody logs in at a fleet. | Pairwise offers don't scale to many tenants and many operators; a broker that only holds public registration data adds no new place where users or secrets live. |
+| D33 | Fleets broker trust | A **fleet** is a registry run by a fleet operator: registered directories (issuer and key pins), tenants (with their kind and the fleet's labels) and clusters (endpoint, CA pin, operator, admission terms). Members follow it on a signed feed. The fleet has its own directory (D38) for the people who run and use the registry; it holds none of the registered directories' users, teams, projects or credentials. | Pairwise offers don't scale to many tenants and many operators; a broker that holds registration data and its own users' accounts adds no new place where tenants' users or secrets live. |
 | D34 | Admission policies | An operator whose cluster is in a fleet can admit by policy: Cedar site policies on `admitTenant`, evaluated when a tenant of the fleet opts in, create the admission with the policy's default cap and labels. A shipped template, `fleet.open`, admits every user tenant registered in the cluster's fleet. Without a matching policy the opt-in waits for the operator. | "Allow any user tenant of the fleet" becomes one setting instead of one handshake per tenant, and the operator can still narrow it. |
 | D35 | Labels by provenance | A tenant carries three kinds of labels, each a separate Cedar attribute: `self_tags` (set by its directory owner), `fleet_labels` (set by the fleet operator, e.g. `verified`), `operator_labels` (set by this cluster's operator on the admission). Site policies say which they trust by naming the attribute. | An operator decides whose word it takes; a tenant can't label itself into a cluster that trusts only fleet or operator labels. |
-| D36 | Self-service registration | A directory registers itself with a fleet (a request signed with its own key, made when its owner asks); its tenant admins then register tenants (user or operator) and operators register clusters. A fleet's `registration` setting is `open` or `approval` (default). A registered directory's key can afterwards change only by a rotation signed with its previous key, never by the fleet. | Organizations join without a person at the fleet in the loop, and a compromised or careless fleet can add new directories but can't take over existing ones. |
+| D36 | Self-service registration | A fleet user registers, in its **account** (D38), a directory, tenant or cluster and gets a one-time **claim code**; the owner of that directory, the tenant's admin or the cluster's operator redeems it **there**, which sends the registration signed with the directory's or cluster's own key. Fleet admins decide what each account may register (directories, user tenants, operator tenants, clusters) and whether registrations need approval (`approval`, the default, or `open`). A registered directory's key can afterwards change only by a rotation signed with its previous key, never by the fleet. | Organizations join without a person at the fleet in the loop; holding a fleet account isn't enough to claim someone else's directory or cluster, and a compromised or careless fleet can add new directories but can't take over existing ones. |
 | D37 | Moving clusters | A cluster belongs to at most one fleet. Leaving keeps every established admission and directory pin as pairwise trust (the operator may instead end the ones the fleet's policy created, with notice to those tenants); joining another fleet applies that fleet's registry and the operator's policies from then on. Directories and tenants may register in several fleets. | Operators can change brokers without evicting tenants; tenants can use clusters of several fleets. |
+| D38 | The fleet's directory and accounts | A fleet runs a directory of its own (the same directory software, D27), owned by the fleet operator's tenant: **fleet admins** are its members. Each organization that uses the fleet has an **account**, a tenant of that directory whose members (**fleet users**: mostly tenant admins and cluster operators of that organization) manage the account's registrations. An account can add a connector for its own IdP, so its people log in with their usual identity. Fleet admins manage accounts and their registry rights. Consolidated billing will attach to accounts (§20). | The registry needs owners and administrators like anything else; reusing the directory and tenant model gives logins, connectors, roles, audit and Cedar boundaries without a second system. |
 
 ## 3. Threat model additions
 
@@ -119,7 +124,8 @@ organizations that **operate** it, and lets each keep its own identity.
 | Tenant administrators | Their tenant's projects, resources, members, links and opt-ins. Nothing on hosts; nothing in other tenants. |
 | An organization's IdP | Identities and groups for the directory connected to it. A compromised IdP yields at most that directory's users' rights. |
 | CI issuers trusted by a federation | Claims matching its rules, mapped to one service account. |
-| A fleet operator | Its registry: which directories, tenants and clusters are registered, their first pins, and `fleet_labels`. A compromised fleet can register rogue directories and tenants (bounded by each cluster's admission policies) and mislabel; it can't change a registered directory's keys (D36), see any user or project, or act on any cluster or directory. |
+| A fleet user | Its account's registrations, as far as the fleet admins allow; never a registration it can't also claim from the directory or cluster itself (D36). |
+| A fleet operator | Its registry and its directory: accounts and their rights, which directories, tenants and clusters are registered, their first pins, and `fleet_labels`. A compromised fleet can register rogue directories and tenants (bounded by each cluster's admission policies) and mislabel; it can't change a registered directory's keys (D36), see any user or project, or act on any cluster or directory. |
 
 New assets: connector secrets, SCIM tokens, each directory's signing
 keys and secrets key, provisioning state, admissions, trust pins. New
@@ -147,8 +153,9 @@ tables: `directories`, `tenants`, `connectors`, `connector_secrets`,
 `connector_sync`, `scim_tokens`, `federations`, `trusted_clusters`
 (directory side); `trusted_directories`, `admissions`, `feed_state`,
 `fleet_membership` (cluster side); `fleet_directories`, `fleet_tenants`,
-`fleet_clusters`, `fleet_settings` (on a control plane that runs a
-fleet).
+`fleet_clusters`, `fleet_accounts` (each account's registry rights),
+`fleet_claims`, `fleet_settings` (on a control plane that runs a fleet,
+next to the fleet's own directory tables).
 
 | Record | Scope | Contents |
 |---|---|---|
@@ -158,7 +165,7 @@ fleet).
 | `TrustedDirectory` (new) | cluster | `directory_id`, `issuer`, `ca_fingerprint`, JWKS (from the feed), `max_staleness`, `feed_revision`, `last_sync`. |
 | `Admission` (new) | cluster | `tenant_id`, `directory_id`, `cap` (D19), `labels` (the operator's, D35), `status` (`offered` \| `pending` \| `admitted` \| `suspended`), `source` (`offer` \| `fleet:<id>`), `by`, `at`. |
 | `FleetMembership` (new) | cluster | `fleet_id`, registry endpoint, fleet key pin, `joined_at`, registry revision. At most one. |
-| `FleetDirectory`, `FleetTenant`, `FleetCluster` (new) | fleet | directory: `issuer`, key pin, CA pin, `registered_at`, `status`; tenant: `directory_id`, `tenant_id`, `slug`, kind (`user` \| `operator`), `fleet_labels`, `status`; cluster: `cluster_id`, `endpoint`, CA pin, operator tenant, published admission terms (which tenants it admits by policy, default cap), `status`. Public registration data only. |
+| `FleetDirectory`, `FleetTenant`, `FleetCluster` (new) | fleet | each with `account_id` (the account tenant in the fleet's directory that registered it) and the claim's state; directory: `issuer`, key pin, CA pin, `registered_at`, `status`; tenant: `directory_id`, `tenant_id`, `slug`, kind (`user` \| `operator`), `fleet_labels`, `status`; cluster: `cluster_id`, `endpoint`, CA pin, operator tenant, published admission terms (which tenants it admits by policy, default cap), `status`. Public registration data only. |
 | `Project` | directory | + `tenant_id` (immutable), `quotas: {cluster_id → quotas}`. Name unique per tenant. |
 | `Credential` (guest) | directory | moves from cluster to directory, so a project's guest logins serve its VMs in every cluster. Key `(project_id, username)`. |
 | `Vm`, `Disk`, `Network`, `Router` | cluster | + `tenant_id` (from the project, immutable). |
@@ -454,9 +461,15 @@ namespace Glidex {
   action admitTenant
     appliesTo { principal: [Tenant], resource: [Cluster], context: Ctx };
 
-  // Fleet roles, linked on a Fleet: the registry and its labels.
+  // The registry (D38). Registrations are resources of the account
+  // (a tenant of the fleet's directory) that made them, so the tenant
+  // boundary keeps accounts apart; fleet admins are members of the
+  // directory's owner tenant and reach them as owners do (D15).
+  entity Registration in [Tenant] { tenant: Tenant, kind: String };
   action "role.fleet-admin";
   action "fleet.registry" in ["role.fleet-admin", "directory-scoped", "step-up"];
+  action "role.account-admin" in ["role.tenant-admin"];
+  action "account.register" in ["role.account-admin", "tenant-scoped"];
 
   // Every allocation on a cluster (compound request, §10.4).
   action useCluster in ["shared"]
@@ -588,7 +601,8 @@ deletes.
 | `tenant-admin` | tenant | `owner` in every project, `tenant-auditor`, `tenant.members`, `tenant.projects`, `tenant.clusters`, `tenant.federations` |
 | cluster roles (`auditor`, `image-admin`, `net-admin`, `system-admin`) | cluster / host | unchanged, for that cluster; `system-admin` adds `cluster.admissions`, `cluster.trust` and its site policies; operator members only (D4) |
 | `directory-auditor` | directory | `directory.read` |
-| `fleet-admin` | fleet | `fleet.registry`: approve and suspend registrations, `fleet_labels`, the fleet's settings; members of the fleet's owner tenant only |
+| `fleet-admin` | fleet | `fleet.registry`: accounts and their registry rights, approving and suspending registrations, `fleet_labels`, the fleet's settings; members of the fleet directory's owner tenant only |
+| `account-admin` | account (a tenant of the fleet's directory) | `account.register` (create registrations and claim codes, within the account's rights), members, the account's connector; `tenant-admin` of the account |
 | `directory-admin` | directory | `directory-auditor`, `directory.tenants` (tenants, operator flags, self tags, domains, delegation links, fleet registrations), `directory.connectors`, `directory.users`, `directory.policy`; owner members only (D7) |
 
 ## 11. Operators, directory owners and tenants
@@ -613,10 +627,15 @@ cluster reports resources of the tenant), connectors, users, teams,
 domains, self tags, its site policies, and its registrations in
 fleets (D36).
 
-**A fleet operator** owns, through `fleet-admin` on its fleet, the
-registry: approving or suspending directories, tenants and clusters
-(with `registration: approval`), `fleet_labels`, and the fleet's
-settings. It has no rights on any directory or cluster.
+**A fleet operator** owns the fleet's directory and, through
+`fleet-admin`, the registry: accounts and what each may register,
+approving or suspending registrations, `fleet_labels`, the fleet's
+settings. It has no rights on any registered directory or cluster.
+
+**A fleet user** is a member of an account in the fleet's directory,
+usually a tenant admin or a cluster operator of that organization. With
+`account-admin` it registers the organization's directories, tenants
+and clusters and manages the account's members.
 
 **A tenant admin** owns its projects (with per-cluster quotas), members,
 links, opt-ins and federations, and sees every admission, delegated
@@ -690,27 +709,46 @@ placement, caps, site policies, image libraries.
 
 **Running a fleet.** A fleet is a role of a glidex control plane, like a
 directory (it can share a host with directories and clusters). It has
-its own issuer-style URL, signing key and owner tenant, whose members
-administer it through their own directory (`fleet-admin` on the
-`Fleet`). Its registry is small and public to its members; it is
-served to them as a signed feed, like a directory's.
+its own URL, signing key and **directory** (D38). The directory's owner
+tenant is the fleet operator's, and its members are the fleet admins;
+every other tenant of that directory is an **account**. Fleet admins
+and fleet users log in there like at any directory (§6), through the
+connectors the fleet admins enable, including an account's own IdP. The
+registry is small and public to the fleet's members; it is served to
+them as a signed feed, like a directory's.
 
-**Registering.**
-1. A directory's owner registers the directory: `gxctl fleet register
-   directory --fleet <url>` at the directory. The directory sends its
-   issuer and key fingerprints, signed with its signing key, over TLS
-   pinned to the fleet's certificate (given out by the fleet operator,
-   or trusted on first use with a fingerprint check, as gxctl-auth.md
-   §5 does). With `registration: approval` it waits for a fleet admin.
-2. Its tenant admins register tenants (`gxctl fleet register tenant`):
-   kind `user` or `operator`, slug, contact. The fleet sees nothing
-   else of the tenant.
-3. An operator registers each cluster (`gxctl fleet join --fleet <url>
-   [--admit open|none]`, `cluster.trust` and step-up): endpoint, CA
-   pin, operator tenant, and the admission terms it publishes (whether
-   it admits by policy, the default cap). `--admit open` enables the
-   `fleet.open` template; the operator can write narrower policies
-   instead. The cluster now follows the registry feed.
+**Accounts.** A fleet admin creates an account for an organization
+(`gxctl fleet account create`), sets what it may register (directories,
+user tenants, operator tenants, clusters) and invites its first
+`account-admin`. With `accounts: open` an organization can create its
+own account at sign-up, with the fleet's default rights. Account admins
+add their colleagues or a connector to their own IdP.
+
+**Registering (claim codes, D36).** Every registration has two halves:
+the account asks, the thing itself confirms.
+1. **A directory.** An account admin, logged in at the fleet, creates
+   the entry (`gxctl fleet register directory`) and gets a claim code
+   (single use, 7 days). The directory's owner redeems it at the
+   directory (`gxctl fleet claim <code>`, `directory.tenants`, step-up):
+   the directory sends its issuer and key fingerprints, signed with its
+   signing key, over TLS pinned to the fleet's certificate (in the claim
+   code). With `approval` it then waits for a fleet admin.
+2. **A tenant.** Likewise, from the account (`gxctl fleet register
+   tenant --directory <id> --kind user|operator`), redeemed by the
+   tenant's admin at its directory (`tenant.clusters`). The fleet sees
+   the tenant's id, slug, kind and contact, nothing else.
+3. **A cluster.** From the account of the cluster's operator (`gxctl
+   fleet register cluster`), redeemed on the cluster with `gxctl fleet
+   join --claim <code> [--admit open|none]` (`cluster.trust`, step-up):
+   endpoint, CA pin, operator tenant, and the admission terms it
+   publishes (whether it admits by policy, the default cap). `--admit
+   open` enables the `fleet.open` template; the operator can write
+   narrower policies instead. The cluster now follows the registry
+   feed.
+
+The two halves are usually the same people with two logins (their
+fleet account and their own directory); the claim code is what binds
+them. An account can register only what it can also claim.
 
 **Self-service use.** A tenant admin browses the fleet's catalog of
 clusters (`gxctl fleet clusters`, the UI's Clusters page) and opts in to
@@ -789,9 +827,11 @@ with one directory); cluster operations on the cluster.
 | `offerAdmission`, `listAdmissions`, `updateAdmission`, `removeAdmission` | cluster | `POST/GET /admissions`, `PATCH/DELETE /admissions/{tenant}` | `AdmissionService.…` | `cluster.admissions`; tenants see their own |
 | `listTrustedDirectories`, `updateTrustedDirectory`, `removeTrustedDirectory` | cluster | `/trust/directories…` | `TrustService.…` | `cluster.trust` |
 | resources (VMs, disks, networks, …) | cluster | unchanged paths | per grpc.md §9 | unchanged + `useCluster` (§10.4) |
-| `registerDirectory`, `registerTenant`, `registerCluster`, `deregister…` | fleet | `POST /fleet/v1/directories`, `…/tenants`, `…/clusters`, `DELETE …/{id}` | `FleetService.Register…`, `Deregister…` | the registering directory's key (directories); `tenant.clusters` relayed by the directory (tenants); `cluster.trust` relayed by the cluster (clusters) |
+| `createAccount`, `updateAccount`, `listAccounts` | fleet | `POST/PATCH/GET /fleet/v1/accounts` | `FleetService.…Account` | `fleet.registry` (own account: `tenant.read`) |
+| `registerDirectory`, `registerTenant`, `registerCluster`, `deregister…` | fleet | `POST /fleet/v1/registrations` (`{kind, …}`), `DELETE …/{id}` | `FleetService.Register`, `Deregister` | `account.register` within the account's rights; returns a claim code |
+| `claim` | directory or cluster | `POST /fleet/claim` (`{code}`) | `ClaimService.Claim` | `directory.tenants` (directory), `tenant.clusters` (tenant), `cluster.trust` (cluster); sends the signed half to the fleet |
 | `listRegistry`, `approveRegistration`, `suspendRegistration`, `setFleetLabels` | fleet | `GET /fleet/v1/registry`, `POST …/{id}/approve`, `…/suspend`, `PUT …/{id}/labels` | `FleetService.…` | members (list); `fleet.registry` |
-| `joinFleet`, `leaveFleet`, `fleetStatus` | cluster | `POST /fleet`, `DELETE /fleet`, `GET /fleet` | `ClusterFleetService.…` | `cluster.trust` (step-up); status: authenticated |
+| `joinFleet` (a cluster claim), `leaveFleet`, `fleetStatus` | cluster | `POST /fleet` (`{claim}`), `DELETE /fleet`, `GET /fleet` | `ClusterFleetService.…` | `cluster.trust` (step-up); status: authenticated |
 | `readAudit`, `readUsage` | both | `GET /audit`, `GET /usage` (+ `?tenant=`) | with their families | + `tenant.audit` / `tenant.usage` |
 
 **HTTP-only, on purpose:** browser redirects, the OIDC provider
@@ -843,8 +883,11 @@ file-defined connectors of the host's first directory. New:
   caps, labels), **Fleet** (membership, published terms, admission
   policies, move), **Trusted directories** (lag, `max_staleness`), site
   policies, plus today's cluster pages.
-- Fleet operator: **Registry** (directories, tenants, clusters, pending
-  approvals, labels).
+- Fleet (at the fleet's directory): fleet admins get **Accounts**
+  (rights, invitations) and **Registry** (directories, tenants,
+  clusters, pending approvals, labels); fleet users get **My account**
+  (members, connector) and **Registrations** (create, claim codes,
+  status).
 - Tenant admin: **Projects** (per-cluster quotas, where each project has
   resources), **Clusters** (the fleets' catalogs, opt in, accept offers,
   opt out, each admission),
@@ -862,9 +905,11 @@ gxctl connector scim-token create|list|revoke
 gxctl federation list|add|remove
 gxctl admission offer|list|update|remove                # on a cluster
 gxctl trust list|update|remove                          # on a cluster
-gxctl fleet create|registry|approve|suspend|label        # on a fleet
-gxctl fleet register directory|tenant --fleet <url>      # at a directory
-gxctl fleet join --fleet <url> [--admit open|none] | leave | status   # on a cluster
+gxctl fleet create|registry|approve|suspend|label        # fleet admins
+gxctl fleet account create|update|list|invite            # fleet admins; account admins: their own
+gxctl fleet register directory|tenant|cluster            # account admins, at the fleet → claim code
+gxctl fleet claim <code>                                 # at the directory (directory, tenant)
+gxctl fleet join --claim <code> [--admit open|none] | leave | status   # on the cluster
 gxctl fleet clusters [--fleet <url>]; gxctl tenant opt-in --offer <token> | --fleet <url> <cluster>
 ```
 
@@ -946,7 +991,14 @@ one login for both (D3). Nothing a user does today changes.
   - promote with a new epoch: north accepts the standby's keys only as
     announced.
 - **Fleets (T7),** a fleet, two directories, two clusters:
-  - a self-registered directory waits for approval under `approval`;
+  - fleet users log in at the fleet's directory; an account admin of
+    account A can't see or change B's registrations
+    (`base.tenant-boundary`); a fleet admin can;
+  - an account without the right to register clusters gets no claim
+    code for one;
+  - a claim code redeemed at the wrong directory, by a principal
+    without the right role there, twice, or after expiry is refused;
+  - a claimed directory waits for approval under `approval`;
   - with `fleet.open`, a user tenant's opt-in creates an admission with
     the default cap and `source: fleet:<id>`; an operator tenant's
     doesn't; without a policy it stays `pending`;
@@ -976,7 +1028,7 @@ Each milestone ships its API, CLI, UI and tests together and leaves
 | **T4** pull sync and attributes | `directory_sync`, LDAP, Google Directory, Graph, GitHub, safety stop; SSH keys from connectors | Pull sync tests; LDAP against OpenLDAP in CI. |
 | **T5** workload federation | `federations`, `POST /auth/exchange`, `jwt` and `aws` kinds | Federation tests; a GitHub Actions workflow deploys without a stored token. |
 | **T6** directories and clusters apart | hosted directories (D27), the directory as OIDC provider, access and refresh tokens, cluster sessions from ID tokens, the handshake, filtered feeds, admission reports, partitions and staleness, standby and promote, gxctl `auth login --directory`, `trust`, UI | §17 trust tests; a check with two organizations' directories and two clusters across a real WAN link. Can start once T1 has landed. |
-| **T7** fleets | §12.2: the fleet role, registry and signed feed, self-service registration with approval, the catalog and opt-in, `admitTenant` and the `fleet.open` template, labels by provenance, key continuity, leave and move, gxctl `fleet`, UI Registry and Fleet pages | §17 fleet tests; two operators' clusters in one fleet, one moved to a second fleet. Needs T6. |
+| **T7** fleets | §12.2: the fleet role with its own directory and accounts (D38), registry and signed feed, claim codes and self-service registration with approval, the catalog and opt-in, `admitTenant` and the `fleet.open` template, labels by provenance, key continuity, leave and move, gxctl `fleet`, UI Registry and Fleet pages | §17 fleet tests; two operators' clusters in one fleet, one moved to a second fleet. Needs T6. |
 
 **T0 tasks** (files):
 1. `tenancy.rs`: `Directory`, `Tenant`, `Admission` and stores;
@@ -1038,6 +1090,9 @@ T2–T7 get their own task lists when T1 lands; per-protocol code under
 - **GPUs, DPUs and other server-attached accelerators**: modelling,
   scheduling and granting them to tenants; today's PCI grants (D25)
   stay.
+- **Consolidated billing** per fleet account: usage reported by the
+  account's clusters and tenants (metering.md) gathered at the fleet,
+  priced and invoiced per account.
 - **A tenant's view across clusters**: resources, usage and audit from
   every cluster in one place, assembled by the UI and gxctl from each
   cluster's API at first, perhaps kept at the directory later.
@@ -1063,11 +1118,15 @@ T2–T7 get their own task lists when T1 lands; per-protocol code under
 10. **Brokering admission at scale:** fleets, with self-service
     registration and admission policies; clusters can move between
     fleets (D33–D37).
+11. **Who manages a fleet:** fleet admins and fleet users log in at
+    the fleet's own directory; each organization has an account that
+    owns its registrations (D38).
 
 ## 22. Open questions
 
-1. **Fleet approval defaults.** `registration: approval` is the default
-   for directories, tenants and clusters alike. Should tenants of an
-   already approved directory be registered without a second approval?
+1. **Fleet approval defaults.** `registration: approval` and
+   `accounts: invite` are the defaults. Should tenants of an already
+   approved directory, or clusters of an already approved operator, be
+   registered without a second approval?
 2. **Fleets of fleets.** A tenant can register in several fleets
    (D37), so no federation between fleets is designed. Is that enough?
