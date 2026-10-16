@@ -108,7 +108,7 @@ async fn form(n: usize) -> Vec<Cp> {
     let mut cps = vec![first];
     for _ in 1..n {
         let cp = new_cp();
-        let token = manage::join_token(&cluster(&cps[0]), NodeRole::Server, 600, false, "test").unwrap();
+        let token = manage::join_token(&cluster(&cps[0]), NodeRole::Server, 600, false, "test").await.unwrap();
         manage::join(
             &cp.manager,
             &cfg,
@@ -246,7 +246,7 @@ async fn a_join_needs_the_right_token_and_the_pinned_ca() {
     let first = new_cp();
     manage::init(&first.manager, &cfg, InitOptions { advertise: Some(first.addr), tunnel_ip: None, listen: Some(first.addr) }).await.unwrap();
     let c = cluster(&first);
-    let good = manage::join_token(&c, NodeRole::Server, 600, false, "test").unwrap();
+    let good = manage::join_token(&c, NodeRole::Server, 600, false, "test").await.unwrap();
 
     // A token for another CA's hash is refused before anything is sent.
     let evil = format!("{}.{}", &good[..good.rfind('.').unwrap()], "0".repeat(64));
@@ -258,7 +258,7 @@ async fn a_join_needs_the_right_token_and_the_pinned_ca() {
     assert!(err.contains("not the one the token names"), "{err}");
 
     // An agent token can't bring in a server.
-    let agent = manage::join_token(&c, NodeRole::Agent, 600, false, "test").unwrap();
+    let agent = manage::join_token(&c, NodeRole::Agent, 600, false, "test").await.unwrap();
     let err = manage::join(&cp.manager, &cfg, JoinOptions { server: first.addr, token: agent, role: NodeRole::Server, advertise: Some(cp.addr), tunnel_ip: None, name: Some("cp2".into()), listen: Some(cp.addr) })
         .await
         .unwrap_err()
@@ -337,7 +337,7 @@ async fn a_vm_placed_on_an_agent_is_that_agents_and_its_status_comes_back() {
     server.manager.initialize().await.unwrap();
 
     let agent = new_cp();
-    let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test").unwrap();
+    let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test").await.unwrap();
     manage::join(&agent.manager, &cfg, JoinOptions { server: server.addr, token, role: NodeRole::Agent, advertise: Some(agent.addr), tunnel_ip: None, name: Some("agent1".into()), listen: Some(agent.addr) })
         .await
         .unwrap();
@@ -414,7 +414,7 @@ async fn a_silent_node_is_unreachable_not_gone() {
     manage::init(&server.manager, &cfg, InitOptions { advertise: Some(server.addr), tunnel_ip: None, listen: Some(server.addr) }).await.unwrap();
     server.manager.initialize().await.unwrap();
     let agent = new_cp();
-    let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test").unwrap();
+    let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test").await.unwrap();
     manage::join(&agent.manager, &cfg, JoinOptions { server: server.addr, token, role: NodeRole::Agent, advertise: Some(agent.addr), tunnel_ip: None, name: Some("agent1".into()), listen: Some(agent.addr) })
         .await
         .unwrap();
@@ -447,7 +447,7 @@ async fn a_server_relays_the_console_log_of_a_vm_on_an_agent() {
     manage::init(&server.manager, &cfg, InitOptions { advertise: Some(server.addr), tunnel_ip: None, listen: Some(server.addr) }).await.unwrap();
     server.manager.initialize().await.unwrap();
     let agent = new_cp();
-    let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test").unwrap();
+    let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test").await.unwrap();
     manage::join(&agent.manager, &cfg, JoinOptions { server: server.addr, token, role: NodeRole::Agent, advertise: Some(agent.addr), tunnel_ip: None, name: Some("agent1".into()), listen: Some(agent.addr) })
         .await
         .unwrap();
@@ -501,7 +501,7 @@ async fn image_copies_go_where_they_are_wanted_and_spare_files_are_used() {
     server.manager.start_controllers();
     let agent = new_cp();
     agent.manager.configure(&cfg);
-    let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test").unwrap();
+    let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test").await.unwrap();
     manage::join(&agent.manager, &cfg, JoinOptions { server: server.addr, token, role: NodeRole::Agent, advertise: Some(agent.addr), tunnel_ip: None, name: Some("agent1".into()), listen: Some(agent.addr) })
         .await
         .unwrap();
@@ -636,7 +636,7 @@ async fn a_node_copies_an_image_it_needs_from_a_holder_and_checks_it() {
     server.manager.start_controllers();
     let agent = new_cp();
     agent.manager.configure(&cfg);
-    let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test").unwrap();
+    let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test").await.unwrap();
     manage::join(&agent.manager, &cfg, JoinOptions { server: server.addr, token, role: NodeRole::Agent, advertise: Some(agent.addr), tunnel_ip: None, name: Some("agent1".into()), listen: Some(agent.addr) })
         .await
         .unwrap();
@@ -704,7 +704,7 @@ async fn the_scheduler_spreads_vms_honours_pins_and_disks_and_explains_itself() 
     let mut agents = Vec::new();
     for i in 1..=2 {
         let a = new_cp();
-        let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test").unwrap();
+        let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test").await.unwrap();
         manage::join(&a.manager, &cfg, JoinOptions { server: server.addr, token, role: NodeRole::Agent, advertise: Some(a.addr), tunnel_ip: None, name: Some(format!("agent{i}")), listen: Some(a.addr) })
             .await
             .unwrap();
@@ -1040,8 +1040,18 @@ async fn nodes_are_removed_forgotten_and_rejoin_as_themselves() {
     wait_until("the forgotten learner to leave the group", || async { !cluster(&cps[lead]).node.as_ref().unwrap().learners().contains(&cluster(&cps[learner]).identity.raft_id) }).await;
 
     // It comes back as itself, with a new certificate, starting its Raft state afresh (D18).
+    // A server left, so the CA rotates (D20): before the token is issued, so
+    // the token pins the CA that signs, not the one about to be replaced.
+    let ca_before = cluster(&cps[lead]).signing_fp();
     let (s, t) = call(&cps[lead], "POST", &format!("/nodes/{lname}/rejoin-token"), Some(json!({ "raft_intact": false })), &[]).await;
     assert_eq!(s, StatusCode::OK, "{t}");
+    {
+        use glidex_control_plane::cluster::{net, pki, tokens};
+        let pinned = tokens::parse(t["token"].as_str().unwrap()).unwrap().2.to_string();
+        assert_ne!(pinned, ca_before, "the rotation the forgotten server called for ran before the token");
+        let served = pki::public_key_fingerprint(&net::fetch_ca_untrusted(&cps[lead].addr.to_string()).await.unwrap()).unwrap();
+        assert_eq!(served, pinned, "the server already serves the CA the token names");
+    }
     let cfg = test_config();
     let out = manage::rejoin(
         &cps[learner].manager,
@@ -1144,7 +1154,7 @@ async fn the_ca_rotates_and_every_node_renews_before_the_old_one_is_retired() {
     // A node can still join, pinned to the new CA.
     let cfg = test_config();
     let extra = new_cp();
-    let token = manage::join_token(&cluster(&cps[lead]), NodeRole::Server, 600, false, "test").unwrap();
+    let token = manage::join_token(&cluster(&cps[lead]), NodeRole::Server, 600, false, "test").await.unwrap();
     assert!(token.ends_with(&new_fp));
     manage::join(&extra.manager, &cfg, JoinOptions { server: cps[lead].addr, token, role: NodeRole::Server, advertise: Some(extra.addr), tunnel_ip: None, name: Some("cp4".into()), listen: Some(extra.addr) }).await.unwrap();
 }
@@ -1158,7 +1168,7 @@ async fn a_node_detaches_with_its_vms_and_the_cluster_lets_go() {
     manage::init(&server.manager, &cfg, InitOptions { advertise: Some(server.addr), tunnel_ip: None, listen: Some(server.addr) }).await.unwrap();
     server.manager.initialize().await.unwrap();
     let agent = new_cp();
-    let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test").unwrap();
+    let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test").await.unwrap();
     manage::join(&agent.manager, &cfg, JoinOptions { server: server.addr, token, role: NodeRole::Agent, advertise: Some(agent.addr), tunnel_ip: None, name: Some("agent1".into()), listen: Some(agent.addr) })
         .await
         .unwrap();
@@ -1269,7 +1279,7 @@ async fn a_removed_agent_leaves_offline_once_a_server_confirms_it() {
     manage::init(&server.manager, &cfg, InitOptions { advertise: Some(server.addr), tunnel_ip: None, listen: Some(server.addr) }).await.unwrap();
     server.manager.initialize().await.unwrap();
     let agent = new_cp();
-    let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test").unwrap();
+    let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test").await.unwrap();
     manage::join(&agent.manager, &cfg, JoinOptions { server: server.addr, token, role: NodeRole::Agent, advertise: Some(agent.addr), tunnel_ip: None, name: Some("agent1".into()), listen: Some(agent.addr) })
         .await
         .unwrap();
@@ -1312,7 +1322,7 @@ async fn a_node_that_left_on_its_own_is_forgotten_as_departed_and_its_bundle_can
     manage::init(&server.manager, &cfg, InitOptions { advertise: Some(server.addr), tunnel_ip: None, listen: Some(server.addr) }).await.unwrap();
     server.manager.initialize().await.unwrap();
     let agent = new_cp();
-    let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test").unwrap();
+    let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test").await.unwrap();
     manage::join(&agent.manager, &cfg, JoinOptions { server: server.addr, token, role: NodeRole::Agent, advertise: Some(agent.addr), tunnel_ip: None, name: Some("agent1".into()), listen: Some(agent.addr) })
         .await
         .unwrap();
@@ -1359,7 +1369,7 @@ async fn a_detached_host_imports_into_another_cluster_with_its_vm_after_approval
     manage::init(&a.manager, &cfg, InitOptions { advertise: Some(a.addr), tunnel_ip: None, listen: Some(a.addr) }).await.unwrap();
     a.manager.initialize().await.unwrap();
     let agent = new_cp();
-    let token = manage::join_token(&cluster(&a), NodeRole::Agent, 600, false, "test").unwrap();
+    let token = manage::join_token(&cluster(&a), NodeRole::Agent, 600, false, "test").await.unwrap();
     manage::join(&agent.manager, &cfg, JoinOptions { server: a.addr, token, role: NodeRole::Agent, advertise: Some(agent.addr), tunnel_ip: None, name: Some("mover".into()), listen: Some(agent.addr) }).await.unwrap();
     let link = agent.manager.node_link().expect("an agent has a link").clone();
     assert!(link.wait_ready(Duration::from_secs(20)).await);
@@ -1389,12 +1399,12 @@ async fn a_detached_host_imports_into_another_cluster_with_its_vm_after_approval
     let b = new_cp();
     manage::init(&b.manager, &cfg, InitOptions { advertise: Some(b.addr), tunnel_ip: None, listen: Some(b.addr) }).await.unwrap();
     b.manager.initialize().await.unwrap();
-    let plain = manage::join_token(&cluster(&b), NodeRole::Agent, 600, false, "test").unwrap();
+    let plain = manage::join_token(&cluster(&b), NodeRole::Agent, 600, false, "test").await.unwrap();
     let host_addr: SocketAddr = format!("127.0.0.1:{}", free_port()).parse().unwrap();
     let refused = manage::join_import(&host, &cfg, manage::ImportOptions { server: b.addr, token: plain, advertise: Some(host_addr), tunnel_ip: None, name: Some("imported".into()), listen: Some(host_addr), wait: Duration::from_secs(5) }).await;
     assert!(refused.is_err(), "a token without --allow-import can't import");
     assert!(host.cluster().is_none(), "the host is untouched");
-    let token = manage::join_token(&cluster(&b), NodeRole::Agent, 600, true, "test").unwrap();
+    let token = manage::join_token(&cluster(&b), NodeRole::Agent, 600, true, "test").await.unwrap();
     let (h2, cfg2, b_addr) = (host.clone(), cfg.clone(), b.addr);
     let join = tokio::spawn(async move {
         manage::join_import(&h2, &cfg2, manage::ImportOptions { server: b_addr, token, advertise: Some(host_addr), tunnel_ip: None, name: Some("imported".into()), listen: Some(host_addr), wait: Duration::from_secs(90) }).await
@@ -1461,7 +1471,7 @@ async fn the_last_node_dissolves_the_cluster_and_keeps_everything() {
     let (s, _) = call(&a, "POST", "/cluster/dissolve", Some(json!({})), &[]).await;
     assert_eq!(s, StatusCode::CONFLICT);
     let agent = new_cp();
-    let token = manage::join_token(&cluster(&a), NodeRole::Agent, 600, false, "test").unwrap();
+    let token = manage::join_token(&cluster(&a), NodeRole::Agent, 600, false, "test").await.unwrap();
     manage::join(&agent.manager, &cfg, JoinOptions { server: a.addr, token, role: NodeRole::Agent, advertise: Some(agent.addr), tunnel_ip: None, name: Some("other".into()), listen: Some(agent.addr) }).await.unwrap();
     let (s, e) = call(&a, "POST", "/cluster/dissolve", Some(json!({ "force": true })), &[]).await;
     assert_eq!(s, StatusCode::CONFLICT, "{e}");
@@ -1517,7 +1527,7 @@ async fn an_agents_ui_is_relayed_to_a_server_and_host_paths_run_on_the_agent() {
     manage::init(&server.manager, &cfg, InitOptions { advertise: Some(server.addr), tunnel_ip: None, listen: Some(server.addr) }).await.unwrap();
     server.manager.initialize().await.unwrap();
     let agent = new_cp();
-    let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test").unwrap();
+    let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test").await.unwrap();
     manage::join(&agent.manager, &cfg, JoinOptions { server: server.addr, token, role: NodeRole::Agent, advertise: Some(agent.addr), tunnel_ip: None, name: Some("agent1".into()), listen: Some(agent.addr) })
         .await
         .unwrap();
@@ -1613,7 +1623,7 @@ async fn ovn_is_a_cluster_setting_every_node_follows() {
     server.manager.initialize().await.unwrap();
     let agent = new_cp();
     agent.manager.configure(&cfg);
-    let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test").unwrap();
+    let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test").await.unwrap();
     manage::join(&agent.manager, &cfg, JoinOptions { server: server.addr, token, role: NodeRole::Agent, advertise: Some(agent.addr), tunnel_ip: None, name: Some("agent1".into()), listen: Some(agent.addr) })
         .await
         .unwrap();

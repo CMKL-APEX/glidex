@@ -1351,6 +1351,21 @@ nodes rejoin.
 If another server leaves during a rotation, the rotation restarts from
 step 1 with a fresh CA: the new key has been exposed too.
 
+**Tokens pin the CA that will sign.** A join or rejoin token names the
+signing CA's fingerprint (§5.2), and the joining host refuses a server
+whose CA isn't that one. A token issued after a server left but before
+the leader's CA tick (every 3 s) started the rotation would name the CA
+about to be replaced, and stop working moments later. So issuing a token
+first runs a rotation that is due: the leader does it under the same lock
+as its tick, and another server asks the leader
+(`POST /cluster/v1/ca/settle`, servers only, answering the signing CA's
+fingerprint) and pins what it answers. If that rotation fails (a server
+can't take the new key), the token names the current CA, and the error a
+joining host gets when they differ says to issue a new token. The rotation
+records the servers that had left when it started (`covers` in
+`ca_bundle`), so one that left in the same second as the rotation started
+doesn't start a second rotation.
+
 ## 13. Metering in a cluster
 
 ### 13.1 Node-local accumulation, shipped hours
@@ -1875,7 +1890,7 @@ Built (tests in `cluster_tests.rs`, `ovn.rs`, `ct_meter`):
 - **Membership** (`cluster/membership.rs`, API `POST /nodes/{id}/{remove,forget,purge,rejoin-token}`, Cedar `removeNode`, `forgetNode`, `purgeNode`, `createRejoinToken` in `host.cluster.critical`): remove refuses a node that holds VMs, disks or node networks, is the last gateway of a router or the edge, or would break the Raft rules of §5.5 (majority of the old group; odd unless `--force`). One write retires the node and deny-lists its certificates; the Raft side is finished by a leader loop that removes any tombstoned server still in the group, so a leader that dies half way is replaced by one that completes it. Forget needs `--fenced`, a node that has stopped reporting, and marks its VMs `Ready=False/Lost`. Purge deletes a forgotten node's VM, disk and node-network records and makes it `Removed`.
 - **Rejoin** (`POST /cluster/v1/rejoin`, `gxctl cluster rejoin`, `glidex-install --rejoin`): single-use token bound to a node id; a new certificate for the same id; with `--raft-lost` (D18) the leader removes the old voter, the host wipes its Raft state and returns as a learner through the join path.
 - **OVN membership:** netd op `forget_ovn_member` kicks a departed server from the NB and SB clusters (`cluster/kick`, by address) and deletes its chassis. The edge's gateway list drops tombstoned nodes by itself because the plan filters them.
-- **CA rotation and renewal** (`cluster/rotation.rs`, `gxctl cluster rotate-ca`): `ca_bundle` holds the trust bundle, the signing CA and the CAs being retired. Servers receive the new key by `PUT /cluster/v1/ca` (with its certificate), every node installs the replicated bundle, renews by CSR (`POST /cluster/v1/renew`) when its issuer is not the signing CA or it expires within 30 days, and the leader retires old CAs when every node has renewed or the grace has passed. A server leaving triggers a rotation; so does a CA within a year of expiry. Tokens pin the signing CA.
+- **CA rotation and renewal** (`cluster/rotation.rs`, `gxctl cluster rotate-ca`): `ca_bundle` holds the trust bundle, the signing CA and the CAs being retired. Servers receive the new key by `PUT /cluster/v1/ca` (with its certificate), every node installs the replicated bundle, renews by CSR (`POST /cluster/v1/renew`) when its issuer is not the signing CA or it expires within 30 days, and the leader retires old CAs when every node has renewed or the grace has passed. A server leaving triggers a rotation; so does a CA within a year of expiry. Tokens pin the signing CA, after any rotation that is due (`POST /cluster/v1/ca/settle` from a server that isn't the leader).
 - **Feature level:** each server reports `features.feature_level`; the leader raises `meta.feature_level` to the minimum across servers (never down). Nothing uses a level above 1 yet.
 - **`cluster status`:** versions, feature level, CA rotation, and `?ports=true` TCP reachability from the serving server to every other node's 8842 (and 6641-6644 with OVN).
 - **UI:** a Cluster page (nodes, drain/undrain, Raft, CA, port gaps). **CLI:** `gxctl node remove|forget|purge|rejoin-token`, `gxctl cluster rejoin|leave|rotate-ca`. **Installer:** `--rejoin`, `--node-id`, `--leave`. **Runbook:** `spec/cluster-runbook.md`.

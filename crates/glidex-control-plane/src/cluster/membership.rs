@@ -334,7 +334,8 @@ impl VmManager {
         if n.meta.id == c.identity.node_id {
             return Err(MemberError::Conflict("this is the server issuing the token".into()));
         }
-        let token = tokens::create(&c.db, TokenKind::Rejoin { node: n.meta.id.clone(), raft_intact }, ttl_secs, &c.signing_fp(), by).map_err(failed)?;
+        let fp = c.ca_for_token().await;
+        let token = tokens::create(&c.db, TokenKind::Rejoin { node: n.meta.id.clone(), raft_intact }, ttl_secs, &fp, by).map_err(failed)?;
         Ok(json!({ "token": token, "node": n.spec.name, "node_id": n.meta.id, "raft_intact": raft_intact, "ttl_secs": ttl_secs }))
     }
 

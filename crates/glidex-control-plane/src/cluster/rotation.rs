@@ -14,6 +14,7 @@ use crate::store::{Origin, TableId};
 use redb::ReadableTable;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use bytes::Bytes;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -36,6 +37,10 @@ pub struct CaState {
     /// Retire the old CAs at this time even if some node has not renewed.
     #[serde(default)]
     pub retire_at: Option<u64>,
+    /// The servers that had left when this rotation started: it covers
+    /// them, so one that left in the same second doesn't start another.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub covers: Vec<String>,
 }
 
 fn other(e: impl std::fmt::Display) -> ClusterError {
@@ -168,6 +173,7 @@ impl Cluster {
             retiring: old_fps,
             started_at: now,
             retire_at: Some(now + grace),
+            covers: self.retired_servers(),
         };
         self.write_state(&st)?;
         // Every server (this one first) switches once it sees the state.
@@ -321,18 +327,74 @@ impl Cluster {
     /// Whether a server was retired (removed, forgotten, departed) after the
     /// current CA started signing: it may hold the key (§12.5).
     fn rotation_due(&self) -> bool {
-        let since = self.ca_state().map(|s| s.started_at).unwrap_or(0);
+        let st = self.ca_state();
+        let since = st.as_ref().map(|s| s.started_at).unwrap_or(0);
+        let covered = st.map(|s| s.covers).unwrap_or_default();
+        self.retired_servers_since(since).iter().any(|n| !covered.contains(n))
+    }
+
+    /// Servers retired (their certificates denied as they left) at or after
+    /// `since`: each may hold the CA key.
+    fn retired_servers_since(&self, since: u64) -> Vec<String> {
         let nodes = NodeStore::new(self.db.clone()).list().unwrap_or_default();
-        let Ok(txn) = self.db.begin_read() else { return false };
-        let Ok(t) = txn.open_table(TableId::NodeDenylist.definition()) else { return false };
-        let Ok(it) = t.iter() else { return false };
+        let Ok(txn) = self.db.begin_read() else { return Vec::new() };
+        let Ok(t) = txn.open_table(TableId::NodeDenylist.definition()) else { return Vec::new() };
+        let Ok(it) = t.iter() else { return Vec::new() };
         let rows: Vec<Value> = it.flatten().filter_map(|(_, v)| serde_json::from_slice::<Value>(v.value()).ok()).collect();
-        rows.iter().any(|d| {
-            let at = d["at"].as_u64().unwrap_or(0);
-            let node = d["node"].as_str().unwrap_or("");
-            // Certificates replaced at a rejoin are no reason: the node is still a member.
-            at >= since && d["why"] != "replaced at rejoin" && nodes.iter().any(|n| n.meta.id == node && n.spec.role == NodeRole::Server && n.status.phase.is_tombstone())
-        })
+        let mut out: Vec<String> = rows
+            .iter()
+            .filter(|d| {
+                let node = d["node"].as_str().unwrap_or("");
+                // Certificates replaced at a rejoin are no reason: the node is still a member.
+                d["at"].as_u64().unwrap_or(0) >= since && d["why"] != "replaced at rejoin" && nodes.iter().any(|n| n.meta.id == node && n.spec.role == NodeRole::Server && n.status.phase.is_tombstone())
+            })
+            .filter_map(|d| d["node"].as_str().map(String::from))
+            .collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    /// Every server that has left, for a new rotation to cover.
+    fn retired_servers(&self) -> Vec<String> {
+        self.retired_servers_since(0)
+    }
+
+    /// The CA a token issued now must pin (§12.5): a rotation that is due
+    /// (a server left) runs first, so the token names the CA that will
+    /// sign, not one about to be replaced. The leader does it; another
+    /// server asks the leader. On failure, the CA that signs now.
+    pub async fn ca_for_token(&self) -> String {
+        let Some(node) = &self.node else { return self.signing_fp() };
+        if node.is_leader() {
+            return self.settle_ca().await;
+        }
+        match self.post_leader("/cluster/v1/ca/settle", Bytes::new()).await {
+            Ok(r) if r.status.is_success() => serde_json::from_slice::<Value>(&r.body).ok().and_then(|v| v["signing_fp"].as_str().map(String::from)).unwrap_or_else(|| self.signing_fp()),
+            Ok(r) => {
+                tracing::warn!("the leader did not settle the CA for a token: {}", r.status);
+                self.signing_fp()
+            }
+            Err(e) => {
+                tracing::warn!("asking the leader to settle the CA for a token: {}", e);
+                self.signing_fp()
+            }
+        }
+    }
+
+    /// Leader: run a rotation that is due, under the same lock as the CA
+    /// tick (so the two never both start one), and return the signing CA.
+    pub async fn settle_ca(&self) -> String {
+        let mut last = self.ca_op.lock().await;
+        if self.rotation_due() {
+            let r = self.rotate_ca_locked(None).await;
+            match &r {
+                Ok(_) => tracing::warn!("rotated the CA before issuing a token: a server left"),
+                Err(e) => tracing::warn!("rotating the CA before issuing a token (the token keeps the current CA): {}", e),
+            }
+            *last = r.is_err().then(std::time::Instant::now);
+        }
+        self.signing_fp()
     }
 
     fn own_issuer_is(&self, fp: &str) -> bool {
