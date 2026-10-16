@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import * as api from "../api";
 import type { ClusterStatus } from "../api";
 import type { Departure, NodeRecord, VmResponse } from "../types";
-import { formatTime, isTombstone } from "../types";
+import { formatTime, isTombstone, nodeLabel } from "../types";
 import { useLive, useLiveCluster, useLiveRefresh } from "../live";
 import { useNodes } from "../nodes";
 import { useSession } from "../session";
@@ -135,7 +135,7 @@ export default function Cluster() {
     <tr key={n.meta.id} className="border-t border-gray-100 align-top">
       <td className="py-2">
         <Link to={`/cluster/nodes/${encodeURIComponent(n.meta.id)}`} className="font-medium text-sky-700 hover:underline">
-          {n.spec.name}
+          {nodeLabel(n)}
         </Link>
         {dir.self === n.meta.id && <span className="text-gray-400"> (this node)</span>}
       </td>

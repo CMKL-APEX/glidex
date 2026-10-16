@@ -1,6 +1,7 @@
 import { useState } from "react";
 import * as api from "../api";
 import type { IssuedToken, NodeRecord } from "../types";
+import { nodeLabel } from "../types";
 import { hostOf, useAllowed, useNodes } from "../nodes";
 import { useSession } from "../session";
 import { useLive } from "../live";
@@ -21,6 +22,8 @@ export default function NodeActions({ node, onDone }: { node: NodeRecord; onDone
   const { host: caps } = useSession();
   const id = node.meta.id;
   const name = node.spec.name;
+  // A node that left keeps its name: its short id tells the records apart.
+  const label = nodeLabel(node);
   const host = hostOf(id, dir.self);
   const can = useAllowed(["drainNode", "undrainNode"], [host]);
   const [op, setOp] = useState<Op | null>(null);
@@ -62,7 +65,7 @@ export default function NodeActions({ node, onDone }: { node: NodeRecord; onDone
       )}
       {shown.length > 0 && (
         <select
-          aria-label={`Operations on ${name}`}
+          aria-label={`Operations on ${label}`}
           className={`${selectClass} w-auto py-1 text-sm`}
           value=""
           onChange={(e) => setOp(e.target.value as Op)}
@@ -78,7 +81,7 @@ export default function NodeActions({ node, onDone }: { node: NodeRecord; onDone
 
       {op === "drain" && (
         <ConfirmDialog
-          title={`Drain ${name}`}
+          title={`Drain ${label}`}
           consequence="No new VMs are placed on this node. VMs already on it keep running; move or stop them before removing the node."
           actionLabel="Drain"
           danger={false}
@@ -90,7 +93,7 @@ export default function NodeActions({ node, onDone }: { node: NodeRecord; onDone
       )}
       {op === "promote" && (
         <ConfirmDialog
-          title={`Promote ${name}`}
+          title={`Promote ${label}`}
           consequence="It becomes a Raft voter and a member of the OVN databases. Keep the number of servers odd (1, 3 or 5)."
           actionLabel="Promote"
           danger={false}
@@ -103,7 +106,7 @@ export default function NodeActions({ node, onDone }: { node: NodeRecord; onDone
       )}
       {op === "remove" && (
         <ConfirmDialog
-          title={`Remove ${name}`}
+          title={`Remove ${label}`}
           consequence="The node leaves the cluster: Raft and the OVN databases forget it and its certificate is refused from now on. It must have no VMs, disks or node networks left."
           typeToConfirm={name}
           actionLabel="Remove"
@@ -117,7 +120,7 @@ export default function NodeActions({ node, onDone }: { node: NodeRecord; onDone
       {op === "forget" && <ForgetDialog node={node} onClose={done} />}
       {op === "purge" && (
         <ConfirmDialog
-          title={`Purge ${name}`}
+          title={`Purge ${label}`}
           consequence="Deletes the records of the VMs, disks and networks that were on this forgotten node. Their files, if the host ever comes back, are not touched. This cannot be undone."
           typeToConfirm={name}
           actionLabel="Purge"
@@ -131,7 +134,7 @@ export default function NodeActions({ node, onDone }: { node: NodeRecord; onDone
       {op === "detach" && <DetachDialog node={node} onClose={done} />}
       {op === "abort" && (
         <ConfirmDialog
-          title={`Abort the detach of ${name}`}
+          title={`Abort the detach of ${label}`}
           consequence="The node goes back to Active and keeps its VMs in the cluster. A detach the node already acknowledged can't be aborted."
           actionLabel="Abort the detach"
           danger={false}
@@ -149,7 +152,7 @@ function ForgetDialog({ node, onClose }: { node: NodeRecord; onClose: () => void
   const [fenced, setFenced] = useState(false);
   return (
     <ConfirmDialog
-      title={`Forget ${node.spec.name}`}
+      title={`Forget ${nodeLabel(node)}`}
       consequence="For a node that is gone for good. Its VMs stay recorded on it, marked lost, until it rejoins with its disks or you purge it. Its certificate is refused from now on."
       typeToConfirm={fenced ? node.spec.name : undefined}
       actionLabel="Forget"
@@ -180,7 +183,7 @@ function RejoinDialog({ node, onClose }: { node: NodeRecord; onClose: () => void
     onClose();
   };
   return (
-    <Modal title={`Rejoin token for ${node.spec.name}`} onClose={close}>
+    <Modal title={`Rejoin token for ${nodeLabel(node)}`} onClose={close}>
       {issued ? (
         <>
           <TokenReveal
@@ -243,7 +246,7 @@ function DetachDialog({ node, onClose }: { node: NodeRecord; onClose: () => void
   const [withAccess, setWithAccess] = useState(false);
   return (
     <ConfirmDialog
-      title={`Detach ${node.spec.name}`}
+      title={`Detach ${nodeLabel(node)}`}
       consequence={
         <>
           The node leaves the cluster <strong>with its VMs, disks and node networks</strong> and becomes a standalone host (or can be imported

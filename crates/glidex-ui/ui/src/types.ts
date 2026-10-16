@@ -968,6 +968,12 @@ export function isTombstone(phase: NodePhase): boolean {
   return phase === "Departed" || phase === "Removed" || phase === "Forgotten";
 }
 
+/** A node's name, with its short id when it is a tombstone: a node that left
+ * keeps its name, and a host that joins again takes the same one. */
+export function nodeLabel(n: NodeRecord): string {
+  return isTombstone(n.status.phase) ? `${n.spec.name} · ${n.meta.id.slice(0, 8)}` : n.spec.name;
+}
+
 /** What one import plan brings (`GET /imports/{plan}`), for the mapping editor. */
 export interface ImportSources {
   projects: { id: string; name: string }[];

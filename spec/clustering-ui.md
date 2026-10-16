@@ -113,6 +113,14 @@ name, or the first 8 characters of the id when the caller can't list
 nodes (`listNodes` denied) — see §9 `node_name` for the proper fix. The
 node serving the UI is marked "(this node)" (`node_id` of `GET /cluster/status`).
 
+A tombstone (clustering.md §5.3) keeps its name, and a host that joins
+again takes the same one, so the directory can hold several records of
+one name. `nodeLabel(node)` shows a tombstone as `<name> · <first 8 of
+id>` wherever tombstones are listed (the Cluster page's departed list,
+the node page, the operations menu and its dialogs). A picker of nodes
+for something to run on (gateway nodes, copy targets, placement) lists
+live nodes only.
+
 ### 3.3 Leader changes and unavailability
 
 `request()` in `api.ts`:

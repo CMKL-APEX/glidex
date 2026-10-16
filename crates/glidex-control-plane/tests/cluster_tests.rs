@@ -879,6 +879,20 @@ async fn provider_networks_and_vpc_routers() {
     assert!(d.networks.iter().any(|n| n.name == "p1" && matches!(&n.kind, glidex_ovn::NetKind::Provider { physnet, vlan: Some(30) } if physnet == "lan")));
     assert!(glidex_control_plane::ipam::list_subnets(&server.manager.database()).unwrap().is_empty(), "a provider network takes no subnet");
 
+    // A gateway node is a node in the cluster: one that left keeps its
+    // record and name, and is refused by either.
+    let store = glidex_control_plane::node::NodeStore::new(server.manager.database());
+    let mut ghost = store.get(&server.manager.local_node_id()).unwrap().unwrap();
+    ghost.meta.id = "0000dead-0000-4000-8000-000000000000".into();
+    ghost.spec.name = "gone-host".into();
+    ghost.status.phase = glidex_control_plane::node::NodePhase::Removed;
+    store.put(&ghost).unwrap();
+    for key in ["gone-host", "0000dead-0000-4000-8000-000000000000"] {
+        let (s, e) = call(&server, "POST", "/projects/default/routers", Some(json!({ "name": "rg", "external": false, "gateway_nodes": [key] })), &[]).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{e}");
+        assert!(e["message"].as_str().unwrap().contains("gone-host (0000dead) is Removed"), "{e}");
+    }
+
     // VPC routers: one per project by default, an external address each.
     let (s, r) = call(&server, "POST", "/projects/default/routers", Some(json!({ "name": "r1" })), &[]).await;
     assert_eq!(s, StatusCode::CREATED, "{r}");

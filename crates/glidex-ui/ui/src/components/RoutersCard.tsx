@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import * as api from "../api";
-import type { Network, OvnOverview, Router } from "../types";
+import { isTombstone, type Network, type OvnOverview, type Router } from "../types";
 import { useNodes } from "../nodes";
 import { useSession } from "../session";
 import ConfirmDialog from "./ConfirmDialog";
@@ -20,7 +20,8 @@ function NewRouterDialog({ project, pool, onClose, onDone }: { project: string; 
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const site = host.createNetwork;
-  const nodeNames = [...nodes.nodes.values()].map((n) => n.spec.name).sort();
+  // Nodes in the cluster: one that left keeps its name, and can't be a gateway.
+  const nodeNames = [...nodes.nodes.values()].filter((n) => !isTombstone(n.status.phase)).map((n) => n.spec.name).sort();
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();

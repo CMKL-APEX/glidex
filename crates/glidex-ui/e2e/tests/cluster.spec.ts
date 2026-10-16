@@ -15,13 +15,14 @@ const noStream = (r: Route) => r.fulfill({ status: 503, contentType: "applicatio
 const CLUSTER = "c0ffee00-0000-4000-8000-000000000001";
 const S1 = "11111111-1111-4111-8111-111111111111";
 const A1 = "22222222-2222-4222-8222-222222222222";
+const GONE = "44444444-4444-4444-8444-444444444444";
 
-function node(id: string, name: string, role: "server" | "agent") {
+function node(id: string, name: string, role: "server" | "agent", phase = "Active") {
   return {
     meta: { id, name, created_at: 1790000000, generation: 1, resource_version: 1 },
     spec: { name, role, unschedulable: false, labels: {} },
     status: {
-      phase: "Active",
+      phase,
       ready: "True",
       advertise: role === "server" ? "192.0.2.11:8842" : "192.0.2.12:8842",
       versions: { glidex: "0.1.0" },
@@ -80,7 +81,8 @@ async function mockCluster(page: Page): Promise<Seen> {
       ports: [],
     }),
   );
-  await page.route("**/api/nodes", (r) => json(r, [node(S1, "s1", "server"), node(A1, "a1", "agent")]));
+  // a1 left once and joined again: its old record keeps the name.
+  await page.route("**/api/nodes", (r) => json(r, [node(S1, "s1", "server"), node(A1, "a1", "agent"), node(GONE, "a1", "agent", "Removed")]));
   await page.route("**/api/departures", (r) => json(r, []));
   await page.route("**/api/cluster/ovn", (r) => json(r, { enabled: false }));
   await page.route("**/api/imports", (r) => json(r, [PLAN]));
@@ -115,7 +117,11 @@ test("the Cluster page lists the nodes and a pending import", async ({ page }) =
   await page.goto("/cluster");
   await expect(page.getByRole("heading", { name: "Cluster" })).toBeVisible();
   await expect(page.getByRole("link", { name: "s1" })).toBeVisible();
-  await expect(page.getByRole("link", { name: "a1" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "a1", exact: true })).toBeVisible();
+  // The record a1 left behind reads apart from it.
+  await page.getByText("1 departed, removed or forgotten").click();
+  await expect(page.getByRole("link", { name: "a1 · 44444444", exact: true })).toBeVisible();
+  await expect(page.getByLabel("Operations on a1 · 44444444")).toBeVisible();
   await expect(page.getByRole("link", { name: "lab-host" })).toBeVisible();
   await expect(page.getByText("Leader, term 3")).toBeVisible();
 });
@@ -123,7 +129,7 @@ test("the Cluster page lists the nodes and a pending import", async ({ page }) =
 test("removing a node asks for its name and offers --force only after the server asks", async ({ page }) => {
   const seen = await mockCluster(page);
   await page.goto("/cluster");
-  await page.getByLabel("Operations on a1").selectOption({ label: "Remove…" });
+  await page.getByLabel("Operations on a1", { exact: true }).selectOption({ label: "Remove…" });
   const dialog = page.getByRole("heading", { name: "Remove a1" }).locator("..").locator("..");
   const go = dialog.getByRole("button", { name: "Remove", exact: true });
   await expect(go).toBeDisabled();
