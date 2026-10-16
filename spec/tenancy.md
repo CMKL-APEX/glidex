@@ -422,35 +422,35 @@ tenant (D4).
 ## 12. API
 
 Every tenancy operation is served over **both REST/JSON and gRPC** from
-one implementation (§12.1), following [grpc.md](grpc.md). The gRPC
-services are `glidex.tenancy.v1.Tenants`, `glidex.directory.v1.Connectors`,
-`glidex.directory.v1.Federations` and `glidex.auth.v1.Login`. The
+one implementation (§12.1), following [grpc.md](grpc.md). The RPC
+services are `glidex.tenancy.v1.TenantService`, `glidex.directory.v1.ConnectorService`,
+`glidex.directory.v1.FederationService` and `glidex.auth.v1.LoginService`. The
 operation table below is the single list both routers are checked
 against (grpc.md §5).
 
 | Operation (Cedar action) | REST | gRPC | Permission |
 |---|---|---|---|
-| `discover` | `POST /auth/discover` | `Login.Discover` | none |
+| `discover` | `POST /auth/discover` | `LoginService.Discover` | none |
 | `startLogin`, `finishLogin` | `GET /auth/c/{id}/start`, `GET /auth/c/{id}/callback` | — (browser redirects) | none |
 | SAML ACS and metadata | `POST /auth/c/{id}/saml/acs`, `GET /auth/c/{id}/saml/metadata` | — (browser form post / IdP fetch) | none |
-| `startDevice`, `pollDevice` | `POST /auth/c/{id}/device`, `…/device/poll` | `Login.StartDevice`, `Login.PollDevice` | none |
-| `redeemCliCode` | `POST /auth/cli-code` | `Login.RedeemCliCode` | none |
-| `passwordToken` | `POST /auth/token` (+ `connector`) | `Login.PasswordToken` | none (PAM, LDAP; TLS or api.sock only) |
-| `exchangeToken` | `POST /auth/exchange` | `Login.ExchangeToken` | none (workload token) |
-| `listTenants`, `readTenant` | `GET /tenants`, `GET /tenants/{id}` | `Tenants.List`, `Tenants.Get` | `system.tenants` (all) · own tenant for anyone |
-| `createTenant`, `updateTenant` | `POST /tenants`, `PATCH /tenants/{id}` | `Tenants.Create`, `Tenants.Update` | `system.tenants` |
-| `suspendTenant`, `resumeTenant` | `POST /tenants/{id}/suspend`, `/resume` | `Tenants.Suspend`, `Tenants.Resume` | `system.tenants` |
-| `deleteTenant` | `DELETE /tenants/{id}` | `Tenants.Delete` | `system.tenants` (step-up) |
-| `listTenantBindings`, `setTenantBinding`, `deleteTenantBinding` | `GET/PUT/DELETE /tenants/{id}/bindings` | `Tenants.ListBindings`, `SetBinding`, `DeleteBinding` | `tenant.members` (tenant roles only) |
-| `listConnectors`, `readConnector` | `GET /tenants/{id}/connectors[/{cid}]` | `Connectors.List`, `Connectors.Get` | `tenant.read` |
-| `createConnector`, `updateConnector`, `deleteConnector` | `POST/PATCH/DELETE /tenants/{id}/connectors[/{cid}]` | `Connectors.Create`, `Update`, `Delete` | `tenant.directories` (step-up); admin tenant: `system.identity` too |
-| `setConnectorSecret` | `PUT /connectors/{id}/secrets/{field}` | `Connectors.SetSecret` | `tenant.directories` |
-| `testConnector`, `syncConnector` | `POST /connectors/{id}/test`, `/sync` | `Connectors.Test`, `Connectors.Sync` | `tenant.directories` |
-| `listScimTokens`, `createScimToken`, `revokeScimToken` | `GET/POST/DELETE /connectors/{id}/scim-tokens` | `Connectors.ListScimTokens`, `CreateScimToken`, `RevokeScimToken` | `tenant.directories` |
+| `startDevice`, `pollDevice` | `POST /auth/c/{id}/device`, `…/device/poll` | `LoginService.StartDevice`, `LoginService.PollDevice` | none |
+| `redeemCliCode` | `POST /auth/cli-code` | `LoginService.RedeemCliCode` | none |
+| `passwordToken` | `POST /auth/token` (+ `connector`) | `LoginService.PasswordToken` | none (PAM, LDAP; TLS or api.sock only) |
+| `exchangeToken` | `POST /auth/exchange` | `LoginService.ExchangeToken` | none (workload token) |
+| `listTenants`, `readTenant` | `GET /tenants`, `GET /tenants/{id}` | `TenantService.List`, `TenantService.Get` | `system.tenants` (all) · own tenant for anyone |
+| `createTenant`, `updateTenant` | `POST /tenants`, `PATCH /tenants/{id}` | `TenantService.Create`, `TenantService.Update` | `system.tenants` |
+| `suspendTenant`, `resumeTenant` | `POST /tenants/{id}/suspend`, `/resume` | `TenantService.Suspend`, `TenantService.Resume` | `system.tenants` |
+| `deleteTenant` | `DELETE /tenants/{id}` | `TenantService.Delete` | `system.tenants` (step-up) |
+| `listTenantBindings`, `setTenantBinding`, `deleteTenantBinding` | `GET/PUT/DELETE /tenants/{id}/bindings` | `TenantService.ListBindings`, `SetBinding`, `DeleteBinding` | `tenant.members` (tenant roles only) |
+| `listConnectors`, `readConnector` | `GET /tenants/{id}/connectors[/{cid}]` | `ConnectorService.List`, `ConnectorService.Get` | `tenant.read` |
+| `createConnector`, `updateConnector`, `deleteConnector` | `POST/PATCH/DELETE /tenants/{id}/connectors[/{cid}]` | `ConnectorService.Create`, `Update`, `Delete` | `tenant.directories` (step-up); admin tenant: `system.identity` too |
+| `setConnectorSecret` | `PUT /connectors/{id}/secrets/{field}` | `ConnectorService.SetSecret` | `tenant.directories` |
+| `testConnector`, `syncConnector` | `POST /connectors/{id}/test`, `/sync` | `ConnectorService.Test`, `ConnectorService.Sync` | `tenant.directories` |
+| `listScimTokens`, `createScimToken`, `revokeScimToken` | `GET/POST/DELETE /connectors/{id}/scim-tokens` | `ConnectorService.ListScimTokens`, `CreateScimToken`, `RevokeScimToken` | `tenant.directories` |
 | SCIM 2.0 | `/scim/v2/c/{id}/…` | — (protocol fixed by RFC 7644) | SCIM token of that connector |
-| `listFederations`, `createFederation`, `updateFederation`, `deleteFederation` | `GET/POST/PATCH/DELETE /tenants/{id}/federations` | `Federations.List`, `Create`, `Update`, `Delete` | `tenant.directories` |
-| `listUsers`, `listTeams`, `listProjects` | `GET /users`, `/teams`, `/projects` + `?tenant=` | `Tenants.ListUsers`, `ListTeams`, `ListProjects` | non-admin principals see their tenant only |
-| `createProject` | `POST /projects` | `Tenants.CreateProject` | `tenant.projects` on the tenant (was `system.projects`) |
+| `listFederations`, `createFederation`, `updateFederation`, `deleteFederation` | `GET/POST/PATCH/DELETE /tenants/{id}/federations` | `FederationService.List`, `Create`, `Update`, `Delete` | `tenant.directories` |
+| `listUsers`, `listTeams`, `listProjects` | `GET /users`, `/teams`, `/projects` + `?tenant=` | `TenantService.ListUsers`, `ListTeams`, `ListProjects` | non-admin principals see their tenant only |
+| `createProject` | `POST /projects` | `TenantService.CreateProject` | `tenant.projects` on the tenant (was `system.projects`) |
 | `readAudit` | `GET /audit` | (with the audit family, grpc.md §9) | + `tenant.audit` for entries whose actor or target is in the tenant |
 | `readUsage` | `GET /usage` + `?tenant=` | (with the usage family, grpc.md §9) | `tenant.usage` for own tenant |
 

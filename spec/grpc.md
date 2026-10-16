@@ -1,6 +1,6 @@
 # gRPC API (design)
 
-Status: **design**, nothing implemented. Adds an RPC transport (gRPC, gRPC-Web and the
+Status: **design**; G0 is implemented (§15). Adds an RPC transport (gRPC, gRPC-Web and the
 Connect protocol, served by `connectrpc`) next to the REST API of [rest-api.md](rest-api.md), sharing its authentication
 ([security.md](security.md) §5), Cedar authorization (§7), audit (§10)
 and cluster forwarding ([clustering.md](clustering.md) §6.4). The first
@@ -56,8 +56,9 @@ The web UI moves to gRPC-Web through Connect (G-D8, §11).
   hyper-util's auto builder (ALPN `h2`, `http/1.1` on TLS; HTTP/2
   prior knowledge also works on the Unix sockets), so native gRPC needs
   no listener change.
-- `grpc.health.v1.Health` (`connectrpc-health`) on every listener, no
-  auth, like `GET /health`. Server reflection (`connectrpc-reflection`)
+- `grpc.health.v1.Health` (`connectrpc-health`; its default features
+  add zstd, a C build dependency only) on every listener, no auth, like
+  `GET /health`, always answered by the server that receives it. Server reflection (`connectrpc-reflection`)
   on `api.sock` only (later; not in G0).
 - Limits: 4 MiB per message (configurable, never above 16 MiB),
   deadlines from `grpc-timeout` / `connect-timeout-ms` capped at 5
@@ -76,7 +77,7 @@ crates/glidex-api/
 ├── proto/
 │   ├── glidex/api/v1/options.proto   # (glidex.api.v1.op), (glidex.api.v1.secret); build-time only
 │   ├── glidex/api/v1/errors.proto    # ErrorDetails
-│   ├── glidex/system/v1/system.proto # G0: GetServerInfo, WhoAmI
+│   ├── glidex/system/v1/system.proto # G0: SystemService.GetServerInfo, WhoAmI
 │   ├── glidex/…/v1/*.proto           # tenancy, directory, auth; vm, storage, … as ported (§9)
 │   └── google/rpc/error_details.proto # vendored ErrorInfo only (excluded from buf lint)
 └── src/lib.rs            # generated modules + OPERATIONS
@@ -95,6 +96,7 @@ crates/glidex-api/
    clients.
 
 Rules:
+- Services are named `<Noun>Service` (buf `STANDARD` lint).
 - Ids are `string` (UUIDs as today). Timestamps are
   `google.protobuf.Timestamp`; durations `google.protobuf.Duration`.
 - Partial updates use `google.protobuf.FieldMask` (`update_mask`); the
@@ -165,12 +167,12 @@ the layer as for REST and are returned in `x-request-id`.
 
 | `ServiceError.code` (REST status) | gRPC status |
 |---|---|
-| `unauthenticated`, `login_failed`, `reauth_required` (401) | `UNAUTHENTICATED` |
-| `forbidden`, `login_not_allowed`, `tls_required`, `ticket_required`, `tenant_suspended` (403) | `PERMISSION_DENIED` |
+| `unauthenticated`, `login_failed`, `reauth_required`, `cookie_not_accepted` (401) | `UNAUTHENTICATED` |
+| `forbidden`, `login_not_allowed`, `tls_required`, `ticket_required`, `tenant_suspended`, `protocol_not_allowed` (403) | `PERMISSION_DENIED` |
 | `quota_exceeded`, `tenant_quota_exceeded` (403) | `RESOURCE_EXHAUSTED` |
 | `not_found`, `oidc_disabled` (404) | `NOT_FOUND` |
-| `conflict` from a stale `version` (409) | `ABORTED` |
-| other 409s: `would_lock_out`, `confirmation_required`, `in_use`, `managed_by_connector`, `sync_blocked`, `not_clustered`, `dpdk_not_running`, … | `FAILED_PRECONDITION` |
+| `conflict` (409: a stale `version`, a name already taken, a concurrent change) | `ABORTED` |
+| other 409s: `would_lock_out`, `confirmation_required`, `in_use`, `managed_by_connector`, `sync_blocked`, `not_clustered`, `dpdk_not_running`, … (any code not listed falls back by REST status) | `FAILED_PRECONDITION` |
 | `bad_request`, `invalid*` (400), `invalid_policy` (422) | `INVALID_ARGUMENT` |
 | `unsupported_on_host` (422) | `FAILED_PRECONDITION` |
 | `too_large` (413) | `RESOURCE_EXHAUSTED` |
@@ -236,7 +238,11 @@ When a family is ported:
    use `uint32`; byte counts and timestamps-as-integers stay `uint64`
    and become strings), enum values are their full proto names
    (`PHASE_RUNNING`, where REST says `running` today), and
-   `Timestamp` is RFC 3339.
+   `Timestamp` is RFC 3339. Unset fields are left out where REST sent
+   `null`; every reader indexing JSON sees the same thing. A field REST
+   always sends, even at its default (`"oidc": false`), is declared
+   `optional` and always set, because proto3 JSON leaves out default
+   values of fields without presence.
 3. For **one release** the REST adapter also accepts the old request
    shape (the few value conversions above, done in the adapter before
    decoding), and responses carry `Glidex-Api-Shape: proto` so clients
@@ -308,7 +314,7 @@ equivalent test suite; until then it stays WebSocket.
 
 | # | Scope | Acceptance |
 |---|---|---|
-| **G0** scaffold | `glidex-api` crate (protox → `connectrpc-build`, build checks, operation table), `buf.yaml` + CI job, RPC routes in `api::router`, the RPC adapter (§6), `ServiceError` with both mappings, health, forwarding by `kind` with trailers, a first `System` service: `GetServerInfo` (REST twin `GET /auth/server-info`, same JSON, both served by one service function) and `WhoAmI` (RPC only; `GET /auth/whoami` moves onto its message with the access family in G2) | `System` round-trips over gRPC, Connect and REST; listener/credential, error-mapping and operation-table tests. Lands before tenancy.md T0. |
+| **G0** scaffold | `glidex-api` crate (protox → `connectrpc-build`, build checks, operation table), `buf.yaml` + CI job, RPC routes in `api::router`, the RPC adapter (§6), `ServiceError` with both mappings, health, forwarding by `kind` with trailers, a first `SystemService`: `GetServerInfo` (REST twin `GET /auth/server-info`, same JSON, both served by one service function) and `WhoAmI` (RPC only; `GET /auth/whoami` moves onto its message with the access family in G2) | `System` round-trips over gRPC, Connect and REST; listener/credential, error-mapping and operation-table tests. Lands before tenancy.md T0. |
 | **G1** tenancy | tenancy, directory, login services (tenancy.md §12) | Both-transport tenancy tests. |
 | **G2** VMs, storage, access | as §9 | Existing REST suites unchanged; `{rest, grpc}` tables. |
 | **G3** networking, host, cluster | as §9, including relay and `PreAuthorized` | Host tests on a real cluster. |
@@ -324,3 +330,21 @@ equivalent test suite; until then it stays WebSocket.
 4. **Hand-written REST types:** removed as each family is ported, REST
    moves to the proto JSON form with a one-release transition (G-D3,
    §9.1).
+
+## 15. Implementation status
+
+| Spec | Code |
+|---|---|
+| Protos, build checks (op option, G-D11 names, secrets), operation table (§4, §5) | `crates/glidex-api` (`build.rs`, `proto/`, `buf.yaml`) |
+| Mounting, per-listener protocols and cookies, audit, error mapping (§3, §6, §7) | `crates/glidex-control-plane/src/api/rpc/` |
+| Service layer (`Call`, `ServiceError`) | `crates/glidex-control-plane/src/service/` |
+| `SystemService` (G0) | `service/system.rs`, `api/rpc/system.rs`; REST twin `api/access.rs::server_info` |
+| Forwarding by `kind`, trailers (§8) | `api/gate.rs`, `cluster/net.rs` (`Reply.trailers`) |
+| CI (G-D9) | `.github/workflows/rust.yml` job `proto` |
+| Tests | `tests/rpc_tests.rs`; `cluster_tests.rs::rpc_reads_are_answered_by_the_server_that_takes_them`; unit tests in `api/rpc` and `glidex-api` |
+
+Not yet exercised: forwarding a **write** RPC with its trailers (G0 has
+no write RPC; the first is `TenantService.Create` in tenancy.md T0, whose
+tests cover it), reflection, the TypeScript generation check (starts with
+G4, when the UI first uses Connect-ES).
+

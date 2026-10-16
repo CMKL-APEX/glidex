@@ -17,6 +17,7 @@ mod nodes;
 mod storage;
 mod rates;
 pub mod relay;
+mod rpc;
 pub(crate) use rates::live_vm_stats;
 pub(crate) use vms::read_log_tail;
 mod usage;
@@ -137,7 +138,8 @@ pub fn create_router(manager: Arc<VmManager>) -> Router {
 
 pub fn router(app: AppState) -> Router {
     let (r, _) = routes(&app);
-    r.layer(from_fn_with_state(app.clone(), gate::cluster_gate))
+    r.merge(rpc::routes(&app))
+        .layer(from_fn_with_state(app.clone(), gate::cluster_gate))
         .layer(from_fn_with_state(app.clone(), authenticate))
         .layer(from_fn_with_state(app.clone(), relay::ui_relay))
         .with_state(app)
@@ -511,34 +513,50 @@ async fn audit_layer(State(app): State<AppState>, mut req: Request, next: Next) 
     let path = req.uri().path().to_string();
     let method = req.method().to_string();
     let resp = next.run(req).await;
-    let info = slot.0.lock().unwrap();
     let status = resp.status();
-    let audited = !safe || info.denied || info.always;
-    // Public routes (logins) are audited by their handlers.
-    if audited && action != PUBLIC && !app.auth.is_disabled() {
-        let result = if info.denied {
-            "denied".to_string()
-        } else if status.is_success() {
-            "ok".to_string()
-        } else {
-            format!("error:{}", status.as_u16())
-        };
-        let mut details = info.details.clone();
-        details.insert("http".into(), serde_json::json!(format!("{} {}", method, path)));
-        app.auth.audit(
-            principal.as_ref(),
-            &request_id,
-            action,
-            info.project.as_deref(),
-            info.target.as_deref(),
-            &result,
-            (!status.is_success()).then(|| status.as_str()),
-            &info.policies,
-            serde_json::Value::Object(details),
-        );
-    }
-    drop(info);
+    let failure = (!status.is_success()).then(|| (format!("error:{}", status.as_u16()), status.as_str().to_string()));
+    write_audit(&app, principal.as_ref(), &request_id, action, !safe, &slot, failure, ("http", format!("{} {}", method, path)));
     resp
+}
+
+/// The audit entry of one request (spec/security.md §10), for REST and
+/// RPCs alike: writes always, any request a policy denied, and reads a
+/// handler asked to record. `failure` is (result, error code);
+/// `transport` is the detail saying how the request came in.
+#[allow(clippy::too_many_arguments)]
+fn write_audit(
+    app: &App,
+    principal: Option<&Principal>,
+    request_id: &str,
+    action: &str,
+    write: bool,
+    slot: &AuditSlot,
+    failure: Option<(String, String)>,
+    transport: (&str, String),
+) {
+    let info = slot.0.lock().unwrap();
+    // Public routes (logins) are audited by their handlers.
+    if !(write || info.denied || info.always) || action == PUBLIC || app.auth.is_disabled() {
+        return;
+    }
+    let (result, code) = match (info.denied, failure) {
+        (true, f) => ("denied".to_string(), f.map(|f| f.1)),
+        (false, Some((r, c))) => (r, Some(c)),
+        (false, None) => ("ok".to_string(), None),
+    };
+    let mut details = info.details.clone();
+    details.insert(transport.0.into(), serde_json::json!(transport.1));
+    app.auth.audit(
+        principal,
+        request_id,
+        action,
+        info.project.as_deref(),
+        info.target.as_deref(),
+        &result,
+        code.as_deref(),
+        &info.policies,
+        serde_json::Value::Object(details),
+    );
 }
 
 /// The authenticated caller of a route.
@@ -556,18 +574,27 @@ impl FromRequestParts<AppState> for Caller {
     type Rejection = ApiErr;
 
     async fn from_request_parts(parts: &mut Parts, app: &AppState) -> Result<Self, Self::Rejection> {
-        let p = parts
-            .extensions
+        let action = parts.extensions.get::<RouteAction>().map(|a| a.0).unwrap_or(AUTHENTICATED);
+        Caller::from_extensions(&parts.extensions, app, action)
+    }
+}
+
+impl Caller {
+    /// The caller of `action`, from what the layers put on the request:
+    /// for REST through the extractor above, for RPCs from the
+    /// `RequestContext` (api::rpc).
+    fn from_extensions(ext: &axum::http::Extensions, app: &AppState, action: &'static str) -> Result<Self, ApiErr> {
+        let p = ext
             .get::<Principal>()
             .cloned()
             .ok_or_else(|| err(StatusCode::UNAUTHORIZED, "unauthenticated", "authentication required"))?;
         Ok(Caller {
             p,
-            action: parts.extensions.get::<RouteAction>().map(|a| a.0).unwrap_or(AUTHENTICATED),
-            pre: parts.extensions.get::<PreAuthorized>().map(|p| p.0.clone()).unwrap_or_default(),
+            action,
+            pre: ext.get::<PreAuthorized>().map(|p| p.0.clone()).unwrap_or_default(),
             app: app.clone(),
-            request_id: parts.extensions.get::<RequestId>().map(|r| r.0.clone()).unwrap_or_default(),
-            audit: parts.extensions.get::<AuditSlot>().cloned().unwrap_or_default(),
+            request_id: ext.get::<RequestId>().map(|r| r.0.clone()).unwrap_or_default(),
+            audit: ext.get::<AuditSlot>().cloned().unwrap_or_default(),
         })
     }
 }
@@ -846,6 +873,21 @@ mod tests {
             public,
             ["/health", "/auth/methods", "/auth/server-info", "/auth/login", "/auth/token", "/auth/oidc/start", "/auth/oidc/callback", "/auth/oidc/device", "/auth/oidc/device/poll"]
         );
+
+        // The RPC operation table (spec/grpc.md §5): the same rules, and
+        // each REST twin is registered with the same action.
+        assert!(!glidex_api::OPERATIONS.is_empty());
+        for op in glidex_api::OPERATIONS {
+            if op.action != PUBLIC && op.action != AUTHENTICATED {
+                assert!(actions.iter().any(|a| a == op.action), "{} → unknown action {}", op.procedure, op.action);
+                assert!(!op.action.contains('.') && !op.action.starts_with("role"), "{}", op.procedure);
+            }
+            if let Some((method, path)) = op.rest {
+                let twin = table.iter().find(|r| r.method == method && r.path == path);
+                let twin = twin.unwrap_or_else(|| panic!("{}: REST twin {method} {path} isn't a route", op.procedure));
+                assert_eq!(twin.action, op.action, "{}: REST twin has a different action", op.procedure);
+            }
+        }
     }
 
     #[test]

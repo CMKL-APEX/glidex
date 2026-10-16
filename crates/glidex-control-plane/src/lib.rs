@@ -23,4 +23,5 @@ pub mod state;
 pub mod tenancy;
 pub mod scheduler;
 pub mod serve;
+pub mod service;
 pub mod paths;

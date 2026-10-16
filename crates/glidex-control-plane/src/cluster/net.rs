@@ -179,6 +179,8 @@ pub struct Reply {
     pub status: StatusCode,
     pub headers: HeaderMap,
     pub body: Bytes,
+    /// HTTP/2 trailers, where native gRPC carries its status (spec/grpc.md §8).
+    pub trailers: Option<HeaderMap>,
 }
 
 impl PeerClient {
@@ -226,8 +228,9 @@ impl PeerClient {
             let sent = tokio::time::timeout(timeout, async {
                 let resp = sender.send_request(req).await?;
                 let (parts, inc) = resp.into_parts();
-                let bytes = inc.collect().await?.to_bytes();
-                Ok::<_, hyper::Error>(Reply { status: parts.status, headers: parts.headers, body: bytes })
+                let collected = inc.collect().await?;
+                let trailers = collected.trailers().cloned();
+                Ok::<_, hyper::Error>(Reply { status: parts.status, headers: parts.headers, body: collected.to_bytes(), trailers })
             })
             .await;
             match sent {
@@ -405,7 +408,7 @@ impl PeerClient {
         let resp = sender.send_request(req).await.map_err(|e| NetError::Request(addr.to_string(), e.to_string()))?;
         let (parts, inc) = resp.into_parts();
         let body = inc.collect().await.map_err(|e| NetError::Request(addr.to_string(), e.to_string()))?.to_bytes();
-        Ok(Reply { status: parts.status, headers: parts.headers, body })
+        Ok(Reply { status: parts.status, headers: parts.headers, body, trailers: None })
     }
 }
 

@@ -1,0 +1,22 @@
+[package]
+name = "glidex-api"
+version.workspace = true
+edition.workspace = true
+description = "Protos, generated messages, services and clients, and the operation table of the glidex RPC API (spec/grpc.md)"
+
+[dependencies]
+# Pinned like openraft: pre-1.0, upgraded deliberately (spec/grpc.md G-D10).
+connectrpc = { version = "=0.9.1", default-features = false, features = ["json", "gzip"] }
+buffa = { version = "=0.9.2", features = ["json"] }
+buffa-types = { version = "=0.9.2", features = ["json"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[features]
+# Generated clients and their HTTP transports (gxctl, tests).
+client = ["connectrpc/client", "connectrpc/client-tls"]
+
+[build-dependencies]
+connectrpc-build = "=0.9.0"
+protox = "0.10"
+prost-reflect = "0.16"

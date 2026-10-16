@@ -367,8 +367,13 @@ Same public allowlist as `/auth/methods` (`api/mod.rs:246`,
 certificate — public information (the server logs it at start; a
 certificate's fingerprint is not a secret). `cluster_id`/`node_id` come
 from `<state dir>/cluster/identity.json` (clustering.md:1565); a
-standalone host reports its single-node cluster id, and `null` before
-clustering state exists. Caches nothing per client; no rate needed
+standalone host reports its single-node cluster id, and leaves the
+field out before clustering state exists. The body is the proto JSON of
+`glidex.system.v1.GetServerInfoResponse`, the same message
+`SystemService.GetServerInfo` returns over RPC ([grpc.md](grpc.md) G0):
+unset `cluster_id`, `node_id` and `fingerprint` are omitted rather than
+`null` (readers that index the JSON see no difference), and the three
+`methods` flags are always present. Caches nothing per client; no rate needed
 (it is static after boot). `GET /health` can carry `version` too so
 monitoring sees it without a new route.
 

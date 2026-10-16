@@ -32,7 +32,7 @@ fresh reader cannot infer just by reading the source.
 | [security.md](security.md) | Authentication (peer uid, PAM, OIDC, tokens), projects/teams, Cedar authorization policies, netd policy, hardening (draft) |
 | [gxctl-auth.md](gxctl-auth.md) | `gxctl auth login` and its config file (`~/.config/glidex/config.json`): login profiles per server/cluster, TLS trust ladder with fingerprint pinning (TOFU) for self-signed control planes, the contained `insecure` bypass, identity generation and administration, server-side additions (`/auth/server-info`, `/auth/token`) |
 | [tenancy.md](tenancy.md) | Tenants and directory connectors (design): tenant above projects, the admin tenant owning nodes/OVN/host networks/devices/cluster membership, Cedar tenant boundary, tenant-admin role, per-tenant connectors (PAM, LDAP, OIDC, Google, Entra ID, GitHub, JumpCloud, AWS IAM Identity Center, SAML) for login and provisioning (SCIM push, pull sync), deprovisioning, encrypted connector secrets, workload federation for CI, milestones T0–T6 |
-| [grpc.md](grpc.md) | gRPC API (design): a second transport next to REST on the same listeners, one transport-neutral service layer under both, proto source of truth in `glidex-api`, per-RPC operation table (Cedar action, read/write, REST twin), error-code mapping, cluster forwarding, port order G0–G4 |
+| [grpc.md](grpc.md) | RPC API (design; G0 implemented): gRPC, gRPC-Web and Connect via `connectrpc` next to REST on the same listeners, browser on Connect-ES, one transport-neutral service layer under both, proto source of truth in `glidex-api`, per-RPC operation table (Cedar action, read/write, REST twin), error-code mapping, cluster forwarding, port order G0–G5 |
 
 ## Goals
 
@@ -77,7 +77,8 @@ glidex/
 ├── spec/                            # (this directory)
 ├── packaging/                       # systemd units (netd, authd, control plane, UI, glidex-vm@), polkit rule
 └── crates/
-    ├── glidex-control-plane/        # REST server, controllers, hypervisor drivers, gxctl
+    ├── glidex-api/                  # RPC protos, generated messages/services/clients, operation table (grpc.md)
+    ├── glidex-control-plane/        # REST and RPC server, controllers, hypervisor drivers, gxctl
     ├── glidex-vm-shim/              # per-VM supervisor: hypervisor parent, console, exit record
     ├── glidex-hv-client/            # CH HTTP and QMP clients (shim + control plane)
     ├── glidex-ovs/                  # host networking library (OVS, NAT, VM ports)

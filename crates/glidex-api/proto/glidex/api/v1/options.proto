@@ -1,0 +1,34 @@
+// Options every glidex RPC and field may carry (spec/grpc.md §4, §5).
+// Read by build.rs only; no Rust code is generated for this file.
+syntax = "proto3";
+
+package glidex.api.v1;
+
+import "google/protobuf/descriptor.proto";
+
+// How the cluster treats an operation: reads may be served by any
+// server after a read barrier, writes go to the leader (spec/grpc.md G-D6).
+enum Kind {
+  KIND_UNSPECIFIED = 0;
+  KIND_READ = 1;
+  KIND_WRITE = 2;
+}
+
+// One API operation, whichever transport carries it.
+message Op {
+  // The Cedar action, or "public" / "authenticated" (spec/security.md §7.7).
+  string action = 1;
+  Kind kind = 2;
+  // The REST twin, "<METHOD> <path>" as registered in api::routes, or empty.
+  string rest = 3;
+}
+
+extend google.protobuf.MethodOptions {
+  // Required on every RPC; build.rs fails without it.
+  Op op = 50841;
+}
+
+extend google.protobuf.FieldOptions {
+  // Write-only secret: never in a response message, never audited.
+  bool secret = 50842;
+}

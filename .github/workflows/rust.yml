@@ -29,3 +29,32 @@ jobs:
       run: cargo test --verbose
     - name: Replay write sets (spec/clustering.md section 6.1)
       run: GLIDEX_CHECK_WRITE_SETS=1 cargo test -p glidex-control-plane --verbose
+
+  # The RPC API's protos (spec/grpc.md G-D9). Building them needs only
+  # cargo (protox in glidex-api's build.rs); buf checks style and
+  # compatibility.
+  proto:
+
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        fetch-depth: 0
+    - uses: bufbuild/buf-action@v1
+      with:
+        version: 1.74.0
+        setup_only: true
+    - name: Lint and format
+      working-directory: crates/glidex-api
+      run: buf lint && buf format --exit-code > /dev/null
+    - name: Breaking changes against main
+      working-directory: crates/glidex-api
+      run: |
+        # Nothing to compare with until the API exists on main.
+        if git cat-file -e origin/main:crates/glidex-api/buf.yaml 2>/dev/null; then
+          buf breaking --against "../../.git#ref=origin/main,subdir=crates/glidex-api"
+        else
+          echo "crates/glidex-api is not on main yet; skipping"
+        fi
