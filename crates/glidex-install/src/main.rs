@@ -1057,10 +1057,12 @@ fn install_system_packages(opts: &Options, platform: &Platform) -> Result<()> {
         }
         // ovn-controller made br-int when the package started it. Empty, it is
         // only in the way (the OVS setup below won't restart OVS while a bridge
-        // exists); a cluster makes it again (ensure_ovn_chassis).
-        let ports = run_capture_sudo(&["ovs-vsctl", "list-ports", "br-int"]);
+        // exists); a cluster makes it again (ensure_ovn_chassis). Without
+        // waiting for ovs-vswitchd: it may not be running yet, and the
+        // database row is what's in the way.
+        let ports = run_capture_sudo(&["ovs-vsctl", "--timeout=10", "list-ports", "br-int"]);
         if ports.as_deref().is_some_and(|p| p.trim().is_empty()) {
-            let _ = sudo(&argv(&["ovs-vsctl", "--if-exists", "del-br", "br-int"]));
+            let _ = sudo(&argv(&["ovs-vsctl", "--timeout=10", "--no-wait", "--if-exists", "del-br", "br-int"]));
         }
         println!("{} OVN is installed with its services off; a cluster turns on what it needs.", "Note:".yellow());
     }

@@ -132,6 +132,28 @@ fn packages_for(family: Family, profile: Profile) -> Vec<String> {
     v.iter().map(|s| s.to_string()).collect()
 }
 
+/// Packages that are Open vSwitch itself, as opposed to its helpers.
+fn is_ovs_package(p: &str) -> bool {
+    p.starts_with("openvswitch")
+}
+
+/// The package that provides this host's Open vSwitch when it is not the
+/// distribution's own (e.g. NVIDIA DOCA's `doca-openvswitch-switch`).
+/// Installing the distribution's OVS over it would remove it.
+pub fn foreign_ovs_package(exec: &dyn Exec, family: Family) -> Option<String> {
+    if family != Family::Debian {
+        return None;
+    }
+    let out = exec.run(&Cmd::new(Program::DpkgQuery, ["-S", "/usr/bin/ovs-vsctl"]).timeout(Duration::from_secs(10))).ok()?;
+    if out.status != 0 {
+        return None;
+    }
+    // "doca-openvswitch-switch: /usr/bin/ovs-vsctl" (diversions list more).
+    let pkg = out.stdout_str().lines().find_map(|l| l.split_once(": ").map(|(p, _)| p.trim().to_string()))?;
+    let pkg = pkg.split(':').next().unwrap_or_default().to_string();
+    (!pkg.is_empty() && !pkg.starts_with("openvswitch-")).then_some(pkg)
+}
+
 fn service_for(family: Family) -> &'static str {
     match family {
         Family::Debian => "openvswitch-switch",
@@ -154,8 +176,19 @@ pub fn plan(exec: &dyn Exec, caps: &HostCapabilities, req: &InstallRequest) -> R
     let family = distro.family.ok_or_else(|| OvsError::Unsupported {
         missing: vec![format!("package install on distro '{}'", distro.id)],
     })?;
+    let mut packages = packages_for(family, req.profile);
+    let foreign = if caps.ovs_installed { foreign_ovs_package(exec, family) } else { None };
+    if let Some(pkg) = &foreign {
+        // Keep that OVS: start it, never replace it.
+        if req.profile == Profile::Dpdk && !caps.ovs_dpdk_build {
+            return Err(OvsError::Unsupported {
+                missing: vec![format!("a DPDK build of ovs-vswitchd (this host's OVS comes from {pkg}, which glidex does not replace)")],
+            });
+        }
+        packages.retain(|p| !is_ovs_package(p) && !(p.starts_with("dnsmasq") && caps.dnsmasq) && !(p == "nftables" && caps.nft));
+    }
     let mut post = Vec::new();
-    if family == Family::Debian && req.profile == Profile::Dpdk {
+    if family == Family::Debian && req.profile == Profile::Dpdk && foreign.is_none() {
         post.push(Cmd::new(
             Program::UpdateAlternatives,
             [
@@ -180,7 +213,7 @@ pub fn plan(exec: &dyn Exec, caps: &HostCapabilities, req: &InstallRequest) -> R
     };
     Ok(InstallPlan {
         family,
-        packages: packages_for(family, req.profile),
+        packages,
         post,
         affected_bridges,
     })
@@ -249,6 +282,7 @@ pub fn install(exec: &dyn Exec, probe_opts: &ProbeOptions, req: &InstallRequest)
 
     let mut output = Vec::new();
     let install_cmd = match plan.family {
+        _ if plan.packages.is_empty() => None,
         Family::Debian => {
             let update = Cmd::new(Program::AptGet, ["update"])
                 .env("DEBIAN_FRONTEND", "noninteractive")
@@ -262,17 +296,18 @@ pub fn install(exec: &dyn Exec, probe_opts: &ProbeOptions, req: &InstallRequest)
                 args.push("--no-install-recommends".into());
             }
             args.extend(plan.packages.iter().cloned());
-            Cmd::new(Program::AptGet, args).env("DEBIAN_FRONTEND", "noninteractive")
+            Some(Cmd::new(Program::AptGet, args).env("DEBIAN_FRONTEND", "noninteractive"))
         }
         Family::Fedora => {
             let mut args = vec!["install".to_string(), "-y".into()];
             args.extend(plan.packages.iter().cloned());
-            Cmd::new(Program::Dnf, args)
+            Some(Cmd::new(Program::Dnf, args))
         }
+    };
+    if let Some(cmd) = install_cmd {
+        output.extend(exec.check(&cmd.timeout(INSTALL_TIMEOUT))?.stdout);
     }
-    .timeout(INSTALL_TIMEOUT);
-    output.extend(exec.check(&install_cmd)?.stdout);
-    if plan.family == Family::Debian && req.profile == Profile::Dpdk {
+    if plan.family == Family::Debian && req.profile == Profile::Dpdk && plan.packages.iter().any(|p| is_ovs_package(p)) {
         // apt skips recommends of packages that are already installed, so
         // install dpdk's mempool drivers explicitly. Their names carry the
         // DPDK ABI (librte-mempool-ring26), so read them from dpdk itself.
@@ -567,6 +602,40 @@ mod tests {
         exec.on("ovs-vsctl --version", Output::ok("ovs-vsctl (Open vSwitch) 3.7.1\n"));
         exec.on("dnsmasq --version", Output::ok("Dnsmasq version 2.92\n"));
         exec.on("ovs-vsctl --format=json --columns=iface_types", Output::ok(row));
+    }
+
+    /// NVIDIA DOCA's OVS, installed with its ovs-vswitchd stopped: the
+    /// database answers, the switch doesn't.
+    fn doca_ovs_stopped(exec: &RecordingExec) {
+        exec.file("/etc/os-release", UBUNTU);
+        exec.on("ovs-vsctl --version", Output::ok("ovs-vsctl (Open vSwitch) 3.5.0052\n"));
+        exec.on("dnsmasq --version", Output::ok("Dnsmasq version 2.90\n"));
+        exec.on("ovs-appctl --timeout=2 -t ovs-vswitchd version", Output::failed(1, ""));
+        exec.on("ovs-appctl --timeout=2 -t ovs-vswitchd version", Output::ok("ovs-vswitchd (Open vSwitch) 3.5.0052\n"));
+        exec.on("dpkg-query -S /usr/bin/ovs-vsctl", Output::ok("doca-openvswitch-switch: /usr/bin/ovs-vsctl\n"));
+        exec.on("ovs-vsctl --format=json --columns=iface_types", Output::ok(OVS_ROW));
+    }
+
+    #[test]
+    fn an_ovs_from_another_package_is_started_not_replaced() {
+        let exec = RecordingExec::new();
+        doca_ovs_stopped(&exec);
+        assert!(!host::probe(&exec, &ProbeOptions::default()).ovs_running, "a database without ovs-vswitchd is not a running OVS");
+
+        let exec = RecordingExec::new();
+        doca_ovs_stopped(&exec);
+        let report = install(&exec, &ProbeOptions::default(), &InstallRequest { profile: Profile::Kernel, source_build: false, confirm: false }).unwrap();
+        assert!(report.packages.is_empty(), "{report:?}");
+        let calls = exec.calls();
+        assert!(!calls.iter().any(|c| c.starts_with("apt-get")), "nothing to install, and never the distribution's OVS: {calls:?}");
+        assert!(calls.contains(&"systemctl enable --now openvswitch-switch".to_string()), "{calls:?}");
+
+        // DPDK needs a build of it this OVS isn't: say so, don't replace it.
+        let exec = RecordingExec::new();
+        doca_ovs_stopped(&exec);
+        let e = install(&exec, &ProbeOptions::default(), &InstallRequest { profile: Profile::Dpdk, source_build: false, confirm: false }).unwrap_err();
+        assert!(e.to_string().contains("doca-openvswitch-switch"), "{e}");
+        assert!(!exec.calls().iter().any(|c| c.starts_with("apt-get") || c.starts_with("update-alternatives")), "{:?}", exec.calls());
     }
 
     #[test]
