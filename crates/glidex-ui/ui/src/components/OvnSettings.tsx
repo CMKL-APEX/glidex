@@ -9,6 +9,25 @@ import { Badge, Card, ErrorBanner, errorMessage, inputClass, primaryButton, seco
 
 const emptyEdge: OvnEdge = { physnet: "", external_cidr: "", gateway: "", external_ip: "", external_pool: "", gateway_nodes: [] };
 
+/** Nodes whose ovn-controller is older than the cluster's ovn-northd: they
+ * can't run its logical flows, so VMs on cluster networks aren't placed
+ * there (spec/clustering-ui.md §8a). */
+export function OvnOutdated({ view }: { view: OvnSettingsView }) {
+  const outdated = (view.nodes ?? []).filter((n) => n.outdated);
+  if (!outdated.length) return null;
+  return (
+    <div role="alert" className="mt-3 text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-3">
+      <p className="font-medium">OVN is out of date on {outdated.map((n) => n.name).join(", ")}</p>
+      <ul className="list-disc pl-5 mt-1 space-y-0.5">
+        {outdated.map((n) => (
+          <li key={n.id}>{n.outdated}</li>
+        ))}
+      </ul>
+      <p className="mt-1 text-xs">VMs on cluster networks aren't placed there until it is upgraded; the installer fetches the matching OVN.</p>
+    </div>
+  );
+}
+
 /** OVN while it is off (spec/clustering-ui.md §8a): which nodes are ready
  * for it, and the button that turns it on for the whole cluster. */
 export function OvnOff({ view, onDone }: { view: OvnSettingsView; onDone: () => void }) {
@@ -44,11 +63,20 @@ export function OvnOff({ view, onDone }: { view: OvnSettingsView; onDone: () => 
               <td className="py-1.5">
                 {n.name} <span className="text-gray-400">({n.role})</span>
               </td>
-              <td>{n.missing ? <span className="text-amber-700">{n.missing}</span> : <Badge kind="ok">{n.ovn_version} ready</Badge>}</td>
+              <td>
+                {n.missing ? (
+                  <span className="text-amber-700">{n.missing}</span>
+                ) : n.outdated ? (
+                  <Badge kind="warn">{n.ovn_version} outdated</Badge>
+                ) : (
+                  <Badge kind="ok">{n.ovn_version} ready</Badge>
+                )}
+              </td>
             </tr>
           ))}
         </tbody>
       </table>
+      <OvnOutdated view={view} />
       {missing.length > 0 && (
         <p className="mt-2 text-xs text-gray-600">
           Install it on {missing.map((n) => n.name).join(", ")} with <code>sudo glidex-install --ovn</code>; nodes report it within two minutes.

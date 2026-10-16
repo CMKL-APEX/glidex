@@ -359,13 +359,12 @@ fn ovn_view(c: &Caller) -> serde_json::Value {
     let settings = m.ovn_settings();
     let source = if settings.is_some() { "cluster" } else if m.ovn.load().enabled { "file" } else { "none" };
     let shown = settings.clone().unwrap_or_else(|| crate::ovn_settings::OvnSettings::from_file(&m.ovn.load()));
-    let nodes: Vec<serde_json::Value> = m
-        .nodes()
-        .list()
-        .unwrap_or_default()
+    let all = m.nodes().list().unwrap_or_default();
+    let northd = crate::node::cluster_northd_ovn(&all);
+    let nodes: Vec<serde_json::Value> = all
         .into_iter()
         .filter(|n| !n.status.phase.is_tombstone())
-        .map(|n| json!({ "id": n.meta.id, "name": n.spec.name, "role": n.spec.role, "ovn_version": n.status.versions.ovn, "ovn_central": n.status.features.ovn_central, "missing": ovn_missing(&n) }))
+        .map(|n| json!({ "id": n.meta.id, "name": n.spec.name, "role": n.spec.role, "ovn_version": n.status.versions.ovn, "ovn_central": n.status.features.ovn_central, "missing": ovn_missing(&n), "outdated": crate::node::ovn_outdated(&n, northd.as_deref()) }))
         .collect();
     let cluster_networks: Vec<String> = m.networks_list().into_iter().filter(|n| n.scope == crate::network::NetworkScope::Cluster).map(|n| n.name).collect();
     json!({ "enabled": m.ovn_enabled(), "edge": m.ovn.load().edge.is_some(), "vpc_pool": vpc_pool(c), "clustered": m.cluster().is_some(), "source": source, "settings": shown, "nodes": nodes, "cluster_networks": cluster_networks })

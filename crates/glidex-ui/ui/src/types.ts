@@ -1024,7 +1024,8 @@ export interface OvnSettingsView {
   /** `cluster`: the setting; `file`: control-plane.json (not moved yet); `none`. */
   source?: "cluster" | "file" | "none";
   settings?: OvnSettings;
-  nodes?: { id: string; name: string; role: string; ovn_version: string | null; ovn_central: boolean; missing: string | null }[];
+  /** `outdated`: its ovn-controller is older than the cluster's ovn-northd, so it drops traffic of the newer pipeline. */
+  nodes?: { id: string; name: string; role: string; ovn_version: string | null; ovn_central: boolean; missing: string | null; outdated?: string | null }[];
   cluster_networks?: string[];
 }
 

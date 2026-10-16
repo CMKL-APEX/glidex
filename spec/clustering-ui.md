@@ -484,6 +484,15 @@ installed) and every server `features.ovn_central` (`ovn-northd` is).
 The message names the nodes and the fix (`sudo glidex-install --ovn`
 there). Nodes report both in their status from now on.
 
+**Outdated OVN.** Each node in `GET /cluster/settings/ovn` also carries
+`outdated`: why it can't run the cluster's logical flows, when its
+`ovn-controller` is an older release than the cluster's ovn-northd (the
+newest OVN its servers with `ovn-central` report; installer.md, OVN). It
+doesn't block the setting; it is shown on the Cluster page (in the OVN
+card, and as the node's badge while OVN is off), and the scheduler refuses
+that node for a VM with a NIC on a cluster network, with the same reason.
+Re-running the installer on the node fetches the matching OVN.
+
 **Rollout.** Nothing restarts. Each node's existing OVN loop (every
 controller resync) reads the setting from its replica: servers start
 their part of `ovn-central` (the oldest server creates the databases,

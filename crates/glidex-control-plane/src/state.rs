@@ -564,6 +564,13 @@ impl VmManager {
                 .iter()
                 .filter_map(|a| nets.iter().find(|n| n.name == a.network))
                 .any(|n| n.scope == crate::network::NetworkScope::Cluster && n.port_type == glidex_ovs::vm_port::VmPortKind::VhostUser),
+            ovn_northd: c
+                .networks
+                .iter()
+                .filter_map(|a| nets.iter().find(|n| n.name == a.network))
+                .any(|n| n.scope == crate::network::NetworkScope::Cluster)
+                .then(|| crate::node::cluster_northd_ovn(&self.nodes().list().unwrap_or_default()))
+                .flatten(),
             arch: self.vm_arch(c, disks).map(|a| a.as_str().to_string()).unwrap_or_default(),
         }
     }

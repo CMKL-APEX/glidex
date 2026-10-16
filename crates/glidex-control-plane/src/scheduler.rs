@@ -26,6 +26,9 @@ pub struct Request {
     pub physnets: Vec<String>,
     /// A NIC on a cluster network is vhost-user: `br-int` must be userspace.
     pub vhost_user_on_cluster: bool,
+    /// The cluster's ovn-northd version when a NIC is on a cluster (OVN)
+    /// network: the node's ovn-controller must be that release or newer.
+    pub ovn_northd: Option<String>,
     /// The VM's architecture (its image's, else its firmware's); empty:
     /// none (spec/clustering.md §9.2.1).
     pub arch: String,
@@ -71,6 +74,9 @@ fn failing(n: &Node, load: Load, req: &Request, cfg: &SchedulerConfig) -> Option
         if !n.status.features.physnets.contains_key(p) {
             return Some(format!("it does not reach physical network {p}"));
         }
+    }
+    if let Some(why) = crate::node::ovn_outdated(n, req.ovn_northd.as_deref()) {
+        return Some(why);
     }
     if req.vhost_user_on_cluster && n.status.features.br_int_datapath.as_deref() != Some("netdev") {
         return Some("br-int is not on the userspace (netdev) datapath".into());
@@ -203,6 +209,38 @@ mod tests {
 
     fn cfg() -> SchedulerConfig {
         SchedulerConfig { cpu_overcommit: 4.0, memory_overcommit: 1.0 }
+    }
+
+    #[test]
+    fn a_vm_on_a_cluster_network_needs_an_ovn_controller_as_new_as_northd() {
+        let ovn = |id: &str, role: NodeRole, v: &str, central: bool| {
+            let mut n = node(id, 8, 16384);
+            n.spec.role = role;
+            n.status.versions.ovn = Some(v.into());
+            n.status.features.ovn_central = central;
+            n
+        };
+        let server = ovn("s1", NodeRole::Server, "26.03.0", true);
+        let old = ovn("a-old", NodeRole::Agent, "24.03.8", false);
+        let same = ovn("a-same", NodeRole::Agent, "26.03.0", false);
+        let newer = ovn("a-newer", NodeRole::Agent, "26.09.1", false);
+        // An agent's newer OVN doesn't count: only a server runs northd.
+        let northd = crate::node::cluster_northd_ovn(&[server.clone(), old.clone(), same.clone(), newer.clone()]);
+        assert_eq!(northd.as_deref(), Some("26.03.0"));
+        assert_eq!(crate::node::cluster_northd_ovn(std::slice::from_ref(&old)), None);
+
+        let nodes = vec![(server, Load::default()), (old, Load::default()), (same, Load::default()), (newer, Load::default())];
+        let mut r = req(2, 1024);
+        r.ovn_northd = northd;
+        let fits = evaluate(&r, &nodes, &cfg());
+        let refused = |id: &str| fits.iter().find(|f| f.id == id).unwrap().refused.clone();
+        assert_eq!(refused("a-old").as_deref(), Some("its ovn-controller 24.03.8 is older than the cluster's ovn-northd 26.03.0: re-run glidex-install on a-old to upgrade OVN"));
+        for ok in ["s1", "a-same", "a-newer"] {
+            assert_eq!(refused(ok), None, "{ok}");
+        }
+        // A VM on no cluster network doesn't care.
+        r.ovn_northd = None;
+        assert!(evaluate(&r, &nodes, &cfg()).iter().all(|f| f.refused.is_none()));
     }
 
     #[test]
