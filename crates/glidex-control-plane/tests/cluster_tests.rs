@@ -225,6 +225,80 @@ async fn rpc_reads_are_answered_by_the_server_that_takes_them() {
     assert_eq!(s, StatusCode::OK);
 }
 
+/// A gRPC write sent to a follower is forwarded to the leader, and the
+/// leader's status comes back in the HTTP/2 trailers (spec/grpc.md §8).
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn rpc_writes_on_a_follower_reach_the_leader_with_their_trailers() {
+    use buffa::Message;
+    use glidex_api::proto::glidex::tenancy::v1::{CreateTenantRequest, CreateTenantResponse};
+    let _one = SERIAL.lock().await;
+    let cps = form(2).await;
+    let leader = leader_index(&cps, &[0, 1]).await;
+    let follower = 1 - leader;
+    let grpc = |cp: &Cp, slug: &str| {
+        let msg = CreateTenantRequest { slug: slug.into(), ..Default::default() }.encode_to_vec();
+        let mut body = vec![0u8];
+        body.extend_from_slice(&(msg.len() as u32).to_be_bytes());
+        body.extend_from_slice(&msg);
+        let req = Request::post("/glidex.tenancy.v1.TenantService/CreateTenant")
+            .header("content-type", "application/grpc")
+            .header("te", "trailers")
+            .body(Body::from(body))
+            .unwrap();
+        cp.router.clone().oneshot(req)
+    };
+    // A write right after an election can answer 503 while the new leader
+    // settles (as create_project knows); retry those. A 503 after the
+    // write was applied makes the retry a duplicate (ABORTED, 10).
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let mut retried = false;
+    let (headers, collected) = loop {
+        let resp = grpc(&cps[follower], "acme").await.unwrap();
+        let status = resp.status();
+        let headers = resp.headers().clone();
+        let collected = resp.into_body().collect().await.unwrap();
+        if status == StatusCode::SERVICE_UNAVAILABLE && tokio::time::Instant::now() < deadline {
+            retried = true;
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            continue;
+        }
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&collected.to_bytes()));
+        break (headers, collected);
+    };
+    let trailers = collected.trailers().cloned().expect("gRPC trailers came back through the forward");
+    let grpc_status = trailers.get("grpc-status").map(|v| v.to_str().unwrap().to_string());
+    let id = if grpc_status.as_deref() == Some("10") && retried {
+        let (s, v) = call(&cps[leader], "GET", "/tenants/acme", None, &[]).await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        v["tenant"]["id"].as_str().unwrap().to_string()
+    } else {
+        assert_eq!(grpc_status.as_deref(), Some("0"), "headers {headers:?} trailers {trailers:?}");
+        let b = collected.to_bytes();
+        let created = CreateTenantResponse::decode_from_slice(&b[5..]).unwrap();
+        created.tenant.as_option().unwrap().id.clone()
+    };
+    // Written once, through Raft: both servers have it.
+    for cp in &cps {
+        let (s, v) = call(cp, "GET", &format!("/tenants/{id}"), None, &[]).await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v["tenant"]["slug"], "acme");
+    }
+    // An error is forwarded the same way: a duplicate is ABORTED (10).
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let resp = loop {
+        let resp = grpc(&cps[follower], "acme").await.unwrap();
+        if resp.status() == StatusCode::SERVICE_UNAVAILABLE && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            continue;
+        }
+        break resp;
+    };
+    let headers = resp.headers().clone();
+    let collected = resp.into_body().collect().await.unwrap();
+    let status = collected.trailers().and_then(|t| t.get("grpc-status").cloned()).or_else(|| headers.get("grpc-status").cloned());
+    assert_eq!(status.as_ref().map(|v| v.to_str().unwrap()), Some("10"));
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn reads_without_a_quorum_fail_unless_stale_is_asked_for() {
     let _one = SERIAL.lock().await;

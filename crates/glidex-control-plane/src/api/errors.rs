@@ -151,6 +151,10 @@ pub fn error_to_response(error: VmManagerError) -> (StatusCode, Json<ApiError>) 
             StatusCode::FORBIDDEN,
             Json(ApiError::new("quota_exceeded", error.to_string()).with_details(serde_json::json!({ "quota": over }))),
         ),
+        VmManagerError::TenantQuotaExceeded(over) => (
+            StatusCode::FORBIDDEN,
+            Json(ApiError::new("tenant_quota_exceeded", error.to_string()).with_details(serde_json::json!({ "quota": over }))),
+        ),
         VmManagerError::Deleting(_) => (
             StatusCode::CONFLICT,
             Json(ApiError::new("conflict", error.to_string())),

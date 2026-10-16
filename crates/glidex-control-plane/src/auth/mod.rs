@@ -212,6 +212,8 @@ struct Ticket {
 
 pub struct AuthService {
     pub store: IdentityStore,
+    /// Directory, tenants and admissions (spec/tenancy.md).
+    pub tenants: crate::tenants::TenantStore,
     pub engine: Engine,
     pub config: Config,
     /// No authentication: every request is [`Principal::system`].
@@ -219,6 +221,14 @@ pub struct AuthService {
     tickets: Mutex<HashMap<String, Ticket>>,
     pub oidc: oidc::OidcState,
     audit_count: std::sync::atomic::AtomicU64,
+}
+
+pub fn tenant_err(e: crate::tenants::TenantError) -> AuthError {
+    use crate::tenants::TenantError as T;
+    match e {
+        T::Storage(m) => AuthError::Unavailable(m),
+        other => AuthError::Invalid(other.to_string()),
+    }
 }
 
 pub fn sha256_hex(data: &[u8]) -> String {
@@ -270,6 +280,7 @@ impl AuthService {
     pub fn new(db: Arc<crate::store::Db>, config: Config) -> Result<Arc<Self>, AuthError> {
         config.check().map_err(AuthError::Invalid)?;
         let svc = Arc::new(Self {
+            tenants: crate::tenants::TenantStore::new(db.clone()).map_err(tenant_err)?,
             store: IdentityStore::new(db)?,
             engine: Engine::new()?,
             oidc: oidc::OidcState::new(&config.auth.oidc),
@@ -280,6 +291,7 @@ impl AuthService {
         });
         svc.store.set_policy_history(svc.config.authz.policy_history);
         svc.reload_policies()?;
+        svc.migrate_tenancy()?;
         Ok(svc)
     }
 
@@ -294,6 +306,7 @@ impl AuthService {
         // Embedding and tests never read the host's policy files.
         config.authz.policy_files_dir = std::path::PathBuf::new();
         let svc = Arc::new(Self {
+            tenants: crate::tenants::TenantStore::new(db.clone()).map_err(tenant_err)?,
             store: IdentityStore::new(db)?,
             engine: Engine::new()?,
             oidc: oidc::OidcState::new(&config.auth.oidc),
@@ -415,9 +428,85 @@ impl AuthService {
             let Some(u) = self.store.user_for_identity("unix", &authz::local_subject(name), name, None, true)? else { continue };
             self.add_link("role.system-admin", Ent::User(u.id.clone()), Ent::Cluster, "bootstrap")?;
             self.add_link("role.owner", Ent::User(u.id.clone()), Ent::Project(default_project.into()), "bootstrap")?;
+            self.make_administrator(&Ent::User(u.id.clone()), "bootstrap")?;
             made.push(name.clone());
         }
         Ok(made)
+    }
+
+    /// Give a system administrator of a host that is its own directory
+    /// what it had before tenants (spec/tenancy.md §16 step 4): membership
+    /// of the operator tenant, the directory, and both tenants.
+    pub fn make_administrator(&self, principal: &Ent, by: &str) -> Result<(), AuthError> {
+        use crate::tenants::{ADMIN_TENANT, DEFAULT_TENANT, LOCAL_DIRECTORY};
+        self.tenants.add_member(ADMIN_TENANT, principal.clone(), by).map_err(tenant_err)?;
+        self.add_link("role.directory-admin", principal.clone(), Ent::Directory(LOCAL_DIRECTORY.into()), by)?;
+        for t in [ADMIN_TENANT, DEFAULT_TENANT] {
+            self.add_link("role.tenant-admin", principal.clone(), Ent::Tenant(t.into()), by)?;
+        }
+        Ok(())
+    }
+
+    /// Whether `principal` (a user, team or token) is a member of `tenant`
+    /// (D3): listed, or linked on the tenant or one of its projects. A
+    /// personal token counts as its owner.
+    pub fn is_member(&self, principal: &Ent, tenant: &str) -> Result<bool, AuthError> {
+        let principal = match principal {
+            Ent::Token(id) => match self.store.token_by_id(id)?.map(|(_, t)| t.kind) {
+                Some(TokenKind::Personal { owner }) => Ent::User(owner),
+                Some(TokenKind::ServiceAccount { project }) => {
+                    return Ok(self.tenants.project_tenant(&project).map_err(tenant_err)?.as_deref().unwrap_or(crate::tenants::DEFAULT_TENANT) == tenant)
+                }
+                None => return Ok(false),
+            },
+            other => other.clone(),
+        };
+        let mut mine = vec![principal.clone()];
+        if let Ent::User(u) = &principal {
+            mine.extend(self.store.teams_of(u)?.into_iter().map(Ent::Team));
+        }
+        if self.tenants.members(tenant).map_err(tenant_err)?.iter().any(|m| mine.contains(&m.principal)) {
+            return Ok(true);
+        }
+        for l in self.store.links()?.into_iter().filter(|l| mine.contains(&l.link.principal)) {
+            let of = match &l.link.resource {
+                Ent::Tenant(t) => Some(t.clone()),
+                Ent::Project(p) => Some(self.tenants.project_tenant(p).map_err(tenant_err)?.unwrap_or_else(|| crate::tenants::DEFAULT_TENANT.into())),
+                _ => None,
+            };
+            if of.as_deref() == Some(tenant) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// One-time: existing host-role holders become members of the operator
+    /// tenant; system administrators get [`make_administrator`]'s links;
+    /// auditors also audit the directory (spec/tenancy.md §16 steps 3-4).
+    pub fn migrate_tenancy(&self) -> Result<(), AuthError> {
+        const KEY: &str = "tenants_links_v1";
+        if self.tenants.done(KEY).map_err(tenant_err)? || !self.tenants.can_write() {
+            return Ok(());
+        }
+        let operator = self.tenants.operator().map_err(tenant_err)?;
+        for l in self.store.links()? {
+            if !matches!(l.link.resource, Ent::Cluster | Ent::Host | Ent::Node(_)) || l.link.template == "grant.host-paths" {
+                continue;
+            }
+            if matches!(l.link.principal, Ent::User(_) | Ent::Team(_)) {
+                self.tenants.add_member(&operator, l.link.principal.clone(), "migration").map_err(tenant_err)?;
+            }
+            match l.link.template.as_str() {
+                "role.system-admin" => self.make_administrator(&l.link.principal, "migration")?,
+                "role.auditor" => {
+                    self.add_link("role.directory-auditor", l.link.principal.clone(), Ent::Directory(crate::tenants::LOCAL_DIRECTORY.into()), "migration")?;
+                }
+                _ => {}
+            }
+        }
+        self.tenants.mark_done(KEY).map_err(tenant_err)?;
+        Ok(())
     }
 
     // ---- authorization --------------------------------------------------
@@ -434,6 +523,92 @@ impl AuthService {
             };
             es.token(&t.id, owner, t.expires_at <= store::now());
         }
+    }
+
+    /// Fill in what tenancy says about the request (spec/tenancy.md §10):
+    /// each project's tenant, the tenants with their attributes, the
+    /// cluster's operator and admissions, the principal's memberships;
+    /// returns the context fields `cluster`, `directory` and, when the
+    /// resource belongs to one, `tenant`.
+    fn complete_tenancy(&self, p: &Principal, resource: &Ent, es: &mut EntitySet) -> Result<Vec<(&'static str, Ent)>, AuthError> {
+        use crate::tenants::{ADMIN_TENANT, DEFAULT_TENANT, LOCAL_DIRECTORY};
+        let snap = self.tenants.snapshot().map_err(tenant_err)?;
+        let project_tenant = |id: &str| -> Result<String, AuthError> {
+            Ok(self.tenants.project_tenant(id).map_err(tenant_err)?.unwrap_or_else(|| DEFAULT_TENANT.to_string()))
+        };
+        for pid in es.projects() {
+            es.set_project_tenant(&pid, &project_tenant(&pid)?);
+        }
+        // Memberships (D3): listed members, and links on a tenant or on one
+        // of its projects. Break-glass principals belong to the operator.
+        let mut tenants: Vec<String> = Vec::new();
+        let mut mine: Vec<Ent> = p.teams.iter().map(|t| Ent::Team(t.clone())).collect();
+        if let Some(u) = &p.user {
+            mine.push(Ent::User(u.id.clone()));
+        }
+        for m in snap.members.iter().filter(|m| mine.contains(&m.principal)) {
+            tenants.push(m.tenant_id.clone());
+        }
+        for l in self.links_of(p)? {
+            match &l.link.resource {
+                Ent::Tenant(t) => tenants.push(t.clone()),
+                Ent::Project(pid) => tenants.push(project_tenant(pid)?),
+                _ => {}
+            }
+        }
+        if p.teams.iter().any(|t| t == authz::BREAK_GLASS_TEAM) {
+            tenants.push(snap.operator.clone());
+        }
+        if let Some(t) = &p.token {
+            if let TokenKind::ServiceAccount { project } = &t.kind {
+                let tid = project_tenant(project)?;
+                es.add_parents(&Ent::Token(t.id.clone()), std::slice::from_ref(&tid));
+                tenants.push(tid);
+            }
+        }
+        tenants.sort();
+        tenants.dedup();
+        if let Some(u) = &p.user {
+            es.add_parents(&Ent::User(u.id.clone()), &tenants);
+        }
+        // A personal token is also decided as itself (when narrowed), still
+        // capped by its owner's decision.
+        if let Some(t) = &p.token {
+            es.add_parents(&Ent::Token(t.id.clone()), &tenants);
+        }
+        // The resource's tenant.
+        let owner = match resource {
+            Ent::Tenant(t) => Some(t.clone()),
+            _ => match es.project_of(resource) {
+                Some(pid) => Some(project_tenant(&pid)?),
+                None => None,
+            },
+        };
+        // Every tenant the request mentions, as stored.
+        let mut wanted: Vec<String> = es.tenants();
+        wanted.extend(tenants.iter().cloned());
+        wanted.extend(owner.iter().cloned());
+        wanted.push(snap.operator.clone());
+        wanted.push(snap.owner().to_string());
+        wanted.sort();
+        wanted.dedup();
+        let directory = snap.directory.as_ref().map(|d| d.id.clone()).unwrap_or_else(|| LOCAL_DIRECTORY.to_string());
+        es.directory(&directory, snap.owner());
+        for t in &wanted {
+            match snap.tenant(t) {
+                Some(rec) => es.tenant(&rec.id, &rec.directory_id, rec.owns_directory, rec.operator, rec.suspended, snap.admitted(&rec.id)),
+                // Unknown to the store (a test's bare entity set, a tenant
+                // being created): no rights of its own.
+                None => es.tenant(t, &directory, t == ADMIN_TENANT, t == ADMIN_TENANT, false, false),
+            };
+        }
+        let admitted: Vec<String> = snap.admissions.iter().filter(|a| snap.admitted(&a.tenant_id)).map(|a| a.tenant_id.clone()).collect();
+        es.cluster(&snap.operator, &admitted);
+        let mut ctx = vec![("cluster", Ent::Cluster), ("directory", Ent::Directory(directory))];
+        if let Some(t) = owner {
+            ctx.push(("tenant", Ent::Tenant(t)));
+        }
+        Ok(ctx)
     }
 
     /// Decide `action` on `resource` for `p`. `extra` are context fields
@@ -462,9 +637,16 @@ impl AuthService {
         extra: &[(&'static str, Ent)],
     ) -> Decision {
         self.principal_entities(p, &mut es);
+        let tenancy = match self.complete_tenancy(p, &resource, &mut es) {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::error!("tenancy lookup failed; denying: {}", e);
+                return Decision { allowed: false, policies: Vec::new(), errors: vec![e.to_string()] };
+            }
+        };
         let ask = |principal: Ent, as_owner: bool| {
             let mut q = Query::new(principal, action, resource.clone(), p.auth_context(as_owner), es.clone());
-            for (k, e) in extra {
+            for (k, e) in extra.iter().chain(tenancy.iter()) {
                 q = q.with(k, e.clone());
             }
             match set {
@@ -796,11 +978,16 @@ impl AuthService {
     pub fn add_link(&self, template: &str, principal: Ent, resource: Ent, by: &str) -> Result<LinkRecord, AuthError> {
         let project_role = authz::PROJECT_ROLES.contains(&template);
         let host_role = authz::HOST_ROLES.contains(&template);
-        match (&resource, project_role, host_role) {
-            (Ent::Project(_), true, _) | (Ent::Cluster, _, true) => {}
+        let tenant_role = authz::TENANT_ROLES.contains(&template);
+        let directory_role = authz::DIRECTORY_ROLES.contains(&template);
+        match &resource {
+            Ent::Project(_) if project_role => {}
+            Ent::Cluster if host_role => {}
+            Ent::Tenant(_) if tenant_role => {}
+            Ent::Directory(_) if directory_role => {}
             _ => {
                 return Err(AuthError::Invalid(format!(
-                    "{} can't be linked to {}: project roles link to a project, host roles to the host",
+                    "{} can't be linked to {}: project roles link to a project, host roles to the host, tenant roles to a tenant, directory roles to the directory",
                     template, resource
                 )))
             }
@@ -1008,7 +1195,8 @@ mod tests {
         es.in_project(Ent::Vm("v".into()), "pa");
         // Unnarrowed: acts as the owner.
         let tp = s.token_principal(&secret, Transport::Tcp, None).unwrap().unwrap();
-        assert!(s.authorize(&tp, "startVm", Ent::Vm("v".into()), es.clone(), &[]).allowed);
+        let d = s.authorize(&tp, "startVm", Ent::Vm("v".into()), es.clone(), &[]);
+        assert!(d.allowed, "{d:?}");
         // Narrowed to viewer: can read, can't start, even though the owner can.
         s.add_link("role.viewer", Ent::Token(tok.id.clone()), Ent::Project("pa".into()), "t").unwrap();
         let tp = s.token_principal(&secret, Transport::Tcp, None).unwrap().unwrap();
@@ -1030,6 +1218,8 @@ mod tests {
         let p = user_principal(&s, "net");
         let uid = p.user_id().unwrap().to_string();
         s.add_link("role.net-admin", Ent::User(uid.clone()), Ent::Cluster, "t").unwrap();
+        // Host roles work for members of the operator tenant (spec/tenancy.md D4).
+        s.tenants.add_member(crate::tenants::ADMIN_TENANT, Ent::User(uid.clone()), "t").unwrap();
         let (secret, tok) = s.create_token("t", TokenKind::Personal { owner: uid.clone() }, &uid, None, None, None).unwrap();
         let tp = s.token_principal(&secret, Transport::Tcp, None).unwrap().unwrap();
         let d = s.authorize(&tp, "installOvs", Ent::Host, EntitySet::new(), &[]);
@@ -1072,7 +1262,10 @@ mod tests {
         let (s, _d) = svc();
         assert_eq!(s.bootstrap_with(&["root2".into()], "pdefault").unwrap(), vec!["root2"]);
         let links = s.store.links().unwrap();
-        assert_eq!(links.len(), 2);
+        // System admin and default-project owner, plus what tenancy adds:
+        // directory-admin and tenant-admin of admin and default.
+        assert_eq!(links.len(), 5);
+        assert!(s.tenants.members(crate::tenants::ADMIN_TENANT).unwrap().iter().any(|m| matches!(&m.principal, Ent::User(_))));
         assert!(links.iter().any(|l| l.link.template == "role.system-admin" && l.link.resource == Ent::Cluster));
         // A PAM login of the same name is the same user.
         let u = s.store.user_for_identity("pam", "root2", "root2", None, true).unwrap().unwrap();

@@ -505,6 +505,13 @@ async fn resource_entities(c: &Caller, e: &Ent) -> Option<EntitySet> {
             es
         }
         Ent::PciDevice(bdf) => super::vms::pci_entities(c, bdf).1,
+        // Tenants and the directory are filled in by AuthService.
+        Ent::Tenant(id) => {
+            c.auth().tenants.get(id).ok().flatten()?;
+            EntitySet::new()
+        }
+        Ent::Directory(id) if id == crate::tenants::LOCAL_DIRECTORY => EntitySet::new(),
+        Ent::Directory(_) => return None,
         Ent::User(id) => {
             let mut es = EntitySet::new();
             if c.p.user_id() != Some(id) {
@@ -624,7 +631,7 @@ fn self_entities(c: &Caller) -> (Ent, EntitySet) {
 }
 
 pub async fn list_tokens(c: Caller) -> Result<impl IntoResponse, ApiErr> {
-    let all = c.allowed("manageAnyTokens", Ent::Cluster, EntitySet::new());
+    let all = c.allowed("manageAnyTokens", super::directory_ent(), EntitySet::new());
     let links = c.auth().store.links().map_err(store_err)?;
     let mut out = Vec::new();
     for (_, t) in c.auth().store.tokens().map_err(store_err)? {
@@ -702,7 +709,7 @@ pub async fn revoke_token(c: Caller, Path(id): Path<String>) -> Result<impl Into
             }
             _ => false,
         }
-        || c.allowed("manageAnyTokens", Ent::Cluster, EntitySet::new());
+        || c.allowed("manageAnyTokens", super::directory_ent(), EntitySet::new());
     if !ok {
         return Err(err(StatusCode::NOT_FOUND, "not_found", "token not found"));
     }
@@ -720,7 +727,7 @@ struct UserView {
 }
 
 pub async fn list_users(c: Caller) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Cluster, EntitySet::new())?;
+    c.require(super::directory_ent(), EntitySet::new())?;
     let s = &c.auth().store;
     let out: Vec<UserView> = s
         .users()
@@ -749,7 +756,7 @@ fn valid_provider(p: &str) -> bool {
 }
 
 pub async fn create_user(c: Caller, Json(body): Json<CreateUser>) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Cluster, EntitySet::new())?;
+    c.require(super::directory_ent(), EntitySet::new())?;
     let s = &c.auth().store;
     for i in &body.identities {
         if !valid_provider(&i.provider) || i.subject.is_empty() {
@@ -786,7 +793,7 @@ pub struct UpdateUser {
 }
 
 pub async fn update_user(c: Caller, Path(id): Path<String>, Json(body): Json<UpdateUser>) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Cluster, EntitySet::new())?;
+    c.require(super::directory_ent(), EntitySet::new())?;
     c.set_target(format!("user:{}", id));
     let s = &c.auth().store;
     let mut u = s.user(&id).map_err(store_err)?.ok_or_else(|| err(StatusCode::NOT_FOUND, "not_found", "user not found"))?;
@@ -807,7 +814,7 @@ pub async fn update_user(c: Caller, Path(id): Path<String>, Json(body): Json<Upd
 }
 
 pub async fn link_identity(c: Caller, Path(id): Path<String>, Json(body): Json<IdentityRef>) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Cluster, EntitySet::new())?;
+    c.require(super::directory_ent(), EntitySet::new())?;
     c.set_target(format!("user:{}", id));
     let s = &c.auth().store;
     s.user(&id).map_err(store_err)?.ok_or_else(|| err(StatusCode::NOT_FOUND, "not_found", "user not found"))?;
@@ -823,7 +830,7 @@ pub async fn link_identity(c: Caller, Path(id): Path<String>, Json(body): Json<I
 }
 
 pub async fn unlink_identity(c: Caller, Path((id, key)): Path<(String, String)>) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Cluster, EntitySet::new())?;
+    c.require(super::directory_ent(), EntitySet::new())?;
     c.set_target(format!("user:{}", id));
     let s = &c.auth().store;
     let found = s.identities_of(&id).map_err(store_err)?.into_iter().find(|i| Identity::key(&i.provider, &i.subject) == key);
@@ -833,7 +840,7 @@ pub async fn unlink_identity(c: Caller, Path((id, key)): Path<(String, String)>)
 }
 
 pub async fn list_teams(c: Caller) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Cluster, EntitySet::new())?;
+    c.require(super::directory_ent(), EntitySet::new())?;
     Ok(Json(c.auth().store.teams().map_err(store_err)?))
 }
 
@@ -851,7 +858,7 @@ fn valid_team_name(name: &str) -> Result<(), ApiErr> {
 }
 
 pub async fn create_team(c: Caller, Json(body): Json<TeamBody>) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Cluster, EntitySet::new())?;
+    c.require(super::directory_ent(), EntitySet::new())?;
     valid_team_name(&body.name)?;
     let s = &c.auth().store;
     if s.team_by_name(&body.name).map_err(store_err)?.is_some() {
@@ -869,7 +876,7 @@ fn team(c: &Caller, id: &str) -> Result<Team, ApiErr> {
 }
 
 pub async fn update_team(c: Caller, Path(id): Path<String>, Json(body): Json<TeamBody>) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Cluster, EntitySet::new())?;
+    c.require(super::directory_ent(), EntitySet::new())?;
     valid_team_name(&body.name)?;
     let mut t = team(&c, &id)?;
     t.name = body.name;
@@ -878,7 +885,7 @@ pub async fn update_team(c: Caller, Path(id): Path<String>, Json(body): Json<Tea
 }
 
 pub async fn delete_team(c: Caller, Path(id): Path<String>) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Cluster, EntitySet::new())?;
+    c.require(super::directory_ent(), EntitySet::new())?;
     team(&c, &id)?;
     c.auth().store.remove_team(&id).map_err(store_err)?;
     c.auth().forget_entity(&Ent::Team(id)).map_err(auth_error)?;
@@ -886,7 +893,7 @@ pub async fn delete_team(c: Caller, Path(id): Path<String>) -> Result<impl IntoR
 }
 
 pub async fn add_member(c: Caller, Path((id, user)): Path<(String, String)>) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Cluster, EntitySet::new())?;
+    c.require(super::directory_ent(), EntitySet::new())?;
     let mut t = team(&c, &id)?;
     c.auth().store.user(&user).map_err(store_err)?.ok_or_else(|| err(StatusCode::NOT_FOUND, "not_found", "user not found"))?;
     if !t.members.iter().any(|m| m.user_id == user && m.source == MemberSource::Manual) {
@@ -897,7 +904,7 @@ pub async fn add_member(c: Caller, Path((id, user)): Path<(String, String)>) -> 
 }
 
 pub async fn remove_member(c: Caller, Path((id, user)): Path<(String, String)>) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Cluster, EntitySet::new())?;
+    c.require(super::directory_ent(), EntitySet::new())?;
     let mut t = team(&c, &id)?;
     t.members.retain(|m| m.user_id != user);
     c.auth().store.put_team(&t).map_err(store_err)?;
@@ -935,16 +942,25 @@ pub struct CreateProject {
     /// Users (ids) to make owners.
     #[serde(default)]
     owners: Vec<String>,
+    /// Tenant id or slug (spec/tenancy.md D1); `default` when absent.
+    #[serde(default)]
+    tenant: Option<String>,
 }
 
 pub async fn create_project(c: Caller, Json(body): Json<CreateProject>) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Cluster, EntitySet::new())?;
+    let key = body.tenant.as_deref().unwrap_or(crate::tenants::DEFAULT_TENANT);
+    let tenant = c
+        .auth()
+        .tenants
+        .resolve(key)
+        .map_err(|_| err(StatusCode::NOT_FOUND, "not_found", "tenant not found"))?;
+    c.require(Ent::Tenant(tenant.id.clone()), EntitySet::new())?;
     // Without explicit quotas a project gets the site default (spec §6.3).
     let quotas = body.quotas.unwrap_or_else(|| c.auth().config.quotas.default.clone());
     let p = c
         .manager()
         .projects()
-        .create(&body.name, body.description, Some(quotas))
+        .create_in(&tenant.id, &body.name, body.description, Some(quotas))
         .map_err(|e| manager_err(e.into()))?;
     c.set_project(&p.id);
     c.set_target(format!("project:{}", p.id));
@@ -1120,6 +1136,15 @@ pub async fn add_system_binding(c: Caller, Json(body): Json<BindingBody>) -> Res
         return Err(err(StatusCode::BAD_REQUEST, "invalid", "only host roles and grants are given on the host"));
     }
     check_principal_exists(&c, &body.principal)?;
+    // Host roles go to the operator's people only (spec/tenancy.md D4).
+    let operator = c.auth().tenants.operator().map_err(|e| auth_error(crate::auth::tenant_err(e)))?;
+    if !c.auth().is_member(&body.principal, &operator).map_err(auth_error)? {
+        return Err(err(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "not_operator_member",
+            format!("{} isn't a member of tenant {operator}, which operates this cluster: add them there first", body.principal),
+        ));
+    }
     c.detail("role", serde_json::json!(body.role));
     c.detail("principal", serde_json::json!(body.principal));
     let l = c.auth().add_link(&body.role, body.principal, Ent::Cluster, c.p.user_id().unwrap_or("-")).map_err(auth_error)?;

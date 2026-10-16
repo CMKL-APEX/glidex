@@ -1,0 +1,324 @@
+// Tenants, their members and role bindings, and admissions to this
+// cluster (spec/tenancy.md §14, milestone T0).
+syntax = "proto3";
+
+package glidex.tenancy.v1;
+
+import "glidex/api/v1/options.proto";
+import "glidex/api/v1/types.proto";
+import "google/protobuf/timestamp.proto";
+
+// Tenants of the directory this control plane hosts.
+service TenantService {
+  // Every tenant for directory readers; otherwise the caller's own.
+  rpc ListTenants(ListTenantsRequest) returns (ListTenantsResponse) {
+    option (glidex.api.v1.op) = {
+      action: "authenticated"
+      kind: KIND_READ
+      rest: "GET /tenants"
+    };
+  }
+  rpc GetTenant(GetTenantRequest) returns (GetTenantResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readTenant"
+      kind: KIND_READ
+      rest: "GET /tenants/{id}"
+    };
+  }
+  rpc CreateTenant(CreateTenantRequest) returns (CreateTenantResponse) {
+    option (glidex.api.v1.op) = {
+      action: "createTenant"
+      kind: KIND_WRITE
+      rest: "POST /tenants"
+    };
+  }
+  rpc UpdateTenant(UpdateTenantRequest) returns (UpdateTenantResponse) {
+    option (glidex.api.v1.op) = {
+      action: "updateTenant"
+      kind: KIND_WRITE
+      rest: "PATCH /tenants/{id}"
+    };
+  }
+  rpc SuspendTenant(SuspendTenantRequest) returns (SuspendTenantResponse) {
+    option (glidex.api.v1.op) = {
+      action: "suspendTenant"
+      kind: KIND_WRITE
+      rest: "POST /tenants/{id}/suspend"
+    };
+  }
+  rpc ResumeTenant(ResumeTenantRequest) returns (ResumeTenantResponse) {
+    option (glidex.api.v1.op) = {
+      action: "resumeTenant"
+      kind: KIND_WRITE
+      rest: "POST /tenants/{id}/resume"
+    };
+  }
+  rpc DeleteTenant(DeleteTenantRequest) returns (DeleteTenantResponse) {
+    option (glidex.api.v1.op) = {
+      action: "deleteTenant"
+      kind: KIND_WRITE
+      rest: "DELETE /tenants/{id}"
+    };
+  }
+  rpc ListMembers(ListMembersRequest) returns (ListMembersResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readTenantMembers"
+      kind: KIND_READ
+      rest: "GET /tenants/{id}/members"
+    };
+  }
+  rpc AddMember(AddMemberRequest) returns (AddMemberResponse) {
+    option (glidex.api.v1.op) = {
+      action: "manageTenantMembers"
+      kind: KIND_WRITE
+      rest: "POST /tenants/{id}/members"
+    };
+  }
+  rpc RemoveMember(RemoveMemberRequest) returns (RemoveMemberResponse) {
+    option (glidex.api.v1.op) = {
+      action: "manageTenantMembers"
+      kind: KIND_WRITE
+      rest: "DELETE /tenants/{id}/members/{principal}"
+    };
+  }
+  rpc ListBindings(ListBindingsRequest) returns (ListBindingsResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readTenantBindings"
+      kind: KIND_READ
+      rest: "GET /tenants/{id}/bindings"
+    };
+  }
+  rpc AddBinding(AddBindingRequest) returns (AddBindingResponse) {
+    option (glidex.api.v1.op) = {
+      action: "manageTenantBindings"
+      kind: KIND_WRITE
+      rest: "POST /tenants/{id}/bindings"
+    };
+  }
+  rpc RemoveBinding(RemoveBindingRequest) returns (RemoveBindingResponse) {
+    option (glidex.api.v1.op) = {
+      action: "manageTenantBindings"
+      kind: KIND_WRITE
+      rest: "DELETE /tenants/{id}/bindings/{link}"
+    };
+  }
+}
+
+// Which tenants this cluster admits, with their caps (D9, D19). Its
+// operator's.
+service AdmissionService {
+  rpc ListAdmissions(ListAdmissionsRequest) returns (ListAdmissionsResponse) {
+    option (glidex.api.v1.op) = {
+      action: "listAdmissions"
+      kind: KIND_READ
+      rest: "GET /admissions"
+    };
+  }
+  rpc SetAdmission(SetAdmissionRequest) returns (SetAdmissionResponse) {
+    option (glidex.api.v1.op) = {
+      action: "manageAdmissions"
+      kind: KIND_WRITE
+      rest: "PUT /admissions/{tenant}"
+    };
+  }
+  rpc RemoveAdmission(RemoveAdmissionRequest) returns (RemoveAdmissionResponse) {
+    option (glidex.api.v1.op) = {
+      action: "manageAdmissions"
+      kind: KIND_WRITE
+      rest: "DELETE /admissions/{tenant}"
+    };
+  }
+}
+
+message Tenant {
+  string id = 1;
+  string directory_id = 2 [json_name = "directory_id"];
+  string slug = 3;
+  string display_name = 4 [json_name = "display_name"];
+  optional bool owns_directory = 5 [json_name = "owns_directory"];
+  optional bool operator = 6;
+  optional bool suspended = 7;
+  google.protobuf.Timestamp created_at = 8 [json_name = "created_at"];
+  // This cluster's admission of the tenant, if any.
+  Admission admission = 9;
+}
+
+// Limits; an absent field is unlimited.
+message Quotas {
+  optional uint32 vms = 1;
+  optional uint32 vcpus = 2;
+  optional uint32 memory_mib = 3 [json_name = "memory_mib"];
+  optional uint32 disk_gib = 4 [json_name = "disk_gib"];
+  optional uint32 running_vms = 5 [json_name = "running_vms"];
+  optional uint32 networks = 6;
+  optional uint32 routers = 7;
+  optional uint32 external_ips = 8 [json_name = "external_ips"];
+}
+
+enum AdmissionStatus {
+  ADMISSION_STATUS_UNSPECIFIED = 0;
+  ADMISSION_STATUS_ADMITTED = 1;
+  // No new allocations or starts; running resources stay.
+  ADMISSION_STATUS_SUSPENDED = 2;
+}
+
+message Admission {
+  string tenant_id = 1 [json_name = "tenant_id"];
+  string directory_id = 2 [json_name = "directory_id"];
+  Quotas cap = 3;
+  AdmissionStatus status = 4;
+  string by = 5;
+  google.protobuf.Timestamp at = 6;
+}
+
+message Member {
+  string tenant_id = 1 [json_name = "tenant_id"];
+  glidex.api.v1.EntityRef principal = 2;
+  string by = 3;
+  google.protobuf.Timestamp at = 4;
+}
+
+// A role link on the tenant (role.tenant-admin, role.tenant-auditor).
+message Binding {
+  string id = 1;
+  string role = 2;
+  glidex.api.v1.EntityRef principal = 3;
+  string principal_name = 4 [json_name = "principal_name"];
+  string created_by = 5 [json_name = "created_by"];
+  google.protobuf.Timestamp created_at = 6 [json_name = "created_at"];
+}
+
+message ListTenantsRequest {
+  optional uint32 page_size = 1 [json_name = "page_size"];
+  string page_token = 2 [json_name = "page_token"];
+}
+
+message ListTenantsResponse {
+  repeated Tenant tenants = 1;
+  string next_page_token = 2 [json_name = "next_page_token"];
+}
+
+message GetTenantRequest {
+  // Id or slug.
+  string id = 1;
+}
+
+message CreateTenantRequest {
+  string slug = 1;
+  string display_name = 2 [json_name = "display_name"];
+  optional bool operator = 3;
+}
+
+message UpdateTenantRequest {
+  string id = 1;
+  optional string display_name = 2 [json_name = "display_name"];
+  optional bool operator = 3;
+}
+
+message SuspendTenantRequest {
+  string id = 1;
+}
+
+message ResumeTenantRequest {
+  string id = 1;
+}
+
+message DeleteTenantRequest {
+  string id = 1;
+}
+
+message DeleteTenantResponse {}
+
+message ListMembersRequest {
+  string id = 1;
+}
+
+message ListMembersResponse {
+  repeated Member members = 1;
+}
+
+message AddMemberRequest {
+  string id = 1;
+  glidex.api.v1.EntityRef principal = 2;
+}
+
+message RemoveMemberRequest {
+  string id = 1;
+  // `user:<id>` or `team:<id>`.
+  string principal = 2;
+}
+
+message RemoveMemberResponse {}
+
+message ListBindingsRequest {
+  string id = 1;
+}
+
+message ListBindingsResponse {
+  repeated Binding bindings = 1;
+}
+
+message AddBindingRequest {
+  string id = 1;
+  string role = 2;
+  glidex.api.v1.EntityRef principal = 3;
+}
+
+message RemoveBindingRequest {
+  string id = 1;
+  string link = 2;
+}
+
+message RemoveBindingResponse {}
+
+message ListAdmissionsRequest {}
+
+message ListAdmissionsResponse {
+  repeated Admission admissions = 1;
+}
+
+message SetAdmissionRequest {
+  // Tenant id or slug.
+  string tenant = 1;
+  // Absent: keep the current cap, or unlimited for a new admission.
+  Quotas cap = 2;
+  optional bool suspended = 3;
+}
+
+message RemoveAdmissionRequest {
+  string tenant = 1;
+}
+
+message RemoveAdmissionResponse {}
+
+message GetTenantResponse {
+  Tenant tenant = 1;
+}
+
+message CreateTenantResponse {
+  Tenant tenant = 1;
+}
+
+message UpdateTenantResponse {
+  Tenant tenant = 1;
+}
+
+message SuspendTenantResponse {
+  Tenant tenant = 1;
+}
+
+message ResumeTenantResponse {
+  Tenant tenant = 1;
+}
+
+message AddMemberResponse {
+  Member member = 1;
+}
+
+message AddBindingResponse {
+  Binding binding = 1;
+}
+
+message SetAdmissionResponse {
+  Admission admission = 1;
+}

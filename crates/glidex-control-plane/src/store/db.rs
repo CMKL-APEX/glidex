@@ -102,6 +102,33 @@ tables! {
     IpamReservations = 35 => "ipam_reservations",
     Routers = 36 => "routers",
     IpamExternal = 37 => "ipam_external",
+    // Tenants, directories and admissions (spec/tenancy.md §4).
+    Directories = 38 => "directories",
+    Tenants = 39 => "tenants",
+    Admissions = 40 => "admissions",
+    TenantMembers = 41 => "tenant_members",
+}
+
+/// Whose a table's records are (spec/tenancy.md §4): a directory's (they
+/// follow the organization), this cluster's (they follow the hardware), or
+/// both (role links: on a tenant or project, the directory's; on the
+/// cluster or a host, the cluster's).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scope {
+    Directory,
+    Cluster,
+    Both,
+}
+
+impl TableId {
+    pub fn scope(self) -> Scope {
+        use TableId::*;
+        match self {
+            Users | Identities | Teams | ApiTokens | Projects | Credentials | Directories | Tenants | TenantMembers => Scope::Directory,
+            PolicyLinks | Audit | Meta => Scope::Both,
+            _ => Scope::Cluster,
+        }
+    }
 }
 
 impl Serialize for TableId {

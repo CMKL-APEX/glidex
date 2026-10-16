@@ -15,6 +15,7 @@ pub mod gate;
 mod net;
 mod nodes;
 mod storage;
+mod tenants;
 mod rates;
 pub mod relay;
 mod rpc;
@@ -316,6 +317,23 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         .add("DELETE", "/teams/{id}", "manageTeams", delete(access::delete_team))
         .add("PUT", "/teams/{id}/members/{user}", "manageTeams", put(access::add_member))
         .add("DELETE", "/teams/{id}/members/{user}", "manageTeams", delete(access::remove_member))
+        // ---- tenants and admissions (spec/tenancy.md §14; REST twins of glidex.tenancy.v1)
+        .add("GET", "/tenants", AUTHENTICATED, get(tenants::list))
+        .add("POST", "/tenants", "createTenant", post(tenants::create))
+        .add("GET", "/tenants/{id}", "readTenant", get(tenants::get))
+        .add("PATCH", "/tenants/{id}", "updateTenant", axum::routing::patch(tenants::update))
+        .add("DELETE", "/tenants/{id}", "deleteTenant", delete(tenants::delete))
+        .add("POST", "/tenants/{id}/suspend", "suspendTenant", post(tenants::suspend))
+        .add("POST", "/tenants/{id}/resume", "resumeTenant", post(tenants::resume))
+        .add("GET", "/tenants/{id}/members", "readTenantMembers", get(tenants::list_members))
+        .add("POST", "/tenants/{id}/members", "manageTenantMembers", post(tenants::add_member))
+        .add("DELETE", "/tenants/{id}/members/{principal}", "manageTenantMembers", delete(tenants::remove_member))
+        .add("GET", "/tenants/{id}/bindings", "readTenantBindings", get(tenants::list_bindings))
+        .add("POST", "/tenants/{id}/bindings", "manageTenantBindings", post(tenants::add_binding))
+        .add("DELETE", "/tenants/{id}/bindings/{link}", "manageTenantBindings", delete(tenants::remove_binding))
+        .add("GET", "/admissions", "listAdmissions", get(tenants::list_admissions))
+        .add("PUT", "/admissions/{tenant}", "manageAdmissions", put(tenants::set_admission))
+        .add("DELETE", "/admissions/{tenant}", "manageAdmissions", delete(tenants::remove_admission))
         // ---- projects and role links
         .add("GET", "/projects", AUTHENTICATED, get(access::list_projects))
         .add("POST", "/projects", "createProject", post(access::create_project))
@@ -674,6 +692,16 @@ impl Caller {
         Ok(())
     }
 
+    /// D9: allocating on this cluster needs the project's tenant admitted
+    /// here (`useCluster`, spec/tenancy.md §10.4); `403 not_admitted` otherwise.
+    pub fn require_admitted(&self, project: &str) -> Result<(), ApiErr> {
+        let d = self.decide("useCluster", Ent::Cluster, project_entities(project), &[("project", Ent::Project(project.into()))]);
+        if d.allowed {
+            return Ok(());
+        }
+        Err(err(StatusCode::FORBIDDEN, "not_admitted", "this project's tenant isn't admitted on this cluster, or its admission is suspended"))
+    }
+
     /// Who made a request, for events (`api:<user>` or `api:token:<id>`).
     pub fn actor(&self) -> String {
         match (&self.p.user, &self.p.token) {
@@ -795,6 +823,11 @@ pub(crate) fn auth_error(e: AuthError) -> ApiErr {
 }
 
 // ---- entities for Cedar ---------------------------------------------------
+
+/// The directory this host hosts (spec/tenancy.md D32).
+pub(crate) fn directory_ent() -> Ent {
+    Ent::Directory(crate::tenants::LOCAL_DIRECTORY.into())
+}
 
 pub(crate) fn project_entities(project: &str) -> EntitySet {
     let mut es = EntitySet::new();

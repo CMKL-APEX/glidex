@@ -256,7 +256,8 @@ pub async fn approve_import(c: Caller, Path(plan): Path<String>, b: Option<Json<
             }
         }
         if creates {
-            c.require_action("createProject", Ent::Cluster, EntitySet::new(), &[])?;
+            // Imported projects that are new land in the default tenant.
+            c.require_action("createProject", Ent::Tenant(crate::tenants::DEFAULT_TENANT.into()), EntitySet::new(), &[])?;
         }
     }
     let r = tokio::task::spawn_blocking(move || if b.dry_run { cl.check_import(&plan, b.mappings) } else { cl.approve_import(&plan, b.mappings) }).await;

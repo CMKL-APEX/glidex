@@ -54,6 +54,9 @@ pub enum VmManagerError {
     Image(ImageError),
     /// The request would go over these project quotas.
     QuotaExceeded(Vec<QuotaOverrun>),
+    /// The request would go over the tenant's cap on this cluster
+    /// (spec/tenancy.md D19).
+    TenantQuotaExceeded(Vec<QuotaOverrun>),
     Tenancy(TenancyError),
     /// The VM is being deleted: its spec no longer changes (§6.3).
     Deleting(String),
@@ -95,6 +98,9 @@ impl std::fmt::Display for VmManagerError {
             VmManagerError::Image(e) => write!(f, "{}", e),
             VmManagerError::QuotaExceeded(o) => {
                 write!(f, "{}", o.iter().map(|o| o.to_string()).collect::<Vec<_>>().join("; "))
+            }
+            VmManagerError::TenantQuotaExceeded(o) => {
+                write!(f, "tenant cap on this cluster: {}", o.iter().map(|o| o.to_string()).collect::<Vec<_>>().join("; "))
             }
             VmManagerError::Tenancy(e) => write!(f, "{}", e),
             VmManagerError::CredentialInUse { username, vms } => {
@@ -260,6 +266,7 @@ pub struct VmManager {
     pub(crate) credentials: CredentialStore,
     pub(crate) networks: NetworkStore,
     pub(crate) projects: ProjectStore,
+    pub(crate) tenants: crate::tenants::TenantStore,
     pub(crate) netd: Netd,
     pub(crate) images: Arc<ImageManager>,
     /// Where per-VM state outside the database lives (next to it).
@@ -391,12 +398,14 @@ impl VmManager {
         let credentials = CredentialStore::new(store.database())?;
         let networks = NetworkStore::new(store.database())?;
         let projects = ProjectStore::new(store.database())?;
+        let tenants = crate::tenants::TenantStore::new(store.database()).map_err(|e| VmManagerError::Tenancy(TenancyError::Storage(e.to_string())))?;
         let nodes = crate::node::NodeStore::new(store.database());
         let mgr = Arc::new_cyclic(|me| Self {
             vms: RwLock::new(HashMap::new()),
             credentials,
             networks,
             projects,
+            tenants,
             netd,
             images,
             store,
@@ -1219,7 +1228,7 @@ impl VmManager {
             ..Default::default()
         };
         let usage = self.usage_locked(project, &vms)?;
-        Self::apply_quota(&project_rec.quotas, &usage, &delta, quota, &mut bypassed)?;
+        self.apply_quotas(&project_rec, &usage, &delta, quota, &mut bypassed, &vms)?;
 
         let mut vm = Vm::new(name, config);
         vm.project = project.to_string();
@@ -1284,7 +1293,7 @@ impl VmManager {
             let mut d = self.images.new_disk_record(&req)?;
             if sel.root_disk_size_gib.is_none() {
                 let disk_delta = Delta { disk_gib: gib_ceil(self.estimated_size(&d)), ..Default::default() };
-                Self::apply_quota(&project_rec.quotas, &usage, &disk_delta, quota, &mut bypassed)?;
+                self.apply_quotas(&project_rec, &usage, &disk_delta, quota, &mut bypassed, &vms)?;
             }
             d.owner = Some(vm.id.clone());
             vm.spec.config.root_disk = Some(d.id.clone());
@@ -1488,7 +1497,7 @@ impl VmManager {
         if cur.spec.power == PowerState::Stopped && power != PowerState::Stopped {
             if let Some(p) = self.projects.get(&cur.project)? {
                 let usage = self.usage_locked(&cur.project, &vms)?;
-                Self::apply_quota(&p.quotas, &usage, &Delta { running_vms: 1, ..Default::default() }, quota, &mut bypassed)?;
+                self.apply_quotas(&p, &usage, &Delta { running_vms: 1, ..Default::default() }, quota, &mut bypassed, &vms)?;
             }
         }
         let grace = grace.unwrap_or(cur.spec.stop_grace_secs);
@@ -1636,7 +1645,7 @@ impl VmManager {
         if delta.running_vms + delta.vcpus + delta.memory_mib > 0 {
             if let Some(p) = self.projects.get(&project)? {
                 let usage = self.usage_locked(&project, &vms)?;
-                Self::apply_quota(&p.quotas, &usage, &delta, quota, &mut bypassed)?;
+                self.apply_quotas(&p, &usage, &delta, quota, &mut bypassed, &vms)?;
             }
         }
         vm.generation += 1;
@@ -2084,7 +2093,7 @@ impl VmManager {
         let usage = self.usage_locked(project, &vms)?;
         let mut bypassed = Vec::new();
         let delta = Delta { disk_gib: gib_ceil(self.estimated_size(&disk)), ..Default::default() };
-        Self::apply_quota(&p.quotas, &usage, &delta, quota, &mut bypassed)?;
+        self.apply_quotas(&p, &usage, &delta, quota, &mut bypassed, &vms)?;
         self.store.commit(Commit {
             put_disks: vec![&disk],
             events: vec![(event_key("disk", &disk.id), Event::new("api", EventKind::Normal, "Created", "disk recorded; its file is made next"))],
@@ -2150,7 +2159,7 @@ impl VmManager {
             if let Some(p) = self.projects.get(&current.project)? {
                 let vms = self.vms.read().await;
                 let usage = self.usage_locked(&current.project, &vms)?;
-                Self::apply_quota(&p.quotas, &usage, &Delta { disk_gib: grow, ..Default::default() }, quota, &mut bypassed)?;
+                self.apply_quotas(&p, &usage, &Delta { disk_gib: grow, ..Default::default() }, quota, &mut bypassed, &vms)?;
             }
         }
         if size < current.size_bytes {
@@ -2486,7 +2495,7 @@ impl VmManager {
         let vms = self.vms.write().await;
         let mut bypassed = Vec::new();
         let usage = self.usage_locked(project, &vms)?;
-        Self::apply_quota(&p.quotas, &usage, &Delta { networks: 1, ..Default::default() }, quota, &mut bypassed)?;
+        self.apply_quotas(&p, &usage, &Delta { networks: 1, ..Default::default() }, quota, &mut bypassed, &vms)?;
         let id = uuid::Uuid::new_v4().simple().to_string();
         // Cluster networks have no bridge of their own: they sit on br-int.
         if !(req.scope == Some(crate::network::NetworkScope::Cluster) || (req.scope.is_none() && self.ovn_enabled())) {
@@ -2529,7 +2538,7 @@ impl VmManager {
         let vms = self.vms.write().await;
         let mut bypassed = Vec::new();
         let usage = self.usage_locked(project, &vms)?;
-        Self::apply_quota(&p.quotas, &usage, &Delta { routers: 1, external_ips: spec.external as u64, ..Default::default() }, quota, &mut bypassed)?;
+        self.apply_quotas(&p, &usage, &Delta { routers: 1, external_ips: spec.external as u64, ..Default::default() }, quota, &mut bypassed, &vms)?;
         let site = crate::router::Site { pool, exclude: &exclude, zones: ovn.snat_ct_zones.unwrap_or((60000, 64999)) };
         let r = crate::router::create(&self.store.database(), project, spec, &site).map_err(router_err)?;
         drop(vms);
@@ -2818,6 +2827,47 @@ impl VmManager {
         }
         match mode {
             QuotaMode::Enforce => Err(VmManagerError::QuotaExceeded(over)),
+            QuotaMode::MayExceed => {
+                bypassed.extend(over);
+                Ok(())
+            }
+        }
+    }
+
+    /// The project's quotas, then its tenant's cap on this cluster: the
+    /// tenant's use is the sum over its projects here (spec/tenancy.md D19).
+    #[allow(clippy::too_many_arguments)]
+    fn apply_quotas(
+        &self,
+        p: &tenancy::Project,
+        usage: &Usage,
+        delta: &Delta,
+        mode: QuotaMode,
+        bypassed: &mut Vec<QuotaOverrun>,
+        vms: &HashMap<String, Vm>,
+    ) -> Result<(), VmManagerError> {
+        Self::apply_quota(&p.quotas, usage, delta, mode, bypassed)?;
+        let Some(admission) = self.tenants.admission(&p.tenant_id).map_err(|e| VmManagerError::Tenancy(TenancyError::Storage(e.to_string())))? else {
+            return Ok(());
+        };
+        let mut total = Usage::default();
+        for other in self.projects.list()?.iter().filter(|o| o.tenant_id == p.tenant_id) {
+            let u = self.usage_locked(&other.id, vms)?;
+            total.vms += u.vms;
+            total.vcpus += u.vcpus;
+            total.memory_mib += u.memory_mib;
+            total.disk_gib += u.disk_gib;
+            total.running_vms += u.running_vms;
+            total.networks += u.networks;
+            total.routers += u.routers;
+            total.external_ips += u.external_ips;
+        }
+        let over = tenancy::overruns(&admission.cap, &total, delta);
+        if over.is_empty() {
+            return Ok(());
+        }
+        match mode {
+            QuotaMode::Enforce => Err(VmManagerError::TenantQuotaExceeded(over)),
             QuotaMode::MayExceed => {
                 bypassed.extend(over);
                 Ok(())

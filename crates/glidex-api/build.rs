@@ -7,13 +7,8 @@ use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-/// Files that get Rust code. `glidex/api/v1/options.proto` is read here
-/// only: its extensions describe the API, they aren't part of it.
-const GENERATE: &[&str] = &[
-    "glidex/api/v1/errors.proto",
-    "google/rpc/error_details.proto",
-    "glidex/system/v1/system.proto",
-];
+/// Read here only: its extensions describe the API, they aren't part of it.
+const NOT_GENERATED: &[&str] = &["glidex/api/v1/options.proto"];
 
 fn main() {
     let proto = PathBuf::from("proto");
@@ -29,11 +24,6 @@ fn main() {
     check_json_names(&pool, &mut errors);
     let table = operations(&pool, &mut errors);
     check_secrets(&pool, &mut errors);
-    for f in GENERATE {
-        if !files.iter().any(|p| p == f) {
-            errors.push(format!("{f} is listed in GENERATE but doesn't exist"));
-        }
-    }
     if !errors.is_empty() {
         fail(&errors.join("\n"));
     }
@@ -43,9 +33,10 @@ fn main() {
     let fds = out.join("glidex.fds");
     std::fs::write(&fds, compiler.encode_file_descriptor_set()).unwrap();
 
+    let generate: Vec<&String> = files.iter().filter(|f| !NOT_GENERATED.contains(&f.as_str())).collect();
     connectrpc_build::Config::new()
         .descriptor_set(&fds)
-        .files(GENERATE)
+        .files(&generate)
         .include_file("_connectrpc.rs")
         .emit_rerun_directives(false)
         .compile()
