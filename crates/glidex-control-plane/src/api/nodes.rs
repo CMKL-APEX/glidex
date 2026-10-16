@@ -395,12 +395,25 @@ pub async fn put_node_ovn(c: Caller, Path(id): Path<String>, Json(b): Json<NodeO
     })))
 }
 
+/// The live node a gateway key (id or name) means. A key that names only a
+/// node that left (a tombstone keeps its name) is refused, saying so.
+pub(crate) fn live_gateway_node<'a>(nodes: &'a [crate::node::Node], k: &str) -> Result<&'a crate::node::Node, String> {
+    let matching = || nodes.iter().filter(|n| n.meta.id == k || n.spec.name == k);
+    if let Some(n) = matching().find(|n| !n.status.phase.is_tombstone()) {
+        return Ok(n);
+    }
+    match matching().next() {
+        Some(n) => Err(format!("{} ({}) is {:?}: a gateway node must be a node in the cluster", n.spec.name, &n.meta.id[..n.meta.id.len().min(8)], n.status.phase)),
+        None => Err(format!("no node {k}")),
+    }
+}
+
 /// Whether `keys` (node ids or names) can carry an OVN gateway on `physnet`:
 /// each maps that physical network and wants `br-int` on the kernel datapath
 /// (spec/clustering.md §11.2, §13.2). The reason when not.
 pub(crate) fn check_gateway_nodes(nodes: &[crate::node::Node], keys: &[String], physnet: &str) -> Result<(), String> {
     for k in keys {
-        let Some(n) = nodes.iter().find(|n| n.meta.id == *k || (n.spec.name == *k && !n.status.phase.is_tombstone())) else { return Err(format!("no node {k}")) };
+        let n = live_gateway_node(nodes, k)?;
         if !n.status.features.physnets.contains_key(physnet) {
             return Err(format!(
                 "{} doesn't map physical network {physnet}: add it to cluster.ovn.bridge_mappings in that node's control-plane.json (a bridge with the uplink) and restart its control plane",

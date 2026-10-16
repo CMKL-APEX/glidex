@@ -1121,6 +1121,9 @@ only be reached through their external IP, which only accepts replies
 - Created and deleted by a project's `network.manage` holders
   (security.md §7.2). Choosing `external_ip` or `gateway_nodes`
   explicitly needs `host.network`, because both are site resources.
+  Each gateway node (id or name) must be a node in the cluster: a name
+  means the live node, and a key that names only a tombstone (§5.3: it
+  keeps its name) is refused with `400 invalid`, naming its phase.
 - New quotas: `routers` (default 1 per project) and `external_ips`
   (default 1). They are checked in the same admission write that
   reserves the address in `ipam_external` (reconciliation.md D5). The

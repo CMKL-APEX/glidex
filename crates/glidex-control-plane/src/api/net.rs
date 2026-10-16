@@ -251,10 +251,16 @@ pub async fn create_router(c: Caller, Path(project): Path<String>, Json(spec): J
     if spec.external_ip.is_some() || spec.gateway_nodes.is_some() {
         c.require_action("createNetwork", Ent::Host, EntitySet::new(), &[])?;
     }
-    // Its own gateway nodes must be able to carry it (spec/clustering.md §11.2a).
-    if let (true, Some(gws), Some(edge)) = (spec.external, spec.gateway_nodes.as_ref(), c.manager().ovn.load().edge.clone()) {
+    // Its own gateway nodes are nodes in the cluster, able to carry it
+    // (spec/clustering.md §11.2a).
+    if let Some(gws) = spec.gateway_nodes.as_ref() {
         let nodes = c.manager().nodes().list().unwrap_or_default();
-        super::nodes::check_gateway_nodes(&nodes, gws, &edge.physnet).map_err(|m| err(StatusCode::CONFLICT, "gateway_not_ready", m))?;
+        for g in gws {
+            super::nodes::live_gateway_node(&nodes, g).map_err(|m| err(StatusCode::BAD_REQUEST, "invalid", m))?;
+        }
+        if let (true, Some(edge)) = (spec.external, c.manager().ovn.load().edge.clone()) {
+            super::nodes::check_gateway_nodes(&nodes, gws, &edge.physnet).map_err(|m| err(StatusCode::CONFLICT, "gateway_not_ready", m))?;
+        }
     }
     let quota = c.quota_mode(&project);
     let (r, over) = c.manager().create_router(&project, spec, quota).await.map_err(manager_err)?;

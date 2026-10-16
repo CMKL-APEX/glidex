@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import * as api from "../api";
 import type { DiskInfo, NodeRecord, VmResponse } from "../types";
-import { formatBytes, formatTime, stateLabel, wantedBrInt } from "../types";
+import { formatBytes, formatTime, nodeLabel, stateLabel, wantedBrInt } from "../types";
 import BrIntDialog from "../components/BrIntDialog";
 import MappingsDialog from "../components/MappingsDialog";
 import { hostOf, useAllowed } from "../nodes";
@@ -92,7 +92,7 @@ export default function NodeDetail() {
         </Link>
       </p>
       <PageHeader
-        title={node.spec.name}
+        title={nodeLabel(node)}
         subtitle={
           <span className="inline-flex flex-wrap items-center gap-2">
             <span>{node.spec.role}</span>

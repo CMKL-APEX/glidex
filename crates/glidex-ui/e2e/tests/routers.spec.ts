@@ -18,11 +18,11 @@ test.afterAll(cleanup);
 
 const json = (r: Route, v: unknown, status = 200) => r.fulfill({ status, contentType: "application/json", body: JSON.stringify(v) });
 
-function node(id: string, name: string) {
+function node(id: string, name: string, phase = "Active") {
   return {
     meta: { id, name, created_at: 1790000000, generation: 1, resource_version: 1 },
     spec: { name, role: "server", unschedulable: false, labels: {} },
-    status: { phase: "Active", ready: "True", versions: { glidex: "0.1.0" }, capacity: { cpus: 8, memory_mib: 16384 }, allocatable: { cpus: 7, memory_mib: 14336 }, features: {} },
+    status: { phase, ready: "True", versions: { glidex: "0.1.0" }, capacity: { cpus: 8, memory_mib: 16384 }, allocatable: { cpus: 7, memory_mib: 14336 }, features: {} },
   };
 }
 
@@ -33,7 +33,12 @@ async function mockOvn(page: Page, project: string, pool = true): Promise<Seen> 
   const seen: Seen = [];
   const routers: any[] = [{ id: "a1b2c3d4", project, spec: { name: "r1", external: true, external_ip: null, gateway_nodes: null }, status: { external_ip: "192.0.2.240", snat_ct_zone: 60001 }, created_at: 1790000000 }];
   await page.route("**/api/watch*", (r) => json(r, { error: "too_many_watchers", message: "poll" }, 503));
-  await page.route("**/api/nodes", (r) => json(r, [node("11111111-1111-4111-8111-111111111111", "s1"), node("22222222-2222-4222-8222-222222222222", "s2")]));
+  await page.route("**/api/nodes", (r) => json(r, [
+      node("11111111-1111-4111-8111-111111111111", "s1"),
+      node("22222222-2222-4222-8222-222222222222", "s2"),
+      // s2 before it left and joined again: a tombstone with the same name.
+      node("33333333-3333-4333-8333-333333333333", "s2", "Removed"),
+    ]));
   await page.route("**/api/cluster/settings/ovn", (r) => json(r, { enabled: true, edge: true, vpc_pool: pool }));
   await page.route("**/api/cluster/ovn", (r) =>
     json(r, { enabled: true, nb: [], sb: [], chassis: [], gateways: [{ router: "gxr-a1b2c3d4", active: { chassis: "node:1", node: "1", node_name: "s1" }, candidates: [] }] }),
@@ -105,6 +110,10 @@ test("a project's routers: listed with their address and gateway, created and de
   await expect(page.getByText("External IPs")).toBeVisible();
 
   await page.getByRole("button", { name: "New router" }).click();
+  // Gateway nodes: the nodes in the cluster, once each; not the one that left.
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByRole("checkbox", { name: "s1" })).toHaveCount(1);
+  await expect(dialog.getByRole("checkbox", { name: "s2" })).toHaveCount(1);
   await page.getByLabel("Name").fill("r2");
   await expect(page.getByLabel("Reaches outside", { exact: false })).toBeChecked();
   await page.getByRole("button", { name: "Create", exact: true }).click();
