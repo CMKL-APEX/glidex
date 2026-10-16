@@ -125,8 +125,10 @@ pub fn probe(exec: &dyn Exec, opts: &ProbeOptions) -> HostCapabilities {
             caps.dpdk_mempool_driver = dpdk_mempool_driver(exec);
         }
     }
+    // `show` needs only ovsdb-server; ovs-vswitchd answers `version` itself.
     if caps.ovs_installed
         && ok(exec, Cmd::new(Program::OvsVsctl, ["--timeout=2", "show"])).is_some()
+        && ok(exec, Cmd::new(Program::OvsAppctl, ["--timeout=2", "-t", "ovs-vswitchd", "version"])).is_some()
     {
         caps.ovs_running = true;
         if let Ok(rows) = vsctl::list(
