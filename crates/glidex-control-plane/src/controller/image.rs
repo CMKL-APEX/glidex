@@ -39,8 +39,9 @@ impl VmManager {
                 }
             }
             // The `image.download` and `image.file` finalizers (§6.3).
-            self.images.finish_image_delete(&img.id)?;
-            self.image_event(&img.id, EventKind::Normal, "Deleted", "");
+            if self.images.finish_image_delete(&img.id)? {
+                self.image_event(&img.id, EventKind::Normal, "Deleted", "");
+            }
             return Ok(None);
         }
         // A node that doesn't write the catalog keeps only its copy.
