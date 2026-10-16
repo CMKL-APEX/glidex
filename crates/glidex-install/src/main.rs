@@ -8,6 +8,7 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use tempfile::TempDir;
 
+mod ovn_match;
 mod sysconfig;
 mod uninstall;
 
@@ -142,6 +143,11 @@ fn main() -> Result<()> {
     if let Some(j) = &opts.join {
         join_cluster(j)?;
     }
+    // A member's OVN matches the cluster's ovn-northd: after a join, and on
+    // every re-run (a server may have been upgraded since).
+    if opts.networking && opts.ovn && cluster_identity().is_some() {
+        ensure_ovn_matches_cluster(opts.join.is_some())?;
+    }
     print_usage(&opts);
     Ok(())
 }
@@ -221,6 +227,115 @@ fn offline_step(mode: &str, failed: &str) -> Result<()> {
 
 /// Ask the running control plane to join (`gxctl cluster join`), handing it
 /// the token on its standard input.
+/// This host's cluster identity (`identity.json`: `role`, `node_id`, …),
+/// read as root (the cluster directory is the service user's); `None` on a
+/// standalone host.
+fn cluster_identity() -> Option<serde_json::Value> {
+    let path = format!("{}/identity.json", ovn_match::CLUSTER_DIR);
+    let raw = if is_root() { fs::read_to_string(&path).ok()? } else { run_capture_sudo(&["cat", &path])? };
+    serde_json::from_str(&raw).ok()
+}
+
+/// Bring this member's OVN up to the cluster's ovn-northd (spec/installer.md
+/// §5a), from the distribution or else the Ubuntu Cloud Archive, OVN only.
+fn ensure_ovn_matches_cluster(just_joined: bool) -> Result<()> {
+    use ovn_match::{Plan, CLUSTER_DIR};
+    section("OVN version (to match the cluster)");
+    if !command_exists("ovn-controller") {
+        println!("{} ovn-controller is not installed; skipping.", "Note:".yellow());
+        return Ok(());
+    }
+    // netd sets ovn-remote once the cluster's OVN is on; give a fresh join a moment.
+    let mut remote = None;
+    for _ in 0..if just_joined { 45 } else { 1 } {
+        remote = run_capture_sudo(&["ovs-vsctl", "--timeout=5", "get", "Open_vSwitch", ".", "external_ids:ovn-remote"]).as_deref().and_then(ovn_match::ovn_remote);
+        if remote.is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_secs(2));
+    }
+    let Some(remote) = remote else {
+        println!("{} the cluster's OVN isn't on here yet (no ovn-remote); re-run the installer once it is, to match its version.", "Note:".yellow());
+        return Ok(());
+    };
+    let (key, crt, ca) = (format!("{CLUSTER_DIR}/node.key"), format!("{CLUSTER_DIR}/node.crt"), format!("{CLUSTER_DIR}/ca.crt"));
+    let northd = run_capture_sudo(&["ovn-sbctl", "--timeout=15", &format!("--db={remote}"), "-p", &key, "-c", &crt, "-C", &ca, "get", "SB_Global", ".", "options:northd_internal_version"]);
+    let Some(want) = northd.as_deref().and_then(ovn_match::northd_series) else {
+        println!("{} could not read the cluster's ovn-northd version from {remote}; skipping (re-run the installer to try again).", "Warning:".yellow());
+        return Ok(());
+    };
+    let local_v = run_capture("ovn-controller", &["--version"]).ok().and_then(|v| v.lines().next().map(str::to_string)).unwrap_or_default();
+    let local = ovn_match::series(&local_v);
+    if local.is_some_and(|l| l >= want) {
+        println!("{} {} (the cluster's ovn-northd is {})", "OVN matches:".green(), local_v.trim(), ovn_match::series_str(want));
+        return Ok(());
+    }
+    if package_manager() != Some("apt-get") {
+        bail!("the cluster's ovn-northd is OVN {}, this host has {}: install OVN {} or newer here, then re-run the installer", ovn_match::series_str(want), local_v.trim(), ovn_match::series_str(want));
+    }
+    println!("{} {} is older than the cluster's ovn-northd (OVN {}); upgrading", "OVN:".yellow(), local_v.trim(), ovn_match::series_str(want));
+    let distro = run_capture("apt-cache", &["policy", "ovn-host"]).ok().as_deref().and_then(ovn_match::apt_candidate);
+    let plan = match ovn_match::plan(local, want, distro.as_deref(), &[]) {
+        Ok(p) => p,
+        Err(_) => ovn_match::plan(local, want, distro.as_deref(), &cloud_archive_offers())?,
+    };
+    let pkgs: Vec<&str> = ["ovn-host", "ovn-common", "ovn-central"].into_iter().filter(|p| package_installed("apt-get", p)).collect();
+    let mut upgrade = vec!["env", "DEBIAN_FRONTEND=noninteractive", "NEEDRESTART_MODE=l", "apt-get", "install", "-y", "--only-upgrade"];
+    upgrade.extend(&pkgs);
+    match &plan {
+        Plan::Matches => return Ok(()),
+        Plan::Distro { candidate } => println!("  from the distribution: ovn-host {candidate}"),
+        Plan::CloudArchive { pocket, version } => {
+            let codename = os_release("VERSION_CODENAME").context("no VERSION_CODENAME in /etc/os-release")?;
+            println!("  from the Ubuntu Cloud Archive ({codename}-updates/{pocket}): ovn-host {version}, OVN only");
+            sudo(&argv(&["env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "install", "-y", "-q", "ubuntu-cloud-keyring"]))?;
+            sudo_write(ovn_match::UCA_LIST, &ovn_match::uca_source(&codename, pocket))?;
+            sudo_write(ovn_match::UCA_PIN, &ovn_match::uca_pin(&codename, pocket))?;
+            sudo(&argv(&["apt-get", "update", "-q"]))?;
+        }
+    }
+    // Never at another package's expense (a DOCA OVS, say).
+    let mut sim = vec!["apt-get", "-s", "install", "--only-upgrade"];
+    sim.extend(&pkgs);
+    let simulation = run_capture(sim[0], &sim[1..]).unwrap_or_default();
+    let gone = ovn_match::removals(&simulation);
+    if !gone.is_empty() {
+        bail!("upgrading OVN would remove {}: not done; upgrade OVN to {} here by hand, then re-run the installer", gone.join(", "), ovn_match::series_str(want));
+    }
+    sudo(&argv(&upgrade))?;
+    let after = run_capture("ovn-controller", &["--version"]).ok().and_then(|v| v.lines().next().map(str::to_string)).unwrap_or_default();
+    if !ovn_match::series(&after).is_some_and(|s| s >= want) {
+        bail!("OVN is still {} after the upgrade; the cluster's ovn-northd is {}", after.trim(), ovn_match::series_str(want));
+    }
+    println!("{} {}", "OVN upgraded:".green(), after.trim());
+    Ok(())
+}
+
+/// (pocket, ovn-host version) for each Ubuntu Cloud Archive pocket of this
+/// release; empty when not Ubuntu or not reachable.
+fn cloud_archive_offers() -> Vec<(String, String)> {
+    let (Some(id), Some(codename)) = (os_release("ID"), os_release("VERSION_CODENAME")) else { return Vec::new() };
+    if id != "ubuntu" {
+        return Vec::new();
+    }
+    let Ok(arch) = run_capture("dpkg", &["--print-architecture"]) else { return Vec::new() };
+    let fetch = |url: &str| run_capture("curl", &["-fsSL", "--max-time", "60", url]).ok();
+    let Some(index) = fetch(&format!("{}/dists/{codename}-updates/", ovn_match::UCA)) else { return Vec::new() };
+    ovn_match::pockets(&index)
+        .into_iter()
+        .filter_map(|p| {
+            let packages = fetch(&format!("{}/dists/{codename}-updates/{p}/main/binary-{}/Packages", ovn_match::UCA, arch.trim()))?;
+            ovn_match::ovn_host_version(&packages).map(|v| (p, v))
+        })
+        .collect()
+}
+
+/// A field of /etc/os-release, unquoted.
+fn os_release(key: &str) -> Option<String> {
+    let text = fs::read_to_string("/etc/os-release").ok()?;
+    text.lines().find_map(|l| l.strip_prefix(&format!("{key}="))).map(|v| v.trim().trim_matches('"').to_string())
+}
+
 fn join_cluster(j: &JoinOptions) -> Result<()> {
     use std::io::Write;
     section("Joining the cluster");
@@ -869,12 +984,14 @@ fn ovn_units_to_quiesce(just_installed: &[&str], in_cluster: bool) -> Vec<&'stat
     OVN_UNITS.to_vec()
 }
 
-fn wanted_deps(opts: &Options, platform: &Platform) -> Vec<Dep> {
+/// `role`: the cluster role this host takes (`--join --role`) or already
+/// has (a re-run on a member); `None` on a standalone host.
+fn wanted_deps(opts: &Options, platform: &Platform, role: Option<&str>) -> Vec<Dep> {
     let mut deps = BASE_DEPS.to_vec();
     // OVN on every node (servers also run its databases), unless --no-ovn.
     if opts.networking && opts.ovn {
         deps.extend_from_slice(OVN_HOST_DEPS);
-        if opts.join.as_ref().is_none_or(|j| j.role == "server") {
+        if role.is_none_or(|r| r == "server") {
             deps.extend_from_slice(OVN_CENTRAL_DEPS);
         }
         deps.extend_from_slice(CONNTRACK_DEPS);
@@ -1021,7 +1138,9 @@ fn package_commands(manager: &str, missing: &[&str], update: &[&str]) -> Vec<Vec
 
 fn install_system_packages(opts: &Options, platform: &Platform) -> Result<()> {
     section("System packages");
-    let deps = wanted_deps(opts, platform);
+    let member = cluster_identity();
+    let role = opts.join.as_ref().map(|j| j.role.clone()).or_else(|| member.as_ref().and_then(|m| m["role"].as_str().map(str::to_string)));
+    let deps = wanted_deps(opts, platform, role.as_deref());
     let Some(manager) = package_manager() else {
         let missing: Vec<String> = deps.iter().filter(|d| !probe_present(&d.probe)).map(|d| d.packages[0].to_string()).collect();
         if missing.is_empty() {
@@ -1048,7 +1167,8 @@ fn install_system_packages(opts: &Options, platform: &Platform) -> Result<()> {
     for cmd in package_commands(manager, &missing, &update) {
         sudo(&cmd)?;
     }
-    let in_cluster = Path::new(SERVICE_HOME).join(".glidex/cluster/identity.json").exists();
+    // Read as root: the cluster directory is the service user's.
+    let in_cluster = member.is_some();
     let quiet = ovn_units_to_quiesce(&missing, in_cluster);
     if !quiet.is_empty() {
         // Units a distribution doesn't have are skipped: disable each on its own.
@@ -2379,7 +2499,7 @@ mod tests {
         let x86 = Platform { os: "linux", arch: "x86_64" };
         let arm = Platform { os: "linux", arch: "aarch64" };
         let names = |m: &str, o: &Options, p: &Platform| {
-            let deps = wanted_deps(o, p);
+            let deps = wanted_deps(o, p, None);
             pkgs(m, &deps, &["qemu-system-x86_64", "ovmf", "setcap"], &[]).0
         };
         let all = Options::default();
@@ -2394,13 +2514,17 @@ mod tests {
     #[test]
     fn ovn_comes_with_networking_unless_skipped_and_agents_get_no_databases() {
         let x86 = Platform { os: "linux", arch: "x86_64" };
-        let names = |o: &Options| pkgs("apt-get", &wanted_deps(o, &x86), &["ovn-controller", "ovn-northd", "conntrack"], &[]).0;
+        let names_as = |o: &Options, role: Option<&str>| pkgs("apt-get", &wanted_deps(o, &x86, role), &["ovn-controller", "ovn-northd", "conntrack"], &[]).0;
+        let names = |o: &Options| names_as(o, o.join.as_ref().map(|j| j.role.as_str()));
         let all = Options::default();
         for p in ["ovn-host", "ovn-central", "conntrack"] {
             assert!(names(&all).contains(&p), "{p} in {:?}", names(&all));
         }
         let agent = Options { join: Some(JoinOptions { server: "s:8842".into(), role: "agent".into(), ..Default::default() }), ..Options::default() };
         assert!(names(&agent).contains(&"ovn-host") && !names(&agent).contains(&"ovn-central"));
+        // A re-run on a member that joined as an agent: no --join, still an agent.
+        assert!(!names_as(&all, Some("agent")).contains(&"ovn-central"), "an agent runs no OVN databases");
+        assert!(names_as(&all, Some("server")).contains(&"ovn-central"));
         let skipped = Options { ovn: false, ..Options::default() };
         assert!(!names(&skipped).iter().any(|p| p.starts_with("ovn") || *p == "conntrack"));
         let no_net = Options { networking: false, ..Options::default() };

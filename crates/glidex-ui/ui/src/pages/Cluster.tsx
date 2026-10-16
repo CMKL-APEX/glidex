@@ -14,7 +14,7 @@ import { Badge, Card, ErrorBanner, PageHeader, errorMessage, primaryButton } fro
 import { PHASE_KIND } from "./NodeDetail";
 import { ClusterCa, DangerZone, InitCluster } from "../components/ClusterLifecycle";
 import { OvnCard, TunnelMatrix, useOvnOverview, useTunnels } from "../components/OvnViews";
-import { OvnOff, OvnSettingsDialog } from "../components/OvnSettings";
+import { OvnOff, OvnOutdated, OvnSettingsDialog } from "../components/OvnSettings";
 import type { OvnSettingsView } from "../types";
 
 /** Port checks open connections to every node: not on every change. */
@@ -317,6 +317,7 @@ export default function Cluster() {
             )
           }
         >
+          <OvnOutdated view={ovnView} />
           <TunnelMatrix nodes={tunnels.nodes} error={tunnels.error} onRefresh={() => setOvnTick((x) => x + 1)} />
         </OvnCard>
       )}

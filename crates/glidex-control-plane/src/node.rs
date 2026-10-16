@@ -300,6 +300,34 @@ macro_rules! storage_from {
 }
 storage_from!(redb::TransactionError, redb::TableError, redb::StorageError, redb::CommitError, serde_json::Error);
 
+/// An OVN release series, `(major, minor)` of "26.03.0" or "24.03.8".
+pub fn ovn_series(v: &str) -> Option<(u32, u32)> {
+    let mut parts = v.trim().split(|c: char| !c.is_ascii_digit());
+    Some((parts.next()?.parse().ok()?, parts.next()?.parse().ok()?))
+}
+
+/// The OVN of the cluster's ovn-northd: the newest that the servers running
+/// OVN's central part report (one of them runs northd; a newer one may take
+/// over). `None` without such a server.
+pub fn cluster_northd_ovn(nodes: &[Node]) -> Option<String> {
+    nodes
+        .iter()
+        .filter(|n| n.spec.role == NodeRole::Server && n.status.phase == NodePhase::Active && n.status.features.ovn_central)
+        .filter_map(|n| n.status.versions.ovn.clone())
+        .filter(|v| ovn_series(v).is_some())
+        .max_by_key(|v| ovn_series(v))
+}
+
+/// Why `n` can't run the logical flows of an ovn-northd of version `northd`:
+/// its ovn-controller is an older release, whose tables stop short of
+/// northd's pipeline (spec/installer.md, OVN). `None` when it can.
+pub fn ovn_outdated(n: &Node, northd: Option<&str>) -> Option<String> {
+    let (want, have) = (northd.and_then(ovn_series)?, n.status.versions.ovn.as_deref()?);
+    (ovn_series(have)? < want).then(|| {
+        format!("its ovn-controller {have} is older than the cluster's ovn-northd {}: re-run glidex-install on {} to upgrade OVN", northd.unwrap_or_default(), n.spec.name)
+    })
+}
+
 /// The `nodes` table.
 pub struct NodeStore {
     db: Arc<Db>,

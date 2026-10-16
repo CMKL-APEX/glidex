@@ -227,6 +227,32 @@ test("OVN settings stay reachable when OVN's state can't be read", async ({ page
   await expect(page.getByRole("heading", { name: "OVN settings" })).toBeVisible();
 });
 
+test("a node whose OVN is older than the cluster's northd is called out", async ({ page }) => {
+  await mockCluster(page);
+  const json = (r: Route, v: unknown, status = 200) => r.fulfill({ status, contentType: "application/json", body: JSON.stringify(v) });
+  const why = "its ovn-controller 24.03.8 is older than the cluster's ovn-northd 26.03.0: re-run glidex-install on a1 to upgrade OVN";
+  await page.route("**/api/cluster/settings/ovn", (r) =>
+    json(r, {
+      enabled: true,
+      source: "cluster",
+      settings: { enabled: true, dns_servers: [] },
+      nodes: [
+        { id: S1, name: "s1", role: "server", ovn_version: "26.03.0", ovn_central: true, missing: null, outdated: null },
+        { id: A1, name: "a1", role: "agent", ovn_version: "24.03.8", ovn_central: false, missing: null, outdated: why },
+      ],
+      cluster_networks: [],
+    }),
+  );
+  // OVN's live state isn't what's checked here.
+  await page.route("**/api/cluster/ovn", (r) => json(r, { error: "unavailable", message: "northbound database not reachable" }, 503));
+  await page.route("**/api/cluster/ovn/tunnels", (r) => json(r, { enabled: true, nodes: [] }));
+  await page.goto("/cluster");
+  const alert = page.getByRole("alert").filter({ hasText: "OVN is out of date" });
+  await expect(alert).toContainText("OVN is out of date on a1");
+  await expect(alert).toContainText(why);
+  await expect(alert).not.toContainText("s1");
+});
+
 test("through an agent's UI, the agent is this node and the Raft card names the server", async ({ page }) => {
   await mockCluster(page);
   // What a server answers for a request the agent's UI socket relayed.

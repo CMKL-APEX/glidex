@@ -507,8 +507,10 @@ switched off get the UI back on the next run.
 ## OVN
 
 With networking, the installer also installs OVN for cluster networks
-(spec/clustering.md §10.1): `ovn-host` on every host, `ovn-central` unless the
-run joins as an agent, and `conntrack` for gateway metering. `--no-ovn` skips
+(spec/clustering.md §10.1): `ovn-host` on every host, `ovn-central` on a
+server or standalone host (not on an agent: the role comes from `--join
+--role`, or on a re-run from the node's `identity.json`, read as root), and
+`conntrack` for gateway metering. `--no-ovn` skips
 them and is remembered in `install.conf`. When this run installed OVN and the
 host is in no cluster, OVN's services are stopped and disabled: Debian and
 Ubuntu start them on install, and a standalone host would only run empty
@@ -517,4 +519,38 @@ chassis, `ovn-central` on servers). Installing OVN doesn't turn it on: that is
 a cluster setting, from the Cluster page or `PUT /cluster/settings/ovn`
 (spec/clustering-ui.md §8a), refused until every node reports OVN
 installed.
+
+### Matching the cluster's ovn-northd
+
+An `ovn-controller` must be the release of the cluster's ovn-northd or
+newer. An older one can't run northd's logical flows: they use tables past
+the end of its pipeline, which it rejects ("table_id 33 is not in the valid
+range 0 to 32"), so traffic leaving a VM's switch is dropped on that node.
+Hosts on different distribution releases ship different OVN (Ubuntu 24.04:
+24.03, Ubuntu 26.04: 26.03), so on a member, after a join and on every
+re-run (a server may have been upgraded since), the installer:
+
+1. reads northd's release from the southbound database
+   (`SB_Global options:northd_internal_version`), at `ovn-remote` with the
+   node's certificate. Without `ovn-remote` yet (the cluster's OVN is off
+   here) it says so and stops; the next run matches it;
+2. stops there when the local `ovn-controller` is that release or newer;
+3. otherwise upgrades `ovn-host` (and `ovn-common`, and `ovn-central` where
+   installed): from the distribution when its candidate is new enough, else,
+   on Ubuntu, from the Ubuntu Cloud Archive pocket of this release that has
+   northd's release (else the oldest newer one), found from the archive's
+   index. That pocket goes in `/etc/apt/sources.list.d/glidex-uca-ovn.list`
+   (`ubuntu-cloud-keyring`), pinned in `/etc/apt/preferences.d/glidex-uca-ovn`
+   so that only `ovn-*` comes from it (priority 500) and nothing else does
+   (-1): its Open vSwitch would replace another vendor's (a DOCA OVS);
+4. dry-runs the upgrade and stops if it would remove any package, naming them;
+5. checks the version after the upgrade.
+
+Any other case (no apt, no such release anywhere) stops with what to install.
+The control plane enforces the same rule: a node whose `ovn-controller` is
+older than the newest OVN its servers with `ovn-central` report is refused
+for VMs on cluster networks ("its ovn-controller 24.03.8 is older than the
+cluster's ovn-northd 26.03.0: re-run glidex-install on it"), and
+`GET /cluster/settings/ovn` reports it as `outdated` (spec/clustering-ui.md
+§8a).
 
