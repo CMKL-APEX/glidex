@@ -38,7 +38,7 @@ fn mtime_of(m: &std::fs::Metadata) -> u64 {
 
 impl ImageManager {
     fn index_path(&self) -> PathBuf {
-        self.settings.image_dir.join(INDEX)
+        crate::paths::file_in(&self.settings.image_dir, INDEX)
     }
 
     fn load_index(&self) -> Index {
@@ -47,11 +47,16 @@ impl ImageManager {
 
     fn save_index(&self, idx: &Index) {
         if let Ok(b) = serde_json::to_vec(idx) {
-            let tmp = self.index_path().with_extension("json.tmp");
+            let tmp = crate::paths::file_in(&self.settings.image_dir, &format!("{INDEX}.tmp"));
             if std::fs::write(&tmp, b).is_ok() {
                 let _ = std::fs::rename(&tmp, self.index_path());
             }
         }
+    }
+
+    /// A file in the image directory by name (one `read_dir` gave).
+    fn spare_path(&self, name: &str) -> PathBuf {
+        crate::paths::file_in(&self.settings.image_dir, name)
     }
 
     /// The files of every image record, which are not spare.
@@ -101,14 +106,14 @@ impl ImageManager {
             let digest = match idx.hashes.get(&f.name) {
                 Some((s, m, h)) if *s == f.bytes && *m == f.mtime => h.clone(),
                 _ => {
-                    let Ok(h) = super::download::sha256_path(&self.settings.image_dir.join(&f.name)) else { continue };
+                    let Ok(h) = super::download::sha256_path(&self.spare_path(&f.name)) else { continue };
                     idx.hashes.insert(f.name.clone(), (f.bytes, f.mtime, h.clone()));
                     dirty = true;
                     h
                 }
             };
             if digest == sha256 {
-                found = Some(self.settings.image_dir.join(&f.name));
+                found = Some(self.spare_path(&f.name));
                 break;
             }
         }
@@ -127,7 +132,7 @@ impl ImageManager {
         };
         if kind == ImageKind::Firmware {
             let stem = spare.file_name().and_then(|n| n.to_str()).and_then(|n| n.strip_suffix(".fd")).unwrap_or_default();
-            let vars = spare.with_file_name(format!("{stem}.vars.fd"));
+            let vars = self.spare_path(&format!("{stem}.vars.fd"));
             if !stem.is_empty() && vars.is_file() {
                 std::fs::rename(&vars, self.firmware_vars_template(id))?;
             }
@@ -156,7 +161,7 @@ impl ImageManager {
         }
         let mut n = 0;
         for f in self.spare_files().into_iter().filter(|f| f.mtime < before) {
-            if std::fs::remove_file(self.settings.image_dir.join(&f.name)).is_ok() {
+            if std::fs::remove_file(self.spare_path(&f.name)).is_ok() {
                 idx.hashes.remove(&f.name);
                 n += 1;
             }
