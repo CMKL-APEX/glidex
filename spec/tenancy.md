@@ -1,4 +1,4 @@
-# Tenants and directory connectors (design)
+# Tenants, directory and operators (design)
 
 Status: **design**, nothing implemented. Builds on
 [security.md](security.md) §5–§7 (authentication, projects and teams,
@@ -6,29 +6,51 @@ Cedar) and [clustering.md](clustering.md) §12 (cluster authorization).
 It lifts the "federation and SCIM provisioning" item of
 [security.md §12](security.md#12-out-of-scope).
 
-This document adds one level above projects, the **tenant**, and lets
-every tenant bring its own users from **directory connectors**: PAM,
-LDAP, OIDC, Google, Microsoft Entra ID (Azure), GitHub, JumpCloud and
-SCIM. One tenant is special: the **admin tenant** owns the physical
-cluster (nodes, OVN, host networks, PCI devices, images, cluster
-membership). Every other tenant only ever sees
-its own projects and whatever the admin tenant grants it.
+This document adds the **tenant**, an organization, above projects, and
+separates two things that today are one: the people and organizations
+that use glidex, and the clusters that run their workloads.
 
-A tenant is not tied to one cluster. Several clusters, for example one
-per datacenter, form a **fleet** that shares one tenant directory: the
-same tenants, users, teams and connectors in every cluster, with each
-project and its VMs in one cluster (§13.2). A standalone cluster is a
-fleet of one.
+- A **tenant** has users, teams and projects, and brings its users from
+  **directory connectors**: PAM, LDAP, OIDC, Google, Microsoft Entra ID
+  (Azure), GitHub, JumpCloud and SCIM.
+- A **project** belongs to one tenant, never more, and can use
+  resources in several clusters.
+- A **cluster** is operated by one **operator tenant**: the
+  organization that owns its hardware. Several clusters may share an
+  operator, or each may have its own. The operator runs the cluster's
+  hosts (nodes, OVN, host networks, PCI devices, images, membership),
+  writes its site policies, and decides which tenants it admits.
+- The **directory** holds the tenants, users, teams, projects and
+  connectors, and is where users log in. One login works on every
+  cluster that admits the user's tenant. The directory is run by the
+  **directory owner**, itself a tenant.
+- Clusters that share a directory form a **fleet**. A standalone
+  cluster is a fleet of one: it is its own directory, and its operator
+  owns the directory. That is what an upgraded host looks like (§16).
+
+```
+                 directory (owner: tenant "admin")
+        tenants · users · teams · projects · connectors · logins
+         │ feed (filtered per cluster)              │
+ ┌───────┴──────────────┐              ┌────────────┴─────────┐
+ │ cluster A            │              │ cluster B            │
+ │ operator: "admin"    │              │ operator: "dc-north" │
+ │ admits: lab, acme    │              │ admits: acme         │
+ │ site policies, hosts │              │ site policies, hosts │
+ └──────────────────────┘              └──────────────────────┘
+   project acme/web: VMs in A and B · project lab/ci: VMs in A
+```
 
 ## 1. Starting point (17946fc)
 
 | Area | Today | Problem for multi-tenancy |
 |---|---|---|
 | Hierarchy | `Project in Cluster`; teams and users are global (`security.md` §6.1). | No boundary between groups of projects: whoever holds `system.identity` or `system.projects` manages everyone, and nobody else can manage users at all. |
+| Operators | One set of host roles; the cluster's operator and the people managing users are the same. | Hardware owned by different organizations can't be offered to the same users. |
 | Login sources | One PAM config and **one** OIDC issuer in `control-plane.json` (`config.rs::OidcConfig`). | A second organization can't bring its IdP; changing the IdP needs a root-edited file and a restart. |
+| Login scope | Users, sessions and tokens are per cluster. | A user of two clusters is two users with two logins. |
 | Provisioning | JIT at login only; team sync from the `groups` claim at login. | A user removed from the IdP keeps their glidex session and **personal tokens (up to 365 days)** until they expire. |
 | Names | Project, disk and network names are unique cluster-wide. | A name collision tells one tenant that another tenant's object exists. |
-| Grants | Host networks and PCI devices are granted to projects. | The admin has to re-grant for every new project of a customer. |
 | Machine identity | Service-account tokens are long-lived bearer secrets. | CI pipelines store `gxt_` secrets instead of using the OIDC/STS identity they already have. |
 | Secrets | The only IdP secret is the systemd credential `oidc-client-secret`. | Per-tenant connectors created through the API need secrets stored by the control plane. |
 
@@ -36,77 +58,85 @@ fleet of one.
 
 | # | Topic | Decision | Why |
 |---|---|---|---|
-| D1 | Hierarchy | `Fleet ⊃ Cluster` and `Fleet ⊃ Tenant ⊃ Project`, each project also in exactly **one** cluster. Every project, team, user, service account and connector belongs to **exactly one** tenant. | One boundary that Cedar can express as `resource in principal.tenant`, instead of per-resource rules; tenants above clusters so one tenant can use several (D23). |
-| D2 | Users | A user belongs to one tenant (its *home tenant*). The same person in two organizations is two users. | Keeps identity keys, provisioning and deprovisioning per tenant; no cross-tenant identity merging to get wrong. Admin-tenant users are the one exception that may hold links anywhere (D4). |
-| D3 | Admin tenant | Fixed id `admin`, created at migration, can't be deleted or suspended. Only its principals pass the **host-scoped** actions (every `host.*`, `image.manage`, `policy.*`, `system.*`, `quota.exceed`, `node.drain`, `host.cluster*`). Enforced by a `forbid` in `base.cedar`. | A role link mistakenly given to a customer's team can't hand out the cluster. Roles still decide *which* admin may do what; the tenant only bounds *who can ever*. |
-| D4 | Operator access | Admin-tenant principals may be linked to roles in any tenant's projects (support, operations). Other principals may only be linked inside their own tenant. Every action by an admin-tenant principal on another tenant's resource is visible in **that tenant's** audit view. | Operators need to help customers; customers need to see when they did. |
-| D5 | Tenant administration | New role `tenant-admin` on a `Tenant`: projects, quotas inside the tenant cap, teams, users, links and connectors of that tenant. New role `tenant-auditor`: read everything in the tenant, its audit log and usage. | Customers run their own organization without asking the cluster operator for each project or user. |
-| D6 | Connectors | A **connector** is one configured external source, owned by a tenant. It may do any of: **login** (the user proves who they are), **provisioning** (users and groups are created, updated and disabled ahead of login), **attributes** (SSH public keys, display name, email). Presets (Google, Entra, GitHub, JumpCloud) are fixed configurations of four underlying protocols: PAM, LDAP, OIDC/OAuth 2.0, SCIM 2.0. SAML is not one of them (D20). | Every "provider" is a preset, not a new code path; the security-critical parsing (ID tokens, SCIM) exists once. |
-| D7 | Identity key | `(connector_id, subject)`, with the provider's **immutable** subject (`sub`, Entra `oid`, GitHub numeric id, LDAP `entryUUID`/`objectGUID`). Emails and login names are attributes, never keys. `unix:`/`pam:` keys keep the node suffix of clustering.md D13. | Emails get reassigned; GitHub logins get renamed. Keying on them lets a new owner of the name inherit someone's account. |
-| D8 | Group → team | Directory groups map to teams of the same tenant (`group_teams`), or auto-create one team per group (`group_mode: auto`, marked `managed_by: <connector>`). Teams carry rights only through role links, as today. Groups are never mapped to roles directly. | One rights mechanism (links), visible in one place; a directory admin can create groups but cannot grant rights the tenant admin didn't link. |
-| D9 | Deprovisioning | A user disabled or removed by provisioning is **disabled at once**: sessions deleted, personal tokens revoked, membership in managed teams dropped. The record stays (audit, ownership) until a tenant admin purges it. Connectors with login but no provisioning clamp their users' personal tokens to `token_max_days` (default 30) and re-check the connector at each token-minting login. | Closes the "removed from the IdP, still has a 365-day token" gap. |
-| D10 | Connector secrets | Stored in the replicated store **encrypted** with a cluster secrets key (KEK) held like the CA key (systemd credential on each server, never in Raft or snapshots). Write-only in the API. Agents never receive them. SCIM bearer tokens are generated by glidex and stored as SHA-256 only. | The API must accept secrets per tenant; the store, its snapshots and node caches must not leak them in clear. |
-| D11 | Admin-tenant connectors | Must restrict who gets in: `jit: false`, or a non-empty `required_groups`, or provisioning. They may require MFA (`require_mfa`, checked from the ID token's `amr`/`acr`), which is on by default for new admin-tenant SSO connectors. Writes to them need `system.identity` + step-up. | An admin-tenant connector that admits "anyone in the IdP" would make every employee of the IdP's organization an admin-tenant user. |
-| D12 | PAM and peer identity | Host accounts belong to the cluster operator. A `pam` connector names Unix groups; it is created only by the admin tenant, may be placed in any tenant, and a Unix group belongs to at most one PAM connector. A peer on `api.sock` resolves to the tenant whose PAM connector lists one of its groups; `glidex-admin`/root resolve to the admin tenant; anyone else is refused (as today). `glidex-authd`'s own `allowed_groups` stays the outer fence. | Lets a lab give a class's Unix group its own tenant without letting a tenant admin claim host accounts. The root-owned authd config can't be widened through the API. |
-| D13 | Login routing | Users reach their tenant by slug (`/t/<slug>`, `gxctl auth login --tenant`) or by email domain. Domains are **assigned to tenants by a system admin**, not self-claimed. | No DNS verification flow to build, and no tenant can capture another organization's domain. |
-| D14 | Names | Names of tenant-owned objects (projects, disks, project networks, credentials, teams, service accounts) are unique **per tenant**: within the cluster for objects that live in one (projects, disks, networks, credentials, project service accounts), across the fleet for directory objects (teams, tenant-level service accounts). Ids stay global UUIDs and flat paths stay (security.md decision 8). Name lookups resolve in the caller's tenant; admin principals pass `?tenant=`. Host networks, images and nodes keep their per-cluster names; tenant slugs are unique in the fleet. | Removes cross-tenant existence oracles without changing any id-based path. |
-| D15 | Grants | Host networks and PCI devices can be granted to a **tenant** (`tenant_grants`) as well as to projects. Project networks may only be shared between projects of the same tenant. | One grant per customer, not per project. Cross-tenant L2 sharing stays an admin decision (a host network granted to both). |
-| D16 | Quotas | A tenant has a **cap** (same quota names as projects) per cluster, checked in code next to the project quota, against the sum over its projects in that cluster. No fleet-wide sum. Tenant admins set project quotas freely; the cap still binds. Exceeding the cap needs `exceedQuota` on the `Tenant` (system-admin only). | Two levels of the existing mechanism, no new allocation model. |
-| D17 | Machine identity | **Workload federation**: a tenant trusts an external JWT issuer (GitHub Actions, GitLab CI, any OIDC workload issuer) or AWS STS identity, and maps matching claims to one of its service accounts; `POST /auth/exchange` returns a short-lived (≤ 1 h) service-account token. | CI uses the identity it already has; no long-lived glidex secret in a CI vault. |
-| D18 | Policies stay cluster-wide | Site policies (security.md §7.6) remain an admin-tenant feature. Tenants get roles and teams, not their own Cedar text. | Tenant-authored Cedar would need per-tenant validation scopes and lock-out rules; nothing asked for needs it yet. |
-| D19 | Two transports | Every tenancy operation is served over REST/JSON and gRPC from one service function (§12.1, [grpc.md](grpc.md)); only protocol-fixed endpoints (OIDC/OAuth browser redirects, SCIM) are HTTP-only. | The tenancy API is new, so it can be built on the service layer from the start instead of being ported later. |
-| D20 | No SAML | Connectors speak OIDC/OAuth 2.0, LDAP, PAM and SCIM only. An organization whose IdP offers only SAML connects through it with an OIDC front (its IdP's own OIDC app type, or a broker such as Dex or Keycloak) as a generic `oidc` connector. | Every IdP listed here also offers OIDC. XML signature verification is a long-running source of authentication bypasses, and the Rust SAML crates either wrap `xmlsec` or are young; not carrying it removes that risk and a milestone. |
-| D21 | Tenant creation | Only the admin tenant creates tenants (`system.tenants`). No self-service signup. | glidex runs for one operator and the organizations it hosts; signup would need abuse controls, email verification and quota defaults nobody asked for. |
-| D22 | Upgrade | Existing projects move into a `default` tenant; users with host roles move to the admin tenant (§15). | The tenant boundary (D3) holds from the first start after the upgrade, instead of everything sitting in the admin tenant until the operator splits it. |
-| D23 | Fleets | A tenant can span clusters. Clusters run by one operator form a **fleet** sharing one **tenant directory** (tenants, users, teams, connectors, tenant-level role links); resources stay in the cluster that runs them (§13.2). | Datacenters fail and partition independently, so each keeps its own control plane; the people and organizations using them are the same everywhere. |
-| D24 | One authority, async replicas | One cluster of the fleet holds the authoritative directory in its Raft store; the others keep read-only replicas fed by a change stream and forward directory writes to it. No Raft across clusters. | Raft over WAN links would make every write, in every datacenter, depend on the slowest link (clustering.md D1 assumes a LAN). Directory writes are rare; resource writes, which are frequent, stay local. |
-| D25 | Projects in one cluster | A project, its VMs, disks, credentials, networks, routers, project role links and service accounts belong to one cluster, fixed at creation (`cluster_id`). A tenant that wants a presence in two datacenters has a project in each. | A project's resources share L2 networks, local disks and quotas that only exist inside one cluster. |
-| D26 | Partitioned members keep serving | A member that can't reach the authority keeps serving existing users and all project operations; it refuses only directory writes and new users. Past `fleet.max_staleness` (default 1 h) without a sync it also refuses logins and personal tokens of users from **provisioned** connectors, since a deprovisioning (D9) may not have reached it. | A datacenter cut off from the authority shouldn't stop running workloads or lock everyone out; but "removed from the IdP" must not stay ineffective indefinitely. |
-| D27 | Members are trusted for their tenants only | A tenant lists the clusters it may use (`clusters`). The authority accepts a member's forwarded writes only for tenants placed on that member, never for the admin tenant's fleet-wide links; connector secrets go only to clusters the connector serves. | A compromised member cluster must not be able to rewrite the whole fleet's directory, or read every tenant's IdP secrets. |
-| D28 | Sessions and personal tokens per cluster | Logins, sessions and personal tokens stay per cluster (gxctl already keeps one profile per cluster, gxctl-auth.md). The user and its rights are the same everywhere. | Fleet-wide tokens would make every token check depend on the authority or on replication lag for revocation. One sign-on across clusters is a later step (§20). |
+| D1 | Tenant boundary | Every project, team, user, service account, guest credential and connector belongs to **exactly one** tenant. Projects never span tenants. | The tenant is the organizational boundary; Cedar expresses it as `resource in principal.tenant`. |
+| D2 | Users | A user belongs to one tenant (its *home tenant*). The same person in two organizations is two users. | Keeps identity keys, provisioning and deprovisioning per tenant; no cross-tenant identity merging to get wrong. |
+| D3 | Directory and clusters | Tenants, users, identities, teams, projects, guest credentials, project and tenant role links, connectors, federations and API tokens are **directory** records. VMs, disks, networks, routers, nodes, images, site policies and host role links are **cluster** records. | The people and organizations are the same everywhere; hardware and what runs on it are owned and operated per cluster. |
+| D4 | Projects span clusters | A project uses resources in every cluster that admits its tenant (D7). Each VM, disk, network and router is in one cluster and one project. Project role links apply in every cluster. | A service can run in several datacenters under one set of roles. L2 networks, disks and placement still stop at a cluster boundary. |
+| D5 | Operator tenants | Each cluster has one **operator tenant** (`Cluster.operator`), set when it joins the fleet. Only the operator's principals can hold host roles on it and pass the **host-scoped** actions there (every `host.*`, `image.manage`, cluster `policy.*`, `quota.exceed`, `node.drain`, `host.cluster*`), enforced by a `forbid` in `base.cedar`. An operator may run many clusters. | Hardware owned by different organizations stays under its owner's control; a role link given to anyone else by mistake hands out nothing. |
+| D6 | Directory owner | One tenant owns the directory (`owns_directory`): it creates tenants, flags operator tenants, assigns domains, admits clusters into the fleet. Its rights are **directory-scoped**; on a cluster it has only what that cluster's operator gives it, unless it is the operator. | Running the directory and running hardware are different jobs, possibly of different organizations. |
+| D7 | Admission, both sides | A tenant's projects can create resources on a cluster only when the cluster's operator **admits** the tenant (with a cap, D17) and the tenant **opts in** to the cluster. The cluster's site policies can refuse more (`useCluster`). The directory sends a cluster only the records of tenants admitted on both sides. | The operator decides whom it serves; the tenant decides which operators see its users and projects. |
+| D8 | Per-cluster site policies | Each cluster keeps its own site policies (security.md §7.6), written by its operator; the directory has its own for directory actions. A cluster's policies decide requests evaluated on that cluster only. | Each operator sets its own rules: accepted tenants, console network ranges, device passthrough. |
+| D9 | One login | Users log in at the directory, which is the fleet's OIDC provider. A cluster accepts directory-issued tokens addressed to it and checks them against its replica (§7). Cluster-local credentials remain for the operator's host accounts and break-glass. | One login for the user; no cluster ever holds a tenant's IdP secrets or a credential valid on another cluster. |
+| D10 | Directory replication | The directory is one glidex Raft cluster. Each fleet cluster keeps a read-only replica of the records it needs, fed by a filtered change stream. There is no Raft across clusters and no write forwarding from clusters to the directory: directory writes are made against the directory, with the caller's own credential. | Datacenters fail and partition independently; directory writes are rare, resource writes stay local, and a compromised cluster can't write the directory on anyone's behalf. |
+| D11 | Partitions | A cluster cut off from the directory keeps running workloads and serving credentials it can verify; new logins need the directory. Past `fleet.max_staleness` (set by the operator, default 1 h) the cluster stops accepting directory credentials, because a revocation may not have reached it; cluster-local credentials keep working. | Running workloads must not depend on a WAN link; "removed from the IdP" must not stay ineffective indefinitely. The operator chooses the balance for its cluster. |
+| D12 | Tenant administration | Role `tenant-admin` on a `Tenant`: projects, project quotas within each cluster's cap, teams, users, links, connectors, opt-ins. Role `tenant-auditor`: read everything in the tenant, its audit and usage. | Organizations run themselves without asking an operator or the directory owner. |
+| D13 | Delegated administration | Directory-owner principals may be linked to tenant or project roles of any tenant; these links are visible to the tenant and their actions are in its audit. Operator principals reach a tenant's resources **in their own cluster** through their host roles, also audited to the tenant. Nobody else crosses the tenant boundary. | The directory owner bootstraps and helps tenants; an operator supports what runs on its hardware; tenants can see both. |
+| D14 | Connectors | A **connector** is one configured external source, owned by a tenant. It may do any of: **login**, **provisioning** (users and groups created, updated and disabled ahead of login), **attributes** (SSH public keys, display name, email). Presets (Google, Entra, GitHub, JumpCloud) are fixed configurations of four protocols: PAM, LDAP, OIDC/OAuth 2.0, SCIM 2.0. | Every "provider" is a preset, not a new code path; the security-critical parsing exists once. |
+| D15 | Identity key | `(connector_id, subject)`, with the provider's **immutable** subject (`sub`, Entra `oid`, GitHub numeric id, LDAP `entryUUID`/`objectGUID`). Emails and login names are attributes, never keys. `unix:`/`pam:` keys keep the node suffix of clustering.md D13. | Emails get reassigned; GitHub logins get renamed. Keying on them lets a new owner of the name inherit someone's account. |
+| D16 | Group → team | Directory groups map to teams of the same tenant (`group_teams`), or auto-create one team per group (`group_mode: auto`, marked `managed_by`). Teams carry rights only through role links. Groups are never mapped to roles directly. | One rights mechanism (links), visible in one place. |
+| D17 | Quotas | Each admission carries the tenant's **cap on that cluster**, set by the operator. Tenant admins set each project's quota per cluster. Both are checked by the cluster at create, start and resize. No fleet-wide sum. Exceeding a cap needs `exceedQuota` from the cluster's operator. | Capacity belongs to whoever owns the hardware; the tenant splits its share among its projects. |
+| D18 | Deprovisioning | A user disabled or removed by provisioning is **disabled at once**: directory sessions and tokens revoked, managed team memberships dropped; clusters drop the user's sessions as the change arrives. The record stays until a tenant admin purges it. Connectors without provisioning clamp their users' tokens to `token_max_days` (default 30). | Closes the "removed from the IdP, still has a 365-day token" gap. |
+| D19 | Connector secrets | Stored **only in the directory**, encrypted with the directory's secrets key (KEK, held like the CA key). Write-only in the API. Never in a cluster's feed. SCIM bearer tokens are stored as SHA-256 only. | Clusters don't need them (logins happen at the directory, D9), so a cluster run by another organization never sees a tenant's IdP secrets. |
+| D20 | Owner and operator connectors | Connectors of the directory owner and of operator tenants must restrict who gets in (`jit: false`, non-empty `required_groups`, or provisioning) and require MFA by default (`require_mfa`, from `amr`/`acr`). | A connector that admits "anyone in the IdP" would make every employee of that organization an operator or directory administrator. |
+| D21 | PAM and peer identity | Host accounts belong to a cluster. A `pam` connector is created by that cluster's operator, is **bound to that cluster**, and may be placed in the operator's tenant or in a tenant admitted there (a lab giving a class's Unix group its own tenant). PAM and peer logins happen at that cluster and give sessions valid there only. `glidex-admin`/root resolve to the operator tenant. `glidex-authd`'s `allowed_groups` stays the outer fence. | Unix accounts exist on one cluster's hosts; they can't be a fleet-wide credential. |
+| D22 | Names | Directory objects of a tenant (projects, teams, service accounts, guest credentials) have names unique **per tenant**. Cluster objects (VMs per project; disks and project networks per tenant) have names unique per tenant **within the cluster**. Tenant slugs are unique in the fleet. Ids stay global UUIDs; flat REST paths stay (security.md decision 8). | Removes cross-tenant existence oracles without changing any id-based path. |
+| D23 | Grants | Operators grant host networks and PCI devices on their cluster to a **tenant** (`tenant_grants`) or to projects. Project networks are shared only between projects of the same tenant, within one cluster. | One grant per customer; cross-tenant L2 sharing stays an operator decision. |
+| D24 | Machine identity | **Workload federation** at the directory: a tenant trusts an external JWT issuer (GitHub Actions, GitLab CI, any OIDC workload issuer) or AWS STS identity and maps matching claims to one of its service accounts; `POST /auth/exchange` returns a short-lived (≤ 1 h) token for the clusters named. | CI uses the identity it already has; no long-lived glidex secret in a CI vault. |
+| D25 | No tenant-authored Cedar | Site policies belong to operators (per cluster) and the directory owner (directory). Tenants get roles and teams. | Tenant-authored Cedar would need per-tenant validation scopes and lock-out rules; nothing asks for it. |
+| D26 | Two transports | Every operation is served over REST/JSON and gRPC from one service function (§14.1, [grpc.md](grpc.md)); only protocol-fixed endpoints (OIDC/OAuth browser redirects, SCIM) are HTTP-only. | Built on the service layer from the start instead of ported later. |
+| D27 | No SAML | Connectors speak OIDC/OAuth 2.0, LDAP, PAM and SCIM only. A SAML-only IdP connects through an OIDC front (its own OIDC app type, or Dex/Keycloak) as a generic `oidc` connector. | Every IdP listed here offers OIDC. XML signature verification is a long-running source of authentication bypasses. |
+| D28 | Tenant creation | Only the directory owner creates tenants. No self-service signup. | Signup would need abuse controls, email verification and default quotas nobody asked for. |
+| D29 | Upgrade | An existing host becomes a fleet of one: it is the directory, tenant `admin` owns the directory and operates the cluster, existing projects move to a `default` tenant admitted there (§16). | The tenant boundary holds from the first start, and nothing a user does today changes. |
 
 ## 3. Threat model additions
 
 | Actor | Trusted for |
 |---|---|
-| Admin-tenant system administrators | Unchanged (security.md §3), plus every tenant: of their cluster when linked on a `Cluster`, of the fleet when linked on the `Fleet`. |
-| Tenant administrators | Their tenant's projects, users, teams and connectors, inside its cap. Nothing on hosts; nothing in other tenants. |
-| A tenant's directory (IdP, LDAP, SCIM client) | Asserting identities and group memberships **for that tenant only**. A compromised customer IdP yields at most that tenant's rights. |
-| The admin tenant's directory | Admin-tenant membership. Combined with role links, the cluster: hence D11. |
+| The directory and its owner | Identity for every tenant in the fleet: who a user is, which tenant, which roles. A compromised directory compromises every tenant's access to every cluster that trusts it, but not an operator's hosts (D5). |
+| An operator | Its clusters' hosts, and the resources of admitted tenants **located there** (D13). Not the directory, not other clusters, not tenants it doesn't admit. |
+| A cluster's control plane | Its own resources, and the replica of what the directory sends it: the records of tenants admitted on both sides (D7). It never receives connector secrets (D19) or a credential valid elsewhere (§7.3), and can't write the directory (D10). |
+| Tenant administrators | Their tenant's projects, users, teams, connectors and opt-ins. Nothing on hosts; nothing in other tenants. |
+| A tenant's IdP (OIDC, LDAP, SCIM client) | Identities and group memberships **for that tenant only**. A compromised customer IdP yields at most that tenant's rights. |
+| The owner's and operators' IdPs | Their tenants' membership; combined with role links, the directory or a cluster: hence D20. |
 | CI issuers trusted by a federation | Claims matching that federation's rules, mapped to one service account. |
-| The fleet's authority cluster | The directory of every tenant in the fleet. |
-| A member cluster | Its own resources, and directory writes for the tenants placed on it (D27). It holds a replica of the directory and the secrets of the connectors that serve it. |
 
-New assets: connector secrets, SCIM tokens, the secrets KEK, provisioning
-state. New boundaries: IdP → control plane (SCIM pushes and pull-sync
-responses are untrusted input), and tenant ↔ tenant inside one cluster.
+New assets: connector secrets, SCIM tokens, the directory's signing keys
+and KEK, provisioning state, admissions. New boundaries: IdP →
+directory (SCIM pushes and pull-sync responses are untrusted input),
+directory → cluster (the feed), and tenant ↔ tenant and operator ↔
+operator inside one fleet.
 
-**Invariant:** nothing a tenant configures (connector, mapping, team,
-link, federation rule) can produce a principal outside that tenant or
-an action in the host-scoped group.
+**Invariants:**
+- nothing a tenant configures (connector, mapping, team, link,
+  federation rule, opt-in) can produce a principal outside that tenant,
+  or an action in the host-scoped or directory-scoped groups;
+- nothing an operator configures on its cluster affects another
+  cluster or the directory;
+- a credential a cluster receives is valid on that cluster only.
 
 ## 4. Data model
 
-New replicated tables (added to `store/db.rs::tables!`): `tenants`,
-`connectors`, `connector_secrets`, `connector_sync` (cursor and last
-result per connector), `scim_tokens`, `federations`. Every table is
-marked **fleet** (part of the directory, §13.2) or **cluster**
-(`TableId::scope()`), so the change stream and the forwarding of
-directory writes know what to carry. Changed records:
+Every table is marked **directory** or **cluster** (`TableId::scope()`),
+so the feed knows what to carry. New tables: `tenants`, `connectors`,
+`connector_secrets`, `connector_sync`, `scim_tokens`, `federations`,
+`fleet_clusters` (directory), `admissions`, `feed_state` (cluster).
 
-| Record | Change |
-|---|---|
-| `Tenant` (new) | `id` (UUID; `admin` for the admin tenant), `slug` (`[a-z0-9-]{1,32}`, unique in the fleet), `display_name`, `admin: bool`, `suspended: bool`, `domains: [String]`, `clusters: [cluster_id] \| "all"` (D27), `quotas` (cap per cluster: a default plus overrides by cluster id, D16), `project_defaults` (quotas for new projects), `limits {projects, users, teams, connectors}`, `created_at`. |
-| `Project` | + `tenant_id` and `cluster_id` (both immutable, D25). Name unique per tenant within its cluster. |
-| `User` | + `tenant_id` (immutable), `managed_by: Option<connector_id>`, `external_id` (SCIM), `email`, `disabled_reason` (`manual` \| `deprovisioned` \| `tenant_suspended`). |
-| `Identity` | `provider` becomes `unix` \| `pam` \| `conn:<connector_id>`; old `oidc:<issuer>` rows are re-keyed at migration. |
-| `Team` | + `tenant_id`, `managed_by: Option<connector_id>`, `external_id`. Name unique per tenant. |
-| `TeamMember.source` | `manual` \| `connector:<id>` (old `pam`/`oidc` map to the migrated connectors). |
-| `Token` (service account) | + `tenant_id` (from its project, or a tenant-level service account). Project service accounts are cluster-scoped; tenant-level ones are in the directory. |
-| `Network`, `PciDevice` | + `tenant_grants: [tenant_id]`. |
-| `AuditEntry` | + `tenant` (the actor's) and `target_tenant` (the resource's). |
-
-`Connector`:
+| Record | Scope | Change |
+|---|---|---|
+| `Tenant` (new) | directory | `id` (UUID; `admin` for the upgraded host's tenant), `slug` (`[a-z0-9-]{1,32}`, unique in the fleet), `display_name`, `owns_directory: bool`, `operator: bool`, `suspended: bool`, `tags: [String]` (set by the directory owner; usable in site policies), `domains: [String]`, `clusters: [cluster_id]` (opt-ins, D7), `limits {projects, users, teams, connectors}`, `created_at`. |
+| `FleetCluster` (new) | directory | `cluster_id`, `name`, `operator` (tenant id), `endpoints` (API and UI URLs), `ca_fingerprint`, `admitted: [tenant_id]` as the cluster last reported it, `feed_revision`, `joined_at`. |
+| `Admission` (new) | cluster | `tenant_id`, `cap` (quotas on this cluster, D17), `status` (`admitted` \| `suspended`), `admitted_by`, `at`. Written by the cluster's operator; the cluster reports the list to the directory, which filters the feed by it and by the tenant's opt-ins. |
+| `Project` | directory | + `tenant_id` (immutable), `quotas: {cluster_id → quotas}` (D17). Name unique per tenant. No cluster. |
+| `Vm`, `Disk`, `Network`, `Router` | cluster | + nothing new: `project_id` already; the cluster is the one holding the record. |
+| `Credential` (guest) | directory | moves from cluster to directory: a project's guest credentials serve its VMs in every cluster. Key `(project_id, username)` as today. |
+| `User` | directory | + `tenant_id` (immutable), `managed_by`, `external_id`, `email`, `disabled_reason`. |
+| `Identity` | directory | `provider` becomes `conn:<connector_id>`, or `pam`/`unix` with the cluster in the subject (`alice@<node>`, D21); old `oidc:<issuer>` rows are re-keyed at migration. |
+| `Team`, `TeamMember` | directory | + `tenant_id`, `managed_by`, `external_id`; `source: manual \| connector:<id>`. |
+| `LinkRecord` | both | links on a `Tenant`, a `Project` or the `Fleet` are directory records; links on a `Cluster` or `Host` are records of that cluster. |
+| `Token` | directory | personal and service-account API tokens (`gxt_`) + `tenant_id`, `clusters: [cluster_id]` (where it is valid; §7.4). |
+| `Network`, `PciDevice` | cluster | + `tenant_grants: [tenant_id]`. |
+| `AuditEntry` | both | + `tenant` (actor's) and `target_tenant` (resource's). |
+| `Connector` | directory | below. |
 
 ```json
 {
@@ -123,6 +153,7 @@ directory writes know what to carry. Changed records:
   "token_max_days": 30,
   "settings": { "tenant_id": "…", "client_id": "…" },
   "secrets": { "client_secret": { "set": true, "updated_at": 1760000000 } },
+  "cluster": null,                  // pam only: the cluster it is bound to (D21)
   "source": "api",                  // api | file
   "created_at": 1760000000
 }
@@ -135,80 +166,140 @@ only whether each is set and when.
 
 | Kind | Login | Provisioning | Attributes | Subject | Notes |
 |---|---|---|---|---|---|
-| `pam` | `glidex-authd` | JIT at login | `~/.ssh/*.pub` via authd | `<name>@<node>` | D12. Admin-created only. |
+| `pam` | `glidex-authd` on the bound cluster | JIT at login | `~/.ssh/*.pub` via authd | `<name>@<node>` | D21. Created by the cluster's operator. |
 | `ldap` | simple bind over LDAPS / StartTLS (never plain) | pull: users and groups by filter | `sshPublicKey`, `mail`, `displayName` | `entryUUID` / `objectGUID` | AD, FreeIPA, OpenLDAP, JumpCloud LDAP-as-a-Service. Bind with the user's DN after a search with the service account; password never stored. |
 | `oidc` | Authorization Code + PKCE; device grant for gxctl | JIT; optional SCIM | claims | `sub` | Generic: Keycloak, Okta, Authentik, Auth0, Dex, Zitadel. Today's `auth.oidc` behavior (security.md §5.4) unchanged. |
-| `google` | OIDC preset (`https://accounts.google.com`); `hd` must equal one of `settings.domains` | pull: Admin SDK Directory API (service account with domain-wide delegation, read-only scopes `admin.directory.user.readonly`, `admin.directory.group.readonly`) | custom schema field for SSH keys (optional) | `sub` | Google ID tokens carry no groups; group mapping needs pull sync. Without it, `group_teams` is refused. |
-| `azure` | OIDC preset (`https://login.microsoftonline.com/<tid>/v2.0`); `tid` checked | SCIM (Entra enterprise app provisioning) or pull via Microsoft Graph (`User.Read.All`, `GroupMember.Read.All`, delta queries) | — | `oid` (not `sub`, which is per-app pairwise) | Group overage (`_claim_names` instead of `groups` past 200 groups) is resolved through Graph when pull is configured, otherwise the login is refused with a clear error rather than mapping no groups. |
-| `github` | OAuth 2.0 web flow and device flow (GitHub is not OIDC) | pull: org members and teams via a GitHub App installation | `GET /user/{id}/keys`-style public SSH keys | numeric user id | Login requires membership of `settings.org` (checked at every login and sync). Team mapping by team id. |
+| `google` | OIDC preset (`https://accounts.google.com`); `hd` must equal one of `settings.domains` | pull: Admin SDK Directory API (service account with domain-wide delegation, read-only scopes) | custom schema field for SSH keys (optional) | `sub` | Google ID tokens carry no groups; group mapping needs pull sync. Without it, `group_teams` is refused. |
+| `azure` | OIDC preset (`https://login.microsoftonline.com/<tid>/v2.0`); `tid` checked | SCIM (Entra enterprise app provisioning) or pull via Microsoft Graph (delta queries) | — | `oid` (not `sub`, which is per-app pairwise) | Group overage (`_claim_names` past 200 groups) is resolved through Graph when pull is configured; otherwise the login is refused rather than mapping no groups. |
+| `github` | OAuth 2.0 web flow and device flow (GitHub is not OIDC) | pull: org members and teams via a GitHub App installation | public SSH keys | numeric user id | Login requires membership of `settings.org` (checked at every login and sync). Team mapping by team id. |
 | `jumpcloud` | OIDC preset (`https://oauth.id.jumpcloud.com`) | SCIM (JumpCloud's generic SCIM app) or LDAP | via LDAP `sshPublicKey` | `sub` | |
 | `scim` | — (provisioning only; pair with a login connector via `login_connector`) | SCIM 2.0 push | — | SCIM `externalId` | For IdPs that provision by SCIM but log in through another connector of the same tenant. |
 
-**Presets.** `google`, `azure`, `github` and `jumpcloud` are stored
-with their kind so the UI can show the right fields and checks, but
-their code is `oidc` or OAuth 2.0 plus a short validation and
-claim-mapping module. Adding a preset (Okta, OneLogin, Keycloak) is a
-settings schema and a claim map, not a protocol.
+**Presets.** `google`, `azure`, `github` and `jumpcloud` are stored with
+their kind so the UI can show the right fields and checks, but their
+code is `oidc` or OAuth 2.0 plus a short validation and claim-mapping
+module. Adding a preset (Okta, OneLogin, Keycloak) is a settings schema
+and a claim map, not a protocol.
 
 **AWS.** IAM Identity Center offers SAML, not OIDC, to applications like
-glidex (D20). AWS users log in through the IdP that Identity Center
+glidex (D27). AWS users log in through the IdP that Identity Center
 itself federates from (Entra, Okta, Google, JumpCloud), connected
-directly. AWS *workload* identity (STS) is covered by federation (§8).
+directly. AWS *workload* identity (STS) is covered by federation (§9).
 
-**Callback and metadata URLs** are per connector:
-`https://<ui>/api/auth/c/<connector_id>/callback` (OIDC/OAuth) and
-`/scim/v2/c/<id>/` (SCIM base). The connector page shows
-them so the tenant admin can paste them into the IdP.
+**URLs** are per connector, on the directory:
+`https://<directory>/api/auth/c/<connector_id>/callback` (OIDC/OAuth) and
+`/scim/v2/c/<id>/` (SCIM). The connector page shows them so the tenant
+admin can paste them into the IdP.
 
 **Test.** `POST /connectors/{id}/test` checks what can be checked
-without a user: discovery and JWKS fetch, LDAP bind with the service
-account, Directory/Graph/GitHub API access with
-the stored credentials, and reports per-step results. Never returns
-secrets or directory contents beyond counts.
+without a user (discovery and JWKS, LDAP bind with the service account,
+Directory/Graph/GitHub API access) and reports per-step results. Never
+returns secrets or directory contents beyond counts.
 
-## 6. Authentication flow
+## 6. Logging in at the directory
 
-1. **Discover.** `POST /auth/discover {hint}`: `hint` is a tenant slug or
-   an email address. Returns `{tenant: {slug, display_name},
-   connectors: [{id, kind, display_name}]}` for an exact slug or an
-   assigned domain, otherwise `{connectors: []}` after the same delay.
-   Slugs are not secrets (they are in URLs), but unknown domains don't
-   reveal which tenants exist.
+1. **Discover.** `POST /auth/discover {hint}`: a tenant slug or an email
+   address. Returns `{tenant: {slug, display_name}, connectors: [{id,
+   kind, display_name}]}` for an exact slug or an assigned domain,
+   otherwise `{connectors: []}` after the same delay. Slugs are not
+   secrets (they are in URLs), but unknown domains don't reveal which
+   tenants exist.
 2. **Login** through the chosen connector. Each connector produces an
    `ExternalIdentity {connector_id, subject, email, name, groups,
-   mfa: bool}`. The common path then:
-   - refuses if the connector or its tenant is disabled/suspended;
+   mfa}`. The common path then:
+   - refuses if the connector or its tenant is disabled or suspended;
    - looks up `(connector_id, subject)`;
    - if absent: JIT-creates the user in the connector's tenant when
      `jit` and `required_groups`/domain rules pass; refused otherwise
      (same error and timing as a wrong password);
    - refuses `require_mfa` connectors without `mfa`;
-   - syncs managed team memberships from `groups` (D8);
-   - creates the session or token, stamped with `tenant_id`.
-3. **gxctl.** `gxctl auth login --tenant <slug> [--connector <id>]`
-   runs the device grant (OIDC presets, GitHub), or the PAM/LDAP
-   username-password token flow (`POST /auth/token` with `connector`).
-   Every login connector has one of the two, so the CLI never needs a
-   browser hand-off of its own. Profiles gain `tenant`
-   ([gxctl-auth.md](gxctl-auth.md)).
-4. `GET /auth/methods` and `GET /auth/server-info` take `?tenant=`; with
-   none they list only the admin tenant's PAM method (the current
-   behavior on a standalone host).
+   - syncs managed team memberships from `groups` (D16);
+   - creates a **directory session** (browser) or a refresh token
+     (gxctl), stamped with `tenant_id`, `auth_time` and `amr`.
+3. **Domains** are assigned to tenants by the directory owner, not
+   self-claimed: no DNS verification flow, and no tenant can capture
+   another organization's domain.
 
-`Principal` gains `tenant_id`; Cedar's `Auth` context gains `tenant`
-and `mfa: Bool`, so site policies can require MFA for sensitive actions
-(e.g. `forbid … host.cluster.critical unless context.auth.mfa`).
+`Principal` gains `tenant_id`; Cedar's `Auth` context gains `mfa: Bool`,
+so site policies can require MFA (e.g. `forbid … host.cluster.critical
+unless context.auth.mfa`).
 
-## 7. Provisioning
+## 7. Using a cluster
 
-### 7.1 SCIM 2.0 (push)
+### 7.1 Browser
 
-- Base `https://<cp>/scim/v2/c/<connector_id>/`, TLS only, on the
-  control plane's listeners (not the UI). Authenticated by a bearer
-  token `gxs_<base62>` minted by `POST /connectors/{id}/scim-tokens`
-  (shown once, SHA-256 stored, required expiry ≤ 1 year, several at
-  once for rotation). The token authorizes exactly this connector; it
-  is not a Cedar principal and can do nothing else.
+The directory is an OIDC provider; every fleet cluster is a client of
+it, registered when the cluster joins (§12).
+1. A browser at a cluster's UI without a session is sent to the
+   directory (Authorization Code + PKCE, `client_id` = the cluster).
+   A user who already has a directory session isn't asked again.
+2. The cluster receives an ID token with `aud` = its cluster id, `sub`
+   = the user id, `tenant`, `sid`, `auth_time`, `amr`; it checks the
+   signature against the directory's keys (in its replica, §12), the
+   audience, and that the user is in its replica, enabled, of a tenant
+   it admits.
+3. It creates a **cluster session** (today's session, security.md §5.5:
+   idle 30 min, absolute 12 h, bound to `sid`). Logging out at the
+   directory or revoking `sid` reaches the cluster on the feed and ends
+   its sessions.
+
+### 7.2 gxctl
+
+`gxctl auth login --directory <url> --tenant <slug>` runs the device
+grant (OIDC presets, GitHub) or the password flow (LDAP) at the
+directory and keeps a **refresh token** for it in the profile. Before
+calling a cluster, gxctl gets an **access token** for that cluster from
+the directory: a JWT with `aud` = the cluster id, the same claims as
+§7.1, valid `access_token_ttl` (default 1 h). The cluster verifies it
+offline. One login serves every cluster; profiles gain `directory` and
+list the clusters the tenant uses ([gxctl-auth.md](gxctl-auth.md)).
+
+### 7.3 Why audience-bound
+
+A cluster receives only credentials addressed to it (`aud`), and the
+directory accepts only credentials addressed to the directory. A
+cluster, even a compromised one, can't replay what it receives to
+another cluster or to the directory; refresh tokens never leave the
+client and the directory.
+
+### 7.4 API tokens
+
+Personal and service-account tokens (`gxt_`, security.md §5.5) are
+directory records valid on the clusters they list (`clusters`, default
+the one they were created for; `all` must be asked for). Their hashes
+are in the feed of those clusters only, so a cluster verifies them
+offline. A token listing several clusters can be replayed between them
+by a compromised one of them: the reason the default is one cluster.
+On a fleet of one this is exactly today's token.
+
+### 7.5 Cluster-local credentials
+
+Peer identity on `api.sock` and PAM logins (D21) stay on the cluster
+that has those accounts and give sessions valid there only. Root and
+`glidex-admin` resolve to the operator tenant (break-glass,
+security.md §5.2, clustering.md D14 unchanged).
+
+### 7.6 Partitions (D11)
+
+| Lost | Still works | Stops |
+|---|---|---|
+| Cluster ↔ directory | Running VMs, all project operations; cluster sessions until they end; access tokens until `exp`; API tokens; cluster-local credentials | New cluster sessions (they need an ID token, which needs the directory), feed updates |
+| Past `fleet.max_staleness` | Cluster-local credentials, running VMs | Every directory credential on that cluster, because a revocation may be missing |
+| User ↔ directory | Credentials the user already holds | New logins and new access tokens |
+
+Every response carries `X-Glidex-Directory-Lag` (seconds) when the
+replica is behind, and `GET /fleet` reports it.
+
+## 8. Provisioning (at the directory)
+
+### 8.1 SCIM 2.0 (push)
+
+- Base `https://<directory>/scim/v2/c/<connector_id>/`, TLS only, on the
+  directory's API listeners. Authenticated by a bearer token
+  `gxs_<base62>` minted by `POST /connectors/{id}/scim-tokens` (shown
+  once, SHA-256 stored, expiry ≤ 1 year, several at once for rotation).
+  The token authorizes exactly this connector; it is not a Cedar
+  principal.
 - Supported: `/Users` and `/Groups` with `GET` (filters `userName eq`,
   `externalId eq`, `displayName eq` only), `POST`, `PUT`, `PATCH` (the
   `add`/`replace`/`remove` operations Entra, Okta and JumpCloud send,
@@ -216,51 +307,45 @@ and `mfa: Bool`, so site policies can require MFA for sensitive actions
   `DELETE`; `/ServiceProviderConfig`, `/Schemas`, `/ResourceTypes`. No
   bulk, sort, or `/Me`. Pagination by `startIndex`/`count` ≤ 200.
 - Mapping: `externalId` → `User.external_id`, `userName` → login
-  attribute, `active: false` or `DELETE` → D9 disable, group membership
+  attribute, `active: false` or `DELETE` → D18 disable, group membership
   → managed team membership. Unknown attributes are accepted and
-  ignored. Groups create managed teams only with `group_mode: auto`;
-  with `mapped`, unknown groups are stored as connector state and only
-  mapped groups touch teams.
-- Limits: 20 requests/s per connector, 1 MiB bodies, tenant `limits.users`
-  and `limits.teams` enforced with SCIM `409`/`400` errors. Every write
-  is audited as `system:scim:<connector_id>` with the tenant.
+  ignored. Groups create managed teams only with `group_mode: auto`.
+- Limits: 20 requests/s per connector, 1 MiB bodies, tenant `limits`
+  enforced with SCIM `409`/`400` errors. Every write is audited as
+  `system:scim:<connector_id>` with the tenant.
 
-### 7.2 Pull sync
+### 8.2 Pull sync
 
-- Kinds `ldap`, `google`, `azure` (Graph), `github`. Runs on the cluster
-  leader as a controller (`directory_sync`), every `sync.interval`
-  (default 15 min, minimum 5) and on `POST /connectors/{id}/sync`.
-- Each run computes a diff against the connector's managed users and
-  teams and commits it as one write set (clustering.md D2), in chunks
-  of ≤ 500 changes. Delta tokens (Graph delta, LDAP `modifyTimestamp`)
-  are kept in `connector_sync`; a full resync runs daily.
-- **Safety stop:** a run that would disable more than
-  `sync.max_disable` (default 10 % of managed users, at least 5) is not
-  applied; the connector is marked `sync_blocked` and the tenant admin
-  confirms or fixes it. Why: a wrong filter or an expired credential
-  returning an empty list must not lock out a whole tenant.
-- An API error is never read as "no users"; the run fails and keeps
-  the previous state.
+- Kinds `ldap`, `google`, `azure` (Graph), `github`. A controller on the
+  directory's leader (`directory_sync`), every `sync.interval` (default
+  15 min, minimum 5) and on `POST /connectors/{id}/sync`.
+- Each run diffs the connector's managed users and teams and commits
+  the diff as write sets of ≤ 500 changes. Delta tokens (Graph delta,
+  LDAP `modifyTimestamp`) are kept in `connector_sync`; a full resync
+  runs daily.
+- **Safety stop:** a run that would disable more than `sync.max_disable`
+  (default 10 % of managed users, at least 5) is not applied; the
+  connector is marked `sync_blocked` until the tenant admin confirms or
+  fixes it. An API error is never read as "no users".
 
-### 7.3 Ownership of fields
+### 8.3 Ownership of fields
 
 A managed user's display name, email, `external_id` and disabled state
 belong to its connector: manual edits return `409 managed_by_connector`.
 Role links, default project and manual team memberships stay the
-tenant's. Disconnecting a connector (`DELETE`) offers two outcomes:
-disable its users (default) or detach them (they become manual users
-without a login until linked to another connector).
+tenant's. Deleting a connector disables its users (default) or detaches
+them.
 
-## 8. Workload federation
+## 9. Workload federation (at the directory)
 
 ```json
 {
   "id": "…", "tenant_id": "…", "kind": "jwt",
   "issuer": "https://token.actions.githubusercontent.com",
-  "audience": "glidex:<cluster id>",
+  "audience": "glidex:<directory id>",
   "rules": [
     { "match": { "repository": "cmkl/infra", "ref": "refs/heads/main" },
-      "service_account": "<token id>", "ttl_secs": 900 }
+      "service_account": "<token id>", "clusters": ["<cluster id>"], "ttl_secs": 900 }
   ]
 }
 ```
@@ -268,589 +353,564 @@ without a login until linked to another connector).
 - Kinds: `jwt` (any OIDC-style workload issuer: GitHub Actions, GitLab,
   Kubernetes service-account issuers, Azure managed identity, Google
   service-account ID tokens) and `aws` (a presigned
-  `sts:GetCallerIdentity` request, verified by the control plane calling
-  STS; match on account and role ARN).
-- `POST /auth/exchange` (RFC 8693 shape: `subject_token`,
-  `subject_token_type`) → `{access_token, expires_in}`: a token acting
-  as the mapped service account, at most `ttl_secs` (≤ 3600), not
-  renewable, audited with the matched rule and the external subject.
-- Rules match on exact claim values only (no globs on `sub`); every
-  rule must name at least one of `repository`/`project_path`/`sub`/
-  role ARN, so "any workflow on GitHub" can't be written. The service
+  `sts:GetCallerIdentity` request, verified by calling STS; match on
+  account and role ARN).
+- `POST /auth/exchange` (RFC 8693 shape) → access tokens (§7.2) acting
+  as the mapped service account, for the rule's clusters, at most
+  `ttl_secs` (≤ 3600), not renewable, audited with the rule and the
+  external subject.
+- Rules match exact claim values only; every rule must name at least
+  one of `repository`/`project_path`/`sub`/role ARN. The service
   account must belong to the federation's tenant.
-- Admin-tenant federations need `system.identity` + step-up.
 
-## 9. Authorization changes (security.md §7)
+## 10. Authorization (security.md §7)
 
-### 9.1 Schema
+### 10.1 Schema
 
 ```cedarschema
 namespace Glidex {
   type Auth = {
     method: String, transport: String, age_secs: Long,
-    source_ip?: ipaddr, tenant: Tenant, mfa: Bool,
+    source_ip?: ipaddr, mfa: Bool,
   };
+  // Every request is decided by one cluster (or the directory, which
+  // is a cluster too); `cluster` is that one.
+  type Ctx = { auth: Auth, cluster: Cluster };
+  type ProjectCtx = { auth: Auth, cluster: Cluster, project: Project };
+  type NetworkCtx = { auth: Auth, cluster: Cluster, network: Network };
 
-  // A standalone cluster is a fleet of one (§13.2).
   entity Fleet;
-  entity Cluster in [Fleet];
+  entity Tenant in [Fleet] {
+    owns_directory: Bool, operator: Bool, suspended: Bool,
+    tags: Set<String>, clusters: Set<Cluster>,
+  };
+  entity Cluster in [Fleet] { operator: Tenant, admitted: Set<Tenant> };
   entity Host in [Cluster];
-  entity Tenant in [Fleet] { admin: Bool, suspended: Bool };
   entity Team in [Tenant] { tenant: Tenant };
   entity User in [Team, Tenant] { disabled: Bool, tenant: Tenant };
   entity Token in [Tenant] { owner?: User, expired: Bool, tenant: Tenant };
-  // Each project is in its tenant and in the one cluster that runs it (D25).
-  entity Project in [Tenant, Cluster] { tenant: Tenant, cluster: Cluster };
   entity Connector in [Tenant] { tenant: Tenant };
-  // Vm, Disk, Credential: unchanged (in [Project]).
+  // Projects and guest credentials are tenant records, in no cluster (D3, D4).
+  entity Project in [Tenant] { tenant: Tenant };
+  entity Credential in [Project] { project: Project };
+  // What runs somewhere is in its project and in its cluster.
+  entity Vm in [Project, Cluster] { project: Project, cluster: Cluster };
+  entity Disk in [Project, Cluster] { project: Project, cluster: Cluster };
   entity Network in [Cluster, Project] {
     project?: Project, all_projects: Bool, grants: Set<Project>,
     tenant_grants: Set<Tenant>, shares: Set<Project>,
   };
   entity PciDevice in [Host] { grants: Set<Project>, tenant_grants: Set<Tenant> };
 
-  // Marker groups (like "step-up"): every concrete action is in exactly
-  // one of tenant-scoped, host-scoped or shared (route-coverage test).
+  // Marker groups: every concrete action is in exactly one of these
+  // (route-coverage test).
   action "tenant-scoped";
   action "host-scoped";
+  action "directory-scoped";
   action "shared";
 
-  action "role.tenant-admin" in ["role.system-admin"];
-  action "role.tenant-auditor" in ["role.tenant-admin", "role.auditor"];
-  action "role.owner" in ["role.tenant-admin"];          // and system-admin, as today
-  action "role.viewer" in ["role.operator", "role.auditor", "role.tenant-auditor"];
+  // Directory roles, linked on the Fleet.
+  action "role.directory-admin";
+  action "role.directory-auditor" in ["role.directory-admin"];
+  action "directory.read" in ["role.directory-auditor", "directory-scoped"];
+  action "directory.tenants", "directory.clusters", "directory.policy"
+    in ["role.directory-admin", "directory-scoped", "step-up"];
 
+  // Tenant roles, linked on a Tenant.
+  action "role.tenant-admin";
+  action "role.tenant-auditor" in ["role.tenant-admin"];
+  action "role.owner" in ["role.tenant-admin", "role.system-admin"];
+  action "role.viewer" in ["role.operator", "role.auditor", "role.tenant-auditor"];
   action "tenant.read", "tenant.audit", "tenant.usage" in ["role.tenant-auditor", "tenant-scoped"];
-  action "tenant.members", "tenant.projects" in ["role.tenant-admin", "tenant-scoped"];
+  action "tenant.members", "tenant.projects", "tenant.clusters" in ["role.tenant-admin", "tenant-scoped"];
   action "tenant.directories" in ["role.tenant-admin", "tenant-scoped", "step-up"];
-  action "system.tenants" in ["role.system-admin", "host-scoped"];
+
+  // Cluster roles (auditor, image-admin, net-admin, system-admin), linked
+  // on a Cluster or Host, keep their groups and gain the host-scoped
+  // marker; system-admin also gets admissions:
+  action "cluster.admissions" in ["role.system-admin", "host-scoped"];
+
+  // Every resource created on a cluster (compound request, §10.4).
+  action useCluster in ["shared"]
+    appliesTo { principal: [User, Token], resource: [Cluster], context: ProjectCtx };
 
   // Existing permission groups gain a marker, e.g.:
-  //   "vm.read", "disk.read", … in [..., "tenant-scoped"]
+  //   "vm.read", "disk.read", "credential.*", … in [..., "tenant-scoped"]
   //   "host.read", "host.network", "host.cluster", "image.manage",
-  //   "policy.*", "system.*", "quota.exceed", "node.drain" in [..., "host-scoped"]
+  //   "policy.*", "quota.exceed", "node.drain" in [..., "host-scoped"]
   //   readImage, readNetwork, useNetwork, usePciDevice in ["shared"]
+  // system.identity, system.projects and system.tenants are replaced
+  // by the directory and tenant groups above.
 }
 ```
 
-`Team in [Tenant]` and `User in [Tenant]` make a link on a `Tenant`
-cover its teams' members; `Project in [Tenant, Cluster]` makes it cover
-its projects in every cluster. A system role linked on a `Cluster`
-covers that cluster's hosts and every tenant's projects there, and
-nothing in other clusters; linked on the `Fleet` it covers everything.
-Existing links on `Cluster` keep their meaning after the upgrade.
+How links reach:
+- a project role on a `Project` covers its credentials and its VMs and
+  disks **in every cluster** (`Vm in [Project, …]`);
+- a tenant role on a `Tenant` covers all its projects;
+- a cluster role on a `Cluster` covers that cluster's hosts and the
+  resources **located in it** (`Vm in [… , Cluster]`), of every tenant,
+  but no `Project` or `Credential` record (those are in no cluster);
+- a directory role on the `Fleet` covers directory-scoped actions.
 
-### 9.2 Base policies (added)
+### 10.2 Base policies (added)
 
 ```cedar
-// D1: outside the admin tenant, everything tenant-scoped stays home.
+// D1, D13: a tenant's things are its own; the directory owner may be
+// linked in (delegation); an operator reaches what runs on its cluster.
 @id("base.tenant-boundary")
 forbid (principal, action in Glidex::Action::"tenant-scoped", resource)
-unless { principal.tenant.admin || resource in principal.tenant };
+unless {
+  resource in principal.tenant ||
+  principal.tenant.owns_directory ||
+  (principal.tenant == context.cluster.operator && resource in context.cluster)
+};
 
-// D3: the physical cluster belongs to the admin tenant.
-@id("base.host-admin-tenant")
+// D5: a cluster's hosts belong to its operator.
+@id("base.host-operator")
 forbid (principal, action in Glidex::Action::"host-scoped", resource)
-unless { principal.tenant.admin };
+unless { principal.tenant == context.cluster.operator };
 
-// A suspended tenant's principals can do nothing; its resources can
-// only be read and managed by the admin tenant.
+// D6: the directory belongs to its owner.
+@id("base.directory-owner")
+forbid (principal, action in Glidex::Action::"directory-scoped", resource)
+unless { principal.tenant.owns_directory };
+
+// D7: admitted by the operator and opted in by the tenant.
+@id("base.admission")
+forbid (principal, action == Glidex::Action::"useCluster", resource)
+unless {
+  resource.admitted.contains(context.project.tenant) &&
+  context.project.tenant.clusters.contains(resource)
+};
+// Who may create is decided by createVm & co.; this only checks the place.
+@id("base.cluster-use")
+permit (principal, action == Glidex::Action::"useCluster", resource);
+
+// A suspended tenant's principals can do nothing.
 @id("base.tenant-suspended")
 forbid (principal, action, resource)
 when { principal.tenant.suspended };
 
-// D15: project networks are shared within one tenant only.
+// D23: project networks are shared within one tenant only.
 @id("base.share-same-tenant")
 forbid (principal, action == Glidex::Action::"offerNetworkShare", resource)
 when { resource has project && resource.project.tenant != context.project.tenant };
 ```
 
 `base.network-grant` gains `|| resource.tenant_grants.contains(context.project.tenant)`,
-and `base.pci-grant` the same. Break-glass (`unix:glidex-admin`)
-principals are admin-tenant users, so these policies don't change it.
+and `base.pci-grant` the same. An operator's site policy narrows
+admission further, e.g.
 
-### 9.3 Rules kept in code
+```cedar
+@id("site.edu-only")
+forbid (principal, action == Glidex::Action::"useCluster", resource)
+unless { context.project.tenant.tags.contains("edu") };
+```
 
-- **Link boundary.** Creating a link checks that the link's principal
-  is in the resource's tenant, or in the admin tenant (D4). Cedar
-  can't see the *target* principal of a link request without a
-  dedicated action shape; a code check next to `project.members` is
-  simpler and is covered by tests.
-- **Tenant cap** (D16), next to `tenancy.rs::overruns`.
-- **Per-tenant name uniqueness** (D14), in the same ReDB transaction as
-  the create.
-- **Entities per request** now include the principal's `Tenant` (its
-  `admin` and `suspended` attributes) and the resource's tenant. A
-  missing tenant entity fails closed (Cedar evaluation error → Deny).
+### 10.3 Rules kept in code
 
-### 9.4 Roles
+- **Link boundary.** A link on a `Tenant` or `Project` takes a
+  principal of that tenant, or of the directory owner (D13). A link on
+  a `Cluster` or `Host` takes a principal of the cluster's operator. A
+  link on the `Fleet` takes a principal of the directory owner. Checked
+  where the link is written (directory or cluster).
+- **Caps and project quotas** (D17), next to `tenancy.rs::overruns`, on
+  the cluster.
+- **Names** (D22), in the same transaction as the create.
+- **Entities per request** include the principal's `Tenant`, the
+  deciding `Cluster` (with `operator` and `admitted`), and the
+  resource's project and tenant. A missing entity fails closed.
+
+### 10.4 Compound requests (security.md §7.4)
+
+Every create of a VM, disk, network or router on a cluster adds
+`useCluster` on that `Cluster` with the project in the context; so does
+a start (a suspended admission refuses starts but not stops or
+deletes).
+
+### 10.5 Roles
 
 | Role | Link resource | Includes |
 |---|---|---|
-| `tenant-auditor` | tenant | `viewer` in every project of the tenant, `tenant.read`, `tenant.audit`, `tenant.usage` |
-| `tenant-admin` | tenant | `owner` in every project, `tenant-auditor`, `tenant.members`, `tenant.projects`, `tenant.directories` |
-| project roles | project | unchanged |
-| host roles | cluster / host | unchanged; links refused for non-admin-tenant principals (D3) |
+| project roles (`viewer` … `owner`) | project | unchanged; cover the project in every cluster |
+| `tenant-auditor` | tenant | `viewer` in every project, `tenant.read`, `tenant.audit`, `tenant.usage` |
+| `tenant-admin` | tenant | `owner` in every project, `tenant-auditor`, `tenant.members`, `tenant.projects`, `tenant.clusters`, `tenant.directories` |
+| cluster roles (`auditor`, `image-admin`, `net-admin`, `system-admin`) | cluster / host | unchanged, for that cluster; `system-admin` adds `cluster.admissions` and its site policies; operator principals only (D5) |
+| `directory-auditor` | fleet | `directory.read` |
+| `directory-admin` | fleet | `directory-auditor`, `directory.tenants` (tenants, operator flags, tags, domains, delegation links), `directory.clusters` (fleet join tokens, removal), `directory.policy` (the directory's site policies); owner principals only (D6) |
 
-## 10. The admin tenant
+## 11. Operators and the directory owner
 
-Owns, through the existing host roles:
+**An operator** owns, through its cluster roles, on each of its clusters:
 
 | Area | Actions (unchanged names) |
 |---|---|
-| Cluster membership | init, join and rejoin tokens, remove, forget, purge, drain, detach, imports, CA rotation, snapshots (`host.cluster*`, `node.drain`) |
-| Host networking | OVS install, DPDK, bridges, uplinks, node-scope networks, OVN configuration and edge router (`host.network*`, `configureOvn`) |
-| Devices | PCI/VFIO grants (`host.devices`). GPUs, DPUs and other server-attached accelerators get their own design later (§18). |
-| Shared library | images (`image.manage`) |
-| Platform | site policies, tenants (`system.tenants`), domains, quota caps, audit and usage of every tenant |
+| Cluster membership | init, join and rejoin tokens, remove, forget, purge, drain, detach, imports, CA rotation, snapshots |
+| Host networking | OVS install, DPDK, bridges, uplinks, node-scope networks, OVN and the edge router |
+| Devices | PCI/VFIO grants. GPUs, DPUs and other accelerators get their own design later (§20). |
+| Images | the cluster's image library |
+| Tenants on its cluster | admissions with their caps (`cluster.admissions`), site policies (which tenants, which rules), audit and usage of what runs on it, support access to it (D13) |
 
-It also has projects of its own (platform services running as VMs),
-connectors (the operator's IdP, host PAM) and federations, like any
-tenant. `system-admin` linked on a `Cluster` covers every tenant's
-projects in that cluster; linked on the `Fleet`, in every cluster (D4,
-§9.1). Tenant lifecycle and domains are directory writes, made at the
-fleet's authority (§13.2).
+**The directory owner** owns, through directory roles:
+- tenants: *create* `{slug, display_name, domains, tags, operator}`,
+  optionally with a first `tenant-admin` invitation bound to the first
+  login with that verified email through the tenant's connector
+  (single-use, 7 days); *suspend*/*resume* (takes effect on the next
+  request on every cluster, as the feed delivers it; running VMs keep
+  running unless the operators stop them); *delete* (refused while any
+  cluster reports resources of the tenant; then connectors, users,
+  teams, projects, links and tokens go in one write);
+- the fleet: which clusters belong (§12), with which operator;
+- domains, tenant tags, the directory's own site policies.
 
-**Tenant lifecycle** (`system.tenants`):
-- *create* `{slug, display_name, quotas, domains}` — optionally with a
-  first `tenant-admin` invitation by email that is bound to the first
-  login through the tenant's connector with that verified email
-  (single-use, 7 days), so the operator never handles a customer password;
-- *suspend* / *resume* — `base.tenant-suspended` takes effect on the next
-  request; running VMs keep running unless `stop_vms: true`;
-- *delete* — refused while the tenant has VMs, disks, networks or
-  routers (`409 in_use`); then removes connectors (secrets wiped),
-  users, teams, links and tokens in one write. Audit and metering stay
-  (clustering.md D19).
+**A tenant** decides, through `tenant.clusters`, which clusters it
+opts into, and sees every operator's admission and every delegated
+link affecting it.
 
-## 11. Connector secrets (D10)
+## 12. The fleet
+
+**Joining.** The directory owner creates a cluster entry naming its
+operator tenant and gets a fleet join token (`gxctl fleet join-token
+--operator <tenant>`); the cluster's operator runs `gxctl fleet join`
+on it (`host.cluster.critical` and step-up there, `directory.clusters`
+at the directory). The token carries the directory CA's hash; the
+directory pins the cluster's CA. The cluster becomes an OIDC client of
+the directory (§7.1) and starts its feed. A cluster with existing
+tenants maps them onto directory tenants (`--tenant <local>=<fleet>`)
+or adds them; the directory owner approves the merge in one write, as
+an import is approved (clustering.md §5.9).
+
+**The feed.** The directory's leader serves `/fleet/v1/feed` to each
+cluster over mTLS between the two clusters' servers: the write sets
+that touch directory tables, in revision order (clustering.md D2),
+**filtered for that cluster**: the records of tenants it admits that
+opted into it, its operator tenant's records, the directory's public
+keys, and revocations. Each cluster's leader applies a batch in one
+write and records the revision reached in `feed_state`; a cluster too
+far behind gets a filtered snapshot. Clusters report their admissions
+on the same channel. Connector secrets are never in a feed (D19).
+
+**Directory writes** are made at the directory with the caller's own
+directory credential: the UI on a cluster links to the directory's
+pages for them, and gxctl calls the directory. The cluster that served
+the page is never in that path (D10).
+
+**Losing the directory.** The directory is a Raft cluster, so losing a
+node changes nothing. Losing all of it leaves clusters serving as in
+§7.6. `gxctl fleet promote` on a cluster that holds a full replica
+(only the directory's standby can: clusters hold filtered ones) makes
+it the directory under a new **fleet epoch**; feeds carry the epoch, so
+an old directory that comes back can't serve clusters. A **standby**
+is a cluster that, with the directory owner's consent, receives the
+whole directory except connector secrets, which are re-entered after a
+promote.
+
+**Leaving.** A cluster that leaves keeps the records of the tenants
+with resources on it and becomes a fleet of one with its own directory;
+the tenants' users then log in there separately.
+
+**Not across clusters:** Raft (except within the directory's own
+cluster), L2 networks, disks, VM placement, quotas, site policies,
+image libraries.
+
+## 13. Connector secrets (D19)
 
 - `connector_secrets` rows: `(connector_id, field)` →
   `{kek_id, nonce, ciphertext}` with XChaCha20-Poly1305, AAD =
-  `connector_id ‖ field ‖ kek_id`.
-- The KEK is 32 random bytes generated at `cluster init` (or first
-  start, standalone), stored as the systemd credential `secrets-kek`
-  (`systemd-creds`, TPM2 when present) on every server, transferred to
-  joining servers over the same mTLS step as the CA key
-  (clustering.md §5.2), never written to Raft, snapshots, `node.db` or
-  departure bundles.
-- Decryption happens only on the leader, in the connector code path,
-  into zeroized buffers.
-- **KEK rotation** runs with CA rotation (clustering.md §12.5) and on
-  demand: re-encrypt all rows under the new KEK in one write.
-  *Honest limit:* a departed server held both the KEK and the
-  ciphertexts, so the secrets themselves must be considered exposed;
-  the leave flow lists the affected connectors and asks their tenants
-  to rotate IdP-side secrets.
+  `connector_id ‖ field ‖ kek_id`; directory only.
+- The KEK is 32 random bytes generated when the directory is created,
+  stored as the systemd credential `secrets-kek` (`systemd-creds`, TPM2
+  when present) on each of the directory's servers, transferred to
+  joining servers with the CA key (clustering.md §5.2), never written to
+  Raft, snapshots, feeds or departure bundles.
+- Decryption only on the directory's leader, in the connector code
+  path, into zeroized buffers.
+- **KEK rotation** with CA rotation (clustering.md §12.5) and on demand.
+  *Honest limit:* a departed directory server held the KEK and the
+  ciphertexts, so the leave flow lists the connectors and asks their
+  tenants to rotate IdP-side secrets.
 - File-defined connectors (`source: file`, migrated from
   `control-plane.json`) keep reading `oidc-client-secret` from
-  `LoadCredential` as today.
+  `LoadCredential`.
 
-## 12. API
+## 14. API
 
-Every tenancy operation is served over **both REST/JSON and gRPC** from
-one implementation (§12.1), following [grpc.md](grpc.md). The RPC
-services are `glidex.tenancy.v1.TenantService`, `glidex.directory.v1.ConnectorService`,
-`glidex.directory.v1.FederationService` and `glidex.auth.v1.LoginService`. The
-operation table below is the single list both routers are checked
-against (grpc.md §5).
+Every operation is served over **both REST/JSON and gRPC** from one
+implementation (§14.1, [grpc.md](grpc.md)). Directory operations answer
+on the directory; cluster operations on the cluster. The operation
+table is the single list both routers are checked against (grpc.md §5).
 
-| Operation (Cedar action) | REST | gRPC | Permission |
-|---|---|---|---|
-| `discover` | `POST /auth/discover` | `LoginService.Discover` | none |
-| `startLogin`, `finishLogin` | `GET /auth/c/{id}/start`, `GET /auth/c/{id}/callback` | — (browser redirects) | none |
-| `startDevice`, `pollDevice` | `POST /auth/c/{id}/device`, `…/device/poll` | `LoginService.StartDevice`, `LoginService.PollDevice` | none |
-| `passwordToken` | `POST /auth/token` (+ `connector`) | `LoginService.PasswordToken` | none (PAM, LDAP; TLS or api.sock only) |
-| `exchangeToken` | `POST /auth/exchange` | `LoginService.ExchangeToken` | none (workload token) |
-| `listTenants`, `readTenant` | `GET /tenants`, `GET /tenants/{id}` | `TenantService.List`, `TenantService.Get` | `system.tenants` (all) · own tenant for anyone |
-| `createTenant`, `updateTenant` | `POST /tenants`, `PATCH /tenants/{id}` | `TenantService.Create`, `TenantService.Update` | `system.tenants` |
-| `suspendTenant`, `resumeTenant` | `POST /tenants/{id}/suspend`, `/resume` | `TenantService.Suspend`, `TenantService.Resume` | `system.tenants` |
-| `deleteTenant` | `DELETE /tenants/{id}` | `TenantService.Delete` | `system.tenants` (step-up) |
-| `listTenantBindings`, `setTenantBinding`, `deleteTenantBinding` | `GET/PUT/DELETE /tenants/{id}/bindings` | `TenantService.ListBindings`, `SetBinding`, `DeleteBinding` | `tenant.members` (tenant roles only) |
-| `listConnectors`, `readConnector` | `GET /tenants/{id}/connectors[/{cid}]` | `ConnectorService.List`, `ConnectorService.Get` | `tenant.read` |
-| `createConnector`, `updateConnector`, `deleteConnector` | `POST/PATCH/DELETE /tenants/{id}/connectors[/{cid}]` | `ConnectorService.Create`, `Update`, `Delete` | `tenant.directories` (step-up); admin tenant: `system.identity` too |
-| `setConnectorSecret` | `PUT /connectors/{id}/secrets/{field}` | `ConnectorService.SetSecret` | `tenant.directories` |
-| `testConnector`, `syncConnector` | `POST /connectors/{id}/test`, `/sync` | `ConnectorService.Test`, `ConnectorService.Sync` | `tenant.directories` |
-| `listScimTokens`, `createScimToken`, `revokeScimToken` | `GET/POST/DELETE /connectors/{id}/scim-tokens` | `ConnectorService.ListScimTokens`, `CreateScimToken`, `RevokeScimToken` | `tenant.directories` |
-| SCIM 2.0 | `/scim/v2/c/{id}/…` | — (protocol fixed by RFC 7644) | SCIM token of that connector |
-| `listFederations`, `createFederation`, `updateFederation`, `deleteFederation` | `GET/POST/PATCH/DELETE /tenants/{id}/federations` | `FederationService.List`, `Create`, `Update`, `Delete` | `tenant.directories` |
-| `listUsers`, `listTeams`, `listProjects` | `GET /users`, `/teams`, `/projects` + `?tenant=` | `TenantService.ListUsers`, `ListTeams`, `ListProjects` | non-admin principals see their tenant only |
-| `createProject` | `POST /projects` | `TenantService.CreateProject` | `tenant.projects` on the tenant (was `system.projects`) |
-| `readAudit` | `GET /audit` | (with the audit family, grpc.md §9) | + `tenant.audit` for entries whose actor or target is in the tenant |
-| `readUsage` | `GET /usage` + `?tenant=` | (with the usage family, grpc.md §9) | `tenant.usage` for own tenant |
+| Operation (Cedar action) | Where | REST | gRPC | Permission |
+|---|---|---|---|---|
+| `discover` | directory | `POST /auth/discover` | `LoginService.Discover` | none |
+| `startLogin`, `finishLogin` | directory | `GET /auth/c/{id}/start`, `/callback` | — (browser redirects) | none |
+| OIDC provider (`authorize`, `token`, JWKS, discovery) | directory | `/oidc/…` | — (OIDC endpoints) | none / client authentication |
+| `startDevice`, `pollDevice` | directory | `POST /auth/c/{id}/device`, `…/poll` | `LoginService.StartDevice`, `PollDevice` | none |
+| `passwordToken` | directory, or the bound cluster for PAM | `POST /auth/token` (+ `connector`) | `LoginService.PasswordToken` | none (TLS or api.sock) |
+| `accessToken` | directory | `POST /auth/access-token` (`{cluster}`) | `LoginService.AccessToken` | refresh token |
+| `exchangeToken` | directory | `POST /auth/exchange` | `LoginService.ExchangeToken` | none (workload token) |
+| `listTenants`, `readTenant` | directory | `GET /tenants[/{id}]` | `TenantService.List`, `Get` | `directory.read` (all) · own tenant |
+| `createTenant`, `updateTenant`, `suspendTenant`, `resumeTenant`, `deleteTenant` | directory | `POST /tenants`, `PATCH /tenants/{id}`, `POST …/suspend`, `…/resume`, `DELETE` | `TenantService.Create`, `Update`, `Suspend`, `Resume`, `Delete` | `directory.tenants` |
+| `optInCluster`, `optOutCluster` | directory | `PUT/DELETE /tenants/{id}/clusters/{cluster}` | `TenantService.OptIn`, `OptOut` | `tenant.clusters` |
+| `listTenantBindings`, `setTenantBinding`, `deleteTenantBinding` | directory | `GET/PUT/DELETE /tenants/{id}/bindings` | `TenantService.ListBindings`, `SetBinding`, `DeleteBinding` | `tenant.members` |
+| `listProjects`, `createProject`, `updateProject`, `deleteProject` | directory | `GET/POST /projects`, `PATCH/DELETE /projects/{id}` | `ProjectService.…` | `tenant.projects` / project roles |
+| `listConnectors` … `revokeScimToken` | directory | `/tenants/{id}/connectors…`, `/connectors/{id}/…` | `ConnectorService.…` | `tenant.read` / `tenant.directories` |
+| SCIM 2.0 | directory | `/scim/v2/c/{id}/…` | — (RFC 7644) | SCIM token |
+| `listFederations` … `deleteFederation` | directory | `/tenants/{id}/federations` | `FederationService.…` | `tenant.directories` |
+| `listUsers`, `listTeams` | directory | `GET /users`, `/teams` (+ `?tenant=`) | `TenantService.ListUsers`, `ListTeams` | own tenant; `directory.read` for all |
+| `listFleetClusters`, `createFleetCluster`, `removeFleetCluster` | directory | `GET/POST /fleet/clusters`, `DELETE …/{id}` | `FleetService.…` | `directory.read` / `directory.clusters` |
+| `listAdmissions`, `admitTenant`, `updateAdmission`, `removeAdmission` | cluster | `GET /admissions`, `PUT/PATCH/DELETE /admissions/{tenant}` | `AdmissionService.…` | `cluster.admissions` (tenants see their own) |
+| `readFleet` | cluster | `GET /fleet` | `FleetService.Status` | authenticated |
+| resources (VMs, disks, networks, …) | cluster | unchanged paths | per grpc.md §9 | unchanged + `useCluster` (§10.4) |
+| `readAudit`, `readUsage` | both | `GET /audit`, `GET /usage` (+ `?tenant=`) | with their families | + `tenant.audit` / `tenant.usage` for the tenant's entries there |
 
-**HTTP-only, on purpose.** Browser redirects (OIDC/OAuth callbacks)
-and SCIM are fixed by their protocols and by what IdPs
-send; they have no gRPC form. They still go through the service layer
-(§12.1), so their checks and audit are the same.
+**HTTP-only, on purpose:** browser redirects, the OIDC provider
+endpoints and SCIM are fixed by their protocols. They still go through
+the service layer (§14.1).
 
-**Lists** take `page_size` (≤ 500, default 100) and `page_token` on
-both transports (`?page_size=&page_token=` in REST, response
-`next_page_token`). Tenants and connectors can number in the thousands
-across a cluster; unpaged lists would have to be changed later on both
+**Lists** take `page_size` (≤ 500, default 100) and `page_token` on both
 transports.
 
-### 12.1 Service layer (both transports)
+Errors: `409 managed_by_connector`, `409 tenant_in_use`, `403
+tenant_suspended`, `403 not_admitted` (useCluster), `403
+tenant_quota_exceeded`, `422 invalid_connector`, `409 sync_blocked`,
+`503 directory_unavailable`, `401 directory_stale` (past
+`max_staleness`).
 
-Today a REST handler authorizes through `Caller` and calls the store
-directly (`api/access.rs::create_project`). Tenancy code is written
-differently, so gRPC isn't a second copy of it:
+### 14.1 Service layer (both transports)
 
 1. **Operations are transport-neutral functions** in
-   `src/service/{tenancy,directory,login}.rs`:
-   `async fn create_tenant(call: &Call, req: CreateTenantRequest) ->
-   Result<Tenant, ServiceError>`. `Call` carries the principal, the
-   operation's Cedar action, request id, consistency, transport and the
-   audit slot; both `api::Caller` and the gRPC layer build one.
-2. **All decisions live in the service function**: every Cedar request
-   (including compound ones), not-found-versus-forbidden (§7.4 of
-   security.md), quota and tenant cap, name rules, the link boundary
-   (§9.3), managed-field checks, secret handling and the store write.
-   **Adapters only decode, call one service function, and encode.** An
-   adapter that calls `Authz`, a store or `VmManager` directly fails
-   review; a lint test greps `src/api/` and `src/api/rpc/` for new uses in
-   tenancy modules.
-3. **Types come from proto.** Request and response messages are
-   defined once in `crates/glidex-api/proto/` (grpc.md §4); REST uses
-   their JSON mapping with the proto field names (`snake_case`, as the
-   rest of the REST API). No hand-written REST twin of a message.
-4. **Errors are one enum with stable codes**: `ServiceError { code,
-   message, details }` where `code` is the existing REST error string
-   (`not_found`, `tenant_suspended`, `managed_by_connector`, …). REST
-   maps it to a status and `ApiError`; gRPC to a status code plus
-   `google.rpc.ErrorInfo { reason: code }` (grpc.md §7). A new code is
-   added to both mappings in the same change, checked by a test.
-5. **One operation, one Cedar action, one audit entry** whichever
-   transport carried it; the audit entry records `transport: rest |
-   grpc`.
-6. **Secrets never appear in response messages.** Secret fields exist
-   only in write requests (`SetSecret`); responses carry `{set,
-   updated_at}`. This is a property of the proto messages, so it holds
-   for both transports.
-7. **Reads and writes are declared per operation** (`kind: READ |
-   WRITE` in the operation table), not inferred from the HTTP method,
-   so cluster forwarding (§13) treats a gRPC `POST` correctly.
-
-Errors: `409 managed_by_connector`, `409 tenant_in_use`, `403
-tenant_suspended`, `403 tenant_quota_exceeded`, `422 invalid_connector`
-(per-field messages), `409 sync_blocked`.
+   `src/service/{tenancy,directory,login,fleet}.rs`, taking a `Call`
+   (principal, Cedar action, request id, audit slot; grpc.md §6) and a
+   proto request, returning a proto response or a `ServiceError`.
+2. **All decisions live in the service function**: Cedar requests,
+   not-found versus forbidden, caps, names, the link boundary,
+   managed-field checks, secrets, the store write. Adapters only
+   decode, call one function, and encode.
+3. **Types come from proto** (`crates/glidex-api/proto/`), REST using
+   their JSON form.
+4. **Errors are one enum with stable codes** mapped to both transports
+   (grpc.md §7).
+5. **One operation, one Cedar action, one audit entry**, whichever
+   transport.
+6. **Secrets never appear in response messages** (grpc.md §4 check).
+7. **Reads and writes are declared per operation** (grpc.md G-D6).
+8. **Directory writes go through `service::directory` only**, which on a
+   cluster that isn't the directory answers `directory_is_elsewhere`
+   with the directory's URL. One module, so a fleet of one and a fleet
+   of many run the same code.
 
 `control-plane.json`: `auth.pam` and `auth.oidc` keep working as
-**file-defined connectors** of the admin tenant (or `"tenant": "<slug>"`)
-and are listed as `source: file`, read-only through the API.
-New: `tenancy.max_tenants` (default 100), `directory.sync_interval_min`.
+file-defined connectors (`source: file`, read-only through the API).
+New: `fleet.max_staleness`, `fleet.access_token_ttl`,
+`tenancy.max_tenants`, `directory.sync_interval_min`.
 
-## 13. Clusters and fleets
-
-### 13.1 Within a cluster
-
-- All new tables are replicated; agents' node caches never include
-  `connectors`, `connector_secrets`, `scim_tokens` or `federations`.
-- Login, SCIM and exchange endpoints answer on servers; an agent
-  forwards them (clustering.md §8) like other API calls. gRPC calls are
-  forwarded the same way, whole, using the operation's declared kind
-  (§12.1 rule 7, grpc.md §8). Pull sync runs
-  only on the leader; a leader change resumes from `connector_sync`.
-- Clustering import/detach (`--with-access`, clustering.md §5.8–§5.9)
-  carry `tenant_id` on users, teams and projects. An import into a
-  cluster maps the source's tenants with `--tenant <src>=<dst>`; an
-  unmapped tenant is created only with `system.tenants`.
-
-### 13.2 Tenants across clusters (fleets)
-
-**What is where.**
-
-| Fleet-wide: the directory | Per cluster |
-|---|---|
-| Tenants (with `clusters`, caps and domains), users, OIDC/LDAP/preset identities, teams and memberships, links on a `Tenant` or the `Fleet`, connectors other than PAM and their secrets, SCIM tokens, federations, tenant-level service accounts | Projects and everything in them (VMs, disks, credentials, networks, routers, project role links, project service accounts), PAM connectors and `unix:`/`pam:` identities (host accounts, D12 and clustering.md D13), links on that `Cluster` or its `Host`s, sessions and personal tokens (D28), audit, metering, site policies, images |
-
-**Authority and replicas (D24).**
-- The fleet's **authority** is one cluster; its leader serves the
-  directory's change stream, `/fleet/v1/feed`: the write sets that touch
-  fleet tables, in revision order (the same write sets clustering.md D2
-  replicates, filtered by table scope). Each member's leader follows it
-  and applies each batch to its own store in one write, recording the
-  authority revision it has reached. A member too far behind gets a
-  full directory snapshot, as a lagging node does (clustering.md §8.2).
-- A directory write made at a member (a tenant admin edits a team, a
-  JIT login creates a user, a connector is changed) is forwarded to the
-  authority with the original principal over `/fleet/v1/forward`, the
-  way a follower forwards to its leader (clustering.md §6.4), and
-  authorized there. The member answers once the change has come back
-  on its own feed, so the caller reads its own write.
-- SCIM endpoints and pull sync (§7) run at the authority only; their
-  changes reach members on the feed.
-- Members serve logins from their replica of connectors and identities;
-  nothing on the login path waits for the authority except JIT
-  creation of a new user.
-
-**Partitions (D26).** A member cut off from the authority keeps serving
-existing users and every project operation. Directory writes and JIT
-logins answer `503 directory_unavailable`. `GET /fleet` shows the
-replica's lag; past `fleet.max_staleness`, users of provisioned
-connectors can't log in or use personal tokens there until the member
-catches up, while service accounts, PAM and peer users (all
-cluster-local) keep working.
-
-**Trust between clusters (D27).**
-- Clusters join a fleet with a fleet join token minted at the authority
-  (`gxctl fleet join-token`, then `gxctl fleet join` on the member;
-  `host.cluster.critical` and step-up on both sides). The token carries
-  the authority CA's hash; the member's CA is pinned by the authority at
-  join, as cluster joins pin (clustering.md §5.2). The inter-cluster
-  channel is mTLS between server nodes of the two clusters, on the
-  cluster port.
-- The authority accepts forwarded writes from a member only for tenants
-  whose `clusters` include that member, and never for links on the
-  `Fleet` or admin-tenant records: those are made at the authority.
-- Connector secrets go only to clusters a connector serves (its tenant's
-  `clusters`, narrowed by the connector's own `clusters` setting). They
-  travel on the mTLS feed only, decrypted at the authority and
-  re-encrypted by the member under its own KEK (§11).
-
-**Joining with existing tenants.** A cluster that joins a fleet already
-has an admin tenant, a `default` tenant and maybe more:
-- the admin tenant merges into the fleet's (same fixed id); users map by
-  identity key, others are added;
-- every other tenant is mapped onto a fleet tenant (`--tenant
-  <local>=<fleet>`) or added as a new tenant (a slug that exists in the
-  fleet is refused until renamed);
-- the authority approves the merge as one write, as an import is
-  approved (clustering.md §5.9, D17).
-
-**Losing the authority.** The authority is itself a Raft cluster, so a
-node failure changes nothing. Losing its whole datacenter leaves every
-member serving from its replica (D26). `gxctl fleet promote` on a member
-makes its replica authoritative under a new **fleet epoch**; feeds and
-forwarded writes carry the epoch, so an old authority that comes back
-can't serve or accept them and rejoins as a member.
-
-**Leaving a fleet.** The leaving cluster keeps a copy of the directory
-records of the tenants that still have projects on it, and becomes the
-authority of its own fleet of one.
-
-**What users see.** The same tenant, users, teams and roles in every
-cluster. A user logs in to each cluster (D28); projects and lists show
-their cluster; tenant admins manage the directory from any cluster.
-Tenant usage and audit are per cluster; a fleet-wide view is later
-(§20).
-
-**Not across clusters:** Raft, L2 networks, disks, VM placement,
-project quotas, site policies, the image library. Each cluster stays
-what clustering.md describes.
-
-## 14. UI and CLI
+## 15. UI and CLI
 
 **UI** ([web-ui.md](web-ui.md)):
-- Login page: one field ("work email or organization"), then the
-  tenant's connector buttons; `/t/<slug>` skips the first step.
-- Admin tenant: **Tenants** page (list, create with quotas and domains,
-  suspend, usage per tenant).
-- Tenant settings (tenant-admin): **Directories** with a wizard per
-  preset that shows the callback/SCIM/metadata URLs to paste, secret
-  fields write-only, *Test* and *Sync now* with per-step results and the
-  sync safety stop; **Teams** (managed teams marked with their
-  connector); **Projects**; **Members** (tenant role links);
-  **Federations**.
-- The project switcher lists the caller's tenant's projects; admin
-  users get a tenant filter.
+- Login: at the directory, one field ("work email or organization"),
+  then the tenant's connector buttons; a cluster's UI sends the browser
+  there and back (§7.1).
+- Directory owner: **Tenants** (create with domains, tags, operator
+  flag; suspend), **Fleet** (clusters, their operators, feed lag).
+- Operator, per cluster: **Admissions** (tenants, caps), site policies,
+  plus today's cluster pages.
+- Tenant admin: **Directories** (connector wizard per preset with the
+  URLs to paste, write-only secrets, *Test*, *Sync now*), **Teams**,
+  **Projects** (with per-cluster quotas and where each project has
+  resources), **Clusters** (opt-ins and each operator's admission),
+  **Members**, **Federations**.
+- Lists of VMs, disks and networks show their cluster.
 
 **CLI** ([cli.md](cli.md)):
 ```
-gxctl tenant list|show|create|update|suspend|resume|delete
+gxctl auth login --directory <url> --tenant <slug> [--connector <id>]
+gxctl tenant list|show|create|update|suspend|resume|delete|opt-in|opt-out
 gxctl directory list|show|add <kind>|update|secret set <field>|test|sync|remove
 gxctl directory scim-token create|list|revoke
 gxctl federation list|add|remove
-gxctl auth login --tenant <slug> [--connector <id>]
+gxctl fleet status|clusters|join-token|join|leave|promote
+gxctl admission list|admit|update|remove        # on a cluster
 ```
 
-The new `gxctl` families use the gRPC client from `glidex-api`
-(grpc.md §10); the UI uses REST until grpc.md's browser decision.
+## 16. Migration
 
-## 15. Migration
+On the first start with the tenancy schema (one write), a host becomes a
+fleet of one that is its own directory:
 
-On the first start with the tenancy schema (one write):
+1. Create `Fleet::"<new id>"`, this cluster as its directory, and tenant
+   `admin` (`owns_directory`, `operator`), the cluster's operator.
+2. Create tenant `default`, opted in and admitted here with an
+   unlimited cap; every project moves to it (project quotas become this
+   cluster's entry), with its guest credentials.
+3. Users who hold a system-role or grant link, or are `glidex-admin`
+   peers, go to `admin`; every other user to `default`. Teams go to
+   `default` unless all members are in `admin`.
+4. Links on the `Cluster` stay as this cluster's links. Holders of
+   `role.system-admin` also get `directory-admin` on the `Fleet` and a
+   delegated `tenant-admin` on `default` (D13), so they keep managing
+   users and projects as before.
+5. `auth.pam` becomes a file-defined PAM connector bound to this
+   cluster, in `admin`; operators who want `glidex-users` in `default`
+   move it (`gxctl directory add pam --tenant default --group
+   glidex-users`). `auth.oidc` becomes a file-defined OIDC connector in
+   `auth.oidc.tenant` (default `default`); `oidc:<issuer>` identities are
+   re-keyed to `conn:<id>`.
+6. API tokens become directory tokens valid on this cluster.
+7. Name indexes are rebuilt per tenant (no conflicts are possible).
 
-1. Create the fleet of one (`Fleet::"<new fleet id>"`, this cluster as
-   its authority), tenant `admin` (`admin: true`, `clusters: "all"`) and
-   tenant `default` (`clusters: [this cluster]`).
-2. Every project goes to `default`, with this cluster as its
-   `cluster_id`. Users who hold a system-role or
-   grant link, or are `glidex-admin` peers, go to `admin`; every other
-   user goes to `default`. Teams go to `default` unless all members are
-   in `admin`. Existing links stay; links of admin users in `default`
-   projects are allowed by D4.
-3. `auth.pam` becomes a file-defined PAM connector of `admin` with the
-   same `allowed_groups`, `jit` and `group_teams`; a second PAM
-   connector for `default` is **not** created automatically — on a host
-   where non-admin users log in with PAM, the installer/upgrade notes
-   tell the operator to move `glidex-users` to a `default` PAM
-   connector (one command: `gxctl directory add pam --tenant default
-   --group glidex-users`). Until then those users resolve to `admin`
-   with no host roles, so nothing they could do changes.
-4. `auth.oidc` becomes a file-defined OIDC connector in the tenant named
-   by `auth.oidc.tenant` (default `default`); `oidc:<issuer>` identities
-   are re-keyed to `conn:<id>`.
-5. Every name uniqueness index is rebuilt per tenant (no conflicts are
-   possible: global uniqueness implies per-tenant uniqueness).
+Nothing a user does today changes: one login page, the same tokens, the
+same rights.
 
-A standalone host that never creates a second tenant behaves as today:
-one admin tenant, one default tenant, the same login page.
+## 17. Testing
 
-## 16. Testing
+- **Policy decisions** (table-driven, security.md §14 style), with two
+  clusters A (operator `admin`) and B (operator `dc-north`) in the
+  entity set:
+  - a `tenant-admin` of acme reads acme's VMs in A and B and nothing of
+    lab's (`base.tenant-boundary`);
+  - `system-admin` on A, held by an `admin` principal, reaches acme's
+    VM in A but not in B, and no acme project or credential record;
+  - a `dc-north` principal with `role.net-admin` linked on A (inserted
+    into the store directly) is denied (`base.host-operator`);
+  - `useCluster` on B for lab is denied until B admits lab **and** lab
+    opts in (`base.admission`); a site `forbid` by tag beats both;
+  - a directory-owner principal with a delegated `tenant-admin` on acme
+    passes; without the link, it doesn't;
+  - directory-scoped actions are denied to operators that don't own the
+    directory; a suspended tenant gets `base.tenant-suspended`.
+- **Route coverage:** every action is in exactly one marker group.
+- **Link boundary:** each of the four link kinds refuses a principal
+  from the wrong tenant.
+- **Names, caps, project quotas per cluster.**
+- **Connectors, per protocol** against local mocks (OIDC with
+  `tid`/`hd`/`oid`, Entra group overage; GitHub org membership; LDAP
+  StartTLS and `objectGUID`; MFA required without `amr`).
+- **SCIM:** Entra and Okta request sequences as fixtures; `active:
+  false` revokes within the request; a token of connector X can't touch
+  Y; limits.
+- **Pull sync:** a failing API changes nothing; the safety stop blocks a
+  mass disable; delta then full resync agree.
+- **Secrets:** no connector read or feed ever contains secret bytes;
+  store, snapshot and `node.db` contain no plaintext.
+- **Federation:** wrong repository, wrong `aud`, expired token and a
+  rule without a pinning claim are refused; tokens expire at `ttl_secs`
+  and work only on the rule's clusters.
+- **Fleet (T6),** a directory and two clusters in process:
+  - a cluster's feed holds only tenants admitted on both sides, never a
+    connector secret;
+  - an access token for A is refused by B and by the directory;
+  - a refresh token is never sent to a cluster;
+  - logout at the directory ends the cluster sessions as the feed
+    delivers it;
+  - a partitioned cluster keeps serving per §7.6, then refuses directory
+    credentials past `max_staleness` while PAM and peer still work;
+  - promote with a new epoch fences the old directory.
+- **Both transports:** every API test is table-driven over `{rest,
+  grpc}` (grpc.md §12).
+- **Migration:** a pre-tenancy database migrates per §16 and every
+  existing API test passes unchanged.
 
-- **Policy decisions** (table-driven, security.md §14 style): a
-  `tenant-admin` of A can't read B's VM (`base.tenant-boundary`), can't
-  create a host network (`base.host-admin-tenant`) even with a
-  `role.net-admin` link inserted directly into the store; an
-  admin-tenant `system-admin` can; a suspended tenant's owner gets
-  `base.tenant-suspended`; offering a network to another tenant's
-  project is refused; a `tenant_grants` host network is usable by every
-  project of that tenant and none other.
-- **Route coverage:** every action is in exactly one of `tenant-scoped`,
-  `host-scoped`, `shared`; the test fails otherwise.
-- **Link boundary:** `PUT /projects/{id}/bindings` with a principal from
-  another tenant → `403`; an admin-tenant principal → allowed and
-  visible in the target tenant's audit.
-- **Names:** same project/disk name in two tenants succeeds; a create
-  in another tenant gives no signal about existing names.
-- **Connectors, per protocol** against local mocks: OIDC (existing mock
-  IdP cases, plus `tid`/`hd`/`oid` checks, Entra group overage),
-  GitHub OAuth (org membership revoked → login refused), LDAP (StartTLS required, bind with wrong
-  password, `objectGUID` key), MFA required without `amr`.
-- **SCIM:** the Entra and Okta conformance request sequences recorded
-  as fixtures; `active: false` revokes sessions and tokens within the
-  request; a token of connector X can't touch connector Y; limits.
-- **Pull sync:** an empty result from a failing API changes nothing;
-  the safety stop blocks a mass disable; delta then full resync agree.
-- **Secrets:** a connector read never contains secret bytes; the store
-  file, a snapshot and `node.db` contain no plaintext (grep test with a
-  known secret); KEK rotation re-encrypts every row.
-- **Federation:** a GitHub Actions token for another repository, a
-  wrong `aud`, an expired token, and a rule without a pinning claim are
-  refused; the minted token expires at `ttl_secs`.
-- **Fleet-ready model (T0):** Cedar decisions with two clusters in
-  the entity set: `system-admin` linked on cluster A doesn't reach a
-  project in cluster B; a `tenant-admin` covers the tenant's projects
-  in both; a `Fleet` link covers both. A project's `cluster_id` can't
-  change.
-- **Fleets (T6),** two in-process clusters: directory changes made at
-  either reach the other; a member's forwarded write for a tenant not
-  placed on it is refused; a partitioned member keeps serving and
-  refuses directory writes, then refuses provisioned users past
-  `max_staleness`; a connector's secret never reaches a cluster it
-  doesn't serve; promote with a new epoch fences the old authority;
-  joining merges the admin tenant and maps `default`.
-- **Both transports:** the tenancy API tests are table-driven over
-  `{rest, grpc}`: same request → same result, same error code
-  (`ApiError.error` = `ErrorInfo.reason`), same audit entry apart from
-  `transport`. A test fails for any operation in the table that lacks
-  either adapter, except the HTTP-only ones of §12.
-- **Migration:** a pre-tenancy database (fixtures from
-  `security_tests.rs`) migrates per §15 and every existing API test
-  passes unchanged.
-
-## 17. Milestones and work plan
+## 18. Milestones and work plan
 
 Each milestone ships its API, CLI, UI and tests together and leaves
 `main` releasable.
 
 | # | Scope | Acceptance |
 |---|---|---|
-| **T0** tenants | needs grpc.md **G0** (scaffold, listeners, auth layer, error mapping, operation table); fleet-ready model for a fleet of one (`Fleet` entity, `Project in [Tenant, Cluster]`, `cluster_id`, `Tenant.clusters`, table scopes, every directory write through one service module so T6 can forward it); §4 records, `tenants` table, migration (§15 steps 1, 2, 5), Cedar schema and base policies (§9), tenant roles, link boundary, tenant cap, per-tenant names, `tenant_grants`, tenant API on REST and gRPC through the service layer (§12.1) and `gxctl tenant`, audit `tenant`/`target_tenant`, UI Tenants page and tenant filter | §16 policy, route-coverage, link, names and migration tests, each API test run on both transports; existing suites green. |
-| **T1** connector framework | `connectors`, `connector_secrets` + KEK (§11), `ExternalIdentity` common path (§6.2), discovery and per-connector routes, file-defined PAM/OIDC connectors (§15 steps 3–4), PAM per tenant and peer→tenant resolution (D12), D11 rules, D9 token clamp, `gxctl directory`, UI Directories (PAM, OIDC) | Existing OIDC and PAM tests pass through connectors; secrets tests; peer resolution tests. |
-| **T2** OIDC presets and GitHub | `google`, `azure`, `jumpcloud`, `oidc` presets with their checks; MFA; GitHub OAuth + device flow; `connectors/{id}/test` | Mock tests per preset; manual check against real Google, Entra, GitHub, JumpCloud tenants. |
-| **T3** SCIM | §7.1, SCIM tokens, managed users/teams, D9 deprovisioning, field ownership (§7.3), `scim` kind | SCIM fixtures from Entra and Okta; deprovision-revokes test. |
-| **T4** pull sync and attributes | `directory_sync` controller, LDAP, Google Directory, Graph, GitHub org/teams, safety stop; SSH public keys from connectors in `GET /users/me/ssh-keys` | Pull sync tests; LDAP against a containerized OpenLDAP in CI. |
-| **T5** workload federation | `federations`, `POST /auth/exchange`, `jwt` and `aws` kinds, `gxctl federation` | Federation tests; a GitHub Actions workflow in this repo deploys to a test cluster without a stored token. |
-| **T6** fleets | §13.2: fleet join and leave, directory feed and replicas, forwarded directory writes with D27's checks, secret distribution, staleness (D26), promote with epochs, `gxctl fleet`, UI fleet page. Can start once T1 has landed. | §16 fleet tests; a two-datacenter check with a real WAN link. |
+| **T0** tenants, operators, admission | needs grpc.md **G0**. The model for a fleet of one (§10 entities incl. `Fleet`, `Cluster.operator`, `Vm in [Project, Cluster]`, `context.cluster`), table scopes, `tenants` and `admissions`, projects and guest credentials as directory records, `useCluster` and `base.admission`, the operator and directory-owner boundaries, tenant and directory roles, link boundary, caps and per-cluster project quotas, names, `tenant_grants`, migration (§16 steps 1–4, 6–7), tenant/project/admission APIs on both transports through `service::directory`, `gxctl tenant`/`admission`, UI Tenants, Admissions and cluster columns | §17 policy, route-coverage, link, names, caps and migration tests on both transports; existing suites green. |
+| **T1** connector framework | `connectors`, `connector_secrets` + KEK, the `ExternalIdentity` login path, discovery, per-connector routes, file-defined PAM/OIDC connectors (§16 step 5), PAM bound to its cluster (D21), D20 rules, D18 token clamp, `gxctl directory`, UI Directories (PAM, OIDC) | Existing OIDC and PAM tests pass through connectors; secrets and peer tests. |
+| **T2** OIDC presets and GitHub | `google`, `azure`, `jumpcloud`, `oidc` presets; MFA; GitHub OAuth + device flow; connector test | Mock tests per preset; manual checks against real Google, Entra, GitHub, JumpCloud. |
+| **T3** SCIM | §8.1, managed users and teams, D18, field ownership | SCIM fixtures; deprovision-revokes test. |
+| **T4** pull sync and attributes | `directory_sync`, LDAP, Google Directory, Graph, GitHub org/teams, safety stop; SSH keys from connectors | Pull sync tests; LDAP against OpenLDAP in CI. |
+| **T5** workload federation | `federations`, `POST /auth/exchange`, `jwt` and `aws` kinds | Federation tests; a GitHub Actions workflow deploys to a test cluster without a stored token. |
+| **T6** fleet | the directory as OIDC provider (§7), access and refresh tokens, cluster sessions from ID tokens, fleet join with operators, the filtered feed and admission reports, partitions and staleness, standby and promote, `gxctl fleet`, UI Fleet | §17 fleet tests; a check across two datacenters with a real WAN link. Can start once T1 has landed. |
 
 **T0 tasks** (files):
-1. `tenancy.rs`: `Tenant` (with `clusters`), `TenantStore`,
-   `Project.tenant_id` and `cluster_id`, per-tenant-per-cluster name
-   index, tenant cap in `overruns` and `state.rs::usage_locked`.
-2. `store/db.rs`: `Tenants` table id and `TableId::scope()` (fleet or
-   cluster) for every table; the fleet id in `meta`; migration step in
-   `state.rs` beside `adopt_into_default_project`.
-3. `auth/store.rs`: `tenant_id` on `User`, `Team`, `Token`; `MemberSource`
-   becomes `Manual | Connector(String)` with serde aliases for `pam`/`oidc`.
-4. `policies/glidex.cedarschema`, `base.cedar`, `roles.cedar`: §9.1–§9.2
-   (`Fleet`, `Cluster in [Fleet]`, `Tenant in [Fleet]`,
-   `Project in [Tenant, Cluster]`); `authz.rs` entity builder adds the
-   `Fleet` and `Tenant` entities and `tenant`/`cluster` attrs.
-5. `crates/glidex-api/proto/glidex/tenancy/v1/tenants.proto`;
-   `src/service/tenancy.rs` (every T0 operation, §12.1); thin adapters
-   in `api/access.rs` (REST, `?tenant=` filters) and
-   `src/api/rpc/tenancy.rs`; the link boundary in the service's binding
-   operations; marker and both-transport checks in
-   `api/mod.rs::every_route_maps_to_a_schema_action`.
-6. `api/net.rs`, `pci.rs`: `tenant_grants`; `base.share-same-tenant`.
-7. `bin/gxctl/admin.rs`: `tenant` family; `glidex-ui`: Tenants page,
-   tenant column/filter (bun).
-8. `tests/tenancy_tests.rs`: §16 T0 cases; spec updates in security.md
-   §6–§7, rest-api.md, cli.md, web-ui.md, data-model.md.
+1. `tenancy.rs`: `Tenant`, `Admission`, stores; `Project.tenant_id` and
+   per-cluster quotas; caps in `overruns` and `state.rs::usage_locked`.
+2. `store/db.rs`: `Tenants` and `Admissions` table ids,
+   `TableId::scope()`; the fleet id in `meta`; guest credentials marked
+   directory-scoped; migration beside `adopt_into_default_project`.
+3. `auth/store.rs`: `tenant_id` on `User`, `Team`, `Token`; `Token.clusters`;
+   `MemberSource` = `Manual | Connector(String)` with serde aliases.
+4. `policies/`: §10.1–§10.2; `authz.rs` adds `context.cluster` to every
+   request and the `Fleet`, `Tenant` and `Cluster` entities.
+5. Protos `glidex/tenancy/v1/{tenants,projects,admissions}.proto`;
+   `src/service/{tenancy,directory}.rs`; thin adapters in `api/` and
+   `api/rpc/`; route-coverage marker check.
+6. `api/vms.rs`, `api/storage.rs`, `api/net.rs`: `useCluster` in
+   compound requests; `tenant_grants`; `base.share-same-tenant`.
+7. gxctl `tenant` and `admission`; UI Tenants, Admissions, cluster
+   columns (bun).
+8. `tests/tenancy_tests.rs`; spec updates in security.md §6–§7,
+   rest-api.md, cli.md, web-ui.md, data-model.md.
 
 **T1 tasks** (files):
-1. New module `src/directory/` (`mod.rs` connector model and settings
-   validation, `secrets.rs` KEK + AEAD, `pam.rs`, `oidc.rs` moved from
-   `auth/oidc.rs` and made per-connector).
-2. `auth/mod.rs`: `ExternalIdentity` login path; `Principal.tenant_id`;
-   peer resolution through PAM connectors; token clamp.
-3. `config.rs`: file-defined connectors from `auth.pam`/`auth.oidc`.
-4. `cluster/`: KEK transfer at server join, exclusion from snapshots
-   and node caches; KEK rotation hooked to CA rotation.
-5. `glidex-install`: generate `secrets-kek` credential on servers.
-6. `directory/v1/*.proto`, `auth/v1/login.proto`;
-   `src/service/{directory,login}.rs`; REST adapters for discover,
-   per-connector login routes, connector CRUD, secrets, test; gRPC
-   adapters for all but the HTTP-only routes (§12); `gxctl directory`
-   on gRPC; UI Directories on REST.
+1. `src/directory/` (`mod.rs` connector model and validation,
+   `secrets.rs`, `pam.rs`, `oidc.rs` moved from `auth/oidc.rs`).
+2. `auth/mod.rs`: `ExternalIdentity` path; `Principal.tenant_id`; peer
+   and PAM resolution; token clamp.
+3. `config.rs`: file-defined connectors.
+4. `cluster/`: KEK transfer to joining directory servers, exclusion
+   from snapshots and node caches, rotation with the CA.
+5. `glidex-install`: the `secrets-kek` credential.
+6. Protos `glidex/directory/v1/*`, `glidex/auth/v1/login.proto`;
+   `src/service/{directory,login}.rs` and adapters; `gxctl directory`;
+   UI Directories.
 
-T2–T6 get their own task lists when T1 lands; the per-protocol code
-lives under `src/directory/<protocol>.rs`, presets under
-`src/directory/presets/`.
+T2–T6 get their own task lists when T1 lands; per-protocol code under
+`src/directory/<protocol>.rs`, presets under `src/directory/presets/`.
 
-## 18. Out of scope
+## 19. Out of scope
 
-- One person in several tenants with one login (D2); tenant-to-tenant
-  trust.
-- Tenant-authored Cedar policies (D18).
-- Tenant-private images; per-tenant OVN routers beyond today's
-  per-project VPC routers; per-tenant metering prices.
+- One person in several tenants with one login (D2).
+- Tenant-authored Cedar policies (D25).
+- Tenant-private images; per-tenant metering prices.
+- L2 networks or disks spanning clusters; moving a VM between clusters.
 - Acting as an IdP for guest VMs (SSH certificates from directory
-  identities) — a natural follow-up of T4's SSH keys.
-- SCIM outbound (glidex provisioning other systems).
-- SAML (D20).
-- Tenant self-service signup (D21).
-- SPIFFE/SPIRE. A later option for workload and agent identity: SPIFFE
-  JWT-SVIDs fit federation's `jwt` kind (§8) as one more trusted
-  issuer, and SPIRE could issue node identities in place of the cluster
-  CA's node certificates (clustering.md §12.1). Needs its own design.
-- GPUs, DPUs and other server-attached accelerators: modelling,
-  scheduling and granting them to tenants (today's PCI grants, D15,
-  stay as they are).
+  identities), a follow-up of T4's SSH keys.
+- SCIM outbound.
+- SAML (D27).
+- Tenant self-service signup (D28).
 
-## 19. Resolved questions
+## 20. Later designs
 
-1. **SAML:** not supported; SAML-only IdPs come in through an OIDC front
-   (D20). SPIFFE/SPIRE is a later option for workload and agent identity
-   (§18).
-2. **Default tenant on upgrade:** existing projects go to a `default`
-   tenant (D22, §15).
-3. **Tenant self-service signup:** none; the admin tenant creates
-   tenants (D21).
-4. **DPUs and other accelerators:** deferred to their own design (§18).
+- **SPIFFE/SPIRE** for workload and agent identity: SPIFFE JWT-SVIDs fit
+  federation's `jwt` kind (§9) as one more trusted issuer; SPIRE could
+  issue node identities in place of the cluster CA's node certificates
+  (clustering.md §12.1).
+- **GPUs, DPUs and other server-attached accelerators**: modelling,
+  scheduling and granting them to tenants; today's PCI grants (D23) stay
+  as they are.
+- **Fleet-wide views**: a tenant's resources, usage and audit across
+  clusters in one place (each cluster serves its own today).
 
-## 20. Open questions
+## 21. Resolved questions
 
-1. **Where the authority runs.** One of the fleet's clusters (§13.2), or
-   a small dedicated directory cluster that runs no VMs? The design
-   works either way; a dedicated one keeps the directory's blast radius
-   apart from any datacenter's workloads.
-2. **One sign-on across clusters** (D28): a fleet-wide login, a token
-   valid in every cluster the tenant uses, and fleet-wide views (all of
-   a tenant's projects, usage and audit in one place).
-3. **Projects spanning clusters** (D25 says no): needed later for
-   multi-datacenter services with one set of role links?
-4. **Fleet-wide site policies and images**: per cluster for now.
+1. **SAML:** not supported (D27).
+2. **Default tenant on upgrade:** existing projects go to `default`
+   (D29, §16).
+3. **Tenant creation:** the directory owner only (D28).
+4. **DPUs and accelerators:** later (§20).
+5. **Tenants across clusters:** one directory for the fleet, clusters
+   as independently operated providers (D3, D10).
+6. **Projects across clusters:** yes, a project's resources can be in
+   any cluster that admits its tenant (D4); projects never span tenants
+   (D1).
+7. **One login:** at the directory, accepted by every admitting cluster
+   (D9, §7).
+8. **Different operators:** each cluster has its own operator tenant
+   and site policies, and admits tenants itself (D5, D7, D8).
 
+## 22. Open questions
+
+1. **Directory availability across datacenters.** New logins and new
+   access tokens need the directory (§7.6). Its own Raft cluster could
+   place voters in three datacenters (its write rate is low, but
+   clustering.md assumes a LAN), or keep one datacenter plus a standby
+   (§12). Which do you expect to run?
+2. **Who may be the directory owner** when operators are different
+   organizations: one of them, or a separate party none of them
+   operate hardware for?

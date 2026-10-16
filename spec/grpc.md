@@ -5,7 +5,7 @@ Connect protocol, served by `connectrpc`) next to the REST API of [rest-api.md](
 ([security.md](security.md) §5), Cedar authorization (§7), audit (§10)
 and cluster forwarding ([clustering.md](clustering.md) §6.4). The first
 services to use it are the tenancy services of
-[tenancy.md](tenancy.md) §12.
+[tenancy.md](tenancy.md) §14.
 
 ## 1. Why, and what it is not
 
@@ -29,7 +29,7 @@ The web UI moves to gRPC-Web through Connect (G-D8, §11).
 
 | # | Decision | Why |
 |---|---|---|
-| G-D1 | **One implementation, two adapters.** Every operation is a transport-neutral service function; REST and gRPC adapters only decode, call it and encode (tenancy.md §12.1 rules). | Authorization, quota and audit written once. Two copies of a Cedar check is exactly the kind of drift that becomes a cross-tenant bug. |
+| G-D1 | **One implementation, two adapters.** Every operation is a transport-neutral service function; REST and gRPC adapters only decode, call it and encode (tenancy.md §14.1 rules). | Authorization, quota and audit written once. Two copies of a Cedar check is exactly the kind of drift that becomes a cross-tenant bug. |
 | G-D2 | **Same listeners, same port.** RPCs are served on `:8841`, `api.sock`, `ui.sock` and the cluster port, inside the existing axum router at their procedure paths (`/glidex.<area>.v1.<Service>/<Method>`); which protocols each listener accepts is in §6. | No new port to open, firewall or put in certificates; the TLS setup, certificate pinning and peer-uid identification are reused unchanged. |
 | G-D3 | **Proto is the source of truth for every API type.** REST JSON is the proto3 JSON mapping of the same `buffa` messages, with `snake_case` names (G-D11). New operations start that way; existing hand-written request/response types in `models.rs` and `api/*.rs` are **removed** when their family is ported (§9), and the REST shape changes to the proto JSON form where they differ (§9.1). | Two type systems for one API drift apart; one definition serves REST, gRPC, gxctl and the UI. The cost is a documented, one-time shape change per family. |
 | G-D4 | **Credentials per listener.** Native gRPC accepts `authorization: Bearer gxt_…` metadata, or peer uid on `api.sock`. Session cookies are accepted **only** for gRPC-Web from the `glidex-ui` peer on `ui.sock`, with the same Origin and CSRF checks as REST (§11). | Cookies are the browser's credential; keeping them on the one browser path keeps CSRF and Origin rules where browsers are. |
@@ -222,7 +222,7 @@ missing.
 | Watch, VM events, console | `watch.v1` server stream; console bidi stream | G4 |
 
 Porting a family means: move its handler logic into `src/service/`
-(tenancy.md §12.1), keep the REST adapter's JSON identical (the
+(tenancy.md §14.1), keep the REST adapter's JSON identical (the
 existing API tests are the check), add the gRPC adapter. A family is
 ported whole, never half.
 
@@ -295,7 +295,7 @@ equivalent test suite; until then it stays WebSocket.
 
 - Operation table tests (§5), error-mapping test (§7), secret-field
   build check (§4).
-- Tenancy API tests run on both transports (tenancy.md §16); each later
+- Tenancy API tests run on both transports (tenancy.md §17); each later
   family adds the same `{rest, grpc}` table when ported.
 - Auth: cookies refused on native gRPC; gRPC-Web with a cookie
   accepted only on `ui.sock` with a valid Origin and `x-glidex-csrf`;
@@ -315,7 +315,7 @@ equivalent test suite; until then it stays WebSocket.
 | # | Scope | Acceptance |
 |---|---|---|
 | **G0** scaffold | `glidex-api` crate (protox → `connectrpc-build`, build checks, operation table), `buf.yaml` + CI job, RPC routes in `api::router`, the RPC adapter (§6), `ServiceError` with both mappings, health, forwarding by `kind` with trailers, a first `SystemService`: `GetServerInfo` (REST twin `GET /auth/server-info`, same JSON, both served by one service function) and `WhoAmI` (RPC only; `GET /auth/whoami` moves onto its message with the access family in G2) | `System` round-trips over gRPC, Connect and REST; listener/credential, error-mapping and operation-table tests. Lands before tenancy.md T0. |
-| **G1** tenancy | tenancy, directory, login services (tenancy.md §12) | Both-transport tenancy tests. |
+| **G1** tenancy | tenancy, directory, login services (tenancy.md §14) | Both-transport tenancy tests. |
 | **G2** VMs, storage, access | as §9 | Existing REST suites unchanged; `{rest, grpc}` tables. |
 | **G3** networking, host, cluster | as §9, including relay and `PreAuthorized` | Host tests on a real cluster. |
 | **G4** streams and UI | watch, events as server streams; Connect-ES clients in the UI for every ported family; console after its test suite | Watch tests on both transports; UI e2e on gRPC-Web. |
