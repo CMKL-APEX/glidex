@@ -4,7 +4,6 @@ syntax = "proto3";
 package glidex.system.v1;
 
 import "glidex/api/v1/options.proto";
-import "glidex/api/v1/types.proto";
 
 service SystemService {
   // The server's identity, which client login profiles bind to
@@ -68,5 +67,12 @@ message ProjectRole {
   optional string project_name = 2 [json_name = "project_name"];
   string role = 3;
   // The linked principal the role comes through (the user, a team, a token).
-  glidex.api.v1.EntityRef via = 4;
+  EntityRef via = 4;
+}
+
+// A Cedar entity, as REST's `{"type": "Team", "id": "…"}`.
+message EntityRef {
+  string type = 1;
+  // Absent for singletons (`Cluster`, `Host`).
+  optional string id = 2;
 }
