@@ -779,7 +779,9 @@ with no extra fencing needed for the store.
     cloud-init seeds need, its node networks, and the project and image
     catalog records all of these reference. That is exactly the
     offline departure bundle (§5.8.3), so a node cut off for good can
-    still leave with consistent records;
+    still leave with consistent records. A credential written before
+    any VM of the node names it isn't sent then; a VM placed on the node
+    brings the credential it names in the same write set, ahead of it;
   - an **outbox** of status writes not yet acknowledged;
   - its metering accumulators (§13).
 - It lists, then watches from the last revision (§6.5). The cache is

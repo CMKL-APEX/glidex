@@ -175,7 +175,32 @@ pub fn filter_for(db: &Db, node: &str, ws: &WriteSet) -> WriteSet {
             ops.push(op.clone());
         }
     }
-    WriteSet { format: ws.format, origin: ws.origin, ops }
+    // A VM placed here brings the credential it names: written before
+    // the VM was, that credential concerned no VM of this node then.
+    let sent: HashSet<Vec<u8>> = ops.iter().filter(|o| o.table() == TableId::Credentials).map(|o| o.key().to_vec()).collect();
+    let mut brought = Vec::new();
+    for op in &ops {
+        if let Op::Put { table: TableId::Vms, value, .. } = op {
+            let Ok(v) = serde_json::from_slice::<Value>(value) else { continue };
+            let (Some(project), Some(user)) = (v.pointer("/meta/project").and_then(Value::as_str), v.pointer("/spec/config/credential").and_then(Value::as_str)) else { continue };
+            let key = format!("{project}/{user}");
+            if sent.contains(key.as_bytes()) || brought.iter().any(|o: &Op| o.key() == key.as_bytes()) {
+                continue;
+            }
+            if let Some(c) = get_raw(db, TableId::Credentials, &key) {
+                brought.push(Op::Put { table: TableId::Credentials, key: key.into_bytes(), value: c });
+            }
+        }
+    }
+    // Before the VMs, so the credential is there when the VM arrives.
+    brought.extend(ops);
+    WriteSet { format: ws.format, origin: ws.origin, ops: brought }
+}
+
+fn get_raw(db: &Db, table: TableId, key: &str) -> Option<Vec<u8>> {
+    let txn = db.begin_read().ok()?;
+    let t = txn.open_table(table.definition()).ok()?;
+    t.get(key).ok()?.map(|v| v.value().to_vec())
 }
 
 /// Everything `node` is entitled to, as one write set (a `list`).
@@ -436,3 +461,39 @@ macro_rules! swe {
     ($($t:ty),*) => {$(impl From<$t> for StatusWriteError { fn from(e: $t) -> Self { StatusWriteError::Store(e.to_string()) } })*};
 }
 swe!(StoreError, redb::TableError, redb::StorageError);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn put(table: TableId, key: &str, v: &Value) -> Op {
+        Op::Put { table, key: key.as_bytes().to_vec(), value: v.to_string().into_bytes() }
+    }
+
+    #[test]
+    fn a_vm_placed_on_a_node_brings_the_credential_it_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::create(dir.path().join("db")).unwrap();
+        // Synthetic credential: a placeholder hash, no real secret.
+        let cred = serde_json::json!({ "project": "p", "username": "alice", "passwd_hash": "[test-hash]", "ssh_authorized_keys": [] });
+        db.write(Origin::Api, |tx| -> Result<(), StoreError> {
+            tx.open_table(TableId::Credentials.definition())?.insert("p/alice", cred.to_string().as_bytes())?;
+            Ok(())
+        })
+        .unwrap();
+        let ws = |ops| WriteSet { format: WRITE_SET_FORMAT, origin: Origin::Api, ops };
+
+        // Written before any VM of n1 uses it: not n1's.
+        assert!(filter_for(&db, "n1", &ws(vec![put(TableId::Credentials, "p/alice", &cred)])).ops.is_empty());
+
+        // The VM placed on n1 brings it, ahead of the VM.
+        let vm = serde_json::json!({ "meta": { "project": "p" }, "spec": { "config": { "credential": "alice" } }, "status": { "placement": { "node": "n1" } } });
+        let f = filter_for(&db, "n1", &ws(vec![put(TableId::Vms, "vm1", &vm)]));
+        let tables: Vec<TableId> = f.ops.iter().map(|o| o.table()).collect();
+        assert_eq!(tables, [TableId::Credentials, TableId::Vms]);
+        assert_eq!(f.ops[0].key(), b"p/alice");
+        // Once, though two VMs name it; another node gets neither.
+        assert_eq!(filter_for(&db, "n1", &ws(vec![put(TableId::Vms, "vm1", &vm), put(TableId::Vms, "vm2", &vm)])).ops.len(), 3);
+        assert!(filter_for(&db, "n2", &ws(vec![put(TableId::Vms, "vm1", &vm)])).ops.is_empty());
+    }
+}
