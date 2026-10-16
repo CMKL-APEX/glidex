@@ -483,7 +483,7 @@ differently, so gRPC isn't a second copy of it:
    (§9.3), managed-field checks, secret handling and the store write.
    **Adapters only decode, call one service function, and encode.** An
    adapter that calls `Authz`, a store or `VmManager` directly fails
-   review; a lint test greps `src/api/` and `src/grpc/` for new uses in
+   review; a lint test greps `src/api/` and `src/api/rpc/` for new uses in
    tenancy modules.
 3. **Types come from proto.** Request and response messages are
    defined once in `crates/glidex-api/proto/` (grpc.md §4); REST uses
@@ -654,7 +654,7 @@ Each milestone ships its API, CLI, UI and tests together and leaves
 5. `crates/glidex-api/proto/glidex/tenancy/v1/tenants.proto`;
    `src/service/tenancy.rs` (every T0 operation, §12.1); thin adapters
    in `api/access.rs` (REST, `?tenant=` filters) and
-   `src/grpc/tenancy.rs`; the link boundary in the service's binding
+   `src/api/rpc/tenancy.rs`; the link boundary in the service's binding
    operations; marker and both-transport checks in
    `api/mod.rs::every_route_maps_to_a_schema_action`.
 6. `api/net.rs`, `pci.rs`: `tenant_grants`; `base.share-same-tenant`.
