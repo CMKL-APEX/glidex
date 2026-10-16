@@ -273,21 +273,6 @@ pub fn accept_relayed(req: &mut Request, peer_node: &str, self_node: &str) -> Re
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn host_paths_are_the_hosts_own_and_role_links_are_the_clusters() {
-        for p in ["/ovs/status", "/ovs/bridges/br0/uplinks", "/pci-devices", "/system/reconcile", "/cluster/leave"] {
-            assert!(is_remote_host_path(p), "{p}");
-        }
-        for p in ["/system/bindings", "/vms", "/cluster/status", "/cluster/dissolve", "/ovsx"] {
-            assert!(!is_remote_host_path(p), "{p}");
-        }
-    }
-}
-
 /// On an agent, `/cluster/v1/host/<path>` from a server: a host-local
 /// request it authorized for this host.
 pub fn accept_authorized(req: &mut Request) -> Result<(), Response> {
@@ -304,4 +289,19 @@ pub fn accept_authorized(req: &mut Request) -> Result<(), Response> {
     req.extensions_mut().insert(Listener::Cluster);
     req.extensions_mut().insert(PreAuthorized(action.split(',').map(str::trim).filter(|a| !a.is_empty()).map(String::from).collect()));
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn host_paths_are_the_hosts_own_and_role_links_are_the_clusters() {
+        for p in ["/ovs/status", "/ovs/bridges/br0/uplinks", "/pci-devices", "/system/reconcile", "/cluster/leave"] {
+            assert!(is_remote_host_path(p), "{p}");
+        }
+        for p in ["/system/bindings", "/vms", "/cluster/status", "/cluster/dissolve", "/ovsx"] {
+            assert!(!is_remote_host_path(p), "{p}");
+        }
+    }
 }

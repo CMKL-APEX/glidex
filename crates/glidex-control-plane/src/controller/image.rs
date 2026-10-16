@@ -63,9 +63,12 @@ impl VmManager {
             }
             ImageStatus::Failed { .. } => Ok(None),
             ImageStatus::Ready => {
+                // Copies on chosen nodes, copies let go (§9.2.2).
+                let tending = if self.cluster().is_some() { self.tend_image_copies(&mut img).await? } else { false };
+                let again = |n: Next| -> Next { n.map(|d| d.or(tending.then(|| Duration::from_secs(10)))) };
                 if self.cluster().is_some() && !self.images.image_file(&img).exists() && self.image_caches(&img.id).iter().any(|(n, r)| *n != self.local_node_id() && r.phase == crate::controller::image_cache::CachePhase::Ready) {
                     // Another node has the file: this leader fetches it only if it needs it.
-                    return self.reconcile_image_cache(&img).await;
+                    return again(self.reconcile_image_cache(&img).await);
                 }
                 if !self.images.image_file(&img).exists() {
                     img.status = ImageStatus::Missing;
@@ -82,13 +85,19 @@ impl VmManager {
                         self.queue.add(Key::Disk(d.id.clone()));
                     }
                 }
-                Ok(None)
+                again(Ok(None))
             }
             ImageStatus::Missing => {
                 if self.images.image_file(&img).exists() {
                     img.status = ImageStatus::Ready;
                     self.images.put_image(&img)?;
                     self.image_event(&img.id, EventKind::Normal, "FileFound", "the image's file is back");
+                } else if self.cluster().is_some() && self.image_caches(&img.id).iter().any(|(n, r)| *n != self.local_node_id() && r.phase == crate::controller::image_cache::CachePhase::Ready) {
+                    // Another node has it (§9.2.2).
+                    img.status = ImageStatus::Ready;
+                    self.images.put_image(&img)?;
+                    self.image_event(&img.id, EventKind::Normal, "FileFound", "another node has a copy");
+                    return Ok(Some(Duration::from_secs(1)));
                 }
                 Ok(None)
             }

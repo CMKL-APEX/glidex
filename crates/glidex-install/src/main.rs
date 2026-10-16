@@ -874,7 +874,7 @@ fn wanted_deps(opts: &Options, platform: &Platform) -> Vec<Dep> {
     // OVN on every node (servers also run its databases), unless --no-ovn.
     if opts.networking && opts.ovn {
         deps.extend_from_slice(OVN_HOST_DEPS);
-        if opts.join.as_ref().map_or(true, |j| j.role == "server") {
+        if opts.join.as_ref().is_none_or(|j| j.role == "server") {
             deps.extend_from_slice(OVN_CENTRAL_DEPS);
         }
         deps.extend_from_slice(CONNTRACK_DEPS);

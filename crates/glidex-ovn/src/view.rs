@@ -161,7 +161,7 @@ pub fn gateways(exec: &dyn Exec, conn: &NbConn, nb: &[String], sb: &[String]) ->
         .filter_map(|r| {
             let router = r.str("name")?;
             let mut candidates: Vec<(String, i64)> = refs(&r, "ha_chassis").iter().filter_map(|u| ha.get(u).cloned()).collect();
-            candidates.sort_by(|a, b| b.1.cmp(&a.1));
+            candidates.sort_by_key(|c| std::cmp::Reverse(c.1));
             Some(GatewayView { active: active.get(&router).cloned(), router, candidates })
         })
         .collect();

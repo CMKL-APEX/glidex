@@ -586,7 +586,7 @@ mod stale_chassis_tests {
     use crate::node::{Node, NodePhase, NodeRole, NodeSpec};
 
     fn node(id: &str, name: &str, phase: NodePhase) -> Node {
-        let mut n = Node::new(id, NodeSpec { name: name.into(), role: NodeRole::Agent, unschedulable: false, labels: Default::default(), br_int_datapath: Default::default(), bridge_mappings: Default::default() });
+        let mut n = Node::new(id, NodeSpec { name: name.into(), role: NodeRole::Agent, unschedulable: false, labels: Default::default(), br_int_datapath: Default::default(), bridge_mappings: Default::default(), drop_spare_files_before: None });
         n.status.phase = phase;
         n
     }

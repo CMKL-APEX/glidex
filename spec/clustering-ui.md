@@ -302,6 +302,17 @@ Each image row shows its copies: `n of m nodes`, and per node
 `ready` / `copying (p %)` / `failed (reason)`. Needs §9 `copies` on
 `GET /images`.
 
+In a cluster (clustering.md §9.2.1–3): every image shows its
+architecture. The pull form offers the architecture (default: the
+nodes chosen, else the server's), *Copy to nodes* (only nodes of that
+architecture) and *Keep the server's copy*. An image offers *Copy to
+node…* (nodes of its architecture without a copy) and each copy
+*Remove* (disabled, with the reason, while the node needs it or it is
+the last ready copy). The Node page shows the node's architecture and
+its unrecorded image files with *Delete unrecorded files*. The VM form
+shows the image's architecture, and placement preview refuses nodes of
+another one.
+
 ### 5.4 Usage
 
 Usage gains a *By node* breakdown (VM-hours, vCPU-hours, memory,

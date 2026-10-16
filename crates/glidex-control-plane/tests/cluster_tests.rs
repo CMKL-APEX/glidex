@@ -484,6 +484,128 @@ async fn a_server_relays_the_console_log_of_a_vm_on_an_agent() {
     std::fs::remove_dir_all(&paths.dir).unwrap();
 }
 
+/// spec/clustering.md §9.2.1–3: copies on chosen nodes, letting one go, a
+/// file a node already has adopted instead of copied, the rest reported and
+/// deleted on request, and images of another architecture kept off nodes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn image_copies_go_where_they_are_wanted_and_spare_files_are_used() {
+    use glidex_control_plane::store::{Origin, TableId};
+    use sha2::{Digest, Sha256};
+    let _one = SERIAL.lock().await;
+    let mut cfg = test_config();
+    cfg.reconcile.resync_secs = 2;
+    let server = new_cp();
+    server.manager.configure(&cfg);
+    manage::init(&server.manager, &cfg, InitOptions { advertise: Some(server.addr), tunnel_ip: None, listen: Some(server.addr) }).await.unwrap();
+    server.manager.initialize().await.unwrap();
+    server.manager.start_controllers();
+    let agent = new_cp();
+    agent.manager.configure(&cfg);
+    let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test").unwrap();
+    manage::join(&agent.manager, &cfg, JoinOptions { server: server.addr, token, role: NodeRole::Agent, advertise: Some(agent.addr), tunnel_ip: None, name: Some("agent1".into()), listen: Some(agent.addr) })
+        .await
+        .unwrap();
+    assert!(agent.manager.node_link().unwrap().wait_ready(Duration::from_secs(20)).await);
+    agent.manager.initialize().await.unwrap();
+    agent.manager.start_controllers();
+    let host_arch = glidex_control_plane::images::catalog::Arch::host().unwrap().as_str();
+    let other_arch = if host_arch == "x86_64" { "aarch64" } else { "x86_64" };
+    wait_until("the agent's arch", || async { node_json(&server, "agent1").await["status"]["features"]["arch"] == host_arch }).await;
+
+    // Two images the server holds: one of this host's architecture, one of another.
+    let put_image = |id: &str, arch: &str, data: &[u8]| {
+        let sha = glidex_control_plane::cluster::pki::hex(&Sha256::digest(data));
+        let img = json!({
+            "id": id, "name": id, "kind": "disk", "source": { "kind": "url", "url": "http://example.invalid/x", "expected_sha256": sha },
+            "status": { "state": "ready" }, "format": "qcow2", "virtual_size_bytes": 1048576, "file_size_bytes": data.len(), "sha256": sha,
+            "arch": arch, "created_at": 1,
+        });
+        let path = server.manager.images().image_path(id);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, data).unwrap();
+        server.manager.database().write(Origin::Api, |tx| -> Result<(), glidex_control_plane::store::StoreError> {
+            tx.open_table(TableId::Images.definition())?.insert(id, img.to_string().as_bytes())?;
+            Ok(())
+        })
+        .unwrap();
+    };
+    // The agent already has the first one's file, under another name (a
+    // host that joined), and an unrelated file.
+    let data = vec![3u8; 50_000];
+    let agent_dir = agent.manager.images().image_path("x").parent().unwrap().to_path_buf();
+    std::fs::create_dir_all(&agent_dir).unwrap();
+    std::fs::write(agent_dir.join("from-before.qcow2"), &data).unwrap();
+    std::fs::write(agent_dir.join("stray.qcow2"), b"nothing the cluster has").unwrap();
+    put_image("img-here", host_arch, &data);
+    put_image("img-other", other_arch, b"another architecture");
+
+    // Adopted, not copied: the file it had becomes its copy (§9.2.3).
+    let here = agent.manager.images().image_path("img-here");
+    wait_until("the agent to adopt its file", || async { here.exists() }).await;
+    assert!(!agent_dir.join("from-before.qcow2").exists(), "renamed into place");
+    wait_until("both copies of img-here ready", || async {
+        let c = server.manager.image_caches("img-here");
+        c.len() == 2 && c.iter().all(|(_, r)| r.phase == glidex_control_plane::controller::image_cache::CachePhase::Ready)
+    })
+    .await;
+
+    // A host that left and joined again: a tombstone has the same name, and
+    // the live node is the one a name means.
+    let store = glidex_control_plane::node::NodeStore::new(server.manager.database());
+    let mut ghost = store.get(&cluster(&agent).identity.node_id).unwrap().unwrap();
+    ghost.meta.id = "00000000-dead-4000-8000-000000000000".into();
+    ghost.status.phase = glidex_control_plane::node::NodePhase::Removed;
+    store.put(&ghost).unwrap();
+
+    // Another architecture: not copied there, and not placed there (§9.2.1).
+    let (s, e) = call(&server, "POST", "/images/img-other/copies", Some(json!({ "node": "agent1" })), &[]).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{e}");
+    assert!(e["message"].as_str().unwrap().contains(other_arch), "{e}");
+    let (s, v) = call(&server, "POST", "/scheduler/preview", Some(json!({ "vcpu_count": 1, "mem_size_mib": 256, "image": "img-other" })), &[]).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert!(v["pick"].is_null(), "{v}");
+    assert!(v["nodes"].as_array().unwrap().iter().all(|n| n["refused"].as_str().unwrap_or_default().contains(&format!("the VM's image is {other_arch}"))), "{v}");
+
+    // The server lets its copy go; the last one can't (§9.2.2).
+    let server_id = cluster(&server).identity.node_id.clone();
+    let agent_id = cluster(&agent).identity.node_id.clone();
+    let (s, e) = call(&server, "DELETE", &format!("/images/img-here/copies/{server_id}"), None, &[]).await;
+    assert_eq!(s, StatusCode::ACCEPTED, "{e}");
+    let server_file = server.manager.images().image_path("img-here");
+    wait_until("the server's copy to go", || async { !server_file.exists() && server.manager.image_caches("img-here").len() == 1 }).await;
+    // Another node has the only copy: the image is ready, not missing, even
+    // after a restart checked the server's own files.
+    let mut img = server.manager.images().get_image("img-here").unwrap();
+    img.status = glidex_control_plane::images::ImageStatus::Missing;
+    server.manager.images().put_image(&img).unwrap();
+    wait_until("the image ready again", || async { server.manager.images().get_image("img-here").unwrap().status == glidex_control_plane::images::ImageStatus::Ready }).await;
+    let (s, e) = call(&server, "DELETE", "/images/img-here/copies/agent1", None, &[]).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{e}");
+    assert!(e["message"].as_str().unwrap().contains("last ready copy"), "{e}");
+    // And comes back when pinned again.
+    let (s, v) = call(&server, "POST", "/images/img-here/copies", Some(json!({ "node": server_id })), &[]).await;
+    assert_eq!(s, StatusCode::ACCEPTED, "{v}");
+    wait_until("the server's copy back", || async { server_file.exists() }).await;
+    let (_, v) = call(&server, "GET", "/images/img-here", None, &[]).await;
+    let pinned: Vec<&Value> = v["copies"].as_array().unwrap().iter().filter(|c| c["pinned"] == true).collect();
+    assert_eq!((pinned.len(), pinned[0]["node"].as_str()), (1, Some(server_id.as_str())), "{v}");
+    let _ = agent_id;
+
+    // The rest is reported, and deleted when asked (§9.2.3). (Nodes report
+    // every two minutes: report now.)
+    let m = agent.manager.clone();
+    tokio::task::spawn_blocking(move || m.report_self()).await.unwrap().unwrap();
+    wait_until("the stray file reported", || async {
+        node_json(&server, "agent1").await["status"]["features"]["spare_image_files"].as_array().is_some_and(|f| f.iter().any(|f| f["name"] == "stray.qcow2"))
+    })
+    .await;
+    let agent_node = node_json(&server, "agent1").await["meta"]["id"].as_str().unwrap().to_string();
+    let (s, v) = call(&server, "POST", &format!("/nodes/{agent_node}/spare-image-files/delete"), Some(json!({})), &[]).await;
+    assert_eq!(s, StatusCode::ACCEPTED, "{v}");
+    wait_until("the stray file gone", || async { !agent_dir.join("stray.qcow2").exists() }).await;
+    assert!(here.exists(), "the adopted copy stays");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn a_node_copies_an_image_it_needs_from_a_holder_and_checks_it() {
     use glidex_control_plane::store::{Origin, TableId};
@@ -839,7 +961,10 @@ async fn provider_networks_and_vpc_routers() {
 async fn node_json(cp: &Cp, key: &str) -> Value {
     let (s, v) = call(cp, "GET", "/nodes", None, &[]).await;
     assert_eq!(s, StatusCode::OK, "{v}");
-    v.as_array().unwrap().iter().find(|n| n["meta"]["id"] == key || n["spec"]["name"] == key).cloned().unwrap_or(Value::Null)
+    let all = v.as_array().unwrap();
+    // The live node a name means, before a tombstone of the same name.
+    let live = |n: &&Value| !matches!(n["status"]["phase"].as_str(), Some("Removed" | "Departed" | "Forgotten"));
+    all.iter().find(|n| n["meta"]["id"] == key).or_else(|| all.iter().filter(live).find(|n| n["spec"]["name"] == key)).or_else(|| all.iter().find(|n| n["spec"]["name"] == key)).cloned().unwrap_or(Value::Null)
 }
 
 fn denylist_len(cp: &Cp) -> usize {
@@ -1335,8 +1460,7 @@ async fn the_last_node_dissolves_the_cluster_and_keeps_everything() {
 /// The UI socket of an agent with `ui_user` set to whoever runs the test,
 /// so the relay's peer check passes.
 fn agent_ui_router(cp: &Cp, relay: bool) -> axum::Router {
-    let mut cfg = Config::default();
-    cfg.ui_user = nix::unistd::User::from_uid(nix::unistd::getuid()).unwrap().unwrap().name;
+    let mut cfg = Config { ui_user: nix::unistd::User::from_uid(nix::unistd::getuid()).unwrap().unwrap().name, ..Default::default() };
     cfg.cluster.ui_relay = relay;
     let auth = glidex_control_plane::auth::AuthService::disabled_with(cp.manager.database(), cfg).unwrap();
     glidex_control_plane::api::router(Arc::new(glidex_control_plane::api::App { manager: cp.manager.clone(), auth }))

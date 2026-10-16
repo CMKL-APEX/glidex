@@ -201,6 +201,8 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         .add("GET", "/images/{id}", "readImage", get(storage::get_image))
         .add("DELETE", "/images/{id}", "deleteImage", delete(storage::delete_image))
         .add("POST", "/images/{id}/retry", "pullImage", post(storage::retry_image))
+        .add("POST", "/images/{id}/copies", "pullImage", post(storage::add_image_copy))
+        .add("DELETE", "/images/{id}/copies/{node}", "pullImage", delete(storage::remove_image_copy))
         .add("GET", "/images/{id}/events", "readImage", get(storage::image_events))
         .add("GET", "/disks/{id}/events", "readDisk", get(storage::disk_events))
         .add("GET", "/disks", "listDisks", get(storage::list_disks))
@@ -264,6 +266,7 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         .add("GET", "/nodes/{id}", "readNode", get(nodes::get_node))
         .add("POST", "/nodes/{id}/drain", "drainNode", post(nodes::drain))
         .add("PUT", "/nodes/{id}/ovn", "configureNode", axum::routing::put(nodes::put_node_ovn))
+        .add("POST", "/nodes/{id}/spare-image-files/delete", "pullImage", post(nodes::delete_spare_image_files))
         .add("POST", "/nodes/{id}/undrain", "undrainNode", post(nodes::undrain))
         .add("POST", "/nodes/{id}/remove", "removeNode", post(nodes::remove))
         .add("POST", "/nodes/{id}/forget", "forgetNode", post(nodes::forget))
@@ -802,6 +805,20 @@ pub(crate) fn add_network(es: &mut EntitySet, n: &crate::network::Network) -> En
     Ent::Network(n.name.clone())
 }
 
+/// Where `gxctl` on an agent logs in: a server's API (spec/gxctl-auth.md).
+fn agent_login_hint(m: &crate::state::VmManager) -> String {
+    let servers: Vec<String> = m
+        .nodes()
+        .list()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|n| n.spec.role == crate::node::NodeRole::Server && !n.status.phase.is_tombstone())
+        .filter_map(|n| n.status.advertise.map(|a| format!("https://{}:8841", a.ip())))
+        .collect();
+    let url = servers.first().cloned().unwrap_or_else(|| "https://<server>:8841".into());
+    format!("this host is a cluster agent: it has no local API, and the cluster can't vouch for a Unix user of another host. Log in to a server: `gxctl auth login {url}` (servers: {})", if servers.is_empty() { "unknown".into() } else { servers.join(", ") })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -840,18 +857,4 @@ mod tests {
         h.insert(header::AUTHORIZATION, "Bearer gxt_x".parse().unwrap());
         assert_eq!(bearer(&h).as_deref(), Some("gxt_x"));
     }
-}
-
-/// Where `gxctl` on an agent logs in: a server's API (spec/gxctl-auth.md).
-fn agent_login_hint(m: &crate::state::VmManager) -> String {
-    let servers: Vec<String> = m
-        .nodes()
-        .list()
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|n| n.spec.role == crate::node::NodeRole::Server && !n.status.phase.is_tombstone())
-        .filter_map(|n| n.status.advertise.map(|a| format!("https://{}:8841", a.ip())))
-        .collect();
-    let url = servers.first().cloned().unwrap_or_else(|| "https://<server>:8841".into());
-    format!("this host is a cluster agent: it has no local API, and the cluster can't vouch for a Unix user of another host. Log in to a server: `gxctl auth login {url}` (servers: {})", if servers.is_empty() { "unknown".into() } else { servers.join(", ") })
 }

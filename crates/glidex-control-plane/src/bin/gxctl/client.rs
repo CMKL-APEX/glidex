@@ -1045,7 +1045,7 @@ mod tests {
         cfg.profiles.insert(
             "t".into(),
             crate::config::Profile {
-                url: vec![format!("https://127.0.0.1:1"), format!("https://127.0.0.1:{live}")],
+                url: vec!["https://127.0.0.1:1".to_string(), format!("https://127.0.0.1:{live}")],
                 tls: tls.clone(),
                 ..Default::default()
             },

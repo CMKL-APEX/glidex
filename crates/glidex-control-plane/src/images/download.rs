@@ -182,7 +182,11 @@ impl ImageManager {
     /// Start a download (spec §5). Returns the record and whether it is
     /// new; an in-flight download of the same catalog key is returned as is.
     pub async fn pull_image(self: &Arc<Self>, req: PullImageRequest) -> Result<(Image, bool), ImageError> {
-        let arch = Arch::host().ok_or_else(|| ImageError::InvalidImage("unsupported host architecture".into()))?;
+        // In a cluster the leader downloads for any node's architecture (§9.2.1).
+        let arch = match req.arch.as_deref() {
+            Some(a) => Arch::parse(a).ok_or_else(|| ImageError::InvalidImage(format!("unknown arch {a}: x86_64 or aarch64")))?,
+            None => Arch::host().ok_or_else(|| ImageError::InvalidImage("unsupported host architecture".into()))?,
+        };
         let firmware_url = req.kind == Some(ImageKind::Firmware);
         if req.hypervisor.is_some() && !firmware_url {
             return Err(ImageError::InvalidImage("hypervisor is only for a firmware download (kind: firmware)".into()));
@@ -219,6 +223,7 @@ impl ImageManager {
                 }
                 if let Some(existing) = self.images.read().unwrap().values().find(|i| {
                     i.firmware_key() == Some(key.as_str())
+                        && i.arch == arch
                         && i.deletion_requested_at.is_none()
                         && matches!(i.status, ImageStatus::Downloading { .. } | ImageStatus::Verifying)
                 }) {
@@ -242,6 +247,9 @@ impl ImageManager {
                         ImageSource::Firmware { key: key.clone(), url: url.to_string(), version: version.to_string() }
                     }
                     FirmwareSource::Host { package, .. } => {
+                        if Some(arch) != Arch::host() {
+                            return Err(ImageError::InvalidImage(format!("{key} comes from this host's {package} package, which is not for {}: pull it on a server of that architecture", arch.as_str())));
+                        }
                         let code = entry.host_file().ok_or_else(|| {
                             ImageError::ToolMissing { tool: "OVMF firmware".into(), package: package.into() }
                         })?;
@@ -263,6 +271,7 @@ impl ImageManager {
                 })?;
                 if let Some(existing) = self.images.read().unwrap().values().find(|i| {
                     i.catalog_key() == Some(key.as_str())
+                        && i.arch == arch
                         && i.deletion_requested_at.is_none()
                         && matches!(i.status, ImageStatus::Downloading { .. } | ImageStatus::Verifying)
                 }) {
@@ -292,7 +301,12 @@ impl ImageManager {
         let name = match &req.name {
             Some(n) => n.clone(),
             None => match &source {
-                ImageSource::Catalog { key, .. } | ImageSource::Firmware { key, .. } => key.clone(),
+                // Names stay unique: another architecture's copy of the same
+                // key keeps the plain name (§9.2.1).
+                ImageSource::Catalog { key, .. } | ImageSource::Firmware { key, .. } => {
+                    let taken_by_other_arch = self.images.read().unwrap().values().any(|i| i.name == *key && i.arch != arch);
+                    if taken_by_other_arch { format!("{key}-{}", arch.as_str()) } else { key.clone() }
+                }
                 ImageSource::Url { url, .. } => {
                     let file = catalog::url_file_name(url);
                     let stem = file.split('.').next().unwrap_or(file);
@@ -342,6 +356,9 @@ impl ImageManager {
             retry_seq: 0,
             applied_retry_seq: 0,
             deletion_requested_at: None,
+            pinned: req.nodes.clone(),
+            release: Vec::new(),
+            keep_server_copy: req.keep_server_copy.unwrap_or(true),
         };
         if let Some((code, vars)) = import {
             // A local copy: made before the record exists, so a failure
@@ -814,7 +831,7 @@ impl ImageManager {
                 streamed_sha256
             }
             "raw" => {
-                let converted = crate::paths::file_in(&self.settings.image_dir, &format!("{}.qcow2.conv.part", super::safe_stem(&id)));
+                let converted = crate::paths::file_in(&self.settings.image_dir, &format!("{}.qcow2.conv.part", super::safe_stem(id)));
                 let _ = std::fs::remove_file(&converted);
                 qemu_img::convert(&part, DiskFormat::Raw, &converted, DiskFormat::Qcow2)?;
                 std::fs::rename(&converted, &part).map_err(|e| ImageError::Io(e.to_string()))?;

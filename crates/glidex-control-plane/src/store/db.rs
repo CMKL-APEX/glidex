@@ -421,6 +421,9 @@ enum Mode {
     Mirror(Arc<dyn Mirror>),
 }
 
+/// One table's contents, as [`Db::dump`] gives them: keys and values in key order.
+pub type TableDump = (TableId, Vec<(String, Vec<u8>)>);
+
 /// The control-plane database.
 pub struct Db {
     inner: redb::Database,
@@ -627,7 +630,7 @@ impl Db {
     }
 
     /// Every table's contents, in key order, for comparing databases.
-    pub fn dump(&self) -> Result<Vec<(TableId, Vec<(String, Vec<u8>)>)>, StoreError> {
+    pub fn dump(&self) -> Result<Vec<TableDump>, StoreError> {
         use redb::ReadableTable;
         let txn = self.inner.begin_read()?;
         let mut out = Vec::new();

@@ -10,7 +10,7 @@ import { useLive, useLiveRefresh } from "../live";
 import { useNodes } from "../nodes";
 import NodeActions from "../components/NodeActions";
 import { NodeOvnCard } from "../components/OvnViews";
-import { useSession } from "../session";
+import { useCan, useSession } from "../session";
 import { LoadingCard } from "../components/Loading";
 import { Badge, Card, ErrorBanner, PageHeader, errorMessage } from "../components/ui";
 
@@ -163,6 +163,8 @@ export default function NodeDetail() {
                 <dd>{s.versions.ovn}</dd>
               </>
             )}
+            <dt className="text-gray-500">Architecture</dt>
+            <dd>{s.features?.arch || "—"}</dd>
             <dt className="text-gray-500">Hypervisors</dt>
             <dd>{s.features?.hypervisors.join(", ") || "—"}</dd>
             <dt className="text-gray-500">KVM / IOMMU / DPDK</dt>
@@ -219,6 +221,8 @@ export default function NodeDetail() {
       </div>
 
       {host.readCluster && <NodeOvnCard node={id} />}
+
+      <SpareFilesCard node={node} />
 
       {mapsOpen && (
         <MappingsDialog
@@ -292,5 +296,52 @@ export default function NodeDetail() {
         </Card>
       )}
     </div>
+  );
+}
+
+/** Files in the node's image directory that no image record names
+ * (spec/clustering.md §9.2.3): from before it joined, mostly. Files
+ * matching a ready image are adopted as its copies; these are the rest. */
+function SpareFilesCard({ node }: { node: NodeRecord }) {
+  const files = node.status.features?.spare_image_files ?? [];
+  const caps = useCan([{ action: "pullImage", resource: { type: "Cluster" } }]);
+  const [error, setError] = useState<string | null>(null);
+  const [asked, setAsked] = useState(false);
+  if (files.length === 0) return null;
+  const bytes = files.reduce((n, f) => n + f.bytes, 0);
+  const drop = async () => {
+    if (!confirm(`Delete ${files.length} unrecorded file(s) (${formatBytes(bytes)}) on ${node.spec.name}?`)) return;
+    setError(null);
+    try {
+      await api.deleteSpareImageFiles(node.meta.id);
+      setAsked(true);
+    } catch (e) {
+      setError(errorMessage(e));
+    }
+  };
+  return (
+    <Card
+      title={`Unrecorded image files (${files.length}, ${formatBytes(bytes)})`}
+      actions={
+        caps?.[0] && (
+          <button className="px-3 py-1.5 text-sm text-red-700 bg-red-50 hover:bg-red-100 rounded-lg disabled:opacity-50" disabled={asked} onClick={drop}>
+            {asked ? "Deleting…" : "Delete unrecorded files"}
+          </button>
+        )
+      }
+    >
+      <ErrorBanner error={error} onDismiss={() => setError(null)} />
+      <p className="text-sm text-gray-600 mb-2">
+        In this node's image directory, but no image refers to them (from before it joined, say). A file matching an image is used as
+        its copy here; these match none.
+      </p>
+      <ul className="text-sm font-mono space-y-0.5">
+        {files.map((f) => (
+          <li key={f.name}>
+            {f.name} <span className="text-gray-500 font-sans">{formatBytes(f.bytes)}</span>
+          </li>
+        ))}
+      </ul>
+    </Card>
   );
 }

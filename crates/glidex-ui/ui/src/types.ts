@@ -293,7 +293,8 @@ export interface ImageInfo {
   /** VMs booting through this firmware image. */
   used_by_vms?: string[];
   /** In a cluster, each node's copy of the file (spec/clustering-ui.md §5.3). */
-  copies?: { node: string; node_name?: string; state: "downloading" | "ready" | "failed"; bytes: number; error?: string }[];
+  /** Each node's copy (spec/clustering.md §9.2.2): `wanted` is pinned and not started, `releasing` asked to go. */
+  copies?: { node: string; node_name?: string; state: "downloading" | "ready" | "failed" | "wanted" | "releasing"; bytes: number; error?: string; pinned?: boolean }[];
   /** Deletion requested; the image controller is removing it. */
   deleting?: boolean;
 }
@@ -935,7 +936,18 @@ export interface NodeRecord {
     versions: { glidex: string; ovs?: string; ovn?: string };
     capacity: NodeResources;
     allocatable: NodeResources;
-    features?: { kvm: boolean; hypervisors: string[]; dpdk?: boolean; iommu?: boolean; br_int_datapath?: string; physnets?: Record<string, string> };
+    features?: {
+      kvm: boolean;
+      hypervisors: string[];
+      dpdk?: boolean;
+      iommu?: boolean;
+      br_int_datapath?: string;
+      physnets?: Record<string, string>;
+      /** `x86_64` or `aarch64` (spec/clustering.md §9.2.1). */
+      arch?: string;
+      /** Files in its image directory that no image record names (§9.2.3). */
+      spare_image_files?: { name: string; bytes: number; mtime: number }[];
+    };
     pci_devices?: string[];
     heartbeat?: number;
     departed_ids?: string[];

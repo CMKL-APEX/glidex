@@ -195,7 +195,7 @@ pub fn plan(
     // Our own bridge's route (from a previous apply) must not count as a collision.
     let routes: Vec<Ipv4Net> = route_destinations(exec)?
         .into_iter()
-        .filter(|r| existing.map_or(true, |e| *r != e.subnet))
+        .filter(|r| existing.is_none_or(|e| *r != e.subnet))
         .collect();
     let subnet = match (spec.subnet, existing) {
         (None, Some(e)) => e.subnet,
@@ -745,7 +745,7 @@ table inet glidex {
         exec.on("iptables -w -S DOCKER-USER", Output::ok("-N DOCKER-USER\n"));
         exec.on("iptables -w -F GLIDEX-FORWARD", Output::failed(1, "No chain"));
         exec.on("iptables -w -C DOCKER-USER", Output::failed(1, "Bad rule"));
-        apply_iptables(&exec, &[a.clone()]).unwrap();
+        apply_iptables(&exec, std::slice::from_ref(&a)).unwrap();
         let calls = exec.calls();
         let after_detect: Vec<&str> = calls.iter().skip(1).map(String::as_str).collect();
         assert_eq!(after_detect, [
@@ -772,7 +772,7 @@ table inet glidex {
         exec.on("iptables -w -S INPUT", Output::ok("-P INPUT DROP\n-A INPUT -j ufw-before-input\n"));
         exec.on("iptables -w -F GLIDEX-INPUT", Output::failed(1, "No chain"));
         exec.on("iptables -w -C INPUT", Output::failed(1, "Bad rule"));
-        apply_iptables_input(&exec, &[a.clone()]).unwrap();
+        apply_iptables_input(&exec, std::slice::from_ref(&a)).unwrap();
         let calls = exec.calls();
         let after_detect: Vec<&str> = calls.iter().skip(1).map(String::as_str).collect();
         assert_eq!(after_detect, [
@@ -789,7 +789,7 @@ table inet glidex {
         // Re-applying keeps the existing chain and jump.
         let exec = RecordingExec::new();
         exec.on("iptables -w -S INPUT", Output::ok("-P INPUT DROP\n"));
-        apply_iptables_input(&exec, &[a.clone()]).unwrap();
+        apply_iptables_input(&exec, std::slice::from_ref(&a)).unwrap();
         assert!(!exec.calls().iter().any(|c| c.contains(" -N ") || c.contains(" -I ")), "{:#?}", exec.calls());
 
         // INPUT accepts, or no NAT networks left: the chain and jump go.
