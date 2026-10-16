@@ -247,15 +247,36 @@ async fn rpc_writes_on_a_follower_reach_the_leader_with_their_trailers() {
             .unwrap();
         cp.router.clone().oneshot(req)
     };
-    let resp = grpc(&cps[follower], "acme").await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let headers = resp.headers().clone();
-    let collected = resp.into_body().collect().await.unwrap();
+    // A write right after an election can answer 503 while the new leader
+    // settles (as create_project knows); retry those. A 503 after the
+    // write was applied makes the retry a duplicate (ABORTED, 10).
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let mut retried = false;
+    let (headers, collected) = loop {
+        let resp = grpc(&cps[follower], "acme").await.unwrap();
+        let status = resp.status();
+        let headers = resp.headers().clone();
+        let collected = resp.into_body().collect().await.unwrap();
+        if status == StatusCode::SERVICE_UNAVAILABLE && tokio::time::Instant::now() < deadline {
+            retried = true;
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            continue;
+        }
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&collected.to_bytes()));
+        break (headers, collected);
+    };
     let trailers = collected.trailers().cloned().expect("gRPC trailers came back through the forward");
-    assert_eq!(trailers.get("grpc-status").map(|v| v.to_str().unwrap()), Some("0"), "headers {headers:?} trailers {trailers:?}");
-    let b = collected.to_bytes();
-    let created = CreateTenantResponse::decode_from_slice(&b[5..]).unwrap();
-    let id = created.tenant.as_option().unwrap().id.clone();
+    let grpc_status = trailers.get("grpc-status").map(|v| v.to_str().unwrap().to_string());
+    let id = if grpc_status.as_deref() == Some("10") && retried {
+        let (s, v) = call(&cps[leader], "GET", "/tenants/acme", None, &[]).await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        v["tenant"]["id"].as_str().unwrap().to_string()
+    } else {
+        assert_eq!(grpc_status.as_deref(), Some("0"), "headers {headers:?} trailers {trailers:?}");
+        let b = collected.to_bytes();
+        let created = CreateTenantResponse::decode_from_slice(&b[5..]).unwrap();
+        created.tenant.as_option().unwrap().id.clone()
+    };
     // Written once, through Raft: both servers have it.
     for cp in &cps {
         let (s, v) = call(cp, "GET", &format!("/tenants/{id}"), None, &[]).await;
@@ -263,7 +284,15 @@ async fn rpc_writes_on_a_follower_reach_the_leader_with_their_trailers() {
         assert_eq!(v["tenant"]["slug"], "acme");
     }
     // An error is forwarded the same way: a duplicate is ABORTED (10).
-    let resp = grpc(&cps[follower], "acme").await.unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let resp = loop {
+        let resp = grpc(&cps[follower], "acme").await.unwrap();
+        if resp.status() == StatusCode::SERVICE_UNAVAILABLE && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            continue;
+        }
+        break resp;
+    };
     let headers = resp.headers().clone();
     let collected = resp.into_body().collect().await.unwrap();
     let status = collected.trailers().and_then(|t| t.get("grpc-status").cloned()).or_else(|| headers.get("grpc-status").cloned());
