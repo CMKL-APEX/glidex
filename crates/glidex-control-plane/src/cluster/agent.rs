@@ -130,6 +130,7 @@ impl NodeLink {
 
     /// One request to the leader: tries each known server, following
     /// "not the leader" answers. `Err(None)`: nobody could be reached.
+    #[allow(clippy::result_large_err)] // the reply itself is the error: the caller passes it on
     async fn to_leader(&self, method: hyper::Method, path: &str, body: Bytes, timeout: Duration) -> Result<super::net::Reply, Option<super::net::Reply>> {
         if self.partitioned.load(Ordering::Acquire) {
             self.set_connected(false, "partitioned");

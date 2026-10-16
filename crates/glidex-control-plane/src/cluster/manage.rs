@@ -171,7 +171,7 @@ pub async fn init(manager: &Arc<VmManager>, cfg: &crate::config::Config, opts: I
     // 5. Raft: a cluster of one, then the writes that only a cluster has.
     crate::authz::set_identity(&cluster_id, &node_id);
     crate::authz::set_local_account_scope((!ccfg.shared_local_accounts).then(|| node_id.clone()));
-    let cluster = Cluster::start(db.clone(), files.clone(), identity.clone(), ccfg, listen).await.map_err(|e| rollback(e))?;
+    let cluster = Cluster::start(db.clone(), files.clone(), identity.clone(), ccfg, listen).await.map_err(rollback)?;
     let node = cluster.node.as_ref().expect("a server has a Raft member");
     node.bootstrap(&advertise.to_string()).await.map_err(|e| rollback(e.into()))?;
     node.wait_for_leader(Duration::from_secs(20)).await.map_err(|e| rollback(e.into()))?;

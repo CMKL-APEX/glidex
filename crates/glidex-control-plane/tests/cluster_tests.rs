@@ -583,7 +583,7 @@ async fn image_copies_go_where_they_are_wanted_and_spare_files_are_used() {
     assert_eq!(s, StatusCode::CONFLICT, "{e}");
     assert!(e["message"].as_str().unwrap().contains("last ready copy"), "{e}");
     // And comes back when pinned again.
-    let (s, v) = call(&server, "POST", &format!("/images/img-here/copies"), Some(json!({ "node": server_id })), &[]).await;
+    let (s, v) = call(&server, "POST", "/images/img-here/copies", Some(json!({ "node": server_id })), &[]).await;
     assert_eq!(s, StatusCode::ACCEPTED, "{v}");
     wait_until("the server's copy back", || async { server_file.exists() }).await;
     let (_, v) = call(&server, "GET", "/images/img-here", None, &[]).await;
@@ -1460,8 +1460,7 @@ async fn the_last_node_dissolves_the_cluster_and_keeps_everything() {
 /// The UI socket of an agent with `ui_user` set to whoever runs the test,
 /// so the relay's peer check passes.
 fn agent_ui_router(cp: &Cp, relay: bool) -> axum::Router {
-    let mut cfg = Config::default();
-    cfg.ui_user = nix::unistd::User::from_uid(nix::unistd::getuid()).unwrap().unwrap().name;
+    let mut cfg = Config { ui_user: nix::unistd::User::from_uid(nix::unistd::getuid()).unwrap().unwrap().name, ..Default::default() };
     cfg.cluster.ui_relay = relay;
     let auth = glidex_control_plane::auth::AuthService::disabled_with(cp.manager.database(), cfg).unwrap();
     glidex_control_plane::api::router(Arc::new(glidex_control_plane::api::App { manager: cp.manager.clone(), auth }))

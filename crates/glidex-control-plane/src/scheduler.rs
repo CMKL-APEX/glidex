@@ -61,7 +61,7 @@ fn failing(n: &Node, load: Load, req: &Request, cfg: &SchedulerConfig) -> Option
     if req.hugepages && n.status.allocatable.hugepages.is_empty() {
         return Some("no hugepages".into());
     }
-    if !req.hypervisor.is_empty() && !n.status.features.hypervisors.iter().any(|h| *h == req.hypervisor) {
+    if !req.hypervisor.is_empty() && !n.status.features.hypervisors.contains(&req.hypervisor) {
         return Some(format!("{} is not installed", req.hypervisor));
     }
     if !n.status.features.runs_arch(&req.arch) {

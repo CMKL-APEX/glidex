@@ -3,6 +3,8 @@
 //! needs a certificate the cluster issued; Raft, forwarding and the CA key
 //! need a *server's* (§12.3).
 
+#![allow(clippy::result_large_err)] // handlers' checks return the Response to send, as in api/mod.rs
+
 use super::net::PeerCert;
 use super::raft::{Rpc, SnapshotHandle};
 use super::runtime::Cluster;

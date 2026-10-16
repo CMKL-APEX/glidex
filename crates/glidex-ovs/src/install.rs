@@ -194,7 +194,7 @@ fn dpdk_mempool_drivers(exec: &dyn Exec) -> Vec<String> {
     };
     let mut names: Vec<String> = out
         .stdout_str()
-        .split(|c| c == ',' || c == '|')
+        .split([',', '|'])
         .filter_map(|dep| dep.split_whitespace().next())
         .filter(|name| name.starts_with("librte-mempool-"))
         .filter(|name| name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.' || c == '+'))

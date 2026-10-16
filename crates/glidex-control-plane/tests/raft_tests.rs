@@ -8,7 +8,7 @@ use std::time::Duration;
 async fn a_single_member_commits_writes() {
     let c = TestCluster::new(1).await;
     c.put(1, "k", "v").unwrap();
-    assert_eq!(c.by_id(1).db.revision() > 0, true);
+    assert!(c.by_id(1).db.revision() > 0);
     let dump = c.by_id(1).db.dump().unwrap();
     assert!(dump.iter().any(|(_, rows)| rows.iter().any(|(k, v)| k == "k" && v == b"v")));
 }

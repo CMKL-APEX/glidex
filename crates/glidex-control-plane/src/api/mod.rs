@@ -805,6 +805,20 @@ pub(crate) fn add_network(es: &mut EntitySet, n: &crate::network::Network) -> En
     Ent::Network(n.name.clone())
 }
 
+/// Where `gxctl` on an agent logs in: a server's API (spec/gxctl-auth.md).
+fn agent_login_hint(m: &crate::state::VmManager) -> String {
+    let servers: Vec<String> = m
+        .nodes()
+        .list()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|n| n.spec.role == crate::node::NodeRole::Server && !n.status.phase.is_tombstone())
+        .filter_map(|n| n.status.advertise.map(|a| format!("https://{}:8841", a.ip())))
+        .collect();
+    let url = servers.first().cloned().unwrap_or_else(|| "https://<server>:8841".into());
+    format!("this host is a cluster agent: it has no local API, and the cluster can't vouch for a Unix user of another host. Log in to a server: `gxctl auth login {url}` (servers: {})", if servers.is_empty() { "unknown".into() } else { servers.join(", ") })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -843,18 +857,4 @@ mod tests {
         h.insert(header::AUTHORIZATION, "Bearer gxt_x".parse().unwrap());
         assert_eq!(bearer(&h).as_deref(), Some("gxt_x"));
     }
-}
-
-/// Where `gxctl` on an agent logs in: a server's API (spec/gxctl-auth.md).
-fn agent_login_hint(m: &crate::state::VmManager) -> String {
-    let servers: Vec<String> = m
-        .nodes()
-        .list()
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|n| n.spec.role == crate::node::NodeRole::Server && !n.status.phase.is_tombstone())
-        .filter_map(|n| n.status.advertise.map(|a| format!("https://{}:8841", a.ip())))
-        .collect();
-    let url = servers.first().cloned().unwrap_or_else(|| "https://<server>:8841".into());
-    format!("this host is a cluster agent: it has no local API, and the cluster can't vouch for a Unix user of another host. Log in to a server: `gxctl auth login {url}` (servers: {})", if servers.is_empty() { "unknown".into() } else { servers.join(", ") })
 }

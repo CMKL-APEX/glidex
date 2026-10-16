@@ -267,7 +267,7 @@ async fn tofu_verdict(urls: &[String]) -> String {
 }
 
 async fn auth_login(session: &ApiClient, args: &[&str]) {
-    let mut urls: Vec<String> = flag_values(args, "--url").into_iter().chain(flag_values(args, "--server").into_iter()).map(|u| (*u).to_string()).collect();
+    let mut urls: Vec<String> = flag_values(args, "--url").into_iter().chain(flag_values(args, "--server")).map(|u| (*u).to_string()).collect();
     let mut name = flag_value(args, "--profile").map(|s| s.to_string());
     let rebind = has_flag(args, "--rebind");
     let non_interactive = has_flag(args, "--non-interactive") || !std::io::stdin().is_terminal();
@@ -867,7 +867,7 @@ async fn auth_trust(args: &[&str]) {
                 }
                 println!("{}", if gone { format!("{} pin removed from profile '{name}'", "OK:".green()) } else { format!("profile '{name}' had no such pin") });
             } else {
-                return usage("Usage: auth trust remove <sha256/pin> | auth trust remove --all [--yes]");
+                usage("Usage: auth trust remove <sha256/pin> | auth trust remove --all [--yes]")
             }
         }
         _ => usage("Usage: auth trust list | fetch | remove <sha256/pin> | remove --all [--yes]"),
@@ -1807,35 +1807,6 @@ pub async fn network(client: &ApiClient, args: &[&str]) {
     }
 }
 
-#[cfg(test)]
-mod tests {
-
-    #[test]
-    fn usage_query_from_flags() {
-        let p = super::usage_path(&["--by", "vm,nic", "--from", "2026-10-01T00:00:00Z", "--csv"], Some("pa".into()));
-        assert!(p.starts_with("/usage?project=pa&granularity=month&from=2026-10-01T00%3A00%3A00Z&group_by=vm%2Cnic"), "{p}");
-        assert!(p.ends_with("&format=csv"), "{p}");
-        assert_eq!(super::usage_path(&["--granularity", "day"], None), "/usage?granularity=day");
-    }
-    use super::*;
-
-    #[test]
-    fn quota_edits_merge_into_the_current_set() {
-        let mut q = json!({ "vms": 5, "vcpus": null, "networks": 2 });
-        apply_quota_edits(&mut q, &["vms=10", "networks=none", "memory_mib=4096"]).unwrap();
-        assert_eq!(q, json!({ "vms": 10, "vcpus": null, "networks": null, "memory_mib": 4096 }));
-        assert!(apply_quota_edits(&mut q, &["cpus=1"]).is_err());
-        assert!(apply_quota_edits(&mut q, &["vms"]).is_err());
-        assert!(apply_quota_edits(&mut q, &["vms=lots"]).is_err());
-    }
-
-    #[test]
-    fn positional_arguments_skip_flags_and_their_values() {
-        assert_eq!(positional(&["ci", "--days", "7", "--service-account", "--role", "viewer"], &["--days", "--role"]), vec!["ci"]);
-        assert_eq!(positional(&["--project", "lab", "net1"], &["--project"]), vec!["net1"]);
-    }
-}
-
 // ---- cluster (spec/clustering.md §5) ---------------------------------------
 
 /// A token read from a 0600 file or stdin, never from argv.
@@ -1909,7 +1880,7 @@ pub async fn cluster(client: &ApiClient, args: &[&str]) {
             match client.request_json::<Value>(Method::POST, "/cluster/join-tokens", Some(body)).await {
                 Ok(v) => {
                     println!("{}", s(&v["token"]));
-                    eprintln!("Shown once. Valid {} s; for a {} node. Servers: {}", v["ttl_secs"], s(&v["role"]), v["servers"].as_array().map(|a| a.iter().map(|x| s(x)).collect::<Vec<_>>().join(", ")).unwrap_or_default());
+                    eprintln!("Shown once. Valid {} s; for a {} node. Servers: {}", v["ttl_secs"], s(&v["role"]), v["servers"].as_array().map(|a| a.iter().map(s).collect::<Vec<_>>().join(", ")).unwrap_or_default());
                 }
                 Err(e) => err(e),
             }
@@ -2006,5 +1977,34 @@ pub async fn cluster(client: &ApiClient, args: &[&str]) {
             }
         }
         Some(other) => usage(&format!("Unknown cluster command '{other}'. Try: init, join, join-token, status, promote, snapshot, rotate-ca, rejoin, leave, dissolve")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    #[test]
+    fn usage_query_from_flags() {
+        let p = super::usage_path(&["--by", "vm,nic", "--from", "2026-10-01T00:00:00Z", "--csv"], Some("pa".into()));
+        assert!(p.starts_with("/usage?project=pa&granularity=month&from=2026-10-01T00%3A00%3A00Z&group_by=vm%2Cnic"), "{p}");
+        assert!(p.ends_with("&format=csv"), "{p}");
+        assert_eq!(super::usage_path(&["--granularity", "day"], None), "/usage?granularity=day");
+    }
+    use super::*;
+
+    #[test]
+    fn quota_edits_merge_into_the_current_set() {
+        let mut q = json!({ "vms": 5, "vcpus": null, "networks": 2 });
+        apply_quota_edits(&mut q, &["vms=10", "networks=none", "memory_mib=4096"]).unwrap();
+        assert_eq!(q, json!({ "vms": 10, "vcpus": null, "networks": null, "memory_mib": 4096 }));
+        assert!(apply_quota_edits(&mut q, &["cpus=1"]).is_err());
+        assert!(apply_quota_edits(&mut q, &["vms"]).is_err());
+        assert!(apply_quota_edits(&mut q, &["vms=lots"]).is_err());
+    }
+
+    #[test]
+    fn positional_arguments_skip_flags_and_their_values() {
+        assert_eq!(positional(&["ci", "--days", "7", "--service-account", "--role", "viewer"], &["--days", "--role"]), vec!["ci"]);
+        assert_eq!(positional(&["--project", "lab", "net1"], &["--project"]), vec!["net1"]);
     }
 }

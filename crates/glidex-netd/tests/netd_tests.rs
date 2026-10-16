@@ -163,7 +163,7 @@ fn attach_reserves_address_and_detach_keeps_it() {
     assert_eq!(res.port, "gx1a2b3c4d-0");
     assert_eq!(res.ipv4.unwrap().to_string(), "10.88.0.2");
     assert!(exec.calls().iter().any(|c| c == "ip tuntap add dev gx1a2b3c4d-0 mode tap user 1000"), "tap owned by the peer uid");
-    let hosts = exec.writes().into_iter().filter(|(p, _)| p.ends_with("gxbr-nat.hosts")).last().unwrap();
+    let hosts = exec.writes().into_iter().rfind(|(p, _)| p.ends_with("gxbr-nat.hosts")).unwrap();
     assert_eq!(String::from_utf8(hosts.1).unwrap(), format!("{},10.88.0.2\n", port_spec().mac));
     assert!(sup.events.lock().unwrap().contains(&"reload gxbr-nat".to_string()));
 

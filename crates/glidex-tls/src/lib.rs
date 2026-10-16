@@ -469,7 +469,7 @@ impl ClientTls {
     /// Trust the system store plus every certificate in `extra` (PEM
     /// files), offering `alpn`.
     pub fn new(extra: &[PathBuf], alpn: &[&[u8]]) -> Result<Self, String> {
-        Self::with_trust(&Trust { ca_files: extra.into_iter().cloned().collect(), verify_host: true, ..Default::default() }, alpn)
+        Self::with_trust(&Trust { ca_files: extra.to_vec(), verify_host: true, ..Default::default() }, alpn)
     }
 
     /// gxctl's trust ladder (spec/gxctl-auth.md §5.1), one rung stricter

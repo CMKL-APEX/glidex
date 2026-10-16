@@ -309,7 +309,7 @@ async fn isolated_networks_are_fenced_by_netd() {
 async fn lost_nat_is_recreated_only_without_vms() {
     use glidex_netd::proto::{NatInfo, Op};
     let h = harness(true);
-    let netd = Netd::new(&h._dir.path().join("run"));
+    let netd = Netd::new(h._dir.path().join("run"));
     let nat_exists = || netd.call::<Vec<NatInfo>>(Op::ListNat).unwrap().iter().any(|n| n.state.bridge == "gxbr-lab");
     let lose_nat = || {
         netd.call::<Value>(Op::DeleteNat { bridge: "gxbr-lab".into() }).unwrap();
