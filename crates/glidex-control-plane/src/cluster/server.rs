@@ -27,6 +27,7 @@ type Ctx = State<Arc<Cluster>>;
 pub fn router(c: Arc<Cluster>) -> Router {
     Router::new()
         .route("/cluster/v1/ca", get(get_ca).put(put_ca))
+        .route("/cluster/v1/ca/settle", post(ca_settle))
         .route("/cluster/v1/join", post(join))
         .route("/cluster/v1/join/ready", post(join_ready))
         .route("/cluster/v1/rejoin", post(rejoin))
@@ -104,6 +105,19 @@ async fn get_ca(State(c): Ctx) -> Response {
         Ok(t) => (StatusCode::OK, [("content-type", "application/x-pem-file")], c.ca_state().map(|s| s.trust_pem).unwrap_or(t)).into_response(),
         Err(e) => fail(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()),
     }
+}
+
+/// `POST /cluster/v1/ca/settle` (servers, leader only): run a CA rotation
+/// that is due before a server issues a token, and answer the CA the token
+/// must pin (§12.5).
+async fn ca_settle(State(c): Ctx, p: Option<Extension<PeerCert>>) -> Response {
+    if let Err(r) = peer(&c, p, true) {
+        return r;
+    }
+    if !c.node.as_ref().is_some_and(|n| n.is_leader()) {
+        return not_leader(&c);
+    }
+    Json(json!({ "signing_fp": c.settle_ca().await })).into_response()
 }
 
 #[derive(Deserialize)]

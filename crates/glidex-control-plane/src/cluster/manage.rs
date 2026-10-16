@@ -234,7 +234,7 @@ pub async fn join(manager: &Arc<VmManager>, cfg: &crate::config::Config, opts: J
     let ca_pem = net::fetch_ca_untrusted(&server).await?;
     let got = pki::public_key_fingerprint(&ca_pem)?;
     if got != ca_hash {
-        return Err(other(format!("the server's CA ({}…) is not the one the token names ({}…): refusing to join", &got[..12], &ca_hash[..12])));
+        return Err(other(format!("the server's CA ({}…) is not the one the token names ({}…): refusing to join. If this is your cluster, its CA was rotated after the token was issued (a server left): issue a new token", &got[..12], &ca_hash[..12])));
     }
     let trusting = net::client_trusting(&ca_pem)?;
 
@@ -360,7 +360,7 @@ pub async fn rejoin(manager: &Arc<VmManager>, cfg: &crate::config::Config, opts:
     let ca_pem = net::fetch_ca_untrusted(&server).await?;
     let got = pki::public_key_fingerprint(&ca_pem)?;
     if got != ca_hash {
-        return Err(other(format!("the server's CA ({}…) is not the one the token names ({}…): refusing to rejoin", &got[..12], &ca_hash[..12])));
+        return Err(other(format!("the server's CA ({}…) is not the one the token names ({}…): refusing to rejoin. If this is your cluster, its CA was rotated after the token was issued (a server left): issue a new token", &got[..12], &ca_hash[..12])));
     }
     let trusting = net::client_trusting(&ca_pem)?;
     let ccfg = cfg.cluster.clone();
@@ -460,9 +460,11 @@ pub async fn rejoin(manager: &Arc<VmManager>, cfg: &crate::config::Config, opts:
     Ok(json!({ "cluster_id": identity.cluster_id, "node_id": node_id, "role": role, "raft_fresh": resp.raft_fresh }))
 }
 
-/// A join token for a new node (§5.2). `by` is recorded.
-pub fn join_token(cluster: &Cluster, role: NodeRole, ttl_secs: u64, allow_import: bool, by: &str) -> Result<String, ClusterError> {
-    tokens::create(&cluster.db, TokenKind::Join { role, allow_import }, ttl_secs, &cluster.signing_fp(), by).map_err(other)
+/// A join token for a new node (§5.2). `by` is recorded. It pins the CA
+/// that will sign: a CA rotation that is due runs first (§12.5).
+pub async fn join_token(cluster: &Cluster, role: NodeRole, ttl_secs: u64, allow_import: bool, by: &str) -> Result<String, ClusterError> {
+    let fp = cluster.ca_for_token().await;
+    tokens::create(&cluster.db, TokenKind::Join { role, allow_import }, ttl_secs, &fp, by).map_err(other)
 }
 
 /// What `gxctl cluster status` shows.
@@ -779,7 +781,7 @@ pub async fn join_import(manager: &Arc<VmManager>, cfg: &crate::config::Config, 
     let ca_pem = net::fetch_ca_untrusted(&server).await?;
     let got = pki::public_key_fingerprint(&ca_pem)?;
     if got != ca_hash {
-        return Err(other(format!("the server's CA ({}…) is not the one the token names ({}…): refusing to join", &got[..12], &ca_hash[..12])));
+        return Err(other(format!("the server's CA ({}…) is not the one the token names ({}…): refusing to join. If this is your cluster, its CA was rotated after the token was issued (a server left): issue a new token", &got[..12], &ca_hash[..12])));
     }
     let trusting = net::client_trusting(&ca_pem)?;
     let ccfg = cfg.cluster.clone();

@@ -257,7 +257,7 @@ pub async fn create_token(c: Caller, Json(b): Json<TokenBody>) -> Result<impl In
     let ttl = b.ttl_secs.unwrap_or(3600).clamp(60, 7 * 86400);
     let role = b.role.unwrap_or(NodeRole::Agent);
     let by = c.actor();
-    let token = manage::join_token(&cl, role, ttl, b.allow_import, &by).map_err(cluster_err)?;
+    let token = manage::join_token(&cl, role, ttl, b.allow_import, &by).await.map_err(cluster_err)?;
     c.set_target("join-token".to_string());
     let servers: Vec<String> = crate::node::NodeStore::new(cl.db.clone())
         .list()
