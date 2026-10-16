@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/glidex-api",
     "crates/glidex-control-plane",
     "crates/glidex-ovs",
     "crates/glidex-ovn",

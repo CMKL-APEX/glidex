@@ -74,24 +74,11 @@ fn session_cookie(value: &str, secure: bool, max_age: Option<u64>) -> HeaderValu
 
 /// Who the caller is, for `/auth/whoami` and login responses.
 fn whoami_json(app: &AppState, p: &Principal) -> Result<serde_json::Value, ApiErr> {
-    let links = app.auth.links_of(p).map_err(auth_error)?;
-    let projects = app.manager.projects();
-    let mut project_roles: Vec<serde_json::Value> = Vec::new();
-    let mut host_roles: Vec<String> = Vec::new();
-    for l in &links {
-        match &l.link.resource {
-            Ent::Cluster => host_roles.push(l.link.template.clone()),
-            Ent::Project(id) => project_roles.push(serde_json::json!({
-                "project": id,
-                "project_name": projects.get(id).ok().flatten().map(|p| p.name),
-                "role": l.link.template,
-                "via": l.link.principal,
-            })),
-            _ => {}
-        }
-    }
-    host_roles.sort();
-    host_roles.dedup();
+    let (host_roles, project_roles) = crate::service::system::roles_of(app, p)?;
+    let project_roles: Vec<serde_json::Value> = project_roles
+        .iter()
+        .map(|r| serde_json::json!({ "project": r.project, "project_name": r.project_name, "role": r.role, "via": r.via }))
+        .collect();
     Ok(serde_json::json!({
         "user": p.user,
         "token": p.token.as_ref().map(|t| serde_json::json!({ "id": t.id, "name": t.name, "device": t.device, "client": t.client })),
@@ -173,28 +160,11 @@ pub async fn peer_session(c: Caller) -> Result<impl IntoResponse, ApiErr> {
 /// logs it at every start (security.md §5.1.1) — and lets gxctl tell a
 /// genuine untrusted self-signed certificate from a proxy that terminated
 /// TLS in front of it.
+///
+/// REST twin of `SystemService.GetServerInfo`: the same message, as proto
+/// JSON (an absent cluster or fingerprint is left out rather than `null`).
 pub async fn server_info(State(app): State<AppState>) -> impl IntoResponse {
-    let fingerprint = match &app.auth.config.tls {
-        crate::config::TlsSetting::Mode(crate::config::TlsMode::Off) => None,
-        crate::config::TlsSetting::Mode(crate::config::TlsMode::Auto) => {
-            glidex_tls::fingerprint(&crate::serve::self_signed_dir().join("cp.crt")).ok()
-        }
-        crate::config::TlsSetting::Files(f) => glidex_tls::fingerprint(&f.cert).ok(),
-    };
-    let identity = crate::cluster::identity::Files::beside(app.manager.db_path()).load_identity().ok().flatten();
-    let name = app.auth.config.server_name.clone().or_else(glidex_tls::hostname).unwrap_or_else(|| "glidex".into());
-    Json(serde_json::json!({
-        "cluster_id": identity.as_ref().map(|i| i.cluster_id.clone()),
-        "node_id": identity.as_ref().map(|i| i.node_id.clone()),
-        "cluster_name": name,
-        "version": env!("CARGO_PKG_VERSION"),
-        "fingerprint": fingerprint,
-        "methods": {
-            "pam": app.auth.config.auth.pam.enabled,
-            "oidc": app.auth.oidc.enabled(),
-            "disabled": app.auth.is_disabled(),
-        },
-    }))
+    Json(crate::service::system::server_info(&app))
 }
 
 #[derive(Deserialize)]

@@ -1,0 +1,12 @@
+// Vendored subset of googleapis google/rpc/error_details.proto
+// (Apache-2.0): only ErrorInfo, with its upstream field numbers, so
+// clients decode it as the standard google.rpc.ErrorInfo.
+syntax = "proto3";
+
+package google.rpc;
+
+message ErrorInfo {
+  string reason = 1;
+  string domain = 2;
+  map<string, string> metadata = 3;
+}

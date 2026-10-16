@@ -208,6 +208,24 @@ async fn three_control_planes_survive_losing_the_leader() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn rpc_reads_are_answered_by_the_server_that_takes_them() {
+    let _one = SERIAL.lock().await;
+    let cps = form(2).await;
+    let leader = leader_index(&cps, &[0, 1]).await;
+    let follower = 1 - leader;
+    // Every RPC is a POST: the operation's kind (READ), not the method,
+    // keeps it on the follower (spec/grpc.md G-D6). Forwarded, it would
+    // report the leader's node id.
+    let (s, v) = call(&cps[follower], "POST", "/glidex.system.v1.SystemService/GetServerInfo", Some(json!({})), &[]).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["node_id"], cluster(&cps[follower]).identity.node_id.as_str(), "{v}");
+    assert_eq!(v["cluster_id"], cluster(&cps[leader]).identity.cluster_id.as_str(), "{v}");
+    // Health is always this server's own.
+    let (s, _) = call(&cps[follower], "POST", "/grpc.health.v1.Health/Check", Some(json!({})), &[]).await;
+    assert_eq!(s, StatusCode::OK);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn reads_without_a_quorum_fail_unless_stale_is_asked_for() {
     let _one = SERIAL.lock().await;
     let cps = form(3).await;

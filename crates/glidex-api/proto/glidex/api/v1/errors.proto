@@ -1,0 +1,9 @@
+// Error details sent with every RPC error (spec/grpc.md §7).
+syntax = "proto3";
+
+package glidex.api.v1;
+
+// The `details` object of the REST error body, as JSON text.
+message ErrorDetails {
+  string json = 1;
+}

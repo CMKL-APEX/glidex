@@ -31,6 +31,8 @@ fresh reader cannot infer just by reading the source.
 | [clustering-ui.md](clustering-ui.md) | Cluster operations in the web UI (plan): capability checks on the right resource type, node awareness in existing pages, placement and capacity, the Cluster page with membership, imports, CA and lifecycle operations, OVN views, the server additions they need, milestones U0–U5 |
 | [security.md](security.md) | Authentication (peer uid, PAM, OIDC, tokens), projects/teams, Cedar authorization policies, netd policy, hardening (draft) |
 | [gxctl-auth.md](gxctl-auth.md) | `gxctl auth login` and its config file (`~/.config/glidex/config.json`): login profiles per server/cluster, TLS trust ladder with fingerprint pinning (TOFU) for self-signed control planes, the contained `insecure` bypass, identity generation and administration, server-side additions (`/auth/server-info`, `/auth/token`) |
+| [tenancy.md](tenancy.md) | Tenants, directories and operators (design): user tenants owning projects that allocate VMs/disks/networks from several clusters; operator tenants owning clusters, nodes and site policies; per-organization directories (users, teams, connectors to the org's own IdP: PAM, LDAP, OIDC, Google, Entra ID, GitHub, JumpCloud) that are OIDC providers, SSO by sharing a directory; pairwise directory↔cluster trust by handshake or brokered by fleets (registries with their own directory and per-organization accounts, claim-code registration, admission policies, labels by provenance, clusters moving between fleets), two-sided admission, filtered feeds, audience-bound tokens, partitions; Cedar boundaries (tenant, operator, directory owner); SCIM and pull sync; directories hosted by operators; workload federation; REST and RPC; milestones T0–T7 |
+| [grpc.md](grpc.md) | RPC API (design; G0 implemented): gRPC, gRPC-Web and Connect via `connectrpc` next to REST on the same listeners, browser on Connect-ES, one transport-neutral service layer under both, proto source of truth in `glidex-api`, per-RPC operation table (Cedar action, read/write, REST twin), error-code mapping, cluster forwarding, port order G0–G5 |
 
 ## Goals
 
@@ -75,7 +77,8 @@ glidex/
 ├── spec/                            # (this directory)
 ├── packaging/                       # systemd units (netd, authd, control plane, UI, glidex-vm@), polkit rule
 └── crates/
-    ├── glidex-control-plane/        # REST server, controllers, hypervisor drivers, gxctl
+    ├── glidex-api/                  # RPC protos, generated messages/services/clients, operation table (grpc.md)
+    ├── glidex-control-plane/        # REST and RPC server, controllers, hypervisor drivers, gxctl
     ├── glidex-vm-shim/              # per-VM supervisor: hypervisor parent, console, exit record
     ├── glidex-hv-client/            # CH HTTP and QMP clients (shim + control plane)
     ├── glidex-ovs/                  # host networking library (OVS, NAT, VM ports)

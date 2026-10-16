@@ -17,11 +17,33 @@ use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use base64::Engine;
 use bytes::Bytes;
+use http_body_util::StreamBody;
+use hyper::body::Frame;
 
 pub const PRINCIPAL_HEADER: &str = "x-glidex-principal";
 pub const CONSISTENCY_HEADER: &str = "x-glidex-consistency";
 pub const REVISION_HEADER: &str = "x-glidex-revision";
 const MAX_FORWARDED_BODY: usize = 32 << 20;
+
+/// What an RPC needs to arrive at the leader as it was sent: the
+/// protocol's own headers (deadlines, compression, gRPC-Web marker).
+const RPC_REQUEST_HEADERS: &[&str] = &[
+    "te",
+    "grpc-timeout",
+    "grpc-encoding",
+    "grpc-accept-encoding",
+    "connect-protocol-version",
+    "connect-timeout-ms",
+    "connect-content-encoding",
+    "connect-accept-encoding",
+    "content-encoding",
+    "accept-encoding",
+    "x-grpc-web",
+];
+
+/// RPC response headers to pass back: a trailers-only gRPC reply carries
+/// its status in headers.
+const RPC_RESPONSE_HEADERS: &[&str] = &["grpc-status", "grpc-message", "grpc-status-details-bin", "grpc-encoding", "content-encoding", "connect-content-encoding"];
 
 /// Routes that need no cluster at all.
 fn needs_no_barrier(path: &str) -> bool {
@@ -63,10 +85,16 @@ pub async fn cluster_gate(State(app): State<AppState>, req: Request, next: Next)
         return next.run(req).await;
     }
     let path = req.uri().path().to_string();
-    if is_host_local(&path) || req.headers().get(header::UPGRADE).is_some() {
+    if is_host_local(&path) || super::rpc::is_local(&path) || req.headers().get(header::UPGRADE).is_some() {
         return next.run(req).await;
     }
-    if is_safe(req.method()) {
+    // An RPC is always a POST: its operation says whether it reads or
+    // writes (spec/grpc.md G-D6). Streams are reads served here.
+    let read = match glidex_api::operation(&path) {
+        Some(op) => op.kind == glidex_api::Kind::Read || op.streaming,
+        None => is_safe(req.method()),
+    };
+    if read {
         if needs_no_barrier(&path) {
             return next.run(req).await;
         }
@@ -97,8 +125,14 @@ async fn forward(_app: &AppState, cluster: std::sync::Arc<crate::cluster::Cluste
     let pq = parts.uri.path_and_query().map(|p| p.as_str().to_string()).unwrap_or_else(|| parts.uri.path().to_string());
     let path = format!("/fwd{pq}");
     let mut headers: Vec<(&str, String)> = Vec::new();
-    for name in ["content-type", "accept", "if-match", "x-request-id", "user-agent"] {
-        if let Some(v) = parts.headers.get(name).and_then(|v| v.to_str().ok()) {
+    let rpc = glidex_api::operation(parts.uri.path()).is_some();
+    let rpc_headers: &[&str] = if rpc { RPC_REQUEST_HEADERS } else { &[] };
+    for name in ["content-type", "accept", "if-match", "x-request-id", "user-agent"].iter().chain(rpc_headers) {
+        if let Some(v) = parts.headers.get(*name).and_then(|v| v.to_str().ok()) {
+            // HTTP/2 allows no other `te` (RFC 9113 §8.2.2).
+            if *name == "te" && v != "trailers" {
+                continue;
+            }
             headers.push((name, v.to_string()));
         }
     }
@@ -130,9 +164,19 @@ async fn forward(_app: &AppState, cluster: std::sync::Arc<crate::cluster::Cluste
                 continue;
             }
             Ok(r) => {
-                let mut resp = Response::new(Body::from(r.body));
+                let body = match r.trailers {
+                    // Native gRPC: the status is in the trailers.
+                    Some(t) => Body::new(StreamBody::new(futures_util::stream::iter([
+                        Ok::<_, std::convert::Infallible>(Frame::data(r.body)),
+                        Ok(Frame::trailers(t)),
+                    ]))),
+                    None => Body::from(r.body),
+                };
+                let mut resp = Response::new(body);
                 *resp.status_mut() = r.status;
-                for name in [header::CONTENT_TYPE, header::SET_COOKIE, header::LOCATION, header::ETAG, header::CACHE_CONTROL, header::HeaderName::from_static("x-request-id")] {
+                let names = [header::CONTENT_TYPE, header::SET_COOKIE, header::LOCATION, header::ETAG, header::CACHE_CONTROL, header::HeaderName::from_static("x-request-id")];
+                let rpc_names: &[&'static str] = if rpc { RPC_RESPONSE_HEADERS } else { &[] };
+                for name in names.into_iter().chain(rpc_names.iter().map(|n| header::HeaderName::from_static(n))) {
                     for v in r.headers.get_all(&name) {
                         resp.headers_mut().append(name.clone(), v.clone());
                     }

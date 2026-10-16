@@ -1,0 +1,10 @@
+# TypeScript messages for glidex-ui (Connect-ES, spec/grpc.md §11).
+# Run from this directory: buf generate
+version: v2
+inputs:
+  - directory: proto
+plugins:
+  - remote: buf.build/bufbuild/es
+    out: ../glidex-ui/ui/src/gen
+    opt:
+      - target=ts
