@@ -60,7 +60,9 @@ Non-goals for this revision (each in §18):
   that breaks reconciliation.md D8.
 - BGP, routed (no-NAT) networks, floating IPs and load balancers.
 - A security-group API. Networks keep today's isolation semantics.
-- Several sites, or federation between clusters.
+- Several sites, or federation between clusters. (Tenants shared by
+  several clusters are designed in [tenancy.md §13.2](tenancy.md), without
+  joining the clusters' stores.)
 - An eBPF datapath (D15).
 
 ## 3. Decisions
