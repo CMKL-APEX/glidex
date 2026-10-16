@@ -109,7 +109,7 @@ organizations that **operate** it, and lets each keep its own identity.
 | D33 | Fleets broker trust | A **fleet** is a registry run by a fleet operator: registered directories (issuer and key pins), tenants (with their kind and the fleet's labels) and clusters (endpoint, CA pin, operator, admission terms). Members follow it on a signed feed. The fleet has its own directory (D38) for the people who run and use the registry; it holds none of the registered directories' users, teams, projects or credentials. | Pairwise offers don't scale to many tenants and many operators; a broker that holds registration data and its own users' accounts adds no new place where tenants' users or secrets live. |
 | D34 | Admission policies | An operator whose cluster is in a fleet can admit by policy: Cedar site policies on `admitTenant`, evaluated when a tenant of the fleet opts in, create the admission with the policy's default cap and labels. A shipped template, `fleet.open`, admits every user tenant registered in the cluster's fleet. Without a matching policy the opt-in waits for the operator. | "Allow any user tenant of the fleet" becomes one setting instead of one handshake per tenant, and the operator can still narrow it. |
 | D35 | Labels by provenance | A tenant carries three kinds of labels, each a separate Cedar attribute: `self_tags` (set by its directory owner), `fleet_labels` (set by the fleet operator, e.g. `verified`), `operator_labels` (set by this cluster's operator on the admission). Site policies say which they trust by naming the attribute. | An operator decides whose word it takes; a tenant can't label itself into a cluster that trusts only fleet or operator labels. |
-| D36 | Self-service registration | A fleet user registers, in its **account** (D38), a directory, tenant or cluster and gets a one-time **claim code**; the owner of that directory, the tenant's admin or the cluster's operator redeems it **there**, which sends the registration signed with the directory's or cluster's own key. Fleet admins decide what each account may register (directories, user tenants, operator tenants, clusters) and whether registrations need approval (`approval`, the default, or `open`). A registered directory's key can afterwards change only by a rotation signed with its previous key, never by the fleet. | Organizations join without a person at the fleet in the loop; holding a fleet account isn't enough to claim someone else's directory or cluster, and a compromised or careless fleet can add new directories but can't take over existing ones. |
+| D36 | Self-service registration | A fleet user registers, in its **account** (D38), a directory, tenant or cluster and gets a one-time **claim code**; the owner of that directory, the tenant's admin or the cluster's operator redeems it **there**, which sends the registration signed with the directory's or cluster's own key. Fleet admins decide what each account may register (directories, user tenants, operator tenants, clusters) and whether registrations need approval (`approval`, the default, or `open`). Approval is needed once per directory and once per operator tenant: user tenants of an approved directory, and clusters of an approved operator tenant, are active as soon as they are claimed; fleet admins can still suspend any registration. A registered directory's key can afterwards change only by a rotation signed with its previous key, never by the fleet. | Organizations join without a person at the fleet in the loop; holding a fleet account isn't enough to claim someone else's directory or cluster, and a compromised or careless fleet can add new directories but can't take over existing ones. |
 | D37 | Moving clusters | A cluster belongs to at most one fleet. Leaving keeps every established admission and directory pin as pairwise trust (the operator may instead end the ones the fleet's policy created, with notice to those tenants); joining another fleet applies that fleet's registry and the operator's policies from then on. Directories and tenants may register in several fleets. | Operators can change brokers without evicting tenants; tenants can use clusters of several fleets. |
 | D38 | The fleet's directory and accounts | A fleet runs a directory of its own (the same directory software, D27), owned by the fleet operator's tenant: **fleet admins** are its members. Each organization that uses the fleet has an **account**, a tenant of that directory whose members (**fleet users**: mostly tenant admins and cluster operators of that organization) manage the account's registrations. An account can add a connector for its own IdP, so its people log in with their usual identity. Fleet admins manage accounts and their registry rights. Consolidated billing will attach to accounts (§20). | The registry needs owners and administrators like anything else; reusing the directory and tenant model gives logins, connectors, roles, audit and Cedar boundaries without a second system. |
 
@@ -736,7 +736,9 @@ the account asks, the thing itself confirms.
 2. **A tenant.** Likewise, from the account (`gxctl fleet register
    tenant --directory <id> --kind user|operator`), redeemed by the
    tenant's admin at its directory (`tenant.clusters`). The fleet sees
-   the tenant's id, slug, kind and contact, nothing else.
+   the tenant's id, slug, kind and contact, nothing else. A user tenant
+   of an approved directory is active once claimed; an operator tenant
+   waits for approval under `approval`, once.
 3. **A cluster.** From the account of the cluster's operator (`gxctl
    fleet register cluster`), redeemed on the cluster with `gxctl fleet
    join --claim <code> [--admit open|none]` (`cluster.trust`, step-up):
@@ -744,7 +746,8 @@ the account asks, the thing itself confirms.
    publishes (whether it admits by policy, the default cap). `--admit
    open` enables the `fleet.open` template; the operator can write
    narrower policies instead. The cluster now follows the registry
-   feed.
+   feed. A cluster whose operator tenant is approved is active once
+   claimed.
 
 The two halves are usually the same people with two logins (their
 fleet account and their own directory); the claim code is what binds
@@ -998,7 +1001,9 @@ one login for both (D3). Nothing a user does today changes.
     code for one;
   - a claim code redeemed at the wrong directory, by a principal
     without the right role there, twice, or after expiry is refused;
-  - a claimed directory waits for approval under `approval`;
+  - under `approval`, a claimed directory and a claimed operator tenant
+    wait for a fleet admin; a user tenant of that directory and a
+    cluster of that operator are then active as soon as claimed;
   - with `fleet.open`, a user tenant's opt-in creates an admission with
     the default cap and `source: fleet:<id>`; an operator tenant's
     doesn't; without a policy it stays `pending`;
@@ -1121,12 +1126,10 @@ T2–T7 get their own task lists when T1 lands; per-protocol code under
 11. **Who manages a fleet:** fleet admins and fleet users log in at
     the fleet's own directory; each organization has an account that
     owns its registrations (D38).
+12. **Approval defaults:** one approval per directory and per operator
+    tenant; their user tenants and clusters need no second one (D36).
 
 ## 22. Open questions
 
-1. **Fleet approval defaults.** `registration: approval` and
-   `accounts: invite` are the defaults. Should tenants of an already
-   approved directory, or clusters of an already approved operator, be
-   registered without a second approval?
-2. **Fleets of fleets.** A tenant can register in several fleets
+1. **Fleets of fleets.** A tenant can register in several fleets
    (D37), so no federation between fleets is designed. Is that enough?
