@@ -8,10 +8,10 @@ It lifts the "federation and SCIM provisioning" item of
 
 This document adds one level above projects, the **tenant**, and lets
 every tenant bring its own users from **directory connectors**: PAM,
-LDAP, OIDC, Google, Microsoft Entra ID (Azure), GitHub, JumpCloud, AWS
-IAM Identity Center, SAML and SCIM. One tenant is special: the **admin
-tenant** owns the physical cluster (nodes, OVN, host networks, devices,
-DPUs, images, cluster membership). Every other tenant only ever sees
+LDAP, OIDC, Google, Microsoft Entra ID (Azure), GitHub, JumpCloud and
+SCIM. One tenant is special: the **admin tenant** owns the physical
+cluster (nodes, OVN, host networks, PCI devices, images, cluster
+membership). Every other tenant only ever sees
 its own projects and whatever the admin tenant grants it.
 
 ## 1. Starting point (17946fc)
@@ -35,20 +35,23 @@ its own projects and whatever the admin tenant grants it.
 | D3 | Admin tenant | Fixed id `admin`, created at migration, can't be deleted or suspended. Only its principals pass the **host-scoped** actions (every `host.*`, `image.manage`, `policy.*`, `system.*`, `quota.exceed`, `node.drain`, `host.cluster*`). Enforced by a `forbid` in `base.cedar`. | A role link mistakenly given to a customer's team can't hand out the cluster. Roles still decide *which* admin may do what; the tenant only bounds *who can ever*. |
 | D4 | Operator access | Admin-tenant principals may be linked to roles in any tenant's projects (support, operations). Other principals may only be linked inside their own tenant. Every action by an admin-tenant principal on another tenant's resource is visible in **that tenant's** audit view. | Operators need to help customers; customers need to see when they did. |
 | D5 | Tenant administration | New role `tenant-admin` on a `Tenant`: projects, quotas inside the tenant cap, teams, users, links and connectors of that tenant. New role `tenant-auditor`: read everything in the tenant, its audit log and usage. | Customers run their own organization without asking the cluster operator for each project or user. |
-| D6 | Connectors | A **connector** is one configured external source, owned by a tenant. It may do any of: **login** (the user proves who they are), **provisioning** (users and groups are created, updated and disabled ahead of login), **attributes** (SSH public keys, display name, email). Presets (Google, Entra, GitHub, JumpCloud, AWS) are fixed configurations of five underlying protocols: PAM, LDAP, OIDC/OAuth 2.0, SAML 2.0, SCIM 2.0. | Every "provider" is a preset, not a new code path; the security-critical parsing (ID tokens, assertions, SCIM) exists once. |
-| D7 | Identity key | `(connector_id, subject)`, with the provider's **immutable** subject (`sub`, Entra `oid`, GitHub numeric id, SAML persistent `NameID`, LDAP `entryUUID`/`objectGUID`). Emails and login names are attributes, never keys. `unix:`/`pam:` keys keep the node suffix of clustering.md D13. | Emails get reassigned; GitHub logins get renamed. Keying on them lets a new owner of the name inherit someone's account. |
+| D6 | Connectors | A **connector** is one configured external source, owned by a tenant. It may do any of: **login** (the user proves who they are), **provisioning** (users and groups are created, updated and disabled ahead of login), **attributes** (SSH public keys, display name, email). Presets (Google, Entra, GitHub, JumpCloud) are fixed configurations of four underlying protocols: PAM, LDAP, OIDC/OAuth 2.0, SCIM 2.0. SAML is not one of them (D20). | Every "provider" is a preset, not a new code path; the security-critical parsing (ID tokens, SCIM) exists once. |
+| D7 | Identity key | `(connector_id, subject)`, with the provider's **immutable** subject (`sub`, Entra `oid`, GitHub numeric id, LDAP `entryUUID`/`objectGUID`). Emails and login names are attributes, never keys. `unix:`/`pam:` keys keep the node suffix of clustering.md D13. | Emails get reassigned; GitHub logins get renamed. Keying on them lets a new owner of the name inherit someone's account. |
 | D8 | Group → team | Directory groups map to teams of the same tenant (`group_teams`), or auto-create one team per group (`group_mode: auto`, marked `managed_by: <connector>`). Teams carry rights only through role links, as today. Groups are never mapped to roles directly. | One rights mechanism (links), visible in one place; a directory admin can create groups but cannot grant rights the tenant admin didn't link. |
 | D9 | Deprovisioning | A user disabled or removed by provisioning is **disabled at once**: sessions deleted, personal tokens revoked, membership in managed teams dropped. The record stays (audit, ownership) until a tenant admin purges it. Connectors with login but no provisioning clamp their users' personal tokens to `token_max_days` (default 30) and re-check the connector at each token-minting login. | Closes the "removed from the IdP, still has a 365-day token" gap. |
 | D10 | Connector secrets | Stored in the replicated store **encrypted** with a cluster secrets key (KEK) held like the CA key (systemd credential on each server, never in Raft or snapshots). Write-only in the API. Agents never receive them. SCIM bearer tokens are generated by glidex and stored as SHA-256 only. | The API must accept secrets per tenant; the store, its snapshots and node caches must not leak them in clear. |
-| D11 | Admin-tenant connectors | Must restrict who gets in: `jit: false`, or a non-empty `required_groups`, or provisioning. They may require MFA (`require_mfa`, checked from `amr`/`acr` or the SAML `AuthnContextClassRef`), which is on by default for new admin-tenant SSO connectors. Writes to them need `system.identity` + step-up. | An admin-tenant connector that admits "anyone in the IdP" would make every employee of the IdP's organization an admin-tenant user. |
+| D11 | Admin-tenant connectors | Must restrict who gets in: `jit: false`, or a non-empty `required_groups`, or provisioning. They may require MFA (`require_mfa`, checked from the ID token's `amr`/`acr`), which is on by default for new admin-tenant SSO connectors. Writes to them need `system.identity` + step-up. | An admin-tenant connector that admits "anyone in the IdP" would make every employee of the IdP's organization an admin-tenant user. |
 | D12 | PAM and peer identity | Host accounts belong to the cluster operator. A `pam` connector names Unix groups; it is created only by the admin tenant, may be placed in any tenant, and a Unix group belongs to at most one PAM connector. A peer on `api.sock` resolves to the tenant whose PAM connector lists one of its groups; `glidex-admin`/root resolve to the admin tenant; anyone else is refused (as today). `glidex-authd`'s own `allowed_groups` stays the outer fence. | Lets a lab give a class's Unix group its own tenant without letting a tenant admin claim host accounts. The root-owned authd config can't be widened through the API. |
 | D13 | Login routing | Users reach their tenant by slug (`/t/<slug>`, `gxctl auth login --tenant`) or by email domain. Domains are **assigned to tenants by a system admin**, not self-claimed. | No DNS verification flow to build, and no tenant can capture another organization's domain. |
 | D14 | Names | Names of tenant-owned objects (projects, disks, project networks, credentials, teams, service accounts) are unique **per tenant**. Ids stay global UUIDs and flat paths stay (security.md decision 8). Name lookups resolve in the caller's tenant; admin principals pass `?tenant=`. Host networks, images and nodes keep global names. | Removes cross-tenant existence oracles without changing any id-based path. |
-| D15 | Grants | Host networks, PCI devices and DPU functions can be granted to a **tenant** (`tenant_grants`) as well as to projects. Project networks may only be shared between projects of the same tenant. | One grant per customer, not per project. Cross-tenant L2 sharing stays an admin decision (a host network granted to both). |
+| D15 | Grants | Host networks and PCI devices can be granted to a **tenant** (`tenant_grants`) as well as to projects. Project networks may only be shared between projects of the same tenant. | One grant per customer, not per project. Cross-tenant L2 sharing stays an admin decision (a host network granted to both). |
 | D16 | Quotas | A tenant has a **cap** (same quota names as projects) checked in code next to the project quota, against the sum over its projects. Tenant admins set project quotas freely; the cap still binds. Exceeding the cap needs `exceedQuota` on the `Tenant` (system-admin only). | Two levels of the existing mechanism, no new allocation model. |
 | D17 | Machine identity | **Workload federation**: a tenant trusts an external JWT issuer (GitHub Actions, GitLab CI, any OIDC workload issuer) or AWS STS identity, and maps matching claims to one of its service accounts; `POST /auth/exchange` returns a short-lived (≤ 1 h) service-account token. | CI uses the identity it already has; no long-lived glidex secret in a CI vault. |
 | D18 | Policies stay cluster-wide | Site policies (security.md §7.6) remain an admin-tenant feature. Tenants get roles and teams, not their own Cedar text. | Tenant-authored Cedar would need per-tenant validation scopes and lock-out rules; nothing asked for needs it yet. |
-| D19 | Two transports | Every tenancy operation is served over REST/JSON and gRPC from one service function (§12.1, [grpc.md](grpc.md)); only protocol-fixed endpoints (OIDC/SAML browser flows, SCIM) are HTTP-only. | The tenancy API is new, so it can be built on the service layer from the start instead of being ported later. |
+| D19 | Two transports | Every tenancy operation is served over REST/JSON and gRPC from one service function (§12.1, [grpc.md](grpc.md)); only protocol-fixed endpoints (OIDC/OAuth browser redirects, SCIM) are HTTP-only. | The tenancy API is new, so it can be built on the service layer from the start instead of being ported later. |
+| D20 | No SAML | Connectors speak OIDC/OAuth 2.0, LDAP, PAM and SCIM only. An organization whose IdP offers only SAML connects through it with an OIDC front (its IdP's own OIDC app type, or a broker such as Dex or Keycloak) as a generic `oidc` connector. | Every IdP listed here also offers OIDC. XML signature verification is a long-running source of authentication bypasses, and the Rust SAML crates either wrap `xmlsec` or are young; not carrying it removes that risk and a milestone. |
+| D21 | Tenant creation | Only the admin tenant creates tenants (`system.tenants`). No self-service signup. | glidex runs for one operator and the organizations it hosts; signup would need abuse controls, email verification and quota defaults nobody asked for. |
+| D22 | Upgrade | Existing projects move into a `default` tenant; users with host roles move to the admin tenant (§15). | The tenant boundary (D3) holds from the first start after the upgrade, instead of everything sitting in the admin tenant until the operator splits it. |
 
 ## 3. Threat model additions
 
@@ -122,25 +125,27 @@ only whether each is set and when.
 | `azure` | OIDC preset (`https://login.microsoftonline.com/<tid>/v2.0`); `tid` checked | SCIM (Entra enterprise app provisioning) or pull via Microsoft Graph (`User.Read.All`, `GroupMember.Read.All`, delta queries) | — | `oid` (not `sub`, which is per-app pairwise) | Group overage (`_claim_names` instead of `groups` past 200 groups) is resolved through Graph when pull is configured, otherwise the login is refused with a clear error rather than mapping no groups. |
 | `github` | OAuth 2.0 web flow and device flow (GitHub is not OIDC) | pull: org members and teams via a GitHub App installation | `GET /user/{id}/keys`-style public SSH keys | numeric user id | Login requires membership of `settings.org` (checked at every login and sync). Team mapping by team id. |
 | `jumpcloud` | OIDC preset (`https://oauth.id.jumpcloud.com`) | SCIM (JumpCloud's generic SCIM app) or LDAP | via LDAP `sshPublicKey` | `sub` | |
-| `aws` | SAML 2.0 preset for an IAM Identity Center "customer managed application" | JIT from assertion attributes (Identity Center doesn't push SCIM to applications) | — | persistent `NameID` | `groups` from an attribute mapping configured in Identity Center. For AWS *workload* identity, see §8. |
-| `saml` | SAML 2.0 SP-initiated, POST binding, signed assertion **and** response required, `InResponseTo`, audience, recipient, `NotOnOrAfter` checked; replay cache for assertion ids | JIT; optional SCIM | attributes | persistent `NameID` or a configured immutable attribute | Shibboleth / eduGAIN, ADFS, Okta SAML. IdP-initiated login is refused. |
 | `scim` | — (provisioning only; pair with a login connector via `login_connector`) | SCIM 2.0 push | — | SCIM `externalId` | For IdPs that provision by SCIM but log in through another connector of the same tenant. |
 
-**Presets.** `google`, `azure`, `github`, `jumpcloud` and `aws` are stored
+**Presets.** `google`, `azure`, `github` and `jumpcloud` are stored
 with their kind so the UI can show the right fields and checks, but
-their code is `oidc`, OAuth 2.0 or `saml` plus a short validation and
+their code is `oidc` or OAuth 2.0 plus a short validation and
 claim-mapping module. Adding a preset (Okta, OneLogin, Keycloak) is a
 settings schema and a claim map, not a protocol.
 
+**AWS.** IAM Identity Center offers SAML, not OIDC, to applications like
+glidex (D20). AWS users log in through the IdP that Identity Center
+itself federates from (Entra, Okta, Google, JumpCloud), connected
+directly. AWS *workload* identity (STS) is covered by federation (§8).
+
 **Callback and metadata URLs** are per connector:
-`https://<ui>/api/auth/c/<connector_id>/callback` (OIDC/OAuth),
-`/api/auth/c/<id>/saml/acs` and `/api/auth/c/<id>/saml/metadata` (SAML
-SP metadata), `/scim/v2/c/<id>/` (SCIM base). The connector page shows
+`https://<ui>/api/auth/c/<connector_id>/callback` (OIDC/OAuth) and
+`/scim/v2/c/<id>/` (SCIM base). The connector page shows
 them so the tenant admin can paste them into the IdP.
 
 **Test.** `POST /connectors/{id}/test` checks what can be checked
 without a user: discovery and JWKS fetch, LDAP bind with the service
-account, SAML metadata signature, Directory/Graph/GitHub API access with
+account, Directory/Graph/GitHub API access with
 the stored credentials, and reports per-step results. Never returns
 secrets or directory contents beyond counts.
 
@@ -166,10 +171,8 @@ secrets or directory contents beyond counts.
 3. **gxctl.** `gxctl auth login --tenant <slug> [--connector <id>]`
    runs the device grant (OIDC presets, GitHub), or the PAM/LDAP
    username-password token flow (`POST /auth/token` with `connector`).
-   SAML-only connectors log in through the browser:
-   `gxctl auth login` prints a URL to a page that, after login, shows a
-   one-time code the CLI exchanges for a token (`/auth/cli-code`), the
-   same shape as the device grant. Profiles gain `tenant`
+   Every login connector has one of the two, so the CLI never needs a
+   browser hand-off of its own. Profiles gain `tenant`
    ([gxctl-auth.md](gxctl-auth.md)).
 4. `GET /auth/methods` and `GET /auth/server-info` take `?tenant=`; with
    none they list only the admin tenant's PAM method (the current
@@ -375,7 +378,7 @@ Owns, through the existing host roles:
 |---|---|
 | Cluster membership | init, join and rejoin tokens, remove, forget, purge, drain, detach, imports, CA rotation, snapshots (`host.cluster*`, `node.drain`) |
 | Host networking | OVS install, DPDK, bridges, uplinks, node-scope networks, OVN configuration and edge router (`host.network*`, `configureOvn`) |
-| Devices | PCI/VFIO grants; DPU functions when they land (a `Dpu in [Host]` entity under `host.devices`, granted like PCI devices) |
+| Devices | PCI/VFIO grants (`host.devices`). GPUs, DPUs and other server-attached accelerators get their own design later (§18). |
 | Shared library | images (`image.manage`) |
 | Platform | site policies, tenants (`system.tenants`), domains, quota caps, audit and usage of every tenant |
 
@@ -432,9 +435,7 @@ against (grpc.md §5).
 |---|---|---|---|
 | `discover` | `POST /auth/discover` | `LoginService.Discover` | none |
 | `startLogin`, `finishLogin` | `GET /auth/c/{id}/start`, `GET /auth/c/{id}/callback` | — (browser redirects) | none |
-| SAML ACS and metadata | `POST /auth/c/{id}/saml/acs`, `GET /auth/c/{id}/saml/metadata` | — (browser form post / IdP fetch) | none |
 | `startDevice`, `pollDevice` | `POST /auth/c/{id}/device`, `…/device/poll` | `LoginService.StartDevice`, `LoginService.PollDevice` | none |
-| `redeemCliCode` | `POST /auth/cli-code` | `LoginService.RedeemCliCode` | none |
 | `passwordToken` | `POST /auth/token` (+ `connector`) | `LoginService.PasswordToken` | none (PAM, LDAP; TLS or api.sock only) |
 | `exchangeToken` | `POST /auth/exchange` | `LoginService.ExchangeToken` | none (workload token) |
 | `listTenants`, `readTenant` | `GET /tenants`, `GET /tenants/{id}` | `TenantService.List`, `TenantService.Get` | `system.tenants` (all) · own tenant for anyone |
@@ -454,8 +455,8 @@ against (grpc.md §5).
 | `readAudit` | `GET /audit` | (with the audit family, grpc.md §9) | + `tenant.audit` for entries whose actor or target is in the tenant |
 | `readUsage` | `GET /usage` + `?tenant=` | (with the usage family, grpc.md §9) | `tenant.usage` for own tenant |
 
-**HTTP-only, on purpose.** Browser redirects (OIDC/OAuth callbacks),
-SAML endpoints and SCIM are fixed by their protocols and by what IdPs
+**HTTP-only, on purpose.** Browser redirects (OIDC/OAuth callbacks)
+and SCIM are fixed by their protocols and by what IdPs
 send; they have no gRPC form. They still go through the service layer
 (§12.1), so their checks and audit are the same.
 
@@ -603,9 +604,7 @@ one admin tenant, one default tenant, the same login page.
   in another tenant gives no signal about existing names.
 - **Connectors, per protocol** against local mocks: OIDC (existing mock
   IdP cases, plus `tid`/`hd`/`oid` checks, Entra group overage),
-  GitHub OAuth (org membership revoked → login refused), SAML (unsigned
-  assertion, signature wrapping, wrong audience, replayed id,
-  IdP-initiated, expired), LDAP (StartTLS required, bind with wrong
+  GitHub OAuth (org membership revoked → login refused), LDAP (StartTLS required, bind with wrong
   password, `objectGUID` key), MFA required without `amr`.
 - **SCIM:** the Entra and Okta conformance request sequences recorded
   as fixtures; `active: false` revokes sessions and tokens within the
@@ -639,8 +638,7 @@ Each milestone ships its API, CLI, UI and tests together and leaves
 | **T2** OIDC presets and GitHub | `google`, `azure`, `jumpcloud`, `oidc` presets with their checks; MFA; GitHub OAuth + device flow; `connectors/{id}/test` | Mock tests per preset; manual check against real Google, Entra, GitHub, JumpCloud tenants. |
 | **T3** SCIM | §7.1, SCIM tokens, managed users/teams, D9 deprovisioning, field ownership (§7.3), `scim` kind | SCIM fixtures from Entra and Okta; deprovision-revokes test. |
 | **T4** pull sync and attributes | `directory_sync` controller, LDAP, Google Directory, Graph, GitHub org/teams, safety stop; SSH public keys from connectors in `GET /users/me/ssh-keys` | Pull sync tests; LDAP against a containerized OpenLDAP in CI. |
-| **T5** SAML | `saml` and `aws` kinds, SP metadata, `/auth/cli-code` | SAML attack-case tests; manual check against IAM Identity Center and a Shibboleth IdP. |
-| **T6** workload federation | `federations`, `POST /auth/exchange`, `jwt` and `aws` kinds, `gxctl federation` | Federation tests; a GitHub Actions workflow in this repo deploys to a test cluster without a stored token. |
+| **T5** workload federation | `federations`, `POST /auth/exchange`, `jwt` and `aws` kinds, `gxctl federation` | Federation tests; a GitHub Actions workflow in this repo deploys to a test cluster without a stored token. |
 
 **T0 tasks** (files):
 1. `tenancy.rs`: `Tenant`, `TenantStore`, `Project.tenant_id`, per-tenant
@@ -679,7 +677,7 @@ Each milestone ships its API, CLI, UI and tests together and leaves
    adapters for all but the HTTP-only routes (§12); `gxctl directory`
    on gRPC; UI Directories on REST.
 
-T2–T6 get their own task lists when T1 lands; the per-protocol code
+T2–T5 get their own task lists when T1 lands; the per-protocol code
 lives under `src/directory/<protocol>.rs`, presets under
 `src/directory/presets/`.
 
@@ -693,19 +691,23 @@ lives under `src/directory/<protocol>.rs`, presets under
 - Acting as an IdP for guest VMs (SSH certificates from directory
   identities) — a natural follow-up of T4's SSH keys.
 - SCIM outbound (glidex provisioning other systems).
+- SAML (D20).
+- Tenant self-service signup (D21).
+- SPIFFE/SPIRE. A later option for workload and agent identity: SPIFFE
+  JWT-SVIDs fit federation's `jwt` kind (§8) as one more trusted
+  issuer, and SPIRE could issue node identities in place of the cluster
+  CA's node certificates (clustering.md §12.1). Needs its own design.
+- GPUs, DPUs and other server-attached accelerators: modelling,
+  scheduling and granting them to tenants (today's PCI grants, D15,
+  stay as they are).
 
-## 19. Open questions
+## 19. Resolved questions
 
-1. **SAML implementation.** Built-in (the Rust SAML crates either wrap
-   `xmlsec` or are young; XML signature handling is a classic source of
-   auth bypasses) or documented bridging through Dex/Keycloak as an
-   OIDC connector? T5 should start with this decision.
-2. **Default tenant on upgrade.** §15 puts existing projects in a
-   `default` tenant. Alternative: put everything in `admin` and let the
-   operator split later. `default` keeps D3's boundary meaningful from
-   day one.
-3. **Tenant self-service signup.** Excluded here (tenants are created by
-   the admin tenant). Needed for any public offering?
-4. **DPU model.** No DPU support exists yet; §10 reserves `Dpu in
-   [Host]` under `host.devices`. Confirm DPU functions are granted like
-   PCI devices rather than modelled as network ports.
+1. **SAML:** not supported; SAML-only IdPs come in through an OIDC front
+   (D20). SPIFFE/SPIRE is a later option for workload and agent identity
+   (§18).
+2. **Default tenant on upgrade:** existing projects go to a `default`
+   tenant (D22, §15).
+3. **Tenant self-service signup:** none; the admin tenant creates
+   tenants (D21).
+4. **DPUs and other accelerators:** deferred to their own design (§18).

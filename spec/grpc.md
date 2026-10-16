@@ -19,7 +19,7 @@ services to use it are the tenancy services of
 
 **Not a replacement for REST.** REST/JSON stays, permanently, for curl,
 scripts and automation that doesn't want generated clients, and for
-protocols that are HTTP by definition (OIDC/OAuth callbacks, SAML, SCIM,
+protocols that are HTTP by definition (OIDC/OAuth callbacks, SCIM,
 console WebSocket, `/health`). What changes is where its types come
 from: REST bodies become the proto JSON form of the same messages, and
 the hand-written serde types are removed family by family (G-D3, §9).
