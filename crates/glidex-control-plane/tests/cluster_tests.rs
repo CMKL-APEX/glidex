@@ -604,6 +604,22 @@ async fn image_copies_go_where_they_are_wanted_and_spare_files_are_used() {
     assert_eq!(s, StatusCode::ACCEPTED, "{v}");
     wait_until("the stray file gone", || async { !agent_dir.join("stray.qcow2").exists() }).await;
     assert!(here.exists(), "the adopted copy stays");
+
+    // The agent leaves with its files and never drops its copy: the copy is
+    // no longer counted, and deleting the image doesn't wait for it.
+    let (_, v) = call(&server, "GET", "/images/img-here", None, &[]).await;
+    assert!(v["copies"].as_array().unwrap().iter().any(|c| c["node"] == agent_node.as_str()), "{v}");
+    cluster(&agent).stop().await;
+    let store = glidex_control_plane::node::NodeStore::new(server.manager.database());
+    let mut gone = store.get(&agent_node).unwrap().unwrap();
+    gone.status.phase = glidex_control_plane::node::NodePhase::Departed;
+    store.put(&gone).unwrap();
+    let (_, v) = call(&server, "GET", "/images/img-here", None, &[]).await;
+    assert!(!v["copies"].as_array().unwrap().iter().any(|c| c["node"] == agent_node.as_str()), "a node that left has no copy: {v}");
+    let (s, v) = call(&server, "DELETE", "/images/img-here", None, &[]).await;
+    assert!(s.is_success(), "{s} {v}");
+    wait_until("the image deleted though the agent left with a copy", || async { call(&server, "GET", "/images/img-here", None, &[]).await.0 == StatusCode::NOT_FOUND }).await;
+    assert!(server.manager.image_caches("img-here").is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]

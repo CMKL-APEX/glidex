@@ -24,6 +24,9 @@ impl VmManager {
             return Ok(None);
         };
         let leads = self.store.database().can_write();
+        if leads && self.cluster().is_some() {
+            self.prune_departed_copies(&mut img)?;
+        }
         if img.deletion_requested_at.is_some() {
             // Every node's copy goes first (§9.2); the record is the leader's to remove.
             if self.cluster().is_some() {
@@ -36,8 +39,9 @@ impl VmManager {
                 }
             }
             // The `image.download` and `image.file` finalizers (§6.3).
-            self.images.finish_image_delete(&img.id)?;
-            self.image_event(&img.id, EventKind::Normal, "Deleted", "");
+            if self.images.finish_image_delete(&img.id)? {
+                self.image_event(&img.id, EventKind::Normal, "Deleted", "");
+            }
             return Ok(None);
         }
         // A node that doesn't write the catalog keeps only its copy.

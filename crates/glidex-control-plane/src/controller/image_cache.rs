@@ -36,8 +36,16 @@ fn cache_key(image: &str, node: &str) -> String {
 type Next = Result<Option<Duration>, VmManagerError>;
 
 impl VmManager {
-    /// Every node's copy of `image`: `(node, row)`.
+    /// The copies of `image` on nodes of the cluster: `(node, row)`. A node
+    /// that left (a tombstone) took its files with it, so its row, until the
+    /// leader prunes it, counts for nothing.
     pub fn image_caches(&self, image: &str) -> Vec<(String, CacheRow)> {
+        let gone: std::collections::HashSet<String> = self.nodes().list().unwrap_or_default().into_iter().filter(|n| n.status.phase.is_tombstone()).map(|n| n.meta.id).collect();
+        self.image_cache_rows(image).into_iter().filter(|(n, _)| !gone.contains(n)).collect()
+    }
+
+    /// Every row of `image`'s copies, of nodes in the cluster or not.
+    fn image_cache_rows(&self, image: &str) -> Vec<(String, CacheRow)> {
         let db = self.store.database();
         let Ok(txn) = db.begin_read() else { return Vec::new() };
         let Ok(t) = txn.open_table(TableId::ImageCaches.definition()) else { return Vec::new() };
@@ -51,6 +59,41 @@ impl VmManager {
             }
         }
         out
+    }
+
+    /// The leader forgets the copies of nodes that left the cluster (or
+    /// whose records are gone): their rows, and their place in `pinned` and
+    /// `release`. Without this, deleting an image whose copy was on such a
+    /// node would wait for that node forever. Returns whether `img` changed.
+    pub(crate) fn prune_departed_copies(&self, img: &mut Image) -> Result<bool, VmManagerError> {
+        let nodes = self.nodes().list().unwrap_or_default();
+        if nodes.is_empty() {
+            return Ok(false);
+        }
+        let in_cluster = |id: &str| nodes.iter().any(|n| n.meta.id == id && !n.status.phase.is_tombstone());
+        let stale: Vec<String> = self.image_cache_rows(&img.id).into_iter().map(|(n, _)| n).filter(|n| !in_cluster(n)).collect();
+        if !stale.is_empty() {
+            let db = self.store.database();
+            db.write(Origin::Controller, |tx| -> Result<(), VmManagerError> {
+                let mut t = tx.open_table(TableId::ImageCaches.definition()).map_err(|e| VmManagerError::PersistenceError(e.to_string()))?;
+                for n in &stale {
+                    t.remove(cache_key(&img.id, n).as_str()).map_err(|e| VmManagerError::PersistenceError(e.to_string()))?;
+                }
+                Ok(())
+            })?;
+            for n in &stale {
+                let name = nodes.iter().find(|x| x.meta.id == *n).map(|x| x.spec.name.clone()).unwrap_or_else(|| n.clone());
+                tracing::info!(image = %img.name, node = %name, "forgot the copy of a node that left the cluster");
+            }
+        }
+        let (pinned, release) = (img.pinned.len(), img.release.len());
+        img.pinned.retain(|n| in_cluster(n));
+        img.release.retain(|n| in_cluster(n));
+        let changed = img.pinned.len() != pinned || img.release.len() != release;
+        if changed {
+            self.images.put_image(img)?;
+        }
+        Ok(!stale.is_empty() || changed)
     }
 
     fn put_cache_row(&self, image: &str, row: Option<CacheRow>) -> Result<(), VmManagerError> {

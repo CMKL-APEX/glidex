@@ -1307,8 +1307,15 @@ impl ImageManager {
     /// The image controller's half of a deletion: stop the download, then
     /// remove the record, then the files. A file that can't be removed is
     /// left as an orphan (spec/images.md §2) and logged.
-    pub(crate) fn finish_image_delete(&self, id: &str) -> Result<(), ImageError> {
-        let img = self.get_image(id)?;
+    /// Remove the record and the files of an image being deleted. `false`
+    /// when another round already did (a request's own round and the
+    /// controller's can race to it).
+    pub(crate) fn finish_image_delete(&self, id: &str) -> Result<bool, ImageError> {
+        let img = match self.get_image(id) {
+            Ok(img) => img,
+            Err(ImageError::NotFound(_)) => return Ok(false),
+            Err(e) => return Err(e),
+        };
         if let Some(task) = self.tasks.lock().unwrap().remove(&img.id) {
             task.abort();
         }
@@ -1325,7 +1332,7 @@ impl ImageManager {
             }
         }
         tracing::info!(image = %img.name, "image deleted");
-        Ok(())
+        Ok(true)
     }
 }
 
@@ -1405,7 +1412,8 @@ mod tests {
         stale.deletion_requested_at = None;
         mgr.put_image(&stale).unwrap();
         assert!(mgr.get_image("base").unwrap().deletion_requested_at.is_some());
-        mgr.finish_image_delete("img-1").unwrap();
+        assert!(mgr.finish_image_delete("img-1").unwrap());
+        assert!(!mgr.finish_image_delete("img-1").unwrap(), "a second round finds it done: no error (a request and the controller race to it)");
         assert!(matches!(mgr.get_image("base"), Err(ImageError::NotFound(_))));
         // ...and can't bring it back.
         mgr.put_image(&stale).unwrap();
