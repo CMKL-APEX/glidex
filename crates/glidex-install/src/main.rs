@@ -171,18 +171,15 @@ fn read_join_token(file: Option<&str>) -> Result<String> {
     Ok(t)
 }
 
-/// `--leave`: ask the control plane to leave the cluster. It refuses until a
-/// server has removed this node (`gxctl node remove`): local root has no
-/// cluster rights to start a removal.
+/// `--leave`: this host's node was removed by a server (`gxctl node remove`);
+/// make it a standalone host. Done offline, with the control plane stopped:
+/// an agent has no API of its own, and the servers refuse a removed node, so
+/// `gxctl cluster leave` can't reach it. The control plane only goes on when
+/// the removal is confirmed (its record, or a server refusing its
+/// certificate): local root has no cluster rights to start one.
 fn leave_cluster() -> Result<()> {
     section("Leaving the cluster");
-    let ok = Command::new(format!("{}/gxctl", BIN_DIR)).args(["cluster", "leave"]).status().context("running gxctl")?.success();
-    if !ok {
-        bail!("leaving failed (see above); the host is unchanged");
-    }
-    let _ = sudo(&argv(&["systemctl", "restart", "glidex-control-plane.service"]));
-    let _ = sudo(&argv(&["systemctl", "enable", "--now", "glidex-ui.service"]));
-    Ok(())
+    offline_step("--leave-removed", "leaving failed (see above); the host is unchanged")
 }
 
 /// `--leave --keep-resources --offline` (§5.8.3): with no server reachable,
@@ -198,14 +195,27 @@ fn leave_offline() -> Result<()> {
     if answer.trim() != "yes" {
         bail!("cancelled; nothing changed");
     }
-    let _ = sudo(&argv(&["systemctl", "stop", "glidex-control-plane.service"]));
-    let ok = Command::new(format!("{}/glidex-control-plane", BIN_DIR)).arg("--detach-offline").status().context("running glidex-control-plane")?.success();
-    if !ok {
-        let _ = sudo(&argv(&["systemctl", "start", "glidex-control-plane.service"]));
-        bail!("the offline detach failed (see above); the host is unchanged");
+    offline_step("--detach-offline", "the offline detach failed (see above); the host is unchanged")
+}
+
+/// Run one of the control plane's offline modes with the service stopped,
+/// as the service user with its home (where its database is), then start it
+/// again: standalone on success, as it was otherwise.
+fn offline_step(mode: &str, failed: &str) -> Result<()> {
+    let _ = sudo(&argv(&["systemctl", "stop", "glidex-ui.service", "glidex-control-plane.service"]));
+    let bin = format!("{BIN_DIR}/glidex-control-plane");
+    let home = format!("HOME={SERVICE_HOME}");
+    // `sudo -u` whether or not we are root already (`sudo()` runs its
+    // arguments as they are when root).
+    if !is_root() {
+        ensure_sudo()?;
     }
+    let ok = run("sudo", &["-u", SERVICE_USER, "env", &home, &bin, mode]).is_ok();
     sudo(&argv(&["systemctl", "start", "glidex-control-plane.service"]))?;
     let _ = sudo(&argv(&["systemctl", "enable", "--now", "glidex-ui.service"]));
+    if !ok {
+        bail!("{failed}");
+    }
     Ok(())
 }
 
@@ -509,7 +519,8 @@ fn print_help() {
          node (§5.7) with a token from `gxctl node rejoin-token`:\n\
          \x20     --rejoin SERVER:8842   rejoin as the same node (--token-file, --node-id ID)\n\
          A host whose node a server removed leaves the cluster (§5.5):\n\
-         \x20     --leave                go back to a standalone host\n\
+         \x20     --leave                go back to a standalone host (once a server\n\
+         \x20                            confirms the removal; works offline)\n\
          \x20     --leave --keep-resources --offline   leave with this host's VMs when no\n\
          \x20                            server can be reached (§5.8.3)"
     );
@@ -863,7 +874,7 @@ fn wanted_deps(opts: &Options, platform: &Platform) -> Vec<Dep> {
     // OVN on every node (servers also run its databases), unless --no-ovn.
     if opts.networking && opts.ovn {
         deps.extend_from_slice(OVN_HOST_DEPS);
-        if opts.join.as_ref().map_or(true, |j| j.role == "server") {
+        if opts.join.as_ref().is_none_or(|j| j.role == "server") {
             deps.extend_from_slice(OVN_CENTRAL_DEPS);
         }
         deps.extend_from_slice(CONNTRACK_DEPS);

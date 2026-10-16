@@ -32,6 +32,12 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> Conn for T {}
 /// Where the control plane's `api.sock` usually is, in order: the systemd
 /// unit's runtime directory, then the run directories a control plane
 /// started by hand uses (`paths::run_dir`).
+/// The UI socket every node serves; on an agent it is the only one.
+pub const AGENT_UI_SOCKET: &str = "/run/glidex-cp/ui.sock";
+
+/// What `gxctl` says on a cluster agent, which has no API of its own.
+pub const AGENT_HINT: &str = "this host is a cluster agent: it has no local API, and the cluster can't vouch for a Unix user of another host. Log in to a server instead: `gxctl auth login https://<server>:8841` (spec/gxctl-auth.md)";
+
 pub fn socket_candidates(xdg_runtime_dir: Option<&str>, euid: u32) -> Vec<PathBuf> {
     let mut v = vec![PathBuf::from("/run/glidex-cp/api.sock")];
     if let Some(x) = xdg_runtime_dir.filter(|x| !x.is_empty()) {
@@ -1039,7 +1045,7 @@ mod tests {
         cfg.profiles.insert(
             "t".into(),
             crate::config::Profile {
-                url: vec![format!("https://127.0.0.1:1"), format!("https://127.0.0.1:{live}")],
+                url: vec!["https://127.0.0.1:1".to_string(), format!("https://127.0.0.1:{live}")],
                 tls: tls.clone(),
                 ..Default::default()
             },

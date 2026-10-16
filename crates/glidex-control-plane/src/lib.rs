@@ -6,6 +6,7 @@ pub mod config;
 pub mod cloud_init;
 pub mod credentials;
 pub mod hypervisor;
+pub mod restart;
 pub mod images;
 pub mod ipam;
 pub mod models;

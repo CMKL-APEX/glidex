@@ -68,7 +68,7 @@ impl Config {
             return Err(format!("{}: unsupported config version {} (this gxctl writes version {})", path.display(), self.version, CONFIG_VERSION));
         }
         if let Some(cur) = &self.current {
-            if self.profiles.get(cur).is_none() {
+            if !self.profiles.contains_key(cur) {
                 return Err(format!("{}: 'current' names '{}', which the file does not define; its profiles are {}", path.display(), cur, self.list()));
             }
         }
@@ -392,7 +392,7 @@ pub fn chosen(cfg: &Config, want: Option<&str>) -> Result<Option<String>, String
     let want = want.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
     let name = want.or(env).or(cfg.current.clone());
     if let Some(name) = name {
-        if cfg.profiles.get(&name).is_none() {
+        if !cfg.profiles.contains_key(&name) {
             return Err(format!("unknown profile '{}'; this file has: {}", name, cfg.list()));
         }
         return Ok(Some(name));
@@ -408,10 +408,7 @@ pub fn chosen(cfg: &Config, want: Option<&str>) -> Result<Option<String>, String
 /// commands that can act without operating on a missing profile say so
 /// themselves.
 pub fn profile_of<'a>(cfg: &'a Option<Config>, name: Option<&str>) -> Option<(&'a String, &'a Profile)> {
-    let c = match cfg.as_ref() {
-        Some(c) => c,
-        None => return None,
-    };
+    let c = cfg.as_ref()?;
     match name {
         Some(n) => c.profiles.iter().find(|(k, _)| k.as_str() == n),
         None => c.current.as_ref().and_then(|cur| c.profiles.iter().find(|(k, _)| *k == cur)),
@@ -475,8 +472,7 @@ mod tests {
     }
 
     fn full() -> Config {
-        let mut cfg = Config::default();
-        cfg.current = Some("lab".into());
+        let mut cfg = Config { current: Some("lab".into()), ..Default::default() };
         cfg.profiles.insert(
             "lab".into(),
             Profile {

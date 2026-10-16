@@ -130,12 +130,31 @@ async fn main() {
         }
     }
 
+    // `--leave-removed` (spec/clustering.md §5.5 step 3): a node the cluster
+    // removed becomes a standalone host, without its API (an agent's goes to
+    // the servers, which refuse it now). Run with the service stopped.
+    if args.iter().any(|a| a == "--leave-removed") {
+        let db = state::VmManager::default_db_path_pub();
+        match glidex_control_plane::cluster::manage::leave_removed_offline(&db).await {
+            Ok((name, confirmed)) => {
+                leave_ovn();
+                println!("Left the cluster as {name} ({confirmed}): this host's cluster identity and key are gone. Start the control plane: it is standalone.");
+                return;
+            }
+            Err(e) => {
+                eprintln!("leaving failed, nothing changed: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     // `--detach-offline` (spec/clustering.md §5.8.3): leave with this host's resources
     // while no server can be reached, then exit. Run with the service stopped.
     if args.iter().any(|a| a == "--detach-offline") {
         let db = state::VmManager::default_db_path_pub();
         match glidex_control_plane::cluster::departure::offline_detach(&db) {
             Ok(b) => {
+                leave_ovn();
                 println!("Detached: {} VM(s), {} disk(s) kept; this host's cluster identity and key are gone. Start the control plane: it is standalone.", b.vm_ids.len(), b.disk_ids.len());
                 println!("Changes made in the cluster since this node last synced are not included. On a server, run `gxctl node detach <node> --departed` so the cluster lets go (it rotates its CA).");
                 return;
@@ -268,6 +287,9 @@ async fn main() {
     // a server, which authenticates them (spec/clustering-ui.md §3.6).
     if vm_manager.node_link().is_some() {
         println!("  Agent node: serving VMs for the cluster; node API on {}", vm_manager.cluster().map(|c| c.identity.advertise.to_string()).unwrap_or_default());
+        // A standalone process before a restart into agent mode left its
+        // API socket: gone, so gxctl finds no API here and says where to log in.
+        let _ = std::fs::remove_file(cfg.api_socket_path());
         let mut servers = Vec::new();
         let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
         match auth::AuthService::new(vm_manager.database(), cfg.clone()) {
@@ -413,6 +435,10 @@ async fn main() {
     for s in servers {
         let _ = s.await;
     }
+    // Asked to come back in another mode (now a cluster agent).
+    if glidex_control_plane::restart::is_requested() {
+        std::process::exit(glidex_control_plane::restart::EXIT_CODE);
+    }
 }
 
 async fn shutdown_signal() {
@@ -436,8 +462,21 @@ async fn shutdown_signal() {
     tokio::select! {
         _ = ctrl_c => {},
         _ = terminate => {},
+        _ = glidex_control_plane::restart::requested() => {},
     }
 
     println!();
     tracing::info!("Shutdown signal received; VMs keep running");
+}
+
+/// After an offline leave: stop being an OVN chassis (netd `LeaveOvn`), or
+/// the host's `ovn-controller` keeps registering with the cluster it left.
+/// netd refuses while a VM port is still on `br-int` (a VM kept by an
+/// offline detach): it is only a warning then.
+fn leave_ovn() {
+    let netd = network::Netd::from_env();
+    match netd.call::<serde_json::Value>(glidex_netd::proto::Op::LeaveOvn { confirm: true }) {
+        Ok(_) => println!("This host is no longer an OVN chassis."),
+        Err(e) => eprintln!("Warning: still an OVN chassis ({e}); stop ovn-controller once nothing is on br-int."),
+    }
 }

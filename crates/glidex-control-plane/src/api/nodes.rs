@@ -164,7 +164,7 @@ pub async fn detach(c: Caller, Path(id): Path<String>, b: Option<Json<DetachBody
         return m.forget_departed(&id).await.map(Json).map_err(departure_err);
     }
     if b.abort {
-        let node = m.nodes().list().map_err(store_err)?.into_iter().find(|n| n.meta.id == id || n.spec.name == id).ok_or_else(|| err(StatusCode::NOT_FOUND, "not_found", format!("node {id} not found")))?;
+        let node = m.nodes().list().map_err(store_err)?.into_iter().find(|n| n.meta.id == id || (n.spec.name == id && !n.status.phase.is_tombstone())).ok_or_else(|| err(StatusCode::NOT_FOUND, "not_found", format!("node {id} not found")))?;
         let plan = crate::cluster::departure::plans(&m.database()).into_iter().find(|p| p.node == node.meta.id && p.state == "frozen").ok_or_else(|| err(StatusCode::NOT_FOUND, "not_found", "no detach is under way for that node"))?;
         crate::cluster::departure::abort_plan(&m.database(), &plan.plan).map_err(departure_err)?;
         return Ok(Json(serde_json::json!({ "node": node.spec.name, "aborted": plan.plan })));
@@ -400,7 +400,7 @@ pub async fn put_node_ovn(c: Caller, Path(id): Path<String>, Json(b): Json<NodeO
 /// (spec/clustering.md §11.2, §13.2). The reason when not.
 pub(crate) fn check_gateway_nodes(nodes: &[crate::node::Node], keys: &[String], physnet: &str) -> Result<(), String> {
     for k in keys {
-        let Some(n) = nodes.iter().find(|n| n.meta.id == *k || n.spec.name == *k) else { return Err(format!("no node {k}")) };
+        let Some(n) = nodes.iter().find(|n| n.meta.id == *k || (n.spec.name == *k && !n.status.phase.is_tombstone())) else { return Err(format!("no node {k}")) };
         if !n.status.features.physnets.contains_key(physnet) {
             return Err(format!(
                 "{} doesn't map physical network {physnet}: add it to cluster.ovn.bridge_mappings in that node's control-plane.json (a bridge with the uplink) and restart its control plane",
@@ -415,4 +415,21 @@ pub(crate) fn check_gateway_nodes(nodes: &[crate::node::Node], keys: &[String], 
         }
     }
     Ok(())
+}
+
+/// `POST /nodes/{id}/spare-image-files/delete` (`pullImage` on the
+/// cluster): the node deletes the unrecorded image files it has reported
+/// (spec/clustering.md §9.2.3), at its next report.
+pub async fn delete_spare_image_files(c: Caller, Path(id): Path<String>) -> Result<impl IntoResponse, ApiErr> {
+    c.require(Ent::Cluster, EntitySet::new())?;
+    c.set_target(format!("node:{id}"));
+    c.audit_always();
+    let store = c.manager().nodes();
+    let mut n = store.get(&id).map_err(store_err)?.ok_or_else(|| err(StatusCode::NOT_FOUND, "not_found", format!("node {id} not found")))?;
+    let files = n.status.features.spare_image_files.clone();
+    n.spec.drop_spare_files_before = Some(crate::tenancy::now() + 1);
+    n.meta.generation += 1;
+    n.meta.resource_version += 1;
+    store.put(&n).map_err(store_err)?;
+    Ok((StatusCode::ACCEPTED, Json(serde_json::json!({ "node": n.spec.name, "files": files.len(), "bytes": files.iter().map(|f| f.bytes).sum::<u64>() }))))
 }

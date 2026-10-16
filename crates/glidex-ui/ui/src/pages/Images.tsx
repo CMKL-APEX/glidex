@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import * as api from "../api";
-import type { CatalogItem, FirmwareCatalogItem, HypervisorType, ImageInfo, ImageKind } from "../types";
-import { HYPERVISOR_LABELS, formatBytes } from "../types";
+import type { CatalogItem, FirmwareCatalogItem, HypervisorType, ImageInfo, ImageKind, NodeRecord } from "../types";
+import { HYPERVISOR_LABELS, formatBytes, isTombstone } from "../types";
 import Modal from "../components/Modal";
 import { LoadingCard } from "../components/Loading";
 import { useLiveRefresh } from "../live";
+import { useNodes } from "../nodes";
 
 const inputClass =
   "mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-transparent";
@@ -163,9 +164,13 @@ interface TableProps {
   firmware: boolean;
   onRetry: (img: ImageInfo) => void;
   onRemove: (img: ImageInfo) => void;
+  /** In a cluster: copies on chosen nodes (spec/clustering.md §9.2.2). */
+  clustered?: boolean;
+  onCopy?: (img: ImageInfo) => void;
+  onRemoveCopy?: (img: ImageInfo, node: string) => void;
 }
 
-function ImageTable({ images, firmware, onRetry, onRemove }: TableProps) {
+function ImageTable({ images, firmware, onRetry, onRemove, clustered, onCopy, onRemoveCopy }: TableProps) {
   return (
     <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-x-auto">
       <table className="w-full text-sm" data-testid={firmware ? "firmware-images" : "disk-images"}>
@@ -185,7 +190,10 @@ function ImageTable({ images, firmware, onRetry, onRemove }: TableProps) {
             const users = firmware ? img.used_by_vms ?? [] : img.linked_disks;
             return (
               <tr key={img.id}>
-                <td className="px-4 py-3 font-mono">{img.name}</td>
+                <td className="px-4 py-3 font-mono">
+                  {img.name}
+                  {clustered && <span className="ml-1 text-xs text-gray-500 font-sans">{img.arch}</span>}
+                </td>
                 {firmware && (
                   <td className="px-4 py-3">
                     {img.hypervisor ? HYPERVISOR_LABELS[img.hypervisor] : "—"}
@@ -198,7 +206,7 @@ function ImageTable({ images, firmware, onRetry, onRemove }: TableProps) {
                 )}
                 <td className="px-4 py-3">
                   <StatusBadge image={img} />
-                  <Copies img={img} />
+                  <Copies img={img} onRemove={onRemoveCopy && ((node) => onRemoveCopy(img, node))} />
                 </td>
                 <td className="px-4 py-3">
                   {firmware
@@ -214,6 +222,11 @@ function ImageTable({ images, firmware, onRetry, onRemove }: TableProps) {
                 </td>
                 <td className="px-4 py-3 text-xs font-mono">{users.join(", ") || "—"}</td>
                 <td className="px-4 py-3 text-right space-x-2 whitespace-nowrap">
+                  {clustered && onCopy && img.status.state === "ready" && !img.deleting && (
+                    <button className="px-3 py-1 text-xs font-medium text-sky-700 bg-sky-50 hover:bg-sky-100 rounded-lg" onClick={() => onCopy(img)}>
+                      Copy to node…
+                    </button>
+                  )}
                   {img.status.state === "failed" && (
                     <button
                       className="px-3 py-1 text-xs font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg"
@@ -241,29 +254,166 @@ function ImageTable({ images, firmware, onRetry, onRemove }: TableProps) {
 }
 
 /** Where the image's file is, in a cluster: one line per node's copy. */
-function Copies({ img }: { img: ImageInfo }) {
+function Copies({ img, onRemove }: { img: ImageInfo; onRemove?: (node: string) => void }) {
   const copies = img.copies ?? [];
   if (copies.length === 0) return null;
   const ready = copies.filter((c) => c.state === "ready").length;
+  const pending = copies.length - ready;
   return (
     <details className="mt-1 text-xs text-gray-600">
       <summary className="cursor-pointer">
         on {ready} node{ready === 1 ? "" : "s"}
-        {ready < copies.length ? `, ${copies.length - ready} copying or failed` : ""}
+        {pending ? `, ${pending} on the way, going or failed` : ""}
       </summary>
       <ul className="mt-1 space-y-0.5">
         {copies.map((c) => (
           <li key={c.node}>
             <span className="font-medium">{c.node_name ?? c.node.slice(0, 8)}</span>:{" "}
-            {c.state === "ready"
-              ? "ready"
-              : c.state === "downloading"
-                ? `copying${img.file_size_bytes ? ` (${Math.min(100, Math.round((c.bytes / img.file_size_bytes) * 100))} %)` : ""}`
-                : <span className="text-red-600">failed{c.error ? `: ${c.error}` : ""}</span>}
+            {c.state === "ready" ? (
+              "ready"
+            ) : c.state === "downloading" ? (
+              `copying${img.file_size_bytes ? ` (${Math.min(100, Math.round((c.bytes / img.file_size_bytes) * 100))} %)` : ""}`
+            ) : c.state === "wanted" ? (
+              "wanted"
+            ) : c.state === "releasing" ? (
+              "going"
+            ) : (
+              <span className="text-red-600">failed{c.error ? `: ${c.error}` : ""}</span>
+            )}
+            {c.pinned && <span className="ml-1 text-gray-400">(kept here)</span>}
+            {onRemove && c.state !== "releasing" && (
+              <button
+                className="ml-2 text-red-600 hover:underline disabled:opacity-40 disabled:no-underline"
+                disabled={c.state === "ready" && ready <= 1}
+                title={c.state === "ready" && ready <= 1 ? "The last ready copy: delete the image instead" : "Let this node's copy go"}
+                onClick={() => onRemove(c.node)}
+              >
+                Remove
+              </button>
+            )}
           </li>
         ))}
       </ul>
     </details>
+  );
+}
+
+/** Nodes an image of `arch` may go to (an older node, reporting none, may). */
+function nodesFor(nodes: Map<string, NodeRecord>, arch: string): NodeRecord[] {
+  return [...nodes.values()]
+    .filter((n) => !isTombstone(n.status.phase) && (!n.status.features?.arch || !arch || n.status.features.arch === arch))
+    .sort((a, b) => a.spec.name.localeCompare(b.spec.name));
+}
+
+/** A pull in a cluster (spec/clustering.md §9.2.1–2): which nodes get a
+ * copy once it is downloaded, and whether the server keeps its own. */
+function PullDialog({
+  what,
+  arch,
+  nodes,
+  onClose,
+  onDone,
+}: {
+  what: { catalog?: string; firmware?: string; label: string };
+  arch: string;
+  nodes: Map<string, NodeRecord>;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const candidates = nodesFor(nodes, arch);
+  const [picked, setPicked] = useState<string[]>([]);
+  const [keep, setKeep] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const submit = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.pullImage({ catalog: what.catalog, firmware: what.firmware, arch: arch || undefined, nodes: picked.length ? picked : undefined, keep_server_copy: picked.length ? keep : undefined });
+      onDone();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to start download");
+      setBusy(false);
+    }
+  };
+  return (
+    <Modal title={`Pull ${what.label}`} onClose={onClose}>
+      <div className="space-y-4 text-sm">
+        {error && <p className="text-red-600">{error}</p>}
+        <p className="text-gray-600">
+          A server downloads it{arch ? ` for ${arch}` : ""} and checks it. Nodes copy it from there when they need it; pick nodes to have a copy
+          ready before then.
+        </p>
+        <div>
+          <span className="block font-medium text-gray-700">Copy to nodes</span>
+          {candidates.length === 0 ? (
+            <p className="text-gray-500">No node of this architecture.</p>
+          ) : (
+            <div className="mt-1 flex flex-wrap gap-3">
+              {candidates.map((n) => (
+                <label key={n.meta.id} className="flex items-center gap-1">
+                  <input type="checkbox" checked={picked.includes(n.meta.id)} onChange={(e) => setPicked(e.target.checked ? [...picked, n.meta.id] : picked.filter((x) => x !== n.meta.id))} />
+                  {n.spec.name}
+                </label>
+              ))}
+            </div>
+          )}
+        </div>
+        <label className="flex items-start gap-2">
+          <input type="checkbox" className="mt-1" checked={keep} disabled={picked.length === 0} onChange={(e) => setKeep(e.target.checked)} />
+          <span>
+            Keep the server's copy
+            <span className="block text-xs text-gray-500">Unchecked: it goes once a chosen node has one, so it takes no space on the server.</span>
+          </span>
+        </label>
+        <div className="flex justify-end gap-2">
+          <button className="px-4 py-2 text-sm bg-gray-200 rounded-lg" onClick={onClose}>
+            Cancel
+          </button>
+          <button className="px-4 py-2 text-sm text-white bg-sky-600 hover:bg-sky-700 rounded-lg disabled:opacity-50" disabled={busy} onClick={submit}>
+            {busy ? "Starting…" : "Pull"}
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+/** Keep a copy of an image on a node ahead of need (§9.2.2). */
+function CopyDialog({ img, nodes, onClose, onDone }: { img: ImageInfo; nodes: Map<string, NodeRecord>; onClose: () => void; onDone: () => void }) {
+  const has = new Set((img.copies ?? []).filter((c) => c.state !== "releasing").map((c) => c.node));
+  const candidates = nodesFor(nodes, img.arch).filter((n) => !has.has(n.meta.id));
+  const [error, setError] = useState<string | null>(null);
+  const copy = async (node: string) => {
+    setError(null);
+    try {
+      await api.addImageCopy(img.id, node);
+      onDone();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to copy");
+    }
+  };
+  return (
+    <Modal title={`Copy ${img.name} to a node`} onClose={onClose}>
+      <div className="space-y-3 text-sm">
+        {error && <p className="text-red-600">{error}</p>}
+        <p className="text-gray-600">The node copies it from a node that has it, checks it, and keeps it until it is let go. Only {img.arch} nodes can run it.</p>
+        {candidates.length === 0 ? (
+          <p className="text-gray-500">Every {img.arch} node has a copy already.</p>
+        ) : (
+          <ul className="divide-y divide-gray-100">
+            {candidates.map((n) => (
+              <li key={n.meta.id} className="py-2 flex items-center justify-between">
+                <span>{n.spec.name}</span>
+                <button className="px-3 py-1 text-xs font-medium text-sky-700 bg-sky-50 hover:bg-sky-100 rounded-lg" onClick={() => copy(n.meta.id)}>
+                  Copy here
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </Modal>
   );
 }
 
@@ -273,15 +423,23 @@ export default function Images() {
   const [images, setImages] = useState<ImageInfo[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pullingUrl, setPullingUrl] = useState(false);
+  // In a cluster (spec/clustering.md §9.2.1): the nodes' architectures, and
+  // which one the catalogs are for (default: the server's).
+  const dir = useNodes();
+  const archs = [...new Set([...dir.nodes.values()].filter((n) => !isTombstone(n.status.phase)).map((n) => n.status.features?.arch).filter((a): a is string => !!a))].sort();
+  const selfArch = (dir.self && dir.nodes.get(dir.self)?.status.features?.arch) || "";
+  const [arch, setArch] = useState("");
+  const [pulling, setPulling] = useState<{ catalog?: string; firmware?: string; label: string } | null>(null);
+  const [copying, setCopying] = useState<ImageInfo | null>(null);
 
   const refresh = useCallback(() => {
-    api.imageCatalog().then(setCatalog).catch(() => setCatalog([]));
-    api.firmwareCatalog().then(setFirmwareCatalog).catch(() => setFirmwareCatalog([]));
+    api.imageCatalog(arch || undefined).then(setCatalog).catch(() => setCatalog([]));
+    api.firmwareCatalog(arch || undefined).then(setFirmwareCatalog).catch(() => setFirmwareCatalog([]));
     api
       .listImages()
       .then(setImages)
       .catch((e) => setError(e instanceof Error ? e.message : "Failed to load images"));
-  }, []);
+  }, [arch]);
 
   useEffect(() => {
     refresh();
@@ -296,8 +454,13 @@ export default function Images() {
     return () => clearInterval(id);
   }, [busy, live, refresh]);
 
-  const pull = async (req: { catalog?: string; firmware?: string }) => {
+  const pull = async (req: { catalog?: string; firmware?: string }, label = "") => {
     setError(null);
+    // In a cluster: where copies go (§9.2.2).
+    if (dir.clustered) {
+      setPulling({ ...req, label: label || req.catalog || req.firmware || "" });
+      return;
+    }
     try {
       await api.pullImage(req);
       refresh();
@@ -331,9 +494,25 @@ export default function Images() {
     }
   };
 
+  const removeCopy = async (img: ImageInfo, node: string) => {
+    const name = dir.nodes.get(node)?.spec.name ?? node;
+    if (!confirm(`Let ${name}'s copy of ${img.name} go?`)) return;
+    setError(null);
+    try {
+      await api.removeImageCopy(img.id, node);
+      refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to remove the copy");
+    }
+  };
+
   const inFlight = (kind: "catalog" | "firmware", key: string) =>
     images?.some(
-      (i) => i.source.kind === kind && i.source.key === key && (i.status.state === "downloading" || i.status.state === "verifying"),
+      (i) =>
+        i.source.kind === kind &&
+        i.source.key === key &&
+        (!arch || i.arch === arch) &&
+        (i.status.state === "downloading" || i.status.state === "verifying"),
     );
 
   const diskImages = images?.filter((i) => i.kind !== "firmware") ?? [];
@@ -356,6 +535,20 @@ export default function Images() {
 
       {error && <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700">{error}</div>}
 
+      {archs.length > 1 && (
+        <div className="mb-4 flex items-center gap-2 text-sm">
+          <label htmlFor="catalog-arch" className="text-gray-600">
+            Catalogs for
+          </label>
+          <select id="catalog-arch" className="px-2 py-1 border border-gray-300 rounded-lg bg-white" value={arch || selfArch} onChange={(e) => setArch(e.target.value)}>
+            {archs.map((a) => (
+              <option key={a} value={a}>
+                {a} ({[...dir.nodes.values()].filter((n) => n.status.features?.arch === a && !isTombstone(n.status.phase)).map((n) => n.spec.name).join(", ")})
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
       <h2 className="text-lg font-semibold text-gray-800 mb-3">Cloud image catalog</h2>
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 mb-8">
         {catalog.map((c) => (
@@ -369,7 +562,7 @@ export default function Images() {
             {c.downloaded_image_id ? (
               <span className="text-xs text-green-700">Downloaded</span>
             ) : (
-              <button className={pullClass} disabled={inFlight("catalog", c.key)} onClick={() => pull({ catalog: c.key })}>
+              <button className={pullClass} disabled={inFlight("catalog", c.key)} onClick={() => pull({ catalog: c.key }, `${c.distro} ${c.release}`)}>
                 {inFlight("catalog", c.key) ? "Downloading…" : "Pull"}
               </button>
             )}
@@ -407,7 +600,7 @@ export default function Images() {
               <button
                 className={pullClass}
                 disabled={!f.available || inFlight("firmware", f.key)}
-                onClick={() => pull({ firmware: f.key })}
+                onClick={() => pull({ firmware: f.key }, f.name)}
               >
                 {inFlight("firmware", f.key) ? "Downloading…" : f.source === "host" ? "Import" : "Pull"}
               </button>
@@ -424,7 +617,7 @@ export default function Images() {
           No images yet. Pull one from the catalog above.
         </div>
       ) : (
-        <ImageTable images={diskImages} firmware={false} onRetry={retry} onRemove={remove} />
+        <ImageTable images={diskImages} firmware={false} onRetry={retry} onRemove={remove} clustered={dir.clustered} onCopy={setCopying} onRemoveCopy={removeCopy} />
       )}
 
       <h2 className="text-lg font-semibold text-gray-800 mt-8 mb-3">Firmware</h2>
@@ -435,9 +628,32 @@ export default function Images() {
           No firmware yet. VMs booting cloud images need one: pull it from the firmware catalog above.
         </div>
       ) : (
-        <ImageTable images={firmwareImages} firmware onRetry={retry} onRemove={remove} />
+        <ImageTable images={firmwareImages} firmware onRetry={retry} onRemove={remove} clustered={dir.clustered} onCopy={setCopying} onRemoveCopy={removeCopy} />
       )}
 
+      {pulling && (
+        <PullDialog
+          what={pulling}
+          arch={arch || selfArch}
+          nodes={dir.nodes}
+          onClose={() => setPulling(null)}
+          onDone={() => {
+            setPulling(null);
+            refresh();
+          }}
+        />
+      )}
+      {copying && (
+        <CopyDialog
+          img={copying}
+          nodes={dir.nodes}
+          onClose={() => setCopying(null)}
+          onDone={() => {
+            setCopying(null);
+            refresh();
+          }}
+        />
+      )}
       {pullingUrl && (
         <Modal title="Download from URL" onClose={() => setPullingUrl(false)}>
           <PullUrlForm

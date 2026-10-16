@@ -115,7 +115,7 @@ pub fn classify(exec: &dyn Exec, ifname: &str) -> Result<Classification, OvsErro
 
 /// `0000:41:00.0`.
 pub fn validate_bdf(bdf: &str) -> Result<(), OvsError> {
-    let parts: Vec<&str> = bdf.split(|c| c == ':' || c == '.').collect();
+    let parts: Vec<&str> = bdf.split([':', '.']).collect();
     let ok = parts.len() == 4
         && [4, 2, 2, 1]
             .iter()

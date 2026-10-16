@@ -195,6 +195,10 @@ pub struct PreviewBody {
     vfio_devices: Vec<String>,
     #[serde(default)]
     data_disks: Vec<String>,
+    /// The image the root disk would come from: its architecture counts
+    /// (spec/clustering.md §9.2.1).
+    #[serde(default)]
+    image: Option<String>,
 }
 
 pub async fn preview(c: Caller, Json(b): Json<PreviewBody>) -> Result<Response, ApiErr> {
@@ -209,7 +213,7 @@ pub async fn preview(c: Caller, Json(b): Json<PreviewBody>) -> Result<Response, 
         cfg["hypervisor"] = serde_json::json!(h);
     }
     let config: VmConfig = serde_json::from_value(cfg).map_err(|e| err(StatusCode::BAD_REQUEST, "invalid", e.to_string()))?;
-    let fits = c.manager().preview_placement(&config, b.node.clone(), &b.data_disks).await.map_err(super::storage::manager_err)?;
+    let fits = c.manager().preview_placement(&config, b.node.clone(), &b.data_disks, b.image.as_deref()).await.map_err(super::storage::manager_err)?;
     let pick = fits.first().filter(|f| f.refused.is_none()).map(|f| f.id.clone());
     Ok(Json(serde_json::json!({ "pick": pick, "nodes": fits })).into_response())
 }

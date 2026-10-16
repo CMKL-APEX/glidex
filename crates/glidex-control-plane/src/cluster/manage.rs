@@ -148,7 +148,7 @@ pub async fn init(manager: &Arc<VmManager>, cfg: &crate::config::Config, opts: I
     let nodes = NodeStore::new(db.clone());
     let mut me = match nodes.get(crate::node::LOCAL_NODE).map_err(other)? {
         Some(n) => n,
-        None => Node::new(crate::node::LOCAL_NODE, NodeSpec { name: identity.name.clone(), role: NodeRole::Server, unschedulable: false, labels: Default::default(), br_int_datapath: Default::default(), bridge_mappings: Default::default() }),
+        None => Node::new(crate::node::LOCAL_NODE, NodeSpec { name: identity.name.clone(), role: NodeRole::Server, unschedulable: false, labels: Default::default(), br_int_datapath: Default::default(), bridge_mappings: Default::default(), drop_spare_files_before: None }),
     };
     me.meta.id = node_id.clone();
     me.meta.name = identity.name.clone();
@@ -171,7 +171,7 @@ pub async fn init(manager: &Arc<VmManager>, cfg: &crate::config::Config, opts: I
     // 5. Raft: a cluster of one, then the writes that only a cluster has.
     crate::authz::set_identity(&cluster_id, &node_id);
     crate::authz::set_local_account_scope((!ccfg.shared_local_accounts).then(|| node_id.clone()));
-    let cluster = Cluster::start(db.clone(), files.clone(), identity.clone(), ccfg, listen).await.map_err(|e| rollback(e))?;
+    let cluster = Cluster::start(db.clone(), files.clone(), identity.clone(), ccfg, listen).await.map_err(rollback)?;
     let node = cluster.node.as_ref().expect("a server has a Raft member");
     node.bootstrap(&advertise.to_string()).await.map_err(|e| rollback(e.into()))?;
     node.wait_for_leader(Duration::from_secs(20)).await.map_err(|e| rollback(e.into()))?;
@@ -491,6 +491,23 @@ fn ca_not_after(c: &Cluster) -> Option<i64> {
     Some(cert.validity().not_after.timestamp())
 }
 
+/// The summary as the node `viewer` sees it: a request a node's UI socket
+/// relayed (spec/clustering-ui.md §3.6) is about that node, so "this node"
+/// (`node_id`, `name`, `role`, `advertise`) is the relaying one; `served_by`
+/// names the server that answered. Without a viewer, or for this server
+/// itself, it is [`status_of`].
+pub fn status_seen_from(c: &Cluster, viewer: Option<&str>) -> Value {
+    let mut v = status_of(c);
+    let Some(id) = viewer.filter(|id| *id != c.identity.node_id) else { return v };
+    let Ok(Some(n)) = NodeStore::new(c.db.clone()).get(id) else { return v };
+    v["served_by"] = json!({ "node_id": c.identity.node_id, "name": c.identity.name });
+    v["node_id"] = json!(n.meta.id);
+    v["name"] = json!(n.spec.name);
+    v["role"] = json!(n.spec.role);
+    v["advertise"] = json!(n.status.advertise.map(|a| a.to_string()));
+    v
+}
+
 pub fn status_of(c: &Cluster) -> Value {
     let nodes = NodeStore::new(c.db.clone()).list().unwrap_or_default();
     let certs = node_certs(c);
@@ -678,6 +695,65 @@ pub async fn leave(manager: &Arc<VmManager>) -> Result<Value, ClusterError> {
     let name = c.identity.name.clone();
     files.delete_all();
     Ok(json!({ "left": name, "restart": "restart the control plane: it starts again as a standalone host" }))
+}
+
+/// §5.5 step 3 without this node's API, with the control plane stopped: an
+/// agent has none of its own (its requests go to the servers, which refuse a
+/// removed node), so `gxctl cluster leave` can't reach it once removed. Local
+/// root still can't start a removal (D14): this goes on only when the node's
+/// own record says it is gone, or a server refuses its certificate as revoked.
+/// The host becomes standalone with what the cluster left it (nothing, for a
+/// removed node). Returns the node's name and what confirmed the removal.
+pub async fn leave_removed_offline(db_path: &std::path::Path) -> Result<(String, String), ClusterError> {
+    use crate::node::NodePhase;
+    let files = Files::beside(db_path);
+    let identity = files.load_identity().map_err(other)?.ok_or_else(|| other("this host is not part of a cluster"))?;
+    let db = Arc::new(crate::store::Db::create(db_path).map_err(other)?);
+    let store = NodeStore::new(db.clone());
+    let phase = store.get(&identity.node_id).map_err(other)?.map(|n| n.status.phase);
+    let confirmed = match phase {
+        Some(p @ (NodePhase::Removed | NodePhase::Departed | NodePhase::Forgotten)) => format!("this node's record says {p:?}"),
+        recorded => {
+            // The record may predate the removal: the write that removed the
+            // node also revoked its certificate. Ask the servers.
+            let mut servers = identity.seeds.clone();
+            for n in store.list().unwrap_or_default() {
+                if n.spec.role == NodeRole::Server && n.meta.id != identity.node_id && !n.status.phase.is_tombstone() {
+                    if let Some(a) = n.status.advertise.map(|a| a.to_string()).filter(|a| !servers.contains(a)) {
+                        servers.push(a);
+                    }
+                }
+            }
+            let material = net::TlsMaterial::from_pem(&files.read(files.cert()).map_err(other)?, &files.read(files.key()).map_err(other)?, &files.read(files.trust()).map_err(other)?)?;
+            let client = net::PeerClient::new(net::ClusterTls::new(material)?);
+            let mut answer = None;
+            for s in &servers {
+                let Ok(r) = client.request_timeout(s, hyper::Method::GET, "/cluster/v1/list", &[], Bytes::new(), Duration::from_secs(10)).await else { continue };
+                let code = serde_json::from_slice::<Value>(&r.body).ok().and_then(|v| v["error"].as_str().map(String::from));
+                if r.status == hyper::StatusCode::UNAUTHORIZED && code.as_deref() == Some(super::server::NODE_REMOVED) {
+                    answer = Some(format!("{s} refuses its certificate as revoked"));
+                    break;
+                }
+                if r.status.is_success() {
+                    return Err(other(format!(
+                        "{s} still has this node as a member ({}): remove it on a server first (`gxctl node remove {}`)",
+                        recorded.map(|p| format!("{p:?}")).unwrap_or_else(|| "no record here".into()),
+                        identity.name
+                    )));
+                }
+            }
+            answer.ok_or_else(|| {
+                other(format!(
+                    "no server confirms the removal (tried {}): if the cluster is gone for good, use `glidex-install --leave --keep-resources --offline`",
+                    if servers.is_empty() { "none known".to_string() } else { servers.join(", ") }
+                ))
+            })?
+        }
+    };
+    drop(store);
+    drop(db);
+    super::departure::offline_detach(db_path).map_err(other)?;
+    Ok((identity.name, confirmed))
 }
 
 pub struct ImportOptions {

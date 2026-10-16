@@ -120,7 +120,7 @@ impl RaftLogStorage<TypeConfig> for LogStore {
     }
 
     async fn save_vote(&mut self, vote: &Vote) -> Result<(), StorageError> {
-        let (this, vote) = (self.clone(), vote.clone());
+        let (this, vote) = (self.clone(), *vote);
         tokio::task::spawn_blocking(move || this.set_kv(VOTE, Some(&vote))).await.map_err(io_err)?
     }
 

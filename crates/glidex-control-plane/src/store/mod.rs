@@ -330,7 +330,7 @@ impl VmStore {
                 let probe = crate::node::SelfProbe::detect(&crate::node::Resources::default());
                 let mut n = crate::node::Node::new(
                     local,
-                    crate::node::NodeSpec { name: probe.name.clone(), role: crate::node::NodeRole::Server, unschedulable: false, labels: Default::default(), br_int_datapath: Default::default(), bridge_mappings: Default::default() },
+                    crate::node::NodeSpec { name: probe.name.clone(), role: crate::node::NodeRole::Server, unschedulable: false, labels: Default::default(), br_int_datapath: Default::default(), bridge_mappings: Default::default(), drop_spare_files_before: None },
                 );
                 n.status.capacity = probe.capacity;
                 n.status.allocatable = probe.allocatable;

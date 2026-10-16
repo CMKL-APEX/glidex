@@ -304,15 +304,23 @@ authenticate; it rejoins with its own identity (§5.7).
       `node_denylist`.
    6. **CA rotation:** if the node was a server, the leader starts a CA
       rotation (§12.5), since the node held the CA key.
-3. On the host, `glidex-install --leave` (or `gxctl cluster leave` there,
-   run as root) stops the node role, asks netd to `leave_ovn` (§11.3),
-   deletes the certificate, key and `node.db`, and removes the `cluster`
-   section. The host is then an empty standalone host, or can be
-   uninstalled. It refuses until step 2 has committed (it checks its
-   node's phase is `Removed`), and points to `gxctl node remove`: local
-   root on a host has no cluster rights to start a removal (D14). A host
-   whose cluster is gone for good uses the offline path of §5.8.3
-   instead.
+3. On the host, `glidex-install --leave` makes it an empty standalone
+   host. It works offline, with the control plane stopped
+   (`glidex-control-plane --leave-removed`, run as the service user): an
+   agent has no API of its own, and once removed the servers refuse it,
+   so `gxctl cluster leave` can't reach it. It refuses until step 2 has
+   committed: the node's cached record says `Removed` (or `Departed`,
+   `Forgotten`), or, when the write that removed it never reached the
+   node, a server answers the node's certificate with `401 node_removed`
+   (servers name a revoked certificate so, and say to run this). Local
+   root on a host still has no cluster rights to start a removal (D14).
+   Then it asks netd to `leave_ovn` (§11.3) and deletes the identity,
+   certificates and key. A host whose cluster is gone for good uses the
+   offline path of §5.8.3 instead; it leaves OVN the same way.
+   A removed node whose `ovn-controller` keeps running registers its
+   chassis again (its OVN certificate is the cluster CA's): the leader
+   deletes the chassis of tombstoned nodes about once a minute, with a
+   warning naming the node.
 
 ### 5.6 Lost nodes: forget
 
@@ -870,6 +878,74 @@ changes. Placement is never changed by the scheduler afterwards (D6).
   The images.md §2 invariants (file named by id, orphans never deleted)
   hold on each node.
 - **Quotas** stay cluster-wide, in the same admission write as today.
+
+#### 9.2.1 Architectures
+
+A cluster may mix `x86_64` and `aarch64` nodes. An image record has one
+`arch`; a VM runs only where it matches.
+
+- **Nodes** report `status.features.arch` (`x86_64` | `aarch64`). A node
+  of an older version reports none and counts as matching anything.
+- **A VM's architecture** is that of the image its root disk comes from,
+  else of its firmware image; a VM with neither (direct kernel boot)
+  has none. Create refuses an image and a firmware of different
+  architectures (`400`). The default firmware (none named) is the newest
+  usable one for the hypervisor *and* the VM's architecture.
+- **Scheduler:** a node of another architecture is refused, with the
+  reason (`it is aarch64; the VM's image is x86_64`), in placement and in
+  `POST /scheduler/preview`.
+- **Pull:** `POST /images` takes `arch` (default: the architecture of the
+  `nodes` it names, which must agree, else the answering server's). The
+  catalog picks that architecture's artifact; the download itself runs on
+  the leader whatever its own architecture (it only stores a file). Image
+  names stay unique: a catalog or firmware pull whose default name (its
+  key) is taken by an image of another architecture is named
+  `<key>-<arch>` (`ubuntu-26.04-aarch64`).
+
+#### 9.2.2 Copies on chosen nodes
+
+Copies follow need (a disk or VM bound to the node, §9.2); an
+administrator can also place them ahead of time or let one go:
+
+- `Image.pinned: [node]`: nodes that keep a copy whether or not they
+  need it. `POST /images` takes `nodes` (pin them once downloaded) and
+  `keep_server_copy` (default `true`; `false` releases the downloading
+  server's copy once a pinned node has a ready one).
+  `POST /images/{id}/copies {node}` pins one later; refused (`409`) for a
+  node of another architecture, or a tombstone.
+- `Image.release: [node]`: nodes asked to drop their copy.
+  `DELETE /images/{id}/copies/{node}` unpins it and asks it to drop;
+  refused (`409`) while that node needs the image, or when its copy is
+  the last ready one. The node removes its files and its
+  `image_caches` row; the leader then clears it from `release`.
+- Both are written by servers only (`pullImage` on the cluster, as for
+  pull and retry); nodes act on them through the image-cache controller,
+  which already runs on every node.
+
+#### 9.2.3 Files a node already has
+
+A host that joins, or a node whose cluster later gains an image it
+already holds, shouldn't download it again, nor keep files nothing
+refers to:
+
+- **Spare files** are files in a node's image directory that name no
+  image record (images.md §2: never deleted on their own). Each node
+  indexes them (`images/spare-index.json`: name, size, mtime, SHA-256,
+  hashed in the background once per file).
+- **Reuse:** a node adopts a spare file whose size and SHA-256 match a
+  ready image of its architecture: it renames it to the image's file
+  name (a firmware's variables template with it) and records a `Ready`
+  copy, before any copy from a holder. It does so for every matching
+  image, not only those it needs, so a joining node's firmware and
+  common images count as copies at once.
+- **The rest** are reported in `status.features.spare_image_files`
+  (name, bytes, mtime; at the node's report, or at once after its own
+  record changes) and shown on the Node page, with *Delete unrecorded files*:
+  `POST /nodes/{id}/spare-image-files/delete` (`pullImage` on the
+  cluster) records `spec.drop_spare_files_before` (now); the node deletes
+  the spare files it has reported whose mtime is older, once (it keeps
+  the last value it applied). A plain join proceeds and reports them;
+  `--import` brings a host's images in as records instead (§5.9).
 
 ## 10. Installation
 
@@ -1901,6 +1977,8 @@ the end (`GLIDEX_E2E_KEEP=1` keeps them). Bugs it found, now fixed:
   image.
 - `/disks` showed remote disks as missing (it checked the local file);
   it now reports the disk's phase and its node.
-- Known, not fixed: on an agent, the local API's PAM login fails ("a
-  node may not write users"): an agent cannot record the user. Use a
-  server's API.
+- On an agent, a login through its local API was refused ("a node may
+  not write users": an agent cannot record the user) and showed as a 500.
+  A host that becomes an agent now restarts into agent mode, which has no
+  local API, and the refusal answers `403 agent_no_local_api` naming a
+  server to log in to (spec/clustering-ui.md §3.6).

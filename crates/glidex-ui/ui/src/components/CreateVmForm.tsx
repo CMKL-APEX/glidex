@@ -229,6 +229,7 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
               .split(",")
               .map((d) => d.trim())
               .filter((d) => d.length > 0),
+            image: firmware && rootSource === "image" && image ? image : undefined,
           }}
           value={node}
           onChange={setNode}
@@ -314,7 +315,7 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
                 >
                   {images.map((i) => (
                     <option key={i.id} value={i.id}>
-                      {i.name} ({formatBytes(i.virtual_size_bytes)})
+                      {i.name} ({i.arch}, {formatBytes(i.virtual_size_bytes)})
                     </option>
                   ))}
                 </select>

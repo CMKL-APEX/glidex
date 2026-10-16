@@ -216,7 +216,14 @@ browser ─HTTPS─▶ glidex-ui (agent) ─ui.sock─▶ control plane (agent)
 - `gxctl` on an agent's API socket (peer uid) is not covered: a server
   can't verify a Unix uid of another host. `gxctl` users on agents log in
   to a server (`gxctl auth login`, spec/gxctl-auth.md). This matches C D14:
-  break-glass through `api.sock` gives no cluster rights on an agent.
+  break-glass through `api.sock` gives no cluster rights on an agent. An
+  agent serves no `api.sock`; a host that becomes one (join, rejoin or an
+  approved import, through its API) restarts its control plane into agent
+  mode once it has answered (exit code 75, `Restart=on-failure`; started
+  by hand, it says to restart). Until then, a local login that the
+  cluster refuses answers `403 agent_no_local_api` with the servers to
+  log in to, and `gxctl` on a host with only a UI socket says the same
+  instead of trying `localhost:8841`.
 
 ### 3.7 Live updates
 
@@ -294,6 +301,17 @@ and the post-create condition.
 Each image row shows its copies: `n of m nodes`, and per node
 `ready` / `copying (p %)` / `failed (reason)`. Needs §9 `copies` on
 `GET /images`.
+
+In a cluster (clustering.md §9.2.1–3): every image shows its
+architecture. The pull form offers the architecture (default: the
+nodes chosen, else the server's), *Copy to nodes* (only nodes of that
+architecture) and *Keep the server's copy*. An image offers *Copy to
+node…* (nodes of its architecture without a copy) and each copy
+*Remove* (disabled, with the reason, while the node needs it or it is
+the last ready copy). The Node page shows the node's architecture and
+its unrecorded image files with *Delete unrecorded files*. The VM form
+shows the image's architecture, and placement preview refuses nodes of
+another one.
 
 ### 5.4 Usage
 

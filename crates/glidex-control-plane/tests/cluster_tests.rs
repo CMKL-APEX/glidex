@@ -484,6 +484,128 @@ async fn a_server_relays_the_console_log_of_a_vm_on_an_agent() {
     std::fs::remove_dir_all(&paths.dir).unwrap();
 }
 
+/// spec/clustering.md §9.2.1–3: copies on chosen nodes, letting one go, a
+/// file a node already has adopted instead of copied, the rest reported and
+/// deleted on request, and images of another architecture kept off nodes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn image_copies_go_where_they_are_wanted_and_spare_files_are_used() {
+    use glidex_control_plane::store::{Origin, TableId};
+    use sha2::{Digest, Sha256};
+    let _one = SERIAL.lock().await;
+    let mut cfg = test_config();
+    cfg.reconcile.resync_secs = 2;
+    let server = new_cp();
+    server.manager.configure(&cfg);
+    manage::init(&server.manager, &cfg, InitOptions { advertise: Some(server.addr), tunnel_ip: None, listen: Some(server.addr) }).await.unwrap();
+    server.manager.initialize().await.unwrap();
+    server.manager.start_controllers();
+    let agent = new_cp();
+    agent.manager.configure(&cfg);
+    let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test").unwrap();
+    manage::join(&agent.manager, &cfg, JoinOptions { server: server.addr, token, role: NodeRole::Agent, advertise: Some(agent.addr), tunnel_ip: None, name: Some("agent1".into()), listen: Some(agent.addr) })
+        .await
+        .unwrap();
+    assert!(agent.manager.node_link().unwrap().wait_ready(Duration::from_secs(20)).await);
+    agent.manager.initialize().await.unwrap();
+    agent.manager.start_controllers();
+    let host_arch = glidex_control_plane::images::catalog::Arch::host().unwrap().as_str();
+    let other_arch = if host_arch == "x86_64" { "aarch64" } else { "x86_64" };
+    wait_until("the agent's arch", || async { node_json(&server, "agent1").await["status"]["features"]["arch"] == host_arch }).await;
+
+    // Two images the server holds: one of this host's architecture, one of another.
+    let put_image = |id: &str, arch: &str, data: &[u8]| {
+        let sha = glidex_control_plane::cluster::pki::hex(&Sha256::digest(data));
+        let img = json!({
+            "id": id, "name": id, "kind": "disk", "source": { "kind": "url", "url": "http://example.invalid/x", "expected_sha256": sha },
+            "status": { "state": "ready" }, "format": "qcow2", "virtual_size_bytes": 1048576, "file_size_bytes": data.len(), "sha256": sha,
+            "arch": arch, "created_at": 1,
+        });
+        let path = server.manager.images().image_path(id);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, data).unwrap();
+        server.manager.database().write(Origin::Api, |tx| -> Result<(), glidex_control_plane::store::StoreError> {
+            tx.open_table(TableId::Images.definition())?.insert(id, img.to_string().as_bytes())?;
+            Ok(())
+        })
+        .unwrap();
+    };
+    // The agent already has the first one's file, under another name (a
+    // host that joined), and an unrelated file.
+    let data = vec![3u8; 50_000];
+    let agent_dir = agent.manager.images().image_path("x").parent().unwrap().to_path_buf();
+    std::fs::create_dir_all(&agent_dir).unwrap();
+    std::fs::write(agent_dir.join("from-before.qcow2"), &data).unwrap();
+    std::fs::write(agent_dir.join("stray.qcow2"), b"nothing the cluster has").unwrap();
+    put_image("img-here", host_arch, &data);
+    put_image("img-other", other_arch, b"another architecture");
+
+    // Adopted, not copied: the file it had becomes its copy (§9.2.3).
+    let here = agent.manager.images().image_path("img-here");
+    wait_until("the agent to adopt its file", || async { here.exists() }).await;
+    assert!(!agent_dir.join("from-before.qcow2").exists(), "renamed into place");
+    wait_until("both copies of img-here ready", || async {
+        let c = server.manager.image_caches("img-here");
+        c.len() == 2 && c.iter().all(|(_, r)| r.phase == glidex_control_plane::controller::image_cache::CachePhase::Ready)
+    })
+    .await;
+
+    // A host that left and joined again: a tombstone has the same name, and
+    // the live node is the one a name means.
+    let store = glidex_control_plane::node::NodeStore::new(server.manager.database());
+    let mut ghost = store.get(&cluster(&agent).identity.node_id).unwrap().unwrap();
+    ghost.meta.id = "00000000-dead-4000-8000-000000000000".into();
+    ghost.status.phase = glidex_control_plane::node::NodePhase::Removed;
+    store.put(&ghost).unwrap();
+
+    // Another architecture: not copied there, and not placed there (§9.2.1).
+    let (s, e) = call(&server, "POST", "/images/img-other/copies", Some(json!({ "node": "agent1" })), &[]).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{e}");
+    assert!(e["message"].as_str().unwrap().contains(other_arch), "{e}");
+    let (s, v) = call(&server, "POST", "/scheduler/preview", Some(json!({ "vcpu_count": 1, "mem_size_mib": 256, "image": "img-other" })), &[]).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert!(v["pick"].is_null(), "{v}");
+    assert!(v["nodes"].as_array().unwrap().iter().all(|n| n["refused"].as_str().unwrap_or_default().contains(&format!("the VM's image is {other_arch}"))), "{v}");
+
+    // The server lets its copy go; the last one can't (§9.2.2).
+    let server_id = cluster(&server).identity.node_id.clone();
+    let agent_id = cluster(&agent).identity.node_id.clone();
+    let (s, e) = call(&server, "DELETE", &format!("/images/img-here/copies/{server_id}"), None, &[]).await;
+    assert_eq!(s, StatusCode::ACCEPTED, "{e}");
+    let server_file = server.manager.images().image_path("img-here");
+    wait_until("the server's copy to go", || async { !server_file.exists() && server.manager.image_caches("img-here").len() == 1 }).await;
+    // Another node has the only copy: the image is ready, not missing, even
+    // after a restart checked the server's own files.
+    let mut img = server.manager.images().get_image("img-here").unwrap();
+    img.status = glidex_control_plane::images::ImageStatus::Missing;
+    server.manager.images().put_image(&img).unwrap();
+    wait_until("the image ready again", || async { server.manager.images().get_image("img-here").unwrap().status == glidex_control_plane::images::ImageStatus::Ready }).await;
+    let (s, e) = call(&server, "DELETE", "/images/img-here/copies/agent1", None, &[]).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{e}");
+    assert!(e["message"].as_str().unwrap().contains("last ready copy"), "{e}");
+    // And comes back when pinned again.
+    let (s, v) = call(&server, "POST", "/images/img-here/copies", Some(json!({ "node": server_id })), &[]).await;
+    assert_eq!(s, StatusCode::ACCEPTED, "{v}");
+    wait_until("the server's copy back", || async { server_file.exists() }).await;
+    let (_, v) = call(&server, "GET", "/images/img-here", None, &[]).await;
+    let pinned: Vec<&Value> = v["copies"].as_array().unwrap().iter().filter(|c| c["pinned"] == true).collect();
+    assert_eq!((pinned.len(), pinned[0]["node"].as_str()), (1, Some(server_id.as_str())), "{v}");
+    let _ = agent_id;
+
+    // The rest is reported, and deleted when asked (§9.2.3). (Nodes report
+    // every two minutes: report now.)
+    let m = agent.manager.clone();
+    tokio::task::spawn_blocking(move || m.report_self()).await.unwrap().unwrap();
+    wait_until("the stray file reported", || async {
+        node_json(&server, "agent1").await["status"]["features"]["spare_image_files"].as_array().is_some_and(|f| f.iter().any(|f| f["name"] == "stray.qcow2"))
+    })
+    .await;
+    let agent_node = node_json(&server, "agent1").await["meta"]["id"].as_str().unwrap().to_string();
+    let (s, v) = call(&server, "POST", &format!("/nodes/{agent_node}/spare-image-files/delete"), Some(json!({})), &[]).await;
+    assert_eq!(s, StatusCode::ACCEPTED, "{v}");
+    wait_until("the stray file gone", || async { !agent_dir.join("stray.qcow2").exists() }).await;
+    assert!(here.exists(), "the adopted copy stays");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn a_node_copies_an_image_it_needs_from_a_holder_and_checks_it() {
     use glidex_control_plane::store::{Origin, TableId};
@@ -839,7 +961,10 @@ async fn provider_networks_and_vpc_routers() {
 async fn node_json(cp: &Cp, key: &str) -> Value {
     let (s, v) = call(cp, "GET", "/nodes", None, &[]).await;
     assert_eq!(s, StatusCode::OK, "{v}");
-    v.as_array().unwrap().iter().find(|n| n["meta"]["id"] == key || n["spec"]["name"] == key).cloned().unwrap_or(Value::Null)
+    let all = v.as_array().unwrap();
+    // The live node a name means, before a tombstone of the same name.
+    let live = |n: &&Value| !matches!(n["status"]["phase"].as_str(), Some("Removed" | "Departed" | "Forgotten"));
+    all.iter().find(|n| n["meta"]["id"] == key).or_else(|| all.iter().filter(live).find(|n| n["spec"]["name"] == key)).or_else(|| all.iter().find(|n| n["spec"]["name"] == key)).cloned().unwrap_or(Value::Null)
 }
 
 fn denylist_len(cp: &Cp) -> usize {
@@ -1088,6 +1213,66 @@ fn agent_state_dir(cp: &Cp) -> std::path::PathBuf {
     cp.manager.db_path().parent().unwrap().to_path_buf()
 }
 
+/// A copy of a node's files, as the host has them: identity, certificates
+/// and its cache. The live manager keeps the database open.
+fn copy_node_files(cp: &Cp) -> tempfile::TempDir {
+    let state = agent_state_dir(cp);
+    let copy = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(copy.path().join("cluster")).unwrap();
+    for f in ["identity.json", "ca.crt", "node.key", "node.crt"] {
+        std::fs::copy(state.join("cluster").join(f), copy.path().join("cluster").join(f)).unwrap();
+    }
+    let snap = copy.path().join("snap");
+    manage::export_snapshot(&cp.manager.database(), &snap).unwrap();
+    let db = glidex_control_plane::store::Db::create(copy.path().join("glidex.db")).unwrap();
+    db.install_dump(&mut std::io::BufReader::new(std::fs::File::open(&snap).unwrap()), 0, |_| Ok(())).unwrap();
+    copy
+}
+
+/// A removed agent has no API of its own (the servers refuse it), so it
+/// leaves offline: only once the cluster confirms the removal (§5.5 step 3).
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn a_removed_agent_leaves_offline_once_a_server_confirms_it() {
+    let _one = SERIAL.lock().await;
+    let cfg = test_config();
+    let server = new_cp();
+    manage::init(&server.manager, &cfg, InitOptions { advertise: Some(server.addr), tunnel_ip: None, listen: Some(server.addr) }).await.unwrap();
+    server.manager.initialize().await.unwrap();
+    let agent = new_cp();
+    let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test").unwrap();
+    manage::join(&agent.manager, &cfg, JoinOptions { server: server.addr, token, role: NodeRole::Agent, advertise: Some(agent.addr), tunnel_ip: None, name: Some("agent1".into()), listen: Some(agent.addr) })
+        .await
+        .unwrap();
+    assert!(agent.manager.node_link().unwrap().wait_ready(Duration::from_secs(20)).await);
+    agent.manager.initialize().await.unwrap();
+    // Its cache says Active, as a host's does when the removal's write
+    // (which also revoked its certificate) never reached it.
+    let before = copy_node_files(&agent);
+
+    // Still a member: local root can't make it leave (D14).
+    let e = manage::leave_removed_offline(&before.path().join("glidex.db")).await.unwrap_err();
+    assert!(e.to_string().contains("still has this node as a member"), "{e}");
+    assert!(before.path().join("cluster/identity.json").exists(), "nothing changed");
+
+    let (s, r) = call(&server, "POST", "/nodes/agent1/remove", Some(json!({})), &[]).await;
+    assert_eq!(s, StatusCode::OK, "{r}");
+    // The servers now refuse the node, and say why.
+    let r = cluster(&agent).client.request_timeout(&server.addr.to_string(), hyper::Method::GET, "/cluster/v1/list", &[], bytes::Bytes::new(), Duration::from_secs(10)).await.unwrap();
+    let body: Value = serde_json::from_slice(&r.body).unwrap();
+    assert_eq!((r.status, body["error"].as_str()), (StatusCode::UNAUTHORIZED, Some("node_removed")), "{body}");
+    assert!(body["message"].as_str().unwrap().contains("glidex-install --leave"), "{body}");
+
+    // Offline, from the stale cache: a server confirms it, and the host is standalone and empty.
+    let (name, confirmed) = manage::leave_removed_offline(&before.path().join("glidex.db")).await.unwrap();
+    assert_eq!(name, "agent1");
+    assert!(confirmed.contains("refuses its certificate as revoked"), "{confirmed}");
+    assert!(!before.path().join("cluster").exists(), "identity, certificates and key are gone");
+    let standalone = VmManager::with_db_path(before.path().join("glidex.db")).unwrap();
+    standalone.initialize().await.unwrap();
+    assert!(standalone.cluster().is_none());
+    assert!(standalone.list_vms().await.is_empty());
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn a_node_that_left_on_its_own_is_forgotten_as_departed_and_its_bundle_can_be_built_offline() {
     use glidex_control_plane::cluster::departure::{offline_detach, pending_db};
@@ -1115,17 +1300,7 @@ async fn a_node_that_left_on_its_own_is_forgotten_as_departed_and_its_bundle_can
 
     // The host builds its bundle from its cache (what the installer's offline path does).
     // Run on a copy of its files: the live manager still has the database open.
-    let state = agent_state_dir(&agent);
-    let copy = tempfile::tempdir().unwrap();
-    std::fs::create_dir_all(copy.path().join("cluster")).unwrap();
-    for f in ["identity.json", "ca.crt", "node.key", "node.crt"] {
-        std::fs::copy(state.join("cluster").join(f), copy.path().join("cluster").join(f)).unwrap();
-    }
-    let snap = copy.path().join("snap");
-    manage::export_snapshot(&agent.manager.database(), &snap).unwrap();
-    let db = glidex_control_plane::store::Db::create(copy.path().join("glidex.db")).unwrap();
-    db.install_dump(&mut std::io::BufReader::new(std::fs::File::open(&snap).unwrap()), 0, |_| Ok(())).unwrap();
-    drop(db);
+    let copy = copy_node_files(&agent);
     let bundle = offline_detach(&copy.path().join("glidex.db")).unwrap();
     assert_eq!(bundle.vm_ids, vec![id.clone()]);
     assert!(!copy.path().join("cluster").exists() && !pending_db(copy.path()).exists(), "switched and cleaned up");
@@ -1285,8 +1460,7 @@ async fn the_last_node_dissolves_the_cluster_and_keeps_everything() {
 /// The UI socket of an agent with `ui_user` set to whoever runs the test,
 /// so the relay's peer check passes.
 fn agent_ui_router(cp: &Cp, relay: bool) -> axum::Router {
-    let mut cfg = Config::default();
-    cfg.ui_user = nix::unistd::User::from_uid(nix::unistd::getuid()).unwrap().unwrap().name;
+    let mut cfg = Config { ui_user: nix::unistd::User::from_uid(nix::unistd::getuid()).unwrap().unwrap().name, ..Default::default() };
     cfg.cluster.ui_relay = relay;
     let auth = glidex_control_plane::auth::AuthService::disabled_with(cp.manager.database(), cfg).unwrap();
     glidex_control_plane::api::router(Arc::new(glidex_control_plane::api::App { manager: cp.manager.clone(), auth }))
@@ -1323,11 +1497,35 @@ async fn an_agents_ui_is_relayed_to_a_server_and_host_paths_run_on_the_agent() {
     let agent_id = cluster(&agent).identity.node_id.clone();
     let ui = agent_ui_router(&agent, true);
 
-    // Cluster-wide reads are the server's.
+    // Cluster-wide reads are the server's; "this node" is the one whose UI it is.
     let (s, h, v) = via_ui(&ui, "GET", "/cluster/status").await;
     assert_eq!(s, StatusCode::OK, "{v}");
-    assert_eq!(v["node_id"], server_id.as_str(), "the server answered: {v}");
-    assert_eq!(h["x-glidex-served-by"], server_id.as_str());
+    assert_eq!(h["x-glidex-served-by"], server_id.as_str(), "the server answered");
+    assert_eq!((v["node_id"].as_str(), v["name"].as_str(), v["role"].as_str()), (Some(agent_id.as_str()), Some("agent1"), Some("agent")), "{v}");
+    assert_eq!(v["served_by"]["node_id"], server_id.as_str(), "{v}");
+    // The agent's own API socket (a host that joined without restarting):
+    // the cluster won't record a Unix user of another host, so a local login
+    // says where to log in instead of failing with a 500.
+    let mut cfg = Config::default();
+    let group = nix::unistd::Group::from_gid(nix::unistd::getgid()).unwrap().unwrap().name;
+    (cfg.users_group, cfg.admin_group) = (group.clone(), group);
+    let no_site_policies = tempfile::tempdir().unwrap();
+    cfg.authz.policy_files_dir = no_site_policies.path().to_path_buf();
+    let auth = glidex_control_plane::auth::AuthService::new(agent.manager.database(), cfg).unwrap();
+    let api = glidex_control_plane::api::router(Arc::new(glidex_control_plane::api::App { manager: agent.manager.clone(), auth }));
+    let mut req = Request::builder().uri("/cluster/status").body(Body::empty()).unwrap();
+    req.extensions_mut().insert(glidex_control_plane::api::Listener::Api);
+    req.extensions_mut().insert(glidex_control_plane::api::PeerUid(nix::unistd::getuid().as_raw()));
+    let resp = api.oneshot(req).await.unwrap();
+    let status = resp.status();
+    let body: Value = serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap_or(Value::Null);
+    assert_eq!((status, body["error"].as_str()), (StatusCode::FORBIDDEN, Some("agent_no_local_api")), "{body}");
+    assert!(body["message"].as_str().unwrap().contains("gxctl auth login https://127.0.0.1:8841"), "{body}");
+
+    // Asked directly, the server is "this node".
+    let (_, v) = call(&server, "GET", "/cluster/status", None, &[]).await;
+    assert_eq!(v["node_id"], server_id.as_str(), "{v}");
+    assert!(v.get("served_by").is_none(), "{v}");
     let (s, _, v) = via_ui(&ui, "GET", "/nodes").await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(v.as_array().unwrap().len(), 2, "{v}");

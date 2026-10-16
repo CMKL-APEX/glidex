@@ -11,6 +11,9 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+/// One write log entry: its revision and the writes.
+pub type Entry = (u64, Arc<WriteSet>);
+
 /// Recent applied write sets, for watches. A node that asks for older ones
 /// re-lists (`410 Gone`).
 pub struct WriteLog {
@@ -73,7 +76,7 @@ impl WriteLog {
 
     /// Entries after `from`, or `None` if `from` is older than the log.
     /// The returned revision is how far the log has seen.
-    pub fn after(&self, from: u64, max: usize) -> Option<(u64, Vec<(u64, Arc<WriteSet>)>)> {
+    pub fn after(&self, from: u64, max: usize) -> Option<(u64, Vec<Entry>)> {
         let g = self.inner.lock().unwrap();
         if from < g.first {
             return None;

@@ -3,6 +3,8 @@
 //! needs a certificate the cluster issued; Raft, forwarding and the CA key
 //! need a *server's* (§12.3).
 
+#![allow(clippy::result_large_err)] // handlers' checks return the Response to send, as in api/mod.rs
+
 use super::net::PeerCert;
 use super::raft::{Rpc, SnapshotHandle};
 use super::runtime::Cluster;
@@ -67,13 +69,28 @@ fn fail(status: StatusCode, code: &str, msg: impl Into<String>) -> Response {
 fn peer(c: &Cluster, p: Option<Extension<PeerCert>>, server: bool) -> Result<PeerCert, Response> {
     let Some(Extension(p)) = p else { return Err(fail(StatusCode::UNAUTHORIZED, "unauthenticated", "a node certificate is required")) };
     if let Err(why) = c.check_peer(&p) {
-        return Err(fail(StatusCode::UNAUTHORIZED, "unauthenticated", why));
+        return Err(refused(why));
     }
     if server && !p.server {
         return Err(fail(StatusCode::FORBIDDEN, "forbidden", "only a server may do this"));
     }
     Ok(p)
 }
+
+/// A peer the cluster won't talk to. A revoked certificate is a node that
+/// was removed, forgotten or detached: it says so, so the node (and whoever
+/// runs `gxctl` on it) knows it is no longer a member and how to go on.
+fn refused(why: &str) -> Response {
+    if why == REVOKED {
+        return fail(StatusCode::UNAUTHORIZED, NODE_REMOVED, "this node is no longer a member of the cluster (removed, forgotten or detached): on it, run `sudo glidex-install --leave` to make it a standalone host");
+    }
+    fail(StatusCode::UNAUTHORIZED, "unauthenticated", why)
+}
+
+/// The error code of [`refused`] for a revoked certificate.
+pub const NODE_REMOVED: &str = "node_removed";
+/// [`Cluster::check_peer`]'s reason for a deny-listed certificate.
+pub const REVOKED: &str = "certificate revoked";
 
 /// Answer for a request that needs the leader and arrived elsewhere.
 fn not_leader(c: &Cluster) -> Response {
@@ -110,7 +127,7 @@ async fn departure_get(State(c): Ctx, p: Option<Extension<PeerCert>>, axum::extr
     // collect its receipt if the answer to its acknowledgement was lost.
     if let Err(why) = c.check_peer(&peer) {
         if !(plan.state == "committed" && c.was_issued(&peer.serial)) {
-            return fail(StatusCode::UNAUTHORIZED, "unauthenticated", why);
+            return refused(why);
         }
     }
     match plan.state.as_str() {
@@ -359,7 +376,7 @@ async fn join(State(c): Ctx, Json(req): Json<JoinRequest>) -> Response {
         if existing.iter().any(|n| n.status.raft_id == Some(rec.raft_id)) {
             return Err("that Raft id is taken".to_string());
         }
-        let mut n = Node::new(&rec.node_id, NodeSpec { name: rec.name.clone(), role: rec.role, unschedulable: false, labels: Default::default(), br_int_datapath: Default::default(), bridge_mappings: Default::default() });
+        let mut n = Node::new(&rec.node_id, NodeSpec { name: rec.name.clone(), role: rec.role, unschedulable: false, labels: Default::default(), br_int_datapath: Default::default(), bridge_mappings: Default::default(), drop_spare_files_before: None });
         n.status.advertise = Some(rec.advertise);
         n.status.tunnel_ip = rec.tunnel_ip.or(Some(rec.advertise.ip()));
         n.status.raft_id = (rec.role == NodeRole::Server).then_some(rec.raft_id);

@@ -213,7 +213,7 @@ pub(crate) fn hugepages_available_for(mem_mib: u32) -> bool {
     let (Some(free), resv) = (read("free_hugepages"), read("resv_hugepages").unwrap_or(0)) else { return false };
     let spare_mib = free.saturating_sub(resv) * 2;
     let mem = mem_mib as u64;
-    mem % 2 == 0 && spare_mib >= mem + (mem / 4).max(256)
+    mem.is_multiple_of(2) && spare_mib >= mem + (mem / 4).max(256)
 }
 
 /// vhost-user: OVS maps guest RAM, so it must be shared.

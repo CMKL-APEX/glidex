@@ -98,7 +98,7 @@ fn parse_kinds(s: Option<&str>) -> Result<Vec<Kind>, ApiErr> {
 /// endpoint renders it.
 type View = BTreeMap<(Kind, String), serde_json::Value>;
 
-async fn snapshot(c: &Caller, kinds: &[Kind], only: Option<&str>) -> Result<View, ApiErr> {
+async fn snapshot(c: &Caller, kinds: &[Kind], only: Option<&str>, viewer: Option<&str>) -> Result<View, ApiErr> {
     let m = c.manager();
     let visible = c.visible_projects()?;
     let mut view = View::new();
@@ -159,7 +159,7 @@ async fn snapshot(c: &Caller, kinds: &[Kind], only: Option<&str>) -> Result<View
             }
             Kind::Cluster => {
                 if let Some(cl) = m.cluster().filter(|_| c.allowed("readCluster", Ent::Cluster, EntitySet::new())) {
-                    view.insert((Kind::Cluster, cl.identity.cluster_id.clone()), cluster_summary(&cl));
+                    view.insert((Kind::Cluster, cl.identity.cluster_id.clone()), cluster_summary(&cl, viewer));
                 }
             }
             Kind::Policy => {
@@ -172,8 +172,8 @@ async fn snapshot(c: &Caller, kinds: &[Kind], only: Option<&str>) -> Result<View
 
 /// `cluster status` without what changes on every write (applied and log
 /// indexes, replication progress), so the stream only speaks on real changes.
-fn cluster_summary(cl: &crate::cluster::Cluster) -> serde_json::Value {
-    let mut v = crate::cluster::manage::status_of(cl);
+fn cluster_summary(cl: &crate::cluster::Cluster, viewer: Option<&str>) -> serde_json::Value {
+    let mut v = crate::cluster::manage::status_seen_from(cl, viewer);
     if let Some(r) = v.get_mut("raft").and_then(|r| r.as_object_mut()) {
         for k in ["last_applied", "last_log_index", "purged", "replication"] {
             r.remove(k);
@@ -214,7 +214,9 @@ impl Drop for Slot {
     }
 }
 
-pub async fn watch(c: Caller, Query(q): Query<WatchQuery>) -> Result<axum::response::Response, ApiErr> {
+pub async fn watch(c: Caller, via: Option<axum::Extension<super::RelayedBy>>, Query(q): Query<WatchQuery>) -> Result<axum::response::Response, ApiErr> {
+    // Through a node's UI, the cluster summary is about that node.
+    let viewer = via.map(|v| v.0 .0);
     use axum::response::IntoResponse;
     let kinds = parse_kinds(q.kinds.as_deref())?;
     let only = match &q.project {
@@ -227,7 +229,7 @@ pub async fn watch(c: Caller, Query(q): Query<WatchQuery>) -> Result<axum::respo
     }
     let slot = Slot;
     // First snapshot before answering, so an error is a plain HTTP error.
-    let first = snapshot(&c, &kinds, only.as_deref()).await?;
+    let first = snapshot(&c, &kinds, only.as_deref(), viewer.as_deref()).await?;
 
     let (tx, rx) = tokio::sync::mpsc::channel::<Event>(256);
     let mut bell = c.manager().changed.subscribe();
@@ -262,7 +264,7 @@ pub async fn watch(c: Caller, Query(q): Query<WatchQuery>) -> Result<axum::respo
                 break;
             }
             tokio::time::sleep(COALESCE).await;
-            now = match snapshot(&c, &kinds, only.as_deref()).await {
+            now = match snapshot(&c, &kinds, only.as_deref(), viewer.as_deref()).await {
                 Ok(v) => v,
                 // Access gone (user disabled, say): end the stream.
                 Err(_) => break,

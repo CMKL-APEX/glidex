@@ -302,8 +302,8 @@ fn remove(db: &Db, table: crate::store::Def, key: &str) -> Result<bool, StoreErr
     };
     let existed = {
         let mut t = txn.open_table(table)?;
-        let existed = t.remove(key)?.is_some();
-        existed
+        
+        t.remove(key)?.is_some()
     };
     txn.commit()?;
     Ok(existed)
