@@ -15,7 +15,7 @@ use crate::hypervisor::HypervisorType;
 use std::io::Read;
 use std::path::PathBuf;
 
-/// Release of https://github.com/cloud-hypervisor/edk2/releases the
+/// Release of <https://github.com/cloud-hypervisor/edk2/releases> the
 /// `cloudhv-edk2` entry pins (same as `glidex-install`).
 pub const EDK2_FIRMWARE_VERSION: &str = "ch-811ce5ea35";
 

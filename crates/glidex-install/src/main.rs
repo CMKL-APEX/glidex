@@ -13,11 +13,11 @@ mod sysconfig;
 mod uninstall;
 
 const CLOUD_HYPERVISOR_VERSION: &str = "v53.0";
-/// Release tag of https://github.com/cloud-hypervisor/edk2/releases to fetch
+/// Release tag of <https://github.com/cloud-hypervisor/edk2/releases> to fetch
 /// the UEFI firmware from. Bump together with the digests in
 /// `firmware_asset`.
 const EDK2_FIRMWARE_VERSION: &str = "ch-811ce5ea35";
-/// rustup-init from static.rust-lang.org/rustup/archive/<version>/<target>/,
+/// rustup-init from `static.rust-lang.org/rustup/archive/<version>/<target>/`,
 /// verified against `rustup_asset` (the `rustup-init.sha256` published next
 /// to it) before it runs. Only used when Rust is missing; after that
 /// `rustup update` keeps it current.

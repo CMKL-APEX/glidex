@@ -1,0 +1,14 @@
+# User-facing documentation (docs/README.md).
+[book]
+title = "Glidex"
+description = "Install, use and operate Glidex"
+language = "en"
+src = "src"
+
+[build]
+build-dir = "../../target/docs/public"
+create-missing = false
+
+[output.html]
+git-repository-url = "https://github.com/CMKL-APEX/glidex"
+edit-url-template = "https://github.com/CMKL-APEX/glidex/edit/main/docs/public/{path}"

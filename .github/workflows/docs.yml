@@ -1,0 +1,58 @@
+name: Docs
+
+# Builds the public book, the internal book and the internal API reference
+# (docs/README.md) and keeps them as artifacts. Nothing is published.
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+# The jobs only read the repository.
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  public:
+
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+
+    steps:
+    - uses: actions/checkout@v7
+    - uses: taiki-e/install-action@v2
+      with:
+        tool: mdbook@0.5.4
+    - name: Build the public book
+      run: mdbook build docs/public
+    - uses: actions/upload-artifact@v4
+      with:
+        name: docs-public
+        path: target/docs/public
+
+  internal:
+
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+
+    steps:
+    - uses: actions/checkout@v7
+    - uses: taiki-e/install-action@v2
+      with:
+        tool: mdbook@0.5.4
+    - name: Build the internal book (spec/)
+      run: mdbook build docs/internal
+    - name: Build the internal API reference
+      # Private items are documented, so links to them are fine here.
+      env:
+        RUSTDOCFLAGS: -D warnings -A rustdoc::private_intra_doc_links
+      run: cargo doc --workspace --no-deps --document-private-items
+    - name: Put the API reference under the book
+      run: cp -r target/doc target/docs/internal/api
+    - uses: actions/upload-artifact@v4
+      with:
+        name: docs-internal
+        path: target/docs/internal
