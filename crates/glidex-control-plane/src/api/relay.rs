@@ -85,6 +85,7 @@ pub fn is_remote_host_path(path: &str) -> bool {
         || path == "/pci-devices"
         || path == "/system/reconcile"
         || path == "/cluster/leave"
+        || path == "/glidex.cluster.v1.ClusterService/LeaveCluster"
 }
 
 fn copy_headers(from: &HeaderMap, names: &[&'static str]) -> Vec<(&'static str, String)> {

@@ -53,6 +53,7 @@ import type {
   UsageResponse,
   VmStats,
   NodeRecord,
+  ClusterStatus,
   PlacementPreview,
   ProtoHypervisor,
   Departure,
@@ -61,11 +62,14 @@ import type {
   IssuedToken,
   NetworkOvn,
   OvnOverview,
-  OvnSettings,
+  PutOvnSettings,
   OvnSettingsView,
-  OvnEdge,
+  EdgeDefaults,
   NodeTunnels,
   BrIntDatapath,
+  NodeRole,
+  NodePhase,
+  U64,
   UplinkKind,
   UplinkResult,
   Admission,
@@ -491,7 +495,7 @@ export const addImageCopy = (id: string, node: string) =>
 export const removeImageCopy = (id: string, node: string) =>
   del<{ image?: ImageInfo } | undefined>(`/images/${enc(id)}/copies/${enc(node)}`).then((r) => r?.image);
 /** The node deletes the unrecorded image files it reported (§9.2.3). */
-export const deleteSpareImageFiles = (node: string) => post<{ node: string; files: number; bytes: number }>(`/nodes/${enc(node)}/spare-image-files/delete`, {});
+export const deleteSpareImageFiles = (node: string) => post<{ node?: string; files?: number; bytes?: U64 }>(`/nodes/${enc(node)}/spare-image-files/delete`, {});
 /** `undefined` when gone (204), else the image its controller is still deleting (202). */
 export const deleteImage = (id: string) => del<{ image?: ImageInfo } | undefined>(`/images/${enc(id)}`).then((r) => r?.image);
 /** Download a failed image again (spec/reconciliation.md D19). */
@@ -618,52 +622,27 @@ export const getVmIo = (id: string) => get<SeriesResponse>(`/vms/${enc(id)}/io?p
 export const getVmCompute = (id: string) => get<SeriesResponse>(`/vms/${enc(id)}/compute?p95=true`);
 export const getVmStats = (id: string) => get<VmStats>(`/vms/${enc(id)}/stats`);
 
-// ---- cluster (spec/clustering.md §5, §7) ----------------------------------
+// ---- cluster (spec/clustering.md §5, §7; glidex.cluster.v1) ------------------
+// The cluster, node, import and departure routes answer in the proto3 JSON
+// shape (types.ts): lists and records are wrapped (`{nodes}`, `{node}`,
+// `{plans}`, `{plan}`, `{departures}`); requests send enums by full name.
 
-export interface ClusterNodeRow {
-  id: string;
-  name: string;
-  role: string;
-  phase: string;
-  advertise: string | null;
-  version?: string;
-  feature_level?: number;
-  ready?: string;
-  /** Its newest certificate: signed by the current CA, and until when. */
-  cert?: { current_ca: boolean; not_after: number } | null;
+export type { ClusterNodeRow, ClusterStatus } from "./types";
+
+/** `PUT /nodes/{id}/ovn`'s answer; `wanted`/`current` are `system` or `netdev`. */
+export interface ConfigureNodeOvnResponse {
+  node?: string;
+  br_int_datapath?: BrIntDatapath;
+  wanted?: string;
+  current?: string;
+  bridge_mappings?: Record<string, string>;
+  physnets?: Record<string, string>;
 }
 
-export interface ClusterStatus {
-  clustered?: boolean;
-  cluster_id?: string;
-  /** The node serving this UI (through an agent's UI: that agent). */
-  node_id?: string;
-  name?: string;
-  role?: string;
-  advertise?: string;
-  /** The server that answered, when it isn't the node serving this UI
-   * (an agent relays its UI to a server, spec/clustering-ui.md §3.6). */
-  served_by?: { node_id: string; name: string };
-  feature_level?: number;
-  ca_fingerprint?: string;
-  ca?: { signing: string; retiring: string[]; retire_at: number | null; started_at?: number | null; not_after?: number | null } | null;
-  raft?: {
-    state: string;
-    term: number;
-    leader: { name: string | null; address: string | null } | null;
-    voters: { name: string | null; address: string | null }[];
-    learners: { name: string | null; address: string | null }[];
-    last_applied: number | null;
-    last_log_index: number | null;
-  } | null;
-  nodes: ClusterNodeRow[];
-  ports?: { node: string; port: number; proto: string; reachable: boolean }[];
-}
-
-export const clusterStatus = () => get<ClusterStatus>("/cluster/status?ports=true");
+export const clusterStatus = () => get<ClusterStatus>("/cluster/status?ports=true").then((r) => r ?? {});
 /** The summary without the port checks (which connect to every node). */
-export const clusterSummary = () => get<ClusterStatus>("/cluster/status");
-export const listNodes = () => get<NodeRecord[]>("/nodes");
+export const clusterSummary = () => get<ClusterStatus>("/cluster/status").then((r) => r ?? {});
+export const listNodes = () => get<{ nodes?: NodeRecord[] }>("/nodes").then((r) => r?.nodes ?? []);
 export interface PreviewRequest {
   project?: string;
   vcpu_count: number;
@@ -678,15 +657,15 @@ export interface PreviewRequest {
 }
 /** Where a VM would go, node by node (spec/clustering-ui.md §5.1). */
 export const previewPlacement = (req: PreviewRequest) => query<PlacementPreview>("/scheduler/preview", req);
-export const getNode = (id: string) => get<NodeRecord>(`/nodes/${enc(id)}`);
+export const getNode = (id: string) => get<{ node?: NodeRecord }>(`/nodes/${enc(id)}`).then((r) => r?.node as NodeRecord);
 /** A node's br-int datapath (spec/clustering.md §11.6). */
-export const setNodeBrInt = (id: string, br_int_datapath: BrIntDatapath) => put<Record<string, unknown>>(`/nodes/${enc(id)}/ovn`, { br_int_datapath });
+export const setNodeBrInt = (id: string, br_int_datapath: BrIntDatapath) => put<ConfigureNodeOvnResponse>(`/nodes/${enc(id)}/ovn`, { br_int_datapath });
 /** A node's physical networks: physnet → bridge (replaces its own; the file's stay). */
-export const setNodeMappings = (id: string, bridge_mappings: Record<string, string>) => put<Record<string, unknown>>(`/nodes/${enc(id)}/ovn`, { bridge_mappings });
+export const setNodeMappings = (id: string, bridge_mappings: Record<string, string>) => put<ConfigureNodeOvnResponse>(`/nodes/${enc(id)}/ovn`, { bridge_mappings });
 
 // ---- membership (spec/clustering-ui.md §7) ---------------------------------------
 
-export const createJoinToken = (req: { role: "agent" | "server"; ttl_secs: number; allow_import: boolean }) => post<IssuedToken>("/cluster/join-tokens", req);
+export const createJoinToken = (req: { role: NodeRole; ttl_secs: number; allow_import: boolean }) => post<IssuedToken>("/cluster/join-tokens", req);
 export const removeNode = (id: string, force = false) => post<Record<string, unknown>>(`/nodes/${enc(id)}/remove`, { force });
 export const forgetNode = (id: string, fenced: boolean, force = false) => post<Record<string, unknown>>(`/nodes/${enc(id)}/forget`, { fenced, force });
 export const purgeNode = (id: string) => post<Record<string, unknown>>(`/nodes/${enc(id)}/purge`);
@@ -694,13 +673,22 @@ export const rejoinToken = (id: string, req: { raft_intact: boolean; ttl_secs: n
 export const promoteNodes = (nodes: string[], force = false) => post<Record<string, unknown>>("/cluster/promote", { nodes, force });
 export const detachNode = (id: string, req: { map_networks: Record<string, string>; with_access: boolean }) => post<Record<string, unknown>>(`/nodes/${enc(id)}/detach`, req);
 export const abortDetach = (id: string) => post<Record<string, unknown>>(`/nodes/${enc(id)}/detach`, { abort: true });
-export const listDepartures = () => get<Departure[]>("/departures");
-export const clusterOvn = () => get<OvnOverview>("/cluster/ovn");
-export const clusterTunnels = () => get<{ enabled: boolean; nodes?: NodeTunnels[] }>("/cluster/ovn/tunnels");
+export const listDepartures = () => get<{ departures?: Departure[] }>("/departures").then((r) => r?.departures ?? []);
+export const clusterOvn = () => get<OvnOverview>("/cluster/ovn").then((r) => r ?? {});
+export const clusterTunnels = () => get<{ enabled?: boolean; nodes?: NodeTunnels[] }>("/cluster/ovn/tunnels").then((r) => r ?? {});
 /** A shared edge that should work for this cluster, from what nodes report (spec/clustering-ui.md §8a). */
-export const getEdgeDefaults = () => get<{ edge: OvnEdge; complete: boolean; notes: string[] }>("/cluster/settings/ovn/edge-defaults");
-export const getOvnSettings = () => get<OvnSettingsView>("/cluster/settings/ovn");
-export const putOvnSettings = (s: Omit<OvnSettings, "updated_by" | "updated_at">) => put<OvnSettingsView>("/cluster/settings/ovn", s);
+export const getEdgeDefaults = () => get<EdgeDefaults>("/cluster/settings/ovn/edge-defaults").then((r) => r ?? {});
+export const getOvnSettings = () => get<OvnSettingsView>("/cluster/settings/ovn").then((r) => r ?? {});
+/** Replaces the whole setting; only the request's fields may be sent (another is `422 invalid`). */
+export const putOvnSettings = (s: PutOvnSettings) =>
+  put<OvnSettingsView>("/cluster/settings/ovn", {
+    enabled: s.enabled,
+    underlay_mtu: s.underlay_mtu,
+    nat_supernet: s.nat_supernet,
+    edge: s.edge,
+    snat_ct_zones: s.snat_ct_zones,
+    dns_servers: s.dns_servers,
+  }).then((r) => r ?? {});
 export const networkOvn = (id: string) => get<NetworkOvn>(`/networks/${enc(id)}/ovn`);
 
 // ---- cluster lifecycle (spec/clustering-ui.md §7.5–7.8) ---------------------------
@@ -711,12 +699,17 @@ export const dissolveCluster = () => post<Record<string, unknown>>("/cluster/dis
 export const leaveCluster = () => post<Record<string, unknown>>("/cluster/leave");
 /** A same-origin link that downloads the cluster snapshot (with the session cookie). */
 export const clusterSnapshotUrl = () => `${API_BASE}/cluster/snapshot`;
-export const listImports = () => get<ImportPlanView[]>("/imports");
-export const getImport = (plan: string) => get<ImportPlanView>(`/imports/${enc(plan)}`);
-export const checkImport = (plan: string, m: ImportMappings) => post<ImportPlanView>(`/imports/${enc(plan)}/approve`, { ...m, dry_run: true });
-export const approveImport = (plan: string, m: ImportMappings) => post<ImportPlanView>(`/imports/${enc(plan)}/approve`, m);
-export const rejectImport = (plan: string) => post<ImportPlanView>(`/imports/${enc(plan)}/reject`);
-export const drainNode = (id: string, drain: boolean) => post<unknown>(`/nodes/${enc(id)}/${drain ? "drain" : "undrain"}`);
+export const listImports = () => get<{ plans?: ImportPlanView[] }>("/imports").then((r) => r?.plans ?? []);
+export const getImport = (plan: string) => get<{ plan?: ImportPlanView }>(`/imports/${enc(plan)}`).then((r) => r?.plan as ImportPlanView);
+export const checkImport = (plan: string, m: ImportMappings) =>
+  post<{ plan?: ImportPlanView }>(`/imports/${enc(plan)}/approve`, { ...m, dry_run: true }).then((r) => r?.plan as ImportPlanView);
+export const approveImport = (plan: string, m: ImportMappings) =>
+  post<{ plan?: ImportPlanView }>(`/imports/${enc(plan)}/approve`, m).then((r) => r?.plan as ImportPlanView);
+/** 204. */
+export const rejectImport = (plan: string) => post<void>(`/imports/${enc(plan)}/reject`);
+/** `{node, phase, remaining}`: what still keeps it from being removed. */
+export const drainNode = (id: string, drain: boolean) =>
+  post<{ node?: string; phase?: NodePhase; remaining?: { vms?: string[]; disks?: string[]; networks?: string[] } }>(`/nodes/${enc(id)}/${drain ? "drain" : "undrain"}`);
 
 // ---- tenants and admissions (spec/tenancy.md §14) -----------------------------
 

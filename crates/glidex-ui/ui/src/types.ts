@@ -1255,70 +1255,128 @@ export interface VmStats {
   disks?: LiveEntry[];
 }
 
-// ---- nodes (spec/clustering.md §7) -------------------------------------------
+// ---- the cluster, nodes, imports and departures (glidex.cluster.v1) -----------
+//
+// `/cluster/*`, `/nodes*`, `/imports*` and `/departures` answer in the proto3
+// JSON shape of glidex.cluster.v1 (spec/grpc.md §9.1): enums by their full
+// names, times RFC 3339, 64-bit numbers as strings (read with `num`), fields at
+// their default left out. The helpers read them back in the words the pages
+// show (`NODE_PHASE_ACTIVE` → `Active`, `NODE_ROLE_SERVER` → `server`).
 
-export type NodePhase = "Active" | "Draining" | "Departing" | "Departed" | "Removed" | "Forgotten";
+export type NodeRole = "NODE_ROLE_SERVER" | "NODE_ROLE_AGENT";
+export type NodePhase =
+  | "NODE_PHASE_ACTIVE"
+  | "NODE_PHASE_DRAINING"
+  | "NODE_PHASE_DEPARTING"
+  | "NODE_PHASE_DEPARTED"
+  | "NODE_PHASE_REMOVED"
+  | "NODE_PHASE_FORGOTTEN";
+/** A phase as the pages show it. */
+export type NodePhaseLabel = "Active" | "Draining" | "Departing" | "Departed" | "Removed" | "Forgotten";
 export type Tristate = "True" | "False" | "Unknown";
+export type BrIntDatapath = "BR_INT_DATAPATH_AUTO" | "BR_INT_DATAPATH_SYSTEM" | "BR_INT_DATAPATH_NETDEV";
+export type RaftState = "RAFT_STATE_LEADER" | "RAFT_STATE_FOLLOWER" | "RAFT_STATE_CANDIDATE" | "RAFT_STATE_LEARNER" | "RAFT_STATE_SHUTDOWN";
+export type ImportState = "IMPORT_STATE_PENDING" | "IMPORT_STATE_COMMITTED" | "IMPORT_STATE_REJECTED";
+export type DepartureState = "DEPARTURE_STATE_FROZEN" | "DEPARTURE_STATE_COMMITTED" | "DEPARTURE_STATE_ABORTED";
+export type TunnelState = "TUNNEL_STATE_PRESENT" | "TUNNEL_STATE_ERROR" | "TUNNEL_STATE_BFD_DOWN";
+export type OvnSettingsSource = "OVN_SETTINGS_SOURCE_CLUSTER" | "OVN_SETTINGS_SOURCE_FILE" | "OVN_SETTINGS_SOURCE_NONE";
+
+/** `bfd_down` → `Bfd_down`: the first letter up. */
+const capitalized = (s: string) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
+
+/** `NODE_ROLE_SERVER` → `server`. */
+export const nodeRoleLabel = (r: string | undefined) => enumLabel(r, "NODE_ROLE_");
+/** `NODE_PHASE_ACTIVE` → `Active` (absent: `Active`; the server always sends it). */
+export const nodePhaseLabel = (p: string | undefined) => (capitalized(enumLabel(p, "NODE_PHASE_")) || "Active") as NodePhaseLabel;
+/** `RAFT_STATE_LEADER` → `Leader`. */
+export const raftStateLabel = (s: string | undefined) => capitalized(enumLabel(s, "RAFT_STATE_")) || "Unknown";
+/** `IMPORT_STATE_PENDING` → `pending`. */
+export const importStateLabel = (s: string | undefined) => enumLabel(s, "IMPORT_STATE_");
+/** `DEPARTURE_STATE_FROZEN` → `frozen`. */
+export const departureStateLabel = (s: string | undefined) => enumLabel(s, "DEPARTURE_STATE_");
+/** `TUNNEL_STATE_BFD_DOWN` → `bfd_down`. */
+export const tunnelStateLabel = (s: string | undefined) => (enumLabel(s, "TUNNEL_STATE_") || "error") as "present" | "error" | "bfd_down";
+/** `OVN_SETTINGS_SOURCE_FILE` → `file`. */
+export const ovnSourceLabel = (s: string | undefined) => enumLabel(s, "OVN_SETTINGS_SOURCE_") || "none";
+/** `BR_INT_DATAPATH_SYSTEM` → `system` (absent: `auto`). */
+export const brIntLabel = (d: string | undefined) => enumLabel(d, "BR_INT_DATAPATH_") || "auto";
 
 export interface NodeResources {
-  cpus: number;
-  memory_mib: number;
-  hugepages?: Record<string, number>;
+  cpus?: number;
+  /** uint64: read with `num`. */
+  memory_mib?: U64;
+  /** Page size in KiB → pages (uint64 strings). */
+  hugepages?: Record<string, U64>;
 }
 
-/** A node record as `GET /nodes` and the live stream send it. */
+/** A file in a node's image directory that no image record names (spec/clustering.md §9.2.3). */
+export interface SpareFile {
+  name: string;
+  bytes?: U64;
+  /** RFC 3339. */
+  mtime?: string;
+}
+
+/** A node (glidex.cluster.v1.Node) as `GET /nodes` and the live stream send it. */
 export interface NodeRecord {
-  meta: { id: string; name: string; created_at: number; generation: number; resource_version: number };
+  meta: { id: string; name?: string; created_at?: string; generation?: U64; resource_version?: U64 };
   spec: {
     name: string;
-    role: "server" | "agent";
-    unschedulable: boolean;
-    labels: Record<string, string>;
-    /** `auto` (absent): `netdev` where DPDK runs, else `system` (spec/clustering.md §11.6). */
+    role?: NodeRole;
+    unschedulable?: boolean;
+    labels?: Record<string, string>;
+    /** Absent: auto, `netdev` where DPDK runs, else `system` (spec/clustering.md §11.6). */
     br_int_datapath?: BrIntDatapath;
     /** physnet → bridge set through the API (the host's file may add more). */
     bridge_mappings?: Record<string, string>;
+    drop_spare_files_before?: string;
   };
   status: {
-    phase: NodePhase;
-    ready: Tristate;
+    phase?: NodePhase;
+    ready?: ConditionStatus;
     ready_reason?: string;
-    raft_id?: number;
+    observed_generation?: U64;
+    raft_id?: U64;
     advertise?: string;
     tunnel_ip?: string;
-    versions: { glidex: string; ovs?: string; ovn?: string };
-    capacity: NodeResources;
-    allocatable: NodeResources;
+    versions?: { glidex?: string; ovs?: string; ovn?: string };
+    capacity?: NodeResources;
+    allocatable?: NodeResources;
     features?: {
-      kvm: boolean;
-      hypervisors: string[];
+      kvm?: boolean;
+      hypervisors?: string[];
       dpdk?: boolean;
       iommu?: boolean;
+      /** `system` or `netdev`, as the node runs br-int now (a plain string). */
       br_int_datapath?: string;
       physnets?: Record<string, string>;
+      feature_level?: number;
+      ovn_central?: boolean;
+      bridge_addrs?: Record<string, { address: string; gateway?: string }>;
       /** `x86_64` or `aarch64` (spec/clustering.md §9.2.1). */
       arch?: string;
-      /** Files in its image directory that no image record names (§9.2.3). */
-      spare_image_files?: { name: string; bytes: number; mtime: number }[];
+      spare_image_files?: SpareFile[];
     };
     pci_devices?: string[];
-    heartbeat?: number;
+    /** When Ready last changed (RFC 3339). */
+    heartbeat?: string;
     departed_ids?: string[];
   };
 }
 
-export type BrIntDatapath = "auto" | "system" | "netdev";
+/** A node's readiness in the short form (`True`, `False`, `Unknown`). */
+export const nodeReady = (n: NodeRecord): Tristate => conditionStatus({ status: n.status.ready });
 
 /** What a node's `br-int` datapath should be, by its setting. */
 export function wantedBrInt(n: NodeRecord): "system" | "netdev" {
-  const s = n.spec.br_int_datapath ?? "auto";
+  const s = brIntLabel(n.spec.br_int_datapath);
   if (s === "system" || s === "netdev") return s;
   return n.status.features?.dpdk ? "netdev" : "system";
 }
 
 /** A node is gone for good (kept as a record only). */
-export function isTombstone(phase: NodePhase): boolean {
-  return phase === "Departed" || phase === "Removed" || phase === "Forgotten";
+export function isTombstone(phase: NodePhase | undefined): boolean {
+  return phase === "NODE_PHASE_DEPARTED" || phase === "NODE_PHASE_REMOVED" || phase === "NODE_PHASE_FORGOTTEN";
 }
 
 /** A node's name, with its short id when it is a tombstone: a node that left
@@ -1327,14 +1385,116 @@ export function nodeLabel(n: NodeRecord): string {
   return isTombstone(n.status.phase) ? `${n.spec.name} · ${n.meta.id.slice(0, 8)}` : n.spec.name;
 }
 
-/** What one import plan brings (`GET /imports/{plan}`), for the mapping editor. */
-export interface ImportSources {
-  projects: { id: string; name: string }[];
-  networks: { name: string; mode: string }[];
-  credentials: { key: string; project: string; username: string }[];
-  vms: { id: string; name: string; project: string }[];
+/** A node as the cluster status lists it (glidex.cluster.v1.NodeSummary). */
+export interface ClusterNodeRow {
+  id: string;
+  name: string;
+  role?: NodeRole;
+  phase?: NodePhase;
+  advertise?: string;
+  raft_id?: U64;
+  version?: string;
+  feature_level?: number;
+  ready?: ConditionStatus;
+  /** Its newest certificate: signed by the current CA, and until when (RFC 3339). */
+  cert?: { current_ca?: boolean; not_after?: string };
 }
 
+export interface RaftMember {
+  raft_id?: U64;
+  name?: string;
+  address?: string;
+}
+
+/** `GET /cluster/status` (glidex.cluster.v1.GetClusterStatusResponse). */
+export interface ClusterStatus {
+  /** Always sent by `GET /cluster/status`. */
+  clustered?: boolean;
+  cluster_id?: string;
+  /** The node serving this UI (through an agent's UI: that agent). */
+  node_id?: string;
+  name?: string;
+  role?: NodeRole;
+  advertise?: string;
+  /** The server that answered, when it isn't the node serving this UI
+   * (an agent relays its UI to a server, spec/clustering-ui.md §3.6). */
+  served_by?: { node_id: string; name: string };
+  feature_level?: number;
+  ca_fingerprint?: string;
+  /** Times RFC 3339. */
+  ca?: { signing?: string; retiring?: string[]; retire_at?: string; started_at?: string; not_after?: string };
+  /** Absent on an agent. uint64s as strings. */
+  raft?: {
+    id?: U64;
+    state?: RaftState;
+    term?: U64;
+    leader?: RaftMember;
+    voters?: RaftMember[];
+    learners?: RaftMember[];
+    last_applied?: U64;
+    last_log_index?: U64;
+    purged?: U64;
+  };
+  nodes?: ClusterNodeRow[];
+  ports?: { node: string; port: number; proto: string; reachable?: boolean }[];
+}
+
+/** `"Leader"` → `RAFT_STATE_LEADER`: a legacy enum value in the proto form. */
+function protoEnum(v: unknown, prefix: string): unknown {
+  if (typeof v !== "string" || !v || v.startsWith(`${prefix}_`)) return v;
+  return `${prefix}_${v.toUpperCase()}`;
+}
+
+/** Unix seconds → RFC 3339 (0 or null: absent); a string passes through. */
+function protoTime(v: unknown): string | undefined {
+  if (typeof v === "string") return v || undefined;
+  if (typeof v === "number" && v) return new Date(v * 1000).toISOString();
+  return undefined;
+}
+
+/** Drop nulls, recursively (proto JSON leaves those fields out). */
+function withoutNulls(v: unknown): unknown {
+  if (Array.isArray(v)) return v.map(withoutNulls);
+  if (v && typeof v === "object") {
+    return Object.fromEntries(
+      Object.entries(v as Record<string, unknown>)
+        .filter(([, x]) => x !== null)
+        .map(([k, x]) => [k, withoutNulls(x)]),
+    );
+  }
+  return v;
+}
+
+/** The live stream's `cluster` object as a `ClusterStatus`. The stream sends
+ * the summary in the older shape (`role: "server"`, `raft.state: "Leader"`,
+ * unix-second times); this reads either shape. */
+export function clusterStatusOf(raw: unknown): ClusterStatus {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const s = withoutNulls(raw) as Record<string, any>;
+  if (!s || typeof s !== "object") return {};
+  s.role = protoEnum(s.role, "NODE_ROLE");
+  if (s.ca) for (const k of ["retire_at", "started_at", "not_after"]) s.ca[k] = protoTime(s.ca[k]);
+  if (s.raft) s.raft.state = protoEnum(s.raft.state, "RAFT_STATE");
+  for (const n of s.nodes ?? []) {
+    n.role = protoEnum(n.role, "NODE_ROLE");
+    n.phase = protoEnum(n.phase, "NODE_PHASE");
+    n.ready = protoEnum(n.ready, "CONDITION_STATUS");
+    if (n.cert) n.cert.not_after = protoTime(n.cert.not_after);
+  }
+  return s as ClusterStatus;
+}
+
+/** What one import plan brings (`GET /imports/{plan}`), for the mapping editor. */
+export interface ImportSources {
+  projects?: { id: string; name?: string }[];
+  /** `mode` is `nat`, `bridged` or `isolated`. */
+  networks?: { id: string; name?: string; mode?: string }[];
+  /** `key` is `<project>/<username>`. */
+  credentials?: { key: string; project?: string; username?: string }[];
+  vms?: { id: string; name?: string; project?: string }[];
+}
+
+/** The names an import gets here (the editor keeps every key; the API leaves empty ones out). */
 export interface ImportMappings {
   projects: Record<string, string>;
   networks: Record<string, string>;
@@ -1342,85 +1502,138 @@ export interface ImportMappings {
   over_quota: boolean;
 }
 
-/** A chassis or node reference in OVN views. */
+/** A chassis or node reference in OVN views (glidex.cluster.v1.ChassisRef). */
 export interface ChassisRef {
   chassis: string;
-  node: string | null;
-  node_name: string | null;
-  priority?: number;
+  node?: string;
+  node_name?: string;
+  /** int64: read with `num`. */
+  priority?: U64;
 }
 
 /** The shared edge of NAT cluster networks (spec/clustering.md §11.2). */
 export interface OvnEdge {
-  physnet: string;
-  external_cidr: string;
-  gateway: string;
-  external_ip: string;
-  external_pool?: string | null;
-  gateway_nodes: string[];
+  physnet?: string;
+  external_cidr?: string;
+  gateway?: string;
+  external_ip?: string;
+  external_pool?: string;
+  gateway_nodes?: string[];
 }
 
 /** The cluster's OVN setting (spec/clustering-ui.md §8a). */
 export interface OvnSettings {
-  enabled: boolean;
-  underlay_mtu?: number | null;
-  nat_supernet?: string | null;
-  edge?: OvnEdge | null;
-  snat_ct_zones?: [number, number] | null;
+  enabled?: boolean;
+  underlay_mtu?: number;
+  nat_supernet?: string;
+  edge?: OvnEdge;
+  /** `[first, last]`. */
+  snat_ct_zones?: number[];
   dns_servers?: string[];
   updated_by?: string;
-  updated_at?: number;
+  /** RFC 3339. */
+  updated_at?: string;
+}
+
+/** `PUT /cluster/settings/ovn`: the whole setting (absent: none / the default). */
+export type PutOvnSettings = Omit<OvnSettings, "updated_by" | "updated_at"> & { enabled: boolean };
+
+/** A node's OVN readiness (glidex.cluster.v1.OvnNode). */
+export interface OvnNode {
+  id: string;
+  name: string;
+  role?: NodeRole;
+  ovn_version?: string;
+  ovn_central?: boolean;
+  /** What it lacks to run OVN. */
+  missing?: string;
+  /** Its ovn-controller is older than the cluster's ovn-northd, so it drops traffic of the newer pipeline. */
+  outdated?: string;
 }
 
 /** `GET /cluster/settings/ovn`: `enabled` for everyone, the rest with `readCluster`. */
 export interface OvnSettingsView {
-  enabled: boolean;
+  enabled?: boolean;
   /** The shared edge for NAT networks spanning the nodes is set. */
   edge?: boolean;
   /** The edge has a pool of addresses for VPC routers that reach outside. */
   vpc_pool?: boolean;
   clustered?: boolean;
-  /** `cluster`: the setting; `file`: control-plane.json (not moved yet); `none`. */
-  source?: "cluster" | "file" | "none";
+  /** Read with `ovnSourceLabel`: `cluster`, `file` (control-plane.json, not moved yet) or `none`. */
+  source?: OvnSettingsSource;
   settings?: OvnSettings;
-  /** `outdated`: its ovn-controller is older than the cluster's ovn-northd, so it drops traffic of the newer pipeline. */
-  nodes?: { id: string; name: string; role: string; ovn_version: string | null; ovn_central: boolean; missing: string | null; outdated?: string | null }[];
-  cluster_networks?: string[];
+  nodes?: OvnNode[];
+  /** Cluster networks still there (OVN can't be turned off while any is). */
+  cluster_networks?: { id: string; name?: string }[];
+}
+
+/** `GET /cluster/settings/ovn/edge-defaults`. */
+export interface EdgeDefaults {
+  edge?: OvnEdge;
+  complete?: boolean;
+  notes?: string[];
+}
+
+export interface OvnServer {
+  address: string;
+  reachable?: boolean;
+  leader?: boolean;
+}
+
+/** An OVN chassis with the glidex node it is. */
+export interface OvnChassis {
+  chassis: string;
+  node?: string;
+  node_name?: string;
+  hostname?: string;
+  encaps?: string[];
+  /** When its ovn-controller last caught up with the northbound database (RFC 3339). */
+  nb_cfg_at?: string;
 }
 
 /** `GET /cluster/ovn` (spec/clustering-ui.md §8). */
 export interface OvnOverview {
-  enabled: boolean;
-  nb?: { address: string; reachable: boolean; leader: boolean }[];
-  sb?: { address: string; reachable: boolean; leader: boolean }[];
-  chassis?: (ChassisRef & { hostname: string; encaps: string[]; nb_cfg_timestamp: number | null })[];
-  gateways?: { router: string; active: ChassisRef | null; candidates: ChassisRef[] }[];
+  enabled?: boolean;
+  servers?: number;
+  nb?: OvnServer[];
+  sb?: OvnServer[];
+  chassis?: OvnChassis[];
+  gateways?: { router: string; active?: ChassisRef; candidates?: ChassisRef[] }[];
+}
+
+export interface NodeRef {
+  node: string;
+  node_name?: string;
+}
+
+export interface Tunnel {
+  name: string;
+  remote_ip?: string;
+  /** Read with `tunnelStateLabel`: `present`, `error` (OVS couldn't set it up) or `bfd_down`. */
+  state?: TunnelState;
+  error?: string;
+  bfd_state?: string;
+  bfd_diagnostic?: string;
+  /** uint64s: read with `num`. */
+  rx_packets?: U64;
+  tx_packets?: U64;
+  rx_bytes?: U64;
+  tx_bytes?: U64;
+  /** The node at the other end. */
+  peer?: NodeRef;
 }
 
 /** One node's tunnels (`GET /cluster/ovn/tunnels`, spec/clustering-ui.md §8b). */
 export interface NodeTunnels {
   node: string;
-  node_name: string;
-  answered: boolean;
+  node_name?: string;
+  answered?: boolean;
   error?: string;
-  chassis?: string | null;
+  chassis?: string;
   controller_running?: boolean;
-  tunnels?: {
-    name: string;
-    remote_ip: string;
-    /** `present`, `error` (OVS couldn't set it up) or `bfd_down`. */
-    state: "present" | "error" | "bfd_down";
-    error?: string;
-    bfd_state?: string;
-    bfd_diagnostic?: string;
-    rx_packets: number;
-    tx_packets: number;
-    rx_bytes: number;
-    tx_bytes: number;
-    peer: { node: string; node_name: string } | null;
-  }[];
+  tunnels?: Tunnel[];
   /** Other nodes it has no tunnel to. */
-  missing?: { node: string; node_name: string }[];
+  missing?: NodeRef[];
 }
 
 /** A chassis in a network's OVN view (glidex.network.v1.Chassis): absent fields left out, `priority` an int64 string. */
@@ -1441,43 +1654,54 @@ export interface NetworkOvn {
 /** A detach (`GET /departures`, clustering.md §5.8). */
 export interface Departure {
   plan: string;
+  /** The node's id. */
   node: string;
   node_name?: string;
-  /** `frozen`, `committed` or `aborted`. */
-  state: string;
-  started_at: number;
-  deadline: number;
-  map_networks: Record<string, string>;
-  with_access: boolean;
-  acknowledged: boolean;
+  /** Read with `departureStateLabel`. */
+  state?: DepartureState;
+  /** RFC 3339. */
+  started_at?: string;
+  deadline?: string;
+  map_networks?: Record<string, string>;
+  with_access?: boolean;
+  /** The node confirmed it has its bundle. */
+  acknowledged?: boolean;
 }
 
 /** A join or rejoin token, shown once (spec/clustering-ui.md §2.3). */
 export interface IssuedToken {
   token: string;
-  role?: string;
-  ttl_secs: number;
+  role?: NodeRole;
+  /** uint64: read with `num`. */
+  ttl_secs?: U64;
   servers?: string[];
   ca_fingerprint?: string;
   node?: string;
   node_id?: string;
+  raft_intact?: boolean;
 }
 
-/** An import plan as `GET /imports` and the live stream send it (clustering.md §5.9). */
+export type ImportSummaryKey = "vms" | "disks" | "images" | "networks" | "credentials" | "projects";
+
+/** An import plan (glidex.cluster.v1.ImportPlan) as `GET /imports` and the live stream send it (clustering.md §5.9). */
 export interface ImportPlanView {
   plan: string;
-  state: string;
-  node: string;
-  node_id: string;
-  advertise: string;
-  summary: { vms: number; disks: number; images: number; networks: number; credentials: number; projects: number };
-  problems: string[];
-  mappings: ImportMappings;
+  /** Read with `importStateLabel`. */
+  state?: ImportState;
+  /** The joining host's name. */
+  node?: string;
+  node_id?: string;
+  advertise?: string;
+  /** A count of zero is left out. */
+  summary?: Partial<Record<ImportSummaryKey, number>>;
+  problems?: string[];
+  mappings?: Partial<ImportMappings>;
   /** Only on `GET /imports/{plan}`. */
   sources?: ImportSources;
-  created_by: string;
-  created_at: number;
-  expires_at: number;
+  created_by?: string;
+  /** RFC 3339. */
+  created_at?: string;
+  expires_at?: string;
 }
 
 // ---- tenants, admissions and login connectors (spec/tenancy.md §14) ----------

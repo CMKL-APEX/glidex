@@ -172,6 +172,31 @@ fn vm_of(v: &Value) -> &Value {
     &v["vm"]
 }
 
+/// A node's `status.ready` when it is Ready.
+const READY: &str = "CONDITION_STATUS_TRUE";
+
+/// The nodes of a `GET /nodes` answer (`{nodes}`); proto3 JSON leaves an
+/// empty list out.
+fn nodes_of(v: &Value) -> Vec<Value> {
+    assert!(v.is_object(), "not a node list: {v}");
+    v["nodes"].as_array().cloned().unwrap_or_default()
+}
+
+/// An RFC 3339 time in UTC, as proto3 JSON writes a Timestamp
+/// (`2026-10-17T08:00:00Z`, maybe with a fraction).
+fn is_time(v: &Value) -> bool {
+    let Some(t) = v.as_str() else { return false };
+    let b = t.as_bytes();
+    t.len() >= 20
+        && t.ends_with('Z')
+        && b[4] == b'-'
+        && b[7] == b'-'
+        && b[10] == b'T'
+        && b[13] == b':'
+        && b[16] == b':'
+        && t[..4].parse::<u32>().is_ok_and(|y| y >= 1970)
+}
+
 fn cluster(cp: &Cp) -> Arc<Cluster> {
     cp.manager.cluster().expect("clustered")
 }
@@ -813,11 +838,9 @@ async fn a_vm_placed_on_an_agent_is_that_agents_and_its_status_comes_back() {
     let (s, nodes) = call(&server, "GET", "/nodes", None, &[]).await;
     assert_eq!(s, StatusCode::OK);
     assert!(
-        nodes
-            .as_array()
-            .unwrap()
+        nodes_of(&nodes)
             .iter()
-            .any(|n| n["spec"]["name"] == "agent1" && n["spec"]["role"] == "agent"),
+            .any(|n| n["spec"]["name"] == "agent1" && n["spec"]["role"] == "NODE_ROLE_AGENT"),
         "{nodes}"
     );
 
@@ -976,21 +999,20 @@ async fn a_silent_node_is_unreachable_not_gone() {
     let id = vm_of(&vm)["id"].as_str().unwrap().to_string();
 
     let ready = |nodes: &Value| {
-        nodes
-            .as_array()
-            .unwrap()
+        nodes_of(nodes)
             .iter()
             .find(|n| n["spec"]["name"] == "agent1")
             .map(|n| n["status"]["ready"].as_str().unwrap().to_string())
     };
     wait_for("the agent to be Ready", || async {
-        ready(&call(&server, "GET", "/nodes", None, &[]).await.1).as_deref() == Some("True")
+        ready(&call(&server, "GET", "/nodes", None, &[]).await.1).as_deref() == Some(READY)
     })
     .await;
 
     link.set_partitioned(true);
     wait_for("the agent to be Unknown", || async {
-        ready(&call(&server, "GET", "/nodes", None, &[]).await.1).as_deref() == Some("Unknown")
+        ready(&call(&server, "GET", "/nodes", None, &[]).await.1).as_deref()
+            == Some("CONDITION_STATUS_UNKNOWN")
     })
     .await;
     // Its VMs say so, and nothing was stopped or moved.
@@ -1008,7 +1030,7 @@ async fn a_silent_node_is_unreachable_not_gone() {
 
     link.set_partitioned(false);
     wait_for("the agent to be Ready again", || async {
-        ready(&call(&server, "GET", "/nodes", None, &[]).await.1).as_deref() == Some("True")
+        ready(&call(&server, "GET", "/nodes", None, &[]).await.1).as_deref() == Some(READY)
     })
     .await;
 }
@@ -1583,8 +1605,7 @@ async fn the_scheduler_spreads_vms_honours_pins_and_disks_and_explains_itself() 
     }
     let ids: Vec<String> = {
         let (_, n) = call(&server, "GET", "/nodes", None, &[]).await;
-        n.as_array()
-            .unwrap()
+        nodes_of(&n)
             .iter()
             .map(|n| n["meta"]["id"].as_str().unwrap().to_string())
             .collect()
@@ -1714,7 +1735,8 @@ async fn the_scheduler_spreads_vms_honours_pins_and_disks_and_explains_itself() 
     for id in &ids {
         let (s, v) = call(&server, "POST", &format!("/nodes/{id}/drain"), None, &[]).await;
         assert_eq!(s, StatusCode::OK, "{v}");
-        assert!(v["remaining"]["vms"].is_array());
+        assert_eq!(v["phase"], "NODE_PHASE_DRAINING", "{v}");
+        assert!(v["remaining"]["vms"].is_array(), "{v}");
     }
     let (s, vm) = call(
         &server,
@@ -2199,12 +2221,12 @@ async fn provider_networks_and_vpc_routers() {
 async fn node_json(cp: &Cp, key: &str) -> Value {
     let (s, v) = call(cp, "GET", "/nodes", None, &[]).await;
     assert_eq!(s, StatusCode::OK, "{v}");
-    let all = v.as_array().unwrap();
+    let all = nodes_of(&v);
     // The live node a name means, before a tombstone of the same name.
     let live = |n: &&Value| {
         !matches!(
             n["status"]["phase"].as_str(),
-            Some("Removed" | "Departed" | "Forgotten")
+            Some("NODE_PHASE_REMOVED" | "NODE_PHASE_DEPARTED" | "NODE_PHASE_FORGOTTEN")
         )
     };
     all.iter()
@@ -2264,7 +2286,7 @@ async fn nodes_are_removed_forgotten_and_rejoin_as_themselves() {
     assert!(e["message"].as_str().unwrap().contains("1, 3 or 5"), "{e}");
     assert_eq!(
         node_json(&cps[lead], &vname).await["status"]["phase"],
-        "Active"
+        "NODE_PHASE_ACTIVE"
     );
     // The server issuing the request can't remove itself, and an active node can't be purged.
     let (s, _) = call(
@@ -2298,7 +2320,7 @@ async fn nodes_are_removed_forgotten_and_rejoin_as_themselves() {
     assert_eq!(s, StatusCode::BAD_REQUEST, "forget without --fenced");
     cluster(&cps[learner]).stop().await;
     wait_until("the node to be reported unreachable", || async {
-        node_json(&cps[lead], &lname).await["status"]["ready"] != "True"
+        node_json(&cps[lead], &lname).await["status"]["ready"] != READY
     })
     .await;
     let before = denylist_len(&cps[lead]);
@@ -2311,7 +2333,7 @@ async fn nodes_are_removed_forgotten_and_rejoin_as_themselves() {
     )
     .await;
     assert_eq!(s, StatusCode::OK, "{r}");
-    assert_eq!(r["phase"], "Forgotten");
+    assert_eq!(r["phase"], "NODE_PHASE_FORGOTTEN", "{r}");
     assert_eq!(
         denylist_len(&cps[lead]),
         before + 1,
@@ -2378,7 +2400,7 @@ async fn nodes_are_removed_forgotten_and_rejoin_as_themselves() {
     .unwrap();
     assert_eq!(out["raft_fresh"], true, "the rejoin starts Raft afresh");
     let n = node_json(&cps[lead], &lname).await;
-    assert_eq!(n["status"]["phase"], "Active", "{n}");
+    assert_eq!(n["status"]["phase"], "NODE_PHASE_ACTIVE", "{n}");
     assert_eq!(
         n["meta"]["id"],
         cluster(&cps[learner]).identity.node_id,
@@ -2403,7 +2425,7 @@ async fn nodes_are_removed_forgotten_and_rejoin_as_themselves() {
     )
     .await;
     assert_eq!(s, StatusCode::OK, "{r}");
-    assert_eq!(r["phase"], "Removed");
+    assert_eq!(r["phase"], "NODE_PHASE_REMOVED", "{r}");
     assert!(denylist_len(&cps[lead]) > before);
     wait_until("the removed node to leave the group", || async {
         let c = cluster(&cps[lead]);
@@ -2471,12 +2493,31 @@ async fn the_ca_rotates_and_every_node_renews_before_the_old_one_is_retired() {
         "{st}"
     );
     assert!(st["feature_level"].as_u64().unwrap() >= 1);
+    assert_eq!(st["clustered"], true, "{st}");
+    assert_eq!(st["raft"]["state"], "RAFT_STATE_LEADER", "{st}");
+    assert!(num(&st["raft"]["term"]) >= 1, "{st}");
+    assert!(st["raft"]["id"].is_string(), "a uint64 is a string: {st}");
     // The CA's expiry and each node's certificate (spec/clustering-ui.md §7.6).
-    assert!(st["ca"]["not_after"].as_i64().unwrap() > 0, "{st}");
+    assert!(is_time(&st["ca"]["not_after"]), "{st}");
+    // Every node reports ready once it has sent its first report.
+    wait_for("every node to report ready", || async {
+        let (_, st) = call(&cps[lead], "GET", "/cluster/status", None, &[]).await;
+        st["nodes"]
+            .as_array()
+            .is_some_and(|ns| ns.iter().all(|n| n["ready"] == READY))
+    })
+    .await;
+    let (_, st) = call(&cps[lead], "GET", "/cluster/status", None, &[]).await;
     assert!(
-        st["nodes"].as_array().unwrap().iter().all(
-            |n| n["cert"]["current_ca"] == true && n["cert"]["not_after"].as_i64().unwrap() > 0
-        ),
+        st["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|n| n["cert"]["current_ca"] == true
+                && is_time(&n["cert"]["not_after"])
+                && n["ready"] == READY
+                && n["phase"] == "NODE_PHASE_ACTIVE"
+                && n["role"] == "NODE_ROLE_SERVER"),
         "{st}"
     );
     let (s, r) = call(
@@ -2617,7 +2658,7 @@ async fn a_node_detaches_with_its_vms_and_the_cluster_lets_go() {
     assert_eq!(s, StatusCode::CREATED, "{vm}");
     let id = vm_of(&vm)["id"].as_str().unwrap().to_string();
     wait_for("the agent to be ready", || async {
-        node_json(&server, "agent1").await["status"]["ready"] == "True"
+        node_json(&server, "agent1").await["status"]["ready"] == READY
     })
     .await;
 
@@ -2633,7 +2674,7 @@ async fn a_node_detaches_with_its_vms_and_the_cluster_lets_go() {
     assert_eq!(s, StatusCode::BAD_REQUEST, "{e}");
     assert_eq!(
         node_json(&server, "agent1").await["status"]["phase"],
-        "Active"
+        "NODE_PHASE_ACTIVE"
     );
 
     // An abort returns the node to Active.
@@ -2646,7 +2687,9 @@ async fn a_node_detaches_with_its_vms_and_the_cluster_lets_go() {
     )
     .await;
     assert_eq!(s, StatusCode::OK, "{p}");
-    assert_eq!(p["vms"], 1);
+    assert_eq!(p["vms"], 1, "{p}");
+    assert!(is_time(&p["deadline"]), "{p}");
+    let plan = p["plan"].as_str().unwrap().to_string();
     let (s, a) = call(
         &server,
         "POST",
@@ -2656,9 +2699,10 @@ async fn a_node_detaches_with_its_vms_and_the_cluster_lets_go() {
     )
     .await;
     assert_eq!(s, StatusCode::OK, "{a}");
+    assert_eq!(a["aborted"], plan.as_str(), "{a}");
     assert_eq!(
         node_json(&server, "agent1").await["status"]["phase"],
-        "Active"
+        "NODE_PHASE_ACTIVE"
     );
     assert!(
         !pending_db(&agent_state_dir(&agent)).exists() || {
@@ -2683,18 +2727,23 @@ async fn a_node_detaches_with_its_vms_and_the_cluster_lets_go() {
     let dir = agent_state_dir(&agent);
     wait_until("the receipt", || async { receipt_file(&dir).exists() }).await;
     let n = node_json(&server, "agent1").await;
-    assert_eq!(n["status"]["phase"], "Departed", "{n}");
+    assert_eq!(n["status"]["phase"], "NODE_PHASE_DEPARTED", "{n}");
     // The detaches are listed with their state (spec/clustering-ui.md §6).
     let (s, deps) = call(&server, "GET", "/departures", None, &[]).await;
     assert_eq!(s, StatusCode::OK, "{deps}");
-    let deps = deps.as_array().unwrap();
+    let deps = deps["departures"].as_array().cloned().unwrap_or_default();
     assert!(
         deps.iter().any(|d| d["node_name"] == "agent1"
-            && d["state"] == "committed"
-            && d["acknowledged"] == true),
+            && d["state"] == "DEPARTURE_STATE_COMMITTED"
+            && d["acknowledged"] == true
+            && is_time(&d["started_at"])),
         "{deps:?}"
     );
-    assert!(deps.iter().any(|d| d["state"] == "aborted"), "{deps:?}");
+    assert!(
+        deps.iter()
+            .any(|d| d["state"] == "DEPARTURE_STATE_ABORTED" && d["plan"] == plan.as_str()),
+        "{deps:?}"
+    );
     assert!(
         n["status"]["departed_ids"]
             .as_array()
@@ -3006,7 +3055,7 @@ async fn a_node_that_left_on_its_own_is_forgotten_as_departed_and_its_bundle_can
     // Now the agent really is gone: the cluster records that it left, not that it was lost.
     cluster(&agent).stop().await;
     wait_until("the node to be silent", || async {
-        node_json(&server, "agent1").await["status"]["ready"] != "True"
+        node_json(&server, "agent1").await["status"]["ready"] != READY
     })
     .await;
     let (s, r) = call(
@@ -3020,7 +3069,8 @@ async fn a_node_that_left_on_its_own_is_forgotten_as_departed_and_its_bundle_can
     assert_eq!(s, StatusCode::OK, "{r}");
     assert_eq!(
         (r["phase"].as_str(), r["vms"].as_u64()),
-        (Some("Departed"), Some(1))
+        (Some("NODE_PHASE_DEPARTED"), Some(1)),
+        "{r}"
     );
     let (s, _) = call(&server, "GET", &format!("/vms/{id}"), None, &[]).await;
     assert_eq!(s, StatusCode::NOT_FOUND);
@@ -3079,7 +3129,7 @@ async fn a_detached_host_imports_into_another_cluster_with_its_vm_after_approval
     let id = vm_of(&vm)["id"].as_str().unwrap().to_string();
     let src_project = vm_of(&vm)["project"].as_str().unwrap().to_string();
     wait_for("the agent to be ready", || async {
-        node_json(&a, "mover").await["status"]["ready"] == "True"
+        node_json(&a, "mover").await["status"]["ready"] == READY
     })
     .await;
     let (s, p) = call(&a, "POST", "/nodes/mover/detach", Some(json!({})), &[]).await;
@@ -3162,13 +3212,17 @@ async fn a_detached_host_imports_into_another_cluster_with_its_vm_after_approval
     // The plan appears, with the checks it failed: B has its own project called "default".
     wait_until("the import plan", || async {
         let (_, v) = call(&b, "GET", "/imports", None, &[]).await;
-        v.as_array().is_some_and(|a| !a.is_empty())
+        v["plans"].as_array().is_some_and(|a| !a.is_empty())
     })
     .await;
     let (_, listed) = call(&b, "GET", "/imports", None, &[]).await;
-    let plan = listed.as_array().unwrap()[0].clone();
+    let plan = listed["plans"][0].clone();
     let pid = plan["plan"].as_str().unwrap().to_string();
-    assert_eq!(plan["state"], "pending");
+    assert_eq!(plan["state"], "IMPORT_STATE_PENDING", "{plan}");
+    assert!(
+        is_time(&plan["created_at"]) && is_time(&plan["expires_at"]),
+        "{plan}"
+    );
     assert_eq!(plan["summary"]["vms"], 1, "{plan}");
     assert!(
         plan["problems"]
@@ -3181,6 +3235,8 @@ async fn a_detached_host_imports_into_another_cluster_with_its_vm_after_approval
     // One plan's view says what it brings, for the mapping editor (spec/clustering-ui.md §7.4).
     let (s, one) = call(&b, "GET", &format!("/imports/{pid}"), None, &[]).await;
     assert_eq!(s, StatusCode::OK, "{one}");
+    assert_eq!(one["plan"]["plan"], pid.as_str(), "{one}");
+    let one = &one["plan"];
     assert!(
         one["sources"]["projects"]
             .as_array()
@@ -3212,7 +3268,9 @@ async fn a_detached_host_imports_into_another_cluster_with_its_vm_after_approval
     )
     .await;
     assert_eq!(s, StatusCode::OK, "{d}");
-    assert!(d["problems"].as_array().unwrap().is_empty(), "{d}");
+    assert!(d["plan"].is_object(), "{d}");
+    assert!(d["plan"].get("problems").is_none(), "no problems: {d}");
+    assert_eq!(d["plan"]["state"], "IMPORT_STATE_PENDING", "a dry run: {d}");
     let (s, done) = call(
         &b,
         "POST",
@@ -3222,7 +3280,7 @@ async fn a_detached_host_imports_into_another_cluster_with_its_vm_after_approval
     )
     .await;
     assert_eq!(s, StatusCode::OK, "{done}");
-    assert_eq!(done["state"], "committed");
+    assert_eq!(done["plan"]["state"], "IMPORT_STATE_COMMITTED", "{done}");
     let out = join.await.unwrap().unwrap();
     // The VM is the cluster's now, with its id, placed on the new node, in B's default project.
     let (s, v) = call(&b, "GET", &format!("/vms/{id}"), None, &[]).await;
@@ -3242,7 +3300,7 @@ async fn a_detached_host_imports_into_another_cluster_with_its_vm_after_approval
         "merged into the existing project: {v}"
     );
     let n = node_json(&b, "imported").await;
-    assert_eq!(n["spec"]["role"], "agent", "{n}");
+    assert_eq!(n["spec"]["role"], "NODE_ROLE_AGENT", "{n}");
     assert!(host.cluster().is_some(), "the host is a node of B now");
     assert!(
         std::path::Path::new(out["backup"].as_str().unwrap()).exists(),
@@ -3331,7 +3389,7 @@ async fn the_last_node_dissolves_the_cluster_and_keeps_everything() {
     )
     .await;
     assert_eq!(s, StatusCode::OK, "{d}");
-    assert_eq!(d["vms"], 1);
+    assert_eq!(d["vms"], 1, "{d}");
     let dir = agent_state_dir(&a);
     assert!(std::path::Path::new(d["snapshot"].as_str().unwrap()).exists());
     let fresh = tempfile::tempdir().unwrap();
@@ -3469,7 +3527,11 @@ async fn an_agents_ui_is_relayed_to_a_server_and_host_paths_run_on_the_agent() {
             v["name"].as_str(),
             v["role"].as_str()
         ),
-        (Some(agent_id.as_str()), Some("agent1"), Some("agent")),
+        (
+            Some(agent_id.as_str()),
+            Some("agent1"),
+            Some("NODE_ROLE_AGENT")
+        ),
         "{v}"
     );
     assert_eq!(v["served_by"]["node_id"], server_id.as_str(), "{v}");
@@ -3522,13 +3584,13 @@ async fn an_agents_ui_is_relayed_to_a_server_and_host_paths_run_on_the_agent() {
     assert!(v.get("served_by").is_none(), "{v}");
     let (s, _, v) = via_ui(&ui, "GET", "/nodes").await;
     assert_eq!(s, StatusCode::OK);
-    assert_eq!(v.as_array().unwrap().len(), 2, "{v}");
+    assert_eq!(nodes_of(&v).len(), 2, "{v}");
 
     // Routes with path parameters work through the relay (the relay's own
     // route parameter must not reach the API's handlers).
     let (s, _, v) = via_ui(&ui, "GET", &format!("/nodes/{agent_id}")).await;
     assert_eq!(s, StatusCode::OK, "{v}");
-    assert_eq!(v["meta"]["id"], agent_id.as_str());
+    assert_eq!(v["node"]["meta"]["id"], agent_id.as_str(), "{v}");
 
     // Host-local paths are about the agent's host and run there.
     let (s, h, v) = via_ui(&ui, "GET", "/system/reconcile").await;
@@ -3670,8 +3732,11 @@ async fn ovn_is_a_cluster_setting_every_node_follows() {
     let (s, v) = call(&server, "GET", "/cluster/settings/ovn", None, &[]).await;
     assert_eq!(s, StatusCode::OK, "{v}");
     assert_eq!(
-        (v["enabled"].as_bool(), v["source"].as_str()),
-        (Some(false), Some("none")),
+        (
+            v["enabled"].as_bool().unwrap_or(false),
+            v["source"].as_str()
+        ),
+        (false, Some("OVN_SETTINGS_SOURCE_NONE")),
         "{v}"
     );
 
@@ -3739,9 +3804,11 @@ async fn ovn_is_a_cluster_setting_every_node_follows() {
     assert_eq!(s, StatusCode::OK, "{v}");
     assert_eq!(
         (v["enabled"].as_bool(), v["source"].as_str()),
-        (Some(true), Some("cluster")),
+        (Some(true), Some("OVN_SETTINGS_SOURCE_CLUSTER")),
         "{v}"
     );
+    assert_eq!(v["settings"]["dns_servers"], json!(["192.0.2.53"]), "{v}");
+    assert!(is_time(&v["settings"]["updated_at"]), "{v}");
     assert!(server.manager.ovn_enabled());
     wait_for("the agent to follow the setting", || async {
         agent.manager.ovn_enabled()
@@ -3765,10 +3832,10 @@ async fn ovn_is_a_cluster_setting_every_node_follows() {
     // Anyone signed in may ask whether OVN is on (the network form does).
     let (s, v) = call(&agent, "GET", "/cluster/settings/ovn", None, &[]).await;
     assert_eq!(s, StatusCode::OK, "{v}");
-    assert_eq!(v["enabled"], true);
-    assert_eq!(
-        v["edge"], false,
-        "no shared edge yet: NAT networks can't span the nodes"
+    assert_eq!(v["enabled"], true, "{v}");
+    assert!(
+        !v["edge"].as_bool().unwrap_or(false),
+        "no shared edge yet: NAT networks can't span the nodes: {v}"
     );
     let (s, v) = call(
         &server,
@@ -3807,15 +3874,15 @@ async fn a_file_enabled_cluster_moves_to_the_setting() {
     .unwrap();
     server.manager.initialize().await.unwrap();
     let (_, v) = call(&server, "GET", "/cluster/settings/ovn", None, &[]).await;
-    assert_eq!(v["source"], "file", "{v}");
+    assert_eq!(v["source"], "OVN_SETTINGS_SOURCE_FILE", "{v}");
     server.manager.migrate_ovn_settings();
     let (_, v) = call(&server, "GET", "/cluster/settings/ovn", None, &[]).await;
     assert_eq!(
         (v["source"].as_str(), v["enabled"].as_bool()),
-        (Some("cluster"), Some(true)),
+        (Some("OVN_SETTINGS_SOURCE_CLUSTER"), Some(true)),
         "{v}"
     );
-    assert_eq!(v["settings"]["updated_by"], "file");
+    assert_eq!(v["settings"]["updated_by"], "file", "{v}");
 }
 
 /// spec/clustering.md §11.6, §13.2: a node's br-int datapath is a setting;
@@ -3934,12 +4001,12 @@ async fn gateway_nodes_need_the_physnet_and_the_kernel_datapath() {
     assert_eq!(s, StatusCode::OK, "{v}");
     assert_eq!(
         (v["br_int_datapath"].as_str(), v["wanted"].as_str()),
-        (Some("system"), Some("system")),
+        (Some("BR_INT_DATAPATH_SYSTEM"), Some("system")),
         "{v}"
     );
     assert_eq!(
         node_json(&server, &id).await["spec"]["br_int_datapath"],
-        "system"
+        "BR_INT_DATAPATH_SYSTEM"
     );
     let (s, v) = put_edge().await;
     assert_eq!(s, StatusCode::OK, "{v}");

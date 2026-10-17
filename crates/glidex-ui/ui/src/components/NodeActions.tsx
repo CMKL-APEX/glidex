@@ -1,7 +1,7 @@
 import { useState } from "react";
 import * as api from "../api";
 import type { IssuedToken, NodeRecord } from "../types";
-import { isClusterNetwork, nodeLabel } from "../types";
+import { isClusterNetwork, isTombstone, nodeLabel, nodePhaseLabel, nodeReady } from "../types";
 import { hostOf, useAllowed, useNodes } from "../nodes";
 import { useSession } from "../session";
 import { useLive } from "../live";
@@ -28,8 +28,9 @@ export default function NodeActions({ node, onDone }: { node: NodeRecord; onDone
   const can = useAllowed(["drainNode", "undrainNode"], [host]);
   const [op, setOp] = useState<Op | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const { phase, ready } = node.status;
-  const tombstone = phase === "Departed" || phase === "Removed" || phase === "Forgotten";
+  const phase = nodePhaseLabel(node.status.phase);
+  const ready = nodeReady(node);
+  const tombstone = isTombstone(node.status.phase);
   const done = () => {
     setOp(null);
     onDone();
@@ -37,7 +38,7 @@ export default function NodeActions({ node, onDone }: { node: NodeRecord; onDone
 
   const items: { op: Op; label: string; show: boolean }[] = [
     { op: "drain", label: "Drain", show: phase === "Active" && !!can?.(host, "drainNode") },
-    { op: "promote", label: "Promote to server", show: phase === "Active" && node.spec.role === "agent" && caps.promoteNode },
+    { op: "promote", label: "Promote to server", show: phase === "Active" && node.spec.role === "NODE_ROLE_AGENT" && caps.promoteNode },
     { op: "detach", label: "Detach with its VMs…", show: (phase === "Active" || phase === "Draining") && dir.self !== id && caps.detachNode },
     { op: "abort", label: "Abort the detach", show: phase === "Departing" && caps.detachNode },
     { op: "remove", label: "Remove…", show: (phase === "Active" || phase === "Draining") && dir.self !== id && caps.removeNode },
@@ -177,7 +178,7 @@ function RejoinDialog({ node, onClose }: { node: NodeRecord; onClose: () => void
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const live = useLive();
-  const server = [...live.nodes.values()].find((n) => n.spec.role === "server" && n.status.phase === "Active")?.status.advertise ?? "<server>:8842";
+  const server = [...live.nodes.values()].find((n) => n.spec.role === "NODE_ROLE_SERVER" && n.status.phase === "NODE_PHASE_ACTIVE")?.status.advertise ?? "<server>:8842";
   const close = () => {
     setIssued(null);
     onClose();
@@ -204,7 +205,7 @@ function RejoinDialog({ node, onClose }: { node: NodeRecord; onClose: () => void
         <div className="space-y-4 text-sm">
           <p>The node comes back as itself, with its disks; its VMs are adopted where they are.</p>
           <ErrorBanner error={error} onDismiss={() => setError(null)} />
-          {node.spec.role === "server" && (
+          {node.spec.role === "NODE_ROLE_SERVER" && (
             <label className="flex items-start gap-2">
               <input type="checkbox" className="mt-1" checked={raftIntact} onChange={(e) => setRaftIntact(e.target.checked)} />
               <span>Its Raft log is intact (it rejoins as the same voter; otherwise as a learner).</span>

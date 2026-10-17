@@ -1,6 +1,7 @@
 import { useState } from "react";
 import * as api from "../api";
 import type { IssuedToken } from "../types";
+import { nodeRoleLabel } from "../types";
 import Modal from "./Modal";
 import TokenReveal from "./TokenReveal";
 import { ErrorBanner, errorMessage, primaryButton, secondaryButton, selectClass } from "./ui";
@@ -31,7 +32,7 @@ export default function AddNodeDialog({ onClose }: { onClose: () => void }) {
     setBusy(true);
     setError(null);
     try {
-      setIssued(await api.createJoinToken({ role, ttl_secs: ttl, allow_import: allowImport }));
+      setIssued(await api.createJoinToken({ role: role === "server" ? "NODE_ROLE_SERVER" : "NODE_ROLE_AGENT", ttl_secs: ttl, allow_import: allowImport }));
     } catch (e) {
       setError(errorMessage(e));
     } finally {
@@ -48,9 +49,9 @@ export default function AddNodeDialog({ onClose }: { onClose: () => void }) {
             issued={issued}
             commands={[
               "# a fresh host, with the installer:",
-              `sudo glidex-install --join ${server} --role ${issued.role ?? role}${allowImport ? " --import" : ""} --token-file ./join-token`,
+              `sudo glidex-install --join ${server} --role ${nodeRoleLabel(issued.role) || role}${allowImport ? " --import" : ""} --token-file ./join-token`,
               "# or a host that already runs glidex:",
-              `gxctl cluster join --server ${server} --role ${issued.role ?? role} --token-file ./join-token`,
+              `gxctl cluster join --server ${server} --role ${nodeRoleLabel(issued.role) || role} --token-file ./join-token`,
             ]}
           />
           <div className="mt-4 flex justify-end">

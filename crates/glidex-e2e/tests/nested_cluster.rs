@@ -360,10 +360,10 @@ fn a_nested_two_node_cluster_binds_vm_ports_and_carries_traffic_over_geneve() {
         Duration::from_secs(180),
         || {
             let v = inner.ok("GET", "/nodes", None);
-            let all: Vec<Value> = v.as_array().cloned().unwrap_or_default();
+            let all: Vec<Value> = items(&v, "nodes").to_vec();
             (all.len() == 2
                 && all.iter().all(|n| {
-                    n["status"]["ready"] == "True"
+                    n["status"]["ready"] == "CONDITION_STATUS_TRUE"
                         && n["status"]["capacity"]["cpus"].as_u64().unwrap_or(0) > 0
                 }))
             .then_some(all)
@@ -417,7 +417,7 @@ fn a_nested_two_node_cluster_binds_vm_ports_and_carries_traffic_over_geneve() {
                 .as_array()?
                 .iter()
                 .any(|c| c["node"] == n2.as_str() && c["state"] == "ready");
-            let spare = inner.ok("GET", &format!("/nodes/{n2}"), None)["status"]["features"]
+            let spare = inner.ok("GET", &format!("/nodes/{n2}"), None)["node"]["status"]["features"]
                 ["spare_image_files"]
                 .as_array()
                 .map(|a| a.len())
@@ -428,7 +428,7 @@ fn a_nested_two_node_cluster_binds_vm_ports_and_carries_traffic_over_geneve() {
             format!(
                 "images: {}\nh2: {}",
                 inner.call("GET", "/images", None).1,
-                inner.call("GET", &format!("/nodes/{n2}"), None).1["status"]["features"]
+                inner.call("GET", &format!("/nodes/{n2}"), None).1["node"]["status"]["features"]
             )
         },
     );
@@ -448,7 +448,7 @@ fn a_nested_two_node_cluster_binds_vm_ports_and_carries_traffic_over_geneve() {
         },
         || format!("{}", inner.call("GET", "/cluster/settings/ovn", None).1),
     );
-    assert_eq!(ovn["enabled"], false, "{ovn}");
+    assert!(!ovn["enabled"].as_bool().unwrap_or(false), "{ovn}");
     let on = inner.ok(
         "PUT",
         "/cluster/settings/ovn",
@@ -456,7 +456,7 @@ fn a_nested_two_node_cluster_binds_vm_ports_and_carries_traffic_over_geneve() {
     );
     assert_eq!(
         (on["enabled"].as_bool(), on["source"].as_str()),
-        (Some(true), Some("cluster")),
+        (Some(true), Some("OVN_SETTINGS_SOURCE_CLUSTER")),
         "{on}"
     );
 
@@ -691,12 +691,14 @@ fn a_nested_two_node_cluster_binds_vm_ports_and_carries_traffic_over_geneve() {
             .iter()
             .find(|t| t["peer"]["node"] == peer.as_str())
             .unwrap_or_else(|| panic!("{me} → {peer}: {n}"));
-        assert_eq!(t["state"], "present", "{t}");
+        assert_eq!(t["state"], "TUNNEL_STATE_PRESENT", "{t}");
+        // uint64 counters are JSON strings (proto3 JSON).
+        let count = |v: &Value| v.as_str().and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
         assert!(
-            t["rx_packets"].as_u64().unwrap() > 0 && t["tx_packets"].as_u64().unwrap() > 0,
+            count(&t["rx_packets"]) > 0 && count(&t["tx_packets"]) > 0,
             "the ping went through it: {t}"
         );
-        assert!(n["missing"].as_array().unwrap().is_empty(), "{n}");
+        assert!(items(n, "missing").is_empty(), "{n}");
     }
     let pv = inner.ok(
         "POST",

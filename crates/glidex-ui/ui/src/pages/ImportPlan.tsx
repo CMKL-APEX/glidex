@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import * as api from "../api";
 import type { ImportMappings, ImportPlanView, ProjectView } from "../types";
-import { formatTime } from "../types";
+import { formatTimestamp, importStateLabel } from "../types";
 import { useSession } from "../session";
 import { useCan } from "../session";
 import ConfirmDialog from "../components/ConfirmDialog";
@@ -43,17 +43,23 @@ export default function ImportPlan() {
   const canExceed = useCan(targets.map((t) => ({ action: "exceedQuota", resource: { type: "Project" as const, id: projects.find((p) => p.name === t || p.id === t)?.id ?? t } })));
 
   if (!view) return error ? <ErrorBanner error={error} /> : <LoadingCard />;
-  const pending = view.state === "pending";
-  const problems = checked?.key === key ? checked.problems : view.problems;
+  const pending = view.state === "IMPORT_STATE_PENDING";
+  const problems = (checked?.key === key ? checked.problems : view.problems) ?? [];
   const checkedNow = checked?.key === key;
   const src = view.sources;
+  const hostName = view.node ?? view.plan;
+  const sum = view.summary ?? {};
+  const srcVms = src?.vms ?? [];
+  const srcProjects = src?.projects ?? [];
+  const srcNetworks = src?.networks ?? [];
+  const srcCredentials = src?.credentials ?? [];
 
   const check = async () => {
     setBusy(true);
     setError(null);
     try {
       const r = await api.checkImport(plan, m);
-      setChecked({ problems: r.problems, key });
+      setChecked({ problems: r?.problems ?? [], key });
     } catch (e) {
       setError(errorMessage(e));
     } finally {
@@ -69,12 +75,12 @@ export default function ImportPlan() {
         </Link>
       </p>
       <PageHeader
-        title={`Import ${view.node}`}
+        title={`Import ${hostName}`}
         subtitle={
           <span className="inline-flex flex-wrap gap-2 items-center">
-            <Badge kind={pending ? "warn" : view.state === "committed" ? "ok" : "muted"}>{view.state}</Badge>
+            <Badge kind={pending ? "warn" : view.state === "IMPORT_STATE_COMMITTED" ? "ok" : "muted"}>{importStateLabel(view.state)}</Badge>
             <span>
-              from {view.advertise}, asked by {view.created_by} {formatTime(view.created_at)}; expires {formatTime(view.expires_at)}
+              from {view.advertise}, asked by {view.created_by} {formatTimestamp(view.created_at)}; expires {formatTimestamp(view.expires_at)}
             </span>
           </span>
         }
@@ -83,44 +89,48 @@ export default function ImportPlan() {
 
       <Card title="What it brings">
         <p className="text-sm text-gray-700">
-          {view.summary.vms} VMs, {view.summary.disks} disks, {view.summary.images} images, {view.summary.networks} node networks,{" "}
-          {view.summary.credentials} credentials, {view.summary.projects} projects. Nothing is live in the cluster until it is approved; the VMs
+          {sum.vms ?? 0} VMs, {sum.disks ?? 0} disks, {sum.images ?? 0} images, {sum.networks ?? 0} node networks,{" "}
+          {sum.credentials ?? 0} credentials, {sum.projects ?? 0} projects. Nothing is live in the cluster until it is approved; the VMs
           keep running on the host either way.
         </p>
-        {src && src.vms.length > 0 && (
-          <p className="mt-2 text-xs text-gray-500">VMs: {src.vms.map((v) => v.name).join(", ")}</p>
+        {srcVms.length > 0 && (
+          <p className="mt-2 text-xs text-gray-500">VMs: {srcVms.map((v) => v.name ?? v.id).join(", ")}</p>
         )}
       </Card>
 
       {pending && src && (
         <Card title="Names here">
           <div className="space-y-4 text-sm">
-            {src.projects.length > 0 && (
+            {srcProjects.length > 0 && (
               <div>
                 <p className="font-medium mb-1">Projects</p>
-                {src.projects.map((p) => (
-                  <ProjectMapping key={p.id} source={p} projects={projects} value={m.projects[p.id] ?? ""} onChange={(v) => setM({ ...m, projects: set(m.projects, p.id, v) })} />
+                {srcProjects.map((p) => (
+                  <ProjectMapping key={p.id} source={{ id: p.id, name: p.name ?? p.id }} projects={projects} value={m.projects[p.id] ?? ""} onChange={(v) => setM({ ...m, projects: set(m.projects, p.id, v) })} />
                 ))}
               </div>
             )}
-            {src.networks.length > 0 && (
+            {srcNetworks.length > 0 && (
               <div>
                 <p className="font-medium mb-1">Node networks (renamed if the name is taken)</p>
-                {src.networks.map((n) => (
-                  <div key={n.name} className="grid grid-cols-2 gap-2 items-center mb-1">
-                    <span className="font-mono text-xs">{n.name}</span>
-                    <input className={inputClass} placeholder={n.name} value={m.networks[n.name] ?? ""} onChange={(e) => setM({ ...m, networks: set(m.networks, n.name, e.target.value) })} />
-                  </div>
-                ))}
+                {srcNetworks.map((n) => {
+                  // Mapped by the source network's name.
+                  const name = n.name ?? n.id;
+                  return (
+                    <div key={n.id} className="grid grid-cols-2 gap-2 items-center mb-1">
+                      <span className="font-mono text-xs">{name}</span>
+                      <input className={inputClass} placeholder={name} value={m.networks[name] ?? ""} onChange={(e) => setM({ ...m, networks: set(m.networks, name, e.target.value) })} />
+                    </div>
+                  );
+                })}
               </div>
             )}
-            {src.credentials.length > 0 && (
+            {srcCredentials.length > 0 && (
               <div>
                 <p className="font-medium mb-1">Credentials (renamed if the name is taken in its project)</p>
-                {src.credentials.map((c) => (
+                {srcCredentials.map((c) => (
                   <div key={c.key} className="grid grid-cols-2 gap-2 items-center mb-1">
-                    <span className="font-mono text-xs">{c.username}</span>
-                    <input className={inputClass} placeholder={c.username} value={m.credentials[c.key] ?? ""} onChange={(e) => setM({ ...m, credentials: set(m.credentials, c.key, e.target.value) })} />
+                    <span className="font-mono text-xs">{c.username ?? c.key}</span>
+                    <input className={inputClass} placeholder={c.username ?? c.key} value={m.credentials[c.key] ?? ""} onChange={(e) => setM({ ...m, credentials: set(m.credentials, c.key, e.target.value) })} />
                   </div>
                 ))}
               </div>
@@ -168,9 +178,9 @@ export default function ImportPlan() {
 
       {confirm === "approve" && (
         <ConfirmDialog
-          title={`Approve the import of ${view.node}`}
+          title={`Approve the import of ${hostName}`}
           consequence="The host joins the cluster and its VMs, disks and networks become the cluster's, under the names above, in one step. Its VMs keep running."
-          typeToConfirm={view.node}
+          typeToConfirm={hostName}
           actionLabel="Approve"
           danger={false}
           onConfirm={async () => {
@@ -182,7 +192,7 @@ export default function ImportPlan() {
       )}
       {confirm === "reject" && (
         <ConfirmDialog
-          title={`Reject the import of ${view.node}`}
+          title={`Reject the import of ${hostName}`}
           consequence="The host is told no and stays as it is, standalone, with everything it has."
           actionLabel="Reject"
           onConfirm={async () => {

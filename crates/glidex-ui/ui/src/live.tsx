@@ -4,11 +4,13 @@
 // and, in a cluster, of its nodes, import plans and status, plus a marker
 // that changes with the policies (spec/clustering-ui.md §3.7); it tells
 // subscribers when one of a kind changes. Without it (an old control
-// plane, a proxy that buffers) pages fall back to polling. VMs, disks and
-// images arrive in the proto3 JSON shape their REST routes answer in.
+// plane, a proxy that buffers) pages fall back to polling. VMs, disks,
+// images, networks, nodes (glidex.cluster.v1.Node) and import plans
+// (glidex.cluster.v1.ImportPlan) arrive in the proto3 JSON shape their REST
+// routes answer in; the cluster summary is read into the same shape.
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import type { DiskInfo, ImageInfo, ImportPlanView, Network, NodeRecord, VmResponse } from "./types";
-import type { ClusterStatus } from "./api";
+import type { ClusterStatus, DiskInfo, ImageInfo, ImportPlanView, Network, NodeRecord, VmResponse } from "./types";
+import { clusterStatusOf } from "./types";
 import { useSession } from "./session";
 
 export type LiveKind = "vm" | "disk" | "image" | "network" | "node" | "import" | "cluster" | "policy";
@@ -120,8 +122,10 @@ export function LiveProvider({ children }: { children: ReactNode }) {
     const mapFor = (o: ReturnType<typeof empty>, kind: LiveKind) => o[FIELD[kind]] as Map<string, unknown>;
 
     const apply = (type: "added" | "modified" | "deleted") => (e: MessageEvent) => {
-      const { kind, id, object } = JSON.parse(e.data) as { kind: LiveKind; id: string; object?: unknown };
+      const { kind, id, object: raw } = JSON.parse(e.data) as { kind: LiveKind; id: string; object?: unknown };
       if (!KINDS.includes(kind)) return;
+      // The summary may come in the older shape (`raft.state: "Leader"`).
+      const object = kind === "cluster" && raw !== undefined ? clusterStatusOf(raw) : raw;
       if (!synced) {
         if (type !== "deleted") mapFor(next, kind).set(id, object);
         return;

@@ -98,6 +98,24 @@ counts as strings. Status codes are unchanged. These operations act on
 the host that answers them; from an agent's UI they run on the agent
 (over REST or gRPC-Web), authorized by a server.
 
+The cluster family (`/cluster/…` but the snapshot, `/nodes…`,
+`/imports…`, `/departures`) is served in the proto shape too: the
+`glidex.cluster.v1` messages, wrapped (`{nodes}`, `{node}`, `{plans}`,
+`{plan}`, `{departures}`), with enum names in full (`NODE_PHASE_ACTIVE`,
+`NODE_ROLE_SERVER`, `CONDITION_STATUS_TRUE` for a node's `ready`,
+`RAFT_STATE_LEADER`, `BR_INT_DATAPATH_SYSTEM`, `IMPORT_STATE_PENDING`,
+`DEPARTURE_STATE_FROZEN`, `TUNNEL_STATE_BFD_DOWN`; the old request values
+are still read), RFC 3339 times (an OVN chassis' `nb_cfg_timestamp` in
+ms is `nb_cfg_at`), and 64-bit numbers (Raft ids, terms and indexes,
+generations, memory, bytes, counters) as strings. `GET /cluster/status`
+always says `clustered`; `cluster_networks` in the OVN settings are
+`[{id, name}]`. `POST /nodes/{id}/detach` answers the detach, or with
+`abort` `{node, aborted}`, or with `departed` the departed node (three
+RPCs: `DetachNode`, `AbortDetach`, `ForgetDeparted`); the membership
+routes (`remove`, `forget`, `purge`, `rejoin-token`, `detach`) ignore body
+flags their operation doesn't take, as gxctl sends them all. Status codes
+are unchanged. `GET /cluster/snapshot` (binary) stays REST-only.
+
 In every ported family, a body field the message doesn't have is
 `422 invalid` ("unknown field `quotas.vm`").
 

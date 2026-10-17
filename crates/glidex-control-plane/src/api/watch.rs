@@ -178,7 +178,10 @@ async fn snapshot(
                     for n in m.nodes().list().unwrap_or_default() {
                         view.insert(
                             (Kind::Node, n.meta.id.clone()),
-                            serde_json::to_value(&n).unwrap_or_default(),
+                            crate::service::node::node_pb(&n)
+                                .ok()
+                                .and_then(|n| serde_json::to_value(n).ok())
+                                .unwrap_or_default(),
                         );
                     }
                 }
@@ -189,7 +192,14 @@ async fn snapshot(
                     .filter(|_| c.allowed("listImports", Ent::Cluster, EntitySet::new()))
                 {
                     for p in crate::cluster::import::plans(&cl.db) {
-                        view.insert((Kind::Import, p.plan.clone()), super::nodes::plan_view(&p));
+                        view.insert(
+                            (Kind::Import, p.plan.clone()),
+                            serde_json::to_value(
+                                crate::service::node::plan_pb(crate::service::node::plan_view(&p))
+                                    .unwrap_or_default(),
+                            )
+                            .unwrap_or_default(),
+                        );
                     }
                 }
             }
@@ -224,7 +234,12 @@ fn cluster_summary(cl: &crate::cluster::Cluster, viewer: Option<&str>) -> serde_
             r.remove(k);
         }
     }
-    v
+    v["clustered"] = serde_json::json!(true);
+    // As `GET /cluster/status` answers it (the proto shape).
+    crate::service::cluster::status_pb(v)
+        .ok()
+        .and_then(|s| serde_json::to_value(s).ok())
+        .unwrap_or_default()
 }
 
 fn event(kind: &str, k: Kind, id: &str, object: Option<&serde_json::Value>) -> Event {

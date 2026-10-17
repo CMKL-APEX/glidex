@@ -17,17 +17,22 @@ const S1 = "11111111-1111-4111-8111-111111111111";
 const A1 = "22222222-2222-4222-8222-222222222222";
 const GONE = "44444444-4444-4444-8444-444444444444";
 
-function node(id: string, name: string, role: "server" | "agent", phase = "Active") {
+// The fixtures are glidex.cluster.v1 messages as proto3 JSON: enums by full
+// name, RFC 3339 times, 64-bit numbers as strings, defaults left out.
+const JOINED = "2026-09-21T14:13:20Z";
+const CERT_UNTIL = "2033-05-18T03:33:20Z";
+
+function node(id: string, name: string, role: "server" | "agent", phase = "NODE_PHASE_ACTIVE") {
   return {
-    meta: { id, name, created_at: 1790000000, generation: 1, resource_version: 1 },
-    spec: { name, role, unschedulable: false, labels: {} },
+    meta: { id, name, created_at: JOINED, generation: "1", resource_version: "1" },
+    spec: { name, role: role === "server" ? "NODE_ROLE_SERVER" : "NODE_ROLE_AGENT" },
     status: {
       phase,
-      ready: "True",
+      ready: "CONDITION_STATUS_TRUE",
       advertise: role === "server" ? "192.0.2.11:8842" : "192.0.2.12:8842",
       versions: { glidex: "0.1.0" },
-      capacity: { cpus: 8, memory_mib: 16384 },
-      allocatable: { cpus: 7, memory_mib: 14336 },
+      capacity: { cpus: 8, memory_mib: "16384" },
+      allocatable: { cpus: 7, memory_mib: "14336" },
       features: { kvm: true, hypervisors: ["cloudhypervisor"] },
     },
   };
@@ -35,16 +40,15 @@ function node(id: string, name: string, role: "server" | "agent", phase = "Activ
 
 const PLAN = {
   plan: "p1",
-  state: "pending",
+  state: "IMPORT_STATE_PENDING",
   node: "lab-host",
   node_id: "33333333-3333-4333-8333-333333333333",
   advertise: "192.0.2.20:8842",
   summary: { vms: 2, disks: 2, images: 1, networks: 1, credentials: 1, projects: 1 },
   problems: ["project 'lab' exists with another id: map it with --project src1=<existing> or src1=new:<name>"],
-  mappings: { projects: {}, networks: {}, credentials: {}, over_quota: false },
   created_by: "api:someone",
-  created_at: 1790000000,
-  expires_at: 4102444800,
+  created_at: JOINED,
+  expires_at: "2100-01-01T00:00:00Z",
 };
 
 type Seen = { method: string; path: string; body: unknown }[];
@@ -67,39 +71,57 @@ async function mockCluster(page: Page): Promise<Seen> {
   await page.route("**/api/watch*", noStream);
   await page.route("**/api/cluster/status*", (r) =>
     json(r, {
+      clustered: true,
       cluster_id: CLUSTER,
       node_id: S1,
       name: "s1",
+      role: "NODE_ROLE_SERVER",
       feature_level: 1,
       ca_fingerprint: "ab".repeat(32),
-      ca: { signing: "ab".repeat(32), retiring: [], retire_at: null, not_after: 2000000000 },
-      raft: { state: "Leader", term: 3, leader: { name: "s1", address: "192.0.2.11:8842" }, voters: [{ name: "s1", address: "192.0.2.11:8842" }], learners: [] },
+      ca: { signing: "ab".repeat(32), not_after: CERT_UNTIL },
+      raft: {
+        id: "1",
+        state: "RAFT_STATE_LEADER",
+        term: "3",
+        leader: { raft_id: "1", name: "s1", address: "192.0.2.11:8842" },
+        voters: [{ raft_id: "1", name: "s1", address: "192.0.2.11:8842" }],
+      },
       nodes: [
-        { id: S1, name: "s1", role: "server", phase: "Active", advertise: "192.0.2.11:8842", cert: { current_ca: true, not_after: 2000000000 } },
-        { id: A1, name: "a1", role: "agent", phase: "Active", advertise: "192.0.2.12:8842", cert: { current_ca: true, not_after: 2000000000 } },
+        { id: S1, name: "s1", role: "NODE_ROLE_SERVER", phase: "NODE_PHASE_ACTIVE", advertise: "192.0.2.11:8842", ready: "CONDITION_STATUS_TRUE", cert: { current_ca: true, not_after: CERT_UNTIL } },
+        { id: A1, name: "a1", role: "NODE_ROLE_AGENT", phase: "NODE_PHASE_ACTIVE", advertise: "192.0.2.12:8842", ready: "CONDITION_STATUS_TRUE", cert: { current_ca: true, not_after: CERT_UNTIL } },
       ],
-      ports: [],
     }),
   );
   // a1 left once and joined again: its old record keeps the name.
-  await page.route("**/api/nodes", (r) => json(r, [node(S1, "s1", "server"), node(A1, "a1", "agent"), node(GONE, "a1", "agent", "Removed")]));
-  await page.route("**/api/departures", (r) => json(r, []));
-  await page.route("**/api/cluster/ovn", (r) => json(r, { enabled: false }));
-  await page.route("**/api/imports", (r) => json(r, [PLAN]));
+  await page.route("**/api/nodes", (r) => json(r, { nodes: [node(S1, "s1", "server"), node(A1, "a1", "agent"), node(GONE, "a1", "agent", "NODE_PHASE_REMOVED")] }));
+  await page.route("**/api/departures", (r) => json(r, {}));
+  await page.route("**/api/cluster/ovn", (r) => json(r, {}));
+  await page.route("**/api/imports", (r) => json(r, { plans: [PLAN] }));
   await page.route("**/api/imports/p1", (r) =>
     json(r, {
-      ...PLAN,
-      sources: { projects: [{ id: "src1", name: "lab" }], networks: [{ name: "lan", mode: "nat" }], credentials: [], vms: [{ id: "v1", name: "web", project: "src1" }] },
+      plan: {
+        ...PLAN,
+        sources: {
+          projects: [{ id: "src1", name: "lab" }],
+          networks: [{ id: "n1", name: "lan", mode: "nat" }],
+          vms: [{ id: "v1", name: "web", project: "src1" }],
+        },
+      },
     }),
   );
   await page.route("**/api/imports/p1/approve", (r) => {
     record(r);
     const dry = (r.request().postDataJSON() as { dry_run?: boolean }).dry_run;
-    return json(r, { ...PLAN, state: dry ? "pending" : "committed", problems: [] });
+    // No problems left: the list is left out (JSON drops the undefined).
+    return json(r, { plan: { ...PLAN, problems: undefined, state: dry ? "IMPORT_STATE_PENDING" : "IMPORT_STATE_COMMITTED" } });
   });
   await page.route("**/api/cluster/join-tokens", (r) => {
     record(r);
-    return json(r, { token: "gxj_secret-token-value_ab", role: "agent", ttl_secs: 3600, servers: ["192.0.2.11:8842"], ca_fingerprint: "ab".repeat(32) }, 201);
+    return json(
+      r,
+      { token: "gxj_secret-token-value_ab", role: "NODE_ROLE_AGENT", ttl_secs: "3600", servers: ["192.0.2.11:8842"], ca_fingerprint: "ab".repeat(32) },
+      201,
+    );
   });
   let removals = 0;
   await page.route(`**/api/nodes/${A1}/remove`, (r) => {
@@ -107,7 +129,7 @@ async function mockCluster(page: Page): Promise<Seen> {
     removals += 1;
     return removals === 1
       ? json(r, { error: "conflict", message: "a1 is the last gateway of gx-edge: confirm with --force" }, 409)
-      : json(r, { node: "a1", phase: "Removed" });
+      : json(r, { node: "a1", phase: "NODE_PHASE_REMOVED" });
   });
   return seen;
 }
@@ -158,7 +180,7 @@ test("a join token is shown once, masked, and never stored", async ({ page }) =>
   expect(page.url()).not.toContain("gxj_secret");
   await page.getByRole("button", { name: "Done" }).click();
   await expect(page.getByLabel("token")).toHaveCount(0);
-  expect(seen.find((s) => s.path === "/cluster/join-tokens")?.body).toEqual({ role: "agent", ttl_secs: 3600, allow_import: false });
+  expect(seen.find((s) => s.path === "/cluster/join-tokens")?.body).toEqual({ role: "NODE_ROLE_AGENT", ttl_secs: 3600, allow_import: false });
 });
 
 test("an import is checked with its names before it can be approved", async ({ page }) => {
@@ -214,12 +236,12 @@ test("OVN settings stay reachable when OVN's state can't be read", async ({ page
   await mockCluster(page);
   const json = (r: Route, v: unknown, status = 200) => r.fulfill({ status, contentType: "application/json", body: JSON.stringify(v) });
   await page.route("**/api/cluster/settings/ovn", (r) =>
-    json(r, { enabled: true, source: "cluster", settings: { enabled: true, dns_servers: [] }, nodes: [], cluster_networks: [] }),
+    json(r, { enabled: true, clustered: true, source: "OVN_SETTINGS_SOURCE_CLUSTER", settings: { enabled: true } }),
   );
   await page.route("**/api/cluster/ovn", (r) => json(r, { error: "unavailable", message: "northbound database not reachable" }, 503));
   await page.route("**/api/cluster/ovn/tunnels", (r) => json(r, { enabled: true, nodes: [] }));
   await page.route("**/api/cluster/settings/ovn/edge-defaults", (r) =>
-    json(r, { edge: { physnet: "uplink", external_cidr: "", gateway: "", external_ip: "", external_pool: null, gateway_nodes: [] }, complete: false, notes: [] }),
+    json(r, { edge: { physnet: "uplink" }, complete: false }),
   );
   await page.goto("/cluster");
   await expect(page.getByText(/OVN's state couldn't be read/)).toBeVisible();
@@ -234,13 +256,13 @@ test("a node whose OVN is older than the cluster's northd is called out", async 
   await page.route("**/api/cluster/settings/ovn", (r) =>
     json(r, {
       enabled: true,
-      source: "cluster",
-      settings: { enabled: true, dns_servers: [] },
+      clustered: true,
+      source: "OVN_SETTINGS_SOURCE_CLUSTER",
+      settings: { enabled: true },
       nodes: [
-        { id: S1, name: "s1", role: "server", ovn_version: "26.03.0", ovn_central: true, missing: null, outdated: null },
-        { id: A1, name: "a1", role: "agent", ovn_version: "24.03.8", ovn_central: false, missing: null, outdated: why },
+        { id: S1, name: "s1", role: "NODE_ROLE_SERVER", ovn_version: "26.03.0", ovn_central: true },
+        { id: A1, name: "a1", role: "NODE_ROLE_AGENT", ovn_version: "24.03.8", ovn_central: false, outdated: why },
       ],
-      cluster_networks: [],
     }),
   );
   // OVN's live state isn't what's checked here.
@@ -261,17 +283,22 @@ test("through an agent's UI, the agent is this node and the Raft card names the 
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
+        clustered: true,
         cluster_id: CLUSTER,
         node_id: A1,
         name: "a1",
-        role: "agent",
+        role: "NODE_ROLE_AGENT",
         served_by: { node_id: S1, name: "s1" },
         feature_level: 1,
         ca_fingerprint: "ab".repeat(32),
-        ca: { signing: "ab".repeat(32), retiring: [], retire_at: null, not_after: 2000000000 },
-        raft: { state: "Leader", term: 3, leader: { name: "s1", address: "192.0.2.11:8842" }, voters: [{ name: "s1", address: "192.0.2.11:8842" }], learners: [] },
-        nodes: [],
-        ports: [],
+        ca: { signing: "ab".repeat(32), not_after: CERT_UNTIL },
+        raft: {
+          id: "1",
+          state: "RAFT_STATE_LEADER",
+          term: "3",
+          leader: { raft_id: "1", name: "s1", address: "192.0.2.11:8842" },
+          voters: [{ raft_id: "1", name: "s1", address: "192.0.2.11:8842" }],
+        },
       }),
     }),
   );

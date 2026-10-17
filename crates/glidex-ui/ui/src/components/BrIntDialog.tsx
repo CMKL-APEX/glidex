@@ -4,19 +4,19 @@ import type { BrIntDatapath, NodeRecord } from "../types";
 import ConfirmDialog from "./ConfirmDialog";
 
 const CHOICES: { value: BrIntDatapath; label: string; help: string }[] = [
-  { value: "auto", label: "Automatic", help: "Userspace (DPDK) where OVS runs DPDK, else the kernel datapath." },
+  { value: "BR_INT_DATAPATH_AUTO", label: "Automatic", help: "Userspace (DPDK) where OVS runs DPDK, else the kernel datapath." },
   {
-    value: "system",
+    value: "BR_INT_DATAPATH_SYSTEM",
     label: "Kernel (system)",
     help: "What a gateway node needs: its external traffic is metered from kernel conntrack. VMs here get tap NICs on cluster networks; DPDK stays available to node networks.",
   },
-  { value: "netdev", label: "Userspace (netdev, DPDK)", help: "For vhost-user NICs on cluster networks. Needs DPDK; can't carry a gateway." },
+  { value: "BR_INT_DATAPATH_NETDEV", label: "Userspace (netdev, DPDK)", help: "For vhost-user NICs on cluster networks. Needs DPDK; can't carry a gateway." },
 ];
 
 /** A node's br-int datapath (spec/clustering.md §11.6). The node switches
  * within half a minute; netd refuses while VM ports sit on br-int. */
 export default function BrIntDialog({ node, onClose, onDone }: { node: NodeRecord; onClose: () => void; onDone: () => void }) {
-  const [value, setValue] = useState<BrIntDatapath>(node.spec.br_int_datapath ?? "auto");
+  const [value, setValue] = useState<BrIntDatapath>(node.spec.br_int_datapath ?? "BR_INT_DATAPATH_AUTO");
   return (
     <ConfirmDialog
       title={`br-int datapath of ${node.spec.name}`}

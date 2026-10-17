@@ -37,7 +37,7 @@ macro_rules! svc {
 
 /// An enum from the short word gxctl takes (`best_effort` →
 /// `XDP_MODE_BEST_EFFORT`); unspecified is not a word.
-fn from_word<E: Enumeration>(word: &str, prefix: &str) -> Option<E> {
+pub(crate) fn from_word<E: Enumeration>(word: &str, prefix: &str) -> Option<E> {
     E::from_proto_name(&format!("{}{}", prefix, word.to_ascii_uppercase()))
         .filter(|e| e.to_i32() != 0)
 }

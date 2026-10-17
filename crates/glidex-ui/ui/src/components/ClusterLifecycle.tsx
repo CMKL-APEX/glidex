@@ -2,7 +2,7 @@ import { useState } from "react";
 import * as api from "../api";
 import type { ClusterStatus, ClusterNodeRow } from "../api";
 import type { NodeRecord } from "../types";
-import { formatTime } from "../types";
+import { formatTimestamp, isTombstone, tsSecs } from "../types";
 import { useSession } from "../session";
 import { useNodes } from "../nodes";
 import ConfirmDialog from "./ConfirmDialog";
@@ -10,9 +10,9 @@ import { Card, inputClass, primaryButton, secondaryButton } from "./ui";
 
 const DAY = 86400;
 
-/** "in 3 days" / "2 days ago", for expiry dates. */
-function relative(secs: number): string {
-  const d = Math.round((secs - Date.now() / 1000) / DAY);
+/** "in 3 days" / "2 days ago", for expiry dates (RFC 3339). */
+function relative(at: string | undefined): string {
+  const d = Math.round((tsSecs(at) - Date.now() / 1000) / DAY);
   if (d === 0) return "today";
   return d > 0 ? `in ${d} day${d === 1 ? "" : "s"}` : `${-d} day${d === -1 ? "" : "s"} ago`;
 }
@@ -81,7 +81,7 @@ export function ClusterCa({ status, nodes, onDone }: { status: ClusterStatus; no
   const rows: ClusterNodeRow[] = status.nodes ?? [];
   const live = new Set(nodes.map((n) => n.meta.id));
   const behind = rows.filter((r) => live.has(r.id) && r.cert && !r.cert.current_ca);
-  const soon = rows.filter((r) => live.has(r.id) && r.cert && r.cert.not_after - Date.now() / 1000 < 30 * DAY);
+  const soon = rows.filter((r) => live.has(r.id) && r.cert?.not_after && tsSecs(r.cert.not_after) - Date.now() / 1000 < 30 * DAY);
   return (
     <Card
       title="Certificate authority"
@@ -107,15 +107,15 @@ export function ClusterCa({ status, nodes, onDone }: { status: ClusterStatus; no
           <>
             <dt className="text-gray-500">CA expires</dt>
             <dd>
-              {formatTime(ca.not_after)} ({relative(ca.not_after)})
+              {formatTimestamp(ca.not_after)} ({relative(ca.not_after)})
             </dd>
           </>
         )}
-        {ca && ca.retiring.length > 0 && (
+        {ca?.retiring && ca.retiring.length > 0 && (
           <>
             <dt className="text-gray-500">Rotation</dt>
             <dd>
-              {ca.retiring.length} old CA still trusted{ca.retire_at ? `, retired ${formatTime(ca.retire_at)} at the latest` : ""}
+              {ca.retiring.length} old CA still trusted{ca.retire_at ? `, retired ${formatTimestamp(ca.retire_at)} at the latest` : ""}
             </dd>
           </>
         )}
@@ -123,7 +123,7 @@ export function ClusterCa({ status, nodes, onDone }: { status: ClusterStatus; no
       {behind.length > 0 && <p className="mt-3 text-sm text-amber-700">Not yet renewed under the current CA: {behind.map((r) => r.name).join(", ")}.</p>}
       {soon.length > 0 && (
         <p className="mt-1 text-sm text-amber-700">
-          Certificates expiring within 30 days: {soon.map((r) => `${r.name} (${relative(r.cert!.not_after)})`).join(", ")}. Nodes renew on their own;
+          Certificates expiring within 30 days: {soon.map((r) => `${r.name} (${relative(r.cert?.not_after)})`).join(", ")}. Nodes renew on their own;
           one that doesn't is probably unreachable.
         </p>
       )}
@@ -182,10 +182,10 @@ export function DangerZone({ status, onDone }: { status: ClusterStatus; onDone: 
   const { host, refresh } = useSession();
   const dir = useNodes();
   const [op, setOp] = useState<"leave" | "dissolve" | null>(null);
-  const members = [...dir.nodes.values()].filter((n) => !["Departed", "Removed", "Forgotten"].includes(n.status.phase));
+  const members = [...dir.nodes.values()].filter((n) => !isTombstone(n.status.phase));
   const self = dir.self ? dir.nodes.get(dir.self) : undefined;
   const canDissolve = host.dissolveCluster && members.length === 1;
-  const canLeave = host.leaveCluster && self?.status.phase === "Removed";
+  const canLeave = host.leaveCluster && self?.status.phase === "NODE_PHASE_REMOVED";
   if (!canDissolve && !canLeave) return null;
   return (
     <details className="mb-6 bg-white rounded-xl shadow-sm border border-red-200 p-5">

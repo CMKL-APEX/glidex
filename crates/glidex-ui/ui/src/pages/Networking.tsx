@@ -251,7 +251,7 @@ function AddNetworkForm({
     api
       .getOvnSettings()
       .then((v) => {
-        setOvnOn(v.enabled);
+        setOvnOn(!!v.enabled);
         setEdgeSet(!!v.edge);
       })
       .catch(() => setOvnOn(false));

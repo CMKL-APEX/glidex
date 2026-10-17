@@ -66,7 +66,13 @@ fn is_host_local(path: &str) -> bool {
         || path.starts_with("/system/")
         || matches!(
             path,
-            "/cluster/init" | "/cluster/join" | "/cluster/snapshot" | "/cluster/leave"
+            "/cluster/init"
+                | "/cluster/join"
+                | "/cluster/snapshot"
+                | "/cluster/leave"
+                | "/glidex.cluster.v1.ClusterService/InitCluster"
+                | "/glidex.cluster.v1.ClusterService/JoinCluster"
+                | "/glidex.cluster.v1.ClusterService/LeaveCluster"
         )
 }
 
