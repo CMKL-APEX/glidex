@@ -1,6 +1,6 @@
 import { Link } from "react-router-dom";
 import type { VmResponse } from "../types";
-import { nodeUnreachable, notReadyReason, HYPERVISOR_LABELS } from "../types";
+import { desiredState, nodeUnreachable, notReadyReason, vmHypervisor, vmState, HYPERVISOR_LABELS } from "../types";
 import NodeName from "./NodeName";
 import VmActions, { type VmAction } from "./VmActions";
 import VmStateBadge from "./VmStateBadge";
@@ -13,8 +13,9 @@ interface VmCardProps {
 export default function VmCard({ vm, onAction }: VmCardProps) {
   const vfioCount = (vm.vfio_devices ?? []).length;
   const unreachable = nodeUnreachable(vm);
+  const state = vmState(vm);
   // Only a live guest has a console worth opening, on a node that answers.
-  const hasConsole = !vm.deleting && !unreachable && (vm.state === "running" || vm.state === "paused");
+  const hasConsole = !vm.deleting && !unreachable && (state === "running" || state === "paused");
 
   return (
     <div className="bg-white rounded-xl shadow-md p-6 border border-gray-100 hover:shadow-lg transition-shadow duration-200">
@@ -55,7 +56,7 @@ export default function VmCard({ vm, onAction }: VmCardProps) {
         <div>
           <span className="text-gray-500">Hypervisor:</span>
           <span className="ml-2 font-medium text-gray-900">
-            {HYPERVISOR_LABELS[vm.hypervisor] ?? vm.hypervisor}
+            {HYPERVISOR_LABELS[vmHypervisor(vm)]}
           </span>
         </div>
         {vm.node && (
@@ -81,7 +82,7 @@ export default function VmCard({ vm, onAction }: VmCardProps) {
       </div>
 
       <div className="mt-4 pt-4 border-t border-gray-100 flex items-center gap-2 flex-wrap">
-        <VmActions vmId={vm.id} state={vm.state} desired={vm.desired_state} deleting={vm.deleting} onAction={onAction} />
+        <VmActions vmId={vm.id} state={state} desired={desiredState(vm)} deleting={vm.deleting} onAction={onAction} />
         {hasConsole && (
           <Link
             to={`/vms/${vm.id}/console`}

@@ -78,7 +78,8 @@ mod tests {
                 "glidex.storage.v1.DiskService",
                 "glidex.system.v1.SystemService",
                 "glidex.tenancy.v1.TenantService",
-                "glidex.tenancy.v1.AdmissionService"
+                "glidex.tenancy.v1.AdmissionService",
+                "glidex.vm.v1.VmService"
             ]
         );
         let w = operation("/glidex.tenancy.v1.TenantService/CreateTenant").unwrap();

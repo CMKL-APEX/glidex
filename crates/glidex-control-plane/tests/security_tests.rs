@@ -166,6 +166,13 @@ impl H {
     }
 }
 
+/// The VM in a `{vm}` answer (`POST /vms`), in the proto3 JSON shape
+/// (spec/grpc.md §9.1).
+fn vm_of(v: &Value) -> &Value {
+    assert!(v["vm"].is_object(), "not a VM answer: {v}");
+    &v["vm"]
+}
+
 fn vm_body(name: &str, project: &str) -> Value {
     json!({
         "name": name, "project": project, "vcpu_count": 1, "mem_size_mib": 128,
@@ -225,6 +232,7 @@ async fn project_isolation_and_not_found() {
 
     let (s, vm, _) = h.call("POST", "/vms", Some(vm_body("v1", "pa")), &a).await;
     assert_eq!(s, StatusCode::CREATED, "{vm}");
+    let vm = vm_of(&vm);
     assert_eq!(vm["project"], pa);
     let id = vm["id"].as_str().unwrap();
 
@@ -251,8 +259,11 @@ async fn project_isolation_and_not_found() {
     assert_eq!(s, StatusCode::NOT_FOUND);
     let (s, _, _) = h.call("POST", &format!("/vms/{id}/start"), None, &b).await;
     assert_eq!(s, StatusCode::NOT_FOUND);
-    let (_, list, _) = h.call("GET", "/vms", None, &b).await;
-    assert_eq!(list.as_array().unwrap().len(), 0);
+    let (s, list, _) = h.call("GET", "/vms", None, &b).await;
+    assert_eq!(s, StatusCode::OK, "{list}");
+    // `{vms: [...]}`; proto3 JSON leaves an empty list out.
+    assert!(list.is_object(), "{list}");
+    assert_eq!(list["vms"].as_array().map_or(0, |l| l.len()), 0, "{list}");
     // Nor create in a project it has no role in.
     let (s, _, _) = h.call("POST", "/vms", Some(vm_body("v2", "pa")), &b).await;
     assert_eq!(s, StatusCode::FORBIDDEN);

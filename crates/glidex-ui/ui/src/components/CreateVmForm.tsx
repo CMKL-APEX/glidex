@@ -2,7 +2,7 @@ import { useRef, useEffect, useState, type FormEvent } from "react";
 import { listCredentials, listDisks, listImages, listNetworks } from "../api";
 import { Link } from "react-router-dom";
 import type { CreateVmRequest, CredentialInfo, DiskInfo, HypervisorType, ImageInfo, Network } from "../types";
-import { HYPERVISOR_LABELS, archLabel, firmwareFor, formatBytes, imageState, isFirmware, networkUsableBy } from "../types";
+import { HYPERVISOR_LABELS, HYPERVISOR_TO_PROTO, archLabel, firmwareFor, formatBytes, imageState, isFirmware, networkUsableBy } from "../types";
 import { useSession } from "../session";
 import { useNodes } from "../nodes";
 import PlacementPicker from "./PlacementPicker";
@@ -137,12 +137,12 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
         root_disk_size_gib:
           firmware && rootSource === "image" && rootSizeGib ? Number(rootSizeGib) : undefined,
         root_disk: firmware && rootSource === "disk" ? rootDisk : undefined,
-        hypervisor,
+        hypervisor: HYPERVISOR_TO_PROTO[hypervisor],
         kernel_args: !firmware && kernelArgs ? kernelArgs : undefined,
         vfio_devices: devices.length > 0 ? devices : undefined,
-        power: startNow ? "running" : undefined,
-        restart_policy: restartPolicy,
-        on_host_boot: onHostBoot,
+        power: startNow ? "POWER_STATE_RUNNING" : undefined,
+        restart_policy: restartPolicy === "never" ? "RESTART_POLICY_NEVER" : "RESTART_POLICY_ON_FAILURE",
+        on_host_boot: onHostBoot === "stop" ? "HOST_BOOT_POLICY_STOP" : "HOST_BOOT_POLICY_RESUME",
         node: nodes.clustered && node ? node : undefined,
       });
     } catch (err) {
@@ -223,7 +223,7 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
             project: project ?? undefined,
             vcpu_count: vcpuCount,
             mem_size_mib: memSizeMib,
-            hypervisor,
+            hypervisor: HYPERVISOR_TO_PROTO[hypervisor],
             networks: selectedNetworks.map((network) => ({ network })),
             vfio_devices: vfioDevices
               .split(",")

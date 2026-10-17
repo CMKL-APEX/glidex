@@ -426,7 +426,9 @@ same holds for VFIO devices (`attach_device` / create on another VM).
 
 ### 7.4 Defaults and API projection
 
-`VmResponse` keeps every current field; `state` is derived:
+`VmResponse` keeps every current field; `state` is derived. (Since the
+gRPC port the API shows it as the `glidex.vm.v1.Vm` message, with the
+values below as `VM_STATE_*` names; [rest-api.md](rest-api.md#vm).)
 
 | `phase` | `state` |
 |---|---|
@@ -1058,7 +1060,8 @@ A live stream of the objects the caller may list, as server-sent events
   (data `{}`). Then `added`, `modified`, `deleted` as objects change.
   Data is `{"kind": "vm"|"disk"|"image"|"network", "id": "…", "object":
   {…}}`, where `object` is exactly what the list endpoint returns for it
-  (`VmResponse`, `DiskResponse`, `ImageResponse`, the network view);
+  (the `Vm`, `Disk` and `Image` messages in their proto JSON shape since
+  the gRPC port, and the network view);
   `deleted` carries no `object`. A keep-alive comment every 15 s.
 
 ```

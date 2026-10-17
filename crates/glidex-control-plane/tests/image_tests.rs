@@ -295,6 +295,21 @@ fn num(v: &Value) -> u64 {
     }
 }
 
+/// The VM in a `{vm}` answer (`POST /vms`, writes), in the proto3 JSON
+/// shape (spec/grpc.md §9.1).
+fn vm_of(v: &Value) -> &Value {
+    assert!(v["vm"].is_object(), "not a VM answer: {v}");
+    &v["vm"]
+}
+
+/// The id of the VM in a `{vm}` answer.
+fn id_of(v: &Value) -> String {
+    vm_of(v)["id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no VM id: {v}"))
+        .to_string()
+}
+
 /// The disk of a `{disk, settled?}` or `{disk}` answer.
 fn disk_of(v: &Value) -> Value {
     v["disk"].clone()
@@ -945,9 +960,13 @@ async fn vms_create_attach_and_own_disks() {
         "name": "web 1", "vcpu_count": 1, "mem_size_mib": 512, "image": "base", "root_disk_size_gib": 1
     }))).await;
     assert_eq!(status, StatusCode::CREATED, "{vm}");
-    assert_eq!(vm["firmware"], fw["id"], "the default firmware image");
-    let vm_id = vm["id"].as_str().unwrap().to_string();
-    let root_id = vm["root_disk"].as_str().unwrap().to_string();
+    assert_eq!(
+        vm_of(&vm)["firmware"],
+        fw["id"],
+        "the default firmware image"
+    );
+    let vm_id = id_of(&vm);
+    let root_id = vm_of(&vm)["root_disk"].as_str().unwrap().to_string();
     // Recorded with the VM, made by the disk controller.
     let root = ready_disk(&app, &root_id).await;
     assert_eq!(root["name"], "web-1-root");
@@ -1008,7 +1027,7 @@ async fn vms_create_attach_and_own_disks() {
     )
     .await;
     assert_eq!(status, StatusCode::ACCEPTED, "{v}");
-    assert_eq!(v["data_disks"].as_array().unwrap().len(), 1);
+    assert_eq!(vm_of(&v)["data_disks"].as_array().unwrap().len(), 1, "{v}");
     let (status, _) = request(&app, "POST", "/vms", Some(json!({
         "name": "other", "vcpu_count": 1, "mem_size_mib": 512, "kernel_image_path": "/k", "rootfs_path": "/x", "data_disks": ["data1"]
     }))).await;
@@ -1027,7 +1046,7 @@ async fn vms_create_attach_and_own_disks() {
     );
     let (status, v) = request(&app, "DELETE", &format!("/vms/{vm_id}/disks/data1"), None).await;
     assert_eq!(status, StatusCode::ACCEPTED, "{v}");
-    assert!(v.get("data_disks").is_none());
+    assert!(vm_of(&v).get("data_disks").is_none(), "{v}");
 
     // VM on an existing root disk plus a data disk: deleting the VM keeps both.
     let (_, _) = request(
@@ -1041,7 +1060,7 @@ async fn vms_create_attach_and_own_disks() {
         "name": "vm2", "vcpu_count": 1, "mem_size_mib": 512, "root_disk": "mine", "data_disks": ["data1"]
     }))).await;
     assert_eq!(status, StatusCode::CREATED, "{vm2}");
-    let vm2_id = vm2["id"].as_str().unwrap();
+    let vm2_id = id_of(&vm2);
     let (status, _) = request(&app, "DELETE", &format!("/vms/{vm2_id}"), None).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
     for name in ["mine", "data1"] {
@@ -1059,11 +1078,11 @@ async fn vms_create_attach_and_own_disks() {
         Some(json!({"name": "vm3", "vcpu_count": 1, "mem_size_mib": 512, "image": "base"})),
     )
     .await;
-    let vm3_root = vm3["root_disk"].as_str().unwrap().to_string();
+    let vm3_root = vm_of(&vm3)["root_disk"].as_str().unwrap().to_string();
     let (status, _) = request(
         &app,
         "DELETE",
-        &format!("/vms/{}?keep_disk=true", vm3["id"].as_str().unwrap()),
+        &format!("/vms/{}?keep_disk=true", id_of(&vm3)),
         None,
     )
     .await;
@@ -1203,17 +1222,18 @@ async fn firmware_images() {
         "name": "q", "vcpu_count": 1, "mem_size_mib": 512, "image": "base", "hypervisor": "qemu", "firmware": "ovmf-test"
     }))).await;
     assert_eq!(status, StatusCode::CREATED, "{vm}");
-    assert_eq!(vm["firmware"], fw["id"]);
+    assert_eq!(vm_of(&vm)["firmware"], fw["id"], "{vm}");
 
     // Free once the VM is gone; deleting removes the file.
     let (status, _) = request(
         &app,
         "DELETE",
-        &format!("/vms/{}?wait=30", vm["id"].as_str().unwrap()),
+        &format!("/vms/{}?wait=30", id_of(&vm)),
         None,
     )
     .await;
-    assert!(status.is_success(), "{status}");
+    // Never started: gone at once (204, spec/grpc.md §9.1).
+    assert_eq!(status, StatusCode::NO_CONTENT);
     let (status, _) = request(&app, "DELETE", "/images/ovmf-test?wait=30", None).await;
     assert!(status.is_success(), "{status}");
     assert!(!Path::new(fw["path"].as_str().unwrap()).exists());

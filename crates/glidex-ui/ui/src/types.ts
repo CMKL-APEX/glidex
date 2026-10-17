@@ -1,4 +1,11 @@
-/** What a VM is doing, as the controller last saw it (spec/reconciliation.md §7.4). */
+// ---- VMs (glidex.vm.v1, spec/grpc.md §9.1) ---------------------------------
+//
+// The VM routes answer in the proto3 JSON shape (see the storage section
+// below for the rules): enums by their full names, 64-bit counters as
+// strings, timestamps RFC 3339, defaults left out. The helpers here read
+// them back in the short forms the pages show (`VM_STATE_RUNNING` → `running`).
+
+/** What a VM is doing, as the controller last saw it (spec/reconciliation.md §7.4), for display. */
 export type VmState =
   | "created"
   | "starting"
@@ -9,10 +16,25 @@ export type VmState =
   | "failed"
   | "unknown";
 
-/** What a VM should be doing (`spec.power`). */
+/** What a VM should be doing (`spec.power`), for display. */
 export type PowerState = "running" | "paused" | "stopped";
 
-/** A status condition (`Ready`, `DisksReady`, `CrashLoopBackOff`, …). */
+/** `VmState` as the API sends it. */
+export type ProtoVmState =
+  | "VM_STATE_CREATED"
+  | "VM_STATE_STARTING"
+  | "VM_STATE_RUNNING"
+  | "VM_STATE_PAUSED"
+  | "VM_STATE_STOPPING"
+  | "VM_STATE_STOPPED"
+  | "VM_STATE_FAILED"
+  | "VM_STATE_UNKNOWN";
+
+export type ProtoPowerState = "POWER_STATE_RUNNING" | "POWER_STATE_PAUSED" | "POWER_STATE_STOPPED";
+export type RestartPolicy = "RESTART_POLICY_ON_FAILURE" | "RESTART_POLICY_NEVER";
+export type HostBootPolicy = "HOST_BOOT_POLICY_RESUME" | "HOST_BOOT_POLICY_STOP";
+
+/** A legacy status condition (`True`/`False`/`Unknown`, Unix seconds): networks still send these. */
 export interface Condition {
   kind: string;
   status: "True" | "False" | "Unknown";
@@ -21,13 +43,24 @@ export interface Condition {
   last_transition_at: number;
 }
 
+export type ExitCause =
+  | "EXIT_CAUSE_REQUESTED"
+  | "EXIT_CAUSE_TERMINATED"
+  | "EXIT_CAUSE_CLEAN_EXIT"
+  | "EXIT_CAUSE_CRASHED"
+  | "EXIT_CAUSE_LAUNCH_FAILED"
+  | "EXIT_CAUSE_HOST_REBOOT"
+  | "EXIT_CAUSE_LOST";
+
 export interface ExitRecord {
-  at: number;
-  instance_id: string;
-  cause: string;
+  /** RFC 3339. */
+  at?: string;
+  instance_id?: string;
+  cause?: ExitCause;
   code?: number;
   signal?: number;
   message?: string;
+  launched_at?: string;
 }
 
 export type HypervisorType = "cloudhypervisor" | "qemu";
@@ -37,23 +70,26 @@ export const HYPERVISOR_LABELS: Record<HypervisorType, string> = {
   qemu: "QEMU",
 };
 
+/** A VM (glidex.vm.v1.Vm). */
 export interface VmResponse {
   id: string;
   name: string;
   /** Owning project id. */
   project: string;
-  state: VmState;
-  desired_state?: PowerState;
-  generation?: number;
-  observed_generation?: number;
-  resource_version?: number;
+  /** Read with `vmState`. */
+  state?: ProtoVmState;
+  /** Read with `desiredState`. */
+  desired_state?: ProtoPowerState;
+  generation?: U64;
+  observed_generation?: U64;
+  resource_version?: U64;
   restart_required?: boolean;
   /** Deletion requested; the controller is tearing it down. */
   deleting?: boolean;
-  restart_policy?: "on_failure" | "never";
-  on_host_boot?: "resume" | "stop";
+  restart_policy?: RestartPolicy;
+  on_host_boot?: HostBootPolicy;
   stop_grace_secs?: number;
-  conditions?: Condition[];
+  conditions?: StorageCondition[];
   last_exit?: ExitRecord;
   /** The node the VM is placed on (spec/clustering.md §9.1). */
   node?: string;
@@ -61,8 +97,9 @@ export interface VmResponse {
   node_name?: string;
   vcpu_count: number;
   mem_size_mib: number;
-  hypervisor: HypervisorType;
-  vfio_devices: string[];
+  /** Read with `vmHypervisor`. */
+  hypervisor?: ProtoHypervisor;
+  vfio_devices?: string[];
   credential?: string;
   nics?: NicState[];
   /** Firmware image id the VM boots through. */
@@ -70,6 +107,30 @@ export interface VmResponse {
   root_disk?: string;
   data_disks?: string[];
   warnings?: string[];
+}
+
+export type Vm = VmResponse;
+
+/** A VM write's answer (`{vm, settled}`); `vm` is absent once the VM is gone. */
+export interface VmWriteResponse {
+  vm?: VmResponse;
+  /** Set when the call waited: whether the VM got where it was asked to. */
+  settled?: boolean;
+}
+
+/** The VM's observed state: `VM_STATE_RUNNING` → `running` (absent: `unknown`). */
+export function vmState(vm: Pick<VmResponse, "state">): VmState {
+  return (enumLabel(vm.state, "VM_STATE_") || "unknown") as VmState;
+}
+
+/** What the VM should be doing: `POWER_STATE_RUNNING` → `running`. */
+export function desiredState(vm: Pick<VmResponse, "desired_state">): PowerState | undefined {
+  return (enumLabel(vm.desired_state, "POWER_STATE_") || undefined) as PowerState | undefined;
+}
+
+/** The VM's hypervisor in the short form (`cloudhypervisor`, `qemu`). */
+export function vmHypervisor(vm: Pick<VmResponse, "hypervisor">): HypervisorType {
+  return hypervisorOf(vm.hypervisor) ?? "cloudhypervisor";
 }
 
 export interface NicState {
@@ -222,14 +283,14 @@ export interface CreateVmRequest {
   root_disk?: string;
   data_disks?: string[];
   kernel_args?: string;
-  hypervisor?: HypervisorType;
+  hypervisor?: ProtoHypervisor;
   vfio_devices?: string[];
   /** Desired power state; default `stopped` (spec/reconciliation.md §7.4). */
-  power?: PowerState;
+  power?: ProtoPowerState;
   /** After a crash: restart (default) or leave it stopped. */
-  restart_policy?: "on_failure" | "never";
+  restart_policy?: RestartPolicy;
   /** After a host reboot, if it should be running: start it again (default) or not. */
-  on_host_boot?: "resume" | "stop";
+  on_host_boot?: HostBootPolicy;
   /** Run on this node (id or name); default: the scheduler picks (spec/clustering.md §9.1). */
   node?: string;
 }
@@ -238,20 +299,21 @@ export interface CreateVmRequest {
 export interface NodeFit {
   id: string;
   name: string;
-  /** Why the VM can't go there; null: it fits. */
-  refused: string | null;
-  vcpus_taken: number;
-  vcpus_capacity: number;
-  mem_mib_taken: number;
-  mem_mib_capacity: number;
-  vms: number;
+  /** Why the VM can't go there; absent: it fits. */
+  refused?: string;
+  /** 64-bit counts: read with `num`. */
+  vcpus_taken?: U64;
+  vcpus_capacity?: U64;
+  mem_mib_taken?: U64;
+  mem_mib_capacity?: U64;
+  vms?: U64;
 }
 
 export interface PlacementPreview {
   /** The node the scheduler would pick, if any fits. */
-  pick: string | null;
+  pick?: string;
   /** Every node, the scheduler's preference first. */
-  nodes: NodeFit[];
+  nodes?: NodeFit[];
 }
 
 // ---- images and disks (spec/images.md) ------------------------------------
@@ -314,7 +376,7 @@ export function hypervisorOf(h: ProtoHypervisor | undefined): HypervisorType | u
 
 export type ConditionStatus = "CONDITION_STATUS_TRUE" | "CONDITION_STATUS_FALSE" | "CONDITION_STATUS_UNKNOWN";
 
-/** A storage object's condition (glidex.common.v1.Condition). */
+/** A proto condition (glidex.common.v1.Condition): VMs and storage objects send these. */
 export interface StorageCondition {
   kind: string;
   status?: ConditionStatus;
@@ -600,11 +662,26 @@ export function networkActivity(n: Network): string | null {
   return why && why.reason !== "Converged" ? `Deleting (${why.reason})` : "Deleting";
 }
 
+/** A condition's status in the short form, whichever shape it came in: a
+ * proto one (`CONDITION_STATUS_TRUE`: VMs, storage) or a legacy one (`True`:
+ * networks). Absent: `Unknown`. */
+export function conditionStatus(c: { status?: string }): Tristate {
+  switch (c.status) {
+    case "True":
+    case "CONDITION_STATUS_TRUE":
+      return "True";
+    case "False":
+    case "CONDITION_STATUS_FALSE":
+      return "False";
+    default:
+      return "Unknown";
+  }
+}
+
 /** The `Ready` condition when it isn't True: why an object hasn't converged.
- * Takes a VM's or network's conditions (`True`) or a storage object's
- * (`CONDITION_STATUS_TRUE`). */
+ * Takes either condition shape (see `conditionStatus`). */
 export function notReady<C extends { kind: string; status?: string }>(conditions?: C[]): C | undefined {
-  return conditions?.find((c) => c.kind === "Ready" && c.status !== "True" && c.status !== "CONDITION_STATUS_TRUE");
+  return conditions?.find((c) => c.kind === "Ready" && conditionStatus(c) !== "True");
 }
 
 export interface CreateDiskRequest {
@@ -699,41 +776,44 @@ export function settled(vm: VmResponse): boolean {
  * §7.4), or `null` once it has converged. */
 export function vmActivity(vm: VmResponse): string | null {
   if (vm.deleting) return "Deleting";
-  const desired = vm.desired_state;
+  const desired = desiredState(vm);
   if (!desired) return null;
-  const there =
-    desired === "stopped" ? vm.state === "stopped" || vm.state === "created" : vm.state === desired;
+  const state = vmState(vm);
+  const there = desired === "stopped" ? state === "stopped" || state === "created" : state === desired;
   if (!there) {
     if (desired === "stopped") return "Stopping";
-    if (desired === "paused") return vm.state === "running" ? "Pausing" : "Starting";
-    return vm.state === "paused" ? "Resuming" : "Starting";
+    if (desired === "paused") return state === "running" ? "Pausing" : "Starting";
+    return state === "paused" ? "Resuming" : "Starting";
   }
-  if (vm.generation !== undefined && vm.observed_generation !== undefined && vm.observed_generation < vm.generation) {
-    return "Applying changes";
-  }
-  const ready = vm.conditions?.find((c) => c.kind === "Ready");
-  if (ready && ready.status !== "True") return "Reconciling";
+  if (generationBehind(vm)) return "Applying changes";
+  if (notReady(vm.conditions)) return "Reconciling";
   return null;
+}
+
+/** The controller hasn't acted on the VM's latest spec yet. Absent
+ * generations are 0 now (proto3 leaves defaults out). */
+export function generationBehind(vm: VmResponse): boolean {
+  return num(vm.observed_generation) < num(vm.generation);
 }
 
 /** What keeps the VM from its desired state (the `Ready` condition). */
 /** The VM's node stopped reporting (spec/clustering.md §7.2): its last
  * known state is shown, but the VM may still be running. */
 export function nodeUnreachable(vm: VmResponse): boolean {
-  return vm.conditions?.some((c) => c.kind === "Ready" && c.status === "Unknown" && c.reason === "NodeUnreachable") ?? false;
+  return vm.conditions?.some((c) => c.kind === "Ready" && conditionStatus(c) === "Unknown" && c.reason === "NodeUnreachable") ?? false;
 }
 
 /** Why the scheduler hasn't placed the VM, when it hasn't. */
 export function unscheduledReason(vm: VmResponse): string | null {
   const s = vm.conditions?.find((c) => c.kind === "Scheduled");
-  if (!s || s.status !== "False") return null;
-  return s.message || s.reason;
+  if (!s || conditionStatus(s) !== "False") return null;
+  return s.message || s.reason || null;
 }
 
 export function notReadyReason(vm: VmResponse): string | null {
-  const ready = vm.conditions?.find((c) => c.kind === "Ready");
-  if (!ready || ready.status === "True") return null;
-  return ready.message ? `${ready.reason}: ${ready.message}` : ready.reason;
+  const ready = notReady(vm.conditions);
+  if (!ready) return null;
+  return ready.message ? `${ready.reason ?? ""}: ${ready.message}` : (ready.reason ?? "");
 }
 
 /** "Crashed (exit 1) 5 min ago": the instance's last exit, for people. */
@@ -748,7 +828,8 @@ export function describeExit(e: ExitRecord): string {
     lost: "Lost",
   };
   const detail = e.signal !== undefined ? `signal ${e.signal}` : e.code !== undefined && e.code !== 0 ? `exit ${e.code}` : null;
-  return `${cause[e.cause] ?? e.cause}${detail ? ` (${detail})` : ""}, ${new Date(e.at * 1000).toLocaleString()}${
+  const c = enumLabel(e.cause, "EXIT_CAUSE_");
+  return `${cause[c] ?? c}${detail ? ` (${detail})` : ""}, ${new Date(tsSecs(e.at) * 1000).toLocaleString()}${
     e.message ? `: ${e.message}` : ""
   }`;
 }

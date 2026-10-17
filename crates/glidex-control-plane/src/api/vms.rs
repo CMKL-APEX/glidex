@@ -1,16 +1,18 @@
-//! VM routes. Creating a VM is a compound request (spec/security.md §7.4):
-//! every disk, credential, network, PCI device and host path it names is
-//! checked on its own.
+//! VM routes: the REST twins of `glidex.vm.v1` (spec/grpc.md §9.1), the
+//! proto messages as JSON with path, query and header parameters merged
+//! in, on the same `service::vm` functions as the RPCs; the console
+//! WebSocket (spec/console.md), which stays one until G4; the stored
+//! record (`?view=full`); and `/system/reconcile`.
 //!
 //! Writes change the VM's desired state and return at once (`202`), or,
 //! with `?wait=<secs>`, once the VM controller has acted on them
 //! (spec/reconciliation.md §12.3).
 
-use super::{ApiErr, Caller, err, vm_entities};
+use super::{ApiErr, Caller, Proto, err, proto_body, proto_no_content, vm_entities};
 use crate::auth::Method;
 use crate::authz::{Ent, EntitySet};
-use crate::models::{CreateVmRequest, DeviceRequest, PowerState, Vm, VmConfig, VmResponse};
-use crate::state::{VmManagerError, VmOptions, VmPatch, Waited};
+use crate::models::{Vm, VmResponse};
+use crate::service::vm::{self as svc, VmReply};
 use axum::{
     Json,
     extract::{
@@ -20,23 +22,64 @@ use axum::{
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
-use serde::Serialize;
-use std::time::Duration;
+use glidex_api::proto::glidex::vm::v1 as pb;
+use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 
-fn manager_err(e: VmManagerError) -> ApiErr {
+fn manager_err(e: crate::state::VmManagerError) -> ApiErr {
     super::error_to_response(e)
 }
-
-/// Longest `?wait` (and stop grace).
-const MAX_WAIT_SECS: u64 = 300;
 
 #[derive(Debug, serde::Deserialize, Default)]
 pub struct WaitQuery {
     /// Hold the response until the controller has acted (§12.3).
     #[serde(default)]
     wait: Option<u64>,
+}
+
+fn secs(w: Option<u64>) -> Option<u32> {
+    w.map(|w| w.min(u64::from(u32::MAX)) as u32)
+}
+
+/// The old shape's enum values (spec/grpc.md §9.1 step 3).
+const ENUMS: &[(&str, &str)] = &[
+    ("hypervisor", "HYPERVISOR"),
+    ("power", "POWER_STATE"),
+    ("restart_policy", "RESTART_POLICY"),
+    ("on_host_boot", "HOST_BOOT_POLICY"),
+];
+const RENAMES: &[(&str, &str, &str)] = &[(
+    "hypervisor",
+    "cloudhypervisor",
+    "HYPERVISOR_CLOUD_HYPERVISOR",
+)];
+
+fn body<T: serde::de::DeserializeOwned>(v: Value) -> Result<T, ApiErr> {
+    proto_body(v, ENUMS, RENAMES)
+}
+
+/// The answer to a VM write: at once `immediate` (`201` for a create,
+/// else `202`); with `?wait`, `ok` once the controller converged, `202`
+/// when the time ran out; `204` once the VM is gone. The body is `{vm,
+/// settled}` (every write's response has that shape).
+fn reply(r: VmReply, ok: StatusCode, immediate: StatusCode) -> Response {
+    let status = match &r {
+        VmReply::Gone => return proto_no_content(),
+        VmReply::Now(_) => immediate,
+        VmReply::Settled(_) => ok,
+        VmReply::Pending(_) => StatusCode::ACCEPTED,
+    };
+    let (vm, settled) = r.parts();
+    Proto(
+        status,
+        pb::CreateVmResponse {
+            vm: vm.into(),
+            settled,
+            ..Default::default()
+        },
+    )
+    .into_response()
 }
 
 /// `If-Match: <resource_version>` (§12.1).
@@ -88,46 +131,6 @@ pub(crate) fn vm_response(c: &Caller, vm: &Vm) -> VmResponse {
     r
 }
 
-/// The response to a spec write: `202` (or `ok` for a create) at once, or
-/// with `?wait`, after the controller decided: converged → `ok`, failed →
-/// the error the call would have returned synchronously (D20), timeout →
-/// `202`.
-async fn respond(
-    c: &Caller,
-    vm: Vm,
-    wait: Option<u64>,
-    ok: StatusCode,
-    warnings: Vec<String>,
-) -> Response {
-    let body = |vm: &Vm| {
-        let mut r = vm_response(c, vm);
-        r.warnings = warnings.clone();
-        Json(r)
-    };
-    let Some(secs) = wait else {
-        let status = if ok == StatusCode::CREATED {
-            ok
-        } else {
-            StatusCode::ACCEPTED
-        };
-        return (status, body(&vm)).into_response();
-    };
-    match c
-        .manager()
-        .wait_converged(
-            &vm.id,
-            vm.generation,
-            Duration::from_secs(secs.min(MAX_WAIT_SECS)),
-        )
-        .await
-    {
-        Waited::Decided(v) if v.is_converged() => (ok, body(&v)).into_response(),
-        Waited::Decided(v) => super::errors::failed_reconcile_response(&v).into_response(),
-        Waited::Gone | Waited::TimedOut(None) => StatusCode::OK.into_response(),
-        Waited::TimedOut(Some(v)) => (StatusCode::ACCEPTED, body(&v)).into_response(),
-    }
-}
-
 /// The VM `id`, if the caller may see it (else 404), and its entities.
 async fn visible_vm(c: &Caller, id: &str) -> Result<(Vm, Ent, EntitySet), ApiErr> {
     let vm = c.manager().get_vm(id).await.map_err(manager_err)?;
@@ -145,23 +148,303 @@ pub struct ProjectFilter {
 }
 
 pub async fn list(c: Caller, Query(q): Query<ProjectFilter>) -> Result<impl IntoResponse, ApiErr> {
-    let only = match &q.project {
-        Some(p) => Some(c.target_project(Some(p))?),
-        None => None,
+    let req = pb::ListVmsRequest {
+        project: q.project,
+        ..Default::default()
     };
-    let visible = c.visible_projects()?;
-    let mut out: Vec<VmResponse> = Vec::new();
-    for vm in c.manager().list_vms().await {
-        if only.as_ref().is_some_and(|p| *p != vm.project) || !visible.contains(&vm.project) {
-            continue;
-        }
-        let (e, es) = vm_entities(&vm);
-        if c.allowed("readVm", e, es) {
-            out.push(vm_response(&c, &vm));
+    Ok(Proto(StatusCode::OK, svc::list_vms(&c, req).await?))
+}
+
+/// `POST /scheduler/preview` (spec/clustering-ui.md §5.1): where a VM would
+/// go, node by node, before it is created.
+pub async fn preview(c: Caller, Json(v): Json<Value>) -> Result<Response, ApiErr> {
+    let req: pb::PreviewPlacementRequest = body(v)?;
+    Ok(Proto(StatusCode::OK, svc::preview_placement(&c, req).await?).into_response())
+}
+
+pub async fn create(
+    c: Caller,
+    Query(w): Query<WaitQuery>,
+    Json(v): Json<Value>,
+) -> Result<Response, ApiErr> {
+    // proto3 has no required fields; the REST body says which are missing
+    // (`422`, as before the port). A `0` sent is validated like any value.
+    let missing: Vec<&str> = ["name", "vcpu_count", "mem_size_mib"]
+        .into_iter()
+        .filter(|f| v.get(*f).is_none_or(Value::is_null))
+        .collect();
+    if !missing.is_empty() {
+        return Err(err(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid",
+            format!("missing field(s): {}", missing.join(", ")),
+        ));
+    }
+    let mut req: pb::CreateVmRequest = body(v)?;
+    req.wait_secs = req.wait_secs.or(secs(w.wait));
+    let r = svc::create_vm(&c, req).await?;
+    Ok(reply(r, StatusCode::CREATED, StatusCode::CREATED))
+}
+
+#[derive(Debug, serde::Deserialize, Default)]
+pub struct ViewQuery {
+    /// `full`: the stored `{meta, spec, status}` (§12.4).
+    #[serde(default)]
+    view: Option<String>,
+}
+
+pub async fn get_one(
+    c: Caller,
+    Path(id): Path<String>,
+    Query(q): Query<ViewQuery>,
+) -> Result<Response, ApiErr> {
+    if q.view.as_deref() == Some("full") {
+        let (vm, _, _) = visible_vm(&c, &id).await?;
+        // The stored record carries host paths (disk files, kernel, seed in
+        // the private runtime directory), PIDs and the boot id, which the
+        // flat view leaves out: host readers only (spec/security.md §9).
+        // It is the store's own format, not an API message.
+        c.require_action("readSystemStatus", Ent::Host, EntitySet::new(), &[])?;
+        return Ok(Json(serde_json::to_value(&vm).unwrap_or_default()).into_response());
+    }
+    let req = pb::GetVmRequest {
+        id,
+        ..Default::default()
+    };
+    Ok(Proto(StatusCode::OK, svc::get_vm(&c, req).await?).into_response())
+}
+
+#[derive(serde::Deserialize, Default)]
+pub struct DeleteVmQuery {
+    #[serde(default)]
+    keep_disk: bool,
+    #[serde(default)]
+    wait: Option<u64>,
+}
+
+/// `204` once the VM is gone (at once when nothing ran, or with `?wait`
+/// when the controller finished in time), else `202` with it.
+pub async fn delete_one(
+    c: Caller,
+    Path(id): Path<String>,
+    Query(q): Query<DeleteVmQuery>,
+) -> Result<Response, ApiErr> {
+    let req = pb::DeleteVmRequest {
+        id,
+        keep_disk: q.keep_disk.then_some(true),
+        wait_secs: secs(q.wait),
+        ..Default::default()
+    };
+    Ok(match svc::delete_vm(&c, req).await? {
+        None => proto_no_content(),
+        Some(vm) => Proto(
+            StatusCode::ACCEPTED,
+            pb::DeleteVmResponse {
+                vm: vm.into(),
+                ..Default::default()
+            },
+        )
+        .into_response(),
+    })
+}
+
+pub async fn start(
+    c: Caller,
+    Path(id): Path<String>,
+    Query(w): Query<WaitQuery>,
+    headers: HeaderMap,
+) -> Result<Response, ApiErr> {
+    let req = pb::StartVmRequest {
+        id,
+        expected_resource_version: if_match(&headers)?,
+        wait_secs: secs(w.wait),
+        ..Default::default()
+    };
+    Ok(reply(
+        svc::start_vm(&c, req).await?,
+        StatusCode::OK,
+        StatusCode::ACCEPTED,
+    ))
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct StopParams {
+    /// Press the guest's power button and wait up to this long for it to
+    /// shut down before stopping it hard (`spec.stop_grace_secs`).
+    graceful_timeout_secs: Option<u64>,
+    #[serde(default)]
+    wait: Option<u64>,
+}
+
+pub async fn stop(
+    c: Caller,
+    Path(id): Path<String>,
+    Query(p): Query<StopParams>,
+    headers: HeaderMap,
+) -> Result<Response, ApiErr> {
+    let req = pb::StopVmRequest {
+        id,
+        graceful_timeout_secs: secs(p.graceful_timeout_secs),
+        expected_resource_version: if_match(&headers)?,
+        wait_secs: secs(p.wait),
+        ..Default::default()
+    };
+    Ok(reply(
+        svc::stop_vm(&c, req).await?,
+        StatusCode::OK,
+        StatusCode::ACCEPTED,
+    ))
+}
+
+pub async fn pause(
+    c: Caller,
+    Path(id): Path<String>,
+    Query(w): Query<WaitQuery>,
+    headers: HeaderMap,
+) -> Result<Response, ApiErr> {
+    let req = pb::PauseVmRequest {
+        id,
+        expected_resource_version: if_match(&headers)?,
+        wait_secs: secs(w.wait),
+        ..Default::default()
+    };
+    Ok(reply(
+        svc::pause_vm(&c, req).await?,
+        StatusCode::OK,
+        StatusCode::ACCEPTED,
+    ))
+}
+
+/// The JSON merge patch `PATCH /vms/{id}` took before the port
+/// (`{power, restart_policy, on_host_boot, stop_grace_secs, config: {…}}`),
+/// as a change and its mask (spec/grpc.md §9.1 step 3). The immutable
+/// fields it used to refuse by name are refused the same way.
+fn merge_patch(v: &Value) -> Result<(Value, Vec<String>), ApiErr> {
+    const IMMUTABLE: &[&str] = &[
+        "hypervisor",
+        "kernel_image_path",
+        "firmware_path",
+        "firmware",
+        "rootfs_path",
+        "cloud_init_path",
+        "root_disk",
+        "image",
+    ];
+    let o = v.as_object().cloned().unwrap_or_default();
+    let mut change = serde_json::Map::new();
+    let mut mask = Vec::new();
+    for (k, val) in o {
+        if k == "config" {
+            let cfg = val.as_object().cloned().unwrap_or_default();
+            let fixed: Vec<&str> = IMMUTABLE
+                .iter()
+                .copied()
+                .filter(|f| cfg.contains_key(*f))
+                .collect();
+            if !fixed.is_empty() {
+                return Err(err(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_config",
+                    format!("immutable field(s): {}", fixed.join(", ")),
+                ));
+            }
+            for (ck, cv) in cfg {
+                mask.push(ck.clone());
+                if !cv.is_null() {
+                    change.insert(ck, cv);
+                }
+            }
+        } else {
+            mask.push(k.clone());
+            change.insert(k, val);
         }
     }
-    out.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(Json(out))
+    Ok((Value::Object(change), mask))
+}
+
+/// `PATCH /vms/{id}`: `{change, update_mask}` (`UpdateVmRequest`), or,
+/// for one release, the merge patch from before the port. Without a mask
+/// the fields of `change` present are the ones changed.
+pub async fn patch_one(
+    c: Caller,
+    Path(id): Path<String>,
+    Query(w): Query<WaitQuery>,
+    headers: HeaderMap,
+    Json(v): Json<Value>,
+) -> Result<Response, ApiErr> {
+    let proto_shape = v.get("change").is_some() || v.get("update_mask").is_some();
+    let (change, mask, rest) = if proto_shape {
+        let mask: Vec<String> = match v.get("update_mask").and_then(|m| m.as_str()) {
+            // proto3 JSON: a FieldMask is one comma-separated string.
+            Some(s) => s
+                .split(',')
+                .filter(|p| !p.is_empty())
+                .map(str::to_string)
+                .collect(),
+            None => v["change"]
+                .as_object()
+                .map(|o| o.keys().cloned().collect())
+                .unwrap_or_default(),
+        };
+        let mut rest = v.clone();
+        if let Some(o) = rest.as_object_mut() {
+            o.remove("change");
+            o.remove("update_mask");
+        }
+        (
+            v.get("change")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({})),
+            mask,
+            rest,
+        )
+    } else {
+        let (change, mask) = merge_patch(&v)?;
+        (change, mask, serde_json::json!({}))
+    };
+    let change: pb::VmChange = body(change)?;
+    let mut req: pb::UpdateVmRequest = body(rest)?;
+    req.id = id;
+    req.change = change.into();
+    req.update_mask = buffa_types::google::protobuf::FieldMask {
+        paths: mask,
+        ..Default::default()
+    }
+    .into();
+    req.expected_resource_version = req.expected_resource_version.or(if_match(&headers)?);
+    req.wait_secs = req.wait_secs.or(secs(w.wait));
+    Ok(reply(
+        svc::update_vm(&c, req).await?,
+        StatusCode::OK,
+        StatusCode::ACCEPTED,
+    ))
+}
+
+pub async fn events(c: Caller, Path(id): Path<String>) -> Result<impl IntoResponse, ApiErr> {
+    let req = pb::ListVmEventsRequest {
+        id,
+        ..Default::default()
+    };
+    Ok(Proto(StatusCode::OK, svc::vm_events(&c, req).await?))
+}
+
+pub async fn console_info(c: Caller, Path(id): Path<String>) -> Result<impl IntoResponse, ApiErr> {
+    let req = pb::GetConsoleInfoRequest {
+        id,
+        ..Default::default()
+    };
+    Ok(Proto(StatusCode::OK, svc::console_info(&c, req).await?))
+}
+
+pub async fn console_ticket(
+    c: Caller,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, ApiErr> {
+    let req = pb::CreateConsoleTicketRequest {
+        id,
+        ..Default::default()
+    };
+    Ok(Proto(StatusCode::OK, svc::console_ticket(&c, req).await?))
 }
 
 /// The PCI address in a VFIO device path (`/sys/bus/pci/devices/<bdf>`
@@ -215,431 +498,6 @@ pub(crate) fn pci_entities(c: &Caller, bdf: &str) -> (Ent, EntitySet) {
     (Ent::PciDevice(bdf.to_string()), es)
 }
 
-/// Whether a create request names a host path (spec/security.md §7.4).
-/// Firmware is a managed image (`firmware`) like the disks; a
-/// `firmware_path` is a host path like any other.
-fn names_host_path(req: &CreateVmRequest) -> bool {
-    !req.kernel_image_path.is_empty()
-        || !req.rootfs_path.is_empty()
-        || req.cloud_init_path.is_some()
-        || req.firmware_path.is_some()
-}
-
-/// `POST /scheduler/preview` (spec/clustering-ui.md §5.1): where a VM would
-/// go, node by node, before it is created.
-#[derive(serde::Deserialize)]
-pub struct PreviewBody {
-    #[serde(default)]
-    project: Option<String>,
-    vcpu_count: u8,
-    mem_size_mib: u32,
-    #[serde(default)]
-    hypervisor: Option<String>,
-    #[serde(default)]
-    hugepages: bool,
-    /// Pin: a node id or name.
-    #[serde(default)]
-    node: Option<String>,
-    #[serde(default)]
-    networks: Vec<crate::models::NetworkAttachment>,
-    #[serde(default)]
-    vfio_devices: Vec<String>,
-    #[serde(default)]
-    data_disks: Vec<String>,
-    /// The image the root disk would come from: its architecture counts
-    /// (spec/clustering.md §9.2.1).
-    #[serde(default)]
-    image: Option<String>,
-}
-
-pub async fn preview(c: Caller, Json(b): Json<PreviewBody>) -> Result<Response, ApiErr> {
-    // Whoever may create a VM in the project may see where it would fit.
-    let project = c.target_project(b.project.as_deref())?;
-    c.require_action(
-        "createVm",
-        Ent::Project(project.clone()),
-        super::project_entities(&project),
-        &[],
-    )?;
-    let mut cfg = serde_json::json!({
-        "vcpu_count": b.vcpu_count, "mem_size_mib": b.mem_size_mib, "rootfs_path": "", "kernel_args": "",
-        "hugepages": b.hugepages, "networks": b.networks, "vfio_devices": b.vfio_devices,
-    });
-    if let Some(h) = &b.hypervisor {
-        cfg["hypervisor"] = serde_json::json!(h);
-    }
-    let config: VmConfig = serde_json::from_value(cfg)
-        .map_err(|e| err(StatusCode::BAD_REQUEST, "invalid", e.to_string()))?;
-    let fits = c
-        .manager()
-        .preview_placement(
-            &project,
-            &config,
-            b.node.clone(),
-            &b.data_disks,
-            b.image.as_deref(),
-        )
-        .await
-        .map_err(super::storage::manager_err)?;
-    let pick = fits
-        .first()
-        .filter(|f| f.refused.is_none())
-        .map(|f| f.id.clone());
-    Ok(Json(serde_json::json!({ "pick": pick, "nodes": fits })).into_response())
-}
-
-pub async fn create(
-    c: Caller,
-    Query(w): Query<WaitQuery>,
-    Json(req): Json<CreateVmRequest>,
-) -> Result<Response, ApiErr> {
-    let project = c.target_project(req.project.as_deref())?;
-    c.set_project(&project);
-    let pent = Ent::Project(project.clone());
-    let pes = super::project_entities(&project);
-    c.require(pent.clone(), pes.clone())?;
-    c.require_admitted(&project)?;
-    let with_project: &[(&'static str, Ent)] = &[("project", pent.clone())];
-
-    let sel = req.disk_selection();
-    for key in sel.data_disks.iter().chain(sel.root_disk.iter()) {
-        if let Ok(d) = c.manager().get_disk_for(&project, key).await {
-            let (e, es) = super::disk_entities(&d.id, &d.project);
-            c.require_action("useDisk", e, es, with_project)?;
-        }
-    }
-    if let Some(username) = &req.credential {
-        let (e, mut es) = super::credential_entities(&project, username);
-        es.project(&project);
-        c.require_action("useCredential", e, es, with_project)?;
-    }
-    if !req.networks.as_ref().is_none_or(|n| n.is_empty()) {
-        c.require_action("attachNetwork", pent.clone(), pes.clone(), &[])?;
-        for att in req.networks.iter().flatten() {
-            if let Ok(n) = c.manager().get_network(&att.network) {
-                let mut es = pes.clone();
-                let e = super::add_network(&mut es, &n);
-                c.require_action("useNetwork", e, es, with_project)?;
-            }
-        }
-    }
-    for dev in req.vfio_devices.iter().flatten() {
-        let bdf = device_bdf(dev)?;
-        let (e, mut es) = pci_entities(&c, &bdf);
-        es.project(&project);
-        c.require_action("usePciDevice", e, es, with_project)?;
-    }
-    if names_host_path(&req) {
-        c.require_action("useHostPath", Ent::Host, EntitySet::new(), &[])?;
-    }
-    for image in sel.image.iter().chain(sel.firmware.iter()) {
-        let mut es = EntitySet::new();
-        es.image(image);
-        c.require_action("readImage", Ent::Image(image.clone()), es, &[])?;
-    }
-
-    let name = req.name.clone();
-    let opts = VmOptions {
-        power: req.power,
-        restart_policy: req.restart_policy,
-        on_host_boot: req.on_host_boot,
-        stop_grace_secs: req.stop_grace_secs,
-        node: req.node.clone(),
-    };
-    let config = VmConfig::from(req);
-    let quota = c.quota_mode(&project);
-    let (vm, warnings, over) = c
-        .manager()
-        .create_vm_with(&project, name, config, sel, opts, quota, &c.actor())
-        .await
-        .map_err(manager_err)?;
-    c.note_overruns(&over);
-    c.set_target(format!("vm:{}", vm.id));
-    Ok(respond(&c, vm, w.wait, StatusCode::CREATED, warnings).await)
-}
-
-#[derive(Debug, serde::Deserialize, Default)]
-pub struct ViewQuery {
-    /// `full`: the stored `{meta, spec, status}` (§12.4).
-    #[serde(default)]
-    view: Option<String>,
-}
-
-pub async fn get_one(
-    c: Caller,
-    Path(id): Path<String>,
-    Query(q): Query<ViewQuery>,
-) -> Result<Response, ApiErr> {
-    let (vm, _, _) = visible_vm(&c, &id).await?;
-    if q.view.as_deref() == Some("full") {
-        // The stored record carries host paths (disk files, kernel, seed in
-        // the private runtime directory), PIDs and the boot id, which the
-        // flat view leaves out: host readers only (spec/security.md §9).
-        c.require_action("readSystemStatus", Ent::Host, EntitySet::new(), &[])?;
-        return Ok(Json(serde_json::to_value(&vm).unwrap_or_default()).into_response());
-    }
-    Ok(Json(vm_response(&c, &vm)).into_response())
-}
-
-#[derive(serde::Deserialize, Default)]
-pub struct DeleteVmQuery {
-    #[serde(default)]
-    keep_disk: bool,
-    #[serde(default)]
-    wait: Option<u64>,
-}
-
-/// `204` when the VM is gone at once (nothing ran), else `202` (or, with
-/// `?wait`, `200` once the record is gone).
-pub async fn delete_one(
-    c: Caller,
-    Path(id): Path<String>,
-    Query(q): Query<DeleteVmQuery>,
-) -> Result<Response, ApiErr> {
-    visible_vm(&c, &id).await?;
-    let gone = c
-        .manager()
-        .delete_vm_as(&id, q.keep_disk, &c.actor())
-        .await
-        .map_err(manager_err)?;
-    if gone {
-        return Ok(StatusCode::NO_CONTENT.into_response());
-    }
-    let Some(secs) = q.wait else {
-        let vm = c.manager().get_vm(&id).await.ok();
-        return Ok(match vm {
-            Some(vm) => (StatusCode::ACCEPTED, Json(vm_response(&c, &vm))).into_response(),
-            None => StatusCode::NO_CONTENT.into_response(),
-        });
-    };
-    let generation = c
-        .manager()
-        .get_vm(&id)
-        .await
-        .map(|v| v.generation)
-        .unwrap_or(0);
-    match c
-        .manager()
-        .wait_converged(
-            &id,
-            generation,
-            Duration::from_secs(secs.min(MAX_WAIT_SECS)),
-        )
-        .await
-    {
-        Waited::Gone | Waited::TimedOut(None) => Ok(StatusCode::OK.into_response()),
-        Waited::Decided(vm) | Waited::TimedOut(Some(vm)) => {
-            Ok((StatusCode::ACCEPTED, Json(vm_response(&c, &vm))).into_response())
-        }
-    }
-}
-
-async fn set_power(
-    c: Caller,
-    id: String,
-    power: PowerState,
-    grace: Option<u32>,
-    wait: Option<u64>,
-    headers: &HeaderMap,
-) -> Result<Response, ApiErr> {
-    let (vm, _, _) = visible_vm(&c, &id).await?;
-    if power == PowerState::Running {
-        c.require_admitted(&vm.project)?;
-    }
-    let quota = c.quota_mode(&vm.project);
-    let (vm, over) = c
-        .manager()
-        .set_power(&id, power, grace, quota, &c.actor(), if_match(headers)?)
-        .await
-        .map_err(manager_err)?;
-    c.note_overruns(&over);
-    Ok(respond(&c, vm, wait, StatusCode::OK, Vec::new()).await)
-}
-
-pub async fn start(
-    c: Caller,
-    Path(id): Path<String>,
-    Query(w): Query<WaitQuery>,
-    headers: HeaderMap,
-) -> Result<Response, ApiErr> {
-    set_power(c, id, PowerState::Running, None, w.wait, &headers).await
-}
-
-#[derive(Debug, serde::Deserialize)]
-pub struct StopParams {
-    /// Press the guest's power button and wait up to this long for it to
-    /// shut down before stopping it hard (`spec.stop_grace_secs`).
-    graceful_timeout_secs: Option<u64>,
-    #[serde(default)]
-    wait: Option<u64>,
-}
-
-pub async fn stop(
-    c: Caller,
-    Path(id): Path<String>,
-    Query(params): Query<StopParams>,
-    headers: HeaderMap,
-) -> Result<Response, ApiErr> {
-    let grace = params
-        .graceful_timeout_secs
-        .map(|s| s.min(MAX_WAIT_SECS) as u32);
-    set_power(c, id, PowerState::Stopped, grace, params.wait, &headers).await
-}
-
-pub async fn pause(
-    c: Caller,
-    Path(id): Path<String>,
-    Query(w): Query<WaitQuery>,
-    headers: HeaderMap,
-) -> Result<Response, ApiErr> {
-    set_power(c, id, PowerState::Paused, None, w.wait, &headers).await
-}
-
-/// `PATCH /vms/{id}`: a merge patch of `spec`, authorized per changed
-/// field (spec §12.1): power → start/stop/pauseVm, devices → attach/
-/// detachDevice + usePciDevice, data disks → attach/detachDisk + useDisk,
-/// networks → attach/detachNetwork + useNetwork, credential → updateVm +
-/// useCredential, anything else → updateVm.
-pub async fn patch_one(
-    c: Caller,
-    Path(id): Path<String>,
-    Query(w): Query<WaitQuery>,
-    headers: HeaderMap,
-    Json(patch): Json<VmPatch>,
-) -> Result<Response, ApiErr> {
-    let vm = c.manager().get_vm(&id).await.map_err(manager_err)?;
-    c.set_project(&vm.project);
-    c.set_target(format!("vm:{}", vm.id));
-    let (e, es) = vm_entities(&vm);
-    c.require_readable("readVm", e.clone(), es.clone(), "VM")?;
-    if let Some(fields) = patch
-        .config
-        .as_ref()
-        .map(|c| c.immutable_fields())
-        .filter(|f| !f.is_empty())
-    {
-        return Err(err(
-            StatusCode::BAD_REQUEST,
-            "invalid_config",
-            format!("immutable field(s): {}", fields.join(", ")),
-        ));
-    }
-    let project = vm.project.clone();
-    let with_project: &[(&'static str, Ent)] = &[("project", Ent::Project(project.clone()))];
-    let mut update = false;
-    if let Some(p) = patch.power
-        && p != vm.spec.power
-    {
-        let action = match p {
-            PowerState::Running => "startVm",
-            PowerState::Paused => "pauseVm",
-            PowerState::Stopped => "stopVm",
-        };
-        c.require_action(action, e.clone(), es.clone(), &[])?;
-        if p == PowerState::Running {
-            c.require_admitted(&project)?;
-        }
-    }
-    update |= patch
-        .restart_policy
-        .is_some_and(|r| r != vm.spec.restart_policy)
-        || patch
-            .on_host_boot
-            .is_some_and(|h| h != vm.spec.on_host_boot)
-        || patch
-            .stop_grace_secs
-            .is_some_and(|g| g != vm.spec.stop_grace_secs);
-    if let Some(cp) = &patch.config {
-        let cur = vm.config();
-        update |= cp.vcpu_count.is_some_and(|v| v != cur.vcpu_count)
-            || cp.mem_size_mib.is_some_and(|v| v != cur.mem_size_mib)
-            || cp
-                .kernel_args
-                .as_ref()
-                .is_some_and(|v| *v != cur.kernel_args)
-            || cp.hugepages.is_some_and(|v| v != cur.hugepages);
-        if let Some(cred) = &cp.credential {
-            update = true;
-            if let Some(username) = cred.as_str() {
-                let (ce, mut ces) = super::credential_entities(&project, username);
-                ces.project(&project);
-                c.require_action("useCredential", ce, ces, with_project)?;
-            }
-        }
-        if let Some(devs) = &cp.vfio_devices {
-            for d in devs.iter().filter(|d| !cur.vfio_devices.contains(d)) {
-                c.require_action("attachDevice", e.clone(), es.clone(), &[])?;
-                let bdf = device_bdf(d)?;
-                let (pe, mut pes) = pci_entities(&c, &bdf);
-                pes.project(&project);
-                c.require_action("usePciDevice", pe, pes, with_project)?;
-            }
-            if cur.vfio_devices.iter().any(|d| !devs.contains(d)) {
-                c.require_action("detachDevice", e.clone(), es.clone(), &[])?;
-            }
-        }
-        if let Some(keys) = &cp.data_disks {
-            let mut ids = Vec::new();
-            for key in keys {
-                if let Ok(d) = c.manager().get_disk_for(&project, key).await {
-                    if !cur.data_disks.contains(&d.id) {
-                        c.require_action("attachDisk", e.clone(), es.clone(), &[])?;
-                        let (de, des) = super::disk_entities(&d.id, &d.project);
-                        c.require_action("useDisk", de, des, with_project)?;
-                    }
-                    ids.push(d.id);
-                }
-            }
-            if cur.data_disks.iter().any(|d| !ids.contains(d)) {
-                c.require_action("detachDisk", e.clone(), es.clone(), &[])?;
-            }
-        }
-        if let Some(nets) = &cp.networks {
-            let new: Vec<&str> = nets.iter().map(|a| a.network.as_str()).collect();
-            if nets
-                .iter()
-                .any(|a| !cur.networks.iter().any(|b| b.network == a.network))
-            {
-                c.require_action("attachNetwork", e.clone(), es.clone(), &[])?;
-                for att in nets
-                    .iter()
-                    .filter(|a| !cur.networks.iter().any(|b| b.network == a.network))
-                {
-                    if let Ok(n) = c.manager().get_network(&att.network) {
-                        let mut nes = super::project_entities(&project);
-                        let ne = super::add_network(&mut nes, &n);
-                        c.require_action("useNetwork", ne, nes, with_project)?;
-                    }
-                }
-            }
-            if cur
-                .networks
-                .iter()
-                .any(|b| !new.contains(&b.network.as_str()))
-            {
-                c.require_action("detachNetwork", e.clone(), es.clone(), &[])?;
-            }
-        }
-    }
-    if update {
-        c.require_action("updateVm", e.clone(), es.clone(), &[])?;
-    }
-    let quota = c.quota_mode(&project);
-    let (vm, over) = c
-        .manager()
-        .patch_vm(&id, patch, quota, &c.actor(), if_match(&headers)?)
-        .await
-        .map_err(manager_err)?;
-    c.note_overruns(&over);
-    Ok(respond(&c, vm, w.wait, StatusCode::OK, Vec::new()).await)
-}
-
-pub async fn events(c: Caller, Path(id): Path<String>) -> Result<impl IntoResponse, ApiErr> {
-    let (vm, _, _) = visible_vm(&c, &id).await?;
-    let events = c.manager().vm_events(&vm.id).map_err(manager_err)?;
-    Ok(Json(serde_json::json!({ "events": events })))
-}
-
 /// `GET /system/reconcile` (§12.5).
 pub async fn system_reconcile(c: Caller) -> Result<impl IntoResponse, ApiErr> {
     c.require(Ent::Host, EntitySet::new())?;
@@ -671,36 +529,6 @@ pub async fn system_reconcile(c: Caller) -> Result<impl IntoResponse, ApiErr> {
         "orphans": m.orphans(),
         "unknown_vms": unknown,
     })))
-}
-
-#[derive(Debug, Serialize)]
-struct ConsoleInfo {
-    vm_id: String,
-    available: bool,
-    /// Relative URL of the console WebSocket.
-    websocket: String,
-}
-
-pub async fn console_info(c: Caller, Path(id): Path<String>) -> Result<impl IntoResponse, ApiErr> {
-    let (vm, _, _) = visible_vm(&c, &id).await?;
-    Ok(Json(ConsoleInfo {
-        // While an instance exists, including after the guest exited and
-        // before the shim is released.
-        available: vm.status.instance.is_some(),
-        websocket: format!("/vms/{}/console/ws", vm.id),
-        vm_id: vm.id,
-    }))
-}
-
-pub async fn console_ticket(
-    c: Caller,
-    Path(id): Path<String>,
-) -> Result<impl IntoResponse, ApiErr> {
-    let (vm, _, _) = visible_vm(&c, &id).await?;
-    let ticket = c.auth().issue_ticket(&c.p, &vm.id);
-    Ok(Json(
-        serde_json::json!({ "ticket": ticket, "expires_in": crate::auth::TICKET_SECS }),
-    ))
 }
 
 #[derive(Debug, serde::Deserialize, Default)]
@@ -830,75 +658,24 @@ pub struct LogQuery {
     previous: bool,
 }
 
-/// The VM's captured console output (it can hold anything the guest
-/// printed, so it needs `vm.console` like the live console).
+/// The VM's captured console output, as the bytes themselves.
 pub async fn console_log(
     c: Caller,
     Path(id): Path<String>,
     Query(q): Query<LogQuery>,
 ) -> Result<Response, ApiErr> {
-    let (vm, _, _) = visible_vm(&c, &id).await?;
-    const CAP: u64 = 1 << 20;
-    let tail = q.tail_bytes.unwrap_or(CAP).min(CAP);
-    if let Some(addr) = c.manager().remote_node_addr(&vm) {
-        let Some(cluster) = c.manager().cluster() else {
-            return Err(err(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                "no cluster",
-            ));
-        };
-        let path = format!(
-            "/cluster/v1/vms/{}/console-log?tail_bytes={}&previous={}",
-            vm.id, tail, q.previous
-        );
-        let r = cluster
-            .client
-            .request(
-                &addr,
-                axum::http::Method::GET,
-                &path,
-                &[],
-                bytes::Bytes::new(),
-            )
-            .await
-            .map_err(|e| err(StatusCode::BAD_GATEWAY, "node_unreachable", e.to_string()))?;
-        return if r.status.is_success() {
-            Ok((
-                [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
-                r.body.to_vec(),
-            )
-                .into_response())
-        } else {
-            Err(err(r.status, "not_found", "no console log"))
-        };
-    }
-    let paths = vm.paths();
-    let path = if q.previous {
-        paths.previous_log()
-    } else {
-        paths.log
+    let req = pb::GetConsoleLogRequest {
+        id,
+        tail_bytes: q.tail_bytes,
+        previous: q.previous.then_some(true),
+        ..Default::default()
     };
-    let previous = q.previous;
-    let bytes = read_log_tail(path, tail, previous).await.map_err(|e| {
-        err(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "internal",
-            format!("console log: {}", e),
-        )
-    })?;
-    match bytes {
-        Some(b) => Ok((
-            [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
-            b,
-        )
-            .into_response()),
-        None => Err(err(
-            StatusCode::NOT_FOUND,
-            "not_found",
-            "no rotated console log",
-        )),
-    }
+    let r = svc::console_log(&c, req).await?;
+    Ok((
+        [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
+        r.data,
+    )
+        .into_response())
 }
 
 /// The last `tail` bytes of a console log; `None` for a rotated log that
@@ -927,47 +704,51 @@ pub(crate) async fn read_log_tail(
     .map_err(std::io::Error::other)?
 }
 
+#[derive(serde::Deserialize)]
+pub struct DeviceBody {
+    device_path: String,
+}
+
 pub async fn attach_device(
     c: Caller,
     Path(id): Path<String>,
     Query(w): Query<WaitQuery>,
-    Json(req): Json<DeviceRequest>,
+    Json(b): Json<DeviceBody>,
 ) -> Result<Response, ApiErr> {
-    let (vm, _, _) = visible_vm(&c, &id).await?;
-    let bdf = device_bdf(&req.device_path)?;
-    let (e, mut es) = pci_entities(&c, &bdf);
-    es.project(&vm.project);
-    c.require_action(
-        "usePciDevice",
-        e,
-        es,
-        &[("project", Ent::Project(vm.project.clone()))],
-    )?;
-    let vm = c
-        .manager()
-        .attach_device(&id, req.device_path)
-        .await
-        .map_err(manager_err)?;
-    Ok(respond(&c, vm, w.wait, StatusCode::OK, Vec::new()).await)
+    let req = pb::AttachDeviceRequest {
+        id,
+        device_path: b.device_path,
+        wait_secs: secs(w.wait),
+        ..Default::default()
+    };
+    Ok(reply(
+        svc::attach_device(&c, req).await?,
+        StatusCode::OK,
+        StatusCode::ACCEPTED,
+    ))
 }
 
 pub async fn detach_device(
     c: Caller,
     Path(id): Path<String>,
     Query(w): Query<WaitQuery>,
-    Json(req): Json<DeviceRequest>,
+    Json(b): Json<DeviceBody>,
 ) -> Result<Response, ApiErr> {
-    visible_vm(&c, &id).await?;
-    let vm = c
-        .manager()
-        .detach_device(&id, &req.device_path)
-        .await
-        .map_err(manager_err)?;
-    Ok(respond(&c, vm, w.wait, StatusCode::OK, Vec::new()).await)
+    let req = pb::DetachDeviceRequest {
+        id,
+        device_path: b.device_path,
+        wait_secs: secs(w.wait),
+        ..Default::default()
+    };
+    Ok(reply(
+        svc::detach_device(&c, req).await?,
+        StatusCode::OK,
+        StatusCode::ACCEPTED,
+    ))
 }
 
 #[derive(serde::Deserialize)]
-pub struct AttachDiskRequest {
+pub struct AttachDiskBody {
     disk: String,
 }
 
@@ -975,27 +756,19 @@ pub async fn attach_disk(
     c: Caller,
     Path(id): Path<String>,
     Query(w): Query<WaitQuery>,
-    Json(req): Json<AttachDiskRequest>,
+    Json(b): Json<AttachDiskBody>,
 ) -> Result<Response, ApiErr> {
-    let (vm, _, _) = visible_vm(&c, &id).await?;
-    let d = c
-        .manager()
-        .get_disk_for(&vm.project, &req.disk)
-        .await
-        .map_err(manager_err)?;
-    let (e, es) = super::disk_entities(&d.id, &d.project);
-    c.require_action(
-        "useDisk",
-        e,
-        es,
-        &[("project", Ent::Project(vm.project.clone()))],
-    )?;
-    let vm = c
-        .manager()
-        .attach_disk(&id, &req.disk)
-        .await
-        .map_err(manager_err)?;
-    Ok(respond(&c, vm, w.wait, StatusCode::OK, Vec::new()).await)
+    let req = pb::AttachDiskRequest {
+        id,
+        disk: b.disk,
+        wait_secs: secs(w.wait),
+        ..Default::default()
+    };
+    Ok(reply(
+        svc::attach_disk(&c, req).await?,
+        StatusCode::OK,
+        StatusCode::ACCEPTED,
+    ))
 }
 
 pub async fn detach_disk(
@@ -1003,13 +776,17 @@ pub async fn detach_disk(
     Path((id, disk)): Path<(String, String)>,
     Query(w): Query<WaitQuery>,
 ) -> Result<Response, ApiErr> {
-    visible_vm(&c, &id).await?;
-    let vm = c
-        .manager()
-        .detach_disk(&id, &disk)
-        .await
-        .map_err(manager_err)?;
-    Ok(respond(&c, vm, w.wait, StatusCode::OK, Vec::new()).await)
+    let req = pb::DetachDiskRequest {
+        id,
+        disk,
+        wait_secs: secs(w.wait),
+        ..Default::default()
+    };
+    Ok(reply(
+        svc::detach_disk(&c, req).await?,
+        StatusCode::OK,
+        StatusCode::ACCEPTED,
+    ))
 }
 
 #[cfg(test)]

@@ -128,6 +128,18 @@ export async function api<T = any>(path: string, init?: { method?: string; body?
 
 export const del = (path: string) => api(path, { method: "DELETE" });
 
+/** Every VM, from `GET /vms` (the proto3 JSON shape of glidex.vm.v1: `{vms}`,
+ * enums by their full names, spec/grpc.md §9.1). */
+export async function listVms(): Promise<any[]> {
+  return (await api<{ vms?: any[] }>("/vms")).vms ?? [];
+}
+
+/** Create a VM over the API; the VM from its `{vm}` answer (or the error body). */
+export async function createVm(body: Record<string, unknown>): Promise<any> {
+  const r = await api("/vms", { method: "POST", body });
+  return r?.vm ?? r;
+}
+
 export function commandExists(cmd: string): boolean {
   try {
     execFileSync("sh", ["-c", `command -v ${cmd}`], { stdio: "ignore" });
@@ -172,7 +184,7 @@ export async function firmwareImages(hypervisor: Hypervisor): Promise<any[]> {
     .sort((a, b) => Date.parse(b.created_at ?? "") - Date.parse(a.created_at ?? ""));
 }
 
-/** A hypervisor as the storage API names it. */
+/** A hypervisor as the storage and VM APIs name it. */
 export const PROTO_HYPERVISOR: Record<Hypervisor, string> = {
   cloudhypervisor: "HYPERVISOR_CLOUD_HYPERVISOR",
   qemu: "HYPERVISOR_QEMU",

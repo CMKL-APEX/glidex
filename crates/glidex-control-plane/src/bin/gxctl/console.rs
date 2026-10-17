@@ -5,10 +5,12 @@
 //! peers and token holders need no ticket; tickets are for browsers.
 
 use crate::client::{ApiClient, Conn, render_error};
+use crate::tenancy::rpc_err;
 use colored::Colorize;
 use futures_util::{SinkExt, StreamExt};
+use glidex_api::proto::glidex::vm::v1::{GetConsoleInfoRequest, GetConsoleLogRequest};
+use hyper::StatusCode;
 use hyper::header::AUTHORIZATION;
-use hyper::{Method, StatusCode};
 use nix::sys::termios::{self, LocalFlags, SetArg, Termios};
 use std::io::{self, Write};
 use std::os::fd::{AsFd, BorrowedFd};
@@ -20,13 +22,6 @@ use tokio_tungstenite::tungstenite::{self, Message};
 
 /// `Ctrl+]` detaches.
 const DETACH: u8 = 0x1d;
-
-#[derive(Debug, serde::Deserialize)]
-struct ConsoleInfo {
-    available: bool,
-    #[serde(default)]
-    websocket: Option<String>,
-}
 
 /// Put the terminal in raw mode; returns the settings to restore.
 pub fn set_raw_mode(fd: BorrowedFd<'_>) -> Option<Termios> {
@@ -114,14 +109,24 @@ fn pump_stdin(running: Arc<AtomicBool>, tx: tokio::sync::mpsc::Sender<Vec<u8>>) 
 }
 
 pub async fn handle_connect(client: &ApiClient, vm_id: &str) {
-    let info: ConsoleInfo = match client
-        .request_json(Method::GET, &format!("/vms/{}/console", vm_id), None)
-        .await
-    {
+    // Where the console is, from `GetConsoleInfo`; the console itself
+    // stays a WebSocket (spec/grpc.md §9).
+    let info = match crate::vm::rpc(client).await {
+        Ok(svc) => svc
+            .get_console_info(GetConsoleInfoRequest {
+                id: vm_id.to_string(),
+                ..Default::default()
+            })
+            .await
+            .map(|r| r.into_owned())
+            .map_err(rpc_err),
+        Err(e) => Err(e),
+    };
+    let info = match info {
         Ok(i) => i,
         Err(e) => return println!("{} {}", "Error:".red(), e),
     };
-    if !info.available {
+    if info.available != Some(true) {
         println!(
             "{} VM is not running. Start the VM first with: start {}",
             "Error:".red(),
@@ -129,9 +134,11 @@ pub async fn handle_connect(client: &ApiClient, vm_id: &str) {
         );
         return;
     }
-    let path = info
-        .websocket
-        .unwrap_or_else(|| format!("/vms/{}/console/ws", vm_id));
+    let path = if info.websocket.is_empty() {
+        format!("/vms/{}/console/ws", vm_id)
+    } else {
+        info.websocket
+    };
     let ws = match open_ws(client, &path).await {
         Ok(ws) => ws,
         Err(e) => return println!("{} {}", "Error:".red(), e),
@@ -204,22 +211,30 @@ pub async fn handle_connect(client: &ApiClient, vm_id: &str) {
     }
 }
 
-/// `log`: the captured console output (`GET /vms/{id}/console/log`).
+/// `log`: the captured console output (`GetConsoleLog`).
 pub async fn handle_log(client: &ApiClient, vm_id: &str) {
-    match client
-        .request_bytes(Method::GET, &format!("/vms/{}/console/log", vm_id), None)
-        .await
-    {
-        Ok(r) if r.body.is_empty() => {
+    let log = match crate::vm::rpc(client).await {
+        Ok(svc) => svc
+            .get_console_log(GetConsoleLogRequest {
+                id: vm_id.to_string(),
+                ..Default::default()
+            })
+            .await
+            .map(|r| r.into_owned().data)
+            .map_err(rpc_err),
+        Err(e) => Err(e),
+    };
+    match log {
+        Ok(body) if body.is_empty() => {
             println!(
                 "{} The console log is empty. Start the VM to see console output.",
                 "Info:".yellow()
             )
         }
-        Ok(r) => {
+        Ok(body) => {
             let mut out = io::stdout().lock();
-            let _ = out.write_all(&r.body);
-            if !r.body.ends_with(b"\n") {
+            let _ = out.write_all(&body);
+            if !body.ends_with(b"\n") {
                 let _ = out.write_all(b"\n");
             }
             let _ = out.flush();

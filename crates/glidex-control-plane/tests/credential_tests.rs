@@ -42,6 +42,13 @@ async fn request(
     (status, String::from_utf8(bytes.to_vec()).unwrap())
 }
 
+/// The VM in a `{vm}` answer (`POST /vms`), in the proto3 JSON shape
+/// (spec/grpc.md §9.1).
+fn vm_of(v: &Value) -> Value {
+    assert!(v["vm"].is_object(), "not a VM answer: {v}");
+    v["vm"].clone()
+}
+
 fn json_of(body: &str) -> Value {
     serde_json::from_str(body).unwrap_or(Value::Null)
 }
@@ -214,7 +221,7 @@ async fn vm_credential_must_exist_and_needs_firmware_boot() {
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
-    assert_eq!(json_of(&body)["credential"], "alice");
+    assert_eq!(vm_of(&json_of(&body))["credential"], "alice", "{body}");
 }
 
 #[tokio::test]
@@ -229,7 +236,7 @@ async fn credential_in_use_cannot_be_deleted() {
         Some(firmware_vm("uses-alice", Some("alice"))),
     )
     .await;
-    let vm_id = json_of(&vm)["id"].as_str().unwrap().to_string();
+    let vm_id = vm_of(&json_of(&vm))["id"].as_str().unwrap().to_string();
 
     let (status, body) = request(&app, "DELETE", "/credentials/alice", None).await;
     assert_eq!(status, StatusCode::CONFLICT, "{body}");

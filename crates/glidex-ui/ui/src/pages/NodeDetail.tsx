@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import * as api from "../api";
 import type { DiskInfo, NodeRecord, VmResponse } from "../types";
-import { formatBytes, formatTime, nodeLabel, stateLabel, wantedBrInt } from "../types";
+import { formatBytes, formatTime, nodeLabel, stateLabel, vmState, wantedBrInt } from "../types";
 import BrIntDialog from "../components/BrIntDialog";
 import MappingsDialog from "../components/MappingsDialog";
 import { hostOf, useAllowed } from "../nodes";
@@ -82,7 +82,7 @@ export default function NodeDetail() {
   if (!node) return error ? <ErrorBanner error={error} /> : <LoadingCard />;
   const s = node.status;
   const requested = (vms ?? []).reduce((a, v) => ({ cpu: a.cpu + v.vcpu_count, mem: a.mem + v.mem_size_mib }), { cpu: 0, mem: 0 });
-  const running = (vms ?? []).filter((v) => v.state === "running").length;
+  const running = (vms ?? []).filter((v) => vmState(v) === "running").length;
 
   return (
     <div>
@@ -271,7 +271,7 @@ export default function NodeDetail() {
                         {v.name}
                       </Link>
                     </td>
-                    <td>{stateLabel(v.state)}</td>
+                    <td>{stateLabel(vmState(v))}</td>
                     <td>{v.vcpu_count}</td>
                     <td>{v.mem_size_mib} MiB</td>
                   </tr>

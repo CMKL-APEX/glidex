@@ -7,9 +7,10 @@ mod console;
 mod directory;
 mod storage;
 mod tenancy;
+mod vm;
 
 use clap::Parser;
-use client::{ApiClient, enc};
+use client::ApiClient;
 use colored::Colorize;
 use console::{handle_connect, handle_log, restore_terminal};
 use hyper::Method;
@@ -21,7 +22,7 @@ use rustyline::hint::Hinter;
 use rustyline::history::DefaultHistory;
 use rustyline::validate::Validator;
 use rustyline::{CompletionType, Config, Context, Editor, Helper};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::io::{self, IsTerminal, Write};
 use std::os::fd::AsFd;
 use std::path::PathBuf;
@@ -208,46 +209,6 @@ fn profile_client(cli: &Cli, sel: &config::Selected) -> Result<ApiClient, String
     Ok(c)
 }
 
-#[derive(Debug, Deserialize)]
-struct VmResponse {
-    id: String,
-    name: String,
-    #[serde(default)]
-    project: String,
-    state: String,
-    /// What the VM should be doing; `state` is what it is doing
-    /// (spec/reconciliation.md §7.4).
-    #[serde(default)]
-    desired_state: String,
-    #[serde(default)]
-    conditions: Vec<serde_json::Value>,
-    #[serde(default)]
-    last_exit: Option<serde_json::Value>,
-    vcpu_count: u8,
-    mem_size_mib: u32,
-    hypervisor: String,
-    #[serde(default)]
-    vfio_devices: Vec<String>,
-    #[serde(default)]
-    nics: Vec<NicInfo>,
-    /// The node the VM is placed on (spec/clustering.md §9.1).
-    #[serde(default)]
-    node: Option<String>,
-}
-
-/// A `list` row: the project shown by name when it's known.
-#[derive(Tabled)]
-struct VmRow {
-    id: String,
-    name: String,
-    project: String,
-    state: String,
-    node: String,
-    vcpu_count: u8,
-    mem_size_mib: u32,
-    hypervisor: String,
-}
-
 /// A `nodes` row.
 #[derive(Tabled)]
 struct NodeRow {
@@ -289,16 +250,6 @@ async fn project_names(client: &ApiClient) -> std::collections::HashMap<String, 
             ))
         })
         .collect()
-}
-
-#[derive(Debug, Deserialize, Clone)]
-struct NicInfo {
-    network: String,
-    mac: String,
-    #[serde(default)]
-    port: Option<String>,
-    #[serde(default)]
-    ipv4: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Tabled)]
@@ -400,20 +351,6 @@ fn split_line(line: &str) -> Result<Vec<String>, String> {
         words.push(cur);
     }
     Ok(words)
-}
-
-/// `--graceful [secs]` from a `stop` command's arguments.
-fn graceful_stop_secs(args: &[&str]) -> Result<Option<u64>, String> {
-    const DEFAULT_SECS: u64 = 60;
-    match args {
-        [] => Ok(None),
-        ["--graceful"] => Ok(Some(DEFAULT_SECS)),
-        ["--graceful", secs] => secs
-            .parse()
-            .map(Some)
-            .map_err(|_| format!("'{}' is not a number of seconds", secs)),
-        _ => Err("usage: stop <name|id> [--graceful [secs]]".to_string()),
-    }
 }
 
 fn has_flag(args: &[&str], flag: &str) -> bool {
@@ -699,45 +636,6 @@ async fn handle_ovs(client: &CliClient, args: &[&str]) {
     }
 }
 
-#[derive(Debug, Serialize)]
-struct NetworkAttachmentReq {
-    network: String,
-}
-
-#[derive(Debug, Serialize)]
-struct CreateVmRequest {
-    name: String,
-    vcpu_count: u8,
-    mem_size_mib: u32,
-    kernel_image_path: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    firmware: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    firmware_path: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    cloud_init_path: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    credential: Option<String>,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    rootfs_path: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    image: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    root_disk_size_gib: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    root_disk: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    data_disks: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    kernel_args: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    hypervisor: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    vfio_devices: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    networks: Option<Vec<NetworkAttachmentReq>>,
-}
-
 #[derive(Debug, Deserialize, Tabled)]
 struct PciDeviceInfo {
     address: String,
@@ -764,81 +662,6 @@ fn display_option(o: &Option<String>) -> String {
 type CliClient = ApiClient;
 
 impl ApiClient {
-    async fn list_vms(&self) -> Result<Vec<VmResponse>, String> {
-        self.request_json(Method::GET, &self.scoped("/vms"), None)
-            .await
-    }
-
-    async fn get_vm(&self, id: &str) -> Result<VmResponse, String> {
-        self.request_json(Method::GET, &format!("/vms/{}", enc(id)), None)
-            .await
-    }
-
-    async fn create_vm(&self, request: CreateVmRequest) -> Result<VmResponse, String> {
-        let mut body = serde_json::to_value(&request).map_err(|e| e.to_string())?;
-        self.scope_body(&mut body);
-        self.request_json(Method::POST, "/vms", Some(body)).await
-    }
-
-    /// `?wait=<secs>` unless the caller asked not to wait (`--no-wait`).
-    fn waiting(path: String, wait: Option<u64>) -> String {
-        match wait {
-            Some(w) => client::add_query(&path, "wait", &w.to_string()),
-            None => path,
-        }
-    }
-
-    async fn start_vm(&self, id: &str, wait: Option<u64>) -> Result<VmResponse, String> {
-        self.request_json(
-            Method::POST,
-            &Self::waiting(format!("/vms/{}/start", enc(id)), wait),
-            None,
-        )
-        .await
-    }
-
-    /// Stop a VM; with `graceful_secs`, power-button first and wait.
-    async fn stop_vm(
-        &self,
-        id: &str,
-        graceful_secs: Option<u64>,
-        wait: Option<u64>,
-    ) -> Result<VmResponse, String> {
-        let mut path = format!("/vms/{}/stop", enc(id));
-        if let Some(s) = graceful_secs {
-            path = client::add_query(&path, "graceful_timeout_secs", &s.to_string());
-        }
-        // Waiting must cover the grace.
-        let wait = wait.map(|w| w.max(graceful_secs.unwrap_or(0) + 20).min(300));
-        self.request_json(Method::POST, &Self::waiting(path, wait), None)
-            .await
-    }
-
-    async fn pause_vm(&self, id: &str, wait: Option<u64>) -> Result<VmResponse, String> {
-        self.request_json(
-            Method::POST,
-            &Self::waiting(format!("/vms/{}/pause", enc(id)), wait),
-            None,
-        )
-        .await
-    }
-
-    async fn delete_vm(&self, id: &str, keep_disk: bool, wait: Option<u64>) -> Result<(), String> {
-        let path = format!(
-            "/vms/{}{}",
-            enc(id),
-            if keep_disk { "?keep_disk=true" } else { "" }
-        );
-        self.request_json::<serde_json::Value>(Method::DELETE, &Self::waiting(path, wait), None)
-            .await
-            .map(|_| ())
-    }
-
-    async fn vm_events(&self, id: &str) -> Result<serde_json::Value, String> {
-        self.request_json(Method::GET, &format!("/vms/{}/events", enc(id)), None)
-            .await
-    }
-
     async fn health_check(&self) -> Result<(), String> {
         self.request_bytes(Method::GET, "/health", None)
             .await
@@ -848,52 +671,6 @@ impl ApiClient {
 
     async fn list_pci_devices(&self) -> Result<Vec<PciDeviceInfo>, String> {
         self.request_json(Method::GET, "/pci-devices", None).await
-    }
-
-    async fn attach_device(&self, vm_id: &str, device_path: &str) -> Result<VmResponse, String> {
-        let body = serde_json::json!({ "device_path": device_path });
-        self.request_json(
-            Method::POST,
-            &format!("/vms/{}/devices", enc(vm_id)),
-            Some(body),
-        )
-        .await
-    }
-
-    async fn detach_device(&self, vm_id: &str, device_path: &str) -> Result<VmResponse, String> {
-        let body = serde_json::json!({ "device_path": device_path });
-        self.request_json(
-            Method::DELETE,
-            &format!("/vms/{}/devices", enc(vm_id)),
-            Some(body),
-        )
-        .await
-    }
-
-    /// Resolve a VM identifier (name or ID) to an ID.
-    /// First tries to use it as an ID, then searches by name (within the
-    /// selected project, if any).
-    async fn resolve_vm(&self, name_or_id: &str) -> Result<String, String> {
-        if let Ok(vm) = self.get_vm(name_or_id).await {
-            return Ok(vm.id);
-        }
-        let vms = self.list_vms().await?;
-        let matches: Vec<_> = vms.iter().filter(|vm| vm.name == name_or_id).collect();
-        match matches.len() {
-            0 => Err(format!("VM '{}' not found", name_or_id)),
-            1 => Ok(matches[0].id.clone()),
-            _ => {
-                let ids: Vec<_> = matches
-                    .iter()
-                    .map(|vm| format!("{} (project {})", vm.id, vm.project))
-                    .collect();
-                Err(format!(
-                    "Multiple VMs found with name '{}'. Use --project or the ID instead: {}",
-                    name_or_id,
-                    ids.join(", ")
-                ))
-            }
-        }
     }
 }
 
@@ -913,19 +690,26 @@ fn format_bytes(n: u64) -> String {
     }
 }
 
+/// A condition's `status`: `CONDITION_STATUS_TRUE` in the proto shape,
+/// `True` in the older REST bodies.
+fn condition_true(status: &serde_json::Value) -> bool {
+    status == "CONDITION_STATUS_TRUE" || status == "True"
+}
+
 /// One line for an object from `/watch`: its name and what it is doing.
 fn watch_summary(kind: &str, o: &serde_json::Value) -> (String, String) {
     let name = o["name"].as_str().unwrap_or("?").to_string();
     let deleting = o["deleting"].as_bool().unwrap_or(false) || o["deletion_requested_at"].is_u64();
     let mut what = match kind {
+        // The proto shape (spec/grpc.md §9.1): `VM_STATE_*`, `POWER_STATE_*`.
         "vm" => {
-            let state = o["state"].as_str().unwrap_or("?");
-            match o["desired_state"].as_str() {
-                Some(d) if d != state && !(d == "stopped" && state == "created") => {
-                    format!("{} → {}", state, d)
-                }
-                _ => state.to_string(),
-            }
+            let word = |v: &serde_json::Value, prefix: &str| {
+                v.as_str()
+                    .map(|s| s.trim_start_matches(prefix).to_ascii_lowercase())
+            };
+            let state = word(&o["state"], "VM_STATE_").unwrap_or_else(|| "?".to_string());
+            let desired = word(&o["desired_state"], "POWER_STATE_").unwrap_or_default();
+            vm::plain_state(&state, &desired)
         }
         "disk" => o["status"].as_str().unwrap_or("?").to_string(),
         // The proto shape (spec/grpc.md §9.1): `IMAGE_STATE_*`, 64-bit
@@ -960,7 +744,7 @@ fn watch_summary(kind: &str, o: &serde_json::Value) -> (String, String) {
         .as_array()
         .into_iter()
         .flatten()
-        .find(|c| c["kind"] == "Ready" && c["status"] != "True")
+        .find(|c| c["kind"] == "Ready" && !condition_true(&c["status"]))
     {
         what = format!(
             "{} — {}: {}",
@@ -1086,7 +870,7 @@ pub(crate) fn print_delete_result(kind: &str, name: &str, v: &serde_json::Value)
         .as_array()
         .into_iter()
         .flatten()
-        .find(|c| c["kind"] == "Ready" && c["status"] != "True")
+        .find(|c| c["kind"] == "Ready" && !condition_true(&c["status"]))
     {
         println!(
             "  {} {}: {}",
@@ -1840,385 +1624,6 @@ fn prompt_optional(msg: &str) -> Option<String> {
     if input.is_empty() { None } else { Some(input) }
 }
 
-async fn handle_create(client: &CliClient) {
-    println!("{}", "Create new VM".bold());
-    println!("{}", "-".repeat(40));
-
-    let name = prompt("VM name: ");
-    if name.is_empty() {
-        println!("{}", "Error: VM name is required".red());
-        return;
-    }
-
-    let vcpu_count: u8 = prompt("vCPU count [1]: ").parse().unwrap_or(1);
-
-    let mem_size_mib: u32 = prompt("Memory (MiB) [512]: ").parse().unwrap_or(512);
-
-    let hypervisor = match prompt("Hypervisor [cloudhypervisor/qemu] (default: cloudhypervisor): ")
-        .to_lowercase()
-        .as_str()
-    {
-        "" | "cloudhypervisor" | "cloud-hypervisor" | "ch" => Some("cloudhypervisor".to_string()),
-        "qemu" | "q" => Some("qemu".to_string()),
-        other => {
-            println!(
-                "{} Unknown hypervisor '{}', using cloudhypervisor",
-                "Warning:".yellow(),
-                other
-            );
-            Some("cloudhypervisor".to_string())
-        }
-    };
-
-    // A disk image boots through UEFI firmware: a firmware image built for
-    // the hypervisor (spec images.md §7), or a host path (admins only).
-    let (firmware, firmware_path) = {
-        let ty = match hypervisor.as_deref() {
-            Some("qemu") => "qemu",
-            _ => "cloudhypervisor",
-        };
-        let ready: Vec<String> = storage::list_images(client)
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .rev() // newest first
-            .filter(|i| {
-                storage::is_firmware(i)
-                    && storage::hypervisor_name(&i.hypervisor) == ty
-                    && storage::is_ready(i)
-                    && i.deleting != Some(true)
-            })
-            .map(|i| i.name)
-            .collect();
-        if ready.is_empty() {
-            let key = if ty == "qemu" { "ovmf" } else { "cloudhv-edk2" };
-            println!(
-                "{} no firmware image for {}; pull one with 'image pull --firmware {}' for firmware boot",
-                "Note:".yellow(),
-                ty,
-                key
-            );
-        }
-        let default = ready.first().cloned().unwrap_or_else(|| "none".to_string());
-        let options = if ready.is_empty() {
-            String::new()
-        } else {
-            format!("{}, ", ready.join(", "))
-        };
-        match prompt_path(&format!(
-            "UEFI firmware [{}'none' for kernel boot, or a host path] [{}]: ",
-            options, default
-        ))
-        .as_str()
-        {
-            "" if default == "none" => (None, None),
-            "" => (Some(default), None),
-            "none" => (None, None),
-            s if s.starts_with('/') => (None, Some(s.to_string())),
-            s => (Some(s.to_string()), None),
-        }
-    };
-    let firmware_boot = firmware.is_some() || firmware_path.is_some();
-
-    let kernel_image_path = if firmware_boot {
-        String::new()
-    } else {
-        let path = prompt_path("Kernel image path: ");
-        if path.is_empty() {
-            println!(
-                "{}",
-                "Error: kernel image path is required for kernel boot".red()
-            );
-            return;
-        }
-        path
-    };
-
-    // Boot disk. Firmware boot offers managed images first (spec
-    // images.md §10); kernel boot takes a bare root filesystem image.
-    let (mut rootfs_path, mut image, mut root_disk_size_gib, mut root_disk) =
-        (String::new(), None, None, None);
-    let mut choice = "path".to_string();
-    if firmware_boot {
-        let ready: Vec<String> = storage::list_images(client)
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|i| storage::is_ready(i) && !storage::is_firmware(i))
-            .map(|i| i.name)
-            .collect();
-        let default = if ready.is_empty() { "path" } else { "image" };
-        choice =
-            prompt(&format!("Boot disk from [image/disk/path] [{}]: ", default)).to_lowercase();
-        if choice.is_empty() {
-            choice = default.to_string();
-        }
-        match choice.as_str() {
-            "image" | "i" => {
-                if ready.is_empty() {
-                    println!(
-                        "{}",
-                        "Error: no downloaded images; pull one with 'image pull <key>'".red()
-                    );
-                    return;
-                }
-                let pick = prompt(&format!("Image ({}) [{}]: ", ready.join(", "), ready[0]));
-                image = Some(if pick.is_empty() {
-                    ready[0].clone()
-                } else {
-                    pick
-                });
-                root_disk_size_gib = match prompt("Root disk size in GiB [10]: ").as_str() {
-                    "" => None,
-                    s => match s.parse::<u64>() {
-                        Ok(n) => Some(n),
-                        Err(_) => {
-                            println!("{}", "Error: size must be a whole number of GiB".red());
-                            return;
-                        }
-                    },
-                };
-            }
-            "disk" | "d" => {
-                let d = prompt("Existing disk (name or id; see 'disk list'): ");
-                if d.is_empty() {
-                    println!("{}", "Error: a disk is required".red());
-                    return;
-                }
-                root_disk = Some(d);
-            }
-            _ => choice = "path".into(),
-        }
-    }
-    if choice == "path" {
-        // Firmware boot needs a disk with its own bootloader (e.g. a raw
-        // distro cloud image); kernel boot takes a bare root filesystem image.
-        let rootfs_prompt = if firmware_boot {
-            "Disk image path (UEFI-bootable, e.g. a raw cloud image): "
-        } else {
-            "Root filesystem path: "
-        };
-        rootfs_path = prompt_path(rootfs_prompt);
-        if rootfs_path.is_empty() {
-            println!("{}", "Error: disk image path is required".red());
-            return;
-        }
-    }
-    let data_disks =
-        prompt_optional("Data disks (optional, comma-separated disk names): ").map(|s| {
-            s.split(',')
-                .map(|d| d.trim().to_string())
-                .filter(|d| !d.is_empty())
-                .collect::<Vec<_>>()
-        });
-
-    let cloud_init_path = if firmware_boot {
-        prompt_path_optional("cloud-init seed image (optional, default: auto-generated): ")
-    } else {
-        None
-    };
-
-    // A stored credential is provisioned through the generated seed only.
-    let credential = if firmware_boot && cloud_init_path.is_none() {
-        let names: Vec<String> = storage::list_credentials(client)
-            .await
-            .map(|cs| cs.into_iter().map(|c| c.username).collect())
-            .unwrap_or_default();
-        if names.is_empty() {
-            println!(
-                "{} no login available: this project has no credentials, so the VM will have no way to log in (add one with 'credential-add').",
-                "Login credential:".dimmed()
-            );
-            None
-        } else {
-            // Default to the signed-in user's own credential, if the
-            // project has one by that name.
-            let mine = signed_in_name(client).await.filter(|n| names.contains(n));
-            let answer = match &mine {
-                Some(m) => prompt(&format!(
-                    "Login credential (one of: {}; 'none' for no login) [{}]: ",
-                    names.join(", "),
-                    m
-                )),
-                None => prompt(&format!(
-                    "Login credential (one of: {}; empty: none, no login): ",
-                    names.join(", ")
-                )),
-            };
-            credential_choice(&answer, mine.as_deref())
-        }
-    } else {
-        None
-    };
-
-    let kernel_args = if firmware_boot {
-        None
-    } else {
-        prompt_optional("Kernel arguments (optional, default: root=/dev/vda reboot=k panic=1): ")
-    };
-
-    // Networks: offer the ones that exist.
-    let networks = {
-        let names: Vec<String> = client
-            .request_json::<Vec<NetworkRow>>(Method::GET, "/networks", None)
-            .await
-            .map(|ns| ns.into_iter().map(|n| n.name).collect())
-            .unwrap_or_default();
-        if names.is_empty() {
-            None
-        } else {
-            let default = if names.iter().any(|n| n == "default") {
-                "default"
-            } else {
-                "none"
-            };
-            let answer = prompt(&format!(
-                "Networks (comma-separated; available: {}; 'none' for no NIC) [{}]: ",
-                names.join(", "),
-                default
-            ));
-            let answer = if answer.is_empty() {
-                default.to_string()
-            } else {
-                answer
-            };
-            if answer == "none" {
-                None
-            } else {
-                Some(
-                    answer
-                        .split(',')
-                        .map(|n| n.trim())
-                        .filter(|n| !n.is_empty())
-                        .map(|n| NetworkAttachmentReq {
-                            network: n.to_string(),
-                        })
-                        .collect::<Vec<_>>(),
-                )
-                .filter(|v| !v.is_empty())
-            }
-        }
-    };
-
-    let vfio_devices = prompt_path_optional(
-        "VFIO PCI devices (comma-separated, e.g. /sys/bus/pci/devices/0000:41:00.0): ",
-    )
-    .map(|s| {
-        s.split(',')
-            .map(|d| d.trim().to_string())
-            .filter(|d| !d.is_empty())
-            .collect::<Vec<_>>()
-    })
-    .filter(|v| !v.is_empty());
-
-    let request = CreateVmRequest {
-        name,
-        vcpu_count,
-        mem_size_mib,
-        kernel_image_path,
-        firmware,
-        firmware_path,
-        cloud_init_path,
-        credential,
-        rootfs_path,
-        image,
-        root_disk_size_gib,
-        root_disk,
-        data_disks: data_disks.filter(|v| !v.is_empty()),
-        kernel_args,
-        hypervisor,
-        vfio_devices,
-        networks,
-    };
-
-    match client.create_vm(request).await {
-        Ok(vm) => {
-            println!("{}", "VM created successfully!".green());
-            println!("  ID: {}", vm.id.yellow());
-            println!("  Name: {}", vm.name);
-            println!("  State: {}", vm.state);
-            println!("  Hypervisor: {}", vm.hypervisor);
-        }
-        Err(e) => println!("{} {}", "Error:".red(), e),
-    }
-}
-
-fn format_state(state: &str) -> String {
-    match state {
-        "running" => state.green().to_string(),
-        "stopped" => state.red().to_string(),
-        "paused" => state.yellow().to_string(),
-        "created" => state.blue().to_string(),
-        "failed" | "unknown" => state.red().bold().to_string(),
-        _ => state.to_string(),
-    }
-}
-
-/// `state`, plus `→ desired` while the VM is still getting there.
-fn format_vm_state(vm: &VmResponse) -> String {
-    let settled = match vm.desired_state.as_str() {
-        "" => true,
-        "stopped" => matches!(vm.state.as_str(), "stopped" | "created"),
-        d => d == vm.state,
-    };
-    if settled {
-        format_state(&vm.state)
-    } else {
-        format!("{} → {}", format_state(&vm.state), vm.desired_state)
-    }
-}
-
-/// `format_vm_state` without colours, for tables.
-fn plain_vm_state(vm: &VmResponse) -> String {
-    let settled = match vm.desired_state.as_str() {
-        "" => true,
-        "stopped" => matches!(vm.state.as_str(), "stopped" | "created"),
-        d => d == vm.state,
-    };
-    if settled {
-        vm.state.clone()
-    } else {
-        format!("{} → {}", vm.state, vm.desired_state)
-    }
-}
-
-/// What the controller says is in the way (the `Ready` condition), if
-/// the VM has not converged.
-fn not_ready_reason(vm: &VmResponse) -> Option<String> {
-    let ready = vm.conditions.iter().find(|c| c["kind"] == "Ready")?;
-    if ready["status"] == "True" {
-        return None;
-    }
-    let msg = ready["message"].as_str().unwrap_or("");
-    Some(format!(
-        "{}{}",
-        ready["reason"].as_str().unwrap_or(""),
-        if msg.is_empty() {
-            String::new()
-        } else {
-            format!(": {}", msg)
-        }
-    ))
-}
-
-/// How long lifecycle commands wait for the VM to get there, or `None`
-/// with `--no-wait` (spec/reconciliation.md §12.3).
-fn wait_secs(args: &[&str]) -> Option<u64> {
-    (!has_flag(args, "--no-wait")).then_some(60)
-}
-
-fn print_lifecycle_result(vm: &VmResponse) {
-    println!(
-        "{} VM {} is now {}",
-        "Success:".green(),
-        vm.name,
-        format_vm_state(vm)
-    );
-    if let Some(r) = not_ready_reason(vm) {
-        println!("  {} {}", "Not there yet:".yellow(), r);
-    }
-}
-
 async fn handle_command(line: &str, client: &CliClient) -> bool {
     match split_line(line) {
         Ok(words) => handle_words(&words, client).await,
@@ -2241,174 +1646,12 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
 
         "exit" | "quit" | "q" => return false,
 
-        "list" | "ls" => match client.list_vms().await {
-            Ok(vms) => {
-                if vms.is_empty() {
-                    println!("{}", "No VMs found".yellow());
-                } else {
-                    let names = project_names(client).await;
-                    let rows: Vec<VmRow> = vms
-                        .into_iter()
-                        .map(|vm| VmRow {
-                            state: plain_vm_state(&vm),
-                            project: names.get(&vm.project).cloned().unwrap_or(vm.project),
-                            node: vm.node.unwrap_or_default(),
-                            id: vm.id,
-                            name: vm.name,
-                            vcpu_count: vm.vcpu_count,
-                            mem_size_mib: vm.mem_size_mib,
-                            hypervisor: vm.hypervisor,
-                        })
-                        .collect();
-                    println!("{}", Table::new(rows));
-                }
-            }
-            Err(e) => println!("{} {}", "Error:".red(), e),
-        },
-
-        "get" => {
-            if parts.len() < 2 {
-                println!("{}", "Usage: get <name|id>".yellow());
-                return true;
-            }
-            let vm_id = match client.resolve_vm(parts[1]).await {
-                Ok(id) => id,
-                Err(e) => {
-                    println!("{} {}", "Error:".red(), e);
-                    return true;
-                }
-            };
-            match client.get_vm(&vm_id).await {
-                Ok(vm) => {
-                    println!("{}", "VM Details".bold());
-                    println!("{}", "-".repeat(40));
-                    println!("  ID:         {}", vm.id.yellow());
-                    println!("  Name:       {}", vm.name);
-                    let names = project_names(client).await;
-                    println!(
-                        "  Project:    {}",
-                        names
-                            .get(&vm.project)
-                            .map(|n| format!("{} ({})", n, vm.project))
-                            .unwrap_or(vm.project.clone())
-                    );
-                    println!("  State:      {}", format_vm_state(&vm));
-                    if let Some(r) = not_ready_reason(&vm) {
-                        println!("  Waiting:    {}", r);
-                    }
-                    if let Some(e) = &vm.last_exit {
-                        println!(
-                            "  Last exit:  {} ({})",
-                            e["cause"].as_str().unwrap_or("?"),
-                            e["instance_id"].as_str().unwrap_or("")
-                        );
-                    }
-                    println!("  Hypervisor: {}", vm.hypervisor);
-                    println!("  vCPUs:      {}", vm.vcpu_count);
-                    println!("  Memory:     {} MiB", vm.mem_size_mib);
-                    if !vm.vfio_devices.is_empty() {
-                        println!("  VFIO:       {}", vm.vfio_devices.join(", "));
-                    }
-                    for (i, nic) in vm.nics.iter().enumerate() {
-                        println!(
-                            "  NIC {}:      {} {} {}{}",
-                            i,
-                            nic.network.cyan(),
-                            nic.mac,
-                            nic.ipv4
-                                .as_deref()
-                                .map(|ip| ip.green().to_string())
-                                .unwrap_or_else(|| "-".dimmed().to_string()),
-                            nic.port
-                                .as_deref()
-                                .map(|p| format!(" ({})", p))
-                                .unwrap_or_default()
-                        );
-                    }
-                }
-                Err(e) => println!("{} {}", "Error:".red(), e),
-            }
-        }
-
-        "create" => handle_create(client).await,
-
-        "start" => {
-            if parts.len() < 2 {
-                println!("{}", "Usage: start <name|id> [--no-wait]".yellow());
-                return true;
-            }
-            let vm_id = match client.resolve_vm(parts[1]).await {
-                Ok(id) => id,
-                Err(e) => {
-                    println!("{} {}", "Error:".red(), e);
-                    return true;
-                }
-            };
-            match client.start_vm(&vm_id, wait_secs(&parts[2..])).await {
-                Ok(vm) => print_lifecycle_result(&vm),
-                Err(e) => println!("{} {}", "Error:".red(), e),
-            }
-        }
-
-        "stop" => {
-            if parts.len() < 2 {
-                println!(
-                    "{}",
-                    "Usage: stop <name|id> [--graceful [secs]] [--no-wait]".yellow()
-                );
-                return true;
-            }
-            let flags: Vec<&str> = parts[2..]
-                .iter()
-                .copied()
-                .filter(|p| *p != "--no-wait")
-                .collect();
-            let graceful = match graceful_stop_secs(&flags) {
-                Ok(g) => g,
-                Err(e) => {
-                    println!("{} {}", "Error:".red(), e);
-                    return true;
-                }
-            };
-            let vm_id = match client.resolve_vm(parts[1]).await {
-                Ok(id) => id,
-                Err(e) => {
-                    println!("{} {}", "Error:".red(), e);
-                    return true;
-                }
-            };
-            if let Some(secs) = graceful {
-                println!(
-                    "Pressing the power button; waiting up to {} s for the guest to shut down...",
-                    secs
-                );
-            }
-            match client
-                .stop_vm(&vm_id, graceful, wait_secs(&parts[2..]))
-                .await
-            {
-                Ok(vm) => print_lifecycle_result(&vm),
-                Err(e) => println!("{} {}", "Error:".red(), e),
-            }
-        }
-
-        "pause" => {
-            if parts.len() < 2 {
-                println!("{}", "Usage: pause <name|id> [--no-wait]".yellow());
-                return true;
-            }
-            let vm_id = match client.resolve_vm(parts[1]).await {
-                Ok(id) => id,
-                Err(e) => {
-                    println!("{} {}", "Error:".red(), e);
-                    return true;
-                }
-            };
-            match client.pause_vm(&vm_id, wait_secs(&parts[2..])).await {
-                Ok(vm) => print_lifecycle_result(&vm),
-                Err(e) => println!("{} {}", "Error:".red(), e),
-            }
-        }
+        "list" | "ls" => vm::list(client).await,
+        "get" => vm::get(client, &parts[1..]).await,
+        "create" => vm::create(client).await,
+        "start" => vm::start(client, &parts[1..]).await,
+        "stop" => vm::stop(client, &parts[1..]).await,
+        "pause" => vm::pause(client, &parts[1..]).await,
 
         "connect" | "console" | "attach" => {
             if parts.len() < 2 {
@@ -2425,39 +1668,7 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
             handle_connect(client, &vm_id).await;
         }
 
-        "events" => {
-            if parts.len() < 2 {
-                println!("{}", "Usage: events <name|id>".yellow());
-                return true;
-            }
-            let vm_id = match client.resolve_vm(parts[1]).await {
-                Ok(id) => id,
-                Err(e) => {
-                    println!("{} {}", "Error:".red(), e);
-                    return true;
-                }
-            };
-            match client.vm_events(&vm_id).await {
-                Ok(v) => {
-                    for e in v["events"].as_array().into_iter().flatten() {
-                        let reason = e["reason"].as_str().unwrap_or("");
-                        let reason = if e["kind"] == "warning" {
-                            reason.yellow().to_string()
-                        } else {
-                            reason.to_string()
-                        };
-                        println!(
-                            "{}  {:<12} {:<18} {}",
-                            format_unix_time(e["at"].as_u64().unwrap_or(0)),
-                            e["actor"].as_str().unwrap_or(""),
-                            reason,
-                            e["message"].as_str().unwrap_or("")
-                        );
-                    }
-                }
-                Err(e) => println!("{} {}", "Error:".red(), e),
-            }
-        }
+        "events" => vm::events(client, &parts[1..]).await,
 
         "watch" => handle_watch(client, &parts[1..]).await,
 
@@ -2476,40 +1687,7 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
             handle_log(client, &vm_id).await;
         }
 
-        "delete" | "rm" => {
-            if parts.len() < 2 {
-                println!("{}", "Usage: delete <name|id>".yellow());
-                return true;
-            }
-            let vm_id = match client.resolve_vm(parts[1]).await {
-                Ok(id) => id,
-                Err(e) => {
-                    println!("{} {}", "Error:".red(), e);
-                    return true;
-                }
-            };
-            let keep_disk = has_flag(&parts[2..], "--keep-disk");
-            let confirm = prompt(&format!(
-                "Are you sure you want to delete VM {}{}? [y/N]: ",
-                parts[1],
-                if keep_disk {
-                    ""
-                } else {
-                    " (and a root disk created for it)"
-                }
-            ));
-            if confirm.to_lowercase() == "y" {
-                match client
-                    .delete_vm(&vm_id, keep_disk, wait_secs(&parts[2..]))
-                    .await
-                {
-                    Ok(()) => println!("{} VM deleted", "Success:".green()),
-                    Err(e) => println!("{} {}", "Error:".red(), e),
-                }
-            } else {
-                println!("Cancelled");
-            }
-        }
+        "delete" | "rm" => vm::delete(client, &parts[1..]).await,
 
         "nodes" | "node" if matches!(parts.get(1), Some(&"drain") | Some(&"undrain")) => {
             let Some(id) = parts.get(2) else {
@@ -2739,67 +1917,8 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
             Err(e) => println!("{} {}", "Error:".red(), e),
         },
 
-        "attach-device" => {
-            if parts.len() < 3 {
-                println!(
-                    "{}",
-                    "Usage: attach-device <name|id> <device-path>".yellow()
-                );
-                return true;
-            }
-            let vm_id = match client.resolve_vm(parts[1]).await {
-                Ok(id) => id,
-                Err(e) => {
-                    println!("{} {}", "Error:".red(), e);
-                    return true;
-                }
-            };
-            match client.attach_device(&vm_id, parts[2]).await {
-                Ok(vm) => {
-                    println!(
-                        "{} Device {} attached to VM {}",
-                        "Success:".green(),
-                        parts[2],
-                        vm.name
-                    );
-                    if !vm.vfio_devices.is_empty() {
-                        println!("  VFIO devices: {}", vm.vfio_devices.join(", "));
-                    }
-                }
-                Err(e) => println!("{} {}", "Error:".red(), e),
-            }
-        }
-
-        "detach-device" => {
-            if parts.len() < 3 {
-                println!(
-                    "{}",
-                    "Usage: detach-device <name|id> <device-path>".yellow()
-                );
-                return true;
-            }
-            let vm_id = match client.resolve_vm(parts[1]).await {
-                Ok(id) => id,
-                Err(e) => {
-                    println!("{} {}", "Error:".red(), e);
-                    return true;
-                }
-            };
-            match client.detach_device(&vm_id, parts[2]).await {
-                Ok(vm) => {
-                    println!(
-                        "{} Device {} detached from VM {}",
-                        "Success:".green(),
-                        parts[2],
-                        vm.name
-                    );
-                    if !vm.vfio_devices.is_empty() {
-                        println!("  VFIO devices: {}", vm.vfio_devices.join(", "));
-                    }
-                }
-                Err(e) => println!("{} {}", "Error:".red(), e),
-            }
-        }
+        "attach-device" => vm::device(client, true, &parts[1..]).await,
+        "detach-device" => vm::device(client, false, &parts[1..]).await,
 
         "credentials" | "creds" => storage::credentials(client).await,
 
@@ -3131,12 +2250,34 @@ mod tests {
     }
 
     #[test]
-    fn graceful_stop_arguments() {
-        assert_eq!(graceful_stop_secs(&[]), Ok(None));
-        assert_eq!(graceful_stop_secs(&["--graceful"]), Ok(Some(60)));
-        assert_eq!(graceful_stop_secs(&["--graceful", "15"]), Ok(Some(15)));
-        assert!(graceful_stop_secs(&["--graceful", "soon"]).is_err());
-        assert!(graceful_stop_secs(&["--force"]).is_err());
+    fn watch_summary_reads_proto_vms() {
+        let vm = serde_json::json!({
+            "name": "web",
+            "state": "VM_STATE_STOPPED",
+            "desired_state": "POWER_STATE_RUNNING",
+            "generation": "3",
+            "conditions": [{
+                "kind": "Ready",
+                "status": "CONDITION_STATUS_FALSE",
+                "reason": "Starting",
+                "message": "launching"
+            }]
+        });
+        assert_eq!(
+            watch_summary("vm", &vm),
+            (
+                "web".to_string(),
+                "stopped → running — Starting: launching".to_string()
+            )
+        );
+        let vm = serde_json::json!({
+            "name": "db",
+            "state": "VM_STATE_CREATED",
+            "desired_state": "POWER_STATE_STOPPED",
+            "deleting": true,
+            "conditions": [{"kind": "Ready", "status": "CONDITION_STATUS_TRUE"}]
+        });
+        assert_eq!(watch_summary("vm", &vm).1, "deleting (created)");
     }
 
     fn replacements(result: rustyline::Result<(usize, Vec<Pair>)>) -> (usize, Vec<String>) {
@@ -3396,11 +2537,24 @@ mod tests {
         assert!(e.contains("not_found"), "{e}");
         client.set_project(None);
 
-        let e = client
-            .request::<serde_json::Value>(Method::GET, "/vms/nope", None)
+        // VMs on their RPC client.
+        let e = vm::rpc(&client)
+            .await
+            .unwrap()
+            .get_vm(glidex_api::proto::glidex::vm::v1::GetVmRequest {
+                id: "nope".into(),
+                ..Default::default()
+            })
             .await
             .unwrap_err();
-        assert_eq!(e.status, Some(hyper::StatusCode::NOT_FOUND));
+        assert_eq!(e.code, connectrpc::ErrorCode::NotFound);
+        assert!(
+            client
+                .get_vm("nope")
+                .await
+                .unwrap_err()
+                .contains("not_found")
+        );
         assert!(
             client
                 .resolve_vm("nope")
@@ -3466,12 +2620,16 @@ mod tests {
             .err()
             .unwrap();
         assert!(e.contains("not_found"), "{e}");
-        let e = client
-            .request_bytes(Method::GET, "/vms/nope/console/log", None)
+        let e = vm::rpc(&client)
             .await
-            .err()
-            .unwrap();
-        assert_eq!(e.status, Some(hyper::StatusCode::NOT_FOUND));
+            .unwrap()
+            .get_console_log(glidex_api::proto::glidex::vm::v1::GetConsoleLogRequest {
+                id: "nope".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(e.code, connectrpc::ErrorCode::NotFound);
 
         let _ = stop.send(true);
     }

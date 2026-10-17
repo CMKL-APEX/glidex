@@ -165,6 +165,13 @@ fn image_copies(v: &Value) -> Vec<Value> {
     v["image"]["copies"].as_array().cloned().unwrap_or_default()
 }
 
+/// The VM in a `{vm}` answer (`POST /vms`, `GET /vms/{id}`, ...), in the
+/// proto3 JSON shape (spec/grpc.md §9.1).
+fn vm_of(v: &Value) -> &Value {
+    assert!(v["vm"].is_object(), "not a VM answer: {v}");
+    &v["vm"]
+}
+
 fn cluster(cp: &Cp) -> Arc<Cluster> {
     cp.manager.cluster().expect("clustered")
 }
@@ -823,6 +830,7 @@ async fn a_vm_placed_on_an_agent_is_that_agents_and_its_status_comes_back() {
     )
     .await;
     assert_eq!(s, StatusCode::CREATED, "{vm}");
+    let vm = vm_of(&vm).clone();
     let id = vm["id"].as_str().unwrap().to_string();
     let agent_node = agent.manager.local_node_id();
     assert_eq!(vm["node"], agent_node.as_str(), "{vm}");
@@ -836,7 +844,7 @@ async fn a_vm_placed_on_an_agent_is_that_agents_and_its_status_comes_back() {
     // The agent's controller reconciles it and its status reaches the server.
     wait_for("the controller's status on the server", || async {
         let (_, v) = call(&server, "GET", &format!("/vms/{id}"), None, &[]).await;
-        v["observed_generation"].as_u64().unwrap_or(0) >= 1
+        num(&vm_of(&v)["observed_generation"]) >= 1
     })
     .await;
 
@@ -886,13 +894,13 @@ async fn a_vm_placed_on_an_agent_is_that_agents_and_its_status_comes_back() {
     link.set_partitioned(true);
     let before = {
         let (_, v) = call(&server, "GET", &format!("/vms/{id}"), None, &[]).await;
-        v["resource_version"].as_u64().unwrap()
+        num(&vm_of(&v)["resource_version"])
     };
     agent.manager.__touch_status_for_tests(&id).await.unwrap();
     tokio::time::sleep(Duration::from_millis(500)).await;
     let (_, v) = call(&server, "GET", &format!("/vms/{id}"), None, &[]).await;
     assert_eq!(
-        v["resource_version"].as_u64().unwrap(),
+        num(&vm_of(&v)["resource_version"]),
         before,
         "the server saw a write the agent could not send"
     );
@@ -910,7 +918,7 @@ async fn a_vm_placed_on_an_agent_is_that_agents_and_its_status_comes_back() {
     link.set_partitioned(false);
     wait_for("the queued write to reach the server", || async {
         let (_, v) = call(&server, "GET", &format!("/vms/{id}"), None, &[]).await;
-        v["resource_version"].as_u64().unwrap() > before
+        num(&vm_of(&v)["resource_version"]) > before
     })
     .await;
 }
@@ -964,7 +972,7 @@ async fn a_silent_node_is_unreachable_not_gone() {
     )
     .await;
     assert_eq!(s, StatusCode::CREATED, "{vm}");
-    let id = vm["id"].as_str().unwrap().to_string();
+    let id = vm_of(&vm)["id"].as_str().unwrap().to_string();
 
     let ready = |nodes: &Value| {
         nodes
@@ -986,6 +994,7 @@ async fn a_silent_node_is_unreachable_not_gone() {
     .await;
     // Its VMs say so, and nothing was stopped or moved.
     let (_, v) = call(&server, "GET", &format!("/vms/{id}"), None, &[]).await;
+    let v = vm_of(&v).clone();
     assert!(
         v["conditions"]
             .as_array()
@@ -1057,7 +1066,7 @@ async fn a_server_relays_the_console_log_of_a_vm_on_an_agent() {
     )
     .await;
     assert_eq!(s, StatusCode::CREATED, "{vm}");
-    let id = vm["id"].as_str().unwrap().to_string();
+    let id = vm_of(&vm)["id"].as_str().unwrap().to_string();
 
     // The log lives on the agent's disk (here, the same machine).
     let paths = glidex_control_plane::paths::vm_paths(&id);
@@ -1594,7 +1603,7 @@ async fn the_scheduler_spreads_vms_honours_pins_and_disks_and_explains_itself() 
         .await;
         assert_eq!(s, StatusCode::CREATED, "{vm}");
         *placed
-            .entry(vm["node"].as_str().expect("placed").to_string())
+            .entry(vm_of(&vm)["node"].as_str().expect("placed").to_string())
             .or_default() += 1;
     }
     assert_eq!(placed.len(), 3, "{placed:?}");
@@ -1615,8 +1624,8 @@ async fn the_scheduler_spreads_vms_honours_pins_and_disks_and_explains_itself() 
     assert_eq!(nodes.len(), 3, "{pv}");
     assert!(
         nodes.iter().all(|n| n["refused"].is_null()
-            && n["vms"] == 2
-            && n["vcpus_capacity"].as_u64().unwrap() > 0),
+            && num(&n["vms"]) == 2
+            && num(&n["vcpus_capacity"]) > 0),
         "{pv}"
     );
     assert_eq!(pv["pick"], nodes[0]["id"]);
@@ -1645,6 +1654,7 @@ async fn the_scheduler_spreads_vms_honours_pins_and_disks_and_explains_itself() 
     )
     .await;
     assert_eq!(s, StatusCode::CREATED, "{vm}");
+    let vm = vm_of(&vm).clone();
     assert_eq!(
         vm["node"], pv["pick"],
         "the preview's pick is where it goes"
@@ -1683,7 +1693,7 @@ async fn the_scheduler_spreads_vms_honours_pins_and_disks_and_explains_itself() 
     body["data_disks"] = json!(["dd"]);
     let (s, vm) = call(&server, "POST", "/vms", Some(body), &[]).await;
     assert_eq!(s, StatusCode::CREATED, "{vm}");
-    assert_eq!(vm["node"], a2.as_str());
+    assert_eq!(vm_of(&vm)["node"], a2.as_str());
 
     // Pin to a node and it goes there; a pin on a drained node waits;
     // with every node drained a VM waits and says why, then is placed.
@@ -1696,7 +1706,10 @@ async fn the_scheduler_spreads_vms_honours_pins_and_disks_and_explains_itself() 
     )
     .await;
     assert_eq!(s, StatusCode::CREATED, "{vm}");
-    assert_eq!(vm["node"], agents[0].manager.local_node_id().as_str());
+    assert_eq!(
+        vm_of(&vm)["node"],
+        agents[0].manager.local_node_id().as_str()
+    );
     for id in &ids {
         let (s, v) = call(&server, "POST", &format!("/nodes/{id}/drain"), None, &[]).await;
         assert_eq!(s, StatusCode::OK, "{v}");
@@ -1711,6 +1724,7 @@ async fn the_scheduler_spreads_vms_honours_pins_and_disks_and_explains_itself() 
     )
     .await;
     assert_eq!(s, StatusCode::CREATED, "{vm}");
+    let vm = vm_of(&vm).clone();
     assert!(vm["node"].is_null(), "a pin on a drained node waits: {vm}");
     let (s, _) = call(
         &server,
@@ -1723,6 +1737,7 @@ async fn the_scheduler_spreads_vms_honours_pins_and_disks_and_explains_itself() 
     assert!(s.is_success());
     let (s, vm) = call(&server, "POST", "/vms", Some(vm_unpinned("waits")), &[]).await;
     assert_eq!(s, StatusCode::CREATED, "{vm}");
+    let vm = vm_of(&vm).clone();
     assert!(vm["node"].is_null(), "{vm}");
     let waiting = vm["conditions"]
         .as_array()
@@ -1748,7 +1763,7 @@ async fn the_scheduler_spreads_vms_honours_pins_and_disks_and_explains_itself() 
     assert_eq!(s, StatusCode::OK);
     wait_for("the waiting VM to be placed", || async {
         let (_, v) = call(&server, "GET", &format!("/vms/{id}"), None, &[]).await;
-        v["node"].as_str() == Some(ids[0].as_str())
+        vm_of(&v)["node"].as_str() == Some(ids[0].as_str())
     })
     .await;
 }
@@ -1833,7 +1848,7 @@ async fn cluster_networks_get_a_subnet_and_vms_get_addresses_that_go_when_they_d
     let (s, _) = call(
         &server,
         "DELETE",
-        &format!("/vms/{}", a["id"].as_str().unwrap()),
+        &format!("/vms/{}", vm_of(&a)["id"].as_str().unwrap()),
         None,
         &[],
     )
@@ -2586,7 +2601,7 @@ async fn a_node_detaches_with_its_vms_and_the_cluster_lets_go() {
     )
     .await;
     assert_eq!(s, StatusCode::CREATED, "{vm}");
-    let id = vm["id"].as_str().unwrap().to_string();
+    let id = vm_of(&vm)["id"].as_str().unwrap().to_string();
     wait_for("the agent to be ready", || async {
         node_json(&server, "agent1").await["status"]["ready"] == "True"
     })
@@ -2944,7 +2959,7 @@ async fn a_node_that_left_on_its_own_is_forgotten_as_departed_and_its_bundle_can
     )
     .await;
     assert_eq!(s, StatusCode::CREATED, "{vm}");
-    let id = vm["id"].as_str().unwrap().to_string();
+    let id = vm_of(&vm)["id"].as_str().unwrap().to_string();
     wait_for("the VM in the agent's cache", || async {
         agent.manager.list_vms().await.iter().any(|v| v.id == id)
     })
@@ -3047,8 +3062,8 @@ async fn a_detached_host_imports_into_another_cluster_with_its_vm_after_approval
     agent.manager.initialize().await.unwrap();
     let (s, vm) = call(&a, "POST", "/vms", Some(vm_body("traveller", "mover")), &[]).await;
     assert_eq!(s, StatusCode::CREATED, "{vm}");
-    let id = vm["id"].as_str().unwrap().to_string();
-    let src_project = vm["project"].as_str().unwrap().to_string();
+    let id = vm_of(&vm)["id"].as_str().unwrap().to_string();
+    let src_project = vm_of(&vm)["project"].as_str().unwrap().to_string();
     wait_for("the agent to be ready", || async {
         node_json(&a, "mover").await["status"]["ready"] == "True"
     })
@@ -3198,6 +3213,7 @@ async fn a_detached_host_imports_into_another_cluster_with_its_vm_after_approval
     // The VM is the cluster's now, with its id, placed on the new node, in B's default project.
     let (s, v) = call(&b, "GET", &format!("/vms/{id}"), None, &[]).await;
     assert_eq!(s, StatusCode::OK, "{v}");
+    let v = vm_of(&v).clone();
     assert_eq!(v["node"], out["node_id"], "{v}");
     let (_, projects) = call(&b, "GET", "/projects", None, &[]).await;
     let default_id = projects
@@ -3252,9 +3268,9 @@ async fn the_last_node_dissolves_the_cluster_and_keeps_everything() {
     a.manager.initialize().await.unwrap();
     let (s, vm) = call(&a, "POST", "/vms", Some(vm_unpinned("keeper")), &[]).await;
     assert_eq!(s, StatusCode::CREATED, "{vm}");
-    let id = vm["id"].as_str().unwrap().to_string();
+    let id = vm_of(&vm)["id"].as_str().unwrap().to_string();
     wait_for("the VM to be placed", || async {
-        call(&a, "GET", &format!("/vms/{id}"), None, &[]).await.1["node"].is_string()
+        call(&a, "GET", &format!("/vms/{id}"), None, &[]).await.1["vm"]["node"].is_string()
     })
     .await;
     // It needs confirmation, and refuses while another node is a member.

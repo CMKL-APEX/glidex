@@ -20,11 +20,16 @@ the error codes `401 unauthenticated`, `401 reauth_required`,
 `403 forbidden`, `403 quota_exceeded`, `409 would_lock_out` and
 `422 invalid_policy`.
 
-The storage family (guest credentials, images, disks) is served in the
-proto shape ([grpc.md](grpc.md) §9.1, [images.md](images.md) §8): the
-`glidex.storage.v1` messages as JSON, wrapped (`{disks}`, `{disk}`,
+The storage and VM families (guest credentials, images, disks; VMs,
+their events, console info and tickets, and `/scheduler/preview`) are
+served in the proto shape ([grpc.md](grpc.md) §9.1, [images.md](images.md) §8): the
+`glidex.storage.v1` and `glidex.vm.v1` messages as JSON, wrapped (`{disks}`, `{disk}`,
 `{disk, settled}`, …), with 64-bit numbers as strings, enum names in
-full and RFC 3339 times. The families not ported yet keep their shapes.
+full and RFC 3339 times. A body that is JSON but not the message (an
+unknown enum value, a wrong type) is `422 invalid`, as before; so is a
+`POST /vms` without `name`, `vcpu_count` or `mem_size_mib` (proto3 has
+no required fields, so the REST twin checks them). The families not
+ported yet keep their shapes.
 
 VMs, disks and guest credentials belong to a project: responses carry
 `project`, create bodies accept `project` (id or name; default: the
@@ -192,10 +197,11 @@ disks) accepts `?wait=<secs>` (capped at 300; gxctl and the UI send
 
 | Outcome | Response |
 |---|---|
-| no `wait` | `202` with the VM (`201` for a create) |
-| converged (`observed_generation ≥` the written generation and `Ready=True`) | `200` with the VM (`201` for a create) |
+| no `wait` | `202` with `{vm}` (`201` for a create) |
+| converged (`observed_generation ≥` the written generation and `Ready=True`) | `200` with `{vm, settled: true}` (`201` for a create) |
 | the reconcile of that generation failed (`state: failed`) | the error envelope the call used to return synchronously, chosen from the `Ready` reason, with `details.reason` and the VM in `details.vm` (D20) |
-| timeout, including while waiting on a dependency | `202` with the VM |
+| timeout, including while waiting on a dependency | `202` with `{vm, settled: false}` |
+| the VM went away meanwhile | `204` |
 
 Failure mapping (`api/errors.rs::failed_reconcile_response`):
 `NetdUnavailable` → `503 netd_unavailable`; `DiskBusy` → `409 conflict`;
@@ -219,8 +225,9 @@ grows on every write, spec or status.
 **Deletion** (`DELETE /vms/{id}`): `204` when nothing ever ran (no
 instance, no ports: the record is gone at once); otherwise `202` with
 the VM (`deleting: true`) while the controller stops the instance and
-works off its finalizers, or with `?wait`, `200` once the record is
-gone. A deleting VM refuses other writes with `409 conflict`.
+works off its finalizers, or with `?wait`, `204` once the record is
+gone (`200` before the gRPC port). A deleting VM refuses other writes
+with `409 conflict`.
 
 ### Disks
 
@@ -363,15 +370,19 @@ beyond that the call is `503 too_many_watchers` (poll instead).
   A credential's password hash is applied via `chpasswd`, so it also
   works on a rootfs that was provisioned before.
 - `~` is expanded server-side (see [data-model.md](data-model.md)).
-- `power` (`"stopped"` by default, `"running"`, `"paused"`) is the
-  desired state; with `"running"` one call creates and starts the VM.
-  `restart_policy` (`"on_failure"` default, `"never"`), `on_host_boot`
-  (`"resume"` / `"stop"`, default from `reconcile.on_host_boot`) and
-  `stop_grace_secs` (0–300, default 0 = hard stop) are optional.
+- `power` (`POWER_STATE_STOPPED` by default, `POWER_STATE_RUNNING`,
+  `POWER_STATE_PAUSED`) is the desired state; with running one call
+  creates and starts the VM. `restart_policy`
+  (`RESTART_POLICY_ON_FAILURE` default, `RESTART_POLICY_NEVER`),
+  `on_host_boot` (`HOST_BOOT_POLICY_RESUME` / `HOST_BOOT_POLICY_STOP`,
+  default from `reconcile.on_host_boot`) and `stop_grace_secs` (0–300,
+  default 0 = hard stop) are optional. `hypervisor` is
+  `HYPERVISOR_CLOUD_HYPERVISOR` or `HYPERVISOR_QEMU`. For one release
+  the old values (`"running"`, `"never"`, `"qemu"`, …) are still read.
 - Paths that reach the hypervisor command line must not contain `"` or
   control characters, and with the systemd runner must not be under
   `/tmp` or `/var/tmp` (`400 invalid_config`).
-- Response: `201 Created` with a `VmResponse` (see `?wait` above).
+- Response: `201 Created` with `{vm}` (see `?wait` above).
 
 - `credential` (firmware boot only, no custom `cloud_init_path`) names a
   stored credential that the generated seed provisions as the guest login.
@@ -387,45 +398,60 @@ beyond that the call is `503 too_many_watchers` (poll instead).
 - `DELETE /vms/{id}?keep_disk=true` keeps a root disk that was created for
   the VM; by default it is deleted with it.
 
-### `VmResponse`
+### `Vm`
+
+The `glidex.vm.v1.Vm` message ([grpc.md](grpc.md) §9.1): lists are
+`{vms}`, one VM `{vm}`, writes `{vm, settled}`.
 
 ```json
 { "id": "…", "name": "web-1", "project": "…",
-  "state": "running", "desired_state": "running",
-  "generation": 4, "observed_generation": 4, "resource_version": 17, "restart_required": false,
-  "conditions": [ { "kind": "Ready", "status": "True", "reason": "Converged", "message": "", "last_transition_at": 1791000000 } ],
-  "last_exit": { "at": 1790990000, "instance_id": "…", "cause": "crashed", "signal": 9 },
-  "restart_policy": "on_failure", "on_host_boot": "resume", "stop_grace_secs": 0,
-  "vcpu_count": 2, "mem_size_mib": 2048, "hypervisor": "cloudhypervisor", "…": "…" }
+  "state": "VM_STATE_RUNNING", "desired_state": "POWER_STATE_RUNNING",
+  "generation": "4", "observed_generation": "4", "resource_version": "17", "restart_required": false,
+  "conditions": [ { "kind": "Ready", "status": "CONDITION_STATUS_TRUE", "reason": "Converged", "last_transition_at": "2026-10-17T01:00:00Z" } ],
+  "last_exit": { "at": "2026-10-16T22:13:20Z", "instance_id": "…", "cause": "EXIT_CAUSE_CRASHED", "signal": 9 },
+  "restart_policy": "RESTART_POLICY_ON_FAILURE", "on_host_boot": "HOST_BOOT_POLICY_RESUME",
+  "vcpu_count": 2, "mem_size_mib": 2048, "hypervisor": "HYPERVISOR_CLOUD_HYPERVISOR", "…": "…" }
 ```
 
-`state` is one of `created`, `starting`, `running`, `paused`,
-`stopping`, `stopped`, `failed`, `unknown`
+`state` is `VM_STATE_` and one of `CREATED`, `STARTING`, `RUNNING`,
+`PAUSED`, `STOPPING`, `STOPPED`, `FAILED`, `UNKNOWN`
 ([data-model.md](data-model.md#powerstate-vmphase-and-the-derived-vmstate));
-`desired_state` one of `running`, `paused`, `stopped`. `conditions` and
-their reasons are the closed catalogue of
+`desired_state` a `POWER_STATE_`. `conditions` and their reasons are
+the closed catalogue of
 [reconciliation.md §7.5](reconciliation.md#75-exit-handling);
-`last_exit.cause` is `requested`, `terminated`, `clean_exit`,
-`crashed`, `launch_failed`, `host_reboot` or `lost`. `deleting: true`
-appears while a deletion is in progress.
+`last_exit.cause` an `EXIT_CAUSE_` (`REQUESTED`, `TERMINATED`,
+`CLEAN_EXIT`, `CRASHED`, `LAUNCH_FAILED`, `HOST_REBOOT`, `LOST`).
+`generation`, `observed_generation` and `resource_version` are 64-bit,
+so strings. Fields at their default are left out (`stop_grace_secs: 0`,
+empty lists); `deleting: true` appears while a deletion is in progress.
+`GET /vms/{id}?view=full` still returns the stored record, the store's
+own format.
 
 ### `PATCH /vms/{id}`
 
-A JSON merge patch of the spec:
+`UpdateVmRequest`: a change and the fields it applies.
 
 ```json
-{ "power": "running", "stop_grace_secs": 30,
-  "config": { "mem_size_mib": 4096, "data_disks": ["data-1"], "credential": null } }
+{ "change": { "power": "POWER_STATE_RUNNING", "stop_grace_secs": 30, "mem_size_mib": 4096,
+              "data_disks": ["data-1"] },
+  "update_mask": "power,stop_grace_secs,mem_size_mib,data_disks,credential" }
 ```
 
-Top level: `power`, `restart_policy`, `on_host_boot`,
-`stop_grace_secs`. `config`: `vcpu_count`, `mem_size_mib`,
-`kernel_args`, `credential` (`null` removes it), `hugepages`,
+The fields: `power`, `restart_policy`, `on_host_boot`,
+`stop_grace_secs`, `vcpu_count`, `mem_size_mib`, `kernel_args`,
+`credential` (in the mask but absent: removed), `hugepages`,
 `vfio_devices`, `data_disks` (ids or names; replaces the list),
-`networks`. Unknown fields are `422`; immutable ones
-(`hypervisor`, `kernel_image_path`, `firmware_path`, `firmware`, `rootfs_path`,
+`networks`. Without `update_mask` the fields present in `change` are
+the ones changed. Another path is `400 invalid_config`.
+`expected_resource_version` (or `If-Match`) and `?wait` as above.
+
+For one release the merge patch from before the port is still read:
+`{"power": "running", "stop_grace_secs": 30, "config": {"mem_size_mib":
+4096, "credential": null}}`. Its immutable fields (`hypervisor`,
+`kernel_image_path`, `firmware_path`, `firmware`, `rootfs_path`,
 `cloud_init_path`, `root_disk`, `image`) are refused with `400
 invalid_config` ("immutable field(s): …") before anything is authorized.
+
 When each change takes effect is in
 [data-model.md](data-model.md) (mutability); changes that need a new
 launch set `restart_required` while the VM runs. Each changed field is
@@ -435,12 +461,13 @@ checked against the project quota like a create.
 ### `GET /vms/{id}/events`
 
 ```json
-{ "events": [ { "at": 1791000520, "actor": "guest", "kind": "warning",
+{ "events": [ { "at": "2026-10-17T01:08:40Z", "actor": "guest", "kind": "EVENT_KIND_WARNING",
                 "reason": "CleanExit", "message": "guest powered off; desired state set to stopped" } ] }
 ```
 
 `actor` is `api:<principal>`, `controller`, `guest`, `systemd` or
-`host`; `kind` is `normal` or `warning`. Needs `readVm`.
+`host`; `kind` is `EVENT_KIND_NORMAL` or `EVENT_KIND_WARNING`. Needs
+`readVm`.
 
 ### `GET /system/reconcile`
 
@@ -499,7 +526,10 @@ launch. A hot-plug the hypervisor refuses shows as
 `available` is `true` while an instance exists, including after the
 guest exited and until the controller releases the shim, so the last
 output of a crashed guest stays reachable. gxctl checks it before
-opening the WebSocket.
+opening the WebSocket. `POST /vms/{id}/console/ticket` answers
+`{ticket, expires_in}`; `GET /vms/{id}/console/log` stays raw bytes
+(`application/octet-stream`; the RPC `GetConsoleLog` answers `{data}`).
+The WebSocket itself stays one until G4 ([grpc.md](grpc.md) §9).
 
 ## Error model
 
