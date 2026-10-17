@@ -1,0 +1,625 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Clusters - Glidex</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="Install, use and operate Glidex">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon-de23e50b.svg">
+        <link rel="shortcut icon" href="../favicon-8114d1fc.png">
+        <link rel="stylesheet" href="../css/variables-8adf115d.css">
+        <link rel="stylesheet" href="../css/general-e96d0476.css">
+        <link rel="stylesheet" href="../css/chrome-d279d366.css">
+        <link rel="stylesheet" href="../css/print-9e4910d8.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../fonts/fonts-9644e21d.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="mdbook-highlight-css" href="../highlight-493f70e1.css">
+        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="../tomorrow-night-4c0ae647.css">
+        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="../ayu-highlight-3fdfc3ac.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "../searchindex-c284ecbb.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc-3f2f0e1d.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="mdbook-body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="mdbook-sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("mdbook-sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="mdbook-sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="mdbook-page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="mdbook-menu-bar-hover-placeholder"></div>
+                <div id="mdbook-menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="mdbook-sidebar-toggle" class="icon-button" for="mdbook-sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="mdbook-sidebar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M0 96C0 78.3 14.3 64 32 64H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32C14.3 128 0 113.7 0 96zM0 256c0-17.7 14.3-32 32-32H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32c-17.7 0-32-14.3-32-32zM448 416c0 17.7-14.3 32-32 32H32c-17.7 0-32-14.3-32-32s14.3-32 32-32H416c17.7 0 32 14.3 32 32z"/></svg></span>
+                        </label>
+                        <button id="mdbook-theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="mdbook-theme-list">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M371.3 367.1c27.3-3.9 51.9-19.4 67.2-42.9L600.2 74.1c12.6-19.5 9.4-45.3-7.6-61.2S549.7-4.4 531.1 9.6L294.4 187.2c-24 18-38.2 46.1-38.4 76.1L371.3 367.1zm-19.6 25.4l-116-104.4C175.9 290.3 128 339.6 128 400c0 3.9 .2 7.8 .6 11.6c1.8 17.5-10.2 36.4-27.8 36.4H96c-17.7 0-32 14.3-32 32s14.3 32 32 32H240c61.9 0 112-50.1 112-112c0-2.5-.1-5-.2-7.5z"/></svg></span>
+                        </button>
+                        <ul id="mdbook-theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-ayu">Ayu</button></li>
+                        </ul>
+                        <button id="mdbook-search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="mdbook-searchbar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352c79.5 0 144-64.5 144-144s-64.5-144-144-144S64 128.5 64 208s64.5 144 144 144z"/></svg></span>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">Glidex</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/CMKL-APEX/glidex" title="Git repository" aria-label="Git repository">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 496 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6zm-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3zm44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9zM244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252 496 113.3 383.5 8 244.8 8zM97.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1zm-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7zm32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1zm-11.4-14.7c-1.6 1-1.6 3.6 0 5.9 1.6 2.3 4.3 3.3 5.6 2.3 1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/CMKL-APEX/glidex/edit/main/docs/public/src/operator-guide/clusters.md" title="Suggest an edit" aria-label="Suggest an edit" rel="edit">
+                            <span class=fa-svg id="git-edit-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M421.7 220.3l-11.3 11.3-22.6 22.6-205 205c-6.6 6.6-14.8 11.5-23.8 14.1L30.8 511c-8.4 2.5-17.5 .2-23.7-6.1S-1.5 489.7 1 481.2L38.7 353.1c2.6-9 7.5-17.2 14.1-23.8l205-205 22.6-22.6 11.3-11.3 33.9 33.9 62.1 62.1 33.9 33.9zM96 353.9l-9.3 9.3c-.9 .9-1.6 2.1-2 3.4l-25.3 86 86-25.3c1.3-.4 2.5-1.1 3.4-2l9.3-9.3H112c-8.8 0-16-7.2-16-16V353.9zM453.3 19.3l39.4 39.4c25 25 25 65.5 0 90.5l-14.5 14.5-22.6 22.6-11.3 11.3-33.9-33.9-62.1-62.1L314.3 67.7l11.3-11.3 22.6-22.6 14.5-14.5c25-25 65.5-25 90.5 0z"/></svg></span>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="mdbook-search-wrapper" class="hidden">
+                    <form id="mdbook-searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="mdbook-searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="mdbook-searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <span class=fa-svg id="fa-spin"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M304 48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zm0 416c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM48 304c26.5 0 48-21.5 48-48s-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48zm464-48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM142.9 437c18.7-18.7 18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zm0-294.2c18.7-18.7 18.7-49.1 0-67.9S93.7 56.2 75 75s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zM369.1 437c18.7 18.7 49.1 18.7 67.9 0s18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9z"/></svg></span>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="mdbook-searchresults-outer" class="searchresults-outer hidden">
+                        <div id="mdbook-searchresults-header" class="searchresults-header"></div>
+                        <ul id="mdbook-searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('mdbook-sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('mdbook-sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#mdbook-sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="mdbook-content" class="content">
+                    <main>
+                        <h1 id="clusters"><a class="header" href="#clusters">Clusters</a></h1>
+<p>Several Glidex hosts can run as one cluster: one API, one set of
+projects, users and images, and a scheduler that places VMs on the
+nodes. This page covers forming a cluster, adding and removing nodes,
+recovery, upgrades, and turning on cluster networks (OVN).</p>
+<p>Cluster operations need the <code>system-admin</code> role. On the local socket,
+members of <code>glidex-admin</code> have it. Most of them (init, join tokens,
+removals, snapshots, CA rotation, OVN settings) also need a recent
+login: over TCP or in the web UI, you may be asked to log in again.</p>
+<h2 id="roles-and-quorum"><a class="header" href="#roles-and-quorum">Roles and quorum</a></h2>
+<p>Every node runs the same software and runs VMs. A node is one of:</p>
+<ul>
+<li><strong>Server</strong>: keeps a copy of the cluster’s database, replicated with
+Raft, and serves the API. Servers sign node certificates and run OVN’s
+databases when OVN is on.</li>
+<li><strong>Agent</strong>: only runs VMs. It has no API of its own: <code>gxctl</code> on an
+agent says so and points you to a server. Its web UI still works; it
+relays every request to a server, which authenticates it, so you log
+in there with the servers’ users.</li>
+</ul>
+<p>The servers that vote in Raft are <em>voters</em>. A cluster keeps working
+while a majority of voters is up, so run 1, 3 or 5 servers: 3 survive
+one lost server, 5 survive two. Glidex refuses changes that leave an
+even number of voters or no majority, unless you <code>--force</code> the even
+case.</p>
+<p>Nodes talk to each other on TCP 8842 (the node API), with mutual TLS
+under the cluster’s own certificate authority. The installer doesn’t
+open firewall ports; see <a href="host-networking.html#ports-between-nodes">the port list</a>.</p>
+<h2 id="before-you-start"><a class="header" href="#before-you-start">Before you start</a></h2>
+<p>Install Glidex on every host as in <a href="installation.html">Installation</a>. OVN
+is installed too unless you pass <code>--no-ovn</code>; its services stay off until
+the host is in a cluster. Give each host a stable address that the
+others can reach.</p>
+<h2 id="create-a-cluster"><a class="header" href="#create-a-cluster">Create a cluster</a></h2>
+<p>On the first host, which becomes the first server:</p>
+<pre><code class="language-bash">gxctl cluster init --force
+</code></pre>
+<p><code>--force</code> is required: init re-keys every record for clustering and
+can’t be undone from Glidex. It keeps a copy of the database first
+(<code>glidex.db.pre-cluster-&lt;time&gt;</code> in the data directory) and prints the
+cluster id and the CA’s SHA-256 fingerprint. VMs keep running.</p>
+<p>The node advertises its first non-loopback address on port 8842. To
+choose, pass <code>--advertise 192.0.2.11:8842</code>; <code>--tunnel-ip</code> sets the
+address for Geneve tunnels (default: the advertised address).</p>
+<p>In the web UI: <strong>Cluster</strong> → <strong>Make this host a cluster</strong> →
+<strong>Initialize cluster…</strong>, with the same two fields.</p>
+<p>Check it:</p>
+<pre><code class="language-bash">gxctl cluster status
+gxctl nodes
+</code></pre>
+<h2 id="join-tokens"><a class="header" href="#join-tokens">Join tokens</a></h2>
+<p>A host joins with a one-time token issued by a server. The token is a
+secret: it is shown once, works once, and expires (1 hour by default,
+up to 7 days). Write it straight to a private file:</p>
+<pre><code class="language-bash">umask 077
+gxctl cluster join-token --role agent &gt; join.token           # an agent
+gxctl cluster join-token --role server --ttl 24h &gt; join.token
+gxctl cluster join-token --role agent --allow-import &gt; join.token
+</code></pre>
+<p><code>--role</code> is <code>agent</code> (default) or <code>server</code>, and the joining host must ask
+for the same role. <code>--allow-import</code> lets the host bring its existing VMs
+along (see <a href="#import-an-existing-hosts-vms">Import</a>). The command prints
+the servers to join through on standard error.</p>
+<p>In the web UI: <strong>Cluster</strong> → <strong>+ Add node</strong>, pick the <strong>Role</strong>, how long
+the <strong>Token valid for</strong>, and whether the host has VMs to bring along.
+The dialog shows the token once with the commands to run.</p>
+<p>Copy the token to the new host over a secure channel (for example
+<code>scp</code>), keep it mode 0600, and delete it after use. The token also pins
+the cluster’s CA: the joining host refuses a server whose CA doesn’t
+match it.</p>
+<h2 id="join-a-host"><a class="header" href="#join-a-host">Join a host</a></h2>
+<p>On the new host, from your Glidex checkout, with the token file:</p>
+<pre><code class="language-bash">cargo run -p glidex-install -- --join 192.0.2.11:8842 --role agent --token-file join.token
+</code></pre>
+<p>The installer installs or updates Glidex as usual, then joins. The
+token is read from the file (which must not be readable by others) or
+from standard input, never from the command line. Options:</p>
+<ul>
+<li><code>--role server</code> for a server (the token must be a server token).</li>
+<li><code>--advertise IP:PORT</code>: the address other nodes use for this one.</li>
+<li><code>--node-name NAME</code>: default is the host name.</li>
+</ul>
+<p>A host that already runs Glidex can join with <code>gxctl</code> instead:</p>
+<pre><code class="language-bash">gxctl cluster join --server 192.0.2.11:8842 --role agent --token-file join.token
+</code></pre>
+<p><code>gxctl cluster join</code> defaults to <code>--role server</code>, so pass the role the
+token was made for.</p>
+<p>A host that has VMs, disks, networks or credentials can’t do a plain
+join: that would abandon them. Remove them, or join with <code>--import</code>.</p>
+<h2 id="add-servers"><a class="header" href="#add-servers">Add servers</a></h2>
+<p>A new server joins as a Raft <em>learner</em>, then becomes a voter. To keep
+the voter count odd, learners are promoted in pairs: join two servers
+to go from 1 to 3 voters, two more to reach 5. A single extra server
+stays a learner until the next one joins, or until you promote it:</p>
+<pre><code class="language-bash">gxctl cluster promote node2 node3        # learners to voters; --force for an even count
+</code></pre>
+<p><code>gxctl cluster status</code> lists voters and learners; the <strong>Raft</strong> card on
+the Cluster page shows the same.</p>
+<p>An agent can’t become a server in place. To turn an agent into a
+server, take it out of the cluster and join it again with a server
+token.</p>
+<h2 id="import-an-existing-hosts-vms"><a class="header" href="#import-an-existing-hosts-vms">Import an existing host’s VMs</a></h2>
+<p>A standalone host can join with its VMs, disks, networks and
+credentials:</p>
+<ol>
+<li>On a server: <code>gxctl cluster join-token --role agent --allow-import &gt; join.token</code>
+(or tick <strong>The host already has VMs to bring along</strong> in <strong>+ Add node</strong>).</li>
+<li>On the host:
+<code>cargo run -p glidex-install -- --join 192.0.2.11:8842 --import --token-file join.token</code>.
+Nothing changes yet: the host sends a plan and waits.</li>
+<li>An administrator reviews and approves the plan. On the Cluster page,
+<strong>Pending imports</strong> lists it; its page shows what the host brings,
+lets you map its projects, node networks and credentials to names in
+the cluster, and reports problems. <strong>Check</strong>, then <strong>Approve</strong> (or
+<strong>Reject</strong>). From the CLI:</li>
+</ol>
+<pre><code class="language-bash">gxctl node import list
+gxctl node import show &lt;plan&gt;
+gxctl node import approve &lt;plan&gt; --project lab=new:lab-imported --dry-run
+gxctl node import approve &lt;plan&gt; --project lab=new:lab-imported --network default=lab-net
+gxctl node import reject &lt;plan&gt;
+</code></pre>
+<p><code>--project src=existing</code> puts a project’s resources into an existing
+project, <code>src=new:name</code> into a new one. <code>--network a=b</code> and
+<code>--credential project/user=new</code> rename networks and credentials whose
+name is taken. <code>--over-quota</code> accepts an import that takes a project
+over its quota. A plan expires after a day.</p>
+<p>On approval the host joins and its resources become the cluster’s in
+one step. Its VMs keep running.</p>
+<h2 id="placement"><a class="header" href="#placement">Placement</a></h2>
+<p>The scheduler picks a node when a VM is created. A node is a candidate
+only if it is <code>Active</code>, ready, not draining, has room, and has what the
+VM needs: the hypervisor, the image’s architecture, hugepages if asked,
+its PCI devices, the physical networks of its provider networks, a
+userspace <code>br-int</code> for vhost-user NICs on cluster networks, an OVN
+version as new as the cluster’s, and the node of any disk or node
+network it uses. Among candidates it picks the least allocated
+(the larger of CPU and memory share after placing), then the one with
+fewest VMs.</p>
+<p>Room is each node’s CPUs and memory minus a reserve, times an
+overcommit ratio. The defaults, in <code>/etc/glidex/control-plane.json</code>:</p>
+<pre><code class="language-json">{
+  "cluster": {
+    "scheduler": { "cpu_overcommit": 4.0, "memory_overcommit": 1.0 },
+    "node_reserved": { "cpus": 1, "memory_mib": 2048 }
+  }
+}
+</code></pre>
+<p>The VM form’s <strong>Placement</strong> shows the scheduler’s choice
+(<strong>Automatic (now: …)</strong>) and each node’s free vCPUs and memory, or why
+it can’t take the VM. Pick a node to pin the VM there (<code>node</code> in the
+API). A VM no node can take is still created and waits, with each
+node’s reason in its status.</p>
+<p>A VM stays on its node once placed. Glidex doesn’t move running VMs.</p>
+<h2 id="node-lifecycle"><a class="header" href="#node-lifecycle">Node lifecycle</a></h2>
+<p>Each node has a phase: <code>Active</code>, <code>Draining</code>, <code>Departing</code> (a detach in
+progress), or one of the end states <code>Departed</code>, <code>Removed</code>, <code>Forgotten</code>.
+The Cluster page’s <strong>Nodes</strong> card shows phase and readiness; a node’s
+page has an <strong>Operations…</strong> menu for everything below.</p>
+<h3 id="a-node-is-down-for-a-while"><a class="header" href="#a-node-is-down-for-a-while">A node is down for a while</a></h3>
+<p>Nothing to do. A node that stops reporting for 40 seconds
+(<code>cluster.node_grace_secs</code>) becomes not ready, and so do its VMs
+(<code>NodeUnreachable</code>). Nothing is restarted elsewhere. The node comes back
+by itself with its identity.</p>
+<h3 id="drain"><a class="header" href="#drain">Drain</a></h3>
+<pre><code class="language-bash">gxctl node drain node3
+gxctl node undrain node3
+</code></pre>
+<p>A draining node gets no new VMs. VMs already there keep running; the
+command prints what is still on the node. Stop, delete or move them
+before removing it.</p>
+<h3 id="remove-an-empty-node"><a class="header" href="#remove-an-empty-node">Remove an empty node</a></h3>
+<ol>
+<li><code>gxctl node drain node3</code>, then delete its VMs, disks and node
+networks (or <a href="#detach-a-node-with-its-vms">detach</a> it with them).</li>
+<li><code>gxctl node remove node3</code>. Refused while the node holds a VM, disk
+or node network, if it is the only gateway of the shared edge or of a
+project router, or if the Raft voters left would have no majority or
+an even count (<code>--force</code> for the even case only).</li>
+<li>On that host, from your checkout:
+<code>cargo run -p glidex-install -- --leave</code>. It refuses until the removal
+has committed, then makes the host standalone again. (On a removed
+server whose control plane still runs, <code>gxctl cluster leave</code> does the
+same; an agent has no local API for it.)</li>
+</ol>
+<p>Removing a server rotates the CA afterwards: it held the CA key.</p>
+<h3 id="detach-a-node-with-its-vms"><a class="header" href="#detach-a-node-with-its-vms">Detach a node with its VMs</a></h3>
+<pre><code class="language-bash">gxctl node detach node3 --map-network lab=lab-standalone
+gxctl node detach node3 --abort         # before the node acknowledged
+</code></pre>
+<p>The node leaves <em>with</em> its VMs, disks and node networks and becomes a
+standalone host that owns them. <code>--with-access</code> also carries the
+projects’ users, teams and role bindings (never sessions or tokens).
+The node is frozen while the handover runs. The Cluster page shows it
+under <strong>Detaches</strong>.</p>
+<p>If no server can be reached at all, a node can leave on its own:</p>
+<pre><code class="language-bash">cargo run -p glidex-install -- --leave --keep-resources --offline
+</code></pre>
+<p>It asks for confirmation: changes made in the cluster since the node
+last synced are lost. Then, on a server, run
+<code>gxctl node detach node3 --departed</code> so the cluster lets go of it.</p>
+<h3 id="a-node-is-gone-for-good"><a class="header" href="#a-node-is-gone-for-good">A node is gone for good</a></h3>
+<ol>
+<li>Make sure it is powered off or fenced. Then:
+<code>gxctl node forget node3 --fenced</code> (add <code>--force</code> if that leaves an
+even number of voters). Its VMs stay recorded, marked lost; its
+certificate is refused from now on; a forgotten server is rotated out
+of the CA.</li>
+<li>When you no longer want its records:
+<code>gxctl node purge node3</code>. This deletes the records of its VMs, disks
+and networks, not any files.</li>
+</ol>
+<h3 id="a-repaired-host-comes-back-as-itself"><a class="header" href="#a-repaired-host-comes-back-as-itself">A repaired host comes back as itself</a></h3>
+<p>A forgotten node, or one whose certificate expired, can rejoin with the
+same identity, disks and VMs:</p>
+<pre><code class="language-bash">umask 077
+gxctl node rejoin-token node3 &gt; rejoin.token
+gxctl node rejoin-token node3 --raft-lost &gt; rejoin.token   # a server whose Raft state is gone
+</code></pre>
+<p>Use <code>--raft-lost</code> for a server whose <code>cluster/raft</code> directory is gone or
+older than its last vote: it then returns as a learner with fresh Raft
+state. On the host:</p>
+<pre><code class="language-bash">cargo run -p glidex-install -- --rejoin 192.0.2.11:8842 --token-file rejoin.token
+</code></pre>
+<p>Add <code>--node-id &lt;id&gt;</code> if the host lost its cluster files. A removed or
+departed node’s id is retired; it joins as a new node instead.</p>
+<h3 id="end-the-cluster"><a class="header" href="#end-the-cluster">End the cluster</a></h3>
+<p>On the last node, after every other node has left:</p>
+<pre><code class="language-bash">gxctl cluster dissolve --force
+</code></pre>
+<p>The host becomes standalone with every VM, disk, network and user, and
+keeps a final snapshot. Restart the control plane afterwards. The
+Cluster page’s <strong>Danger zone</strong> has <strong>Leave</strong> (for a removed node) and
+<strong>Dissolve</strong>.</p>
+<h2 id="certificates-and-the-ca"><a class="header" href="#certificates-and-the-ca">Certificates and the CA</a></h2>
+<p>The cluster CA is valid for 10 years, node certificates for one. Nodes
+renew their certificates by themselves 30 days before they expire. The
+CA rotates by itself after a server leaves and a year before it
+expires. To rotate on demand:</p>
+<pre><code class="language-bash">gxctl cluster rotate-ca                  # old CA retires after 7 days, or once every node renewed
+gxctl cluster rotate-ca --grace 0        # retire at once
+</code></pre>
+<p><code>--grace</code> is in seconds (default 604800, <code>cluster.ca_rotation_grace_secs</code>).
+Every node trusts both CAs, renews its certificate under the new one,
+and the old one retires. A node that was unreachable the whole time
+needs a rejoin token. The <strong>Certificate authority</strong> card on the Cluster
+page shows the signing CA, its expiry, a rotation in progress, and
+nodes not yet renewed; <strong>Rotate</strong> starts one (grace in days there).</p>
+<p>Join tokens pin the CA. A token issued before a rotation fails with
+“the server’s CA … is not the one the token names”: issue a new one.</p>
+<h3 id="the-secrets-key"><a class="header" href="#the-secrets-key">The secrets key</a></h3>
+<p>Connector secrets are sealed with a key every server holds. Rotate it
+with:</p>
+<pre><code class="language-bash">gxctl cluster rotate-secrets-key
+</code></pre>
+<p>If a server can’t be reached, it stops before re-wrapping anything; run
+it again.</p>
+<h2 id="rolling-upgrades"><a class="header" href="#rolling-upgrades">Rolling upgrades</a></h2>
+<p>Upgrade one node at a time: agents first, then servers. On each host,
+update the checkout and re-run the installer (see
+<a href="maintenance.html#updating">Maintenance</a>). VMs keep running while the
+control plane restarts.</p>
+<p><code>gxctl cluster status</code> shows each node’s version and feature level. The
+cluster runs at the lowest feature level any server reports, and uses
+new formats only once every server has them. Keep servers within one
+release of each other while you upgrade, and finish the round before
+starting the next.</p>
+<!-- TODO(verify): the "servers at N, agents at N or N-1" rule is not enforced in code; confirm the supported version skew. -->
+<p>The installer also brings a node’s OVN up to the version the cluster’s
+<code>ovn-northd</code> runs. A node whose OVN is older gets no VMs on cluster
+networks; the Cluster page names it.</p>
+<h2 id="backups-and-lost-quorum"><a class="header" href="#backups-and-lost-quorum">Backups and lost quorum</a></h2>
+<p>On a server, take a snapshot of the replicated database regularly:</p>
+<pre><code class="language-bash">gxctl cluster snapshot glidex-$(date +%F).gxsnap
+</code></pre>
+<p>The file is written 0600: it holds credential and token hashes. Store it
+like the database itself. The Cluster page’s <strong>Certificate authority</strong>
+card also offers <strong>Download a cluster snapshot</strong>.</p>
+<p>If a majority of servers is destroyed, the cluster can’t elect a
+leader. Recover from one surviving server:</p>
+<ol>
+<li>
+<p>On that server, stop the control plane (VMs keep running):
+<code>sudo systemctl stop glidex-control-plane</code>.</p>
+</li>
+<li>
+<p>Start a single-voter cluster from its own database, or from a
+snapshot. Copy the snapshot where the <code>glidex</code> user can read it
+(<code>sudo install -o glidex -g glidex -m 0600 glidex-….gxsnap /var/lib/glidex-control-plane/latest.gxsnap</code>), then:</p>
+<pre><code class="language-bash">sudo -u glidex env HOME=/var/lib/glidex-control-plane \
+  /usr/local/bin/glidex-control-plane --force-new-cluster --from /var/lib/glidex-control-plane/latest.gxsnap
+</code></pre>
+<p>Leave out <code>--from</code> to use its local database. Then
+<code>sudo systemctl start glidex-control-plane</code>.</p>
+</li>
+<li>
+<p>Re-join the other servers with <code>--rejoin</code> and tokens made with
+<code>gxctl node rejoin-token &lt;node&gt; --raft-lost</code>.</p>
+</li>
+<li>
+<p>With OVN on, OVN’s own databases need the same: on a surviving
+server, convert its northbound and southbound database files to
+standalone (<code>ovsdb-tool cluster-to-standalone</code>), then re-cluster the
+servers.</p>
+</li>
+</ol>
+<!-- TODO(verify): step 4 (OVN NB/SB recovery) is not exercised by the test suite; confirm the exact procedure and file locations before publishing more detail. -->
+<h2 id="cluster-networks-on-ovn"><a class="header" href="#cluster-networks-on-ovn">Cluster networks on OVN</a></h2>
+<p>With OVN off, every network lives on one node. With OVN on, <em>cluster
+networks</em> span every node: VMs on different nodes share them over
+Geneve tunnels, and NAT cluster networks leave through a shared edge.
+Node networks and their VMs are not affected either way.</p>
+<h3 id="turn-ovn-on"><a class="header" href="#turn-ovn-on">Turn OVN on</a></h3>
+<p>Every node needs OVN installed (the default). If the Cluster page’s
+<strong>OVN</strong> card lists a node as missing it, re-run the installer there with
+<code>--ovn</code>. Then <strong>Enable OVN…</strong> on that card. Every node follows within a
+minute, without a restart: servers start OVN’s databases, every node
+becomes a chassis.</p>
+<p>You can instead set it in a server’s <code>/etc/glidex/control-plane.json</code>
+(<code>"cluster": {"ovn": {"enabled": true}}</code>) and restart the control plane;
+saving in the UI makes the setting the cluster’s.</p>
+<p>With OVN on, the <strong>OVN</strong> card shows tunnels between nodes, and nodes
+whose OVN is out of date. <strong>OVN settings…</strong> holds the rest. <strong>Disable
+OVN…</strong> is there too, once no cluster network is left.</p>
+<h3 id="ovn-settings"><a class="header" href="#ovn-settings">OVN settings</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td>DNS servers for guests</td><td>Resolvers handed to guests on cluster networks; default: the hosts’.</td></tr>
+<tr><td>NAT supernet</td><td>Where NAT cluster networks get their subnets; default <code>10.89.0.0/16</code>.</td></tr>
+<tr><td>Underlay MTU</td><td>The MTU of the network between nodes; default 1500. Cluster networks get 58 bytes less, for the Geneve header.</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="the-shared-edge"><a class="header" href="#the-shared-edge">The shared edge</a></h3>
+<p>NAT cluster networks reach the outside through a logical router on
+<em>gateway nodes</em>, with one outside address. Tick <strong>Shared edge for NAT
+cluster networks</strong> in <strong>OVN settings…</strong> and fill in:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>Example</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td>Physical network</td><td><code>uplink</code></td><td>The LAN the edge sits on; each gateway node maps it to a bridge.</td></tr>
+<tr><td>External network</td><td><code>192.0.2.0/24</code></td><td>That LAN’s subnet.</td></tr>
+<tr><td>Gateway</td><td><code>192.0.2.1</code></td><td>The LAN’s router.</td></tr>
+<tr><td>Edge address</td><td><code>192.0.2.50</code></td><td>The edge’s own address on the LAN; NAT traffic leaves with it.</td></tr>
+<tr><td>Pool for VPC routers (optional)</td><td><code>192.0.2.64/26</code></td><td>Outside addresses for project routers that get their own.</td></tr>
+<tr><td>Gateway nodes, by priority</td><td>node1, node2</td><td>Where the edge runs; the next takes over if one fails.</td></tr>
+</tbody>
+</table>
+</div>
+<p>The fields are prefilled from what the nodes report (their uplinks,
+addresses and routes); <strong>Suggest values</strong> fills them again, with notes
+on anything uncertain. Each gateway node must map the physical network
+and have <code>br-int</code> on the kernel datapath; see
+<a href="host-networking.html#clusters-ovn-on-the-host">Host networking</a>. Use
+addresses on the LAN that nothing else uses.</p>
+<p>The same settings can be given in a server’s <code>control-plane.json</code>
+under <code>cluster.ovn</code> (<code>edge</code> with <code>physnet</code>, <code>external_cidr</code>, <code>gateway</code>,
+<code>external_ip</code>, <code>external_pool</code>, <code>gateway_nodes</code>); the OVN settings
+dialog says when it is showing the file’s values.</p>
+<p>Projects can have their own routers, each with its own outside address
+from the pool, and attach their NAT or isolated networks to them; see
+<a href="../user-guide/networks.html">Networks</a>.</p>
+<h2 id="the-cluster-page"><a class="header" href="#the-cluster-page">The Cluster page</a></h2>
+<p>The web UI’s <strong>Cluster</strong> page (in the side menu) shows, on a cluster:</p>
+<ul>
+<li>the cluster id and feature level, and <strong>+ Add node</strong>;</li>
+<li>warnings for ports that don’t answer, a CA rotation under way, and
+detaches in progress;</li>
+<li><strong>Nodes</strong>: role, phase, readiness, address, version and VM count;
+click a node for its page (capacity, versions, KVM / IOMMU / DPDK,
+<code>br-int</code> datapath, physical networks, its VMs and disks, and the
+<strong>Operations…</strong> menu);</li>
+<li><strong>Pending imports</strong> and <strong>Detaches</strong>;</li>
+<li><strong>Raft</strong>: state, term, leader, voters and learners;</li>
+<li><strong>OVN</strong>: on/off, tunnels, settings;</li>
+<li><strong>Certificate authority</strong>, and the <strong>Danger zone</strong>.</li>
+</ul>
+<p>On a standalone host it offers <strong>Make this host a cluster</strong>.</p>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../operator-guide/pci-passthrough.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                            </a>
+
+                            <a rel="next prefetch" href="../operator-guide/maintenance.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../operator-guide/pci-passthrough.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                    </a>
+
+                    <a rel="next prefetch" href="../operator-guide/maintenance.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                    </a>
+            </nav>
+
+        </div>
+
+        <template id=fa-eye><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M288 32c-80.8 0-145.5 36.8-192.6 80.6C48.6 156 17.3 208 2.5 243.7c-3.3 7.9-3.3 16.7 0 24.6C17.3 304 48.6 356 95.4 399.4C142.5 443.2 207.2 480 288 480s145.5-36.8 192.6-80.6c46.8-43.5 78.1-95.4 93-131.1c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C433.5 68.8 368.8 32 288 32zM432 256c0 79.5-64.5 144-144 144s-144-64.5-144-144s64.5-144 144-144s144 64.5 144 144zM288 192c0 35.3-28.7 64-64 64c-11.5 0-22.3-3-31.6-8.4c-.2 2.8-.4 5.5-.4 8.4c0 53 43 96 96 96s96-43 96-96s-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6z"/></svg></span></template>
+        <template id=fa-eye-slash><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M38.8 5.1C28.4-3.1 13.3-1.2 5.1 9.2S-1.2 34.7 9.2 42.9l592 464c10.4 8.2 25.5 6.3 33.7-4.1s6.3-25.5-4.1-33.7L525.6 386.7c39.6-40.6 66.4-86.1 79.9-118.4c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C465.5 68.8 400.8 32 320 32c-68.2 0-125 26.3-169.3 60.8L38.8 5.1zM223.1 149.5C248.6 126.2 282.7 112 320 112c79.5 0 144 64.5 144 144c0 24.9-6.3 48.3-17.4 68.7L408 294.5c5.2-11.8 8-24.8 8-38.5c0-53-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6c0 10.2-2.4 19.8-6.6 28.3l-90.3-70.8zm223.1 298L373 389.9c-16.4 6.5-34.3 10.1-53 10.1c-79.5 0-144-64.5-144-144c0-6.9 .5-13.6 1.4-20.2L83.1 161.5C60.3 191.2 44 220.8 34.5 243.7c-3.3 7.9-3.3 16.7 0 24.6c14.9 35.7 46.2 87.7 93 131.1C174.5 443.2 239.2 480 320 480c47.8 0 89.9-12.9 126.2-32.5z"/></svg></span></template>
+        <template id=fa-copy><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M502.6 70.63l-61.25-61.25C435.4 3.371 427.2 0 418.7 0H255.1c-35.35 0-64 28.66-64 64l.0195 256C192 355.4 220.7 384 256 384h192c35.2 0 64-28.8 64-64V93.25C512 84.77 508.6 76.63 502.6 70.63zM464 320c0 8.836-7.164 16-16 16H255.1c-8.838 0-16-7.164-16-16L239.1 64.13c0-8.836 7.164-16 16-16h128L384 96c0 17.67 14.33 32 32 32h47.1V320zM272 448c0 8.836-7.164 16-16 16H63.1c-8.838 0-16-7.164-16-16L47.98 192.1c0-8.836 7.164-16 16-16H160V128H63.99c-35.35 0-64 28.65-64 64l.0098 256C.002 483.3 28.66 512 64 512h192c35.2 0 64-28.8 64-64v-32h-47.1L272 448z"/></svg></span></template>
+        <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
+        <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr-ef4e11c1.min.js"></script>
+        <script src="../mark-09e88c2c.min.js"></script>
+        <script src="../searcher-09f2665d.js"></script>
+
+        <script src="../clipboard-1626706a.min.js"></script>
+        <script src="../highlight-abc7f01d.js"></script>
+        <script src="../book-609e4cb8.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+
+    </div>
+    </body>
+</html>

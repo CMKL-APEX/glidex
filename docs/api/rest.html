@@ -1,0 +1,757 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>REST API - Glidex</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="Install, use and operate Glidex">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon-de23e50b.svg">
+        <link rel="shortcut icon" href="../favicon-8114d1fc.png">
+        <link rel="stylesheet" href="../css/variables-8adf115d.css">
+        <link rel="stylesheet" href="../css/general-e96d0476.css">
+        <link rel="stylesheet" href="../css/chrome-d279d366.css">
+        <link rel="stylesheet" href="../css/print-9e4910d8.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../fonts/fonts-9644e21d.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="mdbook-highlight-css" href="../highlight-493f70e1.css">
+        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="../tomorrow-night-4c0ae647.css">
+        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="../ayu-highlight-3fdfc3ac.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "../searchindex-c284ecbb.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc-3f2f0e1d.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="mdbook-body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="mdbook-sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("mdbook-sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="mdbook-sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="mdbook-page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="mdbook-menu-bar-hover-placeholder"></div>
+                <div id="mdbook-menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="mdbook-sidebar-toggle" class="icon-button" for="mdbook-sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="mdbook-sidebar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M0 96C0 78.3 14.3 64 32 64H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32C14.3 128 0 113.7 0 96zM0 256c0-17.7 14.3-32 32-32H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32c-17.7 0-32-14.3-32-32zM448 416c0 17.7-14.3 32-32 32H32c-17.7 0-32-14.3-32-32s14.3-32 32-32H416c17.7 0 32 14.3 32 32z"/></svg></span>
+                        </label>
+                        <button id="mdbook-theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="mdbook-theme-list">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M371.3 367.1c27.3-3.9 51.9-19.4 67.2-42.9L600.2 74.1c12.6-19.5 9.4-45.3-7.6-61.2S549.7-4.4 531.1 9.6L294.4 187.2c-24 18-38.2 46.1-38.4 76.1L371.3 367.1zm-19.6 25.4l-116-104.4C175.9 290.3 128 339.6 128 400c0 3.9 .2 7.8 .6 11.6c1.8 17.5-10.2 36.4-27.8 36.4H96c-17.7 0-32 14.3-32 32s14.3 32 32 32H240c61.9 0 112-50.1 112-112c0-2.5-.1-5-.2-7.5z"/></svg></span>
+                        </button>
+                        <ul id="mdbook-theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-ayu">Ayu</button></li>
+                        </ul>
+                        <button id="mdbook-search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="mdbook-searchbar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352c79.5 0 144-64.5 144-144s-64.5-144-144-144S64 128.5 64 208s64.5 144 144 144z"/></svg></span>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">Glidex</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/CMKL-APEX/glidex" title="Git repository" aria-label="Git repository">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 496 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6zm-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3zm44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9zM244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252 496 113.3 383.5 8 244.8 8zM97.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1zm-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7zm32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1zm-11.4-14.7c-1.6 1-1.6 3.6 0 5.9 1.6 2.3 4.3 3.3 5.6 2.3 1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/CMKL-APEX/glidex/edit/main/docs/public/src/api/rest.md" title="Suggest an edit" aria-label="Suggest an edit" rel="edit">
+                            <span class=fa-svg id="git-edit-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M421.7 220.3l-11.3 11.3-22.6 22.6-205 205c-6.6 6.6-14.8 11.5-23.8 14.1L30.8 511c-8.4 2.5-17.5 .2-23.7-6.1S-1.5 489.7 1 481.2L38.7 353.1c2.6-9 7.5-17.2 14.1-23.8l205-205 22.6-22.6 11.3-11.3 33.9 33.9 62.1 62.1 33.9 33.9zM96 353.9l-9.3 9.3c-.9 .9-1.6 2.1-2 3.4l-25.3 86 86-25.3c1.3-.4 2.5-1.1 3.4-2l9.3-9.3H112c-8.8 0-16-7.2-16-16V353.9zM453.3 19.3l39.4 39.4c25 25 25 65.5 0 90.5l-14.5 14.5-22.6 22.6-11.3 11.3-33.9-33.9-62.1-62.1L314.3 67.7l11.3-11.3 22.6-22.6 14.5-14.5c25-25 65.5-25 90.5 0z"/></svg></span>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="mdbook-search-wrapper" class="hidden">
+                    <form id="mdbook-searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="mdbook-searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="mdbook-searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <span class=fa-svg id="fa-spin"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M304 48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zm0 416c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM48 304c26.5 0 48-21.5 48-48s-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48zm464-48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM142.9 437c18.7-18.7 18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zm0-294.2c18.7-18.7 18.7-49.1 0-67.9S93.7 56.2 75 75s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zM369.1 437c18.7 18.7 49.1 18.7 67.9 0s18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9z"/></svg></span>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="mdbook-searchresults-outer" class="searchresults-outer hidden">
+                        <div id="mdbook-searchresults-header" class="searchresults-header"></div>
+                        <ul id="mdbook-searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('mdbook-sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('mdbook-sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#mdbook-sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="mdbook-content" class="content">
+                    <main>
+                        <h1 id="rest-api"><a class="header" href="#rest-api">REST API</a></h1>
+<h2 id="conventions"><a class="header" href="#conventions">Conventions</a></h2>
+<ul>
+<li><strong>Base URL</strong>: <code>https://host.example.org:8841</code>, with no path prefix
+(<code>https://host.example.org:8841/vms</code>). Locally, the same paths over the
+Unix socket <code>/run/glidex-cp/api.sock</code>.</li>
+<li><strong>JSON</strong> in and out (<code>Content-Type: application/json</code>), except the
+console WebSocket, CSV exports and the cluster snapshot.</li>
+<li><strong>Ids and names</strong>: VM paths take the VM’s id. Disks, images,
+networks, projects and nodes take an id or a name, tenants an id or a
+slug; a name that several visible resources share is <code>409 ambiguous</code>.
+<code>gxctl</code> resolves VM names for you.</li>
+<li><strong>Projects</strong>: VMs, disks, guest credentials and project networks
+belong to a project. Creates take <code>project</code> (id or name) and default to
+your default project; lists take <code>?project=</code>.</li>
+<li><strong>Status codes</strong>: <code>200</code> OK, <code>201</code> created, <code>202</code> accepted (the
+controller is still working on it), <code>204</code> no content (gone).</li>
+</ul>
+<h3 id="proto-json"><a class="header" href="#proto-json">Proto JSON</a></h3>
+<p>Most families are served in the proto shape: the request and response
+are the RPC’s message as proto3 JSON. Such responses carry the header
+<code>Glidex-Api-Shape: proto</code>. What that means for a client:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Rule</th><th>Example</th></tr>
+</thead>
+<tbody>
+<tr><td>Field names are <code>snake_case</code>, as in the proto</td><td><code>mem_size_mib</code>, <code>root_disk_size_gib</code></td></tr>
+<tr><td>Responses are wrapped in the message’s fields</td><td><code>{"vms": [...]}</code>, <code>{"vm": {...}}</code>, <code>{"vm": {...}, "settled": true}</code></td></tr>
+<tr><td>64-bit integers are JSON strings</td><td><code>"size_bytes": "21474836480"</code></td></tr>
+<tr><td>Enum values are full proto names</td><td><code>"hypervisor": "HYPERVISOR_QEMU"</code>, <code>"mode": "NETWORK_MODE_NAT"</code></td></tr>
+<tr><td>Times are RFC 3339</td><td><code>"created_at": "2026-10-17T08:00:00Z"</code></td></tr>
+<tr><td>Unset or default fields are left out, not <code>null</code></td><td>an unlimited quota is absent</td></tr>
+<tr><td>A body field the message doesn’t have is refused</td><td><code>422 invalid</code> (“unknown field …”)</td></tr>
+</tbody>
+</table>
+</div>
+<p>For now, requests may still use the older lowercase enum values
+(<code>"hypervisor": "qemu"</code>, <code>"cloudhypervisor"</code>); responses always use the
+full names. Partial updates (<code>PATCH</code>) change the fields present, or
+those listed in <code>update_mask</code> (<code>"description,quotas"</code>).</p>
+<p>Ported families: VMs, guest credentials, images, disks, networks,
+routers and shares, host networking and PCI, usage and metrics,
+projects, users, teams, tokens, bindings, policies, audit, tenants,
+admissions, login connectors, and <code>GET /auth/server-info</code>,
+<code>GET /auth/whoami</code>. Cluster, node and import endpoints, <code>/watch</code>,
+<code>/auth/methods</code>, the OIDC routes and <code>/health</code> keep plain JSON bodies.</p>
+<h3 id="authentication"><a class="header" href="#authentication">Authentication</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Listener</th><th>Send</th></tr>
+</thead>
+<tbody>
+<tr><td>HTTPS <code>:8841</code></td><td><code>Authorization: Bearer &lt;token&gt;</code></td></tr>
+<tr><td><code>api.sock</code></td><td>Nothing; you are your Unix user</td></tr>
+</tbody>
+</table>
+</div>
+<p>Without a credential, protected endpoints answer <code>401 unauthenticated</code>.
+A request from a browser <code>Origin</code> the site doesn’t allow is
+<code>403 origin_not_allowed</code> on writes and WebSocket upgrades. See
+<a href="README.html#authentication">API overview</a>.</p>
+<h3 id="errors"><a class="header" href="#errors">Errors</a></h3>
+<p>Errors are JSON with a stable <code>error</code> code, a human <code>message</code> and,
+for some codes, <code>details</code>:</p>
+<pre><code class="language-json">{
+  "error": "quota_exceeded",
+  "message": "vms quota exceeded: limit 10, in use 10, requested 1",
+  "details": {"quota": [{"resource": "vms", "limit": 10, "used": 10, "requested": 1}]}
+}
+</code></pre>
+<p>Branch on <code>error</code>, never on <code>message</code>. Common codes:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Status</th><th><code>error</code></th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td>400</td><td><code>bad_request</code>, <code>invalid_request</code>, <code>invalid_config</code>, <code>invalid_disk</code>, <code>invalid_image</code>, <code>invalid_network</code>, <code>invalid_credential</code>, <code>invalid_project</code>, <code>invalid_state</code>, <code>project_required</code>, <code>range_too_large</code></td><td>The request is malformed or not valid here</td></tr>
+<tr><td>401</td><td><code>unauthenticated</code></td><td>No credential, or an invalid or expired token</td></tr>
+<tr><td>401</td><td><code>login_failed</code></td><td>Wrong username or password</td></tr>
+<tr><td>401</td><td><code>reauth_required</code></td><td>The operation needs a recent login; log in again</td></tr>
+<tr><td>403</td><td><code>forbidden</code></td><td>Not allowed by your roles and the site’s policies</td></tr>
+<tr><td>403</td><td><code>quota_exceeded</code>, <code>tenant_quota_exceeded</code></td><td>Over a project quota, or the tenant’s cap; <code>details.quota</code> lists what</td></tr>
+<tr><td>403</td><td><code>not_admitted</code>, <code>tenant_suspended</code></td><td>The project’s tenant isn’t admitted on this site, or is suspended</td></tr>
+<tr><td>403</td><td><code>login_not_allowed</code>, <code>tls_required</code>, <code>ticket_required</code>, <code>origin_not_allowed</code>, <code>csrf_failed</code></td><td>Login or browser rules refused the request</td></tr>
+<tr><td>404</td><td><code>not_found</code></td><td>No such resource, or one you can’t read</td></tr>
+<tr><td>409</td><td><code>conflict</code></td><td>A name already taken, a resource in use or being deleted, a concurrent change</td></tr>
+<tr><td>409</td><td><code>ambiguous</code></td><td>A name matches several resources; use the id</td></tr>
+<tr><td>409</td><td><code>would_lock_out</code>, <code>confirmation_required</code>, <code>host_interface_in_use</code>, <code>not_clustered</code>, <code>ovn_not_installed</code>, <code>dpdk_not_running</code>, …</td><td>A precondition isn’t met; the message says which</td></tr>
+<tr><td>412</td><td><code>precondition_failed</code></td><td><code>If-Match</code> didn’t match; <code>details.resource_version</code> has the current one</td></tr>
+<tr><td>413</td><td><code>too_large</code></td><td>The body is too large</td></tr>
+<tr><td>421</td><td><code>not_leader</code>, <code>use_a_server</code></td><td>Ask a cluster server (clients retry another)</td></tr>
+<tr><td>422</td><td><code>invalid</code></td><td>The body isn’t the expected message (unknown field, wrong type, unknown enum value)</td></tr>
+<tr><td>422</td><td><code>invalid_policy</code>, <code>invalid_connector</code>, <code>unsupported_on_host</code></td><td>Rejected policy text or connector settings; a feature this host can’t do</td></tr>
+<tr><td>429</td><td><code>rate_limited</code>, <code>slow_down</code></td><td>Back off and retry</td></tr>
+<tr><td>502</td><td><code>netd_error</code>, <code>node_unreachable</code>, <code>idp_error</code></td><td>A helper, node or identity provider failed</td></tr>
+<tr><td>503</td><td><code>cluster_unavailable</code>, <code>netd_unavailable</code>, <code>hypervisor_unavailable</code>, <code>tool_unavailable</code>, <code>too_many_watchers</code>, <code>unavailable</code></td><td>Try again later, or fix the host</td></tr>
+<tr><td>500</td><td><code>internal</code>, <code>persistence_error</code>, <code>hypervisor_error</code>, <code>image_error</code></td><td>Server-side failure; quote <code>x-request-id</code></td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="waiting-for-the-controller"><a class="header" href="#waiting-for-the-controller">Waiting for the controller</a></h3>
+<p>VM and disk writes, and image and network deletes, record what you
+want and return; controllers carry it out. By default such a write
+answers at once: <code>202</code> with the resource (<code>201</code> for a create, <code>204</code> for
+a delete with nothing left to do). Add <code>?wait=&lt;secs&gt;</code> (at most
+300) to hold the answer until the controller has acted:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Outcome</th><th>Answer</th></tr>
+</thead>
+<tbody>
+<tr><td>Done in time</td><td><code>200</code> (<code>201</code> for a create) with <code>"settled": true</code></td></tr>
+<tr><td>The time ran out</td><td><code>202</code> with <code>"settled": false</code></td></tr>
+<tr><td>The controller failed</td><td>The error it hit, e.g. <code>500 hypervisor_error</code>, with the VM in <code>details.vm</code></td></tr>
+<tr><td>The resource is gone (a delete)</td><td><code>204</code></td></tr>
+</tbody>
+</table>
+</div>
+<p><code>?wait</code> applies to VM create, start, stop, pause, <code>PATCH</code>, delete,
+device and disk attach/detach; disk create, resize and extend-root;
+image delete; network delete. <code>gxctl</code> waits 60 s by default.</p>
+<p>A VM’s <code>state</code> is what the controller last saw and <code>desired_state</code>
+what you asked for. Wait for its <code>Ready</code> condition to be <code>True</code>, not for
+a <code>state</code>.</p>
+<p>Start, stop, pause and <code>PATCH</code> of a VM take <code>If-Match: &lt;resource_version&gt;</code>:
+the write is refused with <code>412 precondition_failed</code> if the VM changed
+since you read it.</p>
+<h3 id="lists-and-paging"><a class="header" href="#lists-and-paging">Lists and paging</a></h3>
+<p>Lists return everything you may see in one answer, except:</p>
+<ul>
+<li><code>GET /tenants</code>: <code>page_size</code>, <code>page_token</code>; the answer has
+<code>next_page_token</code>.</li>
+<li><code>GET /audit</code>: <code>since</code>, <code>limit</code> (default 500, at most 5000),
+<code>project</code>, <code>user</code>.</li>
+</ul>
+<h3 id="live-changes-get-watch"><a class="header" href="#live-changes-get-watch">Live changes: <code>GET /watch</code></a></h3>
+<p>A stream of server-sent events (<code>text/event-stream</code>) with the VMs,
+disks, images and networks you may list:</p>
+<ul>
+<li><code>?kinds=vms,disks,images,networks</code> (the default); also <code>nodes</code>,
+<code>imports</code>, <code>cluster</code>, <code>policy</code>.</li>
+<li><code>?project=&lt;p&gt;</code> limits VMs and disks to one project.</li>
+</ul>
+<p>The stream starts with an <code>added</code> event per object, then <code>synced</code>;
+after that <code>added</code>, <code>modified</code> and <code>deleted</code> as things change. Each
+event’s data is <code>{"kind": "vm", "id": "…", "object": {…}}</code> (no <code>object</code>
+on <code>deleted</code>). Authorization is re-checked for every event. The server
+ends a stream after 5 minutes with <code>expired</code>; reconnect for a fresh
+snapshot (a browser <code>EventSource</code> does this by itself). Too many open
+streams on a host give <code>503 too_many_watchers</code>: poll instead.</p>
+<h3 id="console-websocket"><a class="header" href="#console-websocket">Console WebSocket</a></h3>
+<ol>
+<li><code>GET /vms/{id}/console</code> says whether the console is available and
+gives the WebSocket path.</li>
+<li>Browsers with a session cookie first get a single-use ticket,
+<code>POST /vms/{id}/console/ticket</code>, and pass it as <code>?ticket=</code>. Token and
+Unix-socket clients don’t need one.</li>
+<li><code>GET /vms/{id}/console/ws</code> upgrades to a WebSocket. Output arrives
+as binary frames of raw serial bytes; send keystrokes as binary or
+text frames. Any number of clients can share a console.</li>
+</ol>
+<p><code>GET /vms/{id}/console/log?tail_bytes=N</code> returns the end of the console
+log (at most 1 MiB); <code>previous=true</code> reads the rotated one. See
+<a href="../user-guide/console.html">Console</a>.</p>
+<h3 id="cluster-reads"><a class="header" href="#cluster-reads">Cluster reads</a></h3>
+<p>In a cluster any server answers reads after catching up with the
+leader. Send <code>x-glidex-consistency: local</code> to skip that wait and accept
+a possibly stale answer. Writes sent to a follower are forwarded to the
+leader.</p>
+<h2 id="examples"><a class="header" href="#examples">Examples</a></h2>
+<pre><code class="language-bash">export GLIDEX_TOKEN=&lt;token&gt;
+api() { curl --fail-with-body --cacert tls.crt -H "Authorization: Bearer $GLIDEX_TOKEN" "$@"; }
+
+api https://host.example.org:8841/auth/whoami
+api 'https://host.example.org:8841/vms?project=lab'
+
+api -X POST https://host.example.org:8841/images \
+  -H 'Content-Type: application/json' -d '{"catalog": "ubuntu-26.04"}'
+
+api -X POST 'https://host.example.org:8841/vms?wait=60' \
+  -H 'Content-Type: application/json' -d '{
+  "name": "web-1", "project": "lab", "vcpu_count": 2, "mem_size_mib": 2048,
+  "hypervisor": "HYPERVISOR_QEMU", "image": "ubuntu-26.04",
+  "root_disk_size_gib": 20, "credential": "alice",
+  "networks": [{"network": "lab-net"}]
+}'
+
+api -X POST 'https://host.example.org:8841/vms/&lt;vm-id&gt;/stop?graceful_timeout_secs=60&amp;wait=90'
+</code></pre>
+<p>On the host itself, no token is needed:</p>
+<pre><code class="language-bash">curl --unix-socket /run/glidex-cp/api.sock http://localhost/vms
+</code></pre>
+<h2 id="endpoints"><a class="header" href="#endpoints">Endpoints</a></h2>
+<p>Grouped by area. Query parameters in parentheses are optional.
+The RPC twin of each operation is in <a href="rpc.html#services">RPC API</a>.</p>
+<h3 id="service-and-login"><a class="header" href="#service-and-login">Service and login</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Method</th><th>Path</th><th>What it does</th></tr>
+</thead>
+<tbody>
+<tr><td><code>GET</code></td><td><code>/health</code></td><td>Liveness: <code>{"status": "ok"}</code>; no credential</td></tr>
+<tr><td><code>GET</code></td><td><code>/auth/methods</code></td><td>Which login methods are on (PAM, OIDC, connectors); no credential</td></tr>
+<tr><td><code>GET</code></td><td><code>/auth/server-info</code></td><td>The server’s identity: version, cluster, certificate fingerprint; no credential</td></tr>
+<tr><td><code>POST</code></td><td><code>/auth/discover</code></td><td>Which login connectors to offer for a tenant slug or email (<code>{hint}</code>)</td></tr>
+<tr><td><code>POST</code></td><td><code>/auth/login</code></td><td>Password login for the browser: sets a session cookie</td></tr>
+<tr><td><code>POST</code></td><td><code>/auth/token</code></td><td>Password login for tools: returns an API token</td></tr>
+<tr><td><code>GET</code></td><td><code>/auth/oidc/start</code>, <code>/auth/oidc/callback</code></td><td>OIDC browser login (redirects)</td></tr>
+<tr><td><code>POST</code></td><td><code>/auth/oidc/device</code>, <code>/auth/oidc/device/poll</code></td><td>OIDC device flow for CLIs: start, then poll for the token</td></tr>
+<tr><td><code>GET</code></td><td><code>/auth/c/{id}/start</code>, <code>/auth/c/{id}/callback</code></td><td>Browser login through connector <code>{id}</code></td></tr>
+<tr><td><code>POST</code></td><td><code>/auth/c/{id}/device</code>, <code>/auth/c/{id}/device/poll</code></td><td>Device flow through connector <code>{id}</code></td></tr>
+<tr><td><code>POST</code></td><td><code>/auth/logout</code></td><td>End the current session</td></tr>
+<tr><td><code>GET</code></td><td><code>/auth/whoami</code></td><td>Who you are: user, method, teams, roles, default project</td></tr>
+<tr><td><code>POST</code></td><td><code>/authz/check</code></td><td>Would these actions be allowed? One answer per check</td></tr>
+<tr><td><code>POST</code></td><td><code>/authz/allowed</code></td><td>Which actions you may take on each of some resources</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="vms"><a class="header" href="#vms">VMs</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Method</th><th>Path</th><th>What it does</th></tr>
+</thead>
+<tbody>
+<tr><td><code>GET</code></td><td><code>/vms</code></td><td>List VMs (<code>?project=</code>)</td></tr>
+<tr><td><code>POST</code></td><td><code>/vms</code></td><td>Create a VM (<code>?wait=</code>)</td></tr>
+<tr><td><code>POST</code></td><td><code>/scheduler/preview</code></td><td>Where a VM would be placed, node by node</td></tr>
+<tr><td><code>GET</code></td><td><code>/vms/{id}</code></td><td>Get a VM</td></tr>
+<tr><td><code>PATCH</code></td><td><code>/vms/{id}</code></td><td>Change a VM’s spec (<code>?wait=</code>, <code>If-Match</code>)</td></tr>
+<tr><td><code>DELETE</code></td><td><code>/vms/{id}</code></td><td>Delete a VM and its own root disk (<code>?keep_disk=true</code>, <code>?wait=</code>)</td></tr>
+<tr><td><code>POST</code></td><td><code>/vms/{id}/start</code></td><td>Start, or resume a paused VM (<code>?wait=</code>)</td></tr>
+<tr><td><code>POST</code></td><td><code>/vms/{id}/stop</code></td><td>Stop; <code>?graceful_timeout_secs=N</code> presses the power button first and waits up to <code>N</code> s (<code>?wait=</code>)</td></tr>
+<tr><td><code>POST</code></td><td><code>/vms/{id}/pause</code></td><td>Pause (<code>?wait=</code>)</td></tr>
+<tr><td><code>GET</code></td><td><code>/vms/{id}/events</code></td><td>The VM’s last events</td></tr>
+<tr><td><code>POST</code></td><td><code>/vms/{id}/devices</code></td><td>Attach a PCI device (VFIO); hot-plugged if running</td></tr>
+<tr><td><code>DELETE</code></td><td><code>/vms/{id}/devices</code></td><td>Detach a PCI device</td></tr>
+<tr><td><code>POST</code></td><td><code>/vms/{id}/disks</code></td><td>Attach a data disk (on a running VM: at its next start)</td></tr>
+<tr><td><code>DELETE</code></td><td><code>/vms/{id}/disks/{disk}</code></td><td>Detach a data disk</td></tr>
+<tr><td><code>GET</code></td><td><code>/vms/{id}/console</code></td><td>Console availability and WebSocket path</td></tr>
+<tr><td><code>POST</code></td><td><code>/vms/{id}/console/ticket</code></td><td>Single-use console ticket for a browser session</td></tr>
+<tr><td><code>GET</code></td><td><code>/vms/{id}/console/ws</code></td><td>Console WebSocket</td></tr>
+<tr><td><code>GET</code></td><td><code>/vms/{id}/console/log</code></td><td>Console log tail (<code>?tail_bytes=</code>, <code>?previous=true</code>)</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="guest-credentials"><a class="header" href="#guest-credentials">Guest credentials</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Method</th><th>Path</th><th>What it does</th></tr>
+</thead>
+<tbody>
+<tr><td><code>GET</code></td><td><code>/credentials</code></td><td>List guest logins (no password hashes)</td></tr>
+<tr><td><code>POST</code></td><td><code>/credentials</code></td><td>Create one: username, password and/or SSH keys</td></tr>
+<tr><td><code>GET</code></td><td><code>/credentials/{username}</code></td><td>Get one</td></tr>
+<tr><td><code>PUT</code></td><td><code>/credentials/{username}</code></td><td>Change the password and/or replace the SSH keys</td></tr>
+<tr><td><code>DELETE</code></td><td><code>/credentials/{username}</code></td><td>Delete (<code>409</code> while a VM uses it)</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="images"><a class="header" href="#images">Images</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Method</th><th>Path</th><th>What it does</th></tr>
+</thead>
+<tbody>
+<tr><td><code>GET</code></td><td><code>/images/catalog</code></td><td>Built-in cloud images for this host’s architecture</td></tr>
+<tr><td><code>GET</code></td><td><code>/images/firmware-catalog</code></td><td>Built-in UEFI firmware images</td></tr>
+<tr><td><code>GET</code></td><td><code>/images</code></td><td>List images</td></tr>
+<tr><td><code>POST</code></td><td><code>/images</code></td><td>Download and verify an image (<code>catalog</code>, <code>url</code> + <code>sha256</code>, or <code>firmware</code>)</td></tr>
+<tr><td><code>GET</code></td><td><code>/images/{id}</code></td><td>Get an image and its download progress</td></tr>
+<tr><td><code>DELETE</code></td><td><code>/images/{id}</code></td><td>Delete, or cancel a download (<code>?wait=</code>; <code>409</code> while a disk uses it)</td></tr>
+<tr><td><code>POST</code></td><td><code>/images/{id}/retry</code></td><td>Download a failed image again</td></tr>
+<tr><td><code>GET</code></td><td><code>/images/{id}/events</code></td><td>The image’s last events</td></tr>
+<tr><td><code>POST</code></td><td><code>/images/{id}/copies</code></td><td>Cluster: keep a copy on a node (<code>{node}</code>)</td></tr>
+<tr><td><code>DELETE</code></td><td><code>/images/{id}/copies/{node}</code></td><td>Cluster: drop a node’s copy</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="disks"><a class="header" href="#disks">Disks</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Method</th><th>Path</th><th>What it does</th></tr>
+</thead>
+<tbody>
+<tr><td><code>GET</code></td><td><code>/disks</code></td><td>List disks</td></tr>
+<tr><td><code>POST</code></td><td><code>/disks</code></td><td>Create a blank disk or one from an image (<code>?wait=</code>)</td></tr>
+<tr><td><code>GET</code></td><td><code>/disks/{id}</code></td><td>Get a disk and its partition table</td></tr>
+<tr><td><code>DELETE</code></td><td><code>/disks/{id}</code></td><td>Delete (<code>409</code> while attached)</td></tr>
+<tr><td><code>POST</code></td><td><code>/disks/{id}/resize</code></td><td>Grow or shrink (<code>?wait=</code>)</td></tr>
+<tr><td><code>POST</code></td><td><code>/disks/{id}/extend-root</code></td><td>Grow the root partition, offline or at next boot (<code>?wait=</code>)</td></tr>
+<tr><td><code>GET</code></td><td><code>/disks/{id}/events</code></td><td>The disk’s last events</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="networks"><a class="header" href="#networks">Networks</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Method</th><th>Path</th><th>What it does</th></tr>
+</thead>
+<tbody>
+<tr><td><code>GET</code></td><td><code>/networks</code></td><td>List networks</td></tr>
+<tr><td><code>POST</code></td><td><code>/networks</code></td><td>Create a host or cluster network (NAT, isolated or bridged)</td></tr>
+<tr><td><code>GET</code></td><td><code>/networks/{id}</code></td><td>Get a network</td></tr>
+<tr><td><code>DELETE</code></td><td><code>/networks/{id}</code></td><td>Delete (<code>?wait=</code>; <code>409</code> while a VM uses it)</td></tr>
+<tr><td><code>GET</code></td><td><code>/networks/{id}/events</code></td><td>The network’s last events</td></tr>
+<tr><td><code>GET</code></td><td><code>/networks/{id}/ovn</code></td><td>A cluster network as OVN sees it: switch, ports, router</td></tr>
+<tr><td><code>PUT</code></td><td><code>/networks/{id}/grants</code></td><td>Which projects and tenants may use a host network (replaces the grants)</td></tr>
+<tr><td><code>POST</code></td><td><code>/networks/{id}/shares</code></td><td>Offer a project network to another project</td></tr>
+<tr><td><code>DELETE</code></td><td><code>/networks/{id}/shares/{project}</code></td><td>Withdraw a share</td></tr>
+<tr><td><code>POST</code></td><td><code>/projects/{id}/networks</code></td><td>Create a project network</td></tr>
+<tr><td><code>PUT</code></td><td><code>/projects/{id}/networks/{network}/router</code></td><td>Put a project network on one of the project’s routers, or back on the shared edge</td></tr>
+<tr><td><code>GET</code></td><td><code>/projects/{id}/network-shares</code></td><td>Shares offered to or accepted by a project</td></tr>
+<tr><td><code>POST</code></td><td><code>/projects/{id}/network-shares/{network}/accept</code></td><td>Accept a share</td></tr>
+<tr><td><code>DELETE</code></td><td><code>/projects/{id}/network-shares/{network}</code></td><td>Leave a share</td></tr>
+<tr><td><code>GET</code></td><td><code>/projects/{id}/routers</code></td><td>A project’s routers</td></tr>
+<tr><td><code>POST</code></td><td><code>/projects/{id}/routers</code></td><td>Create a router</td></tr>
+<tr><td><code>GET</code></td><td><code>/projects/{id}/routers/{router}</code></td><td>Get a router</td></tr>
+<tr><td><code>DELETE</code></td><td><code>/projects/{id}/routers/{router}</code></td><td>Delete a router (<code>409</code> while a network is attached)</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="host-networking-and-pci"><a class="header" href="#host-networking-and-pci">Host networking and PCI</a></h3>
+<p>These act on the host that answers them (in a cluster, the UI sends
+them to the node being managed).</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Method</th><th>Path</th><th>What it does</th></tr>
+</thead>
+<tbody>
+<tr><td><code>GET</code></td><td><code>/ovs/status</code></td><td>Open vSwitch and networking helper status</td></tr>
+<tr><td><code>POST</code></td><td><code>/ovs/install</code></td><td>Install Open vSwitch (kernel or DPDK profile)</td></tr>
+<tr><td><code>POST</code></td><td><code>/ovs/dpdk-init</code></td><td>Initialize DPDK in Open vSwitch</td></tr>
+<tr><td><code>GET</code></td><td><code>/ovs/bridges</code></td><td>List glidex bridges</td></tr>
+<tr><td><code>POST</code></td><td><code>/ovs/bridges</code></td><td>Create a bridge</td></tr>
+<tr><td><code>DELETE</code></td><td><code>/ovs/bridges/{name}</code></td><td>Delete a bridge</td></tr>
+<tr><td><code>GET</code></td><td><code>/ovs/bridges/{name}/uplinks</code></td><td>List a bridge’s uplinks</td></tr>
+<tr><td><code>POST</code></td><td><code>/ovs/bridges/{name}/uplinks</code></td><td>Add an uplink (kernel, AF_XDP or DPDK)</td></tr>
+<tr><td><code>DELETE</code></td><td><code>/ovs/bridges/{name}/uplinks/{uplink}</code></td><td>Remove an uplink, restoring the NIC</td></tr>
+<tr><td><code>POST</code></td><td><code>/ovs/bridges/{name}/uplinks/{uplink}/commit</code></td><td>Keep a migrated host address (otherwise it is rolled back at the deadline)</td></tr>
+<tr><td><code>POST</code></td><td><code>/ovs/bridges/{name}/uplinks/{uplink}/reapply</code></td><td>Set up again an uplink that was rolled back at start</td></tr>
+<tr><td><code>GET</code></td><td><code>/pci-devices</code></td><td>List the host’s PCI devices</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="usage-and-metrics"><a class="header" href="#usage-and-metrics">Usage and metrics</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Method</th><th>Path</th><th>What it does</th></tr>
+</thead>
+<tbody>
+<tr><td><code>GET</code></td><td><code>/usage</code></td><td>Usage records by hour, day or month, grouped by project, VM, disk, NIC or network (<code>format=csv</code> for CSV)</td></tr>
+<tr><td><code>GET</code></td><td><code>/projects/{id}/usage</code></td><td>The same, for one project</td></tr>
+<tr><td><code>GET</code></td><td><code>/vms/{id}/usage</code></td><td>The same, for one VM and its NICs</td></tr>
+<tr><td><code>GET</code></td><td><code>/disks/{id}/usage</code></td><td>The same, for one disk</td></tr>
+<tr><td><code>GET</code></td><td><code>/usage/bandwidth</code></td><td>Per billing month: average, 30-second peak, 95th percentile of network traffic</td></tr>
+<tr><td><code>GET</code></td><td><code>/usage/disk-io</code></td><td>The same for disk I/O</td></tr>
+<tr><td><code>GET</code></td><td><code>/usage/compute</code></td><td>The same for CPU and memory</td></tr>
+<tr><td><code>GET</code></td><td><code>/vms/{id}/bandwidth</code></td><td>5-minute bandwidth series for a VM (<code>from</code>, <code>to</code>, <code>p95=true</code>)</td></tr>
+<tr><td><code>GET</code></td><td><code>/vms/{id}/io</code></td><td>5-minute disk I/O series for a VM</td></tr>
+<tr><td><code>GET</code></td><td><code>/vms/{id}/compute</code></td><td>5-minute CPU and memory series for a VM</td></tr>
+<tr><td><code>GET</code></td><td><code>/disks/{id}/io</code></td><td>5-minute I/O series for a disk</td></tr>
+<tr><td><code>GET</code></td><td><code>/networks/{id}/bandwidth</code></td><td>5-minute bandwidth series for a network</td></tr>
+<tr><td><code>GET</code></td><td><code>/vms/{id}/stats</code></td><td>A VM’s current rates: CPU, memory, NICs, disks</td></tr>
+<tr><td><code>GET</code></td><td><code>/networks/{id}/stats</code></td><td>A network’s current rates</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="projects-and-access"><a class="header" href="#projects-and-access">Projects and access</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Method</th><th>Path</th><th>What it does</th></tr>
+</thead>
+<tbody>
+<tr><td><code>GET</code></td><td><code>/projects</code></td><td>Projects you can see</td></tr>
+<tr><td><code>POST</code></td><td><code>/projects</code></td><td>Create a project</td></tr>
+<tr><td><code>GET</code></td><td><code>/projects/{id}</code></td><td>Get a project with its quotas and usage</td></tr>
+<tr><td><code>PATCH</code></td><td><code>/projects/{id}</code></td><td>Change description or quotas</td></tr>
+<tr><td><code>DELETE</code></td><td><code>/projects/{id}</code></td><td>Delete a project</td></tr>
+<tr><td><code>GET</code></td><td><code>/projects/{id}/bindings</code></td><td>A project’s role bindings</td></tr>
+<tr><td><code>POST</code></td><td><code>/projects/{id}/bindings</code></td><td>Grant a role on the project to a user, team or token</td></tr>
+<tr><td><code>DELETE</code></td><td><code>/projects/{id}/bindings/{link}</code></td><td>Remove a binding</td></tr>
+<tr><td><code>GET</code></td><td><code>/system/bindings</code></td><td>Host-wide role bindings</td></tr>
+<tr><td><code>POST</code></td><td><code>/system/bindings</code></td><td>Grant a host role</td></tr>
+<tr><td><code>DELETE</code></td><td><code>/system/bindings/{link}</code></td><td>Remove a host role binding</td></tr>
+<tr><td><code>GET</code></td><td><code>/tokens</code></td><td>Your API tokens (all, for administrators)</td></tr>
+<tr><td><code>POST</code></td><td><code>/tokens</code></td><td>Create a token, personal or for a service account; the secret is returned once</td></tr>
+<tr><td><code>DELETE</code></td><td><code>/tokens/{id}</code></td><td>Revoke a token</td></tr>
+<tr><td><code>GET</code></td><td><code>/users</code></td><td>List users and their identities</td></tr>
+<tr><td><code>POST</code></td><td><code>/users</code></td><td>Create a user</td></tr>
+<tr><td><code>PATCH</code></td><td><code>/users/{id}</code></td><td>Change a user</td></tr>
+<tr><td><code>POST</code></td><td><code>/users/{id}/identities</code></td><td>Link a login identity to a user</td></tr>
+<tr><td><code>DELETE</code></td><td><code>/users/{id}/identities/{key}</code></td><td>Unlink an identity</td></tr>
+<tr><td><code>GET</code></td><td><code>/users/me</code></td><td>Same as <code>GET /auth/whoami</code></td></tr>
+<tr><td><code>PATCH</code></td><td><code>/users/me</code></td><td>Change your own profile (e.g. <code>default_project</code>)</td></tr>
+<tr><td><code>GET</code></td><td><code>/users/me/ssh-keys</code></td><td>Your local account’s SSH public keys, to prefill a guest credential</td></tr>
+<tr><td><code>GET</code></td><td><code>/teams</code></td><td>List teams</td></tr>
+<tr><td><code>POST</code></td><td><code>/teams</code></td><td>Create a team</td></tr>
+<tr><td><code>PATCH</code></td><td><code>/teams/{id}</code></td><td>Change a team</td></tr>
+<tr><td><code>DELETE</code></td><td><code>/teams/{id}</code></td><td>Delete a team</td></tr>
+<tr><td><code>PUT</code></td><td><code>/teams/{id}/members/{user}</code></td><td>Add a member</td></tr>
+<tr><td><code>DELETE</code></td><td><code>/teams/{id}/members/{user}</code></td><td>Remove a member</td></tr>
+<tr><td><code>GET</code></td><td><code>/authz/policies</code></td><td>List site Cedar policies</td></tr>
+<tr><td><code>GET</code></td><td><code>/authz/policies/{id}</code></td><td>Get a policy</td></tr>
+<tr><td><code>GET</code></td><td><code>/authz/policies/{id}/versions</code></td><td>A policy’s history</td></tr>
+<tr><td><code>PUT</code></td><td><code>/authz/policies/{id}</code></td><td>Create or replace a policy (with its current <code>version</code>)</td></tr>
+<tr><td><code>DELETE</code></td><td><code>/authz/policies/{id}</code></td><td>Delete a policy</td></tr>
+<tr><td><code>POST</code></td><td><code>/authz/validate</code></td><td>Check a policy without saving it</td></tr>
+<tr><td><code>POST</code></td><td><code>/authz/simulate</code></td><td>Decide requests under the current policies plus proposed changes</td></tr>
+<tr><td><code>POST</code></td><td><code>/authz/reload</code></td><td>Reload policies</td></tr>
+<tr><td><code>GET</code></td><td><code>/audit</code></td><td>The audit log (<code>since</code>, <code>limit</code>, <code>project</code>, <code>user</code>)</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="tenants-and-login-connectors"><a class="header" href="#tenants-and-login-connectors">Tenants and login connectors</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Method</th><th>Path</th><th>What it does</th></tr>
+</thead>
+<tbody>
+<tr><td><code>GET</code></td><td><code>/tenants</code></td><td>Tenants you can see (<code>page_size</code>, <code>page_token</code>)</td></tr>
+<tr><td><code>POST</code></td><td><code>/tenants</code></td><td>Create a tenant</td></tr>
+<tr><td><code>GET</code></td><td><code>/tenants/{id}</code></td><td>Get a tenant</td></tr>
+<tr><td><code>PATCH</code></td><td><code>/tenants/{id}</code></td><td>Change a tenant</td></tr>
+<tr><td><code>DELETE</code></td><td><code>/tenants/{id}</code></td><td>Delete a tenant (<code>409 tenant_in_use</code> while it has projects)</td></tr>
+<tr><td><code>POST</code></td><td><code>/tenants/{id}/suspend</code></td><td>Suspend a tenant</td></tr>
+<tr><td><code>POST</code></td><td><code>/tenants/{id}/resume</code></td><td>Resume a tenant</td></tr>
+<tr><td><code>GET</code></td><td><code>/tenants/{id}/members</code></td><td>List explicit members</td></tr>
+<tr><td><code>POST</code></td><td><code>/tenants/{id}/members</code></td><td>Add a member</td></tr>
+<tr><td><code>DELETE</code></td><td><code>/tenants/{id}/members/{principal}</code></td><td>Remove a member (<code>user:&lt;id&gt;</code> or <code>team:&lt;id&gt;</code>)</td></tr>
+<tr><td><code>GET</code></td><td><code>/tenants/{id}/bindings</code></td><td>Tenant role bindings</td></tr>
+<tr><td><code>POST</code></td><td><code>/tenants/{id}/bindings</code></td><td>Grant a tenant role</td></tr>
+<tr><td><code>DELETE</code></td><td><code>/tenants/{id}/bindings/{link}</code></td><td>Remove a tenant role binding</td></tr>
+<tr><td><code>GET</code></td><td><code>/admissions</code></td><td>Tenants admitted on this site, with their caps</td></tr>
+<tr><td><code>PUT</code></td><td><code>/admissions/{tenant}</code></td><td>Admit a tenant or change its cap</td></tr>
+<tr><td><code>DELETE</code></td><td><code>/admissions/{tenant}</code></td><td>Remove an admission</td></tr>
+<tr><td><code>GET</code></td><td><code>/connectors</code></td><td>List login connectors</td></tr>
+<tr><td><code>POST</code></td><td><code>/connectors</code></td><td>Create a connector (OIDC or PAM)</td></tr>
+<tr><td><code>GET</code></td><td><code>/connectors/{id}</code></td><td>Get a connector (secrets show only whether they are set)</td></tr>
+<tr><td><code>PATCH</code></td><td><code>/connectors/{id}</code></td><td>Change a connector</td></tr>
+<tr><td><code>DELETE</code></td><td><code>/connectors/{id}</code></td><td>Delete a connector</td></tr>
+<tr><td><code>PUT</code></td><td><code>/connectors/{id}/secrets/{field}</code></td><td>Set a connector secret (write-only)</td></tr>
+<tr><td><code>POST</code></td><td><code>/connectors/{id}/test</code></td><td>Test a connector step by step</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="cluster-and-nodes"><a class="header" href="#cluster-and-nodes">Cluster and nodes</a></h3>
+<p>Administrator operations; see <a href="../operator-guide/clusters.html">Clusters</a>.
+<code>gxctl cluster …</code> and <code>gxctl node …</code> wrap them.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Method</th><th>Path</th><th>What it does</th></tr>
+</thead>
+<tbody>
+<tr><td><code>GET</code></td><td><code>/cluster/status</code></td><td>Raft group, nodes, versions, CA rotation (<code>?ports=true</code>: port reachability)</td></tr>
+<tr><td><code>POST</code></td><td><code>/cluster/init</code></td><td>Turn this host into a cluster of one</td></tr>
+<tr><td><code>POST</code></td><td><code>/cluster/join</code></td><td>Join this host to a cluster with a join token</td></tr>
+<tr><td><code>POST</code></td><td><code>/cluster/import</code></td><td>Join with this host’s VMs and disks (waits for approval)</td></tr>
+<tr><td><code>POST</code></td><td><code>/cluster/rejoin</code></td><td>Come back as the same node with a rejoin token</td></tr>
+<tr><td><code>POST</code></td><td><code>/cluster/leave</code></td><td>Go back to standalone after this node was removed</td></tr>
+<tr><td><code>POST</code></td><td><code>/cluster/dissolve</code></td><td>The last node ends the cluster, keeping everything</td></tr>
+<tr><td><code>POST</code></td><td><code>/cluster/join-tokens</code></td><td>Create a one-time join token</td></tr>
+<tr><td><code>POST</code></td><td><code>/cluster/promote</code></td><td>Promote agents to servers</td></tr>
+<tr><td><code>POST</code></td><td><code>/cluster/rotate-ca</code></td><td>Rotate the cluster CA</td></tr>
+<tr><td><code>POST</code></td><td><code>/cluster/rotate-secrets-key</code></td><td>Rotate the key that protects connector secrets</td></tr>
+<tr><td><code>GET</code></td><td><code>/cluster/snapshot</code></td><td>Download a snapshot of the replicated store (store it like the database)</td></tr>
+<tr><td><code>GET</code></td><td><code>/cluster/settings/ovn</code></td><td>Whether cluster networks use OVN, and its settings</td></tr>
+<tr><td><code>PUT</code></td><td><code>/cluster/settings/ovn</code></td><td>Turn OVN on or off and set the shared edge</td></tr>
+<tr><td><code>GET</code></td><td><code>/cluster/settings/ovn/edge-defaults</code></td><td>A suggested shared edge from what the nodes report</td></tr>
+<tr><td><code>GET</code></td><td><code>/cluster/ovn</code></td><td>OVN as it is now: databases, chassis, gateways</td></tr>
+<tr><td><code>GET</code></td><td><code>/cluster/ovn/tunnels</code></td><td>Each node’s Geneve tunnels and their state</td></tr>
+<tr><td><code>GET</code></td><td><code>/nodes</code></td><td>List nodes</td></tr>
+<tr><td><code>GET</code></td><td><code>/nodes/{id}</code></td><td>Get a node</td></tr>
+<tr><td><code>POST</code></td><td><code>/nodes/{id}/drain</code></td><td>Stop placing VMs on a node</td></tr>
+<tr><td><code>POST</code></td><td><code>/nodes/{id}/undrain</code></td><td>Place VMs on it again</td></tr>
+<tr><td><code>POST</code></td><td><code>/nodes/{id}/remove</code></td><td>Remove an empty node</td></tr>
+<tr><td><code>POST</code></td><td><code>/nodes/{id}/forget</code></td><td>Forget a node that is gone for good</td></tr>
+<tr><td><code>POST</code></td><td><code>/nodes/{id}/purge</code></td><td>Drop a forgotten node’s record</td></tr>
+<tr><td><code>POST</code></td><td><code>/nodes/{id}/rejoin-token</code></td><td>Token for a node to rejoin as itself</td></tr>
+<tr><td><code>POST</code></td><td><code>/nodes/{id}/detach</code></td><td>Detach a node with its resources, back to standalone</td></tr>
+<tr><td><code>PUT</code></td><td><code>/nodes/{id}/ovn</code></td><td>A node’s <code>br-int</code> datapath and physical network mappings</td></tr>
+<tr><td><code>POST</code></td><td><code>/nodes/{id}/spare-image-files/delete</code></td><td>Delete image files a node holds that nothing records</td></tr>
+<tr><td><code>GET</code></td><td><code>/departures</code></td><td>Detaches in progress or done</td></tr>
+<tr><td><code>GET</code></td><td><code>/imports</code></td><td>Import plans</td></tr>
+<tr><td><code>GET</code></td><td><code>/imports/{plan}</code></td><td>One plan and what it brings</td></tr>
+<tr><td><code>POST</code></td><td><code>/imports/{plan}/approve</code></td><td>Approve a plan with mappings (<code>dry_run</code> checks only)</td></tr>
+<tr><td><code>POST</code></td><td><code>/imports/{plan}/reject</code></td><td>Reject a plan</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="system"><a class="header" href="#system">System</a></h3>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Method</th><th>Path</th><th>What it does</th></tr>
+</thead>
+<tbody>
+<tr><td><code>GET</code></td><td><code>/watch</code></td><td>Live change events (server-sent events; above)</td></tr>
+<tr><td><code>GET</code></td><td><code>/system/reconcile</code></td><td>Controller status: runner, networking helper, queue, unknown VMs (host administrators)</td></tr>
+</tbody>
+</table>
+</div>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../api/index.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                            </a>
+
+                            <a rel="next prefetch" href="../api/rpc.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../api/index.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                    </a>
+
+                    <a rel="next prefetch" href="../api/rpc.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                    </a>
+            </nav>
+
+        </div>
+
+        <template id=fa-eye><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M288 32c-80.8 0-145.5 36.8-192.6 80.6C48.6 156 17.3 208 2.5 243.7c-3.3 7.9-3.3 16.7 0 24.6C17.3 304 48.6 356 95.4 399.4C142.5 443.2 207.2 480 288 480s145.5-36.8 192.6-80.6c46.8-43.5 78.1-95.4 93-131.1c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C433.5 68.8 368.8 32 288 32zM432 256c0 79.5-64.5 144-144 144s-144-64.5-144-144s64.5-144 144-144s144 64.5 144 144zM288 192c0 35.3-28.7 64-64 64c-11.5 0-22.3-3-31.6-8.4c-.2 2.8-.4 5.5-.4 8.4c0 53 43 96 96 96s96-43 96-96s-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6z"/></svg></span></template>
+        <template id=fa-eye-slash><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M38.8 5.1C28.4-3.1 13.3-1.2 5.1 9.2S-1.2 34.7 9.2 42.9l592 464c10.4 8.2 25.5 6.3 33.7-4.1s6.3-25.5-4.1-33.7L525.6 386.7c39.6-40.6 66.4-86.1 79.9-118.4c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C465.5 68.8 400.8 32 320 32c-68.2 0-125 26.3-169.3 60.8L38.8 5.1zM223.1 149.5C248.6 126.2 282.7 112 320 112c79.5 0 144 64.5 144 144c0 24.9-6.3 48.3-17.4 68.7L408 294.5c5.2-11.8 8-24.8 8-38.5c0-53-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6c0 10.2-2.4 19.8-6.6 28.3l-90.3-70.8zm223.1 298L373 389.9c-16.4 6.5-34.3 10.1-53 10.1c-79.5 0-144-64.5-144-144c0-6.9 .5-13.6 1.4-20.2L83.1 161.5C60.3 191.2 44 220.8 34.5 243.7c-3.3 7.9-3.3 16.7 0 24.6c14.9 35.7 46.2 87.7 93 131.1C174.5 443.2 239.2 480 320 480c47.8 0 89.9-12.9 126.2-32.5z"/></svg></span></template>
+        <template id=fa-copy><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M502.6 70.63l-61.25-61.25C435.4 3.371 427.2 0 418.7 0H255.1c-35.35 0-64 28.66-64 64l.0195 256C192 355.4 220.7 384 256 384h192c35.2 0 64-28.8 64-64V93.25C512 84.77 508.6 76.63 502.6 70.63zM464 320c0 8.836-7.164 16-16 16H255.1c-8.838 0-16-7.164-16-16L239.1 64.13c0-8.836 7.164-16 16-16h128L384 96c0 17.67 14.33 32 32 32h47.1V320zM272 448c0 8.836-7.164 16-16 16H63.1c-8.838 0-16-7.164-16-16L47.98 192.1c0-8.836 7.164-16 16-16H160V128H63.99c-35.35 0-64 28.65-64 64l.0098 256C.002 483.3 28.66 512 64 512h192c35.2 0 64-28.8 64-64v-32h-47.1L272 448z"/></svg></span></template>
+        <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
+        <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr-ef4e11c1.min.js"></script>
+        <script src="../mark-09e88c2c.min.js"></script>
+        <script src="../searcher-09f2665d.js"></script>
+
+        <script src="../clipboard-1626706a.min.js"></script>
+        <script src="../highlight-abc7f01d.js"></script>
+        <script src="../book-609e4cb8.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+
+    </div>
+    </body>
+</html>

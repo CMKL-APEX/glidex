@@ -1,0 +1,552 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>gxctl - Glidex</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="Install, use and operate Glidex">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon-de23e50b.svg">
+        <link rel="shortcut icon" href="../favicon-8114d1fc.png">
+        <link rel="stylesheet" href="../css/variables-8adf115d.css">
+        <link rel="stylesheet" href="../css/general-e96d0476.css">
+        <link rel="stylesheet" href="../css/chrome-d279d366.css">
+        <link rel="stylesheet" href="../css/print-9e4910d8.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../fonts/fonts-9644e21d.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="mdbook-highlight-css" href="../highlight-493f70e1.css">
+        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="../tomorrow-night-4c0ae647.css">
+        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="../ayu-highlight-3fdfc3ac.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "../searchindex-c284ecbb.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc-3f2f0e1d.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="mdbook-body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="mdbook-sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("mdbook-sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="mdbook-sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="mdbook-page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="mdbook-menu-bar-hover-placeholder"></div>
+                <div id="mdbook-menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="mdbook-sidebar-toggle" class="icon-button" for="mdbook-sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="mdbook-sidebar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M0 96C0 78.3 14.3 64 32 64H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32C14.3 128 0 113.7 0 96zM0 256c0-17.7 14.3-32 32-32H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32c-17.7 0-32-14.3-32-32zM448 416c0 17.7-14.3 32-32 32H32c-17.7 0-32-14.3-32-32s14.3-32 32-32H416c17.7 0 32 14.3 32 32z"/></svg></span>
+                        </label>
+                        <button id="mdbook-theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="mdbook-theme-list">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M371.3 367.1c27.3-3.9 51.9-19.4 67.2-42.9L600.2 74.1c12.6-19.5 9.4-45.3-7.6-61.2S549.7-4.4 531.1 9.6L294.4 187.2c-24 18-38.2 46.1-38.4 76.1L371.3 367.1zm-19.6 25.4l-116-104.4C175.9 290.3 128 339.6 128 400c0 3.9 .2 7.8 .6 11.6c1.8 17.5-10.2 36.4-27.8 36.4H96c-17.7 0-32 14.3-32 32s14.3 32 32 32H240c61.9 0 112-50.1 112-112c0-2.5-.1-5-.2-7.5z"/></svg></span>
+                        </button>
+                        <ul id="mdbook-theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-ayu">Ayu</button></li>
+                        </ul>
+                        <button id="mdbook-search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="mdbook-searchbar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352c79.5 0 144-64.5 144-144s-64.5-144-144-144S64 128.5 64 208s64.5 144 144 144z"/></svg></span>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">Glidex</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/CMKL-APEX/glidex" title="Git repository" aria-label="Git repository">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 496 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6zm-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3zm44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9zM244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252 496 113.3 383.5 8 244.8 8zM97.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1zm-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7zm32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1zm-11.4-14.7c-1.6 1-1.6 3.6 0 5.9 1.6 2.3 4.3 3.3 5.6 2.3 1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/CMKL-APEX/glidex/edit/main/docs/public/src/reference/gxctl.md" title="Suggest an edit" aria-label="Suggest an edit" rel="edit">
+                            <span class=fa-svg id="git-edit-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M421.7 220.3l-11.3 11.3-22.6 22.6-205 205c-6.6 6.6-14.8 11.5-23.8 14.1L30.8 511c-8.4 2.5-17.5 .2-23.7-6.1S-1.5 489.7 1 481.2L38.7 353.1c2.6-9 7.5-17.2 14.1-23.8l205-205 22.6-22.6 11.3-11.3 33.9 33.9 62.1 62.1 33.9 33.9zM96 353.9l-9.3 9.3c-.9 .9-1.6 2.1-2 3.4l-25.3 86 86-25.3c1.3-.4 2.5-1.1 3.4-2l9.3-9.3H112c-8.8 0-16-7.2-16-16V353.9zM453.3 19.3l39.4 39.4c25 25 25 65.5 0 90.5l-14.5 14.5-22.6 22.6-11.3 11.3-33.9-33.9-62.1-62.1L314.3 67.7l11.3-11.3 22.6-22.6 14.5-14.5c25-25 65.5-25 90.5 0z"/></svg></span>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="mdbook-search-wrapper" class="hidden">
+                    <form id="mdbook-searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="mdbook-searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="mdbook-searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <span class=fa-svg id="fa-spin"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M304 48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zm0 416c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM48 304c26.5 0 48-21.5 48-48s-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48zm464-48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM142.9 437c18.7-18.7 18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zm0-294.2c18.7-18.7 18.7-49.1 0-67.9S93.7 56.2 75 75s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zM369.1 437c18.7 18.7 49.1 18.7 67.9 0s18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9z"/></svg></span>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="mdbook-searchresults-outer" class="searchresults-outer hidden">
+                        <div id="mdbook-searchresults-header" class="searchresults-header"></div>
+                        <ul id="mdbook-searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('mdbook-sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('mdbook-sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#mdbook-sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="mdbook-content" class="content">
+                    <main>
+                        <h1 id="gxctl"><a class="header" href="#gxctl">gxctl</a></h1>
+<p><code>gxctl</code> is the Glidex command-line client. It runs as an interactive
+shell, or runs one command and exits:</p>
+<pre><code class="language-bash">gxctl                                   # interactive shell: gxctl&gt; …
+gxctl list                              # one command, then exit
+gxctl --project lab disk list
+gxctl --url https://host.example.org:8841 auth login --oidc
+</code></pre>
+<p>In the shell, <code>help</code> (or <code>?</code>) lists the commands, Tab completes command
+names, subcommands and file paths, and <code>exit</code> (<code>quit</code>, <code>q</code>) leaves.
+Words can be quoted: <code>project create lab --description "Lab VMs"</code>.
+Noun commands also answer to their plural (<code>images</code>, <code>projects</code>,
+<code>tenants</code>, …), and many subcommands to short forms (<code>ls</code>, <code>rm</code>).</p>
+<p><code>gxctl --help</code> shows the global options. Commands have no <code>--help</code> of
+their own: run one without its arguments to see its usage line, or
+<code>gxctl help</code> for the full list. Both are authoritative over this page.</p>
+<h2 id="global-options"><a class="header" href="#global-options">Global options</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Option</th><th>Environment</th><th>Effect</th></tr>
+</thead>
+<tbody>
+<tr><td><code>--socket &lt;path&gt;</code></td><td><code>GLIDEX_SOCKET</code></td><td>Talk to this Unix socket. Default: the first that exists of <code>/run/glidex-cp/api.sock</code>, <code>$XDG_RUNTIME_DIR/glidex/api.sock</code>, <code>/tmp/glidex-&lt;uid&gt;/api.sock</code>; with none, <code>https://localhost:8841</code></td></tr>
+<tr><td><code>-s</code>, <code>--url &lt;url&gt;</code> (alias <code>--server</code>)</td><td></td><td>Talk to a control plane over HTTPS instead, e.g. <code>https://host.example.org:8841</code>. Wins over <code>--socket</code>. Plain <code>http://</code> only to loopback</td></tr>
+<tr><td><code>--profile &lt;name&gt;</code></td><td><code>GLIDEX_PROFILE</code></td><td>Use this login profile instead of the current one</td></tr>
+<tr><td><code>-p</code>, <code>--project &lt;id|name&gt;</code></td><td><code>GLIDEX_PROJECT</code></td><td>Project for creates, lists and name lookups; default: your default project (<code>project use</code>)</td></tr>
+</tbody>
+</table>
+</div>
+<p>Other environment variables:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Variable</th><th>Effect</th></tr>
+</thead>
+<tbody>
+<tr><td><code>GLIDEX_TOKEN</code></td><td>API token to send over HTTPS; wins over the saved one</td></tr>
+<tr><td><code>GLIDEX_CA_CERT</code></td><td>A PEM file to trust, e.g. a copy of the host’s <code>/run/glidex-cp/tls.crt</code></td></tr>
+<tr><td><code>GLIDEX_CONFIG</code></td><td>Path of the profile file (default <code>~/.config/glidex/config.json</code>); empty means no profile file, which is what CI should use</td></tr>
+<tr><td><code>GLIDEX_TLS_INSECURE=1</code></td><td>With a profile that has no pinned fingerprint or CA: skip certificate checks for this run, with a warning. For throwaway test setups only: anyone on the network path can read your token</td></tr>
+<tr><td><code>GLIDEX_UI_URL</code></td><td>What <code>ui</code> prints (default <code>https://localhost:5173</code>)</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="connecting-and-logging-in"><a class="header" href="#connecting-and-logging-in">Connecting and logging in</a></h2>
+<ul>
+<li><strong>On the host</strong>, <code>gxctl</code> uses the Unix socket and you are your Unix
+user: no login. You need to be in <code>glidex-users</code> (or <code>glidex-admin</code>
+for administration).</li>
+<li><strong>From another machine</strong>, log in once with <code>auth login</code>, which saves a
+<em>profile</em> (target URLs, TLS trust and token) in
+<code>~/.config/glidex/config.json</code> (mode <code>0600</code>). Later runs use the
+current profile. The older <code>login</code> command saves just a token in
+<code>~/.config/glidex/token</code>.</li>
+<li>A self-signed server certificate is either trusted through
+<code>GLIDEX_CA_CERT</code>, or pinned by fingerprint at <code>auth login</code> (compare it
+with the one the server printed at start).</li>
+</ul>
+<p>See <a href="../user-guide/logging-in.html">Logging in</a>.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Command</th><th>Effect</th></tr>
+</thead>
+<tbody>
+<tr><td><code>auth login [--url U]… [--profile P] [--oidc | --token | --pam-user U] [--connector ID]</code></td><td>Log in and save a profile. <code>--oidc</code>: device flow in a browser; <code>--token</code>: paste a token (read without echo); <code>--pam-user</code>: a password login. Also <code>--pin sha256/…</code> (expected fingerprint), <code>--insecure</code>, <code>--rebind</code>, <code>--use</code> (make it current), <code>--name N</code> / <code>--days N</code> (the token’s name and lifetime), <code>--save</code> (record a new target as a profile named after its host), <code>--non-interactive</code></td></tr>
+<tr><td><code>auth logout [--profile P] [--revoke] [--keep-token]</code></td><td>Drop a profile’s credential; <code>--revoke</code> also revokes the token on the server</td></tr>
+<tr><td><code>auth status [--profile P]</code></td><td>Target, cluster, trust mode, token and expiry</td></tr>
+<tr><td><code>auth use &lt;profile|-&gt;</code></td><td>Set the current profile (<code>-</code> clears it)</td></tr>
+<tr><td><code>auth profiles [--all]</code></td><td>List profiles</td></tr>
+<tr><td><code>auth trust list | fetch | remove &lt;pin&gt; | remove --all [--yes]</code></td><td>A profile’s pinned certificate fingerprints; <code>fetch</code> shows what the server claims, sending nothing else</td></tr>
+<tr><td><code>auth token …</code>, <code>auth whoami</code></td><td>Same as <code>token …</code>, <code>whoami</code></td></tr>
+<tr><td><code>login --oidc [--connector ID] | --token</code></td><td>Older form: log in over HTTPS and save the token file. Not needed on the socket</td></tr>
+<tr><td><code>logout [--revoke]</code></td><td>Delete the token file; <code>--revoke</code> revokes the token first</td></tr>
+<tr><td><code>whoami</code></td><td>Who you are: login method, teams, roles, default project</td></tr>
+<tr><td><code>ui</code></td><td>Print the web UI’s address</td></tr>
+<tr><td><code>health</code></td><td>Check that the API answers</td></tr>
+</tbody>
+</table>
+</div>
+<h2 id="vms"><a class="header" href="#vms">VMs</a></h2>
+<p><code>&lt;vm&gt;</code> is a VM name or id.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Command</th><th>Effect</th></tr>
+</thead>
+<tbody>
+<tr><td><code>list</code>, <code>ls</code></td><td>List VMs; <code>STATE</code> shows <code>state → desired</code> while they differ</td></tr>
+<tr><td><code>get &lt;vm&gt;</code></td><td>VM details, and why it isn’t ready yet if it isn’t</td></tr>
+<tr><td><code>create</code></td><td>Create a VM, asking for name, size, hypervisor, firmware, image or disk, credential and networks</td></tr>
+<tr><td><code>start &lt;vm&gt; [--no-wait]</code></td><td>Start or resume; waits up to 60 s for the VM to run</td></tr>
+<tr><td><code>stop &lt;vm&gt; [--graceful [secs]] [--no-wait]</code></td><td>Stop. <code>--graceful</code> presses the power button and stops it hard after <code>secs</code> (default 60)</td></tr>
+<tr><td><code>pause &lt;vm&gt; [--no-wait]</code></td><td>Pause</td></tr>
+<tr><td><code>delete &lt;vm&gt; [--keep-disk] [--no-wait]</code>, <code>rm</code></td><td>Delete after confirmation, with its own root disk unless <code>--keep-disk</code></td></tr>
+<tr><td><code>events &lt;vm&gt;</code></td><td>What happened to the VM: starts, exits, restarts</td></tr>
+<tr><td><code>connect &lt;vm&gt;</code>, <code>console</code>, <code>attach</code></td><td>Serial console; <code>Ctrl+]</code> detaches</td></tr>
+<tr><td><code>log &lt;vm&gt;</code>, <code>logs</code></td><td>The console log (last 1 MiB)</td></tr>
+<tr><td><code>attach-device &lt;vm&gt; &lt;path&gt;</code></td><td>Attach a PCI device (<code>/sys/bus/pci/devices/&lt;address&gt;</code> or the bare address)</td></tr>
+<tr><td><code>detach-device &lt;vm&gt; &lt;path&gt;</code></td><td>Detach a PCI device</td></tr>
+<tr><td><code>watch [kinds]</code></td><td>Follow changes until Ctrl-C; kinds are <code>vms,disks,images,networks</code> (the default), also <code>nodes</code>, <code>imports</code>, <code>cluster</code>, <code>policy</code></td></tr>
+</tbody>
+</table>
+</div>
+<p><code>start</code>, <code>stop</code>, <code>pause</code> and <code>delete</code> wait for the controller and print
+where the VM ended up; <code>--no-wait</code> returns at once. See
+<a href="../user-guide/vms.html">Virtual machines</a>.</p>
+<h2 id="guest-credentials"><a class="header" href="#guest-credentials">Guest credentials</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Command</th><th>Effect</th></tr>
+</thead>
+<tbody>
+<tr><td><code>credentials</code>, <code>creds</code></td><td>List guest logins (no hashes)</td></tr>
+<tr><td><code>credential-add</code>, <code>cred-add</code></td><td>Add one: username, password (asked twice, hidden) and/or SSH public key files</td></tr>
+<tr><td><code>credential-passwd &lt;user&gt;</code>, <code>cred-passwd</code></td><td>Change the password</td></tr>
+<tr><td><code>credential-keys &lt;user&gt;</code>, <code>cred-keys</code></td><td>Replace the SSH keys (empty: remove all)</td></tr>
+<tr><td><code>credential-rm &lt;user&gt;</code>, <code>cred-rm</code></td><td>Delete</td></tr>
+</tbody>
+</table>
+</div>
+<p>Private key files are refused before anything is sent. See
+<a href="../user-guide/credentials.html">Guest credentials</a>.</p>
+<h2 id="images-and-disks"><a class="header" href="#images-and-disks">Images and disks</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Command</th><th>Effect</th></tr>
+</thead>
+<tbody>
+<tr><td><code>image catalog</code></td><td>Built-in cloud images and UEFI firmware</td></tr>
+<tr><td><code>image list</code>, <code>images</code></td><td>Downloaded images and their state</td></tr>
+<tr><td><code>image pull &lt;catalog-key|https-url&gt; [--name N] [--sha256 H]</code></td><td>Download and verify an image, showing progress</td></tr>
+<tr><td><code>image pull --firmware &lt;key&gt; [--name N]</code></td><td>Download UEFI firmware from the catalog (<code>cloudhv-edk2</code>, <code>ovmf</code>)</td></tr>
+<tr><td><code>image pull &lt;url&gt; --firmware-for &lt;cloudhypervisor|qemu&gt; [--vars-url U] [--vars-sha256 H]</code></td><td>Download firmware from a URL (QEMU: with its variable store)</td></tr>
+<tr><td><code>image retry &lt;image&gt;</code></td><td>Download a failed image again</td></tr>
+<tr><td><code>image rm &lt;image&gt;</code></td><td>Delete an image</td></tr>
+<tr><td><code>disk list</code>, <code>disks</code></td><td>List disks</td></tr>
+<tr><td><code>disk show &lt;disk&gt;</code></td><td>Details and partitions</td></tr>
+<tr><td><code>disk create &lt;name&gt; [--size-gib N] [--image I] [--full] [--raw] [--no-extend]</code></td><td>Create a blank disk or one from an image. <code>--full</code>: a full copy instead of a linked clone; <code>--raw</code>: raw format; <code>--no-extend</code>: don’t grow the root partition</td></tr>
+<tr><td><code>disk resize &lt;disk&gt; &lt;GiB&gt; [--no-extend]</code></td><td>Grow or shrink</td></tr>
+<tr><td><code>disk extend-root &lt;disk&gt; [--on-boot]</code></td><td>Grow the root partition now (offline) or at next boot</td></tr>
+<tr><td><code>disk rm &lt;disk&gt;</code></td><td>Delete after confirmation</td></tr>
+</tbody>
+</table>
+</div>
+<p>See <a href="../user-guide/images-and-disks.html">Images and disks</a>.</p>
+<h2 id="networks"><a class="header" href="#networks">Networks</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Command</th><th>Effect</th></tr>
+</thead>
+<tbody>
+<tr><td><code>networks</code>, <code>nets</code>, <code>network list</code></td><td>List networks</td></tr>
+<tr><td><code>network show &lt;net&gt;</code></td><td>A network’s id, mode, grants or shares</td></tr>
+<tr><td><code>network-add &lt;name&gt; [--nat [--subnet CIDR] | --isolated | --bridged &lt;bridge&gt;] [--vhost-user] [--vlan N] [--bridge NAME] [--cluster | --node]</code>, <code>net-add</code></td><td>Create a host or cluster network (default NAT). <code>--cluster</code> / <code>--node</code>: on OVN across the cluster, or on one node’s bridge</td></tr>
+<tr><td><code>network create &lt;name&gt; --project P [--isolated] [--vhost-user] [--subnet CIDR] [--mtu N]</code></td><td>Create a project network (NAT unless <code>--isolated</code>). Without <code>--project</code>, same as <code>network-add</code></td></tr>
+<tr><td><code>network rm &lt;net&gt;</code>, <code>network-rm</code>, <code>net-rm</code></td><td>Delete, waiting up to a minute</td></tr>
+<tr><td><code>network grant &lt;host-net&gt; [--project P]… [--tenant T]… [--all-projects]</code></td><td>Who may use a host network (replaces the current grants)</td></tr>
+<tr><td><code>network share &lt;net&gt; &lt;project-id&gt;</code></td><td>Offer a project network to another project</td></tr>
+<tr><td><code>network unshare &lt;net&gt; &lt;project-id&gt;</code></td><td>Withdraw the offer</td></tr>
+<tr><td><code>network shares &lt;project&gt;</code></td><td>Shares offered to or accepted by a project</td></tr>
+<tr><td><code>network accept &lt;project&gt; &lt;net&gt;</code></td><td>Accept a share</td></tr>
+<tr><td><code>network leave &lt;project&gt; &lt;net&gt;</code></td><td>Leave a share</td></tr>
+</tbody>
+</table>
+</div>
+<p>Routers have no <code>gxctl</code> command yet: use the web UI or the
+<a href="../api/rest.html#networks">REST API</a>. See <a href="../user-guide/networks.html">Networks</a>.</p>
+<h2 id="host-networking-and-pci"><a class="header" href="#host-networking-and-pci">Host networking and PCI</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Command</th><th>Effect</th></tr>
+</thead>
+<tbody>
+<tr><td><code>ovs status</code>, <code>ovs</code></td><td>Open vSwitch and networking helper status</td></tr>
+<tr><td><code>ovs install [--profile kernel|dpdk] [--source] [--force]</code></td><td>Install Open vSwitch (<code>--source</code>: build it from source)</td></tr>
+<tr><td><code>ovs dpdk-init [--socket-mem M] [--pmd-cpu-mask MASK] [--force]</code></td><td>Initialize DPDK (<code>--socket-mem</code> default <code>1024</code>)</td></tr>
+<tr><td><code>bridges</code></td><td>List glidex bridges</td></tr>
+<tr><td><code>uplinks &lt;bridge&gt;</code></td><td>List a bridge’s uplinks</td></tr>
+<tr><td><code>uplink-add &lt;bridge&gt; --kernel &lt;if&gt; [--migrate-ip] [--force] [--accept-dhcp]</code></td><td>Add a NIC as an uplink. <code>--migrate-ip</code> moves the NIC’s address to the bridge, rolled back unless confirmed in time</td></tr>
+<tr><td><code>uplink-add &lt;bridge&gt; --afxdp &lt;if&gt; [--xdp-mode best_effort|native|native_with_zerocopy|generic] [--rxq N]</code></td><td>Add an AF_XDP uplink</td></tr>
+<tr><td><code>uplink-add &lt;bridge&gt; --dpdk &lt;pci-address&gt; --name &lt;port&gt; [--rxq N]</code></td><td>Add a DPDK uplink</td></tr>
+<tr><td><code>uplink-reapply &lt;bridge&gt; &lt;name&gt;</code></td><td>Set up again an uplink rolled back at start</td></tr>
+<tr><td><code>uplink-rm &lt;bridge&gt; &lt;name&gt;</code></td><td>Remove an uplink, restoring the NIC</td></tr>
+<tr><td><code>pci</code>, <code>pci-devices</code></td><td>List the host’s PCI devices</td></tr>
+<tr><td><code>pci &lt;address&gt;</code></td><td>One device in detail</td></tr>
+</tbody>
+</table>
+</div>
+<p>See <a href="../operator-guide/host-networking.html">Host networking</a> and
+<a href="../operator-guide/pci-passthrough.html">PCI passthrough</a>.</p>
+<h2 id="usage"><a class="header" href="#usage">Usage</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Command</th><th>Effect</th></tr>
+</thead>
+<tbody>
+<tr><td><code>usage [--project P] [--from D] [--to D] [--by project,vm,disk,nic,network] [--granularity hour|day|month] [--meters m,…] [--tz Z] [--csv]</code></td><td>Resource usage; default: this billing month by project</td></tr>
+<tr><td><code>usage bandwidth|disk-io|compute [--month YYYY-MM] [--by …] [--project P] [--csv]</code></td><td>Average, 30-second peak and 95th percentile per billing month</td></tr>
+<tr><td><code>stats &lt;vm&gt;</code></td><td>A VM’s current CPU, memory, NIC and disk rates</td></tr>
+<tr><td><code>bandwidth &lt;vm&gt; | --network N [--from D] [--to D]</code></td><td>5-minute bandwidth series with its 95th percentile</td></tr>
+<tr><td><code>io &lt;vm&gt; | --disk D [--from D] [--to D]</code></td><td>5-minute disk I/O series</td></tr>
+<tr><td><code>compute &lt;vm&gt; [--from D] [--to D]</code></td><td>5-minute CPU and memory series</td></tr>
+</tbody>
+</table>
+</div>
+<p>Times (<code>--from</code>, <code>--to</code>) are Unix seconds or RFC 3339. See
+<a href="../user-guide/usage.html">Usage</a>.</p>
+<h2 id="projects-and-access"><a class="header" href="#projects-and-access">Projects and access</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Command</th><th>Effect</th></tr>
+</thead>
+<tbody>
+<tr><td><code>project list</code>, <code>projects</code></td><td>Projects you can see</td></tr>
+<tr><td><code>project show &lt;p&gt;</code></td><td>Quotas and usage</td></tr>
+<tr><td><code>project create &lt;name&gt; [--description TEXT]</code></td><td>Create a project</td></tr>
+<tr><td><code>project delete &lt;p&gt;</code></td><td>Delete after confirmation</td></tr>
+<tr><td><code>project quota &lt;p&gt; [key=value…]</code></td><td>Show, or set limits: <code>vms</code>, <code>vcpus</code>, <code>memory_mib</code>, <code>disk_gib</code>, <code>running_vms</code>, <code>networks</code>; <code>none</code> means unlimited</td></tr>
+<tr><td><code>project use &lt;p&gt;</code></td><td>Set your default project (<code>-</code> or <code>none</code> clears it)</td></tr>
+<tr><td><code>binding list &lt;p&gt;</code></td><td>A project’s role bindings</td></tr>
+<tr><td><code>binding add &lt;p&gt; &lt;role&gt; user:&lt;id&gt;|team:&lt;id&gt;|token:&lt;id&gt;</code></td><td>Grant a role on a project</td></tr>
+<tr><td><code>binding remove &lt;p&gt; &lt;binding-id&gt;</code></td><td>Remove a binding</td></tr>
+<tr><td><code>system-binding list | add &lt;role&gt; &lt;principal&gt; | remove &lt;binding-id&gt;</code></td><td>Host-wide role bindings</td></tr>
+<tr><td><code>token list</code>, <code>tokens</code></td><td>Your API tokens</td></tr>
+<tr><td><code>token create &lt;name&gt; [--days N] [--service-account [--project P]] [--role ROLE[@PROJECT]]…</code></td><td>Create a token; the secret is printed once</td></tr>
+<tr><td><code>token revoke &lt;id&gt;</code></td><td>Revoke a token</td></tr>
+<tr><td><code>user list</code>, <code>users</code></td><td>Users and their identities</td></tr>
+<tr><td><code>team list | create &lt;name&gt; | delete &lt;team&gt;</code></td><td>Teams</td></tr>
+<tr><td><code>team add-member &lt;team&gt; &lt;user-id&gt;</code>, <code>remove-member &lt;team&gt; &lt;user-id&gt;</code></td><td>Team membership</td></tr>
+<tr><td><code>policy list | show &lt;id&gt;</code></td><td>Site Cedar policies</td></tr>
+<tr><td><code>policy put &lt;id&gt; &lt;file&gt; [--disable] [--description TEXT]</code></td><td>Create or replace a policy</td></tr>
+<tr><td><code>policy validate &lt;id&gt; &lt;file&gt;</code></td><td>Check a policy without saving it</td></tr>
+<tr><td><code>policy history &lt;id&gt;</code></td><td>A policy’s versions</td></tr>
+<tr><td><code>policy delete &lt;id&gt;</code></td><td>Delete after confirmation</td></tr>
+<tr><td><code>policy reload</code></td><td>Reload policies</td></tr>
+<tr><td><code>audit [--project P] [--since &lt;unix-ms&gt;] [--limit N] [--user U]</code></td><td>The audit log</td></tr>
+</tbody>
+</table>
+</div>
+<p>Roles are written <code>owner</code> or <code>role.owner</code>; principals are <code>user:&lt;id&gt;</code>,
+<code>team:&lt;id&gt;</code> or <code>token:&lt;id&gt;</code>. See <a href="../user-guide/projects.html">Projects</a>
+and <a href="../operator-guide/access-control.html">Access control</a>.</p>
+<h2 id="tenants-and-login-connectors"><a class="header" href="#tenants-and-login-connectors">Tenants and login connectors</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Command</th><th>Effect</th></tr>
+</thead>
+<tbody>
+<tr><td><code>tenant list | show &lt;t&gt;</code></td><td>Tenants</td></tr>
+<tr><td><code>tenant create &lt;slug&gt; [--name TEXT] [--operator]</code></td><td>Create a tenant</td></tr>
+<tr><td><code>tenant rename &lt;t&gt; &lt;name&gt;</code></td><td>Change its display name</td></tr>
+<tr><td><code>tenant suspend &lt;t&gt;</code>, <code>resume &lt;t&gt;</code>, <code>delete &lt;t&gt;</code></td><td>Suspend, resume or delete</td></tr>
+<tr><td><code>tenant members &lt;t&gt;</code>, <code>add-member &lt;t&gt; &lt;principal&gt;</code>, <code>remove-member &lt;t&gt; &lt;principal&gt;</code></td><td>Explicit members (<code>user:&lt;id&gt;</code>, <code>team:&lt;id&gt;</code>)</td></tr>
+<tr><td><code>tenant bindings &lt;t&gt;</code>, <code>bind &lt;t&gt; &lt;tenant-admin|tenant-auditor&gt; &lt;principal&gt;</code>, <code>unbind &lt;t&gt; &lt;link&gt;</code></td><td>Tenant roles</td></tr>
+<tr><td><code>admission list</code></td><td>Tenants admitted on this site, with their caps</td></tr>
+<tr><td><code>admission set &lt;tenant&gt; [key=value… | unlimited] [--suspend | --resume]</code></td><td>Admit a tenant and set its caps: <code>vms</code>, <code>vcpus</code>, <code>memory_mib</code>, <code>disk_gib</code>, <code>running_vms</code>, <code>networks</code>, <code>routers</code>, <code>external_ips</code></td></tr>
+<tr><td><code>admission remove &lt;tenant&gt;</code></td><td>Remove an admission</td></tr>
+<tr><td><code>connector list | show &lt;id&gt;</code></td><td>Login connectors (secrets show only whether they are set)</td></tr>
+<tr><td><code>connector add oidc &lt;id&gt; --issuer URL --client-id ID [--name TEXT] [--scope S]… [--groups-claim C] [--domain D]… [--mfa-acr V]… [common]</code></td><td>Add an OIDC connector</td></tr>
+<tr><td><code>connector add pam &lt;id&gt; [--name TEXT] [--allow-group G]… [common]</code></td><td>Add a PAM connector</td></tr>
+<tr><td><code>connector update &lt;id&gt; [--name TEXT] [--enable | --disable] [common]</code></td><td>Change a connector</td></tr>
+<tr><td><code>connector secret set &lt;id&gt; [field] [--from-file PATH]</code></td><td>Set a secret (default <code>client_secret</code>), from a hidden prompt, stdin or a file</td></tr>
+<tr><td><code>connector test &lt;id&gt;</code></td><td>Test it step by step</td></tr>
+<tr><td><code>connector remove &lt;id&gt;</code></td><td>Delete it</td></tr>
+</tbody>
+</table>
+</div>
+<p>Common connector flags: <code>--jit</code> / <code>--no-jit</code>, <code>--require-group G</code>…,
+<code>--mfa</code> / <code>--no-mfa</code>, <code>--team GROUP=TEAM</code>…, <code>--default-tenant T</code>,
+<code>--token-max-days N</code>. See <a href="../operator-guide/authentication.html">Authentication</a>.</p>
+<h2 id="cluster-and-nodes"><a class="header" href="#cluster-and-nodes">Cluster and nodes</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Command</th><th>Effect</th></tr>
+</thead>
+<tbody>
+<tr><td><code>cluster status</code>, <code>cluster</code></td><td>Raft group, nodes, versions and port reachability; says so on a standalone host</td></tr>
+<tr><td><code>cluster init [--advertise &lt;ip:port&gt;] [--tunnel-ip &lt;ip&gt;] --force</code></td><td>Make this host a cluster of one (keeps a backup; can’t be undone)</td></tr>
+<tr><td><code>cluster join-token [--role agent|server] [--ttl &lt;hours&gt;h] [--allow-import]</code></td><td>Create a one-time join token, printed once (default role <code>agent</code>)</td></tr>
+<tr><td><code>cluster join --server &lt;ip:8842&gt; [--role server|agent] [--advertise &lt;ip:port&gt;] [--tunnel-ip &lt;ip&gt;] [--name &lt;name&gt;] [--token-file &lt;file&gt;] [--import]</code></td><td>Join this host to a cluster. The token is read from the file (mode <code>0600</code>) or stdin, never from the command line. <code>--import</code> brings this host’s VMs and disks once an administrator approves</td></tr>
+<tr><td><code>cluster rejoin --server &lt;ip:8842&gt; [--node-id &lt;id&gt;] [--advertise &lt;ip:port&gt;] [--tunnel-ip &lt;ip&gt;] [--token-file &lt;file&gt;]</code></td><td>Come back as the same node, with a token from <code>node rejoin-token</code></td></tr>
+<tr><td><code>cluster promote &lt;node&gt;… [--force]</code></td><td>Promote agents to servers</td></tr>
+<tr><td><code>cluster leave</code></td><td>Go back to standalone after this node was removed</td></tr>
+<tr><td><code>cluster dissolve --force</code></td><td>The last node ends the cluster, keeping everything</td></tr>
+<tr><td><code>cluster rotate-ca [--grace &lt;secs&gt;]</code></td><td>Rotate the cluster CA</td></tr>
+<tr><td><code>cluster rotate-secrets-key</code></td><td>Rotate the key that protects connector secrets</td></tr>
+<tr><td><code>cluster snapshot &lt;file&gt;</code></td><td>Save a snapshot of the replicated store (written <code>0600</code>; store it like the database)</td></tr>
+<tr><td><code>nodes</code>, <code>node</code></td><td>List nodes</td></tr>
+<tr><td><code>node &lt;id&gt;</code></td><td>One node in detail</td></tr>
+<tr><td><code>node drain &lt;node&gt;</code>, <code>node undrain &lt;node&gt;</code></td><td>Stop or resume placing VMs on a node</td></tr>
+<tr><td><code>node remove &lt;node&gt; [--force]</code></td><td>Remove an empty node</td></tr>
+<tr><td><code>node forget &lt;node&gt; [--fenced] [--force]</code></td><td>Forget a node that is gone for good</td></tr>
+<tr><td><code>node purge &lt;node&gt;</code></td><td>Drop a forgotten node’s record</td></tr>
+<tr><td><code>node rejoin-token &lt;node&gt; [--raft-lost]</code></td><td>Token for the node to rejoin as itself, printed once</td></tr>
+<tr><td><code>node detach &lt;node&gt; [--map-network &lt;cluster-net&gt;=&lt;node-net&gt;]… [--with-access] [--timeout &lt;secs&gt;]</code></td><td>Detach a node with its resources, back to standalone. <code>--abort</code> cancels; <code>--departed</code> records a node that already left on its own</td></tr>
+<tr><td><code>node import list | show &lt;plan&gt; | reject &lt;plan&gt;</code></td><td>Import plans</td></tr>
+<tr><td><code>node import approve &lt;plan&gt; [--project src=existing|src=new:name]… [--network a=b]… [--credential proj/user=new]… [--over-quota] [--dry-run]</code></td><td>Approve an import with its mappings</td></tr>
+</tbody>
+</table>
+</div>
+<!-- TODO(verify): the clustering design describes `node forget <node> --departed`; in the code only `node detach --departed` sends a flag the server reads (`/nodes/{id}/forget` ignores `departed`). -->
+<p>See <a href="../operator-guide/clusters.html">Clusters</a>.</p>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../operator-guide/troubleshooting.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                            </a>
+
+                            <a rel="next prefetch" href="../api/index.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../operator-guide/troubleshooting.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                    </a>
+
+                    <a rel="next prefetch" href="../api/index.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                    </a>
+            </nav>
+
+        </div>
+
+        <template id=fa-eye><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M288 32c-80.8 0-145.5 36.8-192.6 80.6C48.6 156 17.3 208 2.5 243.7c-3.3 7.9-3.3 16.7 0 24.6C17.3 304 48.6 356 95.4 399.4C142.5 443.2 207.2 480 288 480s145.5-36.8 192.6-80.6c46.8-43.5 78.1-95.4 93-131.1c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C433.5 68.8 368.8 32 288 32zM432 256c0 79.5-64.5 144-144 144s-144-64.5-144-144s64.5-144 144-144s144 64.5 144 144zM288 192c0 35.3-28.7 64-64 64c-11.5 0-22.3-3-31.6-8.4c-.2 2.8-.4 5.5-.4 8.4c0 53 43 96 96 96s96-43 96-96s-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6z"/></svg></span></template>
+        <template id=fa-eye-slash><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M38.8 5.1C28.4-3.1 13.3-1.2 5.1 9.2S-1.2 34.7 9.2 42.9l592 464c10.4 8.2 25.5 6.3 33.7-4.1s6.3-25.5-4.1-33.7L525.6 386.7c39.6-40.6 66.4-86.1 79.9-118.4c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C465.5 68.8 400.8 32 320 32c-68.2 0-125 26.3-169.3 60.8L38.8 5.1zM223.1 149.5C248.6 126.2 282.7 112 320 112c79.5 0 144 64.5 144 144c0 24.9-6.3 48.3-17.4 68.7L408 294.5c5.2-11.8 8-24.8 8-38.5c0-53-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6c0 10.2-2.4 19.8-6.6 28.3l-90.3-70.8zm223.1 298L373 389.9c-16.4 6.5-34.3 10.1-53 10.1c-79.5 0-144-64.5-144-144c0-6.9 .5-13.6 1.4-20.2L83.1 161.5C60.3 191.2 44 220.8 34.5 243.7c-3.3 7.9-3.3 16.7 0 24.6c14.9 35.7 46.2 87.7 93 131.1C174.5 443.2 239.2 480 320 480c47.8 0 89.9-12.9 126.2-32.5z"/></svg></span></template>
+        <template id=fa-copy><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M502.6 70.63l-61.25-61.25C435.4 3.371 427.2 0 418.7 0H255.1c-35.35 0-64 28.66-64 64l.0195 256C192 355.4 220.7 384 256 384h192c35.2 0 64-28.8 64-64V93.25C512 84.77 508.6 76.63 502.6 70.63zM464 320c0 8.836-7.164 16-16 16H255.1c-8.838 0-16-7.164-16-16L239.1 64.13c0-8.836 7.164-16 16-16h128L384 96c0 17.67 14.33 32 32 32h47.1V320zM272 448c0 8.836-7.164 16-16 16H63.1c-8.838 0-16-7.164-16-16L47.98 192.1c0-8.836 7.164-16 16-16H160V128H63.99c-35.35 0-64 28.65-64 64l.0098 256C.002 483.3 28.66 512 64 512h192c35.2 0 64-28.8 64-64v-32h-47.1L272 448z"/></svg></span></template>
+        <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
+        <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr-ef4e11c1.min.js"></script>
+        <script src="../mark-09e88c2c.min.js"></script>
+        <script src="../searcher-09f2665d.js"></script>
+
+        <script src="../clipboard-1626706a.min.js"></script>
+        <script src="../highlight-abc7f01d.js"></script>
+        <script src="../book-609e4cb8.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+
+    </div>
+    </body>
+</html>

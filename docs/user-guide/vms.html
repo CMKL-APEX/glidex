@@ -1,0 +1,582 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Virtual machines - Glidex</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="Install, use and operate Glidex">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon-de23e50b.svg">
+        <link rel="shortcut icon" href="../favicon-8114d1fc.png">
+        <link rel="stylesheet" href="../css/variables-8adf115d.css">
+        <link rel="stylesheet" href="../css/general-e96d0476.css">
+        <link rel="stylesheet" href="../css/chrome-d279d366.css">
+        <link rel="stylesheet" href="../css/print-9e4910d8.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../fonts/fonts-9644e21d.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="mdbook-highlight-css" href="../highlight-493f70e1.css">
+        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="../tomorrow-night-4c0ae647.css">
+        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="../ayu-highlight-3fdfc3ac.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "../searchindex-c284ecbb.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc-3f2f0e1d.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="mdbook-body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="mdbook-sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("mdbook-sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="mdbook-sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="mdbook-page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="mdbook-menu-bar-hover-placeholder"></div>
+                <div id="mdbook-menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="mdbook-sidebar-toggle" class="icon-button" for="mdbook-sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="mdbook-sidebar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M0 96C0 78.3 14.3 64 32 64H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32C14.3 128 0 113.7 0 96zM0 256c0-17.7 14.3-32 32-32H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32c-17.7 0-32-14.3-32-32zM448 416c0 17.7-14.3 32-32 32H32c-17.7 0-32-14.3-32-32s14.3-32 32-32H416c17.7 0 32 14.3 32 32z"/></svg></span>
+                        </label>
+                        <button id="mdbook-theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="mdbook-theme-list">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M371.3 367.1c27.3-3.9 51.9-19.4 67.2-42.9L600.2 74.1c12.6-19.5 9.4-45.3-7.6-61.2S549.7-4.4 531.1 9.6L294.4 187.2c-24 18-38.2 46.1-38.4 76.1L371.3 367.1zm-19.6 25.4l-116-104.4C175.9 290.3 128 339.6 128 400c0 3.9 .2 7.8 .6 11.6c1.8 17.5-10.2 36.4-27.8 36.4H96c-17.7 0-32 14.3-32 32s14.3 32 32 32H240c61.9 0 112-50.1 112-112c0-2.5-.1-5-.2-7.5z"/></svg></span>
+                        </button>
+                        <ul id="mdbook-theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-ayu">Ayu</button></li>
+                        </ul>
+                        <button id="mdbook-search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="mdbook-searchbar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352c79.5 0 144-64.5 144-144s-64.5-144-144-144S64 128.5 64 208s64.5 144 144 144z"/></svg></span>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">Glidex</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/CMKL-APEX/glidex" title="Git repository" aria-label="Git repository">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 496 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6zm-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3zm44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9zM244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252 496 113.3 383.5 8 244.8 8zM97.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1zm-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7zm32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1zm-11.4-14.7c-1.6 1-1.6 3.6 0 5.9 1.6 2.3 4.3 3.3 5.6 2.3 1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/CMKL-APEX/glidex/edit/main/docs/public/src/user-guide/vms.md" title="Suggest an edit" aria-label="Suggest an edit" rel="edit">
+                            <span class=fa-svg id="git-edit-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M421.7 220.3l-11.3 11.3-22.6 22.6-205 205c-6.6 6.6-14.8 11.5-23.8 14.1L30.8 511c-8.4 2.5-17.5 .2-23.7-6.1S-1.5 489.7 1 481.2L38.7 353.1c2.6-9 7.5-17.2 14.1-23.8l205-205 22.6-22.6 11.3-11.3 33.9 33.9 62.1 62.1 33.9 33.9zM96 353.9l-9.3 9.3c-.9 .9-1.6 2.1-2 3.4l-25.3 86 86-25.3c1.3-.4 2.5-1.1 3.4-2l9.3-9.3H112c-8.8 0-16-7.2-16-16V353.9zM453.3 19.3l39.4 39.4c25 25 25 65.5 0 90.5l-14.5 14.5-22.6 22.6-11.3 11.3-33.9-33.9-62.1-62.1L314.3 67.7l11.3-11.3 22.6-22.6 14.5-14.5c25-25 65.5-25 90.5 0z"/></svg></span>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="mdbook-search-wrapper" class="hidden">
+                    <form id="mdbook-searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="mdbook-searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="mdbook-searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <span class=fa-svg id="fa-spin"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M304 48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zm0 416c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM48 304c26.5 0 48-21.5 48-48s-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48zm464-48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM142.9 437c18.7-18.7 18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zm0-294.2c18.7-18.7 18.7-49.1 0-67.9S93.7 56.2 75 75s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zM369.1 437c18.7 18.7 49.1 18.7 67.9 0s18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9z"/></svg></span>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="mdbook-searchresults-outer" class="searchresults-outer hidden">
+                        <div id="mdbook-searchresults-header" class="searchresults-header"></div>
+                        <ul id="mdbook-searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('mdbook-sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('mdbook-sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#mdbook-sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="mdbook-content" class="content">
+                    <main>
+                        <h1 id="virtual-machines"><a class="header" href="#virtual-machines">Virtual machines</a></h1>
+<p>A VM belongs to one project. You create it stopped (or ask for it to
+start at once), then start, pause, stop and delete it. Each of these
+changes the VM’s <em>desired state</em>; the control plane then works until
+the VM gets there. See <a href="../concepts.html#virtual-machines">Concepts</a> for
+the model.</p>
+<p>In the web UI, the <strong>VMs</strong> page lists the VMs of the selected project.
+Click a VM for its details, actions, usage and events.</p>
+<p>In <code>gxctl</code>, commands take a VM’s name or id. Names are unique within a
+project; use <code>--project &lt;p&gt;</code> (or <code>project use &lt;p&gt;</code>) when the same name
+exists in two projects you can see.</p>
+<pre><code>gxctl&gt; list                       # the VMs: id, name, project, state, node, vCPUs, memory, hypervisor
+gxctl&gt; get my-vm                  # one VM: state, last exit, NICs and their addresses
+</code></pre>
+<h2 id="before-you-start"><a class="header" href="#before-you-start">Before you start</a></h2>
+<p>A VM that boots a cloud image needs:</p>
+<ul>
+<li>an <strong>image</strong> (or an existing disk made from one), and a <strong>firmware
+image</strong> for the hypervisor. See <a href="images-and-disks.html">Images and disks</a>;</li>
+<li>a <strong>guest credential</strong>, or the VM has no way to log in. See
+<a href="credentials.html">Guest credentials</a>;</li>
+<li>a <strong>network</strong> your project may use, or the VM has no NIC. See
+<a href="networks.html">Networks</a>.</li>
+</ul>
+<p>You need the <code>editor</code> role in the project to create, change and delete
+VMs, and <code>operator</code> to start, stop and pause them and to open their
+consoles. See <a href="projects.html">Projects</a>.</p>
+<h2 id="create-a-vm"><a class="header" href="#create-a-vm">Create a VM</a></h2>
+<h3 id="web-ui"><a class="header" href="#web-ui">Web UI</a></h3>
+<p>On the <strong>VMs</strong> page, click <strong>+ Create VM</strong> and fill in the form:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Field</th><th>What it is</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>VM Name</strong></td><td>The VM’s name in the project.</td></tr>
+<tr><td><strong>Hypervisor Backend</strong></td><td>Cloud Hypervisor (the default) or QEMU. Fixed once created.</td></tr>
+<tr><td><strong>vCPU Count</strong>, <strong>Memory (MiB)</strong></td><td>Defaults 1 vCPU and 512 MiB.</td></tr>
+<tr><td><strong>Placement</strong></td><td>Clusters only: <strong>Automatic</strong>, or a node. See <a href="#placement-on-a-cluster">Placement on a cluster</a>.</td></tr>
+<tr><td><strong>Boot Mode</strong></td><td><strong>UEFI firmware (distro cloud image)</strong> or <strong>Direct kernel boot</strong>.</td></tr>
+<tr><td><strong>UEFI Firmware</strong></td><td>The firmware image to boot through; the newest one for the hypervisor is preselected.</td></tr>
+<tr><td><strong>Boot Disk</strong></td><td><strong>New disk from an image</strong>, <strong>Existing disk</strong> (an unattached disk of the project), or <strong>Disk image file path</strong>.</td></tr>
+<tr><td><strong>Image</strong>, <strong>Root disk (GiB)</strong></td><td>For a new disk from an image: a linked disk is created for this VM, its root partition extended, and deleted with the VM.</td></tr>
+<tr><td><strong>Login Credential</strong></td><td>A credential of the project, provisioned by cloud-init on first boot; or none.</td></tr>
+<tr><td><strong>Networks</strong></td><td>One NIC per ticked network, in that order. A network named <code>default</code> is ticked for you.</td></tr>
+<tr><td><strong>VFIO PCI Devices (optional)</strong></td><td>Host PCI devices to pass through. See <a href="#pci-devices">Devices</a>.</td></tr>
+<tr><td><strong>If It Crashes</strong></td><td><strong>Restart it (with backoff)</strong> or <strong>Leave it stopped</strong>.</td></tr>
+<tr><td><strong>After a Host Reboot</strong></td><td><strong>Start it again if it was running</strong> or <strong>Leave it stopped</strong>.</td></tr>
+<tr><td><strong>Start it now</strong></td><td>Start the VM as soon as it is created.</td></tr>
+</tbody>
+</table>
+</div>
+<p>With <strong>Direct kernel boot</strong>, the form asks for a <strong>Kernel Image Path</strong>,
+a <strong>Root Filesystem Path</strong> and optional <strong>Kernel Arguments</strong> instead.</p>
+<h3 id="gxctl"><a class="header" href="#gxctl">gxctl</a></h3>
+<p><code>create</code> asks for each setting in turn; press Enter to take the default
+in brackets.</p>
+<pre><code>gxctl&gt; create
+VM name: web-1
+vCPU count [1]: 2
+Memory (MiB) [512]: 2048
+Hypervisor [cloudhypervisor/qemu] (default: cloudhypervisor):
+UEFI firmware [cloudhv-edk2, 'none' for kernel boot, or a host path] [cloudhv-edk2]:
+Boot disk from [image/disk/path] [image]:
+Image (ubuntu-26.04) [ubuntu-26.04]:
+Root disk size in GiB [10]: 20
+Data disks (optional, comma-separated disk names):
+cloud-init seed image (optional, default: auto-generated):
+Login credential (one of: alice; 'none' for no login) [alice]:
+Networks (comma-separated; available: default, lab; 'none' for no NIC) [default]:
+VFIO PCI devices (comma-separated, e.g. /sys/bus/pci/devices/0000:41:00.0):
+</code></pre>
+<p>The VM is created stopped; start it with <code>start web-1</code>. <code>gxctl create</code>
+doesn’t ask for a node, a restart policy or a host-boot policy: they
+take their defaults (use the web UI or the API to set them).</p>
+<h3 id="api"><a class="header" href="#api">API</a></h3>
+<pre><code class="language-bash">curl -H "Authorization: Bearer $GLIDEX_TOKEN" -H 'Content-Type: application/json' \
+  -X POST https://host.example.org:8841/vms -d '{
+    "name": "web-1", "vcpu_count": 2, "mem_size_mib": 2048,
+    "image": "ubuntu-26.04", "root_disk_size_gib": 20,
+    "credential": "alice", "networks": [{"network": "lab"}],
+    "power": "running"
+  }'
+</code></pre>
+<p><code>name</code>, <code>vcpu_count</code> and <code>mem_size_mib</code> are required. See
+<a href="../api/rest.html#vms">REST API</a> for every field.</p>
+<h2 id="vm-settings"><a class="header" href="#vm-settings">VM settings</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Setting</th><th>API field</th><th>Notes</th></tr>
+</thead>
+<tbody>
+<tr><td>Name</td><td><code>name</code></td><td>Unique in the project. The generated cloud-init seed makes it the guest’s hostname.</td></tr>
+<tr><td>Project</td><td><code>project</code></td><td>Id or name; default: your default project.</td></tr>
+<tr><td>vCPUs</td><td><code>vcpu_count</code></td><td>At least 1. Changeable; applies at the next start.</td></tr>
+<tr><td>Memory</td><td><code>mem_size_mib</code></td><td>In MiB, at least 1. Changeable; applies at the next start.</td></tr>
+<tr><td>Hypervisor</td><td><code>hypervisor</code></td><td><code>cloudhypervisor</code> (default) or <code>qemu</code>. Fixed.</td></tr>
+<tr><td>Boot disk</td><td><code>image</code>, <code>root_disk</code> or <code>rootfs_path</code></td><td>Exactly one. Fixed. See below.</td></tr>
+<tr><td>Root disk size</td><td><code>root_disk_size_gib</code></td><td>With <code>image</code> only. Default: the image’s size, at least 10 GiB.</td></tr>
+<tr><td>Firmware</td><td><code>firmware</code></td><td>A firmware image (name or id). Fixed.</td></tr>
+<tr><td>Kernel boot</td><td><code>kernel_image_path</code>, <code>kernel_args</code></td><td>Instead of firmware. Fixed path; arguments changeable.</td></tr>
+<tr><td>Credential</td><td><code>credential</code></td><td>A credential of the project. Firmware boot with the generated cloud-init seed only.</td></tr>
+<tr><td>Networks</td><td><code>networks</code></td><td>Up to 8 NICs, in order. Changeable; applies at the next start.</td></tr>
+<tr><td>Data disks</td><td><code>data_disks</code></td><td>Disks of the project, attached after the boot disk. Changeable; applies at the next start.</td></tr>
+<tr><td>PCI devices</td><td><code>vfio_devices</code></td><td>Changeable while the VM runs.</td></tr>
+<tr><td>Restart policy</td><td><code>restart_policy</code></td><td><code>on_failure</code> (default) or <code>never</code>. Changeable.</td></tr>
+<tr><td>On host boot</td><td><code>on_host_boot</code></td><td><code>resume</code> (default) or <code>stop</code>. Changeable.</td></tr>
+<tr><td>Stop grace</td><td><code>stop_grace_secs</code></td><td>Seconds a stop waits after the power button; 0 (default) stops at once; at most 300. Changeable.</td></tr>
+<tr><td>Initial power</td><td><code>power</code></td><td><code>stopped</code> (default), <code>running</code> or <code>paused</code>.</td></tr>
+<tr><td>Node</td><td><code>node</code></td><td>Clusters: pin the VM to a node (name or id). Fixed.</td></tr>
+<tr><td>Hugepages</td><td><code>hugepages</code></td><td>Back guest memory with hugepages. Changeable; applies at the next start.</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="boot-disk"><a class="header" href="#boot-disk">Boot disk</a></h3>
+<p>Give exactly one of:</p>
+<ul>
+<li><code>image</code>: Glidex creates a linked root disk from the image for this VM
+(named <code>&lt;vm&gt;-root</code>), grows it to <code>root_disk_size_gib</code>, and extends the
+guest’s root partition at first boot. The disk belongs to the VM and
+is deleted with it, unless you delete with <code>--keep-disk</code>.</li>
+<li><code>root_disk</code>: an existing, unattached disk of the project (name or
+id). It is not deleted with the VM.</li>
+<li><code>rootfs_path</code>: a disk image file on the host, used as is.</li>
+</ul>
+<p>The image (or the root disk’s image) and the firmware must be for the
+same CPU architecture.</p>
+<h3 id="firmware-or-kernel-boot"><a class="header" href="#firmware-or-kernel-boot">Firmware or kernel boot</a></h3>
+<p>A VM with an <code>image</code> or <code>root_disk</code> boots through UEFI firmware: the
+newest firmware image for its hypervisor (and architecture), unless you
+name one with <code>firmware</code>. If there is none, the create fails and tells
+you which one to pull (<code>cloudhv-edk2</code> for Cloud Hypervisor, <code>ovmf</code> for
+QEMU).</p>
+<p>For a direct kernel boot, give <code>kernel_image_path</code> (and a root
+filesystem in <code>rootfs_path</code>) instead. The default kernel arguments are
+<code>console=hvc0 root=/dev/vda reboot=k panic=1</code> on Cloud Hypervisor and
+<code>console=ttyS0 root=/dev/vda reboot=k panic=1</code> on QEMU.</p>
+<h3 id="host-paths"><a class="header" href="#host-paths">Host paths</a></h3>
+<p><code>rootfs_path</code>, <code>kernel_image_path</code>, <code>cloud_init_path</code> and
+<code>firmware_path</code> name files on the host. Using them needs the
+<code>system-admin</code> role, and the files must be readable by the service
+user the control plane runs as. Most users should use images, disks and
+firmware images instead. A path under <code>/tmp</code> or <code>/var/tmp</code> is refused:
+VMs have a private <code>/tmp</code>.</p>
+<h3 id="credential-and-cloud-init"><a class="header" href="#credential-and-cloud-init">Credential and cloud-init</a></h3>
+<p>With firmware boot and no <code>cloud_init_path</code>, Glidex generates a
+cloud-init seed for the VM: its hostname, the root partition grow, and,
+if you name a <code>credential</code>, that user with its password and SSH keys.
+cloud-init applies it on the VM’s first boot. Without a credential the
+guest has no login. See <a href="credentials.html">Guest credentials</a>.</p>
+<p><code>cloud_init_path</code> replaces the generated seed with your own (a host
+path, see above); a <code>credential</code> can’t be combined with it.</p>
+<h3 id="networks"><a class="header" href="#networks">Networks</a></h3>
+<p>Each entry of <code>networks</code> adds one NIC, in order (at most 8):</p>
+<pre><code class="language-json">"networks": [
+  {"network": "lab"},
+  {"network": "storage", "mac": "02:00:00:00:10:01", "queue_pairs": 2}
+]
+</code></pre>
+<p><code>network</code> is a network’s name or id that your project may use. <code>mac</code> is
+optional: by default each NIC gets a stable MAC derived from the VM’s
+id. <code>queue_pairs</code> (1 to 8) is optional. The address each NIC got shows
+in the VM’s details. See <a href="networks.html">Networks</a>.</p>
+<h3 id="data-disks"><a class="header" href="#data-disks">Data disks</a></h3>
+<p><code>data_disks</code> lists disks of the project (names or ids), attached in
+order after the boot disk. A disk is attached to one VM at a time.</p>
+<p>To attach or detach a disk later:</p>
+<pre><code class="language-bash">curl -H "Authorization: Bearer $GLIDEX_TOKEN" -H 'Content-Type: application/json' \
+  -X POST https://host.example.org:8841/vms/&lt;id&gt;/disks -d '{"disk": "data-1"}'
+curl -H "Authorization: Bearer $GLIDEX_TOKEN" \
+  -X DELETE https://host.example.org:8841/vms/&lt;id&gt;/disks/data-1
+</code></pre>
+<p>On a running VM the change applies at the next start. See
+<a href="images-and-disks.html">Images and disks</a>.</p>
+<h3 id="pci-devices"><a class="header" href="#pci-devices">PCI devices</a></h3>
+<p><code>vfio_devices</code> passes host PCI devices (a GPU, a NIC) through to the
+guest. Give each as <code>/sys/bus/pci/devices/0000:41:00.0</code> or the bare
+address <code>0000:41:00.0</code>. A device is used by one VM at a time, and using
+one needs a grant from an administrator. See
+<a href="../operator-guide/pci-passthrough.html">PCI passthrough</a>.</p>
+<pre><code>gxctl&gt; pci                                          # host PCI devices
+gxctl&gt; attach-device my-vm /sys/bus/pci/devices/0000:41:00.0
+gxctl&gt; detach-device my-vm /sys/bus/pci/devices/0000:41:00.0
+</code></pre>
+<p>On a running VM, devices are hot-plugged. On a paused VM, the change
+waits until it runs again.</p>
+<h2 id="lifecycle"><a class="header" href="#lifecycle">Lifecycle</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Action</th><th>Web UI</th><th>gxctl</th><th>API</th></tr>
+</thead>
+<tbody>
+<tr><td>Start</td><td><strong>Start</strong></td><td><code>start &lt;vm&gt;</code></td><td><code>POST /vms/{id}/start</code></td></tr>
+<tr><td>Resume a paused VM</td><td><strong>Resume</strong></td><td><code>start &lt;vm&gt;</code></td><td><code>POST /vms/{id}/start</code></td></tr>
+<tr><td>Pause</td><td><strong>Pause</strong></td><td><code>pause &lt;vm&gt;</code></td><td><code>POST /vms/{id}/pause</code></td></tr>
+<tr><td>Graceful stop</td><td><strong>Shut down</strong></td><td><code>stop &lt;vm&gt; --graceful [secs]</code></td><td><code>POST /vms/{id}/stop?graceful_timeout_secs=60</code></td></tr>
+<tr><td>Immediate stop</td><td><strong>Stop</strong></td><td><code>stop &lt;vm&gt;</code></td><td><code>POST /vms/{id}/stop</code></td></tr>
+<tr><td>Delete</td><td><strong>Delete</strong></td><td><code>delete &lt;vm&gt; [--keep-disk]</code></td><td><code>DELETE /vms/{id}</code></td></tr>
+</tbody>
+</table>
+</div>
+<p><code>gxctl</code> waits up to 60 seconds for the VM to get there (longer for a
+graceful stop) and prints the state it reached; <code>--no-wait</code> returns at
+once. If the VM isn’t there yet, it says what it is waiting for. The
+web UI follows the VM and shows <strong>In progress</strong> until it gets there.
+The API returns at once (<code>202</code>), or, with <code>?wait=&lt;secs&gt;</code> (at most 300),
+once the VM got there. See
+<a href="../api/rest.html#waiting-for-the-controller">Waiting for the controller</a>.</p>
+<p>Starting a stopped VM counts against the project’s running-VM quota.</p>
+<h3 id="stop"><a class="header" href="#stop">Stop</a></h3>
+<p>A <strong>graceful</strong> stop presses the guest’s power button, waits for the
+guest to shut down, and stops the VM hard if it is still running after
+the timeout:</p>
+<pre><code>gxctl&gt; stop my-vm --graceful          # wait up to 60 s
+gxctl&gt; stop my-vm --graceful 120      # wait up to 120 s (at most 300)
+</code></pre>
+<p>The web UI’s <strong>Shut down</strong> waits 60 seconds. <strong>Stop</strong> and <code>stop</code> without
+<code>--graceful</code> stop the VM like pulling the plug.</p>
+<p>The timeout you give is kept as the VM’s stop grace (<code>stop_grace_secs</code>)
+and used again by later stops that don’t give one, including stops from
+the web UI’s <strong>Stop</strong> button. Pass <code>--graceful 0</code> (or
+<code>graceful_timeout_secs=0</code>) for an immediate stop after a graceful one.</p>
+<!-- TODO(verify): a stop without a grace reuses the stored stop_grace_secs; confirm this is intended rather than a bug before publishing. -->
+<h3 id="pause-and-resume"><a class="header" href="#pause-and-resume">Pause and resume</a></h3>
+<p>A paused VM keeps its memory but gets no CPU time. <strong>Resume</strong> in the web
+UI, or <code>start</code> in <code>gxctl</code>, runs it again.</p>
+<h3 id="restart"><a class="header" href="#restart">Restart</a></h3>
+<p>There is no restart action: stop the VM, then start it. A reboot from
+inside the guest restarts the guest and the VM stays running.</p>
+<!-- TODO(verify): guest-initiated reboot behaviour on both hypervisors (QEMU runs without -no-reboot; Cloud Hypervisor reboot handling). -->
+<h3 id="when-the-vm-stops-on-its-own"><a class="header" href="#when-the-vm-stops-on-its-own">When the VM stops on its own</a></h3>
+<ul>
+<li><strong>The guest powers off</strong> (for example <code>poweroff</code> inside it): the
+desired state becomes stopped, and the VM stays stopped whatever its
+restart policy.</li>
+<li><strong>The hypervisor crashes</strong>: with the restart policy <code>on_failure</code>, the
+VM is started again after 10 seconds, doubling with each crash in a
+row up to 5 minutes; after 10 minutes of running the count starts
+over. With <code>never</code>, the desired state becomes stopped.</li>
+<li><strong>It fails to launch</strong>: the VM is <code>failed</code> and Glidex retries with a
+growing delay. Its details and events say why.</li>
+<li><strong>The host reboots</strong>: with <code>on_host_boot</code> <code>resume</code>, a VM that was
+running is started again; with <code>stop</code>, it stays stopped.</li>
+</ul>
+<p>Change these policies with the API:</p>
+<pre><code class="language-bash">curl -H "Authorization: Bearer $GLIDEX_TOKEN" -H 'Content-Type: application/json' \
+  -X PATCH https://host.example.org:8841/vms/&lt;id&gt; \
+  -d '{"change": {"restart_policy": "never"}, "update_mask": "restart_policy"}'
+</code></pre>
+<h3 id="change-a-vm"><a class="header" href="#change-a-vm">Change a VM</a></h3>
+<p>Change vCPUs, memory, networks, data disks, PCI devices, kernel
+arguments, the credential, hugepages and the policies with
+<code>PATCH /vms/{id}</code>. <code>change</code> holds the new values, <code>update_mask</code> lists
+the fields to change (comma-separated):</p>
+<pre><code class="language-bash">curl -H "Authorization: Bearer $GLIDEX_TOKEN" -H 'Content-Type: application/json' \
+  -X PATCH https://host.example.org:8841/vms/&lt;id&gt; \
+  -d '{"change": {"vcpu_count": 4, "mem_size_mib": 8192}, "update_mask": "vcpu_count,mem_size_mib"}'
+</code></pre>
+<p><code>networks</code> and <code>data_disks</code> replace the whole list. The hypervisor, the
+boot disk, the firmware and host paths can’t be changed.</p>
+<p>The web UI and <code>gxctl</code> have no edit form; <code>gxctl</code> changes PCI devices
+only (<code>attach-device</code>, <code>detach-device</code>).</p>
+<p>A change to vCPUs, memory, kernel arguments, the credential, hugepages,
+networks or data disks of a running VM takes effect at the next start:
+the web UI says <strong>Configuration changes take effect at the next start</strong>,
+and the API sets <code>restart_required</code>. Stop and start the VM to apply it.
+A new credential doesn’t change logins in a guest that already booted
+(cloud-init runs once).</p>
+<p>Pass the VM’s <code>resource_version</code> in an <code>If-Match</code> header to refuse the
+change (<code>409</code>) if someone else changed the VM since you read it.</p>
+<h3 id="delete"><a class="header" href="#delete">Delete</a></h3>
+<pre><code>gxctl&gt; delete my-vm                 # asks for confirmation
+gxctl&gt; delete my-vm --keep-disk     # keep the root disk created for it
+</code></pre>
+<p>Deleting stops the VM if it runs, releases its NICs and their
+addresses, and detaches its disks. A root disk created for the VM from
+an image is deleted with it, unless you keep it (<code>--keep-disk</code>,
+<code>?keep_disk=true</code>). Other disks are only detached.</p>
+<h2 id="states-and-events"><a class="header" href="#states-and-events">States and events</a></h2>
+<p>The state shows where the VM is; while it is on its way to its desired
+state, <code>gxctl</code> and the web UI show both, for example <code>stopped → running</code>.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>State</th><th>Meaning</th></tr>
+</thead>
+<tbody>
+<tr><td><code>created</code></td><td>Never started.</td></tr>
+<tr><td><code>starting</code></td><td>Being provisioned or launched.</td></tr>
+<tr><td><code>running</code></td><td>The guest runs.</td></tr>
+<tr><td><code>paused</code></td><td>The guest is paused.</td></tr>
+<tr><td><code>stopping</code></td><td>A stop is in progress.</td></tr>
+<tr><td><code>stopped</code></td><td>Not running.</td></tr>
+<tr><td><code>failed</code></td><td>It failed to launch, or crashed and waits to be restarted.</td></tr>
+<tr><td><code>unknown</code></td><td>The control plane can’t tell, for example because the VM’s node stopped reporting.</td></tr>
+</tbody>
+</table>
+</div>
+<p>In the API, states are <code>VM_STATE_RUNNING</code> and so on, and the desired
+state is <code>desired_state</code>. The VM’s <code>conditions</code> say what is in the way
+(the <code>Ready</code> condition), and <code>last_exit</code> says how the last run ended:
+stopped on request, stopped by the host, guest powered off, crashed (with
+its exit code or signal), failed to launch, host rebooted, or lost.</p>
+<p>Each VM keeps a list of events: created, spec changes, launches, exits,
+restarts, warnings such as a lost network port.</p>
+<pre><code>gxctl&gt; events my-vm           # time, who, reason, message
+</code></pre>
+<p>In the web UI they are under <strong>Events</strong> on the VM’s page. With the API,
+<code>GET /vms/{id}/events</code>.</p>
+<p>To follow every VM, disk, image and network of your projects as they
+change:</p>
+<pre><code>gxctl&gt; watch                  # Ctrl-C stops
+gxctl&gt; watch vms
+</code></pre>
+<h2 id="placement-on-a-cluster"><a class="header" href="#placement-on-a-cluster">Placement on a cluster</a></h2>
+<p>On a cluster, the scheduler picks the node for a new VM when it is
+created. It considers only nodes that are active, ready and not
+draining, that have the hypervisor, enough vCPUs and memory left, the
+PCI devices, hugepages and physical networks the VM needs, and that hold
+its disks and node networks. Of those, it prefers the least loaded.</p>
+<p>A VM stays on its node for its whole life: Glidex doesn’t move it, and
+doesn’t restart it elsewhere if the node fails. If no node can take the
+VM, it is still created and waits for one; its page says <strong>Waiting for a
+node</strong> with each node’s reason.</p>
+<p>In the web UI’s create form, <strong>Placement</strong> shows <strong>Automatic (now:
+&lt;node&gt;)</strong> and each node with its free vCPUs and memory, or why it
+can’t take the VM. Pick a node to pin the VM there. With the API, set
+<code>node</code> when you create the VM. To ask the scheduler without creating
+anything:</p>
+<pre><code class="language-bash">curl -H "Authorization: Bearer $GLIDEX_TOKEN" -H 'Content-Type: application/json' \
+  -X POST https://host.example.org:8841/scheduler/preview \
+  -d '{"vcpu_count": 2, "mem_size_mib": 2048, "hypervisor": "qemu"}'
+</code></pre>
+<p>The answer has the node it would pick (<code>pick</code>) and every node’s fit
+(<code>nodes</code>, with <code>refused</code> when it can’t take the VM).</p>
+<p>The VM’s node shows in <code>gxctl list</code> and on its page. If the node stops
+reporting, the page shows the VM’s last known state; the VM may still be
+running there.</p>
+<p>See <a href="../operator-guide/clusters.html">Clusters</a> for nodes and draining.</p>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../user-guide/credentials.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                            </a>
+
+                            <a rel="next prefetch" href="../user-guide/networks.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../user-guide/credentials.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                    </a>
+
+                    <a rel="next prefetch" href="../user-guide/networks.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                    </a>
+            </nav>
+
+        </div>
+
+        <template id=fa-eye><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M288 32c-80.8 0-145.5 36.8-192.6 80.6C48.6 156 17.3 208 2.5 243.7c-3.3 7.9-3.3 16.7 0 24.6C17.3 304 48.6 356 95.4 399.4C142.5 443.2 207.2 480 288 480s145.5-36.8 192.6-80.6c46.8-43.5 78.1-95.4 93-131.1c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C433.5 68.8 368.8 32 288 32zM432 256c0 79.5-64.5 144-144 144s-144-64.5-144-144s64.5-144 144-144s144 64.5 144 144zM288 192c0 35.3-28.7 64-64 64c-11.5 0-22.3-3-31.6-8.4c-.2 2.8-.4 5.5-.4 8.4c0 53 43 96 96 96s96-43 96-96s-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6z"/></svg></span></template>
+        <template id=fa-eye-slash><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M38.8 5.1C28.4-3.1 13.3-1.2 5.1 9.2S-1.2 34.7 9.2 42.9l592 464c10.4 8.2 25.5 6.3 33.7-4.1s6.3-25.5-4.1-33.7L525.6 386.7c39.6-40.6 66.4-86.1 79.9-118.4c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C465.5 68.8 400.8 32 320 32c-68.2 0-125 26.3-169.3 60.8L38.8 5.1zM223.1 149.5C248.6 126.2 282.7 112 320 112c79.5 0 144 64.5 144 144c0 24.9-6.3 48.3-17.4 68.7L408 294.5c5.2-11.8 8-24.8 8-38.5c0-53-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6c0 10.2-2.4 19.8-6.6 28.3l-90.3-70.8zm223.1 298L373 389.9c-16.4 6.5-34.3 10.1-53 10.1c-79.5 0-144-64.5-144-144c0-6.9 .5-13.6 1.4-20.2L83.1 161.5C60.3 191.2 44 220.8 34.5 243.7c-3.3 7.9-3.3 16.7 0 24.6c14.9 35.7 46.2 87.7 93 131.1C174.5 443.2 239.2 480 320 480c47.8 0 89.9-12.9 126.2-32.5z"/></svg></span></template>
+        <template id=fa-copy><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M502.6 70.63l-61.25-61.25C435.4 3.371 427.2 0 418.7 0H255.1c-35.35 0-64 28.66-64 64l.0195 256C192 355.4 220.7 384 256 384h192c35.2 0 64-28.8 64-64V93.25C512 84.77 508.6 76.63 502.6 70.63zM464 320c0 8.836-7.164 16-16 16H255.1c-8.838 0-16-7.164-16-16L239.1 64.13c0-8.836 7.164-16 16-16h128L384 96c0 17.67 14.33 32 32 32h47.1V320zM272 448c0 8.836-7.164 16-16 16H63.1c-8.838 0-16-7.164-16-16L47.98 192.1c0-8.836 7.164-16 16-16H160V128H63.99c-35.35 0-64 28.65-64 64l.0098 256C.002 483.3 28.66 512 64 512h192c35.2 0 64-28.8 64-64v-32h-47.1L272 448z"/></svg></span></template>
+        <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
+        <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr-ef4e11c1.min.js"></script>
+        <script src="../mark-09e88c2c.min.js"></script>
+        <script src="../searcher-09f2665d.js"></script>
+
+        <script src="../clipboard-1626706a.min.js"></script>
+        <script src="../highlight-abc7f01d.js"></script>
+        <script src="../book-609e4cb8.js"></script>
+
+        <!-- Custom JS scripts -->
+
+
+
+    </div>
+    </body>
+</html>
