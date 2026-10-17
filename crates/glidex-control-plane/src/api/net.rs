@@ -12,15 +12,8 @@ use serde_json::Value;
 
 // ---- networks, shares, routers: REST twins of glidex.network.v1 ----------
 
-/// The old shape's enum values (spec/grpc.md §9.1 step 3).
-const ENUMS: &[(&str, &str)] = &[
-    ("mode", "NETWORK_MODE"),
-    ("port_type", "PORT_TYPE"),
-    ("scope", "NETWORK_SCOPE"),
-];
-
 fn body<T: serde::de::DeserializeOwned + buffa::MessageName>(v: Value) -> Result<T, ApiErr> {
-    proto_body(v, ENUMS, &[])
+    proto_body(v)
 }
 
 /// `body` with path fields set over what the body says.
@@ -252,14 +245,6 @@ pub async fn leave_share(
 
 // ---- host networking: REST twins of glidex.host.v1 -------------------------
 
-/// The old shape's enum values of the host family.
-const HOST_ENUMS: &[(&str, &str)] = &[
-    ("profile", "OVS_PROFILE"),
-    ("datapath", "DATAPATH"),
-    ("kind", "UPLINK_KIND"),
-    ("xdp_mode", "XDP_MODE"),
-];
-
 fn host_body<T: serde::de::DeserializeOwned + buffa::MessageName>(
     mut v: Value,
     path: &[(&str, &str)],
@@ -269,7 +254,7 @@ fn host_body<T: serde::de::DeserializeOwned + buffa::MessageName>(
             o.insert((*k).into(), Value::String((*val).into()));
         }
     }
-    proto_body(v, HOST_ENUMS, &[])
+    proto_body(v)
 }
 
 pub async fn ovs_status(c: Caller) -> Result<impl IntoResponse, ApiErr> {

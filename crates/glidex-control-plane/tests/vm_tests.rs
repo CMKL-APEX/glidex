@@ -193,10 +193,17 @@ async fn vms_over_rest_in_the_proto_shape() {
         .unwrap()
         .id;
 
-    // The old enum values still read; the answer is proto.
+    // The old enum values are refused; the answer is proto.
     let mut b = vm_body("web", &p);
-    b["hypervisor"] = json!("cloudhypervisor");
     b["restart_policy"] = json!("never");
+    let (st, v) = h.rest("POST", "/vms", Some(b.clone()), &t).await;
+    assert_eq!(
+        (st, v["error"].as_str()),
+        (StatusCode::UNPROCESSABLE_ENTITY, Some("invalid")),
+        "{v}"
+    );
+    b["hypervisor"] = json!("HYPERVISOR_CLOUD_HYPERVISOR");
+    b["restart_policy"] = json!("RESTART_POLICY_NEVER");
     let (st, v) = h.rest("POST", "/vms", Some(b), &t).await;
     assert_eq!(st, StatusCode::CREATED, "{v}");
     let vm = &v["vm"];
@@ -238,7 +245,7 @@ async fn vms_over_rest_in_the_proto_shape() {
         (StatusCode::ACCEPTED, Some(30)),
         "{v}"
     );
-    // The old merge patch, and its refusal of immutable fields.
+    // The merge patch from before the port is not read any more.
     let (st, v) = h
         .rest(
             "PATCH",
@@ -248,21 +255,8 @@ async fn vms_over_rest_in_the_proto_shape() {
         )
         .await;
     assert_eq!(
-        (st, v["vm"]["mem_size_mib"].as_u64()),
-        (StatusCode::ACCEPTED, Some(256)),
-        "{v}"
-    );
-    let (st, v) = h
-        .rest(
-            "PATCH",
-            &format!("/vms/{id}"),
-            Some(json!({"config": {"rootfs_path": "/x"}})),
-            &t,
-        )
-        .await;
-    assert_eq!(
         (st, v["error"].as_str()),
-        (StatusCode::BAD_REQUEST, Some("invalid_config")),
+        (StatusCode::UNPROCESSABLE_ENTITY, Some("invalid")),
         "{v}"
     );
     // A field the change can't touch.

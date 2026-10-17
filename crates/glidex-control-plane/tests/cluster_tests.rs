@@ -841,7 +841,7 @@ async fn a_new_cluster_starts_from_a_snapshot() {
 }
 
 fn vm_body(name: &str, node: &str) -> Value {
-    json!({ "name": name, "vcpu_count": 1, "mem_size_mib": 256, "hypervisor": "cloudhypervisor",
+    json!({ "name": name, "vcpu_count": 1, "mem_size_mib": 256, "hypervisor": "HYPERVISOR_CLOUD_HYPERVISOR",
             "firmware_path": "/path/to/CLOUDHV.fd", "rootfs_path": "/path/to/disk.raw", "node": node })
 }
 
@@ -1674,7 +1674,7 @@ async fn a_node_copies_an_image_it_needs_from_a_holder_and_checks_it() {
 }
 
 fn vm_unpinned(name: &str) -> Value {
-    json!({ "name": name, "vcpu_count": 1, "mem_size_mib": 64, "hypervisor": "cloudhypervisor",
+    json!({ "name": name, "vcpu_count": 1, "mem_size_mib": 64, "hypervisor": "HYPERVISOR_CLOUD_HYPERVISOR",
             "firmware_path": "/path/to/CLOUDHV.fd", "rootfs_path": "/path/to/disk.raw" })
 }
 
@@ -1762,7 +1762,7 @@ async fn the_scheduler_spreads_vms_honours_pins_and_disks_and_explains_itself() 
         &server,
         "POST",
         "/scheduler/preview",
-        Some(json!({ "vcpu_count": 1, "mem_size_mib": 64, "hypervisor": "cloudhypervisor" })),
+        Some(json!({ "vcpu_count": 1, "mem_size_mib": 64, "hypervisor": "HYPERVISOR_CLOUD_HYPERVISOR" })),
         &[],
     )
     .await;
@@ -1950,7 +1950,7 @@ async fn cluster_networks_get_a_subnet_and_vms_get_addresses_that_go_when_they_d
         &server,
         "POST",
         "/networks",
-        Some(json!({ "name": "web", "mode": "nat", "port_type": "tap", "scope": "cluster" })),
+        Some(json!({ "name": "web", "mode": "NETWORK_MODE_NAT", "port_type": "PORT_TYPE_TAP", "scope": "NETWORK_SCOPE_CLUSTER" })),
         &[],
     )
     .await;
@@ -1960,12 +1960,12 @@ async fn cluster_networks_get_a_subnet_and_vms_get_addresses_that_go_when_they_d
         (n["scope"].as_str(), n["bridge"].as_str(), n["mtu"].as_u64()),
         (Some("NETWORK_SCOPE_CLUSTER"), Some("br-int"), Some(1442))
     );
-    let (s, n2) = call(&server, "POST", "/networks", Some(json!({ "name": "lab", "mode": "isolated", "port_type": "tap", "scope": "cluster", "subnet": "10.89.200.0/24" })), &[]).await;
+    let (s, n2) = call(&server, "POST", "/networks", Some(json!({ "name": "lab", "mode": "NETWORK_MODE_ISOLATED", "port_type": "PORT_TYPE_TAP", "scope": "NETWORK_SCOPE_CLUSTER", "subnet": "10.89.200.0/24" })), &[]).await;
     assert_eq!(s, StatusCode::CREATED, "{n2}");
     // Overlap and the node NAT range are refused.
-    let (s, _) = call(&server, "POST", "/networks", Some(json!({ "name": "bad", "mode": "isolated", "port_type": "tap", "scope": "cluster", "subnet": "10.89.200.128/25" })), &[]).await;
+    let (s, _) = call(&server, "POST", "/networks", Some(json!({ "name": "bad", "mode": "NETWORK_MODE_ISOLATED", "port_type": "PORT_TYPE_TAP", "scope": "NETWORK_SCOPE_CLUSTER", "subnet": "10.89.200.128/25" })), &[]).await;
     assert_ne!(s, StatusCode::CREATED);
-    let (s, _) = call(&server, "POST", "/networks", Some(json!({ "name": "bad2", "mode": "isolated", "port_type": "tap", "scope": "cluster", "subnet": "10.88.9.0/24" })), &[]).await;
+    let (s, _) = call(&server, "POST", "/networks", Some(json!({ "name": "bad2", "mode": "NETWORK_MODE_ISOLATED", "port_type": "PORT_TYPE_TAP", "scope": "NETWORK_SCOPE_CLUSTER", "subnet": "10.88.9.0/24" })), &[]).await;
     assert_ne!(s, StatusCode::CREATED);
 
     // VMs on it get stable addresses at placement.
@@ -2047,8 +2047,7 @@ async fn provider_networks_and_vpc_routers() {
 
     // Provider networks: a physnet is required, a subnet isn't allowed, vlan is checked.
     let mk = |name: &str, extra: serde_json::Value| {
-        let mut b =
-            json!({ "name": name, "mode": "bridged", "port_type": "tap", "scope": "cluster" });
+        let mut b = json!({ "name": name, "mode": "NETWORK_MODE_BRIDGED", "port_type": "PORT_TYPE_TAP", "scope": "NETWORK_SCOPE_CLUSTER" });
         b.as_object_mut()
             .unwrap()
             .extend(extra.as_object().unwrap().clone());
@@ -2171,10 +2170,10 @@ async fn provider_networks_and_vpc_routers() {
     assert_eq!(s, StatusCode::CONFLICT);
 
     // A NAT network on the router: by name, and the plan shows the router and its zone.
-    let (s, n) = call(&server, "POST", "/projects/default/networks", Some(json!({ "name": "app", "mode": "nat", "port_type": "tap", "scope": "cluster", "router": "r1" })), &[]).await;
+    let (s, n) = call(&server, "POST", "/projects/default/networks", Some(json!({ "name": "app", "mode": "NETWORK_MODE_NAT", "port_type": "PORT_TYPE_TAP", "scope": "NETWORK_SCOPE_CLUSTER", "router": "r1" })), &[]).await;
     assert_eq!(s, StatusCode::CREATED, "{n}");
     let app = id_of(&n);
-    let (s, n) = call(&server, "POST", "/projects/default/networks", Some(json!({ "name": "bad", "mode": "nat", "port_type": "tap", "scope": "cluster", "router": "nope" })), &[]).await;
+    let (s, n) = call(&server, "POST", "/projects/default/networks", Some(json!({ "name": "bad", "mode": "NETWORK_MODE_NAT", "port_type": "PORT_TYPE_TAP", "scope": "NETWORK_SCOPE_CLUSTER", "router": "nope" })), &[]).await;
     assert_eq!(s, StatusCode::BAD_REQUEST, "{n}");
     let d = server.manager.__desired_ovn_for_tests().await.unwrap();
     assert_eq!(d.routers.len(), 4);
@@ -2201,7 +2200,7 @@ async fn provider_networks_and_vpc_routers() {
         &server,
         "POST",
         "/projects/default/networks",
-        Some(json!({ "name": "web", "mode": "nat", "port_type": "tap", "scope": "cluster" })),
+        Some(json!({ "name": "web", "mode": "NETWORK_MODE_NAT", "port_type": "PORT_TYPE_TAP", "scope": "NETWORK_SCOPE_CLUSTER" })),
         &[],
     )
     .await;
@@ -2238,7 +2237,7 @@ async fn provider_networks_and_vpc_routers() {
         &server,
         "POST",
         "/projects/default/networks",
-        Some(json!({ "name": "iso", "mode": "isolated", "port_type": "tap", "scope": "cluster" })),
+        Some(json!({ "name": "iso", "mode": "NETWORK_MODE_ISOLATED", "port_type": "PORT_TYPE_TAP", "scope": "NETWORK_SCOPE_CLUSTER" })),
         &[],
     )
     .await;
@@ -3941,7 +3940,7 @@ async fn ovn_is_a_cluster_setting_every_node_follows() {
     .await;
 
     // Off is refused while a cluster network exists.
-    let (s, n) = call(&server, "POST", "/networks", Some(json!({ "name": "c-net", "mode": "isolated", "scope": "cluster", "subnet": "10.89.40.0/24" })), &[]).await;
+    let (s, n) = call(&server, "POST", "/networks", Some(json!({ "name": "c-net", "mode": "NETWORK_MODE_ISOLATED", "scope": "NETWORK_SCOPE_CLUSTER", "subnet": "10.89.40.0/24" })), &[]).await;
     assert_eq!(s, StatusCode::CREATED, "{n}");
     let (s, v) = call(
         &server,
@@ -3966,7 +3965,7 @@ async fn ovn_is_a_cluster_setting_every_node_follows() {
         &server,
         "POST",
         "/networks",
-        Some(json!({ "name": "c-nat", "mode": "nat", "scope": "cluster" })),
+        Some(json!({ "name": "c-nat", "mode": "NETWORK_MODE_NAT", "scope": "NETWORK_SCOPE_CLUSTER" })),
         &[],
     )
     .await;
@@ -4119,7 +4118,7 @@ async fn gateway_nodes_need_the_physnet_and_the_kernel_datapath() {
         &server,
         "PUT",
         &format!("/nodes/{id}/ovn"),
-        Some(json!({ "br_int_datapath": "system" })),
+        Some(json!({ "br_int_datapath": "BR_INT_DATAPATH_SYSTEM" })),
         &[],
     )
     .await;
@@ -4158,7 +4157,7 @@ async fn gateway_nodes_need_the_physnet_and_the_kernel_datapath() {
         &server,
         "PUT",
         &format!("/nodes/{id}/ovn"),
-        Some(json!({ "br_int_datapath": "netdev" })),
+        Some(json!({ "br_int_datapath": "BR_INT_DATAPATH_NETDEV" })),
         &[],
     )
     .await;
@@ -4170,7 +4169,7 @@ async fn gateway_nodes_need_the_physnet_and_the_kernel_datapath() {
         &server,
         "PUT",
         &format!("/nodes/{id}/ovn"),
-        Some(json!({ "br_int_datapath": "netdev" })),
+        Some(json!({ "br_int_datapath": "BR_INT_DATAPATH_NETDEV" })),
         &[],
     )
     .await;

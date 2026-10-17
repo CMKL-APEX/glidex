@@ -393,7 +393,8 @@ monitoring sees it without a new route.
 ### 7.3 `POST /auth/token` — credential → personal token
 
 `{username, password, token_name?, device?, client?, days?}` →
-`{token, token_id, expires_at}` (or `401`, rate-limited). It runs the
+`{issued: {token, token_id, expires_at, user_id, display_name}}`
+(`glidex.auth.v1.PasswordTokenResponse`; or `401`, rate-limited). It runs the
 same authd path as `POST /auth/login` (security.md §5.3: peer check,
 `pam_acct_mgmt`, `allowed_groups`, the 5/15 min + 30/min limits, the
 fixed delay) but mints a *bearer token* like the device flow does,

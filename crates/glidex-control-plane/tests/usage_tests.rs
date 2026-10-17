@@ -124,10 +124,7 @@ impl H {
     }
 
     async fn rest(&self, path: &str, token: &str) -> (StatusCode, Value) {
-        let (s, h, b) = self.raw("GET", path, None, token).await;
-        if s == StatusCode::OK {
-            assert_eq!(h["glidex-api-shape"], "proto", "{path}");
-        }
+        let (s, _, b) = self.raw("GET", path, None, token).await;
         (s, serde_json::from_slice(&b).unwrap_or(Value::Null))
     }
 

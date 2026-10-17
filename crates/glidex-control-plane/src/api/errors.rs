@@ -3,7 +3,6 @@
 use crate::credentials::CredentialError;
 use crate::hypervisor::HypervisorError;
 use crate::images::ImageError;
-use crate::models::ApiError;
 use crate::network::NetError;
 use crate::state::VmManagerError;
 use crate::tenancy::TenancyError;
@@ -11,6 +10,45 @@ use axum::{Json, http::StatusCode};
 use glidex_netd::proto::ErrorBody;
 
 pub type ApiErr = (StatusCode, Json<ApiError>);
+
+/// A REST error, sent as a `glidex.api.v1.Error`.
+#[derive(Debug)]
+pub struct ApiError {
+    pub error: String,
+    pub message: String,
+    pub details: serde_json::Value,
+}
+
+impl ApiError {
+    pub fn new(error: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            error: error.into(),
+            message: message.into(),
+            details: serde_json::Value::Null,
+        }
+    }
+
+    pub fn with_details(mut self, details: serde_json::Value) -> Self {
+        self.details = details;
+        self
+    }
+}
+
+/// The fields of `glidex.api.v1.Error`. `details` is written as the JSON it
+/// is rather than through `google.protobuf.Value`, whose numbers are
+/// doubles (`33554432.0`): sizes and versions stay integers.
+impl serde::Serialize for ApiError {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut st = s.serialize_struct("Error", 3)?;
+        st.serialize_field("error", &self.error)?;
+        st.serialize_field("message", &self.message)?;
+        if !self.details.is_null() {
+            st.serialize_field("details", &self.details)?;
+        }
+        st.end()
+    }
+}
 
 /// REST status for an error reported by netd (spec §11.3).
 pub(crate) fn netd_error_response(body: &ErrorBody) -> (StatusCode, Json<ApiError>) {
@@ -201,5 +239,33 @@ pub fn error_to_response(error: VmManagerError) -> (StatusCode, Json<ApiError>) 
             };
             (status, Json(ApiError::new(code, error.to_string())))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_rest_error_is_a_glidex_api_v1_error() {
+        let e = ApiError::new("quota_exceeded", "over")
+            .with_details(serde_json::json!({"bytes": 33554432}));
+        let v = serde_json::to_value(&e).unwrap();
+        assert_eq!(
+            glidex_api::unknown_field("glidex.api.v1.Error", &v),
+            None,
+            "{v}"
+        );
+        let other = serde_json::json!({"bogus": 1});
+        assert!(glidex_api::unknown_field("glidex.api.v1.Error", &other).is_some());
+        assert_eq!(
+            v["details"]["bytes"], 33554432,
+            "integers stay integers: {v}"
+        );
+        let v = serde_json::to_value(ApiError::new("not_found", "no such vm")).unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!({"error": "not_found", "message": "no such vm"})
+        );
     }
 }

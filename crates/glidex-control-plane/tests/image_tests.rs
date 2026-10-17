@@ -351,8 +351,16 @@ const FIRMWARE: &[u8] = &[0x5a; 64 * 1024];
 const VARS: &[u8] = &[0xa5; 16 * 1024];
 
 /// Pull `fw.fd` as a firmware image for `hypervisor`.
+/// A hypervisor's short name (`qemu`, `cloudhypervisor`) as its proto name.
+fn hypervisor_pb(h: &str) -> String {
+    match h {
+        "cloudhypervisor" => "HYPERVISOR_CLOUD_HYPERVISOR".into(),
+        h => format!("HYPERVISOR_{}", h.to_ascii_uppercase()),
+    }
+}
+
 async fn pull_firmware(app: &Router, base: &str, name: &str, hypervisor: &str) -> Value {
-    let body = json!({"url": format!("{base}/fw.fd"), "name": name, "kind": "firmware", "hypervisor": hypervisor, "sha256": sha256_hex(FIRMWARE)});
+    let body = json!({"url": format!("{base}/fw.fd"), "name": name, "kind": "IMAGE_KIND_FIRMWARE", "hypervisor": hypervisor_pb(hypervisor), "sha256": sha256_hex(FIRMWARE)});
     let (status, img) = request(app, "POST", "/images", Some(body)).await;
     assert_eq!(status, StatusCode::ACCEPTED, "{img}");
     let img = wait_image(app, img["image"]["id"].as_str().unwrap()).await;
@@ -408,15 +416,8 @@ fn marker_intact(disk: &Path, format: &str, dir: &Path) -> bool {
 async fn catalog_lists_host_images() {
     let tmp = TempDir::new().unwrap();
     let (app, _m) = create_app(tmp.path());
-    let (status, cat, headers) = request_with_headers(&app, "GET", "/images/catalog", None).await;
+    let (status, cat, _) = request_with_headers(&app, "GET", "/images/catalog", None).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(
-        headers
-            .get("glidex-api-shape")
-            .and_then(|v| v.to_str().ok()),
-        Some("proto"),
-        "{headers:?}"
-    );
     let cat = items(&cat, "items");
     let keys: Vec<_> = cat
         .iter()
@@ -522,7 +523,7 @@ async fn download_verify_then_linked_and_full_disks() {
     assert!(err["message"].as_str().unwrap().contains("web-root"));
 
     // Full clone, default size (GLIDEX_DEFAULT_ROOT_GIB is 10 GiB).
-    let (status, full) = request(&app, "POST", "/disks?wait=30", Some(json!({"name": "copy", "image": "base", "clone": "full", "format": "raw", "extend_root": false}))).await;
+    let (status, full) = request(&app, "POST", "/disks?wait=30", Some(json!({"name": "copy", "image": "base", "clone": "CLONE_MODE_FULL", "format": "DISK_FORMAT_RAW", "extend_root": false}))).await;
     assert_eq!(status, StatusCode::CREATED, "{full}");
     let full = disk_of(&full);
     assert_eq!(num(&full["size_bytes"]), 10 * 1024 * MIB, "{full}");
@@ -533,7 +534,7 @@ async fn download_verify_then_linked_and_full_disks() {
         &app,
         "POST",
         "/disks?wait=30",
-        Some(json!({"name": "x", "image": "base", "format": "raw"})),
+        Some(json!({"name": "x", "image": "base", "format": "DISK_FORMAT_RAW"})),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -826,7 +827,7 @@ async fn grow_shrink_and_extend_root() {
             "POST",
             "/disks?wait=30",
             Some(json!({
-                "name": name, "image": "base", "clone": "full", "format": format,
+                "name": name, "image": "base", "clone": "CLONE_MODE_FULL", "format": format!("DISK_FORMAT_{}", format.to_ascii_uppercase()),
                 "size_bytes": 48 * MIB, "extend_root": false
             })),
         )
@@ -903,7 +904,7 @@ async fn grow_shrink_and_extend_root() {
             &app,
             "POST",
             &format!("/disks/{name}/extend-root?wait=30"),
-            Some(json!({"mode": "on-boot"})),
+            Some(json!({"mode": "EXTEND_MODE_ON_BOOT"})),
         )
         .await;
         assert_eq!(
@@ -1179,7 +1180,7 @@ async fn firmware_images() {
         &app,
         "POST",
         "/images",
-        Some(json!({"url": format!("{base}/fw.fd"), "kind": "firmware"})),
+        Some(json!({"url": format!("{base}/fw.fd"), "kind": "IMAGE_KIND_FIRMWARE"})),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{err}");
@@ -1216,12 +1217,12 @@ async fn firmware_images() {
         "{err}"
     );
     let (status, err) = request(&app, "POST", "/vms", Some(json!({
-        "name": "both", "vcpu_count": 1, "mem_size_mib": 512, "image": "base", "hypervisor": "qemu",
+        "name": "both", "vcpu_count": 1, "mem_size_mib": 512, "image": "base", "hypervisor": "HYPERVISOR_QEMU",
         "firmware": "ovmf-test", "firmware_path": "/x.fd"
     }))).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{err}");
     let (status, vm) = request(&app, "POST", "/vms", Some(json!({
-        "name": "q", "vcpu_count": 1, "mem_size_mib": 512, "image": "base", "hypervisor": "qemu", "firmware": "ovmf-test"
+        "name": "q", "vcpu_count": 1, "mem_size_mib": 512, "image": "base", "hypervisor": "HYPERVISOR_QEMU", "firmware": "ovmf-test"
     }))).await;
     assert_eq!(status, StatusCode::CREATED, "{vm}");
     assert_eq!(vm_of(&vm)["firmware"], fw["id"], "{vm}");
@@ -1384,7 +1385,7 @@ async fn firmware_download_with_a_vars_template() {
     let (base, _) = start_server(&fx).await;
     let (app, _manager) = create_app(tmp.path());
     let fw = |name: &str, extra: Value| {
-        let mut body = json!({"url": format!("{base}/fw.fd"), "sha256": sha256_hex(FIRMWARE), "name": name, "kind": "firmware", "hypervisor": "qemu"});
+        let mut body = json!({"url": format!("{base}/fw.fd"), "sha256": sha256_hex(FIRMWARE), "name": name, "kind": "IMAGE_KIND_FIRMWARE", "hypervisor": "HYPERVISOR_QEMU"});
         body.as_object_mut()
             .unwrap()
             .extend(extra.as_object().unwrap().clone());
@@ -1401,7 +1402,7 @@ async fn firmware_download_with_a_vars_template() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{err}");
     let mut ch = fw("ch", json!({"vars_url": format!("{base}/vars.fd")}));
-    ch["hypervisor"] = json!("cloudhypervisor");
+    ch["hypervisor"] = json!("HYPERVISOR_CLOUD_HYPERVISOR");
     let (status, err) = request(&app, "POST", "/images", Some(ch)).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{err}");
     let (status, err) = request(

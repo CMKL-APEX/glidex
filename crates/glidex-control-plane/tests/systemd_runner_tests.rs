@@ -217,7 +217,7 @@ async fn systemd_runner_launches_adopts_and_stops() {
         "/vms?wait=120",
         Some(json!({
             "name": "sd-test", "vcpu_count": 1, "mem_size_mib": 1024, "firmware_path": firmware,
-            "rootfs_path": rootfs, "power": "running",
+            "rootfs_path": rootfs, "power": "POWER_STATE_RUNNING",
         })),
     )
     .await;

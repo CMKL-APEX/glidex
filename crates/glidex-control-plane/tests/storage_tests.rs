@@ -296,7 +296,7 @@ async fn disk_names_are_unique_per_tenant() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn rest_answers_in_the_proto_shape_and_reads_the_old_one() {
+async fn rest_answers_in_the_proto_shape_and_refuses_the_old_one() {
     let h = harness();
     let admin = h.admin("ada");
     let s = h.session(&admin);
@@ -308,8 +308,23 @@ async fn rest_answers_in_the_proto_shape_and_reads_the_old_one() {
         .unwrap()
         .id;
 
-    // The old enum values and a numeric size still work.
-    let body = json!({"name": "old", "project": p, "size_bytes": 2097152, "format": "raw"});
+    // An old enum value is refused (spec/grpc.md G-D12).
+    let (st, v) = h
+        .rest(
+            "POST",
+            "/disks",
+            Some(json!({"name": "old", "project": p, "size_bytes": 2097152, "format": "raw"})),
+            &s,
+        )
+        .await;
+    assert_eq!(
+        (st, v["error"].as_str()),
+        (StatusCode::UNPROCESSABLE_ENTITY, Some("invalid")),
+        "{v}"
+    );
+    // A numeric size still reads (proto3 JSON takes a number or a string).
+    let body =
+        json!({"name": "old", "project": p, "size_bytes": 2097152, "format": "DISK_FORMAT_RAW"});
     let req = Request::post("/disks")
         .header(header::AUTHORIZATION, format!("Bearer {}", h.token(&admin)))
         .header(header::CONTENT_TYPE, "application/json")
@@ -317,7 +332,6 @@ async fn rest_answers_in_the_proto_shape_and_reads_the_old_one() {
         .unwrap();
     let resp = h.router.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
-    assert_eq!(resp.headers().get("glidex-api-shape").unwrap(), "proto");
     let v: Value =
         serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
     let d = &v["disk"];

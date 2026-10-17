@@ -886,16 +886,22 @@ async fn device_login_through_an_api_connector() {
     let (st, v) = h
         .rest("POST", "/auth/c/corp/device/poll", Some(poll.clone()), "")
         .await;
+    // `glidex.auth.v1.PollDeviceResponse`.
     assert_eq!(
-        (st, v["status"].as_str()),
-        (StatusCode::ACCEPTED, Some("pending"))
+        (st, v["pending"].as_bool()),
+        (StatusCode::ACCEPTED, Some(true))
     );
     let (st, v) = h
         .rest("POST", "/auth/c/corp/device/poll", Some(poll), "")
         .await;
     assert_eq!(st, StatusCode::OK, "{v}");
     let (_, who) = h
-        .rest("GET", "/auth/whoami", None, v["token"].as_str().unwrap())
+        .rest(
+            "GET",
+            "/auth/whoami",
+            None,
+            v["issued"]["token"].as_str().unwrap(),
+        )
         .await;
     assert_eq!(who["user"]["display_name"], "Alice");
     assert!(
@@ -926,7 +932,10 @@ async fn pam_connector_tokens_are_clamped_to_its_maximum() {
         json!({"username": "bob", "password": "bob-password", "days": 30, "connector": "lab"});
     let (st, v) = h.rest("POST", "/auth/token", Some(body), "").await;
     assert_eq!(st, StatusCode::OK, "{v}");
-    let expires = v["expires_at"].as_u64().unwrap();
+    // `glidex.auth.v1.PasswordTokenResponse`: an RFC 3339 expiry.
+    let expires: buffa_types::google::protobuf::Timestamp =
+        serde_json::from_value(v["issued"]["expires_at"].clone()).unwrap();
+    let expires = expires.seconds as u64;
     assert!(
         expires <= now() + 86_400 + 60,
         "clamped to a day: {expires}"

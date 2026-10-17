@@ -155,7 +155,7 @@ async fn request(
 fn vm(name: &str, networks: Value) -> Value {
     json!({
         "name": name, "vcpu_count": 1, "mem_size_mib": 512,
-        "hypervisor": "cloudhypervisor",
+        "hypervisor": "HYPERVISOR_CLOUD_HYPERVISOR",
         "firmware_path": "/nonexistent/CLOUDHV.fd",
         "rootfs_path": "/nonexistent/disk.raw",
         "networks": networks
@@ -169,7 +169,7 @@ async fn nat_network_crud() {
         &h.app,
         "POST",
         "/networks",
-        Some(json!({"name": "lab", "mode": "nat"})),
+        Some(json!({"name": "lab", "mode": "NETWORK_MODE_NAT"})),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
@@ -200,7 +200,7 @@ async fn nat_network_crud() {
         &h.app,
         "POST",
         "/networks",
-        Some(json!({"name": "lab", "mode": "nat", "bridge": "gxbr-lab"})),
+        Some(json!({"name": "lab", "mode": "NETWORK_MODE_NAT", "bridge": "gxbr-lab"})),
     )
     .await;
     assert_eq!(status, StatusCode::CONFLICT);
@@ -218,7 +218,7 @@ async fn vms_reference_networks() {
         &h.app,
         "POST",
         "/networks",
-        Some(json!({"name": "lab", "mode": "nat", "bridge": "gxbr-lab"})),
+        Some(json!({"name": "lab", "mode": "NETWORK_MODE_NAT", "bridge": "gxbr-lab"})),
     )
     .await;
 
@@ -247,7 +247,7 @@ async fn vms_reference_networks() {
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
 
     let mut qemu = vm("v3", json!([{"network": "lab"}]));
-    qemu["hypervisor"] = json!("qemu");
+    qemu["hypervisor"] = json!("HYPERVISOR_QEMU");
     qemu["kernel_image_path"] = json!("/k");
     qemu.as_object_mut().unwrap().remove("firmware_path");
     let (status, body) = request(&h.app, "POST", "/vms", Some(qemu)).await;
@@ -299,6 +299,14 @@ async fn qemu_failed_start_detaches_ports() {
     failed_start_detaches_ports_for("qemu", "qemu-system-x86_64").await;
 }
 
+/// A hypervisor's short name (`qemu`, `cloudhypervisor`) as its proto name.
+fn hypervisor_pb(h: &str) -> String {
+    match h {
+        "cloudhypervisor" => "HYPERVISOR_CLOUD_HYPERVISOR".into(),
+        h => format!("HYPERVISOR_{}", h.to_ascii_uppercase()),
+    }
+}
+
 async fn failed_start_detaches_ports_for(hypervisor: &str, binary: &str) {
     if std::process::Command::new(binary)
         .arg("--version")
@@ -315,11 +323,11 @@ async fn failed_start_detaches_ports_for(hypervisor: &str, binary: &str) {
         &h.app,
         "POST",
         "/networks",
-        Some(json!({"name": "lab", "mode": "nat", "bridge": "gxbr-lab"})),
+        Some(json!({"name": "lab", "mode": "NETWORK_MODE_NAT", "bridge": "gxbr-lab"})),
     )
     .await;
     let mut spec = vm("boom", json!([{"network": "lab"}]));
-    spec["hypervisor"] = json!(hypervisor);
+    spec["hypervisor"] = json!(hypervisor_pb(hypervisor));
     let (_, body) = request(&h.app, "POST", "/vms", Some(spec)).await;
     let id = vm_id(&body);
     let port = glidex_ovs::names::port_name(&id, 0).unwrap();
@@ -371,7 +379,7 @@ async fn ovs_status_and_bridges() {
         &h.app,
         "POST",
         "/ovs/bridges",
-        Some(json!({"name": "gxbr-lab", "datapath": "system"})),
+        Some(json!({"name": "gxbr-lab", "datapath": "DATAPATH_SYSTEM"})),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
@@ -416,7 +424,7 @@ async fn ovs_status_and_bridges() {
         &h.app,
         "POST",
         "/ovs/bridges",
-        Some(json!({"name": "Bad!", "datapath": "system"})),
+        Some(json!({"name": "Bad!", "datapath": "DATAPATH_SYSTEM"})),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
@@ -433,7 +441,7 @@ async fn network_controller_reports_the_phase() {
         &h.app,
         "POST",
         "/networks",
-        Some(json!({"name": "lab", "mode": "nat", "bridge": "gxbr-lab"})),
+        Some(json!({"name": "lab", "mode": "NETWORK_MODE_NAT", "bridge": "gxbr-lab"})),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
@@ -490,7 +498,7 @@ async fn isolated_networks_are_fenced_by_netd() {
         &h.app,
         "POST",
         "/networks",
-        Some(json!({"name": "iso", "mode": "isolated", "bridge": "gxbr-iso"})),
+        Some(json!({"name": "iso", "mode": "NETWORK_MODE_ISOLATED", "bridge": "gxbr-iso"})),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
@@ -499,7 +507,7 @@ async fn isolated_networks_are_fenced_by_netd() {
         &h.app,
         "POST",
         "/networks",
-        Some(json!({"name": "lab", "mode": "nat", "bridge": "gxbr-lab"})),
+        Some(json!({"name": "lab", "mode": "NETWORK_MODE_NAT", "bridge": "gxbr-lab"})),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
@@ -559,7 +567,7 @@ async fn lost_nat_is_recreated_only_without_vms() {
         &h.app,
         "POST",
         "/networks",
-        Some(json!({"name": "lab", "mode": "nat", "bridge": "gxbr-lab"})),
+        Some(json!({"name": "lab", "mode": "NETWORK_MODE_NAT", "bridge": "gxbr-lab"})),
     )
     .await;
     let lab = body["network"]["id"].as_str().unwrap().to_string();
@@ -603,7 +611,7 @@ async fn netd_errors_map_to_rest() {
         &h.app,
         "POST",
         "/networks",
-        Some(json!({"name": "lab", "mode": "nat", "bridge": "gxbr-lab"})),
+        Some(json!({"name": "lab", "mode": "NETWORK_MODE_NAT", "bridge": "gxbr-lab"})),
     )
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
@@ -619,7 +627,7 @@ async fn netd_errors_map_to_rest() {
         &app,
         "POST",
         "/networks",
-        Some(json!({"name": "lab", "mode": "nat", "bridge": "gxbr-lab"})),
+        Some(json!({"name": "lab", "mode": "NETWORK_MODE_NAT", "bridge": "gxbr-lab"})),
     )
     .await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
@@ -655,7 +663,7 @@ async fn project_networks_and_sharing() {
         &h.app,
         "POST",
         &format!("/projects/{pa}/networks"),
-        Some(json!({"name": "pnet", "mode": "nat"})),
+        Some(json!({"name": "pnet", "mode": "NETWORK_MODE_NAT"})),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{net}");
@@ -668,7 +676,7 @@ async fn project_networks_and_sharing() {
         &h.app,
         "POST",
         &format!("/projects/{pa}/networks"),
-        Some(json!({"name": "x", "mode": "bridged"})),
+        Some(json!({"name": "x", "mode": "NETWORK_MODE_BRIDGED"})),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -676,7 +684,7 @@ async fn project_networks_and_sharing() {
         &h.app,
         "POST",
         &format!("/projects/{pa}/networks"),
-        Some(json!({"name": "x", "mode": "nat", "bridge": "gxbr-mine"})),
+        Some(json!({"name": "x", "mode": "NETWORK_MODE_NAT", "bridge": "gxbr-mine"})),
     )
     .await;
     // Not a field of a project network's create (the proto shape refuses it).
@@ -691,7 +699,7 @@ async fn project_networks_and_sharing() {
         &h.app,
         "POST",
         &format!("/projects/{pc}/networks"),
-        Some(json!({"name": "iso", "mode": "isolated"})),
+        Some(json!({"name": "iso", "mode": "NETWORK_MODE_ISOLATED"})),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{iso}");
@@ -713,7 +721,7 @@ async fn project_networks_and_sharing() {
         &h.app,
         "POST",
         &format!("/projects/{pc}/networks"),
-        Some(json!({"name": "iso-dpdk", "mode": "isolated", "port_type": "vhost_user"})),
+        Some(json!({"name": "iso-dpdk", "mode": "NETWORK_MODE_ISOLATED", "port_type": "PORT_TYPE_VHOST_USER"})),
     )
     .await;
     assert_eq!(
@@ -729,7 +737,7 @@ async fn project_networks_and_sharing() {
         &h.app,
         "POST",
         &format!("/projects/{pc}/networks"),
-        Some(json!({"name": "iso2", "mode": "isolated", "subnet": "10.99.0.0/24"})),
+        Some(json!({"name": "iso2", "mode": "NETWORK_MODE_ISOLATED", "subnet": "10.99.0.0/24"})),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -882,7 +890,7 @@ async fn network_deletion_waits_for_netd() {
         &app,
         "POST",
         "/networks",
-        Some(json!({"name": "lab", "mode": "nat", "bridge": "gxbr-lab"})),
+        Some(json!({"name": "lab", "mode": "NETWORK_MODE_NAT", "bridge": "gxbr-lab"})),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
@@ -977,7 +985,7 @@ async fn host_networks_are_granted_to_tenants_and_shares_stay_in_one() {
         &h.app,
         "POST",
         "/networks",
-        Some(json!({"name": "lab", "mode": "nat", "tenants": ["acme"]})),
+        Some(json!({"name": "lab", "mode": "NETWORK_MODE_NAT", "tenants": ["acme"]})),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{net}");
@@ -1026,7 +1034,7 @@ async fn host_networks_are_granted_to_tenants_and_shares_stay_in_one() {
         &h.app,
         "POST",
         &format!("/projects/{pa}/networks"),
-        Some(json!({"name": "apnet", "mode": "isolated"})),
+        Some(json!({"name": "apnet", "mode": "NETWORK_MODE_ISOLATED"})),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
@@ -1092,7 +1100,7 @@ async fn network_names_are_per_tenant_and_ids_are_the_keys() {
                 &app,
                 "POST",
                 &uri,
-                Some(json!({"name": "web", "mode": "isolated"})),
+                Some(json!({"name": "web", "mode": "NETWORK_MODE_ISOLATED"})),
             )
             .await
         }
@@ -1114,7 +1122,7 @@ async fn network_names_are_per_tenant_and_ids_are_the_keys() {
         &h.app,
         "POST",
         "/networks",
-        Some(json!({"name": "web", "mode": "nat", "bridge": "gxbr-lab"})),
+        Some(json!({"name": "web", "mode": "NETWORK_MODE_NAT", "bridge": "gxbr-lab"})),
     )
     .await;
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
@@ -1224,7 +1232,7 @@ async fn a_networks_events_stream_as_they_happen() {
         &h.app,
         "POST",
         "/networks",
-        Some(json!({"name": "lab", "mode": "nat", "bridge": "gxbr-lab"})),
+        Some(json!({"name": "lab", "mode": "NETWORK_MODE_NAT", "bridge": "gxbr-lab"})),
     )
     .await;
     let lab = body["network"]["id"].as_str().unwrap().to_string();

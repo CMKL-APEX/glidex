@@ -13,12 +13,6 @@ fn cluster_err(e: crate::cluster::ClusterError) -> ApiErr {
     err(StatusCode::CONFLICT, "cluster_error", e.to_string())
 }
 
-/// The old shape's enum values of the cluster family.
-pub(crate) const ENUMS: &[(&str, &str)] = &[
-    ("role", "NODE_ROLE"),
-    ("br_int_datapath", "BR_INT_DATAPATH"),
-];
-
 pub(crate) fn body<T: serde::de::DeserializeOwned + buffa::MessageName>(
     v: Option<Json<Value>>,
     path: &[(&str, &str)],
@@ -31,7 +25,7 @@ pub(crate) fn body<T: serde::de::DeserializeOwned + buffa::MessageName>(
             o.insert((*k).into(), Value::String((*val).into()));
         }
     }
-    proto_body(v, ENUMS, &[])
+    proto_body(v)
 }
 
 pub async fn init(c: Caller, b: Option<Json<Value>>) -> Result<impl IntoResponse, ApiErr> {

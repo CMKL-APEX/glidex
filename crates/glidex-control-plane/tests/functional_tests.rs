@@ -77,6 +77,14 @@ async fn request(
     (status, json)
 }
 
+/// A hypervisor's short name (`qemu`, `cloudhypervisor`) as its proto name.
+fn hypervisor_pb(h: &str) -> String {
+    match h {
+        "cloudhypervisor" => "HYPERVISOR_CLOUD_HYPERVISOR".into(),
+        h => format!("HYPERVISOR_{}", h.to_ascii_uppercase()),
+    }
+}
+
 /// A proto3 JSON 64-bit integer: a string (`"17179869184"`) or a number;
 /// left out (null) at its default, 0.
 fn num(v: &Value) -> u64 {
@@ -126,7 +134,7 @@ fn firmware_vm(name: &str) -> Value {
         "name": name,
         "vcpu_count": 1,
         "mem_size_mib": 512,
-        "hypervisor": "cloudhypervisor",
+        "hypervisor": "HYPERVISOR_CLOUD_HYPERVISOR",
         "firmware_path": "/path/to/CLOUDHV.fd",
         "rootfs_path": "/path/to/disk.raw"
     })
@@ -181,7 +189,7 @@ async fn qemu_firmware_vm_can_be_created_without_kernel() {
     let (app, manager, _tmp) = create_test_app();
 
     let mut req = firmware_vm("fw-qemu");
-    req["hypervisor"] = json!("qemu");
+    req["hypervisor"] = json!("HYPERVISOR_QEMU");
     req["firmware_path"] = json!("/usr/share/OVMF/OVMF_CODE_4M.fd");
     let (status, body) = request(&app, "POST", "/vms", Some(req)).await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
@@ -219,7 +227,7 @@ async fn qemu_accepts_a_custom_cloud_init_path() {
         "name": "qemu-ci",
         "vcpu_count": 1,
         "mem_size_mib": 512,
-        "hypervisor": "qemu",
+        "hypervisor": "HYPERVISOR_QEMU",
         "kernel_image_path": "/path/to/vmlinux",
         "rootfs_path": "/path/to/rootfs",
         "cloud_init_path": "/path/to/seed.img"
@@ -687,7 +695,7 @@ async fn firmware_boot_e2e(hypervisor: &str) {
             "name": hostname,
             "vcpu_count": 2,
             "mem_size_mib": 2048,
-            "hypervisor": hypervisor,
+            "hypervisor": hypervisor_pb(hypervisor),
             "firmware": firmware,
             "rootfs_path": rootfs,
             "credential": username,
@@ -893,8 +901,8 @@ async fn restart_e2e(hypervisor: &str) {
     .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
     let (status, vm) = request(&app, "POST", "/vms?wait=120", Some(json!({
-        "name": hostname, "vcpu_count": 2, "mem_size_mib": 2048, "hypervisor": hypervisor,
-        "firmware_path": firmware, "rootfs_path": rootfs, "credential": username, "power": "running",
+        "name": hostname, "vcpu_count": 2, "mem_size_mib": 2048, "hypervisor": hypervisor_pb(hypervisor),
+        "firmware_path": firmware, "rootfs_path": rootfs, "credential": username, "power": "POWER_STATE_RUNNING",
     }))).await;
     assert_eq!(status, StatusCode::CREATED, "{vm}");
     assert_eq!(state(&vm), "running", "{vm}");
@@ -1092,7 +1100,7 @@ async fn mixed_hypervisors_share_a_network() {
         &app,
         "POST",
         "/networks",
-        Some(json!({"name": "mixed", "mode": "nat", "bridge": "gxbr-mixed"})),
+        Some(json!({"name": "mixed", "mode": "NETWORK_MODE_NAT", "bridge": "gxbr-mixed"})),
     )
     .await;
     assert_eq!(st, StatusCode::CREATED, "{net}");
@@ -1102,7 +1110,7 @@ async fn mixed_hypervisors_share_a_network() {
         &tmp,
         "mixed",
         "gx-mix-ch",
-        json!({"hypervisor": "cloudhypervisor"}),
+        json!({"hypervisor": "HYPERVISOR_CLOUD_HYPERVISOR"}),
     )
     .await;
     let qemu = start_and_login(
@@ -1110,7 +1118,7 @@ async fn mixed_hypervisors_share_a_network() {
         &tmp,
         "mixed",
         "gx-mix-qemu",
-        json!({"hypervisor": "qemu"}),
+        json!({"hypervisor": "HYPERVISOR_QEMU"}),
     )
     .await;
     let (ch_ip, qemu_ip) = (ch.ipv4.clone().unwrap(), qemu.ipv4.clone().unwrap());
@@ -1164,7 +1172,7 @@ async fn nat_e2e(hypervisor: &str) {
         &app,
         "POST",
         "/networks",
-        Some(json!({"name": "e2e", "mode": "nat", "bridge": "gxbr-e2e"})),
+        Some(json!({"name": "e2e", "mode": "NETWORK_MODE_NAT", "bridge": "gxbr-e2e"})),
     )
     .await;
     assert_eq!(st, StatusCode::CREATED, "{net}");
@@ -1194,7 +1202,7 @@ async fn nat_e2e(hypervisor: &str) {
         "/vms",
         Some(json!({
             "name": hostname, "vcpu_count": 2, "mem_size_mib": 2048,
-            "hypervisor": hypervisor,
+            "hypervisor": hypervisor_pb(hypervisor),
             "firmware_path": firmware, "rootfs_path": rootfs,
             "credential": username,
             "networks": [{"network": "e2e", "queue_pairs": 2}],
@@ -1355,7 +1363,7 @@ async fn start_and_login(
     .await;
     assert_eq!(st, StatusCode::CREATED, "{body}");
     let mut spec = json!({
-        "name": hostname, "vcpu_count": 2, "mem_size_mib": 2048, "hypervisor": hypervisor,
+        "name": hostname, "vcpu_count": 2, "mem_size_mib": 2048, "hypervisor": hypervisor_pb(&hypervisor),
         "firmware_path": firmware, "rootfs_path": rootfs, "credential": username,
         "networks": [{"network": network}],
     });
@@ -1519,11 +1527,11 @@ async fn bridged_uplink_e2e() {
         &app,
         "POST",
         "/ovs/bridges",
-        Some(json!({"name": "gxbr-e2eup", "datapath": "system"})),
+        Some(json!({"name": "gxbr-e2eup", "datapath": "DATAPATH_SYSTEM"})),
     )
     .await;
     assert_eq!(st, StatusCode::CREATED, "{body}");
-    let uplink = json!({"name": "gxup0", "kind": "kernel", "ifname": "gxup0"});
+    let uplink = json!({"name": "gxup0", "kind": "UPLINK_KIND_KERNEL", "ifname": "gxup0"});
 
     // 1. In use by the host: refused without migrate_ip + confirm.
     let (st, body) = request(
@@ -1623,7 +1631,7 @@ async fn bridged_uplink_e2e() {
         &app,
         "POST",
         "/networks",
-        Some(json!({"name": "lan", "mode": "bridged", "bridge": "gxbr-e2eup"})),
+        Some(json!({"name": "lan", "mode": "NETWORK_MODE_BRIDGED", "bridge": "gxbr-e2eup"})),
     )
     .await;
     assert_eq!(st, StatusCode::CREATED, "{body}");
@@ -1697,7 +1705,7 @@ async fn afxdp_uplink_e2e() {
         &app,
         "POST",
         "/ovs/bridges",
-        Some(json!({"name": "gxbr-e2exdp", "datapath": "netdev"})),
+        Some(json!({"name": "gxbr-e2exdp", "datapath": "DATAPATH_NETDEV"})),
     )
     .await;
     assert_eq!(st, StatusCode::CREATED, "{body}");
@@ -1706,7 +1714,7 @@ async fn afxdp_uplink_e2e() {
         "POST",
         "/ovs/bridges/gxbr-e2exdp/uplinks",
         Some(json!({
-            "name": "gxup1", "kind": "afxdp", "ifname": "gxup1", "xdp_mode": "generic"
+            "name": "gxup1", "kind": "UPLINK_KIND_AFXDP", "ifname": "gxup1", "xdp_mode": "XDP_MODE_GENERIC"
         })),
     )
     .await;
@@ -1720,7 +1728,7 @@ async fn afxdp_uplink_e2e() {
         &app,
         "POST",
         "/networks",
-        Some(json!({"name": "xdp", "mode": "bridged", "bridge": "gxbr-e2exdp"})),
+        Some(json!({"name": "xdp", "mode": "NETWORK_MODE_BRIDGED", "bridge": "gxbr-e2exdp"})),
     )
     .await;
     assert_eq!(st, StatusCode::CREATED, "{body}");
@@ -1796,7 +1804,7 @@ async fn vhost_user_net_e2e(hypervisor: &str) {
         "POST",
         "/networks",
         Some(json!({
-            "name": "fast", "mode": "nat", "port_type": "vhost_user", "bridge": "gxbr-fast"
+            "name": "fast", "mode": "NETWORK_MODE_NAT", "port_type": "PORT_TYPE_VHOST_USER", "bridge": "gxbr-fast"
         })),
     )
     .await;
@@ -1814,7 +1822,7 @@ async fn vhost_user_net_e2e(hypervisor: &str) {
     let (_, net) = request(&app, "GET", "/networks/fast", None).await;
     assert_eq!(net["network"]["port_type"], "PORT_TYPE_VHOST_USER", "{net}");
     // OVS-DPDK's vhost-user backend needs hugepage-backed guest memory.
-    boot_and_check(&app, &tmp, "fast", "gx-vhosttest", json!({"hugepages": true, "mem_size_mib": 1024, "hypervisor": hypervisor}), vec![
+    boot_and_check(&app, &tmp, "fast", "gx-vhosttest", json!({"hugepages": true, "mem_size_mib": 1024, "hypervisor": hypervisor_pb(hypervisor)}), vec![
         ("ip -4 -o addr | grep -q ' 10.88.' && echo GX_$((80+1))_VHOST_DHCP".into(), "GX_81_VHOST_DHCP".into()),
         ("ping -c 2 -W 3 $(ip -4 route show default | awk '{print $3}') >/dev/null && echo GX_$((80+2))_VHOST_GW".into(), "GX_82_VHOST_GW".into()),
     ]).await;
@@ -1901,7 +1909,7 @@ async fn catalog_image_e2e(hypervisor: &str) {
 
     let hostname = "gx-imgtest";
     let spec = json!({
-        "name": hostname, "vcpu_count": 2, "mem_size_mib": 2048, "hypervisor": hypervisor,
+        "name": hostname, "vcpu_count": 2, "mem_size_mib": 2048, "hypervisor": hypervisor_pb(hypervisor),
         "image": image_id, "root_disk_size_gib": 12, "credential": username,
     });
     let (status, vm) = request(&app, "POST", "/vms", Some(spec)).await;

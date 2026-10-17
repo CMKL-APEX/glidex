@@ -85,7 +85,7 @@ fn firmware_vm(name: &str, credential: Option<&str>) -> Value {
         "name": name,
         "vcpu_count": 1,
         "mem_size_mib": 512,
-        "hypervisor": "cloudhypervisor",
+        "hypervisor": "HYPERVISOR_CLOUD_HYPERVISOR",
         "firmware_path": "/path/to/CLOUDHV.fd",
         "rootfs_path": "/path/to/disk.raw"
     });
@@ -203,7 +203,7 @@ async fn vm_credential_must_exist_and_needs_firmware_boot() {
 
     let kernel_vm = json!({
         "name": "vm2", "vcpu_count": 1, "mem_size_mib": 512,
-        "hypervisor": "cloudhypervisor",
+        "hypervisor": "HYPERVISOR_CLOUD_HYPERVISOR",
         "kernel_image_path": "/path/to/vmlinux", "rootfs_path": "/path/to/rootfs",
         "credential": "alice"
     });

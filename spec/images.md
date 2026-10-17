@@ -749,9 +749,6 @@ These are the REST twins of `glidex.storage.v1` (`ImageService`,
   {image_id, mode}}`.
 - **Absent fields**: fields at their default are left out (`deleting`,
   `pinned` and `vars_template` appear only when true).
-- **Old requests**: for one release, request bodies may still use the old
-  lower-case enum values (`"qcow2"`, `"on-boot"`, `"x86_64"`), and
-  responses carry `Glidex-Api-Shape: proto`.
 - **Deleting an image with `wait`**: answers `204` once it is gone (`200`
   before).
 

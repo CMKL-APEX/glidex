@@ -77,22 +77,16 @@ pub async fn delete(c: Caller, Path(id): Path<String>) -> Result<StatusCode, Api
     Ok(StatusCode::NO_CONTENT)
 }
 
-#[derive(serde::Deserialize)]
-pub struct SecretBody {
-    value: zeroize::Zeroizing<String>,
-}
-
 pub async fn set_secret(
     c: Caller,
     Path((id, field)): Path<(String, String)>,
-    Json(b): Json<SecretBody>,
+    Json(mut v): Json<serde_json::Value>,
 ) -> Result<Json<pb::SetSecretResponse>, ApiErr> {
-    let req = pb::SetSecretRequest {
-        id,
-        field,
-        value: b.value.to_string(),
-        ..Default::default()
-    };
+    if let Some(o) = v.as_object_mut() {
+        o.insert("id".into(), id.into());
+        o.insert("field".into(), field.into());
+    }
+    let req: pb::SetSecretRequest = super::proto_body(v)?;
     Ok(Json(svc::set_secret(&c, req)?))
 }
 
