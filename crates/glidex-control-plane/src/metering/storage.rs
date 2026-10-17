@@ -62,7 +62,7 @@ pub fn record(
 
 #[cfg(test)]
 mod tests {
-    use super::super::ledger::{combine, Ledger, LedgerSettings, HOUR_MS};
+    use super::super::ledger::{HOUR_MS, Ledger, LedgerSettings, combine};
     use super::*;
     use crate::store::Db;
     use std::sync::Arc;

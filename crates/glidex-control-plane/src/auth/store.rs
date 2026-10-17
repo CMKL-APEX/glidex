@@ -292,7 +292,7 @@ fn put<T: Serialize>(
                 table: table_id(table),
                 key: key.as_bytes().to_vec(),
                 value: bytes,
-            }])?)
+            }])?);
         }
         Err(e) => return Err(e.into()),
     };
@@ -921,10 +921,11 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_ne!(o.id, a.id, "never linked by name or email across providers");
-        assert!(s
-            .user_for_identity("pam", "bob", "bob", None, false)
-            .unwrap()
-            .is_none());
+        assert!(
+            s.user_for_identity("pam", "bob", "bob", None, false)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

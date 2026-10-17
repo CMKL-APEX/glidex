@@ -299,8 +299,16 @@ impl VmManager {
                 chassis: chassis.clone(),
                 server: false,
             };
-            match tokio::task::spawn_blocking(move || netd.call::<()>(glidex_netd::proto::Op::ForgetOvnMember(args))).await {
-                Ok(Ok(())) => tracing::warn!(node, chassis, "deleted the OVN chassis of a node that is no longer a member: its ovn-controller still runs (on it: `sudo glidex-install --leave`)"),
+            match tokio::task::spawn_blocking(move || {
+                netd.call::<()>(glidex_netd::proto::Op::ForgetOvnMember(args))
+            })
+            .await
+            {
+                Ok(Ok(())) => tracing::warn!(
+                    node,
+                    chassis,
+                    "deleted the OVN chassis of a node that is no longer a member: its ovn-controller still runs (on it: `sudo glidex-install --leave`)"
+                ),
                 Ok(Err(e)) => tracing::warn!(node, chassis, "deleting a stale OVN chassis: {}", e),
                 Err(e) => tracing::warn!("deleting a stale OVN chassis: {}", e),
             }
@@ -449,12 +457,12 @@ impl VmManager {
             Ok(Ok(datapath)) => {
                 // The scheduler needs to know where vhost-user NICs can go (§9.1).
                 let me = self.local_node_id();
-                if let Ok(Some(mut n)) = self.nodes().get(&me) {
-                    if n.status.features.br_int_datapath != datapath {
-                        n.status.features.br_int_datapath = datapath;
-                        n.meta.resource_version += 1;
-                        let _ = self.nodes().put(&n);
-                    }
+                if let Ok(Some(mut n)) = self.nodes().get(&me)
+                    && n.status.features.br_int_datapath != datapath
+                {
+                    n.status.features.br_int_datapath = datapath;
+                    n.meta.resource_version += 1;
+                    let _ = self.nodes().put(&n);
                 }
             }
             // A node that can't become a chassis can't run VMs on cluster networks.

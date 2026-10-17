@@ -162,12 +162,11 @@ pub fn probe(exec: &dyn Exec, opts: &ProbeOptions) -> HostCapabilities {
             exec,
             "Open_vSwitch",
             &["iface_types", "datapath_types", "dpdk_initialized"],
-        ) {
-            if let Some(row) = rows.first() {
-                caps.iface_types = row.set("iface_types");
-                caps.datapath_types = row.set("datapath_types");
-                caps.dpdk_initialized = row.bool("dpdk_initialized").unwrap_or(false);
-            }
+        ) && let Some(row) = rows.first()
+        {
+            caps.iface_types = row.set("iface_types");
+            caps.datapath_types = row.set("datapath_types");
+            caps.dpdk_initialized = row.bool("dpdk_initialized").unwrap_or(false);
         }
     }
 

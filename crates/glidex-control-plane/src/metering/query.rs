@@ -1,7 +1,7 @@
 //! Reading usage back (spec/metering.md §8): buckets in a fixed-offset
 //! time zone, grouping, derived meters and presentation units.
 
-use super::ledger::{is_max_meter, Flag, SubjectKind, UsageRecord};
+use super::ledger::{Flag, SubjectKind, UsageRecord, is_max_meter};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -377,10 +377,10 @@ pub fn aggregate(records: &[UsageRecord], q: &Query) -> Vec<Row> {
             flags: BTreeSet::new(),
         });
         for (k, v) in q.group_by.iter().zip(keys) {
-            if let Some(v) = v {
-                if names_itself(*k, r.subject.kind) || !row.keys.contains_key(k) {
-                    row.keys.insert(*k, v);
-                }
+            if let Some(v) = v
+                && (names_itself(*k, r.subject.kind) || !row.keys.contains_key(k))
+            {
+                row.keys.insert(*k, v);
             }
         }
         for (m, v) in &r.meters {
@@ -430,11 +430,11 @@ pub fn derive(m: &mut BTreeMap<String, u64>, secs: u64) {
             add.push(("net.internal_bytes", total.saturating_sub(ext)));
         }
     }
-    if let Some(total) = get(m, "bridge.bytes") {
-        if let Some(ext) = sum2(m, "bridge.ext_rx_bytes", "bridge.ext_tx_bytes") {
-            add.push(("bridge.ext_bytes", ext));
-            add.push(("bridge.internal_bytes", total.saturating_sub(ext)));
-        }
+    if let Some(total) = get(m, "bridge.bytes")
+        && let Some(ext) = sum2(m, "bridge.ext_rx_bytes", "bridge.ext_tx_bytes")
+    {
+        add.push(("bridge.ext_bytes", ext));
+        add.push(("bridge.internal_bytes", total.saturating_sub(ext)));
     }
     // kbit/s averages over the bucket; presented in Mbps.
     for (bytes, avg) in [
@@ -454,16 +454,16 @@ pub fn derive(m: &mut BTreeMap<String, u64>, secs: u64) {
         ("disk.read_ops", "disk.read_iops_avg"),
         ("disk.write_ops", "disk.write_iops_avg"),
     ] {
-        if let Some(o) = get(m, ops) {
-            if let Some(v) = (o * 1000).checked_div(secs) {
-                add.push((avg, v));
-            }
+        if let Some(o) = get(m, ops)
+            && let Some(v) = (o * 1000).checked_div(secs)
+        {
+            add.push((avg, v));
         }
     }
-    if let Some(total) = sum2(m, "disk.read_ops", "disk.write_ops") {
-        if let Some(v) = (total * 1000).checked_div(secs) {
-            add.push(("disk.iops_avg", v));
-        }
+    if let Some(total) = sum2(m, "disk.read_ops", "disk.write_ops")
+        && let Some(v) = (total * 1000).checked_div(secs)
+    {
+        add.push(("disk.iops_avg", v));
     }
     for (by, avg) in [
         ("disk.read_bytes", "disk.read_kBps_avg"),
@@ -481,10 +481,10 @@ pub fn derive(m: &mut BTreeMap<String, u64>, secs: u64) {
             "disk.write_latency_us",
         ),
     ] {
-        if let (Some(t), Some(o)) = (get(m, t), get(m, ops)) {
-            if let Some(us) = (t / 1000).checked_div(o) {
-                add.push((lat, us));
-            }
+        if let (Some(t), Some(o)) = (get(m, t), get(m, ops))
+            && let Some(us) = (t / 1000).checked_div(o)
+        {
+            add.push((lat, us));
         }
     }
     for (k, v) in add {
@@ -596,9 +596,11 @@ mod tests {
             7 * 3600
         );
         assert_eq!(tzif_fixed_offset(b"TZif2....\nEST5\n").unwrap(), -5 * 3600);
-        assert!(tzif_fixed_offset(b"TZif2....\nIST-5:30\n")
-            .unwrap_err()
-            .contains("whole number"));
+        assert!(
+            tzif_fixed_offset(b"TZif2....\nIST-5:30\n")
+                .unwrap_err()
+                .contains("whole number")
+        );
         assert!(
             tzif_fixed_offset(b"TZif2....\nCET-1CEST,M3.5.0,M10.5.0/3\n")
                 .unwrap_err()

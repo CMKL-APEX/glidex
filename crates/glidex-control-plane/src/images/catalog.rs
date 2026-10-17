@@ -279,15 +279,15 @@ pub fn parse_checksums(text: &str) -> Vec<(String, String)> {
             continue;
         }
         // BSD: ALGO (name) = hex
-        if let (Some(open), Some(close)) = (line.find(" ("), line.rfind(") = ")) {
-            if open < close {
-                let name = &line[open + 2..close];
-                let hex = line[close + 4..].trim();
-                if is_hex(hex) {
-                    out.push((name.to_string(), hex.to_ascii_lowercase()));
-                }
-                continue;
+        if let (Some(open), Some(close)) = (line.find(" ("), line.rfind(") = "))
+            && open < close
+        {
+            let name = &line[open + 2..close];
+            let hex = line[close + 4..].trim();
+            if is_hex(hex) {
+                out.push((name.to_string(), hex.to_ascii_lowercase()));
             }
+            continue;
         }
         // GNU: hex, whitespace, optional '*' (binary mode), name
         if let Some((hex, rest)) = line.split_once(char::is_whitespace) {

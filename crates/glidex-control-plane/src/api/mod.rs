@@ -26,7 +26,7 @@ mod usage;
 mod vms;
 mod watch;
 
-pub use errors::{error_to_response, ApiErr};
+pub use errors::{ApiErr, error_to_response};
 
 use crate::auth::{self, AuthError, AuthService, Method, Principal, Transport};
 use crate::authz::{Decision, Ent, EntitySet};
@@ -34,12 +34,12 @@ use crate::models::ApiError;
 use crate::state::VmManager;
 use crate::tenancy::QuotaMode;
 use axum::{
-    extract::{FromRequestParts, Request, State},
-    http::{header, request::Parts, HeaderMap, HeaderValue, Method as HttpMethod, StatusCode},
-    middleware::{from_fn_with_state, Next},
-    response::{IntoResponse, Response},
-    routing::{delete, get, post, put, MethodRouter},
     Extension, Json, Router,
+    extract::{FromRequestParts, Request, State},
+    http::{HeaderMap, HeaderValue, Method as HttpMethod, StatusCode, header, request::Parts},
+    middleware::{Next, from_fn_with_state},
+    response::{IntoResponse, Response},
+    routing::{MethodRouter, delete, get, post, put},
 };
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
@@ -1269,7 +1269,7 @@ async fn authenticate(State(app): State<AppState>, mut req: Request, next: Next)
                                 StatusCode::UNAUTHORIZED,
                                 "unauthenticated",
                                 "invalid or expired token",
-                            )
+                            );
                         }
                         Err(e) => Err(e),
                     }
@@ -1853,7 +1853,14 @@ fn agent_login_hint(m: &crate::state::VmManager) -> String {
         .first()
         .cloned()
         .unwrap_or_else(|| "https://<server>:8841".into());
-    format!("this host is a cluster agent: it has no local API, and the cluster can't vouch for a Unix user of another host. Log in to a server: `gxctl auth login {url}` (servers: {})", if servers.is_empty() { "unknown".into() } else { servers.join(", ") })
+    format!(
+        "this host is a cluster agent: it has no local API, and the cluster can't vouch for a Unix user of another host. Log in to a server: `gxctl auth login {url}` (servers: {})",
+        if servers.is_empty() {
+            "unknown".into()
+        } else {
+            servers.join(", ")
+        }
+    )
 }
 
 #[cfg(test)]

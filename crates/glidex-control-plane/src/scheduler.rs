@@ -43,10 +43,11 @@ pub struct Load {
 }
 
 fn failing(n: &Node, load: Load, req: &Request, cfg: &SchedulerConfig) -> Option<String> {
-    if let Some(pin) = &req.pin {
-        if &n.meta.id != pin && &n.spec.name != pin {
-            return Some(format!("pinned to {pin}"));
-        }
+    if let Some(pin) = &req.pin
+        && &n.meta.id != pin
+        && &n.spec.name != pin
+    {
+        return Some(format!("pinned to {pin}"));
     }
     if n.status.phase != NodePhase::Active || n.spec.unschedulable {
         return Some(
@@ -314,15 +315,22 @@ mod tests {
         r.ovn_northd = northd;
         let fits = evaluate(&r, &nodes, &cfg());
         let refused = |id: &str| fits.iter().find(|f| f.id == id).unwrap().refused.clone();
-        assert_eq!(refused("a-old").as_deref(), Some("its ovn-controller 24.03.8 is older than the cluster's ovn-northd 26.03.0: re-run glidex-install on a-old to upgrade OVN"));
+        assert_eq!(
+            refused("a-old").as_deref(),
+            Some(
+                "its ovn-controller 24.03.8 is older than the cluster's ovn-northd 26.03.0: re-run glidex-install on a-old to upgrade OVN"
+            )
+        );
         for ok in ["s1", "a-same", "a-newer"] {
             assert_eq!(refused(ok), None, "{ok}");
         }
         // A VM on no cluster network doesn't care.
         r.ovn_northd = None;
-        assert!(evaluate(&r, &nodes, &cfg())
-            .iter()
-            .all(|f| f.refused.is_none()));
+        assert!(
+            evaluate(&r, &nodes, &cfg())
+                .iter()
+                .all(|f| f.refused.is_none())
+        );
     }
 
     #[test]
@@ -349,9 +357,11 @@ mod tests {
         assert_eq!(refused("old"), None, "a node that reports no arch matches");
         // A VM without an image or firmware has no architecture.
         r.arch = String::new();
-        assert!(evaluate(&r, &nodes, &cfg())
-            .iter()
-            .all(|f| f.refused.is_none()));
+        assert!(
+            evaluate(&r, &nodes, &cfg())
+                .iter()
+                .all(|f| f.refused.is_none())
+        );
     }
 
     #[test]

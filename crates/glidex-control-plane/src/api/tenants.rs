@@ -4,10 +4,10 @@
 
 use super::{ApiErr, Caller};
 use crate::service::tenancy as svc;
+use axum::Json;
 use axum::extract::{Path, Query};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::Json;
 use glidex_api::proto::glidex::tenancy::v1 as pb;
 use serde::Deserialize;
 

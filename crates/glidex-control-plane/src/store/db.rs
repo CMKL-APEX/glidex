@@ -918,7 +918,10 @@ impl Drop for Db {
             .expect("replay of the write sets failed");
         replayed.journal.lock().unwrap().take();
         let (a, b) = (self.dump().expect("dump"), replayed.dump().expect("dump"));
-        assert!(a == b, "replaying the write sets did not reproduce the database (spec/clustering.md §6.1 invariant)");
+        assert!(
+            a == b,
+            "replaying the write sets did not reproduce the database (spec/clustering.md §6.1 invariant)"
+        );
         replayed.journal.lock().unwrap().take();
     }
 }

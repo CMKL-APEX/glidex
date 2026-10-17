@@ -1,12 +1,12 @@
 //! VM-side ports: tap devices and vhost-user sockets on glidex bridges.
 
+use crate::OvsError;
 use crate::bridge::{self, Datapath};
 use crate::exec::{Cmd, Exec, Program};
 use crate::host::HostCapabilities;
-use crate::names::{self, validate_mac, validate_name, validate_vm_id, MAX_IFNAME, MAX_NICS};
+use crate::names::{self, MAX_IFNAME, MAX_NICS, validate_mac, validate_name, validate_vm_id};
 use crate::net::link_exists;
-use crate::vsctl::{self, owned_tags, tag_args, NIC_KEY, VM_ID_KEY};
-use crate::OvsError;
+use crate::vsctl::{self, NIC_KEY, VM_ID_KEY, owned_tags, tag_args};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -52,10 +52,10 @@ impl VmPortSpec {
             )));
         }
         validate_mac(&self.mac)?;
-        if let Some(vlan) = self.vlan {
-            if !(1..=4094).contains(&vlan) {
-                return Err(OvsError::invalid("vlan must be 1-4094"));
-            }
+        if let Some(vlan) = self.vlan
+            && !(1..=4094).contains(&vlan)
+        {
+            return Err(OvsError::invalid("vlan must be 1-4094"));
         }
         if let Some(l) = &self.ovn_lport {
             validate_name("ovn_lport", l, 63)?;
@@ -73,10 +73,10 @@ impl VmPortSpec {
         if !(1..=8).contains(&self.queue_pairs) {
             return Err(OvsError::invalid("queue_pairs must be 1-8"));
         }
-        if let Some(mtu) = self.mtu {
-            if !(576..=9216).contains(&mtu) {
-                return Err(OvsError::invalid("mtu must be 576-9216"));
-            }
+        if let Some(mtu) = self.mtu
+            && !(576..=9216).contains(&mtu)
+        {
+            return Err(OvsError::invalid("mtu must be 576-9216"));
         }
         Ok(())
     }
@@ -357,18 +357,22 @@ mod tests {
             "{add}"
         );
         // br-int takes only OVN ports, and an OVN port only br-int.
-        assert!(VmPortSpec {
-            ovn_lport: None,
-            ..s.clone()
-        }
-        .validate()
-        .is_err());
-        assert!(VmPortSpec {
-            bridge: "gxbr-nat".into(),
-            ..s.clone()
-        }
-        .validate()
-        .is_err());
+        assert!(
+            VmPortSpec {
+                ovn_lport: None,
+                ..s.clone()
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            VmPortSpec {
+                bridge: "gxbr-nat".into(),
+                ..s.clone()
+            }
+            .validate()
+            .is_err()
+        );
         assert!(VmPortSpec { vlan: Some(5), ..s }.validate().is_err());
     }
 
@@ -420,16 +424,19 @@ mod tests {
         let exec = RecordingExec::new();
         exec.on(FIND_BR, bridge("system", true));
         exec.on("ovs-vsctl --may-exist add-port", Output::failed(1, "boom"));
-        assert!(attach(
-            &exec,
-            &HostCapabilities::default(),
-            &spec(VmPortKind::Tap),
-            1000
-        )
-        .is_err());
-        assert!(exec
-            .calls()
-            .contains(&"ip link del gx1a2b3c4d-0".to_string()));
+        assert!(
+            attach(
+                &exec,
+                &HostCapabilities::default(),
+                &spec(VmPortKind::Tap),
+                1000
+            )
+            .is_err()
+        );
+        assert!(
+            exec.calls()
+                .contains(&"ip link del gx1a2b3c4d-0".to_string())
+        );
     }
 
     #[test]
@@ -459,11 +466,12 @@ mod tests {
             panic!()
         };
         assert_eq!(socket, names::vhost_socket(VM, 0).unwrap());
-        assert!(exec
-            .calls()
-            .iter()
-            .any(|c| c.contains("type=dpdkvhostuserclient")
-                && c.contains(&format!("options:vhost-server-path={}", socket.display()))));
+        assert!(
+            exec.calls()
+                .iter()
+                .any(|c| c.contains("type=dpdkvhostuserclient")
+                    && c.contains(&format!("options:vhost-server-path={}", socket.display())))
+        );
         assert!(!exec.calls().iter().any(|c| c.contains("tuntap")));
     }
 
@@ -506,10 +514,12 @@ mod tests {
             Output::ok(r#"{"data":[],"headings":["name","external_ids","type"]}"#),
         );
         detach(&exec, VM, 0).unwrap();
-        assert!(!exec
-            .calls()
-            .iter()
-            .any(|c| c.contains("del-port") || c.contains("link del")));
+        assert!(
+            !exec
+                .calls()
+                .iter()
+                .any(|c| c.contains("del-port") || c.contains("link del"))
+        );
 
         let exec = RecordingExec::new();
         exec.on(FIND_IF, Output::ok(r#"{"data":[["gx1a2b3c4d-0",["map",[]],""]],"headings":["name","external_ids","type"]}"#));

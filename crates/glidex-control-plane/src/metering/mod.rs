@@ -314,13 +314,14 @@ impl crate::state::VmManager {
         let meter = Meter::new_clustered(central.clone(), local.clone(), cfg.clone())?;
         // A host that metered before it joined brings its cursors along, so
         // nothing is counted twice or lost (D8).
-        if let Some(l) = meter.local_ledger() {
-            if l.is_empty_of_state()? && central.can_write() {
-                let old = meter.ledger().node_state()?;
-                if !old.cursors.is_empty() || !old.open.is_empty() {
-                    l.put_node_state(&old)?;
-                    meter.ledger().clear_node_state(&old)?;
-                }
+        if let Some(l) = meter.local_ledger()
+            && l.is_empty_of_state()?
+            && central.can_write()
+        {
+            let old = meter.ledger().node_state()?;
+            if !old.cursors.is_empty() || !old.open.is_empty() {
+                l.put_node_state(&old)?;
+                meter.ledger().clear_node_state(&old)?;
             }
         }
         Ok(meter)

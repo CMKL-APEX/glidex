@@ -236,15 +236,14 @@ impl SystemExec {
         if matches!(
             program,
             Program::OvsVsctl | Program::OvsAppctl | Program::OvsVswitchd
-        ) {
-            if let Some(dir) = self.ovs_bin_dir.lock().unwrap().as_ref() {
-                // ovs-vswitchd lives in sbin/ of a source prefix.
-                let sbin = dir.parent().map(|p| p.join("sbin").join(program.name()));
-                return Ok(match (program, sbin) {
-                    (Program::OvsVswitchd, Some(p)) => p,
-                    _ => dir.join(program.name()),
-                });
-            }
+        ) && let Some(dir) = self.ovs_bin_dir.lock().unwrap().as_ref()
+        {
+            // ovs-vswitchd lives in sbin/ of a source prefix.
+            let sbin = dir.parent().map(|p| p.join("sbin").join(program.name()));
+            return Ok(match (program, sbin) {
+                (Program::OvsVswitchd, Some(p)) => p,
+                _ => dir.join(program.name()),
+            });
         }
         Ok(PathBuf::from(program.name()))
     }

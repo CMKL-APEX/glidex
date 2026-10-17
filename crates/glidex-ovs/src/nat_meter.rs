@@ -8,9 +8,9 @@
 //! network is gone are deleted. The table itself is deleted by uninstall
 //! alone. Named counters survive `flush chain` (verified, §15.3).
 
+use crate::OvsError;
 use crate::exec::{Cmd, Exec, Program};
 use crate::nat::NatState;
-use crate::OvsError;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 

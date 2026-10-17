@@ -10,12 +10,12 @@
 use super::pki;
 use super::runtime::Cluster;
 use crate::models::Tristate;
-use crate::node::{Node, NodePhase, NodeRole, NodeStore, LOCAL_NODE};
+use crate::node::{LOCAL_NODE, Node, NodePhase, NodeRole, NodeStore};
 use crate::state::VmManager;
 use crate::store::{Db, Origin, TableId};
 use redb::ReadableTable;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -255,10 +255,10 @@ pub fn build_bundle(db: &Db, plan: &str, node: &str, opts: &DetachOptions) -> Bu
         vm_ids.push(id);
     }
     for (id, ring) in rows_of(db, TableId::Events) {
-        if let Some(v) = id.strip_prefix("vm/") {
-            if vm_ids.iter().any(|x| x == v) {
-                out.push(row(TableId::Events, &id, &ring));
-            }
+        if let Some(v) = id.strip_prefix("vm/")
+            && vm_ids.iter().any(|x| x == v)
+        {
+            out.push(row(TableId::Events, &id, &ring));
         }
     }
     for (id, mut d) in rows_of(db, TableId::Disks) {
@@ -650,8 +650,7 @@ impl Cluster {
                     if let Some(l) = serde_json::from_slice::<Value>(&r.body)
                         .ok()
                         .and_then(|v| v["leader"].as_str().map(String::from))
-                    {
-                        if let Ok(r) = self
+                        && let Ok(r) = self
                             .client
                             .request_timeout(
                                 &l,
@@ -662,9 +661,8 @@ impl Cluster {
                                 Duration::from_secs(30),
                             )
                             .await
-                        {
-                            return Ok(r);
-                        }
+                    {
+                        return Ok(r);
                     }
                 }
                 Ok(r) => return Ok(r),
@@ -714,20 +712,20 @@ pub fn abort_plan(db: &Db, plan_id: &str) -> Result<(), DepartureError> {
         let cur = nodes
             .get(plan.node.as_str())?
             .and_then(|v| serde_json::from_slice::<Node>(v.value()).ok());
-        if let Some(mut n) = cur {
-            if n.status.phase == NodePhase::Departing {
-                n.status.phase = NodePhase::Active;
-                n.spec.unschedulable = false;
-                n.meta.resource_version += 1;
-                nodes.insert(
-                    plan.node.as_str(),
-                    serde_json::to_vec(&n)
-                        .map_err(|e| {
-                            crate::store::StoreError::Io(std::io::Error::other(e.to_string()))
-                        })?
-                        .as_slice(),
-                )?;
-            }
+        if let Some(mut n) = cur
+            && n.status.phase == NodePhase::Departing
+        {
+            n.status.phase = NodePhase::Active;
+            n.spec.unschedulable = false;
+            n.meta.resource_version += 1;
+            nodes.insert(
+                plan.node.as_str(),
+                serde_json::to_vec(&n)
+                    .map_err(|e| {
+                        crate::store::StoreError::Io(std::io::Error::other(e.to_string()))
+                    })?
+                    .as_slice(),
+            )?;
         }
         Ok(())
     });
@@ -1008,12 +1006,12 @@ pub fn finish_pending(db_path: &Path) -> Result<bool, DepartureError> {
         ));
     }
     // The receipt must be for this node and for the very bundle on disk.
-    if let Some(id) = files.load_identity().map_err(failed)? {
-        if id.node_id != r.node {
-            return Err(DepartureError::Invalid(
-                "the departure receipt is for another node".into(),
-            ));
-        }
+    if let Some(id) = files.load_identity().map_err(failed)?
+        && id.node_id != r.node
+    {
+        return Err(DepartureError::Invalid(
+            "the departure receipt is for another node".into(),
+        ));
     }
     let sha = std::fs::read_to_string(pending_sha_file(&dir)).map_err(|_| {
         DepartureError::Invalid("the pending database has no recorded bundle hash".into())
@@ -1140,7 +1138,9 @@ impl Cluster {
                         me.expire_imports();
                     }
                     if me.departure_tick().await.is_some() {
-                        tracing::warn!("this node's departure committed: restart the control plane to continue as a standalone host");
+                        tracing::warn!(
+                            "this node's departure committed: restart the control plane to continue as a standalone host"
+                        );
                         if let Some(h) = me.handlers.get() {
                             h.departed();
                         }

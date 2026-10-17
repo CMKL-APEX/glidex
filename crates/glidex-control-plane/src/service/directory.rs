@@ -302,7 +302,7 @@ pub fn update_connector(
                     StatusCode::BAD_REQUEST,
                     "invalid",
                     format!("{other} can't be updated"),
-                ))
+                ));
             }
         }
     }

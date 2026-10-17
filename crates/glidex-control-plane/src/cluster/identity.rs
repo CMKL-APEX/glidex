@@ -111,10 +111,10 @@ impl Files {
                 // The trust bundle may hold the old CA too (during a rotation);
                 // the signing CA is the one whose key this is.
                 for der_pem in split_pem(&t) {
-                    if let Ok(ca) = Ca::from_pem(&der_pem, &k) {
-                        if ca_matches_key(&ca) {
-                            return Ok(Some(ca));
-                        }
+                    if let Ok(ca) = Ca::from_pem(&der_pem, &k)
+                        && ca_matches_key(&ca)
+                    {
+                        return Ok(Some(ca));
                     }
                 }
                 Ok(None)

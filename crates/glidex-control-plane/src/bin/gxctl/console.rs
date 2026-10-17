@@ -4,7 +4,7 @@
 //! same transport as every other request (api.sock, TCP or TLS). Local
 //! peers and token holders need no ticket; tickets are for browsers.
 
-use crate::client::{render_error, ApiClient, Conn};
+use crate::client::{ApiClient, Conn, render_error};
 use colored::Colorize;
 use futures_util::{SinkExt, StreamExt};
 use hyper::header::AUTHORIZATION;
@@ -12,11 +12,11 @@ use hyper::{Method, StatusCode};
 use nix::sys::termios::{self, LocalFlags, SetArg, Termios};
 use std::io::{self, Write};
 use std::os::fd::{AsFd, BorrowedFd};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::{self, Message};
-use tokio_tungstenite::WebSocketStream;
 
 /// `Ctrl+]` detaches.
 const DETACH: u8 = 0x1d;

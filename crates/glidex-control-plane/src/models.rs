@@ -15,10 +15,10 @@ fn expand_tilde(path: String) -> String {
             .map(|h| h.to_string_lossy().into_owned())
             .unwrap_or(path);
     }
-    if let Some(rest) = path.strip_prefix("~/") {
-        if let Some(home) = dirs::home_dir() {
-            return home.join(rest).to_string_lossy().into_owned();
-        }
+    if let Some(rest) = path.strip_prefix("~/")
+        && let Some(home) = dirs::home_dir()
+    {
+        return home.join(rest).to_string_lossy().into_owned();
     }
     path
 }

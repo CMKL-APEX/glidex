@@ -1,14 +1,14 @@
 //! Usage records (spec/metering.md §9.1–§9.2, §10).
 
-use super::{err, project_entities, vm_entities, ApiErr, Caller};
+use super::{ApiErr, Caller, err, project_entities, vm_entities};
 use crate::authz::{Ent, EntitySet};
 use crate::metering::query::{self, Granularity, GroupKey, Query as UsageQuery, Row};
 use crate::metering::{SubjectKind, UsageRecord};
 use axum::{
-    extract::{Path, Query},
-    http::{header, StatusCode},
-    response::{IntoResponse, Response},
     Json,
+    extract::{Path, Query},
+    http::{StatusCode, header},
+    response::{IntoResponse, Response},
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -314,15 +314,15 @@ fn respond(
         if row.start < started_at {
             row.flags.insert("partial".into());
         }
-        if let Some(pr) = row.keys.get_mut(&GroupKey::Project) {
-            if let Some(n) = names.get(&pr.id) {
-                pr.name = n.clone();
-            }
+        if let Some(pr) = row.keys.get_mut(&GroupKey::Project)
+            && let Some(n) = names.get(&pr.id)
+        {
+            pr.name = n.clone();
         }
-        if let Some(nd) = row.keys.get_mut(&GroupKey::Node) {
-            if let Some(n) = node_names.get(&nd.id) {
-                nd.name = n.clone();
-            }
+        if let Some(nd) = row.keys.get_mut(&GroupKey::Node)
+            && let Some(n) = node_names.get(&nd.id)
+        {
+            nd.name = n.clone();
         }
     }
     let complete_through = ledger.complete_through().map_err(storage)?;

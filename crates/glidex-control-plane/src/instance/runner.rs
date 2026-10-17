@@ -292,10 +292,9 @@ impl SystemdRunner {
                 if let Ok((_id, path, _unit, result)) =
                     msg.body()
                         .deserialize::<(u32, zbus::zvariant::OwnedObjectPath, String, String)>()
+                    && path == job
                 {
-                    if path == job {
-                        return Some(result);
-                    }
+                    return Some(result);
                 }
             }
             None

@@ -19,9 +19,9 @@
 //! Bytes are L2-normalized like `nat_counters`: L3 bytes + 14 per packet,
 //! so they match OVS's frame counts.
 
+use crate::OvsError;
 use crate::exec::{Cmd, Exec, Program};
 use crate::nat_meter::ETHERNET_HEADER;
-use crate::OvsError;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::net::Ipv4Addr;
@@ -291,38 +291,40 @@ pub fn spawn_event_reader(meter: Arc<CtMeter>) {
     use std::process::{Command, Stdio};
     let _ = std::thread::Builder::new()
         .name("ct-events".into())
-        .spawn(move || loop {
-            // `stdbuf -oL`: conntrack's output to a pipe is block-buffered, which would
-            // hold events back (and lose them if the reader dies).
-            let child = Command::new("stdbuf")
-                .args([
-                    "-oL",
-                    Program::Conntrack.name(),
-                    "-E",
-                    "-e",
-                    "DESTROY",
-                    "-f",
-                    "ipv4",
-                    "-o",
-                    "extended,id",
-                ])
-                .stdin(Stdio::null())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::null())
-                .spawn();
-            match child {
-                Ok(mut c) => {
-                    if let Some(out) = c.stdout.take() {
-                        for line in BufRead::lines(BufReader::new(out)).map_while(Result::ok) {
-                            meter.ingest_destroy(&line);
+        .spawn(move || {
+            loop {
+                // `stdbuf -oL`: conntrack's output to a pipe is block-buffered, which would
+                // hold events back (and lose them if the reader dies).
+                let child = Command::new("stdbuf")
+                    .args([
+                        "-oL",
+                        Program::Conntrack.name(),
+                        "-E",
+                        "-e",
+                        "DESTROY",
+                        "-f",
+                        "ipv4",
+                        "-o",
+                        "extended,id",
+                    ])
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::null())
+                    .spawn();
+                match child {
+                    Ok(mut c) => {
+                        if let Some(out) = c.stdout.take() {
+                            for line in BufRead::lines(BufReader::new(out)).map_while(Result::ok) {
+                                meter.ingest_destroy(&line);
+                            }
                         }
+                        let _ = c.wait();
                     }
-                    let _ = c.wait();
+                    Err(e) => tracing_log(&format!("conntrack events: {e}")),
                 }
-                Err(e) => tracing_log(&format!("conntrack events: {e}")),
+                meter.state.lock().unwrap().gaps += 1;
+                std::thread::sleep(std::time::Duration::from_secs(5));
             }
-            meter.state.lock().unwrap().gaps += 1;
-            std::thread::sleep(std::time::Duration::from_secs(5));
         });
 }
 
@@ -377,9 +379,11 @@ ipv4     2 tcp      6 311075 ESTABLISHED src=100.97.160.61 dst=100.85.237.99 spo
         let entries: Vec<CtEntry> = REAL_DUMP.lines().filter_map(parse_line).collect();
         // The zone-0 entry without counters (accounting off for it) is not one.
         assert_eq!(entries.len(), 3);
-        assert!(entries
-            .iter()
-            .all(|e| e.vm.to_string() == "10.89.0.5" && e.zone == 60001));
+        assert!(
+            entries
+                .iter()
+                .all(|e| e.vm.to_string() == "10.89.0.5" && e.zone == 60001)
+        );
         let big = entries.iter().find(|e| e.id == 3424708189).unwrap();
         assert_eq!(
             (big.tx_bytes, big.rx_bytes),

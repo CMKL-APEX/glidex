@@ -2,12 +2,12 @@
 //! (`cluster::net`), an in-process router with fault injection in tests.
 
 use super::types::*;
+use openraft::BasicNode;
 use openraft::error::{Fatal, NetworkError, RPCError, RaftError, StreamingError, Unreachable};
 use openraft::network::{RPCOption, RaftNetwork, RaftNetworkFactory};
 use openraft::raft::{
     AppendEntriesRequest, AppendEntriesResponse, SnapshotResponse, VoteRequest, VoteResponse,
 };
-use openraft::BasicNode;
 use serde::{Deserialize, Serialize};
 use std::future::Future;
 use std::path::PathBuf;
@@ -127,8 +127,8 @@ impl RaftNetwork<TypeConfig> for Peer {
         vote: Vote,
         snapshot: openraft::Snapshot<TypeConfig>,
         _cancel: impl Future<Output = openraft::error::ReplicationClosed>
-            + openraft::OptionalSend
-            + 'static,
+        + openraft::OptionalSend
+        + 'static,
         _option: RPCOption,
     ) -> Result<SnapshotResponse<RaftId>, StreamingError<TypeConfig, Fatal<RaftId>>> {
         let view = snapshot.snapshot.view.ok_or_else(|| {

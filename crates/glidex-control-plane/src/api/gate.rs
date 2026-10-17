@@ -8,11 +8,11 @@
 //! ReadIndex round trip, batched), unless the caller asks for a local, possibly
 //! stale, read with `X-Glidex-Consistency: local`.
 
-use super::{err, is_safe, AppState, Listener};
+use super::{AppState, Listener, err, is_safe};
 use crate::auth::{AuthError, Principal};
 use axum::body::Body;
 use axum::extract::{Request, State};
-use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use base64::Engine;
@@ -134,10 +134,13 @@ pub async fn cluster_gate(State(app): State<AppState>, req: Request, next: Next)
             .get(CONSISTENCY_HEADER)
             .and_then(|v| v.to_str().ok())
             == Some("local");
-        if !local {
-            if let Err(e) = cluster.read_barrier().await {
-                return unavailable("cluster_unavailable", &format!("no quorum to read through ({e}); retry, or ask for a stale read with X-Glidex-Consistency: local"));
-            }
+        if !local && let Err(e) = cluster.read_barrier().await {
+            return unavailable(
+                "cluster_unavailable",
+                &format!(
+                    "no quorum to read through ({e}); retry, or ask for a stale read with X-Glidex-Consistency: local"
+                ),
+            );
         }
         let mut resp = next.run(req).await;
         if let Ok(v) = HeaderValue::from_str(&app.manager.database().revision().to_string()) {
@@ -165,7 +168,7 @@ async fn forward(
                 "too_large",
                 "request body too large",
             )
-            .into_response()
+            .into_response();
         }
     };
     let pq = parts

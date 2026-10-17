@@ -10,9 +10,10 @@ async fn a_single_member_commits_writes() {
     c.put(1, "k", "v").unwrap();
     assert!(c.by_id(1).db.revision() > 0);
     let dump = c.by_id(1).db.dump().unwrap();
-    assert!(dump
-        .iter()
-        .any(|(_, rows)| rows.iter().any(|(k, v)| k == "k" && v == b"v")));
+    assert!(
+        dump.iter()
+            .any(|(_, rows)| rows.iter().any(|(k, v)| k == "k" && v == b"v"))
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -98,9 +99,10 @@ async fn a_partitioned_leaders_writes_are_rejected() {
                 .any(|(_, rows)| rows.iter().any(|(k, _)| k == "stale")),
             "the stale write reached {i}"
         );
-        assert!(dump
-            .iter()
-            .any(|(_, rows)| rows.iter().any(|(k, _)| k == "fresh")));
+        assert!(
+            dump.iter()
+                .any(|(_, rows)| rows.iter().any(|(k, _)| k == "fresh"))
+        );
     }
 }
 
@@ -136,13 +138,14 @@ async fn a_lagging_learner_catches_up_from_a_snapshot() {
         "the new member installed no snapshot"
     );
     assert!(c.same_data(&[leader, id]), "the new member's data differs");
-    assert!(c
-        .by_id(id)
-        .db
-        .dump()
-        .unwrap()
-        .iter()
-        .any(|(_, rows)| rows.iter().any(|(k, _)| k == "k0399")));
+    assert!(
+        c.by_id(id)
+            .db
+            .dump()
+            .unwrap()
+            .iter()
+            .any(|(_, rows)| rows.iter().any(|(k, _)| k == "k0399"))
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

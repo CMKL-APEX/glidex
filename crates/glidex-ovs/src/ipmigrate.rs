@@ -1,9 +1,9 @@
 //! Moving a NIC's IP configuration onto its bridge, with verification and
 //! exact rollback (spec §8.5).
 
+use crate::OvsError;
 use crate::exec::{Cmd, Exec, Program};
 use crate::nic::global_addresses;
-use crate::OvsError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::time::{Duration, Instant};

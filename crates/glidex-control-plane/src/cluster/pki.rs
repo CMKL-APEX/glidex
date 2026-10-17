@@ -4,8 +4,8 @@
 
 use rcgen::{
     BasicConstraints, CertificateParams, CertificateSigningRequestParams, DistinguishedName,
-    DnType, ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair, KeyUsagePurpose, SanType, SerialNumber,
-    PKCS_ECDSA_P256_SHA256,
+    DnType, ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair, KeyUsagePurpose,
+    PKCS_ECDSA_P256_SHA256, SanType, SerialNumber,
 };
 use sha2::{Digest, Sha256};
 use std::net::IpAddr;
@@ -104,7 +104,7 @@ impl Ca {
     /// Sign `msg` with the CA key (ECDSA P-256, ASN.1): a departure receipt
     /// (§5.8.2) proves to the node that the cluster committed.
     pub fn sign_bytes(&self, msg: &[u8]) -> Result<String, PkiError> {
-        use ring::signature::{EcdsaKeyPair, ECDSA_P256_SHA256_ASN1_SIGNING};
+        use ring::signature::{ECDSA_P256_SHA256_ASN1_SIGNING, EcdsaKeyPair};
         let key = KeyPair::from_pem(&self.key_pem)?;
         let rng = ring::rand::SystemRandom::new();
         let pair =
@@ -377,7 +377,7 @@ pub fn issuer_of(leaf_der: &[u8], trust_pem: &str) -> Option<String> {
 
 /// Whether `sig_hex` is a signature of `msg` by one of the CAs of `trust_pem`.
 pub fn verify_bytes(trust_pem: &str, msg: &[u8], sig_hex: &str) -> bool {
-    use ring::signature::{UnparsedPublicKey, ECDSA_P256_SHA256_ASN1};
+    use ring::signature::{ECDSA_P256_SHA256_ASN1, UnparsedPublicKey};
     let Some(sig) = (0..sig_hex.len() / 2)
         .map(|i| u8::from_str_radix(&sig_hex[2 * i..2 * i + 2], 16).ok())
         .collect::<Option<Vec<u8>>>()

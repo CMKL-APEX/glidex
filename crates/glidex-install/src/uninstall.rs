@@ -13,7 +13,7 @@
 //! `/etc/pam.d/glidex`.
 
 use crate::sysconfig;
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use colored::Colorize;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -701,16 +701,14 @@ fn execute(step: &Step) -> Result<()> {
 
 fn invoking_user_home() -> PathBuf {
     let user = std::env::var("SUDO_USER").ok().filter(|u| u != "root");
-    if let Some(u) = user {
-        if let Ok(out) = Command::new("getent").args(["passwd", &u]).output() {
-            if let Some(home) = String::from_utf8_lossy(&out.stdout)
-                .trim()
-                .split(':')
-                .nth(5)
-            {
-                return PathBuf::from(home);
-            }
-        }
+    if let Some(u) = user
+        && let Ok(out) = Command::new("getent").args(["passwd", &u]).output()
+        && let Some(home) = String::from_utf8_lossy(&out.stdout)
+            .trim()
+            .split(':')
+            .nth(5)
+    {
+        return PathBuf::from(home);
     }
     dirs::home_dir().unwrap_or_else(|| PathBuf::from("/root"))
 }
@@ -914,8 +912,9 @@ mod tests {
         // Services stop before networking is torn down, which happens before
         // netd's state (which describes it) is deleted.
         assert!(
-            pos("systemctl disable --now glidex-ui.service glidex-control-plane.service glidex-authd.socket glidex-netd.service")
-                < pos("tear down glidex networking")
+            pos(
+                "systemctl disable --now glidex-ui.service glidex-control-plane.service glidex-authd.socket glidex-netd.service"
+            ) < pos("tear down glidex networking")
         );
         assert!(pos("userdel glidex") < pos("groupdel glidex"));
         assert!(pos("userdel glidex-ui") < pos("groupdel glidex-ui"));
@@ -1108,7 +1107,10 @@ mod tests {
             "note: keeping /etc/glidex (control-plane.json, netd.json, policies: site configuration)",
             "note: keeping /etc/pam.d/glidex (edited locally",
         ] {
-            assert!(l.iter().any(|s| s.starts_with(needle)), "missing {needle}: {l:#?}");
+            assert!(
+                l.iter().any(|s| s.starts_with(needle)),
+                "missing {needle}: {l:#?}"
+            );
         }
         assert!(
             !l.iter()

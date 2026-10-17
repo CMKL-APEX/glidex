@@ -71,21 +71,21 @@ impl OvnSettings {
     /// `node_known` says whether a gateway node (id or name) exists.
     pub fn validate(&self, node_known: impl Fn(&str) -> bool) -> Result<(), String> {
         use glidex_ovs::net::Ipv4Net;
-        if let Some(m) = self.underlay_mtu {
-            if !(1280..=9216).contains(&m) {
-                return Err(format!("underlay_mtu {m} is outside 1280–9216"));
-            }
+        if let Some(m) = self.underlay_mtu
+            && !(1280..=9216).contains(&m)
+        {
+            return Err(format!("underlay_mtu {m} is outside 1280–9216"));
         }
         if let Some(s) = &self.nat_supernet {
             s.parse::<Ipv4Net>()
                 .map_err(|_| format!("nat_supernet '{s}' is not an IPv4 network"))?;
         }
-        if let Some((a, b)) = self.snat_ct_zones {
-            if a == 0 || a >= b {
-                return Err(format!(
-                    "snat_ct_zones [{a}, {b}] must be a range of zones above 0"
-                ));
-            }
+        if let Some((a, b)) = self.snat_ct_zones
+            && (a == 0 || a >= b)
+        {
+            return Err(format!(
+                "snat_ct_zones [{a}, {b}] must be a range of zones above 0"
+            ));
         }
         if let Some(e) = &self.edge {
             if e.physnet.trim().is_empty() {
@@ -123,12 +123,12 @@ impl OvnSettings {
                         e.external_cidr
                     ));
                 }
-                if let IpAddr::V4(x) = e.external_ip {
-                    if pool.contains(x) {
-                        return Err(format!(
-                            "edge.external_pool {p} holds the edge's own address {x}"
-                        ));
-                    }
+                if let IpAddr::V4(x) = e.external_ip
+                    && pool.contains(x)
+                {
+                    return Err(format!(
+                        "edge.external_pool {p} holds the edge's own address {x}"
+                    ));
                 }
             }
             if e.gateway_nodes.is_empty() {

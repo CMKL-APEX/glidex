@@ -22,13 +22,13 @@
 //! self-signed certificate. `GLIDEX_UI_TLS=off` serves plain HTTP, only on
 //! loopback addresses.
 
+use axum::Router;
 use axum::body::Body;
 use axum::extract::{Request, State};
-use axum::http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode, Uri, Version};
-use axum::middleware::{from_fn_with_state, Next};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, Uri, Version, header};
+use axum::middleware::{Next, from_fn_with_state};
 use axum::response::{IntoResponse, Response};
 use axum::routing::any;
-use axum::Router;
 use hyper_util::rt::TokioIo;
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
@@ -295,7 +295,7 @@ fn upstream_spec(socket: Option<&str>, url: Option<&str>) -> Result<UpstreamSpec
                 _ => {
                     return Err(
                         "GLIDEX_API_URL must be https://host:port or http://host:port".into(),
-                    )
+                    );
                 }
             };
             let host = api.host().ok_or("GLIDEX_API_URL has no host")?.to_string();
@@ -366,10 +366,10 @@ impl UpstreamTrust {
             })
             .collect();
         let mut cache = self.cache.lock().unwrap();
-        if let Some((seen, tls)) = cache.as_ref() {
-            if *seen == stamps {
-                return Ok(tls.clone());
-            }
+        if let Some((seen, tls)) = cache.as_ref()
+            && *seen == stamps
+        {
+            return Ok(tls.clone());
         }
         let tls = glidex_tls::ClientTls::new(&files, &[b"http/1.1"])
             .map_err(|e| format!("GLIDEX_API_CA_CERT: {}", e))?;
@@ -614,25 +614,25 @@ async fn proxy_api(State(s): State<AppState>, mut req: Request) -> Response {
                     e
                 ),
             )
-                .into_response()
+                .into_response();
         }
     };
-    if let Some(client_upgrade) = client_upgrade {
-        if resp.status() == StatusCode::SWITCHING_PROTOCOLS {
-            let upstream_upgrade = hyper::upgrade::on(&mut resp);
-            tokio::spawn(async move {
-                match tokio::try_join!(client_upgrade, upstream_upgrade) {
-                    Ok((client, upstream)) => {
-                        let _ = tokio::io::copy_bidirectional(
-                            &mut TokioIo::new(client),
-                            &mut TokioIo::new(upstream),
-                        )
-                        .await;
-                    }
-                    Err(e) => tracing::warn!("WebSocket upgrade failed: {}", e),
+    if let Some(client_upgrade) = client_upgrade
+        && resp.status() == StatusCode::SWITCHING_PROTOCOLS
+    {
+        let upstream_upgrade = hyper::upgrade::on(&mut resp);
+        tokio::spawn(async move {
+            match tokio::try_join!(client_upgrade, upstream_upgrade) {
+                Ok((client, upstream)) => {
+                    let _ = tokio::io::copy_bidirectional(
+                        &mut TokioIo::new(client),
+                        &mut TokioIo::new(upstream),
+                    )
+                    .await;
                 }
-            });
-        }
+                Err(e) => tracing::warn!("WebSocket upgrade failed: {}", e),
+            }
+        });
     }
     resp.map(Body::new)
 }
@@ -994,10 +994,10 @@ async fn run_dev_server() {
             std::process::exit(1);
         }
     };
-    if env("GLIDEX_API_CA_CERT").is_none() {
-        if let Some(p) = glidex_tls::published_certs().into_iter().next() {
-            cmd.env("GLIDEX_API_CA_CERT", p);
-        }
+    if env("GLIDEX_API_CA_CERT").is_none()
+        && let Some(p) = glidex_tls::published_certs().into_iter().next()
+    {
+        cmd.env("GLIDEX_API_CA_CERT", p);
     }
     let mut child = cmd
         .spawn()
@@ -1180,10 +1180,12 @@ mod tests {
     fn security_headers_and_hsts_only_with_a_configured_certificate() {
         let mut h = HeaderMap::new();
         add_security_headers(&mut h, false);
-        assert!(h["content-security-policy"]
-            .to_str()
-            .unwrap()
-            .contains("frame-ancestors 'none'"));
+        assert!(
+            h["content-security-policy"]
+                .to_str()
+                .unwrap()
+                .contains("frame-ancestors 'none'")
+        );
         assert_eq!(h["x-content-type-options"], "nosniff");
         assert_eq!(h["referrer-policy"], "no-referrer");
         assert_eq!(h["x-frame-options"], "DENY");

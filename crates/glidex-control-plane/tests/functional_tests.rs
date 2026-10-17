@@ -25,12 +25,12 @@
 //!   modified.
 
 use axum::{
+    Router,
     body::Body,
     http::{Request, StatusCode},
-    Router,
 };
 use http_body_util::BodyExt;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -42,8 +42,8 @@ use tower::ServiceExt;
 
 use glidex_control_plane::api::create_router;
 use glidex_control_plane::cloud_init::{self, SeedConfig};
-use glidex_control_plane::hypervisor::cloud_hypervisor::default_firmware_path;
 use glidex_control_plane::hypervisor::HypervisorType;
+use glidex_control_plane::hypervisor::cloud_hypervisor::default_firmware_path;
 use glidex_control_plane::state::VmManager;
 
 // ============================================================================
@@ -159,10 +159,12 @@ async fn kernel_or_firmware_is_required() {
     req.as_object_mut().unwrap().remove("firmware_path");
     let (status, body) = request(&app, "POST", "/vms", Some(req)).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-    assert!(body["message"]
-        .as_str()
-        .unwrap_or_default()
-        .contains("kernel_image_path"));
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("kernel_image_path")
+    );
 }
 
 #[tokio::test]

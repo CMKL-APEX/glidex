@@ -8,7 +8,7 @@
 use crate::controller::queue::Key;
 use crate::images::{DiskPhase, ImageStatus};
 use crate::state::{VmManager, VmManagerError};
-use crate::store::{event_key, Event, EventKind};
+use crate::store::{Event, EventKind, event_key};
 use std::time::Duration;
 
 type Next = Result<Option<Duration>, VmManagerError>;

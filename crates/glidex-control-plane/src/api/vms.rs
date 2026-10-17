@@ -6,19 +6,19 @@
 //! with `?wait=<secs>`, once the VM controller has acted on them
 //! (spec/reconciliation.md §12.3).
 
-use super::{err, vm_entities, ApiErr, Caller};
+use super::{ApiErr, Caller, err, vm_entities};
 use crate::auth::Method;
 use crate::authz::{Ent, EntitySet};
 use crate::models::{CreateVmRequest, DeviceRequest, PowerState, Vm, VmConfig, VmResponse};
 use crate::state::{VmManagerError, VmOptions, VmPatch, Waited};
 use axum::{
+    Json,
     extract::{
-        ws::{Message, WebSocket, WebSocketUpgrade},
         Path, Query,
+        ws::{Message, WebSocket, WebSocketUpgrade},
     },
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    Json,
 };
 use serde::Serialize;
 use std::time::Duration;
@@ -397,7 +397,7 @@ pub async fn delete_one(
             None => StatusCode::NO_CONTENT.into_response(),
         });
     };
-    let gen = c
+    let generation = c
         .manager()
         .get_vm(&id)
         .await
@@ -405,7 +405,11 @@ pub async fn delete_one(
         .unwrap_or(0);
     match c
         .manager()
-        .wait_converged(&id, gen, Duration::from_secs(secs.min(MAX_WAIT_SECS)))
+        .wait_converged(
+            &id,
+            generation,
+            Duration::from_secs(secs.min(MAX_WAIT_SECS)),
+        )
         .await
     {
         Waited::Gone | Waited::TimedOut(None) => Ok(StatusCode::OK.into_response()),
@@ -508,17 +512,17 @@ pub async fn patch_one(
     let project = vm.project.clone();
     let with_project: &[(&'static str, Ent)] = &[("project", Ent::Project(project.clone()))];
     let mut update = false;
-    if let Some(p) = patch.power {
-        if p != vm.spec.power {
-            let action = match p {
-                PowerState::Running => "startVm",
-                PowerState::Paused => "pauseVm",
-                PowerState::Stopped => "stopVm",
-            };
-            c.require_action(action, e.clone(), es.clone(), &[])?;
-            if p == PowerState::Running {
-                c.require_admitted(&project)?;
-            }
+    if let Some(p) = patch.power
+        && p != vm.spec.power
+    {
+        let action = match p {
+            PowerState::Running => "startVm",
+            PowerState::Paused => "pauseVm",
+            PowerState::Stopped => "stopVm",
+        };
+        c.require_action(action, e.clone(), es.clone(), &[])?;
+        if p == PowerState::Running {
+            c.require_admitted(&project)?;
         }
     }
     update |= patch
@@ -894,7 +898,7 @@ pub(crate) async fn read_log_tail(
         let mut f = match std::fs::File::open(&path) {
             Ok(f) => f,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(if previous { None } else { Some(Vec::new()) })
+                return Ok(if previous { None } else { Some(Vec::new()) });
             }
             Err(e) => return Err(e),
         };

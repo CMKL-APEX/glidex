@@ -7,7 +7,7 @@ use crate::models::Tristate;
 use crate::node::Node;
 use crate::store::{Origin, TableId};
 use redb::ReadableTable;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -105,10 +105,10 @@ impl Cluster {
             let silent = self.liveness.silent_for(&n.meta.id);
             let reachable = silent <= grace;
             let ready = n.status.ready == Tristate::True;
-            if reachable != ready {
-                if let Err(e) = self.set_ready(&n, reachable) {
-                    tracing::warn!(node = %n.spec.name, "recording the node's liveness: {}", e);
-                }
+            if reachable != ready
+                && let Err(e) = self.set_ready(&n, reachable)
+            {
+                tracing::warn!(node = %n.spec.name, "recording the node's liveness: {}", e);
             }
         }
     }

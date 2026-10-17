@@ -76,15 +76,15 @@ impl Config {
                 CONFIG_VERSION
             ));
         }
-        if let Some(cur) = &self.current {
-            if !self.profiles.contains_key(cur) {
-                return Err(format!(
-                    "{}: 'current' names '{}', which the file does not define; its profiles are {}",
-                    path.display(),
-                    cur,
-                    self.list()
-                ));
-            }
+        if let Some(cur) = &self.current
+            && !self.profiles.contains_key(cur)
+        {
+            return Err(format!(
+                "{}: 'current' names '{}', which the file does not define; its profiles are {}",
+                path.display(),
+                cur,
+                self.list()
+            ));
         }
         for (name, p) in &self.profiles {
             let e = |what: &str| format!("{}: profile '{}': {what}", path.display(), name);
@@ -102,13 +102,17 @@ impl Config {
             }
             for pin in &p.tls.pins {
                 if glidex_tls::Trust::normalize_pin(pin).is_none() {
-                    return Err(e(&format!("pin '{pin}' is not a fingerprint in the form gxctl prints, 'sha256/AB:CD:…'")));
+                    return Err(e(&format!(
+                        "pin '{pin}' is not a fingerprint in the form gxctl prints, 'sha256/AB:CD:…'"
+                    )));
                 }
             }
             if !p.tls.verify_host && p.tls.pins.is_empty() && !p.tls.insecure {
                 // A name-check waiver without a pin is no verification at
                 // all dressed as one (§2.2).
-                return Err(e("tls.verify_host=false needs a matching tls.pins entry; without a pin it would accept any certificate for any host"));
+                return Err(e(
+                    "tls.verify_host=false needs a matching tls.pins entry; without a pin it would accept any certificate for any host",
+                ));
             }
             if p.tls.insecure {
                 // The bypass exists only as a confirmation phrase typed at
@@ -117,13 +121,16 @@ impl Config {
                 let host = url_host(p.url.first().unwrap_or(&String::new()));
                 let phrase = p.tls.i_understand.as_ref().map(|s| s.trim());
                 if phrase != Some(host.as_str()) || host.is_empty() {
-                    return Err(e(&format!("tls.insecure needs tls.i_understand: \"{}\" typed by the operator ('auth login --insecure' asks for it)", host)));
+                    return Err(e(&format!(
+                        "tls.insecure needs tls.i_understand: \"{}\" typed by the operator ('auth login --insecure' asks for it)",
+                        host
+                    )));
                 }
             }
-            if let Some(id) = &p.cluster_id {
-                if id.is_empty() || id.chars().any(char::is_control) {
-                    return Err(e("cluster_id is not a printable identifier"));
-                }
+            if let Some(id) = &p.cluster_id
+                && (id.is_empty() || id.chars().any(char::is_control))
+            {
+                return Err(e("cluster_id is not a printable identifier"));
             }
         }
         Ok(())
@@ -721,9 +728,11 @@ mod tests {
     fn choosing_follows_the_precedence() {
         let cfg = full();
         assert_eq!(chosen(&cfg, Some("lab")).unwrap(), Some("lab".to_string()));
-        assert!(chosen(&cfg, Some("nope"))
-            .unwrap_err()
-            .contains("this file has: lab"));
+        assert!(
+            chosen(&cfg, Some("nope"))
+                .unwrap_err()
+                .contains("this file has: lab")
+        );
         // No flag: `current`.
         assert_eq!(chosen(&cfg, None).unwrap(), Some("lab".to_string()));
         // Empty file: today's behaviour, not an error (§3.3).
@@ -758,9 +767,11 @@ mod tests {
     fn the_helper_speaks_one_trimmed_line() {
         let t = run_token_command("printf '  gxt_x \\n  junk\\n'").unwrap();
         assert_eq!(t.as_str(), "gxt_x");
-        assert!(run_token_command("exit 3")
-            .unwrap_err()
-            .contains("exited unsuccessfully"));
+        assert!(
+            run_token_command("exit 3")
+                .unwrap_err()
+                .contains("exited unsuccessfully")
+        );
         assert!(run_token_command("true").unwrap_err().contains("nothing"));
         let big = format!("printf '{}'", "k".repeat(5000));
         assert!(run_token_command(&big).unwrap_err().contains("4 KiB"));

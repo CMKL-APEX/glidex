@@ -4,10 +4,10 @@
 
 use super::{ApiErr, Caller};
 use crate::service::directory as svc;
+use axum::Json;
 use axum::extract::Path;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::Json;
 use glidex_api::proto::glidex::directory::v1 as pb;
 
 pub async fn list(c: Caller) -> Result<Json<pb::ListConnectorsResponse>, ApiErr> {

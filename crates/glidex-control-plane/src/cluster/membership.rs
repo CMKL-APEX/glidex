@@ -13,7 +13,7 @@ use crate::node::{Node, NodePhase, NodeRole, NodeStore};
 use crate::state::VmManager;
 use crate::store::{Origin, TableId};
 use redb::ReadableTable;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -104,7 +104,9 @@ impl Cluster {
             )));
         }
         if remaining % 2 == 0 && !force {
-            return Err(MemberError::Conflict(format!("that would leave {remaining} voters; voters are 1, 3 or 5 (add a server first, or use --force)")));
+            return Err(MemberError::Conflict(format!(
+                "that would leave {remaining} voters; voters are 1, 3 or 5 (add a server first, or use --force)"
+            )));
         }
         Ok(())
     }
@@ -213,19 +215,19 @@ impl VmManager {
                 && n.deletion_requested_at.is_none()
         });
         let routers = crate::router::list(&self.database()).unwrap_or_default();
-        if let Some(e) = &ovn.edge {
-            if e.gateway_nodes.iter().any(is_it)
-                && !e.gateway_nodes.iter().any(lives)
-                && nat_networks
-            {
-                return Some("it is the only gateway of the shared edge router; add another gateway node to the shared edge first (Cluster page, OVN settings)".into());
-            }
+        if let Some(e) = &ovn.edge
+            && e.gateway_nodes.iter().any(is_it)
+            && !e.gateway_nodes.iter().any(lives)
+            && nat_networks
+        {
+            return Some("it is the only gateway of the shared edge router; add another gateway node to the shared edge first (Cluster page, OVN settings)".into());
         }
         for r in routers {
-            if let Some(g) = &r.spec.gateway_nodes {
-                if g.iter().any(is_it) && !g.iter().any(lives) {
-                    return Some(format!("it is the only gateway of router {}", r.spec.name));
-                }
+            if let Some(g) = &r.spec.gateway_nodes
+                && g.iter().any(is_it)
+                && !g.iter().any(lives)
+            {
+                return Some(format!("it is the only gateway of router {}", r.spec.name));
             }
         }
         None
@@ -238,7 +240,9 @@ impl VmManager {
         let n = resolve(&store.list().map_err(failed)?, key)?;
         match n.status.phase {
             NodePhase::Removed => {
-                return Ok(json!({ "node": n.spec.name, "phase": n.status.phase, "already": true }))
+                return Ok(
+                    json!({ "node": n.spec.name, "phase": n.status.phase, "already": true }),
+                );
             }
             NodePhase::Active | NodePhase::Draining => {}
             p => return Err(MemberError::Conflict(format!("the node is {p:?}"))),
@@ -347,7 +351,9 @@ impl VmManager {
         let n = resolve(&store.list().map_err(failed)?, key)?;
         match n.status.phase {
             NodePhase::Forgotten => {
-                return Ok(json!({ "node": n.spec.name, "phase": n.status.phase, "already": true }))
+                return Ok(
+                    json!({ "node": n.spec.name, "phase": n.status.phase, "already": true }),
+                );
             }
             NodePhase::Active | NodePhase::Draining => {}
             p => return Err(MemberError::Conflict(format!("the node is {p:?}"))),
@@ -466,12 +472,12 @@ impl VmManager {
                 return Err(MemberError::Conflict(format!(
                     "the node is {:?}: its id is retired; join as a new node",
                     n.status.phase
-                )))
+                )));
             }
             NodePhase::Departing => {
                 return Err(MemberError::Conflict(
                     "a detach is in progress for this node".into(),
-                ))
+                ));
             }
             _ => {}
         }

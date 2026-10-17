@@ -6,23 +6,23 @@
 //! drift. Every step is idempotent and safe to repeat after a crash.
 
 use crate::cloud_init;
-use crate::controller::queue::{backoff, Key};
-use crate::hypervisor::{driver, vfio_device_id, HypervisorError, HypervisorType};
+use crate::controller::queue::{Key, backoff};
+use crate::hypervisor::{HypervisorError, HypervisorType, driver, vfio_device_id};
 use crate::images::ImageError;
-use crate::instance::{liveness, Liveness, Seen};
+use crate::instance::{Liveness, Seen, liveness};
 use crate::models::{
     Condition, ExitCause, ExitRecord, InstanceRef, NicBinding, NicStatus, PowerState,
     RestartPolicy, Tristate, Vm, VmPhase, VmSpec, VmStatus,
 };
 use crate::network::NetError;
-use crate::state::{power_name, VmManager, VmManagerError};
-use crate::store::{event_key, Commit, Event, EventKind};
+use crate::state::{VmManager, VmManagerError, power_name};
+use crate::store::{Commit, Event, EventKind, event_key};
 use glidex_hv_client::GuestState;
 use glidex_netd::proto::{AttachResult, Op};
 use glidex_ovs::vm_port::VmPortSpec;
+use glidex_vm_shim::LaunchFile;
 use glidex_vm_shim::client::ShimClient;
 use glidex_vm_shim::state::{InstanceFile, Phase};
-use glidex_vm_shim::LaunchFile;
 use std::time::Duration;
 
 /// Finalizers of a VM (§6.3), in the order they are worked off.
@@ -292,20 +292,20 @@ impl VmManager {
         if !self.is_local(&vm) {
             return Ok(None);
         }
-        let gen = vm.generation;
+        let generation = vm.generation;
         let mut st = vm.status.clone();
         let mut events: Vec<Event> = Vec::new();
         let seen = self.observe(&vm).await?;
         let paths = vm.paths();
 
         // Fill in what the shim reported about our instance.
-        if let (Some(inst), Some(f)) = (st.instance.as_mut(), seen.file.as_ref()) {
-            if f.instance_id == inst.instance_id {
-                inst.shim_pid = Some(f.shim_pid);
-                inst.shim_starttime = Some(f.shim_starttime);
-                inst.hypervisor_pid = f.hypervisor_pid.or(inst.hypervisor_pid);
-                inst.hypervisor_starttime = f.hypervisor_starttime.or(inst.hypervisor_starttime);
-            }
+        if let (Some(inst), Some(f)) = (st.instance.as_mut(), seen.file.as_ref())
+            && f.instance_id == inst.instance_id
+        {
+            inst.shim_pid = Some(f.shim_pid);
+            inst.shim_starttime = Some(f.shim_starttime);
+            inst.hypervisor_pid = f.hypervisor_pid.or(inst.hypervisor_pid);
+            inst.hypervisor_starttime = f.hypervisor_starttime.or(inst.hypervisor_starttime);
         }
 
         match &seen.liveness {
@@ -325,7 +325,7 @@ impl VmManager {
                     "CannotVerify",
                     "the instance's state cannot be established",
                 );
-                self.write_status(id, gen, st, events).await?;
+                self.write_status(id, generation, st, events).await?;
                 return Ok(Some(Duration::from_secs(10)));
             }
             Liveness::Live => {
@@ -344,8 +344,13 @@ impl VmManager {
                     }
                     None if recorded.is_none() => {
                         st.phase = VmPhase::Unknown;
-                        set_cond(&mut st.conditions, "HypervisorReachable", Tristate::Unknown, "LegacyOrphan",
-                            "a hypervisor answers on this VM's socket but no shim reports it; stop that process");
+                        set_cond(
+                            &mut st.conditions,
+                            "HypervisorReachable",
+                            Tristate::Unknown,
+                            "LegacyOrphan",
+                            "a hypervisor answers on this VM's socket but no shim reports it; stop that process",
+                        );
                         set_cond(
                             &mut st.conditions,
                             "Ready",
@@ -353,7 +358,7 @@ impl VmManager {
                             "LegacyOrphan",
                             "an unmanaged hypervisor holds this VM",
                         );
-                        self.write_status(id, gen, st, events).await?;
+                        self.write_status(id, generation, st, events).await?;
                         return Ok(Some(Duration::from_secs(30)));
                     }
                     _ => {}
@@ -376,7 +381,7 @@ impl VmManager {
                 // The shim keeps the console until released.
                 let _ = shim_call(paths.shim_socket.clone(), |c| c.release()).await;
                 st.phase = VmPhase::Stopping;
-                self.write_status(id, gen, st, events).await?;
+                self.write_status(id, generation, st, events).await?;
                 return Ok(Some(Duration::from_millis(300)));
             }
             if !live {
@@ -420,7 +425,7 @@ impl VmManager {
                 "",
             );
             set_cond(&mut st.conditions, "Ready", Tristate::True, "Converged", "");
-            self.write_status(id, gen, st, events).await?;
+            self.write_status(id, generation, st, events).await?;
             return Ok(None);
         }
 
@@ -664,10 +669,10 @@ impl VmManager {
                 .collect();
             if now >= deadline + STOP_SLACK_SECS {
                 let _ = runner.kill(&vm.id, &pids).await;
-            } else if now >= deadline || sent.is_err() {
-                if let Err(e) = runner.stop(&vm.id, shim).await {
-                    tracing::warn!(vm_id = %vm.id, "stopping the instance: {}", e);
-                }
+            } else if (now >= deadline || sent.is_err())
+                && let Err(e) = runner.stop(&vm.id, shim).await
+            {
+                tracing::warn!(vm_id = %vm.id, "stopping the instance: {}", e);
             }
         }
         st.phase = VmPhase::Stopping;
@@ -1071,13 +1076,12 @@ impl VmManager {
         loop {
             let netd = self.netd.clone();
             let st = blocking(move || netd.call::<glidex_ovs::ovn::OvnStatus>(Op::OvnStatus)).await;
-            if let Ok(Ok(st)) = st {
-                if lports
+            if let Ok(Ok(st)) = st
+                && lports
                     .iter()
                     .all(|p| st.ports.iter().any(|x| &x.lport == p && x.ovn_installed))
-                {
-                    return true;
-                }
+            {
+                return true;
             }
             if tokio::time::Instant::now() >= deadline {
                 return false;
@@ -1382,11 +1386,11 @@ impl VmManager {
             // The seed carried a root-partition grow and the guest booted
             // it: say so; the disk controller clears its flag (each
             // controller writes only its own object, §6.2).
-            if guest == GuestState::Running {
-                if let Some(disk) = inst.growpart_disk.take() {
-                    st.seed_growpart_seq = inst.growpart_seq.take();
-                    self.queue.add(crate::controller::queue::Key::Disk(disk));
-                }
+            if guest == GuestState::Running
+                && let Some(disk) = inst.growpart_disk.take()
+            {
+                st.seed_growpart_seq = inst.growpart_seq.take();
+                self.queue.add(crate::controller::queue::Key::Disk(disk));
             }
         }
         st.launch_failures = 0;

@@ -91,13 +91,13 @@ impl LaunchFile {
         expected_vm: Option<&str>,
         allowed: &[PathBuf],
     ) -> Result<(), LaunchError> {
-        if let Some(vm) = expected_vm {
-            if vm != self.vm_id {
-                return Err(LaunchError::WrongVm {
-                    expected: vm.to_string(),
-                    found: self.vm_id.clone(),
-                });
-            }
+        if let Some(vm) = expected_vm
+            && vm != self.vm_id
+        {
+            return Err(LaunchError::WrongVm {
+                expected: vm.to_string(),
+                found: self.vm_id.clone(),
+            });
         }
         if self.argv.is_empty() {
             return Err(LaunchError::Invalid("argv is empty".into()));
@@ -175,15 +175,15 @@ pub fn allowed_binaries_from(file: &Path) -> Vec<PathBuf> {
         },
         Err(_) => default_binaries(),
     };
-    if std::env::var_os("INVOCATION_ID").is_none() {
-        if let Ok(extra) = std::env::var("GLIDEX_VM_SHIM_ALLOW") {
-            out.extend(
-                extra
-                    .split(':')
-                    .filter(|s| !s.is_empty())
-                    .filter_map(|p| std::fs::canonicalize(p).ok()),
-            );
-        }
+    if std::env::var_os("INVOCATION_ID").is_none()
+        && let Ok(extra) = std::env::var("GLIDEX_VM_SHIM_ALLOW")
+    {
+        out.extend(
+            extra
+                .split(':')
+                .filter(|s| !s.is_empty())
+                .filter_map(|p| std::fs::canonicalize(p).ok()),
+        );
     }
     out
 }

@@ -100,7 +100,11 @@ fn peer(c: &Cluster, p: Option<Extension<PeerCert>>, server: bool) -> Result<Pee
 /// runs `gxctl` on it) knows it is no longer a member and how to go on.
 fn refused(why: &str) -> Response {
     if why == REVOKED {
-        return fail(StatusCode::UNAUTHORIZED, NODE_REMOVED, "this node is no longer a member of the cluster (removed, forgotten or detached): on it, run `sudo glidex-install --leave` to make it a standalone host");
+        return fail(
+            StatusCode::UNAUTHORIZED,
+            NODE_REMOVED,
+            "this node is no longer a member of the cluster (removed, forgotten or detached): on it, run `sudo glidex-install --leave` to make it a standalone host",
+        );
     }
     fail(StatusCode::UNAUTHORIZED, "unauthenticated", why)
 }
@@ -180,10 +184,10 @@ async fn departure_get(
     };
     // The commit revokes the node's certificate; it must still be able to
     // collect its receipt if the answer to its acknowledgement was lost.
-    if let Err(why) = c.check_peer(&peer) {
-        if !(plan.state == "committed" && c.was_issued(&peer.serial)) {
-            return refused(why);
-        }
+    if let Err(why) = c.check_peer(&peer)
+        && !(plan.state == "committed" && c.was_issued(&peer.serial))
+    {
+        return refused(why);
     }
     match plan.state.as_str() {
         "committed" => {
@@ -353,7 +357,7 @@ async fn renew(
                 StatusCode::FORBIDDEN,
                 "forbidden",
                 "this node is not a member",
-            )
+            );
         }
     }
     let (cert_pem, info) = match ca.sign_node(
@@ -418,12 +422,11 @@ async fn put_ca(State(c): Ctx, p: Option<Extension<PeerCert>>, Json(b): Json<CaK
     // Only a key that matches the cluster's CA is accepted.
     let mut found = None;
     for pem in trust.split_inclusive("-----END CERTIFICATE-----") {
-        if let Ok(ca) = super::pki::Ca::from_pem(pem.trim_start(), &b.key_pem) {
-            if ca.public_key_fingerprint().ok().as_deref()
+        if let Ok(ca) = super::pki::Ca::from_pem(pem.trim_start(), &b.key_pem)
+            && ca.public_key_fingerprint().ok().as_deref()
                 == Some(c.identity.ca_fingerprint.as_str())
-            {
-                found = Some(ca);
-            }
+        {
+            found = Some(ca);
         }
     }
     let Some(ca) = found else {
@@ -637,7 +640,7 @@ async fn rejoin(State(c): Ctx, Json(req): Json<JoinRequest>) -> Response {
                     StatusCode::FORBIDDEN,
                     "invalid_token",
                     "this is a join token, not a rejoin token",
-                )
+                );
             }
         },
         Ok(Err(e)) => return fail(StatusCode::FORBIDDEN, "invalid_token", e.to_string()),
@@ -676,16 +679,15 @@ async fn rejoin(State(c): Ctx, Json(req): Json<JoinRequest>) -> Response {
     // D18: a voter that lost its log must not vote again as itself. It leaves
     // the group here, and comes back through the learner path.
     let raft_fresh = server && !raft_intact;
-    if raft_fresh {
-        if let (Some(rid), Some(raft)) = (rec.status.raft_id, &c.node) {
-            if let Err(e) = raft.remove_members([rid].into_iter().collect()).await {
-                return fail(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "rejoin_failed",
-                    format!("could not remove the old voter: {e}"),
-                );
-            }
-        }
+    if raft_fresh
+        && let (Some(rid), Some(raft)) = (rec.status.raft_id, &c.node)
+        && let Err(e) = raft.remove_members([rid].into_iter().collect()).await
+    {
+        return fail(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "rejoin_failed",
+            format!("could not remove the old voter: {e}"),
+        );
     }
     let was_forgotten = rec.status.phase == crate::node::NodePhase::Forgotten;
     if was_forgotten {
@@ -1036,11 +1038,10 @@ async fn serve_marked(c: &Cluster, req: Request) -> Response {
     if !r
         .headers()
         .contains_key(crate::api::relay::SERVED_BY_HEADER)
+        && let Ok(v) = axum::http::HeaderValue::from_str(&c.identity.node_id)
     {
-        if let Ok(v) = axum::http::HeaderValue::from_str(&c.identity.node_id) {
-            r.headers_mut()
-                .insert(crate::api::relay::SERVED_BY_HEADER, v);
-        }
+        r.headers_mut()
+            .insert(crate::api::relay::SERVED_BY_HEADER, v);
     }
     r
 }
@@ -1243,7 +1244,7 @@ async fn node_watch(
                     StatusCode::GONE,
                     "gone",
                     "that revision is older than this server remembers: list again",
-                )
+                );
             }
             Some((upto, entries)) => {
                 let mut out = Vec::new();

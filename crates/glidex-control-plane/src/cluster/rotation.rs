@@ -14,7 +14,7 @@ use crate::store::{Origin, TableId};
 use bytes::Bytes;
 use redb::ReadableTable;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -577,10 +577,9 @@ impl Cluster {
             return;
         };
         if c.validity().not_after.timestamp() - (crate::tenancy::now() as i64) < ROTATE_BEFORE_SECS
+            && let Err(e) = self.rotate_ca(None).await
         {
-            if let Err(e) = self.rotate_ca(None).await {
-                tracing::warn!("rotating the CA before it expires: {}", e);
-            }
+            tracing::warn!("rotating the CA before it expires: {}", e);
         }
     }
 

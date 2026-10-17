@@ -9,13 +9,13 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use glidex_control_plane::api::create_router;
-use glidex_control_plane::cluster::manage::{self, InitOptions, JoinOptions};
 use glidex_control_plane::cluster::Cluster;
+use glidex_control_plane::cluster::manage::{self, InitOptions, JoinOptions};
 use glidex_control_plane::config::Config;
 use glidex_control_plane::node::NodeRole;
 use glidex_control_plane::state::VmManager;
 use http_body_util::BodyExt;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -92,7 +92,8 @@ fn hypervisors_on_path() {
         let path = std::env::var_os("PATH").unwrap_or_default();
         let joined =
             std::env::join_paths(std::iter::once(dir).chain(std::env::split_paths(&path))).unwrap();
-        std::env::set_var("PATH", joined);
+        // SAFETY: test-only; every test sets it the same way before reading it.
+        unsafe { std::env::set_var("PATH", joined) };
     });
 }
 
@@ -282,12 +283,16 @@ async fn three_control_planes_survive_losing_the_leader() {
     .await;
     assert_eq!(s, StatusCode::CREATED, "{v}");
     let other = (0..3).find(|i| *i != leader && *i != follower).unwrap();
-    assert!(project_names(&cps[other])
-        .await
-        .contains(&"alpha".to_string()));
-    assert!(project_names(&cps[leader])
-        .await
-        .contains(&"alpha".to_string()));
+    assert!(
+        project_names(&cps[other])
+            .await
+            .contains(&"alpha".to_string())
+    );
+    assert!(
+        project_names(&cps[leader])
+            .await
+            .contains(&"alpha".to_string())
+    );
 
     // Kill the leader: the other two elect one and writes continue.
     cluster(&cps[leader]).stop().await;
@@ -1080,11 +1085,13 @@ async fn a_server_relays_the_console_log_of_a_vm_on_an_agent() {
         .unwrap();
     assert_eq!(&buf, b"ls\n");
     // Another VM's console isn't served by this node.
-    assert!(cluster(&server)
-        .client
-        .upgrade(&agent.addr.to_string(), "/cluster/v1/vms/nope/console")
-        .await
-        .is_err());
+    assert!(
+        cluster(&server)
+            .client
+            .upgrade(&agent.addr.to_string(), "/cluster/v1/vms/nope/console")
+            .await
+            .is_err()
+    );
     std::fs::remove_dir_all(&paths.dir).unwrap();
 }
 
@@ -2006,10 +2013,11 @@ async fn provider_networks_and_vpc_routers() {
     let ext = r1.external.as_ref().unwrap();
     assert_eq!(ext.snat_ct_zone, Some(60001));
     assert_eq!(d.edge.as_ref().unwrap().snat_ct_zone, Some(60000));
-    assert!(d
-        .networks
-        .iter()
-        .any(|n| n.name == "app" && n.router.as_deref() == Some(r1.name.as_str())));
+    assert!(
+        d.networks
+            .iter()
+            .any(|n| n.name == "app" && n.router.as_deref() == Some(r1.name.as_str()))
+    );
 
     // An existing network moves onto a router and back to the edge.
     let (s, n) = call(

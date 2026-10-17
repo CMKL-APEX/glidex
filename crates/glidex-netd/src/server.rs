@@ -2,7 +2,7 @@
 
 use crate::auth::{self, Peer};
 use crate::proto::*;
-use crate::store::{self, Store, BRIDGES, META, NAT, UPLINKS, VM_PORTS};
+use crate::store::{self, BRIDGES, META, NAT, Store, UPLINKS, VM_PORTS};
 use crate::supervisor::Supervisor;
 use glidex_ovs::bridge::{self, BridgeSpec};
 use glidex_ovs::host::{self, ProbeOptions};
@@ -15,7 +15,7 @@ use glidex_ovs::nic;
 use glidex_ovs::uplink::{self, UplinkKind};
 use glidex_ovs::vm_port::{self, VmPortSpec};
 use glidex_ovs::{Exec, OvsError};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -131,10 +131,9 @@ impl Netd {
             .ok()
             .flatten()
             .is_some()
+            && let Err(e) = self.ct_meter()
         {
-            if let Err(e) = self.ct_meter() {
-                tracing::warn!("conntrack counters: {}", e);
-            }
+            tracing::warn!("conntrack counters: {}", e);
         }
     }
 
@@ -493,10 +492,10 @@ impl Netd {
             }
         }
         let undo_driver = |netd: &Netd| {
-            if let UplinkKind::Dpdk { pci, .. } = &spec.kind {
-                if orig_driver.as_deref() != Some("vfio-pci") {
-                    let _ = nic::restore_driver(netd.ex(), pci);
-                }
+            if let UplinkKind::Dpdk { pci, .. } = &spec.kind
+                && orig_driver.as_deref() != Some("vfio-pci")
+            {
+                let _ = nic::restore_driver(netd.ex(), pci);
             }
         };
         if let Err(e) = uplink::add_port(self.ex(), &spec, orig_driver.as_deref()) {
@@ -522,21 +521,21 @@ impl Netd {
             if let Err(e) = ipmigrate::apply(self.ex(), &snap, &spec.bridge) {
                 return Err(rollback(self, format!("applying failed: {}", e)));
             }
-            if let Some(gw) = snap.default_gateway() {
-                if !ipmigrate::gateway_reachable(
+            if let Some(gw) = snap.default_gateway()
+                && !ipmigrate::gateway_reachable(
                     self.ex(),
                     gw,
                     &spec.bridge,
                     self.config.gateway_check,
-                ) {
-                    return Err(rollback(
-                        self,
-                        format!(
-                            "default gateway {} did not answer through {}",
-                            gw, spec.bridge
-                        ),
-                    ));
-                }
+                )
+            {
+                return Err(rollback(
+                    self,
+                    format!(
+                        "default gateway {} did not answer through {}",
+                        gw, spec.bridge
+                    ),
+                ));
             }
             record.pending = Some(Pending {
                 token: random_token(),
@@ -599,10 +598,10 @@ impl Netd {
         if let Some(snap) = &record.snapshot {
             ipmigrate::restore(self.ex(), snap, &record.spec.bridge)?;
         }
-        if let UplinkKind::Dpdk { pci, .. } = &record.spec.kind {
-            if record.orig_driver.as_deref() != Some("vfio-pci") {
-                nic::restore_driver(self.ex(), pci)?;
-            }
+        if let UplinkKind::Dpdk { pci, .. } = &record.spec.kind
+            && record.orig_driver.as_deref() != Some("vfio-pci")
+        {
+            nic::restore_driver(self.ex(), pci)?;
         }
         self.store.delete(
             UPLINKS,
@@ -802,13 +801,13 @@ impl Netd {
             self.require_bridge(&spec.bridge)?;
         }
         let key = store::vm_port_key(&spec.vm_id, spec.nic_index);
-        if let Some(existing) = self.store.get::<VmPortRecord>(VM_PORTS, &key)? {
-            if existing.spec.bridge != spec.bridge {
-                return Err(OvsError::conflict(format!(
-                    "{} is attached to bridge '{}'",
-                    existing.port, existing.spec.bridge
-                )));
-            }
+        if let Some(existing) = self.store.get::<VmPortRecord>(VM_PORTS, &key)?
+            && existing.spec.bridge != spec.bridge
+        {
+            return Err(OvsError::conflict(format!(
+                "{} is attached to bridge '{}'",
+                existing.port, existing.spec.bridge
+            )));
         }
         let caps = host::probe(self.ex(), &self.config.probe);
         let binding = vm_port::attach(self.ex(), &caps, &spec, owner_uid)?;
@@ -1061,10 +1060,10 @@ impl Netd {
     /// the bridge, and the record says why (`boot_rollback`), so the host
     /// stays reachable.
     fn reapply_uplink(&self, record: &UplinkRecord) -> Result<(), OvsError> {
-        if let UplinkKind::Dpdk { pci, .. } = &record.spec.kind {
-            if nic::pci_driver(self.ex(), pci)?.as_deref() != Some("vfio-pci") {
-                nic::bind_driver(self.ex(), pci, "vfio-pci")?;
-            }
+        if let UplinkKind::Dpdk { pci, .. } = &record.spec.kind
+            && nic::pci_driver(self.ex(), pci)?.as_deref() != Some("vfio-pci")
+        {
+            nic::bind_driver(self.ex(), pci, "vfio-pci")?;
         }
         let Some(snap) = &record.snapshot else {
             return uplink::add_port(self.ex(), &record.spec, record.orig_driver.as_deref());

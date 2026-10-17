@@ -4,19 +4,19 @@
 //! connector (OIDC code and device flows against a mock IdP, PAM tokens).
 
 use axum::{
-    body::Body,
-    http::{header, Request, StatusCode},
     Router,
+    body::Body,
+    http::{Request, StatusCode, header},
 };
 use buffa::Message;
 use glidex_api::proto::glidex::directory::v1 as pb;
 use glidex_control_plane::api::{self, App, AppState};
-use glidex_control_plane::auth::{self, store::TokenKind, AuthService};
+use glidex_control_plane::auth::{self, AuthService, store::TokenKind};
 use glidex_control_plane::authz::Ent;
 use glidex_control_plane::config::Config;
 use glidex_control_plane::state::VmManager;
 use http_body_util::BodyExt;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::Arc;
 use tempfile::TempDir;
 use tower::ServiceExt;
@@ -32,7 +32,8 @@ struct H {
 
 fn harness_with(f: impl FnOnce(&mut Config)) -> H {
     let dir = TempDir::new().unwrap();
-    std::env::set_var("GLIDEX_RUN_DIR", dir.path().join("run"));
+    // SAFETY: test-only; every test sets it the same way before reading it.
+    unsafe { std::env::set_var("GLIDEX_RUN_DIR", dir.path().join("run")) };
     let manager = VmManager::with_db_path(dir.path().join("t.db")).unwrap();
     let mut cfg = Config::default();
     cfg.authz.policy_files_dir = dir.path().join("policies");
@@ -353,7 +354,7 @@ fn fake_authd(dir: &TempDir) -> std::path::PathBuf {
 }
 
 mod idp {
-    use axum::{extract::State, routing::get, routing::post, Json, Router};
+    use axum::{Json, Router, extract::State, routing::get, routing::post};
     use base64::Engine as _;
     use jsonwebtoken::{EncodingKey, Header};
     use rsa::pkcs1::EncodeRsaPrivateKey;
@@ -786,11 +787,12 @@ async fn oidc_login_through_an_api_connector() {
     assert_eq!(who["user"]["display_name"], "Alice");
     assert_eq!(who["teams"], json!(["team-lab"]));
     let user = who["user"]["id"].as_str().unwrap().to_string();
-    assert!(h
-        .app
-        .auth
-        .is_member(&Ent::User(user.clone()), "default")
-        .unwrap());
+    assert!(
+        h.app
+            .auth
+            .is_member(&Ent::User(user.clone()), "default")
+            .unwrap()
+    );
     assert!(!h.app.auth.is_member(&Ent::User(user), "admin").unwrap());
     assert!(
         h.app

@@ -478,13 +478,13 @@ impl Config {
 
     /// Refuse plain HTTP on a non-loopback listener (spec §5.1).
     pub fn check_listeners(&self) -> Result<(), String> {
-        if !self.tls.enabled() {
-            if let Some(a) = self.listen.iter().find(|a| !a.ip().is_loopback()) {
-                return Err(format!(
-                    "refusing to serve plain HTTP on {}: \"tls\": \"off\" needs every listener on loopback ({})",
-                    a, DEFAULT_CONFIG_PATH
-                ));
-            }
+        if !self.tls.enabled()
+            && let Some(a) = self.listen.iter().find(|a| !a.ip().is_loopback())
+        {
+            return Err(format!(
+                "refusing to serve plain HTTP on {}: \"tls\": \"off\" needs every listener on loopback ({})",
+                a, DEFAULT_CONFIG_PATH
+            ));
         }
         Ok(())
     }
@@ -547,13 +547,15 @@ mod tests {
         ] {
             assert!(bad.check().is_err(), "{bad:?}");
         }
-        assert!(MeteringConfig {
-            sample_secs: 60,
-            close_grace_secs: 60,
-            ..ok
-        }
-        .check()
-        .is_ok());
+        assert!(
+            MeteringConfig {
+                sample_secs: 60,
+                close_grace_secs: 60,
+                ..ok
+            }
+            .check()
+            .is_ok()
+        );
     }
 
     #[test]

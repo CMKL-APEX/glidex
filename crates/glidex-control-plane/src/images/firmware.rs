@@ -9,8 +9,8 @@
 //! build of Debian's `ovmf` package, unpacked here (`extract_deb`), on any
 //! host.
 
-use super::catalog::Arch;
 use super::ImageError;
+use super::catalog::Arch;
 use crate::hypervisor::HypervisorType;
 use std::io::Read;
 use std::path::PathBuf;
@@ -86,7 +86,10 @@ pub const FIRMWARE_CATALOG: &[FirmwareEntry] = &[
         key: "ovmf",
         name: "OVMF UEFI (host package)",
         hypervisor: HypervisorType::Qemu,
-        source: FirmwareSource::Host { package: "ovmf / edk2-ovmf", candidates: crate::hypervisor::qemu::OVMF_CODE_CANDIDATES },
+        source: FirmwareSource::Host {
+            package: "ovmf / edk2-ovmf",
+            candidates: crate::hypervisor::qemu::OVMF_CODE_CANDIDATES,
+        },
     },
     // snapshot.debian.org keeps every file at its first-seen URL forever,
     // unlike the archive's pool. The digests are Debian's (Packages index)
@@ -306,18 +309,21 @@ mod tests {
                 }
             }
         }
-        assert!(find("cloudhv-edk2")
-            .unwrap()
-            .download_for(Arch::X86_64)
-            .is_some());
+        assert!(
+            find("cloudhv-edk2")
+                .unwrap()
+                .download_for(Arch::X86_64)
+                .is_some()
+        );
         assert!(!find("ovmf").unwrap().supports(Arch::Aarch64));
         let deb = find("ovmf-debian").unwrap();
         assert!(deb.supports(Arch::X86_64) && !deb.supports(Arch::Aarch64));
-        assert!(deb
-            .download_for(Arch::X86_64)
-            .unwrap()
-            .0
-            .starts_with("https://snapshot.debian.org/"));
+        assert!(
+            deb.download_for(Arch::X86_64)
+                .unwrap()
+                .0
+                .starts_with("https://snapshot.debian.org/")
+        );
     }
 
     /// A `.deb` built here: `ar` with an odd-sized member (padding) and an

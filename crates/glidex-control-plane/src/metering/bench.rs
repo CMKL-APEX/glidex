@@ -3,7 +3,7 @@
 //! month query under 200 ms. Run with
 //! `cargo test --release --lib metering::bench -- --ignored --nocapture`.
 
-use super::ledger::{Ledger, LedgerSettings, Origin, Subject, SubjectKind, HOUR_MS};
+use super::ledger::{HOUR_MS, Ledger, LedgerSettings, Origin, Subject, SubjectKind};
 use super::query::{self, Granularity, GroupKey};
 use super::rates::{bandwidth_p95, compute_p95, group_slots};
 use crate::store::Db;
@@ -147,7 +147,7 @@ fn load_targets() {
     let t0 = T0;
 
     // A month of history: one sample every 5 minutes (fills every slot).
-    let gen = Instant::now();
+    let generated = Instant::now();
     // GLIDEX_BENCH_DAYS shortens the history (default: a whole month).
     let days: usize = std::env::var("GLIDEX_BENCH_DAYS")
         .ok()
@@ -166,7 +166,7 @@ fn load_targets() {
             let mib = std::fs::metadata(&path).map(|m| m.len() >> 20).unwrap_or(0);
             println!(
                 "  round {step}: {:?} so far, last round {:?}, {mib} MiB",
-                gen.elapsed(),
+                generated.elapsed(),
                 start.elapsed()
             );
         }
@@ -175,7 +175,7 @@ fn load_targets() {
     println!(
         "history: {} rounds in {:?}; slowest round {:?}; database {} MiB",
         slots_per_month + 1,
-        gen.elapsed(),
+        generated.elapsed(),
         slowest_round,
         db_mib
     );

@@ -8,7 +8,7 @@
 
 use http_body_util::{BodyExt, Full};
 use hyper::body::Bytes;
-use hyper::header::{HeaderValue, AUTHORIZATION, CONTENT_TYPE, HOST};
+use hyper::header::{AUTHORIZATION, CONTENT_TYPE, HOST, HeaderValue};
 use hyper::{Method, Request, StatusCode, Uri};
 use hyper_util::rt::TokioIo;
 use serde::de::DeserializeOwned;
@@ -187,7 +187,7 @@ pub fn parse_principal(s: &str) -> Result<serde_json::Value, String> {
             return Err(format!(
                 "'{}': a principal is user:<id>, team:<id> or token:<id>",
                 s
-            ))
+            ));
         }
     };
     if id.is_empty() {
@@ -308,7 +308,10 @@ pub fn render_error(status: StatusCode, body: &[u8], tcp: bool) -> Failure {
             )
         }
         (StatusCode::UNAUTHORIZED, Some("unauthenticated")) if tcp => {
-            format!("not logged in: {} (run `gxctl login --oidc` or `gxctl login --token`, or set GLIDEX_TOKEN)", message)
+            format!(
+                "not logged in: {} (run `gxctl login --oidc` or `gxctl login --token`, or set GLIDEX_TOKEN)",
+                message
+            )
         }
         (StatusCode::FORBIDDEN, Some(c)) => format!("permission denied ({}): {}", c, message),
         (_, Some(c)) => format!("{}: {}", c, message),
@@ -461,7 +464,10 @@ fn tls_config_for(
             // (§2.1): owner and mode are checked before it joins the store.
             let euid = nix::unistd::geteuid().as_raw();
             if !glidex_tls::trustworthy(f, euid, None) {
-                return Err(format!("{}: a CA file must be yours, not group or world writable, and in a directory only you can write", f.display()));
+                return Err(format!(
+                    "{}: a CA file must be yours, not group or world writable, and in a directory only you can write",
+                    f.display()
+                ));
             }
             t.ca_files.push(f.clone());
         }
@@ -484,7 +490,10 @@ fn tls_error(target: &str, tls: &glidex_tls::ClientTls, e: io::Error) -> String 
             "TLS with {}: {}\n  the server's certificate has SHA-256 fingerprint {}\n  \
              if that is the control plane's (it prints it at startup), save its certificate and set GLIDEX_CA_CERT to the file\n  \
              or, from a login profile, trust this exact certificate: gxctl auth login … --pin sha256/{}",
-            target, e, fp, fp.to_lowercase()
+            target,
+            e,
+            fp,
+            fp.to_lowercase()
         ),
         None => format!("TLS with {}: {}", target, e),
     }
@@ -592,11 +601,11 @@ impl ApiClient {
                         .and_then(|p| p.last_used.as_ref())
                         .and_then(|l| l.url.clone())
                 });
-            if let Some(hint) = hint {
-                if let Some(i) = eps.iter().position(|e| e.url == hint) {
-                    let ep = eps.remove(i);
-                    eps.insert(0, ep);
-                }
+            if let Some(hint) = hint
+                && let Some(i) = eps.iter().position(|e| e.url == hint)
+            {
+                let ep = eps.remove(i);
+                eps.insert(0, ep);
             }
         }
         Ok(ApiClient {
@@ -703,7 +712,11 @@ impl ApiClient {
                 Ok(s) => Ok(Box::new(s)),
                 Err(e) => Err(match e.kind() {
                     io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused => {
-                        format!("cannot reach the control plane at {}: {} (is glidex-control-plane running?)", p.display(), e)
+                        format!(
+                            "cannot reach the control plane at {}: {} (is glidex-control-plane running?)",
+                            p.display(),
+                            e
+                        )
                     }
                     io::ErrorKind::PermissionDenied => format!(
                         "cannot open {}: {} (local users need to be in the glidex-users group; log out and in again after being added)",
@@ -731,7 +744,10 @@ impl ApiClient {
                 Err(if errs.len() == 1 {
                     errs.remove(0)
                 } else {
-                    format!("no endpoint of this profile answered:\n  {}", errs.join("\n  "))
+                    format!(
+                        "no endpoint of this profile answered:\n  {}",
+                        errs.join("\n  ")
+                    )
                 })
             }
         }
@@ -881,17 +897,17 @@ impl ApiClient {
                 return Ok(());
             }
         };
-        if let (Some(want), Some(got)) = (b.cluster_id.as_deref(), v["cluster_id"].as_str()) {
-            if want != got {
-                return Err(format!(
-                    "refusing to continue: profile '{}' is bound to cluster {} but {} answers for {}.\n  A machine was repurposed, or the profile is stale.\n  Re-point with: gxctl auth login --profile {} --rebind",
-                    b.profile,
-                    want,
-                    self.describe(),
-                    got,
-                    b.profile
-                ));
-            }
+        if let (Some(want), Some(got)) = (b.cluster_id.as_deref(), v["cluster_id"].as_str())
+            && want != got
+        {
+            return Err(format!(
+                "refusing to continue: profile '{}' is bound to cluster {} but {} answers for {}.\n  A machine was repurposed, or the profile is stale.\n  Re-point with: gxctl auth login --profile {} --rebind",
+                b.profile,
+                want,
+                self.describe(),
+                got,
+                b.profile
+            ));
         }
         let seen = self
             .last_tls
@@ -912,7 +928,10 @@ impl ApiClient {
         if let Some(got) = v["version"].as_str() {
             let mine = env!("CARGO_PKG_VERSION");
             if got != mine {
-                eprintln!("Warning: {} runs version {got}, this gxctl is {mine} (fine across a rolling upgrade)", self.describe());
+                eprintln!(
+                    "Warning: {} runs version {got}, this gxctl is {mine} (fine across a rolling upgrade)",
+                    self.describe()
+                );
             }
         }
         Ok(())
@@ -1040,10 +1059,10 @@ impl ApiClient {
         {
             let frame =
                 frame.map_err(|e| Failure::transport(format!("reading the stream: {}", e)))?;
-            if let Ok(data) = frame.into_data() {
-                if !on_text(&String::from_utf8_lossy(&data)) {
-                    break;
-                }
+            if let Ok(data) = frame.into_data()
+                && !on_text(&String::from_utf8_lossy(&data))
+            {
+                break;
             }
         }
         Ok(())
@@ -1535,12 +1554,13 @@ mod tests {
             None,
         )
         .unwrap();
-        assert!(c
-            .send(Method::GET, "/vms", None)
-            .await
-            .unwrap()
-            .status
-            .is_success());
+        assert!(
+            c.send(Method::GET, "/vms", None)
+                .await
+                .unwrap()
+                .status
+                .is_success()
+        );
         assert_eq!(c.accepted_fingerprint().as_deref(), Some(fp.as_str()));
         // The declared bypass accepts anything — which is exactly why
         // getting to it needs a typed host name (§5.4, enforced by the
@@ -1557,12 +1577,13 @@ mod tests {
             None,
         )
         .unwrap();
-        assert!(c
-            .send(Method::GET, "/vms", None)
-            .await
-            .unwrap()
-            .status
-            .is_success());
+        assert!(
+            c.send(Method::GET, "/vms", None)
+                .await
+                .unwrap()
+                .status
+                .is_success()
+        );
         let _ = dir;
     }
 

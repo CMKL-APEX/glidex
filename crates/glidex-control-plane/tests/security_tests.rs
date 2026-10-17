@@ -4,17 +4,17 @@
 //! login through an in-process glidex-authd, and OIDC against a mock IdP.
 
 use axum::{
-    body::Body,
-    http::{header, Request, StatusCode},
     Router,
+    body::Body,
+    http::{Request, StatusCode, header},
 };
 use glidex_control_plane::api::{self, App, AppState, Listener, PeerUid};
-use glidex_control_plane::auth::{self, store::TokenKind, AuthService, Method};
+use glidex_control_plane::auth::{self, AuthService, Method, store::TokenKind};
 use glidex_control_plane::authz::Ent;
 use glidex_control_plane::config::Config;
 use glidex_control_plane::state::VmManager;
 use http_body_util::BodyExt;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::Arc;
 use tempfile::TempDir;
 use tower::ServiceExt;
@@ -29,7 +29,8 @@ struct H {
 
 fn harness_with(f: impl FnOnce(&mut Config)) -> H {
     let dir = TempDir::new().unwrap();
-    std::env::set_var("GLIDEX_RUN_DIR", dir.path().join("run"));
+    // SAFETY: test-only; every test sets it the same way before reading it.
+    unsafe { std::env::set_var("GLIDEX_RUN_DIR", dir.path().join("run")) };
     let manager = VmManager::with_db_path(dir.path().join("t.db")).unwrap();
     let mut cfg = Config::default();
     cfg.authz.policy_files_dir = dir.path().join("policies");
@@ -662,9 +663,11 @@ async fn site_policies_api_and_break_glass() {
     assert_eq!(s, StatusCode::OK, "{v}");
     assert_eq!(v["results"][0]["current"]["allowed"], true);
     assert_eq!(v["results"][0]["candidate"]["allowed"], false);
-    assert!(v["results"][0]["candidate"]["policies"]
-        .to_string()
-        .contains("site.no-read"));
+    assert!(
+        v["results"][0]["candidate"]["policies"]
+            .to_string()
+            .contains("site.no-read")
+    );
 
     let (s, v, _) = h
         .call(
@@ -804,11 +807,13 @@ async fn audit_records_decisions_without_secrets() {
         .unwrap();
     assert_eq!(created["result"], "ok");
     assert_eq!(created["project"], pa);
-    assert!(created["policies"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|p| p.as_str().unwrap().starts_with("link.")));
+    assert!(
+        created["policies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p.as_str().unwrap().starts_with("link."))
+    );
     let denied = v
         .as_array()
         .unwrap()
@@ -907,10 +912,12 @@ async fn usage_is_project_scoped_and_exports_are_audited() {
         .call("GET", "/usage?project=pa&format=csv", None, &v)
         .await;
     assert_eq!(s, StatusCode::OK);
-    assert!(headers[header::CONTENT_TYPE]
-        .to_str()
-        .unwrap()
-        .starts_with("text/csv"));
+    assert!(
+        headers[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .starts_with("text/csv")
+    );
     let (_, log, _) = h.call("GET", "/audit", None, &a).await;
     let export = log
         .as_array()
@@ -923,11 +930,12 @@ async fn usage_is_project_scoped_and_exports_are_audited() {
         (Some("ok"), Some(pa.as_str()))
     );
     // The denied request of the user without links is audited too.
-    assert!(log
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|e| e["action"] == "readUsage" && e["result"] == "denied"));
+    assert!(
+        log.as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["action"] == "readUsage" && e["result"] == "denied")
+    );
     // Bad ranges.
     let (s, body, _) = h
         .call(
@@ -991,10 +999,12 @@ async fn usage_is_project_scoped_and_exports_are_audited() {
         .call("GET", "/usage/bandwidth?project=pa&format=csv", None, &v)
         .await;
     assert_eq!(s, StatusCode::OK);
-    assert!(headers[header::CONTENT_TYPE]
-        .to_str()
-        .unwrap()
-        .starts_with("text/csv"));
+    assert!(
+        headers[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .starts_with("text/csv")
+    );
     let (s, body, _) = h.call("GET", "/usage/disk-io?group_by=nic", None, &a).await;
     assert_eq!(s, StatusCode::BAD_REQUEST, "{body}");
     // Months in another whole-hour zone (`tz=`, §15.6); half-hour zones are refused.
@@ -1233,9 +1243,11 @@ async fn pam_login_provisions_on_first_login() {
     assert!(
         entries.iter().any(|e| e.result == "ok") && entries.iter().any(|e| e.result == "denied")
     );
-    assert!(!serde_json::to_string(&entries)
-        .unwrap()
-        .contains("alice-password"));
+    assert!(
+        !serde_json::to_string(&entries)
+            .unwrap()
+            .contains("alice-password")
+    );
 }
 
 #[tokio::test]
@@ -1348,9 +1360,11 @@ async fn pam_token_exchanges_credentials_for_a_personal_token() {
             .any(|e| e.result == "ok" && e.details["method"] == "pam-token"),
         "{entries:?}"
     );
-    assert!(!serde_json::to_string(&entries)
-        .unwrap()
-        .contains("bob-password"));
+    assert!(
+        !serde_json::to_string(&entries)
+            .unwrap()
+            .contains("bob-password")
+    );
 }
 
 #[tokio::test]
@@ -1394,7 +1408,7 @@ async fn server_info_is_public_and_describes_the_host() {
 // ---- OIDC against a mock IdP ---------------------------------------------
 
 mod idp {
-    use axum::{extract::State, routing::get, routing::post, Json, Router};
+    use axum::{Json, Router, extract::State, routing::get, routing::post};
     use base64::Engine as _;
     use jsonwebtoken::{EncodingKey, Header};
     use rsa::pkcs1::EncodeRsaPrivateKey;
@@ -1502,13 +1516,24 @@ fn now() -> u64 {
         .as_secs()
 }
 
-async fn oidc_harness(mock: &idp::Mock, f: impl FnOnce(&mut Config)) -> (H, TempDir) {
-    let secret_dir = TempDir::new().unwrap();
-    let secret = secret_dir.path().join("secret");
-    std::fs::write(&secret, "test-client-secret\n").unwrap();
-    std::env::set_var("GLIDEX_OIDC_CLIENT_SECRET_FILE", &secret);
+/// The client secret file, one for the whole run: the variable naming it is
+/// process-wide, and a test's own file would vanish under the others.
+fn oidc_secret_file() -> &'static std::path::Path {
+    static DIR: std::sync::OnceLock<TempDir> = std::sync::OnceLock::new();
+    let dir = DIR.get_or_init(|| {
+        let d = TempDir::new().unwrap();
+        std::fs::write(d.path().join("secret"), "test-client-secret\n").unwrap();
+        // SAFETY: test-only; set once, to the same value for every test.
+        unsafe { std::env::set_var("GLIDEX_OIDC_CLIENT_SECRET_FILE", d.path().join("secret")) };
+        d
+    });
+    dir.path()
+}
+
+async fn oidc_harness(mock: &idp::Mock, f: impl FnOnce(&mut Config)) -> H {
+    oidc_secret_file();
     let base = mock.base.clone();
-    let h = harness_with(move |c| {
+    harness_with(move |c| {
         c.auth.oidc.enabled = true;
         c.auth.oidc.issuer = base;
         c.auth.oidc.client_id = "glidex".into();
@@ -1517,8 +1542,7 @@ async fn oidc_harness(mock: &idp::Mock, f: impl FnOnce(&mut Config)) -> (H, Temp
             .group_teams
             .insert("lab-staff".into(), "lab".into());
         f(c);
-    });
-    (h, secret_dir)
+    })
 }
 
 /// Start a browser login; returns (state, nonce, code_challenge, browser cookie).
@@ -1577,7 +1601,7 @@ fn claims(mock: &idp::Mock, nonce: &str) -> Value {
 #[tokio::test]
 async fn oidc_code_flow_with_pkce() {
     let mock = idp::start().await;
-    let (h, _s) = oidc_harness(&mock, |_| {}).await;
+    let h = oidc_harness(&mock, |_| {}).await;
     h.app
         .auth
         .store
@@ -1644,7 +1668,7 @@ async fn oidc_code_flow_with_pkce() {
 #[tokio::test]
 async fn oidc_rejects_bad_tokens() {
     let mock = idp::start().await;
-    let (h, _s) = oidc_harness(&mock, |_| {}).await;
+    let h = oidc_harness(&mock, |_| {}).await;
     type MakeToken<'a> = Box<dyn Fn(&str) -> String + 'a>;
     let cases: Vec<(&str, MakeToken)> = vec![
         (
@@ -1729,7 +1753,7 @@ async fn oidc_rejects_bad_tokens() {
 #[tokio::test]
 async fn oidc_login_rules_and_device_grant() {
     let mock = idp::start().await;
-    let (h, _s) = oidc_harness(&mock, |c| {
+    let h = oidc_harness(&mock, |c| {
         c.auth.oidc.required_groups = vec!["glidex".into()];
     })
     .await;
@@ -1738,7 +1762,7 @@ async fn oidc_login_rules_and_device_grant() {
     let (s, _) = oidc_finish(&h, &state, Some(&browser)).await;
     assert_eq!(s, StatusCode::FORBIDDEN, "not in a required group");
 
-    let (h, _s) = oidc_harness(&mock, |_| {}).await;
+    let h = oidc_harness(&mock, |_| {}).await;
     let (s, v, _) = h.call("POST", "/auth/oidc/device", None, &As::Nobody).await;
     assert_eq!(s, StatusCode::OK, "{v}");
     assert_eq!(v["user_code"], "ABCD-EFGH");
@@ -1928,19 +1952,23 @@ async fn control_plane_json_drives_the_service() {
         .to_string(),
     )
     .unwrap();
-    std::env::set_var("GLIDEX_CONFIG", &cfg_path);
+    // SAFETY: test-only; every test sets it the same way before reading it.
+    unsafe { std::env::set_var("GLIDEX_CONFIG", &cfg_path) };
     let cfg = Config::load().unwrap();
-    std::env::remove_var("GLIDEX_CONFIG");
+    // SAFETY: test-only; every test sets it the same way before reading it.
+    unsafe { std::env::remove_var("GLIDEX_CONFIG") };
     assert_eq!(cfg.quotas.default.vms, Some(4));
     assert_eq!(cfg.quotas.default.networks, None, "null means unlimited");
 
     let manager = VmManager::with_db_path(dir.path().join("t.db")).unwrap();
     // The default project takes the site default once (main.rs does this
     // at startup).
-    assert!(manager
-        .projects()
-        .adopt_default_quotas(&cfg.quotas.default)
-        .unwrap());
+    assert!(
+        manager
+            .projects()
+            .adopt_default_quotas(&cfg.quotas.default)
+            .unwrap()
+    );
     assert_eq!(
         manager.projects().resolve("default").unwrap().quotas,
         cfg.quotas.default

@@ -4,10 +4,10 @@
 //! together, so they are the default. The pinned source build for
 //! features a distro lacks (spec §6.3) lives in `source_build`.
 
+use crate::OvsError;
 use crate::bridge;
 use crate::exec::{Cmd, Exec, Program};
 use crate::host::{self, HostCapabilities, ProbeOptions};
-use crate::OvsError;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::time::Duration;
@@ -200,7 +200,9 @@ pub fn plan(
         // Keep that OVS: start it, never replace it.
         if req.profile == Profile::Dpdk && !caps.ovs_dpdk_build {
             return Err(OvsError::Unsupported {
-                missing: vec![format!("a DPDK build of ovs-vswitchd (this host's OVS comes from {pkg}, which glidex does not replace)")],
+                missing: vec![format!(
+                    "a DPDK build of ovs-vswitchd (this host's OVS comes from {pkg}, which glidex does not replace)"
+                )],
             });
         }
         packages.retain(|p| {

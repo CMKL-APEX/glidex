@@ -8,12 +8,12 @@ mod directory;
 mod tenancy;
 
 use clap::Parser;
-use client::{enc, ApiClient};
+use client::{ApiClient, enc};
 use colored::Colorize;
 use console::{handle_connect, handle_log, restore_terminal};
 use hyper::Method;
 use nix::sys::termios::{self, LocalFlags, SetArg};
-use rustyline::completion::{unescape, Completer, FilenameCompleter, Pair};
+use rustyline::completion::{Completer, FilenameCompleter, Pair, unescape};
 use rustyline::error::ReadlineError;
 use rustyline::highlight::Highlighter;
 use rustyline::hint::Hinter;
@@ -70,10 +70,10 @@ struct Cli {
 /// first existing default socket, else TCP to localhost.
 fn build_client(cli: &Cli) -> Result<ApiClient, String> {
     let cfg = config::load()?;
-    if let Some(cfg) = cfg.as_ref().filter(|c| c.has_any()) {
-        if let Some(sel) = config::select(cfg, cli.profile.as_deref())? {
-            return profile_client(cli, &sel);
-        }
+    if let Some(cfg) = cfg.as_ref().filter(|c| c.has_any())
+        && let Some(sel) = config::select(cfg, cli.profile.as_deref())?
+    {
+        return profile_client(cli, &sel);
     }
     let tcp = |url: &str| -> Result<ApiClient, String> {
         let token = match client::load_token() {
@@ -97,7 +97,7 @@ fn build_client(cli: &Cli) -> Result<ApiClient, String> {
                 // A UI socket but no API socket: a cluster agent, which has
                 // no API of its own (spec/clustering-ui.md §3.6).
                 None if client::is_socket(std::path::Path::new(client::AGENT_UI_SOCKET)) => {
-                    return Err(client::AGENT_HINT.into())
+                    return Err(client::AGENT_HINT.into());
                 }
                 None => tcp(client::DEFAULT_URL)?,
             }
@@ -143,7 +143,10 @@ fn profile_client(cli: &Cli, sel: &config::Selected) -> Result<ApiClient, String
         // and until then the banner says where the credential came from.
         token = config::legacy_token()?;
         if token.is_some() {
-            eprintln!("note: credential from ~/.config/glidex/token (legacy); 'gxctl auth login --profile {}' folds it into the profile", sel.name);
+            eprintln!(
+                "note: credential from ~/.config/glidex/token (legacy); 'gxctl auth login --profile {}' folds it into the profile",
+                sel.name
+            );
         }
     }
     // The CI-only one-run grant (§5.4): never when the profile carries
@@ -151,17 +154,23 @@ fn profile_client(cli: &Cli, sel: &config::Selected) -> Result<ApiClient, String
     // through `auth trust remove` — and never for a login, which reads
     // its own flags, not this environment.
     let mut tls = p.tls.clone();
-    if !tls.insecure && tls.pins.is_empty() && tls.ca_file.is_none() && tls.ca_pem.is_none() {
-        if let Ok(v) = std::env::var("GLIDEX_TLS_INSECURE") {
-            if v.trim() == "1" {
-                tls.insecure = true;
-            }
-        }
+    if !tls.insecure
+        && tls.pins.is_empty()
+        && tls.ca_file.is_none()
+        && tls.ca_pem.is_none()
+        && let Ok(v) = std::env::var("GLIDEX_TLS_INSECURE")
+        && v.trim() == "1"
+    {
+        tls.insecure = true;
     }
     if tls.insecure {
         // The bypass's loud line, before this invocation's first request
         // (§5.4) — every run, not just the ones that notice it.
-        eprintln!("{} UNVERIFIED TLS: the certificate of {} was not checked — a network attacker can read your token", "Warning:".red(), urls.join(", "));
+        eprintln!(
+            "{} UNVERIFIED TLS: the certificate of {} was not checked — a network attacker can read your token",
+            "Warning:".red(),
+            urls.join(", ")
+        );
     }
     let mut banner = format!(
         "profile '{}' · {}",
@@ -175,10 +184,10 @@ fn profile_client(cli: &Cli, sel: &config::Selected) -> Result<ApiClient, String
     if let Some(c) = p.cluster_name.as_ref().or(p.cluster_id.as_ref()) {
         banner.push_str(&format!(" · cluster {c}"));
     }
-    if let Some(id) = &p.identity {
-        if let Some(tn) = id.token_name.as_ref() {
-            banner.push_str(&format!(" · token {tn}"));
-        }
+    if let Some(id) = &p.identity
+        && let Some(tn) = id.token_name.as_ref()
+    {
+        banner.push_str(&format!(" · token {tn}"));
     }
     let c = ApiClient::tcp_multi(
         &urls,
@@ -317,10 +326,10 @@ async fn list_networks(client: &ApiClient) {
         Ok(mut nets) => {
             let names = project_names(client).await;
             for n in &mut nets {
-                if let Some(p) = n.project.as_mut() {
-                    if let Some(name) = names.get(p.as_str()) {
-                        *p = name.clone();
-                    }
+                if let Some(p) = n.project.as_mut()
+                    && let Some(name) = names.get(p.as_str())
+                {
+                    *p = name.clone();
                 }
             }
             println!("{}", Table::new(nets))
@@ -498,9 +507,17 @@ async fn handle_uplink_add(client: &CliClient, args: &[&str]) {
         Ok(r) => r,
         Err(e) => {
             if e.contains("DHCP-managed") {
-                println!("{} {}\n  Give the NIC a static address first, or re-run with --accept-dhcp to move it anyway.", "Error:".red(), e);
+                println!(
+                    "{} {}\n  Give the NIC a static address first, or re-run with --accept-dhcp to move it anyway.",
+                    "Error:".red(),
+                    e
+                );
             } else if e.contains("host_interface_in_use") {
-                println!("{} {}\n  The NIC is in use by the host. Re-run with --migrate-ip --force to move its IP configuration onto the bridge (rolled back automatically if the gateway stops answering or this CLI can't confirm).", "Error:".red(), e);
+                println!(
+                    "{} {}\n  The NIC is in use by the host. Re-run with --migrate-ip --force to move its IP configuration onto the bridge (rolled back automatically if the gateway stops answering or this CLI can't confirm).",
+                    "Error:".red(),
+                    e
+                );
             } else {
                 println!("{} {}", "Error:".red(), e);
             }
@@ -1751,7 +1768,11 @@ fn print_help() {
         "login --oidc [--connector ID] | --token".cyan()
     );
     println!("  {} - Forget the saved token", "logout [--revoke]".cyan());
-    println!("  {} - Login profiles for remote control planes: target, trust and token of a server, under a name", "auth login | logout [--revoke] | status | use <P> | profiles | trust list|fetch|remove".cyan());
+    println!(
+        "  {} - Login profiles for remote control planes: target, trust and token of a server, under a name",
+        "auth login | logout [--revoke] | status | use <P> | profiles | trust list|fetch|remove"
+            .cyan()
+    );
     println!(
         "  {}                - Print the web UI address",
         "ui".cyan()
@@ -1984,11 +2005,7 @@ async fn handle_credential_add(client: &CliClient) {
         prompt("Username: ")
     } else {
         let u = prompt(&format!("Username [{}]: ", me));
-        if u.is_empty() {
-            me
-        } else {
-            u
-        }
+        if u.is_empty() { me } else { u }
     };
     if username.is_empty() {
         println!("{}", "Error: username is required".red());
@@ -2405,11 +2422,7 @@ fn prompt_path(msg: &str) -> String {
 
 fn prompt_path_optional(msg: &str) -> Option<String> {
     let input = prompt_path(msg);
-    if input.is_empty() {
-        None
-    } else {
-        Some(input)
-    }
+    if input.is_empty() { None } else { Some(input) }
 }
 
 fn prompt(msg: &str) -> String {
@@ -2422,11 +2435,7 @@ fn prompt(msg: &str) -> String {
 
 fn prompt_optional(msg: &str) -> Option<String> {
     let input = prompt(msg);
-    if input.is_empty() {
-        None
-    } else {
-        Some(input)
-    }
+    if input.is_empty() { None } else { Some(input) }
 }
 
 async fn handle_create(client: &CliClient) {
@@ -2482,7 +2491,12 @@ async fn handle_create(client: &CliClient) {
             .collect();
         if ready.is_empty() {
             let key = if ty == "qemu" { "ovmf" } else { "cloudhv-edk2" };
-            println!("{} no firmware image for {}; pull one with 'image pull --firmware {}' for firmware boot", "Note:".yellow(), ty, key);
+            println!(
+                "{} no firmware image for {}; pull one with 'image pull --firmware {}' for firmware boot",
+                "Note:".yellow(),
+                ty,
+                key
+            );
         }
         let default = ready.first().cloned().unwrap_or_else(|| "none".to_string());
         let options = if ready.is_empty() {
@@ -3255,7 +3269,16 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
             {
                 Ok(v) if parts[1] == "rejoin-token" => {
                     println!("{}", v["token"].as_str().unwrap_or(""));
-                    eprintln!("Shown once, for node {} ({}). On the host, as root: glidex-install --rejoin <server:8842>, token on stdin.{}", v["node"].as_str().unwrap_or(""), v["node_id"].as_str().unwrap_or(""), if v["raft_intact"] == false { " Its Raft state will be started afresh." } else { "" });
+                    eprintln!(
+                        "Shown once, for node {} ({}). On the host, as root: glidex-install --rejoin <server:8842>, token on stdin.{}",
+                        v["node"].as_str().unwrap_or(""),
+                        v["node_id"].as_str().unwrap_or(""),
+                        if v["raft_intact"] == false {
+                            " Its Raft state will be started afresh."
+                        } else {
+                            ""
+                        }
+                    );
                 }
                 Ok(v) => println!(
                     "{} {}",
@@ -3945,7 +3968,7 @@ mod tests {
         std::path::PathBuf,
         tokio::sync::watch::Sender<bool>,
     ) {
-        use glidex_control_plane::api::{create_router, Listener};
+        use glidex_control_plane::api::{Listener, create_router};
         use glidex_control_plane::serve::{bind_unix, serve_unix};
         use glidex_control_plane::state::VmManager;
         let dir = tempfile::TempDir::new().unwrap();
@@ -4018,11 +4041,13 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(e.status, Some(hyper::StatusCode::NOT_FOUND));
-        assert!(client
-            .resolve_vm("nope")
-            .await
-            .unwrap_err()
-            .contains("not found"));
+        assert!(
+            client
+                .resolve_vm("nope")
+                .await
+                .unwrap_err()
+                .contains("not found")
+        );
 
         client
             .update_credential(

@@ -1,7 +1,7 @@
 //! Blocking client for glidex-netd, used by the control plane (run it in
 //! `spawn_blocking`).
 
-use crate::proto::{ErrorBody, HelloResult, OnBehalfOf, Op, Request, Response, PROTOCOL_VERSION};
+use crate::proto::{ErrorBody, HelloResult, OnBehalfOf, Op, PROTOCOL_VERSION, Request, Response};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Write};

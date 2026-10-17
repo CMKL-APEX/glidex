@@ -1,9 +1,9 @@
 //! `GET /nodes` and `GET /nodes/{id}` (spec/clustering.md §7). A standalone
 //! host lists one node, `local`.
 
-use super::{err, ApiErr, Caller};
+use super::{ApiErr, Caller, err};
 use crate::authz::{Ent, EntitySet};
-use axum::{extract::Path, http::StatusCode, response::IntoResponse, Json};
+use axum::{Json, extract::Path, http::StatusCode, response::IntoResponse};
 
 fn store_err(e: crate::node::NodeError) -> ApiErr {
     err(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string())
@@ -74,7 +74,7 @@ async fn set_drain(c: &Caller, id: &str, drain: bool) -> Result<serde_json::Valu
                 StatusCode::CONFLICT,
                 "conflict",
                 format!("the node is {p:?}"),
-            ))
+            ));
         }
     }
     n.spec.unschedulable = drain;
@@ -143,8 +143,8 @@ async fn member_op<F, Fut>(
 where
     F: FnOnce(std::sync::Arc<crate::state::VmManager>) -> Fut,
     Fut: std::future::Future<
-        Output = Result<serde_json::Value, crate::cluster::membership::MemberError>,
-    >,
+            Output = Result<serde_json::Value, crate::cluster::membership::MemberError>,
+        >,
 {
     c.require(Ent::Cluster, EntitySet::new())?;
     c.set_target(format!("node:{id}"));
@@ -532,20 +532,19 @@ pub async fn put_node_ovn(
             let still_mapped = maps.contains_key(&edge.physnet)
                 || (n.status.features.physnets.contains_key(&edge.physnet)
                     && !n.spec.bridge_mappings.contains_key(&edge.physnet));
-            if !still_mapped {
-                if let Some((_, what)) = gateway_node_keys(&c)
+            if !still_mapped
+                && let Some((_, what)) = gateway_node_keys(&c)
                     .into_iter()
                     .find(|(g, _)| *g == n.meta.id || *g == n.spec.name)
-                {
-                    return Err(err(
-                        StatusCode::CONFLICT,
-                        "gateway_node",
-                        format!(
-                            "{} is a gateway node of {what}, which needs physical network {}",
-                            n.spec.name, edge.physnet
-                        ),
-                    ));
-                }
+            {
+                return Err(err(
+                    StatusCode::CONFLICT,
+                    "gateway_node",
+                    format!(
+                        "{} is a gateway node of {what}, which needs physical network {}",
+                        n.spec.name, edge.physnet
+                    ),
+                ));
             }
         }
     }
@@ -554,7 +553,14 @@ pub async fn put_node_ovn(
     want.spec.br_int_datapath = datapath;
     let wanted = want.wanted_br_int();
     if b.br_int_datapath == Some(D::Netdev) && !n.status.features.dpdk {
-        return Err(err(StatusCode::CONFLICT, "dpdk_not_running", format!("{}: OVS doesn't run DPDK there; the userspace datapath needs it (install with --ovs-profile dpdk)", n.spec.name)));
+        return Err(err(
+            StatusCode::CONFLICT,
+            "dpdk_not_running",
+            format!(
+                "{}: OVS doesn't run DPDK there; the userspace datapath needs it (install with --ovs-profile dpdk)",
+                n.spec.name
+            ),
+        ));
     }
     if wanted == "netdev" {
         // A gateway's SNAT is metered from kernel conntrack (§13.2).
@@ -562,7 +568,14 @@ pub async fn put_node_ovn(
             .into_iter()
             .find(|(g, _)| *g == n.meta.id || *g == n.spec.name)
         {
-            return Err(err(StatusCode::CONFLICT, "gateway_node", format!("{} is a gateway node of {what}; gateways need br-int on the kernel (system) datapath", n.spec.name)));
+            return Err(err(
+                StatusCode::CONFLICT,
+                "gateway_node",
+                format!(
+                    "{} is a gateway node of {what}; gateways need br-int on the kernel (system) datapath",
+                    n.spec.name
+                ),
+            ));
         }
     }
     if wanted == "system" {
@@ -590,7 +603,15 @@ pub async fn put_node_ovn(
             .map(|v| v.name.clone())
             .collect();
         if !blocking.is_empty() {
-            return Err(err(StatusCode::CONFLICT, "vhost_user_vms", format!("{} runs VMs with vhost-user NICs on cluster networks, which need the userspace datapath: {}", n.spec.name, blocking.join(", "))));
+            return Err(err(
+                StatusCode::CONFLICT,
+                "vhost_user_vms",
+                format!(
+                    "{} runs VMs with vhost-user NICs on cluster networks, which need the userspace datapath: {}",
+                    n.spec.name,
+                    blocking.join(", ")
+                ),
+            ));
         }
     }
     let before = n.clone();

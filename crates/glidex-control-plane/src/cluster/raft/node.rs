@@ -7,8 +7,8 @@ use openraft::error::{ClientWriteError, RaftError};
 use openraft::{BasicNode, Config, SnapshotPolicy};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 /// `cluster.raft.*` (§10.2).

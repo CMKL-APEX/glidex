@@ -7,7 +7,7 @@ use crate::models::ApiError;
 use crate::network::NetError;
 use crate::state::VmManagerError;
 use crate::tenancy::TenancyError;
-use axum::{http::StatusCode, Json};
+use axum::{Json, http::StatusCode};
 use glidex_netd::proto::ErrorBody;
 
 pub type ApiErr = (StatusCode, Json<ApiError>);

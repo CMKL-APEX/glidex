@@ -330,14 +330,13 @@ impl Cluster {
                 )
                 .await
                 .map_err(|e| e.to_string())?;
-            if r.status == hyper::StatusCode::MISDIRECTED_REQUEST {
-                if let Some(l) = serde_json::from_slice::<serde_json::Value>(&r.body)
+            if r.status == hyper::StatusCode::MISDIRECTED_REQUEST
+                && let Some(l) = serde_json::from_slice::<serde_json::Value>(&r.body)
                     .ok()
                     .and_then(|v| v["leader"].as_str().map(String::from))
-                {
-                    addr = l;
-                    continue;
-                }
+            {
+                addr = l;
+                continue;
             }
             return Ok(r);
         }

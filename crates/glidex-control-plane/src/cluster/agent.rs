@@ -72,10 +72,10 @@ impl NodeLink {
     /// startup never mistakes "not listed yet" for "no VMs" (networking.md §7.7).
     pub async fn wait_ready(&self, timeout: Duration) -> bool {
         let mut rx = self.ready.subscribe();
-        let ok = tokio::time::timeout(timeout, rx.wait_for(|r| *r))
+
+        tokio::time::timeout(timeout, rx.wait_for(|r| *r))
             .await
-            .is_ok();
-        ok
+            .is_ok()
     }
 
     pub fn stop(&self) {
@@ -111,12 +111,13 @@ impl NodeLink {
         let mut v = self.servers.lock().unwrap().clone();
         if let Ok(nodes) = crate::node::NodeStore::new(self.db.clone()).list() {
             for n in nodes {
-                if n.spec.role == crate::node::NodeRole::Server && !n.status.phase.is_tombstone() {
-                    if let Some(a) = n.status.advertise {
-                        let a = a.to_string();
-                        if !v.contains(&a) {
-                            v.push(a);
-                        }
+                if n.spec.role == crate::node::NodeRole::Server
+                    && !n.status.phase.is_tombstone()
+                    && let Some(a) = n.status.advertise
+                {
+                    let a = a.to_string();
+                    if !v.contains(&a) {
+                        v.push(a);
                     }
                 }
             }

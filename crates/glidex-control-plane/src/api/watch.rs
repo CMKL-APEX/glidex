@@ -12,7 +12,7 @@
 //! its own) and get a fresh snapshot.
 
 use super::net::network_view;
-use super::{disk_entities, err, vm_entities, ApiErr, Caller};
+use super::{ApiErr, Caller, disk_entities, err, vm_entities};
 use crate::authz::{Ent, EntitySet};
 use axum::extract::Query;
 use axum::http::StatusCode;
@@ -87,7 +87,16 @@ fn parse_kinds(s: Option<&str>) -> Result<Vec<Kind>, ApiErr> {
             "import" | "imports" => Kind::Import,
             "cluster" => Kind::Cluster,
             "policy" => Kind::Policy,
-            other => return Err(err(StatusCode::BAD_REQUEST, "invalid", format!("unknown kind '{}' (vms, disks, images, networks, nodes, imports, cluster, policy)", other))),
+            other => {
+                return Err(err(
+                    StatusCode::BAD_REQUEST,
+                    "invalid",
+                    format!(
+                        "unknown kind '{}' (vms, disks, images, networks, nodes, imports, cluster, policy)",
+                        other
+                    ),
+                ));
+            }
         };
         if !out.contains(&kind) {
             out.push(kind);
@@ -252,7 +261,7 @@ pub async fn watch(
     Query(q): Query<WatchQuery>,
 ) -> Result<axum::response::Response, ApiErr> {
     // Through a node's UI, the cluster summary is about that node.
-    let viewer = via.map(|v| v.0 .0);
+    let viewer = via.map(|v| v.0.0);
     use axum::response::IntoResponse;
     let kinds = parse_kinds(q.kinds.as_deref())?;
     let only = match &q.project {

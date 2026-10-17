@@ -134,9 +134,10 @@ fn nat_network_lifecycle() {
         calls.contains(&"ip addr replace 10.88.0.1/24 dev gxbr-nat".to_string()),
         "{calls:#?}"
     );
-    assert!(calls.iter().any(|c| c
-        .starts_with("nft -f - <<< table inet glidex\ndelete table inet glidex")
-        && c.contains("masquerade")));
+    assert!(calls.iter().any(|c| {
+        c.starts_with("nft -f - <<< table inet glidex\ndelete table inet glidex")
+            && c.contains("masquerade")
+    }));
     assert!(sup.running("gxbr-nat"));
 
     let nats: Vec<NatInfo> =
@@ -247,11 +248,12 @@ fn attach_reserves_address_and_detach_keeps_it() {
         String::from_utf8(hosts.1).unwrap(),
         format!("{},10.88.0.2\n", port_spec().mac)
     );
-    assert!(sup
-        .events
-        .lock()
-        .unwrap()
-        .contains(&"reload gxbr-nat".to_string()));
+    assert!(
+        sup.events
+            .lock()
+            .unwrap()
+            .contains(&"reload gxbr-nat".to_string())
+    );
 
     // Detach (VM stop) keeps the reservation; the next start gets the same IP.
     netd.handle(
@@ -332,10 +334,11 @@ fn nat_meter_counters_follow_reservations_incrementally() {
             format!("delete counter inet glidex_meter m_{mac}_out")
         ]
     );
-    assert!(exec
-        .calls()
-        .iter()
-        .all(|c| !c.contains("delete table inet glidex_meter")));
+    assert!(
+        exec.calls()
+            .iter()
+            .all(|c| !c.contains("delete table inet glidex_meter"))
+    );
     // nat_counters reports the network's counters, normalized.
     let counters: Vec<glidex_ovs::nat_meter::NatCounter> =
         serde_json::from_value(netd.handle(Op::NatCounters, &peer()).unwrap()).unwrap();
@@ -586,10 +589,12 @@ fn sync_detaches_stopped_vms_and_reports_orphans() {
         vec!["gxdeadbeef-0"],
         "untracked ports are reported, not deleted"
     );
-    assert!(!exec
-        .calls()
-        .iter()
-        .any(|c| c.contains("del-port gxdeadbeef-0")));
+    assert!(
+        !exec
+            .calls()
+            .iter()
+            .any(|c| c.contains("del-port gxdeadbeef-0"))
+    );
 }
 
 #[test]
@@ -604,9 +609,10 @@ fn state_survives_restart_and_is_reconciled() {
     let report = netd.reconcile_startup();
     assert!(report.errors.is_empty(), "{report:?}");
     assert!(report.repaired.contains(&"nat gxbr-nat".to_string()));
-    assert!(exec
-        .calls()
-        .contains(&"ip addr replace 10.88.0.1/24 dev gxbr-nat".to_string()));
+    assert!(
+        exec.calls()
+            .contains(&"ip addr replace 10.88.0.1/24 dev gxbr-nat".to_string())
+    );
     assert!(sup.running("gxbr-nat"));
 }
 
@@ -1007,10 +1013,11 @@ fn free_nic_becomes_active_uplink() {
     let netd = up_netd(exec.clone(), &dir, Duration::from_secs(60));
     let res = ensure(&netd, kernel_uplink(false), false).unwrap();
     assert_eq!(res.phase, UplinkPhase::Active);
-    assert!(exec
-        .calls()
-        .iter()
-        .any(|c| c.starts_with("ovs-vsctl --may-exist add-port gxbr-up gxup0")));
+    assert!(
+        exec.calls()
+            .iter()
+            .any(|c| c.starts_with("ovs-vsctl --may-exist add-port gxbr-up gxup0"))
+    );
     // Idempotent.
     assert_eq!(
         ensure(&netd, kernel_uplink(false), false).unwrap().phase,
@@ -1061,9 +1068,10 @@ fn migration_is_pending_until_committed_with_the_token() {
     assert_eq!(res.phase, UplinkPhase::PendingCommit);
     let token = res.record.pending.as_ref().unwrap().token.clone();
     assert_eq!(token.len(), 32);
-    assert!(exec
-        .calls()
-        .contains(&"ip addr replace 192.0.2.10/24 dev gxbr-up".to_string()));
+    assert!(
+        exec.calls()
+            .contains(&"ip addr replace 192.0.2.10/24 dev gxbr-up".to_string())
+    );
 
     let err = netd
         .handle(
@@ -1205,10 +1213,11 @@ fn dpdk_uplink_binds_and_restores_the_driver() {
     };
     let res = ensure(&netd, spec, false).unwrap();
     assert_eq!(res.record.orig_driver.as_deref(), Some("ixgbe"));
-    assert!(exec
-        .writes()
-        .iter()
-        .any(|(p, d)| p.ends_with("driver_override") && d == b"vfio-pci"));
+    assert!(
+        exec.writes()
+            .iter()
+            .any(|(p, d)| p.ends_with("driver_override") && d == b"vfio-pci")
+    );
     netd.handle(
         Op::DeleteUplink {
             bridge: "gxbr-up".into(),
@@ -1257,9 +1266,11 @@ fn committed_migrations_are_reapplied_at_start() {
     let report = netd.reconcile_startup();
     assert!(report.errors.is_empty(), "{report:?}");
     let calls = exec.calls();
-    assert!(calls
-        .iter()
-        .any(|c| c.starts_with("ovs-vsctl --may-exist add-port gxbr-up gxup0")));
+    assert!(
+        calls
+            .iter()
+            .any(|c| c.starts_with("ovs-vsctl --may-exist add-port gxbr-up gxup0"))
+    );
     assert!(calls.contains(&"ip addr replace 192.0.2.10/24 dev gxbr-up".to_string()));
 }
 
@@ -1442,9 +1453,10 @@ fn uncommitted_migrations_are_rolled_back_at_start() {
             .any(|r| r.contains("rolled back uncommitted uplink gxup0")),
         "{report:?}"
     );
-    assert!(exec
-        .calls()
-        .contains(&"ip addr replace 192.0.2.10/24 dev gxup0".to_string()));
+    assert!(
+        exec.calls()
+            .contains(&"ip addr replace 192.0.2.10/24 dev gxup0".to_string())
+    );
 }
 
 /// Isolated networks' bridges are fenced off from the host and from
@@ -1518,9 +1530,11 @@ fn isolated_bridges_are_fenced_off_from_the_host() {
             .any(|r| r == "isolated bridges fenced"),
         "{report:?}"
     );
-    assert!(exec.calls()[calls_before..]
-        .iter()
-        .any(|c| c.contains("iifname { \"gxbr-nat\" } drop")));
+    assert!(
+        exec.calls()[calls_before..]
+            .iter()
+            .any(|c| c.contains("iifname { \"gxbr-nat\" } drop"))
+    );
 
     // No longer isolated: the fence goes.
     netd.handle(bridge(false), &peer()).unwrap();

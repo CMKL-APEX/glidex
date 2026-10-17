@@ -39,7 +39,7 @@ pub const DISKS_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("disk
 /// Image-module bookkeeping, e.g. which firmware was auto-imported once.
 pub const IMAGE_META_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("image_meta");
 
-pub use disk::{wanted_root_size, MaterializeOutcome};
+pub use disk::{MaterializeOutcome, wanted_root_size};
 
 pub const GIB: u64 = 1024 * 1024 * 1024;
 
@@ -956,12 +956,12 @@ impl ImageManager {
                 }
                 _ => None,
             };
-            if let Some(s) = new_status {
-                if s != img.status {
-                    tracing::warn!(image = %img.name, "image status {:?} -> {:?}", img.status, s);
-                    img.status = s;
-                    let _ = self.put_image(&img);
-                }
+            if let Some(s) = new_status
+                && s != img.status
+            {
+                tracing::warn!(image = %img.name, "image status {:?} -> {:?}", img.status, s);
+                img.status = s;
+                let _ = self.put_image(&img);
             }
         }
         let disks: Vec<Disk> = self.disks.read().unwrap().values().cloned().collect();
@@ -1592,11 +1592,12 @@ mod tests {
         let mut stale = img.clone();
         stale.deletion_requested_at = None;
         mgr.put_image(&stale).unwrap();
-        assert!(mgr
-            .get_image("base")
-            .unwrap()
-            .deletion_requested_at
-            .is_some());
+        assert!(
+            mgr.get_image("base")
+                .unwrap()
+                .deletion_requested_at
+                .is_some()
+        );
         assert!(mgr.finish_image_delete("img-1").unwrap());
         assert!(
             !mgr.finish_image_delete("img-1").unwrap(),

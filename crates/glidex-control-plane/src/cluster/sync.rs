@@ -4,7 +4,7 @@
 //! make. A node sees and changes only what is placed or bound on it.
 
 use super::runtime::Cluster;
-use crate::store::{Db, Op, Origin, StoreError, TableId, WriteSet, WRITE_SET_FORMAT};
+use crate::store::{Db, Op, Origin, StoreError, TableId, WRITE_SET_FORMAT, WriteSet};
 use redb::ReadableTable;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -133,10 +133,10 @@ pub fn node_vms(db: &Db, node: &str) -> Vec<(String, Value)> {
     let mut out = Vec::new();
     if let Ok(it) = t.iter() {
         for r in it.flatten() {
-            if let Ok(v) = serde_json::from_slice::<Value>(r.1.value()) {
-                if placed_on(&v, node) {
-                    out.push((r.0.value().to_string(), v));
-                }
+            if let Ok(v) = serde_json::from_slice::<Value>(r.1.value())
+                && placed_on(&v, node)
+            {
+                out.push((r.0.value().to_string(), v));
             }
         }
     }
@@ -501,13 +501,13 @@ fn check_vm_status_only(cur: &Value, new: &Value) -> Result<(), String> {
     }
     let power_stop = cur.pointer("/spec/power") != new.pointer("/spec/power")
         && new.pointer("/spec/power").and_then(|p| p.as_str()) == Some("stopped");
-    let gen = |v: &Value| {
+    let generation = |v: &Value| {
         v.pointer("/meta/generation")
             .and_then(|x| x.as_u64())
             .unwrap_or(0)
     };
     if power_stop {
-        if gen(new) != gen(cur) + 1 {
+        if generation(new) != generation(cur) + 1 {
             return Err("spec.power changes with a generation bump".into());
         }
         let (mut c, mut n) = (cur.clone(), new.clone());
@@ -640,13 +640,15 @@ mod tests {
         };
 
         // Written before any VM of n1 uses it: not n1's.
-        assert!(filter_for(
-            &db,
-            "n1",
-            &ws(vec![put(TableId::Credentials, "p/alice", &cred)])
-        )
-        .ops
-        .is_empty());
+        assert!(
+            filter_for(
+                &db,
+                "n1",
+                &ws(vec![put(TableId::Credentials, "p/alice", &cred)])
+            )
+            .ops
+            .is_empty()
+        );
 
         // The VM placed on n1 brings it, ahead of the VM.
         let vm = serde_json::json!({ "meta": { "project": "p" }, "spec": { "config": { "credential": "alice" } }, "status": { "placement": { "node": "n1" } } });

@@ -2,9 +2,9 @@
 //! socket, recording executor underneath): no root, no OVS.
 
 use axum::{
+    Router,
     body::Body,
     http::{Request, StatusCode},
-    Router,
 };
 use glidex_control_plane::api::create_router;
 use glidex_control_plane::network::Netd;
@@ -13,7 +13,7 @@ use glidex_netd::server::{self, Access, Config, Netd as NetdServer};
 use glidex_netd::supervisor::FakeSupervisor;
 use glidex_ovs::{Output, RecordingExec};
 use http_body_util::BodyExt;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::Arc;
 use tempfile::TempDir;
 use tower::ServiceExt;

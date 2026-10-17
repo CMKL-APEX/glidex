@@ -2,18 +2,18 @@
 //! and audit (spec/security.md §5, §6, §7, §10, §13).
 
 use super::{
-    add_network, auth_error, credential_entities, disk_entities, err, error_to_response,
-    vm_entities, ApiErr, Caller, ClientAddr, Listener, RequestId,
+    ApiErr, Caller, ClientAddr, Listener, RequestId, add_network, auth_error, credential_entities,
+    disk_entities, err, error_to_response, vm_entities,
 };
 use crate::auth::store::{Identity, MemberSource, StoreError, Team, TeamMember, TokenKind, User};
 use crate::auth::{self, AuthError, Method, Principal};
 use crate::authz::{self, Ent, EntitySet, SiteSource};
 use crate::tenancy::Quotas;
 use axum::{
-    extract::{Path, Query, State},
-    http::{header, HeaderMap, HeaderValue, StatusCode},
-    response::{IntoResponse, Redirect, Response},
     Extension, Json,
+    extract::{Path, Query, State},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
+    response::{IntoResponse, Redirect, Response},
 };
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
@@ -188,7 +188,7 @@ pub async fn login(
     let local = match listener {
         Listener::Ui | Listener::Api | Listener::Cluster | Listener::Relay => true,
         Listener::Tcp => {
-            app.auth.config.tls.enabled() || addr.is_none_or(|a| a.0 .0.ip().is_loopback())
+            app.auth.config.tls.enabled() || addr.is_none_or(|a| a.0.0.ip().is_loopback())
         }
     };
     if !local {
@@ -307,13 +307,17 @@ pub async fn pam_token(
 ) -> Result<impl IntoResponse, ApiErr> {
     let listener = listener.map(|l| l.0).unwrap_or(Listener::Tcp);
     if app.auth.pam_connector(body.connector.as_deref()).is_err() {
-        return Err(err(StatusCode::UNAUTHORIZED, "unauthenticated", "PAM logins are off: set auth.pam.enabled in control-plane.json, or name a PAM connector"));
+        return Err(err(
+            StatusCode::UNAUTHORIZED,
+            "unauthenticated",
+            "PAM logins are off: set auth.pam.enabled in control-plane.json, or name a PAM connector",
+        ));
     }
     // Passwords only over TLS or from this host (spec §5.3), the same rule as `login`.
     let local = match listener {
         Listener::Ui | Listener::Api | Listener::Cluster | Listener::Relay => true,
         Listener::Tcp => {
-            app.auth.config.tls.enabled() || addr.is_none_or(|a| a.0 .0.ip().is_loopback())
+            app.auth.config.tls.enabled() || addr.is_none_or(|a| a.0.0.ip().is_loopback())
         }
     };
     if !local {
@@ -739,7 +743,7 @@ async fn poll_device(
                 StatusCode::ACCEPTED,
                 Json(serde_json::json!({ "status": "pending" })),
             )
-                .into_response())
+                .into_response());
         }
         Err(e) => return Err(oidc_error(e)),
     };
@@ -1769,7 +1773,10 @@ pub async fn add_system_binding(
         return Err(err(
             StatusCode::UNPROCESSABLE_ENTITY,
             "not_operator_member",
-            format!("{} isn't a member of tenant {operator}, which operates this cluster: add them there first", body.principal),
+            format!(
+                "{} isn't a member of tenant {operator}, which operates this cluster: add them there first",
+                body.principal
+            ),
         ));
     }
     c.detail("role", serde_json::json!(body.role));

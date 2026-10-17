@@ -1,7 +1,7 @@
 //! Blocking `shim.sock` client, used by the control plane (run it in
 //! `spawn_blocking`). One connection per call.
 
-use crate::proto::{HelloResult, Op, Request, Response, MIN_PROTOCOL_VERSION, PROTOCOL_VERSION};
+use crate::proto::{HelloResult, MIN_PROTOCOL_VERSION, Op, PROTOCOL_VERSION, Request, Response};
 use crate::state::InstanceFile;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;

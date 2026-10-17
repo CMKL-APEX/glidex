@@ -21,8 +21,8 @@ use crate::models::HostBootPolicy;
 use crate::state::VmManager;
 use queue::Key;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 /// `reconcile` and `console` settings (spec §14).

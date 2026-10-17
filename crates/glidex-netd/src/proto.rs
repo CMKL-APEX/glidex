@@ -4,6 +4,7 @@
 //! response per line, one request in flight per connection. The first
 //! request on a connection must be `hello`.
 
+use glidex_ovs::OvsError;
 use glidex_ovs::bridge::{BridgeInfo, BridgeSpec};
 use glidex_ovs::install::InstallRequest;
 use glidex_ovs::ipmigrate::Snapshot;
@@ -11,7 +12,6 @@ use glidex_ovs::nat::{NatSpec, NatState};
 use glidex_ovs::nic::Classification;
 use glidex_ovs::uplink::{UplinkSpec, UplinkState};
 use glidex_ovs::vm_port::{VmPortBinding, VmPortSpec};
-use glidex_ovs::OvsError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::net::Ipv4Addr;

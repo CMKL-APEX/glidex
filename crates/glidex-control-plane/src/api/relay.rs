@@ -13,12 +13,12 @@
 //! (`/cluster/v1/host/…`, a server certificate), which runs it with that one
 //! decision (`PreAuthorized`).
 
-use super::{err, ApiErr, AppState, Listener, PreAuthorized, RemoteHost, RouteAction};
+use super::{ApiErr, AppState, Listener, PreAuthorized, RemoteHost, RouteAction, err};
 use crate::auth::Principal;
 use crate::authz::{Ent, EntitySet};
 use axum::body::Body;
 use axum::extract::{Request, State};
-use axum::http::{header, HeaderMap, HeaderName, HeaderValue, StatusCode};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
@@ -151,14 +151,14 @@ pub async fn ui_relay(State(app): State<AppState>, req: Request, next: Next) -> 
         .headers()
         .get(header::ORIGIN)
         .and_then(|v| v.to_str().ok())
+        && (!super::is_safe(req.method()) || websocket)
+        && !app.auth.config.auth.origin_allowed(o)
     {
-        if (!super::is_safe(req.method()) || websocket) && !app.auth.config.auth.origin_allowed(o) {
-            return super::plain_error(
-                StatusCode::FORBIDDEN,
-                "origin_not_allowed",
-                "this origin may not use the API",
-            );
-        }
+        return super::plain_error(
+            StatusCode::FORBIDDEN,
+            "origin_not_allowed",
+            "this origin may not use the API",
+        );
     }
     let path = req.uri().path().to_string();
     let pq = req
@@ -233,7 +233,7 @@ pub async fn ui_relay(State(app): State<AppState>, req: Request, next: Next) -> 
                 "too_large",
                 "request body too large",
             )
-            .into_response()
+            .into_response();
         }
     };
     for addr in &servers {

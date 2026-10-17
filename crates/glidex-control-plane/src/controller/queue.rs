@@ -188,9 +188,11 @@ mod tests {
         // Added while active: comes back after done, not before.
         q.add(vm("a"));
         assert_eq!(q.next().await, vm("b"));
-        assert!(tokio::time::timeout(Duration::from_millis(50), q.next())
-            .await
-            .is_err());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), q.next())
+                .await
+                .is_err()
+        );
         q.done(&vm("a"));
         assert_eq!(q.next().await, vm("a"));
         assert_eq!(q.stats(), (0, 2));

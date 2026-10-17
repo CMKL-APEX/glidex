@@ -1,15 +1,15 @@
 //! Guest credentials, images and disks (spec/images.md §8,
 //! spec/credentials.md), scoped to projects.
 
-use super::{credential_entities, disk_entities, err, ApiErr, Caller};
+use super::{ApiErr, Caller, credential_entities, disk_entities, err};
 use crate::authz::{Ent, EntitySet};
 use crate::credentials::{CreateCredentialRequest, CredentialInfo, UpdateCredentialRequest};
 use crate::images::{CreateDiskRequest, ExtendRootRequest, PullImageRequest, ResizeDiskRequest};
 use axum::{
+    Json,
     extract::{Path, Query},
     http::StatusCode,
     response::IntoResponse,
-    Json,
 };
 
 pub(crate) fn manager_err(e: crate::state::VmManagerError) -> ApiErr {

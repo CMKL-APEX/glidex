@@ -5,8 +5,8 @@
 //! down as on SIGTERM and exits with [`EXIT_CODE`]; under systemd,
 //! `Restart=on-failure` starts it again.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::Notify;
 
 /// The exit code of a requested restart (EX_TEMPFAIL).

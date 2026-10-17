@@ -99,9 +99,10 @@ mod tests {
         );
         assert_eq!((s[0].read_ops, s[0].write_ops), (12826, 11432));
         assert_eq!((s[0].read_bytes, s[0].write_bytes), (464455168, 1087837696));
-        assert!(s
-            .iter()
-            .all(|b| b.read_time_ns.is_none() && b.write_time_ns.is_none()));
+        assert!(
+            s.iter()
+                .all(|b| b.read_time_ns.is_none() && b.write_time_ns.is_none())
+        );
         // The second disk had no writes: its latency sentinels are ignored.
         assert_eq!(s[1].write_ops, 0);
     }

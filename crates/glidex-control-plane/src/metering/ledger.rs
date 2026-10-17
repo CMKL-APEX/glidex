@@ -597,11 +597,11 @@ impl Round {
         launched: u64,
     ) -> Result<bool, MeteringError> {
         let key = format!("{}/{}", subject.key(), meter);
-        if let Some(c) = self.cursor(&key)? {
-            if c.reset_key == run || c.reset_key.starts_with(&format!("{run}/")) {
-                self.counter_final(subject, meter, run, value, at)?;
-                return Ok(false);
-            }
+        if let Some(c) = self.cursor(&key)?
+            && (c.reset_key == run || c.reset_key.starts_with(&format!("{run}/")))
+        {
+            self.counter_final(subject, meter, run, value, at)?;
+            return Ok(false);
         }
         let counted = launched > 0 && launched >= self.started_at && launched <= at;
         if counted && value > 0 {
@@ -669,10 +669,12 @@ impl Round {
         at: u64,
     ) -> Result<(), MeteringError> {
         let key = format!("{}/{}", subject.key(), meter);
-        if let Some(c) = self.cursor(&key)? {
-            if since > c.at && since < at && c.value != level {
-                self.gauge(subject, meter, level, since)?;
-            }
+        if let Some(c) = self.cursor(&key)?
+            && since > c.at
+            && since < at
+            && c.value != level
+        {
+            self.gauge(subject, meter, level, since)?;
         }
         self.gauge(subject, meter, level, at)
     }
@@ -783,16 +785,16 @@ impl Round {
 
     fn integrate(&mut self, subject: &Subject, meter: &str, at: u64) -> Result<(), MeteringError> {
         let key = format!("{}/{}", subject.key(), meter);
-        if let Some(c) = self.cursor(&key)? {
-            if at > c.at {
-                // level × ms, plus what the last interval left over.
-                let total = c.value as u128 * (at - c.at) as u128 + c.rem as u128;
-                let amount = (total / 1000) as u64;
-                let flag = (at - c.at > self.settings.gap_ms).then_some(Flag::Interpolated);
-                self.spread(subject, meter, amount, c.at, at, flag);
-                let rem = (total % 1000) as u64;
-                self.cursors.insert(key, Some(Cursor { at, rem, ..c }));
-            }
+        if let Some(c) = self.cursor(&key)?
+            && at > c.at
+        {
+            // level × ms, plus what the last interval left over.
+            let total = c.value as u128 * (at - c.at) as u128 + c.rem as u128;
+            let amount = (total / 1000) as u64;
+            let flag = (at - c.at > self.settings.gap_ms).then_some(Flag::Interpolated);
+            self.spread(subject, meter, amount, c.at, at, flag);
+            let rem = (total % 1000) as u64;
+            self.cursors.insert(key, Some(Cursor { at, rem, ..c }));
         }
         Ok(())
     }
@@ -1807,9 +1809,11 @@ mod tests {
             );
             let hours: Vec<u64> = parts.iter().map(|p| p.0).collect();
             assert!(hours.windows(2).all(|w| w[0] < w[1]));
-            assert!(hours
-                .iter()
-                .all(|&h| h * 1000 >= hour_of(from) * 1000 && h * 1000 <= to));
+            assert!(
+                hours
+                    .iter()
+                    .all(|&h| h * 1000 >= hour_of(from) * 1000 && h * 1000 <= to)
+            );
         }
     }
 
@@ -1905,13 +1909,17 @@ mod tests {
         let after = rows(&l);
         // Whole UTC days before the cutoff are day rows; the rest stay hourly.
         let cutoff_day = l.complete_through().unwrap() / 86400 * 86400;
-        assert!(after
-            .iter()
-            .filter(|r| r.hour < cutoff_day)
-            .all(|r| r.hour % 86400 == 0));
-        assert!(after
-            .iter()
-            .any(|r| r.hour >= cutoff_day && r.hour % 86400 != 0));
+        assert!(
+            after
+                .iter()
+                .filter(|r| r.hour < cutoff_day)
+                .all(|r| r.hour % 86400 == 0)
+        );
+        assert!(
+            after
+                .iter()
+                .any(|r| r.hour >= cutoff_day && r.hour % 86400 != 0)
+        );
         assert_eq!(combine(&after), before, "sums and maxima kept");
         let days = after.iter().filter(|r| r.hour < cutoff_day).count();
         assert_eq!(l.prune_daily_before(u64::MAX / 10).unwrap(), days);
@@ -2112,11 +2120,13 @@ mod tests {
             sum_of(&ea) + sum_of(&eb) + sum_of(&e2)
         );
         assert!(sum_of(&e2) > 0);
-        assert!(central
-            .scan(0, u64::MAX / 10, None)
-            .unwrap()
-            .iter()
-            .all(|r| r.written_at > 0));
+        assert!(
+            central
+                .scan(0, u64::MAX / 10, None)
+                .unwrap()
+                .iter()
+                .all(|r| r.written_at > 0)
+        );
     }
 
     #[test]
@@ -2201,7 +2211,7 @@ mod tests {
         r.gauge(&s, "mem.alloc", 2048, T0).unwrap();
         r.gauge(&s, "mem.alloc", 4096, T0 + 30_000).unwrap(); // 2048 MiB × 30 s
         r.gauge_end(&s, "mem.alloc", T0 + 60_000).unwrap(); //   4096 MiB × 30 s
-                                                            // Ended: no more accrual.
+        // Ended: no more accrual.
         r.gauge(&s, "cpu.alloc", 2, T0 + H - 1_000).unwrap();
         l.commit(r).unwrap();
         assert_eq!(total(&l, "mem.alloc"), 2048 * 30 + 4096 * 30);

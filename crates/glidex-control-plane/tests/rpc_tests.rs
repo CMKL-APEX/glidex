@@ -4,16 +4,16 @@
 //! credential rules of §6 and the error mapping of §7.
 
 use axum::{
-    body::Body,
-    http::{header, HeaderMap, Request, StatusCode},
     Router,
+    body::Body,
+    http::{HeaderMap, Request, StatusCode, header},
 };
 use base64::Engine;
 use buffa::Message;
 use glidex_api::proto::glidex::system::v1::{GetServerInfoResponse, WhoAmIResponse};
 use glidex_api::proto::google::rpc::ErrorInfo;
 use glidex_control_plane::api::{self, App, AppState, Listener, PeerUid};
-use glidex_control_plane::auth::{self, store::TokenKind, AuthService, Method};
+use glidex_control_plane::auth::{self, AuthService, Method, store::TokenKind};
 use glidex_control_plane::config::Config;
 use glidex_control_plane::state::VmManager;
 use http_body_util::BodyExt;
@@ -34,7 +34,8 @@ struct H {
 
 fn harness() -> H {
     let dir = TempDir::new().unwrap();
-    std::env::set_var("GLIDEX_RUN_DIR", dir.path().join("run"));
+    // SAFETY: test-only; every test sets it the same way before reading it.
+    unsafe { std::env::set_var("GLIDEX_RUN_DIR", dir.path().join("run")) };
     let manager = VmManager::with_db_path(dir.path().join("t.db")).unwrap();
     let mut cfg = Config::default();
     cfg.authz.policy_files_dir = dir.path().join("policies");

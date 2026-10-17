@@ -5,7 +5,7 @@
 use crate::controller::queue::Key;
 use crate::models::Tristate;
 use crate::state::VmManager;
-use crate::store::{event_key, Commit, Event, EventKind};
+use crate::store::{Commit, Event, EventKind, event_key};
 
 impl VmManager {
     /// One pass over the VMs without a placement.

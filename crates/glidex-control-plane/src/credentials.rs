@@ -453,12 +453,16 @@ mod tests {
 
         let stored = store.get("p", "alice").unwrap();
         let parsed = PasswordHashRef::new(stored.password_hash.as_deref().unwrap()).unwrap();
-        assert!(ShaCrypt::default()
-            .verify_password(b"correct horse", parsed)
-            .is_ok());
-        assert!(ShaCrypt::default()
-            .verify_password(b"wrong", parsed)
-            .is_err());
+        assert!(
+            ShaCrypt::default()
+                .verify_password(b"correct horse", parsed)
+                .is_ok()
+        );
+        assert!(
+            ShaCrypt::default()
+                .verify_password(b"wrong", parsed)
+                .is_err()
+        );
     }
 
     #[test]

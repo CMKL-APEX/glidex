@@ -29,11 +29,7 @@ fn kind(c: &Connector) -> &'static str {
 }
 
 fn yes_no(b: Option<bool>) -> &'static str {
-    if b == Some(true) {
-        "yes"
-    } else {
-        "no"
-    }
+    if b == Some(true) { "yes" } else { "no" }
 }
 
 fn show(c: &Connector) {

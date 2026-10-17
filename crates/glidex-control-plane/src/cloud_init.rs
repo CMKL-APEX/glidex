@@ -286,9 +286,11 @@ mod tests {
             seed.network_config(),
             "version: 2\nethernets:\n  net0:\n    match:\n      macaddress: '02:aa:bb:cc:dd:00'\n    dhcp4: true\n  net1:\n    match:\n      macaddress: '02:aa:bb:cc:dd:01'\n    dhcp4: true\n"
         );
-        assert!(SeedConfig::default()
-            .network_config()
-            .contains("name: \"en*\""));
+        assert!(
+            SeedConfig::default()
+                .network_config()
+                .contains("name: \"en*\"")
+        );
     }
 
     #[test]
@@ -302,9 +304,11 @@ mod tests {
     fn default_seed_has_no_login() {
         // Even with keys in the control-plane user's ~/.ssh and the old
         // variable set, a VM without a credential gets no way in.
-        std::env::set_var("GLIDEX_CLOUD_INIT_PASSWD_HASH", "$6$salt$hash");
+        // SAFETY: test-only; no other test reads this variable.
+        unsafe { std::env::set_var("GLIDEX_CLOUD_INIT_PASSWD_HASH", "$6$salt$hash") };
         let seed = SeedConfig::for_vm("id", "My VM");
-        std::env::remove_var("GLIDEX_CLOUD_INIT_PASSWD_HASH");
+        // SAFETY: as above.
+        unsafe { std::env::remove_var("GLIDEX_CLOUD_INIT_PASSWD_HASH") };
         assert!(seed.ssh_authorized_keys.is_empty());
         assert!(seed.passwd_hash.is_none());
         let ud = seed.user_data();

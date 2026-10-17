@@ -41,7 +41,7 @@ pub fn liveness(vm: &Vm, unit: Option<Result<bool, String>>) -> Seen {
                 liveness: Liveness::Unknown(format!("boot id: {}", e)),
                 file: None,
                 boot_id: String::new(),
-            }
+            };
         }
     };
     let file = match InstanceFile::read(&paths.instance) {
@@ -51,7 +51,7 @@ pub fn liveness(vm: &Vm, unit: Option<Result<bool, String>>) -> Seen {
                 liveness: Liveness::Unknown(format!("{}: {}", paths.instance.display(), e)),
                 file: None,
                 boot_id: boot,
-            }
+            };
         }
     };
     let liveness = check(

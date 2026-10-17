@@ -16,7 +16,7 @@ use std::io::{Read, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
+use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -107,10 +107,11 @@ impl LogWriter {
 
     /// Write one chunk whole; rotate first if it would not fit.
     pub fn write(&mut self, bytes: &[u8]) {
-        if self.size > 0 && self.size + bytes.len() as u64 > self.max {
-            if let Err(e) = self.rotate() {
-                eprintln!("glidex-vm-shim: console log rotation failed: {}", e);
-            }
+        if self.size > 0
+            && self.size + bytes.len() as u64 > self.max
+            && let Err(e) = self.rotate()
+        {
+            eprintln!("glidex-vm-shim: console log rotation failed: {}", e);
         }
         if self.file.write_all(bytes).is_ok() {
             self.size += bytes.len() as u64;
@@ -248,25 +249,25 @@ fn proxy_loop(
                 log: &mut LogWriter,
                 clients: &mut Vec<Client>,
                 buf: &mut [u8]| {
-        if let Some(f) = pty.as_ref() {
-            if !drain(f, buf, |b| {
+        if let Some(f) = pty.as_ref()
+            && !drain(f, buf, |b| {
                 log.write(b);
                 clients.retain_mut(|c| c.send(b));
-            }) {
-                *pty = None;
-            }
+            })
+        {
+            *pty = None;
         }
-        if let Some(f) = stderr.as_ref() {
-            if !drain(f, buf, |b| {
+        if let Some(f) = stderr.as_ref()
+            && !drain(f, buf, |b| {
                 log.write(b);
                 let mut cap = capture.lock().unwrap();
                 if cap.len() < CAPTURE_MAX {
                     let room = CAPTURE_MAX - cap.len();
                     cap.extend_from_slice(&b[..b.len().min(room)]);
                 }
-            }) {
-                *stderr = None;
-            }
+            })
+        {
+            *stderr = None;
         }
     };
 
@@ -358,8 +359,8 @@ mod client_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nix::pty::{openpty, OpenptyResult};
-    use nix::sys::termios::{cfmakeraw, tcgetattr, tcsetattr, SetArg};
+    use nix::pty::{OpenptyResult, openpty};
+    use nix::sys::termios::{SetArg, cfmakeraw, tcgetattr, tcsetattr};
 
     fn raw_pty() -> (File, File) {
         let OpenptyResult { master, slave } = openpty(None, None).unwrap();
@@ -464,8 +465,10 @@ mod tests {
         std::thread::sleep(Duration::from_millis(50));
         slave.write_all(b"last words").unwrap();
         proxy.stop();
-        assert!(std::fs::read_to_string(&log_path)
-            .unwrap()
-            .contains("last words"));
+        assert!(
+            std::fs::read_to_string(&log_path)
+                .unwrap()
+                .contains("last words")
+        );
     }
 }

@@ -270,17 +270,19 @@ mod tests {
             ),
             "an external router needs a pool"
         );
-        assert!(create(
-            &db,
-            "p",
-            RouterSpec {
-                external: false,
-                external_ip: Some("192.0.2.9".parse().unwrap()),
-                ..spec("x")
-            },
-            &s
-        )
-        .is_err());
+        assert!(
+            create(
+                &db,
+                "p",
+                RouterSpec {
+                    external: false,
+                    external_ip: Some("192.0.2.9".parse().unwrap()),
+                    ..spec("x")
+                },
+                &s
+            )
+            .is_err()
+        );
         for bad in ["", "-a", "a-", "A", "a_b", &"x".repeat(33)] {
             assert!(validate_name(bad).is_err(), "{bad:?}");
         }

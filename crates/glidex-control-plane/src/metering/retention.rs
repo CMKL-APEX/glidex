@@ -2,7 +2,7 @@
 //! percentiles, hourly → daily roll-up, and expiry.
 
 use super::ledger::{Ledger, MeteringError, SlotRow, SubjectKind};
-use super::query::{bucket, Granularity, GroupKey, Tz};
+use super::query::{Granularity, GroupKey, Tz, bucket};
 use super::rates::{bandwidth_p95, compute_p95, disk_io_p95, group_slots};
 use crate::config::MeteringConfig;
 
@@ -109,7 +109,7 @@ pub fn run(ledger: &Ledger, cfg: &MeteringConfig, tz: &Tz, now: u64) -> Result<(
 
 #[cfg(test)]
 mod tests {
-    use super::super::ledger::{LedgerSettings, Origin, Subject, HOUR_MS};
+    use super::super::ledger::{HOUR_MS, LedgerSettings, Origin, Subject};
     use super::super::query::Granularity;
     use super::*;
     use crate::store::Db;
@@ -119,7 +119,7 @@ mod tests {
     /// month (here Bangkok, +07:00) still sums exactly.
     #[test]
     fn roll_up_keeps_billing_months_exact() {
-        use super::super::query::{aggregate, month_bounds, parse_tz, Query};
+        use super::super::query::{Query, aggregate, month_bounds, parse_tz};
         let dir = tempfile::TempDir::new().unwrap();
         let l = Ledger::new(
             Arc::new(Db::create(dir.path().join("t.db")).unwrap()),
@@ -210,10 +210,11 @@ mod tests {
         run(&l, &cfg, &Tz::utc(), now).unwrap();
         // Long after: slots expire, the month's figures stay.
         run(&l, &cfg, &Tz::utc(), now + 200 * DAY).unwrap();
-        assert!(l
-            .scan_slots(0, u64::MAX / 10, None, |_| true)
-            .unwrap()
-            .is_empty());
+        assert!(
+            l.scan_slots(0, u64::MAX / 10, None, |_| true)
+                .unwrap()
+                .is_empty()
+        );
         assert_eq!(l.month_rates(sept, "bw/vm/").unwrap().len(), 1);
     }
 }

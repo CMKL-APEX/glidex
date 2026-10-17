@@ -1,10 +1,10 @@
 //! OVS bridges owned by glidex.
 
+use crate::OvsError;
 use crate::exec::Exec;
 use crate::host::HostCapabilities;
-use crate::names::{validate_name, MAX_IFNAME};
-use crate::vsctl::{self, owned_tags, tag_args, Row};
-use crate::OvsError;
+use crate::names::{MAX_IFNAME, validate_name};
+use crate::vsctl::{self, Row, owned_tags, tag_args};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -50,10 +50,10 @@ pub struct BridgeSpec {
 impl BridgeSpec {
     pub fn validate(&self) -> Result<(), OvsError> {
         validate_name("bridge", &self.name, MAX_IFNAME)?;
-        if let Some(mtu) = self.mtu {
-            if !(576..=9216).contains(&mtu) {
-                return Err(OvsError::invalid("mtu must be 576-9216"));
-            }
+        if let Some(mtu) = self.mtu
+            && !(576..=9216).contains(&mtu)
+        {
+            return Err(OvsError::invalid("mtu must be 576-9216"));
         }
         Ok(())
     }
@@ -252,10 +252,12 @@ mod tests {
         let exec = RecordingExec::new();
         exec.on(FIND, Output::ok(OWNED));
         ensure(&exec, &caps(), &spec()).unwrap();
-        assert!(!exec
-            .calls()
-            .iter()
-            .any(|c| c.contains("add-br") || c.contains(" set ")));
+        assert!(
+            !exec
+                .calls()
+                .iter()
+                .any(|c| c.contains("add-br") || c.contains(" set "))
+        );
     }
 
     #[test]
@@ -312,9 +314,10 @@ mod tests {
         let exec = RecordingExec::new();
         exec.on(FIND, Output::ok(OWNED));
         delete(&exec, "gxbr-nat").unwrap();
-        assert!(exec
-            .calls()
-            .contains(&"ovs-vsctl --if-exists del-br gxbr-nat".to_string()));
+        assert!(
+            exec.calls()
+                .contains(&"ovs-vsctl --if-exists del-br gxbr-nat".to_string())
+        );
 
         let exec = RecordingExec::new();
         exec.on(FIND, Output::ok(EMPTY));

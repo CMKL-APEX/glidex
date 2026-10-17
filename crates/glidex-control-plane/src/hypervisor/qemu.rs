@@ -2,12 +2,12 @@
 //! (no `-S`, D9), and driven over QMP (`glidex-hv-client`) at run time.
 
 use super::{
-    needs_shared_memory, resolve_binary, vfio_bdf, vfio_device_id, vm_disks, HypervisorDriver,
-    HypervisorError, HypervisorType, LaunchArgs, VmDisk,
+    HypervisorDriver, HypervisorError, HypervisorType, LaunchArgs, VmDisk, needs_shared_memory,
+    resolve_binary, vfio_bdf, vfio_device_id, vm_disks,
 };
 use crate::images::qemu_img::ImageType;
 use crate::models::{NicBinding, VmConfig};
-use glidex_hv_client::{qmp::QmpClient, Observed};
+use glidex_hv_client::{Observed, qmp::QmpClient};
 use glidex_ovs::vm_port::VmPortBinding;
 use std::fs::OpenOptions;
 use std::os::unix::fs::OpenOptionsExt;
@@ -433,13 +433,13 @@ impl HypervisorDriver for QemuDriver {
                 "qemu-system-x86_64 is not installed",
             ))
         })?;
-        if let Some(version) = qemu_version() {
-            if version < MIN_QEMU_VERSION {
-                return Err(HypervisorError::Unsupported(format!(
-                    "QEMU {}.{} is too old; glidex needs {}.{} or newer",
-                    version.0, version.1, MIN_QEMU_VERSION.0, MIN_QEMU_VERSION.1
-                )));
-            }
+        if let Some(version) = qemu_version()
+            && version < MIN_QEMU_VERSION
+        {
+            return Err(HypervisorError::Unsupported(format!(
+                "QEMU {}.{} is too old; glidex needs {}.{} or newer",
+                version.0, version.1, MIN_QEMU_VERSION.0, MIN_QEMU_VERSION.1
+            )));
         }
         let firmware = match &config.firmware_path {
             Some(code) => {
@@ -703,10 +703,13 @@ mod tests {
             .into_iter()
             .filter(|d| d.starts_with("virtio-net-pci"))
             .collect();
-        assert_eq!(nics, [
-            "virtio-net-pci,netdev=net0,id=dev-net0,mac=02:00:00:00:00:01",
-            "virtio-net-pci,netdev=net1,id=dev-net1,mac=02:00:00:00:00:02,host_mtu=9000,mq=on,vectors=10",
-        ]);
+        assert_eq!(
+            nics,
+            [
+                "virtio-net-pci,netdev=net0,id=dev-net0,mac=02:00:00:00:00:01",
+                "virtio-net-pci,netdev=net1,id=dev-net1,mac=02:00:00:00:00:02,host_mtu=9000,mq=on,vectors=10",
+            ]
+        );
         // Tap NICs alone don't need shared guest memory.
         assert_eq!(values(&args, "-machine"), ["q35"]);
 
@@ -747,8 +750,10 @@ mod tests {
         let config = config(serde_json::json!({"hugepages": true}));
         let args = spec(&config).args();
         assert_eq!(values(&args, "-machine"), ["q35,memory-backend=mem"]);
-        assert!(values(&args, "-object")
-            .contains(&"memory-backend-memfd,id=mem,size=1024M,share=on,hugetlb=on"));
+        assert!(
+            values(&args, "-object")
+                .contains(&"memory-backend-memfd,id=mem,size=1024M,share=on,hugetlb=on")
+        );
     }
 
     #[test]
@@ -792,8 +797,10 @@ mod tests {
     fn vfio_devices_on_the_command_line() {
         let config =
             config(serde_json::json!({"vfio_devices": ["/sys/bus/pci/devices/0000:41:00.0"]}));
-        assert!(values(&spec(&config).args(), "-device")
-            .contains(&"vfio-pci,host=0000:41:00.0,id=_vfio_0000_41_00_0"));
+        assert!(
+            values(&spec(&config).args(), "-device")
+                .contains(&"vfio-pci,host=0000:41:00.0,id=_vfio_0000_41_00_0")
+        );
     }
 
     #[test]

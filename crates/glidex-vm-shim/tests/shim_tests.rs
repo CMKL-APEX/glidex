@@ -4,7 +4,7 @@
 //! ignored end-to-end tests.
 
 use glidex_vm_shim::client::ShimClient;
-use glidex_vm_shim::launch::{HypervisorKind, LaunchFile, LAUNCH_VERSION};
+use glidex_vm_shim::launch::{HypervisorKind, LAUNCH_VERSION, LaunchFile};
 use glidex_vm_shim::state::{ExitCause, InstanceFile, Phase};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
@@ -287,7 +287,9 @@ fn a_failed_launch_reports_the_hypervisors_output() {
         .release()
         .unwrap();
     assert_eq!(wait_exit_status(&mut shim), 0);
-    assert!(std::fs::read_to_string(dir.path().join("console.log"))
-        .unwrap()
-        .contains("bogus"));
+    assert!(
+        std::fs::read_to_string(dir.path().join("console.log"))
+            .unwrap()
+            .contains("bogus")
+    );
 }

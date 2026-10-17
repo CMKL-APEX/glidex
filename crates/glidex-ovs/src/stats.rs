@@ -1,10 +1,10 @@
 //! Per-port traffic counters of glidex bridges, for metering
 //! (spec/metering.md §5.4). Read-only: three `ovs-vsctl list` calls.
 
+use crate::OvsError;
 use crate::exec::Exec;
 use crate::vsctl::{self, Row};
 use crate::vsctl::{NIC_KEY, VM_ID_KEY};
-use crate::OvsError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;

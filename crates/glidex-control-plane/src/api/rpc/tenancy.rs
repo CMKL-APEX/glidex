@@ -1,6 +1,6 @@
 //! `glidex.tenancy.v1` over RPC; the logic is in `service::tenancy`.
 
-use super::{unary, Svc};
+use super::{Svc, unary};
 use crate::api::AppState;
 use crate::service::tenancy;
 use connectrpc::{RequestContext, ServiceRequest, ServiceResult};

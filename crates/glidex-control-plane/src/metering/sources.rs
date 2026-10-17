@@ -113,14 +113,11 @@ impl Host {
                 let class = self.sys_root.join("class/block").join(&name);
                 // The slave itself, and its whole disk if it is a partition.
                 let mut devs = vec![std::fs::read_to_string(class.join("dev")).unwrap_or_default()];
-                if class.join("partition").exists() {
-                    if let Ok(real) = std::fs::canonicalize(&class) {
-                        if let Some(parent) = real.parent() {
-                            devs.push(
-                                std::fs::read_to_string(parent.join("dev")).unwrap_or_default(),
-                            );
-                        }
-                    }
+                if class.join("partition").exists()
+                    && let Ok(real) = std::fs::canonicalize(&class)
+                    && let Some(parent) = real.parent()
+                {
+                    devs.push(std::fs::read_to_string(parent.join("dev")).unwrap_or_default());
                 }
                 for d in devs
                     .into_iter()
@@ -160,10 +157,10 @@ impl Host {
         let f: Vec<&str> = rest.split_whitespace().collect();
         // rest[0] is field 3 (state): utime = 14, stime = 15, starttime = 22.
         let field = |n: usize| f.get(n - 3)?.parse::<u64>().ok();
-        if let Some(want) = starttime {
-            if field(22)? != want {
-                return None;
-            }
+        if let Some(want) = starttime
+            && field(22)? != want
+        {
+            return None;
         }
         let ticks = field(14)? + field(15)?;
         let hz = clock_ticks();
@@ -235,11 +232,7 @@ fn read_u64(path: &Path) -> Option<u64> {
 fn clock_ticks() -> u64 {
     // SAFETY: sysconf has no preconditions.
     let hz = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
-    if hz > 0 {
-        hz as u64
-    } else {
-        100
-    }
+    if hz > 0 { hz as u64 } else { 100 }
 }
 
 #[cfg(test)]

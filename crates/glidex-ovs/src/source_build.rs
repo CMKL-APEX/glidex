@@ -4,10 +4,10 @@
 //! Pins follow the OVS release FAQ's pairing (OVS 3.7.x LTS ↔ DPDK
 //! 25.11.2). Bump versions and checksums together.
 
+use crate::OvsError;
 use crate::exec::{Cmd, Exec, Program};
 use crate::host::{self, ProbeOptions};
-use crate::install::{detect_distro, Family, InstallReport};
-use crate::OvsError;
+use crate::install::{Family, InstallReport, detect_distro};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -418,10 +418,12 @@ mod tests {
         };
         assert!(impact.contains("3.7.1") && impact.contains("25.11.2"));
         assert!(impact.contains("stopped and disabled (not uninstalled)"));
-        assert!(!exec
-            .calls()
-            .iter()
-            .any(|c| c.starts_with("curl") || c.starts_with("apt-get")));
+        assert!(
+            !exec
+                .calls()
+                .iter()
+                .any(|c| c.starts_with("curl") || c.starts_with("apt-get"))
+        );
     }
 
     #[test]
@@ -487,11 +489,15 @@ mod tests {
     #[test]
     fn units_point_at_the_prefix() {
         let units = units();
-        assert!(units[1]
-            .1
-            .contains("/opt/glidex/ovs-3.7.1/share/openvswitch/scripts/ovs-ctl --no-ovsdb-server"));
-        assert!(units[1]
-            .1
-            .contains("LD_LIBRARY_PATH=/opt/glidex/dpdk-25.11.2/lib/x86_64-linux-gnu"));
+        assert!(
+            units[1].1.contains(
+                "/opt/glidex/ovs-3.7.1/share/openvswitch/scripts/ovs-ctl --no-ovsdb-server"
+            )
+        );
+        assert!(
+            units[1]
+                .1
+                .contains("LD_LIBRARY_PATH=/opt/glidex/dpdk-25.11.2/lib/x86_64-linux-gnu")
+        );
     }
 }

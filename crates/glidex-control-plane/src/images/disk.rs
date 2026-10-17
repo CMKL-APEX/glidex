@@ -4,11 +4,11 @@
 //! the caller (`VmManager`) has already checked that no running or paused
 //! VM has the disk open and holds the disk's `BusyGuard`.
 
-use super::partition::{self, round_up, TableKind, MIB};
+use super::partition::{self, MIB, TableKind, round_up};
 use super::qemu_img::{self, DiskFormat, GrowOutcome};
 use super::{
-    validate_name, CloneMode, CreateDiskRequest, Disk, DiskCreateSpec, DiskOrigin, DiskPhase,
-    ExtendMode, ExtendOutcome, ImageError, ImageHold, ImageManager, ImageStatus,
+    CloneMode, CreateDiskRequest, Disk, DiskCreateSpec, DiskOrigin, DiskPhase, ExtendMode,
+    ExtendOutcome, ImageError, ImageHold, ImageManager, ImageStatus, validate_name,
 };
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -23,7 +23,7 @@ pub fn requested_size(
         (Some(_), Some(_)) => {
             return Err(ImageError::invalid_disk(
                 "give size_gib or size_bytes, not both",
-            ))
+            ));
         }
         (Some(g), None) => Some(
             g.checked_mul(super::GIB)
@@ -143,14 +143,14 @@ impl ImageManager {
                         return Err(ImageError::NotReady(format!(
                             "image {} is missing its file",
                             img.name
-                        )))
+                        )));
                     }
                     // A disk would wait for it forever: retry it first.
                     ImageStatus::Failed { reason } => {
                         return Err(ImageError::NotReady(format!(
                             "image {} failed ({}); retry it first",
                             img.name, reason
-                        )))
+                        )));
                     }
                     _ => {}
                 }
@@ -160,10 +160,10 @@ impl ImageManager {
                         "a raw disk cannot be linked; use clone: full",
                     ));
                 }
-                if let (Some(s), ImageStatus::Ready) = (size, &img.status) {
-                    if s < img.virtual_size_bytes {
-                        return Err(too_small(s, &img.name, img.virtual_size_bytes));
-                    }
+                if let (Some(s), ImageStatus::Ready) = (size, &img.status)
+                    && s < img.virtual_size_bytes
+                {
+                    return Err(too_small(s, &img.name, img.virtual_size_bytes));
                 }
                 DiskOrigin::Image {
                     image_id: img.id.clone(),
@@ -364,33 +364,33 @@ impl ImageManager {
             ))
         };
         let table = partition::read_table(path, disk.format, new_size).map_err(partial)?;
-        if let Some(t) = &table {
-            if t.kind == TableKind::Gpt {
-                match partition::edit(
-                    path,
-                    disk.format,
-                    new_size,
-                    qemu_img::sgdisk_relocate_backup,
-                ) {
-                    Ok(()) => {}
-                    Err(e @ ImageError::ToolMissing { .. }) => {
-                        if extend_root.unwrap_or(disk.is_from_image()) {
-                            // On-boot growpart fixes the backup header too.
-                            disk.pending_growpart = true;
-                            self.put_disk(disk)?;
-                            return Ok((
-                                disk.clone(),
-                                Some(ExtendOutcome::OnBoot),
-                                vec![format!(
-                                    "{}; the guest will extend the root partition on next boot",
-                                    e
-                                )],
-                            ));
-                        }
-                        return Err(partial(e));
+        if let Some(t) = &table
+            && t.kind == TableKind::Gpt
+        {
+            match partition::edit(
+                path,
+                disk.format,
+                new_size,
+                qemu_img::sgdisk_relocate_backup,
+            ) {
+                Ok(()) => {}
+                Err(e @ ImageError::ToolMissing { .. }) => {
+                    if extend_root.unwrap_or(disk.is_from_image()) {
+                        // On-boot growpart fixes the backup header too.
+                        disk.pending_growpart = true;
+                        self.put_disk(disk)?;
+                        return Ok((
+                            disk.clone(),
+                            Some(ExtendOutcome::OnBoot),
+                            vec![format!(
+                                "{}; the guest will extend the root partition on next boot",
+                                e
+                            )],
+                        ));
                     }
-                    Err(e) => return Err(partial(e)),
+                    return Err(partial(e));
                 }
+                Err(e) => return Err(partial(e)),
             }
         }
         if !extend_root.unwrap_or(disk.is_from_image()) {
@@ -422,7 +422,11 @@ impl ImageManager {
                 message: format!(
                     "{} bytes would cut into a partition{}; the minimum is {} bytes. glidex does not shrink filesystems: shrink the filesystem and partition inside the guest first",
                     new_size,
-                    if disk.is_linked() { " or the backing image" } else { "" },
+                    if disk.is_linked() {
+                        " or the backing image"
+                    } else {
+                        ""
+                    },
                     min
                 ),
                 details: serde_json::json!({ "min_size_bytes": min }),

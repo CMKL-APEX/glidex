@@ -12,11 +12,11 @@ mod directory;
 mod system;
 mod tenancy;
 
-use super::{write_audit, AppState, Caller, Listener, RequestId, PUBLIC};
+use super::{AppState, Caller, Listener, PUBLIC, RequestId, write_audit};
 use crate::auth::Principal;
 use crate::service::{Call, ServiceError};
-use axum::http::StatusCode;
 use axum::Router;
+use axum::http::StatusCode;
 use connectrpc::{
     ConnectError, ConnectRpcService, DeadlinePolicy, ErrorCode, ErrorDetail, Limits, Protocol,
     RequestContext,

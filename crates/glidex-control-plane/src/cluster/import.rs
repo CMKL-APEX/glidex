@@ -17,7 +17,7 @@ use crate::node::{Node, NodeRole, NodeSpec, NodeStore};
 use crate::store::{Db, Origin, TableId};
 use redb::ReadableTable;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::{IpAddr, SocketAddr};
@@ -356,10 +356,10 @@ fn resolve(db: &Db, rows: &[Row], m: &ImportMappings) -> Resolved {
                     mem,
                 ),
             ] {
-                if let Some(l) = limit {
-                    if have + more > l {
-                        r.problems.push(format!("project {dest} would go over its {what} quota ({} of {l}): approve with --over-quota", have + more));
-                    }
+                if let Some(l) = limit
+                    && have + more > l
+                {
+                    r.problems.push(format!("project {dest} would go over its {what} quota ({} of {l}): approve with --over-quota", have + more));
                 }
             }
         }
@@ -414,13 +414,13 @@ fn check_import_rows(b: &Bundle) -> Result<(), ImportError> {
                 return Err(ImportError::Invalid(format!(
                     "events {} are not of an imported VM",
                     r.key
-                )))
+                )));
             }
             TableId::Networks if v["scope"] == "cluster" => {
                 return Err(ImportError::Invalid(format!(
                     "network {} is a cluster network",
                     r.key
-                )))
+                )));
             }
             _ => {}
         }
@@ -467,12 +467,12 @@ impl Cluster {
             } => {
                 return Err(ImportError::Invalid(
                     "this token can't import: create it with --allow-import".into(),
-                ))
+                ));
             }
             _ => {
                 return Err(ImportError::Invalid(
                     "an import joins as an agent; promote it to a server later".into(),
-                ))
+                ));
             }
         }
         let existing = NodeStore::new(self.db.clone()).list().map_err(failed)?;
@@ -868,11 +868,13 @@ mod tests {
     #[test]
     fn an_import_brings_resources_and_nothing_else() {
         let vm = json!({ "meta": { "project": "p1" } });
-        assert!(check_import_rows(&bundle(vec![
-            (TableId::Vms, "v1", vm.clone()),
-            (TableId::Events, "vm/v1", json!([]))
-        ]))
-        .is_ok());
+        assert!(
+            check_import_rows(&bundle(vec![
+                (TableId::Vms, "v1", vm.clone()),
+                (TableId::Events, "vm/v1", json!([]))
+            ]))
+            .is_ok()
+        );
         for (t, k) in [
             (TableId::Users, "u1"),
             (TableId::PolicyLinks, "l1"),
@@ -895,11 +897,13 @@ mod tests {
             .is_err(),
             "events of a VM it doesn't bring"
         );
-        assert!(check_import_rows(&bundle(vec![(
-            TableId::Networks,
-            "n",
-            json!({ "scope": "cluster" })
-        )]))
-        .is_err());
+        assert!(
+            check_import_rows(&bundle(vec![(
+                TableId::Networks,
+                "n",
+                json!({ "scope": "cluster" })
+            )]))
+            .is_err()
+        );
     }
 }

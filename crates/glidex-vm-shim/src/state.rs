@@ -148,8 +148,10 @@ mod tests {
         assert_eq!(f.phase, Phase::Exited);
         assert_eq!(f.exit.unwrap().cause, ExitCause::Requested);
         let dir = tempfile::tempdir().unwrap();
-        assert!(InstanceFile::read(&dir.path().join("none"))
-            .unwrap()
-            .is_none());
+        assert!(
+            InstanceFile::read(&dir.path().join("none"))
+                .unwrap()
+                .is_none()
+        );
     }
 }

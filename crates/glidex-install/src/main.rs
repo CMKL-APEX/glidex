@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use colored::Colorize;
 use std::env;
 use std::fs;
@@ -278,7 +278,7 @@ fn cluster_identity() -> Option<serde_json::Value> {
 /// Bring this member's OVN up to the cluster's ovn-northd (spec/installer.md
 /// §5a), from the distribution or else the Ubuntu Cloud Archive, OVN only.
 fn ensure_ovn_matches_cluster(just_joined: bool) -> Result<()> {
-    use ovn_match::{Plan, CLUSTER_DIR};
+    use ovn_match::{CLUSTER_DIR, Plan};
     section("OVN version (to match the cluster)");
     if !command_exists("ovn-controller") {
         println!(
@@ -306,7 +306,10 @@ fn ensure_ovn_matches_cluster(just_joined: bool) -> Result<()> {
         std::thread::sleep(std::time::Duration::from_secs(2));
     }
     let Some(remote) = remote else {
-        println!("{} the cluster's OVN isn't on here yet (no ovn-remote); re-run the installer once it is, to match its version.", "Note:".yellow());
+        println!(
+            "{} the cluster's OVN isn't on here yet (no ovn-remote); re-run the installer once it is, to match its version.",
+            "Note:".yellow()
+        );
         return Ok(());
     };
     let (key, crt, ca) = (
@@ -330,7 +333,10 @@ fn ensure_ovn_matches_cluster(just_joined: bool) -> Result<()> {
         "options:northd_internal_version",
     ]);
     let Some(want) = northd.as_deref().and_then(ovn_match::northd_series) else {
-        println!("{} could not read the cluster's ovn-northd version from {remote}; skipping (re-run the installer to try again).", "Warning:".yellow());
+        println!(
+            "{} could not read the cluster's ovn-northd version from {remote}; skipping (re-run the installer to try again).",
+            "Warning:".yellow()
+        );
         return Ok(());
     };
     let local_v = run_capture("ovn-controller", &["--version"])
@@ -348,7 +354,12 @@ fn ensure_ovn_matches_cluster(just_joined: bool) -> Result<()> {
         return Ok(());
     }
     if package_manager() != Some("apt-get") {
-        bail!("the cluster's ovn-northd is OVN {}, this host has {}: install OVN {} or newer here, then re-run the installer", ovn_match::series_str(want), local_v.trim(), ovn_match::series_str(want));
+        bail!(
+            "the cluster's ovn-northd is OVN {}, this host has {}: install OVN {} or newer here, then re-run the installer",
+            ovn_match::series_str(want),
+            local_v.trim(),
+            ovn_match::series_str(want)
+        );
     }
     println!(
         "{} {} is older than the cluster's ovn-northd (OVN {}); upgrading",
@@ -384,7 +395,9 @@ fn ensure_ovn_matches_cluster(just_joined: bool) -> Result<()> {
         Plan::CloudArchive { pocket, version } => {
             let codename =
                 os_release("VERSION_CODENAME").context("no VERSION_CODENAME in /etc/os-release")?;
-            println!("  from the Ubuntu Cloud Archive ({codename}-updates/{pocket}): ovn-host {version}, OVN only");
+            println!(
+                "  from the Ubuntu Cloud Archive ({codename}-updates/{pocket}): ovn-host {version}, OVN only"
+            );
             sudo(&argv(&[
                 "env",
                 "DEBIAN_FRONTEND=noninteractive",
@@ -408,7 +421,11 @@ fn ensure_ovn_matches_cluster(just_joined: bool) -> Result<()> {
     let simulation = run_capture(sim[0], &sim[1..]).unwrap_or_default();
     let gone = ovn_match::removals(&simulation);
     if !gone.is_empty() {
-        bail!("upgrading OVN would remove {}: not done; upgrade OVN to {} here by hand, then re-run the installer", gone.join(", "), ovn_match::series_str(want));
+        bail!(
+            "upgrading OVN would remove {}: not done; upgrade OVN to {} here by hand, then re-run the installer",
+            gone.join(", "),
+            ovn_match::series_str(want)
+        );
     }
     sudo(&argv(&upgrade))?;
     let after = run_capture("ovn-controller", &["--version"])
@@ -520,7 +537,10 @@ fn join_cluster(j: &JoinOptions) -> Result<()> {
     // An agent keeps its web UI: its control plane relays the UI's requests
     // to a server, which authenticates them (spec/clustering-ui.md §3.6).
     if j.role == "agent" {
-        println!("{} the web UI here is served through the cluster's servers (log in with a server's users)", "Note:".green());
+        println!(
+            "{} the web UI here is served through the cluster's servers (log in with a server's users)",
+            "Note:".green()
+        );
     }
     Ok(())
 }
@@ -745,7 +765,9 @@ impl Options {
         }
         if let Some(j) = &mut o.join {
             if j.server.is_empty() {
-                bail!("--role, --token-file, --advertise and --node-name go with --join <server:8842>");
+                bail!(
+                    "--role, --token-file, --advertise and --node-name go with --join <server:8842>"
+                );
             }
             if j.role.is_empty() {
                 j.role = "agent".into();
@@ -1008,12 +1030,14 @@ fn ensure_sudo() -> Result<()> {
         SUDO_READY.store(false, Ordering::SeqCst);
         return Err(e);
     }
-    std::thread::spawn(|| loop {
-        std::thread::sleep(std::time::Duration::from_secs(60));
-        let _ = Command::new("sudo")
-            .args(["-n", "-v"])
-            .stderr(Stdio::null())
-            .status();
+    std::thread::spawn(|| {
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(60));
+            let _ = Command::new("sudo")
+                .args(["-n", "-v"])
+                .stderr(Stdio::null())
+                .status();
+        }
     });
     Ok(())
 }
@@ -2291,7 +2315,7 @@ fn ensure_service_user(invoking: Option<&str>) -> Result<()> {
 /// and CAP_NET_ADMIN for cloud-hypervisor's tap devices.
 fn setup_networking(opts: &Options, changed: &Changes) -> Result<()> {
     use glidex_ovs::host::ProbeOptions;
-    use glidex_ovs::install::{install, InstallRequest, Profile};
+    use glidex_ovs::install::{InstallRequest, Profile, install};
     use glidex_ovs::{OvsError, SystemExec};
 
     section("VM Networking (Open vSwitch + glidex-netd)");
@@ -2427,8 +2451,8 @@ fn configure_host(
     exec: &glidex_ovs::SystemExec,
     probe: &glidex_ovs::host::ProbeOptions,
 ) -> Result<()> {
-    use glidex_ovs::install::{init_dpdk, DpdkSettings, Profile};
     use glidex_ovs::OvsError;
+    use glidex_ovs::install::{DpdkSettings, Profile, init_dpdk};
     use sysconfig::{IP_FORWARD, NR_HUGEPAGES};
 
     // NAT networks route VM traffic through this host.
@@ -2473,7 +2497,9 @@ fn configure_host(
     if got < sysconfig::JUMBO_HUGEPAGES {
         println!(
             "{} {} hugepages is too few for jumbo-frame (MTU 9000) vhost-user networks: OVS-DPDK then needs ~3.3 GiB of mempools on top of the guests. Raise vm.nr_hugepages to at least {}.",
-            "Note:".yellow(), got, sysconfig::JUMBO_HUGEPAGES
+            "Note:".yellow(),
+            got,
+            sysconfig::JUMBO_HUGEPAGES
         );
     }
     if got < sysconfig::MIN_HUGEPAGES {
@@ -2489,10 +2515,10 @@ fn configure_host(
     // vfio-pci binds physical NICs for DPDK uplinks.
     let modules = "# Managed by glidex-install\nvfio-pci\n";
     write_if_changed(sysconfig::MODULES_DROPIN, modules)?;
-    if !Path::new("/sys/bus/pci/drivers/vfio-pci").exists() {
-        if let Err(e) = sudo(&argv(&["modprobe", "vfio-pci"])) {
-            println!("{} could not load vfio-pci: {}", "Note:".yellow(), e);
-        }
+    if !Path::new("/sys/bus/pci/drivers/vfio-pci").exists()
+        && let Err(e) = sudo(&argv(&["modprobe", "vfio-pci"]))
+    {
+        println!("{} could not load vfio-pci: {}", "Note:".yellow(), e);
     }
     let iommu = fs::read_dir("/sys/kernel/iommu_groups")
         .map(|mut d| d.next().is_some())
@@ -2519,7 +2545,11 @@ fn configure_host(
     if let Some(p) = &auto_plan {
         println!(
             "{} PMD threads on CPUs {:?} (mask {}), NUMA nodes {:?}; CPUs {:?} left for the OS and OVS's other threads",
-            "Plan:".green(), p.pmd_cpus, p.pmd_mask(), p.nodes, p.lcore_cpus
+            "Plan:".green(),
+            p.pmd_cpus,
+            p.pmd_mask(),
+            p.nodes,
+            p.lcore_cpus
         );
     }
     let settings = DpdkSettings {
@@ -2858,7 +2888,12 @@ fn install_services(changed: &Changes, invoking: Option<&str>, user_home: &Path)
         match (legacy_running, active_vms()) {
             (false, _) | (true, Some(0)) => {
                 sudo(&argv(&["systemctl", "restart", cp]))?;
-                println!("{} {} (as {}); running VMs keep running", "Restarted:".green(), cp, SERVICE_USER);
+                println!(
+                    "{} {} (as {}); running VMs keep running",
+                    "Restarted:".green(),
+                    cp,
+                    SERVICE_USER
+                );
             }
             (true, n) => println!(
                 "{} {} has {} running VM(s), and the running release stops VMs when it stops. \
@@ -2895,16 +2930,17 @@ fn install_services(changed: &Changes, invoking: Option<&str>, user_home: &Path)
     }
 
     // The control plane used to run as the installing user, on its ~/.glidex.
-    if let (Some(prev), Some(me)) = (previous_user.as_deref(), invoking) {
-        if prev == me && user_home.join(".glidex/glidex.db").exists() {
-            println!(
-                "{} the control plane now runs as '{}' with its data in {}/.glidex. Your earlier VMs, images and credentials in {} were not moved.",
-                "Note:".yellow(),
-                SERVICE_USER,
-                SERVICE_HOME,
-                user_home.join(".glidex").display()
-            );
-        }
+    if let (Some(prev), Some(me)) = (previous_user.as_deref(), invoking)
+        && prev == me
+        && user_home.join(".glidex/glidex.db").exists()
+    {
+        println!(
+            "{} the control plane now runs as '{}' with its data in {}/.glidex. Your earlier VMs, images and credentials in {} were not moved.",
+            "Note:".yellow(),
+            SERVICE_USER,
+            SERVICE_HOME,
+            user_home.join(".glidex").display()
+        );
     }
     Ok(())
 }
@@ -3057,7 +3093,9 @@ fn print_usage(opts: &Options) {
                 println!("     {} certificate SHA-256: {}", what, fp);
             }
         }
-        println!("     Both listen on every address over HTTPS; the installer does not change the firewall.");
+        println!(
+            "     Both listen on every address over HTTPS; the installer does not change the firewall."
+        );
         println!(
             "     status:  {}",
             "systemctl status glidex-control-plane glidex-ui glidex-authd.socket".green()
@@ -3072,7 +3110,9 @@ fn print_usage(opts: &Options) {
         println!();
         println!("2. (Optional) Start the web UI in another terminal:");
         println!("     {}", "glidex-ui".green());
-        println!("     Then open https://localhost:5173 (a self-signed certificate; glidex-ui logs its fingerprint)");
+        println!(
+            "     Then open https://localhost:5173 (a self-signed certificate; glidex-ui logs its fingerprint)"
+        );
     }
     println!();
     println!("Use the interactive CLI:");
@@ -3270,9 +3310,11 @@ mod tests {
             ovn: false,
             ..Options::default()
         };
-        assert!(!names(&skipped)
-            .iter()
-            .any(|p| p.starts_with("ovn") || *p == "conntrack"));
+        assert!(
+            !names(&skipped)
+                .iter()
+                .any(|p| p.starts_with("ovn") || *p == "conntrack")
+        );
         let no_net = Options {
             networking: false,
             ..Options::default()
@@ -3437,7 +3479,9 @@ mod tests {
         };
         assert_eq!(
             cmd_lines(&group_kept, "/bin/false"),
-            ["useradd --system --gid glidex-ui --home-dir /nonexistent --no-create-home --shell /bin/false --comment glidex web UI glidex-ui"]
+            [
+                "useradd --system --gid glidex-ui --home-dir /nonexistent --no-create-home --shell /bin/false --comment glidex web UI glidex-ui"
+            ]
         );
         // Only the missing group is added.
         let half = UserState {
@@ -3486,9 +3530,11 @@ mod tests {
             member: None,
             ..upgraded
         };
-        assert!(!cmd_lines(&root, "/bin/false")
-            .iter()
-            .any(|l| l.starts_with("usermod") || l.starts_with("gpasswd")));
+        assert!(
+            !cmd_lines(&root, "/bin/false")
+                .iter()
+                .any(|l| l.starts_with("usermod") || l.starts_with("gpasswd"))
+        );
     }
 
     #[test]
@@ -3780,10 +3826,10 @@ mod tests {
         assert!(rh.lines().any(
             |l| l.split_whitespace().collect::<Vec<_>>() == ["auth", "include", "system-auth"]
         ));
-        assert!(rh
-            .lines()
-            .any(|l| l.split_whitespace().collect::<Vec<_>>()
-                == ["account", "include", "system-auth"]));
+        assert!(
+            rh.lines().any(|l| l.split_whitespace().collect::<Vec<_>>()
+                == ["account", "include", "system-auth"])
+        );
         assert!(!rh.lines().any(|l| l.starts_with("@include")));
         assert!(rh.contains(PAM_MARKER));
 
@@ -3883,9 +3929,11 @@ mod tests {
             ..Options::default()
         };
         assert!(!binaries(&no_services).contains(&"glidex-authd"));
-        assert!(build_args(&Options::default())
-            .windows(2)
-            .any(|w| w == ["-p", "glidex-authd"]));
+        assert!(
+            build_args(&Options::default())
+                .windows(2)
+                .any(|w| w == ["-p", "glidex-authd"])
+        );
         assert!(!build_args(&no_services).contains(&"glidex-authd"));
     }
 
@@ -3901,10 +3949,17 @@ mod tests {
         };
         assert_eq!(
             rustup_url(&x86),
-            format!("https://static.rust-lang.org/rustup/archive/{RUSTUP_VERSION}/x86_64-unknown-linux-gnu/rustup-init")
+            format!(
+                "https://static.rust-lang.org/rustup/archive/{RUSTUP_VERSION}/x86_64-unknown-linux-gnu/rustup-init"
+            )
         );
         assert!(rustup_url(&arm).contains("/aarch64-unknown-linux-gnu/"));
-        assert_eq!(bun_url(&x86), format!("https://github.com/oven-sh/bun/releases/download/bun-v{BUN_VERSION}/bun-linux-x64.zip"));
+        assert_eq!(
+            bun_url(&x86),
+            format!(
+                "https://github.com/oven-sh/bun/releases/download/bun-v{BUN_VERSION}/bun-linux-x64.zip"
+            )
+        );
         assert!(bun_url(&arm).ends_with("/bun-linux-aarch64.zip"));
         for sha in [
             rustup_asset(&x86).1,
@@ -4000,11 +4055,13 @@ mod tests {
         install_uefi_firmware(&platform, home.path(), false).unwrap();
         let dest = home.path().join(".glidex").join(asset);
         assert_eq!(file_sha256(&dest).unwrap(), sha256);
-        assert!(!home
-            .path()
-            .join(".glidex")
-            .join(format!("{asset}.part"))
-            .exists());
+        assert!(
+            !home
+                .path()
+                .join(".glidex")
+                .join(format!("{asset}.part"))
+                .exists()
+        );
 
         // Second run sees the verified file and does not re-download.
         let mtime = fs::metadata(&dest).unwrap().modified().unwrap();

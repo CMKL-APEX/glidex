@@ -156,15 +156,16 @@ pub struct Delta {
 pub fn overruns(quotas: &Quotas, usage: &Usage, delta: &Delta) -> Vec<QuotaOverrun> {
     let mut out = Vec::new();
     let mut check = |resource: &'static str, limit: Option<u64>, used: u64, requested: u64| {
-        if let Some(limit) = limit {
-            if requested > 0 && used + requested > limit {
-                out.push(QuotaOverrun {
-                    resource,
-                    limit,
-                    used,
-                    requested,
-                });
-            }
+        if let Some(limit) = limit
+            && requested > 0
+            && used + requested > limit
+        {
+            out.push(QuotaOverrun {
+                resource,
+                limit,
+                used,
+                requested,
+            });
         }
     };
     check("vms", quotas.vms, usage.vms, delta.vms);
@@ -484,18 +485,20 @@ mod tests {
         assert_eq!(o[0].resource, "vms");
         assert!(overruns(&q, &u, &Delta::default()).is_empty());
         // Unlimited when None.
-        assert!(overruns(
-            &Quotas {
-                networks: None,
-                ..Default::default()
-            },
-            &u,
-            &Delta {
-                networks: 9,
-                ..Default::default()
-            }
-        )
-        .is_empty());
+        assert!(
+            overruns(
+                &Quotas {
+                    networks: None,
+                    ..Default::default()
+                },
+                &u,
+                &Delta {
+                    networks: 9,
+                    ..Default::default()
+                }
+            )
+            .is_empty()
+        );
     }
 
     #[test]

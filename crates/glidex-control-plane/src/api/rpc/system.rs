@@ -1,7 +1,7 @@
 //! `glidex.system.v1.SystemService` over RPC; the logic is in
 //! `service::system`.
 
-use super::{unary, Svc};
+use super::{Svc, unary};
 use crate::api::AppState;
 use crate::service::system;
 use connectrpc::{RequestContext, ServiceRequest, ServiceResult};

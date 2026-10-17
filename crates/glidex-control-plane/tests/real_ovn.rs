@@ -33,11 +33,13 @@ fn the_northbound_database_takes_cluster_certificates_and_a_sync_over_ssl() {
     std::fs::write(p("node.key"), key.key_pem().as_bytes()).unwrap();
 
     let schema = "/usr/share/ovn/ovn-nb.ovsschema";
-    assert!(Command::new("ovsdb-tool")
-        .args(["create", p("nb.db").to_str().unwrap(), schema])
-        .status()
-        .unwrap()
-        .success());
+    assert!(
+        Command::new("ovsdb-tool")
+            .args(["create", p("nb.db").to_str().unwrap(), schema])
+            .status()
+            .unwrap()
+            .success()
+    );
     let port = std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()
         .local_addr()
@@ -123,7 +125,7 @@ fn the_northbound_database_takes_cluster_certificates_and_a_sync_over_ssl() {
 #[test]
 #[ignore = "needs ovn-ctl (ovn-central) and the 127.0.0.2 loopback address"]
 fn two_servers_form_the_ovn_database_clusters_with_glidex_options() {
-    use glidex_ovs::ovn::{central_opts, CentralSpec};
+    use glidex_ovs::ovn::{CentralSpec, central_opts};
     let root = tempfile::tempdir().unwrap();
     let ca = Ca::generate("test-cluster").unwrap();
     let ips: [std::net::IpAddr; 2] = ["127.0.0.1".parse().unwrap(), "127.0.0.2".parse().unwrap()];

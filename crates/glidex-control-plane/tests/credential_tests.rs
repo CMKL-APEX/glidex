@@ -1,12 +1,12 @@
 //! REST API tests for the credential store and its use by VMs.
 
 use axum::{
+    Router,
     body::Body,
     http::{Request, StatusCode},
-    Router,
 };
 use http_body_util::BodyExt;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
 use tempfile::TempDir;

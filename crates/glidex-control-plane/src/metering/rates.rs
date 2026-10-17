@@ -1,8 +1,8 @@
 //! 95th percentiles over 5-minute slots (spec/metering.md §8.5.1, §8.6,
 //! D15, D16): series per group, summed slot by slot, nearest rank.
 
-use super::ledger::{SlotRow, SubjectKind, SLOTS_PER_HOUR, SLOT_MS};
-use super::query::{key_of, names_itself, GroupKey, Named};
+use super::ledger::{SLOT_MS, SLOTS_PER_HOUR, SlotRow, SubjectKind};
+use super::query::{GroupKey, Named, key_of, names_itself};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -54,10 +54,10 @@ pub fn group_slots(
             .collect();
         let g = out.entry(ids).or_default();
         for (k, v) in group_by.iter().zip(keys) {
-            if let Some(v) = v {
-                if names_itself(*k, s.kind) || !g.keys.contains_key(k) {
-                    g.keys.insert(*k, v);
-                }
+            if let Some(v) = v
+                && (names_itself(*k, s.kind) || !g.keys.contains_key(k))
+            {
+                g.keys.insert(*k, v);
             }
         }
         for i in 0..SLOTS_PER_HOUR {
@@ -313,10 +313,10 @@ pub fn series_points(g: &GroupSlots, kind: SeriesKind) -> Vec<serde_json::Value>
                     ("disk.read_time_ns", "disk.read_ops", "read_latency_ms"),
                     ("disk.write_time_ns", "disk.write_ops", "write_latency_ms"),
                 ] {
-                    if let (Some(t), Some(o_)) = (get(t), get(ops)) {
-                        if o_ > 0 {
-                            o.insert(k.into(), round3(t as f64 / o_ as f64 / 1e6).into());
-                        }
+                    if let (Some(t), Some(o_)) = (get(t), get(ops))
+                        && o_ > 0
+                    {
+                        o.insert(k.into(), round3(t as f64 / o_ as f64 / 1e6).into());
                     }
                 }
             } else {
@@ -507,11 +507,7 @@ mod tests {
         let mut a = [0u64; 12];
         let mut b = [0u64; 12];
         for i in 0..12 {
-            if i < 6 {
-                a[i] = busy
-            } else {
-                b[i] = busy
-            }
+            if i < 6 { a[i] = busy } else { b[i] = busy }
         }
         let mem = [512 * 300u64; 12]; // 512 MiB held
         let mem_alloc = [1024 * 300u64; 12];

@@ -9,8 +9,8 @@
 //! tool wrote nothing outside the windows, and writes changed windows back
 //! with `qemu-io`. No FUSE or NBD export, so no root and no `/dev/fuse`.
 
-use super::qemu_img::{self, DiskFormat};
 use super::ImageError;
+use super::qemu_img::{self, DiskFormat};
 use serde::Serialize;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};

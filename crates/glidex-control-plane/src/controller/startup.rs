@@ -75,8 +75,13 @@ impl VmManager {
                 }
                 None if st.instance.is_none() => {
                     st.phase = VmPhase::Unknown;
-                    set_cond(&mut st.conditions, "HypervisorReachable", Tristate::Unknown, "LegacyOrphan",
-                        "a hypervisor answers on this VM's socket but no shim reports it; stop that process");
+                    set_cond(
+                        &mut st.conditions,
+                        "HypervisorReachable",
+                        Tristate::Unknown,
+                        "LegacyOrphan",
+                        "a hypervisor answers on this VM's socket but no shim reports it; stop that process",
+                    );
                 }
                 None => {}
             }

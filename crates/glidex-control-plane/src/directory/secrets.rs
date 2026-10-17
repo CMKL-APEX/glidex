@@ -10,7 +10,7 @@
 //! sends it with the CA key to each new server (clustering.md §12.1).
 
 use base64::Engine as _;
-use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, CHACHA20_POLY1305, NONCE_LEN};
+use ring::aead::{Aad, CHACHA20_POLY1305, LessSafeKey, NONCE_LEN, Nonce, UnboundKey};
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
 use std::path::{Path, PathBuf};
@@ -71,7 +71,9 @@ impl Kek {
                 })
             }
             None => {
-                tracing::warn!("no secrets key file configured: connector secrets last only as long as this process");
+                tracing::warn!(
+                    "no secrets key file configured: connector secrets last only as long as this process"
+                );
                 Ok(Kek {
                     bytes: Zeroizing::new(crate::auth::random_bytes(KEK_LEN)),
                     path: None,

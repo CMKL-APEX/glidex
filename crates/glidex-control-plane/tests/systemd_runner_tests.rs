@@ -15,12 +15,12 @@
 //! operator installed for the test user (their run directory given as
 //! `GLIDEX_TEST_RUN_DIR`). That also checks the polkit `kill` verb (F6).
 
-use axum::{body::Body, http::Request, http::StatusCode, Router};
+use axum::{Router, body::Body, http::Request, http::StatusCode};
 use glidex_control_plane::api::create_router;
 use glidex_control_plane::models::{ExitCause, PowerState, Runner};
 use glidex_control_plane::state::VmManager;
 use http_body_util::BodyExt;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
@@ -199,12 +199,14 @@ async fn systemd_runner_launches_adopts_and_stops() {
     };
 
     let rootfs = tmp.path().join("root.raw");
-    assert!(Command::new("qemu-img")
-        .args(["convert", "-O", "raw", &image])
-        .arg(&rootfs)
-        .status()
-        .unwrap()
-        .success());
+    assert!(
+        Command::new("qemu-img")
+            .args(["convert", "-O", "raw", &image])
+            .arg(&rootfs)
+            .status()
+            .unwrap()
+            .success()
+    );
     let db = tmp.path().join("cp.db");
 
     // Launch through StartUnit; the unit is the instance.
@@ -281,11 +283,13 @@ async fn systemd_runner_launches_adopts_and_stops() {
     // desired state follows (D12).
     if system {
         // As root, as systemd itself does at shutdown.
-        assert!(Command::new("sudo")
-            .args(["-n", "systemctl", "stop", &unit])
-            .status()
-            .unwrap()
-            .success());
+        assert!(
+            Command::new("sudo")
+                .args(["-n", "systemctl", "stop", &unit])
+                .status()
+                .unwrap()
+                .success()
+        );
     } else {
         systemctl(&["stop", &unit]);
     }

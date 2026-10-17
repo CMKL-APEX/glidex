@@ -14,7 +14,7 @@ use crate::state::VmManager;
 use crate::store::{Db, Origin, TableId};
 use bytes::Bytes;
 use redb::ReadableTable;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
@@ -78,13 +78,13 @@ pub fn rekey_node(
             let mut changed = Vec::new();
             for r in t.iter().map_err(other)? {
                 let (k, v) = r.map_err(other)?;
-                if let Ok(mut j) = serde_json::from_slice::<Value>(v.value()) {
-                    if f(&mut j) {
-                        changed.push((
-                            k.value().to_string(),
-                            serde_json::to_vec(&j).map_err(other)?,
-                        ));
-                    }
+                if let Ok(mut j) = serde_json::from_slice::<Value>(v.value())
+                    && f(&mut j)
+                {
+                    changed.push((
+                        k.value().to_string(),
+                        serde_json::to_vec(&j).map_err(other)?,
+                    ));
                 }
             }
             for (k, v) in changed {
@@ -294,7 +294,9 @@ pub async fn join(
     // A plain join refuses a host with resources: it could only abandon or
     // duplicate them (§5.2).
     if manager.has_resources().await {
-        return Err(other("this host has VMs, disks, networks or credentials: a plain join would abandon them; join with --import to bring them along"));
+        return Err(other(
+            "this host has VMs, disks, networks or credentials: a plain join would abandon them; join with --import to bring them along",
+        ));
     }
     let (_, _, ca_hash) = tokens::parse(&opts.token).map_err(other)?;
     let server = opts.server.to_string();
@@ -303,7 +305,11 @@ pub async fn join(
     let ca_pem = net::fetch_ca_untrusted(&server).await?;
     let got = pki::public_key_fingerprint(&ca_pem)?;
     if got != ca_hash {
-        return Err(other(format!("the server's CA ({}…) is not the one the token names ({}…): refusing to join. If this is your cluster, its CA was rotated after the token was issued (a server left): issue a new token", &got[..12], &ca_hash[..12])));
+        return Err(other(format!(
+            "the server's CA ({}…) is not the one the token names ({}…): refusing to join. If this is your cluster, its CA was rotated after the token was issued (a server left): issue a new token",
+            &got[..12],
+            &ca_hash[..12]
+        )));
     }
     let trusting = net::client_trusting(&ca_pem)?;
 
@@ -481,7 +487,11 @@ pub async fn rejoin(
     let ca_pem = net::fetch_ca_untrusted(&server).await?;
     let got = pki::public_key_fingerprint(&ca_pem)?;
     if got != ca_hash {
-        return Err(other(format!("the server's CA ({}…) is not the one the token names ({}…): refusing to rejoin. If this is your cluster, its CA was rotated after the token was issued (a server left): issue a new token", &got[..12], &ca_hash[..12])));
+        return Err(other(format!(
+            "the server's CA ({}…) is not the one the token names ({}…): refusing to rejoin. If this is your cluster, its CA was rotated after the token was issued (a server left): issue a new token",
+            &got[..12],
+            &ca_hash[..12]
+        )));
     }
     let trusting = net::client_trusting(&ca_pem)?;
     let ccfg = cfg.cluster.clone();
@@ -973,12 +983,12 @@ pub async fn leave(manager: &Arc<VmManager>) -> Result<Value, ClusterError> {
             return Err(other(format!(
                 "this node is {p:?}: run `gxctl node remove {}` on a server first",
                 c.identity.name
-            )))
+            )));
         }
         None => {
             return Err(other(
                 "the cluster has no record of this node (is it up to date?)",
-            ))
+            ));
         }
     }
     if manager.ovn_enabled() {
@@ -1031,15 +1041,13 @@ pub async fn leave_removed_offline(
                 if n.spec.role == NodeRole::Server
                     && n.meta.id != identity.node_id
                     && !n.status.phase.is_tombstone()
-                {
-                    if let Some(a) = n
+                    && let Some(a) = n
                         .status
                         .advertise
                         .map(|a| a.to_string())
                         .filter(|a| !servers.contains(a))
-                    {
-                        servers.push(a);
-                    }
+                {
+                    servers.push(a);
                 }
             }
             let material = net::TlsMaterial::from_pem(
@@ -1075,7 +1083,9 @@ pub async fn leave_removed_offline(
                 if r.status.is_success() {
                     return Err(other(format!(
                         "{s} still has this node as a member ({}): remove it on a server first (`gxctl node remove {}`)",
-                        recorded.map(|p| format!("{p:?}")).unwrap_or_else(|| "no record here".into()),
+                        recorded
+                            .map(|p| format!("{p:?}"))
+                            .unwrap_or_else(|| "no record here".into()),
                         identity.name
                     )));
                 }
@@ -1121,7 +1131,11 @@ pub async fn join_import(
     let ca_pem = net::fetch_ca_untrusted(&server).await?;
     let got = pki::public_key_fingerprint(&ca_pem)?;
     if got != ca_hash {
-        return Err(other(format!("the server's CA ({}…) is not the one the token names ({}…): refusing to join. If this is your cluster, its CA was rotated after the token was issued (a server left): issue a new token", &got[..12], &ca_hash[..12])));
+        return Err(other(format!(
+            "the server's CA ({}…) is not the one the token names ({}…): refusing to join. If this is your cluster, its CA was rotated after the token was issued (a server left): issue a new token",
+            &got[..12],
+            &ca_hash[..12]
+        )));
     }
     let trusting = net::client_trusting(&ca_pem)?;
     let ccfg = cfg.cluster.clone();
@@ -1209,17 +1223,16 @@ pub async fn join_import(
                 Some("rejected") => {
                     return Err(other(
                         "the import was rejected or expired; this host is unchanged",
-                    ))
+                    ));
                 }
                 _ => {}
             }
-        } else if r.status == hyper::StatusCode::MISDIRECTED_REQUEST {
-            if let Some(l) = serde_json::from_slice::<Value>(&r.body)
+        } else if r.status == hyper::StatusCode::MISDIRECTED_REQUEST
+            && let Some(l) = serde_json::from_slice::<Value>(&r.body)
                 .ok()
                 .and_then(|v| v["leader"].as_str().map(String::from))
-            {
-                target = l;
-            }
+        {
+            target = l;
         }
         if tokio::time::Instant::now() >= deadline {
             // Withdraw the plan so it can't commit behind this host's back; if it
@@ -1238,7 +1251,10 @@ pub async fn join_import(
                 break v["result"].clone();
             }
             if !r.status.is_success() {
-                return Err(other(format!("not approved in time, and the plan {plan} could not be withdrawn ({}): ask an administrator to reject it before using this host's VMs elsewhere", r.status)));
+                return Err(other(format!(
+                    "not approved in time, and the plan {plan} could not be withdrawn ({}): ask an administrator to reject it before using this host's VMs elsewhere",
+                    r.status
+                )));
             }
             return Err(other(format!(
                 "not approved in time: the plan {plan} was withdrawn and this host is unchanged"
@@ -1296,13 +1312,11 @@ pub async fn join_import(
 /// at the next ten-minute refresh: the scheduler can't place VMs on it before.
 async fn report_after_joining(manager: &Arc<VmManager>) {
     // An agent reports through its cache: once that holds its own record.
-    if let Some(link) = manager.node_link() {
-        if !link.wait_ready(Duration::from_secs(30)).await {
-            tracing::warn!(
-                "this node's cache is not ready yet; it reports itself at the next refresh"
-            );
-            return;
-        }
+    if let Some(link) = manager.node_link()
+        && !link.wait_ready(Duration::from_secs(30)).await
+    {
+        tracing::warn!("this node's cache is not ready yet; it reports itself at the next refresh");
+        return;
     }
     let m = manager.clone();
     match tokio::task::spawn_blocking(move || m.report_self()).await {

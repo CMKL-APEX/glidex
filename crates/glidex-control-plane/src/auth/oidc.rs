@@ -13,7 +13,7 @@
 
 use crate::config::OidcConfig;
 use base64::Engine as _;
-use jsonwebtoken::{jwk::JwkSet, Algorithm, DecodingKey, Validation};
+use jsonwebtoken::{Algorithm, DecodingKey, Validation, jwk::JwkSet};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -252,10 +252,10 @@ impl OidcState {
 
     async fn jwks(&self, d: &Discovery, refresh: bool) -> Result<JwkSet, OidcError> {
         let mut cached = self.jwks.lock().await;
-        if let Some(j) = cached.as_ref() {
-            if !refresh || j.fetched.elapsed() < JWKS_REFRESH_MIN {
-                return Ok(j.set.clone());
-            }
+        if let Some(j) = cached.as_ref()
+            && (!refresh || j.fetched.elapsed() < JWKS_REFRESH_MIN)
+        {
+            return Ok(j.set.clone());
         }
         let set: JwkSet = self
             .http
@@ -451,27 +451,25 @@ impl OidcState {
         let data = jsonwebtoken::decode::<IdClaims>(id_token, &key, &v)
             .map_err(|e| OidcError::Invalid(format!("id_token: {}", e)))?;
         let c = data.claims;
-        if let Some(iat) = c.iat {
-            if iat > now() + SKEW_SECS {
-                return Err(OidcError::Invalid("id_token issued in the future".into()));
-            }
+        if let Some(iat) = c.iat
+            && iat > now() + SKEW_SECS
+        {
+            return Err(OidcError::Invalid("id_token issued in the future".into()));
         }
-        if let Some(expected) = nonce {
-            if !c
+        if let Some(expected) = nonce
+            && !c
                 .nonce
                 .as_deref()
                 .is_some_and(|n| super::constant_eq(n, expected))
-            {
-                return Err(OidcError::Invalid("id_token nonce mismatch".into()));
-            }
+        {
+            return Err(OidcError::Invalid("id_token nonce mismatch".into()));
         }
         // With several audiences the token must be issued to us (azp).
-        if let Some(aud) = c.rest.get("aud").and_then(|a| a.as_array()) {
-            if aud.len() > 1
-                && c.rest.get("azp").and_then(|a| a.as_str()) != Some(self.cfg.client_id.as_str())
-            {
-                return Err(OidcError::Invalid("id_token azp is not this client".into()));
-            }
+        if let Some(aud) = c.rest.get("aud").and_then(|a| a.as_array())
+            && aud.len() > 1
+            && c.rest.get("azp").and_then(|a| a.as_str()) != Some(self.cfg.client_id.as_str())
+        {
+            return Err(OidcError::Invalid("id_token azp is not this client".into()));
         }
         let groups: Vec<String> = match c.rest.get(&self.cfg.groups_claim) {
             Some(serde_json::Value::Array(a)) => a

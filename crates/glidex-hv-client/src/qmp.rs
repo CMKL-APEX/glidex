@@ -5,7 +5,7 @@
 //! A QMP monitor serves one client at a time, so a connection attempt that
 //! finds it busy is retried for a short while (spec §16).
 
-use crate::{connect, GuestState, HvError, Observed};
+use crate::{GuestState, HvError, Observed, connect};
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;

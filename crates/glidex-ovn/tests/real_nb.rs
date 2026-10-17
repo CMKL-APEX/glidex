@@ -9,8 +9,8 @@
 //! edge, checks `sync` is a no-op the second time, and deletes everything.
 
 use glidex_ovn::*;
-use glidex_ovs::exec::{Cmd, Exec, Output, SystemExec};
 use glidex_ovs::OvsError;
+use glidex_ovs::exec::{Cmd, Exec, Output, SystemExec};
 use std::path::Path;
 
 /// The system, with every command printed (run with --nocapture to see them).
@@ -239,16 +239,18 @@ fn sync_makes_the_objects_northd_accepts_them_and_cleans_up() {
         ps.contains("52:54:00:aa:bb:02 10.89.242.2"),
         "port security pins the address: {ps}"
     );
-    assert!(nbctl(
-        &db,
-        &[
-            "get",
-            "Logical_Switch_Port",
-            "gxt-1",
-            "options:requested-chassis"
-        ]
-    )
-    .contains("chassis-b"));
+    assert!(
+        nbctl(
+            &db,
+            &[
+                "get",
+                "Logical_Switch_Port",
+                "gxt-1",
+                "options:requested-chassis"
+            ]
+        )
+        .contains("chassis-b")
+    );
     let lan = nbctl(&db, &["show", "gx-gxt-lan"]);
     assert!(lan.contains("localnet"), "{lan}");
     assert!(
@@ -287,16 +289,20 @@ fn sync_makes_the_objects_northd_accepts_them_and_cleans_up() {
         !nbctl(&db, &["lr-nat-list", "gx-edge"]).contains("10.89.242.0/24"),
         "a VPC network leaves through its own router"
     );
-    assert!(nbctl(
-        &db,
-        &["get", "Logical_Router", "gxr-r1", "options:snat-ct-zone"]
-    )
-    .contains("60001"));
-    assert!(nbctl(
-        &db,
-        &["get", "Logical_Router", "gx-edge", "options:snat-ct-zone"]
-    )
-    .contains("60000"));
+    assert!(
+        nbctl(
+            &db,
+            &["get", "Logical_Router", "gxr-r1", "options:snat-ct-zone"]
+        )
+        .contains("60001")
+    );
+    assert!(
+        nbctl(
+            &db,
+            &["get", "Logical_Router", "gx-edge", "options:snat-ct-zone"]
+        )
+        .contains("60000")
+    );
     let members = nbctl(&db, &["ha-chassis-group-list"]);
     assert!(
         members.contains("gx-edge") && members.contains("gxr-r1") && members.contains("chassis-a"),

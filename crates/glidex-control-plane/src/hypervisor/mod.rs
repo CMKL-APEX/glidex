@@ -10,7 +10,7 @@
 pub mod cloud_hypervisor;
 pub mod qemu;
 
-use crate::images::qemu_img::{detect_image_type, ImageType};
+use crate::images::qemu_img::{ImageType, detect_image_type};
 use crate::models::VmConfig;
 use glidex_hv_client::{HvError, Observed};
 use glidex_ovs::vm_port::VmPortBinding;

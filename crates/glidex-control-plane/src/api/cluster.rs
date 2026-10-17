@@ -1,11 +1,11 @@
 //! `/cluster/*`: forming, joining and inspecting the cluster (spec/clustering.md
 //! §5). `init`, `join` and `snapshot` act on the host that receives them.
 
-use super::{err, ApiErr, Caller};
+use super::{ApiErr, Caller, err};
 use crate::authz::{Ent, EntitySet};
 use crate::cluster::manage;
 use crate::node::NodeRole;
-use axum::{http::StatusCode, response::IntoResponse, Json};
+use axum::{Json, http::StatusCode, response::IntoResponse};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -260,7 +260,11 @@ pub async fn dissolve(
 ) -> Result<impl IntoResponse, ApiErr> {
     c.require(Ent::Cluster, EntitySet::new())?;
     if !b.is_some_and(|b| b.0["force"] == true) {
-        return Err(err(StatusCode::CONFLICT, "confirmation_required", "this ends the cluster and turns this host into a standalone host with everything it held; it keeps a final snapshot: confirm with --force"));
+        return Err(err(
+            StatusCode::CONFLICT,
+            "confirmation_required",
+            "this ends the cluster and turns this host into a standalone host with everything it held; it keeps a final snapshot: confirm with --force",
+        ));
     }
     let cl = require_cluster(&c)?;
     c.set_target("cluster".to_string());
@@ -309,7 +313,7 @@ pub async fn status(
     match c.manager().cluster() {
         Some(cl) => {
             // Through a node's UI, "this node" is that node.
-            let mut v = manage::status_seen_from(&cl, via.as_ref().map(|v| v.0 .0.as_str()));
+            let mut v = manage::status_seen_from(&cl, via.as_ref().map(|v| v.0.0.as_str()));
             // Port checks open connections to every node: opt in (`?ports=true`).
             if q.ports {
                 v["ports"] = json!(manage::port_checks(&cl, c.manager().ovn_enabled()).await);

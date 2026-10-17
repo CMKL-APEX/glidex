@@ -15,9 +15,9 @@ use thiserror::Error;
 
 mod db;
 pub use db::{
-    new_bell, ring, Applied, Bell, Consistency, Db, Def, Forwarder, Mirror, Op, Origin, RecTable,
-    Replicator, SnapshotView, StoreError, Submitted, TableId, Tx, WriteSet, LAST_APPLIED,
-    LAST_MEMBERSHIP, MAX_WRITE_SET_BYTES, MIRROR_REVISION, WRITE_SET_FORMAT,
+    Applied, Bell, Consistency, Db, Def, Forwarder, LAST_APPLIED, LAST_MEMBERSHIP,
+    MAX_WRITE_SET_BYTES, MIRROR_REVISION, Mirror, Op, Origin, RecTable, Replicator, SnapshotView,
+    StoreError, Submitted, TableId, Tx, WRITE_SET_FORMAT, WriteSet, new_bell, ring,
 };
 
 const VMS_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("vms");
@@ -209,10 +209,10 @@ impl VmStore {
             std::fs::set_permissions(path.as_ref(), std::fs::Permissions::from_mode(0o600))?;
         }
         let store = Self { db: Arc::new(db) };
-        if let Some(v) = store.schema_version()? {
-            if v > SCHEMA_VERSION {
-                return Err(PersistenceError::NewerSchema(v));
-            }
+        if let Some(v) = store.schema_version()?
+            && v > SCHEMA_VERSION
+        {
+            return Err(PersistenceError::NewerSchema(v));
         }
         Ok(store)
     }
@@ -310,10 +310,10 @@ impl VmStore {
             let mut changed = Vec::new();
             for r in t.iter()? {
                 let (k, v) = r?;
-                if let Ok(mut j) = serde_json::from_slice::<serde_json::Value>(v.value()) {
-                    if f(&mut j) {
-                        changed.push((k.value().to_string(), serde_json::to_vec(&j)?));
-                    }
+                if let Ok(mut j) = serde_json::from_slice::<serde_json::Value>(v.value())
+                    && f(&mut j)
+                {
+                    changed.push((k.value().to_string(), serde_json::to_vec(&j)?));
                 }
             }
             for (k, v) in changed {

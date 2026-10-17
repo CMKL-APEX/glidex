@@ -1,9 +1,9 @@
 //! Host NICs: classification before use as an uplink (spec §8.4) and PCI
 //! driver binding for DPDK (spec §8.3).
 
+use crate::OvsError;
 use crate::exec::{Cmd, Exec, Program};
 use crate::names::validate_ifname;
-use crate::OvsError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::net::IpAddr;
@@ -306,10 +306,11 @@ mod tests {
             ]
         );
         restore_driver(&exec, "0000:41:00.0").unwrap();
-        assert!(exec
-            .writes()
-            .iter()
-            .any(|(p, d)| p.ends_with("driver_override") && d == b"\n"));
+        assert!(
+            exec.writes()
+                .iter()
+                .any(|(p, d)| p.ends_with("driver_override") && d == b"\n")
+        );
         assert!(validate_bdf("0000:41:00.0").is_ok());
         assert!(validate_bdf("41:00.0").is_err());
         assert!(validate_bdf("0000:41:00.0/../x").is_err());

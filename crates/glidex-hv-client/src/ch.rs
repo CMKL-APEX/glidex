@@ -1,7 +1,7 @@
 //! Cloud Hypervisor's HTTP API over its Unix socket. Message framing is
 //! hand-rolled to match upstream's `api_client` exactly.
 
-use crate::{connect, GuestState, HvError, Observed};
+use crate::{GuestState, HvError, Observed, connect};
 use std::io::{Read, Write};
 
 pub struct ChClient {
@@ -53,7 +53,10 @@ impl ChClient {
                 body_str.len(),
                 body_str
             ),
-            None => format!("{} /api/v1{} HTTP/1.1\r\nHost: localhost\r\nAccept: */*\r\n\r\n", method, path),
+            None => format!(
+                "{} /api/v1{} HTTP/1.1\r\nHost: localhost\r\nAccept: */*\r\n\r\n",
+                method, path
+            ),
         };
         stream.write_all(request.as_bytes())?;
         stream.flush()?;
@@ -75,7 +78,7 @@ impl ChClient {
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
                 Err(e) if e.kind() == std::io::ErrorKind::TimedOut => break,
                 Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => {
-                    return Err(HvError::Connect(format!("{}: {}", self.socket_path, e)))
+                    return Err(HvError::Connect(format!("{}: {}", self.socket_path, e)));
                 }
                 Err(e) => return Err(e.into()),
             }
@@ -227,10 +230,10 @@ mod tests {
             loop {
                 let n = s.read(&mut buf).unwrap();
                 req.extend_from_slice(&buf[..n]);
-                if let Some(end) = find_header_end(&req) {
-                    if n == 0 || req.len() >= end + parse_content_length(&req[..end]) {
-                        break;
-                    }
+                if let Some(end) = find_header_end(&req)
+                    && (n == 0 || req.len() >= end + parse_content_length(&req[..end]))
+                {
+                    break;
                 }
                 if n == 0 {
                     break;

@@ -357,7 +357,7 @@ pub fn forget_gone(round: &mut Round, with_cursors: &BTreeSet<String>, live: &BT
 
 #[cfg(test)]
 mod tests {
-    use super::super::ledger::{combine, Ledger, LedgerSettings, HOUR_MS};
+    use super::super::ledger::{HOUR_MS, Ledger, LedgerSettings, combine};
     use super::*;
     use crate::store::Db;
     use std::path::Path;
@@ -636,10 +636,11 @@ mod tests {
             rows.iter().all(|r| r.subject.id != "2"),
             "the seed is not metered"
         );
-        assert!(rows
-            .iter()
-            .filter(|r| r.subject.kind == SubjectKind::Disk)
-            .all(|r| r.subject.vm_id.as_deref() == Some("vm-1")));
+        assert!(
+            rows.iter()
+                .filter(|r| r.subject.kind == SubjectKind::Disk)
+                .all(|r| r.subject.vm_id.as_deref() == Some("vm-1"))
+        );
     }
 
     #[test]

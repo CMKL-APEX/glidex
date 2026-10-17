@@ -6,10 +6,10 @@
 //! deleting, the rest. Every call is `ovn-nbctl`, through the same [`Exec`]
 //! glidex-ovs uses, so tests assert exact command lines.
 
+use glidex_ovs::OvsError;
 use glidex_ovs::exec::{Cmd, Exec, Program};
 use glidex_ovs::net::Ipv4Net;
 use glidex_ovs::vsctl::{self, Row};
-use glidex_ovs::OvsError;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::{IpAddr, Ipv4Addr};
@@ -1049,26 +1049,25 @@ fn ensure_network(
             let lsp = format!("{sw}-rt");
             // A network moved to another router (or back to the edge): its
             // port leaves the old one first (`--may-exist` won't move it).
-            if !new {
-                if let Some(port) = nb
+            if !new
+                && let Some(port) = nb
                     .find("Logical_Router_Port", &["_uuid"], &[format!("name={lrp}")])?
                     .first()
                     .and_then(|r| uuid(r, "_uuid"))
-                {
-                    let owner = nb
-                        .find("Logical_Router", &["name", "ports"], &[])?
-                        .into_iter()
-                        .find(|r| {
-                            r.0.get("ports")
-                                .is_some_and(|p| p.to_string().contains(&port))
-                        })
-                        .and_then(|r| r.str("name"));
-                    if owner.as_deref().is_some_and(|o| o != router) {
-                        nb.txn(vec![vec![s("--if-exists"), s("lrp-del"), lrp.clone()]])?;
-                        report
-                            .changed
-                            .push(format!("network {} moved to {router}", n.name));
-                    }
+            {
+                let owner = nb
+                    .find("Logical_Router", &["name", "ports"], &[])?
+                    .into_iter()
+                    .find(|r| {
+                        r.0.get("ports")
+                            .is_some_and(|p| p.to_string().contains(&port))
+                    })
+                    .and_then(|r| r.str("name"));
+                if owner.as_deref().is_some_and(|o| o != router) {
+                    nb.txn(vec![vec![s("--if-exists"), s("lrp-del"), lrp.clone()]])?;
+                    report
+                        .changed
+                        .push(format!("network {} moved to {router}", n.name));
                 }
             }
             cmds.extend([
@@ -1171,17 +1170,19 @@ fn ensure_network(
             &["_uuid", "options"],
             &[format!("external_ids:{NETWORK_KEY}={}", n.name)],
         )?;
-        if let Some(r) = rows.first() {
-            if r.map("options").is_empty() {
-                nb.txn(vec![[
+        if let Some(r) = rows.first()
+            && r.map("options").is_empty()
+        {
+            nb.txn(vec![
+                [
                     vec![
                         s("dhcp-options-set-options"),
                         uuid(r, "_uuid").unwrap_or_default(),
                     ],
                     dhcp_options(n),
                 ]
-                .concat()])?;
-            }
+                .concat(),
+            ])?;
         }
     }
     let _ = (desired, was);
@@ -1245,20 +1246,18 @@ fn ensure_port(
         ]),
     }
     // The network's DHCP options, by the UUID of its row.
-    if let (Some(_), Some(n)) = (p.ip, net) {
-        if n.cidr.is_some() {
-            if let Some(u) = nb
-                .find(
-                    "DHCP_Options",
-                    &["_uuid"],
-                    &[format!("external_ids:{NETWORK_KEY}={}", p.network)],
-                )?
-                .first()
-                .and_then(|r| uuid(r, "_uuid"))
-            {
-                cmds.push(vec![s("lsp-set-dhcpv4-options"), p.lport.clone(), u]);
-            }
-        }
+    if let (Some(_), Some(n)) = (p.ip, net)
+        && n.cidr.is_some()
+        && let Some(u) = nb
+            .find(
+                "DHCP_Options",
+                &["_uuid"],
+                &[format!("external_ids:{NETWORK_KEY}={}", p.network)],
+            )?
+            .first()
+            .and_then(|r| uuid(r, "_uuid"))
+    {
+        cmds.push(vec![s("lsp-set-dhcpv4-options"), p.lport.clone(), u]);
     }
     nb.txn(cmds)?;
     report.changed.push(format!("port {}", p.lport));

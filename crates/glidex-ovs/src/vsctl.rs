@@ -7,8 +7,8 @@
 //! `["set", [...]]` (also used for empty optional columns) and
 //! `["map", [[k, v], ...]]`.
 
-use crate::exec::{Cmd, Exec, Program};
 use crate::OvsError;
+use crate::exec::{Cmd, Exec, Program};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
@@ -65,17 +65,16 @@ impl Row {
 
     pub fn map(&self, column: &str) -> BTreeMap<String, String> {
         let mut out = BTreeMap::new();
-        if let Some(Value::Array(a)) = self.0.get(column) {
-            if a.first() == Some(&Value::String("map".into())) {
-                if let Some(Value::Array(pairs)) = a.get(1) {
-                    for pair in pairs {
-                        if let (Some(k), Some(v)) = (
-                            pair.get(0).and_then(Value::as_str),
-                            pair.get(1).and_then(scalar_to_string),
-                        ) {
-                            out.insert(k.to_string(), v);
-                        }
-                    }
+        if let Some(Value::Array(a)) = self.0.get(column)
+            && a.first() == Some(&Value::String("map".into()))
+            && let Some(Value::Array(pairs)) = a.get(1)
+        {
+            for pair in pairs {
+                if let (Some(k), Some(v)) = (
+                    pair.get(0).and_then(Value::as_str),
+                    pair.get(1).and_then(scalar_to_string),
+                ) {
+                    out.insert(k.to_string(), v);
                 }
             }
         }

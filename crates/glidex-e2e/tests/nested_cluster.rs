@@ -28,7 +28,7 @@
 //! outer network the hosts use, default `default`) override the defaults.
 
 use glidex_e2e::*;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::process::Command;
 use std::time::Duration;
 
@@ -523,7 +523,11 @@ fn a_nested_two_node_cluster_binds_vm_ports_and_carries_traffic_over_geneve() {
                 let nodes = inner.call("GET", "/nodes", None).1;
                 let log =
                     |h: &Ssh| String::from_utf8_lossy(&h.run(LOG_PROBLEMS).stdout).into_owned();
-                format!("vm: {vm}\nevents: {events}\ndisks: {disks}\nimages: {images}\nnodes: {nodes}\nh1 log:\n{}\nh2 log:\n{}", log(&h1), log(&h2))
+                format!(
+                    "vm: {vm}\nevents: {events}\ndisks: {disks}\nimages: {images}\nnodes: {nodes}\nh1 log:\n{}\nh2 log:\n{}",
+                    log(&h1),
+                    log(&h2)
+                )
             },
         );
     }
@@ -878,7 +882,9 @@ fn a_nested_two_node_cluster_binds_vm_ports_and_carries_traffic_over_geneve() {
 
     // An existing network moves onto the router: its port leaves the edge,
     // and its guests then reach the router's other networks.
-    step("existing networks attach to the router: a NAT one moves off the edge, an isolated one gets routed");
+    step(
+        "existing networks attach to the router: a NAT one moves off the edge, an isolated one gets routed",
+    );
     let d_ip = line
         .split("my address:")
         .nth(1)
@@ -1377,8 +1383,7 @@ fn check_single_nic_uplink_survives_a_reboot(h2: &Ssh, ui: &(std::path::PathBuf,
 }
 
 /// The control plane's warnings, errors and cluster-link changes, newest last.
-const LOG_PROBLEMS: &str =
-    "sudo journalctl -u glidex-control-plane --no-pager -o short-iso | grep -E 'WARN|ERROR|cluster servers|liveness|disk created|image (ready|copied)' | grep -v ovn_dbctl | tail -n 80 | cut -c1-300";
+const LOG_PROBLEMS: &str = "sudo journalctl -u glidex-control-plane --no-pager -o short-iso | grep -E 'WARN|ERROR|cluster servers|liveness|disk created|image (ready|copied)' | grep -v ovn_dbctl | tail -n 80 | cut -c1-300";
 
 fn tempfile_dir(tag: &str) -> std::path::PathBuf {
     let d = std::env::temp_dir().join(format!("glidex-e2e-{tag}"));

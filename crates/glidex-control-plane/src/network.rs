@@ -3,8 +3,8 @@
 
 use crate::store::Db;
 use glidex_netd::client::{Client, ClientError};
-use glidex_netd::proto::{ErrorBody, OnBehalfOf, Op, FULL_SOCKET_NAME, STATUS_SOCKET_NAME};
-use glidex_ovs::names::{validate_name, MAX_IFNAME};
+use glidex_netd::proto::{ErrorBody, FULL_SOCKET_NAME, OnBehalfOf, Op, STATUS_SOCKET_NAME};
+use glidex_ovs::names::{MAX_IFNAME, validate_name};
 use glidex_ovs::net::Ipv4Net;
 use glidex_ovs::vm_port::VmPortKind;
 use redb::{ReadableTable, TableDefinition};
@@ -330,7 +330,7 @@ impl CreateNetworkRequest {
             (None, NetworkMode::Bridged) => {
                 return Err(NetError::Invalid(
                     "a bridged network needs an existing bridge".into(),
-                ))
+                ));
             }
             (None, _) => format!("gxbr-{}", self.name),
         };
@@ -345,10 +345,10 @@ impl CreateNetworkRequest {
                 "subnet only applies to NAT networks".into(),
             ));
         }
-        if let Some(v) = self.vlan {
-            if !(1..=4094).contains(&v) {
-                return Err(NetError::Invalid("vlan must be 1-4094".into()));
-            }
+        if let Some(v) = self.vlan
+            && !(1..=4094).contains(&v)
+        {
+            return Err(NetError::Invalid("vlan must be 1-4094".into()));
         }
         Ok(Network {
             name: self.name.clone(),

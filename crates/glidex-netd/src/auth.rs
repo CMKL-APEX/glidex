@@ -2,7 +2,7 @@
 //! and which ops each group may send (security spec §8.1).
 
 use nix::sys::socket::{getsockopt, sockopt::PeerCredentials};
-use nix::unistd::{getgrouplist, Gid, Group, Uid, User};
+use nix::unistd::{Gid, Group, Uid, User, getgrouplist};
 use std::collections::BTreeMap;
 use std::ffi::CString;
 use std::os::unix::net::UnixStream;

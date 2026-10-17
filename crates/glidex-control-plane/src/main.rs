@@ -60,8 +60,7 @@ fn check_kvm_access() -> Result<(), String> {
     }
 }
 
-const DETACHED_IN_SANDBOX: &str =
-    "The detached VM runner (reconcile.vm_runner \"detached\", or \"auto\" outside a \
+const DETACHED_IN_SANDBOX: &str = "The detached VM runner (reconcile.vm_runner \"detached\", or \"auto\" outside a \
 glidex-control-plane*.service unit) runs hypervisors as children of this process, but it \
 runs with no_new_privs (a sandboxed unit), which drops cloud-hypervisor's CAP_NET_ADMIN, \
 and the unit closes /dev/kvm. Set vm_runner \"systemd\" (\"auto\" picks it in the \
@@ -131,7 +130,11 @@ async fn main() {
         .await
         {
             Ok(()) => {
-                println!("A new single-voter cluster was started from {}. Start the control plane; re-join the other servers with fresh state.", from.map(|f| f.display().to_string()).unwrap_or_else(|| db.display().to_string()));
+                println!(
+                    "A new single-voter cluster was started from {}. Start the control plane; re-join the other servers with fresh state.",
+                    from.map(|f| f.display().to_string())
+                        .unwrap_or_else(|| db.display().to_string())
+                );
                 return;
             }
             Err(e) => {
@@ -149,7 +152,9 @@ async fn main() {
         match glidex_control_plane::cluster::manage::leave_removed_offline(&db).await {
             Ok((name, confirmed)) => {
                 leave_ovn();
-                println!("Left the cluster as {name} ({confirmed}): this host's cluster identity and key are gone. Start the control plane: it is standalone.");
+                println!(
+                    "Left the cluster as {name} ({confirmed}): this host's cluster identity and key are gone. Start the control plane: it is standalone."
+                );
                 return;
             }
             Err(e) => {
@@ -166,8 +171,14 @@ async fn main() {
         match glidex_control_plane::cluster::departure::offline_detach(&db) {
             Ok(b) => {
                 leave_ovn();
-                println!("Detached: {} VM(s), {} disk(s) kept; this host's cluster identity and key are gone. Start the control plane: it is standalone.", b.vm_ids.len(), b.disk_ids.len());
-                println!("Changes made in the cluster since this node last synced are not included. On a server, run `gxctl node detach <node> --departed` so the cluster lets go (it rotates its CA).");
+                println!(
+                    "Detached: {} VM(s), {} disk(s) kept; this host's cluster identity and key are gone. Start the control plane: it is standalone.",
+                    b.vm_ids.len(),
+                    b.disk_ids.len()
+                );
+                println!(
+                    "Changes made in the cluster since this node last synced are not included. On a server, run `gxctl node detach <node> --departed` so the cluster lets go (it rotates its CA)."
+                );
                 return;
             }
             Err(e) => {

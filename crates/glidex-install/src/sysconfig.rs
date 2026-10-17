@@ -64,15 +64,16 @@ pub fn parse(contents: &str) -> Vec<Setting> {
             if let Some((k, v)) = rest.split_once('=') {
                 previous.insert(k.trim().to_string(), v.trim().to_string());
             }
-        } else if !line.is_empty() && !line.starts_with('#') {
-            if let Some((k, v)) = line.split_once('=') {
-                let key = k.trim().to_string();
-                out.push(Setting {
-                    previous: previous.get(&key).cloned(),
-                    key,
-                    value: v.trim().to_string(),
-                });
-            }
+        } else if !line.is_empty()
+            && !line.starts_with('#')
+            && let Some((k, v)) = line.split_once('=')
+        {
+            let key = k.trim().to_string();
+            out.push(Setting {
+                previous: previous.get(&key).cloned(),
+                key,
+                value: v.trim().to_string(),
+            });
         }
     }
     out

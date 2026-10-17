@@ -3,7 +3,7 @@ use axum::{
     http::{Request, StatusCode},
 };
 use http_body_util::BodyExt;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tempfile::TempDir;
 use tower::ServiceExt;
 

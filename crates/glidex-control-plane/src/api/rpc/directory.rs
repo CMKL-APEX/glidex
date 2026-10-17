@@ -1,6 +1,6 @@
 //! `glidex.directory.v1` over RPC; the logic is in `service::directory`.
 
-use super::{unary, Svc};
+use super::{Svc, unary};
 use crate::api::AppState;
 use crate::service::directory;
 use connectrpc::{RequestContext, ServiceRequest, ServiceResult};

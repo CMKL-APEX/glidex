@@ -15,9 +15,12 @@ pub fn listener() -> Option<std::io::Result<UnixListener>> {
         return None;
     }
     let fds = std::env::var("LISTEN_FDS").ok();
-    std::env::remove_var("LISTEN_PID");
-    std::env::remove_var("LISTEN_FDS");
-    std::env::remove_var("LISTEN_FDNAMES");
+    // SAFETY: main calls this before any thread starts.
+    unsafe {
+        std::env::remove_var("LISTEN_PID");
+        std::env::remove_var("LISTEN_FDS");
+        std::env::remove_var("LISTEN_FDNAMES");
+    }
     if fds.as_deref() != Some("1") {
         return Some(Err(std::io::Error::other(format!(
             "expected LISTEN_FDS=1, got {}",

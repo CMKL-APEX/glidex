@@ -10,7 +10,7 @@ use crate::controller::vm::set_cond;
 use crate::models::Tristate;
 use crate::network::{NetError, NetworkMode, NetworkPhase};
 use crate::state::{VmManager, VmManagerError};
-use crate::store::{event_key, Event, EventKind};
+use crate::store::{Event, EventKind, event_key};
 use glidex_netd::proto::{BridgeRecord, NatInfo, Op};
 use glidex_ovs::bridge::{BridgeSpec, Datapath};
 use glidex_ovs::nat::NatSpec;

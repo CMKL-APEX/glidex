@@ -2,7 +2,7 @@
 //! spec/cli.md "Access control").
 
 use crate::client::{
-    self, enc, format_entity, parse_principal, parse_role_ref, role_name, ApiClient,
+    self, ApiClient, enc, format_entity, parse_principal, parse_role_ref, role_name,
 };
 use crate::config;
 use crate::{
@@ -10,7 +10,7 @@ use crate::{
 };
 use colored::Colorize;
 use hyper::{Method, StatusCode};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::io::IsTerminal;
 use std::path::PathBuf;
 use zeroize::Zeroizing;
@@ -167,7 +167,9 @@ pub async fn login(client: &ApiClient, args: &[&str]) {
         }
         Zeroizing::new(t.trim().to_string())
     } else {
-        return usage("Usage: login --oidc [--connector ID] | --token   (over the local socket no login is needed)");
+        return usage(
+            "Usage: login --oidc [--connector ID] | --token   (over the local socket no login is needed)",
+        );
     };
     // Check the token before saving it.
     let previous = client::load_token().ok().flatten();
@@ -314,7 +316,9 @@ pub async fn auth(client: &ApiClient, args: &[&str]) {
         "trust" => auth_trust(&args[1..]).await,
         "token" | "tokens" => token(client, &args[1..]).await,
         "whoami" => whoami(client).await,
-        _ => usage("Usage: auth login [--url U]… [--profile P] [--oidc | --token | --pam-user U] [--connector ID] [--pin sha256/…] [--insecure] [--rebind] [--use] [--name N] [--days N] | logout [--revoke] [--keep-token] | status | use P | profiles [--all] | trust list|fetch|remove [--all] | token … | whoami"),
+        _ => usage(
+            "Usage: auth login [--url U]… [--profile P] [--oidc | --token | --pam-user U] [--connector ID] [--pin sha256/…] [--insecure] [--rebind] [--use] [--name N] [--days N] | logout [--revoke] [--keep-token] | status | use P | profiles [--all] | trust list|fetch|remove [--all] | token … | whoami",
+        ),
     }
 }
 
@@ -343,7 +347,10 @@ async fn tofu_verdict(urls: &[String]) -> String {
                     if same {
                         format!("it matches what we are being handed ({})", claim)
                     } else {
-                        format!("IT DOES NOT MATCH: the server says {claim}, the certificate in front of it is {}", seen.unwrap_or_else(|| "?".into()))
+                        format!(
+                            "IT DOES NOT MATCH: the server says {claim}, the certificate in front of it is {}",
+                            seen.unwrap_or_else(|| "?".into())
+                        )
                     }
                 }
                 None => "the server did not say (an older control plane?)".into(),
@@ -389,7 +396,7 @@ async fn auth_login(session: &ApiClient, args: &[&str]) {
                 return usage(&format!(
                     "which server? give --url https://host:8841 or --profile P; the file knows: {}",
                     known()
-                ))
+                ));
             }
         }
     }
@@ -397,7 +404,11 @@ async fn auth_login(session: &ApiClient, args: &[&str]) {
         match config::profile_of(&cfg, Some(n)) {
             Some(p) => Some(p),
             None if !urls.is_empty() => None, // a new profile, named, dialling the given target
-            None => return err(format!("profile '{n}' does not exist yet and no --url was given; there is nothing to log in to")),
+            None => {
+                return err(format!(
+                    "profile '{n}' does not exist yet and no --url was given; there is nothing to log in to"
+                ));
+            }
         }
     } else if !urls.is_empty() {
         // `--url` without `--profile`: refresh the profile that already
@@ -416,7 +427,9 @@ async fn auth_login(session: &ApiClient, args: &[&str]) {
             Some(p) => Some(p),
             None => {
                 if !has_flag(args, "--save") {
-                    return usage("which profile? this target is new to the file: pass --profile NAME, or --save to record it as a new profile named for its host");
+                    return usage(
+                        "which profile? this target is new to the file: pass --profile NAME, or --save to record it as a new profile named for its host",
+                    );
                 }
                 let host = config::url_host(&urls[0]);
                 let mut n: String = host
@@ -445,7 +458,7 @@ async fn auth_login(session: &ApiClient, args: &[&str]) {
             None => {
                 return err(format!(
                     "profile '{name}' is new and lists no urls; give --url https://host:8841"
-                ))
+                ));
             }
         };
     }
@@ -476,7 +489,9 @@ async fn auth_login(session: &ApiClient, args: &[&str]) {
         // confirmation cannot be typed into a pipe: CI passes --pin, or the
         // one-run GLIDEX_TLS_INSECURE=1 for throwaway rigs, never this.
         if non_interactive {
-            return err("--insecure needs a typed confirmation and stdin is not a terminal; trust the exact certificate instead: --pin sha256/<fingerprint>");
+            return err(
+                "--insecure needs a typed confirmation and stdin is not a terminal; trust the exact certificate instead: --pin sha256/<fingerprint>",
+            );
         }
         println!("{}", "The connection will verify NO certificate: anyone on the path can read your token and everything you send. This is for hardware labs whose switches cannot present a certificate at all.".red().bold());
         let typed = prompt(&format!(
@@ -544,7 +559,9 @@ async fn auth_login(session: &ApiClient, args: &[&str]) {
                     .to_lowercase()
                     .starts_with('y')
                     {
-                        return err("the certificate was not trusted; nothing was saved and no token was requested");
+                        return err(
+                            "the certificate was not trusted; nothing was saved and no token was requested",
+                        );
                     }
                     tls.pins =
                         vec![glidex_tls::Trust::normalize_pin(&fp).unwrap_or(fp.to_lowercase())];
@@ -583,10 +600,15 @@ async fn auth_login(session: &ApiClient, args: &[&str]) {
             );
         }
     } else if expect.is_some() && claimed.is_none() && !rebind {
-        println!("{} the server does not report a cluster id (pre-cluster or older build); nothing new is bound", "Note:".dimmed());
+        println!(
+            "{} the server does not report a cluster id (pre-cluster or older build); nothing new is bound",
+            "Note:".dimmed()
+        );
     }
     if has_flag(args, "--oidc") && info["methods"]["oidc"] == json!(false) {
-        return err("this control plane has OIDC logins off: set auth.oidc in control-plane.json, or log in with --pam-user / a piped --token");
+        return err(
+            "this control plane has OIDC logins off: set auth.oidc in control-plane.json, or log in with --pam-user / a piped --token",
+        );
     }
 
     // §6.1.4 prove the credential. The token name says which profile minted
@@ -614,7 +636,9 @@ async fn auth_login(session: &ApiClient, args: &[&str]) {
         // a pipe gets no password prompt at all (§6.1.7) — CI pipes tokens,
         // not passwords.
         if non_interactive {
-            return err("--pam-user needs a terminal for the hidden password (CI: pipe an existing token to 'auth login --token' on a trusted rig)");
+            return err(
+                "--pam-user needs a terminal for the hidden password (CI: pipe an existing token to 'auth login --token' on a trusted rig)",
+            );
         }
         let pw = prompt_hidden(&format!("Password for {user}@{host}: "));
         if pw.trim().is_empty() {
@@ -667,16 +691,36 @@ async fn auth_login(session: &ApiClient, args: &[&str]) {
         // the server just confirmed it answers for the same cluster — a
         // re-login is not a reason to mint a second token.
         match p.credential() {
-            Ok(Some(t)) => (t, p.identity.as_ref().and_then(|i| i.method.as_deref()).unwrap_or("token")),
+            Ok(Some(t)) => (
+                t,
+                p.identity
+                    .as_ref()
+                    .and_then(|i| i.method.as_deref())
+                    .unwrap_or("token"),
+            ),
             // §3.5: logging in to the implicit localhost keeps working —
             // the legacy token file is that profile's credential, folded in
             // as a copy the moment the profile is written.
-            Ok(None) if urls.iter().all(|u| client::is_loopback_host(&config::url_host(u))) => match config::legacy_token() {
-                Ok(Some(t)) => (t, "token"),
-                Ok(None) => return usage(&format!("profile '{name}' has no credential: --oidc, --token (piped or prompted) or --pam-user USER")),
-                Err(e) => return err(e),
-            },
-            Ok(None) => return usage(&format!("profile '{name}' has no credential: --oidc, --token (piped or prompted) or --pam-user USER")),
+            Ok(None)
+                if urls
+                    .iter()
+                    .all(|u| client::is_loopback_host(&config::url_host(u))) =>
+            {
+                match config::legacy_token() {
+                    Ok(Some(t)) => (t, "token"),
+                    Ok(None) => {
+                        return usage(&format!(
+                            "profile '{name}' has no credential: --oidc, --token (piped or prompted) or --pam-user USER"
+                        ));
+                    }
+                    Err(e) => return err(e),
+                }
+            }
+            Ok(None) => {
+                return usage(&format!(
+                    "profile '{name}' has no credential: --oidc, --token (piped or prompted) or --pam-user USER"
+                ));
+            }
             Err(e) => return err(e),
         }
     } else {
@@ -698,7 +742,10 @@ async fn auth_login(session: &ApiClient, args: &[&str]) {
         let agrees = glidex_tls::Trust::normalize_pin(claim)
             .is_some_and(|c| glidex_tls::Trust::normalize_pin(&seen).is_some_and(|s| s == c));
         if !agrees {
-            return err(format!("the answer came over a connection presenting a different certificate than the server claims as its own (we saw {seen}, the server says {claim}) — something is terminating TLS in front of {}", cl.describe()));
+            return err(format!(
+                "the answer came over a connection presenting a different certificate than the server claims as its own (we saw {seen}, the server says {claim}) — something is terminating TLS in front of {}",
+                cl.describe()
+            ));
         }
     }
     // Display-only metadata, copied from the checked answer (§2.2): the
@@ -758,12 +805,19 @@ async fn auth_login(session: &ApiClient, args: &[&str]) {
         who.yellow(),
         cl.describe()
     );
-    println!("{} token saved to {} (mode 0600) — profile '{name}', anyone who can read that file can act as {who}", "Note:".yellow(), path.display());
+    println!(
+        "{} token saved to {} (mode 0600) — profile '{name}', anyone who can read that file can act as {who}",
+        "Note:".yellow(),
+        path.display()
+    );
     if made_current {
         println!("{} profile '{name}' is now current", "Info:".dimmed());
     }
     if session.profile_name().is_some_and(|n| n == name) {
-        println!("{} this session keeps the credential it started with; start gxctl again to pick up the saved one", "Note:".dimmed());
+        println!(
+            "{} this session keeps the credential it started with; start gxctl again to pick up the saved one",
+            "Note:".dimmed()
+        );
     }
 }
 
@@ -793,7 +847,11 @@ async fn auth_logout(client: &ApiClient, args: &[&str]) {
     if has_flag(args, "--revoke") {
         let id = match &token_id {
             Some(id) => id.clone(),
-            None => return err(format!("profile '{name}' has no server-side token id on record — nothing to revoke; the credential can still be struck from the server's side ('token revoke', or the admin)")),
+            None => {
+                return err(format!(
+                    "profile '{name}' has no server-side token id on record — nothing to revoke; the credential can still be struck from the server's side ('token revoke', or the admin)"
+                ));
+            }
         };
         // The delete is signed as the token itself; the server allows a
         // principal to strike its own token. A failure here aborts the
@@ -850,8 +908,8 @@ async fn auth_status(client: &ApiClient, args: &[&str]) {
         Some(x) => x,
         None => {
             return println!(
-            "no profiles yet — log in: gxctl auth login --url https://host:8841 --profile P --save"
-        )
+                "no profiles yet — log in: gxctl auth login --url https://host:8841 --profile P --save"
+            );
         }
     };
     let current = cfg
@@ -926,7 +984,9 @@ fn auth_use(args: &[&str]) {
         Err(e) => return err(e),
     };
     if cfg.as_ref().is_none_or(|c| !c.has_any()) {
-        return println!("there is no config file yet (log in first: gxctl auth login --url … --profile P --save)");
+        return println!(
+            "there is no config file yet (log in first: gxctl auth login --url … --profile P --save)"
+        );
     }
     let Some(target) = args.first() else {
         return usage(
@@ -954,7 +1014,10 @@ fn auth_use(args: &[&str]) {
     if let Err(e) = config::edit(cfg, |c| c.current = Some(target.clone())) {
         return err(e);
     }
-    println!("{} profile '{target}' is current; bare invocations use its target, trust and token unless --profile says otherwise", "OK:".green());
+    println!(
+        "{} profile '{target}' is current; bare invocations use its target, trust and token unless --profile says otherwise",
+        "OK:".green()
+    );
 }
 
 fn auth_profiles(args: &[&str]) {
@@ -968,7 +1031,9 @@ fn auth_profiles(args: &[&str]) {
         );
     };
     if c.profiles.is_empty() {
-        return println!("the file exists but holds no profiles (log in: gxctl auth login --url … --profile P --save)");
+        return println!(
+            "the file exists but holds no profiles (log in: gxctl auth login --url … --profile P --save)"
+        );
     }
     let all = has_flag(args, "--all");
     let current = c.current.as_deref();
@@ -1095,7 +1160,9 @@ async fn auth_trust(args: &[&str]) {
                     what.push_str(" and the unverified bypass");
                 }
                 if !std::io::stdin().is_terminal() && !has_flag(args, "--yes") {
-                    return err("--all clears everything the profile adds to trust; confirm interactively or pass --yes");
+                    return err(
+                        "--all clears everything the profile adds to trust; confirm interactively or pass --yes",
+                    );
                 }
                 if std::io::stdin().is_terminal()
                     && !prompt(&format!("Remove {what} from profile '{name}'? [y/N]: "))
@@ -1195,7 +1262,10 @@ pub async fn logout(client: &ApiClient, args: &[&str]) {
         );
     }
     if !has_flag(args, "--revoke") {
-        println!("{} The token stays valid until it expires; 'logout --revoke' or 'token revoke <id>' ends it now.", "Note:".dimmed());
+        println!(
+            "{} The token stays valid until it expires; 'logout --revoke' or 'token revoke <id>' ends it now.",
+            "Note:".dimmed()
+        );
     }
 }
 
@@ -1358,9 +1428,10 @@ pub fn apply_quota_edits(quotas: &mut Value, edits: &[&str]) -> Result<(), Strin
         }
         quotas[k] = match v {
             "none" | "null" | "unlimited" | "-" => Value::Null,
-            n => json!(n
-                .parse::<u64>()
-                .map_err(|_| format!("'{}': a quota is a number or 'none'", e))?),
+            n => json!(
+                n.parse::<u64>()
+                    .map_err(|_| format!("'{}': a quota is a number or 'none'", e))?
+            ),
         };
     }
     Ok(())
@@ -2475,7 +2546,14 @@ pub async fn network(client: &ApiClient, args: &[&str]) {
             let (Some(net), Some(project)) = (args.get(1), args.get(2)) else {
                 return usage(u);
             };
-            match client.request_json::<()>(Method::POST, &format!("/networks/{}/shares", enc(net)), Some(json!({ "project": project }))).await {
+            match client
+                .request_json::<()>(
+                    Method::POST,
+                    &format!("/networks/{}/shares", enc(net)),
+                    Some(json!({ "project": project })),
+                )
+                .await
+            {
                 Ok(()) => println!(
                     "{} {} offered to project {}. Its owner accepts with 'network accept {} {}' within 7 days.",
                     "Offered:".green(),
@@ -2628,12 +2706,22 @@ pub async fn cluster(client: &ApiClient, args: &[&str]) {
     match args.first().copied() {
         Some("init") => {
             if !has_flag(args, "--force") {
-                return usage("Usage: cluster init [--advertise <ip:port>] [--tunnel-ip <ip>] --force\n  Turns this host into a cluster of one and re-keys its records. It keeps a backup but can't be undone.");
+                return usage(
+                    "Usage: cluster init [--advertise <ip:port>] [--tunnel-ip <ip>] --force\n  Turns this host into a cluster of one and re-keys its records. It keeps a backup but can't be undone.",
+                );
             }
             let body = json!({ "advertise": flag_value(args, "--advertise"), "tunnel_ip": flag_value(args, "--tunnel-ip"), "force": true });
-            match client.request_json::<Value>(Method::POST, "/cluster/init", Some(body)).await {
+            match client
+                .request_json::<Value>(Method::POST, "/cluster/init", Some(body))
+                .await
+            {
                 Ok(v) => {
-                    println!("{} cluster {} (this node: {})", "Created".green(), s(&v["cluster_id"]), s(&v["node_id"]));
+                    println!(
+                        "{} cluster {} (this node: {})",
+                        "Created".green(),
+                        s(&v["cluster_id"]),
+                        s(&v["node_id"])
+                    );
                     println!("  Backup:      {}", s(&v["backup"]));
                     println!("  CA SHA-256:  {}", s(&v["ca_fingerprint"]));
                 }
@@ -2642,7 +2730,9 @@ pub async fn cluster(client: &ApiClient, args: &[&str]) {
         }
         Some("join") => {
             let Some(server) = flag_value(args, "--server") else {
-                return usage("Usage: cluster join --server <ip:8842> [--role server|agent] [--advertise <ip:port>] [--name <name>] [--token-file <file>]\n  The token is read from the file or stdin, never from the command line.");
+                return usage(
+                    "Usage: cluster join --server <ip:8842> [--role server|agent] [--advertise <ip:port>] [--name <name>] [--token-file <file>]\n  The token is read from the file or stdin, never from the command line.",
+                );
             };
             let token = match read_token(args) {
                 Ok(t) => t,
@@ -2650,7 +2740,10 @@ pub async fn cluster(client: &ApiClient, args: &[&str]) {
             };
             if has_flag(args, "--import") {
                 let body = json!({ "server": server, "token": token.as_str(), "advertise": flag_value(args, "--advertise"), "tunnel_ip": flag_value(args, "--tunnel-ip"), "name": flag_value(args, "--name") });
-                match client.request_json::<Value>(Method::POST, "/cluster/import", Some(body)).await {
+                match client
+                    .request_json::<Value>(Method::POST, "/cluster/import", Some(body))
+                    .await
+                {
                     Ok(v) => println!("{} {}", "Waiting:".green(), s(&v["message"])),
                     Err(e) => err(e),
                 }
@@ -2658,8 +2751,16 @@ pub async fn cluster(client: &ApiClient, args: &[&str]) {
             }
             let body = json!({ "server": server, "token": token.as_str(), "role": flag_value(args, "--role").unwrap_or("server"),
                 "advertise": flag_value(args, "--advertise"), "tunnel_ip": flag_value(args, "--tunnel-ip"), "name": flag_value(args, "--name") });
-            match client.request_json::<Value>(Method::POST, "/cluster/join", Some(body)).await {
-                Ok(v) => println!("{} cluster {} as node {}", "Joined".green(), s(&v["cluster_id"]), s(&v["node_id"])),
+            match client
+                .request_json::<Value>(Method::POST, "/cluster/join", Some(body))
+                .await
+            {
+                Ok(v) => println!(
+                    "{} cluster {} as node {}",
+                    "Joined".green(),
+                    s(&v["cluster_id"]),
+                    s(&v["node_id"])
+                ),
                 Err(e) => err(e),
             }
         }
@@ -2667,24 +2768,59 @@ pub async fn cluster(client: &ApiClient, args: &[&str]) {
             let body = json!({ "role": flag_value(args, "--role").unwrap_or("agent"),
                 "ttl_secs": flag_value(args, "--ttl").and_then(|t| t.trim_end_matches('h').parse::<u64>().ok().map(|h| h * 3600)),
                 "allow_import": has_flag(args, "--allow-import") });
-            match client.request_json::<Value>(Method::POST, "/cluster/join-tokens", Some(body)).await {
+            match client
+                .request_json::<Value>(Method::POST, "/cluster/join-tokens", Some(body))
+                .await
+            {
                 Ok(v) => {
                     println!("{}", s(&v["token"]));
-                    eprintln!("Shown once. Valid {} s; for a {} node. Servers: {}", v["ttl_secs"], s(&v["role"]), v["servers"].as_array().map(|a| a.iter().map(s).collect::<Vec<_>>().join(", ")).unwrap_or_default());
+                    eprintln!(
+                        "Shown once. Valid {} s; for a {} node. Servers: {}",
+                        v["ttl_secs"],
+                        s(&v["role"]),
+                        v["servers"]
+                            .as_array()
+                            .map(|a| a.iter().map(s).collect::<Vec<_>>().join(", "))
+                            .unwrap_or_default()
+                    );
                 }
                 Err(e) => err(e),
             }
         }
-        Some("status") | None => match client.request_json::<Value>(Method::GET, "/cluster/status?ports=true", None).await {
+        Some("status") | None => match client
+            .request_json::<Value>(Method::GET, "/cluster/status?ports=true", None)
+            .await
+        {
             Ok(v) => {
                 if v["clustered"] == false {
                     println!("This host is standalone (not in a cluster).");
                     return;
                 }
-                println!("Cluster {}  node {} ({}, {})", s(&v["cluster_id"]), s(&v["name"]), s(&v["role"]), s(&v["advertise"]));
+                println!(
+                    "Cluster {}  node {} ({}, {})",
+                    s(&v["cluster_id"]),
+                    s(&v["name"]),
+                    s(&v["role"]),
+                    s(&v["advertise"])
+                );
                 let r = &v["raft"];
                 if !r.is_null() {
-                    println!("  Raft: {} term {}  leader: {}  applied {}  last log {}", s(&r["state"]), r["term"], if r["leader"].is_null() { "none".into() } else { format!("{} ({})", s(&r["leader"]["name"]), s(&r["leader"]["address"])) }, r["last_applied"], r["last_log_index"]);
+                    println!(
+                        "  Raft: {} term {}  leader: {}  applied {}  last log {}",
+                        s(&r["state"]),
+                        r["term"],
+                        if r["leader"].is_null() {
+                            "none".into()
+                        } else {
+                            format!(
+                                "{} ({})",
+                                s(&r["leader"]["name"]),
+                                s(&r["leader"]["address"])
+                            )
+                        },
+                        r["last_applied"],
+                        r["last_log_index"]
+                    );
                     for (kind, key) in [("voter", "voters"), ("learner", "learners")] {
                         for m in r[key].as_array().into_iter().flatten() {
                             println!("    {kind:<8} {}  {}", s(&m["name"]), s(&m["address"]));
@@ -2692,15 +2828,39 @@ pub async fn cluster(client: &ApiClient, args: &[&str]) {
                     }
                 }
                 for n in v["nodes"].as_array().into_iter().flatten() {
-                    println!("  node {:<16} {:<7} {:<10} {}  v{} level {}", s(&n["name"]), s(&n["role"]), s(&n["phase"]), s(&n["advertise"]), s(&n["version"]), n["feature_level"]);
+                    println!(
+                        "  node {:<16} {:<7} {:<10} {}  v{} level {}",
+                        s(&n["name"]),
+                        s(&n["role"]),
+                        s(&n["phase"]),
+                        s(&n["advertise"]),
+                        s(&n["version"]),
+                        n["feature_level"]
+                    );
                 }
                 println!("  Feature level: {}", v["feature_level"]);
                 if !v["ca"].is_null() {
-                    println!("  CA rotation: signing {}…, {} old CA(s) still trusted", s(&v["ca"]["signing"]).chars().take(12).collect::<String>(), v["ca"]["retiring"].as_array().map_or(0, |a| a.len()));
+                    println!(
+                        "  CA rotation: signing {}…, {} old CA(s) still trusted",
+                        s(&v["ca"]["signing"]).chars().take(12).collect::<String>(),
+                        v["ca"]["retiring"].as_array().map_or(0, |a| a.len())
+                    );
                 }
-                let gaps: Vec<&Value> = v["ports"].as_array().into_iter().flatten().filter(|p| p["reachable"] == false).collect();
+                let gaps: Vec<&Value> = v["ports"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|p| p["reachable"] == false)
+                    .collect();
                 for p in &gaps {
-                    println!("  {} port {}/{} on {} is not reachable from {}", "!".yellow(), p["port"], s(&p["proto"]), s(&p["node"]), s(&v["name"]));
+                    println!(
+                        "  {} port {}/{} on {} is not reachable from {}",
+                        "!".yellow(),
+                        p["port"],
+                        s(&p["proto"]),
+                        s(&p["node"]),
+                        s(&v["name"])
+                    );
                 }
                 if gaps.is_empty() && v["ports"].is_array() {
                     println!("  Ports: every checked port answers");
@@ -2713,60 +2873,126 @@ pub async fn cluster(client: &ApiClient, args: &[&str]) {
             if nodes.is_empty() {
                 return usage("Usage: cluster promote <node>… [--force]");
             }
-            match client.request_json::<Value>(Method::POST, "/cluster/promote", Some(json!({ "nodes": nodes, "force": has_flag(args, "--force") }))).await {
+            match client
+                .request_json::<Value>(
+                    Method::POST,
+                    "/cluster/promote",
+                    Some(json!({ "nodes": nodes, "force": has_flag(args, "--force") })),
+                )
+                .await
+            {
                 Ok(v) => println!("{} {} voters", "OK".green(), v["voters"]),
                 Err(e) => err(e),
             }
         }
         Some("rejoin") => {
             let Some(server) = flag_value(args, "--server") else {
-                return usage("Usage: cluster rejoin --server <ip:8842> [--node-id <id>] [--advertise <ip:port>] [--token-file <file>]\n  Comes back as the same node. The token is from `gxctl node rejoin-token` and is read from the file or stdin.");
+                return usage(
+                    "Usage: cluster rejoin --server <ip:8842> [--node-id <id>] [--advertise <ip:port>] [--token-file <file>]\n  Comes back as the same node. The token is from `gxctl node rejoin-token` and is read from the file or stdin.",
+                );
             };
             let token = match read_token(args) {
                 Ok(t) => t,
                 Err(e) => return err(e),
             };
             let body = json!({ "server": server, "token": token.as_str(), "node_id": flag_value(args, "--node-id"), "advertise": flag_value(args, "--advertise"), "tunnel_ip": flag_value(args, "--tunnel-ip") });
-            match client.request_json::<Value>(Method::POST, "/cluster/rejoin", Some(body)).await {
-                Ok(v) => println!("{} node {} (Raft state {})", "Rejoined".green(), s(&v["node_id"]), if v["raft_fresh"] == true { "started afresh" } else { "kept" }),
+            match client
+                .request_json::<Value>(Method::POST, "/cluster/rejoin", Some(body))
+                .await
+            {
+                Ok(v) => println!(
+                    "{} node {} (Raft state {})",
+                    "Rejoined".green(),
+                    s(&v["node_id"]),
+                    if v["raft_fresh"] == true {
+                        "started afresh"
+                    } else {
+                        "kept"
+                    }
+                ),
                 Err(e) => err(e),
             }
         }
         Some("dissolve") => {
             if !has_flag(args, "--force") {
-                return usage("Usage: cluster dissolve --force\n  The last node ends the cluster and becomes a standalone host with everything it held. Other nodes must have left. A final snapshot is kept.");
+                return usage(
+                    "Usage: cluster dissolve --force\n  The last node ends the cluster and becomes a standalone host with everything it held. Other nodes must have left. A final snapshot is kept.",
+                );
             }
-            match client.request_json::<Value>(Method::POST, "/cluster/dissolve", Some(json!({ "force": true }))).await {
-                Ok(v) => println!("{} {} VM(s), {} disk(s) kept; snapshot {}. Restart the control plane to continue standalone.", "Dissolved:".green(), v["vms"], v["disks"], s(&v["snapshot"])),
+            match client
+                .request_json::<Value>(
+                    Method::POST,
+                    "/cluster/dissolve",
+                    Some(json!({ "force": true })),
+                )
+                .await
+            {
+                Ok(v) => println!(
+                    "{} {} VM(s), {} disk(s) kept; snapshot {}. Restart the control plane to continue standalone.",
+                    "Dissolved:".green(),
+                    v["vms"],
+                    v["disks"],
+                    s(&v["snapshot"])
+                ),
                 Err(e) => err(e),
             }
         }
-        Some("leave") => match client.request_json::<Value>(Method::POST, "/cluster/leave", Some(json!({}))).await {
+        Some("leave") => match client
+            .request_json::<Value>(Method::POST, "/cluster/leave", Some(json!({})))
+            .await
+        {
             Ok(v) => println!("{} {}: {}", "Left".green(), s(&v["left"]), s(&v["restart"])),
             Err(e) => err(e),
         },
         Some("rotate-ca") => {
             let body = json!({ "grace_secs": flag_value(args, "--grace").and_then(|g| g.parse::<u64>().ok()) });
-            match client.request_json::<Value>(Method::POST, "/cluster/rotate-ca", Some(body)).await {
-                Ok(v) => println!("{} new CA {}; {} old CA(s) retire when every node renewed (or at {})", "Rotating".green(), s(&v["signing_ca"]), v["retiring"], s(&v["retire_at"])),
+            match client
+                .request_json::<Value>(Method::POST, "/cluster/rotate-ca", Some(body))
+                .await
+            {
+                Ok(v) => println!(
+                    "{} new CA {}; {} old CA(s) retire when every node renewed (or at {})",
+                    "Rotating".green(),
+                    s(&v["signing_ca"]),
+                    v["retiring"],
+                    s(&v["retire_at"])
+                ),
                 Err(e) => err(e),
             }
         }
         Some("snapshot") => {
-            let Some(file) = args.get(1) else { return usage("Usage: cluster snapshot <file>") };
-            match client.request_bytes(Method::GET, "/cluster/snapshot", None).await {
+            let Some(file) = args.get(1) else {
+                return usage("Usage: cluster snapshot <file>");
+            };
+            match client
+                .request_bytes(Method::GET, "/cluster/snapshot", None)
+                .await
+            {
                 Ok(r) => {
-                    use std::os::unix::fs::OpenOptionsExt;
                     use std::io::Write;
-                    match std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(file).and_then(|mut f| f.write_all(&r.body)) {
-                        Ok(()) => println!("{} {} ({} bytes, 0600: it holds credential and token hashes; store it like the database)", "Wrote".green(), file, r.body.len()),
+                    use std::os::unix::fs::OpenOptionsExt;
+                    match std::fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .mode(0o600)
+                        .open(file)
+                        .and_then(|mut f| f.write_all(&r.body))
+                    {
+                        Ok(()) => println!(
+                            "{} {} ({} bytes, 0600: it holds credential and token hashes; store it like the database)",
+                            "Wrote".green(),
+                            file,
+                            r.body.len()
+                        ),
                         Err(e) => err(format!("{file}: {e}")),
                     }
                 }
                 Err(e) => err(e.message),
             }
         }
-        Some(other) => usage(&format!("Unknown cluster command '{other}'. Try: init, join, join-token, status, promote, snapshot, rotate-ca, rejoin, leave, dissolve")),
+        Some(other) => usage(&format!(
+            "Unknown cluster command '{other}'. Try: init, join, join-token, status, promote, snapshot, rotate-ca, rejoin, leave, dissolve"
+        )),
     }
 }
 

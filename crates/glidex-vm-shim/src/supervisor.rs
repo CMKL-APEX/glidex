@@ -6,16 +6,16 @@
 //! ready. Run: serve `shim.sock`, carry out stops and kills, notice the
 //! hypervisor's exit and record why. Release: stop the console and exit.
 
-use crate::launch::{allowed_binaries, HypervisorKind, LaunchFile};
-use crate::proto::{self, HelloResult, Op, Request, Response, MAX_LINE};
+use crate::launch::{HypervisorKind, LaunchFile, allowed_binaries};
+use crate::proto::{self, HelloResult, MAX_LINE, Op, Request, Response};
 use crate::proxy::{LogWriter, Proxy};
-use crate::state::{ExitCause, ExitInfo, InstanceFile, Phase, StopInfo, INSTANCE_VERSION};
+use crate::state::{ExitCause, ExitInfo, INSTANCE_VERSION, InstanceFile, Phase, StopInfo};
 use crate::util::{boot_id, now, now_ms, proc_starttime};
-use glidex_hv_client::{ch::ChClient, qmp::QmpClient, GuestState};
-use nix::pty::{openpty, OpenptyResult};
-use nix::sys::signal::{kill, signal, SigHandler, Signal};
-use nix::sys::termios::{cfmakeraw, tcgetattr, tcsetattr, SetArg};
-use nix::unistd::{setsid, Pid};
+use glidex_hv_client::{GuestState, ch::ChClient, qmp::QmpClient};
+use nix::pty::{OpenptyResult, openpty};
+use nix::sys::signal::{SigHandler, Signal, kill, signal};
+use nix::sys::termios::{SetArg, cfmakeraw, tcgetattr, tcsetattr};
+use nix::unistd::{Pid, setsid};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::fd::AsRawFd;
@@ -24,7 +24,7 @@ use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -64,7 +64,7 @@ pub fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Args, String
                 return Err(format!(
                     "unknown argument {}\nusage: glidex-vm-shim --dir <vm runtime dir> [--vm <id>]",
                     other
-                ))
+                ));
             }
         }
     }

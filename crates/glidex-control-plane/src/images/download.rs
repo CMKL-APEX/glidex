@@ -6,8 +6,8 @@ use super::catalog::{self, Arch, ChecksumSource, HashAlgo, VersionSource};
 use super::firmware::{self, FirmwareSource, MAX_FIRMWARE_SIZE};
 use super::qemu_img::{self, DiskFormat};
 use super::{
-    now, validate_name, Image, ImageError, ImageKind, ImageManager, ImageSource, ImageStatus,
-    PullImageRequest,
+    Image, ImageError, ImageKind, ImageManager, ImageSource, ImageStatus, PullImageRequest, now,
+    validate_name,
 };
 use futures_util::StreamExt;
 use sha2::{Digest, Sha256, Sha512};
@@ -279,7 +279,10 @@ impl ImageManager {
                     },
                     FirmwareSource::Host { package, .. } => {
                         if Some(arch) != Arch::host() {
-                            return Err(ImageError::InvalidImage(format!("{key} comes from this host's {package} package, which is not for {}: pull it on a server of that architecture", arch.as_str())));
+                            return Err(ImageError::InvalidImage(format!(
+                                "{key} comes from this host's {package} package, which is not for {}: pull it on a server of that architecture",
+                                arch.as_str()
+                            )));
                         }
                         let code = entry.host_file().ok_or_else(|| ImageError::ToolMissing {
                             tool: "OVMF firmware".into(),
@@ -349,7 +352,7 @@ impl ImageManager {
             _ => {
                 return Err(ImageError::InvalidImage(
                     "give exactly one of catalog, firmware or url".into(),
-                ))
+                ));
             }
         };
         let kind = if hypervisor.is_some() {
@@ -402,7 +405,10 @@ impl ImageManager {
                         name
                     )
                 } else {
-                    format!("an image named {} already exists (pass a different name, or delete it first)", name)
+                    format!(
+                        "an image named {} already exists (pass a different name, or delete it first)",
+                        name
+                    )
                 },
             ));
         }
@@ -536,14 +542,14 @@ impl ImageManager {
                     }
                 }
             };
-            if matches!(result, AutoImport::Imported(_) | AutoImport::HaveOne(_)) {
-                if let Err(e) = self.meta_put(&marker, now().to_string().as_bytes()) {
-                    tracing::warn!(
-                        firmware = entry.key,
-                        "could not record the firmware auto-import: {}",
-                        e
-                    );
-                }
+            if matches!(result, AutoImport::Imported(_) | AutoImport::HaveOne(_))
+                && let Err(e) = self.meta_put(&marker, now().to_string().as_bytes())
+            {
+                tracing::warn!(
+                    firmware = entry.key,
+                    "could not record the firmware auto-import: {}",
+                    e
+                );
             }
             out.push((entry.key, result));
         }
@@ -642,13 +648,13 @@ impl ImageManager {
         img.status = ImageStatus::Verifying;
         self.put_image(&img)?;
         let (sha256, expected_digest) = hashers.finish(algo);
-        if let (Some((_, want)), Some(got)) = (&img.download.expected, &expected_digest) {
-            if want != got {
-                return Err(ImageError::InvalidImage(format!(
-                    "checksum mismatch (expected {}, got {})",
-                    want, got
-                )));
-            }
+        if let (Some((_, want)), Some(got)) = (&img.download.expected, &expected_digest)
+            && want != got
+        {
+            return Err(ImageError::InvalidImage(format!(
+                "checksum mismatch (expected {}, got {})",
+                want, got
+            )));
         }
 
         let mgr = self.clone();
@@ -725,16 +731,16 @@ impl ImageManager {
             416 if resuming => {
                 return Err(ImageError::Download(
                     "server refused to resume (416)".into(),
-                ))
+                ));
             }
             code if (500..600).contains(&code) => {
-                return Err(ImageError::Download(format!("HTTP {}", status)))
+                return Err(ImageError::Download(format!("HTTP {}", status)));
             }
             _ => {
                 return Err(ImageError::InvalidImage(format!(
                     "HTTP {} from {}",
                     status, img.download.url
-                )))
+                )));
             }
         };
         let header = |name: reqwest::header::HeaderName| {
@@ -749,12 +755,11 @@ impl ImageManager {
             *hashers = Hashers::new(img.download.expected.as_ref().map(|(a, _)| *a));
             img.download.etag = header(reqwest::header::ETAG).filter(|e| !e.starts_with("W/"));
             img.download.last_modified = header(reqwest::header::LAST_MODIFIED);
-            if let ImageSource::Catalog { version, .. } = &mut img.source {
-                if version.is_empty() {
-                    if let Some(lm) = &img.download.last_modified {
-                        *version = lm.clone();
-                    }
-                }
+            if let ImageSource::Catalog { version, .. } = &mut img.source
+                && version.is_empty()
+                && let Some(lm) = &img.download.last_modified
+            {
+                *version = lm.clone();
             }
         }
         let total = resp.content_length().map(|n| n + *received);
@@ -763,13 +768,13 @@ impl ImageManager {
         } else {
             self.settings.max_image_size.saturating_mul(2)
         };
-        if let Some(t) = total {
-            if t > limit {
-                return Err(ImageError::InvalidImage(format!(
-                    "download is {} bytes, over the {} byte limit",
-                    t, limit
-                )));
-            }
+        if let Some(t) = total
+            && t > limit
+        {
+            return Err(ImageError::InvalidImage(format!(
+                "download is {} bytes, over the {} byte limit",
+                t, limit
+            )));
         }
 
         let mut file = std::fs::OpenOptions::new()
@@ -812,13 +817,13 @@ impl ImageManager {
                 self.cache_image(img);
             }
         }
-        if let Some(t) = total {
-            if *received < t {
-                return Err(ImageError::Download(format!(
-                    "connection closed after {} of {} bytes",
-                    received, t
-                )));
-            }
+        if let Some(t) = total
+            && *received < t
+        {
+            return Err(ImageError::Download(format!(
+                "connection closed after {} of {} bytes",
+                received, t
+            )));
         }
         file.sync_all()
             .map_err(|e| ImageError::Io(format!("{}: {}", part.display(), e)))?;
@@ -1042,11 +1047,11 @@ impl ImageManager {
         };
         let dest = self.firmware_path(id);
         let size = copy(code, &dest)?;
-        if let Some(vars) = vars {
-            if let Err(e) = copy(vars, &self.firmware_vars_template(id)) {
-                let _ = std::fs::remove_file(&dest);
-                return Err(e);
-            }
+        if let Some(vars) = vars
+            && let Err(e) = copy(vars, &self.firmware_vars_template(id))
+        {
+            let _ = std::fs::remove_file(&dest);
+            return Err(e);
         }
         Ok((size, sha256_file(&dest)?))
     }
@@ -1094,7 +1099,7 @@ impl ImageManager {
                 return Err(ImageError::InvalidImage(format!(
                     "unsupported image format {} (want qcow2 or raw)",
                     other
-                )))
+                )));
             }
         };
         let f = std::fs::File::open(&part).map_err(|e| ImageError::Io(e.to_string()))?;

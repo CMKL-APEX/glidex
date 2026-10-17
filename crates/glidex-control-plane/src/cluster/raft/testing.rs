@@ -244,10 +244,11 @@ impl TestCluster {
         loop {
             let views: Vec<Option<RaftId>> =
                 among.iter().map(|i| self.by_id(*i).node.leader()).collect();
-            if let Some(Some(l)) = views.first() {
-                if views.iter().all(|v| *v == Some(*l)) && among.contains(l) {
-                    return *l;
-                }
+            if let Some(Some(l)) = views.first()
+                && views.iter().all(|v| *v == Some(*l))
+                && among.contains(l)
+            {
+                return *l;
             }
             assert!(
                 tokio::time::Instant::now() < deadline,

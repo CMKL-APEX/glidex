@@ -4,9 +4,9 @@
 //! here writes.
 
 use crate::NbConn;
+use glidex_ovs::OvsError;
 use glidex_ovs::exec::{Cmd, Exec, Program};
 use glidex_ovs::vsctl::{self, Row};
-use glidex_ovs::OvsError;
 use serde::Serialize;
 use std::collections::BTreeMap;
 

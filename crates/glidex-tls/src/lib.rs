@@ -511,11 +511,7 @@ impl Trust {
             None => &low[..],
         };
         let hex: String = body.chars().filter(|c| c.is_ascii_hexdigit()).collect();
-        if hex.len() == 64 {
-            Some(hex)
-        } else {
-            None
-        }
+        if hex.len() == 64 { Some(hex) } else { None }
     }
 }
 
@@ -1125,14 +1121,16 @@ mod tests {
             "the waiver is the profile's, and only with a pin"
         );
         // Without the pin, waiving the name is refused at construction.
-        assert!(ClientTls::with_trust(
-            &Trust {
-                verify_host: false,
-                ..Default::default()
-            },
-            &[]
-        )
-        .is_err());
+        assert!(
+            ClientTls::with_trust(
+                &Trust {
+                    verify_host: false,
+                    ..Default::default()
+                },
+                &[]
+            )
+            .is_err()
+        );
     }
 
     #[test]

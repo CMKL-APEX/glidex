@@ -103,7 +103,7 @@ pub fn parse_principal(key: &str) -> ServiceResult<EntityRef> {
                 StatusCode::BAD_REQUEST,
                 "invalid",
                 "a principal is user:<id> or team:<id>",
-            ))
+            ));
         }
     };
     Ok(EntityRef {

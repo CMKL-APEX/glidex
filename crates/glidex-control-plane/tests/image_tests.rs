@@ -6,22 +6,22 @@
 //! are skipped (with a note) where those are missing.
 
 use axum::{
+    Router,
     body::{Body, Bytes},
     extract::{Path as AxPath, State},
     http::{HeaderMap, Request, StatusCode},
     response::{IntoResponse, Response},
     routing::get,
-    Router,
 };
 use http_body_util::BodyExt;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 use tower::ServiceExt;
@@ -200,7 +200,8 @@ async fn start_server(fx: &Fixtures) -> (String, Arc<AtomicUsize>) {
 fn create_app(dir: &Path) -> (Router, Arc<VmManager>) {
     // Local plain-http test server: private addresses must be allowed.
     // Every test sets the same value, so parallel tests don't race on it.
-    std::env::set_var("GLIDEX_ALLOW_PRIVATE_IMAGE_URLS", "1");
+    // SAFETY: test-only; every test sets it the same way before reading it.
+    unsafe { std::env::set_var("GLIDEX_ALLOW_PRIVATE_IMAGE_URLS", "1") };
     let manager = VmManager::with_db_path(dir.join("test.db")).unwrap();
     // Disks are made, resized and extended by the disk controller
     // (spec/reconciliation.md §10.1); the tests wait for it with ?wait.
@@ -660,11 +661,12 @@ async fn disks_wait_for_their_image_and_notice_a_lost_file() {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
     assert!(missing, "the lost file is reported");
-    assert!(!tmp.path().join("disks").read_dir().unwrap().any(|e| e
-        .unwrap()
-        .file_name()
-        .to_string_lossy()
-        .contains(d["id"].as_str().unwrap())));
+    assert!(!tmp.path().join("disks").read_dir().unwrap().any(|e| {
+        e.unwrap()
+            .file_name()
+            .to_string_lossy()
+            .contains(d["id"].as_str().unwrap())
+    }));
 }
 
 #[tokio::test]
@@ -733,10 +735,12 @@ async fn grow_shrink_and_extend_root() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{err}");
-    assert!(err["message"]
-        .as_str()
-        .unwrap()
-        .contains("no partition table"));
+    assert!(
+        err["message"]
+            .as_str()
+            .unwrap()
+            .contains("no partition table")
+    );
 
     for format in ["qcow2", "raw"] {
         let name = format!("img-{format}");
@@ -1056,11 +1060,13 @@ async fn deleting_an_image_cancels_its_download() {
     assert!(left.is_empty(), "files left: {left:?}");
     let (status, events) = request(&app, "GET", "/images", None).await;
     assert_eq!(status, StatusCode::OK);
-    assert!(events
-        .as_array()
-        .unwrap()
-        .iter()
-        .all(|i| i["name"] != "doomed"));
+    assert!(
+        events
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|i| i["name"] != "doomed")
+    );
 
     let img = pull_ready(&app, &base, "good.qcow2", "doomed", None).await;
     assert_eq!(img["name"], "doomed", "the name is free again");

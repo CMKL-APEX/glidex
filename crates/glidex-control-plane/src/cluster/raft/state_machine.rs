@@ -4,7 +4,7 @@
 //! skips one.
 
 use super::types::*;
-use crate::store::{Db, StoreError, TableId, WriteSet, LAST_APPLIED, LAST_MEMBERSHIP};
+use crate::store::{Db, LAST_APPLIED, LAST_MEMBERSHIP, StoreError, TableId, WriteSet};
 use openraft::storage::{RaftSnapshotBuilder, RaftStateMachine, Snapshot};
 use openraft::{EntryPayload, StoredMembership};
 use std::path::PathBuf;

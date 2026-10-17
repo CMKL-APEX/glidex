@@ -9,8 +9,8 @@ use glidex_authd::config::Config;
 use glidex_authd::server::{self, Authd};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use tempfile::TempDir;
 

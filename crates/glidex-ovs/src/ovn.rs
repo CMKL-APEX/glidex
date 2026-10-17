@@ -4,11 +4,11 @@
 //! to the OVN northbound database; netd only makes this host a chassis and
 //! plugs VM ports into `br-int`.
 
+use crate::OvsError;
 use crate::bridge::Datapath;
 use crate::exec::{Cmd, Exec, Program};
-use crate::names::{validate_name, MAX_IFNAME};
-use crate::vsctl::{self, owned_tags, tag_args, OWNER_KEY, OWNER_VALUE, ROLE_KEY};
-use crate::OvsError;
+use crate::names::{MAX_IFNAME, validate_name};
+use crate::vsctl::{self, OWNER_KEY, OWNER_VALUE, ROLE_KEY, owned_tags, tag_args};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::net::IpAddr;
@@ -228,7 +228,11 @@ pub fn ensure_chassis(
             if have != want {
                 let ports = list_br_int_ports(exec)?;
                 if ports.iter().any(|p| p.starts_with("gx")) {
-                    return Err(OvsError::Conflict { message: format!("br-int has {have} datapath and VM ports on it; move them before changing it to {want}") });
+                    return Err(OvsError::Conflict {
+                        message: format!(
+                            "br-int has {have} datapath and VM ports on it; move them before changing it to {want}"
+                        ),
+                    });
                 }
                 vsctl::run(
                     exec,
@@ -381,13 +385,9 @@ pub fn status(exec: &dyn Exec) -> Result<OvnStatus, OvsError> {
             .map(|r| r.split(',').map(String::from).collect())
             .unwrap_or_default(),
         br_int: br.is_some(),
-        datapath: br.and_then(|b| b.str("datapath_type")).map(|d| {
-            if d.is_empty() {
-                "system".into()
-            } else {
-                d
-            }
-        }),
+        datapath: br
+            .and_then(|b| b.str("datapath_type"))
+            .map(|d| if d.is_empty() { "system".into() } else { d }),
         ports,
         tunnels: tunnels(exec)?,
     })
@@ -903,9 +903,11 @@ mod central_tests {
         let exec3 = RecordingExec::new();
         exec3.file(CENTRAL_DEFAULTS, "OVN_CTL_OPTS=\"old\"\n");
         ensure_central(&exec3, &spec(None), &certs(), dir).unwrap();
-        assert!(exec3
-            .calls()
-            .contains(&"systemctl restart ovn-central".to_string()));
+        assert!(
+            exec3
+                .calls()
+                .contains(&"systemctl restart ovn-central".to_string())
+        );
         // A server that isn't in its own list is a mistake.
         let mut bad = spec(None);
         bad.servers.pop();

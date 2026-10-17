@@ -9,12 +9,12 @@
 //! containing `,` must be double-quoted.
 
 use super::{
-    needs_shared_memory, resolve_binary, vfio_device_id, vm_disks, HypervisorDriver,
-    HypervisorError, HypervisorType, LaunchArgs,
+    HypervisorDriver, HypervisorError, HypervisorType, LaunchArgs, needs_shared_memory,
+    resolve_binary, vfio_device_id, vm_disks,
 };
 use crate::images::qemu_img::ImageType;
 use crate::models::VmConfig;
-use glidex_hv_client::{ch::ChClient, Observed};
+use glidex_hv_client::{Observed, ch::ChClient};
 use glidex_ovs::vm_port::VmPortBinding;
 
 /// Where `glidex-install` puts Cloud-Hypervisor's EDK2 UEFI firmware:
@@ -214,7 +214,7 @@ impl HypervisorDriver for CloudHypervisorDriver {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::images::qemu_img::{detect_image_type, DiskFormat};
+    use crate::images::qemu_img::{DiskFormat, detect_image_type};
     use crate::models::{DiskBinding, NicBinding};
 
     fn config(extra: serde_json::Value) -> VmConfig {
@@ -347,10 +347,13 @@ mod tests {
             },
         ];
         let a = args(&c, "/s");
-        assert_eq!(values(&a, "--net"), [
-            "id=net0,mac=02:00:00:00:00:01,num_queues=2,tap=gxabc-0",
-            "id=net1,mac=02:00:00:00:00:02,num_queues=4,mtu=9000,vhost_user=on,socket=/run/glidex/vhost/x.net1.sock,vhost_mode=server,queue_size=1024",
-        ]);
+        assert_eq!(
+            values(&a, "--net"),
+            [
+                "id=net0,mac=02:00:00:00:00:01,num_queues=2,tap=gxabc-0",
+                "id=net1,mac=02:00:00:00:00:02,num_queues=4,mtu=9000,vhost_user=on,socket=/run/glidex/vhost/x.net1.sock,vhost_mode=server,queue_size=1024",
+            ]
+        );
         // vhost-user needs shared guest memory.
         assert_eq!(
             values(&a, "--memory"),

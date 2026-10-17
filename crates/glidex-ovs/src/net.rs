@@ -1,7 +1,7 @@
 //! IPv4 subnets and read-only queries of the host's `ip` state.
 
-use crate::exec::{Cmd, Exec, Program};
 use crate::OvsError;
+use crate::exec::{Cmd, Exec, Program};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fmt;

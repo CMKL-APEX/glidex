@@ -9,7 +9,7 @@ use crate::controller::vm::set_cond;
 use crate::images::{Disk, DiskOrigin, DiskPhase, ImageError, ImageStatus};
 use crate::models::Tristate;
 use crate::state::{VmManager, VmManagerError};
-use crate::store::{event_key, Commit, Event, EventKind};
+use crate::store::{Commit, Event, EventKind, event_key};
 use std::time::Duration;
 
 type Next = Result<Option<Duration>, VmManagerError>;
@@ -396,27 +396,24 @@ impl VmManager {
         }
 
         // The on-boot grow ran: the claiming VM booted a seed carrying it.
-        if disk.pending_growpart {
-            if let Some(vm_id) = &disk.attached_to {
-                if let Some(vm) = self.vm(vm_id).await {
-                    if vm
-                        .status
-                        .seed_growpart_seq
-                        .is_some_and(|s| s >= disk.applied_extend_root_seq)
-                    {
-                        disk.pending_growpart = false;
-                        self.put_disk_with_event(
-                            &disk,
-                            Some(Event::new(
-                                "controller",
-                                EventKind::Normal,
-                                "RootGrownOnBoot",
-                                format!("by VM {}", vm.name),
-                            )),
-                        )?;
-                    }
-                }
-            }
+        if disk.pending_growpart
+            && let Some(vm_id) = &disk.attached_to
+            && let Some(vm) = self.vm(vm_id).await
+            && vm
+                .status
+                .seed_growpart_seq
+                .is_some_and(|s| s >= disk.applied_extend_root_seq)
+        {
+            disk.pending_growpart = false;
+            self.put_disk_with_event(
+                &disk,
+                Some(Event::new(
+                    "controller",
+                    EventKind::Normal,
+                    "RootGrownOnBoot",
+                    format!("by VM {}", vm.name),
+                )),
+            )?;
         }
 
         for kind in ["ResizePending", "ResizeInvalid", "ExtendRootPending"] {

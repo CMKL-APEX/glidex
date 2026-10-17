@@ -2,10 +2,10 @@
 //! and masquerading through whatever route the host already uses
 //! (spec §10).
 
-use crate::exec::{Cmd, Exec, Program};
-use crate::names::{validate_mac, validate_name, MAX_IFNAME};
-use crate::net::{route_destinations, Ipv4Net};
 use crate::OvsError;
+use crate::exec::{Cmd, Exec, Program};
+use crate::names::{MAX_IFNAME, validate_mac, validate_name};
+use crate::net::{Ipv4Net, route_destinations};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::net::Ipv4Addr;
@@ -233,10 +233,10 @@ pub fn plan(
         (None, None) => choose_subnet(supernet, &routes, &taken)?,
     };
     let mut state = NatState::new(&spec.bridge, subnet, spec.dns)?;
-    if let Some(e) = existing {
-        if e.subnet == subnet {
-            state.reservations = e.reservations.clone();
-        }
+    if let Some(e) = existing
+        && e.subnet == subnet
+    {
+        state.reservations = e.reservations.clone();
     }
     Ok(state)
 }
@@ -919,15 +919,18 @@ table inet glidex {
         apply_iptables(&exec, std::slice::from_ref(&a)).unwrap();
         let calls = exec.calls();
         let after_detect: Vec<&str> = calls.iter().skip(1).map(String::as_str).collect();
-        assert_eq!(after_detect, [
-            "iptables -w -D FORWARD -j GLIDEX-FORWARD",
-            "iptables -w -F GLIDEX-FORWARD",
-            "iptables -w -N GLIDEX-FORWARD",
-            "iptables -w -A GLIDEX-FORWARD -i gxbr-nat -s 10.88.0.0/24 -j ACCEPT",
-            "iptables -w -A GLIDEX-FORWARD -o gxbr-nat -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT",
-            "iptables -w -C DOCKER-USER -j GLIDEX-FORWARD",
-            "iptables -w -I DOCKER-USER 1 -j GLIDEX-FORWARD",
-        ]);
+        assert_eq!(
+            after_detect,
+            [
+                "iptables -w -D FORWARD -j GLIDEX-FORWARD",
+                "iptables -w -F GLIDEX-FORWARD",
+                "iptables -w -N GLIDEX-FORWARD",
+                "iptables -w -A GLIDEX-FORWARD -i gxbr-nat -s 10.88.0.0/24 -j ACCEPT",
+                "iptables -w -A GLIDEX-FORWARD -o gxbr-nat -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT",
+                "iptables -w -C DOCKER-USER -j GLIDEX-FORWARD",
+                "iptables -w -I DOCKER-USER 1 -j GLIDEX-FORWARD",
+            ]
+        );
 
         // Re-applying keeps the existing chain and jump.
         let exec = RecordingExec::new();
@@ -956,16 +959,19 @@ table inet glidex {
         apply_iptables_input(&exec, std::slice::from_ref(&a)).unwrap();
         let calls = exec.calls();
         let after_detect: Vec<&str> = calls.iter().skip(1).map(String::as_str).collect();
-        assert_eq!(after_detect, [
-            "iptables -w -F GLIDEX-INPUT",
-            "iptables -w -N GLIDEX-INPUT",
-            "iptables -w -A GLIDEX-INPUT -i gxbr-nat -p udp --dport 67 -j ACCEPT",
-            "iptables -w -A GLIDEX-INPUT -i gxbr-nat -d 10.88.0.1 -p udp --dport 53 -j ACCEPT",
-            "iptables -w -A GLIDEX-INPUT -i gxbr-nat -d 10.88.0.1 -p tcp --dport 53 -j ACCEPT",
-            "iptables -w -A GLIDEX-INPUT -i gxbr-nat -d 10.88.0.1 -p icmp --icmp-type echo-request -j ACCEPT",
-            "iptables -w -C INPUT -j GLIDEX-INPUT",
-            "iptables -w -I INPUT 1 -j GLIDEX-INPUT",
-        ]);
+        assert_eq!(
+            after_detect,
+            [
+                "iptables -w -F GLIDEX-INPUT",
+                "iptables -w -N GLIDEX-INPUT",
+                "iptables -w -A GLIDEX-INPUT -i gxbr-nat -p udp --dport 67 -j ACCEPT",
+                "iptables -w -A GLIDEX-INPUT -i gxbr-nat -d 10.88.0.1 -p udp --dport 53 -j ACCEPT",
+                "iptables -w -A GLIDEX-INPUT -i gxbr-nat -d 10.88.0.1 -p tcp --dport 53 -j ACCEPT",
+                "iptables -w -A GLIDEX-INPUT -i gxbr-nat -d 10.88.0.1 -p icmp --icmp-type echo-request -j ACCEPT",
+                "iptables -w -C INPUT -j GLIDEX-INPUT",
+                "iptables -w -I INPUT 1 -j GLIDEX-INPUT",
+            ]
+        );
 
         // Re-applying keeps the existing chain and jump.
         let exec = RecordingExec::new();
@@ -1042,9 +1048,10 @@ table inet glidex {
         let exec = RecordingExec::new();
         exec.file("/proc/sys/net/ipv4/ip_forward", "0\n");
         assert!(ensure_ip_forward(&exec).unwrap());
-        assert!(exec
-            .calls()
-            .contains(&"sysctl -w net.ipv4.ip_forward=1".to_string()));
+        assert!(
+            exec.calls()
+                .contains(&"sysctl -w net.ipv4.ip_forward=1".to_string())
+        );
         let exec = RecordingExec::new();
         exec.file("/proc/sys/net/ipv4/ip_forward", "1\n");
         assert!(!ensure_ip_forward(&exec).unwrap());

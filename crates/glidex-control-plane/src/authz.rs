@@ -16,7 +16,7 @@ use cedar_policy::{
     PolicySet, Request, Schema, SlotId, Template, ValidationMode, Validator,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap};
 use std::str::FromStr;
 use std::sync::Arc;
@@ -1110,9 +1110,11 @@ mod tests {
     fn shipped_policies_validate_strictly() {
         let e = Engine::new().unwrap();
         let listing = e.listing();
-        assert!(listing
-            .iter()
-            .any(|p| p.id == "base.step-up" && p.source == PolicySource::Base));
+        assert!(
+            listing
+                .iter()
+                .any(|p| p.id == "base.step-up" && p.source == PolicySource::Base)
+        );
         assert_eq!(listing.iter().filter(|p| p.template).count(), 13);
     }
 
@@ -1288,12 +1290,14 @@ mod tests {
                 es.clone(),
             )
         };
-        assert!(e
-            .check(&q(Ent::User("u".into())))
-            .denied_by("base.disabled-user"));
-        assert!(e
-            .check(&q(Ent::Token("t".into())))
-            .denied_by("base.expired-token"));
+        assert!(
+            e.check(&q(Ent::User("u".into())))
+                .denied_by("base.disabled-user")
+        );
+        assert!(
+            e.check(&q(Ent::Token("t".into())))
+                .denied_by("base.expired-token")
+        );
     }
 
     #[test]
@@ -1332,24 +1336,27 @@ mod tests {
             e.check(&q("o", "useDisk", Ent::Disk("d".into()), "pa"))
                 .allowed
         );
-        assert!(e
-            .check(&q("o", "useDisk", Ent::Disk("d".into()), "pb"))
-            .denied_by("base.same-project"));
+        assert!(
+            e.check(&q("o", "useDisk", Ent::Disk("d".into()), "pb"))
+                .denied_by("base.same-project")
+        );
         // An owner of pa editing pb still can't put pa's network on a pb VM.
         assert!(
             e.check(&q("o", "useNetwork", Ent::Network("pnet".into()), "pa"))
                 .allowed
         );
-        assert!(e
-            .check(&q("o", "useNetwork", Ent::Network("pnet".into()), "pb"))
-            .denied_by("base.network-grant"));
+        assert!(
+            e.check(&q("o", "useNetwork", Ent::Network("pnet".into()), "pb"))
+                .denied_by("base.network-grant")
+        );
         assert!(
             e.check(&q("o", "useNetwork", Ent::Network("shared".into()), "pb"))
                 .allowed
         );
-        assert!(e
-            .check(&q("n", "useNetwork", Ent::Network("hostnet".into()), "pb"))
-            .denied_by("base.network-grant"));
+        assert!(
+            e.check(&q("n", "useNetwork", Ent::Network("hostnet".into()), "pb"))
+                .denied_by("base.network-grant")
+        );
         // Project networks can't be granted, only shared.
         let g = tq(
             Ent::User("n".into()),

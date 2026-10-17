@@ -2,7 +2,7 @@
 //! the generated RPC clients of `glidex-api`, over the Connect protocol
 //! (spec/grpc.md §10).
 
-use crate::client::{parse_principal, ApiClient, RpcTransport};
+use crate::client::{ApiClient, RpcTransport, parse_principal};
 use crate::{flag_value, has_flag, prompt};
 use colored::Colorize;
 use glidex_api::proto::glidex::api::v1::EntityRef;
@@ -247,8 +247,17 @@ pub async fn tenant(client: &ApiClient, args: &[&str]) {
         }
         "members" => {
             let Some(id) = id(1) else { return usage(u) };
-            match svc.list_members(ListMembersRequest { id, ..Default::default() }).await.map(|r| r.into_owned()) {
-                Ok(r) if r.members.is_empty() => println!("No listed members (role links on the tenant and its projects make members too)."),
+            match svc
+                .list_members(ListMembersRequest {
+                    id,
+                    ..Default::default()
+                })
+                .await
+                .map(|r| r.into_owned())
+            {
+                Ok(r) if r.members.is_empty() => println!(
+                    "No listed members (role links on the tenant and its projects make members too)."
+                ),
                 Ok(r) => {
                     for m in &r.members {
                         let p = m.principal.as_option().cloned().unwrap_or_default();

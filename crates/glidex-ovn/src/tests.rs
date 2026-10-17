@@ -35,7 +35,12 @@ fn commands_carry_the_connection_or_the_daemon() {
             vec!["ls-add".into(), "y".into()],
         ])
         .unwrap();
-    assert_eq!(exec.calls(), vec!["ovn-nbctl --db=ssl:192.0.2.11:6641,ssl:192.0.2.12:6641 -p /k -c /c -C /ca ls-add x -- ls-add y"]);
+    assert_eq!(
+        exec.calls(),
+        vec![
+            "ovn-nbctl --db=ssl:192.0.2.11:6641,ssl:192.0.2.12:6641 -p /k -c /c -C /ca ls-add x -- ls-add y"
+        ]
+    );
     let exec = RecordingExec::new();
     let mut c = conn();
     c.daemon = Some("/run/ovn/nbctl.ctl".into());
@@ -219,10 +224,11 @@ fn ports_and_networks_gone_from_the_plan_are_removed_and_foreign_rows_are_left()
     assert!(calls.contains("--if-exists lsp-del gxdead-0"), "{calls}");
     assert!(calls.contains("--if-exists ls-del gx-old"), "{calls}");
     assert!(calls.contains("--if-exists lrp-del gx-lrp-old"), "{calls}");
-    assert!(rep
-        .changed
-        .iter()
-        .any(|c| c.contains("removed network old")));
+    assert!(
+        rep.changed
+            .iter()
+            .any(|c| c.contains("removed network old"))
+    );
     // Only owned rows are ever asked for.
     assert!(
         calls.contains("find Logical_Switch external_ids:glidex-owner=glidex"),

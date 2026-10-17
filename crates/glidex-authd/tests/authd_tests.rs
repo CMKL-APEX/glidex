@@ -320,10 +320,11 @@ fn failure_delay_is_applied() {
     };
     let h = start_with(config, Some(my_uid()));
     let t = std::time::Instant::now();
-    assert!(h
-        .client()
-        .authenticate("alice", PASSWORD, DEFAULT_SERVICE)
-        .is_ok());
+    assert!(
+        h.client()
+            .authenticate("alice", PASSWORD, DEFAULT_SERVICE)
+            .is_ok()
+    );
     assert!(t.elapsed() < Duration::from_millis(150));
     let t = std::time::Instant::now();
     assert_eq!(

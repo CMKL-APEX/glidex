@@ -2,7 +2,7 @@
 //! systemd (`packaging/glidex-authd.socket`); without activation it binds
 //! `$GLIDEX_AUTHD_RUN_DIR/auth.sock` itself.
 
-use glidex_authd::authenticator::{user_uid, SystemAccounts};
+use glidex_authd::authenticator::{SystemAccounts, user_uid};
 use glidex_authd::config::{Config, DEFAULT_CONFIG_PATH};
 use glidex_authd::pam::{Pam, PamAuthenticator};
 use glidex_authd::proto::SOCKET_NAME;

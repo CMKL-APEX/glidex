@@ -4,20 +4,20 @@
 //! host-link boundary; and the migration of a pre-tenancy database.
 
 use axum::{
-    body::Body,
-    http::{header, Request, StatusCode},
     Router,
+    body::Body,
+    http::{Request, StatusCode, header},
 };
 use buffa::Message;
 use glidex_api::proto::glidex::tenancy::v1 as pb;
 use glidex_control_plane::api::{self, App, AppState};
-use glidex_control_plane::auth::{store::TokenKind, AuthService};
+use glidex_control_plane::auth::{AuthService, store::TokenKind};
 use glidex_control_plane::authz::Ent;
 use glidex_control_plane::config::Config;
 use glidex_control_plane::state::VmManager;
 use glidex_control_plane::tenants::{ADMIN_TENANT, DEFAULT_TENANT};
 use http_body_util::BodyExt;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::Arc;
 use tempfile::TempDir;
 use tower::ServiceExt;
@@ -30,7 +30,8 @@ struct H {
 
 fn harness() -> H {
     let dir = TempDir::new().unwrap();
-    std::env::set_var("GLIDEX_RUN_DIR", dir.path().join("run"));
+    // SAFETY: test-only; every test sets it the same way before reading it.
+    unsafe { std::env::set_var("GLIDEX_RUN_DIR", dir.path().join("run")) };
     let manager = VmManager::with_db_path(dir.path().join("t.db")).unwrap();
     let mut cfg = Config::default();
     cfg.authz.policy_files_dir = dir.path().join("policies");
@@ -578,7 +579,8 @@ async fn allocation_needs_an_admission_and_the_tenant_cap_binds() {
 #[tokio::test]
 async fn migration_keeps_an_existing_system_admin_whole() {
     let dir = TempDir::new().unwrap();
-    std::env::set_var("GLIDEX_RUN_DIR", dir.path().join("run"));
+    // SAFETY: test-only; every test sets it the same way before reading it.
+    unsafe { std::env::set_var("GLIDEX_RUN_DIR", dir.path().join("run")) };
     let manager = VmManager::with_db_path(dir.path().join("t.db")).unwrap();
     // A host from before tenants: a user with system-admin on the cluster.
     let uid = {
@@ -605,12 +607,13 @@ async fn migration_keeps_an_existing_system_admin_whole() {
     let mut cfg = Config::default();
     cfg.authz.policy_files_dir = dir.path().join("policies");
     let auth = AuthService::new(manager.database(), cfg).unwrap();
-    assert!(auth
-        .tenants
-        .members(ADMIN_TENANT)
-        .unwrap()
-        .iter()
-        .any(|m| m.principal == Ent::User(uid.clone())));
+    assert!(
+        auth.tenants
+            .members(ADMIN_TENANT)
+            .unwrap()
+            .iter()
+            .any(|m| m.principal == Ent::User(uid.clone()))
+    );
     let links = auth.store.links().unwrap();
     for (role, res) in [
         ("role.directory-admin", Ent::Directory("local".into())),

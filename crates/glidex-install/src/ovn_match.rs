@@ -9,7 +9,7 @@
 //! new enough, else, on Ubuntu, from the Ubuntu Cloud Archive pocket that
 //! has it, pinned so that nothing but OVN comes from there.
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
 /// The cluster's files on a member (`<SERVICE_HOME>/.glidex/cluster`).
 pub const CLUSTER_DIR: &str = "/var/lib/glidex-control-plane/.glidex/cluster";
@@ -193,7 +193,12 @@ mod tests {
             ovn_host_version(packages).as_deref(),
             Some("26.03.0-2~cloud0")
         );
-        assert_eq!(removals("NOTE: simulation\nInst ovn-host [24.03] (26.03)\nRemv doca-openvswitch-switch [3.5]\nRemv doca-all [3.5]\n"), ["doca-openvswitch-switch", "doca-all"]);
+        assert_eq!(
+            removals(
+                "NOTE: simulation\nInst ovn-host [24.03] (26.03)\nRemv doca-openvswitch-switch [3.5]\nRemv doca-all [3.5]\n"
+            ),
+            ["doca-openvswitch-switch", "doca-all"]
+        );
     }
 
     #[test]

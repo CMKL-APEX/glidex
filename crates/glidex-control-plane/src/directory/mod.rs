@@ -269,10 +269,10 @@ impl Connector {
                 }
             }
         }
-        if let Some(d) = self.token_max_days {
-            if d == 0 || d > 365 {
-                return Err(ConnectorError::Invalid("token_max_days is 1-365".into()));
-            }
+        if let Some(d) = self.token_max_days
+            && (d == 0 || d > 365)
+        {
+            return Err(ConnectorError::Invalid("token_max_days is 1-365".into()));
         }
         // D22: who lands in the owner's or an operator's tenant is
         // decided by the IdP; admit nobody by default.

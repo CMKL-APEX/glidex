@@ -2,7 +2,7 @@
 //! after logging in (spec/grpc.md G0).
 
 use super::{Call, ServiceResult};
-use crate::api::{auth_error, App};
+use crate::api::{App, auth_error};
 use crate::auth::Principal;
 use crate::authz::Ent;
 use glidex_api::proto::glidex::system::v1::{

@@ -1,12 +1,12 @@
 //! Host-side uplink ports: kernel NIC, AF_XDP, DPDK (spec §8.3).
 
+use crate::OvsError;
 use crate::bridge::{self, Datapath};
 use crate::exec::Exec;
 use crate::host::HostCapabilities;
-use crate::names::{validate_ifname, validate_name, MAX_IFNAME};
+use crate::names::{MAX_IFNAME, validate_ifname, validate_name};
 use crate::nic;
 use crate::vsctl::{self, owned_tags, tag_args};
-use crate::OvsError;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -91,10 +91,10 @@ impl UplinkSpec {
                 }
             }
         }
-        if let UplinkKind::Afxdp { n_rxq, .. } | UplinkKind::Dpdk { n_rxq, .. } = &self.kind {
-            if !(1..=64).contains(n_rxq) {
-                return Err(OvsError::invalid("n_rxq must be 1-64"));
-            }
+        if let UplinkKind::Afxdp { n_rxq, .. } | UplinkKind::Dpdk { n_rxq, .. } = &self.kind
+            && !(1..=64).contains(n_rxq)
+        {
+            return Err(OvsError::invalid("n_rxq must be 1-64"));
         }
         Ok(())
     }
@@ -148,12 +148,12 @@ pub fn check(exec: &dyn Exec, caps: &HostCapabilities, spec: &UplinkSpec) -> Res
         UplinkKind::Dpdk { .. } => Some("dpdk"),
         UplinkKind::Kernel { .. } => None,
     };
-    if let Some(t) = iface_type {
-        if !caps.iface_types.iter().any(|x| x == t) {
-            return Err(OvsError::Unsupported {
-                missing: vec![t.into()],
-            });
-        }
+    if let Some(t) = iface_type
+        && !caps.iface_types.iter().any(|x| x == t)
+    {
+        return Err(OvsError::Unsupported {
+            missing: vec![t.into()],
+        });
     }
     if let UplinkKind::Dpdk { .. } = spec.kind {
         if !caps.dpdk_initialized {
@@ -365,7 +365,10 @@ mod tests {
         };
         add_port(&exec, &dpdk, Some("ixgbe")).unwrap();
         let calls = exec.calls();
-        assert_eq!(calls[0], "ovs-vsctl --may-exist add-port gxbr-up gxup0 -- set Interface gxup0 external_ids:glidex-owner=glidex external_ids:glidex-role=uplink external_ids:glidex-uplink=gxup0");
+        assert_eq!(
+            calls[0],
+            "ovs-vsctl --may-exist add-port gxbr-up gxup0 -- set Interface gxup0 external_ids:glidex-owner=glidex external_ids:glidex-role=uplink external_ids:glidex-uplink=gxup0"
+        );
         assert!(calls[1].contains("type=afxdp options:xdp-mode=native options:n_rxq=4"));
         assert!(
             calls[2].contains("type=dpdk options:dpdk-devargs=0000:41:00.0 options:n_rxq=2")

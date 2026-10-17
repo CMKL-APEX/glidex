@@ -204,7 +204,7 @@ impl Authd {
                             e.column()
                         ),
                     ),
-                )
+                );
             }
         };
         let Some(args) = req.args.as_ref() else {

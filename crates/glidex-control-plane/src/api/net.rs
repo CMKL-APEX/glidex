@@ -2,12 +2,12 @@
 //! networking through glidex-netd (spec/networking.md §11,
 //! spec/security.md §6.2, §8).
 
-use super::{add_network, err, error_to_response, ApiErr, Caller};
+use super::{ApiErr, Caller, add_network, err, error_to_response};
 use crate::authz::{Ent, EntitySet};
 use crate::models::ApiError;
 use crate::network::{CreateNetworkRequest, NetError, Netd, NetdAccess, Network};
 use crate::state::VmManagerError;
-use axum::{extract::Path, http::StatusCode, response::IntoResponse, Json};
+use axum::{Json, extract::Path, http::StatusCode, response::IntoResponse};
 use glidex_netd::proto::{
     BridgeRecord, EnsureUplinkArgs, OnBehalfOf, Op, UplinkPhase, UplinkResult,
 };

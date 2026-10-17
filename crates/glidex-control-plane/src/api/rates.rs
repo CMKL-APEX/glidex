@@ -2,19 +2,19 @@
 //! §9.3–§9.4).
 
 use super::usage::{bad, list, meter, scope};
-use super::{err, vm_entities, ApiErr, Caller};
+use super::{ApiErr, Caller, err, vm_entities};
 use crate::metering::ledger::{SlotRow, Subject, SubjectKind};
 use crate::metering::query::{self, Granularity, GroupKey, Named};
 use crate::metering::rates::{
-    bandwidth_p95, compute_p95, disk_io_p95, group_slots, series_points, GroupSlots, SeriesKind,
+    GroupSlots, SeriesKind, bandwidth_p95, compute_p95, disk_io_p95, group_slots, series_points,
 };
 use axum::{
-    extract::{Path, Query},
-    http::{header, StatusCode},
-    response::{IntoResponse, Response},
     Json,
+    extract::{Path, Query},
+    http::{StatusCode, header},
+    response::{IntoResponse, Response},
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
 const DAY: u64 = 86400;
@@ -141,10 +141,10 @@ fn keys_json(
 ) {
     for (k, v) in keys {
         let mut n = v.clone();
-        if matches!(k, GroupKey::Project | GroupKey::Node) {
-            if let Some(name) = names.get(&n.id) {
-                n.name = name.clone();
-            }
+        if matches!(k, GroupKey::Project | GroupKey::Node)
+            && let Some(name) = names.get(&n.id)
+        {
+            n.name = name.clone();
         }
         out.insert(
             serde_json::to_value(k)

@@ -2,8 +2,8 @@
 
 use glidex_ovs::OvsError;
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use std::path::Path;
 
 pub const BRIDGES: TableDefinition<&str, &[u8]> = TableDefinition::new("bridges");
