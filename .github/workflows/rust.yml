@@ -29,10 +29,11 @@ jobs:
       run: scripts/lint-store-writes.sh
     - name: Build
       run: cargo build --verbose
-    - name: Run tests
-      run: cargo test --verbose
-    - name: Replay write sets (spec/clustering.md section 6.1)
-      run: GLIDEX_CHECK_WRITE_SETS=1 cargo test -p glidex-control-plane --verbose
+    # With every database a test opens replayed from its write sets and
+    # compared (spec/clustering.md section 6.1). The check only adds to the
+    # tests, so one run covers both.
+    - name: Run tests, replaying write sets
+      run: GLIDEX_CHECK_WRITE_SETS=1 cargo test --verbose
 
   # Formatting: rustfmt's defaults (rustfmt.toml), checked, not applied.
   fmt:
