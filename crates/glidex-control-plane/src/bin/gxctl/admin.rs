@@ -848,9 +848,11 @@ async fn auth_status(client: &ApiClient, args: &[&str]) {
     });
     let (name, p) = match pair {
         Some(x) => x,
-        None => return println!(
+        None => {
+            return println!(
             "no profiles yet — log in: gxctl auth login --url https://host:8841 --profile P --save"
-        ),
+        )
+        }
     };
     let current = cfg
         .as_ref()

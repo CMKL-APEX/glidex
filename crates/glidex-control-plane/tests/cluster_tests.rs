@@ -36,7 +36,8 @@ struct Cp {
 fn with_secrets(mut cp: Cp) -> Cp {
     let mut cfg = test_config();
     cfg.auth.secrets_key = Some(cp._dir.path().join("secrets.kek"));
-    let auth = glidex_control_plane::auth::AuthService::disabled_with(cp.manager.database(), cfg).unwrap();
+    let auth =
+        glidex_control_plane::auth::AuthService::disabled_with(cp.manager.database(), cfg).unwrap();
     cp.manager.set_secrets_key(auth.clone());
     cp.secrets = Some(auth);
     cp
