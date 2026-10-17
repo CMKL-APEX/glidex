@@ -4,7 +4,9 @@
 //! `api.sock`, where the server identifies the caller by peer uid and no
 //! credentials are sent (spec/security.md §5.2), or over TCP (TLS for
 //! `https://`) with `Authorization: Bearer <token>`. One connection per
-//! request. The token is never printed, logged or put in a URL.
+//! request; a streaming call (the console) gets an HTTP/2 connection of its
+//! own, made the same way. The token is never printed, logged or put in a
+//! URL.
 
 use http_body_util::{BodyExt, Full};
 use hyper::body::Bytes;
@@ -683,6 +685,16 @@ impl ApiClient {
     /// failures move to the next endpoint. All down: one error listing
     /// each URL and its reason.
     pub async fn connect(&self) -> Result<Box<dyn Conn>, String> {
+        self.connect_alpn(false).await
+    }
+
+    /// [`connect`](Self::connect) for HTTP/2: TLS offers only `h2` (with
+    /// the same trust), and a server that does not agree is an error.
+    pub async fn connect_h2(&self) -> Result<Box<dyn Conn>, String> {
+        self.connect_alpn(true).await
+    }
+
+    async fn connect_alpn(&self, h2: bool) -> Result<Box<dyn Conn>, String> {
         match &self.endpoint {
             Endpoint::Unix(p) => match tokio::net::UnixStream::connect(p).await {
                 Ok(s) => Ok(Box::new(s)),
@@ -707,7 +719,7 @@ impl ApiClient {
                 let mut errs: Vec<String> = Vec::new();
                 for k in 0..eps.len() {
                     let i = (first + k) % eps.len();
-                    match self.connect_one(&eps[i], eps.len() == 1).await {
+                    match self.connect_one(&eps[i], eps.len() == 1, h2).await {
                         Ok(c) => {
                             if i != first {
                                 self.promote(i);
@@ -729,7 +741,7 @@ impl ApiClient {
         }
     }
 
-    async fn connect_one(&self, ep: &TcpEp, sole: bool) -> Result<Box<dyn Conn>, String> {
+    async fn connect_one(&self, ep: &TcpEp, sole: bool, h2: bool) -> Result<Box<dyn Conn>, String> {
         let bare = ep.host.trim_start_matches('[').trim_end_matches(']');
         let addr = if bare.contains(':') {
             format!("[{}]:{}", bare, ep.port)
@@ -768,10 +780,25 @@ impl ApiClient {
                 // way the attempt went (the TOFU prompt and §5.3 need the
                 // rejected one).
                 *self.last_tls.lock().unwrap() = Some(cfg.clone());
-                let s = tokio_rustls::TlsConnector::from(cfg.config.clone())
+                // HTTP/2 keeps the verifier (and so the fingerprints it
+                // records); only the ALPN offer changes.
+                let config = if h2 {
+                    let mut c = (*cfg.config).clone();
+                    c.alpn_protocols = vec![b"h2".to_vec()];
+                    std::sync::Arc::new(c)
+                } else {
+                    cfg.config.clone()
+                };
+                let s = tokio_rustls::TlsConnector::from(config)
                     .connect(name, tcp)
                     .await
                     .map_err(|e| tls_error(&self.describe(), cfg, e))?;
+                if h2 && s.get_ref().1.alpn_protocol() != Some(b"h2".as_slice()) {
+                    return Err(format!(
+                        "{} does not speak HTTP/2 over TLS, which streaming calls need",
+                        self.describe()
+                    ));
+                }
                 Ok(Box::new(s))
             }
         }
@@ -815,22 +842,6 @@ impl ApiClient {
             None => path.to_string(),
             Some(e) => format!("{}{}", e.base, path),
         }
-    }
-
-    /// `ws://` / `wss://` URL of an API path, for the WebSocket handshake
-    /// over a stream from [`connect`](Self::connect).
-    pub fn ws_url(&self, path: &str) -> String {
-        let scheme = if self.ep().is_some_and(|e| e.tls.is_some()) {
-            "wss"
-        } else {
-            "ws"
-        };
-        format!(
-            "{}://{}{}",
-            scheme,
-            self.host_header(),
-            self.full_path(path)
-        )
     }
 
     /// `GET /auth/server-info` (spec/gxctl-auth.md §7.1), asked without
@@ -989,6 +1000,61 @@ impl ApiClient {
             host: self.host_header(),
             auth: self.auth_header(),
         })
+    }
+
+    /// The base URI of the RPC paths: the endpoint's scheme, authority
+    /// and path prefix (`http://localhost` on api.sock).
+    pub fn rpc_base(&self) -> Uri {
+        let scheme = if self.ep().is_some_and(|e| e.tls.is_some()) {
+            "https"
+        } else {
+            "http"
+        };
+        format!("{}://{}{}", scheme, self.host_header(), self.full_path(""))
+            .parse()
+            .unwrap_or_else(|_| Uri::from_static("http://localhost"))
+    }
+
+    /// A transport for streaming RPCs (the console), which need HTTP/2:
+    /// a dedicated connection, dialed like every other (api.sock with peer
+    /// identity, or TCP/TLS with the profile's trust, failover and token),
+    /// speaking Connect like the unary calls (full duplex on HTTP/2; over
+    /// gRPC the error's `ErrorInfo` reason does not reach the client). It
+    /// does not reconnect: once the connection is gone, calls on it fail.
+    pub async fn stream_transport(
+        &self,
+    ) -> Result<
+        (
+            connectrpc::client::SharedHttp2Connection,
+            connectrpc::client::ClientConfig,
+        ),
+        Failure,
+    > {
+        let stream = self.connect_h2().await.map_err(Failure::transport)?;
+        let slot = std::sync::Arc::new(Mutex::new(Some(stream)));
+        let connector = tower::service_fn(move |_: Uri| {
+            let s = slot.lock().unwrap().take();
+            async move {
+                s.map(TokioIo::new).ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::NotConnected, "the connection is closed")
+                })
+            }
+        });
+        let base = self.rpc_base();
+        let conn =
+            connectrpc::client::Http2Connection::connect_with_connector(connector, base.clone())
+                .await
+                .map_err(|e| {
+                    Failure::transport(format!("connection to {}: {}", self.describe(), e))
+                })?;
+        let mut config = connectrpc::client::ClientConfig::new(base)
+            .with_protocol(connectrpc::Protocol::Connect);
+        if let Some(h) = self.auth_header() {
+            let mut headers = hyper::HeaderMap::new();
+            headers.insert(AUTHORIZATION, h);
+            config = config.with_default_headers(headers);
+        }
+        Ok((conn.shared(16), config))
     }
 
     /// Request returning the raw body of a successful response.
@@ -1242,10 +1308,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(c.describe(), "http://localhost:8841/api");
-        assert_eq!(
-            c.ws_url("/vms/x/console/ws"),
-            "ws://localhost:8841/api/vms/x/console/ws"
-        );
+        assert_eq!(c.rpc_base().to_string(), "http://localhost:8841/api");
         assert!(!format!("{:?}", c).contains("gxt_s"));
         assert!(c.auth_header().unwrap().is_sensitive());
         assert!(ApiClient::unix("/x".into()).auth_header().is_none());
@@ -1504,6 +1567,66 @@ mod tests {
                 .is_success()
         );
         let _ = dir;
+    }
+
+    /// Streaming calls dial TLS offering only `h2`, with the profile's
+    /// trust, the endpoint's path prefix and the token; a server that will
+    /// not speak HTTP/2 is refused before any request.
+    #[tokio::test]
+    async fn streams_get_an_http2_connection_of_their_own() {
+        use glidex_api::proto::glidex::vm::v1::{ConsoleRequest, VmServiceClient};
+        let (_dir, ss, fp) = lab();
+        let tls = crate::config::Tls {
+            pins: vec![fp],
+            verify_host: false,
+            ..Default::default()
+        };
+        let token = || Some(Zeroizing::new("gxt_secret".to_string()));
+
+        // HTTP/1.1 only (no ALPN): refused.
+        let old = canned_tls_server(&ss.cert, &ss.key, canned("{}"));
+        let urls = vec![format!("https://127.0.0.1:{old}")];
+        let c = ApiClient::tcp_multi(&urls, token(), Some(&tls), None, None).unwrap();
+        let e = c.stream_transport().await.err().unwrap().message;
+        assert!(e.contains("HTTP/2"), "{e}");
+
+        // An h2 server that records what it was asked.
+        let acceptor = tokio_rustls::TlsAcceptor::from(
+            glidex_tls::server_config(&ss.cert, &ss.key, &[b"h2"]).unwrap(),
+        );
+        let l = glidex_tls::bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let port = l.local_addr().unwrap().port();
+        let (seen_tx, mut seen) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            let (tcp, _) = l.accept().await.unwrap();
+            let t = acceptor.accept(tcp).await.unwrap();
+            let svc = hyper::service::service_fn(move |req: Request<hyper::body::Incoming>| {
+                let auth = req
+                    .headers()
+                    .get(AUTHORIZATION)
+                    .map(|v| v.to_str().unwrap().to_string());
+                let _ = seen_tx.send((req.version(), req.uri().path().to_string(), auth));
+                async {
+                    hyper::Response::builder()
+                        .status(StatusCode::NOT_FOUND)
+                        .body(Full::new(Bytes::new()))
+                }
+            });
+            let _ = hyper::server::conn::http2::Builder::new(hyper_util::rt::TokioExecutor::new())
+                .serve_connection(TokioIo::new(t), svc)
+                .await;
+        });
+        let urls = vec![format!("https://127.0.0.1:{port}/api")];
+        let c = ApiClient::tcp_multi(&urls, token(), Some(&tls), None, None).unwrap();
+        let (t, config) = c.stream_transport().await.unwrap();
+        assert!(c.accepted_fingerprint().is_some());
+        let mut stream = VmServiceClient::new(t, config).console().await.unwrap();
+        let _ = stream.send(ConsoleRequest::default()).await;
+        assert!(stream.message().await.is_err());
+        let (version, path, auth) = seen.recv().await.unwrap();
+        assert_eq!(version, hyper::Version::HTTP_2);
+        assert_eq!(path, "/api/glidex.vm.v1.VmService/Console");
+        assert_eq!(auth.as_deref(), Some("Bearer gxt_secret"));
     }
 
     #[tokio::test]

@@ -14,6 +14,8 @@ import { enumDesc, fileDesc, messageDesc, serviceDesc } from "@bufbuild/protobuf
 import { file_glidex_api_v1_options } from "../../api/v1/options_pb";
 import type { GetClusterStatusResponse, GetClusterStatusResponseJson, ImportPlan, ImportPlanJson, Node, NodeJson } from "../../cluster/v1/cluster_pb";
 import { file_glidex_cluster_v1_cluster } from "../../cluster/v1/cluster_pb";
+import type { Event, EventJson } from "../../common/v1/common_pb";
+import { file_glidex_common_v1_common } from "../../common/v1/common_pb";
 import type { Network, NetworkJson } from "../../network/v1/network_pb";
 import { file_glidex_network_v1_network } from "../../network/v1/network_pb";
 import type { Disk, DiskJson, Image, ImageJson } from "../../storage/v1/storage_pb";
@@ -26,7 +28,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file glidex/watch/v1/watch.proto.
  */
 export const file_glidex_watch_v1_watch: GenFile = /*@__PURE__*/
-  fileDesc("ChtnbGlkZXgvd2F0Y2gvdjEvd2F0Y2gucHJvdG8SD2dsaWRleC53YXRjaC52MSJbCgxXYXRjaFJlcXVlc3QSKQoFa2luZHMYASADKA4yGi5nbGlkZXgud2F0Y2gudjEuV2F0Y2hLaW5kEhQKB3Byb2plY3QYAiABKAlIAIgBAUIKCghfcHJvamVjdCIiCgxQb2xpY3lNYXJrZXISEgoKZ2VuZXJhdGlvbhgBIAEoBCL+AwoNV2F0Y2hSZXNwb25zZRItCgR0eXBlGAEgASgOMh8uZ2xpZGV4LndhdGNoLnYxLldhdGNoRXZlbnRUeXBlEigKBGtpbmQYAiABKA4yGi5nbGlkZXgud2F0Y2gudjEuV2F0Y2hLaW5kEgoKAmlkGAMgASgJEh4KAnZtGAQgASgLMhAuZ2xpZGV4LnZtLnYxLlZtSAASJwoEZGlzaxgFIAEoCzIXLmdsaWRleC5zdG9yYWdlLnYxLkRpc2tIABIpCgVpbWFnZRgGIAEoCzIYLmdsaWRleC5zdG9yYWdlLnYxLkltYWdlSAASLQoHbmV0d29yaxgHIAEoCzIaLmdsaWRleC5uZXR3b3JrLnYxLk5ldHdvcmtIABInCgRub2RlGAggASgLMhcuZ2xpZGV4LmNsdXN0ZXIudjEuTm9kZUgAEkEKC2ltcG9ydF9wbGFuGAkgASgLMh0uZ2xpZGV4LmNsdXN0ZXIudjEuSW1wb3J0UGxhbkgAUgtpbXBvcnRfcGxhbhI+CgdjbHVzdGVyGAogASgLMisuZ2xpZGV4LmNsdXN0ZXIudjEuR2V0Q2x1c3RlclN0YXR1c1Jlc3BvbnNlSAASLwoGcG9saWN5GAsgASgLMh0uZ2xpZGV4LndhdGNoLnYxLlBvbGljeU1hcmtlckgAQggKBm9iamVjdCrYAQoJV2F0Y2hLaW5kEhoKFldBVENIX0tJTkRfVU5TUEVDSUZJRUQQABIRCg1XQVRDSF9LSU5EX1ZNEAESEwoPV0FUQ0hfS0lORF9ESVNLEAISFAoQV0FUQ0hfS0lORF9JTUFHRRADEhYKEldBVENIX0tJTkRfTkVUV09SSxAEEhMKD1dBVENIX0tJTkRfTk9ERRAFEhUKEVdBVENIX0tJTkRfSU1QT1JUEAYSFgoSV0FUQ0hfS0lORF9DTFVTVEVSEAcSFQoRV0FUQ0hfS0lORF9QT0xJQ1kQCCrmAQoOV2F0Y2hFdmVudFR5cGUSIAocV0FUQ0hfRVZFTlRfVFlQRV9VTlNQRUNJRklFRBAAEhoKFldBVENIX0VWRU5UX1RZUEVfQURERUQQARIdChlXQVRDSF9FVkVOVF9UWVBFX01PRElGSUVEEAISHAoYV0FUQ0hfRVZFTlRfVFlQRV9ERUxFVEVEEAMSGwoXV0FUQ0hfRVZFTlRfVFlQRV9TWU5DRUQQBBIcChhXQVRDSF9FVkVOVF9UWVBFX0VYUElSRUQQBRIeChpXQVRDSF9FVkVOVF9UWVBFX0tFRVBBTElWRRAGMnsKDFdhdGNoU2VydmljZRJrCgVXYXRjaBIdLmdsaWRleC53YXRjaC52MS5XYXRjaFJlcXVlc3QaHi5nbGlkZXgud2F0Y2gudjEuV2F0Y2hSZXNwb25zZSIhyukYHQoNYXV0aGVudGljYXRlZBABGgpHRVQgL3dhdGNoMAFiBnByb3RvMw", [file_glidex_api_v1_options, file_glidex_cluster_v1_cluster, file_glidex_network_v1_network, file_glidex_storage_v1_storage, file_glidex_vm_v1_vm]);
+  fileDesc("ChtnbGlkZXgvd2F0Y2gvdjEvd2F0Y2gucHJvdG8SD2dsaWRleC53YXRjaC52MSJbCgxXYXRjaFJlcXVlc3QSKQoFa2luZHMYASADKA4yGi5nbGlkZXgud2F0Y2gudjEuV2F0Y2hLaW5kEhQKB3Byb2plY3QYAiABKAlIAIgBAUIKCghfcHJvamVjdCIiCgxQb2xpY3lNYXJrZXISEgoKZ2VuZXJhdGlvbhgBIAEoBCL+AwoNV2F0Y2hSZXNwb25zZRItCgR0eXBlGAEgASgOMh8uZ2xpZGV4LndhdGNoLnYxLldhdGNoRXZlbnRUeXBlEigKBGtpbmQYAiABKA4yGi5nbGlkZXgud2F0Y2gudjEuV2F0Y2hLaW5kEgoKAmlkGAMgASgJEh4KAnZtGAQgASgLMhAuZ2xpZGV4LnZtLnYxLlZtSAASJwoEZGlzaxgFIAEoCzIXLmdsaWRleC5zdG9yYWdlLnYxLkRpc2tIABIpCgVpbWFnZRgGIAEoCzIYLmdsaWRleC5zdG9yYWdlLnYxLkltYWdlSAASLQoHbmV0d29yaxgHIAEoCzIaLmdsaWRleC5uZXR3b3JrLnYxLk5ldHdvcmtIABInCgRub2RlGAggASgLMhcuZ2xpZGV4LmNsdXN0ZXIudjEuTm9kZUgAEkEKC2ltcG9ydF9wbGFuGAkgASgLMh0uZ2xpZGV4LmNsdXN0ZXIudjEuSW1wb3J0UGxhbkgAUgtpbXBvcnRfcGxhbhI+CgdjbHVzdGVyGAogASgLMisuZ2xpZGV4LmNsdXN0ZXIudjEuR2V0Q2x1c3RlclN0YXR1c1Jlc3BvbnNlSAASLwoGcG9saWN5GAsgASgLMh0uZ2xpZGV4LndhdGNoLnYxLlBvbGljeU1hcmtlckgAQggKBm9iamVjdCJKChJXYXRjaEV2ZW50c1JlcXVlc3QSKAoEa2luZBgBIAEoDjIaLmdsaWRleC53YXRjaC52MS5XYXRjaEtpbmQSCgoCaWQYAiABKAkibAoTV2F0Y2hFdmVudHNSZXNwb25zZRItCgR0eXBlGAEgASgOMh8uZ2xpZGV4LndhdGNoLnYxLldhdGNoRXZlbnRUeXBlEiYKBWV2ZW50GAIgASgLMhcuZ2xpZGV4LmNvbW1vbi52MS5FdmVudCrYAQoJV2F0Y2hLaW5kEhoKFldBVENIX0tJTkRfVU5TUEVDSUZJRUQQABIRCg1XQVRDSF9LSU5EX1ZNEAESEwoPV0FUQ0hfS0lORF9ESVNLEAISFAoQV0FUQ0hfS0lORF9JTUFHRRADEhYKEldBVENIX0tJTkRfTkVUV09SSxAEEhMKD1dBVENIX0tJTkRfTk9ERRAFEhUKEVdBVENIX0tJTkRfSU1QT1JUEAYSFgoSV0FUQ0hfS0lORF9DTFVTVEVSEAcSFQoRV0FUQ0hfS0lORF9QT0xJQ1kQCCrmAQoOV2F0Y2hFdmVudFR5cGUSIAocV0FUQ0hfRVZFTlRfVFlQRV9VTlNQRUNJRklFRBAAEhoKFldBVENIX0VWRU5UX1RZUEVfQURERUQQARIdChlXQVRDSF9FVkVOVF9UWVBFX01PRElGSUVEEAISHAoYV0FUQ0hfRVZFTlRfVFlQRV9ERUxFVEVEEAMSGwoXV0FUQ0hfRVZFTlRfVFlQRV9TWU5DRUQQBBIcChhXQVRDSF9FVkVOVF9UWVBFX0VYUElSRUQQBRIeChpXQVRDSF9FVkVOVF9UWVBFX0tFRVBBTElWRRAGMu4BCgxXYXRjaFNlcnZpY2USawoFV2F0Y2gSHS5nbGlkZXgud2F0Y2gudjEuV2F0Y2hSZXF1ZXN0Gh4uZ2xpZGV4LndhdGNoLnYxLldhdGNoUmVzcG9uc2UiIcrpGB0KDWF1dGhlbnRpY2F0ZWQQARoKR0VUIC93YXRjaDABEnEKC1dhdGNoRXZlbnRzEiMuZ2xpZGV4LndhdGNoLnYxLldhdGNoRXZlbnRzUmVxdWVzdBokLmdsaWRleC53YXRjaC52MS5XYXRjaEV2ZW50c1Jlc3BvbnNlIhXK6RgRCg1hdXRoZW50aWNhdGVkEAEwAWIGcHJvdG8z", [file_glidex_api_v1_options, file_glidex_cluster_v1_cluster, file_glidex_common_v1_common, file_glidex_network_v1_network, file_glidex_storage_v1_storage, file_glidex_vm_v1_vm]);
 
 /**
  * @generated from message glidex.watch.v1.WatchRequest
@@ -247,6 +249,94 @@ export const WatchResponseSchema: GenMessage<WatchResponse, {jsonType: WatchResp
   messageDesc(file_glidex_watch_v1_watch, 2);
 
 /**
+ * @generated from message glidex.watch.v1.WatchEventsRequest
+ */
+export type WatchEventsRequest = Message<"glidex.watch.v1.WatchEventsRequest"> & {
+  /**
+   * A VM, disk, image or network.
+   *
+   * @generated from field: glidex.watch.v1.WatchKind kind = 1;
+   */
+  kind: WatchKind;
+
+  /**
+   * Its id.
+   *
+   * @generated from field: string id = 2;
+   */
+  id: string;
+};
+
+/**
+ * @generated from message glidex.watch.v1.WatchEventsRequest
+ */
+export type WatchEventsRequestJson = {
+  /**
+   * A VM, disk, image or network.
+   *
+   * @generated from field: glidex.watch.v1.WatchKind kind = 1;
+   */
+  kind?: WatchKindJson;
+
+  /**
+   * Its id.
+   *
+   * @generated from field: string id = 2;
+   */
+  id?: string;
+};
+
+/**
+ * Describes the message glidex.watch.v1.WatchEventsRequest.
+ * Use `create(WatchEventsRequestSchema)` to create a new message.
+ */
+export const WatchEventsRequestSchema: GenMessage<WatchEventsRequest, {jsonType: WatchEventsRequestJson}> = /*@__PURE__*/
+  messageDesc(file_glidex_watch_v1_watch, 3);
+
+/**
+ * @generated from message glidex.watch.v1.WatchEventsResponse
+ */
+export type WatchEventsResponse = Message<"glidex.watch.v1.WatchEventsResponse"> & {
+  /**
+   * `added` for each event; `synced` after the ones there were;
+   * `keepalive` and `expired` as on `Watch`.
+   *
+   * @generated from field: glidex.watch.v1.WatchEventType type = 1;
+   */
+  type: WatchEventType;
+
+  /**
+   * @generated from field: glidex.common.v1.Event event = 2;
+   */
+  event?: Event | undefined;
+};
+
+/**
+ * @generated from message glidex.watch.v1.WatchEventsResponse
+ */
+export type WatchEventsResponseJson = {
+  /**
+   * `added` for each event; `synced` after the ones there were;
+   * `keepalive` and `expired` as on `Watch`.
+   *
+   * @generated from field: glidex.watch.v1.WatchEventType type = 1;
+   */
+  type?: WatchEventTypeJson;
+
+  /**
+   * @generated from field: glidex.common.v1.Event event = 2;
+   */
+  event?: EventJson;
+};
+
+/**
+ * Describes the message glidex.watch.v1.WatchEventsResponse.
+ * Use `create(WatchEventsResponseSchema)` to create a new message.
+ */
+export const WatchEventsResponseSchema: GenMessage<WatchEventsResponse, {jsonType: WatchEventsResponseJson}> = /*@__PURE__*/
+  messageDesc(file_glidex_watch_v1_watch, 4);
+
+/**
  * @generated from enum glidex.watch.v1.WatchKind
  */
 export enum WatchKind {
@@ -379,6 +469,19 @@ export const WatchService: GenService<{
     methodKind: "server_streaming";
     input: typeof WatchRequestSchema;
     output: typeof WatchResponseSchema;
+  },
+  /**
+   * One object's events (a VM's starts, exits and restarts; a disk's, an
+   * image's or a network's), as its events list answers them (the last
+   * 50), `synced`, then each new one as it happens. Seeing them takes
+   * reading the object (`readVm`, `readDisk`, `readImage`, `readNetwork`).
+   *
+   * @generated from rpc glidex.watch.v1.WatchService.WatchEvents
+   */
+  watchEvents: {
+    methodKind: "server_streaming";
+    input: typeof WatchEventsRequestSchema;
+    output: typeof WatchEventsResponseSchema;
   },
 }> = /*@__PURE__*/
   serviceDesc(file_glidex_watch_v1_watch, 0);

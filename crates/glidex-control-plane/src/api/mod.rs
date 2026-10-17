@@ -1568,6 +1568,19 @@ fn deny_response(action: &str, d: &Decision) -> ApiErr {
 }
 
 impl Caller {
+    /// The same caller for another action (a stream that reads through an
+    /// operation of its own): the same principal, request id and audit entry.
+    pub fn with_action(&self, action: &'static str) -> Caller {
+        Caller {
+            p: self.p.clone(),
+            action,
+            app: self.app.clone(),
+            request_id: self.request_id.clone(),
+            audit: self.audit.clone(),
+            pre: self.pre.clone(),
+        }
+    }
+
     pub fn manager(&self) -> &VmManager {
         &self.app.manager
     }

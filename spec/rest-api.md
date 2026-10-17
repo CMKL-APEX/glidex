@@ -659,6 +659,9 @@ built — happen in the controller and reach the caller only through
 
 ### Protocol
 
+(`glidex.vm.v1.VmService.Console` is the same console as a bidi RPC
+stream over HTTP/2, for API clients and gxctl; grpc.md §9.1.)
+
 `GET /vms/{id}/console/ws` upgrades to a WebSocket. The handler
 `console_ws → bridge_console`:
 

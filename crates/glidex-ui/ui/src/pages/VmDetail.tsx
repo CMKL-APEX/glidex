@@ -89,10 +89,13 @@ export default function VmDetail() {
     if (!vm?.firmware) return;
     api.getImage(vm.firmware).then((i) => setFirmwareName(i.name)).catch(() => setFirmwareName(null));
   }, [vm?.firmware]);
+  // Its history, as it happens (`WatchEvents`).
   useEffect(() => {
     if (!id) return;
-    api.vmEvents(id).then((r) => setEvents(r.events)).catch(() => setEvents([]));
-  }, [id, vm?.state, vm?.observed_generation]);
+    const abort = new AbortController();
+    void api.followEvents("vm", id, setEvents, abort.signal);
+    return () => abort.abort();
+  }, [id]);
 
   const handleAction = async (vmId: string, action: VmAction) => {
     if (action === "delete" && !confirm(`Delete VM ${vm?.name ?? vmId}? A root disk created with it is deleted too.`)) return;

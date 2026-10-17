@@ -49,7 +49,7 @@ glidex-authd = { path = "../glidex-authd" }
 glidex-tls = { path = "../glidex-tls" }
 # RPC API next to REST (spec/grpc.md); pinned with glidex-api's connectrpc.
 glidex-api = { path = "../glidex-api" }
-connectrpc = { version = "=0.9.1", default-features = false, features = ["json", "gzip", "axum"] }
+connectrpc = { version = "=0.9.1", default-features = false, features = ["json", "gzip", "axum", "client"] }
 connectrpc-health = "=0.9.0"
 buffa = { version = "=0.9.2", features = ["json"] }
 buffa-types = { version = "=0.9.2", features = ["json"] }
@@ -58,9 +58,8 @@ hyper-util = { version = "0.1", features = ["server", "server-auto", "tokio", "s
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
 rustls-pki-types = { version = "1", features = ["std"] }
 tower = { version = "0.5", features = ["util"] }
-# gxctl: HTTP over api.sock / TLS, console WebSocket
+# gxctl: HTTP over api.sock / TLS
 http-body-util = "0.1"
-tokio-tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }
 rustls-native-certs = "0.8"
 percent-encoding = "2"
 # Replicated control plane (spec/clustering.md D1); pinned, upgrades reviewed like the CH/OVS pins.
@@ -71,6 +70,8 @@ x509-parser = { version = "0.18", features = ["verify"] }
 time = "0.3"
 
 [dev-dependencies]
+# The console WebSocket's tests (the browser's console).
+tokio-tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }
 glidex-api = { path = "../glidex-api", features = ["client"] }
 rsa = "0.9"
 rand = "0.8"

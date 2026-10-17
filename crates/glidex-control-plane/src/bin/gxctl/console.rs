@@ -1,24 +1,31 @@
 //! `connect` and `log`: the VM console through the API (spec/cli.md).
 //!
-//! The console WebSocket `GET /vms/{id}/console/ws` is opened over the
-//! same transport as every other request (api.sock, TCP or TLS). Local
-//! peers and token holders need no ticket; tickets are for browsers.
+//! The console is the bidi RPC `VmService.Console`, on an HTTP/2
+//! connection of its own made like every other (api.sock, TCP or TLS).
+//! Local peers and token holders need no ticket; tickets are for browsers.
 
-use crate::client::{ApiClient, Conn, render_error};
+use crate::client::ApiClient;
 use crate::tenancy::rpc_err;
 use colored::Colorize;
-use futures_util::{SinkExt, StreamExt};
-use glidex_api::proto::glidex::vm::v1::{GetConsoleInfoRequest, GetConsoleLogRequest};
-use hyper::StatusCode;
-use hyper::header::AUTHORIZATION;
+use connectrpc::client::{BidiStream, SharedHttp2Connection};
+use glidex_api::proto::glidex::vm::v1::__buffa::oneof::console_request::Request as R;
+use glidex_api::proto::glidex::vm::v1::__buffa::view::ConsoleResponseView;
+use glidex_api::proto::glidex::vm::v1::{
+    ConsoleOpen, ConsoleRequest, GetConsoleInfoRequest, GetConsoleLogRequest, VmServiceClient,
+};
 use nix::sys::termios::{self, LocalFlags, SetArg, Termios};
 use std::io::{self, Write};
 use std::os::fd::{AsFd, BorrowedFd};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tokio_tungstenite::WebSocketStream;
-use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-use tokio_tungstenite::tungstenite::{self, Message};
+use std::time::Duration;
+
+/// An open console stream.
+pub type Console = BidiStream<
+    <SharedHttp2Connection as connectrpc::client::ClientTransport>::ResponseBody,
+    ConsoleRequest,
+    ConsoleResponseView<'static>,
+>;
 
 /// `Ctrl+]` detaches.
 const DETACH: u8 = 0x1d;
@@ -38,28 +45,41 @@ pub fn restore_terminal(fd: BorrowedFd<'_>, t: &Termios) {
     let _ = termios::tcsetattr(fd, SetArg::TCSANOW, t);
 }
 
-/// Open the console WebSocket at `path` (an API path).
-pub async fn open_ws(
-    client: &ApiClient,
-    path: &str,
-) -> Result<WebSocketStream<Box<dyn Conn>>, String> {
-    let stream = client.connect().await?;
-    let mut req = client
-        .ws_url(path)
-        .into_client_request()
-        .map_err(|e| format!("console: {}", e))?;
-    if let Some(h) = client.auth_header() {
-        req.headers_mut().insert(AUTHORIZATION, h);
-    }
-    match tokio_tungstenite::client_async(req, stream).await {
-        Ok((ws, _)) => Ok(ws),
-        Err(tungstenite::Error::Http(resp)) => {
-            let status =
-                StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
-            let body = resp.body().clone().unwrap_or_default();
-            Err(render_error(status, &body, !client.is_unix()).message)
+/// Open the console of `vm_id`: the call, its `open` message, and the
+/// server's answer. A refusal (unknown VM, not allowed, no console) is the
+/// error; on success, whatever output already came is returned with the
+/// stream, to be written once the terminal is set up.
+pub async fn open_console(client: &ApiClient, vm_id: &str) -> Result<(Console, Vec<u8>), String> {
+    let (t, config) = client.stream_transport().await.map_err(|e| e.message)?;
+    let mut stream = VmServiceClient::new(t, config)
+        .console()
+        .await
+        .map_err(rpc_err)?;
+    stream
+        .send(ConsoleRequest {
+            request: Some(R::Open(Box::new(ConsoleOpen {
+                id: vm_id.to_string(),
+                ..Default::default()
+            }))),
+            ..Default::default()
+        })
+        .await
+        .map_err(rpc_err)?;
+    // The server answers (headers, or the refusal) once the console is
+    // reached; there is no call to wait for headers alone, so wait in short
+    // slices of the (cancel-safe) `message`, keeping any output it brings.
+    let mut early = Vec::new();
+    loop {
+        match tokio::time::timeout(Duration::from_millis(20), stream.message()).await {
+            Ok(Ok(Some(m))) => early.extend_from_slice(&m.to_owned_message().output),
+            // Opened and closed at once: the loop below reports it.
+            Ok(Ok(None)) => return Ok((stream, early)),
+            Ok(Err(e)) => return Err(rpc_err(e)),
+            Err(_) => {}
         }
-        Err(e) => Err(format!("console: {}", e)),
+        if stream.headers().is_some() {
+            return Ok((stream, early));
+        }
     }
 }
 
@@ -109,8 +129,7 @@ fn pump_stdin(running: Arc<AtomicBool>, tx: tokio::sync::mpsc::Sender<Vec<u8>>) 
 }
 
 pub async fn handle_connect(client: &ApiClient, vm_id: &str) {
-    // Where the console is, from `GetConsoleInfo`; the console itself
-    // stays a WebSocket (spec/grpc.md §9).
+    // Whether the console is up, from `GetConsoleInfo`.
     let info = match crate::vm::rpc(client).await {
         Ok(svc) => svc
             .get_console_info(GetConsoleInfoRequest {
@@ -134,13 +153,8 @@ pub async fn handle_connect(client: &ApiClient, vm_id: &str) {
         );
         return;
     }
-    let path = if info.websocket.is_empty() {
-        format!("/vms/{}/console/ws", vm_id)
-    } else {
-        info.websocket
-    };
-    let ws = match open_ws(client, &path).await {
-        Ok(ws) => ws,
+    let (mut stream, early) = match open_console(client, vm_id).await {
+        Ok(s) => s,
         Err(e) => return println!("{} {}", "Error:".red(), e),
     };
     println!(
@@ -167,30 +181,32 @@ pub async fn handle_connect(client: &ApiClient, vm_id: &str) {
     let r = running.clone();
     let reader = std::thread::spawn(move || pump_stdin(r, tx));
 
-    let (mut sink, mut source) = ws.split();
+    let write_out = |b: &[u8]| {
+        let mut out = io::stdout().lock();
+        let _ = out.write_all(b);
+        let _ = out.flush();
+    };
+    if !early.is_empty() {
+        write_out(&early);
+    }
     let mut closed_by_vm = false;
     loop {
         tokio::select! {
-            msg = source.next() => match msg {
-                Some(Ok(Message::Binary(b))) => {
-                    let mut out = io::stdout().lock();
-                    let _ = out.write_all(&b);
-                    let _ = out.flush();
-                }
-                Some(Ok(Message::Text(t))) => {
-                    let mut out = io::stdout().lock();
-                    let _ = out.write_all(t.as_bytes());
-                    let _ = out.flush();
-                }
-                Some(Ok(Message::Close(_))) | None | Some(Err(_)) => {
+            msg = stream.message() => match msg {
+                Ok(Some(m)) => write_out(&m.to_owned_message().output),
+                // The console closed (or the call failed).
+                Ok(None) | Err(_) => {
                     closed_by_vm = true;
                     break;
                 }
-                Some(Ok(_)) => {}
             },
             input = rx.recv() => match input {
                 Some(bytes) => {
-                    if sink.send(Message::Binary(bytes.into())).await.is_err() {
+                    let req = ConsoleRequest {
+                        request: Some(R::Input(bytes)),
+                        ..Default::default()
+                    };
+                    if stream.send(req).await.is_err() {
                         closed_by_vm = true;
                         break;
                     }
@@ -201,7 +217,9 @@ pub async fn handle_connect(client: &ApiClient, vm_id: &str) {
         }
     }
     running.store(false, Ordering::SeqCst);
-    let _ = sink.send(Message::Close(None)).await;
+    // Done sending; dropping the stream ends the call.
+    stream.close_send();
+    drop(stream);
     let _ = reader.join();
     restore_terminal(stdin.as_fd(), &orig);
     if closed_by_vm {

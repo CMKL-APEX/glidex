@@ -2047,12 +2047,32 @@ mod tests {
             assert!(tenancy::rpc_err(e).contains("not_found"));
         }
 
-        // The console WebSocket goes over the same socket; errors come back
-        // as API errors.
-        let e = console::open_ws(&client, "/vms/nope/console/ws")
+        // The console RPC goes over the same socket, on HTTP/2 of its own;
+        // a refusal is the call's error.
+        {
+            let (t, config) = client.stream_transport().await.unwrap();
+            let mut stream = glidex_api::proto::glidex::vm::v1::VmServiceClient::new(t, config)
+                .console()
+                .await
+                .unwrap();
+            stream
+            .send(glidex_api::proto::glidex::vm::v1::ConsoleRequest {
+                request: Some(
+                    glidex_api::proto::glidex::vm::v1::__buffa::oneof::console_request::Request::Open(
+                        Box::new(glidex_api::proto::glidex::vm::v1::ConsoleOpen {
+                            id: "nope".into(),
+                            ..Default::default()
+                        }),
+                    ),
+                ),
+                ..Default::default()
+            })
             .await
-            .err()
             .unwrap();
+            let e = stream.message().await.unwrap_err();
+            assert_eq!(e.code, connectrpc::ErrorCode::NotFound, "{e:?}");
+        }
+        let e = console::open_console(&client, "nope").await.err().unwrap();
         assert!(e.contains("not_found"), "{e}");
         let e = vm::rpc(&client)
             .await

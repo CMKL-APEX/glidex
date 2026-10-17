@@ -1,6 +1,6 @@
 //! VMs (spec/reconciliation.md §7, §12) on the generated
 //! `glidex.vm.v1.VmServiceClient`, over the Connect protocol
-//! (spec/grpc.md §9.1). The live console stays a WebSocket (`console.rs`).
+//! (spec/grpc.md §9.1). The live console is the `Console` bidi RPC (`console.rs`).
 
 use crate::client::{ApiClient, RpcTransport};
 use crate::tenancy::{err, rpc_err, usage};

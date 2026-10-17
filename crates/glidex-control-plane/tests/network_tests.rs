@@ -1189,3 +1189,105 @@ async fn network_names_are_per_tenant_and_ids_are_the_keys() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["network"]["id"], a_id.as_str());
 }
+
+/// The next message of a Connect server stream (`application/connect+json`);
+/// `None` at its end.
+async fn next_frame(body: &mut Body, buf: &mut Vec<u8>) -> Option<Value> {
+    loop {
+        if buf.len() >= 5 {
+            let len = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
+            if buf.len() >= 5 + len {
+                let flags = buf[0];
+                let msg: Value = serde_json::from_slice(&buf[5..5 + len]).unwrap();
+                buf.drain(..5 + len);
+                return (flags & 0x02 == 0).then_some(msg);
+            }
+        }
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(15), body.frame())
+            .await
+            .expect("a frame within 15 s")?
+            .unwrap();
+        if let Ok(data) = frame.into_data() {
+            buf.extend_from_slice(&data);
+        }
+    }
+}
+
+/// `glidex.watch.v1.WatchService.WatchEvents` (spec/grpc.md G4): an
+/// object's events as a stream, the ones it has, `synced`, then new ones
+/// as they happen.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_networks_events_stream_as_they_happen() {
+    use glidex_netd::proto::Op;
+    let h = harness(true);
+    let (_, body) = request(
+        &h.app,
+        "POST",
+        "/networks",
+        Some(json!({"name": "lab", "mode": "nat", "bridge": "gxbr-lab"})),
+    )
+    .await;
+    let lab = body["network"]["id"].as_str().unwrap().to_string();
+    let mut req = vec![0u8];
+    let msg = json!({"kind": "WATCH_KIND_NETWORK", "id": lab}).to_string();
+    req.extend_from_slice(&(msg.len() as u32).to_be_bytes());
+    req.extend_from_slice(msg.as_bytes());
+    let resp = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/glidex.watch.v1.WatchService/WatchEvents")
+                .header("content-type", "application/connect+json")
+                .body(Body::from(req))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let mut body = resp.into_body();
+    let mut buf = Vec::new();
+    loop {
+        let e = next_frame(&mut body, &mut buf).await.expect("synced");
+        if e["type"] == "WATCH_EVENT_TYPE_SYNCED" {
+            break;
+        }
+        assert_eq!(e["type"], "WATCH_EVENT_TYPE_ADDED", "{e}");
+    }
+    // netd lost the NAT; the controller makes it again and says so.
+    let netd = Netd::new(h._dir.path().join("run"));
+    netd.call::<Value>(Op::DeleteNat {
+        bridge: "gxbr-lab".into(),
+    })
+    .unwrap();
+    h.manager.reconcile_network(&lab).await.unwrap();
+    let e = next_frame(&mut body, &mut buf).await.expect("an event");
+    assert_eq!(e["type"], "WATCH_EVENT_TYPE_ADDED", "{e}");
+    assert_eq!(e["event"]["reason"], "NatRestored", "{e}");
+
+    // A kind without events, or an object the caller can't see, is refused.
+    let mut req = vec![0u8];
+    let msg = json!({"kind": "WATCH_KIND_NODE", "id": "local"}).to_string();
+    req.extend_from_slice(&(msg.len() as u32).to_be_bytes());
+    req.extend_from_slice(msg.as_bytes());
+    let resp = h
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/glidex.watch.v1.WatchService/WatchEvents")
+                .header("content-type", "application/connect+json")
+                .body(Body::from(req))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let mut body = resp.into_body();
+    let mut buf = Vec::new();
+    assert!(
+        next_frame(&mut body, &mut buf).await.is_none(),
+        "refused: the stream ends at once with its error"
+    );
+}

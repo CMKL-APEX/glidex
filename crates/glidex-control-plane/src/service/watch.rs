@@ -388,6 +388,165 @@ pub async fn open(
     Ok(rx)
 }
 
+// ---- one object's events ----------------------------------------------------
+
+/// What `WatchEvents` streams: each event, `synced` after the snapshot, `expired`.
+pub enum ObjectEvent {
+    Event(Box<glidex_api::proto::glidex::common::v1::Event>),
+    Synced,
+    Expired,
+}
+
+/// The events of object `id` of `kind`, as its list operation answers them
+/// (with that operation's checks), now and whenever the store changes.
+async fn object_events(
+    call: &Call,
+    kind: Kind,
+    id: &str,
+) -> ServiceResult<Vec<glidex_api::proto::glidex::common::v1::Event>> {
+    use crate::service::{network, storage, vm};
+    let id = id.to_string();
+    Ok(match kind {
+        Kind::Vm => {
+            let c = call.with_action("readVm");
+            let req = glidex_api::proto::glidex::vm::v1::ListVmEventsRequest {
+                id,
+                ..Default::default()
+            };
+            vm::vm_events(&c, req).await?.events
+        }
+        Kind::Disk => {
+            let c = call.with_action("readDisk");
+            let req = glidex_api::proto::glidex::storage::v1::ListDiskEventsRequest {
+                id,
+                ..Default::default()
+            };
+            storage::disk_events(&c, req).await?.events
+        }
+        Kind::Image => {
+            let c = call.with_action("readImage");
+            let req = glidex_api::proto::glidex::storage::v1::ListImageEventsRequest {
+                id,
+                ..Default::default()
+            };
+            storage::image_events(&c, req).await?.events
+        }
+        Kind::Network => {
+            let c = call.with_action("readNetwork");
+            let req = glidex_api::proto::glidex::network::v1::ListNetworkEventsRequest {
+                id,
+                ..Default::default()
+            };
+            network::network_events(&c, req)?.events
+        }
+        _ => {
+            return Err(err(
+                StatusCode::BAD_REQUEST,
+                "invalid",
+                "events are kept for VMs, disks, images and networks",
+            ));
+        }
+    })
+}
+
+/// Open a stream of one object's events: the ones it has (a refusal is the
+/// call's error), `synced`, then each new one; it ends like `open`'s.
+pub async fn open_events(
+    call: Call,
+    kind: Kind,
+    id: String,
+) -> ServiceResult<tokio::sync::mpsc::Receiver<ObjectEvent>> {
+    if WATCHERS.fetch_add(1, Ordering::SeqCst) >= MAX_WATCHERS {
+        WATCHERS.fetch_sub(1, Ordering::SeqCst);
+        return Err(err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "too_many_watchers",
+            "too many open watch streams; poll instead",
+        ));
+    }
+    let slot = Slot;
+    let first = object_events(&call, kind, &id).await?;
+    let (tx, rx) = tokio::sync::mpsc::channel::<ObjectEvent>(256);
+    let mut bell = call.manager().changed.subscribe();
+    tokio::spawn(async move {
+        let _slot = slot;
+        let deadline = tokio::time::Instant::now() + MAX_LIFETIME;
+        let mut seen: Vec<_> = Vec::new();
+        let mut now = first;
+        let mut synced = false;
+        loop {
+            // The list keeps the last events: what follows the last one
+            // sent is new (all of it, if that one rotated out).
+            let fresh = match seen.last() {
+                None => now.as_slice(),
+                Some(last) => match now.iter().rposition(|e| e == last) {
+                    Some(i) => &now[i + 1..],
+                    None => now.as_slice(),
+                },
+            };
+            for e in fresh {
+                if tx
+                    .send(ObjectEvent::Event(Box::new(e.clone())))
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+            }
+            if !synced {
+                if tx.send(ObjectEvent::Synced).await.is_err() {
+                    return;
+                }
+                synced = true;
+            }
+            seen = now;
+            bell.borrow_and_update();
+            let wake = tokio::time::Instant::now() + RESYNC;
+            tokio::select! {
+                _ = bell.changed() => {}
+                _ = tokio::time::sleep_until(wake.min(deadline)) => {}
+                _ = tx.closed() => return,
+            }
+            if tokio::time::Instant::now() >= deadline {
+                break;
+            }
+            tokio::time::sleep(COALESCE).await;
+            now = match object_events(&call, kind, &id).await {
+                Ok(v) => v,
+                // Gone, or access gone: end the stream.
+                Err(_) => break,
+            };
+        }
+        let _ = tx.send(ObjectEvent::Expired).await;
+    });
+    Ok(rx)
+}
+
+/// The kind a `WatchEventsRequest` names, if events are kept for it.
+pub fn events_kind(req: &pb::WatchEventsRequest) -> Option<Kind> {
+    match req.kind.as_known() {
+        Some(pb::WatchKind::WATCH_KIND_VM) => Some(Kind::Vm),
+        Some(pb::WatchKind::WATCH_KIND_DISK) => Some(Kind::Disk),
+        Some(pb::WatchKind::WATCH_KIND_IMAGE) => Some(Kind::Image),
+        Some(pb::WatchKind::WATCH_KIND_NETWORK) => Some(Kind::Network),
+        _ => None,
+    }
+}
+
+/// An object event as `WatchEventsResponse`.
+pub fn object_event_pb(e: ObjectEvent) -> pb::WatchEventsResponse {
+    let (ty, event) = match e {
+        ObjectEvent::Event(e) => (pb::WatchEventType::WATCH_EVENT_TYPE_ADDED, Some(*e)),
+        ObjectEvent::Synced => (pb::WatchEventType::WATCH_EVENT_TYPE_SYNCED, None),
+        ObjectEvent::Expired => (pb::WatchEventType::WATCH_EVENT_TYPE_EXPIRED, None),
+    };
+    pb::WatchEventsResponse {
+        r#type: ty.into(),
+        event: event.into(),
+        ..Default::default()
+    }
+}
+
 // ---- the message --------------------------------------------------------------
 
 /// The kinds a `WatchRequest` asks for (default: VMs, disks, images, networks).

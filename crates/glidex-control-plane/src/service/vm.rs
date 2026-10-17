@@ -926,3 +926,71 @@ pub async fn detach_disk(call: &Call, req: pb::DetachDiskRequest) -> ServiceResu
         .map_err(manager_err)?;
     respond(call, vm, req.wait_secs, Vec::new()).await
 }
+
+// ---- the live console (the WebSocket and `Console`) ---------------------------
+
+/// Where a VM's console is: its shim's socket here, or its node.
+pub enum ConsoleTarget {
+    Local(String),
+    /// On another node: relayed over `/cluster/v1/vms/{id}/console` (§8.4).
+    Remote {
+        addr: String,
+        vm: String,
+    },
+}
+
+/// The console's byte stream, whichever way it is reached.
+pub trait ConsoleIo: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin {}
+impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin> ConsoleIo for T {}
+
+/// The console of VM `id` if the caller may open it: they may read the VM
+/// (else not found), and a browser session (PAM, OIDC) needs a fresh
+/// single-use `ticket` (spec/security.md §5.6). Tokens and the API socket
+/// don't.
+pub async fn console_target(
+    call: &Call,
+    id: &str,
+    ticket: Option<&str>,
+) -> ServiceResult<ConsoleTarget> {
+    let vm = call.manager().get_vm(id).await.map_err(manager_err)?;
+    call.set_project(&vm.project);
+    call.set_target(format!("vm:{}", vm.id));
+    let (e, es) = vm_entities(&vm);
+    call.require_visible("readVm", e, es, "VM")?;
+    use crate::auth::Method;
+    if matches!(call.p.method, Method::Pam | Method::Oidc)
+        && !ticket.is_some_and(|t| call.auth().redeem_ticket(&call.p, &vm.id, t))
+    {
+        return Err(ServiceError::new(
+            StatusCode::FORBIDDEN,
+            "ticket_required",
+            "open the console with a fresh ticket",
+        ));
+    }
+    Ok(match call.manager().remote_node_addr(&vm) {
+        Some(addr) => ConsoleTarget::Remote { addr, vm: vm.id },
+        None => ConsoleTarget::Local(vm.paths().console_socket),
+    })
+}
+
+/// Connect to the console a target names.
+pub async fn console_connect(
+    m: &crate::state::VmManager,
+    target: ConsoleTarget,
+) -> Result<Box<dyn ConsoleIo>, String> {
+    match target {
+        ConsoleTarget::Local(path) => tokio::net::UnixStream::connect(&path)
+            .await
+            .map(|s| Box::new(s) as Box<dyn ConsoleIo>)
+            .map_err(|e| format!("Failed to connect to the VM console: {e}")),
+        ConsoleTarget::Remote { addr, vm } => {
+            let cluster = m.cluster().ok_or("no cluster")?;
+            cluster
+                .client
+                .upgrade(&addr, &format!("/cluster/v1/vms/{vm}/console"))
+                .await
+                .map(|s| Box::new(s) as Box<dyn ConsoleIo>)
+                .map_err(|e| format!("the VM's node can't be reached: {e}"))
+        }
+    }
+}
