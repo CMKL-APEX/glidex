@@ -52,7 +52,9 @@ export default defineConfig<Options>({
       command: `bunx vite --port ${uiPort} --strictPort`,
       cwd: "../ui",
       url: `http://localhost:${uiPort}`,
-      env: { GLIDEX_API_URL: `http://127.0.0.1:${apiPort}` },
+      // Through the scratch control plane's ui.sock: the UI's RPCs are
+      // gRPC-Web, taken there only (spec/grpc.md §6).
+      env: { GLIDEX_API_SOCKET: `${process.env.GLIDEX_E2E_HOME ?? "/tmp/glidex-ui-e2e"}/ui.sock` },
       reuseExistingServer: false,
       stdout: "ignore",
     },

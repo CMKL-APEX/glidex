@@ -7,7 +7,9 @@
 # Authentication is on, as in production. The user running the tests is
 # the scratch instance's break-glass admin on its api.sock (admin_group is
 # their primary group); tests/auth.setup.ts turns that into a browser
-# session.
+# session. They are its `ui_user` too: the dev server and glidex-ui reach
+# it through its ui.sock, where the UI's gRPC-Web RPCs are taken
+# (spec/grpc.md §6).
 set -euo pipefail
 
 repo=$(cd "$(dirname "$0")/../../../.." && pwd)
@@ -40,6 +42,7 @@ cat >"$e2e_home/control-plane.json" <<EOF
   "ui_socket": "$e2e_home/ui.sock",
   "admin_group": "$group",
   "users_group": "$group",
+  "ui_user": "$(id -un)",
   "auth": {
     "allowed_origins": [
       "http://localhost:$ui_port", "http://127.0.0.1:$ui_port",

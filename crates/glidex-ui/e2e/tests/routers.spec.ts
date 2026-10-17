@@ -2,8 +2,8 @@
 // Routers card on the project page and the router choice in the network
 // form. The scratch control plane is standalone, so OVN, the routers and
 // two nodes are mocked; the project is real.
-import type { Page, Route } from "@playwright/test";
-import { api, del, expect, field, test } from "../fixtures";
+import type { Page } from "@playwright/test";
+import { api, del, expect, field, RpcCode, rpcFetch, rpcRoute, test } from "../fixtures";
 
 test.use({ ignoredConsoleErrors: /Failed to load resource/ });
 
@@ -16,7 +16,7 @@ async function cleanup() {
 test.beforeAll(cleanup);
 test.afterAll(cleanup);
 
-const json = (r: Route, v: unknown, status = 200) => r.fulfill({ status, contentType: "application/json", body: JSON.stringify(v) });
+const ok = (message: unknown) => ({ message });
 
 /** A server node as glidex.cluster.v1 sends it (proto3 JSON). */
 function node(id: string, name: string, phase = "NODE_PHASE_ACTIVE") {
@@ -56,9 +56,12 @@ async function mockOvn(page: Page, project: string, pool = true): Promise<Seen> 
   const seen: Seen = [];
   // glidex.network.v1 shapes: fields at their default left out, RFC 3339 times.
   const routers: any[] = [{ id: R1, project, spec: { name: "r1", external: true }, status: { external_ip: "192.0.2.240", snat_ct_zone: 60001 }, created_at: "2026-09-21T12:00:00Z" }];
-  await page.route("**/api/watch*", (r) => json(r, { error: "too_many_watchers", message: "poll" }, 503));
-  await page.route("**/api/nodes", (r) =>
-    json(r, {
+  // No live stream: the pages poll, so the mocks are what they see.
+  await rpcRoute(page, "glidex.watch.v1.WatchService/Watch", () => ({
+    error: { code: RpcCode.UNAVAILABLE, reason: "too_many_watchers", message: "poll", httpStatus: 503 },
+  }));
+  await rpcRoute(page, "glidex.cluster.v1.NodeService/ListNodes", () =>
+    ok({
       nodes: [
         node("11111111-1111-4111-8111-111111111111", "s1"),
         node("22222222-2222-4222-8222-222222222222", "s2"),
@@ -67,28 +70,27 @@ async function mockOvn(page: Page, project: string, pool = true): Promise<Seen> 
       ],
     }),
   );
-  await page.route("**/api/cluster/settings/ovn", (r) => json(r, { enabled: true, edge: true, vpc_pool: pool }));
-  await page.route("**/api/cluster/ovn", (r) =>
-    json(r, { enabled: true, gateways: [{ router: "gxr-a1b2c3d4", active: { chassis: "node:1", node: "1", node_name: "s1" } }] }),
+  await rpcRoute(page, "glidex.cluster.v1.ClusterService/GetOvnSettings", () => ok({ enabled: true, edge: true, vpc_pool: pool }));
+  await rpcRoute(page, "glidex.cluster.v1.ClusterService/GetOvnOverview", () =>
+    ok({ enabled: true, gateways: [{ router: "gxr-a1b2c3d4", active: { chassis: "node:1", node: "1", node_name: "s1" } }] }),
   );
-  await page.route(`**/api/projects/${project}/routers`, async (r) => {
-    const req = r.request();
-    if (req.method() === "POST") {
-      const body = req.postDataJSON();
-      seen.push({ method: "POST", path: "routers", body });
-      const made = { id: "e5f6a7b8", project, spec: body, status: body.external ? { external_ip: "192.0.2.241" } : {}, created_at: "2026-09-21T12:00:01Z" };
-      routers.push(made);
-      return json(r, { router: made }, 201);
-    }
-    return json(r, { routers });
+  await rpcRoute(page, "glidex.network.v1.RouterService/ListRouters", (req) => (req.project === project ? ok({ routers }) : undefined));
+  await rpcRoute(page, "glidex.network.v1.RouterService/CreateRouter", (req) => {
+    if (req.project !== project) return undefined;
+    const { project: _, ...spec } = req;
+    seen.push({ method: "POST", path: "routers", body: spec });
+    const made = { id: "e5f6a7b8", project, spec, status: spec.external ? { external_ip: "192.0.2.241" } : {}, created_at: "2026-09-21T12:00:01Z" };
+    routers.push(made);
+    return ok({ router: made });
   });
-  await page.route(`**/api/projects/${project}/routers/*`, async (r) => {
+  await rpcRoute(page, "glidex.network.v1.RouterService/DeleteRouter", (req) => {
+    if (req.project !== project) return undefined;
     // By id or name, as the server takes it; recorded by name.
-    const key = decodeURIComponent(new URL(r.request().url()).pathname.split("/").pop()!);
+    const key = req.router;
     const i = routers.findIndex((x) => x.id === key || x.spec.name === key);
-    seen.push({ method: r.request().method(), path: `routers/${routers[i]?.spec.name ?? key}`, body: null });
+    seen.push({ method: "DELETE", path: `routers/${routers[i]?.spec.name ?? key}`, body: null });
     routers.splice(i, 1);
-    return r.fulfill({ status: 204 });
+    return ok({});
   });
   // The project's NAT networks, `app` on r1 and `web` on the edge (the
   // networks list is otherwise real).
@@ -97,29 +99,26 @@ async function mockOvn(page: Page, project: string, pool = true): Promise<Seen> 
     { id: "0a000000-0000-4000-8000-000000000002", name: "web", ...CLUSTER_NAT, project },
     { id: "0a000000-0000-4000-8000-000000000003", name: "lab", ...CLUSTER_NAT, mode: "NETWORK_MODE_ISOLATED", project },
   ];
-  await page.route("**/api/networks", async (r) => {
-    if (r.request().method() !== "GET") return r.continue();
+  await rpcRoute(page, "glidex.network.v1.NetworkService/ListNetworks", async (_req, r) => {
     // The page may have moved on (to the Networking page) meanwhile.
-    const real = await r
-      .fetch()
-      .then((x) => x.json())
-      .catch(() => null);
-    if (real === null) return;
-    return json(r, { networks: [...(real.networks ?? []), ...nets] });
+    const real = await rpcFetch(r);
+    if (real === null) return { error: { code: RpcCode.UNAVAILABLE, reason: "unavailable", message: "gone", httpStatus: 503 } };
+    return ok({ networks: [...(real.networks ?? []), ...nets] });
   });
-  await page.route(`**/api/projects/${project}/networks/*/router`, async (r) => {
+  await rpcRoute(page, "glidex.network.v1.NetworkService/SetNetworkRouter", (req) => {
+    if (req.project !== project) return undefined;
     // The network and router by id or name; recorded by the network's name.
-    const key = decodeURIComponent(new URL(r.request().url()).pathname.split("/").slice(-2)[0]);
-    const body = r.request().postDataJSON();
+    const { project: _, network: key, ...body } = req;
     const n = nets.find((x) => x.id === key || x.name === key)!;
     seen.push({ method: "PUT", path: `networks/${n.name}/router`, body });
     if (body.router) n.router = routers.find((x) => x.id === body.router || x.spec.name === body.router)!.id;
     else delete n.router;
-    return json(r, { network: n });
+    return ok({ network: n });
   });
-  await page.route(`**/api/projects/${project}/networks`, async (r) => {
-    seen.push({ method: "POST", path: "networks", body: r.request().postDataJSON() });
-    return json(r, { network: { id: "0a000000-0000-4000-8000-000000000004", name: "db", ...CLUSTER_NAT, project } }, 201);
+  await rpcRoute(page, "glidex.network.v1.NetworkService/CreateProjectNetwork", (req) => {
+    if (req.project !== project) return undefined;
+    seen.push({ method: "POST", path: "networks", body: req });
+    return ok({ network: { id: "0a000000-0000-4000-8000-000000000004", name: "db", ...CLUSTER_NAT, project } });
   });
   return seen;
 }
@@ -185,13 +184,10 @@ test("a network made from a router's card goes on that router", async ({ page })
   try {
     const seen = await mockOvn(page, project.id);
     // The form opens where netd can make networks (none on the scratch host).
-    await page.route("**/api/ovs/status", async (r) => {
-      const real = await r
-        .fetch()
-        .then((x) => x.json())
-        .catch(() => null);
-      if (real === null) return;
-      return json(r, { ...real, netd: { ...(real.netd ?? {}), available: true, access: "NETD_ACCESS_FULL" }, host: { ...(real.host ?? {}), ovs_running: true } });
+    await rpcRoute(page, "glidex.host.v1.HostNetworkService/GetOvsStatus", async (_req, r) => {
+      const real = await rpcFetch(r);
+      if (real === null) return { error: { code: RpcCode.UNAVAILABLE, reason: "unavailable", message: "gone", httpStatus: 503 } };
+      return ok({ ...real, netd: { ...(real.netd ?? {}), available: true, access: "NETD_ACCESS_FULL" }, host: { ...(real.host ?? {}), ovs_running: true } });
     });
     await page.goto(`/projects/${project.id}`);
     await page.getByRole("link", { name: "+ network on r1" }).click();
@@ -233,7 +229,7 @@ test("existing networks attach to a router and detach back to the edge", async (
     // app goes back to the edge.
     await r1.getByText("app").locator("..").getByRole("button", { name: "Detach" }).click();
     await page.getByRole("dialog").getByRole("button", { name: "Detach" }).click();
-    await expect.poll(() => seen.find((s) => s.path === "networks/app/router")?.body).toEqual({ router: null });
+    await expect.poll(() => seen.find((s) => s.path === "networks/app/router")?.body).toEqual({});
     await expect(page.getByText(/app.*leaves via the shared edge/)).toBeVisible();
   } finally {
     await del(`/projects/${project.id}`);
@@ -261,7 +257,7 @@ test("an isolated network attaches to a router and is isolated again when detach
     await r1.getByText("lab", { exact: true }).locator("..").getByRole("button", { name: "Detach" }).click();
     await expect(page.getByRole("dialog")).toContainText("isolated again");
     await page.getByRole("dialog").getByRole("button", { name: "Detach" }).click();
-    await expect.poll(() => seen.filter((s) => s.path === "networks/lab/router").pop()?.body).toEqual({ router: null });
+    await expect.poll(() => seen.filter((s) => s.path === "networks/lab/router").pop()?.body).toEqual({});
     await expect(page.getByText(/routed via router r1/)).toHaveCount(0);
   } finally {
     await del(`/projects/${project.id}`);

@@ -1,7 +1,7 @@
 // Login, session and browser protections (spec/security.md §5.5, §5.6,
 // §14 "UI e2e"): the login page, CSRF on writes, logout, console tickets,
 // and glidex-ui's Host allowlist and security headers.
-import { api, createVm, del, expect, rawRequest, test, UI_SERVER_PORT } from "../fixtures";
+import { api, createVm, del, expect, rawRequest, test, UI_SERVER_PORT, waitForRpc } from "../fixtures";
 
 const UI_SERVER = `http://localhost:${UI_SERVER_PORT}`;
 
@@ -49,13 +49,13 @@ test.describe("signed in", () => {
 
     await page.getByLabel("New team name").fill("e2e-csrf");
     const [request] = await Promise.all([
-      page.waitForRequest((r) => r.method() === "POST" && r.url().endsWith("/api/teams")),
+      page.waitForRequest((r) => r.method() === "POST" && r.url().endsWith("/api/glidex.access.v1.TeamService/CreateTeam")),
       page.getByRole("button", { name: "Create team" }).click(),
     ]);
     expect(request.headers()["x-glidex-csrf"]).toBe(csrf);
     await expect(page.getByText("e2e-csrf", { exact: true })).toBeVisible();
 
-    // The same request without the header.
+    // The same request without the header (to its REST twin).
     const refused = await page.evaluate(() =>
       fetch("/api/teams", {
         method: "POST",
@@ -118,11 +118,11 @@ test.describe("console", () => {
     ["glidex-ui", UI_SERVER],
   ] as const) {
     test(`opens through a single-use ticket (${server})`, async ({ page }) => {
-      const ticket = page.waitForRequest((r) => r.method() === "POST" && r.url().endsWith(`/api/vms/${vmId}/console/ticket`));
+      const ticket = waitForRpc(page, "glidex.vm.v1.VmService/CreateConsoleTicket");
       // (The dev server has a WebSocket of its own, for HMR.)
       const socket = page.waitForEvent("websocket", (ws) => ws.url().includes("/console/ws"));
       await page.goto(`${base}/vms/${vmId}/console`);
-      await ticket;
+      expect(await ticket).toMatchObject({ id: vmId });
       const ws = await socket;
       expect(ws.url()).toMatch(/\/api\/vms\/[^/]+\/console\/ws\?ticket=.+/);
       // The VM isn't running: the server accepted the upgrade and says so.

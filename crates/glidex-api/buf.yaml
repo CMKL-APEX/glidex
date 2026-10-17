@@ -2,11 +2,13 @@
 version: v2
 modules:
   - path: proto
-    excludes:
-      - proto/google
 lint:
   use:
     - STANDARD
+  # The vendored google.rpc.ErrorInfo keeps upstream's style; it is still
+  # generated for the UI and checked for breaking changes.
+  ignore:
+    - proto/google
 breaking:
   use:
     - FILE

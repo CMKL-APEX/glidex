@@ -1,5 +1,5 @@
 // CreateVmForm per hypervisor: no VM is booted, so no KVM or image needed.
-import { api, createVm, del, ensureFirmware, expect, field, firmwareImages, FIRMWARE_KEY, LABEL, listVms, PROTO_HYPERVISOR, test, vmCard, type Hypervisor } from "../fixtures";
+import { api, createVm, del, ensureFirmware, expect, field, firmwareImages, FIRMWARE_KEY, LABEL, listVms, PROTO_HYPERVISOR, test, vmCard, waitForRpc, type Hypervisor } from "../fixtures";
 
 const other = (hv: Hypervisor): Hypervisor => (hv === "qemu" ? "cloudhypervisor" : "qemu");
 
@@ -64,17 +64,17 @@ test("submits hypervisor, firmware and networks", async ({ page, hypervisor }) =
   await field(page, "Boot Disk").selectOption("path");
   await field(page, "Disk Image Path").fill("/nonexistent/disk.img");
 
-  const [request] = await Promise.all([
-    page.waitForRequest((r) => r.method() === "POST" && r.url().endsWith("/api/vms")),
+  const [body] = await Promise.all([
+    waitForRpc(page, "glidex.vm.v1.VmService/CreateVm"),
     page.getByRole("button", { name: "Create VM", exact: true }).click(),
   ]);
-  const body = request.postDataJSON();
   expect(body.firmware_path).toBeUndefined();
+  // proto JSON leaves an empty string out.
+  expect(body.kernel_image_path ?? "").toBe("");
   expect(body).toMatchObject({
     name: `form-${hypervisor}`,
     hypervisor: PROTO_HYPERVISOR[hypervisor],
     firmware: (await firmwareImages(hypervisor))[0].id,
-    kernel_image_path: "",
     rootfs_path: "/nonexistent/disk.img",
     restart_policy: "RESTART_POLICY_ON_FAILURE",
     on_host_boot: "HOST_BOOT_POLICY_RESUME",
@@ -105,10 +105,10 @@ test("starts it now with the chosen restart behaviour", async ({ page, hyperviso
   await page.getByLabel("Start it now").check();
 
   const [request] = await Promise.all([
-    page.waitForRequest((r) => r.method() === "POST" && r.url().endsWith("/api/vms")),
+    waitForRpc(page, "glidex.vm.v1.VmService/CreateVm"),
     page.getByRole("button", { name: "Create VM", exact: true }).click(),
   ]);
-  expect(request.postDataJSON()).toMatchObject({ power: "POWER_STATE_RUNNING", restart_policy: "RESTART_POLICY_NEVER", on_host_boot: "HOST_BOOT_POLICY_STOP" });
+  expect(request).toMatchObject({ power: "POWER_STATE_RUNNING", restart_policy: "RESTART_POLICY_NEVER", on_host_boot: "HOST_BOOT_POLICY_STOP" });
   await expect(vmCard(page, `form-${hypervisor}`)).toBeVisible();
   const vm = (await listVms()).find((v) => v.name === `form-${hypervisor}`);
   expect(vm).toMatchObject({ desired_state: "POWER_STATE_RUNNING", restart_policy: "RESTART_POLICY_NEVER", on_host_boot: "HOST_BOOT_POLICY_STOP" });

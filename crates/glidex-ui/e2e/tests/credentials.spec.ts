@@ -1,6 +1,6 @@
 // Login credentials: the VM form's "no login" default, and prefilling a
 // new credential with the user's own public keys (GET /users/me/ssh-keys).
-import { api, del, expect, field, test } from "../fixtures";
+import { api, del, expect, field, rpcRoute, test, waitForRpc } from "../fixtures";
 
 const KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl me@laptop";
 const USER = "e2e-keys";
@@ -71,9 +71,7 @@ test("Add Credential prefills my own public keys", async ({ page }) => {
   // The server reads ~/.ssh through glidex-authd, which only serves the
   // glidex service user; the scratch control plane can't use it, so the
   // answer is stubbed here (the server side has its own tests).
-  await page.route("**/api/users/me/ssh-keys", (route) =>
-    route.fulfill({ json: { available: true, username: USER, keys: [KEY] } }),
-  );
+  await rpcRoute(page, "glidex.access.v1.UserService/GetMySshKeys", () => ({ message: { available: true, username: USER, keys: [KEY] } }));
   await page.goto("/credentials");
   await page.getByRole("button", { name: "Add Credential" }).click();
   const keys = page.getByPlaceholder("ssh-ed25519 AAAA... user@host");
@@ -85,10 +83,10 @@ test("Add Credential prefills my own public keys", async ({ page }) => {
   await expect(keys).toHaveValue(KEY);
 
   const [request] = await Promise.all([
-    page.waitForRequest((r) => r.method() === "POST" && r.url().endsWith("/api/credentials")),
+    waitForRpc(page, "glidex.storage.v1.CredentialService/CreateCredential"),
     page.getByRole("button", { name: "Add", exact: true }).click(),
   ]);
-  expect(request.postDataJSON()).toMatchObject({ username: USER, ssh_authorized_keys: [KEY] });
+  expect(request).toMatchObject({ username: USER, ssh_authorized_keys: [KEY] });
   await expect(page.getByText(USER, { exact: true })).toBeVisible();
 });
 
