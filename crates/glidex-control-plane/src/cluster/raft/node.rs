@@ -268,8 +268,13 @@ struct RaftReplicator {
 }
 
 impl RaftReplicator {
-    fn block<F: std::future::Future>(&self, f: F) -> F::Output {
-        tokio::task::block_in_place(|| self.node.runtime.block_on(f))
+    /// `None` when the control plane is shutting down.
+    fn block<F>(&self, f: F) -> Option<F::Output>
+    where
+        F: std::future::Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
+        crate::cluster::wait_on(&self.node.runtime, f)
     }
 }
 
@@ -285,8 +290,10 @@ impl Replicator for RaftReplicator {
         }
         // A new leader first applies everything committed before it, so the
         // closure of the first write reads the state its write set lands on.
-        self.block(n.raft.ensure_linearizable())
-            .map_err(|_| n.not_leader())?;
+        let raft = n.raft.clone();
+        self.block(async move { raft.ensure_linearizable().await })
+            .and_then(|r| r.ok())
+            .ok_or_else(|| n.not_leader())?;
         n.ready_term.store(m.current_term, Ordering::Release);
         Ok(())
     }
@@ -299,7 +306,13 @@ impl Replicator for RaftReplicator {
 
     fn propose(&self, _db: &Db, ws: WriteSet) -> Result<u64, StoreError> {
         let n = &self.node;
-        match self.block(n.raft.client_write(ws)) {
+        let raft = n.raft.clone();
+        let Some(written) = self.block(async move { raft.client_write(ws).await }) else {
+            return Err(StoreError::Io(std::io::Error::other(
+                "the control plane is shutting down",
+            )));
+        };
+        match written {
             Ok(r) => Ok(r.log_id.index),
             Err(RaftError::APIError(ClientWriteError::ForwardToLeader(f))) => {
                 Err(StoreError::NotLeader {

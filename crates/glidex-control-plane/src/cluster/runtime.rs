@@ -486,32 +486,35 @@ impl LeaderForwarder {
             .upgrade()
             .ok_or(StoreError::NotLeader { leader: None })?;
         let path = path.to_string();
-        tokio::task::block_in_place(|| {
-            self.runtime.block_on(async move {
-                let Some(addr) = c.leader_addr() else {
-                    return Err(StoreError::NotLeader { leader: None });
-                };
-                let r = c
-                    .client
-                    .request(
-                        &addr,
-                        hyper::Method::POST,
-                        &path,
-                        &[("content-type", "application/json".into())],
-                        Bytes::from(body),
-                    )
-                    .await
-                    .map_err(|e| StoreError::Io(std::io::Error::other(e.to_string())))?;
-                if r.status.is_success() {
-                    Ok(r.body)
-                } else {
-                    Err(StoreError::Io(std::io::Error::other(format!(
-                        "the leader answered {}: {}",
-                        r.status,
-                        String::from_utf8_lossy(&r.body)
-                    ))))
-                }
-            })
+        crate::cluster::wait_on(&self.runtime, async move {
+            let Some(addr) = c.leader_addr() else {
+                return Err(StoreError::NotLeader { leader: None });
+            };
+            let r = c
+                .client
+                .request(
+                    &addr,
+                    hyper::Method::POST,
+                    &path,
+                    &[("content-type", "application/json".into())],
+                    Bytes::from(body),
+                )
+                .await
+                .map_err(|e| StoreError::Io(std::io::Error::other(e.to_string())))?;
+            if r.status.is_success() {
+                Ok(r.body)
+            } else {
+                Err(StoreError::Io(std::io::Error::other(format!(
+                    "the leader answered {}: {}",
+                    r.status,
+                    String::from_utf8_lossy(&r.body)
+                ))))
+            }
+        })
+        .unwrap_or_else(|| {
+            Err(StoreError::Io(std::io::Error::other(
+                "the control plane is shutting down",
+            )))
         })
     }
 }
