@@ -43,8 +43,60 @@ fn with_secrets(mut cp: Cp) -> Cp {
     cp
 }
 
+/// Stop the controllers while the test's runtime still runs. One caught in
+/// a status write to the leader (`NodeLink::submit` blocks on the runtime)
+/// would otherwise keep the runtime's shutdown waiting for ever.
+impl Drop for Cp {
+    fn drop(&mut self) {
+        let Ok(rt) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let m = self.manager.clone();
+        tokio::task::block_in_place(|| {
+            rt.block_on(async {
+                let _ = tokio::time::timeout(Duration::from_secs(20), m.stop_controllers()).await;
+            })
+        });
+    }
+}
+
 /// The identity in `authz` is process-wide, so these tests run one at a time.
 static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// How long a test may take once it has its turn, its runtime's shutdown
+/// included: a few times the slowest, and longer than any one wait in it,
+/// so a failing test still fails with its own message.
+const TEST_DEADLINE: Duration = Duration::from_secs(90);
+
+/// Take this test's turn (`SERIAL`) and give it `TEST_DEADLINE`: a test
+/// still running then aborts the run, rather than hang it until CI gives up.
+async fn serial() -> tokio::sync::MutexGuard<'static, ()> {
+    let turn = SERIAL.lock().await;
+    // The test's thread holds the sender; it goes when the thread ends,
+    // after the runtime has shut down.
+    thread_local! {
+        static RUNNING: std::cell::RefCell<Option<std::sync::mpsc::Sender<()>>> =
+            const { std::cell::RefCell::new(None) };
+    }
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    RUNNING.with(|r| *r.borrow_mut() = Some(tx));
+    let name = std::thread::current()
+        .name()
+        .unwrap_or("a test")
+        .to_string();
+    std::thread::spawn(move || {
+        if rx.recv_timeout(TEST_DEADLINE) == Err(std::sync::mpsc::RecvTimeoutError::Timeout) {
+            // Not eprintln!: the test harness captures this thread's output.
+            use std::io::Write;
+            let _ = writeln!(
+                std::io::stderr(),
+                "{name} has not finished {TEST_DEADLINE:?} after it started; aborting"
+            );
+            std::process::abort();
+        }
+    });
+    turn
+}
 
 fn free_port() -> u16 {
     std::net::TcpListener::bind("127.0.0.1:0")
@@ -289,7 +341,7 @@ async fn project_names(cp: &Cp) -> Vec<String> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn three_control_planes_survive_losing_the_leader() {
-    let _one = SERIAL.lock().await;
+    let _one = serial().await;
     let cps = form(3).await;
 
     for (i, cp) in cps.iter().enumerate() {
@@ -395,7 +447,7 @@ async fn three_control_planes_survive_losing_the_leader() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn rpc_reads_are_answered_by_the_server_that_takes_them() {
-    let _one = SERIAL.lock().await;
+    let _one = serial().await;
     let cps = form(2).await;
     let leader = leader_index(&cps, &[0, 1]).await;
     let follower = 1 - leader;
@@ -437,7 +489,7 @@ async fn rpc_reads_are_answered_by_the_server_that_takes_them() {
 /// open the connector secrets in the replicated store (spec/tenancy.md §13).
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn a_new_server_receives_the_secrets_key() {
-    let _one = SERIAL.lock().await;
+    let _one = serial().await;
     let cps = form_with(2, || with_secrets(new_cp())).await;
     let secrets = |i: usize| cps[i].secrets.as_ref().unwrap();
     let first = secrets(0).connectors.kek_id();
@@ -460,7 +512,7 @@ async fn a_new_server_receives_the_secrets_key() {
 async fn rpc_writes_on_a_follower_reach_the_leader_with_their_trailers() {
     use buffa::Message;
     use glidex_api::proto::glidex::tenancy::v1::{CreateTenantRequest, CreateTenantResponse};
-    let _one = SERIAL.lock().await;
+    let _one = serial().await;
     let cps = form(2).await;
     let leader = leader_index(&cps, &[0, 1]).await;
     let follower = 1 - leader;
@@ -553,7 +605,7 @@ async fn rpc_writes_on_a_follower_reach_the_leader_with_their_trailers() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn reads_without_a_quorum_fail_unless_stale_is_asked_for() {
-    let _one = SERIAL.lock().await;
+    let _one = serial().await;
     let cps = form(3).await;
     let leader = leader_index(&cps, &[0, 1, 2]).await;
     let (s, _) = call(
@@ -605,7 +657,7 @@ async fn reads_without_a_quorum_fail_unless_stale_is_asked_for() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn a_join_needs_the_right_token_and_the_pinned_ca() {
-    let _one = SERIAL.lock().await;
+    let _one = serial().await;
     let cfg = test_config();
     let first = new_cp();
     manage::init(
@@ -705,7 +757,7 @@ async fn a_join_needs_the_right_token_and_the_pinned_ca() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn a_new_cluster_starts_from_a_snapshot() {
-    let _one = SERIAL.lock().await;
+    let _one = serial().await;
     let cfg = test_config();
     let first = new_cp();
     manage::init(
@@ -790,7 +842,7 @@ async fn wait_for<F: std::future::Future<Output = bool>>(what: &str, mut f: impl
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn a_vm_placed_on_an_agent_is_that_agents_and_its_status_comes_back() {
-    let _one = SERIAL.lock().await;
+    let _one = serial().await;
     let cfg = test_config();
     let server = new_cp();
     manage::init(
@@ -949,7 +1001,7 @@ async fn a_vm_placed_on_an_agent_is_that_agents_and_its_status_comes_back() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn a_silent_node_is_unreachable_not_gone() {
-    let _one = SERIAL.lock().await;
+    let _one = serial().await;
     let mut cfg = test_config();
     cfg.cluster.node_grace_secs = 5;
     let server = new_cp();
@@ -1037,7 +1089,7 @@ async fn a_silent_node_is_unreachable_not_gone() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn a_server_relays_the_console_log_of_a_vm_on_an_agent() {
-    let _one = SERIAL.lock().await;
+    let _one = serial().await;
     let cfg = test_config();
     let server = new_cp();
     manage::init(
@@ -1151,7 +1203,7 @@ async fn a_server_relays_the_console_log_of_a_vm_on_an_agent() {
 async fn image_copies_go_where_they_are_wanted_and_spare_files_are_used() {
     use glidex_control_plane::store::{Origin, TableId};
     use sha2::{Digest, Sha256};
-    let _one = SERIAL.lock().await;
+    let _one = serial().await;
     let mut cfg = test_config();
     cfg.reconcile.resync_secs = 2;
     let server = new_cp();
@@ -1443,7 +1495,7 @@ async fn image_copies_go_where_they_are_wanted_and_spare_files_are_used() {
 async fn a_node_copies_an_image_it_needs_from_a_holder_and_checks_it() {
     use glidex_control_plane::store::{Origin, TableId};
     use sha2::{Digest, Sha256};
-    let _one = SERIAL.lock().await;
+    let _one = serial().await;
     let mut cfg = test_config();
     cfg.reconcile.resync_secs = 5;
     let server = new_cp();
@@ -1555,7 +1607,7 @@ fn vm_unpinned(name: &str) -> Value {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn the_scheduler_spreads_vms_honours_pins_and_disks_and_explains_itself() {
-    let _one = SERIAL.lock().await;
+    let _one = serial().await;
     let cfg = test_config();
     let server = new_cp();
     server.manager.configure(&cfg);
@@ -1794,7 +1846,7 @@ async fn the_scheduler_spreads_vms_honours_pins_and_disks_and_explains_itself() 
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn cluster_networks_get_a_subnet_and_vms_get_addresses_that_go_when_they_do() {
     use glidex_control_plane::cluster::config::EdgeConfig;
-    let _one = SERIAL.lock().await;
+    let _one = serial().await;
     let mut cfg = test_config();
     cfg.cluster.ovn.enabled = true;
     cfg.cluster.ovn.edge = Some(EdgeConfig {
@@ -1890,7 +1942,7 @@ async fn cluster_networks_get_a_subnet_and_vms_get_addresses_that_go_when_they_d
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn provider_networks_and_vpc_routers() {
     use glidex_control_plane::cluster::config::EdgeConfig;
-    let _one = SERIAL.lock().await;
+    let _one = serial().await;
     let mut cfg = test_config();
     cfg.cluster.ovn.enabled = true;
     cfg.cluster.ovn.edge = Some(EdgeConfig {
@@ -2247,7 +2299,7 @@ fn denylist_len(cp: &Cp) -> usize {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn nodes_are_removed_forgotten_and_rejoin_as_themselves() {
-    let _one = SERIAL.lock().await;
+    let _one = serial().await;
     let cps = form(4).await;
     let lead = leader_index(&cps, &[0, 1, 2, 3]).await;
     let status = manage::status_of(&cluster(&cps[lead]));
@@ -2476,7 +2528,7 @@ where
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn the_ca_rotates_and_every_node_renews_before_the_old_one_is_retired() {
-    let _one = SERIAL.lock().await;
+    let _one = serial().await;
     let cps = form(3).await;
     let lead = leader_index(&cps, &[0, 1, 2]).await;
     let old_fp = cluster(&cps[lead]).signing_fp();
@@ -2605,7 +2657,7 @@ async fn a_node_detaches_with_its_vms_and_the_cluster_lets_go() {
     use glidex_control_plane::cluster::departure::{
         finish_pending, pending_db, pending_sha_file, receipt_file,
     };
-    let _one = SERIAL.lock().await;
+    let _one = serial().await;
     let cfg = test_config();
     let server = new_cp();
     manage::init(
@@ -2853,7 +2905,7 @@ fn copy_node_files(cp: &Cp) -> tempfile::TempDir {
 /// leaves offline: only once the cluster confirms the removal (§5.5 step 3).
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn a_removed_agent_leaves_offline_once_a_server_confirms_it() {
-    let _one = SERIAL.lock().await;
+    let _one = serial().await;
     let cfg = test_config();
     let server = new_cp();
     manage::init(
@@ -2972,7 +3024,7 @@ async fn a_removed_agent_leaves_offline_once_a_server_confirms_it() {
 async fn a_node_that_left_on_its_own_is_forgotten_as_departed_and_its_bundle_can_be_built_offline()
 {
     use glidex_control_plane::cluster::departure::{offline_detach, pending_db};
-    let _one = SERIAL.lock().await;
+    let _one = serial().await;
     let cfg = test_config();
     let server = new_cp();
     manage::init(
@@ -3081,7 +3133,7 @@ async fn a_detached_host_imports_into_another_cluster_with_its_vm_after_approval
     use glidex_control_plane::cluster::departure::{
         finish_pending, pending_db, pending_sha_file, receipt_file,
     };
-    let _one = SERIAL.lock().await;
+    let _one = serial().await;
     let cfg = test_config();
 
     // Cluster A, an agent with a VM on it, and the agent detaching with it.
@@ -3323,7 +3375,7 @@ async fn the_last_node_dissolves_the_cluster_and_keeps_everything() {
     use glidex_control_plane::cluster::departure::{
         finish_pending, pending_db, pending_sha_file, receipt_file,
     };
-    let _one = SERIAL.lock().await;
+    let _one = serial().await;
     let cfg = test_config();
     let a = new_cp();
     manage::init(
@@ -3466,7 +3518,7 @@ async fn via_ui(
 /// carry a principal; with the relay off the agent points at the servers.
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn an_agents_ui_is_relayed_to_a_server_and_host_paths_run_on_the_agent() {
-    let _one = SERIAL.lock().await;
+    let _one = serial().await;
     let cfg = test_config();
     let server = new_cp();
     manage::init(
@@ -3683,7 +3735,7 @@ async fn an_agents_ui_is_relayed_to_a_server_and_host_paths_run_on_the_agent() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn ovn_is_a_cluster_setting_every_node_follows() {
     use glidex_control_plane::store::{Origin, TableId};
-    let _one = SERIAL.lock().await;
+    let _one = serial().await;
     let cfg = test_config();
     let server = new_cp();
     server.manager.configure(&cfg);
@@ -3856,7 +3908,7 @@ async fn ovn_is_a_cluster_setting_every_node_follows() {
 /// writes the setting from its file.
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn a_file_enabled_cluster_moves_to_the_setting() {
-    let _one = SERIAL.lock().await;
+    let _one = serial().await;
     let mut cfg = test_config();
     cfg.cluster.ovn.enabled = true;
     let server = new_cp();
@@ -3891,7 +3943,7 @@ async fn a_file_enabled_cluster_moves_to_the_setting() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn gateway_nodes_need_the_physnet_and_the_kernel_datapath() {
     use glidex_control_plane::store::{Origin, TableId};
-    let _one = SERIAL.lock().await;
+    let _one = serial().await;
     let cfg = test_config();
     let server = new_cp();
     server.manager.configure(&cfg);
@@ -4059,7 +4111,7 @@ async fn gateway_nodes_need_the_physnet_and_the_kernel_datapath() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn the_secrets_key_rotates_on_every_server() {
     use glidex_control_plane::directory::{Connector, Kind, Source};
-    let _one = SERIAL.lock().await;
+    let _one = serial().await;
     let cps = form_with(2, || with_secrets(new_cp())).await;
     let leader = leader_index(&cps, &[0, 1]).await;
     let other = 1 - leader;
