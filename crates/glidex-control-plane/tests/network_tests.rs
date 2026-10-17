@@ -28,6 +28,32 @@ struct Harness {
     _dir: TempDir,
 }
 
+/// The VM in a `{vm}` answer (`POST /vms`, writes), in the proto3 JSON
+/// shape (spec/grpc.md §9.1).
+fn vm_of(v: &Value) -> &Value {
+    assert!(v["vm"].is_object(), "not a VM answer: {v}");
+    &v["vm"]
+}
+
+/// The id of the VM in a `{vm}` answer.
+fn vm_id(v: &Value) -> String {
+    vm_of(v)["id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no VM id: {v}"))
+        .to_string()
+}
+
+/// A proto VM's `state`, short and lower-case (`VM_STATE_FAILED` is
+/// `failed`).
+fn state(vm: &Value) -> String {
+    let s = vm["state"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no state: {vm}"));
+    s.strip_prefix("VM_STATE_")
+        .unwrap_or_else(|| panic!("not a VM state: {s}"))
+        .to_ascii_lowercase()
+}
+
 fn fake_exec(ovs_running: bool) -> Arc<RecordingExec> {
     let exec = Arc::new(RecordingExec::new());
     if ovs_running {
@@ -195,12 +221,12 @@ async fn vms_reference_networks() {
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
-    let mac = body["nics"][0]["mac"].as_str().unwrap().to_string();
+    let mac = vm_of(&body)["nics"][0]["mac"].as_str().unwrap().to_string();
     assert!(
         mac.starts_with("02:"),
         "stable MAC assigned at create: {mac}"
     );
-    let id = body["id"].as_str().unwrap().to_string();
+    let id = vm_id(&body);
 
     let (status, body) = request(
         &h.app,
@@ -222,10 +248,13 @@ async fn vms_reference_networks() {
         "QEMU VMs take networks too: {body}"
     );
     assert!(
-        body["nics"][0]["mac"].as_str().unwrap().starts_with("02:"),
+        vm_of(&body)["nics"][0]["mac"]
+            .as_str()
+            .unwrap()
+            .starts_with("02:"),
         "{body}"
     );
-    let qemu_id = body["id"].as_str().unwrap().to_string();
+    let qemu_id = vm_id(&body);
 
     let (status, body) = request(
         &h.app,
@@ -283,7 +312,7 @@ async fn failed_start_detaches_ports_for(hypervisor: &str, binary: &str) {
     let mut spec = vm("boom", json!([{"network": "lab"}]));
     spec["hypervisor"] = json!(hypervisor);
     let (_, body) = request(&h.app, "POST", "/vms", Some(spec)).await;
-    let id = body["id"].as_str().unwrap().to_string();
+    let id = vm_id(&body);
     let port = glidex_ovs::names::port_name(&id, 0).unwrap();
 
     // The firmware path doesn't exist, so the launch fails after the port
@@ -293,7 +322,7 @@ async fn failed_start_detaches_ports_for(hypervisor: &str, binary: &str) {
         status.is_server_error() || status.is_client_error(),
         "{status} {body}"
     );
-    assert_eq!(body["details"]["vm"]["state"], "failed", "{body}");
+    assert_eq!(state(&body["details"]["vm"]), "failed", "{body}");
     let calls = h.exec.calls();
     let attached = calls
         .iter()
@@ -307,7 +336,7 @@ async fn failed_start_detaches_ports_for(hypervisor: &str, binary: &str) {
     // `created` when the launch failed before anything ran (QEMU refuses
     // the missing firmware while building its command line).
     assert!(
-        matches!(body["state"].as_str(), Some("stopped" | "created")),
+        matches!(state(vm_of(&body)).as_str(), "stopped" | "created"),
         "{body}"
     );
     let calls = h.exec.calls();
@@ -316,7 +345,7 @@ async fn failed_start_detaches_ports_for(hypervisor: &str, binary: &str) {
         .rposition(|c| c == &format!("ovs-vsctl --if-exists del-port {port}"))
         .expect("detached");
     assert!(detached > attached);
-    assert!(body["nics"][0]["port"].is_null(), "{body}");
+    assert!(vm_of(&body)["nics"][0]["port"].is_null(), "{body}");
     request(&h.app, "DELETE", &format!("/vms/{id}?wait=30"), None).await;
 }
 
@@ -731,7 +760,7 @@ async fn project_networks_and_sharing() {
     assert_eq!(body["shares"], json!([pb]));
     let (status, body) = request(&h.app, "POST", "/vms", Some(spec)).await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
-    let id = body["id"].as_str().unwrap().to_string();
+    let id = vm_id(&body);
 
     // Ending the share is refused while the target's VMs use it.
     let (status, _) = request(

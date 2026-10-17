@@ -13,6 +13,7 @@ mod login;
 mod storage;
 mod system;
 mod tenancy;
+mod vm;
 
 use super::{AppState, Caller, Listener, PUBLIC, RequestId, write_audit};
 use crate::auth::Principal;
@@ -58,6 +59,7 @@ pub(crate) fn routes(app: &AppState) -> Router<AppState> {
     let connect = directory::register(app, connect);
     let connect = login::register(app, connect);
     let connect = storage::register(app, connect);
+    let connect = vm::register(app, connect);
     let (connect, _health) = connectrpc_health::install_static(connect, glidex_api::services());
     let svc = ConnectRpcService::new(connect)
         .with_limits(

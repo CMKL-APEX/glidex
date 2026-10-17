@@ -87,6 +87,40 @@ fn num(v: &Value) -> u64 {
     }
 }
 
+/// The VM in a `{vm}` answer (`POST /vms`, `GET /vms/{id}`, writes), in the
+/// proto3 JSON shape (spec/grpc.md §9.1).
+fn vm_of(v: &Value) -> &Value {
+    assert!(v["vm"].is_object(), "not a VM answer: {v}");
+    &v["vm"]
+}
+
+/// The short lower-case name of a proto enum value: `VM_STATE_RUNNING` with
+/// prefix `VM_STATE_` is `running`.
+fn short(v: &Value, prefix: &str) -> String {
+    let s = v.as_str().unwrap_or_else(|| panic!("not an enum: {v}"));
+    s.strip_prefix(prefix)
+        .unwrap_or_else(|| panic!("{s} is not a {prefix}* value"))
+        .to_ascii_lowercase()
+}
+
+/// The `state` of the VM in a `{vm}` answer (`created`, `running`, ...).
+fn state(v: &Value) -> String {
+    short(&vm_of(v)["state"], "VM_STATE_")
+}
+
+/// The `hypervisor` of the VM in a `{vm}` answer (`cloud_hypervisor`, `qemu`).
+fn hypervisor(v: &Value) -> String {
+    short(&vm_of(v)["hypervisor"], "HYPERVISOR_")
+}
+
+/// The id of the VM in a `{vm}` answer.
+fn vm_id(v: &Value) -> String {
+    vm_of(v)["id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no VM id: {v}"))
+        .to_string()
+}
+
 fn firmware_vm(name: &str) -> Value {
     json!({
         "name": name,
@@ -130,10 +164,10 @@ async fn firmware_vm_can_be_created_without_kernel() {
 
     let (status, body) = request(&app, "POST", "/vms", Some(firmware_vm("fw-vm"))).await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
-    assert_eq!(body["hypervisor"], "cloudhypervisor");
-    assert_eq!(body["state"], "created");
+    assert_eq!(hypervisor(&body), "cloud_hypervisor");
+    assert_eq!(state(&body), "created");
 
-    let vm = manager.get_vm(body["id"].as_str().unwrap()).await.unwrap();
+    let vm = manager.get_vm(&vm_id(&body)).await.unwrap();
     assert_eq!(
         vm.spec.config.firmware_path.as_deref(),
         Some("/path/to/CLOUDHV.fd")
@@ -151,9 +185,9 @@ async fn qemu_firmware_vm_can_be_created_without_kernel() {
     req["firmware_path"] = json!("/usr/share/OVMF/OVMF_CODE_4M.fd");
     let (status, body) = request(&app, "POST", "/vms", Some(req)).await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
-    assert_eq!(body["hypervisor"], "qemu");
+    assert_eq!(hypervisor(&body), "qemu");
 
-    let vm = manager.get_vm(body["id"].as_str().unwrap()).await.unwrap();
+    let vm = manager.get_vm(&vm_id(&body)).await.unwrap();
     assert_eq!(
         vm.spec.config.firmware_path.as_deref(),
         Some("/usr/share/OVMF/OVMF_CODE_4M.fd")
@@ -192,7 +226,7 @@ async fn qemu_accepts_a_custom_cloud_init_path() {
     });
     let (status, body) = request(&app, "POST", "/vms", Some(req)).await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
-    let vm = manager.get_vm(body["id"].as_str().unwrap()).await.unwrap();
+    let vm = manager.get_vm(&vm_id(&body)).await.unwrap();
     assert_eq!(
         vm.spec.config.cloud_init_path.as_deref(),
         Some("/path/to/seed.img")
@@ -222,8 +256,8 @@ async fn firecracker_is_no_longer_a_hypervisor() {
         "kernel_image_path": "/path/to/vmlinux",
         "rootfs_path": "/path/to/rootfs"
     });
-    let (status, _) = request(&app, "POST", "/vms", Some(req)).await;
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    let (status, body) = request(&app, "POST", "/vms", Some(req)).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
 }
 
 /// A database written by an older build may hold Firecracker VMs. They must
@@ -239,10 +273,7 @@ async fn legacy_firecracker_records_are_skipped_on_load() {
         let app = create_router(manager);
         let (_, keep) = request(&app, "POST", "/vms", Some(firmware_vm("keep"))).await;
         let (_, legacy) = request(&app, "POST", "/vms", Some(firmware_vm("legacy"))).await;
-        (
-            keep["id"].as_str().unwrap().to_string(),
-            legacy["id"].as_str().unwrap().to_string(),
-        )
+        (vm_id(&keep), vm_id(&legacy))
     };
 
     // Rewrite one record the way an older build would have stored it.
@@ -282,7 +313,7 @@ async fn hypervisor_defaults_to_cloud_hypervisor() {
     req.as_object_mut().unwrap().remove("hypervisor");
     let (status, body) = request(&app, "POST", "/vms", Some(req)).await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
-    assert_eq!(body["hypervisor"], "cloudhypervisor");
+    assert_eq!(hypervisor(&body), "cloud_hypervisor");
 }
 
 #[tokio::test]
@@ -296,7 +327,7 @@ async fn firmware_and_cloud_init_paths_are_tilde_expanded() {
     let (status, body) = request(&app, "POST", "/vms", Some(req)).await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
 
-    let vm = manager.get_vm(body["id"].as_str().unwrap()).await.unwrap();
+    let vm = manager.get_vm(&vm_id(&body)).await.unwrap();
     assert_eq!(
         vm.spec.config.firmware_path.map(PathBuf::from),
         Some(home.join("fw/CLOUDHV.fd"))
@@ -318,7 +349,7 @@ async fn firmware_config_survives_restart() {
         let app = create_router(manager);
         let (status, body) = request(&app, "POST", "/vms", Some(firmware_vm("persist"))).await;
         assert_eq!(status, StatusCode::CREATED, "{body}");
-        body["id"].as_str().unwrap().to_string()
+        vm_id(&body)
     };
 
     let manager = VmManager::with_db_path(db).unwrap();
@@ -664,13 +695,13 @@ async fn firmware_boot_e2e(hypervisor: &str) {
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{vm}");
-    let id = vm["id"].as_str().unwrap().to_string();
+    let id = vm_id(&vm);
     let seed_path = manager.get_vm(&id).await.unwrap().default_cloud_init_path();
 
     // Start: seed is generated and the VM reaches Running.
     let (status, body) = request(&app, "POST", &format!("/vms/{id}/start?wait=120"), None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["state"], "running");
+    assert_eq!(state(&body), "running");
     assert!(Path::new(&seed_path).exists(), "seed image not generated");
     let persisted = manager.get_vm(&id).await.unwrap();
     assert_eq!(
@@ -705,10 +736,10 @@ async fn firmware_boot_e2e(hypervisor: &str) {
     // Pause / resume keeps the guest alive.
     let (status, body) = request(&app, "POST", &format!("/vms/{id}/pause?wait=60"), None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["state"], "paused");
+    assert_eq!(state(&body), "paused");
     let (status, body) = request(&app, "POST", &format!("/vms/{id}/start?wait=60"), None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["state"], "running");
+    assert_eq!(state(&body), "running");
     console = tokio::task::spawn_blocking(move || {
         console.send("echo GX_$((6*8))_resumed\r");
         console.expect("GX_48_resumed", Duration::from_secs(30));
@@ -733,7 +764,7 @@ async fn firmware_boot_e2e(hypervisor: &str) {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["state"], "stopped");
+    assert_eq!(state(&body), "stopped");
     assert!(
         started.elapsed() < Duration::from_secs(110),
         "guest ignored the power button"
@@ -866,8 +897,8 @@ async fn restart_e2e(hypervisor: &str) {
         "firmware_path": firmware, "rootfs_path": rootfs, "credential": username, "power": "running",
     }))).await;
     assert_eq!(status, StatusCode::CREATED, "{vm}");
-    assert_eq!(vm["state"], "running", "{vm}");
-    let id = vm["id"].as_str().unwrap().to_string();
+    assert_eq!(state(&vm), "running", "{vm}");
+    let id = vm_id(&vm);
     let before = manager.get_vm(&id).await.unwrap().status.instance.unwrap();
     let hv = (
         before.hypervisor_pid.unwrap(),
@@ -1171,11 +1202,11 @@ async fn nat_e2e(hypervisor: &str) {
     )
     .await;
     assert_eq!(st, StatusCode::CREATED, "{vm}");
-    let id = vm["id"].as_str().unwrap().to_string();
+    let id = vm_id(&vm);
 
     let (st, body) = request(&app, "POST", &format!("/vms/{id}/start?wait=120"), None).await;
     assert_eq!(st, StatusCode::OK, "{body}");
-    let ipv4 = body["nics"][0]["ipv4"]
+    let ipv4 = vm_of(&body)["nics"][0]["ipv4"]
         .as_str()
         .expect("NAT reservation")
         .to_string();
@@ -1232,10 +1263,19 @@ async fn nat_e2e(hypervisor: &str) {
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
     let (_, body) = request(&app, "GET", &format!("/vms/{id}"), None).await;
-    assert_eq!(body["state"], "stopped", "{body}");
-    assert_eq!(body["desired_state"], "stopped", "{body}");
-    assert_eq!(body["last_exit"]["cause"], "clean_exit", "{body}");
-    assert!(body["nics"][0]["port"].is_null(), "{body}");
+    assert_eq!(state(&body), "stopped", "{body}");
+    let vm = vm_of(&body);
+    assert_eq!(
+        short(&vm["desired_state"], "POWER_STATE_"),
+        "stopped",
+        "{body}"
+    );
+    assert_eq!(
+        short(&vm["last_exit"]["cause"], "EXIT_CAUSE_"),
+        "clean_exit",
+        "{body}"
+    );
+    assert!(vm["nics"][0]["port"].is_null(), "{body}");
 
     let (st, _) = request(&app, "DELETE", &format!("/vms/{id}"), None).await;
     assert_eq!(st, StatusCode::NO_CONTENT);
@@ -1324,10 +1364,10 @@ async fn start_and_login(
     }
     let (st, vm) = request(app, "POST", "/vms", Some(spec)).await;
     assert_eq!(st, StatusCode::CREATED, "{vm}");
-    let id = vm["id"].as_str().unwrap().to_string();
+    let id = vm_id(&vm);
     let (st, body) = request(app, "POST", &format!("/vms/{id}/start?wait=120"), None).await;
     assert_eq!(st, StatusCode::OK, "{body}");
-    let ipv4 = body["nics"][0]["ipv4"].as_str().map(str::to_string);
+    let ipv4 = vm_of(&body)["nics"][0]["ipv4"].as_str().map(str::to_string);
     let console_path = glidex_control_plane::paths::vm_paths(&id).console_socket;
     let host = hostname.to_string();
     let user = username.clone();
@@ -1862,16 +1902,16 @@ async fn catalog_image_e2e(hypervisor: &str) {
     });
     let (status, vm) = request(&app, "POST", "/vms", Some(spec)).await;
     assert_eq!(status, StatusCode::CREATED, "{vm}");
-    let id = vm["id"].as_str().unwrap().to_string();
+    let id = vm_id(&vm);
     let config = manager.get_vm(&id).await.unwrap().spec.config;
     assert_eq!(
         config.firmware_image.as_deref(),
         Some(fw_id.as_str()),
         "image VMs default to the firmware image"
     );
-    let root = vm["root_disk"].as_str().unwrap().to_string();
+    let root = vm_of(&vm)["root_disk"].as_str().unwrap().to_string();
     // glidex extended the root partition offline, before the first boot.
-    assert!(vm.get("warnings").is_none(), "{vm}");
+    assert!(vm_of(&vm).get("warnings").is_none(), "{vm}");
     // The disk controller makes the disk after the create returns.
     let mut disk = Value::Null;
     for _ in 0..240 {

@@ -4,7 +4,7 @@
 // GLIDEX_TEST_IMAGE (a UEFI-bootable cloud image, copied first).
 import { existsSync, rmSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { api, bootPrerequisites, CLEAN_POWEROFF, del, E2E_HOME, expect, field, firmwareImages, LABEL, test, testImage, vmCard } from "../fixtures";
+import { api, bootPrerequisites, CLEAN_POWEROFF, del, E2E_HOME, expect, field, firmwareImages, LABEL, listVms, PROTO_HYPERVISOR, test, testImage, vmCard } from "../fixtures";
 
 test("boots a cloud image and runs it from the UI", async ({ page, hypervisor }) => {
   test.setTimeout(10 * 60_000);
@@ -18,7 +18,7 @@ test("boots a cloud image and runs it from the UI", async ({ page, hypervisor })
   const password = `Gx-${Math.random().toString(36).slice(2, 12)}`;
   const disk = `${E2E_HOME}/images/${vmName}.img`;
   execFileSync("cp", ["--sparse=always", testImage()!, disk]);
-  const vm = async () => (await api<any[]>("/vms")).find((v) => v.name === vmName);
+  const vm = async () => (await listVms()).find((v) => v.name === vmName);
 
   try {
     await test.step("add a credential", async () => {
@@ -60,8 +60,8 @@ test("boots a cloud image and runs it from the UI", async ({ page, hypervisor })
       await expect(page.getByText(vmName, { exact: true })).toBeVisible();
 
       const created = await vm();
-      expect(created.hypervisor).toBe(hypervisor);
-      const full = await api(`/vms/${created.id}`);
+      expect(created.hypervisor).toBe(PROTO_HYPERVISOR[hypervisor]);
+      const full = (await api(`/vms/${created.id}`)).vm;
       expect(full.nics.map((n: any) => n.network)).toEqual([network]);
     });
 
@@ -120,7 +120,7 @@ test("boots a cloud image and runs it from the UI", async ({ page, hypervisor })
       await page.getByRole("button", { name: "Shut down" }).click();
       await expect(page.getByRole("button", { name: "Start" })).toBeVisible({ timeout: 90_000 });
       const stopped = await vm();
-      expect(stopped.state).toBe("stopped");
+      expect(stopped.state).toBe("VM_STATE_STOPPED");
       const log = await api<string>(`/vms/${stopped.id}/console/log`);
       expect(log, "guest powered off cleanly").toMatch(CLEAN_POWEROFF);
     });

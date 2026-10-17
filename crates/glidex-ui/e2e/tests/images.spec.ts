@@ -1,6 +1,6 @@
 // The Images page: the cloud image and firmware catalogs, and the
 // downloaded images split by kind. Nothing is booted.
-import { api, del, ensureFirmware, expect, field, FIRMWARE_KEY, LABEL, test } from "../fixtures";
+import { api, createVm, del, ensureFirmware, expect, field, FIRMWARE_KEY, LABEL, PROTO_HYPERVISOR, test } from "../fixtures";
 
 test("lists the firmware catalog and the firmware images", async ({ page, hypervisor }) => {
   const fw = await ensureFirmware(hypervisor);
@@ -35,11 +35,8 @@ test("the disk form never offers firmware as a source", async ({ page, hyperviso
 
 test("the VM page names its firmware image", async ({ page, hypervisor }) => {
   const fw = await ensureFirmware(hypervisor);
-  const vm = await api("/vms", {
-    method: "POST",
-    body: { name: `fw-${hypervisor}`, project: "default", vcpu_count: 1, mem_size_mib: 256, hypervisor, kernel_image_path: "",
-      firmware: fw.id, rootfs_path: "/nonexistent/disk.img" },
-  });
+  const vm = await createVm({ name: `fw-${hypervisor}`, project: "default", vcpu_count: 1, mem_size_mib: 256, hypervisor: PROTO_HYPERVISOR[hypervisor],
+    kernel_image_path: "", firmware: fw.id, rootfs_path: "/nonexistent/disk.img" });
   expect(vm.firmware, JSON.stringify(vm)).toBe(fw.id);
   try {
     await page.goto(`/vms/${vm.id}`);

@@ -187,6 +187,13 @@ impl H {
     }
 }
 
+/// The VM in a `{vm}` answer (`POST /vms`), in the proto3 JSON shape
+/// (spec/grpc.md §9.1).
+fn vm_of(v: &Value) -> &Value {
+    assert!(v["vm"].is_object(), "not a VM answer: {v}");
+    &v["vm"]
+}
+
 fn vm_body(name: &str, project: &str) -> Value {
     json!({
         "name": name, "project": project, "vcpu_count": 1, "mem_size_mib": 128,
@@ -533,7 +540,7 @@ async fn allocation_needs_an_admission_and_the_tenant_cap_binds() {
     assert_eq!(s, StatusCode::OK, "{v}");
     let (s, v) = h.rest("POST", "/vms", Some(vm_body("v1", &p1)), &o).await;
     assert_eq!(s, StatusCode::CREATED, "{v}");
-    let vm = v["id"].as_str().unwrap().to_string();
+    let vm = vm_of(&v)["id"].as_str().unwrap().to_string();
     let (s, v) = h.rest("POST", "/vms", Some(vm_body("v2", &p2)), &o).await;
     assert_eq!(
         (s, v["error"].as_str()),

@@ -15,6 +15,7 @@ pub mod login;
 pub mod storage;
 pub mod system;
 pub mod tenancy;
+pub mod vm;
 
 use crate::api::ApiErr;
 use crate::models::ApiError;

@@ -127,7 +127,7 @@ async fn snapshot(
                     }
                     let (e, es) = vm_entities(&vm);
                     if c.allowed("readVm", e, es) {
-                        let v = serde_json::to_value(super::vms::vm_response(c, &vm))
+                        let v = serde_json::to_value(crate::service::vm::vm_pb(c, &vm))
                             .unwrap_or_default();
                         view.insert((Kind::Vm, vm.id.clone()), v);
                     }

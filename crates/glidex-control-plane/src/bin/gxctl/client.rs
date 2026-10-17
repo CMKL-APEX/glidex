@@ -684,21 +684,6 @@ impl ApiClient {
         *self.project.lock().unwrap() = p.filter(|p| !p.is_empty());
     }
 
-    /// `path` with `?project=` when a project is selected.
-    pub fn scoped(&self, path: &str) -> String {
-        match self.project() {
-            Some(p) => add_query(path, "project", &p),
-            None => path.to_string(),
-        }
-    }
-
-    /// Add `"project"` to a create body when a project is selected.
-    pub fn scope_body(&self, body: &mut serde_json::Value) {
-        if let (Some(p), Some(obj)) = (self.project(), body.as_object_mut()) {
-            obj.entry("project").or_insert(serde_json::json!(p));
-        }
-    }
-
     /// One connection, walked across the profile's endpoints in order
     /// (§4.2): the first that answers wins and is remembered as
     /// `last_used`. Authorization failures are answers too — 401/403

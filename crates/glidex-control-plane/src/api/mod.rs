@@ -11,7 +11,7 @@
 mod access;
 mod cluster;
 mod connectors;
-mod errors;
+pub(crate) mod errors;
 pub mod gate;
 mod net;
 mod nodes;
@@ -23,7 +23,7 @@ mod tenants;
 pub(crate) use rates::live_vm_stats;
 pub(crate) use vms::read_log_tail;
 mod usage;
-mod vms;
+pub(crate) mod vms;
 mod watch;
 
 pub use errors::{ApiErr, error_to_response};
@@ -1174,7 +1174,8 @@ pub(crate) fn proto_no_content() -> axum::response::Response {
     (StatusCode::NO_CONTENT, [(API_SHAPE, "proto")]).into_response()
 }
 
-/// Read a REST body as proto message `T`, first mapping what the shape
+/// Read a REST body as proto message `T` (`422` when it isn't one), first
+/// mapping what the shape
 /// before the port sent (spec/grpc.md §9.1 step 3): `enums` names fields
 /// whose old lower-case values become `PREFIX_VALUE` (`-` as `_`), and
 /// `renames` maps old values that don't follow that rule.
@@ -1199,7 +1200,9 @@ pub(crate) fn proto_body<T: serde::de::DeserializeOwned>(
             }
         }
     }
-    serde_json::from_value(v).map_err(|e| err(StatusCode::BAD_REQUEST, "invalid", e.to_string()))
+    // As axum's `Json` answers a body that is JSON but not the message.
+    serde_json::from_value(v)
+        .map_err(|e| err(StatusCode::UNPROCESSABLE_ENTITY, "invalid", e.to_string()))
 }
 
 pub(crate) fn err(status: StatusCode, code: &str, message: impl Into<String>) -> ApiErr {

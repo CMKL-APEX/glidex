@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import * as api from "../api";
 import type { PlacementPreview } from "../types";
+import { num } from "../types";
 import { selectClass } from "./ui";
 
 /** Where a new VM runs (spec/clustering-ui.md §5.1): "Automatic" (the
@@ -40,9 +41,10 @@ export default function PlacementPicker({
     };
   }, [key]);
 
-  const pick = preview?.nodes.find((n) => n.id === preview.pick);
-  const chosen = preview?.nodes.find((n) => n.id === value);
-  const nothingFits = preview !== null && preview.pick === null;
+  const nodes = preview?.nodes ?? [];
+  const pick = nodes.find((n) => n.id === preview?.pick);
+  const chosen = nodes.find((n) => n.id === value);
+  const nothingFits = preview !== null && !preview.pick;
 
   return (
     <div>
@@ -51,12 +53,12 @@ export default function PlacementPicker({
       </label>
       <select id="vm-placement" className={`mt-1 ${selectClass}`} value={value} onChange={(e) => onChange(e.target.value)}>
         <option value="">{pick ? `Automatic (now: ${pick.name})` : "Automatic"}</option>
-        {preview?.nodes
+        {nodes
           .slice()
           .sort((a, b) => a.name.localeCompare(b.name))
           .map((n) => (
             <option key={n.id} value={n.id} disabled={!!n.refused && !n.refused.startsWith("pinned")}>
-              {n.name} — {Math.max(0, n.vcpus_capacity - n.vcpus_taken)} vCPUs, {Math.max(0, n.mem_mib_capacity - n.mem_mib_taken)} MiB free
+              {n.name} — {Math.max(0, num(n.vcpus_capacity) - num(n.vcpus_taken))} vCPUs, {Math.max(0, num(n.mem_mib_capacity) - num(n.mem_mib_taken))} MiB free
               {n.refused && !n.refused.startsWith("pinned") ? ` (${n.refused})` : ""}
             </option>
           ))}
@@ -68,7 +70,7 @@ export default function PlacementPicker({
       {!value && nothingFits && (
         <p className="mt-1 text-xs text-amber-700">
           No node can take it now; it is created and waits for one:{" "}
-          {preview!.nodes.map((n) => `${n.name}: ${n.refused}`).join("; ")}
+          {nodes.map((n) => `${n.name}: ${n.refused}`).join("; ")}
         </p>
       )}
     </div>

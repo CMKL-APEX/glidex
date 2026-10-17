@@ -1,0 +1,511 @@
+// Virtual machines (spec/reconciliation.md §7, §12): the desired state the
+// API writes and what the VM controller last saw. Writes change the
+// desired state and answer at once, or with `wait_secs` once the
+// controller acted (§12.3). The REST twins answer with these messages as
+// JSON (spec/grpc.md §9.1).
+syntax = "proto3";
+
+package glidex.vm.v1;
+
+import "glidex/api/v1/options.proto";
+import "glidex/common/v1/common.proto";
+import "google/protobuf/field_mask.proto";
+import "google/protobuf/timestamp.proto";
+
+service VmService {
+  rpc ListVms(ListVmsRequest) returns (ListVmsResponse) {
+    option (glidex.api.v1.op) = {
+      action: "listVms"
+      kind: KIND_READ
+      rest: "GET /vms"
+    };
+  }
+  rpc CreateVm(CreateVmRequest) returns (CreateVmResponse) {
+    option (glidex.api.v1.op) = {
+      action: "createVm"
+      kind: KIND_WRITE
+      rest: "POST /vms"
+    };
+  }
+  // Where a VM would go, node by node, the scheduler's choice first
+  // (spec/clustering-ui.md §5.1).
+  // Authenticated; it then needs `createVm` on the project.
+  rpc PreviewPlacement(PreviewPlacementRequest) returns (PreviewPlacementResponse) {
+    option (glidex.api.v1.op) = {
+      action: "authenticated"
+      kind: KIND_READ
+      rest: "POST /scheduler/preview"
+    };
+  }
+  rpc GetVm(GetVmRequest) returns (GetVmResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readVm"
+      kind: KIND_READ
+      rest: "GET /vms/{id}"
+    };
+  }
+  // Changes the fields `update_mask` names, each authorized on its own
+  // (power → start/stop/pauseVm, devices, disks, networks, credential,
+  // anything else → updateVm; §12.1).
+  rpc UpdateVm(UpdateVmRequest) returns (UpdateVmResponse) {
+    option (glidex.api.v1.op) = {
+      action: "updateVm"
+      kind: KIND_WRITE
+      rest: "PATCH /vms/{id}"
+    };
+  }
+  // Request deletion; the controller stops the VM and cleans up.
+  rpc DeleteVm(DeleteVmRequest) returns (DeleteVmResponse) {
+    option (glidex.api.v1.op) = {
+      action: "deleteVm"
+      kind: KIND_WRITE
+      rest: "DELETE /vms/{id}"
+    };
+  }
+  rpc StartVm(StartVmRequest) returns (StartVmResponse) {
+    option (glidex.api.v1.op) = {
+      action: "startVm"
+      kind: KIND_WRITE
+      rest: "POST /vms/{id}/start"
+    };
+  }
+  rpc StopVm(StopVmRequest) returns (StopVmResponse) {
+    option (glidex.api.v1.op) = {
+      action: "stopVm"
+      kind: KIND_WRITE
+      rest: "POST /vms/{id}/stop"
+    };
+  }
+  rpc PauseVm(PauseVmRequest) returns (PauseVmResponse) {
+    option (glidex.api.v1.op) = {
+      action: "pauseVm"
+      kind: KIND_WRITE
+      rest: "POST /vms/{id}/pause"
+    };
+  }
+  // The VM's last 50 events, oldest first.
+  rpc ListVmEvents(ListVmEventsRequest) returns (ListVmEventsResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readVm"
+      kind: KIND_READ
+      rest: "GET /vms/{id}/events"
+    };
+  }
+  rpc GetConsoleInfo(GetConsoleInfoRequest) returns (GetConsoleInfoResponse) {
+    option (glidex.api.v1.op) = {
+      action: "getConsoleInfo"
+      kind: KIND_READ
+      rest: "GET /vms/{id}/console"
+    };
+  }
+  // A single-use ticket for a browser's console WebSocket
+  // (spec/security.md §5.6). The console itself stays a WebSocket until
+  // G4 (spec/grpc.md §9).
+  rpc CreateConsoleTicket(CreateConsoleTicketRequest) returns (CreateConsoleTicketResponse) {
+    option (glidex.api.v1.op) = {
+      action: "openConsole"
+      kind: KIND_READ
+      rest: "POST /vms/{id}/console/ticket"
+    };
+  }
+  // The last bytes of the console log. REST answers with the bytes
+  // (`application/octet-stream`).
+  rpc GetConsoleLog(GetConsoleLogRequest) returns (GetConsoleLogResponse) {
+    option (glidex.api.v1.op) = {
+      action: "openConsole"
+      kind: KIND_READ
+      rest: "GET /vms/{id}/console/log"
+    };
+  }
+  rpc AttachDevice(AttachDeviceRequest) returns (AttachDeviceResponse) {
+    option (glidex.api.v1.op) = {
+      action: "attachDevice"
+      kind: KIND_WRITE
+      rest: "POST /vms/{id}/devices"
+    };
+  }
+  rpc DetachDevice(DetachDeviceRequest) returns (DetachDeviceResponse) {
+    option (glidex.api.v1.op) = {
+      action: "detachDevice"
+      kind: KIND_WRITE
+      rest: "DELETE /vms/{id}/devices"
+    };
+  }
+  rpc AttachDisk(AttachDiskRequest) returns (AttachDiskResponse) {
+    option (glidex.api.v1.op) = {
+      action: "attachDisk"
+      kind: KIND_WRITE
+      rest: "POST /vms/{id}/disks"
+    };
+  }
+  rpc DetachDisk(DetachDiskRequest) returns (DetachDiskResponse) {
+    option (glidex.api.v1.op) = {
+      action: "detachDisk"
+      kind: KIND_WRITE
+      rest: "DELETE /vms/{id}/disks/{disk}"
+    };
+  }
+}
+
+// The state the API shows, from the observed phase (§7.4).
+enum VmState {
+  VM_STATE_UNSPECIFIED = 0;
+  // Never started.
+  VM_STATE_CREATED = 1;
+  VM_STATE_STARTING = 2;
+  VM_STATE_RUNNING = 3;
+  VM_STATE_PAUSED = 4;
+  VM_STATE_STOPPING = 5;
+  VM_STATE_STOPPED = 6;
+  VM_STATE_FAILED = 7;
+  VM_STATE_UNKNOWN = 8;
+}
+
+// What the user wants the VM to be doing.
+enum PowerState {
+  POWER_STATE_UNSPECIFIED = 0;
+  POWER_STATE_RUNNING = 1;
+  POWER_STATE_PAUSED = 2;
+  POWER_STATE_STOPPED = 3;
+}
+
+// What to do when the hypervisor dies without being asked to (§7.5).
+enum RestartPolicy {
+  RESTART_POLICY_UNSPECIFIED = 0;
+  RESTART_POLICY_ON_FAILURE = 1;
+  RESTART_POLICY_NEVER = 2;
+}
+
+// What to do with a VM that should be running after a host reboot.
+enum HostBootPolicy {
+  HOST_BOOT_POLICY_UNSPECIFIED = 0;
+  HOST_BOOT_POLICY_RESUME = 1;
+  HOST_BOOT_POLICY_STOP = 2;
+}
+
+enum ExitCause {
+  EXIT_CAUSE_UNSPECIFIED = 0;
+  // A stop or kill was asked for.
+  EXIT_CAUSE_REQUESTED = 1;
+  // SIGTERM to the shim (a unit stop: host shutdown, or an operator).
+  EXIT_CAUSE_TERMINATED = 2;
+  // Exit status 0 with nothing requested: the guest powered off.
+  EXIT_CAUSE_CLEAN_EXIT = 3;
+  // Non-zero exit status or killed by a signal.
+  EXIT_CAUSE_CRASHED = 4;
+  // Exited before its API socket answered.
+  EXIT_CAUSE_LAUNCH_FAILED = 5;
+  EXIT_CAUSE_HOST_REBOOT = 6;
+  EXIT_CAUSE_LOST = 7;
+}
+
+// How the last instance ended.
+message ExitRecord {
+  google.protobuf.Timestamp at = 1;
+  string instance_id = 2 [json_name = "instance_id"];
+  ExitCause cause = 3;
+  optional int32 code = 4;
+  optional int32 signal = 5;
+  optional string message = 6;
+  google.protobuf.Timestamp launched_at = 7 [json_name = "launched_at"];
+}
+
+// A network a NIC attaches to, in NIC order.
+message NetworkAttachment {
+  string network = 1;
+  // Filled in at create time (derived from the VM id) if absent.
+  optional string mac = 2;
+  optional uint32 queue_pairs = 3 [json_name = "queue_pairs"];
+}
+
+// A NIC as last seen.
+message Nic {
+  string network = 1;
+  string mac = 2;
+  optional string port = 3;
+  optional string ipv4 = 4;
+}
+
+message Vm {
+  string id = 1;
+  string name = 2;
+  string project = 3;
+  VmState state = 4;
+  PowerState desired_state = 5 [json_name = "desired_state"];
+  uint64 generation = 6;
+  uint64 observed_generation = 7 [json_name = "observed_generation"];
+  // For `expected_resource_version` (REST: `If-Match`, §12.1).
+  uint64 resource_version = 8 [json_name = "resource_version"];
+  optional bool restart_required = 9 [json_name = "restart_required"];
+  repeated glidex.common.v1.Condition conditions = 10;
+  ExitRecord last_exit = 11 [json_name = "last_exit"];
+  RestartPolicy restart_policy = 12 [json_name = "restart_policy"];
+  HostBootPolicy on_host_boot = 13 [json_name = "on_host_boot"];
+  // Power-button wait when glidex stops the VM; 0: stop hard.
+  uint32 stop_grace_secs = 14 [json_name = "stop_grace_secs"];
+  optional bool deleting = 15;
+  // The node it is placed on (spec/clustering.md §9.1), and its name.
+  optional string node = 16;
+  optional string node_name = 17 [json_name = "node_name"];
+  uint32 vcpu_count = 18 [json_name = "vcpu_count"];
+  uint32 mem_size_mib = 19 [json_name = "mem_size_mib"];
+  glidex.common.v1.Hypervisor hypervisor = 20;
+  repeated string vfio_devices = 21 [json_name = "vfio_devices"];
+  optional string credential = 22;
+  repeated Nic nics = 23;
+  // Firmware image id.
+  optional string firmware = 24;
+  optional string root_disk = 25 [json_name = "root_disk"];
+  repeated string data_disks = 26 [json_name = "data_disks"];
+  repeated string warnings = 27;
+}
+
+message ListVmsRequest {
+  // Project id or name; all the caller may see when absent.
+  optional string project = 1;
+}
+message ListVmsResponse {
+  // By name.
+  repeated Vm vms = 1;
+}
+
+message CreateVmRequest {
+  string name = 1;
+  // Project id or name; default: the caller's default project.
+  optional string project = 2;
+  uint32 vcpu_count = 3 [json_name = "vcpu_count"];
+  uint32 mem_size_mib = 4 [json_name = "mem_size_mib"];
+  // Host paths (need `useHostPath`): prefer images and disks.
+  string kernel_image_path = 5 [json_name = "kernel_image_path"];
+  optional string firmware_path = 6 [json_name = "firmware_path"];
+  // Firmware image id or name to boot through.
+  optional string firmware = 7;
+  optional string cloud_init_path = 8 [json_name = "cloud_init_path"];
+  // A stored guest credential's username.
+  optional string credential = 9;
+  string rootfs_path = 10 [json_name = "rootfs_path"];
+  // Image id or name: a linked root disk is made from it.
+  optional string image = 11;
+  optional uint32 root_disk_size_gib = 12 [json_name = "root_disk_size_gib"];
+  // An existing, unattached disk (id or name) to boot from.
+  optional string root_disk = 13 [json_name = "root_disk"];
+  repeated string data_disks = 14 [json_name = "data_disks"];
+  optional string kernel_args = 15 [json_name = "kernel_args"];
+  glidex.common.v1.Hypervisor hypervisor = 16;
+  repeated string vfio_devices = 17 [json_name = "vfio_devices"];
+  repeated NetworkAttachment networks = 18;
+  optional bool hugepages = 19;
+  // Default: stopped (create, then start).
+  PowerState power = 20;
+  RestartPolicy restart_policy = 21 [json_name = "restart_policy"];
+  HostBootPolicy on_host_boot = 22 [json_name = "on_host_boot"];
+  optional uint32 stop_grace_secs = 23 [json_name = "stop_grace_secs"];
+  // Run on this node (id or name).
+  optional string node = 24;
+  // Wait this long (at most 300 s) for the controller to act.
+  optional uint32 wait_secs = 25 [json_name = "wait_secs"];
+}
+
+// The answer to a VM write (§12.3).
+message CreateVmResponse {
+  // Absent once the VM is gone.
+  Vm vm = 1;
+  // With `wait_secs`: whether the controller converged in time (REST:
+  // `202` when not). A failed reconcile is an error instead.
+  optional bool settled = 2;
+}
+
+message PreviewPlacementRequest {
+  optional string project = 1;
+  uint32 vcpu_count = 2 [json_name = "vcpu_count"];
+  uint32 mem_size_mib = 3 [json_name = "mem_size_mib"];
+  glidex.common.v1.Hypervisor hypervisor = 4;
+  optional bool hugepages = 5;
+  // Pin: a node id or name.
+  optional string node = 6;
+  repeated NetworkAttachment networks = 7;
+  repeated string vfio_devices = 8 [json_name = "vfio_devices"];
+  repeated string data_disks = 9 [json_name = "data_disks"];
+  // The image the root disk would come from: its architecture counts.
+  optional string image = 10;
+}
+message NodeFit {
+  string id = 1;
+  string name = 2;
+  // Why the VM can't go there; absent: it fits.
+  optional string refused = 3;
+  // What VMs placed there take, and what may be taken.
+  uint64 vcpus_taken = 4 [json_name = "vcpus_taken"];
+  uint64 vcpus_capacity = 5 [json_name = "vcpus_capacity"];
+  uint64 mem_mib_taken = 6 [json_name = "mem_mib_taken"];
+  uint64 mem_mib_capacity = 7 [json_name = "mem_mib_capacity"];
+  uint64 vms = 8;
+}
+message PreviewPlacementResponse {
+  // The scheduler's choice, when anything fits.
+  optional string pick = 1;
+  repeated NodeFit nodes = 2;
+}
+
+message GetVmRequest {
+  string id = 1;
+}
+message GetVmResponse {
+  Vm vm = 1;
+}
+
+// The fields of a VM `UpdateVm` may change.
+message VmChange {
+  PowerState power = 1;
+  RestartPolicy restart_policy = 2 [json_name = "restart_policy"];
+  HostBootPolicy on_host_boot = 3 [json_name = "on_host_boot"];
+  uint32 stop_grace_secs = 4 [json_name = "stop_grace_secs"];
+  uint32 vcpu_count = 5 [json_name = "vcpu_count"];
+  uint32 mem_size_mib = 6 [json_name = "mem_size_mib"];
+  string kernel_args = 7 [json_name = "kernel_args"];
+  // Absent with `credential` in the mask: the VM loses its credential.
+  optional string credential = 8;
+  bool hugepages = 9;
+  repeated string vfio_devices = 10 [json_name = "vfio_devices"];
+  // Disk ids or names, replacing the list.
+  repeated string data_disks = 11 [json_name = "data_disks"];
+  repeated NetworkAttachment networks = 12;
+}
+
+message UpdateVmRequest {
+  string id = 1;
+  VmChange change = 2;
+  // Which fields of `change` to apply (`power`, `vcpu_count`, …).
+  google.protobuf.FieldMask update_mask = 3 [json_name = "update_mask"];
+  // Refused (`409`) unless the VM is still at this version.
+  optional uint64 expected_resource_version = 4 [json_name = "expected_resource_version"];
+  optional uint32 wait_secs = 5 [json_name = "wait_secs"];
+}
+message UpdateVmResponse {
+  Vm vm = 1;
+  optional bool settled = 2;
+}
+
+message DeleteVmRequest {
+  string id = 1;
+  // Keep a root disk made for the VM.
+  optional bool keep_disk = 2 [json_name = "keep_disk"];
+  optional uint32 wait_secs = 3 [json_name = "wait_secs"];
+}
+message DeleteVmResponse {
+  // Still there while the controller cleans up; absent once gone.
+  Vm vm = 1;
+}
+
+message StartVmRequest {
+  string id = 1;
+  optional uint64 expected_resource_version = 2 [json_name = "expected_resource_version"];
+  optional uint32 wait_secs = 3 [json_name = "wait_secs"];
+}
+message StartVmResponse {
+  Vm vm = 1;
+  optional bool settled = 2;
+}
+
+message StopVmRequest {
+  string id = 1;
+  // Press the guest's power button and wait up to this long (at most
+  // 300 s) before stopping it hard; stored as `stop_grace_secs`.
+  optional uint32 graceful_timeout_secs = 2 [json_name = "graceful_timeout_secs"];
+  optional uint64 expected_resource_version = 3 [json_name = "expected_resource_version"];
+  optional uint32 wait_secs = 4 [json_name = "wait_secs"];
+}
+message StopVmResponse {
+  Vm vm = 1;
+  optional bool settled = 2;
+}
+
+message PauseVmRequest {
+  string id = 1;
+  optional uint64 expected_resource_version = 2 [json_name = "expected_resource_version"];
+  optional uint32 wait_secs = 3 [json_name = "wait_secs"];
+}
+message PauseVmResponse {
+  Vm vm = 1;
+  optional bool settled = 2;
+}
+
+message ListVmEventsRequest {
+  string id = 1;
+}
+message ListVmEventsResponse {
+  repeated glidex.common.v1.Event events = 1;
+}
+
+message GetConsoleInfoRequest {
+  string id = 1;
+}
+message GetConsoleInfoResponse {
+  string vm_id = 1 [json_name = "vm_id"];
+  // An instance exists (also after the guest exited, until released).
+  optional bool available = 2;
+  // Relative URL of the console WebSocket.
+  string websocket = 3;
+}
+
+message CreateConsoleTicketRequest {
+  string id = 1;
+}
+message CreateConsoleTicketResponse {
+  string ticket = 1;
+  // Seconds it is good for.
+  uint32 expires_in = 2 [json_name = "expires_in"];
+}
+
+message GetConsoleLogRequest {
+  string id = 1;
+  // At most (and by default) 1 MiB.
+  optional uint64 tail_bytes = 2 [json_name = "tail_bytes"];
+  // The rotated log (`console.log.1`).
+  optional bool previous = 3;
+}
+message GetConsoleLogResponse {
+  bytes data = 1;
+}
+
+message AttachDeviceRequest {
+  string id = 1;
+  // `/sys/bus/pci/devices/DDDD:BB:DD.F` or the bare address.
+  string device_path = 2 [json_name = "device_path"];
+  optional uint32 wait_secs = 3 [json_name = "wait_secs"];
+}
+message AttachDeviceResponse {
+  Vm vm = 1;
+  optional bool settled = 2;
+}
+
+message DetachDeviceRequest {
+  string id = 1;
+  string device_path = 2 [json_name = "device_path"];
+  optional uint32 wait_secs = 3 [json_name = "wait_secs"];
+}
+message DetachDeviceResponse {
+  Vm vm = 1;
+  optional bool settled = 2;
+}
+
+message AttachDiskRequest {
+  string id = 1;
+  // Disk id, or a name in the VM's tenant.
+  string disk = 2;
+  optional uint32 wait_secs = 3 [json_name = "wait_secs"];
+}
+message AttachDiskResponse {
+  Vm vm = 1;
+  optional bool settled = 2;
+}
+
+message DetachDiskRequest {
+  string id = 1;
+  string disk = 2;
+  optional uint32 wait_secs = 3 [json_name = "wait_secs"];
+}
+message DetachDiskResponse {
+  Vm vm = 1;
+  optional bool settled = 2;
+}

@@ -189,7 +189,9 @@ sensible default `kernel_args` string (see `hypervisor/mod.rs`).
   creates and starts in one call. `restart_policy`, `on_host_boot`,
   `stop_grace_secs` default as in `VmSpec`.
 
-`VmResponse` is the API projection (`From<&Vm>`):
+`VmResponse` is the API projection (`From<&Vm>`), which
+`service::vm` turns into the `glidex.vm.v1.Vm` message the API answers
+with ([rest-api.md](rest-api.md#vm)):
 
 - `id, name, project, state, vcpu_count, mem_size_mib, hypervisor,
   vfio_devices, credential, nics, root_disk, data_disks`;

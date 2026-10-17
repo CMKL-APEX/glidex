@@ -4,7 +4,8 @@
 // and, in a cluster, of its nodes, import plans and status, plus a marker
 // that changes with the policies (spec/clustering-ui.md §3.7); it tells
 // subscribers when one of a kind changes. Without it (an old control
-// plane, a proxy that buffers) pages fall back to polling.
+// plane, a proxy that buffers) pages fall back to polling. VMs, disks and
+// images arrive in the proto3 JSON shape their REST routes answer in.
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { DiskInfo, ImageInfo, ImportPlanView, Network, NodeRecord, VmResponse } from "./types";
 import type { ClusterStatus } from "./api";

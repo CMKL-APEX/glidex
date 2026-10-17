@@ -37,6 +37,7 @@ import type {
   Team,
   UpdateCredentialRequest,
   CreateVmRequest,
+  VmWriteResponse,
   HealthResponse,
   User,
   UserView,
@@ -49,6 +50,7 @@ import type {
   VmStats,
   NodeRecord,
   PlacementPreview,
+  ProtoHypervisor,
   Departure,
   ImportMappings,
   ImportPlanView,
@@ -304,37 +306,45 @@ export async function allowedActions(actions: string[], resources: EntityRef[]):
 
 // ---- VMs --------------------------------------------------------------------
 
-export const listVms = (project?: string | null) => get<VmResponse[]>(`/vms${inProject(project)}`);
+export const listVms = (project?: string | null) =>
+  get<{ vms?: VmResponse[] }>(`/vms${inProject(project)}`).then((r) => r?.vms ?? []);
 
 export async function getVm(id: string): Promise<VmResponse> {
   try {
-    return await get<VmResponse>(`/vms/${enc(id)}`);
+    const r = await get<{ vm?: VmResponse }>(`/vms/${enc(id)}`);
+    if (!r?.vm) throw new Error("VM not found");
+    return r.vm;
   } catch (e) {
     if (e instanceof ApiRequestError && e.status === 404) throw new Error("VM not found");
     throw e;
   }
 }
 
-export const createVm = (req: CreateVmRequest) => post<VmResponse>("/vms", req);
+/** A VM write's answer: `{vm, settled}`, or `{}` when it answered 204 (gone). */
+const vmWrite = (p: Promise<VmWriteResponse | undefined>) => p.then((r) => r ?? {});
+
+export const createVm = (req: CreateVmRequest) => vmWrite(post<VmWriteResponse | undefined>("/vms", req));
 
 /** Lifecycle calls change the VM's desired state; `wait` holds the answer
  * until the controller got it there, or reports why it couldn't
  * (spec/reconciliation.md §12.3). */
 const WAIT_SECS = 60;
 
-export const startVm = (id: string) => post<VmResponse>(`/vms/${enc(id)}/start?wait=${WAIT_SECS}`);
+export const startVm = (id: string) => vmWrite(post<VmWriteResponse | undefined>(`/vms/${enc(id)}/start?wait=${WAIT_SECS}`));
 
 /** Stop a VM. With `gracefulTimeoutSecs`, press the guest's power button
  * first and stop it hard only if it is still running after that long. */
-export function stopVm(id: string, gracefulTimeoutSecs?: number): Promise<VmResponse> {
+export function stopVm(id: string, gracefulTimeoutSecs?: number): Promise<VmWriteResponse> {
   const wait = Math.min(300, Math.max(WAIT_SECS, (gracefulTimeoutSecs ?? 0) + 20));
   const grace = gracefulTimeoutSecs === undefined ? "" : `&graceful_timeout_secs=${gracefulTimeoutSecs}`;
-  return post<VmResponse>(`/vms/${enc(id)}/stop?wait=${wait}${grace}`);
+  return vmWrite(post<VmWriteResponse | undefined>(`/vms/${enc(id)}/stop?wait=${wait}${grace}`));
 }
 
-export const pauseVm = (id: string) => post<VmResponse>(`/vms/${enc(id)}/pause?wait=${WAIT_SECS}`);
+export const pauseVm = (id: string) => vmWrite(post<VmWriteResponse | undefined>(`/vms/${enc(id)}/pause?wait=${WAIT_SECS}`));
+
+/** Delete a VM: `undefined` once it is gone (204), else the VM still being torn down (202 `{vm}`). */
 export const deleteVm = (id: string, keepDisk = false) =>
-  del(`/vms/${enc(id)}?wait=${WAIT_SECS}${keepDisk ? "&keep_disk=true" : ""}`);
+  del<{ vm?: VmResponse } | undefined>(`/vms/${enc(id)}?wait=${WAIT_SECS}${keepDisk ? "&keep_disk=true" : ""}`).then((r) => r?.vm);
 
 /** One VM lifecycle action from the UI's buttons. `shutdown` presses the
  * power button and stops the VM hard after 60 s. */
@@ -353,15 +363,10 @@ export function vmAction(id: string, action: "start" | "shutdown" | "stop" | "pa
   }
 }
 
-/** A VM's event history: starts, exits, restarts, adoptions. */
-export interface VmEvent {
-  at: number;
-  actor: string;
-  kind: "normal" | "warning";
-  reason: string;
-  message: string;
-}
-export const vmEvents = (id: string) => get<{ events: VmEvent[] }>(`/vms/${enc(id)}/events`);
+/** A VM's event history: starts, exits, restarts, adoptions (glidex.common.v1.Event). */
+export type VmEvent = StorageEvent;
+export const vmEvents = (id: string) =>
+  get<{ events?: VmEvent[] }>(`/vms/${enc(id)}/events`).then((r) => ({ events: r?.events ?? [] }));
 
 /** A single-use console ticket for the WebSocket (spec §5.6). */
 export const consoleTicket = (id: string) =>
@@ -614,7 +619,7 @@ export interface PreviewRequest {
   project?: string;
   vcpu_count: number;
   mem_size_mib: number;
-  hypervisor?: string;
+  hypervisor?: ProtoHypervisor;
   node?: string;
   networks?: { network: string }[];
   vfio_devices?: string[];

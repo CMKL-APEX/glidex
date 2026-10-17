@@ -29,6 +29,44 @@ async fn body_to_json(body: Body) -> Value {
     serde_json::from_slice(&bytes).unwrap()
 }
 
+/// The VM in a `{vm}` answer (`POST /vms`, `GET /vms/{id}`, writes), in the
+/// proto3 JSON shape (spec/grpc.md §9.1).
+fn vm_of(v: &Value) -> &Value {
+    assert!(v["vm"].is_object(), "not a VM answer: {v}");
+    &v["vm"]
+}
+
+/// The VMs of a `GET /vms` answer (`{vms}`; proto3 JSON leaves an empty
+/// list out).
+fn vms_of(v: &Value) -> Vec<Value> {
+    assert!(v.is_object(), "not a VM list: {v}");
+    v["vms"].as_array().cloned().unwrap_or_default()
+}
+
+/// A proto3 JSON 64-bit integer: a string (`"3"`) or a number; left out
+/// (null) at its default, 0.
+fn num(v: &Value) -> u64 {
+    match v {
+        Value::Null => 0,
+        Value::String(s) => s.parse().unwrap_or_else(|_| panic!("not a number: {v}")),
+        _ => v.as_u64().unwrap_or_else(|| panic!("not a number: {v}")),
+    }
+}
+
+/// The short lower-case name of a proto enum value: `VM_STATE_RUNNING` with
+/// prefix `VM_STATE_` is `running`.
+fn short(v: &Value, prefix: &str) -> String {
+    let s = v.as_str().unwrap_or_else(|| panic!("not an enum: {v}"));
+    s.strip_prefix(prefix)
+        .unwrap_or_else(|| panic!("{s} is not a {prefix}* value"))
+        .to_ascii_lowercase()
+}
+
+/// A VM's `state` (`created`, `running`, ...).
+fn state(vm: &Value) -> String {
+    short(&vm["state"], "VM_STATE_")
+}
+
 // ============================================================================
 // Health Check Tests
 // ============================================================================
@@ -69,8 +107,7 @@ async fn test_list_vms_empty() {
     assert_eq!(response.status(), StatusCode::OK);
 
     let body = body_to_json(response.into_body()).await;
-    assert!(body.is_array());
-    assert_eq!(body.as_array().unwrap().len(), 0);
+    assert_eq!(vms_of(&body).len(), 0, "{body}");
 }
 
 // ============================================================================
@@ -104,11 +141,12 @@ async fn test_create_vm_success() {
     assert_eq!(response.status(), StatusCode::CREATED);
 
     let body = body_to_json(response.into_body()).await;
-    assert_eq!(body["name"], "test-vm");
-    assert_eq!(body["vcpu_count"], 2);
-    assert_eq!(body["mem_size_mib"], 512);
-    assert_eq!(body["state"], "created");
-    assert!(body["id"].is_string());
+    let vm = vm_of(&body);
+    assert_eq!(vm["name"], "test-vm");
+    assert_eq!(vm["vcpu_count"], 2);
+    assert_eq!(vm["mem_size_mib"], 512);
+    assert_eq!(state(vm), "created");
+    assert!(vm["id"].is_string());
 }
 
 #[tokio::test]
@@ -139,9 +177,10 @@ async fn test_create_vm_with_optional_fields() {
     assert_eq!(response.status(), StatusCode::CREATED);
 
     let body = body_to_json(response.into_body()).await;
-    assert_eq!(body["name"], "test-vm-full");
-    assert_eq!(body["vcpu_count"], 4);
-    assert_eq!(body["mem_size_mib"], 1024);
+    let vm = vm_of(&body);
+    assert_eq!(vm["name"], "test-vm-full");
+    assert_eq!(vm["vcpu_count"], 4);
+    assert_eq!(vm["mem_size_mib"], 1024);
 }
 
 #[tokio::test]
@@ -232,7 +271,9 @@ async fn test_create_vm_missing_required_fields() {
         .await
         .unwrap();
 
-    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let status = response.status();
+    let body = body_to_json(response.into_body()).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
 }
 
 // ============================================================================
@@ -266,7 +307,7 @@ async fn test_get_vm_success() {
         .unwrap();
 
     let created_vm = body_to_json(response.into_body()).await;
-    let vm_id = created_vm["id"].as_str().unwrap();
+    let vm_id = vm_of(&created_vm)["id"].as_str().unwrap();
 
     // Get the VM
     let response = app
@@ -282,8 +323,8 @@ async fn test_get_vm_success() {
     assert_eq!(response.status(), StatusCode::OK);
 
     let body = body_to_json(response.into_body()).await;
-    assert_eq!(body["id"], vm_id);
-    assert_eq!(body["name"], "get-test-vm");
+    assert_eq!(vm_of(&body)["id"], vm_id);
+    assert_eq!(vm_of(&body)["name"], "get-test-vm");
 }
 
 #[tokio::test]
@@ -337,7 +378,7 @@ async fn test_delete_vm_success() {
         .unwrap();
 
     let created_vm = body_to_json(response.into_body()).await;
-    let vm_id = created_vm["id"].as_str().unwrap();
+    let vm_id = vm_of(&created_vm)["id"].as_str().unwrap();
 
     // Delete the VM
     let response = app
@@ -426,8 +467,7 @@ async fn test_list_vms_after_create() {
     assert_eq!(response.status(), StatusCode::OK);
 
     let body = body_to_json(response.into_body()).await;
-    assert!(body.is_array());
-    assert_eq!(body.as_array().unwrap().len(), 2);
+    assert_eq!(vms_of(&body).len(), 2, "{body}");
 }
 
 // ============================================================================
@@ -510,7 +550,7 @@ async fn create_simple_vm(app: &axum::Router, name: &str) -> String {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::CREATED);
-    body_to_json(response.into_body()).await["id"]
+    vm_of(&body_to_json(response.into_body()).await)["id"]
         .as_str()
         .unwrap()
         .to_string()
@@ -551,9 +591,10 @@ async fn test_stop_of_a_stopped_vm_is_a_no_op() {
     let vm_id = create_simple_vm(&app, "stop-test-vm").await;
     let (status, body) = send(&app, "POST", format!("/vms/{}/stop", vm_id), None, &[]).await;
     assert_eq!(status, StatusCode::ACCEPTED, "{body}");
-    assert_eq!(body["desired_state"], "stopped");
-    assert_eq!(body["state"], "created");
-    assert_eq!(body["generation"], 1, "nothing changed");
+    let vm = vm_of(&body);
+    assert_eq!(short(&vm["desired_state"], "POWER_STATE_"), "stopped");
+    assert_eq!(state(vm), "created");
+    assert_eq!(num(&vm["generation"]), 1, "nothing changed");
 }
 
 #[tokio::test]
@@ -572,10 +613,10 @@ async fn test_graceful_stop_records_the_grace() {
     assert_eq!(status, StatusCode::ACCEPTED, "{body}");
     assert_eq!(
         (
-            body["stop_grace_secs"].as_u64(),
-            body["generation"].as_u64()
+            vm_of(&body)["stop_grace_secs"].as_u64(),
+            num(&vm_of(&body)["generation"])
         ),
-        (Some(5), Some(2))
+        (Some(5), 2)
     );
 
     let (status, _) = send(
@@ -606,9 +647,10 @@ async fn test_pause_records_the_desired_state() {
     let vm_id = create_simple_vm(&app, "pause-test-vm").await;
     let (status, body) = send(&app, "POST", format!("/vms/{}/pause", vm_id), None, &[]).await;
     assert_eq!(status, StatusCode::ACCEPTED, "{body}");
-    assert_eq!(body["desired_state"], "paused");
-    assert_eq!(body["generation"], 2);
-    assert_eq!(body["observed_generation"], 0, "no controller ran");
+    let vm = vm_of(&body);
+    assert_eq!(short(&vm["desired_state"], "POWER_STATE_"), "paused");
+    assert_eq!(num(&vm["generation"]), 2);
+    assert_eq!(num(&vm["observed_generation"]), 0, "no controller ran");
 }
 
 #[tokio::test]
@@ -625,8 +667,11 @@ async fn test_patch_edits_spec_and_refuses_immutable_fields() {
     .await;
     assert_eq!(status, StatusCode::ACCEPTED, "{body}");
     assert_eq!(
-        (body["vcpu_count"].as_u64(), body["restart_policy"].as_str()),
-        (Some(4), Some("never"))
+        (
+            vm_of(&body)["vcpu_count"].as_u64(),
+            short(&vm_of(&body)["restart_policy"], "RESTART_POLICY_")
+        ),
+        (Some(4), "never".to_string())
     );
 
     let (status, body) = send(
@@ -758,7 +803,7 @@ async fn test_get_console_info_vm_not_running() {
         .unwrap();
 
     let created_vm = body_to_json(response.into_body()).await;
-    let vm_id = created_vm["id"].as_str().unwrap();
+    let vm_id = vm_of(&created_vm)["id"].as_str().unwrap();
 
     // Get console info (VM not running)
     let response = app
@@ -821,7 +866,7 @@ async fn test_vm_persists_across_restart() {
 
         assert_eq!(response.status(), StatusCode::CREATED);
         let body = body_to_json(response.into_body()).await;
-        vm_id = body["id"].as_str().unwrap().to_string();
+        vm_id = vm_of(&body)["id"].as_str().unwrap().to_string();
     }
     // First manager is dropped here (simulates restart)
 
@@ -840,7 +885,7 @@ async fn test_vm_persists_across_restart() {
 
         assert_eq!(response.status(), StatusCode::OK);
         let body = body_to_json(response.into_body()).await;
-        let vms = body.as_array().unwrap();
+        let vms = vms_of(&body);
         assert_eq!(vms.len(), 1);
         assert_eq!(vms[0]["id"], vm_id);
         assert_eq!(vms[0]["name"], "persistent-vm");
@@ -858,10 +903,11 @@ async fn test_vm_persists_across_restart() {
 
         assert_eq!(response.status(), StatusCode::OK);
         let body = body_to_json(response.into_body()).await;
-        assert_eq!(body["id"], vm_id);
-        assert_eq!(body["name"], "persistent-vm");
-        assert_eq!(body["vcpu_count"], 2);
-        assert_eq!(body["mem_size_mib"], 512);
+        let vm = vm_of(&body);
+        assert_eq!(vm["id"], vm_id);
+        assert_eq!(vm["name"], "persistent-vm");
+        assert_eq!(vm["vcpu_count"], 2);
+        assert_eq!(vm["mem_size_mib"], 512);
     }
 }
 
@@ -901,7 +947,7 @@ async fn test_vm_delete_persists() {
             .unwrap();
 
         let body = body_to_json(response.into_body()).await;
-        vm_id = body["id"].as_str().unwrap().to_string();
+        vm_id = vm_of(&body)["id"].as_str().unwrap().to_string();
 
         // Delete VM
         let response = app
@@ -932,7 +978,7 @@ async fn test_vm_delete_persists() {
             .unwrap();
 
         let body = body_to_json(response.into_body()).await;
-        assert!(body.as_array().unwrap().is_empty());
+        assert!(vms_of(&body).is_empty(), "{body}");
 
         // Get should return not found
         let response = app
@@ -999,7 +1045,7 @@ async fn test_multiple_vms_persist() {
 
         assert_eq!(response.status(), StatusCode::OK);
         let body = body_to_json(response.into_body()).await;
-        let vms = body.as_array().unwrap();
+        let vms = vms_of(&body);
         assert_eq!(vms.len(), 3);
 
         // Verify names are present (order may vary)
@@ -1216,5 +1262,5 @@ async fn a_standalone_host_is_one_node_and_places_vms_on_it() {
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{vm}");
-    assert_eq!(vm["node"], "local");
+    assert_eq!(vm_of(&vm)["node"], "local");
 }

@@ -1,7 +1,7 @@
 // Login, session and browser protections (spec/security.md §5.5, §5.6,
 // §14 "UI e2e"): the login page, CSRF on writes, logout, console tickets,
 // and glidex-ui's Host allowlist and security headers.
-import { api, del, expect, rawRequest, test, UI_SERVER_PORT } from "../fixtures";
+import { api, createVm, del, expect, rawRequest, test, UI_SERVER_PORT } from "../fixtures";
 
 const UI_SERVER = `http://localhost:${UI_SERVER_PORT}`;
 
@@ -95,18 +95,15 @@ test.describe("console", () => {
   let vmId = "";
 
   test.beforeAll(async () => {
-    const vm = await api("/vms", {
-      method: "POST",
-      body: {
-        name: "e2e-console",
-        project: "default",
-        vcpu_count: 1,
-        mem_size_mib: 256,
-        hypervisor: "cloudhypervisor",
-        kernel_image_path: "",
-        firmware_path: "~/.glidex/CLOUDHV.fd",
-        rootfs_path: "/nonexistent/disk.img",
-      },
+    const vm = await createVm({
+      name: "e2e-console",
+      project: "default",
+      vcpu_count: 1,
+      mem_size_mib: 256,
+      hypervisor: "HYPERVISOR_CLOUD_HYPERVISOR",
+      kernel_image_path: "",
+      firmware_path: "~/.glidex/CLOUDHV.fd",
+      rootfs_path: "/nonexistent/disk.img",
     });
     expect(vm.id, JSON.stringify(vm)).toBeTruthy();
     vmId = vm.id;

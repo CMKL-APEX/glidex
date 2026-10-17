@@ -73,8 +73,11 @@ pub fn failed_reconcile_response(vm: &crate::models::Vm) -> (StatusCode, Json<Ap
         }
         _ => (StatusCode::INTERNAL_SERVER_ERROR, "hypervisor_error"),
     };
-    let details =
-        serde_json::json!({ "reason": reason, "vm": crate::models::VmResponse::from(vm) });
+    // The VM in the proto shape, as the VM routes answer (spec/grpc.md §9.1).
+    let details = serde_json::json!({
+        "reason": reason,
+        "vm": serde_json::to_value(crate::service::vm::vm_pb_plain(vm)).unwrap_or_default(),
+    });
     (
         status,
         Json(ApiError::new(code, message).with_details(details)),

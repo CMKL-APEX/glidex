@@ -1,5 +1,5 @@
 // CreateVmForm per hypervisor: no VM is booted, so no KVM or image needed.
-import { api, del, ensureFirmware, expect, field, firmwareImages, FIRMWARE_KEY, LABEL, test, vmCard, type Hypervisor } from "../fixtures";
+import { api, createVm, del, ensureFirmware, expect, field, firmwareImages, FIRMWARE_KEY, LABEL, listVms, PROTO_HYPERVISOR, test, vmCard, type Hypervisor } from "../fixtures";
 
 const other = (hv: Hypervisor): Hypervisor => (hv === "qemu" ? "cloudhypervisor" : "qemu");
 
@@ -51,7 +51,7 @@ test("offers only firmware built for the chosen hypervisor", async ({ page, hype
 });
 
 test.afterEach(async ({ hypervisor }) => {
-  const vm = (await api<any[]>("/vms")).find((v) => v.name === `form-${hypervisor}`);
+  const vm = (await listVms()).find((v) => v.name === `form-${hypervisor}`);
   // Wait: a VM that was started takes a moment to tear down, and the next
   // test reuses its name.
   if (vm) await del(`/vms/${vm.id}?wait=60`);
@@ -72,12 +72,12 @@ test("submits hypervisor, firmware and networks", async ({ page, hypervisor }) =
   expect(body.firmware_path).toBeUndefined();
   expect(body).toMatchObject({
     name: `form-${hypervisor}`,
-    hypervisor,
+    hypervisor: PROTO_HYPERVISOR[hypervisor],
     firmware: (await firmwareImages(hypervisor))[0].id,
     kernel_image_path: "",
     rootfs_path: "/nonexistent/disk.img",
-    restart_policy: "on_failure",
-    on_host_boot: "resume",
+    restart_policy: "RESTART_POLICY_ON_FAILURE",
+    on_host_boot: "HOST_BOOT_POLICY_RESUME",
   });
   // Created stopped unless asked to start.
   expect(body.power).toBeUndefined();
@@ -88,8 +88,8 @@ test("submits hypervisor, firmware and networks", async ({ page, hypervisor }) =
 
   // The control plane accepted it; the dashboard lists it with its hypervisor.
   await expect(vmCard(page, `form-${hypervisor}`)).toContainText(LABEL[hypervisor]);
-  const vm = (await api<any[]>("/vms")).find((v) => v.name === `form-${hypervisor}`);
-  expect(vm?.hypervisor).toBe(hypervisor);
+  const vm = (await listVms()).find((v) => v.name === `form-${hypervisor}`);
+  expect(vm?.hypervisor).toBe(PROTO_HYPERVISOR[hypervisor]);
 });
 
 test("starts it now with the chosen restart behaviour", async ({ page, hypervisor }) => {
@@ -105,10 +105,10 @@ test("starts it now with the chosen restart behaviour", async ({ page, hyperviso
     page.waitForRequest((r) => r.method() === "POST" && r.url().endsWith("/api/vms")),
     page.getByRole("button", { name: "Create VM", exact: true }).click(),
   ]);
-  expect(request.postDataJSON()).toMatchObject({ power: "running", restart_policy: "never", on_host_boot: "stop" });
+  expect(request.postDataJSON()).toMatchObject({ power: "POWER_STATE_RUNNING", restart_policy: "RESTART_POLICY_NEVER", on_host_boot: "HOST_BOOT_POLICY_STOP" });
   await expect(vmCard(page, `form-${hypervisor}`)).toBeVisible();
-  const vm = (await api<any[]>("/vms")).find((v) => v.name === `form-${hypervisor}`);
-  expect(vm).toMatchObject({ desired_state: "running", restart_policy: "never", on_host_boot: "stop" });
+  const vm = (await listVms()).find((v) => v.name === `form-${hypervisor}`);
+  expect(vm).toMatchObject({ desired_state: "POWER_STATE_RUNNING", restart_policy: "RESTART_POLICY_NEVER", on_host_boot: "HOST_BOOT_POLICY_STOP" });
 });
 
 test.describe("refused", () => {
@@ -117,10 +117,7 @@ test.describe("refused", () => {
 
   test("a refused create keeps the form open with the reason", async ({ page, hypervisor }) => {
     // Taken: the second create is refused (409).
-    const taken = await api("/vms", {
-      method: "POST",
-      body: { name: `form-${hypervisor}`, vcpu_count: 1, mem_size_mib: 256, kernel_image_path: "/nonexistent/vmlinux", rootfs_path: "/nonexistent/disk.img" },
-    });
+    const taken = await createVm({ name: `form-${hypervisor}`, vcpu_count: 1, mem_size_mib: 256, kernel_image_path: "/nonexistent/vmlinux", rootfs_path: "/nonexistent/disk.img" });
     expect(taken.id, JSON.stringify(taken)).toBeTruthy();
     await field(page, "VM Name").fill(`form-${hypervisor}`);
     await field(page, "Boot Disk").selectOption("path");
