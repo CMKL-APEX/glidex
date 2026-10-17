@@ -98,9 +98,8 @@ service VmService {
       rest: "GET /vms/{id}/console"
     };
   }
-  // A single-use ticket for a browser's console WebSocket
-  // (spec/security.md §5.6). The console itself stays a WebSocket until
-  // G4 (spec/grpc.md §9).
+  // A single-use ticket for a browser's console (spec/security.md §5.6):
+  // the WebSocket's `?ticket=`, or `Console`'s `open.ticket`.
   rpc CreateConsoleTicket(CreateConsoleTicketRequest) returns (CreateConsoleTicketResponse) {
     option (glidex.api.v1.op) = {
       action: "openConsole"
@@ -115,6 +114,18 @@ service VmService {
       action: "openConsole"
       kind: KIND_READ
       rest: "GET /vms/{id}/console/log"
+    };
+  }
+  // The live console, both ways: the first request names the VM (and, for
+  // a browser session, a ticket); the shim replays the console log, then
+  // relays the guest's output and takes keystrokes. Over HTTP/2 only
+  // (gRPC, or Connect on a client that can stream both ways); the browser
+  // keeps the WebSocket (`GET /vms/{id}/console/ws`), whose twin this is.
+  rpc Console(stream ConsoleRequest) returns (stream ConsoleResponse) {
+    option (glidex.api.v1.op) = {
+      action: "openConsole"
+      kind: KIND_READ
+      rest: "GET /vms/{id}/console/ws"
     };
   }
   rpc AttachDevice(AttachDeviceRequest) returns (AttachDeviceResponse) {
@@ -511,4 +522,26 @@ message DetachDiskRequest {
 message DetachDiskResponse {
   Vm vm = 1;
   optional bool settled = 2;
+}
+
+// Which console to open: the first message of a `Console` stream.
+message ConsoleOpen {
+  string id = 1;
+  // A single-use ticket (`CreateConsoleTicket`), which a browser session
+  // needs; tokens and the API socket don't.
+  optional string ticket = 2 [(glidex.api.v1.secret) = true];
+}
+
+message ConsoleRequest {
+  oneof request {
+    // First, and only first.
+    ConsoleOpen open = 1;
+    // Keystrokes.
+    bytes input = 2;
+  }
+}
+
+message ConsoleResponse {
+  // The console's bytes: the replayed log, then the guest's output.
+  bytes output = 1;
 }

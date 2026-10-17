@@ -88,6 +88,7 @@ import { createGrpcWebTransport } from "@connectrpc/connect-web";
 import { ErrorDetailsSchema } from "./gen/glidex/api/v1/errors_pb";
 import { ErrorInfoSchema } from "./gen/google/rpc/error_details_pb";
 import { VmService, type CreateVmRequestJson } from "./gen/glidex/vm/v1/vm_pb";
+import { WatchEventsResponseSchema, WatchKind, WatchService, type WatchEventsResponseJson } from "./gen/glidex/watch/v1/watch_pb";
 import {
   AuditService,
   AuthzService,
@@ -576,6 +577,34 @@ export function vmAction(id: string, action: "start" | "shutdown" | "stop" | "pa
 export type VmEvent = StorageEvent;
 export const vmEvents = (id: string) =>
   rpc(VmService.method.listVmEvents, { id }).then((r) => ({ events: (r.events ?? []) as VmEvent[] }));
+
+/** Follow an object's events (`WatchService.WatchEvents`): `onEvents` gets
+ * the history, then the list again with each new event, until `signal`
+ * aborts. Reconnects (with a fresh history) when the stream ends. */
+export async function followEvents(kind: "vm" | "disk" | "image" | "network", id: string, onEvents: (events: VmEvent[]) => void, signal: AbortSignal): Promise<void> {
+  const client = createClient(WatchService, transport);
+  const kinds = { vm: WatchKind.VM, disk: WatchKind.DISK, image: WatchKind.IMAGE, network: WatchKind.NETWORK };
+  while (!signal.aborted) {
+    let events: VmEvent[] = [];
+    let synced = false;
+    try {
+      for await (const msg of client.watchEvents({ kind: kinds[kind], id }, { signal })) {
+        const r = toJson(WatchEventsResponseSchema, msg) as WatchEventsResponseJson;
+        if (r.type === "WATCH_EVENT_TYPE_SYNCED") {
+          synced = true;
+          onEvents(events);
+        } else if (r.type === "WATCH_EVENT_TYPE_ADDED" && r.event) {
+          events = [...events, r.event as VmEvent];
+          if (synced) onEvents(events);
+        } else if (r.type === "WATCH_EVENT_TYPE_EXPIRED") break;
+      }
+    } catch {
+      /* gone, refused or cut off: try again below */
+    }
+    if (signal.aborted) return;
+    await new Promise((r) => setTimeout(r, 3000));
+  }
+}
 
 /** A single-use console ticket for the WebSocket (spec §5.6). */
 export const consoleTicket = (id: string) =>

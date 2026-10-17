@@ -58,7 +58,9 @@ fn test_config() -> Config {
     let mut c = Config::default();
     c.cluster.raft.heartbeat_ms = 100;
     c.cluster.raft.election_ms = (600, 1200);
-    c.cluster.node_grace_secs = 3;
+    // Longer than an agent's 5 s heartbeat plus the leader's 2 s liveness
+    // tick: shorter, and a live node flaps between ready and unreachable.
+    c.cluster.node_grace_secs = 8;
     c
 }
 
@@ -950,8 +952,7 @@ async fn a_vm_placed_on_an_agent_is_that_agents_and_its_status_comes_back() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn a_silent_node_is_unreachable_not_gone() {
     let _one = SERIAL.lock().await;
-    let mut cfg = test_config();
-    cfg.cluster.node_grace_secs = 5;
+    let cfg = test_config();
     let server = new_cp();
     manage::init(
         &server.manager,
@@ -1113,9 +1114,12 @@ async fn a_server_relays_the_console_log_of_a_vm_on_an_agent() {
     // The live console is a raw stream through the node API.
     let listener = tokio::net::UnixListener::bind(&paths.console_socket).unwrap();
     tokio::spawn(async move {
-        let (mut s, _) = listener.accept().await.unwrap();
-        let (mut r, mut w) = s.split();
-        let _ = tokio::io::copy(&mut r, &mut w).await;
+        while let Ok((mut s, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let (mut r, mut w) = s.split();
+                let _ = tokio::io::copy(&mut r, &mut w).await;
+            });
+        }
     });
     let mut stream = cluster(&server)
         .client
@@ -1141,6 +1145,61 @@ async fn a_server_relays_the_console_log_of_a_vm_on_an_agent() {
             .await
             .is_err()
     );
+
+    // `VmService.Console` on the server reaches it through the agent too
+    // (a Connect bidi stream; the frames go in as the body streams).
+    let frame = |v: serde_json::Value| {
+        let msg = v.to_string();
+        let mut f = vec![0u8];
+        f.extend_from_slice(&(msg.len() as u32).to_be_bytes());
+        f.extend_from_slice(msg.as_bytes());
+        bytes::Bytes::from(f)
+    };
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<bytes::Bytes, std::io::Error>>(4);
+    tx.send(Ok(frame(json!({"open": {"id": id}}))))
+        .await
+        .unwrap();
+    // "ls\n", base64 (proto JSON bytes).
+    tx.send(Ok(frame(json!({"input": "bHMK"})))).await.unwrap();
+    let body = Body::from_stream(futures_util::stream::unfold(rx, |mut rx| async move {
+        rx.recv().await.map(|item| (item, rx))
+    }));
+    let resp = server
+        .router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/glidex.vm.v1.VmService/Console")
+                .header("content-type", "application/connect+json")
+                .body(body)
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let mut body = resp.into_body();
+    let mut got = Vec::new();
+    use base64::Engine;
+    while !got.ends_with(b"ls\n") {
+        let f = tokio::time::timeout(Duration::from_secs(10), body.frame())
+            .await
+            .expect("console output within 10 s")
+            .expect("the stream is open")
+            .unwrap();
+        let Ok(data) = f.into_data() else { continue };
+        let mut at = 0;
+        while at + 5 <= data.len() {
+            let len = u32::from_be_bytes([data[at + 1], data[at + 2], data[at + 3], data[at + 4]])
+                as usize;
+            let m: serde_json::Value = serde_json::from_slice(&data[at + 5..at + 5 + len]).unwrap();
+            if let Some(o) = m["output"].as_str() {
+                got.extend(base64::engine::general_purpose::STANDARD.decode(o).unwrap());
+            }
+            at += 5 + len;
+        }
+    }
+    drop(tx);
     std::fs::remove_dir_all(&paths.dir).unwrap();
 }
 

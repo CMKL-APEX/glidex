@@ -10,6 +10,7 @@ package glidex.watch.v1;
 
 import "glidex/api/v1/options.proto";
 import "glidex/cluster/v1/cluster.proto";
+import "glidex/common/v1/common.proto";
 import "glidex/network/v1/network.proto";
 import "glidex/storage/v1/storage.proto";
 import "glidex/vm/v1/vm.proto";
@@ -20,6 +21,16 @@ service WatchService {
       action: "authenticated"
       kind: KIND_READ
       rest: "GET /watch"
+    };
+  }
+  // One object's events (a VM's starts, exits and restarts; a disk's, an
+  // image's or a network's), as its events list answers them (the last
+  // 50), `synced`, then each new one as it happens. Seeing them takes
+  // reading the object (`readVm`, `readDisk`, `readImage`, `readNetwork`).
+  rpc WatchEvents(WatchEventsRequest) returns (stream WatchEventsResponse) {
+    option (glidex.api.v1.op) = {
+      action: "authenticated"
+      kind: KIND_READ
     };
   }
 }
@@ -78,4 +89,18 @@ message WatchResponse {
     glidex.cluster.v1.GetClusterStatusResponse cluster = 10;
     PolicyMarker policy = 11;
   }
+}
+
+message WatchEventsRequest {
+  // A VM, disk, image or network.
+  WatchKind kind = 1;
+  // Its id.
+  string id = 2;
+}
+
+message WatchEventsResponse {
+  // `added` for each event; `synced` after the ones there were;
+  // `keepalive` and `expired` as on `Watch`.
+  WatchEventType type = 1;
+  glidex.common.v1.Event event = 2;
 }

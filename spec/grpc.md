@@ -293,9 +293,25 @@ each re-filtered by the caller's current rights; the stream ends
 a `oneof`); `GET /watch` sends the same events as server-sent events.
 Opening a stream is checked and audited like a unary call (the
 `unary` helper with the stream as its value), so a refusal is the call's
-error before any event. **Console** moves to a bidi
-stream only after the WebSocket path (tickets, shim relay) has an
-equivalent test suite; until then it stays WebSocket.
+error before any event; both send a keep-alive every 15 s.
+`WatchService.WatchEvents` streams one object's events (a VM's, disk's,
+image's or network's): the ones it has, as its events list answers
+them, `synced`, then each new one; seeing them takes reading the object.
+
+**Console** is `VmService.Console`, a bidi stream (G4), now that the
+WebSocket path has its test suite (`tests/console_tests.rs`: replay on
+connect, both directions, the shim hanging up, a missing socket, refusals;
+the same for the RPC). The first request opens it (`{open: {id,
+ticket?}}`), then keystrokes (`{input}`); the answers are the console's
+bytes. Both paths share `service::vm::console_target` (visibility, the
+ticket a browser session needs, a VM on another node relayed through
+it) and `console_connect`. A bidi stream needs HTTP/2, which the
+listeners speak; the browser, whose gRPC-Web can't stream both ways,
+keeps the WebSocket. gxctl uses the RPC over its own HTTP/2 connection,
+with the Connect protocol: over gRPC, a refusal of the stream reaches the
+client with its status but without its `ErrorInfo` (connectrpc 0.9.1), so
+gxctl couldn't show the reason. The first message must come within 30 s;
+a client that stops sending (half-close) ends the call.
 
 ## 10. gxctl
 
@@ -339,7 +355,9 @@ equivalent test suite; until then it stays WebSocket.
   `ui.sock` to it, and keeps it off the other listeners.
 - **Browser protections stay** (security.md §5.6): the Origin check,
   CSRF for cookie-authenticated calls, no CORS (same origin through the
-  UI). Console stays a WebSocket with tickets (§9).
+  UI). The browser's console stays a WebSocket with tickets: gRPC-Web
+  can't stream both ways (`VmService.Console`, §9.1, is for HTTP/2
+  clients).
 
 ## 12. Testing
 
@@ -400,6 +418,7 @@ equivalent test suite; until then it stays WebSocket.
 | Host family (G3): `HostNetworkService` (OVS status and install, DPDK, bridges, uplinks), `PciService` | proto `glidex/host/v1/host.proto`; `service/host.rs`; RPC `api/rpc/host.rs`; REST twins in `api/net.rs`; host-local in `gate::is_host_local` and relayed from an agent's UI like the REST paths (`relay::is_remote_host_path`, `relay::remote_host` on the RPC mount, the action from the operation table; the agent runs it `PreAuthorized`); gxctl and the UI on the new shapes; tests `network_tests.rs::ovs_status_and_bridges`, `cluster_tests.rs::an_agents_ui_is_relayed_to_a_server_and_host_paths_run_on_the_agent` (gRPC-Web through the relay) |
 | Cluster family (G3): `ClusterService` (init, join, import, rejoin, status, join tokens, promote, dissolve, leave, CA and secrets-key rotation, OVN settings, edge defaults, OVN overview and tunnels), `NodeService` (nodes, drain, br-int and mappings, spare image files, remove, forget, purge, rejoin tokens, detach, abort, departed, departures), `ImportService` | proto `glidex/cluster/v1/cluster.proto`; `service/cluster.rs`, `service/node.rs` (the cluster code's JSON turned into the messages by `cluster::proto_of`: times and enum names by field path); RPC `api/rpc/cluster.rs`; REST twins `api/cluster.rs`, `api/nodes.rs`; `GET /cluster/snapshot` stays REST (a binary download); init, join and leave are host-local as RPCs too, and leave runs on the agent from its UI; `/watch` nodes and imports are the messages; gxctl and the UI on the new shapes; tests `tests/cluster_tests.rs` |
 | Watch (G4): `WatchService.Watch`, a server stream | proto `glidex/watch/v1/watch.proto`; `service/watch.rs` (snapshots, diffs, watcher slots; events as data); RPC `api/rpc/watch.rs`; `GET /watch` as server-sent events in `api/watch.rs`; gxctl `watch` on the stream; tests `api_tests.rs::test_watch_over_rpc_streams_the_same_events` and the REST watch tests |
+| Object events and console (G4): `WatchService.WatchEvents` (server stream), `VmService.Console` (bidi) | `service/watch.rs::open_events` (through each kind's events list, with its read action via `Caller::with_action`); `service/vm.rs::console_target`/`console_connect`, shared with the WebSocket (`api/vms.rs::console_ws`); RPC `api/rpc/watch.rs`, `api/rpc/vm.rs::console`; gxctl `console` on the RPC; tests `tests/console_tests.rs`, `network_tests.rs::a_networks_events_stream_as_they_happen` |
 | UI on gRPC-Web (G4) | `crates/glidex-ui/ui/src/gen/` (generated, committed; CI checks it is current), `api.ts::rpc()` and `rpcError()`, `live.tsx` on `WatchService.Watch` (keep-alives every 15 s); dev and e2e through `ui.sock` (§6); `ErrorInfo.metadata.http_status` (§7) |
 | Forwarding by `kind`, trailers (§8) | `api/gate.rs`, `cluster/net.rs` (`Reply.trailers`) |
 | CI (G-D9) | `.github/workflows/rust.yml` job `proto` |
