@@ -999,6 +999,18 @@ async fn run_dev_server() {
     {
         cmd.env("GLIDEX_API_CA_CERT", p);
     }
+    // The UI's RPCs are gRPC-Web, which the control plane takes on its UI
+    // socket only (spec/grpc.md §6): the dev proxy goes there when it can.
+    // The control plane admits only its `ui_user` there; for a dev server
+    // run as yourself, set `ui_user` to your user in control-plane.json.
+    let socket = env("GLIDEX_API_SOCKET").unwrap_or_else(|| DEFAULT_API_SOCKET.to_string());
+    if std::path::Path::new(&socket).exists() {
+        cmd.env("GLIDEX_API_SOCKET", &socket);
+    } else {
+        tracing::warn!(
+            "{socket} doesn't exist: the dev proxy uses TCP, where RPCs need a bearer token"
+        );
+    }
     let mut child = cmd
         .spawn()
         .expect("Failed to start bun dev server. Is bun installed?");

@@ -5,8 +5,11 @@ import { readFileSync } from "node:fs";
 import { rootCertificates } from "node:tls";
 import { fileURLToPath } from "node:url";
 
-// GLIDEX_API_URL points the dev proxy at another control plane (the e2e
-// suite runs a scratch one, over plain HTTP on loopback).
+// GLIDEX_API_SOCKET: the control plane's UI socket (`glidex-ui --dev` and
+// the e2e suite set it). The UI's RPCs are gRPC-Web, which the control
+// plane takes there only (spec/grpc.md §6). Without it, GLIDEX_API_URL
+// points the dev proxy at a control plane over TCP (REST only, then).
+const apiSocket = process.env.GLIDEX_API_SOCKET;
 const apiUrl = process.env.GLIDEX_API_URL ?? "https://localhost:8841";
 
 /** The file at env var `name`, if set. */
@@ -65,14 +68,20 @@ export default defineConfig({
     port: 5173,
     https,
     proxy: {
-      "/api": {
-        target: apiUrl,
-        changeOrigin: true,
-        ws: true,
-        secure: true,
-        ...(apiCa ? { ca: apiCa } : {}),
-        rewrite: (path) => path.replace(/^\/api/, ""),
-      },
+      "/api": apiSocket
+        ? {
+            target: { socketPath: apiSocket, host: "localhost", protocol: "http:" } as unknown as string,
+            ws: true,
+            rewrite: (path) => path.replace(/^\/api/, ""),
+          }
+        : {
+            target: apiUrl,
+            changeOrigin: true,
+            ws: true,
+            secure: true,
+            ...(apiCa ? { ca: apiCa } : {}),
+            rewrite: (path) => path.replace(/^\/api/, ""),
+          },
     },
   },
 });

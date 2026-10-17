@@ -1,10 +1,17 @@
-# TypeScript messages for glidex-ui (Connect-ES, spec/grpc.md §11).
-# Run from this directory: buf generate
+# TypeScript messages and service descriptors for glidex-ui (Connect-ES,
+# spec/grpc.md §11), with types for their JSON form (`json_types`): the UI
+# works on the proto JSON its REST twins answer too. Run from this
+# directory after `bun install` in ../glidex-ui/ui: buf generate
 version: v2
 inputs:
   - directory: proto
+clean: true
 plugins:
-  - remote: buf.build/bufbuild/es
+  # Run with bun (the UI toolchain; no Node needed).
+  - local: ["bun", "../glidex-ui/ui/node_modules/@bufbuild/protoc-gen-es/bin/protoc-gen-es"]
     out: ../glidex-ui/ui/src/gen
+    include_imports: true
     opt:
       - target=ts
+      - json_types=true
+      - import_extension=none

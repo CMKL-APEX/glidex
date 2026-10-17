@@ -251,11 +251,15 @@ pub(crate) fn to_connect(e: ServiceError, request_id: &str) -> ConnectError {
     } else {
         e.message
     };
-    let info = ErrorInfo {
+    // The REST status too, so a client on RPC (the UI) can tell what REST
+    // would have said (422 from 400, say).
+    let mut info = ErrorInfo {
         reason: e.code,
         domain: glidex_api::ERROR_DOMAIN.into(),
         ..Default::default()
     };
+    info.metadata
+        .insert("http_status".into(), e.status.as_u16().to_string());
     let mut err = ConnectError::new(code, message)
         .with_detail(ErrorDetail::from_message("google.rpc.ErrorInfo", &info));
     if !e.details.is_null() {

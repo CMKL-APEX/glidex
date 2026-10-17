@@ -47,6 +47,8 @@ enum WatchEventType {
   WATCH_EVENT_TYPE_SYNCED = 4;
   // The stream ends here: reconnect for a fresh snapshot.
   WATCH_EVENT_TYPE_EXPIRED = 5;
+  // Nothing changed; sent every 15 s so proxies keep a quiet stream open.
+  WATCH_EVENT_TYPE_KEEPALIVE = 6;
 }
 
 message WatchRequest {
