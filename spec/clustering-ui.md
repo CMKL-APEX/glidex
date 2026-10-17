@@ -218,7 +218,7 @@ browser ─HTTPS─▶ glidex-ui (agent) ─ui.sock─▶ control plane (agent)
   host-local requests only from a server certificate, with the
   server-verified principal.
 - **Unreachable servers**: the agent answers `503 cluster_unavailable`
-  ("this node can't reach a server; log in on a server: <list>"); the
+  (`this node can't reach a server; log in on a server: <list>`); the
   UI shows its banner (§3.3). Nothing falls back to authenticating
   locally.
 - **Trust**: a compromised agent sees what its users type into its UI

@@ -36,7 +36,23 @@ A Rust control plane for KVM virtual machines on
   `br-int` datapath are set from the UI, and an uplink that took the
   host's address is re-applied, or rolled back, safely at boot
 
+## Documentation
+
+The user and operator documentation is in [docs/public](docs/public/src/SUMMARY.md)
+(an [mdBook](https://rust-lang.github.io/mdBook/): `mdbook serve docs/public`):
+a [quick start](docs/public/src/quick-start.md), a
+[user guide](docs/public/src/user-guide/README.md), an
+[operator guide](docs/public/src/operator-guide/README.md), and references
+for [gxctl](docs/public/src/reference/gxctl.md) and the
+[API](docs/public/src/api/README.md). The design specs for contributors are
+in [spec/](spec/README.md); [docs/README.md](docs/README.md) explains the
+split.
+
 ## Install
+
+It needs Linux with KVM (`/dev/kvm`), `sudo`, `git` and a Rust toolchain
+(`cargo`, e.g. from [rustup.rs](https://rustup.rs)) to run the installer;
+the installer keeps Rust up to date afterwards.
 
 ```bash
 git clone https://github.com/CMKL-APEX/glidex.git && cd glidex
@@ -58,8 +74,8 @@ and back in afterwards. Defaults need no config file;
 `/etc/glidex/control-plane.json.example` lists the settings. Re-run it
 to update. `--no-qemu`, `--no-networking` and `--no-services` opt out;
 Open vSwitch uses the kernel datapath unless `--ovs-profile dpdk`
-(choices are remembered for later runs; `--help` for all). It needs Linux with KVM (`/dev/kvm`). See
-[spec/installer.md](spec/installer.md).
+(choices are remembered for later runs; `--help` for all). See
+[Installation](docs/public/src/operator-guide/installation.md).
 
 ## Run
 
@@ -86,18 +102,22 @@ touch the firewall.
 The API also listens on `api.sock` in its run directory
 (`/run/glidex-cp/api.sock` under systemd, for members of
 `glidex-users`); every request is authenticated. See
-[spec/security.md](spec/security.md).
+[TLS](docs/public/src/operator-guide/tls.md) and
+[Authentication](docs/public/src/operator-guide/authentication.md).
 
 `gxctl` talks to the control plane's Unix socket (`/run/glidex-cp/api.sock`,
 or the one a hand-started control plane creates under `$XDG_RUNTIME_DIR/glidex`)
 and you're identified by your Unix account: no login. From another
-machine, `gxctl --url https://host:8841 login --oidc` (or `login --token`)
-saves a token in `~/.config/glidex/token`; for a self-signed certificate,
-copy the host's `/run/glidex-cp/tls.crt` and set `GLIDEX_CA_CERT` to it
-(local connections trust it already). `--project <p>` picks the
+machine, `gxctl auth login --url https://host:8841 --profile lab --oidc`
+(or `--pam-user <user>`, or `--token` with the token on stdin) saves a
+token in a login profile in `~/.config/glidex/config.json`, and pins the
+server's certificate after showing you its fingerprint. Once a profile
+exists, `gxctl` uses profiles instead of the local socket. Tokens expire
+(`gxctl token create`: 90 days unless you ask otherwise). See
+[Logging in](docs/public/src/user-guide/logging-in.md). `--project <p>` picks the
 project; `whoami`, `project`, `token`, `binding`, `team`, `policy` and
-`audit` manage access ([spec/cli.md](spec/cli.md),
-[spec/security.md](spec/security.md)).
+`audit` manage access ([gxctl](docs/public/src/reference/gxctl.md),
+[Access control](docs/public/src/operator-guide/access-control.md)).
 
 ## Your first VM
 
@@ -135,12 +155,16 @@ api -X POST 'https://localhost:8841/vms/<id>/stop?graceful_timeout_secs=60'
   `kernel_image_path` for a direct kernel boot. Paths you pass are opened
   by the control plane, so under the units they must be readable by the
   `glidex` user (your home directory usually isn't).
-- Without a stored credential, the guest user is `cloud` with the
-  `~/.ssh/*.pub` keys of the user the control plane runs as (none for the
-  `glidex` service user, so add a credential). `cloud_init_path` replaces the generated seed.
+- Without a stored credential, the guest's `cloud` user has no SSH keys
+  and a locked password: nobody can log in, so add a credential.
+  `cloud_init_path` replaces the generated seed.
+- Give the root disk a size (`root_disk_size_gib`, or type one at
+  `gxctl create`'s prompt): without one, the disk is the size of the image.
 - Networks: glidex creates none by itself. Add one first with
   `gxctl network-add` or the web UI's Networking page (e.g. a NAT network
-  `lab`); a network named `default` is preselected in the VM form.
+  `lab`); a network named `default` is preselected in the VM form. Only
+  your default project can use a new network until you grant it to others
+  (`gxctl network grant`).
 
 ## A cluster
 
@@ -167,12 +191,7 @@ nodes, adds more (`gxctl cluster status`, `gxctl node …` from the CLI),
 and turns OVN on for networks that span the nodes: its OVN settings
 suggest the shared edge (physical network, gateway nodes, the LAN's
 addresses) from what the nodes report. A project's routers are on its
-project page. See [spec/clustering.md](spec/clustering.md) and
-[spec/clustering-ui.md](spec/clustering-ui.md).
-
-More in [spec/cli.md](spec/cli.md), [spec/rest-api.md](spec/rest-api.md),
-[spec/images.md](spec/images.md), [spec/credentials.md](spec/credentials.md)
-and [spec/networking.md](spec/networking.md).
+project page. See [Clusters](docs/public/src/operator-guide/clusters.md).
 
 ## Tests
 
@@ -212,6 +231,7 @@ crates/
   glidex-install/         installer / uninstaller
   glidex-ui/ui/           web UI (Vite + React)
   glidex-ui/e2e/          web UI end-to-end tests (Playwright)
+docs/                     user and operator docs (docs/public), book config
 spec/                     design docs, start with spec/README.md
 LICENSES/                 MIT and Apache-2.0 texts, COPYRIGHT
 scripts/dev/              test helpers

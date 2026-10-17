@@ -650,7 +650,7 @@ impl AuthService {
     }
 
     /// One-time: existing host-role holders become members of the operator
-    /// tenant; system administrators get [`make_administrator`]'s links;
+    /// tenant; system administrators get [`Self::make_administrator`]'s links;
     /// auditors also audit the directory (spec/tenancy.md §16 steps 3-4).
     pub fn migrate_tenancy(&self) -> Result<(), AuthError> {
         const KEY: &str = "tenants_links_v1";

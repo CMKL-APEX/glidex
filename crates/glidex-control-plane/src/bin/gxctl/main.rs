@@ -1,5 +1,9 @@
 //! `gxctl`: interactive CLI for the glidex control plane (spec/cli.md).
 
+// Doc comments on the clap types are `--help` text, printed verbatim:
+// `<uid>` and bare URLs there are meant for the terminal, not rustdoc.
+#![allow(rustdoc::invalid_html_tags, rustdoc::bare_urls)]
+
 mod access;
 mod admin;
 mod client;
