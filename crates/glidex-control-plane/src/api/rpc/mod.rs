@@ -19,6 +19,7 @@ mod system;
 mod tenancy;
 mod usage;
 mod vm;
+mod watch;
 
 use super::{AppState, Caller, Listener, PUBLIC, RequestId, write_audit};
 use crate::auth::Principal;
@@ -70,6 +71,7 @@ pub(crate) fn routes(app: &AppState) -> Router<AppState> {
     let connect = network::register(app, connect);
     let connect = host::register(app, connect);
     let connect = cluster::register(app, connect);
+    let connect = watch::register(app, connect);
     let (connect, _health) = connectrpc_health::install_static(connect, glidex_api::services());
     let svc = ConnectRpcService::new(connect)
         .with_limits(

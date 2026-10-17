@@ -1211,6 +1211,88 @@ async fn test_watch_streams_nodes_and_the_policy_marker() {
     assert_eq!(data["object"]["meta"]["id"], node.as_str(), "{data}");
 }
 
+/// The next message of a Connect server stream (`application/connect+json`):
+/// a flag byte, a 4-byte length, then JSON. `None` at the end-of-stream frame.
+async fn next_frame(body: &mut Body, buf: &mut Vec<u8>) -> Option<Value> {
+    use http_body_util::BodyExt;
+    loop {
+        if buf.len() >= 5 {
+            let len = u32::from_be_bytes([buf[1], buf[2], buf[3], buf[4]]) as usize;
+            if buf.len() >= 5 + len {
+                let flags = buf[0];
+                let msg: Value = serde_json::from_slice(&buf[5..5 + len]).unwrap();
+                buf.drain(..5 + len);
+                return (flags & 0x02 == 0).then_some(msg);
+            }
+        }
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(10), body.frame())
+            .await
+            .expect("a frame within 10 s")
+            .expect("the stream is open")
+            .unwrap();
+        if let Ok(data) = frame.into_data() {
+            buf.extend_from_slice(&data);
+        }
+    }
+}
+
+/// `glidex.watch.v1.WatchService.Watch` (spec/grpc.md G4): the same events
+/// as `GET /watch`, as a server stream of `WatchResponse` messages.
+#[tokio::test]
+async fn test_watch_over_rpc_streams_the_same_events() {
+    let (app, _temp_dir) = create_test_app();
+    let before = create_simple_vm(&app, "rpc-watch-before").await;
+    let mut req = vec![0u8];
+    let msg = br#"{"kinds":["WATCH_KIND_VM"]}"#;
+    req.extend_from_slice(&(msg.len() as u32).to_be_bytes());
+    req.extend_from_slice(msg);
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/glidex.watch.v1.WatchService/Watch")
+                .header("content-type", "application/connect+json")
+                .body(Body::from(req))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let mut body = resp.into_body();
+    let mut buf = Vec::new();
+    let e = next_frame(&mut body, &mut buf).await.expect("an event");
+    assert_eq!(
+        (e["type"].as_str(), e["kind"].as_str(), e["id"].as_str()),
+        (
+            Some("WATCH_EVENT_TYPE_ADDED"),
+            Some("WATCH_KIND_VM"),
+            Some(before.as_str())
+        ),
+        "{e}"
+    );
+    assert_eq!(e["vm"]["name"], "rpc-watch-before", "the Vm message: {e}");
+    let e = next_frame(&mut body, &mut buf).await.expect("synced");
+    assert_eq!(e["type"], "WATCH_EVENT_TYPE_SYNCED", "{e}");
+
+    let id = create_simple_vm(&app, "rpc-watch-new").await;
+    let e = next_frame(&mut body, &mut buf).await.expect("an event");
+    assert_eq!(
+        (e["type"].as_str(), e["id"].as_str()),
+        (Some("WATCH_EVENT_TYPE_ADDED"), Some(id.as_str())),
+        "{e}"
+    );
+    let (status, _) = send(&app, "DELETE", format!("/vms/{}", id), None, &[]).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let e = next_frame(&mut body, &mut buf).await.expect("an event");
+    assert_eq!(
+        (e["type"].as_str(), e["id"].as_str()),
+        (Some("WATCH_EVENT_TYPE_DELETED"), Some(id.as_str())),
+        "{e}"
+    );
+    assert!(e.get("vm").is_none(), "no object on delete: {e}");
+}
+
 // ---- nodes (spec/clustering.md C1) ------------------------------------------
 
 async fn call(

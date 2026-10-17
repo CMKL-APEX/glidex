@@ -425,11 +425,41 @@ fn watch_summary(kind: &str, o: &serde_json::Value) -> (String, String) {
 }
 
 /// `watch [kinds]` (spec/reconciliation.md §12.6): print changes to what
-/// the caller can see until Ctrl-C. Reconnects when the server ends a
-/// stream, printing only what changed meanwhile.
+/// the caller can see until Ctrl-C, over `glidex.watch.v1.WatchService.Watch`.
+/// Reconnects when the server ends a stream, printing only what changed
+/// meanwhile.
 async fn handle_watch(client: &ApiClient, args: &[&str]) {
+    use glidex_api::proto::glidex::watch::v1 as w;
     let kinds = args.first().copied().unwrap_or("vms,disks,images,networks");
-    let path = format!("/watch?kinds={}", kinds);
+    let mut req = w::WatchRequest::default();
+    for k in kinds.split(',').map(str::trim).filter(|k| !k.is_empty()) {
+        let kind = match k {
+            "vm" | "vms" => w::WatchKind::WATCH_KIND_VM,
+            "disk" | "disks" => w::WatchKind::WATCH_KIND_DISK,
+            "image" | "images" => w::WatchKind::WATCH_KIND_IMAGE,
+            "network" | "networks" => w::WatchKind::WATCH_KIND_NETWORK,
+            "node" | "nodes" => w::WatchKind::WATCH_KIND_NODE,
+            "import" | "imports" => w::WatchKind::WATCH_KIND_IMPORT,
+            "cluster" => w::WatchKind::WATCH_KIND_CLUSTER,
+            "policy" => w::WatchKind::WATCH_KIND_POLICY,
+            other => {
+                println!(
+                    "{} unknown kind '{other}' (vms, disks, images, networks, nodes, imports, cluster, policy)",
+                    "Error:".red()
+                );
+                return;
+            }
+        };
+        req.kinds.push(kind.into());
+    }
+    let t = match client.rpc_transport().await {
+        Ok(t) => t,
+        Err(e) => {
+            println!("{} {}", "Error:".red(), e.message);
+            return;
+        }
+    };
+    let svc = w::WatchServiceClient::new(t.clone(), t.config());
     // What was last printed per (kind, id), to skip repeats after a reconnect.
     let mut last: std::collections::HashMap<(String, String), String> =
         std::collections::HashMap::new();
@@ -437,72 +467,58 @@ async fn handle_watch(client: &ApiClient, args: &[&str]) {
     println!("{} {} (Ctrl-C to stop)", "Watching".green(), kinds);
     let watch = async {
         loop {
-            let mut buf = String::new();
-            let mut ended = false;
-            let res = client
-                .stream(&path, |text| {
-                    buf.push_str(text);
-                    while let Some(end) = buf.find("\n\n") {
-                        let block: String = buf.drain(..end + 2).collect();
-                        let (mut event, mut data) = (String::new(), String::new());
-                        for line in block.lines() {
-                            if let Some(v) = line.strip_prefix("event:") {
-                                event = v.trim().to_string();
-                            } else if let Some(v) = line.strip_prefix("data:") {
-                                data.push_str(v.trim_start());
-                            }
-                        }
-                        let v: serde_json::Value = serde_json::from_str(&data).unwrap_or_default();
-                        let (kind, id) = (
-                            v["kind"].as_str().unwrap_or("").to_string(),
-                            v["id"].as_str().unwrap_or("").to_string(),
-                        );
-                        match event.as_str() {
-                            "synced" => {
-                                if !synced_once {
-                                    println!(
-                                        "{} {} objects; changes follow",
-                                        "Synced:".green(),
-                                        last.len()
-                                    );
-                                    synced_once = true;
-                                }
-                            }
-                            "expired" => ended = true,
-                            "added" | "modified" => {
-                                let (name, what) = watch_summary(&kind, &v["object"]);
-                                let line = format!("{:<8} {:<24} {}", kind, name, what);
-                                if last.get(&(kind.clone(), id.clone())) != Some(&line) {
-                                    if synced_once {
-                                        println!("{}  {}", chrono_now(), line);
-                                    }
-                                    last.insert((kind, id), line);
-                                }
-                            }
-                            "deleted" => {
-                                if let Some(prev) = last.remove(&(kind.clone(), id)) {
-                                    let name =
-                                        prev.split_whitespace().nth(1).unwrap_or("?").to_string();
-                                    println!(
-                                        "{}  {:<8} {:<24} {}",
-                                        chrono_now(),
-                                        kind,
-                                        name,
-                                        "deleted".red()
-                                    );
-                                }
-                            }
-                            _ => {}
+            let mut stream = match svc.watch(req.clone()).await {
+                Ok(s) => s,
+                Err(e) => {
+                    println!("{} {}", "Error:".red(), tenancy::rpc_err(e));
+                    return;
+                }
+            };
+            loop {
+                let e: w::WatchResponse = match stream.message().await {
+                    Ok(Some(m)) => m.to_owned_message(),
+                    // The server ended the stream (lifetime, restart): follow on.
+                    Ok(None) | Err(_) => break,
+                };
+                let (kind, id, object) = watch_event(&e);
+                use w::WatchEventType as T;
+                match e.r#type.as_known() {
+                    Some(T::WATCH_EVENT_TYPE_SYNCED) => {
+                        if !synced_once {
+                            println!(
+                                "{} {} objects; changes follow",
+                                "Synced:".green(),
+                                last.len()
+                            );
+                            synced_once = true;
                         }
                     }
-                    !ended
-                })
-                .await;
-            if let Err(e) = res {
-                println!("{} {}", "Error:".red(), e.message);
-                return;
+                    Some(T::WATCH_EVENT_TYPE_EXPIRED) => break,
+                    Some(T::WATCH_EVENT_TYPE_ADDED | T::WATCH_EVENT_TYPE_MODIFIED) => {
+                        let (name, what) = watch_summary(&kind, &object);
+                        let line = format!("{:<8} {:<24} {}", kind, name, what);
+                        if last.get(&(kind.clone(), id.clone())) != Some(&line) {
+                            if synced_once {
+                                println!("{}  {}", chrono_now(), line);
+                            }
+                            last.insert((kind, id), line);
+                        }
+                    }
+                    Some(T::WATCH_EVENT_TYPE_DELETED) => {
+                        if let Some(prev) = last.remove(&(kind.clone(), id)) {
+                            let name = prev.split_whitespace().nth(1).unwrap_or("?").to_string();
+                            println!(
+                                "{}  {:<8} {:<24} {}",
+                                chrono_now(),
+                                kind,
+                                name,
+                                "deleted".red()
+                            );
+                        }
+                    }
+                    _ => {}
+                }
             }
-            // The server ended the stream (lifetime, restart): follow on.
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         }
     };
@@ -510,6 +526,39 @@ async fn handle_watch(client: &ApiClient, args: &[&str]) {
         _ = watch => {}
         _ = tokio::signal::ctrl_c() => println!(),
     }
+}
+
+/// A watch event as the kind's word, the id and the object's proto JSON.
+fn watch_event(
+    e: &glidex_api::proto::glidex::watch::v1::WatchResponse,
+) -> (String, String, serde_json::Value) {
+    use glidex_api::proto::glidex::watch::v1::{
+        __buffa::oneof::watch_response::Object, WatchKind as K,
+    };
+    let kind = match e.kind.as_known() {
+        Some(K::WATCH_KIND_VM) => "vm",
+        Some(K::WATCH_KIND_DISK) => "disk",
+        Some(K::WATCH_KIND_IMAGE) => "image",
+        Some(K::WATCH_KIND_NETWORK) => "network",
+        Some(K::WATCH_KIND_NODE) => "node",
+        Some(K::WATCH_KIND_IMPORT) => "import",
+        Some(K::WATCH_KIND_CLUSTER) => "cluster",
+        Some(K::WATCH_KIND_POLICY) => "policy",
+        _ => "",
+    };
+    let json = |r: Result<serde_json::Value, serde_json::Error>| r.unwrap_or_default();
+    let object = match &e.object {
+        Some(Object::Vm(v)) => json(serde_json::to_value(v.as_ref())),
+        Some(Object::Disk(v)) => json(serde_json::to_value(v.as_ref())),
+        Some(Object::Image(v)) => json(serde_json::to_value(v.as_ref())),
+        Some(Object::Network(v)) => json(serde_json::to_value(v.as_ref())),
+        Some(Object::Node(v)) => json(serde_json::to_value(v.as_ref())),
+        Some(Object::ImportPlan(v)) => json(serde_json::to_value(v.as_ref())),
+        Some(Object::Cluster(v)) => json(serde_json::to_value(v.as_ref())),
+        Some(Object::Policy(v)) => json(serde_json::to_value(v.as_ref())),
+        None => serde_json::Value::Null,
+    };
+    (kind.to_string(), e.id.clone(), object)
 }
 
 /// `HH:MM:SS` (UTC, like `events`), for `watch` lines.
@@ -1573,6 +1622,26 @@ mod tests {
         std::fs::write(ssh.join("empty.pub"), "\n").unwrap();
         let files = public_key_files_in(dir.path());
         assert_eq!(files, vec!["~/.ssh/id_ed25519.pub"]);
+    }
+
+    #[test]
+    fn watch_events_carry_the_kind_id_and_object() {
+        use glidex_api::proto::glidex::watch::v1 as w;
+        let e = w::WatchResponse {
+            r#type: w::WatchEventType::WATCH_EVENT_TYPE_ADDED.into(),
+            kind: w::WatchKind::WATCH_KIND_VM.into(),
+            id: "v1".into(),
+            object: Some(w::__buffa::oneof::watch_response::Object::Vm(Box::new(
+                glidex_api::proto::glidex::vm::v1::Vm {
+                    name: "web".into(),
+                    ..Default::default()
+                },
+            ))),
+            ..Default::default()
+        };
+        let (kind, id, object) = watch_event(&e);
+        assert_eq!((kind.as_str(), id.as_str()), ("vm", "v1"));
+        assert_eq!(watch_summary(&kind, &object).0, "web");
     }
 
     #[test]

@@ -381,7 +381,8 @@ Image, disk and network events (`GET /{images,disks}/{id}/events`,
 ## Live stream: `GET /watch`
 
 `GET /watch[?kinds=vms,disks,images,networks,nodes,imports,cluster,policy][&project=<id>]` answers
-`text/event-stream` (server-sent events). Any authenticated caller may
+`text/event-stream` (server-sent events); `glidex.watch.v1.WatchService.Watch`
+is the same stream over RPC (grpc.md §9.1). Any authenticated caller may
 open it; each kind is filtered exactly like its list endpoint (VMs by
 `readVm`, disks by `readDisk`, both in visible projects and narrowed by
 `project`; images need `readImage` and networks `readNetwork` on

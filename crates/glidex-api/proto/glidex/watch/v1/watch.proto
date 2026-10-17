@@ -1,0 +1,79 @@
+// The live stream of what the caller may see (spec/reconciliation.md
+// §12.6, clustering-ui.md §3.7): a snapshot of every visible object
+// (`added`), `synced`, then `added`, `modified` and `deleted` as they
+// change, each re-checked against the caller's current rights; the stream
+// ends (`expired`) after a while and the client reconnects. `GET /watch`
+// serves the same events as server-sent events.
+syntax = "proto3";
+
+package glidex.watch.v1;
+
+import "glidex/api/v1/options.proto";
+import "glidex/cluster/v1/cluster.proto";
+import "glidex/network/v1/network.proto";
+import "glidex/storage/v1/storage.proto";
+import "glidex/vm/v1/vm.proto";
+
+service WatchService {
+  rpc Watch(WatchRequest) returns (stream WatchResponse) {
+    option (glidex.api.v1.op) = {
+      action: "authenticated"
+      kind: KIND_READ
+      rest: "GET /watch"
+    };
+  }
+}
+
+enum WatchKind {
+  WATCH_KIND_UNSPECIFIED = 0;
+  WATCH_KIND_VM = 1;
+  WATCH_KIND_DISK = 2;
+  WATCH_KIND_IMAGE = 3;
+  WATCH_KIND_NETWORK = 4;
+  WATCH_KIND_NODE = 5;
+  WATCH_KIND_IMPORT = 6;
+  // A summary of the cluster's status.
+  WATCH_KIND_CLUSTER = 7;
+  // A marker that changes when the policies do (rights may have changed).
+  WATCH_KIND_POLICY = 8;
+}
+
+enum WatchEventType {
+  WATCH_EVENT_TYPE_UNSPECIFIED = 0;
+  WATCH_EVENT_TYPE_ADDED = 1;
+  WATCH_EVENT_TYPE_MODIFIED = 2;
+  WATCH_EVENT_TYPE_DELETED = 3;
+  // The snapshot is complete.
+  WATCH_EVENT_TYPE_SYNCED = 4;
+  // The stream ends here: reconnect for a fresh snapshot.
+  WATCH_EVENT_TYPE_EXPIRED = 5;
+}
+
+message WatchRequest {
+  // Default: VMs, disks, images and networks.
+  repeated WatchKind kinds = 1;
+  // Only this project's VMs and disks (id or name).
+  optional string project = 2;
+}
+
+message PolicyMarker {
+  uint64 generation = 1;
+}
+
+message WatchResponse {
+  WatchEventType type = 1;
+  // Absent for `synced` and `expired`.
+  WatchKind kind = 2;
+  string id = 3;
+  // The object as its list operation answers it; absent for `deleted`.
+  oneof object {
+    glidex.vm.v1.Vm vm = 4;
+    glidex.storage.v1.Disk disk = 5;
+    glidex.storage.v1.Image image = 6;
+    glidex.network.v1.Network network = 7;
+    glidex.cluster.v1.Node node = 8;
+    glidex.cluster.v1.ImportPlan import_plan = 9 [json_name = "import_plan"];
+    glidex.cluster.v1.GetClusterStatusResponse cluster = 10;
+    PolicyMarker policy = 11;
+  }
+}
