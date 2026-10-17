@@ -98,14 +98,22 @@ pub fn hex_mask(cpus: &[u32]) -> String {
     for &c in cpus {
         nibbles[c as usize / 4] |= 1 << (c % 4);
     }
-    let s: String = nibbles.iter().rev().map(|n| char::from_digit(*n as u32, 16).unwrap()).collect();
+    let s: String = nibbles
+        .iter()
+        .rev()
+        .map(|n| char::from_digit(*n as u32, 16).unwrap())
+        .collect();
     let s = s.trim_start_matches('0');
     format!("0x{}", if s.is_empty() { "0" } else { s })
 }
 
 /// Number of CPUs in a hex mask (`0x3c` → 4).
 pub fn mask_cpu_count(mask: &str) -> usize {
-    mask.trim_start_matches("0x").chars().filter_map(|c| c.to_digit(16)).map(|d| d.count_ones() as usize).sum()
+    mask.trim_start_matches("0x")
+        .chars()
+        .filter_map(|c| c.to_digit(16))
+        .map(|d| d.count_ones() as usize)
+        .sum()
 }
 
 /// Parse a kernel CPU list: `0-3,8,10-11`.
@@ -129,7 +137,12 @@ pub fn parse_cpu_list(s: &str) -> Vec<u32> {
 pub fn isolated_from_cmdline(cmdline: &str) -> BTreeSet<u32> {
     let mut out = BTreeSet::new();
     for tok in cmdline.split_whitespace() {
-        let Some(v) = tok.strip_prefix("isolcpus=").or_else(|| tok.strip_prefix("nohz_full=")) else { continue };
+        let Some(v) = tok
+            .strip_prefix("isolcpus=")
+            .or_else(|| tok.strip_prefix("nohz_full="))
+        else {
+            continue;
+        };
         for part in v.split(',') {
             if part.chars().next().is_some_and(|c| c.is_ascii_digit()) {
                 out.extend(parse_cpu_list(part));
@@ -142,8 +155,12 @@ pub fn isolated_from_cmdline(cmdline: &str) -> BTreeSet<u32> {
 pub fn read_topology(exec: &dyn Exec) -> Topology {
     let read = |p: String| exec.read_file(Path::new(&p)).ok();
     let mut t = Topology::default();
-    let Some(online) = read("/sys/devices/system/cpu/online".into()) else { return t };
-    let node_online = read("/sys/devices/system/node/online".into()).map(|s| parse_cpu_list(&s)).unwrap_or_else(|| vec![0]);
+    let Some(online) = read("/sys/devices/system/cpu/online".into()) else {
+        return t;
+    };
+    let node_online = read("/sys/devices/system/node/online".into())
+        .map(|s| parse_cpu_list(&s))
+        .unwrap_or_else(|| vec![0]);
     let mut node_of = BTreeMap::new();
     for &n in &node_online {
         if let Some(list) = read(format!("/sys/devices/system/node/node{}/cpulist", n)) {
@@ -154,16 +171,34 @@ pub fn read_topology(exec: &dyn Exec) -> Topology {
     }
     for id in parse_cpu_list(&online) {
         let base = format!("/sys/devices/system/cpu/cpu{}/topology", id);
-        let num = |f: &str| read(format!("{}/{}", base, f)).and_then(|s| s.trim().parse::<u32>().ok());
-        let (Some(core), package) = (num("core_id"), num("physical_package_id").unwrap_or(0)) else { continue };
-        let siblings = read(format!("{}/thread_siblings_list", base)).map(|s| parse_cpu_list(&s)).filter(|s| !s.is_empty()).unwrap_or_else(|| vec![id]);
-        t.cpus.push(Cpu { id, package, core, node: node_of.get(&id).copied().unwrap_or(0), siblings });
+        let num =
+            |f: &str| read(format!("{}/{}", base, f)).and_then(|s| s.trim().parse::<u32>().ok());
+        let (Some(core), package) = (num("core_id"), num("physical_package_id").unwrap_or(0))
+        else {
+            continue;
+        };
+        let siblings = read(format!("{}/thread_siblings_list", base))
+            .map(|s| parse_cpu_list(&s))
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| vec![id]);
+        t.cpus.push(Cpu {
+            id,
+            package,
+            core,
+            node: node_of.get(&id).copied().unwrap_or(0),
+            siblings,
+        });
     }
-    t.isolated = read("/proc/cmdline".into()).map(|c| isolated_from_cmdline(&c)).unwrap_or_default();
+    t.isolated = read("/proc/cmdline".into())
+        .map(|c| isolated_from_cmdline(&c))
+        .unwrap_or_default();
     for &n in &node_online {
-        let total = read(format!("/sys/devices/system/node/node{}/hugepages/hugepages-2048kB/nr_hugepages", n))
-            .and_then(|s| s.trim().parse::<u64>().ok())
-            .unwrap_or(0);
+        let total = read(format!(
+            "/sys/devices/system/node/node{}/hugepages/hugepages-2048kB/nr_hugepages",
+            n
+        ))
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .unwrap_or(0);
         if total > 0 {
             t.hugepage_nodes.insert(n);
         }
@@ -181,7 +216,11 @@ struct Core {
 fn cores(t: &Topology) -> Vec<Core> {
     let mut by: BTreeMap<(u32, u32), Core> = BTreeMap::new();
     for c in &t.cpus {
-        let e = by.entry((c.package, c.core)).or_insert(Core { first_cpu: c.id, node: c.node, threads: Vec::new() });
+        let e = by.entry((c.package, c.core)).or_insert(Core {
+            first_cpu: c.id,
+            node: c.node,
+            threads: Vec::new(),
+        });
         e.first_cpu = e.first_cpu.min(c.id);
         e.threads.extend(c.siblings.iter().copied().chain([c.id]));
     }
@@ -203,7 +242,11 @@ pub fn plan(t: &Topology) -> Option<Plan> {
     let reserved = &all[0];
     let rest: Vec<&Core> = all.iter().skip(1).collect();
     // Prefer cores the operator isolated, when there are any.
-    let isolated: Vec<&Core> = rest.iter().copied().filter(|c| c.threads.iter().all(|th| t.isolated.contains(th))).collect();
+    let isolated: Vec<&Core> = rest
+        .iter()
+        .copied()
+        .filter(|c| c.threads.iter().all(|th| t.isolated.contains(th)))
+        .collect();
     let pool = if isolated.is_empty() { rest } else { isolated };
 
     let mut nodes: BTreeSet<u32> = pool.iter().map(|c| c.node).collect();
@@ -220,7 +263,12 @@ pub fn plan(t: &Topology) -> Option<Plan> {
         pmd.extend(cand.iter().take(want).map(|c| c.first_cpu));
     }
     pmd.sort_unstable();
-    Some(Plan { pmd_cpus: pmd, lcore_cpus: reserved.threads.clone(), nodes: nodes.into_iter().collect(), max_node })
+    Some(Plan {
+        pmd_cpus: pmd,
+        lcore_cpus: reserved.threads.clone(),
+        nodes: nodes.into_iter().collect(),
+        max_node,
+    })
 }
 
 /// Default queue pairs for a vhost-user NIC: one per vCPU, capped at
@@ -291,7 +339,10 @@ mod tests {
         assert_eq!(plan(&topo(4, 1, 1)).unwrap().pmd_cpus.len(), 1);
         assert_eq!(plan(&topo(8, 1, 1)).unwrap().pmd_cpus.len(), 2);
         // Big hosts stop at 4 per node.
-        assert_eq!(plan(&topo(64, 2, 1)).unwrap().pmd_cpus.len(), MAX_PMDS_PER_NODE);
+        assert_eq!(
+            plan(&topo(64, 2, 1)).unwrap().pmd_cpus.len(),
+            MAX_PMDS_PER_NODE
+        );
     }
 
     #[test]
@@ -337,9 +388,15 @@ mod tests {
             let b = format!("/sys/devices/system/cpu/cpu{}/topology", cpu);
             exec.file(&format!("{}/core_id", b), &format!("{}\n", core));
             exec.file(&format!("{}/physical_package_id", b), "0\n");
-            exec.file(&format!("{}/thread_siblings_list", b), &format!("{}\n", sib));
+            exec.file(
+                &format!("{}/thread_siblings_list", b),
+                &format!("{}\n", sib),
+            );
         }
-        exec.file("/sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepages", "1024\n");
+        exec.file(
+            "/sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepages",
+            "1024\n",
+        );
         let t = read_topology(&exec);
         assert_eq!(t.cpus.len(), 4);
         assert_eq!(t.isolated, BTreeSet::from([3]));

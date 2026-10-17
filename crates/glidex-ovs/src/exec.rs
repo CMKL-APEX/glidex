@@ -233,7 +233,10 @@ impl SystemExec {
                 .map(|d| d.join("configure"))
                 .ok_or_else(|| OvsError::Io("./configure needs a working directory".into()));
         }
-        if matches!(program, Program::OvsVsctl | Program::OvsAppctl | Program::OvsVswitchd) {
+        if matches!(
+            program,
+            Program::OvsVsctl | Program::OvsAppctl | Program::OvsVswitchd
+        ) {
             if let Some(dir) = self.ovs_bin_dir.lock().unwrap().as_ref() {
                 // ovs-vswitchd lives in sbin/ of a source prefix.
                 let sbin = dir.parent().map(|p| p.join("sbin").join(program.name()));
@@ -332,19 +335,26 @@ impl Exec for SystemExec {
     }
 
     fn read_file(&self, path: &Path) -> Result<String, OvsError> {
-        std::fs::read_to_string(path).map_err(|e| OvsError::Io(format!("{}: {}", path.display(), e)))
+        std::fs::read_to_string(path)
+            .map_err(|e| OvsError::Io(format!("{}: {}", path.display(), e)))
     }
 
     fn write_file(&self, path: &Path, data: &[u8]) -> Result<(), OvsError> {
         if self.sudo {
-            return Err(OvsError::Io(format!("refusing to write {} via sudo", path.display())));
+            return Err(OvsError::Io(format!(
+                "refusing to write {} via sudo",
+                path.display()
+            )));
         }
         std::fs::write(path, data).map_err(|e| OvsError::Io(format!("{}: {}", path.display(), e)))
     }
 
     fn remove_file(&self, path: &Path) -> Result<(), OvsError> {
         if self.sudo {
-            return Err(OvsError::Io(format!("refusing to remove {} via sudo", path.display())));
+            return Err(OvsError::Io(format!(
+                "refusing to remove {} via sudo",
+                path.display()
+            )));
         }
         match std::fs::remove_file(path) {
             Ok(()) => Ok(()),
@@ -356,7 +366,10 @@ impl Exec for SystemExec {
     fn create_dir(&self, path: &Path, mode: u32) -> Result<(), OvsError> {
         use std::os::unix::fs::PermissionsExt;
         if self.sudo {
-            return Err(OvsError::Io(format!("refusing to create {} via sudo", path.display())));
+            return Err(OvsError::Io(format!(
+                "refusing to create {} via sudo",
+                path.display()
+            )));
         }
         let err = |e: std::io::Error| OvsError::Io(format!("{}: {}", path.display(), e));
         std::fs::create_dir_all(path).map_err(err)?;
@@ -471,10 +484,10 @@ impl Exec for RecordingExec {
             .lock()
             .unwrap()
             .push((path.to_path_buf(), data.to_vec()));
-        self.files
-            .lock()
-            .unwrap()
-            .push((path.to_path_buf(), String::from_utf8_lossy(data).into_owned()));
+        self.files.lock().unwrap().push((
+            path.to_path_buf(),
+            String::from_utf8_lossy(data).into_owned(),
+        ));
         Ok(())
     }
 

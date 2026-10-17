@@ -44,16 +44,23 @@ pub fn restore_terminal(fd: BorrowedFd<'_>, t: &Termios) {
 }
 
 /// Open the console WebSocket at `path` (an API path).
-pub async fn open_ws(client: &ApiClient, path: &str) -> Result<WebSocketStream<Box<dyn Conn>>, String> {
+pub async fn open_ws(
+    client: &ApiClient,
+    path: &str,
+) -> Result<WebSocketStream<Box<dyn Conn>>, String> {
     let stream = client.connect().await?;
-    let mut req = client.ws_url(path).into_client_request().map_err(|e| format!("console: {}", e))?;
+    let mut req = client
+        .ws_url(path)
+        .into_client_request()
+        .map_err(|e| format!("console: {}", e))?;
     if let Some(h) = client.auth_header() {
         req.headers_mut().insert(AUTHORIZATION, h);
     }
     match tokio_tungstenite::client_async(req, stream).await {
         Ok((ws, _)) => Ok(ws),
         Err(tungstenite::Error::Http(resp)) => {
-            let status = StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+            let status =
+                StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
             let body = resp.body().clone().unwrap_or_default();
             Err(render_error(status, &body, !client.is_unix()).message)
         }
@@ -66,7 +73,11 @@ pub async fn open_ws(client: &ApiClient, path: &str) -> Result<WebSocketStream<B
 fn pump_stdin(running: Arc<AtomicBool>, tx: tokio::sync::mpsc::Sender<Vec<u8>>) {
     let mut buf = [0u8; 1024];
     while running.load(Ordering::SeqCst) {
-        let mut pfd = libc::pollfd { fd: 0, events: libc::POLLIN, revents: 0 };
+        let mut pfd = libc::pollfd {
+            fd: 0,
+            events: libc::POLLIN,
+            revents: 0,
+        };
         // SAFETY: one valid pollfd for the duration of the call.
         let r = unsafe { libc::poll(&mut pfd, 1, 100) };
         if r < 0 {
@@ -103,21 +114,38 @@ fn pump_stdin(running: Arc<AtomicBool>, tx: tokio::sync::mpsc::Sender<Vec<u8>>) 
 }
 
 pub async fn handle_connect(client: &ApiClient, vm_id: &str) {
-    let info: ConsoleInfo = match client.request_json(Method::GET, &format!("/vms/{}/console", vm_id), None).await {
+    let info: ConsoleInfo = match client
+        .request_json(Method::GET, &format!("/vms/{}/console", vm_id), None)
+        .await
+    {
         Ok(i) => i,
         Err(e) => return println!("{} {}", "Error:".red(), e),
     };
     if !info.available {
-        println!("{} VM is not running. Start the VM first with: start {}", "Error:".red(), vm_id);
+        println!(
+            "{} VM is not running. Start the VM first with: start {}",
+            "Error:".red(),
+            vm_id
+        );
         return;
     }
-    let path = info.websocket.unwrap_or_else(|| format!("/vms/{}/console/ws", vm_id));
+    let path = info
+        .websocket
+        .unwrap_or_else(|| format!("/vms/{}/console/ws", vm_id));
     let ws = match open_ws(client, &path).await {
         Ok(ws) => ws,
         Err(e) => return println!("{} {}", "Error:".red(), e),
     };
-    println!("{} Connected to the VM console via {}", "Info:".cyan(), client.describe());
-    println!("{} Press {} to detach from console\n", "Tip:".yellow(), "Ctrl+]".bold());
+    println!(
+        "{} Connected to the VM console via {}",
+        "Info:".cyan(),
+        client.describe()
+    );
+    println!(
+        "{} Press {} to detach from console\n",
+        "Tip:".yellow(),
+        "Ctrl+]".bold()
+    );
 
     let stdin = io::stdin();
     let orig = match set_raw_mode(stdin.as_fd()) {
@@ -178,9 +206,15 @@ pub async fn handle_connect(client: &ApiClient, vm_id: &str) {
 
 /// `log`: the captured console output (`GET /vms/{id}/console/log`).
 pub async fn handle_log(client: &ApiClient, vm_id: &str) {
-    match client.request_bytes(Method::GET, &format!("/vms/{}/console/log", vm_id), None).await {
+    match client
+        .request_bytes(Method::GET, &format!("/vms/{}/console/log", vm_id), None)
+        .await
+    {
         Ok(r) if r.body.is_empty() => {
-            println!("{} The console log is empty. Start the VM to see console output.", "Info:".yellow())
+            println!(
+                "{} The console log is empty. Start the VM to see console output.",
+                "Info:".yellow()
+            )
         }
         Ok(r) => {
             let mut out = io::stdout().lock();

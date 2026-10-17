@@ -116,7 +116,9 @@ impl InstanceFile {
     /// `Ok(None)` if there is no file.
     pub fn read(path: &Path) -> std::io::Result<Option<Self>> {
         match std::fs::read(path) {
-            Ok(bytes) => serde_json::from_slice(&bytes).map(Some).map_err(std::io::Error::other),
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map(Some)
+                .map_err(std::io::Error::other),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(e),
         }
@@ -146,6 +148,8 @@ mod tests {
         assert_eq!(f.phase, Phase::Exited);
         assert_eq!(f.exit.unwrap().cause, ExitCause::Requested);
         let dir = tempfile::tempdir().unwrap();
-        assert!(InstanceFile::read(&dir.path().join("none")).unwrap().is_none());
+        assert!(InstanceFile::read(&dir.path().join("none"))
+            .unwrap()
+            .is_none());
     }
 }

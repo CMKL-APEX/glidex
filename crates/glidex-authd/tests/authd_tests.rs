@@ -26,7 +26,10 @@ fn send(s: &mut UnixStream, r: &mut BufReader<UnixStream>, line: &[u8]) -> serde
 #[test]
 fn success_returns_uid_and_groups() {
     let h = start();
-    let ok = h.client().authenticate("alice", PASSWORD, DEFAULT_SERVICE).unwrap();
+    let ok = h
+        .client()
+        .authenticate("alice", PASSWORD, DEFAULT_SERVICE)
+        .unwrap();
     assert_eq!(
         ok,
         AuthOk {
@@ -89,13 +92,20 @@ fn every_denial_looks_the_same() {
     assert_eq!(invalid_name, wrong_password);
     // PAM ran only for alice; the others never reached it.
     assert_eq!(h.pam_calls(), 1);
-    assert_eq!(h.client().authenticate("mallory", PASSWORD, DEFAULT_SERVICE), Err(AuthdError::Denied));
+    assert_eq!(
+        h.client()
+            .authenticate("mallory", PASSWORD, DEFAULT_SERVICE),
+        Err(AuthdError::Denied)
+    );
 }
 
 #[test]
 fn other_peer_uid_is_disconnected() {
     let h = start_with(test_config(), Some(my_uid() + 1));
-    let e = h.client().authenticate("alice", PASSWORD, DEFAULT_SERVICE).unwrap_err();
+    let e = h
+        .client()
+        .authenticate("alice", PASSWORD, DEFAULT_SERVICE)
+        .unwrap_err();
     assert!(matches!(e, AuthdError::Unavailable(_)), "{e:?}");
     // A raw connection gets EOF (or a reset) without any reply.
     let mut s = UnixStream::connect(&h.socket).unwrap();
@@ -125,7 +135,12 @@ fn root_needs_allow_root() {
             allow_root,
             ..test_config()
         };
-        Authd::new(config, Some(999), Arc::new(FakePam::default()), Arc::new(FakeAccounts(HashMap::new())))
+        Authd::new(
+            config,
+            Some(999),
+            Arc::new(FakePam::default()),
+            Arc::new(FakeAccounts(HashMap::new())),
+        )
     };
     assert!(!mk(false).peer_allowed(0));
     assert!(mk(true).peer_allowed(0));
@@ -138,17 +153,29 @@ fn per_user_rate_limit() {
     let h = start();
     let c = h.client();
     for _ in 0..5 {
-        assert_eq!(c.authenticate("alice", "wrong", DEFAULT_SERVICE), Err(AuthdError::Denied));
+        assert_eq!(
+            c.authenticate("alice", "wrong", DEFAULT_SERVICE),
+            Err(AuthdError::Denied)
+        );
     }
     let calls = h.pam_calls();
     // Even the right password is refused now, without calling PAM.
-    assert_eq!(c.authenticate("alice", PASSWORD, DEFAULT_SERVICE), Err(AuthdError::RateLimited));
+    assert_eq!(
+        c.authenticate("alice", PASSWORD, DEFAULT_SERVICE),
+        Err(AuthdError::RateLimited)
+    );
     assert_eq!(h.pam_calls(), calls);
     // Unknown users are limited the same way, so the limit leaks nothing.
     for _ in 0..5 {
-        assert_eq!(c.authenticate("ghost", "x", DEFAULT_SERVICE), Err(AuthdError::Denied));
+        assert_eq!(
+            c.authenticate("ghost", "x", DEFAULT_SERVICE),
+            Err(AuthdError::Denied)
+        );
     }
-    assert_eq!(c.authenticate("ghost", "x", DEFAULT_SERVICE), Err(AuthdError::RateLimited));
+    assert_eq!(
+        c.authenticate("ghost", "x", DEFAULT_SERVICE),
+        Err(AuthdError::RateLimited)
+    );
     // Other users are unaffected.
     assert!(c.authenticate("user0", PASSWORD, DEFAULT_SERVICE).is_ok());
 }
@@ -158,11 +185,17 @@ fn success_resets_the_user_counter() {
     let h = start();
     let c = h.client();
     for _ in 0..4 {
-        assert_eq!(c.authenticate("alice", "wrong", DEFAULT_SERVICE), Err(AuthdError::Denied));
+        assert_eq!(
+            c.authenticate("alice", "wrong", DEFAULT_SERVICE),
+            Err(AuthdError::Denied)
+        );
     }
     assert!(c.authenticate("alice", PASSWORD, DEFAULT_SERVICE).is_ok());
     for _ in 0..4 {
-        assert_eq!(c.authenticate("alice", "wrong", DEFAULT_SERVICE), Err(AuthdError::Denied));
+        assert_eq!(
+            c.authenticate("alice", "wrong", DEFAULT_SERVICE),
+            Err(AuthdError::Denied)
+        );
     }
     assert!(c.authenticate("alice", PASSWORD, DEFAULT_SERVICE).is_ok());
 }
@@ -174,10 +207,17 @@ fn global_rate_limit() {
     // 30 failures spread over users so no single user hits its limit.
     for i in 0..30 {
         let user = format!("user{}", i % 10);
-        assert_eq!(c.authenticate(&user, "wrong", DEFAULT_SERVICE), Err(AuthdError::Denied), "attempt {i}");
+        assert_eq!(
+            c.authenticate(&user, "wrong", DEFAULT_SERVICE),
+            Err(AuthdError::Denied),
+            "attempt {i}"
+        );
     }
     let calls = h.pam_calls();
-    assert_eq!(c.authenticate("alice", PASSWORD, DEFAULT_SERVICE), Err(AuthdError::RateLimited));
+    assert_eq!(
+        c.authenticate("alice", PASSWORD, DEFAULT_SERVICE),
+        Err(AuthdError::RateLimited)
+    );
     assert_eq!(h.pam_calls(), calls);
 }
 
@@ -189,17 +229,29 @@ fn malformed_json_is_a_protocol_error() {
     assert_eq!(v["id"], 0);
     assert_eq!(v["error"]["code"], "protocol_error");
     // The message never quotes the input.
-    let v = send(&mut s, &mut r, br#"{"id":"sekrit-input","op":"authenticate"}
-"#);
+    let v = send(
+        &mut s,
+        &mut r,
+        br#"{"id":"sekrit-input","op":"authenticate"}
+"#,
+    );
     assert_eq!(v["error"]["code"], "protocol_error");
     assert!(!v.to_string().contains("sekrit"), "{v}");
     // The connection stays usable.
-    let v = send(&mut s, &mut r, br#"{"id":2,"op":"frobnicate"}
-"#);
+    let v = send(
+        &mut s,
+        &mut r,
+        br#"{"id":2,"op":"frobnicate"}
+"#,
+    );
     assert_eq!(v["id"], 2);
     assert_eq!(v["error"]["code"], "protocol_error");
-    let v = send(&mut s, &mut r, br#"{"id":3,"op":"authenticate"}
-"#);
+    let v = send(
+        &mut s,
+        &mut r,
+        br#"{"id":3,"op":"authenticate"}
+"#,
+    );
     assert_eq!(v["error"]["message"], "missing args");
     let v = send(
         &mut s,
@@ -222,7 +274,11 @@ fn oversize_line_is_rejected_and_closed() {
     assert_eq!(v["error"]["code"], "protocol_error");
     assert_eq!(v["error"]["message"], "request too large");
     let mut rest = String::new();
-    assert_eq!(r.read_line(&mut rest).unwrap_or(0), 0, "connection should be closed");
+    assert_eq!(
+        r.read_line(&mut rest).unwrap_or(0),
+        0,
+        "connection should be closed"
+    );
     assert_eq!(h.pam_calls(), 0);
 }
 
@@ -244,7 +300,10 @@ fn connection_cap() {
     drop((a, b));
     let mut ok = false;
     for _ in 0..50 {
-        if h.client().authenticate("alice", PASSWORD, DEFAULT_SERVICE).is_ok() {
+        if h.client()
+            .authenticate("alice", PASSWORD, DEFAULT_SERVICE)
+            .is_ok()
+        {
             ok = true;
             break;
         }
@@ -261,17 +320,26 @@ fn failure_delay_is_applied() {
     };
     let h = start_with(config, Some(my_uid()));
     let t = std::time::Instant::now();
-    assert!(h.client().authenticate("alice", PASSWORD, DEFAULT_SERVICE).is_ok());
+    assert!(h
+        .client()
+        .authenticate("alice", PASSWORD, DEFAULT_SERVICE)
+        .is_ok());
     assert!(t.elapsed() < Duration::from_millis(150));
     let t = std::time::Instant::now();
-    assert_eq!(h.client().authenticate("nobody", "x", DEFAULT_SERVICE), Err(AuthdError::Denied));
+    assert_eq!(
+        h.client().authenticate("nobody", "x", DEFAULT_SERVICE),
+        Err(AuthdError::Denied)
+    );
     assert!(t.elapsed() >= Duration::from_millis(150));
 }
 
 #[test]
 fn client_reports_missing_socket() {
     let c = glidex_authd::client::AuthdClient::new("/nonexistent/glidex-authd/auth.sock");
-    assert!(matches!(c.authenticate("alice", "x", DEFAULT_SERVICE), Err(AuthdError::Unavailable(_))));
+    assert!(matches!(
+        c.authenticate("alice", "x", DEFAULT_SERVICE),
+        Err(AuthdError::Unavailable(_))
+    ));
 }
 
 #[test]
@@ -291,7 +359,11 @@ fn public_keys_for_login_capable_users_only() {
     assert!(keys[0].ends_with("alice@host"));
     // Not in an allowed group, unknown, or not a user name: the same denial.
     for user in ["mallory", "nobody-here", "Not A User!"] {
-        assert_eq!(c.public_keys(user), Err(glidex_authd::client::AuthdError::Denied), "{user}");
+        assert_eq!(
+            c.public_keys(user),
+            Err(glidex_authd::client::AuthdError::Denied),
+            "{user}"
+        );
     }
     // No password needed and PAM is never involved.
     assert_eq!(h.pam_calls(), 0);

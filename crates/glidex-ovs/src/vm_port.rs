@@ -46,7 +46,10 @@ impl VmPortSpec {
         validate_name("bridge", &self.bridge, MAX_IFNAME)?;
         validate_vm_id(&self.vm_id)?;
         if self.nic_index >= MAX_NICS {
-            return Err(OvsError::invalid(format!("nic_index must be < {}", MAX_NICS)));
+            return Err(OvsError::invalid(format!(
+                "nic_index must be < {}",
+                MAX_NICS
+            )));
         }
         validate_mac(&self.mac)?;
         if let Some(vlan) = self.vlan {
@@ -60,7 +63,9 @@ impl VmPortSpec {
                 return Err(OvsError::invalid("an OVN port goes on br-int"));
             }
             if self.vlan.is_some() {
-                return Err(OvsError::invalid("an OVN port has no VLAN tag: the logical switch decides"));
+                return Err(OvsError::invalid(
+                    "an OVN port has no VLAN tag: the logical switch decides",
+                ));
             }
         } else if self.bridge == crate::ovn::BR_INT {
             return Err(OvsError::invalid("br-int is OVN's: give ovn_lport"));
@@ -85,9 +90,13 @@ impl VmPortSpec {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VmPortBinding {
-    Tap { ifname: String },
+    Tap {
+        ifname: String,
+    },
     /// The hypervisor must run as the vhost-user *server* on this path.
-    VhostUser { socket: PathBuf },
+    VhostUser {
+        socket: PathBuf,
+    },
 }
 
 /// Create the port. `owner_uid` owns the tap (the control plane's uid,
@@ -190,7 +199,10 @@ pub fn attach(
     // OVS doesn't bring a tap up, and only a hypervisor with
     // CAP_NET_ADMIN could (QEMU, as packaged, can't).
     if spec.kind == VmPortKind::Tap {
-        exec.check(&Cmd::new(Program::Ip, ["link", "set", "dev", port.as_str(), "up"]))?;
+        exec.check(&Cmd::new(
+            Program::Ip,
+            ["link", "set", "dev", port.as_str(), "up"],
+        ))?;
     }
     Ok(binding)
 }
@@ -201,7 +213,9 @@ pub fn attach(
 /// vhost-user client port by itself. Idempotent; refuses a port glidex didn't tag.
 pub fn unplug(exec: &dyn Exec, vm_id: &str, nic_index: u8) -> Result<(), OvsError> {
     let port = names::port_name(vm_id, nic_index)?;
-    if let Some(row) = vsctl::find_by_name(exec, "Interface", &port, &["name", "external_ids", "type"])? {
+    if let Some(row) =
+        vsctl::find_by_name(exec, "Interface", &port, &["name", "external_ids", "type"])?
+    {
         if !row.owned_by_glidex() {
             return Err(OvsError::not_owned(format!("interface '{}'", port)));
         }
@@ -214,11 +228,16 @@ pub fn unplug(exec: &dyn Exec, vm_id: &str, nic_index: u8) -> Result<(), OvsErro
 /// a port of that name that glidex didn't tag.
 pub fn detach(exec: &dyn Exec, vm_id: &str, nic_index: u8) -> Result<(), OvsError> {
     let port = names::port_name(vm_id, nic_index)?;
-    if let Some(row) = vsctl::find_by_name(exec, "Interface", &port, &["name", "external_ids", "type"])? {
+    if let Some(row) =
+        vsctl::find_by_name(exec, "Interface", &port, &["name", "external_ids", "type"])?
+    {
         if !row.owned_by_glidex() {
             return Err(OvsError::not_owned(format!("interface '{}'", port)));
         }
-        vsctl::run(exec, vec!["--if-exists".into(), "del-port".into(), port.clone()])?;
+        vsctl::run(
+            exec,
+            vec!["--if-exists".into(), "del-port".into(), port.clone()],
+        )?;
     }
     if link_exists(exec, &port) {
         exec.check(&Cmd::new(Program::Ip, ["link", "del", port.as_str()]))?;
@@ -253,11 +272,18 @@ mod tests {
 
     const VM: &str = "1a2b3c4d-5e6f-4a1b-9c2d-0123456789ab";
     const FIND_BR: &str = "ovs-vsctl --format=json --columns=name,datapath_type,external_ids,ports find Bridge name=gxbr-nat";
-    const FIND_IF: &str = "ovs-vsctl --format=json --columns=name,external_ids,type find Interface name=gx1a2b3c4d-0";
+    const FIND_IF: &str =
+        "ovs-vsctl --format=json --columns=name,external_ids,type find Interface name=gx1a2b3c4d-0";
 
     fn bridge(datapath: &str, owned: bool) -> Output {
-        let ids = if owned { r#"["map",[["glidex-owner","glidex"]]]"# } else { r#"["map",[]]"# };
-        Output::ok(format!(r#"{{"data":[["gxbr-nat","{datapath}",{ids},["set",[]]]],"headings":["name","datapath_type","external_ids","ports"]}}"#))
+        let ids = if owned {
+            r#"["map",[["glidex-owner","glidex"]]]"#
+        } else {
+            r#"["map",[]]"#
+        };
+        Output::ok(format!(
+            r#"{{"data":[["gxbr-nat","{datapath}",{ids},["set",[]]]],"headings":["name","datapath_type","external_ids","ports"]}}"#
+        ))
     }
 
     fn spec(kind: VmPortKind) -> VmPortSpec {
@@ -278,11 +304,32 @@ mod tests {
     fn tap_port_commands() {
         let exec = RecordingExec::new();
         exec.on(FIND_BR, bridge("system", true));
-        let binding = attach(&exec, &HostCapabilities::default(), &VmPortSpec { vlan: Some(10), ..spec(VmPortKind::Tap) }, 1000).unwrap();
-        assert_eq!(binding, VmPortBinding::Tap { ifname: "gx1a2b3c4d-0".into() });
+        let binding = attach(
+            &exec,
+            &HostCapabilities::default(),
+            &VmPortSpec {
+                vlan: Some(10),
+                ..spec(VmPortKind::Tap)
+            },
+            1000,
+        )
+        .unwrap();
+        assert_eq!(
+            binding,
+            VmPortBinding::Tap {
+                ifname: "gx1a2b3c4d-0".into()
+            }
+        );
         let calls = exec.calls();
-        assert!(calls.contains(&"ip tuntap add dev gx1a2b3c4d-0 mode tap user 1000".to_string()), "{calls:?}");
-        assert_eq!(calls.last().map(String::as_str), Some("ip link set dev gx1a2b3c4d-0 up"), "{calls:?}");
+        assert!(
+            calls.contains(&"ip tuntap add dev gx1a2b3c4d-0 mode tap user 1000".to_string()),
+            "{calls:?}"
+        );
+        assert_eq!(
+            calls.last().map(String::as_str),
+            Some("ip link set dev gx1a2b3c4d-0 up"),
+            "{calls:?}"
+        );
         assert!(calls.contains(&format!("ovs-vsctl --may-exist add-port gxbr-nat gx1a2b3c4d-0 -- set Interface gx1a2b3c4d-0 external_ids:glidex-owner=glidex external_ids:glidex-role=vm external_ids:glidex-vm-id={VM} external_ids:glidex-nic=0 -- set Port gx1a2b3c4d-0 tag=10")), "{calls:?}");
     }
 
@@ -293,13 +340,35 @@ mod tests {
             "ovs-vsctl --format=json --columns=name,datapath_type,external_ids,ports find Bridge name=br-int",
             Output::ok(r#"{"data":[["br-int","system",["map",[["glidex-owner","glidex"]]],["set",[]]]],"headings":["name","datapath_type","external_ids","ports"]}"#),
         );
-        let s = VmPortSpec { bridge: "br-int".into(), ovn_lport: Some("gx-1a2b3c4d-0".into()), mtu: Some(1442), ..spec(VmPortKind::Tap) };
+        let s = VmPortSpec {
+            bridge: "br-int".into(),
+            ovn_lport: Some("gx-1a2b3c4d-0".into()),
+            mtu: Some(1442),
+            ..spec(VmPortKind::Tap)
+        };
         attach(&exec, &HostCapabilities::default(), &s, 1000).unwrap();
-        let add = exec.calls().into_iter().find(|c| c.contains("add-port br-int")).unwrap();
-        assert!(add.contains("external_ids:iface-id=gx-1a2b3c4d-0") && add.contains("mtu_request=1442"), "{add}");
+        let add = exec
+            .calls()
+            .into_iter()
+            .find(|c| c.contains("add-port br-int"))
+            .unwrap();
+        assert!(
+            add.contains("external_ids:iface-id=gx-1a2b3c4d-0") && add.contains("mtu_request=1442"),
+            "{add}"
+        );
         // br-int takes only OVN ports, and an OVN port only br-int.
-        assert!(VmPortSpec { ovn_lport: None, ..s.clone() }.validate().is_err());
-        assert!(VmPortSpec { bridge: "gxbr-nat".into(), ..s.clone() }.validate().is_err());
+        assert!(VmPortSpec {
+            ovn_lport: None,
+            ..s.clone()
+        }
+        .validate()
+        .is_err());
+        assert!(VmPortSpec {
+            bridge: "gxbr-nat".into(),
+            ..s.clone()
+        }
+        .validate()
+        .is_err());
         assert!(VmPortSpec { vlan: Some(5), ..s }.validate().is_err());
     }
 
@@ -307,9 +376,27 @@ mod tests {
     fn port_mtu_is_requested_from_ovs() {
         let exec = RecordingExec::new();
         exec.on(FIND_BR, bridge("system", true));
-        attach(&exec, &HostCapabilities::default(), &VmPortSpec { mtu: Some(9000), ..spec(VmPortKind::Tap) }, 1000).unwrap();
-        assert!(exec.calls().iter().any(|c| c.contains("set Interface gx1a2b3c4d-0 mtu_request=9000 external_ids:")), "{:?}", exec.calls());
-        let bad = VmPortSpec { mtu: Some(100), ..spec(VmPortKind::Tap) };
+        attach(
+            &exec,
+            &HostCapabilities::default(),
+            &VmPortSpec {
+                mtu: Some(9000),
+                ..spec(VmPortKind::Tap)
+            },
+            1000,
+        )
+        .unwrap();
+        assert!(
+            exec.calls()
+                .iter()
+                .any(|c| c.contains("set Interface gx1a2b3c4d-0 mtu_request=9000 external_ids:")),
+            "{:?}",
+            exec.calls()
+        );
+        let bad = VmPortSpec {
+            mtu: Some(100),
+            ..spec(VmPortKind::Tap)
+        };
         assert!(bad.validate().is_err());
     }
 
@@ -318,7 +405,13 @@ mod tests {
         let exec = RecordingExec::new();
         exec.on(FIND_BR, bridge("system", true));
         exec.file("/sys/class/net/gx1a2b3c4d-0", "");
-        attach(&exec, &HostCapabilities::default(), &spec(VmPortKind::Tap), 1000).unwrap();
+        attach(
+            &exec,
+            &HostCapabilities::default(),
+            &spec(VmPortKind::Tap),
+            1000,
+        )
+        .unwrap();
         assert!(!exec.calls().iter().any(|c| c.contains("tuntap")));
     }
 
@@ -327,25 +420,50 @@ mod tests {
         let exec = RecordingExec::new();
         exec.on(FIND_BR, bridge("system", true));
         exec.on("ovs-vsctl --may-exist add-port", Output::failed(1, "boom"));
-        assert!(attach(&exec, &HostCapabilities::default(), &spec(VmPortKind::Tap), 1000).is_err());
-        assert!(exec.calls().contains(&"ip link del gx1a2b3c4d-0".to_string()));
+        assert!(attach(
+            &exec,
+            &HostCapabilities::default(),
+            &spec(VmPortKind::Tap),
+            1000
+        )
+        .is_err());
+        assert!(exec
+            .calls()
+            .contains(&"ip link del gx1a2b3c4d-0".to_string()));
     }
 
     #[test]
     fn vhost_user_needs_netdev_and_dpdk() {
         let exec = RecordingExec::new();
         exec.on(FIND_BR, bridge("system", true));
-        let err = attach(&exec, &HostCapabilities::default(), &spec(VmPortKind::VhostUser), 1000).unwrap_err();
-        let OvsError::Unsupported { missing } = err else { panic!() };
+        let err = attach(
+            &exec,
+            &HostCapabilities::default(),
+            &spec(VmPortKind::VhostUser),
+            1000,
+        )
+        .unwrap_err();
+        let OvsError::Unsupported { missing } = err else {
+            panic!()
+        };
         assert_eq!(missing.len(), 2);
 
         let exec = RecordingExec::new();
         exec.on(FIND_BR, bridge("netdev", true));
-        let caps = HostCapabilities { iface_types: vec!["dpdkvhostuserclient".into()], ..Default::default() };
+        let caps = HostCapabilities {
+            iface_types: vec!["dpdkvhostuserclient".into()],
+            ..Default::default()
+        };
         let binding = attach(&exec, &caps, &spec(VmPortKind::VhostUser), 1000).unwrap();
-        let VmPortBinding::VhostUser { socket } = binding else { panic!() };
+        let VmPortBinding::VhostUser { socket } = binding else {
+            panic!()
+        };
         assert_eq!(socket, names::vhost_socket(VM, 0).unwrap());
-        assert!(exec.calls().iter().any(|c| c.contains("type=dpdkvhostuserclient") && c.contains(&format!("options:vhost-server-path={}", socket.display()))));
+        assert!(exec
+            .calls()
+            .iter()
+            .any(|c| c.contains("type=dpdkvhostuserclient")
+                && c.contains(&format!("options:vhost-server-path={}", socket.display()))));
         assert!(!exec.calls().iter().any(|c| c.contains("tuntap")));
     }
 
@@ -353,9 +471,23 @@ mod tests {
     fn refuses_foreign_bridge_and_bad_input() {
         let exec = RecordingExec::new();
         exec.on(FIND_BR, bridge("system", false));
-        assert!(matches!(attach(&exec, &HostCapabilities::default(), &spec(VmPortKind::Tap), 1000), Err(OvsError::NotOwned { .. })));
-        let bad = VmPortSpec { mac: "01:00:5e:00:00:01".into(), ..spec(VmPortKind::Tap) };
-        assert!(matches!(attach(&exec, &HostCapabilities::default(), &bad, 1000), Err(OvsError::InvalidArgument { .. })));
+        assert!(matches!(
+            attach(
+                &exec,
+                &HostCapabilities::default(),
+                &spec(VmPortKind::Tap),
+                1000
+            ),
+            Err(OvsError::NotOwned { .. })
+        ));
+        let bad = VmPortSpec {
+            mac: "01:00:5e:00:00:01".into(),
+            ..spec(VmPortKind::Tap)
+        };
+        assert!(matches!(
+            attach(&exec, &HostCapabilities::default(), &bad, 1000),
+            Err(OvsError::InvalidArgument { .. })
+        ));
     }
 
     #[test]
@@ -369,12 +501,21 @@ mod tests {
         assert!(calls.contains(&"ip link del gx1a2b3c4d-0".to_string()));
 
         let exec = RecordingExec::new();
-        exec.on(FIND_IF, Output::ok(r#"{"data":[],"headings":["name","external_ids","type"]}"#));
+        exec.on(
+            FIND_IF,
+            Output::ok(r#"{"data":[],"headings":["name","external_ids","type"]}"#),
+        );
         detach(&exec, VM, 0).unwrap();
-        assert!(!exec.calls().iter().any(|c| c.contains("del-port") || c.contains("link del")));
+        assert!(!exec
+            .calls()
+            .iter()
+            .any(|c| c.contains("del-port") || c.contains("link del")));
 
         let exec = RecordingExec::new();
         exec.on(FIND_IF, Output::ok(r#"{"data":[["gx1a2b3c4d-0",["map",[]],""]],"headings":["name","external_ids","type"]}"#));
-        assert!(matches!(detach(&exec, VM, 0), Err(OvsError::NotOwned { .. })));
+        assert!(matches!(
+            detach(&exec, VM, 0),
+            Err(OvsError::NotOwned { .. })
+        ));
     }
 }

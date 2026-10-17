@@ -1,9 +1,13 @@
 //! Identity, tenancy and policy commands (spec/security.md §5, §6, §7;
 //! spec/cli.md "Access control").
 
-use crate::client::{self, enc, format_entity, parse_principal, parse_role_ref, role_name, ApiClient};
+use crate::client::{
+    self, enc, format_entity, parse_principal, parse_role_ref, role_name, ApiClient,
+};
 use crate::config;
-use crate::{flag_value, flag_values, format_unix_time, has_flag, project_names, prompt, prompt_hidden};
+use crate::{
+    flag_value, flag_values, format_unix_time, has_flag, project_names, prompt, prompt_hidden,
+};
 use colored::Colorize;
 use hyper::{Method, StatusCode};
 use serde_json::{json, Value};
@@ -24,7 +28,9 @@ fn s(v: &Value) -> &str {
 }
 
 fn time_secs(v: &Value) -> String {
-    v.as_u64().map(format_unix_time).unwrap_or_else(|| "-".into())
+    v.as_u64()
+        .map(format_unix_time)
+        .unwrap_or_else(|| "-".into())
 }
 
 /// Positional arguments: everything that isn't a `--flag` or the value
@@ -46,7 +52,6 @@ fn positional<'a>(args: &[&'a str], valued: &[&str]) -> Vec<&'a str> {
     out
 }
 
-
 // ---- whoami / login / logout / ui ------------------------------------------
 
 pub async fn whoami(client: &ApiClient) {
@@ -58,22 +63,63 @@ pub async fn whoami(client: &ApiClient) {
     if user.is_null() {
         println!("  User:     {}", "(service account)".dimmed());
     } else {
-        println!("  User:     {} ({})", s(&user["display_name"]).yellow(), s(&user["id"]));
+        println!(
+            "  User:     {} ({})",
+            s(&user["display_name"]).yellow(),
+            s(&user["id"])
+        );
     }
     println!("  Method:   {} via {}", s(&w["method"]), client.describe());
     if let Some(t) = w["token"].as_object() {
-        println!("  Token:    {} ({})", t.get("name").and_then(|v| v.as_str()).unwrap_or(""), t.get("id").and_then(|v| v.as_str()).unwrap_or(""));
+        println!(
+            "  Token:    {} ({})",
+            t.get("name").and_then(|v| v.as_str()).unwrap_or(""),
+            t.get("id").and_then(|v| v.as_str()).unwrap_or("")
+        );
     }
     if w["break_glass"] == true {
-        println!("  {}", "Break-glass administrator (base policies only)".red());
+        println!(
+            "  {}",
+            "Break-glass administrator (base policies only)".red()
+        );
     }
-    let teams: Vec<&str> = w["teams"].as_array().into_iter().flatten().filter_map(|t| t.as_str()).collect();
-    println!("  Teams:    {}", if teams.is_empty() { "-".to_string() } else { teams.join(", ") });
-    let host: Vec<&str> = w["host_roles"].as_array().into_iter().flatten().filter_map(|t| t.as_str()).collect();
-    println!("  Host roles: {}", if host.is_empty() { "-".to_string() } else { host.join(", ") });
+    let teams: Vec<&str> = w["teams"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|t| t.as_str())
+        .collect();
+    println!(
+        "  Teams:    {}",
+        if teams.is_empty() {
+            "-".to_string()
+        } else {
+            teams.join(", ")
+        }
+    );
+    let host: Vec<&str> = w["host_roles"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|t| t.as_str())
+        .collect();
+    println!(
+        "  Host roles: {}",
+        if host.is_empty() {
+            "-".to_string()
+        } else {
+            host.join(", ")
+        }
+    );
     let names = project_names(client).await;
     match w["default_project"].as_str() {
-        Some(p) => println!("  Default project: {}", names.get(p).map(|n| format!("{} ({})", n, p)).unwrap_or_else(|| p.to_string())),
+        Some(p) => println!(
+            "  Default project: {}",
+            names
+                .get(p)
+                .map(|n| format!("{} ({})", n, p))
+                .unwrap_or_else(|| p.to_string())
+        ),
         None => println!("  Default project: -"),
     }
     if let Some(p) = client.project() {
@@ -85,7 +131,10 @@ pub async fn whoami(client: &ApiClient) {
         for r in roles {
             println!(
                 "    {:<20} {:<14} via {}",
-                r["project_name"].as_str().unwrap_or(s(&r["project"])).cyan(),
+                r["project_name"]
+                    .as_str()
+                    .unwrap_or(s(&r["project"]))
+                    .cyan(),
                 s(&r["role"]),
                 format_entity(&r["via"])
             );
@@ -106,7 +155,8 @@ pub async fn login(client: &ApiClient, args: &[&str]) {
         return err("no configuration directory (HOME unset?)");
     };
     let token = if has_flag(args, "--oidc") {
-        match device_login(client).await {
+        match device_login_named(client, "gxctl", None, None, flag_value(args, "--connector")).await
+        {
             Some(t) => t,
             None => return,
         }
@@ -117,20 +167,33 @@ pub async fn login(client: &ApiClient, args: &[&str]) {
         }
         Zeroizing::new(t.trim().to_string())
     } else {
-        return usage("Usage: login --oidc | --token   (over the local socket no login is needed)");
+        return usage("Usage: login --oidc [--connector ID] | --token   (over the local socket no login is needed)");
     };
     // Check the token before saving it.
     let previous = client::load_token().ok().flatten();
     client.set_token(Some(token.clone()));
-    match client.request_json::<Value>(Method::GET, "/auth/whoami", None).await {
+    match client
+        .request_json::<Value>(Method::GET, "/auth/whoami", None)
+        .await
+    {
         Ok(w) => {
             if let Err(e) = client::save_token_file(&path, &token) {
                 return err(e);
             }
-            let who = w["user"]["display_name"].as_str().unwrap_or("service account");
-            println!("{} logged in as {}; token saved to {} (mode 0600)", "OK:".green(), who.yellow(), path.display());
+            let who = w["user"]["display_name"]
+                .as_str()
+                .unwrap_or("service account");
+            println!(
+                "{} logged in as {}; token saved to {} (mode 0600)",
+                "OK:".green(),
+                who.yellow(),
+                path.display()
+            );
             if std::env::var_os("GLIDEX_TOKEN").is_some() {
-                println!("{} GLIDEX_TOKEN is set and takes precedence in new gxctl sessions.", "Note:".dimmed());
+                println!(
+                    "{} GLIDEX_TOKEN is set and takes precedence in new gxctl sessions.",
+                    "Note:".dimmed()
+                );
             }
         }
         Err(e) => {
@@ -140,16 +203,28 @@ pub async fn login(client: &ApiClient, args: &[&str]) {
     }
 }
 
-/// OAuth device flow through the control plane (spec §5.4).
-async fn device_login(client: &ApiClient) -> Option<Zeroizing<String>> {
-    device_login_named(client, "gxctl", None, None).await
-}
-
-/// The same flow for the login family, with the token named for its
-/// profile and the `device`/`client` metadata stamped so `auth token list`
-/// and the audit trail say which machine and which gxctl asked (A8).
-async fn device_login_named(client: &ApiClient, token_name: &str, device: Option<&str>, client_id: Option<&str>) -> Option<Zeroizing<String>> {
-    let start: Value = match client.request_json(Method::POST, "/auth/oidc/device", Some(json!({}))).await {
+/// OAuth device flow through the control plane (spec §5.4), with the
+/// token named for its profile and the `device`/`client` metadata stamped
+/// so `auth token list` and the audit trail say which machine and which
+/// gxctl asked (A8).
+///
+/// `connector` picks an OIDC connector of the directory
+/// (`/auth/c/{id}/device`); without one, the first.
+async fn device_login_named(
+    client: &ApiClient,
+    token_name: &str,
+    device: Option<&str>,
+    client_id: Option<&str>,
+    connector: Option<&str>,
+) -> Option<Zeroizing<String>> {
+    let base = match connector {
+        Some(c) => format!("/auth/c/{}", client::enc(c)),
+        None => "/auth/oidc".to_string(),
+    };
+    let start: Value = match client
+        .request_json(Method::POST, &format!("{base}/device"), Some(json!({})))
+        .await
+    {
         Ok(v) => v,
         Err(e) => {
             err(e);
@@ -159,8 +234,14 @@ async fn device_login_named(client: &ApiClient, token_name: &str, device: Option
     let code = s(&start["device_code"]).to_string();
     let mut interval = start["interval"].as_u64().unwrap_or(5).max(1);
     let expires = start["expires_in"].as_u64().unwrap_or(600);
-    println!("To log in, open:\n\n    {}\n", s(&start["verification_uri"]).cyan().bold());
-    println!("and enter the code:  {}", s(&start["user_code"]).yellow().bold());
+    println!(
+        "To log in, open:\n\n    {}\n",
+        s(&start["verification_uri"]).cyan().bold()
+    );
+    println!(
+        "and enter the code:  {}",
+        s(&start["user_code"]).yellow().bold()
+    );
     if let Some(u) = start["verification_uri_complete"].as_str() {
         println!("(or open {} directly)", u);
     }
@@ -181,7 +262,10 @@ async fn device_login_named(client: &ApiClient, token_name: &str, device: Option
                 return None;
             }
         }
-        let r = match client.send(Method::POST, "/auth/oidc/device/poll", Some(&body)).await {
+        let r = match client
+            .send(Method::POST, &format!("{base}/device/poll"), Some(&body))
+            .await
+        {
             Ok(r) => r,
             Err(e) => {
                 err(e);
@@ -230,7 +314,7 @@ pub async fn auth(client: &ApiClient, args: &[&str]) {
         "trust" => auth_trust(&args[1..]).await,
         "token" | "tokens" => token(client, &args[1..]).await,
         "whoami" => whoami(client).await,
-        _ => usage("Usage: auth login [--url U]… [--profile P] [--oidc | --token | --pam-user U] [--pin sha256/…] [--insecure] [--rebind] [--use] [--name N] [--days N] | logout [--revoke] [--keep-token] | status | use P | profiles [--all] | trust list|fetch|remove [--all] | token … | whoami"),
+        _ => usage("Usage: auth login [--url U]… [--profile P] [--oidc | --token | --pam-user U] [--connector ID] [--pin sha256/…] [--insecure] [--rebind] [--use] [--name N] [--days N] | logout [--revoke] [--keep-token] | status | use P | profiles [--all] | trust list|fetch|remove [--all] | token … | whoami"),
     }
 }
 
@@ -242,14 +326,18 @@ pub async fn auth(client: &ApiClient, args: &[&str]) {
 /// no credential — server-info is public information, the answer to be
 /// compared before any token exists on that connection.
 async fn tofu_verdict(urls: &[String]) -> String {
-    let trust = config::Tls { insecure: true, ..Default::default() };
+    let trust = config::Tls {
+        insecure: true,
+        ..Default::default()
+    };
     match ApiClient::tcp_multi(urls, None, Some(&trust), None, None) {
         Ok(c) => match c.server_info().await {
             Ok(v) => match v["fingerprint"].as_str() {
                 Some(claim) => {
                     let seen = c.accepted_fingerprint();
                     let same = match (glidex_tls::Trust::normalize_pin(claim), seen.as_deref()) {
-                        (Some(c), Some(s)) => glidex_tls::Trust::normalize_pin(s).is_some_and(|n| n.as_str() == c.as_str()),
+                        (Some(c), Some(s)) => glidex_tls::Trust::normalize_pin(s)
+                            .is_some_and(|n| n.as_str() == c.as_str()),
                         _ => false,
                     };
                     if same {
@@ -267,7 +355,11 @@ async fn tofu_verdict(urls: &[String]) -> String {
 }
 
 async fn auth_login(session: &ApiClient, args: &[&str]) {
-    let mut urls: Vec<String> = flag_values(args, "--url").into_iter().chain(flag_values(args, "--server")).map(|u| (*u).to_string()).collect();
+    let mut urls: Vec<String> = flag_values(args, "--url")
+        .into_iter()
+        .chain(flag_values(args, "--server"))
+        .map(|u| (*u).to_string())
+        .collect();
     let mut name = flag_value(args, "--profile").map(|s| s.to_string());
     let rebind = has_flag(args, "--rebind");
     let non_interactive = has_flag(args, "--non-interactive") || !std::io::stdin().is_terminal();
@@ -278,7 +370,11 @@ async fn auth_login(session: &ApiClient, args: &[&str]) {
         Ok(c) => c,
         Err(e) => return err(e),
     };
-    let known = || cfg.as_ref().map(|c| c.list()).unwrap_or_else(|| "no profiles yet".into());
+    let known = || {
+        cfg.as_ref()
+            .map(|c| c.list())
+            .unwrap_or_else(|| "no profiles yet".into())
+    };
 
     // §6.1.1 — target and profile: a named profile, the `--url` target, or
     // the live current one. With nothing to go on, ask which server, never
@@ -289,7 +385,12 @@ async fn auth_login(session: &ApiClient, args: &[&str]) {
                 name = Some(n.clone());
                 urls = p.url.clone();
             }
-            None => return usage(&format!("which server? give --url https://host:8841 or --profile P; the file knows: {}", known())),
+            None => {
+                return usage(&format!(
+                    "which server? give --url https://host:8841 or --profile P; the file knows: {}",
+                    known()
+                ))
+            }
         }
     }
     let pair: Option<(&String, &config::Profile)> = if let Some(n) = &name {
@@ -303,14 +404,25 @@ async fn auth_login(session: &ApiClient, args: &[&str]) {
         // dials exactly this host; anything else is a new profile and the
         // operator must say so with --save (no defaults are guessed,
         // §6.1.1).
-        match cfg.as_ref().and_then(|c| c.profiles.iter().find(|(_, p)| urls.iter().all(|u| p.url.iter().any(|pu| config::url_host(pu) == config::url_host(u))))) {
+        match cfg.as_ref().and_then(|c| {
+            c.profiles.iter().find(|(_, p)| {
+                urls.iter().all(|u| {
+                    p.url
+                        .iter()
+                        .any(|pu| config::url_host(pu) == config::url_host(u))
+                })
+            })
+        }) {
             Some(p) => Some(p),
             None => {
                 if !has_flag(args, "--save") {
                     return usage("which profile? this target is new to the file: pass --profile NAME, or --save to record it as a new profile named for its host");
                 }
                 let host = config::url_host(&urls[0]);
-                let mut n: String = host.chars().take_while(|c| matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | '-')).collect();
+                let mut n: String = host
+                    .chars()
+                    .take_while(|c| matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | '-'))
+                    .collect();
                 n = n.trim_matches('-').to_string();
                 if n.is_empty() {
                     n = host;
@@ -330,14 +442,21 @@ async fn auth_login(session: &ApiClient, args: &[&str]) {
     if urls.is_empty() {
         urls = match pair {
             Some((_, p)) => p.url.clone(),
-            None => return err(format!("profile '{name}' is new and lists no urls; give --url https://host:8841")),
+            None => {
+                return err(format!(
+                    "profile '{name}' is new and lists no urls; give --url https://host:8841"
+                ))
+            }
         };
     }
 
     // Trust carries over a refresh untouched (§6.2: profile, pins and CA
     // stay); --rebind wipes the pins because a rotating-ca or re-init
     // legitimately changes them, and the TOFU path below re-establishes.
-    let mut tls = existing.as_ref().map(|(_, p)| p.tls.clone()).unwrap_or_default();
+    let mut tls = existing
+        .as_ref()
+        .map(|(_, p)| p.tls.clone())
+        .unwrap_or_default();
     if rebind {
         tls.pins.clear();
         tls.insecure = false;
@@ -345,7 +464,9 @@ async fn auth_login(session: &ApiClient, args: &[&str]) {
     }
     if let Some(p) = &pin_arg {
         if glidex_tls::Trust::normalize_pin(p).is_none() {
-            return err(format!("{p} is not a fingerprint; gxctl prints them as sha256/AB:CD:… — paste that line"));
+            return err(format!(
+                "{p} is not a fingerprint; gxctl prints them as sha256/AB:CD:… — paste that line"
+            ));
         }
         tls.pins = vec![p.clone()];
     }
@@ -358,7 +479,9 @@ async fn auth_login(session: &ApiClient, args: &[&str]) {
             return err("--insecure needs a typed confirmation and stdin is not a terminal; trust the exact certificate instead: --pin sha256/<fingerprint>");
         }
         println!("{}", "The connection will verify NO certificate: anyone on the path can read your token and everything you send. This is for hardware labs whose switches cannot present a certificate at all.".red().bold());
-        let typed = prompt(&format!("type '{host}' to accept unverified TLS for this profile: "));
+        let typed = prompt(&format!(
+            "type '{host}' to accept unverified TLS for this profile: "
+        ));
         if typed.trim() != host {
             return err("confirmation not typed — nothing is saved and nothing is unverified");
         }
@@ -415,10 +538,16 @@ async fn auth_login(session: &ApiClient, args: &[&str]) {
                     if !verdict.starts_with("it matches") {
                         println!("{}", "  the two do not agree — check with the operator of the other channel before trusting this".red());
                     }
-                    if !prompt(&format!("Trust this exact certificate for profile '{name}'? [y/N]: ")).to_lowercase().starts_with('y') {
+                    if !prompt(&format!(
+                        "Trust this exact certificate for profile '{name}'? [y/N]: "
+                    ))
+                    .to_lowercase()
+                    .starts_with('y')
+                    {
                         return err("the certificate was not trusted; nothing was saved and no token was requested");
                     }
-                    tls.pins = vec![glidex_tls::Trust::normalize_pin(&fp).unwrap_or(fp.to_lowercase())];
+                    tls.pins =
+                        vec![glidex_tls::Trust::normalize_pin(&fp).unwrap_or(fp.to_lowercase())];
                     asked = true;
                 }
             },
@@ -443,7 +572,15 @@ async fn auth_login(session: &ApiClient, args: &[&str]) {
             }
             println!("{} rebinding profile '{name}':", "Warning:".yellow());
             println!("   cluster was {want}, now {got}");
-            println!("   pins were {} (the server now reports {})", if tls.pins.is_empty() { "(none left by --rebind)".into() } else { tls.pins.join(", ") }, info["fingerprint"].as_str().unwrap_or("?"));
+            println!(
+                "   pins were {} (the server now reports {})",
+                if tls.pins.is_empty() {
+                    "(none left by --rebind)".into()
+                } else {
+                    tls.pins.join(", ")
+                },
+                info["fingerprint"].as_str().unwrap_or("?")
+            );
         }
     } else if expect.is_some() && claimed.is_none() && !rebind {
         println!("{} the server does not report a cluster id (pre-cluster or older build); nothing new is bound", "Note:".dimmed());
@@ -454,11 +591,21 @@ async fn auth_login(session: &ApiClient, args: &[&str]) {
 
     // §6.1.4 prove the credential. The token name says which profile minted
     // it, so `auth token list` on the server reads as an audit trail.
-    let token_name = flag_value(args, "--name").map(|s| s.to_string()).unwrap_or_else(|| format!("gxctl@{name}"));
+    let token_name = flag_value(args, "--name")
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| format!("gxctl@{name}"));
     let device_tag = glidex_tls::hostname().unwrap_or_else(|| "device".to_string());
     let client_tag = format!("gxctl/{}", env!("CARGO_PKG_VERSION"));
     let (credential, method_hint) = if has_flag(args, "--oidc") {
-        match device_login_named(&cl, &token_name, Some(&device_tag), Some(&client_tag)).await {
+        match device_login_named(
+            &cl,
+            &token_name,
+            Some(&device_tag),
+            Some(&client_tag),
+            flag_value(args, "--connector"),
+        )
+        .await
+        {
             Some(t) => (t, "oidc"),
             None => return,
         }
@@ -476,6 +623,9 @@ async fn auth_login(session: &ApiClient, args: &[&str]) {
         let mut body = json!({ "username": user, "password": pw.trim().to_string(), "token_name": token_name, "device": device_tag, "client": client_tag });
         if let Some(d) = flag_value(args, "--days").and_then(|d| d.parse::<u64>().ok()) {
             body["days"] = json!(d);
+        }
+        if let Some(c) = flag_value(args, "--connector") {
+            body["connector"] = json!(c);
         }
         match cl.send(Method::POST, "/auth/token", Some(&body)).await {
             Ok(r) if r.status.is_success() => {
@@ -537,12 +687,16 @@ async fn auth_login(session: &ApiClient, args: &[&str]) {
     // §6.1.5 check it before anything is written — whoami on the answered,
     // verified connection, with the candidate as its only secret.
     cl.set_token(Some(credential.clone()));
-    let w = match cl.request_json::<Value>(Method::GET, "/auth/whoami", None).await {
+    let w = match cl
+        .request_json::<Value>(Method::GET, "/auth/whoami", None)
+        .await
+    {
         Ok(w) => w,
         Err(e) => return err(format!("the credential was not accepted: {e}")),
     };
     if let (Some(claim), Some(seen)) = (info["fingerprint"].as_str(), cl.accepted_fingerprint()) {
-        let agrees = glidex_tls::Trust::normalize_pin(claim).is_some_and(|c| glidex_tls::Trust::normalize_pin(&seen).is_some_and(|s| s == c));
+        let agrees = glidex_tls::Trust::normalize_pin(claim)
+            .is_some_and(|c| glidex_tls::Trust::normalize_pin(&seen).is_some_and(|s| s == c));
         if !agrees {
             return err(format!("the answer came over a connection presenting a different certificate than the server claims as its own (we saw {seen}, the server says {claim}) — something is terminating TLS in front of {}", cl.describe()));
         }
@@ -556,7 +710,10 @@ async fn auth_login(session: &ApiClient, args: &[&str]) {
         token_name: w["token"]["name"].as_str().map(str::to_string),
         logged_in_at: Some(client::now_secs()),
     };
-    let who = w["user"]["display_name"].as_str().unwrap_or("service account").to_string();
+    let who = w["user"]["display_name"]
+        .as_str()
+        .unwrap_or("service account")
+        .to_string();
 
     // §6.1.6 merge-write the file (never clobber what the callback does
     // not touch); the token goes out of here into the 0600 file only.
@@ -595,7 +752,12 @@ async fn auth_login(session: &ApiClient, args: &[&str]) {
         return err(e);
     }
     let path = config::file().unwrap_or_else(|| PathBuf::from("(nowhere)"));
-    println!("{} logged in as {} to {}", "OK:".green(), who.yellow(), cl.describe());
+    println!(
+        "{} logged in as {} to {}",
+        "OK:".green(),
+        who.yellow(),
+        cl.describe()
+    );
     println!("{} token saved to {} (mode 0600) — profile '{name}', anyone who can read that file can act as {who}", "Note:".yellow(), path.display());
     if made_current {
         println!("{} profile '{name}' is now current", "Info:".dimmed());
@@ -614,11 +776,20 @@ async fn auth_logout(client: &ApiClient, args: &[&str]) {
     let name = match config::profile_of(&cfg, want) {
         Some((n, _)) => n.clone(),
         None => {
-            println!("{}", if want.is_some() { format!("no profile '{}' in the file", want.unwrap_or("")) } else { "no profile is in effect here (log in first: gxctl auth login --url … --profile P --save)".into() });
+            println!(
+                "{}",
+                if want.is_some() {
+                    format!("no profile '{}' in the file", want.unwrap_or(""))
+                } else {
+                    "no profile is in effect here (log in first: gxctl auth login --url … --profile P --save)".into()
+                }
+            );
             return;
         }
     };
-    let token_id = config::profile_of(&cfg, want).and_then(|(_, p)| p.identity.as_ref()).and_then(|i| i.token_id.clone());
+    let token_id = config::profile_of(&cfg, want)
+        .and_then(|(_, p)| p.identity.as_ref())
+        .and_then(|i| i.token_id.clone());
     if has_flag(args, "--revoke") {
         let id = match &token_id {
             Some(id) => id.clone(),
@@ -628,13 +799,26 @@ async fn auth_logout(client: &ApiClient, args: &[&str]) {
         // principal to strike its own token. A failure here aborts the
         // logout: clearing the file while the token lives would hide a
         // working credential, not remove one.
-        if let Err(e) = client.request_json::<()>(Method::DELETE, &format!("/tokens/{}", enc(id.as_str())), None).await {
+        if let Err(e) = client
+            .request_json::<()>(
+                Method::DELETE,
+                &format!("/tokens/{}", enc(id.as_str())),
+                None,
+            )
+            .await
+        {
             return err(format!("the server did not revoke the token: {e}"));
         }
-        println!("{} token {id} revoked on {}", "OK:".green(), client.describe());
+        println!(
+            "{} token {id} revoked on {}",
+            "OK:".green(),
+            client.describe()
+        );
     }
     if has_flag(args, "--keep-token") {
-        println!("the profile keeps its credential (--keep-token); this session ends with the process");
+        println!(
+            "the profile keeps its credential (--keep-token); this session ends with the process"
+        );
         return;
     }
     if let Err(e) = config::edit(cfg, |c| {
@@ -644,7 +828,10 @@ async fn auth_logout(client: &ApiClient, args: &[&str]) {
     }) {
         return err(e);
     }
-    println!("{} profile '{name}': credential removed (the target, pins and CA stay)", "OK:".green());
+    println!(
+        "{} profile '{name}': credential removed (the target, pins and CA stay)",
+        "OK:".green()
+    );
 }
 
 async fn auth_status(client: &ApiClient, args: &[&str]) {
@@ -655,20 +842,35 @@ async fn auth_status(client: &ApiClient, args: &[&str]) {
     // The profile this session runs under if one does; else the one asked
     // for; else the file's current (§6.2).
     let want = flag_value(args, "--profile");
-    let pair = config::profile_of(&cfg, want).or_else(|| match client.profile_name() { Some(n) => config::profile_of(&cfg, Some(&n)), None => None });
+    let pair = config::profile_of(&cfg, want).or_else(|| match client.profile_name() {
+        Some(n) => config::profile_of(&cfg, Some(&n)),
+        None => None,
+    });
     let (name, p) = match pair {
         Some(x) => x,
-        None => return println!("no profiles yet — log in: gxctl auth login --url https://host:8841 --profile P --save"),
+        None => return println!(
+            "no profiles yet — log in: gxctl auth login --url https://host:8841 --profile P --save"
+        ),
     };
-    let current = cfg.as_ref().and_then(|c| c.current.as_deref()).is_some_and(|c| c == name);
-    println!("{} profile '{name}'{}", "Profile:".dimmed(), if current { " (current)" } else { "" });
+    let current = cfg
+        .as_ref()
+        .and_then(|c| c.current.as_deref())
+        .is_some_and(|c| c == name);
+    println!(
+        "{} profile '{name}'{}",
+        "Profile:".dimmed(),
+        if current { " (current)" } else { "" }
+    );
     println!("   dials:  {}", p.url.join(", "));
-    println!("   cluster: {}", match (&p.cluster_name, &p.cluster_id) {
-        (Some(n), Some(id)) => format!("{n} ({id})"),
-        (None, Some(id)) => id.clone(),
-        (Some(n), None) => format!("{n} (never verified)"),
-        (None, None) => "never verified".into(),
-    });
+    println!(
+        "   cluster: {}",
+        match (&p.cluster_name, &p.cluster_id) {
+            (Some(n), Some(id)) => format!("{n} ({id})"),
+            (None, Some(id)) => id.clone(),
+            (Some(n), None) => format!("{n} (never verified)"),
+            (None, None) => "never verified".into(),
+        }
+    );
     let mut trust = p.trust_mode();
     if p.tls.insecure {
         trust.push_str("  — this profile verifies NOTHING (typed confirmation)");
@@ -679,12 +881,20 @@ async fn auth_status(client: &ApiClient, args: &[&str]) {
             "   token:  {} ({}){}",
             i.token_name.as_deref().unwrap_or("?"),
             i.user.as_deref().or(i.method.as_deref()).unwrap_or("?"),
-            i.logged_in_at.map(|t| format!(", since {}", format_unix_time(t))).unwrap_or_default()
+            i.logged_in_at
+                .map(|t| format!(", since {}", format_unix_time(t)))
+                .unwrap_or_default()
         ),
         None => println!("   token:  (none — run 'auth login --profile {name}')"),
     }
     if let Some(lu) = &p.last_used {
-        println!("   used:   {}{}", lu.url.as_deref().unwrap_or("?"), lu.at.map(|t| format!(" at {}", format_unix_time(t))).unwrap_or_default());
+        println!(
+            "   used:   {}{}",
+            lu.url.as_deref().unwrap_or("?"),
+            lu.at
+                .map(|t| format!(" at {}", format_unix_time(t)))
+                .unwrap_or_default()
+        );
     }
     if !client.is_unix() && client.profile_name().is_some() {
         match client.server_info().await {
@@ -692,8 +902,16 @@ async fn auth_status(client: &ApiClient, args: &[&str]) {
                 "   server: {} {} reachable (pam {}, oidc {})",
                 v["cluster_name"].as_str().unwrap_or("?"),
                 v["version"].as_str().unwrap_or("?"),
-                if v["methods"]["pam"] == json!(true) { "on" } else { "off" },
-                if v["methods"]["oidc"] == json!(true) { "on" } else { "off" }
+                if v["methods"]["pam"] == json!(true) {
+                    "on"
+                } else {
+                    "off"
+                },
+                if v["methods"]["oidc"] == json!(true) {
+                    "on"
+                } else {
+                    "off"
+                }
             ),
             Err(e) => println!("   server: not reachable now ({e})"),
         }
@@ -709,18 +927,27 @@ fn auth_use(args: &[&str]) {
         return println!("there is no config file yet (log in first: gxctl auth login --url … --profile P --save)");
     }
     let Some(target) = args.first() else {
-        return usage("Usage: auth use <profile|->   ('-' clears the current profile for this user)");
+        return usage(
+            "Usage: auth use <profile|->   ('-' clears the current profile for this user)",
+        );
     };
     let target = target.to_string();
     if target == "-" {
         if let Err(e) = config::edit(cfg, |c| c.current = None) {
             return err(e);
         }
-        return println!("no profile is current now; gxctl asks for --profile when it needs a target");
+        return println!(
+            "no profile is current now; gxctl asks for --profile when it needs a target"
+        );
     }
     if config::profile_of(&cfg, Some(&target)).is_none() {
-        let list = cfg.as_ref().map(|c| c.list()).unwrap_or_else(|| "none".into());
-        return err(format!("unknown profile '{target}'; the file knows: {list}"));
+        let list = cfg
+            .as_ref()
+            .map(|c| c.list())
+            .unwrap_or_else(|| "none".into());
+        return err(format!(
+            "unknown profile '{target}'; the file knows: {list}"
+        ));
     }
     if let Err(e) = config::edit(cfg, |c| c.current = Some(target.clone())) {
         return err(e);
@@ -734,14 +961,19 @@ fn auth_profiles(args: &[&str]) {
         Err(e) => return err(e),
     };
     let Some(c) = cfg.as_ref() else {
-        return println!("no config file yet (log in first: gxctl auth login --url … --profile P --save)");
+        return println!(
+            "no config file yet (log in first: gxctl auth login --url … --profile P --save)"
+        );
     };
     if c.profiles.is_empty() {
         return println!("the file exists but holds no profiles (log in: gxctl auth login --url … --profile P --save)");
     }
     let all = has_flag(args, "--all");
     let current = c.current.as_deref();
-    println!("{:<2} {:<16} {:<38} {:<22} TOKEN", "", "PROFILE", "TARGET", "TRUST");
+    println!(
+        "{:<2} {:<16} {:<38} {:<22} TOKEN",
+        "", "PROFILE", "TARGET", "TRUST"
+    );
     for (n, p) in &c.profiles {
         let is_cur = current.is_some_and(|x| *x == *n);
         if !all && !is_cur {
@@ -757,11 +989,17 @@ fn auth_profiles(args: &[&str]) {
             n,
             target,
             p.trust_mode(),
-            p.identity.as_ref().and_then(|i| i.token_name.as_deref()).unwrap_or("-")
+            p.identity
+                .as_ref()
+                .and_then(|i| i.token_name.as_deref())
+                .unwrap_or("-")
         );
     }
     if !all && c.profiles.len() > 1 {
-        println!("{}", "run 'auth profiles --all' to see every profile in the file".dimmed());
+        println!(
+            "{}",
+            "run 'auth profiles --all' to see every profile in the file".dimmed()
+        );
     }
 }
 
@@ -788,10 +1026,20 @@ async fn auth_trust(args: &[&str]) {
                 println!("  ca file {}", f.display());
             }
             if p.tls.ca_pem.is_some() {
-                println!("  ca pem (embedded, {} bytes)", p.tls.ca_pem.as_ref().map(|s| s.len()).unwrap_or(0));
+                println!(
+                    "  ca pem (embedded, {} bytes)",
+                    p.tls.ca_pem.as_ref().map(|s| s.len()).unwrap_or(0)
+                );
             }
             if p.tls.insecure {
-                println!("{}", format!("  UNVERIFIED — this profile checks nothing, by typed confirmation: {}", p.tls.i_understand.as_deref().unwrap_or("?")).red());
+                println!(
+                    "{}",
+                    format!(
+                        "  UNVERIFIED — this profile checks nothing, by typed confirmation: {}",
+                        p.tls.i_understand.as_deref().unwrap_or("?")
+                    )
+                    .red()
+                );
             }
         }
         "fetch" => {
@@ -805,22 +1053,34 @@ async fn auth_trust(args: &[&str]) {
             };
             match cl.server_info().await {
                 Ok(v) => {
-                    let claim = v["fingerprint"].as_str().unwrap_or("(the server does not say)");
+                    let claim = v["fingerprint"]
+                        .as_str()
+                        .unwrap_or("(the server does not say)");
                     let seen = cl.accepted_fingerprint();
                     let agrees = match (&seen, glidex_tls::Trust::normalize_pin(claim)) {
-                        (Some(s), Some(c)) => glidex_tls::Trust::normalize_pin(s).is_some_and(|n| n.as_str() == c.as_str()),
+                        (Some(s), Some(c)) => glidex_tls::Trust::normalize_pin(s)
+                            .is_some_and(|n| n.as_str() == c.as_str()),
                         _ => false,
                     };
                     println!("{} {claim}", "server claims:".dimmed());
                     println!("{} {seen:?}", "we were handed:".dimmed());
                     if agrees {
-                        let which = glidex_tls::Trust::normalize_pin(claim).and_then(|c| p.tls.pins.iter().position(|pin| glidex_tls::Trust::normalize_pin(pin).is_some_and(|n| n.as_str() == c.as_str()))).map(|i| format!("pin #{} of the profile matches", i + 1));
+                        let which = glidex_tls::Trust::normalize_pin(claim)
+                            .and_then(|c| {
+                                p.tls.pins.iter().position(|pin| {
+                                    glidex_tls::Trust::normalize_pin(pin)
+                                        .is_some_and(|n| n.as_str() == c.as_str())
+                                })
+                            })
+                            .map(|i| format!("pin #{} of the profile matches", i + 1));
                         println!("{}", which.unwrap_or_else(|| "the certificate is trusted (through the system store or the profile's CA)".into()).green());
                     } else {
                         println!("{}", "MISMATCH: what the server claims and what the connection presented are different certificates — a proxy may be terminating TLS here. The control plane regenerates its certificate only in narrow cases (rotate-ca, re-init): confirm with its operator through another channel before trusting this".red().bold());
                     }
                 }
-                Err(e) => err(format!("the profile's trust refused or could not reach the server: {e}")),
+                Err(e) => err(format!(
+                    "the profile's trust refused or could not reach the server: {e}"
+                )),
             }
         }
         "remove" => {
@@ -835,7 +1095,11 @@ async fn auth_trust(args: &[&str]) {
                 if !std::io::stdin().is_terminal() && !has_flag(args, "--yes") {
                     return err("--all clears everything the profile adds to trust; confirm interactively or pass --yes");
                 }
-                if std::io::stdin().is_terminal() && !prompt(&format!("Remove {what} from profile '{name}'? [y/N]: ")).to_lowercase().starts_with('y') {
+                if std::io::stdin().is_terminal()
+                    && !prompt(&format!("Remove {what} from profile '{name}'? [y/N]: "))
+                        .to_lowercase()
+                        .starts_with('y')
+                {
                     return;
                 }
                 if let Err(e) = config::edit(cfg, |c| {
@@ -849,23 +1113,38 @@ async fn auth_trust(args: &[&str]) {
                 }) {
                     return err(e);
                 }
-                println!("{} profile '{name}': trust is the system store alone again", "OK:".green());
+                println!(
+                    "{} profile '{name}': trust is the system store alone again",
+                    "OK:".green()
+                );
             } else if let Some(pin) = args.get(2) {
                 let want = glidex_tls::Trust::normalize_pin(pin);
                 let Some(want) = want else {
-                    return err(format!("{pin} is not a fingerprint (sha256/<64 hex>, as gxctl prints it)"));
+                    return err(format!(
+                        "{pin} is not a fingerprint (sha256/<64 hex>, as gxctl prints it)"
+                    ));
                 };
                 let mut gone = false;
                 if let Err(e) = config::edit(cfg, |c| {
                     if let Some(pf) = c.profiles.get_mut(&name) {
                         let before = pf.tls.pins.len();
-                        pf.tls.pins.retain(|x| glidex_tls::Trust::normalize_pin(x).is_none_or(|n| n.as_str() != want.as_str()));
+                        pf.tls.pins.retain(|x| {
+                            glidex_tls::Trust::normalize_pin(x)
+                                .is_none_or(|n| n.as_str() != want.as_str())
+                        });
                         gone = pf.tls.pins.len() != before;
                     }
                 }) {
                     return err(e);
                 }
-                println!("{}", if gone { format!("{} pin removed from profile '{name}'", "OK:".green()) } else { format!("profile '{name}' had no such pin") });
+                println!(
+                    "{}",
+                    if gone {
+                        format!("{} pin removed from profile '{name}'", "OK:".green())
+                    } else {
+                        format!("profile '{name}' had no such pin")
+                    }
+                );
             } else {
                 usage("Usage: auth trust remove <sha256/pin> | auth trust remove --all [--yes]")
             }
@@ -876,13 +1155,22 @@ async fn auth_trust(args: &[&str]) {
 
 pub async fn logout(client: &ApiClient, args: &[&str]) {
     if client.is_unix() {
-        println!("{} Nothing to log out of on the local socket.", "Info:".cyan());
+        println!(
+            "{} Nothing to log out of on the local socket.",
+            "Info:".cyan()
+        );
         return;
     }
     if has_flag(args, "--revoke") && client.has_token() {
-        match client.request_json::<Value>(Method::GET, "/auth/whoami", None).await {
+        match client
+            .request_json::<Value>(Method::GET, "/auth/whoami", None)
+            .await
+        {
             Ok(w) => match w["token"]["id"].as_str() {
-                Some(id) => match client.request_json::<()>(Method::DELETE, &format!("/tokens/{}", enc(id)), None).await {
+                Some(id) => match client
+                    .request_json::<()>(Method::DELETE, &format!("/tokens/{}", enc(id)), None)
+                    .await
+                {
                     Ok(()) => println!("{} token {} revoked", "OK:".green(), id),
                     Err(e) => err(e),
                 },
@@ -899,7 +1187,10 @@ pub async fn logout(client: &ApiClient, args: &[&str]) {
         None => {}
     }
     if std::env::var_os("GLIDEX_TOKEN").is_some() {
-        println!("{} GLIDEX_TOKEN is still set in your environment.", "Note:".dimmed());
+        println!(
+            "{} GLIDEX_TOKEN is still set in your environment.",
+            "Note:".dimmed()
+        );
     }
     if !has_flag(args, "--revoke") {
         println!("{} The token stays valid until it expires; 'logout --revoke' or 'token revoke <id>' ends it now.", "Note:".dimmed());
@@ -907,9 +1198,15 @@ pub async fn logout(client: &ApiClient, args: &[&str]) {
 }
 
 pub fn ui() {
-    let url = std::env::var("GLIDEX_UI_URL").ok().filter(|u| !u.is_empty()).unwrap_or_else(|| "https://localhost:5173".into());
+    let url = std::env::var("GLIDEX_UI_URL")
+        .ok()
+        .filter(|u| !u.is_empty())
+        .unwrap_or_else(|| "https://localhost:5173".into());
     println!("Web UI: {}", url.cyan());
-    println!("{} Log in there with your account (PAM or OIDC, whatever the site enables).", "Note:".dimmed());
+    println!(
+        "{} Log in there with your account (PAM or OIDC, whatever the site enables).",
+        "Note:".dimmed()
+    );
 }
 
 // ---- tokens ----------------------------------------------------------------
@@ -917,7 +1214,10 @@ pub fn ui() {
 pub async fn token(client: &ApiClient, args: &[&str]) {
     let u = "Usage: token list | create <name> [--days N] [--service-account [--project P]] [--role ROLE[@PROJECT]]... | revoke <id>";
     match args.first().copied().unwrap_or("list") {
-        "list" | "ls" => match client.request_json::<Vec<Value>>(Method::GET, "/tokens", None).await {
+        "list" | "ls" => match client
+            .request_json::<Vec<Value>>(Method::GET, "/tokens", None)
+            .await
+        {
             Ok(ts) if ts.is_empty() => println!("No tokens."),
             Ok(ts) => {
                 let names = project_names(client).await;
@@ -925,7 +1225,10 @@ pub async fn token(client: &ApiClient, args: &[&str]) {
                     let kind = match s(&t["kind"]) {
                         "service_account" => {
                             let p = s(&t["project"]);
-                            format!("service account in {}", names.get(p).map(String::as_str).unwrap_or(p))
+                            format!(
+                                "service account in {}",
+                                names.get(p).map(String::as_str).unwrap_or(p)
+                            )
                         }
                         _ => "personal".to_string(),
                     };
@@ -942,7 +1245,11 @@ pub async fn token(client: &ApiClient, args: &[&str]) {
                         kind,
                         time_secs(&t["expires_at"]),
                         time_secs(&t["last_used_at"]),
-                        if roles.is_empty() { String::new() } else { format!("  roles: {}", roles.join(", ")) }
+                        if roles.is_empty() {
+                            String::new()
+                        } else {
+                            format!("  roles: {}", roles.join(", "))
+                        }
                     );
                 }
             }
@@ -950,7 +1257,9 @@ pub async fn token(client: &ApiClient, args: &[&str]) {
         },
         "create" => {
             let pos = positional(&args[1..], &["--days", "--project", "--role"]);
-            let Some(name) = pos.first() else { return usage(u) };
+            let Some(name) = pos.first() else {
+                return usage(u);
+            };
             let mut body = json!({ "name": name });
             if let Some(d) = flag_value(args, "--days") {
                 match d.parse::<u64>() {
@@ -960,9 +1269,15 @@ pub async fn token(client: &ApiClient, args: &[&str]) {
             }
             if has_flag(args, "--service-account") {
                 body["kind"] = json!("service_account");
-                match flag_value(args, "--project").map(str::to_string).or_else(|| client.project()) {
+                match flag_value(args, "--project")
+                    .map(str::to_string)
+                    .or_else(|| client.project())
+                {
                     Some(p) => body["project"] = json!(p),
-                    None => println!("{} no --project; the control plane uses your default project.", "Note:".dimmed()),
+                    None => println!(
+                        "{} no --project; the control plane uses your default project.",
+                        "Note:".dimmed()
+                    ),
                 }
             }
             let mut roles = Vec::new();
@@ -973,10 +1288,19 @@ pub async fn token(client: &ApiClient, args: &[&str]) {
                 }
             }
             body["roles"] = json!(roles);
-            match client.request_json::<Value>(Method::POST, "/tokens", Some(body)).await {
+            match client
+                .request_json::<Value>(Method::POST, "/tokens", Some(body))
+                .await
+            {
                 Ok(r) => {
                     let rec = &r["record"];
-                    println!("{} token {} ({}), expires {}", "Created:".green(), s(&rec["name"]).yellow(), s(&rec["id"]), time_secs(&rec["expires_at"]));
+                    println!(
+                        "{} token {} ({}), expires {}",
+                        "Created:".green(),
+                        s(&rec["name"]).yellow(),
+                        s(&rec["id"]),
+                        time_secs(&rec["expires_at"])
+                    );
                     println!();
                     println!("    {}", s(&r["token"]).bold());
                     println!();
@@ -990,7 +1314,10 @@ pub async fn token(client: &ApiClient, args: &[&str]) {
             }
         }
         "revoke" | "rm" | "delete" => match args.get(1) {
-            Some(id) => match client.request_json::<()>(Method::DELETE, &format!("/tokens/{}", enc(id)), None).await {
+            Some(id) => match client
+                .request_json::<()>(Method::DELETE, &format!("/tokens/{}", enc(id)), None)
+                .await
+            {
                 Ok(()) => println!("{} token {}", "Revoked:".green(), id),
                 Err(e) => err(e),
             },
@@ -1002,7 +1329,14 @@ pub async fn token(client: &ApiClient, args: &[&str]) {
 
 // ---- projects and bindings -------------------------------------------------
 
-const QUOTA_KEYS: [&str; 6] = ["vms", "vcpus", "memory_mib", "disk_gib", "running_vms", "networks"];
+const QUOTA_KEYS: [&str; 6] = [
+    "vms",
+    "vcpus",
+    "memory_mib",
+    "disk_gib",
+    "running_vms",
+    "networks",
+];
 
 /// `key=value` quota edits applied to `quotas`; `none`/`unlimited` → no limit.
 pub fn apply_quota_edits(quotas: &mut Value, edits: &[&str]) -> Result<(), String> {
@@ -1010,13 +1344,21 @@ pub fn apply_quota_edits(quotas: &mut Value, edits: &[&str]) -> Result<(), Strin
         *quotas = json!({});
     }
     for e in edits {
-        let (k, v) = e.split_once('=').ok_or_else(|| format!("'{}': write quotas as key=value", e))?;
+        let (k, v) = e
+            .split_once('=')
+            .ok_or_else(|| format!("'{}': write quotas as key=value", e))?;
         if !QUOTA_KEYS.contains(&k) {
-            return Err(format!("unknown quota '{}'; one of {}", k, QUOTA_KEYS.join(", ")));
+            return Err(format!(
+                "unknown quota '{}'; one of {}",
+                k,
+                QUOTA_KEYS.join(", ")
+            ));
         }
         quotas[k] = match v {
             "none" | "null" | "unlimited" | "-" => Value::Null,
-            n => json!(n.parse::<u64>().map_err(|_| format!("'{}': a quota is a number or 'none'", e))?),
+            n => json!(n
+                .parse::<u64>()
+                .map_err(|_| format!("'{}': a quota is a number or 'none'", e))?),
         };
     }
     Ok(())
@@ -1026,7 +1368,10 @@ fn quota_line(q: &Value, usage: &Value) -> String {
     QUOTA_KEYS
         .iter()
         .map(|k| {
-            let limit = q[*k].as_u64().map(|v| v.to_string()).unwrap_or_else(|| "∞".into());
+            let limit = q[*k]
+                .as_u64()
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "∞".into());
             match usage[*k].as_u64() {
                 Some(u) => format!("{} {}/{}", k, u, limit),
                 None => format!("{} {}", k, limit),
@@ -1039,7 +1384,10 @@ fn quota_line(q: &Value, usage: &Value) -> String {
 pub async fn project(client: &ApiClient, args: &[&str]) {
     let u = "Usage: project list | show <p> | create <name> [--description TEXT] | delete <p> | quota <p> key=value... | use <p>";
     match args.first().copied().unwrap_or("list") {
-        "list" | "ls" => match client.request_json::<Vec<Value>>(Method::GET, "/projects", None).await {
+        "list" | "ls" => match client
+            .request_json::<Vec<Value>>(Method::GET, "/projects", None)
+            .await
+        {
             Ok(ps) if ps.is_empty() => println!("No projects visible to you."),
             Ok(ps) => {
                 for p in ps {
@@ -1048,7 +1396,10 @@ pub async fn project(client: &ApiClient, args: &[&str]) {
                         s(&p["name"]).cyan(),
                         s(&p["id"]).dimmed(),
                         p["usage"]["vms"].as_u64().unwrap_or(0),
-                        p["quotas"]["vms"].as_u64().map(|v| v.to_string()).unwrap_or_else(|| "∞".into()),
+                        p["quotas"]["vms"]
+                            .as_u64()
+                            .map(|v| v.to_string())
+                            .unwrap_or_else(|| "∞".into()),
                         s(&p["description"])
                     );
                 }
@@ -1056,7 +1407,10 @@ pub async fn project(client: &ApiClient, args: &[&str]) {
             Err(e) => err(e),
         },
         "show" | "get" => match args.get(1) {
-            Some(p) => match client.request_json::<Value>(Method::GET, &format!("/projects/{}", enc(p)), None).await {
+            Some(p) => match client
+                .request_json::<Value>(Method::GET, &format!("/projects/{}", enc(p)), None)
+                .await
+            {
                 Ok(p) => {
                     println!("  Name:        {}", s(&p["name"]).yellow());
                     println!("  Id:          {}", s(&p["id"]));
@@ -1070,10 +1424,20 @@ pub async fn project(client: &ApiClient, args: &[&str]) {
         },
         "create" => {
             let pos = positional(&args[1..], &["--description"]);
-            let Some(name) = pos.first() else { return usage(u) };
+            let Some(name) = pos.first() else {
+                return usage(u);
+            };
             let body = json!({ "name": name, "description": flag_value(args, "--description").unwrap_or("") });
-            match client.request_json::<Value>(Method::POST, "/projects", Some(body)).await {
-                Ok(p) => println!("{} {} ({})", "Project created:".green(), s(&p["name"]).yellow(), s(&p["id"])),
+            match client
+                .request_json::<Value>(Method::POST, "/projects", Some(body))
+                .await
+            {
+                Ok(p) => println!(
+                    "{} {} ({})",
+                    "Project created:".green(),
+                    s(&p["name"]).yellow(),
+                    s(&p["id"])
+                ),
                 Err(e) => err(e),
             }
         }
@@ -1082,7 +1446,10 @@ pub async fn project(client: &ApiClient, args: &[&str]) {
                 if prompt(&format!("Delete project {} (it must be empty; its service-account tokens are revoked)? [y/N]: ", p)).to_lowercase() != "y" {
                     return println!("Cancelled");
                 }
-                match client.request_json::<()>(Method::DELETE, &format!("/projects/{}", enc(p)), None).await {
+                match client
+                    .request_json::<()>(Method::DELETE, &format!("/projects/{}", enc(p)), None)
+                    .await
+                {
                     Ok(()) => println!("{} {}", "Project deleted:".green(), p),
                     Err(e) => err(e),
                 }
@@ -1090,7 +1457,9 @@ pub async fn project(client: &ApiClient, args: &[&str]) {
             None => usage(u),
         },
         "quota" | "quotas" => {
-            let Some(p) = args.get(1) else { return usage(u) };
+            let Some(p) = args.get(1) else {
+                return usage(u);
+            };
             let path = format!("/projects/{}", enc(p));
             let current: Value = match client.request_json(Method::GET, &path, None).await {
                 Ok(v) => v,
@@ -1104,26 +1473,51 @@ pub async fn project(client: &ApiClient, args: &[&str]) {
             if let Err(e) = apply_quota_edits(&mut q, &args[2..]) {
                 return err(e);
             }
-            match client.request_json::<Value>(Method::PATCH, &path, Some(json!({ "quotas": q }))).await {
-                Ok(p) => println!("{} {}: {}", "Quotas updated:".green(), s(&p["name"]), quota_line(&p["quotas"], &current["usage"])),
+            match client
+                .request_json::<Value>(Method::PATCH, &path, Some(json!({ "quotas": q })))
+                .await
+            {
+                Ok(p) => println!(
+                    "{} {}: {}",
+                    "Quotas updated:".green(),
+                    s(&p["name"]),
+                    quota_line(&p["quotas"], &current["usage"])
+                ),
                 Err(e) => err(e),
             }
         }
         "use" => match args.get(1) {
             Some(p) => {
-                let body = json!({ "default_project": if *p == "-" || *p == "none" { "" } else { *p } });
-                match client.request::<Value>(Method::PATCH, "/users/me", Some(body)).await {
+                let body =
+                    json!({ "default_project": if *p == "-" || *p == "none" { "" } else { *p } });
+                match client
+                    .request::<Value>(Method::PATCH, "/users/me", Some(body))
+                    .await
+                {
                     Ok(u) => {
                         client.set_project(None);
                         match u["default_project"].as_str() {
-                            Some(id) => println!("{} default project is now {} ({})", "OK:".green(), p.yellow(), id),
+                            Some(id) => println!(
+                                "{} default project is now {} ({})",
+                                "OK:".green(),
+                                p.yellow(),
+                                id
+                            ),
                             None => println!("{} no default project", "OK:".green()),
                         }
                     }
-                    Err(e) if e.status == Some(StatusCode::BAD_REQUEST) && e.code.as_deref() == Some("invalid") => {
+                    Err(e)
+                        if e.status == Some(StatusCode::BAD_REQUEST)
+                            && e.code.as_deref() == Some("invalid") =>
+                    {
                         // Service accounts and auth-disabled servers have no profile.
                         client.set_project(Some(p.to_string()));
-                        println!("{} {}; using project {} for this session only", "Note:".yellow(), e.message, p);
+                        println!(
+                            "{} {}; using project {} for this session only",
+                            "Note:".yellow(),
+                            e.message,
+                            p
+                        );
                     }
                     Err(e) => err(e),
                 }
@@ -1156,24 +1550,53 @@ fn print_links(links: &[Value]) {
 pub async fn binding(client: &ApiClient, args: &[&str]) {
     let u = "Usage: binding list <project> | add <project> <role> user:<id>|team:<id>|token:<id> | remove <project> <binding-id>";
     match (args.first().copied().unwrap_or("list"), args.get(1)) {
-        ("list" | "ls", Some(p)) => match client.request_json::<Vec<Value>>(Method::GET, &format!("/projects/{}/bindings", enc(p)), None).await {
+        ("list" | "ls", Some(p)) => match client
+            .request_json::<Vec<Value>>(
+                Method::GET,
+                &format!("/projects/{}/bindings", enc(p)),
+                None,
+            )
+            .await
+        {
             Ok(l) => print_links(&l),
             Err(e) => err(e),
         },
         ("add", Some(p)) => {
-            let (Some(role), Some(who)) = (args.get(2), args.get(3)) else { return usage(u) };
+            let (Some(role), Some(who)) = (args.get(2), args.get(3)) else {
+                return usage(u);
+            };
             let principal = match parse_principal(who) {
                 Ok(v) => v,
                 Err(e) => return err(e),
             };
             let body = json!({ "role": role_name(role), "principal": principal });
-            match client.request_json::<Value>(Method::POST, &format!("/projects/{}/bindings", enc(p)), Some(body)).await {
-                Ok(l) => println!("{} {} {} → {}", "Added:".green(), s(&l["id"]), s(&l["template"]), format_entity(&l["principal"])),
+            match client
+                .request_json::<Value>(
+                    Method::POST,
+                    &format!("/projects/{}/bindings", enc(p)),
+                    Some(body),
+                )
+                .await
+            {
+                Ok(l) => println!(
+                    "{} {} {} → {}",
+                    "Added:".green(),
+                    s(&l["id"]),
+                    s(&l["template"]),
+                    format_entity(&l["principal"])
+                ),
                 Err(e) => err(e),
             }
         }
         ("remove" | "rm" | "delete", Some(p)) => match args.get(2) {
-            Some(link) => match client.request_json::<()>(Method::DELETE, &format!("/projects/{}/bindings/{}", enc(p), enc(link)), None).await {
+            Some(link) => match client
+                .request_json::<()>(
+                    Method::DELETE,
+                    &format!("/projects/{}/bindings/{}", enc(p), enc(link)),
+                    None,
+                )
+                .await
+            {
                 Ok(()) => println!("{} {}", "Removed:".green(), link),
                 Err(e) => err(e),
             },
@@ -1186,24 +1609,45 @@ pub async fn binding(client: &ApiClient, args: &[&str]) {
 pub async fn system_binding(client: &ApiClient, args: &[&str]) {
     let u = "Usage: system-binding list | add <role> user:<id>|team:<id>|token:<id> | remove <binding-id>";
     match args.first().copied().unwrap_or("list") {
-        "list" | "ls" => match client.request_json::<Vec<Value>>(Method::GET, "/system/bindings", None).await {
+        "list" | "ls" => match client
+            .request_json::<Vec<Value>>(Method::GET, "/system/bindings", None)
+            .await
+        {
             Ok(l) => print_links(&l),
             Err(e) => err(e),
         },
         "add" => {
-            let (Some(role), Some(who)) = (args.get(1), args.get(2)) else { return usage(u) };
+            let (Some(role), Some(who)) = (args.get(1), args.get(2)) else {
+                return usage(u);
+            };
             let principal = match parse_principal(who) {
                 Ok(v) => v,
                 Err(e) => return err(e),
             };
             let body = json!({ "role": role_name(role), "principal": principal });
-            match client.request_json::<Value>(Method::POST, "/system/bindings", Some(body)).await {
-                Ok(l) => println!("{} {} {} → {}", "Added:".green(), s(&l["id"]), s(&l["template"]), format_entity(&l["principal"])),
+            match client
+                .request_json::<Value>(Method::POST, "/system/bindings", Some(body))
+                .await
+            {
+                Ok(l) => println!(
+                    "{} {} {} → {}",
+                    "Added:".green(),
+                    s(&l["id"]),
+                    s(&l["template"]),
+                    format_entity(&l["principal"])
+                ),
                 Err(e) => err(e),
             }
         }
         "remove" | "rm" | "delete" => match args.get(1) {
-            Some(link) => match client.request_json::<()>(Method::DELETE, &format!("/system/bindings/{}", enc(link)), None).await {
+            Some(link) => match client
+                .request_json::<()>(
+                    Method::DELETE,
+                    &format!("/system/bindings/{}", enc(link)),
+                    None,
+                )
+                .await
+            {
                 Ok(()) => println!("{} {}", "Removed:".green(), link),
                 Err(e) => err(e),
             },
@@ -1217,7 +1661,10 @@ pub async fn system_binding(client: &ApiClient, args: &[&str]) {
 
 pub async fn user(client: &ApiClient, args: &[&str]) {
     match args.first().copied().unwrap_or("list") {
-        "list" | "ls" => match client.request_json::<Vec<Value>>(Method::GET, "/users", None).await {
+        "list" | "ls" => match client
+            .request_json::<Vec<Value>>(Method::GET, "/users", None)
+            .await
+        {
             Ok(us) => {
                 for u in us {
                     let ids: Vec<String> = u["identities"]
@@ -1231,7 +1678,11 @@ pub async fn user(client: &ApiClient, args: &[&str]) {
                         s(&u["id"]).cyan(),
                         s(&u["display_name"]),
                         ids.join(", "),
-                        if u["disabled"] == true { " (disabled)".red().to_string() } else { String::new() }
+                        if u["disabled"] == true {
+                            " (disabled)".red().to_string()
+                        } else {
+                            String::new()
+                        }
                     );
                 }
             }
@@ -1255,7 +1706,10 @@ async fn resolve_team(client: &ApiClient, key: &str) -> Result<String, String> {
 pub async fn team(client: &ApiClient, args: &[&str]) {
     let u = "Usage: team list | create <name> | delete <team> | add-member <team> <user-id> | remove-member <team> <user-id>";
     match args.first().copied().unwrap_or("list") {
-        "list" | "ls" => match client.request_json::<Vec<Value>>(Method::GET, "/teams", None).await {
+        "list" | "ls" => match client
+            .request_json::<Vec<Value>>(Method::GET, "/teams", None)
+            .await
+        {
             Ok(ts) if ts.is_empty() => println!("No teams."),
             Ok(ts) => {
                 for t in ts {
@@ -1265,14 +1719,31 @@ pub async fn team(client: &ApiClient, args: &[&str]) {
                         .flatten()
                         .map(|m| format!("{}({})", s(&m["user_id"]), s(&m["source"])))
                         .collect();
-                    println!("  {:<20} {}  members: {}", s(&t["name"]).cyan(), s(&t["id"]).dimmed(), if members.is_empty() { "-".into() } else { members.join(", ") });
+                    println!(
+                        "  {:<20} {}  members: {}",
+                        s(&t["name"]).cyan(),
+                        s(&t["id"]).dimmed(),
+                        if members.is_empty() {
+                            "-".into()
+                        } else {
+                            members.join(", ")
+                        }
+                    );
                 }
             }
             Err(e) => err(e),
         },
         "create" => match args.get(1) {
-            Some(name) => match client.request_json::<Value>(Method::POST, "/teams", Some(json!({ "name": name }))).await {
-                Ok(t) => println!("{} {} ({})", "Team created:".green(), s(&t["name"]).yellow(), s(&t["id"])),
+            Some(name) => match client
+                .request_json::<Value>(Method::POST, "/teams", Some(json!({ "name": name })))
+                .await
+            {
+                Ok(t) => println!(
+                    "{} {} ({})",
+                    "Team created:".green(),
+                    s(&t["name"]).yellow(),
+                    s(&t["id"])
+                ),
                 Err(e) => err(e),
             },
             None => usage(u),
@@ -1283,7 +1754,10 @@ pub async fn team(client: &ApiClient, args: &[&str]) {
                     Ok(id) => id,
                     Err(e) => return err(e),
                 };
-                match client.request_json::<()>(Method::DELETE, &format!("/teams/{}", enc(&id)), None).await {
+                match client
+                    .request_json::<()>(Method::DELETE, &format!("/teams/{}", enc(&id)), None)
+                    .await
+                {
                     Ok(()) => println!("{} {}", "Team deleted:".green(), t),
                     Err(e) => err(e),
                 }
@@ -1291,14 +1765,32 @@ pub async fn team(client: &ApiClient, args: &[&str]) {
             None => usage(u),
         },
         sub @ ("add-member" | "remove-member") => {
-            let (Some(t), Some(user)) = (args.get(1), args.get(2)) else { return usage(u) };
+            let (Some(t), Some(user)) = (args.get(1), args.get(2)) else {
+                return usage(u);
+            };
             let id = match resolve_team(client, t).await {
                 Ok(id) => id,
                 Err(e) => return err(e),
             };
-            let method = if sub == "add-member" { Method::PUT } else { Method::DELETE };
-            match client.request_json::<Value>(method, &format!("/teams/{}/members/{}", enc(&id), enc(user)), None).await {
-                Ok(t) => println!("{} {} now has {} member(s)", "OK:".green(), s(&t["name"]), t["members"].as_array().map(|m| m.len()).unwrap_or(0)),
+            let method = if sub == "add-member" {
+                Method::PUT
+            } else {
+                Method::DELETE
+            };
+            match client
+                .request_json::<Value>(
+                    method,
+                    &format!("/teams/{}/members/{}", enc(&id), enc(user)),
+                    None,
+                )
+                .await
+            {
+                Ok(t) => println!(
+                    "{} {} now has {} member(s)",
+                    "OK:".green(),
+                    s(&t["name"]),
+                    t["members"].as_array().map(|m| m.len()).unwrap_or(0)
+                ),
                 Err(e) => err(e),
             }
         }
@@ -1310,9 +1802,19 @@ pub async fn team(client: &ApiClient, args: &[&str]) {
 
 /// The current version of site policy `id`: 0 when it doesn't exist.
 async fn policy_version(client: &ApiClient, id: &str) -> Result<(u64, Option<Value>), String> {
-    match client.request::<Value>(Method::GET, &format!("/authz/policies/{}", enc(id)), None).await {
-        Ok(v) if v["source"] == "site" => Ok((v["policy"]["version"].as_u64().unwrap_or(0), Some(v["policy"].clone()))),
-        Ok(v) => Err(format!("{} is a {} policy and can't be changed through the API", id, s(&v["source"]))),
+    match client
+        .request::<Value>(Method::GET, &format!("/authz/policies/{}", enc(id)), None)
+        .await
+    {
+        Ok(v) if v["source"] == "site" => Ok((
+            v["policy"]["version"].as_u64().unwrap_or(0),
+            Some(v["policy"].clone()),
+        )),
+        Ok(v) => Err(format!(
+            "{} is a {} policy and can't be changed through the API",
+            id,
+            s(&v["source"])
+        )),
         Err(e) if e.status == Some(StatusCode::NOT_FOUND) => Ok((0, None)),
         Err(e) => Err(e.message),
     }
@@ -1325,7 +1827,10 @@ fn read_policy_file(path: &str) -> Result<String, String> {
 pub async fn policy(client: &ApiClient, args: &[&str]) {
     let u = "Usage: policy list | show <id> | put <id> <file> [--disable] [--description TEXT] | delete <id> | validate <id> <file> | history <id> | reload";
     match args.first().copied().unwrap_or("list") {
-        "list" | "ls" => match client.request_json::<Value>(Method::GET, "/authz/policies", None).await {
+        "list" | "ls" => match client
+            .request_json::<Value>(Method::GET, "/authz/policies", None)
+            .await
+        {
             Ok(v) => {
                 let site = v["site"].as_array().cloned().unwrap_or_default();
                 for p in v["policies"].as_array().into_iter().flatten() {
@@ -1338,18 +1843,41 @@ pub async fn policy(client: &ApiClient, args: &[&str]) {
                     println!("  {:<36} {:<6} {}", id.cyan(), s(&p["source"]), extra);
                 }
                 for sp in site.iter().filter(|x| x["enabled"] == false) {
-                    println!("  {:<36} {:<6} v{} {} {}", s(&sp["id"]).cyan(), "site", sp["version"], "(disabled)".yellow(), s(&sp["description"]));
+                    println!(
+                        "  {:<36} {:<6} v{} {} {}",
+                        s(&sp["id"]).cyan(),
+                        "site",
+                        sp["version"],
+                        "(disabled)".yellow(),
+                        s(&sp["description"])
+                    );
                 }
             }
             Err(e) => err(e),
         },
         "show" | "get" => match args.get(1) {
-            Some(id) => match client.request_json::<Value>(Method::GET, &format!("/authz/policies/{}", enc(id)), None).await {
+            Some(id) => match client
+                .request_json::<Value>(Method::GET, &format!("/authz/policies/{}", enc(id)), None)
+                .await
+            {
                 Ok(v) => {
                     let p = &v["policy"];
-                    print!("{} {} ({}", "Policy".bold(), s(&p["id"]).yellow(), s(&v["source"]));
+                    print!(
+                        "{} {} ({}",
+                        "Policy".bold(),
+                        s(&p["id"]).yellow(),
+                        s(&v["source"])
+                    );
                     if let Some(ver) = p["version"].as_u64() {
-                        print!(", version {}, {}", ver, if p["enabled"] == false { "disabled" } else { "enabled" });
+                        print!(
+                            ", version {}, {}",
+                            ver,
+                            if p["enabled"] == false {
+                                "disabled"
+                            } else {
+                                "enabled"
+                            }
+                        );
                     }
                     println!(")");
                     if !s(&p["description"]).is_empty() {
@@ -1363,7 +1891,9 @@ pub async fn policy(client: &ApiClient, args: &[&str]) {
         },
         "put" => {
             let pos = positional(&args[1..], &["--description"]);
-            let (Some(id), Some(file)) = (pos.first(), pos.get(1)) else { return usage(u) };
+            let (Some(id), Some(file)) = (pos.first(), pos.get(1)) else {
+                return usage(u);
+            };
             let text = match read_policy_file(file) {
                 Ok(t) => t,
                 Err(e) => return err(e),
@@ -1377,8 +1907,25 @@ pub async fn policy(client: &ApiClient, args: &[&str]) {
                 .or_else(|| current.as_ref().map(|c| s(&c["description"]).to_string()))
                 .unwrap_or_default();
             let body = json!({ "text": text, "description": description, "enabled": !has_flag(args, "--disable"), "version": version });
-            match client.request_json::<Value>(Method::PUT, &format!("/authz/policies/{}", enc(id)), Some(body)).await {
-                Ok(p) => println!("{} {} version {}{}", if version == 0 { "Created:" } else { "Updated:" }.green(), id, p["version"], if p["enabled"] == false { " (disabled)" } else { "" }),
+            match client
+                .request_json::<Value>(
+                    Method::PUT,
+                    &format!("/authz/policies/{}", enc(id)),
+                    Some(body),
+                )
+                .await
+            {
+                Ok(p) => println!(
+                    "{} {} version {}{}",
+                    if version == 0 { "Created:" } else { "Updated:" }.green(),
+                    id,
+                    p["version"],
+                    if p["enabled"] == false {
+                        " (disabled)"
+                    } else {
+                        ""
+                    }
+                ),
                 Err(e) => err(e),
             }
         }
@@ -1392,7 +1939,18 @@ pub async fn policy(client: &ApiClient, args: &[&str]) {
                 if prompt(&format!("Delete site policy {}? [y/N]: ", id)).to_lowercase() != "y" {
                     return println!("Cancelled");
                 }
-                match client.request_json::<()>(Method::DELETE, &client::add_query(&format!("/authz/policies/{}", enc(id)), "version", &version.to_string()), None).await {
+                match client
+                    .request_json::<()>(
+                        Method::DELETE,
+                        &client::add_query(
+                            &format!("/authz/policies/{}", enc(id)),
+                            "version",
+                            &version.to_string(),
+                        ),
+                        None,
+                    )
+                    .await
+                {
                     Ok(()) => println!("{} {}", "Deleted:".green(), id),
                     Err(e) => err(e),
                 }
@@ -1400,24 +1958,45 @@ pub async fn policy(client: &ApiClient, args: &[&str]) {
             None => usage(u),
         },
         "validate" | "check" => {
-            let (Some(id), Some(file)) = (args.get(1), args.get(2)) else { return usage(u) };
+            let (Some(id), Some(file)) = (args.get(1), args.get(2)) else {
+                return usage(u);
+            };
             let text = match read_policy_file(file) {
                 Ok(t) => t,
                 Err(e) => return err(e),
             };
-            match client.request_json::<Value>(Method::POST, "/authz/validate", Some(json!({ "id": id, "text": text }))).await {
+            match client
+                .request_json::<Value>(
+                    Method::POST,
+                    "/authz/validate",
+                    Some(json!({ "id": id, "text": text })),
+                )
+                .await
+            {
                 Ok(v) if v["valid"] == true => println!("{} {} is valid", "OK:".green(), id),
                 Ok(v) => {
                     println!("{} {} is not valid:", "Invalid:".red(), id);
                     for e in v["errors"].as_array().into_iter().flatten() {
-                        println!("  {}", e.as_str().map(str::to_string).unwrap_or_else(|| e.to_string()));
+                        println!(
+                            "  {}",
+                            e.as_str()
+                                .map(str::to_string)
+                                .unwrap_or_else(|| e.to_string())
+                        );
                     }
                 }
                 Err(e) => err(e),
             }
         }
         "history" | "versions" => match args.get(1) {
-            Some(id) => match client.request_json::<Vec<Value>>(Method::GET, &format!("/authz/policies/{}/versions", enc(id)), None).await {
+            Some(id) => match client
+                .request_json::<Vec<Value>>(
+                    Method::GET,
+                    &format!("/authz/policies/{}/versions", enc(id)),
+                    None,
+                )
+                .await
+            {
                 Ok(vs) if vs.is_empty() => println!("No history for {}.", id),
                 Ok(vs) => {
                     for v in vs {
@@ -1426,7 +2005,13 @@ pub async fn policy(client: &ApiClient, args: &[&str]) {
                             v["version"],
                             time_secs(&v["time"]),
                             s(&v["author"]),
-                            if v["deleted"] == true { " (deleted)".red().to_string() } else if v["enabled"] == false { " (disabled)".yellow().to_string() } else { String::new() }
+                            if v["deleted"] == true {
+                                " (deleted)".red().to_string()
+                            } else if v["enabled"] == false {
+                                " (disabled)".yellow().to_string()
+                            } else {
+                                String::new()
+                            }
                         );
                     }
                 }
@@ -1434,7 +2019,10 @@ pub async fn policy(client: &ApiClient, args: &[&str]) {
             },
             None => usage(u),
         },
-        "reload" => match client.request_json::<()>(Method::POST, "/authz/reload", None).await {
+        "reload" => match client
+            .request_json::<()>(Method::POST, "/authz/reload", None)
+            .await
+        {
             Ok(()) => println!("{} policies reloaded", "OK:".green()),
             Err(e) => err(e),
         },
@@ -1446,18 +2034,36 @@ pub async fn policy(client: &ApiClient, args: &[&str]) {
 
 pub async fn audit(client: &ApiClient, args: &[&str]) {
     let mut path = "/audit".to_string();
-    if let Some(p) = flag_value(args, "--project").map(str::to_string).or_else(|| client.project()) {
+    if let Some(p) = flag_value(args, "--project")
+        .map(str::to_string)
+        .or_else(|| client.project())
+    {
         path = client::add_query(&path, "project", &p);
     }
-    for (flag, key) in [("--since", "since"), ("--limit", "limit"), ("--user", "user")] {
+    for (flag, key) in [
+        ("--since", "since"),
+        ("--limit", "limit"),
+        ("--user", "user"),
+    ] {
         if let Some(v) = flag_value(args, flag) {
             if key != "user" && v.parse::<u64>().is_err() {
-                return err(format!("{} must be a number{}", flag, if key == "since" { " (Unix milliseconds)" } else { "" }));
+                return err(format!(
+                    "{} must be a number{}",
+                    flag,
+                    if key == "since" {
+                        " (Unix milliseconds)"
+                    } else {
+                        ""
+                    }
+                ));
             }
             path = client::add_query(&path, key, v);
         }
     }
-    match client.request_json::<Vec<Value>>(Method::GET, &path, None).await {
+    match client
+        .request_json::<Vec<Value>>(Method::GET, &path, None)
+        .await
+    {
         Ok(es) if es.is_empty() => println!("No audit entries."),
         Ok(es) => {
             for e in es {
@@ -1465,13 +2071,25 @@ pub async fn audit(client: &ApiClient, args: &[&str]) {
                     .as_str()
                     .or(e["principal"]["user"].as_str())
                     .map(str::to_string)
-                    .or_else(|| e["principal"]["token"].as_str().map(|t| format!("token:{}", t)))
+                    .or_else(|| {
+                        e["principal"]["token"]
+                            .as_str()
+                            .map(|t| format!("token:{}", t))
+                    })
                     .unwrap_or_else(|| "-".into());
                 let result = s(&e["result"]);
-                let result = if result == "ok" { result.green().to_string() } else { result.red().to_string() };
+                let result = if result == "ok" {
+                    result.green().to_string()
+                } else {
+                    result.red().to_string()
+                };
                 println!(
                     "  {} {:<16} {:<22} {:<10} {} {}",
-                    e["time"].as_u64().map(|ms| format_unix_time(ms / 1000)).unwrap_or_default().dimmed(),
+                    e["time"]
+                        .as_u64()
+                        .map(|ms| format_unix_time(ms / 1000))
+                        .unwrap_or_default()
+                        .dimmed(),
                     who,
                     s(&e["action"]),
                     result,
@@ -1487,12 +2105,21 @@ pub async fn audit(client: &ApiClient, args: &[&str]) {
 /// `GET /usage` path from `usage` arguments (spec/metering.md §12).
 fn usage_path(args: &[&str], project: Option<String>) -> String {
     let mut path = "/usage".to_string();
-    if let Some(p) = flag_value(args, "--project").map(str::to_string).or(project) {
+    if let Some(p) = flag_value(args, "--project")
+        .map(str::to_string)
+        .or(project)
+    {
         path = client::add_query(&path, "project", &p);
     }
     let granularity = flag_value(args, "--granularity").unwrap_or("month");
     path = client::add_query(&path, "granularity", granularity);
-    for (flag, key) in [("--from", "from"), ("--to", "to"), ("--by", "group_by"), ("--meters", "meters"), ("--tz", "tz")] {
+    for (flag, key) in [
+        ("--from", "from"),
+        ("--to", "to"),
+        ("--by", "group_by"),
+        ("--meters", "meters"),
+        ("--tz", "tz"),
+    ] {
         if let Some(v) = flag_value(args, flag) {
             path = client::add_query(&path, key, v);
         }
@@ -1543,19 +2170,32 @@ pub async fn resource_usage(client: &ApiClient, args: &[&str]) {
             .filter_map(|k| {
                 let k = k.as_str()?;
                 let n = &r[k];
-                n.is_object().then(|| format!("{}={}", k, n["name"].as_str().unwrap_or("?")))
+                n.is_object()
+                    .then(|| format!("{}={}", k, n["name"].as_str().unwrap_or("?")))
             })
             .collect();
-        let flags: Vec<&str> = r["flags"].as_array().map(|f| f.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+        let flags: Vec<&str> = r["flags"]
+            .as_array()
+            .map(|f| f.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default();
         println!(
             "\n  {} {} {}",
             s(&r["start"]).dimmed(),
             who.join(" ").cyan(),
-            if flags.is_empty() { String::new() } else { format!("[{}]", flags.join(", ")).yellow().to_string() }
+            if flags.is_empty() {
+                String::new()
+            } else {
+                format!("[{}]", flags.join(", ")).yellow().to_string()
+            }
         );
         if let Some(meters) = r["meters"].as_object() {
             for (m, x) in meters {
-                println!("    {:<26} {:>16} {}", m, format!("{}", x["value"]), s(&x["unit"]));
+                println!(
+                    "    {:<26} {:>16} {}",
+                    m,
+                    format!("{}", x["value"]),
+                    s(&x["unit"])
+                );
             }
         }
     }
@@ -1564,16 +2204,31 @@ pub async fn resource_usage(client: &ApiClient, args: &[&str]) {
 /// `usage bandwidth|disk-io|compute [--month YYYY-MM] [--by k,…] [--project P] [--csv]` (§9.3).
 async fn rate_report(client: &ApiClient, base: &str, args: &[&str]) {
     let mut path = base.to_string();
-    if let Some(p) = flag_value(args, "--project").map(str::to_string).or_else(|| client.project()) {
+    if let Some(p) = flag_value(args, "--project")
+        .map(str::to_string)
+        .or_else(|| client.project())
+    {
         path = client::add_query(&path, "project", &p);
     }
-    for (flag, key) in [("--month", "month"), ("--by", "group_by"), ("--from", "from"), ("--to", "to")] {
+    for (flag, key) in [
+        ("--month", "month"),
+        ("--by", "group_by"),
+        ("--from", "from"),
+        ("--to", "to"),
+    ] {
         if let Some(v) = flag_value(args, flag) {
             path = client::add_query(&path, key, v);
         }
     }
     if args.contains(&"--csv") {
-        match client.request_bytes(Method::GET, &client::add_query(&path, "format", "csv"), None).await {
+        match client
+            .request_bytes(
+                Method::GET,
+                &client::add_query(&path, "format", "csv"),
+                None,
+            )
+            .await
+        {
             Ok(r) => print!("{}", String::from_utf8_lossy(&r.body)),
             Err(e) => err(e.message),
         }
@@ -1583,7 +2238,10 @@ async fn rate_report(client: &ApiClient, base: &str, args: &[&str]) {
         Ok(v) => v,
         Err(e) => return err(e),
     };
-    let period = v["month"].as_str().map(str::to_string).unwrap_or_else(|| format!("{} → {}", s(&v["from"]), s(&v["to"])));
+    let period = v["month"]
+        .as_str()
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("{} → {}", s(&v["from"]), s(&v["to"])));
     println!(
         "{} {} ({}){}",
         match base.rsplit('/').next() {
@@ -1594,7 +2252,11 @@ async fn rate_report(client: &ApiClient, base: &str, args: &[&str]) {
         .bold(),
         period,
         s(&v["timezone"]),
-        if v["final"].as_bool() == Some(true) { "" } else { ", month to date" }
+        if v["final"].as_bool() == Some(true) {
+            ""
+        } else {
+            ", month to date"
+        }
     );
     let rows = v["rows"].as_array().cloned().unwrap_or_default();
     if rows.is_empty() {
@@ -1607,10 +2269,15 @@ async fn rate_report(client: &ApiClient, base: &str, args: &[&str]) {
             .iter()
             .filter_map(|k| {
                 let k = k.as_str()?;
-                r[k].is_object().then(|| format!("{}={}", k, r[k]["name"].as_str().unwrap_or("?")))
+                r[k].is_object()
+                    .then(|| format!("{}={}", k, r[k]["name"].as_str().unwrap_or("?")))
             })
             .collect();
-        println!("\n  {}  {}", who.join(" ").cyan(), format!("({} slots of 5 min)", r["slots"]["counted"]).dimmed());
+        println!(
+            "\n  {}  {}",
+            who.join(" ").cyan(),
+            format!("({} slots of 5 min)", r["slots"]["counted"]).dimmed()
+        );
         for part in ["avg", "peak", "p95"] {
             if let Some(o) = r[part].as_object() {
                 let vals: Vec<String> = o
@@ -1627,19 +2294,27 @@ async fn rate_report(client: &ApiClient, base: &str, args: &[&str]) {
             }
         }
         if r["latency_source"] == "none" {
-            println!("    {}", "latency not available (Cloud Hypervisor)".dimmed());
+            println!(
+                "    {}",
+                "latency not available (Cloud Hypervisor)".dimmed()
+            );
         }
     }
 }
 
 /// `stats <vm>`: the latest rates (§9.4).
 pub async fn stats(client: &ApiClient, args: &[&str]) {
-    let Some(vm) = args.first() else { return err("Usage: stats <vm>") };
+    let Some(vm) = args.first() else {
+        return err("Usage: stats <vm>");
+    };
     let id = match client.resolve_vm(vm).await {
         Ok(id) => id,
         Err(e) => return err(e),
     };
-    let v: Value = match client.request_json(Method::GET, &format!("/vms/{}/stats", enc(&id)), None).await {
+    let v: Value = match client
+        .request_json(Method::GET, &format!("/vms/{}/stats", enc(&id)), None)
+        .await
+    {
         Ok(v) => v,
         Err(e) => return err(e),
     };
@@ -1647,7 +2322,12 @@ pub async fn stats(client: &ApiClient, args: &[&str]) {
         println!("No recent sample (is the VM running?).");
         return;
     }
-    println!("{} sampled at {} (over {} s)", vm.bold(), s(&v["sampled_at"]), v["resolution_secs"]);
+    println!(
+        "{} sampled at {} (over {} s)",
+        vm.bold(),
+        s(&v["sampled_at"]),
+        v["resolution_secs"]
+    );
     let line = |label: &str, o: &Value| {
         if let Some(o) = o.as_object() {
             let vals: Vec<String> = o.iter().map(|(k, x)| format!("{k}={x}")).collect();
@@ -1665,7 +2345,12 @@ pub async fn stats(client: &ApiClient, args: &[&str]) {
 /// `bandwidth <vm> | --network <net>`, `io <vm> | --disk <disk>` and
 /// `compute <vm>`: the 5-minute series with its p95 (§9.3).
 pub async fn series(client: &ApiClient, what: &str, args: &[&str]) {
-    let path = match (what, flag_value(args, "--network"), flag_value(args, "--disk"), args.first()) {
+    let path = match (
+        what,
+        flag_value(args, "--network"),
+        flag_value(args, "--disk"),
+        args.first(),
+    ) {
         ("bandwidth", Some(n), _, _) => format!("/networks/{}/bandwidth", enc(n)),
         ("io", _, Some(d), _) => format!("/disks/{}/io", enc(d)),
         (_, None, None, Some(vm)) if !vm.starts_with("--") => match client.resolve_vm(vm).await {
@@ -1692,13 +2377,28 @@ pub async fn series(client: &ApiClient, what: &str, args: &[&str]) {
         Err(e) => return err(e),
     };
     let points = v["points"].as_array().cloned().unwrap_or_default();
-    println!("{} → {}  ({} points of 5 min)", s(&v["from"]), s(&v["to"]), points.len());
+    println!(
+        "{} → {}  ({} points of 5 min)",
+        s(&v["from"]),
+        s(&v["to"]),
+        points.len()
+    );
     for p in &points {
-        let vals: Vec<String> = p.as_object().into_iter().flatten().filter(|(k, _)| *k != "slot").map(|(k, x)| format!("{k}={x}")).collect();
+        let vals: Vec<String> = p
+            .as_object()
+            .into_iter()
+            .flatten()
+            .filter(|(k, _)| *k != "slot")
+            .map(|(k, x)| format!("{k}={x}"))
+            .collect();
         println!("  {}  {}", s(&p["slot"]).dimmed(), vals.join("  "));
     }
     if let Some(o) = v["p95"].as_object() {
-        let vals: Vec<String> = o.iter().filter(|(k, x)| !x.is_null() && *k != "slots").map(|(k, x)| format!("{k}={x}")).collect();
+        let vals: Vec<String> = o
+            .iter()
+            .filter(|(k, x)| !x.is_null() && *k != "slots")
+            .map(|(k, x)| format!("{k}={x}"))
+            .collect();
         println!("  {} {}", "95th percentile:".bold(), vals.join("  "));
     }
 }
@@ -1715,8 +2415,14 @@ pub async fn network(client: &ApiClient, args: &[&str]) {
                 // Project networks: NAT or isolated, the bridge is generated.
                 Some(p) => {
                     let pos = positional(&args[1..], &["--project", "--subnet", "--mtu"]);
-                    let Some(name) = pos.first() else { return usage(u) };
-                    let mode = if has_flag(args, "--isolated") { "isolated" } else { "nat" };
+                    let Some(name) = pos.first() else {
+                        return usage(u);
+                    };
+                    let mode = if has_flag(args, "--isolated") {
+                        "isolated"
+                    } else {
+                        "nat"
+                    };
                     let mut body = json!({ "name": name, "mode": mode });
                     if let Some(s) = flag_value(args, "--subnet") {
                         body["subnet"] = json!(s);
@@ -1727,7 +2433,14 @@ pub async fn network(client: &ApiClient, args: &[&str]) {
                     if has_flag(args, "--vhost-user") {
                         body["port_type"] = json!("vhost_user");
                     }
-                    match client.request_json::<Value>(Method::POST, &format!("/projects/{}/networks", enc(p)), Some(body)).await {
+                    match client
+                        .request_json::<Value>(
+                            Method::POST,
+                            &format!("/projects/{}/networks", enc(p)),
+                            Some(body),
+                        )
+                        .await
+                    {
                         Ok(n) => println!(
                             "{} {} ({} on {}, project {})",
                             "Network created:".green(),
@@ -1743,14 +2456,23 @@ pub async fn network(client: &ApiClient, args: &[&str]) {
             }
         }
         "rm" | "delete" => match args.get(1) {
-            Some(name) => match client.request_json::<serde_json::Value>(Method::DELETE, &format!("/networks/{}?wait=60", enc(name)), None).await {
+            Some(name) => match client
+                .request_json::<serde_json::Value>(
+                    Method::DELETE,
+                    &format!("/networks/{}?wait=60", enc(name)),
+                    None,
+                )
+                .await
+            {
                 Ok(v) => crate::print_delete_result("Network", name, &v),
                 Err(e) => err(e),
             },
             None => usage(u),
         },
         "share" => {
-            let (Some(net), Some(project)) = (args.get(1), args.get(2)) else { return usage(u) };
+            let (Some(net), Some(project)) = (args.get(1), args.get(2)) else {
+                return usage(u);
+            };
             match client.request_json::<()>(Method::POST, &format!("/networks/{}/shares", enc(net)), Some(json!({ "project": project }))).await {
                 Ok(()) => println!(
                     "{} {} offered to project {}. Its owner accepts with 'network accept {} {}' within 7 days.",
@@ -1764,15 +2486,42 @@ pub async fn network(client: &ApiClient, args: &[&str]) {
             }
         }
         "unshare" => {
-            let (Some(net), Some(project)) = (args.get(1), args.get(2)) else { return usage(u) };
-            match client.request_json::<()>(Method::DELETE, &format!("/networks/{}/shares/{}", enc(net), enc(project)), None).await {
-                Ok(()) => println!("{} {} no longer shared with {}", "OK:".green(), net, project),
+            let (Some(net), Some(project)) = (args.get(1), args.get(2)) else {
+                return usage(u);
+            };
+            match client
+                .request_json::<()>(
+                    Method::DELETE,
+                    &format!("/networks/{}/shares/{}", enc(net), enc(project)),
+                    None,
+                )
+                .await
+            {
+                Ok(()) => println!(
+                    "{} {} no longer shared with {}",
+                    "OK:".green(),
+                    net,
+                    project
+                ),
                 Err(e) => err(e),
             }
         }
         "shares" => {
-            let Some(project) = args.get(1).map(|s| s.to_string()).or_else(|| client.project()) else { return usage(u) };
-            match client.request_json::<Vec<Value>>(Method::GET, &format!("/projects/{}/network-shares", enc(&project)), None).await {
+            let Some(project) = args
+                .get(1)
+                .map(|s| s.to_string())
+                .or_else(|| client.project())
+            else {
+                return usage(u);
+            };
+            match client
+                .request_json::<Vec<Value>>(
+                    Method::GET,
+                    &format!("/projects/{}/network-shares", enc(&project)),
+                    None,
+                )
+                .await
+            {
                 Ok(v) if v.is_empty() => println!("No network shares for {}.", project),
                 Ok(v) => {
                     for sh in v {
@@ -1781,8 +2530,15 @@ pub async fn network(client: &ApiClient, args: &[&str]) {
                             "  {:<20} from {:<38} {}{}",
                             s(&sh["network"]).cyan(),
                             sh["owner_project"].as_str().unwrap_or("-"),
-                            if status == "accepted" { status.green().to_string() } else { status.yellow().to_string() },
-                            sh["expires_at"].as_u64().map(|t| format!(" (until {})", format_unix_time(t))).unwrap_or_default()
+                            if status == "accepted" {
+                                status.green().to_string()
+                            } else {
+                                status.yellow().to_string()
+                            },
+                            sh["expires_at"]
+                                .as_u64()
+                                .map(|t| format!(" (until {})", format_unix_time(t)))
+                                .unwrap_or_default()
                         );
                     }
                 }
@@ -1790,15 +2546,42 @@ pub async fn network(client: &ApiClient, args: &[&str]) {
             }
         }
         "accept" => {
-            let (Some(project), Some(net)) = (args.get(1), args.get(2)) else { return usage(u) };
-            match client.request_json::<Value>(Method::POST, &format!("/projects/{}/network-shares/{}/accept", enc(project), enc(net)), None).await {
-                Ok(_) => println!("{} project {} can now attach VMs to {}", "Accepted:".green(), project, net),
+            let (Some(project), Some(net)) = (args.get(1), args.get(2)) else {
+                return usage(u);
+            };
+            match client
+                .request_json::<Value>(
+                    Method::POST,
+                    &format!(
+                        "/projects/{}/network-shares/{}/accept",
+                        enc(project),
+                        enc(net)
+                    ),
+                    None,
+                )
+                .await
+            {
+                Ok(_) => println!(
+                    "{} project {} can now attach VMs to {}",
+                    "Accepted:".green(),
+                    project,
+                    net
+                ),
                 Err(e) => err(e),
             }
         }
         "leave" => {
-            let (Some(project), Some(net)) = (args.get(1), args.get(2)) else { return usage(u) };
-            match client.request_json::<()>(Method::DELETE, &format!("/projects/{}/network-shares/{}", enc(project), enc(net)), None).await {
+            let (Some(project), Some(net)) = (args.get(1), args.get(2)) else {
+                return usage(u);
+            };
+            match client
+                .request_json::<()>(
+                    Method::DELETE,
+                    &format!("/projects/{}/network-shares/{}", enc(project), enc(net)),
+                    None,
+                )
+                .await
+            {
                 Ok(()) => println!("{} project {} left {}", "OK:".green(), project, net),
                 Err(e) => err(e),
             }
@@ -1815,7 +2598,10 @@ fn read_token(args: &[&str]) -> Result<Zeroizing<String>, String> {
     let raw = match flag_value(args, "--token-file") {
         Some(p) => {
             use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(p).map_err(|e| format!("{p}: {e}"))?.permissions().mode();
+            let mode = std::fs::metadata(p)
+                .map_err(|e| format!("{p}: {e}"))?
+                .permissions()
+                .mode();
             if mode & 0o077 != 0 {
                 return Err(format!("{p} is readable by others; chmod 600 it"));
             }
@@ -1823,7 +2609,9 @@ fn read_token(args: &[&str]) -> Result<Zeroizing<String>, String> {
         }
         None => {
             let mut s = String::new();
-            std::io::stdin().read_to_string(&mut s).map_err(|e| e.to_string())?;
+            std::io::stdin()
+                .read_to_string(&mut s)
+                .map_err(|e| e.to_string())?;
             s
         }
     };
@@ -1985,10 +2773,16 @@ mod tests {
 
     #[test]
     fn usage_query_from_flags() {
-        let p = super::usage_path(&["--by", "vm,nic", "--from", "2026-10-01T00:00:00Z", "--csv"], Some("pa".into()));
+        let p = super::usage_path(
+            &["--by", "vm,nic", "--from", "2026-10-01T00:00:00Z", "--csv"],
+            Some("pa".into()),
+        );
         assert!(p.starts_with("/usage?project=pa&granularity=month&from=2026-10-01T00%3A00%3A00Z&group_by=vm%2Cnic"), "{p}");
         assert!(p.ends_with("&format=csv"), "{p}");
-        assert_eq!(super::usage_path(&["--granularity", "day"], None), "/usage?granularity=day");
+        assert_eq!(
+            super::usage_path(&["--granularity", "day"], None),
+            "/usage?granularity=day"
+        );
     }
     use super::*;
 
@@ -1996,7 +2790,10 @@ mod tests {
     fn quota_edits_merge_into_the_current_set() {
         let mut q = json!({ "vms": 5, "vcpus": null, "networks": 2 });
         apply_quota_edits(&mut q, &["vms=10", "networks=none", "memory_mib=4096"]).unwrap();
-        assert_eq!(q, json!({ "vms": 10, "vcpus": null, "networks": null, "memory_mib": 4096 }));
+        assert_eq!(
+            q,
+            json!({ "vms": 10, "vcpus": null, "networks": null, "memory_mib": 4096 })
+        );
         assert!(apply_quota_edits(&mut q, &["cpus=1"]).is_err());
         assert!(apply_quota_edits(&mut q, &["vms"]).is_err());
         assert!(apply_quota_edits(&mut q, &["vms=lots"]).is_err());
@@ -2004,7 +2801,16 @@ mod tests {
 
     #[test]
     fn positional_arguments_skip_flags_and_their_values() {
-        assert_eq!(positional(&["ci", "--days", "7", "--service-account", "--role", "viewer"], &["--days", "--role"]), vec!["ci"]);
-        assert_eq!(positional(&["--project", "lab", "net1"], &["--project"]), vec!["net1"]);
+        assert_eq!(
+            positional(
+                &["ci", "--days", "7", "--service-account", "--role", "viewer"],
+                &["--days", "--role"]
+            ),
+            vec!["ci"]
+        );
+        assert_eq!(
+            positional(&["--project", "lab", "net1"], &["--project"]),
+            vec!["net1"]
+        );
     }
 }

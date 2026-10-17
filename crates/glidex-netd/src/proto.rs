@@ -7,9 +7,9 @@
 use glidex_ovs::bridge::{BridgeInfo, BridgeSpec};
 use glidex_ovs::install::InstallRequest;
 use glidex_ovs::ipmigrate::Snapshot;
+use glidex_ovs::nat::{NatSpec, NatState};
 use glidex_ovs::nic::Classification;
 use glidex_ovs::uplink::{UplinkSpec, UplinkState};
-use glidex_ovs::nat::{NatSpec, NatState};
 use glidex_ovs::vm_port::{VmPortBinding, VmPortSpec};
 use glidex_ovs::OvsError;
 use serde::{Deserialize, Serialize};
@@ -50,7 +50,9 @@ pub struct OnBehalfOf {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", content = "args", rename_all = "snake_case")]
 pub enum Op {
-    Hello { protocol: u32 },
+    Hello {
+        protocol: u32,
+    },
     Probe,
     ListBridges,
     ListNat,
@@ -69,30 +71,53 @@ pub enum Op {
     InstallOvs(InstallRequest),
     InitDpdk(glidex_ovs::install::DpdkSettings),
     EnsureUplink(EnsureUplinkArgs),
-    CommitUplink { bridge: String, name: String, token: String },
+    CommitUplink {
+        bridge: String,
+        name: String,
+        token: String,
+    },
     /// Set up again an uplink rolled back at start, with the first setup's
     /// safety: gateway check, then a commit window.
-    ReapplyUplink { bridge: String, name: String },
-    DeleteUplink { bridge: String, name: String },
+    ReapplyUplink {
+        bridge: String,
+        name: String,
+    },
+    DeleteUplink {
+        bridge: String,
+        name: String,
+    },
     EnsureBridge(BridgeSpec),
-    DeleteBridge { name: String },
+    DeleteBridge {
+        name: String,
+    },
     EnsureNat(NatSpec),
-    DeleteNat { bridge: String },
+    DeleteNat {
+        bridge: String,
+    },
     AttachVmPort(VmPortSpec),
-    DetachVmPort { vm_id: String, nic_index: u8 },
+    DetachVmPort {
+        vm_id: String,
+        nic_index: u8,
+    },
     /// Move a VM port to another bridge (`br-int` and a glidex bridge, either
     /// way) without recreating its tap or socket (spec/clustering.md §11.3).
     /// The spec names the new bridge (and `ovn_lport` for `br-int`).
     MoveVmPort(VmPortSpec),
     /// The VM is being deleted: free its NAT reservations too.
-    ReleaseVm { vm_id: String },
-    SyncVms { running: Vec<String> },
+    ReleaseVm {
+        vm_id: String,
+    },
+    SyncVms {
+        running: Vec<String>,
+    },
     /// Make this host an OVN chassis (spec/clustering.md §11.3).
     EnsureOvnChassis(EnsureOvnChassisArgs),
     /// Read-only: the chassis, `ovn-controller` and which ports have flows.
     OvnStatus,
     /// Stop being a chassis. Refused while a glidex VM port is on `br-int`.
-    LeaveOvn { confirm: bool },
+    LeaveOvn {
+        confirm: bool,
+    },
     /// Run this server's part of OVN's databases (`ovn-central`).
     EnsureOvnCentral(EnsureOvnCentralArgs),
     /// Take a departed member out of OVN (kick it from the NB/SB clusters,
@@ -363,7 +388,8 @@ mod tests {
 
     #[test]
     fn wire_format() {
-        let r: Request = serde_json::from_str(r#"{"id":1,"op":"hello","args":{"protocol":1}}"#).unwrap();
+        let r: Request =
+            serde_json::from_str(r#"{"id":1,"op":"hello","args":{"protocol":1}}"#).unwrap();
         assert_eq!(r.op, Op::Hello { protocol: 1 });
         let r: Request = serde_json::from_str(r#"{"id":2,"op":"probe"}"#).unwrap();
         assert_eq!(r.op, Op::Probe);
@@ -374,7 +400,12 @@ mod tests {
         assert_eq!(r.op.name(), "detach_vm_port");
         assert!(serde_json::from_str::<Request>(r#"{"id":4,"op":"rm_rf"}"#).is_err());
         assert_eq!(
-            serde_json::to_string(&Request { id: 5, op: Op::ListNat, on_behalf_of: None }).unwrap(),
+            serde_json::to_string(&Request {
+                id: 5,
+                op: Op::ListNat,
+                on_behalf_of: None
+            })
+            .unwrap(),
             r#"{"id":5,"op":"list_nat"}"#
         );
     }
@@ -385,18 +416,38 @@ mod tests {
             r#"{"id":1,"op":"release_vm","args":{"vm_id":"abc"},"on_behalf_of":{"user":"alice","project":"p1","request_id":"r-9"}}"#,
         )
         .unwrap();
-        assert_eq!(r.op, Op::ReleaseVm { vm_id: "abc".into() });
+        assert_eq!(
+            r.op,
+            Op::ReleaseVm {
+                vm_id: "abc".into()
+            }
+        );
         let obo = r.on_behalf_of.clone().unwrap();
         assert_eq!(
-            (obo.user.as_str(), obo.project.as_deref(), obo.request_id.as_deref()),
+            (
+                obo.user.as_str(),
+                obo.project.as_deref(),
+                obo.request_id.as_deref()
+            ),
             ("alice", Some("p1"), Some("r-9"))
         );
-        assert_eq!(serde_json::from_str::<Request>(&serde_json::to_string(&r).unwrap()).unwrap(), r);
+        assert_eq!(
+            serde_json::from_str::<Request>(&serde_json::to_string(&r).unwrap()).unwrap(),
+            r
+        );
 
         // Only `user` is required; absent fields aren't serialized.
-        let r: Request = serde_json::from_str(r#"{"id":2,"op":"list_nat","on_behalf_of":{"user":"bob"}}"#).unwrap();
-        assert_eq!(serde_json::to_string(&r).unwrap(), r#"{"id":2,"op":"list_nat","on_behalf_of":{"user":"bob"}}"#);
-        assert!(serde_json::from_str::<Request>(r#"{"id":3,"op":"list_nat","on_behalf_of":{}}"#).is_err());
+        let r: Request =
+            serde_json::from_str(r#"{"id":2,"op":"list_nat","on_behalf_of":{"user":"bob"}}"#)
+                .unwrap();
+        assert_eq!(
+            serde_json::to_string(&r).unwrap(),
+            r#"{"id":2,"op":"list_nat","on_behalf_of":{"user":"bob"}}"#
+        );
+        assert!(
+            serde_json::from_str::<Request>(r#"{"id":3,"op":"list_nat","on_behalf_of":{}}"#)
+                .is_err()
+        );
     }
 
     #[test]
@@ -410,7 +461,9 @@ mod tests {
 
     #[test]
     fn error_body_carries_details() {
-        let body = ErrorBody::from(&OvsError::ConfirmationRequired { impact: "restart".into() });
+        let body = ErrorBody::from(&OvsError::ConfirmationRequired {
+            impact: "restart".into(),
+        });
         assert_eq!(body.code, "confirmation_required");
         assert_eq!(body.details["impact"], "restart");
         let body = ErrorBody::from(&OvsError::Io("x".into()));

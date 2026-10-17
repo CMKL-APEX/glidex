@@ -72,7 +72,9 @@ impl LogStore {
     pub fn is_fresh(&self) -> Result<bool, StorageError> {
         let txn = s(self.db.begin_read())?;
         let log = s(txn.open_table(LOG))?;
-        Ok(s(log.is_empty())? && self.kv::<Vote>(VOTE)?.is_none() && self.kv::<LogId>(PURGED)?.is_none())
+        Ok(s(log.is_empty())?
+            && self.kv::<Vote>(VOTE)?.is_none()
+            && self.kv::<LogId>(PURGED)?.is_none())
     }
 }
 
@@ -112,7 +114,10 @@ impl RaftLogStorage<TypeConfig> for LogStore {
             }
             None => last_purged_log_id,
         };
-        Ok(LogState { last_purged_log_id, last_log_id: last })
+        Ok(LogState {
+            last_purged_log_id,
+            last_log_id: last,
+        })
     }
 
     async fn get_log_reader(&mut self) -> Self::LogReader {
@@ -121,7 +126,9 @@ impl RaftLogStorage<TypeConfig> for LogStore {
 
     async fn save_vote(&mut self, vote: &Vote) -> Result<(), StorageError> {
         let (this, vote) = (self.clone(), *vote);
-        tokio::task::spawn_blocking(move || this.set_kv(VOTE, Some(&vote))).await.map_err(io_err)?
+        tokio::task::spawn_blocking(move || this.set_kv(VOTE, Some(&vote)))
+            .await
+            .map_err(io_err)?
     }
 
     async fn read_vote(&mut self) -> Result<Option<Vote>, StorageError> {
@@ -130,19 +137,29 @@ impl RaftLogStorage<TypeConfig> for LogStore {
 
     async fn save_committed(&mut self, committed: Option<LogId>) -> Result<(), StorageError> {
         let this = self.clone();
-        tokio::task::spawn_blocking(move || this.set_kv(COMMITTED, committed.as_ref())).await.map_err(io_err)?
+        tokio::task::spawn_blocking(move || this.set_kv(COMMITTED, committed.as_ref()))
+            .await
+            .map_err(io_err)?
     }
 
     async fn read_committed(&mut self) -> Result<Option<LogId>, StorageError> {
         self.kv(COMMITTED)
     }
 
-    async fn append<I>(&mut self, entries: I, callback: LogFlushed<TypeConfig>) -> Result<(), StorageError>
+    async fn append<I>(
+        &mut self,
+        entries: I,
+        callback: LogFlushed<TypeConfig>,
+    ) -> Result<(), StorageError>
     where
         I: IntoIterator<Item = openraft::Entry<TypeConfig>> + openraft::OptionalSend,
         I::IntoIter: openraft::OptionalSend,
     {
-        let rows: Vec<(u64, Vec<u8>)> = entries.into_iter().map(|e| Ok((e.log_id.index, serde_json::to_vec(&e)?))).collect::<Result<_, serde_json::Error>>().map_err(io_err)?;
+        let rows: Vec<(u64, Vec<u8>)> = entries
+            .into_iter()
+            .map(|e| Ok((e.log_id.index, serde_json::to_vec(&e)?)))
+            .collect::<Result<_, serde_json::Error>>()
+            .map_err(io_err)?;
         let db = self.db.clone();
         let res = tokio::task::spawn_blocking(move || -> Result<(), String> {
             let txn = db.begin_write().map_err(|e| e.to_string())?;
@@ -174,7 +191,9 @@ impl RaftLogStorage<TypeConfig> for LogStore {
             let txn = s(db.begin_write())?;
             {
                 let mut t = s(txn.open_table(LOG))?;
-                let keys: Vec<u64> = s(t.range(log_id.index..))?.filter_map(|r| r.ok().map(|(k, _)| k.value())).collect();
+                let keys: Vec<u64> = s(t.range(log_id.index..))?
+                    .filter_map(|r| r.ok().map(|(k, _)| k.value()))
+                    .collect();
                 for k in keys {
                     s(t.remove(k))?;
                 }
@@ -192,7 +211,9 @@ impl RaftLogStorage<TypeConfig> for LogStore {
             let txn = s(db.begin_write())?;
             {
                 let mut t = s(txn.open_table(LOG))?;
-                let keys: Vec<u64> = s(t.range(..=log_id.index))?.filter_map(|r| r.ok().map(|(k, _)| k.value())).collect();
+                let keys: Vec<u64> = s(t.range(..=log_id.index))?
+                    .filter_map(|r| r.ok().map(|(k, _)| k.value()))
+                    .collect();
                 for k in keys {
                     s(t.remove(k))?;
                 }

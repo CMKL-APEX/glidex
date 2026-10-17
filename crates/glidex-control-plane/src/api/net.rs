@@ -8,7 +8,9 @@ use crate::models::ApiError;
 use crate::network::{CreateNetworkRequest, NetError, Netd, NetdAccess, Network};
 use crate::state::VmManagerError;
 use axum::{extract::Path, http::StatusCode, response::IntoResponse, Json};
-use glidex_netd::proto::{BridgeRecord, EnsureUplinkArgs, OnBehalfOf, Op, UplinkPhase, UplinkResult};
+use glidex_netd::proto::{
+    BridgeRecord, EnsureUplinkArgs, OnBehalfOf, Op, UplinkPhase, UplinkResult,
+};
 use glidex_ovs::bridge::BridgeSpec;
 use glidex_ovs::install::{InstallReport, InstallRequest};
 use glidex_ovs::uplink::{UplinkKind, UplinkSpec};
@@ -20,7 +22,11 @@ fn manager_err(e: VmManagerError) -> ApiErr {
 
 fn on_behalf_of(c: &Caller) -> OnBehalfOf {
     OnBehalfOf {
-        user: c.p.user_id().map(String::from).unwrap_or_else(|| c.p.display()),
+        user: c
+            .p
+            .user_id()
+            .map(String::from)
+            .unwrap_or_else(|| c.p.display()),
         project: None,
         request_id: Some(c.request_id.clone()),
     }
@@ -36,7 +42,12 @@ where
     let who = on_behalf_of(c);
     tokio::task::spawn_blocking(move || f(&netd, &who))
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError::new("internal", e.to_string()))))?
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError::new("internal", e.to_string())),
+            )
+        })?
         .map_err(|e| error_to_response(VmManagerError::Network(e)))
 }
 
@@ -51,14 +62,27 @@ pub(crate) fn network_entities(n: &Network) -> (Ent, EntitySet) {
 /// Host networks, and project networks of (or shared with) projects the
 /// caller can see. Share offers are shown only to those who may manage
 /// the network's shares.
-pub(crate) fn network_view(c: &Caller, visible: &crate::auth::LinkedProjects, mut n: Network) -> Option<Network> {
+pub(crate) fn network_view(
+    c: &Caller,
+    visible: &crate::auth::LinkedProjects,
+    mut n: Network,
+) -> Option<Network> {
     if let Some(p) = &n.project {
         if !visible.contains(p) && !n.shares.iter().any(|s| visible.contains(s)) {
             return None;
         }
         let (e, mut es) = network_entities(&n);
         es.project(p);
-        let manage = c.auth().authorize(&c.p, "unshareNetwork", e, es, &[("project", Ent::Project(p.clone()))]).allowed;
+        let manage = c
+            .auth()
+            .authorize(
+                &c.p,
+                "unshareNetwork",
+                e,
+                es,
+                &[("project", Ent::Project(p.clone()))],
+            )
+            .allowed;
         if !manage {
             n.share_offers.clear();
         }
@@ -84,9 +108,13 @@ pub async fn get_network(c: Caller, Path(name): Path<String>) -> Result<impl Int
     let (e, es) = network_entities(&n);
     c.require(e, es)?;
     let visible = c.visible_projects()?;
-    network_view(&c, &visible, n)
-        .map(Json)
-        .ok_or_else(|| err(StatusCode::NOT_FOUND, "not_found", format!("network not found: {}", name)))
+    network_view(&c, &visible, n).map(Json).ok_or_else(|| {
+        err(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            format!("network not found: {}", name),
+        )
+    })
 }
 
 /// `GET /networks/{name}/ovn` (spec/clustering-ui.md §8): a cluster network
@@ -96,8 +124,16 @@ pub async fn network_ovn(c: Caller, Path(name): Path<String>) -> Result<impl Int
     let (e, es) = network_entities(&n);
     c.require(e, es)?;
     let visible = c.visible_projects()?;
-    let n = network_view(&c, &visible, n).ok_or_else(|| err(StatusCode::NOT_FOUND, "not_found", format!("network not found: {}", name)))?;
-    Ok(Json(c.manager().network_ovn(&n).await.map_err(manager_err)?))
+    let n = network_view(&c, &visible, n).ok_or_else(|| {
+        err(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            format!("network not found: {}", name),
+        )
+    })?;
+    Ok(Json(
+        c.manager().network_ovn(&n).await.map_err(manager_err)?,
+    ))
 }
 
 /// `GET /cluster/ovn/tunnels` (spec/clustering-ui.md §8b): each node's tunnels.
@@ -112,15 +148,24 @@ pub async fn cluster_ovn(c: Caller) -> Result<impl IntoResponse, ApiErr> {
     Ok(Json(c.manager().ovn_overview().await.map_err(manager_err)?))
 }
 
-pub async fn network_events(c: Caller, Path(name): Path<String>) -> Result<impl IntoResponse, ApiErr> {
+pub async fn network_events(
+    c: Caller,
+    Path(name): Path<String>,
+) -> Result<impl IntoResponse, ApiErr> {
     let n = c.manager().get_network(&name).map_err(manager_err)?;
     let (e, es) = network_entities(&n);
     c.require(e, es)?;
     let visible = c.visible_projects()?;
     if network_view(&c, &visible, n.clone()).is_none() {
-        return Err(err(StatusCode::NOT_FOUND, "not_found", format!("network not found: {}", name)));
+        return Err(err(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            format!("network not found: {}", name),
+        ));
     }
-    Ok(Json(serde_json::json!({ "events": c.manager().object_events("network", &n.name).map_err(manager_err)? })))
+    Ok(Json(
+        serde_json::json!({ "events": c.manager().object_events("network", &n.name).map_err(manager_err)? }),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -142,12 +187,21 @@ fn resolve_projects(c: &Caller, keys: &[String]) -> Result<Vec<String>, ApiErr> 
                 .projects()
                 .resolve(k)
                 .map(|p| p.id)
-                .map_err(|_| err(StatusCode::NOT_FOUND, "not_found", format!("project {} not found", k)))
+                .map_err(|_| {
+                    err(
+                        StatusCode::NOT_FOUND,
+                        "not_found",
+                        format!("project {} not found", k),
+                    )
+                })
         })
         .collect()
 }
 
-pub async fn create_network(c: Caller, Json(body): Json<CreateHostNetwork>) -> Result<impl IntoResponse, ApiErr> {
+pub async fn create_network(
+    c: Caller,
+    Json(body): Json<CreateHostNetwork>,
+) -> Result<impl IntoResponse, ApiErr> {
     c.set_target(format!("network:{}", body.req.name));
     c.require(Ent::Host, EntitySet::new())?;
     let grants = match &body.grants {
@@ -187,9 +241,15 @@ pub async fn delete_network(
         return Ok(StatusCode::NO_CONTENT.into_response());
     };
     let visible = c.visible_projects()?;
-    let Some(still) = network_view(&c, &visible, still) else { return Ok(StatusCode::ACCEPTED.into_response()) };
+    let Some(still) = network_view(&c, &visible, still) else {
+        return Ok(StatusCode::ACCEPTED.into_response());
+    };
     super::storage::deleted_reply(m, still, w.wait, || {
-        m.networks.get(&name).ok().flatten().and_then(|n| network_view(&c, &visible, n))
+        m.networks
+            .get(&name)
+            .ok()
+            .flatten()
+            .and_then(|n| network_view(&c, &visible, n))
     })
     .await
 }
@@ -202,13 +262,21 @@ pub struct GrantBody {
     all_projects: bool,
 }
 
-pub async fn grant_network(c: Caller, Path(name): Path<String>, Json(body): Json<GrantBody>) -> Result<impl IntoResponse, ApiErr> {
+pub async fn grant_network(
+    c: Caller,
+    Path(name): Path<String>,
+    Json(body): Json<GrantBody>,
+) -> Result<impl IntoResponse, ApiErr> {
     let n = c.manager().get_network(&name).map_err(manager_err)?;
     c.set_target(format!("network:{}", n.name));
     let (e, es) = network_entities(&n);
     c.require(e, es)?;
     let grants = resolve_projects(&c, &body.grants)?;
-    Ok(Json(c.manager().grant_network(&name, grants, body.all_projects).map_err(manager_err)?))
+    Ok(Json(
+        c.manager()
+            .grant_network(&name, grants, body.all_projects)
+            .map_err(manager_err)?,
+    ))
 }
 
 pub async fn create_project_network(
@@ -219,35 +287,67 @@ pub async fn create_project_network(
     let project = c.target_project(Some(&project))?;
     c.set_project(&project);
     c.set_target(format!("network:{}", req.name));
-    c.require(Ent::Project(project.clone()), super::project_entities(&project))?;
+    c.require(
+        Ent::Project(project.clone()),
+        super::project_entities(&project),
+    )?;
     c.require_admitted(&project)?;
     let quota = c.quota_mode(&project);
-    let (net, over) = c.manager().create_project_network(&project, req, quota).await.map_err(manager_err)?;
+    let (net, over) = c
+        .manager()
+        .create_project_network(&project, req, quota)
+        .await
+        .map_err(manager_err)?;
     c.note_overruns(&over);
     Ok((StatusCode::CREATED, Json(net)))
 }
 
 // ---- VPC routers (spec/clustering.md §11.2a) ------------------------------
 
-pub async fn list_routers(c: Caller, Path(project): Path<String>) -> Result<impl IntoResponse, ApiErr> {
+pub async fn list_routers(
+    c: Caller,
+    Path(project): Path<String>,
+) -> Result<impl IntoResponse, ApiErr> {
     let project = c.target_project(Some(&project))?;
     c.set_project(&project);
-    c.require(Ent::Project(project.clone()), super::project_entities(&project))?;
-    Ok(Json(c.manager().list_routers(&project).map_err(manager_err)?))
+    c.require(
+        Ent::Project(project.clone()),
+        super::project_entities(&project),
+    )?;
+    Ok(Json(
+        c.manager().list_routers(&project).map_err(manager_err)?,
+    ))
 }
 
-pub async fn get_router(c: Caller, Path((project, name)): Path<(String, String)>) -> Result<impl IntoResponse, ApiErr> {
+pub async fn get_router(
+    c: Caller,
+    Path((project, name)): Path<(String, String)>,
+) -> Result<impl IntoResponse, ApiErr> {
     let project = c.target_project(Some(&project))?;
     c.set_project(&project);
-    c.require(Ent::Project(project.clone()), super::project_entities(&project))?;
-    Ok(Json(c.manager().get_router(&project, &name).map_err(manager_err)?))
+    c.require(
+        Ent::Project(project.clone()),
+        super::project_entities(&project),
+    )?;
+    Ok(Json(
+        c.manager()
+            .get_router(&project, &name)
+            .map_err(manager_err)?,
+    ))
 }
 
-pub async fn create_router(c: Caller, Path(project): Path<String>, Json(spec): Json<crate::router::RouterSpec>) -> Result<impl IntoResponse, ApiErr> {
+pub async fn create_router(
+    c: Caller,
+    Path(project): Path<String>,
+    Json(spec): Json<crate::router::RouterSpec>,
+) -> Result<impl IntoResponse, ApiErr> {
     let project = c.target_project(Some(&project))?;
     c.set_project(&project);
     c.set_target(format!("router:{}", spec.name));
-    c.require(Ent::Project(project.clone()), super::project_entities(&project))?;
+    c.require(
+        Ent::Project(project.clone()),
+        super::project_entities(&project),
+    )?;
     c.require_admitted(&project)?;
     // The external pool and the gateway nodes are site resources.
     if spec.external_ip.is_some() || spec.gateway_nodes.is_some() {
@@ -258,14 +358,20 @@ pub async fn create_router(c: Caller, Path(project): Path<String>, Json(spec): J
     if let Some(gws) = spec.gateway_nodes.as_ref() {
         let nodes = c.manager().nodes().list().unwrap_or_default();
         for g in gws {
-            super::nodes::live_gateway_node(&nodes, g).map_err(|m| err(StatusCode::BAD_REQUEST, "invalid", m))?;
+            super::nodes::live_gateway_node(&nodes, g)
+                .map_err(|m| err(StatusCode::BAD_REQUEST, "invalid", m))?;
         }
         if let (true, Some(edge)) = (spec.external, c.manager().ovn.load().edge.clone()) {
-            super::nodes::check_gateway_nodes(&nodes, gws, &edge.physnet).map_err(|m| err(StatusCode::CONFLICT, "gateway_not_ready", m))?;
+            super::nodes::check_gateway_nodes(&nodes, gws, &edge.physnet)
+                .map_err(|m| err(StatusCode::CONFLICT, "gateway_not_ready", m))?;
         }
     }
     let quota = c.quota_mode(&project);
-    let (r, over) = c.manager().create_router(&project, spec, quota).await.map_err(manager_err)?;
+    let (r, over) = c
+        .manager()
+        .create_router(&project, spec, quota)
+        .await
+        .map_err(manager_err)?;
     c.note_overruns(&over);
     Ok((StatusCode::CREATED, Json(r)))
 }
@@ -278,20 +384,41 @@ pub struct NetworkRouterBody {
 
 /// `PUT /projects/{id}/networks/{name}/router`: put an existing NAT network
 /// on one of the project's routers, or back on the shared edge.
-pub async fn set_network_router(c: Caller, Path((project, name)): Path<(String, String)>, Json(b): Json<NetworkRouterBody>) -> Result<impl IntoResponse, ApiErr> {
+pub async fn set_network_router(
+    c: Caller,
+    Path((project, name)): Path<(String, String)>,
+    Json(b): Json<NetworkRouterBody>,
+) -> Result<impl IntoResponse, ApiErr> {
     let project = c.target_project(Some(&project))?;
     c.set_project(&project);
     c.set_target(format!("network:{name}"));
-    c.require(Ent::Project(project.clone()), super::project_entities(&project))?;
-    Ok(Json(c.manager().set_network_router(&project, &name, b.router.as_deref()).await.map_err(manager_err)?))
+    c.require(
+        Ent::Project(project.clone()),
+        super::project_entities(&project),
+    )?;
+    Ok(Json(
+        c.manager()
+            .set_network_router(&project, &name, b.router.as_deref())
+            .await
+            .map_err(manager_err)?,
+    ))
 }
 
-pub async fn delete_router(c: Caller, Path((project, name)): Path<(String, String)>) -> Result<impl IntoResponse, ApiErr> {
+pub async fn delete_router(
+    c: Caller,
+    Path((project, name)): Path<(String, String)>,
+) -> Result<impl IntoResponse, ApiErr> {
     let project = c.target_project(Some(&project))?;
     c.set_project(&project);
     c.set_target(format!("router:{name}"));
-    c.require(Ent::Project(project.clone()), super::project_entities(&project))?;
-    c.manager().delete_router(&project, &name).await.map_err(manager_err)?;
+    c.require(
+        Ent::Project(project.clone()),
+        super::project_entities(&project),
+    )?;
+    c.manager()
+        .delete_router(&project, &name)
+        .await
+        .map_err(manager_err)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -303,7 +430,11 @@ pub struct OfferBody {
     project: String,
 }
 
-pub async fn offer_share(c: Caller, Path(name): Path<String>, Json(body): Json<OfferBody>) -> Result<impl IntoResponse, ApiErr> {
+pub async fn offer_share(
+    c: Caller,
+    Path(name): Path<String>,
+    Json(body): Json<OfferBody>,
+) -> Result<impl IntoResponse, ApiErr> {
     let n = c.manager().get_network(&name).map_err(manager_err)?;
     c.set_target(format!("network:{}", n.name));
     if let Some(p) = &n.project {
@@ -311,21 +442,39 @@ pub async fn offer_share(c: Caller, Path(name): Path<String>, Json(body): Json<O
     }
     let (e, mut es) = network_entities(&n);
     es.project(&body.project);
-    c.require_action("offerNetworkShare", e, es, &[("project", Ent::Project(body.project.clone()))])?;
+    c.require_action(
+        "offerNetworkShare",
+        e,
+        es,
+        &[("project", Ent::Project(body.project.clone()))],
+    )?;
     c.detail("to_project", serde_json::json!(body.project));
     let by = c.p.user_id().unwrap_or("-").to_string();
-    c.manager().offer_network_share(&name, &body.project, &by).map_err(manager_err)?;
+    c.manager()
+        .offer_network_share(&name, &body.project, &by)
+        .map_err(manager_err)?;
     // The same answer whether or not the target exists (spec §6.2.1).
     Ok(StatusCode::ACCEPTED)
 }
 
-pub async fn unshare(c: Caller, Path((name, project)): Path<(String, String)>) -> Result<impl IntoResponse, ApiErr> {
+pub async fn unshare(
+    c: Caller,
+    Path((name, project)): Path<(String, String)>,
+) -> Result<impl IntoResponse, ApiErr> {
     let n = c.manager().get_network(&name).map_err(manager_err)?;
     c.set_target(format!("network:{}", n.name));
     let (e, mut es) = network_entities(&n);
     es.project(&project);
-    c.require_action("unshareNetwork", e, es, &[("project", Ent::Project(project.clone()))])?;
-    c.manager().end_network_share(&name, &project).await.map_err(manager_err)?;
+    c.require_action(
+        "unshareNetwork",
+        e,
+        es,
+        &[("project", Ent::Project(project.clone()))],
+    )?;
+    c.manager()
+        .end_network_share(&name, &project)
+        .await
+        .map_err(manager_err)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -338,9 +487,15 @@ struct ShareView {
     expires_at: Option<u64>,
 }
 
-pub async fn list_shares(c: Caller, Path(project): Path<String>) -> Result<impl IntoResponse, ApiErr> {
+pub async fn list_shares(
+    c: Caller,
+    Path(project): Path<String>,
+) -> Result<impl IntoResponse, ApiErr> {
     let project = c.target_project(Some(&project))?;
-    c.require(Ent::Project(project.clone()), super::project_entities(&project))?;
+    c.require(
+        Ent::Project(project.clone()),
+        super::project_entities(&project),
+    )?;
     let out: Vec<ShareView> = c
         .manager()
         .network_shares_for(&project)
@@ -349,7 +504,14 @@ pub async fn list_shares(c: Caller, Path(project): Path<String>) -> Result<impl 
         .map(|n| {
             let accepted = n.shares.contains(&project);
             ShareView {
-                expires_at: (!accepted).then(|| n.share_offers.iter().find(|o| o.project == project).map(|o| o.expires_at)).flatten(),
+                expires_at: (!accepted)
+                    .then(|| {
+                        n.share_offers
+                            .iter()
+                            .find(|o| o.project == project)
+                            .map(|o| o.expires_at)
+                    })
+                    .flatten(),
                 status: if accepted { "accepted" } else { "offered" },
                 owner_project: n.project.clone(),
                 network: n.name,
@@ -359,25 +521,48 @@ pub async fn list_shares(c: Caller, Path(project): Path<String>) -> Result<impl 
     Ok(Json(out))
 }
 
-async fn share_target(c: &Caller, project: &str, network: &str, action: &str) -> Result<(String, Network), ApiErr> {
+async fn share_target(
+    c: &Caller,
+    project: &str,
+    network: &str,
+    action: &str,
+) -> Result<(String, Network), ApiErr> {
     let project = c.target_project(Some(project))?;
     c.set_project(&project);
     c.set_target(format!("network:{}", network));
     let n = c.manager().get_network(network).map_err(manager_err)?;
     let mut es = super::project_entities(&project);
     let ne = add_network(&mut es, &n);
-    c.require_action(action, Ent::Project(project.clone()), es, &[("network", ne)])?;
+    c.require_action(
+        action,
+        Ent::Project(project.clone()),
+        es,
+        &[("network", ne)],
+    )?;
     Ok((project, n))
 }
 
-pub async fn accept_share(c: Caller, Path((project, network)): Path<(String, String)>) -> Result<impl IntoResponse, ApiErr> {
+pub async fn accept_share(
+    c: Caller,
+    Path((project, network)): Path<(String, String)>,
+) -> Result<impl IntoResponse, ApiErr> {
     let (project, _) = share_target(&c, &project, &network, "acceptNetworkShare").await?;
-    Ok(Json(c.manager().accept_network_share(&project, &network).map_err(manager_err)?))
+    Ok(Json(
+        c.manager()
+            .accept_network_share(&project, &network)
+            .map_err(manager_err)?,
+    ))
 }
 
-pub async fn leave_share(c: Caller, Path((project, network)): Path<(String, String)>) -> Result<impl IntoResponse, ApiErr> {
+pub async fn leave_share(
+    c: Caller,
+    Path((project, network)): Path<(String, String)>,
+) -> Result<impl IntoResponse, ApiErr> {
     let (project, _) = share_target(&c, &project, &network, "leaveNetworkShare").await?;
-    c.manager().end_network_share(&network, &project).await.map_err(manager_err)?;
+    c.manager()
+        .end_network_share(&network, &project)
+        .await
+        .map_err(manager_err)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -404,24 +589,53 @@ pub async fn ovs_status(c: Caller) -> Result<impl IntoResponse, ApiErr> {
     let status = tokio::task::spawn_blocking(move || {
         let (access, result) = netd.probe();
         match result {
-            Ok(host) => OvsStatus { netd: NetdStatus { available: true, access, error: None }, host: Some(host) },
-            Err(e) => OvsStatus { netd: NetdStatus { available: false, access, error: Some(e.to_string()) }, host: None },
+            Ok(host) => OvsStatus {
+                netd: NetdStatus {
+                    available: true,
+                    access,
+                    error: None,
+                },
+                host: Some(host),
+            },
+            Err(e) => OvsStatus {
+                netd: NetdStatus {
+                    available: false,
+                    access,
+                    error: Some(e.to_string()),
+                },
+                host: None,
+            },
         }
     })
     .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError::new("internal", e.to_string()))))?;
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError::new("internal", e.to_string())),
+        )
+    })?;
     Ok(Json(status))
 }
 
-pub async fn ovs_install(c: Caller, Json(req): Json<InstallRequest>) -> Result<impl IntoResponse, ApiErr> {
+pub async fn ovs_install(
+    c: Caller,
+    Json(req): Json<InstallRequest>,
+) -> Result<impl IntoResponse, ApiErr> {
     c.require(Ent::Host, EntitySet::new())?;
-    let report: InstallReport = netd_blocking(&c, move |n, who| n.call_as(Op::InstallOvs(req), who)).await?;
+    let report: InstallReport =
+        netd_blocking(&c, move |n, who| n.call_as(Op::InstallOvs(req), who)).await?;
     Ok(Json(report))
 }
 
-pub async fn ovs_dpdk_init(c: Caller, Json(settings): Json<glidex_ovs::install::DpdkSettings>) -> Result<impl IntoResponse, ApiErr> {
+pub async fn ovs_dpdk_init(
+    c: Caller,
+    Json(settings): Json<glidex_ovs::install::DpdkSettings>,
+) -> Result<impl IntoResponse, ApiErr> {
     c.require(Ent::Host, EntitySet::new())?;
-    netd_blocking(&c, move |n, who| n.call_as::<serde_json::Value>(Op::InitDpdk(settings), who)).await?;
+    netd_blocking(&c, move |n, who| {
+        n.call_as::<serde_json::Value>(Op::InitDpdk(settings), who)
+    })
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -431,31 +645,53 @@ pub async fn list_bridges(c: Caller) -> Result<impl IntoResponse, ApiErr> {
     Ok(Json(bridges))
 }
 
-pub async fn create_bridge(c: Caller, Json(spec): Json<BridgeSpec>) -> Result<impl IntoResponse, ApiErr> {
+pub async fn create_bridge(
+    c: Caller,
+    Json(spec): Json<BridgeSpec>,
+) -> Result<impl IntoResponse, ApiErr> {
     c.set_target(format!("bridge:{}", spec.name));
     c.require(Ent::Host, EntitySet::new())?;
-    let bridge: BridgeRecord = netd_blocking(&c, move |n, who| n.call_as(Op::EnsureBridge(spec), who)).await?;
+    let bridge: BridgeRecord =
+        netd_blocking(&c, move |n, who| n.call_as(Op::EnsureBridge(spec), who)).await?;
     Ok((StatusCode::CREATED, Json(bridge)))
 }
 
-pub async fn delete_bridge(c: Caller, Path(name): Path<String>) -> Result<impl IntoResponse, ApiErr> {
+pub async fn delete_bridge(
+    c: Caller,
+    Path(name): Path<String>,
+) -> Result<impl IntoResponse, ApiErr> {
     c.set_target(format!("bridge:{}", name));
     c.require(Ent::Host, EntitySet::new())?;
-    if let Some(net) = c.manager().list_networks().map_err(manager_err)?.into_iter().find(|n| n.bridge == name) {
-        return Err(manager_err(VmManagerError::Network(NetError::Conflict(format!(
-            "bridge '{}' is used by network '{}'",
-            name, net.name
-        )))));
+    if let Some(net) = c
+        .manager()
+        .list_networks()
+        .map_err(manager_err)?
+        .into_iter()
+        .find(|n| n.bridge == name)
+    {
+        return Err(manager_err(VmManagerError::Network(NetError::Conflict(
+            format!("bridge '{}' is used by network '{}'", name, net.name),
+        ))));
     }
     c.manager().meter_final_sample().await;
-    netd_blocking(&c, move |n, who| n.call_as::<serde_json::Value>(Op::DeleteBridge { name }, who)).await?;
+    netd_blocking(&c, move |n, who| {
+        n.call_as::<serde_json::Value>(Op::DeleteBridge { name }, who)
+    })
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
-pub async fn list_uplinks(c: Caller, Path(bridge): Path<String>) -> Result<impl IntoResponse, ApiErr> {
+pub async fn list_uplinks(
+    c: Caller,
+    Path(bridge): Path<String>,
+) -> Result<impl IntoResponse, ApiErr> {
     c.require(Ent::Host, EntitySet::new())?;
     let all: Vec<UplinkResult> = netd_blocking(&c, |n, _| n.call(Op::ListUplinks)).await?;
-    Ok(Json(all.into_iter().filter(|u| u.record.spec.bridge == bridge).collect::<Vec<_>>()))
+    Ok(Json(
+        all.into_iter()
+            .filter(|u| u.record.spec.bridge == bridge)
+            .collect::<Vec<_>>(),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -472,17 +708,31 @@ pub struct CreateUplinkRequest {
     accept_dhcp: bool,
 }
 
-pub async fn create_uplink(c: Caller, Path(bridge): Path<String>, Json(req): Json<CreateUplinkRequest>) -> Result<impl IntoResponse, ApiErr> {
+pub async fn create_uplink(
+    c: Caller,
+    Path(bridge): Path<String>,
+    Json(req): Json<CreateUplinkRequest>,
+) -> Result<impl IntoResponse, ApiErr> {
     c.set_target(format!("uplink:{}/{}", bridge, req.name));
     // A confirmed uplink may move the host's IP: step-up (spec §7.1).
-    let action = if req.confirm { "confirmUplink" } else { "ensureUplink" };
+    let action = if req.confirm {
+        "confirmUplink"
+    } else {
+        "ensureUplink"
+    };
     c.require_action(action, Ent::Host, EntitySet::new(), &[])?;
     let args = EnsureUplinkArgs {
-        spec: UplinkSpec { name: req.name, bridge, kind: req.kind, migrate_ip: req.migrate_ip },
+        spec: UplinkSpec {
+            name: req.name,
+            bridge,
+            kind: req.kind,
+            migrate_ip: req.migrate_ip,
+        },
         confirm: req.confirm,
         accept_dhcp: req.accept_dhcp,
     };
-    let res: UplinkResult = netd_blocking(&c, move |n, who| n.call_as(Op::EnsureUplink(args), who)).await?;
+    let res: UplinkResult =
+        netd_blocking(&c, move |n, who| n.call_as(Op::EnsureUplink(args), who)).await?;
     report_soon(&c);
     // 202: the IP migration must still be committed within the window.
     let status = match res.phase {
@@ -497,12 +747,25 @@ pub struct CommitRequest {
     token: String,
 }
 
-pub async fn commit_uplink(c: Caller, Path((bridge, name)): Path<(String, String)>, Json(req): Json<CommitRequest>) -> Result<impl IntoResponse, ApiErr> {
+pub async fn commit_uplink(
+    c: Caller,
+    Path((bridge, name)): Path<(String, String)>,
+    Json(req): Json<CommitRequest>,
+) -> Result<impl IntoResponse, ApiErr> {
     c.set_target(format!("uplink:{}/{}", bridge, name));
     c.require(Ent::Host, EntitySet::new())?;
     c.manager().meter_final_sample().await;
-    let res: UplinkResult =
-        netd_blocking(&c, move |n, who| n.call_as(Op::CommitUplink { bridge, name, token: req.token }, who)).await?;
+    let res: UplinkResult = netd_blocking(&c, move |n, who| {
+        n.call_as(
+            Op::CommitUplink {
+                bridge,
+                name,
+                token: req.token,
+            },
+            who,
+        )
+    })
+    .await?;
     report_soon(&c);
     Ok(Json(res))
 }
@@ -510,11 +773,17 @@ pub async fn commit_uplink(c: Caller, Path((bridge, name)): Path<(String, String
 /// `POST /ovs/bridges/{b}/uplinks/{u}/reapply`: set up again an uplink netd
 /// rolled back at start (the gateway check failed there): a fresh snapshot,
 /// the gateway check and a commit window, as when it was first added.
-pub async fn reapply_uplink(c: Caller, Path((bridge, name)): Path<(String, String)>) -> Result<impl IntoResponse, ApiErr> {
+pub async fn reapply_uplink(
+    c: Caller,
+    Path((bridge, name)): Path<(String, String)>,
+) -> Result<impl IntoResponse, ApiErr> {
     c.set_target(format!("uplink:{}/{}", bridge, name));
     // It moves the host's IP again: as a confirmed uplink, step-up.
     c.require_action("confirmUplink", Ent::Host, EntitySet::new(), &[])?;
-    let res: UplinkResult = netd_blocking(&c, move |n, who| n.call_as(Op::ReapplyUplink { bridge, name }, who)).await?;
+    let res: UplinkResult = netd_blocking(&c, move |n, who| {
+        n.call_as(Op::ReapplyUplink { bridge, name }, who)
+    })
+    .await?;
     report_soon(&c);
     let status = match res.phase {
         UplinkPhase::PendingCommit => StatusCode::ACCEPTED,
@@ -534,11 +803,17 @@ fn report_soon(c: &Caller) {
     });
 }
 
-pub async fn delete_uplink(c: Caller, Path((bridge, name)): Path<(String, String)>) -> Result<impl IntoResponse, ApiErr> {
+pub async fn delete_uplink(
+    c: Caller,
+    Path((bridge, name)): Path<(String, String)>,
+) -> Result<impl IntoResponse, ApiErr> {
     c.set_target(format!("uplink:{}/{}", bridge, name));
     c.require(Ent::Host, EntitySet::new())?;
     c.manager().meter_final_sample().await;
-    netd_blocking(&c, move |n, who| n.call_as::<serde_json::Value>(Op::DeleteUplink { bridge, name }, who)).await?;
+    netd_blocking(&c, move |n, who| {
+        n.call_as::<serde_json::Value>(Op::DeleteUplink { bridge, name }, who)
+    })
+    .await?;
     report_soon(&c);
     Ok(StatusCode::NO_CONTENT)
 }

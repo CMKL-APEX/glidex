@@ -13,10 +13,14 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio_rustls::rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+use tokio_rustls::rustls::client::danger::{
+    HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier,
+};
 use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
 use tokio_rustls::rustls::server::WebPkiClientVerifier;
-use tokio_rustls::rustls::{self, ClientConfig, DigitallySignedStruct, RootCertStore, ServerConfig, SignatureScheme};
+use tokio_rustls::rustls::{
+    self, ClientConfig, DigitallySignedStruct, RootCertStore, ServerConfig, SignatureScheme,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum NetError {
@@ -43,23 +47,39 @@ pub struct TlsMaterial {
 }
 
 impl TlsMaterial {
-    pub fn from_pem(chain_pem: &str, key_pem: &str, trust_pem: &str) -> Result<TlsMaterial, NetError> {
-        let ders = |pem: &str| super::pki::pem_bundle_ders(pem).map_err(|e| NetError::Tls(e.to_string()));
+    pub fn from_pem(
+        chain_pem: &str,
+        key_pem: &str,
+        trust_pem: &str,
+    ) -> Result<TlsMaterial, NetError> {
+        let ders =
+            |pem: &str| super::pki::pem_bundle_ders(pem).map_err(|e| NetError::Tls(e.to_string()));
         let key = PrivateKeyDer::try_from(
-            x509_parser::pem::parse_x509_pem(key_pem.as_bytes()).map_err(|e| NetError::Tls(format!("key: {e}")))?.1.contents,
+            x509_parser::pem::parse_x509_pem(key_pem.as_bytes())
+                .map_err(|e| NetError::Tls(format!("key: {e}")))?
+                .1
+                .contents,
         )
         .map_err(|e| NetError::Tls(format!("key: {e}")))?;
         Ok(TlsMaterial {
-            chain: ders(chain_pem)?.into_iter().map(CertificateDer::from).collect(),
+            chain: ders(chain_pem)?
+                .into_iter()
+                .map(CertificateDer::from)
+                .collect(),
             key: Arc::new(key),
-            trust: ders(trust_pem)?.into_iter().map(CertificateDer::from).collect(),
+            trust: ders(trust_pem)?
+                .into_iter()
+                .map(CertificateDer::from)
+                .collect(),
         })
     }
 
     fn roots(&self) -> Result<Arc<RootCertStore>, NetError> {
         let mut roots = RootCertStore::empty();
         for c in &self.trust {
-            roots.add(c.clone()).map_err(|e| NetError::Tls(e.to_string()))?;
+            roots
+                .add(c.clone())
+                .map_err(|e| NetError::Tls(e.to_string()))?;
         }
         Ok(Arc::new(roots))
     }
@@ -104,13 +124,30 @@ impl TlsMaterial {
 struct AcceptAny(Arc<rustls::crypto::CryptoProvider>);
 
 impl ServerCertVerifier for AcceptAny {
-    fn verify_server_cert(&self, _: &CertificateDer<'_>, _: &[CertificateDer<'_>], _: &ServerName<'_>, _: &[u8], _: UnixTime) -> Result<ServerCertVerified, rustls::Error> {
+    fn verify_server_cert(
+        &self,
+        _: &CertificateDer<'_>,
+        _: &[CertificateDer<'_>],
+        _: &ServerName<'_>,
+        _: &[u8],
+        _: UnixTime,
+    ) -> Result<ServerCertVerified, rustls::Error> {
         Ok(ServerCertVerified::assertion())
     }
-    fn verify_tls12_signature(&self, m: &[u8], c: &CertificateDer<'_>, d: &DigitallySignedStruct) -> Result<HandshakeSignatureValid, rustls::Error> {
+    fn verify_tls12_signature(
+        &self,
+        m: &[u8],
+        c: &CertificateDer<'_>,
+        d: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
         rustls::crypto::verify_tls12_signature(m, c, d, &self.0.signature_verification_algorithms)
     }
-    fn verify_tls13_signature(&self, m: &[u8], c: &CertificateDer<'_>, d: &DigitallySignedStruct) -> Result<HandshakeSignatureValid, rustls::Error> {
+    fn verify_tls13_signature(
+        &self,
+        m: &[u8],
+        c: &CertificateDer<'_>,
+        d: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
         rustls::crypto::verify_tls13_signature(m, c, d, &self.0.signature_verification_algorithms)
     }
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
@@ -131,7 +168,12 @@ pub struct ClusterTls {
 
 impl ClusterTls {
     pub fn new(m: TlsMaterial) -> Result<Arc<ClusterTls>, NetError> {
-        Ok(Arc::new(ClusterTls { server: ArcSwap::new(m.server_config()?), client: ArcSwap::new(m.client_config()?), client_h1: ArcSwap::new(m.client_config_h1()?), material: ArcSwap::from_pointee(m) }))
+        Ok(Arc::new(ClusterTls {
+            server: ArcSwap::new(m.server_config()?),
+            client: ArcSwap::new(m.client_config()?),
+            client_h1: ArcSwap::new(m.client_config_h1()?),
+            material: ArcSwap::from_pointee(m),
+        }))
     }
 
     pub fn reload(&self, m: TlsMaterial) -> Result<(), NetError> {
@@ -185,17 +227,34 @@ pub struct Reply {
 
 impl PeerClient {
     pub fn new(tls: Arc<ClusterTls>) -> Arc<PeerClient> {
-        Arc::new(PeerClient { tls: ClientTls::Node(tls), conns: Mutex::new(HashMap::new()), timeout: Duration::from_secs(10) })
+        Arc::new(PeerClient {
+            tls: ClientTls::Node(tls),
+            conns: Mutex::new(HashMap::new()),
+            timeout: Duration::from_secs(10),
+        })
     }
 
-    async fn connect(&self, addr: &str, config: Arc<ClientConfig>) -> Result<hyper::client::conn::http2::SendRequest<Full<Bytes>>, NetError> {
+    async fn connect(
+        &self,
+        addr: &str,
+        config: Arc<ClientConfig>,
+    ) -> Result<hyper::client::conn::http2::SendRequest<Full<Bytes>>, NetError> {
         let ce = |e: &dyn std::fmt::Display| NetError::Connect(addr.to_string(), e.to_string());
         let sock: SocketAddr = addr.parse().map_err(|e| ce(&e))?;
-        let tcp = tokio::time::timeout(self.timeout, tokio::net::TcpStream::connect(sock)).await.map_err(|_| ce(&"timed out"))?.map_err(|e| ce(&e))?;
+        let tcp = tokio::time::timeout(self.timeout, tokio::net::TcpStream::connect(sock))
+            .await
+            .map_err(|_| ce(&"timed out"))?
+            .map_err(|e| ce(&e))?;
         let _ = tcp.set_nodelay(true);
         let name = ServerName::IpAddress(sock.ip().into());
-        let tls = tokio_rustls::TlsConnector::from(config).connect(name, tcp).await.map_err(|e| ce(&e))?;
-        let (sender, conn) = hyper::client::conn::http2::handshake(TokioExecutor::new(), TokioIo::new(tls)).await.map_err(|e| ce(&e))?;
+        let tls = tokio_rustls::TlsConnector::from(config)
+            .connect(name, tcp)
+            .await
+            .map_err(|e| ce(&e))?;
+        let (sender, conn) =
+            hyper::client::conn::http2::handshake(TokioExecutor::new(), TokioIo::new(tls))
+                .await
+                .map_err(|e| ce(&e))?;
         tokio::spawn(async move {
             let _ = conn.await;
         });
@@ -204,33 +263,61 @@ impl PeerClient {
 
     /// One request to `https://addr<path>`. Retries once on a broken
     /// pooled connection.
-    pub async fn request(&self, addr: &str, method: Method, path: &str, headers: &[(&str, String)], body: Bytes) -> Result<Reply, NetError> {
-        self.request_timeout(addr, method, path, headers, body, self.timeout).await
+    pub async fn request(
+        &self,
+        addr: &str,
+        method: Method,
+        path: &str,
+        headers: &[(&str, String)],
+        body: Bytes,
+    ) -> Result<Reply, NetError> {
+        self.request_timeout(addr, method, path, headers, body, self.timeout)
+            .await
     }
 
     /// As [`request`](Self::request), with a limit for the whole exchange.
-    pub async fn request_timeout(&self, addr: &str, method: Method, path: &str, headers: &[(&str, String)], body: Bytes, timeout: Duration) -> Result<Reply, NetError> {
+    pub async fn request_timeout(
+        &self,
+        addr: &str,
+        method: Method,
+        path: &str,
+        headers: &[(&str, String)],
+        body: Bytes,
+        timeout: Duration,
+    ) -> Result<Reply, NetError> {
         for attempt in 0..2 {
             let pooled = self.conns.lock().unwrap().get(addr).cloned();
             let mut sender = match pooled {
                 Some(s) if !s.is_closed() => s,
                 _ => {
                     let s = self.connect(addr, self.tls.config()).await?;
-                    self.conns.lock().unwrap().insert(addr.to_string(), s.clone());
+                    self.conns
+                        .lock()
+                        .unwrap()
+                        .insert(addr.to_string(), s.clone());
                     s
                 }
             };
-            let mut req = Request::builder().method(method.clone()).uri(format!("https://{addr}{path}"));
+            let mut req = Request::builder()
+                .method(method.clone())
+                .uri(format!("https://{addr}{path}"));
             for (k, v) in headers {
                 req = req.header(*k, v.as_str());
             }
-            let req = req.body(Full::new(body.clone())).map_err(|e| NetError::Other(e.to_string()))?;
+            let req = req
+                .body(Full::new(body.clone()))
+                .map_err(|e| NetError::Other(e.to_string()))?;
             let sent = tokio::time::timeout(timeout, async {
                 let resp = sender.send_request(req).await?;
                 let (parts, inc) = resp.into_parts();
                 let collected = inc.collect().await?;
                 let trailers = collected.trailers().cloned();
-                Ok::<_, hyper::Error>(Reply { status: parts.status, headers: parts.headers, body: collected.to_bytes(), trailers })
+                Ok::<_, hyper::Error>(Reply {
+                    status: parts.status,
+                    headers: parts.headers,
+                    body: collected.to_bytes(),
+                    trailers,
+                })
             })
             .await;
             match sent {
@@ -253,22 +340,36 @@ impl PeerClient {
     /// One request whose answer is streamed back rather than collected (the
     /// UI relay: event streams, large downloads). Only connecting has a
     /// time limit.
-    pub async fn request_stream(&self, addr: &str, method: Method, path: &str, headers: &[(&str, String)], body: Bytes) -> Result<hyper::Response<hyper::body::Incoming>, NetError> {
+    pub async fn request_stream(
+        &self,
+        addr: &str,
+        method: Method,
+        path: &str,
+        headers: &[(&str, String)],
+        body: Bytes,
+    ) -> Result<hyper::Response<hyper::body::Incoming>, NetError> {
         for attempt in 0..2 {
             let pooled = self.conns.lock().unwrap().get(addr).cloned();
             let mut sender = match pooled {
                 Some(s) if !s.is_closed() => s,
                 _ => {
                     let s = self.connect(addr, self.tls.config()).await?;
-                    self.conns.lock().unwrap().insert(addr.to_string(), s.clone());
+                    self.conns
+                        .lock()
+                        .unwrap()
+                        .insert(addr.to_string(), s.clone());
                     s
                 }
             };
-            let mut req = Request::builder().method(method.clone()).uri(format!("https://{addr}{path}"));
+            let mut req = Request::builder()
+                .method(method.clone())
+                .uri(format!("https://{addr}{path}"));
             for (k, v) in headers {
                 req = req.header(*k, v.as_str());
             }
-            let req = req.body(Full::new(body.clone())).map_err(|e| NetError::Other(e.to_string()))?;
+            let req = req
+                .body(Full::new(body.clone()))
+                .map_err(|e| NetError::Other(e.to_string()))?;
             match tokio::time::timeout(self.timeout, sender.send_request(req)).await {
                 Ok(Ok(r)) => return Ok(r),
                 Ok(Err(e)) => {
@@ -289,71 +390,149 @@ impl PeerClient {
     /// An HTTP/1.1 request that may switch protocols (a WebSocket relayed
     /// for the UI): the response's status and headers, and the upgraded
     /// stream when it is `101`.
-    pub async fn upgrade_with(&self, addr: &str, method: Method, path: &str, headers: &[(&str, String)]) -> Result<(StatusCode, hyper::HeaderMap, Bytes, Option<TokioIo<hyper::upgrade::Upgraded>>), NetError> {
-        let ClientTls::Node(t) = &self.tls else { return Err(NetError::Other("not a cluster node".into())) };
+    pub async fn upgrade_with(
+        &self,
+        addr: &str,
+        method: Method,
+        path: &str,
+        headers: &[(&str, String)],
+    ) -> Result<
+        (
+            StatusCode,
+            hyper::HeaderMap,
+            Bytes,
+            Option<TokioIo<hyper::upgrade::Upgraded>>,
+        ),
+        NetError,
+    > {
+        let ClientTls::Node(t) = &self.tls else {
+            return Err(NetError::Other("not a cluster node".into()));
+        };
         let ce = |e: &dyn std::fmt::Display| NetError::Connect(addr.to_string(), e.to_string());
         let sock: SocketAddr = addr.parse().map_err(|e| ce(&e))?;
-        let tcp = tokio::time::timeout(self.timeout, tokio::net::TcpStream::connect(sock)).await.map_err(|_| ce(&"timed out"))?.map_err(|e| ce(&e))?;
-        let tls = tokio_rustls::TlsConnector::from(t.client_h1.load_full()).connect(ServerName::IpAddress(sock.ip().into()), tcp).await.map_err(|e| ce(&e))?;
-        let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(tls)).await.map_err(|e| ce(&e))?;
+        let tcp = tokio::time::timeout(self.timeout, tokio::net::TcpStream::connect(sock))
+            .await
+            .map_err(|_| ce(&"timed out"))?
+            .map_err(|e| ce(&e))?;
+        let tls = tokio_rustls::TlsConnector::from(t.client_h1.load_full())
+            .connect(ServerName::IpAddress(sock.ip().into()), tcp)
+            .await
+            .map_err(|e| ce(&e))?;
+        let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(tls))
+            .await
+            .map_err(|e| ce(&e))?;
         tokio::spawn(async move {
             let _ = conn.with_upgrades().await;
         });
-        let mut req = Request::builder().method(method).uri(format!("https://{addr}{path}")).header(hyper::header::HOST, addr);
+        let mut req = Request::builder()
+            .method(method)
+            .uri(format!("https://{addr}{path}"))
+            .header(hyper::header::HOST, addr);
         for (k, v) in headers {
             req = req.header(*k, v.as_str());
         }
-        let req = req.body(Full::new(Bytes::new())).map_err(|e| NetError::Other(e.to_string()))?;
-        let resp = sender.send_request(req).await.map_err(|e| NetError::Request(addr.to_string(), e.to_string()))?;
+        let req = req
+            .body(Full::new(Bytes::new()))
+            .map_err(|e| NetError::Other(e.to_string()))?;
+        let resp = sender
+            .send_request(req)
+            .await
+            .map_err(|e| NetError::Request(addr.to_string(), e.to_string()))?;
         let (status, headers) = (resp.status(), resp.headers().clone());
         if status != StatusCode::SWITCHING_PROTOCOLS {
-            let body = resp.into_body().collect().await.map(|b| b.to_bytes()).unwrap_or_default();
+            let body = resp
+                .into_body()
+                .collect()
+                .await
+                .map(|b| b.to_bytes())
+                .unwrap_or_default();
             return Ok((status, headers, body, None));
         }
-        let up = hyper::upgrade::on(resp).await.map_err(|e| NetError::Request(addr.to_string(), e.to_string()))?;
+        let up = hyper::upgrade::on(resp)
+            .await
+            .map_err(|e| NetError::Request(addr.to_string(), e.to_string()))?;
         Ok((status, headers, Bytes::new(), Some(TokioIo::new(up))))
     }
 
     /// GET `path` into the file `dest`, streamed. Returns the status; the file
     /// is written only for `200`.
-    pub async fn get_to_file(&self, addr: &str, path: &str, dest: &std::path::Path) -> Result<u16, NetError> {
+    pub async fn get_to_file(
+        &self,
+        addr: &str,
+        path: &str,
+        dest: &std::path::Path,
+    ) -> Result<u16, NetError> {
         use tokio::io::AsyncWriteExt;
         let ce = |e: &dyn std::fmt::Display| NetError::Connect(addr.to_string(), e.to_string());
         let sock: SocketAddr = addr.parse().map_err(|e| ce(&e))?;
-        let tcp = tokio::net::TcpStream::connect(sock).await.map_err(|e| ce(&e))?;
-        let tls = tokio_rustls::TlsConnector::from(self.tls.config()).connect(ServerName::IpAddress(sock.ip().into()), tcp).await.map_err(|e| ce(&e))?;
-        let (mut sender, conn) = hyper::client::conn::http2::handshake(TokioExecutor::new(), TokioIo::new(tls)).await.map_err(|e| ce(&e))?;
+        let tcp = tokio::net::TcpStream::connect(sock)
+            .await
+            .map_err(|e| ce(&e))?;
+        let tls = tokio_rustls::TlsConnector::from(self.tls.config())
+            .connect(ServerName::IpAddress(sock.ip().into()), tcp)
+            .await
+            .map_err(|e| ce(&e))?;
+        let (mut sender, conn) =
+            hyper::client::conn::http2::handshake(TokioExecutor::new(), TokioIo::new(tls))
+                .await
+                .map_err(|e| ce(&e))?;
         tokio::spawn(async move {
             let _ = conn.await;
         });
-        let req = Request::builder().uri(format!("https://{addr}{path}")).body(Full::new(Bytes::new())).map_err(|e| NetError::Other(e.to_string()))?;
-        let resp = sender.send_request(req).await.map_err(|e| NetError::Request(addr.to_string(), e.to_string()))?;
+        let req = Request::builder()
+            .uri(format!("https://{addr}{path}"))
+            .body(Full::new(Bytes::new()))
+            .map_err(|e| NetError::Other(e.to_string()))?;
+        let resp = sender
+            .send_request(req)
+            .await
+            .map_err(|e| NetError::Request(addr.to_string(), e.to_string()))?;
         let status = resp.status().as_u16();
         let mut body = resp.into_body();
         if status != 200 {
             let _ = body.collect().await;
             return Ok(status);
         }
-        let mut f = tokio::fs::File::create(dest).await.map_err(|e| NetError::Other(e.to_string()))?;
+        let mut f = tokio::fs::File::create(dest)
+            .await
+            .map_err(|e| NetError::Other(e.to_string()))?;
         while let Some(frame) = body.frame().await {
             let frame = frame.map_err(|e| NetError::Request(addr.to_string(), e.to_string()))?;
             if let Some(d) = frame.data_ref() {
-                f.write_all(d).await.map_err(|e| NetError::Other(e.to_string()))?;
+                f.write_all(d)
+                    .await
+                    .map_err(|e| NetError::Other(e.to_string()))?;
             }
         }
-        f.sync_all().await.map_err(|e| NetError::Other(e.to_string()))?;
+        f.sync_all()
+            .await
+            .map_err(|e| NetError::Other(e.to_string()))?;
         Ok(200)
     }
 
     /// Open a raw byte stream to `path` on `addr` by upgrading an HTTP/1.1
     /// request (`Upgrade: glidex-stream`). Used to relay consoles.
-    pub async fn upgrade(&self, addr: &str, path: &str) -> Result<TokioIo<hyper::upgrade::Upgraded>, NetError> {
-        let ClientTls::Node(t) = &self.tls else { return Err(NetError::Other("not a cluster node".into())) };
+    pub async fn upgrade(
+        &self,
+        addr: &str,
+        path: &str,
+    ) -> Result<TokioIo<hyper::upgrade::Upgraded>, NetError> {
+        let ClientTls::Node(t) = &self.tls else {
+            return Err(NetError::Other("not a cluster node".into()));
+        };
         let ce = |e: &dyn std::fmt::Display| NetError::Connect(addr.to_string(), e.to_string());
         let sock: SocketAddr = addr.parse().map_err(|e| ce(&e))?;
-        let tcp = tokio::time::timeout(self.timeout, tokio::net::TcpStream::connect(sock)).await.map_err(|_| ce(&"timed out"))?.map_err(|e| ce(&e))?;
-        let tls = tokio_rustls::TlsConnector::from(t.client_h1.load_full()).connect(ServerName::IpAddress(sock.ip().into()), tcp).await.map_err(|e| ce(&e))?;
-        let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(tls)).await.map_err(|e| ce(&e))?;
+        let tcp = tokio::time::timeout(self.timeout, tokio::net::TcpStream::connect(sock))
+            .await
+            .map_err(|_| ce(&"timed out"))?
+            .map_err(|e| ce(&e))?;
+        let tls = tokio_rustls::TlsConnector::from(t.client_h1.load_full())
+            .connect(ServerName::IpAddress(sock.ip().into()), tcp)
+            .await
+            .map_err(|e| ce(&e))?;
+        let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(tls))
+            .await
+            .map_err(|e| ce(&e))?;
         tokio::spawn(async move {
             let _ = conn.with_upgrades().await;
         });
@@ -364,30 +543,62 @@ impl PeerClient {
             .header(hyper::header::UPGRADE, "glidex-stream")
             .body(Full::new(Bytes::new()))
             .map_err(|e| NetError::Other(e.to_string()))?;
-        let resp = sender.send_request(req).await.map_err(|e| NetError::Request(addr.to_string(), e.to_string()))?;
+        let resp = sender
+            .send_request(req)
+            .await
+            .map_err(|e| NetError::Request(addr.to_string(), e.to_string()))?;
         if resp.status() != StatusCode::SWITCHING_PROTOCOLS {
-            return Err(NetError::Request(addr.to_string(), format!("status {}", resp.status())));
+            return Err(NetError::Request(
+                addr.to_string(),
+                format!("status {}", resp.status()),
+            ));
         }
-        let up = hyper::upgrade::on(resp).await.map_err(|e| NetError::Request(addr.to_string(), e.to_string()))?;
+        let up = hyper::upgrade::on(resp)
+            .await
+            .map_err(|e| NetError::Request(addr.to_string(), e.to_string()))?;
         Ok(TokioIo::new(up))
     }
 
     /// POST a file as the request body, streamed (snapshots).
-    pub async fn post_file(&self, addr: &str, path: &str, headers: &[(&str, String)], file: &std::path::Path) -> Result<Reply, NetError> {
+    pub async fn post_file(
+        &self,
+        addr: &str,
+        path: &str,
+        headers: &[(&str, String)],
+        file: &std::path::Path,
+    ) -> Result<Reply, NetError> {
         use http_body_util::StreamBody;
         use hyper::body::Frame;
         use tokio::io::AsyncReadExt;
         let ce = |e: &dyn std::fmt::Display| NetError::Connect(addr.to_string(), e.to_string());
         let sock: SocketAddr = addr.parse().map_err(|e| ce(&e))?;
-        let tcp = tokio::net::TcpStream::connect(sock).await.map_err(|e| ce(&e))?;
-        let tls = tokio_rustls::TlsConnector::from(self.tls.config()).connect(ServerName::IpAddress(sock.ip().into()), tcp).await.map_err(|e| ce(&e))?;
-        let (mut sender, conn) = hyper::client::conn::http2::handshake::<_, _, StreamBody<std::pin::Pin<Box<dyn futures_util::Stream<Item = Result<Frame<Bytes>, std::io::Error>> + Send>>>>(TokioExecutor::new(), TokioIo::new(tls))
+        let tcp = tokio::net::TcpStream::connect(sock)
             .await
             .map_err(|e| ce(&e))?;
+        let tls = tokio_rustls::TlsConnector::from(self.tls.config())
+            .connect(ServerName::IpAddress(sock.ip().into()), tcp)
+            .await
+            .map_err(|e| ce(&e))?;
+        let (mut sender, conn) = hyper::client::conn::http2::handshake::<
+            _,
+            _,
+            StreamBody<
+                std::pin::Pin<
+                    Box<
+                        dyn futures_util::Stream<Item = Result<Frame<Bytes>, std::io::Error>>
+                            + Send,
+                    >,
+                >,
+            >,
+        >(TokioExecutor::new(), TokioIo::new(tls))
+        .await
+        .map_err(|e| ce(&e))?;
         tokio::spawn(async move {
             let _ = conn.await;
         });
-        let f = tokio::fs::File::open(file).await.map_err(|e| NetError::Other(e.to_string()))?;
+        let f = tokio::fs::File::open(file)
+            .await
+            .map_err(|e| NetError::Other(e.to_string()))?;
         let stream = futures_util::stream::unfold(f, |mut f| async move {
             let mut buf = vec![0u8; 256 * 1024];
             match f.read(&mut buf).await {
@@ -399,16 +610,33 @@ impl PeerClient {
                 Err(e) => Some((Err(e), f)),
             }
         });
-        let body = StreamBody::new(Box::pin(stream) as std::pin::Pin<Box<dyn futures_util::Stream<Item = Result<Frame<Bytes>, std::io::Error>> + Send>>);
-        let mut req = Request::builder().method(Method::POST).uri(format!("https://{addr}{path}"));
+        let body = StreamBody::new(Box::pin(stream)
+            as std::pin::Pin<
+                Box<dyn futures_util::Stream<Item = Result<Frame<Bytes>, std::io::Error>> + Send>,
+            >);
+        let mut req = Request::builder()
+            .method(Method::POST)
+            .uri(format!("https://{addr}{path}"));
         for (k, v) in headers {
             req = req.header(*k, v.as_str());
         }
         let req = req.body(body).map_err(|e| NetError::Other(e.to_string()))?;
-        let resp = sender.send_request(req).await.map_err(|e| NetError::Request(addr.to_string(), e.to_string()))?;
+        let resp = sender
+            .send_request(req)
+            .await
+            .map_err(|e| NetError::Request(addr.to_string(), e.to_string()))?;
         let (parts, inc) = resp.into_parts();
-        let body = inc.collect().await.map_err(|e| NetError::Request(addr.to_string(), e.to_string()))?.to_bytes();
-        Ok(Reply { status: parts.status, headers: parts.headers, body, trailers: None })
+        let body = inc
+            .collect()
+            .await
+            .map_err(|e| NetError::Request(addr.to_string(), e.to_string()))?
+            .to_bytes();
+        Ok(Reply {
+            status: parts.status,
+            headers: parts.headers,
+            body,
+            trailers: None,
+        })
     }
 }
 
@@ -426,18 +654,44 @@ pub async fn fetch_ca_untrusted(addr: &str) -> Result<String, NetError> {
     let mut cfg = cfg;
     cfg.alpn_protocols = vec![b"h2".to_vec()];
     let sock: SocketAddr = addr.parse().map_err(|e| ce(&e))?;
-    let tcp = tokio::time::timeout(Duration::from_secs(10), tokio::net::TcpStream::connect(sock)).await.map_err(|_| ce(&"timed out"))?.map_err(|e| ce(&e))?;
-    let tls = tokio_rustls::TlsConnector::from(Arc::new(cfg)).connect(ServerName::IpAddress(sock.ip().into()), tcp).await.map_err(|e| ce(&e))?;
-    let (mut sender, conn) = hyper::client::conn::http2::handshake(TokioExecutor::new(), TokioIo::new(tls)).await.map_err(|e| ce(&e))?;
+    let tcp = tokio::time::timeout(
+        Duration::from_secs(10),
+        tokio::net::TcpStream::connect(sock),
+    )
+    .await
+    .map_err(|_| ce(&"timed out"))?
+    .map_err(|e| ce(&e))?;
+    let tls = tokio_rustls::TlsConnector::from(Arc::new(cfg))
+        .connect(ServerName::IpAddress(sock.ip().into()), tcp)
+        .await
+        .map_err(|e| ce(&e))?;
+    let (mut sender, conn) =
+        hyper::client::conn::http2::handshake(TokioExecutor::new(), TokioIo::new(tls))
+            .await
+            .map_err(|e| ce(&e))?;
     tokio::spawn(async move {
         let _ = conn.await;
     });
-    let req = Request::builder().uri(format!("https://{addr}/cluster/v1/ca")).body(Full::new(Bytes::new())).unwrap();
-    let resp: Response<Incoming> = sender.send_request(req).await.map_err(|e| NetError::Request(addr.to_string(), e.to_string()))?;
+    let req = Request::builder()
+        .uri(format!("https://{addr}/cluster/v1/ca"))
+        .body(Full::new(Bytes::new()))
+        .unwrap();
+    let resp: Response<Incoming> = sender
+        .send_request(req)
+        .await
+        .map_err(|e| NetError::Request(addr.to_string(), e.to_string()))?;
     if !resp.status().is_success() {
-        return Err(NetError::Request(addr.to_string(), format!("status {}", resp.status())));
+        return Err(NetError::Request(
+            addr.to_string(),
+            format!("status {}", resp.status()),
+        ));
     }
-    let body = resp.into_body().collect().await.map_err(|e| NetError::Request(addr.to_string(), e.to_string()))?.to_bytes();
+    let body = resp
+        .into_body()
+        .collect()
+        .await
+        .map_err(|e| NetError::Request(addr.to_string(), e.to_string()))?
+        .to_bytes();
     String::from_utf8(body.to_vec()).map_err(|e| NetError::Other(e.to_string()))
 }
 
@@ -447,7 +701,9 @@ pub fn client_trusting(ca_pem: &str) -> Result<Arc<PeerClient>, NetError> {
     let ders = super::pki::pem_bundle_ders(ca_pem).map_err(|e| NetError::Tls(e.to_string()))?;
     let mut roots = RootCertStore::empty();
     for d in ders {
-        roots.add(CertificateDer::from(d)).map_err(|e| NetError::Tls(e.to_string()))?;
+        roots
+            .add(CertificateDer::from(d))
+            .map_err(|e| NetError::Tls(e.to_string()))?;
     }
     let mut cfg = ClientConfig::builder_with_provider(provider())
         .with_safe_default_protocol_versions()
@@ -455,7 +711,11 @@ pub fn client_trusting(ca_pem: &str) -> Result<Arc<PeerClient>, NetError> {
         .with_root_certificates(roots)
         .with_no_client_auth();
     cfg.alpn_protocols = vec![b"h2".to_vec()];
-    Ok(Arc::new(PeerClient { tls: ClientTls::Fixed(Arc::new(cfg)), conns: Mutex::new(HashMap::new()), timeout: Duration::from_secs(10) }))
+    Ok(Arc::new(PeerClient {
+        tls: ClientTls::Fixed(Arc::new(cfg)),
+        conns: Mutex::new(HashMap::new()),
+        timeout: Duration::from_secs(10),
+    }))
 }
 
 /// Who is on the other end of an accepted connection (§12.3), from its
@@ -469,7 +729,12 @@ pub struct PeerCert {
 
 /// Serve `router` on `listener` over TLS until `stop` fires. Every request
 /// carries the connection's [`PeerCert`] (if any) as an extension.
-pub async fn serve(listener: tokio::net::TcpListener, tls: Arc<ClusterTls>, router: axum::Router, mut stop: tokio::sync::watch::Receiver<bool>) {
+pub async fn serve(
+    listener: tokio::net::TcpListener,
+    tls: Arc<ClusterTls>,
+    router: axum::Router,
+    mut stop: tokio::sync::watch::Receiver<bool>,
+) {
     use tower::ServiceExt;
     loop {
         let (stream, addr) = tokio::select! {
@@ -481,7 +746,9 @@ pub async fn serve(listener: tokio::net::TcpListener, tls: Arc<ClusterTls>, rout
         let stop = stop.clone();
         tokio::spawn(async move {
             let _ = stream.set_nodelay(true);
-            let tls = match tokio::time::timeout(Duration::from_secs(10), acceptor.accept(stream)).await {
+            let tls = match tokio::time::timeout(Duration::from_secs(10), acceptor.accept(stream))
+                .await
+            {
                 Ok(Ok(s)) => s,
                 Ok(Err(e)) => {
                     tracing::debug!(%addr, "cluster TLS handshake failed: {}", e);
@@ -495,7 +762,11 @@ pub async fn serve(listener: tokio::net::TcpListener, tls: Arc<ClusterTls>, rout
                 .peer_certificates()
                 .and_then(|c| c.first())
                 .and_then(|c| super::pki::inspect_node_cert(c.as_ref()).ok())
-                .map(|c| PeerCert { node_id: c.node_id, server: c.server, serial: c.serial });
+                .map(|c| PeerCert {
+                    node_id: c.node_id,
+                    server: c.server,
+                    serial: c.serial,
+                });
             let svc = hyper::service::service_fn(move |mut req: Request<Incoming>| {
                 let router = router.clone();
                 if let Some(p) = &peer {

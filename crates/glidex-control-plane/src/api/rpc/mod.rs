@@ -8,6 +8,7 @@
 //! operation, applies the per-listener protocol and credential rules,
 //! builds the [`Call`], runs the service function and audits the result.
 
+mod directory;
 mod system;
 mod tenancy;
 
@@ -16,7 +17,10 @@ use crate::auth::Principal;
 use crate::service::{Call, ServiceError};
 use axum::http::StatusCode;
 use axum::Router;
-use connectrpc::{ConnectError, ConnectRpcService, DeadlinePolicy, ErrorCode, ErrorDetail, Limits, Protocol, RequestContext};
+use connectrpc::{
+    ConnectError, ConnectRpcService, DeadlinePolicy, ErrorCode, ErrorDetail, Limits, Protocol,
+    RequestContext,
+};
 use glidex_api::proto::glidex::api::v1::ErrorDetails;
 use glidex_api::proto::google::rpc::ErrorInfo;
 use glidex_api::{Kind, Operation};
@@ -49,12 +53,20 @@ pub(crate) fn routes(app: &AppState) -> Router<AppState> {
     let connect = connectrpc::Router::new();
     let connect = system::register(app, connect);
     let connect = tenancy::register(app, connect);
+    let connect = directory::register(app, connect);
     let (connect, _health) = connectrpc_health::install_static(connect, glidex_api::services());
     let svc = ConnectRpcService::new(connect)
-        .with_limits(Limits::default().with_max_message_size(MAX_MESSAGE).with_max_request_body_size(MAX_MESSAGE + 5))
+        .with_limits(
+            Limits::default()
+                .with_max_message_size(MAX_MESSAGE)
+                .with_max_request_body_size(MAX_MESSAGE + 5),
+        )
         .with_deadline_policy(DeadlinePolicy::new().with_max(MAX_DEADLINE));
     let mut r = Router::new();
-    for s in glidex_api::services().into_iter().chain(LOCAL_SERVICES.iter().copied()) {
+    for s in glidex_api::services()
+        .into_iter()
+        .chain(LOCAL_SERVICES.iter().copied())
+    {
         r = r.route_service(&format!("/{s}/{{*method}}"), svc.clone());
     }
     r
@@ -66,7 +78,9 @@ pub(crate) fn routes(app: &AppState) -> Router<AppState> {
 fn protocol_allowed(listener: Listener, protocol: Option<Protocol>) -> bool {
     match listener {
         Listener::Ui | Listener::Relay => protocol == Some(Protocol::GrpcWeb),
-        Listener::Tcp | Listener::Api => matches!(protocol, Some(Protocol::Grpc | Protocol::Connect)),
+        Listener::Tcp | Listener::Api => {
+            matches!(protocol, Some(Protocol::Grpc | Protocol::Connect))
+        }
         Listener::Cluster => true,
     }
 }
@@ -74,12 +88,19 @@ fn protocol_allowed(listener: Listener, protocol: Option<Protocol>) -> bool {
 /// Session cookies are a browser credential: accepted for gRPC-Web from
 /// glidex-ui only. A forwarded call was checked where it came in.
 fn cookie_ok(listener: Listener, protocol: Option<Protocol>, p: &Principal) -> bool {
-    p.session_hash.is_none() || listener == Listener::Cluster || (matches!(listener, Listener::Ui | Listener::Relay) && protocol == Some(Protocol::GrpcWeb))
+    p.session_hash.is_none()
+        || listener == Listener::Cluster
+        || (matches!(listener, Listener::Ui | Listener::Relay)
+            && protocol == Some(Protocol::GrpcWeb))
 }
 
 /// One unary RPC: checks, then `f` with the caller (`None` for public
 /// operations), then the audit entry and the error mapping.
-pub(crate) async fn unary<T, F, Fut>(app: &AppState, ctx: &RequestContext, f: F) -> Result<connectrpc::Response<T>, ConnectError>
+pub(crate) async fn unary<T, F, Fut>(
+    app: &AppState,
+    ctx: &RequestContext,
+    f: F,
+) -> Result<connectrpc::Response<T>, ConnectError>
 where
     F: FnOnce(Option<Call>) -> Fut,
     Fut: Future<Output = Result<T, ServiceError>>,
@@ -91,26 +112,54 @@ where
     };
     let listener = ext.get::<Listener>().copied().unwrap_or(Listener::Tcp);
     let protocol = ctx.protocol();
-    let request_id = ext.get::<RequestId>().map(|r| r.0.clone()).unwrap_or_default();
+    let request_id = ext
+        .get::<RequestId>()
+        .map(|r| r.0.clone())
+        .unwrap_or_default();
     let principal = ext.get::<Principal>();
     let checked = if !protocol_allowed(listener, protocol) {
-        Err(ServiceError::new(StatusCode::FORBIDDEN, "protocol_not_allowed", "this listener doesn't take this RPC protocol (spec/grpc.md §6)"))
+        Err(ServiceError::new(
+            StatusCode::FORBIDDEN,
+            "protocol_not_allowed",
+            "this listener doesn't take this RPC protocol (spec/grpc.md §6)",
+        ))
     } else if principal.is_some_and(|p| !cookie_ok(listener, protocol, p)) {
-        Err(ServiceError::new(StatusCode::UNAUTHORIZED, "cookie_not_accepted", "session cookies are accepted only for gRPC-Web through glidex-ui; send a bearer token"))
+        Err(ServiceError::new(
+            StatusCode::UNAUTHORIZED,
+            "cookie_not_accepted",
+            "session cookies are accepted only for gRPC-Web through glidex-ui; send a bearer token",
+        ))
     } else if op.action == PUBLIC {
         Ok(None)
     } else {
-        Caller::from_extensions(ext, app, op.action).map(Some).map_err(ServiceError::from)
+        Caller::from_extensions(ext, app, op.action)
+            .map(Some)
+            .map_err(ServiceError::from)
     };
     // Kept for the audit entry: the caller itself moves into `f`.
-    let audited = checked.as_ref().ok().and_then(|c| c.as_ref().map(|c| (c.p.clone(), c.audit.clone())));
+    let audited = checked
+        .as_ref()
+        .ok()
+        .and_then(|c| c.as_ref().map(|c| (c.p.clone(), c.audit.clone())));
     let result = match checked {
         Ok(c) => f(c).await,
         Err(e) => Err(e),
     };
     if let Some((p, slot)) = &audited {
-        let failure = result.as_ref().err().map(|e| (format!("error:{}", e.code), e.code.clone()));
-        write_audit(app, Some(p), &request_id, op.action, op.kind == Kind::Write, slot, failure, ("rpc", rpc_detail(op, protocol)));
+        let failure = result
+            .as_ref()
+            .err()
+            .map(|e| (format!("error:{}", e.code), e.code.clone()));
+        write_audit(
+            app,
+            Some(p),
+            &request_id,
+            op.action,
+            op.kind == Kind::Write,
+            slot,
+            failure,
+            ("rpc", rpc_detail(op, protocol)),
+        );
     }
     match result {
         Ok(v) => connectrpc::Response::ok(v),
@@ -132,14 +181,27 @@ fn rpc_detail(op: &Operation, protocol: Option<Protocol>) -> String {
 /// fall back to their REST status.
 pub(crate) fn rpc_code(code: &str, status: StatusCode) -> ErrorCode {
     match code {
-        "unauthenticated" | "login_failed" | "reauth_required" | "cookie_not_accepted" => ErrorCode::Unauthenticated,
-        "forbidden" | "login_not_allowed" | "tls_required" | "ticket_required" | "tenant_suspended" | "origin_not_allowed" | "csrf_failed"
-        | "protocol_not_allowed" | "agent_no_local_api" => ErrorCode::PermissionDenied,
-        "quota_exceeded" | "tenant_quota_exceeded" | "too_large" | "rate_limited" | "slow_down" => ErrorCode::ResourceExhausted,
+        "unauthenticated" | "login_failed" | "reauth_required" | "cookie_not_accepted" => {
+            ErrorCode::Unauthenticated
+        }
+        "forbidden"
+        | "login_not_allowed"
+        | "tls_required"
+        | "ticket_required"
+        | "tenant_suspended"
+        | "origin_not_allowed"
+        | "csrf_failed"
+        | "protocol_not_allowed"
+        | "agent_no_local_api" => ErrorCode::PermissionDenied,
+        "quota_exceeded" | "tenant_quota_exceeded" | "too_large" | "rate_limited" | "slow_down" => {
+            ErrorCode::ResourceExhausted
+        }
         "not_found" | "oidc_disabled" => ErrorCode::NotFound,
         "conflict" => ErrorCode::Aborted,
         "authorization_pending" | "unsupported_on_host" => ErrorCode::FailedPrecondition,
-        "not_leader" | "use_a_server" | "leader_changed" | "cluster_unavailable" => ErrorCode::Unavailable,
+        "not_leader" | "use_a_server" | "leader_changed" | "cluster_unavailable" => {
+            ErrorCode::Unavailable
+        }
         "internal" | "persistence_error" => ErrorCode::Internal,
         _ => match status.as_u16() {
             400 | 422 => ErrorCode::InvalidArgument,
@@ -167,10 +229,18 @@ pub(crate) fn to_connect(e: ServiceError, request_id: &str) -> ConnectError {
     } else {
         e.message
     };
-    let info = ErrorInfo { reason: e.code, domain: glidex_api::ERROR_DOMAIN.into(), ..Default::default() };
-    let mut err = ConnectError::new(code, message).with_detail(ErrorDetail::from_message("google.rpc.ErrorInfo", &info));
+    let info = ErrorInfo {
+        reason: e.code,
+        domain: glidex_api::ERROR_DOMAIN.into(),
+        ..Default::default()
+    };
+    let mut err = ConnectError::new(code, message)
+        .with_detail(ErrorDetail::from_message("google.rpc.ErrorInfo", &info));
     if !e.details.is_null() {
-        let d = ErrorDetails { json: e.details.to_string(), ..Default::default() };
+        let d = ErrorDetails {
+            json: e.details.to_string(),
+            ..Default::default()
+        };
         err = err.with_detail(ErrorDetail::from_message("glidex.api.v1.ErrorDetails", &d));
     }
     err
@@ -213,7 +283,11 @@ mod tests {
             ("persistence_error", 500, ErrorCode::Internal),
         ];
         for (code, status, want) in cases {
-            assert_eq!(rpc_code(code, StatusCode::from_u16(*status).unwrap()), *want, "{code}");
+            assert_eq!(
+                rpc_code(code, StatusCode::from_u16(*status).unwrap()),
+                *want,
+                "{code}"
+            );
         }
     }
 
@@ -231,7 +305,10 @@ mod tests {
 
     #[test]
     fn rpc_paths() {
-        assert_eq!(service_of("/glidex.system.v1.SystemService/WhoAmI"), Some("glidex.system.v1.SystemService"));
+        assert_eq!(
+            service_of("/glidex.system.v1.SystemService/WhoAmI"),
+            Some("glidex.system.v1.SystemService")
+        );
         assert!(is_local("/grpc.health.v1.Health/Check"));
         assert!(!is_local("/glidex.system.v1.SystemService/WhoAmI"));
         assert_eq!(service_of("/vms/abc"), None);

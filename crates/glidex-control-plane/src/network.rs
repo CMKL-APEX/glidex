@@ -1,12 +1,12 @@
 //! VM networks (spec §11): the VM-facing `Network` records, and the
 //! client side of glidex-netd, which owns all host network state.
 
+use crate::store::Db;
 use glidex_netd::client::{Client, ClientError};
 use glidex_netd::proto::{ErrorBody, OnBehalfOf, Op, FULL_SOCKET_NAME, STATUS_SOCKET_NAME};
 use glidex_ovs::names::{validate_name, MAX_IFNAME};
 use glidex_ovs::net::Ipv4Net;
 use glidex_ovs::vm_port::VmPortKind;
-use crate::store::Db;
 use redb::{ReadableTable, TableDefinition};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -230,17 +230,26 @@ pub struct NetworkStore {
 
 impl NetworkStore {
     pub fn new(db: Arc<Db>) -> Result<Self, NetError> {
-        Ok(Self { db, write: std::sync::Mutex::new(()) })
+        Ok(Self {
+            db,
+            write: std::sync::Mutex::new(()),
+        })
     }
 
     /// Record a new network.
     /// Remove a record (its network is gone everywhere).
     pub fn remove(&self, name: &str) -> Result<(), NetError> {
         let _w = self.write.lock().unwrap();
-        self.db.write(crate::store::Origin::Network, |tx| -> Result<(), NetError> {
-            tx.open_table(NETWORKS_TABLE).map_err(storage)?.remove(name).map_err(storage)?;
-            Ok(())
-        })
+        self.db.write(
+            crate::store::Origin::Network,
+            |tx| -> Result<(), NetError> {
+                tx.open_table(NETWORKS_TABLE)
+                    .map_err(storage)?
+                    .remove(name)
+                    .map_err(storage)?;
+                Ok(())
+            },
+        )
     }
 
     pub fn insert(&self, net: &Network) -> Result<(), NetError> {
@@ -273,7 +282,9 @@ impl NetworkStore {
     /// requested deletion is kept.
     pub fn put(&self, net: &Network) -> Result<(), NetError> {
         let _w = self.write.lock().unwrap();
-        let Some(current) = self.get(&net.name)? else { return Ok(()) };
+        let Some(current) = self.get(&net.name)? else {
+            return Ok(());
+        };
         let mut net = net.clone();
         net.deletion_requested_at = net.deletion_requested_at.or(current.deletion_requested_at);
         self.write_record(&net)
@@ -281,10 +292,14 @@ impl NetworkStore {
 
     fn write_record(&self, net: &Network) -> Result<(), NetError> {
         let bytes = serde_json::to_vec(net).map_err(storage)?;
-        let txn = self.db.begin(crate::store::Origin::Network).map_err(storage)?;
+        let txn = self
+            .db
+            .begin(crate::store::Origin::Network)
+            .map_err(storage)?;
         {
             let mut t = txn.open_table(NETWORKS_TABLE).map_err(storage)?;
-            t.insert(net.name.as_str(), bytes.as_slice()).map_err(storage)?;
+            t.insert(net.name.as_str(), bytes.as_slice())
+                .map_err(storage)?;
         }
         txn.commit().map_err(storage)?;
         Ok(())
@@ -292,7 +307,10 @@ impl NetworkStore {
 
     pub fn delete(&self, name: &str) -> Result<(), NetError> {
         let _w = self.write.lock().unwrap();
-        let txn = self.db.begin(crate::store::Origin::Network).map_err(storage)?;
+        let txn = self
+            .db
+            .begin(crate::store::Origin::Network)
+            .map_err(storage)?;
         {
             let mut t = txn.open_table(NETWORKS_TABLE).map_err(storage)?;
             t.remove(name).map_err(storage)?;
@@ -310,7 +328,9 @@ impl CreateNetworkRequest {
         let bridge = match (&self.bridge, self.mode) {
             (Some(b), _) => b.clone(),
             (None, NetworkMode::Bridged) => {
-                return Err(NetError::Invalid("a bridged network needs an existing bridge".into()))
+                return Err(NetError::Invalid(
+                    "a bridged network needs an existing bridge".into(),
+                ))
             }
             (None, _) => format!("gxbr-{}", self.name),
         };
@@ -321,7 +341,9 @@ impl CreateNetworkRequest {
             ))
         })?;
         if self.subnet.is_some() && self.mode != NetworkMode::Nat {
-            return Err(NetError::Invalid("subnet only applies to NAT networks".into()));
+            return Err(NetError::Invalid(
+                "subnet only applies to NAT networks".into(),
+            ));
         }
         if let Some(v) = self.vlan {
             if !(1..=4094).contains(&v) {
@@ -408,7 +430,11 @@ impl Netd {
 
     /// As `call`, telling netd whom the request is for (logged by netd
     /// next to our uid; never used for authorization, spec §8.3).
-    pub fn call_as<T: DeserializeOwned>(&self, op: Op, on_behalf_of: &OnBehalfOf) -> Result<T, NetError> {
+    pub fn call_as<T: DeserializeOwned>(
+        &self,
+        op: Op,
+        on_behalf_of: &OnBehalfOf,
+    ) -> Result<T, NetError> {
         let timeout = Self::timeout(&op);
         let mut client = Client::connect(&self.run_dir.join(FULL_SOCKET_NAME))?;
         Ok(client.call_as(op, Some(on_behalf_of), timeout)?)
@@ -418,15 +444,25 @@ impl Netd {
     /// netd restarts and binds it anew. `None` if there is none.
     pub fn socket_identity(&self) -> Option<(u64, u64)> {
         use std::os::unix::fs::MetadataExt;
-        std::fs::metadata(self.run_dir.join(FULL_SOCKET_NAME)).ok().map(|m| (m.dev(), m.ino()))
+        std::fs::metadata(self.run_dir.join(FULL_SOCKET_NAME))
+            .ok()
+            .map(|m| (m.dev(), m.ino()))
     }
 
     /// Host status: full socket if we're allowed, else the status socket.
     pub fn probe(&self) -> (NetdAccess, Result<serde_json::Value, NetError>) {
         match Client::connect(&self.run_dir.join(FULL_SOCKET_NAME)) {
-            Ok(mut c) => (NetdAccess::Full, c.call_value(Op::Probe, Duration::from_secs(30)).map_err(Into::into)),
+            Ok(mut c) => (
+                NetdAccess::Full,
+                c.call_value(Op::Probe, Duration::from_secs(30))
+                    .map_err(Into::into),
+            ),
             Err(full_err) => match Client::connect(&self.run_dir.join(STATUS_SOCKET_NAME)) {
-                Ok(mut c) => (NetdAccess::Status, c.call_value(Op::Probe, Duration::from_secs(30)).map_err(Into::into)),
+                Ok(mut c) => (
+                    NetdAccess::Status,
+                    c.call_value(Op::Probe, Duration::from_secs(30))
+                        .map_err(Into::into),
+                ),
                 Err(_) => (NetdAccess::None, Err(full_err.into())),
             },
         }
@@ -458,8 +494,16 @@ mod tests {
         let n = req("lab", NetworkMode::Nat).to_network().unwrap();
         assert_eq!(n.bridge, "gxbr-lab");
         assert!(n.owns_bridge);
-        assert!(req("averyverylongname", NetworkMode::Nat).to_network().is_err(), "bridge would exceed 15 chars");
-        assert!(req("lan", NetworkMode::Bridged).to_network().is_err(), "bridged needs a bridge");
+        assert!(
+            req("averyverylongname", NetworkMode::Nat)
+                .to_network()
+                .is_err(),
+            "bridge would exceed 15 chars"
+        );
+        assert!(
+            req("lan", NetworkMode::Bridged).to_network().is_err(),
+            "bridged needs a bridge"
+        );
         let mut r = req("lan", NetworkMode::Bridged);
         r.bridge = Some("gxbr-up".into());
         assert!(!r.to_network().unwrap().owns_bridge);

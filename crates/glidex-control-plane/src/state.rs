@@ -13,7 +13,7 @@
 use crate::controller::queue::{Key, WorkQueue};
 use crate::controller::Settings;
 use crate::credentials::{
-    Credential, CredentialError, CredentialStore, CreateCredentialRequest, UpdateCredentialRequest,
+    CreateCredentialRequest, Credential, CredentialError, CredentialStore, UpdateCredentialRequest,
 };
 use crate::hypervisor::{check_command_line_path, HypervisorError, HypervisorType};
 use crate::images::{
@@ -22,10 +22,12 @@ use crate::images::{
 };
 use crate::instance::runner::Runner;
 use crate::models::{
-    DiskBinding, DiskSelection, HostBootPolicy, NetworkAttachment, PowerState, RestartPolicy, Vm, VmConfig, VmPhase,
-    VmState, MAX_STOP_GRACE_SECS,
+    DiskBinding, DiskSelection, HostBootPolicy, NetworkAttachment, PowerState, RestartPolicy, Vm,
+    VmConfig, VmPhase, VmState, MAX_STOP_GRACE_SECS,
 };
-use crate::network::{self, CreateNetworkRequest, NetError, Netd, Network, NetworkMode, NetworkStore};
+use crate::network::{
+    self, CreateNetworkRequest, NetError, Netd, Network, NetworkMode, NetworkStore,
+};
 use crate::store::{event_key, Commit, Event, EventKind, PersistenceError, VmStore};
 use crate::tenancy::{self, Delta, ProjectStore, QuotaMode, QuotaOverrun, TenancyError, Usage};
 use arc_swap::ArcSwap;
@@ -44,12 +46,18 @@ use tokio::sync::RwLock;
 pub enum VmManagerError {
     VmNotFound(String),
     VmAlreadyExists(String),
-    InvalidState { current: VmState, operation: String },
+    InvalidState {
+        current: VmState,
+        operation: String,
+    },
     HypervisorError(HypervisorError),
     PersistenceError(String),
     HypervisorNotAvailable(HypervisorType),
     Credential(CredentialError),
-    CredentialInUse { username: String, vms: Vec<String> },
+    CredentialInUse {
+        username: String,
+        vms: Vec<String>,
+    },
     Network(NetError),
     Image(ImageError),
     /// The request would go over these project quotas.
@@ -61,7 +69,10 @@ pub enum VmManagerError {
     /// The VM is being deleted: its spec no longer changes (§6.3).
     Deleting(String),
     /// `If-Match` named another resource version (§12.1).
-    PreconditionFailed { expected: u64, actual: u64 },
+    PreconditionFailed {
+        expected: u64,
+        actual: u64,
+    },
 }
 
 pub(crate) fn router_err(e: crate::router::RouterError) -> VmManagerError {
@@ -92,19 +103,40 @@ impl std::fmt::Display for VmManagerError {
             }
             VmManagerError::HypervisorError(e) => write!(f, "Hypervisor error: {}", e),
             VmManagerError::PersistenceError(e) => write!(f, "Persistence error: {}", e),
-            VmManagerError::HypervisorNotAvailable(h) => write!(f, "Hypervisor not available: {:?}", h),
+            VmManagerError::HypervisorNotAvailable(h) => {
+                write!(f, "Hypervisor not available: {:?}", h)
+            }
             VmManagerError::Credential(e) => write!(f, "{}", e),
             VmManagerError::Network(e) => write!(f, "{}", e),
             VmManagerError::Image(e) => write!(f, "{}", e),
             VmManagerError::QuotaExceeded(o) => {
-                write!(f, "{}", o.iter().map(|o| o.to_string()).collect::<Vec<_>>().join("; "))
+                write!(
+                    f,
+                    "{}",
+                    o.iter()
+                        .map(|o| o.to_string())
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                )
             }
             VmManagerError::TenantQuotaExceeded(o) => {
-                write!(f, "tenant cap on this cluster: {}", o.iter().map(|o| o.to_string()).collect::<Vec<_>>().join("; "))
+                write!(
+                    f,
+                    "tenant cap on this cluster: {}",
+                    o.iter()
+                        .map(|o| o.to_string())
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                )
             }
             VmManagerError::Tenancy(e) => write!(f, "{}", e),
             VmManagerError::CredentialInUse { username, vms } => {
-                write!(f, "credential {} is used by VM(s): {}", username, vms.join(", "))
+                write!(
+                    f,
+                    "credential {} is used by VM(s): {}",
+                    username,
+                    vms.join(", ")
+                )
             }
             VmManagerError::Deleting(name) => write!(f, "VM {} is being deleted", name),
             VmManagerError::PreconditionFailed { expected, actual } => {
@@ -302,6 +334,7 @@ pub struct VmManager {
     cluster: arc_swap::ArcSwapOption<crate::cluster::Cluster>,
     /// The API router, handed to the cluster for forwarded requests.
     api_router: std::sync::OnceLock<axum::Router>,
+    secrets_key: std::sync::OnceLock<Arc<dyn crate::cluster::runtime::SecretsKey>>,
     node_link: std::sync::OnceLock<Arc<crate::cluster::agent::NodeLink>>,
     /// The controllers' tasks, aborted by `stop_controllers`.
     pub(crate) tasks: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
@@ -318,7 +351,13 @@ type RootBinding = (DiskBinding, Disk);
 fn root_disk_name(vm_name: &str) -> String {
     let base: String = vm_name
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || "._-".contains(c) { c } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || "._-".contains(c) {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect();
     let base = base.trim_start_matches('.');
     let base = if base.is_empty() { "vm" } else { base };
@@ -343,7 +382,10 @@ impl VmManager {
     }
 
     /// As `with_db_path`, talking to the glidex-netd at `netd`.
-    pub fn with_db_path_and_netd(db_path: PathBuf, netd: Netd) -> Result<Arc<Self>, VmManagerError> {
+    pub fn with_db_path_and_netd(
+        db_path: PathBuf,
+        netd: Netd,
+    ) -> Result<Arc<Self>, VmManagerError> {
         // The cluster files live beside it (paths::file_in).
         crate::paths::checked_path(&db_path).map_err(VmManagerError::PersistenceError)?;
         let store = VmStore::open(&db_path)?;
@@ -354,27 +396,47 @@ impl VmManager {
     /// that may be in a cluster: if it has a cluster identity, its Raft
     /// member is started before anything touches the store, so no write ever
     /// bypasses the log (spec/clustering.md §6.1).
-    pub async fn open(db_path: PathBuf, netd: Netd, cfg: &crate::config::Config) -> Result<Arc<Self>, VmManagerError> {
+    pub async fn open(
+        db_path: PathBuf,
+        netd: Netd,
+        cfg: &crate::config::Config,
+    ) -> Result<Arc<Self>, VmManagerError> {
         crate::paths::checked_path(&db_path).map_err(VmManagerError::PersistenceError)?;
         // A departure that committed before the last restart finishes first (§5.8.2).
         match crate::cluster::departure::finish_pending(&db_path) {
-            Ok(true) => tracing::warn!("finished leaving the cluster: this host is standalone and owns its VMs"),
+            Ok(true) => tracing::warn!(
+                "finished leaving the cluster: this host is standalone and owns its VMs"
+            ),
             Ok(false) => {}
             Err(e) => tracing::error!("a pending departure could not be finished: {}", e),
         }
         let store = VmStore::open(&db_path)?;
         let files = crate::cluster::identity::Files::beside(&db_path);
-        let cluster = match files.load_identity().map_err(|e| VmManagerError::PersistenceError(e.to_string()))? {
+        let cluster = match files
+            .load_identity()
+            .map_err(|e| VmManagerError::PersistenceError(e.to_string()))?
+        {
             Some(identity) => {
                 crate::authz::set_identity(&identity.cluster_id, &identity.node_id);
-                crate::authz::set_local_account_scope((!cfg.cluster.shared_local_accounts).then(|| identity.node_id.clone()));
+                crate::authz::set_local_account_scope(
+                    (!cfg.cluster.shared_local_accounts).then(|| identity.node_id.clone()),
+                );
                 let listen = cfg.cluster.listen;
-                let c = crate::cluster::Cluster::start(store.database(), files, identity, cfg.cluster.clone(), listen)
-                    .await
-                    .map_err(|e| VmManagerError::PersistenceError(format!("cluster: {e}")))?;
+                let c = crate::cluster::Cluster::start(
+                    store.database(),
+                    files,
+                    identity,
+                    cfg.cluster.clone(),
+                    listen,
+                )
+                .await
+                .map_err(|e| VmManagerError::PersistenceError(format!("cluster: {e}")))?;
                 // A restarting node waits briefly for a leader; without one the
                 // control plane still comes up and serves stale reads.
-                if c.wait_for_leader(std::time::Duration::from_secs(10)).await.is_none() {
+                if c.wait_for_leader(std::time::Duration::from_secs(10))
+                    .await
+                    .is_none()
+                {
                     tracing::warn!("no cluster leader yet: serving local, possibly stale, state until a quorum is back");
                 }
                 Some(c)
@@ -384,8 +446,16 @@ impl VmManager {
         Self::build(db_path, store, netd, cluster)
     }
 
-    fn build(db_path: PathBuf, store: VmStore, netd: Netd, cluster: Option<Arc<crate::cluster::Cluster>>) -> Result<Arc<Self>, VmManagerError> {
-        let base = db_path.parent().map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+    fn build(
+        db_path: PathBuf,
+        store: VmStore,
+        netd: Netd,
+        cluster: Option<Arc<crate::cluster::Cluster>>,
+    ) -> Result<Arc<Self>, VmManagerError> {
+        let base = db_path
+            .parent()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("."));
         let changed = store.database().bell();
         let images = ImageManager::new(store.database(), ImageSettings::from_env(&base))?;
         for ty in [HypervisorType::CloudHypervisor, HypervisorType::Qemu] {
@@ -398,7 +468,8 @@ impl VmManager {
         let credentials = CredentialStore::new(store.database())?;
         let networks = NetworkStore::new(store.database())?;
         let projects = ProjectStore::new(store.database())?;
-        let tenants = crate::tenants::TenantStore::new(store.database()).map_err(|e| VmManagerError::Tenancy(TenancyError::Storage(e.to_string())))?;
+        let tenants = crate::tenants::TenantStore::new(store.database())
+            .map_err(|e| VmManagerError::Tenancy(TenancyError::Storage(e.to_string())))?;
         let nodes = crate::node::NodeStore::new(store.database());
         let mgr = Arc::new_cyclic(|me| Self {
             vms: RwLock::new(HashMap::new()),
@@ -429,6 +500,7 @@ impl VmManager {
             db_path,
             cluster: arc_swap::ArcSwapOption::empty(),
             api_router: std::sync::OnceLock::new(),
+            secrets_key: std::sync::OnceLock::new(),
             node_link: std::sync::OnceLock::new(),
             tasks: std::sync::Mutex::new(Vec::new()),
             meter: arc_swap::ArcSwapOption::empty(),
@@ -449,7 +521,8 @@ impl VmManager {
         self.runner.store(Arc::new(Runner::new(s.runner)));
         self.settings.store(Arc::new(s));
         self.sched.store(Arc::new(cfg.cluster.scheduler.clone()));
-        self.reserved.store(Arc::new(cfg.cluster.node_reserved.clone()));
+        self.reserved
+            .store(Arc::new(cfg.cluster.node_reserved.clone()));
         self.ovn_file.store(Arc::new(cfg.cluster.ovn.clone()));
         self.apply_ovn_settings();
     }
@@ -461,8 +534,16 @@ impl VmManager {
         let next = match crate::ovn_settings::read(&self.store.database()) {
             Some(s) => {
                 let from_file = crate::ovn_settings::OvnSettings::from_file(&file);
-                let file_says_something = from_file.enabled || from_file.edge.is_some() || from_file.nat_supernet.is_some() || !from_file.dns_servers.is_empty();
-                if file_says_something && !s.same_options(&from_file) && !self.ovn_file_warned.swap(true, std::sync::atomic::Ordering::AcqRel) {
+                let file_says_something = from_file.enabled
+                    || from_file.edge.is_some()
+                    || from_file.nat_supernet.is_some()
+                    || !from_file.dns_servers.is_empty();
+                if file_says_something
+                    && !s.same_options(&from_file)
+                    && !self
+                        .ovn_file_warned
+                        .swap(true, std::sync::atomic::Ordering::AcqRel)
+                {
                     tracing::warn!("control-plane.json's cluster.ovn options are ignored: the cluster's OVN setting decides (spec/clustering-ui.md §8a); only bridge_mappings is read from the file");
                 }
                 s.effective(&file)
@@ -485,7 +566,10 @@ impl VmManager {
     /// On the leader of a cluster enabled the old way (the file), write the
     /// setting from the file once, so every node follows it.
     pub fn migrate_ovn_settings(&self) {
-        if self.cluster().is_none() || !self.store.database().can_write() || self.ovn_settings().is_some() {
+        if self.cluster().is_none()
+            || !self.store.database().can_write()
+            || self.ovn_settings().is_some()
+        {
             return;
         }
         let file = self.ovn_file.load_full();
@@ -494,22 +578,37 @@ impl VmManager {
         }
         let s = crate::ovn_settings::OvnSettings::from_file(&file);
         match crate::ovn_settings::write(&self.store.database(), &s) {
-            Ok(()) => tracing::info!("wrote the cluster's OVN setting from this server's control-plane.json"),
+            Ok(()) => tracing::info!(
+                "wrote the cluster's OVN setting from this server's control-plane.json"
+            ),
             Err(e) => tracing::warn!("writing the cluster's OVN setting: {}", e),
         }
     }
 
     /// Where `req` goes, from the nodes' records and what each already carries.
-    pub(crate) fn pick_node(&self, vms: &HashMap<String, Vm>, req: &crate::scheduler::Request) -> Result<String, Vec<(String, String)>> {
+    pub(crate) fn pick_node(
+        &self,
+        vms: &HashMap<String, Vm>,
+        req: &crate::scheduler::Request,
+    ) -> Result<String, Vec<(String, String)>> {
         crate::scheduler::schedule(req, &self.node_loads(vms), &self.sched.load())
     }
 
     /// Every node that may take VMs, with what is placed on it.
-    fn node_loads(&self, vms: &HashMap<String, Vm>) -> Vec<(crate::node::Node, crate::scheduler::Load)> {
+    fn node_loads(
+        &self,
+        vms: &HashMap<String, Vm>,
+    ) -> Vec<(crate::node::Node, crate::scheduler::Load)> {
         let nodes = self.nodes.list().unwrap_or_default();
-        let loads = crate::scheduler::loads(
-            vms.values().filter_map(|v| v.status.placement.as_ref().map(|p| (p.node.clone(), v.config().vcpu_count as u64, v.config().mem_size_mib as u64))),
-        );
+        let loads = crate::scheduler::loads(vms.values().filter_map(|v| {
+            v.status.placement.as_ref().map(|p| {
+                (
+                    p.node.clone(),
+                    v.config().vcpu_count as u64,
+                    v.config().mem_size_mib as u64,
+                )
+            })
+        }));
         nodes
             .into_iter()
             .filter(|n| !n.status.phase.is_tombstone())
@@ -522,7 +621,13 @@ impl VmManager {
 
     /// Where a VM of `config` (pinned to `pin`, using `data_disks`) could go,
     /// node by node, the scheduler's choice first (spec/clustering-ui.md §5.1).
-    pub async fn preview_placement(&self, config: &VmConfig, pin: Option<String>, data_disks: &[String], image: Option<&str>) -> Result<Vec<crate::scheduler::NodeFit>, VmManagerError> {
+    pub async fn preview_placement(
+        &self,
+        config: &VmConfig,
+        pin: Option<String>,
+        data_disks: &[String],
+        image: Option<&str>,
+    ) -> Result<Vec<crate::scheduler::NodeFit>, VmManagerError> {
         let mut disks = Vec::new();
         for key in data_disks {
             disks.push(self.images.get_disk(key)?);
@@ -532,7 +637,11 @@ impl VmManager {
             req.arch = self.images.get_image(key)?.arch.as_str().to_string();
         }
         let vms = self.vms.read().await;
-        Ok(crate::scheduler::evaluate(&req, &self.node_loads(&vms), &self.sched.load()))
+        Ok(crate::scheduler::evaluate(
+            &req,
+            &self.node_loads(&vms),
+            &self.sched.load(),
+        ))
     }
 
     /// What `vm` asks of a node, given the disks it uses.
@@ -544,7 +653,12 @@ impl VmManager {
         self.sched_request_for(vm.config(), vm.spec.node.clone(), disks)
     }
 
-    fn sched_request_for(&self, c: &VmConfig, pin: Option<String>, disks: &[Disk]) -> crate::scheduler::Request {
+    fn sched_request_for(
+        &self,
+        c: &VmConfig,
+        pin: Option<String>,
+        disks: &[Disk],
+    ) -> crate::scheduler::Request {
         let nets = self.networks.list().unwrap_or_default();
         crate::scheduler::Request {
             vcpus: c.vcpu_count as u32,
@@ -572,7 +686,10 @@ impl VmManager {
                 .networks
                 .iter()
                 .filter_map(|a| nets.iter().find(|n| n.name == a.network))
-                .any(|n| n.scope == crate::network::NetworkScope::Cluster && n.port_type == glidex_ovs::vm_port::VmPortKind::VhostUser),
+                .any(|n| {
+                    n.scope == crate::network::NetworkScope::Cluster
+                        && n.port_type == glidex_ovs::vm_port::VmPortKind::VhostUser
+                }),
             ovn_northd: c
                 .networks
                 .iter()
@@ -580,41 +697,70 @@ impl VmManager {
                 .any(|n| n.scope == crate::network::NetworkScope::Cluster)
                 .then(|| crate::node::cluster_northd_ovn(&self.nodes().list().unwrap_or_default()))
                 .flatten(),
-            arch: self.vm_arch(c, disks).map(|a| a.as_str().to_string()).unwrap_or_default(),
+            arch: self
+                .vm_arch(c, disks)
+                .map(|a| a.as_str().to_string())
+                .unwrap_or_default(),
         }
     }
 
     /// A VM's architecture (spec/clustering.md §9.2.1): that of the image a
     /// disk of it comes from, else of its firmware image; `None` for one
     /// with neither (direct kernel boot).
-    pub(crate) fn vm_arch(&self, c: &VmConfig, disks: &[Disk]) -> Option<crate::images::catalog::Arch> {
+    pub(crate) fn vm_arch(
+        &self,
+        c: &VmConfig,
+        disks: &[Disk],
+    ) -> Option<crate::images::catalog::Arch> {
         let from_disk = disks.iter().find_map(|d| match &d.origin {
-            crate::images::DiskOrigin::Image { image_id, .. } => self.images.get_image(image_id).ok().map(|i| i.arch),
+            crate::images::DiskOrigin::Image { image_id, .. } => {
+                self.images.get_image(image_id).ok().map(|i| i.arch)
+            }
             _ => None,
         });
-        from_disk.or_else(|| c.firmware_image.as_deref().and_then(|f| self.images.get_image(f).ok()).map(|i| i.arch))
+        from_disk.or_else(|| {
+            c.firmware_image
+                .as_deref()
+                .and_then(|f| self.images.get_image(f).ok())
+                .map(|i| i.arch)
+        })
     }
 
     /// Whether this host has any VM, disk, network or credential record.
     pub async fn has_resources(&self) -> bool {
         !self.vms.read().await.is_empty()
             || !self.images.list_disks().is_empty()
-            || self.networks.list().map(|n| n.iter().any(|n| !Self::is_stock_default(n))).unwrap_or(false)
-            || self.credentials.list(None).map(|c| !c.is_empty()).unwrap_or(false)
+            || self
+                .networks
+                .list()
+                .map(|n| n.iter().any(|n| !Self::is_stock_default(n)))
+                .unwrap_or(false)
+            || self
+                .credentials
+                .list(None)
+                .map(|c| !c.is_empty())
+                .unwrap_or(false)
     }
 
     /// The `default` NAT network older versions made for a host at first
     /// start (glidex no longer creates one): not something a join would
     /// abandon.
     fn is_stock_default(n: &Network) -> bool {
-        n.name == network::DEFAULT_NETWORK && n.bridge == network::DEFAULT_BRIDGE && n.scope == network::NetworkScope::Node && n.project.is_none()
+        n.name == network::DEFAULT_NETWORK
+            && n.bridge == network::DEFAULT_BRIDGE
+            && n.scope == network::NetworkScope::Node
+            && n.project.is_none()
     }
 
     /// Before a plain join: take down the stock `default` network (its bridge
     /// and NAT on the host), which the cluster's records would otherwise leave
     /// behind as an orphan. No VM can use it: `has_resources` said none exist.
     pub async fn drop_stock_default_network(&self) -> Result<(), VmManagerError> {
-        if let Some(n) = self.networks.get(network::DEFAULT_NETWORK)?.filter(Self::is_stock_default) {
+        if let Some(n) = self
+            .networks
+            .get(network::DEFAULT_NETWORK)?
+            .filter(Self::is_stock_default)
+        {
             self.delete_network(&n.name).await?;
         }
         Ok(())
@@ -625,12 +771,22 @@ impl VmManager {
     pub fn report_self(&self) -> Result<(), VmManagerError> {
         let reserved = {
             let c = &self.reserved.load();
-            crate::node::Resources { cpus: c.cpus, memory_mib: c.memory_mib, hugepages: Default::default() }
+            crate::node::Resources {
+                cpus: c.cpus,
+                memory_mib: c.memory_mib,
+                hugepages: Default::default(),
+            }
         };
         let mut probe = crate::node::SelfProbe::detect(&reserved);
         // Unrecorded image files (spec/clustering.md §9.2.3): deleted when
         // asked (once per request), the rest reported.
-        if let Some(before) = self.nodes.get(&self.local_node_id()).ok().flatten().and_then(|n| n.spec.drop_spare_files_before) {
+        if let Some(before) = self
+            .nodes
+            .get(&self.local_node_id())
+            .ok()
+            .flatten()
+            .and_then(|n| n.spec.drop_spare_files_before)
+        {
             self.images.drop_spare_files(before);
         }
         probe.features.spare_image_files = self.images.spare_files();
@@ -638,14 +794,35 @@ impl VmManager {
         probe.features.feature_level = crate::node::FEATURE_LEVEL;
         // Whether OVS runs DPDK here: what `auto` picks br-int's datapath by.
         if let (_, Ok(caps)) = self.netd.probe() {
-            probe.features.dpdk = caps.get("dpdk_initialized").and_then(|v| v.as_bool()).unwrap_or(false);
+            probe.features.dpdk = caps
+                .get("dpdk_initialized")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
         }
         // The address each migrated uplink carries on its bridge.
-        if let Ok(ups) = self.netd.call::<Vec<glidex_netd::proto::UplinkResult>>(Op::ListUplinks) {
-            for u in ups.into_iter().filter(|u| u.record.boot_rollback.is_none() && u.record.pending.is_none()) {
-                let Some(snap) = &u.record.snapshot else { continue };
-                if let Some(a) = snap.addresses.iter().find(|a| a.split('/').next().is_some_and(|ip| ip.parse::<std::net::Ipv4Addr>().is_ok())) {
-                    probe.features.bridge_addrs.insert(u.record.spec.bridge.clone(), crate::node::BridgeAddr { address: a.clone(), gateway: snap.default_gateway().map(String::from) });
+        if let Ok(ups) = self
+            .netd
+            .call::<Vec<glidex_netd::proto::UplinkResult>>(Op::ListUplinks)
+        {
+            for u in ups
+                .into_iter()
+                .filter(|u| u.record.boot_rollback.is_none() && u.record.pending.is_none())
+            {
+                let Some(snap) = &u.record.snapshot else {
+                    continue;
+                };
+                if let Some(a) = snap.addresses.iter().find(|a| {
+                    a.split('/')
+                        .next()
+                        .is_some_and(|ip| ip.parse::<std::net::Ipv4Addr>().is_ok())
+                }) {
+                    probe.features.bridge_addrs.insert(
+                        u.record.spec.bridge.clone(),
+                        crate::node::BridgeAddr {
+                            address: a.clone(),
+                            gateway: snap.default_gateway().map(String::from),
+                        },
+                    );
                 }
             }
         }
@@ -681,7 +858,12 @@ impl VmManager {
             return None;
         }
         let node = vm.status.placement.as_ref()?.node.clone();
-        self.nodes.get(&node).ok().flatten().and_then(|n| n.status.advertise).map(|a| a.to_string())
+        self.nodes
+            .get(&node)
+            .ok()
+            .flatten()
+            .and_then(|n| n.status.advertise)
+            .map(|a| a.to_string())
     }
 
     pub(crate) fn is_local(&self, vm: &Vm) -> bool {
@@ -724,17 +906,44 @@ impl VmManager {
         let _ = self.api_router.set(router);
     }
 
+    /// Record the secrets key's holder, for a cluster to send to and
+    /// receive from other servers (spec/tenancy.md §13).
+    pub fn set_secrets_key(&self, s: Arc<dyn crate::cluster::runtime::SecretsKey>) {
+        if let Some(c) = self.cluster() {
+            c.set_secrets(s.clone());
+        }
+        let _ = self.secrets_key.set(s);
+    }
+
+    /// Hand `cluster` the secrets key's holder before it joins, so the CA
+    /// push that ends a server join can install the key.
+    pub(crate) fn lend_secrets_key(&self, cluster: &crate::cluster::Cluster) {
+        if let Some(s) = self.secrets_key.get() {
+            cluster.set_secrets(s.clone());
+        }
+    }
+
     /// Take part in `cluster`: keep the in-memory VM cache in step with what
     /// the log applies, and give the cluster the API for forwarded requests.
     pub fn attach_cluster(&self, cluster: Arc<crate::cluster::Cluster>) {
         if let Some(r) = self.api_router.get() {
             cluster.set_api(r.clone());
         }
+        if let Some(s) = self.secrets_key.get() {
+            cluster.set_secrets(s.clone());
+        }
         let _ = cluster.handlers.set(Arc::new(HandlersOf(self.me.clone())));
         if cluster.identity.role == crate::node::NodeRole::Agent {
             // An agent runs the node role only, from a cache of the store.
-            self.set_roles(crate::node::Roles { node: true, server: false });
-            let link = crate::cluster::agent::NodeLink::start(cluster.clone(), self.database(), cluster.identity.seeds.clone());
+            self.set_roles(crate::node::Roles {
+                node: true,
+                server: false,
+            });
+            let link = crate::cluster::agent::NodeLink::start(
+                cluster.clone(),
+                self.database(),
+                cluster.identity.seeds.clone(),
+            );
             let _ = self.node_link.set(link);
         }
         self.cluster.store(Some(cluster));
@@ -778,7 +987,12 @@ impl VmManager {
                 Ok(a) => {
                     for table in [crate::store::TableId::Images, crate::store::TableId::Disks] {
                         if a.tables.contains(&table) {
-                            let keys: Vec<String> = a.keys.iter().filter(|(t, _)| *t == table).filter_map(|(_, k)| String::from_utf8(k.clone()).ok()).collect();
+                            let keys: Vec<String> = a
+                                .keys
+                                .iter()
+                                .filter(|(t, _)| *t == table)
+                                .filter_map(|(_, k)| String::from_utf8(k.clone()).ok())
+                                .collect();
                             self.images.sync_keys(table, &keys);
                             // What arrived from elsewhere (the leader, a node's
                             // cache) is this node's controllers' work too: an
@@ -786,10 +1000,15 @@ impl VmManager {
                             // VM waiting for that disk.
                             for k in &keys {
                                 match table {
-                                    crate::store::TableId::Images => self.queue.add(crate::controller::queue::Key::Image(k.clone())),
+                                    crate::store::TableId::Images => self
+                                        .queue
+                                        .add(crate::controller::queue::Key::Image(k.clone())),
                                     _ => {
-                                        self.queue.add(crate::controller::queue::Key::Disk(k.clone()));
-                                        if let Some(vm) = self.images.get_disk(k).ok().and_then(|d| d.attached_to) {
+                                        self.queue
+                                            .add(crate::controller::queue::Key::Disk(k.clone()));
+                                        if let Some(vm) =
+                                            self.images.get_disk(k).ok().and_then(|d| d.attached_to)
+                                        {
                                             self.queue.add(crate::controller::queue::Key::Vm(vm));
                                         }
                                     }
@@ -801,10 +1020,17 @@ impl VmManager {
                     // unrecorded image files, spec/clustering.md §9.2.3):
                     // report now rather than at the next interval.
                     let me = self.local_node_id();
-                    if a.keys.iter().any(|(t, k)| *t == crate::store::TableId::Nodes && k.as_slice() == me.as_bytes()) {
+                    if a.keys.iter().any(|(t, k)| {
+                        *t == crate::store::TableId::Nodes && k.as_slice() == me.as_bytes()
+                    }) {
                         let m = self.clone();
                         tokio::task::spawn_blocking(move || {
-                            let wanted = m.nodes.get(&m.local_node_id()).ok().flatten().and_then(|n| n.spec.drop_spare_files_before);
+                            let wanted = m
+                                .nodes
+                                .get(&m.local_node_id())
+                                .ok()
+                                .flatten()
+                                .and_then(|n| n.spec.drop_spare_files_before);
                             if wanted.is_some_and(|w| m.images.spare_drop_pending(w)) {
                                 let _ = m.report_self();
                             }
@@ -812,19 +1038,34 @@ impl VmManager {
                     }
                     // A copy of an image becoming ready on some node: nodes
                     // waiting to fetch it can go now.
-                    for (_, k) in a.keys.iter().filter(|(t, _)| *t == crate::store::TableId::ImageCaches) {
+                    for (_, k) in a
+                        .keys
+                        .iter()
+                        .filter(|(t, _)| *t == crate::store::TableId::ImageCaches)
+                    {
                         if let Some(image) = String::from_utf8_lossy(k).split('/').next() {
-                            self.queue.add(crate::controller::queue::Key::Image(image.to_string()));
+                            self.queue
+                                .add(crate::controller::queue::Key::Image(image.to_string()));
                         }
                     }
-                    if a.tables.contains(&crate::store::TableId::Images) || a.tables.contains(&crate::store::TableId::Disks) {
+                    if a.tables.contains(&crate::store::TableId::Images)
+                        || a.tables.contains(&crate::store::TableId::Disks)
+                    {
                         self.notify_changed();
                     }
-                    if a.keys.iter().any(|(t, k)| crate::ovn_settings::is_key(*t, k)) {
+                    if a.keys
+                        .iter()
+                        .any(|(t, k)| crate::ovn_settings::is_key(*t, k))
+                    {
                         self.apply_ovn_settings();
                     }
                     if a.tables.contains(&crate::store::TableId::Vms) {
-                        let keys: Vec<String> = a.keys.iter().filter(|(t, _)| *t == crate::store::TableId::Vms).filter_map(|(_, k)| String::from_utf8(k.clone()).ok()).collect();
+                        let keys: Vec<String> = a
+                            .keys
+                            .iter()
+                            .filter(|(t, _)| *t == crate::store::TableId::Vms)
+                            .filter_map(|(_, k)| String::from_utf8(k.clone()).ok())
+                            .collect();
                         self.refresh_vms(&keys).await;
                     }
                 }
@@ -838,14 +1079,17 @@ impl VmManager {
     }
 
     async fn refresh_vms(&self, ids: &[String]) {
-        let Ok(all) = self.store.load_all() else { return };
+        let Ok(all) = self.store.load_all() else {
+            return;
+        };
         let mut vms = self.vms.write().await;
         for id in ids {
             match all.iter().find(|v| &v.id == id) {
                 Some(v) => {
                     if vms.get(id) != Some(v) {
                         vms.insert(id.clone(), v.clone());
-                        self.queue.add(crate::controller::queue::Key::Vm(id.clone()));
+                        self.queue
+                            .add(crate::controller::queue::Key::Vm(id.clone()));
                     }
                 }
                 None => {
@@ -860,7 +1104,9 @@ impl VmManager {
     /// Replace the cache with the table's contents (after a snapshot, or a
     /// missed notification).
     pub async fn reload_vms(&self) {
-        let Ok(all) = self.store.load_all() else { return };
+        let Ok(all) = self.store.load_all() else {
+            return;
+        };
         let mut vms = self.vms.write().await;
         *vms = all.into_iter().map(|v| (v.id.clone(), v)).collect();
         drop(vms);
@@ -912,7 +1158,10 @@ impl VmManager {
 
     /// Get the default database path (~/.glidex/glidex.db)
     fn default_db_path() -> PathBuf {
-        dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")).join(".glidex").join("glidex.db")
+        dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(".glidex")
+            .join("glidex.db")
     }
 
     /// Load the store (migrating it, §6.6), adopt running instances
@@ -924,7 +1173,10 @@ impl VmManager {
         if writable {
             let migrated = self.store.migrate(self.settings().on_host_boot)?;
             if migrated > 0 {
-                tracing::info!(count = migrated, "migrated VM records to the desired-state schema");
+                tracing::info!(
+                    count = migrated,
+                    "migrated VM records to the desired-state schema"
+                );
             }
         }
         // Every node says what it has (capacity, devices, hypervisors).
@@ -935,7 +1187,12 @@ impl VmManager {
         // A copy on another node is where the file is, not a missing one.
         let me = self.local_node_id();
         let clustered = self.cluster().is_some();
-        self.images.initialize(|img| clustered && self.image_caches(&img.id).iter().any(|(n, r)| *n != me && r.phase == crate::controller::image_cache::CachePhase::Ready));
+        self.images.initialize(|img| {
+            clustered
+                && self.image_caches(&img.id).iter().any(|(n, r)| {
+                    *n != me && r.phase == crate::controller::image_cache::CachePhase::Ready
+                })
+        });
         {
             let default_project = self.projects.default_project_id();
             let mut vms = self.vms.write().await;
@@ -966,7 +1223,12 @@ impl VmManager {
 
     /// Persist `vm` (with `events`) and update the cache. The caller holds
     /// the map's write lock (`vms`).
-    pub(crate) fn put_locked(&self, vms: &mut HashMap<String, Vm>, vm: Vm, events: Vec<Event>) -> Result<Vm, VmManagerError> {
+    pub(crate) fn put_locked(
+        &self,
+        vms: &mut HashMap<String, Vm>,
+        vm: Vm,
+        events: Vec<Event>,
+    ) -> Result<Vm, VmManagerError> {
         let key = event_key("vm", &vm.id);
         self.store.commit(Commit {
             put_vm: Some(&vm),
@@ -996,14 +1258,23 @@ impl VmManager {
         Ok(vm)
     }
 
-    fn writable<'a>(vms: &'a HashMap<String, Vm>, id: &str, if_match: Option<u64>) -> Result<&'a Vm, VmManagerError> {
-        let vm = vms.get(id).ok_or_else(|| VmManagerError::VmNotFound(id.to_string()))?;
+    fn writable<'a>(
+        vms: &'a HashMap<String, Vm>,
+        id: &str,
+        if_match: Option<u64>,
+    ) -> Result<&'a Vm, VmManagerError> {
+        let vm = vms
+            .get(id)
+            .ok_or_else(|| VmManagerError::VmNotFound(id.to_string()))?;
         if vm.deletion_requested_at.is_some() {
             return Err(VmManagerError::Deleting(vm.name.clone()));
         }
         if let Some(expected) = if_match {
             if expected != vm.resource_version {
-                return Err(VmManagerError::PreconditionFailed { expected, actual: vm.resource_version });
+                return Err(VmManagerError::PreconditionFailed {
+                    expected,
+                    actual: vm.resource_version,
+                });
             }
         }
         Ok(vm)
@@ -1013,7 +1284,9 @@ impl VmManager {
 
     #[allow(dead_code)] // used by the tests through the lib crate
     pub async fn create_vm(&self, name: String, config: VmConfig) -> Result<Vm, VmManagerError> {
-        self.create_vm_with_disks(name, config, DiskSelection::default()).await.map(|(vm, _)| vm)
+        self.create_vm_with_disks(name, config, DiskSelection::default())
+            .await
+            .map(|(vm, _)| vm)
     }
 
     /// Create a VM in the default project, quotas not enforced (embedding
@@ -1025,9 +1298,17 @@ impl VmManager {
         sel: DiskSelection,
     ) -> Result<(Vm, Vec<String>), VmManagerError> {
         let project = self.default_project_id();
-        self.create_vm_with(&project, name, config, sel, VmOptions::default(), QuotaMode::MayExceed, "api")
-            .await
-            .map(|(vm, w, _)| (vm, w))
+        self.create_vm_with(
+            &project,
+            name,
+            config,
+            sel,
+            VmOptions::default(),
+            QuotaMode::MayExceed,
+            "api",
+        )
+        .await
+        .map(|(vm, w, _)| (vm, w))
     }
 
     pub async fn create_vm_in(
@@ -1038,13 +1319,25 @@ impl VmManager {
         sel: DiskSelection,
         quota: QuotaMode,
     ) -> Result<(Vm, Vec<String>, Vec<QuotaOverrun>), VmManagerError> {
-        self.create_vm_with(project, name, config, sel, VmOptions::default(), quota, "api").await
+        self.create_vm_with(
+            project,
+            name,
+            config,
+            sel,
+            VmOptions::default(),
+            quota,
+            "api",
+        )
+        .await
     }
 
     /// Admission paths the VM's command line will carry (§8.2).
     fn check_paths(&self, config: &VmConfig) -> Result<(), VmManagerError> {
         let systemd = matches!(*self.runner(), Runner::Systemd(_));
-        let mut paths: Vec<(&str, &str)> = vec![("kernel_image_path", &config.kernel_image_path), ("rootfs_path", &config.rootfs_path)];
+        let mut paths: Vec<(&str, &str)> = vec![
+            ("kernel_image_path", &config.kernel_image_path),
+            ("rootfs_path", &config.rootfs_path),
+        ];
         if let Some(p) = &config.firmware_path {
             paths.push(("firmware_path", p));
         }
@@ -1068,24 +1361,43 @@ impl VmManager {
     }
 
     fn check_options(opts: &VmOptions) -> Result<(), VmManagerError> {
-        if opts.stop_grace_secs.is_some_and(|g| g > MAX_STOP_GRACE_SECS) {
-            return Err(invalid(format!("stop_grace_secs must be 0-{}", MAX_STOP_GRACE_SECS)));
+        if opts
+            .stop_grace_secs
+            .is_some_and(|g| g > MAX_STOP_GRACE_SECS)
+        {
+            return Err(invalid(format!(
+                "stop_grace_secs must be 0-{}",
+                MAX_STOP_GRACE_SECS
+            )));
         }
         Ok(())
     }
 
-    fn check_networks(&self, project: &str, networks: &[NetworkAttachment]) -> Result<(), VmManagerError> {
+    fn check_networks(
+        &self,
+        project: &str,
+        networks: &[NetworkAttachment],
+    ) -> Result<(), VmManagerError> {
         if networks.len() > glidex_ovs::names::MAX_NICS as usize {
-            return Err(invalid(format!("at most {} networks per VM", glidex_ovs::names::MAX_NICS)));
+            return Err(invalid(format!(
+                "at most {} networks per VM",
+                glidex_ovs::names::MAX_NICS
+            )));
         }
         for att in networks {
             match self.networks.get(&att.network)? {
                 None => return Err(invalid(format!("network not found: {}", att.network))),
                 Some(n) if !n.usable_by(project) => {
-                    return Err(invalid(format!("network '{}' is not available to this project", att.network)))
+                    return Err(invalid(format!(
+                        "network '{}' is not available to this project",
+                        att.network
+                    )))
                 }
                 Some(n) if n.deletion_requested_at.is_some() => {
-                    return Err(invalid(format!("network '{}' is being deleted", att.network)))
+                    return Err(invalid(format!(
+                        "network '{}' is being deleted",
+                        att.network
+                    )))
                 }
                 Some(_) => {}
             }
@@ -1105,11 +1417,15 @@ impl VmManager {
         if let Some(username) = &config.credential {
             // A credential only takes effect through the generated seed.
             if config.firmware_path.is_none() || config.cloud_init_path.is_some() {
-                return Err(invalid("credential requires firmware boot without a custom cloud_init_path"));
+                return Err(invalid(
+                    "credential requires firmware boot without a custom cloud_init_path",
+                ));
             }
             match self.credentials.get(project, username) {
                 Ok(_) => {}
-                Err(CredentialError::NotFound(_)) => return Err(invalid(format!("credential not found: {}", username))),
+                Err(CredentialError::NotFound(_)) => {
+                    return Err(invalid(format!("credential not found: {}", username)))
+                }
                 Err(e) => return Err(e.into()),
             }
         }
@@ -1130,22 +1446,35 @@ impl VmManager {
         quota: QuotaMode,
         actor: &str,
     ) -> Result<(Vm, Vec<String>, Vec<QuotaOverrun>), VmManagerError> {
-        let project_rec = self.projects.get(project)?.ok_or_else(|| TenancyError::NotFound(project.to_string()))?;
-        let roots = [!config.rootfs_path.is_empty(), sel.image.is_some(), sel.root_disk.is_some()];
+        let project_rec = self
+            .projects
+            .get(project)?
+            .ok_or_else(|| TenancyError::NotFound(project.to_string()))?;
+        let roots = [
+            !config.rootfs_path.is_empty(),
+            sel.image.is_some(),
+            sel.root_disk.is_some(),
+        ];
         if roots.iter().filter(|b| **b).count() != 1 {
-            return Err(invalid("give exactly one of rootfs_path, image or root_disk"));
+            return Err(invalid(
+                "give exactly one of rootfs_path, image or root_disk",
+            ));
         }
         if sel.root_disk_size_gib.is_some() && sel.image.is_none() {
             return Err(invalid("root_disk_size_gib needs image"));
         }
         if sel.firmware.is_some() && config.firmware_path.is_some() {
-            return Err(invalid("give firmware (an image) or firmware_path, not both"));
+            return Err(invalid(
+                "give firmware (an image) or firmware_path, not both",
+            ));
         }
         // The VM's architecture: its root disk's image's (§9.2.1).
         let root_arch = match (&sel.image, &sel.root_disk) {
             (Some(key), _) => Some(self.images.get_image(key)?.arch),
             (None, Some(key)) => match self.images.get_disk(key)?.origin {
-                crate::images::DiskOrigin::Image { image_id, .. } => self.images.get_image(&image_id).ok().map(|i| i.arch),
+                crate::images::DiskOrigin::Image { image_id, .. } => {
+                    self.images.get_image(&image_id).ok().map(|i| i.arch)
+                }
                 _ => None,
             },
             _ => None,
@@ -1172,7 +1501,12 @@ impl VmManager {
         };
         if let (Some(fw), Some(a)) = (&firmware, root_arch) {
             if fw.arch != a {
-                return Err(invalid(format!("firmware {} is {}, the root disk's image is {}: they must match", fw.name, fw.arch.as_str(), a.as_str())));
+                return Err(invalid(format!(
+                    "firmware {} is {}, the root disk's image is {}: they must match",
+                    fw.name,
+                    fw.arch.as_str(),
+                    a.as_str()
+                )));
             }
         }
         if config.vcpu_count == 0 {
@@ -1181,7 +1515,10 @@ impl VmManager {
         if config.mem_size_mib == 0 {
             return Err(invalid("mem_size_mib must be greater than 0"));
         }
-        if firmware.is_none() && config.firmware_path.is_none() && config.kernel_image_path.is_empty() {
+        if firmware.is_none()
+            && config.firmware_path.is_none()
+            && config.kernel_image_path.is_empty()
+        {
             return Err(invalid("either kernel_image_path or firmware is required"));
         }
         Self::check_options(&opts)?;
@@ -1196,7 +1533,12 @@ impl VmManager {
         if let Some(fw) = &firmware {
             let fw = self.images.get_image(&fw.id)?;
             self.check_firmware(&fw, config.hypervisor)?;
-            config.firmware_path = Some(self.images.firmware_path(&fw.id).to_string_lossy().into_owned());
+            config.firmware_path = Some(
+                self.images
+                    .firmware_path(&fw.id)
+                    .to_string_lossy()
+                    .into_owned(),
+            );
             config.firmware_image = Some(fw.id);
         }
 
@@ -1205,12 +1547,17 @@ impl VmManager {
         self.check_credential(project, &config)?;
 
         // Names are unique per project.
-        if vms.values().any(|vm| vm.name == name && vm.project == project) {
+        if vms
+            .values()
+            .any(|vm| vm.name == name && vm.project == project)
+        {
             return Err(VmManagerError::VmAlreadyExists(name));
         }
         for d in &config.vfio_devices {
             if let Some(other) = Self::device_claimed_by(&vms, d, None) {
-                return Err(ImageError::InUse(format!("PCI device {} is used by VM {}", d, other)).into());
+                return Err(
+                    ImageError::InUse(format!("PCI device {} is used by VM {}", d, other)).into(),
+                );
             }
         }
 
@@ -1234,10 +1581,15 @@ impl VmManager {
         vm.project = project.to_string();
         // `spec.node`: an optional pin, by id or name.
         if let Some(want) = &opts.node {
-            let nodes = self.nodes.list().map_err(|e| VmManagerError::PersistenceError(e.to_string()))?;
+            let nodes = self
+                .nodes
+                .list()
+                .map_err(|e| VmManagerError::PersistenceError(e.to_string()))?;
             let n = nodes
                 .iter()
-                .find(|n| (&n.meta.id == want || &n.spec.name == want) && !n.status.phase.is_tombstone())
+                .find(|n| {
+                    (&n.meta.id == want || &n.spec.name == want) && !n.status.phase.is_tombstone()
+                })
                 .ok_or_else(|| invalid(format!("no node {want}")))?;
             vm.spec.node = Some(n.meta.id.clone());
         }
@@ -1268,7 +1620,10 @@ impl VmManager {
         if let Some(key) = &sel.root_disk {
             let d = self.attachable_disk_in(&vms, key, project, None)?;
             if disks.iter().any(|x| x.id == d.id) {
-                return Err(invalid(format!("disk {} is both root_disk and a data disk", d.name)));
+                return Err(invalid(format!(
+                    "disk {} is both root_disk and a data disk",
+                    d.name
+                )));
             }
             vm.spec.config.root_disk = Some(d.id.clone());
             vm.spec.config.rootfs_path = self.images.disk_path(&d).to_string_lossy().into_owned();
@@ -1292,8 +1647,18 @@ impl VmManager {
             };
             let mut d = self.images.new_disk_record(&req)?;
             if sel.root_disk_size_gib.is_none() {
-                let disk_delta = Delta { disk_gib: gib_ceil(self.estimated_size(&d)), ..Default::default() };
-                self.apply_quotas(&project_rec, &usage, &disk_delta, quota, &mut bypassed, &vms)?;
+                let disk_delta = Delta {
+                    disk_gib: gib_ceil(self.estimated_size(&d)),
+                    ..Default::default()
+                };
+                self.apply_quotas(
+                    &project_rec,
+                    &usage,
+                    &disk_delta,
+                    quota,
+                    &mut bypassed,
+                    &vms,
+                )?;
             }
             d.owner = Some(vm.id.clone());
             vm.spec.config.root_disk = Some(d.id.clone());
@@ -1304,7 +1669,10 @@ impl VmManager {
         }
         for d in &mut disks {
             d.attached_to = Some(vm.id.clone());
-            if Some(&d.id) == vm.spec.config.root_disk.as_ref() && d.pending_growpart && vm.spec.config.cloud_init_path.is_some() {
+            if Some(&d.id) == vm.spec.config.root_disk.as_ref()
+                && d.pending_growpart
+                && vm.spec.config.cloud_init_path.is_some()
+            {
                 warnings.push(format!(
                     "disk {} is waiting for an on-boot root partition grow, but this VM uses a custom cloud_init_path; enable growpart in that seed",
                     d.name
@@ -1316,18 +1684,38 @@ impl VmManager {
         if self.cluster().is_none() {
             let node = vm.spec.node.clone().unwrap_or_else(|| self.local_node_id());
             if node != self.local_node_id() {
-                return Err(invalid("this host is not part of a cluster: no other node to run on"));
+                return Err(invalid(
+                    "this host is not part of a cluster: no other node to run on",
+                ));
             }
-            vm.status.placement = Some(crate::models::Placement { node, at: crate::tenancy::now() });
+            vm.status.placement = Some(crate::models::Placement {
+                node,
+                at: crate::tenancy::now(),
+            });
         } else {
             let req = self.sched_request(&vm, &disks);
             match self.pick_node(&vms, &req) {
                 Ok(node) => {
-                    vm.status.placement = Some(crate::models::Placement { node, at: crate::tenancy::now() });
-                    crate::controller::vm::set_cond(&mut vm.status.conditions, "Scheduled", crate::models::Tristate::True, "Scheduled", "");
+                    vm.status.placement = Some(crate::models::Placement {
+                        node,
+                        at: crate::tenancy::now(),
+                    });
+                    crate::controller::vm::set_cond(
+                        &mut vm.status.conditions,
+                        "Scheduled",
+                        crate::models::Tristate::True,
+                        "Scheduled",
+                        "",
+                    );
                 }
                 // Created without a placement; the leader keeps trying.
-                Err(refused) => crate::controller::vm::set_cond(&mut vm.status.conditions, "Scheduled", crate::models::Tristate::False, "Unschedulable", crate::scheduler::explain(&refused)),
+                Err(refused) => crate::controller::vm::set_cond(
+                    &mut vm.status.conditions,
+                    "Scheduled",
+                    crate::models::Tristate::False,
+                    "Unschedulable",
+                    crate::scheduler::explain(&refused),
+                ),
             }
         }
         if let Some(p) = &vm.status.placement {
@@ -1340,8 +1728,17 @@ impl VmManager {
         }
 
         // The VM, its disks' claims and its first event in one transaction.
-        let ev = Event::new(actor, EventKind::Normal, "Created", format!("desired state {}", power_name(power)));
-        let reserve_ips = if vm.status.placement.is_some() { self.cluster_nics(&vm) } else { Vec::new() };
+        let ev = Event::new(
+            actor,
+            EventKind::Normal,
+            "Created",
+            format!("desired state {}", power_name(power)),
+        );
+        let reserve_ips = if vm.status.placement.is_some() {
+            self.cluster_nics(&vm)
+        } else {
+            Vec::new()
+        };
         let commit = Commit {
             put_vm: Some(&vm),
             put_disks: disks.iter().collect(),
@@ -1363,9 +1760,16 @@ impl VmManager {
     }
 
     /// A firmware image a new VM of `hypervisor` may boot through.
-    fn check_firmware(&self, fw: &images::Image, hypervisor: crate::hypervisor::HypervisorType) -> Result<(), VmManagerError> {
+    fn check_firmware(
+        &self,
+        fw: &images::Image,
+        hypervisor: crate::hypervisor::HypervisorType,
+    ) -> Result<(), VmManagerError> {
         if !fw.is_firmware() {
-            return Err(invalid(format!("image {} is not a firmware image", fw.name)));
+            return Err(invalid(format!(
+                "image {} is not a firmware image",
+                fw.name
+            )));
         }
         if fw.hypervisor != Some(hypervisor) {
             return Err(invalid(format!(
@@ -1376,18 +1780,27 @@ impl VmManager {
             )));
         }
         if fw.deletion_requested_at.is_some() {
-            return Err(ImageError::NotReady(format!("firmware {} is being deleted", fw.name)).into());
+            return Err(
+                ImageError::NotReady(format!("firmware {} is being deleted", fw.name)).into(),
+            );
         }
         if fw.status != images::ImageStatus::Ready {
-            return Err(ImageError::NotReady(format!("firmware {} is not ready ({:?})", fw.name, fw.status)).into());
+            return Err(ImageError::NotReady(format!(
+                "firmware {} is not ready ({:?})",
+                fw.name, fw.status
+            ))
+            .into());
         }
         Ok(())
     }
 
     /// Names of the VMs booting through firmware image `id`.
     fn firmware_users(vms: &HashMap<String, Vm>, id: &str) -> Vec<String> {
-        let mut v: Vec<String> =
-            vms.values().filter(|vm| vm.config().firmware_image.as_deref() == Some(id)).map(|vm| vm.name.clone()).collect();
+        let mut v: Vec<String> = vms
+            .values()
+            .filter(|vm| vm.config().firmware_image.as_deref() == Some(id))
+            .map(|vm| vm.name.clone())
+            .collect();
         v.sort();
         v
     }
@@ -1396,41 +1809,77 @@ impl VmManager {
 
     /// The VM (other than `except`) claiming disk `disk_id`: its spec
     /// references it, or a live instance of it has it open.
-    pub(crate) fn disk_claimed_by(vms: &HashMap<String, Vm>, disk_id: &str, except: Option<&str>) -> Option<String> {
+    pub(crate) fn disk_claimed_by(
+        vms: &HashMap<String, Vm>,
+        disk_id: &str,
+        except: Option<&str>,
+    ) -> Option<String> {
         vms.values()
             .filter(|vm| Some(vm.id.as_str()) != except)
             .find(|vm| {
                 let c = vm.config();
                 c.root_disk.as_deref() == Some(disk_id)
                     || c.data_disks.iter().any(|d| d == disk_id)
-                    || vm.status.instance.as_ref().is_some_and(|i| i.disks.iter().any(|d| d == disk_id))
+                    || vm
+                        .status
+                        .instance
+                        .as_ref()
+                        .is_some_and(|i| i.disks.iter().any(|d| d == disk_id))
             })
             .map(|vm| vm.name.clone())
     }
 
-    fn device_claimed_by(vms: &HashMap<String, Vm>, device: &str, except: Option<&str>) -> Option<String> {
+    fn device_claimed_by(
+        vms: &HashMap<String, Vm>,
+        device: &str,
+        except: Option<&str>,
+    ) -> Option<String> {
         let bdf = crate::hypervisor::vfio_device_id(device);
         vms.values()
             .filter(|vm| Some(vm.id.as_str()) != except)
             .find(|vm| {
-                vm.config().vfio_devices.iter().any(|d| crate::hypervisor::vfio_device_id(d) == bdf)
-                    || vm.status.instance.as_ref().is_some_and(|i| i.vfio_devices.iter().any(|d| crate::hypervisor::vfio_device_id(d) == bdf))
+                vm.config()
+                    .vfio_devices
+                    .iter()
+                    .any(|d| crate::hypervisor::vfio_device_id(d) == bdf)
+                    || vm.status.instance.as_ref().is_some_and(|i| {
+                        i.vfio_devices
+                            .iter()
+                            .any(|d| crate::hypervisor::vfio_device_id(d) == bdf)
+                    })
             })
             .map(|vm| vm.name.clone())
     }
 
     /// A disk a VM of `project` may claim: exists, in that project,
     /// unclaimed (by anyone but `vm_id`), not busy.
-    fn attachable_disk_in(&self, vms: &HashMap<String, Vm>, key: &str, project: &str, vm_id: Option<&str>) -> Result<Disk, VmManagerError> {
+    fn attachable_disk_in(
+        &self,
+        vms: &HashMap<String, Vm>,
+        key: &str,
+        project: &str,
+        vm_id: Option<&str>,
+    ) -> Result<Disk, VmManagerError> {
         let d = self.images.get_disk(key)?;
         if d.project != project {
-            return Err(invalid(format!("disk {} belongs to another project", d.name)));
+            return Err(invalid(format!(
+                "disk {} belongs to another project",
+                d.name
+            )));
         }
         if let Some(other) = Self::disk_claimed_by(vms, &d.id, vm_id) {
-            return Err(ImageError::InUse(format!("disk {} is attached to VM {}", d.name, other)).into());
+            return Err(
+                ImageError::InUse(format!("disk {} is attached to VM {}", d.name, other)).into(),
+            );
         }
-        if let Some(owner) = d.attached_to.as_deref().filter(|o| Some(*o) != vm_id && vms.contains_key(*o)) {
-            return Err(ImageError::InUse(format!("disk {} is attached to VM {}", d.name, owner)).into());
+        if let Some(owner) = d
+            .attached_to
+            .as_deref()
+            .filter(|o| Some(*o) != vm_id && vms.contains_key(*o))
+        {
+            return Err(
+                ImageError::InUse(format!("disk {} is attached to VM {}", d.name, owner)).into(),
+            );
         }
         if let Some(op) = self.images.busy_op(&d.id) {
             return Err(ImageError::Busy(format!("disk {} is busy ({})", d.name, op)).into());
@@ -1440,24 +1889,53 @@ impl VmManager {
 
     /// Bindings for a VM's managed disks, checked to be usable right now:
     /// the root disk (with its record) and the data disks.
-    pub(crate) fn disk_bindings(&self, vm: &Vm) -> Result<(Option<RootBinding>, Vec<DiskBinding>), VmManagerError> {
+    pub(crate) fn disk_bindings(
+        &self,
+        vm: &Vm,
+    ) -> Result<(Option<RootBinding>, Vec<DiskBinding>), VmManagerError> {
         let bind = |id: &str| -> Result<(DiskBinding, Disk), VmManagerError> {
             let d = self.images.get_disk(id)?;
             if d.phase != images::DiskPhase::Ready {
-                let why = d.conditions.iter().find(|c| c.kind == "Ready").map(|c| format!(": {}", c.message)).unwrap_or_default();
-                return Err(ImageError::NotReady(format!("disk {} is {:?}{}", d.name, d.phase, why)).into());
+                let why = d
+                    .conditions
+                    .iter()
+                    .find(|c| c.kind == "Ready")
+                    .map(|c| format!(": {}", c.message))
+                    .unwrap_or_default();
+                return Err(ImageError::NotReady(format!(
+                    "disk {} is {:?}{}",
+                    d.name, d.phase, why
+                ))
+                .into());
             }
             if let Some(op) = self.images.busy_op(&d.id) {
                 return Err(ImageError::Busy(format!("disk {} is busy ({})", d.name, op)).into());
             }
             let path = self.images.disk_path(&d);
             if !path.exists() {
-                return Err(ImageError::Io(format!("disk {} file is missing: {}", d.name, path.display())).into());
+                return Err(ImageError::Io(format!(
+                    "disk {} file is missing: {}",
+                    d.name,
+                    path.display()
+                ))
+                .into());
             }
-            Ok((DiskBinding { path: path.to_string_lossy().into_owned(), format: d.format, backing_files: d.is_linked() }, d))
+            Ok((
+                DiskBinding {
+                    path: path.to_string_lossy().into_owned(),
+                    format: d.format,
+                    backing_files: d.is_linked(),
+                },
+                d,
+            ))
         };
         let root = vm.config().root_disk.as_deref().map(bind).transpose()?;
-        let data = vm.config().data_disks.iter().map(|id| bind(id).map(|(b, _)| b)).collect::<Result<Vec<_>, _>>()?;
+        let data = vm
+            .config()
+            .data_disks
+            .iter()
+            .map(|id| bind(id).map(|(b, _)| b))
+            .collect::<Result<Vec<_>, _>>()?;
         Ok((root, data))
     }
 
@@ -1466,15 +1944,42 @@ impl VmManager {
     /// Start a VM, quotas not enforced (embedding and tests); returns at
     /// once, see [`Self::wait_converged`].
     pub async fn start_vm(&self, vm_id: &str) -> Result<Vm, VmManagerError> {
-        self.set_power(vm_id, PowerState::Running, None, QuotaMode::MayExceed, "api", None).await.map(|(vm, _)| vm)
+        self.set_power(
+            vm_id,
+            PowerState::Running,
+            None,
+            QuotaMode::MayExceed,
+            "api",
+            None,
+        )
+        .await
+        .map(|(vm, _)| vm)
     }
 
     pub async fn stop_vm(&self, vm_id: &str) -> Result<Vm, VmManagerError> {
-        self.set_power(vm_id, PowerState::Stopped, None, QuotaMode::MayExceed, "api", None).await.map(|(vm, _)| vm)
+        self.set_power(
+            vm_id,
+            PowerState::Stopped,
+            None,
+            QuotaMode::MayExceed,
+            "api",
+            None,
+        )
+        .await
+        .map(|(vm, _)| vm)
     }
 
     pub async fn pause_vm(&self, vm_id: &str) -> Result<Vm, VmManagerError> {
-        self.set_power(vm_id, PowerState::Paused, None, QuotaMode::MayExceed, "api", None).await.map(|(vm, _)| vm)
+        self.set_power(
+            vm_id,
+            PowerState::Paused,
+            None,
+            QuotaMode::MayExceed,
+            "api",
+            None,
+        )
+        .await
+        .map(|(vm, _)| vm)
     }
 
     /// `spec.power = power` (and `stop_grace_secs` when given), checking the
@@ -1489,7 +1994,10 @@ impl VmManager {
         if_match: Option<u64>,
     ) -> Result<(Vm, Vec<QuotaOverrun>), VmManagerError> {
         if grace.is_some_and(|g| g > MAX_STOP_GRACE_SECS) {
-            return Err(invalid(format!("graceful_timeout_secs must be 0-{}", MAX_STOP_GRACE_SECS)));
+            return Err(invalid(format!(
+                "graceful_timeout_secs must be 0-{}",
+                MAX_STOP_GRACE_SECS
+            )));
         }
         let mut vms = self.vms.write().await;
         let cur = Self::writable(&vms, vm_id, if_match)?.clone();
@@ -1497,7 +2005,17 @@ impl VmManager {
         if cur.spec.power == PowerState::Stopped && power != PowerState::Stopped {
             if let Some(p) = self.projects.get(&cur.project)? {
                 let usage = self.usage_locked(&cur.project, &vms)?;
-                self.apply_quotas(&p, &usage, &Delta { running_vms: 1, ..Default::default() }, quota, &mut bypassed, &vms)?;
+                self.apply_quotas(
+                    &p,
+                    &usage,
+                    &Delta {
+                        running_vms: 1,
+                        ..Default::default()
+                    },
+                    quota,
+                    &mut bypassed,
+                    &vms,
+                )?;
             }
         }
         let grace = grace.unwrap_or(cur.spec.stop_grace_secs);
@@ -1527,10 +2045,16 @@ impl VmManager {
         if let Some(c) = &patch.config {
             let fields = c.immutable_fields();
             if !fields.is_empty() {
-                return Err(invalid(format!("immutable field(s): {}", fields.join(", "))));
+                return Err(invalid(format!(
+                    "immutable field(s): {}",
+                    fields.join(", ")
+                )));
             }
         }
-        Self::check_options(&VmOptions { stop_grace_secs: patch.stop_grace_secs, ..Default::default() })?;
+        Self::check_options(&VmOptions {
+            stop_grace_secs: patch.stop_grace_secs,
+            ..Default::default()
+        })?;
         let mut vms = self.vms.write().await;
         let cur = Self::writable(&vms, vm_id, if_match)?.clone();
         let project = cur.project.clone();
@@ -1586,7 +2110,11 @@ impl VmManager {
                 self.refuse_dpdk_uplink_devices(&devs)?;
                 for d in &devs {
                     if let Some(other) = Self::device_claimed_by(&vms, d, Some(vm_id)) {
-                        return Err(ImageError::InUse(format!("PCI device {} is used by VM {}", d, other)).into());
+                        return Err(ImageError::InUse(format!(
+                            "PCI device {} is used by VM {}",
+                            d, other
+                        ))
+                        .into());
                     }
                 }
                 config.vfio_devices = devs;
@@ -1613,7 +2141,10 @@ impl VmManager {
                     let vm_node = cur.status.placement.as_ref().map(|p| p.node.clone());
                     if let (Some(dn), Some(vn)) = (&d.node, &vm_node) {
                         if dn != vn {
-                            return Err(invalid(format!("disk {} is on another node than the VM", d.name)));
+                            return Err(invalid(format!(
+                                "disk {} is on another node than the VM",
+                                d.name
+                            )));
                         }
                     }
                     let needs_bind = d.node.is_none() && vm_node.is_some();
@@ -1670,7 +2201,12 @@ impl VmManager {
     /// has it open (D11); otherwise its `attached_to` is cleared. Returns
     /// the disk record to write, if it changes.
     fn release_claim_if_unused(&self, vm: &Vm, disk_id: &str) -> Option<Disk> {
-        if vm.status.instance.as_ref().is_some_and(|i| i.disks.iter().any(|d| d == disk_id)) {
+        if vm
+            .status
+            .instance
+            .as_ref()
+            .is_some_and(|i| i.disks.iter().any(|d| d == disk_id))
+        {
             return None;
         }
         let mut d = self.images.get_disk(disk_id).ok()?;
@@ -1682,7 +2218,11 @@ impl VmManager {
         }
     }
 
-    pub async fn attach_device(&self, vm_id: &str, device_path: String) -> Result<Vm, VmManagerError> {
+    pub async fn attach_device(
+        &self,
+        vm_id: &str,
+        device_path: String,
+    ) -> Result<Vm, VmManagerError> {
         let vm = self.get_vm(vm_id).await?;
         if vm.config().vfio_devices.contains(&device_path) {
             return Err(VmManagerError::InvalidState {
@@ -1692,11 +2232,23 @@ impl VmManager {
         }
         let mut devs = vm.config().vfio_devices.clone();
         devs.push(device_path);
-        let patch = VmPatch { config: Some(ConfigPatch { vfio_devices: Some(devs), ..Default::default() }), ..Default::default() };
-        self.patch_vm(vm_id, patch, QuotaMode::MayExceed, "api", None).await.map(|(vm, _)| vm)
+        let patch = VmPatch {
+            config: Some(ConfigPatch {
+                vfio_devices: Some(devs),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        self.patch_vm(vm_id, patch, QuotaMode::MayExceed, "api", None)
+            .await
+            .map(|(vm, _)| vm)
     }
 
-    pub async fn detach_device(&self, vm_id: &str, device_path: &str) -> Result<Vm, VmManagerError> {
+    pub async fn detach_device(
+        &self,
+        vm_id: &str,
+        device_path: &str,
+    ) -> Result<Vm, VmManagerError> {
         let vm = self.get_vm(vm_id).await?;
         let mut devs = vm.config().vfio_devices.clone();
         let Some(pos) = devs.iter().position(|d| d == device_path) else {
@@ -1706,8 +2258,16 @@ impl VmManager {
             });
         };
         devs.remove(pos);
-        let patch = VmPatch { config: Some(ConfigPatch { vfio_devices: Some(devs), ..Default::default() }), ..Default::default() };
-        self.patch_vm(vm_id, patch, QuotaMode::MayExceed, "api", None).await.map(|(vm, _)| vm)
+        let patch = VmPatch {
+            config: Some(ConfigPatch {
+                vfio_devices: Some(devs),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        self.patch_vm(vm_id, patch, QuotaMode::MayExceed, "api", None)
+            .await
+            .map(|(vm, _)| vm)
     }
 
     /// Attach a data disk; on a running VM it takes effect at the next
@@ -1717,8 +2277,16 @@ impl VmManager {
         let d = self.images.get_disk(key)?;
         let mut keys = vm.config().data_disks.clone();
         keys.push(d.id);
-        let patch = VmPatch { config: Some(ConfigPatch { data_disks: Some(keys), ..Default::default() }), ..Default::default() };
-        self.patch_vm(vm_id, patch, QuotaMode::MayExceed, "api", None).await.map(|(vm, _)| vm)
+        let patch = VmPatch {
+            config: Some(ConfigPatch {
+                data_disks: Some(keys),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        self.patch_vm(vm_id, patch, QuotaMode::MayExceed, "api", None)
+            .await
+            .map(|(vm, _)| vm)
     }
 
     pub async fn detach_disk(&self, vm_id: &str, key: &str) -> Result<Vm, VmManagerError> {
@@ -1737,8 +2305,16 @@ impl VmManager {
             return Err(ImageError::Busy(format!("disk {} is busy ({})", disk.name, op)).into());
         }
         keys.remove(pos);
-        let patch = VmPatch { config: Some(ConfigPatch { data_disks: Some(keys), ..Default::default() }), ..Default::default() };
-        self.patch_vm(vm_id, patch, QuotaMode::MayExceed, "api", None).await.map(|(vm, _)| vm)
+        let patch = VmPatch {
+            config: Some(ConfigPatch {
+                data_disks: Some(keys),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        self.patch_vm(vm_id, patch, QuotaMode::MayExceed, "api", None)
+            .await
+            .map(|(vm, _)| vm)
     }
 
     // ---- delete (§6.3) ---------------------------------------------------------
@@ -1751,18 +2327,35 @@ impl VmManager {
     /// Request deletion. Returns `true` when the VM is already gone (it had
     /// no instance, ports or anything else to clean up), `false` when the
     /// controller finishes it.
-    pub async fn delete_vm_with(&self, vm_id: &str, keep_disk: bool) -> Result<bool, VmManagerError> {
+    pub async fn delete_vm_with(
+        &self,
+        vm_id: &str,
+        keep_disk: bool,
+    ) -> Result<bool, VmManagerError> {
         self.delete_vm_as(vm_id, keep_disk, "api").await
     }
 
-    pub async fn delete_vm_as(&self, vm_id: &str, keep_disk: bool, actor: &str) -> Result<bool, VmManagerError> {
+    pub async fn delete_vm_as(
+        &self,
+        vm_id: &str,
+        keep_disk: bool,
+        actor: &str,
+    ) -> Result<bool, VmManagerError> {
         let vm = {
             let mut vms = self.vms.write().await;
-            let cur = vms.get(vm_id).ok_or_else(|| VmManagerError::VmNotFound(vm_id.to_string()))?.clone();
+            let cur = vms
+                .get(vm_id)
+                .ok_or_else(|| VmManagerError::VmNotFound(vm_id.to_string()))?
+                .clone();
             if cur.deletion_requested_at.is_some() {
                 return Ok(false);
             }
-            for id in cur.config().root_disk.iter().chain(cur.config().data_disks.iter()) {
+            for id in cur
+                .config()
+                .root_disk
+                .iter()
+                .chain(cur.config().data_disks.iter())
+            {
                 if let Some(op) = self.images.busy_op(id) {
                     return Err(ImageError::Busy(format!("disk {} is busy ({})", id, op)).into());
                 }
@@ -1775,11 +2368,23 @@ impl VmManager {
                 .map(|f| f.to_string())
                 .collect();
             vm.resource_version += 1;
-            let ev = Event::new(actor, EventKind::Normal, "Deleting", if keep_disk { "deletion requested (keeping its root disk)" } else { "deletion requested" });
+            let ev = Event::new(
+                actor,
+                EventKind::Normal,
+                "Deleting",
+                if keep_disk {
+                    "deletion requested (keeping its root disk)"
+                } else {
+                    "deletion requested"
+                },
+            );
             self.put_locked(&mut vms, vm, vec![ev])?
         };
         // Nothing ran: finish now, so a never-started VM is gone at once.
-        if vm.status.instance.is_none() && vm.status.nics.is_empty() && matches!(vm.status.phase, VmPhase::Stopped | VmPhase::Failed) {
+        if vm.status.instance.is_none()
+            && vm.status.nics.is_empty()
+            && matches!(vm.status.phase, VmPhase::Stopped | VmPhase::Failed)
+        {
             let runner = self.runner();
             let unit = runner.unit_active(&vm.id).await;
             let v = vm.clone();
@@ -1798,7 +2403,9 @@ impl VmManager {
     // ---- reads -------------------------------------------------------------
 
     pub async fn get_vm(&self, vm_id: &str) -> Result<Vm, VmManagerError> {
-        self.vm(vm_id).await.ok_or_else(|| VmManagerError::VmNotFound(vm_id.to_string()))
+        self.vm(vm_id)
+            .await
+            .ok_or_else(|| VmManagerError::VmNotFound(vm_id.to_string()))
     }
 
     pub async fn list_vms(&self) -> Vec<Vm> {
@@ -1827,7 +2434,10 @@ impl VmManager {
                 }
                 _ => {}
             }
-            if tokio::time::timeout_at(deadline, rx.changed()).await.is_err() {
+            if tokio::time::timeout_at(deadline, rx.changed())
+                .await
+                .is_err()
+            {
                 return Waited::TimedOut(vm.map(Box::new));
             }
         }
@@ -1839,17 +2449,28 @@ impl VmManager {
     pub async fn wait_disk(&self, key: &str, timeout: Duration) -> (bool, Option<DiskResponse>) {
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
-            let Ok(d) = self.images.get_disk(key) else { return (true, None) };
+            let Ok(d) = self.images.get_disk(key) else {
+                return (true, None);
+            };
             let ready = d.conditions.iter().find(|c| c.kind == "Ready");
             let decided_pending = ready.is_some_and(|c| {
-                matches!(c.reason.as_str(), "ResizePending" | "ResizeInvalid" | "ExtendRootPending" | "InvalidDisk" | "FileMissing")
+                matches!(
+                    c.reason.as_str(),
+                    "ResizePending"
+                        | "ResizeInvalid"
+                        | "ExtendRootPending"
+                        | "InvalidDisk"
+                        | "FileMissing"
+                )
             });
             let settled = d.deletion_requested_at.is_none()
                 && match d.phase {
                     images::DiskPhase::Failed | images::DiskPhase::Missing => true,
                     images::DiskPhase::Ready => {
                         decided_pending
-                            || (d.resize.is_none() && d.extend_root.is_none_or(|e| e.seq <= d.applied_extend_root_seq))
+                            || (d.resize.is_none()
+                                && d.extend_root
+                                    .is_none_or(|e| e.seq <= d.applied_extend_root_seq))
                     }
                     _ => false,
                 };
@@ -1862,7 +2483,11 @@ impl VmManager {
 
     /// Wait (on the change bell) until `look` returns `None`, i.e. the
     /// object is gone, or `timeout` passes; returns the last thing seen.
-    pub async fn wait_gone<T>(&self, timeout: Duration, mut look: impl FnMut() -> Option<T>) -> Option<T> {
+    pub async fn wait_gone<T>(
+        &self,
+        timeout: Duration,
+        mut look: impl FnMut() -> Option<T>,
+    ) -> Option<T> {
         let deadline = tokio::time::Instant::now() + timeout;
         let mut rx = self.changed.subscribe();
         loop {
@@ -1870,7 +2495,11 @@ impl VmManager {
             let seen = look()?;
             // The bell, or a slow tick in case a change was missed.
             let tick = tokio::time::Instant::now() + Duration::from_secs(1);
-            if tokio::time::timeout_at(deadline.min(tick), rx.changed()).await.is_err() && tokio::time::Instant::now() >= deadline {
+            if tokio::time::timeout_at(deadline.min(tick), rx.changed())
+                .await
+                .is_err()
+                && tokio::time::Instant::now() >= deadline
+            {
                 return Some(seen);
             }
         }
@@ -1886,7 +2515,17 @@ impl VmManager {
         let ids: Vec<String> = self.vms.read().await.keys().cloned().collect();
         let mut gens = Vec::new();
         for id in ids {
-            if let Ok((vm, _)) = self.set_power(&id, PowerState::Stopped, Some(0), QuotaMode::MayExceed, "controller", None).await {
+            if let Ok((vm, _)) = self
+                .set_power(
+                    &id,
+                    PowerState::Stopped,
+                    Some(0),
+                    QuotaMode::MayExceed,
+                    "controller",
+                    None,
+                )
+                .await
+            {
                 gens.push((id, vm.generation));
             }
         }
@@ -1918,11 +2557,19 @@ impl VmManager {
     }
 
     /// The firmware image VMs of `hypervisor` boot through by default.
-    pub fn default_firmware_name(&self, hypervisor: crate::hypervisor::HypervisorType) -> Option<String> {
-        self.images.default_firmware(hypervisor, crate::images::catalog::Arch::host()).map(|i| i.name)
+    pub fn default_firmware_name(
+        &self,
+        hypervisor: crate::hypervisor::HypervisorType,
+    ) -> Option<String> {
+        self.images
+            .default_firmware(hypervisor, crate::images::catalog::Arch::host())
+            .map(|i| i.name)
     }
 
-    pub fn firmware_catalog(&self, arch: Option<crate::images::catalog::Arch>) -> Vec<images::FirmwareCatalogItem> {
+    pub fn firmware_catalog(
+        &self,
+        arch: Option<crate::images::catalog::Arch>,
+    ) -> Vec<images::FirmwareCatalogItem> {
         self.images.firmware_catalog(arch)
     }
 
@@ -1965,9 +2612,20 @@ impl VmManager {
                     c.state = "releasing".into();
                 }
             }
-            let missing: Vec<&String> = img.pinned.iter().filter(|p| !out.iter().any(|c| c.node == **p)).collect();
+            let missing: Vec<&String> = img
+                .pinned
+                .iter()
+                .filter(|p| !out.iter().any(|c| c.node == **p))
+                .collect();
             for p in missing {
-                out.push(images::ImageCopy { node_name: self.nodes.get(p).ok().flatten().map(|n| n.spec.name), node: p.clone(), state: "wanted".into(), bytes: 0, error: String::new(), pinned: true });
+                out.push(images::ImageCopy {
+                    node_name: self.nodes.get(p).ok().flatten().map(|n| n.spec.name),
+                    node: p.clone(),
+                    state: "wanted".into(),
+                    bytes: 0,
+                    error: String::new(),
+                    pinned: true,
+                });
             }
         }
         out.sort_by(|a, b| a.node_name.cmp(&b.node_name));
@@ -1997,22 +2655,48 @@ impl VmManager {
         Ok(self.with_users(r).await)
     }
 
-    pub async fn pull_image(&self, mut req: PullImageRequest) -> Result<(ImageResponse, bool), VmManagerError> {
+    pub async fn pull_image(
+        &self,
+        mut req: PullImageRequest,
+    ) -> Result<(ImageResponse, bool), VmManagerError> {
         // In a cluster: copies on chosen nodes, and their architecture (§9.2.1–2).
         if !req.nodes.is_empty() || req.keep_server_copy == Some(false) {
             if self.cluster().is_none() {
-                return Err(ImageError::InvalidImage("nodes and keep_server_copy are for a cluster".into()).into());
+                return Err(ImageError::InvalidImage(
+                    "nodes and keep_server_copy are for a cluster".into(),
+                )
+                .into());
             }
             if req.nodes.is_empty() {
-                return Err(ImageError::InvalidImage("keep_server_copy: false needs nodes to keep the copies".into()).into());
+                return Err(ImageError::InvalidImage(
+                    "keep_server_copy: false needs nodes to keep the copies".into(),
+                )
+                .into());
             }
-            let nodes: Vec<crate::node::Node> = req.nodes.iter().map(|n| self.copy_node(n)).collect::<Result<_, _>>()?;
-            let archs: std::collections::BTreeSet<&str> = nodes.iter().map(|n| n.status.features.arch.as_str()).filter(|a| !a.is_empty()).collect();
+            let nodes: Vec<crate::node::Node> = req
+                .nodes
+                .iter()
+                .map(|n| self.copy_node(n))
+                .collect::<Result<_, _>>()?;
+            let archs: std::collections::BTreeSet<&str> = nodes
+                .iter()
+                .map(|n| n.status.features.arch.as_str())
+                .filter(|a| !a.is_empty())
+                .collect();
             if archs.len() > 1 {
-                return Err(ImageError::InvalidImage(format!("the nodes are of different architectures ({}): pull once per architecture", archs.into_iter().collect::<Vec<_>>().join(", "))).into());
+                return Err(ImageError::InvalidImage(format!(
+                    "the nodes are of different architectures ({}): pull once per architecture",
+                    archs.into_iter().collect::<Vec<_>>().join(", ")
+                ))
+                .into());
             }
             match (&req.arch, archs.first()) {
-                (Some(a), Some(n)) if a != n => return Err(ImageError::InvalidImage(format!("arch {a}, but the nodes are {n}")).into()),
+                (Some(a), Some(n)) if a != n => {
+                    return Err(ImageError::InvalidImage(format!(
+                        "arch {a}, but the nodes are {n}"
+                    ))
+                    .into())
+                }
                 (None, Some(n)) => req.arch = Some(n.to_string()),
                 _ => {}
             }
@@ -2033,22 +2717,40 @@ impl VmManager {
             let img = self.images.get_image(key)?;
             let users = Self::firmware_users(&vms, &img.id);
             if !users.is_empty() {
-                return Err(ImageError::InUse(format!("firmware {} is used by VM(s): {}", img.name, users.join(", "))).into());
+                return Err(ImageError::InUse(format!(
+                    "firmware {} is used by VM(s): {}",
+                    img.name,
+                    users.join(", ")
+                ))
+                .into());
             }
             self.images.request_image_delete(key)?
         };
         self.reconcile_image(&img.id).await?;
-        Ok(self.images.get_image(&img.id).ok().map(|i| self.images.image_response(&i, false)))
+        Ok(self
+            .images
+            .get_image(&img.id)
+            .ok()
+            .map(|i| self.images.image_response(&i, false)))
     }
 
     pub fn list_disks(&self) -> Vec<DiskResponse> {
-        self.images.list_disks().iter().map(|d| self.images.disk_response(d, false)).collect()
+        self.images
+            .list_disks()
+            .iter()
+            .map(|d| self.images.disk_response(d, false))
+            .collect()
     }
 
     /// Ids of the disks attached to a VM, from the records alone (no
     /// per-disk response or file check).
     pub fn attached_disk_ids(&self, vm_id: &str) -> std::collections::BTreeSet<String> {
-        self.images.list_disks().into_iter().filter(|d| d.attached_to.as_deref() == Some(vm_id)).map(|d| d.id).collect()
+        self.images
+            .list_disks()
+            .into_iter()
+            .filter(|d| d.attached_to.as_deref() == Some(vm_id))
+            .map(|d| d.id)
+            .collect()
     }
 
     pub async fn get_disk(&self, key: &str) -> Result<DiskResponse, VmManagerError> {
@@ -2058,9 +2760,14 @@ impl VmManager {
     }
 
     /// Create a disk in the default project (embedding and tests).
-    pub async fn create_disk(&self, req: CreateDiskRequest) -> Result<DiskResponse, VmManagerError> {
+    pub async fn create_disk(
+        &self,
+        req: CreateDiskRequest,
+    ) -> Result<DiskResponse, VmManagerError> {
         let project = self.default_project_id();
-        self.create_disk_in(&project, req, QuotaMode::MayExceed).await.map(|(d, _)| d)
+        self.create_disk_in(&project, req, QuotaMode::MayExceed)
+            .await
+            .map(|(d, _)| d)
     }
 
     /// What a pending disk will take, for quotas: its requested size, else
@@ -2070,7 +2777,11 @@ impl VmManager {
         match &d.origin {
             images::DiskOrigin::Blank => requested.unwrap_or(d.size_bytes),
             images::DiskOrigin::Image { image_id, .. } => {
-                let image_size = self.images.get_image(image_id).map(|i| i.virtual_size_bytes).unwrap_or(0);
+                let image_size = self
+                    .images
+                    .get_image(image_id)
+                    .map(|i| i.virtual_size_bytes)
+                    .unwrap_or(0);
                 self.images.root_size(requested, image_size)
             }
         }
@@ -2085,18 +2796,32 @@ impl VmManager {
         mut req: CreateDiskRequest,
         quota: QuotaMode,
     ) -> Result<(DiskResponse, Vec<QuotaOverrun>), VmManagerError> {
-        let p = self.projects.get(project)?.ok_or_else(|| TenancyError::NotFound(project.to_string()))?;
+        let p = self
+            .projects
+            .get(project)?
+            .ok_or_else(|| TenancyError::NotFound(project.to_string()))?;
         req.project = Some(project.to_string());
         // The VM lock serializes quota checks with VM creation.
         let vms = self.vms.write().await;
         let disk = self.images.new_disk_record(&req)?;
         let usage = self.usage_locked(project, &vms)?;
         let mut bypassed = Vec::new();
-        let delta = Delta { disk_gib: gib_ceil(self.estimated_size(&disk)), ..Default::default() };
+        let delta = Delta {
+            disk_gib: gib_ceil(self.estimated_size(&disk)),
+            ..Default::default()
+        };
         self.apply_quotas(&p, &usage, &delta, quota, &mut bypassed, &vms)?;
         self.store.commit(Commit {
             put_disks: vec![&disk],
-            events: vec![(event_key("disk", &disk.id), Event::new("api", EventKind::Normal, "Created", "disk recorded; its file is made next"))],
+            events: vec![(
+                event_key("disk", &disk.id),
+                Event::new(
+                    "api",
+                    EventKind::Normal,
+                    "Created",
+                    "disk recorded; its file is made next",
+                ),
+            )],
             ..Default::default()
         })?;
         self.images.cache_disk(&disk);
@@ -2110,9 +2835,13 @@ impl VmManager {
     pub(crate) fn disk_in_use(vms: &HashMap<String, Vm>, id: &str) -> Option<String> {
         vms.values()
             .find(|vm| {
-                vm.status.instance.as_ref().is_some_and(|i| i.disks.iter().any(|d| d == id))
+                vm.status
+                    .instance
+                    .as_ref()
+                    .is_some_and(|i| i.disks.iter().any(|d| d == id))
                     || (matches!(vm.status.phase, VmPhase::Provisioning | VmPhase::Starting)
-                        && (vm.config().root_disk.as_deref() == Some(id) || vm.config().data_disks.iter().any(|d| d == id)))
+                        && (vm.config().root_disk.as_deref() == Some(id)
+                            || vm.config().data_disks.iter().any(|d| d == id)))
             })
             .map(|vm| vm.name.clone())
     }
@@ -2121,18 +2850,32 @@ impl VmManager {
     /// open. Holds the VM read lock while checking, so a launch (which
     /// records the instance's disks under the write lock) cannot slip in
     /// between the check and the mark.
-    pub(crate) async fn begin_disk_op(&self, key: &str, op: &'static str) -> Result<(Disk, images::BusyGuard), VmManagerError> {
+    pub(crate) async fn begin_disk_op(
+        &self,
+        key: &str,
+        op: &'static str,
+    ) -> Result<(Disk, images::BusyGuard), VmManagerError> {
         let vms = self.vms.read().await;
         let disk = self.images.get_disk(key)?;
         if let Some(vm) = Self::disk_in_use(&vms, &disk.id) {
-            return Err(ImageError::InUse(format!("disk {} is in use by VM {}; stop it first", disk.name, vm)).into());
+            return Err(ImageError::InUse(format!(
+                "disk {} is in use by VM {}; stop it first",
+                disk.name, vm
+            ))
+            .into());
         }
         let guard = self.images.begin(&disk.id, op)?;
         Ok((disk, guard))
     }
 
-    pub async fn resize_disk(&self, key: &str, req: ResizeDiskRequest) -> Result<DiskResponse, VmManagerError> {
-        self.resize_disk_with(key, req, QuotaMode::MayExceed).await.map(|(d, _)| d)
+    pub async fn resize_disk(
+        &self,
+        key: &str,
+        req: ResizeDiskRequest,
+    ) -> Result<DiskResponse, VmManagerError> {
+        self.resize_disk_with(key, req, QuotaMode::MayExceed)
+            .await
+            .map(|(d, _)| d)
     }
 
     /// Resize a disk (a spec write, §10.1), checking its project's
@@ -2145,13 +2888,23 @@ impl VmManager {
         req: ResizeDiskRequest,
         quota: QuotaMode,
     ) -> Result<(DiskResponse, Vec<QuotaOverrun>), VmManagerError> {
-        let size = requested_size(req.size_gib, req.size_bytes)?.ok_or_else(|| ImageError::invalid_disk("give size_gib or size_bytes"))?;
+        let size = requested_size(req.size_gib, req.size_bytes)?
+            .ok_or_else(|| ImageError::invalid_disk("give size_gib or size_bytes"))?;
         let current = self.images.get_disk(key)?;
         if current.deletion_requested_at.is_some() {
-            return Err(ImageError::InUse(format!("disk {} is being deleted", current.name)).into());
+            return Err(
+                ImageError::InUse(format!("disk {} is being deleted", current.name)).into(),
+            );
         }
-        if !matches!(current.phase, images::DiskPhase::Ready | images::DiskPhase::Resizing) {
-            return Err(ImageError::NotReady(format!("disk {} is {:?}", current.name, current.phase)).into());
+        if !matches!(
+            current.phase,
+            images::DiskPhase::Ready | images::DiskPhase::Resizing
+        ) {
+            return Err(ImageError::NotReady(format!(
+                "disk {} is {:?}",
+                current.name, current.phase
+            ))
+            .into());
         }
         let mut bypassed = Vec::new();
         let grow = gib_ceil(size).saturating_sub(gib_ceil(current.size_bytes));
@@ -2159,7 +2912,17 @@ impl VmManager {
             if let Some(p) = self.projects.get(&current.project)? {
                 let vms = self.vms.read().await;
                 let usage = self.usage_locked(&current.project, &vms)?;
-                self.apply_quotas(&p, &usage, &Delta { disk_gib: grow, ..Default::default() }, quota, &mut bypassed, &vms)?;
+                self.apply_quotas(
+                    &p,
+                    &usage,
+                    &Delta {
+                        disk_gib: grow,
+                        ..Default::default()
+                    },
+                    quota,
+                    &mut bypassed,
+                    &vms,
+                )?;
             }
         }
         if size < current.size_bytes {
@@ -2167,17 +2930,31 @@ impl VmManager {
             let (min, _) = blocking(move || mgr.shrink_minimum(&d)).await?;
             if size < min {
                 return Err(ImageError::InvalidDisk {
-                    message: format!("{} bytes would cut into a partition; the minimum is {} bytes", size, min),
+                    message: format!(
+                        "{} bytes would cut into a partition; the minimum is {} bytes",
+                        size, min
+                    ),
                     details: serde_json::json!({ "min_size_bytes": min }),
                 }
                 .into());
             }
         }
         let mut disk = current;
-        disk.resize = (size != disk.size_bytes).then_some(images::ResizeSpec { size_bytes: size, extend_root: req.extend_root });
+        disk.resize = (size != disk.size_bytes).then_some(images::ResizeSpec {
+            size_bytes: size,
+            extend_root: req.extend_root,
+        });
         self.store.commit(Commit {
             put_disks: vec![&disk],
-            events: vec![(event_key("disk", &disk.id), Event::new("api", EventKind::Normal, "ResizeRequested", format!("size {} bytes", size)))],
+            events: vec![(
+                event_key("disk", &disk.id),
+                Event::new(
+                    "api",
+                    EventKind::Normal,
+                    "ResizeRequested",
+                    format!("size {} bytes", size),
+                ),
+            )],
             ..Default::default()
         })?;
         self.images.cache_disk(&disk);
@@ -2188,10 +2965,18 @@ impl VmManager {
     /// Request a root-partition extend (a one-shot action, D19): bumps the
     /// disk's `extend_root.seq`. A disk without a growable root partition
     /// is refused here.
-    pub async fn extend_root(&self, key: &str, mode: ExtendMode) -> Result<DiskResponse, VmManagerError> {
+    pub async fn extend_root(
+        &self,
+        key: &str,
+        mode: ExtendMode,
+    ) -> Result<DiskResponse, VmManagerError> {
         let current = self.images.get_disk(key)?;
         if current.phase != images::DiskPhase::Ready || current.deletion_requested_at.is_some() {
-            return Err(ImageError::NotReady(format!("disk {} is {:?}", current.name, current.phase)).into());
+            return Err(ImageError::NotReady(format!(
+                "disk {} is {:?}",
+                current.name, current.phase
+            ))
+            .into());
         }
         let (mgr, d) = (self.images.clone(), current.clone());
         blocking(move || {
@@ -2202,11 +2987,24 @@ impl VmManager {
         })
         .await?;
         let mut disk = current;
-        let seq = disk.extend_root.map(|e| e.seq).unwrap_or(0).max(disk.applied_extend_root_seq) + 1;
+        let seq = disk
+            .extend_root
+            .map(|e| e.seq)
+            .unwrap_or(0)
+            .max(disk.applied_extend_root_seq)
+            + 1;
         disk.extend_root = Some(images::ExtendRootSpec { mode, seq });
         self.store.commit(Commit {
             put_disks: vec![&disk],
-            events: vec![(event_key("disk", &disk.id), Event::new("api", EventKind::Normal, "ExtendRootRequested", format!("{:?}, request {}", mode, seq)))],
+            events: vec![(
+                event_key("disk", &disk.id),
+                Event::new(
+                    "api",
+                    EventKind::Normal,
+                    "ExtendRootRequested",
+                    format!("{:?}, request {}", mode, seq),
+                ),
+            )],
             ..Default::default()
         })?;
         self.images.cache_disk(&disk);
@@ -2223,10 +3021,16 @@ impl VmManager {
             let vms = self.vms.write().await;
             let disk = self.images.get_disk(key)?;
             if let Some(vm) = Self::disk_claimed_by(&vms, &disk.id, None) {
-                return Err(ImageError::InUse(format!("disk {} is attached to VM {}; detach it or delete the VM first", disk.name, vm)).into());
+                return Err(ImageError::InUse(format!(
+                    "disk {} is attached to VM {}; detach it or delete the VM first",
+                    disk.name, vm
+                ))
+                .into());
             }
             if let Some(op) = self.images.busy_op(&disk.id) {
-                return Err(ImageError::Busy(format!("disk {} is busy ({})", disk.name, op)).into());
+                return Err(
+                    ImageError::Busy(format!("disk {} is busy ({})", disk.name, op)).into(),
+                );
             }
             let mut d = disk;
             d.deletion_requested_at.get_or_insert(tenancy::now());
@@ -2245,7 +3049,10 @@ impl VmManager {
         if devices.is_empty() {
             return Ok(());
         }
-        let Ok(uplinks) = self.netd.call::<Vec<glidex_netd::proto::UplinkResult>>(Op::ListUplinks) else {
+        let Ok(uplinks) = self
+            .netd
+            .call::<Vec<glidex_netd::proto::UplinkResult>>(Op::ListUplinks)
+        else {
             return Ok(());
         };
         for dev in devices {
@@ -2268,7 +3075,10 @@ impl VmManager {
     }
 
     pub fn get_network(&self, name: &str) -> Result<Network, VmManagerError> {
-        Ok(self.networks.get(name)?.ok_or_else(|| NetError::NotFound(name.to_string()))?)
+        Ok(self
+            .networks
+            .get(name)?
+            .ok_or_else(|| NetError::NotFound(name.to_string()))?)
     }
 
     /// Whether networks are cluster networks (OVN) unless they say otherwise.
@@ -2278,28 +3088,48 @@ impl VmManager {
 
     /// A cluster network (§11.2): a subnet from the cluster IPAM and a record;
     /// the leader's network controller makes the OVN objects.
-    async fn create_cluster_network(&self, req: CreateNetworkRequest) -> Result<Network, VmManagerError> {
+    async fn create_cluster_network(
+        &self,
+        req: CreateNetworkRequest,
+    ) -> Result<Network, VmManagerError> {
         if !self.ovn_enabled() {
-            return Err(NetError::Invalid("cluster networks need OVN: enable cluster.ovn on a cluster".into()).into());
+            return Err(NetError::Invalid(
+                "cluster networks need OVN: enable cluster.ovn on a cluster".into(),
+            )
+            .into());
         }
         let provider = req.mode == NetworkMode::Bridged;
         if provider && req.physnet.is_none() {
             return Err(NetError::Invalid("a provider network (mode bridged) needs a physnet: the physical network it sits on".into()).into());
         }
         if !provider && (req.physnet.is_some() || req.vlan.is_some()) {
-            return Err(NetError::Invalid("physnet and vlan belong to provider networks (mode bridged)".into()).into());
+            return Err(NetError::Invalid(
+                "physnet and vlan belong to provider networks (mode bridged)".into(),
+            )
+            .into());
         }
         if req.bridge.is_some() {
-            return Err(NetError::Invalid("a cluster network has no bridge of its own".into()).into());
+            return Err(
+                NetError::Invalid("a cluster network has no bridge of its own".into()).into(),
+            );
         }
         if provider && req.subnet.is_some() {
-            return Err(NetError::Invalid("a provider network's addresses come from its LAN".into()).into());
+            return Err(NetError::Invalid(
+                "a provider network's addresses come from its LAN".into(),
+            )
+            .into());
         }
         if req.router.is_some() && req.mode == NetworkMode::Bridged {
-            return Err(NetError::Invalid("only a NAT or isolated network attaches to a VPC router".into()).into());
+            return Err(NetError::Invalid(
+                "only a NAT or isolated network attaches to a VPC router".into(),
+            )
+            .into());
         }
         if let Some(id) = &req.router {
-            if crate::router::get(&self.store.database(), id).map_err(router_err)?.is_none() {
+            if crate::router::get(&self.store.database(), id)
+                .map_err(router_err)?
+                .is_none()
+            {
                 return Err(NetError::Invalid(format!("router {id} not found")).into());
             }
         }
@@ -2307,7 +3137,14 @@ impl VmManager {
         if req.mode == NetworkMode::Nat && self.ovn.load().edge.is_none() {
             return Err(NetError::Invalid("a NAT network that spans every node needs the cluster's shared edge (its external address and gateway nodes), which isn't set: an administrator sets it on the Cluster page under OVN settings (PUT /cluster/settings/ovn). Meanwhile use an isolated network, or a NAT network on this node only (scope node)".into()).into());
         }
-        let mut net = CreateNetworkRequest { subnet: None, bridge: Some("br-int".into()), vlan: None, physnet: None, ..req.clone() }.to_network()?;
+        let mut net = CreateNetworkRequest {
+            subnet: None,
+            bridge: Some("br-int".into()),
+            vlan: None,
+            physnet: None,
+            ..req.clone()
+        }
+        .to_network()?;
         net.vlan = req.vlan;
         net.physnet = req.physnet.clone();
         net.router = req.router.clone();
@@ -2317,9 +3154,18 @@ impl VmManager {
         net.owns_bridge = false;
         let ovn = self.ovn.load_full();
         // Guest MTU: the underlay minus Geneve's overhead (§11.6).
-        net.mtu = if provider { req.mtu } else { Some(req.mtu.unwrap_or(ovn.underlay_mtu.unwrap_or(1500).saturating_sub(58))) };
+        net.mtu = if provider {
+            req.mtu
+        } else {
+            Some(
+                req.mtu
+                    .unwrap_or(ovn.underlay_mtu.unwrap_or(1500).saturating_sub(58)),
+            )
+        };
         if self.networks.get(&net.name)?.is_some() {
-            return Err(NetError::Conflict(format!("network '{}' already exists", net.name)).into());
+            return Err(
+                NetError::Conflict(format!("network '{}' already exists", net.name)).into(),
+            );
         }
         if provider {
             if let Some(v) = req.vlan {
@@ -2331,16 +3177,35 @@ impl VmManager {
             tracing::info!(network = %net.name, physnet = ?net.physnet, vlan = ?net.vlan, "provider network created");
             return Ok(net);
         }
-        let supernet: glidex_ovs::net::Ipv4Net = ovn.nat_supernet.as_deref().unwrap_or("10.89.0.0/16").parse().map_err(|e: glidex_ovs::OvsError| NetError::Invalid(e.to_string()))?;
-        let node_nat: glidex_ovs::net::Ipv4Net = glidex_ovs::nat::DEFAULT_SUPERNET.parse().map_err(|e: glidex_ovs::OvsError| NetError::Invalid(e.to_string()))?;
+        let supernet: glidex_ovs::net::Ipv4Net = ovn
+            .nat_supernet
+            .as_deref()
+            .unwrap_or("10.89.0.0/16")
+            .parse()
+            .map_err(|e: glidex_ovs::OvsError| NetError::Invalid(e.to_string()))?;
+        let node_nat: glidex_ovs::net::Ipv4Net = glidex_ovs::nat::DEFAULT_SUPERNET
+            .parse()
+            .map_err(|e: glidex_ovs::OvsError| NetError::Invalid(e.to_string()))?;
         let name = net.name.clone();
         let requested = req.subnet;
-        self.store.database().write(crate::store::Origin::Network, |tx| crate::ipam::allocate_subnet(tx, &name, requested, supernet, &[node_nat])).map_err(|e| match e {
-            crate::ipam::IpamError::Overlap(..) | crate::ipam::IpamError::Invalid(_) => VmManagerError::Network(NetError::Invalid(e.to_string())),
-            e => VmManagerError::PersistenceError(e.to_string()),
-        })?;
+        self.store
+            .database()
+            .write(crate::store::Origin::Network, |tx| {
+                crate::ipam::allocate_subnet(tx, &name, requested, supernet, &[node_nat])
+            })
+            .map_err(|e| match e {
+                crate::ipam::IpamError::Overlap(..) | crate::ipam::IpamError::Invalid(_) => {
+                    VmManagerError::Network(NetError::Invalid(e.to_string()))
+                }
+                e => VmManagerError::PersistenceError(e.to_string()),
+            })?;
         if let Err(e) = self.networks.insert(&net) {
-            let _ = self.store.database().write(crate::store::Origin::Network, |tx| crate::ipam::free_subnet(tx, &name));
+            let _ = self
+                .store
+                .database()
+                .write(crate::store::Origin::Network, |tx| {
+                    crate::ipam::free_subnet(tx, &name)
+                });
             return Err(e.into());
         }
         tracing::info!(network = %net.name, mode = ?net.mode, "cluster network created");
@@ -2354,27 +3219,61 @@ impl VmManager {
             .networks
             .iter()
             .enumerate()
-            .filter(|(_, a)| nets.iter().any(|n| n.name == a.network && n.scope == crate::network::NetworkScope::Cluster && n.mode != NetworkMode::Bridged))
-            .filter_map(|(i, a)| Some((a.network.clone(), a.mac.clone().or_else(|| glidex_ovs::names::mac_address(&vm.id, i as u8).ok())?, vm.id.clone(), i as u8)))
+            .filter(|(_, a)| {
+                nets.iter().any(|n| {
+                    n.name == a.network
+                        && n.scope == crate::network::NetworkScope::Cluster
+                        && n.mode != NetworkMode::Bridged
+                })
+            })
+            .filter_map(|(i, a)| {
+                Some((
+                    a.network.clone(),
+                    a.mac
+                        .clone()
+                        .or_else(|| glidex_ovs::names::mac_address(&vm.id, i as u8).ok())?,
+                    vm.id.clone(),
+                    i as u8,
+                ))
+            })
             .collect()
     }
 
     /// Create a network: host side in netd first, record only on success.
-    pub async fn create_network(&self, req: CreateNetworkRequest) -> Result<Network, VmManagerError> {
-        if req.scope == Some(crate::network::NetworkScope::Cluster) || (req.scope.is_none() && self.ovn_enabled()) {
+    pub async fn create_network(
+        &self,
+        req: CreateNetworkRequest,
+    ) -> Result<Network, VmManagerError> {
+        if req.scope == Some(crate::network::NetworkScope::Cluster)
+            || (req.scope.is_none() && self.ovn_enabled())
+        {
             return self.create_cluster_network(req).await;
         }
         let net = req.to_network()?;
         if let Some(other) = self.networks.get(&net.name)? {
-            return Err(NetError::Conflict(if other.deletion_requested_at.is_some() {
-                format!("network '{}' is being deleted; try again once it is gone", net.name)
-            } else {
-                format!("network '{}' already exists", net.name)
-            })
-            .into());
+            return Err(
+                NetError::Conflict(if other.deletion_requested_at.is_some() {
+                    format!(
+                        "network '{}' is being deleted; try again once it is gone",
+                        net.name
+                    )
+                } else {
+                    format!("network '{}' already exists", net.name)
+                })
+                .into(),
+            );
         }
-        if let Some(other) = self.networks.list()?.into_iter().find(|n| n.bridge == net.bridge) {
-            return Err(NetError::Conflict(format!("bridge '{}' already belongs to network '{}'", net.bridge, other.name)).into());
+        if let Some(other) = self
+            .networks
+            .list()?
+            .into_iter()
+            .find(|n| n.bridge == net.bridge)
+        {
+            return Err(NetError::Conflict(format!(
+                "bridge '{}' already belongs to network '{}'",
+                net.bridge, other.name
+            ))
+            .into());
         }
         match net.mode {
             NetworkMode::Nat | NetworkMode::Isolated => {
@@ -2397,7 +3296,9 @@ impl VmManager {
                         dns: req.dns,
                     }));
                     if let Err(e) = res {
-                        let _ = self.netd.call::<serde_json::Value>(Op::DeleteBridge { name: net.bridge.clone() });
+                        let _ = self.netd.call::<serde_json::Value>(Op::DeleteBridge {
+                            name: net.bridge.clone(),
+                        });
                         return Err(e.into());
                     }
                 }
@@ -2422,7 +3323,10 @@ impl VmManager {
     /// VMs whose spec or live NICs use network `name`.
     pub(crate) fn network_users(vms: &HashMap<String, Vm>, name: &str) -> Vec<String> {
         vms.values()
-            .filter(|vm| vm.config().networks.iter().any(|a| a.network == name) || vm.status.nics.iter().any(|n| n.network == name))
+            .filter(|vm| {
+                vm.config().networks.iter().any(|a| a.network == name)
+                    || vm.status.nics.iter().any(|n| n.network == name)
+            })
             .map(|vm| vm.name.clone())
             .collect()
     }
@@ -2438,7 +3342,12 @@ impl VmManager {
             let mut net = self.get_network(name)?;
             let users = Self::network_users(&vms, name);
             if !users.is_empty() {
-                return Err(NetError::Conflict(format!("network '{}' is used by VM(s): {}", name, users.join(", "))).into());
+                return Err(NetError::Conflict(format!(
+                    "network '{}' is used by VM(s): {}",
+                    name,
+                    users.join(", ")
+                ))
+                .into());
             }
             if net.deletion_requested_at.is_none() {
                 net.deletion_requested_at = Some(tenancy::now());
@@ -2462,7 +3371,10 @@ impl VmManager {
             }
         }
         if req.router.is_some() {
-            return Err(NetError::Invalid("a VPC router belongs to a project: attach project networks to it".into()).into());
+            return Err(NetError::Invalid(
+                "a VPC router belongs to a project: attach project networks to it".into(),
+            )
+            .into());
         }
         let mut net = self.create_network(req).await?;
         net.grants = grants;
@@ -2480,25 +3392,50 @@ impl VmManager {
         mut req: CreateNetworkRequest,
         quota: QuotaMode,
     ) -> Result<(Network, Vec<QuotaOverrun>), VmManagerError> {
-        let p = self.projects.get(project)?.ok_or_else(|| TenancyError::NotFound(project.to_string()))?;
+        let p = self
+            .projects
+            .get(project)?
+            .ok_or_else(|| TenancyError::NotFound(project.to_string()))?;
         if req.mode == NetworkMode::Bridged {
-            return Err(NetError::Invalid("project networks are NAT or isolated; bridged networks are host networks".into()).into());
+            return Err(NetError::Invalid(
+                "project networks are NAT or isolated; bridged networks are host networks".into(),
+            )
+            .into());
         }
         if req.bridge.is_some() || req.vlan.is_some() {
-            return Err(NetError::Invalid("project networks choose their own bridge; bridge and vlan can't be set".into()).into());
+            return Err(NetError::Invalid(
+                "project networks choose their own bridge; bridge and vlan can't be set".into(),
+            )
+            .into());
         }
         if let Some(name) = req.router.clone() {
             // By name in the project; the record holds the router's id.
-            let r = crate::router::find(&self.store.database(), project, &name).map_err(router_err)?.ok_or_else(|| NetError::Invalid(format!("router '{name}' not found in this project")))?;
+            let r = crate::router::find(&self.store.database(), project, &name)
+                .map_err(router_err)?
+                .ok_or_else(|| {
+                    NetError::Invalid(format!("router '{name}' not found in this project"))
+                })?;
             req.router = Some(r.id);
         }
         let vms = self.vms.write().await;
         let mut bypassed = Vec::new();
         let usage = self.usage_locked(project, &vms)?;
-        self.apply_quotas(&p, &usage, &Delta { networks: 1, ..Default::default() }, quota, &mut bypassed, &vms)?;
+        self.apply_quotas(
+            &p,
+            &usage,
+            &Delta {
+                networks: 1,
+                ..Default::default()
+            },
+            quota,
+            &mut bypassed,
+            &vms,
+        )?;
         let id = uuid::Uuid::new_v4().simple().to_string();
         // Cluster networks have no bridge of their own: they sit on br-int.
-        if !(req.scope == Some(crate::network::NetworkScope::Cluster) || (req.scope.is_none() && self.ovn_enabled())) {
+        if !(req.scope == Some(crate::network::NetworkScope::Cluster)
+            || (req.scope.is_none() && self.ovn_enabled()))
+        {
             req.bridge = Some(format!("gxp-{}", &id[..8]));
         }
         let mut net = self.create_network(req).await?;
@@ -2510,37 +3447,83 @@ impl VmManager {
 
     // ---- VPC routers (spec/clustering.md §11.2a) -------------------------
 
-    pub fn list_routers(&self, project: &str) -> Result<Vec<crate::router::Router>, VmManagerError> {
-        Ok(crate::router::list(&self.store.database()).map_err(router_err)?.into_iter().filter(|r| r.project == project).collect())
+    pub fn list_routers(
+        &self,
+        project: &str,
+    ) -> Result<Vec<crate::router::Router>, VmManagerError> {
+        Ok(crate::router::list(&self.store.database())
+            .map_err(router_err)?
+            .into_iter()
+            .filter(|r| r.project == project)
+            .collect())
     }
 
-    pub fn get_router(&self, project: &str, name: &str) -> Result<crate::router::Router, VmManagerError> {
-        crate::router::find(&self.store.database(), project, name).map_err(router_err)?.ok_or_else(|| NetError::NotFound(format!("router {name}")).into())
+    pub fn get_router(
+        &self,
+        project: &str,
+        name: &str,
+    ) -> Result<crate::router::Router, VmManagerError> {
+        crate::router::find(&self.store.database(), project, name)
+            .map_err(router_err)?
+            .ok_or_else(|| NetError::NotFound(format!("router {name}")).into())
     }
 
     /// Create a router, counting it (and its external address) against the
     /// project's quotas in the same admission write as the address.
-    pub async fn create_router(&self, project: &str, spec: crate::router::RouterSpec, quota: QuotaMode) -> Result<(crate::router::Router, Vec<QuotaOverrun>), VmManagerError> {
+    pub async fn create_router(
+        &self,
+        project: &str,
+        spec: crate::router::RouterSpec,
+        quota: QuotaMode,
+    ) -> Result<(crate::router::Router, Vec<QuotaOverrun>), VmManagerError> {
         if !self.ovn_enabled() {
-            return Err(NetError::Invalid("VPC routers need OVN: enable cluster.ovn on a cluster".into()).into());
+            return Err(NetError::Invalid(
+                "VPC routers need OVN: enable cluster.ovn on a cluster".into(),
+            )
+            .into());
         }
-        let p = self.projects.get(project)?.ok_or_else(|| TenancyError::NotFound(project.to_string()))?;
+        let p = self
+            .projects
+            .get(project)?
+            .ok_or_else(|| TenancyError::NotFound(project.to_string()))?;
         let ovn = self.ovn.load_full();
         let edge = ovn.edge.as_ref();
-        let pool: Option<glidex_ovs::net::Ipv4Net> = edge.and_then(|e| e.external_pool.as_deref()).and_then(|p| p.parse().ok());
+        let pool: Option<glidex_ovs::net::Ipv4Net> = edge
+            .and_then(|e| e.external_pool.as_deref())
+            .and_then(|p| p.parse().ok());
         let mut exclude = Vec::new();
         if let Some(e) = edge {
-            exclude.extend([e.external_ip, e.gateway].into_iter().filter_map(|a| match a {
-                std::net::IpAddr::V4(a) => Some(a),
-                _ => None,
-            }));
+            exclude.extend(
+                [e.external_ip, e.gateway]
+                    .into_iter()
+                    .filter_map(|a| match a {
+                        std::net::IpAddr::V4(a) => Some(a),
+                        _ => None,
+                    }),
+            );
         }
         let vms = self.vms.write().await;
         let mut bypassed = Vec::new();
         let usage = self.usage_locked(project, &vms)?;
-        self.apply_quotas(&p, &usage, &Delta { routers: 1, external_ips: spec.external as u64, ..Default::default() }, quota, &mut bypassed, &vms)?;
-        let site = crate::router::Site { pool, exclude: &exclude, zones: ovn.snat_ct_zones.unwrap_or((60000, 64999)) };
-        let r = crate::router::create(&self.store.database(), project, spec, &site).map_err(router_err)?;
+        self.apply_quotas(
+            &p,
+            &usage,
+            &Delta {
+                routers: 1,
+                external_ips: spec.external as u64,
+                ..Default::default()
+            },
+            quota,
+            &mut bypassed,
+            &vms,
+        )?;
+        let site = crate::router::Site {
+            pool,
+            exclude: &exclude,
+            zones: ovn.snat_ct_zones.unwrap_or((60000, 64999)),
+        };
+        let r = crate::router::create(&self.store.database(), project, spec, &site)
+            .map_err(router_err)?;
         drop(vms);
         tracing::info!(router = %r.id, project, external_ip = ?r.status.external_ip, "VPC router created");
         Ok((r, bypassed))
@@ -2552,8 +3535,17 @@ impl VmManager {
         let r = self.get_router(project, name)?;
         // The VM lock keeps a network from attaching while it goes.
         let _vms = self.vms.write().await;
-        if let Some(n) = self.networks.list()?.iter().find(|n| n.router.as_deref() == Some(r.id.as_str())) {
-            return Err(NetError::Conflict(format!("router '{name}' still has network '{}' attached", n.name)).into());
+        if let Some(n) = self
+            .networks
+            .list()?
+            .iter()
+            .find(|n| n.router.as_deref() == Some(r.id.as_str()))
+        {
+            return Err(NetError::Conflict(format!(
+                "router '{name}' still has network '{}' attached",
+                n.name
+            ))
+            .into());
         }
         crate::router::delete(&self.store.database(), &r.id).map_err(router_err)?;
         Ok(())
@@ -2564,10 +3556,19 @@ impl VmManager {
     /// back to no router). The network keeps its gateway
     /// address and MAC, so its VMs keep working; the network controller
     /// moves its router port and SNAT on its next pass.
-    pub async fn set_network_router(&self, project: &str, network: &str, router: Option<&str>) -> Result<Network, VmManagerError> {
+    pub async fn set_network_router(
+        &self,
+        project: &str,
+        network: &str,
+        router: Option<&str>,
+    ) -> Result<Network, VmManagerError> {
         // The VM lock keeps a router from going while a network attaches.
         let _vms = self.vms.write().await;
-        let mut net = self.networks.get(network)?.filter(|n| n.project.as_deref() == Some(project)).ok_or_else(|| NetError::NotFound(network.to_string()))?;
+        let mut net = self
+            .networks
+            .get(network)?
+            .filter(|n| n.project.as_deref() == Some(project))
+            .ok_or_else(|| NetError::NotFound(network.to_string()))?;
         // An isolated network on a router is routed like a NAT one there,
         // and isolated again once it leaves.
         if net.scope != network::NetworkScope::Cluster || net.mode == NetworkMode::Bridged {
@@ -2577,7 +3578,14 @@ impl VmManager {
             return Err(NetError::Conflict(format!("network '{network}' is being deleted")).into());
         }
         let id = match router {
-            Some(name) => Some(crate::router::find(&self.store.database(), project, name).map_err(router_err)?.ok_or_else(|| NetError::Invalid(format!("router '{name}' not found in this project")))?.id),
+            Some(name) => Some(
+                crate::router::find(&self.store.database(), project, name)
+                    .map_err(router_err)?
+                    .ok_or_else(|| {
+                        NetError::Invalid(format!("router '{name}' not found in this project"))
+                    })?
+                    .id,
+            ),
             None => None,
         };
         if net.router != id {
@@ -2589,10 +3597,17 @@ impl VmManager {
     }
 
     /// Set which projects may use a host network.
-    pub fn grant_network(&self, name: &str, grants: Vec<String>, all_projects: bool) -> Result<Network, VmManagerError> {
+    pub fn grant_network(
+        &self,
+        name: &str,
+        grants: Vec<String>,
+        all_projects: bool,
+    ) -> Result<Network, VmManagerError> {
         let mut net = self.get_network(name)?;
         if net.project.is_some() {
-            return Err(NetError::Invalid("project networks are shared, not granted".into()).into());
+            return Err(
+                NetError::Invalid("project networks are shared, not granted".into()).into(),
+            );
         }
         for g in &grants {
             if self.projects.get(g)?.is_none() {
@@ -2607,7 +3622,12 @@ impl VmManager {
 
     /// Offer a project network to `target`. Silently succeeds when the
     /// target doesn't exist, so offers can't probe for projects.
-    pub fn offer_network_share(&self, name: &str, target: &str, by: &str) -> Result<(), VmManagerError> {
+    pub fn offer_network_share(
+        &self,
+        name: &str,
+        target: &str,
+        by: &str,
+    ) -> Result<(), VmManagerError> {
         let mut net = self.get_network(name)?;
         if net.project.is_none() {
             return Err(NetError::Invalid("only project networks can be shared".into()).into());
@@ -2616,7 +3636,8 @@ impl VmManager {
             return Ok(());
         }
         let now = tenancy::now();
-        net.share_offers.retain(|o| o.project != target && o.expires_at > now);
+        net.share_offers
+            .retain(|o| o.project != target && o.expires_at > now);
         net.share_offers.push(network::ShareOffer {
             project: target.to_string(),
             offered_by: by.to_string(),
@@ -2634,16 +3655,33 @@ impl VmManager {
             .networks
             .list()?
             .into_iter()
-            .filter(|n| n.shares.iter().any(|s| s == project) || n.share_offers.iter().any(|o| o.project == project && o.expires_at > now))
+            .filter(|n| {
+                n.shares.iter().any(|s| s == project)
+                    || n.share_offers
+                        .iter()
+                        .any(|o| o.project == project && o.expires_at > now)
+            })
             .collect())
     }
 
     /// Accept an open offer of `name` to `project`.
-    pub fn accept_network_share(&self, project: &str, name: &str) -> Result<Network, VmManagerError> {
+    pub fn accept_network_share(
+        &self,
+        project: &str,
+        name: &str,
+    ) -> Result<Network, VmManagerError> {
         let mut net = self.get_network(name)?;
         let now = tenancy::now();
-        let Some(pos) = net.share_offers.iter().position(|o| o.project == project && o.expires_at > now) else {
-            return Err(NetError::NotFound(format!("no open share offer of network '{}' to this project", name)).into());
+        let Some(pos) = net
+            .share_offers
+            .iter()
+            .position(|o| o.project == project && o.expires_at > now)
+        else {
+            return Err(NetError::NotFound(format!(
+                "no open share offer of network '{}' to this project",
+                name
+            ))
+            .into());
         };
         net.share_offers.remove(pos);
         if !net.shares.iter().any(|s| s == project) {
@@ -2660,17 +3698,28 @@ impl VmManager {
         let mut net = self.get_network(name)?;
         let users: Vec<String> = vms
             .values()
-            .filter(|vm| vm.project == project && vm.config().networks.iter().any(|a| a.network == name))
+            .filter(|vm| {
+                vm.project == project && vm.config().networks.iter().any(|a| a.network == name)
+            })
             .map(|vm| vm.name.clone())
             .collect();
         if !users.is_empty() {
-            return Err(NetError::Conflict(format!("network '{}' is used by VM(s) of that project: {}", name, users.join(", "))).into());
+            return Err(NetError::Conflict(format!(
+                "network '{}' is used by VM(s) of that project: {}",
+                name,
+                users.join(", ")
+            ))
+            .into());
         }
         let before = (net.shares.len(), net.share_offers.len());
         net.shares.retain(|s| s != project);
         net.share_offers.retain(|o| o.project != project);
         if before == (net.shares.len(), net.share_offers.len()) {
-            return Err(NetError::NotFound(format!("network '{}' isn't shared with that project", name)).into());
+            return Err(NetError::NotFound(format!(
+                "network '{}' isn't shared with that project",
+                name
+            ))
+            .into());
         }
         self.networks.put(&net)?;
         Ok(())
@@ -2688,7 +3737,10 @@ impl VmManager {
     // ---- credentials -----------------------------------------------------
 
     /// Credentials of `project`, or of every project.
-    pub fn list_credentials_in(&self, project: Option<&str>) -> Result<Vec<Credential>, VmManagerError> {
+    pub fn list_credentials_in(
+        &self,
+        project: Option<&str>,
+    ) -> Result<Vec<Credential>, VmManagerError> {
         Ok(self.credentials.list(project)?)
     }
 
@@ -2696,7 +3748,11 @@ impl VmManager {
         self.list_credentials_in(Some(&self.default_project_id()))
     }
 
-    pub fn get_credential_in(&self, project: &str, username: &str) -> Result<Credential, VmManagerError> {
+    pub fn get_credential_in(
+        &self,
+        project: &str,
+        username: &str,
+    ) -> Result<Credential, VmManagerError> {
         Ok(self.credentials.get(project, username)?)
     }
 
@@ -2704,7 +3760,11 @@ impl VmManager {
         self.get_credential_in(&self.default_project_id(), username)
     }
 
-    pub fn create_credential_in(&self, project: &str, req: CreateCredentialRequest) -> Result<Credential, VmManagerError> {
+    pub fn create_credential_in(
+        &self,
+        project: &str,
+        req: CreateCredentialRequest,
+    ) -> Result<Credential, VmManagerError> {
         if self.projects.get(project)?.is_none() {
             return Err(TenancyError::NotFound(project.to_string()).into());
         }
@@ -2713,32 +3773,53 @@ impl VmManager {
         Ok(cred)
     }
 
-    pub fn create_credential(&self, req: CreateCredentialRequest) -> Result<Credential, VmManagerError> {
+    pub fn create_credential(
+        &self,
+        req: CreateCredentialRequest,
+    ) -> Result<Credential, VmManagerError> {
         self.create_credential_in(&self.default_project_id(), req)
     }
 
     /// Changes reach a VM only on its first boot: cloud-init provisions
     /// users once per instance-id, and a VM keeps its id for life.
-    pub fn update_credential_in(&self, project: &str, username: &str, req: UpdateCredentialRequest) -> Result<Credential, VmManagerError> {
+    pub fn update_credential_in(
+        &self,
+        project: &str,
+        username: &str,
+        req: UpdateCredentialRequest,
+    ) -> Result<Credential, VmManagerError> {
         let cred = self.credentials.update(project, username, req)?;
         tracing::info!(username = %cred.username, project, "Credential updated");
         Ok(cred)
     }
 
-    pub fn update_credential(&self, username: &str, req: UpdateCredentialRequest) -> Result<Credential, VmManagerError> {
+    pub fn update_credential(
+        &self,
+        username: &str,
+        req: UpdateCredentialRequest,
+    ) -> Result<Credential, VmManagerError> {
         self.update_credential_in(&self.default_project_id(), username, req)
     }
 
     /// Refuses to delete a credential still referenced by a VM.
-    pub async fn delete_credential_in(&self, project: &str, username: &str) -> Result<(), VmManagerError> {
+    pub async fn delete_credential_in(
+        &self,
+        project: &str,
+        username: &str,
+    ) -> Result<(), VmManagerError> {
         let vms = self.vms.read().await;
         let users: Vec<String> = vms
             .values()
-            .filter(|vm| vm.project == project && vm.config().credential.as_deref() == Some(username))
+            .filter(|vm| {
+                vm.project == project && vm.config().credential.as_deref() == Some(username)
+            })
             .map(|vm| vm.name.clone())
             .collect();
         if !users.is_empty() {
-            return Err(VmManagerError::CredentialInUse { username: username.to_string(), vms: users });
+            return Err(VmManagerError::CredentialInUse {
+                username: username.to_string(),
+                vms: users,
+            });
         }
         self.credentials.delete(project, username)?;
         tracing::info!(username = %username, project, "Credential deleted");
@@ -2746,7 +3827,8 @@ impl VmManager {
     }
 
     pub async fn delete_credential(&self, username: &str) -> Result<(), VmManagerError> {
-        self.delete_credential_in(&self.default_project_id(), username).await
+        self.delete_credential_in(&self.default_project_id(), username)
+            .await
     }
 
     // ---- projects and quotas (spec/security.md §6) ---------------------
@@ -2781,14 +3863,22 @@ impl VmManager {
             }
         }
         self.projects.set_meta(tenancy::META_TENANCY_V1, b"1")?;
-        tracing::info!(credentials = moved, networks = nets, "assigned existing resources to the default project");
+        tracing::info!(
+            credentials = moved,
+            networks = nets,
+            "assigned existing resources to the default project"
+        );
         Ok(())
     }
 
     /// A project's current use. `running_vms` counts VMs whose desired
     /// state is not `stopped` (§12.2), so crash loops and host reboots can
     /// never exceed it.
-    fn usage_locked(&self, project: &str, vms: &HashMap<String, Vm>) -> Result<Usage, VmManagerError> {
+    fn usage_locked(
+        &self,
+        project: &str,
+        vms: &HashMap<String, Vm>,
+    ) -> Result<Usage, VmManagerError> {
         let mut u = Usage::default();
         for vm in vms.values().filter(|vm| vm.project == project) {
             u.vms += 1;
@@ -2798,9 +3888,24 @@ impl VmManager {
                 u.running_vms += 1;
             }
         }
-        u.disk_gib = self.images.list_disks().iter().filter(|d| d.project == project).map(|d| gib_ceil(d.size_bytes)).sum();
-        u.networks = self.networks.list()?.iter().filter(|n| n.project.as_deref() == Some(project)).count() as u64;
-        for r in crate::router::list(&self.store.database()).map_err(router_err)?.iter().filter(|r| r.project == project) {
+        u.disk_gib = self
+            .images
+            .list_disks()
+            .iter()
+            .filter(|d| d.project == project)
+            .map(|d| gib_ceil(d.size_bytes))
+            .sum();
+        u.networks = self
+            .networks
+            .list()?
+            .iter()
+            .filter(|n| n.project.as_deref() == Some(project))
+            .count() as u64;
+        for r in crate::router::list(&self.store.database())
+            .map_err(router_err)?
+            .iter()
+            .filter(|r| r.project == project)
+        {
             u.routers += 1;
             u.external_ips += r.status.external_ip.is_some() as u64;
         }
@@ -2847,11 +3952,20 @@ impl VmManager {
         vms: &HashMap<String, Vm>,
     ) -> Result<(), VmManagerError> {
         Self::apply_quota(&p.quotas, usage, delta, mode, bypassed)?;
-        let Some(admission) = self.tenants.admission(&p.tenant_id).map_err(|e| VmManagerError::Tenancy(TenancyError::Storage(e.to_string())))? else {
+        let Some(admission) = self
+            .tenants
+            .admission(&p.tenant_id)
+            .map_err(|e| VmManagerError::Tenancy(TenancyError::Storage(e.to_string())))?
+        else {
             return Ok(());
         };
         let mut total = Usage::default();
-        for other in self.projects.list()?.iter().filter(|o| o.tenant_id == p.tenant_id) {
+        for other in self
+            .projects
+            .list()?
+            .iter()
+            .filter(|o| o.tenant_id == p.tenant_id)
+        {
             let u = self.usage_locked(&other.id, vms)?;
             total.vms += u.vms;
             total.vcpus += u.vcpus;
@@ -2881,16 +3995,30 @@ impl VmManager {
         if let Some(vm) = vms.values().find(|vm| vm.project == project) {
             return Ok(Some(format!("VM {}", vm.name)));
         }
-        if let Some(d) = self.images.list_disks().iter().find(|d| d.project == project) {
+        if let Some(d) = self
+            .images
+            .list_disks()
+            .iter()
+            .find(|d| d.project == project)
+        {
             return Ok(Some(format!("disk {}", d.name)));
         }
         if let Some(c) = self.credentials.list(Some(project))?.first() {
             return Ok(Some(format!("credential {}", c.username)));
         }
-        if let Some(n) = self.networks.list()?.iter().find(|n| n.project.as_deref() == Some(project)) {
+        if let Some(n) = self
+            .networks
+            .list()?
+            .iter()
+            .find(|n| n.project.as_deref() == Some(project))
+        {
             return Ok(Some(format!("network {}", n.name)));
         }
-        if let Some(r) = crate::router::list(&self.store.database()).map_err(router_err)?.iter().find(|r| r.project == project) {
+        if let Some(r) = crate::router::list(&self.store.database())
+            .map_err(router_err)?
+            .iter()
+            .find(|r| r.project == project)
+        {
             return Ok(Some(format!("router {}", r.spec.name)));
         }
         Ok(None)
@@ -2920,7 +4048,9 @@ pub(crate) fn power_name(p: PowerState) -> &'static str {
 }
 
 /// Run blocking image work off the async runtime.
-async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T, ImageError> + Send + 'static) -> Result<T, ImageError> {
+async fn blocking<T: Send + 'static>(
+    f: impl FnOnce() -> Result<T, ImageError> + Send + 'static,
+) -> Result<T, ImageError> {
     tokio::task::spawn_blocking(f)
         .await
         .map_err(|e| ImageError::Io(format!("task failed: {}", e)))?
@@ -2946,20 +4076,29 @@ impl crate::cluster::runtime::NodeHandlers for HandlersOf {
         let img = m.images.get_image(id).ok()?;
         let p = match (part, img.kind) {
             ("main", _) => m.images.image_file(&img),
-            ("vars", crate::images::ImageKind::Firmware) => m.images.firmware_vars_template(&img.id),
+            ("vars", crate::images::ImageKind::Firmware) => {
+                m.images.firmware_vars_template(&img.id)
+            }
             _ => return None,
         };
         p.exists().then_some(p)
     }
 
-    fn ovn_status<'a>(&'a self) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send + 'a>> {
+    fn ovn_status<'a>(
+        &'a self,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send + 'a>,
+    > {
         Box::pin(async move {
             let m = self.0.upgrade().ok_or("shutting down")?;
             m.local_ovn_status().await
         })
     }
 
-    fn left_ovn<'a>(&'a self, node: &'a crate::node::Node) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+    fn left_ovn<'a>(
+        &'a self,
+        node: &'a crate::node::Node,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
         Box::pin(async move {
             if let Some(m) = self.0.upgrade() {
                 if let Err(e) = m.leave_ovn_membership(node, true).await {

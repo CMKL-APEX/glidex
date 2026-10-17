@@ -16,14 +16,26 @@ fn cluster_err(e: crate::cluster::ClusterError) -> ApiErr {
 fn parse_addr(what: &str, v: &Option<String>) -> Result<Option<std::net::SocketAddr>, ApiErr> {
     match v {
         None => Ok(None),
-        Some(s) => s.parse().map(Some).map_err(|_| err(StatusCode::BAD_REQUEST, "invalid", format!("{what} must be <ip>:<port>"))),
+        Some(s) => s.parse().map(Some).map_err(|_| {
+            err(
+                StatusCode::BAD_REQUEST,
+                "invalid",
+                format!("{what} must be <ip>:<port>"),
+            )
+        }),
     }
 }
 
 fn parse_ip(v: &Option<String>) -> Result<Option<std::net::IpAddr>, ApiErr> {
     match v {
         None => Ok(None),
-        Some(s) => s.parse().map(Some).map_err(|_| err(StatusCode::BAD_REQUEST, "invalid", "tunnel_ip must be an IP address")),
+        Some(s) => s.parse().map(Some).map_err(|_| {
+            err(
+                StatusCode::BAD_REQUEST,
+                "invalid",
+                "tunnel_ip must be an IP address",
+            )
+        }),
     }
 }
 
@@ -50,11 +62,19 @@ pub async fn init(c: Caller, Json(b): Json<InitBody>) -> Result<impl IntoRespons
             "this turns the host into a cluster of one and re-keys every record; it keeps a backup but can't be undone: confirm with --force",
         ));
     }
-    let opts = manage::InitOptions { advertise: parse_addr("advertise", &b.advertise)?, tunnel_ip: parse_ip(&b.tunnel_ip)?, listen: None };
+    let opts = manage::InitOptions {
+        advertise: parse_addr("advertise", &b.advertise)?,
+        tunnel_ip: parse_ip(&b.tunnel_ip)?,
+        listen: None,
+    };
     let cfg = c.app.auth.config.clone();
-    let out = manage::init(&c.app.manager.clone(), &cfg, opts).await.map_err(cluster_err)?;
+    let out = manage::init(&c.app.manager.clone(), &cfg, opts)
+        .await
+        .map_err(cluster_err)?;
     // Role links now name the new cluster.
-    c.auth().reload_policies().map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()))?;
+    c.auth()
+        .reload_policies()
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()))?;
     c.set_target("cluster".to_string());
     Ok((StatusCode::CREATED, Json(out)))
 }
@@ -77,7 +97,13 @@ pub async fn join(c: Caller, Json(b): Json<JoinBody>) -> Result<impl IntoRespons
     let mut es = EntitySet::new();
     es.host(&crate::authz::node_id());
     c.require(Ent::Host, es)?;
-    let server = b.server.parse().map_err(|_| err(StatusCode::BAD_REQUEST, "invalid", "server must be <ip>:<port> of a cluster node (port 8842)"))?;
+    let server = b.server.parse().map_err(|_| {
+        err(
+            StatusCode::BAD_REQUEST,
+            "invalid",
+            "server must be <ip>:<port> of a cluster node (port 8842)",
+        )
+    })?;
     let opts = manage::JoinOptions {
         server,
         token: b.token,
@@ -88,8 +114,12 @@ pub async fn join(c: Caller, Json(b): Json<JoinBody>) -> Result<impl IntoRespons
         listen: None,
     };
     let cfg = c.app.auth.config.clone();
-    let mut out = manage::join(&c.app.manager.clone(), &cfg, opts).await.map_err(cluster_err)?;
-    c.auth().reload_policies().map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()))?;
+    let mut out = manage::join(&c.app.manager.clone(), &cfg, opts)
+        .await
+        .map_err(cluster_err)?;
+    c.auth()
+        .reload_policies()
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()))?;
     c.set_target("cluster".to_string());
     if let Some(note) = restart_as_agent(&c.app.manager) {
         out["restart"] = json!(note);
@@ -130,11 +160,20 @@ pub struct ImportJoinBody {
 
 /// `gxctl cluster join --import`: join with this host's resources (§5.9). The
 /// plan waits for approval on a server; this host works as it is until then.
-pub async fn import_join(c: Caller, Json(b): Json<ImportJoinBody>) -> Result<impl IntoResponse, ApiErr> {
+pub async fn import_join(
+    c: Caller,
+    Json(b): Json<ImportJoinBody>,
+) -> Result<impl IntoResponse, ApiErr> {
     let mut es = EntitySet::new();
     es.host(&crate::authz::node_id());
     c.require(Ent::Host, es)?;
-    let server = b.server.parse().map_err(|_| err(StatusCode::BAD_REQUEST, "invalid", "server must be <ip>:<port> of a cluster node (port 8842)"))?;
+    let server = b.server.parse().map_err(|_| {
+        err(
+            StatusCode::BAD_REQUEST,
+            "invalid",
+            "server must be <ip>:<port> of a cluster node (port 8842)",
+        )
+    })?;
     let opts = manage::ImportOptions {
         server,
         token: b.token,
@@ -159,7 +198,12 @@ pub async fn import_join(c: Caller, Json(b): Json<ImportJoinBody>) -> Result<imp
             Err(e) => tracing::error!("import failed: {}", e),
         }
     });
-    Ok((StatusCode::ACCEPTED, Json(json!({ "waiting": true, "message": "the import plan waits for approval on a server: `gxctl node import list`; this host keeps working as it is until then" }))))
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(
+            json!({ "waiting": true, "message": "the import plan waits for approval on a server: `gxctl node import list`; this host keeps working as it is until then" }),
+        ),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -179,11 +223,28 @@ pub async fn rejoin(c: Caller, Json(b): Json<RejoinBody>) -> Result<impl IntoRes
     let mut es = EntitySet::new();
     es.host(&crate::authz::node_id());
     c.require(Ent::Host, es)?;
-    let server = b.server.parse().map_err(|_| err(StatusCode::BAD_REQUEST, "invalid", "server must be <ip>:<port> of a cluster node (port 8842)"))?;
-    let opts = manage::RejoinOptions { server, token: b.token, node_id: b.node_id, advertise: parse_addr("advertise", &b.advertise)?, tunnel_ip: parse_ip(&b.tunnel_ip)?, listen: None };
+    let server = b.server.parse().map_err(|_| {
+        err(
+            StatusCode::BAD_REQUEST,
+            "invalid",
+            "server must be <ip>:<port> of a cluster node (port 8842)",
+        )
+    })?;
+    let opts = manage::RejoinOptions {
+        server,
+        token: b.token,
+        node_id: b.node_id,
+        advertise: parse_addr("advertise", &b.advertise)?,
+        tunnel_ip: parse_ip(&b.tunnel_ip)?,
+        listen: None,
+    };
     let cfg = c.app.auth.config.clone();
-    let mut out = manage::rejoin(&c.app.manager.clone(), &cfg, opts).await.map_err(cluster_err)?;
-    c.auth().reload_policies().map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()))?;
+    let mut out = manage::rejoin(&c.app.manager.clone(), &cfg, opts)
+        .await
+        .map_err(cluster_err)?;
+    c.auth()
+        .reload_policies()
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()))?;
     c.set_target("cluster".to_string());
     c.audit_always();
     if let Some(note) = restart_as_agent(&c.app.manager) {
@@ -193,7 +254,10 @@ pub async fn rejoin(c: Caller, Json(b): Json<RejoinBody>) -> Result<impl IntoRes
 }
 
 /// `gxctl cluster dissolve`: the last node leaves with everything (§5.10).
-pub async fn dissolve(c: Caller, b: Option<Json<serde_json::Value>>) -> Result<impl IntoResponse, ApiErr> {
+pub async fn dissolve(
+    c: Caller,
+    b: Option<Json<serde_json::Value>>,
+) -> Result<impl IntoResponse, ApiErr> {
     c.require(Ent::Cluster, EntitySet::new())?;
     if !b.is_some_and(|b| b.0["force"] == true) {
         return Err(err(StatusCode::CONFLICT, "confirmation_required", "this ends the cluster and turns this host into a standalone host with everything it held; it keeps a final snapshot: confirm with --force"));
@@ -201,7 +265,10 @@ pub async fn dissolve(c: Caller, b: Option<Json<serde_json::Value>>) -> Result<i
     let cl = require_cluster(&c)?;
     c.set_target("cluster".to_string());
     c.audit_always();
-    cl.dissolve().await.map(Json).map_err(|e| err(StatusCode::CONFLICT, "cluster_error", e.to_string()))
+    cl.dissolve()
+        .await
+        .map(Json)
+        .map_err(|e| err(StatusCode::CONFLICT, "cluster_error", e.to_string()))
 }
 
 /// `gxctl cluster leave`: this host's node was removed; go back to standalone.
@@ -211,12 +278,20 @@ pub async fn leave(c: Caller) -> Result<impl IntoResponse, ApiErr> {
     c.require(Ent::Host, es)?;
     c.set_target("cluster".to_string());
     c.audit_always();
-    let out = manage::leave(&c.app.manager.clone()).await.map_err(cluster_err)?;
+    let out = manage::leave(&c.app.manager.clone())
+        .await
+        .map_err(cluster_err)?;
     Ok(Json(out))
 }
 
 fn require_cluster(c: &Caller) -> Result<std::sync::Arc<crate::cluster::Cluster>, ApiErr> {
-    c.manager().cluster().ok_or_else(|| err(StatusCode::CONFLICT, "not_clustered", "this host is not part of a cluster: run `gxctl cluster init` or join one"))
+    c.manager().cluster().ok_or_else(|| {
+        err(
+            StatusCode::CONFLICT,
+            "not_clustered",
+            "this host is not part of a cluster: run `gxctl cluster init` or join one",
+        )
+    })
 }
 
 #[derive(Deserialize, Default)]
@@ -225,7 +300,11 @@ pub struct StatusQuery {
     ports: bool,
 }
 
-pub async fn status(c: Caller, via: Option<axum::Extension<super::RelayedBy>>, axum::extract::Query(q): axum::extract::Query<StatusQuery>) -> Result<impl IntoResponse, ApiErr> {
+pub async fn status(
+    c: Caller,
+    via: Option<axum::Extension<super::RelayedBy>>,
+    axum::extract::Query(q): axum::extract::Query<StatusQuery>,
+) -> Result<impl IntoResponse, ApiErr> {
     c.require(Ent::Cluster, EntitySet::new())?;
     match c.manager().cluster() {
         Some(cl) => {
@@ -237,7 +316,9 @@ pub async fn status(c: Caller, via: Option<axum::Extension<super::RelayedBy>>, a
             }
             Ok(Json(v))
         }
-        None => Ok(Json(json!({ "clustered": false, "nodes": c.manager().nodes().list().unwrap_or_default().iter().map(|n| json!({ "id": n.meta.id, "name": n.spec.name, "role": n.spec.role, "phase": n.status.phase })).collect::<Vec<_>>() }))),
+        None => Ok(Json(
+            json!({ "clustered": false, "nodes": c.manager().nodes().list().unwrap_or_default().iter().map(|n| json!({ "id": n.meta.id, "name": n.spec.name, "role": n.spec.role, "phase": n.status.phase })).collect::<Vec<_>>() }),
+        )),
     }
 }
 
@@ -251,13 +332,18 @@ pub struct TokenBody {
     allow_import: bool,
 }
 
-pub async fn create_token(c: Caller, Json(b): Json<TokenBody>) -> Result<impl IntoResponse, ApiErr> {
+pub async fn create_token(
+    c: Caller,
+    Json(b): Json<TokenBody>,
+) -> Result<impl IntoResponse, ApiErr> {
     c.require(Ent::Cluster, EntitySet::new())?;
     let cl = require_cluster(&c)?;
     let ttl = b.ttl_secs.unwrap_or(3600).clamp(60, 7 * 86400);
     let role = b.role.unwrap_or(NodeRole::Agent);
     let by = c.actor();
-    let token = manage::join_token(&cl, role, ttl, b.allow_import, &by).await.map_err(cluster_err)?;
+    let token = manage::join_token(&cl, role, ttl, b.allow_import, &by)
+        .await
+        .map_err(cluster_err)?;
     c.set_target("join-token".to_string());
     let servers: Vec<String> = crate::node::NodeStore::new(cl.db.clone())
         .list()
@@ -266,7 +352,12 @@ pub async fn create_token(c: Caller, Json(b): Json<TokenBody>) -> Result<impl In
         .filter(|n| n.spec.role == NodeRole::Server && !n.status.phase.is_tombstone())
         .filter_map(|n| n.status.advertise.map(|a| a.to_string()))
         .collect();
-    Ok((StatusCode::CREATED, Json(json!({ "token": token, "role": role, "ttl_secs": ttl, "servers": servers, "ca_fingerprint": cl.signing_fp() }))))
+    Ok((
+        StatusCode::CREATED,
+        Json(
+            json!({ "token": token, "role": role, "ttl_secs": ttl, "servers": servers, "ca_fingerprint": cl.signing_fp() }),
+        ),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -279,7 +370,9 @@ pub struct PromoteBody {
 pub async fn promote(c: Caller, Json(b): Json<PromoteBody>) -> Result<impl IntoResponse, ApiErr> {
     c.require(Ent::Cluster, EntitySet::new())?;
     let cl = require_cluster(&c)?;
-    let out = manage::promote(&cl, &b.nodes, b.force).await.map_err(cluster_err)?;
+    let out = manage::promote(&cl, &b.nodes, b.force)
+        .await
+        .map_err(cluster_err)?;
     c.set_target("cluster".to_string());
     Ok(Json(out))
 }
@@ -291,12 +384,18 @@ pub struct RotateBody {
 }
 
 /// `gxctl cluster rotate-ca [--grace <secs>]` (§12.5).
-pub async fn rotate_ca(c: Caller, b: Option<Json<RotateBody>>) -> Result<impl IntoResponse, ApiErr> {
+pub async fn rotate_ca(
+    c: Caller,
+    b: Option<Json<RotateBody>>,
+) -> Result<impl IntoResponse, ApiErr> {
     c.require(Ent::Cluster, EntitySet::new())?;
     let cl = require_cluster(&c)?;
     c.set_target("cluster".to_string());
     c.audit_always();
-    let out = cl.rotate_ca(b.and_then(|b| b.0.grace_secs)).await.map_err(cluster_err)?;
+    let out = cl
+        .rotate_ca(b.and_then(|b| b.0.grace_secs))
+        .await
+        .map_err(cluster_err)?;
     Ok(Json(out))
 }
 
@@ -304,25 +403,47 @@ pub async fn rotate_ca(c: Caller, b: Option<Json<RotateBody>>) -> Result<impl In
 /// It holds credential and token hashes: store it like the database itself.
 pub async fn snapshot(c: Caller) -> Result<impl IntoResponse, ApiErr> {
     c.require(Ent::Cluster, EntitySet::new())?;
-    c.manager().cluster().ok_or_else(|| err(StatusCode::CONFLICT, "not_clustered", "this host is not part of a cluster"))?;
+    c.manager().cluster().ok_or_else(|| {
+        err(
+            StatusCode::CONFLICT,
+            "not_clustered",
+            "this host is not part of a cluster",
+        )
+    })?;
     c.set_target("cluster".to_string());
     // Audited as it leaves: the file holds every secret hash.
     c.audit_always();
     let db = c.manager().database();
-    let dir = tempfile::tempdir().map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()))?;
+    let dir = tempfile::tempdir()
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()))?;
     let path = dir.path().join("snapshot.gxsnap");
     let p2 = path.clone();
     tokio::task::spawn_blocking(move || manage::export_snapshot(&db, &p2))
         .await
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()))?
         .map_err(cluster_err)?;
-    let file = tokio::fs::File::open(&path).await.map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()))?;
+    let file = tokio::fs::File::open(&path)
+        .await
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()))?;
     let stream = tokio_util_stream(file, dir);
-    Ok((StatusCode::OK, [("content-type", "application/octet-stream"), ("content-disposition", "attachment; filename=\"glidex-cluster.gxsnap\"")], axum::body::Body::from_stream(stream)))
+    Ok((
+        StatusCode::OK,
+        [
+            ("content-type", "application/octet-stream"),
+            (
+                "content-disposition",
+                "attachment; filename=\"glidex-cluster.gxsnap\"",
+            ),
+        ],
+        axum::body::Body::from_stream(stream),
+    ))
 }
 
 /// Stream a file, deleting its directory when the stream ends.
-fn tokio_util_stream(f: tokio::fs::File, dir: tempfile::TempDir) -> impl futures_util::Stream<Item = Result<bytes::Bytes, std::io::Error>> {
+fn tokio_util_stream(
+    f: tokio::fs::File,
+    dir: tempfile::TempDir,
+) -> impl futures_util::Stream<Item = Result<bytes::Bytes, std::io::Error>> {
     use tokio::io::AsyncReadExt;
     futures_util::stream::unfold((f, Some(dir)), |(mut f, dir)| async move {
         let mut buf = vec![0u8; 256 * 1024];
@@ -357,8 +478,16 @@ fn ovn_missing(n: &crate::node::Node) -> Option<String> {
 fn ovn_view(c: &Caller) -> serde_json::Value {
     let m = c.manager();
     let settings = m.ovn_settings();
-    let source = if settings.is_some() { "cluster" } else if m.ovn.load().enabled { "file" } else { "none" };
-    let shown = settings.clone().unwrap_or_else(|| crate::ovn_settings::OvnSettings::from_file(&m.ovn.load()));
+    let source = if settings.is_some() {
+        "cluster"
+    } else if m.ovn.load().enabled {
+        "file"
+    } else {
+        "none"
+    };
+    let shown = settings
+        .clone()
+        .unwrap_or_else(|| crate::ovn_settings::OvnSettings::from_file(&m.ovn.load()));
     let all = m.nodes().list().unwrap_or_default();
     let northd = crate::node::cluster_northd_ovn(&all);
     let nodes: Vec<serde_json::Value> = all
@@ -366,7 +495,12 @@ fn ovn_view(c: &Caller) -> serde_json::Value {
         .filter(|n| !n.status.phase.is_tombstone())
         .map(|n| json!({ "id": n.meta.id, "name": n.spec.name, "role": n.spec.role, "ovn_version": n.status.versions.ovn, "ovn_central": n.status.features.ovn_central, "missing": ovn_missing(&n), "outdated": crate::node::ovn_outdated(&n, northd.as_deref()) }))
         .collect();
-    let cluster_networks: Vec<String> = m.networks_list().into_iter().filter(|n| n.scope == crate::network::NetworkScope::Cluster).map(|n| n.name).collect();
+    let cluster_networks: Vec<String> = m
+        .networks_list()
+        .into_iter()
+        .filter(|n| n.scope == crate::network::NetworkScope::Cluster)
+        .map(|n| n.name)
+        .collect();
     json!({ "enabled": m.ovn_enabled(), "edge": m.ovn.load().edge.is_some(), "vpc_pool": vpc_pool(c), "clustered": m.cluster().is_some(), "source": source, "settings": shown, "nodes": nodes, "cluster_networks": cluster_networks })
 }
 
@@ -379,12 +513,19 @@ pub async fn get_ovn_settings(c: Caller) -> Result<impl IntoResponse, ApiErr> {
     }
     // Whether NAT networks can span the nodes, and whether a project's own
     // router can reach outside, are no secret: forms need them.
-    Ok(Json(json!({ "enabled": c.manager().ovn_enabled(), "edge": c.manager().ovn.load().edge.is_some(), "vpc_pool": vpc_pool(&c) })))
+    Ok(Json(
+        json!({ "enabled": c.manager().ovn_enabled(), "edge": c.manager().ovn.load().edge.is_some(), "vpc_pool": vpc_pool(&c) }),
+    ))
 }
 
 /// Whether VPC routers can have an external address: the edge has a pool.
 fn vpc_pool(c: &Caller) -> bool {
-    c.manager().ovn.load().edge.as_ref().is_some_and(|e| e.external_pool.is_some())
+    c.manager()
+        .ovn
+        .load()
+        .edge
+        .as_ref()
+        .is_some_and(|e| e.external_pool.is_some())
 }
 
 #[derive(Deserialize)]
@@ -404,15 +545,28 @@ pub struct OvnSettingsBody {
 
 /// `PUT /cluster/settings/ovn` (`configureOvn`): turn OVN on or off for the
 /// whole cluster and set its options. Every node follows without a restart.
-pub async fn put_ovn_settings(c: Caller, Json(b): Json<OvnSettingsBody>) -> Result<impl IntoResponse, ApiErr> {
+pub async fn put_ovn_settings(
+    c: Caller,
+    Json(b): Json<OvnSettingsBody>,
+) -> Result<impl IntoResponse, ApiErr> {
     c.require(Ent::Cluster, EntitySet::new())?;
     c.set_target("cluster:ovn".to_string());
     c.audit_always();
     let m = c.manager();
     if m.cluster().is_none() {
-        return Err(err(StatusCode::CONFLICT, "not_clustered", "OVN runs cluster networks: make this host a cluster first"));
+        return Err(err(
+            StatusCode::CONFLICT,
+            "not_clustered",
+            "OVN runs cluster networks: make this host a cluster first",
+        ));
     }
-    let nodes: Vec<crate::node::Node> = m.nodes().list().unwrap_or_default().into_iter().filter(|n| !n.status.phase.is_tombstone()).collect();
+    let nodes: Vec<crate::node::Node> = m
+        .nodes()
+        .list()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|n| !n.status.phase.is_tombstone())
+        .collect();
     let next = crate::ovn_settings::OvnSettings {
         enabled: b.enabled,
         underlay_mtu: b.underlay_mtu,
@@ -423,26 +577,49 @@ pub async fn put_ovn_settings(c: Caller, Json(b): Json<OvnSettingsBody>) -> Resu
         updated_by: c.actor(),
         updated_at: crate::tenancy::now(),
     };
-    next.validate(|w| nodes.iter().any(|n| n.meta.id == w || n.spec.name == w)).map_err(|m| err(StatusCode::BAD_REQUEST, "invalid", m))?;
+    next.validate(|w| nodes.iter().any(|n| n.meta.id == w || n.spec.name == w))
+        .map_err(|m| err(StatusCode::BAD_REQUEST, "invalid", m))?;
     if let (true, Some(e)) = (next.enabled, &next.edge) {
-        super::nodes::check_gateway_nodes(&nodes, &e.gateway_nodes, &e.physnet).map_err(|m| err(StatusCode::CONFLICT, "gateway_not_ready", m))?;
+        super::nodes::check_gateway_nodes(&nodes, &e.gateway_nodes, &e.physnet)
+            .map_err(|m| err(StatusCode::CONFLICT, "gateway_not_ready", m))?;
     }
     if next.enabled {
-        let missing: Vec<String> = nodes.iter().filter_map(|n| ovn_missing(n).map(|why| format!("{}: {why}", n.spec.name))).collect();
+        let missing: Vec<String> = nodes
+            .iter()
+            .filter_map(|n| ovn_missing(n).map(|why| format!("{}: {why}", n.spec.name)))
+            .collect();
         if !missing.is_empty() {
             return Err(err(
                 StatusCode::CONFLICT,
                 "ovn_not_installed",
-                format!("every node needs OVN first (run `sudo glidex-install --ovn` there): {}", missing.join("; ")),
+                format!(
+                    "every node needs OVN first (run `sudo glidex-install --ovn` there): {}",
+                    missing.join("; ")
+                ),
             ));
         }
     } else {
-        let nets: Vec<String> = m.networks_list().into_iter().filter(|n| n.scope == crate::network::NetworkScope::Cluster).map(|n| n.name).collect();
+        let nets: Vec<String> = m
+            .networks_list()
+            .into_iter()
+            .filter(|n| n.scope == crate::network::NetworkScope::Cluster)
+            .map(|n| n.name)
+            .collect();
         if !nets.is_empty() {
-            return Err(err(StatusCode::CONFLICT, "cluster_networks_exist", format!("delete the cluster networks first: {}", nets.join(", "))));
+            return Err(err(
+                StatusCode::CONFLICT,
+                "cluster_networks_exist",
+                format!("delete the cluster networks first: {}", nets.join(", ")),
+            ));
         }
     }
-    crate::ovn_settings::write(&m.database(), &next).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, "persistence_error", e.to_string()))?;
+    crate::ovn_settings::write(&m.database(), &next).map_err(|e| {
+        err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "persistence_error",
+            e.to_string(),
+        )
+    })?;
     m.apply_ovn_settings();
     Ok(Json(ovn_view(&c)))
 }
@@ -452,7 +629,14 @@ pub async fn put_ovn_settings(c: Caller, Json(b): Json<OvnSettingsBody>) -> Resu
 /// report, and notes on what couldn't be worked out. Nothing is written.
 pub async fn edge_defaults(c: Caller) -> Result<impl IntoResponse, ApiErr> {
     c.require_action("readCluster", Ent::Cluster, EntitySet::new(), &[])?;
-    let nodes: Vec<crate::node::Node> = c.manager().nodes().list().unwrap_or_default().into_iter().filter(|n| !n.status.phase.is_tombstone()).collect();
+    let nodes: Vec<crate::node::Node> = c
+        .manager()
+        .nodes()
+        .list()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|n| !n.status.phase.is_tombstone())
+        .collect();
     Ok(Json(suggest_edge(&nodes)))
 }
 
@@ -468,15 +652,29 @@ pub fn suggest_edge(nodes: &[crate::node::Node]) -> serde_json::Value {
             *count.entry(p.as_str()).or_default() += 1;
         }
     }
-    let physnet = count.iter().max_by(|a, b| a.1.cmp(b.1).then(b.0.cmp(a.0))).map(|(p, _)| p.to_string());
+    let physnet = count
+        .iter()
+        .max_by(|a, b| a.1.cmp(b.1).then(b.0.cmp(a.0)))
+        .map(|(p, _)| p.to_string());
     if physnet.is_none() {
         notes.push("No node maps a physical network yet: on a node's page, map one (e.g. uplink) to a bridge that has the uplink NIC.".into());
     }
     let physnet = physnet.unwrap_or_else(|| "uplink".to_string());
     // Gateway nodes: those that map it and run br-int on the kernel datapath, servers first.
-    let mapping: Vec<&crate::node::Node> = nodes.iter().filter(|n| n.status.features.physnets.contains_key(&physnet)).collect();
-    let mut gateways: Vec<&crate::node::Node> = mapping.iter().copied().filter(|n| n.wanted_br_int() == "system").collect();
-    gateways.sort_by(|a, b| (a.spec.role != NodeRole::Server).cmp(&(b.spec.role != NodeRole::Server)).then(a.spec.name.cmp(&b.spec.name)));
+    let mapping: Vec<&crate::node::Node> = nodes
+        .iter()
+        .filter(|n| n.status.features.physnets.contains_key(&physnet))
+        .collect();
+    let mut gateways: Vec<&crate::node::Node> = mapping
+        .iter()
+        .copied()
+        .filter(|n| n.wanted_br_int() == "system")
+        .collect();
+    gateways.sort_by(|a, b| {
+        (a.spec.role != NodeRole::Server)
+            .cmp(&(b.spec.role != NodeRole::Server))
+            .then(a.spec.name.cmp(&b.spec.name))
+    });
     gateways.truncate(3);
     for n in mapping.iter().filter(|n| n.wanted_br_int() != "system") {
         notes.push(format!("{} maps {physnet} but runs br-int on the userspace datapath; set it to kernel on its page to make it a gateway node.", n.spec.name));
@@ -490,9 +688,16 @@ pub fn suggest_edge(nodes: &[crate::node::Node]) -> serde_json::Value {
         let a = n.status.features.bridge_addrs.get(bridge)?;
         let (ip, prefix) = a.address.split_once('/')?;
         let (ip, prefix): (Ipv4Addr, u8) = (ip.parse().ok()?, prefix.parse().ok()?);
-        Some((ip, prefix, a.gateway.clone(), n.spec.name.clone(), bridge.clone()))
+        Some((
+            ip,
+            prefix,
+            a.gateway.clone(),
+            n.spec.name.clone(),
+            bridge.clone(),
+        ))
     });
-    let (mut cidr, mut gateway, mut external_ip, mut external_pool) = (String::new(), String::new(), String::new(), String::new());
+    let (mut cidr, mut gateway, mut external_ip, mut external_pool) =
+        (String::new(), String::new(), String::new(), String::new());
     match &lan {
         Some((ip, prefix, gw, from, bridge)) if *prefix <= 30 => {
             let mask: u32 = if *prefix == 0 { 0 } else { u32::MAX << (32 - prefix) };
@@ -541,7 +746,11 @@ pub fn suggest_edge(nodes: &[crate::node::Node]) -> serde_json::Value {
         )),
         None => {}
     }
-    let complete = !physnet.is_empty() && !gateways.is_empty() && !cidr.is_empty() && !gateway.is_empty() && !external_ip.is_empty();
+    let complete = !physnet.is_empty()
+        && !gateways.is_empty()
+        && !cidr.is_empty()
+        && !gateway.is_empty()
+        && !external_ip.is_empty();
     json!({
         "edge": {
             "physnet": physnet, "external_cidr": cidr, "gateway": gateway, "external_ip": external_ip,
@@ -557,14 +766,40 @@ mod edge_tests {
     use super::suggest_edge;
     use crate::node::{BridgeAddr, Node, NodeRole, NodeSpec};
 
-    fn node(name: &str, role: NodeRole, mapped: bool, dpdk: bool, addr: Option<(&str, Option<&str>)>) -> Node {
-        let mut n = Node::new(name, NodeSpec { name: name.into(), role, unschedulable: false, labels: Default::default(), br_int_datapath: Default::default(), bridge_mappings: Default::default(), drop_spare_files_before: None });
+    fn node(
+        name: &str,
+        role: NodeRole,
+        mapped: bool,
+        dpdk: bool,
+        addr: Option<(&str, Option<&str>)>,
+    ) -> Node {
+        let mut n = Node::new(
+            name,
+            NodeSpec {
+                name: name.into(),
+                role,
+                unschedulable: false,
+                labels: Default::default(),
+                br_int_datapath: Default::default(),
+                bridge_mappings: Default::default(),
+                drop_spare_files_before: None,
+            },
+        );
         if mapped {
-            n.status.features.physnets.insert("uplink".into(), "gxbr-up".into());
+            n.status
+                .features
+                .physnets
+                .insert("uplink".into(), "gxbr-up".into());
         }
         n.status.features.dpdk = dpdk;
         if let Some((a, gw)) = addr {
-            n.status.features.bridge_addrs.insert("gxbr-up".into(), BridgeAddr { address: a.into(), gateway: gw.map(String::from) });
+            n.status.features.bridge_addrs.insert(
+                "gxbr-up".into(),
+                BridgeAddr {
+                    address: a.into(),
+                    gateway: gw.map(String::from),
+                },
+            );
         }
         n
     }
@@ -572,8 +807,20 @@ mod edge_tests {
     #[test]
     fn the_edge_comes_from_the_mapped_bridges_address() {
         let nodes = vec![
-            node("h2", NodeRole::Agent, true, true, Some(("192.0.2.11/24", Some("192.0.2.1")))),
-            node("h1", NodeRole::Server, true, false, Some(("192.0.2.10/24", Some("192.0.2.1")))),
+            node(
+                "h2",
+                NodeRole::Agent,
+                true,
+                true,
+                Some(("192.0.2.11/24", Some("192.0.2.1"))),
+            ),
+            node(
+                "h1",
+                NodeRole::Server,
+                true,
+                false,
+                Some(("192.0.2.10/24", Some("192.0.2.1"))),
+            ),
             node("h3", NodeRole::Agent, false, false, None),
         ];
         let v = suggest_edge(&nodes);
@@ -581,13 +828,23 @@ mod edge_tests {
         assert_eq!(e["physnet"], "uplink");
         assert_eq!(e["external_cidr"], "192.0.2.0/24");
         assert_eq!(e["gateway"], "192.0.2.1");
-        assert_eq!(e["external_ip"], "192.0.2.254", "the highest address no node uses");
+        assert_eq!(
+            e["external_ip"], "192.0.2.254",
+            "the highest address no node uses"
+        );
         // .248/29 holds the edge address and the broadcast: the next /29 down.
         assert_eq!(e["external_pool"], "192.0.2.240/29");
-        assert_eq!(e["gateway_nodes"], serde_json::json!(["h1"]), "h2 runs br-int on userspace (DPDK)");
+        assert_eq!(
+            e["gateway_nodes"],
+            serde_json::json!(["h1"]),
+            "h2 runs br-int on userspace (DPDK)"
+        );
         assert_eq!(v["complete"], true);
         let notes = v["notes"].to_string();
-        assert!(notes.contains("h2 maps uplink but runs br-int on the userspace datapath"), "{notes}");
+        assert!(
+            notes.contains("h2 maps uplink but runs br-int on the userspace datapath"),
+            "{notes}"
+        );
         assert!(notes.contains("is a guess"), "{notes}");
     }
 
@@ -596,7 +853,12 @@ mod edge_tests {
         let v = suggest_edge(&[node("h1", NodeRole::Server, false, false, None)]);
         assert_eq!(v["edge"]["physnet"], "uplink");
         assert_eq!(v["complete"], false);
-        assert!(v["notes"].to_string().contains("No node maps a physical network"), "{v}");
+        assert!(
+            v["notes"]
+                .to_string()
+                .contains("No node maps a physical network"),
+            "{v}"
+        );
         // Mapped but the address was never moved onto the bridge: the LAN is unknown.
         let v = suggest_edge(&[node("h1", NodeRole::Server, true, false, None)]);
         assert_eq!(v["edge"]["gateway_nodes"], serde_json::json!(["h1"]));

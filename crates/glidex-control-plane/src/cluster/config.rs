@@ -109,19 +109,29 @@ impl Default for ClusterConfig {
 
 impl Default for RaftConfig {
     fn default() -> Self {
-        RaftConfig { heartbeat_ms: 250, election_ms: (1000, 2000), log_keep_entries: 10_000 }
+        RaftConfig {
+            heartbeat_ms: 250,
+            election_ms: (1000, 2000),
+            log_keep_entries: 10_000,
+        }
     }
 }
 
 impl Default for SchedulerConfig {
     fn default() -> Self {
-        SchedulerConfig { cpu_overcommit: 4.0, memory_overcommit: 1.0 }
+        SchedulerConfig {
+            cpu_overcommit: 4.0,
+            memory_overcommit: 1.0,
+        }
     }
 }
 
 impl Default for NodeReserved {
     fn default() -> Self {
-        NodeReserved { cpus: 1, memory_mib: 2048 }
+        NodeReserved {
+            cpus: 1,
+            memory_mib: 2048,
+        }
     }
 }
 
@@ -147,7 +157,11 @@ impl ClusterConfig {
     }
 
     pub fn raft_settings(&self) -> crate::cluster::raft::RaftSettings {
-        crate::cluster::raft::RaftSettings { heartbeat_ms: self.raft.heartbeat_ms, election_ms: self.raft.election_ms, log_keep_entries: self.raft.log_keep_entries }
+        crate::cluster::raft::RaftSettings {
+            heartbeat_ms: self.raft.heartbeat_ms,
+            election_ms: self.raft.election_ms,
+            log_keep_entries: self.raft.log_keep_entries,
+        }
     }
 }
 

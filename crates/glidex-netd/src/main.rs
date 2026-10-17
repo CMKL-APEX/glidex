@@ -129,7 +129,11 @@ fn main() {
     let report = netd.reconcile_startup();
     if let Some(gid) = group_gid {
         // reconcile_startup created the vhost dir; hand it to the group.
-        let _ = nix::unistd::chown(&config.run_dir.join("vhost"), None, Some(nix::unistd::Gid::from_raw(gid)));
+        let _ = nix::unistd::chown(
+            &config.run_dir.join("vhost"),
+            None,
+            Some(nix::unistd::Gid::from_raw(gid)),
+        );
     }
     tracing::info!(report = %server::status_json(&report), "startup reconciliation");
 

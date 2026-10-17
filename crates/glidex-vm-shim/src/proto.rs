@@ -14,11 +14,15 @@ pub const MAX_LINE: usize = 64 * 1024;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", content = "args", rename_all = "snake_case")]
 pub enum Op {
-    Hello { protocol: u32 },
+    Hello {
+        protocol: u32,
+    },
     Status,
     /// Resume if paused, press the power button, wait up to `grace_secs`,
     /// then kill. `grace_secs = 0` kills at once.
-    Stop { grace_secs: u64 },
+    Stop {
+        grace_secs: u64,
+    },
     Kill,
     /// Shut the console down and exit; only once the hypervisor is gone.
     Release,
@@ -48,11 +52,22 @@ pub struct Response {
 
 impl Response {
     pub fn ok(id: u64, v: serde_json::Value) -> Self {
-        Self { id, ok: Some(v), error: None }
+        Self {
+            id,
+            ok: Some(v),
+            error: None,
+        }
     }
 
     pub fn err(id: u64, code: &str, message: impl Into<String>) -> Self {
-        Self { id, ok: None, error: Some(ErrorBody { code: code.into(), message: message.into() }) }
+        Self {
+            id,
+            ok: None,
+            error: Some(ErrorBody {
+                code: code.into(),
+                message: message.into(),
+            }),
+        }
     }
 }
 
@@ -74,8 +89,14 @@ mod tests {
 
     #[test]
     fn wire_format() {
-        let r = Request { id: 3, op: Op::Stop { grace_secs: 30 } };
-        assert_eq!(serde_json::to_value(&r).unwrap(), serde_json::json!({"id": 3, "op": "stop", "args": {"grace_secs": 30}}));
+        let r = Request {
+            id: 3,
+            op: Op::Stop { grace_secs: 30 },
+        };
+        assert_eq!(
+            serde_json::to_value(&r).unwrap(),
+            serde_json::json!({"id": 3, "op": "stop", "args": {"grace_secs": 30}})
+        );
         let r: Request = serde_json::from_str(r#"{"id": 1, "op": "status"}"#).unwrap();
         assert_eq!(r.op, Op::Status);
         assert_eq!(

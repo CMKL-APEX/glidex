@@ -71,12 +71,26 @@ impl From<StoreError> for RouterError {
 macro_rules! storage_from {
     ($($t:ty),*) => {$(impl From<$t> for RouterError { fn from(e: $t) -> Self { RouterError::Storage(e.to_string()) } })*};
 }
-storage_from!(redb::TableError, redb::StorageError, redb::TransactionError, serde_json::Error);
+storage_from!(
+    redb::TableError,
+    redb::StorageError,
+    redb::TransactionError,
+    serde_json::Error
+);
 
 /// Names are DNS-label-like, at most 32 characters.
 pub fn validate_name(name: &str) -> Result<(), RouterError> {
-    if name.is_empty() || name.len() > 32 || !name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-') || name.starts_with('-') || name.ends_with('-') {
-        return Err(RouterError::Invalid("a router name is 1-32 characters of a-z, 0-9 and '-'".into()));
+    if name.is_empty()
+        || name.len() > 32
+        || !name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        || name.starts_with('-')
+        || name.ends_with('-')
+    {
+        return Err(RouterError::Invalid(
+            "a router name is 1-32 characters of a-z, 0-9 and '-'".into(),
+        ));
     }
     Ok(())
 }
@@ -103,19 +117,30 @@ pub fn list(db: &Db) -> Result<Vec<Router>, RouterError> {
 pub fn get(db: &Db, id: &str) -> Result<Option<Router>, RouterError> {
     let txn = db.begin_read()?;
     let t = txn.open_table(TableId::Routers.definition())?;
-    Ok(t.get(id)?.map(|v| serde_json::from_slice(v.value())).transpose()?)
+    Ok(t.get(id)?
+        .map(|v| serde_json::from_slice(v.value()))
+        .transpose()?)
 }
 
 pub fn find(db: &Db, project: &str, name: &str) -> Result<Option<Router>, RouterError> {
-    Ok(list(db)?.into_iter().find(|r| r.project == project && r.spec.name == name))
+    Ok(list(db)?
+        .into_iter()
+        .find(|r| r.project == project && r.spec.name == name))
 }
 
 /// Create a router: name uniqueness, the external address and the
 /// conntrack zone in one write, so a pool that runs out leaves nothing behind.
-pub fn create(db: &Db, project: &str, spec: RouterSpec, site: &Site<'_>) -> Result<Router, RouterError> {
+pub fn create(
+    db: &Db,
+    project: &str,
+    spec: RouterSpec,
+    site: &Site<'_>,
+) -> Result<Router, RouterError> {
     validate_name(&spec.name)?;
     if !spec.external && (spec.external_ip.is_some() || spec.gateway_nodes.is_some()) {
-        return Err(RouterError::Invalid("a router without a gateway has no external_ip or gateway_nodes".into()));
+        return Err(RouterError::Invalid(
+            "a router without a gateway has no external_ip or gateway_nodes".into(),
+        ));
     }
     let id = uuid::Uuid::new_v4().simple().to_string()[..8].to_string();
     db.write(Origin::Api, |tx| -> Result<Router, RouterError> {
@@ -161,7 +186,12 @@ mod tests {
     }
 
     fn spec(name: &str) -> RouterSpec {
-        RouterSpec { name: name.into(), external: true, external_ip: None, gateway_nodes: None }
+        RouterSpec {
+            name: name.into(),
+            external: true,
+            external_ip: None,
+            gateway_nodes: None,
+        }
     }
 
     #[test]
@@ -169,12 +199,23 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let db = Db::create(d.path().join("t.db")).unwrap();
         let (pool, ex) = site("192.0.2.240/29");
-        let s = Site { pool: Some(pool), exclude: &ex, zones: (60000, 60010) };
+        let s = Site {
+            pool: Some(pool),
+            exclude: &ex,
+            zones: (60000, 60010),
+        };
         let a = create(&db, "p1", spec("web"), &s).unwrap();
         let b = create(&db, "p1", spec("db"), &s).unwrap();
         assert_ne!(a.status.external_ip, b.status.external_ip);
-        assert_eq!((a.status.snat_ct_zone, b.status.snat_ct_zone), (Some(60001), Some(60002)), "the edge keeps the first zone");
-        assert!(matches!(create(&db, "p1", spec("web"), &s), Err(RouterError::Conflict(_))));
+        assert_eq!(
+            (a.status.snat_ct_zone, b.status.snat_ct_zone),
+            (Some(60001), Some(60002)),
+            "the edge keeps the first zone"
+        );
+        assert!(matches!(
+            create(&db, "p1", spec("web"), &s),
+            Err(RouterError::Conflict(_))
+        ));
         // The same name in another project is a different router.
         create(&db, "p2", spec("web"), &s).unwrap();
         assert_eq!(find(&db, "p1", "db").unwrap().unwrap().id, b.id);
@@ -189,9 +230,16 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let db = Db::create(d.path().join("t.db")).unwrap();
         let (pool, ex) = site("192.0.2.240/30");
-        let s = Site { pool: Some(pool), exclude: &ex, zones: (60000, 60010) };
+        let s = Site {
+            pool: Some(pool),
+            exclude: &ex,
+            zones: (60000, 60010),
+        };
         create(&db, "p", spec("a"), &s).unwrap();
-        assert!(matches!(create(&db, "p", spec("b"), &s), Err(RouterError::PoolExhausted)));
+        assert!(matches!(
+            create(&db, "p", spec("b"), &s),
+            Err(RouterError::PoolExhausted)
+        ));
         assert_eq!(list(&db).unwrap().len(), 1);
     }
 
@@ -199,11 +247,40 @@ mod tests {
     fn internal_routers_take_nothing_from_the_pool_and_names_are_checked() {
         let d = tempfile::tempdir().unwrap();
         let db = Db::create(d.path().join("t.db")).unwrap();
-        let s = Site { pool: None, exclude: &[], zones: (60000, 60010) };
-        let r = create(&db, "p", RouterSpec { external: false, ..spec("inner") }, &s).unwrap();
+        let s = Site {
+            pool: None,
+            exclude: &[],
+            zones: (60000, 60010),
+        };
+        let r = create(
+            &db,
+            "p",
+            RouterSpec {
+                external: false,
+                ..spec("inner")
+            },
+            &s,
+        )
+        .unwrap();
         assert_eq!((r.status.external_ip, r.status.snat_ct_zone), (None, None));
-        assert!(matches!(create(&db, "p", spec("web"), &s), Err(RouterError::Invalid(_))), "an external router needs a pool");
-        assert!(create(&db, "p", RouterSpec { external: false, external_ip: Some("192.0.2.9".parse().unwrap()), ..spec("x") }, &s).is_err());
+        assert!(
+            matches!(
+                create(&db, "p", spec("web"), &s),
+                Err(RouterError::Invalid(_))
+            ),
+            "an external router needs a pool"
+        );
+        assert!(create(
+            &db,
+            "p",
+            RouterSpec {
+                external: false,
+                external_ip: Some("192.0.2.9".parse().unwrap()),
+                ..spec("x")
+            },
+            &s
+        )
+        .is_err());
         for bad in ["", "-a", "a-", "A", "a_b", &"x".repeat(33)] {
             assert!(validate_name(bad).is_err(), "{bad:?}");
         }

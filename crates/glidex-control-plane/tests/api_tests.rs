@@ -62,12 +62,7 @@ async fn test_list_vms_empty() {
     let (app, _temp_dir) = create_test_app();
 
     let response = app
-        .oneshot(
-            Request::builder()
-                .uri("/vms")
-                .body(Body::empty())
-                .unwrap(),
-        )
+        .oneshot(Request::builder().uri("/vms").body(Body::empty()).unwrap())
         .await
         .unwrap();
 
@@ -424,12 +419,7 @@ async fn test_list_vms_after_create() {
 
     // List VMs
     let response = app
-        .oneshot(
-            Request::builder()
-                .uri("/vms")
-                .body(Body::empty())
-                .unwrap(),
-        )
+        .oneshot(Request::builder().uri("/vms").body(Body::empty()).unwrap())
         .await
         .unwrap();
 
@@ -520,22 +510,37 @@ async fn create_simple_vm(app: &axum::Router, name: &str) -> String {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::CREATED);
-    body_to_json(response.into_body()).await["id"].as_str().unwrap().to_string()
+    body_to_json(response.into_body()).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string()
 }
 
-async fn send(app: &axum::Router, method: &str, uri: String, body: Option<Value>, headers: &[(&str, &str)]) -> (StatusCode, Value) {
+async fn send(
+    app: &axum::Router,
+    method: &str,
+    uri: String,
+    body: Option<Value>,
+    headers: &[(&str, &str)],
+) -> (StatusCode, Value) {
     let mut b = Request::builder().method(method).uri(uri);
     for (k, v) in headers {
         b = b.header(*k, *v);
     }
     let req = match body {
-        Some(v) => b.header("content-type", "application/json").body(Body::from(v.to_string())).unwrap(),
+        Some(v) => b
+            .header("content-type", "application/json")
+            .body(Body::from(v.to_string()))
+            .unwrap(),
         None => b.body(Body::empty()).unwrap(),
     };
     let response = app.clone().oneshot(req).await.unwrap();
     let status = response.status();
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
-    (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
 }
 
 /// Stopping a stopped VM writes nothing: the spec already says stopped
@@ -556,13 +561,40 @@ async fn test_graceful_stop_records_the_grace() {
     let (app, _temp_dir) = create_test_app();
     let vm_id = create_simple_vm(&app, "graceful-vm").await;
 
-    let (status, body) = send(&app, "POST", format!("/vms/{}/stop?graceful_timeout_secs=5", vm_id), None, &[]).await;
+    let (status, body) = send(
+        &app,
+        "POST",
+        format!("/vms/{}/stop?graceful_timeout_secs=5", vm_id),
+        None,
+        &[],
+    )
+    .await;
     assert_eq!(status, StatusCode::ACCEPTED, "{body}");
-    assert_eq!((body["stop_grace_secs"].as_u64(), body["generation"].as_u64()), (Some(5), Some(2)));
+    assert_eq!(
+        (
+            body["stop_grace_secs"].as_u64(),
+            body["generation"].as_u64()
+        ),
+        (Some(5), Some(2))
+    );
 
-    let (status, _) = send(&app, "POST", "/vms/nonexistent-id/stop?graceful_timeout_secs=5".into(), None, &[]).await;
+    let (status, _) = send(
+        &app,
+        "POST",
+        "/vms/nonexistent-id/stop?graceful_timeout_secs=5".into(),
+        None,
+        &[],
+    )
+    .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
-    let (status, _) = send(&app, "POST", format!("/vms/{}/stop?graceful_timeout_secs=soon", vm_id), None, &[]).await;
+    let (status, _) = send(
+        &app,
+        "POST",
+        format!("/vms/{}/stop?graceful_timeout_secs=soon", vm_id),
+        None,
+        &[],
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
@@ -583,16 +615,47 @@ async fn test_pause_records_the_desired_state() {
 async fn test_patch_edits_spec_and_refuses_immutable_fields() {
     let (app, _temp_dir) = create_test_app();
     let vm_id = create_simple_vm(&app, "patch-vm").await;
-    let (status, body) = send(&app, "PATCH", format!("/vms/{}", vm_id), Some(json!({"config": {"vcpu_count": 4}, "restart_policy": "never"})), &[]).await;
+    let (status, body) = send(
+        &app,
+        "PATCH",
+        format!("/vms/{}", vm_id),
+        Some(json!({"config": {"vcpu_count": 4}, "restart_policy": "never"})),
+        &[],
+    )
+    .await;
     assert_eq!(status, StatusCode::ACCEPTED, "{body}");
-    assert_eq!((body["vcpu_count"].as_u64(), body["restart_policy"].as_str()), (Some(4), Some("never")));
+    assert_eq!(
+        (body["vcpu_count"].as_u64(), body["restart_policy"].as_str()),
+        (Some(4), Some("never"))
+    );
 
-    let (status, body) = send(&app, "PATCH", format!("/vms/{}", vm_id), Some(json!({"config": {"hypervisor": "qemu"}})), &[]).await;
+    let (status, body) = send(
+        &app,
+        "PATCH",
+        format!("/vms/{}", vm_id),
+        Some(json!({"config": {"hypervisor": "qemu"}})),
+        &[],
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert_eq!(body["error"], "invalid_config");
-    let (status, _) = send(&app, "PATCH", format!("/vms/{}", vm_id), Some(json!({"bogus": 1})), &[]).await;
+    let (status, _) = send(
+        &app,
+        "PATCH",
+        format!("/vms/{}", vm_id),
+        Some(json!({"bogus": 1})),
+        &[],
+    )
+    .await;
     assert!(status.is_client_error());
-    let (status, body) = send(&app, "PATCH", format!("/vms/{}", vm_id), Some(json!({"stop_grace_secs": 301})), &[]).await;
+    let (status, body) = send(
+        &app,
+        "PATCH",
+        format!("/vms/{}", vm_id),
+        Some(json!({"stop_grace_secs": 301})),
+        &[],
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
 }
 
@@ -600,10 +663,24 @@ async fn test_patch_edits_spec_and_refuses_immutable_fields() {
 async fn test_if_match_guards_writes() {
     let (app, _temp_dir) = create_test_app();
     let vm_id = create_simple_vm(&app, "match-vm").await;
-    let (status, body) = send(&app, "POST", format!("/vms/{}/pause", vm_id), None, &[("if-match", "999")]).await;
+    let (status, body) = send(
+        &app,
+        "POST",
+        format!("/vms/{}/pause", vm_id),
+        None,
+        &[("if-match", "999")],
+    )
+    .await;
     assert_eq!(status, StatusCode::PRECONDITION_FAILED, "{body}");
     assert_eq!(body["error"], "precondition_failed");
-    let (status, _) = send(&app, "POST", format!("/vms/{}/pause", vm_id), None, &[("if-match", "1")]).await;
+    let (status, _) = send(
+        &app,
+        "POST",
+        format!("/vms/{}/pause", vm_id),
+        None,
+        &[("if-match", "1")],
+    )
+    .await;
     assert_eq!(status, StatusCode::ACCEPTED);
 }
 
@@ -614,7 +691,12 @@ async fn test_events_record_spec_writes() {
     send(&app, "POST", format!("/vms/{}/start", vm_id), None, &[]).await;
     let (status, body) = send(&app, "GET", format!("/vms/{}/events", vm_id), None, &[]).await;
     assert_eq!(status, StatusCode::OK);
-    let reasons: Vec<&str> = body["events"].as_array().unwrap().iter().map(|e| e["reason"].as_str().unwrap()).collect();
+    let reasons: Vec<&str> = body["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["reason"].as_str().unwrap())
+        .collect();
     assert_eq!(reasons, ["Created", "PowerChanged"]);
 }
 
@@ -752,12 +834,7 @@ async fn test_vm_persists_across_restart() {
         // List VMs and verify our VM is there
         let response = app
             .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/vms")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(Request::builder().uri("/vms").body(Body::empty()).unwrap())
             .await
             .unwrap();
 
@@ -850,12 +927,7 @@ async fn test_vm_delete_persists() {
         // List should be empty
         let response = app
             .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/vms")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(Request::builder().uri("/vms").body(Body::empty()).unwrap())
             .await
             .unwrap();
 
@@ -921,12 +993,7 @@ async fn test_multiple_vms_persist() {
         let app = create_router(vm_manager);
 
         let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/vms")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(Request::builder().uri("/vms").body(Body::empty()).unwrap())
             .await
             .unwrap();
 
@@ -936,9 +1003,7 @@ async fn test_multiple_vms_persist() {
         assert_eq!(vms.len(), 3);
 
         // Verify names are present (order may vary)
-        let names: Vec<&str> = vms.iter()
-            .map(|v| v["name"].as_str().unwrap())
-            .collect();
+        let names: Vec<&str> = vms.iter().map(|v| v["name"].as_str().unwrap()).collect();
         assert!(names.contains(&"multi-vm-1"));
         assert!(names.contains(&"multi-vm-2"));
         assert!(names.contains(&"multi-vm-3"));
@@ -982,31 +1047,63 @@ async fn test_watch_streams_changes() {
     let (app, _temp_dir) = create_test_app();
     let before = create_simple_vm(&app, "watch-before").await;
 
-    let resp = app.clone().oneshot(Request::builder().uri("/watch?kinds=vms").body(Body::empty()).unwrap()).await.unwrap();
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/watch?kinds=vms")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     assert_eq!(resp.headers()["content-type"], "text/event-stream");
     let mut body = resp.into_body();
     let mut buf = String::new();
 
     let (ev, data) = next_sse(&mut body, &mut buf).await;
-    assert_eq!((ev.as_str(), data["kind"].as_str(), data["id"].as_str()), ("added", Some("vm"), Some(before.as_str())), "{data}");
+    assert_eq!(
+        (ev.as_str(), data["kind"].as_str(), data["id"].as_str()),
+        ("added", Some("vm"), Some(before.as_str())),
+        "{data}"
+    );
     assert_eq!(data["object"]["name"], "watch-before");
     assert_eq!(next_sse(&mut body, &mut buf).await.0, "synced");
 
     let id = create_simple_vm(&app, "watch-new").await;
     let (ev, data) = next_sse(&mut body, &mut buf).await;
-    assert_eq!((ev.as_str(), data["id"].as_str()), ("added", Some(id.as_str())), "{data}");
+    assert_eq!(
+        (ev.as_str(), data["id"].as_str()),
+        ("added", Some(id.as_str())),
+        "{data}"
+    );
 
-    let (status, _) = send(&app, "POST", format!("/vms/{}/stop?graceful_timeout_secs=7", id), None, &[]).await;
+    let (status, _) = send(
+        &app,
+        "POST",
+        format!("/vms/{}/stop?graceful_timeout_secs=7", id),
+        None,
+        &[],
+    )
+    .await;
     assert_eq!(status, StatusCode::ACCEPTED);
     let (ev, data) = next_sse(&mut body, &mut buf).await;
-    assert_eq!((ev.as_str(), data["id"].as_str()), ("modified", Some(id.as_str())), "{data}");
+    assert_eq!(
+        (ev.as_str(), data["id"].as_str()),
+        ("modified", Some(id.as_str())),
+        "{data}"
+    );
     assert_eq!(data["object"]["stop_grace_secs"], 7);
 
     let (status, _) = send(&app, "DELETE", format!("/vms/{}", id), None, &[]).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
     let (ev, data) = next_sse(&mut body, &mut buf).await;
-    assert_eq!((ev.as_str(), data["id"].as_str()), ("deleted", Some(id.as_str())), "{data}");
+    assert_eq!(
+        (ev.as_str(), data["id"].as_str()),
+        ("deleted", Some(id.as_str())),
+        "{data}"
+    );
     assert!(data.get("object").is_none());
 
     // Unknown kinds are refused up front.
@@ -1023,7 +1120,16 @@ async fn test_watch_streams_nodes_and_the_policy_marker() {
     let manager = VmManager::with_db_path(dir.path().join("glidex.db")).unwrap();
     manager.initialize().await.unwrap();
     let app = create_router(manager);
-    let resp = app.clone().oneshot(Request::builder().uri("/watch?kinds=nodes,imports,cluster,policy").body(Body::empty()).unwrap()).await.unwrap();
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/watch?kinds=nodes,imports,cluster,policy")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let mut body = resp.into_body();
     let mut buf = String::new();
@@ -1047,13 +1153,22 @@ async fn test_watch_streams_nodes_and_the_policy_marker() {
     let (status, v) = send(&app, "POST", format!("/nodes/{node}/drain"), None, &[]).await;
     assert_eq!(status, StatusCode::OK, "{v}");
     let (ev, data) = next_sse(&mut body, &mut buf).await;
-    assert_eq!((ev.as_str(), data["kind"].as_str(), data["id"].as_str()), ("modified", Some("node"), Some(node.as_str())), "{data}");
+    assert_eq!(
+        (ev.as_str(), data["kind"].as_str(), data["id"].as_str()),
+        ("modified", Some("node"), Some(node.as_str())),
+        "{data}"
+    );
     assert_eq!(data["object"]["status"]["phase"], "Draining");
 }
 
 // ---- nodes (spec/clustering.md C1) ------------------------------------------
 
-async fn call(app: &axum::Router, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
+async fn call(
+    app: &axum::Router,
+    method: &str,
+    uri: &str,
+    body: Option<Value>,
+) -> (StatusCode, Value) {
     let mut b = Request::builder().method(method).uri(uri);
     let body = match body {
         Some(v) => {
@@ -1065,7 +1180,10 @@ async fn call(app: &axum::Router, method: &str, uri: &str, body: Option<Value>) 
     let resp = app.clone().oneshot(b.body(body).unwrap()).await.unwrap();
     let status = resp.status();
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-    (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
 }
 
 #[tokio::test]

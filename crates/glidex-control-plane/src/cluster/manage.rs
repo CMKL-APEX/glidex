@@ -26,7 +26,10 @@ fn other(e: impl std::fmt::Display) -> ClusterError {
 /// The address other nodes will use for this one: what was asked for, else
 /// the configured one, else the listen address if it names a host, else the
 /// first non-loopback address of this host.
-pub fn resolve_advertise(requested: Option<SocketAddr>, cfg: &ClusterConfig) -> Result<SocketAddr, ClusterError> {
+pub fn resolve_advertise(
+    requested: Option<SocketAddr>,
+    cfg: &ClusterConfig,
+) -> Result<SocketAddr, ClusterError> {
     if let Some(a) = requested.or(cfg.advertise) {
         return Ok(a);
     }
@@ -35,13 +38,22 @@ pub fn resolve_advertise(requested: Option<SocketAddr>, cfg: &ClusterConfig) -> 
     }
     let ip = glidex_tls::interface_ips()
         .ok()
-        .and_then(|v| v.into_iter().find(|i| !i.is_loopback() && !i.is_unspecified() && i.is_ipv4()))
-        .ok_or_else(|| other("cannot tell which address other nodes should use: pass --advertise <ip:port>"))?;
+        .and_then(|v| {
+            v.into_iter()
+                .find(|i| !i.is_loopback() && !i.is_unspecified() && i.is_ipv4())
+        })
+        .ok_or_else(|| {
+            other("cannot tell which address other nodes should use: pass --advertise <ip:port>")
+        })?;
     Ok(SocketAddr::new(ip, cfg.listen.port()))
 }
 
 fn hostname() -> String {
-    std::fs::read_to_string("/proc/sys/kernel/hostname").map(|s| s.trim().to_string()).ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "localhost".into())
+    std::fs::read_to_string("/proc/sys/kernel/hostname")
+        .map(|s| s.trim().to_string())
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "localhost".into())
 }
 
 pub struct InitOptions {
@@ -54,7 +66,12 @@ pub struct InitOptions {
 /// Re-key a node's records from `from` to `to` in one write: its VMs'
 /// placement, its disks, its node networks and its `nodes` record. Used by
 /// init (`local` → the new node id) and as its own inverse.
-pub fn rekey_node(db: &Db, from: &str, to: &str, new_node: Option<Node>) -> Result<(), ClusterError> {
+pub fn rekey_node(
+    db: &Db,
+    from: &str,
+    to: &str,
+    new_node: Option<Node>,
+) -> Result<(), ClusterError> {
     db.write(Origin::Migration, |tx| -> Result<(), ClusterError> {
         let fix = |table: TableId, f: &dyn Fn(&mut Value) -> bool| -> Result<(), ClusterError> {
             let mut t = tx.open_table(table.definition()).map_err(other)?;
@@ -63,7 +80,10 @@ pub fn rekey_node(db: &Db, from: &str, to: &str, new_node: Option<Node>) -> Resu
                 let (k, v) = r.map_err(other)?;
                 if let Ok(mut j) = serde_json::from_slice::<Value>(v.value()) {
                     if f(&mut j) {
-                        changed.push((k.value().to_string(), serde_json::to_vec(&j).map_err(other)?));
+                        changed.push((
+                            k.value().to_string(),
+                            serde_json::to_vec(&j).map_err(other)?,
+                        ));
                     }
                 }
             }
@@ -73,7 +93,9 @@ pub fn rekey_node(db: &Db, from: &str, to: &str, new_node: Option<Node>) -> Resu
             Ok(())
         };
         fix(TableId::Vms, &|j| {
-            let Some(p) = j.pointer_mut("/status/placement") else { return false };
+            let Some(p) = j.pointer_mut("/status/placement") else {
+                return false;
+            };
             if p["node"] == from {
                 p["node"] = to.into();
                 return true;
@@ -83,7 +105,11 @@ pub fn rekey_node(db: &Db, from: &str, to: &str, new_node: Option<Node>) -> Resu
         for t in [TableId::Disks, TableId::Networks] {
             fix(t, &|j| {
                 // A standalone host's disk with no node is its own.
-                if j["node"] == from || (t == TableId::Disks && j["node"].is_null() && from == crate::node::LOCAL_NODE) {
+                if j["node"] == from
+                    || (t == TableId::Disks
+                        && j["node"].is_null()
+                        && from == crate::node::LOCAL_NODE)
+                {
                     j["node"] = to.into();
                     return true;
                 }
@@ -93,14 +119,23 @@ pub fn rekey_node(db: &Db, from: &str, to: &str, new_node: Option<Node>) -> Resu
         let mut nodes = tx.open_table(TableId::Nodes.definition()).map_err(other)?;
         nodes.remove(from).map_err(other)?;
         if let Some(n) = new_node {
-            nodes.insert(&n.meta.id, serde_json::to_vec(&n).map_err(other)?.as_slice()).map_err(other)?;
+            nodes
+                .insert(
+                    &n.meta.id,
+                    serde_json::to_vec(&n).map_err(other)?.as_slice(),
+                )
+                .map_err(other)?;
         }
         Ok(())
     })
 }
 
 /// §5.1: turn this standalone host into a cluster of one.
-pub async fn init(manager: &Arc<VmManager>, cfg: &crate::config::Config, opts: InitOptions) -> Result<Value, ClusterError> {
+pub async fn init(
+    manager: &Arc<VmManager>,
+    cfg: &crate::config::Config,
+    opts: InitOptions,
+) -> Result<Value, ClusterError> {
     let files = Files::beside(manager.db_path());
     if manager.cluster().is_some() || files.exists() {
         return Err(other("this host is already part of a cluster"));
@@ -115,7 +150,9 @@ pub async fn init(manager: &Arc<VmManager>, cfg: &crate::config::Config, opts: I
     let raft_id = raft_id_of(&node_id);
 
     // 1. Backup: what an init that went wrong goes back to.
-    let backup = manager.db_path().with_extension(format!("db.pre-cluster-{}", crate::tenancy::now()));
+    let backup = manager
+        .db_path()
+        .with_extension(format!("db.pre-cluster-{}", crate::tenancy::now()));
     {
         let (src, dst) = (manager.db_path().to_path_buf(), backup.clone());
         db.quiesce(|| -> std::io::Result<()> {
@@ -148,7 +185,18 @@ pub async fn init(manager: &Arc<VmManager>, cfg: &crate::config::Config, opts: I
     let nodes = NodeStore::new(db.clone());
     let mut me = match nodes.get(crate::node::LOCAL_NODE).map_err(other)? {
         Some(n) => n,
-        None => Node::new(crate::node::LOCAL_NODE, NodeSpec { name: identity.name.clone(), role: NodeRole::Server, unschedulable: false, labels: Default::default(), br_int_datapath: Default::default(), bridge_mappings: Default::default(), drop_spare_files_before: None }),
+        None => Node::new(
+            crate::node::LOCAL_NODE,
+            NodeSpec {
+                name: identity.name.clone(),
+                role: NodeRole::Server,
+                unschedulable: false,
+                labels: Default::default(),
+                br_int_datapath: Default::default(),
+                bridge_mappings: Default::default(),
+                drop_spare_files_before: None,
+            },
+        ),
     };
     me.meta.id = node_id.clone();
     me.meta.name = identity.name.clone();
@@ -164,17 +212,29 @@ pub async fn init(manager: &Arc<VmManager>, cfg: &crate::config::Config, opts: I
     };
 
     // 4. Files, identity last: it is what makes the next start clustered.
-    files.save_node_cert(&cert_pem, &key.key_pem(), &ca.cert_pem).map_err(|e| rollback(e.into()))?;
-    files.save_ca_key(ca.key_pem()).map_err(|e| rollback(e.into()))?;
-    files.save_identity(&identity).map_err(|e| rollback(e.into()))?;
+    files
+        .save_node_cert(&cert_pem, &key.key_pem(), &ca.cert_pem)
+        .map_err(|e| rollback(e.into()))?;
+    files
+        .save_ca_key(ca.key_pem())
+        .map_err(|e| rollback(e.into()))?;
+    files
+        .save_identity(&identity)
+        .map_err(|e| rollback(e.into()))?;
 
     // 5. Raft: a cluster of one, then the writes that only a cluster has.
     crate::authz::set_identity(&cluster_id, &node_id);
     crate::authz::set_local_account_scope((!ccfg.shared_local_accounts).then(|| node_id.clone()));
-    let cluster = Cluster::start(db.clone(), files.clone(), identity.clone(), ccfg, listen).await.map_err(rollback)?;
+    let cluster = Cluster::start(db.clone(), files.clone(), identity.clone(), ccfg, listen)
+        .await
+        .map_err(rollback)?;
     let node = cluster.node.as_ref().expect("a server has a Raft member");
-    node.bootstrap(&advertise.to_string()).await.map_err(|e| rollback(e.into()))?;
-    node.wait_for_leader(Duration::from_secs(20)).await.map_err(|e| rollback(e.into()))?;
+    node.bootstrap(&advertise.to_string())
+        .await
+        .map_err(|e| rollback(e.into()))?;
+    node.wait_for_leader(Duration::from_secs(20))
+        .await
+        .map_err(|e| rollback(e.into()))?;
     node.seal_baseline().await.map_err(|e| rollback(e.into()))?;
     let (cid, fp) = (cluster_id.clone(), info.serial.clone());
     let dbc = db.clone();
@@ -196,14 +256,19 @@ pub async fn init(manager: &Arc<VmManager>, cfg: &crate::config::Config, opts: I
     if !cluster.config.shared_local_accounts {
         let n = node_id.clone();
         let auth_db = db.clone();
-        tokio::task::spawn_blocking(move || crate::auth::store::IdentityStore::new(auth_db).and_then(|s| s.scope_local_identities(&n)))
-            .await
-            .map_err(other)?
-            .map_err(other)?;
+        tokio::task::spawn_blocking(move || {
+            crate::auth::store::IdentityStore::new(auth_db)
+                .and_then(|s| s.scope_local_identities(&n))
+        })
+        .await
+        .map_err(other)?
+        .map_err(other)?;
     }
     manager.attach_cluster(cluster.clone());
     manager.reload_vms().await;
-    Ok(json!({ "cluster_id": cluster_id, "node_id": node_id, "advertise": advertise.to_string(), "backup": backup.display().to_string(), "ca_fingerprint": identity.ca_fingerprint }))
+    Ok(
+        json!({ "cluster_id": cluster_id, "node_id": node_id, "advertise": advertise.to_string(), "backup": backup.display().to_string(), "ca_fingerprint": identity.ca_fingerprint }),
+    )
 }
 
 pub struct JoinOptions {
@@ -217,7 +282,11 @@ pub struct JoinOptions {
 }
 
 /// §5.2: join the cluster `token` belongs to, as a new node.
-pub async fn join(manager: &Arc<VmManager>, cfg: &crate::config::Config, opts: JoinOptions) -> Result<Value, ClusterError> {
+pub async fn join(
+    manager: &Arc<VmManager>,
+    cfg: &crate::config::Config,
+    opts: JoinOptions,
+) -> Result<Value, ClusterError> {
     let files = Files::beside(manager.db_path());
     if manager.cluster().is_some() || files.exists() {
         return Err(other("this host is already part of a cluster"));
@@ -246,13 +315,30 @@ pub async fn join(manager: &Arc<VmManager>, cfg: &crate::config::Config, opts: J
     let name = opts.name.unwrap_or_else(hostname);
     let key = NodeKey::generate()?;
     let csr = key.csr(&[advertise.ip()], &[])?;
-    let req = JoinRequest { token: opts.token.clone(), csr, name: name.clone(), role: opts.role, node_id: node_id.clone(), raft_id, advertise, tunnel_ip: opts.tunnel_ip };
+    let req = JoinRequest {
+        token: opts.token.clone(),
+        csr,
+        name: name.clone(),
+        role: opts.role,
+        node_id: node_id.clone(),
+        raft_id,
+        advertise,
+        tunnel_ip: opts.tunnel_ip,
+    };
     let body = Bytes::from(serde_json::to_vec(&req).map_err(other)?);
 
     let mut target = server.clone();
     let mut resp = None;
     for _ in 0..2 {
-        let r = trusting.request(&target, hyper::Method::POST, "/cluster/v1/join", &[("content-type", "application/json".into())], body.clone()).await?;
+        let r = trusting
+            .request(
+                &target,
+                hyper::Method::POST,
+                "/cluster/v1/join",
+                &[("content-type", "application/json".into())],
+                body.clone(),
+            )
+            .await?;
         if r.status == hyper::StatusCode::MISDIRECTED_REQUEST {
             let v: Value = serde_json::from_slice(&r.body).unwrap_or_default();
             match v["leader"].as_str() {
@@ -265,14 +351,25 @@ pub async fn join(manager: &Arc<VmManager>, cfg: &crate::config::Config, opts: J
         }
         if !r.status.is_success() {
             let v: Value = serde_json::from_slice(&r.body).unwrap_or_default();
-            return Err(other(format!("{}: {}", r.status, v["message"].as_str().unwrap_or("the join was refused"))));
+            return Err(other(format!(
+                "{}: {}",
+                r.status,
+                v["message"].as_str().unwrap_or("the join was refused")
+            )));
         }
         resp = Some(r);
         break;
     }
-    let resp: JoinResponse = serde_json::from_slice(&resp.ok_or_else(|| other("no answer from the cluster"))?.body).map_err(other)?;
+    let resp: JoinResponse = serde_json::from_slice(
+        &resp
+            .ok_or_else(|| other("no answer from the cluster"))?
+            .body,
+    )
+    .map_err(other)?;
     if !pki::bundle_has(&resp.trust_pem, ca_hash) {
-        return Err(other("the cluster sent a different CA than the token names"));
+        return Err(other(
+            "the cluster sent a different CA than the token names",
+        ));
     }
 
     let identity = Identity {
@@ -303,19 +400,37 @@ pub async fn join(manager: &Arc<VmManager>, cfg: &crate::config::Config, opts: J
             return Err(e);
         }
     };
+    manager.lend_secrets_key(&cluster);
 
     // Servers ask the leader to add them to the Raft group; it brings them up
     // to date from a snapshot. This can take as long as the database is big.
     let mut promoted = false;
     if opts.role == NodeRole::Server {
-        let r = cluster.client.request_timeout(&target, hyper::Method::POST, "/cluster/v1/join/ready", &[], Bytes::new(), Duration::from_secs(900)).await;
+        let r = cluster
+            .client
+            .request_timeout(
+                &target,
+                hyper::Method::POST,
+                "/cluster/v1/join/ready",
+                &[],
+                Bytes::new(),
+                Duration::from_secs(900),
+            )
+            .await;
         let ok = match r {
             Ok(r) if r.status.is_success() => {
-                promoted = serde_json::from_slice::<Value>(&r.body).ok().and_then(|v| v["promoted"].as_bool()).unwrap_or(false);
+                promoted = serde_json::from_slice::<Value>(&r.body)
+                    .ok()
+                    .and_then(|v| v["promoted"].as_bool())
+                    .unwrap_or(false);
                 true
             }
             Ok(r) => {
-                tracing::error!("the leader refused to add this node: {} {}", r.status, String::from_utf8_lossy(&r.body));
+                tracing::error!(
+                    "the leader refused to add this node: {} {}",
+                    r.status,
+                    String::from_utf8_lossy(&r.body)
+                );
                 false
             }
             Err(e) => {
@@ -335,7 +450,9 @@ pub async fn join(manager: &Arc<VmManager>, cfg: &crate::config::Config, opts: J
     manager.attach_cluster(cluster);
     manager.reload_vms().await;
     report_after_joining(manager).await;
-    Ok(json!({ "cluster_id": identity.cluster_id, "node_id": node_id, "role": opts.role, "promoted": promoted }))
+    Ok(
+        json!({ "cluster_id": identity.cluster_id, "node_id": node_id, "role": opts.role, "promoted": promoted }),
+    )
 }
 
 pub struct RejoinOptions {
@@ -351,7 +468,11 @@ pub struct RejoinOptions {
 /// §5.7: come back as the same node, with a new certificate. A server whose
 /// Raft state can't be trusted (D18) starts it from nothing and returns as a
 /// learner; one whose state is intact simply resumes.
-pub async fn rejoin(manager: &Arc<VmManager>, cfg: &crate::config::Config, opts: RejoinOptions) -> Result<Value, ClusterError> {
+pub async fn rejoin(
+    manager: &Arc<VmManager>,
+    cfg: &crate::config::Config,
+    opts: RejoinOptions,
+) -> Result<Value, ClusterError> {
     let files = Files::beside(manager.db_path());
     let old = files.load_identity()?;
     let node_id = opts.node_id.clone().or_else(|| old.as_ref().map(|i| i.node_id.clone())).ok_or_else(|| other("this host has no cluster identity: pass the node id from `gxctl node rejoin-token`"))?;
@@ -372,14 +493,19 @@ pub async fn rejoin(manager: &Arc<VmManager>, cfg: &crate::config::Config, opts:
     let listen = opts.listen.unwrap_or(ccfg.listen);
     let key = NodeKey::generate()?;
     let csr = key.csr(&[advertise.ip()], &[])?;
-    let tunnel_ip = opts.tunnel_ip.or_else(|| old.as_ref().and_then(|i| i.tunnel_ip));
+    let tunnel_ip = opts
+        .tunnel_ip
+        .or_else(|| old.as_ref().and_then(|i| i.tunnel_ip));
     let req = JoinRequest {
         token: opts.token.clone(),
         csr,
         name: old.as_ref().map(|i| i.name.clone()).unwrap_or_default(),
         role: old.as_ref().map(|i| i.role).unwrap_or(NodeRole::Server),
         node_id: node_id.clone(),
-        raft_id: old.as_ref().map(|i| i.raft_id).unwrap_or_else(|| raft_id_of(&node_id)),
+        raft_id: old
+            .as_ref()
+            .map(|i| i.raft_id)
+            .unwrap_or_else(|| raft_id_of(&node_id)),
         advertise,
         tunnel_ip,
     };
@@ -387,7 +513,15 @@ pub async fn rejoin(manager: &Arc<VmManager>, cfg: &crate::config::Config, opts:
     let mut target = server.clone();
     let mut resp = None;
     for _ in 0..2 {
-        let r = trusting.request(&target, hyper::Method::POST, "/cluster/v1/rejoin", &[("content-type", "application/json".into())], body.clone()).await?;
+        let r = trusting
+            .request(
+                &target,
+                hyper::Method::POST,
+                "/cluster/v1/rejoin",
+                &[("content-type", "application/json".into())],
+                body.clone(),
+            )
+            .await?;
         if r.status == hyper::StatusCode::MISDIRECTED_REQUEST {
             let v: Value = serde_json::from_slice(&r.body).unwrap_or_default();
             match v["leader"].as_str() {
@@ -400,14 +534,25 @@ pub async fn rejoin(manager: &Arc<VmManager>, cfg: &crate::config::Config, opts:
         }
         if !r.status.is_success() {
             let v: Value = serde_json::from_slice(&r.body).unwrap_or_default();
-            return Err(other(format!("{}: {}", r.status, v["message"].as_str().unwrap_or("the rejoin was refused"))));
+            return Err(other(format!(
+                "{}: {}",
+                r.status,
+                v["message"].as_str().unwrap_or("the rejoin was refused")
+            )));
         }
         resp = Some(r);
         break;
     }
-    let resp: JoinResponse = serde_json::from_slice(&resp.ok_or_else(|| other("no answer from the cluster"))?.body).map_err(other)?;
+    let resp: JoinResponse = serde_json::from_slice(
+        &resp
+            .ok_or_else(|| other("no answer from the cluster"))?
+            .body,
+    )
+    .map_err(other)?;
     if !pki::bundle_has(&resp.trust_pem, ca_hash) {
-        return Err(other("the cluster sent a different CA than the token names"));
+        return Err(other(
+            "the cluster sent a different CA than the token names",
+        ));
     }
     let role = resp.role.unwrap_or(req.role);
     let raft_id = resp.raft_id.unwrap_or(req.raft_id);
@@ -438,12 +583,26 @@ pub async fn rejoin(manager: &Arc<VmManager>, cfg: &crate::config::Config, opts:
     }
     let cluster = Cluster::start(db, files.clone(), identity.clone(), ccfg, listen).await?;
     if role == NodeRole::Server && (resp.raft_fresh || resp.rejoin_raft) {
-        let r = cluster.client.request_timeout(&target, hyper::Method::POST, "/cluster/v1/join/ready", &[], Bytes::new(), Duration::from_secs(900)).await;
+        let r = cluster
+            .client
+            .request_timeout(
+                &target,
+                hyper::Method::POST,
+                "/cluster/v1/join/ready",
+                &[],
+                Bytes::new(),
+                Duration::from_secs(900),
+            )
+            .await;
         match r {
             Ok(r) if r.status.is_success() => {}
             Ok(r) => {
                 cluster.stop().await;
-                return Err(other(format!("the leader refused to add this node back: {} {}", r.status, String::from_utf8_lossy(&r.body))));
+                return Err(other(format!(
+                    "the leader refused to add this node back: {} {}",
+                    r.status,
+                    String::from_utf8_lossy(&r.body)
+                )));
             }
             Err(e) => {
                 cluster.stop().await;
@@ -457,27 +616,57 @@ pub async fn rejoin(manager: &Arc<VmManager>, cfg: &crate::config::Config, opts:
     manager.attach_cluster(cluster);
     manager.reload_vms().await;
     report_after_joining(manager).await;
-    Ok(json!({ "cluster_id": identity.cluster_id, "node_id": node_id, "role": role, "raft_fresh": resp.raft_fresh }))
+    Ok(
+        json!({ "cluster_id": identity.cluster_id, "node_id": node_id, "role": role, "raft_fresh": resp.raft_fresh }),
+    )
 }
 
 /// A join token for a new node (§5.2). `by` is recorded. It pins the CA
 /// that will sign: a CA rotation that is due runs first (§12.5).
-pub async fn join_token(cluster: &Cluster, role: NodeRole, ttl_secs: u64, allow_import: bool, by: &str) -> Result<String, ClusterError> {
+pub async fn join_token(
+    cluster: &Cluster,
+    role: NodeRole,
+    ttl_secs: u64,
+    allow_import: bool,
+    by: &str,
+) -> Result<String, ClusterError> {
     let fp = cluster.ca_for_token().await;
-    tokens::create(&cluster.db, TokenKind::Join { role, allow_import }, ttl_secs, &fp, by).map_err(other)
+    tokens::create(
+        &cluster.db,
+        TokenKind::Join { role, allow_import },
+        ttl_secs,
+        &fp,
+        by,
+    )
+    .map_err(other)
 }
 
 /// What `gxctl cluster status` shows.
 /// The newest certificate issued to each node: (issuer fingerprint, not_after).
 fn node_certs(c: &Cluster) -> std::collections::BTreeMap<String, (String, i64)> {
-    let mut out: std::collections::BTreeMap<String, (String, i64)> = std::collections::BTreeMap::new();
-    let Ok(txn) = c.db.begin_read() else { return out };
-    let Ok(t) = txn.open_table(crate::store::TableId::IssuedCerts.definition()) else { return out };
+    let mut out: std::collections::BTreeMap<String, (String, i64)> =
+        std::collections::BTreeMap::new();
+    let Ok(txn) = c.db.begin_read() else {
+        return out;
+    };
+    let Ok(t) = txn.open_table(crate::store::TableId::IssuedCerts.definition()) else {
+        return out;
+    };
     use redb::ReadableTable;
     for (_, v) in t.iter().into_iter().flatten().flatten() {
-        let Ok(v) = serde_json::from_slice::<Value>(v.value()) else { continue };
-        let (Some(node), Some(issuer), Some(not_after)) = (v["node"].as_str(), v["issuer"].as_str(), v["not_after"].as_i64()) else { continue };
-        let e = out.entry(node.to_string()).or_insert((issuer.to_string(), not_after));
+        let Ok(v) = serde_json::from_slice::<Value>(v.value()) else {
+            continue;
+        };
+        let (Some(node), Some(issuer), Some(not_after)) = (
+            v["node"].as_str(),
+            v["issuer"].as_str(),
+            v["not_after"].as_i64(),
+        ) else {
+            continue;
+        };
+        let e = out
+            .entry(node.to_string())
+            .or_insert((issuer.to_string(), not_after));
         if not_after > e.1 {
             *e = (issuer.to_string(), not_after);
         }
@@ -488,7 +677,10 @@ fn node_certs(c: &Cluster) -> std::collections::BTreeMap<String, (String, i64)> 
 /// When the signing CA's certificate expires, where this server holds it.
 fn ca_not_after(c: &Cluster) -> Option<i64> {
     let ca = c.signing_ca()?;
-    let der = super::pki::pem_bundle_ders(&ca.cert_pem).ok()?.into_iter().next()?;
+    let der = super::pki::pem_bundle_ders(&ca.cert_pem)
+        .ok()?
+        .into_iter()
+        .next()?;
     let (_, cert) = x509_parser::parse_x509_certificate(&der).ok()?;
     Some(cert.validity().not_after.timestamp())
 }
@@ -500,8 +692,12 @@ fn ca_not_after(c: &Cluster) -> Option<i64> {
 /// itself, it is [`status_of`].
 pub fn status_seen_from(c: &Cluster, viewer: Option<&str>) -> Value {
     let mut v = status_of(c);
-    let Some(id) = viewer.filter(|id| *id != c.identity.node_id) else { return v };
-    let Ok(Some(n)) = NodeStore::new(c.db.clone()).get(id) else { return v };
+    let Some(id) = viewer.filter(|id| *id != c.identity.node_id) else {
+        return v;
+    };
+    let Ok(Some(n)) = NodeStore::new(c.db.clone()).get(id) else {
+        return v;
+    };
     v["served_by"] = json!({ "node_id": c.identity.node_id, "name": c.identity.name });
     v["node_id"] = json!(n.meta.id);
     v["name"] = json!(n.spec.name);
@@ -514,8 +710,19 @@ pub fn status_of(c: &Cluster) -> Value {
     let nodes = NodeStore::new(c.db.clone()).list().unwrap_or_default();
     let certs = node_certs(c);
     let signing = c.signing_fp();
-    let name_of = |raft_id: u64| nodes.iter().find(|n| n.status.raft_id == Some(raft_id)).map(|n| n.spec.name.clone());
-    let addr_of = |raft_id: u64| nodes.iter().find(|n| n.status.raft_id == Some(raft_id)).and_then(|n| n.status.advertise).map(|a| a.to_string());
+    let name_of = |raft_id: u64| {
+        nodes
+            .iter()
+            .find(|n| n.status.raft_id == Some(raft_id))
+            .map(|n| n.spec.name.clone())
+    };
+    let addr_of = |raft_id: u64| {
+        nodes
+            .iter()
+            .find(|n| n.status.raft_id == Some(raft_id))
+            .and_then(|n| n.status.advertise)
+            .map(|a| a.to_string())
+    };
     let raft = c.node.as_ref().map(|n| {
         let m = n.raft.metrics().borrow().clone();
         let member = |id: u64| json!({ "raft_id": id, "name": name_of(id), "address": addr_of(id) });
@@ -555,23 +762,39 @@ pub fn status_of(c: &Cluster) -> Value {
 
 /// Promote learners to voters (§5.11): the new voter count must be 1, 3 or 5
 /// unless `force`.
-pub async fn promote(c: &Cluster, node_names: &[String], force: bool) -> Result<Value, ClusterError> {
-    let node = c.node.as_ref().ok_or_else(|| other("this node is not a server"))?;
+pub async fn promote(
+    c: &Cluster,
+    node_names: &[String],
+    force: bool,
+) -> Result<Value, ClusterError> {
+    let node = c
+        .node
+        .as_ref()
+        .ok_or_else(|| other("this node is not a server"))?;
     if !node.is_leader() {
         return Err(other("this is not the leader"));
     }
     let nodes = NodeStore::new(c.db.clone()).list().map_err(other)?;
     let mut voters = node.voters();
     for name in node_names {
-        let n = nodes.iter().find(|n| &n.spec.name == name || &n.meta.id == name).ok_or_else(|| other(format!("no node {name}")))?;
-        let id = n.status.raft_id.ok_or_else(|| other(format!("{name} is not a server")))?;
+        let n = nodes
+            .iter()
+            .find(|n| &n.spec.name == name || &n.meta.id == name)
+            .ok_or_else(|| other(format!("no node {name}")))?;
+        let id = n
+            .status
+            .raft_id
+            .ok_or_else(|| other(format!("{name} is not a server")))?;
         if !node.learners().contains(&id) && !voters.contains(&id) {
             return Err(other(format!("{name} is not a member yet")));
         }
         voters.insert(id);
     }
     if !force && ![1, 3, 5].contains(&voters.len()) {
-        return Err(other(format!("that would make {} voters; voters are 1, 3 or 5 (use --force to override)", voters.len())));
+        return Err(other(format!(
+            "that would make {} voters; voters are 1, 3 or 5 (use --force to override)",
+            voters.len()
+        )));
     }
     node.set_voters(voters.clone()).await?;
     Ok(json!({ "voters": voters.len() }))
@@ -582,7 +805,13 @@ pub async fn promote(c: &Cluster, node_names: &[String], force: bool) -> Result<
 pub fn export_snapshot(db: &Db, path: &std::path::Path) -> Result<u64, ClusterError> {
     use std::os::unix::fs::OpenOptionsExt;
     let view = db.snapshot_view().map_err(other)?;
-    let f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(path).map_err(other)?;
+    let f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)
+        .map_err(other)?;
     let mut w = std::io::BufWriter::new(f);
     view.write_to(&mut w).map_err(other)
 }
@@ -596,10 +825,22 @@ struct NoTransport;
 
 #[async_trait::async_trait]
 impl super::raft::Transport for NoTransport {
-    async fn call(&self, _: u64, _: &str, _: super::raft::Rpc, _: Vec<u8>) -> Result<Vec<u8>, super::raft::TransportError> {
+    async fn call(
+        &self,
+        _: u64,
+        _: &str,
+        _: super::raft::Rpc,
+        _: Vec<u8>,
+    ) -> Result<Vec<u8>, super::raft::TransportError> {
         Err(super::raft::TransportError("recovery runs alone".into()))
     }
-    async fn snapshot(&self, _: u64, _: &str, _: Vec<u8>, _: std::path::PathBuf) -> Result<Vec<u8>, super::raft::TransportError> {
+    async fn snapshot(
+        &self,
+        _: u64,
+        _: &str,
+        _: Vec<u8>,
+        _: std::path::PathBuf,
+    ) -> Result<Vec<u8>, super::raft::TransportError> {
         Err(super::raft::TransportError("recovery runs alone".into()))
     }
 }
@@ -609,9 +850,15 @@ impl super::raft::Transport for NoTransport {
 /// from a snapshot. The identity, certificates and CA stay; the Raft log is
 /// replaced by a fresh one whose only member is this node. Other servers
 /// re-join with fresh Raft state (D18). Run while the control plane is stopped.
-pub async fn force_new_cluster(db_path: &std::path::Path, from: Option<&std::path::Path>, cfg: &ClusterConfig) -> Result<(), ClusterError> {
+pub async fn force_new_cluster(
+    db_path: &std::path::Path,
+    from: Option<&std::path::Path>,
+    cfg: &ClusterConfig,
+) -> Result<(), ClusterError> {
     let files = Files::beside(db_path);
-    let identity = files.load_identity()?.ok_or_else(|| other("this host has no cluster identity"))?;
+    let identity = files
+        .load_identity()?
+        .ok_or_else(|| other("this host has no cluster identity"))?;
     if identity.role != NodeRole::Server {
         return Err(other("only a server can start a new cluster"));
     }
@@ -635,7 +882,14 @@ pub async fn force_new_cluster(db_path: &std::path::Path, from: Option<&std::pat
     if raft_dir.exists() {
         std::fs::remove_dir_all(&raft_dir).map_err(other)?;
     }
-    let node = super::raft::ClusterNode::start(db.clone(), &raft_dir, identity.raft_id, &cfg.raft_settings(), Arc::new(NoTransport)).await?;
+    let node = super::raft::ClusterNode::start(
+        db.clone(),
+        &raft_dir,
+        identity.raft_id,
+        &cfg.raft_settings(),
+        Arc::new(NoTransport),
+    )
+    .await?;
     node.bootstrap(&identity.advertise.to_string()).await?;
     node.wait_for_leader(Duration::from_secs(20)).await?;
     node.seal_baseline().await?;
@@ -645,12 +899,20 @@ pub async fn force_new_cluster(db_path: &std::path::Path, from: Option<&std::pat
 
 fn reset_raft_meta(db: &Db) -> Result<(), ClusterError> {
     // `raft_meta` is local: it is written outside the replicated path.
-    db.apply(&crate::store::WriteSet { format: crate::store::WRITE_SET_FORMAT, origin: Origin::System, ops: Vec::new() }, 0, |txn| {
-        let mut t = txn.open_table(TableId::RaftMeta.definition())?;
-        t.remove(crate::store::LAST_APPLIED)?;
-        t.remove(crate::store::LAST_MEMBERSHIP)?;
-        Ok(())
-    })
+    db.apply(
+        &crate::store::WriteSet {
+            format: crate::store::WRITE_SET_FORMAT,
+            origin: Origin::System,
+            ops: Vec::new(),
+        },
+        0,
+        |txn| {
+            let mut t = txn.open_table(TableId::RaftMeta.definition())?;
+            t.remove(crate::store::LAST_APPLIED)?;
+            t.remove(crate::store::LAST_MEMBERSHIP)?;
+            Ok(())
+        },
+    )
     .map_err(other)
 }
 
@@ -660,16 +922,33 @@ fn reset_raft_meta(db: &Db) -> Result<(), ClusterError> {
 pub async fn port_checks(c: &Cluster, ovn: bool) -> Vec<Value> {
     let nodes = NodeStore::new(c.db.clone()).list().unwrap_or_default();
     let mut jobs = Vec::new();
-    for n in nodes.iter().filter(|n| !n.status.phase.is_tombstone() && n.meta.id != c.identity.node_id) {
-        let Some(adv) = n.status.advertise else { continue };
+    for n in nodes
+        .iter()
+        .filter(|n| !n.status.phase.is_tombstone() && n.meta.id != c.identity.node_id)
+    {
+        let Some(adv) = n.status.advertise else {
+            continue;
+        };
         let mut ports = vec![adv.port()];
         if ovn && n.spec.role == NodeRole::Server {
-            ports.extend([glidex_ovs::ovn::NB_PORT, glidex_ovs::ovn::SB_PORT, glidex_ovs::ovn::NB_RAFT_PORT, glidex_ovs::ovn::SB_RAFT_PORT]);
+            ports.extend([
+                glidex_ovs::ovn::NB_PORT,
+                glidex_ovs::ovn::SB_PORT,
+                glidex_ovs::ovn::NB_RAFT_PORT,
+                glidex_ovs::ovn::SB_RAFT_PORT,
+            ]);
         }
         for p in ports {
             let (name, addr) = (n.spec.name.clone(), SocketAddr::new(adv.ip(), p));
             jobs.push(async move {
-                let ok = matches!(tokio::time::timeout(Duration::from_secs(2), tokio::net::TcpStream::connect(addr)).await, Ok(Ok(_)));
+                let ok = matches!(
+                    tokio::time::timeout(
+                        Duration::from_secs(2),
+                        tokio::net::TcpStream::connect(addr)
+                    )
+                    .await,
+                    Ok(Ok(_))
+                );
                 json!({ "node": name, "port": addr.port(), "proto": "tcp", "reachable": ok })
             });
         }
@@ -681,22 +960,41 @@ pub async fn port_checks(c: &Cluster, ovn: bool) -> Vec<Value> {
 /// removed. Local root has no cluster rights to start a removal (D14), so it
 /// refuses until the node's record says `Removed` (or `Departed`).
 pub async fn leave(manager: &Arc<VmManager>) -> Result<Value, ClusterError> {
-    let c = manager.cluster().ok_or_else(|| other("this host is not part of a cluster"))?;
-    let phase = NodeStore::new(c.db.clone()).get(&c.identity.node_id).map_err(other)?.map(|n| n.status.phase);
+    let c = manager
+        .cluster()
+        .ok_or_else(|| other("this host is not part of a cluster"))?;
+    let phase = NodeStore::new(c.db.clone())
+        .get(&c.identity.node_id)
+        .map_err(other)?
+        .map(|n| n.status.phase);
     match phase {
         Some(crate::node::NodePhase::Removed) | Some(crate::node::NodePhase::Departed) => {}
-        Some(p) => return Err(other(format!("this node is {p:?}: run `gxctl node remove {}` on a server first", c.identity.name))),
-        None => return Err(other("the cluster has no record of this node (is it up to date?)")),
+        Some(p) => {
+            return Err(other(format!(
+                "this node is {p:?}: run `gxctl node remove {}` on a server first",
+                c.identity.name
+            )))
+        }
+        None => {
+            return Err(other(
+                "the cluster has no record of this node (is it up to date?)",
+            ))
+        }
     }
     if manager.ovn_enabled() {
         let netd = manager.netd().clone();
-        let _ = tokio::task::spawn_blocking(move || netd.call::<()>(glidex_netd::proto::Op::LeaveOvn { confirm: true })).await;
+        let _ = tokio::task::spawn_blocking(move || {
+            netd.call::<()>(glidex_netd::proto::Op::LeaveOvn { confirm: true })
+        })
+        .await;
     }
     manager.detach_cluster().await;
     let files = Files::beside(manager.db_path());
     let name = c.identity.name.clone();
     files.delete_all();
-    Ok(json!({ "left": name, "restart": "restart the control plane: it starts again as a standalone host" }))
+    Ok(
+        json!({ "left": name, "restart": "restart the control plane: it starts again as a standalone host" }),
+    )
 }
 
 /// §5.5 step 3 without this node's API, with the control plane stopped: an
@@ -706,33 +1004,71 @@ pub async fn leave(manager: &Arc<VmManager>) -> Result<Value, ClusterError> {
 /// own record says it is gone, or a server refuses its certificate as revoked.
 /// The host becomes standalone with what the cluster left it (nothing, for a
 /// removed node). Returns the node's name and what confirmed the removal.
-pub async fn leave_removed_offline(db_path: &std::path::Path) -> Result<(String, String), ClusterError> {
+pub async fn leave_removed_offline(
+    db_path: &std::path::Path,
+) -> Result<(String, String), ClusterError> {
     use crate::node::NodePhase;
     let files = Files::beside(db_path);
-    let identity = files.load_identity().map_err(other)?.ok_or_else(|| other("this host is not part of a cluster"))?;
+    let identity = files
+        .load_identity()
+        .map_err(other)?
+        .ok_or_else(|| other("this host is not part of a cluster"))?;
     let db = Arc::new(crate::store::Db::create(db_path).map_err(other)?);
     let store = NodeStore::new(db.clone());
-    let phase = store.get(&identity.node_id).map_err(other)?.map(|n| n.status.phase);
+    let phase = store
+        .get(&identity.node_id)
+        .map_err(other)?
+        .map(|n| n.status.phase);
     let confirmed = match phase {
-        Some(p @ (NodePhase::Removed | NodePhase::Departed | NodePhase::Forgotten)) => format!("this node's record says {p:?}"),
+        Some(p @ (NodePhase::Removed | NodePhase::Departed | NodePhase::Forgotten)) => {
+            format!("this node's record says {p:?}")
+        }
         recorded => {
             // The record may predate the removal: the write that removed the
             // node also revoked its certificate. Ask the servers.
             let mut servers = identity.seeds.clone();
             for n in store.list().unwrap_or_default() {
-                if n.spec.role == NodeRole::Server && n.meta.id != identity.node_id && !n.status.phase.is_tombstone() {
-                    if let Some(a) = n.status.advertise.map(|a| a.to_string()).filter(|a| !servers.contains(a)) {
+                if n.spec.role == NodeRole::Server
+                    && n.meta.id != identity.node_id
+                    && !n.status.phase.is_tombstone()
+                {
+                    if let Some(a) = n
+                        .status
+                        .advertise
+                        .map(|a| a.to_string())
+                        .filter(|a| !servers.contains(a))
+                    {
                         servers.push(a);
                     }
                 }
             }
-            let material = net::TlsMaterial::from_pem(&files.read(files.cert()).map_err(other)?, &files.read(files.key()).map_err(other)?, &files.read(files.trust()).map_err(other)?)?;
+            let material = net::TlsMaterial::from_pem(
+                &files.read(files.cert()).map_err(other)?,
+                &files.read(files.key()).map_err(other)?,
+                &files.read(files.trust()).map_err(other)?,
+            )?;
             let client = net::PeerClient::new(net::ClusterTls::new(material)?);
             let mut answer = None;
             for s in &servers {
-                let Ok(r) = client.request_timeout(s, hyper::Method::GET, "/cluster/v1/list", &[], Bytes::new(), Duration::from_secs(10)).await else { continue };
-                let code = serde_json::from_slice::<Value>(&r.body).ok().and_then(|v| v["error"].as_str().map(String::from));
-                if r.status == hyper::StatusCode::UNAUTHORIZED && code.as_deref() == Some(super::server::NODE_REMOVED) {
+                let Ok(r) = client
+                    .request_timeout(
+                        s,
+                        hyper::Method::GET,
+                        "/cluster/v1/list",
+                        &[],
+                        Bytes::new(),
+                        Duration::from_secs(10),
+                    )
+                    .await
+                else {
+                    continue;
+                };
+                let code = serde_json::from_slice::<Value>(&r.body)
+                    .ok()
+                    .and_then(|v| v["error"].as_str().map(String::from));
+                if r.status == hyper::StatusCode::UNAUTHORIZED
+                    && code.as_deref() == Some(super::server::NODE_REMOVED)
+                {
                     answer = Some(format!("{s} refuses its certificate as revoked"));
                     break;
                 }
@@ -771,7 +1107,11 @@ pub struct ImportOptions {
 
 /// §5.9: join a cluster and bring this host's resources in. The host stays a
 /// working standalone host until the plan is approved and committed.
-pub async fn join_import(manager: &Arc<VmManager>, cfg: &crate::config::Config, opts: ImportOptions) -> Result<Value, ClusterError> {
+pub async fn join_import(
+    manager: &Arc<VmManager>,
+    cfg: &crate::config::Config,
+    opts: ImportOptions,
+) -> Result<Value, ClusterError> {
     let files = Files::beside(manager.db_path());
     if manager.cluster().is_some() || files.exists() {
         return Err(other("this host is already part of a cluster"));
@@ -793,13 +1133,36 @@ pub async fn join_import(manager: &Arc<VmManager>, cfg: &crate::config::Config, 
     let key = NodeKey::generate()?;
     let csr = key.csr(&[advertise.ip()], &[])?;
     // The host's own records, as a bundle (ids kept).
-    let bundle = super::departure::build_bundle(&manager.database(), "import", crate::node::LOCAL_NODE, &Default::default());
-    let req = super::import::ImportRequest { token: opts.token.clone(), csr, name: name.clone(), node_id: node_id.clone(), raft_id, advertise, tunnel_ip: opts.tunnel_ip, bundle };
+    let bundle = super::departure::build_bundle(
+        &manager.database(),
+        "import",
+        crate::node::LOCAL_NODE,
+        &Default::default(),
+    );
+    let req = super::import::ImportRequest {
+        token: opts.token.clone(),
+        csr,
+        name: name.clone(),
+        node_id: node_id.clone(),
+        raft_id,
+        advertise,
+        tunnel_ip: opts.tunnel_ip,
+        bundle,
+    };
     let body = Bytes::from(serde_json::to_vec(&req).map_err(other)?);
     let mut target = server.clone();
     let mut created = None;
     for _ in 0..2 {
-        let r = trusting.request_timeout(&target, hyper::Method::POST, "/cluster/v1/import", &[("content-type", "application/json".into())], body.clone(), Duration::from_secs(120)).await?;
+        let r = trusting
+            .request_timeout(
+                &target,
+                hyper::Method::POST,
+                "/cluster/v1/import",
+                &[("content-type", "application/json".into())],
+                body.clone(),
+                Duration::from_secs(120),
+            )
+            .await?;
         if r.status == hyper::StatusCode::MISDIRECTED_REQUEST {
             let v: Value = serde_json::from_slice(&r.body).unwrap_or_default();
             match v["leader"].as_str() {
@@ -812,34 +1175,64 @@ pub async fn join_import(manager: &Arc<VmManager>, cfg: &crate::config::Config, 
         }
         if !r.status.is_success() {
             let v: Value = serde_json::from_slice(&r.body).unwrap_or_default();
-            return Err(other(format!("{}: {}", r.status, v["message"].as_str().unwrap_or("the import was refused"))));
+            return Err(other(format!(
+                "{}: {}",
+                r.status,
+                v["message"].as_str().unwrap_or("the import was refused")
+            )));
         }
         created = Some(serde_json::from_slice::<Value>(&r.body).map_err(other)?);
         break;
     }
     let created = created.ok_or_else(|| other("no answer from the cluster"))?;
-    let (plan, secret) = (created["plan"].as_str().unwrap_or("").to_string(), created["secret"].as_str().unwrap_or("").to_string());
+    let (plan, secret) = (
+        created["plan"].as_str().unwrap_or("").to_string(),
+        created["secret"].as_str().unwrap_or("").to_string(),
+    );
     tracing::warn!(plan = %plan, "import plan created; waiting for a cluster administrator to approve it: `gxctl node import show {plan}`");
     // Wait for the decision. The host works as a standalone host meanwhile.
     let deadline = tokio::time::Instant::now() + opts.wait;
     let result = loop {
-        let r = trusting.request(&target, hyper::Method::GET, &format!("/cluster/v1/import/{plan}"), &[("x-import-secret", secret.clone())], Bytes::new()).await?;
+        let r = trusting
+            .request(
+                &target,
+                hyper::Method::GET,
+                &format!("/cluster/v1/import/{plan}"),
+                &[("x-import-secret", secret.clone())],
+                Bytes::new(),
+            )
+            .await?;
         if r.status.is_success() {
             let v: Value = serde_json::from_slice(&r.body).map_err(other)?;
             match v["state"].as_str() {
                 Some("committed") => break v["result"].clone(),
-                Some("rejected") => return Err(other("the import was rejected or expired; this host is unchanged")),
+                Some("rejected") => {
+                    return Err(other(
+                        "the import was rejected or expired; this host is unchanged",
+                    ))
+                }
                 _ => {}
             }
         } else if r.status == hyper::StatusCode::MISDIRECTED_REQUEST {
-            if let Some(l) = serde_json::from_slice::<Value>(&r.body).ok().and_then(|v| v["leader"].as_str().map(String::from)) {
+            if let Some(l) = serde_json::from_slice::<Value>(&r.body)
+                .ok()
+                .and_then(|v| v["leader"].as_str().map(String::from))
+            {
                 target = l;
             }
         }
         if tokio::time::Instant::now() >= deadline {
             // Withdraw the plan so it can't commit behind this host's back; if it
             // committed in the meantime, go ahead and switch.
-            let r = trusting.request(&target, hyper::Method::POST, &format!("/cluster/v1/import/{plan}/cancel"), &[("x-import-secret", secret.clone())], Bytes::new()).await?;
+            let r = trusting
+                .request(
+                    &target,
+                    hyper::Method::POST,
+                    &format!("/cluster/v1/import/{plan}/cancel"),
+                    &[("x-import-secret", secret.clone())],
+                    Bytes::new(),
+                )
+                .await?;
             let v: Value = serde_json::from_slice(&r.body).unwrap_or_default();
             if r.status.is_success() && v["state"] == "committed" {
                 break v["result"].clone();
@@ -847,18 +1240,29 @@ pub async fn join_import(manager: &Arc<VmManager>, cfg: &crate::config::Config, 
             if !r.status.is_success() {
                 return Err(other(format!("not approved in time, and the plan {plan} could not be withdrawn ({}): ask an administrator to reject it before using this host's VMs elsewhere", r.status)));
             }
-            return Err(other(format!("not approved in time: the plan {plan} was withdrawn and this host is unchanged")));
+            return Err(other(format!(
+                "not approved in time: the plan {plan} was withdrawn and this host is unchanged"
+            )));
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
     };
-    let cert_pem = result["cert_pem"].as_str().ok_or_else(|| other("no certificate in the answer"))?.to_string();
+    let cert_pem = result["cert_pem"]
+        .as_str()
+        .ok_or_else(|| other("no certificate in the answer"))?
+        .to_string();
     let trust_pem = result["trust_pem"].as_str().unwrap_or(&ca_pem).to_string();
     let cluster_id = result["cluster_id"].as_str().unwrap_or("").to_string();
     if !pki::bundle_has(&trust_pem, ca_hash) {
-        return Err(other("the cluster sent a different CA than the token names"));
+        return Err(other(
+            "the cluster sent a different CA than the token names",
+        ));
     }
     // Switch (§5.9 step 6): keep the standalone records, then work from the cluster.
-    let backup = files.dir.parent().unwrap_or(std::path::Path::new(".")).join(format!("glidex.db.pre-join-{}", crate::tenancy::now()));
+    let backup = files
+        .dir
+        .parent()
+        .unwrap_or(std::path::Path::new("."))
+        .join(format!("glidex.db.pre-join-{}", crate::tenancy::now()));
     export_snapshot(&manager.database(), &backup)?;
     let identity = Identity {
         cluster_id: cluster_id.clone(),
@@ -883,7 +1287,9 @@ pub async fn join_import(manager: &Arc<VmManager>, cfg: &crate::config::Config, 
     manager.attach_cluster(cluster);
     manager.reload_vms().await;
     report_after_joining(manager).await;
-    Ok(json!({ "cluster_id": cluster_id, "node_id": node_id, "plan": plan, "backup": backup.display().to_string() }))
+    Ok(
+        json!({ "cluster_id": cluster_id, "node_id": node_id, "plan": plan, "backup": backup.display().to_string() }),
+    )
 }
 
 /// A node that just joined reports its capacity and features at once, not
@@ -892,7 +1298,9 @@ async fn report_after_joining(manager: &Arc<VmManager>) {
     // An agent reports through its cache: once that holds its own record.
     if let Some(link) = manager.node_link() {
         if !link.wait_ready(Duration::from_secs(30)).await {
-            tracing::warn!("this node's cache is not ready yet; it reports itself at the next refresh");
+            tracing::warn!(
+                "this node's cache is not ready yet; it reports itself at the next refresh"
+            );
             return;
         }
     }

@@ -41,10 +41,17 @@ fn harness() -> H {
     cfg.auth.allowed_origins = vec![ORIGIN.into()];
     cfg.server_name = Some("lab-cp".into());
     // ui.sock checks its peer is the UI's user: make that us.
-    cfg.ui_user = nix::unistd::User::from_uid(nix::unistd::getuid()).unwrap().unwrap().name;
+    cfg.ui_user = nix::unistd::User::from_uid(nix::unistd::getuid())
+        .unwrap()
+        .unwrap()
+        .name;
     let auth = AuthService::new(manager.database(), cfg).unwrap();
     let app = Arc::new(App { manager, auth });
-    H { router: api::router(app.clone()), app, _dir: dir }
+    H {
+        router: api::router(app.clone()),
+        app,
+        _dir: dir,
+    }
 }
 
 #[derive(Clone)]
@@ -65,11 +72,28 @@ struct Reply {
 
 impl H {
     fn user(&self, name: &str) -> String {
-        self.app.auth.store.user_for_identity("pam", name, name, None, true).unwrap().unwrap().id
+        self.app
+            .auth
+            .store
+            .user_for_identity("pam", name, name, None, true)
+            .unwrap()
+            .unwrap()
+            .id
     }
 
     fn token(&self, user: &str) -> String {
-        self.app.auth.create_token("t", TokenKind::Personal { owner: user.into() }, user, None, None, None).unwrap().0
+        self.app
+            .auth
+            .create_token(
+                "t",
+                TokenKind::Personal { owner: user.into() },
+                user,
+                None,
+                None,
+                None,
+            )
+            .unwrap()
+            .0
     }
 
     fn session(&self, user: &str) -> Who {
@@ -78,8 +102,18 @@ impl H {
         Who::Cookie(cookie, csrf)
     }
 
-    async fn send(&self, path: &str, content_type: &str, body: Vec<u8>, who: &Who, listener: Option<Listener>) -> Reply {
-        let mut b = Request::builder().method("POST").uri(path).header(header::CONTENT_TYPE, content_type);
+    async fn send(
+        &self,
+        path: &str,
+        content_type: &str,
+        body: Vec<u8>,
+        who: &Who,
+        listener: Option<Listener>,
+    ) -> Reply {
+        let mut b = Request::builder()
+            .method("POST")
+            .uri(path)
+            .header(header::CONTENT_TYPE, content_type);
         match who {
             Who::Nobody => {}
             Who::Bearer(t) => b = b.header(header::AUTHORIZATION, format!("Bearer {t}")),
@@ -96,22 +130,38 @@ impl H {
                 b = b.extension(PeerUid(nix::unistd::getuid().as_raw()));
             }
         }
-        let resp = self.router.clone().oneshot(b.body(Body::from(body)).unwrap()).await.unwrap();
+        let resp = self
+            .router
+            .clone()
+            .oneshot(b.body(Body::from(body)).unwrap())
+            .await
+            .unwrap();
         let (parts, body) = resp.into_parts();
         let collected = body.collect().await.unwrap();
         let trailers = collected.trailers().cloned();
-        Reply { status: parts.status, headers: parts.headers, body: collected.to_bytes(), trailers }
+        Reply {
+            status: parts.status,
+            headers: parts.headers,
+            body: collected.to_bytes(),
+            trailers,
+        }
     }
 
     /// Connect protocol, JSON (what curl sends).
     async fn connect(&self, path: &str, who: &Who) -> (StatusCode, Value) {
-        let r = self.send(path, "application/json", b"{}".to_vec(), who, None).await;
-        (r.status, serde_json::from_slice(&r.body).unwrap_or(Value::Null))
+        let r = self
+            .send(path, "application/json", b"{}".to_vec(), who, None)
+            .await;
+        (
+            r.status,
+            serde_json::from_slice(&r.body).unwrap_or(Value::Null),
+        )
     }
 
     /// gRPC: an empty request message in one envelope.
     async fn grpc(&self, path: &str, who: &Who, listener: Option<Listener>) -> Reply {
-        self.send(path, "application/grpc", envelope(0, &[]), who, listener).await
+        self.send(path, "application/grpc", envelope(0, &[]), who, listener)
+            .await
     }
 }
 
@@ -145,8 +195,13 @@ fn grpc_status(r: &Reply) -> Option<String> {
 
 /// `ErrorInfo.reason` from a Connect error body.
 fn connect_reason(v: &Value) -> Option<String> {
-    let d = v["details"].as_array()?.iter().find(|d| d["type"] == "google.rpc.ErrorInfo")?;
-    let bytes = base64::engine::general_purpose::STANDARD_NO_PAD.decode(d["value"].as_str()?.trim_end_matches('=')).ok()?;
+    let d = v["details"]
+        .as_array()?
+        .iter()
+        .find(|d| d["type"] == "google.rpc.ErrorInfo")?;
+    let bytes = base64::engine::general_purpose::STANDARD_NO_PAD
+        .decode(d["value"].as_str()?.trim_end_matches('='))
+        .ok()?;
     let info = ErrorInfo::decode_from_slice(&bytes).ok()?;
     assert_eq!(info.domain, "glidex");
     Some(info.reason)
@@ -156,11 +211,24 @@ fn connect_reason(v: &Value) -> Option<String> {
 async fn server_info_is_one_answer_on_every_transport() {
     let h = harness();
     // REST twin: the same message as proto JSON.
-    let rest = h.router.clone().oneshot(Request::get("/auth/server-info").body(Body::empty()).unwrap()).await.unwrap();
+    let rest = h
+        .router
+        .clone()
+        .oneshot(
+            Request::get("/auth/server-info")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
     assert_eq!(rest.status(), StatusCode::OK);
-    let rest: Value = serde_json::from_slice(&rest.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    let rest: Value =
+        serde_json::from_slice(&rest.into_body().collect().await.unwrap().to_bytes()).unwrap();
     assert_eq!(rest["cluster_name"], "lab-cp");
-    assert_eq!(rest["methods"]["oidc"], false, "set falses are sent: {rest}");
+    assert_eq!(
+        rest["methods"]["oidc"], false,
+        "set falses are sent: {rest}"
+    );
     assert!(rest["cluster_id"].is_null(), "standalone: {rest}");
 
     let (s, connect) = h.connect(SERVER_INFO, &Who::Nobody).await;
@@ -214,7 +282,15 @@ async fn cookies_only_for_grpc_web_through_the_ui() {
     assert_eq!(connect_reason(&v).as_deref(), Some("cookie_not_accepted"));
 
     // gRPC-Web from glidex-ui with the cookie: the browser path.
-    let r = h.send(WHOAMI, "application/grpc-web+proto", envelope(0, &[]), &cookie, Some(Listener::Ui)).await;
+    let r = h
+        .send(
+            WHOAMI,
+            "application/grpc-web+proto",
+            envelope(0, &[]),
+            &cookie,
+            Some(Listener::Ui),
+        )
+        .await;
     assert_eq!(r.status, StatusCode::OK);
     let frames = envelopes(&r.body);
     let me = WhoAmIResponse::decode_from_slice(&frames[0].1).unwrap();
@@ -222,11 +298,24 @@ async fn cookies_only_for_grpc_web_through_the_ui() {
     // gRPC-Web carries its trailers as the last envelope (flag 0x80).
     let (flags, trailer) = frames.last().unwrap();
     assert_eq!(*flags & 0x80, 0x80);
-    assert!(String::from_utf8_lossy(trailer).contains("grpc-status: 0") || String::from_utf8_lossy(trailer).contains("grpc-status:0"));
+    assert!(
+        String::from_utf8_lossy(trailer).contains("grpc-status: 0")
+            || String::from_utf8_lossy(trailer).contains("grpc-status:0")
+    );
 
     // The same request without CSRF is stopped by the authentication layer.
-    let Who::Cookie(c, _) = &cookie else { unreachable!() };
-    let r = h.send(WHOAMI, "application/grpc-web+proto", envelope(0, &[]), &Who::Cookie(c.clone(), "wrong".into()), Some(Listener::Ui)).await;
+    let Who::Cookie(c, _) = &cookie else {
+        unreachable!()
+    };
+    let r = h
+        .send(
+            WHOAMI,
+            "application/grpc-web+proto",
+            envelope(0, &[]),
+            &Who::Cookie(c.clone(), "wrong".into()),
+            Some(Listener::Ui),
+        )
+        .await;
     assert_eq!(r.status, StatusCode::FORBIDDEN);
 }
 
@@ -235,8 +324,20 @@ async fn each_listener_takes_its_protocols() {
     let h = harness();
     let token = Who::Bearer(h.token(&h.user("alice")));
     // gRPC-Web is the browser's: not on TCP.
-    let r = h.send(WHOAMI, "application/grpc-web+proto", envelope(0, &[]), &token, None).await;
-    assert_eq!(grpc_web_status(&r).as_deref(), Some("7"), "PERMISSION_DENIED");
+    let r = h
+        .send(
+            WHOAMI,
+            "application/grpc-web+proto",
+            envelope(0, &[]),
+            &token,
+            None,
+        )
+        .await;
+    assert_eq!(
+        grpc_web_status(&r).as_deref(),
+        Some("7"),
+        "PERMISSION_DENIED"
+    );
     // The UI socket takes nothing but gRPC-Web.
     let r = h.grpc(WHOAMI, &token, Some(Listener::Ui)).await;
     assert_eq!(grpc_status(&r).as_deref(), Some("7"));
@@ -248,16 +349,24 @@ fn grpc_web_status(r: &Reply) -> Option<String> {
     if let Some(v) = r.headers.get("grpc-status") {
         return Some(v.to_str().unwrap().to_string());
     }
-    let (flags, t) = envelopes(&r.body).into_iter().find(|(f, _)| f & 0x80 != 0)?;
+    let (flags, t) = envelopes(&r.body)
+        .into_iter()
+        .find(|(f, _)| f & 0x80 != 0)?;
     debug_assert!(flags & 0x80 != 0);
-    String::from_utf8_lossy(&t).lines().find_map(|l| l.trim().strip_prefix("grpc-status:").map(|s| s.trim().to_string()))
+    String::from_utf8_lossy(&t).lines().find_map(|l| {
+        l.trim()
+            .strip_prefix("grpc-status:")
+            .map(|s| s.trim().to_string())
+    })
 }
 
 #[tokio::test]
 async fn health_is_served_without_credentials() {
     let h = harness();
     // grpc.health.v1.HealthCheckRequest{service: ""} is empty on the wire.
-    let r = h.grpc("/grpc.health.v1.Health/Check", &Who::Nobody, None).await;
+    let r = h
+        .grpc("/grpc.health.v1.Health/Check", &Who::Nobody, None)
+        .await;
     assert_eq!(grpc_status(&r).as_deref(), Some("0"));
     // HealthCheckResponse{status: SERVING = 1}: field 1, varint 1.
     assert_eq!(envelopes(&r.body)[0].1, vec![0x08, 0x01]);
@@ -266,6 +375,8 @@ async fn health_is_served_without_credentials() {
 #[tokio::test]
 async fn unknown_methods_are_unimplemented() {
     let h = harness();
-    let r = h.grpc("/glidex.system.v1.SystemService/Nope", &Who::Nobody, None).await;
+    let r = h
+        .grpc("/glidex.system.v1.SystemService/Nope", &Who::Nobody, None)
+        .await;
     assert_eq!(grpc_status(&r).as_deref(), Some("12"));
 }

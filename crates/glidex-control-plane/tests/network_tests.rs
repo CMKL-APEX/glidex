@@ -31,7 +31,10 @@ struct Harness {
 fn fake_exec(ovs_running: bool) -> Arc<RecordingExec> {
     let exec = Arc::new(RecordingExec::new());
     if ovs_running {
-        exec.on("ovs-vsctl --version", Output::ok("ovs-vsctl (Open vSwitch) 3.7.1\n"));
+        exec.on(
+            "ovs-vsctl --version",
+            Output::ok("ovs-vsctl (Open vSwitch) 3.7.1\n"),
+        );
     } else {
         exec.on("ovs-vsctl --version", Output::failed(127, "not found"));
     }
@@ -39,9 +42,18 @@ fn fake_exec(ovs_running: bool) -> Arc<RecordingExec> {
         "ovs-vsctl --format=json --columns=iface_types",
         Output::ok(r#"{"data":[[["set",["internal","system","tap"]],["set",["system"]],false]],"headings":["iface_types","datapath_types","dpdk_initialized"]}"#),
     );
-    exec.on("ovs-vsctl --format=json --columns=name,datapath_type,external_ids,ports find Bridge", Output::ok(OWNED_BRIDGE));
-    exec.on("ovs-vsctl --format=json --columns=name,external_ids,type find Interface", Output::ok(OWNED_IF));
-    exec.on("ip -4 -j route show", Output::ok(r#"[{"dst":"default","dev":"eth0"}]"#));
+    exec.on(
+        "ovs-vsctl --format=json --columns=name,datapath_type,external_ids,ports find Bridge",
+        Output::ok(OWNED_BRIDGE),
+    );
+    exec.on(
+        "ovs-vsctl --format=json --columns=name,external_ids,type find Interface",
+        Output::ok(OWNED_IF),
+    );
+    exec.on(
+        "ip -4 -j route show",
+        Output::ok(r#"[{"dst":"default","dev":"eth0"}]"#),
+    );
     exec.file("/proc/sys/net/ipv4/ip_forward", "1\n");
     exec
 }
@@ -52,7 +64,10 @@ fn harness(ovs_running: bool) -> Harness {
     let run_dir = dir.path().join("run");
     std::fs::create_dir_all(&run_dir).unwrap();
     let exec = fake_exec(ovs_running);
-    let my_group = nix::unistd::Group::from_gid(nix::unistd::getgid()).unwrap().unwrap().name;
+    let my_group = nix::unistd::Group::from_gid(nix::unistd::getgid())
+        .unwrap()
+        .unwrap()
+        .name;
     let netd = Arc::new(
         NetdServer::new(
             exec.clone(),
@@ -78,7 +93,8 @@ fn harness(ovs_running: bool) -> Harness {
     std::thread::spawn(move || server::serve(n2, status, Access::Status, None));
     std::thread::spawn(move || server::serve(netd, full, Access::Full, gid));
 
-    let manager = VmManager::with_db_path_and_netd(dir.path().join("cp.db"), Netd::new(&run_dir)).unwrap();
+    let manager =
+        VmManager::with_db_path_and_netd(dir.path().join("cp.db"), Netd::new(&run_dir)).unwrap();
     Harness {
         app: create_router(manager.clone()),
         manager,
@@ -87,16 +103,27 @@ fn harness(ovs_running: bool) -> Harness {
     }
 }
 
-async fn request(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
+async fn request(
+    app: &Router,
+    method: &str,
+    uri: &str,
+    body: Option<Value>,
+) -> (StatusCode, Value) {
     let builder = Request::builder().method(method).uri(uri);
     let req = match body {
-        Some(b) => builder.header("content-type", "application/json").body(Body::from(b.to_string())).unwrap(),
+        Some(b) => builder
+            .header("content-type", "application/json")
+            .body(Body::from(b.to_string()))
+            .unwrap(),
         None => builder.body(Body::empty()).unwrap(),
     };
     let resp = app.clone().oneshot(req).await.unwrap();
     let status = resp.status();
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-    (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
 }
 
 fn vm(name: &str, networks: Value) -> Value {
@@ -112,18 +139,35 @@ fn vm(name: &str, networks: Value) -> Value {
 #[tokio::test(flavor = "multi_thread")]
 async fn nat_network_crud() {
     let h = harness(true);
-    let (status, body) = request(&h.app, "POST", "/networks", Some(json!({"name": "lab", "mode": "nat"}))).await;
+    let (status, body) = request(
+        &h.app,
+        "POST",
+        "/networks",
+        Some(json!({"name": "lab", "mode": "nat"})),
+    )
+    .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
     assert_eq!(body["bridge"], "gxbr-lab");
     assert_eq!(body["port_type"], "tap");
     let calls = h.exec.calls();
-    assert!(calls.iter().any(|c| c == "ip addr replace 10.88.0.1/24 dev gxbr-lab"), "{calls:#?}");
+    assert!(
+        calls
+            .iter()
+            .any(|c| c == "ip addr replace 10.88.0.1/24 dev gxbr-lab"),
+        "{calls:#?}"
+    );
 
     let (status, list) = request(&h.app, "GET", "/networks", None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(list.as_array().unwrap().len(), 1);
 
-    let (status, _) = request(&h.app, "POST", "/networks", Some(json!({"name": "lab", "mode": "nat"}))).await;
+    let (status, _) = request(
+        &h.app,
+        "POST",
+        "/networks",
+        Some(json!({"name": "lab", "mode": "nat"})),
+    )
+    .await;
     assert_eq!(status, StatusCode::CONFLICT);
 
     let (status, _) = request(&h.app, "DELETE", "/networks/lab", None).await;
@@ -135,15 +179,36 @@ async fn nat_network_crud() {
 #[tokio::test(flavor = "multi_thread")]
 async fn vms_reference_networks() {
     let h = harness(true);
-    request(&h.app, "POST", "/networks", Some(json!({"name": "lab", "mode": "nat"}))).await;
+    request(
+        &h.app,
+        "POST",
+        "/networks",
+        Some(json!({"name": "lab", "mode": "nat"})),
+    )
+    .await;
 
-    let (status, body) = request(&h.app, "POST", "/vms", Some(vm("v1", json!([{"network": "lab"}])))).await;
+    let (status, body) = request(
+        &h.app,
+        "POST",
+        "/vms",
+        Some(vm("v1", json!([{"network": "lab"}]))),
+    )
+    .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
     let mac = body["nics"][0]["mac"].as_str().unwrap().to_string();
-    assert!(mac.starts_with("02:"), "stable MAC assigned at create: {mac}");
+    assert!(
+        mac.starts_with("02:"),
+        "stable MAC assigned at create: {mac}"
+    );
     let id = body["id"].as_str().unwrap().to_string();
 
-    let (status, body) = request(&h.app, "POST", "/vms", Some(vm("v2", json!([{"network": "nope"}])))).await;
+    let (status, body) = request(
+        &h.app,
+        "POST",
+        "/vms",
+        Some(vm("v2", json!([{"network": "nope"}]))),
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
 
     let mut qemu = vm("v3", json!([{"network": "lab"}]));
@@ -151,11 +216,27 @@ async fn vms_reference_networks() {
     qemu["kernel_image_path"] = json!("/k");
     qemu.as_object_mut().unwrap().remove("firmware_path");
     let (status, body) = request(&h.app, "POST", "/vms", Some(qemu)).await;
-    assert_eq!(status, StatusCode::CREATED, "QEMU VMs take networks too: {body}");
-    assert!(body["nics"][0]["mac"].as_str().unwrap().starts_with("02:"), "{body}");
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "QEMU VMs take networks too: {body}"
+    );
+    assert!(
+        body["nics"][0]["mac"].as_str().unwrap().starts_with("02:"),
+        "{body}"
+    );
     let qemu_id = body["id"].as_str().unwrap().to_string();
 
-    let (status, body) = request(&h.app, "POST", "/vms", Some(vm("v4", json!([{"network": "lab", "mac": "01:00:5e:00:00:01"}])))).await;
+    let (status, body) = request(
+        &h.app,
+        "POST",
+        "/vms",
+        Some(vm(
+            "v4",
+            json!([{"network": "lab", "mac": "01:00:5e:00:00:01"}]),
+        )),
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "multicast MAC: {body}");
 
     let (status, body) = request(&h.app, "DELETE", "/networks/lab", None).await;
@@ -181,14 +262,24 @@ async fn qemu_failed_start_detaches_ports() {
 }
 
 async fn failed_start_detaches_ports_for(hypervisor: &str, binary: &str) {
-    if std::process::Command::new(binary).arg("--version").output().is_err() {
+    if std::process::Command::new(binary)
+        .arg("--version")
+        .output()
+        .is_err()
+    {
         eprintln!("skipping: {binary} not installed");
         return;
     }
     let h = harness(true);
     h.manager.initialize().await.unwrap();
     h.manager.start_controllers();
-    request(&h.app, "POST", "/networks", Some(json!({"name": "lab", "mode": "nat"}))).await;
+    request(
+        &h.app,
+        "POST",
+        "/networks",
+        Some(json!({"name": "lab", "mode": "nat"})),
+    )
+    .await;
     let mut spec = vm("boom", json!([{"network": "lab"}]));
     spec["hypervisor"] = json!(hypervisor);
     let (_, body) = request(&h.app, "POST", "/vms", Some(spec)).await;
@@ -198,10 +289,16 @@ async fn failed_start_detaches_ports_for(hypervisor: &str, binary: &str) {
     // The firmware path doesn't exist, so the launch fails after the port
     // was attached (spec/reconciliation.md §9.1 step 5).
     let (status, body) = request(&h.app, "POST", &format!("/vms/{id}/start?wait=60"), None).await;
-    assert!(status.is_server_error() || status.is_client_error(), "{status} {body}");
+    assert!(
+        status.is_server_error() || status.is_client_error(),
+        "{status} {body}"
+    );
     assert_eq!(body["details"]["vm"]["state"], "failed", "{body}");
     let calls = h.exec.calls();
-    let attached = calls.iter().position(|c| c.starts_with(&format!("ip tuntap add dev {port}"))).expect("attached");
+    let attached = calls
+        .iter()
+        .position(|c| c.starts_with(&format!("ip tuntap add dev {port}")))
+        .expect("attached");
 
     // Ports belong to the VM while it should run (D16); stopping it
     // releases them.
@@ -209,9 +306,15 @@ async fn failed_start_detaches_ports_for(hypervisor: &str, binary: &str) {
     assert_eq!(status, StatusCode::OK, "{body}");
     // `created` when the launch failed before anything ran (QEMU refuses
     // the missing firmware while building its command line).
-    assert!(matches!(body["state"].as_str(), Some("stopped" | "created")), "{body}");
+    assert!(
+        matches!(body["state"].as_str(), Some("stopped" | "created")),
+        "{body}"
+    );
     let calls = h.exec.calls();
-    let detached = calls.iter().rposition(|c| c == &format!("ovs-vsctl --if-exists del-port {port}")).expect("detached");
+    let detached = calls
+        .iter()
+        .rposition(|c| c == &format!("ovs-vsctl --if-exists del-port {port}"))
+        .expect("detached");
     assert!(detached > attached);
     assert!(body["nics"][0]["port"].is_null(), "{body}");
     request(&h.app, "DELETE", &format!("/vms/{id}?wait=30"), None).await;
@@ -226,13 +329,25 @@ async fn ovs_status_and_bridges() {
     assert_eq!(body["netd"]["access"], "full");
     assert_eq!(body["host"]["ovs_version"], "3.7.1");
 
-    let (status, body) = request(&h.app, "POST", "/ovs/bridges", Some(json!({"name": "gxbr-lab", "datapath": "system"}))).await;
+    let (status, body) = request(
+        &h.app,
+        "POST",
+        "/ovs/bridges",
+        Some(json!({"name": "gxbr-lab", "datapath": "system"})),
+    )
+    .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
     let (status, body) = request(&h.app, "GET", "/ovs/bridges", None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body[0]["spec"]["name"], "gxbr-lab");
 
-    let (status, body) = request(&h.app, "POST", "/ovs/bridges", Some(json!({"name": "Bad!", "datapath": "system"}))).await;
+    let (status, body) = request(
+        &h.app,
+        "POST",
+        "/ovs/bridges",
+        Some(json!({"name": "Bad!", "datapath": "system"})),
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert_eq!(body["error"], "invalid_network");
 }
@@ -243,7 +358,13 @@ async fn ovs_status_and_bridges() {
 async fn network_controller_reports_the_phase() {
     let h = harness(true);
     h.manager.start_controllers();
-    let (status, _) = request(&h.app, "POST", "/networks", Some(json!({"name": "lab", "mode": "nat"}))).await;
+    let (status, _) = request(
+        &h.app,
+        "POST",
+        "/networks",
+        Some(json!({"name": "lab", "mode": "nat"})),
+    )
+    .await;
     assert_eq!(status, StatusCode::CREATED);
     let mut net = Value::Null;
     for _ in 0..50 {
@@ -256,7 +377,10 @@ async fn network_controller_reports_the_phase() {
     }
     // The fake OVS reports the bridge with no ports and no running
     // dnsmasq: the controller says what is missing instead of guessing.
-    assert!(matches!(net["phase"].as_str(), Some("ready" | "degraded")), "{net}");
+    assert!(
+        matches!(net["phase"].as_str(), Some("ready" | "degraded")),
+        "{net}"
+    );
     let ready = &net["conditions"][0];
     assert_eq!(ready["kind"], "Ready", "{net}");
     if net["phase"] == "degraded" {
@@ -278,18 +402,44 @@ async fn isolated_networks_are_fenced_by_netd() {
     let h = harness(true);
     let netd = Netd::new(h._dir.path().join("run"));
     let isolated = |name: &str| {
-        netd.call::<Vec<BridgeRecord>>(Op::ListBridges).unwrap().into_iter().find(|b| b.spec.name == name).map(|b| b.spec.isolated)
+        netd.call::<Vec<BridgeRecord>>(Op::ListBridges)
+            .unwrap()
+            .into_iter()
+            .find(|b| b.spec.name == name)
+            .map(|b| b.spec.isolated)
     };
 
-    let (status, body) = request(&h.app, "POST", "/networks", Some(json!({"name": "iso", "mode": "isolated"}))).await;
+    let (status, body) = request(
+        &h.app,
+        "POST",
+        "/networks",
+        Some(json!({"name": "iso", "mode": "isolated"})),
+    )
+    .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
-    let (status, body) = request(&h.app, "POST", "/networks", Some(json!({"name": "lab", "mode": "nat"}))).await;
+    let (status, body) = request(
+        &h.app,
+        "POST",
+        "/networks",
+        Some(json!({"name": "lab", "mode": "nat"})),
+    )
+    .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
     assert_eq!(isolated("gxbr-iso"), Some(true));
-    assert_eq!(isolated("gxbr-lab"), Some(false), "NAT bridges are fenced by their NAT rules");
+    assert_eq!(
+        isolated("gxbr-lab"),
+        Some(false),
+        "NAT bridges are fenced by their NAT rules"
+    );
 
     // A record from before the flag: the controller marks it.
-    let old = BridgeSpec { name: "gxbr-iso".into(), datapath: Datapath::System, mtu: None, adopt: false, isolated: false };
+    let old = BridgeSpec {
+        name: "gxbr-iso".into(),
+        datapath: Datapath::System,
+        mtu: None,
+        adopt: false,
+        isolated: false,
+    };
     netd.call::<BridgeRecord>(Op::EnsureBridge(old)).unwrap();
     assert_eq!(isolated("gxbr-iso"), Some(false));
     h.manager.reconcile_network("iso").await.unwrap();
@@ -299,7 +449,11 @@ async fn isolated_networks_are_fenced_by_netd() {
     // Then it is left alone.
     h.manager.reconcile_network("iso").await.unwrap();
     let (_, ev2) = request(&h.app, "GET", "/networks/iso/events", None).await;
-    assert_eq!(ev2["events"].as_array().unwrap().len(), ev["events"].as_array().unwrap().len(), "{ev2}");
+    assert_eq!(
+        ev2["events"].as_array().unwrap().len(),
+        ev["events"].as_array().unwrap().len(),
+        "{ev2}"
+    );
 }
 
 /// netd lost its records (state database wiped): the NAT is created again
@@ -310,12 +464,26 @@ async fn lost_nat_is_recreated_only_without_vms() {
     use glidex_netd::proto::{NatInfo, Op};
     let h = harness(true);
     let netd = Netd::new(h._dir.path().join("run"));
-    let nat_exists = || netd.call::<Vec<NatInfo>>(Op::ListNat).unwrap().iter().any(|n| n.state.bridge == "gxbr-lab");
+    let nat_exists = || {
+        netd.call::<Vec<NatInfo>>(Op::ListNat)
+            .unwrap()
+            .iter()
+            .any(|n| n.state.bridge == "gxbr-lab")
+    };
     let lose_nat = || {
-        netd.call::<Value>(Op::DeleteNat { bridge: "gxbr-lab".into() }).unwrap();
+        netd.call::<Value>(Op::DeleteNat {
+            bridge: "gxbr-lab".into(),
+        })
+        .unwrap();
     };
 
-    request(&h.app, "POST", "/networks", Some(json!({"name": "lab", "mode": "nat"}))).await;
+    request(
+        &h.app,
+        "POST",
+        "/networks",
+        Some(json!({"name": "lab", "mode": "nat"})),
+    )
+    .await;
     assert!(nat_exists());
 
     lose_nat();
@@ -325,30 +493,55 @@ async fn lost_nat_is_recreated_only_without_vms() {
     let (_, ev) = request(&h.app, "GET", "/networks/lab/events", None).await;
     assert_eq!(ev["events"][0]["reason"], "NatRestored", "{ev}");
 
-    let (status, body) = request(&h.app, "POST", "/vms", Some(vm("v1", json!([{"network": "lab"}])))).await;
+    let (status, body) = request(
+        &h.app,
+        "POST",
+        "/vms",
+        Some(vm("v1", json!([{"network": "lab"}]))),
+    )
+    .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
     lose_nat();
     h.manager.reconcile_network("lab").await.unwrap();
-    assert!(!nat_exists(), "a VM uses it: not renumbered behind its back");
+    assert!(
+        !nat_exists(),
+        "a VM uses it: not renumbered behind its back"
+    );
     let (_, net) = request(&h.app, "GET", "/networks/lab", None).await;
     assert_eq!(net["phase"], "degraded", "{net}");
-    assert_eq!(net["conditions"][0]["message"], "netd has no NAT for it", "{net}");
+    assert_eq!(
+        net["conditions"][0]["message"], "netd has no NAT for it",
+        "{net}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn netd_errors_map_to_rest() {
     // OVS not running: creating a network is unsupported on this host.
     let h = harness(false);
-    let (status, body) = request(&h.app, "POST", "/networks", Some(json!({"name": "lab", "mode": "nat"}))).await;
+    let (status, body) = request(
+        &h.app,
+        "POST",
+        "/networks",
+        Some(json!({"name": "lab", "mode": "nat"})),
+    )
+    .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
     assert_eq!(body["error"], "unsupported_on_host");
     assert!(body["details"]["missing"].as_array().is_some());
 
     // No netd at all.
     let dir = TempDir::new().unwrap();
-    let manager = VmManager::with_db_path_and_netd(dir.path().join("cp.db"), Netd::new(dir.path())).unwrap();
+    let manager =
+        VmManager::with_db_path_and_netd(dir.path().join("cp.db"), Netd::new(dir.path())).unwrap();
     let app = create_router(manager);
-    let (status, body) = request(&app, "POST", "/networks", Some(json!({"name": "lab", "mode": "nat"}))).await;
+    let (status, body) = request(
+        &app,
+        "POST",
+        "/networks",
+        Some(json!({"name": "lab", "mode": "nat"})),
+    )
+    .await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
     assert_eq!(body["error"], "netd_unavailable");
     let (status, body) = request(&app, "GET", "/ovs/status", None).await;
@@ -365,23 +558,68 @@ async fn netd_errors_map_to_rest() {
 #[tokio::test(flavor = "multi_thread")]
 async fn project_networks_and_sharing() {
     let h = harness(true);
-    let pa = h.manager.projects().create("pa", String::new(), None).unwrap().id;
-    let pb = h.manager.projects().create("pb", String::new(), None).unwrap().id;
+    let pa = h
+        .manager
+        .projects()
+        .create("pa", String::new(), None)
+        .unwrap()
+        .id;
+    let pb = h
+        .manager
+        .projects()
+        .create("pb", String::new(), None)
+        .unwrap()
+        .id;
 
-    let (status, net) = request(&h.app, "POST", &format!("/projects/{pa}/networks"), Some(json!({"name": "pnet", "mode": "nat"}))).await;
+    let (status, net) = request(
+        &h.app,
+        "POST",
+        &format!("/projects/{pa}/networks"),
+        Some(json!({"name": "pnet", "mode": "nat"})),
+    )
+    .await;
     assert_eq!(status, StatusCode::CREATED, "{net}");
     assert_eq!(net["project"], pa);
     assert!(net["bridge"].as_str().unwrap().starts_with("gxp-"), "{net}");
     // Project networks are NAT or isolated, never bridged, and pick their own bridge.
-    let (status, _) = request(&h.app, "POST", &format!("/projects/{pa}/networks"), Some(json!({"name": "x", "mode": "bridged"}))).await;
+    let (status, _) = request(
+        &h.app,
+        "POST",
+        &format!("/projects/{pa}/networks"),
+        Some(json!({"name": "x", "mode": "bridged"})),
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    let (status, _) =
-        request(&h.app, "POST", &format!("/projects/{pa}/networks"), Some(json!({"name": "x", "mode": "nat", "bridge": "gxbr-mine"}))).await;
+    let (status, _) = request(
+        &h.app,
+        "POST",
+        &format!("/projects/{pa}/networks"),
+        Some(json!({"name": "x", "mode": "nat", "bridge": "gxbr-mine"})),
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    let pc = h.manager.projects().create("pc", String::new(), None).unwrap().id;
-    let (status, iso) = request(&h.app, "POST", &format!("/projects/{pc}/networks"), Some(json!({"name": "iso", "mode": "isolated"}))).await;
+    let pc = h
+        .manager
+        .projects()
+        .create("pc", String::new(), None)
+        .unwrap()
+        .id;
+    let (status, iso) = request(
+        &h.app,
+        "POST",
+        &format!("/projects/{pc}/networks"),
+        Some(json!({"name": "iso", "mode": "isolated"})),
+    )
+    .await;
     assert_eq!(status, StatusCode::CREATED, "{iso}");
-    assert_eq!((iso["mode"].as_str(), iso["port_type"].as_str(), iso["project"].as_str()), (Some("isolated"), Some("tap"), Some(pc.as_str())));
+    assert_eq!(
+        (
+            iso["mode"].as_str(),
+            iso["port_type"].as_str(),
+            iso["project"].as_str()
+        ),
+        (Some("isolated"), Some("tap"), Some(pc.as_str()))
+    );
     // vhost-user is allowed too, but only where the host has DPDK (this one hasn't).
     let (status, body) = request(
         &h.app,
@@ -390,16 +628,50 @@ async fn project_networks_and_sharing() {
         Some(json!({"name": "iso-dpdk", "mode": "isolated", "port_type": "vhost_user"})),
     )
     .await;
-    assert_eq!((status, body["error"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("unsupported_on_host")), "{body}");
+    assert_eq!(
+        (status, body["error"].as_str()),
+        (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Some("unsupported_on_host")
+        ),
+        "{body}"
+    );
     // An isolated network has no subnet to choose.
-    let (status, _) =
-        request(&h.app, "POST", &format!("/projects/{pc}/networks"), Some(json!({"name": "iso2", "mode": "isolated", "subnet": "10.99.0.0/24"}))).await;
+    let (status, _) = request(
+        &h.app,
+        "POST",
+        &format!("/projects/{pc}/networks"),
+        Some(json!({"name": "iso2", "mode": "isolated", "subnet": "10.99.0.0/24"})),
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     // Quota: 2 project networks by default.
     let req = |n: &str| serde_json::from_value(json!({"name": n, "mode": "nat"})).unwrap();
-    h.manager.create_project_network(&pa, req("pnet2"), glidex_control_plane::tenancy::QuotaMode::Enforce).await.unwrap();
-    let over = h.manager.create_project_network(&pa, req("pnet3"), glidex_control_plane::tenancy::QuotaMode::Enforce).await;
-    assert!(matches!(over, Err(glidex_control_plane::state::VmManagerError::QuotaExceeded(_))), "{over:?}");
+    h.manager
+        .create_project_network(
+            &pa,
+            req("pnet2"),
+            glidex_control_plane::tenancy::QuotaMode::Enforce,
+        )
+        .await
+        .unwrap();
+    let over = h
+        .manager
+        .create_project_network(
+            &pa,
+            req("pnet3"),
+            glidex_control_plane::tenancy::QuotaMode::Enforce,
+        )
+        .await;
+    assert!(
+        matches!(
+            over,
+            Err(glidex_control_plane::state::VmManagerError::QuotaExceeded(
+                _
+            ))
+        ),
+        "{over:?}"
+    );
 
     // Not usable from another project until shared and accepted.
     let mut spec = vm("b1", json!([{"network": "pnet"}]));
@@ -407,21 +679,54 @@ async fn project_networks_and_sharing() {
     let (status, body) = request(&h.app, "POST", "/vms", Some(spec.clone())).await;
     assert!(status.is_client_error(), "{status} {body}");
     // Project networks are never granted, only shared.
-    let (status, _) = request(&h.app, "PUT", "/networks/pnet/grants", Some(json!({"grants": [pb]}))).await;
+    let (status, _) = request(
+        &h.app,
+        "PUT",
+        "/networks/pnet/grants",
+        Some(json!({"grants": [pb]})),
+    )
+    .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 
-    let (status, _) = request(&h.app, "POST", "/networks/pnet/shares", Some(json!({"project": pb}))).await;
+    let (status, _) = request(
+        &h.app,
+        "POST",
+        "/networks/pnet/shares",
+        Some(json!({"project": pb})),
+    )
+    .await;
     assert_eq!(status, StatusCode::ACCEPTED);
     // Offers to unknown projects look the same and record nothing.
-    let (status, _) = request(&h.app, "POST", "/networks/pnet/shares", Some(json!({"project": "no-such-project"}))).await;
+    let (status, _) = request(
+        &h.app,
+        "POST",
+        "/networks/pnet/shares",
+        Some(json!({"project": "no-such-project"})),
+    )
+    .await;
     assert_eq!(status, StatusCode::ACCEPTED);
-    let (_, shares) = request(&h.app, "GET", &format!("/projects/{pb}/network-shares"), None).await;
-    assert_eq!(shares, json!([{"network": "pnet", "owner_project": pa, "status": "offered", "expires_at": shares[0]["expires_at"]}]));
+    let (_, shares) = request(
+        &h.app,
+        "GET",
+        &format!("/projects/{pb}/network-shares"),
+        None,
+    )
+    .await;
+    assert_eq!(
+        shares,
+        json!([{"network": "pnet", "owner_project": pa, "status": "offered", "expires_at": shares[0]["expires_at"]}])
+    );
     // An offer alone grants nothing.
     let (status, _) = request(&h.app, "POST", "/vms", Some(spec.clone())).await;
     assert!(status.is_client_error());
 
-    let (status, body) = request(&h.app, "POST", &format!("/projects/{pb}/network-shares/pnet/accept"), None).await;
+    let (status, body) = request(
+        &h.app,
+        "POST",
+        &format!("/projects/{pb}/network-shares/pnet/accept"),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["shares"], json!([pb]));
     let (status, body) = request(&h.app, "POST", "/vms", Some(spec)).await;
@@ -429,18 +734,42 @@ async fn project_networks_and_sharing() {
     let id = body["id"].as_str().unwrap().to_string();
 
     // Ending the share is refused while the target's VMs use it.
-    let (status, _) = request(&h.app, "DELETE", &format!("/networks/pnet/shares/{pb}"), None).await;
+    let (status, _) = request(
+        &h.app,
+        "DELETE",
+        &format!("/networks/pnet/shares/{pb}"),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::CONFLICT);
-    let (status, _) = request(&h.app, "DELETE", &format!("/projects/{pb}/network-shares/pnet"), None).await;
+    let (status, _) = request(
+        &h.app,
+        "DELETE",
+        &format!("/projects/{pb}/network-shares/pnet"),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::CONFLICT);
     // Deleting the network is refused too.
     let (status, _) = request(&h.app, "DELETE", "/networks/pnet", None).await;
     assert_eq!(status, StatusCode::CONFLICT);
 
     request(&h.app, "DELETE", &format!("/vms/{id}"), None).await;
-    let (status, _) = request(&h.app, "DELETE", &format!("/projects/{pb}/network-shares/pnet"), None).await;
+    let (status, _) = request(
+        &h.app,
+        "DELETE",
+        &format!("/projects/{pb}/network-shares/pnet"),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
-    let (_, shares) = request(&h.app, "GET", &format!("/projects/{pb}/network-shares"), None).await;
+    let (_, shares) = request(
+        &h.app,
+        "GET",
+        &format!("/projects/{pb}/network-shares"),
+        None,
+    )
+    .await;
     assert_eq!(shares, json!([]));
     // A project that still owns networks can't be deleted.
     let (status, _) = request(&h.app, "DELETE", &format!("/projects/{pa}"), None).await;
@@ -453,8 +782,19 @@ async fn project_networks_and_sharing() {
 /// and bridge go, then the record.
 #[tokio::test(flavor = "multi_thread")]
 async fn network_deletion_waits_for_netd() {
-    let Harness { app, manager, exec, _dir: dir } = harness(true);
-    let (status, body) = request(&app, "POST", "/networks", Some(json!({"name": "lab", "mode": "nat"}))).await;
+    let Harness {
+        app,
+        manager,
+        exec,
+        _dir: dir,
+    } = harness(true);
+    let (status, body) = request(
+        &app,
+        "POST",
+        "/networks",
+        Some(json!({"name": "lab", "mode": "nat"})),
+    )
+    .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
     drop(app);
     drop(manager);
@@ -462,7 +802,8 @@ async fn network_deletion_waits_for_netd() {
     // The same database, with netd unreachable.
     let away = dir.path().join("away");
     std::fs::create_dir_all(&away).unwrap();
-    let manager = VmManager::with_db_path_and_netd(dir.path().join("cp.db"), Netd::new(&away)).unwrap();
+    let manager =
+        VmManager::with_db_path_and_netd(dir.path().join("cp.db"), Netd::new(&away)).unwrap();
     let app = create_router(manager.clone());
     let (status, net) = request(&app, "DELETE", "/networks/lab", None).await;
     assert_eq!(status, StatusCode::ACCEPTED, "{net}");
@@ -470,14 +811,27 @@ async fn network_deletion_waits_for_netd() {
     assert_eq!(net["phase"], "netd_unavailable", "{net}");
     assert_eq!(net["conditions"][0]["reason"], "NetdUnavailable", "{net}");
     // No new VM may use it meanwhile.
-    let (status, body) = request(&app, "POST", "/vms", Some(vm("late", json!([{"network": "lab"}])))).await;
+    let (status, body) = request(
+        &app,
+        "POST",
+        "/vms",
+        Some(vm("late", json!([{"network": "lab"}]))),
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-    assert!(body["message"].as_str().unwrap().contains("being deleted"), "{body}");
+    assert!(
+        body["message"].as_str().unwrap().contains("being deleted"),
+        "{body}"
+    );
     drop(app);
     drop(manager);
 
     // netd is back: the controller finishes the deletion.
-    let manager = VmManager::with_db_path_and_netd(dir.path().join("cp.db"), Netd::new(dir.path().join("run"))).unwrap();
+    let manager = VmManager::with_db_path_and_netd(
+        dir.path().join("cp.db"),
+        Netd::new(dir.path().join("run")),
+    )
+    .unwrap();
     let app = create_router(manager.clone());
     manager.start_controllers();
     let mut gone = false;
@@ -491,6 +845,11 @@ async fn network_deletion_waits_for_netd() {
     }
     assert!(gone, "the network controller deleted it");
     let calls = exec.calls();
-    assert!(calls.iter().any(|c| c.starts_with("ip addr del") || c.contains("gxbr-lab")), "{calls:#?}");
+    assert!(
+        calls
+            .iter()
+            .any(|c| c.starts_with("ip addr del") || c.contains("gxbr-lab")),
+        "{calls:#?}"
+    );
     manager.stop_controllers().await;
 }

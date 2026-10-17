@@ -5,7 +5,9 @@ use super::{Call, ServiceResult};
 use crate::api::{auth_error, App};
 use crate::auth::Principal;
 use crate::authz::Ent;
-use glidex_api::proto::glidex::system::v1::{EntityRef, GetServerInfoResponse, LoginMethods, ProjectRole, WhoAmIResponse};
+use glidex_api::proto::glidex::system::v1::{
+    EntityRef, GetServerInfoResponse, LoginMethods, ProjectRole, WhoAmIResponse,
+};
 
 /// `GetServerInfo` / `GET /auth/server-info` (spec/gxctl-auth.md §7.1):
 /// what client login profiles bind to. Public.
@@ -17,8 +19,17 @@ pub fn server_info(app: &App) -> GetServerInfoResponse {
         }
         crate::config::TlsSetting::Files(f) => glidex_tls::fingerprint(&f.cert).ok(),
     };
-    let identity = crate::cluster::identity::Files::beside(app.manager.db_path()).load_identity().ok().flatten();
-    let name = app.auth.config.server_name.clone().or_else(glidex_tls::hostname).unwrap_or_else(|| "glidex".into());
+    let identity = crate::cluster::identity::Files::beside(app.manager.db_path())
+        .load_identity()
+        .ok()
+        .flatten();
+    let name = app
+        .auth
+        .config
+        .server_name
+        .clone()
+        .or_else(glidex_tls::hostname)
+        .unwrap_or_else(|| "glidex".into());
     GetServerInfoResponse {
         cluster_id: identity.as_ref().map(|i| i.cluster_id.clone()),
         node_id: identity.as_ref().map(|i| i.node_id.clone()),
@@ -26,8 +37,8 @@ pub fn server_info(app: &App) -> GetServerInfoResponse {
         version: env!("CARGO_PKG_VERSION").into(),
         fingerprint,
         methods: LoginMethods {
-            pam: Some(app.auth.config.auth.pam.enabled),
-            oidc: Some(app.auth.oidc.enabled()),
+            pam: Some(app.auth.pam_connector(None).is_ok()),
+            oidc: Some(app.auth.oidc_enabled()),
             disabled: Some(app.auth.is_disabled()),
             ..Default::default()
         }
@@ -71,7 +82,11 @@ pub(crate) fn roles_of(app: &App, p: &Principal) -> ServiceResult<(Vec<String>, 
 fn entity_ref(e: &Ent) -> EntityRef {
     // Ent serializes as {"type", "id"}: the REST shape this mirrors.
     let v = serde_json::to_value(e).unwrap_or_default();
-    EntityRef { r#type: v["type"].as_str().unwrap_or_default().into(), id: v["id"].as_str().map(String::from), ..Default::default() }
+    EntityRef {
+        r#type: v["type"].as_str().unwrap_or_default().into(),
+        id: v["id"].as_str().map(String::from),
+        ..Default::default()
+    }
 }
 
 /// `WhoAmI`: who the caller is and which roles they hold. RPC only until
@@ -95,7 +110,13 @@ pub fn whoami(call: &Call) -> ServiceResult<WhoAmIResponse> {
         host_roles,
         project_roles: project_roles
             .into_iter()
-            .map(|r| ProjectRole { project: r.project, project_name: r.project_name, role: r.role, via: entity_ref(&r.via).into(), ..Default::default() })
+            .map(|r| ProjectRole {
+                project: r.project,
+                project_name: r.project_name,
+                role: r.role,
+                via: entity_ref(&r.via).into(),
+                ..Default::default()
+            })
             .collect(),
         default_project: p.default_project().map(String::from),
         ..Default::default()

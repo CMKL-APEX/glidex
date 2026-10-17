@@ -60,10 +60,18 @@ pub fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Args, String
             "--dir" => dir = args.next(),
             "--vm" => vm = args.next(),
             "--version" => return Err(format!("glidex-vm-shim {}", env!("CARGO_PKG_VERSION"))),
-            other => return Err(format!("unknown argument {}\nusage: glidex-vm-shim --dir <vm runtime dir> [--vm <id>]", other)),
+            other => {
+                return Err(format!(
+                    "unknown argument {}\nusage: glidex-vm-shim --dir <vm runtime dir> [--vm <id>]",
+                    other
+                ))
+            }
         }
     }
-    Ok(Args { dir: PathBuf::from(dir.ok_or("--dir is required")?), vm })
+    Ok(Args {
+        dir: PathBuf::from(dir.ok_or("--dir is required")?),
+        vm,
+    })
 }
 
 /// Run the shim; returns its exit status.
@@ -160,7 +168,11 @@ impl Supervisor {
 
     fn save(&self) {
         if let Err(e) = self.instance.write(&self.instance_path) {
-            eprintln!("glidex-vm-shim: cannot write {}: {}", self.instance_path.display(), e);
+            eprintln!(
+                "glidex-vm-shim: cannot write {}: {}",
+                self.instance_path.display(),
+                e
+            );
         }
     }
 
@@ -170,7 +182,12 @@ impl Supervisor {
         }
     }
 
-    fn record_exit(&mut self, cause: ExitCause, status: Option<std::process::ExitStatus>, message: Option<String>) {
+    fn record_exit(
+        &mut self,
+        cause: ExitCause,
+        status: Option<std::process::ExitStatus>,
+        message: Option<String>,
+    ) {
         let code = status.and_then(|s| s.code());
         let sig = status.and_then(|s| s.signal());
         let detail = match (code, sig) {
@@ -186,7 +203,14 @@ impl Supervisor {
         ));
         self.poll_stop.store(true, Ordering::SeqCst);
         let usage = self.exit_usage();
-        self.instance.exit = Some(ExitInfo { at: now(), cause, code, signal: sig, message, usage });
+        self.instance.exit = Some(ExitInfo {
+            at: now(),
+            cause,
+            code,
+            signal: sig,
+            message,
+            usage,
+        });
         self.instance.phase = Phase::Exited;
         self.save();
     }
@@ -195,17 +219,26 @@ impl Supervisor {
         for path in [&self.launch.api_socket, &self.launch.shim_socket] {
             let _ = std::fs::remove_file(path);
         }
-        let log = match LogWriter::open(Path::new(&self.launch.log_path), self.launch.log_max_bytes) {
+        let log = match LogWriter::open(Path::new(&self.launch.log_path), self.launch.log_max_bytes)
+        {
             Ok(l) => l,
             Err(e) => {
-                self.record_exit(ExitCause::LaunchFailed, None, Some(format!("console log: {}", e)));
+                self.record_exit(
+                    ExitCause::LaunchFailed,
+                    None,
+                    Some(format!("console log: {}", e)),
+                );
                 return EXIT_INTERNAL;
             }
         };
         match Proxy::start(Path::new(&self.launch.console_socket), log) {
             Ok(p) => self.proxy = Some(p),
             Err(e) => {
-                self.record_exit(ExitCause::LaunchFailed, None, Some(format!("console socket: {}", e)));
+                self.record_exit(
+                    ExitCause::LaunchFailed,
+                    None,
+                    Some(format!("console socket: {}", e)),
+                );
                 return EXIT_INTERNAL;
             }
         }
@@ -249,11 +282,16 @@ impl Supervisor {
                     self.save();
                 }
                 Err(e) => {
-                    self.record_exit(ExitCause::LaunchFailed, None, Some(format!("cannot start {}: {}", argv[0], e)));
+                    self.record_exit(
+                        ExitCause::LaunchFailed,
+                        None,
+                        Some(format!("cannot start {}: {}", argv[0], e)),
+                    );
                     return;
                 }
             }
-            let deadline = Instant::now() + Duration::from_secs(self.launch.ready_timeout_secs.max(1));
+            let deadline =
+                Instant::now() + Duration::from_secs(self.launch.ready_timeout_secs.max(1));
             loop {
                 if TERM.load(Ordering::SeqCst) {
                     self.hard_kill();
@@ -263,14 +301,26 @@ impl Supervisor {
                     self.auto_release = true;
                     return;
                 }
-                if let Some(status) = self.child.as_mut().and_then(|c| c.try_wait().ok().flatten()) {
+                if let Some(status) = self
+                    .child
+                    .as_mut()
+                    .and_then(|c| c.try_wait().ok().flatten())
+                {
                     self.child = None;
                     // Let the proxy read what it printed.
                     std::thread::sleep(Duration::from_millis(100));
-                    let output = self.proxy.as_ref().map(|p| p.captured_stderr()).unwrap_or_default();
+                    let output = self
+                        .proxy
+                        .as_ref()
+                        .map(|p| p.captured_stderr())
+                        .unwrap_or_default();
                     if let Some(fb) = fallback.take() {
                         let lower = output.to_ascii_lowercase();
-                        if fb.when_output_matches.iter().any(|m| lower.contains(&m.to_ascii_lowercase())) {
+                        if fb
+                            .when_output_matches
+                            .iter()
+                            .any(|m| lower.contains(&m.to_ascii_lowercase()))
+                        {
                             self.note(format!(
                                 "\r\n--- glidex: {} exited at launch; retrying with the fallback command line ---\r\n",
                                 argv[0]
@@ -279,7 +329,12 @@ impl Supervisor {
                             break;
                         }
                     }
-                    let message = format!("{} exited with {} before its API socket was ready.\n{}", argv[0], status, output.trim());
+                    let message = format!(
+                        "{} exited with {} before its API socket was ready.\n{}",
+                        argv[0],
+                        status,
+                        output.trim()
+                    );
                     self.record_exit(ExitCause::LaunchFailed, Some(status), Some(message));
                     return;
                 }
@@ -293,7 +348,11 @@ impl Supervisor {
                     self.hard_kill();
                     let status = self.child.as_mut().and_then(|c| c.wait().ok());
                     self.child = None;
-                    let output = self.proxy.as_ref().map(|p| p.captured_stderr()).unwrap_or_default();
+                    let output = self
+                        .proxy
+                        .as_ref()
+                        .map(|p| p.captured_stderr())
+                        .unwrap_or_default();
                     let message = format!(
                         "{} API socket not ready after {} s.\n{}",
                         argv[0],
@@ -317,23 +376,25 @@ impl Supervisor {
         }
         let (sock, kind) = (self.launch.api_socket.clone(), self.launch.hypervisor);
         let (out, stop) = (self.disk_poll.clone(), self.poll_stop.clone());
-        let _ = std::thread::Builder::new().name("disk-poll".into()).spawn(move || {
-            while !stop.load(Ordering::SeqCst) {
-                let stats = match kind {
-                    HypervisorKind::CloudHypervisor => ChClient::new(&sock).block_stats(),
-                    HypervisorKind::Qemu => QmpClient::new(&sock).block_stats(),
-                };
-                if let Ok(s) = stats {
-                    *out.lock().unwrap_or_else(|e| e.into_inner()) = Some((s, now_ms()));
-                }
-                for _ in 0..secs * 10 {
-                    if stop.load(Ordering::SeqCst) {
-                        return;
+        let _ = std::thread::Builder::new()
+            .name("disk-poll".into())
+            .spawn(move || {
+                while !stop.load(Ordering::SeqCst) {
+                    let stats = match kind {
+                        HypervisorKind::CloudHypervisor => ChClient::new(&sock).block_stats(),
+                        HypervisorKind::Qemu => QmpClient::new(&sock).block_stats(),
+                    };
+                    if let Ok(s) = stats {
+                        *out.lock().unwrap_or_else(|e| e.into_inner()) = Some((s, now_ms()));
                     }
-                    std::thread::sleep(Duration::from_millis(100));
+                    for _ in 0..secs * 10 {
+                        if stop.load(Ordering::SeqCst) {
+                            return;
+                        }
+                        std::thread::sleep(Duration::from_millis(100));
+                    }
                 }
-            }
-        });
+            });
     }
 
     /// The exit snapshot (D12): this unit's cgroup counters, read after
@@ -345,16 +406,29 @@ impl Supervisor {
         let unit = format!("glidex-vm@{}.service", self.launch.vm_id);
         let cgroup = std::fs::read_to_string("/proc/self/cgroup")
             .ok()
-            .and_then(|t| t.lines().find_map(|l| l.strip_prefix("0::").map(|p| p.trim().to_string())))
+            .and_then(|t| {
+                t.lines()
+                    .find_map(|l| l.strip_prefix("0::").map(|p| p.trim().to_string()))
+            })
             .filter(|p| p.ends_with(&unit))
             .map(|p| Path::new("/sys/fs/cgroup").join(p.trim_start_matches('/')));
         if let Some(cg) = cgroup {
             u.cpu_usage_usec = std::fs::read_to_string(cg.join("cpu.stat"))
                 .ok()
-                .and_then(|t| t.lines().find_map(|l| l.strip_prefix("usage_usec ")?.trim().parse().ok()));
-            u.memory_peak_bytes = std::fs::read_to_string(cg.join("memory.peak")).ok().and_then(|t| t.trim().parse().ok());
+                .and_then(|t| {
+                    t.lines()
+                        .find_map(|l| l.strip_prefix("usage_usec ")?.trim().parse().ok())
+                });
+            u.memory_peak_bytes = std::fs::read_to_string(cg.join("memory.peak"))
+                .ok()
+                .and_then(|t| t.trim().parse().ok());
         }
-        if let Some((disks, at)) = self.disk_poll.lock().unwrap_or_else(|e| e.into_inner()).take() {
+        if let Some((disks, at)) = self
+            .disk_poll
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        {
             u.disks = disks;
             u.disks_at = Some(at);
         }
@@ -367,7 +441,9 @@ impl Supervisor {
             return false;
         }
         match self.launch.hypervisor {
-            HypervisorKind::CloudHypervisor => ChClient::new(&self.launch.api_socket).ping().is_ok(),
+            HypervisorKind::CloudHypervisor => {
+                ChClient::new(&self.launch.api_socket).ping().is_ok()
+            }
             HypervisorKind::Qemu => QmpClient::new(&self.launch.api_socket).ping().is_ok(),
         }
     }
@@ -379,12 +455,17 @@ impl Supervisor {
         // openpty's fds are inheritable: a hypervisor holding the master
         // itself would never see the hangup when the shim dies.
         for fd in [master.as_raw_fd(), slave.as_raw_fd()] {
-            nix::fcntl::fcntl(fd, nix::fcntl::FcntlArg::F_SETFD(nix::fcntl::FdFlag::FD_CLOEXEC)).map_err(std::io::Error::from)?;
+            nix::fcntl::fcntl(
+                fd,
+                nix::fcntl::FcntlArg::F_SETFD(nix::fcntl::FdFlag::FD_CLOEXEC),
+            )
+            .map_err(std::io::Error::from)?;
         }
         let mut termios = tcgetattr(&slave).map_err(std::io::Error::from)?;
         cfmakeraw(&mut termios);
         tcsetattr(&slave, SetArg::TCSANOW, &termios).map_err(std::io::Error::from)?;
-        let (err_r, err_w) = nix::unistd::pipe2(nix::fcntl::OFlag::O_CLOEXEC).map_err(std::io::Error::from)?;
+        let (err_r, err_w) =
+            nix::unistd::pipe2(nix::fcntl::OFlag::O_CLOEXEC).map_err(std::io::Error::from)?;
 
         let parent = std::process::id() as libc::pid_t;
         let mut cmd = Command::new(&argv[0]);
@@ -467,7 +548,11 @@ impl Supervisor {
                 self.begin_stop(self.launch.host_shutdown_grace_secs, ExitCause::Terminated);
             }
 
-            if let Some(status) = self.child.as_mut().and_then(|c| c.try_wait().ok().flatten()) {
+            if let Some(status) = self
+                .child
+                .as_mut()
+                .and_then(|c| c.try_wait().ok().flatten())
+            {
                 self.child = None;
                 let cause = match (self.kill_cause, &self.stop) {
                     (Some(c), _) => c,
@@ -503,8 +588,14 @@ impl Supervisor {
     fn handle(&mut self, req: Request) -> (Response, bool) {
         let id = req.id;
         match req.op {
-            Op::Hello { .. } => (Response::err(id, proto::E_PROTOCOL, "hello was already sent"), false),
-            Op::Status => (Response::ok(id, serde_json::to_value(&self.instance).unwrap_or_default()), false),
+            Op::Hello { .. } => (
+                Response::err(id, proto::E_PROTOCOL, "hello was already sent"),
+                false,
+            ),
+            Op::Status => (
+                Response::ok(id, serde_json::to_value(&self.instance).unwrap_or_default()),
+                false,
+            ),
             Op::Stop { grace_secs } => {
                 self.begin_stop(grace_secs, ExitCause::Requested);
                 (Response::ok(id, serde_json::Value::Null), false)
@@ -519,7 +610,14 @@ impl Supervisor {
                 if self.instance.phase == Phase::Exited {
                     (Response::ok(id, serde_json::Value::Null), true)
                 } else {
-                    (Response::err(id, proto::E_NOT_EXITED, "the hypervisor is still running; stop it first"), false)
+                    (
+                        Response::err(
+                            id,
+                            proto::E_NOT_EXITED,
+                            "the hypervisor is still running; stop it first",
+                        ),
+                        false,
+                    )
                 }
             }
         }
@@ -540,7 +638,11 @@ impl Supervisor {
         let wall_deadline = now() + grace_secs;
         let info = match &self.instance.stop {
             Some(s) if s.deadline <= wall_deadline => s.clone(),
-            _ => StopInfo { requested_at: now(), grace_secs, deadline: wall_deadline },
+            _ => StopInfo {
+                requested_at: now(),
+                grace_secs,
+                deadline: wall_deadline,
+            },
         };
         self.instance.stop = Some(info);
         self.save();
@@ -559,14 +661,20 @@ impl Supervisor {
         match self.launch.hypervisor {
             HypervisorKind::CloudHypervisor => {
                 let c = ChClient::new(sock);
-                if c.observe().map(|o| o.guest == GuestState::Paused).unwrap_or(false) {
+                if c.observe()
+                    .map(|o| o.guest == GuestState::Paused)
+                    .unwrap_or(false)
+                {
                     c.resume()?;
                 }
                 c.power_button()
             }
             HypervisorKind::Qemu => {
                 let c = QmpClient::new(sock);
-                if c.observe().map(|o| o.guest == GuestState::Paused).unwrap_or(false) {
+                if c.observe()
+                    .map(|o| o.guest == GuestState::Paused)
+                    .unwrap_or(false)
+                {
                     c.cont()?;
                 }
                 c.system_powerdown()
@@ -604,7 +712,11 @@ impl Supervisor {
         if let Some(p) = self.proxy.take() {
             p.stop();
         }
-        for path in [&self.launch.console_socket, &self.launch.api_socket, &self.launch.shim_socket] {
+        for path in [
+            &self.launch.console_socket,
+            &self.launch.api_socket,
+            &self.launch.shim_socket,
+        ] {
             let _ = std::fs::remove_file(path);
         }
     }
@@ -626,9 +738,10 @@ fn spawn_acceptor(listener: UnixListener, tx: Sender<(Request, Sender<Response>)
     std::thread::spawn(move || {
         for stream in listener.incoming().flatten() {
             // §8.5: only our own user (the socket is 0600 anyway).
-            let peer_ok = nix::sys::socket::getsockopt(&stream, nix::sys::socket::sockopt::PeerCredentials)
-                .map(|c| c.uid() == me.as_raw() || c.uid() == 0)
-                .unwrap_or(false);
+            let peer_ok =
+                nix::sys::socket::getsockopt(&stream, nix::sys::socket::sockopt::PeerCredentials)
+                    .map(|c| c.uid() == me.as_raw() || c.uid() == 0)
+                    .unwrap_or(false);
             if !peer_ok {
                 continue;
             }
@@ -640,7 +753,9 @@ fn spawn_acceptor(listener: UnixListener, tx: Sender<(Request, Sender<Response>)
 
 fn connection(stream: UnixStream, tx: Sender<(Request, Sender<Response>)>) {
     stream.set_read_timeout(Some(Duration::from_secs(60))).ok();
-    let Ok(mut writer) = stream.try_clone() else { return };
+    let Ok(mut writer) = stream.try_clone() else {
+        return;
+    };
     let mut reader = BufReader::new(stream).take(u64::MAX);
     let mut greeted = false;
     loop {
@@ -651,20 +766,30 @@ fn connection(stream: UnixStream, tx: Sender<(Request, Sender<Response>)>) {
             Ok(_) => {}
         }
         if line.len() > MAX_LINE {
-            let _ = send(&mut writer, &Response::err(0, proto::E_PROTOCOL, "line too long"));
+            let _ = send(
+                &mut writer,
+                &Response::err(0, proto::E_PROTOCOL, "line too long"),
+            );
             return;
         }
         let req: Request = match serde_json::from_str(&line) {
             Ok(r) => r,
             Err(e) => {
-                let _ = send(&mut writer, &Response::err(0, proto::E_PROTOCOL, e.to_string()));
+                let _ = send(
+                    &mut writer,
+                    &Response::err(0, proto::E_PROTOCOL, e.to_string()),
+                );
                 return;
             }
         };
         let resp = match (&req.op, greeted) {
             (Op::Hello { protocol }, false) => {
                 if *protocol < proto::MIN_PROTOCOL_VERSION {
-                    Response::err(req.id, proto::E_PROTOCOL, format!("protocol {} is too old", protocol))
+                    Response::err(
+                        req.id,
+                        proto::E_PROTOCOL,
+                        format!("protocol {} is too old", protocol),
+                    )
                 } else {
                     greeted = true;
                     let r = HelloResult {
@@ -713,7 +838,15 @@ fn rfc3339(secs: u64) -> String {
     let d = doy - (153 * mp + 2) / 5 + 1;
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = if m <= 2 { y + 1 } else { y };
-    format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", y, m, d, rem / 3600, rem % 3600 / 60, rem % 60)
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+        y,
+        m,
+        d,
+        rem / 3600,
+        rem % 3600 / 60,
+        rem % 60
+    )
 }
 
 #[cfg(test)]
@@ -729,8 +862,16 @@ mod tests {
 
     #[test]
     fn args() {
-        let a = parse_args(["--vm", "x", "--dir", "/run/x"].map(String::from).into_iter()).unwrap();
-        assert_eq!((a.dir, a.vm.as_deref()), (PathBuf::from("/run/x"), Some("x")));
+        let a = parse_args(
+            ["--vm", "x", "--dir", "/run/x"]
+                .map(String::from)
+                .into_iter(),
+        )
+        .unwrap();
+        assert_eq!(
+            (a.dir, a.vm.as_deref()),
+            (PathBuf::from("/run/x"), Some("x"))
+        );
         assert!(parse_args(std::iter::empty()).is_err());
         assert!(parse_args(["--bogus".to_string()].into_iter()).is_err());
     }

@@ -56,7 +56,11 @@ impl Settings {
             host_shutdown_grace_secs: cfg.reconcile.host_shutdown_grace_secs,
             log_max_bytes: cfg.console.log_max_bytes,
             ready_timeout_secs: 30,
-            meter_poll_secs: if cfg.metering.enabled { cfg.metering.sample_secs } else { 0 },
+            meter_poll_secs: if cfg.metering.enabled {
+                cfg.metering.sample_secs
+            } else {
+                0
+            },
         }
     }
 }
@@ -114,7 +118,14 @@ impl VmManager {
             for key in me.all_keys().await {
                 me.queue.add(key);
             }
-            let ids: Vec<String> = me.vms.read().await.values().filter(|v| me.is_local(v)).map(|v| v.id.clone()).collect();
+            let ids: Vec<String> = me
+                .vms
+                .read()
+                .await
+                .values()
+                .filter(|v| me.is_local(v))
+                .map(|v| v.id.clone())
+                .collect();
             for id in ids {
                 me.watch_instance(&id).await;
             }
@@ -151,11 +162,33 @@ impl VmManager {
     /// Every object the controllers own.
     async fn all_keys(&self) -> Vec<Key> {
         let me = self.local_node_id();
-        let mut keys: Vec<Key> = self.vms.read().await.values().filter(|v| self.is_local(v)).map(|v| Key::Vm(v.id.clone())).collect();
-        keys.extend(self.images.list_disks().into_iter().filter(|d| self.is_local_disk(d)).map(|d| Key::Disk(d.id)));
-        keys.extend(self.images.list_images().into_iter().map(|i| Key::Image(i.id)));
+        let mut keys: Vec<Key> = self
+            .vms
+            .read()
+            .await
+            .values()
+            .filter(|v| self.is_local(v))
+            .map(|v| Key::Vm(v.id.clone()))
+            .collect();
+        keys.extend(
+            self.images
+                .list_disks()
+                .into_iter()
+                .filter(|d| self.is_local_disk(d))
+                .map(|d| Key::Disk(d.id)),
+        );
+        keys.extend(
+            self.images
+                .list_images()
+                .into_iter()
+                .map(|i| Key::Image(i.id)),
+        );
         if let Ok(nets) = self.networks.list() {
-            keys.extend(nets.into_iter().filter(|n| n.node.as_deref().is_none_or(|x| x == me)).map(|n| Key::Network(n.name)));
+            keys.extend(
+                nets.into_iter()
+                    .filter(|n| n.node.as_deref().is_none_or(|x| x == me))
+                    .map(|n| Key::Network(n.name)),
+            );
         }
         keys
     }
@@ -237,8 +270,15 @@ impl VmManager {
         let _ports = self.ports_lock.lock().await;
         let (running, networked) = {
             let vms = self.vms.read().await;
-            let running: Vec<String> = vms.values().filter(|vm| self.is_local(vm) && !vm.status.nics.is_empty()).map(|vm| vm.id.clone()).collect();
-            let networked = vms.values().any(|vm| self.is_local(vm) && (!vm.config().networks.is_empty() || !vm.status.nics.is_empty()));
+            let running: Vec<String> = vms
+                .values()
+                .filter(|vm| self.is_local(vm) && !vm.status.nics.is_empty())
+                .map(|vm| vm.id.clone())
+                .collect();
+            let networked = vms.values().any(|vm| {
+                self.is_local(vm)
+                    && (!vm.config().networks.is_empty() || !vm.status.nics.is_empty())
+            });
             (running, networked)
         };
         *self.netd_seen.lock().unwrap() = self.netd.socket_identity();
@@ -247,7 +287,9 @@ impl VmManager {
         }
         let netd = self.netd.clone();
         let res = tokio::task::spawn_blocking(move || {
-            netd.call::<glidex_netd::proto::ReconcileReport>(glidex_netd::proto::Op::SyncVms { running })
+            netd.call::<glidex_netd::proto::ReconcileReport>(glidex_netd::proto::Op::SyncVms {
+                running,
+            })
         })
         .await;
         match res {
@@ -264,13 +306,25 @@ impl VmManager {
     /// Watch the live processes of `vm_id`'s instance: when one exits,
     /// queue the VM (§9.2). One watch per (VM, pid).
     pub(crate) async fn watch_instance(&self, vm_id: &str) {
-        let Some(vm) = self.vm(vm_id).await else { return };
-        let Some(inst) = vm.status.instance else { return };
-        for (pid, start) in [inst.shim_pid.zip(inst.shim_starttime), inst.hypervisor_pid.zip(inst.hypervisor_starttime)]
-            .into_iter()
-            .flatten()
+        let Some(vm) = self.vm(vm_id).await else {
+            return;
+        };
+        let Some(inst) = vm.status.instance else {
+            return;
+        };
+        for (pid, start) in [
+            inst.shim_pid.zip(inst.shim_starttime),
+            inst.hypervisor_pid.zip(inst.hypervisor_starttime),
+        ]
+        .into_iter()
+        .flatten()
         {
-            if !self.watched.lock().unwrap().insert((vm_id.to_string(), pid)) {
+            if !self
+                .watched
+                .lock()
+                .unwrap()
+                .insert((vm_id.to_string(), pid))
+            {
                 continue;
             }
             let me = self.arc();
@@ -297,7 +351,9 @@ async fn wait_for_exit(pid: u32, start: u64) {
         if !glidex_vm_shim::util::same_process(pid, start).unwrap_or(false) {
             return;
         }
-        if let Ok(afd) = tokio::io::unix::AsyncFd::with_interest(PidFd(fd), tokio::io::Interest::READABLE) {
+        if let Ok(afd) =
+            tokio::io::unix::AsyncFd::with_interest(PidFd(fd), tokio::io::Interest::READABLE)
+        {
             let _ = afd.readable().await;
             return;
         }
@@ -321,15 +377,22 @@ mod tests {
 
     #[tokio::test]
     async fn pidfd_wait_returns_when_the_process_exits() {
-        let mut child = std::process::Command::new("sleep").arg("0.3").spawn().unwrap();
+        let mut child = std::process::Command::new("sleep")
+            .arg("0.3")
+            .spawn()
+            .unwrap();
         let pid = child.id();
         let start = glidex_vm_shim::util::proc_starttime(pid).unwrap().unwrap();
         let reaper = std::thread::spawn(move || child.wait());
         let t = std::time::Instant::now();
-        tokio::time::timeout(Duration::from_secs(5), wait_for_exit(pid, start)).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), wait_for_exit(pid, start))
+            .await
+            .unwrap();
         assert!(t.elapsed() >= Duration::from_millis(200));
         reaper.join().unwrap().unwrap();
         // An already-gone process returns at once.
-        tokio::time::timeout(Duration::from_millis(500), wait_for_exit(pid, start)).await.unwrap();
+        tokio::time::timeout(Duration::from_millis(500), wait_for_exit(pid, start))
+            .await
+            .unwrap();
     }
 }

@@ -135,18 +135,28 @@ fn member_key(tenant: &str, principal: &Ent) -> String {
 pub fn validate_slug(slug: &str) -> Result<(), TenantError> {
     let ok = !slug.is_empty()
         && slug.len() <= 32
-        && slug.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        && slug
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
         && !slug.starts_with('-');
     if ok {
         Ok(())
     } else {
-        Err(TenantError::Invalid(format!("invalid tenant slug '{}': use [a-z0-9-], 1-32 characters", slug)))
+        Err(TenantError::Invalid(format!(
+            "invalid tenant slug '{}': use [a-z0-9-], 1-32 characters",
+            slug
+        )))
     }
 }
 
 /// Limits that limit nothing: an admission's cap unless the operator sets one.
 pub fn unlimited() -> Quotas {
-    Quotas { networks: None, routers: None, external_ips: None, ..Default::default() }
+    Quotas {
+        networks: None,
+        routers: None,
+        external_ips: None,
+        ..Default::default()
+    }
 }
 
 /// Everything about tenants this control plane knows, read in one go for
@@ -167,11 +177,16 @@ impl Snapshot {
 
     /// Admitted (not suspended) here.
     pub fn admitted(&self, tenant: &str) -> bool {
-        self.admissions.iter().any(|a| a.tenant_id == tenant && a.status == AdmissionStatus::Admitted)
+        self.admissions
+            .iter()
+            .any(|a| a.tenant_id == tenant && a.status == AdmissionStatus::Admitted)
     }
 
     pub fn owner(&self) -> &str {
-        self.directory.as_ref().map(|d| d.owner_tenant.as_str()).unwrap_or(ADMIN_TENANT)
+        self.directory
+            .as_ref()
+            .map(|d| d.owner_tenant.as_str())
+            .unwrap_or(ADMIN_TENANT)
     }
 }
 
@@ -193,7 +208,12 @@ impl TenantStore {
 
     fn bootstrap(&self) -> Result<(), TenantError> {
         let at = now();
-        let directory = Directory { id: LOCAL_DIRECTORY.into(), name: "local".into(), owner_tenant: ADMIN_TENANT.into(), created_at: at };
+        let directory = Directory {
+            id: LOCAL_DIRECTORY.into(),
+            name: "local".into(),
+            owner_tenant: ADMIN_TENANT.into(),
+            created_at: at,
+        };
         let admin = Tenant {
             id: ADMIN_TENANT.into(),
             directory_id: LOCAL_DIRECTORY.into(),
@@ -260,7 +280,10 @@ impl TenantStore {
         Ok(table.get(key)?.map(|v| v.value().to_vec()))
     }
 
-    fn read_all<T: serde::de::DeserializeOwned>(&self, def: TableDefinition<'static, &'static str, &'static [u8]>) -> Result<Vec<T>, TenantError> {
+    fn read_all<T: serde::de::DeserializeOwned>(
+        &self,
+        def: TableDefinition<'static, &'static str, &'static [u8]>,
+    ) -> Result<Vec<T>, TenantError> {
         let txn = self.db.begin_read()?;
         let table = match txn.open_table(def) {
             Ok(t) => t,
@@ -275,7 +298,12 @@ impl TenantStore {
         Ok(out)
     }
 
-    fn put<T: Serialize>(&self, def: TableDefinition<'static, &'static str, &'static [u8]>, key: &str, v: &T) -> Result<(), TenantError> {
+    fn put<T: Serialize>(
+        &self,
+        def: TableDefinition<'static, &'static str, &'static [u8]>,
+        key: &str,
+        v: &T,
+    ) -> Result<(), TenantError> {
         let bytes = serde_json::to_vec(v)?;
         let txn = self.db.begin(crate::store::Origin::Api)?;
         {
@@ -286,7 +314,11 @@ impl TenantStore {
         Ok(())
     }
 
-    fn remove(&self, def: TableDefinition<'static, &'static str, &'static [u8]>, key: &str) -> Result<bool, TenantError> {
+    fn remove(
+        &self,
+        def: TableDefinition<'static, &'static str, &'static [u8]>,
+        key: &str,
+    ) -> Result<bool, TenantError> {
         let txn = self.db.begin(crate::store::Origin::Api)?;
         let removed = {
             let mut table = txn.open_table(def)?;
@@ -328,12 +360,18 @@ impl TenantStore {
     }
 
     pub fn directory(&self) -> Result<Option<Directory>, TenantError> {
-        Ok(self.read_all::<Directory>(DIRECTORIES)?.into_iter().find(|d| d.id == LOCAL_DIRECTORY))
+        Ok(self
+            .read_all::<Directory>(DIRECTORIES)?
+            .into_iter()
+            .find(|d| d.id == LOCAL_DIRECTORY))
     }
 
     /// The tenant operating this cluster.
     pub fn operator(&self) -> Result<String, TenantError> {
-        Ok(self.meta(META_OPERATOR)?.map(|v| String::from_utf8_lossy(&v).into_owned()).unwrap_or_else(|| ADMIN_TENANT.into()))
+        Ok(self
+            .meta(META_OPERATOR)?
+            .map(|v| String::from_utf8_lossy(&v).into_owned())
+            .unwrap_or_else(|| ADMIN_TENANT.into()))
     }
 
     pub fn list(&self) -> Result<Vec<Tenant>, TenantError> {
@@ -363,11 +401,18 @@ impl TenantStore {
     }
 
     pub fn admission(&self, tenant: &str) -> Result<Option<Admission>, TenantError> {
-        Ok(self.admissions()?.into_iter().find(|a| a.tenant_id == tenant))
+        Ok(self
+            .admissions()?
+            .into_iter()
+            .find(|a| a.tenant_id == tenant))
     }
 
     pub fn members(&self, tenant: &str) -> Result<Vec<Member>, TenantError> {
-        let mut out: Vec<Member> = self.read_all::<Member>(MEMBERS)?.into_iter().filter(|m| m.tenant_id == tenant).collect();
+        let mut out: Vec<Member> = self
+            .read_all::<Member>(MEMBERS)?
+            .into_iter()
+            .filter(|m| m.tenant_id == tenant)
+            .collect();
         out.sort_by_key(|m| member_key(&m.tenant_id, &m.principal));
         Ok(out)
     }
@@ -382,14 +427,21 @@ impl TenantStore {
             Err(e) => return Err(e.into()),
         };
         Ok(match table.get(project)? {
-            Some(v) => Some(serde_json::from_slice::<crate::tenancy::Project>(v.value())?.tenant_id),
+            Some(v) => {
+                Some(serde_json::from_slice::<crate::tenancy::Project>(v.value())?.tenant_id)
+            }
             None => None,
         })
     }
 
     // ---- writes (through the service layer, spec/tenancy.md §14.1) -----
 
-    pub fn create(&self, slug: &str, display_name: String, operator: bool) -> Result<Tenant, TenantError> {
+    pub fn create(
+        &self,
+        slug: &str,
+        display_name: String,
+        operator: bool,
+    ) -> Result<Tenant, TenantError> {
         validate_slug(slug)?;
         if self.list()?.iter().any(|t| t.slug == slug || t.id == slug) {
             return Err(TenantError::AlreadyExists(slug.to_string()));
@@ -417,7 +469,9 @@ impl TenantStore {
 
     pub fn delete(&self, id: &str) -> Result<(), TenantError> {
         if [ADMIN_TENANT, DEFAULT_TENANT].contains(&id) {
-            return Err(TenantError::Invalid(format!("tenant {id} can't be deleted")));
+            return Err(TenantError::Invalid(format!(
+                "tenant {id} can't be deleted"
+            )));
         }
         if !self.remove(TENANTS, id)? {
             return Err(TenantError::NotFound(id.into()));
@@ -429,9 +483,24 @@ impl TenantStore {
         Ok(())
     }
 
-    pub fn admit(&self, tenant: &str, cap: Quotas, status: AdmissionStatus, by: &str) -> Result<Admission, TenantError> {
-        let t = self.get(tenant)?.ok_or_else(|| TenantError::NotFound(tenant.into()))?;
-        let a = Admission { tenant_id: t.id.clone(), directory_id: t.directory_id, cap, status, by: by.into(), at: now() };
+    pub fn admit(
+        &self,
+        tenant: &str,
+        cap: Quotas,
+        status: AdmissionStatus,
+        by: &str,
+    ) -> Result<Admission, TenantError> {
+        let t = self
+            .get(tenant)?
+            .ok_or_else(|| TenantError::NotFound(tenant.into()))?;
+        let a = Admission {
+            tenant_id: t.id.clone(),
+            directory_id: t.directory_id,
+            cap,
+            status,
+            by: by.into(),
+            at: now(),
+        };
         self.put(ADMISSIONS, &t.id, &a)?;
         Ok(a)
     }
@@ -443,21 +512,35 @@ impl TenantStore {
         Ok(())
     }
 
-    pub fn add_member(&self, tenant: &str, principal: Ent, by: &str) -> Result<Member, TenantError> {
+    pub fn add_member(
+        &self,
+        tenant: &str,
+        principal: Ent,
+        by: &str,
+    ) -> Result<Member, TenantError> {
         if !matches!(principal, Ent::User(_) | Ent::Team(_)) {
-            return Err(TenantError::Invalid("tenant members are users or teams".into()));
+            return Err(TenantError::Invalid(
+                "tenant members are users or teams".into(),
+            ));
         }
         if self.get(tenant)?.is_none() {
             return Err(TenantError::NotFound(tenant.into()));
         }
-        let m = Member { tenant_id: tenant.into(), principal, by: by.into(), at: now() };
+        let m = Member {
+            tenant_id: tenant.into(),
+            principal,
+            by: by.into(),
+            at: now(),
+        };
         self.put(MEMBERS, &member_key(tenant, &m.principal), &m)?;
         Ok(m)
     }
 
     pub fn remove_member(&self, tenant: &str, principal: &Ent) -> Result<(), TenantError> {
         if !self.remove(MEMBERS, &member_key(tenant, principal))? {
-            return Err(TenantError::NotFound(format!("{principal} is not a listed member of {tenant}")));
+            return Err(TenantError::NotFound(format!(
+                "{principal} is not a listed member of {tenant}"
+            )));
         }
         Ok(())
     }
@@ -479,7 +562,10 @@ mod tests {
         let snap = s.snapshot().unwrap();
         assert_eq!(snap.owner(), ADMIN_TENANT);
         assert_eq!(snap.operator, ADMIN_TENANT);
-        assert!(snap.tenant(ADMIN_TENANT).unwrap().owns_directory && snap.tenant(ADMIN_TENANT).unwrap().operator);
+        assert!(
+            snap.tenant(ADMIN_TENANT).unwrap().owns_directory
+                && snap.tenant(ADMIN_TENANT).unwrap().operator
+        );
         assert!(snap.admitted(DEFAULT_TENANT) && snap.admitted(ADMIN_TENANT));
         let again = TenantStore::new(s.db.clone()).unwrap();
         assert_eq!(again.list().unwrap().len(), 2);
@@ -490,12 +576,20 @@ mod tests {
         let (s, _d) = store();
         let t = s.create("acme", "Acme".into(), false).unwrap();
         assert_eq!(s.resolve("acme").unwrap(), t);
-        assert!(matches!(s.create("acme", String::new(), false), Err(TenantError::AlreadyExists(_))));
-        assert!(matches!(s.create("Acme", String::new(), false), Err(TenantError::Invalid(_))));
+        assert!(matches!(
+            s.create("acme", String::new(), false),
+            Err(TenantError::AlreadyExists(_))
+        ));
+        assert!(matches!(
+            s.create("Acme", String::new(), false),
+            Err(TenantError::Invalid(_))
+        ));
         assert!(!s.snapshot().unwrap().admitted(&t.id));
-        s.admit(&t.id, unlimited(), AdmissionStatus::Admitted, "test").unwrap();
+        s.admit(&t.id, unlimited(), AdmissionStatus::Admitted, "test")
+            .unwrap();
         assert!(s.snapshot().unwrap().admitted(&t.id));
-        s.admit(&t.id, unlimited(), AdmissionStatus::Suspended, "test").unwrap();
+        s.admit(&t.id, unlimited(), AdmissionStatus::Suspended, "test")
+            .unwrap();
         assert!(!s.snapshot().unwrap().admitted(&t.id));
         s.add_member(&t.id, Ent::User("u1".into()), "test").unwrap();
         assert_eq!(s.members(&t.id).unwrap().len(), 1);

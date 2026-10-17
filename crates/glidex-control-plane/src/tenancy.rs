@@ -90,7 +90,12 @@ fn default_router_quota() -> Option<u64> {
 impl Quotas {
     /// Defaults for a new project: unlimited, except 2 project networks.
     pub fn new_project() -> Self {
-        Quotas { networks: default_network_quota(), routers: default_router_quota(), external_ips: default_router_quota(), ..Default::default() }
+        Quotas {
+            networks: default_network_quota(),
+            routers: default_router_quota(),
+            external_ips: default_router_quota(),
+            ..Default::default()
+        }
     }
 }
 
@@ -153,18 +158,38 @@ pub fn overruns(quotas: &Quotas, usage: &Usage, delta: &Delta) -> Vec<QuotaOverr
     let mut check = |resource: &'static str, limit: Option<u64>, used: u64, requested: u64| {
         if let Some(limit) = limit {
             if requested > 0 && used + requested > limit {
-                out.push(QuotaOverrun { resource, limit, used, requested });
+                out.push(QuotaOverrun {
+                    resource,
+                    limit,
+                    used,
+                    requested,
+                });
             }
         }
     };
     check("vms", quotas.vms, usage.vms, delta.vms);
     check("vcpus", quotas.vcpus, usage.vcpus, delta.vcpus);
-    check("memory_mib", quotas.memory_mib, usage.memory_mib, delta.memory_mib);
+    check(
+        "memory_mib",
+        quotas.memory_mib,
+        usage.memory_mib,
+        delta.memory_mib,
+    );
     check("disk_gib", quotas.disk_gib, usage.disk_gib, delta.disk_gib);
-    check("running_vms", quotas.running_vms, usage.running_vms, delta.running_vms);
+    check(
+        "running_vms",
+        quotas.running_vms,
+        usage.running_vms,
+        delta.running_vms,
+    );
     check("networks", quotas.networks, usage.networks, delta.networks);
     check("routers", quotas.routers, usage.routers, delta.routers);
-    check("external_ips", quotas.external_ips, usage.external_ips, delta.external_ips);
+    check(
+        "external_ips",
+        quotas.external_ips,
+        usage.external_ips,
+        delta.external_ips,
+    );
     out
 }
 
@@ -190,7 +215,9 @@ fn default_tenant() -> String {
 pub fn validate_project_name(name: &str) -> Result<(), TenancyError> {
     let ok = !name.is_empty()
         && name.len() <= 32
-        && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
         && !name.starts_with('-');
     if ok {
         Ok(())
@@ -224,7 +251,8 @@ impl ProjectStore {
                 id: uuid::Uuid::new_v4().to_string(),
                 name: DEFAULT_PROJECT_NAME.into(),
                 tenant_id: default_tenant(),
-                description: "Created at install; holds resources from before projects existed.".into(),
+                description: "Created at install; holds resources from before projects existed."
+                    .into(),
                 quotas: Quotas::new_project(),
                 created_at: now(),
             };
@@ -316,15 +344,30 @@ impl ProjectStore {
         Ok(())
     }
 
-    pub fn create(&self, name: &str, description: String, quotas: Option<Quotas>) -> Result<Project, TenancyError> {
+    pub fn create(
+        &self,
+        name: &str,
+        description: String,
+        quotas: Option<Quotas>,
+    ) -> Result<Project, TenancyError> {
         self.create_in(&default_tenant(), name, description, quotas)
     }
 
     /// A new project of `tenant`; names are unique per tenant
     /// (spec/tenancy.md D24).
-    pub fn create_in(&self, tenant: &str, name: &str, description: String, quotas: Option<Quotas>) -> Result<Project, TenancyError> {
+    pub fn create_in(
+        &self,
+        tenant: &str,
+        name: &str,
+        description: String,
+        quotas: Option<Quotas>,
+    ) -> Result<Project, TenancyError> {
         validate_project_name(name)?;
-        if self.list()?.iter().any(|p| p.name == name && p.tenant_id == tenant) {
+        if self
+            .list()?
+            .iter()
+            .any(|p| p.name == name && p.tenant_id == tenant)
+        {
             return Err(TenancyError::AlreadyExists(name.to_string()));
         }
         let p = Project {
@@ -341,7 +384,9 @@ impl ProjectStore {
 
     pub fn delete(&self, id: &str) -> Result<(), TenancyError> {
         if id == self.default_project_id() {
-            return Err(TenancyError::Invalid("the default project can't be deleted".into()));
+            return Err(TenancyError::Invalid(
+                "the default project can't be deleted".into(),
+            ));
         }
         let txn = self.db.begin(crate::store::Origin::Api)?;
         {
@@ -383,8 +428,14 @@ mod tests {
         assert_eq!(p.quotas.networks, Some(2));
         assert_eq!(s.resolve("lab-1").unwrap(), p);
         assert_eq!(s.resolve(&p.id).unwrap(), p);
-        assert!(matches!(s.create("lab-1", String::new(), None), Err(TenancyError::AlreadyExists(_))));
-        assert!(matches!(s.create("Lab", String::new(), None), Err(TenancyError::Invalid(_))));
+        assert!(matches!(
+            s.create("lab-1", String::new(), None),
+            Err(TenancyError::AlreadyExists(_))
+        ));
+        assert!(matches!(
+            s.create("Lab", String::new(), None),
+            Err(TenancyError::Invalid(_))
+        ));
         assert!(s.delete(&s.default_project_id()).is_err());
         s.delete(&p.id).unwrap();
         assert!(matches!(s.resolve("lab-1"), Err(TenancyError::NotFound(_))));
@@ -393,7 +444,11 @@ mod tests {
     #[test]
     fn default_project_takes_site_quotas_once() {
         let (s, _d) = store();
-        let site = Quotas { vms: Some(5), networks: Some(3), ..Default::default() };
+        let site = Quotas {
+            vms: Some(5),
+            networks: Some(3),
+            ..Default::default()
+        };
         assert!(s.adopt_default_quotas(&site).unwrap());
         assert_eq!(s.resolve("default").unwrap().quotas, site);
         // An admin's later change survives the next start.
@@ -406,27 +461,80 @@ mod tests {
 
     #[test]
     fn overrun_detection() {
-        let q = Quotas { vms: Some(2), vcpus: Some(4), ..Default::default() };
-        let u = Usage { vms: 2, vcpus: 3, ..Default::default() };
-        let o = overruns(&q, &u, &Delta { vms: 1, vcpus: 1, ..Default::default() });
+        let q = Quotas {
+            vms: Some(2),
+            vcpus: Some(4),
+            ..Default::default()
+        };
+        let u = Usage {
+            vms: 2,
+            vcpus: 3,
+            ..Default::default()
+        };
+        let o = overruns(
+            &q,
+            &u,
+            &Delta {
+                vms: 1,
+                vcpus: 1,
+                ..Default::default()
+            },
+        );
         assert_eq!(o.len(), 1);
         assert_eq!(o[0].resource, "vms");
         assert!(overruns(&q, &u, &Delta::default()).is_empty());
         // Unlimited when None.
-        assert!(overruns(&Quotas { networks: None, ..Default::default() }, &u, &Delta { networks: 9, ..Default::default() }).is_empty());
+        assert!(overruns(
+            &Quotas {
+                networks: None,
+                ..Default::default()
+            },
+            &u,
+            &Delta {
+                networks: 9,
+                ..Default::default()
+            }
+        )
+        .is_empty());
     }
 
     #[test]
     fn router_quotas_default_to_one_each() {
         let q = Quotas::new_project();
         assert_eq!((q.routers, q.external_ips), (Some(1), Some(1)));
-        let u = Usage { routers: 1, external_ips: 1, ..Default::default() };
-        let o = overruns(&q, &u, &Delta { routers: 1, external_ips: 1, ..Default::default() });
-        assert_eq!(o.iter().map(|o| o.resource).collect::<Vec<_>>(), ["routers", "external_ips"]);
+        let u = Usage {
+            routers: 1,
+            external_ips: 1,
+            ..Default::default()
+        };
+        let o = overruns(
+            &q,
+            &u,
+            &Delta {
+                routers: 1,
+                external_ips: 1,
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            o.iter().map(|o| o.resource).collect::<Vec<_>>(),
+            ["routers", "external_ips"]
+        );
         // An internal router counts only against `routers`.
-        let o = overruns(&q, &Usage::default(), &Delta { routers: 1, ..Default::default() });
+        let o = overruns(
+            &q,
+            &Usage::default(),
+            &Delta {
+                routers: 1,
+                ..Default::default()
+            },
+        );
         assert!(o.is_empty());
         let none: Quotas = serde_json::from_str("{}").unwrap();
-        assert_eq!((none.routers, none.external_ips), (Some(1), Some(1)), "records from before the router quotas get the default");
+        assert_eq!(
+            (none.routers, none.external_ips),
+            (Some(1), Some(1)),
+            "records from before the router quotas get the default"
+        );
     }
 }

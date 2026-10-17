@@ -2,8 +2,8 @@
 //! (no `-S`, D9), and driven over QMP (`glidex-hv-client`) at run time.
 
 use super::{
-    needs_shared_memory, resolve_binary, vfio_bdf, vfio_device_id, vm_disks, HypervisorDriver, HypervisorError,
-    HypervisorType, LaunchArgs, VmDisk,
+    needs_shared_memory, resolve_binary, vfio_bdf, vfio_device_id, vm_disks, HypervisorDriver,
+    HypervisorError, HypervisorType, LaunchArgs, VmDisk,
 };
 use crate::images::qemu_img::ImageType;
 use crate::models::{NicBinding, VmConfig};
@@ -77,7 +77,11 @@ fn qemu_version() -> Option<(u32, u32)> {
 /// (usually the `kvm` group). `access(2)`, not an open: the VM's unit runs
 /// as this user with these groups, but this unit's sandbox closes /dev.
 fn vhost_net_usable() -> bool {
-    nix::unistd::access("/dev/vhost-net", nix::unistd::AccessFlags::R_OK | nix::unistd::AccessFlags::W_OK).is_ok()
+    nix::unistd::access(
+        "/dev/vhost-net",
+        nix::unistd::AccessFlags::R_OK | nix::unistd::AccessFlags::W_OK,
+    )
+    .is_ok()
 }
 
 /// Whether the filesystem holding `path` supports `O_DIRECT` (tmpfs and
@@ -171,15 +175,22 @@ impl LaunchSpec<'_> {
         let config = self.config;
         // No default NIC, VGA, floppy or CD-ROM: the guest gets exactly the
         // devices below, as under Cloud-Hypervisor.
-        let mut args: Vec<String> =
-            ["-nodefaults", "-no-user-config", "-enable-kvm"].map(String::from).to_vec();
+        let mut args: Vec<String> = ["-nodefaults", "-no-user-config", "-enable-kvm"]
+            .map(String::from)
+            .to_vec();
         let push = |args: &mut Vec<String>, a: &str, b: String| {
             args.push(a.to_string());
             args.push(b);
         };
 
         let shared = needs_shared_memory(config) || config.hugepages;
-        let secure_boot = matches!(self.firmware, Some(Firmware::Pflash { secure_boot: true, .. }));
+        let secure_boot = matches!(
+            self.firmware,
+            Some(Firmware::Pflash {
+                secure_boot: true,
+                ..
+            })
+        );
         let mut machine = "q35".to_string();
         if shared {
             machine.push_str(",memory-backend=mem");
@@ -207,16 +218,31 @@ impl LaunchSpec<'_> {
         }
 
         match &self.firmware {
-            Some(Firmware::Pflash { code, vars, secure_boot }) => {
+            Some(Firmware::Pflash {
+                code,
+                vars,
+                secure_boot,
+            }) => {
                 if *secure_boot {
-                    push(&mut args, "-global", "driver=cfi.pflash01,property=secure,value=on".into());
+                    push(
+                        &mut args,
+                        "-global",
+                        "driver=cfi.pflash01,property=secure,value=on".into(),
+                    );
                 }
                 push(
                     &mut args,
                     "-drive",
-                    format!("if=pflash,format=raw,unit=0,readonly=on,file={}", qopt(code)),
+                    format!(
+                        "if=pflash,format=raw,unit=0,readonly=on,file={}",
+                        qopt(code)
+                    ),
                 );
-                push(&mut args, "-drive", format!("if=pflash,format=raw,unit=1,file={}", qopt(vars)));
+                push(
+                    &mut args,
+                    "-drive",
+                    format!("if=pflash,format=raw,unit=1,file={}", qopt(vars)),
+                );
             }
             Some(Firmware::Bios(path)) => push(&mut args, "-bios", path.clone()),
             None => {
@@ -230,7 +256,11 @@ impl LaunchSpec<'_> {
             let node = format!("disk{}", i);
             push(&mut args, "-blockdev", disk.blockdev(&node));
             let boot = if i == 0 { ",bootindex=1" } else { "" };
-            push(&mut args, "-device", format!("virtio-blk-pci,drive={},id=vd{}{}", node, i, boot));
+            push(
+                &mut args,
+                "-device",
+                format!("virtio-blk-pci,drive={},id=vd{}{}", node, i, boot),
+            );
         }
 
         for nic in &config.nic_bindings {
@@ -243,14 +273,26 @@ impl LaunchSpec<'_> {
             push(
                 &mut args,
                 "-device",
-                format!("vfio-pci,host={},id={}", vfio_bdf(device), vfio_device_id(device)),
+                format!(
+                    "vfio-pci,host={},id={}",
+                    vfio_bdf(device),
+                    vfio_device_id(device)
+                ),
             );
         }
 
-        push(&mut args, "-object", "rng-random,id=rng0,filename=/dev/urandom".into());
+        push(
+            &mut args,
+            "-object",
+            "rng-random,id=rng0,filename=/dev/urandom".into(),
+        );
         push(&mut args, "-device", "virtio-rng-pci,rng=rng0".into());
 
-        push(&mut args, "-qmp", format!("unix:{},server=on,wait=off", qopt(&self.qmp_socket)));
+        push(
+            &mut args,
+            "-qmp",
+            format!("unix:{},server=on,wait=off", qopt(&self.qmp_socket)),
+        );
         push(&mut args, "-serial", "stdio".into());
         push(&mut args, "-display", "none".into());
         args
@@ -263,7 +305,11 @@ impl LaunchSpec<'_> {
 fn nic_args(nic: &NicBinding, vhost_net: bool) -> Vec<(&'static str, String)> {
     let id = &nic.id;
     let pairs = nic.queue_pairs.max(1);
-    let queues = if pairs > 1 { format!(",queues={}", pairs) } else { String::new() };
+    let queues = if pairs > 1 {
+        format!(",queues={}", pairs)
+    } else {
+        String::new()
+    };
     let mut out = Vec::new();
     match &nic.binding {
         VmPortBinding::Tap { ifname } => out.push((
@@ -285,7 +331,10 @@ fn nic_args(nic: &NicBinding, vhost_net: bool) -> Vec<(&'static str, String)> {
                     qopt(&socket.to_string_lossy())
                 ),
             ));
-            out.push(("-netdev", format!("vhost-user,id={},chardev=chr-{}{}", id, id, queues)));
+            out.push((
+                "-netdev",
+                format!("vhost-user,id={},chardev=chr-{}{}", id, id, queues),
+            ));
         }
     }
     let mut device = format!("virtio-net-pci,netdev={},id=dev-{},mac={}", id, id, nic.mac);
@@ -321,7 +370,11 @@ fn cpu_model_rejected(log: &str) -> bool {
 /// template changed size, e.g. after a 2M -> 4M OVMF upgrade). The
 /// template is the firmware image's own (`template`), else the one shipped
 /// next to the code file.
-fn prepare_firmware(code: &str, vars: &str, template: Option<&str>) -> Result<Firmware, HypervisorError> {
+fn prepare_firmware(
+    code: &str,
+    vars: &str,
+    template: Option<&str>,
+) -> Result<Firmware, HypervisorError> {
     let code_path = Path::new(code);
     if !code_path.exists() {
         return Err(HypervisorError::InvalidConfig(format!(
@@ -329,7 +382,10 @@ fn prepare_firmware(code: &str, vars: &str, template: Option<&str>) -> Result<Fi
             code
         )));
     }
-    let Some(template) = template.map(PathBuf::from).or_else(|| ovmf_vars_template(code_path)) else {
+    let Some(template) = template
+        .map(PathBuf::from)
+        .or_else(|| ovmf_vars_template(code_path))
+    else {
         return Ok(Firmware::Bios(code.to_string()));
     };
     let template_len = std::fs::metadata(&template)?.len();
@@ -343,9 +399,18 @@ fn prepare_firmware(code: &str, vars: &str, template: Option<&str>) -> Result<Fi
         // template is read-only; the guest writes its own store.
         std::fs::set_permissions(vars, std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
     }
-    let name = code_path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
-    let secure_boot = ["secboot", ".ms.", "snakeoil"].iter().any(|s| name.contains(s));
-    Ok(Firmware::Pflash { code: code.to_string(), vars: vars.to_string(), secure_boot })
+    let name = code_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default();
+    let secure_boot = ["secboot", ".ms.", "snakeoil"]
+        .iter()
+        .any(|s| name.contains(s));
+    Ok(Firmware::Pflash {
+        code: code.to_string(),
+        vars: vars.to_string(),
+        secure_boot,
+    })
 }
 
 pub struct QemuDriver;
@@ -357,9 +422,16 @@ impl HypervisorDriver for QemuDriver {
 
     /// Resolve the config against the host into a `LaunchSpec`; the
     /// fallback is the same command line without `-cpu host`.
-    fn launch_args(&self, config: &VmConfig, api_socket: &str) -> Result<LaunchArgs, HypervisorError> {
+    fn launch_args(
+        &self,
+        config: &VmConfig,
+        api_socket: &str,
+    ) -> Result<LaunchArgs, HypervisorError> {
         let bin = resolve_binary("qemu-system-x86_64").ok_or_else(|| {
-            HypervisorError::ProcessStart(std::io::Error::new(std::io::ErrorKind::NotFound, "qemu-system-x86_64 is not installed"))
+            HypervisorError::ProcessStart(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "qemu-system-x86_64 is not installed",
+            ))
         })?;
         if let Some(version) = qemu_version() {
             if version < MIN_QEMU_VERSION {
@@ -372,15 +444,24 @@ impl HypervisorDriver for QemuDriver {
         let firmware = match &config.firmware_path {
             Some(code) => {
                 let vars = config.firmware_vars_path.clone().ok_or_else(|| {
-                    HypervisorError::InvalidConfig("firmware boot needs a firmware variable store path".into())
+                    HypervisorError::InvalidConfig(
+                        "firmware boot needs a firmware variable store path".into(),
+                    )
                 })?;
-                Some(prepare_firmware(code, &vars, config.firmware_vars_template.as_deref())?)
+                Some(prepare_firmware(
+                    code,
+                    &vars,
+                    config.firmware_vars_template.as_deref(),
+                )?)
             }
             None => None,
         };
         let disks = vm_disks(config)
             .into_iter()
-            .map(|disk| QemuDisk { direct: supports_direct_io(&disk.path), disk })
+            .map(|disk| QemuDisk {
+                direct: supports_direct_io(&disk.path),
+                disk,
+            })
             .collect();
         let mut spec = LaunchSpec {
             config,
@@ -390,8 +471,15 @@ impl HypervisorDriver for QemuDriver {
             cpu_host: true,
             vhost_net: vhost_net_usable(),
         };
-        if !spec.vhost_net && config.nic_bindings.iter().any(|n| matches!(n.binding, VmPortBinding::Tap { .. })) {
-            tracing::warn!("/dev/vhost-net is not usable; tap NICs fall back to QEMU's userspace virtio-net");
+        if !spec.vhost_net
+            && config
+                .nic_bindings
+                .iter()
+                .any(|n| matches!(n.binding, VmPortBinding::Tap { .. }))
+        {
+            tracing::warn!(
+                "/dev/vhost-net is not usable; tap NICs fall back to QEMU's userspace virtio-net"
+            );
         }
         let bin = bin.to_string_lossy().into_owned();
         let argv = std::iter::once(bin.clone()).chain(spec.args()).collect();
@@ -400,7 +488,10 @@ impl HypervisorDriver for QemuDriver {
             argv: std::iter::once(bin).chain(spec.args()).collect(),
             when_output_matches: CPU_REJECTED_MARKERS.iter().map(|s| s.to_string()).collect(),
         };
-        Ok(LaunchArgs { argv, fallback: Some(fallback) })
+        Ok(LaunchArgs {
+            argv,
+            fallback: Some(fallback),
+        })
     }
 
     fn observe(&self, api_socket: &str) -> Result<Observed, HypervisorError> {
@@ -416,7 +507,8 @@ impl HypervisorDriver for QemuDriver {
     }
 
     fn add_device(&self, api_socket: &str, device_path: &str) -> Result<(), HypervisorError> {
-        Ok(QmpClient::new(api_socket).device_add_vfio(&vfio_bdf(device_path), &vfio_device_id(device_path))?)
+        Ok(QmpClient::new(api_socket)
+            .device_add_vfio(&vfio_bdf(device_path), &vfio_device_id(device_path))?)
     }
 
     fn remove_device(&self, api_socket: &str, device_path: &str) -> Result<(), HypervisorError> {
@@ -435,7 +527,9 @@ mod tests {
             "vcpu_count": 2, "mem_size_mib": 1024, "rootfs_path": "/disks/root.raw",
             "kernel_image_path": "/boot/vmlinux", "kernel_args": "console=ttyS0"
         });
-        base.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        base.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
         serde_json::from_value(base).unwrap()
     }
 
@@ -446,7 +540,10 @@ mod tests {
             firmware: None,
             disks: vm_disks(config)
                 .into_iter()
-                .map(|disk| QemuDisk { disk, direct: false })
+                .map(|disk| QemuDisk {
+                    disk,
+                    direct: false,
+                })
                 .collect(),
             cpu_host: true,
             vhost_net: true,
@@ -465,7 +562,9 @@ mod tests {
         NicBinding {
             id: id.into(),
             mac: mac.into(),
-            binding: VmPortBinding::Tap { ifname: ifname.into() },
+            binding: VmPortBinding::Tap {
+                ifname: ifname.into(),
+            },
             queue_pairs,
             mtu,
         }
@@ -475,14 +574,20 @@ mod tests {
     fn kernel_boot_command_line() {
         let config = config(serde_json::json!({}));
         let args = spec(&config).args();
-        assert_eq!(&args[..3], ["-nodefaults", "-no-user-config", "-enable-kvm"]);
+        assert_eq!(
+            &args[..3],
+            ["-nodefaults", "-no-user-config", "-enable-kvm"]
+        );
         assert_eq!(values(&args, "-machine"), ["q35"]);
         assert_eq!(values(&args, "-cpu"), ["host"]);
         assert_eq!(values(&args, "-m"), ["1024M"]);
         assert_eq!(values(&args, "-smp"), ["2"]);
         assert_eq!(values(&args, "-kernel"), ["/boot/vmlinux"]);
         assert_eq!(values(&args, "-append"), ["console=ttyS0"]);
-        assert_eq!(values(&args, "-qmp"), ["unix:/tmp/qmp.sock,server=on,wait=off"]);
+        assert_eq!(
+            values(&args, "-qmp"),
+            ["unix:/tmp/qmp.sock,server=on,wait=off"]
+        );
         assert!(values(&args, "-netdev").is_empty());
         assert!(!args.iter().any(|a| a == "-no-reboot"));
         // D9: started running, not held at reset.
@@ -501,10 +606,22 @@ mod tests {
     #[test]
     fn disks_root_data_seed_in_order_and_backing_files_blocked() {
         let mut config = config(serde_json::json!({"cloud_init_path": "/tmp/seed,1.img"}));
-        config.root_disk_binding = Some(DiskBinding { path: "/disks/root.qcow2".into(), format: DiskFormat::Qcow2, backing_files: true });
+        config.root_disk_binding = Some(DiskBinding {
+            path: "/disks/root.qcow2".into(),
+            format: DiskFormat::Qcow2,
+            backing_files: true,
+        });
         config.data_disk_bindings = vec![
-            DiskBinding { path: "/disks/data.qcow2".into(), format: DiskFormat::Qcow2, backing_files: false },
-            DiskBinding { path: "/disks/data.raw".into(), format: DiskFormat::Raw, backing_files: false },
+            DiskBinding {
+                path: "/disks/data.qcow2".into(),
+                format: DiskFormat::Qcow2,
+                backing_files: false,
+            },
+            DiskBinding {
+                path: "/disks/data.raw".into(),
+                format: DiskFormat::Raw,
+                backing_files: false,
+            },
         ];
         let args = spec(&config).args();
         let blockdevs: Vec<serde_json::Value> = values(&args, "-blockdev")
@@ -512,10 +629,13 @@ mod tests {
             .map(|b| serde_json::from_str(b).unwrap())
             .collect();
         assert_eq!(blockdevs.len(), 4);
-        assert_eq!(blockdevs[0], serde_json::json!({
-            "driver": "qcow2", "node-name": "disk0", "read-only": false,
-            "file": {"driver": "file", "filename": "/disks/root.qcow2", "read-only": false}
-        }));
+        assert_eq!(
+            blockdevs[0],
+            serde_json::json!({
+                "driver": "qcow2", "node-name": "disk0", "read-only": false,
+                "file": {"driver": "file", "filename": "/disks/root.qcow2", "read-only": false}
+            })
+        );
         // A glidex overlay may open its base image; nothing else may.
         assert_eq!(blockdevs[1]["backing"], serde_json::Value::Null);
         assert!(blockdevs[1].as_object().unwrap().contains_key("backing"));
@@ -527,12 +647,15 @@ mod tests {
             .into_iter()
             .filter(|d| d.starts_with("virtio-blk-pci"))
             .collect();
-        assert_eq!(devices, [
-            "virtio-blk-pci,drive=disk0,id=vd0,bootindex=1",
-            "virtio-blk-pci,drive=disk1,id=vd1",
-            "virtio-blk-pci,drive=disk2,id=vd2",
-            "virtio-blk-pci,drive=disk3,id=vd3",
-        ]);
+        assert_eq!(
+            devices,
+            [
+                "virtio-blk-pci,drive=disk0,id=vd0,bootindex=1",
+                "virtio-blk-pci,drive=disk1,id=vd1",
+                "virtio-blk-pci,drive=disk2,id=vd2",
+                "virtio-blk-pci,drive=disk3,id=vd3",
+            ]
+        );
     }
 
     #[test]
@@ -554,7 +677,8 @@ mod tests {
         let config = config(serde_json::json!({}));
         let mut spec = spec(&config);
         spec.disks[0].direct = true;
-        let root: serde_json::Value = serde_json::from_str(values(&spec.args(), "-blockdev")[0]).unwrap();
+        let root: serde_json::Value =
+            serde_json::from_str(values(&spec.args(), "-blockdev")[0]).unwrap();
         assert_eq!(root["cache"], serde_json::json!({"direct": true}));
         assert_eq!(root["file"]["aio"], "native");
     }
@@ -568,10 +692,13 @@ mod tests {
         ];
         let mut spec = spec(&config);
         let args = spec.args();
-        assert_eq!(values(&args, "-netdev"), [
-            "tap,id=net0,ifname=gxabc-0,script=no,downscript=no,vhost=on",
-            "tap,id=net1,ifname=gxabc-1,script=no,downscript=no,vhost=on,queues=4",
-        ]);
+        assert_eq!(
+            values(&args, "-netdev"),
+            [
+                "tap,id=net0,ifname=gxabc-0,script=no,downscript=no,vhost=on",
+                "tap,id=net1,ifname=gxabc-1,script=no,downscript=no,vhost=on,queues=4",
+            ]
+        );
         let nics: Vec<&str> = values(&args, "-device")
             .into_iter()
             .filter(|d| d.starts_with("virtio-net-pci"))
@@ -593,15 +720,25 @@ mod tests {
         config.nic_bindings = vec![NicBinding {
             id: "net0".into(),
             mac: "02:00:00:00:00:01".into(),
-            binding: VmPortBinding::VhostUser { socket: "/run/glidex/vhost/x.net0.sock".into() },
+            binding: VmPortBinding::VhostUser {
+                socket: "/run/glidex/vhost/x.net0.sock".into(),
+            },
             queue_pairs: 2,
             mtu: None,
         }];
         let args = spec(&config).args();
         assert_eq!(values(&args, "-machine"), ["q35,memory-backend=mem"]);
-        assert!(values(&args, "-object").contains(&"memory-backend-memfd,id=mem,size=1024M,share=on"));
-        assert_eq!(values(&args, "-chardev"), ["socket,id=chr-net0,path=/run/glidex/vhost/x.net0.sock,server=on,wait=off"]);
-        assert_eq!(values(&args, "-netdev"), ["vhost-user,id=net0,chardev=chr-net0,queues=2"]);
+        assert!(
+            values(&args, "-object").contains(&"memory-backend-memfd,id=mem,size=1024M,share=on")
+        );
+        assert_eq!(
+            values(&args, "-chardev"),
+            ["socket,id=chr-net0,path=/run/glidex/vhost/x.net0.sock,server=on,wait=off"]
+        );
+        assert_eq!(
+            values(&args, "-netdev"),
+            ["vhost-user,id=net0,chardev=chr-net0,queues=2"]
+        );
         assert!(values(&args, "-device").contains(&"virtio-net-pci,netdev=net0,id=dev-net0,mac=02:00:00:00:00:01,rx_queue_size=1024,tx_queue_size=1024,mq=on,vectors=6"));
     }
 
@@ -610,7 +747,8 @@ mod tests {
         let config = config(serde_json::json!({"hugepages": true}));
         let args = spec(&config).args();
         assert_eq!(values(&args, "-machine"), ["q35,memory-backend=mem"]);
-        assert!(values(&args, "-object").contains(&"memory-backend-memfd,id=mem,size=1024M,share=on,hugetlb=on"));
+        assert!(values(&args, "-object")
+            .contains(&"memory-backend-memfd,id=mem,size=1024M,share=on,hugetlb=on"));
     }
 
     #[test]
@@ -625,16 +763,26 @@ mod tests {
         let args = spec.args();
         assert!(values(&args, "-kernel").is_empty());
         assert!(values(&args, "-append").is_empty());
-        assert_eq!(values(&args, "-drive"), [
-            "if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd",
-            "if=pflash,format=raw,unit=1,file=/var/lib/glidex/a,,b.fd",
-        ]);
+        assert_eq!(
+            values(&args, "-drive"),
+            [
+                "if=pflash,format=raw,unit=0,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd",
+                "if=pflash,format=raw,unit=1,file=/var/lib/glidex/a,,b.fd",
+            ]
+        );
         assert_eq!(values(&args, "-machine"), ["q35"]);
 
-        spec.firmware = Some(Firmware::Pflash { code: "c".into(), vars: "v".into(), secure_boot: true });
+        spec.firmware = Some(Firmware::Pflash {
+            code: "c".into(),
+            vars: "v".into(),
+            secure_boot: true,
+        });
         let args = spec.args();
         assert_eq!(values(&args, "-machine"), ["q35,smm=on"]);
-        assert_eq!(values(&args, "-global"), ["driver=cfi.pflash01,property=secure,value=on"]);
+        assert_eq!(
+            values(&args, "-global"),
+            ["driver=cfi.pflash01,property=secure,value=on"]
+        );
 
         spec.firmware = Some(Firmware::Bios("/usr/share/qemu/OVMF.fd".into()));
         assert_eq!(values(&spec.args(), "-bios"), ["/usr/share/qemu/OVMF.fd"]);
@@ -642,21 +790,38 @@ mod tests {
 
     #[test]
     fn vfio_devices_on_the_command_line() {
-        let config = config(serde_json::json!({"vfio_devices": ["/sys/bus/pci/devices/0000:41:00.0"]}));
-        assert!(values(&spec(&config).args(), "-device").contains(&"vfio-pci,host=0000:41:00.0,id=_vfio_0000_41_00_0"));
+        let config =
+            config(serde_json::json!({"vfio_devices": ["/sys/bus/pci/devices/0000:41:00.0"]}));
+        assert!(values(&spec(&config).args(), "-device")
+            .contains(&"vfio-pci,host=0000:41:00.0,id=_vfio_0000_41_00_0"));
     }
 
     #[test]
     fn vars_template_sits_next_to_code() {
         let dir = tempfile::tempdir().unwrap();
-        for name in ["OVMF_CODE_4M.fd", "OVMF_VARS_4M.fd", "OVMF_CODE.4m.fd", "OVMF.fd", "edk2-x86_64-code.fd"] {
+        for name in [
+            "OVMF_CODE_4M.fd",
+            "OVMF_VARS_4M.fd",
+            "OVMF_CODE.4m.fd",
+            "OVMF.fd",
+            "edk2-x86_64-code.fd",
+        ] {
             std::fs::write(dir.path().join(name), b"").unwrap();
         }
-        assert_eq!(ovmf_vars_template(&dir.path().join("OVMF_CODE_4M.fd")), Some(dir.path().join("OVMF_VARS_4M.fd")));
+        assert_eq!(
+            ovmf_vars_template(&dir.path().join("OVMF_CODE_4M.fd")),
+            Some(dir.path().join("OVMF_VARS_4M.fd"))
+        );
         // No OVMF_VARS.4m.fd shipped alongside.
-        assert_eq!(ovmf_vars_template(&dir.path().join("OVMF_CODE.4m.fd")), None);
+        assert_eq!(
+            ovmf_vars_template(&dir.path().join("OVMF_CODE.4m.fd")),
+            None
+        );
         assert_eq!(ovmf_vars_template(&dir.path().join("OVMF.fd")), None);
-        assert_eq!(ovmf_vars_template(&dir.path().join("edk2-x86_64-code.fd")), None);
+        assert_eq!(
+            ovmf_vars_template(&dir.path().join("edk2-x86_64-code.fd")),
+            None
+        );
     }
 
     #[test]
@@ -669,11 +834,14 @@ mod tests {
         let vars_s = vars.to_string_lossy().into_owned();
 
         let fw = prepare_firmware(code.to_str().unwrap(), &vars_s, None).unwrap();
-        assert_eq!(fw, Firmware::Pflash {
-            code: code.to_string_lossy().into_owned(),
-            vars: vars.to_string_lossy().into_owned(),
-            secure_boot: false,
-        });
+        assert_eq!(
+            fw,
+            Firmware::Pflash {
+                code: code.to_string_lossy().into_owned(),
+                vars: vars.to_string_lossy().into_owned(),
+                secure_boot: false,
+            }
+        );
         assert_eq!(std::fs::read(&vars).unwrap(), b"pristine");
 
         // Variables the guest wrote survive the next boot.
@@ -700,24 +868,44 @@ mod tests {
         std::fs::set_permissions(&template, std::fs::Permissions::from_mode(0o444)).unwrap();
         let vars = dir.path().join("vm/vars.fd");
         let vars_s = vars.to_string_lossy().into_owned();
-        let fw = prepare_firmware(code.to_str().unwrap(), &vars_s, Some(template.to_str().unwrap())).unwrap();
+        let fw = prepare_firmware(
+            code.to_str().unwrap(),
+            &vars_s,
+            Some(template.to_str().unwrap()),
+        )
+        .unwrap();
         assert!(matches!(fw, Firmware::Pflash { .. }));
         assert_eq!(std::fs::read(&vars).unwrap(), b"pristine");
-        assert_eq!(std::fs::metadata(&vars).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            std::fs::metadata(&vars).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
     }
 
     #[test]
     fn version_parsing() {
-        assert_eq!(parse_qemu_version("QEMU emulator version 10.2.1 (Debian 1:10.2.1+ds-1ubuntu3.2)\n"), Some((10, 2)));
-        assert_eq!(parse_qemu_version("QEMU emulator version 5.2.0\n"), Some((5, 2)));
+        assert_eq!(
+            parse_qemu_version("QEMU emulator version 10.2.1 (Debian 1:10.2.1+ds-1ubuntu3.2)\n"),
+            Some((10, 2))
+        );
+        assert_eq!(
+            parse_qemu_version("QEMU emulator version 5.2.0\n"),
+            Some((5, 2))
+        );
         assert_eq!(parse_qemu_version("garbage"), None);
         assert!((5, 2) < MIN_QEMU_VERSION && (10, 2) >= MIN_QEMU_VERSION);
     }
 
     #[test]
     fn cpu_errors_trigger_the_fallback() {
-        assert!(cpu_model_rejected("qemu-system-x86_64: error: failed to set MSR 0x345 to 0x2000"));
-        assert!(cpu_model_rejected("host doesn't support requested feature: CPUID.80000001H:ECX.svm"));
-        assert!(!cpu_model_rejected("Could not open '/disks/root.raw': No such file or directory"));
+        assert!(cpu_model_rejected(
+            "qemu-system-x86_64: error: failed to set MSR 0x345 to 0x2000"
+        ));
+        assert!(cpu_model_rejected(
+            "host doesn't support requested feature: CPUID.80000001H:ECX.svm"
+        ));
+        assert!(!cpu_model_rejected(
+            "Could not open '/disks/root.raw': No such file or directory"
+        ));
     }
 }

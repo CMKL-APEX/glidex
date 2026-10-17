@@ -33,7 +33,11 @@ use glidex_control_plane::state::VmManager;
 const MIB: u64 = 1024 * 1024;
 
 fn tools_present() -> bool {
-    let missing: Vec<_> = qemu_img::ALL_TOOLS.iter().filter(|t| !t.available()).map(|t| t.name).collect();
+    let missing: Vec<_> = qemu_img::ALL_TOOLS
+        .iter()
+        .filter(|t| !t.available())
+        .map(|t| t.name)
+        .collect();
     if !missing.is_empty() {
         eprintln!("skipping: missing {}", missing.join(", "));
     }
@@ -42,25 +46,51 @@ fn tools_present() -> bool {
 
 fn run_ok(cmd: &mut Command) -> String {
     let out = cmd.output().unwrap();
-    assert!(out.status.success(), "{:?}: {}", cmd, String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{:?}: {}",
+        cmd,
+        String::from_utf8_lossy(&out.stderr)
+    );
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
-    Sha256::digest(bytes).iter().map(|b| format!("{:02x}", b)).collect()
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect()
 }
 
 /// A 32 MiB cloud-image-like disk: GPT, 8 MiB ESP, 16 MiB root (x86-64
 /// root type) with a marker inside, free space after.
 fn fixture_raw(dir: &Path) -> PathBuf {
     let raw = dir.join("fixture.raw");
-    std::fs::File::create(&raw).unwrap().set_len(32 * MIB).unwrap();
-    run_ok(Command::new(qemu_img::SGDISK.find().unwrap()).args([
-        "-n", "1:2048:+8M", "-t", "1:ef00",
-        "-n", "2:0:+16M", "-t", "2:8304",
-    ]).arg(&raw));
+    std::fs::File::create(&raw)
+        .unwrap()
+        .set_len(32 * MIB)
+        .unwrap();
+    run_ok(
+        Command::new(qemu_img::SGDISK.find().unwrap())
+            .args([
+                "-n",
+                "1:2048:+8M",
+                "-t",
+                "1:ef00",
+                "-n",
+                "2:0:+16M",
+                "-t",
+                "2:8304",
+            ])
+            .arg(&raw),
+    );
     use std::os::unix::fs::FileExt;
-    std::fs::OpenOptions::new().write(true).open(&raw).unwrap().write_all_at(b"GLIDEX-ROOT-MARKER", 12 * MIB).unwrap();
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&raw)
+        .unwrap()
+        .write_all_at(b"GLIDEX-ROOT-MARKER", 12 * MIB)
+        .unwrap();
     raw
 }
 
@@ -73,10 +103,24 @@ struct Fixtures {
 fn fixtures(dir: &Path) -> Fixtures {
     let raw = fixture_raw(dir);
     let q = dir.join("fixture.qcow2");
-    run_ok(Command::new("qemu-img").args(["convert", "-q", "-f", "raw", "-O", "qcow2"]).arg(&raw).arg(&q));
+    run_ok(
+        Command::new("qemu-img")
+            .args(["convert", "-q", "-f", "raw", "-O", "qcow2"])
+            .arg(&raw)
+            .arg(&q),
+    );
     let b = dir.join("backing.qcow2");
-    run_ok(Command::new("qemu-img").args(["create", "-q", "-f", "qcow2", "-F", "qcow2", "-b"]).arg(&q).arg(&b));
-    Fixtures { qcow2: std::fs::read(&q).unwrap(), raw: std::fs::read(&raw).unwrap(), with_backing: std::fs::read(&b).unwrap() }
+    run_ok(
+        Command::new("qemu-img")
+            .args(["create", "-q", "-f", "qcow2", "-F", "qcow2", "-b"])
+            .arg(&q)
+            .arg(&b),
+    );
+    Fixtures {
+        qcow2: std::fs::read(&q).unwrap(),
+        raw: std::fs::read(&raw).unwrap(),
+        with_backing: std::fs::read(&b).unwrap(),
+    }
 }
 
 #[derive(Clone)]
@@ -87,7 +131,11 @@ struct Served {
 
 /// `GET /<name>` with a strong ETag and `Range: bytes=N-` + `If-Range`.
 /// `flaky-*`: the first response stops after half the body.
-async fn serve(State(st): State<Served>, AxPath(name): AxPath<String>, headers: HeaderMap) -> Response {
+async fn serve(
+    State(st): State<Served>,
+    AxPath(name): AxPath<String>,
+    headers: HeaderMap,
+) -> Response {
     let Some(data) = st.files.get(name.trim_start_matches("flaky-")) else {
         return StatusCode::NOT_FOUND.into_response();
     };
@@ -120,7 +168,12 @@ async fn serve(State(st): State<Served>, AxPath(name): AxPath<String>, headers: 
     h.insert("etag", etag.parse().unwrap());
     h.insert("content-length", len.to_string().parse().unwrap());
     if let Some(s) = start {
-        h.insert("content-range", format!("bytes {}-{}/{}", s, data.len() - 1, data.len()).parse().unwrap());
+        h.insert(
+            "content-range",
+            format!("bytes {}-{}/{}", s, data.len() - 1, data.len())
+                .parse()
+                .unwrap(),
+        );
     }
     resp
 }
@@ -133,7 +186,10 @@ async fn start_server(fx: &Fixtures) -> (String, Arc<AtomicUsize>) {
     files.insert("fw.fd".to_string(), FIRMWARE.to_vec());
     files.insert("vars.fd".to_string(), VARS.to_vec());
     let hits = Arc::new(AtomicUsize::new(0));
-    let st = Served { files: Arc::new(files), hits: hits.clone() };
+    let st = Served {
+        files: Arc::new(files),
+        hits: hits.clone(),
+    };
     let app = Router::new().route("/{name}", get(serve)).with_state(st);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -167,11 +223,32 @@ async fn ready_disk(app: &Router, key: &str) -> Value {
 /// Reasons and messages of a disk's events, newest last.
 async fn disk_events(app: &Router, key: &str) -> Vec<(String, String)> {
     let (_, d) = request(app, "GET", &format!("/disks/{key}"), None).await;
-    let (_, ev) = request(app, "GET", &format!("/disks/{}/events", d["id"].as_str().unwrap()), None).await;
-    ev["events"].as_array().unwrap().iter().map(|e| (e["reason"].as_str().unwrap().to_string(), e["message"].as_str().unwrap().to_string())).collect()
+    let (_, ev) = request(
+        app,
+        "GET",
+        &format!("/disks/{}/events", d["id"].as_str().unwrap()),
+        None,
+    )
+    .await;
+    ev["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| {
+            (
+                e["reason"].as_str().unwrap().to_string(),
+                e["message"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect()
 }
 
-async fn request(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
+async fn request(
+    app: &Router,
+    method: &str,
+    uri: &str,
+    body: Option<Value>,
+) -> (StatusCode, Value) {
     let mut builder = Request::builder().method(method).uri(uri);
     let body = match body {
         Some(b) => {
@@ -180,10 +257,17 @@ async fn request(app: &Router, method: &str, uri: &str, body: Option<Value>) -> 
         }
         None => Body::empty(),
     };
-    let resp = app.clone().oneshot(builder.body(body).unwrap()).await.unwrap();
+    let resp = app
+        .clone()
+        .oneshot(builder.body(body).unwrap())
+        .await
+        .unwrap();
     let status = resp.status();
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-    (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
 }
 
 /// Poll an image until it leaves downloading/verifying.
@@ -230,8 +314,17 @@ async fn pull_ready(app: &Router, base: &str, file: &str, name: &str, sha: Optio
 
 fn sgdisk_verify(disk: &Path, format: &str, dir: &Path) -> String {
     let raw = dir.join(format!("verify-{}.raw", uuid::Uuid::new_v4()));
-    run_ok(Command::new("qemu-img").args(["convert", "-q", "-f", format, "-O", "raw"]).arg(disk).arg(&raw));
-    let out = run_ok(Command::new(qemu_img::SGDISK.find().unwrap()).arg("-v").arg(&raw));
+    run_ok(
+        Command::new("qemu-img")
+            .args(["convert", "-q", "-f", format, "-O", "raw"])
+            .arg(disk)
+            .arg(&raw),
+    );
+    let out = run_ok(
+        Command::new(qemu_img::SGDISK.find().unwrap())
+            .arg("-v")
+            .arg(&raw),
+    );
     let _ = std::fs::remove_file(&raw);
     out
 }
@@ -239,9 +332,14 @@ fn sgdisk_verify(disk: &Path, format: &str, dir: &Path) -> String {
 fn marker_intact(disk: &Path, format: &str, dir: &Path) -> bool {
     let out = dir.join(format!("marker-{}.bin", uuid::Uuid::new_v4()));
     // qemu-img dd's count includes the skipped blocks.
-    run_ok(Command::new("qemu-img").args(["dd", "-f", format, "-O", "raw", "bs=512"])
-        .arg(format!("skip={}", 12 * MIB / 512)).arg(format!("count={}", 12 * MIB / 512 + 1))
-        .arg(format!("if={}", disk.display())).arg(format!("of={}", out.display())));
+    run_ok(
+        Command::new("qemu-img")
+            .args(["dd", "-f", format, "-O", "raw", "bs=512"])
+            .arg(format!("skip={}", 12 * MIB / 512))
+            .arg(format!("count={}", 12 * MIB / 512 + 1))
+            .arg(format!("if={}", disk.display()))
+            .arg(format!("of={}", out.display())),
+    );
     let data = std::fs::read(&out).unwrap();
     data.starts_with(b"GLIDEX-ROOT-MARKER")
 }
@@ -252,7 +350,12 @@ async fn catalog_lists_host_images() {
     let (app, _m) = create_app(tmp.path());
     let (status, cat) = request(&app, "GET", "/images/catalog", None).await;
     assert_eq!(status, StatusCode::OK);
-    let keys: Vec<_> = cat.as_array().unwrap().iter().map(|e| e["key"].as_str().unwrap().to_string()).collect();
+    let keys: Vec<_> = cat
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["key"].as_str().unwrap().to_string())
+        .collect();
     assert!(keys.contains(&"ubuntu-26.04".to_string()), "{keys:?}");
     assert!(cat[0]["downloaded_image_id"].is_null());
 
@@ -261,7 +364,13 @@ async fn catalog_lists_host_images() {
     assert_eq!(err["error"], "invalid_image");
     let (status, _) = request(&app, "POST", "/images", Some(json!({}))).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    let (status, err) = request(&app, "POST", "/images", Some(json!({"url": "file:///etc/passwd"}))).await;
+    let (status, err) = request(
+        &app,
+        "POST",
+        "/images",
+        Some(json!({"url": "file:///etc/passwd"})),
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{err}");
 }
 
@@ -282,29 +391,56 @@ async fn download_verify_then_linked_and_full_disks() {
     assert_eq!(img["virtual_size_bytes"], 32 * MIB);
     let img_path = PathBuf::from(img["path"].as_str().unwrap());
     use std::os::unix::fs::PermissionsExt;
-    assert_eq!(std::fs::metadata(&img_path).unwrap().permissions().mode() & 0o777, 0o444);
+    assert_eq!(
+        std::fs::metadata(&img_path).unwrap().permissions().mode() & 0o777,
+        0o444
+    );
     assert!(!img_path.with_extension("qcow2.part").exists());
 
     // Same name again: conflict.
-    let (status, _) = request(&app, "POST", "/images", Some(json!({"url": format!("{base}/good.qcow2"), "name": "base"}))).await;
+    let (status, _) = request(
+        &app,
+        "POST",
+        "/images",
+        Some(json!({"url": format!("{base}/good.qcow2"), "name": "base"})),
+    )
+    .await;
     assert_eq!(status, StatusCode::CONFLICT);
 
     // Smaller than the image: refused with the minimum.
-    let (status, err) = request(&app, "POST", "/disks?wait=30", Some(json!({"name": "tiny", "image": "base", "size_bytes": 16 * MIB}))).await;
+    let (status, err) = request(
+        &app,
+        "POST",
+        "/disks?wait=30",
+        Some(json!({"name": "tiny", "image": "base", "size_bytes": 16 * MIB})),
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{err}");
     assert_eq!(err["error"], "invalid_disk");
     assert_eq!(err["details"]["min_size_bytes"], 32 * MIB);
 
     // Linked, larger: root partition extended offline.
-    let (status, d) = request(&app, "POST", "/disks?wait=30", Some(json!({"name": "web-root", "image": "base", "size_bytes": 64 * MIB}))).await;
+    let (status, d) = request(
+        &app,
+        "POST",
+        "/disks?wait=30",
+        Some(json!({"name": "web-root", "image": "base", "size_bytes": 64 * MIB})),
+    )
+    .await;
     assert_eq!(status, StatusCode::CREATED, "{d}");
     assert_eq!(d["origin"]["mode"], "linked");
     let (_, detail) = request(&app, "GET", "/disks/web-root", None).await;
-    assert_eq!(detail["info"]["backing-filename"], img_path.to_str().unwrap());
+    assert_eq!(
+        detail["info"]["backing-filename"],
+        img_path.to_str().unwrap()
+    );
     let parts = detail["partition_table"]["partitions"].as_array().unwrap();
     assert_eq!(parts.len(), 2);
     assert_eq!(parts[1]["is_root"], true);
-    assert_eq!(parts[1]["start_bytes"].as_u64().unwrap() + parts[1]["size_bytes"].as_u64().unwrap(), 64 * MIB - 33 * 512);
+    assert_eq!(
+        parts[1]["start_bytes"].as_u64().unwrap() + parts[1]["size_bytes"].as_u64().unwrap(),
+        64 * MIB - 33 * 512
+    );
     assert_eq!(detail["partition_table"]["free_tail_bytes"], 0);
     let linked_path = PathBuf::from(d["path"].as_str().unwrap());
     assert!(sgdisk_verify(&linked_path, "qcow2", tmp.path()).contains("No problems found"));
@@ -322,7 +458,13 @@ async fn download_verify_then_linked_and_full_disks() {
     assert_eq!(full["format"], "raw");
 
     // Raw + linked is impossible.
-    let (status, _) = request(&app, "POST", "/disks?wait=30", Some(json!({"name": "x", "image": "base", "format": "raw"}))).await;
+    let (status, _) = request(
+        &app,
+        "POST",
+        "/disks?wait=30",
+        Some(json!({"name": "x", "image": "base", "format": "raw"})),
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 
     // Deleting the linked disk frees the image; the full copy doesn't hold it.
@@ -356,24 +498,58 @@ async fn checksum_mismatch_and_backing_file_fail() {
     let (base, _) = start_server(&fx).await;
     let (app, _m) = create_app(tmp.path());
 
-    let (status, img) = request(&app, "POST", "/images", Some(json!({"url": format!("{base}/good.qcow2"), "name": "bad", "sha256": "0".repeat(64)}))).await;
+    let (status, img) = request(
+        &app,
+        "POST",
+        "/images",
+        Some(json!({"url": format!("{base}/good.qcow2"), "name": "bad", "sha256": "0".repeat(64)})),
+    )
+    .await;
     assert_eq!(status, StatusCode::ACCEPTED);
     let img = wait_image(&app, img["id"].as_str().unwrap()).await;
     assert_eq!(img["status"]["state"], "failed");
-    assert!(img["status"]["reason"].as_str().unwrap().contains("checksum mismatch"), "{img}");
+    assert!(
+        img["status"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("checksum mismatch"),
+        "{img}"
+    );
     let images_dir = tmp.path().join("images");
-    assert_eq!(std::fs::read_dir(&images_dir).unwrap().count(), 0, "partial file left behind");
+    assert_eq!(
+        std::fs::read_dir(&images_dir).unwrap().count(),
+        0,
+        "partial file left behind"
+    );
 
-    let (_, img) = request(&app, "POST", "/images", Some(json!({"url": format!("{base}/backing.qcow2"), "name": "evil"}))).await;
+    let (_, img) = request(
+        &app,
+        "POST",
+        "/images",
+        Some(json!({"url": format!("{base}/backing.qcow2"), "name": "evil"})),
+    )
+    .await;
     let img = wait_image(&app, img["id"].as_str().unwrap()).await;
     assert_eq!(img["status"]["state"], "failed");
-    assert!(img["status"]["reason"].as_str().unwrap().contains("backing file"), "{img}");
+    assert!(
+        img["status"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("backing file"),
+        "{img}"
+    );
     assert_eq!(img["verified"], false);
 
     // A failed image can be deleted.
     let (status, _) = request(&app, "DELETE", "/images/evil", None).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
-    let (status, _) = request(&app, "POST", "/disks?wait=30", Some(json!({"name": "d", "image": "bad"}))).await;
+    let (status, _) = request(
+        &app,
+        "POST",
+        "/disks?wait=30",
+        Some(json!({"name": "d", "image": "bad"})),
+    )
+    .await;
     assert_eq!(status, StatusCode::CONFLICT, "a failed image is not ready");
 
     // Retry (D19): downloaded again; the digest still doesn't match.
@@ -386,16 +562,30 @@ async fn checksum_mismatch_and_backing_file_fail() {
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let (_, ev) = request(&app, "GET", &format!("/images/{id}/events"), None).await;
-        let reasons: Vec<String> = ev["events"].as_array().unwrap().iter().map(|e| e["reason"].as_str().unwrap().to_string()).collect();
+        let reasons: Vec<String> = ev["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["reason"].as_str().unwrap().to_string())
+            .collect();
         if reasons.iter().any(|r| r == "Retrying") {
             break;
         }
-        assert!(Instant::now() < deadline, "the controller never retried: {reasons:?}");
+        assert!(
+            Instant::now() < deadline,
+            "the controller never retried: {reasons:?}"
+        );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     let img = wait_image(&app, id).await;
     assert_eq!(img["status"]["state"], "failed");
-    assert!(img["status"]["reason"].as_str().unwrap().contains("checksum mismatch"), "{img}");
+    assert!(
+        img["status"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("checksum mismatch"),
+        "{img}"
+    );
     // Only a failed image can be retried.
     let (status, _) = request(&app, "POST", "/images/nonexistent/retry", None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
@@ -416,9 +606,21 @@ async fn disks_wait_for_their_image_and_notice_a_lost_file() {
 
     // The flaky URL needs a retry (about 2 s), so the image is still
     // downloading when the disk is created.
-    let (status, img) = request(&app, "POST", "/images", Some(json!({"url": format!("{base}/flaky-good.qcow2"), "name": "slow"}))).await;
+    let (status, img) = request(
+        &app,
+        "POST",
+        "/images",
+        Some(json!({"url": format!("{base}/flaky-good.qcow2"), "name": "slow"})),
+    )
+    .await;
     assert_eq!(status, StatusCode::ACCEPTED, "{img}");
-    let (status, d) = request(&app, "POST", "/disks", Some(json!({"name": "early", "image": "slow", "size_bytes": 64 * MIB}))).await;
+    let (status, d) = request(
+        &app,
+        "POST",
+        "/disks",
+        Some(json!({"name": "early", "image": "slow", "size_bytes": 64 * MIB})),
+    )
+    .await;
     assert_eq!(status, StatusCode::CREATED, "{d}");
     assert_eq!(d["status"], "pending", "{d}");
     // The image can't be deleted from under a disk waiting for it.
@@ -427,15 +629,29 @@ async fn disks_wait_for_their_image_and_notice_a_lost_file() {
     assert!(e["message"].as_str().unwrap().contains("early"), "{e}");
     let d = ready_disk(&app, "early").await;
     assert_eq!(d["size_bytes"], 64 * MIB);
-    let reasons: Vec<String> = disk_events(&app, "early").await.into_iter().map(|e| e.0).collect();
-    assert_eq!(reasons, ["Created", "Created"], "recorded by the API, made by the controller");
+    let reasons: Vec<String> = disk_events(&app, "early")
+        .await
+        .into_iter()
+        .map(|e| e.0)
+        .collect();
+    assert_eq!(
+        reasons,
+        ["Created", "Created"],
+        "recorded by the API, made by the controller"
+    );
 
     // The file goes away behind glidex's back.
     std::fs::remove_file(d["path"].as_str().unwrap()).unwrap();
     let mut missing = false;
     for _ in 0..200 {
         // Resync is every 30 s; a resize request reconciles it at once.
-        let _ = request(&app, "POST", "/disks/early/resize", Some(json!({"size_bytes": 80 * MIB}))).await;
+        let _ = request(
+            &app,
+            "POST",
+            "/disks/early/resize",
+            Some(json!({"size_bytes": 80 * MIB})),
+        )
+        .await;
         let (_, d) = request(&app, "GET", "/disks/early", None).await;
         if d["status"] == "missing" {
             missing = true;
@@ -444,7 +660,11 @@ async fn disks_wait_for_their_image_and_notice_a_lost_file() {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
     assert!(missing, "the lost file is reported");
-    assert!(!tmp.path().join("disks").read_dir().unwrap().any(|e| e.unwrap().file_name().to_string_lossy().contains(d["id"].as_str().unwrap())));
+    assert!(!tmp.path().join("disks").read_dir().unwrap().any(|e| e
+        .unwrap()
+        .file_name()
+        .to_string_lossy()
+        .contains(d["id"].as_str().unwrap())));
 }
 
 #[tokio::test]
@@ -460,7 +680,11 @@ async fn resume_after_dropped_connection_and_raw_conversion() {
     let sha = sha256_hex(&fx.qcow2);
     let img = pull_ready(&app, &base, "flaky-good.qcow2", "flaky", Some(&sha)).await;
     assert_eq!(img["sha256"], sha);
-    assert_eq!(hits.load(Ordering::SeqCst), 2, "expected one dropped attempt and one ranged resume");
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        2,
+        "expected one dropped attempt and one ranged resume"
+    );
 
     // A raw download is stored as qcow2; the stored digest is the qcow2's.
     let raw_sha = sha256_hex(&fx.raw);
@@ -484,29 +708,68 @@ async fn grow_shrink_and_extend_root() {
     pull_ready(&app, &base, "good.qcow2", "base", None).await;
 
     // Blank disks have no table: grow works, shrink is refused.
-    let (status, blank) = request(&app, "POST", "/disks?wait=30", Some(json!({"name": "blank", "size_gib": 1}))).await;
+    let (status, blank) = request(
+        &app,
+        "POST",
+        "/disks?wait=30",
+        Some(json!({"name": "blank", "size_gib": 1})),
+    )
+    .await;
     assert_eq!(status, StatusCode::CREATED, "{blank}");
-    let (status, d) = request(&app, "POST", "/disks/blank/resize?wait=30", Some(json!({"size_gib": 2}))).await;
+    let (status, d) = request(
+        &app,
+        "POST",
+        "/disks/blank/resize?wait=30",
+        Some(json!({"size_gib": 2})),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{d}");
     assert_eq!(d["size_bytes"], 2 * 1024 * MIB);
-    let (status, err) = request(&app, "POST", "/disks/blank/resize?wait=30", Some(json!({"size_gib": 1}))).await;
+    let (status, err) = request(
+        &app,
+        "POST",
+        "/disks/blank/resize?wait=30",
+        Some(json!({"size_gib": 1})),
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{err}");
-    assert!(err["message"].as_str().unwrap().contains("no partition table"));
+    assert!(err["message"]
+        .as_str()
+        .unwrap()
+        .contains("no partition table"));
 
     for format in ["qcow2", "raw"] {
         let name = format!("img-{format}");
-        let (status, d) = request(&app, "POST", "/disks?wait=30", Some(json!({
-            "name": name, "image": "base", "clone": "full", "format": format,
-            "size_bytes": 48 * MIB, "extend_root": false
-        }))).await;
+        let (status, d) = request(
+            &app,
+            "POST",
+            "/disks?wait=30",
+            Some(json!({
+                "name": name, "image": "base", "clone": "full", "format": format,
+                "size_bytes": 48 * MIB, "extend_root": false
+            })),
+        )
+        .await;
         assert_eq!(status, StatusCode::CREATED, "{d}");
         let path = PathBuf::from(d["path"].as_str().unwrap());
 
         // Root partition ends at 25 MiB (+ GPT backup) → minimum 26 MiB.
-        let (status, err) = request(&app, "POST", &format!("/disks/{name}/resize?wait=30"), Some(json!({"size_bytes": 16 * MIB}))).await;
+        let (status, err) = request(
+            &app,
+            "POST",
+            &format!("/disks/{name}/resize?wait=30"),
+            Some(json!({"size_bytes": 16 * MIB})),
+        )
+        .await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{err}");
         assert_eq!(err["details"]["min_size_bytes"], 26 * MIB);
-        let (status, d) = request(&app, "POST", &format!("/disks/{name}/resize?wait=30"), Some(json!({"size_bytes": 26 * MIB}))).await;
+        let (status, d) = request(
+            &app,
+            "POST",
+            &format!("/disks/{name}/resize?wait=30"),
+            Some(json!({"size_bytes": 26 * MIB})),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK, "{d}");
         assert_eq!(d["size_bytes"], 26 * MIB);
         assert_eq!(qemu_img::info(&path, None).unwrap().virtual_size, 26 * MIB);
@@ -514,27 +777,72 @@ async fn grow_shrink_and_extend_root() {
         assert!(marker_intact(&path, format, tmp.path()));
 
         // Grow: from an image, extend_root defaults to true.
-        let (status, d) = request(&app, "POST", &format!("/disks/{name}/resize?wait=30"), Some(json!({"size_bytes": 80 * MIB}))).await;
+        let (status, d) = request(
+            &app,
+            "POST",
+            &format!("/disks/{name}/resize?wait=30"),
+            Some(json!({"size_bytes": 80 * MIB})),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK, "{d}");
         // What the controller did is in the disk's events.
-        assert!(disk_events(&app, &name).await.last().unwrap().1.contains("Grown"), "{:?}", disk_events(&app, &name).await);
+        assert!(
+            disk_events(&app, &name)
+                .await
+                .last()
+                .unwrap()
+                .1
+                .contains("Grown"),
+            "{:?}",
+            disk_events(&app, &name).await
+        );
         let (_, detail) = request(&app, "GET", &format!("/disks/{name}"), None).await;
         assert_eq!(detail["partition_table"]["free_tail_bytes"], 0, "{detail}");
         assert!(sgdisk_verify(&path, format, tmp.path()).contains("No problems found"));
         assert!(marker_intact(&path, format, tmp.path()));
 
         // Nothing left to grow; on-boot just sets the flag.
-        let (status, d) = request(&app, "POST", &format!("/disks/{name}/extend-root?wait=30"), Some(json!({}))).await;
+        let (status, d) = request(
+            &app,
+            "POST",
+            &format!("/disks/{name}/extend-root?wait=30"),
+            Some(json!({})),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK, "{d}");
-        assert_eq!(disk_events(&app, &name).await.last().unwrap(), &("RootExtended".to_string(), "AlreadyFull".to_string()));
-        let (_, d) = request(&app, "POST", &format!("/disks/{name}/extend-root?wait=30"), Some(json!({"mode": "on-boot"}))).await;
-        assert_eq!(disk_events(&app, &name).await.last().unwrap(), &("RootExtended".to_string(), "OnBoot".to_string()));
+        assert_eq!(
+            disk_events(&app, &name).await.last().unwrap(),
+            &("RootExtended".to_string(), "AlreadyFull".to_string())
+        );
+        let (_, d) = request(
+            &app,
+            "POST",
+            &format!("/disks/{name}/extend-root?wait=30"),
+            Some(json!({"mode": "on-boot"})),
+        )
+        .await;
+        assert_eq!(
+            disk_events(&app, &name).await.last().unwrap(),
+            &("RootExtended".to_string(), "OnBoot".to_string())
+        );
         assert_eq!(d["pending_growpart"], true);
     }
 
     // Linked disks cannot shrink below their image.
-    let (_, _) = request(&app, "POST", "/disks?wait=30", Some(json!({"name": "lnk", "image": "base", "size_bytes": 40 * MIB, "extend_root": false}))).await;
-    let (status, err) = request(&app, "POST", "/disks/lnk/resize?wait=30", Some(json!({"size_bytes": 26 * MIB}))).await;
+    let (_, _) = request(
+        &app,
+        "POST",
+        "/disks?wait=30",
+        Some(json!({"name": "lnk", "image": "base", "size_bytes": 40 * MIB, "extend_root": false})),
+    )
+    .await;
+    let (status, err) = request(
+        &app,
+        "POST",
+        "/disks/lnk/resize?wait=30",
+        Some(json!({"size_bytes": 26 * MIB})),
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{err}");
     assert_eq!(err["details"]["min_size_bytes"], 32 * MIB);
 }
@@ -555,7 +863,13 @@ async fn vms_create_attach_and_own_disks() {
         "name": "web 1", "vcpu_count": 1, "mem_size_mib": 512, "image": "base", "root_disk_size_gib": 1
     }))).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{err}");
-    assert!(err["message"].as_str().unwrap().contains("no firmware image"), "{err}");
+    assert!(
+        err["message"]
+            .as_str()
+            .unwrap()
+            .contains("no firmware image"),
+        "{err}"
+    );
     let fw = pull_firmware(&app, &base, "edk2", "cloudhypervisor").await;
 
     // VM from an image: owned, linked root disk named after the VM.
@@ -572,10 +886,20 @@ async fn vms_create_attach_and_own_disks() {
     assert_eq!(root["attached_to"], vm_id.as_str());
     assert_eq!(root["size_bytes"], 1024 * MIB);
     let internal = manager.get_vm(&vm_id).await.unwrap();
-    assert_eq!(internal.spec.config.rootfs_path, root["path"].as_str().unwrap());
+    assert_eq!(
+        internal.spec.config.rootfs_path,
+        root["path"].as_str().unwrap()
+    );
     assert!(internal.spec.config.owns_root_disk);
-    assert_eq!(internal.spec.config.firmware_path.as_deref(), fw["path"].as_str(), "image implies firmware boot");
-    assert_eq!(internal.spec.config.firmware_image.as_deref(), fw["id"].as_str());
+    assert_eq!(
+        internal.spec.config.firmware_path.as_deref(),
+        fw["path"].as_str(),
+        "image implies firmware boot"
+    );
+    assert_eq!(
+        internal.spec.config.firmware_image.as_deref(),
+        fw["id"].as_str()
+    );
     // In use: the firmware image stays.
     let (status, err) = request(&app, "DELETE", "/images/edk2", None).await;
     assert_eq!(status, StatusCode::CONFLICT, "{err}");
@@ -585,7 +909,13 @@ async fn vms_create_attach_and_own_disks() {
     // Attached: no delete; a Created VM's disk can still be resized.
     let (status, _) = request(&app, "DELETE", &format!("/disks/{root_id}"), None).await;
     assert_eq!(status, StatusCode::CONFLICT);
-    let (status, d) = request(&app, "POST", &format!("/disks/{root_id}/resize?wait=30"), Some(json!({"size_gib": 2}))).await;
+    let (status, d) = request(
+        &app,
+        "POST",
+        &format!("/disks/{root_id}/resize?wait=30"),
+        Some(json!({"size_gib": 2})),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{d}");
 
     // Exactly one root source.
@@ -595,22 +925,50 @@ async fn vms_create_attach_and_own_disks() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
 
     // Data disks: attach/detach are spec writes (202); one VM per disk.
-    let (_, _) = request(&app, "POST", "/disks?wait=30", Some(json!({"name": "data1", "size_gib": 1}))).await;
-    let (status, v) = request(&app, "POST", &format!("/vms/{vm_id}/disks"), Some(json!({"disk": "data1"}))).await;
+    let (_, _) = request(
+        &app,
+        "POST",
+        "/disks?wait=30",
+        Some(json!({"name": "data1", "size_gib": 1})),
+    )
+    .await;
+    let (status, v) = request(
+        &app,
+        "POST",
+        &format!("/vms/{vm_id}/disks"),
+        Some(json!({"disk": "data1"})),
+    )
+    .await;
     assert_eq!(status, StatusCode::ACCEPTED, "{v}");
     assert_eq!(v["data_disks"].as_array().unwrap().len(), 1);
     let (status, _) = request(&app, "POST", "/vms", Some(json!({
         "name": "other", "vcpu_count": 1, "mem_size_mib": 512, "kernel_image_path": "/k", "rootfs_path": "/x", "data_disks": ["data1"]
     }))).await;
     assert_eq!(status, StatusCode::CONFLICT, "disk already attached");
-    let (status, _) = request(&app, "DELETE", &format!("/vms/{vm_id}/disks/{root_id}"), None).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "root disk is not a data disk");
+    let (status, _) = request(
+        &app,
+        "DELETE",
+        &format!("/vms/{vm_id}/disks/{root_id}"),
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "root disk is not a data disk"
+    );
     let (status, v) = request(&app, "DELETE", &format!("/vms/{vm_id}/disks/data1"), None).await;
     assert_eq!(status, StatusCode::ACCEPTED, "{v}");
     assert!(v.get("data_disks").is_none());
 
     // VM on an existing root disk plus a data disk: deleting the VM keeps both.
-    let (_, _) = request(&app, "POST", "/disks?wait=30", Some(json!({"name": "mine", "image": "base"}))).await;
+    let (_, _) = request(
+        &app,
+        "POST",
+        "/disks?wait=30",
+        Some(json!({"name": "mine", "image": "base"})),
+    )
+    .await;
     let (status, vm2) = request(&app, "POST", "/vms", Some(json!({
         "name": "vm2", "vcpu_count": 1, "mem_size_mib": 512, "root_disk": "mine", "data_disks": ["data1"]
     }))).await;
@@ -625,9 +983,21 @@ async fn vms_create_attach_and_own_disks() {
     }
 
     // keep_disk=true keeps an owned root disk, detached.
-    let (_, vm3) = request(&app, "POST", "/vms", Some(json!({"name": "vm3", "vcpu_count": 1, "mem_size_mib": 512, "image": "base"}))).await;
+    let (_, vm3) = request(
+        &app,
+        "POST",
+        "/vms",
+        Some(json!({"name": "vm3", "vcpu_count": 1, "mem_size_mib": 512, "image": "base"})),
+    )
+    .await;
     let vm3_root = vm3["root_disk"].as_str().unwrap().to_string();
-    let (status, _) = request(&app, "DELETE", &format!("/vms/{}?keep_disk=true", vm3["id"].as_str().unwrap()), None).await;
+    let (status, _) = request(
+        &app,
+        "DELETE",
+        &format!("/vms/{}?keep_disk=true", vm3["id"].as_str().unwrap()),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
     let (_, d) = request(&app, "GET", &format!("/disks/{vm3_root}"), None).await;
     assert!(d["attached_to"].is_null(), "{d}");
@@ -654,17 +1024,30 @@ async fn deleting_an_image_cancels_its_download() {
     let (base, _) = start_server(&fx).await;
     let (app, _m) = create_app(tmp.path());
 
-    let (status, img) = request(&app, "POST", "/images", Some(json!({"url": format!("{base}/flaky-good.qcow2"), "name": "doomed"}))).await;
+    let (status, img) = request(
+        &app,
+        "POST",
+        "/images",
+        Some(json!({"url": format!("{base}/flaky-good.qcow2"), "name": "doomed"})),
+    )
+    .await;
     assert_eq!(status, StatusCode::ACCEPTED, "{img}");
     let id = img["id"].as_str().unwrap().to_string();
     let (status, body) = request(&app, "DELETE", "/images/doomed?wait=10", None).await;
-    assert!(matches!(status, StatusCode::NO_CONTENT | StatusCode::OK), "{status} {body}");
+    assert!(
+        matches!(status, StatusCode::NO_CONTENT | StatusCode::OK),
+        "{status} {body}"
+    );
     let (status, _) = request(&app, "GET", &format!("/images/{id}"), None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     // Give an aborted download a moment to have written, had it survived.
     tokio::time::sleep(Duration::from_millis(500)).await;
     let (status, _) = request(&app, "GET", &format!("/images/{id}"), None).await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "not brought back by the download task");
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "not brought back by the download task"
+    );
     let left: Vec<String> = std::fs::read_dir(tmp.path().join("images"))
         .unwrap()
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
@@ -673,7 +1056,11 @@ async fn deleting_an_image_cancels_its_download() {
     assert!(left.is_empty(), "files left: {left:?}");
     let (status, events) = request(&app, "GET", "/images", None).await;
     assert_eq!(status, StatusCode::OK);
-    assert!(events.as_array().unwrap().iter().all(|i| i["name"] != "doomed"));
+    assert!(events
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|i| i["name"] != "doomed"));
 
     let img = pull_ready(&app, &base, "good.qcow2", "doomed", None).await;
     assert_eq!(img["name"], "doomed", "the name is free again");
@@ -691,27 +1078,55 @@ async fn firmware_images() {
 
     let (status, cat) = request(&app, "GET", "/images/firmware-catalog", None).await;
     assert_eq!(status, StatusCode::OK);
-    assert!(cat.as_array().unwrap().iter().any(|e| e["key"] == "cloudhv-edk2" && e["hypervisor"] == "cloudhypervisor"), "{cat}");
+    assert!(
+        cat.as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["key"] == "cloudhv-edk2" && e["hypervisor"] == "cloudhypervisor"),
+        "{cat}"
+    );
 
     // A firmware download names its hypervisor.
-    let (status, err) = request(&app, "POST", "/images", Some(json!({"url": format!("{base}/fw.fd"), "kind": "firmware"}))).await;
+    let (status, err) = request(
+        &app,
+        "POST",
+        "/images",
+        Some(json!({"url": format!("{base}/fw.fd"), "kind": "firmware"})),
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{err}");
     let fw = pull_firmware(&app, &base, "ovmf-test", "qemu").await;
-    assert_eq!((fw["kind"].as_str(), fw["hypervisor"].as_str()), (Some("firmware"), Some("qemu")));
+    assert_eq!(
+        (fw["kind"].as_str(), fw["hypervisor"].as_str()),
+        (Some("firmware"), Some("qemu"))
+    );
     assert_eq!(fw["sha256"], sha256_hex(FIRMWARE));
     assert!(fw["path"].as_str().unwrap().ends_with(".fd"));
-    let mode = std::fs::metadata(fw["path"].as_str().unwrap()).unwrap().permissions().mode() & 0o777;
+    let mode = std::fs::metadata(fw["path"].as_str().unwrap())
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
     assert_eq!(mode, 0o444);
 
     // Not a disk source, and only for its own hypervisor.
-    let (status, err) = request(&app, "POST", "/disks", Some(json!({"name": "d", "image": "ovmf-test"}))).await;
+    let (status, err) = request(
+        &app,
+        "POST",
+        "/disks",
+        Some(json!({"name": "d", "image": "ovmf-test"})),
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{err}");
     pull_ready(&app, &base, "good.qcow2", "base", None).await;
     let (status, err) = request(&app, "POST", "/vms", Some(json!({
         "name": "wrong-hv", "vcpu_count": 1, "mem_size_mib": 512, "image": "base", "firmware": "ovmf-test"
     }))).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{err}");
-    assert!(err["message"].as_str().unwrap().contains("built for qemu"), "{err}");
+    assert!(
+        err["message"].as_str().unwrap().contains("built for qemu"),
+        "{err}"
+    );
     let (status, err) = request(&app, "POST", "/vms", Some(json!({
         "name": "both", "vcpu_count": 1, "mem_size_mib": 512, "image": "base", "hypervisor": "qemu",
         "firmware": "ovmf-test", "firmware_path": "/x.fd"
@@ -724,7 +1139,13 @@ async fn firmware_images() {
     assert_eq!(vm["firmware"], fw["id"]);
 
     // Free once the VM is gone; deleting removes the file.
-    let (status, _) = request(&app, "DELETE", &format!("/vms/{}?wait=30", vm["id"].as_str().unwrap()), None).await;
+    let (status, _) = request(
+        &app,
+        "DELETE",
+        &format!("/vms/{}?wait=30", vm["id"].as_str().unwrap()),
+        None,
+    )
+    .await;
     assert!(status.is_success(), "{status}");
     let (status, _) = request(&app, "DELETE", "/images/ovmf-test?wait=30", None).await;
     assert!(status.is_success(), "{status}");
@@ -735,7 +1156,11 @@ async fn firmware_images() {
 /// template into the image directory, ready at once.
 #[tokio::test]
 async fn ovmf_firmware_is_imported_from_the_host_package() {
-    let Some(code) = glidex_control_plane::hypervisor::qemu::OVMF_CODE_CANDIDATES.iter().map(Path::new).find(|p| p.is_file()) else {
+    let Some(code) = glidex_control_plane::hypervisor::qemu::OVMF_CODE_CANDIDATES
+        .iter()
+        .map(Path::new)
+        .find(|p| p.is_file())
+    else {
         eprintln!("skipping: no OVMF installed");
         return;
     };
@@ -744,13 +1169,28 @@ async fn ovmf_firmware_is_imported_from_the_host_package() {
     let (status, img) = request(&app, "POST", "/images", Some(json!({"firmware": "ovmf"}))).await;
     assert_eq!(status, StatusCode::ACCEPTED, "{img}");
     assert_eq!(img["status"]["state"], "ready", "{img}");
-    assert_eq!((img["name"].as_str(), img["hypervisor"].as_str()), (Some("ovmf"), Some("qemu")));
+    assert_eq!(
+        (img["name"].as_str(), img["hypervisor"].as_str()),
+        (Some("ovmf"), Some("qemu"))
+    );
     assert_eq!(img["source"]["url"], code.to_str().unwrap());
-    assert_eq!(std::fs::read(img["path"].as_str().unwrap()).unwrap(), std::fs::read(code).unwrap());
+    assert_eq!(
+        std::fs::read(img["path"].as_str().unwrap()).unwrap(),
+        std::fs::read(code).unwrap()
+    );
     let vars = img["path"].as_str().unwrap().replace(".fd", ".vars.fd");
-    assert!(Path::new(&vars).is_file(), "the variable store template comes along");
+    assert!(
+        Path::new(&vars).is_file(),
+        "the variable store template comes along"
+    );
     let (_, cat) = request(&app, "GET", "/images/firmware-catalog", None).await;
-    let entry = cat.as_array().unwrap().iter().find(|e| e["key"] == "ovmf").unwrap().clone();
+    let entry = cat
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["key"] == "ovmf")
+        .unwrap()
+        .clone();
     assert_eq!(entry["downloaded_image_id"], img["id"]);
 }
 
@@ -759,23 +1199,43 @@ async fn ovmf_firmware_is_imported_from_the_host_package() {
 #[tokio::test]
 async fn local_firmware_is_auto_imported_once() {
     use glidex_control_plane::images::AutoImport;
-    if !glidex_control_plane::hypervisor::qemu::OVMF_CODE_CANDIDATES.iter().any(|p| Path::new(p).is_file()) {
+    if !glidex_control_plane::hypervisor::qemu::OVMF_CODE_CANDIDATES
+        .iter()
+        .any(|p| Path::new(p).is_file())
+    {
         eprintln!("skipping: no OVMF installed");
         return;
     }
-    let ovmf = |r: &[(&str, AutoImport)]| r.iter().find(|(k, _)| *k == "ovmf").map(|(_, a)| a.clone());
+    let ovmf =
+        |r: &[(&str, AutoImport)]| r.iter().find(|(k, _)| *k == "ovmf").map(|(_, a)| a.clone());
     let tmp = TempDir::new().unwrap();
     let (app, manager) = create_app(tmp.path());
 
     let first = manager.auto_import_firmware().await;
-    assert_eq!(ovmf(&first), Some(AutoImport::Imported("ovmf".into())), "{first:?}");
+    assert_eq!(
+        ovmf(&first),
+        Some(AutoImport::Imported("ovmf".into())),
+        "{first:?}"
+    );
     let (_, img) = request(&app, "GET", "/images/ovmf", None).await;
-    assert_eq!((img["kind"].as_str(), img["status"]["state"].as_str()), (Some("firmware"), Some("ready")));
+    assert_eq!(
+        (img["kind"].as_str(), img["status"]["state"].as_str()),
+        (Some("firmware"), Some("ready"))
+    );
     // Cloud Hypervisor's entry depends on this host's ~/.glidex; it never downloads.
     let (_, all) = request(&app, "GET", "/images", None).await;
-    assert!(all.as_array().unwrap().iter().all(|i| i["status"]["state"] == "ready"), "{all}");
+    assert!(
+        all.as_array()
+            .unwrap()
+            .iter()
+            .all(|i| i["status"]["state"] == "ready"),
+        "{all}"
+    );
 
-    assert_eq!(ovmf(&manager.auto_import_firmware().await), Some(AutoImport::AlreadyDone));
+    assert_eq!(
+        ovmf(&manager.auto_import_firmware().await),
+        Some(AutoImport::AlreadyDone)
+    );
     let (status, _) = request(&app, "DELETE", "/images/ovmf?wait=30", None).await;
     assert!(status.is_success(), "{status}");
 
@@ -784,7 +1244,10 @@ async fn local_firmware_is_auto_imported_once() {
     drop(app);
     drop(manager);
     let (app, manager) = create_app(tmp.path());
-    assert_eq!(ovmf(&manager.auto_import_firmware().await), Some(AutoImport::AlreadyDone));
+    assert_eq!(
+        ovmf(&manager.auto_import_firmware().await),
+        Some(AutoImport::AlreadyDone)
+    );
     let (status, _) = request(&app, "GET", "/images/ovmf", None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
@@ -807,7 +1270,15 @@ async fn auto_import_leaves_existing_firmware_alone() {
         assert_eq!(*r, AutoImport::HaveOne("my-ovmf".into()));
     }
     let (_, all) = request(&app, "GET", "/images", None).await;
-    assert_eq!(all.as_array().unwrap().iter().filter(|i| i["hypervisor"] == "qemu").count(), 1, "{all}");
+    assert_eq!(
+        all.as_array()
+            .unwrap()
+            .iter()
+            .filter(|i| i["hypervisor"] == "qemu")
+            .count(),
+        1,
+        "{all}"
+    );
 }
 
 /// A QEMU firmware download can bring its variable-store template.
@@ -822,37 +1293,94 @@ async fn firmware_download_with_a_vars_template() {
     let (app, _manager) = create_app(tmp.path());
     let fw = |name: &str, extra: Value| {
         let mut body = json!({"url": format!("{base}/fw.fd"), "sha256": sha256_hex(FIRMWARE), "name": name, "kind": "firmware", "hypervisor": "qemu"});
-        body.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        body.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
         body
     };
 
     // Only for a QEMU firmware URL, and a digest needs the URL.
-    let (status, err) = request(&app, "POST", "/images", Some(json!({"url": format!("{base}/good.qcow2"), "vars_url": format!("{base}/vars.fd")}))).await;
+    let (status, err) = request(
+        &app,
+        "POST",
+        "/images",
+        Some(json!({"url": format!("{base}/good.qcow2"), "vars_url": format!("{base}/vars.fd")})),
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{err}");
     let mut ch = fw("ch", json!({"vars_url": format!("{base}/vars.fd")}));
     ch["hypervisor"] = json!("cloudhypervisor");
     let (status, err) = request(&app, "POST", "/images", Some(ch)).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{err}");
-    let (status, err) = request(&app, "POST", "/images", Some(fw("nourl", json!({"vars_sha256": sha256_hex(VARS)})))).await;
+    let (status, err) = request(
+        &app,
+        "POST",
+        "/images",
+        Some(fw("nourl", json!({"vars_sha256": sha256_hex(VARS)}))),
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{err}");
 
-    let (status, img) = request(&app, "POST", "/images", Some(fw("with-vars", json!({"vars_url": format!("{base}/vars.fd"), "vars_sha256": sha256_hex(VARS)})))).await;
+    let (status, img) = request(
+        &app,
+        "POST",
+        "/images",
+        Some(fw(
+            "with-vars",
+            json!({"vars_url": format!("{base}/vars.fd"), "vars_sha256": sha256_hex(VARS)}),
+        )),
+    )
+    .await;
     assert_eq!(status, StatusCode::ACCEPTED, "{img}");
     let img = wait_image(&app, img["id"].as_str().unwrap()).await;
     assert_eq!(img["status"]["state"], "ready", "{img}");
-    assert_eq!((img["vars_template"].as_bool(), img["verified"].as_bool()), (Some(true), Some(true)));
+    assert_eq!(
+        (img["vars_template"].as_bool(), img["verified"].as_bool()),
+        (Some(true), Some(true))
+    );
     let vars = img["path"].as_str().unwrap().replace(".fd", ".vars.fd");
     assert_eq!(std::fs::read(&vars).unwrap(), VARS);
-    assert_eq!(std::fs::metadata(&vars).unwrap().permissions().mode() & 0o777, 0o444);
+    assert_eq!(
+        std::fs::metadata(&vars).unwrap().permissions().mode() & 0o777,
+        0o444
+    );
 
     // Without a vars digest it works but isn't verified; a wrong one fails.
-    let (_, img) = request(&app, "POST", "/images", Some(fw("unpinned-vars", json!({"vars_url": format!("{base}/vars.fd")})))).await;
+    let (_, img) = request(
+        &app,
+        "POST",
+        "/images",
+        Some(fw(
+            "unpinned-vars",
+            json!({"vars_url": format!("{base}/vars.fd")}),
+        )),
+    )
+    .await;
     let img = wait_image(&app, img["id"].as_str().unwrap()).await;
-    assert_eq!((img["status"]["state"].as_str(), img["verified"].as_bool()), (Some("ready"), Some(false)), "{img}");
-    let (_, img) = request(&app, "POST", "/images", Some(fw("bad-vars", json!({"vars_url": format!("{base}/vars.fd"), "vars_sha256": sha256_hex(b"x")})))).await;
+    assert_eq!(
+        (img["status"]["state"].as_str(), img["verified"].as_bool()),
+        (Some("ready"), Some(false)),
+        "{img}"
+    );
+    let (_, img) = request(
+        &app,
+        "POST",
+        "/images",
+        Some(fw(
+            "bad-vars",
+            json!({"vars_url": format!("{base}/vars.fd"), "vars_sha256": sha256_hex(b"x")}),
+        )),
+    )
+    .await;
     let img = wait_image(&app, img["id"].as_str().unwrap()).await;
     assert_eq!(img["status"]["state"], "failed", "{img}");
-    assert!(img["status"]["reason"].as_str().unwrap().contains("vars_url: checksum mismatch"), "{img}");
+    assert!(
+        img["status"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("vars_url: checksum mismatch"),
+        "{img}"
+    );
     assert!(!Path::new(&img["path"].as_str().unwrap().replace(".fd", ".vars.fd")).exists());
 
     // Deleting removes the template too.
@@ -869,25 +1397,65 @@ async fn ovmf_debian_is_downloaded_and_unpacked() {
     let (app, _manager) = create_app(tmp.path());
     let (status, cat) = request(&app, "GET", "/images/firmware-catalog", None).await;
     assert_eq!(status, StatusCode::OK);
-    let entry = cat.as_array().unwrap().iter().find(|e| e["key"] == "ovmf-debian").unwrap().clone();
-    assert_eq!((entry["source"].as_str(), entry["available"].as_bool()), (Some("debian"), Some(true)), "{entry}");
+    let entry = cat
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["key"] == "ovmf-debian")
+        .unwrap()
+        .clone();
+    assert_eq!(
+        (entry["source"].as_str(), entry["available"].as_bool()),
+        (Some("debian"), Some(true)),
+        "{entry}"
+    );
 
-    let (status, img) = request(&app, "POST", "/images", Some(json!({"firmware": "ovmf-debian"}))).await;
+    let (status, img) = request(
+        &app,
+        "POST",
+        "/images",
+        Some(json!({"firmware": "ovmf-debian"})),
+    )
+    .await;
     assert_eq!(status, StatusCode::ACCEPTED, "{img}");
     let mut img = img;
     for _ in 0..600 {
-        let (_, i) = request(&app, "GET", &format!("/images/{}", img["id"].as_str().unwrap()), None).await;
+        let (_, i) = request(
+            &app,
+            "GET",
+            &format!("/images/{}", img["id"].as_str().unwrap()),
+            None,
+        )
+        .await;
         img = i;
-        if !matches!(img["status"]["state"].as_str(), Some("downloading" | "verifying")) {
+        if !matches!(
+            img["status"]["state"].as_str(),
+            Some("downloading" | "verifying")
+        ) {
             break;
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
     assert_eq!(img["status"]["state"], "ready", "{img}");
-    assert_eq!((img["hypervisor"].as_str(), img["vars_template"].as_bool(), img["verified"].as_bool()), (Some("qemu"), Some(true), Some(true)));
-    assert_eq!(img["sha256"], "624e06de18b4fa535e90db7160d00d3d07d206422b89999bf1e27d920264e4e0", "the unpacked OVMF_CODE_4M.fd");
+    assert_eq!(
+        (
+            img["hypervisor"].as_str(),
+            img["vars_template"].as_bool(),
+            img["verified"].as_bool()
+        ),
+        (Some("qemu"), Some(true), Some(true))
+    );
+    assert_eq!(
+        img["sha256"], "624e06de18b4fa535e90db7160d00d3d07d206422b89999bf1e27d920264e4e0",
+        "the unpacked OVMF_CODE_4M.fd"
+    );
     assert_eq!(img["file_size_bytes"], 3653632);
     let path = img["path"].as_str().unwrap();
     assert!(!Path::new(&format!("{}.part", path.trim_end_matches(".fd"))).exists());
-    assert_eq!(std::fs::metadata(path.replace(".fd", ".vars.fd")).unwrap().len(), 540672);
+    assert_eq!(
+        std::fs::metadata(path.replace(".fd", ".vars.fd"))
+            .unwrap()
+            .len(),
+        540672
+    );
 }

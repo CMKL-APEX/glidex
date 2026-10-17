@@ -1,6 +1,6 @@
 //! The authd socket server: peer check, request handling, rate limits.
 
-use crate::authenticator::{AuthFailure, Accounts, Authenticator};
+use crate::authenticator::{Accounts, AuthFailure, Authenticator};
 use crate::config::Config;
 use crate::keys::{KeyReader, SystemKeyReader};
 use crate::limiter::RateLimiter;
@@ -67,7 +67,10 @@ impl Authd {
             return Err(ErrorBody::denied());
         }
         match self.accounts.lookup(user) {
-            Some(a) if a.groups.iter().any(|g| self.config.allowed_groups.contains(g)) => {}
+            Some(a)
+                if a.groups
+                    .iter()
+                    .any(|g| self.config.allowed_groups.contains(g)) => {}
             _ => return Err(ErrorBody::denied()),
         }
         self.keys.public_keys(user).map_err(|e| {
@@ -95,7 +98,10 @@ impl Authd {
         self.limiter().record_failure(user, Instant::now());
         let mut delay = self.config.failure_delay;
         if dummy_pam {
-            delay += *self.last_pam_failure.lock().unwrap_or_else(|p| p.into_inner());
+            delay += *self
+                .last_pam_failure
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
         }
         std::thread::sleep(delay);
         ErrorBody::denied()
@@ -111,27 +117,54 @@ impl Authd {
         let user = args.user.as_str();
         if !valid_user_name(user) {
             // Not logged: people type passwords into the user field.
-            tracing::info!(service, outcome = "denied", reason = "invalid user name", "authentication");
+            tracing::info!(
+                service,
+                outcome = "denied",
+                reason = "invalid user name",
+                "authentication"
+            );
             return Err(self.fail(None, true));
         }
         if !self.limiter().allowed(user, Instant::now()) {
             tracing::warn!(user, service, outcome = "rate_limited", "authentication");
             std::thread::sleep(self.config.failure_delay);
-            return Err(ErrorBody::new(CODE_RATE_LIMITED, "too many failed attempts; try again later"));
+            return Err(ErrorBody::new(
+                CODE_RATE_LIMITED,
+                "too many failed attempts; try again later",
+            ));
         }
         let account = match self.accounts.lookup(user) {
-            Some(a) if a.groups.iter().any(|g| self.config.allowed_groups.contains(g)) => a,
+            Some(a)
+                if a.groups
+                    .iter()
+                    .any(|g| self.config.allowed_groups.contains(g)) =>
+            {
+                a
+            }
             other => {
-                let reason = if other.is_none() { "unknown user" } else { "not in an allowed group" };
+                let reason = if other.is_none() {
+                    "unknown user"
+                } else {
+                    "not in an allowed group"
+                };
                 tracing::info!(user, service, outcome = "denied", reason, "authentication");
                 return Err(self.fail(Some(user), true));
             }
         };
         let started = Instant::now();
-        match self.authenticator.authenticate(service, user, args.password.as_str()) {
+        match self
+            .authenticator
+            .authenticate(service, user, args.password.as_str())
+        {
             Ok(()) => {
                 self.limiter().record_success(user);
-                tracing::info!(user, service, uid = account.uid, outcome = "success", "authentication");
+                tracing::info!(
+                    user,
+                    service,
+                    uid = account.uid,
+                    outcome = "success",
+                    "authentication"
+                );
                 Ok(AuthOk {
                     uid: account.uid,
                     groups: account.groups,
@@ -139,13 +172,19 @@ impl Authd {
             }
             Err(AuthFailure::Denied(reason)) => {
                 let took = started.elapsed().min(MAX_DUMMY_PAM_TIME);
-                *self.last_pam_failure.lock().unwrap_or_else(|p| p.into_inner()) = took;
+                *self
+                    .last_pam_failure
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner()) = took;
                 tracing::info!(user, service, outcome = "denied", reason = %reason, "authentication");
                 Err(self.fail(Some(user), false))
             }
             Err(AuthFailure::Internal(reason)) => {
                 tracing::error!(user, service, outcome = "internal", reason = %reason, "authentication");
-                Err(ErrorBody::new(CODE_INTERNAL, "authentication is unavailable"))
+                Err(ErrorBody::new(
+                    CODE_INTERNAL,
+                    "authentication is unavailable",
+                ))
             }
         }
     }
@@ -159,7 +198,11 @@ impl Authd {
                     0,
                     ErrorBody::new(
                         CODE_PROTOCOL_ERROR,
-                        format!("malformed request at line {} column {}", e.line(), e.column()),
+                        format!(
+                            "malformed request at line {} column {}",
+                            e.line(),
+                            e.column()
+                        ),
                     ),
                 )
             }
@@ -227,7 +270,11 @@ impl Authd {
                 }
             };
             if !self.peer_allowed(peer.uid()) {
-                tracing::warn!(uid = peer.uid(), pid = peer.pid(), "rejected peer: not the service user");
+                tracing::warn!(
+                    uid = peer.uid(),
+                    pid = peer.pid(),
+                    "rejected peer: not the service user"
+                );
                 continue;
             }
             if self.active.fetch_add(1, Ordering::SeqCst) >= self.config.max_connections {
@@ -235,7 +282,10 @@ impl Authd {
                 tracing::warn!(uid = peer.uid(), pid = peer.pid(), "too many connections");
                 let mut s = stream;
                 let _ = s.set_write_timeout(Some(Duration::from_secs(1)));
-                let _ = write_line(&mut s, &Response::err(0, ErrorBody::new(CODE_RATE_LIMITED, "too many connections")));
+                let _ = write_line(
+                    &mut s,
+                    &Response::err(0, ErrorBody::new(CODE_RATE_LIMITED, "too many connections")),
+                );
                 continue;
             }
             let authd = self.clone();
@@ -291,7 +341,11 @@ impl<R: Read> LineReader<R> {
     fn next_line(&mut self) -> std::io::Result<Line> {
         let mut scanned = 0;
         loop {
-            if let Some(pos) = self.buf[scanned..].iter().position(|b| *b == b'\n').map(|p| p + scanned) {
+            if let Some(pos) = self.buf[scanned..]
+                .iter()
+                .position(|b| *b == b'\n')
+                .map(|p| p + scanned)
+            {
                 if pos > MAX_LINE {
                     return Ok(Line::TooLong);
                 }
@@ -376,7 +430,11 @@ mod tests {
 
     #[test]
     fn line_reader_splits_and_joins() {
-        let mut r = LineReader::new(Chunks(vec![b"ab".to_vec(), b"c\nde\n".to_vec(), b"f\n".to_vec()]));
+        let mut r = LineReader::new(Chunks(vec![
+            b"ab".to_vec(),
+            b"c\nde\n".to_vec(),
+            b"f\n".to_vec(),
+        ]));
         assert_eq!(lines(&mut r), vec!["abc", "de", "f"]);
     }
 

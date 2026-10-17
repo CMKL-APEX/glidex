@@ -127,7 +127,11 @@ pub trait HypervisorDriver: Send + Sync {
     /// The command line carrying the whole VM config. `config` has its
     /// non-persisted bindings (disks, NICs, seed, firmware vars) filled in.
     /// Pure apart from host probes (firmware vars, `O_DIRECT`, vhost-net).
-    fn launch_args(&self, config: &VmConfig, api_socket: &str) -> Result<LaunchArgs, HypervisorError>;
+    fn launch_args(
+        &self,
+        config: &VmConfig,
+        api_socket: &str,
+    ) -> Result<LaunchArgs, HypervisorError>;
 
     fn observe(&self, api_socket: &str) -> Result<Observed, HypervisorError>;
     fn pause(&self, api_socket: &str) -> Result<(), HypervisorError>;
@@ -210,7 +214,9 @@ pub(crate) fn hugepages_available_for(mem_mib: u32) -> bool {
             .ok()
             .and_then(|s| s.trim().parse::<u64>().ok())
     };
-    let (Some(free), resv) = (read("free_hugepages"), read("resv_hugepages").unwrap_or(0)) else { return false };
+    let (Some(free), resv) = (read("free_hugepages"), read("resv_hugepages").unwrap_or(0)) else {
+        return false;
+    };
     let spare_mib = free.saturating_sub(resv) * 2;
     let mem = mem_mib as u64;
     mem.is_multiple_of(2) && spare_mib >= mem + (mem / 4).max(256)
@@ -257,14 +263,23 @@ mod tests {
 
     #[test]
     fn binary_name_matches_hypervisor_type() {
-        assert_eq!(HypervisorType::CloudHypervisor.binary_name(), "cloud-hypervisor");
+        assert_eq!(
+            HypervisorType::CloudHypervisor.binary_name(),
+            "cloud-hypervisor"
+        );
         assert_eq!(HypervisorType::Qemu.binary_name(), "qemu-system-x86_64");
     }
 
     #[test]
     fn vfio_ids_ignore_trailing_slashes() {
-        assert_eq!(vfio_bdf("/sys/bus/pci/devices/0000:41:00.0/"), "0000:41:00.0");
-        assert_eq!(vfio_device_id("/sys/bus/pci/devices/0000:41:00.0"), "_vfio_0000_41_00_0");
+        assert_eq!(
+            vfio_bdf("/sys/bus/pci/devices/0000:41:00.0/"),
+            "0000:41:00.0"
+        );
+        assert_eq!(
+            vfio_device_id("/sys/bus/pci/devices/0000:41:00.0"),
+            "_vfio_0000_41_00_0"
+        );
         assert_eq!(vfio_device_id("0000:41:00.0"), "_vfio_0000_41_00_0");
     }
 

@@ -28,7 +28,9 @@ pub fn listener() -> Option<std::io::Result<UnixListener>> {
     // nothing else in the process owns it; ownership moves to the listener.
     let listener = unsafe { UnixListener::from_raw_fd(SD_LISTEN_FDS_START) };
     if let Err(e) = listener.local_addr() {
-        return Some(Err(std::io::Error::other(format!("fd 3 is not a Unix socket: {e}"))));
+        return Some(Err(std::io::Error::other(format!(
+            "fd 3 is not a Unix socket: {e}"
+        ))));
     }
     if let Err(e) = nix::fcntl::fcntl(
         SD_LISTEN_FDS_START,

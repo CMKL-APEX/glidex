@@ -79,15 +79,24 @@ function currentPath(): string {
   return window.location.pathname + window.location.search;
 }
 
-export function SsoButton({ reauth = false }: { reauth?: boolean }) {
+/** One button per OIDC connector of the directory; one plain "SSO"
+ *  button for a server that doesn't list them. */
+export function SsoButtons({ methods, reauth = false }: { methods: AuthMethods; reauth?: boolean }) {
+  const oidc = methods.connectors?.filter((c) => c.kind === "oidc");
+  const buttons = oidc ? oidc.map((c) => ({ id: c.id as string | undefined, label: c.display_name || "SSO" })) : [{ id: undefined, label: "SSO" }];
   return (
-    <button
-      type="button"
-      onClick={() => api.startOidc(currentPath(), reauth)}
-      className="w-full px-4 py-2 text-sm font-medium text-sky-700 bg-white border border-sky-300 hover:bg-sky-50 rounded-lg"
-    >
-      Sign in with SSO
-    </button>
+    <div className="space-y-2">
+      {buttons.map((b) => (
+        <button
+          key={b.id ?? "sso"}
+          type="button"
+          onClick={() => api.startOidc(currentPath(), reauth, b.id)}
+          className="w-full px-4 py-2 text-sm font-medium text-sky-700 bg-white border border-sky-300 hover:bg-sky-50 rounded-lg"
+        >
+          Sign in with {b.label}
+        </button>
+      ))}
+    </div>
   );
 }
 
@@ -108,7 +117,7 @@ export default function Login({ methods, onLoggedIn }: { methods: AuthMethods; o
             <span className="flex-1 border-t border-gray-200" />
           </div>
         )}
-        {methods.oidc && <SsoButton />}
+        {methods.oidc && <SsoButtons methods={methods} />}
         {none && (
           <p className="text-sm text-gray-600">
             No login method is enabled on this host. Ask an administrator, or use <code>gxctl</code> on the host.

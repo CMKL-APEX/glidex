@@ -22,7 +22,12 @@ fn create_test_app() -> (Router, Arc<VmManager>, TempDir) {
     (create_router(manager.clone()), manager, temp_dir)
 }
 
-async fn request(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, String) {
+async fn request(
+    app: &Router,
+    method: &str,
+    uri: &str,
+    body: Option<Value>,
+) -> (StatusCode, String) {
     let builder = Request::builder().method(method).uri(uri);
     let req = match body {
         Some(b) => builder
@@ -131,7 +136,13 @@ async fn credential_crud_status_codes() {
 
     let (status, _) = request(&app, "GET", "/credentials/nobody-here", None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
-    let (status, _) = request(&app, "PUT", "/credentials/nobody-here", Some(json!({"password": PASSWORD}))).await;
+    let (status, _) = request(
+        &app,
+        "PUT",
+        "/credentials/nobody-here",
+        Some(json!({"password": PASSWORD})),
+    )
+    .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
     let (status, _) = request(&app, "DELETE", "/credentials/alice", None).await;
@@ -144,7 +155,13 @@ async fn credential_crud_status_codes() {
 async fn vm_credential_must_exist_and_needs_firmware_boot() {
     let (app, _manager, _tmp) = create_test_app();
 
-    let (status, body) = request(&app, "POST", "/vms", Some(firmware_vm("vm1", Some("ghost")))).await;
+    let (status, body) = request(
+        &app,
+        "POST",
+        "/vms",
+        Some(firmware_vm("vm1", Some("ghost"))),
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert!(body.contains("credential not found"));
 
@@ -164,7 +181,13 @@ async fn vm_credential_must_exist_and_needs_firmware_boot() {
     let (status, body) = request(&app, "POST", "/vms", Some(custom_seed)).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
 
-    let (status, body) = request(&app, "POST", "/vms", Some(firmware_vm("vm4", Some("alice")))).await;
+    let (status, body) = request(
+        &app,
+        "POST",
+        "/vms",
+        Some(firmware_vm("vm4", Some("alice"))),
+    )
+    .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
     assert_eq!(json_of(&body)["credential"], "alice");
 }
@@ -174,7 +197,13 @@ async fn credential_in_use_cannot_be_deleted() {
     let (app, _manager, _tmp) = create_test_app();
     create_alice(&app).await;
 
-    let (_, vm) = request(&app, "POST", "/vms", Some(firmware_vm("uses-alice", Some("alice")))).await;
+    let (_, vm) = request(
+        &app,
+        "POST",
+        "/vms",
+        Some(firmware_vm("uses-alice", Some("alice"))),
+    )
+    .await;
     let vm_id = json_of(&vm)["id"].as_str().unwrap().to_string();
 
     let (status, body) = request(&app, "DELETE", "/credentials/alice", None).await;
@@ -217,8 +246,15 @@ async fn seed_uses_only_the_credential() {
     assert!(user_data.contains("    - name: alice\n      password: "));
     assert!(user_data.contains(&format!("- '{KEY}'")));
     assert!(!user_data.contains("name: cloud"));
-    assert_eq!(user_data.matches("ssh-").count(), 1, "host keys must not be added");
-    assert!(!format!("{seed:?}").contains("$6$"), "Debug must redact the hash");
+    assert_eq!(
+        user_data.matches("ssh-").count(),
+        1,
+        "host keys must not be added"
+    );
+    assert!(
+        !format!("{seed:?}").contains("$6$"),
+        "Debug must redact the hash"
+    );
 }
 
 #[test]

@@ -14,17 +14,45 @@ pub fn measurable(d: &Disk) -> bool {
 
 /// Record measured disk sizes (`disk.stored`) and ready images
 /// (`image.stored`) as gauges held until the next pass.
-pub fn record(round: &mut Round, disks: &[(Disk, u64)], images: &[Image], now: u64) -> Result<(), MeteringError> {
+pub fn record(
+    round: &mut Round,
+    disks: &[(Disk, u64)],
+    images: &[Image],
+    now: u64,
+) -> Result<(), MeteringError> {
     for (d, actual) in disks {
-        let mut s = Subject::new(SubjectKind::Disk, d.id.clone(), d.name.clone(), (!d.project.is_empty()).then(|| d.project.clone()));
+        let mut s = Subject::new(
+            SubjectKind::Disk,
+            d.id.clone(),
+            d.name.clone(),
+            (!d.project.is_empty()).then(|| d.project.clone()),
+        );
         s.vm_id = d.attached_to.clone();
         s.node = d.node.clone();
-        round.gauge_run(&s, "disk.stored", "disk", d.created_at * 1000, actual.div_ceil(MIB), 0, now, None)?;
+        round.gauge_run(
+            &s,
+            "disk.stored",
+            "disk",
+            d.created_at * 1000,
+            actual.div_ceil(MIB),
+            0,
+            now,
+            None,
+        )?;
     }
     for i in images {
         let s = Subject::new(SubjectKind::Image, i.id.clone(), i.name.clone(), None);
         if matches!(i.status, ImageStatus::Ready) && i.file_size_bytes > 0 {
-            round.gauge_run(&s, "image.stored", "image", i.created_at * 1000, i.file_size_bytes.div_ceil(MIB), 0, now, None)?;
+            round.gauge_run(
+                &s,
+                "image.stored",
+                "image",
+                i.created_at * 1000,
+                i.file_size_bytes.div_ceil(MIB),
+                0,
+                now,
+                None,
+            )?;
         } else {
             round.gauge_end_at(&s, "image.stored", now)?;
         }
@@ -42,7 +70,11 @@ mod tests {
     #[test]
     fn stored_sizes_are_held_between_passes() {
         let dir = tempfile::TempDir::new().unwrap();
-        let l = Ledger::new(Arc::new(Db::create(dir.path().join("t.db")).unwrap()), LedgerSettings::from_secs(30, 120)).unwrap();
+        let l = Ledger::new(
+            Arc::new(Db::create(dir.path().join("t.db")).unwrap()),
+            LedgerSettings::from_secs(30, 120),
+        )
+        .unwrap();
         l.set_started_at_for_test(0);
         let t0 = 1_791_000_000 / 3600 * HOUR_MS;
         let d: Disk = serde_json::from_value(serde_json::json!({
@@ -58,14 +90,27 @@ mod tests {
         .unwrap_or_else(|e| panic!("image fixture: {e}"));
         let mut r = l.begin_round(t0 + 900_000).unwrap();
         // 200 MiB written at first, 1 GiB fifteen minutes later.
-        record(&mut r, &[(d.clone(), 200 << 20)], std::slice::from_ref(&img), t0).unwrap();
+        record(
+            &mut r,
+            &[(d.clone(), 200 << 20)],
+            std::slice::from_ref(&img),
+            t0,
+        )
+        .unwrap();
         record(&mut r, &[(d, 1 << 30)], &[img], t0 + 900_000).unwrap();
         l.commit(r).unwrap();
         let rows = l.scan(0, u64::MAX / 10, None).unwrap();
         let t = combine(&rows);
-        assert_eq!(t["disk.stored"], 200 * 900, "the first level held for 15 minutes");
+        assert_eq!(
+            t["disk.stored"],
+            200 * 900,
+            "the first level held for 15 minutes"
+        );
         assert_eq!(t["image.stored"], 600 * 900);
-        let img_row = rows.iter().find(|r| r.subject.kind == SubjectKind::Image).unwrap();
+        let img_row = rows
+            .iter()
+            .find(|r| r.subject.kind == SubjectKind::Image)
+            .unwrap();
         assert_eq!(img_row.subject.project, None, "images are host-level");
     }
 }

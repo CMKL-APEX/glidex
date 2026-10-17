@@ -17,7 +17,9 @@ fn main() {
     let files = proto_files(&proto);
     let mut compiler = protox::Compiler::new([&proto]).unwrap_or_else(|e| fail(&e.to_string()));
     compiler.include_imports(true).include_source_info(true);
-    compiler.open_files(&files).unwrap_or_else(|e| fail(&e.to_string()));
+    compiler
+        .open_files(&files)
+        .unwrap_or_else(|e| fail(&e.to_string()));
     let pool = compiler.descriptor_pool();
 
     let mut errors = Vec::new();
@@ -33,7 +35,10 @@ fn main() {
     let fds = out.join("glidex.fds");
     std::fs::write(&fds, compiler.encode_file_descriptor_set()).unwrap();
 
-    let generate: Vec<&String> = files.iter().filter(|f| !NOT_GENERATED.contains(&f.as_str())).collect();
+    let generate: Vec<&String> = files
+        .iter()
+        .filter(|f| !NOT_GENERATED.contains(&f.as_str()))
+        .collect();
     connectrpc_build::Config::new()
         .descriptor_set(&fds)
         .files(&generate)
@@ -51,13 +56,21 @@ fn fail(msg: &str) -> ! {
 /// Every `.proto` under `dir`, as paths relative to it.
 fn proto_files(dir: &Path) -> Vec<String> {
     fn walk(root: &Path, dir: &Path, out: &mut Vec<String>) {
-        let mut entries: Vec<_> = std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().path()).collect();
+        let mut entries: Vec<_> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .collect();
         entries.sort();
         for p in entries {
             if p.is_dir() {
                 walk(root, &p, out);
             } else if p.extension().is_some_and(|e| e == "proto") {
-                out.push(p.strip_prefix(root).unwrap().to_string_lossy().replace('\\', "/"));
+                out.push(
+                    p.strip_prefix(root)
+                        .unwrap()
+                        .to_string_lossy()
+                        .replace('\\', "/"),
+                );
             }
         }
     }
@@ -102,7 +115,9 @@ fn operations(pool: &DescriptorPool, errors: &mut Vec<String>) -> String {
                 errors.push(format!("{name}: missing option (glidex.api.v1.op)"));
                 continue;
             }
-            let Value::Message(op) = opts.get_extension(&ext).into_owned() else { unreachable!() };
+            let Value::Message(op) = opts.get_extension(&ext).into_owned() else {
+                unreachable!()
+            };
             let action = string(&op, "action");
             let rest = string(&op, "rest");
             let kind = match op.get_field_by_name("kind").map(|v| v.into_owned()) {
@@ -118,11 +133,16 @@ fn operations(pool: &DescriptorPool, errors: &mut Vec<String>) -> String {
             }
             let rest = match rest.split_once(' ') {
                 None if rest.is_empty() => "None".to_string(),
-                Some((method, path)) if ["GET", "POST", "PUT", "PATCH", "DELETE"].contains(&method) && path.starts_with('/') => {
+                Some((method, path))
+                    if ["GET", "POST", "PUT", "PATCH", "DELETE"].contains(&method)
+                        && path.starts_with('/') =>
+                {
                     format!("Some(({method:?}, {path:?}))")
                 }
                 _ => {
-                    errors.push(format!("{name}: op.rest must be \"<METHOD> /path\", got {rest:?}"));
+                    errors.push(format!(
+                        "{name}: op.rest must be \"<METHOD> /path\", got {rest:?}"
+                    ));
                     continue;
                 }
             };
@@ -157,7 +177,13 @@ fn check_secrets(pool: &DescriptorPool, errors: &mut Vec<String>) {
         errors.push("glidex.api.v1.secret is not defined".into());
         return;
     };
-    fn walk(m: &MessageDescriptor, ext: &prost_reflect::ExtensionDescriptor, seen: &mut BTreeSet<String>, path: &str, errors: &mut Vec<String>) {
+    fn walk(
+        m: &MessageDescriptor,
+        ext: &prost_reflect::ExtensionDescriptor,
+        seen: &mut BTreeSet<String>,
+        path: &str,
+        errors: &mut Vec<String>,
+    ) {
         if !seen.insert(m.full_name().to_string()) {
             return;
         }
@@ -165,7 +191,9 @@ fn check_secrets(pool: &DescriptorPool, errors: &mut Vec<String>) {
             let here = format!("{path}.{}", f.name());
             let opts = f.options();
             if opts.has_extension(ext) && opts.get_extension(ext).as_bool() == Some(true) {
-                errors.push(format!("{here}: a secret field is reachable from a response"));
+                errors.push(format!(
+                    "{here}: a secret field is reachable from a response"
+                ));
             }
             if let Kind::Message(child) = f.kind() {
                 walk(&child, ext, seen, &here, errors);
@@ -175,7 +203,13 @@ fn check_secrets(pool: &DescriptorPool, errors: &mut Vec<String>) {
     for s in pool.services().filter(|s| ours(s.package_name())) {
         for m in s.methods() {
             let out = m.output();
-            walk(&out, &ext, &mut BTreeSet::new(), &format!("{}.{} → {}", s.name(), m.name(), out.name()), errors);
+            walk(
+                &out,
+                &ext,
+                &mut BTreeSet::new(),
+                &format!("{}.{} → {}", s.name(), m.name(), out.name()),
+                errors,
+            );
         }
     }
 }

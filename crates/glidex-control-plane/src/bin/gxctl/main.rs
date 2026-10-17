@@ -4,6 +4,7 @@ mod admin;
 mod client;
 mod config;
 mod console;
+mod directory;
 mod tenancy;
 
 use clap::Parser;
@@ -95,7 +96,9 @@ fn build_client(cli: &Cli) -> Result<ApiClient, String> {
                 Some(p) => ApiClient::unix(p),
                 // A UI socket but no API socket: a cluster agent, which has
                 // no API of its own (spec/clustering-ui.md §3.6).
-                None if client::is_socket(std::path::Path::new(client::AGENT_UI_SOCKET)) => return Err(client::AGENT_HINT.into()),
+                None if client::is_socket(std::path::Path::new(client::AGENT_UI_SOCKET)) => {
+                    return Err(client::AGENT_HINT.into())
+                }
                 None => tcp(client::DEFAULT_URL)?,
             }
         }
@@ -115,16 +118,25 @@ fn profile_client(cli: &Cli, sel: &config::Selected) -> Result<ApiClient, String
         Some(u) => vec![u.clone()],
         None => p.url.clone(),
     };
-    let dials_known = urls.iter().all(|u| p.url.iter().any(|pu| config::url_host(pu) == config::url_host(u)));
+    let dials_known = urls.iter().all(|u| {
+        p.url
+            .iter()
+            .any(|pu| config::url_host(pu) == config::url_host(u))
+    });
     let mut token = client::token_from_env();
     if token.is_none() && dials_known {
         token = p.credential()?;
     }
     if token.is_none() && !dials_known {
         // The point of the rule, said out loud once per run.
-        eprintln!("note: --url dials a host outside profile '{}'; no credential is sent to it", sel.name);
+        eprintln!(
+            "note: --url dials a host outside profile '{}'; no credential is sent to it",
+            sel.name
+        );
     }
-    let loopback_only = urls.iter().all(|u| client::is_loopback_host(&config::url_host(u)));
+    let loopback_only = urls
+        .iter()
+        .all(|u| client::is_loopback_host(&config::url_host(u)));
     if token.is_none() && loopback_only {
         // The legacy token file is the implicit localhost profile's
         // credential (§3.5); `auth login` folds a copy into the profile,
@@ -151,7 +163,15 @@ fn profile_client(cli: &Cli, sel: &config::Selected) -> Result<ApiClient, String
         // (§5.4) — every run, not just the ones that notice it.
         eprintln!("{} UNVERIFIED TLS: the certificate of {} was not checked — a network attacker can read your token", "Warning:".red(), urls.join(", "));
     }
-    let mut banner = format!("profile '{}' · {}", sel.name, if tls.insecure { "UNVERIFIED".to_string() } else { p.trust_mode() });
+    let mut banner = format!(
+        "profile '{}' · {}",
+        sel.name,
+        if tls.insecure {
+            "UNVERIFIED".to_string()
+        } else {
+            p.trust_mode()
+        }
+    );
     if let Some(c) = p.cluster_name.as_ref().or(p.cluster_id.as_ref()) {
         banner.push_str(&format!(" · cluster {c}"));
     }
@@ -164,8 +184,15 @@ fn profile_client(cli: &Cli, sel: &config::Selected) -> Result<ApiClient, String
         &urls,
         token,
         Some(&tls),
-        Some(client::ProfileCtx { name: sel.name.clone(), path: config::file().unwrap_or_else(|| PathBuf::from("")), banner }),
-        Some(client::Binding { profile: sel.name.clone(), cluster_id: p.cluster_id.clone() }),
+        Some(client::ProfileCtx {
+            name: sel.name.clone(),
+            path: config::file().unwrap_or_else(|| PathBuf::from("")),
+            banner,
+        }),
+        Some(client::Binding {
+            profile: sel.name.clone(),
+            cluster_id: p.cluster_id.clone(),
+        }),
     )?;
     c.set_project(cli.project.clone().or_else(|| p.project.clone()));
     Ok(c)
@@ -245,7 +272,12 @@ async fn project_names(client: &ApiClient) -> std::collections::HashMap<String, 
         .await
         .unwrap_or_default()
         .into_iter()
-        .filter_map(|p| Some((p["id"].as_str()?.to_string(), p["name"].as_str()?.to_string())))
+        .filter_map(|p| {
+            Some((
+                p["id"].as_str()?.to_string(),
+                p["name"].as_str()?.to_string(),
+            ))
+        })
         .collect()
 }
 
@@ -275,8 +307,13 @@ struct NetworkRow {
 }
 
 async fn list_networks(client: &ApiClient) {
-    match client.request_json::<Vec<NetworkRow>>(Method::GET, "/networks", None).await {
-        Ok(nets) if nets.is_empty() => println!("No networks. Create one with 'network create <name>'."),
+    match client
+        .request_json::<Vec<NetworkRow>>(Method::GET, "/networks", None)
+        .await
+    {
+        Ok(nets) if nets.is_empty() => {
+            println!("No networks. Create one with 'network create <name>'.")
+        }
         Ok(mut nets) => {
             let names = project_names(client).await;
             for n in &mut nets {
@@ -298,12 +335,18 @@ fn display_opt_u16(o: &Option<u16>) -> String {
 
 /// `--flag value` from a command's arguments.
 fn flag_value<'a>(args: &'a [&'a str], flag: &str) -> Option<&'a str> {
-    args.iter().position(|a| *a == flag).and_then(|i| args.get(i + 1)).copied()
+    args.iter()
+        .position(|a| *a == flag)
+        .and_then(|i| args.get(i + 1))
+        .copied()
 }
 
 /// Every value of a repeatable `--flag value`.
 fn flag_values<'a>(args: &[&'a str], flag: &str) -> Vec<&'a str> {
-    args.windows(2).filter(|w| w[0] == flag).map(|w| w[1]).collect()
+    args.windows(2)
+        .filter(|w| w[0] == flag)
+        .map(|w| w[1])
+        .collect()
 }
 
 /// Split a command line into words; single or double quotes keep spaces
@@ -405,8 +448,17 @@ async fn handle_network_add(client: &CliClient, args: &[&str]) {
             }
         }
     }
-    match client.request_json::<NetworkRow>(Method::POST, "/networks", Some(body)).await {
-        Ok(n) => println!("{} {} ({} on {})", "Network created:".green(), n.name.yellow(), n.mode, n.bridge),
+    match client
+        .request_json::<NetworkRow>(Method::POST, "/networks", Some(body))
+        .await
+    {
+        Ok(n) => println!(
+            "{} {} ({} on {})",
+            "Network created:".green(),
+            n.name.yellow(),
+            n.mode,
+            n.bridge
+        ),
         Err(e) => println!("{} {}", "Error:".red(), e),
     }
 }
@@ -417,7 +469,9 @@ async fn handle_uplink_add(client: &CliClient, args: &[&str]) {
         println!("{}", usage.yellow());
         return;
     };
-    let rxq: u16 = flag_value(args, "--rxq").and_then(|v| v.parse().ok()).unwrap_or(1);
+    let rxq: u16 = flag_value(args, "--rxq")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1);
     let mut body = if let Some(ifname) = flag_value(args, "--kernel") {
         serde_json::json!({"name": ifname, "kind": "kernel", "ifname": ifname})
     } else if let Some(ifname) = flag_value(args, "--afxdp") {
@@ -437,7 +491,10 @@ async fn handle_uplink_add(client: &CliClient, args: &[&str]) {
     body["confirm"] = serde_json::json!(has_flag(args, "--force"));
     body["accept_dhcp"] = serde_json::json!(has_flag(args, "--accept-dhcp"));
     let path = format!("/ovs/bridges/{}/uplinks", bridge);
-    let res = match client.request_json::<serde_json::Value>(Method::POST, &path, Some(body)).await {
+    let res = match client
+        .request_json::<serde_json::Value>(Method::POST, &path, Some(body))
+        .await
+    {
         Ok(r) => r,
         Err(e) => {
             if e.contains("DHCP-managed") {
@@ -456,20 +513,44 @@ async fn handle_uplink_add(client: &CliClient, args: &[&str]) {
 /// After an uplink was added or re-applied: commit a moved IP once the API
 /// still answers (netd rolls it back otherwise).
 async fn finish_uplink(client: &CliClient, bridge: &str, res: serde_json::Value) {
-    let name = res["record"]["spec"]["name"].as_str().unwrap_or("?").to_string();
+    let name = res["record"]["spec"]["name"]
+        .as_str()
+        .unwrap_or("?")
+        .to_string();
     for w in res["live"]["warnings"].as_array().into_iter().flatten() {
         println!("{} {}", "Warning:".yellow(), w.as_str().unwrap_or(""));
     }
     if res["phase"] == "pending_commit" {
-        println!("IP configuration moved to {}; checking the API is still reachable...", bridge);
-        let token = res["record"]["pending"]["token"].as_str().unwrap_or("").to_string();
+        println!(
+            "IP configuration moved to {}; checking the API is still reachable...",
+            bridge
+        );
+        let token = res["record"]["pending"]["token"]
+            .as_str()
+            .unwrap_or("")
+            .to_string();
         if client.health_check().await.is_err() {
-            println!("{} API unreachable; glidex-netd will roll the change back automatically.", "Error:".red());
+            println!(
+                "{} API unreachable; glidex-netd will roll the change back automatically.",
+                "Error:".red()
+            );
             return;
         }
         let commit = format!("/ovs/bridges/{}/uplinks/{}/commit", bridge, name);
-        match client.request_json::<serde_json::Value>(Method::POST, &commit, Some(serde_json::json!({"token": token}))).await {
-            Ok(_) => println!("{} uplink {} on {} (IP migrated)", "Committed:".green(), name, bridge),
+        match client
+            .request_json::<serde_json::Value>(
+                Method::POST,
+                &commit,
+                Some(serde_json::json!({"token": token})),
+            )
+            .await
+        {
+            Ok(_) => println!(
+                "{} uplink {} on {} (IP migrated)",
+                "Committed:".green(),
+                name,
+                bridge
+            ),
             Err(e) => println!("{} {} (the change will be rolled back)", "Error:".red(), e),
         }
     } else {
@@ -480,35 +561,67 @@ async fn finish_uplink(client: &CliClient, bridge: &str, res: serde_json::Value)
 async fn handle_ovs(client: &CliClient, args: &[&str]) {
     match args.first().copied() {
         Some("status") | None => {
-            match client.request_json::<serde_json::Value>(Method::GET, "/ovs/status", None).await {
+            match client
+                .request_json::<serde_json::Value>(Method::GET, "/ovs/status", None)
+                .await
+            {
                 Ok(s) => {
                     let netd = &s["netd"];
                     if netd["available"] != true {
-                        println!("{} glidex-netd unavailable: {}", "netd:".bold(), netd["error"].as_str().unwrap_or("unknown").red());
+                        println!(
+                            "{} glidex-netd unavailable: {}",
+                            "netd:".bold(),
+                            netd["error"].as_str().unwrap_or("unknown").red()
+                        );
                         return;
                     }
-                    println!("{} available (access: {})", "netd:".bold(), netd["access"].as_str().unwrap_or("?"));
+                    println!(
+                        "{} available (access: {})",
+                        "netd:".bold(),
+                        netd["access"].as_str().unwrap_or("?")
+                    );
                     let h = &s["host"];
                     let ovs = if h["ovs_installed"] == true {
                         format!(
                             "{} ({})",
                             h["ovs_version"].as_str().unwrap_or("?"),
-                            if h["ovs_running"] == true { "running".green() } else { "not running".red() }
+                            if h["ovs_running"] == true {
+                                "running".green()
+                            } else {
+                                "not running".red()
+                            }
                         )
                     } else {
                         "not installed".red().to_string()
                     };
                     println!("{} {}", "Open vSwitch:".bold(), ovs);
-                    println!("{} {}", "dnsmasq:".bold(), if h["dnsmasq"] == true { "yes".green() } else { "missing".red() });
+                    println!(
+                        "{} {}",
+                        "dnsmasq:".bold(),
+                        if h["dnsmasq"] == true {
+                            "yes".green()
+                        } else {
+                            "missing".red()
+                        }
+                    );
                     println!("{} {}", "DPDK initialized:".bold(), h["dpdk_initialized"]);
                     if let Some(combos) = h["combinations"].as_array() {
                         println!("{}", "Combinations:".bold());
                         for c in combos {
-                            let missing: Vec<&str> = c["missing"].as_array().map(|m| m.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
+                            let missing: Vec<&str> = c["missing"]
+                                .as_array()
+                                .map(|m| m.iter().filter_map(|x| x.as_str()).collect())
+                                .unwrap_or_default();
                             println!(
                                 "  {} {} {}",
                                 c["id"].as_str().unwrap_or("?"),
-                                if c["available"] == true { "available".green().to_string() } else { format!("missing: {}", missing.join(", ")).yellow().to_string() },
+                                if c["available"] == true {
+                                    "available".green().to_string()
+                                } else {
+                                    format!("missing: {}", missing.join(", "))
+                                        .yellow()
+                                        .to_string()
+                                },
                                 c["description"].as_str().unwrap_or("").dimmed()
                             );
                         }
@@ -524,10 +637,24 @@ async fn handle_ovs(client: &CliClient, args: &[&str]) {
                 "source_build": has_flag(args, "--source"),
                 "confirm": has_flag(args, "--force"),
             });
-            println!("Installing Open vSwitch ({} profile); this can take a few minutes...", profile);
-            match client.request_json::<serde_json::Value>(Method::POST, "/ovs/install", Some(body)).await {
-                Ok(r) if r["changed"] == true => println!("{} Open vSwitch {}", "Installed:".green(), r["ovs_version"].as_str().unwrap_or("?")),
-                Ok(r) => println!("{} Open vSwitch {} already satisfies the profile", "Nothing to do:".green(), r["ovs_version"].as_str().unwrap_or("?")),
+            println!(
+                "Installing Open vSwitch ({} profile); this can take a few minutes...",
+                profile
+            );
+            match client
+                .request_json::<serde_json::Value>(Method::POST, "/ovs/install", Some(body))
+                .await
+            {
+                Ok(r) if r["changed"] == true => println!(
+                    "{} Open vSwitch {}",
+                    "Installed:".green(),
+                    r["ovs_version"].as_str().unwrap_or("?")
+                ),
+                Ok(r) => println!(
+                    "{} Open vSwitch {} already satisfies the profile",
+                    "Nothing to do:".green(),
+                    r["ovs_version"].as_str().unwrap_or("?")
+                ),
                 Err(e) => println!("{} {}", "Error:".red(), e),
             }
         }
@@ -538,12 +665,19 @@ async fn handle_ovs(client: &CliClient, args: &[&str]) {
                 "confirm": has_flag(args, "--force"),
             });
             println!("Enabling DPDK in ovs-vswitchd (restarts it)...");
-            match client.request_json::<()>(Method::POST, "/ovs/dpdk-init", Some(body)).await {
+            match client
+                .request_json::<()>(Method::POST, "/ovs/dpdk-init", Some(body))
+                .await
+            {
                 Ok(()) => println!("{} DPDK initialized", "OK:".green()),
                 Err(e) => println!("{} {}", "Error:".red(), e),
             }
         }
-        Some(other) => println!("{} unknown 'ovs {}'; use 'ovs status', 'ovs install' or 'ovs dpdk-init'", "Error:".red(), other),
+        Some(other) => println!(
+            "{} unknown 'ovs {}'; use 'ovs status', 'ovs install' or 'ovs dpdk-init'",
+            "Error:".red(),
+            other
+        ),
     }
 }
 
@@ -659,11 +793,13 @@ type CliClient = ApiClient;
 
 impl ApiClient {
     async fn list_vms(&self) -> Result<Vec<VmResponse>, String> {
-        self.request_json(Method::GET, &self.scoped("/vms"), None).await
+        self.request_json(Method::GET, &self.scoped("/vms"), None)
+            .await
     }
 
     async fn get_vm(&self, id: &str) -> Result<VmResponse, String> {
-        self.request_json(Method::GET, &format!("/vms/{}", enc(id)), None).await
+        self.request_json(Method::GET, &format!("/vms/{}", enc(id)), None)
+            .await
     }
 
     async fn create_vm(&self, request: CreateVmRequest) -> Result<VmResponse, String> {
@@ -681,54 +817,99 @@ impl ApiClient {
     }
 
     async fn start_vm(&self, id: &str, wait: Option<u64>) -> Result<VmResponse, String> {
-        self.request_json(Method::POST, &Self::waiting(format!("/vms/{}/start", enc(id)), wait), None).await
+        self.request_json(
+            Method::POST,
+            &Self::waiting(format!("/vms/{}/start", enc(id)), wait),
+            None,
+        )
+        .await
     }
 
     /// Stop a VM; with `graceful_secs`, power-button first and wait.
-    async fn stop_vm(&self, id: &str, graceful_secs: Option<u64>, wait: Option<u64>) -> Result<VmResponse, String> {
+    async fn stop_vm(
+        &self,
+        id: &str,
+        graceful_secs: Option<u64>,
+        wait: Option<u64>,
+    ) -> Result<VmResponse, String> {
         let mut path = format!("/vms/{}/stop", enc(id));
         if let Some(s) = graceful_secs {
             path = client::add_query(&path, "graceful_timeout_secs", &s.to_string());
         }
         // Waiting must cover the grace.
         let wait = wait.map(|w| w.max(graceful_secs.unwrap_or(0) + 20).min(300));
-        self.request_json(Method::POST, &Self::waiting(path, wait), None).await
+        self.request_json(Method::POST, &Self::waiting(path, wait), None)
+            .await
     }
 
     async fn pause_vm(&self, id: &str, wait: Option<u64>) -> Result<VmResponse, String> {
-        self.request_json(Method::POST, &Self::waiting(format!("/vms/{}/pause", enc(id)), wait), None).await
+        self.request_json(
+            Method::POST,
+            &Self::waiting(format!("/vms/{}/pause", enc(id)), wait),
+            None,
+        )
+        .await
     }
 
     async fn delete_vm(&self, id: &str, keep_disk: bool, wait: Option<u64>) -> Result<(), String> {
-        let path = format!("/vms/{}{}", enc(id), if keep_disk { "?keep_disk=true" } else { "" });
-        self.request_json::<serde_json::Value>(Method::DELETE, &Self::waiting(path, wait), None).await.map(|_| ())
+        let path = format!(
+            "/vms/{}{}",
+            enc(id),
+            if keep_disk { "?keep_disk=true" } else { "" }
+        );
+        self.request_json::<serde_json::Value>(Method::DELETE, &Self::waiting(path, wait), None)
+            .await
+            .map(|_| ())
     }
 
     async fn vm_events(&self, id: &str) -> Result<serde_json::Value, String> {
-        self.request_json(Method::GET, &format!("/vms/{}/events", enc(id)), None).await
+        self.request_json(Method::GET, &format!("/vms/{}/events", enc(id)), None)
+            .await
     }
 
     async fn list_credentials(&self) -> Result<Vec<CredentialInfo>, String> {
-        self.request_json(Method::GET, &self.scoped("/credentials"), None).await
+        self.request_json(Method::GET, &self.scoped("/credentials"), None)
+            .await
     }
 
-    async fn create_credential(&self, request: &CreateCredentialRequest) -> Result<CredentialInfo, String> {
+    async fn create_credential(
+        &self,
+        request: &CreateCredentialRequest,
+    ) -> Result<CredentialInfo, String> {
         let mut body = serde_json::to_value(request).map_err(|e| e.to_string())?;
         self.scope_body(&mut body);
-        self.request_json(Method::POST, "/credentials", Some(body)).await
+        self.request_json(Method::POST, "/credentials", Some(body))
+            .await
     }
 
-    async fn update_credential(&self, username: &str, request: &UpdateCredentialRequest) -> Result<CredentialInfo, String> {
+    async fn update_credential(
+        &self,
+        username: &str,
+        request: &UpdateCredentialRequest,
+    ) -> Result<CredentialInfo, String> {
         let body = serde_json::to_value(request).map_err(|e| e.to_string())?;
-        self.request_json(Method::PUT, &self.scoped(&format!("/credentials/{}", enc(username))), Some(body)).await
+        self.request_json(
+            Method::PUT,
+            &self.scoped(&format!("/credentials/{}", enc(username))),
+            Some(body),
+        )
+        .await
     }
 
     async fn delete_credential(&self, username: &str) -> Result<(), String> {
-        self.request_json(Method::DELETE, &self.scoped(&format!("/credentials/{}", enc(username))), None).await
+        self.request_json(
+            Method::DELETE,
+            &self.scoped(&format!("/credentials/{}", enc(username))),
+            None,
+        )
+        .await
     }
 
     async fn health_check(&self) -> Result<(), String> {
-        self.request_bytes(Method::GET, "/health", None).await.map(|_| ()).map_err(|e| e.message)
+        self.request_bytes(Method::GET, "/health", None)
+            .await
+            .map(|_| ())
+            .map_err(|e| e.message)
     }
 
     async fn list_pci_devices(&self) -> Result<Vec<PciDeviceInfo>, String> {
@@ -737,12 +918,22 @@ impl ApiClient {
 
     async fn attach_device(&self, vm_id: &str, device_path: &str) -> Result<VmResponse, String> {
         let body = serde_json::json!({ "device_path": device_path });
-        self.request_json(Method::POST, &format!("/vms/{}/devices", enc(vm_id)), Some(body)).await
+        self.request_json(
+            Method::POST,
+            &format!("/vms/{}/devices", enc(vm_id)),
+            Some(body),
+        )
+        .await
     }
 
     async fn detach_device(&self, vm_id: &str, device_path: &str) -> Result<VmResponse, String> {
         let body = serde_json::json!({ "device_path": device_path });
-        self.request_json(Method::DELETE, &format!("/vms/{}/devices", enc(vm_id)), Some(body)).await
+        self.request_json(
+            Method::DELETE,
+            &format!("/vms/{}/devices", enc(vm_id)),
+            Some(body),
+        )
+        .await
     }
 
     /// Resolve a VM identifier (name or ID) to an ID.
@@ -758,7 +949,10 @@ impl ApiClient {
             0 => Err(format!("VM '{}' not found", name_or_id)),
             1 => Ok(matches[0].id.clone()),
             _ => {
-                let ids: Vec<_> = matches.iter().map(|vm| format!("{} (project {})", vm.id, vm.project)).collect();
+                let ids: Vec<_> = matches
+                    .iter()
+                    .map(|vm| format!("{} (project {})", vm.id, vm.project))
+                    .collect();
                 Err(format!(
                     "Multiple VMs found with name '{}'. Use --project or the ID instead: {}",
                     name_or_id,
@@ -778,7 +972,11 @@ fn format_bytes(n: u64) -> String {
         v /= 1024.0;
         u += 1;
     }
-    if u == 0 { format!("{} B", n) } else { format!("{:.1} {}", v, UNITS[u]) }
+    if u == 0 {
+        format!("{} B", n)
+    } else {
+        format!("{:.1} {}", v, UNITS[u])
+    }
 }
 
 fn image_status(img: &serde_json::Value) -> String {
@@ -791,7 +989,9 @@ fn image_status(img: &serde_json::Value) -> String {
                 _ => format!("downloading {}", format_bytes(got)),
             }
         }
-        "failed" => format!("failed: {}", st["reason"].as_str().unwrap_or("")).red().to_string(),
+        "failed" => format!("failed: {}", st["reason"].as_str().unwrap_or(""))
+            .red()
+            .to_string(),
         "ready" => "ready".green().to_string(),
         other => other.to_string(),
     }
@@ -800,7 +1000,10 @@ fn image_status(img: &serde_json::Value) -> String {
 async fn handle_image(client: &CliClient, args: &[&str]) {
     let usage = "Usage: image catalog | list | pull <catalog-key|url> [--name N] [--sha256 H] [--firmware-for <cloudhypervisor|qemu> [--vars-url U] [--vars-sha256 H]] | pull --firmware <key> [--name N] | retry <name|id> | rm <name|id>";
     match args.first().copied().unwrap_or("list") {
-        "catalog" => match client.request_json::<Vec<serde_json::Value>>(Method::GET, "/images/catalog", None).await {
+        "catalog" => match client
+            .request_json::<Vec<serde_json::Value>>(Method::GET, "/images/catalog", None)
+            .await
+        {
             Ok(items) => {
                 println!("{}", "Cloud images (image pull <key>):".bold());
                 for i in items {
@@ -809,10 +1012,21 @@ async fn handle_image(client: &CliClient, args: &[&str]) {
                         i["key"].as_str().unwrap_or("?").cyan(),
                         i["distro"].as_str().unwrap_or(""),
                         i["release"].as_str().unwrap_or(""),
-                        if i["downloaded_image_id"].is_null() { String::new() } else { " (downloaded)".green().to_string() }
+                        if i["downloaded_image_id"].is_null() {
+                            String::new()
+                        } else {
+                            " (downloaded)".green().to_string()
+                        }
                     );
                 }
-                if let Ok(fw) = client.request_json::<Vec<serde_json::Value>>(Method::GET, "/images/firmware-catalog", None).await {
+                if let Ok(fw) = client
+                    .request_json::<Vec<serde_json::Value>>(
+                        Method::GET,
+                        "/images/firmware-catalog",
+                        None,
+                    )
+                    .await
+                {
                     println!("{}", "UEFI firmware (image pull --firmware <key>):".bold());
                     for i in fw {
                         let note = if !i["downloaded_image_id"].is_null() {
@@ -835,13 +1049,22 @@ async fn handle_image(client: &CliClient, args: &[&str]) {
             }
             Err(e) => println!("{} {}", "Error:".red(), e),
         },
-        "list" | "ls" => match client.request_json::<Vec<serde_json::Value>>(Method::GET, "/images", None).await {
-            Ok(imgs) if imgs.is_empty() => println!("No images. Pull one with 'image pull <key>' (see 'image catalog')."),
+        "list" | "ls" => match client
+            .request_json::<Vec<serde_json::Value>>(Method::GET, "/images", None)
+            .await
+        {
+            Ok(imgs) if imgs.is_empty() => {
+                println!("No images. Pull one with 'image pull <key>' (see 'image catalog').")
+            }
             Ok(imgs) => {
                 for i in imgs {
                     let src = &i["source"];
                     let from = match src["kind"].as_str() {
-                        Some("catalog") | Some("firmware") => format!("{} {}", src["key"].as_str().unwrap_or(""), src["version"].as_str().unwrap_or("")),
+                        Some("catalog") | Some("firmware") => format!(
+                            "{} {}",
+                            src["key"].as_str().unwrap_or(""),
+                            src["version"].as_str().unwrap_or("")
+                        ),
                         _ => src["url"].as_str().unwrap_or("").to_string(),
                     };
                     let kind = match i["hypervisor"].as_str() {
@@ -855,7 +1078,11 @@ async fn handle_image(client: &CliClient, args: &[&str]) {
                         image_status(&i),
                         format_bytes(i["virtual_size_bytes"].as_u64().unwrap_or(0)),
                         from.trim(),
-                        if i["verified"] == true { "" } else { " (unverified)" }
+                        if i["verified"] == true {
+                            ""
+                        } else {
+                            " (unverified)"
+                        }
                     );
                 }
             }
@@ -863,7 +1090,9 @@ async fn handle_image(client: &CliClient, args: &[&str]) {
         },
         "pull" => {
             let firmware = flag_value(args, "--firmware");
-            let Some(what) = firmware.or_else(|| args.get(1).copied().filter(|a| !a.starts_with("--"))) else {
+            let Some(what) =
+                firmware.or_else(|| args.get(1).copied().filter(|a| !a.starts_with("--")))
+            else {
                 println!("{}", usage.yellow());
                 return;
             };
@@ -891,7 +1120,10 @@ async fn handle_image(client: &CliClient, args: &[&str]) {
             if let Some(h) = flag_value(args, "--sha256") {
                 body["sha256"] = serde_json::json!(h);
             }
-            let img = match client.request_json::<serde_json::Value>(Method::POST, "/images", Some(body)).await {
+            let img = match client
+                .request_json::<serde_json::Value>(Method::POST, "/images", Some(body))
+                .await
+            {
                 Ok(i) => i,
                 Err(e) => {
                     println!("{} {}", "Error:".red(), e);
@@ -899,9 +1131,20 @@ async fn handle_image(client: &CliClient, args: &[&str]) {
                 }
             };
             let id = img["id"].as_str().unwrap_or("").to_string();
-            println!("Pulling {} as {} (Ctrl-C stops watching; the download continues)", what, img["name"].as_str().unwrap_or("?").yellow());
+            println!(
+                "Pulling {} as {} (Ctrl-C stops watching; the download continues)",
+                what,
+                img["name"].as_str().unwrap_or("?").yellow()
+            );
             loop {
-                match client.request_json::<serde_json::Value>(Method::GET, &format!("/images/{}", id), None).await {
+                match client
+                    .request_json::<serde_json::Value>(
+                        Method::GET,
+                        &format!("/images/{}", id),
+                        None,
+                    )
+                    .await
+                {
                     Ok(i) => {
                         let state = i["status"]["state"].as_str().unwrap_or("").to_string();
                         print!("\r  {:<60}", image_status(&i));
@@ -909,7 +1152,13 @@ async fn handle_image(client: &CliClient, args: &[&str]) {
                         if state != "downloading" && state != "verifying" {
                             println!();
                             if state == "ready" {
-                                println!("{} {} ({}, sha256 {})", "Image ready:".green(), i["name"].as_str().unwrap_or(""), format_bytes(i["virtual_size_bytes"].as_u64().unwrap_or(0)), i["sha256"].as_str().unwrap_or(""));
+                                println!(
+                                    "{} {} ({}, sha256 {})",
+                                    "Image ready:".green(),
+                                    i["name"].as_str().unwrap_or(""),
+                                    format_bytes(i["virtual_size_bytes"].as_u64().unwrap_or(0)),
+                                    i["sha256"].as_str().unwrap_or("")
+                                );
                             }
                             break;
                         }
@@ -923,14 +1172,32 @@ async fn handle_image(client: &CliClient, args: &[&str]) {
             }
         }
         "retry" => match args.get(1) {
-            Some(name) => match client.request_json::<serde_json::Value>(Method::POST, &format!("/images/{}/retry", name), None).await {
-                Ok(_) => println!("{} {} (follow it with: image list)", "Downloading again:".green(), name),
+            Some(name) => match client
+                .request_json::<serde_json::Value>(
+                    Method::POST,
+                    &format!("/images/{}/retry", name),
+                    None,
+                )
+                .await
+            {
+                Ok(_) => println!(
+                    "{} {} (follow it with: image list)",
+                    "Downloading again:".green(),
+                    name
+                ),
                 Err(e) => println!("{} {}", "Error:".red(), e),
             },
             None => println!("{}", usage.yellow()),
         },
         "rm" | "delete" => match args.get(1) {
-            Some(name) => match client.request_json::<serde_json::Value>(Method::DELETE, &format!("/images/{}?wait=60", name), None).await {
+            Some(name) => match client
+                .request_json::<serde_json::Value>(
+                    Method::DELETE,
+                    &format!("/images/{}?wait=60", name),
+                    None,
+                )
+                .await
+            {
                 Ok(v) => print_delete_result("Image", name, &v),
                 Err(e) => println!("{} {}", "Error:".red(), e),
             },
@@ -948,13 +1215,18 @@ fn watch_summary(kind: &str, o: &serde_json::Value) -> (String, String) {
         "vm" => {
             let state = o["state"].as_str().unwrap_or("?");
             match o["desired_state"].as_str() {
-                Some(d) if d != state && !(d == "stopped" && state == "created") => format!("{} → {}", state, d),
+                Some(d) if d != state && !(d == "stopped" && state == "created") => {
+                    format!("{} → {}", state, d)
+                }
                 _ => state.to_string(),
             }
         }
         "disk" => o["status"].as_str().unwrap_or("?").to_string(),
         "image" => match o["status"]["state"].as_str().unwrap_or("?") {
-            "downloading" => match (o["status"]["received_bytes"].as_u64(), o["status"]["total_bytes"].as_u64()) {
+            "downloading" => match (
+                o["status"]["received_bytes"].as_u64(),
+                o["status"]["total_bytes"].as_u64(),
+            ) {
                 (Some(r), Some(t)) if t > 0 => format!("downloading {}%", r * 100 / t),
                 _ => "downloading".to_string(),
             },
@@ -965,8 +1237,18 @@ fn watch_summary(kind: &str, o: &serde_json::Value) -> (String, String) {
     if deleting {
         what = format!("deleting ({})", what);
     }
-    if let Some(c) = o["conditions"].as_array().into_iter().flatten().find(|c| c["kind"] == "Ready" && c["status"] != "True") {
-        what = format!("{} — {}: {}", what, c["reason"].as_str().unwrap_or(""), c["message"].as_str().unwrap_or(""));
+    if let Some(c) = o["conditions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|c| c["kind"] == "Ready" && c["status"] != "True")
+    {
+        what = format!(
+            "{} — {}: {}",
+            what,
+            c["reason"].as_str().unwrap_or(""),
+            c["message"].as_str().unwrap_or("")
+        );
     }
     (name, what)
 }
@@ -978,7 +1260,8 @@ async fn handle_watch(client: &ApiClient, args: &[&str]) {
     let kinds = args.first().copied().unwrap_or("vms,disks,images,networks");
     let path = format!("/watch?kinds={}", kinds);
     // What was last printed per (kind, id), to skip repeats after a reconnect.
-    let mut last: std::collections::HashMap<(String, String), String> = std::collections::HashMap::new();
+    let mut last: std::collections::HashMap<(String, String), String> =
+        std::collections::HashMap::new();
     let mut synced_once = false;
     println!("{} {} (Ctrl-C to stop)", "Watching".green(), kinds);
     let watch = async {
@@ -999,11 +1282,18 @@ async fn handle_watch(client: &ApiClient, args: &[&str]) {
                             }
                         }
                         let v: serde_json::Value = serde_json::from_str(&data).unwrap_or_default();
-                        let (kind, id) = (v["kind"].as_str().unwrap_or("").to_string(), v["id"].as_str().unwrap_or("").to_string());
+                        let (kind, id) = (
+                            v["kind"].as_str().unwrap_or("").to_string(),
+                            v["id"].as_str().unwrap_or("").to_string(),
+                        );
                         match event.as_str() {
                             "synced" => {
                                 if !synced_once {
-                                    println!("{} {} objects; changes follow", "Synced:".green(), last.len());
+                                    println!(
+                                        "{} {} objects; changes follow",
+                                        "Synced:".green(),
+                                        last.len()
+                                    );
                                     synced_once = true;
                                 }
                             }
@@ -1020,8 +1310,15 @@ async fn handle_watch(client: &ApiClient, args: &[&str]) {
                             }
                             "deleted" => {
                                 if let Some(prev) = last.remove(&(kind.clone(), id)) {
-                                    let name = prev.split_whitespace().nth(1).unwrap_or("?").to_string();
-                                    println!("{}  {:<8} {:<24} {}", chrono_now(), kind, name, "deleted".red());
+                                    let name =
+                                        prev.split_whitespace().nth(1).unwrap_or("?").to_string();
+                                    println!(
+                                        "{}  {:<8} {:<24} {}",
+                                        chrono_now(),
+                                        kind,
+                                        name,
+                                        "deleted".red()
+                                    );
                                 }
                             }
                             _ => {}
@@ -1046,7 +1343,10 @@ async fn handle_watch(client: &ApiClient, args: &[&str]) {
 
 /// `HH:MM:SS` (UTC, like `events`), for `watch` lines.
 fn chrono_now() -> String {
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
     let t = now % 86_400;
     format!("{:02}:{:02}:{:02}", t / 3600, (t % 3600) / 60, t % 60)
 }
@@ -1058,9 +1358,23 @@ pub(crate) fn print_delete_result(kind: &str, name: &str, v: &serde_json::Value)
         println!("{} {}", format!("{} deleted:", kind).green(), name);
         return;
     }
-    println!("{} {} (the control plane finishes it)", "Deleting:".yellow(), name);
-    if let Some(ready) = v["conditions"].as_array().into_iter().flatten().find(|c| c["kind"] == "Ready" && c["status"] != "True") {
-        println!("  {} {}: {}", "Waiting:".yellow(), ready["reason"].as_str().unwrap_or(""), ready["message"].as_str().unwrap_or(""));
+    println!(
+        "{} {} (the control plane finishes it)",
+        "Deleting:".yellow(),
+        name
+    );
+    if let Some(ready) = v["conditions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|c| c["kind"] == "Ready" && c["status"] != "True")
+    {
+        println!(
+            "  {} {}: {}",
+            "Waiting:".yellow(),
+            ready["reason"].as_str().unwrap_or(""),
+            ready["message"].as_str().unwrap_or("")
+        );
     }
 }
 
@@ -1074,8 +1388,18 @@ fn print_disk_result(d: &serde_json::Value) {
         d["format"].as_str().unwrap_or(""),
         d["status"].as_str().unwrap_or("")
     );
-    if let Some(ready) = d["conditions"].as_array().into_iter().flatten().find(|c| c["kind"] == "Ready" && c["status"] != "True") {
-        println!("  {} {}: {}", "Not there yet:".yellow(), ready["reason"].as_str().unwrap_or(""), ready["message"].as_str().unwrap_or(""));
+    if let Some(ready) = d["conditions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|c| c["kind"] == "Ready" && c["status"] != "True")
+    {
+        println!(
+            "  {} {}: {}",
+            "Not there yet:".yellow(),
+            ready["reason"].as_str().unwrap_or(""),
+            ready["message"].as_str().unwrap_or("")
+        );
     }
     for w in d["warnings"].as_array().into_iter().flatten() {
         println!("  {} {}", "Warning:".yellow(), w.as_str().unwrap_or(""));
@@ -1084,18 +1408,29 @@ fn print_disk_result(d: &serde_json::Value) {
 
 async fn handle_disk(client: &CliClient, args: &[&str]) {
     let usage = "Usage: disk list | show <disk> | create <name> [--size-gib N] [--image I] [--full] [--raw] [--no-extend] | resize <disk> <GiB> [--no-extend] | extend-root <disk> [--on-boot] | rm <disk>";
-    let gib = |s: &str| s.parse::<u64>().map_err(|_| format!("{} is not a whole number of GiB", s));
+    let gib = |s: &str| {
+        s.parse::<u64>()
+            .map_err(|_| format!("{} is not a whole number of GiB", s))
+    };
     match args.first().copied().unwrap_or("list") {
-        "list" | "ls" => match client.request_json::<Vec<serde_json::Value>>(Method::GET, &client.scoped("/disks"), None).await {
+        "list" | "ls" => match client
+            .request_json::<Vec<serde_json::Value>>(Method::GET, &client.scoped("/disks"), None)
+            .await
+        {
             Ok(disks) if disks.is_empty() => println!("No disks."),
             Ok(disks) => {
                 let vms = client.list_vms().await.unwrap_or_default();
                 for d in disks {
                     let vm = d["attached_to"].as_str().map(|id| {
-                        vms.iter().find(|v| v.id == id).map(|v| v.name.clone()).unwrap_or_else(|| id.to_string())
+                        vms.iter()
+                            .find(|v| v.id == id)
+                            .map(|v| v.name.clone())
+                            .unwrap_or_else(|| id.to_string())
                     });
                     let origin = match d["origin"]["kind"].as_str() {
-                        Some("image") => format!("image ({})", d["origin"]["mode"].as_str().unwrap_or("")),
+                        Some("image") => {
+                            format!("image ({})", d["origin"]["mode"].as_str().unwrap_or(""))
+                        }
                         _ => "blank".to_string(),
                     };
                     println!(
@@ -1112,7 +1447,10 @@ async fn handle_disk(client: &CliClient, args: &[&str]) {
             Err(e) => println!("{} {}", "Error:".red(), e),
         },
         "show" | "get" => match args.get(1) {
-            Some(name) => match client.request_json::<serde_json::Value>(Method::GET, &format!("/disks/{}", name), None).await {
+            Some(name) => match client
+                .request_json::<serde_json::Value>(Method::GET, &format!("/disks/{}", name), None)
+                .await
+            {
                 Ok(d) => {
                     print_disk_result(&d);
                     println!("  path: {}", d["path"].as_str().unwrap_or(""));
@@ -1136,7 +1474,10 @@ async fn handle_disk(client: &CliClient, args: &[&str]) {
                                     if p["is_root"] == true { " (root)" } else { "" }
                                 );
                             }
-                            println!("  free at end: {}", format_bytes(t["free_tail_bytes"].as_u64().unwrap_or(0)));
+                            println!(
+                                "  free at end: {}",
+                                format_bytes(t["free_tail_bytes"].as_u64().unwrap_or(0))
+                            );
                         }
                         None => println!("  no partition table"),
                     }
@@ -1171,7 +1512,10 @@ async fn handle_disk(client: &CliClient, args: &[&str]) {
             }
             client.scope_body(&mut body);
             // Making it may wait for its image to download.
-            match client.request_json::<serde_json::Value>(Method::POST, "/disks?wait=300", Some(body)).await {
+            match client
+                .request_json::<serde_json::Value>(Method::POST, "/disks?wait=300", Some(body))
+                .await
+            {
                 Ok(d) => {
                     println!("{}", "Disk created:".green());
                     print_disk_result(&d);
@@ -1189,7 +1533,14 @@ async fn handle_disk(client: &CliClient, args: &[&str]) {
                 if has_flag(args, "--no-extend") {
                     body["extend_root"] = serde_json::json!(false);
                 }
-                match client.request_json::<serde_json::Value>(Method::POST, &format!("/disks/{}/resize?wait=120", name), Some(body)).await {
+                match client
+                    .request_json::<serde_json::Value>(
+                        Method::POST,
+                        &format!("/disks/{}/resize?wait=120", name),
+                        Some(body),
+                    )
+                    .await
+                {
                     Ok(d) => {
                         println!("{}", "Disk resize:".green());
                         print_disk_result(&d);
@@ -1201,9 +1552,17 @@ async fn handle_disk(client: &CliClient, args: &[&str]) {
         },
         "extend-root" => match args.get(1) {
             Some(name) => {
-                let mode = if has_flag(args, "--on-boot") { "on-boot" } else { "offline" };
+                let mode = if has_flag(args, "--on-boot") {
+                    "on-boot"
+                } else {
+                    "offline"
+                };
                 match client
-                    .request_json::<serde_json::Value>(Method::POST, &format!("/disks/{}/extend-root?wait=120", name), Some(serde_json::json!({ "mode": mode })))
+                    .request_json::<serde_json::Value>(
+                        Method::POST,
+                        &format!("/disks/{}/extend-root?wait=120", name),
+                        Some(serde_json::json!({ "mode": mode })),
+                    )
                     .await
                 {
                     Ok(d) => print_disk_result(&d),
@@ -1214,13 +1573,26 @@ async fn handle_disk(client: &CliClient, args: &[&str]) {
         },
         "rm" | "delete" => match args.get(1) {
             Some(name) => {
-                if prompt(&format!("Delete disk {} and its data? [y/N]: ", name)).to_lowercase() != "y" {
+                if prompt(&format!("Delete disk {} and its data? [y/N]: ", name)).to_lowercase()
+                    != "y"
+                {
                     println!("Cancelled");
                     return;
                 }
-                match client.request_json::<serde_json::Value>(Method::DELETE, &format!("/disks/{}", name), None).await {
+                match client
+                    .request_json::<serde_json::Value>(
+                        Method::DELETE,
+                        &format!("/disks/{}", name),
+                        None,
+                    )
+                    .await
+                {
                     Ok(serde_json::Value::Null) => println!("{} {}", "Disk deleted:".green(), name),
-                    Ok(_) => println!("{} {} (once the operation on it finishes)", "Deleting:".green(), name),
+                    Ok(_) => println!(
+                        "{} {} (once the operation on it finishes)",
+                        "Deleting:".green(),
+                        name
+                    ),
                     Err(e) => println!("{} {}", "Error:".red(), e),
                 }
             }
@@ -1238,20 +1610,44 @@ fn print_help() {
         "  {}           - Create a new VM (interactive)",
         "create".cyan()
     );
-    println!("  {}  - Start a VM (waits until it runs; --no-wait returns at once)", "start <name|id>".cyan());
+    println!(
+        "  {}  - Start a VM (waits until it runs; --no-wait returns at once)",
+        "start <name|id>".cyan()
+    );
     println!("  {}   - Stop a VM", "stop <name|id>".cyan());
     println!(
         "  {} - Shut a VM down via its power button (default wait 60 s), then stop it",
         "stop <name|id> --graceful [secs]".cyan()
     );
     println!("  {}  - Pause a VM", "pause <name|id>".cyan());
-    println!("  {} - Connect to VM console (interactive)", "connect <name|id>".cyan());
-    println!("  {}     - Show VM serial console log", "log <name|id>".cyan());
-    println!("  {}  - What happened to a VM (starts, exits, restarts, adoptions)", "events <name|id>".cyan());
-    println!("  {}  - Follow VMs, disks, images and networks as they change (Ctrl-C stops)", "watch [vms,disks,images,networks]".cyan());
-    println!("  {} - Delete a VM (and its own root disk)", "delete <name|id> [--keep-disk]".cyan());
-    println!("  {} <init|join|join-token|status|promote|snapshot> - Form or inspect the cluster", "cluster".cyan());
-    println!("  {}             - List the cluster's nodes (a standalone host has one)", "nodes".cyan());
+    println!(
+        "  {} - Connect to VM console (interactive)",
+        "connect <name|id>".cyan()
+    );
+    println!(
+        "  {}     - Show VM serial console log",
+        "log <name|id>".cyan()
+    );
+    println!(
+        "  {}  - What happened to a VM (starts, exits, restarts, adoptions)",
+        "events <name|id>".cyan()
+    );
+    println!(
+        "  {}  - Follow VMs, disks, images and networks as they change (Ctrl-C stops)",
+        "watch [vms,disks,images,networks]".cyan()
+    );
+    println!(
+        "  {} - Delete a VM (and its own root disk)",
+        "delete <name|id> [--keep-disk]".cyan()
+    );
+    println!(
+        "  {} <init|join|join-token|status|promote|snapshot> - Form or inspect the cluster",
+        "cluster".cyan()
+    );
+    println!(
+        "  {}             - List the cluster's nodes (a standalone host has one)",
+        "nodes".cyan()
+    );
     println!("  {}               - List host PCI devices", "pci".cyan());
     println!(
         "  {}     - Show detailed info (incl. sysfs path) for one device",
@@ -1265,51 +1661,142 @@ fn print_help() {
         "  {} - Detach PCI device from VM",
         "detach-device <name|id> <path>".cyan()
     );
-    println!("  {}       - List stored guest login credentials", "credentials".cyan());
-    println!("  {}    - Add a credential (interactive)", "credential-add".cyan());
-    println!("  {} - Change a credential's password", "credential-passwd <user>".cyan());
-    println!("  {} - Replace a credential's SSH keys", "credential-keys <user>".cyan());
+    println!(
+        "  {}       - List stored guest login credentials",
+        "credentials".cyan()
+    );
+    println!(
+        "  {}    - Add a credential (interactive)",
+        "credential-add".cyan()
+    );
+    println!(
+        "  {} - Change a credential's password",
+        "credential-passwd <user>".cyan()
+    );
+    println!(
+        "  {} - Replace a credential's SSH keys",
+        "credential-keys <user>".cyan()
+    );
     println!("  {}  - Delete a credential", "credential-rm <user>".cyan());
     println!("  {}          - List networks", "networks".cyan());
-    println!("  {} - Create a network (default: NAT)", "network-add <name> [--nat|--isolated|--bridged <br>]".cyan());
+    println!(
+        "  {} - Create a network (default: NAT)",
+        "network-add <name> [--nat|--isolated|--bridged <br>]".cyan()
+    );
     println!("  {}  - Delete a network", "network-rm <name>".cyan());
     println!("  {}           - List glidex OVS bridges", "bridges".cyan());
     println!("  {}  - List a bridge's uplinks", "uplinks <bridge>".cyan());
-    println!("  {} - Add an uplink (kernel/AF_XDP/DPDK)", "uplink-add <bridge> --kernel <if> [--migrate-ip] [--force] [--accept-dhcp]".cyan());
-    println!("  {} - Set up again an uplink rolled back at start", "uplink-reapply <bridge> <name>".cyan());
-    println!("  {} - Remove an uplink, restoring the NIC", "uplink-rm <bridge> <name>".cyan());
+    println!(
+        "  {} - Add an uplink (kernel/AF_XDP/DPDK)",
+        "uplink-add <bridge> --kernel <if> [--migrate-ip] [--force] [--accept-dhcp]".cyan()
+    );
+    println!(
+        "  {} - Set up again an uplink rolled back at start",
+        "uplink-reapply <bridge> <name>".cyan()
+    );
+    println!(
+        "  {} - Remove an uplink, restoring the NIC",
+        "uplink-rm <bridge> <name>".cyan()
+    );
     println!("  {}        - Host networking status", "ovs status".cyan());
-    println!("  {} - Install Open vSwitch", "ovs install [--profile kernel|dpdk] [--force]".cyan());
-    println!("  {}     - Cloud images in the built-in catalog", "image catalog".cyan());
+    println!(
+        "  {} - Install Open vSwitch",
+        "ovs install [--profile kernel|dpdk] [--force]".cyan()
+    );
+    println!(
+        "  {}     - Cloud images in the built-in catalog",
+        "image catalog".cyan()
+    );
     println!("  {}        - List downloaded images", "image list".cyan());
-    println!("  {} - Download and verify an image", "image pull <catalog-key|https-url> [--name N] [--sha256 H]".cyan());
-    println!("  {} - Pull UEFI firmware VMs boot through", "image pull --firmware <key> [--name N]".cyan());
-    println!("  {} - Download firmware (QEMU: with its variable store)", "image pull <url> --firmware-for <hv> [--vars-url U] [--vars-sha256 H]".cyan());
+    println!(
+        "  {} - Download and verify an image",
+        "image pull <catalog-key|https-url> [--name N] [--sha256 H]".cyan()
+    );
+    println!(
+        "  {} - Pull UEFI firmware VMs boot through",
+        "image pull --firmware <key> [--name N]".cyan()
+    );
+    println!(
+        "  {} - Download firmware (QEMU: with its variable store)",
+        "image pull <url> --firmware-for <hv> [--vars-url U] [--vars-sha256 H]".cyan()
+    );
     println!("  {}   - Delete an image", "image rm <name|id>".cyan());
     println!("  {}         - List disks", "disk list".cyan());
-    println!("  {}  - Disk details and partitions", "disk show <name|id>".cyan());
-    println!("  {} - Create a disk", "disk create <name> [--size-gib N] [--image I] [--full] [--raw] [--no-extend]".cyan());
-    println!("  {} - Grow or shrink a disk", "disk resize <disk> <GiB> [--no-extend]".cyan());
-    println!("  {} - Grow the root partition", "disk extend-root <disk> [--on-boot]".cyan());
+    println!(
+        "  {}  - Disk details and partitions",
+        "disk show <name|id>".cyan()
+    );
+    println!(
+        "  {} - Create a disk",
+        "disk create <name> [--size-gib N] [--image I] [--full] [--raw] [--no-extend]".cyan()
+    );
+    println!(
+        "  {} - Grow or shrink a disk",
+        "disk resize <disk> <GiB> [--no-extend]".cyan()
+    );
+    println!(
+        "  {} - Grow the root partition",
+        "disk extend-root <disk> [--on-boot]".cyan()
+    );
     println!("  {}    - Delete a disk", "disk rm <name|id>".cyan());
     println!("  {}            - Check API server health", "health".cyan());
     println!();
     println!("{}", "Access control:".bold());
-    println!("  {}            - Who you are: method, teams, roles", "whoami".cyan());
-    println!("  {} - Log in over TCP (OIDC device flow or a pasted token)", "login --oidc | --token".cyan());
+    println!(
+        "  {}            - Who you are: method, teams, roles",
+        "whoami".cyan()
+    );
+    println!(
+        "  {} - Log in over TCP (OIDC device flow or a pasted token)",
+        "login --oidc [--connector ID] | --token".cyan()
+    );
     println!("  {} - Forget the saved token", "logout [--revoke]".cyan());
     println!("  {} - Login profiles for remote control planes: target, trust and token of a server, under a name", "auth login | logout [--revoke] | status | use <P> | profiles | trust list|fetch|remove".cyan());
-    println!("  {}                - Print the web UI address", "ui".cyan());
-    println!("  {} - Access tokens", "token list | create <name> [--days N] [--service-account] [--role R[@P]] | revoke <id>".cyan());
-    println!("  {} - Projects", "project list | show <p> | create <name> [--description D] | delete <p>".cyan());
-    println!("  {} - Quotas (none = unlimited)", "project quota <p> vms=10 memory_mib=none ...".cyan());
+    println!(
+        "  {}                - Print the web UI address",
+        "ui".cyan()
+    );
+    println!(
+        "  {} - Access tokens",
+        "token list | create <name> [--days N] [--service-account] [--role R[@P]] | revoke <id>"
+            .cyan()
+    );
+    println!("  {} - Tenants", "tenant list | show <t> | create <slug> [--operator] | suspend|resume|delete <t> | members|add-member|remove-member …".cyan());
+    println!(
+        "  {} - Tenants admitted on this cluster, and their caps",
+        "admission list | set <t> [vms=N … | unlimited] [--suspend|--resume] | remove <t>".cyan()
+    );
+    println!("  {} - Login connectors of this directory", "connector list | show <id> | add oidc|pam <id> … | update <id> … | secret set <id> | test <id> | remove <id>".cyan());
+    println!(
+        "  {} - Projects",
+        "project list | show <p> | create <name> [--description D] | delete <p>".cyan()
+    );
+    println!(
+        "  {} - Quotas (none = unlimited)",
+        "project quota <p> vms=10 memory_mib=none ...".cyan()
+    );
     println!("  {} - Set your default project", "project use <p>".cyan());
-    println!("  {} - Project role bindings", "binding list <p> | add <p> <role> user:<id> | remove <p> <id>".cyan());
-    println!("  {} - Host role bindings", "system-binding list | add <role> <principal> | remove <id>".cyan());
-    println!("  {}         - Users and their identities", "user list".cyan());
-    println!("  {} - Teams", "team list | create <name> | add-member <team> <user> | remove-member <team> <user>".cyan());
+    println!(
+        "  {} - Project role bindings",
+        "binding list <p> | add <p> <role> user:<id> | remove <p> <id>".cyan()
+    );
+    println!(
+        "  {} - Host role bindings",
+        "system-binding list | add <role> <principal> | remove <id>".cyan()
+    );
+    println!(
+        "  {}         - Users and their identities",
+        "user list".cyan()
+    );
+    println!(
+        "  {} - Teams",
+        "team list | create <name> | add-member <team> <user> | remove-member <team> <user>".cyan()
+    );
     println!("  {} - Site Cedar policies", "policy list | show <id> | put <id> <file> [--disable] | delete <id> | validate <id> <file> | history <id>".cyan());
-    println!("  {} - Audit log", "audit [--project P] [--since <unix-ms>] [--limit N] [--user U]".cyan());
+    println!(
+        "  {} - Audit log",
+        "audit [--project P] [--since <unix-ms>] [--limit N] [--user U]".cyan()
+    );
     println!(
         "  {} - Resource usage (default: this billing month by project)",
         "usage [--project P] [--from D] [--to D] [--by project,vm,disk,nic,network] [--granularity hour|day|month] [--meters m,…] [--tz Z] [--csv]".cyan()
@@ -1318,10 +1805,19 @@ fn print_help() {
         "  {} - Average, 30-second peak and 95th percentile per billing month",
         "usage bandwidth|disk-io|compute [--month YYYY-MM] [--by project,vm,nic,network|disk] [--csv]".cyan()
     );
-    println!("  {} - A VM's current CPU, memory, NIC and disk rates", "stats <vm>".cyan());
-    println!("  {} - 5-minute series with the 95th percentile", "bandwidth <vm> | --network N · io <vm> | --disk D · compute <vm>".cyan());
+    println!(
+        "  {} - A VM's current CPU, memory, NIC and disk rates",
+        "stats <vm>".cyan()
+    );
+    println!(
+        "  {} - 5-minute series with the 95th percentile",
+        "bandwidth <vm> | --network N · io <vm> | --disk D · compute <vm>".cyan()
+    );
     println!("  {} - Project networks", "network create <name> --project P [--isolated] [--vhost-user] | share <net> <project-id> | unshare <net> <project-id>".cyan());
-    println!("  {} - Shares offered to a project", "network shares <p> | accept <p> <net> | leave <p> <net>".cyan());
+    println!(
+        "  {} - Shares offered to a project",
+        "network shares <p> | accept <p> <net> | leave <p> <net>".cyan()
+    );
     println!();
     println!("  {}              - Show this help", "help".cyan());
     println!("  {}              - Exit the CLI", "exit".cyan());
@@ -1402,8 +1898,7 @@ fn read_public_key_files(input: &str) -> Result<Vec<String>, String> {
             Some(rest) => format!("{}/{}", home, rest),
             None => path.to_string(),
         };
-        let contents =
-            std::fs::read_to_string(&path).map_err(|e| format!("{}: {}", path, e))?;
+        let contents = std::fs::read_to_string(&path).map_err(|e| format!("{}: {}", path, e))?;
         if contents.contains("PRIVATE KEY") {
             return Err(format!(
                 "{} is a private key; give the matching .pub file instead",
@@ -1423,8 +1918,14 @@ fn read_public_key_files(input: &str) -> Result<Vec<String>, String> {
 
 /// The signed-in user's name (the login name for local accounts).
 async fn signed_in_name(client: &CliClient) -> Option<String> {
-    let w: serde_json::Value = client.request_json(Method::GET, "/auth/whoami", None).await.ok()?;
-    w["user"]["display_name"].as_str().filter(|n| !n.is_empty()).map(str::to_string)
+    let w: serde_json::Value = client
+        .request_json(Method::GET, "/auth/whoami", None)
+        .await
+        .ok()?;
+    w["user"]["display_name"]
+        .as_str()
+        .filter(|n| !n.is_empty())
+        .map(str::to_string)
 }
 
 /// The login-credential answer: empty takes the default (if any),
@@ -1448,12 +1949,19 @@ fn own_public_key_files() -> Vec<String> {
 
 fn public_key_files_in(home: &std::path::Path) -> Vec<String> {
     let dir = home.join(".ssh");
-    let Ok(entries) = std::fs::read_dir(&dir) else { return Vec::new() };
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
     let mut files: Vec<String> = entries
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| p.is_file() && p.extension().is_some_and(|e| e == "pub"))
         .filter(|p| read_public_key_files(&p.to_string_lossy()).is_ok_and(|k| !k.is_empty()))
-        .map(|p| format!("~/.ssh/{}", p.file_name().unwrap_or_default().to_string_lossy()))
+        .map(|p| {
+            format!(
+                "~/.ssh/{}",
+                p.file_name().unwrap_or_default().to_string_lossy()
+            )
+        })
         .collect();
     files.sort();
     files
@@ -1476,13 +1984,20 @@ async fn handle_credential_add(client: &CliClient) {
         prompt("Username: ")
     } else {
         let u = prompt(&format!("Username [{}]: ", me));
-        if u.is_empty() { me } else { u }
+        if u.is_empty() {
+            me
+        } else {
+            u
+        }
     };
     if username.is_empty() {
         println!("{}", "Error: username is required".red());
         return;
     }
-    println!("{}", "Leave the password empty for SSH-key-only login.".dimmed());
+    println!(
+        "{}",
+        "Leave the password empty for SSH-key-only login.".dimmed()
+    );
     let password = match prompt_new_password(true) {
         Ok(p) => p,
         Err(e) => {
@@ -1495,7 +2010,10 @@ async fn handle_credential_add(client: &CliClient) {
     let question = if defaults.is_empty() {
         "SSH public key files (optional, comma-separated, e.g. ~/.ssh/id_ed25519.pub): ".to_string()
     } else {
-        format!("SSH public key files (comma-separated; 'none' for no keys) [{}]: ", defaults.join(", "))
+        format!(
+            "SSH public key files (comma-separated; 'none' for no keys) [{}]: ",
+            defaults.join(", ")
+        )
     };
     let keys = match chosen_key_files(&prompt_path(&question), &defaults)
         .map(|s| read_public_key_files(&s))
@@ -1524,7 +2042,11 @@ async fn handle_credential_add(client: &CliClient) {
     }
 }
 
-async fn handle_credential_update(client: &CliClient, username: &str, request: UpdateCredentialRequest) {
+async fn handle_credential_update(
+    client: &CliClient,
+    username: &str,
+    request: UpdateCredentialRequest,
+) {
     match client.update_credential(username, &request).await {
         Ok(c) => {
             println!("{} {}", "Credential updated:".green(), c.username.yellow());
@@ -1539,35 +2061,176 @@ async fn handle_credential_update(client: &CliClient, username: &str, request: U
 
 /// REPL command names offered by Tab (aliases included).
 const COMMANDS: &[&str] = &[
-    "help", "exit", "quit", "list", "ls", "get", "create", "start", "stop", "pause", "events", "watch",
-    "connect", "console", "attach", "log", "logs", "delete", "rm", "pci", "pci-devices", "nodes", "node", "cluster",
-    "attach-device", "detach-device", "credentials", "creds", "credential-add",
-    "credential-passwd", "credential-keys", "credential-rm", "networks", "network-add",
-    "network-rm", "bridges", "uplinks", "uplink-add", "uplink-reapply", "uplink-rm", "ovs", "health",
-    "image", "images", "disk", "disks", "whoami", "login", "logout", "ui", "token",
-    "tokens", "project", "projects", "binding", "bindings", "system-binding", "user",
-    "users", "team", "teams", "policy", "policies", "audit", "usage", "stats", "bandwidth", "io", "compute", "network",
+    "help",
+    "exit",
+    "quit",
+    "list",
+    "ls",
+    "get",
+    "create",
+    "start",
+    "stop",
+    "pause",
+    "events",
+    "watch",
+    "connect",
+    "console",
+    "attach",
+    "log",
+    "logs",
+    "delete",
+    "rm",
+    "pci",
+    "pci-devices",
+    "nodes",
+    "node",
+    "cluster",
+    "attach-device",
+    "detach-device",
+    "credentials",
+    "creds",
+    "credential-add",
+    "credential-passwd",
+    "credential-keys",
+    "credential-rm",
+    "networks",
+    "network-add",
+    "network-rm",
+    "bridges",
+    "uplinks",
+    "uplink-add",
+    "uplink-reapply",
+    "uplink-rm",
+    "ovs",
+    "health",
+    "image",
+    "images",
+    "disk",
+    "disks",
+    "whoami",
+    "login",
+    "logout",
+    "ui",
+    "token",
+    "tokens",
+    "project",
+    "projects",
+    "binding",
+    "bindings",
+    "system-binding",
+    "user",
+    "users",
+    "team",
+    "teams",
+    "policy",
+    "policies",
+    "audit",
+    "usage",
+    "stats",
+    "bandwidth",
+    "io",
+    "compute",
+    "network",
     "auth",
+    "tenant",
+    "tenants",
+    "admission",
+    "admissions",
+    "connector",
+    "connectors",
 ];
 
 /// Subcommands offered by Tab after these commands.
 const SUBCOMMANDS: &[(&str, &[&str])] = &[
     ("image", &["catalog", "list", "pull", "rm"]),
-    ("disk", &["list", "show", "create", "resize", "extend-root", "rm"]),
+    (
+        "tenant",
+        &[
+            "list",
+            "show",
+            "create",
+            "rename",
+            "suspend",
+            "resume",
+            "delete",
+            "members",
+            "add-member",
+            "remove-member",
+            "bindings",
+            "bind",
+            "unbind",
+        ],
+    ),
+    ("admission", &["list", "set", "remove"]),
+    (
+        "connector",
+        &["list", "show", "add", "update", "secret", "test", "remove"],
+    ),
+    (
+        "disk",
+        &["list", "show", "create", "resize", "extend-root", "rm"],
+    ),
     ("ovs", &["status", "install", "dpdk-init"]),
-    ("cluster", &["init", "join", "join-token", "status", "promote", "snapshot", "rotate-ca", "rejoin", "leave", "dissolve"]),
-    ("node", &["drain", "undrain", "remove", "forget", "purge", "rejoin-token", "detach", "import"]),
+    (
+        "cluster",
+        &[
+            "init",
+            "join",
+            "join-token",
+            "status",
+            "promote",
+            "snapshot",
+            "rotate-ca",
+            "rejoin",
+            "leave",
+            "dissolve",
+        ],
+    ),
+    (
+        "node",
+        &[
+            "drain",
+            "undrain",
+            "remove",
+            "forget",
+            "purge",
+            "rejoin-token",
+            "detach",
+            "import",
+        ],
+    ),
     ("login", &["--oidc", "--token"]),
     ("logout", &["--revoke"]),
-    ("auth", &["login", "logout", "status", "use", "profiles", "trust", "token", "whoami"]),
+    (
+        "auth",
+        &[
+            "login", "logout", "status", "use", "profiles", "trust", "token", "whoami",
+        ],
+    ),
     ("token", &["list", "create", "revoke"]),
-    ("project", &["list", "show", "create", "delete", "quota", "use"]),
+    (
+        "project",
+        &["list", "show", "create", "delete", "quota", "use"],
+    ),
     ("binding", &["list", "add", "remove"]),
     ("system-binding", &["list", "add", "remove"]),
     ("user", &["list"]),
-    ("team", &["list", "create", "delete", "add-member", "remove-member"]),
-    ("policy", &["list", "show", "put", "delete", "validate", "history", "reload"]),
-    ("network", &["list", "create", "rm", "share", "unshare", "shares", "accept", "leave"]),
+    (
+        "team",
+        &["list", "create", "delete", "add-member", "remove-member"],
+    ),
+    (
+        "policy",
+        &[
+            "list", "show", "put", "delete", "validate", "history", "reload",
+        ],
+    ),
+    (
+        "network",
+        &[
+            "list", "create", "rm", "share", "unshare", "shares", "accept", "leave",
+        ],
+    ),
 ];
 
 /// Commands whose argument at this (0-based, after the command) index is a
@@ -1587,7 +2250,11 @@ fn subcommands(cmd: &str) -> &'static [&'static str] {
         "policies" => "policy",
         c => c,
     };
-    SUBCOMMANDS.iter().find(|(c, _)| *c == cmd).map(|(_, s)| *s).unwrap_or(&[])
+    SUBCOMMANDS
+        .iter()
+        .find(|(c, _)| *c == cmd)
+        .map(|(_, s)| *s)
+        .unwrap_or(&[])
 }
 
 /// What Tab completes in the line being edited.
@@ -1679,13 +2346,20 @@ fn complete_command_line(
         words.len() - 2
     };
     if arg_index == 0 {
-        let prefix = if starting_new_word { "" } else { words[words.len() - 1] };
+        let prefix = if starting_new_word {
+            ""
+        } else {
+            words[words.len() - 1]
+        };
         let subs = subcommands(words[0]);
         if !subs.is_empty() {
             let candidates = subs
                 .iter()
                 .filter(|c| c.starts_with(prefix))
-                .map(|c| Pair { display: c.to_string(), replacement: format!("{} ", c) })
+                .map(|c| Pair {
+                    display: c.to_string(),
+                    replacement: format!("{} ", c),
+                })
                 .collect();
             return Ok((pos - prefix.len(), candidates));
         }
@@ -1705,7 +2379,8 @@ fn complete_path_list(
 ) -> rustyline::Result<(usize, Vec<Pair>)> {
     let before = &line[..pos];
     let segment_start = before.rfind(',').map(|i| i + 1).unwrap_or(0);
-    let segment_start = segment_start + (before[segment_start..].len() - before[segment_start..].trim_start().len());
+    let segment_start = segment_start
+        + (before[segment_start..].len() - before[segment_start..].trim_start().len());
     let (start, candidates) = files.complete_path(&before[segment_start..], pos - segment_start)?;
     Ok((segment_start + start, candidates))
 }
@@ -1797,7 +2472,12 @@ async fn handle_create(client: &CliClient) {
             .unwrap_or_default()
             .into_iter()
             .rev() // newest first
-            .filter(|i| i["kind"] == "firmware" && i["hypervisor"] == ty && i["status"]["state"] == "ready" && i["deleting"] != true)
+            .filter(|i| {
+                i["kind"] == "firmware"
+                    && i["hypervisor"] == ty
+                    && i["status"]["state"] == "ready"
+                    && i["deleting"] != true
+            })
             .filter_map(|i| i["name"].as_str().map(str::to_string))
             .collect();
         if ready.is_empty() {
@@ -1805,8 +2485,17 @@ async fn handle_create(client: &CliClient) {
             println!("{} no firmware image for {}; pull one with 'image pull --firmware {}' for firmware boot", "Note:".yellow(), ty, key);
         }
         let default = ready.first().cloned().unwrap_or_else(|| "none".to_string());
-        let options = if ready.is_empty() { String::new() } else { format!("{}, ", ready.join(", ")) };
-        match prompt_path(&format!("UEFI firmware [{}'none' for kernel boot, or a host path] [{}]: ", options, default)).as_str() {
+        let options = if ready.is_empty() {
+            String::new()
+        } else {
+            format!("{}, ", ready.join(", "))
+        };
+        match prompt_path(&format!(
+            "UEFI firmware [{}'none' for kernel boot, or a host path] [{}]: ",
+            options, default
+        ))
+        .as_str()
+        {
             "" if default == "none" => (None, None),
             "" => (Some(default), None),
             "none" => (None, None),
@@ -1821,7 +2510,10 @@ async fn handle_create(client: &CliClient) {
     } else {
         let path = prompt_path("Kernel image path: ");
         if path.is_empty() {
-            println!("{}", "Error: kernel image path is required for kernel boot".red());
+            println!(
+                "{}",
+                "Error: kernel image path is required for kernel boot".red()
+            );
             return;
         }
         path
@@ -1829,7 +2521,8 @@ async fn handle_create(client: &CliClient) {
 
     // Boot disk. Firmware boot offers managed images first (spec
     // images.md §10); kernel boot takes a bare root filesystem image.
-    let (mut rootfs_path, mut image, mut root_disk_size_gib, mut root_disk) = (String::new(), None, None, None);
+    let (mut rootfs_path, mut image, mut root_disk_size_gib, mut root_disk) =
+        (String::new(), None, None, None);
     let mut choice = "path".to_string();
     if firmware_boot {
         let ready: Vec<String> = client
@@ -1841,18 +2534,26 @@ async fn handle_create(client: &CliClient) {
             .filter_map(|i| i["name"].as_str().map(str::to_string))
             .collect();
         let default = if ready.is_empty() { "path" } else { "image" };
-        choice = prompt(&format!("Boot disk from [image/disk/path] [{}]: ", default)).to_lowercase();
+        choice =
+            prompt(&format!("Boot disk from [image/disk/path] [{}]: ", default)).to_lowercase();
         if choice.is_empty() {
             choice = default.to_string();
         }
         match choice.as_str() {
             "image" | "i" => {
                 if ready.is_empty() {
-                    println!("{}", "Error: no downloaded images; pull one with 'image pull <key>'".red());
+                    println!(
+                        "{}",
+                        "Error: no downloaded images; pull one with 'image pull <key>'".red()
+                    );
                     return;
                 }
                 let pick = prompt(&format!("Image ({}) [{}]: ", ready.join(", "), ready[0]));
-                image = Some(if pick.is_empty() { ready[0].clone() } else { pick });
+                image = Some(if pick.is_empty() {
+                    ready[0].clone()
+                } else {
+                    pick
+                });
                 root_disk_size_gib = match prompt("Root disk size in GiB [10]: ").as_str() {
                     "" => None,
                     s => match s.parse::<u64>() {
@@ -1889,9 +2590,13 @@ async fn handle_create(client: &CliClient) {
             return;
         }
     }
-    let data_disks = prompt_optional("Data disks (optional, comma-separated disk names): ").map(|s| {
-        s.split(',').map(|d| d.trim().to_string()).filter(|d| !d.is_empty()).collect::<Vec<_>>()
-    });
+    let data_disks =
+        prompt_optional("Data disks (optional, comma-separated disk names): ").map(|s| {
+            s.split(',')
+                .map(|d| d.trim().to_string())
+                .filter(|d| !d.is_empty())
+                .collect::<Vec<_>>()
+        });
 
     let cloud_init_path = if firmware_boot {
         prompt_path_optional("cloud-init seed image (optional, default: auto-generated): ")
@@ -1922,7 +2627,10 @@ async fn handle_create(client: &CliClient) {
                     names.join(", "),
                     m
                 )),
-                None => prompt(&format!("Login credential (one of: {}; empty: none, no login): ", names.join(", "))),
+                None => prompt(&format!(
+                    "Login credential (one of: {}; empty: none, no login): ",
+                    names.join(", ")
+                )),
             };
             credential_choice(&answer, mine.as_deref())
         }
@@ -1946,13 +2654,21 @@ async fn handle_create(client: &CliClient) {
         if names.is_empty() {
             None
         } else {
-            let default = if names.iter().any(|n| n == "default") { "default" } else { "none" };
+            let default = if names.iter().any(|n| n == "default") {
+                "default"
+            } else {
+                "none"
+            };
             let answer = prompt(&format!(
                 "Networks (comma-separated; available: {}; 'none' for no NIC) [{}]: ",
                 names.join(", "),
                 default
             ));
-            let answer = if answer.is_empty() { default.to_string() } else { answer };
+            let answer = if answer.is_empty() {
+                default.to_string()
+            } else {
+                answer
+            };
             if answer == "none" {
                 None
             } else {
@@ -1961,7 +2677,9 @@ async fn handle_create(client: &CliClient) {
                         .split(',')
                         .map(|n| n.trim())
                         .filter(|n| !n.is_empty())
-                        .map(|n| NetworkAttachmentReq { network: n.to_string() })
+                        .map(|n| NetworkAttachmentReq {
+                            network: n.to_string(),
+                        })
                         .collect::<Vec<_>>(),
                 )
                 .filter(|v| !v.is_empty())
@@ -1969,15 +2687,16 @@ async fn handle_create(client: &CliClient) {
         }
     };
 
-    let vfio_devices =
-        prompt_path_optional("VFIO PCI devices (comma-separated, e.g. /sys/bus/pci/devices/0000:41:00.0): ")
-            .map(|s| {
-                s.split(',')
-                    .map(|d| d.trim().to_string())
-                    .filter(|d| !d.is_empty())
-                    .collect::<Vec<_>>()
-            })
-            .filter(|v| !v.is_empty());
+    let vfio_devices = prompt_path_optional(
+        "VFIO PCI devices (comma-separated, e.g. /sys/bus/pci/devices/0000:41:00.0): ",
+    )
+    .map(|s| {
+        s.split(',')
+            .map(|d| d.trim().to_string())
+            .filter(|d| !d.is_empty())
+            .collect::<Vec<_>>()
+    })
+    .filter(|v| !v.is_empty());
 
     let request = CreateVmRequest {
         name,
@@ -2058,7 +2777,15 @@ fn not_ready_reason(vm: &VmResponse) -> Option<String> {
         return None;
     }
     let msg = ready["message"].as_str().unwrap_or("");
-    Some(format!("{}{}", ready["reason"].as_str().unwrap_or(""), if msg.is_empty() { String::new() } else { format!(": {}", msg) }))
+    Some(format!(
+        "{}{}",
+        ready["reason"].as_str().unwrap_or(""),
+        if msg.is_empty() {
+            String::new()
+        } else {
+            format!(": {}", msg)
+        }
+    ))
 }
 
 /// How long lifecycle commands wait for the VM to get there, or `None`
@@ -2068,7 +2795,12 @@ fn wait_secs(args: &[&str]) -> Option<u64> {
 }
 
 fn print_lifecycle_result(vm: &VmResponse) {
-    println!("{} VM {} is now {}", "Success:".green(), vm.name, format_vm_state(vm));
+    println!(
+        "{} VM {} is now {}",
+        "Success:".green(),
+        vm.name,
+        format_vm_state(vm)
+    );
     if let Some(r) = not_ready_reason(vm) {
         println!("  {} {}", "Not there yet:".yellow(), r);
     }
@@ -2140,13 +2872,23 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
                     println!("  ID:         {}", vm.id.yellow());
                     println!("  Name:       {}", vm.name);
                     let names = project_names(client).await;
-                    println!("  Project:    {}", names.get(&vm.project).map(|n| format!("{} ({})", n, vm.project)).unwrap_or(vm.project.clone()));
+                    println!(
+                        "  Project:    {}",
+                        names
+                            .get(&vm.project)
+                            .map(|n| format!("{} ({})", n, vm.project))
+                            .unwrap_or(vm.project.clone())
+                    );
                     println!("  State:      {}", format_vm_state(&vm));
                     if let Some(r) = not_ready_reason(&vm) {
                         println!("  Waiting:    {}", r);
                     }
                     if let Some(e) = &vm.last_exit {
-                        println!("  Last exit:  {} ({})", e["cause"].as_str().unwrap_or("?"), e["instance_id"].as_str().unwrap_or(""));
+                        println!(
+                            "  Last exit:  {} ({})",
+                            e["cause"].as_str().unwrap_or("?"),
+                            e["instance_id"].as_str().unwrap_or("")
+                        );
                     }
                     println!("  Hypervisor: {}", vm.hypervisor);
                     println!("  vCPUs:      {}", vm.vcpu_count);
@@ -2160,8 +2902,14 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
                             i,
                             nic.network.cyan(),
                             nic.mac,
-                            nic.ipv4.as_deref().map(|ip| ip.green().to_string()).unwrap_or_else(|| "-".dimmed().to_string()),
-                            nic.port.as_deref().map(|p| format!(" ({})", p)).unwrap_or_default()
+                            nic.ipv4
+                                .as_deref()
+                                .map(|ip| ip.green().to_string())
+                                .unwrap_or_else(|| "-".dimmed().to_string()),
+                            nic.port
+                                .as_deref()
+                                .map(|p| format!(" ({})", p))
+                                .unwrap_or_default()
                         );
                     }
                 }
@@ -2191,10 +2939,17 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
 
         "stop" => {
             if parts.len() < 2 {
-                println!("{}", "Usage: stop <name|id> [--graceful [secs]] [--no-wait]".yellow());
+                println!(
+                    "{}",
+                    "Usage: stop <name|id> [--graceful [secs]] [--no-wait]".yellow()
+                );
                 return true;
             }
-            let flags: Vec<&str> = parts[2..].iter().copied().filter(|p| *p != "--no-wait").collect();
+            let flags: Vec<&str> = parts[2..]
+                .iter()
+                .copied()
+                .filter(|p| *p != "--no-wait")
+                .collect();
             let graceful = match graceful_stop_secs(&flags) {
                 Ok(g) => g,
                 Err(e) => {
@@ -2210,9 +2965,15 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
                 }
             };
             if let Some(secs) = graceful {
-                println!("Pressing the power button; waiting up to {} s for the guest to shut down...", secs);
+                println!(
+                    "Pressing the power button; waiting up to {} s for the guest to shut down...",
+                    secs
+                );
             }
-            match client.stop_vm(&vm_id, graceful, wait_secs(&parts[2..])).await {
+            match client
+                .stop_vm(&vm_id, graceful, wait_secs(&parts[2..]))
+                .await
+            {
                 Ok(vm) => print_lifecycle_result(&vm),
                 Err(e) => println!("{} {}", "Error:".red(), e),
             }
@@ -2267,7 +3028,11 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
                 Ok(v) => {
                     for e in v["events"].as_array().into_iter().flatten() {
                         let reason = e["reason"].as_str().unwrap_or("");
-                        let reason = if e["kind"] == "warning" { reason.yellow().to_string() } else { reason.to_string() };
+                        let reason = if e["kind"] == "warning" {
+                            reason.yellow().to_string()
+                        } else {
+                            reason.to_string()
+                        };
                         println!(
                             "{}  {:<12} {:<18} {}",
                             format_unix_time(e["at"].as_u64().unwrap_or(0)),
@@ -2314,10 +3079,17 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
             let confirm = prompt(&format!(
                 "Are you sure you want to delete VM {}{}? [y/N]: ",
                 parts[1],
-                if keep_disk { "" } else { " (and a root disk created for it)" }
+                if keep_disk {
+                    ""
+                } else {
+                    " (and a root disk created for it)"
+                }
             ));
             if confirm.to_lowercase() == "y" {
-                match client.delete_vm(&vm_id, keep_disk, wait_secs(&parts[2..])).await {
+                match client
+                    .delete_vm(&vm_id, keep_disk, wait_secs(&parts[2..]))
+                    .await
+                {
                     Ok(()) => println!("{} VM deleted", "Success:".green()),
                     Err(e) => println!("{} {}", "Error:".red(), e),
                 }
@@ -2332,17 +3104,42 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
                 return true;
             };
             // Accept a node's name as well as its id.
-            let nodes: serde_json::Value = client.request_json(Method::GET, "/nodes", None).await.unwrap_or_default();
-            let found = nodes.as_array().into_iter().flatten().find(|n| n["meta"]["id"] == *id || n["spec"]["name"] == *id).and_then(|n| n["meta"]["id"].as_str().map(String::from));
+            let nodes: serde_json::Value = client
+                .request_json(Method::GET, "/nodes", None)
+                .await
+                .unwrap_or_default();
+            let found = nodes
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|n| n["meta"]["id"] == *id || n["spec"]["name"] == *id)
+                .and_then(|n| n["meta"]["id"].as_str().map(String::from));
             let Some(nid) = found else {
                 println!("{} no node {}", "Error:".red(), id);
                 return true;
             };
-            match client.request_json::<serde_json::Value>(Method::POST, &format!("/nodes/{}/{}", nid, parts[1]), None).await {
+            match client
+                .request_json::<serde_json::Value>(
+                    Method::POST,
+                    &format!("/nodes/{}/{}", nid, parts[1]),
+                    None,
+                )
+                .await
+            {
                 Ok(v) => {
-                    println!("{} {} is now {}", "OK".green(), v["node"].as_str().unwrap_or(""), v["phase"].as_str().unwrap_or(""));
+                    println!(
+                        "{} {} is now {}",
+                        "OK".green(),
+                        v["node"].as_str().unwrap_or(""),
+                        v["phase"].as_str().unwrap_or("")
+                    );
                     let r = &v["remaining"];
-                    println!("  still on it: {} VMs, {} disks, {} networks", r["vms"].as_array().map_or(0, |a| a.len()), r["disks"].as_array().map_or(0, |a| a.len()), r["networks"].as_array().map_or(0, |a| a.len()));
+                    println!(
+                        "  still on it: {} VMs, {} disks, {} networks",
+                        r["vms"].as_array().map_or(0, |a| a.len()),
+                        r["disks"].as_array().map_or(0, |a| a.len()),
+                        r["networks"].as_array().map_or(0, |a| a.len())
+                    );
                 }
                 Err(e) => println!("{} {}", "Error:".red(), e),
             }
@@ -2361,13 +3158,44 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
                 m
             };
             let result = match (sub, plan) {
-                ("list", _) => client.request_json::<serde_json::Value>(Method::GET, "/imports", None).await,
-                ("show", Some(p)) => client.request_json::<serde_json::Value>(Method::GET, &format!("/imports/{p}"), None).await,
+                ("list", _) => {
+                    client
+                        .request_json::<serde_json::Value>(Method::GET, "/imports", None)
+                        .await
+                }
+                ("show", Some(p)) => {
+                    client
+                        .request_json::<serde_json::Value>(
+                            Method::GET,
+                            &format!("/imports/{p}"),
+                            None,
+                        )
+                        .await
+                }
                 ("approve", Some(p)) => {
                     let body = serde_json::json!({ "projects": map_of("--project"), "networks": map_of("--network"), "credentials": map_of("--credential"), "over_quota": has_flag(rest, "--over-quota"), "dry_run": has_flag(rest, "--dry-run") });
-                    client.request_json::<serde_json::Value>(Method::POST, &format!("/imports/{p}/approve"), Some(body)).await
+                    client
+                        .request_json::<serde_json::Value>(
+                            Method::POST,
+                            &format!("/imports/{p}/approve"),
+                            Some(body),
+                        )
+                        .await
                 }
-                ("reject", Some(p)) => client.request_json::<serde_json::Value>(Method::POST, &format!("/imports/{p}/reject"), Some(serde_json::json!({}))).await.or_else(|e| if e.to_string().is_empty() { Ok(serde_json::Value::Null) } else { Err(e) }),
+                ("reject", Some(p)) => client
+                    .request_json::<serde_json::Value>(
+                        Method::POST,
+                        &format!("/imports/{p}/reject"),
+                        Some(serde_json::json!({})),
+                    )
+                    .await
+                    .or_else(|e| {
+                        if e.to_string().is_empty() {
+                            Ok(serde_json::Value::Null)
+                        } else {
+                            Err(e)
+                        }
+                    }),
                 _ => {
                     println!("{}", "Usage: node import list | show <plan> | approve <plan> [--project src=existing|src=new:name] [--network a=b] [--credential proj/user=new] [--over-quota] [--dry-run] | reject <plan>".yellow());
                     return true;
@@ -2378,9 +3206,25 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
                 Err(e) => println!("{} {}", "Error:".red(), e),
             }
         }
-        "nodes" | "node" if matches!(parts.get(1), Some(&"remove") | Some(&"forget") | Some(&"purge") | Some(&"rejoin-token") | Some(&"detach")) => {
+        "nodes" | "node"
+            if matches!(
+                parts.get(1),
+                Some(&"remove")
+                    | Some(&"forget")
+                    | Some(&"purge")
+                    | Some(&"rejoin-token")
+                    | Some(&"detach")
+            ) =>
+        {
             let Some(id) = parts.get(2).filter(|a| !a.starts_with("--")) else {
-                println!("{}", format!("Usage: node {} <node> [--force] [--fenced] [--raft-lost]", parts[1]).yellow());
+                println!(
+                    "{}",
+                    format!(
+                        "Usage: node {} <node> [--force] [--fenced] [--raft-lost]",
+                        parts[1]
+                    )
+                    .yellow()
+                );
                 return true;
             };
             let rest = &parts[3..];
@@ -2401,12 +3245,23 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
                 "raft_intact": !has_flag(rest, "--raft-lost"),
             });
             // The node's name goes in the path as it is: the server resolves names too.
-            match client.request_json::<serde_json::Value>(Method::POST, &format!("/nodes/{}/{}", id, parts[1]), Some(body)).await {
+            match client
+                .request_json::<serde_json::Value>(
+                    Method::POST,
+                    &format!("/nodes/{}/{}", id, parts[1]),
+                    Some(body),
+                )
+                .await
+            {
                 Ok(v) if parts[1] == "rejoin-token" => {
                     println!("{}", v["token"].as_str().unwrap_or(""));
                     eprintln!("Shown once, for node {} ({}). On the host, as root: glidex-install --rejoin <server:8842>, token on stdin.{}", v["node"].as_str().unwrap_or(""), v["node_id"].as_str().unwrap_or(""), if v["raft_intact"] == false { " Its Raft state will be started afresh." } else { "" });
                 }
-                Ok(v) => println!("{} {}", "OK".green(), serde_json::to_string(&v).unwrap_or_default()),
+                Ok(v) => println!(
+                    "{} {}",
+                    "OK".green(),
+                    serde_json::to_string(&v).unwrap_or_default()
+                ),
                 Err(e) => println!("{} {}", "Error:".red(), e),
             }
         }
@@ -2415,9 +3270,17 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
                 Some(id) => format!("/nodes/{}", id),
                 None => "/nodes".to_string(),
             };
-            match client.request_json::<serde_json::Value>(Method::GET, &path, None).await {
+            match client
+                .request_json::<serde_json::Value>(Method::GET, &path, None)
+                .await
+            {
                 Ok(v) if v.is_array() => {
-                    let rows: Vec<NodeRow> = v.as_array().unwrap().iter().map(NodeRow::from_json).collect();
+                    let rows: Vec<NodeRow> = v
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(NodeRow::from_json)
+                        .collect();
                     println!("{}", Table::new(rows));
                 }
                 Ok(v) => println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default()),
@@ -2442,11 +3305,9 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
                             println!("IOMMU:      {}", display_option(&dev.iommu_group));
                             println!("Sysfs path: {}", dev.sysfs_path);
                         }
-                        None => println!(
-                            "{} no PCI device with address {}",
-                            "Error:".red(),
-                            parts[1]
-                        ),
+                        None => {
+                            println!("{} no PCI device with address {}", "Error:".red(), parts[1])
+                        }
                     }
                 } else {
                     let table = Table::new(&devices).to_string();
@@ -2545,7 +3406,9 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
 
         "credential-keys" | "cred-keys" => match parts.get(1) {
             Some(username) => {
-                let input = prompt_path("SSH public key files (comma-separated; empty to remove all keys): ");
+                let input = prompt_path(
+                    "SSH public key files (comma-separated; empty to remove all keys): ",
+                );
                 match read_public_key_files(&input) {
                     Ok(keys) => {
                         let request = UpdateCredentialRequest {
@@ -2580,6 +3443,7 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
         "token" | "tokens" => admin::token(client, &parts[1..]).await,
         "tenant" | "tenants" => tenancy::tenant(client, &parts[1..]).await,
         "admission" | "admissions" => tenancy::admission(client, &parts[1..]).await,
+        "connector" | "connectors" => directory::connector(client, &parts[1..]).await,
         "project" | "projects" => admin::project(client, &parts[1..]).await,
         "binding" | "bindings" => admin::binding(client, &parts[1..]).await,
         "system-binding" => admin::system_binding(client, &parts[1..]).await,
@@ -2597,7 +3461,11 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
 
         "network-rm" | "net-rm" => match parts.get(1) {
             Some(name) => match client
-                .request_json::<serde_json::Value>(Method::DELETE, &format!("/networks/{}?wait=60", name), None)
+                .request_json::<serde_json::Value>(
+                    Method::DELETE,
+                    &format!("/networks/{}?wait=60", name),
+                    None,
+                )
                 .await
             {
                 Ok(v) => print_delete_result("Network", name, &v),
@@ -2617,7 +3485,14 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
                         "  {} ({}) {}",
                         b["spec"]["name"].as_str().unwrap_or("?").cyan(),
                         b["spec"]["datapath"].as_str().unwrap_or("?"),
-                        if b["live"].is_null() { "MISSING on host".red().to_string() } else { format!("ports: {}", b["live"]["ports"].as_array().map(|p| p.len()).unwrap_or(0)) }
+                        if b["live"].is_null() {
+                            "MISSING on host".red().to_string()
+                        } else {
+                            format!(
+                                "ports: {}",
+                                b["live"]["ports"].as_array().map(|p| p.len()).unwrap_or(0)
+                            )
+                        }
                     );
                 }
             }
@@ -2628,7 +3503,11 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
 
         "uplinks" => match parts.get(1) {
             Some(bridge) => match client
-                .request_json::<Vec<serde_json::Value>>(Method::GET, &format!("/ovs/bridges/{}/uplinks", bridge), None)
+                .request_json::<Vec<serde_json::Value>>(
+                    Method::GET,
+                    &format!("/ovs/bridges/{}/uplinks", bridge),
+                    None,
+                )
                 .await
             {
                 Ok(list) if list.is_empty() => println!("No uplinks on {}.", bridge),
@@ -2640,7 +3519,13 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
                             spec["name"].as_str().unwrap_or("?").cyan(),
                             spec["kind"].as_str().unwrap_or("?"),
                             u["phase"].as_str().unwrap_or("?"),
-                            u["live"]["error"].as_str().map(|e| e.red().to_string()).unwrap_or_else(|| u["live"]["link_state"].as_str().unwrap_or("").to_string())
+                            u["live"]["error"]
+                                .as_str()
+                                .map(|e| e.red().to_string())
+                                .unwrap_or_else(|| u["live"]["link_state"]
+                                    .as_str()
+                                    .unwrap_or("")
+                                    .to_string())
                         );
                     }
                 }
@@ -2655,7 +3540,14 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
         // set it up again with the gateway check and commit.
         "uplink-reapply" => match (parts.get(1), parts.get(2)) {
             (Some(bridge), Some(name)) => {
-                match client.request_json::<serde_json::Value>(Method::POST, &format!("/ovs/bridges/{}/uplinks/{}/reapply", bridge, name), Some(serde_json::json!({}))).await {
+                match client
+                    .request_json::<serde_json::Value>(
+                        Method::POST,
+                        &format!("/ovs/bridges/{}/uplinks/{}/reapply", bridge, name),
+                        Some(serde_json::json!({})),
+                    )
+                    .await
+                {
                     Ok(res) => finish_uplink(client, bridge, res).await,
                     Err(e) => println!("{} {}", "Error:".red(), e),
                 }
@@ -2665,7 +3557,11 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
 
         "uplink-rm" => match (parts.get(1), parts.get(2)) {
             (Some(bridge), Some(name)) => match client
-                .request_json::<()>(Method::DELETE, &format!("/ovs/bridges/{}/uplinks/{}", bridge, name), None)
+                .request_json::<()>(
+                    Method::DELETE,
+                    &format!("/ovs/bridges/{}/uplinks/{}", bridge, name),
+                    None,
+                )
                 .await
             {
                 Ok(()) => println!("{} uplink {} (NIC restored)", "Removed:".green(), name),
@@ -2737,12 +3633,21 @@ async fn main() {
         println!("{} {}", "Profile:".dimmed(), b.cyan());
     }
     if client.is_unix() {
-        println!("{} identified by your Unix user (see 'whoami')", "Auth:".dimmed());
+        println!(
+            "{} identified by your Unix user (see 'whoami')",
+            "Auth:".dimmed()
+        );
     } else if !client.has_token() {
         if client.profile_banner().is_some() {
-            println!("{} no token in this profile; run 'auth login'", "Auth:".dimmed());
+            println!(
+                "{} no token in this profile; run 'auth login'",
+                "Auth:".dimmed()
+            );
         } else {
-            println!("{} no token; run 'login --oidc' or 'login --token' (or set GLIDEX_TOKEN)", "Auth:".dimmed());
+            println!(
+                "{} no token; run 'login --oidc' or 'login --token' (or set GLIDEX_TOKEN)",
+                "Auth:".dimmed()
+            );
         }
     }
     if let Some(p) = client.project() {
@@ -2751,7 +3656,10 @@ async fn main() {
     println!("Type {} for available commands\n", "help".cyan());
 
     let mut rl = new_editor(CompletionMode::Command).expect("Failed to initialize readline");
-    println!("{} Tab completes commands and file paths.\n", "Tip:".dimmed());
+    println!(
+        "{} Tab completes commands and file paths.\n",
+        "Tip:".dimmed()
+    );
 
     loop {
         match rl.readline("gxctl> ") {
@@ -2786,19 +3694,34 @@ mod tests {
 
     #[test]
     fn credential_choice_defaults_to_mine() {
-        assert_eq!(credential_choice("", Some("alice")).as_deref(), Some("alice"));
+        assert_eq!(
+            credential_choice("", Some("alice")).as_deref(),
+            Some("alice")
+        );
         assert_eq!(credential_choice("none", Some("alice")), None);
-        assert_eq!(credential_choice("bob", Some("alice")).as_deref(), Some("bob"));
+        assert_eq!(
+            credential_choice("bob", Some("alice")).as_deref(),
+            Some("bob")
+        );
         assert_eq!(credential_choice("", None), None);
     }
 
     #[test]
     fn credential_key_file_answers() {
-        let d = vec!["~/.ssh/id_ed25519.pub".to_string(), "~/.ssh/id_rsa.pub".to_string()];
-        assert_eq!(chosen_key_files("", &d).as_deref(), Some("~/.ssh/id_ed25519.pub,~/.ssh/id_rsa.pub"));
+        let d = vec![
+            "~/.ssh/id_ed25519.pub".to_string(),
+            "~/.ssh/id_rsa.pub".to_string(),
+        ];
+        assert_eq!(
+            chosen_key_files("", &d).as_deref(),
+            Some("~/.ssh/id_ed25519.pub,~/.ssh/id_rsa.pub")
+        );
         assert_eq!(chosen_key_files("none", &d), None);
         assert_eq!(chosen_key_files("NONE", &d), None);
-        assert_eq!(chosen_key_files("/tmp/k.pub", &d).as_deref(), Some("/tmp/k.pub"));
+        assert_eq!(
+            chosen_key_files("/tmp/k.pub", &d).as_deref(),
+            Some("/tmp/k.pub")
+        );
         assert_eq!(chosen_key_files("", &[]), None);
     }
 
@@ -2807,8 +3730,16 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let ssh = dir.path().join(".ssh");
         std::fs::create_dir(&ssh).unwrap();
-        std::fs::write(ssh.join("id_ed25519.pub"), "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA me@host\n").unwrap();
-        std::fs::write(ssh.join("id_ed25519"), "-----BEGIN OPENSSH PRIVATE KEY-----\n").unwrap();
+        std::fs::write(
+            ssh.join("id_ed25519.pub"),
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA me@host\n",
+        )
+        .unwrap();
+        std::fs::write(
+            ssh.join("id_ed25519"),
+            "-----BEGIN OPENSSH PRIVATE KEY-----\n",
+        )
+        .unwrap();
         std::fs::write(ssh.join("bad.pub"), "-----BEGIN OPENSSH PRIVATE KEY-----\n").unwrap();
         std::fs::write(ssh.join("empty.pub"), "\n").unwrap();
         let files = public_key_files_in(dir.path());
@@ -2847,11 +3778,19 @@ mod tests {
         assert_eq!(start, 0);
         assert_eq!(
             got,
-            ["cred-add", "credential-add", "credential-keys", "credential-passwd", "credential-rm", "credentials", "creds"]
-                .iter()
-                .filter(|c| COMMANDS.contains(c))
-                .map(|c| format!("{c} "))
-                .collect::<Vec<_>>()
+            [
+                "cred-add",
+                "credential-add",
+                "credential-keys",
+                "credential-passwd",
+                "credential-rm",
+                "credentials",
+                "creds"
+            ]
+            .iter()
+            .filter(|c| COMMANDS.contains(c))
+            .map(|c| format!("{c} "))
+            .collect::<Vec<_>>()
         );
         let (_, got) = replacements(complete_command_line(&files, "", 0));
         assert_eq!(got.len(), COMMANDS.len());
@@ -2871,9 +3810,17 @@ mod tests {
 
         // ...but not the VM name, and not arguments of other commands.
         let line = format!("attach-device {base}/CLO");
-        assert!(replacements(complete_command_line(&files, &line, line.len())).1.is_empty());
+        assert!(
+            replacements(complete_command_line(&files, &line, line.len()))
+                .1
+                .is_empty()
+        );
         let line = format!("start {base}/CLO");
-        assert!(replacements(complete_command_line(&files, &line, line.len())).1.is_empty());
+        assert!(
+            replacements(complete_command_line(&files, &line, line.len()))
+                .1
+                .is_empty()
+        );
     }
 
     #[test]
@@ -2912,7 +3859,11 @@ mod tests {
     fn reads_public_keys_and_refuses_private_keys() {
         let dir = tempfile::TempDir::new().unwrap();
         let public = dir.path().join("id.pub");
-        std::fs::write(&public, "# comment\nssh-ed25519 AAAA a@b\n\nssh-rsa BBBB c@d\n").unwrap();
+        std::fs::write(
+            &public,
+            "# comment\nssh-ed25519 AAAA a@b\n\nssh-rsa BBBB c@d\n",
+        )
+        .unwrap();
         let private = dir.path().join("id");
         std::fs::write(&private, "-----BEGIN OPENSSH PRIVATE KEY-----\nxxx\n").unwrap();
 
@@ -2950,11 +3901,22 @@ mod tests {
         assert_eq!(split_line("  list  ").unwrap(), vec!["list"]);
         assert_eq!(
             split_line(r#"project create lab --description "Lab VMs" 'a b' c\ d"#).unwrap(),
-            vec!["project", "create", "lab", "--description", "Lab VMs", "a b", "c d"]
+            vec![
+                "project",
+                "create",
+                "lab",
+                "--description",
+                "Lab VMs",
+                "a b",
+                "c d"
+            ]
         );
         assert_eq!(split_line(r#"x """#).unwrap(), vec!["x", ""]);
         assert!(split_line("say 'oops").is_err());
-        assert_eq!(flag_values(&["--role", "a", "x", "--role", "b@p"], "--role"), vec!["a", "b@p"]);
+        assert_eq!(
+            flag_values(&["--role", "a", "x", "--role", "b@p"], "--role"),
+            vec!["a", "b@p"]
+        );
     }
 
     #[test]
@@ -2967,14 +3929,22 @@ mod tests {
         assert_eq!(start, 9);
         assert_eq!(got, vec!["quota "]);
         // Second argument: no subcommands.
-        assert!(replacements(complete_command_line(&files, "token create ", 13)).1.is_empty());
+        assert!(
+            replacements(complete_command_line(&files, "token create ", 13))
+                .1
+                .is_empty()
+        );
         for (cmd, _) in SUBCOMMANDS {
             assert!(COMMANDS.contains(cmd), "{cmd} is missing from COMMANDS");
         }
     }
 
     /// A control plane (auth disabled) on a temporary api.sock.
-    async fn serve_temp() -> (tempfile::TempDir, std::path::PathBuf, tokio::sync::watch::Sender<bool>) {
+    async fn serve_temp() -> (
+        tempfile::TempDir,
+        std::path::PathBuf,
+        tokio::sync::watch::Sender<bool>,
+    ) {
         use glidex_control_plane::api::{create_router, Listener};
         use glidex_control_plane::serve::{bind_unix, serve_unix};
         use glidex_control_plane::state::VmManager;
@@ -2990,13 +3960,19 @@ mod tests {
     #[tokio::test]
     async fn api_calls_over_the_unix_socket() {
         let (_dir, sock, stop) = serve_temp().await;
-        assert_eq!(client::select_socket(None, std::slice::from_ref(&sock), client::is_socket), Some(sock.clone()));
+        assert_eq!(
+            client::select_socket(None, std::slice::from_ref(&sock), client::is_socket),
+            Some(sock.clone())
+        );
         let client = ApiClient::unix(sock);
 
         client.health_check().await.unwrap();
         assert!(client.list_vms().await.unwrap().is_empty());
 
-        let who: serde_json::Value = client.request_json(Method::GET, "/auth/whoami", None).await.unwrap();
+        let who: serde_json::Value = client
+            .request_json(Method::GET, "/auth/whoami", None)
+            .await
+            .unwrap();
         assert_eq!(who["method"], "disabled");
 
         let req = CreateCredentialRequest {
@@ -3009,12 +3985,24 @@ mod tests {
         assert_eq!(c.ssh_authorized_keys.len(), 1);
 
         // Scoped to a project by name: ?project= on lists and /credentials/{user}.
-        let projects: Vec<serde_json::Value> = client.request_json(Method::GET, "/projects", None).await.unwrap();
+        let projects: Vec<serde_json::Value> = client
+            .request_json(Method::GET, "/projects", None)
+            .await
+            .unwrap();
         let project = projects[0]["name"].as_str().unwrap().to_string();
         client.set_project(Some(project.clone()));
         let creds = client.list_credentials().await.unwrap();
-        assert_eq!(creds.iter().map(|c| c.username.as_str()).collect::<Vec<_>>(), ["alice"]);
-        let one: serde_json::Value = client.request_json(Method::GET, &client.scoped("/credentials/alice"), None).await.unwrap();
+        assert_eq!(
+            creds
+                .iter()
+                .map(|c| c.username.as_str())
+                .collect::<Vec<_>>(),
+            ["alice"]
+        );
+        let one: serde_json::Value = client
+            .request_json(Method::GET, &client.scoped("/credentials/alice"), None)
+            .await
+            .unwrap();
         assert_eq!(one["username"], "alice");
         assert_eq!(one["project"], projects[0]["id"]);
         assert!(client.list_vms().await.unwrap().is_empty());
@@ -3025,19 +4013,42 @@ mod tests {
         assert!(e.starts_with("not_found:"), "{e}");
         client.set_project(None);
 
-        let e = client.request::<serde_json::Value>(Method::GET, "/vms/nope", None).await.unwrap_err();
+        let e = client
+            .request::<serde_json::Value>(Method::GET, "/vms/nope", None)
+            .await
+            .unwrap_err();
         assert_eq!(e.status, Some(hyper::StatusCode::NOT_FOUND));
-        assert!(client.resolve_vm("nope").await.unwrap_err().contains("not found"));
+        assert!(client
+            .resolve_vm("nope")
+            .await
+            .unwrap_err()
+            .contains("not found"));
 
-        client.update_credential("alice", &UpdateCredentialRequest { password: None, ssh_authorized_keys: Some(vec!["ssh-ed25519 BBBBC3Nza alice@new".into()]) }).await.unwrap();
+        client
+            .update_credential(
+                "alice",
+                &UpdateCredentialRequest {
+                    password: None,
+                    ssh_authorized_keys: Some(vec!["ssh-ed25519 BBBBC3Nza alice@new".into()]),
+                },
+            )
+            .await
+            .unwrap();
         client.delete_credential("alice").await.unwrap();
         assert!(client.list_credentials().await.unwrap().is_empty());
 
         // The console WebSocket goes over the same socket; errors come back
         // as API errors.
-        let e = console::open_ws(&client, "/vms/nope/console/ws").await.err().unwrap();
+        let e = console::open_ws(&client, "/vms/nope/console/ws")
+            .await
+            .err()
+            .unwrap();
         assert!(e.contains("not_found"), "{e}");
-        let e = client.request_bytes(Method::GET, "/vms/nope/console/log", None).await.err().unwrap();
+        let e = client
+            .request_bytes(Method::GET, "/vms/nope/console/log", None)
+            .await
+            .err()
+            .unwrap();
         assert_eq!(e.status, Some(hyper::StatusCode::NOT_FOUND));
 
         let _ = stop.send(true);
@@ -3053,28 +4064,149 @@ mod tests {
         let t = client.rpc_transport().await.unwrap();
         let tenants = TenantServiceClient::new(t.clone(), t.config());
         let created = tenants
-            .create_tenant(CreateTenantRequest { slug: "acme".into(), display_name: "Acme".into(), ..Default::default() })
+            .create_tenant(CreateTenantRequest {
+                slug: "acme".into(),
+                display_name: "Acme".into(),
+                ..Default::default()
+            })
             .await
             .unwrap()
             .into_owned();
         let acme = created.tenant.as_option().unwrap().id.clone();
         // The same connection carries the next call.
-        let list = tenants.list_tenants(ListTenantsRequest::default()).await.unwrap().into_owned();
-        assert_eq!(list.tenants.iter().map(|t| t.slug.as_str()).collect::<Vec<_>>(), ["acme", "admin", "default"]);
-        let admissions = AdmissionServiceClient::new(t.clone(), t.config());
-        let a = admissions
-            .set_admission(SetAdmissionRequest { tenant: "acme".into(), cap: Quotas { vms: Some(3), ..Default::default() }.into(), ..Default::default() })
+        let list = tenants
+            .list_tenants(ListTenantsRequest::default())
             .await
             .unwrap()
             .into_owned();
-        assert_eq!(a.admission.as_option().unwrap().cap.as_option().unwrap().vms, Some(3));
+        assert_eq!(
+            list.tenants
+                .iter()
+                .map(|t| t.slug.as_str())
+                .collect::<Vec<_>>(),
+            ["acme", "admin", "default"]
+        );
+        let admissions = AdmissionServiceClient::new(t.clone(), t.config());
+        let a = admissions
+            .set_admission(SetAdmissionRequest {
+                tenant: "acme".into(),
+                cap: Quotas {
+                    vms: Some(3),
+                    ..Default::default()
+                }
+                .into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .into_owned();
+        assert_eq!(
+            a.admission
+                .as_option()
+                .unwrap()
+                .cap
+                .as_option()
+                .unwrap()
+                .vms,
+            Some(3)
+        );
         // Errors arrive as connectrpc errors with the server's code.
-        let e = tenants.create_tenant(CreateTenantRequest { slug: "acme".into(), ..Default::default() }).await.unwrap_err();
+        let e = tenants
+            .create_tenant(CreateTenantRequest {
+                slug: "acme".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap_err();
         assert_eq!(e.code, connectrpc::ErrorCode::Aborted);
-        let e = tenants.get_tenant(GetTenantRequest { id: "nope".into(), ..Default::default() }).await.unwrap_err();
+        let e = tenants
+            .get_tenant(GetTenantRequest {
+                id: "nope".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap_err();
         assert_eq!(e.code, connectrpc::ErrorCode::NotFound);
-        let got = tenants.get_tenant(GetTenantRequest { id: acme, ..Default::default() }).await.unwrap().into_owned();
+        let got = tenants
+            .get_tenant(GetTenantRequest {
+                id: acme,
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .into_owned();
         assert_eq!(got.tenant.as_option().unwrap().display_name, "Acme");
+        let _ = stop.send(true);
+    }
+
+    /// `connector` drives ConnectorService the same way; a secret goes in
+    /// and only its status comes back.
+    #[tokio::test]
+    async fn connector_client_over_the_unix_socket() {
+        use glidex_api::proto::glidex::directory::v1::*;
+        type Settings =
+            glidex_api::proto::glidex::directory::v1::__buffa::oneof::connector::Settings;
+        let (_dir, sock, stop) = serve_temp().await;
+        let client = ApiClient::unix(sock);
+        let t = client.rpc_transport().await.unwrap();
+        let svc = ConnectorServiceClient::new(t.clone(), t.config());
+        let oidc = OidcSettings {
+            issuer: "https://idp.example".into(),
+            client_id: "glidex".into(),
+            ..Default::default()
+        };
+        let c = Connector {
+            id: "corp".into(),
+            display_name: "Corp".into(),
+            settings: Some(Settings::Oidc(Box::new(oidc))),
+            ..Default::default()
+        };
+        let made = svc
+            .create_connector(CreateConnectorRequest {
+                connector: c.into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .into_owned();
+        assert_eq!(
+            made.connector.as_option().unwrap().secrets[0].set,
+            Some(false)
+        );
+        let req = SetSecretRequest {
+            id: "corp".into(),
+            field: "client_secret".into(),
+            value: "s3cret-value".into(),
+            ..Default::default()
+        };
+        let r = svc.set_secret(req).await.unwrap().into_owned();
+        assert_eq!(r.connector.as_option().unwrap().secrets[0].set, Some(true));
+        let got = svc
+            .get_connector(GetConnectorRequest {
+                id: "corp".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .into_owned();
+        assert_eq!(
+            got.connector.as_option().unwrap().secrets[0].set,
+            Some(true)
+        );
+        let e = svc
+            .get_connector(GetConnectorRequest {
+                id: "nope".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(e.code, connectrpc::ErrorCode::NotFound);
+        svc.delete_connector(DeleteConnectorRequest {
+            id: "corp".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
         let _ = stop.send(true);
     }
 

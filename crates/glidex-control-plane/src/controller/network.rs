@@ -22,8 +22,14 @@ type Next = Result<Option<Duration>, VmManagerError>;
 impl VmManager {
     /// One round for network `name`.
     pub async fn reconcile_network(&self, name: &str) -> Next {
-        let Some(mut net) = self.networks.get(name)? else { return Ok(None) };
-        if net.node.as_deref().is_some_and(|n| n != self.local_node_id()) {
+        let Some(mut net) = self.networks.get(name)? else {
+            return Ok(None);
+        };
+        if net
+            .node
+            .as_deref()
+            .is_some_and(|n| n != self.local_node_id())
+        {
             return Ok(None);
         }
         // A cluster network is the leader's (OVN), not any node's bridge.
@@ -34,13 +40,21 @@ impl VmManager {
             return self.finish_network_delete(net).await;
         }
         let netd = self.netd.clone();
-        let bridges = tokio::task::spawn_blocking(move || netd.call::<Vec<BridgeRecord>>(Op::ListBridges))
-            .await
-            .map_err(|e| VmManagerError::PersistenceError(e.to_string()))?;
+        let bridges =
+            tokio::task::spawn_blocking(move || netd.call::<Vec<BridgeRecord>>(Op::ListBridges))
+                .await
+                .map_err(|e| VmManagerError::PersistenceError(e.to_string()))?;
         let bridges = match bridges {
             Ok(b) => b,
             Err(NetError::Unavailable(m)) => {
-                return self.set_network_status(net, NetworkPhase::NetdUnavailable, Tristate::Unknown, "NetdUnavailable", m, Duration::from_secs(30));
+                return self.set_network_status(
+                    net,
+                    NetworkPhase::NetdUnavailable,
+                    Tristate::Unknown,
+                    "NetdUnavailable",
+                    m,
+                    Duration::from_secs(30),
+                );
             }
             Err(e) => return Err(e.into()),
         };
@@ -49,7 +63,9 @@ impl VmManager {
         match (net.mode, record) {
             (NetworkMode::Nat | NetworkMode::Isolated, rec)
                 if net.owns_bridge
-                    && rec.is_none_or(|r| r.live.is_none() || r.spec.isolated != (net.mode == NetworkMode::Isolated)) =>
+                    && rec.is_none_or(|r| {
+                        r.live.is_none() || r.spec.isolated != (net.mode == NetworkMode::Isolated)
+                    }) =>
             {
                 // netd lost the bridge (record or on the host), or its
                 // record predates the isolated flag (security spec §8.4):
@@ -66,27 +82,44 @@ impl VmManager {
                     isolated: net.mode == NetworkMode::Isolated,
                 };
                 let netd = self.netd.clone();
-                match tokio::task::spawn_blocking(move || netd.call::<BridgeRecord>(Op::EnsureBridge(spec)))
-                    .await
-                    .map_err(|e| VmManagerError::PersistenceError(e.to_string()))?
+                match tokio::task::spawn_blocking(move || {
+                    netd.call::<BridgeRecord>(Op::EnsureBridge(spec))
+                })
+                .await
+                .map_err(|e| VmManagerError::PersistenceError(e.to_string()))?
                 {
                     Ok(_) if restore => {
                         let _ = self.store.push_event(
                             &event_key("network", &net.name),
-                            Event::new("controller", EventKind::Warning, "BridgeRestored", format!("re-created bridge {}", net.bridge)),
+                            Event::new(
+                                "controller",
+                                EventKind::Warning,
+                                "BridgeRestored",
+                                format!("re-created bridge {}", net.bridge),
+                            ),
                         );
                     }
                     Ok(_) => {
                         let _ = self.store.push_event(
                             &event_key("network", &net.name),
-                            Event::new("controller", EventKind::Normal, "BridgeUpdated", format!("bridge {} marked as isolated in netd", net.bridge)),
+                            Event::new(
+                                "controller",
+                                EventKind::Normal,
+                                "BridgeUpdated",
+                                format!("bridge {} marked as isolated in netd", net.bridge),
+                            ),
                         );
                     }
                     Err(e) => problems.push(format!("bridge {}: {}", net.bridge, e)),
                 }
             }
-            (NetworkMode::Bridged, None) => problems.push(format!("bridge {} is not a glidex bridge any more", net.bridge)),
-            (_, Some(r)) if r.live.is_none() => problems.push(format!("bridge {} is missing on the host", net.bridge)),
+            (NetworkMode::Bridged, None) => problems.push(format!(
+                "bridge {} is not a glidex bridge any more",
+                net.bridge
+            )),
+            (_, Some(r)) if r.live.is_none() => {
+                problems.push(format!("bridge {} is missing on the host", net.bridge))
+            }
             _ => {}
         }
         if net.mode == NetworkMode::Nat {
@@ -101,11 +134,17 @@ impl VmManager {
                         if !net.owns_bridge || !users.is_empty() {
                             problems.push("netd has no NAT for it".into());
                         } else {
-                            let spec = NatSpec { bridge: net.bridge.clone(), subnet: None, dns: net.dns };
+                            let spec = NatSpec {
+                                bridge: net.bridge.clone(),
+                                subnet: None,
+                                dns: net.dns,
+                            };
                             let netd = self.netd.clone();
-                            match tokio::task::spawn_blocking(move || netd.call::<NatInfo>(Op::EnsureNat(spec)))
-                                .await
-                                .map_err(|e| VmManagerError::PersistenceError(e.to_string()))?
+                            match tokio::task::spawn_blocking(move || {
+                                netd.call::<NatInfo>(Op::EnsureNat(spec))
+                            })
+                            .await
+                            .map_err(|e| VmManagerError::PersistenceError(e.to_string()))?
                             {
                                 Ok(n) => {
                                     let _ = self.store.push_event(
@@ -118,25 +157,47 @@ impl VmManager {
                                         ),
                                     );
                                 }
-                                Err(e) => problems.push(format!("netd has no NAT for it and creating one failed: {}", e)),
+                                Err(e) => problems.push(format!(
+                                    "netd has no NAT for it and creating one failed: {}",
+                                    e
+                                )),
                             }
                         }
                     }
-                    Some(n) if n.state.dns && !n.dnsmasq_running => problems.push("its DHCP/DNS server (dnsmasq) is not running".into()),
+                    Some(n) if n.state.dns && !n.dnsmasq_running => {
+                        problems.push("its DHCP/DNS server (dnsmasq) is not running".into())
+                    }
                     Some(_) => {}
                 },
                 Err(e) => problems.push(format!("NAT: {}", e)),
             }
         }
         if problems.is_empty() {
-            self.set_network_status(net, NetworkPhase::Ready, Tristate::True, "Converged", String::new(), Duration::ZERO)
+            self.set_network_status(
+                net,
+                NetworkPhase::Ready,
+                Tristate::True,
+                "Converged",
+                String::new(),
+                Duration::ZERO,
+            )
         } else {
             let msg = problems.join("; ");
             if net.phase != NetworkPhase::Degraded {
-                let _ = self.store.push_event(&event_key("network", &net.name), Event::new("controller", EventKind::Warning, "Degraded", msg.clone()));
+                let _ = self.store.push_event(
+                    &event_key("network", &net.name),
+                    Event::new("controller", EventKind::Warning, "Degraded", msg.clone()),
+                );
             }
             net.phase = NetworkPhase::Degraded;
-            self.set_network_status(net, NetworkPhase::Degraded, Tristate::False, "Degraded", msg, Duration::from_secs(30))
+            self.set_network_status(
+                net,
+                NetworkPhase::Degraded,
+                Tristate::False,
+                "Degraded",
+                msg,
+                Duration::from_secs(30),
+            )
         }
     }
 
@@ -149,7 +210,14 @@ impl VmManager {
         let users = Self::network_users(&*self.vms.read().await, &net.name);
         if !users.is_empty() {
             let msg = format!("waiting for VM(s) to leave it: {}", users.join(", "));
-            return self.set_network_status(net, NetworkPhase::Degraded, Tristate::False, "InUse", msg, Duration::from_secs(10));
+            return self.set_network_status(
+                net,
+                NetworkPhase::Degraded,
+                Tristate::False,
+                "InUse",
+                msg,
+                Duration::from_secs(10),
+            );
         }
         if net.owns_bridge {
             self.meter_final_sample().await;
@@ -157,10 +225,16 @@ impl VmManager {
             let (bridge, nat) = (net.bridge.clone(), net.mode == NetworkMode::Nat);
             let done = tokio::task::spawn_blocking(move || -> Result<(), NetError> {
                 if nat {
-                    netd.call::<serde_json::Value>(Op::DeleteNat { bridge: bridge.clone() })?;
+                    netd.call::<serde_json::Value>(Op::DeleteNat {
+                        bridge: bridge.clone(),
+                    })?;
                 }
                 // Only a bridge netd still has: it refuses unknown ones.
-                if netd.call::<Vec<BridgeRecord>>(Op::ListBridges)?.iter().any(|b| b.spec.name == bridge) {
+                if netd
+                    .call::<Vec<BridgeRecord>>(Op::ListBridges)?
+                    .iter()
+                    .any(|b| b.spec.name == bridge)
+                {
                     netd.call::<serde_json::Value>(Op::DeleteBridge { name: bridge })?;
                 }
                 Ok(())
@@ -170,22 +244,46 @@ impl VmManager {
             match done {
                 Ok(()) => {}
                 Err(NetError::Unavailable(m)) => {
-                    return self.set_network_status(net, NetworkPhase::NetdUnavailable, Tristate::Unknown, "NetdUnavailable", m, Duration::from_secs(30));
+                    return self.set_network_status(
+                        net,
+                        NetworkPhase::NetdUnavailable,
+                        Tristate::Unknown,
+                        "NetdUnavailable",
+                        m,
+                        Duration::from_secs(30),
+                    );
                 }
                 Err(e) => {
                     let msg = e.to_string();
-                    if !net.conditions.iter().any(|c| c.kind == "Ready" && c.reason == "DeleteFailed" && c.message == msg) {
+                    if !net.conditions.iter().any(|c| {
+                        c.kind == "Ready" && c.reason == "DeleteFailed" && c.message == msg
+                    }) {
                         let _ = self.store.push_event(
                             &event_key("network", &net.name),
-                            Event::new("controller", EventKind::Warning, "DeleteFailed", msg.clone()),
+                            Event::new(
+                                "controller",
+                                EventKind::Warning,
+                                "DeleteFailed",
+                                msg.clone(),
+                            ),
                         );
                     }
-                    return self.set_network_status(net, NetworkPhase::Degraded, Tristate::False, "DeleteFailed", msg, Duration::from_secs(30));
+                    return self.set_network_status(
+                        net,
+                        NetworkPhase::Degraded,
+                        Tristate::False,
+                        "DeleteFailed",
+                        msg,
+                        Duration::from_secs(30),
+                    );
                 }
             }
         }
         self.networks.delete(&net.name)?;
-        let _ = self.store.push_event(&event_key("network", &net.name), Event::new("controller", EventKind::Normal, "Deleted", ""));
+        let _ = self.store.push_event(
+            &event_key("network", &net.name),
+            Event::new("controller", EventKind::Normal, "Deleted", ""),
+        );
         tracing::info!(network = %net.name, "network deleted");
         Ok(None)
     }

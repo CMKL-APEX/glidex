@@ -9,8 +9,9 @@ response bodies are JSON except for the console WebSocket.
 
 ## Authentication and authorization
 
-Every endpoint except `/health`, `/auth/methods`, `/auth/login` and the
-OIDC endpoints needs a principal: a local user on `api.sock` (peer uid),
+Every endpoint except `/health`, `/auth/methods`, `/auth/login`,
+`/auth/token`, `/auth/discover` and the OIDC and connector login
+endpoints (`/auth/oidc/…`, `/auth/c/{id}/…`) needs a principal: a local user on `api.sock` (peer uid),
 a bearer token, or a browser session (cookie + `X-Glidex-CSRF` on
 writes). Each route maps to one Cedar action; see
 [security.md](security.md) §7 and §13 for the actions, the additional
@@ -113,6 +114,31 @@ the same operations are served as RPCs ([grpc.md](grpc.md)):
 | `DELETE` | `/tenants/{id}/bindings/{link}` | `RemoveBinding` | |
 | `GET` | `/admissions` | `AdmissionService.ListAdmissions` | The cluster operator's (`listAdmissions`) |
 | `PUT` / `DELETE` | `/admissions/{tenant}` | `SetAdmission` / `RemoveAdmission` | `{cap?, suspended?}`; needs a recent login |
+
+Login connectors ([tenancy.md](tenancy.md) §13–§14) are REST twins of
+`glidex.directory.v1.ConnectorService` in the same way. Managing them
+needs `role.directory-admin` and membership of the directory's owner
+tenant (D7); every write needs a recent login. Secrets go in through
+`PUT …/secrets/{field}` and never come back: responses carry only
+`secrets: [{field, set, updated_at}]`.
+
+| Method | Path | RPC | Purpose |
+|---|---|---|---|
+| `GET` | `/connectors` | `ConnectorService.ListConnectors` | The directory's connectors, file-defined ones (`file-pam`, `file-oidc`, `source: file`) included |
+| `POST` | `/connectors` | `CreateConnector` | `{connector: {id, display_name?, enabled?, jit?, required_groups?, require_mfa?, group_teams?, default_tenant?, token_max_days?, pam: {allowed_groups} \| oidc: {issuer, client_id, scopes?, groups_claim?, allowed_domains?, redirect_uri?, mfa_acr_values?}}}`; `422 invalid_connector` (D22: `jit` into the owner or an operator tenant needs `required_groups`; such an OIDC connector has `require_mfa` on unless set) |
+| `GET` / `PATCH` / `DELETE` | `/connectors/{id}` | `GetConnector` / `UpdateConnector` / `DeleteConnector` | PATCH `{connector: {…}, update_mask?}`: without a mask, the fields present are the ones changed. File-defined connectors are read-only (`409`) |
+| `PUT` | `/connectors/{id}/secrets/{field}` | `SetSecret` | `{value}`; the kind's secret fields only (`oidc`: `client_secret`); sealed with the directory's data key |
+| `POST` | `/connectors/{id}/test` | `TestConnector` | `{steps: [{name, ok, message}]}`: PAM reaches authd; OIDC checks the secret, discovery and the device grant |
+
+Logging in through a connector, all public: `GET /auth/methods` lists the
+enabled ones (`connectors: [{id, kind, display_name}]`); `POST
+/auth/discover {hint}` says which to offer for a tenant slug or email;
+`GET /auth/c/{id}/start`, `/auth/c/{id}/callback` (browser), `POST
+/auth/c/{id}/device`, `/auth/c/{id}/device/poll` (gxctl). `POST
+/auth/login` and `POST /auth/token` take `connector` (a PAM connector,
+the first one when absent); a token is clamped to the connector's
+`token_max_days`. A refused login is `403 login_not_allowed`. The
+`/auth/oidc/*` routes remain for the first OIDC connector.
 
 `POST /projects` takes `tenant` (id or slug, default `default`) and needs
 `createProject` on that tenant. Creating a VM, disk, project network or

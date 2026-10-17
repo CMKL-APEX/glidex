@@ -91,6 +91,17 @@ pub struct OidcIdentity {
     pub display_name: String,
     pub email: Option<String>,
     pub groups: Vec<String>,
+    /// `amr` says `mfa`, or `acr` is one of the connector's MFA values.
+    pub mfa: bool,
+}
+
+/// Where a connector's client secret comes from.
+pub enum ClientSecret {
+    /// The systemd credential `oidc-client-secret` (the file-defined
+    /// connector, as before connectors).
+    Credential,
+    /// Decrypted from the connector store on each use (spec/tenancy.md §13).
+    Stored(Box<dyn Fn() -> Result<zeroize::Zeroizing<String>, String> + Send + Sync>),
 }
 
 /// What `start` returns for the browser.
@@ -119,6 +130,10 @@ fn default_interval() -> u64 {
 
 pub struct OidcState {
     cfg: OidcConfig,
+    secret: ClientSecret,
+    mfa_acr: Vec<String>,
+    /// Default callback path on the UI origin.
+    callback_path: String,
     http: reqwest::Client,
     discovery: tokio::sync::Mutex<Option<Discovery>>,
     jwks: tokio::sync::Mutex<Option<Jwks>>,
@@ -138,15 +153,39 @@ fn now() -> u64 {
 /// A same-site path to return to after login; anything else becomes `/`.
 pub fn safe_return_to(r: Option<&str>) -> String {
     match r {
-        Some(p) if p.starts_with('/') && !p.starts_with("//") && !p.contains('\\') && !p.contains("://") => p.to_string(),
+        Some(p)
+            if p.starts_with('/')
+                && !p.starts_with("//")
+                && !p.contains('\\')
+                && !p.contains("://") =>
+        {
+            p.to_string()
+        }
         _ => "/".to_string(),
     }
 }
 
 impl OidcState {
     pub fn new(cfg: &OidcConfig) -> Self {
+        Self::with(
+            cfg,
+            ClientSecret::Credential,
+            Vec::new(),
+            "/api/auth/oidc/callback",
+        )
+    }
+
+    pub fn with(
+        cfg: &OidcConfig,
+        secret: ClientSecret,
+        mfa_acr: Vec<String>,
+        callback_path: &str,
+    ) -> Self {
         Self {
             cfg: cfg.clone(),
+            secret,
+            mfa_acr,
+            callback_path: callback_path.to_string(),
             http: reqwest::Client::builder()
                 .timeout(Duration::from_secs(15))
                 .redirect(reqwest::redirect::Policy::none())
@@ -168,6 +207,9 @@ impl OidcState {
     }
 
     fn client_secret(&self) -> Result<String, OidcError> {
+        if let ClientSecret::Stored(f) = &self.secret {
+            return f().map(|s| s.to_string()).map_err(OidcError::Provider);
+        }
         let path = crate::config::credential("oidc-client-secret")
             .or_else(|| std::env::var_os("GLIDEX_OIDC_CLIENT_SECRET_FILE").map(Into::into))
             .ok_or_else(|| OidcError::Provider("no oidc-client-secret credential".into()))?;
@@ -184,7 +226,10 @@ impl OidcState {
         if let Some(d) = cached.as_ref() {
             return Ok(d.clone());
         }
-        let url = format!("{}/.well-known/openid-configuration", self.cfg.issuer.trim_end_matches('/'));
+        let url = format!(
+            "{}/.well-known/openid-configuration",
+            self.cfg.issuer.trim_end_matches('/')
+        );
         let d: Discovery = self
             .http
             .get(&url)
@@ -196,7 +241,10 @@ impl OidcState {
             .await
             .map_err(|e| OidcError::Invalid(format!("discovery: {}", e)))?;
         if d.issuer.trim_end_matches('/') != self.cfg.issuer.trim_end_matches('/') {
-            return Err(OidcError::Invalid(format!("discovery issuer {} != configured {}", d.issuer, self.cfg.issuer)));
+            return Err(OidcError::Invalid(format!(
+                "discovery issuer {} != configured {}",
+                d.issuer, self.cfg.issuer
+            )));
         }
         *cached = Some(d.clone());
         Ok(d)
@@ -219,18 +267,32 @@ impl OidcState {
             .json()
             .await
             .map_err(|e| OidcError::Invalid(format!("jwks: {}", e)))?;
-        *cached = Some(Jwks { set: set.clone(), fetched: Instant::now() });
+        *cached = Some(Jwks {
+            set: set.clone(),
+            fetched: Instant::now(),
+        });
         Ok(set)
     }
 
     pub fn redirect_uri(&self, default_origin: Option<&str>) -> String {
         self.cfg.redirect_uri.clone().unwrap_or_else(|| {
-            format!("{}/api/auth/oidc/callback", default_origin.unwrap_or("http://localhost:5173").trim_end_matches('/'))
+            format!(
+                "{}{}",
+                default_origin
+                    .unwrap_or("http://localhost:5173")
+                    .trim_end_matches('/'),
+                self.callback_path
+            )
         })
     }
 
     /// Begin a browser login. `reauth` forces a fresh login (step-up).
-    pub async fn start(&self, return_to: Option<&str>, redirect_uri: &str, reauth: bool) -> Result<Start, OidcError> {
+    pub async fn start(
+        &self,
+        return_to: Option<&str>,
+        redirect_uri: &str,
+        reauth: bool,
+    ) -> Result<Start, OidcError> {
         let d = self.discovery().await?;
         let state = super::random_token(24);
         let nonce = super::random_token(24);
@@ -243,10 +305,17 @@ impl OidcState {
             p.retain(|_, v| v.created + STATE_SECS > t);
             p.insert(
                 state.clone(),
-                Pending { nonce: nonce.clone(), verifier, return_to: safe_return_to(return_to), browser: browser.clone(), created: t },
+                Pending {
+                    nonce: nonce.clone(),
+                    verifier,
+                    return_to: safe_return_to(return_to),
+                    browser: browser.clone(),
+                    created: t,
+                },
             );
         }
-        let mut url = reqwest::Url::parse(&d.authorization_endpoint).map_err(|e| OidcError::Invalid(e.to_string()))?;
+        let mut url = reqwest::Url::parse(&d.authorization_endpoint)
+            .map_err(|e| OidcError::Invalid(e.to_string()))?;
         {
             let mut q = url.query_pairs_mut();
             q.append_pair("response_type", "code")
@@ -261,7 +330,10 @@ impl OidcState {
                 q.append_pair("prompt", "login").append_pair("max_age", "0");
             }
         }
-        Ok(Start { redirect: url.to_string(), browser })
+        Ok(Start {
+            redirect: url.to_string(),
+            browser,
+        })
     }
 
     /// Finish a browser login: check `state` against the browser cookie,
@@ -284,7 +356,9 @@ impl OidcState {
             return Err(OidcError::Invalid("login state expired".into()));
         }
         if !browser.is_some_and(|b| super::constant_eq(b, &pending.browser)) {
-            return Err(OidcError::Invalid("login state belongs to another browser".into()));
+            return Err(OidcError::Invalid(
+                "login state belongs to another browser".into(),
+            ));
         }
         let d = self.discovery().await?;
         let resp = self
@@ -306,7 +380,11 @@ impl OidcState {
         Ok((identity, pending.return_to))
     }
 
-    async fn token_request(&self, d: &Discovery, form: &[(&str, &str)]) -> Result<serde_json::Value, OidcError> {
+    async fn token_request(
+        &self,
+        d: &Discovery,
+        form: &[(&str, &str)],
+    ) -> Result<serde_json::Value, OidcError> {
         let secret = self.client_secret()?;
         let resp = self
             .http
@@ -317,9 +395,15 @@ impl OidcState {
             .await
             .map_err(|e| OidcError::Provider(e.to_string()))?;
         let status = resp.status();
-        let body: serde_json::Value = resp.json().await.map_err(|e| OidcError::Invalid(format!("token response: {}", e)))?;
+        let body: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| OidcError::Invalid(format!("token response: {}", e)))?;
         if !status.is_success() {
-            let err = body.get("error").and_then(|v| v.as_str()).unwrap_or("error");
+            let err = body
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("error");
             return Err(match err {
                 "authorization_pending" => OidcError::Pending,
                 "slow_down" => OidcError::SlowDown,
@@ -330,10 +414,19 @@ impl OidcState {
     }
 
     /// Verify an ID token and apply the login rules (domains, groups).
-    pub async fn verify(&self, d: &Discovery, id_token: &str, nonce: Option<&str>) -> Result<OidcIdentity, OidcError> {
-        let header = jsonwebtoken::decode_header(id_token).map_err(|e| OidcError::Invalid(format!("id_token header: {}", e)))?;
+    pub async fn verify(
+        &self,
+        d: &Discovery,
+        id_token: &str,
+        nonce: Option<&str>,
+    ) -> Result<OidcIdentity, OidcError> {
+        let header = jsonwebtoken::decode_header(id_token)
+            .map_err(|e| OidcError::Invalid(format!("id_token header: {}", e)))?;
         if !matches!(header.alg, Algorithm::RS256 | Algorithm::ES256) {
-            return Err(OidcError::Invalid(format!("id_token algorithm {:?} is not allowed", header.alg)));
+            return Err(OidcError::Invalid(format!(
+                "id_token algorithm {:?} is not allowed",
+                header.alg
+            )));
         }
         let kid = header.kid.clone();
         let find = |set: &JwkSet| -> Option<jsonwebtoken::jwk::Jwk> {
@@ -345,15 +438,18 @@ impl OidcState {
         };
         let jwk = match find(&self.jwks(d, false).await?) {
             Some(j) => j,
-            None => find(&self.jwks(d, true).await?).ok_or_else(|| OidcError::Invalid("id_token key not in JWKS".into()))?,
+            None => find(&self.jwks(d, true).await?)
+                .ok_or_else(|| OidcError::Invalid("id_token key not in JWKS".into()))?,
         };
-        let key = DecodingKey::from_jwk(&jwk).map_err(|e| OidcError::Invalid(format!("jwk: {}", e)))?;
+        let key =
+            DecodingKey::from_jwk(&jwk).map_err(|e| OidcError::Invalid(format!("jwk: {}", e)))?;
         let mut v = Validation::new(header.alg);
         v.set_issuer(&[d.issuer.as_str()]);
         v.set_audience(&[self.cfg.client_id.as_str()]);
         v.leeway = SKEW_SECS;
         v.set_required_spec_claims(&["exp", "iss", "aud", "sub"]);
-        let data = jsonwebtoken::decode::<IdClaims>(id_token, &key, &v).map_err(|e| OidcError::Invalid(format!("id_token: {}", e)))?;
+        let data = jsonwebtoken::decode::<IdClaims>(id_token, &key, &v)
+            .map_err(|e| OidcError::Invalid(format!("id_token: {}", e)))?;
         let c = data.claims;
         if let Some(iat) = c.iat {
             if iat > now() + SKEW_SECS {
@@ -361,28 +457,48 @@ impl OidcState {
             }
         }
         if let Some(expected) = nonce {
-            if !c.nonce.as_deref().is_some_and(|n| super::constant_eq(n, expected)) {
+            if !c
+                .nonce
+                .as_deref()
+                .is_some_and(|n| super::constant_eq(n, expected))
+            {
                 return Err(OidcError::Invalid("id_token nonce mismatch".into()));
             }
         }
         // With several audiences the token must be issued to us (azp).
         if let Some(aud) = c.rest.get("aud").and_then(|a| a.as_array()) {
-            if aud.len() > 1 && c.rest.get("azp").and_then(|a| a.as_str()) != Some(self.cfg.client_id.as_str()) {
+            if aud.len() > 1
+                && c.rest.get("azp").and_then(|a| a.as_str()) != Some(self.cfg.client_id.as_str())
+            {
                 return Err(OidcError::Invalid("id_token azp is not this client".into()));
             }
         }
         let groups: Vec<String> = match c.rest.get(&self.cfg.groups_claim) {
-            Some(serde_json::Value::Array(a)) => a.iter().filter_map(|g| g.as_str().map(String::from)).collect(),
+            Some(serde_json::Value::Array(a)) => a
+                .iter()
+                .filter_map(|g| g.as_str().map(String::from))
+                .collect(),
             Some(serde_json::Value::String(s)) => vec![s.clone()],
             _ => Vec::new(),
         };
         if !self.cfg.allowed_domains.is_empty() {
-            let domain = c.email.as_deref().and_then(|e| e.rsplit_once('@')).map(|(_, d)| d.to_ascii_lowercase());
-            if !domain.is_some_and(|d| self.cfg.allowed_domains.iter().any(|a| a.eq_ignore_ascii_case(&d))) {
+            let domain = c
+                .email
+                .as_deref()
+                .and_then(|e| e.rsplit_once('@'))
+                .map(|(_, d)| d.to_ascii_lowercase());
+            if !domain.is_some_and(|d| {
+                self.cfg
+                    .allowed_domains
+                    .iter()
+                    .any(|a| a.eq_ignore_ascii_case(&d))
+            }) {
                 return Err(OidcError::NotAllowed("email domain is not allowed".into()));
             }
         }
-        if !self.cfg.required_groups.is_empty() && !groups.iter().any(|g| self.cfg.required_groups.contains(g)) {
+        if !self.cfg.required_groups.is_empty()
+            && !groups.iter().any(|g| self.cfg.required_groups.contains(g))
+        {
             return Err(OidcError::NotAllowed("not in a required group".into()));
         }
         let display_name = c
@@ -391,28 +507,49 @@ impl OidcState {
             .or(c.preferred_username.clone())
             .or(c.email.clone())
             .unwrap_or_else(|| c.sub.clone());
-        Ok(OidcIdentity { issuer: d.issuer.clone(), subject: c.sub, display_name, email: c.email, groups })
+        let amr_mfa = matches!(c.rest.get("amr"), Some(serde_json::Value::Array(a)) if a.iter().any(|m| m.as_str() == Some("mfa")));
+        let acr_mfa = c
+            .rest
+            .get("acr")
+            .and_then(|a| a.as_str())
+            .is_some_and(|a| self.mfa_acr.iter().any(|m| m == a));
+        Ok(OidcIdentity {
+            issuer: d.issuer.clone(),
+            subject: c.sub,
+            display_name,
+            email: c.email,
+            groups,
+            mfa: amr_mfa || acr_mfa,
+        })
     }
 
     /// Start a device grant (gxctl `login --oidc`).
     pub async fn device_start(&self) -> Result<DeviceStart, OidcError> {
         let d = self.discovery().await?;
-        let endpoint = d
-            .device_authorization_endpoint
-            .clone()
-            .ok_or_else(|| OidcError::Provider("the IdP has no device authorization endpoint".into()))?;
+        let endpoint = d.device_authorization_endpoint.clone().ok_or_else(|| {
+            OidcError::Provider("the IdP has no device authorization endpoint".into())
+        })?;
         let secret = self.client_secret()?;
         let resp = self
             .http
             .post(&endpoint)
             .basic_auth(&self.cfg.client_id, Some(secret))
-            .form(&[("client_id", self.cfg.client_id.as_str()), ("scope", &self.cfg.scopes.join(" "))])
+            .form(&[
+                ("client_id", self.cfg.client_id.as_str()),
+                ("scope", &self.cfg.scopes.join(" ")),
+            ])
             .send()
             .await
             .and_then(|r| r.error_for_status())
             .map_err(|e| OidcError::Provider(e.to_string()))?;
-        let start: DeviceStart = resp.json().await.map_err(|e| OidcError::Invalid(format!("device response: {}", e)))?;
-        self.devices.lock().unwrap().insert(start.device_code.clone(), now() + start.expires_in);
+        let start: DeviceStart = resp
+            .json()
+            .await
+            .map_err(|e| OidcError::Invalid(format!("device response: {}", e)))?;
+        self.devices
+            .lock()
+            .unwrap()
+            .insert(start.device_code.clone(), now() + start.expires_in);
         Ok(start)
     }
 
@@ -432,7 +569,10 @@ impl OidcState {
         let resp = self
             .token_request(
                 &d,
-                &[("grant_type", "urn:ietf:params:oauth:grant-type:device_code"), ("device_code", device_code)],
+                &[
+                    ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
+                    ("device_code", device_code),
+                ],
             )
             .await?;
         self.devices.lock().unwrap().remove(device_code);

@@ -72,7 +72,8 @@ impl LaunchFile {
     pub fn read(path: &Path) -> Result<Self, LaunchError> {
         let shown = path.display().to_string();
         let bytes = std::fs::read(path).map_err(|e| LaunchError::Read(shown.clone(), e))?;
-        let f: LaunchFile = serde_json::from_slice(&bytes).map_err(|e| LaunchError::Parse(shown, e))?;
+        let f: LaunchFile =
+            serde_json::from_slice(&bytes).map_err(|e| LaunchError::Parse(shown, e))?;
         if f.version != LAUNCH_VERSION {
             return Err(LaunchError::Version(f.version));
         }
@@ -85,18 +86,33 @@ impl LaunchFile {
     }
 
     /// Structural checks plus the allowlist for every command it may run.
-    pub fn validate(&self, expected_vm: Option<&str>, allowed: &[PathBuf]) -> Result<(), LaunchError> {
+    pub fn validate(
+        &self,
+        expected_vm: Option<&str>,
+        allowed: &[PathBuf],
+    ) -> Result<(), LaunchError> {
         if let Some(vm) = expected_vm {
             if vm != self.vm_id {
-                return Err(LaunchError::WrongVm { expected: vm.to_string(), found: self.vm_id.clone() });
+                return Err(LaunchError::WrongVm {
+                    expected: vm.to_string(),
+                    found: self.vm_id.clone(),
+                });
             }
         }
         if self.argv.is_empty() {
             return Err(LaunchError::Invalid("argv is empty".into()));
         }
-        for path in [&self.api_socket, &self.console_socket, &self.shim_socket, &self.log_path] {
+        for path in [
+            &self.api_socket,
+            &self.console_socket,
+            &self.shim_socket,
+            &self.log_path,
+        ] {
             if !Path::new(path).is_absolute() {
-                return Err(LaunchError::Invalid(format!("{} is not an absolute path", path)));
+                return Err(LaunchError::Invalid(format!(
+                    "{} is not an absolute path",
+                    path
+                )));
             }
         }
         check_allowed(&self.argv[0], allowed)?;
@@ -111,7 +127,8 @@ impl LaunchFile {
 }
 
 fn check_allowed(binary: &str, allowed: &[PathBuf]) -> Result<(), LaunchError> {
-    let canon = std::fs::canonicalize(binary).map_err(|_| LaunchError::NotAllowed(binary.to_string()))?;
+    let canon =
+        std::fs::canonicalize(binary).map_err(|_| LaunchError::NotAllowed(binary.to_string()))?;
     if allowed.contains(&canon) {
         Ok(())
     } else {
@@ -142,9 +159,17 @@ pub fn allowed_binaries() -> Vec<PathBuf> {
 pub fn allowed_binaries_from(file: &Path) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = match std::fs::read(file) {
         Ok(bytes) => match serde_json::from_slice::<AllowlistFile>(&bytes) {
-            Ok(f) => f.hypervisors.iter().filter_map(|p| std::fs::canonicalize(p).ok()).collect(),
+            Ok(f) => f
+                .hypervisors
+                .iter()
+                .filter_map(|p| std::fs::canonicalize(p).ok())
+                .collect(),
             Err(e) => {
-                eprintln!("glidex-vm-shim: ignoring unreadable {}: {}", file.display(), e);
+                eprintln!(
+                    "glidex-vm-shim: ignoring unreadable {}: {}",
+                    file.display(),
+                    e
+                );
                 Vec::new()
             }
         },
@@ -152,7 +177,12 @@ pub fn allowed_binaries_from(file: &Path) -> Vec<PathBuf> {
     };
     if std::env::var_os("INVOCATION_ID").is_none() {
         if let Ok(extra) = std::env::var("GLIDEX_VM_SHIM_ALLOW") {
-            out.extend(extra.split(':').filter(|s| !s.is_empty()).filter_map(|p| std::fs::canonicalize(p).ok()));
+            out.extend(
+                extra
+                    .split(':')
+                    .filter(|s| !s.is_empty())
+                    .filter_map(|p| std::fs::canonicalize(p).ok()),
+            );
         }
     }
     out
@@ -199,10 +229,14 @@ mod tests {
         let path = dir.path().join(crate::LAUNCH_FILE);
         f.write(&path).unwrap();
         assert_eq!(LaunchFile::read(&path).unwrap(), f);
-        let mut v: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let mut v: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         v["version"] = 2.into();
         std::fs::write(&path, v.to_string()).unwrap();
-        assert!(matches!(LaunchFile::read(&path), Err(LaunchError::Version(2))));
+        assert!(matches!(
+            LaunchFile::read(&path),
+            Err(LaunchError::Version(2))
+        ));
     }
 
     #[test]
@@ -216,12 +250,24 @@ mod tests {
 
         let f = sample(dir.path(), link.to_str().unwrap());
         f.validate(Some("vm-1"), &allowed).unwrap();
-        assert!(matches!(f.validate(Some("vm-2"), &allowed), Err(LaunchError::WrongVm { .. })));
-        assert!(matches!(sample(dir.path(), "/bin/sh").validate(None, &allowed), Err(LaunchError::NotAllowed(_))));
+        assert!(matches!(
+            f.validate(Some("vm-2"), &allowed),
+            Err(LaunchError::WrongVm { .. })
+        ));
+        assert!(matches!(
+            sample(dir.path(), "/bin/sh").validate(None, &allowed),
+            Err(LaunchError::NotAllowed(_))
+        ));
 
         let mut fb = sample(dir.path(), bin.to_str().unwrap());
-        fb.fallback = Some(Fallback { argv: vec!["/bin/sh".into()], when_output_matches: vec![] });
-        assert!(matches!(fb.validate(None, &allowed), Err(LaunchError::NotAllowed(_))));
+        fb.fallback = Some(Fallback {
+            argv: vec!["/bin/sh".into()],
+            when_output_matches: vec![],
+        });
+        assert!(matches!(
+            fb.validate(None, &allowed),
+            Err(LaunchError::NotAllowed(_))
+        ));
     }
 
     #[test]
@@ -230,7 +276,11 @@ mod tests {
         let bin = dir.path().join("hv");
         std::fs::write(&bin, "").unwrap();
         let file = dir.path().join("vm-shim.json");
-        std::fs::write(&file, serde_json::json!({"hypervisors": [bin, "/nonexistent/qemu"]}).to_string()).unwrap();
+        std::fs::write(
+            &file,
+            serde_json::json!({"hypervisors": [bin, "/nonexistent/qemu"]}).to_string(),
+        )
+        .unwrap();
         let list = allowed_binaries_from(&file);
         assert!(list.contains(&std::fs::canonicalize(&bin).unwrap()));
         assert!(!list.iter().any(|p| p.ends_with("cloud-hypervisor")));

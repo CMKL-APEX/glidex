@@ -123,8 +123,11 @@ pub struct AuthConfig {
     pub tokens: TokenConfig,
     pub pam: PamConfig,
     pub oidc: OidcConfig,
+    /// File holding the host's secrets key (spec/tenancy.md §13); the
+    /// systemd credential `secrets-kek` wins when present. The control
+    /// plane defaults it to `secrets.kek` beside its database.
+    pub secrets_key: Option<PathBuf>,
 }
-
 
 impl AuthConfig {
     /// Whether a browser `Origin` may use the API.
@@ -136,8 +139,13 @@ impl AuthConfig {
 
 /// The IP address of an `https://<ip>:5173` origin.
 fn ui_origin_ip(origin: &str) -> Option<std::net::IpAddr> {
-    let host = origin.strip_prefix("https://")?.strip_suffix(&format!(":{}", UI_PORT))?;
-    host.trim_start_matches('[').trim_end_matches(']').parse().ok()
+    let host = origin
+        .strip_prefix("https://")?
+        .strip_suffix(&format!(":{}", UI_PORT))?;
+    host.trim_start_matches('[')
+        .trim_end_matches(']')
+        .parse()
+        .ok()
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -149,7 +157,10 @@ pub struct SessionConfig {
 
 impl Default for SessionConfig {
     fn default() -> Self {
-        Self { idle_minutes: 30, absolute_hours: 12 }
+        Self {
+            idle_minutes: 30,
+            absolute_hours: 12,
+        }
     }
 }
 
@@ -162,7 +173,10 @@ pub struct TokenConfig {
 
 impl Default for TokenConfig {
     fn default() -> Self {
-        Self { default_days: 90, max_days: 365 }
+        Self {
+            default_days: 90,
+            max_days: 365,
+        }
     }
 }
 
@@ -217,7 +231,9 @@ impl Default for OidcConfig {
             enabled: false,
             issuer: String::new(),
             client_id: String::new(),
-            scopes: ["openid", "profile", "email", "groups"].map(String::from).to_vec(),
+            scopes: ["openid", "profile", "email", "groups"]
+                .map(String::from)
+                .to_vec(),
             groups_claim: "groups".into(),
             jit: true,
             allowed_domains: Vec::new(),
@@ -239,7 +255,10 @@ pub struct AuthzConfig {
 
 impl Default for AuthzConfig {
     fn default() -> Self {
-        Self { policy_files_dir: PathBuf::from("/etc/glidex/policies"), policy_history: 50 }
+        Self {
+            policy_files_dir: PathBuf::from("/etc/glidex/policies"),
+            policy_history: 50,
+        }
     }
 }
 
@@ -256,7 +275,9 @@ pub struct QuotasConfig {
 
 impl Default for QuotasConfig {
     fn default() -> Self {
-        Self { default: crate::tenancy::Quotas::new_project() }
+        Self {
+            default: crate::tenancy::Quotas::new_project(),
+        }
     }
 }
 
@@ -330,7 +351,9 @@ pub struct ConsoleConfig {
 
 impl Default for ConsoleConfig {
     fn default() -> Self {
-        Self { log_max_bytes: 16 << 20 }
+        Self {
+            log_max_bytes: 16 << 20,
+        }
     }
 }
 
@@ -391,7 +414,8 @@ impl MeteringConfig {
         if !(35..=400).contains(&self.retention_rate_days) {
             return Err("metering.retention_rate_days must be 35-400".into());
         }
-        crate::metering::query::parse_tz(&self.billing_timezone).map_err(|e| format!("metering.billing_timezone: {e}"))?;
+        crate::metering::query::parse_tz(&self.billing_timezone)
+            .map_err(|e| format!("metering.billing_timezone: {e}"))?;
         Ok(())
     }
 }
@@ -417,7 +441,9 @@ impl Config {
 
     pub fn load_from(path: &Path) -> Result<Self, String> {
         match std::fs::read(path) {
-            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| format!("{}: {}", path.display(), e)),
+            Ok(bytes) => {
+                serde_json::from_slice(&bytes).map_err(|e| format!("{}: {}", path.display(), e))
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(e) => Err(format!("{}: {}", path.display(), e)),
         }
@@ -426,7 +452,8 @@ impl Config {
     /// Refuse values that parse but make no sense.
     pub fn check(&self) -> Result<(), String> {
         if !self.authz.policy_files_dir.as_os_str().is_empty() {
-            crate::paths::checked_path(&self.authz.policy_files_dir).map_err(|e| format!("authz.policy_files_dir {e}"))?;
+            crate::paths::checked_path(&self.authz.policy_files_dir)
+                .map_err(|e| format!("authz.policy_files_dir {e}"))?;
         }
         if !(1..=1000).contains(&self.authz.policy_history) {
             return Err("authz.policy_history must be 1-1000".into());
@@ -465,11 +492,15 @@ impl Config {
 
 impl Config {
     pub fn api_socket_path(&self) -> PathBuf {
-        self.api_socket.clone().unwrap_or_else(|| crate::paths::run_dir().join("api.sock"))
+        self.api_socket
+            .clone()
+            .unwrap_or_else(|| crate::paths::run_dir().join("api.sock"))
     }
 
     pub fn ui_socket_path(&self) -> PathBuf {
-        self.ui_socket.clone().unwrap_or_else(|| crate::paths::run_dir().join("ui.sock"))
+        self.ui_socket
+            .clone()
+            .unwrap_or_else(|| crate::paths::run_dir().join("ui.sock"))
     }
 }
 
@@ -489,16 +520,40 @@ mod tests {
         let ok = MeteringConfig::default();
         assert!(ok.check().is_ok());
         for bad in [
-            MeteringConfig { sample_secs: 40, ..ok.clone() },  // does not divide 300
-            MeteringConfig { sample_secs: 5, ..ok.clone() },
-            MeteringConfig { close_grace_secs: 10, ..ok.clone() },
-            MeteringConfig { storage_secs: 20, ..ok.clone() },
-            MeteringConfig { retention_rate_days: 10, ..ok.clone() },
-            MeteringConfig { billing_timezone: "+05:30".into(), ..ok.clone() },
+            MeteringConfig {
+                sample_secs: 40,
+                ..ok.clone()
+            }, // does not divide 300
+            MeteringConfig {
+                sample_secs: 5,
+                ..ok.clone()
+            },
+            MeteringConfig {
+                close_grace_secs: 10,
+                ..ok.clone()
+            },
+            MeteringConfig {
+                storage_secs: 20,
+                ..ok.clone()
+            },
+            MeteringConfig {
+                retention_rate_days: 10,
+                ..ok.clone()
+            },
+            MeteringConfig {
+                billing_timezone: "+05:30".into(),
+                ..ok.clone()
+            },
         ] {
             assert!(bad.check().is_err(), "{bad:?}");
         }
-        assert!(MeteringConfig { sample_secs: 60, close_grace_secs: 60, ..ok }.check().is_ok());
+        assert!(MeteringConfig {
+            sample_secs: 60,
+            close_grace_secs: 60,
+            ..ok
+        }
+        .check()
+        .is_ok());
     }
 
     #[test]
@@ -529,10 +584,28 @@ mod tests {
         use crate::tenancy::Quotas;
         // Nothing configured: 2 project networks, 1 router with 1 external address, everything else unlimited.
         let c = parse("{}").unwrap();
-        assert_eq!(c.quotas.default, Quotas { networks: Some(2), routers: Some(1), external_ips: Some(1), ..Default::default() });
+        assert_eq!(
+            c.quotas.default,
+            Quotas {
+                networks: Some(2),
+                routers: Some(1),
+                external_ips: Some(1),
+                ..Default::default()
+            }
+        );
         // Partial: omitted networks keeps 2.
         let c = parse(r#"{"quotas": {"default": {"vms": 10, "disk_gib": 500}}}"#).unwrap();
-        assert_eq!(c.quotas.default, Quotas { vms: Some(10), disk_gib: Some(500), networks: Some(2), routers: Some(1), external_ips: Some(1), ..Default::default() });
+        assert_eq!(
+            c.quotas.default,
+            Quotas {
+                vms: Some(10),
+                disk_gib: Some(500),
+                networks: Some(2),
+                routers: Some(1),
+                external_ips: Some(1),
+                ..Default::default()
+            }
+        );
         // null is unlimited.
         let c = parse(r#"{"quotas": {"default": {"networks": null}}}"#).unwrap();
         assert_eq!(c.quotas.default.networks, None);
@@ -545,7 +618,13 @@ mod tests {
     #[test]
     fn policy_history_bounds() {
         assert_eq!(parse("{}").unwrap().authz.policy_history, 50);
-        assert_eq!(parse(r#"{"authz": {"policy_history": 10}}"#).unwrap().authz.policy_history, 10);
+        assert_eq!(
+            parse(r#"{"authz": {"policy_history": 10}}"#)
+                .unwrap()
+                .authz
+                .policy_history,
+            10
+        );
         assert!(parse(r#"{"authz": {"policy_history": 0}}"#).is_err());
     }
 
@@ -553,8 +632,13 @@ mod tests {
     /// the spec can't document keys the parser refuses.
     #[test]
     fn spec_example_parses() {
-        let spec = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../spec/security.md")).unwrap();
-        let start = spec.find("`/etc/glidex/control-plane.json` (`root:glidex 0640`").expect("§13 config heading");
+        let spec = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../spec/security.md"),
+        )
+        .unwrap();
+        let start = spec
+            .find("`/etc/glidex/control-plane.json` (`root:glidex 0640`")
+            .expect("§13 config heading");
         let block = &spec[start..];
         let a = block.find("```json\n").unwrap() + "```json\n".len();
         let b = a + block[a..].find("```").unwrap();
@@ -569,11 +653,15 @@ mod tests {
     /// match the defaults.
     #[test]
     fn packaged_example_parses_and_matches_defaults() {
-        let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packaging/control-plane.json.example");
+        let p = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../packaging/control-plane.json.example");
         let c = Config::load_from(&p).unwrap();
         let d = Config::default();
         assert_eq!(c.listen, d.listen);
-        assert_eq!((&c.ui_user, &c.users_group, &c.admin_group), (&d.ui_user, &d.users_group, &d.admin_group));
+        assert_eq!(
+            (&c.ui_user, &c.users_group, &c.admin_group),
+            (&d.ui_user, &d.users_group, &d.admin_group)
+        );
         assert_eq!(c.auth.allowed_origins, d.auth.allowed_origins);
         assert_eq!(c.auth.pam.allowed_groups, d.auth.pam.allowed_groups);
         assert_eq!(c.auth.pam.authd_socket, d.auth.pam.authd_socket);
@@ -587,17 +675,26 @@ mod tests {
 
     #[test]
     fn plain_http_only_on_loopback() {
-        let mut c = Config { listen: vec!["0.0.0.0:8841".parse().unwrap()], ..Default::default() };
+        let mut c = Config {
+            listen: vec!["0.0.0.0:8841".parse().unwrap()],
+            ..Default::default()
+        };
         assert!(c.check_listeners().is_ok());
         c.tls = TlsSetting::Mode(TlsMode::Off);
         assert!(c.check_listeners().is_err());
-        c.listen = vec!["127.0.0.1:8841".parse().unwrap(), "[::1]:8841".parse().unwrap()];
+        c.listen = vec![
+            "127.0.0.1:8841".parse().unwrap(),
+            "[::1]:8841".parse().unwrap(),
+        ];
         assert!(c.check_listeners().is_ok());
     }
 
     #[test]
     fn origins_from_this_host() {
-        let mut a = AuthConfig { allowed_origins: vec!["https://glidex.example.org:5173".into()], ..Default::default() };
+        let mut a = AuthConfig {
+            allowed_origins: vec!["https://glidex.example.org:5173".into()],
+            ..Default::default()
+        };
         assert!(a.origin_allowed("https://glidex.example.org:5173"));
         assert!(!a.origin_allowed("https://127.0.0.1:5173"));
         a.origins_from_host = true;
@@ -613,12 +710,23 @@ mod tests {
 
     #[test]
     fn tls_settings_parse() {
-        assert_eq!(parse(r#"{"tls": "auto"}"#).unwrap().tls, TlsSetting::Mode(TlsMode::Auto));
+        assert_eq!(
+            parse(r#"{"tls": "auto"}"#).unwrap().tls,
+            TlsSetting::Mode(TlsMode::Auto)
+        );
         assert!(parse(r#"{"tls": "off"}"#).is_err());
-        assert_eq!(parse(r#"{"tls": "off", "listen": ["127.0.0.1:1"]}"#).unwrap().tls, TlsSetting::Mode(TlsMode::Off));
+        assert_eq!(
+            parse(r#"{"tls": "off", "listen": ["127.0.0.1:1"]}"#)
+                .unwrap()
+                .tls,
+            TlsSetting::Mode(TlsMode::Off)
+        );
         assert_eq!(
             parse(r#"{"tls": {"cert": "/c"}}"#).unwrap().tls,
-            TlsSetting::Files(TlsConfig { cert: "/c".into(), key: None })
+            TlsSetting::Files(TlsConfig {
+                cert: "/c".into(),
+                key: None
+            })
         );
         assert!(parse(r#"{"tls": "on"}"#).is_err());
         assert!(parse(r#"{"tls": {"crt": "/c"}}"#).is_err());

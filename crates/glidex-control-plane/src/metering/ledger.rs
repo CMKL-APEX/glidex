@@ -166,8 +166,22 @@ pub struct Subject {
 }
 
 impl Subject {
-    pub fn new(kind: SubjectKind, id: impl Into<String>, name: impl Into<String>, project: Option<String>) -> Self {
-        Self { kind, id: id.into(), name: name.into(), project, vm_id: None, nic: None, network: None, node: None }
+    pub fn new(
+        kind: SubjectKind,
+        id: impl Into<String>,
+        name: impl Into<String>,
+        project: Option<String>,
+    ) -> Self {
+        Self {
+            kind,
+            id: id.into(),
+            name: name.into(),
+            project,
+            vm_id: None,
+            nic: None,
+            network: None,
+            node: None,
+        }
     }
 
     fn key(&self) -> String {
@@ -262,7 +276,10 @@ pub struct LedgerSettings {
 
 impl LedgerSettings {
     pub fn from_secs(sample_secs: u64, close_grace_secs: u64) -> Self {
-        Self { gap_ms: 2 * sample_secs * 1000, close_grace_ms: close_grace_secs * 1000 }
+        Self {
+            gap_ms: 2 * sample_secs * 1000,
+            close_grace_ms: close_grace_secs * 1000,
+        }
     }
 }
 
@@ -347,7 +364,10 @@ impl Round {
     /// Spread `amount` of `meter` over `[from, to]` into hour buckets in
     /// proportion to time (§6.3). The parts add up to `amount` exactly.
     fn slot_row(&mut self, slot_start: u64, subject: &Subject) -> (&mut SlotRow, usize) {
-        let row = self.slots.entry((hour_of(slot_start), subject.key())).or_default();
+        let row = self
+            .slots
+            .entry((hour_of(slot_start), subject.key()))
+            .or_default();
         row.subject = Some(subject.clone());
         (row, ((slot_start % HOUR_MS) / SLOT_MS) as usize)
     }
@@ -371,11 +391,21 @@ impl Round {
         }
     }
 
-    fn spread(&mut self, subject: &Subject, meter: &str, amount: u64, from: u64, to: u64, flag: Option<Flag>) {
+    fn spread(
+        &mut self,
+        subject: &Subject,
+        meter: &str,
+        amount: u64,
+        from: u64,
+        to: u64,
+        flag: Option<Flag>,
+    ) {
         if is_slotted(meter) {
             for (slot, part) in split_by(amount, from, to, SLOT_MS) {
                 let (row, i) = self.slot_row(slot, subject);
-                row.series.entry(meter.to_string()).or_insert([0; SLOTS_PER_HOUR])[i] += part;
+                row.series
+                    .entry(meter.to_string())
+                    .or_insert([0; SLOTS_PER_HOUR])[i] += part;
             }
         }
         for (hour, part) in split_hours(amount, from, to) {
@@ -422,7 +452,12 @@ impl Round {
 
     /// Drop the cursors of a meter's parts that are not in `keep` (ports
     /// that are gone).
-    pub fn prune_parts(&mut self, subject: &Subject, meter: &str, keep: &BTreeSet<String>) -> Result<(), MeteringError> {
+    pub fn prune_parts(
+        &mut self,
+        subject: &Subject,
+        meter: &str,
+        keep: &BTreeSet<String>,
+    ) -> Result<(), MeteringError> {
         let prefix = format!("{}/{}#", subject.key(), meter);
         let txn = self.db.begin_read()?;
         let table = txn.open_table(CURSORS)?;
@@ -430,7 +465,11 @@ impl Round {
             .range(prefix.as_str()..format!("{prefix}~").as_str())?
             .map(|r| r.map(|(k, _)| k.value().to_string()))
             .collect::<Result<_, _>>()?;
-        let known = self.cursors.keys().filter(|k| k.starts_with(&prefix)).cloned();
+        let known = self
+            .cursors
+            .keys()
+            .filter(|k| k.starts_with(&prefix))
+            .cloned();
         let all: BTreeSet<String> = stored.into_iter().chain(known).collect();
         for k in all {
             if !keep.contains(&k[prefix.len()..]) {
@@ -453,7 +492,9 @@ impl Round {
     ) -> Result<Option<Delta>, MeteringError> {
         let prev = self.cursor(&key)?;
         let (amount, from, reset) = match &prev {
-            Some(c) if c.reset_key == reset_key && value >= c.value => (value - c.value, c.at, false),
+            Some(c) if c.reset_key == reset_key && value >= c.value => {
+                (value - c.value, c.at, false)
+            }
             Some(c) if c.reset_key == reset_key => (value, c.at, true),
             Some(c) => match origin {
                 // A new run of the counter: it counted from 0 since `t`.
@@ -466,7 +507,15 @@ impl Round {
                 _ => (0, at, false),
             },
         };
-        self.cursors.insert(key, Some(Cursor { reset_key: reset_key.to_string(), value, at, rem: 0 }));
+        self.cursors.insert(
+            key,
+            Some(Cursor {
+                reset_key: reset_key.to_string(),
+                value,
+                at,
+                rem: 0,
+            }),
+        );
         if is_slotted(meter) {
             let from = if prev.is_some() { from.min(at) } else { at };
             self.mark_present(subject, from, at, at - from > self.settings.gap_ms);
@@ -484,7 +533,12 @@ impl Round {
             None
         };
         self.spread(subject, meter, amount, from, at, flag);
-        Ok(Some(Delta { amount, from, to: at, interpolated }))
+        Ok(Some(Delta {
+            amount,
+            from,
+            to: at,
+            interpolated,
+        }))
     }
 
     /// The last value of a counter run that has ended (an exit snapshot,
@@ -494,16 +548,33 @@ impl Round {
     /// (`<run>/…`), so an exit record that knows only the instance finds
     /// a key like `<instance>/<shim start time>`. Calling it again adds
     /// nothing: it is consumed once.
-    pub fn counter_final(&mut self, subject: &Subject, meter: &str, run: &str, value: u64, at: u64) -> Result<(), MeteringError> {
+    pub fn counter_final(
+        &mut self,
+        subject: &Subject,
+        meter: &str,
+        run: &str,
+        value: u64,
+        at: u64,
+    ) -> Result<(), MeteringError> {
         let key = format!("{}/{}", subject.key(), meter);
         match self.cursor(&key)? {
-            Some(c) if (c.reset_key == run || c.reset_key.starts_with(&format!("{run}/"))) && value >= c.value => {
+            Some(c)
+                if (c.reset_key == run || c.reset_key.starts_with(&format!("{run}/")))
+                    && value >= c.value =>
+            {
                 if value > c.value {
                     let from = c.at.min(at);
                     let flag = (at - from > self.settings.gap_ms).then_some(Flag::Interpolated);
                     self.spread(subject, meter, value - c.value, from, at, flag);
                 }
-                self.cursors.insert(key, Some(Cursor { value, at: at.max(c.at), ..c }));
+                self.cursors.insert(
+                    key,
+                    Some(Cursor {
+                        value,
+                        at: at.max(c.at),
+                        ..c
+                    }),
+                );
             }
             // Already consumed, superseded, or never seen: nothing to add.
             _ => {}
@@ -516,7 +587,15 @@ impl Round {
     /// and ended while the meter was down), it counts in full from
     /// `launched` (unix ms), or only as a baseline if that was before
     /// metering started. Returns whether the run was unseen and counted.
-    pub fn counter_exit(&mut self, subject: &Subject, meter: &str, run: &str, value: u64, at: u64, launched: u64) -> Result<bool, MeteringError> {
+    pub fn counter_exit(
+        &mut self,
+        subject: &Subject,
+        meter: &str,
+        run: &str,
+        value: u64,
+        at: u64,
+        launched: u64,
+    ) -> Result<bool, MeteringError> {
         let key = format!("{}/{}", subject.key(), meter);
         if let Some(c) = self.cursor(&key)? {
             if c.reset_key == run || c.reset_key.starts_with(&format!("{run}/")) {
@@ -529,25 +608,51 @@ impl Round {
             let flag = (at - launched > self.settings.gap_ms).then_some(Flag::Interpolated);
             self.spread(subject, meter, value, launched, at, flag);
         }
-        self.cursors.insert(key, Some(Cursor { reset_key: run.to_string(), value, at, rem: 0 }));
+        self.cursors.insert(
+            key,
+            Some(Cursor {
+                reset_key: run.to_string(),
+                value,
+                at,
+                rem: 0,
+            }),
+        );
         Ok(counted)
     }
 
     /// A gauge level (§2): the level held since the previous reading is
     /// integrated over the time since (`level × seconds`), then `level`
     /// is held from `at`.
-    pub fn gauge(&mut self, subject: &Subject, meter: &str, level: u64, at: u64) -> Result<(), MeteringError> {
+    pub fn gauge(
+        &mut self,
+        subject: &Subject,
+        meter: &str,
+        level: u64,
+        at: u64,
+    ) -> Result<(), MeteringError> {
         self.integrate(subject, meter, at)?;
         let key = format!("{}/{}", subject.key(), meter);
-        let run = self.cursors.get(&key).cloned().flatten().map(|c| c.reset_key).unwrap_or_default();
+        let run = self
+            .cursors
+            .get(&key)
+            .cloned()
+            .flatten()
+            .map(|c| c.reset_key)
+            .unwrap_or_default();
         self.set_gauge(&key, &run, level, at);
         Ok(())
     }
 
     /// End a gauge at `at` (the subject stopped or went away).
-    pub fn gauge_end(&mut self, subject: &Subject, meter: &str, at: u64) -> Result<(), MeteringError> {
+    pub fn gauge_end(
+        &mut self,
+        subject: &Subject,
+        meter: &str,
+        at: u64,
+    ) -> Result<(), MeteringError> {
         self.integrate(subject, meter, at)?;
-        self.cursors.insert(format!("{}/{}", subject.key(), meter), None);
+        self.cursors
+            .insert(format!("{}/{}", subject.key(), meter), None);
         Ok(())
     }
 
@@ -555,7 +660,14 @@ impl Round {
     /// transition time, e.g. `status.phase_since`), read at `at`: the
     /// old level is integrated up to `since`, the new one from there.
     /// A `since` the cursor has already passed is ignored.
-    pub fn gauge_since(&mut self, subject: &Subject, meter: &str, level: u64, since: u64, at: u64) -> Result<(), MeteringError> {
+    pub fn gauge_since(
+        &mut self,
+        subject: &Subject,
+        meter: &str,
+        level: u64,
+        since: u64,
+        at: u64,
+    ) -> Result<(), MeteringError> {
         let key = format!("{}/{}", subject.key(), meter);
         if let Some(c) = self.cursor(&key)? {
             if since > c.at && since < at && c.value != level {
@@ -611,28 +723,57 @@ impl Round {
             Some(Some(c)) if c.reset_key == run => c.rem,
             _ => 0,
         };
-        self.cursors.insert(key.to_string(), Some(Cursor { reset_key: run.to_string(), value: level, at, rem }));
+        self.cursors.insert(
+            key.to_string(),
+            Some(Cursor {
+                reset_key: run.to_string(),
+                value: level,
+                at,
+                rem,
+            }),
+        );
     }
 
     /// Remember that `run` of the subject was seen (a cursor with no
     /// meter of its own).
     pub fn mark_run(&mut self, subject: &Subject, run: &str) {
-        self.cursors.insert(format!("{}/_run", subject.key()), Some(Cursor { reset_key: run.to_string(), value: 0, at: self.now, rem: 0 }));
+        self.cursors.insert(
+            format!("{}/_run", subject.key()),
+            Some(Cursor {
+                reset_key: run.to_string(),
+                value: 0,
+                at: self.now,
+                rem: 0,
+            }),
+        );
     }
 
     /// The run last marked with [`Self::mark_run`].
     pub fn marked_run(&mut self, subject: &Subject) -> Result<Option<String>, MeteringError> {
-        Ok(self.cursor(&format!("{}/_run", subject.key()))?.map(|c| c.reset_key))
+        Ok(self
+            .cursor(&format!("{}/_run", subject.key()))?
+            .map(|c| c.reset_key))
     }
 
     /// The run a gauge's cursor belongs to, if any.
-    pub fn gauge_run_of(&mut self, subject: &Subject, meter: &str) -> Result<Option<String>, MeteringError> {
-        Ok(self.cursor(&format!("{}/{}", subject.key(), meter))?.map(|c| c.reset_key))
+    pub fn gauge_run_of(
+        &mut self,
+        subject: &Subject,
+        meter: &str,
+    ) -> Result<Option<String>, MeteringError> {
+        Ok(self
+            .cursor(&format!("{}/{}", subject.key(), meter))?
+            .map(|c| c.reset_key))
     }
 
     /// End a gauge at the time it really ended, if that is after the
     /// last reading (`end` may be earlier than `now`, e.g. an exit time).
-    pub fn gauge_end_at(&mut self, subject: &Subject, meter: &str, end: u64) -> Result<(), MeteringError> {
+    pub fn gauge_end_at(
+        &mut self,
+        subject: &Subject,
+        meter: &str,
+        end: u64,
+    ) -> Result<(), MeteringError> {
         let key = format!("{}/{}", subject.key(), meter);
         if self.cursor(&key)?.is_some() {
             self.gauge_end(subject, meter, end)?;
@@ -681,7 +822,10 @@ impl Round {
 
     /// Note a live rate of a subject (e.g. `rx_mbps`) for `GET …/stats`.
     pub fn live(&mut self, subject: &Subject, name: &str, value: f64) {
-        let e = self.live.entry(subject.key()).or_insert_with(|| (subject.clone(), BTreeMap::new()));
+        let e = self
+            .live
+            .entry(subject.key())
+            .or_insert_with(|| (subject.clone(), BTreeMap::new()));
         e.0 = subject.clone();
         e.1.insert(name.to_string(), (value * 1000.0).round() / 1000.0);
     }
@@ -725,13 +869,21 @@ pub fn hour_of(ms: u64) -> u64 {
 /// Split `amount` over `[from, to]` (ms) into `(hour, part)` by overlap.
 /// The parts always sum to `amount`; an empty interval goes to `to`'s hour.
 pub fn split_hours(amount: u64, from: u64, to: u64) -> Vec<(u64, u64)> {
-    split_by(amount, from, to, HOUR_MS).into_iter().map(|(t, p)| (t / 1000, p)).collect()
+    split_by(amount, from, to, HOUR_MS)
+        .into_iter()
+        .map(|(t, p)| (t / 1000, p))
+        .collect()
 }
 
 /// Key ranges for time-prefixed keys `<t:010>/<project>/…` over `[from,
 /// to)`: one range, or, for a few named projects, one per period and
 /// project, so other projects' rows are never read (§15.6).
-fn ranges(from: u64, to: u64, period: u64, projects: Option<&BTreeSet<String>>) -> Vec<(String, String)> {
+fn ranges(
+    from: u64,
+    to: u64,
+    period: u64,
+    projects: Option<&BTreeSet<String>>,
+) -> Vec<(String, String)> {
     match projects {
         Some(ps) if ps.len() <= 64 => {
             let mut out = Vec::new();
@@ -744,7 +896,10 @@ fn ranges(from: u64, to: u64, period: u64, projects: Option<&BTreeSet<String>>) 
             }
             out
         }
-        _ => vec![(format!("{:010}/", from / period * period), format!("{to:010}/"))],
+        _ => vec![(
+            format!("{:010}/", from / period * period),
+            format!("{to:010}/"),
+        )],
     }
 }
 
@@ -787,7 +942,9 @@ impl Ledger {
     fn meta_u64(&self, key: &str) -> Result<Option<u64>, MeteringError> {
         let txn = self.db.begin_read()?;
         let table = txn.open_table(META)?;
-        Ok(table.get(key)?.and_then(|v| std::str::from_utf8(v.value()).ok()?.parse().ok()))
+        Ok(table
+            .get(key)?
+            .and_then(|v| std::str::from_utf8(v.value()).ok()?.parse().ok()))
     }
 
     /// When metering first ran (unix ms); set on the first call.
@@ -811,25 +968,34 @@ impl Ledger {
     #[cfg(test)]
     pub(crate) fn table_sizes(&self) -> Vec<(&'static str, usize, usize)> {
         let txn = self.db.begin_read().unwrap();
-        [("meter_cursors", CURSORS), ("meter_open", OPEN), ("usage_hourly", HOURLY), ("rate_5m", RATE5), ("usage_daily", DAILY)]
-            .into_iter()
-            .map(|(name, t)| {
-                let t = txn.open_table(t).unwrap();
-                let (mut n, mut bytes) = (0, 0);
-                for r in t.iter().unwrap() {
-                    let (k, v) = r.unwrap();
-                    n += 1;
-                    bytes += k.value().len() + v.value().len();
-                }
-                (name, n, bytes)
-            })
-            .collect()
+        [
+            ("meter_cursors", CURSORS),
+            ("meter_open", OPEN),
+            ("usage_hourly", HOURLY),
+            ("rate_5m", RATE5),
+            ("usage_daily", DAILY),
+        ]
+        .into_iter()
+        .map(|(name, t)| {
+            let t = txn.open_table(t).unwrap();
+            let (mut n, mut bytes) = (0, 0);
+            for r in t.iter().unwrap() {
+                let (k, v) = r.unwrap();
+                n += 1;
+                bytes += k.value().len() + v.value().len();
+            }
+            (name, n, bytes)
+        })
+        .collect()
     }
 
     #[cfg(test)]
     pub(crate) fn set_started_at_for_test(&self, ms: u64) {
         let txn = self.db.begin(crate::store::Origin::Metering).unwrap();
-        txn.open_table(META).unwrap().insert(META_STARTED_AT, ms.to_string().as_bytes()).unwrap();
+        txn.open_table(META)
+            .unwrap()
+            .insert(META_STARTED_AT, ms.to_string().as_bytes())
+            .unwrap();
         txn.commit().unwrap();
     }
 
@@ -843,7 +1009,10 @@ impl Ledger {
     }
 
     /// Subjects (`kind/id`) of the given kinds that have any cursor.
-    pub fn cursor_subjects(&self, kinds: &[SubjectKind]) -> Result<BTreeSet<String>, MeteringError> {
+    pub fn cursor_subjects(
+        &self,
+        kinds: &[SubjectKind],
+    ) -> Result<BTreeSet<String>, MeteringError> {
         let txn = self.db.begin_read()?;
         let table = txn.open_table(CURSORS)?;
         let mut out = BTreeSet::new();
@@ -930,22 +1099,42 @@ impl Ledger {
             for (k, acc) in due {
                 open.remove(k.as_str())?;
                 let Some(subject) = acc.subject else { continue };
-                let hour: u64 = k.split('/').next().and_then(|h| h.parse().ok()).unwrap_or(0);
+                let hour: u64 = k
+                    .split('/')
+                    .next()
+                    .and_then(|h| h.parse().ok())
+                    .unwrap_or(0);
                 let prefix = format!("{hour:010}/{}/{}/", subject.project_key(), subject.key());
-                let seq = match hourly.range(prefix.as_str()..format!("{prefix}~").as_str())?.next_back() {
+                let seq = match hourly
+                    .range(prefix.as_str()..format!("{prefix}~").as_str())?
+                    .next_back()
+                {
                     Some(r) => {
                         let (k, _) = r?;
-                        k.value().rsplit('/').next().and_then(|s| s.parse::<u16>().ok()).map_or(0, |s| s + 1)
+                        k.value()
+                            .rsplit('/')
+                            .next()
+                            .and_then(|s| s.parse::<u16>().ok())
+                            .map_or(0, |s| s + 1)
                     }
                     None => 0,
                 };
-                let row = UsageRecord { hour, subject, seq, meters: acc.meters, flags: acc.flags, written_at };
+                let row = UsageRecord {
+                    hour,
+                    subject,
+                    seq,
+                    meters: acc.meters,
+                    flags: acc.flags,
+                    written_at,
+                };
                 let key = hour_key(hour, row.subject.project_key(), &row.subject.key(), seq);
                 hourly.insert(key.as_str(), serde_json::to_vec(&row)?.as_slice())?;
             }
             let mut rate5 = txn.open_table(RATE5)?;
             for ((hour, _), row) in round.slots {
-                let Some(subject) = &row.subject else { continue };
+                let Some(subject) = &row.subject else {
+                    continue;
+                };
                 let k = slot_key(hour, subject);
                 let mut merged: SlotRow = match rate5.get(k.as_str())? {
                     Some(v) => serde_json::from_slice(v.value())?,
@@ -967,8 +1156,15 @@ impl Ledger {
     /// Rows for hours in `[from, to)` (unix s), closed rows first, then
     /// the open (provisional, `written_at == 0`) accumulators.
     /// `projects`: only these project ids (`None`: all).
-    pub fn scan(&self, from: u64, to: u64, projects: Option<&BTreeSet<String>>) -> Result<Vec<UsageRecord>, MeteringError> {
-        let keep = |s: &Subject| projects.is_none_or(|p| s.project.as_ref().is_some_and(|id| p.contains(id)));
+    pub fn scan(
+        &self,
+        from: u64,
+        to: u64,
+        projects: Option<&BTreeSet<String>>,
+    ) -> Result<Vec<UsageRecord>, MeteringError> {
+        let keep = |s: &Subject| {
+            projects.is_none_or(|p| s.project.as_ref().is_some_and(|id| p.contains(id)))
+        };
         let txn = self.db.begin_read()?;
         let mut out = Vec::new();
         let hourly = txn.open_table(HOURLY)?;
@@ -983,7 +1179,10 @@ impl Ledger {
         }
         // Days rolled up from hours past retention (§7.3), as day rows.
         let daily = txn.open_table(DAILY)?;
-        if daily.first()?.is_some_and(|(k, _)| k.value() < format!("{to:010}/").as_str()) {
+        if daily
+            .first()?
+            .is_some_and(|(k, _)| k.value() < format!("{to:010}/").as_str())
+        {
             // Day rows start at a whole hour (the billing zone's midnight).
             for (a, b) in ranges(from.saturating_sub(86400), to, 3600, projects) {
                 for r in daily.range(a.as_str()..b.as_str())? {
@@ -1001,8 +1200,20 @@ impl Ledger {
             let acc: HourAcc = serde_json::from_slice(v.value())?;
             let Some(subject) = acc.subject else { continue };
             if keep(&subject) {
-                let hour = k.value().split('/').next().and_then(|h| h.parse().ok()).unwrap_or(0);
-                out.push(UsageRecord { hour, subject, seq: 0, meters: acc.meters, flags: acc.flags, written_at: 0 });
+                let hour = k
+                    .value()
+                    .split('/')
+                    .next()
+                    .and_then(|h| h.parse().ok())
+                    .unwrap_or(0);
+                out.push(UsageRecord {
+                    hour,
+                    subject,
+                    seq: 0,
+                    meters: acc.meters,
+                    flags: acc.flags,
+                    written_at: 0,
+                });
             }
         }
         Ok(out)
@@ -1015,8 +1226,14 @@ impl Ledger {
     /// midnight `offset_secs` from UTC (the billing time zone's), so
     /// billing months stay exact after the roll-up. Returns how many
     /// hourly rows went.
-    pub fn roll_up_hours_before(&self, cutoff: u64, offset_secs: i64) -> Result<usize, MeteringError> {
-        let day_of = |t: u64| ((t as i64 + offset_secs).div_euclid(86400) * 86400 - offset_secs).max(0) as u64;
+    pub fn roll_up_hours_before(
+        &self,
+        cutoff: u64,
+        offset_secs: i64,
+    ) -> Result<usize, MeteringError> {
+        let day_of = |t: u64| {
+            ((t as i64 + offset_secs).div_euclid(86400) * 86400 - offset_secs).max(0) as u64
+        };
         let cutoff = day_of(cutoff.min(self.complete_through()?));
         let txn = self.db.begin(crate::store::Origin::Metering)?;
         let n;
@@ -1042,7 +1259,11 @@ impl Ledger {
                     flags: BTreeSet::new(),
                     written_at: r.written_at,
                 });
-                let mut acc = HourAcc { subject: None, meters: std::mem::take(&mut d.meters), flags: BTreeSet::new() };
+                let mut acc = HourAcc {
+                    subject: None,
+                    meters: std::mem::take(&mut d.meters),
+                    flags: BTreeSet::new(),
+                };
                 for (m, v) in &r.meters {
                     acc.add(m, *v);
                 }
@@ -1055,7 +1276,11 @@ impl Ledger {
                 // A day may already have a row (an adjustment rolled later).
                 if let Some(prev) = daily.get(k.as_str())? {
                     let prev: UsageRecord = serde_json::from_slice(prev.value())?;
-                    let mut acc = HourAcc { subject: None, meters: prev.meters, flags: BTreeSet::new() };
+                    let mut acc = HourAcc {
+                        subject: None,
+                        meters: prev.meters,
+                        flags: BTreeSet::new(),
+                    };
                     for (m, v) in &d.meters {
                         acc.add(m, *v);
                     }
@@ -1101,22 +1326,37 @@ impl Ledger {
 
     /// Final figures of a billing month (`usage_monthly_rates`, §8.5.1):
     /// `month_start` (unix s) keys them so pruning by time works.
-    pub fn put_month_rates(&self, month_start: u64, key: &str, value: &serde_json::Value) -> Result<(), MeteringError> {
+    pub fn put_month_rates(
+        &self,
+        month_start: u64,
+        key: &str,
+        value: &serde_json::Value,
+    ) -> Result<(), MeteringError> {
         let txn = self.db.begin(crate::store::Origin::Metering)?;
-        txn.open_table(MONTHLY_RATES)?.insert(format!("{month_start:010}/{key}").as_str(), serde_json::to_vec(value)?.as_slice())?;
+        txn.open_table(MONTHLY_RATES)?.insert(
+            format!("{month_start:010}/{key}").as_str(),
+            serde_json::to_vec(value)?.as_slice(),
+        )?;
         txn.commit()?;
         Ok(())
     }
 
     /// `(key, value)` of a month's final figures whose key starts with `prefix`.
-    pub fn month_rates(&self, month_start: u64, prefix: &str) -> Result<Vec<(String, serde_json::Value)>, MeteringError> {
+    pub fn month_rates(
+        &self,
+        month_start: u64,
+        prefix: &str,
+    ) -> Result<Vec<(String, serde_json::Value)>, MeteringError> {
         let txn = self.db.begin_read()?;
         let t = txn.open_table(MONTHLY_RATES)?;
         let from = format!("{month_start:010}/{prefix}");
         let mut out = Vec::new();
         for r in t.range(from.as_str()..format!("{from}~").as_str())? {
             let (k, v) = r?;
-            out.push((k.value()[11..].to_string(), serde_json::from_slice(v.value())?));
+            out.push((
+                k.value()[11..].to_string(),
+                serde_json::from_slice(v.value())?,
+            ));
         }
         Ok(out)
     }
@@ -1129,7 +1369,8 @@ impl Ledger {
     pub fn meta(&self, key: &str) -> Result<Option<String>, MeteringError> {
         let txn = self.db.begin_read()?;
         let t = txn.open_table(META)?;
-        Ok(t.get(key)?.map(|v| String::from_utf8_lossy(v.value()).into_owned()))
+        Ok(t.get(key)?
+            .map(|v| String::from_utf8_lossy(v.value()).into_owned()))
     }
 
     pub fn set_meta(&self, key: &str, value: &str) -> Result<(), MeteringError> {
@@ -1154,7 +1395,12 @@ impl Ledger {
         for (a, b) in ranges(from, to, 3600, projects) {
             for r in table.range(a.as_str()..b.as_str())? {
                 let (k, v) = r?;
-                let hour: u64 = k.value().split('/').next().and_then(|h| h.parse().ok()).unwrap_or(0);
+                let hour: u64 = k
+                    .value()
+                    .split('/')
+                    .next()
+                    .and_then(|h| h.parse().ok())
+                    .unwrap_or(0);
                 if hour < from {
                     continue;
                 }
@@ -1181,14 +1427,23 @@ impl Ledger {
                     let (k, v) = r.ok()?;
                     let key = k.value().to_string();
                     let second = key.split('/').nth(1)?;
-                    kinds.contains(&second).then(|| Some((key.clone(), serde_json::from_slice(v.value()).ok()?)))?
+                    kinds
+                        .contains(&second)
+                        .then(|| Some((key.clone(), serde_json::from_slice(v.value()).ok()?)))?
                 })
                 .collect();
             for (key, row) in old {
-                let hour: u64 = key.split('/').next().and_then(|h| h.parse().ok()).unwrap_or(0);
+                let hour: u64 = key
+                    .split('/')
+                    .next()
+                    .and_then(|h| h.parse().ok())
+                    .unwrap_or(0);
                 t.remove(key.as_str())?;
                 if let Some(subject) = &row.subject {
-                    t.insert(slot_key(hour, subject).as_str(), serde_json::to_vec(&row)?.as_slice())?;
+                    t.insert(
+                        slot_key(hour, subject).as_str(),
+                        serde_json::to_vec(&row)?.as_slice(),
+                    )?;
                     n += 1;
                 }
             }
@@ -1222,13 +1477,19 @@ impl Ledger {
 
     /// Another handle on the same database.
     pub fn clone_handle(&self) -> Ledger {
-        Ledger { db: self.db.clone(), settings: self.settings }
+        Ledger {
+            db: self.db.clone(),
+            settings: self.settings,
+        }
     }
 
     /// A ledger on a database that other code owns the upkeep of: no
     /// migrations. For merging shipped rows.
     pub fn attach(db: Arc<Db>) -> Self {
-        Self { db, settings: LedgerSettings::from_secs(30, 120) }
+        Self {
+            db,
+            settings: LedgerSettings::from_secs(30, 120),
+        }
     }
 
     /// Everything a node has not yet shipped: every closed hourly row it still
@@ -1245,12 +1506,22 @@ impl Ledger {
         let mut slots = Vec::new();
         for r in txn.open_table(RATE5)?.iter()? {
             let (k, v) = r?;
-            let hour: u64 = k.value().split('/').next().and_then(|h| h.parse().ok()).unwrap_or(u64::MAX);
+            let hour: u64 = k
+                .value()
+                .split('/')
+                .next()
+                .and_then(|h| h.parse().ok())
+                .unwrap_or(u64::MAX);
             if hour < closed {
                 slots.push((k.value().to_string(), serde_json::from_slice(v.value())?));
             }
         }
-        Ok(Export { started_at_ms: self.meta_u64(META_STARTED_AT)?.unwrap_or(0), closed_through: closed, hourly, slots })
+        Ok(Export {
+            started_at_ms: self.meta_u64(META_STARTED_AT)?.unwrap_or(0),
+            closed_through: closed,
+            hourly,
+            slots,
+        })
     }
 
     /// The leader has `e`: forget the hourly rows, and slots too old to change.
@@ -1283,84 +1554,112 @@ impl Ledger {
     pub fn import(&self, node: &str, e: &Export) -> Result<usize, MeteringError> {
         let now = now_ms() / 1000;
         let mut added = 0;
-        self.db.write(crate::store::Origin::Metering, |tx| -> Result<(), MeteringError> {
-            let mut inbox = tx.open_table(crate::store::TableId::LedgerInbox.definition())?;
-            let mut hourly = tx.open_table(HOURLY)?;
-            for (k, row) in &e.hourly {
-                let ik = format!("{node}/{k}");
-                if inbox.get(ik.as_str())?.is_some() {
-                    continue;
-                }
-                let prefix = format!("{:010}/{}/{}/", row.hour, row.subject.project_key(), row.subject.key());
-                let seq = match hourly.range(prefix.as_str()..format!("{prefix}~").as_str())?.next_back() {
-                    Some(r) => {
-                        let (k, _) = r?;
-                        k.value().rsplit('/').next().and_then(|s| s.parse::<u16>().ok()).map_or(0, |s| s + 1)
+        self.db.write(
+            crate::store::Origin::Metering,
+            |tx| -> Result<(), MeteringError> {
+                let mut inbox = tx.open_table(crate::store::TableId::LedgerInbox.definition())?;
+                let mut hourly = tx.open_table(HOURLY)?;
+                for (k, row) in &e.hourly {
+                    let ik = format!("{node}/{k}");
+                    if inbox.get(ik.as_str())?.is_some() {
+                        continue;
                     }
-                    None => 0,
-                };
-                let mut row = row.clone();
-                row.seq = seq;
-                hourly.insert(hour_key(row.hour, row.subject.project_key(), &row.subject.key(), seq).as_str(), serde_json::to_vec(&row)?.as_slice())?;
-                inbox.insert(ik.as_str(), now.to_string().as_bytes())?;
-                added += 1;
-            }
-            let mut slots = tx.open_table(RATE5)?;
-            for (k, row) in &e.slots {
-                slots.insert(k.as_str(), serde_json::to_vec(row)?.as_slice())?;
-            }
-            inbox.insert(format!("cursor/{node}").as_str(), serde_json::to_vec(&(e.closed_through, e.started_at_ms, now))?.as_slice())?;
-            // Forget old duplicates guards.
-            let cutoff = now.saturating_sub(INBOX_KEEP_SECS);
-            let old: Vec<String> = inbox
-                .iter()?
-                .filter_map(|r| r.ok())
-                .filter(|(k, v)| !k.value().starts_with("cursor/") && std::str::from_utf8(v.value()).ok().and_then(|s| s.parse::<u64>().ok()).is_some_and(|t| t < cutoff))
-                .map(|(k, _)| k.value().to_string())
-                .collect();
-            for k in old {
-                inbox.remove(k.as_str())?;
-            }
-            // Completeness: the least any live node has closed.
-            let live: BTreeSet<String> = {
-                let nodes = tx.open_table(crate::store::TableId::Nodes.definition())?;
-                nodes
+                    let prefix = format!(
+                        "{:010}/{}/{}/",
+                        row.hour,
+                        row.subject.project_key(),
+                        row.subject.key()
+                    );
+                    let seq = match hourly
+                        .range(prefix.as_str()..format!("{prefix}~").as_str())?
+                        .next_back()
+                    {
+                        Some(r) => {
+                            let (k, _) = r?;
+                            k.value()
+                                .rsplit('/')
+                                .next()
+                                .and_then(|s| s.parse::<u16>().ok())
+                                .map_or(0, |s| s + 1)
+                        }
+                        None => 0,
+                    };
+                    let mut row = row.clone();
+                    row.seq = seq;
+                    hourly.insert(
+                        hour_key(row.hour, row.subject.project_key(), &row.subject.key(), seq)
+                            .as_str(),
+                        serde_json::to_vec(&row)?.as_slice(),
+                    )?;
+                    inbox.insert(ik.as_str(), now.to_string().as_bytes())?;
+                    added += 1;
+                }
+                let mut slots = tx.open_table(RATE5)?;
+                for (k, row) in &e.slots {
+                    slots.insert(k.as_str(), serde_json::to_vec(row)?.as_slice())?;
+                }
+                inbox.insert(
+                    format!("cursor/{node}").as_str(),
+                    serde_json::to_vec(&(e.closed_through, e.started_at_ms, now))?.as_slice(),
+                )?;
+                // Forget old duplicates guards.
+                let cutoff = now.saturating_sub(INBOX_KEEP_SECS);
+                let old: Vec<String> = inbox
                     .iter()?
                     .filter_map(|r| r.ok())
-                    .filter_map(|(k, v)| {
-                        let n: crate::node::Node = serde_json::from_slice(v.value()).ok()?;
-                        (!n.status.phase.is_tombstone()).then(|| k.value().to_string())
+                    .filter(|(k, v)| {
+                        !k.value().starts_with("cursor/")
+                            && std::str::from_utf8(v.value())
+                                .ok()
+                                .and_then(|s| s.parse::<u64>().ok())
+                                .is_some_and(|t| t < cutoff)
                     })
-                    .collect()
-            };
-            let mut closed = u64::MAX;
-            let mut started = u64::MAX;
-            let mut reported = BTreeSet::new();
-            for r in inbox.range("cursor/".."cursor0")? {
-                let (k, v) = r?;
-                let id = k.value().trim_start_matches("cursor/").to_string();
-                if live.contains(&id) {
-                    let (c, s, _): (u64, u64, u64) = serde_json::from_slice(v.value())?;
-                    closed = closed.min(c);
-                    if s > 0 {
-                        started = started.min(s);
-                    }
-                    reported.insert(id);
+                    .map(|(k, _)| k.value().to_string())
+                    .collect();
+                for k in old {
+                    inbox.remove(k.as_str())?;
                 }
-            }
-            // A live node that has not reported yet may hold hours: not complete.
-            if live.iter().any(|n| !reported.contains(n)) {
-                closed = 0;
-            }
-            let mut meta = tx.open_table(META)?;
-            if closed != u64::MAX {
-                meta.insert(META_CLOSED_THROUGH, closed.to_string().as_bytes())?;
-            }
-            if started != u64::MAX {
-                meta.insert(META_STARTED_AT, started.to_string().as_bytes())?;
-            }
-            Ok(())
-        })?;
+                // Completeness: the least any live node has closed.
+                let live: BTreeSet<String> = {
+                    let nodes = tx.open_table(crate::store::TableId::Nodes.definition())?;
+                    nodes
+                        .iter()?
+                        .filter_map(|r| r.ok())
+                        .filter_map(|(k, v)| {
+                            let n: crate::node::Node = serde_json::from_slice(v.value()).ok()?;
+                            (!n.status.phase.is_tombstone()).then(|| k.value().to_string())
+                        })
+                        .collect()
+                };
+                let mut closed = u64::MAX;
+                let mut started = u64::MAX;
+                let mut reported = BTreeSet::new();
+                for r in inbox.range("cursor/".."cursor0")? {
+                    let (k, v) = r?;
+                    let id = k.value().trim_start_matches("cursor/").to_string();
+                    if live.contains(&id) {
+                        let (c, s, _): (u64, u64, u64) = serde_json::from_slice(v.value())?;
+                        closed = closed.min(c);
+                        if s > 0 {
+                            started = started.min(s);
+                        }
+                        reported.insert(id);
+                    }
+                }
+                // A live node that has not reported yet may hold hours: not complete.
+                if live.iter().any(|n| !reported.contains(n)) {
+                    closed = 0;
+                }
+                let mut meta = tx.open_table(META)?;
+                if closed != u64::MAX {
+                    meta.insert(META_CLOSED_THROUGH, closed.to_string().as_bytes())?;
+                }
+                if started != u64::MAX {
+                    meta.insert(META_STARTED_AT, started.to_string().as_bytes())?;
+                }
+                Ok(())
+            },
+        )?;
         Ok(added)
     }
 }
@@ -1376,7 +1675,8 @@ pub struct NodeState {
 impl Ledger {
     pub fn is_empty_of_state(&self) -> Result<bool, MeteringError> {
         let txn = self.db.begin_read()?;
-        Ok(txn.open_table(CURSORS)?.iter()?.next().is_none() && txn.open_table(OPEN)?.iter()?.next().is_none())
+        Ok(txn.open_table(CURSORS)?.iter()?.next().is_none()
+            && txn.open_table(OPEN)?.iter()?.next().is_none())
     }
 
     pub fn node_state(&self) -> Result<NodeState, MeteringError> {
@@ -1390,14 +1690,25 @@ impl Ledger {
             }
             Ok(v)
         };
-        let meta = rows(META)?.into_iter().filter(|(k, _)| matches!(k.as_str(), META_STARTED_AT | META_LAST_ROUND)).collect();
-        Ok(NodeState { cursors: rows(CURSORS)?, open: rows(OPEN)?, meta })
+        let meta = rows(META)?
+            .into_iter()
+            .filter(|(k, _)| matches!(k.as_str(), META_STARTED_AT | META_LAST_ROUND))
+            .collect();
+        Ok(NodeState {
+            cursors: rows(CURSORS)?,
+            open: rows(OPEN)?,
+            meta,
+        })
     }
 
     pub fn put_node_state(&self, st: &NodeState) -> Result<(), MeteringError> {
         let txn = self.db.begin(crate::store::Origin::Metering)?;
         {
-            let (mut c, mut o, mut m) = (txn.open_table(CURSORS)?, txn.open_table(OPEN)?, txn.open_table(META)?);
+            let (mut c, mut o, mut m) = (
+                txn.open_table(CURSORS)?,
+                txn.open_table(OPEN)?,
+                txn.open_table(META)?,
+            );
             for (k, v) in &st.cursors {
                 c.insert(k.as_str(), v.as_slice())?;
             }
@@ -1464,7 +1775,10 @@ mod tests {
     }
 
     fn total(l: &Ledger, meter: &str) -> u64 {
-        rows(l).iter().map(|r| r.meters.get(meter).copied().unwrap_or(0)).sum()
+        rows(l)
+            .iter()
+            .map(|r| r.meters.get(meter).copied().unwrap_or(0))
+            .sum()
     }
 
     /// xorshift: deterministic pseudo-random numbers for property tests.
@@ -1486,10 +1800,16 @@ mod tests {
             let to = from + rng.next() % (4 * H);
             let amount = rng.next() % 1_000_000_000_000;
             let parts = split_hours(amount, from, to);
-            assert_eq!(parts.iter().map(|p| p.1).sum::<u64>(), amount, "{from} {to} {amount}");
+            assert_eq!(
+                parts.iter().map(|p| p.1).sum::<u64>(),
+                amount,
+                "{from} {to} {amount}"
+            );
             let hours: Vec<u64> = parts.iter().map(|p| p.0).collect();
             assert!(hours.windows(2).all(|w| w[0] < w[1]));
-            assert!(hours.iter().all(|&h| h * 1000 >= hour_of(from) * 1000 && h * 1000 <= to));
+            assert!(hours
+                .iter()
+                .all(|&h| h * 1000 >= hour_of(from) * 1000 && h * 1000 <= to));
         }
     }
 
@@ -1502,15 +1822,20 @@ mod tests {
         let mut t = T0;
         let mut v = 0;
         let mut r = l.begin_round(t).unwrap();
-        r.counter(&s, "net.rx_bytes", "p", 0, t, Origin::ZeroAt(t)).unwrap();
+        r.counter(&s, "net.rx_bytes", "p", 0, t, Origin::ZeroAt(t))
+            .unwrap();
         for _ in 0..200 {
             t += 30_000;
             v += rng.next() % 1_000_000;
-            r.counter(&s, "net.rx_bytes", "p", v, t, Origin::Unknown).unwrap();
+            r.counter(&s, "net.rx_bytes", "p", v, t, Origin::Unknown)
+                .unwrap();
         }
         l.commit(r).unwrap();
         let slots = l.scan_slots(0, u64::MAX / 10, None, |_| true).unwrap();
-        let slot_total: u64 = slots.iter().map(|(_, row)| row.series["net.rx_bytes"].iter().sum::<u64>()).sum();
+        let slot_total: u64 = slots
+            .iter()
+            .map(|(_, row)| row.series["net.rx_bytes"].iter().sum::<u64>())
+            .sum();
         assert_eq!(slot_total, v, "slots add up to the hours");
         assert_eq!(slot_total, total(&l, "net.rx_bytes"));
         // 200 × 30 s = 100 min = 20 slots, all present, none interpolated.
@@ -1530,14 +1855,31 @@ mod tests {
             let db = Arc::new(Db::create(&path).unwrap());
             let _ = Ledger::new(db.clone(), LedgerSettings::from_secs(30, 120)).unwrap();
             // A row as M2 wrote it: `<hour>/<kind>/<id>`.
-            let row = SlotRow { subject: Some(s.clone()), present: 1, interpolated: 0, series: BTreeMap::new() };
+            let row = SlotRow {
+                subject: Some(s.clone()),
+                present: 1,
+                interpolated: 0,
+                series: BTreeMap::new(),
+            };
             let txn = db.begin(crate::store::Origin::Metering).unwrap();
-            txn.open_table(RATE5).unwrap().insert(format!("{:010}/vm/vm-1", T0 / 1000).as_str(), serde_json::to_vec(&row).unwrap().as_slice()).unwrap();
+            txn.open_table(RATE5)
+                .unwrap()
+                .insert(
+                    format!("{:010}/vm/vm-1", T0 / 1000).as_str(),
+                    serde_json::to_vec(&row).unwrap().as_slice(),
+                )
+                .unwrap();
             txn.commit().unwrap();
         }
-        let l = Ledger::new(Arc::new(Db::create(&path).unwrap()), LedgerSettings::from_secs(30, 120)).unwrap();
+        let l = Ledger::new(
+            Arc::new(Db::create(&path).unwrap()),
+            LedgerSettings::from_secs(30, 120),
+        )
+        .unwrap();
         let only: BTreeSet<String> = ["p1".to_string()].into();
-        let rows = l.scan_slots(T0 / 1000, T0 / 1000 + 3600, Some(&only), |_| true).unwrap();
+        let rows = l
+            .scan_slots(T0 / 1000, T0 / 1000 + 3600, Some(&only), |_| true)
+            .unwrap();
         assert_eq!(rows.len(), 1, "found under its project");
         assert_eq!(l.rekey_slots().unwrap(), 0, "idempotent");
     }
@@ -1547,10 +1889,12 @@ mod tests {
         let (_d, l) = ledger();
         let s = vm();
         let mut r = l.begin_round(T0).unwrap();
-        r.counter(&s, "cpu.used", "i", 0, T0, Origin::ZeroAt(T0)).unwrap();
+        r.counter(&s, "cpu.used", "i", 0, T0, Origin::ZeroAt(T0))
+            .unwrap();
         // 30 hours of usage, 100 per hour, then everything closes.
         for h in 1..=30u64 {
-            r.counter(&s, "cpu.used", "i", 100 * h, T0 + h * H, Origin::Unknown).unwrap();
+            r.counter(&s, "cpu.used", "i", 100 * h, T0 + h * H, Origin::Unknown)
+                .unwrap();
         }
         r.max(&s, "mem.peak", 7, T0 + 2 * H);
         r.now = T0 + 40 * H;
@@ -1561,8 +1905,13 @@ mod tests {
         let after = rows(&l);
         // Whole UTC days before the cutoff are day rows; the rest stay hourly.
         let cutoff_day = l.complete_through().unwrap() / 86400 * 86400;
-        assert!(after.iter().filter(|r| r.hour < cutoff_day).all(|r| r.hour % 86400 == 0));
-        assert!(after.iter().any(|r| r.hour >= cutoff_day && r.hour % 86400 != 0));
+        assert!(after
+            .iter()
+            .filter(|r| r.hour < cutoff_day)
+            .all(|r| r.hour % 86400 == 0));
+        assert!(after
+            .iter()
+            .any(|r| r.hour >= cutoff_day && r.hour % 86400 != 0));
         assert_eq!(combine(&after), before, "sums and maxima kept");
         let days = after.iter().filter(|r| r.hour < cutoff_day).count();
         assert_eq!(l.prune_daily_before(u64::MAX / 10).unwrap(), days);
@@ -1570,11 +1919,20 @@ mod tests {
 
     #[test]
     fn split_is_proportional_and_stays_in_one_hour() {
-        assert_eq!(split_hours(100, T0 + 10, T0 + 30_000), vec![(T0 / 1000, 100)]);
+        assert_eq!(
+            split_hours(100, T0 + 10, T0 + 30_000),
+            vec![(T0 / 1000, 100)]
+        );
         // Ends exactly on the boundary: still the earlier hour.
-        assert_eq!(split_hours(100, T0 + H - 30_000, T0 + H), vec![(T0 / 1000, 100)]);
+        assert_eq!(
+            split_hours(100, T0 + H - 30_000, T0 + H),
+            vec![(T0 / 1000, 100)]
+        );
         // 3/4 before the boundary, 1/4 after.
-        assert_eq!(split_hours(400, T0 + H - 30_000, T0 + H + 10_000), vec![(T0 / 1000, 300), ((T0 + H) / 1000, 100)]);
+        assert_eq!(
+            split_hours(400, T0 + H - 30_000, T0 + H + 10_000),
+            vec![(T0 / 1000, 300), ((T0 + H) / 1000, 100)]
+        );
         // Empty interval: the hour of `to`.
         assert_eq!(split_hours(5, T0 + 7, T0 + 7), vec![(T0 / 1000, 5)]);
     }
@@ -1585,14 +1943,41 @@ mod tests {
         let s = vm();
         let mut r = l.begin_round(T0 + 60_000).unwrap();
         // First sight of a counter that started at launch: counted in full.
-        let d = r.counter(&s, "cpu.used", "i1", 1_000, T0 + 30_000, Origin::ZeroAt(T0)).unwrap();
+        let d = r
+            .counter(&s, "cpu.used", "i1", 1_000, T0 + 30_000, Origin::ZeroAt(T0))
+            .unwrap();
         assert_eq!(d.unwrap().amount, 1_000);
         // Normal delta.
-        assert_eq!(r.counter(&s, "cpu.used", "i1", 1_500, T0 + 60_000, Origin::Unknown).unwrap().unwrap().amount, 500);
+        assert_eq!(
+            r.counter(&s, "cpu.used", "i1", 1_500, T0 + 60_000, Origin::Unknown)
+                .unwrap()
+                .unwrap()
+                .amount,
+            500
+        );
         // Went backwards under the same key: the new value counts, flagged.
-        assert_eq!(r.counter(&s, "cpu.used", "i1", 200, T0 + 90_000, Origin::Unknown).unwrap().unwrap().amount, 200);
+        assert_eq!(
+            r.counter(&s, "cpu.used", "i1", 200, T0 + 90_000, Origin::Unknown)
+                .unwrap()
+                .unwrap()
+                .amount,
+            200
+        );
         // New instance: counts from zero.
-        assert_eq!(r.counter(&s, "cpu.used", "i2", 70, T0 + 120_000, Origin::ZeroAt(T0 + 100_000)).unwrap().unwrap().amount, 70);
+        assert_eq!(
+            r.counter(
+                &s,
+                "cpu.used",
+                "i2",
+                70,
+                T0 + 120_000,
+                Origin::ZeroAt(T0 + 100_000)
+            )
+            .unwrap()
+            .unwrap()
+            .amount,
+            70
+        );
         l.commit(r).unwrap();
         assert_eq!(total(&l, "cpu.used"), 1_770);
         assert!(rows(&l)[0].flags.contains(&Flag::Reset));
@@ -1605,8 +1990,32 @@ mod tests {
         let s = vm();
         let mut r = l.begin_round(T0 + H + 30_000).unwrap();
         // Launched before metering started: baseline only.
-        assert_eq!(r.counter(&s, "cpu.used", "i1", 9_999, T0 + H + 30_000, Origin::ZeroAt(T0)).unwrap(), None);
-        assert_eq!(r.counter(&s, "cpu.used", "i1", 10_099, T0 + H + 60_000, Origin::Unknown).unwrap().unwrap().amount, 100);
+        assert_eq!(
+            r.counter(
+                &s,
+                "cpu.used",
+                "i1",
+                9_999,
+                T0 + H + 30_000,
+                Origin::ZeroAt(T0)
+            )
+            .unwrap(),
+            None
+        );
+        assert_eq!(
+            r.counter(
+                &s,
+                "cpu.used",
+                "i1",
+                10_099,
+                T0 + H + 60_000,
+                Origin::Unknown
+            )
+            .unwrap()
+            .unwrap()
+            .amount,
+            100
+        );
         l.commit(r).unwrap();
         assert_eq!(total(&l, "cpu.used"), 100);
     }
@@ -1619,18 +2028,34 @@ mod tests {
         let central_db = Arc::new(Db::create(central_dir.path().join("c.db")).unwrap());
         let central = Ledger::attach(central_db.clone());
         for id in ["a", "b"] {
-            let n = crate::node::Node::new(id, crate::node::NodeSpec { name: id.into(), role: crate::node::NodeRole::Server, unschedulable: false, labels: Default::default(), br_int_datapath: Default::default(), bridge_mappings: Default::default(), drop_spare_files_before: None });
-            crate::node::NodeStore::new(central_db.clone()).put(&n).unwrap();
+            let n = crate::node::Node::new(
+                id,
+                crate::node::NodeSpec {
+                    name: id.into(),
+                    role: crate::node::NodeRole::Server,
+                    unschedulable: false,
+                    labels: Default::default(),
+                    br_int_datapath: Default::default(),
+                    bridge_mappings: Default::default(),
+                    drop_spare_files_before: None,
+                },
+            );
+            crate::node::NodeStore::new(central_db.clone())
+                .put(&n)
+                .unwrap();
         }
         let node = |name: &str, vm: &str| {
             let (d, l) = ledger();
             let s = Subject::new(SubjectKind::Vm, vm, vm, Some("p1".into()));
             let mut r = l.begin_round(T0).unwrap();
-            r.counter(&s, "cpu.used", "run", 0, T0, Origin::ZeroAt(T0)).unwrap();
-            r.counter(&s, "cpu.used", "run", 1000, T0 + 30_000, Origin::Unknown).unwrap();
+            r.counter(&s, "cpu.used", "run", 0, T0, Origin::ZeroAt(T0))
+                .unwrap();
+            r.counter(&s, "cpu.used", "run", 1000, T0 + 30_000, Origin::Unknown)
+                .unwrap();
             l.commit(r).unwrap();
             let mut r = l.begin_round(T0 + 10 * H).unwrap(); // closes the hour
-            r.counter(&s, "cpu.used", "run", 1500, T0 + 10 * H, Origin::Unknown).unwrap();
+            r.counter(&s, "cpu.used", "run", 1500, T0 + 10 * H, Origin::Unknown)
+                .unwrap();
             l.commit(r).unwrap();
             (name.to_string(), d, l, s)
         };
@@ -1642,10 +2067,22 @@ mod tests {
         // The acknowledgement was lost: the same rows arrive again.
         assert_eq!(central.import(&na, &ea).unwrap(), 0);
         la.ack_export(&ea).unwrap();
-        assert!(la.export().unwrap().hourly.is_empty(), "shipped rows are forgotten locally");
+        assert!(
+            la.export().unwrap().hourly.is_empty(),
+            "shipped rows are forgotten locally"
+        );
         let before = central.scan(0, u64::MAX / 10, None).unwrap();
-        let sum = |rows: &[UsageRecord]| rows.iter().map(|r| r.meters.get("cpu.used").copied().unwrap_or(0)).sum::<u64>();
-        let sum_of = |e: &Export| e.hourly.iter().map(|(_, r)| r.meters.get("cpu.used").copied().unwrap_or(0)).sum::<u64>();
+        let sum = |rows: &[UsageRecord]| {
+            rows.iter()
+                .map(|r| r.meters.get("cpu.used").copied().unwrap_or(0))
+                .sum::<u64>()
+        };
+        let sum_of = |e: &Export| {
+            e.hourly
+                .iter()
+                .map(|(_, r)| r.meters.get("cpu.used").copied().unwrap_or(0))
+                .sum::<u64>()
+        };
         assert!(sum_of(&ea) > 0);
         assert_eq!(sum(&before), sum_of(&ea));
 
@@ -1653,19 +2090,33 @@ mod tests {
         assert_eq!(central.complete_through().unwrap(), 0);
         let eb = lb.export().unwrap();
         central.import(&nb, &eb).unwrap();
-        assert_eq!(central.complete_through().unwrap(), ea.closed_through.min(eb.closed_through));
-        assert_eq!(sum(&central.scan(0, u64::MAX / 10, None).unwrap()), sum_of(&ea) + sum_of(&eb));
+        assert_eq!(
+            central.complete_through().unwrap(),
+            ea.closed_through.min(eb.closed_through)
+        );
+        assert_eq!(
+            sum(&central.scan(0, u64::MAX / 10, None).unwrap()),
+            sum_of(&ea) + sum_of(&eb)
+        );
 
         // A late adjustment for the same subject and hour is a new row, not a replacement.
         let mut r = la.begin_round(T0 + 11 * H).unwrap();
         let s = Subject::new(SubjectKind::Vm, "vm-a", "vm-a", Some("p1".into()));
-        r.counter(&s, "cpu.used", "run", 1700, T0 + 11 * H, Origin::Unknown).unwrap();
+        r.counter(&s, "cpu.used", "run", 1700, T0 + 11 * H, Origin::Unknown)
+            .unwrap();
         la.commit(r).unwrap();
         let e2 = la.export().unwrap();
         central.import(&na, &e2).unwrap();
-        assert_eq!(sum(&central.scan(0, u64::MAX / 10, None).unwrap()), sum_of(&ea) + sum_of(&eb) + sum_of(&e2));
+        assert_eq!(
+            sum(&central.scan(0, u64::MAX / 10, None).unwrap()),
+            sum_of(&ea) + sum_of(&eb) + sum_of(&e2)
+        );
         assert!(sum_of(&e2) > 0);
-        assert!(central.scan(0, u64::MAX / 10, None).unwrap().iter().all(|r| r.written_at > 0));
+        assert!(central
+            .scan(0, u64::MAX / 10, None)
+            .unwrap()
+            .iter()
+            .all(|r| r.written_at > 0));
     }
 
     #[test]
@@ -1673,16 +2124,41 @@ mod tests {
         let (_d, l) = ledger();
         let s = vm();
         let mut r = l.begin_round(T0 + 30_000).unwrap();
-        r.counter(&s, "net.rx_bytes", "port-a", 0, T0, Origin::ZeroAt(T0)).unwrap();
-        r.counter(&s, "net.rx_bytes", "port-a", 100, T0 + 30_000, Origin::Unknown).unwrap();
+        r.counter(&s, "net.rx_bytes", "port-a", 0, T0, Origin::ZeroAt(T0))
+            .unwrap();
+        r.counter(
+            &s,
+            "net.rx_bytes",
+            "port-a",
+            100,
+            T0 + 30_000,
+            Origin::Unknown,
+        )
+        .unwrap();
         l.commit(r).unwrap();
         // A round that is dropped (failed commit) changes nothing...
         let mut lost = l.begin_round(T0 + 60_000).unwrap();
-        lost.counter(&s, "net.rx_bytes", "port-a", 250, T0 + 60_000, Origin::Unknown).unwrap();
+        lost.counter(
+            &s,
+            "net.rx_bytes",
+            "port-a",
+            250,
+            T0 + 60_000,
+            Origin::Unknown,
+        )
+        .unwrap();
         drop(lost);
         // ...and the next round recomputes from the old cursor.
         let mut r = l.begin_round(T0 + 90_000).unwrap();
-        r.counter(&s, "net.rx_bytes", "port-a", 400, T0 + 90_000, Origin::Unknown).unwrap();
+        r.counter(
+            &s,
+            "net.rx_bytes",
+            "port-a",
+            400,
+            T0 + 90_000,
+            Origin::Unknown,
+        )
+        .unwrap();
         l.commit(r).unwrap();
         assert_eq!(total(&l, "net.rx_bytes"), 400);
     }
@@ -1695,11 +2171,13 @@ mod tests {
         let mut t = T0;
         let mut v = 0u64;
         let mut r = l.begin_round(t).unwrap();
-        r.counter(&s, "disk.read_ops", "i1", 0, t, Origin::ZeroAt(t)).unwrap();
+        r.counter(&s, "disk.read_ops", "i1", 0, t, Origin::ZeroAt(t))
+            .unwrap();
         for i in 0..500 {
             t += 1 + rng.next() % 600_000; // up to 10 minutes: gaps included
             v += rng.next() % 50_000;
-            r.counter(&s, "disk.read_ops", "i1", v, t, Origin::Unknown).unwrap();
+            r.counter(&s, "disk.read_ops", "i1", v, t, Origin::Unknown)
+                .unwrap();
             if i % 7 == 0 {
                 let mut next = l.begin_round(t).unwrap();
                 std::mem::swap(&mut r, &mut next);
@@ -1709,7 +2187,10 @@ mod tests {
         r.now = t + 10 * H; // close everything
         l.commit(r).unwrap();
         assert_eq!(total(&l, "disk.read_ops"), v);
-        assert!(rows(&l).iter().all(|row| row.written_at > 0), "all hours closed");
+        assert!(
+            rows(&l).iter().all(|row| row.written_at > 0),
+            "all hours closed"
+        );
     }
 
     #[test]
@@ -1720,7 +2201,7 @@ mod tests {
         r.gauge(&s, "mem.alloc", 2048, T0).unwrap();
         r.gauge(&s, "mem.alloc", 4096, T0 + 30_000).unwrap(); // 2048 MiB × 30 s
         r.gauge_end(&s, "mem.alloc", T0 + 60_000).unwrap(); //   4096 MiB × 30 s
-        // Ended: no more accrual.
+                                                            // Ended: no more accrual.
         r.gauge(&s, "cpu.alloc", 2, T0 + H - 1_000).unwrap();
         l.commit(r).unwrap();
         assert_eq!(total(&l, "mem.alloc"), 2048 * 30 + 4096 * 30);
@@ -1737,10 +2218,12 @@ mod tests {
         let mut rng = Rng(7);
         let mut t = T0;
         let mut r = l.begin_round(t).unwrap();
-        r.gauge_run(&s, "vm.running", "i1", T0, 1, T0, T0, None).unwrap();
+        r.gauge_run(&s, "vm.running", "i1", T0, 1, T0, T0, None)
+            .unwrap();
         for i in 0..400 {
             t += 30_000 + rng.next() % 900; // 30 s + up to 0.9 s jitter
-            r.gauge_run(&s, "vm.running", "i1", T0, 1, T0, t, None).unwrap();
+            r.gauge_run(&s, "vm.running", "i1", T0, 1, T0, t, None)
+                .unwrap();
             if i % 9 == 0 {
                 let mut next = l.begin_round(t).unwrap();
                 std::mem::swap(&mut r, &mut next);
@@ -1748,7 +2231,11 @@ mod tests {
             }
         }
         l.commit(r).unwrap();
-        assert_eq!(total(&l, "vm.running"), (t - T0) / 1000, "whole seconds of the span, none lost");
+        assert_eq!(
+            total(&l, "vm.running"),
+            (t - T0) / 1000,
+            "whole seconds of the span, none lost"
+        );
     }
 
     #[test]
@@ -1758,11 +2245,14 @@ mod tests {
         let mut r = l.begin_round(T0 + H).unwrap();
         r.gauge(&s, "cpu.alloc", 4, T0).unwrap();
         // Paused at +10 s, seen at +30 s: 4 vCPU × 10 s, then 0.
-        r.gauge_since(&s, "cpu.alloc", 0, T0 + 10_000, T0 + 30_000).unwrap();
+        r.gauge_since(&s, "cpu.alloc", 0, T0 + 10_000, T0 + 30_000)
+            .unwrap();
         // The same transition seen again: no double count.
-        r.gauge_since(&s, "cpu.alloc", 0, T0 + 10_000, T0 + 60_000).unwrap();
+        r.gauge_since(&s, "cpu.alloc", 0, T0 + 10_000, T0 + 60_000)
+            .unwrap();
         // Resumed at +70 s, seen at +90 s: 4 × 20 s.
-        r.gauge_since(&s, "cpu.alloc", 4, T0 + 70_000, T0 + 90_000).unwrap();
+        r.gauge_since(&s, "cpu.alloc", 4, T0 + 70_000, T0 + 90_000)
+            .unwrap();
         // Exited at +100 s, seen at +120 s.
         r.gauge_end_at(&s, "cpu.alloc", T0 + 100_000).unwrap();
         r.gauge_end_at(&s, "cpu.alloc", T0 + 120_000).unwrap(); // already ended
@@ -1776,11 +2266,23 @@ mod tests {
         let s = vm();
         let mut r = l.begin_round(T0 + H).unwrap();
         // Instance i1 launched at T0, seen at +30 s.
-        r.gauge_run(&s, "mem.alloc", "i1", T0, 1024, T0, T0 + 30_000, None).unwrap();
-        r.gauge_run(&s, "mem.alloc", "i1", T0, 1024, T0, T0 + 60_000, None).unwrap();
+        r.gauge_run(&s, "mem.alloc", "i1", T0, 1024, T0, T0 + 30_000, None)
+            .unwrap();
+        r.gauge_run(&s, "mem.alloc", "i1", T0, 1024, T0, T0 + 60_000, None)
+            .unwrap();
         // Control plane down; i1 exited at +100 s, i2 launched at +500 s;
         // seen at +530 s. Charged: i1 to its exit, i2 from its launch.
-        r.gauge_run(&s, "mem.alloc", "i2", T0 + 500_000, 1024, T0 + 500_000, T0 + 530_000, Some(T0 + 100_000)).unwrap();
+        r.gauge_run(
+            &s,
+            "mem.alloc",
+            "i2",
+            T0 + 500_000,
+            1024,
+            T0 + 500_000,
+            T0 + 530_000,
+            Some(T0 + 100_000),
+        )
+        .unwrap();
         l.commit(r).unwrap();
         assert_eq!(total(&l, "mem.alloc"), 1024 * 100 + 1024 * 30);
     }
@@ -1791,20 +2293,46 @@ mod tests {
         let net = Subject::new(SubjectKind::Network, "nat", "nat", Some("p".into()));
         let mut r = l.begin_round(T0 + 60_000).unwrap();
         for (part, v0, v1) in [("port-a", 100, 150), ("port-b", 1000, 1300)] {
-            r.counter_part(&net, "bridge.bytes", part, part, v0, T0, Origin::ZeroAt(T0)).unwrap();
-            r.counter_part(&net, "bridge.bytes", part, part, v1, T0 + 30_000, Origin::Unknown).unwrap();
+            r.counter_part(&net, "bridge.bytes", part, part, v0, T0, Origin::ZeroAt(T0))
+                .unwrap();
+            r.counter_part(
+                &net,
+                "bridge.bytes",
+                part,
+                part,
+                v1,
+                T0 + 30_000,
+                Origin::Unknown,
+            )
+            .unwrap();
         }
         l.commit(r).unwrap();
         assert_eq!(total(&l, "bridge.bytes"), 1450);
         // port-a went away: its cursor is dropped, port-b's is kept.
         let mut r = l.begin_round(T0 + 90_000).unwrap();
-        r.prune_parts(&net, "bridge.bytes", &["port-b".to_string()].into()).unwrap();
-        r.counter_part(&net, "bridge.bytes", "port-b", "port-b", 1400, T0 + 60_000, Origin::Unknown).unwrap();
+        r.prune_parts(&net, "bridge.bytes", &["port-b".to_string()].into())
+            .unwrap();
+        r.counter_part(
+            &net,
+            "bridge.bytes",
+            "port-b",
+            "port-b",
+            1400,
+            T0 + 60_000,
+            Origin::Unknown,
+        )
+        .unwrap();
         l.commit(r).unwrap();
         assert_eq!(total(&l, "bridge.bytes"), 1550);
         let r = l.begin_round(T0 + 91_000).unwrap();
         let txn = r.db.begin_read().unwrap();
-        let keys: Vec<String> = txn.open_table(CURSORS).unwrap().iter().unwrap().map(|e| e.unwrap().0.value().to_string()).collect();
+        let keys: Vec<String> = txn
+            .open_table(CURSORS)
+            .unwrap()
+            .iter()
+            .unwrap()
+            .map(|e| e.unwrap().0.value().to_string())
+            .collect();
         assert_eq!(keys, vec!["network/nat/bridge.bytes#port-b".to_string()]);
     }
 
@@ -1817,12 +2345,19 @@ mod tests {
         r.gauge(&a, "disk.alloc", 1024, T0).unwrap();
         r.gauge(&b, "disk.alloc", 1024, T0).unwrap();
         l.commit(r).unwrap();
-        assert_eq!(l.cursor_subjects(&[SubjectKind::Disk]).unwrap(), ["disk/a".to_string(), "disk/b".to_string()].into());
+        assert_eq!(
+            l.cursor_subjects(&[SubjectKind::Disk]).unwrap(),
+            ["disk/a".to_string(), "disk/b".to_string()].into()
+        );
         let mut r = l.begin_round(T0 + 30_000).unwrap();
         r.forget_subject("disk/a");
         r.gauge(&b, "disk.alloc", 1024, T0 + 30_000).unwrap();
         l.commit(r).unwrap();
-        assert_eq!(l.cursor_subjects(&[SubjectKind::Disk, SubjectKind::Vm]).unwrap(), ["disk/b".to_string()].into());
+        assert_eq!(
+            l.cursor_subjects(&[SubjectKind::Disk, SubjectKind::Vm])
+                .unwrap(),
+            ["disk/b".to_string()].into()
+        );
         assert_eq!(total(&l, "disk.alloc"), 1024 * 30);
     }
 
@@ -1831,8 +2366,10 @@ mod tests {
         let (_d, l) = ledger();
         let s = vm();
         let mut r = l.begin_round(T0 + H + 60_000).unwrap();
-        r.counter(&s, "cpu.used", "i1", 0, T0, Origin::ZeroAt(T0)).unwrap();
-        r.counter(&s, "cpu.used", "i1", 10, T0 + 30_000, Origin::Unknown).unwrap();
+        r.counter(&s, "cpu.used", "i1", 0, T0, Origin::ZeroAt(T0))
+            .unwrap();
+        r.counter(&s, "cpu.used", "i1", 10, T0 + 30_000, Origin::Unknown)
+            .unwrap();
         l.commit(r).unwrap();
         // Within the 120 s grace: still open.
         assert!(rows(&l).iter().all(|r| r.written_at == 0));
@@ -1844,7 +2381,8 @@ mod tests {
         assert_eq!(l.complete_through().unwrap(), (T0 + H) / 1000);
         // A late delta for the closed hour (e.g. an exit snapshot): adjustment row.
         let mut r = l.begin_round(T0 + H + 150_000).unwrap();
-        r.counter_final(&s, "cpu.used", "i1", 15, T0 + 40_000).unwrap();
+        r.counter_final(&s, "cpu.used", "i1", 15, T0 + 40_000)
+            .unwrap();
         l.commit(r).unwrap();
         let rows = rows(&l);
         assert_eq!(rows.iter().map(|r| r.seq).collect::<Vec<_>>(), vec![0, 1]);
@@ -1856,9 +2394,17 @@ mod tests {
         let (_d, l) = ledger();
         let s = vm();
         let mut r = l.begin_round(T0 + 120_000).unwrap();
-        r.counter(&s, "net.rx_bytes", "p", 0, T0, Origin::ZeroAt(T0)).unwrap();
-        for (v, t) in [(3_000_000u64, 30_000u64), (3_300_000, 60_000), (33_300_000, 600_000)] {
-            let d = r.counter(&s, "net.rx_bytes", "p", v, T0 + t, Origin::Unknown).unwrap().unwrap();
+        r.counter(&s, "net.rx_bytes", "p", 0, T0, Origin::ZeroAt(T0))
+            .unwrap();
+        for (v, t) in [
+            (3_000_000u64, 30_000u64),
+            (3_300_000, 60_000),
+            (33_300_000, 600_000),
+        ] {
+            let d = r
+                .counter(&s, "net.rx_bytes", "p", v, T0 + t, Origin::Unknown)
+                .unwrap()
+                .unwrap();
             if let Some(kbps) = d.rate(8) {
                 r.max(&s, "net.rx_kbps_peak", kbps / 1000, T0 + t);
             }
@@ -1889,6 +2435,9 @@ mod tests {
         let only: BTreeSet<String> = ["p2".to_string()].into();
         let rows = l.scan(T0 / 1000, (T0 + H) / 1000, Some(&only)).unwrap();
         assert_eq!(rows.len(), 1);
-        assert_eq!((rows[0].subject.id.as_str(), rows[0].meters["vm.running"]), ("b", 3600));
+        assert_eq!(
+            (rows[0].subject.id.as_str(), rows[0].meters["vm.running"]),
+            ("b", 3600)
+        );
     }
 }

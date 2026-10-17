@@ -54,6 +54,7 @@ UMask=0077
 # copies each file into $CREDENTIALS_DIRECTORY, readable only by this unit.
 #LoadCredential=tls-key:/etc/glidex/tls/cp.key
 #LoadCredential=oidc-client-secret:/etc/glidex/oidc-client-secret
+#LoadCredential=secrets-kek:/etc/glidex/secrets.kek
 
 # Sandbox (spec/reconciliation.md §13.3). Hypervisors run in the
 # glidex-vm units with their own sandbox (and keep cloud-hypervisor's

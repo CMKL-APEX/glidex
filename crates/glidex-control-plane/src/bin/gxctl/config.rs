@@ -30,7 +30,11 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { version: CONFIG_VERSION, current: None, profiles: BTreeMap::new() }
+        Self {
+            version: CONFIG_VERSION,
+            current: None,
+            profiles: BTreeMap::new(),
+        }
     }
 }
 
@@ -65,11 +69,21 @@ impl Config {
     /// (§2.2).
     fn validate(&self, path: &Path) -> Result<(), String> {
         if self.version != CONFIG_VERSION {
-            return Err(format!("{}: unsupported config version {} (this gxctl writes version {})", path.display(), self.version, CONFIG_VERSION));
+            return Err(format!(
+                "{}: unsupported config version {} (this gxctl writes version {})",
+                path.display(),
+                self.version,
+                CONFIG_VERSION
+            ));
         }
         if let Some(cur) = &self.current {
             if !self.profiles.contains_key(cur) {
-                return Err(format!("{}: 'current' names '{}', which the file does not define; its profiles are {}", path.display(), cur, self.list()));
+                return Err(format!(
+                    "{}: 'current' names '{}', which the file does not define; its profiles are {}",
+                    path.display(),
+                    cur,
+                    self.list()
+                ));
             }
         }
         for (name, p) in &self.profiles {
@@ -81,7 +95,9 @@ impl Config {
                 let https = u.starts_with("https://");
                 let local = u.starts_with("http://") && is_loopback_host(&url_host(u));
                 if !https && !local {
-                    return Err(e(&format!("url '{u}': https only (plain http is accepted for loopback only, cli.md)")));
+                    return Err(e(&format!(
+                        "url '{u}': https only (plain http is accepted for loopback only, cli.md)"
+                    )));
                 }
             }
             for pin in &p.tls.pins {
@@ -194,7 +210,11 @@ impl Profile {
         if let Some(cmd) = &self.token_command {
             return run_token_command(cmd).map(Some);
         }
-        Ok(self.token.as_ref().filter(|t| !t.trim().is_empty()).map(|t| Zeroizing::new(t.trim().to_string())))
+        Ok(self
+            .token
+            .as_ref()
+            .filter(|t| !t.trim().is_empty())
+            .map(|t| Zeroizing::new(t.trim().to_string())))
     }
 }
 
@@ -221,7 +241,14 @@ pub struct Tls {
 // whole-struct and field defaults both arrive through this path.
 impl Default for Tls {
     fn default() -> Self {
-        Self { ca_file: None, ca_pem: None, pins: Vec::new(), verify_host: yes(), insecure: false, i_understand: None }
+        Self {
+            ca_file: None,
+            ca_pem: None,
+            pins: Vec::new(),
+            verify_host: yes(),
+            insecure: false,
+            i_understand: None,
+        }
     }
 }
 
@@ -265,7 +292,11 @@ pub fn url_host(url: &str) -> String {
     }
     if a.starts_with('[') {
         let tail = &a[1.min(a.len())..];
-        return tail.split_once(']').map(|(h, _)| h).unwrap_or(tail).to_string();
+        return tail
+            .split_once(']')
+            .map(|(h, _)| h)
+            .unwrap_or(tail)
+            .to_string();
     }
     a.rsplit_once(':').map(|(h, _)| h).unwrap_or(a).to_string()
 }
@@ -325,12 +356,16 @@ pub fn load_from(path: &Path) -> Result<Option<Config>, String> {
     }
     let euid = nix::unistd::geteuid().as_raw();
     if meta.uid() != euid {
-        return Err(format!("refusing to read {}: it is owned by another user, not you", path.display()));
+        return Err(format!(
+            "refusing to read {}: it is owned by another user, not you",
+            path.display()
+        ));
     }
     let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {}", path.display(), e))?;
     // Deny-unknown-fields plus the validation below are the promise that
     // gxctl never edits a file it does not fully understand (§2.2).
-    let cfg: Config = serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+    let cfg: Config =
+        serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
     cfg.validate(path)?;
     Ok(Some(cfg))
 }
@@ -345,13 +380,18 @@ pub fn save_to(path: &Path, cfg: &Config) -> Result<(), String> {
         .mode(0o700)
         .create(dir)
         .map_err(|e| format!("{}: {}", dir.display(), e))?;
-    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).map_err(|e| format!("{}: {}", dir.display(), e))?;
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+        .map_err(|e| format!("{}: {}", dir.display(), e))?;
     let tmp = dir.join(format!(".config.json.{}", std::process::id()));
     let _ = std::fs::remove_file(&tmp);
     let json = serde_json::to_string(cfg).map_err(|e| format!("{}: {e}", path.display()))?;
     let write = || -> io::Result<()> {
         use std::io::Write;
-        let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&tmp)?;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&tmp)?;
         f.write_all(json.as_bytes())?;
         f.write_all(b"\n")?;
         f.sync_all()?;
@@ -388,36 +428,55 @@ pub struct Selected<'a> {
 /// The name §3's precedence picks; `Ok(None)` means the file has nothing
 /// to choose from and the caller keeps today's socket/token ladder.
 pub fn chosen(cfg: &Config, want: Option<&str>) -> Result<Option<String>, String> {
-    let env = std::env::var("GLIDEX_PROFILE").ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    let env = std::env::var("GLIDEX_PROFILE")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
     let want = want.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
     let name = want.or(env).or(cfg.current.clone());
     if let Some(name) = name {
         if !cfg.profiles.contains_key(&name) {
-            return Err(format!("unknown profile '{}'; this file has: {}", name, cfg.list()));
+            return Err(format!(
+                "unknown profile '{}'; this file has: {}",
+                name,
+                cfg.list()
+            ));
         }
         return Ok(Some(name));
     }
     if cfg.profiles.is_empty() {
         return Ok(None);
     }
-    Err(format!("no current profile; choose one with --profile ({})", cfg.list()))
+    Err(format!(
+        "no current profile; choose one with --profile ({})",
+        cfg.list()
+    ))
 }
 
 /// The `(name, profile)` pair a login or maintenance command acts on:
 /// `name` when given, else the file's `current`. `None` is not an error —
 /// commands that can act without operating on a missing profile say so
 /// themselves.
-pub fn profile_of<'a>(cfg: &'a Option<Config>, name: Option<&str>) -> Option<(&'a String, &'a Profile)> {
+pub fn profile_of<'a>(
+    cfg: &'a Option<Config>,
+    name: Option<&str>,
+) -> Option<(&'a String, &'a Profile)> {
     let c = cfg.as_ref()?;
     match name {
         Some(n) => c.profiles.iter().find(|(k, _)| k.as_str() == n),
-        None => c.current.as_ref().and_then(|cur| c.profiles.iter().find(|(k, _)| *k == cur)),
+        None => c
+            .current
+            .as_ref()
+            .and_then(|cur| c.profiles.iter().find(|(k, _)| *k == cur)),
     }
 }
 
 pub fn select<'a>(cfg: &'a Config, want: Option<&str>) -> Result<Option<Selected<'a>>, String> {
     match chosen(cfg, want)? {
-        Some(name) => Ok(cfg.profiles.get(&name).map(|profile| Selected { name, profile })),
+        Some(name) => Ok(cfg
+            .profiles
+            .get(&name)
+            .map(|profile| Selected { name, profile })),
         None => Ok(None),
     }
 }
@@ -428,7 +487,11 @@ pub fn select<'a>(cfg: &'a Config, want: Option<&str>) -> Result<Option<Selected
 /// 4 KiB; never echoed, never logged, and its failure — with its own
 /// words — aborts the request.
 pub fn run_token_command(cmd: &str) -> Result<Zeroizing<String>, String> {
-    let out = std::process::Command::new("sh").arg("-c").arg(cmd).output().map_err(|e| format!("token_command: {e}"))?;
+    let out = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(cmd)
+        .output()
+        .map_err(|e| format!("token_command: {e}"))?;
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
         let t: &str = &err;
@@ -468,21 +531,44 @@ mod tests {
     use super::*;
 
     fn tls(pins: &[&str], verify_host: bool, insecure: bool, i_understand: Option<&str>) -> Tls {
-        Tls { pins: pins.iter().map(|p| p.to_string()).collect(), verify_host, insecure, i_understand: i_understand.map(|s| s.to_string()), ..Default::default() }
+        Tls {
+            pins: pins.iter().map(|p| p.to_string()).collect(),
+            verify_host,
+            insecure,
+            i_understand: i_understand.map(|s| s.to_string()),
+            ..Default::default()
+        }
     }
 
     fn full() -> Config {
-        let mut cfg = Config { current: Some("lab".into()), ..Default::default() };
+        let mut cfg = Config {
+            current: Some("lab".into()),
+            ..Default::default()
+        };
         cfg.profiles.insert(
             "lab".into(),
             Profile {
-                url: vec!["https://lab.example:8841".into(), "https://10.0.0.21:8841".into()],
+                url: vec![
+                    "https://lab.example:8841".into(),
+                    "https://10.0.0.21:8841".into(),
+                ],
                 cluster_id: Some("6f0c2c9a".into()),
                 cluster_name: Some("lab".into()),
-                tls: tls(&["sha256/2bf8c6c4f3d2a1b02bf8c6c4f3d2a1b02bf8c6c4f3d2a1b02bf8c6c4f3d2a1b0"], true, false, None),
+                tls: tls(
+                    &["sha256/2bf8c6c4f3d2a1b02bf8c6c4f3d2a1b02bf8c6c4f3d2a1b02bf8c6c4f3d2a1b0"],
+                    true,
+                    false,
+                    None,
+                ),
                 token: Some("gxt_secret_value".into()),
                 token_command: Some("vault kv get -field=token s/secret".into()),
-                identity: Some(Identity { method: Some("pam".into()), user: Some("alice".into()), token_id: Some("3f2a".into()), token_name: Some("gxctl@lab".into()), logged_in_at: Some(1760000000) }),
+                identity: Some(Identity {
+                    method: Some("pam".into()),
+                    user: Some("alice".into()),
+                    token_id: Some("3f2a".into()),
+                    token_name: Some("gxctl@lab".into()),
+                    logged_in_at: Some(1760000000),
+                }),
                 added_at: Some(1760000000),
                 ..Default::default()
             },
@@ -502,23 +588,42 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let p = dir.path().join("conf/config.json");
         save_to(&p, &full()).unwrap();
-        assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
-        assert_eq!(std::fs::metadata(p.parent().unwrap()).unwrap().permissions().mode() & 0o777, 0o700);
+        assert_eq!(
+            std::fs::metadata(&p).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            std::fs::metadata(p.parent().unwrap())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
         let back = load_from(&p).unwrap().unwrap();
         assert_eq!(back.version, CONFIG_VERSION);
         let lab = back.profiles.get("lab").unwrap();
         assert_eq!(lab.url.len(), 2);
         assert_eq!(lab.cluster_id, Some("6f0c2c9a".to_string()));
         assert_eq!(lab.token, Some("gxt_secret_value".to_string()));
-        assert_eq!(lab.identity.as_ref().unwrap().token_name, Some("gxctl@lab".to_string()));
+        assert_eq!(
+            lab.identity.as_ref().unwrap().token_name,
+            Some("gxctl@lab".to_string())
+        );
         assert_eq!(lab.tls.pins.len(), 1);
         assert!(lab.tls.verify_host, "the default survives the trip");
         // Debug names the profile without ever printing the secret or the
         // helper line (§2.1).
         let shown = format!("{back:?}");
-        assert!(!shown.contains("gxt_secret_value") && !shown.contains("vault"), "{shown}");
+        assert!(
+            !shown.contains("gxt_secret_value") && !shown.contains("vault"),
+            "{shown}"
+        );
         let shown = format!("{:?}", full());
-        assert!(!shown.contains("gxt_secret_value") && !shown.contains("vault"), "{shown}");
+        assert!(
+            !shown.contains("gxt_secret_value") && !shown.contains("vault"),
+            "{shown}"
+        );
     }
 
     #[test]
@@ -526,7 +631,10 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let p = write_raw(&dir, r#"{"version":1,"profiles":{}}"#);
         std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)).unwrap();
-        assert!(load_from(&p).unwrap_err().contains("group or others"), "the token inside is as good as a password");
+        assert!(
+            load_from(&p).unwrap_err().contains("group or others"),
+            "the token inside is as good as a password"
+        );
     }
 
     #[test]
@@ -534,18 +642,39 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         // Unknown field name (§2.2: a hand-editing typo must not silently
         // drop a pin).
-        let p = write_raw(&dir, r#"{"version":1,"profiles":{"lab":{"urlz":["https://x"]}}}"#);
-        assert!(load_from(&p).unwrap_err().contains("config.json"), "names the file");
+        let p = write_raw(
+            &dir,
+            r#"{"version":1,"profiles":{"lab":{"urlz":["https://x"]}}}"#,
+        );
+        assert!(
+            load_from(&p).unwrap_err().contains("config.json"),
+            "names the file"
+        );
         let p = write_raw(&dir, r#"{"version":2,"profiles":{}}"#);
         assert!(load_from(&p).unwrap_err().contains("version 2"));
-        let p = write_raw(&dir, r#"{"version":1,"current":"ghost","profiles":{"lab":{"url":["https://x"]}}}"#);
+        let p = write_raw(
+            &dir,
+            r#"{"version":1,"current":"ghost","profiles":{"lab":{"url":["https://x"]}}}"#,
+        );
         assert!(load_from(&p).unwrap_err().contains("ghost"));
-        let p = write_raw(&dir, r#"{"version":1,"profiles":{"lab":{"url":["https://x"],"tls":{"pins":["sha256/zzz"]}}}}"#);
-        assert!(load_from(&p).unwrap_err().contains("sha256/zzz"), "the bad pin is quoted back");
-        let p = write_raw(&dir, r#"{"version":1,"profiles":{"lab":{"url":["http://lab.example:8841"]}}}"#);
+        let p = write_raw(
+            &dir,
+            r#"{"version":1,"profiles":{"lab":{"url":["https://x"],"tls":{"pins":["sha256/zzz"]}}}}"#,
+        );
+        assert!(
+            load_from(&p).unwrap_err().contains("sha256/zzz"),
+            "the bad pin is quoted back"
+        );
+        let p = write_raw(
+            &dir,
+            r#"{"version":1,"profiles":{"lab":{"url":["http://lab.example:8841"]}}}"#,
+        );
         assert!(load_from(&p).unwrap_err().contains("https only"));
         // Loopback may be plain.
-        let p = write_raw(&dir, r#"{"version":1,"profiles":{"lab":{"url":["http://localhost:8841"]}}}"#);
+        let p = write_raw(
+            &dir,
+            r#"{"version":1,"profiles":{"lab":{"url":["http://localhost:8841"]}}}"#,
+        );
         assert!(load_from(&p).unwrap().is_some());
     }
 
@@ -553,18 +682,38 @@ mod tests {
     fn the_waivers_need_what_they_claim() {
         let dir = tempfile::TempDir::new().unwrap();
         // verify_host=false alone would accept any certificate for any host.
-        let p = write_raw(&dir, r#"{"version":1,"profiles":{"lab":{"url":["https://x"],"tls":{"verify_host":false}}}}"#);
+        let p = write_raw(
+            &dir,
+            r#"{"version":1,"profiles":{"lab":{"url":["https://x"],"tls":{"verify_host":false}}}}"#,
+        );
         assert!(load_from(&p).unwrap_err().contains("tls.pins"));
         // The bypass is reachable only through its confirmation phrase.
-        let p = write_raw(&dir, r#"{"version":1,"profiles":{"lab":{"url":["https://lab.example:8841"],"tls":{"insecure":true}}}}"#);
+        let p = write_raw(
+            &dir,
+            r#"{"version":1,"profiles":{"lab":{"url":["https://lab.example:8841"],"tls":{"insecure":true}}}}"#,
+        );
         assert!(load_from(&p).unwrap_err().contains("i_understand"));
-        let p = write_raw(&dir, r#"{"version":1,"profiles":{"lab":{"url":["https://lab.example:8841"],"tls":{"insecure":true,"i_understand":"other.example"}}}}"#);
-        assert!(load_from(&p).unwrap_err().contains("lab.example"), "the phrase must name this host");
-        let p = write_raw(&dir, r#"{"version":1,"profiles":{"lab":{"url":["https://lab.example:8841"],"tls":{"insecure":true,"i_understand":"lab.example"}}}}"#);
+        let p = write_raw(
+            &dir,
+            r#"{"version":1,"profiles":{"lab":{"url":["https://lab.example:8841"],"tls":{"insecure":true,"i_understand":"other.example"}}}}"#,
+        );
+        assert!(
+            load_from(&p).unwrap_err().contains("lab.example"),
+            "the phrase must name this host"
+        );
+        let p = write_raw(
+            &dir,
+            r#"{"version":1,"profiles":{"lab":{"url":["https://lab.example:8841"],"tls":{"insecure":true,"i_understand":"lab.example"}}}}"#,
+        );
         assert!(load_from(&p).unwrap().is_some());
         // Pinned dial-by-IP without a name check is the allowed combo (§2.2).
         let pin = "sha256/".to_string() + &"ab".repeat(32);
-        let p = write_raw(&dir, &format!(r#"{{"version":1,"profiles":{{"lab":{{"url":["https://192.168.1.5:8841"],"tls":{{"verify_host":false,"pins":["{pin}"]}}}}}}}}"#));
+        let p = write_raw(
+            &dir,
+            &format!(
+                r#"{{"version":1,"profiles":{{"lab":{{"url":["https://192.168.1.5:8841"],"tls":{{"verify_host":false,"pins":["{pin}"]}}}}}}}}"#
+            ),
+        );
         assert!(load_from(&p).unwrap().is_some());
     }
 
@@ -572,14 +721,22 @@ mod tests {
     fn choosing_follows_the_precedence() {
         let cfg = full();
         assert_eq!(chosen(&cfg, Some("lab")).unwrap(), Some("lab".to_string()));
-        assert!(chosen(&cfg, Some("nope")).unwrap_err().contains("this file has: lab"));
+        assert!(chosen(&cfg, Some("nope"))
+            .unwrap_err()
+            .contains("this file has: lab"));
         // No flag: `current`.
         assert_eq!(chosen(&cfg, None).unwrap(), Some("lab".to_string()));
         // Empty file: today's behaviour, not an error (§3.3).
         assert_eq!(chosen(&Config::default(), None).unwrap(), None);
         // Profiles but no current: name them, do not guess (§3.2).
         let mut lonely = Config::default();
-        lonely.profiles.insert("prod".into(), Profile { url: vec!["https://p".into()], ..Default::default() });
+        lonely.profiles.insert(
+            "prod".into(),
+            Profile {
+                url: vec!["https://p".into()],
+                ..Default::default()
+            },
+        );
         assert!(chosen(&lonely, None).unwrap_err().contains("prod"));
         let sel = select(&cfg, Some("lab")).unwrap().unwrap();
         assert_eq!(sel.profile.cluster_name, Some("lab".to_string()));
@@ -601,7 +758,9 @@ mod tests {
     fn the_helper_speaks_one_trimmed_line() {
         let t = run_token_command("printf '  gxt_x \\n  junk\\n'").unwrap();
         assert_eq!(t.as_str(), "gxt_x");
-        assert!(run_token_command("exit 3").unwrap_err().contains("exited unsuccessfully"));
+        assert!(run_token_command("exit 3")
+            .unwrap_err()
+            .contains("exited unsuccessfully"));
         assert!(run_token_command("true").unwrap_err().contains("nothing"));
         let big = format!("printf '{}'", "k".repeat(5000));
         assert!(run_token_command(&big).unwrap_err().contains("4 KiB"));
@@ -612,18 +771,38 @@ mod tests {
         // §2.2: `token_command` wins when both are present — a site-wide
         // helper outranks a stale copy, and the precedence is decided per
         // request so fixing the helper fixes gxctl without a re-login.
-        let mut p = Profile { url: vec!["https://x".into()], token: Some("gxt_stored".into()), token_command: Some("printf 'gxt_helper\\n'".into()), ..Default::default() };
-        assert_eq!(p.credential().unwrap().map(|t| t.as_str().to_string()), Some("gxt_helper".to_string()));
+        let mut p = Profile {
+            url: vec!["https://x".into()],
+            token: Some("gxt_stored".into()),
+            token_command: Some("printf 'gxt_helper\\n'".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            p.credential().unwrap().map(|t| t.as_str().to_string()),
+            Some("gxt_helper".to_string())
+        );
         p.token_command = None;
-        assert_eq!(p.credential().unwrap().map(|t| t.as_str().to_string()), Some("gxt_stored".to_string()));
+        assert_eq!(
+            p.credential().unwrap().map(|t| t.as_str().to_string()),
+            Some("gxt_stored".to_string())
+        );
         p.token = Some("   ".into());
-        assert!(p.credential().unwrap().is_none(), "whitespace is no credential");
+        assert!(
+            p.credential().unwrap().is_none(),
+            "whitespace is no credential"
+        );
     }
 
     #[test]
     fn trust_mode_says_what_will_be_checked() {
-        assert_eq!(full().profiles.get("lab").unwrap().trust_mode(), "system+pinned(1)");
-        let mut p = Profile { url: vec!["https://x".into()], ..Default::default() };
+        assert_eq!(
+            full().profiles.get("lab").unwrap().trust_mode(),
+            "system+pinned(1)"
+        );
+        let mut p = Profile {
+            url: vec!["https://x".into()],
+            ..Default::default()
+        };
         assert_eq!(p.trust_mode(), "system");
         p.tls.insecure = true;
         assert_eq!(p.trust_mode(), "UNVERIFIED");

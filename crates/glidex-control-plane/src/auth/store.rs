@@ -24,7 +24,8 @@ const SESSIONS: TableDefinition<&str, &[u8]> = TableDefinition::new("sessions");
 const TOKENS: TableDefinition<&str, &[u8]> = TableDefinition::new("api_tokens");
 const SITE_POLICIES: TableDefinition<&str, &[u8]> = TableDefinition::new("site_policies");
 /// `<id>@<version, zero-padded>` → version.
-const SITE_POLICY_VERSIONS: TableDefinition<&str, &[u8]> = TableDefinition::new("site_policy_versions");
+const SITE_POLICY_VERSIONS: TableDefinition<&str, &[u8]> =
+    TableDefinition::new("site_policy_versions");
 /// `<unix millis, zero-padded>-<seq>` → audit entry.
 const AUDIT: TableDefinition<&str, &[u8]> = TableDefinition::new("audit");
 
@@ -117,12 +118,15 @@ impl Identity {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MemberSource {
     Manual,
+    /// The file-defined connectors keep their names from before connectors.
     Pam,
     Oidc,
+    /// Synced by this connector (spec/tenancy.md D18).
+    Connector(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -273,13 +277,22 @@ fn table_id(table: crate::store::Def) -> crate::store::TableId {
     crate::store::TableId::from_name(table.name()).expect("a known table")
 }
 
-fn put<T: Serialize>(db: &Db, table: crate::store::Def, key: &str, value: &T) -> Result<(), StoreError> {
+fn put<T: Serialize>(
+    db: &Db,
+    table: crate::store::Def,
+    key: &str,
+    value: &T,
+) -> Result<(), StoreError> {
     let bytes = serde_json::to_vec(value)?;
     let txn = match db.begin(crate::store::Origin::Auth) {
         Ok(t) => t,
         // A follower authenticating someone (a session, a user): the leader writes.
         Err(crate::store::StoreError::NotLeader { .. }) => {
-            return Ok(db.forward_raw(vec![crate::store::Op::Put { table: table_id(table), key: key.as_bytes().to_vec(), value: bytes }])?)
+            return Ok(db.forward_raw(vec![crate::store::Op::Put {
+                table: table_id(table),
+                key: key.as_bytes().to_vec(),
+                value: bytes,
+            }])?)
         }
         Err(e) => return Err(e.into()),
     };
@@ -295,21 +308,27 @@ fn remove(db: &Db, table: crate::store::Def, key: &str) -> Result<bool, StoreErr
     let txn = match db.begin(crate::store::Origin::Auth) {
         Ok(t) => t,
         Err(crate::store::StoreError::NotLeader { .. }) => {
-            db.forward_raw(vec![crate::store::Op::Delete { table: table_id(table), key: key.as_bytes().to_vec() }])?;
+            db.forward_raw(vec![crate::store::Op::Delete {
+                table: table_id(table),
+                key: key.as_bytes().to_vec(),
+            }])?;
             return Ok(true);
         }
         Err(e) => return Err(e.into()),
     };
     let existed = {
         let mut t = txn.open_table(table)?;
-        
+
         t.remove(key)?.is_some()
     };
     txn.commit()?;
     Ok(existed)
 }
 
-fn list<T: DeserializeOwned>(db: &Db, table: crate::store::Def) -> Result<Vec<(String, T)>, StoreError> {
+fn list<T: DeserializeOwned>(
+    db: &Db,
+    table: crate::store::Def,
+) -> Result<Vec<(String, T)>, StoreError> {
     let txn = db.begin_read()?;
     let t = txn.open_table(table)?;
     let mut out = Vec::new();
@@ -322,11 +341,16 @@ fn list<T: DeserializeOwned>(db: &Db, table: crate::store::Def) -> Result<Vec<(S
 
 impl IdentityStore {
     pub fn new(db: Arc<Db>) -> Result<Self, StoreError> {
-        Ok(Self { db, audit_seq: Default::default(), policy_history: POLICY_HISTORY.into() })
+        Ok(Self {
+            db,
+            audit_seq: Default::default(),
+            policy_history: POLICY_HISTORY.into(),
+        })
     }
 
     pub fn set_policy_history(&self, n: usize) {
-        self.policy_history.store(n.max(1), std::sync::atomic::Ordering::Relaxed);
+        self.policy_history
+            .store(n.max(1), std::sync::atomic::Ordering::Relaxed);
     }
 
     pub fn database(&self) -> Arc<Db> {
@@ -362,7 +386,12 @@ impl IdentityStore {
     }
 
     pub fn put_identity(&self, i: &Identity) -> Result<(), StoreError> {
-        put(&self.db, IDENTITIES, &Identity::key(&i.provider, &i.subject), i)
+        put(
+            &self.db,
+            IDENTITIES,
+            &Identity::key(&i.provider, &i.subject),
+            i,
+        )
     }
 
     /// D13, at `gxctl cluster init`: re-key every unscoped `unix:` and
@@ -392,21 +421,28 @@ impl IdentityStore {
             let mut moves = Vec::new();
             for r in t.iter()? {
                 let (k, v) = r?;
-                let Ok(i) = serde_json::from_slice::<Identity>(v.value()) else { continue };
+                let Ok(i) = serde_json::from_slice::<Identity>(v.value()) else {
+                    continue;
+                };
                 if !i.is_host_local() {
                     continue;
                 }
                 match f(&i) {
                     Rekey::Keep => {}
                     Rekey::Drop => moves.push((k.value().to_string(), None)),
-                    Rekey::To(subject) => moves.push((k.value().to_string(), Some(Identity { subject, ..i }))),
+                    Rekey::To(subject) => {
+                        moves.push((k.value().to_string(), Some(Identity { subject, ..i })))
+                    }
                 }
             }
             let n = moves.len();
             for (old, new) in moves {
                 t.remove(&old)?;
                 if let Some(i) = new {
-                    t.insert(&Identity::key(&i.provider, &i.subject), serde_json::to_vec(&i)?.as_slice())?;
+                    t.insert(
+                        &Identity::key(&i.provider, &i.subject),
+                        serde_json::to_vec(&i)?.as_slice(),
+                    )?;
                 }
             }
             Ok(n)
@@ -505,16 +541,31 @@ impl IdentityStore {
 
     /// Make `user_id`'s `source` memberships exactly the teams named in
     /// `wanted` (spec §5.3, §5.4). Manual memberships are left alone.
-    pub fn sync_memberships(&self, user_id: &str, source: MemberSource, wanted: &[String]) -> Result<(), StoreError> {
+    pub fn sync_memberships(
+        &self,
+        user_id: &str,
+        source: MemberSource,
+        wanted: &[String],
+    ) -> Result<(), StoreError> {
         for mut t in self.teams()? {
             let want = wanted.contains(&t.name);
-            let has = t.members.iter().any(|m| m.user_id == user_id && m.source == source);
-            let manual = t.members.iter().any(|m| m.user_id == user_id && m.source == MemberSource::Manual);
+            let has = t
+                .members
+                .iter()
+                .any(|m| m.user_id == user_id && m.source == source);
+            let manual = t
+                .members
+                .iter()
+                .any(|m| m.user_id == user_id && m.source == MemberSource::Manual);
             if want && !has && !manual {
-                t.members.push(TeamMember { user_id: user_id.to_string(), source });
+                t.members.push(TeamMember {
+                    user_id: user_id.to_string(),
+                    source: source.clone(),
+                });
                 self.put_team(&t)?;
             } else if !want && has {
-                t.members.retain(|m| !(m.user_id == user_id && m.source == source));
+                t.members
+                    .retain(|m| !(m.user_id == user_id && m.source == source));
                 self.put_team(&t)?;
             }
         }
@@ -537,7 +588,11 @@ impl IdentityStore {
 
     /// Links whose principal or resource is `e` (cleanup on delete).
     pub fn links_mentioning(&self, e: &Ent) -> Result<Vec<LinkRecord>, StoreError> {
-        Ok(self.links()?.into_iter().filter(|l| l.link.principal == *e || l.link.resource == *e).collect())
+        Ok(self
+            .links()?
+            .into_iter()
+            .filter(|l| l.link.principal == *e || l.link.resource == *e)
+            .collect())
     }
 
     // ---- sessions -------------------------------------------------------
@@ -605,7 +660,10 @@ impl IdentityStore {
     // ---- site policies --------------------------------------------------
 
     pub fn site_policies(&self) -> Result<Vec<SitePolicy>, StoreError> {
-        let mut v: Vec<SitePolicy> = list(&self.db, SITE_POLICIES)?.into_iter().map(|(_, p)| p).collect();
+        let mut v: Vec<SitePolicy> = list(&self.db, SITE_POLICIES)?
+            .into_iter()
+            .map(|(_, p)| p)
+            .collect();
         v.sort_by(|a, b| a.id.cmp(&b.id));
         Ok(v)
     }
@@ -646,12 +704,29 @@ impl IdentityStore {
             let mut h = txn.open_table(SITE_POLICY_VERSIONS)?;
             let (text, enabled, deleted) = match new {
                 Some((text, _, enabled)) => (text.to_string(), enabled, false),
-                None => (current.as_ref().map(|p| p.text.clone()).unwrap_or_default(), false, true),
+                None => (
+                    current.as_ref().map(|p| p.text.clone()).unwrap_or_default(),
+                    false,
+                    true,
+                ),
             };
-            let entry = SitePolicyVersion { id: id.to_string(), version, text, enabled, author: author.to_string(), time: ts, deleted };
-            h.insert(format!("{}@{:012}", id, version).as_str(), serde_json::to_vec(&entry)?.as_slice())?;
+            let entry = SitePolicyVersion {
+                id: id.to_string(),
+                version,
+                text,
+                enabled,
+                author: author.to_string(),
+                time: ts,
+                deleted,
+            };
+            h.insert(
+                format!("{}@{:012}", id, version).as_str(),
+                serde_json::to_vec(&entry)?.as_slice(),
+            )?;
             // Keep the newest `policy_history` versions.
-            let keep = self.policy_history.load(std::sync::atomic::Ordering::Relaxed);
+            let keep = self
+                .policy_history
+                .load(std::sync::atomic::Ordering::Relaxed);
             let prefix = format!("{}@", id);
             let mut keys = Vec::new();
             for e in h.range(prefix.as_str()..)? {
@@ -708,12 +783,24 @@ impl IdentityStore {
     // ---- audit ----------------------------------------------------------
 
     pub fn append_audit(&self, e: &AuditEntry) -> Result<(), StoreError> {
-        let seq = self.audit_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        put(&self.db, AUDIT, &format!("{:016}-{:08}", e.time, seq % 100_000_000), e)
+        let seq = self
+            .audit_seq
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        put(
+            &self.db,
+            AUDIT,
+            &format!("{:016}-{:08}", e.time, seq % 100_000_000),
+            e,
+        )
     }
 
     /// Entries at or after `since` (unix millis), oldest first, at most `limit`.
-    pub fn audit(&self, since: u64, limit: usize, filter: impl Fn(&AuditEntry) -> bool) -> Result<Vec<AuditEntry>, StoreError> {
+    pub fn audit(
+        &self,
+        since: u64,
+        limit: usize,
+        filter: impl Fn(&AuditEntry) -> bool,
+    ) -> Result<Vec<AuditEntry>, StoreError> {
         let txn = self.db.begin_read()?;
         let t = txn.open_table(AUDIT)?;
         let start = format!("{:016}", since);
@@ -766,23 +853,53 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db = Arc::new(Db::create(dir.path().join("i.db")).unwrap());
         let s = IdentityStore::new(db).unwrap();
-        let alice = s.user_for_identity("unix", "alice", "alice", None, true).unwrap().unwrap();
-        let bob = s.user_for_identity("pam", "bob", "bob", None, true).unwrap().unwrap();
-        let sso = s.user_for_identity("oidc:https://idp", "carol", "carol", None, true).unwrap().unwrap();
+        let alice = s
+            .user_for_identity("unix", "alice", "alice", None, true)
+            .unwrap()
+            .unwrap();
+        let bob = s
+            .user_for_identity("pam", "bob", "bob", None, true)
+            .unwrap()
+            .unwrap();
+        let sso = s
+            .user_for_identity("oidc:https://idp", "carol", "carol", None, true)
+            .unwrap()
+            .unwrap();
         assert_eq!(s.scope_local_identities("n1").unwrap(), 2);
         assert!(s.identity("unix", "alice").unwrap().is_none());
-        assert_eq!(s.identity("unix", "alice@n1").unwrap().unwrap().user_id, alice.id);
-        assert_eq!(s.identity("pam", "bob@n1").unwrap().unwrap().user_id, bob.id);
+        assert_eq!(
+            s.identity("unix", "alice@n1").unwrap().unwrap().user_id,
+            alice.id
+        );
+        assert_eq!(
+            s.identity("pam", "bob@n1").unwrap().unwrap().user_id,
+            bob.id
+        );
         // OIDC identities are global and untouched.
-        assert_eq!(s.identity("oidc:https://idp", "carol").unwrap().unwrap().user_id, sso.id);
+        assert_eq!(
+            s.identity("oidc:https://idp", "carol")
+                .unwrap()
+                .unwrap()
+                .user_id,
+            sso.id
+        );
         // Idempotent.
         assert_eq!(s.scope_local_identities("n1").unwrap(), 0);
         // Another node's identity appears (a second host's alice).
-        let other = Identity { provider: "unix".into(), subject: "dave@n2".into(), user_id: alice.id.clone(), email: None, created_at: 1 };
+        let other = Identity {
+            provider: "unix".into(),
+            subject: "dave@n2".into(),
+            user_id: alice.id.clone(),
+            email: None,
+            created_at: 1,
+        };
         s.put_identity(&other).unwrap();
         // Leaving with n1's resources: n1's names are plain again, n2's are dropped.
         assert_eq!(s.unscope_local_identities("n1").unwrap(), 3);
-        assert_eq!(s.identity("unix", "alice").unwrap().unwrap().user_id, alice.id);
+        assert_eq!(
+            s.identity("unix", "alice").unwrap().unwrap().user_id,
+            alice.id
+        );
         assert_eq!(s.identity("pam", "bob").unwrap().unwrap().user_id, bob.id);
         assert!(s.identity("unix", "dave@n2").unwrap().is_none());
     }
@@ -790,26 +907,49 @@ mod tests {
     #[test]
     fn pam_and_unix_identities_share_a_user() {
         let (s, _d) = store();
-        let a = s.user_for_identity("unix", "alice", "alice", None, true).unwrap().unwrap();
-        let b = s.user_for_identity("pam", "alice", "alice", None, true).unwrap().unwrap();
+        let a = s
+            .user_for_identity("unix", "alice", "alice", None, true)
+            .unwrap()
+            .unwrap();
+        let b = s
+            .user_for_identity("pam", "alice", "alice", None, true)
+            .unwrap()
+            .unwrap();
         assert_eq!(a.id, b.id);
-        let o = s.user_for_identity("oidc:https://idp", "alice", "Alice", None, true).unwrap().unwrap();
+        let o = s
+            .user_for_identity("oidc:https://idp", "alice", "Alice", None, true)
+            .unwrap()
+            .unwrap();
         assert_ne!(o.id, a.id, "never linked by name or email across providers");
-        assert!(s.user_for_identity("pam", "bob", "bob", None, false).unwrap().is_none());
+        assert!(s
+            .user_for_identity("pam", "bob", "bob", None, false)
+            .unwrap()
+            .is_none());
     }
 
     #[test]
     fn membership_sync_keeps_manual() {
         let (s, _d) = store();
         for name in ["a", "b", "c"] {
-            s.put_team(&Team { id: name.into(), name: name.into(), members: vec![], created_at: 0 }).unwrap();
+            s.put_team(&Team {
+                id: name.into(),
+                name: name.into(),
+                members: vec![],
+                created_at: 0,
+            })
+            .unwrap();
         }
         let mut c = s.team("c").unwrap().unwrap();
-        c.members.push(TeamMember { user_id: "u".into(), source: MemberSource::Manual });
+        c.members.push(TeamMember {
+            user_id: "u".into(),
+            source: MemberSource::Manual,
+        });
         s.put_team(&c).unwrap();
-        s.sync_memberships("u", MemberSource::Oidc, &["a".into(), "b".into()]).unwrap();
+        s.sync_memberships("u", MemberSource::Oidc, &["a".into(), "b".into()])
+            .unwrap();
         assert_eq!(s.teams_of("u").unwrap(), vec!["a", "b", "c"]);
-        s.sync_memberships("u", MemberSource::Oidc, &["b".into()]).unwrap();
+        s.sync_memberships("u", MemberSource::Oidc, &["b".into()])
+            .unwrap();
         assert_eq!(s.teams_of("u").unwrap(), vec!["b", "c"]);
         s.sync_memberships("u", MemberSource::Oidc, &[]).unwrap();
         assert_eq!(s.teams_of("u").unwrap(), vec!["c"]);
@@ -818,22 +958,40 @@ mod tests {
     #[test]
     fn site_policy_versions_and_conflicts() {
         let (s, _d) = store();
-        assert!(matches!(s.write_site_policy("site.a", 1, Some(("x", "", true)), "u"), Err(StoreError::Conflict(_))));
-        let p = s.write_site_policy("site.a", 0, Some(("x", "d", true)), "u").unwrap().unwrap();
+        assert!(matches!(
+            s.write_site_policy("site.a", 1, Some(("x", "", true)), "u"),
+            Err(StoreError::Conflict(_))
+        ));
+        let p = s
+            .write_site_policy("site.a", 0, Some(("x", "d", true)), "u")
+            .unwrap()
+            .unwrap();
         assert_eq!(p.version, 1);
-        assert!(matches!(s.write_site_policy("site.a", 0, Some(("y", "", true)), "u"), Err(StoreError::Conflict(_))));
-        s.write_site_policy("site.a", 1, Some(("y", "", false)), "u").unwrap();
+        assert!(matches!(
+            s.write_site_policy("site.a", 0, Some(("y", "", true)), "u"),
+            Err(StoreError::Conflict(_))
+        ));
+        s.write_site_policy("site.a", 1, Some(("y", "", false)), "u")
+            .unwrap();
         s.write_site_policy("site.a", 2, None, "u").unwrap();
         assert!(s.site_policy("site.a").unwrap().is_none());
         let v = s.site_policy_versions("site.a").unwrap();
-        assert_eq!(v.iter().map(|v| v.version).collect::<Vec<_>>(), vec![1, 2, 3]);
+        assert_eq!(
+            v.iter().map(|v| v.version).collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
         assert!(v[2].deleted);
         for i in 0..60 {
-            s.write_site_policy("site.b", i, Some(("t", "", true)), "u").unwrap();
+            s.write_site_policy("site.b", i, Some(("t", "", true)), "u")
+                .unwrap();
         }
-        assert_eq!(s.site_policy_versions("site.b").unwrap().len(), POLICY_HISTORY);
+        assert_eq!(
+            s.site_policy_versions("site.b").unwrap().len(),
+            POLICY_HISTORY
+        );
         s.set_policy_history(5);
-        s.write_site_policy("site.b", 60, Some(("t", "", true)), "u").unwrap();
+        s.write_site_policy("site.b", 60, Some(("t", "", true)), "u")
+            .unwrap();
         assert_eq!(s.site_policy_versions("site.b").unwrap().len(), 5);
     }
 

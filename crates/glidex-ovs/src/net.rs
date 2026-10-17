@@ -19,7 +19,10 @@ pub struct Ipv4Net {
 impl Ipv4Net {
     pub fn new(addr: Ipv4Addr, prefix: u8) -> Result<Self, OvsError> {
         if prefix > 32 {
-            return Err(OvsError::invalid(format!("prefix /{} out of range", prefix)));
+            return Err(OvsError::invalid(format!(
+                "prefix /{} out of range",
+                prefix
+            )));
         }
         let mask = Self::mask_bits(prefix);
         Ok(Self {
@@ -136,7 +139,10 @@ pub fn route_destinations(exec: &dyn Exec) -> Result<Vec<Ipv4Net>, OvsError> {
         .filter_map(|dst| match dst {
             "default" => Some(Ipv4Net::new(Ipv4Addr::UNSPECIFIED, 0).unwrap()),
             d if d.contains('/') => d.parse().ok(),
-            d => d.parse::<Ipv4Addr>().ok().and_then(|a| Ipv4Net::new(a, 32).ok()),
+            d => d
+                .parse::<Ipv4Addr>()
+                .ok()
+                .and_then(|a| Ipv4Net::new(a, 32).ok()),
         })
         .collect())
 }

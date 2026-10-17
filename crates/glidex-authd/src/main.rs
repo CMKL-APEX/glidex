@@ -56,7 +56,8 @@ fn main() {
                 .flatten()
                 .map(|u| u.gid.as_raw());
             let path = config.run_dir.join(SOCKET_NAME);
-            let l = server::bind(&path, 0o660, gid).unwrap_or_else(|e| die(format!("{}: {}", path.display(), e)));
+            let l = server::bind(&path, 0o660, gid)
+                .unwrap_or_else(|e| die(format!("{}: {}", path.display(), e)));
             tracing::info!(socket = %path.display(), "listening");
             l
         }

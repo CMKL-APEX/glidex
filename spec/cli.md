@@ -145,7 +145,7 @@ name (ids when `/projects` isn't readable).
 | Command | Effect |
 |---|---|
 | `whoami` | `GET /auth/whoami`: user, method, token, teams, break-glass, host roles, project roles (with the principal they come through), default project |
-| `login --oidc` | TCP only. `POST /auth/oidc/device` → prints the verification URI and user code → polls `POST /auth/oidc/device/poll {device_code, token_name: "gxctl"}` every `interval` s (`202` pending, `429` slow down: +5 s) until it returns `{token}` or `expires_in` passes; the token is checked with `whoami` and saved |
+| `login --oidc [--connector ID]` | TCP only. `POST /auth/oidc/device` (`/auth/c/{ID}/device` with `--connector`; `auth login` takes `--connector` too, also for `--pam-user`) → prints the verification URI and user code → polls `POST /auth/oidc/device/poll {device_code, token_name: "gxctl"}` every `interval` s (`202` pending, `429` slow down: +5 s) until it returns `{token}` or `expires_in` passes; the token is checked with `whoami` and saved |
 | `login --token` | TCP only. Reads a token from stdin with echo off, checks it with `whoami`, saves it |
 | `login` on the Unix socket | Prints that no login is needed |
 | `logout [--revoke]` | Deletes the token file (`--revoke`: `DELETE /tokens/{id}` for the current token first) |
@@ -161,6 +161,11 @@ name (ids when `/projects` isn't readable).
 | `tenant members <t>` / `add-member <t> <principal>` / `remove-member <t> <principal>` | `TenantService.ListMembers` / `AddMember` / `RemoveMember` (explicit members; role links on the tenant and its projects make members too) |
 | `tenant bindings <t>` / `bind <t> <tenant-admin\|tenant-auditor> <principal>` / `unbind <t> <link>` | `TenantService.ListBindings` / `AddBinding` / `RemoveBinding` |
 | `admission list` / `set <tenant> [key=value…\|unlimited] [--suspend\|--resume]` / `remove <tenant>` | `AdmissionService` RPCs: which tenants this cluster admits and their caps (spec/tenancy.md D9, D19) |
+| `connector list` / `show <id>` | `ConnectorService.ListConnectors` / `GetConnector`: kind, source, rules, team mappings, and whether each secret is set (never its value) |
+| `connector add oidc <id> --issuer URL --client-id ID [--name N] [--scope S]… [--groups-claim C] [--domain D]… [--mfa-acr V]…` / `add pam <id> [--allow-group G]…`, both with `[--jit\|--no-jit] [--require-group G]… [--mfa\|--no-mfa] [--team GROUP=TEAM]… [--default-tenant T] [--token-max-days N]` | `CreateConnector`; prints the `secret set` command for each secret still to set |
+| `connector update <id> [--name N] [--enable\|--disable] [same flags]` | `UpdateConnector` with a field mask of the flags given |
+| `connector secret set <id> [field] [--from-file PATH]` | `SetSecret` (default field `client_secret`); the value comes from a hidden prompt, piped stdin or the file, never from argv |
+| `connector test <id>` / `remove <id>` | `TestConnector` (one line per step) / `DeleteConnector` |
 | `project list` / `show <p>` | `GET /projects`, `GET /projects/{p}` (quotas and usage) |
 | `project create <name> [--description D]` | `POST /projects` (in tenant `default` unless the body names `tenant`) |
 | `project delete <p>` | Confirmation → `DELETE /projects/{p}` |

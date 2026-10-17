@@ -139,7 +139,10 @@ pub struct FakeSupervisor {
 
 impl Supervisor for FakeSupervisor {
     fn start(&self, bridge: &str, args: Vec<String>) -> Result<(), OvsError> {
-        self.events.lock().unwrap().push(format!("start {} {}", bridge, args.join(" ")));
+        self.events
+            .lock()
+            .unwrap()
+            .push(format!("start {} {}", bridge, args.join(" ")));
         self.running.lock().unwrap().insert(bridge.to_string());
         Ok(())
     }
@@ -148,7 +151,10 @@ impl Supervisor for FakeSupervisor {
         self.running.lock().unwrap().remove(bridge);
     }
     fn reload(&self, bridge: &str) {
-        self.events.lock().unwrap().push(format!("reload {}", bridge));
+        self.events
+            .lock()
+            .unwrap()
+            .push(format!("reload {}", bridge));
     }
     fn running(&self, bridge: &str) -> bool {
         self.running.lock().unwrap().contains(bridge)

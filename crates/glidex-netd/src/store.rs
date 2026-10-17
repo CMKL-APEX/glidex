@@ -38,7 +38,12 @@ impl Store {
         Ok(Self { db })
     }
 
-    pub fn put<T: Serialize>(&self, table: TableDefinition<&str, &[u8]>, key: &str, value: &T) -> Result<(), OvsError> {
+    pub fn put<T: Serialize>(
+        &self,
+        table: TableDefinition<&str, &[u8]>,
+        key: &str,
+        value: &T,
+    ) -> Result<(), OvsError> {
         let bytes = serde_json::to_vec(value).map_err(err)?;
         let txn = self.db.begin_write().map_err(err)?;
         {
@@ -48,7 +53,11 @@ impl Store {
         txn.commit().map_err(err)
     }
 
-    pub fn get<T: DeserializeOwned>(&self, table: TableDefinition<&str, &[u8]>, key: &str) -> Result<Option<T>, OvsError> {
+    pub fn get<T: DeserializeOwned>(
+        &self,
+        table: TableDefinition<&str, &[u8]>,
+        key: &str,
+    ) -> Result<Option<T>, OvsError> {
         let txn = self.db.begin_read().map_err(err)?;
         let t = txn.open_table(table).map_err(err)?;
         match t.get(key).map_err(err)? {
@@ -57,13 +66,19 @@ impl Store {
         }
     }
 
-    pub fn list<T: DeserializeOwned>(&self, table: TableDefinition<&str, &[u8]>) -> Result<Vec<(String, T)>, OvsError> {
+    pub fn list<T: DeserializeOwned>(
+        &self,
+        table: TableDefinition<&str, &[u8]>,
+    ) -> Result<Vec<(String, T)>, OvsError> {
         let txn = self.db.begin_read().map_err(err)?;
         let t = txn.open_table(table).map_err(err)?;
         let mut out = Vec::new();
         for entry in t.iter().map_err(err)? {
             let (k, v) = entry.map_err(err)?;
-            out.push((k.value().to_string(), serde_json::from_slice(v.value()).map_err(err)?));
+            out.push((
+                k.value().to_string(),
+                serde_json::from_slice(v.value()).map_err(err)?,
+            ));
         }
         Ok(out)
     }

@@ -291,7 +291,9 @@ selects TCP.
 - Discovery from `oidc.issuer`; ID token checks: signature (JWKS,
   cached, refreshed on unknown `kid`), `iss`, `aud`, `exp`, `iat`
   skew ≤ 60 s, `nonce`. Algorithms limited to `RS256`/`ES256`.
-- Redirect URI on the UI origin: `https://<ui>/api/auth/oidc/callback`.
+- Redirect URI on the UI origin: `https://<ui>/api/auth/oidc/callback`
+  for the file-defined connector, `https://<ui>/api/auth/c/<id>/callback`
+  for one made through the API ([tenancy.md](tenancy.md) §6).
   `state` binds the browser session; it is single-use and valid 10
   minutes.
 - Identity key: `(issuer, sub)`. `email` / `name` are display only and
@@ -1213,6 +1215,8 @@ New endpoints:
 | `GET /auth/methods` | none |
 | `POST /auth/login` (`{method: "pam", username, password}`) | none |
 | `GET /auth/oidc/start`, `GET /auth/oidc/callback` | none |
+| `POST /auth/discover`; `GET /auth/c/{id}/start`, `/callback`; `POST /auth/c/{id}/device`, `/device/poll` | none (login through connector `id`; [tenancy.md](tenancy.md) §6, §14) |
+| `/connectors…` | `role.directory-admin` in the owner tenant; writes need a recent login |
 | `POST /auth/logout`, `GET /auth/whoami` | authenticated |
 | `GET/POST/DELETE /tokens` | own tokens; `project.members` for service accounts; `system.identity` for others' |
 | `GET/POST/PATCH /users`, `/users/{id}/identities` | `system.identity` (`GET /users/me` for self) |

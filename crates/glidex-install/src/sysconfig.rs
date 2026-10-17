@@ -118,7 +118,10 @@ pub fn socket_mem_mb(hugepages: u64) -> u64 {
 /// Uninstall: which settings to restore now, and which to keep in the
 /// drop-in. Hugepages are kept while OVS-DPDK stays configured (it would
 /// fail to start without them).
-pub fn split_for_uninstall(settings: &[Setting], keep_hugepages: bool) -> (Vec<Setting>, Vec<Setting>) {
+pub fn split_for_uninstall(
+    settings: &[Setting],
+    keep_hugepages: bool,
+) -> (Vec<Setting>, Vec<Setting>) {
     settings
         .iter()
         .cloned()
@@ -140,23 +143,56 @@ mod tests {
     #[test]
     fn render_and_parse_round_trip() {
         let settings = vec![
-            Setting { key: IP_FORWARD.into(), value: "1".into(), previous: Some("0".into()) },
-            Setting { key: NR_HUGEPAGES.into(), value: "2048".into(), previous: Some("0".into()) },
+            Setting {
+                key: IP_FORWARD.into(),
+                value: "1".into(),
+                previous: Some("0".into()),
+            },
+            Setting {
+                key: NR_HUGEPAGES.into(),
+                value: "2048".into(),
+                previous: Some("0".into()),
+            },
         ];
         let text = render(&settings);
-        assert!(text.contains("# glidex-previous: net.ipv4.ip_forward=0\nnet.ipv4.ip_forward = 1\n"));
+        assert!(
+            text.contains("# glidex-previous: net.ipv4.ip_forward=0\nnet.ipv4.ip_forward = 1\n")
+        );
         assert_eq!(parse(&text), settings);
     }
 
     #[test]
     fn rerun_keeps_the_original_previous_value() {
         // First install recorded ip_forward's original 0; it's 1 now because of glidex.
-        let first = render(&[Setting { key: IP_FORWARD.into(), value: "1".into(), previous: Some("0".into()) }]);
-        let merged = merge(Some(&first), &[(IP_FORWARD, "1".into()), (NR_HUGEPAGES, "2048".into())], |k| {
-            Some(if k == IP_FORWARD { "1".into() } else { "0".into() })
-        });
-        assert_eq!(merged[0].previous.as_deref(), Some("0"), "not glidex's own 1");
-        assert_eq!(merged[1], Setting { key: NR_HUGEPAGES.into(), value: "2048".into(), previous: Some("0".into()) });
+        let first = render(&[Setting {
+            key: IP_FORWARD.into(),
+            value: "1".into(),
+            previous: Some("0".into()),
+        }]);
+        let merged = merge(
+            Some(&first),
+            &[(IP_FORWARD, "1".into()), (NR_HUGEPAGES, "2048".into())],
+            |k| {
+                Some(if k == IP_FORWARD {
+                    "1".into()
+                } else {
+                    "0".into()
+                })
+            },
+        );
+        assert_eq!(
+            merged[0].previous.as_deref(),
+            Some("0"),
+            "not glidex's own 1"
+        );
+        assert_eq!(
+            merged[1],
+            Setting {
+                key: NR_HUGEPAGES.into(),
+                value: "2048".into(),
+                previous: Some("0".into())
+            }
+        );
         // A kernel-profile re-run keeps the earlier hugepage setting.
         let second = render(&merged);
         let again = merge(Some(&second), &[(IP_FORWARD, "1".into())], |_| None);
@@ -165,22 +201,52 @@ mod tests {
 
     #[test]
     fn hugepage_sizing() {
-        assert_eq!(hugepages_for(64 * 1024 * 1024, 0), 6144, "64 GiB host: 12 GiB of hugepages");
-        assert_eq!(hugepages_for(31_293 * 1024, 0), 5215, "31 GiB host: capped at a third");
-        assert_eq!(hugepages_for(4 * 1024 * 1024, 0), 682, "4 GiB host: capped at a third");
-        assert_eq!(hugepages_for(64 * 1024 * 1024, 8192), 8192, "never lower an existing reservation");
+        assert_eq!(
+            hugepages_for(64 * 1024 * 1024, 0),
+            6144,
+            "64 GiB host: 12 GiB of hugepages"
+        );
+        assert_eq!(
+            hugepages_for(31_293 * 1024, 0),
+            5215,
+            "31 GiB host: capped at a third"
+        );
+        assert_eq!(
+            hugepages_for(4 * 1024 * 1024, 0),
+            682,
+            "4 GiB host: capped at a third"
+        );
+        assert_eq!(
+            hugepages_for(64 * 1024 * 1024, 8192),
+            8192,
+            "never lower an existing reservation"
+        );
         assert_eq!(socket_mem_mb(6144), 4096);
         assert_eq!(socket_mem_mb(5215), 4096);
         assert_eq!(socket_mem_mb(1024), 1024);
-        assert_eq!(mem_total_kb("MemTotal:       42082304 kB\nMemFree: 1 kB\n"), Some(42_082_304));
-        assert_eq!(proc_path(IP_FORWARD), PathBuf::from("/proc/sys/net/ipv4/ip_forward"));
+        assert_eq!(
+            mem_total_kb("MemTotal:       42082304 kB\nMemFree: 1 kB\n"),
+            Some(42_082_304)
+        );
+        assert_eq!(
+            proc_path(IP_FORWARD),
+            PathBuf::from("/proc/sys/net/ipv4/ip_forward")
+        );
     }
 
     #[test]
     fn uninstall_keeps_hugepages_while_ovs_dpdk_stays() {
         let settings = vec![
-            Setting { key: IP_FORWARD.into(), value: "1".into(), previous: Some("0".into()) },
-            Setting { key: NR_HUGEPAGES.into(), value: "2048".into(), previous: Some("0".into()) },
+            Setting {
+                key: IP_FORWARD.into(),
+                value: "1".into(),
+                previous: Some("0".into()),
+            },
+            Setting {
+                key: NR_HUGEPAGES.into(),
+                value: "2048".into(),
+                previous: Some("0".into()),
+            },
         ];
         let (restore, keep) = split_for_uninstall(&settings, true);
         assert_eq!(restore.len(), 1);

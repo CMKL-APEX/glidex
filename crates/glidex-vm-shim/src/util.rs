@@ -25,7 +25,9 @@ pub fn boot_id() -> std::io::Result<String> {
         // Tests simulate a host reboot by changing it (spec §19).
         return Ok(id);
     }
-    Ok(std::fs::read_to_string("/proc/sys/kernel/random/boot_id")?.trim().to_string())
+    Ok(std::fs::read_to_string("/proc/sys/kernel/random/boot_id")?
+        .trim()
+        .to_string())
 }
 
 /// The start time of `pid` (field 22 of `/proc/<pid>/stat`, in clock
@@ -54,7 +56,10 @@ pub fn same_process(pid: u32, starttime: u64) -> std::io::Result<bool> {
     // A zombie keeps its /proc entry; it is gone as far as we're concerned.
     match std::fs::read_to_string(format!("/proc/{}/stat", pid)) {
         Ok(stat) => {
-            let zombie = stat.rfind(')').and_then(|i| stat[i + 1..].split_whitespace().next()) == Some("Z");
+            let zombie = stat
+                .rfind(')')
+                .and_then(|i| stat[i + 1..].split_whitespace().next())
+                == Some("Z");
             Ok(!zombie && parse_starttime(&stat) == Some(starttime))
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
@@ -73,7 +78,12 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         std::process::id()
     ));
     {
-        let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp)?;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&tmp)?;
         f.write_all(bytes)?;
         f.sync_all()?;
     }
@@ -86,7 +96,14 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 pub fn socket_accepts(path: &Path) -> std::io::Result<bool> {
     match std::os::unix::net::UnixStream::connect(path) {
         Ok(_) => Ok(true),
-        Err(e) if matches!(e.raw_os_error(), Some(libc::ENOENT) | Some(libc::ECONNREFUSED) | Some(libc::ENOTDIR)) => Ok(false),
+        Err(e)
+            if matches!(
+                e.raw_os_error(),
+                Some(libc::ENOENT) | Some(libc::ECONNREFUSED) | Some(libc::ENOTDIR)
+            ) =>
+        {
+            Ok(false)
+        }
         Err(e) => Err(e),
     }
 }
@@ -97,7 +114,8 @@ mod tests {
 
     #[test]
     fn starttime_survives_odd_command_names() {
-        let stat = "1234 (a) b (c)) S 1 1234 1234 0 -1 4194560 100 0 0 0 1 2 0 0 20 0 1 0 987654 1000 10";
+        let stat =
+            "1234 (a) b (c)) S 1 1234 1234 0 -1 4194560 100 0 0 0 1 2 0 0 20 0 1 0 987654 1000 10";
         assert_eq!(parse_starttime(stat), Some(987654));
         assert_eq!(parse_starttime("garbage"), None);
     }
@@ -130,7 +148,10 @@ mod tests {
         write_atomic(&p, b"{}").unwrap();
         write_atomic(&p, b"[1]").unwrap();
         assert_eq!(std::fs::read(&p).unwrap(), b"[1]");
-        assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            std::fs::metadata(&p).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 }

@@ -39,7 +39,11 @@ fn resolve(nodes: &[Node], key: &str) -> Result<Node, MemberError> {
     nodes
         .iter()
         .find(|n| n.meta.id == key)
-        .or_else(|| nodes.iter().find(|n| n.spec.name == key && !n.status.phase.is_tombstone()))
+        .or_else(|| {
+            nodes
+                .iter()
+                .find(|n| n.spec.name == key && !n.status.phase.is_tombstone())
+        })
         .or_else(|| nodes.iter().find(|n| n.spec.name == key))
         .cloned()
         .ok_or_else(|| MemberError::NotFound(key.to_string()))
@@ -47,35 +51,57 @@ fn resolve(nodes: &[Node], key: &str) -> Result<Node, MemberError> {
 
 impl Cluster {
     /// Deny-list every certificate issued to `node` (it can no longer connect).
-    pub(crate) fn deny_certs(tx: &crate::store::Tx<'_>, node: &str, why: &str) -> Result<usize, crate::store::StoreError> {
-        let io = |e: serde_json::Error| crate::store::StoreError::Io(std::io::Error::other(e.to_string()));
+    pub(crate) fn deny_certs(
+        tx: &crate::store::Tx<'_>,
+        node: &str,
+        why: &str,
+    ) -> Result<usize, crate::store::StoreError> {
+        let io = |e: serde_json::Error| {
+            crate::store::StoreError::Io(std::io::Error::other(e.to_string()))
+        };
         let serials: Vec<String> = {
             let t = tx.open_table(TableId::IssuedCerts.definition())?;
             let rows: Vec<String> = t
                 .iter()?
                 .flatten()
-                .filter(|(_, v)| serde_json::from_slice::<Value>(v.value()).ok().is_some_and(|v| v["node"] == node))
+                .filter(|(_, v)| {
+                    serde_json::from_slice::<Value>(v.value())
+                        .ok()
+                        .is_some_and(|v| v["node"] == node)
+                })
                 .map(|(k, _)| k.value().to_string())
                 .collect();
             rows
         };
         let mut deny = tx.open_table(TableId::NodeDenylist.definition())?;
         for s in &serials {
-            deny.insert(s.as_str(), serde_json::to_vec(&json!({ "node": node, "at": crate::tenancy::now(), "why": why })).map_err(io)?.as_slice())?;
+            deny.insert(
+                s.as_str(),
+                serde_json::to_vec(
+                    &json!({ "node": node, "at": crate::tenancy::now(), "why": why }),
+                )
+                .map_err(io)?
+                .as_slice(),
+            )?;
         }
         Ok(serials.len())
     }
 
     /// Whether the voters left after `leaving` go may still elect and commit (§5.5 step 2).
     pub(crate) fn check_voter_leaves(&self, leaving: u64, force: bool) -> Result<(), MemberError> {
-        let Some(node) = &self.node else { return Ok(()) };
+        let Some(node) = &self.node else {
+            return Ok(());
+        };
         let voters = node.voters();
         if !voters.contains(&leaving) {
             return Ok(());
         }
         let remaining = voters.len() - 1;
         if remaining == 0 || remaining * 2 <= voters.len() {
-            return Err(MemberError::Conflict(format!("{remaining} of {} voters would not be a majority of the current group", voters.len())));
+            return Err(MemberError::Conflict(format!(
+                "{remaining} of {} voters would not be a majority of the current group",
+                voters.len()
+            )));
         }
         if remaining % 2 == 0 && !force {
             return Err(MemberError::Conflict(format!("that would leave {remaining} voters; voters are 1, 3 or 5 (add a server first, or use --force)")));
@@ -91,7 +117,13 @@ impl Cluster {
             return Ok(0);
         }
         let store = NodeStore::new(self.db.clone());
-        let gone: BTreeSet<u64> = store.list().map_err(failed)?.iter().filter(|n| n.status.phase.is_tombstone()).filter_map(|n| n.status.raft_id).collect();
+        let gone: BTreeSet<u64> = store
+            .list()
+            .map_err(failed)?
+            .iter()
+            .filter(|n| n.status.phase.is_tombstone())
+            .filter_map(|n| n.status.raft_id)
+            .collect();
         let members: BTreeSet<u64> = node.voters().union(&node.learners()).copied().collect();
         let stale: BTreeSet<u64> = gone.intersection(&members).copied().collect();
         if stale.is_empty() {
@@ -115,7 +147,10 @@ impl Cluster {
             // The leader's CA tick retries this until it works (and resumes it
             // on a new leader): a failure here is only a delay.
             if let Err(e) = me.rotate_ca(None).await {
-                tracing::warn!("rotating the CA after a server left (the leader will retry): {}", e);
+                tracing::warn!(
+                    "rotating the CA after a server left (the leader will retry): {}",
+                    e
+                );
             }
         });
     }
@@ -123,7 +158,9 @@ impl Cluster {
 
 impl VmManager {
     fn member_cluster(&self) -> Result<Arc<Cluster>, MemberError> {
-        let c = self.cluster().ok_or_else(|| MemberError::Invalid("this host is not part of a cluster".into()))?;
+        let c = self
+            .cluster()
+            .ok_or_else(|| MemberError::Invalid("this host is not part of a cluster".into()))?;
         match &c.node {
             Some(n) if n.is_leader() => Ok(c),
             _ => Err(MemberError::NotLeader),
@@ -132,9 +169,25 @@ impl VmManager {
 
     /// What keeps `node` from being removed: its VMs, disks and node networks.
     fn node_contents(&self, id: &str) -> Vec<String> {
-        let mut out: Vec<String> = crate::cluster::sync::node_vms(&self.database(), id).into_iter().map(|(v, _)| format!("VM {v}")).collect();
-        out.extend(self.images.list_disks().into_iter().filter(|d| d.node.as_deref() == Some(id)).map(|d| format!("disk {}", d.name)));
-        out.extend(self.networks.list().unwrap_or_default().into_iter().filter(|n| n.node.as_deref() == Some(id)).map(|n| format!("network {}", n.name)));
+        let mut out: Vec<String> = crate::cluster::sync::node_vms(&self.database(), id)
+            .into_iter()
+            .map(|(v, _)| format!("VM {v}"))
+            .collect();
+        out.extend(
+            self.images
+                .list_disks()
+                .into_iter()
+                .filter(|d| d.node.as_deref() == Some(id))
+                .map(|d| format!("disk {}", d.name)),
+        );
+        out.extend(
+            self.networks
+                .list()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|n| n.node.as_deref() == Some(id))
+                .map(|n| format!("network {}", n.name)),
+        );
         out
     }
 
@@ -146,12 +199,25 @@ impl VmManager {
             return None;
         }
         let nodes = NodeStore::new(self.database()).list().unwrap_or_default();
-        let lives = |w: &String| nodes.iter().any(|n| (&n.meta.id == w || &n.spec.name == w) && n.meta.id != node.meta.id && !n.status.phase.is_tombstone());
+        let lives = |w: &String| {
+            nodes.iter().any(|n| {
+                (&n.meta.id == w || &n.spec.name == w)
+                    && n.meta.id != node.meta.id
+                    && !n.status.phase.is_tombstone()
+            })
+        };
         let is_it = |w: &String| w == &node.meta.id || w == &node.spec.name;
-        let nat_networks = self.networks.list().unwrap_or_default().iter().any(|n| n.scope == crate::network::NetworkScope::Cluster && n.mode == crate::network::NetworkMode::Nat && n.deletion_requested_at.is_none());
+        let nat_networks = self.networks.list().unwrap_or_default().iter().any(|n| {
+            n.scope == crate::network::NetworkScope::Cluster
+                && n.mode == crate::network::NetworkMode::Nat
+                && n.deletion_requested_at.is_none()
+        });
         let routers = crate::router::list(&self.database()).unwrap_or_default();
         if let Some(e) = &ovn.edge {
-            if e.gateway_nodes.iter().any(is_it) && !e.gateway_nodes.iter().any(lives) && nat_networks {
+            if e.gateway_nodes.iter().any(is_it)
+                && !e.gateway_nodes.iter().any(lives)
+                && nat_networks
+            {
                 return Some("it is the only gateway of the shared edge router; add another gateway node to the shared edge first (Cluster page, OVN settings)".into());
             }
         }
@@ -171,16 +237,23 @@ impl VmManager {
         let store = NodeStore::new(self.database());
         let n = resolve(&store.list().map_err(failed)?, key)?;
         match n.status.phase {
-            NodePhase::Removed => return Ok(json!({ "node": n.spec.name, "phase": n.status.phase, "already": true })),
+            NodePhase::Removed => {
+                return Ok(json!({ "node": n.spec.name, "phase": n.status.phase, "already": true }))
+            }
             NodePhase::Active | NodePhase::Draining => {}
             p => return Err(MemberError::Conflict(format!("the node is {p:?}"))),
         }
         if n.meta.id == c.identity.node_id {
-            return Err(MemberError::Conflict("a server can't remove itself: run this on another server".into()));
+            return Err(MemberError::Conflict(
+                "a server can't remove itself: run this on another server".into(),
+            ));
         }
         let left = self.node_contents(&n.meta.id);
         if !left.is_empty() {
-            return Err(MemberError::Conflict(format!("the node still holds: {}", left.join(", "))));
+            return Err(MemberError::Conflict(format!(
+                "the node still holds: {}",
+                left.join(", ")
+            )));
         }
         if let Some(why) = self.gateway_blocker(&n) {
             return Err(MemberError::Conflict(why));
@@ -194,14 +267,25 @@ impl VmManager {
         // The Raft side may need a moment (the leader itself can be going).
         let _ = c.finish_raft_removals().await;
         c.rotate_after_server_left(&n);
-        Ok(json!({ "node": n.spec.name, "phase": NodePhase::Removed, "denied_certificates": denied, "server": n.spec.role == NodeRole::Server }))
+        Ok(
+            json!({ "node": n.spec.name, "phase": NodePhase::Removed, "denied_certificates": denied, "server": n.spec.role == NodeRole::Server }),
+        )
     }
 
     /// The one write that retires a node: its phase, its certificates on the
     /// deny-list and, for `lose`, its VMs marked Lost.
-    fn write_tombstone(&self, c: &Cluster, id: &str, phase: NodePhase, why: &str, lose: bool) -> Result<usize, MemberError> {
+    fn write_tombstone(
+        &self,
+        c: &Cluster,
+        id: &str,
+        phase: NodePhase,
+        why: &str,
+        lose: bool,
+    ) -> Result<usize, MemberError> {
         let now = crate::tenancy::now();
-        let ev = |e: serde_json::Error| crate::store::StoreError::Io(std::io::Error::other(e.to_string()));
+        let ev = |e: serde_json::Error| {
+            crate::store::StoreError::Io(std::io::Error::other(e.to_string()))
+        };
         self.database()
             .write(Origin::Api, |tx| -> Result<usize, crate::store::StoreError> {
                 {
@@ -249,7 +333,12 @@ impl VmManager {
 
     /// §5.6: `gxctl node forget --fenced`: the administrator asserts the host
     /// is off for good.
-    pub async fn forget_node(&self, key: &str, fenced: bool, force: bool) -> Result<Value, MemberError> {
+    pub async fn forget_node(
+        &self,
+        key: &str,
+        fenced: bool,
+        force: bool,
+    ) -> Result<Value, MemberError> {
         if !fenced {
             return Err(MemberError::Invalid("forgetting a node asserts it is powered off and will not come back by itself: confirm with --fenced".into()));
         }
@@ -257,12 +346,16 @@ impl VmManager {
         let store = NodeStore::new(self.database());
         let n = resolve(&store.list().map_err(failed)?, key)?;
         match n.status.phase {
-            NodePhase::Forgotten => return Ok(json!({ "node": n.spec.name, "phase": n.status.phase, "already": true })),
+            NodePhase::Forgotten => {
+                return Ok(json!({ "node": n.spec.name, "phase": n.status.phase, "already": true }))
+            }
             NodePhase::Active | NodePhase::Draining => {}
             p => return Err(MemberError::Conflict(format!("the node is {p:?}"))),
         }
         if n.meta.id == c.identity.node_id {
-            return Err(MemberError::Conflict("this server can't forget itself".into()));
+            return Err(MemberError::Conflict(
+                "this server can't forget itself".into(),
+            ));
         }
         if n.status.ready == Tristate::True {
             return Err(MemberError::Conflict("the node is still reporting; drain and remove it instead (forget is for hosts that are gone)".into()));
@@ -272,10 +365,13 @@ impl VmManager {
         }
         let _ = self.leave_ovn_membership(&n, true).await;
         let lost = crate::cluster::sync::node_vms(&self.database(), &n.meta.id).len();
-        let denied = self.write_tombstone(&c, &n.meta.id, NodePhase::Forgotten, "forgotten", true)?;
+        let denied =
+            self.write_tombstone(&c, &n.meta.id, NodePhase::Forgotten, "forgotten", true)?;
         let _ = c.finish_raft_removals().await;
         c.rotate_after_server_left(&n);
-        Ok(json!({ "node": n.spec.name, "phase": NodePhase::Forgotten, "lost_vms": lost, "denied_certificates": denied }))
+        Ok(
+            json!({ "node": n.spec.name, "phase": NodePhase::Forgotten, "lost_vms": lost, "denied_certificates": denied }),
+        )
     }
 
     /// §5.6: `gxctl node purge`: drop what a forgotten node left and retire it as Removed.
@@ -284,12 +380,31 @@ impl VmManager {
         let store = NodeStore::new(self.database());
         let n = resolve(&store.list().map_err(failed)?, key)?;
         if n.status.phase != NodePhase::Forgotten {
-            return Err(MemberError::Conflict(format!("only a forgotten node can be purged; this one is {:?}", n.status.phase)));
+            return Err(MemberError::Conflict(format!(
+                "only a forgotten node can be purged; this one is {:?}",
+                n.status.phase
+            )));
         }
         let id = n.meta.id.clone();
-        let vms: Vec<String> = crate::cluster::sync::node_vms(&self.database(), &id).into_iter().map(|(v, _)| v).collect();
-        let disks: Vec<String> = self.images.list_disks().into_iter().filter(|d| d.node.as_deref() == Some(id.as_str())).map(|d| d.id).collect();
-        let nets: Vec<String> = self.networks.list().unwrap_or_default().into_iter().filter(|x| x.node.as_deref() == Some(id.as_str())).map(|x| x.name).collect();
+        let vms: Vec<String> = crate::cluster::sync::node_vms(&self.database(), &id)
+            .into_iter()
+            .map(|(v, _)| v)
+            .collect();
+        let disks: Vec<String> = self
+            .images
+            .list_disks()
+            .into_iter()
+            .filter(|d| d.node.as_deref() == Some(id.as_str()))
+            .map(|d| d.id)
+            .collect();
+        let nets: Vec<String> = self
+            .networks
+            .list()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|x| x.node.as_deref() == Some(id.as_str()))
+            .map(|x| x.name)
+            .collect();
         // One write: its records go and it becomes Removed together.
         self.database()
             .write(Origin::Api, |tx| -> Result<(), crate::store::StoreError> {
@@ -310,47 +425,108 @@ impl VmManager {
                     }
                 }
                 let mut nodes = tx.open_table(TableId::Nodes.definition())?;
-                let Some(mut cur): Option<Node> = nodes.get(id.as_str())?.and_then(|v| serde_json::from_slice(v.value()).ok()) else { return Ok(()) };
+                let Some(mut cur): Option<Node> = nodes
+                    .get(id.as_str())?
+                    .and_then(|v| serde_json::from_slice(v.value()).ok())
+                else {
+                    return Ok(());
+                };
                 cur.status.phase = NodePhase::Removed;
                 cur.status.ready_reason = Some("Purged".into());
                 cur.meta.resource_version += 1;
-                nodes.insert(id.as_str(), serde_json::to_vec(&cur).map_err(|e| crate::store::StoreError::Io(std::io::Error::other(e.to_string())))?.as_slice())?;
+                nodes.insert(
+                    id.as_str(),
+                    serde_json::to_vec(&cur)
+                        .map_err(|e| {
+                            crate::store::StoreError::Io(std::io::Error::other(e.to_string()))
+                        })?
+                        .as_slice(),
+                )?;
                 Ok(())
             })
             .map_err(failed)?;
-        Ok(json!({ "node": n.spec.name, "phase": NodePhase::Removed, "purged_vms": vms.len(), "purged_disks": disks.len(), "purged_networks": nets.len() }))
+        Ok(
+            json!({ "node": n.spec.name, "phase": NodePhase::Removed, "purged_vms": vms.len(), "purged_disks": disks.len(), "purged_networks": nets.len() }),
+        )
     }
 
     /// §5.7: `gxctl node rejoin-token`.
-    pub async fn rejoin_token(&self, key: &str, raft_intact: bool, ttl_secs: u64, by: &str) -> Result<Value, MemberError> {
+    pub async fn rejoin_token(
+        &self,
+        key: &str,
+        raft_intact: bool,
+        ttl_secs: u64,
+        by: &str,
+    ) -> Result<Value, MemberError> {
         let c = self.member_cluster()?;
         let store = NodeStore::new(self.database());
         let n = resolve(&store.list().map_err(failed)?, key)?;
         match n.status.phase {
-            NodePhase::Removed | NodePhase::Departed => return Err(MemberError::Conflict(format!("the node is {:?}: its id is retired; join as a new node", n.status.phase))),
-            NodePhase::Departing => return Err(MemberError::Conflict("a detach is in progress for this node".into())),
+            NodePhase::Removed | NodePhase::Departed => {
+                return Err(MemberError::Conflict(format!(
+                    "the node is {:?}: its id is retired; join as a new node",
+                    n.status.phase
+                )))
+            }
+            NodePhase::Departing => {
+                return Err(MemberError::Conflict(
+                    "a detach is in progress for this node".into(),
+                ))
+            }
             _ => {}
         }
         if n.meta.id == c.identity.node_id {
-            return Err(MemberError::Conflict("this is the server issuing the token".into()));
+            return Err(MemberError::Conflict(
+                "this is the server issuing the token".into(),
+            ));
         }
         let fp = c.ca_for_token().await;
-        let token = tokens::create(&c.db, TokenKind::Rejoin { node: n.meta.id.clone(), raft_intact }, ttl_secs, &fp, by).map_err(failed)?;
-        Ok(json!({ "token": token, "node": n.spec.name, "node_id": n.meta.id, "raft_intact": raft_intact, "ttl_secs": ttl_secs }))
+        let token = tokens::create(
+            &c.db,
+            TokenKind::Rejoin {
+                node: n.meta.id.clone(),
+                raft_intact,
+            },
+            ttl_secs,
+            &fp,
+            by,
+        )
+        .map_err(failed)?;
+        Ok(
+            json!({ "token": token, "node": n.spec.name, "node_id": n.meta.id, "raft_intact": raft_intact, "ttl_secs": ttl_secs }),
+        )
     }
 
     /// Hook for the OVN side of leaving (§5.5 steps 3–4): kick the node from
     /// the NB/SB clusters and delete its chassis. A no-op without OVN.
-    pub(crate) async fn leave_ovn_membership(&self, n: &Node, _unreachable: bool) -> Result<(), MemberError> {
+    pub(crate) async fn leave_ovn_membership(
+        &self,
+        n: &Node,
+        _unreachable: bool,
+    ) -> Result<(), MemberError> {
         if !self.ovn_enabled() {
             return Ok(());
         }
-        let Some(addr) = n.status.advertise else { return Ok(()) };
+        let Some(addr) = n.status.advertise else {
+            return Ok(());
+        };
         let netd = self.netd.clone();
-        let (ip, chassis, server) = (addr.ip().to_string(), glidex_ovs::ovn::chassis_name(&n.meta.id), n.spec.role == NodeRole::Server);
-        tokio::task::spawn_blocking(move || netd.call::<()>(glidex_netd::proto::Op::ForgetOvnMember(glidex_netd::proto::ForgetOvnMemberArgs { address: ip, chassis, server })))
-            .await
-            .map_err(failed)?
-            .map_err(|e| MemberError::Failed(format!("OVN: {e}")))
+        let (ip, chassis, server) = (
+            addr.ip().to_string(),
+            glidex_ovs::ovn::chassis_name(&n.meta.id),
+            n.spec.role == NodeRole::Server,
+        );
+        tokio::task::spawn_blocking(move || {
+            netd.call::<()>(glidex_netd::proto::Op::ForgetOvnMember(
+                glidex_netd::proto::ForgetOvnMemberArgs {
+                    address: ip,
+                    chassis,
+                    server,
+                },
+            ))
+        })
+        .await
+        .map_err(failed)?
+        .map_err(|e| MemberError::Failed(format!("OVN: {e}")))
     }
 }

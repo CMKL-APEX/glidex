@@ -112,7 +112,10 @@ pub fn list_owned(exec: &dyn Exec) -> Result<Vec<BridgeInfo>, OvsError> {
 
 /// Names of every bridge on the host, owned or not (for restart impact).
 pub fn list_all_names(exec: &dyn Exec) -> Result<Vec<String>, OvsError> {
-    let out = exec.check(&crate::exec::Cmd::new(crate::exec::Program::OvsVsctl, ["list-br"]))?;
+    let out = exec.check(&crate::exec::Cmd::new(
+        crate::exec::Program::OvsVsctl,
+        ["list-br"],
+    ))?;
     Ok(out
         .stdout_str()
         .lines()
@@ -123,7 +126,11 @@ pub fn list_all_names(exec: &dyn Exec) -> Result<Vec<String>, OvsError> {
 }
 
 /// Create the bridge, or bring an owned one in line with `spec`.
-pub fn ensure(exec: &dyn Exec, caps: &HostCapabilities, spec: &BridgeSpec) -> Result<BridgeInfo, OvsError> {
+pub fn ensure(
+    exec: &dyn Exec,
+    caps: &HostCapabilities,
+    spec: &BridgeSpec,
+) -> Result<BridgeInfo, OvsError> {
     spec.validate()?;
     if spec.datapath == Datapath::Netdev
         && !caps.dpdk_initialized
@@ -196,7 +203,10 @@ pub fn delete(exec: &dyn Exec, name: &str) -> Result<(), OvsError> {
     match get(exec, name)? {
         None => Ok(()),
         Some(b) if !b.owned => Err(OvsError::not_owned(format!("bridge '{}'", name))),
-        Some(_) => vsctl::run(exec, vec!["--if-exists".into(), "del-br".into(), name.into()]),
+        Some(_) => vsctl::run(
+            exec,
+            vec!["--if-exists".into(), "del-br".into(), name.into()],
+        ),
     }
 }
 
@@ -242,29 +252,57 @@ mod tests {
         let exec = RecordingExec::new();
         exec.on(FIND, Output::ok(OWNED));
         ensure(&exec, &caps(), &spec()).unwrap();
-        assert!(!exec.calls().iter().any(|c| c.contains("add-br") || c.contains(" set ")));
+        assert!(!exec
+            .calls()
+            .iter()
+            .any(|c| c.contains("add-br") || c.contains(" set ")));
     }
 
     #[test]
     fn refuses_foreign_bridge_unless_adopted() {
         let exec = RecordingExec::new();
         exec.on(FIND, Output::ok(FOREIGN));
-        assert!(matches!(ensure(&exec, &caps(), &spec()), Err(OvsError::NotOwned { .. })));
-        assert!(matches!(delete(&exec, "gxbr-nat"), Err(OvsError::NotOwned { .. })));
+        assert!(matches!(
+            ensure(&exec, &caps(), &spec()),
+            Err(OvsError::NotOwned { .. })
+        ));
+        assert!(matches!(
+            delete(&exec, "gxbr-nat"),
+            Err(OvsError::NotOwned { .. })
+        ));
         assert!(!exec.calls().iter().any(|c| c.contains("del-br")));
 
         let exec = RecordingExec::new();
         exec.on(FIND, Output::ok(FOREIGN));
         exec.on(FIND, Output::ok(OWNED));
-        ensure(&exec, &caps(), &BridgeSpec { adopt: true, ..spec() }).unwrap();
+        ensure(
+            &exec,
+            &caps(),
+            &BridgeSpec {
+                adopt: true,
+                ..spec()
+            },
+        )
+        .unwrap();
         assert!(exec.calls().contains(&"ovs-vsctl set Bridge gxbr-nat external_ids:glidex-owner=glidex external_ids:glidex-role=bridge".to_string()));
-        assert!(!exec.calls().iter().any(|c| c.contains("datapath_type=")), "adopt must not change the datapath");
+        assert!(
+            !exec.calls().iter().any(|c| c.contains("datapath_type=")),
+            "adopt must not change the datapath"
+        );
     }
 
     #[test]
     fn netdev_needs_userspace_support() {
         let exec = RecordingExec::new();
-        let err = ensure(&exec, &caps(), &BridgeSpec { datapath: Datapath::Netdev, ..spec() }).unwrap_err();
+        let err = ensure(
+            &exec,
+            &caps(),
+            &BridgeSpec {
+                datapath: Datapath::Netdev,
+                ..spec()
+            },
+        )
+        .unwrap_err();
         assert!(matches!(err, OvsError::Unsupported { .. }));
         assert!(exec.calls().is_empty());
     }
@@ -274,7 +312,9 @@ mod tests {
         let exec = RecordingExec::new();
         exec.on(FIND, Output::ok(OWNED));
         delete(&exec, "gxbr-nat").unwrap();
-        assert!(exec.calls().contains(&"ovs-vsctl --if-exists del-br gxbr-nat".to_string()));
+        assert!(exec
+            .calls()
+            .contains(&"ovs-vsctl --if-exists del-br gxbr-nat".to_string()));
 
         let exec = RecordingExec::new();
         exec.on(FIND, Output::ok(EMPTY));

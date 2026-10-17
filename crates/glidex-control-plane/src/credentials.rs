@@ -25,9 +25,29 @@ const MAX_PASSWORD_LEN: usize = 256;
 /// Accounts that already exist in distro images; cloud-init would silently
 /// modify them instead of creating a new login.
 const RESERVED_USERNAMES: &[&str] = &[
-    "root", "daemon", "bin", "sys", "sync", "games", "man", "lp", "mail", "news", "uucp",
-    "proxy", "www-data", "backup", "list", "irc", "nobody", "systemd-network",
-    "systemd-resolve", "messagebus", "sshd", "syslog", "ubuntu",
+    "root",
+    "daemon",
+    "bin",
+    "sys",
+    "sync",
+    "games",
+    "man",
+    "lp",
+    "mail",
+    "news",
+    "uucp",
+    "proxy",
+    "www-data",
+    "backup",
+    "list",
+    "irc",
+    "nobody",
+    "systemd-network",
+    "systemd-resolve",
+    "messagebus",
+    "sshd",
+    "syslog",
+    "ubuntu",
 ];
 
 #[derive(Error, Debug)]
@@ -153,8 +173,13 @@ macro_rules! redacted_debug {
         }
     };
 }
-redacted_debug!(CreateCredentialRequest { username, ssh_authorized_keys });
-redacted_debug!(UpdateCredentialRequest { ssh_authorized_keys });
+redacted_debug!(CreateCredentialRequest {
+    username,
+    ssh_authorized_keys
+});
+redacted_debug!(UpdateCredentialRequest {
+    ssh_authorized_keys
+});
 
 pub fn validate_username(username: &str) -> Result<(), CredentialError> {
     let mut chars = username.chars();
@@ -270,7 +295,11 @@ impl CredentialStore {
         Ok(out)
     }
 
-    pub fn create(&self, project: &str, req: CreateCredentialRequest) -> Result<Credential, CredentialError> {
+    pub fn create(
+        &self,
+        project: &str,
+        req: CreateCredentialRequest,
+    ) -> Result<Credential, CredentialError> {
         validate_username(&req.username)?;
         let password_hash = req.password.as_deref().map(hash_password).transpose()?;
         let ssh_authorized_keys = validate_ssh_keys(req.ssh_authorized_keys.unwrap_or_default())?;
@@ -408,12 +437,17 @@ mod tests {
     #[test]
     fn stores_only_a_verifiable_sha512_hash() {
         let (store, _dir) = store();
-        let cred = store.create("p", req("alice", Some("correct horse"))).unwrap();
+        let cred = store
+            .create("p", req("alice", Some("correct horse")))
+            .unwrap();
         let hash = cred.password_hash.clone().unwrap();
         assert!(hash.starts_with("$6$"), "a SHA-512 crypt hash");
         // glibc only reads 16 salt characters; a longer salt in the string
         // makes every guest login fail (see hash_password).
-        let salt = hash.split('$').find(|p| !p.is_empty() && *p != "6" && !p.starts_with("rounds=")).unwrap();
+        let salt = hash
+            .split('$')
+            .find(|p| !p.is_empty() && *p != "6" && !p.starts_with("rounds="))
+            .unwrap();
         assert_eq!(salt.len(), 16, "a 16-character salt");
         assert!(!hash.contains("correct horse"));
 
@@ -422,7 +456,9 @@ mod tests {
         assert!(ShaCrypt::default()
             .verify_password(b"correct horse", parsed)
             .is_ok());
-        assert!(ShaCrypt::default().verify_password(b"wrong", parsed).is_err());
+        assert!(ShaCrypt::default()
+            .verify_password(b"wrong", parsed)
+            .is_err());
     }
 
     #[test]
@@ -438,7 +474,9 @@ mod tests {
     #[test]
     fn info_never_contains_the_hash() {
         let (store, _dir) = store();
-        let cred = store.create("p", req("carol", Some("password123"))).unwrap();
+        let cred = store
+            .create("p", req("carol", Some("password123")))
+            .unwrap();
         let json = serde_json::to_string(&CredentialInfo::from(&cred)).unwrap();
         assert!(!json.contains("$6$"), "{json}");
         assert!(json.contains("\"has_password\":true"));
@@ -449,18 +487,30 @@ mod tests {
         let (store, _dir) = store();
         for name in ["Root", "root", "9lives", "a b", "", &"x".repeat(33)] {
             assert!(
-                matches!(store.create("p", req(name, Some("password123"))), Err(CredentialError::Invalid(_))),
+                matches!(
+                    store.create("p", req(name, Some("password123"))),
+                    Err(CredentialError::Invalid(_))
+                ),
                 "{name:?}"
             );
         }
-        assert!(matches!(store.create("p", req("dave", Some("short"))), Err(CredentialError::Invalid(_))));
-        assert!(matches!(store.create("p", req("dave", None)), Err(CredentialError::Invalid(_))));
+        assert!(matches!(
+            store.create("p", req("dave", Some("short"))),
+            Err(CredentialError::Invalid(_))
+        ));
+        assert!(matches!(
+            store.create("p", req("dave", None)),
+            Err(CredentialError::Invalid(_))
+        ));
         let bad_key = CreateCredentialRequest {
             username: "dave".into(),
             password: None,
             ssh_authorized_keys: Some(vec!["not a key".into()]),
         };
-        assert!(matches!(store.create("p", bad_key), Err(CredentialError::Invalid(_))));
+        assert!(matches!(
+            store.create("p", bad_key),
+            Err(CredentialError::Invalid(_))
+        ));
     }
 
     #[test]
@@ -473,7 +523,10 @@ mod tests {
         ));
 
         let before = store.get("p", "erin").unwrap().password_hash;
-        let updated = store.update("p", "erin",
+        let updated = store
+            .update(
+                "p",
+                "erin",
                 UpdateCredentialRequest {
                     password: Some("new-password".into()),
                     ssh_authorized_keys: Some(vec!["ssh-ed25519 AAAAC3Nza erin@host".into()]),
@@ -485,7 +538,13 @@ mod tests {
         assert_eq!(store.list(Some("p")).unwrap().len(), 1);
 
         store.delete("p", "erin").unwrap();
-        assert!(matches!(store.get("p", "erin"), Err(CredentialError::NotFound(_))));
-        assert!(matches!(store.delete("p", "erin"), Err(CredentialError::NotFound(_))));
+        assert!(matches!(
+            store.get("p", "erin"),
+            Err(CredentialError::NotFound(_))
+        ));
+        assert!(matches!(
+            store.delete("p", "erin"),
+            Err(CredentialError::NotFound(_))
+        ));
     }
 }

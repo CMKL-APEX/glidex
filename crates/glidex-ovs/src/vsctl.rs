@@ -116,7 +116,11 @@ pub fn parse_table(json: &str) -> Result<Vec<Row>, OvsError> {
     let headings: Vec<String> = v
         .get("headings")
         .and_then(Value::as_array)
-        .map(|h| h.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+        .map(|h| {
+            h.iter()
+                .filter_map(|x| x.as_str().map(str::to_string))
+                .collect()
+        })
         .unwrap_or_default();
     let data = v
         .get("data")
@@ -163,7 +167,9 @@ pub fn find_by_name(
             format!("name={}", name),
         ],
     );
-    Ok(parse_table(&exec.check(&cmd)?.stdout_str())?.into_iter().next())
+    Ok(parse_table(&exec.check(&cmd)?.stdout_str())?
+        .into_iter()
+        .next())
 }
 
 /// `ovs-vsctl <args…>`, requiring success.

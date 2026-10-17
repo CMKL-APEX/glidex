@@ -34,9 +34,10 @@ pub(crate) fn netd_error_response(body: &ErrorBody) -> (StatusCode, Json<ApiErro
 fn image_error_response(e: &ImageError) -> (StatusCode, Json<ApiError>) {
     let (status, code) = match e {
         ImageError::NotFound(_) => (StatusCode::NOT_FOUND, "not_found"),
-        ImageError::AlreadyExists(_) | ImageError::InUse(_) | ImageError::Busy(_) | ImageError::NotReady(_) => {
-            (StatusCode::CONFLICT, "conflict")
-        }
+        ImageError::AlreadyExists(_)
+        | ImageError::InUse(_)
+        | ImageError::Busy(_)
+        | ImageError::NotReady(_) => (StatusCode::CONFLICT, "conflict"),
         ImageError::InvalidImage(_) => (StatusCode::BAD_REQUEST, "invalid_image"),
         ImageError::InvalidDisk { .. } => (StatusCode::BAD_REQUEST, "invalid_disk"),
         // A host that is not set up, not a bug (like hypervisor_unavailable).
@@ -46,7 +47,10 @@ fn image_error_response(e: &ImageError) -> (StatusCode, Json<ApiError>) {
         }
         ImageError::Storage(_) => (StatusCode::INTERNAL_SERVER_ERROR, "persistence_error"),
     };
-    (status, Json(ApiError::new(code, e.to_string()).with_details(e.details())))
+    (
+        status,
+        Json(ApiError::new(code, e.to_string()).with_details(e.details())),
+    )
 }
 
 /// The error envelope a failed reconcile maps to under `?wait`
@@ -63,11 +67,17 @@ pub fn failed_reconcile_response(vm: &crate::models::Vm) -> (StatusCode, Json<Ap
         "CredentialError" => (StatusCode::INTERNAL_SERVER_ERROR, "credential_error"),
         "DiskBusy" => (StatusCode::CONFLICT, "conflict"),
         "DiskMissing" | "DiskNotReady" => (StatusCode::INTERNAL_SERVER_ERROR, "image_error"),
-        _ if message.contains("is not installed") => (StatusCode::SERVICE_UNAVAILABLE, "hypervisor_unavailable"),
+        _ if message.contains("is not installed") => {
+            (StatusCode::SERVICE_UNAVAILABLE, "hypervisor_unavailable")
+        }
         _ => (StatusCode::INTERNAL_SERVER_ERROR, "hypervisor_error"),
     };
-    let details = serde_json::json!({ "reason": reason, "vm": crate::models::VmResponse::from(vm) });
-    (status, Json(ApiError::new(code, message).with_details(details)))
+    let details =
+        serde_json::json!({ "reason": reason, "vm": crate::models::VmResponse::from(vm) });
+    (
+        status,
+        Json(ApiError::new(code, message).with_details(details)),
+    )
 }
 
 pub fn error_to_response(error: VmManagerError) -> (StatusCode, Json<ApiError>) {
@@ -149,11 +159,17 @@ pub fn error_to_response(error: VmManagerError) -> (StatusCode, Json<ApiError>) 
         ),
         VmManagerError::QuotaExceeded(over) => (
             StatusCode::FORBIDDEN,
-            Json(ApiError::new("quota_exceeded", error.to_string()).with_details(serde_json::json!({ "quota": over }))),
+            Json(
+                ApiError::new("quota_exceeded", error.to_string())
+                    .with_details(serde_json::json!({ "quota": over })),
+            ),
         ),
         VmManagerError::TenantQuotaExceeded(over) => (
             StatusCode::FORBIDDEN,
-            Json(ApiError::new("tenant_quota_exceeded", error.to_string()).with_details(serde_json::json!({ "quota": over }))),
+            Json(
+                ApiError::new("tenant_quota_exceeded", error.to_string())
+                    .with_details(serde_json::json!({ "quota": over })),
+            ),
         ),
         VmManagerError::Deleting(_) => (
             StatusCode::CONFLICT,
@@ -161,14 +177,19 @@ pub fn error_to_response(error: VmManagerError) -> (StatusCode, Json<ApiError>) 
         ),
         VmManagerError::PreconditionFailed { actual, .. } => (
             StatusCode::PRECONDITION_FAILED,
-            Json(ApiError::new("precondition_failed", error.to_string()).with_details(serde_json::json!({ "resource_version": actual }))),
+            Json(
+                ApiError::new("precondition_failed", error.to_string())
+                    .with_details(serde_json::json!({ "resource_version": actual })),
+            ),
         ),
         VmManagerError::Tenancy(e) => {
             let (status, code) = match e {
                 TenancyError::NotFound(_) => (StatusCode::NOT_FOUND, "not_found"),
                 TenancyError::AlreadyExists(_) => (StatusCode::CONFLICT, "conflict"),
                 TenancyError::Invalid(_) => (StatusCode::BAD_REQUEST, "invalid_project"),
-                TenancyError::Storage(_) => (StatusCode::INTERNAL_SERVER_ERROR, "persistence_error"),
+                TenancyError::Storage(_) => {
+                    (StatusCode::INTERNAL_SERVER_ERROR, "persistence_error")
+                }
             };
             (status, Json(ApiError::new(code, error.to_string())))
         }

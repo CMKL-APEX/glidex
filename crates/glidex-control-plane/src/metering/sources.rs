@@ -40,7 +40,11 @@ pub struct Host {
 
 impl Default for Host {
     fn default() -> Self {
-        Self { proc_root: "/proc".into(), cgroup_root: "/sys/fs/cgroup".into(), sys_root: "/sys".into() }
+        Self {
+            proc_root: "/proc".into(),
+            cgroup_root: "/sys/fs/cgroup".into(),
+            sys_root: "/sys".into(),
+        }
     }
 }
 
@@ -52,7 +56,8 @@ impl Host {
     /// `ControlGroup` property: same answer, no D-Bus round trip, and the
     /// pid is already verified by start time (§5.1).
     pub fn cgroup_of(&self, pid: u32) -> Option<PathBuf> {
-        let text = std::fs::read_to_string(self.proc_root.join(pid.to_string()).join("cgroup")).ok()?;
+        let text =
+            std::fs::read_to_string(self.proc_root.join(pid.to_string()).join("cgroup")).ok()?;
         let path = text.lines().find_map(|l| l.strip_prefix("0::"))?.trim();
         let rel = path.trim_start_matches('/');
         if rel.is_empty() || rel.split('/').any(|c| c == "..") {
@@ -64,16 +69,31 @@ impl Host {
     /// CPU and memory of a systemd-run instance, from its unit's cgroup.
     pub fn cgroup_usage(&self, cgroup: &Path) -> Option<VmUsage> {
         let cpu = std::fs::read_to_string(cgroup.join("cpu.stat")).ok()?;
-        let cpu_usec = cpu.lines().find_map(|l| l.strip_prefix("usage_usec "))?.trim().parse().ok()?;
+        let cpu_usec = cpu
+            .lines()
+            .find_map(|l| l.strip_prefix("usage_usec "))?
+            .trim()
+            .parse()
+            .ok()?;
         // Buffered disk I/O charges host page cache to the VM's cgroup;
         // the reclaimable part is not memory the VM holds.
         let current = read_u64(&cgroup.join("memory.current")).unwrap_or(0);
         let inactive_file = std::fs::read_to_string(cgroup.join("memory.stat"))
             .ok()
-            .and_then(|t| t.lines().find_map(|l| l.strip_prefix("inactive_file ")?.trim().parse::<u64>().ok()))
+            .and_then(|t| {
+                t.lines()
+                    .find_map(|l| l.strip_prefix("inactive_file ")?.trim().parse::<u64>().ok())
+            })
             .unwrap_or(0);
-        let io = std::fs::read_to_string(cgroup.join("io.stat")).ok().map(|t| self.host_io(&t));
-        Some(VmUsage { cpu_usec, memory_bytes: current.saturating_sub(inactive_file), from_proc: false, io })
+        let io = std::fs::read_to_string(cgroup.join("io.stat"))
+            .ok()
+            .map(|t| self.host_io(&t));
+        Some(VmUsage {
+            cpu_usec,
+            memory_bytes: current.saturating_sub(inactive_file),
+            from_proc: false,
+            io,
+        })
     }
 
     /// Sum `io.stat` over devices that are not underneath another listed
@@ -83,7 +103,11 @@ impl Host {
         let mut below: std::collections::BTreeSet<String> = Default::default();
         let mut todo: Vec<String> = lines.iter().map(|(d, _)| d.to_string()).collect();
         while let Some(dev) = todo.pop() {
-            let Ok(slaves) = std::fs::read_dir(self.sys_root.join("dev/block").join(&dev).join("slaves")) else { continue };
+            let Ok(slaves) =
+                std::fs::read_dir(self.sys_root.join("dev/block").join(&dev).join("slaves"))
+            else {
+                continue;
+            };
             for slave in slaves.flatten() {
                 let name = slave.file_name().to_string_lossy().into_owned();
                 let class = self.sys_root.join("class/block").join(&name);
@@ -92,11 +116,17 @@ impl Host {
                 if class.join("partition").exists() {
                     if let Ok(real) = std::fs::canonicalize(&class) {
                         if let Some(parent) = real.parent() {
-                            devs.push(std::fs::read_to_string(parent.join("dev")).unwrap_or_default());
+                            devs.push(
+                                std::fs::read_to_string(parent.join("dev")).unwrap_or_default(),
+                            );
                         }
                     }
                 }
-                for d in devs.into_iter().map(|d| d.trim().to_string()).filter(|d| !d.is_empty()) {
+                for d in devs
+                    .into_iter()
+                    .map(|d| d.trim().to_string())
+                    .filter(|d| !d.is_empty())
+                {
                     if below.insert(d.clone()) {
                         todo.push(d);
                     }
@@ -143,7 +173,12 @@ impl Host {
             .find_map(|l| l.strip_prefix("VmRSS:"))
             .and_then(|v| v.split_whitespace().next()?.parse().ok())
             .unwrap_or(0);
-        Some(VmUsage { cpu_usec: ticks * 1_000_000 / hz, memory_bytes: rss_kib * 1024, from_proc: true, io: None })
+        Some(VmUsage {
+            cpu_usec: ticks * 1_000_000 / hz,
+            memory_bytes: rss_kib * 1024,
+            from_proc: true,
+            io: None,
+        })
     }
 }
 
@@ -152,7 +187,13 @@ impl Host {
 pub fn launched_disk_ids(spec: &serde_json::Value) -> Vec<Option<String>> {
     let config = &spec["spec"]["config"];
     let mut out = vec![config["root_disk"].as_str().map(str::to_string)];
-    out.extend(config["data_disks"].as_array().into_iter().flatten().map(|d| d.as_str().map(str::to_string)));
+    out.extend(
+        config["data_disks"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|d| d.as_str().map(str::to_string)),
+    );
     out
 }
 
@@ -161,13 +202,26 @@ impl Host {
     /// disk id of each index, from its `launch.json` and its hypervisor
     /// socket. `None` if the launch file is for another instance or the
     /// hypervisor doesn't answer.
-    pub fn block_stats(&self, vm_id: &str, instance_id: &str) -> Option<(Vec<Option<String>>, Vec<glidex_hv_client::stats::BlockStats>)> {
+    pub fn block_stats(
+        &self,
+        vm_id: &str,
+        instance_id: &str,
+    ) -> Option<(
+        Vec<Option<String>>,
+        Vec<glidex_hv_client::stats::BlockStats>,
+    )> {
         use glidex_vm_shim::launch::{HypervisorKind, LaunchFile};
         let paths = crate::paths::vm_paths(vm_id);
-        let launch = LaunchFile::read(&paths.launch).ok().filter(|l| l.instance_id == instance_id)?;
+        let launch = LaunchFile::read(&paths.launch)
+            .ok()
+            .filter(|l| l.instance_id == instance_id)?;
         let stats = match launch.hypervisor {
-            HypervisorKind::CloudHypervisor => glidex_hv_client::ch::ChClient::new(&paths.api_socket).block_stats(),
-            HypervisorKind::Qemu => glidex_hv_client::qmp::QmpClient::new(&paths.api_socket).block_stats(),
+            HypervisorKind::CloudHypervisor => {
+                glidex_hv_client::ch::ChClient::new(&paths.api_socket).block_stats()
+            }
+            HypervisorKind::Qemu => {
+                glidex_hv_client::qmp::QmpClient::new(&paths.api_socket).block_stats()
+            }
         }
         .ok()?;
         Some((launched_disk_ids(&launch.spec), stats))
@@ -181,7 +235,11 @@ fn read_u64(path: &Path) -> Option<u64> {
 fn clock_ticks() -> u64 {
     // SAFETY: sysconf has no preconditions.
     let hz = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
-    if hz > 0 { hz as u64 } else { 100 }
+    if hz > 0 {
+        hz as u64
+    } else {
+        100
+    }
 }
 
 #[cfg(test)]
@@ -190,7 +248,11 @@ mod tests {
 
     fn host() -> (tempfile::TempDir, Host) {
         let dir = tempfile::TempDir::new().unwrap();
-        let host = Host { proc_root: dir.path().join("proc"), cgroup_root: dir.path().join("cg"), sys_root: dir.path().join("sys") };
+        let host = Host {
+            proc_root: dir.path().join("proc"),
+            cgroup_root: dir.path().join("cg"),
+            sys_root: dir.path().join("sys"),
+        };
         (dir, host)
     }
 
@@ -202,13 +264,34 @@ mod tests {
     #[test]
     fn cgroup_from_proc_and_usage() {
         let (_d, h) = host();
-        write(&h.proc_root.join("42/cgroup"), "0::/glidex.slice/glidex-vms.slice/glidex-vm@abc.service\n");
+        write(
+            &h.proc_root.join("42/cgroup"),
+            "0::/glidex.slice/glidex-vms.slice/glidex-vm@abc.service\n",
+        );
         let cg = h.cgroup_of(42).unwrap();
-        assert_eq!(cg, h.cgroup_root.join("glidex.slice/glidex-vms.slice/glidex-vm@abc.service"));
-        write(&cg.join("cpu.stat"), "usage_usec 123456789\nuser_usec 100000000\nsystem_usec 23456789\nnr_periods 0\n");
+        assert_eq!(
+            cg,
+            h.cgroup_root
+                .join("glidex.slice/glidex-vms.slice/glidex-vm@abc.service")
+        );
+        write(
+            &cg.join("cpu.stat"),
+            "usage_usec 123456789\nuser_usec 100000000\nsystem_usec 23456789\nnr_periods 0\n",
+        );
         write(&cg.join("memory.current"), "957349888\n"); // 913 MiB
-        write(&cg.join("memory.stat"), "anon 540016640\nfile 405798912\ninactive_file 405798912\n"); // 387 MiB cache
-        assert_eq!(h.cgroup_usage(&cg), Some(VmUsage { cpu_usec: 123456789, memory_bytes: 526 << 20, from_proc: false, io: None }));
+        write(
+            &cg.join("memory.stat"),
+            "anon 540016640\nfile 405798912\ninactive_file 405798912\n",
+        ); // 387 MiB cache
+        assert_eq!(
+            h.cgroup_usage(&cg),
+            Some(VmUsage {
+                cpu_usec: 123456789,
+                memory_bytes: 526 << 20,
+                from_proc: false,
+                io: None
+            })
+        );
     }
 
     /// This host's layout (2026-10-05): LVM `dm-0` (252:0) on
@@ -224,12 +307,30 @@ mod tests {
         write(&sys.join("devices/nvme/nvme0n1/nvme0n1p3/dev"), "259:3\n");
         write(&sys.join("devices/nvme/nvme0n1/nvme0n1p3/partition"), "3\n");
         std::fs::create_dir_all(sys.join("class/block")).unwrap();
-        std::os::unix::fs::symlink(sys.join("devices/nvme/nvme0n1/nvme0n1p3"), sys.join("class/block/nvme0n1p3")).unwrap();
+        std::os::unix::fs::symlink(
+            sys.join("devices/nvme/nvme0n1/nvme0n1p3"),
+            sys.join("class/block/nvme0n1p3"),
+        )
+        .unwrap();
         let stat = "259:0 rbytes=51646464 wbytes=239923200 rios=1471 wios=54429 dbytes=0 dios=0\n\
                     252:0 rbytes=51646464 wbytes=239923200 rios=1471 wios=54380 dbytes=0 dios=0\n";
-        assert_eq!(h.host_io(stat), HostIo { read_bytes: 51646464, write_bytes: 239923200, read_ops: 1471, write_ops: 54380 });
+        assert_eq!(
+            h.host_io(stat),
+            HostIo {
+                read_bytes: 51646464,
+                write_bytes: 239923200,
+                read_ops: 1471,
+                write_ops: 54380
+            }
+        );
         // Two unrelated disks are both counted.
-        assert_eq!(h.host_io("8:0 rbytes=1 wbytes=2 rios=3 wios=4\n8:16 rbytes=10 wbytes=20 rios=30 wios=40\n").read_bytes, 11);
+        assert_eq!(
+            h.host_io(
+                "8:0 rbytes=1 wbytes=2 rios=3 wios=4\n8:16 rbytes=10 wbytes=20 rios=30 wios=40\n"
+            )
+            .read_bytes,
+            11
+        );
     }
 
     #[test]
@@ -249,14 +350,24 @@ mod tests {
         let h = Host::default();
         let mut seen = 0;
         for entry in std::fs::read_dir("/proc").unwrap().flatten() {
-            let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else { continue };
-            let Ok(comm) = std::fs::read_to_string(entry.path().join("comm")) else { continue };
+            let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
+                continue;
+            };
+            let Ok(comm) = std::fs::read_to_string(entry.path().join("comm")) else {
+                continue;
+            };
             if comm.trim() != "glidex-vm-shim" {
                 continue;
             }
             let cg = h.cgroup_of(pid).expect("shim cgroup");
             let u = h.cgroup_usage(&cg).expect("cgroup usage");
-            println!("{}: cpu {} s, memory {} MiB, io {:?}", cg.file_name().unwrap().to_string_lossy(), u.cpu_usec / 1_000_000, u.memory_bytes >> 20, u.io);
+            println!(
+                "{}: cpu {} s, memory {} MiB, io {:?}",
+                cg.file_name().unwrap().to_string_lossy(),
+                u.cpu_usec / 1_000_000,
+                u.memory_bytes >> 20,
+                u.io
+            );
             assert!(u.cpu_usec > 0 && u.memory_bytes > 0);
             seen += 1;
         }
@@ -270,9 +381,20 @@ mod tests {
         // utime 300, stime 100 ticks; starttime 5555; comm with spaces and ')'.
         let stat = "99 (qemu sys) x) S 1 99 99 0 -1 4194560 0 0 0 0 300 100 0 0 20 0 3 0 5555 0 0";
         write(&h.proc_root.join("99/stat"), stat);
-        write(&h.proc_root.join("99/status"), "Name:\tqemu\nVmRSS:\t  204800 kB\n");
+        write(
+            &h.proc_root.join("99/status"),
+            "Name:\tqemu\nVmRSS:\t  204800 kB\n",
+        );
         let u = h.proc_usage(99, Some(5555)).unwrap();
-        assert_eq!(u, VmUsage { cpu_usec: 400 * 1_000_000 / hz, memory_bytes: 200 << 20, from_proc: true, io: None });
+        assert_eq!(
+            u,
+            VmUsage {
+                cpu_usec: 400 * 1_000_000 / hz,
+                memory_bytes: 200 << 20,
+                from_proc: true,
+                io: None
+            }
+        );
         assert_eq!(h.proc_usage(99, Some(1)), None, "pid reused");
         assert_eq!(h.proc_usage(100, None), None);
     }

@@ -40,7 +40,11 @@ struct Client {
 impl Client {
     fn new(stream: UnixStream, replay: Vec<u8>) -> Self {
         let limit = replay.len() + CLIENT_BACKLOG_MAX;
-        Client { stream, pending: replay.into(), limit }
+        Client {
+            stream,
+            pending: replay.into(),
+            limit,
+        }
     }
 
     /// Queue `bytes`; false once the client is gone or too far behind.
@@ -81,9 +85,18 @@ pub struct LogWriter {
 impl LogWriter {
     pub fn open(path: &Path, max: u64) -> std::io::Result<Self> {
         use std::os::unix::fs::OpenOptionsExt;
-        let file = OpenOptions::new().append(true).create(true).mode(0o600).open(path)?;
+        let file = OpenOptions::new()
+            .append(true)
+            .create(true)
+            .mode(0o600)
+            .open(path)?;
         let size = file.metadata()?.len();
-        Ok(Self { path: path.to_path_buf(), file, size, max: max.max(1) })
+        Ok(Self {
+            path: path.to_path_buf(),
+            file,
+            size,
+            max: max.max(1),
+        })
     }
 
     pub fn rotated_path(path: &Path) -> PathBuf {
@@ -107,7 +120,11 @@ impl LogWriter {
     fn rotate(&mut self) -> std::io::Result<()> {
         use std::os::unix::fs::OpenOptionsExt;
         std::fs::rename(&self.path, Self::rotated_path(&self.path))?;
-        self.file = OpenOptions::new().append(true).create(true).mode(0o600).open(&self.path)?;
+        self.file = OpenOptions::new()
+            .append(true)
+            .create(true)
+            .mode(0o600)
+            .open(&self.path)?;
         self.size = 0;
         Ok(())
     }
@@ -139,7 +156,12 @@ impl Proxy {
         let capture = Arc::new(Mutex::new(Vec::new()));
         let (s, c) = (stop.clone(), capture.clone());
         let handle = thread::spawn(move || proxy_loop(listener, log, rx, s, c));
-        Ok(Self { tx, stop, handle: Some(handle), stderr_capture: capture })
+        Ok(Self {
+            tx,
+            stop,
+            handle: Some(handle),
+            stderr_capture: capture,
+        })
     }
 
     pub fn attach(&self, master: File, stderr: File) {
@@ -199,9 +221,15 @@ fn proxy_loop(
     let mut clients: Vec<Client> = Vec::new();
     let mut buf = [0u8; 4096];
 
-    let handle_cmds = |pty: &mut Option<File>, stderr: &mut Option<File>, log: &mut LogWriter, clients: &mut Vec<Client>| loop {
+    let handle_cmds = |pty: &mut Option<File>,
+                       stderr: &mut Option<File>,
+                       log: &mut LogWriter,
+                       clients: &mut Vec<Client>| loop {
         match rx.try_recv() {
-            Ok(ProxyCmd::Attach { master, stderr: err }) => {
+            Ok(ProxyCmd::Attach {
+                master,
+                stderr: err,
+            }) => {
                 set_nonblocking(&master);
                 set_nonblocking(&err);
                 *pty = Some(master);
@@ -215,7 +243,11 @@ fn proxy_loop(
         }
     };
 
-    let pump = |pty: &mut Option<File>, stderr: &mut Option<File>, log: &mut LogWriter, clients: &mut Vec<Client>, buf: &mut [u8]| {
+    let pump = |pty: &mut Option<File>,
+                stderr: &mut Option<File>,
+                log: &mut LogWriter,
+                clients: &mut Vec<Client>,
+                buf: &mut [u8]| {
         if let Some(f) = pty.as_ref() {
             if !drain(f, buf, |b| {
                 log.write(b);
@@ -353,7 +385,12 @@ mod tests {
         }
         let old = std::fs::read(LogWriter::rotated_path(&path)).unwrap();
         let cur = std::fs::read(&path).unwrap();
-        assert!(old.len() <= 100 && cur.len() <= 100, "{} {}", old.len(), cur.len());
+        assert!(
+            old.len() <= 100 && cur.len() <= 100,
+            "{} {}",
+            old.len(),
+            cur.len()
+        );
         // The newest bytes are in the current file, whole chunks only.
         let all: Vec<u8> = chunks.concat();
         assert!(all.ends_with(&[old.clone(), cur.clone()].concat()));
@@ -376,7 +413,9 @@ mod tests {
         std::thread::sleep(Duration::from_millis(100));
 
         let mut client = UnixStream::connect(&sock).unwrap();
-        client.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
         let mut got = Vec::new();
         while !String::from_utf8_lossy(&got).contains("guest says hi") {
             let mut b = [0u8; 256];
@@ -385,7 +424,10 @@ mod tests {
         }
         // Replay includes the earlier instance and the stderr line.
         let text = String::from_utf8_lossy(&got).into_owned();
-        assert!(text.starts_with("old instance\n--- glidex: instance x started"), "{text}");
+        assert!(
+            text.starts_with("old instance\n--- glidex: instance x started"),
+            "{text}"
+        );
 
         client.write_all(b"ls\r").unwrap();
         let mut typed = [0u8; 3];
@@ -401,20 +443,29 @@ mod tests {
         assert!(proxy.captured_stderr().contains("qemu: warning"));
         proxy.stop();
         let log = std::fs::read_to_string(&log_path).unwrap();
-        assert!(log.contains("qemu: warning") && log.ends_with("exited: clean_exit ---\r\n"), "{log}");
+        assert!(
+            log.contains("qemu: warning") && log.ends_with("exited: clean_exit ---\r\n"),
+            "{log}"
+        );
     }
 
     #[test]
     fn stopping_drains_what_is_still_buffered() {
         let dir = tempfile::tempdir().unwrap();
         let log_path = dir.path().join("console.log");
-        let proxy = Proxy::start(&dir.path().join("c.sock"), LogWriter::open(&log_path, 1 << 20).unwrap()).unwrap();
+        let proxy = Proxy::start(
+            &dir.path().join("c.sock"),
+            LogWriter::open(&log_path, 1 << 20).unwrap(),
+        )
+        .unwrap();
         let (master, mut slave) = raw_pty();
         let (err_r, _err_w) = pipe();
         proxy.attach(master, err_r);
         std::thread::sleep(Duration::from_millis(50));
         slave.write_all(b"last words").unwrap();
         proxy.stop();
-        assert!(std::fs::read_to_string(&log_path).unwrap().contains("last words"));
+        assert!(std::fs::read_to_string(&log_path)
+            .unwrap()
+            .contains("last words"));
     }
 }

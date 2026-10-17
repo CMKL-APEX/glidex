@@ -24,7 +24,10 @@ pub fn peer(stream: &UnixStream) -> std::io::Result<Peer> {
 }
 
 pub fn group_gid(name: &str) -> Option<u32> {
-    Group::from_name(name).ok().flatten().map(|g| g.gid.as_raw())
+    Group::from_name(name)
+        .ok()
+        .flatten()
+        .map(|g| g.gid.as_raw())
 }
 
 /// The peer's groups: primary, plus supplementary from `getgrouplist`
@@ -130,8 +133,14 @@ mod tests {
         assert!(!op_matches("list_*", "release_vm"));
         assert!(op_matches("release_vm", "release_vm"));
         assert!(!op_matches("release_vm", "release_vm_x"));
-        assert!(!op_matches("release", "release_vm"), "no implicit prefix match");
-        assert!(!op_matches("*_vm", "release_vm"), "only a trailing * is a glob");
+        assert!(
+            !op_matches("release", "release_vm"),
+            "no implicit prefix match"
+        );
+        assert!(
+            !op_matches("*_vm", "release_vm"),
+            "only a trailing * is a glob"
+        );
         assert!(!op_matches("", "hello"));
     }
 
@@ -148,8 +157,18 @@ mod tests {
         assert!(!allows(&policy, 1000, "install_ovs", only(&["glidex"])));
         assert!(!allows(&policy, 1000, "ensure_nat", only(&["glidex"])));
         // Grants from several groups add up.
-        assert!(allows(&policy, 1000, "ensure_nat", only(&["glidex", "netops"])));
-        assert!(allows(&policy, 1000, "install_ovs", only(&["glidex-admin"])));
+        assert!(allows(
+            &policy,
+            1000,
+            "ensure_nat",
+            only(&["glidex", "netops"])
+        ));
+        assert!(allows(
+            &policy,
+            1000,
+            "install_ovs",
+            only(&["glidex-admin"])
+        ));
         // No matching group: denied, except the handshake and probe.
         assert!(!allows(&policy, 1000, "list_nat", only(&[])));
         assert!(allows(&policy, 1000, "hello", only(&[])));
@@ -160,13 +179,19 @@ mod tests {
 
         let default = default_policy("glidex", "glidex-admin");
         assert!(allows(&default, 1000, "install_ovs", only(&["glidex"])));
-        assert!(allows(&default, 1000, "delete_uplink", only(&["glidex-admin"])));
+        assert!(allows(
+            &default,
+            1000,
+            "delete_uplink",
+            only(&["glidex-admin"])
+        ));
         assert!(!allows(&default, 1000, "delete_uplink", only(&["users"])));
     }
 
     #[test]
     fn warns_about_inner_globs() {
-        let policy: Policy = serde_json::from_str(r#"{"g": ["list_*", "*", "*_vm", "a**"]}"#).unwrap();
+        let policy: Policy =
+            serde_json::from_str(r#"{"g": ["list_*", "*", "*_vm", "a**"]}"#).unwrap();
         assert_eq!(suspicious_patterns(&policy), vec!["*_vm", "a**"]);
     }
 }

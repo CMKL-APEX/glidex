@@ -70,7 +70,12 @@ impl PartitionTable {
     /// Smallest disk size that keeps every partition (and a GPT backup)
     /// intact, rounded up to a whole MiB.
     pub fn min_disk_size(&self) -> u64 {
-        let end = self.partitions.iter().map(Partition::end_bytes).max().unwrap_or(0);
+        let end = self
+            .partitions
+            .iter()
+            .map(Partition::end_bytes)
+            .max()
+            .unwrap_or(0);
         let tail = match self.kind {
             TableKind::Gpt => GPT_BACKUP_SECTORS * SECTOR,
             TableKind::Mbr => 0,
@@ -90,7 +95,11 @@ fn window_for(disk_size: u64) -> u64 {
 }
 
 /// Read the partition table of a disk. `Ok(None)`: no partition table.
-pub fn read_table(path: &Path, format: DiskFormat, disk_size: u64) -> Result<Option<PartitionTable>, ImageError> {
+pub fn read_table(
+    path: &Path,
+    format: DiskFormat,
+    disk_size: u64,
+) -> Result<Option<PartitionTable>, ImageError> {
     let head = read_head(path, format, disk_size)?;
     Ok(parse_table(&head, disk_size, std::env::consts::ARCH))
 }
@@ -140,7 +149,10 @@ fn guid(b: &[u8]) -> String {
         u16::from_le_bytes([b[6], b[7]]),
         b[8],
         b[9],
-        b[10..16].iter().map(|x| format!("{:02X}", x)).collect::<String>()
+        b[10..16]
+            .iter()
+            .map(|x| format!("{:02X}", x))
+            .collect::<String>()
     )
 }
 
@@ -191,7 +203,11 @@ fn parse_gpt(head: &[u8], disk_size: u64, arch: &str) -> Option<PartitionTable> 
             is_root: false,
         });
     }
-    let mut table = PartitionTable { kind: TableKind::Gpt, partitions, free_tail_bytes: 0 };
+    let mut table = PartitionTable {
+        kind: TableKind::Gpt,
+        partitions,
+        free_tail_bytes: 0,
+    };
     let usable_end = disk_size.saturating_sub(GPT_BACKUP_SECTORS * SECTOR);
     finish(&mut table, usable_end, arch);
     Some(table)
@@ -217,14 +233,23 @@ fn parse_mbr(head: &[u8], disk_size: u64) -> Option<PartitionTable> {
     if partitions.is_empty() {
         return None;
     }
-    let mut table = PartitionTable { kind: TableKind::Mbr, partitions, free_tail_bytes: 0 };
+    let mut table = PartitionTable {
+        kind: TableKind::Mbr,
+        partitions,
+        free_tail_bytes: 0,
+    };
     finish(&mut table, disk_size, "");
     Some(table)
 }
 
 fn finish(table: &mut PartitionTable, usable_end: u64, arch: &str) {
     table.partitions.sort_by_key(|p| p.start_bytes);
-    let last_end = table.partitions.iter().map(Partition::end_bytes).max().unwrap_or(0);
+    let last_end = table
+        .partitions
+        .iter()
+        .map(Partition::end_bytes)
+        .max()
+        .unwrap_or(0);
     table.free_tail_bytes = usable_end.saturating_sub(last_end);
     if let Some(n) = select_root(table, arch) {
         for p in &mut table.partitions {
@@ -258,7 +283,11 @@ pub fn growable_root(table: &PartitionTable) -> Result<&Partition, ImageError> {
     let root = table.root().ok_or_else(|| {
         ImageError::invalid_disk("no root partition found (no Linux root or filesystem partition at the end of the disk)")
     })?;
-    let last = table.partitions.iter().max_by_key(|p| p.end_bytes()).unwrap();
+    let last = table
+        .partitions
+        .iter()
+        .max_by_key(|p| p.end_bytes())
+        .unwrap();
     if last.number != root.number {
         return Err(ImageError::invalid_disk(format!(
             "root partition {} is not the last partition; partition {} is in the way",
@@ -281,7 +310,9 @@ pub fn edit<T>(
     }
     let w = window_for(disk_size);
     if w < 64 * SECTOR {
-        return Err(ImageError::invalid_disk("disk is too small to hold a partition table"));
+        return Err(ImageError::invalid_disk(
+            "disk is too small to hold a partition table",
+        ));
     }
     let dir = path.parent().unwrap_or(Path::new("."));
     let tmp = tempfile::Builder::new()
@@ -300,7 +331,9 @@ pub fn edit<T>(
             let chunk = tmp.path().join(format!("orig{}", i));
             qemu_img::read_region(path, format, *off, *len, &chunk)?;
             let data = std::fs::read(&chunk).map_err(|e| io(&chunk, e))?;
-            shadow.write_all_at(&data, *off).map_err(|e| io(&shadow_path, e))?;
+            shadow
+                .write_all_at(&data, *off)
+                .map_err(|e| io(&shadow_path, e))?;
             originals.push(data);
         }
         shadow.sync_all().map_err(|e| io(&shadow_path, e))?;
@@ -311,7 +344,9 @@ pub fn edit<T>(
     // The tool may only have written inside the windows: anything else
     // would be lost, so refuse to write back at all.
     for (start, end) in data_extents(&shadow_path)? {
-        let inside = windows.iter().any(|(off, len)| start >= *off && end <= off + len);
+        let inside = windows
+            .iter()
+            .any(|(off, len)| start >= *off && end <= off + len);
         if !inside {
             return Err(ImageError::Io(format!(
                 "partition tool wrote outside the partition-table regions ({}..{}); disk left unchanged",
@@ -322,8 +357,12 @@ pub fn edit<T>(
     let mut shadow = File::open(&shadow_path).map_err(|e| io(&shadow_path, e))?;
     for (i, (off, len)) in windows.iter().enumerate() {
         let mut data = vec![0u8; *len as usize];
-        shadow.seek(SeekFrom::Start(*off)).map_err(|e| io(&shadow_path, e))?;
-        shadow.read_exact(&mut data).map_err(|e| io(&shadow_path, e))?;
+        shadow
+            .seek(SeekFrom::Start(*off))
+            .map_err(|e| io(&shadow_path, e))?;
+        shadow
+            .read_exact(&mut data)
+            .map_err(|e| io(&shadow_path, e))?;
         if data == originals[i] {
             continue;
         }
@@ -366,15 +405,29 @@ mod tests {
 
     /// Tests that need host tools are skipped where they are missing.
     fn have(tool: &str) -> bool {
-        qemu_img::ALL_TOOLS.iter().find(|t| t.name == tool).is_some_and(|t| t.available())
+        qemu_img::ALL_TOOLS
+            .iter()
+            .find(|t| t.name == tool)
+            .is_some_and(|t| t.available())
     }
 
     /// Build a raw disk with `sgdisk` arguments.
     fn gpt_disk(dir: &Path, size_mib: u64, args: &[&str]) -> std::path::PathBuf {
         let path = dir.join("d.raw");
-        File::create(&path).unwrap().set_len(size_mib * MIB).unwrap();
-        let st = Command::new(qemu_img::SGDISK.find().unwrap()).args(args).arg(&path).output().unwrap();
-        assert!(st.status.success(), "{}", String::from_utf8_lossy(&st.stderr));
+        File::create(&path)
+            .unwrap()
+            .set_len(size_mib * MIB)
+            .unwrap();
+        let st = Command::new(qemu_img::SGDISK.find().unwrap())
+            .args(args)
+            .arg(&path)
+            .output()
+            .unwrap();
+        assert!(
+            st.status.success(),
+            "{}",
+            String::from_utf8_lossy(&st.stderr)
+        );
         path
     }
 
@@ -390,11 +443,27 @@ mod tests {
             return;
         }
         let dir = tempfile::tempdir().unwrap();
-        let p = gpt_disk(dir.path(), 64, &["-n", "1:2048:+8M", "-t", "1:ef00", "-n", "2:0:+20M", "-t", &format!("2:{}", GUID_ROOT_X86_64)]);
+        let p = gpt_disk(
+            dir.path(),
+            64,
+            &[
+                "-n",
+                "1:2048:+8M",
+                "-t",
+                "1:ef00",
+                "-n",
+                "2:0:+20M",
+                "-t",
+                &format!("2:{}", GUID_ROOT_X86_64),
+            ],
+        );
         let t = table(&p, "x86_64").unwrap();
         assert_eq!(t.kind, TableKind::Gpt);
         assert_eq!(t.partitions.len(), 2);
-        assert_eq!(t.partitions[0].type_id, "C12A7328-F81F-11D2-BA4B-00A0C93EC93B");
+        assert_eq!(
+            t.partitions[0].type_id,
+            "C12A7328-F81F-11D2-BA4B-00A0C93EC93B"
+        );
         let root = growable_root(&t).unwrap();
         assert_eq!(root.number, 2);
         assert_eq!(root.start_bytes, 18432 * SECTOR);
@@ -415,14 +484,29 @@ mod tests {
             dir.path(),
             64,
             &[
-                "-n", "13:2048:+16M", "-t", "13:ea00",
-                "-n", "14:0:+4M", "-t", "14:ef02",
-                "-n", "15:0:+8M", "-t", "15:ef00",
-                "-n", "1:0:0", "-t", "1:8304",
+                "-n",
+                "13:2048:+16M",
+                "-t",
+                "13:ea00",
+                "-n",
+                "14:0:+4M",
+                "-t",
+                "14:ef02",
+                "-n",
+                "15:0:+8M",
+                "-t",
+                "15:ef00",
+                "-n",
+                "1:0:0",
+                "-t",
+                "1:8304",
             ],
         );
         let t = table(&p, "x86_64").unwrap();
-        assert_eq!(t.partitions.iter().find(|p| p.number == 1).unwrap().type_id, GUID_ROOT_X86_64);
+        assert_eq!(
+            t.partitions.iter().find(|p| p.number == 1).unwrap().type_id,
+            GUID_ROOT_X86_64
+        );
         assert_eq!(growable_root(&t).unwrap().number, 1);
     }
 
@@ -435,7 +519,16 @@ mod tests {
         let p = gpt_disk(
             dir.path(),
             64,
-            &["-n", "1:2048:+20M", "-t", &format!("1:{}", GUID_ROOT_X86_64), "-n", "2:0:+8M", "-t", "2:8200"],
+            &[
+                "-n",
+                "1:2048:+20M",
+                "-t",
+                &format!("1:{}", GUID_ROOT_X86_64),
+                "-n",
+                "2:0:+8M",
+                "-t",
+                "2:8200",
+            ],
         );
         let t = table(&p, "x86_64").unwrap();
         assert_eq!(t.root().unwrap().number, 1);
@@ -449,7 +542,20 @@ mod tests {
             return;
         }
         let dir = tempfile::tempdir().unwrap();
-        let p = gpt_disk(dir.path(), 64, &["-n", "1:2048:+8M", "-t", "1:ef00", "-n", "2:0:0", "-t", "2:8300"]);
+        let p = gpt_disk(
+            dir.path(),
+            64,
+            &[
+                "-n",
+                "1:2048:+8M",
+                "-t",
+                "1:ef00",
+                "-n",
+                "2:0:0",
+                "-t",
+                "2:8300",
+            ],
+        );
         let t = table(&p, "x86_64").unwrap();
         assert_eq!(growable_root(&t).unwrap().number, 2);
         // The aarch64 root type is not x86-64's, but the fallback applies.
@@ -491,14 +597,22 @@ mod tests {
 
     #[test]
     fn edit_qcow2_through_shadow_keeps_data() {
-        if !["sgdisk", "qemu-img", "qemu-io", "growpart"].iter().all(|t| have(t)) {
+        if !["sgdisk", "qemu-img", "qemu-io", "growpart"]
+            .iter()
+            .all(|t| have(t))
+        {
             return;
         }
         let dir = tempfile::tempdir().unwrap();
         let raw = gpt_disk(dir.path(), 64, &["-n", "1:2048:+8M", "-n", "2:0:+20M"]);
         // Data inside partition 2, which must survive the edit.
         let pattern: Vec<u8> = (0..MIB).map(|i| (i % 251) as u8).collect();
-        File::options().write(true).open(&raw).unwrap().write_all_at(&pattern, 20 * MIB).unwrap();
+        File::options()
+            .write(true)
+            .open(&raw)
+            .unwrap()
+            .write_all_at(&pattern, 20 * MIB)
+            .unwrap();
         let q = dir.path().join("d.qcow2");
         qemu_img::convert(&raw, DiskFormat::Raw, &q, DiskFormat::Qcow2).unwrap();
         qemu_img::resize(&q, DiskFormat::Qcow2, 128 * MIB, false).unwrap();
@@ -510,29 +624,56 @@ mod tests {
         .unwrap();
         assert_eq!(outcome, qemu_img::GrowOutcome::Changed);
 
-        let t = read_table(&q, DiskFormat::Qcow2, 128 * MIB).unwrap().unwrap();
+        let t = read_table(&q, DiskFormat::Qcow2, 128 * MIB)
+            .unwrap()
+            .unwrap();
         assert_eq!(t.partitions[1].end_bytes(), 128 * MIB - 33 * SECTOR);
         assert_eq!(t.free_tail_bytes, 0);
         let out = dir.path().join("out.raw");
         qemu_img::convert(&q, DiskFormat::Qcow2, &out, DiskFormat::Raw).unwrap();
         let mut back = vec![0u8; MIB as usize];
-        File::open(&out).unwrap().read_exact_at(&mut back, 20 * MIB).unwrap();
+        File::open(&out)
+            .unwrap()
+            .read_exact_at(&mut back, 20 * MIB)
+            .unwrap();
         assert_eq!(back, pattern);
-        let verify = Command::new(qemu_img::SGDISK.find().unwrap()).arg("-v").arg(&out).output().unwrap();
+        let verify = Command::new(qemu_img::SGDISK.find().unwrap())
+            .arg("-v")
+            .arg(&out)
+            .output()
+            .unwrap();
         assert!(String::from_utf8_lossy(&verify.stdout).contains("No problems found"));
         qemu_img::check(&q, DiskFormat::Qcow2).unwrap();
 
         // The tail window is copied too: data there survives an edit.
         let mut f = File::create(dir.path().join("tail.bin")).unwrap();
         f.write_all(&pattern[..4096]).unwrap();
-        qemu_img::write_region(&q, DiskFormat::Qcow2, dir.path(), "tail.bin", 128 * MIB - MIB / 2, 4096).unwrap();
-        edit(&q, DiskFormat::Qcow2, 128 * MIB, qemu_img::sgdisk_relocate_backup).unwrap();
+        qemu_img::write_region(
+            &q,
+            DiskFormat::Qcow2,
+            dir.path(),
+            "tail.bin",
+            128 * MIB - MIB / 2,
+            4096,
+        )
+        .unwrap();
+        edit(
+            &q,
+            DiskFormat::Qcow2,
+            128 * MIB,
+            qemu_img::sgdisk_relocate_backup,
+        )
+        .unwrap();
         let back_tail = dir.path().join("back.bin");
-        qemu_img::read_region(&q, DiskFormat::Qcow2, 128 * MIB - MIB / 2, 4096, &back_tail).unwrap();
+        qemu_img::read_region(&q, DiskFormat::Qcow2, 128 * MIB - MIB / 2, 4096, &back_tail)
+            .unwrap();
         assert_eq!(std::fs::read(&back_tail).unwrap(), &pattern[..4096]);
 
         // Second run: nothing left to grow.
-        let again = edit(&q, DiskFormat::Qcow2, 128 * MIB, |s| qemu_img::growpart(s, 2)).unwrap();
+        let again = edit(&q, DiskFormat::Qcow2, 128 * MIB, |s| {
+            qemu_img::growpart(s, 2)
+        })
+        .unwrap();
         assert_eq!(again, qemu_img::GrowOutcome::NoChange);
     }
 }

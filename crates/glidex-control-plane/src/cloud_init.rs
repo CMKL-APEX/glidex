@@ -64,7 +64,10 @@ impl std::fmt::Debug for SeedConfig {
             .field("hostname", &self.hostname)
             .field("username", &self.username)
             .field("ssh_authorized_keys", &self.ssh_authorized_keys.len())
-            .field("passwd_hash", &self.passwd_hash.as_ref().map(|_| "[REDACTED]"))
+            .field(
+                "passwd_hash",
+                &self.passwd_hash.as_ref().map(|_| "[REDACTED]"),
+            )
             .finish()
     }
 }
@@ -159,7 +162,9 @@ impl SeedConfig {
         // offline but cannot resize filesystems from the host.
         s.push_str("resize_rootfs: true\n");
         if self.growpart {
-            s.push_str("growpart:\n  mode: auto\n  devices: [\"/\"]\n  ignore_growroot_disabled: false\n");
+            s.push_str(
+                "growpart:\n  mode: auto\n  devices: [\"/\"]\n  ignore_growroot_disabled: false\n",
+            );
         }
         s
     }
@@ -281,7 +286,9 @@ mod tests {
             seed.network_config(),
             "version: 2\nethernets:\n  net0:\n    match:\n      macaddress: '02:aa:bb:cc:dd:00'\n    dhcp4: true\n  net1:\n    match:\n      macaddress: '02:aa:bb:cc:dd:01'\n    dhcp4: true\n"
         );
-        assert!(SeedConfig::default().network_config().contains("name: \"en*\""));
+        assert!(SeedConfig::default()
+            .network_config()
+            .contains("name: \"en*\""));
     }
 
     #[test]
@@ -301,8 +308,14 @@ mod tests {
         assert!(seed.ssh_authorized_keys.is_empty());
         assert!(seed.passwd_hash.is_none());
         let ud = seed.user_data();
-        assert!(ud.contains("lock_passwd: true") && ud.contains("ssh_pwauth: false"), "{ud}");
-        assert!(!ud.contains("ssh_authorized_keys") && !ud.contains("chpasswd"), "{ud}");
+        assert!(
+            ud.contains("lock_passwd: true") && ud.contains("ssh_pwauth: false"),
+            "{ud}"
+        );
+        assert!(
+            !ud.contains("ssh_authorized_keys") && !ud.contains("chpasswd"),
+            "{ud}"
+        );
         assert_eq!(seed.hostname, "my-vm");
     }
 
@@ -340,12 +353,20 @@ mod tests {
 
     #[test]
     fn user_data_grows_root_only_when_asked() {
-        let mut seed = SeedConfig { instance_id: "i".into(), hostname: "h".into(), ..Default::default() };
+        let mut seed = SeedConfig {
+            instance_id: "i".into(),
+            hostname: "h".into(),
+            ..Default::default()
+        };
         let ud = seed.user_data();
         assert!(ud.contains("resize_rootfs: true\n"));
         assert!(!ud.contains("growpart:"));
         seed.growpart = true;
         let ud = seed.user_data();
-        assert!(ud.contains("growpart:\n  mode: auto\n  devices: [\"/\"]\n"), "{}", ud);
+        assert!(
+            ud.contains("growpart:\n  mode: auto\n  devices: [\"/\"]\n"),
+            "{}",
+            ud
+        );
     }
 }

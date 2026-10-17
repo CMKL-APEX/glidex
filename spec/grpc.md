@@ -78,6 +78,8 @@ crates/glidex-api/
 │   ├── glidex/api/v1/options.proto   # (glidex.api.v1.op), (glidex.api.v1.secret); build-time only
 │   ├── glidex/api/v1/errors.proto    # ErrorDetails
 │   ├── glidex/system/v1/system.proto # G0: SystemService.GetServerInfo, WhoAmI
+│   ├── glidex/tenancy/v1/tenancy.proto # T0: TenantService, AdmissionService
+│   ├── glidex/directory/v1/connectors.proto # T1: ConnectorService
 │   ├── glidex/…/v1/*.proto           # tenancy, directory, auth; vm, storage, … as ported (§9)
 │   └── google/rpc/error_details.proto # vendored ErrorInfo only (excluded from buf lint)
 └── src/lib.rs            # generated modules + OPERATIONS
@@ -344,6 +346,8 @@ equivalent test suite; until then it stays WebSocket.
 | Mounting, per-listener protocols and cookies, audit, error mapping (§3, §6, §7) | `crates/glidex-control-plane/src/api/rpc/` |
 | Service layer (`Call`, `ServiceError`) | `crates/glidex-control-plane/src/service/` |
 | `SystemService` (G0) | `service/system.rs`, `api/rpc/system.rs`; REST twin `api/access.rs::server_info` |
+| `TenantService`, `AdmissionService` (T0) | `service/tenancy.rs`, `api/rpc/tenancy.rs`; REST twins `api/tenants.rs` |
+| `ConnectorService` (T1) | `service/directory.rs`, `api/rpc/directory.rs`; REST twins `api/connectors.rs`; `SetSecretRequest.value` is the first field marked `secret` |
 | Forwarding by `kind`, trailers (§8) | `api/gate.rs`, `cluster/net.rs` (`Reply.trailers`) |
 | CI (G-D9) | `.github/workflows/rust.yml` job `proto` |
 | Tests | `tests/rpc_tests.rs`; `cluster_tests.rs::rpc_reads_are_answered_by_the_server_that_takes_them`; unit tests in `api/rpc` and `glidex-api` |

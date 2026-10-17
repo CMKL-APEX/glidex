@@ -8,7 +8,10 @@
 //! `mtu=` is accepted although `--help` does not list it, and a value
 //! containing `,` must be double-quoted.
 
-use super::{needs_shared_memory, resolve_binary, vfio_device_id, vm_disks, HypervisorDriver, HypervisorError, HypervisorType, LaunchArgs};
+use super::{
+    needs_shared_memory, resolve_binary, vfio_device_id, vm_disks, HypervisorDriver,
+    HypervisorError, HypervisorType, LaunchArgs,
+};
 use crate::images::qemu_img::ImageType;
 use crate::models::VmConfig;
 use glidex_hv_client::{ch::ChClient, Observed};
@@ -77,20 +80,23 @@ fn net_args(config: &VmConfig) -> Vec<String> {
         .nic_bindings
         .iter()
         .map(|nic| {
-            let mut v = format!("id={},mac={},num_queues={}", nic.id, nic.mac, 2 * nic.queue_pairs.max(1) as u16);
+            let mut v = format!(
+                "id={},mac={},num_queues={}",
+                nic.id,
+                nic.mac,
+                2 * nic.queue_pairs.max(1) as u16
+            );
             if let Some(mtu) = nic.mtu {
                 v.push_str(&format!(",mtu={}", mtu));
             }
             match &nic.binding {
                 VmPortBinding::Tap { ifname } => v.push_str(&format!(",tap={}", ifname)),
                 // OVS's dpdkvhostuserclient is the client, so CH serves.
-                VmPortBinding::VhostUser { socket } => {
-                    v.push_str(&format!(
-                        ",vhost_user=on,socket={},vhost_mode=server,queue_size={}",
-                        q(&socket.to_string_lossy()),
-                        glidex_ovs::tuning::VHOST_QUEUE_SIZE
-                    ))
-                }
+                VmPortBinding::VhostUser { socket } => v.push_str(&format!(
+                    ",vhost_user=on,socket={},vhost_mode=server,queue_size={}",
+                    q(&socket.to_string_lossy()),
+                    glidex_ovs::tuning::VHOST_QUEUE_SIZE
+                )),
             }
             v
         })
@@ -142,9 +148,19 @@ pub(crate) fn args(config: &VmConfig, api_socket: &str) -> Vec<String> {
     }
     if !config.vfio_devices.is_empty() {
         a.push("--device".into());
-        a.extend(config.vfio_devices.iter().map(|p| format!("path={},id={}", q(p), vfio_device_id(p))));
+        a.extend(
+            config
+                .vfio_devices
+                .iter()
+                .map(|p| format!("path={},id={}", q(p), vfio_device_id(p))),
+        );
     }
-    a.extend(["--console".into(), console.into(), "--serial".into(), serial.into()]);
+    a.extend([
+        "--console".into(),
+        console.into(),
+        "--serial".into(),
+        serial.into(),
+    ]);
     a
 }
 
@@ -155,13 +171,23 @@ impl HypervisorDriver for CloudHypervisorDriver {
         HypervisorType::CloudHypervisor
     }
 
-    fn launch_args(&self, config: &VmConfig, api_socket: &str) -> Result<LaunchArgs, HypervisorError> {
+    fn launch_args(
+        &self,
+        config: &VmConfig,
+        api_socket: &str,
+    ) -> Result<LaunchArgs, HypervisorError> {
         let bin = resolve_binary("cloud-hypervisor").ok_or_else(|| {
-            HypervisorError::ProcessStart(std::io::Error::new(std::io::ErrorKind::NotFound, "cloud-hypervisor is not installed"))
+            HypervisorError::ProcessStart(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "cloud-hypervisor is not installed",
+            ))
         })?;
         let mut argv = vec![bin.to_string_lossy().into_owned()];
         argv.extend(args(config, api_socket));
-        Ok(LaunchArgs { argv, fallback: None })
+        Ok(LaunchArgs {
+            argv,
+            fallback: None,
+        })
     }
 
     fn observe(&self, api_socket: &str) -> Result<Observed, HypervisorError> {
@@ -196,57 +222,100 @@ mod tests {
             "vcpu_count": 2, "mem_size_mib": 1024, "rootfs_path": "/d", "kernel_args": "console=hvc0 root=/dev/vda",
             "kernel_image_path": "/k"
         });
-        base.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        base.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
         serde_json::from_value(base).unwrap()
     }
 
     /// The values that follow `flag` up to the next flag.
     fn values<'a>(args: &'a [String], flag: &str) -> Vec<&'a str> {
-        let Some(i) = args.iter().position(|a| a == flag) else { return Vec::new() };
-        args[i + 1..].iter().take_while(|a| !a.starts_with("--")).map(String::as_str).collect()
+        let Some(i) = args.iter().position(|a| a == flag) else {
+            return Vec::new();
+        };
+        args[i + 1..]
+            .iter()
+            .take_while(|a| !a.starts_with("--"))
+            .map(String::as_str)
+            .collect()
     }
 
     #[test]
     fn kernel_boot_command_line() {
-        let a = args(&config(serde_json::json!({})), "/run/glidex-cp/vms/x/api.sock");
-        assert_eq!(values(&a, "--api-socket"), ["path=/run/glidex-cp/vms/x/api.sock"]);
+        let a = args(
+            &config(serde_json::json!({})),
+            "/run/glidex-cp/vms/x/api.sock",
+        );
+        assert_eq!(
+            values(&a, "--api-socket"),
+            ["path=/run/glidex-cp/vms/x/api.sock"]
+        );
         assert_eq!(values(&a, "--cpus"), ["boot=2,max=2"]);
         assert_eq!(values(&a, "--memory"), ["size=1024M"]);
         assert_eq!(values(&a, "--kernel"), ["/k"]);
         assert_eq!(values(&a, "--cmdline"), ["console=hvc0 root=/dev/vda"]);
         assert!(values(&a, "--firmware").is_empty());
         // Kernel boot: the virtio console is the guest console.
-        assert_eq!((values(&a, "--console"), values(&a, "--serial")), (vec!["tty"], vec!["off"]));
+        assert_eq!(
+            (values(&a, "--console"), values(&a, "--serial")),
+            (vec!["tty"], vec!["off"])
+        );
         assert!(!a.iter().any(|x| x == "--net" || x == "--device"));
     }
 
     #[test]
     fn firmware_boot_uses_the_serial_port() {
-        let a = args(&config(serde_json::json!({"firmware_path": "/fw/CLOUDHV.fd"})), "/s");
+        let a = args(
+            &config(serde_json::json!({"firmware_path": "/fw/CLOUDHV.fd"})),
+            "/s",
+        );
         assert_eq!(values(&a, "--firmware"), ["/fw/CLOUDHV.fd"]);
         assert!(values(&a, "--kernel").is_empty() && values(&a, "--cmdline").is_empty());
-        assert_eq!((values(&a, "--console"), values(&a, "--serial")), (vec!["off"], vec!["tty"]));
+        assert_eq!(
+            (values(&a, "--console"), values(&a, "--serial")),
+            (vec!["off"], vec!["tty"])
+        );
     }
 
     #[test]
     fn managed_disks_use_recorded_format_and_seed_stays_last() {
         let mut c = config(serde_json::json!({"cloud_init_path": "/run/x,y/seed.img"}));
-        c.root_disk_binding = Some(DiskBinding { path: "/disks/root.qcow2".into(), format: DiskFormat::Qcow2, backing_files: true });
-        c.data_disk_bindings = vec![DiskBinding { path: "/disks/data.raw".into(), format: DiskFormat::Raw, backing_files: false }];
-        assert_eq!(values(&args(&c, "/s"), "--disk"), [
-            "path=/disks/root.qcow2,image_type=qcow2,backing_files=on",
-            "path=/disks/data.raw,image_type=raw",
-            "path=\"/run/x,y/seed.img\",readonly=on,image_type=raw",
-        ]);
+        c.root_disk_binding = Some(DiskBinding {
+            path: "/disks/root.qcow2".into(),
+            format: DiskFormat::Qcow2,
+            backing_files: true,
+        });
+        c.data_disk_bindings = vec![DiskBinding {
+            path: "/disks/data.raw".into(),
+            format: DiskFormat::Raw,
+            backing_files: false,
+        }];
+        assert_eq!(
+            values(&args(&c, "/s"), "--disk"),
+            [
+                "path=/disks/root.qcow2,image_type=qcow2,backing_files=on",
+                "path=/disks/data.raw,image_type=raw",
+                "path=\"/run/x,y/seed.img\",readonly=on,image_type=raw",
+            ]
+        );
         // An unreadable user-supplied rootfs: CH reports the open error.
         let c = config(serde_json::json!({"rootfs_path": "/nonexistent/root.img"}));
-        assert_eq!(values(&args(&c, "/s"), "--disk"), ["path=/nonexistent/root.img"]);
+        assert_eq!(
+            values(&args(&c, "/s"), "--disk"),
+            ["path=/nonexistent/root.img"]
+        );
     }
 
     #[test]
     fn image_type_names_are_chs_cli_names() {
         assert_eq!(
-            [ImageType::Raw, ImageType::Qcow2, ImageType::Vhdx, ImageType::FixedVhd].map(image_type_name),
+            [
+                ImageType::Raw,
+                ImageType::Qcow2,
+                ImageType::Vhdx,
+                ImageType::FixedVhd
+            ]
+            .map(image_type_name),
             ["raw", "qcow2", "vhdx", "vhd"]
         );
     }
@@ -254,10 +323,28 @@ mod tests {
     #[test]
     fn nics_hugepages_and_vfio() {
         use glidex_ovs::vm_port::VmPortBinding;
-        let mut c = config(serde_json::json!({"hugepages": true, "vfio_devices": ["/sys/bus/pci/devices/0000:41:00.0"]}));
+        let mut c = config(
+            serde_json::json!({"hugepages": true, "vfio_devices": ["/sys/bus/pci/devices/0000:41:00.0"]}),
+        );
         c.nic_bindings = vec![
-            NicBinding { id: "net0".into(), mac: "02:00:00:00:00:01".into(), binding: VmPortBinding::Tap { ifname: "gxabc-0".into() }, queue_pairs: 1, mtu: None },
-            NicBinding { id: "net1".into(), mac: "02:00:00:00:00:02".into(), binding: VmPortBinding::VhostUser { socket: "/run/glidex/vhost/x.net1.sock".into() }, queue_pairs: 2, mtu: Some(9000) },
+            NicBinding {
+                id: "net0".into(),
+                mac: "02:00:00:00:00:01".into(),
+                binding: VmPortBinding::Tap {
+                    ifname: "gxabc-0".into(),
+                },
+                queue_pairs: 1,
+                mtu: None,
+            },
+            NicBinding {
+                id: "net1".into(),
+                mac: "02:00:00:00:00:02".into(),
+                binding: VmPortBinding::VhostUser {
+                    socket: "/run/glidex/vhost/x.net1.sock".into(),
+                },
+                queue_pairs: 2,
+                mtu: Some(9000),
+            },
         ];
         let a = args(&c, "/s");
         assert_eq!(values(&a, "--net"), [
@@ -265,8 +352,14 @@ mod tests {
             "id=net1,mac=02:00:00:00:00:02,num_queues=4,mtu=9000,vhost_user=on,socket=/run/glidex/vhost/x.net1.sock,vhost_mode=server,queue_size=1024",
         ]);
         // vhost-user needs shared guest memory.
-        assert_eq!(values(&a, "--memory"), ["size=1024M,shared=on,hugepages=on"]);
-        assert_eq!(values(&a, "--device"), ["path=/sys/bus/pci/devices/0000:41:00.0,id=_vfio_0000_41_00_0"]);
+        assert_eq!(
+            values(&a, "--memory"),
+            ["size=1024M,shared=on,hugepages=on"]
+        );
+        assert_eq!(
+            values(&a, "--device"),
+            ["path=/sys/bus/pci/devices/0000:41:00.0,id=_vfio_0000_41_00_0"]
+        );
     }
 
     #[test]
@@ -279,16 +372,28 @@ mod tests {
         };
         let mut qcow2 = b"QFI\xfb\x00\x00\x00\x03".to_vec();
         qcow2.resize(4096, 0);
-        assert_eq!(detect_image_type(&write("a.qcow2", &qcow2)), Some(ImageType::Qcow2));
+        assert_eq!(
+            detect_image_type(&write("a.qcow2", &qcow2)),
+            Some(ImageType::Qcow2)
+        );
         let mut vhdx = b"vhdxfile".to_vec();
         vhdx.resize(4096, 0);
-        assert_eq!(detect_image_type(&write("a.vhdx", &vhdx)), Some(ImageType::Vhdx));
+        assert_eq!(
+            detect_image_type(&write("a.vhdx", &vhdx)),
+            Some(ImageType::Vhdx)
+        );
         let mut vhd = vec![0u8; 4096];
         let footer = vhd.len() - 512;
         vhd[footer..footer + 8].copy_from_slice(b"conectix");
         vhd[footer + 60..footer + 64].copy_from_slice(&2u32.to_be_bytes());
-        assert_eq!(detect_image_type(&write("a.vhd", &vhd)), Some(ImageType::FixedVhd));
-        assert_eq!(detect_image_type(&write("a.raw", &[0u8; 4096])), Some(ImageType::Raw));
+        assert_eq!(
+            detect_image_type(&write("a.vhd", &vhd)),
+            Some(ImageType::FixedVhd)
+        );
+        assert_eq!(
+            detect_image_type(&write("a.raw", &[0u8; 4096])),
+            Some(ImageType::Raw)
+        );
         assert_eq!(detect_image_type("/nonexistent/disk.img"), None);
     }
 
@@ -297,18 +402,38 @@ mod tests {
     #[test]
     fn cloud_hypervisor_parses_the_full_command_line() {
         use glidex_ovs::vm_port::VmPortBinding;
-        let Some(bin) = resolve_binary("cloud-hypervisor") else { return };
+        let Some(bin) = resolve_binary("cloud-hypervisor") else {
+            return;
+        };
         let dir = tempfile::tempdir().unwrap();
         let mut c = config(serde_json::json!({
             "firmware_path": "/nonexistent/CLOUDHV.fd", "cloud_init_path": "/nonexistent/a,b/seed.img",
             "vfio_devices": ["/sys/bus/pci/devices/0000:41:00.0"]
         }));
-        c.root_disk_binding = Some(DiskBinding { path: "/nonexistent/root.qcow2".into(), format: DiskFormat::Qcow2, backing_files: true });
-        c.nic_bindings = vec![NicBinding { id: "net0".into(), mac: "02:00:00:00:00:01".into(), binding: VmPortBinding::Tap { ifname: "gxnope-0".into() }, queue_pairs: 2, mtu: Some(1500) }];
+        c.root_disk_binding = Some(DiskBinding {
+            path: "/nonexistent/root.qcow2".into(),
+            format: DiskFormat::Qcow2,
+            backing_files: true,
+        });
+        c.nic_bindings = vec![NicBinding {
+            id: "net0".into(),
+            mac: "02:00:00:00:00:01".into(),
+            binding: VmPortBinding::Tap {
+                ifname: "gxnope-0".into(),
+            },
+            queue_pairs: 2,
+            mtu: Some(1500),
+        }];
         let api = dir.path().join("api.sock");
-        let out = std::process::Command::new(bin).args(args(&c, api.to_str().unwrap())).output().unwrap();
+        let out = std::process::Command::new(bin)
+            .args(args(&c, api.to_str().unwrap()))
+            .output()
+            .unwrap();
         let err = String::from_utf8_lossy(&out.stderr);
         assert!(!out.status.success());
-        assert!(!err.contains("ParsingConfig") && !err.contains("required arguments"), "{err}");
+        assert!(
+            !err.contains("ParsingConfig") && !err.contains("required arguments"),
+            "{err}"
+        );
     }
 }

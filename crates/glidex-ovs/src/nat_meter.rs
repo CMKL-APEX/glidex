@@ -61,7 +61,11 @@ fn bridge_counter(bridge: &str, dir: Direction) -> String {
 /// `m_<mac hex>_<dir>`: reservations are keyed by MAC (the VM id isn't
 /// recoverable from it; the control plane maps MAC → NIC).
 fn mac_counter(mac: &str, dir: Direction) -> String {
-    format!("m_{}_{}", mac.replace(':', "").to_ascii_lowercase(), dir.suffix())
+    format!(
+        "m_{}_{}",
+        mac.replace(':', "").to_ascii_lowercase(),
+        dir.suffix()
+    )
 }
 
 /// Every counter the current NAT state needs, by name.
@@ -69,9 +73,15 @@ fn desired(nats: &[NatState]) -> BTreeMap<String, (String, Option<String>, Direc
     let mut out = BTreeMap::new();
     for n in nats {
         for dir in [Direction::In, Direction::Out] {
-            out.insert(bridge_counter(&n.bridge, dir), (n.bridge.clone(), None, dir));
+            out.insert(
+                bridge_counter(&n.bridge, dir),
+                (n.bridge.clone(), None, dir),
+            );
             for mac in n.reservations.keys() {
-                out.insert(mac_counter(mac, dir), (n.bridge.clone(), Some(mac.clone()), dir));
+                out.insert(
+                    mac_counter(mac, dir),
+                    (n.bridge.clone(), Some(mac.clone()), dir),
+                );
             }
         }
     }
@@ -131,7 +141,10 @@ struct RawCounter {
 
 /// The counters in `inet glidex_meter`; empty when the table doesn't exist.
 fn list_counters(exec: &dyn Exec) -> Result<BTreeMap<String, RawCounter>, OvsError> {
-    let out = exec.run(&Cmd::new(Program::Nft, ["-j", "list", "counters", "table", "inet", METER_TABLE]))?;
+    let out = exec.run(&Cmd::new(
+        Program::Nft,
+        ["-j", "list", "counters", "table", "inet", METER_TABLE],
+    ))?;
     if out.status != 0 {
         let err = String::from_utf8_lossy(&out.stderr);
         if err.contains("No such file or directory") || err.contains("does not exist") {
@@ -146,17 +159,31 @@ fn parse_counters(json: &str) -> Result<BTreeMap<String, RawCounter>, OvsError> 
     if json.trim().is_empty() {
         return Ok(BTreeMap::new());
     }
-    let v: serde_json::Value =
-        serde_json::from_str(json).map_err(|e| OvsError::Io(format!("unexpected nft output: {e}")))?;
+    let v: serde_json::Value = serde_json::from_str(json)
+        .map_err(|e| OvsError::Io(format!("unexpected nft output: {e}")))?;
     let mut out = BTreeMap::new();
-    for item in v.get("nftables").and_then(|n| n.as_array()).into_iter().flatten() {
-        let Some(c) = item.get("counter") else { continue };
+    for item in v
+        .get("nftables")
+        .and_then(|n| n.as_array())
+        .into_iter()
+        .flatten()
+    {
+        let Some(c) = item.get("counter") else {
+            continue;
+        };
         if c.get("table").and_then(|t| t.as_str()) != Some(METER_TABLE) {
             continue;
         }
         let num = |k: &str| c.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
         if let Some(name) = c.get("name").and_then(|n| n.as_str()) {
-            out.insert(name.to_string(), RawCounter { bytes: num("bytes"), packets: num("packets"), handle: num("handle") });
+            out.insert(
+                name.to_string(),
+                RawCounter {
+                    bytes: num("bytes"),
+                    packets: num("packets"),
+                    handle: num("handle"),
+                },
+            );
         }
     }
     Ok(out)
@@ -202,7 +229,8 @@ mod tests {
     use crate::net::Ipv4Net;
 
     fn nat(bridge: &str, macs: &[(&str, &str)]) -> NatState {
-        let mut n = NatState::new(bridge, "10.88.0.0/24".parse::<Ipv4Net>().unwrap(), true).unwrap();
+        let mut n =
+            NatState::new(bridge, "10.88.0.0/24".parse::<Ipv4Net>().unwrap(), true).unwrap();
         for (m, ip) in macs {
             n.reservations.insert(m.to_string(), ip.parse().unwrap());
         }
@@ -213,17 +241,32 @@ mod tests {
     #[test]
     #[ignore = "prints a script for nft -c"]
     fn print_script_for_nft_check() {
-        let n = nat("gxbr-nat", &[("02:ff:ef:a5:e8:72", "10.88.0.3"), ("02:a3:98:bb:9d:40", "10.88.0.5")]);
+        let n = nat(
+            "gxbr-nat",
+            &[
+                ("02:ff:ef:a5:e8:72", "10.88.0.3"),
+                ("02:a3:98:bb:9d:40", "10.88.0.5"),
+            ],
+        );
         let existing: BTreeSet<String> = ["m_020000000009_in".to_string()].into();
         print!("{}", meter_script(&[n], &BTreeSet::new()).unwrap());
         // A second, incremental update deleting a stale counter.
         let n2 = nat("gxbr-nat", &[("02:ff:ef:a5:e8:72", "10.88.0.3")]);
-        print!("{}", meter_script(&[n2], &existing).unwrap().replace("delete counter inet glidex_meter m_020000000009_in\n", ""));
+        print!(
+            "{}",
+            meter_script(&[n2], &existing)
+                .unwrap()
+                .replace("delete counter inet glidex_meter m_020000000009_in\n", "")
+        );
     }
 
     #[test]
     fn golden_script() {
-        let s = meter_script(&[nat("gxbr-nat", &[("02:ff:ef:a5:e8:72", "10.88.0.3")])], &BTreeSet::new()).unwrap();
+        let s = meter_script(
+            &[nat("gxbr-nat", &[("02:ff:ef:a5:e8:72", "10.88.0.3")])],
+            &BTreeSet::new(),
+        )
+        .unwrap();
         assert_eq!(
             s,
             "add table inet glidex_meter\n\
@@ -244,7 +287,13 @@ mod tests {
     /// or flushes another's counters, and never touches the table itself.
     #[test]
     fn updates_are_incremental() {
-        let a = nat("gxbr-a", &[("02:00:00:00:00:01", "10.88.0.2"), ("02:00:00:00:00:02", "10.88.0.3")]);
+        let a = nat(
+            "gxbr-a",
+            &[
+                ("02:00:00:00:00:01", "10.88.0.2"),
+                ("02:00:00:00:00:02", "10.88.0.3"),
+            ],
+        );
         let b = nat("gxbr-b", &[("02:00:00:00:00:03", "10.88.1.2")]);
         let existing: BTreeSet<String> = desired(&[a.clone(), b.clone()]).into_keys().collect();
         // Release one reservation on a.
@@ -254,17 +303,30 @@ mod tests {
         let deletes: Vec<&str> = s.lines().filter(|l| l.starts_with("delete")).collect();
         assert_eq!(
             deletes,
-            vec!["delete counter inet glidex_meter m_020000000002_in", "delete counter inet glidex_meter m_020000000002_out"]
+            vec![
+                "delete counter inet glidex_meter m_020000000002_in",
+                "delete counter inet glidex_meter m_020000000002_out"
+            ]
         );
         assert!(!s.contains("delete table") && !s.contains("flush table"));
         // Delete network a entirely: only a's counters go.
         let s = meter_script(&[b], &existing).unwrap();
-        let deleted: BTreeSet<&str> = s.lines().filter_map(|l| l.strip_prefix("delete counter inet glidex_meter ")).collect();
+        let deleted: BTreeSet<&str> = s
+            .lines()
+            .filter_map(|l| l.strip_prefix("delete counter inet glidex_meter "))
+            .collect();
         assert_eq!(
             deleted,
-            ["br_gxbr_a_in", "br_gxbr_a_out", "m_020000000001_in", "m_020000000001_out", "m_020000000002_in", "m_020000000002_out"]
-                .into_iter()
-                .collect()
+            [
+                "br_gxbr_a_in",
+                "br_gxbr_a_out",
+                "m_020000000001_in",
+                "m_020000000001_out",
+                "m_020000000002_in",
+                "m_020000000002_out"
+            ]
+            .into_iter()
+            .collect()
         );
         // Nothing at all: no table is created.
         assert_eq!(meter_script(&[], &BTreeSet::new()), None);
@@ -278,13 +340,23 @@ mod tests {
             {"counter": {"family": "inet", "name": "m_02ffefa5e872_in", "table": "glidex_meter", "handle": 6, "packets": 2, "bytes": 3000}},
             {"counter": {"family": "inet", "name": "stale_one", "table": "glidex_meter", "handle": 9, "packets": 1, "bytes": 1}}]}"#;
         let ex = RecordingExec::new();
-        ex.on("nft -j list counters table inet glidex_meter", Output::ok(json));
+        ex.on(
+            "nft -j list counters table inet glidex_meter",
+            Output::ok(json),
+        );
         let n = nat("gxbr-nat", &[("02:ff:ef:a5:e8:72", "10.88.0.3")]);
         let got = nat_counters(&ex, &[n]).unwrap();
         assert_eq!(
             got,
             vec![
-                NatCounter { bridge: "gxbr-nat".into(), mac: None, dir: Direction::Out, bytes: 1000 + 140, packets: 10, handle: 3 },
+                NatCounter {
+                    bridge: "gxbr-nat".into(),
+                    mac: None,
+                    dir: Direction::Out,
+                    bytes: 1000 + 140,
+                    packets: 10,
+                    handle: 3
+                },
                 NatCounter {
                     bridge: "gxbr-nat".into(),
                     mac: Some("02:ff:ef:a5:e8:72".into()),
@@ -300,9 +372,18 @@ mod tests {
     #[test]
     fn missing_table_is_empty_and_apply_creates_it() {
         let ex = RecordingExec::new();
-        ex.on("nft -j list counters", Output::failed(1, "Error: No such file or directory; did you mean table 'glidex' in family inet?"));
+        ex.on(
+            "nft -j list counters",
+            Output::failed(
+                1,
+                "Error: No such file or directory; did you mean table 'glidex' in family inet?",
+            ),
+        );
         apply_meter(&ex, &[nat("gxbr-nat", &[])]).unwrap();
         let calls = ex.calls();
-        assert!(calls[1].starts_with("nft -f - <<< add table inet glidex_meter\n"), "{calls:?}");
+        assert!(
+            calls[1].starts_with("nft -f - <<< add table inet glidex_meter\n"),
+            "{calls:?}"
+        );
     }
 }

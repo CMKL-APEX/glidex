@@ -2,8 +2,8 @@
 //! (spec/metering.md §5.4). Read-only: three `ovs-vsctl list` calls.
 
 use crate::exec::Exec;
-use crate::vsctl::{NIC_KEY, VM_ID_KEY};
 use crate::vsctl::{self, Row};
+use crate::vsctl::{NIC_KEY, VM_ID_KEY};
 use crate::OvsError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -88,26 +88,41 @@ fn counter(stats: &BTreeMap<String, String>, key: &str) -> u64 {
 pub fn bridge_stats(exec: &dyn Exec) -> Result<Vec<BridgeStats>, OvsError> {
     let bridges = vsctl::list(exec, "Bridge", &["name", "external_ids", "ports"])?;
     let ports = vsctl::list(exec, "Port", &["_uuid", "name", "interfaces", "tag"])?;
-    let ifaces = vsctl::list(exec, "Interface", &["_uuid", "name", "type", "external_ids", "statistics"])?;
+    let ifaces = vsctl::list(
+        exec,
+        "Interface",
+        &["_uuid", "name", "type", "external_ids", "statistics"],
+    )?;
     Ok(assemble(&bridges, &ports, &ifaces))
 }
 
 fn assemble(bridges: &[Row], ports: &[Row], ifaces: &[Row]) -> Vec<BridgeStats> {
-    let ports: BTreeMap<String, &Row> = ports.iter().filter_map(|p| Some((uuid(p.0.get("_uuid")?)?, p))).collect();
-    let ifaces: BTreeMap<String, &Row> = ifaces.iter().filter_map(|i| Some((uuid(i.0.get("_uuid")?)?, i))).collect();
+    let ports: BTreeMap<String, &Row> = ports
+        .iter()
+        .filter_map(|p| Some((uuid(p.0.get("_uuid")?)?, p)))
+        .collect();
+    let ifaces: BTreeMap<String, &Row> = ifaces
+        .iter()
+        .filter_map(|i| Some((uuid(i.0.get("_uuid")?)?, i)))
+        .collect();
     let mut out = Vec::new();
     for b in bridges.iter().filter(|b| b.owned_by_glidex()) {
         let Some(name) = b.str("name") else { continue };
         let mut stats = Vec::new();
         for port in uuids(b.0.get("ports")).iter().filter_map(|u| ports.get(u)) {
             let tag = port.int("tag").and_then(|t| u16::try_from(t).ok());
-            for (id, iface) in uuids(port.0.get("interfaces")).iter().filter_map(|u| Some((u, *ifaces.get(u)?))) {
+            for (id, iface) in uuids(port.0.get("interfaces"))
+                .iter()
+                .filter_map(|u| Some((u, *ifaces.get(u)?)))
+            {
                 let ids = iface.map("external_ids");
                 let iname = iface.str("name").unwrap_or_default();
                 let role = match ids.get(vsctl::ROLE_KEY).map(String::as_str) {
                     Some("vm") => PortRole::Vm,
                     Some("uplink") => PortRole::Uplink,
-                    _ if iface.str("type").as_deref() == Some("internal") && iname == name => PortRole::Gateway,
+                    _ if iface.str("type").as_deref() == Some("internal") && iname == name => {
+                        PortRole::Gateway
+                    }
                     _ => PortRole::Other,
                 };
                 let st = iface.map("statistics");
@@ -128,7 +143,10 @@ fn assemble(bridges: &[Row], ports: &[Row], ifaces: &[Row]) -> Vec<BridgeStats> 
             }
         }
         stats.sort_by(|a, b| a.name.cmp(&b.name));
-        out.push(BridgeStats { bridge: name, ports: stats });
+        out.push(BridgeStats {
+            bridge: name,
+            ports: stats,
+        });
     }
     out.sort_by(|a, b| a.bridge.cmp(&b.bridge));
     out
@@ -153,7 +171,13 @@ mod tests {
         assert!(!stats.is_empty());
         for b in &stats {
             for p in &b.ports {
-                println!("{} {:<14} {:?} ingress={:?}", b.bridge, p.name, p.role, p.ingress());
+                println!(
+                    "{} {:<14} {:?} ingress={:?}",
+                    b.bridge,
+                    p.name,
+                    p.role,
+                    p.ingress()
+                );
             }
         }
     }
@@ -161,14 +185,24 @@ mod tests {
     #[test]
     fn owned_bridges_with_roles_and_tags() {
         let ex = RecordingExec::new();
-        ex.on("ovs-vsctl --format=json --columns=name,external_ids,ports list Bridge", Output::ok(BRIDGES));
-        ex.on("ovs-vsctl --format=json --columns=_uuid,name,interfaces,tag list Port", Output::ok(PORTS));
+        ex.on(
+            "ovs-vsctl --format=json --columns=name,external_ids,ports list Bridge",
+            Output::ok(BRIDGES),
+        );
+        ex.on(
+            "ovs-vsctl --format=json --columns=_uuid,name,interfaces,tag list Port",
+            Output::ok(PORTS),
+        );
         ex.on("ovs-vsctl --format=json --columns=_uuid,name,type,external_ids,statistics list Interface", Output::ok(IFACES));
         let stats = bridge_stats(&ex).unwrap();
         assert_eq!(stats.len(), 1, "unowned bridges are left out");
         let b = &stats[0];
         assert_eq!(b.bridge, "gxbr-nat");
-        let roles: Vec<_> = b.ports.iter().map(|p| (p.name.as_str(), p.role, p.tag, p.nic)).collect();
+        let roles: Vec<_> = b
+            .ports
+            .iter()
+            .map(|p| (p.name.as_str(), p.role, p.tag, p.nic))
+            .collect();
         assert_eq!(
             roles,
             vec![
@@ -178,8 +212,14 @@ mod tests {
             ]
         );
         let vm = &b.ports[1];
-        assert_eq!(vm.vm_id.as_deref(), Some("b7ab781b-b407-4bd6-9c78-55e08f9ef731"));
-        assert_eq!((vm.rx_bytes, vm.tx_bytes, vm.rx_packets, vm.tx_packets), (1256080, 43115123, 15719, 20024));
+        assert_eq!(
+            vm.vm_id.as_deref(),
+            Some("b7ab781b-b407-4bd6-9c78-55e08f9ef731")
+        );
+        assert_eq!(
+            (vm.rx_bytes, vm.tx_bytes, vm.rx_packets, vm.tx_packets),
+            (1256080, 43115123, 15719, 20024)
+        );
         // The gateway port reports the host's view: its tx is ingress.
         assert_eq!(b.ports[2].ingress(), (135802952, 49389));
         assert_eq!(vm.ingress(), (1256080, 15719));
