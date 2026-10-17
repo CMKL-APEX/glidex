@@ -44,10 +44,14 @@ set must only ever go to an access-controlled host.
 
 ## Still to do
 
-- Public API reference: generate it from the protos (`protoc-gen-doc`
-  through `buf generate` for RPC; an OpenAPI document from
-  `glidex-api`'s `build.rs` for REST), limited to the operations we
-  declare public.
-- CLI reference for `gxctl` generated from its clap definitions.
+- Public API reference: the endpoint and RPC tables in `docs/public/src/api/`
+  are compiled by hand from the route table and the protos. Generate them
+  instead (`protoc-gen-doc` through `buf generate` for RPC; an OpenAPI
+  document from `glidex-api`'s `build.rs` for REST), limited to the
+  operations we declare public.
+- The `gxctl` reference is hand-written too: only gxctl's global options
+  are clap; commands are parsed by hand, so there is nothing to generate
+  it from yet.
+- Resolve the `<!-- TODO(verify) -->` comments in `docs/public/src`.
 - Publishing: the public book to a public site, the internal set to an
   access-controlled one.
