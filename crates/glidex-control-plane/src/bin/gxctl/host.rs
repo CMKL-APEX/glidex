@@ -50,9 +50,9 @@ pub(crate) struct PciRow {
     vendor_id: String,
     device_id: String,
     class_id: String,
-    #[tabled(display_with = "display_option")]
+    #[tabled(display = "display_option")]
     driver: Option<String>,
-    #[tabled(display_with = "display_option")]
+    #[tabled(display = "display_option")]
     iommu_group: Option<String>,
 }
 
