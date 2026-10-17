@@ -40,6 +40,19 @@ fn step(what: &str) {
     eprintln!("\n==> {what}");
 }
 
+/// The VM in a `{vm}` answer (`POST /vms`, `GET /vms/{id}`, writes), in the
+/// proto3 JSON shape (spec/grpc.md §9.1).
+fn vm_of(v: &Value) -> &Value {
+    assert!(v["vm"].is_object(), "not a VM answer: {v}");
+    &v["vm"]
+}
+
+/// The items of a list answer (`{images: [...]}`, `{vms: [...]}`, ...): an
+/// empty list is left out, so `{}` is none.
+fn items<'a>(v: &'a Value, key: &str) -> &'a [Value] {
+    v[key].as_array().map(Vec::as_slice).unwrap_or_default()
+}
+
 /// The outer host's VMs and credential, deleted at the end unless kept.
 struct Outer {
     api: Api<'static>,
@@ -133,7 +146,7 @@ fn make_host(api: &Api, name: &str, credential: &str, key: &std::path::Path) -> 
         "rootfs_path": "",
     });
     let vm = api.ok("POST", "/vms", Some(&body));
-    let id = vm["id"].as_str().unwrap().to_string();
+    let id = vm_of(&vm)["id"].as_str().unwrap().to_string();
     let vm = api.ok(
         "POST",
         &format!("/vms/{id}/start?wait=120"),
@@ -144,7 +157,7 @@ fn make_host(api: &Api, name: &str, credential: &str, key: &std::path::Path) -> 
         Duration::from_secs(120),
         || {
             let v = api.ok("GET", &format!("/vms/{id}"), None);
-            v["nics"][0]["ipv4"].as_str().map(String::from)
+            vm_of(&v)["nics"][0]["ipv4"].as_str().map(String::from)
         },
     );
     let _ = vm;
@@ -246,11 +259,9 @@ fn a_nested_two_node_cluster_binds_vm_ports_and_carries_traffic_over_geneve() {
         env("GLIDEX_E2E_IMAGE", "ubuntu-26.04"),
         "cloudhv-edk2".to_string(),
     ] {
-        let ready = images
-            .as_array()
-            .into_iter()
-            .flatten()
-            .any(|i| i["name"] == name.as_str() && i["status"]["state"] == "ready");
+        let ready = items(&images, "images")
+            .iter()
+            .any(|i| i["name"] == name.as_str() && i["status"]["state"] == "IMAGE_STATE_READY");
         assert!(
             ready,
             "the outer glidex has no ready image {name}; pull it first (gxctl image pull {name})"
@@ -395,10 +406,12 @@ fn a_nested_two_node_cluster_binds_vm_ports_and_carries_traffic_over_geneve() {
         Duration::from_secs(180),
         || {
             let imgs = inner.ok("GET", "/images", None);
-            let fw = imgs
-                .as_array()?
+            let fw = items(&imgs, "images")
                 .iter()
-                .find(|i| i["kind"] == "firmware" && i["source"]["key"] == "cloudhv-edk2")?
+                .find(|i| {
+                    i["kind"] == "IMAGE_KIND_FIRMWARE"
+                        && i["source"]["firmware"]["key"] == "cloudhv-edk2"
+                })?
                 .clone();
             let on_h2 = fw["copies"]
                 .as_array()?
@@ -505,8 +518,8 @@ fn a_nested_two_node_cluster_binds_vm_ports_and_carries_traffic_over_geneve() {
                 "networks": [{ "network": "e2e-net" }], "kernel_image_path": "", "rootfs_path": "",
             })),
         );
-        assert_eq!(vm["node"].as_str(), Some(node.as_str()), "{vm}");
-        guests.push((name, vm["id"].as_str().unwrap().to_string()));
+        assert_eq!(vm_of(&vm)["node"].as_str(), Some(node.as_str()), "{vm}");
+        guests.push((name, vm_of(&vm)["id"].as_str().unwrap().to_string()));
     }
     let before = (geneve_packets(&h1), geneve_packets(&h2));
     for (name, id) in &guests {
@@ -514,7 +527,11 @@ fn a_nested_two_node_cluster_binds_vm_ports_and_carries_traffic_over_geneve() {
         wait_for_or(
             &format!("{name} running"),
             Duration::from_secs(900),
-            || (inner.ok("GET", &format!("/vms/{id}"), None)["state"] == "running").then_some(()),
+            || {
+                (vm_of(&inner.ok("GET", &format!("/vms/{id}"), None))["state"]
+                    == "VM_STATE_RUNNING")
+                    .then_some(())
+            },
             || {
                 let vm = inner.call("GET", &format!("/vms/{id}"), None).1;
                 let events = inner.call("GET", &format!("/vms/{id}/events"), None).1;
@@ -558,7 +575,7 @@ fn a_nested_two_node_cluster_binds_vm_ports_and_carries_traffic_over_geneve() {
             .to_string();
         let vm = inner.ok("GET", &format!("/vms/{id}"), None);
         assert_eq!(
-            vm["nics"][0]["ipv4"].as_str(),
+            vm_of(&vm)["nics"][0]["ipv4"].as_str(),
             Some(mine.as_str()),
             "{name}: {vm}"
         );
@@ -654,7 +671,7 @@ fn a_nested_two_node_cluster_binds_vm_ports_and_carries_traffic_over_geneve() {
         &format!("/images/{}", env("GLIDEX_E2E_GUEST_IMAGE", "debian-13")),
         None,
     );
-    let copies = img["copies"].as_array().unwrap();
+    let copies = img["image"]["copies"].as_array().unwrap();
     assert!(
         copies.len() == 2 && copies.iter().all(|c| c["state"] == "ready"),
         "image copies: {img}"
@@ -761,7 +778,7 @@ fn a_nested_two_node_cluster_binds_vm_ports_and_carries_traffic_over_geneve() {
         "cloud_init_path": "/var/lib/gxe2e/seed-c.img", "hypervisor": "cloudhypervisor", "node": n1,
         "networks": [{ "network": "e2e-nat" }], "kernel_image_path": "", "rootfs_path": "", "power": "running",
     })));
-    let id = vm["id"].as_str().unwrap().to_string();
+    let id = vm_of(&vm)["id"].as_str().unwrap().to_string();
     let line = wait_for(
         "e2e-c to report its ping to the LAN router",
         Duration::from_secs(600),
@@ -791,10 +808,8 @@ fn a_nested_two_node_cluster_binds_vm_ports_and_carries_traffic_over_geneve() {
         .as_str()
         .unwrap_or_else(|| panic!("no pool suggested: {d}"))
         .to_string();
-    let project = inner
-        .ok("GET", "/projects", None)
-        .as_array()
-        .unwrap()
+    let projects = inner.ok("GET", "/projects", None);
+    let project = items(&projects, "projects")
         .iter()
         .find(|p| p["name"] == "default")
         .unwrap()["id"]
@@ -806,6 +821,7 @@ fn a_nested_two_node_cluster_binds_vm_ports_and_carries_traffic_over_geneve() {
         &format!("/projects/{project}/routers"),
         Some(&json!({ "name": "e2e-r" })),
     );
+    let r = &r["router"];
     let rip = r["status"]["external_ip"]
         .as_str()
         .unwrap_or_else(|| panic!("no address: {r}"))
@@ -833,7 +849,7 @@ fn a_nested_two_node_cluster_binds_vm_ports_and_carries_traffic_over_geneve() {
         "cloud_init_path": "/var/lib/gxe2e/seed-d.img", "hypervisor": "cloudhypervisor", "node": n1,
         "networks": [{ "network": "e2e-vpc" }], "kernel_image_path": "", "rootfs_path": "", "power": "running",
     })));
-    let id = vm["id"].as_str().unwrap().to_string();
+    let id = vm_of(&vm)["id"].as_str().unwrap().to_string();
     let console = |id: &str| {
         String::from_utf8_lossy(
             &h1.run(&format!(
@@ -898,15 +914,16 @@ fn a_nested_two_node_cluster_binds_vm_ports_and_carries_traffic_over_geneve() {
     };
     let rlr = format!("gxr-{}", r["id"].as_str().unwrap());
     // A NAT network on the edge: its port moves to the router.
-    inner.ok(
+    // A new network's OVN objects are named after its id (`gx-<id>`,
+    // `gx-lrp-<id>`), not its name (spec/tenancy.md D24).
+    let p2 = inner.ok(
         "POST",
         &format!("/projects/{project}/networks"),
         Some(&json!({ "name": "e2e-p2", "mode": "nat", "port_type": "tap", "scope": "cluster" })),
     );
+    let p2_lrp = format!("gx-lrp-{}", p2["network"]["id"].as_str().unwrap());
     wait_for("e2e-p2's port on the edge", Duration::from_secs(60), || {
-        nb("lrp-list gx-edge")
-            .contains("gx-lrp-e2e-p2")
-            .then_some(())
+        nb("lrp-list gx-edge").contains(&p2_lrp).then_some(())
     });
     inner.ok(
         "PUT",
@@ -917,34 +934,35 @@ fn a_nested_two_node_cluster_binds_vm_ports_and_carries_traffic_over_geneve() {
         "e2e-p2's port on the router",
         Duration::from_secs(60),
         || {
-            (nb(&format!("lrp-list {rlr}")).contains("gx-lrp-e2e-p2")
-                && !nb("lrp-list gx-edge").contains("gx-lrp-e2e-p2"))
+            (nb(&format!("lrp-list {rlr}")).contains(&p2_lrp)
+                && !nb("lrp-list gx-edge").contains(&p2_lrp))
             .then_some(())
         },
     );
     // An isolated network: no router port until it is attached; then a guest
     // on it, on the other node, reaches the router's other network.
-    inner.ok("POST", &format!("/projects/{project}/networks"), Some(&json!({ "name": "e2e-p3", "mode": "isolated", "port_type": "tap", "scope": "cluster" })));
+    let p3 = inner.ok("POST", &format!("/projects/{project}/networks"), Some(&json!({ "name": "e2e-p3", "mode": "isolated", "port_type": "tap", "scope": "cluster" })));
+    let p3_id = p3["network"]["id"].as_str().unwrap().to_string();
+    let p3_lrp = format!("gx-lrp-{p3_id}");
     wait_for("e2e-p3's switch", Duration::from_secs(60), || {
-        nb("ls-list").contains("gx-e2e-p3").then_some(())
+        nb("ls-list").contains(&format!("gx-{p3_id}")).then_some(())
     });
-    assert!(!nb(&format!("lrp-list {rlr}")).contains("gx-lrp-e2e-p3"));
+    assert!(!nb(&format!("lrp-list {rlr}")).contains(&p3_lrp));
     inner.ok(
         "PUT",
         &format!("/projects/{project}/networks/e2e-p3/router"),
         Some(&json!({ "router": "e2e-r" })),
     );
     let dhcp_router = || {
-        nb("--bare --columns=options find DHCP_Options external_ids:glidex-network=e2e-p3")
-            .contains("router=")
+        nb(&format!(
+            "--bare --columns=options find DHCP_Options external_ids:glidex-network={p3_id}"
+        ))
+        .contains("router=")
     };
     wait_for(
         "e2e-p3 routed: a port on the router, a gateway in DHCP",
         Duration::from_secs(60),
-        || {
-            (nb(&format!("lrp-list {rlr}")).contains("gx-lrp-e2e-p3") && dhcp_router())
-                .then_some(())
-        },
+        || (nb(&format!("lrp-list {rlr}")).contains(&p3_lrp) && dhcp_router()).then_some(()),
     );
     let out = h2.run_with_input(
         "sudo sh -s",
@@ -960,7 +978,7 @@ fn a_nested_two_node_cluster_binds_vm_ports_and_carries_traffic_over_geneve() {
         "cloud_init_path": "/var/lib/gxe2e/seed-e.img", "hypervisor": "cloudhypervisor", "node": n2,
         "networks": [{ "network": "e2e-p3" }], "kernel_image_path": "", "rootfs_path": "", "power": "running",
     })));
-    let eid = vm["id"].as_str().unwrap().to_string();
+    let eid = vm_of(&vm)["id"].as_str().unwrap().to_string();
     let line = wait_for(
         "e2e-e to report its ping to e2e-d",
         Duration::from_secs(600),
@@ -987,7 +1005,7 @@ fn a_nested_two_node_cluster_binds_vm_ports_and_carries_traffic_over_geneve() {
         Some(&json!({ "router": null })),
     );
     wait_for("e2e-p3 isolated again", Duration::from_secs(60), || {
-        (!nb(&format!("lrp-list {rlr}")).contains("gx-lrp-e2e-p3") && !dhcp_router()).then_some(())
+        (!nb(&format!("lrp-list {rlr}")).contains(&p3_lrp) && !dhcp_router()).then_some(())
     });
 
     // spec/clustering.md §5.5: the agent is removed from the cluster's side,
@@ -996,7 +1014,7 @@ fn a_nested_two_node_cluster_binds_vm_ports_and_carries_traffic_over_geneve() {
     step("a removed agent leaves the cluster and is a standalone host again");
     // Empty it first: no VM, and nothing that needs it as a gateway.
     let vms = inner.ok("GET", "/vms", None);
-    for v in vms.as_array().unwrap() {
+    for v in items(&vms, "vms") {
         inner.ok(
             "DELETE",
             &format!("/vms/{}", v["id"].as_str().unwrap()),
@@ -1004,26 +1022,21 @@ fn a_nested_two_node_cluster_binds_vm_ports_and_carries_traffic_over_geneve() {
         );
     }
     wait_for("no VMs left", Duration::from_secs(180), || {
-        inner
-            .ok("GET", "/vms", None)
-            .as_array()
-            .unwrap()
+        items(&inner.ok("GET", "/vms", None), "vms")
             .is_empty()
             .then_some(())
     });
     // Copies on chosen nodes (clustering.md §9.2.2): h1 lets its copy of the
     // guest image go (h2 has one), then gets it back from h2.
-    let guest_img = inner
-        .ok("GET", "/images", None)
-        .as_array()
-        .unwrap()
+    let images = inner.ok("GET", "/images", None);
+    let guest_img = items(&images, "images")
         .iter()
-        .find(|i| i["kind"] == "disk")
+        .find(|i| i["kind"] == "IMAGE_KIND_DISK")
         .map(|i| i["id"].as_str().unwrap().to_string())
         .expect("the guest image");
     let copy_on = |node: &str| -> Option<String> {
         let v = inner.ok("GET", &format!("/images/{guest_img}"), None);
-        v["copies"]
+        v["image"]["copies"]
             .as_array()?
             .iter()
             .find(|c| c["node"] == node)
@@ -1047,18 +1060,15 @@ fn a_nested_two_node_cluster_binds_vm_ports_and_carries_traffic_over_geneve() {
         (copy_on(&n1).as_deref() == Some("ready")).then_some(())
     });
     let nets = inner.ok("GET", "/networks", None);
-    for n in nets.as_array().unwrap() {
+    for n in items(&nets, "networks") {
         inner.call(
             "DELETE",
-            &format!("/networks/{}", n["name"].as_str().unwrap()),
+            &format!("/networks/{}", n["id"].as_str().unwrap()),
             None,
         );
     }
     wait_for("no networks left", Duration::from_secs(180), || {
-        inner
-            .ok("GET", "/networks", None)
-            .as_array()
-            .unwrap()
+        items(&inner.ok("GET", "/networks", None), "networks")
             .is_empty()
             .then_some(())
     });
@@ -1255,9 +1265,7 @@ fn check_agent_ui(
     let (s, _, body) = ui_curl(&jar, &base, "GET", "/api/vms", None, None);
     assert_eq!(s, 200, "{body}");
     let vms: Value = serde_json::from_str(&body).unwrap();
-    let b = vms
-        .as_array()
-        .unwrap()
+    let b = items(&vms, "vms")
         .iter()
         .find(|v| v["name"] == "e2e-b")
         .expect("e2e-b listed");
@@ -1324,7 +1332,7 @@ fn check_single_nic_uplink_survives_a_reboot(h2: &Ssh, ui: &(std::path::PathBuf,
     );
     assert_eq!(s, 202, "pending commit: {b}");
     let res: Value = serde_json::from_str(&b).unwrap();
-    let token = res["record"]["pending"]["token"]
+    let token = res["uplink"]["record"]["pending"]["token"]
         .as_str()
         .unwrap()
         .to_string();
@@ -1376,7 +1384,8 @@ fn check_single_nic_uplink_survives_a_reboot(h2: &Ssh, ui: &(std::path::PathBuf,
     assert_eq!(s, 200, "{b}");
     let list: Value = serde_json::from_str(&b).unwrap();
     assert!(
-        list[0]["record"]["boot_rollback"].is_null(),
+        list["uplinks"][0]["record"].is_object()
+            && list["uplinks"][0]["record"]["boot_rollback"].is_null(),
         "not held: {list}"
     );
     let _ = std::fs::remove_file(jar);

@@ -179,7 +179,7 @@ test("a network made from a router's card goes on that router", async ({ page })
         .then((x) => x.json())
         .catch(() => null);
       if (real === null) return;
-      return json(r, { ...real, netd: { ...(real.netd ?? {}), access: "full" }, host: { ...(real.host ?? {}), ovs_running: true } });
+      return json(r, { ...real, netd: { ...(real.netd ?? {}), available: true, access: "NETD_ACCESS_FULL" }, host: { ...(real.host ?? {}), ovs_running: true } });
     });
     await page.goto(`/projects/${project.id}`);
     await page.getByRole("link", { name: "+ network on r1" }).click();

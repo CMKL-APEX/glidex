@@ -3,55 +3,16 @@
 //! spec/security.md §6.2, §8).
 
 use super::{ApiErr, Caller, Proto, error_to_response, proto_body, proto_no_content};
-use crate::authz::{Ent, EntitySet};
-use crate::models::ApiError;
-use crate::network::{NetError, Netd, NetdAccess};
+use crate::service::host;
 use crate::service::network as svc;
 use crate::state::VmManagerError;
 use axum::{Json, extract::Path, http::StatusCode, response::IntoResponse};
+use glidex_api::proto::glidex::host::v1 as hpb;
 use glidex_api::proto::glidex::network::v1 as pb;
-use glidex_netd::proto::{
-    BridgeRecord, EnsureUplinkArgs, OnBehalfOf, Op, UplinkPhase, UplinkResult,
-};
-use glidex_ovs::bridge::BridgeSpec;
-use glidex_ovs::install::{InstallReport, InstallRequest};
-use glidex_ovs::uplink::{UplinkKind, UplinkSpec};
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 fn manager_err(e: VmManagerError) -> ApiErr {
     error_to_response(e)
-}
-
-fn on_behalf_of(c: &Caller) -> OnBehalfOf {
-    OnBehalfOf {
-        user: c
-            .p
-            .user_id()
-            .map(String::from)
-            .unwrap_or_else(|| c.p.display()),
-        project: None,
-        request_id: Some(c.request_id.clone()),
-    }
-}
-
-/// Run a blocking netd call off the async runtime, on behalf of `c`.
-async fn netd_blocking<T, F>(c: &Caller, f: F) -> Result<T, ApiErr>
-where
-    T: Send + 'static,
-    F: FnOnce(&Netd, &OnBehalfOf) -> Result<T, NetError> + Send + 'static,
-{
-    let netd = c.manager().netd().clone();
-    let who = on_behalf_of(c);
-    tokio::task::spawn_blocking(move || f(&netd, &who))
-        .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiError::new("internal", e.to_string())),
-            )
-        })?
-        .map_err(|e| error_to_response(VmManagerError::Network(e)))
 }
 
 // ---- networks, shares, routers: REST twins of glidex.network.v1 ----------
@@ -306,259 +267,146 @@ pub async fn leave_share(
     Ok(proto_no_content())
 }
 
-// ---- host networking -----------------------------------------------------
+// ---- host networking: REST twins of glidex.host.v1 -------------------------
 
-#[derive(Serialize)]
-struct OvsStatus {
-    netd: NetdStatus,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    host: Option<serde_json::Value>,
-}
+/// The old shape's enum values of the host family.
+const HOST_ENUMS: &[(&str, &str)] = &[
+    ("profile", "OVS_PROFILE"),
+    ("datapath", "DATAPATH"),
+    ("kind", "UPLINK_KIND"),
+    ("xdp_mode", "XDP_MODE"),
+];
 
-#[derive(Serialize)]
-struct NetdStatus {
-    available: bool,
-    access: NetdAccess,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<String>,
+fn host_body<T: serde::de::DeserializeOwned + buffa::MessageName>(
+    mut v: Value,
+    path: &[(&str, &str)],
+) -> Result<T, ApiErr> {
+    if let Some(o) = v.as_object_mut() {
+        for (k, val) in path {
+            o.insert((*k).into(), Value::String((*val).into()));
+        }
+    }
+    proto_body(v, HOST_ENUMS, &[])
 }
 
 pub async fn ovs_status(c: Caller) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Host, EntitySet::new())?;
-    let netd = c.manager().netd().clone();
-    let status = tokio::task::spawn_blocking(move || {
-        let (access, result) = netd.probe();
-        match result {
-            Ok(host) => OvsStatus {
-                netd: NetdStatus {
-                    available: true,
-                    access,
-                    error: None,
-                },
-                host: Some(host),
-            },
-            Err(e) => OvsStatus {
-                netd: NetdStatus {
-                    available: false,
-                    access,
-                    error: Some(e.to_string()),
-                },
-                host: None,
-            },
-        }
-    })
-    .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiError::new("internal", e.to_string())),
-        )
-    })?;
-    Ok(Json(status))
+    Ok(Proto(
+        StatusCode::OK,
+        host::ovs_status(&c, Default::default()).await?,
+    ))
 }
 
-pub async fn ovs_install(
-    c: Caller,
-    Json(req): Json<InstallRequest>,
-) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Host, EntitySet::new())?;
-    let report: InstallReport =
-        netd_blocking(&c, move |n, who| n.call_as(Op::InstallOvs(req), who)).await?;
-    Ok(Json(report))
+pub async fn ovs_install(c: Caller, Json(v): Json<Value>) -> Result<impl IntoResponse, ApiErr> {
+    let req: hpb::InstallOvsRequest = host_body(v, &[])?;
+    Ok(Proto(StatusCode::OK, host::install_ovs(&c, req).await?))
 }
 
 pub async fn ovs_dpdk_init(
     c: Caller,
-    Json(settings): Json<glidex_ovs::install::DpdkSettings>,
-) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Host, EntitySet::new())?;
-    netd_blocking(&c, move |n, who| {
-        n.call_as::<serde_json::Value>(Op::InitDpdk(settings), who)
-    })
-    .await?;
-    Ok(StatusCode::NO_CONTENT)
+    Json(v): Json<Value>,
+) -> Result<axum::response::Response, ApiErr> {
+    let req: hpb::InitDpdkRequest = host_body(v, &[])?;
+    host::init_dpdk(&c, req).await?;
+    Ok(proto_no_content())
 }
 
 pub async fn list_bridges(c: Caller) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Host, EntitySet::new())?;
-    let bridges: Vec<BridgeRecord> = netd_blocking(&c, |n, _| n.call(Op::ListBridges)).await?;
-    Ok(Json(bridges))
+    Ok(Proto(
+        StatusCode::OK,
+        host::list_bridges(&c, Default::default()).await?,
+    ))
 }
 
-pub async fn create_bridge(
-    c: Caller,
-    Json(spec): Json<BridgeSpec>,
-) -> Result<impl IntoResponse, ApiErr> {
-    c.set_target(format!("bridge:{}", spec.name));
-    c.require(Ent::Host, EntitySet::new())?;
-    let bridge: BridgeRecord =
-        netd_blocking(&c, move |n, who| n.call_as(Op::EnsureBridge(spec), who)).await?;
-    Ok((StatusCode::CREATED, Json(bridge)))
+pub async fn create_bridge(c: Caller, Json(v): Json<Value>) -> Result<impl IntoResponse, ApiErr> {
+    let req: hpb::CreateBridgeRequest = host_body(v, &[])?;
+    Ok(Proto(
+        StatusCode::CREATED,
+        host::create_bridge(&c, req).await?,
+    ))
 }
 
 pub async fn delete_bridge(
     c: Caller,
     Path(name): Path<String>,
-) -> Result<impl IntoResponse, ApiErr> {
-    c.set_target(format!("bridge:{}", name));
-    c.require(Ent::Host, EntitySet::new())?;
-    if let Some(net) = c
-        .manager()
-        .list_networks()
-        .map_err(manager_err)?
-        .into_iter()
-        .find(|n| n.bridge == name)
-    {
-        return Err(manager_err(VmManagerError::Network(NetError::Conflict(
-            format!("bridge '{}' is used by network '{}'", name, net.name),
-        ))));
-    }
-    c.manager().meter_final_sample().await;
-    netd_blocking(&c, move |n, who| {
-        n.call_as::<serde_json::Value>(Op::DeleteBridge { name }, who)
-    })
-    .await?;
-    Ok(StatusCode::NO_CONTENT)
+) -> Result<axum::response::Response, ApiErr> {
+    let req = hpb::DeleteBridgeRequest {
+        name,
+        ..Default::default()
+    };
+    host::delete_bridge(&c, req).await?;
+    Ok(proto_no_content())
 }
 
 pub async fn list_uplinks(
     c: Caller,
     Path(bridge): Path<String>,
 ) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Host, EntitySet::new())?;
-    let all: Vec<UplinkResult> = netd_blocking(&c, |n, _| n.call(Op::ListUplinks)).await?;
-    Ok(Json(
-        all.into_iter()
-            .filter(|u| u.record.spec.bridge == bridge)
-            .collect::<Vec<_>>(),
-    ))
+    let req = hpb::ListUplinksRequest {
+        bridge,
+        ..Default::default()
+    };
+    Ok(Proto(StatusCode::OK, host::list_uplinks(&c, req).await?))
 }
 
-#[derive(Deserialize)]
-pub struct CreateUplinkRequest {
-    name: String,
-    #[serde(flatten)]
-    kind: UplinkKind,
-    #[serde(default)]
-    migrate_ip: bool,
-    #[serde(default)]
-    confirm: bool,
-    /// Migrate a DHCP-managed address anyway (it may only last until the lease ends).
-    #[serde(default)]
-    accept_dhcp: bool,
-}
-
+/// `201`, or `202` while the migrated address waits for its commit.
 pub async fn create_uplink(
     c: Caller,
     Path(bridge): Path<String>,
-    Json(req): Json<CreateUplinkRequest>,
+    Json(v): Json<Value>,
 ) -> Result<impl IntoResponse, ApiErr> {
-    c.set_target(format!("uplink:{}/{}", bridge, req.name));
-    // A confirmed uplink may move the host's IP: step-up (spec §7.1).
-    let action = if req.confirm {
-        "confirmUplink"
-    } else {
-        "ensureUplink"
+    let req: hpb::EnsureUplinkRequest = host_body(v, &[("bridge", &bridge)])?;
+    let r = host::ensure_uplink(&c, req).await?;
+    let status = match r.uplink.as_option().is_some_and(host::pending) {
+        true => StatusCode::ACCEPTED,
+        false => StatusCode::CREATED,
     };
-    c.require_action(action, Ent::Host, EntitySet::new(), &[])?;
-    let args = EnsureUplinkArgs {
-        spec: UplinkSpec {
-            name: req.name,
-            bridge,
-            kind: req.kind,
-            migrate_ip: req.migrate_ip,
-        },
-        confirm: req.confirm,
-        accept_dhcp: req.accept_dhcp,
-    };
-    let res: UplinkResult =
-        netd_blocking(&c, move |n, who| n.call_as(Op::EnsureUplink(args), who)).await?;
-    report_soon(&c);
-    // 202: the IP migration must still be committed within the window.
-    let status = match res.phase {
-        UplinkPhase::PendingCommit => StatusCode::ACCEPTED,
-        UplinkPhase::Active => StatusCode::CREATED,
-    };
-    Ok((status, Json(res)))
-}
-
-#[derive(Deserialize)]
-pub struct CommitRequest {
-    token: String,
+    Ok(Proto(status, r))
 }
 
 pub async fn commit_uplink(
     c: Caller,
     Path((bridge, name)): Path<(String, String)>,
-    Json(req): Json<CommitRequest>,
+    Json(v): Json<Value>,
 ) -> Result<impl IntoResponse, ApiErr> {
-    c.set_target(format!("uplink:{}/{}", bridge, name));
-    c.require(Ent::Host, EntitySet::new())?;
-    c.manager().meter_final_sample().await;
-    let res: UplinkResult = netd_blocking(&c, move |n, who| {
-        n.call_as(
-            Op::CommitUplink {
-                bridge,
-                name,
-                token: req.token,
-            },
-            who,
-        )
-    })
-    .await?;
-    report_soon(&c);
-    Ok(Json(res))
+    let req: hpb::CommitUplinkRequest = host_body(v, &[("bridge", &bridge), ("name", &name)])?;
+    Ok(Proto(StatusCode::OK, host::commit_uplink(&c, req).await?))
 }
 
-/// `POST /ovs/bridges/{b}/uplinks/{u}/reapply`: set up again an uplink netd
-/// rolled back at start (the gateway check failed there): a fresh snapshot,
-/// the gateway check and a commit window, as when it was first added.
+/// `POST /ovs/bridges/{b}/uplinks/{u}/reapply`: `200`, or `202` while the
+/// address waits for its commit.
 pub async fn reapply_uplink(
     c: Caller,
     Path((bridge, name)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, ApiErr> {
-    c.set_target(format!("uplink:{}/{}", bridge, name));
-    // It moves the host's IP again: as a confirmed uplink, step-up.
-    c.require_action("confirmUplink", Ent::Host, EntitySet::new(), &[])?;
-    let res: UplinkResult = netd_blocking(&c, move |n, who| {
-        n.call_as(Op::ReapplyUplink { bridge, name }, who)
-    })
-    .await?;
-    report_soon(&c);
-    let status = match res.phase {
-        UplinkPhase::PendingCommit => StatusCode::ACCEPTED,
-        UplinkPhase::Active => StatusCode::OK,
+    let req = hpb::ReapplyUplinkRequest {
+        bridge,
+        name,
+        ..Default::default()
     };
-    Ok((status, Json(res)))
-}
-
-/// This node's uplinks changed: report what it has now (the shared edge's
-/// defaults read it), without waiting for the next periodic report.
-fn report_soon(c: &Caller) {
-    let m = c.app.manager.clone();
-    tokio::task::spawn_blocking(move || {
-        if let Err(e) = m.report_self() {
-            tracing::warn!("reporting this node after an uplink change: {}", e);
-        }
-    });
+    let r = host::reapply_uplink(&c, req).await?;
+    let status = match r.uplink.as_option().is_some_and(host::pending) {
+        true => StatusCode::ACCEPTED,
+        false => StatusCode::OK,
+    };
+    Ok(Proto(status, r))
 }
 
 pub async fn delete_uplink(
     c: Caller,
     Path((bridge, name)): Path<(String, String)>,
-) -> Result<impl IntoResponse, ApiErr> {
-    c.set_target(format!("uplink:{}/{}", bridge, name));
-    c.require(Ent::Host, EntitySet::new())?;
-    c.manager().meter_final_sample().await;
-    netd_blocking(&c, move |n, who| {
-        n.call_as::<serde_json::Value>(Op::DeleteUplink { bridge, name }, who)
-    })
-    .await?;
-    report_soon(&c);
-    Ok(StatusCode::NO_CONTENT)
+) -> Result<axum::response::Response, ApiErr> {
+    let req = hpb::DeleteUplinkRequest {
+        bridge,
+        name,
+        ..Default::default()
+    };
+    host::delete_uplink(&c, req).await?;
+    Ok(proto_no_content())
 }
 
 pub async fn list_pci_devices(c: Caller) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Host, EntitySet::new())?;
-    Ok(Json(crate::pci::scan_pci_devices()))
+    Ok(Proto(
+        StatusCode::OK,
+        host::list_pci_devices(&c, Default::default())?,
+    ))
 }

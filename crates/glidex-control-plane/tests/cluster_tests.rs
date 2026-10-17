@@ -3538,6 +3538,36 @@ async fn an_agents_ui_is_relayed_to_a_server_and_host_paths_run_on_the_agent() {
         agent_id.as_str(),
         "ran on the agent"
     );
+    // So do the host family's RPCs (gRPC-Web, the UI socket's protocol).
+    let mut frame = vec![0u8];
+    frame.extend_from_slice(&2u32.to_be_bytes());
+    frame.extend_from_slice(b"{}");
+    let mut req = Request::builder()
+        .method("POST")
+        .uri("/glidex.host.v1.PciService/ListPciDevices")
+        .header("content-type", "application/grpc-web+json")
+        .header("x-grpc-web", "1")
+        .body(Body::from(frame))
+        .unwrap();
+    req.extensions_mut()
+        .insert(glidex_control_plane::api::Listener::Ui);
+    req.extensions_mut()
+        .insert(glidex_control_plane::api::PeerUid(
+            nix::unistd::getuid().as_raw(),
+        ));
+    let resp = ui.clone().oneshot(req).await.unwrap();
+    let (s, h) = (resp.status(), resp.headers().clone());
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let text = String::from_utf8_lossy(&bytes);
+    let tail = &text[text.len().saturating_sub(200)..];
+    assert_eq!(s, StatusCode::OK, "{tail}");
+    assert!(text.contains("\"devices\""), "{tail}");
+    assert!(text.contains("grpc-status: 0"), "{tail}");
+    assert_eq!(
+        h["x-glidex-served-by"],
+        agent_id.as_str(),
+        "the RPC ran on the agent"
+    );
 
     // A relay can't vouch for anyone.
     let r = cluster(&agent)

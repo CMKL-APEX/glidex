@@ -27,7 +27,7 @@ const MAX_FORWARDED_BODY: usize = 32 << 20;
 
 /// What an RPC needs to arrive at the leader as it was sent: the
 /// protocol's own headers (deadlines, compression, gRPC-Web marker).
-const RPC_REQUEST_HEADERS: &[&str] = &[
+pub(crate) const RPC_REQUEST_HEADERS: &[&str] = &[
     "te",
     "grpc-timeout",
     "grpc-encoding",
@@ -61,6 +61,7 @@ fn needs_no_barrier(path: &str) -> bool {
 /// and are never forwarded.
 fn is_host_local(path: &str) -> bool {
     path.starts_with("/ovs")
+        || path.starts_with("/glidex.host.v1.")
         || path.starts_with("/pci-devices")
         || path.starts_with("/system/")
         || matches!(

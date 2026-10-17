@@ -87,6 +87,7 @@ crates/glidex-api/
 │   ├── glidex/usage/v1/usage.proto   # G2: UsageService, MetricsService
 │   ├── glidex/access/v1/access.proto # G2: Project, User, Team, Token, SystemBinding, Policy, Audit, Authz services
 │   ├── glidex/network/v1/network.proto # G3: NetworkService, NetworkShareService, RouterService
+│   ├── glidex/host/v1/host.proto     # G3: HostNetworkService, PciService
 │   ├── glidex/…/v1/*.proto           # tenancy, directory, auth; vm, storage, … as ported (§9)
 │   └── google/rpc/error_details.proto # vendored ErrorInfo only (excluded from buf lint)
 └── src/lib.rs            # generated modules + OPERATIONS
@@ -214,8 +215,10 @@ missing.
 - **Reads** keep the ReadIndex wait; `x-glidex-consistency: local`
   metadata replaces the header of the same name.
 - **Agents** forward gRPC calls to a server like REST calls; agent-local
-  host operations (relay, `PreAuthorized`) are ported with the
-  host-networking family (§9, G3), not before.
+  host operations (relay, `PreAuthorized`) came with the host family
+  (§9, G3): a `glidex.host.v1` RPC from an agent's UI (gRPC-Web, as all
+  RPCs there) is authorized by the server on the agent's `Host`, with the
+  operation's action, and sent back to run on the agent.
 - Mixed versions: an RPC unknown to an older server returns
   `UNIMPLEMENTED`; `gxctl` falls back to REST for that family during an
   upgrade.
@@ -365,6 +368,7 @@ equivalent test suite; until then it stays WebSocket.
 | Usage family (G2): `UsageService` (usage records, billing-month reports), `MetricsService` (5-minute series, live rates) | proto `glidex/usage/v1/usage.proto`; `service/usage.rs`; RPC `api/rpc/usage.rs`; REST twins `api/usage.rs`, `api/rates.rs` (the `format=csv` exports stay REST-only); gxctl `usage`, `stats`, `bandwidth`, `io`, `compute` on the generated clients (`--csv` from REST); tests `tests/usage_tests.rs`; shape changes in metering.md §9.5 |
 | Access family (G2): `ProjectService`, `UserService`, `TeamService`, `TokenService`, `SystemBindingService`, `PolicyService`, `AuditService`, `AuthzService`; `SystemService.WhoAmI` gains `user`, `token`, `csrf` and the REST twin `GET /auth/whoami` | proto `glidex/access/v1/access.proto`; `service/access.rs` (`whoami_of` in `service/system.rs`); RPC `api/rpc/access.rs`; REST twins `api/access.rs` (updates take `update_mask` or the fields present); gxctl and the UI on the new shapes; tests `tests/access_tests.rs` |
 | Network family (G3): `NetworkService` (networks, grants, project networks, a network's router, events, OVN view), `NetworkShareService`, `RouterService` | proto `glidex/network/v1/network.proto`; `service/network.rs`; RPC `api/rpc/network.rs`; REST twins `api/net.rs` (host networking — `/ovs`, bridges, uplinks, PCI — and `/cluster/ovn` stay for `host.v1`/`cluster.v1`); networks re-keyed by id first (tenancy.md D24, schema 4); a VM's `Nic` gains `network_name`; gxctl `network …` on the generated clients; tests `tests/network_tests.rs` |
+| Host family (G3): `HostNetworkService` (OVS status and install, DPDK, bridges, uplinks), `PciService` | proto `glidex/host/v1/host.proto`; `service/host.rs`; RPC `api/rpc/host.rs`; REST twins in `api/net.rs`; host-local in `gate::is_host_local` and relayed from an agent's UI like the REST paths (`relay::is_remote_host_path`, `relay::remote_host` on the RPC mount, the action from the operation table; the agent runs it `PreAuthorized`); gxctl and the UI on the new shapes; tests `network_tests.rs::ovs_status_and_bridges`, `cluster_tests.rs::an_agents_ui_is_relayed_to_a_server_and_host_paths_run_on_the_agent` (gRPC-Web through the relay) |
 | Forwarding by `kind`, trailers (§8) | `api/gate.rs`, `cluster/net.rs` (`Reply.trailers`) |
 | CI (G-D9) | `.github/workflows/rust.yml` job `proto` |
 | Tests | `tests/rpc_tests.rs`; `cluster_tests.rs::rpc_reads_are_answered_by_the_server_that_takes_them`; unit tests in `api/rpc` and `glidex-api` |

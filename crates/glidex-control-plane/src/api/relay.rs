@@ -80,6 +80,8 @@ const PASS_RESPONSE: [&str; 12] = [
 pub fn is_remote_host_path(path: &str) -> bool {
     // `leave` is this host leaving, not the server it is relayed to.
     path.starts_with("/ovs/")
+        // The host family's RPCs (spec/grpc.md §8).
+        || path.starts_with("/glidex.host.v1.")
         || path == "/pci-devices"
         || path == "/system/reconcile"
         || path == "/cluster/leave"
@@ -260,7 +262,13 @@ pub async fn remote_host(State(app): State<AppState>, req: Request, next: Next) 
     let Some(RemoteHost(node)) = req.extensions().get::<RemoteHost>().cloned() else {
         return next.run(req).await;
     };
-    let Some(action) = req.extensions().get::<RouteAction>().map(|a| a.0) else {
+    // A REST route's action, or an RPC's from the operation table.
+    let action = req
+        .extensions()
+        .get::<RouteAction>()
+        .map(|a| a.0)
+        .or_else(|| glidex_api::operation(req.uri().path()).map(|o| o.action));
+    let Some(action) = action else {
         return next.run(req).await;
     };
     match run_on_host(&app, &node, action, req).await {
@@ -338,6 +346,12 @@ async fn run_on_host(
         .map(|p| p.as_str().to_string())
         .unwrap_or_else(|| parts.uri.path().to_string());
     let mut headers = copy_headers(&parts.headers, &["content-type", "accept", "x-request-id"]);
+    if glidex_api::operation(parts.uri.path()).is_some() {
+        headers.extend(copy_headers(
+            &parts.headers,
+            super::gate::RPC_REQUEST_HEADERS,
+        ));
+    }
     // Some handlers ask for a second action on the host (a confirmed uplink
     // moves its IP: `confirmUplink`); pass those the caller holds as well.
     let mut authorized = vec![action.to_string()];
@@ -495,6 +509,8 @@ mod tests {
             "/pci-devices",
             "/system/reconcile",
             "/cluster/leave",
+            "/glidex.host.v1.HostNetworkService/ListBridges",
+            "/glidex.host.v1.PciService/ListPciDevices",
         ] {
             assert!(is_remote_host_path(p), "{p}");
         }
@@ -504,6 +520,7 @@ mod tests {
             "/cluster/status",
             "/cluster/dissolve",
             "/ovsx",
+            "/glidex.network.v1.NetworkService/ListNetworks",
         ] {
             assert!(!is_remote_host_path(p), "{p}");
         }

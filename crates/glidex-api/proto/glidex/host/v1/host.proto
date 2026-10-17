@@ -1,0 +1,417 @@
+// Host networking through glidex-netd and the host's PCI devices
+// (spec/networking.md §8–§11, spec/security.md §8): operations on the host
+// that answers them, never forwarded; from an agent's UI they run on the
+// agent, authorized by a server (spec/grpc.md §8, clustering-ui.md §3.6).
+// The REST twins answer with these messages as JSON (spec/grpc.md §9.1).
+syntax = "proto3";
+
+package glidex.host.v1;
+
+import "glidex/api/v1/options.proto";
+import "google/protobuf/timestamp.proto";
+
+service HostNetworkService {
+  // Whether netd answers, and what the host can do (OVS, DPDK, AF_XDP,
+  // hugepages, the firewall and network managers in the way).
+  rpc GetOvsStatus(GetOvsStatusRequest) returns (GetOvsStatusResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readOvsStatus"
+      kind: KIND_READ
+      rest: "GET /ovs/status"
+    };
+  }
+  rpc InstallOvs(InstallOvsRequest) returns (InstallOvsResponse) {
+    option (glidex.api.v1.op) = {
+      action: "installOvs"
+      kind: KIND_WRITE
+      rest: "POST /ovs/install"
+    };
+  }
+  rpc InitDpdk(InitDpdkRequest) returns (InitDpdkResponse) {
+    option (glidex.api.v1.op) = {
+      action: "initDpdk"
+      kind: KIND_WRITE
+      rest: "POST /ovs/dpdk-init"
+    };
+  }
+  rpc ListBridges(ListBridgesRequest) returns (ListBridgesResponse) {
+    option (glidex.api.v1.op) = {
+      action: "listBridges"
+      kind: KIND_READ
+      rest: "GET /ovs/bridges"
+    };
+  }
+  rpc CreateBridge(CreateBridgeRequest) returns (CreateBridgeResponse) {
+    option (glidex.api.v1.op) = {
+      action: "createBridge"
+      kind: KIND_WRITE
+      rest: "POST /ovs/bridges"
+    };
+  }
+  // Refused while a network uses it.
+  rpc DeleteBridge(DeleteBridgeRequest) returns (DeleteBridgeResponse) {
+    option (glidex.api.v1.op) = {
+      action: "deleteBridge"
+      kind: KIND_WRITE
+      rest: "DELETE /ovs/bridges/{name}"
+    };
+  }
+  rpc ListUplinks(ListUplinksRequest) returns (ListUplinksResponse) {
+    option (glidex.api.v1.op) = {
+      action: "listUplinks"
+      kind: KIND_READ
+      rest: "GET /ovs/bridges/{name}/uplinks"
+    };
+  }
+  // Put a NIC on a bridge. Moving the host's address onto it (`confirm`)
+  // also needs `confirmUplink` and must be committed in time
+  // (UPLINK_PHASE_PENDING_COMMIT).
+  rpc EnsureUplink(EnsureUplinkRequest) returns (EnsureUplinkResponse) {
+    option (glidex.api.v1.op) = {
+      action: "ensureUplink"
+      kind: KIND_WRITE
+      rest: "POST /ovs/bridges/{name}/uplinks"
+    };
+  }
+  rpc DeleteUplink(DeleteUplinkRequest) returns (DeleteUplinkResponse) {
+    option (glidex.api.v1.op) = {
+      action: "deleteUplink"
+      kind: KIND_WRITE
+      rest: "DELETE /ovs/bridges/{name}/uplinks/{uplink}"
+    };
+  }
+  // Keep a migrated address (else netd rolls it back at the deadline).
+  rpc CommitUplink(CommitUplinkRequest) returns (CommitUplinkResponse) {
+    option (glidex.api.v1.op) = {
+      action: "commitUplink"
+      kind: KIND_WRITE
+      rest: "POST /ovs/bridges/{name}/uplinks/{uplink}/commit"
+    };
+  }
+  // Set up again an uplink netd rolled back at start: a fresh snapshot,
+  // the gateway check and a commit window.
+  rpc ReapplyUplink(ReapplyUplinkRequest) returns (ReapplyUplinkResponse) {
+    option (glidex.api.v1.op) = {
+      action: "confirmUplink"
+      kind: KIND_WRITE
+      rest: "POST /ovs/bridges/{name}/uplinks/{uplink}/reapply"
+    };
+  }
+}
+
+service PciService {
+  rpc ListPciDevices(ListPciDevicesRequest) returns (ListPciDevicesResponse) {
+    option (glidex.api.v1.op) = {
+      action: "listPciDevices"
+      kind: KIND_READ
+      rest: "GET /pci-devices"
+    };
+  }
+}
+
+// ---- status and installation ------------------------------------------------
+
+enum NetdAccess {
+  NETD_ACCESS_UNSPECIFIED = 0;
+  // The full socket: the control plane may change the host.
+  NETD_ACCESS_FULL = 1;
+  // The read-only socket.
+  NETD_ACCESS_STATUS = 2;
+  NETD_ACCESS_NONE = 3;
+}
+
+message NetdStatus {
+  optional bool available = 1;
+  NetdAccess access = 2;
+  optional string error = 3;
+}
+
+message Hugepages {
+  uint64 size_kb = 1 [json_name = "size_kb"];
+  uint64 total = 2;
+  uint64 free = 3;
+}
+
+// A way of running VM ports, and what the host lacks for it.
+message Combination {
+  string id = 1;
+  string description = 2;
+  optional bool available = 3;
+  repeated string missing = 4;
+}
+
+message HostCapabilities {
+  optional bool ovs_installed = 1 [json_name = "ovs_installed"];
+  optional string ovs_version = 2 [json_name = "ovs_version"];
+  optional bool ovs_version_supported = 3 [json_name = "ovs_version_supported"];
+  optional bool ovs_running = 4 [json_name = "ovs_running"];
+  repeated string iface_types = 5 [json_name = "iface_types"];
+  repeated string datapath_types = 6 [json_name = "datapath_types"];
+  optional bool ovs_dpdk_build = 7 [json_name = "ovs_dpdk_build"];
+  optional bool dpdk_mempool_driver = 8 [json_name = "dpdk_mempool_driver"];
+  optional bool dpdk_initialized = 9 [json_name = "dpdk_initialized"];
+  repeated Hugepages hugepages = 10;
+  optional bool iommu = 11;
+  optional bool ch_net_admin = 12 [json_name = "ch_net_admin"];
+  optional bool dnsmasq = 13;
+  optional bool nft = 14;
+  optional bool ip_forward = 15 [json_name = "ip_forward"];
+  repeated string firewalls = 16;
+  repeated string network_managers = 17 [json_name = "network_managers"];
+  repeated Combination combinations = 18;
+}
+
+message GetOvsStatusRequest {}
+message GetOvsStatusResponse {
+  NetdStatus netd = 1;
+  // What netd found; absent when it didn't answer.
+  HostCapabilities host = 2;
+}
+
+enum OvsProfile {
+  OVS_PROFILE_UNSPECIFIED = 0;
+  OVS_PROFILE_KERNEL = 1;
+  OVS_PROFILE_DPDK = 2;
+}
+
+message InstallOvsRequest {
+  OvsProfile profile = 1;
+  // Build OVS (and DPDK) from source instead of the distribution's packages.
+  bool source_build = 2 [json_name = "source_build"];
+  bool confirm = 3;
+}
+message InstallOvsResponse {
+  optional bool changed = 1;
+  string method = 2;
+  repeated string packages = 3;
+  optional string ovs_version = 4 [json_name = "ovs_version"];
+  repeated string warnings = 5;
+  string output_tail = 6 [json_name = "output_tail"];
+}
+
+message InitDpdkRequest {
+  // Hugepage memory per NUMA node, `1024` or `1024,1024`.
+  string socket_mem = 1 [json_name = "socket_mem"];
+  optional string pmd_cpu_mask = 2 [json_name = "pmd_cpu_mask"];
+  bool confirm = 3;
+}
+message InitDpdkResponse {}
+
+// ---- bridges ------------------------------------------------------------------
+
+enum Datapath {
+  DATAPATH_UNSPECIFIED = 0;
+  // The kernel datapath.
+  DATAPATH_SYSTEM = 1;
+  // The userspace (DPDK) datapath.
+  DATAPATH_NETDEV = 2;
+}
+
+message BridgeSpec {
+  string name = 1;
+  Datapath datapath = 2;
+  optional uint32 mtu = 3;
+  // Take over a bridge that exists and isn't glidex's.
+  optional bool adopt = 4;
+  // Fenced off from the host (an isolated network's).
+  bool isolated = 5;
+}
+
+// The bridge as OVS has it.
+message BridgeInfo {
+  string name = 1;
+  Datapath datapath = 2;
+  // glidex made it (or adopted it).
+  optional bool owned = 3;
+  repeated string ports = 4;
+}
+
+message Bridge {
+  BridgeSpec spec = 1;
+  // Absent when the bridge is missing on the host.
+  BridgeInfo live = 2;
+}
+
+message ListBridgesRequest {}
+message ListBridgesResponse {
+  repeated Bridge bridges = 1;
+}
+
+message CreateBridgeRequest {
+  string name = 1;
+  Datapath datapath = 2;
+  optional uint32 mtu = 3;
+  bool adopt = 4;
+  bool isolated = 5;
+}
+message CreateBridgeResponse {
+  Bridge bridge = 1;
+}
+
+message DeleteBridgeRequest {
+  string name = 1;
+}
+message DeleteBridgeResponse {}
+
+// ---- uplinks ------------------------------------------------------------------
+
+enum UplinkKind {
+  UPLINK_KIND_UNSPECIFIED = 0;
+  // A kernel NIC (`ifname`).
+  UPLINK_KIND_KERNEL = 1;
+  // AF_XDP on a kernel NIC (`ifname`, `xdp_mode`, `n_rxq`).
+  UPLINK_KIND_AFXDP = 2;
+  // A DPDK port on a PCI device (`pci`, `n_rxq`).
+  UPLINK_KIND_DPDK = 3;
+}
+
+enum XdpMode {
+  XDP_MODE_UNSPECIFIED = 0;
+  XDP_MODE_BEST_EFFORT = 1;
+  XDP_MODE_NATIVE = 2;
+  XDP_MODE_NATIVE_WITH_ZEROCOPY = 3;
+  XDP_MODE_GENERIC = 4;
+}
+
+message UplinkSpec {
+  string name = 1;
+  string bridge = 2;
+  UplinkKind kind = 3;
+  optional string ifname = 4;
+  optional string pci = 5;
+  XdpMode xdp_mode = 6 [json_name = "xdp_mode"];
+  optional uint32 n_rxq = 7 [json_name = "n_rxq"];
+  // Move the NIC's addresses and routes onto the bridge.
+  optional bool migrate_ip = 8 [json_name = "migrate_ip"];
+}
+
+message Route {
+  string dst = 1;
+  optional string gateway = 2;
+  optional uint32 metric = 3;
+}
+
+// A NIC's IP configuration before it was migrated.
+message Snapshot {
+  string ifname = 1;
+  optional string mac = 2;
+  repeated string addresses = 3;
+  repeated Route routes = 4;
+}
+
+// A migration waiting for its commit.
+message PendingCommit {
+  string token = 1;
+  google.protobuf.Timestamp deadline = 2;
+}
+
+message BootRollback {
+  google.protobuf.Timestamp at = 1;
+  string reason = 2;
+}
+
+message UplinkRecord {
+  UplinkSpec spec = 1;
+  // The driver a NIC had before a DPDK uplink rebound it.
+  optional string orig_driver = 2 [json_name = "orig_driver"];
+  Snapshot snapshot = 3;
+  PendingCommit pending = 4;
+  // Re-applying it at start failed and was rolled back.
+  BootRollback boot_rollback = 5 [json_name = "boot_rollback"];
+  // Set up accepting a DHCP-managed address.
+  bool accept_dhcp = 6 [json_name = "accept_dhcp"];
+}
+
+enum UplinkPhase {
+  UPLINK_PHASE_UNSPECIFIED = 0;
+  UPLINK_PHASE_ACTIVE = 1;
+  // The address moved: commit with `pending.token` before `pending.deadline`.
+  UPLINK_PHASE_PENDING_COMMIT = 2;
+}
+
+message UplinkState {
+  optional string error = 1;
+  optional string link_state = 2 [json_name = "link_state"];
+  repeated string warnings = 3;
+}
+
+// Why the NIC looks in use by the host, and its addresses.
+message Classification {
+  repeated string reasons = 1;
+  repeated string addresses = 2;
+}
+
+message Uplink {
+  UplinkRecord record = 1;
+  UplinkPhase phase = 2;
+  UplinkState live = 3;
+  Classification classification = 4;
+}
+
+message ListUplinksRequest {
+  // The bridge.
+  string bridge = 1;
+}
+message ListUplinksResponse {
+  repeated Uplink uplinks = 1;
+}
+
+message EnsureUplinkRequest {
+  string bridge = 1;
+  string name = 2;
+  UplinkKind kind = 3;
+  optional string ifname = 4;
+  optional string pci = 5;
+  XdpMode xdp_mode = 6 [json_name = "xdp_mode"];
+  optional uint32 n_rxq = 7 [json_name = "n_rxq"];
+  bool migrate_ip = 8 [json_name = "migrate_ip"];
+  // Take over a NIC the host is using (needs `confirmUplink`).
+  bool confirm = 9;
+  // Migrate a DHCP-managed address anyway (it may last only until the
+  // lease ends).
+  bool accept_dhcp = 10 [json_name = "accept_dhcp"];
+}
+message EnsureUplinkResponse {
+  Uplink uplink = 1;
+}
+
+message DeleteUplinkRequest {
+  string bridge = 1;
+  string name = 2;
+}
+message DeleteUplinkResponse {}
+
+message CommitUplinkRequest {
+  string bridge = 1;
+  string name = 2;
+  string token = 3;
+}
+message CommitUplinkResponse {
+  Uplink uplink = 1;
+}
+
+message ReapplyUplinkRequest {
+  string bridge = 1;
+  string name = 2;
+}
+message ReapplyUplinkResponse {
+  Uplink uplink = 1;
+}
+
+// ---- PCI devices ----------------------------------------------------------------
+
+message PciDevice {
+  // `0000:3b:00.0`.
+  string address = 1;
+  string vendor_id = 2 [json_name = "vendor_id"];
+  string device_id = 3 [json_name = "device_id"];
+  string class_id = 4 [json_name = "class_id"];
+  optional string driver = 5;
+  optional string iommu_group = 6 [json_name = "iommu_group"];
+  string sysfs_path = 7 [json_name = "sysfs_path"];
+}
+
+message ListPciDevicesRequest {}
+message ListPciDevicesResponse {
+  repeated PciDevice devices = 1;
+}

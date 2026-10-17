@@ -1149,7 +1149,7 @@ async fn nat_e2e(hypervisor: &str) {
 
     let (_, status) = request(&app, "GET", "/ovs/status", None).await;
     assert_eq!(
-        status["netd"]["access"], "full",
+        status["netd"]["access"], "NETD_ACCESS_FULL",
         "glidex-netd not usable: {status}"
     );
     assert_eq!(
@@ -1283,10 +1283,10 @@ async fn nat_e2e(hypervisor: &str) {
     assert_eq!(st, StatusCode::NO_CONTENT, "{body}");
     let (_, bridges) = request(&app, "GET", "/ovs/bridges", None).await;
     assert!(
-        !bridges
+        !bridges["bridges"]
             .as_array()
-            .unwrap()
-            .iter()
+            .into_iter()
+            .flatten()
             .any(|b| b["spec"]["name"] == "gxbr-e2e"),
         "bridge removed with its network: {bridges}"
     );
@@ -1463,7 +1463,7 @@ async fn require_lan_and_netd(app: &Router) {
         "fake LAN missing (gxup0)"
     );
     let (_, status) = request(app, "GET", "/ovs/status", None).await;
-    assert_eq!(status["netd"]["access"], "full", "{status}");
+    assert_eq!(status["netd"]["access"], "NETD_ACCESS_FULL", "{status}");
     assert_eq!(status["host"]["ovs_running"], true, "{status}");
 }
 
@@ -1472,7 +1472,7 @@ async fn require_lan_and_netd(app: &Router) {
 /// pre-cleanup deletes the bridge.
 async fn refuse_foreign_bridge(app: &Router, bridge: &str, own: &str) {
     let (_, list) = request(app, "GET", "/ovs/bridges", None).await;
-    let Some(b) = list
+    let Some(b) = list["bridges"]
         .as_array()
         .and_then(|l| l.iter().find(|b| b["spec"]["name"] == bridge))
     else {
@@ -1572,7 +1572,8 @@ async fn bridged_uplink_e2e() {
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
     loop {
         let (_, list) = request(&app, "GET", "/ovs/bridges/gxbr-e2eup/uplinks", None).await;
-        if list.as_array().unwrap().is_empty() {
+        // `{}` once none are left: an empty list is left out.
+        if list["uplinks"].as_array().is_none_or(|l| l.is_empty()) {
             break;
         }
         assert!(
@@ -1599,7 +1600,7 @@ async fn bridged_uplink_e2e() {
     )
     .await;
     assert_eq!(st, StatusCode::ACCEPTED, "{body}");
-    let token = body["record"]["pending"]["token"]
+    let token = body["uplink"]["record"]["pending"]["token"]
         .as_str()
         .unwrap()
         .to_string();
@@ -1611,7 +1612,7 @@ async fn bridged_uplink_e2e() {
     )
     .await;
     assert_eq!(st, StatusCode::OK, "{body}");
-    assert_eq!(body["phase"], "active");
+    assert_eq!(body["uplink"]["phase"], "UPLINK_PHASE_ACTIVE", "{body}");
     assert!(
         host_ip(&["-4", "route", "show", "198.51.100.0/24"]).contains("dev gxbr-e2eup"),
         "route moved"
@@ -1710,7 +1711,10 @@ async fn afxdp_uplink_e2e() {
     )
     .await;
     assert_eq!(st, StatusCode::CREATED, "{body}");
-    assert!(body["live"]["error"].is_null(), "AF_XDP port error: {body}");
+    assert!(
+        body["uplink"]["live"]["error"].is_null(),
+        "AF_XDP port error: {body}"
+    );
 
     let (st, body) = request(
         &app,
@@ -1798,17 +1802,17 @@ async fn vhost_user_net_e2e(hypervisor: &str) {
     .await;
     assert_eq!(st, StatusCode::CREATED, "{net}");
     let (_, bridges) = request(&app, "GET", "/ovs/bridges", None).await;
-    let fast = bridges
+    let fast = bridges["bridges"]
         .as_array()
-        .unwrap()
-        .iter()
+        .into_iter()
+        .flatten()
         .find(|b| b["spec"]["name"] == "gxbr-fast")
         .unwrap()
         .clone();
-    assert_eq!(fast["spec"]["datapath"], "netdev");
+    assert_eq!(fast["spec"]["datapath"], "DATAPATH_NETDEV", "{fast}");
 
-    let (_, nats) = request(&app, "GET", "/networks/fast", None).await;
-    assert_eq!(nats["port_type"], "vhost_user");
+    let (_, net) = request(&app, "GET", "/networks/fast", None).await;
+    assert_eq!(net["network"]["port_type"], "PORT_TYPE_VHOST_USER", "{net}");
     // OVS-DPDK's vhost-user backend needs hugepage-backed guest memory.
     boot_and_check(&app, &tmp, "fast", "gx-vhosttest", json!({"hugepages": true, "mem_size_mib": 1024, "hypervisor": hypervisor}), vec![
         ("ip -4 -o addr | grep -q ' 10.88.' && echo GX_$((80+1))_VHOST_DHCP".into(), "GX_81_VHOST_DHCP".into()),

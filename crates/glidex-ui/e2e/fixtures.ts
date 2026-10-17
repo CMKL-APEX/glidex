@@ -170,7 +170,7 @@ export async function bootPrerequisites(hypervisor: Hypervisor): Promise<string[
     missing.push(e instanceof Error ? e.message : String(e));
   }
   const status = await api("/ovs/status");
-  if (status?.netd?.access !== "full") missing.push("glidex-netd is not usable (join the glidex group)");
+  if (status?.netd?.access !== "NETD_ACCESS_FULL") missing.push("glidex-netd is not usable (join the glidex group)");
   if (status?.host?.ovs_running !== true) missing.push("Open vSwitch is not running");
   return missing;
 }
