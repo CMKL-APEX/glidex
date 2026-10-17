@@ -9,13 +9,14 @@
 
 #![allow(clippy::result_large_err)] // ServiceError mirrors the REST error body, as api/ does
 
+pub mod directory;
 pub mod system;
 pub mod tenancy;
 
 use crate::api::ApiErr;
 use crate::models::ApiError;
-use axum::http::StatusCode;
 use axum::Json;
+use axum::http::StatusCode;
 
 /// The caller of an operation: principal, the operation's Cedar action,
 /// request id and audit slot. Built by either transport.
@@ -38,7 +39,12 @@ pub type ServiceResult<T> = Result<T, ServiceError>;
 
 impl ServiceError {
     pub fn new(status: StatusCode, code: impl Into<String>, message: impl Into<String>) -> Self {
-        ServiceError { status, code: code.into(), message: message.into(), details: serde_json::Value::Null }
+        ServiceError {
+            status,
+            code: code.into(),
+            message: message.into(),
+            details: serde_json::Value::Null,
+        }
     }
 
     pub fn unauthenticated(message: impl Into<String>) -> Self {
@@ -46,7 +52,10 @@ impl ServiceError {
     }
 
     pub fn into_rest(self) -> ApiErr {
-        (self.status, Json(ApiError::new(self.code, self.message).with_details(self.details)))
+        (
+            self.status,
+            Json(ApiError::new(self.code, self.message).with_details(self.details)),
+        )
     }
 }
 
@@ -54,7 +63,12 @@ impl ServiceError {
 /// a `ServiceError` needs.
 impl From<ApiErr> for ServiceError {
     fn from((status, Json(e)): ApiErr) -> Self {
-        ServiceError { status, code: e.error, message: e.message, details: e.details }
+        ServiceError {
+            status,
+            code: e.error,
+            message: e.message,
+            details: e.details,
+        }
     }
 }
 

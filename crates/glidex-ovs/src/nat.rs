@@ -2,10 +2,10 @@
 //! and masquerading through whatever route the host already uses
 //! (spec §10).
 
-use crate::exec::{Cmd, Exec, Program};
-use crate::names::{validate_mac, validate_name, MAX_IFNAME};
-use crate::net::{route_destinations, Ipv4Net};
 use crate::OvsError;
+use crate::exec::{Cmd, Exec, Program};
+use crate::names::{MAX_IFNAME, validate_mac, validate_name};
+use crate::net::{Ipv4Net, route_destinations};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::net::Ipv4Addr;
@@ -54,7 +54,11 @@ impl NatState {
         if subnet.prefix() > 29 {
             return Err(OvsError::invalid("NAT subnet must be /29 or larger"));
         }
-        let host = |n| subnet.host(n).ok_or_else(|| OvsError::invalid("subnet too small"));
+        let host = |n| {
+            subnet
+                .host(n)
+                .ok_or_else(|| OvsError::invalid("subnet too small"))
+        };
         Ok(Self {
             bridge: bridge.to_string(),
             subnet,
@@ -78,13 +82,18 @@ impl NatState {
     /// [`active_leases`]): dnsmasq won't hand a reserved address out while
     /// that lease lasts, so the VM would get a pool address instead. Such
     /// addresses are used only when nothing else is free.
-    pub fn allocate_avoiding(&mut self, mac: &str, leases: &BTreeMap<Ipv4Addr, String>) -> Result<Ipv4Addr, OvsError> {
+    pub fn allocate_avoiding(
+        &mut self,
+        mac: &str,
+        leases: &BTreeMap<Ipv4Addr, String>,
+    ) -> Result<Ipv4Addr, OvsError> {
         validate_mac(mac)?;
         let mac = mac.to_ascii_lowercase();
         if let Some(ip) = self.reservations.get(&mac) {
             return Ok(*ip);
         }
-        let used: std::collections::BTreeSet<Ipv4Addr> = self.reservations.values().copied().collect();
+        let used: std::collections::BTreeSet<Ipv4Addr> =
+            self.reservations.values().copied().collect();
         let free: Vec<Ipv4Addr> = (u32::from(self.pool_start)..=u32::from(self.pool_end))
             .map(Ipv4Addr::from)
             .filter(|ip| !used.contains(ip))
@@ -95,7 +104,9 @@ impl NatState {
             .find(|ip| !leased_elsewhere(ip))
             .or_else(|| free.first())
             .copied()
-            .ok_or_else(|| OvsError::conflict(format!("NAT pool of '{}' is exhausted", self.bridge)))?;
+            .ok_or_else(|| {
+                OvsError::conflict(format!("NAT pool of '{}' is exhausted", self.bridge))
+            })?;
         self.reservations.insert(mac, pick);
         Ok(pick)
     }
@@ -144,7 +155,10 @@ impl NatState {
             // dnsmasq runs on the host, so it can forward to the host's
             // resolvers (including a systemd-resolved stub on 127.0.0.53)
             // even though guests can't reach that stub themselves.
-            c.push_str(&format!("listen-address={}\ndhcp-option=option:dns-server,{}\n", self.gateway, self.gateway));
+            c.push_str(&format!(
+                "listen-address={}\ndhcp-option=option:dns-server,{}\n",
+                self.gateway, self.gateway
+            ));
         } else {
             c.push_str("port=0\n");
         }
@@ -176,7 +190,9 @@ pub fn choose_subnet(
     supernet
         .subnets(24)
         .find(|candidate| {
-            !routes.iter().any(|r| r.prefix() > 0 && r.overlaps(candidate))
+            !routes
+                .iter()
+                .any(|r| r.prefix() > 0 && r.overlaps(candidate))
                 && !taken.iter().any(|t| t.overlaps(candidate))
         })
         .ok_or_else(|| OvsError::conflict(format!("no free /24 left in {}", supernet)))
@@ -201,20 +217,26 @@ pub fn plan(
         (None, Some(e)) => e.subnet,
         (Some(s), _) => {
             if let Some(clash) = taken.iter().find(|t| t.overlaps(&s)) {
-                return Err(OvsError::conflict(format!("{} overlaps NAT network {}", s, clash)));
+                return Err(OvsError::conflict(format!(
+                    "{} overlaps NAT network {}",
+                    s, clash
+                )));
             }
             if let Some(clash) = routes.iter().find(|r| r.prefix() > 0 && r.overlaps(&s)) {
-                return Err(OvsError::conflict(format!("{} overlaps host route {}", s, clash)));
+                return Err(OvsError::conflict(format!(
+                    "{} overlaps host route {}",
+                    s, clash
+                )));
             }
             s
         }
         (None, None) => choose_subnet(supernet, &routes, &taken)?,
     };
     let mut state = NatState::new(&spec.bridge, subnet, spec.dns)?;
-    if let Some(e) = existing {
-        if e.subnet == subnet {
-            state.reservations = e.reservations.clone();
-        }
+    if let Some(e) = existing
+        && e.subnet == subnet
+    {
+        state.reservations = e.reservations.clone();
     }
     Ok(state)
 }
@@ -222,15 +244,30 @@ pub fn plan(
 /// Put the gateway address on the bridge's internal interface.
 pub fn apply_address(exec: &dyn Exec, state: &NatState) -> Result<(), OvsError> {
     let addr = format!("{}/{}", state.gateway, state.subnet.prefix());
-    exec.check(&Cmd::new(Program::Ip, ["addr", "replace", addr.as_str(), "dev", state.bridge.as_str()]))?;
-    exec.check(&Cmd::new(Program::Ip, ["link", "set", state.bridge.as_str(), "up"]))?;
+    exec.check(&Cmd::new(
+        Program::Ip,
+        [
+            "addr",
+            "replace",
+            addr.as_str(),
+            "dev",
+            state.bridge.as_str(),
+        ],
+    ))?;
+    exec.check(&Cmd::new(
+        Program::Ip,
+        ["link", "set", state.bridge.as_str(), "up"],
+    ))?;
     Ok(())
 }
 
 pub fn remove_address(exec: &dyn Exec, state: &NatState) -> Result<(), OvsError> {
     let addr = format!("{}/{}", state.gateway, state.subnet.prefix());
     // The bridge may already be gone; that's fine.
-    let _ = exec.run(&Cmd::new(Program::Ip, ["addr", "del", addr.as_str(), "dev", state.bridge.as_str()]));
+    let _ = exec.run(&Cmd::new(
+        Program::Ip,
+        ["addr", "del", addr.as_str(), "dev", state.bridge.as_str()],
+    ));
     Ok(())
 }
 
@@ -256,10 +293,7 @@ pub fn ensure_ip_forward(exec: &dyn Exec) -> Result<bool, OvsError> {
 /// address; the fence is defense in depth for when something brings it
 /// up and the kernel gives it an IPv6 link-local address.
 pub fn nft_script(nats: &[NatState], isolated: &[&str]) -> String {
-    let mut s = format!(
-        "table inet {t}\ndelete table inet {t}\n",
-        t = NFT_TABLE
-    );
+    let mut s = format!("table inet {t}\ndelete table inet {t}\n", t = NFT_TABLE);
     if nats.is_empty() && isolated.is_empty() {
         return s;
     }
@@ -313,11 +347,15 @@ pub fn nft_script(nats: &[NatState], isolated: &[&str]) -> String {
     // accept). The drop covers IPv6 too: glidex NAT networks are
     // IPv4-only, and link-local IPv6 is the only address an isolated
     // bridge can get (if its interface is brought up).
-    s.push_str("  }\n  chain input {\n    type filter hook input priority filter; policy accept;\n");
+    s.push_str(
+        "  }\n  chain input {\n    type filter hook input priority filter; policy accept;\n",
+    );
     let nat_names: Vec<&str> = nats.iter().map(|n| n.bridge.as_str()).collect();
     if !nats.is_empty() {
         let all = ifname_set(&nat_names);
-        s.push_str(&format!("    iifname {all} ct state established,related accept\n"));
+        s.push_str(&format!(
+            "    iifname {all} ct state established,related accept\n"
+        ));
         s.push_str(&format!("    iifname {all} udp dport 67 accept\n"));
     }
     for n in nats {
@@ -334,7 +372,11 @@ pub fn nft_script(nats: &[NatState], isolated: &[&str]) -> String {
             n.bridge, n.gateway
         ));
     }
-    let fenced: Vec<&str> = nat_names.iter().copied().chain(isolated.iter().copied()).collect();
+    let fenced: Vec<&str> = nat_names
+        .iter()
+        .copied()
+        .chain(isolated.iter().copied())
+        .collect();
     s.push_str(&format!("    iifname {} drop\n", ifname_set(&fenced)));
     s.push_str("  }\n}\n");
     s
@@ -366,9 +408,15 @@ pub fn iptables_hook(exec: &dyn Exec) -> Option<&'static str> {
             .map(|o| o.stdout_str())
             .unwrap_or_default()
     };
-    if rules("DOCKER-USER").lines().any(|l| l.trim() == "-N DOCKER-USER") {
+    if rules("DOCKER-USER")
+        .lines()
+        .any(|l| l.trim() == "-N DOCKER-USER")
+    {
         Some("DOCKER-USER")
-    } else if rules("FORWARD").lines().any(|l| l.trim() == "-P FORWARD DROP") {
+    } else if rules("FORWARD")
+        .lines()
+        .any(|l| l.trim() == "-P FORWARD DROP")
+    {
         Some("FORWARD")
     } else {
         None
@@ -383,7 +431,16 @@ pub fn iptables_rules(nats: &[NatState]) -> Vec<Vec<String>> {
             let (br, net) = (n.bridge.as_str(), n.subnet.to_string());
             [
                 vec!["-i", br, "-s", &net, "-j", "ACCEPT"],
-                vec!["-o", br, "-m", "conntrack", "--ctstate", "RELATED,ESTABLISHED", "-j", "ACCEPT"],
+                vec![
+                    "-o",
+                    br,
+                    "-m",
+                    "conntrack",
+                    "--ctstate",
+                    "RELATED,ESTABLISHED",
+                    "-j",
+                    "ACCEPT",
+                ],
             ]
             .map(|r| {
                 ["-w", "-A", IPT_CHAIN]
@@ -445,21 +502,48 @@ pub fn iptables_input_rules(nats: &[NatState]) -> Vec<Vec<String>> {
     let mut rules: Vec<Vec<String>> = vec![];
     for n in nats {
         let (br, gw) = (n.bridge.as_str(), n.gateway.to_string());
-        rules.push(["-i", br, "-p", "udp", "--dport", "67", "-j", "ACCEPT"].map(String::from).to_vec());
+        rules.push(
+            ["-i", br, "-p", "udp", "--dport", "67", "-j", "ACCEPT"]
+                .map(String::from)
+                .to_vec(),
+        );
         if n.dns {
             for proto in ["udp", "tcp"] {
-                rules.push(["-i", br, "-d", &gw, "-p", proto, "--dport", "53", "-j", "ACCEPT"].map(String::from).to_vec());
+                rules.push(
+                    [
+                        "-i", br, "-d", &gw, "-p", proto, "--dport", "53", "-j", "ACCEPT",
+                    ]
+                    .map(String::from)
+                    .to_vec(),
+                );
             }
         }
         rules.push(
-            ["-i", br, "-d", &gw, "-p", "icmp", "--icmp-type", "echo-request", "-j", "ACCEPT"]
-                .map(String::from)
-                .to_vec(),
+            [
+                "-i",
+                br,
+                "-d",
+                &gw,
+                "-p",
+                "icmp",
+                "--icmp-type",
+                "echo-request",
+                "-j",
+                "ACCEPT",
+            ]
+            .map(String::from)
+            .to_vec(),
         );
     }
     rules
         .into_iter()
-        .map(|r| ["-w", "-A", IPT_INPUT_CHAIN].map(String::from).into_iter().chain(r).collect())
+        .map(|r| {
+            ["-w", "-A", IPT_INPUT_CHAIN]
+                .map(String::from)
+                .into_iter()
+                .chain(r)
+                .collect()
+        })
         .collect()
 }
 
@@ -533,7 +617,10 @@ mod tests {
     #[test]
     fn picks_first_free_subnet() {
         let sup = net(DEFAULT_SUPERNET);
-        assert_eq!(choose_subnet(sup, &[net("0.0.0.0/0")], &[]).unwrap(), net("10.88.0.0/24"));
+        assert_eq!(
+            choose_subnet(sup, &[net("0.0.0.0/0")], &[]).unwrap(),
+            net("10.88.0.0/24")
+        );
         assert_eq!(
             choose_subnet(sup, &[net("10.88.0.0/24")], &[net("10.88.1.0/24")]).unwrap(),
             net("10.88.2.0/24")
@@ -545,21 +632,37 @@ mod tests {
     #[test]
     fn plan_uses_default_and_refuses_collisions() {
         let exec = RecordingExec::new();
-        exec.on("ip -4 -j route show", Output::ok(r#"[{"dst":"default"},{"dst":"10.0.0.0/24"}]"#));
-        let spec = NatSpec { bridge: "gxbr-nat".into(), subnet: None, dns: true };
+        exec.on(
+            "ip -4 -j route show",
+            Output::ok(r#"[{"dst":"default"},{"dst":"10.0.0.0/24"}]"#),
+        );
+        let spec = NatSpec {
+            bridge: "gxbr-nat".into(),
+            subnet: None,
+            dns: true,
+        };
         let state = plan(&exec, &spec, net(DEFAULT_SUPERNET), &[], None).unwrap();
         assert_eq!(state.subnet, net("10.88.0.0/24"));
         assert_eq!(state.gateway.to_string(), "10.88.0.1");
         assert_eq!(state.pool_start.to_string(), "10.88.0.2");
         assert_eq!(state.pool_end.to_string(), "10.88.0.254");
 
-        let clash = NatSpec { subnet: Some(net("10.0.0.0/24")), ..spec.clone() };
-        assert!(matches!(plan(&exec, &clash, net(DEFAULT_SUPERNET), &[], None), Err(OvsError::Conflict { .. })));
+        let clash = NatSpec {
+            subnet: Some(net("10.0.0.0/24")),
+            ..spec.clone()
+        };
+        assert!(matches!(
+            plan(&exec, &clash, net(DEFAULT_SUPERNET), &[], None),
+            Err(OvsError::Conflict { .. })
+        ));
 
         // Re-planning keeps the subnet and reservations even though the
         // bridge's own route now exists.
         let exec = RecordingExec::new();
-        exec.on("ip -4 -j route show", Output::ok(r#"[{"dst":"10.88.0.0/24","dev":"gxbr-nat"}]"#));
+        exec.on(
+            "ip -4 -j route show",
+            Output::ok(r#"[{"dst":"10.88.0.0/24","dev":"gxbr-nat"}]"#),
+        );
         let mut existing = state.clone();
         existing.allocate("02:00:00:00:00:01").unwrap();
         let again = plan(&exec, &spec, net(DEFAULT_SUPERNET), &[], Some(&existing)).unwrap();
@@ -574,11 +677,22 @@ mod tests {
         let b = s.allocate("02:aa:00:00:00:02").unwrap();
         assert_eq!(a.to_string(), "10.88.0.2");
         assert_eq!(b.to_string(), "10.88.0.3");
-        assert_eq!(s.allocate("02:aa:00:00:00:01").unwrap(), a, "case-insensitive, stable");
+        assert_eq!(
+            s.allocate("02:aa:00:00:00:01").unwrap(),
+            a,
+            "case-insensitive, stable"
+        );
         s.release("02:aa:00:00:00:01");
-        assert_eq!(s.allocate("02:aa:00:00:00:09").unwrap(), a, "freed address reused");
+        assert_eq!(
+            s.allocate("02:aa:00:00:00:09").unwrap(),
+            a,
+            "freed address reused"
+        );
         assert!(s.allocate("ff:ff:ff:ff:ff:ff").is_err());
-        assert_eq!(s.dnsmasq_hosts(), "02:aa:00:00:00:02,10.88.0.3\n02:aa:00:00:00:09,10.88.0.2\n");
+        assert_eq!(
+            s.dnsmasq_hosts(),
+            "02:aa:00:00:00:02,10.88.0.3\n02:aa:00:00:00:09,10.88.0.2\n"
+        );
     }
 
     #[test]
@@ -591,19 +705,50 @@ mod tests {
              garbage line\n",
             1000,
         );
-        assert_eq!(leases.len(), 2, "expired and malformed lines dropped: {leases:?}");
-        assert_eq!(leases[&"10.88.0.4".parse().unwrap()], "02:aa:00:00:00:01", "infinite lease kept, MAC lowercased");
+        assert_eq!(
+            leases.len(),
+            2,
+            "expired and malformed lines dropped: {leases:?}"
+        );
+        assert_eq!(
+            leases[&"10.88.0.4".parse().unwrap()],
+            "02:aa:00:00:00:01",
+            "infinite lease kept, MAC lowercased"
+        );
         let mut s = NatState::new("gxbr-nat", net("10.88.0.0/24"), true).unwrap();
-        assert_eq!(s.allocate_avoiding("02:aa:00:00:00:09", &leases).unwrap().to_string(), "10.88.0.3", ".2 is still leased, .3 expired");
+        assert_eq!(
+            s.allocate_avoiding("02:aa:00:00:00:09", &leases)
+                .unwrap()
+                .to_string(),
+            "10.88.0.3",
+            ".2 is still leased, .3 expired"
+        );
         // A MAC's own lease doesn't block it (.2 is still someone else's).
-        assert_eq!(s.allocate_avoiding("02:aa:00:00:00:01", &leases).unwrap().to_string(), "10.88.0.4");
+        assert_eq!(
+            s.allocate_avoiding("02:aa:00:00:00:01", &leases)
+                .unwrap()
+                .to_string(),
+            "10.88.0.4"
+        );
     }
 
     #[test]
     fn leased_addresses_used_only_when_nothing_else_is_free() {
         let mut s = NatState::new("gxbr-t", net("10.88.9.0/29"), false).unwrap();
-        let leases: BTreeMap<Ipv4Addr, String> = (2..=6).map(|n| (format!("10.88.9.{n}").parse().unwrap(), "02:ff:00:00:00:01".to_string())).collect();
-        assert_eq!(s.allocate_avoiding("02:00:00:00:00:01", &leases).unwrap().to_string(), "10.88.9.2");
+        let leases: BTreeMap<Ipv4Addr, String> = (2..=6)
+            .map(|n| {
+                (
+                    format!("10.88.9.{n}").parse().unwrap(),
+                    "02:ff:00:00:00:01".to_string(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            s.allocate_avoiding("02:00:00:00:00:01", &leases)
+                .unwrap()
+                .to_string(),
+            "10.88.9.2"
+        );
     }
 
     #[test]
@@ -612,7 +757,10 @@ mod tests {
         for i in 0..5 {
             s.allocate(&format!("02:00:00:00:00:0{}", i)).unwrap();
         }
-        assert!(matches!(s.allocate("02:00:00:00:00:09"), Err(OvsError::Conflict { .. })));
+        assert!(matches!(
+            s.allocate("02:00:00:00:00:09"),
+            Err(OvsError::Conflict { .. })
+        ));
     }
 
     #[test]
@@ -622,9 +770,18 @@ mod tests {
         assert!(script.starts_with("table inet glidex\ndelete table inet glidex\n"));
         assert!(script.contains("ip saddr 10.88.0.0/24 ip daddr != 10.88.0.0/24 masquerade"));
         assert!(script.contains("iifname \"gxbr-nat\" ip saddr 10.88.0.0/24 accept"));
-        assert!(!script.contains("oifname \"eth"), "no outgoing interface is pinned");
-        assert!(!script.contains("oifname { "), "a single network has nothing to isolate from");
-        assert_eq!(nft_script(&[], &[]), "table inet glidex\ndelete table inet glidex\n");
+        assert!(
+            !script.contains("oifname \"eth"),
+            "no outgoing interface is pinned"
+        );
+        assert!(
+            !script.contains("oifname { "),
+            "a single network has nothing to isolate from"
+        );
+        assert_eq!(
+            nft_script(&[], &[]),
+            "table inet glidex\ndelete table inet glidex\n"
+        );
     }
 
     #[test]
@@ -690,8 +847,13 @@ table inet glidex {
         let script = nft_script(&[a], &["gxp-11111111"]);
         assert!(script.contains("    iifname { \"gxbr-nat\" } udp dport 67 accept\n"));
         assert!(script.contains("    iifname { \"gxbr-nat\", \"gxp-11111111\" } drop\n  }\n}\n"));
-        let forward = &script[script.find("  chain forward").unwrap()..script.find("  chain input").unwrap()];
-        assert!(forward.find("oifname { \"gxp-11111111\" } drop").unwrap() < forward.find("ip saddr 10.88.0.0/24 accept").unwrap(), "drops come first");
+        let forward =
+            &script[script.find("  chain forward").unwrap()..script.find("  chain input").unwrap()];
+        assert!(
+            forward.find("oifname { \"gxp-11111111\" } drop").unwrap()
+                < forward.find("ip saddr 10.88.0.0/24 accept").unwrap(),
+            "drops come first"
+        );
     }
 
     /// Print the `inet glidex` scripts for `nft -c -f -` checks on a real
@@ -727,14 +889,20 @@ table inet glidex {
         assert_eq!(iptables_hook(&exec), None, "empty output: nothing drops");
 
         let exec = RecordingExec::new();
-        exec.on("iptables -w -S FORWARD", Output::ok("-P FORWARD DROP\n-A FORWARD -j DOCKER-USER\n"));
+        exec.on(
+            "iptables -w -S FORWARD",
+            Output::ok("-P FORWARD DROP\n-A FORWARD -j DOCKER-USER\n"),
+        );
         assert_eq!(iptables_hook(&exec), Some("FORWARD"));
         exec.on("iptables -w -S DOCKER-USER", Output::ok("-N DOCKER-USER\n"));
         assert_eq!(iptables_hook(&exec), Some("DOCKER-USER"));
 
         let exec = RecordingExec::new();
         exec.on("iptables -w -S FORWARD", Output::ok("-P FORWARD ACCEPT\n"));
-        exec.on("iptables -w -S DOCKER-USER", Output::failed(1, "No chain/target/match by that name."));
+        exec.on(
+            "iptables -w -S DOCKER-USER",
+            Output::failed(1, "No chain/target/match by that name."),
+        );
         assert_eq!(iptables_hook(&exec), None);
     }
 
@@ -743,54 +911,80 @@ table inet glidex {
         let a = NatState::new("gxbr-nat", net("10.88.0.0/24"), true).unwrap();
         let exec = RecordingExec::new();
         exec.on("iptables -w -S DOCKER-USER", Output::ok("-N DOCKER-USER\n"));
-        exec.on("iptables -w -F GLIDEX-FORWARD", Output::failed(1, "No chain"));
+        exec.on(
+            "iptables -w -F GLIDEX-FORWARD",
+            Output::failed(1, "No chain"),
+        );
         exec.on("iptables -w -C DOCKER-USER", Output::failed(1, "Bad rule"));
         apply_iptables(&exec, std::slice::from_ref(&a)).unwrap();
         let calls = exec.calls();
         let after_detect: Vec<&str> = calls.iter().skip(1).map(String::as_str).collect();
-        assert_eq!(after_detect, [
-            "iptables -w -D FORWARD -j GLIDEX-FORWARD",
-            "iptables -w -F GLIDEX-FORWARD",
-            "iptables -w -N GLIDEX-FORWARD",
-            "iptables -w -A GLIDEX-FORWARD -i gxbr-nat -s 10.88.0.0/24 -j ACCEPT",
-            "iptables -w -A GLIDEX-FORWARD -o gxbr-nat -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT",
-            "iptables -w -C DOCKER-USER -j GLIDEX-FORWARD",
-            "iptables -w -I DOCKER-USER 1 -j GLIDEX-FORWARD",
-        ]);
+        assert_eq!(
+            after_detect,
+            [
+                "iptables -w -D FORWARD -j GLIDEX-FORWARD",
+                "iptables -w -F GLIDEX-FORWARD",
+                "iptables -w -N GLIDEX-FORWARD",
+                "iptables -w -A GLIDEX-FORWARD -i gxbr-nat -s 10.88.0.0/24 -j ACCEPT",
+                "iptables -w -A GLIDEX-FORWARD -o gxbr-nat -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT",
+                "iptables -w -C DOCKER-USER -j GLIDEX-FORWARD",
+                "iptables -w -I DOCKER-USER 1 -j GLIDEX-FORWARD",
+            ]
+        );
 
         // Re-applying keeps the existing chain and jump.
         let exec = RecordingExec::new();
         exec.on("iptables -w -S DOCKER-USER", Output::ok("-N DOCKER-USER\n"));
         apply_iptables(&exec, &[a]).unwrap();
-        assert!(!exec.calls().iter().any(|c| c.contains(" -N ") || c.contains(" -I ")), "{:#?}", exec.calls());
+        assert!(
+            !exec
+                .calls()
+                .iter()
+                .any(|c| c.contains(" -N ") || c.contains(" -I ")),
+            "{:#?}",
+            exec.calls()
+        );
     }
 
     #[test]
     fn apply_iptables_input_behind_ufw() {
         let a = NatState::new("gxbr-nat", net("10.88.0.0/24"), true).unwrap();
         let exec = RecordingExec::new();
-        exec.on("iptables -w -S INPUT", Output::ok("-P INPUT DROP\n-A INPUT -j ufw-before-input\n"));
+        exec.on(
+            "iptables -w -S INPUT",
+            Output::ok("-P INPUT DROP\n-A INPUT -j ufw-before-input\n"),
+        );
         exec.on("iptables -w -F GLIDEX-INPUT", Output::failed(1, "No chain"));
         exec.on("iptables -w -C INPUT", Output::failed(1, "Bad rule"));
         apply_iptables_input(&exec, std::slice::from_ref(&a)).unwrap();
         let calls = exec.calls();
         let after_detect: Vec<&str> = calls.iter().skip(1).map(String::as_str).collect();
-        assert_eq!(after_detect, [
-            "iptables -w -F GLIDEX-INPUT",
-            "iptables -w -N GLIDEX-INPUT",
-            "iptables -w -A GLIDEX-INPUT -i gxbr-nat -p udp --dport 67 -j ACCEPT",
-            "iptables -w -A GLIDEX-INPUT -i gxbr-nat -d 10.88.0.1 -p udp --dport 53 -j ACCEPT",
-            "iptables -w -A GLIDEX-INPUT -i gxbr-nat -d 10.88.0.1 -p tcp --dport 53 -j ACCEPT",
-            "iptables -w -A GLIDEX-INPUT -i gxbr-nat -d 10.88.0.1 -p icmp --icmp-type echo-request -j ACCEPT",
-            "iptables -w -C INPUT -j GLIDEX-INPUT",
-            "iptables -w -I INPUT 1 -j GLIDEX-INPUT",
-        ]);
+        assert_eq!(
+            after_detect,
+            [
+                "iptables -w -F GLIDEX-INPUT",
+                "iptables -w -N GLIDEX-INPUT",
+                "iptables -w -A GLIDEX-INPUT -i gxbr-nat -p udp --dport 67 -j ACCEPT",
+                "iptables -w -A GLIDEX-INPUT -i gxbr-nat -d 10.88.0.1 -p udp --dport 53 -j ACCEPT",
+                "iptables -w -A GLIDEX-INPUT -i gxbr-nat -d 10.88.0.1 -p tcp --dport 53 -j ACCEPT",
+                "iptables -w -A GLIDEX-INPUT -i gxbr-nat -d 10.88.0.1 -p icmp --icmp-type echo-request -j ACCEPT",
+                "iptables -w -C INPUT -j GLIDEX-INPUT",
+                "iptables -w -I INPUT 1 -j GLIDEX-INPUT",
+            ]
+        );
 
         // Re-applying keeps the existing chain and jump.
         let exec = RecordingExec::new();
         exec.on("iptables -w -S INPUT", Output::ok("-P INPUT DROP\n"));
         apply_iptables_input(&exec, std::slice::from_ref(&a)).unwrap();
-        assert!(!exec.calls().iter().any(|c| c.contains(" -N ") || c.contains(" -I ")), "{:#?}", exec.calls());
+        assert!(
+            !exec
+                .calls()
+                .iter()
+                .any(|c| c.contains(" -N ") || c.contains(" -I ")),
+            "{:#?}",
+            exec.calls()
+        );
 
         // INPUT accepts, or no NAT networks left: the chain and jump go.
         for (nats, input) in [(vec![a], "-P INPUT ACCEPT\n"), (vec![], "-P INPUT DROP\n")] {
@@ -854,7 +1048,10 @@ table inet glidex {
         let exec = RecordingExec::new();
         exec.file("/proc/sys/net/ipv4/ip_forward", "0\n");
         assert!(ensure_ip_forward(&exec).unwrap());
-        assert!(exec.calls().contains(&"sysctl -w net.ipv4.ip_forward=1".to_string()));
+        assert!(
+            exec.calls()
+                .contains(&"sysctl -w net.ipv4.ip_forward=1".to_string())
+        );
         let exec = RecordingExec::new();
         exec.file("/proc/sys/net/ipv4/ip_forward", "1\n");
         assert!(!ensure_ip_forward(&exec).unwrap());
@@ -863,6 +1060,12 @@ table inet glidex {
         let exec = RecordingExec::new();
         let s = NatState::new("gxbr-nat", net("10.88.0.0/24"), true).unwrap();
         apply_address(&exec, &s).unwrap();
-        assert_eq!(exec.calls(), vec!["ip addr replace 10.88.0.1/24 dev gxbr-nat", "ip link set gxbr-nat up"]);
+        assert_eq!(
+            exec.calls(),
+            vec![
+                "ip addr replace 10.88.0.1/24 dev gxbr-nat",
+                "ip link set gxbr-nat up"
+            ]
+        );
     }
 }

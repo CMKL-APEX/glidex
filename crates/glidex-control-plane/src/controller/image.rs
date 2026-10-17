@@ -8,14 +8,17 @@
 use crate::controller::queue::Key;
 use crate::images::{DiskPhase, ImageStatus};
 use crate::state::{VmManager, VmManagerError};
-use crate::store::{event_key, Event, EventKind};
+use crate::store::{Event, EventKind, event_key};
 use std::time::Duration;
 
 type Next = Result<Option<Duration>, VmManagerError>;
 
 impl VmManager {
     fn image_event(&self, id: &str, kind: EventKind, reason: &str, message: impl Into<String>) {
-        let _ = self.store.push_event(&event_key("image", id), Event::new("controller", kind, reason, message));
+        let _ = self.store.push_event(
+            &event_key("image", id),
+            Event::new("controller", kind, reason, message),
+        );
     }
 
     /// One round for image `id`.
@@ -34,7 +37,11 @@ impl VmManager {
                 if !leads {
                     return Ok(None);
                 }
-                if self.image_caches(&img.id).iter().any(|(n, _)| *n != self.local_node_id()) {
+                if self
+                    .image_caches(&img.id)
+                    .iter()
+                    .any(|(n, _)| *n != self.local_node_id())
+                {
                     return Ok(Some(Duration::from_secs(5)));
                 }
             }
@@ -58,26 +65,50 @@ impl VmManager {
             }
             ImageStatus::Failed { .. } if img.retry_seq > img.applied_retry_seq => {
                 img.applied_retry_seq = img.retry_seq;
-                img.status = ImageStatus::Downloading { received_bytes: 0, total_bytes: None };
+                img.status = ImageStatus::Downloading {
+                    received_bytes: 0,
+                    total_bytes: None,
+                };
                 let _ = std::fs::remove_file(self.images.part_path(&img.id));
                 self.images.put_image(&img)?;
-                self.image_event(&img.id, EventKind::Normal, "Retrying", format!("download {}", img.retry_seq));
+                self.image_event(
+                    &img.id,
+                    EventKind::Normal,
+                    "Retrying",
+                    format!("download {}", img.retry_seq),
+                );
                 self.images.spawn_download(img.id.clone());
                 Ok(Some(Duration::from_secs(10)))
             }
             ImageStatus::Failed { .. } => Ok(None),
             ImageStatus::Ready => {
                 // Copies on chosen nodes, copies let go (§9.2.2).
-                let tending = if self.cluster().is_some() { self.tend_image_copies(&mut img).await? } else { false };
-                let again = |n: Next| -> Next { n.map(|d| d.or(tending.then(|| Duration::from_secs(10)))) };
-                if self.cluster().is_some() && !self.images.image_file(&img).exists() && self.image_caches(&img.id).iter().any(|(n, r)| *n != self.local_node_id() && r.phase == crate::controller::image_cache::CachePhase::Ready) {
+                let tending = if self.cluster().is_some() {
+                    self.tend_image_copies(&mut img).await?
+                } else {
+                    false
+                };
+                let again =
+                    |n: Next| -> Next { n.map(|d| d.or(tending.then(|| Duration::from_secs(10)))) };
+                if self.cluster().is_some()
+                    && !self.images.image_file(&img).exists()
+                    && self.image_caches(&img.id).iter().any(|(n, r)| {
+                        *n != self.local_node_id()
+                            && r.phase == crate::controller::image_cache::CachePhase::Ready
+                    })
+                {
                     // Another node has the file: this leader fetches it only if it needs it.
                     return again(self.reconcile_image_cache(&img).await);
                 }
                 if !self.images.image_file(&img).exists() {
                     img.status = ImageStatus::Missing;
                     self.images.put_image(&img)?;
-                    self.image_event(&img.id, EventKind::Warning, "FileMissing", "the image's file is gone; it is not downloaded again");
+                    self.image_event(
+                        &img.id,
+                        EventKind::Warning,
+                        "FileMissing",
+                        "the image's file is gone; it is not downloaded again",
+                    );
                     return Ok(None);
                 }
                 if self.cluster().is_some() {
@@ -85,7 +116,9 @@ impl VmManager {
                 }
                 // Disks waiting for it.
                 for d in self.images.list_disks() {
-                    if d.phase == DiskPhase::Pending && matches!(&d.origin, crate::images::DiskOrigin::Image { image_id, .. } if *image_id == img.id) {
+                    if d.phase == DiskPhase::Pending
+                        && matches!(&d.origin, crate::images::DiskOrigin::Image { image_id, .. } if *image_id == img.id)
+                    {
                         self.queue.add(Key::Disk(d.id.clone()));
                     }
                 }
@@ -95,12 +128,27 @@ impl VmManager {
                 if self.images.image_file(&img).exists() {
                     img.status = ImageStatus::Ready;
                     self.images.put_image(&img)?;
-                    self.image_event(&img.id, EventKind::Normal, "FileFound", "the image's file is back");
-                } else if self.cluster().is_some() && self.image_caches(&img.id).iter().any(|(n, r)| *n != self.local_node_id() && r.phase == crate::controller::image_cache::CachePhase::Ready) {
+                    self.image_event(
+                        &img.id,
+                        EventKind::Normal,
+                        "FileFound",
+                        "the image's file is back",
+                    );
+                } else if self.cluster().is_some()
+                    && self.image_caches(&img.id).iter().any(|(n, r)| {
+                        *n != self.local_node_id()
+                            && r.phase == crate::controller::image_cache::CachePhase::Ready
+                    })
+                {
                     // Another node has it (§9.2.2).
                     img.status = ImageStatus::Ready;
                     self.images.put_image(&img)?;
-                    self.image_event(&img.id, EventKind::Normal, "FileFound", "another node has a copy");
+                    self.image_event(
+                        &img.id,
+                        EventKind::Normal,
+                        "FileFound",
+                        "another node has a copy",
+                    );
                     return Ok(Some(Duration::from_secs(1)));
                 }
                 Ok(None)
@@ -112,15 +160,29 @@ impl VmManager {
     pub fn retry_image(&self, key: &str) -> Result<crate::images::ImageResponse, VmManagerError> {
         let mut img = self.images.get_image(key)?;
         if img.deletion_requested_at.is_some() {
-            return Err(crate::images::ImageError::InvalidImage(format!("image {} is being deleted", img.name)).into());
+            return Err(crate::images::ImageError::InvalidImage(format!(
+                "image {} is being deleted",
+                img.name
+            ))
+            .into());
         }
         if matches!(img.status, ImageStatus::Failed { .. }) {
             img.retry_seq = img.retry_seq.max(img.applied_retry_seq) + 1;
             self.images.put_image(&img)?;
-            let _ = self.store.push_event(&event_key("image", &img.id), Event::new("api", EventKind::Normal, "RetryRequested", ""));
+            let _ = self.store.push_event(
+                &event_key("image", &img.id),
+                Event::new("api", EventKind::Normal, "RetryRequested", ""),
+            );
             self.queue.add(Key::Image(img.id.clone()));
-        } else if !matches!(img.status, ImageStatus::Downloading { .. } | ImageStatus::Verifying) {
-            return Err(crate::images::ImageError::InvalidImage(format!("image {} has not failed ({:?})", img.name, img.status)).into());
+        } else if !matches!(
+            img.status,
+            ImageStatus::Downloading { .. } | ImageStatus::Verifying
+        ) {
+            return Err(crate::images::ImageError::InvalidImage(format!(
+                "image {} has not failed ({:?})",
+                img.name, img.status
+            ))
+            .into());
         }
         Ok(self.images.image_response(&img, false))
     }

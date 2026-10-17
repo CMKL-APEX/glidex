@@ -6,15 +6,15 @@
 //! (1) new CA key to every server, (2) trust {old, new}, (3) every node
 //! renews its certificate against the new CA, (4) retire the old CA.
 
+use super::net::TlsMaterial;
 use super::pki::{self, Ca, NodeKey};
 use super::runtime::{Cluster, ClusterError};
-use super::net::TlsMaterial;
 use crate::node::{NodeRole, NodeStore};
 use crate::store::{Origin, TableId};
+use bytes::Bytes;
 use redb::ReadableTable;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
-use bytes::Bytes;
+use serde_json::{Value, json};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -48,7 +48,11 @@ fn other(e: impl std::fmt::Display) -> ClusterError {
 }
 
 fn normalize(pem: &str) -> String {
-    pem.lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join("\n")
+    pem.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 impl Cluster {
@@ -61,13 +65,22 @@ impl Cluster {
 
     /// The fingerprint tokens pin and joiners expect: the signing CA.
     pub fn signing_fp(&self) -> String {
-        self.ca_state().map(|s| s.signing_fp).unwrap_or_else(|| self.identity.ca_fingerprint.clone())
+        self.ca_state()
+            .map(|s| s.signing_fp)
+            .unwrap_or_else(|| self.identity.ca_fingerprint.clone())
     }
 
     fn write_state(&self, st: &CaState) -> Result<(), ClusterError> {
         self.db
             .write(Origin::Api, |tx| -> Result<(), crate::store::StoreError> {
-                tx.open_table(TableId::CaBundle.definition())?.insert(STATE_KEY, serde_json::to_vec(st).map_err(|e| crate::store::StoreError::Io(std::io::Error::other(e.to_string())))?.as_slice())?;
+                tx.open_table(TableId::CaBundle.definition())?.insert(
+                    STATE_KEY,
+                    serde_json::to_vec(st)
+                        .map_err(|e| {
+                            crate::store::StoreError::Io(std::io::Error::other(e.to_string()))
+                        })?
+                        .as_slice(),
+                )?;
                 Ok(())
             })
             .map_err(other)
@@ -86,8 +99,14 @@ impl Cluster {
         self.files.save_ca_key(ca.key_pem())?;
         let trust = self.files.read(self.files.trust()).unwrap_or_default();
         let fp = ca.public_key_fingerprint()?;
-        if !pki::pem_bundle_ders(&trust)?.iter().any(|d| pki::public_key_fingerprint(&pem_of(d)).ok().as_deref() == Some(fp.as_str())) {
-            pki::write_private(&self.files.trust(), format!("{}\n{}", trust.trim_end(), ca.cert_pem).as_bytes())?;
+        if !pki::pem_bundle_ders(&trust)?
+            .iter()
+            .any(|d| pki::public_key_fingerprint(&pem_of(d)).ok().as_deref() == Some(fp.as_str()))
+        {
+            pki::write_private(
+                &self.files.trust(),
+                format!("{}\n{}", trust.trim_end(), ca.cert_pem).as_bytes(),
+            )?;
         }
         *self.ca.lock().unwrap() = Some(ca);
         self.reload_tls()
@@ -112,12 +131,21 @@ impl Cluster {
 
     /// When the state names the staged CA as the signing one, switch to it.
     fn activate_next(&self, st: &CaState) {
-        let current = self.signing_ca().and_then(|c| c.public_key_fingerprint().ok());
+        let current = self
+            .signing_ca()
+            .and_then(|c| c.public_key_fingerprint().ok());
         if current.as_deref() == Some(st.signing_fp.as_str()) {
             return;
         }
-        let (Ok(key), Ok(cert)) = (std::fs::read_to_string(self.next_key_path()), std::fs::read_to_string(self.next_cert_path())) else { return };
-        let Ok(ca) = Ca::from_pem(&cert, &key) else { return };
+        let (Ok(key), Ok(cert)) = (
+            std::fs::read_to_string(self.next_key_path()),
+            std::fs::read_to_string(self.next_cert_path()),
+        ) else {
+            return;
+        };
+        let Ok(ca) = Ca::from_pem(&cert, &key) else {
+            return;
+        };
         if ca.public_key_fingerprint().ok().as_deref() != Some(st.signing_fp.as_str()) {
             return;
         }
@@ -132,7 +160,11 @@ impl Cluster {
     }
 
     fn reload_tls(&self) -> Result<(), ClusterError> {
-        let m = TlsMaterial::from_pem(&self.files.read(self.files.cert())?, &self.files.read(self.files.key())?, &self.files.read(self.files.trust())?)?;
+        let m = TlsMaterial::from_pem(
+            &self.files.read(self.files.cert())?,
+            &self.files.read(self.files.key())?,
+            &self.files.read(self.files.trust())?,
+        )?;
         self.tls.reload(m)?;
         Ok(())
     }
@@ -146,7 +178,10 @@ impl Cluster {
     }
 
     async fn rotate_ca_locked(&self, grace_secs: Option<u64>) -> Result<Value, ClusterError> {
-        let node = self.node.as_ref().ok_or_else(|| other("only a server rotates the CA"))?;
+        let node = self
+            .node
+            .as_ref()
+            .ok_or_else(|| other("only a server rotates the CA"))?;
         if !node.is_leader() {
             return Err(other("this is not the leader"));
         }
@@ -154,17 +189,43 @@ impl Cluster {
         let new_fp = new.public_key_fingerprint()?;
         let nodes = NodeStore::new(self.db.clone()).list().map_err(other)?;
         let body = json!({ "key_pem": new.key_pem(), "cert_pem": new.cert_pem }).to_string();
-        for n in nodes.iter().filter(|n| n.spec.role == NodeRole::Server && !n.status.phase.is_tombstone() && n.meta.id != self.identity.node_id) {
-            let addr = n.status.advertise.ok_or_else(|| other(format!("{} has no address", n.spec.name)))?;
-            let r = self.client.request(&addr.to_string(), hyper::Method::PUT, "/cluster/v1/ca", &[("content-type", "application/json".into())], body.clone().into()).await.map_err(other)?;
+        for n in nodes.iter().filter(|n| {
+            n.spec.role == NodeRole::Server
+                && !n.status.phase.is_tombstone()
+                && n.meta.id != self.identity.node_id
+        }) {
+            let addr = n
+                .status
+                .advertise
+                .ok_or_else(|| other(format!("{} has no address", n.spec.name)))?;
+            let r = self
+                .client
+                .request(
+                    &addr.to_string(),
+                    hyper::Method::PUT,
+                    "/cluster/v1/ca",
+                    &[("content-type", "application/json".into())],
+                    body.clone().into(),
+                )
+                .await
+                .map_err(other)?;
             if !r.status.is_success() {
-                return Err(other(format!("{} did not take the new CA key: {}", n.spec.name, r.status)));
+                return Err(other(format!(
+                    "{} did not take the new CA key: {}",
+                    n.spec.name, r.status
+                )));
             }
         }
         self.stage_next_ca(&new)?;
         let prev = self.ca_state();
-        let old_bundle = prev.as_ref().map(|s| s.trust_pem.clone()).unwrap_or_else(|| self.files.read(self.files.trust()).unwrap_or_default());
-        let old_fps: Vec<String> = pki::pem_bundle_ders(&old_bundle)?.iter().filter_map(|d| pki::public_key_fingerprint(&pem_of(d)).ok()).collect();
+        let old_bundle = prev
+            .as_ref()
+            .map(|s| s.trust_pem.clone())
+            .unwrap_or_else(|| self.files.read(self.files.trust()).unwrap_or_default());
+        let old_fps: Vec<String> = pki::pem_bundle_ders(&old_bundle)?
+            .iter()
+            .filter_map(|d| pki::public_key_fingerprint(&pem_of(d)).ok())
+            .collect();
         let now = crate::tenancy::now();
         let grace = grace_secs.unwrap_or(self.config.ca_rotation_grace_secs);
         let st = CaState {
@@ -179,7 +240,9 @@ impl Cluster {
         // Every server (this one first) switches once it sees the state.
         self.activate_next(&st);
         tracing::warn!(new_ca = %&new_fp[..12], "CA rotation started");
-        Ok(json!({ "signing_ca": new_fp, "retiring": st.retiring.len(), "retire_at": st.retire_at }))
+        Ok(
+            json!({ "signing_ca": new_fp, "retiring": st.retiring.len(), "retire_at": st.retire_at }),
+        )
     }
 
     /// Install the replicated trust bundle on this node (step 2), and let
@@ -191,7 +254,10 @@ impl Cluster {
         }
         let have = self.files.read(self.files.trust()).unwrap_or_default();
         if normalize(&have) != normalize(&st.trust_pem) {
-            if let Err(e) = pki::write_private(&self.files.trust(), st.trust_pem.as_bytes()).map_err(other).and_then(|_| self.reload_tls()) {
+            if let Err(e) = pki::write_private(&self.files.trust(), st.trust_pem.as_bytes())
+                .map_err(other)
+                .and_then(|_| self.reload_tls())
+            {
                 tracing::warn!("installing the CA bundle: {}", e);
             } else {
                 tracing::info!("CA trust bundle updated");
@@ -209,22 +275,37 @@ impl Cluster {
     /// from another or close to expiry.
     pub async fn renew_if_needed(&self) -> Result<bool, ClusterError> {
         let cert_pem = self.files.read(self.files.cert())?;
-        let der = pki::pem_bundle_ders(&cert_pem)?.into_iter().next().ok_or_else(|| other("no certificate"))?;
+        let der = pki::pem_bundle_ders(&cert_pem)?
+            .into_iter()
+            .next()
+            .ok_or_else(|| other("no certificate"))?;
         let info = pki::inspect_node_cert(&der)?;
         let trust = self.files.read(self.files.trust())?;
         let signing = self.signing_fp();
-        let stale_issuer = self.ca_state().is_some() && pki::issuer_of(&der, &trust).is_some_and(|fp| fp != signing);
+        let stale_issuer = self.ca_state().is_some()
+            && pki::issuer_of(&der, &trust).is_some_and(|fp| fp != signing);
         if !stale_issuer && pki::seconds_left(&info) > RENEW_BEFORE_SECS {
             return Ok(false);
         }
         let key = NodeKey::generate()?;
         let csr = key.csr(&[self.identity.advertise.ip()], &[])?;
-        let r = self.post_any("/cluster/v1/renew", json!({ "csr": csr }).to_string().into()).await?;
+        let r = self
+            .post_any(
+                "/cluster/v1/renew",
+                json!({ "csr": csr }).to_string().into(),
+            )
+            .await?;
         if !r.status.is_success() {
-            return Err(other(format!("renewal refused: {} {}", r.status, String::from_utf8_lossy(&r.body))));
+            return Err(other(format!(
+                "renewal refused: {} {}",
+                r.status,
+                String::from_utf8_lossy(&r.body)
+            )));
         }
         let v: Value = serde_json::from_slice(&r.body).map_err(other)?;
-        let cert = v["cert_pem"].as_str().ok_or_else(|| other("no certificate in the answer"))?;
+        let cert = v["cert_pem"]
+            .as_str()
+            .ok_or_else(|| other("no certificate in the answer"))?;
         let trust = v["trust_pem"].as_str().unwrap_or(&trust);
         self.files.save_node_cert(cert, &key.key_pem(), trust)?;
         self.reload_tls()?;
@@ -233,7 +314,11 @@ impl Cluster {
     }
 
     /// POST to the leader, or to a seed when this node has none of its own.
-    pub async fn post_any(&self, path: &str, body: bytes::Bytes) -> Result<super::net::Reply, ClusterError> {
+    pub async fn post_any(
+        &self,
+        path: &str,
+        body: bytes::Bytes,
+    ) -> Result<super::net::Reply, ClusterError> {
         if let Some(l) = self.leader_addr() {
             let _ = l;
             return self.post_leader(path, body).await.map_err(other);
@@ -242,9 +327,23 @@ impl Cluster {
         for seed in self.identity.seeds.clone() {
             let mut addr = seed;
             for _ in 0..2 {
-                match self.client.request_timeout(&addr, hyper::Method::POST, path, &[("content-type", "application/json".into())], body.clone(), Duration::from_secs(30)).await {
+                match self
+                    .client
+                    .request_timeout(
+                        &addr,
+                        hyper::Method::POST,
+                        path,
+                        &[("content-type", "application/json".into())],
+                        body.clone(),
+                        Duration::from_secs(30),
+                    )
+                    .await
+                {
                     Ok(r) if r.status == hyper::StatusCode::MISDIRECTED_REQUEST => {
-                        match serde_json::from_slice::<Value>(&r.body).ok().and_then(|v| v["leader"].as_str().map(String::from)) {
+                        match serde_json::from_slice::<Value>(&r.body)
+                            .ok()
+                            .and_then(|v| v["leader"].as_str().map(String::from))
+                        {
                             Some(l) if l != addr => addr = l,
                             _ => break,
                         }
@@ -270,11 +369,17 @@ impl Cluster {
         // A server that left since the last rotation started holds the key:
         // rotate, and keep retrying (a minute apart) until it works.
         if self.rotation_due() {
-            let recent = self.ca_op.lock().await.is_some_and(|t| t.elapsed() < Duration::from_secs(60));
+            let recent = self
+                .ca_op
+                .lock()
+                .await
+                .is_some_and(|t| t.elapsed() < Duration::from_secs(60));
             if !recent {
                 match self.rotate_ca(None).await {
                     Ok(_) => tracing::warn!("rotated the CA after a server left"),
-                    Err(e) => tracing::warn!("rotating the CA after a server left (will retry): {}", e),
+                    Err(e) => {
+                        tracing::warn!("rotating the CA after a server left (will retry): {}", e)
+                    }
                 }
             }
             return;
@@ -291,11 +396,25 @@ impl Cluster {
         let now = crate::tenancy::now();
         let nodes = NodeStore::new(self.db.clone()).list().unwrap_or_default();
         let current: std::collections::BTreeSet<String> = {
-            let Ok(txn) = self.db.begin_read() else { return };
-            let Ok(t) = txn.open_table(TableId::IssuedCerts.definition()) else { return };
-            t.iter().into_iter().flatten().flatten().filter_map(|(_, v)| serde_json::from_slice::<Value>(v.value()).ok()).filter(|v| v["issuer"] == st.signing_fp.as_str()).filter_map(|v| v["node"].as_str().map(String::from)).collect()
+            let Ok(txn) = self.db.begin_read() else {
+                return;
+            };
+            let Ok(t) = txn.open_table(TableId::IssuedCerts.definition()) else {
+                return;
+            };
+            t.iter()
+                .into_iter()
+                .flatten()
+                .flatten()
+                .filter_map(|(_, v)| serde_json::from_slice::<Value>(v.value()).ok())
+                .filter(|v| v["issuer"] == st.signing_fp.as_str())
+                .filter_map(|v| v["node"].as_str().map(String::from))
+                .collect()
         };
-        let pending = nodes.iter().filter(|n| !n.status.phase.is_tombstone()).any(|n| !current.contains(&n.meta.id) && n.meta.id != self.identity.node_id);
+        let pending = nodes
+            .iter()
+            .filter(|n| !n.status.phase.is_tombstone())
+            .any(|n| !current.contains(&n.meta.id) && n.meta.id != self.identity.node_id);
         let own_done = self.own_issuer_is(&st.signing_fp);
         if (pending || !own_done) && st.retire_at.is_none_or(|t| now < t) {
             return;
@@ -308,15 +427,27 @@ impl Cluster {
             next.trust_pem = own.cert_pem.clone();
         }
         // Only if the state is still the one this decision was made on.
-        let r = self.db.write(Origin::Api, |tx| -> Result<bool, crate::store::StoreError> {
-            let mut t = tx.open_table(TableId::CaBundle.definition())?;
-            let cur: Option<CaState> = t.get(STATE_KEY)?.and_then(|v| serde_json::from_slice(v.value()).ok());
-            if cur.as_ref() != Some(&st) {
-                return Ok(false);
-            }
-            t.insert(STATE_KEY, serde_json::to_vec(&next).map_err(|e| crate::store::StoreError::Io(std::io::Error::other(e.to_string())))?.as_slice())?;
-            Ok(true)
-        });
+        let r = self.db.write(
+            Origin::Api,
+            |tx| -> Result<bool, crate::store::StoreError> {
+                let mut t = tx.open_table(TableId::CaBundle.definition())?;
+                let cur: Option<CaState> = t
+                    .get(STATE_KEY)?
+                    .and_then(|v| serde_json::from_slice(v.value()).ok());
+                if cur.as_ref() != Some(&st) {
+                    return Ok(false);
+                }
+                t.insert(
+                    STATE_KEY,
+                    serde_json::to_vec(&next)
+                        .map_err(|e| {
+                            crate::store::StoreError::Io(std::io::Error::other(e.to_string()))
+                        })?
+                        .as_slice(),
+                )?;
+                Ok(true)
+            },
+        );
         match r {
             Ok(true) => tracing::warn!("CA rotation finished: the old CA is no longer trusted"),
             Ok(false) => {}
@@ -330,23 +461,38 @@ impl Cluster {
         let st = self.ca_state();
         let since = st.as_ref().map(|s| s.started_at).unwrap_or(0);
         let covered = st.map(|s| s.covers).unwrap_or_default();
-        self.retired_servers_since(since).iter().any(|n| !covered.contains(n))
+        self.retired_servers_since(since)
+            .iter()
+            .any(|n| !covered.contains(n))
     }
 
     /// Servers retired (their certificates denied as they left) at or after
     /// `since`: each may hold the CA key.
     fn retired_servers_since(&self, since: u64) -> Vec<String> {
         let nodes = NodeStore::new(self.db.clone()).list().unwrap_or_default();
-        let Ok(txn) = self.db.begin_read() else { return Vec::new() };
-        let Ok(t) = txn.open_table(TableId::NodeDenylist.definition()) else { return Vec::new() };
+        let Ok(txn) = self.db.begin_read() else {
+            return Vec::new();
+        };
+        let Ok(t) = txn.open_table(TableId::NodeDenylist.definition()) else {
+            return Vec::new();
+        };
         let Ok(it) = t.iter() else { return Vec::new() };
-        let rows: Vec<Value> = it.flatten().filter_map(|(_, v)| serde_json::from_slice::<Value>(v.value()).ok()).collect();
+        let rows: Vec<Value> = it
+            .flatten()
+            .filter_map(|(_, v)| serde_json::from_slice::<Value>(v.value()).ok())
+            .collect();
         let mut out: Vec<String> = rows
             .iter()
             .filter(|d| {
                 let node = d["node"].as_str().unwrap_or("");
                 // Certificates replaced at a rejoin are no reason: the node is still a member.
-                d["at"].as_u64().unwrap_or(0) >= since && d["why"] != "replaced at rejoin" && nodes.iter().any(|n| n.meta.id == node && n.spec.role == NodeRole::Server && n.status.phase.is_tombstone())
+                d["at"].as_u64().unwrap_or(0) >= since
+                    && d["why"] != "replaced at rejoin"
+                    && nodes.iter().any(|n| {
+                        n.meta.id == node
+                            && n.spec.role == NodeRole::Server
+                            && n.status.phase.is_tombstone()
+                    })
             })
             .filter_map(|d| d["node"].as_str().map(String::from))
             .collect();
@@ -365,12 +511,20 @@ impl Cluster {
     /// sign, not one about to be replaced. The leader does it; another
     /// server asks the leader. On failure, the CA that signs now.
     pub async fn ca_for_token(&self) -> String {
-        let Some(node) = &self.node else { return self.signing_fp() };
+        let Some(node) = &self.node else {
+            return self.signing_fp();
+        };
         if node.is_leader() {
             return self.settle_ca().await;
         }
-        match self.post_leader("/cluster/v1/ca/settle", Bytes::new()).await {
-            Ok(r) if r.status.is_success() => serde_json::from_slice::<Value>(&r.body).ok().and_then(|v| v["signing_fp"].as_str().map(String::from)).unwrap_or_else(|| self.signing_fp()),
+        match self
+            .post_leader("/cluster/v1/ca/settle", Bytes::new())
+            .await
+        {
+            Ok(r) if r.status.is_success() => serde_json::from_slice::<Value>(&r.body)
+                .ok()
+                .and_then(|v| v["signing_fp"].as_str().map(String::from))
+                .unwrap_or_else(|| self.signing_fp()),
             Ok(r) => {
                 tracing::warn!("the leader did not settle the CA for a token: {}", r.status);
                 self.signing_fp()
@@ -390,7 +544,10 @@ impl Cluster {
             let r = self.rotate_ca_locked(None).await;
             match &r {
                 Ok(_) => tracing::warn!("rotated the CA before issuing a token: a server left"),
-                Err(e) => tracing::warn!("rotating the CA before issuing a token (the token keeps the current CA): {}", e),
+                Err(e) => tracing::warn!(
+                    "rotating the CA before issuing a token (the token keeps the current CA): {}",
+                    e
+                ),
             }
             *last = r.is_err().then(std::time::Instant::now);
         }
@@ -398,18 +555,31 @@ impl Cluster {
     }
 
     fn own_issuer_is(&self, fp: &str) -> bool {
-        let (Ok(cert), Ok(trust)) = (self.files.read(self.files.cert()), self.files.read(self.files.trust())) else { return false };
-        pki::pem_bundle_ders(&cert).ok().and_then(|d| d.into_iter().next()).and_then(|d| pki::issuer_of(&d, &trust)).is_some_and(|x| x == fp)
+        let (Ok(cert), Ok(trust)) = (
+            self.files.read(self.files.cert()),
+            self.files.read(self.files.trust()),
+        ) else {
+            return false;
+        };
+        pki::pem_bundle_ders(&cert)
+            .ok()
+            .and_then(|d| d.into_iter().next())
+            .and_then(|d| pki::issuer_of(&d, &trust))
+            .is_some_and(|x| x == fp)
     }
 
     async fn maybe_rotate_for_expiry(&self) {
         let Some(ca) = self.signing_ca() else { return };
-        let Ok(der) = pki::pem_bundle_ders(&ca.cert_pem).map(|mut v| v.remove(0)) else { return };
-        let Ok((_, c)) = x509_parser::parse_x509_certificate(&der) else { return };
-        if c.validity().not_after.timestamp() - (crate::tenancy::now() as i64) < ROTATE_BEFORE_SECS {
-            if let Err(e) = self.rotate_ca(None).await {
-                tracing::warn!("rotating the CA before it expires: {}", e);
-            }
+        let Ok(der) = pki::pem_bundle_ders(&ca.cert_pem).map(|mut v| v.remove(0)) else {
+            return;
+        };
+        let Ok((_, c)) = x509_parser::parse_x509_certificate(&der) else {
+            return;
+        };
+        if c.validity().not_after.timestamp() - (crate::tenancy::now() as i64) < ROTATE_BEFORE_SECS
+            && let Err(e) = self.rotate_ca(None).await
+        {
+            tracing::warn!("rotating the CA before it expires: {}", e);
         }
     }
 
@@ -440,6 +610,13 @@ impl Cluster {
 fn pem_of(der: &[u8]) -> String {
     use base64::Engine;
     let b = base64::engine::general_purpose::STANDARD.encode(der);
-    let lines: Vec<&str> = b.as_bytes().chunks(64).map(|c| std::str::from_utf8(c).unwrap()).collect();
-    format!("-----BEGIN CERTIFICATE-----\n{}\n-----END CERTIFICATE-----\n", lines.join("\n"))
+    let lines: Vec<&str> = b
+        .as_bytes()
+        .chunks(64)
+        .map(|c| std::str::from_utf8(c).unwrap())
+        .collect();
+    format!(
+        "-----BEGIN CERTIFICATE-----\n{}\n-----END CERTIFICATE-----\n",
+        lines.join("\n")
+    )
 }

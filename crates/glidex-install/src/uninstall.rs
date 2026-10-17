@@ -13,7 +13,7 @@
 //! `/etc/pam.d/glidex`.
 
 use crate::sysconfig;
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use colored::Colorize;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -28,11 +28,19 @@ pub const UNITS: &[&str] = &[
     "glidex-netd.service",
 ];
 /// Units of the pinned OVS source build (removed only with --remove-ovs).
-pub const OVS_SOURCE_UNITS: &[&str] = &["glidex-ovs-vswitchd.service", "glidex-ovsdb-server.service"];
+pub const OVS_SOURCE_UNITS: &[&str] =
+    &["glidex-ovs-vswitchd.service", "glidex-ovsdb-server.service"];
 pub const UNIT_DIR: &str = "/etc/systemd/system";
 pub const NETD_DB: &str = "/var/lib/glidex/netd.db";
 pub const SYSTEM_BIN_DIR: &str = "/usr/local/bin";
-pub const BINARIES: &[&str] = &["glidex-control-plane", "gxctl", "glidex-netd", "glidex-ui", "glidex-authd", "glidex-vm-shim"];
+pub const BINARIES: &[&str] = &[
+    "glidex-control-plane",
+    "gxctl",
+    "glidex-netd",
+    "glidex-ui",
+    "glidex-authd",
+    "glidex-vm-shim",
+];
 /// The VM unit template and its slice (spec/reconciliation.md §13).
 pub const VM_UNIT_FILES: &[&str] = &["glidex-vm@.service", "glidex-vms.slice"];
 pub const GROUP: &str = "glidex";
@@ -44,7 +52,12 @@ pub const CONFIG_DIR: &str = "/etc/glidex";
 /// What the installer itself puts in `CONFIG_DIR`. The rest (control-plane.json,
 /// netd.json, site policies, TLS files…) is the administrator's and is kept
 /// unless --purge-user-data.
-pub const INSTALLER_CONFIG: &[&str] = &["install.conf", "authd.json", "control-plane.json.example", "vm-shim.json"];
+pub const INSTALLER_CONFIG: &[&str] = &[
+    "install.conf",
+    "authd.json",
+    "control-plane.json.example",
+    "vm-shim.json",
+];
 /// The system user the control plane and UI run as, and its home (the
 /// control plane's VM database, images and disks).
 pub const SERVICE_USER: &str = "glidex";
@@ -53,7 +66,13 @@ pub const SERVICE_HOME: &str = crate::SERVICE_HOME;
 pub const UI_ASSET_ROOT: &str = "/usr/local/share/glidex";
 /// Directories owned entirely by glidex.
 /// (`/var/lib/glidex-ui` holds only the UI's self-signed certificate.)
-pub const STATE_DIRS: &[&str] = &["/var/lib/glidex", "/var/lib/glidex-ui", "/run/glidex", "/run/glidex-cp", "/run/glidex-authd"];
+pub const STATE_DIRS: &[&str] = &[
+    "/var/lib/glidex",
+    "/var/lib/glidex-ui",
+    "/run/glidex",
+    "/run/glidex-cp",
+    "/run/glidex-authd",
+];
 pub const SOURCE_PREFIX: &str = "/opt/glidex";
 pub const DISTRO_OVS_PACKAGES: &[&str] = &["openvswitch-switch-dpdk", "openvswitch-switch"];
 
@@ -198,7 +217,11 @@ pub fn plan(host: &dyn HostView, opts: &Options, user_home: &Path) -> Vec<Step> 
     if host.exists(&Path::new(UNIT_DIR).join("glidex-vm@.service")) {
         steps.push(run(&["systemctl", "stop", "glidex-vm@*.service"]));
     }
-    let units: Vec<&str> = UNITS.iter().copied().filter(|u| host.unit_known(u)).collect();
+    let units: Vec<&str> = UNITS
+        .iter()
+        .copied()
+        .filter(|u| host.unit_known(u))
+        .collect();
     if !units.is_empty() {
         let mut argv = vec!["systemctl", "disable", "--now"];
         argv.extend(&units);
@@ -247,15 +270,29 @@ pub fn plan(host: &dyn HostView, opts: &Options, user_home: &Path) -> Vec<Step> 
     // 5. OVS (optional).
     if opts.reset_dpdk && !opts.remove_ovs && host.exists(Path::new("/usr/bin/ovs-vsctl")) {
         steps.push(run(&[
-            "ovs-vsctl", "--if-exists", "remove", "Open_vSwitch", ".", "other_config",
-            "dpdk-init", "dpdk-socket-mem", "pmd-cpu-mask", "dpdk-lcore-mask", "pmd-auto-lb", "userspace-tso-enable",
+            "ovs-vsctl",
+            "--if-exists",
+            "remove",
+            "Open_vSwitch",
+            ".",
+            "other_config",
+            "dpdk-init",
+            "dpdk-socket-mem",
+            "pmd-cpu-mask",
+            "dpdk-lcore-mask",
+            "pmd-auto-lb",
+            "userspace-tso-enable",
         ]));
         steps.push(Step::Note(
             "restart Open vSwitch for the DPDK change to take effect (e.g. systemctl restart openvswitch-switch)".into(),
         ));
     }
     if opts.remove_ovs {
-        let src_units: Vec<&str> = OVS_SOURCE_UNITS.iter().copied().filter(|u| host.unit_known(u)).collect();
+        let src_units: Vec<&str> = OVS_SOURCE_UNITS
+            .iter()
+            .copied()
+            .filter(|u| host.unit_known(u))
+            .collect();
         if !src_units.is_empty() {
             let mut argv = vec!["systemctl", "disable", "--now"];
             argv.extend(&src_units);
@@ -271,7 +308,11 @@ pub fn plan(host: &dyn HostView, opts: &Options, user_home: &Path) -> Vec<Step> 
         if host.exists(Path::new(SOURCE_PREFIX)) {
             steps.push(Step::Remove(PathBuf::from(SOURCE_PREFIX)));
         }
-        let pkgs: Vec<&str> = DISTRO_OVS_PACKAGES.iter().copied().filter(|p| host.package_installed(p)).collect();
+        let pkgs: Vec<&str> = DISTRO_OVS_PACKAGES
+            .iter()
+            .copied()
+            .filter(|p| host.package_installed(p))
+            .collect();
         if !pkgs.is_empty() {
             let mut argv = vec!["apt-get", "remove", "-y"];
             argv.extend(&pkgs);
@@ -382,13 +423,19 @@ fn host_settings(host: &dyn HostView, opts: &Options, steps: &mut Vec<Step>) {
                     steps.push(run(&["sysctl", "-w", &format!("{}={}", s.key, prev)]));
                 }
                 Some(_) => {}
-                None => steps.push(Step::Note(format!("{} = {} left as is (previous value unknown)", s.key, s.value))),
+                None => steps.push(Step::Note(format!(
+                    "{} = {} left as is (previous value unknown)",
+                    s.key, s.value
+                ))),
             }
         }
         if keep.is_empty() {
             steps.push(Step::Remove(PathBuf::from(sysconfig::SYSCTL_DROPIN)));
         } else {
-            steps.push(Step::Write(PathBuf::from(sysconfig::SYSCTL_DROPIN), sysconfig::render(&keep)));
+            steps.push(Step::Write(
+                PathBuf::from(sysconfig::SYSCTL_DROPIN),
+                sysconfig::render(&keep),
+            ));
             steps.push(Step::Note(format!(
                 "keeping {} in {} for OVS-DPDK; use --reset-dpdk or --remove-ovs to release it",
                 sysconfig::NR_HUGEPAGES,
@@ -418,10 +465,18 @@ impl HostView for RealHost {
                 .unwrap_or(false)
     }
     fn group_exists(&self, name: &str) -> bool {
-        Command::new("getent").args(["group", name]).output().map(|o| o.status.success()).unwrap_or(false)
+        Command::new("getent")
+            .args(["group", name])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
     }
     fn user_exists(&self, name: &str) -> bool {
-        Command::new("getent").args(["passwd", name]).output().map(|o| o.status.success()).unwrap_or(false)
+        Command::new("getent")
+            .args(["passwd", name])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
     }
     fn has_net_admin(&self, bin: &Path) -> bool {
         Command::new("getcap")
@@ -442,7 +497,11 @@ impl HostView for RealHost {
     }
     fn list(&self, dir: &Path) -> Vec<String> {
         let mut names: Vec<String> = std::fs::read_dir(dir)
-            .map(|d| d.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().into_owned()).collect())
+            .map(|d| {
+                d.filter_map(|e| e.ok())
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
             .unwrap_or_default();
         names.sort();
         names
@@ -481,14 +540,23 @@ fn network_teardown(db: &Path) -> Result<Vec<String>> {
         },
     )
     .map_err(|e| anyhow::anyhow!("{} (is glidex-netd still running?)", e))?;
-    let root = Peer { uid: 0, gid: 0, pid: std::process::id() as i32 };
-    let call = |op: Op| netd.handle(op, &root).map_err(|e| anyhow::anyhow!(e.to_string()));
+    let root = Peer {
+        uid: 0,
+        gid: 0,
+        pid: std::process::id() as i32,
+    };
+    let call = |op: Op| {
+        netd.handle(op, &root)
+            .map_err(|e| anyhow::anyhow!(e.to_string()))
+    };
     let mut done = Vec::new();
     let mut failed = Vec::new();
 
     let ports: Vec<VmPortRecord> = serde_json::from_value(call(Op::ListVmPorts)?)?;
     for p in ports {
-        match call(Op::ReleaseVm { vm_id: p.spec.vm_id.clone() }) {
+        match call(Op::ReleaseVm {
+            vm_id: p.spec.vm_id.clone(),
+        }) {
             Ok(_) => done.push(format!("VM port {}", p.port)),
             Err(e) => failed.push(format!("VM port {}: {}", p.port, e)),
         }
@@ -496,21 +564,28 @@ fn network_teardown(db: &Path) -> Result<Vec<String>> {
     let uplinks: Vec<UplinkResult> = serde_json::from_value(call(Op::ListUplinks)?)?;
     for u in uplinks {
         let spec = &u.record.spec;
-        match call(Op::DeleteUplink { bridge: spec.bridge.clone(), name: spec.name.clone() }) {
+        match call(Op::DeleteUplink {
+            bridge: spec.bridge.clone(),
+            name: spec.name.clone(),
+        }) {
             Ok(_) => done.push(format!("uplink {} (NIC restored)", spec.name)),
             Err(e) => failed.push(format!("uplink {}: {}", spec.name, e)),
         }
     }
     let nats: Vec<NatInfo> = serde_json::from_value(call(Op::ListNat)?)?;
     for n in nats {
-        match call(Op::DeleteNat { bridge: n.state.bridge.clone() }) {
+        match call(Op::DeleteNat {
+            bridge: n.state.bridge.clone(),
+        }) {
             Ok(_) => done.push(format!("NAT on {}", n.state.bridge)),
             Err(e) => failed.push(format!("NAT {}: {}", n.state.bridge, e)),
         }
     }
     let bridges: Vec<BridgeRecord> = serde_json::from_value(call(Op::ListBridges)?)?;
     for b in bridges {
-        match call(Op::DeleteBridge { name: b.spec.name.clone() }) {
+        match call(Op::DeleteBridge {
+            name: b.spec.name.clone(),
+        }) {
             Ok(_) => done.push(format!("bridge {}", b.spec.name)),
             Err(e) => failed.push(format!("bridge {}: {}", b.spec.name, e)),
         }
@@ -524,14 +599,27 @@ fn network_teardown(db: &Path) -> Result<Vec<String>> {
 /// dnsmasq started by netd runs with --conf-file=/run/glidex/dnsmasq/*.conf.
 fn stop_glidex_dnsmasq() -> usize {
     let mut stopped = 0;
-    let Ok(procs) = std::fs::read_dir("/proc") else { return 0 };
+    let Ok(procs) = std::fs::read_dir("/proc") else {
+        return 0;
+    };
     for p in procs.filter_map(|e| e.ok()) {
-        let Ok(pid) = p.file_name().to_string_lossy().parse::<i32>() else { continue };
-        let Ok(cmdline) = std::fs::read(p.path().join("cmdline")) else { continue };
-        let args: Vec<String> = cmdline.split(|b| *b == 0).map(|a| String::from_utf8_lossy(a).into_owned()).collect();
-        let is_dnsmasq = args.first().is_some_and(|a| a.rsplit('/').next() == Some("dnsmasq"));
+        let Ok(pid) = p.file_name().to_string_lossy().parse::<i32>() else {
+            continue;
+        };
+        let Ok(cmdline) = std::fs::read(p.path().join("cmdline")) else {
+            continue;
+        };
+        let args: Vec<String> = cmdline
+            .split(|b| *b == 0)
+            .map(|a| String::from_utf8_lossy(a).into_owned())
+            .collect();
+        let is_dnsmasq = args
+            .first()
+            .is_some_and(|a| a.rsplit('/').next() == Some("dnsmasq"));
         if is_dnsmasq
-            && args.iter().any(|a| a.starts_with("--conf-file=/run/glidex/dnsmasq/"))
+            && args
+                .iter()
+                .any(|a| a.starts_with("--conf-file=/run/glidex/dnsmasq/"))
             && unsafe { libc::kill(pid, libc::SIGTERM) } == 0
         {
             stopped += 1;
@@ -543,10 +631,18 @@ fn stop_glidex_dnsmasq() -> usize {
 fn execute(step: &Step) -> Result<()> {
     match step {
         Step::Run(argv) => {
-            let status = Command::new(&argv[0]).args(&argv[1..]).status().with_context(|| argv[0].clone())?;
+            let status = Command::new(&argv[0])
+                .args(&argv[1..])
+                .status()
+                .with_context(|| argv[0].clone())?;
             // Best effort: keep going so the rest of the cleanup happens.
             if !status.success() {
-                println!("  {} {} exited with {}", "warning:".yellow(), argv.join(" "), status);
+                println!(
+                    "  {} {} exited with {}",
+                    "warning:".yellow(),
+                    argv.join(" "),
+                    status
+                );
             }
         }
         Step::NetworkTeardown(db) => {
@@ -565,8 +661,13 @@ fn execute(step: &Step) -> Result<()> {
             use std::io::Write as _;
             // The metering table goes too: the only place it is deleted
             // (spec/metering.md D14).
-            let script = glidex_ovs::nat::nft_script(&[], &[]) + &glidex_ovs::nat_meter::drop_script();
-            child.stdin.take().expect("piped stdin").write_all(script.as_bytes())?;
+            let script =
+                glidex_ovs::nat::nft_script(&[], &[]) + &glidex_ovs::nat_meter::drop_script();
+            child
+                .stdin
+                .take()
+                .expect("piped stdin")
+                .write_all(script.as_bytes())?;
             let status = child.wait()?;
             if !status.success() {
                 bail!("nft -f - exited with {}", status);
@@ -579,14 +680,20 @@ fn execute(step: &Step) -> Result<()> {
             }
         }
         Step::Remove(p) => {
-            let r = if p.is_dir() { std::fs::remove_dir_all(p) } else { std::fs::remove_file(p) };
+            let r = if p.is_dir() {
+                std::fs::remove_dir_all(p)
+            } else {
+                std::fs::remove_file(p)
+            };
             match r {
                 Ok(()) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                 Err(e) => return Err(e).with_context(|| p.display().to_string()),
             }
         }
-        Step::Write(p, contents) => std::fs::write(p, contents).with_context(|| p.display().to_string())?,
+        Step::Write(p, contents) => {
+            std::fs::write(p, contents).with_context(|| p.display().to_string())?
+        }
         Step::Note(_) => {}
     }
     Ok(())
@@ -594,12 +701,14 @@ fn execute(step: &Step) -> Result<()> {
 
 fn invoking_user_home() -> PathBuf {
     let user = std::env::var("SUDO_USER").ok().filter(|u| u != "root");
-    if let Some(u) = user {
-        if let Ok(out) = Command::new("getent").args(["passwd", &u]).output() {
-            if let Some(home) = String::from_utf8_lossy(&out.stdout).trim().split(':').nth(5) {
-                return PathBuf::from(home);
-            }
-        }
+    if let Some(u) = user
+        && let Ok(out) = Command::new("getent").args(["passwd", &u]).output()
+        && let Some(home) = String::from_utf8_lossy(&out.stdout)
+            .trim()
+            .split(':')
+            .nth(5)
+    {
+        return PathBuf::from(home);
     }
     dirs::home_dir().unwrap_or_else(|| PathBuf::from("/root"))
 }
@@ -610,14 +719,22 @@ pub fn main(args: &[String]) -> Result<()> {
     if !is_root && !opts.dry_run {
         // Re-run as root; sudo keeps SUDO_USER so ~ still means the user's home.
         let exe = std::env::current_exe()?;
-        let status = Command::new("sudo").arg(exe).args(opts.to_args()).status()?;
+        let status = Command::new("sudo")
+            .arg(exe)
+            .args(opts.to_args())
+            .status()?;
         std::process::exit(status.code().unwrap_or(1));
     }
 
     let home = invoking_user_home();
     let steps = plan(&RealHost, &opts, &home);
     println!("{}", "glidex uninstall plan:".cyan().bold());
-    if steps.iter().all(|s| matches!(s, Step::Note(_) | Step::StopGlidexDnsmasq | Step::DropNftTable)) {
+    if steps.iter().all(|s| {
+        matches!(
+            s,
+            Step::Note(_) | Step::StopGlidexDnsmasq | Step::DropNftTable
+        )
+    }) {
         println!("  nothing glidex-owned found");
     }
     for s in &steps {
@@ -651,7 +768,11 @@ pub fn main(args: &[String]) -> Result<()> {
     if errors == 0 {
         println!("{}", "glidex uninstalled".green().bold());
     } else {
-        println!("{} {} step(s) failed", "Finished with errors:".yellow(), errors);
+        println!(
+            "{} {} step(s) failed",
+            "Finished with errors:".yellow(),
+            errors
+        );
     }
     Ok(())
 }
@@ -737,9 +858,16 @@ mod tests {
             h.paths.insert(PathBuf::from(p));
         }
         h.units.extend(
-            ["glidex-ui.service", "glidex-control-plane.service", "glidex-authd.socket", "glidex-netd.service"].map(String::from),
+            [
+                "glidex-ui.service",
+                "glidex-control-plane.service",
+                "glidex-authd.socket",
+                "glidex-netd.service",
+            ]
+            .map(String::from),
         );
-        h.groups.extend(["glidex", "glidex-ui", "glidex-users", "glidex-admin"].map(String::from));
+        h.groups
+            .extend(["glidex", "glidex-ui", "glidex-users", "glidex-admin"].map(String::from));
         h.users.extend(["glidex", "glidex-ui"].map(String::from));
         h.files.insert(
             PathBuf::from(crate::PAM_FILE),
@@ -747,11 +875,20 @@ mod tests {
         );
         h.dirs.insert(
             PathBuf::from("/etc/glidex"),
-            ["authd.json", "control-plane.json.example", "install.conf", "policies"].map(String::from).to_vec(),
+            [
+                "authd.json",
+                "control-plane.json.example",
+                "install.conf",
+                "policies",
+            ]
+            .map(String::from)
+            .to_vec(),
         );
-        h.caps.insert(PathBuf::from("/usr/local/bin/cloud-hypervisor"));
+        h.caps
+            .insert(PathBuf::from("/usr/local/bin/cloud-hypervisor"));
         h.packages.insert("openvswitch-switch".into());
-        h.seeds.push(PathBuf::from("/tmp/cloud-hypervisor-abc.cloudinit.img"));
+        h.seeds
+            .push(PathBuf::from("/tmp/cloud-hypervisor-abc.cloudinit.img"));
         h
     }
 
@@ -761,20 +898,32 @@ mod tests {
 
     #[test]
     fn default_plan_order_and_contents() {
-        let steps = plan(&full_install(), &Options::default(), Path::new("/home/alice"));
+        let steps = plan(
+            &full_install(),
+            &Options::default(),
+            Path::new("/home/alice"),
+        );
         let l = lines(&steps);
-        let pos = |needle: &str| l.iter().position(|s| s.contains(needle)).unwrap_or_else(|| panic!("missing {needle}: {l:#?}"));
+        let pos = |needle: &str| {
+            l.iter()
+                .position(|s| s.contains(needle))
+                .unwrap_or_else(|| panic!("missing {needle}: {l:#?}"))
+        };
         // Services stop before networking is torn down, which happens before
         // netd's state (which describes it) is deleted.
         assert!(
-            pos("systemctl disable --now glidex-ui.service glidex-control-plane.service glidex-authd.socket glidex-netd.service")
-                < pos("tear down glidex networking")
+            pos(
+                "systemctl disable --now glidex-ui.service glidex-control-plane.service glidex-authd.socket glidex-netd.service"
+            ) < pos("tear down glidex networking")
         );
         assert!(pos("userdel glidex") < pos("groupdel glidex"));
         assert!(pos("userdel glidex-ui") < pos("groupdel glidex-ui"));
         assert!(pos("tear down glidex networking") < pos("remove: /var/lib/glidex"));
         // The nft fallback runs after the teardown, as an idempotent script.
-        assert!(pos("tear down glidex networking") < pos("drop nftables tables inet glidex and inet glidex_meter if present"));
+        assert!(
+            pos("tear down glidex networking")
+                < pos("drop nftables tables inet glidex and inet glidex_meter if present")
+        );
         assert!(!l.iter().any(|s| s.contains("nft delete table")), "{l:#?}");
         for needle in [
             "setcap -r /usr/local/bin/cloud-hypervisor",
@@ -819,9 +968,16 @@ mod tests {
     fn optional_removals() {
         let mut host = full_install();
         host.paths.insert(PathBuf::from("/opt/glidex"));
-        host.paths.insert(PathBuf::from("/etc/systemd/system/glidex-ovs-vswitchd.service"));
+        host.paths.insert(PathBuf::from(
+            "/etc/systemd/system/glidex-ovs-vswitchd.service",
+        ));
         host.units.insert("glidex-ovs-vswitchd.service".into());
-        let opts = Options { remove_ovs: true, remove_cloud_hypervisor: true, purge_user_data: true, ..Options::default() };
+        let opts = Options {
+            remove_ovs: true,
+            remove_cloud_hypervisor: true,
+            purge_user_data: true,
+            ..Options::default()
+        };
         let l = lines(&plan(&host, &opts, Path::new("/home/alice")));
         for needle in [
             "systemctl disable --now glidex-ovs-vswitchd.service",
@@ -832,51 +988,92 @@ mod tests {
             "remove: /home/alice/.glidex",
             "remove: /var/lib/glidex-control-plane",
         ] {
-            assert!(l.iter().any(|s| s.contains(needle)), "missing {needle}: {l:#?}");
+            assert!(
+                l.iter().any(|s| s.contains(needle)),
+                "missing {needle}: {l:#?}"
+            );
         }
-        assert!(!l.iter().any(|s| s.contains("setcap -r")), "binary removed instead");
+        assert!(
+            !l.iter().any(|s| s.contains("setcap -r")),
+            "binary removed instead"
+        );
     }
 
     #[test]
     fn reset_dpdk_only_when_keeping_ovs() {
-        let opts = Options { reset_dpdk: true, ..Options::default() };
+        let opts = Options {
+            reset_dpdk: true,
+            ..Options::default()
+        };
         let l = lines(&plan(&full_install(), &opts, Path::new("/home/alice")));
         assert!(l.iter().any(|s| s.contains("remove Open_vSwitch . other_config dpdk-init dpdk-socket-mem pmd-cpu-mask dpdk-lcore-mask pmd-auto-lb userspace-tso-enable")));
     }
 
     #[test]
     fn clean_host_has_nothing_to_do() {
-        let l = lines(&plan(&FakeHost::default(), &Options::default(), Path::new("/home/alice")));
+        let l = lines(&plan(
+            &FakeHost::default(),
+            &Options::default(),
+            Path::new("/home/alice"),
+        ));
         assert_eq!(l, vec!["stop dnsmasq processes started by glidex-netd"]);
     }
 
     fn with_sysctls(mut h: FakeHost) -> FakeHost {
         let text = sysconfig::render(&[
-            sysconfig::Setting { key: "net.ipv4.ip_forward".into(), value: "1".into(), previous: Some("0".into()) },
-            sysconfig::Setting { key: "vm.nr_hugepages".into(), value: "2048".into(), previous: Some("0".into()) },
+            sysconfig::Setting {
+                key: "net.ipv4.ip_forward".into(),
+                value: "1".into(),
+                previous: Some("0".into()),
+            },
+            sysconfig::Setting {
+                key: "vm.nr_hugepages".into(),
+                value: "2048".into(),
+                previous: Some("0".into()),
+            },
         ]);
-        h.files.insert(PathBuf::from(sysconfig::SYSCTL_DROPIN), text);
+        h.files
+            .insert(PathBuf::from(sysconfig::SYSCTL_DROPIN), text);
         h.paths.insert(PathBuf::from(sysconfig::MODULES_DROPIN));
         h
     }
 
     #[test]
     fn sysctls_restored_but_hugepages_kept_for_ovs_dpdk() {
-        let steps = plan(&with_sysctls(full_install()), &Options::default(), Path::new("/home/alice"));
+        let steps = plan(
+            &with_sysctls(full_install()),
+            &Options::default(),
+            Path::new("/home/alice"),
+        );
         let l = lines(&steps);
-        assert!(l.contains(&"run: sysctl -w net.ipv4.ip_forward=0".to_string()), "{l:#?}");
+        assert!(
+            l.contains(&"run: sysctl -w net.ipv4.ip_forward=0".to_string()),
+            "{l:#?}"
+        );
         assert!(!l.iter().any(|s| s.contains("vm.nr_hugepages=0")), "{l:#?}");
-        let Some(Step::Write(_, kept)) = steps.iter().find(|s| matches!(s, Step::Write(..))) else { panic!("{l:#?}") };
+        let Some(Step::Write(_, kept)) = steps.iter().find(|s| matches!(s, Step::Write(..))) else {
+            panic!("{l:#?}")
+        };
         let kept = sysconfig::parse(kept);
         assert_eq!(kept.len(), 1);
         assert_eq!(kept[0].key, "vm.nr_hugepages");
-        assert!(!l.iter().any(|s| s.contains("modules-load.d")), "vfio-pci kept with DPDK");
+        assert!(
+            !l.iter().any(|s| s.contains("modules-load.d")),
+            "vfio-pci kept with DPDK"
+        );
     }
 
     #[test]
     fn sysctls_fully_restored_with_reset_dpdk() {
-        let opts = Options { reset_dpdk: true, ..Options::default() };
-        let l = lines(&plan(&with_sysctls(full_install()), &opts, Path::new("/home/alice")));
+        let opts = Options {
+            reset_dpdk: true,
+            ..Options::default()
+        };
+        let l = lines(&plan(
+            &with_sysctls(full_install()),
+            &opts,
+            Path::new("/home/alice"),
+        ));
         for needle in [
             "run: sysctl -w net.ipv4.ip_forward=0",
             "run: sysctl -w vm.nr_hugepages=0",
@@ -890,9 +1087,18 @@ mod tests {
     #[test]
     fn site_configuration_and_local_pam_are_kept() {
         let mut host = full_install();
-        host.dirs.get_mut(Path::new("/etc/glidex")).unwrap().extend(["control-plane.json".to_string(), "netd.json".to_string()]);
-        host.dirs.insert(PathBuf::from("/etc/glidex/policies"), vec!["site.cedar".into()]);
-        host.files.insert(PathBuf::from(crate::PAM_FILE), "auth required pam_sss.so\n".into());
+        host.dirs
+            .get_mut(Path::new("/etc/glidex"))
+            .unwrap()
+            .extend(["control-plane.json".to_string(), "netd.json".to_string()]);
+        host.dirs.insert(
+            PathBuf::from("/etc/glidex/policies"),
+            vec!["site.cedar".into()],
+        );
+        host.files.insert(
+            PathBuf::from(crate::PAM_FILE),
+            "auth required pam_sss.so\n".into(),
+        );
         let l = lines(&plan(&host, &Options::default(), Path::new("/home/alice")));
         for needle in [
             "remove: /etc/glidex/install.conf",
@@ -901,20 +1107,36 @@ mod tests {
             "note: keeping /etc/glidex (control-plane.json, netd.json, policies: site configuration)",
             "note: keeping /etc/pam.d/glidex (edited locally",
         ] {
-            assert!(l.iter().any(|s| s.starts_with(needle)), "missing {needle}: {l:#?}");
+            assert!(
+                l.iter().any(|s| s.starts_with(needle)),
+                "missing {needle}: {l:#?}"
+            );
         }
-        assert!(!l.iter().any(|s| s == "remove: /etc/glidex" || s == "remove: /etc/pam.d/glidex"), "{l:#?}");
+        assert!(
+            !l.iter()
+                .any(|s| s == "remove: /etc/glidex" || s == "remove: /etc/pam.d/glidex"),
+            "{l:#?}"
+        );
         // --purge-user-data takes the site configuration too.
-        let opts = Options { purge_user_data: true, ..Options::default() };
+        let opts = Options {
+            purge_user_data: true,
+            ..Options::default()
+        };
         let l = lines(&plan(&host, &opts, Path::new("/home/alice")));
         assert!(l.iter().any(|s| s == "remove: /etc/glidex"), "{l:#?}");
     }
 
     #[test]
     fn options_round_trip_for_sudo() {
-        let args: Vec<String> = ["--yes", "--remove-ovs", "--purge-user-data"].iter().map(|s| s.to_string()).collect();
+        let args: Vec<String> = ["--yes", "--remove-ovs", "--purge-user-data"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         let o = Options::parse(&args).unwrap();
-        assert_eq!(o.to_args(), vec!["uninstall", "--yes", "--remove-ovs", "--purge-user-data"]);
+        assert_eq!(
+            o.to_args(),
+            vec!["uninstall", "--yes", "--remove-ovs", "--purge-user-data"]
+        );
         assert!(Options::parse(&["--bogus".to_string()]).is_err());
     }
 }

@@ -254,11 +254,13 @@ export async function loginPam(username: string, password: string): Promise<WhoA
   return w;
 }
 
-/** Leave the page for the identity provider. */
-export function startOidc(returnTo: string, reauth = false) {
+/** Leave the page for the identity provider: connector `connector`, or
+ *  the first OIDC connector. */
+export function startOidc(returnTo: string, reauth = false, connector?: string) {
   const q = new URLSearchParams({ return_to: returnTo });
   if (reauth) q.set("reauth", "1");
-  window.location.assign(`${API_BASE}/auth/oidc/start?${q}`);
+  const path = connector ? `/auth/c/${encodeURIComponent(connector)}/start` : "/auth/oidc/start";
+  window.location.assign(`${API_BASE}${path}?${q}`);
 }
 
 export async function logout(): Promise<void> {

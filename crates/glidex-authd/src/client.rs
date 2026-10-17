@@ -61,11 +61,26 @@ impl AuthdClient {
 
     /// Verify `user`'s `password` with PAM service `service`
     /// (normally [`DEFAULT_SERVICE`]).
-    pub fn authenticate(&self, user: &str, password: &str, service: &str) -> Result<AuthOk, AuthdError> {
-        let req = RequestRef { id: 1, op: OP_AUTHENTICATE, args: AuthenticateArgsRef { user, password, service } };
+    pub fn authenticate(
+        &self,
+        user: &str,
+        password: &str,
+        service: &str,
+    ) -> Result<AuthOk, AuthdError> {
+        let req = RequestRef {
+            id: 1,
+            op: OP_AUTHENTICATE,
+            args: AuthenticateArgsRef {
+                user,
+                password,
+                service,
+            },
+        };
         // Sized for the worst-case JSON escaping so it never reallocates and
         // leaves an unwiped copy of the password behind.
-        let mut line = Zeroizing::new(Vec::with_capacity(6 * (user.len() + password.len() + service.len()) + 128));
+        let mut line = Zeroizing::new(Vec::with_capacity(
+            6 * (user.len() + password.len() + service.len()) + 128,
+        ));
         serde_json::to_writer(&mut *line, &req).map_err(|e| AuthdError::Protocol(e.to_string()))?;
         self.exchange(&mut line)?
             .ok
@@ -75,8 +90,14 @@ impl AuthdClient {
     /// `user`'s own SSH public keys (`~/.ssh/*.pub`), read by authd with
     /// the user's file permissions. `Denied` for users who can't log in.
     pub fn public_keys(&self, user: &str) -> Result<Vec<String>, AuthdError> {
-        let req = RequestRef { id: 1, op: OP_PUBLIC_KEYS, args: UserArgsRef { user } };
-        let mut line = Zeroizing::new(serde_json::to_vec(&req).map_err(|e| AuthdError::Protocol(e.to_string()))?);
+        let req = RequestRef {
+            id: 1,
+            op: OP_PUBLIC_KEYS,
+            args: UserArgsRef { user },
+        };
+        let mut line = Zeroizing::new(
+            serde_json::to_vec(&req).map_err(|e| AuthdError::Protocol(e.to_string()))?,
+        );
         self.exchange(&mut line)?
             .keys
             .ok_or_else(|| AuthdError::Protocol("response has neither keys nor error".into()))
@@ -84,10 +105,15 @@ impl AuthdClient {
 
     /// Send one request line and read the response.
     fn exchange(&self, line: &mut Vec<u8>) -> Result<Response, AuthdError> {
-        let unavailable = |e: std::io::Error| AuthdError::Unavailable(format!("{}: {}", self.path.display(), e));
+        let unavailable =
+            |e: std::io::Error| AuthdError::Unavailable(format!("{}: {}", self.path.display(), e));
         let stream = UnixStream::connect(&self.path).map_err(unavailable)?;
-        stream.set_read_timeout(Some(self.timeout)).map_err(unavailable)?;
-        stream.set_write_timeout(Some(self.timeout)).map_err(unavailable)?;
+        stream
+            .set_read_timeout(Some(self.timeout))
+            .map_err(unavailable)?;
+        stream
+            .set_write_timeout(Some(self.timeout))
+            .map_err(unavailable)?;
         line.push(b'\n');
         (&stream).write_all(line).map_err(unavailable)?;
 
@@ -95,9 +121,12 @@ impl AuthdClient {
         let mut reply = String::new();
         let n = reader.read_line(&mut reply).map_err(unavailable)?;
         if n == 0 {
-            return Err(AuthdError::Unavailable("glidex-authd closed the connection".into()));
+            return Err(AuthdError::Unavailable(
+                "glidex-authd closed the connection".into(),
+            ));
         }
-        let resp: Response = serde_json::from_str(&reply).map_err(|e| AuthdError::Protocol(e.to_string()))?;
+        let resp: Response =
+            serde_json::from_str(&reply).map_err(|e| AuthdError::Protocol(e.to_string()))?;
         if let Some(err) = resp.error {
             return Err(match err.code.as_str() {
                 CODE_DENIED => AuthdError::Denied,
@@ -107,7 +136,10 @@ impl AuthdClient {
             });
         }
         if resp.id != 1 {
-            return Err(AuthdError::Protocol(format!("response id {} for request 1", resp.id)));
+            return Err(AuthdError::Protocol(format!(
+                "response id {} for request 1",
+                resp.id
+            )));
         }
         Ok(resp)
     }

@@ -104,14 +104,30 @@ pub struct Tool {
     pub packages: (&'static str, &'static str, &'static str),
 }
 
-pub const QEMU_IMG: Tool = Tool { name: "qemu-img", packages: ("qemu-utils", "qemu-img", "qemu-img") };
-pub const QEMU_IO: Tool = Tool { name: "qemu-io", packages: ("qemu-utils", "qemu-img", "qemu-img") };
-pub const SGDISK: Tool = Tool { name: "sgdisk", packages: ("gdisk", "gdisk", "gptfdisk") };
+pub const QEMU_IMG: Tool = Tool {
+    name: "qemu-img",
+    packages: ("qemu-utils", "qemu-img", "qemu-img"),
+};
+pub const QEMU_IO: Tool = Tool {
+    name: "qemu-io",
+    packages: ("qemu-utils", "qemu-img", "qemu-img"),
+};
+pub const SGDISK: Tool = Tool {
+    name: "sgdisk",
+    packages: ("gdisk", "gdisk", "gptfdisk"),
+};
 pub const GROWPART: Tool = Tool {
     name: "growpart",
-    packages: ("cloud-guest-utils", "cloud-utils-growpart", "cloud-guest-utils"),
+    packages: (
+        "cloud-guest-utils",
+        "cloud-utils-growpart",
+        "cloud-guest-utils",
+    ),
 };
-pub const CP: Tool = Tool { name: "cp", packages: ("coreutils", "coreutils", "coreutils") };
+pub const CP: Tool = Tool {
+    name: "cp",
+    packages: ("coreutils", "coreutils", "coreutils"),
+};
 
 pub const ALL_TOOLS: &[Tool] = &[QEMU_IMG, QEMU_IO, SGDISK, GROWPART];
 
@@ -171,7 +187,10 @@ pub fn tool_failure(tool: &Tool, out: &Output) -> ImageError {
     if msg.is_empty() {
         msg = String::from_utf8_lossy(&out.stdout).trim().to_string();
     }
-    ImageError::Tool { tool: tool.name.to_string(), stderr: msg }
+    ImageError::Tool {
+        tool: tool.name.to_string(),
+        stderr: msg,
+    }
 }
 
 /// The parts of `qemu-img info --output=json` glidex uses.
@@ -182,9 +201,17 @@ pub struct ImgInfo {
     pub virtual_size: u64,
     #[serde(rename = "actual-size", default)]
     pub actual_size: u64,
-    #[serde(rename = "backing-filename", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "backing-filename",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub backing_filename: Option<String>,
-    #[serde(rename = "backing-filename-format", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "backing-filename-format",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub backing_format: Option<String>,
 }
 
@@ -219,7 +246,12 @@ pub fn create(
 }
 
 /// `qemu-img convert` (sparse output, no backing file in the result).
-pub fn convert(src: &Path, src_format: DiskFormat, dst: &Path, dst_format: DiskFormat) -> Result<(), ImageError> {
+pub fn convert(
+    src: &Path,
+    src_format: DiskFormat,
+    dst: &Path,
+    dst_format: DiskFormat,
+) -> Result<(), ImageError> {
     let mut cmd = QEMU_IMG.command()?;
     cmd.arg("convert")
         .arg("-q")
@@ -234,7 +266,12 @@ pub fn convert(src: &Path, src_format: DiskFormat, dst: &Path, dst_format: DiskF
 
 /// `qemu-img resize`. `shrink` must be set to make the file smaller;
 /// qemu-img then discards everything past the new end without asking.
-pub fn resize(path: &Path, format: DiskFormat, size_bytes: u64, shrink: bool) -> Result<(), ImageError> {
+pub fn resize(
+    path: &Path,
+    format: DiskFormat,
+    size_bytes: u64,
+    shrink: bool,
+) -> Result<(), ImageError> {
     let mut cmd = QEMU_IMG.command()?;
     cmd.arg("resize").arg("-q").arg("-f").arg(format.as_str());
     if shrink {
@@ -250,13 +287,23 @@ pub fn check(path: &Path, format: DiskFormat) -> Result<(), ImageError> {
         return Ok(());
     }
     let mut cmd = QEMU_IMG.command()?;
-    cmd.arg("check").arg("-q").arg("-f").arg(format.as_str()).arg(path);
+    cmd.arg("check")
+        .arg("-q")
+        .arg("-f")
+        .arg(format.as_str())
+        .arg(path);
     run(&QEMU_IMG, cmd).map(|_| ())
 }
 
 /// Read `len` bytes at `offset` of the guest-visible disk into `out`.
 /// Both must be multiples of 512.
-pub fn read_region(path: &Path, format: DiskFormat, offset: u64, len: u64, out: &Path) -> Result<(), ImageError> {
+pub fn read_region(
+    path: &Path,
+    format: DiskFormat,
+    offset: u64,
+    len: u64,
+    out: &Path,
+) -> Result<(), ImageError> {
     debug_assert!(offset.is_multiple_of(512) && len.is_multiple_of(512));
     let _ = std::fs::remove_file(out);
     let mut cmd = QEMU_IMG.command()?;
@@ -294,7 +341,14 @@ pub fn read_region(path: &Path, format: DiskFormat, offset: u64, len: u64, out: 
 /// Write the contents of `src` (in directory `dir`) at `offset` of the
 /// guest-visible disk. `src` is a bare file name: qemu-io splits its `-c`
 /// argument on spaces, so the path must not contain any.
-pub fn write_region(path: &Path, format: DiskFormat, dir: &Path, src: &str, offset: u64, len: u64) -> Result<(), ImageError> {
+pub fn write_region(
+    path: &Path,
+    format: DiskFormat,
+    dir: &Path,
+    src: &str,
+    offset: u64,
+    len: u64,
+) -> Result<(), ImageError> {
     debug_assert!(!src.contains(' ') && !src.contains('/'));
     let mut cmd = QEMU_IO.command()?;
     cmd.current_dir(dir)
@@ -307,7 +361,10 @@ pub fn write_region(path: &Path, format: DiskFormat, dir: &Path, src: &str, offs
     // qemu-io reports command errors on stdout with a zero exit status.
     let stdout = String::from_utf8_lossy(&out.stdout);
     if !stdout.contains("wrote ") {
-        return Err(ImageError::Tool { tool: "qemu-io".into(), stderr: stdout.trim().to_string() });
+        return Err(ImageError::Tool {
+            tool: "qemu-io".into(),
+            stderr: stdout.trim().to_string(),
+        });
     }
     Ok(())
 }
@@ -315,7 +372,11 @@ pub fn write_region(path: &Path, format: DiskFormat, dir: &Path, src: &str, offs
 /// Copy a file, keeping holes and sharing extents where the filesystem can.
 pub fn copy_sparse(src: &Path, dst: &Path) -> Result<(), ImageError> {
     let mut cmd = CP.command()?;
-    cmd.arg("--reflink=auto").arg("--sparse=always").arg("--").arg(src).arg(dst);
+    cmd.arg("--reflink=auto")
+        .arg("--sparse=always")
+        .arg("--")
+        .arg(src)
+        .arg(dst);
     run(&CP, cmd).map(|_| ())
 }
 

@@ -2,17 +2,19 @@
 //! §9.3–§9.4).
 
 use super::usage::{bad, list, meter, scope};
-use super::{err, vm_entities, ApiErr, Caller};
+use super::{ApiErr, Caller, err, vm_entities};
 use crate::metering::ledger::{SlotRow, Subject, SubjectKind};
-use crate::metering::query::{self, GroupKey, Granularity, Named};
-use crate::metering::rates::{bandwidth_p95, compute_p95, disk_io_p95, group_slots, series_points, GroupSlots, SeriesKind};
-use axum::{
-    extract::{Path, Query},
-    http::{header, StatusCode},
-    response::{IntoResponse, Response},
-    Json,
+use crate::metering::query::{self, Granularity, GroupKey, Named};
+use crate::metering::rates::{
+    GroupSlots, SeriesKind, bandwidth_p95, compute_p95, disk_io_p95, group_slots, series_points,
 };
-use serde_json::{json, Value};
+use axum::{
+    Json,
+    extract::{Path, Query},
+    http::{StatusCode, header},
+    response::{IntoResponse, Response},
+};
+use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
 const DAY: u64 = 86400;
@@ -56,7 +58,12 @@ struct Range {
     now: u64,
 }
 
-fn range(p: &RateParams, billing_tz: &str, max_days: u64, default_days: Option<u64>) -> Result<Range, ApiErr> {
+fn range(
+    p: &RateParams,
+    billing_tz: &str,
+    max_days: u64,
+    default_days: Option<u64>,
+) -> Result<Range, ApiErr> {
     let tz = query::parse_tz(p.tz.as_deref().unwrap_or(billing_tz)).map_err(bad)?;
     let now = crate::metering::now_ms() / 1000;
     let (from, to, month) = match (&p.month, &p.from, default_days) {
@@ -65,10 +72,23 @@ fn range(p: &RateParams, billing_tz: &str, max_days: u64, default_days: Option<u
             (s, e, Some(m.clone()))
         }
         (None, Some(f), _) => {
-            let to = p.to.as_deref().map(query::parse_time).transpose().map_err(bad)?.unwrap_or(now);
-            (query::parse_time(f).map_err(bad)? / 3600 * 3600, to.div_ceil(3600) * 3600, None)
+            let to =
+                p.to.as_deref()
+                    .map(query::parse_time)
+                    .transpose()
+                    .map_err(bad)?
+                    .unwrap_or(now);
+            (
+                query::parse_time(f).map_err(bad)? / 3600 * 3600,
+                to.div_ceil(3600) * 3600,
+                None,
+            )
         }
-        (None, None, Some(days)) => (now.saturating_sub(days * DAY) / 300 * 300, now.div_ceil(300) * 300, None),
+        (None, None, Some(days)) => (
+            now.saturating_sub(days * DAY) / 300 * 300,
+            now.div_ceil(300) * 300,
+            None,
+        ),
         (None, None, None) => {
             let (s, e) = query::bucket(now, Granularity::Month, &tz);
             (s, e, Some(query::month_label(now, &tz)))
@@ -78,27 +98,61 @@ fn range(p: &RateParams, billing_tz: &str, max_days: u64, default_days: Option<u
         return Err(bad("`to` must be after `from`"));
     }
     if to - from > max_days * DAY {
-        return Err(err(StatusCode::BAD_REQUEST, "range_too_large", format!("at most {max_days} days per request")));
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            "range_too_large",
+            format!("at most {max_days} days per request"),
+        ));
     }
-    Ok(Range { from, to, month, tz, now })
+    Ok(Range {
+        from,
+        to,
+        month,
+        tz,
+        now,
+    })
 }
 
 /// Display names of projects and nodes, by id (the ids don't collide).
 fn names(c: &Caller) -> BTreeMap<String, String> {
-    let mut m: BTreeMap<String, String> = c.manager().projects().list().unwrap_or_default().into_iter().map(|p| (p.id, p.name)).collect();
-    m.extend(c.manager().nodes().list().unwrap_or_default().into_iter().map(|n| (n.meta.id, n.spec.name)));
+    let mut m: BTreeMap<String, String> = c
+        .manager()
+        .projects()
+        .list()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|p| (p.id, p.name))
+        .collect();
+    m.extend(
+        c.manager()
+            .nodes()
+            .list()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|n| (n.meta.id, n.spec.name)),
+    );
     m
 }
 
-fn keys_json(keys: &BTreeMap<GroupKey, Named>, names: &BTreeMap<String, String>, out: &mut serde_json::Map<String, Value>) {
+fn keys_json(
+    keys: &BTreeMap<GroupKey, Named>,
+    names: &BTreeMap<String, String>,
+    out: &mut serde_json::Map<String, Value>,
+) {
     for (k, v) in keys {
         let mut n = v.clone();
-        if matches!(k, GroupKey::Project | GroupKey::Node) {
-            if let Some(name) = names.get(&n.id) {
-                n.name = name.clone();
-            }
+        if matches!(k, GroupKey::Project | GroupKey::Node)
+            && let Some(name) = names.get(&n.id)
+        {
+            n.name = name.clone();
         }
-        out.insert(serde_json::to_value(k).ok().and_then(|x| x.as_str().map(String::from)).unwrap_or_default(), json!(n));
+        out.insert(
+            serde_json::to_value(k)
+                .ok()
+                .and_then(|x| x.as_str().map(String::from))
+                .unwrap_or_default(),
+            json!(n),
+        );
     }
 }
 
@@ -108,9 +162,17 @@ fn r3(v: f64) -> f64 {
 
 /// Averages over the seconds a group was present, and 30-second peaks,
 /// from the hourly rows (§8.5, §8.6).
-fn avg_and_peak(family: Family, kind: SubjectKind, meters: &BTreeMap<String, u64>, secs: u64, sample_secs: u64) -> (Value, Value) {
+fn avg_and_peak(
+    family: Family,
+    kind: SubjectKind,
+    meters: &BTreeMap<String, u64>,
+    secs: u64,
+    sample_secs: u64,
+) -> (Value, Value) {
     let g = |m: &str| meters.get(m).copied();
-    let per_s = |v: Option<u64>, div: f64| v.and_then(|v| (secs > 0).then(|| r3(v as f64 / secs as f64 / div)));
+    let per_s = |v: Option<u64>, div: f64| {
+        v.and_then(|v| (secs > 0).then(|| r3(v as f64 / secs as f64 / div)))
+    };
     let peak = |m: &str, div: f64| g(m).map(|v| r3(v as f64 / div));
     match (family, kind) {
         (Family::Bandwidth, SubjectKind::Network) => (
@@ -173,11 +235,26 @@ async fn report(c: Caller, p: RateParams, family: Family) -> Result<Response, Ap
     let cfg = meter.config().clone();
     let r = range(&p, &cfg.billing_timezone, 100, None)?;
     let allowed: &[GroupKey] = match family {
-        Family::Bandwidth => &[GroupKey::Project, GroupKey::Vm, GroupKey::Nic, GroupKey::Network, GroupKey::Node],
-        Family::DiskIo => &[GroupKey::Project, GroupKey::Vm, GroupKey::Disk, GroupKey::Node],
+        Family::Bandwidth => &[
+            GroupKey::Project,
+            GroupKey::Vm,
+            GroupKey::Nic,
+            GroupKey::Network,
+            GroupKey::Node,
+        ],
+        Family::DiskIo => &[
+            GroupKey::Project,
+            GroupKey::Vm,
+            GroupKey::Disk,
+            GroupKey::Node,
+        ],
         Family::Compute => &[GroupKey::Project, GroupKey::Vm, GroupKey::Node],
     };
-    let mut group_by: Vec<GroupKey> = list(&p.group_by).iter().map(|g| g.parse()).collect::<Result<_, _>>().map_err(bad)?;
+    let mut group_by: Vec<GroupKey> = list(&p.group_by)
+        .iter()
+        .map(|g| g.parse())
+        .collect::<Result<_, _>>()
+        .map_err(bad)?;
     if group_by.is_empty() {
         group_by = vec![GroupKey::Project];
     }
@@ -190,20 +267,55 @@ async fn report(c: Caller, p: RateParams, family: Family) -> Result<Response, Ap
         Family::Bandwidth if group_by.contains(&GroupKey::Network) => SubjectKind::Network,
         Family::Bandwidth => SubjectKind::Nic,
     };
-    let in_scope = |s: &Subject| s.kind == kind && projects.as_ref().is_none_or(|ps| s.project.as_ref().is_some_and(|x| ps.contains(x)));
-    let storage = |e: crate::metering::MeteringError| err(StatusCode::INTERNAL_SERVER_ERROR, "persistence_error", e.to_string());
-    let slots: Vec<(u64, SlotRow)> = meter.ledger().scan_slots(r.from, r.to, projects.as_ref(), in_scope).map_err(storage)?;
+    let in_scope = |s: &Subject| {
+        s.kind == kind
+            && projects
+                .as_ref()
+                .is_none_or(|ps| s.project.as_ref().is_some_and(|x| ps.contains(x)))
+    };
+    let storage = |e: crate::metering::MeteringError| {
+        err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "persistence_error",
+            e.to_string(),
+        )
+    };
+    let slots: Vec<(u64, SlotRow)> = meter
+        .ledger()
+        .scan_slots(r.from, r.to, projects.as_ref(), in_scope)
+        .map_err(storage)?;
     let groups = group_slots(&slots, r.from, r.to, &group_by);
     // Averages and peaks from the hourly rows, by the same groups.
-    let records: Vec<_> = meter.ledger().scan(r.from, r.to, projects.as_ref()).map_err(storage)?.into_iter().filter(|x| in_scope(&x.subject)).collect();
-    let q = query::Query { from: r.from, to: r.to, granularity: Granularity::Hour, tz: query::Tz::utc(), group_by: group_by.clone(), meters: None, now: r.now };
+    let records: Vec<_> = meter
+        .ledger()
+        .scan(r.from, r.to, projects.as_ref())
+        .map_err(storage)?
+        .into_iter()
+        .filter(|x| in_scope(&x.subject))
+        .collect();
+    let q = query::Query {
+        from: r.from,
+        to: r.to,
+        granularity: Granularity::Hour,
+        tz: query::Tz::utc(),
+        group_by: group_by.clone(),
+        meters: None,
+        now: r.now,
+    };
     let mut totals: BTreeMap<Vec<Option<String>>, BTreeMap<String, u64>> = BTreeMap::new();
     for row in query::aggregate(&records, &q) {
-        let ids = group_by.iter().map(|k| row.keys.get(k).map(|n| n.id.clone())).collect();
+        let ids = group_by
+            .iter()
+            .map(|k| row.keys.get(k).map(|n| n.id.clone()))
+            .collect();
         let t = totals.entry(ids).or_default();
         for (m, v) in row.meters {
             let e = t.entry(m.clone()).or_insert(0);
-            *e = if crate::metering::ledger::is_max_meter(&m) { (*e).max(v) } else { e.saturating_add(v) };
+            *e = if crate::metering::ledger::is_max_meter(&m) {
+                (*e).max(v)
+            } else {
+                e.saturating_add(v)
+            };
         }
     }
     let names = names(&c);
@@ -212,27 +324,49 @@ async fn report(c: Caller, p: RateParams, family: Family) -> Result<Response, Ap
         let mut o = serde_json::Map::new();
         keys_json(&g.keys, &names, &mut o);
         let secs = g.slots.len() as u64 * 300;
-        let (avg, peak) = avg_and_peak(family, kind, totals.get(ids).unwrap_or(&BTreeMap::new()), secs, cfg.sample_secs);
+        let (avg, peak) = avg_and_peak(
+            family,
+            kind,
+            totals.get(ids).unwrap_or(&BTreeMap::new()),
+            secs,
+            cfg.sample_secs,
+        );
         o.insert("avg".into(), avg);
         o.insert("peak".into(), peak);
         match family {
             Family::Bandwidth => {
                 let mut b = serde_json::to_value(bandwidth_p95(g, kind)).unwrap_or_default();
-                let slots = b.as_object_mut().and_then(|m| m.remove("slots")).unwrap_or_default();
+                let slots = b
+                    .as_object_mut()
+                    .and_then(|m| m.remove("slots"))
+                    .unwrap_or_default();
                 o.insert("p95".into(), b);
                 o.insert("slots".into(), slots);
             }
             Family::DiskIo => {
                 let mut d = serde_json::to_value(disk_io_p95(g)).unwrap_or_default();
-                let slots = d.as_object_mut().and_then(|m| m.remove("slots")).unwrap_or_default();
-                let source = if totals.get(ids).is_some_and(|t| t.contains_key("disk.read_time_ns")) { "counter" } else { "none" };
+                let slots = d
+                    .as_object_mut()
+                    .and_then(|m| m.remove("slots"))
+                    .unwrap_or_default();
+                let source = if totals
+                    .get(ids)
+                    .is_some_and(|t| t.contains_key("disk.read_time_ns"))
+                {
+                    "counter"
+                } else {
+                    "none"
+                };
                 o.insert("p95".into(), d);
                 o.insert("slots".into(), slots);
                 o.insert("latency_source".into(), source.into());
             }
             Family::Compute => {
                 let mut c = serde_json::to_value(compute_p95(g)).unwrap_or_default();
-                let slots = c.as_object_mut().and_then(|m| m.remove("slots")).unwrap_or_default();
+                let slots = c
+                    .as_object_mut()
+                    .and_then(|m| m.remove("slots"))
+                    .unwrap_or_default();
                 o.insert("p95".into(), c);
                 o.insert("slots".into(), slots);
             }
@@ -255,9 +389,16 @@ async fn report(c: Caller, p: RateParams, family: Family) -> Result<Response, Ap
             _ => None,
         };
         if let Some(gname) = grouping {
-            for (_, v) in meter.ledger().month_rates(r.from, &format!("{gname}/")).map_err(storage)? {
+            for (_, v) in meter
+                .ledger()
+                .month_rates(r.from, &format!("{gname}/"))
+                .map_err(storage)?
+            {
                 let project = v["keys"]["project"]["id"].as_str().map(String::from);
-                if projects.as_ref().is_none_or(|ps| project.as_ref().is_some_and(|x| ps.contains(x))) {
+                if projects
+                    .as_ref()
+                    .is_none_or(|ps| project.as_ref().is_some_and(|x| ps.contains(x)))
+                {
                     let mut o = serde_json::Map::new();
                     if let Some(keys) = v["keys"].as_object() {
                         o.extend(keys.clone());
@@ -283,7 +424,11 @@ async fn report(c: Caller, p: RateParams, family: Family) -> Result<Response, Ap
     if p.format.as_deref() == Some("csv") {
         c.detail("export", json!("csv"));
         c.audit_always();
-        return Ok(([(header::CONTENT_TYPE, "text/csv; charset=utf-8")], flat_csv(&body["rows"])).into_response());
+        return Ok((
+            [(header::CONTENT_TYPE, "text/csv; charset=utf-8")],
+            flat_csv(&body["rows"]),
+        )
+            .into_response());
     }
     Ok(Json(body).into_response())
 }
@@ -294,7 +439,15 @@ fn flat_csv(rows: &Value) -> String {
         match v {
             Value::Object(m) => {
                 for (k, x) in m {
-                    flatten(&if prefix.is_empty() { k.clone() } else { format!("{prefix}.{k}") }, x, out);
+                    flatten(
+                        &if prefix.is_empty() {
+                            k.clone()
+                        } else {
+                            format!("{prefix}.{k}")
+                        },
+                        x,
+                        out,
+                    );
                 }
             }
             Value::Null => {}
@@ -317,11 +470,23 @@ fn flat_csv(rows: &Value) -> String {
         })
         .collect();
     let cols: BTreeSet<&String> = flat.iter().flat_map(|m| m.keys()).collect();
-    let field = |s: &str| if s.contains([',', '"', '\n']) { format!("\"{}\"", s.replace('"', "\"\"")) } else { s.to_string() };
+    let field = |s: &str| {
+        if s.contains([',', '"', '\n']) {
+            format!("\"{}\"", s.replace('"', "\"\""))
+        } else {
+            s.to_string()
+        }
+    };
     let mut out = cols.iter().map(|c| field(c)).collect::<Vec<_>>().join(",");
     out.push('\n');
     for m in &flat {
-        out.push_str(&cols.iter().map(|c| m.get(*c).map(|v| field(v)).unwrap_or_default()).collect::<Vec<_>>().join(","));
+        out.push_str(
+            &cols
+                .iter()
+                .map(|c| m.get(*c).map(|v| field(v)).unwrap_or_default())
+                .collect::<Vec<_>>()
+                .join(","),
+        );
         out.push('\n');
     }
     out
@@ -352,8 +517,19 @@ fn series(
     let r = range(p, &meter.config().billing_timezone, 31, Some(1))?;
     let rows = meter
         .ledger()
-        .scan_slots(r.from, r.to, project.map(|p| BTreeSet::from([p.to_string()])).as_ref(), |s| s.kind == kind && keep(s))
-        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, "persistence_error", e.to_string()))?;
+        .scan_slots(
+            r.from,
+            r.to,
+            project.map(|p| BTreeSet::from([p.to_string()])).as_ref(),
+            |s| s.kind == kind && keep(s),
+        )
+        .map_err(|e| {
+            err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "persistence_error",
+                e.to_string(),
+            )
+        })?;
     let groups = group_slots(&rows, r.from, r.to, group_by);
     let one = |g: &GroupSlots| {
         let skind = match kind {
@@ -382,7 +558,11 @@ fn series(
 }
 
 async fn visible_vm(c: &Caller, id: &str) -> Result<crate::models::Vm, ApiErr> {
-    let vm = c.manager().get_vm(id).await.map_err(|_| err(StatusCode::NOT_FOUND, "not_found", "VM not found"))?;
+    let vm = c
+        .manager()
+        .get_vm(id)
+        .await
+        .map_err(|_| err(StatusCode::NOT_FOUND, "not_found", "VM not found"))?;
     c.set_project(&vm.project);
     c.set_target(format!("vm:{}", vm.id));
     let (e, es) = vm_entities(&vm);
@@ -391,7 +571,11 @@ async fn visible_vm(c: &Caller, id: &str) -> Result<crate::models::Vm, ApiErr> {
 }
 
 async fn visible_disk(c: &Caller, id: &str) -> Result<crate::images::DiskResponse, ApiErr> {
-    let d = c.manager().get_disk(id).await.map_err(|_| err(StatusCode::NOT_FOUND, "not_found", "disk not found"))?;
+    let d = c
+        .manager()
+        .get_disk(id)
+        .await
+        .map_err(|_| err(StatusCode::NOT_FOUND, "not_found", "disk not found"))?;
     c.set_project(&d.project);
     c.set_target(format!("disk:{}", d.id));
     let (e, es) = super::disk_entities(&d.id, &d.project);
@@ -400,7 +584,10 @@ async fn visible_disk(c: &Caller, id: &str) -> Result<crate::images::DiskRespons
 }
 
 fn visible_network(c: &Caller, name: &str) -> Result<crate::network::Network, ApiErr> {
-    let n = c.manager().get_network(name).map_err(|_| err(StatusCode::NOT_FOUND, "not_found", "network not found"))?;
+    let n = c
+        .manager()
+        .get_network(name)
+        .map_err(|_| err(StatusCode::NOT_FOUND, "not_found", "network not found"))?;
     let (e, es) = super::net::network_entities(&n);
     if !c.allowed("readNetwork", e.clone(), es.clone()) {
         return Err(err(StatusCode::NOT_FOUND, "not_found", "network not found"));
@@ -410,39 +597,104 @@ fn visible_network(c: &Caller, name: &str) -> Result<crate::network::Network, Ap
     Ok(n)
 }
 
-pub async fn vm_bandwidth(c: Caller, Path(id): Path<String>, Query(p): Query<RateParams>) -> Result<Response, ApiErr> {
+pub async fn vm_bandwidth(
+    c: Caller,
+    Path(id): Path<String>,
+    Query(p): Query<RateParams>,
+) -> Result<Response, ApiErr> {
     let vm = visible_vm(&c, &id).await?;
-    let v = series(&c, &p, SubjectKind::Nic, Some(&vm.project), &[GroupKey::Vm], |s| s.vm_id.as_deref() == Some(vm.id.as_str()))?;
+    let v = series(
+        &c,
+        &p,
+        SubjectKind::Nic,
+        Some(&vm.project),
+        &[GroupKey::Vm],
+        |s| s.vm_id.as_deref() == Some(vm.id.as_str()),
+    )?;
     Ok(Json(v).into_response())
 }
 
-pub async fn network_bandwidth(c: Caller, Path(name): Path<String>, Query(p): Query<RateParams>) -> Result<Response, ApiErr> {
+pub async fn network_bandwidth(
+    c: Caller,
+    Path(name): Path<String>,
+    Query(p): Query<RateParams>,
+) -> Result<Response, ApiErr> {
     let n = visible_network(&c, &name)?;
-    let v = series(&c, &p, SubjectKind::Network, n.project.as_deref(), &[GroupKey::Network], |s| s.id == n.name)?;
+    let v = series(
+        &c,
+        &p,
+        SubjectKind::Network,
+        n.project.as_deref(),
+        &[GroupKey::Network],
+        |s| s.id == n.name,
+    )?;
     Ok(Json(v).into_response())
 }
 
-pub async fn vm_io(c: Caller, Path(id): Path<String>, Query(p): Query<RateParams>) -> Result<Response, ApiErr> {
+pub async fn vm_io(
+    c: Caller,
+    Path(id): Path<String>,
+    Query(p): Query<RateParams>,
+) -> Result<Response, ApiErr> {
     let vm = visible_vm(&c, &id).await?;
     let on_vm = |s: &Subject| s.vm_id.as_deref() == Some(vm.id.as_str());
-    let mut v = series(&c, &p, SubjectKind::Disk, Some(&vm.project), &[GroupKey::Vm], on_vm)?;
+    let mut v = series(
+        &c,
+        &p,
+        SubjectKind::Disk,
+        Some(&vm.project),
+        &[GroupKey::Vm],
+        on_vm,
+    )?;
     let mut disks = serde_json::Map::new();
     for d in c.manager().attached_disk_ids(&vm.id) {
-        disks.insert(d.clone(), series(&c, &p, SubjectKind::Disk, Some(&vm.project), &[GroupKey::Disk], |s| s.id == d)?);
+        disks.insert(
+            d.clone(),
+            series(
+                &c,
+                &p,
+                SubjectKind::Disk,
+                Some(&vm.project),
+                &[GroupKey::Disk],
+                |s| s.id == d,
+            )?,
+        );
     }
     v["disks"] = disks.into();
     Ok(Json(v).into_response())
 }
 
-pub async fn vm_compute(c: Caller, Path(id): Path<String>, Query(p): Query<RateParams>) -> Result<Response, ApiErr> {
+pub async fn vm_compute(
+    c: Caller,
+    Path(id): Path<String>,
+    Query(p): Query<RateParams>,
+) -> Result<Response, ApiErr> {
     let vm = visible_vm(&c, &id).await?;
-    let v = series(&c, &p, SubjectKind::Vm, Some(&vm.project), &[GroupKey::Vm], |s| s.id == vm.id)?;
+    let v = series(
+        &c,
+        &p,
+        SubjectKind::Vm,
+        Some(&vm.project),
+        &[GroupKey::Vm],
+        |s| s.id == vm.id,
+    )?;
     Ok(Json(v).into_response())
 }
 
-pub async fn disk_io_series(c: Caller, Path(id): Path<String>, Query(p): Query<RateParams>) -> Result<Response, ApiErr> {
+pub async fn disk_io_series(
+    c: Caller,
+    Path(id): Path<String>,
+    Query(p): Query<RateParams>,
+) -> Result<Response, ApiErr> {
     let d = visible_disk(&c, &id).await?;
-    let v = series(&c, &p, SubjectKind::Disk, Some(&d.project), &[GroupKey::Disk], |s| s.id == d.id)?;
+    let v = series(
+        &c,
+        &p,
+        SubjectKind::Disk,
+        Some(&d.project),
+        &[GroupKey::Disk],
+        |s| s.id == d.id,
+    )?;
     Ok(Json(v).into_response())
 }
 
@@ -452,14 +704,31 @@ pub async fn vm_stats(c: Caller, Path(id): Path<String>) -> Result<Response, Api
     let vm = visible_vm(&c, &id).await?;
     // A VM on another node: its live rates are that node's (§8.4).
     if let Some(addr) = c.manager().remote_node_addr(&vm) {
-        let Some(cluster) = c.manager().cluster() else { return Err(err(StatusCode::SERVICE_UNAVAILABLE, "unavailable", "no cluster")) };
+        let Some(cluster) = c.manager().cluster() else {
+            return Err(err(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "no cluster",
+            ));
+        };
         let r = cluster
             .client
-            .request(&addr, axum::http::Method::GET, &format!("/cluster/v1/vms/{}/stats", vm.id), &[], bytes::Bytes::new())
+            .request(
+                &addr,
+                axum::http::Method::GET,
+                &format!("/cluster/v1/vms/{}/stats", vm.id),
+                &[],
+                bytes::Bytes::new(),
+            )
             .await
             .map_err(|e| err(StatusCode::BAD_GATEWAY, "node_unreachable", e.to_string()))?;
-        let v: Value = serde_json::from_slice(&r.body).map_err(|e| err(StatusCode::BAD_GATEWAY, "bad_gateway", e.to_string()))?;
-        return if r.status.is_success() { Ok(Json(v).into_response()) } else { Err(err(r.status, "unavailable", "the node has no stats for it")) };
+        let v: Value = serde_json::from_slice(&r.body)
+            .map_err(|e| err(StatusCode::BAD_GATEWAY, "bad_gateway", e.to_string()))?;
+        return if r.status.is_success() {
+            Ok(Json(v).into_response())
+        } else {
+            Err(err(r.status, "unavailable", "the node has no stats for it"))
+        };
     }
     let meter = meter(&c)?;
     Ok(Json(live_vm_stats(&meter, &vm.id)).into_response())
@@ -468,14 +737,19 @@ pub async fn vm_stats(c: Caller, Path(id): Path<String>) -> Result<Response, Api
 /// The latest rates of a VM, its NICs and its disks (also what a node tells
 /// the server that relays them).
 pub(crate) fn live_vm_stats(meter: &crate::metering::Meter, vm_id: &str) -> Value {
-    let live = meter.live_stats(|s| (s.kind == SubjectKind::Vm && s.id == vm_id) || s.vm_id.as_deref() == Some(vm_id));
+    let live = meter.live_stats(|s| {
+        (s.kind == SubjectKind::Vm && s.id == vm_id) || s.vm_id.as_deref() == Some(vm_id)
+    });
     let pick = |kind: SubjectKind| -> Vec<Value> {
         live.iter()
             .filter(|l| l.subject.kind == kind)
             .map(|l| json!({ "id": l.subject.id, "name": l.subject.name, "network": l.subject.network, "values": l.values }))
             .collect()
     };
-    let vm_values = live.iter().find(|l| l.subject.kind == SubjectKind::Vm).map(|l| json!(l.values));
+    let vm_values = live
+        .iter()
+        .find(|l| l.subject.kind == SubjectKind::Vm)
+        .map(|l| json!(l.values));
     let at = live.iter().map(|l| l.sampled_at).max();
     json!({
         "sampled_at": at.map(|t| query::rfc3339(t / 1000)),

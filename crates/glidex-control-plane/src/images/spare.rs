@@ -4,7 +4,7 @@
 //! never deleted on their own (images.md §2); a node adopts one that
 //! matches a ready image (size and SHA-256), and reports the rest.
 
-use super::{ImageManager, ImageKind};
+use super::{ImageKind, ImageManager};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -33,7 +33,11 @@ struct Index {
 }
 
 fn mtime_of(m: &std::fs::Metadata) -> u64 {
-    m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or(0)
+    m.modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 impl ImageManager {
@@ -42,7 +46,10 @@ impl ImageManager {
     }
 
     fn load_index(&self) -> Index {
-        std::fs::read(self.index_path()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+        std::fs::read(self.index_path())
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default()
     }
 
     fn save_index(&self, idx: &Index) {
@@ -77,15 +84,22 @@ impl ImageManager {
     /// names, other than in-flight copies and the index itself.
     pub fn spare_files(&self) -> Vec<SpareFile> {
         let known = self.recorded_files();
-        let Ok(rd) = std::fs::read_dir(&self.settings.image_dir) else { return Vec::new() };
+        let Ok(rd) = std::fs::read_dir(&self.settings.image_dir) else {
+            return Vec::new();
+        };
         let mut out: Vec<SpareFile> = rd
             .flatten()
             .filter_map(|e| {
                 let p = e.path();
                 let name = e.file_name().to_string_lossy().into_owned();
                 let m = e.metadata().ok().filter(|m| m.is_file())?;
-                let transient = name.ends_with(".part") || name == INDEX || name.ends_with(".json.tmp");
-                (!transient && !known.contains(&p)).then(|| SpareFile { name, bytes: m.len(), mtime: mtime_of(&m) })
+                let transient =
+                    name.ends_with(".part") || name == INDEX || name.ends_with(".json.tmp");
+                (!transient && !known.contains(&p)).then(|| SpareFile {
+                    name,
+                    bytes: m.len(),
+                    mtime: mtime_of(&m),
+                })
             })
             .collect();
         out.sort_by(|a, b| a.name.cmp(&b.name));
@@ -102,12 +116,19 @@ impl ImageManager {
         let mut idx = self.load_index();
         let mut dirty = false;
         let mut found = None;
-        for f in self.spare_files().into_iter().filter(|f| f.bytes == size && !f.name.ends_with(".vars.fd")) {
+        for f in self
+            .spare_files()
+            .into_iter()
+            .filter(|f| f.bytes == size && !f.name.ends_with(".vars.fd"))
+        {
             let digest = match idx.hashes.get(&f.name) {
                 Some((s, m, h)) if *s == f.bytes && *m == f.mtime => h.clone(),
                 _ => {
-                    let Ok(h) = super::download::sha256_path(&self.spare_path(&f.name)) else { continue };
-                    idx.hashes.insert(f.name.clone(), (f.bytes, f.mtime, h.clone()));
+                    let Ok(h) = super::download::sha256_path(&self.spare_path(&f.name)) else {
+                        continue;
+                    };
+                    idx.hashes
+                        .insert(f.name.clone(), (f.bytes, f.mtime, h.clone()));
                     dirty = true;
                     h
                 }
@@ -131,7 +152,11 @@ impl ImageManager {
             ImageKind::Firmware => self.firmware_path(id),
         };
         if kind == ImageKind::Firmware {
-            let stem = spare.file_name().and_then(|n| n.to_str()).and_then(|n| n.strip_suffix(".fd")).unwrap_or_default();
+            let stem = spare
+                .file_name()
+                .and_then(|n| n.to_str())
+                .and_then(|n| n.strip_suffix(".fd"))
+                .unwrap_or_default();
             let vars = self.spare_path(&format!("{stem}.vars.fd"));
             if !stem.is_empty() && vars.is_file() {
                 std::fs::rename(&vars, self.firmware_vars_template(id))?;
@@ -204,16 +229,35 @@ mod tests {
         std::fs::write(images.join("old-id.vars.fd"), b"VARS").unwrap();
         std::fs::write(images.join("stray.qcow2"), b"something else").unwrap();
         std::fs::write(images.join("x.qcow2.part"), b"in flight").unwrap();
-        let names = |m: &ImageManager| m.spare_files().into_iter().map(|f| f.name).collect::<Vec<_>>();
+        let names = |m: &ImageManager| {
+            m.spare_files()
+                .into_iter()
+                .map(|f| f.name)
+                .collect::<Vec<_>>()
+        };
         assert_eq!(names(&m), ["old-id.fd", "old-id.vars.fd", "stray.qcow2"]);
 
         let sha = super::super::download::sha256_path(&images.join("old-id.fd")).unwrap();
-        assert!(m.find_spare(4, "0".repeat(64).as_str()).is_none(), "another digest");
+        assert!(
+            m.find_spare(4, "0".repeat(64).as_str()).is_none(),
+            "another digest"
+        );
         let spare = m.find_spare(4, &sha).expect("matches by size and digest");
-        assert!(m.load_index().hashes.contains_key("old-id.fd"), "hashed once, kept");
-        m.adopt_spare(&spare, "cluster-id", ImageKind::Firmware).unwrap();
-        assert_eq!(std::fs::read(m.firmware_path("cluster-id")).unwrap(), b"CODE");
-        assert_eq!(std::fs::read(m.firmware_vars_template("cluster-id")).unwrap(), b"VARS", "its vars go with it");
+        assert!(
+            m.load_index().hashes.contains_key("old-id.fd"),
+            "hashed once, kept"
+        );
+        m.adopt_spare(&spare, "cluster-id", ImageKind::Firmware)
+            .unwrap();
+        assert_eq!(
+            std::fs::read(m.firmware_path("cluster-id")).unwrap(),
+            b"CODE"
+        );
+        assert_eq!(
+            std::fs::read(m.firmware_vars_template("cluster-id")).unwrap(),
+            b"VARS",
+            "its vars go with it"
+        );
 
         // The adopted files belong to a record once it is there.
         let mut img: Image = serde_json::from_value(serde_json::json!({
@@ -231,7 +275,11 @@ mod tests {
         assert_eq!(m.drop_spare_files(u64::MAX - 1), 1);
         assert!(!images.join("stray.qcow2").exists());
         std::fs::write(images.join("later.qcow2"), b"new").unwrap();
-        assert_eq!(m.drop_spare_files(u64::MAX - 1), 0, "the same request again does nothing");
+        assert_eq!(
+            m.drop_spare_files(u64::MAX - 1),
+            0,
+            "the same request again does nothing"
+        );
         assert!(images.join("later.qcow2").exists());
     }
 }

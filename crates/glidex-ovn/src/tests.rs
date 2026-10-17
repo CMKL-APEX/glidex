@@ -2,11 +2,24 @@ use super::*;
 use glidex_ovs::exec::{Output, RecordingExec};
 
 fn conn() -> NbConn {
-    NbConn { db: vec!["ssl:192.0.2.11:6641".into(), "ssl:192.0.2.12:6641".into()], key: "/k".into(), cert: "/c".into(), ca: "/ca".into(), daemon: None }
+    NbConn {
+        db: vec!["ssl:192.0.2.11:6641".into(), "ssl:192.0.2.12:6641".into()],
+        key: "/k".into(),
+        cert: "/c".into(),
+        ca: "/ca".into(),
+        daemon: None,
+    }
 }
 
 fn net(name: &str, kind: NetKind, cidr: &str) -> NetworkSpec {
-    NetworkSpec { name: name.into(), kind, cidr: Some(cidr.parse().unwrap()), dns: vec!["192.0.2.53".parse().unwrap()], mtu: 1442, router: None }
+    NetworkSpec {
+        name: name.into(),
+        kind,
+        cidr: Some(cidr.parse().unwrap()),
+        dns: vec!["192.0.2.53".parse().unwrap()],
+        mtu: 1442,
+        router: None,
+    }
 }
 
 fn empty(cols: &str) -> Output {
@@ -16,27 +29,52 @@ fn empty(cols: &str) -> Output {
 #[test]
 fn commands_carry_the_connection_or_the_daemon() {
     let exec = RecordingExec::new();
-    Nb::new(&exec, conn()).txn(vec![vec!["ls-add".into(), "x".into()], vec!["ls-add".into(), "y".into()]]).unwrap();
-    assert_eq!(exec.calls(), vec!["ovn-nbctl --db=ssl:192.0.2.11:6641,ssl:192.0.2.12:6641 -p /k -c /c -C /ca ls-add x -- ls-add y"]);
+    Nb::new(&exec, conn())
+        .txn(vec![
+            vec!["ls-add".into(), "x".into()],
+            vec!["ls-add".into(), "y".into()],
+        ])
+        .unwrap();
+    assert_eq!(
+        exec.calls(),
+        vec![
+            "ovn-nbctl --db=ssl:192.0.2.11:6641,ssl:192.0.2.12:6641 -p /k -c /c -C /ca ls-add x -- ls-add y"
+        ]
+    );
     let exec = RecordingExec::new();
     let mut c = conn();
     c.daemon = Some("/run/ovn/nbctl.ctl".into());
-    Nb::new(&exec, c).txn(vec![vec!["ls-add".into(), "x".into()]]).unwrap();
-    assert_eq!(exec.calls(), vec!["ovn-nbctl ls-add x"], "the daemon already holds the connection");
+    Nb::new(&exec, c)
+        .txn(vec![vec!["ls-add".into(), "x".into()]])
+        .unwrap();
+    assert_eq!(
+        exec.calls(),
+        vec!["ovn-nbctl ls-add x"],
+        "the daemon already holds the connection"
+    );
 }
 
 #[test]
 fn an_isolated_network_is_a_switch_with_dhcp_and_no_router() {
     let exec = RecordingExec::new();
     exec.on("ovn-nbctl --db=", empty(r#"["name"]"#));
-    let d = Desired { networks: vec![net("lab", NetKind::Isolated, "10.89.3.0/24")], ..Default::default() };
+    let d = Desired {
+        networks: vec![net("lab", NetKind::Isolated, "10.89.3.0/24")],
+        ..Default::default()
+    };
     let rep = sync(&Nb::new(&exec, conn()), &d).unwrap();
     assert!(rep.changed.contains(&"network lab".to_string()), "{rep:?}");
     let calls = exec.calls().join("\n");
     assert!(calls.contains("--may-exist ls-add gx-lab"), "{calls}");
     assert!(calls.contains("set Logical_Switch gx-lab external_ids:glidex-owner=glidex external_ids:glidex-network=lab"), "{calls}");
-    assert!(calls.contains("dhcp-options-create 10.89.3.0/24 glidex-owner=glidex glidex-network=lab"), "{calls}");
-    assert!(!calls.contains("lrp-add") && !calls.contains("lr-nat-add"), "an isolated network has no router: {calls}");
+    assert!(
+        calls.contains("dhcp-options-create 10.89.3.0/24 glidex-owner=glidex glidex-network=lab"),
+        "{calls}"
+    );
+    assert!(
+        !calls.contains("lrp-add") && !calls.contains("lr-nat-add"),
+        "an isolated network has no router: {calls}"
+    );
 }
 
 #[test]
@@ -45,13 +83,23 @@ fn a_nat_network_is_routed_through_the_edge_with_snat_and_the_isolation_policies
     exec.on("ovn-nbctl --db=", empty(r#"["name"]"#));
     // The group doesn't exist yet; after it is made, it has an id.
     let find_group = "ovn-nbctl --db=ssl:192.0.2.11:6641,ssl:192.0.2.12:6641 -p /k -c /c -C /ca --format=json --columns=_uuid,name,external_ids,ha_chassis find HA_Chassis_Group";
-    exec.on(find_group, empty(r#"["_uuid","name","external_ids","ha_chassis"]"#));
+    exec.on(
+        find_group,
+        empty(r#"["_uuid","name","external_ids","ha_chassis"]"#),
+    );
     exec.on(
         "ovn-nbctl --db=ssl:192.0.2.11:6641,ssl:192.0.2.12:6641 -p /k -c /c -C /ca --format=json --columns=_uuid find HA_Chassis_Group",
         Output::ok(r#"{"data":[[["uuid","g1"]]],"headings":["_uuid"]}"#),
     );
     let d = Desired {
-        edge: Some(EdgeSpec { physnet: "uplink".into(), external_ip: "192.0.2.50".parse().unwrap(), external_prefix: 24, gateway: "192.0.2.1".parse().unwrap(), gateway_nodes: vec!["n1".into(), "n2".into()], snat_ct_zone: Some(60001) }),
+        edge: Some(EdgeSpec {
+            physnet: "uplink".into(),
+            external_ip: "192.0.2.50".parse().unwrap(),
+            external_prefix: 24,
+            gateway: "192.0.2.1".parse().unwrap(),
+            gateway_nodes: vec!["n1".into(), "n2".into()],
+            snat_ct_zone: Some(60001),
+        }),
         networks: vec![net("web", NetKind::Nat, "10.89.1.0/24")],
         node_addresses: vec!["192.0.2.11".parse().unwrap(), "192.0.2.12".parse().unwrap()],
         nat_supernet: Some("10.89.0.0/16".parse().unwrap()),
@@ -97,7 +145,15 @@ fn a_vm_port_has_port_security_and_is_bound_to_its_node() {
     );
     let d = Desired {
         networks: vec![net("lab", NetKind::Isolated, "10.89.3.0/24")],
-        ports: vec![PortSpec { network: "lab".into(), lport: "gx1a2b3c4d-0".into(), mac: "52:54:00:aa:bb:cc".into(), ip: Some("10.89.3.7".parse().unwrap()), vm_id: "vm1".into(), nic: 0, chassis: Some("n1".into()) }],
+        ports: vec![PortSpec {
+            network: "lab".into(),
+            lport: "gx1a2b3c4d-0".into(),
+            mac: "52:54:00:aa:bb:cc".into(),
+            ip: Some("10.89.3.7".parse().unwrap()),
+            vm_id: "vm1".into(),
+            nic: 0,
+            chassis: Some("n1".into()),
+        }],
         ..Default::default()
     };
     sync(&Nb::new(&exec, conn()), &d).unwrap();
@@ -126,16 +182,33 @@ fn a_port_that_is_already_right_costs_nothing() {
         "ovn-nbctl --db=ssl:192.0.2.11:6641,ssl:192.0.2.12:6641 -p /k -c /c -C /ca --format=json --columns=name,addresses,external_ids find Address_Set",
         Output::ok(r#"{"data":[["gx_nodes",["set",[]],["map",[["glidex-owner","glidex"]]]]],"headings":["name","addresses","external_ids"]}"#),
     );
-    let dhcp = format!(r#"{{"data":[[["uuid","aaaa"],["map",[["lease_time","3600"],["server_id","10.89.3.1"],["server_mac","{}"],["mtu","1442"],["dns_server","{{192.0.2.53}}"]]]]],"headings":["_uuid","options"]}}"#, net("lab", NetKind::Isolated, "10.89.3.0/24").router_mac());
+    let dhcp = format!(
+        r#"{{"data":[[["uuid","aaaa"],["map",[["lease_time","3600"],["server_id","10.89.3.1"],["server_mac","{}"],["mtu","1442"],["dns_server","{{192.0.2.53}}"]]]]],"headings":["_uuid","options"]}}"#,
+        net("lab", NetKind::Isolated, "10.89.3.0/24").router_mac()
+    );
     exec.on("ovn-nbctl --db=ssl:192.0.2.11:6641,ssl:192.0.2.12:6641 -p /k -c /c -C /ca --format=json --columns=_uuid,options find DHCP_Options", Output::ok(dhcp));
     let d = Desired {
         networks: vec![net("lab", NetKind::Isolated, "10.89.3.0/24")],
-        ports: vec![PortSpec { network: "lab".into(), lport: "gx1a2b3c4d-0".into(), mac: "52:54:00:aa:bb:cc".into(), ip: Some("10.89.3.7".parse().unwrap()), vm_id: "vm1".into(), nic: 0, chassis: Some("n1".into()) }],
+        ports: vec![PortSpec {
+            network: "lab".into(),
+            lport: "gx1a2b3c4d-0".into(),
+            mac: "52:54:00:aa:bb:cc".into(),
+            ip: Some("10.89.3.7".parse().unwrap()),
+            vm_id: "vm1".into(),
+            nic: 0,
+            chassis: Some("n1".into()),
+        }],
         ..Default::default()
     };
     let rep = sync(&Nb::new(&exec, conn()), &d).unwrap();
     assert!(rep.changed.is_empty(), "{rep:?}");
-    assert!(exec.calls().iter().all(|c| !c.contains("lsp-add") && !c.contains("dhcp-options-create")), "{:?}", exec.calls());
+    assert!(
+        exec.calls()
+            .iter()
+            .all(|c| !c.contains("lsp-add") && !c.contains("dhcp-options-create")),
+        "{:?}",
+        exec.calls()
+    );
 }
 
 #[test]
@@ -151,9 +224,16 @@ fn ports_and_networks_gone_from_the_plan_are_removed_and_foreign_rows_are_left()
     assert!(calls.contains("--if-exists lsp-del gxdead-0"), "{calls}");
     assert!(calls.contains("--if-exists ls-del gx-old"), "{calls}");
     assert!(calls.contains("--if-exists lrp-del gx-lrp-old"), "{calls}");
-    assert!(rep.changed.iter().any(|c| c.contains("removed network old")));
+    assert!(
+        rep.changed
+            .iter()
+            .any(|c| c.contains("removed network old"))
+    );
     // Only owned rows are ever asked for.
-    assert!(calls.contains("find Logical_Switch external_ids:glidex-owner=glidex"), "{calls}");
+    assert!(
+        calls.contains("find Logical_Switch external_ids:glidex-owner=glidex"),
+        "{calls}"
+    );
 }
 
 #[test]
@@ -169,20 +249,33 @@ fn macs_are_stable_and_locally_administered() {
 fn a_vpc_router_has_its_own_address_gateway_group_and_isolation() {
     let exec = RecordingExec::new();
     exec.on("ovn-nbctl --db=", empty(r#"["name"]"#));
-    let ext = ExternalSpec { physnet: "uplink".into(), external_ip: "192.0.2.64".parse().unwrap(), external_prefix: 24, gateway: "192.0.2.1".parse().unwrap(), gateway_nodes: vec!["n2".into()], snat_ct_zone: Some(60002) };
+    let ext = ExternalSpec {
+        physnet: "uplink".into(),
+        external_ip: "192.0.2.64".parse().unwrap(),
+        external_prefix: 24,
+        gateway: "192.0.2.1".parse().unwrap(),
+        gateway_nodes: vec!["n2".into()],
+        snat_ct_zone: Some(60002),
+    };
     let mut a = net("app", NetKind::Nat, "10.89.7.0/24");
     a.router = Some("r1".into());
     let mut b = net("db", NetKind::Nat, "10.89.8.0/24");
     b.router = Some("r1".into());
     let d = Desired {
-        routers: vec![RouterSpec { name: "r1".into(), external: Some(ext) }],
+        routers: vec![RouterSpec {
+            name: "r1".into(),
+            external: Some(ext),
+        }],
         networks: vec![a, b],
         node_addresses: vec!["192.0.2.11".parse().unwrap()],
         nat_supernet: Some("10.89.0.0/16".parse().unwrap()),
         ..Default::default()
     };
     let find_group = "ovn-nbctl --db=ssl:192.0.2.11:6641,ssl:192.0.2.12:6641 -p /k -c /c -C /ca --format=json --columns=_uuid find HA_Chassis_Group";
-    exec.on(find_group, Output::ok(r#"{"data":[[["uuid","g9"]]],"headings":["_uuid"]}"#));
+    exec.on(
+        find_group,
+        Output::ok(r#"{"data":[[["uuid","g9"]]],"headings":["_uuid"]}"#),
+    );
     sync(&Nb::new(&exec, conn()), &d).unwrap();
     let calls = exec.calls().join("\n");
     for want in [
@@ -219,8 +312,15 @@ fn a_vpc_router_that_left_the_plan_is_removed_with_its_port() {
     );
     sync(&Nb::new(&exec, conn()), &Desired::default()).unwrap();
     let calls = exec.calls().join("\n");
-    assert!(calls.contains("--if-exists lr-del gxr-r9") && calls.contains("--if-exists destroy HA_Chassis_Group gxr-r9"), "{calls}");
-    assert!(calls.contains("--if-exists lsp-del gx-ext-uplink-rt-r9"), "{calls}");
+    assert!(
+        calls.contains("--if-exists lr-del gxr-r9")
+            && calls.contains("--if-exists destroy HA_Chassis_Group gxr-r9"),
+        "{calls}"
+    );
+    assert!(
+        calls.contains("--if-exists lsp-del gx-ext-uplink-rt-r9"),
+        "{calls}"
+    );
     assert!(!calls.contains("lsp-del gx-ext-uplink-rt-r1"), "{calls}");
 }
 
@@ -229,16 +329,32 @@ fn replies_from_outside_reach_guests_and_an_older_policy_is_replaced() {
     // Before, the supernet drop matched replies after un-SNAT too.
     let exec = RecordingExec::new();
     exec.on("ovn-nbctl --db=", empty(r#"["name"]"#));
-    let pre = "ovn-nbctl --db=ssl:192.0.2.11:6641,ssl:192.0.2.12:6641 -p /k -c /c -C /ca --format=json";
+    let pre =
+        "ovn-nbctl --db=ssl:192.0.2.11:6641,ssl:192.0.2.12:6641 -p /k -c /c -C /ca --format=json";
     exec.on(&format!("{pre} --columns=name,external_ids find Logical_Router"), Output::ok(r#"{"data":[["gx-edge",["map",[["glidex-owner","glidex"]]]]],"headings":["name","external_ids"]}"#));
-    exec.on(&format!("{pre} --columns=policies find Logical_Router"), Output::ok(r#"{"data":[[["set",[["uuid","p-old"],["uuid","p-nodes"]]]]],"headings":["policies"]}"#));
+    exec.on(
+        &format!("{pre} --columns=policies find Logical_Router"),
+        Output::ok(
+            r#"{"data":[[["set",[["uuid","p-old"],["uuid","p-nodes"]]]]],"headings":["policies"]}"#,
+        ),
+    );
     exec.on(
         &format!("{pre} --columns=_uuid,priority,match,action find Logical_Router_Policy"),
         Output::ok(r#"{"data":[[["uuid","p-old"],1000,"ip4.dst == $gx_nat_supernet","drop"],[["uuid","p-nodes"],1100,"ip4.dst == $gx_nodes","drop"]],"headings":["_uuid","priority","match","action"]}"#),
     );
-    exec.on(&format!("{pre} --columns=_uuid find HA_Chassis_Group"), Output::ok(r#"{"data":[[["uuid","g1"]]],"headings":["_uuid"]}"#));
+    exec.on(
+        &format!("{pre} --columns=_uuid find HA_Chassis_Group"),
+        Output::ok(r#"{"data":[[["uuid","g1"]]],"headings":["_uuid"]}"#),
+    );
     let d = Desired {
-        edge: Some(EdgeSpec { physnet: "uplink".into(), external_ip: "192.0.2.50".parse().unwrap(), external_prefix: 24, gateway: "192.0.2.1".parse().unwrap(), gateway_nodes: vec!["n1".into()], snat_ct_zone: None }),
+        edge: Some(EdgeSpec {
+            physnet: "uplink".into(),
+            external_ip: "192.0.2.50".parse().unwrap(),
+            external_prefix: 24,
+            gateway: "192.0.2.1".parse().unwrap(),
+            gateway_nodes: vec!["n1".into()],
+            snat_ct_zone: None,
+        }),
         networks: vec![net("web", NetKind::Nat, "10.89.1.0/24")],
         node_addresses: vec!["192.0.2.11".parse().unwrap()],
         nat_supernet: Some("10.89.0.0/16".parse().unwrap()),
@@ -246,47 +362,91 @@ fn replies_from_outside_reach_guests_and_an_older_policy_is_replaced() {
     };
     sync(&Nb::new(&exec, conn()), &d).unwrap();
     let calls = exec.calls().join("\n");
-    assert!(calls.contains("--if-exists lr-policy-del gx-edge p-old"), "{calls}");
-    assert!(!calls.contains("lr-policy-del gx-edge p-nodes"), "the node policy is still right: {calls}");
+    assert!(
+        calls.contains("--if-exists lr-policy-del gx-edge p-old"),
+        "{calls}"
+    );
+    assert!(
+        !calls.contains("lr-policy-del gx-edge p-nodes"),
+        "the node policy is still right: {calls}"
+    );
     assert!(!calls.contains("lr-policy-add gx-edge 1100"), "{calls}");
     assert!(calls.contains("lr-policy-add gx-edge 1000 ip4.src == $gx_nat_supernet && ip4.dst == $gx_nat_supernet drop"), "{calls}");
-    assert!(calls.contains("acl-add gx-ext-uplink from-lport 1000"), "unsolicited traffic stays out: {calls}");
+    assert!(
+        calls.contains("acl-add gx-ext-uplink from-lport 1000"),
+        "unsolicited traffic stays out: {calls}"
+    );
 }
 
 #[test]
 fn the_snat_rule_of_a_deleted_network_goes_with_it() {
     let exec = RecordingExec::new();
     exec.on("ovn-nbctl --db=", empty(r#"["name"]"#));
-    let pre = "ovn-nbctl --db=ssl:192.0.2.11:6641,ssl:192.0.2.12:6641 -p /k -c /c -C /ca --format=json";
+    let pre =
+        "ovn-nbctl --db=ssl:192.0.2.11:6641,ssl:192.0.2.12:6641 -p /k -c /c -C /ca --format=json";
     exec.on(&format!("{pre} --columns=name,external_ids find Logical_Router"), Output::ok(r#"{"data":[["gx-edge",["map",[["glidex-owner","glidex"]]]]],"headings":["name","external_ids"]}"#));
-    exec.on(&format!("{pre} --columns=nat find Logical_Router"), Output::ok(r#"{"data":[[["set",[["uuid","n-web"],["uuid","n-old"]]]]],"headings":["nat"]}"#));
+    exec.on(
+        &format!("{pre} --columns=nat find Logical_Router"),
+        Output::ok(
+            r#"{"data":[[["set",[["uuid","n-web"],["uuid","n-old"]]]]],"headings":["nat"]}"#,
+        ),
+    );
     // Another router's rule for the same old subnet is not ours to remove.
     exec.on(
         &format!("{pre} --columns=_uuid,external_ip,logical_ip,type find NAT"),
         Output::ok(r#"{"data":[[["uuid","n-web"],"192.0.2.50","10.89.1.0/24","snat"],[["uuid","n-old"],"192.0.2.50","10.89.9.0/24","snat"],[["uuid","n-vpc"],"192.0.2.64","10.89.7.0/24","snat"]],"headings":["_uuid","external_ip","logical_ip","type"]}"#),
     );
-    exec.on(&format!("{pre} --columns=_uuid find HA_Chassis_Group"), Output::ok(r#"{"data":[[["uuid","g1"]]],"headings":["_uuid"]}"#));
+    exec.on(
+        &format!("{pre} --columns=_uuid find HA_Chassis_Group"),
+        Output::ok(r#"{"data":[[["uuid","g1"]]],"headings":["_uuid"]}"#),
+    );
     let d = Desired {
-        edge: Some(EdgeSpec { physnet: "uplink".into(), external_ip: "192.0.2.50".parse().unwrap(), external_prefix: 24, gateway: "192.0.2.1".parse().unwrap(), gateway_nodes: vec!["n1".into()], snat_ct_zone: None }),
+        edge: Some(EdgeSpec {
+            physnet: "uplink".into(),
+            external_ip: "192.0.2.50".parse().unwrap(),
+            external_prefix: 24,
+            gateway: "192.0.2.1".parse().unwrap(),
+            gateway_nodes: vec!["n1".into()],
+            snat_ct_zone: None,
+        }),
         networks: vec![net("web", NetKind::Nat, "10.89.1.0/24")],
         ..Default::default()
     };
     let rep = sync(&Nb::new(&exec, conn()), &d).unwrap();
     let calls = exec.calls().join("\n");
-    assert!(calls.contains("--if-exists lr-nat-del gx-edge snat 10.89.9.0/24"), "{calls}");
-    assert!(!calls.contains("lr-nat-del gx-edge snat 10.89.1.0/24") && !calls.contains("10.89.7.0/24"), "{calls}");
-    assert!(!calls.contains("lr-nat-add"), "the live network's rule is already there: {calls}");
-    assert!(rep.changed.iter().any(|c| c == "removed snat 10.89.9.0/24"), "{rep:?}");
+    assert!(
+        calls.contains("--if-exists lr-nat-del gx-edge snat 10.89.9.0/24"),
+        "{calls}"
+    );
+    assert!(
+        !calls.contains("lr-nat-del gx-edge snat 10.89.1.0/24") && !calls.contains("10.89.7.0/24"),
+        "{calls}"
+    );
+    assert!(
+        !calls.contains("lr-nat-add"),
+        "the live network's rule is already there: {calls}"
+    );
+    assert!(
+        rep.changed.iter().any(|c| c == "removed snat 10.89.9.0/24"),
+        "{rep:?}"
+    );
 }
 
 #[test]
 fn a_network_moved_to_a_router_takes_its_port_off_the_edge() {
     let exec = RecordingExec::new();
     exec.on("ovn-nbctl --db=", empty(r#"["name"]"#));
-    let pre = "ovn-nbctl --db=ssl:192.0.2.11:6641,ssl:192.0.2.12:6641 -p /k -c /c -C /ca --format=json";
+    let pre =
+        "ovn-nbctl --db=ssl:192.0.2.11:6641,ssl:192.0.2.12:6641 -p /k -c /c -C /ca --format=json";
     let sw = r#"{"data":[["gx-web",["map",[["glidex-owner","glidex"],["glidex-network","web"]]],["map",[]]]],"headings":["name","external_ids","other_config"]}"#;
-    exec.on(&format!("{pre} --columns=name,external_ids,other_config find Logical_Switch"), Output::ok(sw));
-    exec.on(&format!("{pre} --columns=_uuid find Logical_Router_Port"), Output::ok(r#"{"data":[[["uuid","lrp-web"]]],"headings":["_uuid"]}"#));
+    exec.on(
+        &format!("{pre} --columns=name,external_ids,other_config find Logical_Switch"),
+        Output::ok(sw),
+    );
+    exec.on(
+        &format!("{pre} --columns=_uuid find Logical_Router_Port"),
+        Output::ok(r#"{"data":[[["uuid","lrp-web"]]],"headings":["_uuid"]}"#),
+    );
     // The port is still on the edge.
     exec.on(
         &format!("{pre} --columns=name,ports find Logical_Router"),
@@ -294,50 +454,117 @@ fn a_network_moved_to_a_router_takes_its_port_off_the_edge() {
     );
     let mut web = net("web", NetKind::Nat, "10.89.1.0/24");
     web.router = Some("r1".into());
-    let d = Desired { routers: vec![RouterSpec { name: "r1".into(), external: None }], networks: vec![web], ..Default::default() };
+    let d = Desired {
+        routers: vec![RouterSpec {
+            name: "r1".into(),
+            external: None,
+        }],
+        networks: vec![web],
+        ..Default::default()
+    };
     let rep = sync(&Nb::new(&exec, conn()), &d).unwrap();
     let calls = exec.calls().join("\n");
-    let del = calls.find("--if-exists lrp-del gx-lrp-web").unwrap_or_else(|| panic!("{calls}"));
-    let add = calls.find("--may-exist lrp-add gxr-r1 gx-lrp-web").unwrap_or_else(|| panic!("{calls}"));
+    let del = calls
+        .find("--if-exists lrp-del gx-lrp-web")
+        .unwrap_or_else(|| panic!("{calls}"));
+    let add = calls
+        .find("--may-exist lrp-add gxr-r1 gx-lrp-web")
+        .unwrap_or_else(|| panic!("{calls}"));
     assert!(del < add, "off the edge, then onto the router: {calls}");
-    assert!(rep.changed.iter().any(|c| c == "network web moved to gxr-r1"), "{rep:?}");
+    assert!(
+        rep.changed
+            .iter()
+            .any(|c| c == "network web moved to gxr-r1"),
+        "{rep:?}"
+    );
 }
 
 #[test]
 fn a_network_already_on_its_router_stays() {
     let exec = RecordingExec::new();
     exec.on("ovn-nbctl --db=", empty(r#"["name"]"#));
-    let pre = "ovn-nbctl --db=ssl:192.0.2.11:6641,ssl:192.0.2.12:6641 -p /k -c /c -C /ca --format=json";
+    let pre =
+        "ovn-nbctl --db=ssl:192.0.2.11:6641,ssl:192.0.2.12:6641 -p /k -c /c -C /ca --format=json";
     let sw = r#"{"data":[["gx-web",["map",[["glidex-owner","glidex"],["glidex-network","web"]]],["map",[]]]],"headings":["name","external_ids","other_config"]}"#;
-    exec.on(&format!("{pre} --columns=name,external_ids,other_config find Logical_Switch"), Output::ok(sw));
-    exec.on(&format!("{pre} --columns=_uuid find Logical_Router_Port"), Output::ok(r#"{"data":[[["uuid","lrp-web"]]],"headings":["_uuid"]}"#));
-    exec.on(&format!("{pre} --columns=name,ports find Logical_Router"), Output::ok(r#"{"data":[["gxr-r1",["set",[["uuid","lrp-web"]]]]],"headings":["name","ports"]}"#));
+    exec.on(
+        &format!("{pre} --columns=name,external_ids,other_config find Logical_Switch"),
+        Output::ok(sw),
+    );
+    exec.on(
+        &format!("{pre} --columns=_uuid find Logical_Router_Port"),
+        Output::ok(r#"{"data":[[["uuid","lrp-web"]]],"headings":["_uuid"]}"#),
+    );
+    exec.on(
+        &format!("{pre} --columns=name,ports find Logical_Router"),
+        Output::ok(
+            r#"{"data":[["gxr-r1",["set",[["uuid","lrp-web"]]]]],"headings":["name","ports"]}"#,
+        ),
+    );
     let mut web = net("web", NetKind::Nat, "10.89.1.0/24");
     web.router = Some("r1".into());
-    let d = Desired { routers: vec![RouterSpec { name: "r1".into(), external: None }], networks: vec![web], ..Default::default() };
+    let d = Desired {
+        routers: vec![RouterSpec {
+            name: "r1".into(),
+            external: None,
+        }],
+        networks: vec![web],
+        ..Default::default()
+    };
     sync(&Nb::new(&exec, conn()), &d).unwrap();
-    assert!(!exec.calls().join("\n").contains("lrp-del"), "{:?}", exec.calls());
+    assert!(
+        !exec.calls().join("\n").contains("lrp-del"),
+        "{:?}",
+        exec.calls()
+    );
 }
 
 #[test]
 fn an_isolated_network_off_its_router_loses_the_port_and_the_gateway() {
     let exec = RecordingExec::new();
     exec.on("ovn-nbctl --db=", empty(r#"["name"]"#));
-    let pre = "ovn-nbctl --db=ssl:192.0.2.11:6641,ssl:192.0.2.12:6641 -p /k -c /c -C /ca --format=json";
+    let pre =
+        "ovn-nbctl --db=ssl:192.0.2.11:6641,ssl:192.0.2.12:6641 -p /k -c /c -C /ca --format=json";
     let sw = r#"{"data":[["gx-lab",["map",[["glidex-owner","glidex"],["glidex-network","lab"]]],["map",[]]]],"headings":["name","external_ids","other_config"]}"#;
-    exec.on(&format!("{pre} --columns=name,external_ids,other_config find Logical_Switch"), Output::ok(sw));
-    exec.on(&format!("{pre} --columns=_uuid find Logical_Router_Port"), Output::ok(r#"{"data":[[["uuid","lrp-lab"]]],"headings":["_uuid"]}"#));
+    exec.on(
+        &format!("{pre} --columns=name,external_ids,other_config find Logical_Switch"),
+        Output::ok(sw),
+    );
+    exec.on(
+        &format!("{pre} --columns=_uuid find Logical_Router_Port"),
+        Output::ok(r#"{"data":[[["uuid","lrp-lab"]]],"headings":["_uuid"]}"#),
+    );
     // DHCP still hands out the router's gateway.
     let lab = net("lab", NetKind::Isolated, "10.89.3.0/24");
     let dhcp = format!(
         r#"{{"data":[[["uuid","aaaa"],["map",[["lease_time","3600"],["server_id","10.89.3.1"],["router","10.89.3.1"],["server_mac","{}"],["mtu","1442"],["dns_server","{{192.0.2.53}}"]]]]],"headings":["_uuid","options"]}}"#,
         lab.router_mac()
     );
-    exec.on(&format!("{pre} --columns=_uuid,options find DHCP_Options"), Output::ok(dhcp));
-    let rep = sync(&Nb::new(&exec, conn()), &Desired { networks: vec![lab], ..Default::default() }).unwrap();
+    exec.on(
+        &format!("{pre} --columns=_uuid,options find DHCP_Options"),
+        Output::ok(dhcp),
+    );
+    let rep = sync(
+        &Nb::new(&exec, conn()),
+        &Desired {
+            networks: vec![lab],
+            ..Default::default()
+        },
+    )
+    .unwrap();
     let calls = exec.calls().join("\n");
-    assert!(calls.contains("--if-exists lrp-del gx-lrp-lab -- --if-exists lsp-del gx-lab-rt"), "{calls}");
-    assert!(calls.contains("dhcp-options-set-options aaaa"), "the gateway leaves DHCP: {calls}");
+    assert!(
+        calls.contains("--if-exists lrp-del gx-lrp-lab -- --if-exists lsp-del gx-lab-rt"),
+        "{calls}"
+    );
+    assert!(
+        calls.contains("dhcp-options-set-options aaaa"),
+        "the gateway leaves DHCP: {calls}"
+    );
     assert!(!calls.contains("router=10.89.3.1"), "{calls}");
-    assert!(rep.changed.iter().any(|c| c == "network lab isolated again"), "{rep:?}");
+    assert!(
+        rep.changed
+            .iter()
+            .any(|c| c == "network lab isolated again"),
+        "{rep:?}"
+    );
 }

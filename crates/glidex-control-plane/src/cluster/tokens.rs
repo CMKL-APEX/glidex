@@ -3,8 +3,8 @@
 
 use crate::node::NodeRole;
 use crate::store::{Db, Origin, StoreError, TableId};
-use serde::{Deserialize, Serialize};
 use redb::ReadableTable;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -59,11 +59,24 @@ fn now() -> u64 {
 }
 
 /// Make a token. Returns the string to show once.
-pub fn create(db: &Db, kind: TokenKind, ttl_secs: u64, ca_fingerprint: &str, created_by: &str) -> Result<String, TokenError> {
+pub fn create(
+    db: &Db,
+    kind: TokenKind,
+    ttl_secs: u64,
+    ca_fingerprint: &str,
+    created_by: &str,
+) -> Result<String, TokenError> {
     let (id, secret) = (random_hex(8), random_hex(32));
-    let rec = JoinToken { sha256: digest(&secret), kind, expires_at: now() + ttl_secs, used_at: None, created_by: created_by.to_string() };
+    let rec = JoinToken {
+        sha256: digest(&secret),
+        kind,
+        expires_at: now() + ttl_secs,
+        used_at: None,
+        created_by: created_by.to_string(),
+    };
     db.write(Origin::Api, |tx| -> Result<(), TokenError> {
-        tx.open_table(TableId::JoinTokens.definition())?.insert(&id, serde_json::to_vec(&rec)?.as_slice())?;
+        tx.open_table(TableId::JoinTokens.definition())?
+            .insert(&id, serde_json::to_vec(&rec)?.as_slice())?;
         Ok(())
     })?;
     Ok(format!("{id}.{secret}.{ca_fingerprint}"))
@@ -73,7 +86,9 @@ pub fn create(db: &Db, kind: TokenKind, ttl_secs: u64, ca_fingerprint: &str, cre
 pub fn parse(token: &str) -> Result<(&str, &str, &str), TokenError> {
     let mut p = token.trim().splitn(3, '.');
     match (p.next(), p.next(), p.next()) {
-        (Some(i), Some(s), Some(f)) if !i.is_empty() && !s.is_empty() && f.len() == 64 => Ok((i, s, f)),
+        (Some(i), Some(s), Some(f)) if !i.is_empty() && !s.is_empty() && f.len() == 64 => {
+            Ok((i, s, f))
+        }
         _ => Err(TokenError::Invalid),
     }
 }
@@ -81,7 +96,9 @@ pub fn parse(token: &str) -> Result<(&str, &str, &str), TokenError> {
 /// Check a token without using it up.
 pub fn peek(db: &Db, token: &str) -> Result<JoinToken, TokenError> {
     let (id, secret, _) = parse(token)?;
-    let txn = db.begin_read().map_err(|e| TokenError::Storage(e.to_string()))?;
+    let txn = db
+        .begin_read()
+        .map_err(|e| TokenError::Storage(e.to_string()))?;
     let t = txn.open_table(TableId::JoinTokens.definition())?;
     let rec: JoinToken = match t.get(id)? {
         Some(v) => serde_json::from_slice(v.value())?,
@@ -140,10 +157,26 @@ mod tests {
     fn a_token_works_once() {
         let (_d, db) = db();
         let fp = "a".repeat(64);
-        let t = create(&db, TokenKind::Join { role: NodeRole::Agent, allow_import: false }, 3600, &fp, "u").unwrap();
+        let t = create(
+            &db,
+            TokenKind::Join {
+                role: NodeRole::Agent,
+                allow_import: false,
+            },
+            3600,
+            &fp,
+            "u",
+        )
+        .unwrap();
         assert_eq!(parse(&t).unwrap().2, fp);
         let rec = consume(&db, &t).unwrap();
-        assert_eq!(rec.kind, TokenKind::Join { role: NodeRole::Agent, allow_import: false });
+        assert_eq!(
+            rec.kind,
+            TokenKind::Join {
+                role: NodeRole::Agent,
+                allow_import: false
+            }
+        );
         assert!(matches!(consume(&db, &t), Err(TokenError::Used)));
     }
 
@@ -151,13 +184,36 @@ mod tests {
     fn wrong_secrets_and_expired_tokens_are_refused() {
         let (_d, db) = db();
         let fp = "b".repeat(64);
-        let t = create(&db, TokenKind::Join { role: NodeRole::Server, allow_import: false }, 3600, &fp, "u").unwrap();
+        let t = create(
+            &db,
+            TokenKind::Join {
+                role: NodeRole::Server,
+                allow_import: false,
+            },
+            3600,
+            &fp,
+            "u",
+        )
+        .unwrap();
         let (id, _, _) = parse(&t).unwrap();
-        assert!(matches!(consume(&db, &format!("{id}.{}.{fp}", "0".repeat(64))), Err(TokenError::Invalid)));
+        assert!(matches!(
+            consume(&db, &format!("{id}.{}.{fp}", "0".repeat(64))),
+            Err(TokenError::Invalid)
+        ));
         assert!(matches!(consume(&db, "garbage"), Err(TokenError::Invalid)));
         // A token the failed attempts did not use still works.
         consume(&db, &t).unwrap();
-        let old = create(&db, TokenKind::Rejoin { node: "n".into(), raft_intact: true }, 0, &fp, "u").unwrap();
+        let old = create(
+            &db,
+            TokenKind::Rejoin {
+                node: "n".into(),
+                raft_intact: true,
+            },
+            0,
+            &fp,
+            "u",
+        )
+        .unwrap();
         std::thread::sleep(std::time::Duration::from_millis(1100));
         assert!(matches!(consume(&db, &old), Err(TokenError::Expired)));
     }
@@ -166,9 +222,30 @@ mod tests {
     fn only_the_hash_of_the_secret_is_stored() {
         let (_d, db) = db();
         let fp = "c".repeat(64);
-        let t = create(&db, TokenKind::Join { role: NodeRole::Agent, allow_import: false }, 60, &fp, "u").unwrap();
+        let t = create(
+            &db,
+            TokenKind::Join {
+                role: NodeRole::Agent,
+                allow_import: false,
+            },
+            60,
+            &fp,
+            "u",
+        )
+        .unwrap();
         let (_, secret, _) = parse(&t).unwrap();
-        let dump = serde_json::to_string(&db.dump().unwrap().iter().map(|(_, r)| r.iter().map(|(_, v)| String::from_utf8_lossy(v).into_owned()).collect::<Vec<_>>()).collect::<Vec<_>>()).unwrap();
+        let dump = serde_json::to_string(
+            &db.dump()
+                .unwrap()
+                .iter()
+                .map(|(_, r)| {
+                    r.iter()
+                        .map(|(_, v)| String::from_utf8_lossy(v).into_owned())
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
         assert!(!dump.contains(secret));
     }
 }

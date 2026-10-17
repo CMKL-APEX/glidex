@@ -25,12 +25,12 @@
 //!   modified.
 
 use axum::{
+    Router,
     body::Body,
     http::{Request, StatusCode},
-    Router,
 };
 use http_body_util::BodyExt;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -42,8 +42,8 @@ use tower::ServiceExt;
 
 use glidex_control_plane::api::create_router;
 use glidex_control_plane::cloud_init::{self, SeedConfig};
-use glidex_control_plane::hypervisor::cloud_hypervisor::default_firmware_path;
 use glidex_control_plane::hypervisor::HypervisorType;
+use glidex_control_plane::hypervisor::cloud_hypervisor::default_firmware_path;
 use glidex_control_plane::state::VmManager;
 
 // ============================================================================
@@ -56,7 +56,12 @@ fn create_test_app() -> (Router, Arc<VmManager>, TempDir) {
     (create_router(manager.clone()), manager, temp_dir)
 }
 
-async fn request(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
+async fn request(
+    app: &Router,
+    method: &str,
+    uri: &str,
+    body: Option<Value>,
+) -> (StatusCode, Value) {
     let builder = Request::builder().method(method).uri(uri);
     let req = match body {
         Some(b) => builder
@@ -97,7 +102,12 @@ fn run_ok(cmd: &mut Command) -> String {
 }
 
 fn mtype(image: &Path, file: &str) -> String {
-    run_ok(Command::new("mtype").arg("-i").arg(image).arg(format!("::{}", file)))
+    run_ok(
+        Command::new("mtype")
+            .arg("-i")
+            .arg(image)
+            .arg(format!("::{}", file)),
+    )
 }
 
 // ============================================================================
@@ -114,7 +124,10 @@ async fn firmware_vm_can_be_created_without_kernel() {
     assert_eq!(body["state"], "created");
 
     let vm = manager.get_vm(body["id"].as_str().unwrap()).await.unwrap();
-    assert_eq!(vm.spec.config.firmware_path.as_deref(), Some("/path/to/CLOUDHV.fd"));
+    assert_eq!(
+        vm.spec.config.firmware_path.as_deref(),
+        Some("/path/to/CLOUDHV.fd")
+    );
     assert_eq!(vm.spec.config.kernel_image_path, "");
     assert_eq!(vm.spec.config.cloud_init_path, None);
 }
@@ -131,7 +144,10 @@ async fn qemu_firmware_vm_can_be_created_without_kernel() {
     assert_eq!(body["hypervisor"], "qemu");
 
     let vm = manager.get_vm(body["id"].as_str().unwrap()).await.unwrap();
-    assert_eq!(vm.spec.config.firmware_path.as_deref(), Some("/usr/share/OVMF/OVMF_CODE_4M.fd"));
+    assert_eq!(
+        vm.spec.config.firmware_path.as_deref(),
+        Some("/usr/share/OVMF/OVMF_CODE_4M.fd")
+    );
     assert_eq!(vm.spec.config.kernel_image_path, "");
 }
 
@@ -143,7 +159,12 @@ async fn kernel_or_firmware_is_required() {
     req.as_object_mut().unwrap().remove("firmware_path");
     let (status, body) = request(&app, "POST", "/vms", Some(req)).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-    assert!(body["message"].as_str().unwrap_or_default().contains("kernel_image_path"));
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("kernel_image_path")
+    );
 }
 
 #[tokio::test]
@@ -162,7 +183,10 @@ async fn qemu_accepts_a_custom_cloud_init_path() {
     let (status, body) = request(&app, "POST", "/vms", Some(req)).await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
     let vm = manager.get_vm(body["id"].as_str().unwrap()).await.unwrap();
-    assert_eq!(vm.spec.config.cloud_init_path.as_deref(), Some("/path/to/seed.img"));
+    assert_eq!(
+        vm.spec.config.cloud_init_path.as_deref(),
+        Some("/path/to/seed.img")
+    );
 }
 
 #[tokio::test]
@@ -290,13 +314,24 @@ async fn firmware_config_survives_restart() {
     let manager = VmManager::with_db_path(db).unwrap();
     manager.initialize().await.unwrap();
     let vm = manager.get_vm(&id).await.unwrap();
-    assert_eq!(vm.spec.config.firmware_path.as_deref(), Some("/path/to/CLOUDHV.fd"));
+    assert_eq!(
+        vm.spec.config.firmware_path.as_deref(),
+        Some("/path/to/CLOUDHV.fd")
+    );
     // Per-VM private runtime directory (spec/security.md §9).
     assert_eq!(
         vm.default_cloud_init_path(),
-        glidex_control_plane::paths::vm_dir(&id).join("cloudinit.img").to_string_lossy()
+        glidex_control_plane::paths::vm_dir(&id)
+            .join("cloudinit.img")
+            .to_string_lossy()
     );
-    assert!(vm.paths().api_socket.ends_with(&format!("/vms/{id}/api.sock")), "{}", vm.paths().api_socket);
+    assert!(
+        vm.paths()
+            .api_socket
+            .ends_with(&format!("/vms/{id}/api.sock")),
+        "{}",
+        vm.paths().api_socket
+    );
 }
 
 // ============================================================================
@@ -320,7 +355,10 @@ fn seed_image_is_a_cidata_volume_with_nocloud_files() {
     cloud_init::write_seed_image(image.to_str().unwrap(), &seed).unwrap();
 
     let listing = run_ok(Command::new("mdir").arg("-i").arg(&image).arg("::"));
-    assert!(listing.contains("CIDATA"), "volume label missing:\n{listing}");
+    assert!(
+        listing.contains("CIDATA"),
+        "volume label missing:\n{listing}"
+    );
 
     assert_eq!(mtype(&image, "meta-data"), seed.meta_data());
     assert_eq!(mtype(&image, "user-data"), seed.user_data());
@@ -365,8 +403,8 @@ fn seed_image_error_leaves_no_partial_files() {
     std::fs::write(&not_a_dir, b"").unwrap();
     let image = not_a_dir.join("seed.img");
 
-    let err = cloud_init::write_seed_image(image.to_str().unwrap(), &SeedConfig::default())
-        .unwrap_err();
+    let err =
+        cloud_init::write_seed_image(image.to_str().unwrap(), &SeedConfig::default()).unwrap_err();
     assert!(err.to_string().contains("cloud-init seed"), "{err}");
     let entries: Vec<_> = std::fs::read_dir(tmp.path()).unwrap().collect();
     assert_eq!(entries.len(), 1, "only the pre-existing file should remain");
@@ -416,12 +454,15 @@ struct Console {
 
 impl Console {
     fn connect(path: &str) -> Self {
-        let stream = UnixStream::connect(path)
-            .unwrap_or_else(|e| panic!("connect console {path}: {e}"));
+        let stream =
+            UnixStream::connect(path).unwrap_or_else(|e| panic!("connect console {path}: {e}"));
         stream
             .set_read_timeout(Some(Duration::from_millis(200)))
             .unwrap();
-        Self { stream, buf: Vec::new() }
+        Self {
+            stream,
+            buf: Vec::new(),
+        }
     }
 
     /// Drop what the console replays to a new client (the recent history,
@@ -451,7 +492,14 @@ impl Console {
             }
             if Instant::now() > deadline {
                 let tail = String::from_utf8_lossy(&self.buf);
-                let tail: String = tail.chars().rev().take(600).collect::<Vec<_>>().into_iter().rev().collect();
+                let tail: String = tail
+                    .chars()
+                    .rev()
+                    .take(600)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect();
                 panic!("timed out waiting for {needle:?}; last output:\n{tail}");
             }
             match self.stream.read(&mut chunk) {
@@ -501,7 +549,9 @@ fn test_firmware(hypervisor: &str) -> PathBuf {
     match hypervisor {
         "qemu" => env_path(
             "GLIDEX_TEST_QEMU_FIRMWARE",
-            HypervisorType::Qemu.default_firmware_path().map(|p| p.to_string_lossy().into_owned()),
+            HypervisorType::Qemu
+                .default_firmware_path()
+                .map(|p| p.to_string_lossy().into_owned()),
         ),
         _ => env_path(
             "GLIDEX_TEST_FIRMWARE",
@@ -528,7 +578,11 @@ async fn qemu_firmware_boot_with_generated_cloud_init() {
 /// (`ovmf-debian`). Returns its id.
 async fn pull_firmware_image(app: &Router, hypervisor: &str) -> String {
     let qemu_key = std::env::var("GLIDEX_TEST_QEMU_FIRMWARE_KEY").unwrap_or_else(|_| "ovmf".into());
-    let key = if hypervisor == "qemu" { qemu_key.as_str() } else { "cloudhv-edk2" };
+    let key = if hypervisor == "qemu" {
+        qemu_key.as_str()
+    } else {
+        "cloudhv-edk2"
+    };
     let (status, fw) = request(app, "POST", "/images", Some(json!({"firmware": key}))).await;
     assert_eq!(status, StatusCode::ACCEPTED, "{fw}");
     let id = fw["id"].as_str().unwrap().to_string();
@@ -536,7 +590,9 @@ async fn pull_firmware_image(app: &Router, hypervisor: &str) -> String {
     loop {
         let (_, fw) = request(app, "GET", &format!("/images/{id}"), None).await;
         match fw["status"]["state"].as_str() {
-            Some("downloading" | "verifying") => assert!(Instant::now() < deadline, "firmware download timed out"),
+            Some("downloading" | "verifying") => {
+                assert!(Instant::now() < deadline, "firmware download timed out")
+            }
             _ => {
                 assert_eq!(fw["status"]["state"], "ready", "{fw}");
                 return id;
@@ -559,7 +615,12 @@ async fn firmware_boot_e2e(hypervisor: &str) {
 
     // Work on a sparse copy so the source image is never modified.
     let rootfs = tmp.path().join("rootfs.raw");
-    run_ok(Command::new("cp").arg("--sparse=always").arg(&source_image).arg(&rootfs));
+    run_ok(
+        Command::new("cp")
+            .arg("--sparse=always")
+            .arg(&source_image)
+            .arg(&rootfs),
+    );
     // The copy keeps the source's mode; a managed image is read-only.
     std::fs::set_permissions(&rootfs, std::os::unix::fs::PermissionsExt::from_mode(0o644)).unwrap();
 
@@ -601,7 +662,10 @@ async fn firmware_boot_e2e(hypervisor: &str) {
     assert_eq!(body["state"], "running");
     assert!(Path::new(&seed_path).exists(), "seed image not generated");
     let persisted = manager.get_vm(&id).await.unwrap();
-    assert_eq!(persisted.spec.config.cloud_init_path, None, "generated seed must not be persisted");
+    assert_eq!(
+        persisted.spec.config.cloud_init_path, None,
+        "generated seed must not be persisted"
+    );
 
     let console_path = glidex_control_plane::paths::vm_paths(&id).console_socket;
 
@@ -616,7 +680,10 @@ async fn firmware_boot_e2e(hypervisor: &str) {
         console.send(&format!("{username}\r"));
         console.expect("Password: ", Duration::from_secs(30));
         console.send(&format!("{password}\r"));
-        console.expect(&format!("{username}@{hostname}:~$ "), Duration::from_secs(60));
+        console.expect(
+            &format!("{username}@{hostname}:~$ "),
+            Duration::from_secs(60),
+        );
         console.send("echo GX_$((6*7))_$(id -un)_$(sudo -n true && echo root)\r");
         console.expect(&format!("GX_42_{username}_root"), Duration::from_secs(30));
         console
@@ -647,20 +714,38 @@ async fn firmware_boot_e2e(hypervisor: &str) {
     // Graceful stop: the guest shuts down on the power button, well
     // before the deadline that would force it.
     let started = Instant::now();
-    let (status, body) = request(&app, "POST", &format!("/vms/{id}/stop?graceful_timeout_secs=120&wait=200"), None).await;
+    let (status, body) = request(
+        &app,
+        "POST",
+        &format!("/vms/{id}/stop?graceful_timeout_secs=120&wait=200"),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["state"], "stopped");
-    assert!(started.elapsed() < Duration::from_secs(110), "guest ignored the power button");
+    assert!(
+        started.elapsed() < Duration::from_secs(110),
+        "guest ignored the power button"
+    );
     // Lossy: the console log is the guest's raw bytes, not always UTF-8.
-    let log = String::from_utf8_lossy(&std::fs::read(glidex_control_plane::paths::vm_paths(&id).log).unwrap()).into_owned();
+    let log = String::from_utf8_lossy(
+        &std::fs::read(glidex_control_plane::paths::vm_paths(&id).log).unwrap(),
+    )
+    .into_owned();
     // The kernel's very last line: nothing the guest printed before the
     // hypervisor exited may be lost (glidex-vm-shim's proxy).
-    assert!(log.contains("reboot: Power down"), "guest did not power off cleanly:\n{log}");
+    assert!(
+        log.contains("reboot: Power down"),
+        "guest did not power off cleanly:\n{log}"
+    );
 
     // Delete cleans up the generated seed (and the variable store).
     let (status, _) = request(&app, "DELETE", &format!("/vms/{id}"), None).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
-    assert!(!Path::new(&seed_path).exists(), "seed image not removed on delete");
+    assert!(
+        !Path::new(&seed_path).exists(),
+        "seed image not removed on delete"
+    );
     assert!(!vars.exists(), "variable store not removed on delete");
 
     // The credential is no longer referenced and can be removed.
@@ -683,28 +768,50 @@ async fn qemu_vm_survives_control_plane_restart() {
 /// Log in on a fresh console connection to instance `instance_id`. The
 /// log is appended across instances (spec §8.6), so skip the replay up to
 /// this instance's separator line first: earlier boots' prompts are in it.
-fn console_login(path: &str, instance_id: &str, hostname: &str, username: &str, password: &str) -> Console {
+fn console_login(
+    path: &str,
+    instance_id: &str,
+    hostname: &str,
+    username: &str,
+    password: &str,
+) -> Console {
     let mut console = Console::connect(path);
-    console.expect(&format!("--- glidex: instance {instance_id} started"), Duration::from_secs(30));
+    console.expect(
+        &format!("--- glidex: instance {instance_id} started"),
+        Duration::from_secs(30),
+    );
     std::thread::sleep(Duration::from_secs(1));
     console.send("\r");
     console.expect(&format!("{hostname} login: "), Duration::from_secs(240));
     console.send(&format!("{username}\r"));
     console.expect("Password: ", Duration::from_secs(30));
     console.send(&format!("{password}\r"));
-    console.expect(&format!("{username}@{hostname}:~$ "), Duration::from_secs(60));
+    console.expect(
+        &format!("{username}@{hostname}:~$ "),
+        Duration::from_secs(60),
+    );
     console
 }
 
 /// Wait until `f` holds for the VM.
-async fn wait_vm(manager: &VmManager, id: &str, what: &str, timeout: Duration, f: impl Fn(&glidex_control_plane::models::Vm) -> bool) -> glidex_control_plane::models::Vm {
+async fn wait_vm(
+    manager: &VmManager,
+    id: &str,
+    what: &str,
+    timeout: Duration,
+    f: impl Fn(&glidex_control_plane::models::Vm) -> bool,
+) -> glidex_control_plane::models::Vm {
     let deadline = Instant::now() + timeout;
     loop {
         let vm = manager.get_vm(id).await.unwrap();
         if f(&vm) {
             return vm;
         }
-        assert!(Instant::now() < deadline, "timed out waiting for {what}: {:?}", vm.status);
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for {what}: {:?}",
+            vm.status
+        );
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
 }
@@ -720,7 +827,12 @@ async fn restart_e2e(hypervisor: &str) {
     // Raw: this test SIGKILLs the hypervisor, which a qcow2 image may not
     // survive (Cloud Hypervisor then refuses to reopen it).
     let rootfs = tmp.path().join("rootfs.raw");
-    run_ok(Command::new("qemu-img").args(["convert", "-O", "raw"]).arg(&source_image).arg(&rootfs));
+    run_ok(
+        Command::new("qemu-img")
+            .args(["convert", "-O", "raw"])
+            .arg(&source_image)
+            .arg(&rootfs),
+    );
     let (username, hostname) = ("gxtester", "gx-restart");
     let password = uuid::Uuid::new_v4().simple().to_string();
 
@@ -730,7 +842,13 @@ async fn restart_e2e(hypervisor: &str) {
     manager.start_controllers();
     let guard = ShutdownGuard(Some(manager.clone()));
     let app = create_router(manager.clone());
-    let (status, body) = request(&app, "POST", "/credentials", Some(json!({"username": username, "password": password}))).await;
+    let (status, body) = request(
+        &app,
+        "POST",
+        "/credentials",
+        Some(json!({"username": username, "password": password})),
+    )
+    .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
     let (status, vm) = request(&app, "POST", "/vms?wait=120", Some(json!({
         "name": hostname, "vcpu_count": 2, "mem_size_mib": 2048, "hypervisor": hypervisor,
@@ -740,10 +858,18 @@ async fn restart_e2e(hypervisor: &str) {
     assert_eq!(vm["state"], "running", "{vm}");
     let id = vm["id"].as_str().unwrap().to_string();
     let before = manager.get_vm(&id).await.unwrap().status.instance.unwrap();
-    let hv = (before.hypervisor_pid.unwrap(), before.hypervisor_starttime.unwrap());
+    let hv = (
+        before.hypervisor_pid.unwrap(),
+        before.hypervisor_starttime.unwrap(),
+    );
     let console_path = glidex_control_plane::paths::vm_paths(&id).console_socket;
     let mut console = {
-        let (p, h, u, pw) = (console_path.clone(), hostname.to_string(), username.to_string(), password.clone());
+        let (p, h, u, pw) = (
+            console_path.clone(),
+            hostname.to_string(),
+            username.to_string(),
+            password.clone(),
+        );
         let inst = before.instance_id.clone();
         tokio::task::spawn_blocking(move || {
             let mut c = console_login(&p, &inst, &h, &u, &pw);
@@ -761,7 +887,10 @@ async fn restart_e2e(hypervisor: &str) {
     drop(app);
     drop(manager);
     tokio::time::sleep(Duration::from_secs(2)).await;
-    assert!(same_process(hv.0, hv.1).unwrap(), "the hypervisor died with the control plane");
+    assert!(
+        same_process(hv.0, hv.1).unwrap(),
+        "the hypervisor died with the control plane"
+    );
 
     // ---- control plane #2 adopts it ---------------------------------------
     let manager = {
@@ -781,9 +910,15 @@ async fn restart_e2e(hypervisor: &str) {
     manager.start_controllers();
     let _guard = ShutdownGuard(Some(manager.clone()));
     let app = create_router(manager.clone());
-    let vm = wait_vm(&manager, &id, "adoption", Duration::from_secs(30), |v| v.is_converged()).await;
+    let vm = wait_vm(&manager, &id, "adoption", Duration::from_secs(30), |v| {
+        v.is_converged()
+    })
+    .await;
     let after = vm.status.instance.clone().unwrap();
-    assert_eq!(after.instance_id, before.instance_id, "a new instance was launched");
+    assert_eq!(
+        after.instance_id, before.instance_id,
+        "a new instance was launched"
+    );
     assert_eq!(after.hypervisor_pid, before.hypervisor_pid);
     let events = manager.vm_events(&id).unwrap();
     assert!(events.iter().any(|e| e.reason == "Adopted"), "{events:?}");
@@ -798,19 +933,45 @@ async fn restart_e2e(hypervisor: &str) {
     drop(console);
 
     // ---- a crash is restarted (restart_policy on_failure) -----------------
-    nix::sys::signal::kill(nix::unistd::Pid::from_raw(hv.0 as i32), nix::sys::signal::Signal::SIGKILL).unwrap();
-    let vm = wait_vm(&manager, &id, "crash restart", Duration::from_secs(120), |v| {
-        v.status.instance.as_ref().is_some_and(|i| i.instance_id != before.instance_id) && v.is_converged()
-    })
+    nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(hv.0 as i32),
+        nix::sys::signal::Signal::SIGKILL,
+    )
+    .unwrap();
+    let vm = wait_vm(
+        &manager,
+        &id,
+        "crash restart",
+        Duration::from_secs(120),
+        |v| {
+            v.status
+                .instance
+                .as_ref()
+                .is_some_and(|i| i.instance_id != before.instance_id)
+                && v.is_converged()
+        },
+    )
     .await;
     let exit = vm.status.last_exit.clone().unwrap();
-    assert_eq!((exit.cause, exit.signal), (glidex_control_plane::models::ExitCause::Crashed, Some(9)), "{exit:?}");
+    assert_eq!(
+        (exit.cause, exit.signal),
+        (glidex_control_plane::models::ExitCause::Crashed, Some(9)),
+        "{exit:?}"
+    );
     assert_eq!(vm.status.restart_count, 1);
-    assert_eq!(vm.spec.power, glidex_control_plane::models::PowerState::Running);
+    assert_eq!(
+        vm.spec.power,
+        glidex_control_plane::models::PowerState::Running
+    );
 
     // ---- the guest powers itself off: desired state follows ---------------
     {
-        let (p, h, u, pw) = (console_path.clone(), hostname.to_string(), username.to_string(), password.clone());
+        let (p, h, u, pw) = (
+            console_path.clone(),
+            hostname.to_string(),
+            username.to_string(),
+            password.clone(),
+        );
         let inst = vm.status.instance.as_ref().unwrap().instance_id.clone();
         tokio::task::spawn_blocking(move || {
             let mut c = console_login(&p, &inst, &h, &u, &pw);
@@ -819,15 +980,31 @@ async fn restart_e2e(hypervisor: &str) {
         .await
         .unwrap();
     }
-    let vm = wait_vm(&manager, &id, "guest poweroff", Duration::from_secs(120), |v| {
-        v.spec.power == glidex_control_plane::models::PowerState::Stopped && v.is_converged()
-    })
+    let vm = wait_vm(
+        &manager,
+        &id,
+        "guest poweroff",
+        Duration::from_secs(120),
+        |v| v.spec.power == glidex_control_plane::models::PowerState::Stopped && v.is_converged(),
+    )
     .await;
-    assert_eq!(vm.status.last_exit.as_ref().unwrap().cause, glidex_control_plane::models::ExitCause::CleanExit);
-    let log = String::from_utf8_lossy(&std::fs::read(glidex_control_plane::paths::vm_paths(&id).log).unwrap()).into_owned();
+    assert_eq!(
+        vm.status.last_exit.as_ref().unwrap().cause,
+        glidex_control_plane::models::ExitCause::CleanExit
+    );
+    let log = String::from_utf8_lossy(
+        &std::fs::read(glidex_control_plane::paths::vm_paths(&id).log).unwrap(),
+    )
+    .into_owned();
     // Appended across instances, with separators (§8.6).
     assert!(log.matches("--- glidex: instance").count() >= 4, "{log}");
-    assert!(log.contains(&format!("--- glidex: instance {} exited: crashed (signal 9) ---", before.instance_id)), "{log}");
+    assert!(
+        log.contains(&format!(
+            "--- glidex: instance {} exited: crashed (signal 9) ---",
+            before.instance_id
+        )),
+        "{log}"
+    );
 
     let (status, _) = request(&app, "DELETE", &format!("/vms/{id}"), None).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
@@ -837,7 +1014,10 @@ async fn restart_e2e(hypervisor: &str) {
 /// Host's IPv4 default gateway (from `ip -j route`), used as a target that
 /// is reachable only through NAT.
 fn host_default_gateway() -> Option<String> {
-    let out = Command::new("ip").args(["-4", "-j", "route", "show", "default"]).output().ok()?;
+    let out = Command::new("ip")
+        .args(["-4", "-j", "route", "show", "default"])
+        .output()
+        .ok()?;
     let routes: Value = serde_json::from_slice(&out.stdout).ok()?;
     routes.get(0)?.get("gateway")?.as_str().map(str::to_string)
 }
@@ -866,14 +1046,48 @@ async fn mixed_hypervisors_share_a_network() {
     let (app, manager, tmp) = create_running_app().await;
     let _guard = ShutdownGuard(Some(manager.clone()));
     request(&app, "DELETE", "/networks/mixed", None).await;
-    let (st, net) = request(&app, "POST", "/networks", Some(json!({"name": "mixed", "mode": "nat", "bridge": "gxbr-mixed"}))).await;
+    let (st, net) = request(
+        &app,
+        "POST",
+        "/networks",
+        Some(json!({"name": "mixed", "mode": "nat", "bridge": "gxbr-mixed"})),
+    )
+    .await;
     assert_eq!(st, StatusCode::CREATED, "{net}");
 
-    let ch = start_and_login(&app, &tmp, "mixed", "gx-mix-ch", json!({"hypervisor": "cloudhypervisor"})).await;
-    let qemu = start_and_login(&app, &tmp, "mixed", "gx-mix-qemu", json!({"hypervisor": "qemu"})).await;
+    let ch = start_and_login(
+        &app,
+        &tmp,
+        "mixed",
+        "gx-mix-ch",
+        json!({"hypervisor": "cloudhypervisor"}),
+    )
+    .await;
+    let qemu = start_and_login(
+        &app,
+        &tmp,
+        "mixed",
+        "gx-mix-qemu",
+        json!({"hypervisor": "qemu"}),
+    )
+    .await;
     let (ch_ip, qemu_ip) = (ch.ipv4.clone().unwrap(), qemu.ipv4.clone().unwrap());
-    let qemu = run_checks(qemu, vec![(format!("ping -c 2 -W 3 {ch_ip} >/dev/null && echo GX_$((60+1))_TO_CH"), "GX_61_TO_CH".into())]).await;
-    let ch = run_checks(ch, vec![(format!("ping -c 2 -W 3 {qemu_ip} >/dev/null && echo GX_$((60+2))_TO_QEMU"), "GX_62_TO_QEMU".into())]).await;
+    let qemu = run_checks(
+        qemu,
+        vec![(
+            format!("ping -c 2 -W 3 {ch_ip} >/dev/null && echo GX_$((60+1))_TO_CH"),
+            "GX_61_TO_CH".into(),
+        )],
+    )
+    .await;
+    let ch = run_checks(
+        ch,
+        vec![(
+            format!("ping -c 2 -W 3 {qemu_ip} >/dev/null && echo GX_$((60+2))_TO_QEMU"),
+            "GX_62_TO_QEMU".into(),
+        )],
+    )
+    .await;
     stop_and_delete(&app, qemu).await;
     stop_and_delete(&app, ch).await;
     let (st, body) = request(&app, "DELETE", "/networks/mixed", None).await;
@@ -892,8 +1106,14 @@ async fn nat_e2e(hypervisor: &str) {
     let _guard = ShutdownGuard(Some(manager.clone()));
 
     let (_, status) = request(&app, "GET", "/ovs/status", None).await;
-    assert_eq!(status["netd"]["access"], "full", "glidex-netd not usable: {status}");
-    assert_eq!(status["host"]["ovs_running"], true, "Open vSwitch not running: {status}");
+    assert_eq!(
+        status["netd"]["access"], "full",
+        "glidex-netd not usable: {status}"
+    );
+    assert_eq!(
+        status["host"]["ovs_running"], true,
+        "Open vSwitch not running: {status}"
+    );
 
     // Leftovers from an interrupted run.
     request(&app, "DELETE", "/networks/e2e", None).await;
@@ -908,10 +1128,21 @@ async fn nat_e2e(hypervisor: &str) {
     assert_eq!(st, StatusCode::CREATED, "{net}");
 
     let rootfs = tmp.path().join("rootfs.raw");
-    run_ok(Command::new("cp").arg("--sparse=always").arg(&source_image).arg(&rootfs));
+    run_ok(
+        Command::new("cp")
+            .arg("--sparse=always")
+            .arg(&source_image)
+            .arg(&rootfs),
+    );
     let username = "gxnet";
     let password = uuid::Uuid::new_v4().simple().to_string();
-    let (st, body) = request(&app, "POST", "/credentials", Some(json!({"username": username, "password": password}))).await;
+    let (st, body) = request(
+        &app,
+        "POST",
+        "/credentials",
+        Some(json!({"username": username, "password": password})),
+    )
+    .await;
     assert_eq!(st, StatusCode::CREATED, "{body}");
 
     let hostname = "gx-nattest";
@@ -933,7 +1164,10 @@ async fn nat_e2e(hypervisor: &str) {
 
     let (st, body) = request(&app, "POST", &format!("/vms/{id}/start?wait=120"), None).await;
     assert_eq!(st, StatusCode::OK, "{body}");
-    let ipv4 = body["nics"][0]["ipv4"].as_str().expect("NAT reservation").to_string();
+    let ipv4 = body["nics"][0]["ipv4"]
+        .as_str()
+        .expect("NAT reservation")
+        .to_string();
     assert!(ipv4.starts_with("10.88."), "{ipv4}");
 
     let console_path = glidex_control_plane::paths::vm_paths(&id).console_socket;
@@ -948,13 +1182,20 @@ async fn nat_e2e(hypervisor: &str) {
         c.send(&format!("{username}\r"));
         c.expect("Password: ", Duration::from_secs(30));
         c.send(&format!("{password}\r"));
-        c.expect(&format!("{username}@{hostname}:~$ "), Duration::from_secs(60));
+        c.expect(
+            &format!("{username}@{hostname}:~$ "),
+            Duration::from_secs(60),
+        );
         // DHCP from netd's dnsmasq gave the reserved address (whatever
         // the guest named the interface).
-        c.send(&format!("ip -4 -o addr | grep -q ' {expected_ip}/24 ' && echo GX_$((40+1))_DHCP_OK\r"));
+        c.send(&format!(
+            "ip -4 -o addr | grep -q ' {expected_ip}/24 ' && echo GX_$((40+1))_DHCP_OK\r"
+        ));
         c.expect("GX_41_DHCP_OK", Duration::from_secs(30));
         // Masquerade: reach the host's own default gateway.
-        c.send(&format!("ping -c 2 -W 3 {gateway} >/dev/null && echo GX_$((40+2))_NAT_OK\r"));
+        c.send(&format!(
+            "ping -c 2 -W 3 {gateway} >/dev/null && echo GX_$((40+2))_NAT_OK\r"
+        ));
         c.expect("GX_42_NAT_OK", Duration::from_secs(30));
         // queue_pairs: 2 reached the guest as a multiqueue NIC.
         c.send("ls -d /sys/class/net/*/queues/rx-1 >/dev/null && echo GX_$((40+3))_MQ_OK\r");
@@ -969,10 +1210,14 @@ async fn nat_e2e(hypervisor: &str) {
     let deadline = Instant::now() + Duration::from_secs(120);
     loop {
         let vm = manager.get_vm(&id).await.unwrap();
-        if vm.state() == glidex_control_plane::models::VmState::Stopped && vm.status.nics.is_empty() {
+        if vm.state() == glidex_control_plane::models::VmState::Stopped && vm.status.nics.is_empty()
+        {
             break;
         }
-        assert!(Instant::now() < deadline, "VM still running after guest poweroff");
+        assert!(
+            Instant::now() < deadline,
+            "VM still running after guest poweroff"
+        );
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
     let (_, body) = request(&app, "GET", &format!("/vms/{id}"), None).await;
@@ -987,7 +1232,11 @@ async fn nat_e2e(hypervisor: &str) {
     assert_eq!(st, StatusCode::NO_CONTENT, "{body}");
     let (_, bridges) = request(&app, "GET", "/ovs/bridges", None).await;
     assert!(
-        !bridges.as_array().unwrap().iter().any(|b| b["spec"]["name"] == "gxbr-e2e"),
+        !bridges
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|b| b["spec"]["name"] == "gxbr-e2e"),
         "bridge removed with its network: {bridges}"
     );
     request(&app, "DELETE", &format!("/credentials/{username}"), None).await;
@@ -1015,16 +1264,44 @@ struct Guest {
 /// Boot a VM with a throwaway credential (named after the host) on
 /// `network` and log in on the console. `extra` overrides fields of the
 /// create request; `"hypervisor"` also picks the firmware.
-async fn start_and_login(app: &Router, tmp: &TempDir, network: &str, hostname: &str, extra: Value) -> Guest {
-    let hypervisor = extra["hypervisor"].as_str().unwrap_or("cloudhypervisor").to_string();
+async fn start_and_login(
+    app: &Router,
+    tmp: &TempDir,
+    network: &str,
+    hostname: &str,
+    extra: Value,
+) -> Guest {
+    let hypervisor = extra["hypervisor"]
+        .as_str()
+        .unwrap_or("cloudhypervisor")
+        .to_string();
     let firmware = test_firmware(&hypervisor);
     let source_image = env_path("GLIDEX_TEST_IMAGE", None);
     let rootfs = tmp.path().join(format!("{hostname}.raw"));
-    run_ok(Command::new("cp").arg("--sparse=always").arg(&source_image).arg(&rootfs));
-    let username = format!("gx{}", hostname.replace('-', "").chars().rev().take(6).collect::<String>());
+    run_ok(
+        Command::new("cp")
+            .arg("--sparse=always")
+            .arg(&source_image)
+            .arg(&rootfs),
+    );
+    let username = format!(
+        "gx{}",
+        hostname
+            .replace('-', "")
+            .chars()
+            .rev()
+            .take(6)
+            .collect::<String>()
+    );
     let password = uuid::Uuid::new_v4().simple().to_string();
     request(app, "DELETE", &format!("/credentials/{username}"), None).await;
-    let (st, body) = request(app, "POST", "/credentials", Some(json!({"username": username, "password": password}))).await;
+    let (st, body) = request(
+        app,
+        "POST",
+        "/credentials",
+        Some(json!({"username": username, "password": password})),
+    )
+    .await;
     assert_eq!(st, StatusCode::CREATED, "{body}");
     let mut spec = json!({
         "name": hostname, "vcpu_count": 2, "mem_size_mib": 2048, "hypervisor": hypervisor,
@@ -1058,12 +1335,22 @@ async fn start_and_login(app: &Router, tmp: &TempDir, network: &str, hostname: &
     })
     .await
     .unwrap();
-    Guest { id, console, ipv4, username }
+    Guest {
+        id,
+        console,
+        ipv4,
+        username,
+    }
 }
 
 /// Run `checks` (command, expected marker) on a guest's console.
 async fn run_checks(guest: Guest, checks: Vec<(String, String)>) -> Guest {
-    let Guest { id, mut console, ipv4, username } = guest;
+    let Guest {
+        id,
+        mut console,
+        ipv4,
+        username,
+    } = guest;
     let console = tokio::task::spawn_blocking(move || {
         for (cmd, marker) in checks {
             console.send(&format!("{cmd}\r"));
@@ -1073,27 +1360,57 @@ async fn run_checks(guest: Guest, checks: Vec<(String, String)>) -> Guest {
     })
     .await
     .unwrap();
-    Guest { id, console, ipv4, username }
+    Guest {
+        id,
+        console,
+        ipv4,
+        username,
+    }
 }
 
 async fn stop_and_delete(app: &Router, guest: Guest) {
     drop(guest.console);
-    request(app, "POST", &format!("/vms/{}/stop?wait=60", guest.id), None).await;
+    request(
+        app,
+        "POST",
+        &format!("/vms/{}/stop?wait=60", guest.id),
+        None,
+    )
+    .await;
     let (st, _) = request(app, "DELETE", &format!("/vms/{}", guest.id), None).await;
     assert_eq!(st, StatusCode::NO_CONTENT);
-    request(app, "DELETE", &format!("/credentials/{}", guest.username), None).await;
+    request(
+        app,
+        "DELETE",
+        &format!("/credentials/{}", guest.username),
+        None,
+    )
+    .await;
 }
 
 /// Boot a VM on `network`, log in, run `checks`, then delete the VM.
-async fn boot_and_check(app: &Router, tmp: &TempDir, network: &str, hostname: &str, extra: Value, checks: Vec<(String, String)>) {
+async fn boot_and_check(
+    app: &Router,
+    tmp: &TempDir,
+    network: &str,
+    hostname: &str,
+    extra: Value,
+    checks: Vec<(String, String)>,
+) {
     let guest = start_and_login(app, tmp, network, hostname, extra).await;
     let guest = run_checks(guest, checks).await;
     stop_and_delete(app, guest).await;
 }
 
 async fn require_lan_and_netd(app: &Router) {
-    assert!(std::env::var("GLIDEX_TEST_LAN").is_ok(), "set GLIDEX_TEST_LAN=1 after running sudo scripts/dev/fake-lan-setup.sh");
-    assert!(host_ip(&["-br", "link", "show", "gxup0"]).contains("gxup0"), "fake LAN missing (gxup0)");
+    assert!(
+        std::env::var("GLIDEX_TEST_LAN").is_ok(),
+        "set GLIDEX_TEST_LAN=1 after running sudo scripts/dev/fake-lan-setup.sh"
+    );
+    assert!(
+        host_ip(&["-br", "link", "show", "gxup0"]).contains("gxup0"),
+        "fake LAN missing (gxup0)"
+    );
     let (_, status) = request(app, "GET", "/ovs/status", None).await;
     assert_eq!(status["netd"]["access"], "full", "{status}");
     assert_eq!(status["host"]["ovs_running"], true, "{status}");
@@ -1104,9 +1421,23 @@ async fn require_lan_and_netd(app: &Router) {
 /// pre-cleanup deletes the bridge.
 async fn refuse_foreign_bridge(app: &Router, bridge: &str, own: &str) {
     let (_, list) = request(app, "GET", "/ovs/bridges", None).await;
-    let Some(b) = list.as_array().and_then(|l| l.iter().find(|b| b["spec"]["name"] == bridge)) else { return };
-    let ports: Vec<&str> = b["live"]["ports"].as_array().into_iter().flatten().filter_map(|p| p["name"].as_str().or(p.as_str())).filter(|p| *p != bridge && *p != own).collect();
-    assert!(ports.is_empty(), "bridge {bridge} exists with other ports {ports:?}: not the test's, refusing to touch it");
+    let Some(b) = list
+        .as_array()
+        .and_then(|l| l.iter().find(|b| b["spec"]["name"] == bridge))
+    else {
+        return;
+    };
+    let ports: Vec<&str> = b["live"]["ports"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|p| p["name"].as_str().or(p.as_str()))
+        .filter(|p| *p != bridge && *p != own)
+        .collect();
+    assert!(
+        ports.is_empty(),
+        "bridge {bridge} exists with other ports {ports:?}: not the test's, refusing to touch it"
+    );
 }
 
 /// M6 acceptance: kernel uplink on an in-use NIC with IP migration —
@@ -1120,28 +1451,72 @@ async fn bridged_uplink_e2e() {
     refuse_foreign_bridge(&app, "gxbr-e2eup", "gxup0").await;
     // Leftovers from an interrupted run.
     request(&app, "DELETE", "/networks/lan", None).await;
-    request(&app, "DELETE", "/ovs/bridges/gxbr-e2eup/uplinks/gxup0", None).await;
+    request(
+        &app,
+        "DELETE",
+        "/ovs/bridges/gxbr-e2eup/uplinks/gxup0",
+        None,
+    )
+    .await;
     request(&app, "DELETE", "/ovs/bridges/gxbr-e2eup", None).await;
-    assert!(host_ip(&["-4", "-o", "addr", "show", "dev", "gxup0"]).contains("192.0.2.10/24"), "gxup0 should hold 192.0.2.10");
+    assert!(
+        host_ip(&["-4", "-o", "addr", "show", "dev", "gxup0"]).contains("192.0.2.10/24"),
+        "gxup0 should hold 192.0.2.10"
+    );
 
-    let (st, body) = request(&app, "POST", "/ovs/bridges", Some(json!({"name": "gxbr-e2eup", "datapath": "system"}))).await;
+    let (st, body) = request(
+        &app,
+        "POST",
+        "/ovs/bridges",
+        Some(json!({"name": "gxbr-e2eup", "datapath": "system"})),
+    )
+    .await;
     assert_eq!(st, StatusCode::CREATED, "{body}");
     let uplink = json!({"name": "gxup0", "kind": "kernel", "ifname": "gxup0"});
 
     // 1. In use by the host: refused without migrate_ip + confirm.
-    let (st, body) = request(&app, "POST", "/ovs/bridges/gxbr-e2eup/uplinks", Some(uplink.clone())).await;
+    let (st, body) = request(
+        &app,
+        "POST",
+        "/ovs/bridges/gxbr-e2eup/uplinks",
+        Some(uplink.clone()),
+    )
+    .await;
     assert_eq!(st, StatusCode::CONFLICT, "{body}");
     assert_eq!(body["error"], "host_interface_in_use");
-    assert!(body["details"]["reasons"].as_array().unwrap().iter().any(|r| r == "has_addresses"), "{body}");
+    assert!(
+        body["details"]["reasons"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r == "has_addresses"),
+        "{body}"
+    );
 
     // 2. Migrated but never committed: rolled back by netd (10 s window in the dev config).
     let mut migrate = uplink.clone();
     migrate["migrate_ip"] = json!(true);
     migrate["confirm"] = json!(true);
-    let (st, body) = request(&app, "POST", "/ovs/bridges/gxbr-e2eup/uplinks", Some(migrate.clone())).await;
+    let (st, body) = request(
+        &app,
+        "POST",
+        "/ovs/bridges/gxbr-e2eup/uplinks",
+        Some(migrate.clone()),
+    )
+    .await;
     assert_eq!(st, StatusCode::ACCEPTED, "{body}");
-    assert!(host_ip(&["-4", "-o", "addr", "show", "dev", "gxbr-e2eup"]).contains("192.0.2.10/24"), "address moved to the bridge");
-    assert!(Command::new("ping").args(["-c", "1", "-W", "2", "192.0.2.1"]).status().unwrap().success(), "LAN reachable through the bridge");
+    assert!(
+        host_ip(&["-4", "-o", "addr", "show", "dev", "gxbr-e2eup"]).contains("192.0.2.10/24"),
+        "address moved to the bridge"
+    );
+    assert!(
+        Command::new("ping")
+            .args(["-c", "1", "-W", "2", "192.0.2.1"])
+            .status()
+            .unwrap()
+            .success(),
+        "LAN reachable through the bridge"
+    );
     // netd deletes the record as the last rollback step, so wait for that.
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
     loop {
@@ -1149,37 +1524,100 @@ async fn bridged_uplink_e2e() {
         if list.as_array().unwrap().is_empty() {
             break;
         }
-        assert!(std::time::Instant::now() < deadline, "not rolled back: {list}");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "not rolled back: {list}"
+        );
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
-    assert!(host_ip(&["-4", "-o", "addr", "show", "dev", "gxup0"]).contains("192.0.2.10/24"), "address restored");
-    assert!(host_ip(&["-4", "route", "show", "198.51.100.0/24"]).contains("dev gxup0"), "route restored");
+    assert!(
+        host_ip(&["-4", "-o", "addr", "show", "dev", "gxup0"]).contains("192.0.2.10/24"),
+        "address restored"
+    );
+    assert!(
+        host_ip(&["-4", "route", "show", "198.51.100.0/24"]).contains("dev gxup0"),
+        "route restored"
+    );
 
     // 3. Migrated and committed.
-    let (st, body) = request(&app, "POST", "/ovs/bridges/gxbr-e2eup/uplinks", Some(migrate)).await;
+    let (st, body) = request(
+        &app,
+        "POST",
+        "/ovs/bridges/gxbr-e2eup/uplinks",
+        Some(migrate),
+    )
+    .await;
     assert_eq!(st, StatusCode::ACCEPTED, "{body}");
-    let token = body["record"]["pending"]["token"].as_str().unwrap().to_string();
-    let (st, body) = request(&app, "POST", "/ovs/bridges/gxbr-e2eup/uplinks/gxup0/commit", Some(json!({"token": token}))).await;
+    let token = body["record"]["pending"]["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (st, body) = request(
+        &app,
+        "POST",
+        "/ovs/bridges/gxbr-e2eup/uplinks/gxup0/commit",
+        Some(json!({"token": token})),
+    )
+    .await;
     assert_eq!(st, StatusCode::OK, "{body}");
     assert_eq!(body["phase"], "active");
-    assert!(host_ip(&["-4", "route", "show", "198.51.100.0/24"]).contains("dev gxbr-e2eup"), "route moved");
+    assert!(
+        host_ip(&["-4", "route", "show", "198.51.100.0/24"]).contains("dev gxbr-e2eup"),
+        "route moved"
+    );
 
     // 4. A VM on the bridged network gets a LAN address and reaches the LAN and the host.
-    let (st, body) = request(&app, "POST", "/networks", Some(json!({"name": "lan", "mode": "bridged", "bridge": "gxbr-e2eup"}))).await;
+    let (st, body) = request(
+        &app,
+        "POST",
+        "/networks",
+        Some(json!({"name": "lan", "mode": "bridged", "bridge": "gxbr-e2eup"})),
+    )
+    .await;
     assert_eq!(st, StatusCode::CREATED, "{body}");
-    boot_and_check(&app, &tmp, "lan", "gx-lantest", json!({}), vec![
-        ("ip -4 -o addr | grep -q ' 192.0.2.1[0-9][0-9]/24 ' && echo GX_$((60+1))_LAN_DHCP".into(), "GX_61_LAN_DHCP".into()),
-        ("ping -c 2 -W 3 192.0.2.1 >/dev/null && echo GX_$((60+2))_LAN_GW".into(), "GX_62_LAN_GW".into()),
-        ("ping -c 2 -W 3 192.0.2.10 >/dev/null && echo GX_$((60+3))_HOST".into(), "GX_63_HOST".into()),
-    ]).await;
+    boot_and_check(
+        &app,
+        &tmp,
+        "lan",
+        "gx-lantest",
+        json!({}),
+        vec![
+            (
+                "ip -4 -o addr | grep -q ' 192.0.2.1[0-9][0-9]/24 ' && echo GX_$((60+1))_LAN_DHCP"
+                    .into(),
+                "GX_61_LAN_DHCP".into(),
+            ),
+            (
+                "ping -c 2 -W 3 192.0.2.1 >/dev/null && echo GX_$((60+2))_LAN_GW".into(),
+                "GX_62_LAN_GW".into(),
+            ),
+            (
+                "ping -c 2 -W 3 192.0.2.10 >/dev/null && echo GX_$((60+3))_HOST".into(),
+                "GX_63_HOST".into(),
+            ),
+        ],
+    )
+    .await;
 
     // 5. Cleanup restores the NIC.
     let (st, _) = request(&app, "DELETE", "/networks/lan", None).await;
     assert_eq!(st, StatusCode::NO_CONTENT);
-    let (st, body) = request(&app, "DELETE", "/ovs/bridges/gxbr-e2eup/uplinks/gxup0", None).await;
+    let (st, body) = request(
+        &app,
+        "DELETE",
+        "/ovs/bridges/gxbr-e2eup/uplinks/gxup0",
+        None,
+    )
+    .await;
     assert_eq!(st, StatusCode::NO_CONTENT, "{body}");
-    assert!(host_ip(&["-4", "-o", "addr", "show", "dev", "gxup0"]).contains("192.0.2.10/24"), "address back on gxup0");
-    assert!(host_ip(&["-4", "route", "show", "198.51.100.0/24"]).contains("dev gxup0"), "route back on gxup0");
+    assert!(
+        host_ip(&["-4", "-o", "addr", "show", "dev", "gxup0"]).contains("192.0.2.10/24"),
+        "address back on gxup0"
+    );
+    assert!(
+        host_ip(&["-4", "route", "show", "198.51.100.0/24"]).contains("dev gxup0"),
+        "route back on gxup0"
+    );
     let (st, _) = request(&app, "DELETE", "/ovs/bridges/gxbr-e2eup", None).await;
     assert_eq!(st, StatusCode::NO_CONTENT);
 }
@@ -1194,26 +1632,71 @@ async fn afxdp_uplink_e2e() {
     require_lan_and_netd(&app).await;
     refuse_foreign_bridge(&app, "gxbr-e2exdp", "gxup1").await;
     request(&app, "DELETE", "/networks/xdp", None).await;
-    request(&app, "DELETE", "/ovs/bridges/gxbr-e2exdp/uplinks/gxup1", None).await;
+    request(
+        &app,
+        "DELETE",
+        "/ovs/bridges/gxbr-e2exdp/uplinks/gxup1",
+        None,
+    )
+    .await;
     request(&app, "DELETE", "/ovs/bridges/gxbr-e2exdp", None).await;
 
-    let (st, body) = request(&app, "POST", "/ovs/bridges", Some(json!({"name": "gxbr-e2exdp", "datapath": "netdev"}))).await;
+    let (st, body) = request(
+        &app,
+        "POST",
+        "/ovs/bridges",
+        Some(json!({"name": "gxbr-e2exdp", "datapath": "netdev"})),
+    )
+    .await;
     assert_eq!(st, StatusCode::CREATED, "{body}");
-    let (st, body) = request(&app, "POST", "/ovs/bridges/gxbr-e2exdp/uplinks", Some(json!({
-        "name": "gxup1", "kind": "afxdp", "ifname": "gxup1", "xdp_mode": "generic"
-    }))).await;
+    let (st, body) = request(
+        &app,
+        "POST",
+        "/ovs/bridges/gxbr-e2exdp/uplinks",
+        Some(json!({
+            "name": "gxup1", "kind": "afxdp", "ifname": "gxup1", "xdp_mode": "generic"
+        })),
+    )
+    .await;
     assert_eq!(st, StatusCode::CREATED, "{body}");
     assert!(body["live"]["error"].is_null(), "AF_XDP port error: {body}");
 
-    let (st, body) = request(&app, "POST", "/networks", Some(json!({"name": "xdp", "mode": "bridged", "bridge": "gxbr-e2exdp"}))).await;
+    let (st, body) = request(
+        &app,
+        "POST",
+        "/networks",
+        Some(json!({"name": "xdp", "mode": "bridged", "bridge": "gxbr-e2exdp"})),
+    )
+    .await;
     assert_eq!(st, StatusCode::CREATED, "{body}");
-    boot_and_check(&app, &tmp, "xdp", "gx-xdptest", json!({}), vec![
-        ("ip -4 -o addr | grep -q ' 198.18.0.1[0-9][0-9]/24 ' && echo GX_$((70+1))_XDP_DHCP".into(), "GX_71_XDP_DHCP".into()),
-        ("ping -c 2 -W 3 198.18.0.1 >/dev/null && echo GX_$((70+2))_XDP_GW".into(), "GX_72_XDP_GW".into()),
-    ]).await;
+    boot_and_check(
+        &app,
+        &tmp,
+        "xdp",
+        "gx-xdptest",
+        json!({}),
+        vec![
+            (
+                "ip -4 -o addr | grep -q ' 198.18.0.1[0-9][0-9]/24 ' && echo GX_$((70+1))_XDP_DHCP"
+                    .into(),
+                "GX_71_XDP_DHCP".into(),
+            ),
+            (
+                "ping -c 2 -W 3 198.18.0.1 >/dev/null && echo GX_$((70+2))_XDP_GW".into(),
+                "GX_72_XDP_GW".into(),
+            ),
+        ],
+    )
+    .await;
 
     request(&app, "DELETE", "/networks/xdp", None).await;
-    let (st, _) = request(&app, "DELETE", "/ovs/bridges/gxbr-e2exdp/uplinks/gxup1", None).await;
+    let (st, _) = request(
+        &app,
+        "DELETE",
+        "/ovs/bridges/gxbr-e2exdp/uplinks/gxup1",
+        None,
+    )
+    .await;
     assert_eq!(st, StatusCode::NO_CONTENT);
     let (st, _) = request(&app, "DELETE", "/ovs/bridges/gxbr-e2exdp", None).await;
     assert_eq!(st, StatusCode::NO_CONTENT);
@@ -1235,23 +1718,42 @@ async fn qemu_vhost_user_e2e() {
 }
 
 async fn vhost_user_net_e2e(hypervisor: &str) {
-    assert!(std::env::var("GLIDEX_TEST_DPDK").is_ok(), "set GLIDEX_TEST_DPDK=1 once OVS-DPDK is initialized");
+    assert!(
+        std::env::var("GLIDEX_TEST_DPDK").is_ok(),
+        "set GLIDEX_TEST_DPDK=1 once OVS-DPDK is initialized"
+    );
     let (app, manager, tmp) = create_running_app().await;
     let _guard = ShutdownGuard(Some(manager.clone()));
     let (_, status) = request(&app, "GET", "/ovs/status", None).await;
     assert_eq!(status["host"]["dpdk_initialized"], true, "{status}");
     assert!(
-        status["host"]["iface_types"].as_array().unwrap().iter().any(|t| t == "dpdkvhostuserclient"),
+        status["host"]["iface_types"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t == "dpdkvhostuserclient"),
         "{status}"
     );
     request(&app, "DELETE", "/networks/fast", None).await;
 
-    let (st, net) = request(&app, "POST", "/networks", Some(json!({
-        "name": "fast", "mode": "nat", "port_type": "vhost_user", "bridge": "gxbr-fast"
-    }))).await;
+    let (st, net) = request(
+        &app,
+        "POST",
+        "/networks",
+        Some(json!({
+            "name": "fast", "mode": "nat", "port_type": "vhost_user", "bridge": "gxbr-fast"
+        })),
+    )
+    .await;
     assert_eq!(st, StatusCode::CREATED, "{net}");
     let (_, bridges) = request(&app, "GET", "/ovs/bridges", None).await;
-    let fast = bridges.as_array().unwrap().iter().find(|b| b["spec"]["name"] == "gxbr-fast").unwrap().clone();
+    let fast = bridges
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|b| b["spec"]["name"] == "gxbr-fast")
+        .unwrap()
+        .clone();
     assert_eq!(fast["spec"]["datapath"], "netdev");
 
     let (_, nats) = request(&app, "GET", "/networks/fast", None).await;
@@ -1292,13 +1794,20 @@ async fn catalog_image_e2e(hypervisor: &str) {
     // The firmware the VM boots through by default (spec/images.md §7):
     // copied from the installer's pinned file or the host's OVMF, or
     // downloaded.
-    let fw_key = if hypervisor == "qemu" { "ovmf" } else { "cloudhv-edk2" };
+    let fw_key = if hypervisor == "qemu" {
+        "ovmf"
+    } else {
+        "cloudhv-edk2"
+    };
     let (status, fw) = request(&app, "POST", "/images", Some(json!({"firmware": fw_key}))).await;
     assert_eq!(status, StatusCode::ACCEPTED, "{fw}");
     let fw_id = fw["id"].as_str().unwrap().to_string();
     let fw = loop {
         let (_, fw) = request(&app, "GET", &format!("/images/{fw_id}"), None).await;
-        if !matches!(fw["status"]["state"].as_str(), Some("downloading" | "verifying")) {
+        if !matches!(
+            fw["status"]["state"].as_str(),
+            Some("downloading" | "verifying")
+        ) {
             break fw;
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
@@ -1324,7 +1833,13 @@ async fn catalog_image_e2e(hypervisor: &str) {
 
     let username = "gxtester";
     let password = uuid::Uuid::new_v4().simple().to_string();
-    let (status, body) = request(&app, "POST", "/credentials", Some(json!({"username": username, "password": password}))).await;
+    let (status, body) = request(
+        &app,
+        "POST",
+        "/credentials",
+        Some(json!({"username": username, "password": password})),
+    )
+    .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
 
     let hostname = "gx-imgtest";
@@ -1336,14 +1851,20 @@ async fn catalog_image_e2e(hypervisor: &str) {
     assert_eq!(status, StatusCode::CREATED, "{vm}");
     let id = vm["id"].as_str().unwrap().to_string();
     let config = manager.get_vm(&id).await.unwrap().spec.config;
-    assert_eq!(config.firmware_image.as_deref(), Some(fw_id.as_str()), "image VMs default to the firmware image");
+    assert_eq!(
+        config.firmware_image.as_deref(),
+        Some(fw_id.as_str()),
+        "image VMs default to the firmware image"
+    );
     let root = vm["root_disk"].as_str().unwrap().to_string();
     // glidex extended the root partition offline, before the first boot.
     assert!(vm.get("warnings").is_none(), "{vm}");
     // The disk controller makes the disk after the create returns.
     let mut disk = Value::Null;
     for _ in 0..240 {
-        disk = request(&app, "GET", &format!("/disks/{root}"), None).await.1;
+        disk = request(&app, "GET", &format!("/disks/{root}"), None)
+            .await
+            .1;
         if disk["busy_op"].is_null() && disk["phase"] != "pending" {
             break;
         }
@@ -1356,7 +1877,8 @@ async fn catalog_image_e2e(hypervisor: &str) {
         let (app, id) = (app.clone(), id.clone());
         let (username, password) = (username.to_string(), password.clone());
         async move {
-            let (status, body) = request(&app, "POST", &format!("/vms/{id}/start?wait=120"), None).await;
+            let (status, body) =
+                request(&app, "POST", &format!("/vms/{id}/start?wait=120"), None).await;
             assert_eq!(status, StatusCode::OK, "{body}");
             let console_path = glidex_control_plane::paths::vm_paths(&id).console_socket;
             tokio::task::spawn_blocking(move || {
@@ -1377,7 +1899,8 @@ async fn catalog_image_e2e(hypervisor: &str) {
             })
             .await
             .unwrap();
-            let (status, body) = request(&app, "POST", &format!("/vms/{id}/stop?wait=60"), None).await;
+            let (status, body) =
+                request(&app, "POST", &format!("/vms/{id}/stop?wait=60"), None).await;
             assert_eq!(status, StatusCode::OK, "{body}");
         }
     };
@@ -1385,7 +1908,13 @@ async fn catalog_image_e2e(hypervisor: &str) {
     boot_and_check(11, "GX_ROOT12").await;
 
     // Applied by the disk controller: `?wait` answers once it has (200).
-    let (status, d) = request(&app, "POST", &format!("/disks/{root}/resize?wait=120"), Some(json!({"size_gib": 16}))).await;
+    let (status, d) = request(
+        &app,
+        "POST",
+        &format!("/disks/{root}/resize?wait=120"),
+        Some(json!({"size_gib": 16})),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{d}");
     // Grown, root partition included (offline: nothing left for the boot);
     // the guest's own view of it is checked next.
@@ -1397,7 +1926,11 @@ async fn catalog_image_e2e(hypervisor: &str) {
     let (status, _) = request(&app, "DELETE", &format!("/vms/{id}"), None).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
     let (status, _) = request(&app, "GET", &format!("/disks/{root}"), None).await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "owned root disk is deleted with the VM");
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "owned root disk is deleted with the VM"
+    );
     let (status, _) = request(&app, "DELETE", &format!("/images/{image_id}"), None).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
 }

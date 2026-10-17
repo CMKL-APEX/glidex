@@ -4,7 +4,7 @@
 //! skips one.
 
 use super::types::*;
-use crate::store::{Db, StoreError, TableId, WriteSet, LAST_APPLIED, LAST_MEMBERSHIP};
+use crate::store::{Db, LAST_APPLIED, LAST_MEMBERSHIP, StoreError, TableId, WriteSet};
 use openraft::storage::{RaftSnapshotBuilder, RaftStateMachine, Snapshot};
 use openraft::{EntryPayload, StoredMembership};
 use std::path::PathBuf;
@@ -22,7 +22,8 @@ fn s<T, E: std::fmt::Display>(r: Result<T, E>) -> Result<T, StorageError> {
 }
 
 fn put_meta(txn: &redb::WriteTransaction, key: &str, value: &[u8]) -> Result<(), StoreError> {
-    txn.open_table(TableId::RaftMeta.definition())?.insert(key, value)?;
+    txn.open_table(TableId::RaftMeta.definition())?
+        .insert(key, value)?;
     Ok(())
 }
 
@@ -31,7 +32,9 @@ impl StateMachine {
         StateMachine { db, dir }
     }
 
-    fn position(&self) -> Result<(Option<LogId>, StoredMembership<RaftId, openraft::BasicNode>), StorageError> {
+    fn position(
+        &self,
+    ) -> Result<(Option<LogId>, StoredMembership<RaftId, openraft::BasicNode>), StorageError> {
         let view = s(self.db.snapshot_view())?;
         let applied = match &view.last_applied {
             Some(b) => Some(s(serde_json::from_slice::<LogId>(b))?),
@@ -46,14 +49,26 @@ impl StateMachine {
 
     fn snapshot_now(&self) -> Result<Option<Snapshot<TypeConfig>>, StorageError> {
         let view = s(self.db.snapshot_view())?;
-        let Some(applied) = &view.last_applied else { return Ok(None) };
+        let Some(applied) = &view.last_applied else {
+            return Ok(None);
+        };
         let last_log_id: LogId = s(serde_json::from_slice(applied))?;
         let last_membership = match &view.last_membership {
             Some(b) => s(serde_json::from_slice(b))?,
             None => StoredMembership::default(),
         };
-        let meta = SnapshotMeta { snapshot_id: format!("{}-{}", last_log_id.leader_id, last_log_id.index), last_log_id: Some(last_log_id), last_membership };
-        Ok(Some(Snapshot { meta, snapshot: Box::new(SnapshotHandle { view: Some(view), file: None }) }))
+        let meta = SnapshotMeta {
+            snapshot_id: format!("{}-{}", last_log_id.leader_id, last_log_id.index),
+            last_log_id: Some(last_log_id),
+            last_membership,
+        };
+        Ok(Some(Snapshot {
+            meta,
+            snapshot: Box::new(SnapshotHandle {
+                view: Some(view),
+                file: None,
+            }),
+        }))
     }
 }
 
@@ -65,7 +80,10 @@ impl RaftSnapshotBuilder<TypeConfig> for Builder {
         // to build ahead of time, so this only records a position.
         match self.0.snapshot_now()? {
             Some(sn) => Ok(sn),
-            None => Ok(Snapshot { meta: SnapshotMeta::default(), snapshot: Box::new(SnapshotHandle::default()) }),
+            None => Ok(Snapshot {
+                meta: SnapshotMeta::default(),
+                snapshot: Box::new(SnapshotHandle::default()),
+            }),
         }
     }
 }
@@ -73,7 +91,9 @@ impl RaftSnapshotBuilder<TypeConfig> for Builder {
 impl RaftStateMachine<TypeConfig> for StateMachine {
     type SnapshotBuilder = Builder;
 
-    async fn applied_state(&mut self) -> Result<(Option<LogId>, StoredMembership<RaftId, openraft::BasicNode>), StorageError> {
+    async fn applied_state(
+        &mut self,
+    ) -> Result<(Option<LogId>, StoredMembership<RaftId, openraft::BasicNode>), StorageError> {
         self.position()
     }
 
@@ -89,11 +109,25 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
             for e in entries {
                 let log_id_json = s(serde_json::to_vec(&e.log_id))?;
                 let (ws, membership) = match e.payload {
-                    EntryPayload::Blank => (WriteSet { format: crate::store::WRITE_SET_FORMAT, origin: crate::store::Origin::System, ops: Vec::new() }, None),
+                    EntryPayload::Blank => (
+                        WriteSet {
+                            format: crate::store::WRITE_SET_FORMAT,
+                            origin: crate::store::Origin::System,
+                            ops: Vec::new(),
+                        },
+                        None,
+                    ),
                     EntryPayload::Normal(ws) => (ws, None),
                     EntryPayload::Membership(m) => {
                         let stored = StoredMembership::new(Some(e.log_id), m);
-                        (WriteSet { format: crate::store::WRITE_SET_FORMAT, origin: crate::store::Origin::System, ops: Vec::new() }, Some(s(serde_json::to_vec(&stored))?))
+                        (
+                            WriteSet {
+                                format: crate::store::WRITE_SET_FORMAT,
+                                origin: crate::store::Origin::System,
+                                ops: Vec::new(),
+                            },
+                            Some(s(serde_json::to_vec(&stored))?),
+                        )
                     }
                 };
                 s(db.apply(&ws, e.log_id.index, |txn| {
@@ -119,8 +153,15 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
         Ok(Box::new(SnapshotHandle::default()))
     }
 
-    async fn install_snapshot(&mut self, meta: &SnapshotMeta, snapshot: Box<SnapshotHandle>) -> Result<(), StorageError> {
-        let path = snapshot.file.clone().ok_or_else(|| io_err("snapshot without data"))?;
+    async fn install_snapshot(
+        &mut self,
+        meta: &SnapshotMeta,
+        snapshot: Box<SnapshotHandle>,
+    ) -> Result<(), StorageError> {
+        let path = snapshot
+            .file
+            .clone()
+            .ok_or_else(|| io_err("snapshot without data"))?;
         let db = self.db.clone();
         let meta = meta.clone();
         let _ = &self.dir;
@@ -135,7 +176,8 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
                     Some(l) => put_meta(txn, LAST_APPLIED, &s2(serde_json::to_vec(l))?)?,
                     None => {
                         let _ = &applied;
-                        txn.open_table(TableId::RaftMeta.definition())?.remove(LAST_APPLIED)?;
+                        txn.open_table(TableId::RaftMeta.definition())?
+                            .remove(LAST_APPLIED)?;
                     }
                 }
                 put_meta(txn, LAST_MEMBERSHIP, &membership)

@@ -100,7 +100,12 @@ impl WorkQueue {
             let wait = {
                 let mut st = self.st.lock().unwrap();
                 let now = Instant::now();
-                let due: Vec<Key> = st.delayed.iter().filter(|(_, t)| **t <= now).map(|(k, _)| k.clone()).collect();
+                let due: Vec<Key> = st
+                    .delayed
+                    .iter()
+                    .filter(|(_, t)| **t <= now)
+                    .map(|(k, _)| k.clone())
+                    .collect();
                 for k in due {
                     st.delayed.remove(&k);
                     Self::push(&mut st, k);
@@ -110,11 +115,18 @@ impl WorkQueue {
                     st.active.insert(k.clone());
                     return k;
                 }
-                st.delayed.values().min().map(|t| t.saturating_duration_since(now))
+                st.delayed
+                    .values()
+                    .min()
+                    .map(|t| t.saturating_duration_since(now))
             };
             match wait {
                 Some(d) => {
-                    let _ = tokio::time::timeout(d.max(Duration::from_millis(5)), self.notify.notified()).await;
+                    let _ = tokio::time::timeout(
+                        d.max(Duration::from_millis(5)),
+                        self.notify.notified(),
+                    )
+                    .await;
                 }
                 None => self.notify.notified().await,
             }
@@ -176,7 +188,11 @@ mod tests {
         // Added while active: comes back after done, not before.
         q.add(vm("a"));
         assert_eq!(q.next().await, vm("b"));
-        assert!(tokio::time::timeout(Duration::from_millis(50), q.next()).await.is_err());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), q.next())
+                .await
+                .is_err()
+        );
         q.done(&vm("a"));
         assert_eq!(q.next().await, vm("a"));
         assert_eq!(q.stats(), (0, 2));
@@ -190,12 +206,18 @@ mod tests {
         let t = Instant::now();
         assert_eq!(q.next().await, vm("a"));
         let waited = t.elapsed();
-        assert!(waited >= Duration::from_millis(25) && waited < Duration::from_millis(75), "{waited:?}");
+        assert!(
+            waited >= Duration::from_millis(25) && waited < Duration::from_millis(75),
+            "{waited:?}"
+        );
     }
 
     #[test]
     fn backoff_doubles_and_caps() {
-        assert_eq!([1, 2, 3, 9, 10, 64].map(|n| backoff(n).as_secs()), [1, 2, 4, 256, 300, 300]);
+        assert_eq!(
+            [1, 2, 3, 9, 10, 64].map(|n| backoff(n).as_secs()),
+            [1, 2, 4, 256, 300, 300]
+        );
         let q = WorkQueue::new();
         assert_eq!(q.failed(&vm("a")), Duration::from_secs(1));
         assert_eq!(q.failed(&vm("a")), Duration::from_secs(2));

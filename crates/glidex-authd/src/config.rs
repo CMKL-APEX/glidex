@@ -72,7 +72,8 @@ impl Config {
     /// one is an error), then apply the environment overrides.
     pub fn load(path: &Path) -> Result<Self, String> {
         let file = match std::fs::read(path) {
-            Ok(bytes) => serde_json::from_slice::<FileConfig>(&bytes).map_err(|e| format!("{}: {}", path.display(), e))?,
+            Ok(bytes) => serde_json::from_slice::<FileConfig>(&bytes)
+                .map_err(|e| format!("{}: {}", path.display(), e))?,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => FileConfig::default(),
             Err(e) => return Err(format!("{}: {}", path.display(), e)),
         };
@@ -95,7 +96,10 @@ impl Config {
         if let Some(d) = std::env::var_os(ENV_RUN_DIR).filter(|d| !d.is_empty()) {
             config.run_dir = PathBuf::from(d);
         }
-        if let Some(u) = std::env::var(ENV_SERVICE_USER).ok().filter(|u| !u.is_empty()) {
+        if let Some(u) = std::env::var(ENV_SERVICE_USER)
+            .ok()
+            .filter(|u| !u.is_empty())
+        {
             config.service_user = u;
         }
         Ok(config)
@@ -118,7 +122,11 @@ mod tests {
     fn file_values_and_unknown_keys() {
         let dir = tempfile::TempDir::new().unwrap();
         let p = dir.path().join("authd.json");
-        std::fs::write(&p, r#"{"allow_root":true,"allowed_groups":["a","b"],"failure_delay_ms":5}"#).unwrap();
+        std::fs::write(
+            &p,
+            r#"{"allow_root":true,"allowed_groups":["a","b"],"failure_delay_ms":5}"#,
+        )
+        .unwrap();
         let c = Config::load(&p).unwrap();
         assert!(c.allow_root);
         assert_eq!(c.allowed_groups, vec!["a", "b"]);

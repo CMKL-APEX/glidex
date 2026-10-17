@@ -59,7 +59,12 @@ pub fn parse_qmp_blockstats(v: &Value) -> Vec<BlockStats> {
         .flatten()
         .filter_map(|e| {
             let qdev = e.get("qdev")?.as_str()?;
-            let index = qdev.strip_prefix("/machine/peripheral/vd")?.split('/').next()?.parse().ok()?;
+            let index = qdev
+                .strip_prefix("/machine/peripheral/vd")?
+                .split('/')
+                .next()?
+                .parse()
+                .ok()?;
             let st = e.get("stats")?;
             let n = |k: &str| st.get(k).and_then(Value::as_u64);
             Some(BlockStats {
@@ -83,21 +88,37 @@ mod tests {
 
     #[test]
     fn ch_v53_counters_recorded_live() {
-        let v: Value = serde_json::from_str(include_str!("../tests/fixtures/ch_v53_vm_counters.json")).unwrap();
+        let v: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/ch_v53_vm_counters.json"))
+                .unwrap();
         let s = parse_ch_counters(&v);
-        assert_eq!(s.iter().map(|b| b.index).collect::<Vec<_>>(), vec![0, 1], "net0 is not a disk");
+        assert_eq!(
+            s.iter().map(|b| b.index).collect::<Vec<_>>(),
+            vec![0, 1],
+            "net0 is not a disk"
+        );
         assert_eq!((s[0].read_ops, s[0].write_ops), (12826, 11432));
         assert_eq!((s[0].read_bytes, s[0].write_bytes), (464455168, 1087837696));
-        assert!(s.iter().all(|b| b.read_time_ns.is_none() && b.write_time_ns.is_none()));
+        assert!(
+            s.iter()
+                .all(|b| b.read_time_ns.is_none() && b.write_time_ns.is_none())
+        );
         // The second disk had no writes: its latency sentinels are ignored.
         assert_eq!(s[1].write_ops, 0);
     }
 
     #[test]
     fn qemu_blockstats_recorded_live() {
-        let v: Value = serde_json::from_str(include_str!("../tests/fixtures/qemu_10.2_query_blockstats.json")).unwrap();
+        let v: Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/qemu_10.2_query_blockstats.json"
+        ))
+        .unwrap();
         let s = parse_qmp_blockstats(&v);
-        assert_eq!(s.iter().map(|b| b.index).collect::<Vec<_>>(), vec![0, 1], "pflash is skipped");
+        assert_eq!(
+            s.iter().map(|b| b.index).collect::<Vec<_>>(),
+            vec![0, 1],
+            "pflash is skipped"
+        );
         assert!(s[0].read_ops > 0 && s[0].read_time_ns.unwrap() > 0);
         assert!(s.iter().all(|b| b.write_time_ns.is_some()));
     }
@@ -109,7 +130,13 @@ mod tests {
             "_disk2": {"read_ops": 5, "write_ops": 6, "read_bytes": 7, "write_bytes": 8},
             "_disk3": {"read_ops": 1},
         });
-        assert_eq!(parse_ch_counters(&v).iter().map(|b| b.index).collect::<Vec<_>>(), vec![2, 10]);
+        assert_eq!(
+            parse_ch_counters(&v)
+                .iter()
+                .map(|b| b.index)
+                .collect::<Vec<_>>(),
+            vec![2, 10]
+        );
         assert!(parse_qmp_blockstats(&serde_json::json!({"x": 1})).is_empty());
     }
 }

@@ -1,7 +1,7 @@
 [package]
 name = "glidex-control-plane"
 version = "0.1.0"
-edition = "2021"
+edition.workspace = true
 
 [dependencies]
 glidex-ovs = { path = "../glidex-ovs" }

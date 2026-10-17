@@ -17,7 +17,7 @@ use crate::node::{Node, NodeRole, NodeSpec, NodeStore};
 use crate::store::{Db, Origin, TableId};
 use redb::ReadableTable;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::{IpAddr, SocketAddr};
@@ -111,24 +111,48 @@ pub fn read_plan(db: &Db, plan: &str) -> Option<ImportPlan> {
 }
 
 pub fn plans(db: &Db) -> Vec<ImportPlan> {
-    let Ok(txn) = db.begin_read() else { return Vec::new() };
-    let Ok(t) = txn.open_table(TableId::Meta.definition()) else { return Vec::new() };
-    let Ok(it) = t.range(PLAN..) else { return Vec::new() };
-    it.flatten().take_while(|(k, _)| k.value().starts_with(PLAN)).filter(|(k, _)| !k.value()[PLAN.len()..].contains('/')).filter_map(|(_, v)| serde_json::from_slice(v.value()).ok()).collect()
+    let Ok(txn) = db.begin_read() else {
+        return Vec::new();
+    };
+    let Ok(t) = txn.open_table(TableId::Meta.definition()) else {
+        return Vec::new();
+    };
+    let Ok(it) = t.range(PLAN..) else {
+        return Vec::new();
+    };
+    it.flatten()
+        .take_while(|(k, _)| k.value().starts_with(PLAN))
+        .filter(|(k, _)| !k.value()[PLAN.len()..].contains('/'))
+        .filter_map(|(_, v)| serde_json::from_slice(v.value()).ok())
+        .collect()
 }
 
 fn read_rows(db: &Db, plan: &ImportPlan) -> Vec<Row> {
-    let Ok(txn) = db.begin_read() else { return Vec::new() };
-    let Ok(t) = txn.open_table(TableId::Meta.definition()) else { return Vec::new() };
-    (0..plan.chunks).filter_map(|n| t.get(chunk_key(&plan.plan, n).as_str()).ok().flatten()).filter_map(|v| serde_json::from_slice::<Vec<Row>>(v.value()).ok()).flatten().collect()
+    let Ok(txn) = db.begin_read() else {
+        return Vec::new();
+    };
+    let Ok(t) = txn.open_table(TableId::Meta.definition()) else {
+        return Vec::new();
+    };
+    (0..plan.chunks)
+        .filter_map(|n| t.get(chunk_key(&plan.plan, n).as_str()).ok().flatten())
+        .filter_map(|v| serde_json::from_slice::<Vec<Row>>(v.value()).ok())
+        .flatten()
+        .collect()
 }
 
 /// What a plan brings that may need a new name here (the mapping editor,
 /// spec/clustering-ui.md §7.4): its projects, node networks and credentials.
 pub fn sources(db: &Db, plan: &ImportPlan) -> Value {
     let rows = read_rows(db, plan);
-    let projects: Vec<Value> = table_rows(&rows, TableId::Projects).into_iter().map(|(id, p)| serde_json::json!({ "id": id, "name": p["name"] })).collect();
-    let networks: Vec<Value> = table_rows(&rows, TableId::Networks).into_iter().map(|(name, n)| serde_json::json!({ "name": name, "mode": n["mode"] })).collect();
+    let projects: Vec<Value> = table_rows(&rows, TableId::Projects)
+        .into_iter()
+        .map(|(id, p)| serde_json::json!({ "id": id, "name": p["name"] }))
+        .collect();
+    let networks: Vec<Value> = table_rows(&rows, TableId::Networks)
+        .into_iter()
+        .map(|(name, n)| serde_json::json!({ "name": name, "mode": n["mode"] }))
+        .collect();
     let credentials: Vec<Value> = table_rows(&rows, TableId::Credentials)
         .into_iter()
         .map(|(key, c)| serde_json::json!({ "key": key, "project": c["project"], "username": c["username"] }))
@@ -138,21 +162,43 @@ pub fn sources(db: &Db, plan: &ImportPlan) -> Value {
 }
 
 fn table_rows(rows: &[Row], t: TableId) -> Vec<(String, Value)> {
-    rows.iter().filter(|r| r.table == t as u16).filter_map(|r| Some((r.key.clone(), serde_json::from_str(&r.value).ok()?))).collect()
+    rows.iter()
+        .filter(|r| r.table == t as u16)
+        .filter_map(|r| Some((r.key.clone(), serde_json::from_str(&r.value).ok()?)))
+        .collect()
 }
 
 fn keys_of(db: &Db, t: TableId) -> BTreeSet<String> {
-    let Ok(txn) = db.begin_read() else { return BTreeSet::new() };
-    let Ok(tab) = txn.open_table(t.definition()) else { return BTreeSet::new() };
-    let Ok(it) = tab.iter() else { return BTreeSet::new() };
+    let Ok(txn) = db.begin_read() else {
+        return BTreeSet::new();
+    };
+    let Ok(tab) = txn.open_table(t.definition()) else {
+        return BTreeSet::new();
+    };
+    let Ok(it) = tab.iter() else {
+        return BTreeSet::new();
+    };
     it.flatten().map(|(k, _)| k.value().to_string()).collect()
 }
 
 fn values_of(db: &Db, t: TableId) -> Vec<(String, Value)> {
-    let Ok(txn) = db.begin_read() else { return Vec::new() };
-    let Ok(tab) = txn.open_table(t.definition()) else { return Vec::new() };
-    let Ok(it) = tab.iter() else { return Vec::new() };
-    it.flatten().filter_map(|(k, v)| Some((k.value().to_string(), serde_json::from_slice(v.value()).ok()?))).collect()
+    let Ok(txn) = db.begin_read() else {
+        return Vec::new();
+    };
+    let Ok(tab) = txn.open_table(t.definition()) else {
+        return Vec::new();
+    };
+    let Ok(it) = tab.iter() else {
+        return Vec::new();
+    };
+    it.flatten()
+        .filter_map(|(k, v)| {
+            Some((
+                k.value().to_string(),
+                serde_json::from_slice(v.value()).ok()?,
+            ))
+        })
+        .collect()
 }
 
 /// Where each source project lands, and what the checks found.
@@ -165,18 +211,47 @@ struct Resolved {
 }
 
 fn resolve(db: &Db, rows: &[Row], m: &ImportMappings) -> Resolved {
-    let mut r = Resolved { pmap: BTreeMap::new(), new_projects: BTreeMap::new(), problems: Vec::new() };
+    let mut r = Resolved {
+        pmap: BTreeMap::new(),
+        new_projects: BTreeMap::new(),
+        problems: Vec::new(),
+    };
     let projects = values_of(db, TableId::Projects);
-    let by_id = |id: &str| projects.iter().find(|(k, _)| k == id).map(|(_, v)| v.clone());
-    let by_name = |n: &str| projects.iter().find(|(_, v)| v["name"] == n).map(|(k, _)| k.clone());
-    let departed: BTreeSet<String> = values_of(db, TableId::Nodes).into_iter().filter(|(_, n)| n["status"]["phase"] == "Departed").flat_map(|(_, n)| n["status"]["departed_ids"].as_array().cloned().unwrap_or_default()).filter_map(|x| x.as_str().map(String::from)).collect();
+    let by_id = |id: &str| {
+        projects
+            .iter()
+            .find(|(k, _)| k == id)
+            .map(|(_, v)| v.clone())
+    };
+    let by_name = |n: &str| {
+        projects
+            .iter()
+            .find(|(_, v)| v["name"] == n)
+            .map(|(k, _)| k.clone())
+    };
+    let departed: BTreeSet<String> = values_of(db, TableId::Nodes)
+        .into_iter()
+        .filter(|(_, n)| n["status"]["phase"] == "Departed")
+        .flat_map(|(_, n)| {
+            n["status"]["departed_ids"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+        })
+        .filter_map(|x| x.as_str().map(String::from))
+        .collect();
 
     // Ids are kept (D19): a clash is refused unless it is the same resource coming back.
-    for (t, what) in [(TableId::Vms, "VM"), (TableId::Disks, "disk"), (TableId::Images, "image")] {
+    for (t, what) in [
+        (TableId::Vms, "VM"),
+        (TableId::Disks, "disk"),
+        (TableId::Images, "image"),
+    ] {
         let have = keys_of(db, t);
         for (k, _) in table_rows(rows, t) {
             if have.contains(&k) && !departed.contains(&k) {
-                r.problems.push(format!("{what} {k} already exists in the cluster"));
+                r.problems
+                    .push(format!("{what} {k} already exists in the cluster"));
             }
         }
     }
@@ -186,14 +261,17 @@ fn resolve(db: &Db, rows: &[Row], m: &ImportMappings) -> Resolved {
             Some(to) => {
                 if let Some(new_name) = to.strip_prefix("new:") {
                     if by_name(new_name).is_some() {
-                        r.problems.push(format!("project name '{new_name}' already exists"));
+                        r.problems
+                            .push(format!("project name '{new_name}' already exists"));
                     }
                     r.new_projects.insert(id.clone(), new_name.to_string());
                     r.pmap.insert(id.clone(), id);
                 } else if let Some(dest) = by_id(to).map(|_| to.clone()).or_else(|| by_name(to)) {
                     r.pmap.insert(id, dest);
                 } else {
-                    r.problems.push(format!("project '{to}' (mapped from '{name}') does not exist"));
+                    r.problems.push(format!(
+                        "project '{to}' (mapped from '{name}') does not exist"
+                    ));
                 }
             }
             None if by_id(&id).is_some() => {
@@ -213,13 +291,19 @@ fn resolve(db: &Db, rows: &[Row], m: &ImportMappings) -> Resolved {
     for (name, _) in table_rows(rows, TableId::Networks) {
         let to = m.networks.get(&name).cloned().unwrap_or(name.clone());
         if nets.contains(&to) || !taken.insert(to.clone()) {
-            r.problems.push(format!("network '{to}' already exists: rename it with --network {name}=<new name>"));
+            r.problems.push(format!(
+                "network '{to}' already exists: rename it with --network {name}=<new name>"
+            ));
         }
     }
     let creds = keys_of(db, TableId::Credentials);
     for (key, c) in table_rows(rows, TableId::Credentials) {
         let src_project = c["project"].as_str().unwrap_or("").to_string();
-        let dest = r.pmap.get(&src_project).cloned().unwrap_or(src_project.clone());
+        let dest = r
+            .pmap
+            .get(&src_project)
+            .cloned()
+            .unwrap_or(src_project.clone());
         let user = c["username"].as_str().unwrap_or("");
         let to = m.credentials.get(&key).cloned().unwrap_or(user.to_string());
         if creds.contains(&format!("{dest}/{to}")) {
@@ -234,18 +318,48 @@ fn resolve(db: &Db, rows: &[Row], m: &ImportMappings) -> Resolved {
             let dest = r.pmap.get(&src).cloned().unwrap_or(src);
             let e = add.entry(dest).or_default();
             e.0 += 1;
-            e.1 += vm.pointer("/spec/config/vcpu_count").and_then(|x| x.as_u64()).unwrap_or(0);
-            e.2 += vm.pointer("/spec/config/mem_size_mib").and_then(|x| x.as_u64()).unwrap_or(0);
+            e.1 += vm
+                .pointer("/spec/config/vcpu_count")
+                .and_then(|x| x.as_u64())
+                .unwrap_or(0);
+            e.2 += vm
+                .pointer("/spec/config/mem_size_mib")
+                .and_then(|x| x.as_u64())
+                .unwrap_or(0);
         }
         let existing_vms = values_of(db, TableId::Vms);
         for (dest, (vms, cpus, mem)) in add {
             let Some(p) = by_id(&dest) else { continue };
-            let used = existing_vms.iter().filter(|(_, v)| v["meta"]["project"] == dest.as_str()).fold((0u64, 0u64, 0u64), |a, (_, v)| (a.0 + 1, a.1 + v.pointer("/spec/config/vcpu_count").and_then(|x| x.as_u64()).unwrap_or(0), a.2 + v.pointer("/spec/config/mem_size_mib").and_then(|x| x.as_u64()).unwrap_or(0)));
-            for (what, limit, have, more) in [("vms", p["quotas"]["vms"].as_u64(), used.0, vms), ("vcpus", p["quotas"]["vcpus"].as_u64(), used.1, cpus), ("memory_mib", p["quotas"]["memory_mib"].as_u64(), used.2, mem)] {
-                if let Some(l) = limit {
-                    if have + more > l {
-                        r.problems.push(format!("project {dest} would go over its {what} quota ({} of {l}): approve with --over-quota", have + more));
-                    }
+            let used = existing_vms
+                .iter()
+                .filter(|(_, v)| v["meta"]["project"] == dest.as_str())
+                .fold((0u64, 0u64, 0u64), |a, (_, v)| {
+                    (
+                        a.0 + 1,
+                        a.1 + v
+                            .pointer("/spec/config/vcpu_count")
+                            .and_then(|x| x.as_u64())
+                            .unwrap_or(0),
+                        a.2 + v
+                            .pointer("/spec/config/mem_size_mib")
+                            .and_then(|x| x.as_u64())
+                            .unwrap_or(0),
+                    )
+                });
+            for (what, limit, have, more) in [
+                ("vms", p["quotas"]["vms"].as_u64(), used.0, vms),
+                ("vcpus", p["quotas"]["vcpus"].as_u64(), used.1, cpus),
+                (
+                    "memory_mib",
+                    p["quotas"]["memory_mib"].as_u64(),
+                    used.2,
+                    mem,
+                ),
+            ] {
+                if let Some(l) = limit
+                    && have + more > l
+                {
+                    r.problems.push(format!("project {dest} would go over its {what} quota ({} of {l}): approve with --over-quota", have + more));
                 }
             }
         }
@@ -255,24 +369,59 @@ fn resolve(db: &Db, rows: &[Row], m: &ImportMappings) -> Resolved {
 
 fn summarize(rows: &[Row]) -> Summary {
     let n = |t: TableId| rows.iter().filter(|r| r.table == t as u16).count();
-    Summary { vms: n(TableId::Vms), disks: n(TableId::Disks), images: n(TableId::Images), networks: n(TableId::Networks), credentials: n(TableId::Credentials), projects: n(TableId::Projects) }
+    Summary {
+        vms: n(TableId::Vms),
+        disks: n(TableId::Disks),
+        images: n(TableId::Images),
+        networks: n(TableId::Networks),
+        credentials: n(TableId::Credentials),
+        projects: n(TableId::Projects),
+    }
 }
 
 /// The tables an import may bring rows for: resources only (§5.9). Access
 /// data (users, links, identities), certificates, nodes and anything else
 /// a host could send are refused before anything is staged.
-const IMPORT_TABLES: [TableId; 8] = [TableId::Vms, TableId::Events, TableId::Disks, TableId::Networks, TableId::Images, TableId::ImageMeta, TableId::Credentials, TableId::Projects];
+const IMPORT_TABLES: [TableId; 8] = [
+    TableId::Vms,
+    TableId::Events,
+    TableId::Disks,
+    TableId::Networks,
+    TableId::Images,
+    TableId::ImageMeta,
+    TableId::Credentials,
+    TableId::Projects,
+];
 
 fn check_import_rows(b: &Bundle) -> Result<(), ImportError> {
-    let vms: BTreeSet<&str> = b.rows.iter().filter(|r| r.table == TableId::Vms as u16).map(|r| r.key.as_str()).collect();
+    let vms: BTreeSet<&str> = b
+        .rows
+        .iter()
+        .filter(|r| r.table == TableId::Vms as u16)
+        .map(|r| r.key.as_str())
+        .collect();
     for r in &b.rows {
         let Some(t) = TableId::from_id(r.table).filter(|t| IMPORT_TABLES.contains(t)) else {
-            return Err(ImportError::Invalid(format!("an import can't bring rows of table {}", r.table)));
+            return Err(ImportError::Invalid(format!(
+                "an import can't bring rows of table {}",
+                r.table
+            )));
         };
-        let v: Value = serde_json::from_str(&r.value).map_err(|_| ImportError::Invalid(format!("row {} is not JSON", r.key)))?;
+        let v: Value = serde_json::from_str(&r.value)
+            .map_err(|_| ImportError::Invalid(format!("row {} is not JSON", r.key)))?;
         match t {
-            TableId::Events if !r.key.strip_prefix("vm/").is_some_and(|id| vms.contains(id)) => return Err(ImportError::Invalid(format!("events {} are not of an imported VM", r.key))),
-            TableId::Networks if v["scope"] == "cluster" => return Err(ImportError::Invalid(format!("network {} is a cluster network", r.key))),
+            TableId::Events if !r.key.strip_prefix("vm/").is_some_and(|id| vms.contains(id)) => {
+                return Err(ImportError::Invalid(format!(
+                    "events {} are not of an imported VM",
+                    r.key
+                )));
+            }
+            TableId::Networks if v["scope"] == "cluster" => {
+                return Err(ImportError::Invalid(format!(
+                    "network {} is a cluster network",
+                    r.key
+                )));
+            }
             _ => {}
         }
     }
@@ -300,17 +449,40 @@ fn digest(s: &str) -> String {
 impl Cluster {
     /// Step 3 (leader): consume the token, check, and stage. Returns the plan id
     /// and the secret the host polls with.
-    pub fn create_import_plan(&self, req: ImportRequest) -> Result<(ImportPlan, String), ImportError> {
+    pub fn create_import_plan(
+        &self,
+        req: ImportRequest,
+    ) -> Result<(ImportPlan, String), ImportError> {
         check_import_rows(&req.bundle)?;
-        let rec = tokens::consume(&self.db, &req.token).map_err(|e| ImportError::Invalid(e.to_string()))?;
+        let rec = tokens::consume(&self.db, &req.token)
+            .map_err(|e| ImportError::Invalid(e.to_string()))?;
         match rec.kind {
-            TokenKind::Join { role: NodeRole::Agent, allow_import: true } => {}
-            TokenKind::Join { allow_import: false, .. } => return Err(ImportError::Invalid("this token can't import: create it with --allow-import".into())),
-            _ => return Err(ImportError::Invalid("an import joins as an agent; promote it to a server later".into())),
+            TokenKind::Join {
+                role: NodeRole::Agent,
+                allow_import: true,
+            } => {}
+            TokenKind::Join {
+                allow_import: false,
+                ..
+            } => {
+                return Err(ImportError::Invalid(
+                    "this token can't import: create it with --allow-import".into(),
+                ));
+            }
+            _ => {
+                return Err(ImportError::Invalid(
+                    "an import joins as an agent; promote it to a server later".into(),
+                ));
+            }
         }
         let existing = NodeStore::new(self.db.clone()).list().map_err(failed)?;
-        if existing.iter().any(|n| n.meta.id == req.node_id || (!n.status.phase.is_tombstone() && n.spec.name == req.name)) {
-            return Err(ImportError::Conflict(format!("a node named {} or with that id already exists", req.name)));
+        if existing.iter().any(|n| {
+            n.meta.id == req.node_id || (!n.status.phase.is_tombstone() && n.spec.name == req.name)
+        }) {
+            return Err(ImportError::Conflict(format!(
+                "a node named {} or with that id already exists",
+                req.name
+            )));
         }
         let plan_id = uuid::Uuid::new_v4().simple().to_string()[..12].to_string();
         let secret = uuid::Uuid::new_v4().simple().to_string();
@@ -353,7 +525,8 @@ impl Cluster {
             let key = chunk_key(&plan_id, n);
             self.db
                 .write(Origin::Api, |tx| -> Result<(), crate::store::StoreError> {
-                    tx.open_table(TableId::Meta.definition())?.insert(key.as_str(), body.as_slice())?;
+                    tx.open_table(TableId::Meta.definition())?
+                        .insert(key.as_str(), body.as_slice())?;
                     Ok(())
                 })
                 .map_err(failed)?;
@@ -365,15 +538,27 @@ impl Cluster {
     fn put_plan(&self, p: &ImportPlan) -> Result<(), ImportError> {
         self.db
             .write(Origin::Api, |tx| -> Result<(), crate::store::StoreError> {
-                tx.open_table(TableId::Meta.definition())?.insert(plan_key(&p.plan).as_str(), serde_json::to_vec(p).map_err(|e| crate::store::StoreError::Io(std::io::Error::other(e.to_string())))?.as_slice())?;
+                tx.open_table(TableId::Meta.definition())?.insert(
+                    plan_key(&p.plan).as_str(),
+                    serde_json::to_vec(p)
+                        .map_err(|e| {
+                            crate::store::StoreError::Io(std::io::Error::other(e.to_string()))
+                        })?
+                        .as_slice(),
+                )?;
                 Ok(())
             })
             .map_err(failed)
     }
 
     /// Re-run the checks with `mappings` and store them on the plan.
-    pub fn check_import(&self, plan_id: &str, mappings: ImportMappings) -> Result<ImportPlan, ImportError> {
-        let mut p = read_plan(&self.db, plan_id).ok_or_else(|| ImportError::NotFound(plan_id.into()))?;
+    pub fn check_import(
+        &self,
+        plan_id: &str,
+        mappings: ImportMappings,
+    ) -> Result<ImportPlan, ImportError> {
+        let mut p =
+            read_plan(&self.db, plan_id).ok_or_else(|| ImportError::NotFound(plan_id.into()))?;
         if p.state != "pending" {
             return Err(ImportError::Conflict(format!("the plan is {}", p.state)));
         }
@@ -385,14 +570,27 @@ impl Cluster {
     }
 
     /// Steps 4–5: validate against the cluster as it is now, then one write.
-    pub fn approve_import(&self, plan_id: &str, mappings: ImportMappings) -> Result<ImportPlan, ImportError> {
-        let p = read_plan(&self.db, plan_id).ok_or_else(|| ImportError::NotFound(plan_id.into()))?;
+    pub fn approve_import(
+        &self,
+        plan_id: &str,
+        mappings: ImportMappings,
+    ) -> Result<ImportPlan, ImportError> {
+        let p =
+            read_plan(&self.db, plan_id).ok_or_else(|| ImportError::NotFound(plan_id.into()))?;
         if p.state != "pending" {
             return Err(ImportError::Conflict(format!("the plan is {}", p.state)));
         }
-        let ca = self.signing_ca().ok_or_else(|| failed("this server holds no CA key"))?;
-        let (cert_pem, info) = ca.sign_node(&p.csr, &p.node_id, false, super::pki::NODE_VALIDITY_DAYS).map_err(|e| ImportError::Invalid(e.to_string()))?;
-        let trust_pem = self.ca_state().map(|s| s.trust_pem).or_else(|| self.files.read(self.files.trust()).ok()).unwrap_or_default();
+        let ca = self
+            .signing_ca()
+            .ok_or_else(|| failed("this server holds no CA key"))?;
+        let (cert_pem, info) = ca
+            .sign_node(&p.csr, &p.node_id, false, super::pki::NODE_VALIDITY_DAYS)
+            .map_err(|e| ImportError::Invalid(e.to_string()))?;
+        let trust_pem = self
+            .ca_state()
+            .map(|s| s.trust_pem)
+            .or_else(|| self.files.read(self.files.trust()).ok())
+            .unwrap_or_default();
         let cluster_id = self.identity.cluster_id.clone();
         // Validated and committed in one write, against the state of that write:
         // an expiry, a reject or another import can't land in between.
@@ -466,21 +664,31 @@ impl Cluster {
         self.db
             .write(Origin::Api, |tx| -> Result<(), crate::store::StoreError> {
                 let mut meta = tx.open_table(TableId::Meta.definition())?;
-                let cur: Option<ImportPlan> = meta.get(plan_key(plan_id).as_str())?.and_then(|v| serde_json::from_slice(v.value()).ok());
+                let cur: Option<ImportPlan> = meta
+                    .get(plan_key(plan_id).as_str())?
+                    .and_then(|v| serde_json::from_slice(v.value()).ok());
                 let Some(mut p) = cur else {
                     *refused.borrow_mut() = Some(ImportError::NotFound(plan_id.into()));
                     return Ok(());
                 };
                 // Re-read inside the write: an approval may have committed since.
                 if p.state != "pending" {
-                    *refused.borrow_mut() = Some(ImportError::Conflict(format!("the plan is {}", p.state)));
+                    *refused.borrow_mut() =
+                        Some(ImportError::Conflict(format!("the plan is {}", p.state)));
                     return Ok(());
                 }
                 p.state = "rejected".into();
                 for n in 0..p.chunks {
                     meta.remove(chunk_key(plan_id, n).as_str())?;
                 }
-                meta.insert(plan_key(plan_id).as_str(), serde_json::to_vec(&p).map_err(|e| crate::store::StoreError::Io(std::io::Error::other(e.to_string())))?.as_slice())?;
+                meta.insert(
+                    plan_key(plan_id).as_str(),
+                    serde_json::to_vec(&p)
+                        .map_err(|e| {
+                            crate::store::StoreError::Io(std::io::Error::other(e.to_string()))
+                        })?
+                        .as_slice(),
+                )?;
                 Ok(())
             })
             .map_err(failed)?;
@@ -492,21 +700,39 @@ impl Cluster {
 
     /// What approving with `mappings` amounts to (§12.2): the existing projects
     /// the import merges into, and whether it creates projects.
-    pub fn plan_destinations(&self, plan_id: &str, mappings: &ImportMappings) -> Result<(Vec<String>, bool), ImportError> {
-        let p = read_plan(&self.db, plan_id).ok_or_else(|| ImportError::NotFound(plan_id.into()))?;
+    pub fn plan_destinations(
+        &self,
+        plan_id: &str,
+        mappings: &ImportMappings,
+    ) -> Result<(Vec<String>, bool), ImportError> {
+        let p =
+            read_plan(&self.db, plan_id).ok_or_else(|| ImportError::NotFound(plan_id.into()))?;
         let rows = read_rows(&self.db, &p);
         let res = resolve(&self.db, &rows, mappings);
-        let merged: BTreeSet<String> = res.pmap.iter().filter(|(src, _)| !res.new_projects.contains_key(*src)).map(|(_, dest)| dest.clone()).collect();
+        let merged: BTreeSet<String> = res
+            .pmap
+            .iter()
+            .filter(|(src, _)| !res.new_projects.contains_key(*src))
+            .map(|(_, dest)| dest.clone())
+            .collect();
         Ok((merged.into_iter().collect(), !res.new_projects.is_empty()))
     }
 
     /// The host gave up waiting (§5.9): reject the plan if it is still
     /// pending; if it already committed, say so, so the host switches anyway.
-    pub fn cancel_import(&self, plan_id: &str, secret: &str) -> Result<Option<ImportPlan>, ImportError> {
-        let p = self.poll_import(plan_id, secret).ok_or_else(|| ImportError::NotFound(plan_id.into()))?;
+    pub fn cancel_import(
+        &self,
+        plan_id: &str,
+        secret: &str,
+    ) -> Result<Option<ImportPlan>, ImportError> {
+        let p = self
+            .poll_import(plan_id, secret)
+            .ok_or_else(|| ImportError::NotFound(plan_id.into()))?;
         match self.reject_import(plan_id) {
             Ok(()) => Ok(None),
-            Err(ImportError::Conflict(_)) => Ok(read_plan(&self.db, &p.plan).filter(|p| p.state == "committed")),
+            Err(ImportError::Conflict(_)) => {
+                Ok(read_plan(&self.db, &p.plan).filter(|p| p.state == "committed"))
+            }
             Err(e) => Err(e),
         }
     }
@@ -514,7 +740,10 @@ impl Cluster {
     /// Leader: a plan past its time is rejected and its staged rows dropped.
     pub fn expire_imports(&self) {
         let now = crate::tenancy::now();
-        for p in plans(&self.db).into_iter().filter(|p| p.state == "pending" && p.expires_at < now) {
+        for p in plans(&self.db)
+            .into_iter()
+            .filter(|p| p.state == "pending" && p.expires_at < now)
+        {
             let _ = self.reject_import(&p.plan);
         }
     }
@@ -531,24 +760,38 @@ impl Cluster {
 fn rewrite(rows: Vec<Row>, res: &Resolved, m: &ImportMappings, node: &str) -> Vec<Row> {
     let pmap = |p: &str| res.pmap.get(p).cloned().unwrap_or_else(|| p.to_string());
     let nmap = |n: &str| m.networks.get(n).cloned().unwrap_or_else(|| n.to_string());
-    let cname = |proj: &str, u: &str| m.credentials.get(&format!("{proj}/{u}")).cloned().unwrap_or_else(|| u.to_string());
+    let cname = |proj: &str, u: &str| {
+        m.credentials
+            .get(&format!("{proj}/{u}"))
+            .cloned()
+            .unwrap_or_else(|| u.to_string())
+    };
     let mut out = Vec::new();
     for r in rows {
-        let Ok(mut v) = serde_json::from_str::<Value>(&r.value) else { continue };
+        let Ok(mut v) = serde_json::from_str::<Value>(&r.value) else {
+            continue;
+        };
         let mut key = r.key.clone();
         match TableId::from_id(r.table) {
             Some(TableId::Vms) => {
                 let src = v["meta"]["project"].as_str().unwrap_or("").to_string();
                 v["meta"]["project"] = pmap(&src).into();
                 v["status"]["placement"]["node"] = node.into();
-                if let Some(list) = v.pointer_mut("/spec/config/networks").and_then(|l| l.as_array_mut()) {
+                if let Some(list) = v
+                    .pointer_mut("/spec/config/networks")
+                    .and_then(|l| l.as_array_mut())
+                {
                     for a in list {
                         if let Some(n) = a["network"].as_str().map(nmap) {
                             a["network"] = n.into();
                         }
                     }
                 }
-                if let Some(c) = v.pointer("/spec/config/credential").and_then(|c| c.as_str()).map(|u| cname(&src, u)) {
+                if let Some(c) = v
+                    .pointer("/spec/config/credential")
+                    .and_then(|c| c.as_str())
+                    .map(|u| cname(&src, u))
+                {
                     v["spec"]["config"]["credential"] = c.into();
                 }
             }
@@ -585,7 +828,11 @@ fn rewrite(rows: Vec<Row>, res: &Resolved, m: &ImportMappings, node: &str) -> Ve
             // Nothing else is imported (checked at staging; again here).
             _ => continue,
         }
-        out.push(Row { table: r.table, key, value: v.to_string() });
+        out.push(Row {
+            table: r.table,
+            key,
+            value: v.to_string(),
+        });
     }
     out
 }
@@ -602,7 +849,14 @@ mod tests {
         Bundle {
             plan: "p".into(),
             node: "local".into(),
-            rows: rows.into_iter().map(|(t, k, v)| Row { table: t as u16, key: k.into(), value: v.to_string() }).collect(),
+            rows: rows
+                .into_iter()
+                .map(|(t, k, v)| Row {
+                    table: t as u16,
+                    key: k.into(),
+                    value: v.to_string(),
+                })
+                .collect(),
             vm_ids: vec![],
             disk_ids: vec![],
             image_ids: vec![],
@@ -614,11 +868,42 @@ mod tests {
     #[test]
     fn an_import_brings_resources_and_nothing_else() {
         let vm = json!({ "meta": { "project": "p1" } });
-        assert!(check_import_rows(&bundle(vec![(TableId::Vms, "v1", vm.clone()), (TableId::Events, "vm/v1", json!([]))])).is_ok());
-        for (t, k) in [(TableId::Users, "u1"), (TableId::PolicyLinks, "l1"), (TableId::IssuedCerts, "s"), (TableId::Nodes, "n"), (TableId::CaBundle, "state"), (TableId::Meta, "default_project")] {
-            assert!(check_import_rows(&bundle(vec![(t, k, json!({}))])).is_err(), "{t:?} must be refused");
+        assert!(
+            check_import_rows(&bundle(vec![
+                (TableId::Vms, "v1", vm.clone()),
+                (TableId::Events, "vm/v1", json!([]))
+            ]))
+            .is_ok()
+        );
+        for (t, k) in [
+            (TableId::Users, "u1"),
+            (TableId::PolicyLinks, "l1"),
+            (TableId::IssuedCerts, "s"),
+            (TableId::Nodes, "n"),
+            (TableId::CaBundle, "state"),
+            (TableId::Meta, "default_project"),
+        ] {
+            assert!(
+                check_import_rows(&bundle(vec![(t, k, json!({}))])).is_err(),
+                "{t:?} must be refused"
+            );
         }
-        assert!(check_import_rows(&bundle(vec![(TableId::Events, "vm/someone-else", json!([]))])).is_err(), "events of a VM it doesn't bring");
-        assert!(check_import_rows(&bundle(vec![(TableId::Networks, "n", json!({ "scope": "cluster" }))])).is_err());
+        assert!(
+            check_import_rows(&bundle(vec![(
+                TableId::Events,
+                "vm/someone-else",
+                json!([])
+            )]))
+            .is_err(),
+            "events of a VM it doesn't bring"
+        );
+        assert!(
+            check_import_rows(&bundle(vec![(
+                TableId::Networks,
+                "n",
+                json!({ "scope": "cluster" })
+            )]))
+            .is_err()
+        );
     }
 }

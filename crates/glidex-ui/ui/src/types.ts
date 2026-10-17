@@ -590,11 +590,19 @@ export function entityLabel(e: EntityRef): string {
   return "id" in e ? `${e.type}:${e.id}` : e.type;
 }
 
+export interface LoginConnector {
+  id: string;
+  kind: "pam" | "oidc";
+  display_name: string;
+}
+
 export interface AuthMethods {
   pam: boolean;
   oidc: boolean;
   /** Authentication is off (development): everyone is the system user. */
   disabled: boolean;
+  /** The directory's enabled connectors (absent from older servers). */
+  connectors?: LoginConnector[];
 }
 
 export interface User {

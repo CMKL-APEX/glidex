@@ -39,13 +39,22 @@ pub struct SnapshotHandle {
 
 impl std::fmt::Debug for SnapshotHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "SnapshotHandle {{ view: {}, file: {:?} }}", self.view.is_some(), self.file)
+        write!(
+            f,
+            "SnapshotHandle {{ view: {}, file: {:?} }}",
+            self.view.is_some(),
+            self.file
+        )
     }
 }
 
 /// The Raft id of a node UUID.
 pub fn raft_id_of(node_id: &str) -> RaftId {
-    let bytes: Vec<u8> = node_id.bytes().filter(|b| b.is_ascii_hexdigit()).take(16).collect();
+    let bytes: Vec<u8> = node_id
+        .bytes()
+        .filter(|b| b.is_ascii_hexdigit())
+        .take(16)
+        .collect();
     let hex = std::str::from_utf8(&bytes).unwrap_or("");
     let id = u64::from_str_radix(hex, 16).unwrap_or_else(|_| {
         // Not a UUID (the implicit node `local`): hash it.
@@ -56,5 +65,7 @@ pub fn raft_id_of(node_id: &str) -> RaftId {
 }
 
 pub fn io_err(e: impl std::fmt::Display) -> StorageError {
-    StorageError::IO { source: openraft::StorageIOError::write(&std::io::Error::other(e.to_string())) }
+    StorageError::IO {
+        source: openraft::StorageIOError::write(&std::io::Error::other(e.to_string())),
+    }
 }

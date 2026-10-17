@@ -1,0 +1,179 @@
+// The directory's connectors: the IdPs and user sources its users log in
+// through (spec/tenancy.md §5, milestone T1).
+syntax = "proto3";
+
+package glidex.directory.v1;
+
+import "glidex/api/v1/options.proto";
+import "google/protobuf/field_mask.proto";
+import "google/protobuf/timestamp.proto";
+
+service ConnectorService {
+  rpc ListConnectors(ListConnectorsRequest) returns (ListConnectorsResponse) {
+    option (glidex.api.v1.op) = {
+      action: "listConnectors"
+      kind: KIND_READ
+      rest: "GET /connectors"
+    };
+  }
+  rpc GetConnector(GetConnectorRequest) returns (GetConnectorResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readConnector"
+      kind: KIND_READ
+      rest: "GET /connectors/{id}"
+    };
+  }
+  rpc CreateConnector(CreateConnectorRequest) returns (CreateConnectorResponse) {
+    option (glidex.api.v1.op) = {
+      action: "createConnector"
+      kind: KIND_WRITE
+      rest: "POST /connectors"
+    };
+  }
+  rpc UpdateConnector(UpdateConnectorRequest) returns (UpdateConnectorResponse) {
+    option (glidex.api.v1.op) = {
+      action: "updateConnector"
+      kind: KIND_WRITE
+      rest: "PATCH /connectors/{id}"
+    };
+  }
+  rpc DeleteConnector(DeleteConnectorRequest) returns (DeleteConnectorResponse) {
+    option (glidex.api.v1.op) = {
+      action: "deleteConnector"
+      kind: KIND_WRITE
+      rest: "DELETE /connectors/{id}"
+    };
+  }
+  rpc SetSecret(SetSecretRequest) returns (SetSecretResponse) {
+    option (glidex.api.v1.op) = {
+      action: "setConnectorSecret"
+      kind: KIND_WRITE
+      rest: "PUT /connectors/{id}/secrets/{field}"
+    };
+  }
+  // Check what can be checked without a user: discovery and keys, the
+  // client secret being set, glidex-authd being there.
+  rpc TestConnector(TestConnectorRequest) returns (TestConnectorResponse) {
+    option (glidex.api.v1.op) = {
+      action: "testConnector"
+      kind: KIND_READ
+      rest: "POST /connectors/{id}/test"
+    };
+  }
+}
+
+message Connector {
+  // [a-z0-9-]{1,48}; `file-pam` and `file-oidc` are the ones from
+  // control-plane.json.
+  string id = 1;
+  string directory_id = 2 [json_name = "directory_id"];
+  // `pam` or `oidc`: which settings it has. Output only.
+  string kind = 3;
+  string display_name = 4 [json_name = "display_name"];
+  optional bool enabled = 5;
+  // Create a user at the first login.
+  optional bool jit = 6;
+  repeated string required_groups = 7 [json_name = "required_groups"];
+  optional bool require_mfa = 8 [json_name = "require_mfa"];
+  // IdP (or Unix) group → team name.
+  map<string, string> group_teams = 9 [json_name = "group_teams"];
+  // New users become members of this tenant.
+  optional string default_tenant = 10 [json_name = "default_tenant"];
+  // Longest personal token a login through it mints (default 30 days).
+  optional uint32 token_max_days = 11 [json_name = "token_max_days"];
+  oneof settings {
+    PamSettings pam = 12;
+    OidcSettings oidc = 13;
+  }
+  // Which secrets are set; never their values. Output only.
+  repeated SecretStatus secrets = 14;
+  // `api` or `file`. Output only.
+  string source = 15;
+  google.protobuf.Timestamp created_at = 16 [json_name = "created_at"];
+  google.protobuf.Timestamp updated_at = 17 [json_name = "updated_at"];
+}
+
+message PamSettings {
+  repeated string allowed_groups = 1 [json_name = "allowed_groups"];
+}
+
+message OidcSettings {
+  string issuer = 1;
+  string client_id = 2 [json_name = "client_id"];
+  repeated string scopes = 3;
+  string groups_claim = 4 [json_name = "groups_claim"];
+  repeated string allowed_domains = 5 [json_name = "allowed_domains"];
+  optional string redirect_uri = 6 [json_name = "redirect_uri"];
+  repeated string mfa_acr_values = 7 [json_name = "mfa_acr_values"];
+}
+
+message SecretStatus {
+  string field = 1;
+  optional bool set = 2;
+  google.protobuf.Timestamp updated_at = 3 [json_name = "updated_at"];
+}
+
+message ListConnectorsRequest {}
+
+message ListConnectorsResponse {
+  repeated Connector connectors = 1;
+}
+
+message GetConnectorRequest {
+  string id = 1;
+}
+
+message GetConnectorResponse {
+  Connector connector = 1;
+}
+
+message CreateConnectorRequest {
+  Connector connector = 1;
+}
+
+message CreateConnectorResponse {
+  Connector connector = 1;
+}
+
+message UpdateConnectorRequest {
+  string id = 1;
+  Connector connector = 2;
+  // The fields of `connector` to change (`display_name`, `enabled`, `jit`,
+  // `required_groups`, `require_mfa`, `group_teams`, `default_tenant`,
+  // `token_max_days`, `pam`, `oidc`).
+  google.protobuf.FieldMask update_mask = 3 [json_name = "update_mask"];
+}
+
+message UpdateConnectorResponse {
+  Connector connector = 1;
+}
+
+message DeleteConnectorRequest {
+  string id = 1;
+}
+
+message DeleteConnectorResponse {}
+
+message SetSecretRequest {
+  string id = 1;
+  string field = 2;
+  string value = 3 [(glidex.api.v1.secret) = true];
+}
+
+message SetSecretResponse {
+  Connector connector = 1;
+}
+
+message TestConnectorRequest {
+  string id = 1;
+}
+
+message TestConnectorResponse {
+  repeated TestStep steps = 1;
+}
+
+message TestStep {
+  string name = 1;
+  optional bool ok = 2;
+  string message = 3;
+}

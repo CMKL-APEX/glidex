@@ -1,5 +1,5 @@
 import Modal from "./Modal";
-import { PamForm, SsoButton } from "../pages/Login";
+import { PamForm, SsoButtons } from "../pages/Login";
 import type { AuthMethods } from "../types";
 
 /** Step-up (401 reauth_required): log in again, then the request is retried. */
@@ -21,7 +21,7 @@ export default function ReauthDialog({
       </p>
       {methods.pam && <PamForm initialUsername={username} submitLabel="Sign in and retry" onDone={onDone} />}
       {methods.pam && methods.oidc && <div className="my-3" />}
-      {methods.oidc && <SsoButton reauth />}
+      {methods.oidc && <SsoButtons methods={methods} reauth />}
       <button className="mt-3 w-full px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-lg" onClick={onCancel}>
         Cancel
       </button>

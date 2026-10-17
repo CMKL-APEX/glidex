@@ -1,9 +1,9 @@
 //! Moving a NIC's IP configuration onto its bridge, with verification and
 //! exact rollback (spec §8.5).
 
+use crate::OvsError;
 use crate::exec::{Cmd, Exec, Program};
 use crate::nic::global_addresses;
-use crate::OvsError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::time::{Duration, Instant};
@@ -43,7 +43,10 @@ pub fn snapshot(exec: &dyn Exec, ifname: &str) -> Result<Snapshot, OvsError> {
         .into_iter()
         .map(|(ip, p)| format!("{}/{}", ip, p))
         .collect();
-    let out = exec.check(&Cmd::new(Program::Ip, ["-4", "-j", "route", "show", "dev", ifname]))?;
+    let out = exec.check(&Cmd::new(
+        Program::Ip,
+        ["-4", "-j", "route", "show", "dev", ifname],
+    ))?;
     let routes: Vec<Value> = serde_json::from_slice(&out.stdout).unwrap_or_default();
     let routes = routes
         .iter()
@@ -58,7 +61,11 @@ pub fn snapshot(exec: &dyn Exec, ifname: &str) -> Result<Snapshot, OvsError> {
         })
         .collect();
     let mac = exec
-        .read_file(&std::path::Path::new("/sys/class/net").join(ifname).join("address"))
+        .read_file(
+            &std::path::Path::new("/sys/class/net")
+                .join(ifname)
+                .join("address"),
+        )
         .ok()
         .map(|s| s.trim().to_string());
     Ok(Snapshot {
@@ -70,7 +77,12 @@ pub fn snapshot(exec: &dyn Exec, ifname: &str) -> Result<Snapshot, OvsError> {
 }
 
 fn route_args(r: &Route, dev: &str) -> Vec<String> {
-    let mut args = vec!["-4".to_string(), "route".into(), "replace".into(), r.dst.clone()];
+    let mut args = vec![
+        "-4".to_string(),
+        "route".into(),
+        "replace".into(),
+        r.dst.clone(),
+    ];
     if let Some(gw) = &r.gateway {
         args.extend(["via".to_string(), gw.clone()]);
     }
@@ -93,16 +105,36 @@ pub fn apply(exec: &dyn Exec, snap: &Snapshot, bridge: &str) -> Result<(), OvsEr
     if let Some(mac) = &snap.mac {
         crate::vsctl::run(
             exec,
-            vec!["set".into(), "Bridge".into(), bridge.into(), format!("other-config:hwaddr={}", mac)],
+            vec![
+                "set".into(),
+                "Bridge".into(),
+                bridge.into(),
+                format!("other-config:hwaddr={}", mac),
+            ],
         )?;
     }
     for a in &snap.addresses {
         // May already be gone (re-applying after a reboot, or a retry).
-        let _ = exec.run(&Cmd::new(Program::Ip, ["addr", "del", a.as_str(), "dev", snap.ifname.as_str()]));
+        let _ = exec.run(&Cmd::new(
+            Program::Ip,
+            ["addr", "del", a.as_str(), "dev", snap.ifname.as_str()],
+        ));
     }
-    ip(exec, vec!["link".into(), "set".into(), bridge.into(), "up".into()])?;
+    ip(
+        exec,
+        vec!["link".into(), "set".into(), bridge.into(), "up".into()],
+    )?;
     for a in &snap.addresses {
-        ip(exec, vec!["addr".into(), "replace".into(), a.clone(), "dev".into(), bridge.into()])?;
+        ip(
+            exec,
+            vec![
+                "addr".into(),
+                "replace".into(),
+                a.clone(),
+                "dev".into(),
+                bridge.into(),
+            ],
+        )?;
     }
     for r in &snap.routes {
         ip(exec, route_args(r, bridge))?;
@@ -121,18 +153,44 @@ pub fn restore(exec: &dyn Exec, snap: &Snapshot, bridge: &str) -> Result<(), Ovs
     };
     for a in &snap.addresses {
         // May already be gone from the bridge.
-        let _ = exec.run(&Cmd::new(Program::Ip, ["addr", "del", a.as_str(), "dev", bridge]));
+        let _ = exec.run(&Cmd::new(
+            Program::Ip,
+            ["addr", "del", a.as_str(), "dev", bridge],
+        ));
     }
     for a in &snap.addresses {
-        note(ip(exec, vec!["addr".into(), "replace".into(), a.clone(), "dev".into(), snap.ifname.clone()]));
+        note(ip(
+            exec,
+            vec![
+                "addr".into(),
+                "replace".into(),
+                a.clone(),
+                "dev".into(),
+                snap.ifname.clone(),
+            ],
+        ));
     }
-    note(ip(exec, vec!["link".into(), "set".into(), snap.ifname.clone(), "up".into()]));
+    note(ip(
+        exec,
+        vec![
+            "link".into(),
+            "set".into(),
+            snap.ifname.clone(),
+            "up".into(),
+        ],
+    ));
     for r in &snap.routes {
         note(ip(exec, route_args(r, &snap.ifname)));
     }
     let _ = crate::vsctl::run(
         exec,
-        vec!["remove".into(), "Bridge".into(), bridge.into(), "other-config".into(), "hwaddr".into()],
+        vec![
+            "remove".into(),
+            "Bridge".into(),
+            bridge.into(),
+            "other-config".into(),
+            "hwaddr".into(),
+        ],
     );
     first_err.map_or(Ok(()), Err)
 }
@@ -144,15 +202,24 @@ pub fn gateway_reachable(exec: &dyn Exec, gateway: &str, bridge: &str, timeout: 
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
         let _ = exec.run(
-            &Cmd::new(Program::Ping, ["-c", "1", "-W", "1", "-I", bridge, gateway]).timeout(Duration::from_secs(3)),
+            &Cmd::new(Program::Ping, ["-c", "1", "-W", "1", "-I", bridge, gateway])
+                .timeout(Duration::from_secs(3)),
         );
-        if let Ok(out) = exec.check(&Cmd::new(Program::Ip, ["-j", "neigh", "show", gateway, "dev", bridge])) {
+        if let Ok(out) = exec.check(&Cmd::new(
+            Program::Ip,
+            ["-j", "neigh", "show", gateway, "dev", bridge],
+        )) {
             let entries: Vec<Value> = serde_json::from_slice(&out.stdout).unwrap_or_default();
             let resolved = entries.iter().any(|e| {
                 e.get("lladdr").is_some()
-                    && e.get("state")
-                        .and_then(Value::as_array)
-                        .is_some_and(|s| s.iter().any(|x| matches!(x.as_str(), Some("REACHABLE" | "STALE" | "DELAY" | "PROBE" | "PERMANENT"))))
+                    && e.get("state").and_then(Value::as_array).is_some_and(|s| {
+                        s.iter().any(|x| {
+                            matches!(
+                                x.as_str(),
+                                Some("REACHABLE" | "STALE" | "DELAY" | "PROBE" | "PERMANENT")
+                            )
+                        })
+                    })
             });
             if resolved {
                 return true;
@@ -221,19 +288,45 @@ mod tests {
     fn restore_continues_after_errors() {
         let exec = exec_with_nic();
         let snap = snapshot(&exec, "gxup0").unwrap();
-        exec.on("ip addr replace 192.0.2.10/24 dev gxup0", Output::failed(2, "RTNETLINK answers: File exists"));
+        exec.on(
+            "ip addr replace 192.0.2.10/24 dev gxup0",
+            Output::failed(2, "RTNETLINK answers: File exists"),
+        );
         assert!(restore(&exec, &snap, "gxbr-up").is_err());
-        assert!(exec.calls().iter().any(|c| c.contains("route replace default via 192.0.2.1 dev gxup0")), "routes still restored");
+        assert!(
+            exec.calls()
+                .iter()
+                .any(|c| c.contains("route replace default via 192.0.2.1 dev gxup0")),
+            "routes still restored"
+        );
     }
 
     #[test]
     fn gateway_check_uses_neighbour_state() {
         let exec = RecordingExec::new();
-        exec.on("ip -j neigh show 192.0.2.1 dev gxbr-up", Output::ok(r#"[{"dst":"192.0.2.1","lladdr":"aa:bb:cc:dd:ee:ff","state":["REACHABLE"]}]"#));
-        assert!(gateway_reachable(&exec, "192.0.2.1", "gxbr-up", Duration::from_secs(1)));
+        exec.on(
+            "ip -j neigh show 192.0.2.1 dev gxbr-up",
+            Output::ok(
+                r#"[{"dst":"192.0.2.1","lladdr":"aa:bb:cc:dd:ee:ff","state":["REACHABLE"]}]"#,
+            ),
+        );
+        assert!(gateway_reachable(
+            &exec,
+            "192.0.2.1",
+            "gxbr-up",
+            Duration::from_secs(1)
+        ));
 
         let exec = RecordingExec::new();
-        exec.on("ip -j neigh show 192.0.2.1 dev gxbr-up", Output::ok(r#"[{"dst":"192.0.2.1","state":["FAILED"]}]"#));
-        assert!(!gateway_reachable(&exec, "192.0.2.1", "gxbr-up", Duration::from_millis(500)));
+        exec.on(
+            "ip -j neigh show 192.0.2.1 dev gxbr-up",
+            Output::ok(r#"[{"dst":"192.0.2.1","state":["FAILED"]}]"#),
+        );
+        assert!(!gateway_reachable(
+            &exec,
+            "192.0.2.1",
+            "gxbr-up",
+            Duration::from_millis(500)
+        ));
     }
 }

@@ -33,12 +33,18 @@ pub struct Roles {
 }
 
 impl Roles {
-    pub const STANDALONE: Roles = Roles { node: true, server: true };
+    pub const STANDALONE: Roles = Roles {
+        node: true,
+        server: true,
+    };
 
     pub fn of(role: NodeRole) -> Roles {
         match role {
             NodeRole::Server => Roles::STANDALONE,
-            NodeRole::Agent => Roles { node: true, server: false },
+            NodeRole::Agent => Roles {
+                node: true,
+                server: false,
+            },
         }
     }
 }
@@ -115,7 +121,10 @@ pub enum NodePhase {
 impl NodePhase {
     /// A tombstone: the node is gone and its id retired (§5.3).
     pub fn is_tombstone(self) -> bool {
-        matches!(self, NodePhase::Departed | NodePhase::Removed | NodePhase::Forgotten)
+        matches!(
+            self,
+            NodePhase::Departed | NodePhase::Removed | NodePhase::Forgotten
+        )
     }
 
     pub fn schedulable(self) -> bool {
@@ -264,7 +273,10 @@ impl Node {
                 raft_id: None,
                 advertise: None,
                 tunnel_ip: None,
-                versions: Versions { glidex: env!("CARGO_PKG_VERSION").into(), ..Default::default() },
+                versions: Versions {
+                    glidex: env!("CARGO_PKG_VERSION").into(),
+                    ..Default::default()
+                },
                 capacity: Resources::default(),
                 allocatable: Resources::default(),
                 features: NodeFeatures::default(),
@@ -298,7 +310,13 @@ macro_rules! storage_from {
         }
     )*};
 }
-storage_from!(redb::TransactionError, redb::TableError, redb::StorageError, redb::CommitError, serde_json::Error);
+storage_from!(
+    redb::TransactionError,
+    redb::TableError,
+    redb::StorageError,
+    redb::CommitError,
+    serde_json::Error
+);
 
 /// An OVN release series, `(major, minor)` of "26.03.0" or "24.03.8".
 pub fn ovn_series(v: &str) -> Option<(u32, u32)> {
@@ -312,7 +330,11 @@ pub fn ovn_series(v: &str) -> Option<(u32, u32)> {
 pub fn cluster_northd_ovn(nodes: &[Node]) -> Option<String> {
     nodes
         .iter()
-        .filter(|n| n.spec.role == NodeRole::Server && n.status.phase == NodePhase::Active && n.status.features.ovn_central)
+        .filter(|n| {
+            n.spec.role == NodeRole::Server
+                && n.status.phase == NodePhase::Active
+                && n.status.features.ovn_central
+        })
         .filter_map(|n| n.status.versions.ovn.clone())
         .filter(|v| ovn_series(v).is_some())
         .max_by_key(|v| ovn_series(v))
@@ -322,7 +344,10 @@ pub fn cluster_northd_ovn(nodes: &[Node]) -> Option<String> {
 /// its ovn-controller is an older release, whose tables stop short of
 /// northd's pipeline (spec/installer.md, OVN). `None` when it can.
 pub fn ovn_outdated(n: &Node, northd: Option<&str>) -> Option<String> {
-    let (want, have) = (northd.and_then(ovn_series)?, n.status.versions.ovn.as_deref()?);
+    let (want, have) = (
+        northd.and_then(ovn_series)?,
+        n.status.versions.ovn.as_deref()?,
+    );
     (ovn_series(have)? < want).then(|| {
         format!("its ovn-controller {have} is older than the cluster's ovn-northd {}: re-run glidex-install on {} to upgrade OVN", northd.unwrap_or_default(), n.spec.name)
     })
@@ -358,27 +383,42 @@ impl NodeStore {
                 Err(e) => tracing::warn!("skipping unreadable node record: {}", e),
             }
         }
-        out.sort_by(|a, b| a.spec.name.cmp(&b.spec.name).then(a.meta.id.cmp(&b.meta.id)));
+        out.sort_by(|a, b| {
+            a.spec
+                .name
+                .cmp(&b.spec.name)
+                .then(a.meta.id.cmp(&b.meta.id))
+        });
         Ok(out)
     }
 
     /// Insert or replace. Names are unique among live nodes.
     pub fn put(&self, n: &Node) -> Result<(), NodeError> {
         if !n.status.phase.is_tombstone()
-            && self.list()?.iter().any(|o| o.meta.id != n.meta.id && !o.status.phase.is_tombstone() && o.spec.name == n.spec.name)
+            && self.list()?.iter().any(|o| {
+                o.meta.id != n.meta.id
+                    && !o.status.phase.is_tombstone()
+                    && o.spec.name == n.spec.name
+            })
         {
             return Err(NodeError::NameTaken(n.spec.name.clone()));
         }
         let bytes = serde_json::to_vec(n)?;
-        let r = self.db.write(Origin::Controller, |tx| -> Result<(), NodeError> {
-            let mut t = tx.open_table(TableId::Nodes.definition())?;
-            t.insert(n.meta.id.as_str(), bytes.as_slice())?;
-            Ok(())
-        });
+        let r = self
+            .db
+            .write(Origin::Controller, |tx| -> Result<(), NodeError> {
+                let mut t = tx.open_table(TableId::Nodes.definition())?;
+                t.insert(n.meta.id.as_str(), bytes.as_slice())?;
+                Ok(())
+            });
         match r {
             // A follower server reporting on itself: the leader writes it.
             Err(NodeError::Store(StoreError::NotLeader { .. })) => {
-                Ok(self.db.forward_raw(vec![crate::store::Op::Put { table: TableId::Nodes, key: n.meta.id.as_bytes().to_vec(), value: bytes }])?)
+                Ok(self.db.forward_raw(vec![crate::store::Op::Put {
+                    table: TableId::Nodes,
+                    key: n.meta.id.as_bytes().to_vec(),
+                    value: bytes,
+                }])?)
             }
             other => other,
         }
@@ -388,17 +428,34 @@ impl NodeStore {
     /// node reports about itself (capacity, features, versions). Writes
     /// nothing when nothing changed (§4.1).
     pub fn ensure_self(&self, id: &str, probe: SelfProbe) -> Result<Node, NodeError> {
-        self.report_self(id, probe, true).map(|n| n.expect("created"))
+        self.report_self(id, probe, true)
+            .map(|n| n.expect("created"))
     }
 
     /// Update this node's own record with what the host has now. `create`:
     /// make the record when there is none (a standalone host). A cluster
     /// member never does: its record is the cluster's (join wrote it), and a
     /// cache that hasn't received it yet must not replace it with a guess.
-    pub fn report_self(&self, id: &str, probe: SelfProbe, create: bool) -> Result<Option<Node>, NodeError> {
+    pub fn report_self(
+        &self,
+        id: &str,
+        probe: SelfProbe,
+        create: bool,
+    ) -> Result<Option<Node>, NodeError> {
         let mut node = match self.get(id)? {
             Some(n) => n,
-            None if create => Node::new(id, NodeSpec { name: probe.name.clone(), role: NodeRole::Server, unschedulable: false, labels: BTreeMap::new(), br_int_datapath: Default::default(), bridge_mappings: Default::default(), drop_spare_files_before: None }),
+            None if create => Node::new(
+                id,
+                NodeSpec {
+                    name: probe.name.clone(),
+                    role: NodeRole::Server,
+                    unschedulable: false,
+                    labels: BTreeMap::new(),
+                    br_int_datapath: Default::default(),
+                    bridge_mappings: Default::default(),
+                    drop_spare_files_before: None,
+                },
+            ),
             None => return Ok(None),
         };
         let before = node.clone();
@@ -438,11 +495,20 @@ pub struct SelfProbe {
 /// The first line of `<program> --version` (`ovn-controller 24.03.2`), its
 /// second word; `None` when the program isn't installed.
 fn program_version(program: &str) -> Option<String> {
-    let out = std::process::Command::new(program).arg("--version").stdin(std::process::Stdio::null()).output().ok()?;
+    let out = std::process::Command::new(program)
+        .arg("--version")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .ok()?;
     if !out.status.success() {
         return None;
     }
-    String::from_utf8_lossy(&out.stdout).lines().next()?.split_whitespace().nth(1).map(String::from)
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .next()?
+        .split_whitespace()
+        .nth(1)
+        .map(String::from)
 }
 
 impl SelfProbe {
@@ -455,13 +521,19 @@ impl SelfProbe {
             .ok()
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "localhost".into());
-        let cpus = std::thread::available_parallelism().map(|n| n.get() as u32).unwrap_or(1);
+        let cpus = std::thread::available_parallelism()
+            .map(|n| n.get() as u32)
+            .unwrap_or(1);
         let memory_mib = std::fs::read_to_string("/proc/meminfo")
             .ok()
             .and_then(|m| {
                 m.lines()
                     .find_map(|l| l.strip_prefix("MemTotal:"))
-                    .and_then(|r| r.split_whitespace().next().and_then(|n| n.parse::<u64>().ok()))
+                    .and_then(|r| {
+                        r.split_whitespace()
+                            .next()
+                            .and_then(|n| n.parse::<u64>().ok())
+                    })
             })
             .map(|kib| kib / 1024)
             .unwrap_or(0);
@@ -469,34 +541,61 @@ impl SelfProbe {
         if let Ok(rd) = std::fs::read_dir("/sys/kernel/mm/hugepages") {
             for e in rd.flatten() {
                 let dir = e.file_name().to_string_lossy().into_owned();
-                if let Some(kb) = dir.strip_prefix("hugepages-").and_then(|s| s.strip_suffix("kB")) {
-                    let n = std::fs::read_to_string(e.path().join("nr_hugepages")).ok().and_then(|s| s.trim().parse::<u64>().ok()).unwrap_or(0);
+                if let Some(kb) = dir
+                    .strip_prefix("hugepages-")
+                    .and_then(|s| s.strip_suffix("kB"))
+                {
+                    let n = std::fs::read_to_string(e.path().join("nr_hugepages"))
+                        .ok()
+                        .and_then(|s| s.trim().parse::<u64>().ok())
+                        .unwrap_or(0);
                     if n > 0 {
                         hugepages.insert(kb.to_string(), n);
                     }
                 }
             }
         }
-        let capacity = Resources { cpus, memory_mib, hugepages: hugepages.clone() };
+        let capacity = Resources {
+            cpus,
+            memory_mib,
+            hugepages: hugepages.clone(),
+        };
         let allocatable = Resources {
             cpus: cpus.saturating_sub(reserved.cpus).max(1),
             memory_mib: memory_mib.saturating_sub(reserved.memory_mib),
             hugepages,
         };
-        let hypervisors = [crate::hypervisor::HypervisorType::CloudHypervisor, crate::hypervisor::HypervisorType::Qemu]
-            .into_iter()
-            .filter(|t| crate::hypervisor::driver(*t).is_available())
-            .map(|t| t.to_string())
-            .collect();
+        let hypervisors = [
+            crate::hypervisor::HypervisorType::CloudHypervisor,
+            crate::hypervisor::HypervisorType::Qemu,
+        ]
+        .into_iter()
+        .filter(|t| crate::hypervisor::driver(*t).is_available())
+        .map(|t| t.to_string())
+        .collect();
         let features = NodeFeatures {
             kvm: std::path::Path::new("/dev/kvm").exists(),
             hypervisors,
-            iommu: std::fs::read_dir("/sys/kernel/iommu_groups").map(|mut d| d.next().is_some()).unwrap_or(false),
+            iommu: std::fs::read_dir("/sys/kernel/iommu_groups")
+                .map(|mut d| d.next().is_some())
+                .unwrap_or(false),
             ovn_central: program_version("ovn-northd").is_some(),
-            arch: crate::images::catalog::Arch::host().map(|a| a.as_str().to_string()).unwrap_or_default(),
+            arch: crate::images::catalog::Arch::host()
+                .map(|a| a.as_str().to_string())
+                .unwrap_or_default(),
             ..Default::default()
         };
-        let pci_devices = crate::pci::scan_pci_devices().into_iter().map(|d| d.address).collect();
-        SelfProbe { name, capacity, allocatable, features, pci_devices, ovn_version: program_version("ovn-controller") }
+        let pci_devices = crate::pci::scan_pci_devices()
+            .into_iter()
+            .map(|d| d.address)
+            .collect();
+        SelfProbe {
+            name,
+            capacity,
+            allocatable,
+            features,
+            pci_devices,
+            ovn_version: program_version("ovn-controller"),
+        }
     }
 }

@@ -17,7 +17,12 @@ use std::path::{Path, PathBuf};
 pub fn run_dir() -> PathBuf {
     if let Some(d) = std::env::var_os("RUNTIME_DIRECTORY") {
         // systemd passes a colon-separated list when there are several.
-        let first = d.to_string_lossy().split(':').next().unwrap_or_default().to_string();
+        let first = d
+            .to_string_lossy()
+            .split(':')
+            .next()
+            .unwrap_or_default()
+            .to_string();
         if !first.is_empty() {
             return PathBuf::from(first);
         }
@@ -97,10 +102,16 @@ pub fn vm_paths(vm_id: &str) -> VmPaths {
 /// us with mode 0700. Refuses a directory owned by someone else, so a
 /// pre-created directory in a shared location can't be used against us.
 pub fn ensure_private_dir(path: &Path) -> std::io::Result<()> {
-    std::fs::DirBuilder::new().recursive(true).mode(0o700).create(path)?;
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(path)?;
     let meta = std::fs::symlink_metadata(path)?;
     if !meta.is_dir() {
-        return Err(std::io::Error::other(format!("{} is not a directory", path.display())));
+        return Err(std::io::Error::other(format!(
+            "{} is not a directory",
+            path.display()
+        )));
     }
     if meta.uid() != nix::unistd::geteuid().as_raw() {
         return Err(std::io::Error::other(format!(
@@ -119,7 +130,10 @@ pub fn ensure_private_dir(path: &Path) -> std::io::Result<()> {
 /// the API sockets, so it stays traversable; `vms/` and below are 0700.
 pub fn ensure_vm_dir(vm_id: &str) -> std::io::Result<PathBuf> {
     let run = run_dir();
-    std::fs::DirBuilder::new().recursive(true).mode(0o755).create(&run)?;
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o755)
+        .create(&run)?;
     ensure_private_dir(&run.join("vms"))?;
     let dir = vm_dir(vm_id);
     ensure_private_dir(&dir)?;
@@ -147,7 +161,10 @@ mod tests {
 
     #[test]
     fn checked_paths_stay_put() {
-        assert_eq!(checked_path(Path::new("/var/lib/glidex/images")).unwrap(), Path::new("/var/lib/glidex/images"));
+        assert_eq!(
+            checked_path(Path::new("/var/lib/glidex/images")).unwrap(),
+            Path::new("/var/lib/glidex/images")
+        );
         assert!(checked_path(Path::new("/var/lib/glidex/../../etc")).is_err());
         assert_eq!(file_in(Path::new("/d"), "x.qcow2"), Path::new("/d/x.qcow2"));
     }

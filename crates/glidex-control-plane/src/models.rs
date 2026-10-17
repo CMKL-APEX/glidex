@@ -15,10 +15,10 @@ fn expand_tilde(path: String) -> String {
             .map(|h| h.to_string_lossy().into_owned())
             .unwrap_or(path);
     }
-    if let Some(rest) = path.strip_prefix("~/") {
-        if let Some(home) = dirs::home_dir() {
-            return home.join(rest).to_string_lossy().into_owned();
-        }
+    if let Some(rest) = path.strip_prefix("~/")
+        && let Some(home) = dirs::home_dir()
+    {
+        return home.join(rest).to_string_lossy().into_owned();
     }
     path
 }
@@ -40,7 +40,10 @@ pub enum VmState {
 
 impl std::fmt::Display for VmState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let s = serde_json::to_value(self).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default();
+        let s = serde_json::to_value(self)
+            .ok()
+            .and_then(|v| v.as_str().map(String::from))
+            .unwrap_or_default();
         f.write_str(&s)
     }
 }
@@ -169,7 +172,6 @@ pub struct DiskBinding {
     /// Only ever set for disks glidex created.
     pub backing_files: bool,
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NetworkAttachment {
@@ -403,7 +405,10 @@ impl Vm {
                 stop_grace_secs: 0,
                 node: None,
             },
-            status: VmStatus { never_started: true, ..Default::default() },
+            status: VmStatus {
+                never_started: true,
+                ..Default::default()
+            },
         }
     }
 
@@ -446,7 +451,9 @@ impl Vm {
     /// and nothing blocks the spec.
     pub fn is_converged(&self) -> bool {
         self.status.observed_generation >= self.generation
-            && self.condition("Ready").is_some_and(|c| c.status == Tristate::True)
+            && self
+                .condition("Ready")
+                .is_some_and(|c| c.status == Tristate::True)
     }
 }
 
@@ -623,7 +630,9 @@ impl From<&Vm> for VmResponse {
             generation: vm.generation,
             observed_generation: vm.status.observed_generation,
             resource_version: vm.resource_version,
-            restart_required: vm.condition("RestartRequired").is_some_and(|c| c.status == Tristate::True),
+            restart_required: vm
+                .condition("RestartRequired")
+                .is_some_and(|c| c.status == Tristate::True),
             conditions: vm.status.conditions.clone(),
             last_exit: vm.status.last_exit.clone(),
             restart_policy: vm.spec.restart_policy,

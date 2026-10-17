@@ -4,7 +4,7 @@
 //! make. A node sees and changes only what is placed or bound on it.
 
 use super::runtime::Cluster;
-use crate::store::{Db, Op, Origin, StoreError, TableId, WriteSet, WRITE_SET_FORMAT};
+use crate::store::{Db, Op, Origin, StoreError, TableId, WRITE_SET_FORMAT, WriteSet};
 use redb::ReadableTable;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -31,7 +31,15 @@ struct LogInner {
 
 impl WriteLog {
     pub fn new(cap: usize) -> Arc<WriteLog> {
-        Arc::new(WriteLog { inner: Mutex::new(LogInner { entries: VecDeque::new(), last: 0, first: 0 }), notify: tokio::sync::watch::channel(0).0, cap })
+        Arc::new(WriteLog {
+            inner: Mutex::new(LogInner {
+                entries: VecDeque::new(),
+                last: 0,
+                first: 0,
+            }),
+            notify: tokio::sync::watch::channel(0).0,
+            cap,
+        })
     }
 
     /// Follow `db` from now on.
@@ -81,7 +89,13 @@ impl WriteLog {
         if from < g.first {
             return None;
         }
-        let out: Vec<_> = g.entries.iter().filter(|(i, _)| *i > from).take(max).cloned().collect();
+        let out: Vec<_> = g
+            .entries
+            .iter()
+            .filter(|(i, _)| *i > from)
+            .take(max)
+            .cloned()
+            .collect();
         let upto = out.last().map(|(i, _)| *i).unwrap_or(g.last);
         Some((upto.max(from), out))
     }
@@ -103,20 +117,26 @@ fn get_json(db: &Db, table: TableId, key: &str) -> Option<Value> {
 }
 
 fn placed_on(rec: &Value, node: &str) -> bool {
-    rec.pointer("/status/placement/node").and_then(|n| n.as_str()) == Some(node)
+    rec.pointer("/status/placement/node")
+        .and_then(|n| n.as_str())
+        == Some(node)
 }
 
 /// Ids of the VMs placed on `node`.
 pub fn node_vms(db: &Db, node: &str) -> Vec<(String, Value)> {
-    let Ok(txn) = db.begin_read() else { return Vec::new() };
-    let Ok(t) = txn.open_table(TableId::Vms.definition()) else { return Vec::new() };
+    let Ok(txn) = db.begin_read() else {
+        return Vec::new();
+    };
+    let Ok(t) = txn.open_table(TableId::Vms.definition()) else {
+        return Vec::new();
+    };
     let mut out = Vec::new();
     if let Ok(it) = t.iter() {
         for r in it.flatten() {
-            if let Ok(v) = serde_json::from_slice::<Value>(r.1.value()) {
-                if placed_on(&v, node) {
-                    out.push((r.0.value().to_string(), v));
-                }
+            if let Ok(v) = serde_json::from_slice::<Value>(r.1.value())
+                && placed_on(&v, node)
+            {
+                out.push((r.0.value().to_string(), v));
             }
         }
     }
@@ -124,7 +144,16 @@ pub fn node_vms(db: &Db, node: &str) -> Vec<(String, Value)> {
 }
 
 /// Tables a node receives in full: catalogs and names that hold no secrets.
-const SHARED: [TableId; 8] = [TableId::Projects, TableId::Meta, TableId::Images, TableId::Networks, TableId::Nodes, TableId::ImageMeta, TableId::ImageCaches, TableId::CaBundle];
+const SHARED: [TableId; 8] = [
+    TableId::Projects,
+    TableId::Meta,
+    TableId::Images,
+    TableId::Networks,
+    TableId::Nodes,
+    TableId::ImageMeta,
+    TableId::ImageCaches,
+    TableId::CaBundle,
+];
 
 /// The part of `ws` a node may see: shared catalogs, and the VMs, disks,
 /// events and credentials that are its own. Deletions of keys in its tables
@@ -140,21 +169,38 @@ pub fn filter_for(db: &Db, node: &str, ws: &WriteSet) -> WriteSet {
             true
         } else {
             match (t, op) {
-                (TableId::Vms, Op::Put { value, .. }) => serde_json::from_slice::<Value>(value).map(|v| placed_on(&v, node)).unwrap_or(false),
+                (TableId::Vms, Op::Put { value, .. }) => serde_json::from_slice::<Value>(value)
+                    .map(|v| placed_on(&v, node))
+                    .unwrap_or(false),
                 (TableId::Vms, Op::Delete { .. }) => true,
-                (TableId::Disks, Op::Put { value, .. }) => serde_json::from_slice::<Value>(value).map(|v| v["node"] == node).unwrap_or(false),
+                (TableId::Disks, Op::Put { value, .. }) => serde_json::from_slice::<Value>(value)
+                    .map(|v| v["node"] == node)
+                    .unwrap_or(false),
                 (TableId::Disks, Op::Delete { .. }) => true,
                 (TableId::Events, Op::Delete { .. }) => true,
                 (TableId::Events, Op::Put { .. }) => {
-                    let m = mine.get_or_insert_with(|| node_vms(db, node).into_iter().map(|(id, _)| id).collect());
+                    let m = mine.get_or_insert_with(|| {
+                        node_vms(db, node).into_iter().map(|(id, _)| id).collect()
+                    });
                     let local_put = ws.ops.iter().filter_map(|o| match o {
-                        Op::Put { table: TableId::Vms, key, value } if serde_json::from_slice::<Value>(value).map(|v| placed_on(&v, node)).unwrap_or(false) => Some(String::from_utf8_lossy(key).into_owned()),
+                        Op::Put {
+                            table: TableId::Vms,
+                            key,
+                            value,
+                        } if serde_json::from_slice::<Value>(value)
+                            .map(|v| placed_on(&v, node))
+                            .unwrap_or(false) =>
+                        {
+                            Some(String::from_utf8_lossy(key).into_owned())
+                        }
                         _ => None,
                     });
                     let ids: HashSet<String> = local_put.collect();
                     match key.split_once('/') {
                         Some(("vm", id)) => m.contains(id) || ids.contains(id),
-                        Some(("disk", id)) => get_json(db, TableId::Disks, id).is_some_and(|d| d["node"] == node),
+                        Some(("disk", id)) => {
+                            get_json(db, TableId::Disks, id).is_some_and(|d| d["node"] == node)
+                        }
                         _ => false,
                     }
                 }
@@ -163,7 +209,13 @@ pub fn filter_for(db: &Db, node: &str, ws: &WriteSet) -> WriteSet {
                     let c = creds.get_or_insert_with(|| {
                         node_vms(db, node)
                             .into_iter()
-                            .filter_map(|(_, v)| Some(format!("{}/{}", v.pointer("/meta/project")?.as_str()?, v.pointer("/spec/config/credential")?.as_str()?)))
+                            .filter_map(|(_, v)| {
+                                Some(format!(
+                                    "{}/{}",
+                                    v.pointer("/meta/project")?.as_str()?,
+                                    v.pointer("/spec/config/credential")?.as_str()?
+                                ))
+                            })
                             .collect()
                     });
                     c.contains(&key)
@@ -177,24 +229,50 @@ pub fn filter_for(db: &Db, node: &str, ws: &WriteSet) -> WriteSet {
     }
     // A VM placed here brings the credential it names: written before
     // the VM was, that credential concerned no VM of this node then.
-    let sent: HashSet<Vec<u8>> = ops.iter().filter(|o| o.table() == TableId::Credentials).map(|o| o.key().to_vec()).collect();
+    let sent: HashSet<Vec<u8>> = ops
+        .iter()
+        .filter(|o| o.table() == TableId::Credentials)
+        .map(|o| o.key().to_vec())
+        .collect();
     let mut brought = Vec::new();
     for op in &ops {
-        if let Op::Put { table: TableId::Vms, value, .. } = op {
-            let Ok(v) = serde_json::from_slice::<Value>(value) else { continue };
-            let (Some(project), Some(user)) = (v.pointer("/meta/project").and_then(Value::as_str), v.pointer("/spec/config/credential").and_then(Value::as_str)) else { continue };
+        if let Op::Put {
+            table: TableId::Vms,
+            value,
+            ..
+        } = op
+        {
+            let Ok(v) = serde_json::from_slice::<Value>(value) else {
+                continue;
+            };
+            let (Some(project), Some(user)) = (
+                v.pointer("/meta/project").and_then(Value::as_str),
+                v.pointer("/spec/config/credential").and_then(Value::as_str),
+            ) else {
+                continue;
+            };
             let key = format!("{project}/{user}");
-            if sent.contains(key.as_bytes()) || brought.iter().any(|o: &Op| o.key() == key.as_bytes()) {
+            if sent.contains(key.as_bytes())
+                || brought.iter().any(|o: &Op| o.key() == key.as_bytes())
+            {
                 continue;
             }
             if let Some(c) = get_raw(db, TableId::Credentials, &key) {
-                brought.push(Op::Put { table: TableId::Credentials, key: key.into_bytes(), value: c });
+                brought.push(Op::Put {
+                    table: TableId::Credentials,
+                    key: key.into_bytes(),
+                    value: c,
+                });
             }
         }
     }
     // Before the VMs, so the credential is there when the VM arrives.
     brought.extend(ops);
-    WriteSet { format: ws.format, origin: ws.origin, ops: brought }
+    WriteSet {
+        format: ws.format,
+        origin: ws.origin,
+        ops: brought,
+    }
 }
 
 fn get_raw(db: &Db, table: TableId, key: &str) -> Option<Vec<u8>> {
@@ -205,17 +283,29 @@ fn get_raw(db: &Db, table: TableId, key: &str) -> Option<Vec<u8>> {
 
 /// Everything `node` is entitled to, as one write set (a `list`).
 pub fn snapshot_for(db: &Db, node: &str) -> Result<WriteSet, StoreError> {
-    let mut all = WriteSet { format: WRITE_SET_FORMAT, origin: Origin::System, ops: Vec::new() };
+    let mut all = WriteSet {
+        format: WRITE_SET_FORMAT,
+        origin: Origin::System,
+        ops: Vec::new(),
+    };
     let txn = db.begin_read()?;
     for &t in TableId::ALL.iter().filter(|t| !t.is_local()) {
-        let relevant = SHARED.contains(&t) || matches!(t, TableId::Vms | TableId::Disks | TableId::Events | TableId::Credentials);
+        let relevant = SHARED.contains(&t)
+            || matches!(
+                t,
+                TableId::Vms | TableId::Disks | TableId::Events | TableId::Credentials
+            );
         if !relevant {
             continue;
         }
         let table = txn.open_table(t.definition())?;
         for r in table.iter()? {
             let (k, v) = r?;
-            all.ops.push(Op::Put { table: t, key: k.value().as_bytes().to_vec(), value: v.value().to_vec() });
+            all.ops.push(Op::Put {
+                table: t,
+                key: k.value().as_bytes().to_vec(),
+                value: v.value().to_vec(),
+            });
         }
     }
     Ok(filter_for(db, node, &all))
@@ -230,13 +320,19 @@ pub struct Liveness {
 
 impl Default for Liveness {
     fn default() -> Self {
-        Liveness { seen: Mutex::new(HashMap::new()), since: Mutex::new(Instant::now()) }
+        Liveness {
+            seen: Mutex::new(HashMap::new()),
+            since: Mutex::new(Instant::now()),
+        }
     }
 }
 
 impl Liveness {
     pub fn beat(&self, node: &str) {
-        self.seen.lock().unwrap().insert(node.to_string(), Instant::now());
+        self.seen
+            .lock()
+            .unwrap()
+            .insert(node.to_string(), Instant::now());
     }
 
     pub fn new_term(&self) {
@@ -246,14 +342,25 @@ impl Liveness {
     /// How long since `node` was last heard from (or since this leader began).
     pub fn silent_for(&self, node: &str) -> Duration {
         let since = *self.since.lock().unwrap();
-        let last = self.seen.lock().unwrap().get(node).copied().unwrap_or(since).max(since);
+        let last = self
+            .seen
+            .lock()
+            .unwrap()
+            .get(node)
+            .copied()
+            .unwrap_or(since)
+            .max(since);
         last.elapsed()
     }
 }
 
 /// Reject what a node may not write (§8.3, §12.3); run inside the write, so
 /// the state it checks is the state the write lands on.
-pub fn check_status_write(tx: &crate::store::Tx<'_>, node: &str, ws: &WriteSet) -> Result<(), String> {
+pub fn check_status_write(
+    tx: &crate::store::Tx<'_>,
+    node: &str,
+    ws: &WriteSet,
+) -> Result<(), String> {
     let table = |t: TableId| tx.open_table(t.definition()).map_err(|e| e.to_string());
     let get = |t: TableId, key: &str| -> Result<Option<Value>, String> {
         let tb = table(t)?;
@@ -264,24 +371,30 @@ pub fn check_status_write(tx: &crate::store::Tx<'_>, node: &str, ws: &WriteSet) 
         let key = std::str::from_utf8(op.key()).map_err(|_| "non-text key".to_string())?;
         match (op.table(), op) {
             (TableId::Vms, op) => {
-                let cur = get(TableId::Vms, key)?.ok_or_else(|| format!("VM {key} does not exist"))?;
+                let cur =
+                    get(TableId::Vms, key)?.ok_or_else(|| format!("VM {key} does not exist"))?;
                 if !placed_on(&cur, node) {
                     return Err(format!("VM {key} is not placed on this node"));
                 }
                 match op {
                     Op::Delete { .. } => {
-                        if cur.pointer("/meta/deletion_requested_at").is_none_or(|v| v.is_null()) {
+                        if cur
+                            .pointer("/meta/deletion_requested_at")
+                            .is_none_or(|v| v.is_null())
+                        {
                             return Err(format!("VM {key} has not been asked to be deleted"));
                         }
                     }
                     Op::Put { value, .. } => {
-                        let new: Value = serde_json::from_slice(value).map_err(|e| e.to_string())?;
+                        let new: Value =
+                            serde_json::from_slice(value).map_err(|e| e.to_string())?;
                         check_vm_status_only(&cur, &new)?;
                     }
                 }
             }
             (TableId::Disks, op) => {
-                let cur = get(TableId::Disks, key)?.ok_or_else(|| format!("disk {key} does not exist"))?;
+                let cur = get(TableId::Disks, key)?
+                    .ok_or_else(|| format!("disk {key} does not exist"))?;
                 if cur["node"] != node {
                     return Err(format!("disk {key} is not bound to this node"));
                 }
@@ -291,7 +404,8 @@ pub fn check_status_write(tx: &crate::store::Tx<'_>, node: &str, ws: &WriteSet) 
                 }
             }
             (TableId::Networks, op) => {
-                let cur = get(TableId::Networks, key)?.ok_or_else(|| format!("network {key} does not exist"))?;
+                let cur = get(TableId::Networks, key)?
+                    .ok_or_else(|| format!("network {key} does not exist"))?;
                 if cur["node"] != node {
                     return Err(format!("network {key} belongs to another node"));
                 }
@@ -302,7 +416,8 @@ pub fn check_status_write(tx: &crate::store::Tx<'_>, node: &str, ws: &WriteSet) 
                         }
                     }
                     Op::Put { value, .. } => {
-                        let new: Value = serde_json::from_slice(value).map_err(|e| e.to_string())?;
+                        let new: Value =
+                            serde_json::from_slice(value).map_err(|e| e.to_string())?;
                         same_except(&cur, &new, &["phase", "conditions", "owns_bridge"])?;
                     }
                 }
@@ -351,7 +466,9 @@ pub fn check_status_write(tx: &crate::store::Tx<'_>, node: &str, ws: &WriteSet) 
 
 /// `new` equals `cur` but for the listed top-level fields.
 fn same_except(cur: &Value, new: &Value, except: &[&str]) -> Result<(), String> {
-    let (Some(c), Some(n)) = (cur.as_object(), new.as_object()) else { return Err("not a record".into()) };
+    let (Some(c), Some(n)) = (cur.as_object(), new.as_object()) else {
+        return Err("not a record".into());
+    };
     let keys: HashSet<&String> = c.keys().chain(n.keys()).collect();
     for k in keys {
         if except.contains(&k.as_str()) {
@@ -367,17 +484,30 @@ fn same_except(cur: &Value, new: &Value, except: &[&str]) -> Result<(), String> 
 /// A node writes a VM's `status` (and, per D12, `spec.power = stopped` when
 /// the generation it saw is current): never anything else.
 fn check_vm_status_only(cur: &Value, new: &Value) -> Result<(), String> {
-    let rv = |v: &Value| v.pointer("/meta/resource_version").and_then(|x| x.as_u64()).unwrap_or(0);
+    let rv = |v: &Value| {
+        v.pointer("/meta/resource_version")
+            .and_then(|x| x.as_u64())
+            .unwrap_or(0)
+    };
     if rv(new) != rv(cur) + 1 {
-        return Err(format!("conflict: the VM changed (resource_version {} is not {}+1)", rv(new), rv(cur)));
+        return Err(format!(
+            "conflict: the VM changed (resource_version {} is not {}+1)",
+            rv(new),
+            rv(cur)
+        ));
     }
     if cur["status"]["placement"] != new["status"]["placement"] {
         return Err("a node may not move a VM".into());
     }
-    let power_stop = cur.pointer("/spec/power") != new.pointer("/spec/power") && new.pointer("/spec/power").and_then(|p| p.as_str()) == Some("stopped");
-    let gen = |v: &Value| v.pointer("/meta/generation").and_then(|x| x.as_u64()).unwrap_or(0);
+    let power_stop = cur.pointer("/spec/power") != new.pointer("/spec/power")
+        && new.pointer("/spec/power").and_then(|p| p.as_str()) == Some("stopped");
+    let generation = |v: &Value| {
+        v.pointer("/meta/generation")
+            .and_then(|x| x.as_u64())
+            .unwrap_or(0)
+    };
     if power_stop {
-        if gen(new) != gen(cur) + 1 {
+        if generation(new) != generation(cur) + 1 {
             return Err("spec.power changes with a generation bump".into());
         }
         let (mut c, mut n) = (cur.clone(), new.clone());
@@ -387,14 +517,21 @@ fn check_vm_status_only(cur: &Value, new: &Value) -> Result<(), String> {
             v["meta"]["resource_version"] = Value::Null;
             v["status"] = Value::Null;
         }
-        return if c == n { Ok(()) } else { Err("only spec.power may change besides status".into()) };
+        return if c == n {
+            Ok(())
+        } else {
+            Err("only spec.power may change besides status".into())
+        };
     }
     if cur["spec"] != new["spec"] {
         return Err("a node may not change a VM's spec".into());
     }
     let (mut c, mut n) = (cur["meta"].clone(), new["meta"].clone());
     // Finalizers are removed as their cleanup finishes.
-    let (cf, nf) = (c["finalizers"].as_array().cloned().unwrap_or_default(), n["finalizers"].as_array().cloned().unwrap_or_default());
+    let (cf, nf) = (
+        c["finalizers"].as_array().cloned().unwrap_or_default(),
+        n["finalizers"].as_array().cloned().unwrap_or_default(),
+    );
     if !nf.iter().all(|f| cf.contains(f)) {
         return Err("a node may only remove finalizers".into());
     }
@@ -412,7 +549,17 @@ fn check_disk_status_only(cur: &Value, new: &Value) -> Result<(), String> {
     same_except(
         cur,
         new,
-        &["size_bytes", "phase", "conditions", "pending_growpart", "applied_extend_root_seq", "attached_to", "create", "resize", "extend_root"],
+        &[
+            "size_bytes",
+            "phase",
+            "conditions",
+            "pending_growpart",
+            "applied_extend_root_seq",
+            "attached_to",
+            "create",
+            "resize",
+            "extend_root",
+        ],
     )?;
     // Requests are the API's to make, the node's to complete.
     for f in ["create", "resize", "extend_root"] {
@@ -467,7 +614,11 @@ mod tests {
     use super::*;
 
     fn put(table: TableId, key: &str, v: &Value) -> Op {
-        Op::Put { table, key: key.as_bytes().to_vec(), value: v.to_string().into_bytes() }
+        Op::Put {
+            table,
+            key: key.as_bytes().to_vec(),
+            value: v.to_string().into_bytes(),
+        }
     }
 
     #[test]
@@ -477,14 +628,27 @@ mod tests {
         // Synthetic credential: a placeholder hash, no real secret.
         let cred = serde_json::json!({ "project": "p", "username": "alice", "passwd_hash": "[test-hash]", "ssh_authorized_keys": [] });
         db.write(Origin::Api, |tx| -> Result<(), StoreError> {
-            tx.open_table(TableId::Credentials.definition())?.insert("p/alice", cred.to_string().as_bytes())?;
+            tx.open_table(TableId::Credentials.definition())?
+                .insert("p/alice", cred.to_string().as_bytes())?;
             Ok(())
         })
         .unwrap();
-        let ws = |ops| WriteSet { format: WRITE_SET_FORMAT, origin: Origin::Api, ops };
+        let ws = |ops| WriteSet {
+            format: WRITE_SET_FORMAT,
+            origin: Origin::Api,
+            ops,
+        };
 
         // Written before any VM of n1 uses it: not n1's.
-        assert!(filter_for(&db, "n1", &ws(vec![put(TableId::Credentials, "p/alice", &cred)])).ops.is_empty());
+        assert!(
+            filter_for(
+                &db,
+                "n1",
+                &ws(vec![put(TableId::Credentials, "p/alice", &cred)])
+            )
+            .ops
+            .is_empty()
+        );
 
         // The VM placed on n1 brings it, ahead of the VM.
         let vm = serde_json::json!({ "meta": { "project": "p" }, "spec": { "config": { "credential": "alice" } }, "status": { "placement": { "node": "n1" } } });
@@ -493,7 +657,23 @@ mod tests {
         assert_eq!(tables, [TableId::Credentials, TableId::Vms]);
         assert_eq!(f.ops[0].key(), b"p/alice");
         // Once, though two VMs name it; another node gets neither.
-        assert_eq!(filter_for(&db, "n1", &ws(vec![put(TableId::Vms, "vm1", &vm), put(TableId::Vms, "vm2", &vm)])).ops.len(), 3);
-        assert!(filter_for(&db, "n2", &ws(vec![put(TableId::Vms, "vm1", &vm)])).ops.is_empty());
+        assert_eq!(
+            filter_for(
+                &db,
+                "n1",
+                &ws(vec![
+                    put(TableId::Vms, "vm1", &vm),
+                    put(TableId::Vms, "vm2", &vm)
+                ])
+            )
+            .ops
+            .len(),
+            3
+        );
+        assert!(
+            filter_for(&db, "n2", &ws(vec![put(TableId::Vms, "vm1", &vm)]))
+                .ops
+                .is_empty()
+        );
     }
 }

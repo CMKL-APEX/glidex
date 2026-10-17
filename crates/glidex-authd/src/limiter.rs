@@ -43,7 +43,10 @@ pub struct RateLimiter {
 }
 
 fn prune(q: &mut VecDeque<Instant>, window: Duration, now: Instant) {
-    while q.front().is_some_and(|t| now.saturating_duration_since(*t) >= window) {
+    while q
+        .front()
+        .is_some_and(|t| now.saturating_duration_since(*t) >= window)
+    {
         q.pop_front();
     }
 }
@@ -89,7 +92,10 @@ impl RateLimiter {
                 prune(q, window, now);
                 !q.is_empty()
             });
-            self.users.entry(user.to_string()).or_default().push_back(now);
+            self.users
+                .entry(user.to_string())
+                .or_default()
+                .push_back(now);
         }
     }
 

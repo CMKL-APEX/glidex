@@ -10,22 +10,23 @@
 
 mod access;
 mod cluster;
+mod connectors;
 mod errors;
 pub mod gate;
 mod net;
 mod nodes;
-mod storage;
-mod tenants;
 mod rates;
 pub mod relay;
 mod rpc;
+mod storage;
+mod tenants;
 pub(crate) use rates::live_vm_stats;
 pub(crate) use vms::read_log_tail;
 mod usage;
 mod vms;
 mod watch;
 
-pub use errors::{error_to_response, ApiErr};
+pub use errors::{ApiErr, error_to_response};
 
 use crate::auth::{self, AuthError, AuthService, Method, Principal, Transport};
 use crate::authz::{Decision, Ent, EntitySet};
@@ -33,12 +34,12 @@ use crate::models::ApiError;
 use crate::state::VmManager;
 use crate::tenancy::QuotaMode;
 use axum::{
-    extract::{FromRequestParts, Request, State},
-    http::{header, request::Parts, HeaderMap, HeaderValue, Method as HttpMethod, StatusCode},
-    middleware::{from_fn_with_state, Next},
-    response::{IntoResponse, Response},
-    routing::{delete, get, post, put, MethodRouter},
     Extension, Json, Router,
+    extract::{FromRequestParts, Request, State},
+    http::{HeaderMap, HeaderValue, Method as HttpMethod, StatusCode, header, request::Parts},
+    middleware::{Next, from_fn_with_state},
+    response::{IntoResponse, Response},
+    routing::{MethodRouter, delete, get, post, put},
 };
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
@@ -158,10 +159,23 @@ struct Routes<'a> {
 }
 
 impl Routes<'_> {
-    fn add(mut self, method: &'static str, path: &'static str, action: &'static str, mr: MethodRouter<AppState>) -> Self {
-        self.table.push(RouteSpec { method, path, action });
+    fn add(
+        mut self,
+        method: &'static str,
+        path: &'static str,
+        action: &'static str,
+        mr: MethodRouter<AppState>,
+    ) -> Self {
+        self.table.push(RouteSpec {
+            method,
+            path,
+            action,
+        });
         let mr: MethodRouter<AppState> = mr
-            .layer::<_, std::convert::Infallible>(from_fn_with_state(self.app.clone(), relay::remote_host))
+            .layer::<_, std::convert::Infallible>(from_fn_with_state(
+                self.app.clone(),
+                relay::remote_host,
+            ))
             .layer::<_, std::convert::Infallible>(from_fn_with_state(self.app.clone(), audit_layer))
             .layer::<_, std::convert::Infallible>(Extension(RouteAction(action)));
         self.router = self.router.route(path, mr);
@@ -170,207 +184,966 @@ impl Routes<'_> {
 }
 
 fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
-    let r = Routes { app, router: Router::new(), table: Vec::new() }
-        // ---- VMs
-        .add("GET", "/vms", "listVms", get(vms::list))
-        .add("POST", "/vms", "createVm", post(vms::create))
-        .add("POST", "/scheduler/preview", AUTHENTICATED, post(vms::preview))
-        .add("GET", "/vms/{id}", "readVm", get(vms::get_one))
-        .add("DELETE", "/vms/{id}", "deleteVm", delete(vms::delete_one))
-        .add("PATCH", "/vms/{id}", "updateVm", axum::routing::patch(vms::patch_one))
-        .add("GET", "/vms/{id}/events", "readVm", get(vms::events))
-        .add("POST", "/vms/{id}/start", "startVm", post(vms::start))
-        .add("POST", "/vms/{id}/stop", "stopVm", post(vms::stop))
-        .add("POST", "/vms/{id}/pause", "pauseVm", post(vms::pause))
-        .add("GET", "/vms/{id}/console", "getConsoleInfo", get(vms::console_info))
-        .add("POST", "/vms/{id}/console/ticket", "openConsole", post(vms::console_ticket))
-        .add("GET", "/vms/{id}/console/ws", "openConsole", get(vms::console_ws))
-        .add("GET", "/vms/{id}/console/log", "openConsole", get(vms::console_log))
-        .add("POST", "/vms/{id}/devices", "attachDevice", post(vms::attach_device))
-        .add("DELETE", "/vms/{id}/devices", "detachDevice", delete(vms::detach_device))
-        .add("POST", "/vms/{id}/disks", "attachDisk", post(vms::attach_disk))
-        .add("DELETE", "/vms/{id}/disks/{disk}", "detachDisk", delete(vms::detach_disk))
-        // ---- guest credentials
-        .add("GET", "/credentials", "listCredentials", get(storage::list_credentials))
-        .add("POST", "/credentials", "createCredential", post(storage::create_credential))
-        .add("GET", "/credentials/{username}", "readCredential", get(storage::get_credential))
-        .add("PUT", "/credentials/{username}", "updateCredential", put(storage::update_credential))
-        .add("DELETE", "/credentials/{username}", "deleteCredential", delete(storage::delete_credential))
-        // ---- images and disks
-        .add("GET", "/images/catalog", "readImage", get(storage::image_catalog))
-        .add("GET", "/images/firmware-catalog", "readImage", get(storage::firmware_catalog))
-        .add("GET", "/images", "readImage", get(storage::list_images))
-        .add("POST", "/images", "pullImage", post(storage::pull_image))
-        .add("GET", "/images/{id}", "readImage", get(storage::get_image))
-        .add("DELETE", "/images/{id}", "deleteImage", delete(storage::delete_image))
-        .add("POST", "/images/{id}/retry", "pullImage", post(storage::retry_image))
-        .add("POST", "/images/{id}/copies", "pullImage", post(storage::add_image_copy))
-        .add("DELETE", "/images/{id}/copies/{node}", "pullImage", delete(storage::remove_image_copy))
-        .add("GET", "/images/{id}/events", "readImage", get(storage::image_events))
-        .add("GET", "/disks/{id}/events", "readDisk", get(storage::disk_events))
-        .add("GET", "/disks", "listDisks", get(storage::list_disks))
-        .add("POST", "/disks", "createDisk", post(storage::create_disk))
-        .add("GET", "/disks/{id}", "readDisk", get(storage::get_disk))
-        .add("DELETE", "/disks/{id}", "deleteDisk", delete(storage::delete_disk))
-        .add("POST", "/disks/{id}/resize", "resizeDisk", post(storage::resize_disk))
-        .add("POST", "/disks/{id}/extend-root", "extendRoot", post(storage::extend_root))
-        // ---- networks
-        .add("GET", "/networks", "readNetwork", get(net::list_networks))
-        .add("POST", "/networks", "createNetwork", post(net::create_network))
-        .add("GET", "/networks/{name}", "readNetwork", get(net::get_network))
-        .add("DELETE", "/networks/{name}", "deleteNetwork", delete(net::delete_network))
-        .add("GET", "/networks/{name}/events", "readNetwork", get(net::network_events))
-        .add("GET", "/networks/{name}/ovn", "readNetwork", get(net::network_ovn))
-        .add("PUT", "/networks/{name}/grants", "grantNetwork", put(net::grant_network))
-        .add("POST", "/networks/{name}/shares", "offerNetworkShare", post(net::offer_share))
-        .add("DELETE", "/networks/{name}/shares/{project}", "unshareNetwork", delete(net::unshare))
-        .add("POST", "/projects/{id}/networks", "createProjectNetwork", post(net::create_project_network))
-        .add("PUT", "/projects/{id}/networks/{name}/router", "createRouter", put(net::set_network_router))
-        .add("GET", "/projects/{id}/routers", "readRouter", get(net::list_routers))
-        .add("POST", "/projects/{id}/routers", "createRouter", post(net::create_router))
-        .add("GET", "/projects/{id}/routers/{name}", "readRouter", get(net::get_router))
-        .add("DELETE", "/projects/{id}/routers/{name}", "deleteRouter", delete(net::delete_router))
-        .add("GET", "/projects/{id}/network-shares", "listNetworkShares", get(net::list_shares))
-        .add("POST", "/projects/{id}/network-shares/{network}/accept", "acceptNetworkShare", post(net::accept_share))
-        .add("DELETE", "/projects/{id}/network-shares/{network}", "leaveNetworkShare", delete(net::leave_share))
-        // ---- host networking
-        .add("GET", "/ovs/status", "readOvsStatus", get(net::ovs_status))
-        .add("POST", "/ovs/install", "installOvs", post(net::ovs_install))
-        .add("POST", "/ovs/dpdk-init", "initDpdk", post(net::ovs_dpdk_init))
-        .add("GET", "/ovs/bridges", "listBridges", get(net::list_bridges))
-        .add("POST", "/ovs/bridges", "createBridge", post(net::create_bridge))
-        .add("DELETE", "/ovs/bridges/{name}", "deleteBridge", delete(net::delete_bridge))
-        .add("GET", "/ovs/bridges/{name}/uplinks", "listUplinks", get(net::list_uplinks))
-        .add("POST", "/ovs/bridges/{name}/uplinks", "ensureUplink", post(net::create_uplink))
-        .add("DELETE", "/ovs/bridges/{name}/uplinks/{uplink}", "deleteUplink", delete(net::delete_uplink))
-        .add("POST", "/ovs/bridges/{name}/uplinks/{uplink}/commit", "commitUplink", post(net::commit_uplink))
-        .add("POST", "/ovs/bridges/{name}/uplinks/{uplink}/reapply", "confirmUplink", post(net::reapply_uplink))
-        .add("GET", "/pci-devices", "listPciDevices", get(net::list_pci_devices))
-        .add("GET", "/system/reconcile", "readSystemStatus", get(vms::system_reconcile))
-        // ---- cluster (spec/clustering.md §5)
-        .add("POST", "/cluster/init", "initCluster", post(cluster::init))
-        .add("POST", "/cluster/join", "joinCluster", post(cluster::join))
-        .add("GET", "/cluster/status", "readCluster", get(cluster::status))
-        .add("GET", "/cluster/ovn", "readCluster", get(net::cluster_ovn))
-        .add("GET", "/cluster/ovn/tunnels", "readCluster", get(net::cluster_ovn_tunnels))
-        .add("GET", "/cluster/settings/ovn", AUTHENTICATED, get(cluster::get_ovn_settings))
-        .add("PUT", "/cluster/settings/ovn", "configureOvn", axum::routing::put(cluster::put_ovn_settings))
-        .add("GET", "/cluster/settings/ovn/edge-defaults", "readCluster", get(cluster::edge_defaults))
-        .add("POST", "/cluster/join-tokens", "createJoinToken", post(cluster::create_token))
-        .add("POST", "/cluster/promote", "promoteNode", post(cluster::promote))
-        .add("POST", "/cluster/import", "importCluster", post(cluster::import_join))
-        .add("POST", "/cluster/rejoin", "rejoinCluster", post(cluster::rejoin))
-        .add("POST", "/cluster/dissolve", "dissolveCluster", post(cluster::dissolve))
-        .add("POST", "/cluster/leave", "leaveCluster", post(cluster::leave))
-        .add("POST", "/cluster/rotate-ca", "rotateCa", post(cluster::rotate_ca))
-        .add("GET", "/cluster/snapshot", "snapshotCluster", get(cluster::snapshot))
-        // ---- nodes (spec/clustering.md §7)
-        .add("GET", "/nodes", "listNodes", get(nodes::list))
-        .add("GET", "/nodes/{id}", "readNode", get(nodes::get_node))
-        .add("POST", "/nodes/{id}/drain", "drainNode", post(nodes::drain))
-        .add("PUT", "/nodes/{id}/ovn", "configureNode", axum::routing::put(nodes::put_node_ovn))
-        .add("POST", "/nodes/{id}/spare-image-files/delete", "pullImage", post(nodes::delete_spare_image_files))
-        .add("POST", "/nodes/{id}/undrain", "undrainNode", post(nodes::undrain))
-        .add("POST", "/nodes/{id}/remove", "removeNode", post(nodes::remove))
-        .add("POST", "/nodes/{id}/forget", "forgetNode", post(nodes::forget))
-        .add("POST", "/nodes/{id}/detach", "detachNode", post(nodes::detach))
-        .add("GET", "/imports", "listImports", get(nodes::list_imports))
-        .add("GET", "/departures", "readCluster", get(nodes::list_departures))
-        .add("GET", "/imports/{plan}", "readImport", get(nodes::get_import))
-        .add("POST", "/imports/{plan}/approve", "approveImport", post(nodes::approve_import))
-        .add("POST", "/imports/{plan}/reject", "rejectImport", post(nodes::reject_import))
-        .add("POST", "/nodes/{id}/purge", "purgeNode", post(nodes::purge))
-        .add("POST", "/nodes/{id}/rejoin-token", "createRejoinToken", post(nodes::rejoin_token))
-        // Live changes; each kind filtered like its list endpoint.
-        .add("GET", "/watch", AUTHENTICATED, get(watch::watch))
-        // ---- authentication
-        .add("GET", "/health", PUBLIC, get(health_check))
-        .add("GET", "/auth/methods", PUBLIC, get(access::methods))
-        .add("GET", "/auth/server-info", PUBLIC, get(access::server_info))
-        .add("POST", "/auth/login", PUBLIC, post(access::login))
-        .add("POST", "/auth/token", PUBLIC, post(access::pam_token))
-        .add("GET", "/auth/oidc/start", PUBLIC, get(access::oidc_start))
-        .add("GET", "/auth/oidc/callback", PUBLIC, get(access::oidc_callback))
-        .add("POST", "/auth/oidc/device", PUBLIC, post(access::oidc_device_start))
-        .add("POST", "/auth/oidc/device/poll", PUBLIC, post(access::oidc_device_poll))
-        .add("POST", "/auth/logout", AUTHENTICATED, post(access::logout))
-        .add("POST", "/auth/session", AUTHENTICATED, post(access::peer_session))
-        .add("GET", "/auth/whoami", AUTHENTICATED, get(access::whoami))
-        .add("POST", "/authz/check", AUTHENTICATED, post(access::authz_check))
-        .add("POST", "/authz/allowed", AUTHENTICATED, post(access::authz_allowed))
-        // ---- tokens
-        .add("GET", "/tokens", AUTHENTICATED, get(access::list_tokens))
-        .add("POST", "/tokens", AUTHENTICATED, post(access::create_token))
-        .add("DELETE", "/tokens/{id}", AUTHENTICATED, delete(access::revoke_token))
-        // ---- users and teams
-        .add("GET", "/users", "listUsers", get(access::list_users))
-        .add("GET", "/users/me", AUTHENTICATED, get(access::whoami))
-        .add("PATCH", "/users/me", AUTHENTICATED, axum::routing::patch(access::update_me))
-        .add("GET", "/users/me/ssh-keys", AUTHENTICATED, get(access::my_ssh_keys))
-        .add("POST", "/users", "manageUsers", post(access::create_user))
-        .add("PATCH", "/users/{id}", "manageUsers", axum::routing::patch(access::update_user))
-        .add("POST", "/users/{id}/identities", "manageUsers", post(access::link_identity))
-        .add("DELETE", "/users/{id}/identities/{key}", "manageUsers", delete(access::unlink_identity))
-        .add("GET", "/teams", "listTeams", get(access::list_teams))
-        .add("POST", "/teams", "manageTeams", post(access::create_team))
-        .add("PATCH", "/teams/{id}", "manageTeams", axum::routing::patch(access::update_team))
-        .add("DELETE", "/teams/{id}", "manageTeams", delete(access::delete_team))
-        .add("PUT", "/teams/{id}/members/{user}", "manageTeams", put(access::add_member))
-        .add("DELETE", "/teams/{id}/members/{user}", "manageTeams", delete(access::remove_member))
-        // ---- tenants and admissions (spec/tenancy.md §14; REST twins of glidex.tenancy.v1)
-        .add("GET", "/tenants", AUTHENTICATED, get(tenants::list))
-        .add("POST", "/tenants", "createTenant", post(tenants::create))
-        .add("GET", "/tenants/{id}", "readTenant", get(tenants::get))
-        .add("PATCH", "/tenants/{id}", "updateTenant", axum::routing::patch(tenants::update))
-        .add("DELETE", "/tenants/{id}", "deleteTenant", delete(tenants::delete))
-        .add("POST", "/tenants/{id}/suspend", "suspendTenant", post(tenants::suspend))
-        .add("POST", "/tenants/{id}/resume", "resumeTenant", post(tenants::resume))
-        .add("GET", "/tenants/{id}/members", "readTenantMembers", get(tenants::list_members))
-        .add("POST", "/tenants/{id}/members", "manageTenantMembers", post(tenants::add_member))
-        .add("DELETE", "/tenants/{id}/members/{principal}", "manageTenantMembers", delete(tenants::remove_member))
-        .add("GET", "/tenants/{id}/bindings", "readTenantBindings", get(tenants::list_bindings))
-        .add("POST", "/tenants/{id}/bindings", "manageTenantBindings", post(tenants::add_binding))
-        .add("DELETE", "/tenants/{id}/bindings/{link}", "manageTenantBindings", delete(tenants::remove_binding))
-        .add("GET", "/admissions", "listAdmissions", get(tenants::list_admissions))
-        .add("PUT", "/admissions/{tenant}", "manageAdmissions", put(tenants::set_admission))
-        .add("DELETE", "/admissions/{tenant}", "manageAdmissions", delete(tenants::remove_admission))
-        // ---- projects and role links
-        .add("GET", "/projects", AUTHENTICATED, get(access::list_projects))
-        .add("POST", "/projects", "createProject", post(access::create_project))
-        .add("GET", "/projects/{id}", "readProject", get(access::get_project))
-        .add("PATCH", "/projects/{id}", "updateProject", axum::routing::patch(access::update_project))
-        .add("DELETE", "/projects/{id}", "deleteProject", delete(access::delete_project))
-        .add("GET", "/projects/{id}/bindings", "readBindings", get(access::list_bindings))
-        .add("POST", "/projects/{id}/bindings", "manageBindings", post(access::add_binding))
-        .add("DELETE", "/projects/{id}/bindings/{link}", "manageBindings", delete(access::remove_binding))
-        .add("GET", "/system/bindings", "readSystemBindings", get(access::list_system_bindings))
-        .add("POST", "/system/bindings", "manageSystemBindings", post(access::add_system_binding))
-        .add("DELETE", "/system/bindings/{link}", "manageSystemBindings", delete(access::remove_system_binding))
-        // ---- policies and audit
-        .add("GET", "/authz/policies", "readPolicy", get(access::list_policies))
-        .add("GET", "/authz/policies/{id}", "readPolicy", get(access::get_policy))
-        .add("GET", "/authz/policies/{id}/versions", "readPolicy", get(access::policy_versions))
-        .add("PUT", "/authz/policies/{id}", "writePolicy", put(access::put_policy))
-        .add("DELETE", "/authz/policies/{id}", "deletePolicy", delete(access::delete_policy))
-        .add("POST", "/authz/validate", "validatePolicy", post(access::validate_policy))
-        .add("POST", "/authz/simulate", "simulatePolicy", post(access::simulate_policy))
-        .add("POST", "/authz/reload", "reloadPolicies", post(access::reload_policies))
-        .add("GET", "/audit", AUTHENTICATED, get(access::read_audit))
-        // ---- usage (spec/metering.md §9)
-        .add("GET", "/usage", "readUsage", get(usage::usage))
-        .add("GET", "/projects/{id}/usage", "readProjectUsage", get(usage::project_usage))
-        .add("GET", "/vms/{id}/usage", "readVmUsage", get(usage::vm_usage))
-        .add("GET", "/disks/{id}/usage", "readDiskUsage", get(usage::disk_usage))
-        .add("GET", "/usage/bandwidth", "readBandwidth", get(rates::bandwidth))
-        .add("GET", "/usage/disk-io", "readDiskIoUsage", get(rates::disk_io))
-        .add("GET", "/usage/compute", "readComputeUsage", get(rates::compute))
-        .add("GET", "/vms/{id}/bandwidth", "readVmBandwidth", get(rates::vm_bandwidth))
-        .add("GET", "/vms/{id}/io", "readVmIo", get(rates::vm_io))
-        .add("GET", "/vms/{id}/compute", "readVmCompute", get(rates::vm_compute))
-        .add("GET", "/vms/{id}/stats", "readVmStats", get(rates::vm_stats))
-        .add("GET", "/disks/{id}/io", "readDiskIo", get(rates::disk_io_series))
-        .add("GET", "/networks/{name}/bandwidth", "readNetworkBandwidth", get(rates::network_bandwidth))
-        .add("GET", "/networks/{name}/stats", "readNetworkStats", get(rates::network_stats));
+    let r = Routes {
+        app,
+        router: Router::new(),
+        table: Vec::new(),
+    }
+    // ---- VMs
+    .add("GET", "/vms", "listVms", get(vms::list))
+    .add("POST", "/vms", "createVm", post(vms::create))
+    .add(
+        "POST",
+        "/scheduler/preview",
+        AUTHENTICATED,
+        post(vms::preview),
+    )
+    .add("GET", "/vms/{id}", "readVm", get(vms::get_one))
+    .add("DELETE", "/vms/{id}", "deleteVm", delete(vms::delete_one))
+    .add(
+        "PATCH",
+        "/vms/{id}",
+        "updateVm",
+        axum::routing::patch(vms::patch_one),
+    )
+    .add("GET", "/vms/{id}/events", "readVm", get(vms::events))
+    .add("POST", "/vms/{id}/start", "startVm", post(vms::start))
+    .add("POST", "/vms/{id}/stop", "stopVm", post(vms::stop))
+    .add("POST", "/vms/{id}/pause", "pauseVm", post(vms::pause))
+    .add(
+        "GET",
+        "/vms/{id}/console",
+        "getConsoleInfo",
+        get(vms::console_info),
+    )
+    .add(
+        "POST",
+        "/vms/{id}/console/ticket",
+        "openConsole",
+        post(vms::console_ticket),
+    )
+    .add(
+        "GET",
+        "/vms/{id}/console/ws",
+        "openConsole",
+        get(vms::console_ws),
+    )
+    .add(
+        "GET",
+        "/vms/{id}/console/log",
+        "openConsole",
+        get(vms::console_log),
+    )
+    .add(
+        "POST",
+        "/vms/{id}/devices",
+        "attachDevice",
+        post(vms::attach_device),
+    )
+    .add(
+        "DELETE",
+        "/vms/{id}/devices",
+        "detachDevice",
+        delete(vms::detach_device),
+    )
+    .add(
+        "POST",
+        "/vms/{id}/disks",
+        "attachDisk",
+        post(vms::attach_disk),
+    )
+    .add(
+        "DELETE",
+        "/vms/{id}/disks/{disk}",
+        "detachDisk",
+        delete(vms::detach_disk),
+    )
+    // ---- guest credentials
+    .add(
+        "GET",
+        "/credentials",
+        "listCredentials",
+        get(storage::list_credentials),
+    )
+    .add(
+        "POST",
+        "/credentials",
+        "createCredential",
+        post(storage::create_credential),
+    )
+    .add(
+        "GET",
+        "/credentials/{username}",
+        "readCredential",
+        get(storage::get_credential),
+    )
+    .add(
+        "PUT",
+        "/credentials/{username}",
+        "updateCredential",
+        put(storage::update_credential),
+    )
+    .add(
+        "DELETE",
+        "/credentials/{username}",
+        "deleteCredential",
+        delete(storage::delete_credential),
+    )
+    // ---- images and disks
+    .add(
+        "GET",
+        "/images/catalog",
+        "readImage",
+        get(storage::image_catalog),
+    )
+    .add(
+        "GET",
+        "/images/firmware-catalog",
+        "readImage",
+        get(storage::firmware_catalog),
+    )
+    .add("GET", "/images", "readImage", get(storage::list_images))
+    .add("POST", "/images", "pullImage", post(storage::pull_image))
+    .add("GET", "/images/{id}", "readImage", get(storage::get_image))
+    .add(
+        "DELETE",
+        "/images/{id}",
+        "deleteImage",
+        delete(storage::delete_image),
+    )
+    .add(
+        "POST",
+        "/images/{id}/retry",
+        "pullImage",
+        post(storage::retry_image),
+    )
+    .add(
+        "POST",
+        "/images/{id}/copies",
+        "pullImage",
+        post(storage::add_image_copy),
+    )
+    .add(
+        "DELETE",
+        "/images/{id}/copies/{node}",
+        "pullImage",
+        delete(storage::remove_image_copy),
+    )
+    .add(
+        "GET",
+        "/images/{id}/events",
+        "readImage",
+        get(storage::image_events),
+    )
+    .add(
+        "GET",
+        "/disks/{id}/events",
+        "readDisk",
+        get(storage::disk_events),
+    )
+    .add("GET", "/disks", "listDisks", get(storage::list_disks))
+    .add("POST", "/disks", "createDisk", post(storage::create_disk))
+    .add("GET", "/disks/{id}", "readDisk", get(storage::get_disk))
+    .add(
+        "DELETE",
+        "/disks/{id}",
+        "deleteDisk",
+        delete(storage::delete_disk),
+    )
+    .add(
+        "POST",
+        "/disks/{id}/resize",
+        "resizeDisk",
+        post(storage::resize_disk),
+    )
+    .add(
+        "POST",
+        "/disks/{id}/extend-root",
+        "extendRoot",
+        post(storage::extend_root),
+    )
+    // ---- networks
+    .add("GET", "/networks", "readNetwork", get(net::list_networks))
+    .add(
+        "POST",
+        "/networks",
+        "createNetwork",
+        post(net::create_network),
+    )
+    .add(
+        "GET",
+        "/networks/{name}",
+        "readNetwork",
+        get(net::get_network),
+    )
+    .add(
+        "DELETE",
+        "/networks/{name}",
+        "deleteNetwork",
+        delete(net::delete_network),
+    )
+    .add(
+        "GET",
+        "/networks/{name}/events",
+        "readNetwork",
+        get(net::network_events),
+    )
+    .add(
+        "GET",
+        "/networks/{name}/ovn",
+        "readNetwork",
+        get(net::network_ovn),
+    )
+    .add(
+        "PUT",
+        "/networks/{name}/grants",
+        "grantNetwork",
+        put(net::grant_network),
+    )
+    .add(
+        "POST",
+        "/networks/{name}/shares",
+        "offerNetworkShare",
+        post(net::offer_share),
+    )
+    .add(
+        "DELETE",
+        "/networks/{name}/shares/{project}",
+        "unshareNetwork",
+        delete(net::unshare),
+    )
+    .add(
+        "POST",
+        "/projects/{id}/networks",
+        "createProjectNetwork",
+        post(net::create_project_network),
+    )
+    .add(
+        "PUT",
+        "/projects/{id}/networks/{name}/router",
+        "createRouter",
+        put(net::set_network_router),
+    )
+    .add(
+        "GET",
+        "/projects/{id}/routers",
+        "readRouter",
+        get(net::list_routers),
+    )
+    .add(
+        "POST",
+        "/projects/{id}/routers",
+        "createRouter",
+        post(net::create_router),
+    )
+    .add(
+        "GET",
+        "/projects/{id}/routers/{name}",
+        "readRouter",
+        get(net::get_router),
+    )
+    .add(
+        "DELETE",
+        "/projects/{id}/routers/{name}",
+        "deleteRouter",
+        delete(net::delete_router),
+    )
+    .add(
+        "GET",
+        "/projects/{id}/network-shares",
+        "listNetworkShares",
+        get(net::list_shares),
+    )
+    .add(
+        "POST",
+        "/projects/{id}/network-shares/{network}/accept",
+        "acceptNetworkShare",
+        post(net::accept_share),
+    )
+    .add(
+        "DELETE",
+        "/projects/{id}/network-shares/{network}",
+        "leaveNetworkShare",
+        delete(net::leave_share),
+    )
+    // ---- host networking
+    .add("GET", "/ovs/status", "readOvsStatus", get(net::ovs_status))
+    .add("POST", "/ovs/install", "installOvs", post(net::ovs_install))
+    .add(
+        "POST",
+        "/ovs/dpdk-init",
+        "initDpdk",
+        post(net::ovs_dpdk_init),
+    )
+    .add("GET", "/ovs/bridges", "listBridges", get(net::list_bridges))
+    .add(
+        "POST",
+        "/ovs/bridges",
+        "createBridge",
+        post(net::create_bridge),
+    )
+    .add(
+        "DELETE",
+        "/ovs/bridges/{name}",
+        "deleteBridge",
+        delete(net::delete_bridge),
+    )
+    .add(
+        "GET",
+        "/ovs/bridges/{name}/uplinks",
+        "listUplinks",
+        get(net::list_uplinks),
+    )
+    .add(
+        "POST",
+        "/ovs/bridges/{name}/uplinks",
+        "ensureUplink",
+        post(net::create_uplink),
+    )
+    .add(
+        "DELETE",
+        "/ovs/bridges/{name}/uplinks/{uplink}",
+        "deleteUplink",
+        delete(net::delete_uplink),
+    )
+    .add(
+        "POST",
+        "/ovs/bridges/{name}/uplinks/{uplink}/commit",
+        "commitUplink",
+        post(net::commit_uplink),
+    )
+    .add(
+        "POST",
+        "/ovs/bridges/{name}/uplinks/{uplink}/reapply",
+        "confirmUplink",
+        post(net::reapply_uplink),
+    )
+    .add(
+        "GET",
+        "/pci-devices",
+        "listPciDevices",
+        get(net::list_pci_devices),
+    )
+    .add(
+        "GET",
+        "/system/reconcile",
+        "readSystemStatus",
+        get(vms::system_reconcile),
+    )
+    // ---- cluster (spec/clustering.md §5)
+    .add("POST", "/cluster/init", "initCluster", post(cluster::init))
+    .add("POST", "/cluster/join", "joinCluster", post(cluster::join))
+    .add(
+        "GET",
+        "/cluster/status",
+        "readCluster",
+        get(cluster::status),
+    )
+    .add("GET", "/cluster/ovn", "readCluster", get(net::cluster_ovn))
+    .add(
+        "GET",
+        "/cluster/ovn/tunnels",
+        "readCluster",
+        get(net::cluster_ovn_tunnels),
+    )
+    .add(
+        "GET",
+        "/cluster/settings/ovn",
+        AUTHENTICATED,
+        get(cluster::get_ovn_settings),
+    )
+    .add(
+        "PUT",
+        "/cluster/settings/ovn",
+        "configureOvn",
+        axum::routing::put(cluster::put_ovn_settings),
+    )
+    .add(
+        "GET",
+        "/cluster/settings/ovn/edge-defaults",
+        "readCluster",
+        get(cluster::edge_defaults),
+    )
+    .add(
+        "POST",
+        "/cluster/join-tokens",
+        "createJoinToken",
+        post(cluster::create_token),
+    )
+    .add(
+        "POST",
+        "/cluster/promote",
+        "promoteNode",
+        post(cluster::promote),
+    )
+    .add(
+        "POST",
+        "/cluster/import",
+        "importCluster",
+        post(cluster::import_join),
+    )
+    .add(
+        "POST",
+        "/cluster/rejoin",
+        "rejoinCluster",
+        post(cluster::rejoin),
+    )
+    .add(
+        "POST",
+        "/cluster/dissolve",
+        "dissolveCluster",
+        post(cluster::dissolve),
+    )
+    .add(
+        "POST",
+        "/cluster/leave",
+        "leaveCluster",
+        post(cluster::leave),
+    )
+    .add(
+        "POST",
+        "/cluster/rotate-ca",
+        "rotateCa",
+        post(cluster::rotate_ca),
+    )
+    .add(
+        "GET",
+        "/cluster/snapshot",
+        "snapshotCluster",
+        get(cluster::snapshot),
+    )
+    // ---- nodes (spec/clustering.md §7)
+    .add("GET", "/nodes", "listNodes", get(nodes::list))
+    .add("GET", "/nodes/{id}", "readNode", get(nodes::get_node))
+    .add("POST", "/nodes/{id}/drain", "drainNode", post(nodes::drain))
+    .add(
+        "PUT",
+        "/nodes/{id}/ovn",
+        "configureNode",
+        axum::routing::put(nodes::put_node_ovn),
+    )
+    .add(
+        "POST",
+        "/nodes/{id}/spare-image-files/delete",
+        "pullImage",
+        post(nodes::delete_spare_image_files),
+    )
+    .add(
+        "POST",
+        "/nodes/{id}/undrain",
+        "undrainNode",
+        post(nodes::undrain),
+    )
+    .add(
+        "POST",
+        "/nodes/{id}/remove",
+        "removeNode",
+        post(nodes::remove),
+    )
+    .add(
+        "POST",
+        "/nodes/{id}/forget",
+        "forgetNode",
+        post(nodes::forget),
+    )
+    .add(
+        "POST",
+        "/nodes/{id}/detach",
+        "detachNode",
+        post(nodes::detach),
+    )
+    .add("GET", "/imports", "listImports", get(nodes::list_imports))
+    .add(
+        "GET",
+        "/departures",
+        "readCluster",
+        get(nodes::list_departures),
+    )
+    .add(
+        "GET",
+        "/imports/{plan}",
+        "readImport",
+        get(nodes::get_import),
+    )
+    .add(
+        "POST",
+        "/imports/{plan}/approve",
+        "approveImport",
+        post(nodes::approve_import),
+    )
+    .add(
+        "POST",
+        "/imports/{plan}/reject",
+        "rejectImport",
+        post(nodes::reject_import),
+    )
+    .add("POST", "/nodes/{id}/purge", "purgeNode", post(nodes::purge))
+    .add(
+        "POST",
+        "/nodes/{id}/rejoin-token",
+        "createRejoinToken",
+        post(nodes::rejoin_token),
+    )
+    // Live changes; each kind filtered like its list endpoint.
+    .add("GET", "/watch", AUTHENTICATED, get(watch::watch))
+    // ---- authentication
+    .add("GET", "/health", PUBLIC, get(health_check))
+    .add("GET", "/auth/methods", PUBLIC, get(access::methods))
+    .add("GET", "/auth/server-info", PUBLIC, get(access::server_info))
+    .add("POST", "/auth/login", PUBLIC, post(access::login))
+    .add("POST", "/auth/token", PUBLIC, post(access::pam_token))
+    .add("GET", "/auth/oidc/start", PUBLIC, get(access::oidc_start))
+    .add(
+        "GET",
+        "/auth/oidc/callback",
+        PUBLIC,
+        get(access::oidc_callback),
+    )
+    .add(
+        "POST",
+        "/auth/oidc/device",
+        PUBLIC,
+        post(access::oidc_device_start),
+    )
+    .add(
+        "POST",
+        "/auth/oidc/device/poll",
+        PUBLIC,
+        post(access::oidc_device_poll),
+    )
+    // Directory connectors (spec/tenancy.md §6): discovery and each
+    // connector's own login routes.
+    .add("POST", "/auth/discover", PUBLIC, post(access::discover))
+    .add(
+        "GET",
+        "/auth/c/{id}/start",
+        PUBLIC,
+        get(access::connector_start),
+    )
+    .add(
+        "GET",
+        "/auth/c/{id}/callback",
+        PUBLIC,
+        get(access::connector_callback),
+    )
+    .add(
+        "POST",
+        "/auth/c/{id}/device",
+        PUBLIC,
+        post(access::connector_device_start),
+    )
+    .add(
+        "POST",
+        "/auth/c/{id}/device/poll",
+        PUBLIC,
+        post(access::connector_device_poll),
+    )
+    .add("POST", "/auth/logout", AUTHENTICATED, post(access::logout))
+    .add(
+        "POST",
+        "/auth/session",
+        AUTHENTICATED,
+        post(access::peer_session),
+    )
+    .add("GET", "/auth/whoami", AUTHENTICATED, get(access::whoami))
+    .add(
+        "POST",
+        "/authz/check",
+        AUTHENTICATED,
+        post(access::authz_check),
+    )
+    .add(
+        "POST",
+        "/authz/allowed",
+        AUTHENTICATED,
+        post(access::authz_allowed),
+    )
+    // ---- tokens
+    .add("GET", "/tokens", AUTHENTICATED, get(access::list_tokens))
+    .add("POST", "/tokens", AUTHENTICATED, post(access::create_token))
+    .add(
+        "DELETE",
+        "/tokens/{id}",
+        AUTHENTICATED,
+        delete(access::revoke_token),
+    )
+    // ---- users and teams
+    .add("GET", "/users", "listUsers", get(access::list_users))
+    .add("GET", "/users/me", AUTHENTICATED, get(access::whoami))
+    .add(
+        "PATCH",
+        "/users/me",
+        AUTHENTICATED,
+        axum::routing::patch(access::update_me),
+    )
+    .add(
+        "GET",
+        "/users/me/ssh-keys",
+        AUTHENTICATED,
+        get(access::my_ssh_keys),
+    )
+    .add("POST", "/users", "manageUsers", post(access::create_user))
+    .add(
+        "PATCH",
+        "/users/{id}",
+        "manageUsers",
+        axum::routing::patch(access::update_user),
+    )
+    .add(
+        "POST",
+        "/users/{id}/identities",
+        "manageUsers",
+        post(access::link_identity),
+    )
+    .add(
+        "DELETE",
+        "/users/{id}/identities/{key}",
+        "manageUsers",
+        delete(access::unlink_identity),
+    )
+    .add("GET", "/teams", "listTeams", get(access::list_teams))
+    .add("POST", "/teams", "manageTeams", post(access::create_team))
+    .add(
+        "PATCH",
+        "/teams/{id}",
+        "manageTeams",
+        axum::routing::patch(access::update_team),
+    )
+    .add(
+        "DELETE",
+        "/teams/{id}",
+        "manageTeams",
+        delete(access::delete_team),
+    )
+    .add(
+        "PUT",
+        "/teams/{id}/members/{user}",
+        "manageTeams",
+        put(access::add_member),
+    )
+    .add(
+        "DELETE",
+        "/teams/{id}/members/{user}",
+        "manageTeams",
+        delete(access::remove_member),
+    )
+    // ---- tenants and admissions (spec/tenancy.md §14; REST twins of glidex.tenancy.v1)
+    .add("GET", "/tenants", AUTHENTICATED, get(tenants::list))
+    .add("POST", "/tenants", "createTenant", post(tenants::create))
+    .add("GET", "/tenants/{id}", "readTenant", get(tenants::get))
+    .add(
+        "PATCH",
+        "/tenants/{id}",
+        "updateTenant",
+        axum::routing::patch(tenants::update),
+    )
+    .add(
+        "DELETE",
+        "/tenants/{id}",
+        "deleteTenant",
+        delete(tenants::delete),
+    )
+    .add(
+        "POST",
+        "/tenants/{id}/suspend",
+        "suspendTenant",
+        post(tenants::suspend),
+    )
+    .add(
+        "POST",
+        "/tenants/{id}/resume",
+        "resumeTenant",
+        post(tenants::resume),
+    )
+    .add(
+        "GET",
+        "/tenants/{id}/members",
+        "readTenantMembers",
+        get(tenants::list_members),
+    )
+    .add(
+        "POST",
+        "/tenants/{id}/members",
+        "manageTenantMembers",
+        post(tenants::add_member),
+    )
+    .add(
+        "DELETE",
+        "/tenants/{id}/members/{principal}",
+        "manageTenantMembers",
+        delete(tenants::remove_member),
+    )
+    .add(
+        "GET",
+        "/tenants/{id}/bindings",
+        "readTenantBindings",
+        get(tenants::list_bindings),
+    )
+    .add(
+        "POST",
+        "/tenants/{id}/bindings",
+        "manageTenantBindings",
+        post(tenants::add_binding),
+    )
+    .add(
+        "DELETE",
+        "/tenants/{id}/bindings/{link}",
+        "manageTenantBindings",
+        delete(tenants::remove_binding),
+    )
+    // ---- directory connectors (spec/tenancy.md §5; REST twins of glidex.directory.v1)
+    .add(
+        "GET",
+        "/connectors",
+        "listConnectors",
+        get(connectors::list),
+    )
+    .add(
+        "POST",
+        "/connectors",
+        "createConnector",
+        post(connectors::create),
+    )
+    .add(
+        "GET",
+        "/connectors/{id}",
+        "readConnector",
+        get(connectors::get),
+    )
+    .add(
+        "PATCH",
+        "/connectors/{id}",
+        "updateConnector",
+        axum::routing::patch(connectors::update),
+    )
+    .add(
+        "DELETE",
+        "/connectors/{id}",
+        "deleteConnector",
+        delete(connectors::delete),
+    )
+    .add(
+        "PUT",
+        "/connectors/{id}/secrets/{field}",
+        "setConnectorSecret",
+        put(connectors::set_secret),
+    )
+    .add(
+        "POST",
+        "/connectors/{id}/test",
+        "testConnector",
+        post(connectors::test),
+    )
+    .add(
+        "GET",
+        "/admissions",
+        "listAdmissions",
+        get(tenants::list_admissions),
+    )
+    .add(
+        "PUT",
+        "/admissions/{tenant}",
+        "manageAdmissions",
+        put(tenants::set_admission),
+    )
+    .add(
+        "DELETE",
+        "/admissions/{tenant}",
+        "manageAdmissions",
+        delete(tenants::remove_admission),
+    )
+    // ---- projects and role links
+    .add(
+        "GET",
+        "/projects",
+        AUTHENTICATED,
+        get(access::list_projects),
+    )
+    .add(
+        "POST",
+        "/projects",
+        "createProject",
+        post(access::create_project),
+    )
+    .add(
+        "GET",
+        "/projects/{id}",
+        "readProject",
+        get(access::get_project),
+    )
+    .add(
+        "PATCH",
+        "/projects/{id}",
+        "updateProject",
+        axum::routing::patch(access::update_project),
+    )
+    .add(
+        "DELETE",
+        "/projects/{id}",
+        "deleteProject",
+        delete(access::delete_project),
+    )
+    .add(
+        "GET",
+        "/projects/{id}/bindings",
+        "readBindings",
+        get(access::list_bindings),
+    )
+    .add(
+        "POST",
+        "/projects/{id}/bindings",
+        "manageBindings",
+        post(access::add_binding),
+    )
+    .add(
+        "DELETE",
+        "/projects/{id}/bindings/{link}",
+        "manageBindings",
+        delete(access::remove_binding),
+    )
+    .add(
+        "GET",
+        "/system/bindings",
+        "readSystemBindings",
+        get(access::list_system_bindings),
+    )
+    .add(
+        "POST",
+        "/system/bindings",
+        "manageSystemBindings",
+        post(access::add_system_binding),
+    )
+    .add(
+        "DELETE",
+        "/system/bindings/{link}",
+        "manageSystemBindings",
+        delete(access::remove_system_binding),
+    )
+    // ---- policies and audit
+    .add(
+        "GET",
+        "/authz/policies",
+        "readPolicy",
+        get(access::list_policies),
+    )
+    .add(
+        "GET",
+        "/authz/policies/{id}",
+        "readPolicy",
+        get(access::get_policy),
+    )
+    .add(
+        "GET",
+        "/authz/policies/{id}/versions",
+        "readPolicy",
+        get(access::policy_versions),
+    )
+    .add(
+        "PUT",
+        "/authz/policies/{id}",
+        "writePolicy",
+        put(access::put_policy),
+    )
+    .add(
+        "DELETE",
+        "/authz/policies/{id}",
+        "deletePolicy",
+        delete(access::delete_policy),
+    )
+    .add(
+        "POST",
+        "/authz/validate",
+        "validatePolicy",
+        post(access::validate_policy),
+    )
+    .add(
+        "POST",
+        "/authz/simulate",
+        "simulatePolicy",
+        post(access::simulate_policy),
+    )
+    .add(
+        "POST",
+        "/authz/reload",
+        "reloadPolicies",
+        post(access::reload_policies),
+    )
+    .add("GET", "/audit", AUTHENTICATED, get(access::read_audit))
+    // ---- usage (spec/metering.md §9)
+    .add("GET", "/usage", "readUsage", get(usage::usage))
+    .add(
+        "GET",
+        "/projects/{id}/usage",
+        "readProjectUsage",
+        get(usage::project_usage),
+    )
+    .add(
+        "GET",
+        "/vms/{id}/usage",
+        "readVmUsage",
+        get(usage::vm_usage),
+    )
+    .add(
+        "GET",
+        "/disks/{id}/usage",
+        "readDiskUsage",
+        get(usage::disk_usage),
+    )
+    .add(
+        "GET",
+        "/usage/bandwidth",
+        "readBandwidth",
+        get(rates::bandwidth),
+    )
+    .add(
+        "GET",
+        "/usage/disk-io",
+        "readDiskIoUsage",
+        get(rates::disk_io),
+    )
+    .add(
+        "GET",
+        "/usage/compute",
+        "readComputeUsage",
+        get(rates::compute),
+    )
+    .add(
+        "GET",
+        "/vms/{id}/bandwidth",
+        "readVmBandwidth",
+        get(rates::vm_bandwidth),
+    )
+    .add("GET", "/vms/{id}/io", "readVmIo", get(rates::vm_io))
+    .add(
+        "GET",
+        "/vms/{id}/compute",
+        "readVmCompute",
+        get(rates::vm_compute),
+    )
+    .add(
+        "GET",
+        "/vms/{id}/stats",
+        "readVmStats",
+        get(rates::vm_stats),
+    )
+    .add(
+        "GET",
+        "/disks/{id}/io",
+        "readDiskIo",
+        get(rates::disk_io_series),
+    )
+    .add(
+        "GET",
+        "/networks/{name}/bandwidth",
+        "readNetworkBandwidth",
+        get(rates::network_bandwidth),
+    )
+    .add(
+        "GET",
+        "/networks/{name}/stats",
+        "readNetworkStats",
+        get(rates::network_stats),
+    );
     (r.router, r.table)
 }
 
@@ -404,11 +1177,17 @@ pub(crate) fn cookie(headers: &HeaderMap, name: &str) -> Option<String> {
 fn bearer(headers: &HeaderMap) -> Option<String> {
     let v = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
     let (scheme, token) = v.split_once(' ')?;
-    scheme.eq_ignore_ascii_case("bearer").then(|| token.trim().to_string())
+    scheme
+        .eq_ignore_ascii_case("bearer")
+        .then(|| token.trim().to_string())
 }
 
 /// Client IP: the TCP peer, or (only from glidex-ui) X-Forwarded-For.
-fn client_ip(parts_ext: &axum::http::Extensions, headers: &HeaderMap, listener: Listener) -> Option<IpAddr> {
+fn client_ip(
+    parts_ext: &axum::http::Extensions,
+    headers: &HeaderMap,
+    listener: Listener,
+) -> Option<IpAddr> {
     match listener {
         Listener::Ui | Listener::Relay => headers
             .get("x-forwarded-for")
@@ -424,18 +1203,32 @@ fn client_ip(parts_ext: &axum::http::Extensions, headers: &HeaderMap, listener: 
 async fn authenticate(State(app): State<AppState>, mut req: Request, next: Next) -> Response {
     let request_id = auth::random_token(12);
     req.extensions_mut().insert(RequestId(request_id.clone()));
-    let listener = req.extensions().get::<Listener>().copied().unwrap_or(Listener::Tcp);
+    let listener = req
+        .extensions()
+        .get::<Listener>()
+        .copied()
+        .unwrap_or(Listener::Tcp);
     let headers = req.headers().clone();
     let safe = is_safe(req.method());
     let websocket = headers.get(header::UPGRADE).is_some();
 
     // Origin (spec §5.6): browsers send it on cross-origin requests and
     // on every WebSocket upgrade.
-    let origin = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()).map(String::from);
+    let origin = headers
+        .get(header::ORIGIN)
+        .and_then(|v| v.to_str().ok())
+        .map(String::from);
     if let Some(o) = &origin {
         // A forwarded or relayed request was checked by the node that took it.
-        if !matches!(listener, Listener::Cluster | Listener::Relay) && (!safe || websocket) && !app.auth.config.auth.origin_allowed(o) {
-            return plain_error(StatusCode::FORBIDDEN, "origin_not_allowed", "this origin may not use the API");
+        if !matches!(listener, Listener::Cluster | Listener::Relay)
+            && (!safe || websocket)
+            && !app.auth.config.auth.origin_allowed(o)
+        {
+            return plain_error(
+                StatusCode::FORBIDDEN,
+                "origin_not_allowed",
+                "this origin may not use the API",
+            );
         }
     }
 
@@ -447,7 +1240,11 @@ async fn authenticate(State(app): State<AppState>, mut req: Request, next: Next)
                 Some(PeerUid(uid)) => match app.auth.peer_principal(*uid) {
                     Ok(Some(p)) => Ok(Some(p)),
                     Ok(None) => {
-                        return plain_error(StatusCode::FORBIDDEN, "forbidden", "this user may not use the glidex socket");
+                        return plain_error(
+                            StatusCode::FORBIDDEN,
+                            "forbidden",
+                            "this user may not use the glidex socket",
+                        );
                     }
                     Err(e) => Err(e),
                 },
@@ -455,14 +1252,25 @@ async fn authenticate(State(app): State<AppState>, mut req: Request, next: Next)
             },
             Listener::Cluster => gate::forwarded_principal(&headers),
             Listener::Ui | Listener::Tcp | Listener::Relay => {
-                if listener == Listener::Ui && !ui_peer_ok(&app, req.extensions().get::<PeerUid>()) {
-                    return plain_error(StatusCode::FORBIDDEN, "forbidden", "only glidex-ui may use this socket");
+                if listener == Listener::Ui && !ui_peer_ok(&app, req.extensions().get::<PeerUid>())
+                {
+                    return plain_error(
+                        StatusCode::FORBIDDEN,
+                        "forbidden",
+                        "only glidex-ui may use this socket",
+                    );
                 }
                 let ip = client_ip(req.extensions(), &headers, listener);
                 if let Some(token) = bearer(&headers) {
                     match app.auth.token_principal(&token, Transport::Tcp, ip) {
                         Ok(Some(p)) => Ok(Some(p)),
-                        Ok(None) => return plain_error(StatusCode::UNAUTHORIZED, "unauthenticated", "invalid or expired token"),
+                        Ok(None) => {
+                            return plain_error(
+                                StatusCode::UNAUTHORIZED,
+                                "unauthenticated",
+                                "invalid or expired token",
+                            );
+                        }
                         Err(e) => Err(e),
                     }
                 } else if let Some(c) = cookie(&headers, auth::SESSION_COOKIE) {
@@ -471,11 +1279,18 @@ async fn authenticate(State(app): State<AppState>, mut req: Request, next: Next)
                             // Cookie-authenticated writes need a same-origin
                             // request carrying the CSRF value.
                             if !safe {
-                                let csrf = headers.get(auth::CSRF_HEADER).and_then(|v| v.to_str().ok());
+                                let csrf =
+                                    headers.get(auth::CSRF_HEADER).and_then(|v| v.to_str().ok());
                                 let ok = origin.is_some()
-                                    && csrf.is_some_and(|c| p.csrf.as_deref().is_some_and(|s| auth::constant_eq(c, s)));
+                                    && csrf.is_some_and(|c| {
+                                        p.csrf.as_deref().is_some_and(|s| auth::constant_eq(c, s))
+                                    });
                                 if !ok {
-                                    return plain_error(StatusCode::FORBIDDEN, "csrf_failed", "missing or wrong CSRF header or Origin");
+                                    return plain_error(
+                                        StatusCode::FORBIDDEN,
+                                        "csrf_failed",
+                                        "missing or wrong CSRF header or Origin",
+                                    );
                                 }
                             }
                             Ok(Some(p))
@@ -494,11 +1309,19 @@ async fn authenticate(State(app): State<AppState>, mut req: Request, next: Next)
             // refused by the cluster. Say where to log in instead.
             Err(e) if app.manager.node_link().is_some() => {
                 tracing::warn!("a local login on an agent: {}", e);
-                return plain_error(StatusCode::FORBIDDEN, "agent_no_local_api", &agent_login_hint(&app.manager));
+                return plain_error(
+                    StatusCode::FORBIDDEN,
+                    "agent_no_local_api",
+                    &agent_login_hint(&app.manager),
+                );
             }
             Err(e) => {
                 tracing::error!("authentication error: {}", e);
-                return plain_error(StatusCode::INTERNAL_SERVER_ERROR, "internal", "authentication failed");
+                return plain_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal",
+                    "authentication failed",
+                );
             }
         }
     };
@@ -513,7 +1336,9 @@ async fn authenticate(State(app): State<AppState>, mut req: Request, next: Next)
 }
 
 fn ui_peer_ok(app: &App, peer: Option<&PeerUid>) -> bool {
-    let Some(PeerUid(uid)) = peer else { return false };
+    let Some(PeerUid(uid)) = peer else {
+        return false;
+    };
     nix::unistd::User::from_name(&app.auth.config.ui_user)
         .ok()
         .flatten()
@@ -524,16 +1349,38 @@ fn ui_peer_ok(app: &App, peer: Option<&PeerUid>) -> bool {
 async fn audit_layer(State(app): State<AppState>, mut req: Request, next: Next) -> Response {
     let slot = AuditSlot::default();
     req.extensions_mut().insert(slot.clone());
-    let action = req.extensions().get::<RouteAction>().map(|a| a.0).unwrap_or("-");
+    let action = req
+        .extensions()
+        .get::<RouteAction>()
+        .map(|a| a.0)
+        .unwrap_or("-");
     let principal = req.extensions().get::<Principal>().cloned();
-    let request_id = req.extensions().get::<RequestId>().map(|r| r.0.clone()).unwrap_or_default();
+    let request_id = req
+        .extensions()
+        .get::<RequestId>()
+        .map(|r| r.0.clone())
+        .unwrap_or_default();
     let safe = is_safe(req.method());
     let path = req.uri().path().to_string();
     let method = req.method().to_string();
     let resp = next.run(req).await;
     let status = resp.status();
-    let failure = (!status.is_success()).then(|| (format!("error:{}", status.as_u16()), status.as_str().to_string()));
-    write_audit(&app, principal.as_ref(), &request_id, action, !safe, &slot, failure, ("http", format!("{} {}", method, path)));
+    let failure = (!status.is_success()).then(|| {
+        (
+            format!("error:{}", status.as_u16()),
+            status.as_str().to_string(),
+        )
+    });
+    write_audit(
+        &app,
+        principal.as_ref(),
+        &request_id,
+        action,
+        !safe,
+        &slot,
+        failure,
+        ("http", format!("{} {}", method, path)),
+    );
     resp
 }
 
@@ -591,8 +1438,15 @@ pub struct Caller {
 impl FromRequestParts<AppState> for Caller {
     type Rejection = ApiErr;
 
-    async fn from_request_parts(parts: &mut Parts, app: &AppState) -> Result<Self, Self::Rejection> {
-        let action = parts.extensions.get::<RouteAction>().map(|a| a.0).unwrap_or(AUTHENTICATED);
+    async fn from_request_parts(
+        parts: &mut Parts,
+        app: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let action = parts
+            .extensions
+            .get::<RouteAction>()
+            .map(|a| a.0)
+            .unwrap_or(AUTHENTICATED);
         Caller::from_extensions(&parts.extensions, app, action)
     }
 }
@@ -601,17 +1455,30 @@ impl Caller {
     /// The caller of `action`, from what the layers put on the request:
     /// for REST through the extractor above, for RPCs from the
     /// `RequestContext` (api::rpc).
-    fn from_extensions(ext: &axum::http::Extensions, app: &AppState, action: &'static str) -> Result<Self, ApiErr> {
-        let p = ext
-            .get::<Principal>()
-            .cloned()
-            .ok_or_else(|| err(StatusCode::UNAUTHORIZED, "unauthenticated", "authentication required"))?;
+    fn from_extensions(
+        ext: &axum::http::Extensions,
+        app: &AppState,
+        action: &'static str,
+    ) -> Result<Self, ApiErr> {
+        let p = ext.get::<Principal>().cloned().ok_or_else(|| {
+            err(
+                StatusCode::UNAUTHORIZED,
+                "unauthenticated",
+                "authentication required",
+            )
+        })?;
         Ok(Caller {
             p,
             action,
-            pre: ext.get::<PreAuthorized>().map(|p| p.0.clone()).unwrap_or_default(),
+            pre: ext
+                .get::<PreAuthorized>()
+                .map(|p| p.0.clone())
+                .unwrap_or_default(),
             app: app.clone(),
-            request_id: ext.get::<RequestId>().map(|r| r.0.clone()).unwrap_or_default(),
+            request_id: ext
+                .get::<RequestId>()
+                .map(|r| r.0.clone())
+                .unwrap_or_default(),
             audit: ext.get::<AuditSlot>().cloned().unwrap_or_default(),
         })
     }
@@ -626,7 +1493,11 @@ fn deny_response(action: &str, d: &Decision) -> ApiErr {
             "this action needs a recent login; log in again and retry",
         );
     }
-    err(StatusCode::FORBIDDEN, "forbidden", format!("not allowed: {}", action))
+    err(
+        StatusCode::FORBIDDEN,
+        "forbidden",
+        format!("not allowed: {}", action),
+    )
 }
 
 impl Caller {
@@ -641,13 +1512,26 @@ impl Caller {
     /// Ask Cedar, recording the decision for the audit entry.
     /// A server's decision for this host (`PreAuthorized`), when it covers `action` on `resource`.
     fn pre_authorized(&self, action: &str, resource: &Ent) -> Option<Decision> {
-        (self.pre.iter().any(|a| a == action) && *resource == Ent::Host).then(|| Decision { allowed: true, policies: vec!["server-authorized".into()], errors: Vec::new() })
+        (self.pre.iter().any(|a| a == action) && *resource == Ent::Host).then(|| Decision {
+            allowed: true,
+            policies: vec!["server-authorized".into()],
+            errors: Vec::new(),
+        })
     }
 
-    pub fn decide(&self, action: &str, resource: Ent, es: EntitySet, extra: &[(&'static str, Ent)]) -> Decision {
+    pub fn decide(
+        &self,
+        action: &str,
+        resource: Ent,
+        es: EntitySet,
+        extra: &[(&'static str, Ent)],
+    ) -> Decision {
         let d = match self.pre_authorized(action, &resource) {
             Some(d) => d,
-            None => self.app.auth.authorize(&self.p, action, resource, es, extra),
+            None => self
+                .app
+                .auth
+                .authorize(&self.p, action, resource, es, extra),
         };
         let mut a = self.audit.0.lock().unwrap();
         for p in &d.policies {
@@ -665,10 +1549,19 @@ impl Caller {
         if self.pre_authorized(action, &resource).is_some() {
             return true;
         }
-        self.app.auth.authorize(&self.p, action, resource, es, &[]).allowed
+        self.app
+            .auth
+            .authorize(&self.p, action, resource, es, &[])
+            .allowed
     }
 
-    pub fn require_action(&self, action: &str, resource: Ent, es: EntitySet, extra: &[(&'static str, Ent)]) -> Result<(), ApiErr> {
+    pub fn require_action(
+        &self,
+        action: &str,
+        resource: Ent,
+        es: EntitySet,
+        extra: &[(&'static str, Ent)],
+    ) -> Result<(), ApiErr> {
         let d = self.decide(action, resource, es, extra);
         if d.allowed {
             Ok(())
@@ -684,10 +1577,20 @@ impl Caller {
 
     /// A resource the caller can't `read_action` is reported as not found;
     /// nothing else is checked (the handler checks per field, e.g. PATCH).
-    pub fn require_readable(&self, read_action: &str, resource: Ent, es: EntitySet, what: &str) -> Result<(), ApiErr> {
+    pub fn require_readable(
+        &self,
+        read_action: &str,
+        resource: Ent,
+        es: EntitySet,
+        what: &str,
+    ) -> Result<(), ApiErr> {
         if !self.allowed(read_action, resource, es) {
             self.audit.0.lock().unwrap().denied = true;
-            return Err(err(StatusCode::NOT_FOUND, "not_found", format!("{} not found", what)));
+            return Err(err(
+                StatusCode::NOT_FOUND,
+                "not_found",
+                format!("{} not found", what),
+            ));
         }
         Ok(())
     }
@@ -695,11 +1598,20 @@ impl Caller {
     /// D9: allocating on this cluster needs the project's tenant admitted
     /// here (`useCluster`, spec/tenancy.md §10.4); `403 not_admitted` otherwise.
     pub fn require_admitted(&self, project: &str) -> Result<(), ApiErr> {
-        let d = self.decide("useCluster", Ent::Cluster, project_entities(project), &[("project", Ent::Project(project.into()))]);
+        let d = self.decide(
+            "useCluster",
+            Ent::Cluster,
+            project_entities(project),
+            &[("project", Ent::Project(project.into()))],
+        );
         if d.allowed {
             return Ok(());
         }
-        Err(err(StatusCode::FORBIDDEN, "not_admitted", "this project's tenant isn't admitted on this cluster, or its admission is suspended"))
+        Err(err(
+            StatusCode::FORBIDDEN,
+            "not_admitted",
+            "this project's tenant isn't admitted on this cluster, or its admission is suspended",
+        ))
     }
 
     /// Who made a request, for events (`api:<user>` or `api:token:<id>`).
@@ -713,16 +1625,30 @@ impl Caller {
 
     /// Like `require`, but a resource the caller can't even `read` is
     /// reported as not found (spec §7.4).
-    pub fn require_visible(&self, read_action: &str, resource: Ent, es: EntitySet, what: &str) -> Result<(), ApiErr> {
+    pub fn require_visible(
+        &self,
+        read_action: &str,
+        resource: Ent,
+        es: EntitySet,
+        what: &str,
+    ) -> Result<(), ApiErr> {
         if read_action != self.action && !self.allowed(read_action, resource.clone(), es.clone()) {
             self.audit.0.lock().unwrap().denied = true;
-            return Err(err(StatusCode::NOT_FOUND, "not_found", format!("{} not found", what)));
+            return Err(err(
+                StatusCode::NOT_FOUND,
+                "not_found",
+                format!("{} not found", what),
+            ));
         }
         let d = self.decide(self.action, resource, es, &[]);
         if d.allowed {
             Ok(())
         } else if read_action == self.action {
-            Err(err(StatusCode::NOT_FOUND, "not_found", format!("{} not found", what)))
+            Err(err(
+                StatusCode::NOT_FOUND,
+                "not_found",
+                format!("{} not found", what),
+            ))
         } else {
             Err(deny_response(self.action, &d))
         }
@@ -742,7 +1668,12 @@ impl Caller {
     }
 
     pub fn detail(&self, key: &str, value: serde_json::Value) {
-        self.audit.0.lock().unwrap().details.insert(key.into(), value);
+        self.audit
+            .0
+            .lock()
+            .unwrap()
+            .details
+            .insert(key.into(), value);
     }
 
     /// The project a new resource goes into: the requested one (id or
@@ -751,10 +1682,13 @@ impl Caller {
     pub fn target_project(&self, requested: Option<&str>) -> Result<String, ApiErr> {
         let projects = self.manager().projects();
         let resolve = |k: &str| {
-            projects
-                .resolve(k)
-                .map(|p| p.id)
-                .map_err(|_| err(StatusCode::NOT_FOUND, "not_found", format!("project {} not found", k)))
+            projects.resolve(k).map(|p| p.id).map_err(|_| {
+                err(
+                    StatusCode::NOT_FOUND,
+                    "not_found",
+                    format!("project {} not found", k),
+                )
+            })
         };
         if let Some(r) = requested {
             return resolve(r);
@@ -790,7 +1724,13 @@ impl Caller {
     pub fn note_overruns(&self, over: &[crate::tenancy::QuotaOverrun]) {
         if !over.is_empty() {
             self.detail("quota_exceeded", serde_json::json!(over));
-            let d = self.app.auth.authorize(&self.p, "exceedQuota", Ent::Cluster, EntitySet::new(), &[]);
+            let d = self.app.auth.authorize(
+                &self.p,
+                "exceedQuota",
+                Ent::Cluster,
+                EntitySet::new(),
+                &[],
+            );
             let mut a = self.audit.0.lock().unwrap();
             a.policies.extend(d.policies);
         }
@@ -804,21 +1744,45 @@ impl Caller {
 
 pub(crate) fn auth_error(e: AuthError) -> ApiErr {
     match e {
-        AuthError::Unauthenticated => err(StatusCode::UNAUTHORIZED, "unauthenticated", e.to_string()),
+        AuthError::Unauthenticated => {
+            err(StatusCode::UNAUTHORIZED, "unauthenticated", e.to_string())
+        }
         AuthError::Denied => err(StatusCode::UNAUTHORIZED, "login_failed", e.to_string()),
         AuthError::RateLimited => err(StatusCode::TOO_MANY_REQUESTS, "rate_limited", e.to_string()),
-        AuthError::Unavailable(_) => err(StatusCode::SERVICE_UNAVAILABLE, "unavailable", e.to_string()),
+        AuthError::Unavailable(_) => err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            e.to_string(),
+        ),
         AuthError::Invalid(_) => err(StatusCode::BAD_REQUEST, "invalid", e.to_string()),
-        AuthError::Store(crate::auth::store::StoreError::NotFound(_)) => err(StatusCode::NOT_FOUND, "not_found", e.to_string()),
+        AuthError::NotAllowed(_) => err(StatusCode::FORBIDDEN, "login_not_allowed", e.to_string()),
+        AuthError::Store(crate::auth::store::StoreError::NotFound(_)) => {
+            err(StatusCode::NOT_FOUND, "not_found", e.to_string())
+        }
         AuthError::Store(crate::auth::store::StoreError::AlreadyExists(_))
-        | AuthError::Store(crate::auth::store::StoreError::Conflict(_)) => err(StatusCode::CONFLICT, "conflict", e.to_string()),
-        AuthError::Store(crate::auth::store::StoreError::Invalid(_)) => err(StatusCode::BAD_REQUEST, "invalid", e.to_string()),
-        AuthError::Store(_) => err(StatusCode::INTERNAL_SERVER_ERROR, "persistence_error", e.to_string()),
+        | AuthError::Store(crate::auth::store::StoreError::Conflict(_)) => {
+            err(StatusCode::CONFLICT, "conflict", e.to_string())
+        }
+        AuthError::Store(crate::auth::store::StoreError::Invalid(_)) => {
+            err(StatusCode::BAD_REQUEST, "invalid", e.to_string())
+        }
+        AuthError::Store(_) => err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "persistence_error",
+            e.to_string(),
+        ),
         AuthError::Authz(crate::authz::AuthzError::Validation(v)) => (
             StatusCode::UNPROCESSABLE_ENTITY,
-            Json(ApiError::new("invalid_policy", "policy validation failed").with_details(serde_json::json!({ "errors": v }))),
+            Json(
+                ApiError::new("invalid_policy", "policy validation failed")
+                    .with_details(serde_json::json!({ "errors": v })),
+            ),
         ),
-        AuthError::Authz(e) => err(StatusCode::UNPROCESSABLE_ENTITY, "invalid_policy", e.to_string()),
+        AuthError::Authz(e) => err(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_policy",
+            e.to_string(),
+        ),
     }
 }
 
@@ -861,7 +1825,13 @@ pub(crate) fn credential_entities(project: &str, username: &str) -> (Ent, Entity
 }
 
 pub(crate) fn add_network(es: &mut EntitySet, n: &crate::network::Network) -> Ent {
-    es.network(&n.name, n.project.as_deref(), n.all_projects, &n.grants, &n.shares);
+    es.network(
+        &n.name,
+        n.project.as_deref(),
+        n.all_projects,
+        &n.grants,
+        &n.shares,
+    );
     Ent::Network(n.name.clone())
 }
 
@@ -873,10 +1843,24 @@ fn agent_login_hint(m: &crate::state::VmManager) -> String {
         .unwrap_or_default()
         .into_iter()
         .filter(|n| n.spec.role == crate::node::NodeRole::Server && !n.status.phase.is_tombstone())
-        .filter_map(|n| n.status.advertise.map(|a| format!("https://{}:8841", a.ip())))
+        .filter_map(|n| {
+            n.status
+                .advertise
+                .map(|a| format!("https://{}:8841", a.ip()))
+        })
         .collect();
-    let url = servers.first().cloned().unwrap_or_else(|| "https://<server>:8841".into());
-    format!("this host is a cluster agent: it has no local API, and the cluster can't vouch for a Unix user of another host. Log in to a server: `gxctl auth login {url}` (servers: {})", if servers.is_empty() { "unknown".into() } else { servers.join(", ") })
+    let url = servers
+        .first()
+        .cloned()
+        .unwrap_or_else(|| "https://<server>:8841".into());
+    format!(
+        "this host is a cluster agent: it has no local API, and the cluster can't vouch for a Unix user of another host. Log in to a server: `gxctl auth login {url}` (servers: {})",
+        if servers.is_empty() {
+            "unknown".into()
+        } else {
+            servers.join(", ")
+        }
+    )
 }
 
 #[cfg(test)]
@@ -890,21 +1874,54 @@ mod tests {
         let auth = AuthService::disabled(manager.database()).unwrap();
         let app = Arc::new(App { manager, auth });
         let schema = app.auth.engine.schema();
-        let actions: Vec<String> = schema.actions().map(|a| a.id().unescaped().to_string()).collect();
+        let actions: Vec<String> = schema
+            .actions()
+            .map(|a| a.id().unescaped().to_string())
+            .collect();
         let table = route_table(&app);
         assert!(table.len() > 80);
         for r in &table {
             if r.action == PUBLIC || r.action == AUTHENTICATED {
                 continue;
             }
-            assert!(actions.iter().any(|a| a == r.action), "{} {} → unknown action {}", r.method, r.path, r.action);
+            assert!(
+                actions.iter().any(|a| a == r.action),
+                "{} {} → unknown action {}",
+                r.method,
+                r.path,
+                r.action
+            );
             // Groups and roles are never requested directly.
-            assert!(!r.action.contains('.') && !r.action.starts_with("role"), "{} {}", r.method, r.path);
+            assert!(
+                !r.action.contains('.') && !r.action.starts_with("role"),
+                "{} {}",
+                r.method,
+                r.path
+            );
         }
-        let public: Vec<_> = table.iter().filter(|r| r.action == PUBLIC).map(|r| r.path).collect();
+        let public: Vec<_> = table
+            .iter()
+            .filter(|r| r.action == PUBLIC)
+            .map(|r| r.path)
+            .collect();
         assert_eq!(
             public,
-            ["/health", "/auth/methods", "/auth/server-info", "/auth/login", "/auth/token", "/auth/oidc/start", "/auth/oidc/callback", "/auth/oidc/device", "/auth/oidc/device/poll"]
+            [
+                "/health",
+                "/auth/methods",
+                "/auth/server-info",
+                "/auth/login",
+                "/auth/token",
+                "/auth/oidc/start",
+                "/auth/oidc/callback",
+                "/auth/oidc/device",
+                "/auth/oidc/device/poll",
+                "/auth/discover",
+                "/auth/c/{id}/start",
+                "/auth/c/{id}/callback",
+                "/auth/c/{id}/device",
+                "/auth/c/{id}/device/poll",
+            ]
         );
 
         // The RPC operation table (spec/grpc.md §5): the same rules, and
@@ -912,13 +1929,28 @@ mod tests {
         assert!(!glidex_api::OPERATIONS.is_empty());
         for op in glidex_api::OPERATIONS {
             if op.action != PUBLIC && op.action != AUTHENTICATED {
-                assert!(actions.iter().any(|a| a == op.action), "{} → unknown action {}", op.procedure, op.action);
-                assert!(!op.action.contains('.') && !op.action.starts_with("role"), "{}", op.procedure);
+                assert!(
+                    actions.iter().any(|a| a == op.action),
+                    "{} → unknown action {}",
+                    op.procedure,
+                    op.action
+                );
+                assert!(
+                    !op.action.contains('.') && !op.action.starts_with("role"),
+                    "{}",
+                    op.procedure
+                );
             }
             if let Some((method, path)) = op.rest {
                 let twin = table.iter().find(|r| r.method == method && r.path == path);
-                let twin = twin.unwrap_or_else(|| panic!("{}: REST twin {method} {path} isn't a route", op.procedure));
-                assert_eq!(twin.action, op.action, "{}: REST twin has a different action", op.procedure);
+                let twin = twin.unwrap_or_else(|| {
+                    panic!("{}: REST twin {method} {path} isn't a route", op.procedure)
+                });
+                assert_eq!(
+                    twin.action, op.action,
+                    "{}: REST twin has a different action",
+                    op.procedure
+                );
             }
         }
     }

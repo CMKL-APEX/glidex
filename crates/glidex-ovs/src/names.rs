@@ -42,7 +42,10 @@ pub fn validate_ifname(name: &str) -> Result<(), OvsError> {
     if ok {
         Ok(())
     } else {
-        Err(OvsError::invalid(format!("invalid interface name '{}'", name)))
+        Err(OvsError::invalid(format!(
+            "invalid interface name '{}'",
+            name
+        )))
     }
 }
 
@@ -50,7 +53,11 @@ pub fn validate_ifname(name: &str) -> Result<(), OvsError> {
 /// file names and OVSDB values.
 pub fn validate_vm_id(vm_id: &str) -> Result<(), OvsError> {
     let hex: String = vm_id.chars().filter(|c| *c != '-').collect();
-    if hex.len() >= 8 && hex.len() <= 32 && hex.chars().all(|c| c.is_ascii_hexdigit()) && vm_id.len() <= 36 {
+    if hex.len() >= 8
+        && hex.len() <= 32
+        && hex.chars().all(|c| c.is_ascii_hexdigit())
+        && vm_id.len() <= 36
+    {
         Ok(())
     } else {
         Err(OvsError::invalid(format!("invalid VM id '{}'", vm_id)))
@@ -61,7 +68,10 @@ fn check_nic(nic: u8) -> Result<(), OvsError> {
     if nic < MAX_NICS {
         Ok(())
     } else {
-        Err(OvsError::invalid(format!("NIC index must be < {}", MAX_NICS)))
+        Err(OvsError::invalid(format!(
+            "NIC index must be < {}",
+            MAX_NICS
+        )))
     }
 }
 
@@ -97,7 +107,10 @@ pub fn mac_address(vm_id: &str, nic: u8) -> Result<String, OvsError> {
 pub fn vhost_socket(vm_id: &str, nic: u8) -> Result<PathBuf, OvsError> {
     validate_vm_id(vm_id)?;
     check_nic(nic)?;
-    Ok(PathBuf::from(format!("{}/{}.net{}.sock", VHOST_DIR, vm_id, nic)))
+    Ok(PathBuf::from(format!(
+        "{}/{}.net{}.sock",
+        VHOST_DIR, vm_id, nic
+    )))
 }
 
 /// `aa:bb:cc:dd:ee:ff`, unicast (low bit of the first octet clear).

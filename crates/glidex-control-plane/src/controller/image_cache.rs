@@ -40,15 +40,29 @@ impl VmManager {
     /// that left (a tombstone) took its files with it, so its row, until the
     /// leader prunes it, counts for nothing.
     pub fn image_caches(&self, image: &str) -> Vec<(String, CacheRow)> {
-        let gone: std::collections::HashSet<String> = self.nodes().list().unwrap_or_default().into_iter().filter(|n| n.status.phase.is_tombstone()).map(|n| n.meta.id).collect();
-        self.image_cache_rows(image).into_iter().filter(|(n, _)| !gone.contains(n)).collect()
+        let gone: std::collections::HashSet<String> = self
+            .nodes()
+            .list()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|n| n.status.phase.is_tombstone())
+            .map(|n| n.meta.id)
+            .collect();
+        self.image_cache_rows(image)
+            .into_iter()
+            .filter(|(n, _)| !gone.contains(n))
+            .collect()
     }
 
     /// Every row of `image`'s copies, of nodes in the cluster or not.
     fn image_cache_rows(&self, image: &str) -> Vec<(String, CacheRow)> {
         let db = self.store.database();
-        let Ok(txn) = db.begin_read() else { return Vec::new() };
-        let Ok(t) = txn.open_table(TableId::ImageCaches.definition()) else { return Vec::new() };
+        let Ok(txn) = db.begin_read() else {
+            return Vec::new();
+        };
+        let Ok(t) = txn.open_table(TableId::ImageCaches.definition()) else {
+            return Vec::new();
+        };
         let prefix = format!("{image}/");
         let mut out = Vec::new();
         if let Ok(it) = t.range(prefix.as_str()..format!("{prefix}~").as_str()) {
@@ -70,19 +84,35 @@ impl VmManager {
         if nodes.is_empty() {
             return Ok(false);
         }
-        let in_cluster = |id: &str| nodes.iter().any(|n| n.meta.id == id && !n.status.phase.is_tombstone());
-        let stale: Vec<String> = self.image_cache_rows(&img.id).into_iter().map(|(n, _)| n).filter(|n| !in_cluster(n)).collect();
+        let in_cluster = |id: &str| {
+            nodes
+                .iter()
+                .any(|n| n.meta.id == id && !n.status.phase.is_tombstone())
+        };
+        let stale: Vec<String> = self
+            .image_cache_rows(&img.id)
+            .into_iter()
+            .map(|(n, _)| n)
+            .filter(|n| !in_cluster(n))
+            .collect();
         if !stale.is_empty() {
             let db = self.store.database();
             db.write(Origin::Controller, |tx| -> Result<(), VmManagerError> {
-                let mut t = tx.open_table(TableId::ImageCaches.definition()).map_err(|e| VmManagerError::PersistenceError(e.to_string()))?;
+                let mut t = tx
+                    .open_table(TableId::ImageCaches.definition())
+                    .map_err(|e| VmManagerError::PersistenceError(e.to_string()))?;
                 for n in &stale {
-                    t.remove(cache_key(&img.id, n).as_str()).map_err(|e| VmManagerError::PersistenceError(e.to_string()))?;
+                    t.remove(cache_key(&img.id, n).as_str())
+                        .map_err(|e| VmManagerError::PersistenceError(e.to_string()))?;
                 }
                 Ok(())
             })?;
             for n in &stale {
-                let name = nodes.iter().find(|x| x.meta.id == *n).map(|x| x.spec.name.clone()).unwrap_or_else(|| n.clone());
+                let name = nodes
+                    .iter()
+                    .find(|x| x.meta.id == *n)
+                    .map(|x| x.spec.name.clone())
+                    .unwrap_or_else(|| n.clone());
                 tracing::info!(image = %img.name, node = %name, "forgot the copy of a node that left the cluster");
             }
         }
@@ -100,13 +130,22 @@ impl VmManager {
         let key = cache_key(image, &self.local_node_id());
         let db = self.store.database();
         db.write(Origin::Controller, |tx| -> Result<(), VmManagerError> {
-            let mut t = tx.open_table(TableId::ImageCaches.definition()).map_err(|e| VmManagerError::PersistenceError(e.to_string()))?;
+            let mut t = tx
+                .open_table(TableId::ImageCaches.definition())
+                .map_err(|e| VmManagerError::PersistenceError(e.to_string()))?;
             match &row {
                 Some(r) => {
-                    t.insert(key.as_str(), serde_json::to_vec(r).map_err(|e| VmManagerError::PersistenceError(e.to_string()))?.as_slice()).map_err(|e| VmManagerError::PersistenceError(e.to_string()))?;
+                    t.insert(
+                        key.as_str(),
+                        serde_json::to_vec(r)
+                            .map_err(|e| VmManagerError::PersistenceError(e.to_string()))?
+                            .as_slice(),
+                    )
+                    .map_err(|e| VmManagerError::PersistenceError(e.to_string()))?;
                 }
                 None => {
-                    t.remove(key.as_str()).map_err(|e| VmManagerError::PersistenceError(e.to_string()))?;
+                    t.remove(key.as_str())
+                        .map_err(|e| VmManagerError::PersistenceError(e.to_string()))?;
                 }
             }
             Ok(())
@@ -114,15 +153,27 @@ impl VmManager {
     }
 
     /// A node a copy may go to or leave (§9.2.2): known and not a tombstone.
-    pub(crate) fn copy_node(&self, key: &str) -> Result<crate::node::Node, crate::images::ImageError> {
+    pub(crate) fn copy_node(
+        &self,
+        key: &str,
+    ) -> Result<crate::node::Node, crate::images::ImageError> {
         // A name may also be a tombstone's (a host that left and joined
         // again): the live node is the one meant.
-        let matching: Vec<crate::node::Node> = self.nodes().list().unwrap_or_default().into_iter().filter(|n| n.meta.id == key || n.spec.name == key).collect();
+        let matching: Vec<crate::node::Node> = self
+            .nodes()
+            .list()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|n| n.meta.id == key || n.spec.name == key)
+            .collect();
         if let Some(n) = matching.iter().find(|n| !n.status.phase.is_tombstone()) {
             return Ok(n.clone());
         }
         match matching.first() {
-            Some(n) => Err(crate::images::ImageError::InUse(format!("node {} is {:?}", n.spec.name, n.status.phase))),
+            Some(n) => Err(crate::images::ImageError::InUse(format!(
+                "node {} is {:?}",
+                n.spec.name, n.status.phase
+            ))),
             None => Err(crate::images::ImageError::NotFound(format!("node {key}"))),
         }
     }
@@ -141,17 +192,26 @@ impl VmManager {
                 .read()
                 .await
                 .values()
-                .filter(|v| v.status.placement.as_ref().map(|p| p.node.as_str()) == Some(node) && v.config().firmware_image.as_deref() == Some(img.id.as_str()))
+                .filter(|v| {
+                    v.status.placement.as_ref().map(|p| p.node.as_str()) == Some(node)
+                        && v.config().firmware_image.as_deref() == Some(img.id.as_str())
+                })
                 .map(|v| format!("VM {}", v.name)),
         );
         out
     }
 
     /// `POST /images/{id}/copies`: keep a copy on `node` ahead of need.
-    pub async fn add_image_copy(&self, key: &str, node: &str) -> Result<crate::images::ImageResponse, VmManagerError> {
+    pub async fn add_image_copy(
+        &self,
+        key: &str,
+        node: &str,
+    ) -> Result<crate::images::ImageResponse, VmManagerError> {
         use crate::images::ImageError;
         if self.cluster().is_none() {
-            return Err(ImageError::InvalidImage("copies on nodes are for a cluster".into()).into());
+            return Err(
+                ImageError::InvalidImage("copies on nodes are for a cluster".into()).into(),
+            );
         }
         let mut img = self.images.get_image(key)?;
         if img.deletion_requested_at.is_some() {
@@ -159,46 +219,72 @@ impl VmManager {
         }
         let n = self.copy_node(node)?;
         if !n.status.features.runs_arch(img.arch.as_str()) {
-            return Err(ImageError::InUse(format!("{} is {}, image {} is {}", n.spec.name, n.status.features.arch, img.name, img.arch.as_str())).into());
+            return Err(ImageError::InUse(format!(
+                "{} is {}, image {} is {}",
+                n.spec.name,
+                n.status.features.arch,
+                img.name,
+                img.arch.as_str()
+            ))
+            .into());
         }
         img.release.retain(|r| *r != n.meta.id);
         if !img.pinned.contains(&n.meta.id) {
             img.pinned.push(n.meta.id.clone());
         }
         self.images.put_image(&img)?;
-        self.queue.add(crate::controller::queue::Key::Image(img.id.clone()));
+        self.queue
+            .add(crate::controller::queue::Key::Image(img.id.clone()));
         Ok(self.images.image_response(&img, false))
     }
 
     /// `DELETE /images/{id}/copies/{node}`: let `node`'s copy go. Refused
     /// while the node needs it, or when it is the last ready copy.
-    pub async fn remove_image_copy(&self, key: &str, node: &str) -> Result<crate::images::ImageResponse, VmManagerError> {
+    pub async fn remove_image_copy(
+        &self,
+        key: &str,
+        node: &str,
+    ) -> Result<crate::images::ImageResponse, VmManagerError> {
         use crate::images::ImageError;
         let mut img = self.images.get_image(key)?;
         let nodes = self.nodes().list().unwrap_or_default();
         let id = nodes
             .iter()
             .find(|n| n.meta.id == node)
-            .or_else(|| nodes.iter().find(|n| n.spec.name == node && !n.status.phase.is_tombstone()))
+            .or_else(|| {
+                nodes
+                    .iter()
+                    .find(|n| n.spec.name == node && !n.status.phase.is_tombstone())
+            })
             .map(|n| n.meta.id.clone())
             .unwrap_or_else(|| node.to_string());
         let users = self.users_on(&img, &id).await;
         if !users.is_empty() {
-            return Err(ImageError::InUse(format!("that node needs it: {}", users.join(", "))).into());
+            return Err(
+                ImageError::InUse(format!("that node needs it: {}", users.join(", "))).into(),
+            );
         }
         let caches = self.image_caches(&img.id);
         if !caches.iter().any(|(n, _)| *n == id) && !img.pinned.contains(&id) {
             return Err(ImageError::NotFound(format!("no copy of {} on {node}", img.name)).into());
         }
-        if !caches.iter().any(|(n, r)| *n != id && r.phase == CachePhase::Ready) {
-            return Err(ImageError::InUse(format!("it is the last ready copy of {}: delete the image instead", img.name)).into());
+        if !caches
+            .iter()
+            .any(|(n, r)| *n != id && r.phase == CachePhase::Ready)
+        {
+            return Err(ImageError::InUse(format!(
+                "it is the last ready copy of {}: delete the image instead",
+                img.name
+            ))
+            .into());
         }
         img.pinned.retain(|p| *p != id);
         if !img.release.contains(&id) {
             img.release.push(id);
         }
         self.images.put_image(&img)?;
-        self.queue.add(crate::controller::queue::Key::Image(img.id.clone()));
+        self.queue
+            .add(crate::controller::queue::Key::Image(img.id.clone()));
         Ok(self.images.image_response(&img, false))
     }
 
@@ -208,13 +294,18 @@ impl VmManager {
         if disks {
             return true;
         }
-        self.vms.read().await.values().any(|v| self.is_local(v) && v.config().firmware_image.as_deref() == Some(img.id.as_str()))
+        self.vms.read().await.values().any(|v| {
+            self.is_local(v) && v.config().firmware_image.as_deref() == Some(img.id.as_str())
+        })
     }
 
     fn image_files(&self, img: &Image) -> Vec<(&'static str, std::path::PathBuf)> {
         match img.kind {
             ImageKind::Disk => vec![("main", self.images.image_path(&img.id))],
-            ImageKind::Firmware => vec![("main", self.images.firmware_path(&img.id)), ("vars", self.images.firmware_vars_template(&img.id))],
+            ImageKind::Firmware => vec![
+                ("main", self.images.firmware_path(&img.id)),
+                ("vars", self.images.firmware_vars_template(&img.id)),
+            ],
         }
     }
 
@@ -224,7 +315,14 @@ impl VmManager {
         self.image_caches(&img.id)
             .into_iter()
             .filter(|(n, r)| *n != me && r.phase == CachePhase::Ready)
-            .find_map(|(n, _)| self.nodes().get(&n).ok().flatten().and_then(|n| n.status.advertise).map(|a| a.to_string()))
+            .find_map(|(n, _)| {
+                self.nodes()
+                    .get(&n)
+                    .ok()
+                    .flatten()
+                    .and_then(|n| n.status.advertise)
+                    .map(|a| a.to_string())
+            })
     }
 
     /// Make sure this node has `img`'s file if it needs one, and say so.
@@ -234,44 +332,80 @@ impl VmManager {
         let me = self.local_node_id();
         // Asked to let this copy go (§9.2.2), and nothing here needs it.
         if img.release.contains(&me) && !self.needs_image_here(img).await {
-            if self.image_caches(&img.id).iter().any(|(n, _)| *n == me) || self.images.image_file(img).exists() {
+            if self.image_caches(&img.id).iter().any(|(n, _)| *n == me)
+                || self.images.image_file(img).exists()
+            {
                 tracing::info!(image = %img.name, "dropping this node's copy, as asked");
                 self.drop_image_cache(img)?;
             }
             return Ok(None);
         }
-        let mut have = self.image_files(img).iter().filter(|(p, _)| *p == "main").all(|(_, f)| f.exists());
+        let mut have = self
+            .image_files(img)
+            .iter()
+            .filter(|(p, _)| *p == "main")
+            .all(|(_, f)| f.exists());
         // A file this node already has for it, unrecorded (a host that
         // joined, §9.2.3): adopted, whether or not it is needed here.
         if !have && matches!(img.status, ImageStatus::Ready) {
             let (m, size, sha) = (self.images.clone(), img.file_size_bytes, img.sha256.clone());
-            if let Ok(Some(spare)) = tokio::task::spawn_blocking(move || m.find_spare(size, &sha)).await {
+            if let Ok(Some(spare)) =
+                tokio::task::spawn_blocking(move || m.find_spare(size, &sha)).await
+            {
                 match self.images.adopt_spare(&spare, &img.id, img.kind) {
                     Ok(()) => {
                         tracing::info!(image = %img.name, file = %spare.display(), "adopted a file this node already had");
                         have = true;
                     }
-                    Err(e) => tracing::warn!(image = %img.name, "adopting {}: {}", spare.display(), e),
+                    Err(e) => {
+                        tracing::warn!(image = %img.name, "adopting {}: {}", spare.display(), e)
+                    }
                 }
             }
         }
-        let row = self.image_caches(&img.id).into_iter().find(|(n, _)| *n == me).map(|(_, r)| r);
+        let row = self
+            .image_caches(&img.id)
+            .into_iter()
+            .find(|(n, _)| *n == me)
+            .map(|(_, r)| r);
         if have {
             if row.as_ref().is_none_or(|r| r.phase != CachePhase::Ready) {
-                let bytes = std::fs::metadata(self.images.image_file(img)).map(|m| m.len()).unwrap_or(0);
-                self.put_cache_row(&img.id, Some(CacheRow { phase: CachePhase::Ready, bytes, verified_at: crate::tenancy::now(), error: String::new() }))?;
+                let bytes = std::fs::metadata(self.images.image_file(img))
+                    .map(|m| m.len())
+                    .unwrap_or(0);
+                self.put_cache_row(
+                    &img.id,
+                    Some(CacheRow {
+                        phase: CachePhase::Ready,
+                        bytes,
+                        verified_at: crate::tenancy::now(),
+                        error: String::new(),
+                    }),
+                )?;
             }
             return Ok(None);
         }
-        if !matches!(img.status, ImageStatus::Ready) || !(img.pinned.contains(&me) || self.needs_image_here(img).await) {
+        if !matches!(img.status, ImageStatus::Ready)
+            || !(img.pinned.contains(&me) || self.needs_image_here(img).await)
+        {
             return Ok(None);
         }
         let Some(holder) = self.holder_of(img) else {
             // Nobody has it yet (the downloader is still writing its row).
             return Ok(Some(Duration::from_secs(5)));
         };
-        let Some(cluster) = self.cluster() else { return Ok(None) };
-        self.put_cache_row(&img.id, Some(CacheRow { phase: CachePhase::Downloading, bytes: 0, verified_at: 0, error: String::new() }))?;
+        let Some(cluster) = self.cluster() else {
+            return Ok(None);
+        };
+        self.put_cache_row(
+            &img.id,
+            Some(CacheRow {
+                phase: CachePhase::Downloading,
+                bytes: 0,
+                verified_at: 0,
+                error: String::new(),
+            }),
+        )?;
         let mut result: Result<u64, String> = Ok(0);
         for (part, dest) in self.image_files(img) {
             let tmp = dest.with_extension("cache.part");
@@ -292,10 +426,16 @@ impl VmManager {
             }
             if part == "main" {
                 let (t, want) = (tmp.clone(), img.sha256.clone());
-                let digest = tokio::task::spawn_blocking(move || crate::images::download::sha256_path(&t)).await.ok().and_then(|r| r.ok());
+                let digest =
+                    tokio::task::spawn_blocking(move || crate::images::download::sha256_path(&t))
+                        .await
+                        .ok()
+                        .and_then(|r| r.ok());
                 if !want.is_empty() && digest.as_deref() != Some(want.as_str()) {
                     let _ = std::fs::remove_file(&tmp);
-                    result = Err(format!("the copy from {holder} does not match the image's digest"));
+                    result = Err(format!(
+                        "the copy from {holder} does not match the image's digest"
+                    ));
                     break;
                 }
             }
@@ -309,18 +449,36 @@ impl VmManager {
         }
         match result {
             Ok(bytes) => {
-                self.put_cache_row(&img.id, Some(CacheRow { phase: CachePhase::Ready, bytes, verified_at: crate::tenancy::now(), error: String::new() }))?;
+                self.put_cache_row(
+                    &img.id,
+                    Some(CacheRow {
+                        phase: CachePhase::Ready,
+                        bytes,
+                        verified_at: crate::tenancy::now(),
+                        error: String::new(),
+                    }),
+                )?;
                 // Disks and VMs waiting for the file.
                 for d in self.images.list_disks() {
-                    if matches!(&d.origin, crate::images::DiskOrigin::Image { image_id, .. } if *image_id == img.id) {
-                        self.queue.add(crate::controller::queue::Key::Disk(d.id.clone()));
+                    if matches!(&d.origin, crate::images::DiskOrigin::Image { image_id, .. } if *image_id == img.id)
+                    {
+                        self.queue
+                            .add(crate::controller::queue::Key::Disk(d.id.clone()));
                     }
                 }
                 Ok(None)
             }
             Err(e) => {
                 tracing::warn!(image = %img.name, "fetching the image: {}", e);
-                self.put_cache_row(&img.id, Some(CacheRow { phase: CachePhase::Failed, bytes: 0, verified_at: 0, error: e }))?;
+                self.put_cache_row(
+                    &img.id,
+                    Some(CacheRow {
+                        phase: CachePhase::Failed,
+                        bytes: 0,
+                        verified_at: 0,
+                        error: e,
+                    }),
+                )?;
                 Ok(Some(Duration::from_secs(30)))
             }
         }
@@ -336,10 +494,18 @@ impl VmManager {
         let before = img.release.len();
         img.release.retain(|n| caches.iter().any(|(c, _)| c == n));
         changed |= img.release.len() != before;
-        let pinned_ready = img.pinned.iter().any(|p| caches.iter().any(|(n, r)| n == p && r.phase == CachePhase::Ready));
+        let pinned_ready = img.pinned.iter().any(|p| {
+            caches
+                .iter()
+                .any(|(n, r)| n == p && r.phase == CachePhase::Ready)
+        });
         if !img.keep_server_copy && pinned_ready {
             for (n, r) in &caches {
-                if r.phase == CachePhase::Ready && !img.pinned.contains(n) && !img.release.contains(n) && self.users_on(img, n).await.is_empty() {
+                if r.phase == CachePhase::Ready
+                    && !img.pinned.contains(n)
+                    && !img.release.contains(n)
+                    && self.users_on(img, n).await.is_empty()
+                {
                     img.release.push(n.clone());
                     changed = true;
                 }
@@ -348,7 +514,12 @@ impl VmManager {
         if changed {
             self.images.put_image(img)?;
         }
-        let pending = !img.release.is_empty() || img.pinned.iter().any(|p| !caches.iter().any(|(n, r)| n == p && r.phase == CachePhase::Ready));
+        let pending = !img.release.is_empty()
+            || img.pinned.iter().any(|p| {
+                !caches
+                    .iter()
+                    .any(|(n, r)| n == p && r.phase == CachePhase::Ready)
+            });
         Ok(pending)
     }
 

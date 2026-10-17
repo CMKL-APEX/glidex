@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [ "main" ]
 
+# The jobs only read the repository.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -29,6 +33,17 @@ jobs:
       run: cargo test --verbose
     - name: Replay write sets (spec/clustering.md section 6.1)
       run: GLIDEX_CHECK_WRITE_SETS=1 cargo test -p glidex-control-plane --verbose
+
+  # Formatting: rustfmt's defaults (rustfmt.toml), checked, not applied.
+  fmt:
+
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+
+    steps:
+    - uses: actions/checkout@v7
+    - name: Check formatting
+      run: cargo fmt --all --check
 
   # The RPC API's protos (spec/grpc.md G-D9). Building them needs only
   # cargo (protox in glidex-api's build.rs); buf checks style and

@@ -7,7 +7,7 @@ use crate::models::Tristate;
 use crate::node::Node;
 use crate::store::{Origin, TableId};
 use redb::ReadableTable;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -49,15 +49,25 @@ impl Cluster {
     /// The cluster's feature level is the lowest any server reports; it only
     /// goes up (§6.6). New formats are used once it reaches them.
     fn feature_level_round(&self) {
-        let Ok(nodes) = crate::node::NodeStore::new(self.db.clone()).list() else { return };
-        let servers = nodes.iter().filter(|n| n.spec.role == crate::node::NodeRole::Server && !n.status.phase.is_tombstone());
-        let Some(min) = servers.map(|n| n.status.features.feature_level).min() else { return };
+        let Ok(nodes) = crate::node::NodeStore::new(self.db.clone()).list() else {
+            return;
+        };
+        let servers = nodes.iter().filter(|n| {
+            n.spec.role == crate::node::NodeRole::Server && !n.status.phase.is_tombstone()
+        });
+        let Some(min) = servers.map(|n| n.status.features.feature_level).min() else {
+            return;
+        };
         let cur = self.feature_level();
         if min > cur {
-            let r = self.db.write(Origin::Controller, |tx| -> Result<(), crate::store::StoreError> {
-                tx.open_table(TableId::Meta.definition())?.insert("feature_level", min.to_string().as_bytes())?;
-                Ok(())
-            });
+            let r = self.db.write(
+                Origin::Controller,
+                |tx| -> Result<(), crate::store::StoreError> {
+                    tx.open_table(TableId::Meta.definition())?
+                        .insert("feature_level", min.to_string().as_bytes())?;
+                    Ok(())
+                },
+            );
             match r {
                 Ok(()) => tracing::info!(from = cur, to = min, "cluster feature level raised"),
                 Err(e) => tracing::warn!("raising the feature level: {}", e),
@@ -67,9 +77,21 @@ impl Cluster {
 
     /// The level every server supports; 1 before anything was written.
     pub fn feature_level(&self) -> u32 {
-        let Ok(txn) = self.db.begin_read() else { return 1 };
-        let Ok(t) = txn.open_table(TableId::Meta.definition()) else { return 1 };
-        t.get("feature_level").ok().flatten().and_then(|v| std::str::from_utf8(v.value()).ok().and_then(|s| s.parse().ok())).unwrap_or(1)
+        let Ok(txn) = self.db.begin_read() else {
+            return 1;
+        };
+        let Ok(t) = txn.open_table(TableId::Meta.definition()) else {
+            return 1;
+        };
+        t.get("feature_level")
+            .ok()
+            .flatten()
+            .and_then(|v| {
+                std::str::from_utf8(v.value())
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+            })
+            .unwrap_or(1)
     }
 
     fn liveness_round(&self) {
@@ -83,10 +105,10 @@ impl Cluster {
             let silent = self.liveness.silent_for(&n.meta.id);
             let reachable = silent <= grace;
             let ready = n.status.ready == Tristate::True;
-            if reachable != ready {
-                if let Err(e) = self.set_ready(&n, reachable) {
-                    tracing::warn!(node = %n.spec.name, "recording the node's liveness: {}", e);
-                }
+            if reachable != ready
+                && let Err(e) = self.set_ready(&n, reachable)
+            {
+                tracing::warn!(node = %n.spec.name, "recording the node's liveness: {}", e);
             }
         }
     }

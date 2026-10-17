@@ -90,7 +90,7 @@ namespace Glidex {
   action "tenant.read" in ["role.tenant-auditor"];
   action "tenant.members", "tenant.projects" in ["role.tenant-admin"];
   action "directory.read" in ["role.directory-auditor"];
-  action "directory.users", "directory.tenants" in ["role.directory-admin"];
+  action "directory.users", "directory.tenants", "directory.connectors" in ["role.directory-admin"];
 
   // ---- usage (spec/metering.md §10) ----------------------------------------
   action readUsage in ["system.usage", "host-scoped"]
@@ -145,6 +145,13 @@ namespace Glidex {
     appliesTo { principal: [User, Token], resource: [Tenant], context: Ctx };
   action manageTenantMembers, manageTenantBindings in ["tenant.members", "directory.tenants", "tenant-scoped"]
     appliesTo { principal: [User, Token], resource: [Tenant], context: Ctx };
+  // ---- directory connectors (spec/tenancy.md §5, T1) ------------------------
+  action listConnectors, readConnector in ["directory.read", "directory-scoped"]
+    appliesTo { principal: [User, Token], resource: [Directory], context: Ctx };
+  action createConnector, updateConnector, deleteConnector, setConnectorSecret in ["directory.connectors", "step-up", "directory-scoped"]
+    appliesTo { principal: [User, Token], resource: [Directory], context: Ctx };
+  action testConnector in ["directory.connectors", "directory-scoped"]
+    appliesTo { principal: [User, Token], resource: [Directory], context: Ctx };
   action listAdmissions in ["host.read", "host-scoped"]
     appliesTo { principal: [User, Token], resource: [Cluster], context: Ctx };
   action manageAdmissions in ["cluster.admissions", "step-up", "host-scoped"]

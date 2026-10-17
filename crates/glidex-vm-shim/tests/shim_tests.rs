@@ -4,17 +4,20 @@
 //! ignored end-to-end tests.
 
 use glidex_vm_shim::client::ShimClient;
-use glidex_vm_shim::launch::{HypervisorKind, LaunchFile, LAUNCH_VERSION};
+use glidex_vm_shim::launch::{HypervisorKind, LAUNCH_VERSION, LaunchFile};
 use glidex_vm_shim::state::{ExitCause, InstanceFile, Phase};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
 fn cloud_hypervisor() -> Option<PathBuf> {
-    ["/usr/local/bin/cloud-hypervisor", "/usr/bin/cloud-hypervisor"]
-        .iter()
-        .map(PathBuf::from)
-        .find(|p| p.exists())
+    [
+        "/usr/local/bin/cloud-hypervisor",
+        "/usr/bin/cloud-hypervisor",
+    ]
+    .iter()
+    .map(PathBuf::from)
+    .find(|p| p.exists())
 }
 
 fn launch_file(dir: &Path, argv: Vec<String>) -> LaunchFile {
@@ -40,7 +43,14 @@ fn launch_file(dir: &Path, argv: Vec<String>) -> LaunchFile {
 
 fn ch_launch(dir: &Path, ch: &Path) -> LaunchFile {
     let api = dir.join("api.sock");
-    launch_file(dir, vec![ch.to_string_lossy().into_owned(), "--api-socket".into(), format!("path={}", api.display())])
+    launch_file(
+        dir,
+        vec![
+            ch.to_string_lossy().into_owned(),
+            "--api-socket".into(),
+            format!("path={}", api.display()),
+        ],
+    )
 }
 
 /// The shim, killed (with its hypervisor) when the test ends, pass or fail.
@@ -65,7 +75,10 @@ impl std::ops::DerefMut for Shim {
 impl Drop for Shim {
     fn drop(&mut self) {
         if let Some(pid) = instance(&self.dir).and_then(|i| i.hypervisor_pid) {
-            let _ = nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), nix::sys::signal::Signal::SIGKILL);
+            let _ = nix::sys::signal::kill(
+                nix::unistd::Pid::from_raw(pid as i32),
+                nix::sys::signal::Signal::SIGKILL,
+            );
         }
         let _ = self.child.kill();
         let _ = self.child.wait();
@@ -73,7 +86,9 @@ impl Drop for Shim {
 }
 
 fn start_shim(dir: &Path, launch: &LaunchFile) -> Shim {
-    launch.write(&dir.join(glidex_vm_shim::LAUNCH_FILE)).unwrap();
+    launch
+        .write(&dir.join(glidex_vm_shim::LAUNCH_FILE))
+        .unwrap();
     let child = Command::new(env!("CARGO_BIN_EXE_glidex-vm-shim"))
         .args(["--dir", dir.to_str().unwrap(), "--vm", &launch.vm_id])
         .env_remove("INVOCATION_ID")
@@ -82,11 +97,16 @@ fn start_shim(dir: &Path, launch: &LaunchFile) -> Shim {
         .stdout(std::process::Stdio::null())
         .spawn()
         .unwrap();
-    Shim { child, dir: dir.to_path_buf() }
+    Shim {
+        child,
+        dir: dir.to_path_buf(),
+    }
 }
 
 fn instance(dir: &Path) -> Option<InstanceFile> {
-    InstanceFile::read(&dir.join(glidex_vm_shim::INSTANCE_FILE)).ok().flatten()
+    InstanceFile::read(&dir.join(glidex_vm_shim::INSTANCE_FILE))
+        .ok()
+        .flatten()
 }
 
 fn wait_for(what: &str, timeout: Duration, mut f: impl FnMut() -> bool) {
@@ -98,21 +118,29 @@ fn wait_for(what: &str, timeout: Duration, mut f: impl FnMut() -> bool) {
 }
 
 fn wait_running(dir: &Path) -> InstanceFile {
-    wait_for("running", Duration::from_secs(15), || instance(dir).is_some_and(|i| i.phase != Phase::Launching));
+    wait_for("running", Duration::from_secs(15), || {
+        instance(dir).is_some_and(|i| i.phase != Phase::Launching)
+    });
     let i = instance(dir).unwrap();
     assert_eq!(i.phase, Phase::Running, "{:?}", i.exit);
-    wait_for("shim.sock", Duration::from_secs(5), || dir.join("shim.sock").exists());
+    wait_for("shim.sock", Duration::from_secs(5), || {
+        dir.join("shim.sock").exists()
+    });
     i
 }
 
 fn wait_exited(dir: &Path) -> InstanceFile {
-    wait_for("exit", Duration::from_secs(15), || instance(dir).is_some_and(|i| i.phase == Phase::Exited));
+    wait_for("exit", Duration::from_secs(15), || {
+        instance(dir).is_some_and(|i| i.phase == Phase::Exited)
+    });
     instance(dir).unwrap()
 }
 
 fn alive(pid: u32) -> bool {
     glidex_vm_shim::util::proc_starttime(pid).unwrap().is_some()
-        && !std::fs::read_to_string(format!("/proc/{}/stat", pid)).unwrap_or_default().contains(") Z ")
+        && !std::fs::read_to_string(format!("/proc/{}/stat", pid))
+            .unwrap_or_default()
+            .contains(") Z ")
 }
 
 fn wait_exit_status(child: &mut Shim) -> i32 {
@@ -156,7 +184,10 @@ fn requested_stop_then_release() {
     }
     let log = std::fs::read_to_string(dir.path().join("console.log")).unwrap();
     assert!(log.contains("--- glidex: instance inst-1 started"), "{log}");
-    assert!(log.contains("--- glidex: instance inst-1 exited: requested"), "{log}");
+    assert!(
+        log.contains("--- glidex: instance inst-1 exited: requested"),
+        "{log}"
+    );
 }
 
 #[test]
@@ -165,10 +196,17 @@ fn a_killed_hypervisor_is_a_crash() {
     let dir = tempfile::tempdir().unwrap();
     let mut shim = start_shim(dir.path(), &ch_launch(dir.path(), &ch));
     let hv = wait_running(dir.path()).hypervisor_pid.unwrap();
-    nix::sys::signal::kill(nix::unistd::Pid::from_raw(hv as i32), nix::sys::signal::Signal::SIGKILL).unwrap();
+    nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(hv as i32),
+        nix::sys::signal::Signal::SIGKILL,
+    )
+    .unwrap();
     let exit = wait_exited(dir.path()).exit.unwrap();
     assert_eq!((exit.cause, exit.signal), (ExitCause::Crashed, Some(9)));
-    ShimClient::connect(&dir.path().join("shim.sock")).unwrap().release().unwrap();
+    ShimClient::connect(&dir.path().join("shim.sock"))
+        .unwrap()
+        .release()
+        .unwrap();
     assert_eq!(wait_exit_status(&mut shim), 0);
 }
 
@@ -178,10 +216,17 @@ fn sigterm_stops_and_releases_on_its_own() {
     let dir = tempfile::tempdir().unwrap();
     let mut shim = start_shim(dir.path(), &ch_launch(dir.path(), &ch));
     let hv = wait_running(dir.path()).hypervisor_pid.unwrap();
-    nix::sys::signal::kill(nix::unistd::Pid::from_raw(shim.id() as i32), nix::sys::signal::Signal::SIGTERM).unwrap();
+    nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(shim.id() as i32),
+        nix::sys::signal::Signal::SIGTERM,
+    )
+    .unwrap();
     assert_eq!(wait_exit_status(&mut shim), 0);
     assert!(!alive(hv));
-    assert_eq!(instance(dir.path()).unwrap().exit.unwrap().cause, ExitCause::Terminated);
+    assert_eq!(
+        instance(dir.path()).unwrap().exit.unwrap().cause,
+        ExitCause::Terminated
+    );
     assert!(!dir.path().join("shim.sock").exists());
 }
 
@@ -200,7 +245,14 @@ fn the_hypervisor_dies_with_its_shim() {
 fn binaries_off_the_allowlist_never_run() {
     let dir = tempfile::tempdir().unwrap();
     let marker = dir.path().join("ran");
-    let launch = launch_file(dir.path(), vec!["/bin/sh".into(), "-c".into(), format!("touch {}", marker.display())]);
+    let launch = launch_file(
+        dir.path(),
+        vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            format!("touch {}", marker.display()),
+        ],
+    );
     let mut shim = start_shim(dir.path(), &launch);
     assert_eq!(wait_exit_status(&mut shim), 2);
     assert!(!marker.exists());
@@ -214,14 +266,30 @@ fn a_failed_launch_reports_the_hypervisors_output() {
     let Some(ch) = cloud_hypervisor() else { return };
     let dir = tempfile::tempdir().unwrap();
     let mut launch = ch_launch(dir.path(), &ch);
-    launch.argv.extend(["--kernel".into(), "/nonexistent".into(), "--net".into(), "bogus=1".into()]);
+    launch.argv.extend([
+        "--kernel".into(),
+        "/nonexistent".into(),
+        "--net".into(),
+        "bogus=1".into(),
+    ]);
     let mut shim = start_shim(dir.path(), &launch);
     let inst = wait_exited(dir.path());
     let exit = inst.exit.unwrap();
     assert_eq!(exit.cause, ExitCause::LaunchFailed);
-    assert!(exit.message.as_deref().unwrap_or("").contains("bogus"), "{:?}", exit.message);
+    assert!(
+        exit.message.as_deref().unwrap_or("").contains("bogus"),
+        "{:?}",
+        exit.message
+    );
     // The console and shim.sock stay up so the failure can be inspected.
-    ShimClient::connect(&dir.path().join("shim.sock")).unwrap().release().unwrap();
+    ShimClient::connect(&dir.path().join("shim.sock"))
+        .unwrap()
+        .release()
+        .unwrap();
     assert_eq!(wait_exit_status(&mut shim), 0);
-    assert!(std::fs::read_to_string(dir.path().join("console.log")).unwrap().contains("bogus"));
+    assert!(
+        std::fs::read_to_string(dir.path().join("console.log"))
+            .unwrap()
+            .contains("bogus")
+    );
 }

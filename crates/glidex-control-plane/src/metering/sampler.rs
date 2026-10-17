@@ -8,18 +8,34 @@ use crate::models::{Runner, Vm, VmPhase};
 use std::collections::BTreeSet;
 
 /// Meters a VM accrues while it has an instance (§2).
-const VM_GAUGES: [&str; 5] = ["vm.running", "vm.paused", "cpu.alloc", "mem.alloc", "mem.used"];
+const VM_GAUGES: [&str; 5] = [
+    "vm.running",
+    "vm.paused",
+    "cpu.alloc",
+    "mem.alloc",
+    "mem.used",
+];
 
 const MIB: u64 = 1 << 20;
 
 pub fn vm_subject(vm: &Vm) -> Subject {
-    let mut s = Subject::new(SubjectKind::Vm, vm.id.clone(), vm.name.clone(), Some(vm.project.clone()));
+    let mut s = Subject::new(
+        SubjectKind::Vm,
+        vm.id.clone(),
+        vm.name.clone(),
+        Some(vm.project.clone()),
+    );
     s.node = vm.status.placement.as_ref().map(|p| p.node.clone());
     s
 }
 
 fn disk_subject(d: &Disk) -> Subject {
-    let mut s = Subject::new(SubjectKind::Disk, d.id.clone(), d.name.clone(), (!d.project.is_empty()).then(|| d.project.clone()));
+    let mut s = Subject::new(
+        SubjectKind::Disk,
+        d.id.clone(),
+        d.name.clone(),
+        (!d.project.is_empty()).then(|| d.project.clone()),
+    );
     // The VM it is attached to, so VM totals can include its disks (§8.6).
     s.vm_id = d.attached_to.clone();
     s.node = d.node.clone();
@@ -28,32 +44,57 @@ fn disk_subject(d: &Disk) -> Subject {
 
 /// A disk the VM uses that has no record (yet): on the VM's node.
 fn unrecorded_disk(vm: &Vm, id: &str) -> Subject {
-    let mut s = Subject::new(SubjectKind::Disk, id.to_string(), id.to_string(), Some(vm.project.clone()));
+    let mut s = Subject::new(
+        SubjectKind::Disk,
+        id.to_string(),
+        id.to_string(),
+        Some(vm.project.clone()),
+    );
     s.node = vm.status.placement.as_ref().map(|p| p.node.clone());
     s
 }
 
 /// The phases in which an instance exists and is metered.
 fn live(phase: VmPhase) -> bool {
-    matches!(phase, VmPhase::Starting | VmPhase::Running | VmPhase::Paused | VmPhase::Stopping)
+    matches!(
+        phase,
+        VmPhase::Starting | VmPhase::Running | VmPhase::Paused | VmPhase::Stopping
+    )
 }
 
 /// Meter every VM: usage from the instance's cgroup (or `/proc`), and
 /// allocation from the sizing it was launched with (D11).
-pub fn sample_vms(round: &mut Round, vms: &[Vm], disks: &[Disk], host: &Host, now: u64) -> Result<(), MeteringError> {
+pub fn sample_vms(
+    round: &mut Round,
+    vms: &[Vm],
+    disks: &[Disk],
+    host: &Host,
+    now: u64,
+) -> Result<(), MeteringError> {
     for vm in vms {
         sample_vm(round, vm, disks, host, now)?;
     }
     Ok(())
 }
 
-fn sample_vm(round: &mut Round, vm: &Vm, disks: &[Disk], host: &Host, now: u64) -> Result<(), MeteringError> {
+fn sample_vm(
+    round: &mut Round,
+    vm: &Vm,
+    disks: &[Disk],
+    host: &Host,
+    now: u64,
+) -> Result<(), MeteringError> {
     let s = vm_subject(vm);
     let st = &vm.status;
     let since = st.phase_since.map(|t| t * 1000).unwrap_or(0);
     let Some(inst) = st.instance.as_ref().filter(|_| live(st.phase)) else {
         // No instance: end the gauges when it really ended.
-        let end = st.last_exit.as_ref().map(|e| e.at * 1000).unwrap_or(since.max(1)).min(now);
+        let end = st
+            .last_exit
+            .as_ref()
+            .map(|e| e.at * 1000)
+            .unwrap_or(since.max(1))
+            .min(now);
         for m in VM_GAUGES {
             round.gauge_end_at(&s, m, end)?;
         }
@@ -86,7 +127,9 @@ fn sample_vm(round: &mut Round, vm: &Vm, disks: &[Disk], host: &Host, now: u64) 
             // The shim's cgroup must be this VM's unit (pid reuse check).
             .filter(|cg| cg.file_name().is_some_and(|n| n.to_string_lossy() == *unit))
             .and_then(|cg| host.cgroup_usage(&cg)),
-        Runner::Detached => inst.hypervisor_pid.and_then(|pid| host.proc_usage(pid, inst.hypervisor_starttime)),
+        Runner::Detached => inst
+            .hypervisor_pid
+            .and_then(|pid| host.proc_usage(pid, inst.hypervisor_starttime)),
     };
     if let Some((ids, stats)) = host.block_stats(&vm.id, run) {
         record_disk_io(round, vm, &ids, &stats, disks, launched, run, now)?;
@@ -98,17 +141,33 @@ fn sample_vm(round: &mut Round, vm: &Vm, disks: &[Disk], host: &Host, now: u64) 
         Runner::Systemd { .. } => format!("{run}/{}", inst.shim_starttime.unwrap_or(0)),
         Runner::Detached => format!("{run}/{}", inst.hypervisor_starttime.unwrap_or(0)),
     };
-    if let Some(d) = round.counter(&s, "cpu.used", &reset_key, u.cpu_usec, now, Origin::ZeroAt(launched))? {
+    if let Some(d) = round.counter(
+        &s,
+        "cpu.used",
+        &reset_key,
+        u.cpu_usec,
+        now,
+        Origin::ZeroAt(launched),
+    )? {
         // µs of CPU per second of wall time = % of one core × 10⁴; per vCPU.
         if let Some(usec_per_s) = d.rate(1) {
-            round.live(&s, "cpu_percent", usec_per_s as f64 / 1e4 / (c.vcpu_count.max(1) as f64));
+            round.live(
+                &s,
+                "cpu_percent",
+                usec_per_s as f64 / 1e4 / (c.vcpu_count.max(1) as f64),
+            );
             round.live(&s, "cpu_cores", usec_per_s as f64 / 1e6);
             // Cores × 1000 over one sample interval (§2, §8.7).
             round.max(&s, "cpu.cores_peak", usec_per_s / 1000, now);
         }
     }
     // Hugepage-backed guest RAM is not in memory.current (§5.1).
-    let used_mib = u.memory_bytes / MIB + if c.hugepages { c.mem_size_mib as u64 } else { 0 };
+    let used_mib = u.memory_bytes / MIB
+        + if c.hugepages {
+            c.mem_size_mib as u64
+        } else {
+            0
+        };
     round.gauge_run(&s, "mem.used", run, launched, used_mib, now, now, prev_end)?;
     round.max(&s, "mem.peak", used_mib, now);
     // Host-side I/O (D4): for capacity, next to the guest-level disk.*.
@@ -124,7 +183,11 @@ fn sample_vm(round: &mut Round, vm: &Vm, disks: &[Disk], host: &Host, now: u64) 
     }
     round.live(&s, "mem_used_mib", used_mib as f64);
     if c.mem_size_mib > 0 {
-        round.live(&s, "mem_percent", used_mib as f64 * 100.0 / c.mem_size_mib as f64);
+        round.live(
+            &s,
+            "mem_percent",
+            used_mib as f64 * 100.0 / c.mem_size_mib as f64,
+        );
     }
     if u.from_proc {
         round.flag(&s, now, Flag::SourceProc);
@@ -135,7 +198,12 @@ fn sample_vm(round: &mut Round, vm: &Vm, disks: &[Disk], host: &Host, now: u64) 
 /// The tail since the last sample, from the shim's exit snapshot (D12,
 /// §6.4): CPU, the memory peak and the disks' counters, each consumed
 /// once (`counter_final` adds nothing the second time).
-pub fn consume_exit(round: &mut Round, vm: &Vm, e: &crate::models::ExitRecord, disks: &[Disk]) -> Result<(), MeteringError> {
+pub fn consume_exit(
+    round: &mut Round,
+    vm: &Vm,
+    e: &crate::models::ExitRecord,
+    disks: &[Disk],
+) -> Result<(), MeteringError> {
     let Some(u) = &e.usage else { return Ok(()) };
     let s = vm_subject(vm);
     let at = e.at * 1000;
@@ -148,7 +216,11 @@ pub fn consume_exit(round: &mut Round, vm: &Vm, e: &crate::models::ExitRecord, d
         // Never sampled live: charge its allocation from launch to exit,
         // with the current sizing (pauses are unknown), once.
         let c = vm.config();
-        for (m, level) in [("vm.running", 1), ("cpu.alloc", c.vcpu_count as u64), ("mem.alloc", c.mem_size_mib as u64)] {
+        for (m, level) in [
+            ("vm.running", 1),
+            ("cpu.alloc", c.vcpu_count as u64),
+            ("mem.alloc", c.mem_size_mib as u64),
+        ] {
             round.gauge_run(&s, m, &e.instance_id, launched, level, launched, at, None)?;
             round.gauge_end_at(&s, m, at)?;
         }
@@ -159,7 +231,9 @@ pub fn consume_exit(round: &mut Round, vm: &Vm, e: &crate::models::ExitRecord, d
     // `mem.peak` (working set, §5.1); the samples are.
     let disks_at = u.disks_at.unwrap_or(at);
     for b in &u.disks {
-        let Some(Some(id)) = e.disk_ids.get(b.index) else { continue };
+        let Some(Some(id)) = e.disk_ids.get(b.index) else {
+            continue;
+        };
         let mut ds = match disks.iter().find(|d| &d.id == id) {
             Some(d) => disk_subject(d),
             None => unrecorded_disk(vm, id),
@@ -195,7 +269,9 @@ pub fn record_disk_io(
     now: u64,
 ) -> Result<(), MeteringError> {
     for b in stats {
-        let Some(Some(id)) = ids.get(b.index) else { continue }; // unmanaged root, seed
+        let Some(Some(id)) = ids.get(b.index) else {
+            continue;
+        }; // unmanaged root, seed
         let mut s = match disks.iter().find(|d| &d.id == id) {
             Some(d) => disk_subject(d),
             None => unrecorded_disk(vm, id),
@@ -246,11 +322,23 @@ pub fn record_disk_io(
 pub fn sample_disks(round: &mut Round, disks: &[Disk], now: u64) -> Result<(), MeteringError> {
     for d in disks {
         let s = disk_subject(d);
-        let charged = matches!(d.phase, DiskPhase::Ready | DiskPhase::Resizing | DiskPhase::Missing) && d.size_bytes > 0;
+        let charged = matches!(
+            d.phase,
+            DiskPhase::Ready | DiskPhase::Resizing | DiskPhase::Missing
+        ) && d.size_bytes > 0;
         if charged {
             let mib = d.size_bytes.div_ceil(MIB);
             // First sight accrues from creation (or metering's start).
-            round.gauge_run(&s, "disk.alloc", "disk", d.created_at * 1000, mib, 0, now, None)?;
+            round.gauge_run(
+                &s,
+                "disk.alloc",
+                "disk",
+                d.created_at * 1000,
+                mib,
+                0,
+                now,
+                None,
+            )?;
         } else {
             round.gauge_end_at(&s, "disk.alloc", now)?;
         }
@@ -269,7 +357,7 @@ pub fn forget_gone(round: &mut Round, with_cursors: &BTreeSet<String>, live: &BT
 
 #[cfg(test)]
 mod tests {
-    use super::super::ledger::{combine, Ledger, LedgerSettings, HOUR_MS};
+    use super::super::ledger::{HOUR_MS, Ledger, LedgerSettings, combine};
     use super::*;
     use crate::store::Db;
     use std::path::Path;
@@ -278,7 +366,8 @@ mod tests {
     const T0: u64 = 1_791_000_000 / 3600 * HOUR_MS;
 
     fn vm(phase: &str, instance: serde_json::Value, extra: serde_json::Value) -> Vm {
-        let mut status = serde_json::json!({ "phase": phase, "phase_since": T0 / 1000, "instance": instance });
+        let mut status =
+            serde_json::json!({ "phase": phase, "phase_since": T0 / 1000, "instance": instance });
         if let (Some(st), Some(extra)) = (status.as_object_mut(), extra.as_object()) {
             st.extend(extra.clone());
         }
@@ -313,7 +402,11 @@ mod tests {
         let db = Arc::new(Db::create(dir.path().join("t.db")).unwrap());
         let l = Ledger::new(db, LedgerSettings::from_secs(30, 120)).unwrap();
         l.set_started_at_for_test(0);
-        let host = Host { proc_root: dir.path().join("proc"), cgroup_root: dir.path().join("cg"), sys_root: dir.path().join("sys") };
+        let host = Host {
+            proc_root: dir.path().join("proc"),
+            cgroup_root: dir.path().join("cg"),
+            sys_root: dir.path().join("sys"),
+        };
         (dir, l, host)
     }
 
@@ -323,8 +416,13 @@ mod tests {
     }
 
     fn cgroup(host: &Host, cpu_usec: u64, mem_bytes: u64) {
-        write(&host.proc_root.join("42/cgroup"), "0::/glidex.slice/glidex-vms.slice/glidex-vm@vm-1.service\n");
-        let cg = host.cgroup_root.join("glidex.slice/glidex-vms.slice/glidex-vm@vm-1.service");
+        write(
+            &host.proc_root.join("42/cgroup"),
+            "0::/glidex.slice/glidex-vms.slice/glidex-vm@vm-1.service\n",
+        );
+        let cg = host
+            .cgroup_root
+            .join("glidex.slice/glidex-vms.slice/glidex-vm@vm-1.service");
         write(&cg.join("cpu.stat"), &format!("usage_usec {cpu_usec}\n"));
         write(&cg.join("memory.current"), &format!("{mem_bytes}\n"));
     }
@@ -351,7 +449,11 @@ mod tests {
         assert_eq!(t["cpu.alloc"], 2 * 60, "2 vCPU × 60 s since launch");
         assert_eq!(t["mem.alloc"], 1024 * 60);
         assert_eq!(t["vm.running"], 60);
-        assert_eq!(t["mem.used"], 512 * 30, "512 MiB held from the first reading");
+        assert_eq!(
+            t["mem.used"],
+            512 * 30,
+            "512 MiB held from the first reading"
+        );
         assert_eq!(t["mem.peak"], 768);
     }
 
@@ -385,7 +487,10 @@ mod tests {
         // Exited at +45 s, seen at +90 s.
         v.status.phase = VmPhase::Stopped;
         v.status.instance = None;
-        v.status.last_exit = serde_json::from_value(serde_json::json!({ "at": launched + 45, "instance_id": "i1", "cause": "clean_exit" })).unwrap();
+        v.status.last_exit = serde_json::from_value(
+            serde_json::json!({ "at": launched + 45, "instance_id": "i1", "cause": "clean_exit" }),
+        )
+        .unwrap();
         sample_vms(&mut r, std::slice::from_ref(&v), &[], &host, T0 + 90_000).unwrap();
         sample_vms(&mut r, std::slice::from_ref(&v), &[], &host, T0 + 120_000).unwrap();
         l.commit(r).unwrap();
@@ -415,8 +520,15 @@ mod tests {
         l.commit(r).unwrap();
         let t = totals(&l);
         assert_eq!(t["cpu.used"], 1_500_000, "1.0 s sampled + 0.5 s tail, once");
-        assert_eq!(t["cpu.alloc"], 2 * 40, "seen live: allocation is not charged again at exit");
-        assert_eq!(t["mem.peak"], 512, "from the working-set samples, not the cgroup's cache-inclusive peak");
+        assert_eq!(
+            t["cpu.alloc"],
+            2 * 40,
+            "seen live: allocation is not charged again at exit"
+        );
+        assert_eq!(
+            t["mem.peak"], 512,
+            "from the working-set samples, not the cgroup's cache-inclusive peak"
+        );
     }
 
     /// An instance that started and exited while the meter was down is
@@ -437,14 +549,20 @@ mod tests {
         l.commit(r).unwrap();
         let t = totals(&l);
         assert_eq!(t["cpu.used"], 20_000_000);
-        assert_eq!((t["cpu.alloc"], t["mem.alloc"], t["vm.running"]), (2 * 100, 1024 * 100, 100));
+        assert_eq!(
+            (t["cpu.alloc"], t["mem.alloc"], t["vm.running"]),
+            (2 * 100, 1024 * 100, 100)
+        );
     }
 
     #[test]
     fn foreign_cgroup_is_not_read() {
         let (_dir, l, host) = setup();
         // pid 42 now belongs to something else.
-        write(&host.proc_root.join("42/cgroup"), "0::/user.slice/session-1.scope\n");
+        write(
+            &host.proc_root.join("42/cgroup"),
+            "0::/user.slice/session-1.scope\n",
+        );
         let v = vm("running", instance("i1", T0 / 1000), serde_json::json!({}));
         let mut r = l.begin_round(T0 + 30_000).unwrap();
         sample_vms(&mut r, std::slice::from_ref(&v), &[], &host, T0 + 30_000).unwrap();
@@ -460,23 +578,69 @@ mod tests {
         // Root managed (d-root), one data disk, then the seed.
         let ids = vec![Some("d-root".to_string()), Some("d-data".to_string()), None];
         let b = |i: usize, r: u64, w: u64, t: Option<u64>| BlockStats {
-            index: i, read_ops: r, write_ops: w, read_bytes: r * 4096, write_bytes: w * 4096, read_time_ns: t, write_time_ns: t,
+            index: i,
+            read_ops: r,
+            write_ops: w,
+            read_bytes: r * 4096,
+            write_bytes: w * 4096,
+            read_time_ns: t,
+            write_time_ns: t,
         };
         let mut r = l.begin_round(T0 + 60_000).unwrap();
-        record_disk_io(&mut r, &v, &ids, &[b(0, 0, 0, Some(0)), b(1, 0, 0, None), b(2, 9, 9, None)], &[], T0, "i1", T0 + 30_000).unwrap();
-        record_disk_io(&mut r, &v, &ids, &[b(0, 15_000, 3_000, Some(9_000_000)), b(1, 300, 0, None), b(2, 99, 99, None)], &[], T0, "i1", T0 + 60_000).unwrap();
+        record_disk_io(
+            &mut r,
+            &v,
+            &ids,
+            &[b(0, 0, 0, Some(0)), b(1, 0, 0, None), b(2, 9, 9, None)],
+            &[],
+            T0,
+            "i1",
+            T0 + 30_000,
+        )
+        .unwrap();
+        record_disk_io(
+            &mut r,
+            &v,
+            &ids,
+            &[
+                b(0, 15_000, 3_000, Some(9_000_000)),
+                b(1, 300, 0, None),
+                b(2, 99, 99, None),
+            ],
+            &[],
+            T0,
+            "i1",
+            T0 + 60_000,
+        )
+        .unwrap();
         l.commit(r).unwrap();
         let rows = l.scan(0, u64::MAX / 10, None).unwrap();
         let get = |id: &str| combine(rows.iter().filter(|r| r.subject.id == id));
         let root = get("d-root");
-        assert_eq!((root["disk.read_ops"], root["disk.write_ops"]), (15_000, 3_000));
-        assert_eq!(root["disk.read_iops_peak"], 500_000, "15000 ops / 30 s = 500 IOPS (×1000)");
+        assert_eq!(
+            (root["disk.read_ops"], root["disk.write_ops"]),
+            (15_000, 3_000)
+        );
+        assert_eq!(
+            root["disk.read_iops_peak"], 500_000,
+            "15000 ops / 30 s = 500 IOPS (×1000)"
+        );
         assert_eq!(root["disk.iops_peak"], 600_000);
         assert_eq!(root["disk.kBps_peak"], 18_000 * 4096 / 30 / 1000);
         assert_eq!(root["disk.read_time_ns"], 9_000_000);
-        assert!(!get("d-data").contains_key("disk.read_time_ns"), "no latency without a counter (CH, D17)");
-        assert!(rows.iter().all(|r| r.subject.id != "2"), "the seed is not metered");
-        assert!(rows.iter().filter(|r| r.subject.kind == SubjectKind::Disk).all(|r| r.subject.vm_id.as_deref() == Some("vm-1")));
+        assert!(
+            !get("d-data").contains_key("disk.read_time_ns"),
+            "no latency without a counter (CH, D17)"
+        );
+        assert!(
+            rows.iter().all(|r| r.subject.id != "2"),
+            "the seed is not metered"
+        );
+        assert!(
+            rows.iter()
+                .filter(|r| r.subject.kind == SubjectKind::Disk)
+                .all(|r| r.subject.vm_id.as_deref() == Some("vm-1"))
+        );
     }
 
     #[test]
@@ -495,7 +659,9 @@ mod tests {
         l.commit(r).unwrap();
         assert_eq!(totals(&l)["disk.alloc"], 10 * 1024 * 90);
         // Gone: its cursors are forgotten.
-        let with = l.cursor_subjects(&[SubjectKind::Disk, SubjectKind::Vm]).unwrap();
+        let with = l
+            .cursor_subjects(&[SubjectKind::Disk, SubjectKind::Vm])
+            .unwrap();
         let mut r = l.begin_round(T0 + 120_000).unwrap();
         forget_gone(&mut r, &with, &BTreeSet::new());
         l.commit(r).unwrap();

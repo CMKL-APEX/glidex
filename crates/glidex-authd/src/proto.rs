@@ -156,15 +156,30 @@ pub struct Response {
 
 impl Response {
     pub fn ok(id: u64, ok: AuthOk) -> Self {
-        Self { id, ok: Some(ok), keys: None, error: None }
+        Self {
+            id,
+            ok: Some(ok),
+            keys: None,
+            error: None,
+        }
     }
 
     pub fn keys(id: u64, keys: Vec<String>) -> Self {
-        Self { id, ok: None, keys: Some(keys), error: None }
+        Self {
+            id,
+            ok: None,
+            keys: Some(keys),
+            error: None,
+        }
     }
 
     pub fn err(id: u64, error: ErrorBody) -> Self {
-        Self { id, ok: None, keys: None, error: Some(error) }
+        Self {
+            id,
+            ok: None,
+            keys: None,
+            error: Some(error),
+        }
     }
 }
 
@@ -184,7 +199,8 @@ pub fn valid_service_name(name: &str) -> bool {
     let b = name.as_bytes();
     !b.is_empty()
         && b.len() <= 32
-        && b.iter().all(|c| matches!(c, b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-'))
+        && b.iter()
+            .all(|c| matches!(c, b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-'))
 }
 
 #[cfg(test)]
@@ -196,7 +212,18 @@ mod tests {
         for ok in ["alice", "_svc", "a", "bob.smith", "x-1_y", &"a".repeat(32)] {
             assert!(valid_user_name(ok), "{ok}");
         }
-        for bad in ["", "Alice", "1abc", "-x", ".x", "a b", "a/b", "é", &"a".repeat(33), "root\n"] {
+        for bad in [
+            "",
+            "Alice",
+            "1abc",
+            "-x",
+            ".x",
+            "a b",
+            "a/b",
+            "é",
+            &"a".repeat(33),
+            "root\n",
+        ] {
             assert!(!valid_user_name(bad), "{bad:?}");
         }
     }

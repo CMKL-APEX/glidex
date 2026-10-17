@@ -56,10 +56,16 @@ pub enum IpamError {
 macro_rules! storage_from {
     ($($t:ty),*) => {$(impl From<$t> for IpamError { fn from(e: $t) -> Self { IpamError::Storage(e.to_string()) } })*};
 }
-storage_from!(redb::TableError, redb::StorageError, redb::TransactionError, serde_json::Error);
+storage_from!(
+    redb::TableError,
+    redb::StorageError,
+    redb::TransactionError,
+    serde_json::Error
+);
 
 fn parse_net(s: &str) -> Result<Ipv4Net, IpamError> {
-    s.parse().map_err(|e| IpamError::Invalid(format!("{s}: {e}")))
+    s.parse()
+        .map_err(|e| IpamError::Invalid(format!("{s}: {e}")))
 }
 
 fn subnets(tx: &Tx<'_>) -> Result<Vec<Subnet>, IpamError> {
@@ -75,7 +81,13 @@ fn subnets(tx: &Tx<'_>) -> Result<Vec<Subnet>, IpamError> {
 /// `supernet`. `reserved` are ranges that must not be used (the node NAT
 /// supernet, so node and cluster networks never overlap). Idempotent for a
 /// network that has one.
-pub fn allocate_subnet(tx: &Tx<'_>, network: &str, requested: Option<Ipv4Net>, supernet: Ipv4Net, reserved: &[Ipv4Net]) -> Result<Subnet, IpamError> {
+pub fn allocate_subnet(
+    tx: &Tx<'_>,
+    network: &str,
+    requested: Option<Ipv4Net>,
+    supernet: Ipv4Net,
+    reserved: &[Ipv4Net],
+) -> Result<Subnet, IpamError> {
     let existing = subnets(tx)?;
     if let Some(s) = existing.iter().find(|s| s.network == network) {
         return Ok(s.clone());
@@ -84,15 +96,23 @@ pub fn allocate_subnet(tx: &Tx<'_>, network: &str, requested: Option<Ipv4Net>, s
         if let Some(r) = reserved.iter().find(|r| r.overlaps(c)) {
             return Some(format!("the node NAT range {}/{}", r.network(), r.prefix()));
         }
-        existing.iter().find(|s| parse_net(&s.cidr).map(|n| n.overlaps(c)).unwrap_or(false)).map(|s| s.network.clone())
+        existing
+            .iter()
+            .find(|s| parse_net(&s.cidr).map(|n| n.overlaps(c)).unwrap_or(false))
+            .map(|s| s.network.clone())
     };
     let cidr = match requested {
         Some(c) => {
             if c.prefix() > 29 || c.prefix() < 16 {
-                return Err(IpamError::Invalid("a network's subnet is between /16 and /29".into()));
+                return Err(IpamError::Invalid(
+                    "a network's subnet is between /16 and /29".into(),
+                ));
             }
             if let Some(who) = taken(&c) {
-                return Err(IpamError::Overlap(format!("{}/{}", c.network(), c.prefix()), who));
+                return Err(IpamError::Overlap(
+                    format!("{}/{}", c.network(), c.prefix()),
+                    who,
+                ));
             }
             c
         }
@@ -110,22 +130,41 @@ pub fn allocate_subnet(tx: &Tx<'_>, network: &str, requested: Option<Ipv4Net>, s
                 }
                 i += 1;
             }
-            found.ok_or_else(|| IpamError::SupernetFull(format!("{}/{}", supernet.network(), supernet.prefix())))?
+            found.ok_or_else(|| {
+                IpamError::SupernetFull(format!("{}/{}", supernet.network(), supernet.prefix()))
+            })?
         }
     };
-    let gateway = cidr.host(1).ok_or_else(|| IpamError::Invalid("subnet too small".into()))?;
-    let first = cidr.host(2).ok_or_else(|| IpamError::Invalid("subnet too small".into()))?;
-    let last = cidr.last_host().ok_or_else(|| IpamError::Invalid("subnet too small".into()))?;
-    let s = Subnet { network: network.into(), cidr: format!("{}/{}", cidr.network(), cidr.prefix()), gateway, pool: (first, last) };
-    tx.open_table(TableId::IpamSubnets.definition())?.insert(network, serde_json::to_vec(&s)?.as_slice())?;
+    let gateway = cidr
+        .host(1)
+        .ok_or_else(|| IpamError::Invalid("subnet too small".into()))?;
+    let first = cidr
+        .host(2)
+        .ok_or_else(|| IpamError::Invalid("subnet too small".into()))?;
+    let last = cidr
+        .last_host()
+        .ok_or_else(|| IpamError::Invalid("subnet too small".into()))?;
+    let s = Subnet {
+        network: network.into(),
+        cidr: format!("{}/{}", cidr.network(), cidr.prefix()),
+        gateway,
+        pool: (first, last),
+    };
+    tx.open_table(TableId::IpamSubnets.definition())?
+        .insert(network, serde_json::to_vec(&s)?.as_slice())?;
     Ok(s)
 }
 
 pub fn free_subnet(tx: &Tx<'_>, network: &str) -> Result<(), IpamError> {
-    tx.open_table(TableId::IpamSubnets.definition())?.remove(network)?;
+    tx.open_table(TableId::IpamSubnets.definition())?
+        .remove(network)?;
     let mut res = tx.open_table(TableId::IpamReservations.definition())?;
     let prefix = format!("{network}/");
-    let keys: Vec<String> = res.range(prefix.as_str()..format!("{prefix}~").as_str())?.filter_map(|r| r.ok()).map(|(k, _)| k.value().to_string()).collect();
+    let keys: Vec<String> = res
+        .range(prefix.as_str()..format!("{prefix}~").as_str())?
+        .filter_map(|r| r.ok())
+        .map(|(k, _)| k.value().to_string())
+        .collect();
     for k in keys {
         res.remove(k.as_str())?;
     }
@@ -138,10 +177,18 @@ fn key(network: &str, mac: &str) -> String {
 
 /// An address for `(network, mac)`: the one it already holds, else the lowest
 /// free address of the pool.
-pub fn reserve(tx: &Tx<'_>, network: &str, mac: &str, vm_id: &str, nic: u8) -> Result<Reservation, IpamError> {
+pub fn reserve(
+    tx: &Tx<'_>,
+    network: &str,
+    mac: &str,
+    vm_id: &str,
+    nic: u8,
+) -> Result<Reservation, IpamError> {
     let sub: Subnet = {
         let t = tx.open_table(TableId::IpamSubnets.definition())?;
-        let v = t.get(network)?.ok_or_else(|| IpamError::NoSubnet(network.into()))?;
+        let v = t
+            .get(network)?
+            .ok_or_else(|| IpamError::NoSubnet(network.into()))?;
         serde_json::from_slice(v.value())?
     };
     let mut res = tx.open_table(TableId::IpamReservations.definition())?;
@@ -157,27 +204,46 @@ pub fn reserve(tx: &Tx<'_>, network: &str, mac: &str, vm_id: &str, nic: u8) -> R
         used.insert(u32::from(r.ip));
     }
     let (lo, hi) = (u32::from(sub.pool.0), u32::from(sub.pool.1));
-    let ip = (lo..=hi).find(|a| !used.contains(a)).map(Ipv4Addr::from).ok_or_else(|| IpamError::PoolFull(network.into()))?;
-    let r = Reservation { network: network.into(), mac: mac.to_ascii_lowercase(), ip, vm_id: vm_id.into(), nic };
+    let ip = (lo..=hi)
+        .find(|a| !used.contains(a))
+        .map(Ipv4Addr::from)
+        .ok_or_else(|| IpamError::PoolFull(network.into()))?;
+    let r = Reservation {
+        network: network.into(),
+        mac: mac.to_ascii_lowercase(),
+        ip,
+        vm_id: vm_id.into(),
+        nic,
+    };
     res.insert(k.as_str(), serde_json::to_vec(&r)?.as_slice())?;
     Ok(r)
 }
 
 pub fn release(tx: &Tx<'_>, network: &str, mac: &str) -> Result<(), IpamError> {
-    tx.open_table(TableId::IpamReservations.definition())?.remove(key(network, mac).as_str())?;
+    tx.open_table(TableId::IpamReservations.definition())?
+        .remove(key(network, mac).as_str())?;
     Ok(())
 }
 
 /// An address of the external pool for `router` (§11.2a): the requested one
 /// if free, else the lowest free one. `exclude` are addresses the site
 /// already uses (the shared edge, the gateway). Idempotent per router.
-pub fn allocate_external(tx: &Tx<'_>, router: &str, requested: Option<Ipv4Addr>, pool: Ipv4Net, exclude: &[Ipv4Addr]) -> Result<Ipv4Addr, IpamError> {
+pub fn allocate_external(
+    tx: &Tx<'_>,
+    router: &str,
+    requested: Option<Ipv4Addr>,
+    pool: Ipv4Net,
+    exclude: &[Ipv4Addr],
+) -> Result<Ipv4Addr, IpamError> {
     let mut t = tx.open_table(TableId::IpamExternal.definition())?;
     let mut used = std::collections::BTreeSet::new();
     for r in t.iter()? {
         let (k, v) = r?;
         let owner: String = serde_json::from_slice(v.value())?;
-        let ip: Ipv4Addr = k.value().parse().map_err(|_| IpamError::Storage(format!("bad address key {}", k.value())))?;
+        let ip: Ipv4Addr = k
+            .value()
+            .parse()
+            .map_err(|_| IpamError::Storage(format!("bad address key {}", k.value())))?;
         if owner == router {
             return Ok(ip);
         }
@@ -185,20 +251,30 @@ pub fn allocate_external(tx: &Tx<'_>, router: &str, requested: Option<Ipv4Addr>,
     }
     used.extend(exclude.iter().map(|a| u32::from(*a)));
     let (lo, hi) = (pool.host(1).map(u32::from), pool.last_host().map(u32::from));
-    let (Some(lo), Some(hi)) = (lo, hi) else { return Err(IpamError::Invalid("the external pool is too small".into())) };
+    let (Some(lo), Some(hi)) = (lo, hi) else {
+        return Err(IpamError::Invalid("the external pool is too small".into()));
+    };
     let ip = match requested {
         Some(a) => {
             if !(lo..=hi).contains(&u32::from(a)) {
-                return Err(IpamError::Invalid(format!("{a} is outside the external pool")));
+                return Err(IpamError::Invalid(format!(
+                    "{a} is outside the external pool"
+                )));
             }
             if used.contains(&u32::from(a)) {
                 return Err(IpamError::ExternalTaken(a));
             }
             a
         }
-        None => (lo..=hi).find(|a| !used.contains(a)).map(Ipv4Addr::from).ok_or(IpamError::ExternalPoolFull)?,
+        None => (lo..=hi)
+            .find(|a| !used.contains(a))
+            .map(Ipv4Addr::from)
+            .ok_or(IpamError::ExternalPoolFull)?,
     };
-    t.insert(ip.to_string().as_str(), serde_json::to_vec(router)?.as_slice())?;
+    t.insert(
+        ip.to_string().as_str(),
+        serde_json::to_vec(router)?.as_slice(),
+    )?;
     Ok(ip)
 }
 
@@ -207,7 +283,11 @@ pub fn free_external(tx: &Tx<'_>, router: &str) -> Result<(), IpamError> {
     let keys: Vec<String> = t
         .iter()?
         .filter_map(|r| r.ok())
-        .filter(|(_, v)| serde_json::from_slice::<String>(v.value()).map(|o| o == router).unwrap_or(false))
+        .filter(|(_, v)| {
+            serde_json::from_slice::<String>(v.value())
+                .map(|o| o == router)
+                .unwrap_or(false)
+        })
         .map(|(k, _)| k.value().to_string())
         .collect();
     for k in keys {
@@ -258,18 +338,46 @@ mod tests {
     #[test]
     fn subnets_come_from_the_supernet_and_never_overlap() {
         let (_d, db) = db();
-        let w = |name: &str, req: Option<&str>| db.write(Origin::Network, |tx| allocate_subnet(tx, name, req.map(|r| r.parse().unwrap()), sup(), &node_nat()));
+        let w = |name: &str, req: Option<&str>| {
+            db.write(Origin::Network, |tx| {
+                allocate_subnet(
+                    tx,
+                    name,
+                    req.map(|r| r.parse().unwrap()),
+                    sup(),
+                    &node_nat(),
+                )
+            })
+        };
         let a = w("a", None).unwrap();
-        assert_eq!((a.cidr.as_str(), a.gateway, a.pool.0, a.pool.1), ("10.89.0.0/24", "10.89.0.1".parse().unwrap(), "10.89.0.2".parse().unwrap(), "10.89.0.254".parse().unwrap()));
+        assert_eq!(
+            (a.cidr.as_str(), a.gateway, a.pool.0, a.pool.1),
+            (
+                "10.89.0.0/24",
+                "10.89.0.1".parse().unwrap(),
+                "10.89.0.2".parse().unwrap(),
+                "10.89.0.254".parse().unwrap()
+            )
+        );
         assert_eq!(w("b", None).unwrap().cidr, "10.89.1.0/24");
         // Idempotent for a network that has one.
         assert_eq!(w("a", None).unwrap().cidr, "10.89.0.0/24");
         // A requested subnet that overlaps another, or the node NAT range, is refused.
-        assert!(matches!(w("c", Some("10.89.1.128/25")), Err(IpamError::Overlap(..))));
-        assert!(matches!(w("c", Some("10.88.4.0/24")), Err(IpamError::Overlap(..))));
-        assert_eq!(w("c", Some("192.168.50.0/24")).unwrap().gateway, "192.168.50.1".parse::<Ipv4Addr>().unwrap());
+        assert!(matches!(
+            w("c", Some("10.89.1.128/25")),
+            Err(IpamError::Overlap(..))
+        ));
+        assert!(matches!(
+            w("c", Some("10.88.4.0/24")),
+            Err(IpamError::Overlap(..))
+        ));
+        assert_eq!(
+            w("c", Some("192.168.50.0/24")).unwrap().gateway,
+            "192.168.50.1".parse::<Ipv4Addr>().unwrap()
+        );
         // Freeing makes room again.
-        db.write(Origin::Network, |tx| free_subnet(tx, "a")).unwrap();
+        db.write(Origin::Network, |tx| free_subnet(tx, "a"))
+            .unwrap();
         assert_eq!(w("d", None).unwrap().cidr, "10.89.0.0/24");
     }
 
@@ -278,13 +386,30 @@ mod tests {
         let (_d, db) = db();
         let pool: Ipv4Net = "192.0.2.240/29".parse().unwrap();
         let edge: Ipv4Addr = "192.0.2.241".parse().unwrap();
-        let a = |r: &str, req: Option<&str>| db.write(Origin::Api, |tx| allocate_external(tx, r, req.map(|x| x.parse().unwrap()), pool, &[edge]));
+        let a = |r: &str, req: Option<&str>| {
+            db.write(Origin::Api, |tx| {
+                allocate_external(tx, r, req.map(|x| x.parse().unwrap()), pool, &[edge])
+            })
+        };
         let r1 = a("r1", None).unwrap();
-        assert_eq!(r1, "192.0.2.242".parse::<Ipv4Addr>().unwrap(), "the edge's own address is skipped");
+        assert_eq!(
+            r1,
+            "192.0.2.242".parse::<Ipv4Addr>().unwrap(),
+            "the edge's own address is skipped"
+        );
         assert_eq!(a("r1", None).unwrap(), r1, "idempotent per router");
-        assert!(matches!(a("r2", Some("192.0.2.242")), Err(IpamError::ExternalTaken(_))));
-        assert!(matches!(a("r2", Some("192.0.2.1")), Err(IpamError::Invalid(_))));
-        assert_eq!(a("r2", Some("192.0.2.245")).unwrap(), "192.0.2.245".parse::<Ipv4Addr>().unwrap());
+        assert!(matches!(
+            a("r2", Some("192.0.2.242")),
+            Err(IpamError::ExternalTaken(_))
+        ));
+        assert!(matches!(
+            a("r2", Some("192.0.2.1")),
+            Err(IpamError::Invalid(_))
+        ));
+        assert_eq!(
+            a("r2", Some("192.0.2.245")).unwrap(),
+            "192.0.2.245".parse::<Ipv4Addr>().unwrap()
+        );
         // .242 .243 .244 .245 .246 are assignable (.241 is the edge's).
         a("r3", None).unwrap();
         a("r4", None).unwrap();
@@ -297,19 +422,46 @@ mod tests {
     #[test]
     fn addresses_are_the_lowest_free_and_stable() {
         let (_d, db) = db();
-        db.write(Origin::Network, |tx| allocate_subnet(tx, "n", Some("10.89.9.0/29".parse().unwrap()), sup(), &[])).unwrap();
+        db.write(Origin::Network, |tx| {
+            allocate_subnet(tx, "n", Some("10.89.9.0/29".parse().unwrap()), sup(), &[])
+        })
+        .unwrap();
         let r = |mac: &str| db.write(Origin::Api, |tx| reserve(tx, "n", mac, "vm", 0));
         let a = r("52:54:00:00:00:01").unwrap();
         assert_eq!(a.ip, "10.89.9.2".parse::<Ipv4Addr>().unwrap());
-        assert_eq!(r("52:54:00:00:00:01").unwrap().ip, a.ip, "the same NIC keeps its address");
-        assert_eq!(r("52:54:00:00:00:02").unwrap().ip, "10.89.9.3".parse::<Ipv4Addr>().unwrap());
+        assert_eq!(
+            r("52:54:00:00:00:01").unwrap().ip,
+            a.ip,
+            "the same NIC keeps its address"
+        );
+        assert_eq!(
+            r("52:54:00:00:00:02").unwrap().ip,
+            "10.89.9.3".parse::<Ipv4Addr>().unwrap()
+        );
         // A /29 has .2-.6 assignable.
         for i in 3..=5 {
             r(&format!("52:54:00:00:00:1{i}")).unwrap();
         }
-        assert!(matches!(r("52:54:00:00:00:99"), Err(IpamError::PoolFull(_))));
-        db.write(Origin::Api, |tx| release(tx, "n", "52:54:00:00:00:01")).unwrap();
-        assert_eq!(r("52:54:00:00:00:99").unwrap().ip, a.ip, "a freed address is reused");
-        assert!(matches!(db.write(Origin::Api, |tx| reserve(tx, "none", "52:54:00:00:00:01", "vm", 0)), Err(IpamError::NoSubnet(_))));
+        assert!(matches!(
+            r("52:54:00:00:00:99"),
+            Err(IpamError::PoolFull(_))
+        ));
+        db.write(Origin::Api, |tx| release(tx, "n", "52:54:00:00:00:01"))
+            .unwrap();
+        assert_eq!(
+            r("52:54:00:00:00:99").unwrap().ip,
+            a.ip,
+            "a freed address is reused"
+        );
+        assert!(matches!(
+            db.write(Origin::Api, |tx| reserve(
+                tx,
+                "none",
+                "52:54:00:00:00:01",
+                "vm",
+                0
+            )),
+            Err(IpamError::NoSubnet(_))
+        ));
     }
 }

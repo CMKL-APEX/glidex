@@ -9,13 +9,13 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use glidex_control_plane::api::create_router;
-use glidex_control_plane::cluster::manage::{self, InitOptions, JoinOptions};
 use glidex_control_plane::cluster::Cluster;
+use glidex_control_plane::cluster::manage::{self, InitOptions, JoinOptions};
 use glidex_control_plane::config::Config;
 use glidex_control_plane::node::NodeRole;
 use glidex_control_plane::state::VmManager;
 use http_body_util::BodyExt;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -25,14 +25,33 @@ struct Cp {
     manager: Arc<VmManager>,
     router: axum::Router,
     addr: SocketAddr,
+    /// Holds this control plane's secrets key (spec/tenancy.md §13), for
+    /// the tests that need one (`with_secrets`).
+    secrets: Option<Arc<glidex_control_plane::auth::AuthService>>,
     _dir: tempfile::TempDir,
+}
+
+/// `cp` with an auth service on its store whose secrets key sits beside
+/// it, given to the manager the way the control plane does.
+fn with_secrets(mut cp: Cp) -> Cp {
+    let mut cfg = test_config();
+    cfg.auth.secrets_key = Some(cp._dir.path().join("secrets.kek"));
+    let auth =
+        glidex_control_plane::auth::AuthService::disabled_with(cp.manager.database(), cfg).unwrap();
+    cp.manager.set_secrets_key(auth.clone());
+    cp.secrets = Some(auth);
+    cp
 }
 
 /// The identity in `authz` is process-wide, so these tests run one at a time.
 static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
 }
 
 fn test_config() -> Config {
@@ -51,34 +70,59 @@ fn hypervisors_on_path() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
         use std::os::unix::fs::PermissionsExt;
-        let missing: Vec<&str> = ["cloud-hypervisor", "qemu-system-x86_64"].into_iter().filter(|b| glidex_control_plane::hypervisor::resolve_binary(b).is_none()).collect();
+        let missing: Vec<&str> = ["cloud-hypervisor", "qemu-system-x86_64"]
+            .into_iter()
+            .filter(|b| glidex_control_plane::hypervisor::resolve_binary(b).is_none())
+            .collect();
         if missing.is_empty() {
             return;
         }
-        let dir = std::env::temp_dir().join(format!("glidex-cluster-tests-bin-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("glidex-cluster-tests-bin-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         for b in missing {
             let p = dir.join(b);
-            std::fs::write(&p, "#!/bin/sh\necho 'a stand-in for the cluster tests' >&2\nexit 1\n").unwrap();
+            std::fs::write(
+                &p,
+                "#!/bin/sh\necho 'a stand-in for the cluster tests' >&2\nexit 1\n",
+            )
+            .unwrap();
             std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
         let path = std::env::var_os("PATH").unwrap_or_default();
-        let joined = std::env::join_paths(std::iter::once(dir).chain(std::env::split_paths(&path))).unwrap();
-        std::env::set_var("PATH", joined);
+        let joined =
+            std::env::join_paths(std::iter::once(dir).chain(std::env::split_paths(&path))).unwrap();
+        // SAFETY: test-only; every test sets it the same way before reading it.
+        unsafe { std::env::set_var("PATH", joined) };
     });
 }
 
 fn new_cp() -> Cp {
     hypervisors_on_path();
-    let _ = tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::from_default_env()).with_test_writer().try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_test_writer()
+        .try_init();
     let dir = tempfile::tempdir().unwrap();
     let manager = VmManager::with_db_path(dir.path().join("glidex.db")).unwrap();
     let router = create_router(manager.clone());
     manager.set_api_router(router.clone());
-    Cp { manager, router, addr: format!("127.0.0.1:{}", free_port()).parse().unwrap(), _dir: dir }
+    Cp {
+        manager,
+        router,
+        addr: format!("127.0.0.1:{}", free_port()).parse().unwrap(),
+        secrets: None,
+        _dir: dir,
+    }
 }
 
-async fn call(cp: &Cp, method: &str, uri: &str, body: Option<Value>, headers: &[(&str, &str)]) -> (StatusCode, Value) {
+async fn call(
+    cp: &Cp,
+    method: &str,
+    uri: &str,
+    body: Option<Value>,
+    headers: &[(&str, &str)],
+) -> (StatusCode, Value) {
     let mut b = Request::builder().method(method).uri(uri);
     for (k, v) in headers {
         b = b.header(*k, *v);
@@ -90,10 +134,18 @@ async fn call(cp: &Cp, method: &str, uri: &str, body: Option<Value>, headers: &[
         }
         None => Body::empty(),
     };
-    let resp = cp.router.clone().oneshot(b.body(body).unwrap()).await.unwrap();
+    let resp = cp
+        .router
+        .clone()
+        .oneshot(b.body(body).unwrap())
+        .await
+        .unwrap();
     let status = resp.status();
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-    (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
 }
 
 fn cluster(cp: &Cp) -> Arc<Cluster> {
@@ -101,18 +153,43 @@ fn cluster(cp: &Cp) -> Arc<Cluster> {
 }
 
 async fn form(n: usize) -> Vec<Cp> {
+    form_with(n, new_cp).await
+}
+
+/// `form`, each control plane made by `make`.
+async fn form_with(n: usize, make: impl Fn() -> Cp) -> Vec<Cp> {
     let cfg = test_config();
-    let first = new_cp();
-    manage::init(&first.manager, &cfg, InitOptions { advertise: Some(first.addr), tunnel_ip: None, listen: Some(first.addr) }).await.unwrap();
+    let first = make();
+    manage::init(
+        &first.manager,
+        &cfg,
+        InitOptions {
+            advertise: Some(first.addr),
+            tunnel_ip: None,
+            listen: Some(first.addr),
+        },
+    )
+    .await
+    .unwrap();
     first.manager.initialize().await.unwrap();
     let mut cps = vec![first];
     for _ in 1..n {
-        let cp = new_cp();
-        let token = manage::join_token(&cluster(&cps[0]), NodeRole::Server, 600, false, "test").await.unwrap();
+        let cp = make();
+        let token = manage::join_token(&cluster(&cps[0]), NodeRole::Server, 600, false, "test")
+            .await
+            .unwrap();
         manage::join(
             &cp.manager,
             &cfg,
-            JoinOptions { server: cps[0].addr, token, role: NodeRole::Server, advertise: Some(cp.addr), tunnel_ip: None, name: Some(format!("cp{}", cps.len() + 1)), listen: Some(cp.addr) },
+            JoinOptions {
+                server: cps[0].addr,
+                token,
+                role: NodeRole::Server,
+                advertise: Some(cp.addr),
+                tunnel_ip: None,
+                name: Some(format!("cp{}", cps.len() + 1)),
+                listen: Some(cp.addr),
+            },
         )
         .await
         .unwrap();
@@ -129,7 +206,10 @@ async fn leader_index(cps: &[Cp], among: &[usize]) -> usize {
                 return i;
             }
         }
-        assert!(tokio::time::Instant::now() < deadline, "no leader among {among:?}");
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "no leader among {among:?}"
+        );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
@@ -150,7 +230,11 @@ async fn create_project(cp: &Cp, name: &str) -> (StatusCode, Value) {
 async fn project_names(cp: &Cp) -> Vec<String> {
     let (s, v) = call(cp, "GET", "/projects", None, &[]).await;
     assert_eq!(s, StatusCode::OK, "{v}");
-    v.as_array().unwrap().iter().map(|p| p["name"].as_str().unwrap().to_string()).collect()
+    v.as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["name"].as_str().unwrap().to_string())
+        .collect()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
@@ -159,23 +243,56 @@ async fn three_control_planes_survive_losing_the_leader() {
     let cps = form(3).await;
 
     for (i, cp) in cps.iter().enumerate() {
-        let m = cluster(cp).node.as_ref().unwrap().raft.metrics().borrow().clone();
-        eprintln!("cp{} snapshot={:?} purged={:?} applied={:?} last_log={:?}", i + 1, m.snapshot, m.purged, m.last_applied, m.last_log_index);
+        let m = cluster(cp)
+            .node
+            .as_ref()
+            .unwrap()
+            .raft
+            .metrics()
+            .borrow()
+            .clone();
+        eprintln!(
+            "cp{} snapshot={:?} purged={:?} applied={:?} last_log={:?}",
+            i + 1,
+            m.snapshot,
+            m.purged,
+            m.last_applied,
+            m.last_log_index
+        );
     }
     // The group has three voters and one leader everyone agrees on.
     let status = manage::status_of(&cluster(&cps[0]));
-    assert_eq!(status["raft"]["voters"].as_array().unwrap().len(), 3, "{status}");
+    assert_eq!(
+        status["raft"]["voters"].as_array().unwrap().len(),
+        3,
+        "{status}"
+    );
     let leader = leader_index(&cps, &[0, 1, 2]).await;
     let follower = (0..3).find(|i| *i != leader).unwrap();
     assert!(!cluster(&cps[follower]).is_leader());
 
     // A write through a follower is forwarded; a read through the other
     // follower sees it (linearizable).
-    let (s, v) = call(&cps[follower], "POST", "/projects", Some(json!({ "name": "alpha" })), &[]).await;
+    let (s, v) = call(
+        &cps[follower],
+        "POST",
+        "/projects",
+        Some(json!({ "name": "alpha" })),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::CREATED, "{v}");
     let other = (0..3).find(|i| *i != leader && *i != follower).unwrap();
-    assert!(project_names(&cps[other]).await.contains(&"alpha".to_string()));
-    assert!(project_names(&cps[leader]).await.contains(&"alpha".to_string()));
+    assert!(
+        project_names(&cps[other])
+            .await
+            .contains(&"alpha".to_string())
+    );
+    assert!(
+        project_names(&cps[leader])
+            .await
+            .contains(&"alpha".to_string())
+    );
 
     // Kill the leader: the other two elect one and writes continue.
     cluster(&cps[leader]).stop().await;
@@ -187,19 +304,38 @@ async fn three_control_planes_survive_losing_the_leader() {
     assert_eq!(s, StatusCode::CREATED, "{v}");
     for &i in &rest {
         let names = project_names(&cps[i]).await;
-        assert!(names.contains(&"alpha".to_string()) && names.contains(&"beta".to_string()), "{i}: {names:?}");
+        assert!(
+            names.contains(&"alpha".to_string()) && names.contains(&"beta".to_string()),
+            "{i}: {names:?}"
+        );
     }
     for (i, cp) in cps.iter().enumerate() {
         let d = cp.manager.database().dump().unwrap();
-        let dp = d.iter().flat_map(|(_, r)| r.iter()).find(|(k, _)| k == "default_project").map(|(_, v)| String::from_utf8_lossy(v).into_owned());
-        eprintln!("cp{} default_project={:?} leader={} applied={}", i + 1, dp, i == leader, cp.manager.database().revision());
+        let dp = d
+            .iter()
+            .flat_map(|(_, r)| r.iter())
+            .find(|(k, _)| k == "default_project")
+            .map(|(_, v)| String::from_utf8_lossy(v).into_owned());
+        eprintln!(
+            "cp{} default_project={:?} leader={} applied={}",
+            i + 1,
+            dp,
+            i == leader,
+            cp.manager.database().revision()
+        );
     }
-    let (a, b) = (cps[rest[0]].manager.database().dump().unwrap(), cps[rest[1]].manager.database().dump().unwrap());
+    let (a, b) = (
+        cps[rest[0]].manager.database().dump().unwrap(),
+        cps[rest[1]].manager.database().dump().unwrap(),
+    );
     if a != b {
         for ((ta, ra), (tb, rb)) in a.iter().zip(b.iter()) {
             for (k, v) in ra {
                 if rb.iter().find(|(k2, _)| k2 == k).map(|(_, v2)| v2) != Some(v) {
-                    eprintln!("DIFF in {ta:?} {tb:?}: {k} {:?}", String::from_utf8_lossy(v));
+                    eprintln!(
+                        "DIFF in {ta:?} {tb:?}: {k} {:?}",
+                        String::from_utf8_lossy(v)
+                    );
                 }
             }
         }
@@ -216,13 +352,56 @@ async fn rpc_reads_are_answered_by_the_server_that_takes_them() {
     // Every RPC is a POST: the operation's kind (READ), not the method,
     // keeps it on the follower (spec/grpc.md G-D6). Forwarded, it would
     // report the leader's node id.
-    let (s, v) = call(&cps[follower], "POST", "/glidex.system.v1.SystemService/GetServerInfo", Some(json!({})), &[]).await;
+    let (s, v) = call(
+        &cps[follower],
+        "POST",
+        "/glidex.system.v1.SystemService/GetServerInfo",
+        Some(json!({})),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::OK, "{v}");
-    assert_eq!(v["node_id"], cluster(&cps[follower]).identity.node_id.as_str(), "{v}");
-    assert_eq!(v["cluster_id"], cluster(&cps[leader]).identity.cluster_id.as_str(), "{v}");
+    assert_eq!(
+        v["node_id"],
+        cluster(&cps[follower]).identity.node_id.as_str(),
+        "{v}"
+    );
+    assert_eq!(
+        v["cluster_id"],
+        cluster(&cps[leader]).identity.cluster_id.as_str(),
+        "{v}"
+    );
     // Health is always this server's own.
-    let (s, _) = call(&cps[follower], "POST", "/grpc.health.v1.Health/Check", Some(json!({})), &[]).await;
+    let (s, _) = call(
+        &cps[follower],
+        "POST",
+        "/grpc.health.v1.Health/Check",
+        Some(json!({})),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::OK);
+}
+
+/// Every server ends up with the cluster's secrets key, so any of them can
+/// open the connector secrets in the replicated store (spec/tenancy.md §13).
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn a_new_server_receives_the_secrets_key() {
+    let _one = SERIAL.lock().await;
+    let cps = form_with(2, || with_secrets(new_cp())).await;
+    let secrets = |i: usize| cps[i].secrets.as_ref().unwrap();
+    let first = secrets(0).connectors.kek_id();
+    wait_for(
+        "the second server holds the first one's secrets key",
+        || {
+            let ok = secrets(1).connectors.kek_id() == first;
+            async move { ok }
+        },
+    )
+    .await;
+    // The key file on disk is the cluster's too.
+    let disk = std::fs::read(cps[1]._dir.path().join("secrets.kek")).unwrap();
+    assert_eq!(disk, *secrets(0).connectors.kek_bytes());
 }
 
 /// A gRPC write sent to a follower is forwarded to the leader, and the
@@ -236,7 +415,11 @@ async fn rpc_writes_on_a_follower_reach_the_leader_with_their_trailers() {
     let leader = leader_index(&cps, &[0, 1]).await;
     let follower = 1 - leader;
     let grpc = |cp: &Cp, slug: &str| {
-        let msg = CreateTenantRequest { slug: slug.into(), ..Default::default() }.encode_to_vec();
+        let msg = CreateTenantRequest {
+            slug: slug.into(),
+            ..Default::default()
+        }
+        .encode_to_vec();
         let mut body = vec![0u8];
         body.extend_from_slice(&(msg.len() as u32).to_be_bytes());
         body.extend_from_slice(&msg);
@@ -262,17 +445,31 @@ async fn rpc_writes_on_a_follower_reach_the_leader_with_their_trailers() {
             tokio::time::sleep(Duration::from_millis(200)).await;
             continue;
         }
-        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&collected.to_bytes()));
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "{}",
+            String::from_utf8_lossy(&collected.to_bytes())
+        );
         break (headers, collected);
     };
-    let trailers = collected.trailers().cloned().expect("gRPC trailers came back through the forward");
-    let grpc_status = trailers.get("grpc-status").map(|v| v.to_str().unwrap().to_string());
+    let trailers = collected
+        .trailers()
+        .cloned()
+        .expect("gRPC trailers came back through the forward");
+    let grpc_status = trailers
+        .get("grpc-status")
+        .map(|v| v.to_str().unwrap().to_string());
     let id = if grpc_status.as_deref() == Some("10") && retried {
         let (s, v) = call(&cps[leader], "GET", "/tenants/acme", None, &[]).await;
         assert_eq!(s, StatusCode::OK, "{v}");
         v["tenant"]["id"].as_str().unwrap().to_string()
     } else {
-        assert_eq!(grpc_status.as_deref(), Some("0"), "headers {headers:?} trailers {trailers:?}");
+        assert_eq!(
+            grpc_status.as_deref(),
+            Some("0"),
+            "headers {headers:?} trailers {trailers:?}"
+        );
         let b = collected.to_bytes();
         let created = CreateTenantResponse::decode_from_slice(&b[5..]).unwrap();
         created.tenant.as_option().unwrap().id.clone()
@@ -287,7 +484,9 @@ async fn rpc_writes_on_a_follower_reach_the_leader_with_their_trailers() {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     let resp = loop {
         let resp = grpc(&cps[follower], "acme").await.unwrap();
-        if resp.status() == StatusCode::SERVICE_UNAVAILABLE && tokio::time::Instant::now() < deadline {
+        if resp.status() == StatusCode::SERVICE_UNAVAILABLE
+            && tokio::time::Instant::now() < deadline
+        {
             tokio::time::sleep(Duration::from_millis(200)).await;
             continue;
         }
@@ -295,7 +494,10 @@ async fn rpc_writes_on_a_follower_reach_the_leader_with_their_trailers() {
     };
     let headers = resp.headers().clone();
     let collected = resp.into_body().collect().await.unwrap();
-    let status = collected.trailers().and_then(|t| t.get("grpc-status").cloned()).or_else(|| headers.get("grpc-status").cloned());
+    let status = collected
+        .trailers()
+        .and_then(|t| t.get("grpc-status").cloned())
+        .or_else(|| headers.get("grpc-status").cloned());
     assert_eq!(status.as_ref().map(|v| v.to_str().unwrap()), Some("10"));
 }
 
@@ -304,7 +506,14 @@ async fn reads_without_a_quorum_fail_unless_stale_is_asked_for() {
     let _one = SERIAL.lock().await;
     let cps = form(3).await;
     let leader = leader_index(&cps, &[0, 1, 2]).await;
-    let (s, _) = call(&cps[leader], "POST", "/projects", Some(json!({ "name": "kept" })), &[]).await;
+    let (s, _) = call(
+        &cps[leader],
+        "POST",
+        "/projects",
+        Some(json!({ "name": "kept" })),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::CREATED);
     let rest: Vec<usize> = (0..3).filter(|i| *i != leader).collect();
     // Wait for both followers to have it, then take both servers down.
@@ -322,12 +531,25 @@ async fn reads_without_a_quorum_fail_unless_stale_is_asked_for() {
     let resp = cps[survivor]
         .router
         .clone()
-        .oneshot(Request::builder().uri("/projects").header("x-glidex-consistency", "local").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/projects")
+                .header("x-glidex-consistency", "local")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     assert!(resp.headers().contains_key("x-glidex-revision"));
-    let (s, v) = call(&cps[survivor], "POST", "/projects", Some(json!({ "name": "nope" })), &[]).await;
+    let (s, v) = call(
+        &cps[survivor],
+        "POST",
+        "/projects",
+        Some(json!({ "name": "nope" })),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE, "{v}");
 }
 
@@ -336,36 +558,98 @@ async fn a_join_needs_the_right_token_and_the_pinned_ca() {
     let _one = SERIAL.lock().await;
     let cfg = test_config();
     let first = new_cp();
-    manage::init(&first.manager, &cfg, InitOptions { advertise: Some(first.addr), tunnel_ip: None, listen: Some(first.addr) }).await.unwrap();
+    manage::init(
+        &first.manager,
+        &cfg,
+        InitOptions {
+            advertise: Some(first.addr),
+            tunnel_ip: None,
+            listen: Some(first.addr),
+        },
+    )
+    .await
+    .unwrap();
     let c = cluster(&first);
-    let good = manage::join_token(&c, NodeRole::Server, 600, false, "test").await.unwrap();
+    let good = manage::join_token(&c, NodeRole::Server, 600, false, "test")
+        .await
+        .unwrap();
 
     // A token for another CA's hash is refused before anything is sent.
     let evil = format!("{}.{}", &good[..good.rfind('.').unwrap()], "0".repeat(64));
     let cp = new_cp();
-    let err = manage::join(&cp.manager, &cfg, JoinOptions { server: first.addr, token: evil, role: NodeRole::Server, advertise: Some(cp.addr), tunnel_ip: None, name: Some("cp2".into()), listen: Some(cp.addr) })
-        .await
-        .unwrap_err()
-        .to_string();
+    let err = manage::join(
+        &cp.manager,
+        &cfg,
+        JoinOptions {
+            server: first.addr,
+            token: evil,
+            role: NodeRole::Server,
+            advertise: Some(cp.addr),
+            tunnel_ip: None,
+            name: Some("cp2".into()),
+            listen: Some(cp.addr),
+        },
+    )
+    .await
+    .unwrap_err()
+    .to_string();
     assert!(err.contains("not the one the token names"), "{err}");
 
     // An agent token can't bring in a server.
-    let agent = manage::join_token(&c, NodeRole::Agent, 600, false, "test").await.unwrap();
-    let err = manage::join(&cp.manager, &cfg, JoinOptions { server: first.addr, token: agent, role: NodeRole::Server, advertise: Some(cp.addr), tunnel_ip: None, name: Some("cp2".into()), listen: Some(cp.addr) })
+    let agent = manage::join_token(&c, NodeRole::Agent, 600, false, "test")
         .await
-        .unwrap_err()
-        .to_string();
+        .unwrap();
+    let err = manage::join(
+        &cp.manager,
+        &cfg,
+        JoinOptions {
+            server: first.addr,
+            token: agent,
+            role: NodeRole::Server,
+            advertise: Some(cp.addr),
+            tunnel_ip: None,
+            name: Some("cp2".into()),
+            listen: Some(cp.addr),
+        },
+    )
+    .await
+    .unwrap_err()
+    .to_string();
     assert!(err.contains("token is for"), "{err}");
 
     // The good token works once.
-    manage::join(&cp.manager, &cfg, JoinOptions { server: first.addr, token: good.clone(), role: NodeRole::Server, advertise: Some(cp.addr), tunnel_ip: None, name: Some("cp2".into()), listen: Some(cp.addr) })
-        .await
-        .unwrap();
+    manage::join(
+        &cp.manager,
+        &cfg,
+        JoinOptions {
+            server: first.addr,
+            token: good.clone(),
+            role: NodeRole::Server,
+            advertise: Some(cp.addr),
+            tunnel_ip: None,
+            name: Some("cp2".into()),
+            listen: Some(cp.addr),
+        },
+    )
+    .await
+    .unwrap();
     let again = new_cp();
-    let err = manage::join(&again.manager, &cfg, JoinOptions { server: first.addr, token: good, role: NodeRole::Server, advertise: Some(again.addr), tunnel_ip: None, name: Some("cp3".into()), listen: Some(again.addr) })
-        .await
-        .unwrap_err()
-        .to_string();
+    let err = manage::join(
+        &again.manager,
+        &cfg,
+        JoinOptions {
+            server: first.addr,
+            token: good,
+            role: NodeRole::Server,
+            advertise: Some(again.addr),
+            tunnel_ip: None,
+            name: Some("cp3".into()),
+            listen: Some(again.addr),
+        },
+    )
+    .await
+    .unwrap_err()
+    .to_string();
     assert!(err.contains("already used"), "{err}");
 }
 
@@ -374,8 +658,25 @@ async fn a_new_cluster_starts_from_a_snapshot() {
     let _one = SERIAL.lock().await;
     let cfg = test_config();
     let first = new_cp();
-    manage::init(&first.manager, &cfg, InitOptions { advertise: Some(first.addr), tunnel_ip: None, listen: Some(first.addr) }).await.unwrap();
-    let (s, _) = call(&first, "POST", "/projects", Some(json!({ "name": "survivor" })), &[]).await;
+    manage::init(
+        &first.manager,
+        &cfg,
+        InitOptions {
+            advertise: Some(first.addr),
+            tunnel_ip: None,
+            listen: Some(first.addr),
+        },
+    )
+    .await
+    .unwrap();
+    let (s, _) = call(
+        &first,
+        "POST",
+        "/projects",
+        Some(json!({ "name": "survivor" })),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::CREATED);
     let old = first.manager.db_path().to_path_buf();
     let snap = old.with_extension("snap");
@@ -392,14 +693,28 @@ async fn a_new_cluster_starts_from_a_snapshot() {
     for f in ["identity.json", "node.crt", "node.key", "ca.crt", "ca.key"] {
         std::fs::copy(src.join(f), dst.join(f)).unwrap();
     }
-    manage::force_new_cluster(&db_path, Some(&snap), &cfg.cluster).await.unwrap();
+    manage::force_new_cluster(&db_path, Some(&snap), &cfg.cluster)
+        .await
+        .unwrap();
     // Not the default :8842: the machine running the tests may be a cluster node itself.
     let mut cfg = cfg.clone();
     cfg.cluster.listen = format!("127.0.0.1:{}", free_port()).parse().unwrap();
-    let manager = VmManager::open(db_path, glidex_control_plane::network::Netd::from_env(), &cfg).await.unwrap();
+    let manager = VmManager::open(
+        db_path,
+        glidex_control_plane::network::Netd::from_env(),
+        &cfg,
+    )
+    .await
+    .unwrap();
     let router = create_router(manager.clone());
     manager.set_api_router(router.clone());
-    let cp = Cp { manager, router, addr: "127.0.0.1:1".parse().unwrap(), _dir: fresh };
+    let cp = Cp {
+        manager,
+        router,
+        addr: "127.0.0.1:1".parse().unwrap(),
+        secrets: None,
+        _dir: fresh,
+    };
     let c = cluster(&cp);
     c.wait_for_leader(Duration::from_secs(20)).await.unwrap();
     assert!(project_names(&cp).await.contains(&"survivor".to_string()));
@@ -415,7 +730,10 @@ fn vm_body(name: &str, node: &str) -> Value {
 async fn wait_for<F: std::future::Future<Output = bool>>(what: &str, mut f: impl FnMut() -> F) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     while !f().await {
-        assert!(tokio::time::Instant::now() < deadline, "timed out waiting for {what}");
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for {what}"
+        );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
@@ -425,15 +743,43 @@ async fn a_vm_placed_on_an_agent_is_that_agents_and_its_status_comes_back() {
     let _one = SERIAL.lock().await;
     let cfg = test_config();
     let server = new_cp();
-    manage::init(&server.manager, &cfg, InitOptions { advertise: Some(server.addr), tunnel_ip: None, listen: Some(server.addr) }).await.unwrap();
+    manage::init(
+        &server.manager,
+        &cfg,
+        InitOptions {
+            advertise: Some(server.addr),
+            tunnel_ip: None,
+            listen: Some(server.addr),
+        },
+    )
+    .await
+    .unwrap();
     server.manager.initialize().await.unwrap();
 
     let agent = new_cp();
-    let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test").await.unwrap();
-    manage::join(&agent.manager, &cfg, JoinOptions { server: server.addr, token, role: NodeRole::Agent, advertise: Some(agent.addr), tunnel_ip: None, name: Some("agent1".into()), listen: Some(agent.addr) })
+    let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test")
         .await
         .unwrap();
-    let link = agent.manager.node_link().expect("an agent has a link").clone();
+    manage::join(
+        &agent.manager,
+        &cfg,
+        JoinOptions {
+            server: server.addr,
+            token,
+            role: NodeRole::Agent,
+            advertise: Some(agent.addr),
+            tunnel_ip: None,
+            name: Some("agent1".into()),
+            listen: Some(agent.addr),
+        },
+    )
+    .await
+    .unwrap();
+    let link = agent
+        .manager
+        .node_link()
+        .expect("an agent has a link")
+        .clone();
     assert!(link.wait_ready(Duration::from_secs(20)).await);
     agent.manager.initialize().await.unwrap();
     agent.manager.start_controllers();
@@ -441,15 +787,32 @@ async fn a_vm_placed_on_an_agent_is_that_agents_and_its_status_comes_back() {
     // The agent is a node of the cluster, and answers heartbeats.
     let (s, nodes) = call(&server, "GET", "/nodes", None, &[]).await;
     assert_eq!(s, StatusCode::OK);
-    assert!(nodes.as_array().unwrap().iter().any(|n| n["spec"]["name"] == "agent1" && n["spec"]["role"] == "agent"), "{nodes}");
+    assert!(
+        nodes
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|n| n["spec"]["name"] == "agent1" && n["spec"]["role"] == "agent"),
+        "{nodes}"
+    );
 
     // A VM pinned to the agent shows up in its cache and is its own.
-    let (s, vm) = call(&server, "POST", "/vms", Some(vm_body("on-agent", "agent1")), &[]).await;
+    let (s, vm) = call(
+        &server,
+        "POST",
+        "/vms",
+        Some(vm_body("on-agent", "agent1")),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::CREATED, "{vm}");
     let id = vm["id"].as_str().unwrap().to_string();
     let agent_node = agent.manager.local_node_id();
     assert_eq!(vm["node"], agent_node.as_str(), "{vm}");
-    wait_for("the VM in the agent's cache", || async { agent.manager.list_vms().await.iter().any(|v| v.id == id) }).await;
+    wait_for("the VM in the agent's cache", || async {
+        agent.manager.list_vms().await.iter().any(|v| v.id == id)
+    })
+    .await;
     // ... but not in the server's own work: the server's controller leaves it alone.
     assert!(!server.manager.list_vms().await.is_empty());
 
@@ -463,18 +826,43 @@ async fn a_vm_placed_on_an_agent_is_that_agents_and_its_status_comes_back() {
     // A node may write its VMs' status, and nothing else: the server refuses
     // a spec change from the agent's identity.
     let c = cluster(&agent);
-    let mut spec_change = agent.manager.list_vms().await.into_iter().find(|v| v.id == id).unwrap();
+    let mut spec_change = agent
+        .manager
+        .list_vms()
+        .await
+        .into_iter()
+        .find(|v| v.id == id)
+        .unwrap();
     spec_change.spec.power = glidex_control_plane::models::PowerState::Running;
     let ws = {
         let rec = serde_json::to_vec(&spec_change).unwrap();
         glidex_control_plane::store::WriteSet {
             format: 1,
             origin: glidex_control_plane::store::Origin::Controller,
-            ops: vec![glidex_control_plane::store::Op::Put { table: glidex_control_plane::store::TableId::Vms, key: id.as_bytes().to_vec(), value: rec }],
+            ops: vec![glidex_control_plane::store::Op::Put {
+                table: glidex_control_plane::store::TableId::Vms,
+                key: id.as_bytes().to_vec(),
+                value: rec,
+            }],
         }
     };
-    let r = c.client.request(&server.addr.to_string(), hyper::Method::POST, "/cluster/v1/status-write", &[("content-type", "application/json".into())], serde_json::to_vec(&ws).unwrap().into()).await.unwrap();
-    assert_eq!(r.status, StatusCode::CONFLICT, "{}", String::from_utf8_lossy(&r.body));
+    let r = c
+        .client
+        .request(
+            &server.addr.to_string(),
+            hyper::Method::POST,
+            "/cluster/v1/status-write",
+            &[("content-type", "application/json".into())],
+            serde_json::to_vec(&ws).unwrap().into(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        r.status,
+        StatusCode::CONFLICT,
+        "{}",
+        String::from_utf8_lossy(&r.body)
+    );
 
     // Partitioned from every server, the agent keeps working from its cache
     // and queues what it writes; when the servers are back, the queue drains.
@@ -486,9 +874,22 @@ async fn a_vm_placed_on_an_agent_is_that_agents_and_its_status_comes_back() {
     agent.manager.__touch_status_for_tests(&id).await.unwrap();
     tokio::time::sleep(Duration::from_millis(500)).await;
     let (_, v) = call(&server, "GET", &format!("/vms/{id}"), None, &[]).await;
-    assert_eq!(v["resource_version"].as_u64().unwrap(), before, "the server saw a write the agent could not send");
-    let local = agent.manager.list_vms().await.into_iter().find(|v| v.id == id).unwrap();
-    assert_eq!(local.status.launch_failures, 1, "the agent's cache didn't take its own write");
+    assert_eq!(
+        v["resource_version"].as_u64().unwrap(),
+        before,
+        "the server saw a write the agent could not send"
+    );
+    let local = agent
+        .manager
+        .list_vms()
+        .await
+        .into_iter()
+        .find(|v| v.id == id)
+        .unwrap();
+    assert_eq!(
+        local.status.launch_failures, 1,
+        "the agent's cache didn't take its own write"
+    );
     link.set_partitioned(false);
     wait_for("the queued write to reach the server", || async {
         let (_, v) = call(&server, "GET", &format!("/vms/{id}"), None, &[]).await;
@@ -503,32 +904,86 @@ async fn a_silent_node_is_unreachable_not_gone() {
     let mut cfg = test_config();
     cfg.cluster.node_grace_secs = 5;
     let server = new_cp();
-    manage::init(&server.manager, &cfg, InitOptions { advertise: Some(server.addr), tunnel_ip: None, listen: Some(server.addr) }).await.unwrap();
+    manage::init(
+        &server.manager,
+        &cfg,
+        InitOptions {
+            advertise: Some(server.addr),
+            tunnel_ip: None,
+            listen: Some(server.addr),
+        },
+    )
+    .await
+    .unwrap();
     server.manager.initialize().await.unwrap();
     let agent = new_cp();
-    let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test").await.unwrap();
-    manage::join(&agent.manager, &cfg, JoinOptions { server: server.addr, token, role: NodeRole::Agent, advertise: Some(agent.addr), tunnel_ip: None, name: Some("agent1".into()), listen: Some(agent.addr) })
+    let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test")
         .await
         .unwrap();
+    manage::join(
+        &agent.manager,
+        &cfg,
+        JoinOptions {
+            server: server.addr,
+            token,
+            role: NodeRole::Agent,
+            advertise: Some(agent.addr),
+            tunnel_ip: None,
+            name: Some("agent1".into()),
+            listen: Some(agent.addr),
+        },
+    )
+    .await
+    .unwrap();
     let link = agent.manager.node_link().unwrap().clone();
     assert!(link.wait_ready(Duration::from_secs(20)).await);
     agent.manager.initialize().await.unwrap();
-    let (s, vm) = call(&server, "POST", "/vms", Some(vm_body("quiet", "agent1")), &[]).await;
+    let (s, vm) = call(
+        &server,
+        "POST",
+        "/vms",
+        Some(vm_body("quiet", "agent1")),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::CREATED, "{vm}");
     let id = vm["id"].as_str().unwrap().to_string();
 
-    let ready = |nodes: &Value| nodes.as_array().unwrap().iter().find(|n| n["spec"]["name"] == "agent1").map(|n| n["status"]["ready"].as_str().unwrap().to_string());
-    wait_for("the agent to be Ready", || async { ready(&call(&server, "GET", "/nodes", None, &[]).await.1).as_deref() == Some("True") }).await;
+    let ready = |nodes: &Value| {
+        nodes
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["spec"]["name"] == "agent1")
+            .map(|n| n["status"]["ready"].as_str().unwrap().to_string())
+    };
+    wait_for("the agent to be Ready", || async {
+        ready(&call(&server, "GET", "/nodes", None, &[]).await.1).as_deref() == Some("True")
+    })
+    .await;
 
     link.set_partitioned(true);
-    wait_for("the agent to be Unknown", || async { ready(&call(&server, "GET", "/nodes", None, &[]).await.1).as_deref() == Some("Unknown") }).await;
+    wait_for("the agent to be Unknown", || async {
+        ready(&call(&server, "GET", "/nodes", None, &[]).await.1).as_deref() == Some("Unknown")
+    })
+    .await;
     // Its VMs say so, and nothing was stopped or moved.
     let (_, v) = call(&server, "GET", &format!("/vms/{id}"), None, &[]).await;
-    assert!(v["conditions"].as_array().unwrap().iter().any(|c| c["kind"] == "Ready" && c["reason"] == "NodeUnreachable"), "{v}");
+    assert!(
+        v["conditions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["kind"] == "Ready" && c["reason"] == "NodeUnreachable"),
+        "{v}"
+    );
     assert_eq!(v["node"], agent.manager.local_node_id().as_str());
 
     link.set_partitioned(false);
-    wait_for("the agent to be Ready again", || async { ready(&call(&server, "GET", "/nodes", None, &[]).await.1).as_deref() == Some("True") }).await;
+    wait_for("the agent to be Ready again", || async {
+        ready(&call(&server, "GET", "/nodes", None, &[]).await.1).as_deref() == Some("True")
+    })
+    .await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
@@ -536,16 +991,54 @@ async fn a_server_relays_the_console_log_of_a_vm_on_an_agent() {
     let _one = SERIAL.lock().await;
     let cfg = test_config();
     let server = new_cp();
-    manage::init(&server.manager, &cfg, InitOptions { advertise: Some(server.addr), tunnel_ip: None, listen: Some(server.addr) }).await.unwrap();
+    manage::init(
+        &server.manager,
+        &cfg,
+        InitOptions {
+            advertise: Some(server.addr),
+            tunnel_ip: None,
+            listen: Some(server.addr),
+        },
+    )
+    .await
+    .unwrap();
     server.manager.initialize().await.unwrap();
     let agent = new_cp();
-    let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test").await.unwrap();
-    manage::join(&agent.manager, &cfg, JoinOptions { server: server.addr, token, role: NodeRole::Agent, advertise: Some(agent.addr), tunnel_ip: None, name: Some("agent1".into()), listen: Some(agent.addr) })
+    let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test")
         .await
         .unwrap();
-    assert!(agent.manager.node_link().unwrap().wait_ready(Duration::from_secs(20)).await);
+    manage::join(
+        &agent.manager,
+        &cfg,
+        JoinOptions {
+            server: server.addr,
+            token,
+            role: NodeRole::Agent,
+            advertise: Some(agent.addr),
+            tunnel_ip: None,
+            name: Some("agent1".into()),
+            listen: Some(agent.addr),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        agent
+            .manager
+            .node_link()
+            .unwrap()
+            .wait_ready(Duration::from_secs(20))
+            .await
+    );
     agent.manager.initialize().await.unwrap();
-    let (s, vm) = call(&server, "POST", "/vms", Some(vm_body("chatty", "agent1")), &[]).await;
+    let (s, vm) = call(
+        &server,
+        "POST",
+        "/vms",
+        Some(vm_body("chatty", "agent1")),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::CREATED, "{vm}");
     let id = vm["id"].as_str().unwrap().to_string();
 
@@ -553,7 +1046,17 @@ async fn a_server_relays_the_console_log_of_a_vm_on_an_agent() {
     let paths = glidex_control_plane::paths::vm_paths(&id);
     std::fs::create_dir_all(&paths.dir).unwrap();
     std::fs::write(&paths.log, b"booting...\nlogin: ").unwrap();
-    let resp = server.router.clone().oneshot(Request::builder().uri(format!("/vms/{id}/console/log")).body(Body::empty()).unwrap()).await.unwrap();
+    let resp = server
+        .router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/vms/{id}/console/log"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = resp.into_body().collect().await.unwrap().to_bytes();
     assert_eq!(&body[..], b"booting...\nlogin: ");
@@ -565,14 +1068,30 @@ async fn a_server_relays_the_console_log_of_a_vm_on_an_agent() {
         let (mut r, mut w) = s.split();
         let _ = tokio::io::copy(&mut r, &mut w).await;
     });
-    let mut stream = cluster(&server).client.upgrade(&agent.addr.to_string(), &format!("/cluster/v1/vms/{id}/console")).await.unwrap();
+    let mut stream = cluster(&server)
+        .client
+        .upgrade(
+            &agent.addr.to_string(),
+            &format!("/cluster/v1/vms/{id}/console"),
+        )
+        .await
+        .unwrap();
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     stream.write_all(b"ls\n").await.unwrap();
     let mut buf = [0u8; 3];
-    tokio::time::timeout(Duration::from_secs(5), stream.read_exact(&mut buf)).await.unwrap().unwrap();
+    tokio::time::timeout(Duration::from_secs(5), stream.read_exact(&mut buf))
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(&buf, b"ls\n");
     // Another VM's console isn't served by this node.
-    assert!(cluster(&server).client.upgrade(&agent.addr.to_string(), "/cluster/v1/vms/nope/console").await.is_err());
+    assert!(
+        cluster(&server)
+            .client
+            .upgrade(&agent.addr.to_string(), "/cluster/v1/vms/nope/console")
+            .await
+            .is_err()
+    );
     std::fs::remove_dir_all(&paths.dir).unwrap();
 }
 
@@ -588,21 +1107,61 @@ async fn image_copies_go_where_they_are_wanted_and_spare_files_are_used() {
     cfg.reconcile.resync_secs = 2;
     let server = new_cp();
     server.manager.configure(&cfg);
-    manage::init(&server.manager, &cfg, InitOptions { advertise: Some(server.addr), tunnel_ip: None, listen: Some(server.addr) }).await.unwrap();
+    manage::init(
+        &server.manager,
+        &cfg,
+        InitOptions {
+            advertise: Some(server.addr),
+            tunnel_ip: None,
+            listen: Some(server.addr),
+        },
+    )
+    .await
+    .unwrap();
     server.manager.initialize().await.unwrap();
     server.manager.start_controllers();
     let agent = new_cp();
     agent.manager.configure(&cfg);
-    let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test").await.unwrap();
-    manage::join(&agent.manager, &cfg, JoinOptions { server: server.addr, token, role: NodeRole::Agent, advertise: Some(agent.addr), tunnel_ip: None, name: Some("agent1".into()), listen: Some(agent.addr) })
+    let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test")
         .await
         .unwrap();
-    assert!(agent.manager.node_link().unwrap().wait_ready(Duration::from_secs(20)).await);
+    manage::join(
+        &agent.manager,
+        &cfg,
+        JoinOptions {
+            server: server.addr,
+            token,
+            role: NodeRole::Agent,
+            advertise: Some(agent.addr),
+            tunnel_ip: None,
+            name: Some("agent1".into()),
+            listen: Some(agent.addr),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        agent
+            .manager
+            .node_link()
+            .unwrap()
+            .wait_ready(Duration::from_secs(20))
+            .await
+    );
     agent.manager.initialize().await.unwrap();
     agent.manager.start_controllers();
-    let host_arch = glidex_control_plane::images::catalog::Arch::host().unwrap().as_str();
-    let other_arch = if host_arch == "x86_64" { "aarch64" } else { "x86_64" };
-    wait_until("the agent's arch", || async { node_json(&server, "agent1").await["status"]["features"]["arch"] == host_arch }).await;
+    let host_arch = glidex_control_plane::images::catalog::Arch::host()
+        .unwrap()
+        .as_str();
+    let other_arch = if host_arch == "x86_64" {
+        "aarch64"
+    } else {
+        "x86_64"
+    };
+    wait_until("the agent's arch", || async {
+        node_json(&server, "agent1").await["status"]["features"]["arch"] == host_arch
+    })
+    .await;
 
     // Two images the server holds: one of this host's architecture, one of another.
     let put_image = |id: &str, arch: &str, data: &[u8]| {
@@ -615,16 +1174,29 @@ async fn image_copies_go_where_they_are_wanted_and_spare_files_are_used() {
         let path = server.manager.images().image_path(id);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, data).unwrap();
-        server.manager.database().write(Origin::Api, |tx| -> Result<(), glidex_control_plane::store::StoreError> {
-            tx.open_table(TableId::Images.definition())?.insert(id, img.to_string().as_bytes())?;
-            Ok(())
-        })
-        .unwrap();
+        server
+            .manager
+            .database()
+            .write(
+                Origin::Api,
+                |tx| -> Result<(), glidex_control_plane::store::StoreError> {
+                    tx.open_table(TableId::Images.definition())?
+                        .insert(id, img.to_string().as_bytes())?;
+                    Ok(())
+                },
+            )
+            .unwrap();
     };
     // The agent already has the first one's file, under another name (a
     // host that joined), and an unrelated file.
     let data = vec![3u8; 50_000];
-    let agent_dir = agent.manager.images().image_path("x").parent().unwrap().to_path_buf();
+    let agent_dir = agent
+        .manager
+        .images()
+        .image_path("x")
+        .parent()
+        .unwrap()
+        .to_path_buf();
     std::fs::create_dir_all(&agent_dir).unwrap();
     std::fs::write(agent_dir.join("from-before.qcow2"), &data).unwrap();
     std::fs::write(agent_dir.join("stray.qcow2"), b"nothing the cluster has").unwrap();
@@ -634,83 +1206,195 @@ async fn image_copies_go_where_they_are_wanted_and_spare_files_are_used() {
     // Adopted, not copied: the file it had becomes its copy (§9.2.3).
     let here = agent.manager.images().image_path("img-here");
     wait_until("the agent to adopt its file", || async { here.exists() }).await;
-    assert!(!agent_dir.join("from-before.qcow2").exists(), "renamed into place");
+    assert!(
+        !agent_dir.join("from-before.qcow2").exists(),
+        "renamed into place"
+    );
     wait_until("both copies of img-here ready", || async {
         let c = server.manager.image_caches("img-here");
-        c.len() == 2 && c.iter().all(|(_, r)| r.phase == glidex_control_plane::controller::image_cache::CachePhase::Ready)
+        c.len() == 2
+            && c.iter().all(|(_, r)| {
+                r.phase == glidex_control_plane::controller::image_cache::CachePhase::Ready
+            })
     })
     .await;
 
     // A host that left and joined again: a tombstone has the same name, and
     // the live node is the one a name means.
     let store = glidex_control_plane::node::NodeStore::new(server.manager.database());
-    let mut ghost = store.get(&cluster(&agent).identity.node_id).unwrap().unwrap();
+    let mut ghost = store
+        .get(&cluster(&agent).identity.node_id)
+        .unwrap()
+        .unwrap();
     ghost.meta.id = "00000000-dead-4000-8000-000000000000".into();
     ghost.status.phase = glidex_control_plane::node::NodePhase::Removed;
     store.put(&ghost).unwrap();
 
     // Another architecture: not copied there, and not placed there (§9.2.1).
-    let (s, e) = call(&server, "POST", "/images/img-other/copies", Some(json!({ "node": "agent1" })), &[]).await;
+    let (s, e) = call(
+        &server,
+        "POST",
+        "/images/img-other/copies",
+        Some(json!({ "node": "agent1" })),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::CONFLICT, "{e}");
     assert!(e["message"].as_str().unwrap().contains(other_arch), "{e}");
-    let (s, v) = call(&server, "POST", "/scheduler/preview", Some(json!({ "vcpu_count": 1, "mem_size_mib": 256, "image": "img-other" })), &[]).await;
+    let (s, v) = call(
+        &server,
+        "POST",
+        "/scheduler/preview",
+        Some(json!({ "vcpu_count": 1, "mem_size_mib": 256, "image": "img-other" })),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::OK, "{v}");
     assert!(v["pick"].is_null(), "{v}");
-    assert!(v["nodes"].as_array().unwrap().iter().all(|n| n["refused"].as_str().unwrap_or_default().contains(&format!("the VM's image is {other_arch}"))), "{v}");
+    assert!(
+        v["nodes"].as_array().unwrap().iter().all(|n| n["refused"]
+            .as_str()
+            .unwrap_or_default()
+            .contains(&format!("the VM's image is {other_arch}"))),
+        "{v}"
+    );
 
     // The server lets its copy go; the last one can't (§9.2.2).
     let server_id = cluster(&server).identity.node_id.clone();
     let agent_id = cluster(&agent).identity.node_id.clone();
-    let (s, e) = call(&server, "DELETE", &format!("/images/img-here/copies/{server_id}"), None, &[]).await;
+    let (s, e) = call(
+        &server,
+        "DELETE",
+        &format!("/images/img-here/copies/{server_id}"),
+        None,
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::ACCEPTED, "{e}");
     let server_file = server.manager.images().image_path("img-here");
-    wait_until("the server's copy to go", || async { !server_file.exists() && server.manager.image_caches("img-here").len() == 1 }).await;
+    wait_until("the server's copy to go", || async {
+        !server_file.exists() && server.manager.image_caches("img-here").len() == 1
+    })
+    .await;
     // Another node has the only copy: the image is ready, not missing, even
     // after a restart checked the server's own files.
     let mut img = server.manager.images().get_image("img-here").unwrap();
     img.status = glidex_control_plane::images::ImageStatus::Missing;
     server.manager.images().put_image(&img).unwrap();
-    wait_until("the image ready again", || async { server.manager.images().get_image("img-here").unwrap().status == glidex_control_plane::images::ImageStatus::Ready }).await;
-    let (s, e) = call(&server, "DELETE", "/images/img-here/copies/agent1", None, &[]).await;
+    wait_until("the image ready again", || async {
+        server
+            .manager
+            .images()
+            .get_image("img-here")
+            .unwrap()
+            .status
+            == glidex_control_plane::images::ImageStatus::Ready
+    })
+    .await;
+    let (s, e) = call(
+        &server,
+        "DELETE",
+        "/images/img-here/copies/agent1",
+        None,
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::CONFLICT, "{e}");
-    assert!(e["message"].as_str().unwrap().contains("last ready copy"), "{e}");
+    assert!(
+        e["message"].as_str().unwrap().contains("last ready copy"),
+        "{e}"
+    );
     // And comes back when pinned again.
-    let (s, v) = call(&server, "POST", "/images/img-here/copies", Some(json!({ "node": server_id })), &[]).await;
+    let (s, v) = call(
+        &server,
+        "POST",
+        "/images/img-here/copies",
+        Some(json!({ "node": server_id })),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::ACCEPTED, "{v}");
     wait_until("the server's copy back", || async { server_file.exists() }).await;
     let (_, v) = call(&server, "GET", "/images/img-here", None, &[]).await;
-    let pinned: Vec<&Value> = v["copies"].as_array().unwrap().iter().filter(|c| c["pinned"] == true).collect();
-    assert_eq!((pinned.len(), pinned[0]["node"].as_str()), (1, Some(server_id.as_str())), "{v}");
+    let pinned: Vec<&Value> = v["copies"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|c| c["pinned"] == true)
+        .collect();
+    assert_eq!(
+        (pinned.len(), pinned[0]["node"].as_str()),
+        (1, Some(server_id.as_str())),
+        "{v}"
+    );
     let _ = agent_id;
 
     // The rest is reported, and deleted when asked (§9.2.3). (Nodes report
     // every two minutes: report now.)
     let m = agent.manager.clone();
-    tokio::task::spawn_blocking(move || m.report_self()).await.unwrap().unwrap();
+    tokio::task::spawn_blocking(move || m.report_self())
+        .await
+        .unwrap()
+        .unwrap();
     wait_until("the stray file reported", || async {
-        node_json(&server, "agent1").await["status"]["features"]["spare_image_files"].as_array().is_some_and(|f| f.iter().any(|f| f["name"] == "stray.qcow2"))
+        node_json(&server, "agent1").await["status"]["features"]["spare_image_files"]
+            .as_array()
+            .is_some_and(|f| f.iter().any(|f| f["name"] == "stray.qcow2"))
     })
     .await;
-    let agent_node = node_json(&server, "agent1").await["meta"]["id"].as_str().unwrap().to_string();
-    let (s, v) = call(&server, "POST", &format!("/nodes/{agent_node}/spare-image-files/delete"), Some(json!({})), &[]).await;
+    let agent_node = node_json(&server, "agent1").await["meta"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (s, v) = call(
+        &server,
+        "POST",
+        &format!("/nodes/{agent_node}/spare-image-files/delete"),
+        Some(json!({})),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::ACCEPTED, "{v}");
-    wait_until("the stray file gone", || async { !agent_dir.join("stray.qcow2").exists() }).await;
+    wait_until("the stray file gone", || async {
+        !agent_dir.join("stray.qcow2").exists()
+    })
+    .await;
     assert!(here.exists(), "the adopted copy stays");
 
     // The agent leaves with its files and never drops its copy: the copy is
     // no longer counted, and deleting the image doesn't wait for it.
     let (_, v) = call(&server, "GET", "/images/img-here", None, &[]).await;
-    assert!(v["copies"].as_array().unwrap().iter().any(|c| c["node"] == agent_node.as_str()), "{v}");
+    assert!(
+        v["copies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["node"] == agent_node.as_str()),
+        "{v}"
+    );
     cluster(&agent).stop().await;
     let store = glidex_control_plane::node::NodeStore::new(server.manager.database());
     let mut gone = store.get(&agent_node).unwrap().unwrap();
     gone.status.phase = glidex_control_plane::node::NodePhase::Departed;
     store.put(&gone).unwrap();
     let (_, v) = call(&server, "GET", "/images/img-here", None, &[]).await;
-    assert!(!v["copies"].as_array().unwrap().iter().any(|c| c["node"] == agent_node.as_str()), "a node that left has no copy: {v}");
+    assert!(
+        !v["copies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["node"] == agent_node.as_str()),
+        "a node that left has no copy: {v}"
+    );
     let (s, v) = call(&server, "DELETE", "/images/img-here", None, &[]).await;
     assert!(s.is_success(), "{s} {v}");
-    wait_until("the image deleted though the agent left with a copy", || async { call(&server, "GET", "/images/img-here", None, &[]).await.0 == StatusCode::NOT_FOUND }).await;
+    wait_until(
+        "the image deleted though the agent left with a copy",
+        || async {
+            call(&server, "GET", "/images/img-here", None, &[]).await.0 == StatusCode::NOT_FOUND
+        },
+    )
+    .await;
     assert!(server.manager.image_caches("img-here").is_empty());
 }
 
@@ -723,16 +1407,47 @@ async fn a_node_copies_an_image_it_needs_from_a_holder_and_checks_it() {
     cfg.reconcile.resync_secs = 5;
     let server = new_cp();
     server.manager.configure(&cfg);
-    manage::init(&server.manager, &cfg, InitOptions { advertise: Some(server.addr), tunnel_ip: None, listen: Some(server.addr) }).await.unwrap();
+    manage::init(
+        &server.manager,
+        &cfg,
+        InitOptions {
+            advertise: Some(server.addr),
+            tunnel_ip: None,
+            listen: Some(server.addr),
+        },
+    )
+    .await
+    .unwrap();
     server.manager.initialize().await.unwrap();
     server.manager.start_controllers();
     let agent = new_cp();
     agent.manager.configure(&cfg);
-    let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test").await.unwrap();
-    manage::join(&agent.manager, &cfg, JoinOptions { server: server.addr, token, role: NodeRole::Agent, advertise: Some(agent.addr), tunnel_ip: None, name: Some("agent1".into()), listen: Some(agent.addr) })
+    let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test")
         .await
         .unwrap();
-    assert!(agent.manager.node_link().unwrap().wait_ready(Duration::from_secs(20)).await);
+    manage::join(
+        &agent.manager,
+        &cfg,
+        JoinOptions {
+            server: server.addr,
+            token,
+            role: NodeRole::Agent,
+            advertise: Some(agent.addr),
+            tunnel_ip: None,
+            name: Some("agent1".into()),
+            listen: Some(agent.addr),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        agent
+            .manager
+            .node_link()
+            .unwrap()
+            .wait_ready(Duration::from_secs(20))
+            .await
+    );
     agent.manager.initialize().await.unwrap();
     agent.manager.start_controllers();
 
@@ -754,11 +1469,16 @@ async fn a_node_copies_an_image_it_needs_from_a_holder_and_checks_it() {
     server
         .manager
         .database()
-        .write(Origin::Api, |tx| -> Result<(), glidex_control_plane::store::StoreError> {
-            tx.open_table(TableId::Images.definition())?.insert(img_id, img.to_string().as_bytes())?;
-            tx.open_table(TableId::Disks.definition())?.insert("d1", disk.to_string().as_bytes())?;
-            Ok(())
-        })
+        .write(
+            Origin::Api,
+            |tx| -> Result<(), glidex_control_plane::store::StoreError> {
+                tx.open_table(TableId::Images.definition())?
+                    .insert(img_id, img.to_string().as_bytes())?;
+                tx.open_table(TableId::Disks.definition())?
+                    .insert("d1", disk.to_string().as_bytes())?;
+                Ok(())
+            },
+        )
         .unwrap();
 
     // The agent fetches it, verifies it, and says it has it.
@@ -767,7 +1487,10 @@ async fn a_node_copies_an_image_it_needs_from_a_holder_and_checks_it() {
     assert_eq!(std::fs::read(&agent_path).unwrap(), data);
     wait_for("both copies recorded", || async {
         let c = server.manager.image_caches(img_id);
-        c.len() == 2 && c.iter().all(|(_, r)| r.phase == glidex_control_plane::controller::image_cache::CachePhase::Ready)
+        c.len() == 2
+            && c.iter().all(|(_, r)| {
+                r.phase == glidex_control_plane::controller::image_cache::CachePhase::Ready
+            })
     })
     .await;
     // The image says where its copies are (spec/clustering-ui.md §5.3).
@@ -775,7 +1498,12 @@ async fn a_node_copies_an_image_it_needs_from_a_holder_and_checks_it() {
     assert_eq!(s, StatusCode::OK, "{v}");
     let copies = v["copies"].as_array().expect("copies");
     assert_eq!(copies.len(), 2, "{v}");
-    assert!(copies.iter().all(|c| c["state"] == "ready" && c["bytes"] == data.len()), "{v}");
+    assert!(
+        copies
+            .iter()
+            .all(|c| c["state"] == "ready" && c["bytes"] == data.len()),
+        "{v}"
+    );
     assert!(copies.iter().any(|c| c["node_name"] == "agent1"), "{v}");
 }
 
@@ -790,66 +1518,157 @@ async fn the_scheduler_spreads_vms_honours_pins_and_disks_and_explains_itself() 
     let cfg = test_config();
     let server = new_cp();
     server.manager.configure(&cfg);
-    manage::init(&server.manager, &cfg, InitOptions { advertise: Some(server.addr), tunnel_ip: None, listen: Some(server.addr) }).await.unwrap();
+    manage::init(
+        &server.manager,
+        &cfg,
+        InitOptions {
+            advertise: Some(server.addr),
+            tunnel_ip: None,
+            listen: Some(server.addr),
+        },
+    )
+    .await
+    .unwrap();
     server.manager.initialize().await.unwrap();
     server.manager.start_controllers();
     let mut agents = Vec::new();
     for i in 1..=2 {
         let a = new_cp();
-        let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test").await.unwrap();
-        manage::join(&a.manager, &cfg, JoinOptions { server: server.addr, token, role: NodeRole::Agent, advertise: Some(a.addr), tunnel_ip: None, name: Some(format!("agent{i}")), listen: Some(a.addr) })
+        let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test")
             .await
             .unwrap();
-        assert!(a.manager.node_link().unwrap().wait_ready(Duration::from_secs(20)).await);
+        manage::join(
+            &a.manager,
+            &cfg,
+            JoinOptions {
+                server: server.addr,
+                token,
+                role: NodeRole::Agent,
+                advertise: Some(a.addr),
+                tunnel_ip: None,
+                name: Some(format!("agent{i}")),
+                listen: Some(a.addr),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(
+            a.manager
+                .node_link()
+                .unwrap()
+                .wait_ready(Duration::from_secs(20))
+                .await
+        );
         a.manager.initialize().await.unwrap();
         agents.push(a);
     }
     let ids: Vec<String> = {
         let (_, n) = call(&server, "GET", "/nodes", None, &[]).await;
-        n.as_array().unwrap().iter().map(|n| n["meta"]["id"].as_str().unwrap().to_string()).collect()
+        n.as_array()
+            .unwrap()
+            .iter()
+            .map(|n| n["meta"]["id"].as_str().unwrap().to_string())
+            .collect()
     };
     assert_eq!(ids.len(), 3);
 
     // Six VMs spread two to a node (same capacity: fewest VMs, then name).
     let mut placed = std::collections::HashMap::<String, u32>::new();
     for i in 0..6 {
-        let (s, vm) = call(&server, "POST", "/vms", Some(vm_unpinned(&format!("vm{i}"))), &[]).await;
+        let (s, vm) = call(
+            &server,
+            "POST",
+            "/vms",
+            Some(vm_unpinned(&format!("vm{i}"))),
+            &[],
+        )
+        .await;
         assert_eq!(s, StatusCode::CREATED, "{vm}");
-        *placed.entry(vm["node"].as_str().expect("placed").to_string()).or_default() += 1;
+        *placed
+            .entry(vm["node"].as_str().expect("placed").to_string())
+            .or_default() += 1;
     }
     assert_eq!(placed.len(), 3, "{placed:?}");
     assert!(placed.values().all(|n| *n == 2), "{placed:?}");
 
     // The preview (spec/clustering-ui.md §5.1) answers for every node, the
     // scheduler's choice first, and agrees with where a VM then goes.
-    let (s, pv) = call(&server, "POST", "/scheduler/preview", Some(json!({ "vcpu_count": 1, "mem_size_mib": 64, "hypervisor": "cloudhypervisor" })), &[]).await;
+    let (s, pv) = call(
+        &server,
+        "POST",
+        "/scheduler/preview",
+        Some(json!({ "vcpu_count": 1, "mem_size_mib": 64, "hypervisor": "cloudhypervisor" })),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::OK, "{pv}");
     let nodes = pv["nodes"].as_array().unwrap();
     assert_eq!(nodes.len(), 3, "{pv}");
-    assert!(nodes.iter().all(|n| n["refused"].is_null() && n["vms"] == 2 && n["vcpus_capacity"].as_u64().unwrap() > 0), "{pv}");
+    assert!(
+        nodes.iter().all(|n| n["refused"].is_null()
+            && n["vms"] == 2
+            && n["vcpus_capacity"].as_u64().unwrap() > 0),
+        "{pv}"
+    );
     assert_eq!(pv["pick"], nodes[0]["id"]);
-    let (s, pinned) = call(&server, "POST", "/scheduler/preview", Some(json!({ "vcpu_count": 1, "mem_size_mib": 64, "node": "agent2" })), &[]).await;
+    let (s, pinned) = call(
+        &server,
+        "POST",
+        "/scheduler/preview",
+        Some(json!({ "vcpu_count": 1, "mem_size_mib": 64, "node": "agent2" })),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(pinned["nodes"][0]["name"], "agent2", "{pinned}");
-    assert!(pinned["nodes"].as_array().unwrap()[1..].iter().all(|n| n["refused"].as_str().unwrap().contains("pinned")), "{pinned}");
-    let (s, vm) = call(&server, "POST", "/vms", Some(vm_unpinned("as-previewed")), &[]).await;
+    assert!(
+        pinned["nodes"].as_array().unwrap()[1..]
+            .iter()
+            .all(|n| n["refused"].as_str().unwrap().contains("pinned")),
+        "{pinned}"
+    );
+    let (s, vm) = call(
+        &server,
+        "POST",
+        "/vms",
+        Some(vm_unpinned("as-previewed")),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::CREATED, "{vm}");
-    assert_eq!(vm["node"], pv["pick"], "the preview's pick is where it goes");
-    let (s, _) = call(&server, "DELETE", &format!("/vms/{}", vm["id"].as_str().unwrap()), None, &[]).await;
+    assert_eq!(
+        vm["node"], pv["pick"],
+        "the preview's pick is where it goes"
+    );
+    let (s, _) = call(
+        &server,
+        "DELETE",
+        &format!("/vms/{}", vm["id"].as_str().unwrap()),
+        None,
+        &[],
+    )
+    .await;
     assert!(s.is_success());
 
     // A disk bound to agent2 pulls its VM there.
     let a2 = agents[1].manager.local_node_id();
     let (_, projects) = call(&server, "GET", "/projects", None, &[]).await;
-    let project = projects.as_array().unwrap()[0]["id"].as_str().unwrap().to_string();
+    let project = projects.as_array().unwrap()[0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
     let disk = json!({ "id": "dd", "name": "dd", "project": project, "format": "qcow2", "size_bytes": 1048576, "origin": { "kind": "blank" }, "created_at": 1, "phase": "ready", "node": a2 });
     server
         .manager
         .database()
-        .write(glidex_control_plane::store::Origin::Api, |tx| -> Result<(), glidex_control_plane::store::StoreError> {
-            tx.open_table(glidex_control_plane::store::TableId::Disks.definition())?.insert("dd", disk.to_string().as_bytes())?;
-            Ok(())
-        })
+        .write(
+            glidex_control_plane::store::Origin::Api,
+            |tx| -> Result<(), glidex_control_plane::store::StoreError> {
+                tx.open_table(glidex_control_plane::store::TableId::Disks.definition())?
+                    .insert("dd", disk.to_string().as_bytes())?;
+                Ok(())
+            },
+        )
         .unwrap();
     let mut body = vm_unpinned("with-disk");
     body["data_disks"] = json!(["dd"]);
@@ -859,7 +1678,14 @@ async fn the_scheduler_spreads_vms_honours_pins_and_disks_and_explains_itself() 
 
     // Pin to a node and it goes there; a pin on a drained node waits;
     // with every node drained a VM waits and says why, then is placed.
-    let (s, vm) = call(&server, "POST", "/vms", Some(vm_body("pinned", "agent1")), &[]).await;
+    let (s, vm) = call(
+        &server,
+        "POST",
+        "/vms",
+        Some(vm_body("pinned", "agent1")),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::CREATED, "{vm}");
     assert_eq!(vm["node"], agents[0].manager.local_node_id().as_str());
     for id in &ids {
@@ -867,19 +1693,49 @@ async fn the_scheduler_spreads_vms_honours_pins_and_disks_and_explains_itself() 
         assert_eq!(s, StatusCode::OK, "{v}");
         assert!(v["remaining"]["vms"].is_array());
     }
-    let (s, vm) = call(&server, "POST", "/vms", Some(vm_body("refused", "agent1")), &[]).await;
+    let (s, vm) = call(
+        &server,
+        "POST",
+        "/vms",
+        Some(vm_body("refused", "agent1")),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::CREATED, "{vm}");
     assert!(vm["node"].is_null(), "a pin on a drained node waits: {vm}");
-    let (s, _) = call(&server, "DELETE", &format!("/vms/{}", vm["id"].as_str().unwrap()), None, &[]).await;
+    let (s, _) = call(
+        &server,
+        "DELETE",
+        &format!("/vms/{}", vm["id"].as_str().unwrap()),
+        None,
+        &[],
+    )
+    .await;
     assert!(s.is_success());
     let (s, vm) = call(&server, "POST", "/vms", Some(vm_unpinned("waits")), &[]).await;
     assert_eq!(s, StatusCode::CREATED, "{vm}");
     assert!(vm["node"].is_null(), "{vm}");
-    let waiting = vm["conditions"].as_array().unwrap().iter().find(|c| c["kind"] == "Scheduled").cloned().unwrap();
+    let waiting = vm["conditions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["kind"] == "Scheduled")
+        .cloned()
+        .unwrap();
     assert_eq!(waiting["reason"], "Unschedulable");
-    assert!(waiting["message"].as_str().unwrap().contains("draining"), "{waiting}");
+    assert!(
+        waiting["message"].as_str().unwrap().contains("draining"),
+        "{waiting}"
+    );
     let id = vm["id"].as_str().unwrap().to_string();
-    let (s, _) = call(&server, "POST", &format!("/nodes/{}/undrain", ids[0]), None, &[]).await;
+    let (s, _) = call(
+        &server,
+        "POST",
+        &format!("/nodes/{}/undrain", ids[0]),
+        None,
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::OK);
     wait_for("the waiting VM to be placed", || async {
         let (_, v) = call(&server, "GET", &format!("/vms/{id}"), None, &[]).await;
@@ -904,13 +1760,33 @@ async fn cluster_networks_get_a_subnet_and_vms_get_addresses_that_go_when_they_d
     });
     let server = new_cp();
     server.manager.configure(&cfg);
-    manage::init(&server.manager, &cfg, InitOptions { advertise: Some(server.addr), tunnel_ip: None, listen: Some(server.addr) }).await.unwrap();
+    manage::init(
+        &server.manager,
+        &cfg,
+        InitOptions {
+            advertise: Some(server.addr),
+            tunnel_ip: None,
+            listen: Some(server.addr),
+        },
+    )
+    .await
+    .unwrap();
     server.manager.initialize().await.unwrap();
 
     // A cluster network: br-int, the underlay MTU minus Geneve, a /24 from the supernet.
-    let (s, n) = call(&server, "POST", "/networks", Some(json!({ "name": "web", "mode": "nat", "port_type": "tap", "scope": "cluster" })), &[]).await;
+    let (s, n) = call(
+        &server,
+        "POST",
+        "/networks",
+        Some(json!({ "name": "web", "mode": "nat", "port_type": "tap", "scope": "cluster" })),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::CREATED, "{n}");
-    assert_eq!((n["scope"].as_str(), n["bridge"].as_str(), n["mtu"].as_u64()), (Some("cluster"), Some("br-int"), Some(1442)));
+    assert_eq!(
+        (n["scope"].as_str(), n["bridge"].as_str(), n["mtu"].as_u64()),
+        (Some("cluster"), Some("br-int"), Some(1442))
+    );
     let (s, n2) = call(&server, "POST", "/networks", Some(json!({ "name": "lab", "mode": "isolated", "port_type": "tap", "scope": "cluster", "subnet": "10.89.200.0/24" })), &[]).await;
     assert_eq!(s, StatusCode::CREATED, "{n2}");
     // Overlap and the node NAT range are refused.
@@ -937,16 +1813,30 @@ async fn cluster_networks_get_a_subnet_and_vms_get_addresses_that_go_when_they_d
     let d = server.manager.__desired_ovn_for_tests().await.unwrap();
     assert_eq!(d.networks.len(), 2);
     assert_eq!(d.ports.len(), 2);
-    assert!(d.ports.iter().all(|p| p.chassis.as_deref() == Some(glidex_ovs::ovn::chassis_name(&server.manager.local_node_id()).as_str()) && p.ip.is_some()));
+    assert!(d.ports.iter().all(|p| p.chassis.as_deref()
+        == Some(glidex_ovs::ovn::chassis_name(&server.manager.local_node_id()).as_str())
+        && p.ip.is_some()));
     assert!(d.edge.is_some() && !d.node_addresses.is_empty());
 
     // A network in use can't go; a VM that goes frees its address.
     let (s, _) = call(&server, "DELETE", "/networks/web", None, &[]).await;
     assert_eq!(s, StatusCode::CONFLICT);
-    let (s, _) = call(&server, "DELETE", &format!("/vms/{}", a["id"].as_str().unwrap()), None, &[]).await;
+    let (s, _) = call(
+        &server,
+        "DELETE",
+        &format!("/vms/{}", a["id"].as_str().unwrap()),
+        None,
+        &[],
+    )
+    .await;
     assert!(s.is_success());
     server.manager.clone().reconcile_ovn().await;
-    assert_eq!(glidex_control_plane::ipam::list_reservations(&server.manager.database()).unwrap().len(), 1);
+    assert_eq!(
+        glidex_control_plane::ipam::list_reservations(&server.manager.database())
+            .unwrap()
+            .len(),
+        1
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
@@ -963,29 +1853,74 @@ async fn provider_networks_and_vpc_routers() {
         external_pool: Some("192.0.2.0/29".into()),
         gateway_nodes: vec!["cp1".into()],
     });
-    cfg.cluster.ovn.bridge_mappings.insert("lan".into(), "br-lan".into());
+    cfg.cluster
+        .ovn
+        .bridge_mappings
+        .insert("lan".into(), "br-lan".into());
     let server = new_cp();
     server.manager.configure(&cfg);
-    manage::init(&server.manager, &cfg, InitOptions { advertise: Some(server.addr), tunnel_ip: None, listen: Some(server.addr) }).await.unwrap();
+    manage::init(
+        &server.manager,
+        &cfg,
+        InitOptions {
+            advertise: Some(server.addr),
+            tunnel_ip: None,
+            listen: Some(server.addr),
+        },
+    )
+    .await
+    .unwrap();
     server.manager.initialize().await.unwrap();
 
     // Provider networks: a physnet is required, a subnet isn't allowed, vlan is checked.
     let mk = |name: &str, extra: serde_json::Value| {
-        let mut b = json!({ "name": name, "mode": "bridged", "port_type": "tap", "scope": "cluster" });
-        b.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        let mut b =
+            json!({ "name": name, "mode": "bridged", "port_type": "tap", "scope": "cluster" });
+        b.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
         b
     };
     let (s, _) = call(&server, "POST", "/networks", Some(mk("p0", json!({}))), &[]).await;
     assert_eq!(s, StatusCode::BAD_REQUEST);
-    let (s, _) = call(&server, "POST", "/networks", Some(mk("p0", json!({ "physnet": "lan", "subnet": "10.1.0.0/24" }))), &[]).await;
+    let (s, _) = call(
+        &server,
+        "POST",
+        "/networks",
+        Some(mk(
+            "p0",
+            json!({ "physnet": "lan", "subnet": "10.1.0.0/24" }),
+        )),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::BAD_REQUEST);
-    let (s, _) = call(&server, "POST", "/networks", Some(mk("p0", json!({ "physnet": "lan", "vlan": 5000 }))), &[]).await;
+    let (s, _) = call(
+        &server,
+        "POST",
+        "/networks",
+        Some(mk("p0", json!({ "physnet": "lan", "vlan": 5000 }))),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::BAD_REQUEST);
-    let (s, n) = call(&server, "POST", "/networks", Some(mk("p1", json!({ "physnet": "lan", "vlan": 30 }))), &[]).await;
+    let (s, n) = call(
+        &server,
+        "POST",
+        "/networks",
+        Some(mk("p1", json!({ "physnet": "lan", "vlan": 30 }))),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::CREATED, "{n}");
     let d = server.manager.__desired_ovn_for_tests().await.unwrap();
     assert!(d.networks.iter().any(|n| n.name == "p1" && matches!(&n.kind, glidex_ovn::NetKind::Provider { physnet, vlan: Some(30) } if physnet == "lan")));
-    assert!(glidex_control_plane::ipam::list_subnets(&server.manager.database()).unwrap().is_empty(), "a provider network takes no subnet");
+    assert!(
+        glidex_control_plane::ipam::list_subnets(&server.manager.database())
+            .unwrap()
+            .is_empty(),
+        "a provider network takes no subnet"
+    );
 
     // A gateway node is a node in the cluster: one that left keeps its
     // record and name, and is refused by either.
@@ -996,26 +1931,67 @@ async fn provider_networks_and_vpc_routers() {
     ghost.status.phase = glidex_control_plane::node::NodePhase::Removed;
     store.put(&ghost).unwrap();
     for key in ["gone-host", "0000dead-0000-4000-8000-000000000000"] {
-        let (s, e) = call(&server, "POST", "/projects/default/routers", Some(json!({ "name": "rg", "external": false, "gateway_nodes": [key] })), &[]).await;
+        let (s, e) = call(
+            &server,
+            "POST",
+            "/projects/default/routers",
+            Some(json!({ "name": "rg", "external": false, "gateway_nodes": [key] })),
+            &[],
+        )
+        .await;
         assert_eq!(s, StatusCode::BAD_REQUEST, "{e}");
-        assert!(e["message"].as_str().unwrap().contains("gone-host (0000dead) is Removed"), "{e}");
+        assert!(
+            e["message"]
+                .as_str()
+                .unwrap()
+                .contains("gone-host (0000dead) is Removed"),
+            "{e}"
+        );
     }
 
     // VPC routers: one per project by default, an external address each.
-    let (s, r) = call(&server, "POST", "/projects/default/routers", Some(json!({ "name": "r1" })), &[]).await;
+    let (s, r) = call(
+        &server,
+        "POST",
+        "/projects/default/routers",
+        Some(json!({ "name": "r1" })),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::CREATED, "{r}");
     assert_eq!(r["status"]["external_ip"], "192.0.2.3");
     assert_eq!(r["status"]["snat_ct_zone"], 60001);
     // The site's pool (.3-.6 here, the gateway and edge take .1 and .2) runs out; the admin is
     // allowed past quota, so the pool is what stops it.
     for n in ["r2", "r3", "r4"] {
-        let (s, r) = call(&server, "POST", "/projects/default/routers", Some(json!({ "name": n })), &[]).await;
+        let (s, r) = call(
+            &server,
+            "POST",
+            "/projects/default/routers",
+            Some(json!({ "name": n })),
+            &[],
+        )
+        .await;
         assert_eq!(s, StatusCode::CREATED, "{r}");
     }
-    let (s, e) = call(&server, "POST", "/projects/default/routers", Some(json!({ "name": "r5" })), &[]).await;
+    let (s, e) = call(
+        &server,
+        "POST",
+        "/projects/default/routers",
+        Some(json!({ "name": "r5" })),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::CONFLICT, "{e}");
     assert_eq!(e["error"], "external_pool_exhausted", "{e}");
-    let (s, _) = call(&server, "POST", "/projects/default/routers", Some(json!({ "name": "r1", "external": false })), &[]).await;
+    let (s, _) = call(
+        &server,
+        "POST",
+        "/projects/default/routers",
+        Some(json!({ "name": "r1", "external": false })),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::CONFLICT);
 
     // A NAT network on the router: by name, and the plan shows the router and its zone.
@@ -1025,38 +2001,130 @@ async fn provider_networks_and_vpc_routers() {
     assert_eq!(s, StatusCode::BAD_REQUEST, "{n}");
     let d = server.manager.__desired_ovn_for_tests().await.unwrap();
     assert_eq!(d.routers.len(), 4);
-    let r1 = d.routers.iter().find(|r| r.external.as_ref().is_some_and(|e| e.external_ip.to_string() == "192.0.2.3")).unwrap();
+    let r1 = d
+        .routers
+        .iter()
+        .find(|r| {
+            r.external
+                .as_ref()
+                .is_some_and(|e| e.external_ip.to_string() == "192.0.2.3")
+        })
+        .unwrap();
     let ext = r1.external.as_ref().unwrap();
     assert_eq!(ext.snat_ct_zone, Some(60001));
     assert_eq!(d.edge.as_ref().unwrap().snat_ct_zone, Some(60000));
-    assert!(d.networks.iter().any(|n| n.name == "app" && n.router.as_deref() == Some(r1.name.as_str())));
+    assert!(
+        d.networks
+            .iter()
+            .any(|n| n.name == "app" && n.router.as_deref() == Some(r1.name.as_str()))
+    );
 
     // An existing network moves onto a router and back to the edge.
-    let (s, n) = call(&server, "POST", "/projects/default/networks", Some(json!({ "name": "web", "mode": "nat", "port_type": "tap", "scope": "cluster" })), &[]).await;
+    let (s, n) = call(
+        &server,
+        "POST",
+        "/projects/default/networks",
+        Some(json!({ "name": "web", "mode": "nat", "port_type": "tap", "scope": "cluster" })),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::CREATED, "{n}");
-    let (s, n) = call(&server, "PUT", "/projects/default/networks/web/router", Some(json!({ "router": "r1" })), &[]).await;
+    let (s, n) = call(
+        &server,
+        "PUT",
+        "/projects/default/networks/web/router",
+        Some(json!({ "router": "r1" })),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::OK, "{n}");
     let d = server.manager.__desired_ovn_for_tests().await.unwrap();
-    assert!(d.networks.iter().any(|n| n.name == "web" && n.router.as_deref() == Some(r1.name.as_str())), "on r1");
-    let (s, e) = call(&server, "PUT", "/projects/default/networks/web/router", Some(json!({ "router": "nope" })), &[]).await;
+    assert!(
+        d.networks
+            .iter()
+            .any(|n| n.name == "web" && n.router.as_deref() == Some(r1.name.as_str())),
+        "on r1"
+    );
+    let (s, e) = call(
+        &server,
+        "PUT",
+        "/projects/default/networks/web/router",
+        Some(json!({ "router": "nope" })),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::BAD_REQUEST, "{e}");
     // An isolated network goes on a router too, routed there like a NAT
     // one, and is isolated again once it leaves.
-    let (s, n) = call(&server, "POST", "/projects/default/networks", Some(json!({ "name": "iso", "mode": "isolated", "port_type": "tap", "scope": "cluster" })), &[]).await;
+    let (s, n) = call(
+        &server,
+        "POST",
+        "/projects/default/networks",
+        Some(json!({ "name": "iso", "mode": "isolated", "port_type": "tap", "scope": "cluster" })),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::CREATED, "{n}");
-    let kind = |d: &glidex_ovn::Desired| d.networks.iter().find(|n| n.name == "iso").map(|n| (n.kind.clone(), n.router.clone())).unwrap();
-    assert_eq!(kind(&server.manager.__desired_ovn_for_tests().await.unwrap()), (glidex_ovn::NetKind::Isolated, None));
-    let (s, n) = call(&server, "PUT", "/projects/default/networks/iso/router", Some(json!({ "router": "r1" })), &[]).await;
+    let kind = |d: &glidex_ovn::Desired| {
+        d.networks
+            .iter()
+            .find(|n| n.name == "iso")
+            .map(|n| (n.kind.clone(), n.router.clone()))
+            .unwrap()
+    };
+    assert_eq!(
+        kind(&server.manager.__desired_ovn_for_tests().await.unwrap()),
+        (glidex_ovn::NetKind::Isolated, None)
+    );
+    let (s, n) = call(
+        &server,
+        "PUT",
+        "/projects/default/networks/iso/router",
+        Some(json!({ "router": "r1" })),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::OK, "{n}");
     assert_eq!(n["mode"], "isolated", "its mode stays: {n}");
-    assert_eq!(kind(&server.manager.__desired_ovn_for_tests().await.unwrap()), (glidex_ovn::NetKind::Nat, Some(r1.name.clone())));
-    let (s, n) = call(&server, "PUT", "/projects/default/networks/iso/router", Some(json!({ "router": null })), &[]).await;
+    assert_eq!(
+        kind(&server.manager.__desired_ovn_for_tests().await.unwrap()),
+        (glidex_ovn::NetKind::Nat, Some(r1.name.clone()))
+    );
+    let (s, n) = call(
+        &server,
+        "PUT",
+        "/projects/default/networks/iso/router",
+        Some(json!({ "router": null })),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::OK, "{n}");
-    assert_eq!(kind(&server.manager.__desired_ovn_for_tests().await.unwrap()), (glidex_ovn::NetKind::Isolated, None));
+    assert_eq!(
+        kind(&server.manager.__desired_ovn_for_tests().await.unwrap()),
+        (glidex_ovn::NetKind::Isolated, None)
+    );
     // Only the project's own networks that span the nodes.
-    let (s, e) = call(&server, "PUT", "/projects/default/networks/p1/router", Some(json!({ "router": "r1" })), &[]).await;
-    assert_eq!(s, StatusCode::NOT_FOUND, "a host network isn't the project's: {e}");
-    let (s, n) = call(&server, "PUT", "/projects/default/networks/web/router", Some(json!({ "router": null })), &[]).await;
+    let (s, e) = call(
+        &server,
+        "PUT",
+        "/projects/default/networks/p1/router",
+        Some(json!({ "router": "r1" })),
+        &[],
+    )
+    .await;
+    assert_eq!(
+        s,
+        StatusCode::NOT_FOUND,
+        "a host network isn't the project's: {e}"
+    );
+    let (s, n) = call(
+        &server,
+        "PUT",
+        "/projects/default/networks/web/router",
+        Some(json!({ "router": null })),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::OK, "{n}");
     assert!(n["router"].is_null(), "back on the edge: {n}");
     for name in ["web", "iso"] {
@@ -1074,9 +2142,19 @@ async fn provider_networks_and_vpc_routers() {
     // One with nothing on it goes, and its address is free again.
     let (s, _) = call(&server, "DELETE", "/projects/default/routers/r2", None, &[]).await;
     assert_eq!(s, StatusCode::NO_CONTENT);
-    let (s, r) = call(&server, "POST", "/projects/default/routers", Some(json!({ "name": "r6" })), &[]).await;
+    let (s, r) = call(
+        &server,
+        "POST",
+        "/projects/default/routers",
+        Some(json!({ "name": "r6" })),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::CREATED, "{r}");
-    assert_eq!(r["status"]["external_ip"], "192.0.2.4", "the address came back");
+    assert_eq!(
+        r["status"]["external_ip"], "192.0.2.4",
+        "the address came back"
+    );
     assert_eq!(r["status"]["snat_ct_zone"], 60002, "and so did the zone");
 }
 
@@ -1085,14 +2163,26 @@ async fn node_json(cp: &Cp, key: &str) -> Value {
     assert_eq!(s, StatusCode::OK, "{v}");
     let all = v.as_array().unwrap();
     // The live node a name means, before a tombstone of the same name.
-    let live = |n: &&Value| !matches!(n["status"]["phase"].as_str(), Some("Removed" | "Departed" | "Forgotten"));
-    all.iter().find(|n| n["meta"]["id"] == key).or_else(|| all.iter().filter(live).find(|n| n["spec"]["name"] == key)).or_else(|| all.iter().find(|n| n["spec"]["name"] == key)).cloned().unwrap_or(Value::Null)
+    let live = |n: &&Value| {
+        !matches!(
+            n["status"]["phase"].as_str(),
+            Some("Removed" | "Departed" | "Forgotten")
+        )
+    };
+    all.iter()
+        .find(|n| n["meta"]["id"] == key)
+        .or_else(|| all.iter().filter(live).find(|n| n["spec"]["name"] == key))
+        .or_else(|| all.iter().find(|n| n["spec"]["name"] == key))
+        .cloned()
+        .unwrap_or(Value::Null)
 }
 
 fn denylist_len(cp: &Cp) -> usize {
     use redb::ReadableTableMetadata;
     let txn = cp.manager.database().begin_read().unwrap();
-    txn.open_table(glidex_control_plane::store::TableId::NodeDenylist.definition()).map(|t| t.len().unwrap_or(0) as usize).unwrap_or(0)
+    txn.open_table(glidex_control_plane::store::TableId::NodeDenylist.definition())
+        .map(|t| t.len().unwrap_or(0) as usize)
+        .unwrap_or(0)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
@@ -1101,61 +2191,161 @@ async fn nodes_are_removed_forgotten_and_rejoin_as_themselves() {
     let cps = form(4).await;
     let lead = leader_index(&cps, &[0, 1, 2, 3]).await;
     let status = manage::status_of(&cluster(&cps[lead]));
-    assert_eq!((status["raft"]["voters"].as_array().unwrap().len(), status["raft"]["learners"].as_array().unwrap().len()), (3, 1), "{status}");
+    assert_eq!(
+        (
+            status["raft"]["voters"].as_array().unwrap().len(),
+            status["raft"]["learners"].as_array().unwrap().len()
+        ),
+        (3, 1),
+        "{status}"
+    );
     let lc = cluster(&cps[lead]);
-    let learner = (0..4).find(|i| !lc.node.as_ref().unwrap().voters().contains(&cluster(&cps[*i]).identity.raft_id)).unwrap();
+    let learner = (0..4)
+        .find(|i| {
+            !lc.node
+                .as_ref()
+                .unwrap()
+                .voters()
+                .contains(&cluster(&cps[*i]).identity.raft_id)
+        })
+        .unwrap();
     let lname = cluster(&cps[learner]).identity.name.clone();
     let voter = (0..4).find(|i| *i != lead && *i != learner).unwrap();
     let vname = cluster(&cps[voter]).identity.name.clone();
 
     // A voter can't go if that leaves an even group; nothing changes.
-    let (s, e) = call(&cps[lead], "POST", &format!("/nodes/{vname}/remove"), Some(json!({})), &[]).await;
+    let (s, e) = call(
+        &cps[lead],
+        "POST",
+        &format!("/nodes/{vname}/remove"),
+        Some(json!({})),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::CONFLICT, "{e}");
     assert!(e["message"].as_str().unwrap().contains("1, 3 or 5"), "{e}");
-    assert_eq!(node_json(&cps[lead], &vname).await["status"]["phase"], "Active");
+    assert_eq!(
+        node_json(&cps[lead], &vname).await["status"]["phase"],
+        "Active"
+    );
     // The server issuing the request can't remove itself, and an active node can't be purged.
-    let (s, _) = call(&cps[lead], "POST", &format!("/nodes/{}/remove", cluster(&cps[lead]).identity.name), Some(json!({})), &[]).await;
+    let (s, _) = call(
+        &cps[lead],
+        "POST",
+        &format!("/nodes/{}/remove", cluster(&cps[lead]).identity.name),
+        Some(json!({})),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::CONFLICT);
-    let (s, _) = call(&cps[lead], "POST", &format!("/nodes/{vname}/purge"), None, &[]).await;
+    let (s, _) = call(
+        &cps[lead],
+        "POST",
+        &format!("/nodes/{vname}/purge"),
+        None,
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::CONFLICT, "an Active node can't be purged");
 
     // A lost learner: forgetting needs --fenced, and only for a node that has gone silent.
-    let (s, _) = call(&cps[lead], "POST", &format!("/nodes/{lname}/forget"), Some(json!({})), &[]).await;
+    let (s, _) = call(
+        &cps[lead],
+        "POST",
+        &format!("/nodes/{lname}/forget"),
+        Some(json!({})),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::BAD_REQUEST, "forget without --fenced");
     cluster(&cps[learner]).stop().await;
-    wait_until("the node to be reported unreachable", || async { node_json(&cps[lead], &lname).await["status"]["ready"] != "True" }).await;
+    wait_until("the node to be reported unreachable", || async {
+        node_json(&cps[lead], &lname).await["status"]["ready"] != "True"
+    })
+    .await;
     let before = denylist_len(&cps[lead]);
-    let (s, r) = call(&cps[lead], "POST", &format!("/nodes/{lname}/forget"), Some(json!({ "fenced": true })), &[]).await;
+    let (s, r) = call(
+        &cps[lead],
+        "POST",
+        &format!("/nodes/{lname}/forget"),
+        Some(json!({ "fenced": true })),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::OK, "{r}");
     assert_eq!(r["phase"], "Forgotten");
-    assert_eq!(denylist_len(&cps[lead]), before + 1, "its certificate is revoked");
-    wait_until("the forgotten learner to leave the group", || async { !cluster(&cps[lead]).node.as_ref().unwrap().learners().contains(&cluster(&cps[learner]).identity.raft_id) }).await;
+    assert_eq!(
+        denylist_len(&cps[lead]),
+        before + 1,
+        "its certificate is revoked"
+    );
+    wait_until("the forgotten learner to leave the group", || async {
+        !cluster(&cps[lead])
+            .node
+            .as_ref()
+            .unwrap()
+            .learners()
+            .contains(&cluster(&cps[learner]).identity.raft_id)
+    })
+    .await;
 
     // It comes back as itself, with a new certificate, starting its Raft state afresh (D18).
     // A server left, so the CA rotates (D20): before the token is issued, so
     // the token pins the CA that signs, not the one about to be replaced.
     let ca_before = cluster(&cps[lead]).signing_fp();
-    let (s, t) = call(&cps[lead], "POST", &format!("/nodes/{lname}/rejoin-token"), Some(json!({ "raft_intact": false })), &[]).await;
+    let (s, t) = call(
+        &cps[lead],
+        "POST",
+        &format!("/nodes/{lname}/rejoin-token"),
+        Some(json!({ "raft_intact": false })),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::OK, "{t}");
     {
         use glidex_control_plane::cluster::{net, pki, tokens};
-        let pinned = tokens::parse(t["token"].as_str().unwrap()).unwrap().2.to_string();
-        assert_ne!(pinned, ca_before, "the rotation the forgotten server called for ran before the token");
-        let served = pki::public_key_fingerprint(&net::fetch_ca_untrusted(&cps[lead].addr.to_string()).await.unwrap()).unwrap();
-        assert_eq!(served, pinned, "the server already serves the CA the token names");
+        let pinned = tokens::parse(t["token"].as_str().unwrap())
+            .unwrap()
+            .2
+            .to_string();
+        assert_ne!(
+            pinned, ca_before,
+            "the rotation the forgotten server called for ran before the token"
+        );
+        let served = pki::public_key_fingerprint(
+            &net::fetch_ca_untrusted(&cps[lead].addr.to_string())
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            served, pinned,
+            "the server already serves the CA the token names"
+        );
     }
     let cfg = test_config();
     let out = manage::rejoin(
         &cps[learner].manager,
         &cfg,
-        manage::RejoinOptions { server: cps[lead].addr, token: t["token"].as_str().unwrap().to_string(), node_id: None, advertise: Some(cps[learner].addr), tunnel_ip: None, listen: Some(cps[learner].addr) },
+        manage::RejoinOptions {
+            server: cps[lead].addr,
+            token: t["token"].as_str().unwrap().to_string(),
+            node_id: None,
+            advertise: Some(cps[learner].addr),
+            tunnel_ip: None,
+            listen: Some(cps[learner].addr),
+        },
     )
     .await
     .unwrap();
     assert_eq!(out["raft_fresh"], true, "the rejoin starts Raft afresh");
     let n = node_json(&cps[lead], &lname).await;
     assert_eq!(n["status"]["phase"], "Active", "{n}");
-    assert_eq!(n["meta"]["id"], cluster(&cps[learner]).identity.node_id, "the same node id");
+    assert_eq!(
+        n["meta"]["id"],
+        cluster(&cps[learner]).identity.node_id,
+        "the same node id"
+    );
     wait_until("the rejoined server to be a member again", || async {
         let c = cluster(&cps[lead]);
         let rid = cluster(&cps[learner]).identity.raft_id;
@@ -1166,7 +2356,14 @@ async fn nodes_are_removed_forgotten_and_rejoin_as_themselves() {
 
     // An empty node is removed: tombstone, certificate denied, out of the group; twice is fine.
     let before = denylist_len(&cps[lead]);
-    let (s, r) = call(&cps[lead], "POST", &format!("/nodes/{lname}/remove"), Some(json!({})), &[]).await;
+    let (s, r) = call(
+        &cps[lead],
+        "POST",
+        &format!("/nodes/{lname}/remove"),
+        Some(json!({})),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::OK, "{r}");
     assert_eq!(r["phase"], "Removed");
     assert!(denylist_len(&cps[lead]) > before);
@@ -1177,10 +2374,28 @@ async fn nodes_are_removed_forgotten_and_rejoin_as_themselves() {
         !l.voters().contains(&rid) && !l.learners().contains(&rid)
     })
     .await;
-    let (s, r) = call(&cps[lead], "POST", &format!("/nodes/{lname}/remove"), Some(json!({})), &[]).await;
-    assert_eq!((s, r["already"].as_bool()), (StatusCode::OK, Some(true)), "removing twice is fine");
+    let (s, r) = call(
+        &cps[lead],
+        "POST",
+        &format!("/nodes/{lname}/remove"),
+        Some(json!({})),
+        &[],
+    )
+    .await;
+    assert_eq!(
+        (s, r["already"].as_bool()),
+        (StatusCode::OK, Some(true)),
+        "removing twice is fine"
+    );
     // Its id is retired: no rejoin token.
-    let (s, _) = call(&cps[lead], "POST", &format!("/nodes/{lname}/rejoin-token"), Some(json!({})), &[]).await;
+    let (s, _) = call(
+        &cps[lead],
+        "POST",
+        &format!("/nodes/{lname}/rejoin-token"),
+        Some(json!({})),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::CONFLICT);
 }
 
@@ -1191,7 +2406,10 @@ where
 {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
     while !f().await {
-        assert!(tokio::time::Instant::now() < deadline, "timed out waiting for {what}");
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for {what}"
+        );
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
 }
@@ -1206,12 +2424,31 @@ async fn the_ca_rotates_and_every_node_renews_before_the_old_one_is_retired() {
     let (s, st) = call(&cps[lead], "GET", "/cluster/status?ports=true", None, &[]).await;
     assert_eq!(s, StatusCode::OK, "{st}");
     assert_eq!(st["ports"].as_array().unwrap().len(), 2, "{st}");
-    assert!(st["ports"].as_array().unwrap().iter().all(|p| p["reachable"] == true), "{st}");
+    assert!(
+        st["ports"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|p| p["reachable"] == true),
+        "{st}"
+    );
     assert!(st["feature_level"].as_u64().unwrap() >= 1);
     // The CA's expiry and each node's certificate (spec/clustering-ui.md §7.6).
     assert!(st["ca"]["not_after"].as_i64().unwrap() > 0, "{st}");
-    assert!(st["nodes"].as_array().unwrap().iter().all(|n| n["cert"]["current_ca"] == true && n["cert"]["not_after"].as_i64().unwrap() > 0), "{st}");
-    let (s, r) = call(&cps[lead], "POST", "/cluster/rotate-ca", Some(json!({})), &[]).await;
+    assert!(
+        st["nodes"].as_array().unwrap().iter().all(
+            |n| n["cert"]["current_ca"] == true && n["cert"]["not_after"].as_i64().unwrap() > 0
+        ),
+        "{st}"
+    );
+    let (s, r) = call(
+        &cps[lead],
+        "POST",
+        "/cluster/rotate-ca",
+        Some(json!({})),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::OK, "{r}");
     let new_fp = r["signing_ca"].as_str().unwrap().to_string();
     assert_ne!(new_fp, old_fp);
@@ -1222,7 +2459,13 @@ async fn the_ca_rotates_and_every_node_renews_before_the_old_one_is_retired() {
         cps.iter().all(|cp| {
             let c = cluster(cp);
             let trust = c.files.read(c.files.trust()).unwrap_or_default();
-            let fps: Vec<String> = glidex_control_plane::cluster::pki::pem_bundle_ders(&trust).unwrap().iter().map(|d| glidex_control_plane::cluster::pki::issuer_of(d, &trust).unwrap_or_default()).collect();
+            let fps: Vec<String> = glidex_control_plane::cluster::pki::pem_bundle_ders(&trust)
+                .unwrap()
+                .iter()
+                .map(|d| {
+                    glidex_control_plane::cluster::pki::issuer_of(d, &trust).unwrap_or_default()
+                })
+                .collect();
             fps == vec![new_fp.clone()] && c.ca_state().is_some_and(|s| s.retiring.is_empty())
         })
     })
@@ -1230,7 +2473,9 @@ async fn the_ca_rotates_and_every_node_renews_before_the_old_one_is_retired() {
     // Every node is now on the new CA as status sees it.
     wait_until("status to show every node renewed", || async {
         let (_, st) = call(&cps[lead], "GET", "/cluster/status", None, &[]).await;
-        st["nodes"].as_array().is_some_and(|ns| ns.iter().all(|n| n["cert"]["current_ca"] == true))
+        st["nodes"]
+            .as_array()
+            .is_some_and(|ns| ns.iter().all(|n| n["cert"]["current_ca"] == true))
     })
     .await;
     // Nothing broke: a write still goes through, from any node, and the CA's old key is gone.
@@ -1240,55 +2485,162 @@ async fn the_ca_rotates_and_every_node_renews_before_the_old_one_is_retired() {
         let c = cluster(cp);
         assert!(!c.files.ca_key().with_extension("key.old").exists());
         let cert = c.files.read(c.files.cert()).unwrap();
-        let der = glidex_control_plane::cluster::pki::pem_bundle_ders(&cert).unwrap().remove(0);
-        assert_eq!(glidex_control_plane::cluster::pki::issuer_of(&der, &c.files.read(c.files.trust()).unwrap()).as_deref(), Some(new_fp.as_str()));
+        let der = glidex_control_plane::cluster::pki::pem_bundle_ders(&cert)
+            .unwrap()
+            .remove(0);
+        assert_eq!(
+            glidex_control_plane::cluster::pki::issuer_of(
+                &der,
+                &c.files.read(c.files.trust()).unwrap()
+            )
+            .as_deref(),
+            Some(new_fp.as_str())
+        );
     }
     // A node can still join, pinned to the new CA.
     let cfg = test_config();
     let extra = new_cp();
-    let token = manage::join_token(&cluster(&cps[lead]), NodeRole::Server, 600, false, "test").await.unwrap();
+    let token = manage::join_token(&cluster(&cps[lead]), NodeRole::Server, 600, false, "test")
+        .await
+        .unwrap();
     assert!(token.ends_with(&new_fp));
-    manage::join(&extra.manager, &cfg, JoinOptions { server: cps[lead].addr, token, role: NodeRole::Server, advertise: Some(extra.addr), tunnel_ip: None, name: Some("cp4".into()), listen: Some(extra.addr) }).await.unwrap();
+    manage::join(
+        &extra.manager,
+        &cfg,
+        JoinOptions {
+            server: cps[lead].addr,
+            token,
+            role: NodeRole::Server,
+            advertise: Some(extra.addr),
+            tunnel_ip: None,
+            name: Some("cp4".into()),
+            listen: Some(extra.addr),
+        },
+    )
+    .await
+    .unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn a_node_detaches_with_its_vms_and_the_cluster_lets_go() {
-    use glidex_control_plane::cluster::departure::{finish_pending, pending_db, pending_sha_file, receipt_file};
+    use glidex_control_plane::cluster::departure::{
+        finish_pending, pending_db, pending_sha_file, receipt_file,
+    };
     let _one = SERIAL.lock().await;
     let cfg = test_config();
     let server = new_cp();
-    manage::init(&server.manager, &cfg, InitOptions { advertise: Some(server.addr), tunnel_ip: None, listen: Some(server.addr) }).await.unwrap();
+    manage::init(
+        &server.manager,
+        &cfg,
+        InitOptions {
+            advertise: Some(server.addr),
+            tunnel_ip: None,
+            listen: Some(server.addr),
+        },
+    )
+    .await
+    .unwrap();
     server.manager.initialize().await.unwrap();
     let agent = new_cp();
-    let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test").await.unwrap();
-    manage::join(&agent.manager, &cfg, JoinOptions { server: server.addr, token, role: NodeRole::Agent, advertise: Some(agent.addr), tunnel_ip: None, name: Some("agent1".into()), listen: Some(agent.addr) })
+    let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test")
         .await
         .unwrap();
-    let link = agent.manager.node_link().expect("an agent has a link").clone();
+    manage::join(
+        &agent.manager,
+        &cfg,
+        JoinOptions {
+            server: server.addr,
+            token,
+            role: NodeRole::Agent,
+            advertise: Some(agent.addr),
+            tunnel_ip: None,
+            name: Some("agent1".into()),
+            listen: Some(agent.addr),
+        },
+    )
+    .await
+    .unwrap();
+    let link = agent
+        .manager
+        .node_link()
+        .expect("an agent has a link")
+        .clone();
     assert!(link.wait_ready(Duration::from_secs(20)).await);
     agent.manager.initialize().await.unwrap();
     agent.manager.start_controllers();
-    let (s, vm) = call(&server, "POST", "/vms", Some(vm_body("travels", "agent1")), &[]).await;
+    let (s, vm) = call(
+        &server,
+        "POST",
+        "/vms",
+        Some(vm_body("travels", "agent1")),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::CREATED, "{vm}");
     let id = vm["id"].as_str().unwrap().to_string();
-    wait_for("the agent to be ready", || async { node_json(&server, "agent1").await["status"]["ready"] == "True" }).await;
+    wait_for("the agent to be ready", || async {
+        node_json(&server, "agent1").await["status"]["ready"] == "True"
+    })
+    .await;
 
     // Mapping to a network that isn't a node network of it is refused; nothing freezes.
-    let (s, e) = call(&server, "POST", "/nodes/agent1/detach", Some(json!({ "map_networks": { "nope": "nada" } })), &[]).await;
+    let (s, e) = call(
+        &server,
+        "POST",
+        "/nodes/agent1/detach",
+        Some(json!({ "map_networks": { "nope": "nada" } })),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::BAD_REQUEST, "{e}");
-    assert_eq!(node_json(&server, "agent1").await["status"]["phase"], "Active");
+    assert_eq!(
+        node_json(&server, "agent1").await["status"]["phase"],
+        "Active"
+    );
 
     // An abort returns the node to Active.
-    let (s, p) = call(&server, "POST", "/nodes/agent1/detach", Some(json!({ "timeout_secs": 600 })), &[]).await;
+    let (s, p) = call(
+        &server,
+        "POST",
+        "/nodes/agent1/detach",
+        Some(json!({ "timeout_secs": 600 })),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::OK, "{p}");
     assert_eq!(p["vms"], 1);
-    let (s, a) = call(&server, "POST", "/nodes/agent1/detach", Some(json!({ "abort": true })), &[]).await;
+    let (s, a) = call(
+        &server,
+        "POST",
+        "/nodes/agent1/detach",
+        Some(json!({ "abort": true })),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::OK, "{a}");
-    assert_eq!(node_json(&server, "agent1").await["status"]["phase"], "Active");
-    assert!(!pending_db(&agent_state_dir(&agent)).exists() || { wait_until("the pending database to go", || async { !pending_db(&agent_state_dir(&agent)).exists() }).await; true });
+    assert_eq!(
+        node_json(&server, "agent1").await["status"]["phase"],
+        "Active"
+    );
+    assert!(
+        !pending_db(&agent_state_dir(&agent)).exists() || {
+            wait_until("the pending database to go", || async {
+                !pending_db(&agent_state_dir(&agent)).exists()
+            })
+            .await;
+            true
+        }
+    );
 
     // The real thing: the node writes its bundle, the cluster commits and signs a receipt.
-    let (s, p) = call(&server, "POST", "/nodes/agent1/detach", Some(json!({})), &[]).await;
+    let (s, p) = call(
+        &server,
+        "POST",
+        "/nodes/agent1/detach",
+        Some(json!({})),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::OK, "{p}");
     let dir = agent_state_dir(&agent);
     wait_until("the receipt", || async { receipt_file(&dir).exists() }).await;
@@ -1298,13 +2650,32 @@ async fn a_node_detaches_with_its_vms_and_the_cluster_lets_go() {
     let (s, deps) = call(&server, "GET", "/departures", None, &[]).await;
     assert_eq!(s, StatusCode::OK, "{deps}");
     let deps = deps.as_array().unwrap();
-    assert!(deps.iter().any(|d| d["node_name"] == "agent1" && d["state"] == "committed" && d["acknowledged"] == true), "{deps:?}");
+    assert!(
+        deps.iter().any(|d| d["node_name"] == "agent1"
+            && d["state"] == "committed"
+            && d["acknowledged"] == true),
+        "{deps:?}"
+    );
     assert!(deps.iter().any(|d| d["state"] == "aborted"), "{deps:?}");
-    assert!(n["status"]["departed_ids"].as_array().unwrap().iter().any(|x| *x == id.as_str()), "{n}");
+    assert!(
+        n["status"]["departed_ids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|x| *x == id.as_str()),
+        "{n}"
+    );
     let (s, _) = call(&server, "GET", &format!("/vms/{id}"), None, &[]).await;
     assert_eq!(s, StatusCode::NOT_FOUND, "the cluster forgot the VM");
     // The departed node's id is retired: no rejoin token.
-    let (s, _) = call(&server, "POST", "/nodes/agent1/rejoin-token", Some(json!({})), &[]).await;
+    let (s, _) = call(
+        &server,
+        "POST",
+        "/nodes/agent1/rejoin-token",
+        Some(json!({})),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::CONFLICT);
 
     // Restart standalone (on a copy of what the node left on disk): the host owns the VM, as `local`.
@@ -1313,15 +2684,28 @@ async fn a_node_detaches_with_its_vms_and_the_cluster_lets_go() {
     std::fs::copy(receipt_file(&dir), receipt_file(fresh.path())).unwrap();
     std::fs::copy(pending_sha_file(&dir), pending_sha_file(fresh.path())).unwrap();
     std::fs::create_dir_all(fresh.path().join("cluster")).unwrap();
-    std::fs::copy(dir.join("cluster/ca.crt"), fresh.path().join("cluster/ca.crt")).unwrap();
+    std::fs::copy(
+        dir.join("cluster/ca.crt"),
+        fresh.path().join("cluster/ca.crt"),
+    )
+    .unwrap();
     std::fs::write(fresh.path().join("glidex.db"), b"the old cluster cache").unwrap();
     assert!(finish_pending(&fresh.path().join("glidex.db")).unwrap());
-    assert!(!fresh.path().join("cluster").exists(), "identity, certificates and the CA key are gone");
+    assert!(
+        !fresh.path().join("cluster").exists(),
+        "identity, certificates and the CA key are gone"
+    );
     let standalone = VmManager::with_db_path(fresh.path().join("glidex.db")).unwrap();
     standalone.initialize().await.unwrap();
     let vms = standalone.list_vms().await;
     assert_eq!(vms.len(), 1, "{vms:?}");
-    assert_eq!((vms[0].id.as_str(), vms[0].status.placement.as_ref().map(|p| p.node.as_str())), (id.as_str(), Some("local")));
+    assert_eq!(
+        (
+            vms[0].id.as_str(),
+            vms[0].status.placement.as_ref().map(|p| p.node.as_str())
+        ),
+        (id.as_str(), Some("local"))
+    );
     // A receipt that isn't the cluster's is not honoured.
     let other = tempfile::tempdir().unwrap();
     std::fs::copy(pending_db(&dir), pending_db(other.path())).unwrap();
@@ -1329,7 +2713,11 @@ async fn a_node_detaches_with_its_vms_and_the_cluster_lets_go() {
     r["revision"] = json!(1);
     std::fs::write(receipt_file(other.path()), r.to_string()).unwrap();
     std::fs::create_dir_all(other.path().join("cluster")).unwrap();
-    std::fs::copy(dir.join("cluster/ca.crt"), other.path().join("cluster/ca.crt")).unwrap();
+    std::fs::copy(
+        dir.join("cluster/ca.crt"),
+        other.path().join("cluster/ca.crt"),
+    )
+    .unwrap();
     assert!(finish_pending(&other.path().join("glidex.db")).is_err());
     // Nor is a pending database other than the bundle the receipt names.
     let third = tempfile::tempdir().unwrap();
@@ -1337,7 +2725,11 @@ async fn a_node_detaches_with_its_vms_and_the_cluster_lets_go() {
     std::fs::copy(receipt_file(&dir), receipt_file(third.path())).unwrap();
     std::fs::write(pending_sha_file(third.path()), "0".repeat(64)).unwrap();
     std::fs::create_dir_all(third.path().join("cluster")).unwrap();
-    std::fs::copy(dir.join("cluster/ca.crt"), third.path().join("cluster/ca.crt")).unwrap();
+    std::fs::copy(
+        dir.join("cluster/ca.crt"),
+        third.path().join("cluster/ca.crt"),
+    )
+    .unwrap();
     assert!(finish_pending(&third.path().join("glidex.db")).is_err());
 }
 
@@ -1352,12 +2744,21 @@ fn copy_node_files(cp: &Cp) -> tempfile::TempDir {
     let copy = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(copy.path().join("cluster")).unwrap();
     for f in ["identity.json", "ca.crt", "node.key", "node.crt"] {
-        std::fs::copy(state.join("cluster").join(f), copy.path().join("cluster").join(f)).unwrap();
+        std::fs::copy(
+            state.join("cluster").join(f),
+            copy.path().join("cluster").join(f),
+        )
+        .unwrap();
     }
     let snap = copy.path().join("snap");
     manage::export_snapshot(&cp.manager.database(), &snap).unwrap();
     let db = glidex_control_plane::store::Db::create(copy.path().join("glidex.db")).unwrap();
-    db.install_dump(&mut std::io::BufReader::new(std::fs::File::open(&snap).unwrap()), 0, |_| Ok(())).unwrap();
+    db.install_dump(
+        &mut std::io::BufReader::new(std::fs::File::open(&snap).unwrap()),
+        0,
+        |_| Ok(()),
+    )
+    .unwrap();
     copy
 }
 
@@ -1368,37 +2769,112 @@ async fn a_removed_agent_leaves_offline_once_a_server_confirms_it() {
     let _one = SERIAL.lock().await;
     let cfg = test_config();
     let server = new_cp();
-    manage::init(&server.manager, &cfg, InitOptions { advertise: Some(server.addr), tunnel_ip: None, listen: Some(server.addr) }).await.unwrap();
+    manage::init(
+        &server.manager,
+        &cfg,
+        InitOptions {
+            advertise: Some(server.addr),
+            tunnel_ip: None,
+            listen: Some(server.addr),
+        },
+    )
+    .await
+    .unwrap();
     server.manager.initialize().await.unwrap();
     let agent = new_cp();
-    let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test").await.unwrap();
-    manage::join(&agent.manager, &cfg, JoinOptions { server: server.addr, token, role: NodeRole::Agent, advertise: Some(agent.addr), tunnel_ip: None, name: Some("agent1".into()), listen: Some(agent.addr) })
+    let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test")
         .await
         .unwrap();
-    assert!(agent.manager.node_link().unwrap().wait_ready(Duration::from_secs(20)).await);
+    manage::join(
+        &agent.manager,
+        &cfg,
+        JoinOptions {
+            server: server.addr,
+            token,
+            role: NodeRole::Agent,
+            advertise: Some(agent.addr),
+            tunnel_ip: None,
+            name: Some("agent1".into()),
+            listen: Some(agent.addr),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        agent
+            .manager
+            .node_link()
+            .unwrap()
+            .wait_ready(Duration::from_secs(20))
+            .await
+    );
     agent.manager.initialize().await.unwrap();
     // Its cache says Active, as a host's does when the removal's write
     // (which also revoked its certificate) never reached it.
     let before = copy_node_files(&agent);
 
     // Still a member: local root can't make it leave (D14).
-    let e = manage::leave_removed_offline(&before.path().join("glidex.db")).await.unwrap_err();
-    assert!(e.to_string().contains("still has this node as a member"), "{e}");
-    assert!(before.path().join("cluster/identity.json").exists(), "nothing changed");
+    let e = manage::leave_removed_offline(&before.path().join("glidex.db"))
+        .await
+        .unwrap_err();
+    assert!(
+        e.to_string().contains("still has this node as a member"),
+        "{e}"
+    );
+    assert!(
+        before.path().join("cluster/identity.json").exists(),
+        "nothing changed"
+    );
 
-    let (s, r) = call(&server, "POST", "/nodes/agent1/remove", Some(json!({})), &[]).await;
+    let (s, r) = call(
+        &server,
+        "POST",
+        "/nodes/agent1/remove",
+        Some(json!({})),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::OK, "{r}");
     // The servers now refuse the node, and say why.
-    let r = cluster(&agent).client.request_timeout(&server.addr.to_string(), hyper::Method::GET, "/cluster/v1/list", &[], bytes::Bytes::new(), Duration::from_secs(10)).await.unwrap();
+    let r = cluster(&agent)
+        .client
+        .request_timeout(
+            &server.addr.to_string(),
+            hyper::Method::GET,
+            "/cluster/v1/list",
+            &[],
+            bytes::Bytes::new(),
+            Duration::from_secs(10),
+        )
+        .await
+        .unwrap();
     let body: Value = serde_json::from_slice(&r.body).unwrap();
-    assert_eq!((r.status, body["error"].as_str()), (StatusCode::UNAUTHORIZED, Some("node_removed")), "{body}");
-    assert!(body["message"].as_str().unwrap().contains("glidex-install --leave"), "{body}");
+    assert_eq!(
+        (r.status, body["error"].as_str()),
+        (StatusCode::UNAUTHORIZED, Some("node_removed")),
+        "{body}"
+    );
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap()
+            .contains("glidex-install --leave"),
+        "{body}"
+    );
 
     // Offline, from the stale cache: a server confirms it, and the host is standalone and empty.
-    let (name, confirmed) = manage::leave_removed_offline(&before.path().join("glidex.db")).await.unwrap();
+    let (name, confirmed) = manage::leave_removed_offline(&before.path().join("glidex.db"))
+        .await
+        .unwrap();
     assert_eq!(name, "agent1");
-    assert!(confirmed.contains("refuses its certificate as revoked"), "{confirmed}");
-    assert!(!before.path().join("cluster").exists(), "identity, certificates and key are gone");
+    assert!(
+        confirmed.contains("refuses its certificate as revoked"),
+        "{confirmed}"
+    );
+    assert!(
+        !before.path().join("cluster").exists(),
+        "identity, certificates and key are gone"
+    );
     let standalone = VmManager::with_db_path(before.path().join("glidex.db")).unwrap();
     standalone.initialize().await.unwrap();
     assert!(standalone.cluster().is_none());
@@ -1406,28 +2882,74 @@ async fn a_removed_agent_leaves_offline_once_a_server_confirms_it() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
-async fn a_node_that_left_on_its_own_is_forgotten_as_departed_and_its_bundle_can_be_built_offline() {
+async fn a_node_that_left_on_its_own_is_forgotten_as_departed_and_its_bundle_can_be_built_offline()
+{
     use glidex_control_plane::cluster::departure::{offline_detach, pending_db};
     let _one = SERIAL.lock().await;
     let cfg = test_config();
     let server = new_cp();
-    manage::init(&server.manager, &cfg, InitOptions { advertise: Some(server.addr), tunnel_ip: None, listen: Some(server.addr) }).await.unwrap();
+    manage::init(
+        &server.manager,
+        &cfg,
+        InitOptions {
+            advertise: Some(server.addr),
+            tunnel_ip: None,
+            listen: Some(server.addr),
+        },
+    )
+    .await
+    .unwrap();
     server.manager.initialize().await.unwrap();
     let agent = new_cp();
-    let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test").await.unwrap();
-    manage::join(&agent.manager, &cfg, JoinOptions { server: server.addr, token, role: NodeRole::Agent, advertise: Some(agent.addr), tunnel_ip: None, name: Some("agent1".into()), listen: Some(agent.addr) })
+    let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test")
         .await
         .unwrap();
-    let link = agent.manager.node_link().expect("an agent has a link").clone();
+    manage::join(
+        &agent.manager,
+        &cfg,
+        JoinOptions {
+            server: server.addr,
+            token,
+            role: NodeRole::Agent,
+            advertise: Some(agent.addr),
+            tunnel_ip: None,
+            name: Some("agent1".into()),
+            listen: Some(agent.addr),
+        },
+    )
+    .await
+    .unwrap();
+    let link = agent
+        .manager
+        .node_link()
+        .expect("an agent has a link")
+        .clone();
     assert!(link.wait_ready(Duration::from_secs(20)).await);
     agent.manager.initialize().await.unwrap();
-    let (s, vm) = call(&server, "POST", "/vms", Some(vm_body("left-behind", "agent1")), &[]).await;
+    let (s, vm) = call(
+        &server,
+        "POST",
+        "/vms",
+        Some(vm_body("left-behind", "agent1")),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::CREATED, "{vm}");
     let id = vm["id"].as_str().unwrap().to_string();
-    wait_for("the VM in the agent's cache", || async { agent.manager.list_vms().await.iter().any(|v| v.id == id) }).await;
+    wait_for("the VM in the agent's cache", || async {
+        agent.manager.list_vms().await.iter().any(|v| v.id == id)
+    })
+    .await;
 
     // The cluster can't tell a departed node from a partitioned one while it is still reporting.
-    let (s, _) = call(&server, "POST", "/nodes/agent1/detach", Some(json!({ "departed": true })), &[]).await;
+    let (s, _) = call(
+        &server,
+        "POST",
+        "/nodes/agent1/detach",
+        Some(json!({ "departed": true })),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::CONFLICT);
 
     // The host builds its bundle from its cache (what the installer's offline path does).
@@ -1435,42 +2957,93 @@ async fn a_node_that_left_on_its_own_is_forgotten_as_departed_and_its_bundle_can
     let copy = copy_node_files(&agent);
     let bundle = offline_detach(&copy.path().join("glidex.db")).unwrap();
     assert_eq!(bundle.vm_ids, vec![id.clone()]);
-    assert!(!copy.path().join("cluster").exists() && !pending_db(copy.path()).exists(), "switched and cleaned up");
+    assert!(
+        !copy.path().join("cluster").exists() && !pending_db(copy.path()).exists(),
+        "switched and cleaned up"
+    );
     let standalone = VmManager::with_db_path(copy.path().join("glidex.db")).unwrap();
     standalone.initialize().await.unwrap();
     assert_eq!(standalone.list_vms().await.len(), 1);
 
     // Now the agent really is gone: the cluster records that it left, not that it was lost.
     cluster(&agent).stop().await;
-    wait_until("the node to be silent", || async { node_json(&server, "agent1").await["status"]["ready"] != "True" }).await;
-    let (s, r) = call(&server, "POST", "/nodes/agent1/detach", Some(json!({ "departed": true })), &[]).await;
+    wait_until("the node to be silent", || async {
+        node_json(&server, "agent1").await["status"]["ready"] != "True"
+    })
+    .await;
+    let (s, r) = call(
+        &server,
+        "POST",
+        "/nodes/agent1/detach",
+        Some(json!({ "departed": true })),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::OK, "{r}");
-    assert_eq!((r["phase"].as_str(), r["vms"].as_u64()), (Some("Departed"), Some(1)));
+    assert_eq!(
+        (r["phase"].as_str(), r["vms"].as_u64()),
+        (Some("Departed"), Some(1))
+    );
     let (s, _) = call(&server, "GET", &format!("/vms/{id}"), None, &[]).await;
     assert_eq!(s, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn a_detached_host_imports_into_another_cluster_with_its_vm_after_approval() {
-    use glidex_control_plane::cluster::departure::{finish_pending, pending_db, pending_sha_file, receipt_file};
+    use glidex_control_plane::cluster::departure::{
+        finish_pending, pending_db, pending_sha_file, receipt_file,
+    };
     let _one = SERIAL.lock().await;
     let cfg = test_config();
 
     // Cluster A, an agent with a VM on it, and the agent detaching with it.
     let a = new_cp();
-    manage::init(&a.manager, &cfg, InitOptions { advertise: Some(a.addr), tunnel_ip: None, listen: Some(a.addr) }).await.unwrap();
+    manage::init(
+        &a.manager,
+        &cfg,
+        InitOptions {
+            advertise: Some(a.addr),
+            tunnel_ip: None,
+            listen: Some(a.addr),
+        },
+    )
+    .await
+    .unwrap();
     a.manager.initialize().await.unwrap();
     let agent = new_cp();
-    let token = manage::join_token(&cluster(&a), NodeRole::Agent, 600, false, "test").await.unwrap();
-    manage::join(&agent.manager, &cfg, JoinOptions { server: a.addr, token, role: NodeRole::Agent, advertise: Some(agent.addr), tunnel_ip: None, name: Some("mover".into()), listen: Some(agent.addr) }).await.unwrap();
-    let link = agent.manager.node_link().expect("an agent has a link").clone();
+    let token = manage::join_token(&cluster(&a), NodeRole::Agent, 600, false, "test")
+        .await
+        .unwrap();
+    manage::join(
+        &agent.manager,
+        &cfg,
+        JoinOptions {
+            server: a.addr,
+            token,
+            role: NodeRole::Agent,
+            advertise: Some(agent.addr),
+            tunnel_ip: None,
+            name: Some("mover".into()),
+            listen: Some(agent.addr),
+        },
+    )
+    .await
+    .unwrap();
+    let link = agent
+        .manager
+        .node_link()
+        .expect("an agent has a link")
+        .clone();
     assert!(link.wait_ready(Duration::from_secs(20)).await);
     agent.manager.initialize().await.unwrap();
     let (s, vm) = call(&a, "POST", "/vms", Some(vm_body("traveller", "mover")), &[]).await;
     assert_eq!(s, StatusCode::CREATED, "{vm}");
     let id = vm["id"].as_str().unwrap().to_string();
     let src_project = vm["project"].as_str().unwrap().to_string();
-    wait_for("the agent to be ready", || async { node_json(&a, "mover").await["status"]["ready"] == "True" }).await;
+    wait_for("the agent to be ready", || async {
+        node_json(&a, "mover").await["status"]["ready"] == "True"
+    })
+    .await;
     let (s, p) = call(&a, "POST", "/nodes/mover/detach", Some(json!({})), &[]).await;
     assert_eq!(s, StatusCode::OK, "{p}");
     let dir = agent_state_dir(&agent);
@@ -1480,7 +3053,11 @@ async fn a_detached_host_imports_into_another_cluster_with_its_vm_after_approval
     std::fs::copy(receipt_file(&dir), receipt_file(fresh.path())).unwrap();
     std::fs::copy(pending_sha_file(&dir), pending_sha_file(fresh.path())).unwrap();
     std::fs::create_dir_all(fresh.path().join("cluster")).unwrap();
-    std::fs::copy(dir.join("cluster/ca.crt"), fresh.path().join("cluster/ca.crt")).unwrap();
+    std::fs::copy(
+        dir.join("cluster/ca.crt"),
+        fresh.path().join("cluster/ca.crt"),
+    )
+    .unwrap();
     std::fs::write(fresh.path().join("glidex.db"), b"old").unwrap();
     assert!(finish_pending(&fresh.path().join("glidex.db")).unwrap());
     let host = VmManager::with_db_path(fresh.path().join("glidex.db")).unwrap();
@@ -1489,17 +3066,60 @@ async fn a_detached_host_imports_into_another_cluster_with_its_vm_after_approval
 
     // Cluster B takes it in, if an administrator approves.
     let b = new_cp();
-    manage::init(&b.manager, &cfg, InitOptions { advertise: Some(b.addr), tunnel_ip: None, listen: Some(b.addr) }).await.unwrap();
+    manage::init(
+        &b.manager,
+        &cfg,
+        InitOptions {
+            advertise: Some(b.addr),
+            tunnel_ip: None,
+            listen: Some(b.addr),
+        },
+    )
+    .await
+    .unwrap();
     b.manager.initialize().await.unwrap();
-    let plain = manage::join_token(&cluster(&b), NodeRole::Agent, 600, false, "test").await.unwrap();
+    let plain = manage::join_token(&cluster(&b), NodeRole::Agent, 600, false, "test")
+        .await
+        .unwrap();
     let host_addr: SocketAddr = format!("127.0.0.1:{}", free_port()).parse().unwrap();
-    let refused = manage::join_import(&host, &cfg, manage::ImportOptions { server: b.addr, token: plain, advertise: Some(host_addr), tunnel_ip: None, name: Some("imported".into()), listen: Some(host_addr), wait: Duration::from_secs(5) }).await;
-    assert!(refused.is_err(), "a token without --allow-import can't import");
+    let refused = manage::join_import(
+        &host,
+        &cfg,
+        manage::ImportOptions {
+            server: b.addr,
+            token: plain,
+            advertise: Some(host_addr),
+            tunnel_ip: None,
+            name: Some("imported".into()),
+            listen: Some(host_addr),
+            wait: Duration::from_secs(5),
+        },
+    )
+    .await;
+    assert!(
+        refused.is_err(),
+        "a token without --allow-import can't import"
+    );
     assert!(host.cluster().is_none(), "the host is untouched");
-    let token = manage::join_token(&cluster(&b), NodeRole::Agent, 600, true, "test").await.unwrap();
+    let token = manage::join_token(&cluster(&b), NodeRole::Agent, 600, true, "test")
+        .await
+        .unwrap();
     let (h2, cfg2, b_addr) = (host.clone(), cfg.clone(), b.addr);
     let join = tokio::spawn(async move {
-        manage::join_import(&h2, &cfg2, manage::ImportOptions { server: b_addr, token, advertise: Some(host_addr), tunnel_ip: None, name: Some("imported".into()), listen: Some(host_addr), wait: Duration::from_secs(90) }).await
+        manage::join_import(
+            &h2,
+            &cfg2,
+            manage::ImportOptions {
+                server: b_addr,
+                token,
+                advertise: Some(host_addr),
+                tunnel_ip: None,
+                name: Some("imported".into()),
+                listen: Some(host_addr),
+                wait: Duration::from_secs(90),
+            },
+        )
+        .await
     });
     // The plan appears, with the checks it failed: B has its own project called "default".
     wait_until("the import plan", || async {
@@ -1512,22 +3132,57 @@ async fn a_detached_host_imports_into_another_cluster_with_its_vm_after_approval
     let pid = plan["plan"].as_str().unwrap().to_string();
     assert_eq!(plan["state"], "pending");
     assert_eq!(plan["summary"]["vms"], 1, "{plan}");
-    assert!(plan["problems"].as_array().unwrap().iter().any(|p| p.as_str().unwrap().contains("exists with another id")), "{plan}");
+    assert!(
+        plan["problems"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p.as_str().unwrap().contains("exists with another id")),
+        "{plan}"
+    );
     // One plan's view says what it brings, for the mapping editor (spec/clustering-ui.md §7.4).
     let (s, one) = call(&b, "GET", &format!("/imports/{pid}"), None, &[]).await;
     assert_eq!(s, StatusCode::OK, "{one}");
-    assert!(one["sources"]["projects"].as_array().unwrap().iter().any(|p| p["id"] == src_project.as_str()), "{one}");
+    assert!(
+        one["sources"]["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["id"] == src_project.as_str()),
+        "{one}"
+    );
     assert_eq!(one["sources"]["vms"].as_array().unwrap().len(), 1, "{one}");
-    let (s, e) = call(&b, "POST", &format!("/imports/{pid}/approve"), Some(json!({})), &[]).await;
+    let (s, e) = call(
+        &b,
+        "POST",
+        &format!("/imports/{pid}/approve"),
+        Some(json!({})),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::CONFLICT, "{e}");
     let (s, _) = call(&b, "GET", &format!("/vms/{id}"), None, &[]).await;
     assert_eq!(s, StatusCode::NOT_FOUND, "nothing is live before approval");
     // Merge into B's default project; a dry run says it would work.
     let mapping = json!({ "projects": { src_project.clone(): "default" } });
-    let (s, d) = call(&b, "POST", &format!("/imports/{pid}/approve"), Some(json!({ "projects": { src_project.clone(): "default" }, "dry_run": true })), &[]).await;
+    let (s, d) = call(
+        &b,
+        "POST",
+        &format!("/imports/{pid}/approve"),
+        Some(json!({ "projects": { src_project.clone(): "default" }, "dry_run": true })),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::OK, "{d}");
     assert!(d["problems"].as_array().unwrap().is_empty(), "{d}");
-    let (s, done) = call(&b, "POST", &format!("/imports/{pid}/approve"), Some(mapping), &[]).await;
+    let (s, done) = call(
+        &b,
+        "POST",
+        &format!("/imports/{pid}/approve"),
+        Some(mapping),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::OK, "{done}");
     assert_eq!(done["state"], "committed");
     let out = join.await.unwrap().unwrap();
@@ -1536,42 +3191,106 @@ async fn a_detached_host_imports_into_another_cluster_with_its_vm_after_approval
     assert_eq!(s, StatusCode::OK, "{v}");
     assert_eq!(v["node"], out["node_id"], "{v}");
     let (_, projects) = call(&b, "GET", "/projects", None, &[]).await;
-    let default_id = projects.as_array().unwrap().iter().find(|p| p["name"] == "default").unwrap()["id"].clone();
-    assert_eq!(v["project"], default_id, "merged into the existing project: {v}");
+    let default_id = projects
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["name"] == "default")
+        .unwrap()["id"]
+        .clone();
+    assert_eq!(
+        v["project"], default_id,
+        "merged into the existing project: {v}"
+    );
     let n = node_json(&b, "imported").await;
     assert_eq!(n["spec"]["role"], "agent", "{n}");
     assert!(host.cluster().is_some(), "the host is a node of B now");
-    assert!(std::path::Path::new(out["backup"].as_str().unwrap()).exists(), "its standalone records were kept");
+    assert!(
+        std::path::Path::new(out["backup"].as_str().unwrap()).exists(),
+        "its standalone records were kept"
+    );
     // The plan can't be approved twice.
-    let (s, _) = call(&b, "POST", &format!("/imports/{pid}/approve"), Some(json!({})), &[]).await;
+    let (s, _) = call(
+        &b,
+        "POST",
+        &format!("/imports/{pid}/approve"),
+        Some(json!({})),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::CONFLICT);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn the_last_node_dissolves_the_cluster_and_keeps_everything() {
-    use glidex_control_plane::cluster::departure::{finish_pending, pending_db, pending_sha_file, receipt_file};
+    use glidex_control_plane::cluster::departure::{
+        finish_pending, pending_db, pending_sha_file, receipt_file,
+    };
     let _one = SERIAL.lock().await;
     let cfg = test_config();
     let a = new_cp();
-    manage::init(&a.manager, &cfg, InitOptions { advertise: Some(a.addr), tunnel_ip: None, listen: Some(a.addr) }).await.unwrap();
+    manage::init(
+        &a.manager,
+        &cfg,
+        InitOptions {
+            advertise: Some(a.addr),
+            tunnel_ip: None,
+            listen: Some(a.addr),
+        },
+    )
+    .await
+    .unwrap();
     a.manager.initialize().await.unwrap();
     let (s, vm) = call(&a, "POST", "/vms", Some(vm_unpinned("keeper")), &[]).await;
     assert_eq!(s, StatusCode::CREATED, "{vm}");
     let id = vm["id"].as_str().unwrap().to_string();
-    wait_for("the VM to be placed", || async { call(&a, "GET", &format!("/vms/{id}"), None, &[]).await.1["node"].is_string() }).await;
+    wait_for("the VM to be placed", || async {
+        call(&a, "GET", &format!("/vms/{id}"), None, &[]).await.1["node"].is_string()
+    })
+    .await;
     // It needs confirmation, and refuses while another node is a member.
     let (s, _) = call(&a, "POST", "/cluster/dissolve", Some(json!({})), &[]).await;
     assert_eq!(s, StatusCode::CONFLICT);
     let agent = new_cp();
-    let token = manage::join_token(&cluster(&a), NodeRole::Agent, 600, false, "test").await.unwrap();
-    manage::join(&agent.manager, &cfg, JoinOptions { server: a.addr, token, role: NodeRole::Agent, advertise: Some(agent.addr), tunnel_ip: None, name: Some("other".into()), listen: Some(agent.addr) }).await.unwrap();
-    let (s, e) = call(&a, "POST", "/cluster/dissolve", Some(json!({ "force": true })), &[]).await;
+    let token = manage::join_token(&cluster(&a), NodeRole::Agent, 600, false, "test")
+        .await
+        .unwrap();
+    manage::join(
+        &agent.manager,
+        &cfg,
+        JoinOptions {
+            server: a.addr,
+            token,
+            role: NodeRole::Agent,
+            advertise: Some(agent.addr),
+            tunnel_ip: None,
+            name: Some("other".into()),
+            listen: Some(agent.addr),
+        },
+    )
+    .await
+    .unwrap();
+    let (s, e) = call(
+        &a,
+        "POST",
+        "/cluster/dissolve",
+        Some(json!({ "force": true })),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::CONFLICT, "{e}");
     assert!(e["message"].as_str().unwrap().contains("other"), "{e}");
     let (s, _) = call(&a, "POST", "/nodes/other/remove", Some(json!({})), &[]).await;
     assert_eq!(s, StatusCode::OK);
     // Now it ends: a final snapshot, and a standalone database with the VM.
-    let (s, d) = call(&a, "POST", "/cluster/dissolve", Some(json!({ "force": true })), &[]).await;
+    let (s, d) = call(
+        &a,
+        "POST",
+        "/cluster/dissolve",
+        Some(json!({ "force": true })),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::OK, "{d}");
     assert_eq!(d["vms"], 1);
     let dir = agent_state_dir(&a);
@@ -1581,31 +3300,68 @@ async fn the_last_node_dissolves_the_cluster_and_keeps_everything() {
     std::fs::copy(receipt_file(&dir), receipt_file(fresh.path())).unwrap();
     std::fs::copy(pending_sha_file(&dir), pending_sha_file(fresh.path())).unwrap();
     std::fs::create_dir_all(fresh.path().join("cluster")).unwrap();
-    std::fs::copy(dir.join("cluster/ca.crt"), fresh.path().join("cluster/ca.crt")).unwrap();
+    std::fs::copy(
+        dir.join("cluster/ca.crt"),
+        fresh.path().join("cluster/ca.crt"),
+    )
+    .unwrap();
     std::fs::write(fresh.path().join("glidex.db"), b"old").unwrap();
     assert!(finish_pending(&fresh.path().join("glidex.db")).unwrap());
     let host = VmManager::with_db_path(fresh.path().join("glidex.db")).unwrap();
     host.initialize().await.unwrap();
-    assert_eq!(host.list_vms().await.iter().map(|v| v.id.as_str()).collect::<Vec<_>>(), vec![id.as_str()]);
+    assert_eq!(
+        host.list_vms()
+            .await
+            .iter()
+            .map(|v| v.id.as_str())
+            .collect::<Vec<_>>(),
+        vec![id.as_str()]
+    );
 }
 
 /// The UI socket of an agent with `ui_user` set to whoever runs the test,
 /// so the relay's peer check passes.
 fn agent_ui_router(cp: &Cp, relay: bool) -> axum::Router {
-    let mut cfg = Config { ui_user: nix::unistd::User::from_uid(nix::unistd::getuid()).unwrap().unwrap().name, ..Default::default() };
+    let mut cfg = Config {
+        ui_user: nix::unistd::User::from_uid(nix::unistd::getuid())
+            .unwrap()
+            .unwrap()
+            .name,
+        ..Default::default()
+    };
     cfg.cluster.ui_relay = relay;
-    let auth = glidex_control_plane::auth::AuthService::disabled_with(cp.manager.database(), cfg).unwrap();
-    glidex_control_plane::api::router(Arc::new(glidex_control_plane::api::App { manager: cp.manager.clone(), auth }))
+    let auth =
+        glidex_control_plane::auth::AuthService::disabled_with(cp.manager.database(), cfg).unwrap();
+    glidex_control_plane::api::router(Arc::new(glidex_control_plane::api::App {
+        manager: cp.manager.clone(),
+        auth,
+    }))
 }
 
-async fn via_ui(router: &axum::Router, method: &str, uri: &str) -> (StatusCode, axum::http::HeaderMap, Value) {
-    let mut req = Request::builder().method(method).uri(uri).body(Body::empty()).unwrap();
-    req.extensions_mut().insert(glidex_control_plane::api::Listener::Ui);
-    req.extensions_mut().insert(glidex_control_plane::api::PeerUid(nix::unistd::getuid().as_raw()));
+async fn via_ui(
+    router: &axum::Router,
+    method: &str,
+    uri: &str,
+) -> (StatusCode, axum::http::HeaderMap, Value) {
+    let mut req = Request::builder()
+        .method(method)
+        .uri(uri)
+        .body(Body::empty())
+        .unwrap();
+    req.extensions_mut()
+        .insert(glidex_control_plane::api::Listener::Ui);
+    req.extensions_mut()
+        .insert(glidex_control_plane::api::PeerUid(
+            nix::unistd::getuid().as_raw(),
+        ));
     let resp = router.clone().oneshot(req).await.unwrap();
     let (status, headers) = (resp.status(), resp.headers().clone());
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-    (status, headers, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+    (
+        status,
+        headers,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
 }
 
 /// spec/clustering-ui.md §3.6: an agent's UI socket relays to a server, which
@@ -1616,14 +3372,45 @@ async fn an_agents_ui_is_relayed_to_a_server_and_host_paths_run_on_the_agent() {
     let _one = SERIAL.lock().await;
     let cfg = test_config();
     let server = new_cp();
-    manage::init(&server.manager, &cfg, InitOptions { advertise: Some(server.addr), tunnel_ip: None, listen: Some(server.addr) }).await.unwrap();
+    manage::init(
+        &server.manager,
+        &cfg,
+        InitOptions {
+            advertise: Some(server.addr),
+            tunnel_ip: None,
+            listen: Some(server.addr),
+        },
+    )
+    .await
+    .unwrap();
     server.manager.initialize().await.unwrap();
     let agent = new_cp();
-    let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test").await.unwrap();
-    manage::join(&agent.manager, &cfg, JoinOptions { server: server.addr, token, role: NodeRole::Agent, advertise: Some(agent.addr), tunnel_ip: None, name: Some("agent1".into()), listen: Some(agent.addr) })
+    let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test")
         .await
         .unwrap();
-    assert!(agent.manager.node_link().unwrap().wait_ready(Duration::from_secs(20)).await);
+    manage::join(
+        &agent.manager,
+        &cfg,
+        JoinOptions {
+            server: server.addr,
+            token,
+            role: NodeRole::Agent,
+            advertise: Some(agent.addr),
+            tunnel_ip: None,
+            name: Some("agent1".into()),
+            listen: Some(agent.addr),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        agent
+            .manager
+            .node_link()
+            .unwrap()
+            .wait_ready(Duration::from_secs(20))
+            .await
+    );
     agent.manager.initialize().await.unwrap();
     let server_id = cluster(&server).identity.node_id.clone();
     let agent_id = cluster(&agent).identity.node_id.clone();
@@ -1632,27 +3419,63 @@ async fn an_agents_ui_is_relayed_to_a_server_and_host_paths_run_on_the_agent() {
     // Cluster-wide reads are the server's; "this node" is the one whose UI it is.
     let (s, h, v) = via_ui(&ui, "GET", "/cluster/status").await;
     assert_eq!(s, StatusCode::OK, "{v}");
-    assert_eq!(h["x-glidex-served-by"], server_id.as_str(), "the server answered");
-    assert_eq!((v["node_id"].as_str(), v["name"].as_str(), v["role"].as_str()), (Some(agent_id.as_str()), Some("agent1"), Some("agent")), "{v}");
+    assert_eq!(
+        h["x-glidex-served-by"],
+        server_id.as_str(),
+        "the server answered"
+    );
+    assert_eq!(
+        (
+            v["node_id"].as_str(),
+            v["name"].as_str(),
+            v["role"].as_str()
+        ),
+        (Some(agent_id.as_str()), Some("agent1"), Some("agent")),
+        "{v}"
+    );
     assert_eq!(v["served_by"]["node_id"], server_id.as_str(), "{v}");
     // The agent's own API socket (a host that joined without restarting):
     // the cluster won't record a Unix user of another host, so a local login
     // says where to log in instead of failing with a 500.
     let mut cfg = Config::default();
-    let group = nix::unistd::Group::from_gid(nix::unistd::getgid()).unwrap().unwrap().name;
+    let group = nix::unistd::Group::from_gid(nix::unistd::getgid())
+        .unwrap()
+        .unwrap()
+        .name;
     (cfg.users_group, cfg.admin_group) = (group.clone(), group);
     let no_site_policies = tempfile::tempdir().unwrap();
     cfg.authz.policy_files_dir = no_site_policies.path().to_path_buf();
     let auth = glidex_control_plane::auth::AuthService::new(agent.manager.database(), cfg).unwrap();
-    let api = glidex_control_plane::api::router(Arc::new(glidex_control_plane::api::App { manager: agent.manager.clone(), auth }));
-    let mut req = Request::builder().uri("/cluster/status").body(Body::empty()).unwrap();
-    req.extensions_mut().insert(glidex_control_plane::api::Listener::Api);
-    req.extensions_mut().insert(glidex_control_plane::api::PeerUid(nix::unistd::getuid().as_raw()));
+    let api = glidex_control_plane::api::router(Arc::new(glidex_control_plane::api::App {
+        manager: agent.manager.clone(),
+        auth,
+    }));
+    let mut req = Request::builder()
+        .uri("/cluster/status")
+        .body(Body::empty())
+        .unwrap();
+    req.extensions_mut()
+        .insert(glidex_control_plane::api::Listener::Api);
+    req.extensions_mut()
+        .insert(glidex_control_plane::api::PeerUid(
+            nix::unistd::getuid().as_raw(),
+        ));
     let resp = api.oneshot(req).await.unwrap();
     let status = resp.status();
-    let body: Value = serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap_or(Value::Null);
-    assert_eq!((status, body["error"].as_str()), (StatusCode::FORBIDDEN, Some("agent_no_local_api")), "{body}");
-    assert!(body["message"].as_str().unwrap().contains("gxctl auth login https://127.0.0.1:8841"), "{body}");
+    let body: Value = serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes())
+        .unwrap_or(Value::Null);
+    assert_eq!(
+        (status, body["error"].as_str()),
+        (StatusCode::FORBIDDEN, Some("agent_no_local_api")),
+        "{body}"
+    );
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap()
+            .contains("gxctl auth login https://127.0.0.1:8841"),
+        "{body}"
+    );
 
     // Asked directly, the server is "this node".
     let (_, v) = call(&server, "GET", "/cluster/status", None, &[]).await;
@@ -1671,19 +3494,35 @@ async fn an_agents_ui_is_relayed_to_a_server_and_host_paths_run_on_the_agent() {
     // Host-local paths are about the agent's host and run there.
     let (s, h, v) = via_ui(&ui, "GET", "/system/reconcile").await;
     assert_eq!(s, StatusCode::OK, "{v}");
-    assert_eq!(h["x-glidex-served-by"], agent_id.as_str(), "ran on the agent");
+    assert_eq!(
+        h["x-glidex-served-by"],
+        agent_id.as_str(),
+        "ran on the agent"
+    );
 
     // A relay can't vouch for anyone.
     let r = cluster(&agent)
         .client
-        .request(&server.addr.to_string(), axum::http::Method::GET, "/cluster/v1/ui/vms", &[("x-glidex-principal", "e30=".to_string())], bytes::Bytes::new())
+        .request(
+            &server.addr.to_string(),
+            axum::http::Method::GET,
+            "/cluster/v1/ui/vms",
+            &[("x-glidex-principal", "e30=".to_string())],
+            bytes::Bytes::new(),
+        )
         .await
         .unwrap();
     assert_eq!(r.status, StatusCode::FORBIDDEN);
     // Nor may a node send another node's host what it authorized (servers only).
     let r = cluster(&agent)
         .client
-        .request(&server.addr.to_string(), axum::http::Method::GET, "/cluster/v1/host/system/reconcile", &[("x-glidex-authorized", "readSystemStatus".to_string())], bytes::Bytes::new())
+        .request(
+            &server.addr.to_string(),
+            axum::http::Method::GET,
+            "/cluster/v1/host/system/reconcile",
+            &[("x-glidex-authorized", "readSystemStatus".to_string())],
+            bytes::Bytes::new(),
+        )
         .await
         .unwrap();
     assert_eq!(r.status, StatusCode::FORBIDDEN);
@@ -1692,7 +3531,13 @@ async fn an_agents_ui_is_relayed_to_a_server_and_host_paths_run_on_the_agent() {
     let off = agent_ui_router(&agent, false);
     let (s, _, v) = via_ui(&off, "GET", "/vms").await;
     assert_eq!(s, StatusCode::MISDIRECTED_REQUEST, "{v}");
-    assert!(v["message"].as_str().unwrap().contains(&server.addr.to_string()), "{v}");
+    assert!(
+        v["message"]
+            .as_str()
+            .unwrap()
+            .contains(&server.addr.to_string()),
+        "{v}"
+    );
 
     // A server's own UI socket is not relayed.
     let (s, h, _) = via_ui(&agent_ui_router(&server, true), "GET", "/cluster/status").await;
@@ -1711,20 +3556,55 @@ async fn ovn_is_a_cluster_setting_every_node_follows() {
     let cfg = test_config();
     let server = new_cp();
     server.manager.configure(&cfg);
-    manage::init(&server.manager, &cfg, InitOptions { advertise: Some(server.addr), tunnel_ip: None, listen: Some(server.addr) }).await.unwrap();
+    manage::init(
+        &server.manager,
+        &cfg,
+        InitOptions {
+            advertise: Some(server.addr),
+            tunnel_ip: None,
+            listen: Some(server.addr),
+        },
+    )
+    .await
+    .unwrap();
     server.manager.initialize().await.unwrap();
     let agent = new_cp();
     agent.manager.configure(&cfg);
-    let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test").await.unwrap();
-    manage::join(&agent.manager, &cfg, JoinOptions { server: server.addr, token, role: NodeRole::Agent, advertise: Some(agent.addr), tunnel_ip: None, name: Some("agent1".into()), listen: Some(agent.addr) })
+    let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test")
         .await
         .unwrap();
-    assert!(agent.manager.node_link().unwrap().wait_ready(Duration::from_secs(20)).await);
+    manage::join(
+        &agent.manager,
+        &cfg,
+        JoinOptions {
+            server: server.addr,
+            token,
+            role: NodeRole::Agent,
+            advertise: Some(agent.addr),
+            tunnel_ip: None,
+            name: Some("agent1".into()),
+            listen: Some(agent.addr),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        agent
+            .manager
+            .node_link()
+            .unwrap()
+            .wait_ready(Duration::from_secs(20))
+            .await
+    );
     agent.manager.initialize().await.unwrap();
 
     let (s, v) = call(&server, "GET", "/cluster/settings/ovn", None, &[]).await;
     assert_eq!(s, StatusCode::OK, "{v}");
-    assert_eq!((v["enabled"].as_bool(), v["source"].as_str()), (Some(false), Some("none")), "{v}");
+    assert_eq!(
+        (v["enabled"].as_bool(), v["source"].as_str()),
+        (Some(false), Some("none")),
+        "{v}"
+    );
 
     // The nodes report whether OVN is installed; one that says it isn't blocks enabling.
     let set_ovn = |cp: &Cp, id: &str, version: Option<&str>, central: bool| {
@@ -1738,36 +3618,78 @@ async fn ovn_is_a_cluster_setting_every_node_follows() {
         let mut n: Value = serde_json::from_slice(&raw).unwrap();
         n["status"]["versions"]["ovn"] = json!(version);
         n["status"]["features"]["ovn_central"] = json!(central);
-        db.write(Origin::Api, |tx| -> Result<(), glidex_control_plane::store::StoreError> {
-            tx.open_table(TableId::Nodes.definition())?.insert(id, n.to_string().as_bytes())?;
-            Ok(())
-        })
+        db.write(
+            Origin::Api,
+            |tx| -> Result<(), glidex_control_plane::store::StoreError> {
+                tx.open_table(TableId::Nodes.definition())?
+                    .insert(id, n.to_string().as_bytes())?;
+                Ok(())
+            },
+        )
         .unwrap();
     };
-    let (sid, aid) = (server.manager.local_node_id(), agent.manager.local_node_id());
+    let (sid, aid) = (
+        server.manager.local_node_id(),
+        agent.manager.local_node_id(),
+    );
     set_ovn(&server, &sid, Some("24.03.2"), true);
     set_ovn(&server, &aid, None, false);
-    let (s, v) = call(&server, "PUT", "/cluster/settings/ovn", Some(json!({ "enabled": true })), &[]).await;
+    let (s, v) = call(
+        &server,
+        "PUT",
+        "/cluster/settings/ovn",
+        Some(json!({ "enabled": true })),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::CONFLICT, "{v}");
     assert!(v["message"].as_str().unwrap().contains("agent1"), "{v}");
     set_ovn(&server, &aid, Some("24.03.2"), false);
 
     // A bad edge is refused before anything is written.
     let edge = json!({ "physnet": "uplink", "external_cidr": "192.0.2.0/24", "gateway": "198.51.100.1", "external_ip": "192.0.2.50", "gateway_nodes": ["agent1"] });
-    let (s, v) = call(&server, "PUT", "/cluster/settings/ovn", Some(json!({ "enabled": true, "edge": edge })), &[]).await;
+    let (s, v) = call(
+        &server,
+        "PUT",
+        "/cluster/settings/ovn",
+        Some(json!({ "enabled": true, "edge": edge })),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
 
     // On: written once, followed by the agent without a restart.
-    let (s, v) = call(&server, "PUT", "/cluster/settings/ovn", Some(json!({ "enabled": true, "dns_servers": ["192.0.2.53"] })), &[]).await;
+    let (s, v) = call(
+        &server,
+        "PUT",
+        "/cluster/settings/ovn",
+        Some(json!({ "enabled": true, "dns_servers": ["192.0.2.53"] })),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::OK, "{v}");
-    assert_eq!((v["enabled"].as_bool(), v["source"].as_str()), (Some(true), Some("cluster")), "{v}");
+    assert_eq!(
+        (v["enabled"].as_bool(), v["source"].as_str()),
+        (Some(true), Some("cluster")),
+        "{v}"
+    );
     assert!(server.manager.ovn_enabled());
-    wait_for("the agent to follow the setting", || async { agent.manager.ovn_enabled() }).await;
+    wait_for("the agent to follow the setting", || async {
+        agent.manager.ovn_enabled()
+    })
+    .await;
 
     // Off is refused while a cluster network exists.
     let (s, n) = call(&server, "POST", "/networks", Some(json!({ "name": "c-net", "mode": "isolated", "scope": "cluster", "subnet": "10.89.40.0/24" })), &[]).await;
     assert_eq!(s, StatusCode::CREATED, "{n}");
-    let (s, v) = call(&server, "PUT", "/cluster/settings/ovn", Some(json!({ "enabled": false })), &[]).await;
+    let (s, v) = call(
+        &server,
+        "PUT",
+        "/cluster/settings/ovn",
+        Some(json!({ "enabled": false })),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::CONFLICT, "{v}");
     assert!(v["message"].as_str().unwrap().contains("c-net"), "{v}");
 
@@ -1775,10 +3697,23 @@ async fn ovn_is_a_cluster_setting_every_node_follows() {
     let (s, v) = call(&agent, "GET", "/cluster/settings/ovn", None, &[]).await;
     assert_eq!(s, StatusCode::OK, "{v}");
     assert_eq!(v["enabled"], true);
-    assert_eq!(v["edge"], false, "no shared edge yet: NAT networks can't span the nodes");
-    let (s, v) = call(&server, "POST", "/networks", Some(json!({ "name": "c-nat", "mode": "nat", "scope": "cluster" })), &[]).await;
+    assert_eq!(
+        v["edge"], false,
+        "no shared edge yet: NAT networks can't span the nodes"
+    );
+    let (s, v) = call(
+        &server,
+        "POST",
+        "/networks",
+        Some(json!({ "name": "c-nat", "mode": "nat", "scope": "cluster" })),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
-    assert!(v["message"].as_str().unwrap().contains("OVN settings"), "says where to set it: {v}");
+    assert!(
+        v["message"].as_str().unwrap().contains("OVN settings"),
+        "says where to set it: {v}"
+    );
 }
 
 /// A cluster that enabled OVN in its servers' files keeps it: the leader
@@ -1790,13 +3725,27 @@ async fn a_file_enabled_cluster_moves_to_the_setting() {
     cfg.cluster.ovn.enabled = true;
     let server = new_cp();
     server.manager.configure(&cfg);
-    manage::init(&server.manager, &cfg, InitOptions { advertise: Some(server.addr), tunnel_ip: None, listen: Some(server.addr) }).await.unwrap();
+    manage::init(
+        &server.manager,
+        &cfg,
+        InitOptions {
+            advertise: Some(server.addr),
+            tunnel_ip: None,
+            listen: Some(server.addr),
+        },
+    )
+    .await
+    .unwrap();
     server.manager.initialize().await.unwrap();
     let (_, v) = call(&server, "GET", "/cluster/settings/ovn", None, &[]).await;
     assert_eq!(v["source"], "file", "{v}");
     server.manager.migrate_ovn_settings();
     let (_, v) = call(&server, "GET", "/cluster/settings/ovn", None, &[]).await;
-    assert_eq!((v["source"].as_str(), v["enabled"].as_bool()), (Some("cluster"), Some(true)), "{v}");
+    assert_eq!(
+        (v["source"].as_str(), v["enabled"].as_bool()),
+        (Some("cluster"), Some(true)),
+        "{v}"
+    );
     assert_eq!(v["settings"]["updated_by"], "file");
 }
 
@@ -1810,10 +3759,23 @@ async fn gateway_nodes_need_the_physnet_and_the_kernel_datapath() {
     let cfg = test_config();
     let server = new_cp();
     server.manager.configure(&cfg);
-    manage::init(&server.manager, &cfg, InitOptions { advertise: Some(server.addr), tunnel_ip: None, listen: Some(server.addr) }).await.unwrap();
+    manage::init(
+        &server.manager,
+        &cfg,
+        InitOptions {
+            advertise: Some(server.addr),
+            tunnel_ip: None,
+            listen: Some(server.addr),
+        },
+    )
+    .await
+    .unwrap();
     server.manager.initialize().await.unwrap();
     let id = server.manager.local_node_id();
-    let name = node_json(&server, &id).await["spec"]["name"].as_str().unwrap().to_string();
+    let name = node_json(&server, &id).await["spec"]["name"]
+        .as_str()
+        .unwrap()
+        .to_string();
     // What the node reports: OVN installed, DPDK running, no physical network mapped yet.
     let report = |physnets: Value, dpdk: bool| {
         let db = server.manager.database();
@@ -1828,50 +3790,129 @@ async fn gateway_nodes_need_the_physnet_and_the_kernel_datapath() {
         n["status"]["features"]["ovn_central"] = json!(true);
         n["status"]["features"]["physnets"] = physnets;
         n["status"]["features"]["dpdk"] = json!(dpdk);
-        db.write(Origin::Api, |tx| -> Result<(), glidex_control_plane::store::StoreError> {
-            tx.open_table(TableId::Nodes.definition())?.insert(id.as_str(), n.to_string().as_bytes())?;
-            Ok(())
-        })
+        db.write(
+            Origin::Api,
+            |tx| -> Result<(), glidex_control_plane::store::StoreError> {
+                tx.open_table(TableId::Nodes.definition())?
+                    .insert(id.as_str(), n.to_string().as_bytes())?;
+                Ok(())
+            },
+        )
         .unwrap();
     };
     let edge = json!({ "physnet": "uplink", "external_cidr": "192.0.2.0/24", "gateway": "192.0.2.1", "external_ip": "192.0.2.50", "gateway_nodes": [name] });
-    let put_edge = || call(&server, "PUT", "/cluster/settings/ovn", Some(json!({ "enabled": true, "edge": edge.clone() })), &[]);
+    let put_edge = || {
+        call(
+            &server,
+            "PUT",
+            "/cluster/settings/ovn",
+            Some(json!({ "enabled": true, "edge": edge.clone() })),
+            &[],
+        )
+    };
 
     report(json!({}), true);
     let (s, v) = put_edge().await;
     assert_eq!(s, StatusCode::CONFLICT, "{v}");
-    assert!(v["message"].as_str().unwrap().contains("doesn't map physical network uplink"), "{v}");
+    assert!(
+        v["message"]
+            .as_str()
+            .unwrap()
+            .contains("doesn't map physical network uplink"),
+        "{v}"
+    );
 
     // Mapped through the API (no file, no restart), but DPDK runs and the
     // setting is auto: br-int would be userspace.
-    let (s, v) = call(&server, "PUT", &format!("/nodes/{id}/ovn"), Some(json!({ "bridge_mappings": { "uplink": "gxbr-up" } })), &[]).await;
+    let (s, v) = call(
+        &server,
+        "PUT",
+        &format!("/nodes/{id}/ovn"),
+        Some(json!({ "bridge_mappings": { "uplink": "gxbr-up" } })),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::OK, "{v}");
     assert_eq!(v["physnets"]["uplink"], "gxbr-up", "{v}");
-    let (s, v) = call(&server, "PUT", &format!("/nodes/{id}/ovn"), Some(json!({ "bridge_mappings": { "bad name": "x" } })), &[]).await;
+    let (s, v) = call(
+        &server,
+        "PUT",
+        &format!("/nodes/{id}/ovn"),
+        Some(json!({ "bridge_mappings": { "bad name": "x" } })),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
     let (s, v) = put_edge().await;
     assert_eq!(s, StatusCode::CONFLICT, "{v}");
-    assert!(v["message"].as_str().unwrap().contains("userspace datapath"), "{v}");
+    assert!(
+        v["message"]
+            .as_str()
+            .unwrap()
+            .contains("userspace datapath"),
+        "{v}"
+    );
 
     // The node's setting decides: system, then the edge is accepted.
-    let (s, v) = call(&server, "PUT", &format!("/nodes/{id}/ovn"), Some(json!({ "br_int_datapath": "system" })), &[]).await;
+    let (s, v) = call(
+        &server,
+        "PUT",
+        &format!("/nodes/{id}/ovn"),
+        Some(json!({ "br_int_datapath": "system" })),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::OK, "{v}");
-    assert_eq!((v["br_int_datapath"].as_str(), v["wanted"].as_str()), (Some("system"), Some("system")), "{v}");
-    assert_eq!(node_json(&server, &id).await["spec"]["br_int_datapath"], "system");
+    assert_eq!(
+        (v["br_int_datapath"].as_str(), v["wanted"].as_str()),
+        (Some("system"), Some("system")),
+        "{v}"
+    );
+    assert_eq!(
+        node_json(&server, &id).await["spec"]["br_int_datapath"],
+        "system"
+    );
     let (s, v) = put_edge().await;
     assert_eq!(s, StatusCode::OK, "{v}");
 
     // A gateway node keeps its physical network...
-    let (s, v) = call(&server, "PUT", &format!("/nodes/{id}/ovn"), Some(json!({ "bridge_mappings": {} })), &[]).await;
+    let (s, v) = call(
+        &server,
+        "PUT",
+        &format!("/nodes/{id}/ovn"),
+        Some(json!({ "bridge_mappings": {} })),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::CONFLICT, "{v}");
-    assert!(v["message"].as_str().unwrap().contains("needs physical network uplink"), "{v}");
+    assert!(
+        v["message"]
+            .as_str()
+            .unwrap()
+            .contains("needs physical network uplink"),
+        "{v}"
+    );
     // ...and can't go back to the userspace datapath...
-    let (s, v) = call(&server, "PUT", &format!("/nodes/{id}/ovn"), Some(json!({ "br_int_datapath": "netdev" })), &[]).await;
+    let (s, v) = call(
+        &server,
+        "PUT",
+        &format!("/nodes/{id}/ovn"),
+        Some(json!({ "br_int_datapath": "netdev" })),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::CONFLICT, "{v}");
     assert_eq!(v["error"], "gateway_node", "{v}");
     // ...and the userspace datapath needs DPDK anywhere.
     report(json!({ "uplink": "gxbr-up" }), false);
-    let (s, v) = call(&server, "PUT", &format!("/nodes/{id}/ovn"), Some(json!({ "br_int_datapath": "netdev" })), &[]).await;
+    let (s, v) = call(
+        &server,
+        "PUT",
+        &format!("/nodes/{id}/ovn"),
+        Some(json!({ "br_int_datapath": "netdev" })),
+        &[],
+    )
+    .await;
     assert_eq!(s, StatusCode::CONFLICT, "{v}");
     assert_eq!(v["error"], "dpdk_not_running", "{v}");
 }

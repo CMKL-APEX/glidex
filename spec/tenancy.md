@@ -788,11 +788,16 @@ established pair keeps working, including logins and feeds.
 ## 13. Directory secrets (D21, D27)
 
 - Each directory has its own **data key**, random, wrapping its
-  connector secrets with XChaCha20-Poly1305 (AAD = `directory_id ‖
-  connector_id ‖ field ‖ key_id`). Data keys are wrapped by the host's
-  KEK (32 random bytes, systemd credential `secrets-kek`, TPM2 when
-  present, on each server of the host, transferred to joining servers
-  with the CA key, never in Raft, snapshots, feeds or bundles).
+  connector secrets with ChaCha20-Poly1305 (`ring`, a random 96-bit
+  nonce per value; AAD = `directory_id ‖ connector_id ‖ field`). Data
+  keys are wrapped by the host's KEK (32 random bytes: the systemd
+  credential `secrets-kek`, else the file `auth.secrets_key`, default
+  `<database dir>/secrets.kek`, made 0600 on first start; TPM2 sealing
+  later), with the KEK's id stored next to each wrapped key. The KEK is on
+  each server of the host, sent to joining servers with the CA key (and
+  only with a CA key that matches the cluster's), never in Raft,
+  snapshots, feeds or bundles. A server whose KEK is a credential can't
+  take another one: every server gets the same credential.
 - Each directory has its own **signing keys** (ID tokens, access tokens),
   rotated on demand and every 90 days, the old one kept for verification
   until every token it signed has expired; public keys travel in feeds.
@@ -1177,3 +1182,42 @@ Not yet in T0, next to do:
   separated) and names unique per tenant for disks and project networks
   (projects already are).
 
+
+
+**T1** (connector framework) is implemented on the same one-host shape.
+
+| Spec | Code |
+|---|---|
+| Connector model, kinds, validation, D22 (§5, §13) | `src/directory/mod.rs` (`Connector`, `Kind`, `validate`, `ConnectorStore`); tables `Connectors`, `ConnectorSecrets`, `DirectoryKeys` (directory scope) |
+| Data keys and KEK (§13, D21) | `src/directory/secrets.rs` (`Kek`, `seal`/`open`, `rewrap`); `auth.secrets_key` in `config.rs`; `#LoadCredential=secrets-kek` in the unit |
+| KEK transfer to joining servers | `cluster/runtime.rs` (`SecretsKey`), `cluster/server.rs` (`join_ready` sends, `put_ca` installs after the CA key checks out), `state.rs::lend_secrets_key` (before `join/ready`) |
+| File-defined connectors (§16 step 5) | `directory::file_connectors`: `file-pam` from `auth.pam`, `file-oidc` from `auth.oidc` (secret from `oidc-client-secret`), read-only |
+| The `ExternalIdentity` path: rules, JIT, teams, `default_tenant`, MFA (`amr`/`acr`), D20 clamp | `auth/mod.rs::external_login`, `login_pam_with`, `oidc_for` (one client per connector, rebuilt when it changes); `auth/oidc.rs` (`ClientSecret::Stored`, `mfa`) |
+| Discovery and per-connector routes (§6) | `api/access.rs` (`discover`, `connector_start`/`callback`/`device_start`/`device_poll`, `connector` on `/auth/login` and `/auth/token`) |
+| `ConnectorService` on both transports (§14) | proto `glidex/directory/v1/connectors.proto`; `service/directory.rs`; REST `api/connectors.rs`; RPC `api/rpc/directory.rs`; actions under `directory.connectors` (`role.directory-admin`, step-up on writes) |
+| gxctl and UI | `bin/gxctl/directory.rs` (`connector …`), `login --oidc --connector`, `auth login --connector`; a sign-in button per OIDC connector (`pages/Login.tsx`) |
+| Tests | `tests/connector_tests.rs`; `cluster_tests.rs::a_new_server_receives_the_secrets_key`; gxctl `connector_client_over_the_unix_socket`; unit tests in `directory/` |
+
+Decided while building:
+- **File-defined connectors keep their identity keys** (`pam`,
+  `oidc:<issuer>`) and member sources, so upgrading needs no re-keying;
+  API connectors key identities `conn:<id>`.
+- **ChaCha20-Poly1305 from `ring`** rather than XChaCha: `ring` is
+  already a dependency, and random 96-bit nonces are safe for the few
+  values a directory seals.
+- **The KEK defaults to a file next to the database** so a plain
+  install keeps its secrets across restarts; without a path (embedding,
+  tests) it is a one-off key, with a warning.
+- **API-connector OIDC callbacks** are `/api/auth/c/<id>/callback`; the
+  file connector keeps `/api/auth/oidc/callback`.
+
+Not yet in T1, next to do:
+- peer (`api.sock`) resolution through PAM connectors, and identities
+  with the node in the subject (D23);
+- `Principal.directory_id` and the acting tenant (one directory per host
+  makes them constant for now);
+- `LoginService` (`glidex/auth/v1/login.proto`) for the device and
+  password logins over RPC;
+- the UI's connector management pages;
+- KEK rotation with the CA, and TPM2 sealing;
+- moving `auth/oidc.rs` to `directory/oidc.rs`.

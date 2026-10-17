@@ -1,12 +1,12 @@
 //! Host-side uplink ports: kernel NIC, AF_XDP, DPDK (spec §8.3).
 
+use crate::OvsError;
 use crate::bridge::{self, Datapath};
 use crate::exec::Exec;
 use crate::host::HostCapabilities;
-use crate::names::{validate_ifname, validate_name, MAX_IFNAME};
+use crate::names::{MAX_IFNAME, validate_ifname, validate_name};
 use crate::nic;
 use crate::vsctl::{self, owned_tags, tag_args};
-use crate::OvsError;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -32,7 +32,9 @@ impl XdpMode {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum UplinkKind {
-    Kernel { ifname: String },
+    Kernel {
+        ifname: String,
+    },
     Afxdp {
         ifname: String,
         #[serde(default = "default_xdp_mode")]
@@ -74,7 +76,9 @@ impl UplinkSpec {
             UplinkKind::Kernel { ifname } | UplinkKind::Afxdp { ifname, .. } => {
                 validate_ifname(ifname)?;
                 if &self.name != ifname {
-                    return Err(OvsError::invalid("kernel/AF_XDP uplink name must equal the NIC name"));
+                    return Err(OvsError::invalid(
+                        "kernel/AF_XDP uplink name must equal the NIC name",
+                    ));
                 }
             }
             UplinkKind::Dpdk { pci, .. } => {
@@ -87,10 +91,10 @@ impl UplinkSpec {
                 }
             }
         }
-        if let UplinkKind::Afxdp { n_rxq, .. } | UplinkKind::Dpdk { n_rxq, .. } = &self.kind {
-            if !(1..=64).contains(n_rxq) {
-                return Err(OvsError::invalid("n_rxq must be 1-64"));
-            }
+        if let UplinkKind::Afxdp { n_rxq, .. } | UplinkKind::Dpdk { n_rxq, .. } = &self.kind
+            && !(1..=64).contains(n_rxq)
+        {
+            return Err(OvsError::invalid("n_rxq must be 1-64"));
         }
         Ok(())
     }
@@ -132,7 +136,11 @@ pub fn check(exec: &dyn Exec, caps: &HostCapabilities, spec: &UplinkSpec) -> Res
     let need = spec.required_datapath();
     if br.datapath != need {
         return Err(OvsError::Unsupported {
-            missing: vec![format!("{} datapath on bridge '{}'", need.as_str(), spec.bridge)],
+            missing: vec![format!(
+                "{} datapath on bridge '{}'",
+                need.as_str(),
+                spec.bridge
+            )],
         });
     }
     let iface_type = match spec.kind {
@@ -140,24 +148,34 @@ pub fn check(exec: &dyn Exec, caps: &HostCapabilities, spec: &UplinkSpec) -> Res
         UplinkKind::Dpdk { .. } => Some("dpdk"),
         UplinkKind::Kernel { .. } => None,
     };
-    if let Some(t) = iface_type {
-        if !caps.iface_types.iter().any(|x| x == t) {
-            return Err(OvsError::Unsupported { missing: vec![t.into()] });
-        }
+    if let Some(t) = iface_type
+        && !caps.iface_types.iter().any(|x| x == t)
+    {
+        return Err(OvsError::Unsupported {
+            missing: vec![t.into()],
+        });
     }
     if let UplinkKind::Dpdk { .. } = spec.kind {
         if !caps.dpdk_initialized {
-            return Err(OvsError::Unsupported { missing: vec!["dpdk initialized".into()] });
+            return Err(OvsError::Unsupported {
+                missing: vec!["dpdk initialized".into()],
+            });
         }
         if !caps.iommu {
-            return Err(OvsError::Unsupported { missing: vec!["iommu".into()] });
+            return Err(OvsError::Unsupported {
+                missing: vec!["iommu".into()],
+            });
         }
     }
     Ok(())
 }
 
 /// Add the OVS port (after any DPDK driver binding, done by the caller).
-pub fn add_port(exec: &dyn Exec, spec: &UplinkSpec, orig_driver: Option<&str>) -> Result<(), OvsError> {
+pub fn add_port(
+    exec: &dyn Exec,
+    spec: &UplinkSpec,
+    orig_driver: Option<&str>,
+) -> Result<(), OvsError> {
     let mut extra = vec![("glidex-uplink", spec.name.as_str())];
     if let Some(d) = orig_driver {
         extra.push(("glidex-orig-driver", d));
@@ -175,7 +193,9 @@ pub fn add_port(exec: &dyn Exec, spec: &UplinkSpec, orig_driver: Option<&str>) -
     ];
     match &spec.kind {
         UplinkKind::Kernel { .. } => {}
-        UplinkKind::Afxdp { xdp_mode, n_rxq, .. } => {
+        UplinkKind::Afxdp {
+            xdp_mode, n_rxq, ..
+        } => {
             args.push("type=afxdp".into());
             args.push(format!("options:xdp-mode={}", xdp_mode.as_ovs()));
             args.push(format!("options:n_rxq={}", n_rxq));
@@ -196,7 +216,10 @@ pub fn del_port(exec: &dyn Exec, name: &str) -> Result<(), OvsError> {
         if !row.owned_by_glidex() {
             return Err(OvsError::not_owned(format!("interface '{}'", name)));
         }
-        vsctl::run(exec, vec!["--if-exists".into(), "del-port".into(), name.into()])?;
+        vsctl::run(
+            exec,
+            vec!["--if-exists".into(), "del-port".into(), name.into()],
+        )?;
     }
     Ok(())
 }
@@ -229,15 +252,37 @@ mod tests {
     }
 
     fn kernel() -> UplinkSpec {
-        UplinkSpec { name: "gxup0".into(), bridge: "gxbr-up".into(), kind: UplinkKind::Kernel { ifname: "gxup0".into() }, migrate_ip: false }
+        UplinkSpec {
+            name: "gxup0".into(),
+            bridge: "gxbr-up".into(),
+            kind: UplinkKind::Kernel {
+                ifname: "gxup0".into(),
+            },
+            migrate_ip: false,
+        }
     }
 
     #[test]
     fn wire_format() {
-        let spec: UplinkSpec = serde_json::from_str(r#"{"name":"up0","bridge":"gxbr-up","kind":"dpdk","pci":"0000:41:00.0"}"#).unwrap();
-        assert_eq!(spec.kind, UplinkKind::Dpdk { pci: "0000:41:00.0".into(), n_rxq: 1 });
+        let spec: UplinkSpec = serde_json::from_str(
+            r#"{"name":"up0","bridge":"gxbr-up","kind":"dpdk","pci":"0000:41:00.0"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            spec.kind,
+            UplinkKind::Dpdk {
+                pci: "0000:41:00.0".into(),
+                n_rxq: 1
+            }
+        );
         let spec: UplinkSpec = serde_json::from_str(r#"{"name":"enp2s0","bridge":"gxbr-up","kind":"afxdp","ifname":"enp2s0","xdp_mode":"generic"}"#).unwrap();
-        assert!(matches!(spec.kind, UplinkKind::Afxdp { xdp_mode: XdpMode::Generic, .. }));
+        assert!(matches!(
+            spec.kind,
+            UplinkKind::Afxdp {
+                xdp_mode: XdpMode::Generic,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -246,7 +291,15 @@ mod tests {
         let mut s = kernel();
         s.name = "other".into();
         assert!(s.validate().is_err(), "name must match NIC");
-        let dpdk = UplinkSpec { name: "up0".into(), bridge: "gxbr-up".into(), kind: UplinkKind::Dpdk { pci: "0000:41:00.0".into(), n_rxq: 2 }, migrate_ip: true };
+        let dpdk = UplinkSpec {
+            name: "up0".into(),
+            bridge: "gxbr-up".into(),
+            kind: UplinkKind::Dpdk {
+                pci: "0000:41:00.0".into(),
+                n_rxq: 2,
+            },
+            migrate_ip: true,
+        };
         assert!(dpdk.validate().is_err(), "can't migrate IP off a DPDK NIC");
     }
 
@@ -255,27 +308,71 @@ mod tests {
         let exec = RecordingExec::new();
         bridge(&exec, "system");
         check(&exec, &HostCapabilities::default(), &kernel()).unwrap();
-        let afxdp = UplinkSpec { name: "gxup0".into(), bridge: "gxbr-up".into(), kind: UplinkKind::Afxdp { ifname: "gxup0".into(), xdp_mode: XdpMode::Generic, n_rxq: 1 }, migrate_ip: false };
-        assert!(matches!(check(&exec, &HostCapabilities::default(), &afxdp), Err(OvsError::Unsupported { .. })), "afxdp needs netdev");
+        let afxdp = UplinkSpec {
+            name: "gxup0".into(),
+            bridge: "gxbr-up".into(),
+            kind: UplinkKind::Afxdp {
+                ifname: "gxup0".into(),
+                xdp_mode: XdpMode::Generic,
+                n_rxq: 1,
+            },
+            migrate_ip: false,
+        };
+        assert!(
+            matches!(
+                check(&exec, &HostCapabilities::default(), &afxdp),
+                Err(OvsError::Unsupported { .. })
+            ),
+            "afxdp needs netdev"
+        );
 
         let exec = RecordingExec::new();
         bridge(&exec, "netdev");
-        let caps = HostCapabilities { iface_types: vec!["afxdp".into()], ..Default::default() };
+        let caps = HostCapabilities {
+            iface_types: vec!["afxdp".into()],
+            ..Default::default()
+        };
         check(&exec, &caps, &afxdp).unwrap();
-        assert!(check(&exec, &caps, &kernel()).is_err(), "kernel uplink needs system datapath");
+        assert!(
+            check(&exec, &caps, &kernel()).is_err(),
+            "kernel uplink needs system datapath"
+        );
     }
 
     #[test]
     fn port_commands() {
         let exec = RecordingExec::new();
         add_port(&exec, &kernel(), None).unwrap();
-        let afxdp = UplinkSpec { name: "enp2s0".into(), bridge: "gxbr-up".into(), kind: UplinkKind::Afxdp { ifname: "enp2s0".into(), xdp_mode: XdpMode::Native, n_rxq: 4 }, migrate_ip: false };
+        let afxdp = UplinkSpec {
+            name: "enp2s0".into(),
+            bridge: "gxbr-up".into(),
+            kind: UplinkKind::Afxdp {
+                ifname: "enp2s0".into(),
+                xdp_mode: XdpMode::Native,
+                n_rxq: 4,
+            },
+            migrate_ip: false,
+        };
         add_port(&exec, &afxdp, None).unwrap();
-        let dpdk = UplinkSpec { name: "up0".into(), bridge: "gxbr-up".into(), kind: UplinkKind::Dpdk { pci: "0000:41:00.0".into(), n_rxq: 2 }, migrate_ip: false };
+        let dpdk = UplinkSpec {
+            name: "up0".into(),
+            bridge: "gxbr-up".into(),
+            kind: UplinkKind::Dpdk {
+                pci: "0000:41:00.0".into(),
+                n_rxq: 2,
+            },
+            migrate_ip: false,
+        };
         add_port(&exec, &dpdk, Some("ixgbe")).unwrap();
         let calls = exec.calls();
-        assert_eq!(calls[0], "ovs-vsctl --may-exist add-port gxbr-up gxup0 -- set Interface gxup0 external_ids:glidex-owner=glidex external_ids:glidex-role=uplink external_ids:glidex-uplink=gxup0");
+        assert_eq!(
+            calls[0],
+            "ovs-vsctl --may-exist add-port gxbr-up gxup0 -- set Interface gxup0 external_ids:glidex-owner=glidex external_ids:glidex-role=uplink external_ids:glidex-uplink=gxup0"
+        );
         assert!(calls[1].contains("type=afxdp options:xdp-mode=native options:n_rxq=4"));
-        assert!(calls[2].contains("type=dpdk options:dpdk-devargs=0000:41:00.0 options:n_rxq=2") && calls[2].contains("external_ids:glidex-orig-driver=ixgbe"));
+        assert!(
+            calls[2].contains("type=dpdk options:dpdk-devargs=0000:41:00.0 options:n_rxq=2")
+                && calls[2].contains("external_ids:glidex-orig-driver=ixgbe")
+        );
     }
 }

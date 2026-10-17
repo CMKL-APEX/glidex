@@ -19,11 +19,11 @@ pub mod names;
 pub mod nat;
 pub mod nat_meter;
 pub mod net;
+pub mod nic;
+pub mod ovn;
 pub mod source_build;
 pub mod stats;
 pub mod tuning;
-pub mod nic;
-pub mod ovn;
 pub mod uplink;
 pub mod vm_port;
 pub mod vsctl;
@@ -55,7 +55,10 @@ pub enum OvsError {
     Unsupported { missing: Vec<String> },
 
     #[error("{ifname} is in use by the host: {}", reasons.join(", "))]
-    HostInterfaceInUse { ifname: String, reasons: Vec<String> },
+    HostInterfaceInUse {
+        ifname: String,
+        reasons: Vec<String>,
+    },
 
     #[error("migration rolled back: {reason}")]
     MigrationRolledBack { reason: String },

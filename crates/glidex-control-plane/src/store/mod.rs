@@ -4,7 +4,9 @@
 //! `network`); this module owns `vms` and `events`.
 
 use crate::images::{self, Disk, ImageError};
-use crate::models::{HostBootPolicy, PowerState, RestartPolicy, Vm, VmConfig, VmPhase, VmSpec, VmStatus};
+use crate::models::{
+    HostBootPolicy, PowerState, RestartPolicy, Vm, VmConfig, VmPhase, VmSpec, VmStatus,
+};
 use redb::{ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -12,7 +14,11 @@ use std::sync::Arc;
 use thiserror::Error;
 
 mod db;
-pub use db::{Def, Mirror, Submitted, Forwarder, SnapshotView, LAST_APPLIED, LAST_MEMBERSHIP, MIRROR_REVISION, new_bell, ring, Applied, Bell, Consistency, Db, Op, Origin, RecTable, Replicator, StoreError, TableId, Tx, WriteSet, MAX_WRITE_SET_BYTES, WRITE_SET_FORMAT};
+pub use db::{
+    Applied, Bell, Consistency, Db, Def, Forwarder, LAST_APPLIED, LAST_MEMBERSHIP,
+    MAX_WRITE_SET_BYTES, MIRROR_REVISION, Mirror, Op, Origin, RecTable, Replicator, SnapshotView,
+    StoreError, Submitted, TableId, Tx, WRITE_SET_FORMAT, WriteSet, new_bell, ring,
+};
 
 const VMS_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("vms");
 const EVENTS_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("events");
@@ -49,7 +55,9 @@ pub enum PersistenceError {
     Io(#[from] std::io::Error),
     #[error("VM not found: {0}")]
     VmNotFound(String),
-    #[error("database schema {0} is newer than this glidex (schema {SCHEMA_VERSION}); upgrade glidex")]
+    #[error(
+        "database schema {0} is newer than this glidex (schema {SCHEMA_VERSION}); upgrade glidex"
+    )]
     NewerSchema(u32),
     #[error("{0}")]
     Disk(#[from] ImageError),
@@ -147,8 +155,19 @@ pub struct Event {
 }
 
 impl Event {
-    pub fn new(actor: impl Into<String>, kind: EventKind, reason: impl Into<String>, message: impl Into<String>) -> Self {
-        Event { at: crate::tenancy::now(), actor: actor.into(), kind, reason: reason.into(), message: message.into() }
+    pub fn new(
+        actor: impl Into<String>,
+        kind: EventKind,
+        reason: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
+        Event {
+            at: crate::tenancy::now(),
+            actor: actor.into(),
+            kind,
+            reason: reason.into(),
+            message: message.into(),
+        }
     }
 }
 
@@ -190,10 +209,10 @@ impl VmStore {
             std::fs::set_permissions(path.as_ref(), std::fs::Permissions::from_mode(0o600))?;
         }
         let store = Self { db: Arc::new(db) };
-        if let Some(v) = store.schema_version()? {
-            if v > SCHEMA_VERSION {
-                return Err(PersistenceError::NewerSchema(v));
-            }
+        if let Some(v) = store.schema_version()?
+            && v > SCHEMA_VERSION
+        {
+            return Err(PersistenceError::NewerSchema(v));
         }
         Ok(store)
     }
@@ -205,7 +224,11 @@ impl VmStore {
     pub fn schema_version(&self) -> Result<Option<u32>, PersistenceError> {
         let txn = self.db.begin_read()?;
         let t = txn.open_table(META_TABLE)?;
-        Ok(t.get(SCHEMA_KEY)?.and_then(|v| std::str::from_utf8(v.value()).ok().and_then(|s| s.parse().ok())))
+        Ok(t.get(SCHEMA_KEY)?.and_then(|v| {
+            std::str::from_utf8(v.value())
+                .ok()
+                .and_then(|s| s.parse().ok())
+        }))
     }
 
     /// Rewrite schema-1 VM records as envelopes, in one transaction
@@ -219,7 +242,10 @@ impl VmStore {
         Ok(rewritten)
     }
 
-    fn migrate_to_envelopes(&self, on_host_boot: HostBootPolicy) -> Result<usize, PersistenceError> {
+    fn migrate_to_envelopes(
+        &self,
+        on_host_boot: HostBootPolicy,
+    ) -> Result<usize, PersistenceError> {
         if self.schema_version()?.is_some() {
             return Ok(0);
         }
@@ -237,7 +263,11 @@ impl VmStore {
                 let legacy: LegacyVm = match serde_json::from_slice(bytes) {
                     Ok(l) => l,
                     Err(e) => {
-                        tracing::warn!(vm_id = key.value(), "not migrating unreadable VM record: {}", e);
+                        tracing::warn!(
+                            vm_id = key.value(),
+                            "not migrating unreadable VM record: {}",
+                            e
+                        );
                         continue;
                     }
                 };
@@ -273,15 +303,17 @@ impl VmStore {
         let now = crate::tenancy::now();
         let txn = self.db.begin(Origin::Migration)?;
         // Records this build can't parse are left as they are.
-        let rewrite = |table: TableId, f: &dyn Fn(&mut serde_json::Value) -> bool| -> Result<(), PersistenceError> {
+        let rewrite = |table: TableId,
+                       f: &dyn Fn(&mut serde_json::Value) -> bool|
+         -> Result<(), PersistenceError> {
             let mut t = txn.open_table(table.definition())?;
             let mut changed = Vec::new();
             for r in t.iter()? {
                 let (k, v) = r?;
-                if let Ok(mut j) = serde_json::from_slice::<serde_json::Value>(v.value()) {
-                    if f(&mut j) {
-                        changed.push((k.value().to_string(), serde_json::to_vec(&j)?));
-                    }
+                if let Ok(mut j) = serde_json::from_slice::<serde_json::Value>(v.value())
+                    && f(&mut j)
+                {
+                    changed.push((k.value().to_string(), serde_json::to_vec(&j)?));
                 }
             }
             for (k, v) in changed {
@@ -290,15 +322,22 @@ impl VmStore {
             Ok(())
         };
         rewrite(TableId::Vms, &|j| {
-            let Some(status) = j.get_mut("status").and_then(|s| s.as_object_mut()) else { return false };
+            let Some(status) = j.get_mut("status").and_then(|s| s.as_object_mut()) else {
+                return false;
+            };
             if status.contains_key("placement") {
                 return false;
             }
-            status.insert("placement".into(), serde_json::json!({ "node": local, "at": now }));
+            status.insert(
+                "placement".into(),
+                serde_json::json!({ "node": local, "at": now }),
+            );
             true
         })?;
         rewrite(TableId::Disks, &|j| {
-            let Some(o) = j.as_object_mut() else { return false };
+            let Some(o) = j.as_object_mut() else {
+                return false;
+            };
             if o.contains_key("node") {
                 return false;
             }
@@ -306,7 +345,9 @@ impl VmStore {
             true
         })?;
         rewrite(TableId::Networks, &|j| {
-            let Some(o) = j.as_object_mut() else { return false };
+            let Some(o) = j.as_object_mut() else {
+                return false;
+            };
             if o.contains_key("scope") {
                 return false;
             }
@@ -315,14 +356,12 @@ impl VmStore {
             true
         })?;
         // `Host::"local"` was the root of everything; it is now the cluster.
-        rewrite(TableId::PolicyLinks, &|j| {
-            match j.get_mut("resource") {
-                Some(r) if r.get("type").and_then(|t| t.as_str()) == Some("Host") => {
-                    r["type"] = "Cluster".into();
-                    true
-                }
-                _ => false,
+        rewrite(TableId::PolicyLinks, &|j| match j.get_mut("resource") {
+            Some(r) if r.get("type").and_then(|t| t.as_str()) == Some("Host") => {
+                r["type"] = "Cluster".into();
+                true
             }
+            _ => false,
         })?;
         {
             let mut nodes = txn.open_table(TableId::Nodes.definition())?;
@@ -330,7 +369,15 @@ impl VmStore {
                 let probe = crate::node::SelfProbe::detect(&crate::node::Resources::default());
                 let mut n = crate::node::Node::new(
                     local,
-                    crate::node::NodeSpec { name: probe.name.clone(), role: crate::node::NodeRole::Server, unschedulable: false, labels: Default::default(), br_int_datapath: Default::default(), bridge_mappings: Default::default(), drop_spare_files_before: None },
+                    crate::node::NodeSpec {
+                        name: probe.name.clone(),
+                        role: crate::node::NodeRole::Server,
+                        unschedulable: false,
+                        labels: Default::default(),
+                        br_int_datapath: Default::default(),
+                        bridge_mappings: Default::default(),
+                        drop_spare_files_before: None,
+                    },
                 );
                 n.status.capacity = probe.capacity;
                 n.status.allocatable = probe.allocatable;
@@ -355,14 +402,19 @@ impl VmStore {
             let (key, value) = result?;
             match serde_json::from_slice::<Vm>(value.value()) {
                 Ok(vm) => vms.push(vm),
-                Err(e) => tracing::warn!(vm_id = key.value(), "Skipping unreadable VM record: {}", e),
+                Err(e) => {
+                    tracing::warn!(vm_id = key.value(), "Skipping unreadable VM record: {}", e)
+                }
             }
         }
         Ok(vms)
     }
 
     pub fn save(&self, vm: &Vm) -> Result<(), PersistenceError> {
-        self.commit(Commit { put_vm: Some(vm), ..Default::default() })
+        self.commit(Commit {
+            put_vm: Some(vm),
+            ..Default::default()
+        })
     }
 
     /// Apply a `Commit` in a single write transaction.
@@ -387,7 +439,8 @@ impl VmStore {
             images::delete_disk_record(&write_txn, id)?;
         }
         for (network, mac, vm_id, nic) in &c.reserve_ips {
-            crate::ipam::reserve(&write_txn, network, mac, vm_id, *nic).map_err(|e| PersistenceError::Ipam(e.to_string()))?;
+            crate::ipam::reserve(&write_txn, network, mac, vm_id, *nic)
+                .map_err(|e| PersistenceError::Ipam(e.to_string()))?;
         }
         for (key, event) in c.events {
             if c.delete_vm.is_some_and(|id| key == event_key("vm", id)) {
@@ -434,7 +487,14 @@ const AUDIT_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("audit");
 
 /// An audit line for a write the control plane made on its own (the VM
 /// controller's `spec.power = Stopped`, spec/reconciliation.md §6.2).
-pub fn audit_system(db: &Db, actor: &str, action: &str, project: &str, target: &str, details: serde_json::Value) {
+pub fn audit_system(
+    db: &Db,
+    actor: &str,
+    action: &str,
+    project: &str,
+    target: &str,
+    details: serde_json::Value,
+) {
     let time = crate::auth::store::now_millis();
     let entry = crate::auth::store::AuditEntry {
         time,
@@ -501,7 +561,8 @@ mod tests {
         let txn = store.db.begin(crate::store::Origin::Controller).unwrap();
         {
             let mut t = txn.open_table(VMS_TABLE).unwrap();
-            t.insert(id, serde_json::to_vec(v).unwrap().as_slice()).unwrap();
+            t.insert(id, serde_json::to_vec(v).unwrap().as_slice())
+                .unwrap();
         }
         txn.commit().unwrap();
     }
@@ -520,8 +581,19 @@ mod tests {
         assert_eq!(store.schema_version().unwrap(), Some(SCHEMA_VERSION));
         let mut vms = store.load_all().unwrap();
         vms.sort_by(|x, y| x.id.cmp(&y.id));
-        assert_eq!(vms.len(), 2, "the firecracker record is skipped, not dropped");
-        assert_eq!((vms[0].spec.power, vms[0].status.phase, vms[0].status.never_started), (PowerState::Stopped, VmPhase::Stopped, false));
+        assert_eq!(
+            vms.len(),
+            2,
+            "the firecracker record is skipped, not dropped"
+        );
+        assert_eq!(
+            (
+                vms[0].spec.power,
+                vms[0].status.phase,
+                vms[0].status.never_started
+            ),
+            (PowerState::Stopped, VmPhase::Stopped, false)
+        );
         assert!(vms[1].status.never_started);
         assert_eq!(vms[0].spec.on_host_boot, HostBootPolicy::Stop);
         assert_eq!(vms[0].project, "p1");
@@ -542,7 +614,10 @@ mod tests {
             }
             txn.commit().unwrap();
         }
-        assert!(matches!(VmStore::open(&path), Err(PersistenceError::NewerSchema(4))));
+        assert!(matches!(
+            VmStore::open(&path),
+            Err(PersistenceError::NewerSchema(4))
+        ));
     }
 
     /// C1 acceptance: a schema-2 database (before nodes) migrates in one
@@ -592,13 +667,28 @@ mod tests {
         };
         assert_eq!(get(TableId::Disks, "d1")["node"], "local");
         let net = get(TableId::Networks, "n1");
-        assert_eq!((net["scope"].as_str(), net["node"].as_str()), (Some("node"), Some("local")));
-        assert_eq!(get(TableId::PolicyLinks, "link.a")["resource"]["type"], "Cluster");
-        assert_eq!(get(TableId::PolicyLinks, "link.b")["resource"]["type"], "Project");
+        assert_eq!(
+            (net["scope"].as_str(), net["node"].as_str()),
+            (Some("node"), Some("local"))
+        );
+        assert_eq!(
+            get(TableId::PolicyLinks, "link.a")["resource"]["type"],
+            "Cluster"
+        );
+        assert_eq!(
+            get(TableId::PolicyLinks, "link.b")["resource"]["type"],
+            "Project"
+        );
         let node: crate::node::Node = serde_json::from_value(get(TableId::Nodes, "local")).unwrap();
         assert_eq!(node.status.phase, crate::node::NodePhase::Active);
         // The typed readers still load what the migration wrote.
-        assert_eq!(crate::node::NodeStore::new(db.clone()).list().unwrap().len(), 1);
+        assert_eq!(
+            crate::node::NodeStore::new(db.clone())
+                .list()
+                .unwrap()
+                .len(),
+            1
+        );
         drop(txn);
 
         // Idempotent: nothing is written the second time.
@@ -625,12 +715,22 @@ mod tests {
 
         let key = event_key("vm", &vm.id);
         for i in 0..(EVENTS_PER_OBJECT + 5) {
-            store.push_event(&key, Event::new("controller", EventKind::Normal, "Tick", i.to_string())).unwrap();
+            store
+                .push_event(
+                    &key,
+                    Event::new("controller", EventKind::Normal, "Tick", i.to_string()),
+                )
+                .unwrap();
         }
         let ev = store.events(&key).unwrap();
         assert_eq!(ev.len(), EVENTS_PER_OBJECT);
         assert_eq!(ev[0].message, "5");
-        store.commit(Commit { delete_vm: Some(&vm.id), ..Default::default() }).unwrap();
+        store
+            .commit(Commit {
+                delete_vm: Some(&vm.id),
+                ..Default::default()
+            })
+            .unwrap();
         assert!(store.events(&key).unwrap().is_empty());
     }
 }

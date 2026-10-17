@@ -11,13 +11,15 @@
 pub mod oidc;
 pub mod store;
 
-use crate::authz::{self, AuthContext, Decision, Engine, Ent, EntitySet, Link, PolicySource, Query, SiteSource};
+use crate::authz::{
+    self, AuthContext, Decision, Engine, Ent, EntitySet, Link, PolicySource, Query, SiteSource,
+};
 use crate::config::Config;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
-use store::{AuditEntry, IdentityStore, LinkRecord, MemberSource, Session, StoreError, Token, TokenKind, User};
+use store::{AuditEntry, IdentityStore, LinkRecord, Session, StoreError, Token, TokenKind, User};
 use thiserror::Error;
 
 /// Cookie carrying the session id.
@@ -30,7 +32,9 @@ pub const TOKEN_PREFIX: &str = "gxt_";
 /// anything else. Display and audit only — never an authorization input
 /// (spec/gxctl-auth.md §7.2).
 fn stamp(s: Option<&str>) -> Option<String> {
-    let s = s.map(str::trim).filter(|s| !s.is_empty() && !s.chars().any(char::is_control) && s.len() <= 128)?;
+    let s = s
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && !s.chars().any(char::is_control) && s.len() <= 128)?;
     Some(s.to_string())
 }
 /// How long a console ticket stays valid (spec §5.6).
@@ -50,6 +54,9 @@ pub enum AuthError {
     Unavailable(String),
     #[error("{0}")]
     Invalid(String),
+    /// A verified identity the connector's rules don't let in (403).
+    #[error("login not allowed: {0}")]
+    NotAllowed(String),
     #[error(transparent)]
     Store(#[from] StoreError),
     #[error(transparent)]
@@ -176,10 +183,16 @@ impl Principal {
     }
 
     pub fn default_project(&self) -> Option<&str> {
-        self.user.as_ref().and_then(|u| u.default_project.as_deref()).or(match &self.token {
-            Some(Token { kind: TokenKind::ServiceAccount { project }, .. }) => Some(project.as_str()),
-            _ => None,
-        })
+        self.user
+            .as_ref()
+            .and_then(|u| u.default_project.as_deref())
+            .or(match &self.token {
+                Some(Token {
+                    kind: TokenKind::ServiceAccount { project },
+                    ..
+                }) => Some(project.as_str()),
+                _ => None,
+            })
     }
 
     fn auth_context(&self, as_owner: bool) -> AuthContext {
@@ -219,8 +232,34 @@ pub struct AuthService {
     /// No authentication: every request is [`Principal::system`].
     disabled: bool,
     tickets: Mutex<HashMap<String, Ticket>>,
-    pub oidc: oidc::OidcState,
+    /// Directory connectors and their secrets (spec/tenancy.md §5).
+    pub connectors: crate::directory::ConnectorStore,
+    /// One OIDC client per connector, rebuilt when its record changes.
+    oidc: Mutex<HashMap<String, (crate::directory::Connector, Arc<oidc::OidcState>)>>,
     audit_count: std::sync::atomic::AtomicU64,
+}
+
+impl crate::cluster::runtime::SecretsKey for AuthService {
+    fn kek(&self) -> zeroize::Zeroizing<Vec<u8>> {
+        self.connectors.kek_bytes()
+    }
+
+    fn install_kek(&self, bytes: &[u8]) -> Result<(), String> {
+        self.connectors
+            .install_kek(bytes)
+            .map_err(|e| e.to_string())
+    }
+}
+
+pub fn connector_err(e: crate::directory::ConnectorError) -> AuthError {
+    use crate::directory::ConnectorError as C;
+    match e {
+        C::NotFound(m) => AuthError::Store(StoreError::NotFound(m)),
+        C::AlreadyExists(m) => AuthError::Store(StoreError::AlreadyExists(m)),
+        C::Invalid(m) => AuthError::Invalid(m),
+        C::FileDefined(_) => AuthError::Invalid(e.to_string()),
+        C::Secret(_) | C::Storage(_) => AuthError::Unavailable(e.to_string()),
+    }
 }
 
 pub fn tenant_err(e: crate::tenants::TenantError) -> AuthError {
@@ -281,15 +320,18 @@ impl AuthService {
         config.check().map_err(AuthError::Invalid)?;
         let svc = Arc::new(Self {
             tenants: crate::tenants::TenantStore::new(db.clone()).map_err(tenant_err)?,
-            store: IdentityStore::new(db)?,
+            store: IdentityStore::new(db.clone())?,
             engine: Engine::new()?,
-            oidc: oidc::OidcState::new(&config.auth.oidc),
+            connectors: crate::directory::ConnectorStore::new(db.clone(), &config)
+                .map_err(connector_err)?,
+            oidc: Mutex::new(HashMap::new()),
             config,
             disabled: false,
             tickets: Mutex::new(HashMap::new()),
             audit_count: Default::default(),
         });
-        svc.store.set_policy_history(svc.config.authz.policy_history);
+        svc.store
+            .set_policy_history(svc.config.authz.policy_history);
         svc.reload_policies()?;
         svc.migrate_tenancy()?;
         Ok(svc)
@@ -302,14 +344,19 @@ impl AuthService {
     }
 
     /// As [`disabled`](Self::disabled), with the rest of `config` (tests).
-    pub fn disabled_with(db: Arc<crate::store::Db>, mut config: Config) -> Result<Arc<Self>, AuthError> {
+    pub fn disabled_with(
+        db: Arc<crate::store::Db>,
+        mut config: Config,
+    ) -> Result<Arc<Self>, AuthError> {
         // Embedding and tests never read the host's policy files.
         config.authz.policy_files_dir = std::path::PathBuf::new();
         let svc = Arc::new(Self {
             tenants: crate::tenants::TenantStore::new(db.clone()).map_err(tenant_err)?,
-            store: IdentityStore::new(db)?,
+            store: IdentityStore::new(db.clone())?,
             engine: Engine::new()?,
-            oidc: oidc::OidcState::new(&config.auth.oidc),
+            connectors: crate::directory::ConnectorStore::new(db.clone(), &config)
+                .map_err(connector_err)?,
+            oidc: Mutex::new(HashMap::new()),
             config,
             disabled: true,
             tickets: Mutex::new(HashMap::new()),
@@ -332,7 +379,8 @@ impl AuthService {
         if dir.as_os_str().is_empty() {
             return Ok(out);
         }
-        let dir = &crate::paths::checked_path(dir).map_err(|e| AuthError::Invalid(format!("authz.policy_files_dir {e}")))?;
+        let dir = &crate::paths::checked_path(dir)
+            .map_err(|e| AuthError::Invalid(format!("authz.policy_files_dir {e}")))?;
         let entries = match std::fs::read_dir(dir) {
             Ok(e) => e,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(out),
@@ -340,18 +388,29 @@ impl AuthService {
         };
         let mut paths: Vec<_> = entries.filter_map(|e| e.ok()).map(|e| e.path()).collect();
         paths.sort();
-        for p in paths.into_iter().filter(|p| p.extension().is_some_and(|e| e == "cedar")) {
-            let text = std::fs::read_to_string(&p).map_err(|e| AuthError::Invalid(format!("{}: {}", p.display(), e)))?;
+        for p in paths
+            .into_iter()
+            .filter(|p| p.extension().is_some_and(|e| e == "cedar"))
+        {
+            let text = std::fs::read_to_string(&p)
+                .map_err(|e| AuthError::Invalid(format!("{}: {}", p.display(), e)))?;
             // A file may hold several policies; each needs its own @id.
-            let set: cedar_policy::PolicySet = text
-                .parse()
-                .map_err(|e: cedar_policy::ParseErrors| AuthError::Invalid(format!("{}: {}", p.display(), e)))?;
+            let set: cedar_policy::PolicySet =
+                text.parse().map_err(|e: cedar_policy::ParseErrors| {
+                    AuthError::Invalid(format!("{}: {}", p.display(), e))
+                })?;
             for pol in set.policies() {
                 let id = pol
                     .annotation("id")
-                    .ok_or_else(|| AuthError::Invalid(format!("{}: a policy has no @id", p.display())))?
+                    .ok_or_else(|| {
+                        AuthError::Invalid(format!("{}: a policy has no @id", p.display()))
+                    })?
                     .to_string();
-                out.push(SiteSource { id, text: pol.to_string(), source: PolicySource::File });
+                out.push(SiteSource {
+                    id,
+                    text: pol.to_string(),
+                    source: PolicySource::File,
+                });
             }
         }
         Ok(out)
@@ -365,11 +424,18 @@ impl AuthService {
             .site_policies()?
             .into_iter()
             .filter(|p| p.enabled)
-            .map(|p| SiteSource { id: p.id, text: p.text, source: PolicySource::Site })
+            .map(|p| SiteSource {
+                id: p.id,
+                text: p.text,
+                source: PolicySource::Site,
+            })
             .collect();
         let files = self.file_policies()?;
         if let Some(dup) = files.iter().find(|f| site.iter().any(|s| s.id == f.id)) {
-            return Err(AuthError::Invalid(format!("policy id {} is used by a file and the API", dup.id)));
+            return Err(AuthError::Invalid(format!(
+                "policy id {} is used by a file and the API",
+                dup.id
+            )));
         }
         site.extend(files);
         Ok((links, site))
@@ -386,14 +452,15 @@ impl AuthService {
             use crate::store::TableId;
             loop {
                 let relevant = match rx.recv().await {
-                    Ok(a) => a.tables.iter().any(|t| matches!(t, TableId::PolicyLinks | TableId::SitePolicies)),
+                    Ok(a) => a
+                        .tables
+                        .iter()
+                        .any(|t| matches!(t, TableId::PolicyLinks | TableId::SitePolicies)),
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => true,
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
                 };
-                if relevant {
-                    if let Err(e) = me.reload_policies() {
-                        tracing::warn!("reloading policies: {}", e);
-                    }
+                if relevant && let Err(e) = me.reload_policies() {
+                    tracing::warn!("reloading policies: {}", e);
                 }
             }
         });
@@ -419,15 +486,43 @@ impl AuthService {
         self.bootstrap_with(&members, default_project)
     }
 
-    pub fn bootstrap_with(&self, members: &[String], default_project: &str) -> Result<Vec<String>, AuthError> {
-        if self.store.links()?.iter().any(|l| l.link.template == "role.system-admin") {
+    pub fn bootstrap_with(
+        &self,
+        members: &[String],
+        default_project: &str,
+    ) -> Result<Vec<String>, AuthError> {
+        if self
+            .store
+            .links()?
+            .iter()
+            .any(|l| l.link.template == "role.system-admin")
+        {
             return Ok(Vec::new());
         }
         let mut made = Vec::new();
         for name in members {
-            let Some(u) = self.store.user_for_identity("unix", &authz::local_subject(name), name, None, true)? else { continue };
-            self.add_link("role.system-admin", Ent::User(u.id.clone()), Ent::Cluster, "bootstrap")?;
-            self.add_link("role.owner", Ent::User(u.id.clone()), Ent::Project(default_project.into()), "bootstrap")?;
+            let Some(u) = self.store.user_for_identity(
+                "unix",
+                &authz::local_subject(name),
+                name,
+                None,
+                true,
+            )?
+            else {
+                continue;
+            };
+            self.add_link(
+                "role.system-admin",
+                Ent::User(u.id.clone()),
+                Ent::Cluster,
+                "bootstrap",
+            )?;
+            self.add_link(
+                "role.owner",
+                Ent::User(u.id.clone()),
+                Ent::Project(default_project.into()),
+                "bootstrap",
+            )?;
             self.make_administrator(&Ent::User(u.id.clone()), "bootstrap")?;
             made.push(name.clone());
         }
@@ -439,10 +534,22 @@ impl AuthService {
     /// of the operator tenant, the directory, and both tenants.
     pub fn make_administrator(&self, principal: &Ent, by: &str) -> Result<(), AuthError> {
         use crate::tenants::{ADMIN_TENANT, DEFAULT_TENANT, LOCAL_DIRECTORY};
-        self.tenants.add_member(ADMIN_TENANT, principal.clone(), by).map_err(tenant_err)?;
-        self.add_link("role.directory-admin", principal.clone(), Ent::Directory(LOCAL_DIRECTORY.into()), by)?;
+        self.tenants
+            .add_member(ADMIN_TENANT, principal.clone(), by)
+            .map_err(tenant_err)?;
+        self.add_link(
+            "role.directory-admin",
+            principal.clone(),
+            Ent::Directory(LOCAL_DIRECTORY.into()),
+            by,
+        )?;
         for t in [ADMIN_TENANT, DEFAULT_TENANT] {
-            self.add_link("role.tenant-admin", principal.clone(), Ent::Tenant(t.into()), by)?;
+            self.add_link(
+                "role.tenant-admin",
+                principal.clone(),
+                Ent::Tenant(t.into()),
+                by,
+            )?;
         }
         Ok(())
     }
@@ -455,7 +562,13 @@ impl AuthService {
             Ent::Token(id) => match self.store.token_by_id(id)?.map(|(_, t)| t.kind) {
                 Some(TokenKind::Personal { owner }) => Ent::User(owner),
                 Some(TokenKind::ServiceAccount { project }) => {
-                    return Ok(self.tenants.project_tenant(&project).map_err(tenant_err)?.as_deref().unwrap_or(crate::tenants::DEFAULT_TENANT) == tenant)
+                    return Ok(self
+                        .tenants
+                        .project_tenant(&project)
+                        .map_err(tenant_err)?
+                        .as_deref()
+                        .unwrap_or(crate::tenants::DEFAULT_TENANT)
+                        == tenant);
                 }
                 None => return Ok(false),
             },
@@ -465,13 +578,29 @@ impl AuthService {
         if let Ent::User(u) = &principal {
             mine.extend(self.store.teams_of(u)?.into_iter().map(Ent::Team));
         }
-        if self.tenants.members(tenant).map_err(tenant_err)?.iter().any(|m| mine.contains(&m.principal)) {
+        if self
+            .tenants
+            .members(tenant)
+            .map_err(tenant_err)?
+            .iter()
+            .any(|m| mine.contains(&m.principal))
+        {
             return Ok(true);
         }
-        for l in self.store.links()?.into_iter().filter(|l| mine.contains(&l.link.principal)) {
+        for l in self
+            .store
+            .links()?
+            .into_iter()
+            .filter(|l| mine.contains(&l.link.principal))
+        {
             let of = match &l.link.resource {
                 Ent::Tenant(t) => Some(t.clone()),
-                Ent::Project(p) => Some(self.tenants.project_tenant(p).map_err(tenant_err)?.unwrap_or_else(|| crate::tenants::DEFAULT_TENANT.into())),
+                Ent::Project(p) => Some(
+                    self.tenants
+                        .project_tenant(p)
+                        .map_err(tenant_err)?
+                        .unwrap_or_else(|| crate::tenants::DEFAULT_TENANT.into()),
+                ),
                 _ => None,
             };
             if of.as_deref() == Some(tenant) {
@@ -491,16 +620,25 @@ impl AuthService {
         }
         let operator = self.tenants.operator().map_err(tenant_err)?;
         for l in self.store.links()? {
-            if !matches!(l.link.resource, Ent::Cluster | Ent::Host | Ent::Node(_)) || l.link.template == "grant.host-paths" {
+            if !matches!(l.link.resource, Ent::Cluster | Ent::Host | Ent::Node(_))
+                || l.link.template == "grant.host-paths"
+            {
                 continue;
             }
             if matches!(l.link.principal, Ent::User(_) | Ent::Team(_)) {
-                self.tenants.add_member(&operator, l.link.principal.clone(), "migration").map_err(tenant_err)?;
+                self.tenants
+                    .add_member(&operator, l.link.principal.clone(), "migration")
+                    .map_err(tenant_err)?;
             }
             match l.link.template.as_str() {
                 "role.system-admin" => self.make_administrator(&l.link.principal, "migration")?,
                 "role.auditor" => {
-                    self.add_link("role.directory-auditor", l.link.principal.clone(), Ent::Directory(crate::tenants::LOCAL_DIRECTORY.into()), "migration")?;
+                    self.add_link(
+                        "role.directory-auditor",
+                        l.link.principal.clone(),
+                        Ent::Directory(crate::tenants::LOCAL_DIRECTORY.into()),
+                        "migration",
+                    )?;
                 }
                 _ => {}
             }
@@ -530,11 +668,20 @@ impl AuthService {
     /// cluster's operator and admissions, the principal's memberships;
     /// returns the context fields `cluster`, `directory` and, when the
     /// resource belongs to one, `tenant`.
-    fn complete_tenancy(&self, p: &Principal, resource: &Ent, es: &mut EntitySet) -> Result<Vec<(&'static str, Ent)>, AuthError> {
+    fn complete_tenancy(
+        &self,
+        p: &Principal,
+        resource: &Ent,
+        es: &mut EntitySet,
+    ) -> Result<Vec<(&'static str, Ent)>, AuthError> {
         use crate::tenants::{ADMIN_TENANT, DEFAULT_TENANT, LOCAL_DIRECTORY};
         let snap = self.tenants.snapshot().map_err(tenant_err)?;
         let project_tenant = |id: &str| -> Result<String, AuthError> {
-            Ok(self.tenants.project_tenant(id).map_err(tenant_err)?.unwrap_or_else(|| DEFAULT_TENANT.to_string()))
+            Ok(self
+                .tenants
+                .project_tenant(id)
+                .map_err(tenant_err)?
+                .unwrap_or_else(|| DEFAULT_TENANT.to_string()))
         };
         for pid in es.projects() {
             es.set_project_tenant(&pid, &project_tenant(&pid)?);
@@ -559,12 +706,12 @@ impl AuthService {
         if p.teams.iter().any(|t| t == authz::BREAK_GLASS_TEAM) {
             tenants.push(snap.operator.clone());
         }
-        if let Some(t) = &p.token {
-            if let TokenKind::ServiceAccount { project } = &t.kind {
-                let tid = project_tenant(project)?;
-                es.add_parents(&Ent::Token(t.id.clone()), std::slice::from_ref(&tid));
-                tenants.push(tid);
-            }
+        if let Some(t) = &p.token
+            && let TokenKind::ServiceAccount { project } = &t.kind
+        {
+            let tid = project_tenant(project)?;
+            es.add_parents(&Ent::Token(t.id.clone()), std::slice::from_ref(&tid));
+            tenants.push(tid);
         }
         tenants.sort();
         tenants.dedup();
@@ -592,19 +739,45 @@ impl AuthService {
         wanted.push(snap.owner().to_string());
         wanted.sort();
         wanted.dedup();
-        let directory = snap.directory.as_ref().map(|d| d.id.clone()).unwrap_or_else(|| LOCAL_DIRECTORY.to_string());
+        let directory = snap
+            .directory
+            .as_ref()
+            .map(|d| d.id.clone())
+            .unwrap_or_else(|| LOCAL_DIRECTORY.to_string());
         es.directory(&directory, snap.owner());
         for t in &wanted {
             match snap.tenant(t) {
-                Some(rec) => es.tenant(&rec.id, &rec.directory_id, rec.owns_directory, rec.operator, rec.suspended, snap.admitted(&rec.id)),
+                Some(rec) => es.tenant(
+                    &rec.id,
+                    &rec.directory_id,
+                    rec.owns_directory,
+                    rec.operator,
+                    rec.suspended,
+                    snap.admitted(&rec.id),
+                ),
                 // Unknown to the store (a test's bare entity set, a tenant
                 // being created): no rights of its own.
-                None => es.tenant(t, &directory, t == ADMIN_TENANT, t == ADMIN_TENANT, false, false),
+                None => es.tenant(
+                    t,
+                    &directory,
+                    t == ADMIN_TENANT,
+                    t == ADMIN_TENANT,
+                    false,
+                    false,
+                ),
             };
         }
-        let admitted: Vec<String> = snap.admissions.iter().filter(|a| snap.admitted(&a.tenant_id)).map(|a| a.tenant_id.clone()).collect();
+        let admitted: Vec<String> = snap
+            .admissions
+            .iter()
+            .filter(|a| snap.admitted(&a.tenant_id))
+            .map(|a| a.tenant_id.clone())
+            .collect();
         es.cluster(&snap.operator, &admitted);
-        let mut ctx = vec![("cluster", Ent::Cluster), ("directory", Ent::Directory(directory))];
+        let mut ctx = vec![
+            ("cluster", Ent::Cluster),
+            ("directory", Ent::Directory(directory)),
+        ];
         if let Some(t) = owner {
             ctx.push(("tenant", Ent::Tenant(t)));
         }
@@ -641,11 +814,21 @@ impl AuthService {
             Ok(t) => t,
             Err(e) => {
                 tracing::error!("tenancy lookup failed; denying: {}", e);
-                return Decision { allowed: false, policies: Vec::new(), errors: vec![e.to_string()] };
+                return Decision {
+                    allowed: false,
+                    policies: Vec::new(),
+                    errors: vec![e.to_string()],
+                };
             }
         };
         let ask = |principal: Ent, as_owner: bool| {
-            let mut q = Query::new(principal, action, resource.clone(), p.auth_context(as_owner), es.clone());
+            let mut q = Query::new(
+                principal,
+                action,
+                resource.clone(),
+                p.auth_context(as_owner),
+                es.clone(),
+            );
             for (k, e) in extra.iter().chain(tenancy.iter()) {
                 q = q.with(k, e.clone());
             }
@@ -677,7 +860,10 @@ impl AuthService {
     /// The principal for a peer on `api.sock` (spec §5.2), or `None` if
     /// the peer may not use it.
     pub fn peer_principal(&self, uid: u32) -> Result<Option<Principal>, AuthError> {
-        let Some(user) = nix::unistd::User::from_uid(nix::unistd::Uid::from_raw(uid)).ok().flatten() else {
+        let Some(user) = nix::unistd::User::from_uid(nix::unistd::Uid::from_raw(uid))
+            .ok()
+            .flatten()
+        else {
             return Ok(None);
         };
         let groups = unix_groups(&user);
@@ -686,7 +872,14 @@ impl AuthService {
         if !member {
             return Ok(None);
         }
-        let Some(u) = self.store.user_for_identity("unix", &authz::local_subject(&user.name), &user.name, None, true)? else {
+        let Some(u) = self.store.user_for_identity(
+            "unix",
+            &authz::local_subject(&user.name),
+            &user.name,
+            None,
+            true,
+        )?
+        else {
             return Ok(None);
         };
         let mut teams = self.store.teams_of(&u.id)?;
@@ -718,16 +911,27 @@ impl AuthService {
     }
 
     /// The principal for a session cookie value.
-    pub fn session_principal(&self, cookie: &str, transport: Transport, ip: Option<IpAddr>) -> Result<Option<Principal>, AuthError> {
+    pub fn session_principal(
+        &self,
+        cookie: &str,
+        transport: Transport,
+        ip: Option<IpAddr>,
+    ) -> Result<Option<Principal>, AuthError> {
         let hash = sha256_hex(cookie.as_bytes());
-        let Some(mut s) = self.store.session(&hash)? else { return Ok(None) };
+        let Some(mut s) = self.store.session(&hash)? else {
+            return Ok(None);
+        };
         let now = store::now();
         let cfg = &self.config.auth.session;
-        if now > s.last_seen + cfg.idle_minutes * 60 || now > s.created_at + cfg.absolute_hours * 3600 {
+        if now > s.last_seen + cfg.idle_minutes * 60
+            || now > s.created_at + cfg.absolute_hours * 3600
+        {
             self.store.remove_session(&hash)?;
             return Ok(None);
         }
-        let Some(user) = self.store.user(&s.user_id)? else { return Ok(None) };
+        let Some(user) = self.store.user(&s.user_id)? else {
+            return Ok(None);
+        };
         if user.disabled {
             return Ok(None);
         }
@@ -736,7 +940,11 @@ impl AuthService {
             self.store.put_session(&hash, &s)?;
         }
         let teams = self.store.teams_of(&user.id)?;
-        let method = if s.method == "oidc" { Method::Oidc } else { Method::Pam };
+        let method = if s.method == "oidc" {
+            Method::Oidc
+        } else {
+            Method::Pam
+        };
         Ok(Some(Principal {
             user: Some(user),
             token: None,
@@ -753,12 +961,19 @@ impl AuthService {
     }
 
     /// The principal for a bearer token.
-    pub fn token_principal(&self, secret: &str, transport: Transport, ip: Option<IpAddr>) -> Result<Option<Principal>, AuthError> {
+    pub fn token_principal(
+        &self,
+        secret: &str,
+        transport: Transport,
+        ip: Option<IpAddr>,
+    ) -> Result<Option<Principal>, AuthError> {
         if !secret.starts_with(TOKEN_PREFIX) {
             return Ok(None);
         }
         let hash = sha256_hex(secret.as_bytes());
-        let Some(mut t) = self.store.token_by_hash(&hash)? else { return Ok(None) };
+        let Some(mut t) = self.store.token_by_hash(&hash)? else {
+            return Ok(None);
+        };
         let now = store::now();
         if t.expires_at <= now {
             return Ok(None);
@@ -774,7 +989,11 @@ impl AuthService {
             Some(u) => self.store.teams_of(&u.id)?,
             None => Vec::new(),
         };
-        let narrowed = self.store.links()?.iter().any(|l| l.link.principal == Ent::Token(t.id.clone()));
+        let narrowed = self
+            .store
+            .links()?
+            .iter()
+            .any(|l| l.link.principal == Ent::Token(t.id.clone()));
         if t.last_used_at.is_none_or(|at| now >= at + 60) {
             t.last_used_at = Some(now);
             t.last_used_from = ip.map(|i| i.to_string());
@@ -797,7 +1016,11 @@ impl AuthService {
 
     /// A principal for `e` as if it made a request now (for `simulate`).
     pub fn principal_for(&self, e: &Ent) -> Result<Option<Principal>, AuthError> {
-        let base = |user: Option<User>, token: Option<Token>, teams: Vec<String>, narrowed: bool, method: Method| Principal {
+        let base = |user: Option<User>,
+                    token: Option<Token>,
+                    teams: Vec<String>,
+                    narrowed: bool,
+                    method: Method| Principal {
             user,
             token,
             token_narrowed: narrowed,
@@ -828,7 +1051,11 @@ impl AuthService {
                         Some(u) => self.store.teams_of(&u.id)?,
                         None => Vec::new(),
                     };
-                    let narrowed = self.store.links()?.iter().any(|l| l.link.principal == Ent::Token(t.id.clone()));
+                    let narrowed = self
+                        .store
+                        .links()?
+                        .iter()
+                        .any(|l| l.link.principal == Ent::Token(t.id.clone()));
                     Some(base(user, Some(t), teams, narrowed, Method::Token))
                 }
                 None => None,
@@ -846,13 +1073,22 @@ impl AuthService {
         if let Some(t) = &p.token {
             mine.push(Ent::Token(t.id.clone()));
         }
-        Ok(self.store.links()?.into_iter().filter(|l| mine.contains(&l.link.principal)).collect())
+        Ok(self
+            .store
+            .links()?
+            .into_iter()
+            .filter(|l| mine.contains(&l.link.principal))
+            .collect())
     }
 
     // ---- sessions -------------------------------------------------------
 
     /// Start a session; returns the cookie value and the CSRF value.
-    pub fn create_session(&self, user: &User, method: Method) -> Result<(String, String), AuthError> {
+    pub fn create_session(
+        &self,
+        user: &User,
+        method: Method,
+    ) -> Result<(String, String), AuthError> {
         let id = random_token(32);
         let csrf = random_token(24);
         let now = store::now();
@@ -869,7 +1105,8 @@ impl AuthService {
         )?;
         let cfg = &self.config.auth.session;
         let _ = self.store.prune_sessions(|s| {
-            now > s.last_seen + cfg.idle_minutes * 60 || now > s.created_at + cfg.absolute_hours * 3600
+            now > s.last_seen + cfg.idle_minutes * 60
+                || now > s.created_at + cfg.absolute_hours * 3600
         });
         Ok((id, csrf))
     }
@@ -883,36 +1120,212 @@ impl AuthService {
 
     /// PAM login through glidex-authd (spec §5.3). Returns the user.
     pub fn login_pam(&self, username: &str, password: &str) -> Result<User, AuthError> {
+        self.login_pam_with(None, username, password)
+            .map(|(u, _)| u)
+    }
+
+    /// The PAM connector `id`, or the first one.
+    pub fn pam_connector(
+        &self,
+        id: Option<&str>,
+    ) -> Result<crate::directory::Connector, AuthError> {
+        use crate::directory::Kind;
+        let c = match id {
+            Some(id) => self
+                .connectors
+                .get(id)
+                .map_err(connector_err)?
+                .filter(|c| c.kind == Kind::Pam && c.enabled),
+            None => self.connectors.first(Kind::Pam).map_err(connector_err)?,
+        };
+        c.ok_or_else(|| AuthError::Unavailable("PAM login is disabled".into()))
+    }
+
+    /// A PAM login through connector `id` (or the first PAM connector):
+    /// glidex-authd checks the password on this host (D23), then the
+    /// common path. Returns the user and the connector.
+    pub fn login_pam_with(
+        &self,
+        id: Option<&str>,
+        username: &str,
+        password: &str,
+    ) -> Result<(User, crate::directory::Connector), AuthError> {
+        let c = self.pam_connector(id)?;
         let cfg = &self.config.auth.pam;
-        if !cfg.enabled {
-            return Err(AuthError::Unavailable("PAM login is disabled".into()));
-        }
         let client = glidex_authd::client::AuthdClient::new(&cfg.authd_socket);
         let ok = match client.authenticate(username, password, &cfg.service) {
             Ok(ok) => ok,
             Err(glidex_authd::client::AuthdError::Denied) => return Err(AuthError::Denied),
-            Err(glidex_authd::client::AuthdError::RateLimited) => return Err(AuthError::RateLimited),
+            Err(glidex_authd::client::AuthdError::RateLimited) => {
+                return Err(AuthError::RateLimited);
+            }
             Err(e) => return Err(AuthError::Unavailable(format!("glidex-authd: {}", e))),
         };
-        self.pam_user(username, &ok.groups)
+        let user = self.pam_login_groups(&c, username, &ok.groups)?;
+        Ok((user, c))
     }
 
-    /// The user for a successful PAM login with `groups`.
+    /// The user for a successful PAM login with `groups` (first connector).
     pub fn pam_user(&self, username: &str, groups: &[String]) -> Result<User, AuthError> {
-        let cfg = &self.config.auth.pam;
-        if !groups.iter().any(|g| cfg.allowed_groups.contains(g)) {
+        let c = self.pam_connector(None)?;
+        self.pam_login_groups(&c, username, groups)
+    }
+
+    fn pam_login_groups(
+        &self,
+        c: &crate::directory::Connector,
+        username: &str,
+        groups: &[String],
+    ) -> Result<User, AuthError> {
+        let s = c.pam().map_err(connector_err)?;
+        if !groups.iter().any(|g| s.allowed_groups.contains(g)) {
             return Err(AuthError::Denied);
         }
+        let id = crate::directory::ExternalIdentity {
+            connector_id: c.id.clone(),
+            subject: authz::local_subject(username),
+            display_name: username.to_string(),
+            email: None,
+            groups: groups.to_vec(),
+            mfa: false,
+        };
+        // A host account's refusals all look like a wrong password.
+        self.external_login(c, &id).map_err(|e| match e {
+            AuthError::NotAllowed(_) => AuthError::Denied,
+            other => other,
+        })
+    }
+
+    /// The common login path (spec/tenancy.md §6.2): the connector's rules,
+    /// the user (created on first login when `jit`), its managed team
+    /// memberships, and a new user's tenant.
+    pub fn external_login(
+        &self,
+        c: &crate::directory::Connector,
+        id: &crate::directory::ExternalIdentity,
+    ) -> Result<User, AuthError> {
+        if !c.enabled {
+            return Err(AuthError::NotAllowed("this connector is disabled".into()));
+        }
+        if !c.required_groups.is_empty() && !id.groups.iter().any(|g| c.required_groups.contains(g))
+        {
+            return Err(AuthError::NotAllowed("not in a required group".into()));
+        }
+        if c.require_mfa && !id.mfa {
+            return Err(AuthError::NotAllowed(
+                "this connector requires a multi-factor login".into(),
+            ));
+        }
+        let provider = c.identity_provider();
+        let existed = self.store.identity(&provider, &id.subject)?.is_some();
         let user = self
             .store
-            .user_for_identity("pam", &authz::local_subject(username), username, None, cfg.jit)?
-            .ok_or(AuthError::Denied)?;
+            .user_for_identity(
+                &provider,
+                &id.subject,
+                &id.display_name,
+                id.email.clone(),
+                c.jit,
+            )?
+            .ok_or_else(|| AuthError::NotAllowed("no glidex account for this identity".into()))?;
         if user.disabled {
-            return Err(AuthError::Denied);
+            return Err(AuthError::NotAllowed("this account is disabled".into()));
         }
-        let teams: Vec<String> = groups.iter().filter_map(|g| cfg.group_teams.get(g).cloned()).collect();
-        self.store.sync_memberships(&user.id, MemberSource::Pam, &teams)?;
+        let teams: Vec<String> = id
+            .groups
+            .iter()
+            .filter_map(|g| c.group_teams.get(g).cloned())
+            .collect();
+        self.store
+            .sync_memberships(&user.id, c.member_source(), &teams)?;
+        if !existed && let Some(t) = &c.default_tenant {
+            self.tenants
+                .add_member(
+                    t,
+                    Ent::User(user.id.clone()),
+                    &format!("connector:{}", c.id),
+                )
+                .map_err(tenant_err)?;
+        }
         Ok(user)
+    }
+
+    /// Any enabled OIDC connector.
+    pub fn oidc_enabled(&self) -> bool {
+        self.connectors
+            .first(crate::directory::Kind::Oidc)
+            .ok()
+            .flatten()
+            .is_some()
+    }
+
+    /// The OIDC client of connector `id` (or the first OIDC connector, for
+    /// the routes from before connectors).
+    pub fn oidc_for(
+        self: &Arc<Self>,
+        id: Option<&str>,
+    ) -> Result<(crate::directory::Connector, Arc<oidc::OidcState>), AuthError> {
+        use crate::directory::{FILE_OIDC, Kind};
+        let c = match id {
+            Some(id) => self
+                .connectors
+                .get(id)
+                .map_err(connector_err)?
+                .filter(|c| c.kind == Kind::Oidc && c.enabled),
+            None => self.connectors.first(Kind::Oidc).map_err(connector_err)?,
+        }
+        .ok_or_else(|| AuthError::Store(StoreError::NotFound("no such OIDC connector".into())))?;
+        let mut cache = self.oidc.lock().unwrap();
+        if let Some((rec, state)) = cache.get(&c.id)
+            && *rec == c
+        {
+            return Ok((c, state.clone()));
+        }
+        let s = c.oidc().map_err(connector_err)?;
+        let cfg = crate::config::OidcConfig {
+            enabled: true,
+            issuer: s.issuer.clone(),
+            client_id: s.client_id.clone(),
+            scopes: s.scopes.clone(),
+            groups_claim: s.groups_claim.clone(),
+            jit: c.jit,
+            allowed_domains: s.allowed_domains.clone(),
+            required_groups: c.required_groups.clone(),
+            group_teams: c
+                .group_teams
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+            redirect_uri: s.redirect_uri.clone(),
+        };
+        let (secret, path) = if c.id == FILE_OIDC {
+            (
+                oidc::ClientSecret::Credential,
+                "/api/auth/oidc/callback".to_string(),
+            )
+        } else {
+            let me = Arc::downgrade(self);
+            let rec = c.clone();
+            let f = move || -> Result<zeroize::Zeroizing<String>, String> {
+                let svc = me.upgrade().ok_or("shutting down")?;
+                svc.connectors
+                    .secret(&rec, "client_secret")
+                    .map_err(|e| e.to_string())?
+                    .ok_or_else(|| format!("connector {} has no client_secret", rec.id))
+            };
+            (
+                oidc::ClientSecret::Stored(Box::new(f)),
+                format!("/api/auth/c/{}/callback", c.id),
+            )
+        };
+        let state = Arc::new(oidc::OidcState::with(
+            &cfg,
+            secret,
+            s.mfa_acr_values.clone(),
+            &path,
+        ));
+        cache.insert(c.id.clone(), (c.clone(), state.clone()));
+        Ok((c, state))
     }
 
     // ---- tokens ---------------------------------------------------------
@@ -933,10 +1346,15 @@ impl AuthService {
         let cfg = &self.config.auth.tokens;
         let days = days.unwrap_or(cfg.default_days);
         if days == 0 || days > cfg.max_days {
-            return Err(AuthError::Invalid(format!("token lifetime must be 1-{} days", cfg.max_days)));
+            return Err(AuthError::Invalid(format!(
+                "token lifetime must be 1-{} days",
+                cfg.max_days
+            )));
         }
         if name.is_empty() || name.len() > 64 {
-            return Err(AuthError::Invalid("token name must be 1-64 characters".into()));
+            return Err(AuthError::Invalid(
+                "token name must be 1-64 characters".into(),
+            ));
         }
         let secret = format!("{}{}", TOKEN_PREFIX, random_token(32));
         let now = store::now();
@@ -958,7 +1376,10 @@ impl AuthService {
 
     /// Revoke a token and its links.
     pub fn revoke_token(&self, id: &str) -> Result<(), AuthError> {
-        let (hash, _) = self.store.token_by_id(id)?.ok_or_else(|| StoreError::NotFound(id.into()))?;
+        let (hash, _) = self
+            .store
+            .token_by_id(id)?
+            .ok_or_else(|| StoreError::NotFound(id.into()))?;
         self.store.remove_token(&hash)?;
         let mut changed = false;
         for l in self.store.links_mentioning(&Ent::Token(id.into()))? {
@@ -975,7 +1396,13 @@ impl AuthService {
 
     /// Add a role link, validating the template and resource kind, and
     /// republish the policy set.
-    pub fn add_link(&self, template: &str, principal: Ent, resource: Ent, by: &str) -> Result<LinkRecord, AuthError> {
+    pub fn add_link(
+        &self,
+        template: &str,
+        principal: Ent,
+        resource: Ent,
+        by: &str,
+    ) -> Result<LinkRecord, AuthError> {
         let project_role = authz::PROJECT_ROLES.contains(&template);
         let host_role = authz::HOST_ROLES.contains(&template);
         let tenant_role = authz::TENANT_ROLES.contains(&template);
@@ -989,22 +1416,28 @@ impl AuthService {
                 return Err(AuthError::Invalid(format!(
                     "{} can't be linked to {}: project roles link to a project, host roles to the host, tenant roles to a tenant, directory roles to the directory",
                     template, resource
-                )))
+                )));
             }
         }
         if !matches!(principal, Ent::User(_) | Ent::Team(_) | Ent::Token(_)) {
-            return Err(AuthError::Invalid("a role is given to a user, team or token".into()));
+            return Err(AuthError::Invalid(
+                "a role is given to a user, team or token".into(),
+            ));
         }
-        if let Some(existing) = self
-            .store
-            .links()?
-            .into_iter()
-            .find(|l| l.link.template == template && l.link.principal == principal && l.link.resource == resource)
-        {
+        if let Some(existing) = self.store.links()?.into_iter().find(|l| {
+            l.link.template == template
+                && l.link.principal == principal
+                && l.link.resource == resource
+        }) {
             return Ok(existing);
         }
         let rec = LinkRecord {
-            link: Link { id: format!("link.{}", uuid::Uuid::new_v4()), template: template.into(), principal, resource },
+            link: Link {
+                id: format!("link.{}", uuid::Uuid::new_v4()),
+                template: template.into(),
+                principal,
+                resource,
+            },
             created_by: by.to_string(),
             created_at: store::now(),
         };
@@ -1074,7 +1507,14 @@ impl AuthService {
         let now = store::now();
         let mut tickets = self.tickets.lock().unwrap();
         tickets.retain(|_, v| v.expires > now);
-        tickets.insert(sha256_hex(t.as_bytes()), Ticket { principal: p.cedar(), vm_id: vm_id.into(), expires: now + TICKET_SECS });
+        tickets.insert(
+            sha256_hex(t.as_bytes()),
+            Ticket {
+                principal: p.cedar(),
+                vm_id: vm_id.into(),
+                expires: now + TICKET_SECS,
+            },
+        );
         t
     }
 
@@ -1121,10 +1561,14 @@ impl AuthService {
         if let Err(e) = self.store.append_audit(&entry) {
             tracing::error!("audit write failed: {}", e);
         }
-        let n = self.audit_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let n = self
+            .audit_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if n.is_multiple_of(500) {
             let keep = self.config.audit.retention_days * 86_400_000;
-            let _ = self.store.prune_audit(store::now_millis().saturating_sub(keep));
+            let _ = self
+                .store
+                .prune_audit(store::now_millis().saturating_sub(keep));
         }
     }
 }
@@ -1145,10 +1589,17 @@ impl LinkedProjects {
 
 /// Names of every group `user` belongs to (primary first).
 pub fn unix_groups(user: &nix::unistd::User) -> Vec<String> {
-    let Ok(name) = std::ffi::CString::new(user.name.clone()) else { return Vec::new() };
+    let Ok(name) = std::ffi::CString::new(user.name.clone()) else {
+        return Vec::new();
+    };
     let gids = nix::unistd::getgrouplist(&name, user.gid).unwrap_or_else(|_| vec![user.gid]);
     gids.into_iter()
-        .filter_map(|g| nix::unistd::Group::from_gid(g).ok().flatten().map(|g| g.name))
+        .filter_map(|g| {
+            nix::unistd::Group::from_gid(g)
+                .ok()
+                .flatten()
+                .map(|g| g.name)
+        })
         .collect()
 }
 
@@ -1159,14 +1610,29 @@ mod tests {
     fn svc() -> (Arc<AuthService>, tempfile::TempDir) {
         let dir = tempfile::TempDir::new().unwrap();
         let db = Arc::new(crate::store::Db::create(dir.path().join("a.db")).unwrap());
-        let cfg = Config { authz: crate::config::AuthzConfig { policy_files_dir: dir.path().join("policies"), ..Default::default() }, ..Default::default() };
+        let cfg = Config {
+            authz: crate::config::AuthzConfig {
+                policy_files_dir: dir.path().join("policies"),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         (AuthService::new(db, cfg).unwrap(), dir)
     }
 
     fn user_principal(s: &AuthService, name: &str) -> Principal {
-        let u = s.store.user_for_identity("pam", name, name, None, true).unwrap().unwrap();
-        Principal { user: Some(u), method: Method::Pam, transport: Transport::Tcp, ..Principal::system() }
-            .with_teams(vec![])
+        let u = s
+            .store
+            .user_for_identity("pam", name, name, None, true)
+            .unwrap()
+            .unwrap();
+        Principal {
+            user: Some(u),
+            method: Method::Pam,
+            transport: Transport::Tcp,
+            ..Principal::system()
+        }
+        .with_teams(vec![])
     }
 
     impl Principal {
@@ -1189,27 +1655,82 @@ mod tests {
         let (s, _d) = svc();
         let p = user_principal(&s, "alice");
         let uid = p.user_id().unwrap().to_string();
-        s.add_link("role.editor", Ent::User(uid.clone()), Ent::Project("pa".into()), "t").unwrap();
-        let (secret, tok) = s.create_token("ci", TokenKind::Personal { owner: uid.clone() }, &uid, None, None, None).unwrap();
+        s.add_link(
+            "role.editor",
+            Ent::User(uid.clone()),
+            Ent::Project("pa".into()),
+            "t",
+        )
+        .unwrap();
+        let (secret, tok) = s
+            .create_token(
+                "ci",
+                TokenKind::Personal { owner: uid.clone() },
+                &uid,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
         let mut es = EntitySet::new();
         es.in_project(Ent::Vm("v".into()), "pa");
         // Unnarrowed: acts as the owner.
-        let tp = s.token_principal(&secret, Transport::Tcp, None).unwrap().unwrap();
+        let tp = s
+            .token_principal(&secret, Transport::Tcp, None)
+            .unwrap()
+            .unwrap();
         let d = s.authorize(&tp, "startVm", Ent::Vm("v".into()), es.clone(), &[]);
         assert!(d.allowed, "{d:?}");
         // Narrowed to viewer: can read, can't start, even though the owner can.
-        s.add_link("role.viewer", Ent::Token(tok.id.clone()), Ent::Project("pa".into()), "t").unwrap();
-        let tp = s.token_principal(&secret, Transport::Tcp, None).unwrap().unwrap();
+        s.add_link(
+            "role.viewer",
+            Ent::Token(tok.id.clone()),
+            Ent::Project("pa".into()),
+            "t",
+        )
+        .unwrap();
+        let tp = s
+            .token_principal(&secret, Transport::Tcp, None)
+            .unwrap()
+            .unwrap();
         assert!(tp.token_narrowed);
-        assert!(s.authorize(&tp, "readVm", Ent::Vm("v".into()), es.clone(), &[]).allowed);
-        assert!(!s.authorize(&tp, "startVm", Ent::Vm("v".into()), es.clone(), &[]).allowed);
+        assert!(
+            s.authorize(&tp, "readVm", Ent::Vm("v".into()), es.clone(), &[])
+                .allowed
+        );
+        assert!(
+            !s.authorize(&tp, "startVm", Ent::Vm("v".into()), es.clone(), &[])
+                .allowed
+        );
         // Narrowed to owner (more than the user has): still capped by the user.
-        s.add_link("role.owner", Ent::Token(tok.id.clone()), Ent::Project("pa".into()), "t").unwrap();
-        let tp = s.token_principal(&secret, Transport::Tcp, None).unwrap().unwrap();
-        assert!(!s.authorize(&tp, "manageBindings", Ent::Project("pa".into()), es.clone(), &[]).allowed);
+        s.add_link(
+            "role.owner",
+            Ent::Token(tok.id.clone()),
+            Ent::Project("pa".into()),
+            "t",
+        )
+        .unwrap();
+        let tp = s
+            .token_principal(&secret, Transport::Tcp, None)
+            .unwrap()
+            .unwrap();
+        assert!(
+            !s.authorize(
+                &tp,
+                "manageBindings",
+                Ent::Project("pa".into()),
+                es.clone(),
+                &[]
+            )
+            .allowed
+        );
         // Revoked: gone.
         s.revoke_token(&tok.id).unwrap();
-        assert!(s.token_principal(&secret, Transport::Tcp, None).unwrap().is_none());
+        assert!(
+            s.token_principal(&secret, Transport::Tcp, None)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -1217,40 +1738,96 @@ mod tests {
         let (s, _d) = svc();
         let p = user_principal(&s, "net");
         let uid = p.user_id().unwrap().to_string();
-        s.add_link("role.net-admin", Ent::User(uid.clone()), Ent::Cluster, "t").unwrap();
+        s.add_link("role.net-admin", Ent::User(uid.clone()), Ent::Cluster, "t")
+            .unwrap();
         // Host roles work for members of the operator tenant (spec/tenancy.md D4).
-        s.tenants.add_member(crate::tenants::ADMIN_TENANT, Ent::User(uid.clone()), "t").unwrap();
-        let (secret, tok) = s.create_token("t", TokenKind::Personal { owner: uid.clone() }, &uid, None, None, None).unwrap();
-        let tp = s.token_principal(&secret, Transport::Tcp, None).unwrap().unwrap();
+        s.tenants
+            .add_member(crate::tenants::ADMIN_TENANT, Ent::User(uid.clone()), "t")
+            .unwrap();
+        let (secret, tok) = s
+            .create_token(
+                "t",
+                TokenKind::Personal { owner: uid.clone() },
+                &uid,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        let tp = s
+            .token_principal(&secret, Transport::Tcp, None)
+            .unwrap()
+            .unwrap();
         let d = s.authorize(&tp, "installOvs", Ent::Host, EntitySet::new(), &[]);
         assert!(d.denied_by("base.step-up"), "{:?}", d);
-        s.add_link("role.net-admin", Ent::Token(tok.id), Ent::Cluster, "t").unwrap();
-        let tp = s.token_principal(&secret, Transport::Tcp, None).unwrap().unwrap();
-        assert!(s.authorize(&tp, "installOvs", Ent::Host, EntitySet::new(), &[]).allowed);
+        s.add_link("role.net-admin", Ent::Token(tok.id), Ent::Cluster, "t")
+            .unwrap();
+        let tp = s
+            .token_principal(&secret, Transport::Tcp, None)
+            .unwrap()
+            .unwrap();
+        assert!(
+            s.authorize(&tp, "installOvs", Ent::Host, EntitySet::new(), &[])
+                .allowed
+        );
     }
 
     #[test]
     fn sessions_expire_and_logout() {
         let (s, _d) = svc();
         let p = user_principal(&s, "bob");
-        let (cookie, csrf) = s.create_session(p.user.as_ref().unwrap(), Method::Pam).unwrap();
-        let sp = s.session_principal(&cookie, Transport::Tcp, None).unwrap().unwrap();
+        let (cookie, csrf) = s
+            .create_session(p.user.as_ref().unwrap(), Method::Pam)
+            .unwrap();
+        let sp = s
+            .session_principal(&cookie, Transport::Tcp, None)
+            .unwrap()
+            .unwrap();
         assert_eq!(sp.csrf.as_deref(), Some(csrf.as_str()));
         s.end_session(&sp).unwrap();
-        assert!(s.session_principal(&cookie, Transport::Tcp, None).unwrap().is_none());
-        assert!(s.session_principal("nope", Transport::Tcp, None).unwrap().is_none());
+        assert!(
+            s.session_principal(&cookie, Transport::Tcp, None)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            s.session_principal("nope", Transport::Tcp, None)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
     fn pam_user_requires_allowed_group_and_syncs_teams() {
         let dir = tempfile::TempDir::new().unwrap();
         let db = Arc::new(crate::store::Db::create(dir.path().join("a.db")).unwrap());
-        let mut cfg = Config { authz: crate::config::AuthzConfig { policy_files_dir: dir.path().join("p"), ..Default::default() }, ..Default::default() };
-        cfg.auth.pam.group_teams.insert("lab-unix".into(), "lab".into());
+        let mut cfg = Config {
+            authz: crate::config::AuthzConfig {
+                policy_files_dir: dir.path().join("p"),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        cfg.auth
+            .pam
+            .group_teams
+            .insert("lab-unix".into(), "lab".into());
         let s = AuthService::new(db, cfg).unwrap();
-        assert!(matches!(s.pam_user("carol", &["staff".into()]), Err(AuthError::Denied)));
-        s.store.put_team(&store::Team { id: "t1".into(), name: "lab".into(), members: vec![], created_at: 0 }).unwrap();
-        let u = s.pam_user("carol", &["glidex-users".into(), "lab-unix".into()]).unwrap();
+        assert!(matches!(
+            s.pam_user("carol", &["staff".into()]),
+            Err(AuthError::Denied)
+        ));
+        s.store
+            .put_team(&store::Team {
+                id: "t1".into(),
+                name: "lab".into(),
+                members: vec![],
+                created_at: 0,
+            })
+            .unwrap();
+        let u = s
+            .pam_user("carol", &["glidex-users".into(), "lab-unix".into()])
+            .unwrap();
         assert_eq!(s.store.teams_of(&u.id).unwrap(), vec!["t1"]);
         let u2 = s.pam_user("carol", &["glidex-users".into()]).unwrap();
         assert_eq!(u2.id, u.id);
@@ -1260,18 +1837,43 @@ mod tests {
     #[test]
     fn bootstrap_admins_once() {
         let (s, _d) = svc();
-        assert_eq!(s.bootstrap_with(&["root2".into()], "pdefault").unwrap(), vec!["root2"]);
+        assert_eq!(
+            s.bootstrap_with(&["root2".into()], "pdefault").unwrap(),
+            vec!["root2"]
+        );
         let links = s.store.links().unwrap();
         // System admin and default-project owner, plus what tenancy adds:
         // directory-admin and tenant-admin of admin and default.
         assert_eq!(links.len(), 5);
-        assert!(s.tenants.members(crate::tenants::ADMIN_TENANT).unwrap().iter().any(|m| matches!(&m.principal, Ent::User(_))));
-        assert!(links.iter().any(|l| l.link.template == "role.system-admin" && l.link.resource == Ent::Cluster));
+        assert!(
+            s.tenants
+                .members(crate::tenants::ADMIN_TENANT)
+                .unwrap()
+                .iter()
+                .any(|m| matches!(&m.principal, Ent::User(_)))
+        );
+        assert!(
+            links
+                .iter()
+                .any(|l| l.link.template == "role.system-admin" && l.link.resource == Ent::Cluster)
+        );
         // A PAM login of the same name is the same user.
-        let u = s.store.user_for_identity("pam", "root2", "root2", None, true).unwrap().unwrap();
-        assert!(links.iter().all(|l| l.link.principal == Ent::User(u.id.clone())));
+        let u = s
+            .store
+            .user_for_identity("pam", "root2", "root2", None, true)
+            .unwrap()
+            .unwrap();
+        assert!(
+            links
+                .iter()
+                .all(|l| l.link.principal == Ent::User(u.id.clone()))
+        );
         // Only on first start.
-        assert!(s.bootstrap_with(&["other".into()], "pdefault").unwrap().is_empty());
+        assert!(
+            s.bootstrap_with(&["other".into()], "pdefault")
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -1291,11 +1893,39 @@ mod tests {
     #[test]
     fn link_rules() {
         let (s, _d) = svc();
-        assert!(s.add_link("role.owner", Ent::User("u".into()), Ent::Cluster, "t").is_err());
-        assert!(s.add_link("role.net-admin", Ent::User("u".into()), Ent::Project("p".into()), "t").is_err());
-        assert!(s.add_link("role.nope", Ent::User("u".into()), Ent::Cluster, "t").is_err());
-        let a = s.add_link("role.viewer", Ent::Team("t".into()), Ent::Project("p".into()), "t").unwrap();
-        let b = s.add_link("role.viewer", Ent::Team("t".into()), Ent::Project("p".into()), "t").unwrap();
+        assert!(
+            s.add_link("role.owner", Ent::User("u".into()), Ent::Cluster, "t")
+                .is_err()
+        );
+        assert!(
+            s.add_link(
+                "role.net-admin",
+                Ent::User("u".into()),
+                Ent::Project("p".into()),
+                "t"
+            )
+            .is_err()
+        );
+        assert!(
+            s.add_link("role.nope", Ent::User("u".into()), Ent::Cluster, "t")
+                .is_err()
+        );
+        let a = s
+            .add_link(
+                "role.viewer",
+                Ent::Team("t".into()),
+                Ent::Project("p".into()),
+                "t",
+            )
+            .unwrap();
+        let b = s
+            .add_link(
+                "role.viewer",
+                Ent::Team("t".into()),
+                Ent::Project("p".into()),
+                "t",
+            )
+            .unwrap();
         assert_eq!(a.link.id, b.link.id, "idempotent");
         s.forget_entity(&Ent::Project("p".into())).unwrap();
         assert!(s.store.links().unwrap().is_empty());
@@ -1308,7 +1938,12 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("a.cedar"), "@id(\"site.f1\")\nforbid (principal, action == Glidex::Action::\"openConsole\", resource);").unwrap();
         s.reload_policies().unwrap();
-        assert!(s.engine.listing().iter().any(|p| p.id == "site.f1" && p.source == PolicySource::File));
+        assert!(
+            s.engine
+                .listing()
+                .iter()
+                .any(|p| p.id == "site.f1" && p.source == PolicySource::File)
+        );
         s.store.write_site_policy("site.f1", 0, Some(("@id(\"site.f1\")\npermit (principal, action == Glidex::Action::\"readVm\", resource);", "", true)), "u").unwrap();
         assert!(s.reload_policies().is_err());
     }

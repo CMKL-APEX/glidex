@@ -1,7 +1,7 @@
 //! Cloud Hypervisor's HTTP API over its Unix socket. Message framing is
 //! hand-rolled to match upstream's `api_client` exactly.
 
-use crate::{connect, GuestState, HvError, Observed};
+use crate::{GuestState, HvError, Observed, connect};
 use std::io::{Read, Write};
 
 pub struct ChClient {
@@ -10,7 +10,9 @@ pub struct ChClient {
 
 /// Find the end of HTTP headers (position after the \r\n\r\n separator).
 fn find_header_end(data: &[u8]) -> Option<usize> {
-    data.windows(4).position(|w| w == b"\r\n\r\n").map(|p| p + 4)
+    data.windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .map(|p| p + 4)
 }
 
 /// Parse Content-Length from raw HTTP header bytes.
@@ -26,11 +28,18 @@ fn parse_content_length(headers: &[u8]) -> usize {
 
 impl ChClient {
     pub fn new(socket_path: &str) -> Self {
-        Self { socket_path: socket_path.to_string() }
+        Self {
+            socket_path: socket_path.to_string(),
+        }
     }
 
     /// One request; returns the status code and body.
-    fn send_request(&self, method: &str, path: &str, body: Option<&str>) -> Result<(u16, Option<String>), HvError> {
+    fn send_request(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&str>,
+    ) -> Result<(u16, Option<String>), HvError> {
         let mut stream = connect(&self.socket_path)?;
 
         // Request format of the official cloud-hypervisor api_client:
@@ -44,7 +53,10 @@ impl ChClient {
                 body_str.len(),
                 body_str
             ),
-            None => format!("{} /api/v1{} HTTP/1.1\r\nHost: localhost\r\nAccept: */*\r\n\r\n", method, path),
+            None => format!(
+                "{} /api/v1{} HTTP/1.1\r\nHost: localhost\r\nAccept: */*\r\n\r\n",
+                method, path
+            ),
         };
         stream.write_all(request.as_bytes())?;
         stream.flush()?;
@@ -66,13 +78,16 @@ impl ChClient {
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
                 Err(e) if e.kind() == std::io::ErrorKind::TimedOut => break,
                 Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => {
-                    return Err(HvError::Connect(format!("{}: {}", self.socket_path, e)))
+                    return Err(HvError::Connect(format!("{}: {}", self.socket_path, e)));
                 }
                 Err(e) => return Err(e.into()),
             }
         }
         if raw.is_empty() {
-            return Err(HvError::Connect(format!("{}: no response", self.socket_path)));
+            return Err(HvError::Connect(format!(
+                "{}: no response",
+                self.socket_path
+            )));
         }
 
         let response = String::from_utf8_lossy(&raw);
@@ -90,7 +105,12 @@ impl ChClient {
     }
 
     /// Check that the response status indicates success (2xx).
-    fn expect_success(&self, method: &str, path: &str, body: Option<&str>) -> Result<Option<String>, HvError> {
+    fn expect_success(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&str>,
+    ) -> Result<Option<String>, HvError> {
         let (status, response_body) = self.send_request(method, path, body)?;
         if (200..300).contains(&status) {
             Ok(response_body)
@@ -115,7 +135,10 @@ impl ChClient {
         let (status, body) = self.send_request("GET", "/vm.info", None)?;
         if !(200..300).contains(&status) {
             // No VM created yet: CH answers 4xx/5xx with "VM is not created".
-            return Ok(Observed { guest: GuestState::NotCreated, device_ids: Vec::new() });
+            return Ok(Observed {
+                guest: GuestState::NotCreated,
+                device_ids: Vec::new(),
+            });
         }
         let v: serde_json::Value = serde_json::from_str(body.as_deref().unwrap_or("{}"))
             .map_err(|e| HvError::Api(format!("vm.info: {}", e)))?;
@@ -150,18 +173,21 @@ impl ChClient {
     }
 
     pub fn power_button(&self) -> Result<(), HvError> {
-        self.expect_success("PUT", "/vm.power-button", None).map(|_| ())
+        self.expect_success("PUT", "/vm.power-button", None)
+            .map(|_| ())
     }
 
     /// Hot-plug a VFIO device under a deterministic id.
     pub fn add_device(&self, device_path: &str, id: &str) -> Result<(), HvError> {
         let body = serde_json::json!({ "path": device_path, "iommu": false, "id": id }).to_string();
-        self.expect_success("PUT", "/vm.add-device", Some(&body)).map(|_| ())
+        self.expect_success("PUT", "/vm.add-device", Some(&body))
+            .map(|_| ())
     }
 
     pub fn remove_device(&self, id: &str) -> Result<(), HvError> {
         let body = serde_json::json!({ "id": id }).to_string();
-        self.expect_success("PUT", "/vm.remove-device", Some(&body)).map(|_| ())
+        self.expect_success("PUT", "/vm.remove-device", Some(&body))
+            .map(|_| ())
     }
 }
 
@@ -176,7 +202,11 @@ fn parse_vm_info(v: &serde_json::Value) -> Observed {
     let device_ids = v
         .pointer("/config/devices")
         .and_then(|d| d.as_array())
-        .map(|a| a.iter().filter_map(|d| d.get("id").and_then(|i| i.as_str()).map(String::from)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|d| d.get("id").and_then(|i| i.as_str()).map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
     Observed { guest, device_ids }
 }
@@ -187,7 +217,10 @@ mod tests {
     use std::os::unix::net::UnixListener;
 
     /// Answer one request on `path` with `response`, returning the request.
-    fn serve_once(path: &std::path::Path, response: &'static str) -> std::thread::JoinHandle<String> {
+    fn serve_once(
+        path: &std::path::Path,
+        response: &'static str,
+    ) -> std::thread::JoinHandle<String> {
         let listener = UnixListener::bind(path).unwrap();
         std::thread::spawn(move || {
             let (mut s, _) = listener.accept().unwrap();
@@ -197,10 +230,10 @@ mod tests {
             loop {
                 let n = s.read(&mut buf).unwrap();
                 req.extend_from_slice(&buf[..n]);
-                if let Some(end) = find_header_end(&req) {
-                    if n == 0 || req.len() >= end + parse_content_length(&req[..end]) {
-                        break;
-                    }
+                if let Some(end) = find_header_end(&req)
+                    && (n == 0 || req.len() >= end + parse_content_length(&req[..end]))
+                {
+                    break;
                 }
                 if n == 0 {
                     break;
@@ -217,36 +250,67 @@ mod tests {
             "state": "Running",
             "config": { "devices": [ { "path": "/sys/bus/pci/devices/0000:41:00.0", "id": "_vfio_0000_41_00_0" } ] }
         });
-        assert_eq!(parse_vm_info(&v), Observed { guest: GuestState::Running, device_ids: vec!["_vfio_0000_41_00_0".into()] });
-        assert_eq!(parse_vm_info(&serde_json::json!({"state": "Paused"})).guest, GuestState::Paused);
-        assert_eq!(parse_vm_info(&serde_json::json!({})).guest, GuestState::NotCreated);
+        assert_eq!(
+            parse_vm_info(&v),
+            Observed {
+                guest: GuestState::Running,
+                device_ids: vec!["_vfio_0000_41_00_0".into()]
+            }
+        );
+        assert_eq!(
+            parse_vm_info(&serde_json::json!({"state": "Paused"})).guest,
+            GuestState::Paused
+        );
+        assert_eq!(
+            parse_vm_info(&serde_json::json!({})).guest,
+            GuestState::NotCreated
+        );
     }
 
     #[test]
     fn requests_use_the_api_client_framing() {
         let dir = tempfile::tempdir().unwrap();
         let sock = dir.path().join("api.sock");
-        let server = serve_once(&sock, "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n");
-        ChClient::new(sock.to_str().unwrap()).add_device("/sys/bus/pci/devices/0000:41:00.0", "_vfio_0000_41_00_0").unwrap();
+        let server = serve_once(
+            &sock,
+            "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n",
+        );
+        ChClient::new(sock.to_str().unwrap())
+            .add_device("/sys/bus/pci/devices/0000:41:00.0", "_vfio_0000_41_00_0")
+            .unwrap();
         let req = server.join().unwrap();
         assert!(req.starts_with("PUT /api/v1/vm.add-device HTTP/1.1\r\nHost: localhost\r\nAccept: */*\r\nContent-Type: application/json\r\n"), "{req}");
         // Key order depends on serde_json's features, unified across the workspace.
-        let body: serde_json::Value = serde_json::from_str(req.split("\r\n\r\n").nth(1).unwrap()).unwrap();
-        assert_eq!(body, serde_json::json!({"id": "_vfio_0000_41_00_0", "iommu": false, "path": "/sys/bus/pci/devices/0000:41:00.0"}), "{req}");
+        let body: serde_json::Value =
+            serde_json::from_str(req.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({"id": "_vfio_0000_41_00_0", "iommu": false, "path": "/sys/bus/pci/devices/0000:41:00.0"}),
+            "{req}"
+        );
     }
 
     #[test]
     fn error_status_is_an_api_error() {
         let dir = tempfile::tempdir().unwrap();
         let sock = dir.path().join("api.sock");
-        let server = serve_once(&sock, "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 4\r\n\r\nnope");
+        let server = serve_once(
+            &sock,
+            "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 4\r\n\r\nnope",
+        );
         let err = ChClient::new(sock.to_str().unwrap()).pause().unwrap_err();
         server.join().unwrap();
-        assert!(matches!(err, HvError::Api(ref m) if m.contains("500") && m.contains("nope")), "{err}");
+        assert!(
+            matches!(err, HvError::Api(ref m) if m.contains("500") && m.contains("nope")),
+            "{err}"
+        );
     }
 
     #[test]
     fn missing_socket_is_a_connect_error() {
-        assert!(matches!(ChClient::new("/nonexistent/api.sock").ping(), Err(HvError::Connect(_))));
+        assert!(matches!(
+            ChClient::new("/nonexistent/api.sock").ping(),
+            Err(HvError::Connect(_))
+        ));
     }
 }

@@ -104,24 +104,48 @@ macro_rules! ubuntu {
             images: &[
                 ArchImage {
                     arch: Arch::X86_64,
-                    url: concat!("https://cloud-images.ubuntu.com/", $suite, "/current/", $suite, "-server-cloudimg-amd64.img"),
+                    url: concat!(
+                        "https://cloud-images.ubuntu.com/",
+                        $suite,
+                        "/current/",
+                        $suite,
+                        "-server-cloudimg-amd64.img"
+                    ),
                     checksum: ChecksumSource::File {
-                        url: concat!("https://cloud-images.ubuntu.com/", $suite, "/current/SHA256SUMS"),
+                        url: concat!(
+                            "https://cloud-images.ubuntu.com/",
+                            $suite,
+                            "/current/SHA256SUMS"
+                        ),
                         algo: HashAlgo::Sha256,
                     },
                     version: VersionSource::UbuntuBuildInfo(concat!(
-                        "https://cloud-images.ubuntu.com/", $suite, "/current/unpacked/build-info.txt"
+                        "https://cloud-images.ubuntu.com/",
+                        $suite,
+                        "/current/unpacked/build-info.txt"
                     )),
                 },
                 ArchImage {
                     arch: Arch::Aarch64,
-                    url: concat!("https://cloud-images.ubuntu.com/", $suite, "/current/", $suite, "-server-cloudimg-arm64.img"),
+                    url: concat!(
+                        "https://cloud-images.ubuntu.com/",
+                        $suite,
+                        "/current/",
+                        $suite,
+                        "-server-cloudimg-arm64.img"
+                    ),
                     checksum: ChecksumSource::File {
-                        url: concat!("https://cloud-images.ubuntu.com/", $suite, "/current/SHA256SUMS"),
+                        url: concat!(
+                            "https://cloud-images.ubuntu.com/",
+                            $suite,
+                            "/current/SHA256SUMS"
+                        ),
                         algo: HashAlgo::Sha256,
                     },
                     version: VersionSource::UbuntuBuildInfo(concat!(
-                        "https://cloud-images.ubuntu.com/", $suite, "/current/unpacked/build-info.txt"
+                        "https://cloud-images.ubuntu.com/",
+                        $suite,
+                        "/current/unpacked/build-info.txt"
                     )),
                 },
             ],
@@ -138,18 +162,38 @@ macro_rules! debian {
             images: &[
                 ArchImage {
                     arch: Arch::X86_64,
-                    url: concat!("https://cloud.debian.org/images/cloud/", $suite, "/latest/debian-", $n, "-generic-amd64.qcow2"),
+                    url: concat!(
+                        "https://cloud.debian.org/images/cloud/",
+                        $suite,
+                        "/latest/debian-",
+                        $n,
+                        "-generic-amd64.qcow2"
+                    ),
                     checksum: ChecksumSource::File {
-                        url: concat!("https://cloud.debian.org/images/cloud/", $suite, "/latest/SHA512SUMS"),
+                        url: concat!(
+                            "https://cloud.debian.org/images/cloud/",
+                            $suite,
+                            "/latest/SHA512SUMS"
+                        ),
                         algo: HashAlgo::Sha512,
                     },
                     version: VersionSource::LastModified,
                 },
                 ArchImage {
                     arch: Arch::Aarch64,
-                    url: concat!("https://cloud.debian.org/images/cloud/", $suite, "/latest/debian-", $n, "-generic-arm64.qcow2"),
+                    url: concat!(
+                        "https://cloud.debian.org/images/cloud/",
+                        $suite,
+                        "/latest/debian-",
+                        $n,
+                        "-generic-arm64.qcow2"
+                    ),
                     checksum: ChecksumSource::File {
-                        url: concat!("https://cloud.debian.org/images/cloud/", $suite, "/latest/SHA512SUMS"),
+                        url: concat!(
+                            "https://cloud.debian.org/images/cloud/",
+                            $suite,
+                            "/latest/SHA512SUMS"
+                        ),
                         algo: HashAlgo::Sha512,
                     },
                     version: VersionSource::LastModified,
@@ -217,7 +261,9 @@ pub fn find(key: &str) -> Option<&'static CatalogEntry> {
 
 /// Entries that have an image for `arch`.
 pub fn for_arch(arch: Arch) -> impl Iterator<Item = (&'static CatalogEntry, &'static ArchImage)> {
-    CATALOG.iter().filter_map(move |e| e.for_arch(arch).map(|i| (e, i)))
+    CATALOG
+        .iter()
+        .filter_map(move |e| e.for_arch(arch).map(|i| (e, i)))
 }
 
 /// Parse a checksum file into `(file name, lower-case hex digest)` pairs.
@@ -233,15 +279,15 @@ pub fn parse_checksums(text: &str) -> Vec<(String, String)> {
             continue;
         }
         // BSD: ALGO (name) = hex
-        if let (Some(open), Some(close)) = (line.find(" ("), line.rfind(") = ")) {
-            if open < close {
-                let name = &line[open + 2..close];
-                let hex = line[close + 4..].trim();
-                if is_hex(hex) {
-                    out.push((name.to_string(), hex.to_ascii_lowercase()));
-                }
-                continue;
+        if let (Some(open), Some(close)) = (line.find(" ("), line.rfind(") = "))
+            && open < close
+        {
+            let name = &line[open + 2..close];
+            let hex = line[close + 4..].trim();
+            if is_hex(hex) {
+                out.push((name.to_string(), hex.to_ascii_lowercase()));
             }
+            continue;
         }
         // GNU: hex, whitespace, optional '*' (binary mode), name
         if let Some((hex, rest)) = line.split_once(char::is_whitespace) {
@@ -262,7 +308,10 @@ pub fn url_file_name(url: &str) -> &str {
 
 /// Pick the newest Fedora Cloud Base qcow2 for `arch` from `releases.json`:
 /// returns `(url, sha256, file name)`. Pre-releases ("45 Beta") are skipped.
-pub fn parse_fedora_releases(json: &serde_json::Value, arch: Arch) -> Option<(String, String, String)> {
+pub fn parse_fedora_releases(
+    json: &serde_json::Value,
+    arch: Arch,
+) -> Option<(String, String, String)> {
     let arch = match arch {
         Arch::X86_64 => "x86_64",
         Arch::Aarch64 => "aarch64",
@@ -304,7 +353,9 @@ mod tests {
     fn every_entry_is_https_with_checksum_for_both_arches() {
         for e in CATALOG {
             for arch in [Arch::X86_64, Arch::Aarch64] {
-                let img = e.for_arch(arch).unwrap_or_else(|| panic!("{} has no {:?} image", e.key, arch));
+                let img = e
+                    .for_arch(arch)
+                    .unwrap_or_else(|| panic!("{} has no {:?} image", e.key, arch));
                 assert!(img.url.starts_with("https://"), "{}", e.key);
                 if let ChecksumSource::File { url, .. } = img.checksum {
                     assert!(url.starts_with("https://"), "{}", e.key);
@@ -350,7 +401,10 @@ not a checksum line
              "link": "https://x/44/Fedora-Cloud-Base-Generic-44-1.7.aarch64.qcow2", "sha256": "EE"}
         ]);
         let (url, sha, name) = parse_fedora_releases(&json, Arch::X86_64).unwrap();
-        assert_eq!(url, "https://x/44/Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2");
+        assert_eq!(
+            url,
+            "https://x/44/Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2"
+        );
         assert_eq!(sha, "bb");
         assert_eq!(name, "Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2");
         assert_eq!(parse_fedora_releases(&json, Arch::Aarch64).unwrap().1, "ee");

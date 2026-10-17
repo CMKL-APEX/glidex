@@ -66,10 +66,14 @@ impl KeyReader for SystemKeyReader {
 /// Whether `line` is one public key: `<type> <base64> [comment]`.
 pub fn is_public_key_line(line: &str) -> bool {
     let mut parts = line.split_whitespace();
-    let (Some(ty), Some(blob)) = (parts.next(), parts.next()) else { return false };
+    let (Some(ty), Some(blob)) = (parts.next(), parts.next()) else {
+        return false;
+    };
     KEY_TYPES.contains(&ty)
         && blob.len() >= 16
-        && blob.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'/' || b == b'=')
+        && blob
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'/' || b == b'=')
         && line.len() <= 8 * 1024
         && !line.contains(|c: char| c.is_control())
 }
@@ -84,7 +88,10 @@ pub fn read_keys(dir: &Path, uid: u32) -> Result<Vec<String>, String> {
     let mut names: Vec<_> = entries
         .filter_map(|e| e.ok())
         .map(|e| e.file_name())
-        .filter(|n| n.to_str().is_some_and(|n| n.ends_with(".pub") && !n.starts_with('.')))
+        .filter(|n| {
+            n.to_str()
+                .is_some_and(|n| n.ends_with(".pub") && !n.starts_with('.'))
+        })
         .collect();
     names.sort();
     let mut keys = Vec::new();
@@ -127,7 +134,14 @@ mod tests {
     fn key_lines() {
         assert!(is_public_key_line(ED));
         assert!(is_public_key_line("ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQ"));
-        for bad in ["", "-----BEGIN OPENSSH PRIVATE KEY-----", "ssh-ed25519", "ssh-dss AAAAB3NzaC1kc3MAAACBAP", "ssh-ed25519 not*base64*at-all!!", "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA\u{1b}[31m"] {
+        for bad in [
+            "",
+            "-----BEGIN OPENSSH PRIVATE KEY-----",
+            "ssh-ed25519",
+            "ssh-dss AAAAB3NzaC1kc3MAAACBAP",
+            "ssh-ed25519 not*base64*at-all!!",
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA\u{1b}[31m",
+        ] {
             assert!(!is_public_key_line(bad), "{bad:?}");
         }
     }
@@ -138,14 +152,22 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let ssh = dir.path();
         std::fs::write(ssh.join("id_ed25519.pub"), format!("{}\n", ED)).unwrap();
-        std::fs::write(ssh.join("id_ed25519"), "-----BEGIN OPENSSH PRIVATE KEY-----\nsecret\n").unwrap();
+        std::fs::write(
+            ssh.join("id_ed25519"),
+            "-----BEGIN OPENSSH PRIVATE KEY-----\nsecret\n",
+        )
+        .unwrap();
         std::fs::write(ssh.join("notes.pub"), "not a key\n").unwrap();
         std::fs::write(ssh.join("dup.pub"), format!("{}\n", ED)).unwrap();
         std::os::unix::fs::symlink("/etc/passwd", ssh.join("link.pub")).unwrap();
         std::fs::create_dir(ssh.join("dir.pub")).unwrap();
         std::fs::write(ssh.join("big.pub"), "x".repeat(20_000)).unwrap();
         let keys = read_keys(ssh, me).unwrap();
-        assert_eq!(keys, vec![ED.to_string()], "private keys, symlinks, junk and dups are skipped");
+        assert_eq!(
+            keys,
+            vec![ED.to_string()],
+            "private keys, symlinks, junk and dups are skipped"
+        );
         // Files owned by someone else are skipped.
         assert!(read_keys(ssh, me + 1).unwrap().is_empty());
         // No ~/.ssh is no keys, not an error.
