@@ -166,12 +166,17 @@ ui/src/
 | `/policies` | `Policies` (shown with `readPolicy`) |
 | `/audit` | `Audit` (shown with `readAudit`, or to project owners for their projects) |
 | `/usage` | `Usage` (shown with `readUsage`, or to anyone with a project role, for their projects) |
+| `/tenants` | `Tenants` (shown with `listTenants` or `createTenant`, or to members of a tenant; spec/tenancy.md §14) |
+| `/tenants/:id` | `TenantDetail`: rename, suspend, delete, members, tenant roles |
+| `/admissions` | `Admissions` (shown with `listAdmissions`): tenants admitted here and their caps |
+| `/connectors` | `Connectors` (shown with `listConnectors`): login connectors, write-only secrets, `test` |
 | `/cluster` | `Cluster` (shown with `readCluster`; spec/clustering-ui.md §6) |
 | `/cluster/nodes/:id` | `NodeDetail` (spec/clustering-ui.md §5.2) |
 | `/cluster/imports/:plan` | `ImportPlan` (spec/clustering-ui.md §7.4) |
 | `*` | `NotFound` |
 
-Without a session every path shows the login page.
+Without a session every path shows the login page, with a sign-in
+button per OIDC connector (`/api/auth/c/{id}/start`).
 
 ## API client
 

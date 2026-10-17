@@ -8,7 +8,6 @@
 //! asks the policy engine; a personal token that has links of its own is
 //! allowed only what both it and its owner are allowed.
 
-pub mod oidc;
 pub mod store;
 
 use crate::authz::{
@@ -111,9 +110,17 @@ pub struct Principal {
     pub csrf: Option<String>,
     /// Peer uid on api.sock.
     pub peer_uid: Option<u32>,
+    /// A multi-factor browser login. Tokens, peer and PAM logins never are.
+    pub mfa: bool,
 }
 
 impl Principal {
+    /// The directory the principal belongs to (spec/tenancy.md §6). A host
+    /// hosts one directory until directories and clusters come apart (T6).
+    pub fn directory_id(&self) -> &str {
+        crate::tenants::LOCAL_DIRECTORY
+    }
+
     /// The synthetic principal of [`AuthService::disabled`].
     pub fn system() -> Self {
         Principal {
@@ -134,6 +141,7 @@ impl Principal {
             session_hash: None,
             csrf: None,
             peer_uid: None,
+            mfa: false,
         }
     }
 
@@ -211,6 +219,7 @@ impl Principal {
                 Transport::Tcp => "tcp".into(),
             },
             age_secs: age,
+            mfa: self.mfa,
             source_ip: self.source_ip,
         }
     }
@@ -235,19 +244,49 @@ pub struct AuthService {
     /// Directory connectors and their secrets (spec/tenancy.md §5).
     pub connectors: crate::directory::ConnectorStore,
     /// One OIDC client per connector, rebuilt when its record changes.
-    oidc: Mutex<HashMap<String, (crate::directory::Connector, Arc<oidc::OidcState>)>>,
+    oidc: Mutex<
+        HashMap<
+            String,
+            (
+                crate::directory::Connector,
+                Arc<crate::directory::oidc::OidcState>,
+            ),
+        >,
+    >,
     audit_count: std::sync::atomic::AtomicU64,
 }
 
 impl crate::cluster::runtime::SecretsKey for AuthService {
-    fn kek(&self) -> zeroize::Zeroizing<Vec<u8>> {
-        self.connectors.kek_bytes()
+    fn kek(
+        &self,
+    ) -> (
+        zeroize::Zeroizing<Vec<u8>>,
+        Option<zeroize::Zeroizing<Vec<u8>>>,
+    ) {
+        (self.connectors.kek_bytes(), self.connectors.kek_previous())
     }
 
-    fn install_kek(&self, bytes: &[u8]) -> Result<(), String> {
+    fn install_kek(&self, bytes: &[u8], previous: Option<&[u8]>) -> Result<(), String> {
         self.connectors
-            .install_kek(bytes)
+            .install_kek(bytes, previous)
             .map_err(|e| e.to_string())
+    }
+
+    fn can_rotate(&self) -> Result<(), String> {
+        if self.connectors.kek_is_credential() {
+            return Err("the secrets key is the secrets-kek credential: rotate it by changing the credential on every server".into());
+        }
+        Ok(())
+    }
+
+    fn rewrap(&self) -> Result<usize, String> {
+        self.connectors
+            .rewrap_data_keys()
+            .map_err(|e| e.to_string())
+    }
+
+    fn kek_id(&self) -> String {
+        self.connectors.kek_id()
     }
 }
 
@@ -683,8 +722,14 @@ impl AuthService {
                 .map_err(tenant_err)?
                 .unwrap_or_else(|| DEFAULT_TENANT.to_string()))
         };
+        // Each project's tenant, which the request then needs as an entity
+        // (`context.project.tenant.clusters`, base.admission) whether or
+        // not the caller is a member of it.
+        let mut project_tenants: Vec<String> = Vec::new();
         for pid in es.projects() {
-            es.set_project_tenant(&pid, &project_tenant(&pid)?);
+            let t = project_tenant(&pid)?;
+            es.set_project_tenant(&pid, &t);
+            project_tenants.push(t);
         }
         // Memberships (D3): listed members, and links on a tenant or on one
         // of its projects. Break-glass principals belong to the operator.
@@ -733,6 +778,7 @@ impl AuthService {
         };
         // Every tenant the request mentions, as stored.
         let mut wanted: Vec<String> = es.tenants();
+        wanted.extend(project_tenants);
         wanted.extend(tenants.iter().cloned());
         wanted.extend(owner.iter().cloned());
         wanted.push(snap.operator.clone());
@@ -872,16 +918,25 @@ impl AuthService {
         if !member {
             return Ok(None);
         }
-        let Some(u) = self.store.user_for_identity(
-            "unix",
-            &authz::local_subject(&user.name),
-            &user.name,
-            None,
-            true,
-        )?
+        let subject = authz::local_subject(&user.name);
+        let first = self.store.identity("unix", &subject)?.is_none();
+        let Some(u) = self
+            .store
+            .user_for_identity("unix", &subject, &user.name, None, true)?
         else {
             return Ok(None);
         };
+        // D23: local accounts belong to this host's PAM connector. A user
+        // seen for the first time joins its default tenant, as a first
+        // PAM login does.
+        if first
+            && let Ok(c) = self.pam_connector(None)
+            && let Some(t) = &c.default_tenant
+        {
+            self.tenants
+                .add_member(t, Ent::User(u.id.clone()), &format!("connector:{}", c.id))
+                .map_err(tenant_err)?;
+        }
         let mut teams = self.store.teams_of(&u.id)?;
         // Unix groups become `unix:<group>` teams, except that the
         // break-glass team comes only from the configured admin group (or
@@ -907,6 +962,7 @@ impl AuthService {
             session_hash: None,
             csrf: None,
             peer_uid: Some(uid),
+            mfa: false,
         }))
     }
 
@@ -957,6 +1013,7 @@ impl AuthService {
             session_hash: Some(hash),
             csrf: Some(s.csrf),
             peer_uid: None,
+            mfa: s.mfa,
         }))
     }
 
@@ -1011,6 +1068,7 @@ impl AuthService {
             session_hash: None,
             csrf: None,
             peer_uid: None,
+            mfa: false,
         }))
     }
 
@@ -1032,6 +1090,7 @@ impl AuthService {
             session_hash: None,
             csrf: None,
             peer_uid: None,
+            mfa: false,
         };
         Ok(match e {
             Ent::User(id) => match self.store.user(id)? {
@@ -1089,6 +1148,16 @@ impl AuthService {
         user: &User,
         method: Method,
     ) -> Result<(String, String), AuthError> {
+        self.create_session_with(user, method, false)
+    }
+
+    /// A session whose login was multi-factor (`mfa`) or not.
+    pub fn create_session_with(
+        &self,
+        user: &User,
+        method: Method,
+        mfa: bool,
+    ) -> Result<(String, String), AuthError> {
         let id = random_token(32);
         let csrf = random_token(24);
         let now = store::now();
@@ -1101,6 +1170,7 @@ impl AuthService {
                 created_at: now,
                 last_seen: now,
                 authenticated_at: now,
+                mfa,
             },
         )?;
         let cfg = &self.config.auth.session;
@@ -1264,7 +1334,13 @@ impl AuthService {
     pub fn oidc_for(
         self: &Arc<Self>,
         id: Option<&str>,
-    ) -> Result<(crate::directory::Connector, Arc<oidc::OidcState>), AuthError> {
+    ) -> Result<
+        (
+            crate::directory::Connector,
+            Arc<crate::directory::oidc::OidcState>,
+        ),
+        AuthError,
+    > {
         use crate::directory::{FILE_OIDC, Kind};
         let c = match id {
             Some(id) => self
@@ -1300,7 +1376,7 @@ impl AuthService {
         };
         let (secret, path) = if c.id == FILE_OIDC {
             (
-                oidc::ClientSecret::Credential,
+                crate::directory::oidc::ClientSecret::Credential,
                 "/api/auth/oidc/callback".to_string(),
             )
         } else {
@@ -1314,11 +1390,11 @@ impl AuthService {
                     .ok_or_else(|| format!("connector {} has no client_secret", rec.id))
             };
             (
-                oidc::ClientSecret::Stored(Box::new(f)),
+                crate::directory::oidc::ClientSecret::Stored(Box::new(f)),
                 format!("/api/auth/c/{}/callback", c.id),
             )
         };
-        let state = Arc::new(oidc::OidcState::with(
+        let state = Arc::new(crate::directory::oidc::OidcState::with(
             &cfg,
             secret,
             s.mfa_acr_values.clone(),

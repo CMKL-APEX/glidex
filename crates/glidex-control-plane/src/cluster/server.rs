@@ -27,6 +27,10 @@ type Ctx = State<Arc<Cluster>>;
 pub fn router(c: Arc<Cluster>) -> Router {
     Router::new()
         .route("/cluster/v1/ca", get(get_ca).put(put_ca))
+        .route(
+            "/cluster/v1/secrets-key",
+            axum::routing::put(put_secrets_key),
+        )
         .route("/cluster/v1/ca/settle", post(ca_settle))
         .route("/cluster/v1/join", post(join))
         .route("/cluster/v1/join/ready", post(join_ready))
@@ -152,6 +156,9 @@ struct CaKey {
     /// The secrets key, base64 (spec/tenancy.md §13); servers only.
     #[serde(default)]
     secrets_kek: Option<String>,
+    /// The one before it, while a rotation re-wraps the data keys.
+    #[serde(default)]
+    secrets_kek_previous: Option<String>,
     /// A rotation sends the new CA's certificate with its key (§12.5 step 1).
     #[serde(default)]
     cert_pem: Option<String>,
@@ -441,26 +448,66 @@ async fn put_ca(State(c): Ctx, p: Option<Extension<PeerCert>>, Json(b): Json<CaK
     }
     *c.ca.lock().unwrap() = Some(ca);
     // The secrets key travels with the CA key, and only with a valid one.
-    if let Some(k) = &b.secrets_kek {
-        use base64::Engine;
-        let installed = base64::engine::general_purpose::STANDARD
-            .decode(k)
-            .map_err(|e| e.to_string())
-            .and_then(|bytes| {
-                c.secrets
-                    .get()
-                    .ok_or_else(|| "nothing holds the secrets key here".to_string())
-                    .and_then(|s| s.install_kek(&bytes))
-            });
-        if let Err(e) = installed {
-            return fail(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                format!("installing the secrets key: {e}"),
-            );
-        }
+    if let Some(k) = &b.secrets_kek
+        && let Err(e) = install_secrets_key(&c, k, b.secrets_kek_previous.as_deref())
+    {
+        return fail(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal",
+            format!("installing the secrets key: {e}"),
+        );
     }
     StatusCode::NO_CONTENT.into_response()
+}
+
+/// Decode and install the secrets key (and the previous one, base64).
+fn install_secrets_key(c: &Cluster, key: &str, previous: Option<&str>) -> Result<(), String> {
+    use base64::Engine;
+    let b64 = |v: &str| {
+        base64::engine::general_purpose::STANDARD
+            .decode(v)
+            .map_err(|e| e.to_string())
+    };
+    let bytes = zeroize::Zeroizing::new(b64(key)?);
+    let prev = previous.map(b64).transpose()?.map(zeroize::Zeroizing::new);
+    c.secrets
+        .get()
+        .ok_or_else(|| "nothing holds the secrets key here".to_string())?
+        .install_kek(&bytes, prev.as_deref().map(|v| v.as_slice()))
+}
+
+#[derive(Deserialize)]
+struct SecretsKeyBody {
+    kek: String,
+    previous: Option<String>,
+}
+
+/// The leader rotates the secrets key (spec/tenancy.md §13): each server
+/// takes the new key and keeps the previous one until the data keys are
+/// re-wrapped. Never through the Raft log.
+async fn put_secrets_key(
+    State(c): Ctx,
+    p: Option<Extension<PeerCert>>,
+    Json(b): Json<SecretsKeyBody>,
+) -> Response {
+    if let Err(r) = peer(&c, p, true) {
+        return r;
+    }
+    if c.role() != NodeRole::Server {
+        return fail(
+            StatusCode::CONFLICT,
+            "not_a_server",
+            "agents never hold the secrets key",
+        );
+    }
+    match install_secrets_key(&c, &b.kek, b.previous.as_deref()) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => fail(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal",
+            format!("installing the secrets key: {e}"),
+        ),
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -792,8 +839,12 @@ async fn join_ready(State(c): Ctx, p: Option<Extension<PeerCert>>) -> Response {
         let mut body = json!({ "key_pem": ca.key_pem() });
         if let Some(s) = c.secrets.get() {
             use base64::Engine;
-            body["secrets_kek"] =
-                json!(base64::engine::general_purpose::STANDARD.encode(&*s.kek()));
+            let (kek, previous) = s.kek();
+            let b64 = |v: &[u8]| base64::engine::general_purpose::STANDARD.encode(v);
+            body["secrets_kek"] = json!(b64(&kek));
+            if let Some(p) = previous {
+                body["secrets_kek_previous"] = json!(b64(&p));
+            }
         }
         let r = c
             .client

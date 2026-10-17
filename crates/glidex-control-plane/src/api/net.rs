@@ -176,8 +176,25 @@ pub struct CreateHostNetwork {
     /// caller's default project.
     #[serde(default)]
     grants: Option<Vec<String>>,
+    /// Tenants (ids or slugs) whose every project may use it (D25).
+    #[serde(default)]
+    tenants: Vec<String>,
     #[serde(default)]
     all_projects: bool,
+}
+
+fn resolve_tenants(c: &Caller, keys: &[String]) -> Result<Vec<String>, ApiErr> {
+    keys.iter()
+        .map(|k| {
+            c.auth().tenants.resolve(k).map(|t| t.id).map_err(|_| {
+                err(
+                    StatusCode::NOT_FOUND,
+                    "not_found",
+                    format!("tenant {} not found", k),
+                )
+            })
+        })
+        .collect()
 }
 
 fn resolve_projects(c: &Caller, keys: &[String]) -> Result<Vec<String>, ApiErr> {
@@ -206,12 +223,13 @@ pub async fn create_network(
     c.require(Ent::Host, EntitySet::new())?;
     let grants = match &body.grants {
         Some(g) => resolve_projects(&c, g)?,
-        None if body.all_projects => Vec::new(),
+        None if body.all_projects || !body.tenants.is_empty() => Vec::new(),
         None => c.target_project(None).ok().into_iter().collect(),
     };
+    let tenants = resolve_tenants(&c, &body.tenants)?;
     let net = c
         .manager()
-        .create_host_network(body.req, grants, body.all_projects)
+        .create_host_network(body.req, grants, tenants, body.all_projects)
         .await
         .map_err(manager_err)?;
     Ok((StatusCode::CREATED, Json(net)))
@@ -258,6 +276,9 @@ pub async fn delete_network(
 pub struct GrantBody {
     #[serde(default)]
     grants: Vec<String>,
+    /// Tenants (ids or slugs) whose every project may use the network.
+    #[serde(default)]
+    tenants: Vec<String>,
     #[serde(default)]
     all_projects: bool,
 }
@@ -272,9 +293,11 @@ pub async fn grant_network(
     let (e, es) = network_entities(&n);
     c.require(e, es)?;
     let grants = resolve_projects(&c, &body.grants)?;
+    let tenants = resolve_tenants(&c, &body.tenants)?;
+    c.detail("tenants", serde_json::json!(tenants));
     Ok(Json(
         c.manager()
-            .grant_network(&name, grants, body.all_projects)
+            .grant_network(&name, grants, tenants, body.all_projects)
             .map_err(manager_err)?,
     ))
 }
@@ -442,6 +465,28 @@ pub async fn offer_share(
     }
     let (e, mut es) = network_entities(&n);
     es.project(&body.project);
+    // D25: only within the network's tenant. A target elsewhere gets the
+    // answer a missing one does, so offers can't probe other tenants.
+    let tenant_of = |p: &str| {
+        c.manager()
+            .projects()
+            .get(p)
+            .ok()
+            .flatten()
+            .map(|p| p.tenant_id)
+    };
+    let same_tenant = match (
+        n.project.as_deref().and_then(tenant_of),
+        tenant_of(&body.project),
+    ) {
+        (Some(a), Some(b)) => a == b,
+        _ => true,
+    };
+    if !same_tenant {
+        c.detail("to_project", serde_json::json!(body.project));
+        c.detail("refused", serde_json::json!("another tenant"));
+        return Ok(StatusCode::ACCEPTED);
+    }
     c.require_action(
         "offerNetworkShare",
         e,

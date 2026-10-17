@@ -162,6 +162,9 @@ pub struct Session {
     pub last_seen: u64,
     /// For step-up (`base.step-up`).
     pub authenticated_at: u64,
+    /// The login was multi-factor (`context.auth.mfa`, spec/tenancy.md §6).
+    #[serde(default)]
+    pub mfa: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

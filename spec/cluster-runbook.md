@@ -49,6 +49,18 @@ Removing a server rotates the CA afterwards (it held the key).
 
 A removed or departed node's id is retired: it joins as a new node instead.
 
+## Rotating the secrets key
+
+The key wrapping the connector secrets' data keys (spec/tenancy.md §13):
+
+    gxctl cluster rotate-secrets-key
+
+The leader gives every server the new key (each keeps the old one beside
+it, `secrets.kek.prev`), then re-wraps the data keys. If a server can't be
+reached it stops before re-wrapping, and nothing is lost: run it again. A
+key from the `secrets-kek` credential is rotated by changing the
+credential on every server.
+
 ## Rotating the CA
 
 Automatic after a server leaves and a year before the CA expires. On demand:

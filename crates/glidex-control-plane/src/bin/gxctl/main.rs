@@ -2198,6 +2198,7 @@ const SUBCOMMANDS: &[(&str, &[&str])] = &[
             "promote",
             "snapshot",
             "rotate-ca",
+            "rotate-secrets-key",
             "rejoin",
             "leave",
             "dissolve",

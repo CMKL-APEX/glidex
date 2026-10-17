@@ -853,3 +853,113 @@ async fn network_deletion_waits_for_netd() {
     );
     manager.stop_controllers().await;
 }
+
+/// Host networks granted to a whole tenant (spec/tenancy.md D25), and
+/// project networks shared only within their tenant.
+#[tokio::test(flavor = "multi_thread")]
+async fn host_networks_are_granted_to_tenants_and_shares_stay_in_one() {
+    use glidex_control_plane::tenants::DEFAULT_TENANT;
+    let h = harness(true);
+    let (status, t) = request(&h.app, "POST", "/tenants", Some(json!({"slug": "acme"}))).await;
+    assert_eq!(status, StatusCode::CREATED, "{t}");
+    let acme = t["tenant"]["id"].as_str().unwrap().to_string();
+    let (status, a) = request(&h.app, "PUT", "/admissions/acme", Some(json!({}))).await;
+    assert!(status.is_success(), "{a}");
+    let projects = h.manager.projects();
+    let pa = projects
+        .create_in(&acme, "pa", String::new(), None)
+        .unwrap()
+        .id;
+    let pa2 = projects
+        .create_in(&acme, "pa2", String::new(), None)
+        .unwrap()
+        .id;
+    let pd = projects.create("pd", String::new(), None).unwrap().id;
+    let in_project = |name: &str, project: &str, net: &str| {
+        let mut spec = vm(name, json!([{"network": net}]));
+        spec["project"] = json!(project);
+        spec
+    };
+
+    // Granted to acme, by slug: its projects may attach, others may not.
+    let (status, net) = request(
+        &h.app,
+        "POST",
+        "/networks",
+        Some(json!({"name": "lab", "mode": "nat", "tenants": ["acme"]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{net}");
+    assert_eq!(net["tenant_grants"], json!([acme]));
+    assert_eq!(net["grants"], json!([]), "no default project grant");
+    let (status, body) = request(&h.app, "POST", "/vms", Some(in_project("a1", &pa, "lab"))).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let (status, body) = request(&h.app, "POST", "/vms", Some(in_project("d1", &pd, "lab"))).await;
+    assert!(status.is_client_error(), "{status} {body}");
+    // Cedar (base.network-grant) refuses before the manager's own check.
+    assert!(
+        body["error"] == "forbidden" || body["message"].as_str().unwrap().contains("not available"),
+        "{body}"
+    );
+
+    // Regranted to the default tenant instead.
+    let (status, net) = request(
+        &h.app,
+        "PUT",
+        "/networks/lab/grants",
+        Some(json!({"tenants": [DEFAULT_TENANT]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{net}");
+    assert_eq!(net["tenant_grants"], json!([DEFAULT_TENANT]));
+    let (status, body) = request(&h.app, "POST", "/vms", Some(in_project("d2", &pd, "lab"))).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let (status, _) = request(&h.app, "POST", "/vms", Some(in_project("a2", &pa, "lab"))).await;
+    assert!(status.is_client_error());
+    let (status, _) = request(
+        &h.app,
+        "PUT",
+        "/networks/lab/grants",
+        Some(json!({"tenants": ["no-such-tenant"]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // A project network of acme is offered to another acme project, but an
+    // offer to the default tenant's project records nothing, with the
+    // same answer.
+    let (status, body) = request(
+        &h.app,
+        "POST",
+        &format!("/projects/{pa}/networks"),
+        Some(json!({"name": "apnet", "mode": "isolated"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    for target in [&pd, &pa2] {
+        let (status, _) = request(
+            &h.app,
+            "POST",
+            "/networks/apnet/shares",
+            Some(json!({"project": target})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+    }
+    let (_, shares) = request(
+        &h.app,
+        "GET",
+        &format!("/projects/{pd}/network-shares"),
+        None,
+    )
+    .await;
+    assert_eq!(shares, json!([]), "nothing across tenants");
+    let (_, shares) = request(
+        &h.app,
+        "GET",
+        &format!("/projects/{pa2}/network-shares"),
+        None,
+    )
+    .await;
+    assert_eq!(shares[0]["status"], "offered", "{shares}");
+}

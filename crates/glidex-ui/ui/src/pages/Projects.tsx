@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import * as api from "../api";
-import type { ProjectView } from "../types";
+import type { ProjectView, Tenant } from "../types";
 import { QUOTA_KEYS, QUOTA_LABELS } from "../types";
 import Modal from "../components/Modal";
 import { LoadingCard } from "../components/Loading";
@@ -89,6 +89,7 @@ export default function Projects() {
   const [projects, setProjects] = useState<ProjectView[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const [tenants, setTenants] = useState<Tenant[]>([]);
 
   const refresh = useCallback(() => {
     api
@@ -100,6 +101,15 @@ export default function Projects() {
   useEffect(() => {
     refresh();
   }, [refresh]);
+  // Tenant slugs, for those the caller may read; the id otherwise.
+  useEffect(() => {
+    api
+      .listTenants()
+      .then(setTenants)
+      .catch(() => setTenants([]));
+  }, []);
+  const tenantName = (id: string) => tenants.find((t) => t.id === id)?.slug ?? id;
+  const showTenant = !!projects?.some((p) => p.tenant_id);
 
   return (
     <div>
@@ -123,6 +133,7 @@ export default function Projects() {
             <thead>
               <tr className="text-left text-gray-500 border-b border-gray-100">
                 <th className="px-4 py-3 font-medium">Project</th>
+                {showTenant && <th className="px-4 py-3 font-medium">Tenant</th>}
                 {QUOTA_KEYS.map((k) => (
                   <th key={k} className="px-4 py-3 font-medium">
                     {QUOTA_LABELS[k]}
@@ -140,6 +151,11 @@ export default function Projects() {
                     {p.id === session.project && <span className="ml-2 text-xs text-gray-400">(selected)</span>}
                     {p.description && <div className="text-xs text-gray-500">{p.description}</div>}
                   </td>
+                  {showTenant && (
+                    <td className="px-4 py-3 text-gray-700" title={p.tenant_id}>
+                      {p.tenant_id ? tenantName(p.tenant_id) : "—"}
+                    </td>
+                  )}
                   {QUOTA_KEYS.map((k) => (
                     <td key={k} className="px-4 py-3">
                       <UsageCell used={p.usage[k]} limit={p.quotas[k]} />

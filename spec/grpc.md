@@ -80,6 +80,7 @@ crates/glidex-api/
 │   ├── glidex/system/v1/system.proto # G0: SystemService.GetServerInfo, WhoAmI
 │   ├── glidex/tenancy/v1/tenancy.proto # T0: TenantService, AdmissionService
 │   ├── glidex/directory/v1/connectors.proto # T1: ConnectorService
+│   ├── glidex/auth/v1/login.proto    # LoginService (public)
 │   ├── glidex/…/v1/*.proto           # tenancy, directory, auth; vm, storage, … as ported (§9)
 │   └── google/rpc/error_details.proto # vendored ErrorInfo only (excluded from buf lint)
 └── src/lib.rs            # generated modules + OPERATIONS
@@ -347,6 +348,7 @@ equivalent test suite; until then it stays WebSocket.
 | Service layer (`Call`, `ServiceError`) | `crates/glidex-control-plane/src/service/` |
 | `SystemService` (G0) | `service/system.rs`, `api/rpc/system.rs`; REST twin `api/access.rs::server_info` |
 | `TenantService`, `AdmissionService` (T0) | `service/tenancy.rs`, `api/rpc/tenancy.rs`; REST twins `api/tenants.rs` |
+| `LoginService` (G1's last service) | `service/login.rs`, `api/rpc/login.rs`; REST twins in `api/access.rs`; public operations get the request's listener and address from the adapter |
 | `ConnectorService` (T1) | `service/directory.rs`, `api/rpc/directory.rs`; REST twins `api/connectors.rs`; `SetSecretRequest.value` is the first field marked `secret` |
 | Forwarding by `kind`, trailers (§8) | `api/gate.rs`, `cluster/net.rs` (`Reply.trailers`) |
 | CI (G-D9) | `.github/workflows/rust.yml` job `proto` |

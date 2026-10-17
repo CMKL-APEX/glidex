@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { NavLink } from "react-router-dom";
-import { healthCheck } from "../api";
+import { healthCheck, listTenants } from "../api";
 import { useSession } from "../session";
 import Activity from "./Activity";
 
@@ -20,6 +20,21 @@ export default function Header() {
     return () => clearInterval(id);
   }, []);
 
+  // Directory readers see every tenant; others see the tenants they hold a
+  // role on, so ask whether there are any.
+  const [readsATenant, setReadsATenant] = useState(false);
+  const directoryReader = host.listTenants || host.createTenant;
+  useEffect(() => {
+    if (directoryReader || me.token) return;
+    let live = true;
+    listTenants()
+      .then((t) => live && setReadsATenant(t.length > 0))
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [directoryReader, me.token]);
+
   const ownsAProject = me.project_roles.some((r) => r.role === "role.owner");
   const nav = [
     { to: "/", label: "VMs", show: true },
@@ -28,12 +43,15 @@ export default function Header() {
     { to: "/credentials", label: "Credentials", show: true },
     { to: "/networking", label: "Networking", show: true },
     { to: "/projects", label: "Projects", show: true },
+    { to: "/tenants", label: "Tenants", show: directoryReader || readsATenant },
     { to: "/access", label: "Access", show: host.listUsers || host.listTeams || host.readSystemBindings },
+    { to: "/connectors", label: "Connectors", show: host.listConnectors },
     { to: "/tokens", label: "Tokens", show: !me.token },
     { to: "/policies", label: "Policies", show: host.readPolicy },
     { to: "/usage", label: "Usage", show: host.readUsage || me.project_roles.length > 0 },
     { to: "/audit", label: "Audit", show: host.readAudit || ownsAProject },
     { to: "/cluster", label: "Cluster", show: host.readCluster },
+    { to: "/admissions", label: "Admissions", show: host.listAdmissions },
   ].filter((n) => n.show);
 
   const who = me.user?.display_name ?? me.token?.name ?? "unknown";

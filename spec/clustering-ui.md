@@ -172,6 +172,13 @@ when the live stream reports a policy change (`policy` kind, §3.7).
 `/authz/check` stays for single checks and the session's capability
 table (§3.1).
 
+Step-up actions (`base.step-up`) are refused once a browser login is
+older than the step-up window, though using them only asks for a fresh
+login. So `/authz/check` adds `reauth: true` to a refused item a fresh
+login would allow, and `/authz/allowed` returns `reauth` next to
+`allowed`, per resource; the UI counts both as allowed and its re-login
+dialog runs when the action is used. Tokens never get `reauth`.
+
 ### 3.6 The UI on an agent
 
 An agent has no users, sessions or tokens: the auth tables replicate to

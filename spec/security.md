@@ -1238,7 +1238,7 @@ the principal is included.
 | `POST /projects/{id}/networks`, `DELETE /networks/{name}` (project network) | `network.manage` |
 | `POST /networks/{name}/shares` (`{project}`), `DELETE /networks/{name}/shares/{project}` | `network.share` on the network (offer, unshare) |
 | `GET /projects/{id}/network-shares`, `POST /projects/{id}/network-shares/{network}/accept`, `DELETE /projects/{id}/network-shares/{network}` | `network.share` on the target project (list offers, accept, leave) |
-| `PUT /networks/{name}/grants` (`{grants, all_projects}`) | `host.network` |
+| `PUT /networks/{name}/grants` (`{grants, tenants, all_projects}`) | `host.network` |
 | `POST /auth/session` | a peer-identified user on api.sock: a browser session for themselves (without break-glass) |
 | `GET /vms/{id}/console/log` | `vm.console` (console output replaces reading the log file) |
 | `PATCH /users/me` (`{default_project}`) | authenticated |
@@ -1357,7 +1357,7 @@ None. Earlier questions were answered and recorded as decisions 10–17 (§2).
 | Cedar schema and shipped policies (§7.1, §7.3) | `crates/glidex-control-plane/policies/`, engine in `src/authz.rs` |
 | Projects, quotas, migration (§6, §11) | `src/tenancy.rs`, `src/state.rs` (`create_vm_in`, `usage_locked`, `adopt_into_default_project`) |
 | Identity store, principals, sessions, tokens, tickets, audit (§5, §10) | `src/auth/mod.rs`, `src/auth/store.rs` |
-| OIDC (§5.4) | `src/auth/oidc.rs` |
+| OIDC (§5.4) | `src/directory/oidc.rs` |
 | API, route table, compound checks (§7.4, §7.7, §13) | `src/api/` |
 | Listeners, TLS (§5.1, §5.1.1) | `src/serve.rs`, `src/config.rs`; certificates, listeners, local names and client trust shared with glidex-ui, gxctl and the installer in `crates/glidex-tls` |
 | Private VM runtime directories (§9) | `src/paths.rs` |

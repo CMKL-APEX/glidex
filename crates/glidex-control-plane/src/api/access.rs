@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 use super::AppState;
+use crate::service::login::{self as svc, audit_login, oidc_client, oidc_error, oidc_user};
 
 fn store_err(e: StoreError) -> ApiErr {
     auth_error(AuthError::Store(e))
@@ -30,52 +31,22 @@ fn manager_err(e: crate::state::VmManagerError) -> ApiErr {
 
 // ---- login -------------------------------------------------------------
 
-/// The connectors a login page offers (spec/tenancy.md §6).
-fn login_connectors(app: &AppState) -> Vec<serde_json::Value> {
-    app.auth
-        .connectors
-        .list()
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|c| c.enabled)
-        .map(|c| serde_json::json!({ "id": c.id, "kind": c.kind.as_str(), "display_name": c.display_name }))
-        .collect()
-}
-
 pub async fn methods(State(app): State<AppState>) -> impl IntoResponse {
     Json(serde_json::json!({
         "pam": app.auth.pam_connector(None).is_ok(),
         "oidc": app.auth.oidc_enabled(),
         "disabled": app.auth.is_disabled(),
-        "connectors": login_connectors(&app),
+        "connectors": svc::discover(&app, Default::default()).connectors,
     }))
 }
 
-#[derive(Deserialize)]
-pub struct DiscoverBody {
-    #[serde(default)]
-    hint: String,
-}
-
-/// `POST /auth/discover` (spec/tenancy.md §6.1): which connectors to offer
-/// for a tenant slug or an email address. This host hosts one directory,
-/// so every login connector is offered; a hint naming a tenant is echoed.
+/// `POST /auth/discover` (spec/tenancy.md §6.1), the REST twin of
+/// `LoginService.Discover`.
 pub async fn discover(
     State(app): State<AppState>,
-    Json(b): Json<DiscoverBody>,
+    Json(req): Json<glidex_api::proto::glidex::auth::v1::DiscoverRequest>,
 ) -> impl IntoResponse {
-    let slug = b.hint.trim().to_ascii_lowercase();
-    let tenant = app
-        .auth
-        .tenants
-        .list()
-        .unwrap_or_default()
-        .into_iter()
-        .find(|t| t.slug == slug);
-    Json(serde_json::json!({
-        "tenant": tenant.map(|t| serde_json::json!({ "slug": t.slug, "display_name": t.display_name })),
-        "connectors": login_connectors(&app),
-    }))
+    Json(svc::discover(&app, req))
 }
 
 #[derive(Deserialize)]
@@ -143,29 +114,9 @@ fn whoami_json(app: &AppState, p: &Principal) -> Result<serde_json::Value, ApiEr
         "host_roles": host_roles,
         "project_roles": project_roles,
         "default_project": p.default_project(),
+        "mfa": p.mfa,
+        "directory_id": p.directory_id(),
     }))
-}
-
-/// Audit a login outcome (spec §10).
-fn audit_login(
-    app: &AppState,
-    p: Option<&Principal>,
-    rid: &str,
-    method: &str,
-    result: &str,
-    who: &str,
-) {
-    app.auth.audit(
-        p,
-        rid,
-        "login",
-        None,
-        Some(&format!("user:{}", who)),
-        result,
-        None,
-        &[],
-        serde_json::json!({ "method": method }),
-    );
 }
 
 pub async fn login(
@@ -293,11 +244,7 @@ pub struct PamTokenBody {
     days: Option<u64>,
 }
 
-/// CLI/CI token login (spec/gxctl-auth.md §7.3): PAM credentials in, a
-/// personal bearer token out. Same authd path, rate limits, fixed delay
-/// and JIT provisioning as `POST /auth/login`; the answer is a token
-/// because the CLI and CI carry tokens while sessions stay the browser's
-/// half of §5.5.
+/// `POST /auth/token`, the REST twin of `LoginService.PasswordToken`.
 pub async fn pam_token(
     State(app): State<AppState>,
     Extension(rid): Extension<RequestId>,
@@ -305,67 +252,24 @@ pub async fn pam_token(
     addr: Option<Extension<ClientAddr>>,
     Json(body): Json<PamTokenBody>,
 ) -> Result<impl IntoResponse, ApiErr> {
-    let listener = listener.map(|l| l.0).unwrap_or(Listener::Tcp);
-    if app.auth.pam_connector(body.connector.as_deref()).is_err() {
-        return Err(err(
-            StatusCode::UNAUTHORIZED,
-            "unauthenticated",
-            "PAM logins are off: set auth.pam.enabled in control-plane.json, or name a PAM connector",
-        ));
-    }
-    // Passwords only over TLS or from this host (spec §5.3), the same rule as `login`.
-    let local = match listener {
-        Listener::Ui | Listener::Api | Listener::Cluster | Listener::Relay => true,
-        Listener::Tcp => {
-            app.auth.config.tls.enabled() || addr.is_none_or(|a| a.0.0.ip().is_loopback())
-        }
+    let origin = svc::Origin {
+        request_id: &rid.0,
+        listener: listener.map(|l| l.0).unwrap_or(Listener::Tcp),
+        client_ip: addr.map(|a| a.0.0.ip()),
     };
-    if !local {
-        return Err(err(
-            StatusCode::FORBIDDEN,
-            "tls_required",
-            "password token logins need TLS",
-        ));
-    }
-    let a = app.clone();
-    let username = body.username.clone();
-    let password = body.password;
-    let connector = body.connector.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        a.auth
-            .login_pam_with(connector.as_deref(), &username, &password)
-    })
-    .await
-    .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()))?;
-    let (user, c) = match result {
-        Ok(v) => v,
-        Err(e) => {
-            audit_login(&app, None, &rid.0, "pam-token", "denied", &body.username);
-            return Err(auth_error(e));
-        }
+    let req = glidex_api::proto::glidex::auth::v1::PasswordTokenRequest {
+        username: body.username,
+        password: body.password.to_string(),
+        connector: body.connector,
+        days: body.days.map(|d| d.min(u64::from(u32::MAX)) as u32),
+        token_name: body.token_name,
+        device: body.device,
+        client: body.client,
+        ..Default::default()
     };
-    // D20: a connector without provisioning can't vouch for a long token.
-    let days = body
-        .days
-        .unwrap_or(app.auth.config.auth.tokens.default_days)
-        .min(c.token_max_days());
-    let name = body.token_name.unwrap_or_else(|| "gxctl".into());
-    let (secret, token) = app
-        .auth
-        .create_token(
-            &name,
-            TokenKind::Personal {
-                owner: user.id.clone(),
-            },
-            &user.id,
-            Some(days),
-            body.device.as_deref(),
-            body.client.as_deref(),
-        )
-        .map_err(auth_error)?;
-    audit_login(&app, None, &rid.0, "pam-token", "ok", &user.id);
+    let m = svc::password_token(&app, &origin, req).await?;
     Ok(Json(
-        serde_json::json!({ "token": secret, "token_id": token.id, "expires_at": token.expires_at, "user": user }),
+        serde_json::json!({ "token": m.secret, "token_id": m.token.id, "expires_at": m.token.expires_at, "user": m.user }),
     ))
 }
 
@@ -488,26 +392,6 @@ fn first_origin(app: &AppState) -> Option<&str> {
         .map(String::as_str)
 }
 
-fn oidc_client(
-    app: &AppState,
-    id: Option<&str>,
-) -> Result<
-    (
-        crate::directory::Connector,
-        std::sync::Arc<auth::oidc::OidcState>,
-    ),
-    ApiErr,
-> {
-    app.auth.oidc_for(id).map_err(|e| match e {
-        AuthError::Store(StoreError::NotFound(_)) => err(
-            StatusCode::NOT_FOUND,
-            "oidc_disabled",
-            "no such OIDC connector, or OIDC logins are off",
-        ),
-        other => auth_error(other),
-    })
-}
-
 async fn start_oidc(
     app: AppState,
     id: Option<&str>,
@@ -576,35 +460,6 @@ pub struct OidcCallbackQuery {
     error: Option<String>,
 }
 
-fn oidc_error(e: auth::oidc::OidcError) -> ApiErr {
-    use auth::oidc::OidcError as E;
-    match e {
-        E::Disabled => err(StatusCode::NOT_FOUND, "oidc_disabled", e.to_string()),
-        E::NotAllowed(_) => err(StatusCode::FORBIDDEN, "login_not_allowed", e.to_string()),
-        E::Pending => err(StatusCode::ACCEPTED, "authorization_pending", e.to_string()),
-        E::SlowDown => err(StatusCode::TOO_MANY_REQUESTS, "slow_down", e.to_string()),
-        E::Provider(_) => err(StatusCode::BAD_GATEWAY, "idp_error", e.to_string()),
-        E::Invalid(_) => err(StatusCode::UNAUTHORIZED, "login_failed", e.to_string()),
-    }
-}
-
-/// The user for a verified OIDC identity, through the common path.
-fn oidc_user(
-    app: &AppState,
-    c: &crate::directory::Connector,
-    id: &auth::oidc::OidcIdentity,
-) -> Result<User, ApiErr> {
-    let ext = crate::directory::ExternalIdentity {
-        connector_id: c.id.clone(),
-        subject: id.subject.clone(),
-        display_name: id.display_name.clone(),
-        email: id.email.clone(),
-        groups: id.groups.clone(),
-        mfa: id.mfa,
-    };
-    app.auth.external_login(c, &ext).map_err(auth_error)
-}
-
 async fn finish_oidc(
     app: AppState,
     id: Option<&str>,
@@ -641,19 +496,19 @@ async fn finish_oidc(
         Ok(v) => v,
         Err(e) => {
             audit_login(&app, None, &rid.0, "oidc", "denied", "-");
-            return Err(oidc_error(e));
+            return Err(oidc_error(e).into());
         }
     };
     let user = match oidc_user(&app, &c, &identity) {
         Ok(u) => u,
         Err(e) => {
             audit_login(&app, None, &rid.0, "oidc", "denied", &identity.subject);
-            return Err(e);
+            return Err(e.into());
         }
     };
     let (cookie, _) = app
         .auth
-        .create_session(&user, Method::Oidc)
+        .create_session_with(&user, Method::Oidc, identity.mfa)
         .map_err(auth_error)?;
     let p = app
         .auth
@@ -701,16 +556,18 @@ pub async fn connector_callback(
 }
 
 pub async fn oidc_device_start(State(app): State<AppState>) -> Result<impl IntoResponse, ApiErr> {
-    let (_, oidc) = oidc_client(&app, None)?;
-    Ok(Json(oidc.device_start().await.map_err(oidc_error)?))
+    Ok(Json(svc::start_device(&app, Default::default()).await?))
 }
 
 pub async fn connector_device_start(
     State(app): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiErr> {
-    let (_, oidc) = oidc_client(&app, Some(&id))?;
-    Ok(Json(oidc.device_start().await.map_err(oidc_error)?))
+    let req = glidex_api::proto::glidex::auth::v1::StartDeviceRequest {
+        connector: Some(id),
+        ..Default::default()
+    };
+    Ok(Json(svc::start_device(&app, req).await?))
 }
 
 #[derive(Deserialize)]
@@ -726,45 +583,33 @@ pub struct DevicePoll {
     client: Option<String>,
 }
 
-/// Lifetime of the token gxctl gets from a device login.
-const DEVICE_TOKEN_DAYS: u64 = 1;
-
 async fn poll_device(
     app: AppState,
     id: Option<&str>,
     rid: RequestId,
     body: DevicePoll,
 ) -> Result<Response, ApiErr> {
-    let (c, oidc) = oidc_client(&app, id)?;
-    let identity = match oidc.device_poll(&body.device_code).await {
-        Ok(i) => i,
-        Err(auth::oidc::OidcError::Pending) => {
-            return Ok((
-                StatusCode::ACCEPTED,
-                Json(serde_json::json!({ "status": "pending" })),
-            )
-                .into_response());
-        }
-        Err(e) => return Err(oidc_error(e)),
+    let origin = svc::Origin {
+        request_id: &rid.0,
+        listener: Listener::Tcp,
+        client_ip: None,
     };
-    let user = oidc_user(&app, &c, &identity)?;
-    let name = body.token_name.unwrap_or_else(|| "gxctl".into());
-    let days = DEVICE_TOKEN_DAYS.min(c.token_max_days());
-    let (secret, token) = app
-        .auth
-        .create_token(
-            &name,
-            TokenKind::Personal {
-                owner: user.id.clone(),
-            },
-            &user.id,
-            Some(days),
-            body.device.as_deref(),
-            body.client.as_deref(),
+    let req = glidex_api::proto::glidex::auth::v1::PollDeviceRequest {
+        connector: id.map(str::to_string),
+        device_code: body.device_code,
+        token_name: body.token_name,
+        device: body.device,
+        client: body.client,
+        ..Default::default()
+    };
+    match svc::poll_device(&app, &origin, req).await? {
+        None => Ok((
+            StatusCode::ACCEPTED,
+            Json(serde_json::json!({ "status": "pending" })),
         )
-        .map_err(auth_error)?;
-    audit_login(&app, None, &rid.0, "oidc-device", "ok", &user.id);
-    Ok(Json(serde_json::json!({ "status": "ok", "token": secret, "expires_at": token.expires_at, "user": user })).into_response())
+            .into_response()),
+        Some(m) => Ok(Json(serde_json::json!({ "status": "ok", "token": m.secret, "expires_at": m.token.expires_at, "user": m.user })).into_response()),
+    }
 }
 
 pub async fn oidc_device_poll(
@@ -880,11 +725,18 @@ pub async fn authz_check(
             out.push(serde_json::json!({ "allowed": false, "error": "unknown action" }));
             continue;
         }
-        let allowed = match resource_entities(&c, &item.resource).await {
-            Some(es) => c.allowed(&item.action, item.resource.clone(), es),
-            None => false,
+        let Some(es) = resource_entities(&c, &item.resource).await else {
+            out.push(serde_json::json!({ "allowed": false }));
+            continue;
         };
-        out.push(serde_json::json!({ "allowed": allowed }));
+        if c.allowed(&item.action, item.resource.clone(), es.clone()) {
+            out.push(serde_json::json!({ "allowed": true }));
+        } else {
+            // Step-up refuses it only until the user logs in again: say so,
+            // so a client offers the action and its re-login.
+            let reauth = c.allowed_after_reauth(&item.action, item.resource.clone(), es);
+            out.push(serde_json::json!({ "allowed": false, "reauth": reauth }));
+        }
     }
     Ok(Json(serde_json::json!({ "results": out })))
 }
@@ -937,7 +789,8 @@ pub async fn authz_allowed(
             types.map(|t| t.basename().to_string()).collect(),
         ));
     }
-    let mut out = Vec::new();
+    let mut out: Vec<Vec<String>> = Vec::new();
+    let mut reauth: Vec<Vec<String>> = Vec::new();
     for r in &body.resources {
         let ty = r.type_name();
         let candidates: Vec<&str> = applies
@@ -947,19 +800,30 @@ pub async fn authz_allowed(
             .collect();
         if candidates.is_empty() {
             out.push(Vec::new());
+            reauth.push(Vec::new());
             continue;
         }
-        let ok = match resource_entities(&c, r).await {
-            Some(es) => candidates
+        let Some(es) = resource_entities(&c, r).await else {
+            out.push(Vec::new());
+            reauth.push(Vec::new());
+            continue;
+        };
+        let (ok, later): (Vec<&str>, Vec<&str>) = candidates
+            .into_iter()
+            .partition(|a| c.allowed(a, r.clone(), es.clone()));
+        reauth.push(
+            later
                 .into_iter()
-                .filter(|a| c.allowed(a, r.clone(), es.clone()))
+                .filter(|a| c.allowed_after_reauth(a, r.clone(), es.clone()))
                 .map(String::from)
                 .collect(),
-            None => Vec::new(),
-        };
-        out.push(ok);
+        );
+        out.push(ok.into_iter().map(String::from).collect());
     }
-    Ok(Json(serde_json::json!({ "allowed": out })))
+    // `reauth`: per resource, the actions a fresh login would allow.
+    Ok(Json(
+        serde_json::json!({ "allowed": out, "reauth": reauth }),
+    ))
 }
 
 // ---- tokens --------------------------------------------------------------

@@ -141,6 +141,9 @@ message Tenant {
   google.protobuf.Timestamp created_at = 8 [json_name = "created_at"];
   // This cluster's admission of the tenant, if any.
   Admission admission = 9;
+  // The tenant operating this cluster (D4): it can't be suspended here
+  // nor lose its admission.
+  optional bool operates_here = 10 [json_name = "operates_here"];
 }
 
 // Limits; an absent field is unlimited.
@@ -169,6 +172,10 @@ message Admission {
   AdmissionStatus status = 4;
   string by = 5;
   google.protobuf.Timestamp at = 6;
+  // The tenant's slug and name, for an operator who can't read the
+  // directory's tenants.
+  string tenant_slug = 7 [json_name = "tenant_slug"];
+  string tenant_display_name = 8 [json_name = "tenant_display_name"];
 }
 
 message Member {
@@ -176,6 +183,8 @@ message Member {
   glidex.api.v1.EntityRef principal = 2;
   string by = 3;
   google.protobuf.Timestamp at = 4;
+  // The user's display name or the team's name, when known.
+  string principal_name = 5 [json_name = "principal_name"];
 }
 
 // A role link on the tenant (role.tenant-admin, role.tenant-auditor).

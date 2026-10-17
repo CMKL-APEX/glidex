@@ -161,6 +161,8 @@ name (ids when `/projects` isn't readable).
 | `tenant members <t>` / `add-member <t> <principal>` / `remove-member <t> <principal>` | `TenantService.ListMembers` / `AddMember` / `RemoveMember` (explicit members; role links on the tenant and its projects make members too) |
 | `tenant bindings <t>` / `bind <t> <tenant-admin\|tenant-auditor> <principal>` / `unbind <t> <link>` | `TenantService.ListBindings` / `AddBinding` / `RemoveBinding` |
 | `admission list` / `set <tenant> [key=value…\|unlimited] [--suspend\|--resume]` / `remove <tenant>` | `AdmissionService` RPCs: which tenants this cluster admits and their caps (spec/tenancy.md D9, D19) |
+| `network grant <host-net> [--project P]… [--tenant T]… [--all-projects]` | `PUT /networks/{name}/grants`: who may use a host network, by project or whole tenant (spec/tenancy.md D25); the lists replace the current ones |
+| `cluster rotate-secrets-key` | `POST /cluster/rotate-secrets-key`: a new key for the connector secrets, on every server (spec/tenancy.md §13) |
 | `connector list` / `show <id>` | `ConnectorService.ListConnectors` / `GetConnector`: kind, source, rules, team mappings, and whether each secret is set (never its value) |
 | `connector add oidc <id> --issuer URL --client-id ID [--name N] [--scope S]… [--groups-claim C] [--domain D]… [--mfa-acr V]…` / `add pam <id> [--allow-group G]…`, both with `[--jit\|--no-jit] [--require-group G]… [--mfa\|--no-mfa] [--team GROUP=TEAM]… [--default-tenant T] [--token-max-days N]` | `CreateConnector`; prints the `secret set` command for each secret still to set |
 | `connector update <id> [--name N] [--enable\|--disable] [same flags]` | `UpdateConnector` with a field mask of the flags given |

@@ -188,21 +188,30 @@ pub(crate) fn device_bdf(path: &str) -> Result<String, ApiErr> {
     }
 }
 
-/// A PCI device entity with the projects granted it in the config.
+/// A PCI device entity with the projects and tenants granted it in the
+/// config.
 pub(crate) fn pci_entities(c: &Caller, bdf: &str) -> (Ent, EntitySet) {
     let projects = c.manager().projects();
-    let grants: Vec<String> = c
+    let allow: Vec<_> = c
         .auth()
         .config
         .pci
         .allow
         .iter()
         .filter(|g| g.bdf.eq_ignore_ascii_case(bdf))
+        .collect();
+    let grants: Vec<String> = allow
+        .iter()
         .flat_map(|g| g.projects.iter())
         .filter_map(|p| projects.resolve(p).ok().map(|p| p.id))
         .collect();
+    let tenants: Vec<String> = allow
+        .iter()
+        .flat_map(|g| g.tenants.iter())
+        .filter_map(|t| c.auth().tenants.resolve(t).ok().map(|t| t.id))
+        .collect();
     let mut es = EntitySet::new();
-    es.pci_device(bdf, &grants);
+    es.pci_device(bdf, &grants, &tenants);
     (Ent::PciDevice(bdf.to_string()), es)
 }
 
