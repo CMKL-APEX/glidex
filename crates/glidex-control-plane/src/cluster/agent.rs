@@ -65,6 +65,13 @@ impl NodeLink {
         tokio::spawn(async move { l.heartbeat_loop().await });
         let l = link.clone();
         tokio::spawn(async move { l.outbox_loop().await });
+        // Stopping the cluster stops the link: a stopped node sends no heartbeats.
+        let l = link.clone();
+        let mut stopped = link.cluster.stop_rx();
+        tokio::spawn(async move {
+            let _ = stopped.wait_for(|s| *s).await;
+            l.stop();
+        });
         link
     }
 

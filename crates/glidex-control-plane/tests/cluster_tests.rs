@@ -58,7 +58,9 @@ fn test_config() -> Config {
     let mut c = Config::default();
     c.cluster.raft.heartbeat_ms = 100;
     c.cluster.raft.election_ms = (600, 1200);
-    c.cluster.node_grace_secs = 3;
+    // Longer than an agent's 5 s heartbeat plus the leader's 2 s liveness
+    // tick: shorter, and a live node flaps between ready and unreachable.
+    c.cluster.node_grace_secs = 8;
     c
 }
 
@@ -950,8 +952,7 @@ async fn a_vm_placed_on_an_agent_is_that_agents_and_its_status_comes_back() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn a_silent_node_is_unreachable_not_gone() {
     let _one = SERIAL.lock().await;
-    let mut cfg = test_config();
-    cfg.cluster.node_grace_secs = 5;
+    let cfg = test_config();
     let server = new_cp();
     manage::init(
         &server.manager,
