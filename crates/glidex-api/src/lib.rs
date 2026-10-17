@@ -127,6 +127,8 @@ mod tests {
                 "glidex.access.v1.AuthzService",
                 "glidex.auth.v1.LoginService",
                 "glidex.directory.v1.ConnectorService",
+                "glidex.host.v1.HostNetworkService",
+                "glidex.host.v1.PciService",
                 "glidex.network.v1.NetworkService",
                 "glidex.network.v1.NetworkShareService",
                 "glidex.network.v1.RouterService",

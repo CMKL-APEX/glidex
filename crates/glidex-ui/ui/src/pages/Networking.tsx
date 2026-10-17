@@ -8,10 +8,11 @@ import type {
   NetworkMode,
   NetworkScope,
   Router,
+  OvsProfile,
   OvsStatus,
   PortType,
 } from "../types";
-import { isClusterNetwork, networkModeLabel, networkPhaseLabel, networkUsableBy, notReady, portTypeLabel } from "../types";
+import { isClusterNetwork, netdAccessLabel, networkModeLabel, networkPhaseLabel, networkUsableBy, notReady, portTypeLabel } from "../types";
 import { useLiveRefresh } from "../live";
 import { useCan, useSession } from "../session";
 import Modal from "../components/Modal";
@@ -59,7 +60,7 @@ function StatusPanel({
       </div>
     );
   }
-  const host = status.host!;
+  const host = status.host ?? {};
   return (
     <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
       <div className="flex items-center justify-between">
@@ -69,7 +70,7 @@ function StatusPanel({
             {host.ovs_installed ? (
               <>
                 <span className="font-medium">{host.ovs_version}</span>{" "}
-                <Badge ok={host.ovs_running}>
+                <Badge ok={!!host.ovs_running}>
                   {host.ovs_running ? "running" : "not running"}
                 </Badge>
               </>
@@ -79,16 +80,16 @@ function StatusPanel({
           </p>
           <p>
             <span className="text-gray-500">glidex-netd access:</span>{" "}
-            <Badge ok={status.netd.access === "full"}>{status.netd.access}</Badge>
+            <Badge ok={status.netd.access === "NETD_ACCESS_FULL"}>{netdAccessLabel(status.netd.access)}</Badge>
           </p>
-          {host.firewalls.length > 0 && (
+          {(host.firewalls ?? []).length > 0 && (
             <p className="text-yellow-700">
-              Active firewall ({host.firewalls.join(", ")}) may drop forwarded
+              Active firewall ({host.firewalls?.join(", ")}) may drop forwarded
               NAT traffic; allow the NAT subnets there.
             </p>
           )}
         </div>
-        {status.netd.access === "full" && (
+        {status.netd.access === "NETD_ACCESS_FULL" && (
           <button
             className="px-4 py-2 text-sm font-medium text-white bg-sky-600 hover:bg-sky-700 rounded-lg"
             onClick={onInstall}
@@ -99,7 +100,7 @@ function StatusPanel({
       </div>
       <table className="w-full text-sm mt-4">
         <tbody className="divide-y divide-gray-100">
-          {host.combinations.map((c) => (
+          {(host.combinations ?? []).map((c) => (
             <tr key={c.id}>
               <td className="py-2 pr-3 font-mono">{c.id}</td>
               <td className="py-2 pr-3">{c.description}</td>
@@ -108,7 +109,7 @@ function StatusPanel({
                   <Badge ok>available</Badge>
                 ) : (
                   <span className="text-xs text-gray-500">
-                    missing: {c.missing.join(", ")}
+                    missing: {(c.missing ?? []).join(", ")}
                   </span>
                 )}
               </td>
@@ -127,7 +128,7 @@ function InstallDialog({
   onClose: () => void;
   onDone: () => void;
 }) {
-  const [profile, setProfile] = useState<"kernel" | "dpdk">("kernel");
+  const [profile, setProfile] = useState<OvsProfile>("OVS_PROFILE_KERNEL");
   const [impact, setImpact] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -177,10 +178,10 @@ function InstallDialog({
               <select
                 className={`${inputClass} bg-white`}
                 value={profile}
-                onChange={(e) => setProfile(e.target.value as "kernel" | "dpdk")}
+                onChange={(e) => setProfile(e.target.value as OvsProfile)}
               >
-                <option value="kernel">kernel (NAT, bridged, AF_XDP with tap)</option>
-                <option value="dpdk">dpdk (vhost-user, DPDK uplinks)</option>
+                <option value="OVS_PROFILE_KERNEL">kernel (NAT, bridged, AF_XDP with tap)</option>
+                <option value="OVS_PROFILE_DPDK">dpdk (vhost-user, DPDK uplinks)</option>
               </select>
               <p className="mt-1 text-xs text-gray-500">
                 Installs distribution packages; may take a few minutes.
@@ -536,7 +537,7 @@ export default function Networking() {
     if (st.status === "fulfilled") {
       setStatus(st.value);
       setHostView(true);
-      if (st.value.netd.access === "full") {
+      if (st.value.netd.access === "NETD_ACCESS_FULL") {
         try {
           setBridges(await api.listBridges());
         } catch (e) {
@@ -578,7 +579,7 @@ export default function Networking() {
   };
 
   // Without the host status, the server decides whether netd can do it.
-  const netdReady = hostView === false || (status?.netd.access === "full" && !!status.host?.ovs_running);
+  const netdReady = hostView === false || (status?.netd.access === "NETD_ACCESS_FULL" && !!status.host?.ovs_running);
   const canAdd = netdReady && scopes.length > 0;
   const canDelete = (n: Network) =>
     netdReady && (n.project ? ownProjects.some((p) => p.id === n.project) : host.createNetwork);

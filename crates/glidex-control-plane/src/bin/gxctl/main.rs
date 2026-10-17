@@ -6,6 +6,7 @@ mod client;
 mod config;
 mod console;
 mod directory;
+mod host;
 mod network;
 mod storage;
 mod tenancy;
@@ -25,7 +26,6 @@ use rustyline::hint::Hinter;
 use rustyline::history::DefaultHistory;
 use rustyline::validate::Validator;
 use rustyline::{CompletionType, Config, Context, Editor, Helper};
-use serde::Deserialize;
 use std::io::{self, IsTerminal, Write};
 use std::os::fd::AsFd;
 use std::path::PathBuf;
@@ -308,246 +308,6 @@ fn has_flag(args: &[&str], flag: &str) -> bool {
     args.contains(&flag)
 }
 
-async fn handle_uplink_add(client: &CliClient, args: &[&str]) {
-    let usage = "Usage: uplink-add <bridge> (--kernel <if> | --afxdp <if> [--xdp-mode best_effort|native|native_with_zerocopy|generic] [--rxq N] | --dpdk <bdf> --name <port> [--rxq N]) [--migrate-ip] [--force] [--accept-dhcp]";
-    let Some(bridge) = args.first().filter(|a| !a.starts_with("--")) else {
-        println!("{}", usage.yellow());
-        return;
-    };
-    let rxq: u16 = flag_value(args, "--rxq")
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(1);
-    let mut body = if let Some(ifname) = flag_value(args, "--kernel") {
-        serde_json::json!({"name": ifname, "kind": "kernel", "ifname": ifname})
-    } else if let Some(ifname) = flag_value(args, "--afxdp") {
-        serde_json::json!({"name": ifname, "kind": "afxdp", "ifname": ifname, "n_rxq": rxq,
-            "xdp_mode": flag_value(args, "--xdp-mode").unwrap_or("best_effort")})
-    } else if let Some(pci) = flag_value(args, "--dpdk") {
-        let Some(name) = flag_value(args, "--name") else {
-            println!("{}", usage.yellow());
-            return;
-        };
-        serde_json::json!({"name": name, "kind": "dpdk", "pci": pci, "n_rxq": rxq})
-    } else {
-        println!("{}", usage.yellow());
-        return;
-    };
-    body["migrate_ip"] = serde_json::json!(has_flag(args, "--migrate-ip"));
-    body["confirm"] = serde_json::json!(has_flag(args, "--force"));
-    body["accept_dhcp"] = serde_json::json!(has_flag(args, "--accept-dhcp"));
-    let path = format!("/ovs/bridges/{}/uplinks", bridge);
-    let res = match client
-        .request_json::<serde_json::Value>(Method::POST, &path, Some(body))
-        .await
-    {
-        Ok(r) => r,
-        Err(e) => {
-            if e.contains("DHCP-managed") {
-                println!(
-                    "{} {}\n  Give the NIC a static address first, or re-run with --accept-dhcp to move it anyway.",
-                    "Error:".red(),
-                    e
-                );
-            } else if e.contains("host_interface_in_use") {
-                println!(
-                    "{} {}\n  The NIC is in use by the host. Re-run with --migrate-ip --force to move its IP configuration onto the bridge (rolled back automatically if the gateway stops answering or this CLI can't confirm).",
-                    "Error:".red(),
-                    e
-                );
-            } else {
-                println!("{} {}", "Error:".red(), e);
-            }
-            return;
-        }
-    };
-    finish_uplink(client, bridge, res).await;
-}
-
-/// After an uplink was added or re-applied: commit a moved IP once the API
-/// still answers (netd rolls it back otherwise).
-async fn finish_uplink(client: &CliClient, bridge: &str, res: serde_json::Value) {
-    let name = res["record"]["spec"]["name"]
-        .as_str()
-        .unwrap_or("?")
-        .to_string();
-    for w in res["live"]["warnings"].as_array().into_iter().flatten() {
-        println!("{} {}", "Warning:".yellow(), w.as_str().unwrap_or(""));
-    }
-    if res["phase"] == "pending_commit" {
-        println!(
-            "IP configuration moved to {}; checking the API is still reachable...",
-            bridge
-        );
-        let token = res["record"]["pending"]["token"]
-            .as_str()
-            .unwrap_or("")
-            .to_string();
-        if client.health_check().await.is_err() {
-            println!(
-                "{} API unreachable; glidex-netd will roll the change back automatically.",
-                "Error:".red()
-            );
-            return;
-        }
-        let commit = format!("/ovs/bridges/{}/uplinks/{}/commit", bridge, name);
-        match client
-            .request_json::<serde_json::Value>(
-                Method::POST,
-                &commit,
-                Some(serde_json::json!({"token": token})),
-            )
-            .await
-        {
-            Ok(_) => println!(
-                "{} uplink {} on {} (IP migrated)",
-                "Committed:".green(),
-                name,
-                bridge
-            ),
-            Err(e) => println!("{} {} (the change will be rolled back)", "Error:".red(), e),
-        }
-    } else {
-        println!("{} uplink {} on {}", "Added:".green(), name, bridge);
-    }
-}
-
-async fn handle_ovs(client: &CliClient, args: &[&str]) {
-    match args.first().copied() {
-        Some("status") | None => {
-            match client
-                .request_json::<serde_json::Value>(Method::GET, "/ovs/status", None)
-                .await
-            {
-                Ok(s) => {
-                    let netd = &s["netd"];
-                    if netd["available"] != true {
-                        println!(
-                            "{} glidex-netd unavailable: {}",
-                            "netd:".bold(),
-                            netd["error"].as_str().unwrap_or("unknown").red()
-                        );
-                        return;
-                    }
-                    println!(
-                        "{} available (access: {})",
-                        "netd:".bold(),
-                        netd["access"].as_str().unwrap_or("?")
-                    );
-                    let h = &s["host"];
-                    let ovs = if h["ovs_installed"] == true {
-                        format!(
-                            "{} ({})",
-                            h["ovs_version"].as_str().unwrap_or("?"),
-                            if h["ovs_running"] == true {
-                                "running".green()
-                            } else {
-                                "not running".red()
-                            }
-                        )
-                    } else {
-                        "not installed".red().to_string()
-                    };
-                    println!("{} {}", "Open vSwitch:".bold(), ovs);
-                    println!(
-                        "{} {}",
-                        "dnsmasq:".bold(),
-                        if h["dnsmasq"] == true {
-                            "yes".green()
-                        } else {
-                            "missing".red()
-                        }
-                    );
-                    println!("{} {}", "DPDK initialized:".bold(), h["dpdk_initialized"]);
-                    if let Some(combos) = h["combinations"].as_array() {
-                        println!("{}", "Combinations:".bold());
-                        for c in combos {
-                            let missing: Vec<&str> = c["missing"]
-                                .as_array()
-                                .map(|m| m.iter().filter_map(|x| x.as_str()).collect())
-                                .unwrap_or_default();
-                            println!(
-                                "  {} {} {}",
-                                c["id"].as_str().unwrap_or("?"),
-                                if c["available"] == true {
-                                    "available".green().to_string()
-                                } else {
-                                    format!("missing: {}", missing.join(", "))
-                                        .yellow()
-                                        .to_string()
-                                },
-                                c["description"].as_str().unwrap_or("").dimmed()
-                            );
-                        }
-                    }
-                }
-                Err(e) => println!("{} {}", "Error:".red(), e),
-            }
-        }
-        Some("install") => {
-            let profile = flag_value(args, "--profile").unwrap_or("kernel");
-            let body = serde_json::json!({
-                "profile": profile,
-                "source_build": has_flag(args, "--source"),
-                "confirm": has_flag(args, "--force"),
-            });
-            println!(
-                "Installing Open vSwitch ({} profile); this can take a few minutes...",
-                profile
-            );
-            match client
-                .request_json::<serde_json::Value>(Method::POST, "/ovs/install", Some(body))
-                .await
-            {
-                Ok(r) if r["changed"] == true => println!(
-                    "{} Open vSwitch {}",
-                    "Installed:".green(),
-                    r["ovs_version"].as_str().unwrap_or("?")
-                ),
-                Ok(r) => println!(
-                    "{} Open vSwitch {} already satisfies the profile",
-                    "Nothing to do:".green(),
-                    r["ovs_version"].as_str().unwrap_or("?")
-                ),
-                Err(e) => println!("{} {}", "Error:".red(), e),
-            }
-        }
-        Some("dpdk-init") => {
-            let body = serde_json::json!({
-                "socket_mem": flag_value(args, "--socket-mem").unwrap_or("1024"),
-                "pmd_cpu_mask": flag_value(args, "--pmd-cpu-mask"),
-                "confirm": has_flag(args, "--force"),
-            });
-            println!("Enabling DPDK in ovs-vswitchd (restarts it)...");
-            match client
-                .request_json::<()>(Method::POST, "/ovs/dpdk-init", Some(body))
-                .await
-            {
-                Ok(()) => println!("{} DPDK initialized", "OK:".green()),
-                Err(e) => println!("{} {}", "Error:".red(), e),
-            }
-        }
-        Some(other) => println!(
-            "{} unknown 'ovs {}'; use 'ovs status', 'ovs install' or 'ovs dpdk-init'",
-            "Error:".red(),
-            other
-        ),
-    }
-}
-
-#[derive(Debug, Deserialize, Tabled)]
-struct PciDeviceInfo {
-    address: String,
-    vendor_id: String,
-    device_id: String,
-    class_id: String,
-    #[tabled(display_with = "display_option")]
-    driver: Option<String>,
-    #[tabled(display_with = "display_option")]
-    iommu_group: Option<String>,
-    #[tabled(skip)]
-    sysfs_path: String,
-}
-
 fn display_option(o: &Option<String>) -> String {
     match o {
         Some(s) => s.clone(),
@@ -565,10 +325,6 @@ impl ApiClient {
             .await
             .map(|_| ())
             .map_err(|e| e.message)
-    }
-
-    async fn list_pci_devices(&self) -> Result<Vec<PciDeviceInfo>, String> {
-        self.request_json(Method::GET, "/pci-devices", None).await
     }
 }
 
@@ -1772,34 +1528,7 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
             }
         }
 
-        "pci" | "pci-devices" => match client.list_pci_devices().await {
-            Ok(devices) => {
-                if devices.is_empty() {
-                    println!("{}", "No PCI devices found".yellow());
-                } else if parts.len() >= 2 {
-                    // `pci <address>` shows full details for a single device,
-                    // including the sysfs path needed for VFIO attachment.
-                    match devices.iter().find(|d| d.address == parts[1]) {
-                        Some(dev) => {
-                            println!("Address:    {}", dev.address);
-                            println!("Vendor:     {}", dev.vendor_id);
-                            println!("Device:     {}", dev.device_id);
-                            println!("Class:      {}", dev.class_id);
-                            println!("Driver:     {}", display_option(&dev.driver));
-                            println!("IOMMU:      {}", display_option(&dev.iommu_group));
-                            println!("Sysfs path: {}", dev.sysfs_path);
-                        }
-                        None => {
-                            println!("{} no PCI device with address {}", "Error:".red(), parts[1])
-                        }
-                    }
-                } else {
-                    let table = Table::new(&devices).to_string();
-                    println!("{}", table);
-                }
-            }
-            Err(e) => println!("{} {}", "Error:".red(), e),
-        },
+        "pci" | "pci-devices" => host::pci(client, &parts[1..]).await,
 
         "attach-device" => vm::device(client, true, &parts[1..]).await,
         "detach-device" => vm::device(client, false, &parts[1..]).await,
@@ -1851,101 +1580,17 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
             None => println!("{}", "Usage: network-rm <name>".yellow()),
         },
 
-        "bridges" => match client
-            .request_json::<Vec<serde_json::Value>>(Method::GET, "/ovs/bridges", None)
-            .await
-        {
-            Ok(bridges) if bridges.is_empty() => println!("No glidex bridges."),
-            Ok(bridges) => {
-                for b in bridges {
-                    println!(
-                        "  {} ({}) {}",
-                        b["spec"]["name"].as_str().unwrap_or("?").cyan(),
-                        b["spec"]["datapath"].as_str().unwrap_or("?"),
-                        if b["live"].is_null() {
-                            "MISSING on host".red().to_string()
-                        } else {
-                            format!(
-                                "ports: {}",
-                                b["live"]["ports"].as_array().map(|p| p.len()).unwrap_or(0)
-                            )
-                        }
-                    );
-                }
-            }
-            Err(e) => println!("{} {}", "Error:".red(), e),
-        },
+        "bridges" => host::bridges(client).await,
 
-        "ovs" => handle_ovs(client, &parts[1..]).await,
+        "ovs" => host::ovs(client, &parts[1..]).await,
 
-        "uplinks" => match parts.get(1) {
-            Some(bridge) => match client
-                .request_json::<Vec<serde_json::Value>>(
-                    Method::GET,
-                    &format!("/ovs/bridges/{}/uplinks", bridge),
-                    None,
-                )
-                .await
-            {
-                Ok(list) if list.is_empty() => println!("No uplinks on {}.", bridge),
-                Ok(list) => {
-                    for u in list {
-                        let spec = &u["record"]["spec"];
-                        println!(
-                            "  {} ({}) {} {}",
-                            spec["name"].as_str().unwrap_or("?").cyan(),
-                            spec["kind"].as_str().unwrap_or("?"),
-                            u["phase"].as_str().unwrap_or("?"),
-                            u["live"]["error"]
-                                .as_str()
-                                .map(|e| e.red().to_string())
-                                .unwrap_or_else(|| u["live"]["link_state"]
-                                    .as_str()
-                                    .unwrap_or("")
-                                    .to_string())
-                        );
-                    }
-                }
-                Err(e) => println!("{} {}", "Error:".red(), e),
-            },
-            None => println!("{}", "Usage: uplinks <bridge>".yellow()),
-        },
+        "uplinks" => host::uplinks(client, &parts[1..]).await,
 
-        "uplink-add" => handle_uplink_add(client, &parts[1..]).await,
+        "uplink-add" => host::uplink_add(client, &parts[1..]).await,
 
-        // A migration netd rolled back at start (spec/clustering-ui.md):
-        // set it up again with the gateway check and commit.
-        "uplink-reapply" => match (parts.get(1), parts.get(2)) {
-            (Some(bridge), Some(name)) => {
-                match client
-                    .request_json::<serde_json::Value>(
-                        Method::POST,
-                        &format!("/ovs/bridges/{}/uplinks/{}/reapply", bridge, name),
-                        Some(serde_json::json!({})),
-                    )
-                    .await
-                {
-                    Ok(res) => finish_uplink(client, bridge, res).await,
-                    Err(e) => println!("{} {}", "Error:".red(), e),
-                }
-            }
-            _ => println!("{}", "Usage: uplink-reapply <bridge> <name>".yellow()),
-        },
+        "uplink-reapply" => host::uplink_reapply(client, &parts[1..]).await,
 
-        "uplink-rm" => match (parts.get(1), parts.get(2)) {
-            (Some(bridge), Some(name)) => match client
-                .request_json::<()>(
-                    Method::DELETE,
-                    &format!("/ovs/bridges/{}/uplinks/{}", bridge, name),
-                    None,
-                )
-                .await
-            {
-                Ok(()) => println!("{} uplink {} (NIC restored)", "Removed:".green(), name),
-                Err(e) => println!("{} {}", "Error:".red(), e),
-            },
-            _ => println!("{}", "Usage: uplink-rm <bridge> <name>".yellow()),
-        },
+        "uplink-rm" => host::uplink_rm(client, &parts[1..]).await,
 
         "image" | "images" => storage::image(client, &parts[1..]).await,
 
@@ -2296,25 +1941,6 @@ mod tests {
     }
 
     #[test]
-    fn pci_device_info_deserializes_sysfs_path() {
-        let json = r#"{
-            "address": "0000:00:1f.0",
-            "vendor_id": "8086",
-            "device_id": "9d4e",
-            "class_id": "060100",
-            "driver": "lpc_ich",
-            "iommu_group": "5",
-            "sysfs_path": "/sys/bus/pci/devices/0000:00:1f.0"
-        }"#;
-
-        let info: PciDeviceInfo = serde_json::from_str(json).unwrap();
-        assert_eq!(info.sysfs_path, "/sys/bus/pci/devices/0000:00:1f.0");
-        assert_eq!(info.address, "0000:00:1f.0");
-        assert_eq!(info.driver.as_deref(), Some("lpc_ich"));
-        assert_eq!(info.iommu_group.as_deref(), Some("5"));
-    }
-
-    #[test]
     fn splits_lines_with_quotes() {
         assert_eq!(split_line("  list  ").unwrap(), vec!["list"]);
         assert_eq!(
@@ -2571,6 +2197,23 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(e.code, connectrpc::ErrorCode::NotFound);
+
+        // Host networking and PCI devices on their RPC clients: the host
+        // this socket belongs to.
+        host::list_pci_devices(&client).await.unwrap();
+        let status = host::rpc(&client)
+            .await
+            .unwrap()
+            .get_ovs_status(glidex_api::proto::glidex::host::v1::GetOvsStatusRequest::default())
+            .await
+            .unwrap()
+            .into_owned();
+        let netd = status.netd.as_option().unwrap();
+        // Without glidex-netd (as usually under test) the status says why.
+        if netd.available != Some(true) {
+            assert!(netd.error.is_some(), "{netd:?}");
+            assert!(status.host.as_option().is_none());
+        }
 
         let _ = stop.send(true);
     }

@@ -12,6 +12,7 @@
 pub mod access;
 pub mod common;
 pub mod directory;
+pub mod host;
 pub mod login;
 pub mod network;
 pub mod storage;

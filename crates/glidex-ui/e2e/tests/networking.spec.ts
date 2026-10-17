@@ -24,7 +24,7 @@ test.afterAll(cleanup);
 
 test("a project network is created from the Networking page", async ({ page }) => {
   const status = await api("/ovs/status");
-  test.skip(status?.netd?.access !== "full" || status?.host?.ovs_running !== true, "needs glidex-netd and a running Open vSwitch");
+  test.skip(status?.netd?.access !== "NETD_ACCESS_FULL" || status?.host?.ovs_running !== true, "needs glidex-netd and a running Open vSwitch");
 
   const project = (await api("/projects", { method: "POST", body: { name: PROJECT } })).project;
   await page.goto(`/projects/${project.id}`);
@@ -74,7 +74,7 @@ test.describe("as a project owner", () => {
 
   test("creates a project network without host rights", async ({ browser }) => {
     const status = await api("/ovs/status");
-    test.skip(status?.netd?.access !== "full" || status?.host?.ovs_running !== true, "needs glidex-netd and a running Open vSwitch");
+    test.skip(status?.netd?.access !== "NETD_ACCESS_FULL" || status?.host?.ovs_running !== true, "needs glidex-netd and a running Open vSwitch");
     const project =
       ((await api<{ projects?: any[] }>("/projects")).projects ?? []).find((x) => x.name === PROJECT) ?? ((await api("/projects", { method: "POST", body: { name: PROJECT } })).project);
     const t = await api("/tokens", {

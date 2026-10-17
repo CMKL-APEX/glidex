@@ -364,7 +364,7 @@ async fn ovs_status_and_bridges() {
     let (status, body) = request(&h.app, "GET", "/ovs/status", None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["netd"]["available"], true);
-    assert_eq!(body["netd"]["access"], "full");
+    assert_eq!(body["netd"]["access"], "NETD_ACCESS_FULL");
     assert_eq!(body["host"]["ovs_version"], "3.7.1");
 
     let (status, body) = request(
@@ -375,9 +375,42 @@ async fn ovs_status_and_bridges() {
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(
+        body["bridge"]["spec"]["datapath"], "DATAPATH_SYSTEM",
+        "{body}"
+    );
     let (status, body) = request(&h.app, "GET", "/ovs/bridges", None).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body[0]["spec"]["name"], "gxbr-lab");
+    assert_eq!(body["bridges"][0]["spec"]["name"], "gxbr-lab");
+    // The same over RPC (glidex.host.v1).
+    let (status, body) = request(
+        &h.app,
+        "POST",
+        "/glidex.host.v1.HostNetworkService/ListBridges",
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["bridges"][0]["spec"]["name"], "gxbr-lab");
+    let (status, body) = request(
+        &h.app,
+        "POST",
+        "/glidex.host.v1.HostNetworkService/GetOvsStatus",
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["host"]["ovs_version"], "3.7.1", "{body}");
+    let (status, body) = request(
+        &h.app,
+        "POST",
+        "/glidex.host.v1.PciService/ListPciDevices",
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = request(&h.app, "GET", "/ovs/bridges/gxbr-lab/uplinks", None).await;
+    assert_eq!((status, &body), (StatusCode::OK, &json!({})), "no uplinks");
 
     let (status, body) = request(
         &h.app,

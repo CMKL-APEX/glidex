@@ -4,7 +4,7 @@
 //! `network-add`, `network-rm` and `network …`. Networks are keyed by id;
 //! every argument naming one takes an id or a name, which the server
 //! resolves (spec/tenancy.md D24). Host networking (`ovs`, `bridges`,
-//! uplinks, PCI devices) stays REST, in `main.rs`.
+//! uplinks, PCI devices) is in `host.rs`.
 
 use crate::admin::positional;
 use crate::client::{ApiClient, RpcTransport};

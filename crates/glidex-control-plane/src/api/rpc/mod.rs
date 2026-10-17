@@ -10,6 +10,7 @@
 
 mod access;
 mod directory;
+mod host;
 mod login;
 mod network;
 mod storage;
@@ -66,6 +67,7 @@ pub(crate) fn routes(app: &AppState) -> Router<AppState> {
     let connect = vm::register(app, connect);
     let connect = usage::register(app, connect);
     let connect = network::register(app, connect);
+    let connect = host::register(app, connect);
     let (connect, _health) = connectrpc_health::install_static(connect, glidex_api::services());
     let svc = ConnectRpcService::new(connect)
         .with_limits(
@@ -81,7 +83,11 @@ pub(crate) fn routes(app: &AppState) -> Router<AppState> {
     {
         r = r.route_service(&format!("/{s}/{{*method}}"), svc.clone());
     }
-    r
+    // A host RPC relayed from an agent's UI runs on that agent (§8).
+    r.layer(axum::middleware::from_fn_with_state(
+        app.clone(),
+        crate::api::relay::remote_host,
+    ))
 }
 
 /// Which protocols a listener takes (spec/grpc.md §6): gRPC-Web is the

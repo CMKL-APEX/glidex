@@ -86,6 +86,18 @@ once gone (was `200`); a share offer answers `202 {}`. Host networking
 (`/ovs…`, bridges, uplinks, PCI devices) and `/cluster/ovn…` keep their
 shapes.
 
+The host family (`/ovs/status`, `/ovs/install`, `/ovs/dpdk-init`,
+bridges, uplinks and `/pci-devices`) is served in the proto shape too:
+the `glidex.host.v1` messages, wrapped (`{bridges}`, `{bridge}`,
+`{uplinks}`, `{uplink}`, `{devices}`), with enum names in full
+(`NETD_ACCESS_FULL`, `DATAPATH_SYSTEM`, `UPLINK_KIND_KERNEL`,
+`UPLINK_PHASE_PENDING_COMMIT`, `XDP_MODE_NATIVE`, `OVS_PROFILE_DPDK`; the
+old lowercase request values are still read), an uplink's commit
+`deadline` and `boot_rollback.at` in RFC 3339, and hugepage sizes and
+counts as strings. Status codes are unchanged. These operations act on
+the host that answers them; from an agent's UI they run on the agent
+(over REST or gRPC-Web), authorized by a server.
+
 In every ported family, a body field the message doesn't have is
 `422 invalid` ("unknown field `quotas.vm`").
 

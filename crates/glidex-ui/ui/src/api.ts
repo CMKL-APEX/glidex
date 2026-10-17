@@ -23,6 +23,10 @@ import type {
   RouterSpec,
   NetworkShare,
   OvsStatus,
+  OvsProfile,
+  InstallOvsResponse,
+  Datapath,
+  PciDevice,
   CreateCredentialRequest,
   CredentialInfo,
   PolicyChange,
@@ -444,23 +448,31 @@ export const leaveNetworkShare = (project: string, network: string) =>
 
 export const ovsStatus = () => get<OvsStatus>("/ovs/status");
 
-export const installOvs = (profile: "kernel" | "dpdk", confirm: boolean) =>
-  post<{ changed: boolean; ovs_version?: string; warnings: string[] }>("/ovs/install", {
-    profile,
-    source_build: false,
-    confirm,
-  });
+export const installOvs = (profile: OvsProfile, confirm: boolean) =>
+  post<InstallOvsResponse>("/ovs/install", { profile, confirm }).then((r) => r ?? {});
 
-export const listBridges = () => get<BridgeRecord[]>("/ovs/bridges");
-export const createBridge = (name: string, datapath: "system" | "netdev") => post<BridgeRecord>("/ovs/bridges", { name, datapath });
+/** Initialize DPDK: hugepage memory per NUMA node (`1024` or `1024,1024`). */
+export const initDpdk = (socket_mem: string, confirm: boolean, pmd_cpu_mask?: string) =>
+  post<void>("/ovs/dpdk-init", { socket_mem, pmd_cpu_mask, confirm });
+
+export const listBridges = () => get<{ bridges?: BridgeRecord[] }>("/ovs/bridges").then((r) => r?.bridges ?? []);
+export const createBridge = (name: string, datapath: Datapath) =>
+  post<{ bridge?: BridgeRecord }>("/ovs/bridges", { name, datapath }).then((r) => r?.bridge as BridgeRecord);
 export const deleteBridge = (name: string) => del(`/ovs/bridges/${enc(name)}`);
-export const listUplinks = (bridge: string) => get<UplinkResult[]>(`/ovs/bridges/${enc(bridge)}/uplinks`);
+export const listUplinks = (bridge: string) =>
+  get<{ uplinks?: UplinkResult[] }>(`/ovs/bridges/${enc(bridge)}/uplinks`).then((r) => r?.uplinks ?? []);
+const uplinkOf = (r: { uplink?: UplinkResult } | undefined) => r?.uplink as UplinkResult;
 /** Add an uplink; with `migrate_ip` the host's address moves to the bridge and must be committed. */
 export const addUplink = (bridge: string, body: { name: string; migrate_ip: boolean; confirm: boolean; accept_dhcp: boolean } & UplinkKind) =>
-  post<UplinkResult>(`/ovs/bridges/${enc(bridge)}/uplinks`, body);
-export const commitUplink = (bridge: string, name: string, token: string) => post<UplinkResult>(`/ovs/bridges/${enc(bridge)}/uplinks/${enc(name)}/commit`, { token });
-export const reapplyUplink = (bridge: string, name: string) => post<UplinkResult>(`/ovs/bridges/${enc(bridge)}/uplinks/${enc(name)}/reapply`);
+  post<{ uplink?: UplinkResult }>(`/ovs/bridges/${enc(bridge)}/uplinks`, body).then(uplinkOf);
+export const commitUplink = (bridge: string, name: string, token: string) =>
+  post<{ uplink?: UplinkResult }>(`/ovs/bridges/${enc(bridge)}/uplinks/${enc(name)}/commit`, { token }).then(uplinkOf);
+export const reapplyUplink = (bridge: string, name: string) =>
+  post<{ uplink?: UplinkResult }>(`/ovs/bridges/${enc(bridge)}/uplinks/${enc(name)}/reapply`).then(uplinkOf);
 export const deleteUplink = (bridge: string, name: string) => del(`/ovs/bridges/${enc(bridge)}/uplinks/${enc(name)}`);
+
+/** The host's PCI devices (glidex.host.v1: `{devices}`). */
+export const listPciDevices = () => get<{ devices?: PciDevice[] }>("/pci-devices").then((r) => r?.devices ?? []);
 
 // ---- images and disks ---------------------------------------------------------
 

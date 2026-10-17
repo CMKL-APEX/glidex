@@ -252,57 +252,6 @@ export interface Router {
   created_at?: string;
 }
 
-export interface Combination {
-  id: string;
-  description: string;
-  available: boolean;
-  missing: string[];
-}
-
-export interface HostCapabilities {
-  ovs_installed: boolean;
-  ovs_version?: string;
-  ovs_running: boolean;
-  iface_types: string[];
-  dpdk_initialized: boolean;
-  dnsmasq: boolean;
-  nft: boolean;
-  ip_forward: boolean;
-  ch_net_admin?: boolean;
-  firewalls: string[];
-  combinations: Combination[];
-}
-
-export interface OvsStatus {
-  netd: { available: boolean; access: "full" | "status" | "none"; error?: string };
-  host?: HostCapabilities;
-}
-
-export interface BridgeRecord {
-  spec: { name: string; datapath: "system" | "netdev" };
-  live?: { ports: string[] } | null;
-}
-
-/** How an uplink attaches the NIC (networking.md §8). */
-export type UplinkKind =
-  | { kind: "kernel"; ifname: string }
-  | { kind: "afxdp"; ifname: string; xdp_mode?: string; n_rxq?: number }
-  | { kind: "dpdk"; pci: string; n_rxq?: number };
-
-/** An uplink as netd keeps it (`GET /ovs/bridges/{b}/uplinks`). */
-export interface UplinkResult {
-  record: {
-    spec: { name: string; bridge: string; migrate_ip: boolean } & UplinkKind;
-    /** The host's address was moved; commit with `token` before `deadline`. */
-    pending?: { token: string; deadline: number } | null;
-    /** Re-applying at start failed and was rolled back: the NIC has its own address again. */
-    boot_rollback?: { at: number; reason: string } | null;
-    accept_dhcp?: boolean;
-  };
-  phase: "active" | "pending_commit";
-  live: { error?: string; link_state?: string; warnings?: string[] };
-}
-
 export interface CreateVmRequest {
   name: string;
   /** Project id or name; default: the caller's default project. */
@@ -1648,4 +1597,129 @@ export function formatTimestamp(ts: string | undefined | null): string {
   if (!ts) return "—";
   const d = new Date(ts);
   return Number.isNaN(d.getTime()) ? ts : d.toLocaleString();
+}
+
+// ---- host networking and PCI (glidex.host.v1) ------------------------------
+//
+// `/ovs/*` and `/pci-devices` answer in the proto3 JSON shape of
+// glidex.host.v1: enums by full name, fields at their default left out,
+// hugepage numbers as strings (read with `num`), times RFC 3339.
+
+export type NetdAccess = "NETD_ACCESS_FULL" | "NETD_ACCESS_STATUS" | "NETD_ACCESS_NONE";
+
+/** `NETD_ACCESS_FULL` → `full` (the label shown). */
+export const netdAccessLabel = (a: NetdAccess | undefined) => enumLabel(a, "NETD_ACCESS_") || "none";
+
+export interface Combination {
+  id: string;
+  description: string;
+  available?: boolean;
+  missing?: string[];
+}
+
+export interface Hugepages {
+  /** uint64: read with `num`. */
+  size_kb?: U64;
+  total?: U64;
+  free?: U64;
+}
+
+export interface HostCapabilities {
+  ovs_installed?: boolean;
+  ovs_version?: string;
+  ovs_version_supported?: boolean;
+  ovs_running?: boolean;
+  iface_types?: string[];
+  datapath_types?: string[];
+  ovs_dpdk_build?: boolean;
+  dpdk_mempool_driver?: boolean;
+  dpdk_initialized?: boolean;
+  hugepages?: Hugepages[];
+  iommu?: boolean;
+  ch_net_admin?: boolean;
+  dnsmasq?: boolean;
+  nft?: boolean;
+  ip_forward?: boolean;
+  firewalls?: string[];
+  network_managers?: string[];
+  combinations?: Combination[];
+}
+
+export interface OvsStatus {
+  netd: { available?: boolean; access?: NetdAccess; error?: string };
+  /** What netd found; absent when it didn't answer. */
+  host?: HostCapabilities;
+}
+
+export type OvsProfile = "OVS_PROFILE_KERNEL" | "OVS_PROFILE_DPDK";
+
+export interface InstallOvsResponse {
+  changed?: boolean;
+  method?: string;
+  packages?: string[];
+  ovs_version?: string;
+  warnings?: string[];
+  output_tail?: string;
+}
+
+export type Datapath = "DATAPATH_SYSTEM" | "DATAPATH_NETDEV";
+
+/** `DATAPATH_SYSTEM` → `system` (the label shown). */
+export const datapathLabel = (d: Datapath | undefined) => enumLabel(d, "DATAPATH_");
+
+export interface BridgeRecord {
+  spec: { name: string; datapath?: Datapath; mtu?: number; adopt?: boolean; isolated?: boolean };
+  /** Absent when the bridge is missing on the host. */
+  live?: { name: string; datapath?: Datapath; owned?: boolean; ports?: string[] };
+}
+
+export type XdpMode = "XDP_MODE_BEST_EFFORT" | "XDP_MODE_NATIVE" | "XDP_MODE_NATIVE_WITH_ZEROCOPY" | "XDP_MODE_GENERIC";
+
+/** How an uplink attaches the NIC (networking.md §8). */
+export type UplinkKind =
+  | { kind: "UPLINK_KIND_KERNEL"; ifname: string }
+  | { kind: "UPLINK_KIND_AFXDP"; ifname: string; xdp_mode?: XdpMode; n_rxq?: number }
+  | { kind: "UPLINK_KIND_DPDK"; pci: string; n_rxq?: number };
+
+/** `UPLINK_KIND_AFXDP` → `afxdp` (the label shown). */
+export const uplinkKindLabel = (k: string | undefined) => enumLabel(k, "UPLINK_KIND_");
+
+export type UplinkPhase = "UPLINK_PHASE_ACTIVE" | "UPLINK_PHASE_PENDING_COMMIT";
+
+/** An uplink as netd keeps it (`GET /ovs/bridges/{b}/uplinks`). */
+export interface UplinkResult {
+  record: {
+    spec: {
+      name: string;
+      bridge: string;
+      kind?: UplinkKind["kind"];
+      ifname?: string;
+      pci?: string;
+      xdp_mode?: XdpMode;
+      n_rxq?: number;
+      migrate_ip?: boolean;
+    };
+    orig_driver?: string;
+    snapshot?: { ifname: string; mac?: string; addresses?: string[]; routes?: { dst: string; gateway?: string; metric?: number }[] };
+    /** The host's address was moved; commit with `token` before `deadline` (RFC 3339). */
+    pending?: { token: string; deadline?: string };
+    /** Re-applying at start failed and was rolled back: the NIC has its own address again. `at` is RFC 3339. */
+    boot_rollback?: { at?: string; reason: string };
+    accept_dhcp?: boolean;
+  };
+  phase?: UplinkPhase;
+  live?: { error?: string; link_state?: string; warnings?: string[] };
+  classification?: { reasons?: string[]; addresses?: string[] };
+}
+
+/** A host PCI device (`GET /pci-devices`). */
+export interface PciDevice {
+  /** `0000:3b:00.0`. */
+  address: string;
+  vendor_id: string;
+  device_id: string;
+  class_id: string;
+  driver?: string;
+  iommu_group?: string;
+  sysfs_path: string;
 }
