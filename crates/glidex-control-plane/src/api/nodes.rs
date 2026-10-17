@@ -594,7 +594,7 @@ pub async fn put_node_ovn(
             .filter(|v| {
                 v.config().networks.iter().any(|a| {
                     nets.iter().any(|x| {
-                        x.name == a.network
+                        x.id == a.network
                             && x.scope == crate::network::NetworkScope::Cluster
                             && x.port_type == glidex_ovs::vm_port::VmPortKind::VhostUser
                     })

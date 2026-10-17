@@ -86,6 +86,7 @@ crates/glidex-api/
 │   ├── glidex/vm/v1/vm.proto         # G2: VmService
 │   ├── glidex/usage/v1/usage.proto   # G2: UsageService, MetricsService
 │   ├── glidex/access/v1/access.proto # G2: Project, User, Team, Token, SystemBinding, Policy, Audit, Authz services
+│   ├── glidex/network/v1/network.proto # G3: NetworkService, NetworkShareService, RouterService
 │   ├── glidex/…/v1/*.proto           # tenancy, directory, auth; vm, storage, … as ported (§9)
 │   └── google/rpc/error_details.proto # vendored ErrorInfo only (excluded from buf lint)
 └── src/lib.rs            # generated modules + OPERATIONS
@@ -363,6 +364,7 @@ equivalent test suite; until then it stays WebSocket.
 | VM family (G2): `VmService` | proto `glidex/vm/v1/vm.proto`; `service/vm.rs`; RPC `api/rpc/vm.rs`; REST twins `api/vms.rs` (with the console WebSocket, `?view=full` and `/system/reconcile`, which stay REST); `PATCH` reads `{change, update_mask}` and, for one release, the old merge patch; tests `tests/vm_tests.rs` |
 | Usage family (G2): `UsageService` (usage records, billing-month reports), `MetricsService` (5-minute series, live rates) | proto `glidex/usage/v1/usage.proto`; `service/usage.rs`; RPC `api/rpc/usage.rs`; REST twins `api/usage.rs`, `api/rates.rs` (the `format=csv` exports stay REST-only); gxctl `usage`, `stats`, `bandwidth`, `io`, `compute` on the generated clients (`--csv` from REST); tests `tests/usage_tests.rs`; shape changes in metering.md §9.5 |
 | Access family (G2): `ProjectService`, `UserService`, `TeamService`, `TokenService`, `SystemBindingService`, `PolicyService`, `AuditService`, `AuthzService`; `SystemService.WhoAmI` gains `user`, `token`, `csrf` and the REST twin `GET /auth/whoami` | proto `glidex/access/v1/access.proto`; `service/access.rs` (`whoami_of` in `service/system.rs`); RPC `api/rpc/access.rs`; REST twins `api/access.rs` (updates take `update_mask` or the fields present); gxctl and the UI on the new shapes; tests `tests/access_tests.rs` |
+| Network family (G3): `NetworkService` (networks, grants, project networks, a network's router, events, OVN view), `NetworkShareService`, `RouterService` | proto `glidex/network/v1/network.proto`; `service/network.rs`; RPC `api/rpc/network.rs`; REST twins `api/net.rs` (host networking — `/ovs`, bridges, uplinks, PCI — and `/cluster/ovn` stay for `host.v1`/`cluster.v1`); networks re-keyed by id first (tenancy.md D24, schema 4); a VM's `Nic` gains `network_name`; gxctl `network …` on the generated clients; tests `tests/network_tests.rs` |
 | Forwarding by `kind`, trailers (§8) | `api/gate.rs`, `cluster/net.rs` (`Reply.trailers`) |
 | CI (G-D9) | `.github/workflows/rust.yml` job `proto` |
 | Tests | `tests/rpc_tests.rs`; `cluster_tests.rs::rpc_reads_are_answered_by_the_server_that_takes_them`; unit tests in `api/rpc` and `glidex-api` |

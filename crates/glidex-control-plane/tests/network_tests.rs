@@ -173,25 +173,34 @@ async fn nat_network_crud() {
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
-    assert_eq!(body["bridge"], "gxbr-lab");
-    assert_eq!(body["port_type"], "tap");
+    let net = &body["network"];
+    let id = net["id"].as_str().unwrap().to_string();
+    // D24: the bridge is named after the id, as names repeat across tenants.
+    let bridge = format!("gxbr-{}", &id[..8]);
+    assert_eq!(net["bridge"], bridge.as_str(), "{body}");
+    assert_eq!(net["port_type"], "PORT_TYPE_TAP");
+    assert_eq!(net["mode"], "NETWORK_MODE_NAT");
     let calls = h.exec.calls();
     assert!(
         calls
             .iter()
-            .any(|c| c == "ip addr replace 10.88.0.1/24 dev gxbr-lab"),
+            .any(|c| *c == format!("ip addr replace 10.88.0.1/24 dev {bridge}")),
         "{calls:#?}"
     );
 
     let (status, list) = request(&h.app, "GET", "/networks", None).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(list.as_array().unwrap().len(), 1);
+    assert_eq!(list["networks"].as_array().unwrap().len(), 1);
+    // By id or by name.
+    let (status, by_id) = request(&h.app, "GET", &format!("/networks/{id}"), None).await;
+    assert_eq!(status, StatusCode::OK, "{by_id}");
+    assert_eq!(by_id["network"]["name"], "lab");
 
     let (status, _) = request(
         &h.app,
         "POST",
         "/networks",
-        Some(json!({"name": "lab", "mode": "nat"})),
+        Some(json!({"name": "lab", "mode": "nat", "bridge": "gxbr-lab"})),
     )
     .await;
     assert_eq!(status, StatusCode::CONFLICT);
@@ -209,7 +218,7 @@ async fn vms_reference_networks() {
         &h.app,
         "POST",
         "/networks",
-        Some(json!({"name": "lab", "mode": "nat"})),
+        Some(json!({"name": "lab", "mode": "nat", "bridge": "gxbr-lab"})),
     )
     .await;
 
@@ -306,7 +315,7 @@ async fn failed_start_detaches_ports_for(hypervisor: &str, binary: &str) {
         &h.app,
         "POST",
         "/networks",
-        Some(json!({"name": "lab", "mode": "nat"})),
+        Some(json!({"name": "lab", "mode": "nat", "bridge": "gxbr-lab"})),
     )
     .await;
     let mut spec = vm("boom", json!([{"network": "lab"}]));
@@ -391,15 +400,18 @@ async fn network_controller_reports_the_phase() {
         &h.app,
         "POST",
         "/networks",
-        Some(json!({"name": "lab", "mode": "nat"})),
+        Some(json!({"name": "lab", "mode": "nat", "bridge": "gxbr-lab"})),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
     let mut net = Value::Null;
     for _ in 0..50 {
         let (_, n) = request(&h.app, "GET", "/networks/lab", None).await;
-        if n["conditions"].as_array().is_some_and(|c| !c.is_empty()) {
-            net = n;
+        if n["network"]["conditions"]
+            .as_array()
+            .is_some_and(|c| !c.is_empty())
+        {
+            net = n["network"].clone();
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -407,12 +419,15 @@ async fn network_controller_reports_the_phase() {
     // The fake OVS reports the bridge with no ports and no running
     // dnsmasq: the controller says what is missing instead of guessing.
     assert!(
-        matches!(net["phase"].as_str(), Some("ready" | "degraded")),
+        matches!(
+            net["phase"].as_str(),
+            Some("NETWORK_PHASE_READY" | "NETWORK_PHASE_DEGRADED")
+        ),
         "{net}"
     );
     let ready = &net["conditions"][0];
     assert_eq!(ready["kind"], "Ready", "{net}");
-    if net["phase"] == "degraded" {
+    if net["phase"] == "NETWORK_PHASE_DEGRADED" {
         assert!(!ready["message"].as_str().unwrap().is_empty(), "{net}");
         let (status, ev) = request(&h.app, "GET", "/networks/lab/events", None).await;
         assert_eq!(status, StatusCode::OK);
@@ -442,15 +457,16 @@ async fn isolated_networks_are_fenced_by_netd() {
         &h.app,
         "POST",
         "/networks",
-        Some(json!({"name": "iso", "mode": "isolated"})),
+        Some(json!({"name": "iso", "mode": "isolated", "bridge": "gxbr-iso"})),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
+    let iso = body["network"]["id"].as_str().unwrap().to_string();
     let (status, body) = request(
         &h.app,
         "POST",
         "/networks",
-        Some(json!({"name": "lab", "mode": "nat"})),
+        Some(json!({"name": "lab", "mode": "nat", "bridge": "gxbr-lab"})),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
@@ -471,12 +487,12 @@ async fn isolated_networks_are_fenced_by_netd() {
     };
     netd.call::<BridgeRecord>(Op::EnsureBridge(old)).unwrap();
     assert_eq!(isolated("gxbr-iso"), Some(false));
-    h.manager.reconcile_network("iso").await.unwrap();
+    h.manager.reconcile_network(&iso).await.unwrap();
     assert_eq!(isolated("gxbr-iso"), Some(true));
     let (_, ev) = request(&h.app, "GET", "/networks/iso/events", None).await;
     assert_eq!(ev["events"][0]["reason"], "BridgeUpdated", "{ev}");
     // Then it is left alone.
-    h.manager.reconcile_network("iso").await.unwrap();
+    h.manager.reconcile_network(&iso).await.unwrap();
     let (_, ev2) = request(&h.app, "GET", "/networks/iso/events", None).await;
     assert_eq!(
         ev2["events"].as_array().unwrap().len(),
@@ -506,18 +522,19 @@ async fn lost_nat_is_recreated_only_without_vms() {
         .unwrap();
     };
 
-    request(
+    let (_, body) = request(
         &h.app,
         "POST",
         "/networks",
-        Some(json!({"name": "lab", "mode": "nat"})),
+        Some(json!({"name": "lab", "mode": "nat", "bridge": "gxbr-lab"})),
     )
     .await;
+    let lab = body["network"]["id"].as_str().unwrap().to_string();
     assert!(nat_exists());
 
     lose_nat();
     assert!(!nat_exists());
-    h.manager.reconcile_network("lab").await.unwrap();
+    h.manager.reconcile_network(&lab).await.unwrap();
     assert!(nat_exists(), "no VM uses it: the NAT is created again");
     let (_, ev) = request(&h.app, "GET", "/networks/lab/events", None).await;
     assert_eq!(ev["events"][0]["reason"], "NatRestored", "{ev}");
@@ -531,13 +548,14 @@ async fn lost_nat_is_recreated_only_without_vms() {
     .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
     lose_nat();
-    h.manager.reconcile_network("lab").await.unwrap();
+    h.manager.reconcile_network(&lab).await.unwrap();
     assert!(
         !nat_exists(),
         "a VM uses it: not renumbered behind its back"
     );
     let (_, net) = request(&h.app, "GET", "/networks/lab", None).await;
-    assert_eq!(net["phase"], "degraded", "{net}");
+    let net = &net["network"];
+    assert_eq!(net["phase"], "NETWORK_PHASE_DEGRADED", "{net}");
     assert_eq!(
         net["conditions"][0]["message"], "netd has no NAT for it",
         "{net}"
@@ -552,7 +570,7 @@ async fn netd_errors_map_to_rest() {
         &h.app,
         "POST",
         "/networks",
-        Some(json!({"name": "lab", "mode": "nat"})),
+        Some(json!({"name": "lab", "mode": "nat", "bridge": "gxbr-lab"})),
     )
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
@@ -568,7 +586,7 @@ async fn netd_errors_map_to_rest() {
         &app,
         "POST",
         "/networks",
-        Some(json!({"name": "lab", "mode": "nat"})),
+        Some(json!({"name": "lab", "mode": "nat", "bridge": "gxbr-lab"})),
     )
     .await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
@@ -608,6 +626,8 @@ async fn project_networks_and_sharing() {
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{net}");
+    let net = &net["network"];
+    let pnet = net["id"].as_str().unwrap().to_string();
     assert_eq!(net["project"], pa);
     assert!(net["bridge"].as_str().unwrap().starts_with("gxp-"), "{net}");
     // Project networks are NAT or isolated, never bridged, and pick their own bridge.
@@ -626,7 +646,8 @@ async fn project_networks_and_sharing() {
         Some(json!({"name": "x", "mode": "nat", "bridge": "gxbr-mine"})),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+    // Not a field of a project network's create (the proto shape refuses it).
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     let pc = h
         .manager
         .projects()
@@ -641,13 +662,18 @@ async fn project_networks_and_sharing() {
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{iso}");
+    let iso = &iso["network"];
     assert_eq!(
         (
             iso["mode"].as_str(),
             iso["port_type"].as_str(),
             iso["project"].as_str()
         ),
-        (Some("isolated"), Some("tap"), Some(pc.as_str()))
+        (
+            Some("NETWORK_MODE_ISOLATED"),
+            Some("PORT_TYPE_TAP"),
+            Some(pc.as_str())
+        )
     );
     // vhost-user is allowed too, but only where the host has DPDK (this one hasn't).
     let (status, body) = request(
@@ -741,9 +767,11 @@ async fn project_networks_and_sharing() {
         None,
     )
     .await;
+    let expires = shares["shares"][0]["expires_at"].clone();
+    assert!(expires.is_string(), "{shares}");
     assert_eq!(
         shares,
-        json!([{"network": "pnet", "owner_project": pa, "status": "offered", "expires_at": shares[0]["expires_at"]}])
+        json!({"shares": [{"network": pnet, "network_name": "pnet", "owner_project": pa, "status": "SHARE_STATUS_OFFERED", "expires_at": expires}]})
     );
     // An offer alone grants nothing.
     let (status, _) = request(&h.app, "POST", "/vms", Some(spec.clone())).await;
@@ -757,7 +785,7 @@ async fn project_networks_and_sharing() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["shares"], json!([pb]));
+    assert_eq!(body["network"]["shares"], json!([pb]));
     let (status, body) = request(&h.app, "POST", "/vms", Some(spec)).await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
     let id = vm_id(&body);
@@ -799,7 +827,7 @@ async fn project_networks_and_sharing() {
         None,
     )
     .await;
-    assert_eq!(shares, json!([]));
+    assert_eq!(shares, json!({}));
     // A project that still owns networks can't be deleted.
     let (status, _) = request(&h.app, "DELETE", &format!("/projects/{pa}"), None).await;
     assert_eq!(status, StatusCode::CONFLICT);
@@ -821,7 +849,7 @@ async fn network_deletion_waits_for_netd() {
         &app,
         "POST",
         "/networks",
-        Some(json!({"name": "lab", "mode": "nat"})),
+        Some(json!({"name": "lab", "mode": "nat", "bridge": "gxbr-lab"})),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
@@ -836,8 +864,9 @@ async fn network_deletion_waits_for_netd() {
     let app = create_router(manager.clone());
     let (status, net) = request(&app, "DELETE", "/networks/lab", None).await;
     assert_eq!(status, StatusCode::ACCEPTED, "{net}");
-    assert!(net["deletion_requested_at"].is_u64(), "{net}");
-    assert_eq!(net["phase"], "netd_unavailable", "{net}");
+    let net = &net["network"];
+    assert!(net["deletion_requested_at"].is_string(), "{net}");
+    assert_eq!(net["phase"], "NETWORK_PHASE_NETD_UNAVAILABLE", "{net}");
     assert_eq!(net["conditions"][0]["reason"], "NetdUnavailable", "{net}");
     // No new VM may use it meanwhile.
     let (status, body) = request(
@@ -919,8 +948,11 @@ async fn host_networks_are_granted_to_tenants_and_shares_stay_in_one() {
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{net}");
-    assert_eq!(net["tenant_grants"], json!([acme]));
-    assert_eq!(net["grants"], json!([]), "no default project grant");
+    assert_eq!(net["network"]["tenant_grants"], json!([acme]));
+    assert!(
+        net["network"]["grants"].is_null(),
+        "no default project grant: {net}"
+    );
     let (status, body) = request(&h.app, "POST", "/vms", Some(in_project("a1", &pa, "lab"))).await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
     let (status, body) = request(&h.app, "POST", "/vms", Some(in_project("d1", &pd, "lab"))).await;
@@ -940,7 +972,7 @@ async fn host_networks_are_granted_to_tenants_and_shares_stay_in_one() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{net}");
-    assert_eq!(net["tenant_grants"], json!([DEFAULT_TENANT]));
+    assert_eq!(net["network"]["tenant_grants"], json!([DEFAULT_TENANT]));
     let (status, body) = request(&h.app, "POST", "/vms", Some(in_project("d2", &pd, "lab"))).await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
     let (status, _) = request(&h.app, "POST", "/vms", Some(in_project("a2", &pa, "lab"))).await;
@@ -966,14 +998,14 @@ async fn host_networks_are_granted_to_tenants_and_shares_stay_in_one() {
     .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
     for target in [&pd, &pa2] {
-        let (status, _) = request(
+        let (status, why) = request(
             &h.app,
             "POST",
             "/networks/apnet/shares",
             Some(json!({"project": target})),
         )
         .await;
-        assert_eq!(status, StatusCode::ACCEPTED);
+        assert_eq!(status, StatusCode::ACCEPTED, "{why}");
     }
     let (_, shares) = request(
         &h.app,
@@ -982,7 +1014,7 @@ async fn host_networks_are_granted_to_tenants_and_shares_stay_in_one() {
         None,
     )
     .await;
-    assert_eq!(shares, json!([]), "nothing across tenants");
+    assert_eq!(shares, json!({}), "nothing across tenants");
     let (_, shares) = request(
         &h.app,
         "GET",
@@ -990,5 +1022,137 @@ async fn host_networks_are_granted_to_tenants_and_shares_stay_in_one() {
         None,
     )
     .await;
-    assert_eq!(shares[0]["status"], "offered", "{shares}");
+    assert_eq!(
+        shares["shares"][0]["status"], "SHARE_STATUS_OFFERED",
+        "{shares}"
+    );
+}
+
+/// D24 (spec/tenancy.md): networks are keyed by id; a project network's
+/// name is unique in its tenant, a host network's on the cluster. A name
+/// several networks have is ambiguous where both are in view; a VM's NIC
+/// names its network by id, with the name beside it; the RPC transport
+/// takes the same keys.
+#[tokio::test(flavor = "multi_thread")]
+async fn network_names_are_per_tenant_and_ids_are_the_keys() {
+    let h = harness(true);
+    let (status, t) = request(&h.app, "POST", "/tenants", Some(json!({"slug": "acme"}))).await;
+    assert_eq!(status, StatusCode::CREATED, "{t}");
+    let (status, a) = request(&h.app, "PUT", "/admissions/acme", Some(json!({}))).await;
+    assert!(status.is_success(), "{a}");
+    let acme = t["tenant"]["id"].as_str().unwrap().to_string();
+    let projects = h.manager.projects();
+    let pa = projects
+        .create_in(&acme, "pa", String::new(), None)
+        .unwrap()
+        .id;
+    let pa2 = projects
+        .create_in(&acme, "pa2", String::new(), None)
+        .unwrap()
+        .id;
+    let pd = projects.create("pd", String::new(), None).unwrap().id;
+    let create = |project: &str| {
+        let uri = format!("/projects/{project}/networks");
+        let app = h.app.clone();
+        async move {
+            request(
+                &app,
+                "POST",
+                &uri,
+                Some(json!({"name": "web", "mode": "isolated"})),
+            )
+            .await
+        }
+    };
+
+    // Two tenants may each have `web`; one tenant may not have two.
+    let (status, a_web) = create(&pa).await;
+    assert_eq!(status, StatusCode::CREATED, "{a_web}");
+    let (status, d_web) = create(&pd).await;
+    assert_eq!(status, StatusCode::CREATED, "{d_web}");
+    let (status, body) = create(&pa2).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    let a_id = a_web["network"]["id"].as_str().unwrap().to_string();
+    let d_id = d_web["network"]["id"].as_str().unwrap().to_string();
+    assert_ne!(a_id, d_id);
+    assert_ne!(a_web["network"]["bridge"], d_web["network"]["bridge"]);
+    // A host network can't take a name a project network has.
+    let (status, body) = request(
+        &h.app,
+        "POST",
+        "/networks",
+        Some(json!({"name": "web", "mode": "nat", "bridge": "gxbr-lab"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+
+    // Seeing both (the test caller sees every project): the name is
+    // ambiguous, the ids are not.
+    let (status, body) = request(&h.app, "GET", "/networks/web", None).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"], "ambiguous", "{body}");
+    let (status, body) = request(&h.app, "GET", &format!("/networks/{a_id}"), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["network"]["project"], pa.as_str());
+
+    // A VM's network name resolves in its project's tenant, and its NIC
+    // carries the id and the name.
+    let mut spec = vm("v1", json!([{"network": "web"}]));
+    spec["project"] = json!(pd);
+    let (status, body) = request(&h.app, "POST", "/vms", Some(spec)).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let nic = &vm_of(&body)["nics"][0];
+    assert_eq!(
+        (nic["network"].as_str(), nic["network_name"].as_str()),
+        (Some(d_id.as_str()), Some("web")),
+        "{body}"
+    );
+    let vm = vm_id(&body);
+
+    // The same over RPC (Connect, JSON).
+    let (status, body) = request(
+        &h.app,
+        "POST",
+        "/glidex.network.v1.NetworkService/GetNetwork",
+        Some(json!({"id": d_id})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["network"]["name"], "web");
+    assert_eq!(body["network"]["mode"], "NETWORK_MODE_ISOLATED");
+    let (status, body) = request(
+        &h.app,
+        "POST",
+        "/glidex.network.v1.NetworkService/GetNetwork",
+        Some(json!({"id": "web"})),
+    )
+    .await;
+    // `ambiguous` (the ErrorInfo reason) is a failed precondition in RPCs.
+    assert_eq!(body["code"], "failed_precondition", "{status} {body}");
+    let (status, body) = request(
+        &h.app,
+        "POST",
+        "/glidex.network.v1.NetworkService/ListNetworks",
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["networks"].as_array().unwrap().len(), 2, "{body}");
+    let (status, body) = request(
+        &h.app,
+        "POST",
+        "/glidex.network.v1.RouterService/ListRouters",
+        Some(json!({"project": pa})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // Deleting by id leaves the other tenant's `web` alone.
+    let (status, body) = request(&h.app, "DELETE", &format!("/vms/{vm}"), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    let (status, body) = request(&h.app, "DELETE", &format!("/networks/{d_id}"), None).await;
+    assert!(status.is_success(), "{status} {body}");
+    let (status, body) = request(&h.app, "GET", "/networks/web", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["network"]["id"], a_id.as_str());
 }

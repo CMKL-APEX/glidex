@@ -36,11 +36,11 @@ pub fn is_provider(n: &Network) -> bool {
 fn network_subject(n: &Network) -> Subject {
     let mut s = Subject::new(
         SubjectKind::Network,
-        n.name.clone(),
+        n.id.clone(),
         n.name.clone(),
         n.project.clone(),
     );
-    s.network = Some(n.name.clone());
+    s.network = Some(n.id.clone());
     // A cluster network spans the nodes; a node network is on one.
     s.node = n.node.clone();
     s
@@ -292,7 +292,7 @@ pub fn sample_ct(
         }
         let Some(n) = networks
             .iter()
-            .find(|n| n.name == r.network)
+            .find(|n| n.id == r.network)
             .filter(|n| !is_provider(n))
         else {
             continue;
@@ -433,7 +433,7 @@ mod tests {
 
     fn net(name: &str, bridge: &str, vlan: Option<u16>) -> Network {
         serde_json::from_value(serde_json::json!({
-            "name": name, "bridge": bridge, "mode": "nat", "port_type": "tap", "vlan": vlan,
+            "id": name, "name": name, "bridge": bridge, "mode": "nat", "port_type": "tap", "vlan": vlan,
             "created_at": 0, "project": "p1",
         }))
         .unwrap()
@@ -639,7 +639,7 @@ mod tests {
 
     fn cluster_net(name: &str, physnet: Option<&str>) -> Network {
         serde_json::from_value(serde_json::json!({
-            "name": name, "bridge": "br-int", "mode": if physnet.is_some() { "bridged" } else { "nat" }, "port_type": "tap",
+            "id": name, "name": name, "bridge": "br-int", "mode": if physnet.is_some() { "bridged" } else { "nat" }, "port_type": "tap",
             "scope": "cluster", "physnet": physnet, "created_at": 0, "project": "p1",
         }))
         .unwrap()

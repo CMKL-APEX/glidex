@@ -1239,10 +1239,10 @@ the principal is included.
 | `GET /authz/policies`, `GET /authz/policies/{id}`, `GET /authz/policies/{id}/versions` | `policy.read` |
 | `PUT /authz/policies/{id}`, `DELETE /authz/policies/{id}`, `POST /authz/reload` | `policy.write` (step-up) |
 | `POST /authz/validate`, `POST /authz/simulate` | `policy.read` |
-| `POST /projects/{id}/networks`, `DELETE /networks/{name}` (project network) | `network.manage` |
-| `POST /networks/{name}/shares` (`{project}`), `DELETE /networks/{name}/shares/{project}` | `network.share` on the network (offer, unshare) |
+| `POST /projects/{id}/networks`, `DELETE /networks/{id}` (project network) | `network.manage` |
+| `POST /networks/{id}/shares` (`{project}`), `DELETE /networks/{id}/shares/{project}` | `network.share` on the network (offer, unshare) |
 | `GET /projects/{id}/network-shares`, `POST /projects/{id}/network-shares/{network}/accept`, `DELETE /projects/{id}/network-shares/{network}` | `network.share` on the target project (list offers, accept, leave) |
-| `PUT /networks/{name}/grants` (`{grants, tenants, all_projects}`) | `host.network` |
+| `PUT /networks/{id}/grants` (`{grants, tenants, all_projects}`) | `host.network` |
 | `POST /auth/session` | a peer-identified user on api.sock: a browser session for themselves (without break-glass) |
 | `GET /vms/{id}/console/log` | `vm.console` (console output replaces reading the log file) |
 | `PATCH /users/me` (`{default_project}`) | authenticated |

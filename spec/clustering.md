@@ -512,7 +512,7 @@ running throughout.
    |---|---|---|
    | Ids (VM, disk, image) already exist | refused, unless the existing record is in a `Departed` tombstone's `departed_ids` (the same resources coming back) | none: ids are kept (D19) |
    | Project names | refused when a project of that name exists | `--project <src>=<existing>` (merge into it) or `--project <src>=new:<name>` |
-   | Network names (unique cluster-wide) | refused on conflict | `--network <src>=<new name>`; VM attachments are rewritten to match |
+   | Network names (a host network's unique on the cluster, a project network's in its tenant; tenancy.md D24) | refused on conflict | `--network <src>=<new name>`; a network whose id is taken here gets a new one, and VM attachments are rewritten to match |
    | Credential names (unique per project) | refused on conflict | `--credential <project>/<src>=<new name>`; VM references rewritten |
    | Images | each imported as its own record, even if the catalog has the same checksum | none: `Linked` disks use the image file as their qcow2 backing file, so the image id can't change; duplicates stay separate until a shared image store exists (§18) |
    | Quotas of the target projects | refused if the import exceeds them | `--over-quota`: accepted, projects marked over quota as when an admin lowers a quota |
@@ -1136,7 +1136,7 @@ only be reached through their external IP, which only accepts replies
   `409 external_pool_exhausted`.
 - A network's `router` is set at creation, and the project can move the
   network to another of its routers or back to the shared edge
-  (`PUT /projects/{id}/networks/{name}/router`; the gateway address and
+  (`PUT /projects/{id}/networks/{network}/router`; the gateway address and
   MAC stay, so VMs keep working). Subnets come
   from the cluster IPAM as for any NAT network (§11.4, no overlap).
   Deleting a router is refused while networks are attached.
@@ -1231,9 +1231,9 @@ networking.md):
 
 glidex creates no default network, node or cluster: an automatic one
 came back after every restart once deleted, and which networks a cluster
-has is the administrator's choice. Network names are unique
-cluster-wide; a `default` network made by an older version stays as it
-is.
+has is the administrator's choice. A host network's name is unique on
+the cluster, a project network's in its tenant (tenancy.md D24); a
+`default` network made by an older version stays as it is.
 
 ## 12. Security
 

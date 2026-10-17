@@ -753,7 +753,7 @@ impl VmManager {
     pub async fn start_detach(
         &self,
         key: &str,
-        opts: DetachOptions,
+        mut opts: DetachOptions,
         timeout_secs: Option<u64>,
     ) -> Result<Value, DepartureError> {
         let c = self
@@ -789,35 +789,38 @@ impl VmManager {
             c.check_voter_leaves(rid, false)
                 .map_err(|e| DepartureError::Conflict(e.to_string()))?;
         }
-        let known: BTreeSet<String> = self
-            .networks
-            .list()
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|x| x.scope == crate::network::NetworkScope::Cluster)
-            .map(|x| x.name)
-            .collect();
-        let mine: BTreeSet<String> = self
-            .networks
-            .list()
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|x| x.node.as_deref() == Some(n.meta.id.as_str()))
-            .map(|x| x.name)
-            .collect();
+        // Networks are named by id or name (unique among those that fit); the
+        // plan keeps ids, as the NICs do (spec/tenancy.md D24).
+        let nets = self.networks.list().unwrap_or_default();
+        let pick = |key: &str, fits: &dyn Fn(&crate::network::Network) -> bool| {
+            let mut m = nets
+                .iter()
+                .filter(|x| fits(x) && (x.id == key || x.name == key));
+            match (m.next(), m.next()) {
+                (Some(x), None) => Ok(Some(x.id.clone())),
+                (Some(_), Some(_)) => Err(DepartureError::Invalid(format!(
+                    "more than one network is named {key}: give its id"
+                ))),
+                (None, _) => Ok(None),
+            }
+        };
+        let mut mapped = BTreeMap::new();
         for (from, to) in &opts.map_networks {
-            if !known.contains(from) {
+            let Some(from_id) = pick(from, &|x| x.scope == crate::network::NetworkScope::Cluster)?
+            else {
                 return Err(DepartureError::Invalid(format!(
                     "{from} is not a cluster network"
                 )));
-            }
-            if !mine.contains(to) {
+            };
+            let Some(to_id) = pick(to, &|x| x.node.as_deref() == Some(n.meta.id.as_str()))? else {
                 return Err(DepartureError::Invalid(format!(
                     "{to} is not a node network of {}",
                     n.spec.name
                 )));
-            }
+            };
+            mapped.insert(from_id, to_id);
         }
+        opts.map_networks = mapped;
         let id = uuid::Uuid::new_v4().simple().to_string()[..12].to_string();
         let now = crate::tenancy::now();
         let plan = Plan {

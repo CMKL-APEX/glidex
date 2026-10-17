@@ -34,15 +34,6 @@ export type ProtoPowerState = "POWER_STATE_RUNNING" | "POWER_STATE_PAUSED" | "PO
 export type RestartPolicy = "RESTART_POLICY_ON_FAILURE" | "RESTART_POLICY_NEVER";
 export type HostBootPolicy = "HOST_BOOT_POLICY_RESUME" | "HOST_BOOT_POLICY_STOP";
 
-/** A legacy status condition (`True`/`False`/`Unknown`, Unix seconds): networks still send these. */
-export interface Condition {
-  kind: string;
-  status: "True" | "False" | "Unknown";
-  reason: string;
-  message: string;
-  last_transition_at: number;
-}
-
 export type ExitCause =
   | "EXIT_CAUSE_REQUESTED"
   | "EXIT_CAUSE_TERMINATED"
@@ -134,41 +125,83 @@ export function vmHypervisor(vm: Pick<VmResponse, "hypervisor">): HypervisorType
 }
 
 export interface NicState {
+  /** The network's id. */
   network: string;
+  /** The network's name (show this; fall back to `network`). */
+  network_name?: string;
   mac: string;
   port?: string;
   ipv4?: string;
 }
 
-export type NetworkMode = "nat" | "bridged" | "isolated";
-export type PortType = "tap" | "vhost_user";
+/** A NIC's network for display: its name, else its id. */
+export function nicNetworkLabel(nic: Pick<NicState, "network" | "network_name">): string {
+  return nic.network_name || nic.network;
+}
+
+// ---- networks (glidex.network.v1, proto JSON shape) -------------------------
+// Networks are keyed by id (spec/tenancy.md D24); enums are their full proto
+// names, timestamps RFC 3339, fields at their default left out.
+
+export type NetworkMode = "NETWORK_MODE_NAT" | "NETWORK_MODE_BRIDGED" | "NETWORK_MODE_ISOLATED";
+export type PortType = "PORT_TYPE_TAP" | "PORT_TYPE_VHOST_USER";
+export type NetworkScope = "NETWORK_SCOPE_NODE" | "NETWORK_SCOPE_CLUSTER";
+export type NetworkPhase =
+  | "NETWORK_PHASE_PENDING"
+  | "NETWORK_PHASE_READY"
+  | "NETWORK_PHASE_DEGRADED"
+  | "NETWORK_PHASE_NETD_UNAVAILABLE";
+
+/** `NETWORK_MODE_NAT` → `nat` (the short text the UI shows). */
+export const networkModeLabel = (m: string | undefined) => enumLabel(m, "NETWORK_MODE_");
+/** `PORT_TYPE_VHOST_USER` → `vhost-user`, `PORT_TYPE_TAP` → `tap`. */
+export const portTypeLabel = (t: string | undefined) => (t === "PORT_TYPE_VHOST_USER" ? "vhost-user" : "tap");
+/** `NETWORK_PHASE_NETD_UNAVAILABLE` → `netd_unavailable` (absent: `ready`). */
+export const networkPhaseLabel = (p: string | undefined) => enumLabel(p, "NETWORK_PHASE_") || "ready";
+/** Whether a network spans the cluster (on OVN). */
+export const isClusterNetwork = (n: Pick<Network, "scope">) => n.scope === "NETWORK_SCOPE_CLUSTER";
+
+export interface ShareOffer {
+  project: string;
+  offered_by?: string;
+  /** RFC 3339. */
+  offered_at?: string;
+  /** RFC 3339. */
+  expires_at?: string;
+}
 
 export interface Network {
+  /** UUID; paths, keys and VM NICs use it. */
+  id: string;
   name: string;
-  bridge: string;
-  mode: NetworkMode;
-  port_type: PortType;
+  /** `cluster`: an OVN network every node can use; `node`: an OVS bridge on `node` (spec/clustering.md §11). */
+  scope?: NetworkScope;
+  node?: string;
+  physnet?: string;
+  /** The id of the VPC router it is on; absent: the shared edge. */
+  router?: string;
+  bridge?: string;
+  mode?: NetworkMode;
+  port_type?: PortType;
   vlan?: number;
   mtu?: number;
-  owns_bridge: boolean;
-  created_at: number;
+  dns?: boolean;
+  owns_bridge?: boolean;
+  /** RFC 3339. */
+  created_at?: string;
   /** Project networks belong to a project (spec/security.md §6.2). */
   project?: string;
   all_projects?: boolean;
   grants?: string[];
+  tenant_grants?: string[];
   /** Projects that accepted a share of this project network. */
   shares?: string[];
-  share_offers?: { project: string; offered_by: string; offered_at: number; expires_at: number }[];
-  /** `cluster`: an OVN network every node can use; `node`: an OVS bridge on `node` (spec/clustering.md §11). */
-  scope?: "cluster" | "node";
-  node?: string;
-  physnet?: string;
-  router?: string;
+  share_offers?: ShareOffer[];
   /** What the network controller last saw in netd (spec/reconciliation.md §10.3). */
-  phase?: "pending" | "ready" | "degraded" | "netd_unavailable";
-  conditions?: Condition[];
-  /** Deletion requested; the network controller is removing it (from netd, then the record). */
-  deletion_requested_at?: number;
+  phase?: NetworkPhase;
+  conditions?: StorageCondition[];
+  /** Deletion requested (RFC 3339); the network controller is removing it (from netd, then the record). */
+  deletion_requested_at?: string;
 }
 
 /** Whether VMs of `project` may attach to `n` (mirrors base.network-grant). */
@@ -185,21 +218,28 @@ export interface CreateNetworkRequest {
   bridge?: string;
   subnet?: string;
   vlan?: number;
-  /** `cluster` (OVN) or `node`; the server's default is the cluster's when OVN is on. */
-  scope?: "cluster" | "node";
+  mtu?: number;
+  dns?: boolean;
+  /** Cluster (OVN) or node; the server's default is the cluster's when OVN is on. */
+  scope?: NetworkScope;
   /** A provider network (cluster scope, bridged): its physical network. */
   physnet?: string;
-  /** A project NAT network on one of the project's VPC routers (by name). */
+  /** A project NAT network on one of the project's VPC routers (id or name). */
   router?: string;
+  /** Host networks: projects (ids or names) that may use it. */
+  grants?: string[];
+  /** Host networks: tenants (ids or slugs) whose every project may use it. */
+  tenants?: string[];
+  all_projects?: boolean;
 }
 
 /** A project's VPC router (spec/clustering.md §11.2a). */
 export interface RouterSpec {
   name: string;
   /** Reaches outside: an address from the edge's pool, SNAT. */
-  external: boolean;
-  external_ip?: string | null;
-  gateway_nodes?: string[] | null;
+  external?: boolean;
+  external_ip?: string;
+  gateway_nodes?: string[];
 }
 
 export interface Router {
@@ -207,8 +247,9 @@ export interface Router {
   id: string;
   project: string;
   spec: RouterSpec;
-  status: { external_ip: string | null; snat_ct_zone: number | null };
-  created_at: number;
+  status?: { external_ip?: string; snat_ct_zone?: number };
+  /** RFC 3339. */
+  created_at?: string;
 }
 
 export interface Combination {
@@ -663,8 +704,7 @@ export function networkActivity(n: Network): string | null {
 }
 
 /** A condition's status in the short form, whichever shape it came in: a
- * proto one (`CONDITION_STATUS_TRUE`: VMs, storage) or a legacy one (`True`:
- * networks). Absent: `Unknown`. */
+ * proto one (`CONDITION_STATUS_TRUE`) or a legacy one (`True`). Absent: `Unknown`. */
 export function conditionStatus(c: { status?: string }): Tristate {
   switch (c.status) {
     case "True":
@@ -1143,10 +1183,13 @@ export interface AuditEntry {
 }
 
 export interface NetworkShare {
+  /** The network's id. */
   network: string;
-  owner_project: string | null;
-  status: "offered" | "accepted";
-  expires_at?: number;
+  network_name?: string;
+  owner_project?: string;
+  status?: "SHARE_STATUS_OFFERED" | "SHARE_STATUS_ACCEPTED";
+  /** An offer's (RFC 3339). */
+  expires_at?: string;
 }
 
 /** Unix seconds → local date and time. */
@@ -1431,11 +1474,19 @@ export interface NodeTunnels {
   missing?: { node: string; node_name: string }[];
 }
 
-/** `GET /networks/{name}/ovn`. */
+/** A chassis in a network's OVN view (glidex.network.v1.Chassis): absent fields left out, `priority` an int64 string. */
+export interface NetworkOvnChassis {
+  chassis: string;
+  node?: string;
+  node_name?: string;
+  priority?: U64;
+}
+
+/** `GET /networks/{id}/ovn` (proto JSON: empty lists, false and absent fields left out). */
 export interface NetworkOvn {
   switch: string;
-  ports: { name: string; kind: string; addresses: string[]; up: boolean | null; bound: ChassisRef | null; vm: { id: string; name: string } | null }[];
-  router: { name: string; nat: string[]; active_gateway: ChassisRef | null; gateway_candidates: ChassisRef[] } | null;
+  ports?: { name: string; kind?: string; addresses?: string[]; up?: boolean; bound?: NetworkOvnChassis; vm?: { id: string; name: string } }[];
+  router?: { name: string; nat?: string[]; active_gateway?: NetworkOvnChassis; gateway_candidates?: NetworkOvnChassis[] };
 }
 
 /** A detach (`GET /departures`, clustering.md §5.8). */

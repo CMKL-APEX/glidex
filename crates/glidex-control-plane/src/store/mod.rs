@@ -27,9 +27,11 @@ const META_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("meta");
 
 /// `meta.schema_version`: absent = 1 (flat VM records), 2 = envelopes,
 /// 3 = nodes: placement, disk and network nodes, `Cluster` entities
-/// (spec/clustering.md §17 C1).
-pub const SCHEMA_VERSION: u32 = 3;
+/// (spec/clustering.md §17 C1), 4 = networks keyed by id
+/// (spec/tenancy.md D24).
+pub const SCHEMA_VERSION: u32 = 4;
 const SCHEMA_ENVELOPES: u32 = 2;
+const SCHEMA_NODES: u32 = 3;
 const SCHEMA_KEY: &str = "schema_version";
 
 /// Events kept per object.
@@ -239,6 +241,7 @@ impl VmStore {
     pub fn migrate(&self, on_host_boot: HostBootPolicy) -> Result<usize, PersistenceError> {
         let rewritten = self.migrate_to_envelopes(on_host_boot)?;
         self.migrate_to_nodes()?;
+        self.migrate_network_ids()?;
         Ok(rewritten)
     }
 
@@ -296,7 +299,7 @@ impl VmStore {
     /// and network belongs to the implicit node `local`; role links on the
     /// host move to the cluster; the `nodes` table gets its first row.
     fn migrate_to_nodes(&self) -> Result<(), PersistenceError> {
-        if self.schema_version()?.is_some_and(|v| v >= SCHEMA_VERSION) {
+        if self.schema_version()?.is_some_and(|v| v >= SCHEMA_NODES) {
             return Ok(());
         }
         let local = crate::node::LOCAL_NODE;
@@ -385,6 +388,113 @@ impl VmStore {
                 n.status.pci_devices = probe.pci_devices;
                 nodes.insert(local, serde_json::to_vec(&n)?.as_slice())?;
             }
+            let mut meta = txn.open_table(META_TABLE)?;
+            meta.insert(SCHEMA_KEY, SCHEMA_NODES.to_string().as_bytes())?;
+        }
+        txn.commit()?;
+        Ok(())
+    }
+
+    /// Schema 3 → 4, in one write (spec/tenancy.md D24): networks get an id
+    /// (derived from the name, so every server picks the same one) and are
+    /// keyed by it, and so are the VM NICs and IPAM rows that named them.
+    /// Their OVN objects keep the name (`ovn_key`), so nothing on the wire
+    /// changes.
+    fn migrate_network_ids(&self) -> Result<(), PersistenceError> {
+        if self.schema_version()?.is_some_and(|v| v >= SCHEMA_VERSION) {
+            return Ok(());
+        }
+        let txn = self.db.begin(Origin::Migration)?;
+        let mut ids: std::collections::HashMap<String, String> = Default::default();
+        {
+            let mut t = txn.open_table(TableId::Networks.definition())?;
+            let mut moved = Vec::new();
+            for r in t.iter()? {
+                let (k, v) = r?;
+                let Ok(mut j) = serde_json::from_slice::<serde_json::Value>(v.value()) else {
+                    continue;
+                };
+                let Some(o) = j.as_object_mut() else { continue };
+                if o.contains_key("id") {
+                    continue;
+                }
+                let name = k.value().to_string();
+                let id = crate::network::legacy_id(&name);
+                o.insert("id".into(), id.clone().into());
+                o.insert("ovn_key".into(), name.clone().into());
+                moved.push((name.clone(), id.clone(), serde_json::to_vec(&j)?));
+                ids.insert(name, id);
+            }
+            for (name, id, v) in moved {
+                t.remove(name.as_str())?;
+                t.insert(id.as_str(), v.as_slice())?;
+            }
+        }
+        let map = |n: &mut serde_json::Value| -> bool {
+            match n.as_str().and_then(|s| ids.get(s)) {
+                Some(id) => {
+                    *n = id.clone().into();
+                    true
+                }
+                None => false,
+            }
+        };
+        {
+            let mut t = txn.open_table(VMS_TABLE)?;
+            let mut changed = Vec::new();
+            for r in t.iter()? {
+                let (k, v) = r?;
+                let Ok(mut j) = serde_json::from_slice::<serde_json::Value>(v.value()) else {
+                    continue;
+                };
+                let mut hit = false;
+                for path in ["/spec/config/networks", "/status/nics"] {
+                    if let Some(a) = j.pointer_mut(path).and_then(|a| a.as_array_mut()) {
+                        for nic in a {
+                            if let Some(n) = nic.get_mut("network") {
+                                hit |= map(n);
+                            }
+                        }
+                    }
+                }
+                if hit {
+                    changed.push((k.value().to_string(), serde_json::to_vec(&j)?));
+                }
+            }
+            for (k, v) in changed {
+                t.insert(k.as_str(), v.as_slice())?;
+            }
+        }
+        // IPAM: subnets are keyed `<network>`, reservations `<network>/<mac>`.
+        for table in [TableId::IpamSubnets, TableId::IpamReservations] {
+            let mut t = txn.open_table(table.definition())?;
+            let mut moved = Vec::new();
+            for r in t.iter()? {
+                let (k, v) = r?;
+                let key = k.value().to_string();
+                let (net, rest) = match key.split_once('/') {
+                    Some((n, m)) => (n.to_string(), Some(m.to_string())),
+                    None => (key.clone(), None),
+                };
+                let Some(id) = ids.get(&net) else { continue };
+                let Ok(mut j) = serde_json::from_slice::<serde_json::Value>(v.value()) else {
+                    continue;
+                };
+                if let Some(n) = j.get_mut("network") {
+                    map(n);
+                }
+                let new = match rest {
+                    Some(m) => format!("{id}/{m}"),
+                    None => id.clone(),
+                };
+                moved.push((key, new, serde_json::to_vec(&j)?));
+            }
+            for (old, new, v) in moved {
+                t.remove(old.as_str())?;
+                t.insert(new.as_str(), v.as_slice())?;
+            }
+        }
+        {
             let mut meta = txn.open_table(META_TABLE)?;
             meta.insert(SCHEMA_KEY, SCHEMA_VERSION.to_string().as_bytes())?;
         }
@@ -610,13 +720,13 @@ mod tests {
             let txn = store.db.begin(crate::store::Origin::Controller).unwrap();
             {
                 let mut t = txn.open_table(META_TABLE).unwrap();
-                t.insert(SCHEMA_KEY, b"4".as_slice()).unwrap();
+                t.insert(SCHEMA_KEY, b"5".as_slice()).unwrap();
             }
             txn.commit().unwrap();
         }
         assert!(matches!(
             VmStore::open(&path),
-            Err(PersistenceError::NewerSchema(4))
+            Err(PersistenceError::NewerSchema(5))
         ));
     }
 
@@ -657,7 +767,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(store.migrate(HostBootPolicy::Stop).unwrap(), 0);
-        assert_eq!(store.schema_version().unwrap(), Some(3));
+        assert_eq!(store.schema_version().unwrap(), Some(SCHEMA_VERSION));
         let vms = store.load_all().unwrap();
         assert_eq!(vms[0].status.placement.as_ref().unwrap().node, "local");
         let txn = db.begin_read().unwrap();
@@ -666,7 +776,7 @@ mod tests {
             serde_json::from_slice(t.get(k).unwrap().unwrap().value()).unwrap()
         };
         assert_eq!(get(TableId::Disks, "d1")["node"], "local");
-        let net = get(TableId::Networks, "n1");
+        let net = get(TableId::Networks, &crate::network::legacy_id("n1"));
         assert_eq!(
             (net["scope"].as_str(), net["node"].as_str()),
             (Some("node"), Some("local"))
@@ -732,5 +842,91 @@ mod tests {
             })
             .unwrap();
         assert!(store.events(&key).unwrap().is_empty());
+    }
+
+    /// D24: a schema-3 database's networks, the VM NICs on them and their
+    /// IPAM rows move to the network's id; its OVN objects keep the name.
+    #[test]
+    fn schema_three_keys_networks_by_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = VmStore::open(dir.path().join("db")).unwrap();
+        let db = store.database();
+        let mut vm = {
+            let config: VmConfig = serde_json::from_value(serde_json::json!({
+                "vcpu_count": 1, "mem_size_mib": 512, "rootfs_path": "/r", "kernel_args": "",
+                "networks": [{"network": "lab"}, {"network": "gone"}]
+            }))
+            .unwrap();
+            Vm::new("old".into(), config)
+        };
+        vm.status.nics.push(crate::models::NicStatus {
+            network: "lab".into(),
+            nic_index: 0,
+            mac: "02:00:00:00:00:01".into(),
+            port: None,
+            ipv4: None,
+            port_ok: false,
+        });
+        db.write(Origin::System, |tx| -> Result<(), PersistenceError> {
+            let mut vms = tx.open_table(TableId::Vms.definition())?;
+            vms.insert(&vm.id, serde_json::to_vec(&vm)?.as_slice())?;
+            let mut nets = tx.open_table(TableId::Networks.definition())?;
+            nets.insert("lab", br#"{"name":"lab","scope":"cluster","bridge":"br-int","mode":"nat","port_type":"tap","created_at":1}"#.as_slice())?;
+            let mut subnets = tx.open_table(TableId::IpamSubnets.definition())?;
+            subnets.insert("lab", br#"{"network":"lab","cidr":"10.89.0.0/24","gateway":"10.89.0.1","pool":["10.89.0.2","10.89.0.254"]}"#.as_slice())?;
+            let mut res = tx.open_table(TableId::IpamReservations.definition())?;
+            res.insert("lab/02:00:00:00:00:01", br#"{"network":"lab","mac":"02:00:00:00:00:01","ip":"10.89.0.2","vm_id":"v","nic":0}"#.as_slice())?;
+            let mut meta = tx.open_table(TableId::Meta.definition())?;
+            meta.insert(SCHEMA_KEY, b"3".as_slice())?;
+            Ok(())
+        })
+        .unwrap();
+
+        store.migrate(HostBootPolicy::Stop).unwrap();
+        assert_eq!(store.schema_version().unwrap(), Some(4));
+        let id = crate::network::legacy_id("lab");
+        let txn = db.begin_read().unwrap();
+        let get = |t: TableId, k: &str| -> Option<serde_json::Value> {
+            let t = txn.open_table(t.definition()).unwrap();
+            t.get(k)
+                .unwrap()
+                .map(|v| serde_json::from_slice(v.value()).unwrap())
+        };
+        let net = get(TableId::Networks, &id).unwrap();
+        assert_eq!(
+            (net["id"].as_str(), net["ovn_key"].as_str()),
+            (Some(id.as_str()), Some("lab"))
+        );
+        assert!(get(TableId::Networks, "lab").is_none());
+        let n: crate::network::Network = serde_json::from_value(net).unwrap();
+        assert_eq!(n.ovn_key(), "lab");
+        assert_eq!(
+            get(TableId::IpamSubnets, &id).unwrap()["network"],
+            id.as_str()
+        );
+        assert!(get(TableId::IpamSubnets, "lab").is_none());
+        let r = get(
+            TableId::IpamReservations,
+            &format!("{id}/02:00:00:00:00:01"),
+        )
+        .unwrap();
+        assert_eq!(r["network"], id.as_str());
+        drop(txn);
+        let vms = store.load_all().unwrap();
+        let nets: Vec<&str> = vms[0]
+            .config()
+            .networks
+            .iter()
+            .map(|a| a.network.as_str())
+            .collect();
+        // A NIC on a network that no longer exists keeps what it had.
+        assert_eq!(nets, vec![id.as_str(), "gone"]);
+        assert_eq!(vms[0].status.nics[0].network, id);
+        // Idempotent.
+        store.migrate(HostBootPolicy::Stop).unwrap();
+        assert_eq!(
+            store.load_all().unwrap()[0].config().networks[0].network,
+            id
+        );
     }
 }

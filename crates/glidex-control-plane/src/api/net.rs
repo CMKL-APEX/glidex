@@ -2,12 +2,14 @@
 //! networking through glidex-netd (spec/networking.md §11,
 //! spec/security.md §6.2, §8).
 
-use super::{ApiErr, Caller, add_network, err, error_to_response};
+use super::{ApiErr, Caller, Proto, error_to_response, proto_body, proto_no_content};
 use crate::authz::{Ent, EntitySet};
 use crate::models::ApiError;
-use crate::network::{CreateNetworkRequest, NetError, Netd, NetdAccess, Network};
+use crate::network::{NetError, Netd, NetdAccess};
+use crate::service::network as svc;
 use crate::state::VmManagerError;
 use axum::{Json, extract::Path, http::StatusCode, response::IntoResponse};
+use glidex_api::proto::glidex::network::v1 as pb;
 use glidex_netd::proto::{
     BridgeRecord, EnsureUplinkArgs, OnBehalfOf, Op, UplinkPhase, UplinkResult,
 };
@@ -15,6 +17,7 @@ use glidex_ovs::bridge::BridgeSpec;
 use glidex_ovs::install::{InstallReport, InstallRequest};
 use glidex_ovs::uplink::{UplinkKind, UplinkSpec};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 fn manager_err(e: VmManagerError) -> ApiErr {
     error_to_response(e)
@@ -51,89 +54,55 @@ where
         .map_err(|e| error_to_response(VmManagerError::Network(e)))
 }
 
-pub(crate) fn network_entities(n: &Network) -> (Ent, EntitySet) {
-    let mut es = EntitySet::new();
-    let e = add_network(&mut es, n);
-    (e, es)
+// ---- networks, shares, routers: REST twins of glidex.network.v1 ----------
+
+/// The old shape's enum values (spec/grpc.md §9.1 step 3).
+const ENUMS: &[(&str, &str)] = &[
+    ("mode", "NETWORK_MODE"),
+    ("port_type", "PORT_TYPE"),
+    ("scope", "NETWORK_SCOPE"),
+];
+
+fn body<T: serde::de::DeserializeOwned + buffa::MessageName>(v: Value) -> Result<T, ApiErr> {
+    proto_body(v, ENUMS, &[])
 }
 
-// ---- networks ------------------------------------------------------------
-
-/// Host networks, and project networks of (or shared with) projects the
-/// caller can see. Share offers are shown only to those who may manage
-/// the network's shares.
-pub(crate) fn network_view(
-    c: &Caller,
-    visible: &crate::auth::LinkedProjects,
-    mut n: Network,
-) -> Option<Network> {
-    if let Some(p) = &n.project {
-        if !visible.contains(p) && !n.shares.iter().any(|s| visible.contains(s)) {
-            return None;
-        }
-        let (e, mut es) = network_entities(&n);
-        es.project(p);
-        let manage = c
-            .auth()
-            .authorize(
-                &c.p,
-                "unshareNetwork",
-                e,
-                es,
-                &[("project", Ent::Project(p.clone()))],
-            )
-            .allowed;
-        if !manage {
-            n.share_offers.clear();
+/// `body` with path fields set over what the body says.
+fn body_with<T: serde::de::DeserializeOwned + buffa::MessageName>(
+    mut v: Value,
+    path: &[(&str, &str)],
+) -> Result<T, ApiErr> {
+    if let Some(o) = v.as_object_mut() {
+        for (k, val) in path {
+            o.insert((*k).into(), Value::String((*val).into()));
         }
     }
-    Some(n)
+    body(v)
 }
 
 pub async fn list_networks(c: Caller) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Cluster, EntitySet::new())?;
-    let visible = c.visible_projects()?;
-    let nets: Vec<Network> = c
-        .manager()
-        .list_networks()
-        .map_err(manager_err)?
-        .into_iter()
-        .filter_map(|n| network_view(&c, &visible, n))
-        .collect();
-    Ok(Json(nets))
-}
-
-pub async fn get_network(c: Caller, Path(name): Path<String>) -> Result<impl IntoResponse, ApiErr> {
-    let n = c.manager().get_network(&name).map_err(manager_err)?;
-    let (e, es) = network_entities(&n);
-    c.require(e, es)?;
-    let visible = c.visible_projects()?;
-    network_view(&c, &visible, n).map(Json).ok_or_else(|| {
-        err(
-            StatusCode::NOT_FOUND,
-            "not_found",
-            format!("network not found: {}", name),
-        )
-    })
-}
-
-/// `GET /networks/{name}/ovn` (spec/clustering-ui.md §8): a cluster network
-/// as OVN has it. Whoever may see the network may see this.
-pub async fn network_ovn(c: Caller, Path(name): Path<String>) -> Result<impl IntoResponse, ApiErr> {
-    let n = c.manager().get_network(&name).map_err(manager_err)?;
-    let (e, es) = network_entities(&n);
-    c.require(e, es)?;
-    let visible = c.visible_projects()?;
-    let n = network_view(&c, &visible, n).ok_or_else(|| {
-        err(
-            StatusCode::NOT_FOUND,
-            "not_found",
-            format!("network not found: {}", name),
-        )
-    })?;
-    Ok(Json(
-        c.manager().network_ovn(&n).await.map_err(manager_err)?,
+    Ok(Proto(
+        StatusCode::OK,
+        svc::list_networks(&c, Default::default())?,
     ))
+}
+
+pub async fn get_network(c: Caller, Path(id): Path<String>) -> Result<impl IntoResponse, ApiErr> {
+    let req = pb::GetNetworkRequest {
+        id,
+        ..Default::default()
+    };
+    Ok(Proto(StatusCode::OK, svc::get_network(&c, req)?))
+}
+
+/// `GET /networks/{id}/ovn` (spec/clustering-ui.md §8): a cluster network
+/// as OVN has it. Whoever may see the network may see this.
+pub async fn network_ovn(c: Caller, Path(id): Path<String>) -> Result<impl IntoResponse, ApiErr> {
+    let req = pb::GetNetworkOvnRequest {
+        id,
+        ..Default::default()
+    };
+    Ok(Proto(StatusCode::OK, svc::network_ovn(&c, req).await?))
 }
 
 /// `GET /cluster/ovn/tunnels` (spec/clustering-ui.md §8b): each node's tunnels.
@@ -150,465 +119,191 @@ pub async fn cluster_ovn(c: Caller) -> Result<impl IntoResponse, ApiErr> {
 
 pub async fn network_events(
     c: Caller,
-    Path(name): Path<String>,
+    Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiErr> {
-    let n = c.manager().get_network(&name).map_err(manager_err)?;
-    let (e, es) = network_entities(&n);
-    c.require(e, es)?;
-    let visible = c.visible_projects()?;
-    if network_view(&c, &visible, n.clone()).is_none() {
-        return Err(err(
-            StatusCode::NOT_FOUND,
-            "not_found",
-            format!("network not found: {}", name),
-        ));
-    }
-    Ok(Json(
-        serde_json::json!({ "events": c.manager().object_events("network", &n.name).map_err(manager_err)? }),
+    let req = pb::ListNetworkEventsRequest {
+        id,
+        ..Default::default()
+    };
+    Ok(Proto(StatusCode::OK, svc::network_events(&c, req)?))
+}
+
+pub async fn create_network(c: Caller, Json(v): Json<Value>) -> Result<impl IntoResponse, ApiErr> {
+    let req: pb::CreateNetworkRequest = body(v)?;
+    Ok(Proto(
+        StatusCode::CREATED,
+        svc::create_network(&c, req).await?,
     ))
 }
 
-#[derive(Deserialize)]
-pub struct CreateHostNetwork {
-    #[serde(flatten)]
-    req: CreateNetworkRequest,
-    /// Projects (ids or names) that may use the network. Default: the
-    /// caller's default project.
-    #[serde(default)]
-    grants: Option<Vec<String>>,
-    /// Tenants (ids or slugs) whose every project may use it (D25).
-    #[serde(default)]
-    tenants: Vec<String>,
-    #[serde(default)]
-    all_projects: bool,
-}
-
-fn resolve_tenants(c: &Caller, keys: &[String]) -> Result<Vec<String>, ApiErr> {
-    keys.iter()
-        .map(|k| {
-            c.auth().tenants.resolve(k).map(|t| t.id).map_err(|_| {
-                err(
-                    StatusCode::NOT_FOUND,
-                    "not_found",
-                    format!("tenant {} not found", k),
-                )
-            })
-        })
-        .collect()
-}
-
-fn resolve_projects(c: &Caller, keys: &[String]) -> Result<Vec<String>, ApiErr> {
-    keys.iter()
-        .map(|k| {
-            c.manager()
-                .projects()
-                .resolve(k)
-                .map(|p| p.id)
-                .map_err(|_| {
-                    err(
-                        StatusCode::NOT_FOUND,
-                        "not_found",
-                        format!("project {} not found", k),
-                    )
-                })
-        })
-        .collect()
-}
-
-pub async fn create_network(
-    c: Caller,
-    Json(body): Json<CreateHostNetwork>,
-) -> Result<impl IntoResponse, ApiErr> {
-    c.set_target(format!("network:{}", body.req.name));
-    c.require(Ent::Host, EntitySet::new())?;
-    let grants = match &body.grants {
-        Some(g) => resolve_projects(&c, g)?,
-        None if body.all_projects || !body.tenants.is_empty() => Vec::new(),
-        None => c.target_project(None).ok().into_iter().collect(),
-    };
-    let tenants = resolve_tenants(&c, &body.tenants)?;
-    let net = c
-        .manager()
-        .create_host_network(body.req, grants, tenants, body.all_projects)
-        .await
-        .map_err(manager_err)?;
-    Ok((StatusCode::CREATED, Json(net)))
-}
-
 /// A deletion request the network controller finishes (spec/
-/// reconciliation.md §6.3): `204` when the network is gone at once, else
-/// `202` with it (netd unreachable, say); with `?wait`, `200` once gone.
+/// reconciliation.md §6.3): `204` once the network is gone (at once, or
+/// within `?wait`), else `202` with it (netd unreachable, say).
 pub async fn delete_network(
     c: Caller,
-    Path(name): Path<String>,
+    Path(id): Path<String>,
     axum::extract::Query(w): axum::extract::Query<super::storage::WaitQuery>,
 ) -> Result<axum::response::Response, ApiErr> {
-    let n = c.manager().get_network(&name).map_err(manager_err)?;
-    c.set_target(format!("network:{}", n.name));
-    let (e, es) = network_entities(&n);
-    match &n.project {
-        // A project's owner deletes its own networks (spec §6.2).
-        Some(p) => {
-            c.set_project(p);
-            c.require_action("deleteProjectNetwork", e, es, &[])?
-        }
-        None => c.require(e, es)?,
-    }
-    let m = c.manager();
-    let Some(still) = m.delete_network(&name).await.map_err(manager_err)? else {
-        return Ok(StatusCode::NO_CONTENT.into_response());
+    let req = pb::DeleteNetworkRequest {
+        id,
+        wait_secs: w.wait.map(|s| s.min(300) as u32),
+        ..Default::default()
     };
-    let visible = c.visible_projects()?;
-    let Some(still) = network_view(&c, &visible, still) else {
-        return Ok(StatusCode::ACCEPTED.into_response());
-    };
-    super::storage::deleted_reply(m, still, w.wait, || {
-        m.networks
-            .get(&name)
-            .ok()
-            .flatten()
-            .and_then(|n| network_view(&c, &visible, n))
+    Ok(match svc::delete_network(&c, req).await? {
+        None => proto_no_content(),
+        Some(n) => Proto(
+            StatusCode::ACCEPTED,
+            pb::DeleteNetworkResponse {
+                network: n.into(),
+                ..Default::default()
+            },
+        )
+        .into_response(),
     })
-    .await
-}
-
-#[derive(Deserialize)]
-pub struct GrantBody {
-    #[serde(default)]
-    grants: Vec<String>,
-    /// Tenants (ids or slugs) whose every project may use the network.
-    #[serde(default)]
-    tenants: Vec<String>,
-    #[serde(default)]
-    all_projects: bool,
 }
 
 pub async fn grant_network(
     c: Caller,
-    Path(name): Path<String>,
-    Json(body): Json<GrantBody>,
+    Path(id): Path<String>,
+    Json(v): Json<Value>,
 ) -> Result<impl IntoResponse, ApiErr> {
-    let n = c.manager().get_network(&name).map_err(manager_err)?;
-    c.set_target(format!("network:{}", n.name));
-    let (e, es) = network_entities(&n);
-    c.require(e, es)?;
-    let grants = resolve_projects(&c, &body.grants)?;
-    let tenants = resolve_tenants(&c, &body.tenants)?;
-    c.detail("tenants", serde_json::json!(tenants));
-    Ok(Json(
-        c.manager()
-            .grant_network(&name, grants, tenants, body.all_projects)
-            .map_err(manager_err)?,
-    ))
+    let req: pb::GrantNetworkRequest = body_with(v, &[("id", &id)])?;
+    Ok(Proto(StatusCode::OK, svc::grant_network(&c, req)?))
 }
 
 pub async fn create_project_network(
     c: Caller,
     Path(project): Path<String>,
-    Json(req): Json<CreateNetworkRequest>,
+    Json(v): Json<Value>,
 ) -> Result<impl IntoResponse, ApiErr> {
-    let project = c.target_project(Some(&project))?;
-    c.set_project(&project);
-    c.set_target(format!("network:{}", req.name));
-    c.require(
-        Ent::Project(project.clone()),
-        super::project_entities(&project),
-    )?;
-    c.require_admitted(&project)?;
-    let quota = c.quota_mode(&project);
-    let (net, over) = c
-        .manager()
-        .create_project_network(&project, req, quota)
-        .await
-        .map_err(manager_err)?;
-    c.note_overruns(&over);
-    Ok((StatusCode::CREATED, Json(net)))
+    let req: pb::CreateProjectNetworkRequest = body_with(v, &[("project", &project)])?;
+    Ok(Proto(
+        StatusCode::CREATED,
+        svc::create_project_network(&c, req).await?,
+    ))
 }
-
-// ---- VPC routers (spec/clustering.md §11.2a) ------------------------------
 
 pub async fn list_routers(
     c: Caller,
     Path(project): Path<String>,
 ) -> Result<impl IntoResponse, ApiErr> {
-    let project = c.target_project(Some(&project))?;
-    c.set_project(&project);
-    c.require(
-        Ent::Project(project.clone()),
-        super::project_entities(&project),
-    )?;
-    Ok(Json(
-        c.manager().list_routers(&project).map_err(manager_err)?,
-    ))
+    let req = pb::ListRoutersRequest {
+        project,
+        ..Default::default()
+    };
+    Ok(Proto(StatusCode::OK, svc::list_routers(&c, req)?))
 }
 
 pub async fn get_router(
     c: Caller,
-    Path((project, name)): Path<(String, String)>,
+    Path((project, router)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, ApiErr> {
-    let project = c.target_project(Some(&project))?;
-    c.set_project(&project);
-    c.require(
-        Ent::Project(project.clone()),
-        super::project_entities(&project),
-    )?;
-    Ok(Json(
-        c.manager()
-            .get_router(&project, &name)
-            .map_err(manager_err)?,
-    ))
+    let req = pb::GetRouterRequest {
+        project,
+        router,
+        ..Default::default()
+    };
+    Ok(Proto(StatusCode::OK, svc::get_router(&c, req)?))
 }
 
 pub async fn create_router(
     c: Caller,
     Path(project): Path<String>,
-    Json(spec): Json<crate::router::RouterSpec>,
+    Json(v): Json<Value>,
 ) -> Result<impl IntoResponse, ApiErr> {
-    let project = c.target_project(Some(&project))?;
-    c.set_project(&project);
-    c.set_target(format!("router:{}", spec.name));
-    c.require(
-        Ent::Project(project.clone()),
-        super::project_entities(&project),
-    )?;
-    c.require_admitted(&project)?;
-    // The external pool and the gateway nodes are site resources.
-    if spec.external_ip.is_some() || spec.gateway_nodes.is_some() {
-        c.require_action("createNetwork", Ent::Host, EntitySet::new(), &[])?;
-    }
-    // Its own gateway nodes are nodes in the cluster, able to carry it
-    // (spec/clustering.md §11.2a).
-    if let Some(gws) = spec.gateway_nodes.as_ref() {
-        let nodes = c.manager().nodes().list().unwrap_or_default();
-        for g in gws {
-            super::nodes::live_gateway_node(&nodes, g)
-                .map_err(|m| err(StatusCode::BAD_REQUEST, "invalid", m))?;
-        }
-        if let (true, Some(edge)) = (spec.external, c.manager().ovn.load().edge.clone()) {
-            super::nodes::check_gateway_nodes(&nodes, gws, &edge.physnet)
-                .map_err(|m| err(StatusCode::CONFLICT, "gateway_not_ready", m))?;
-        }
-    }
-    let quota = c.quota_mode(&project);
-    let (r, over) = c
-        .manager()
-        .create_router(&project, spec, quota)
-        .await
-        .map_err(manager_err)?;
-    c.note_overruns(&over);
-    Ok((StatusCode::CREATED, Json(r)))
+    let req: pb::CreateRouterRequest = body_with(v, &[("project", &project)])?;
+    Ok(Proto(
+        StatusCode::CREATED,
+        svc::create_router(&c, req).await?,
+    ))
 }
 
-#[derive(Deserialize)]
-pub struct NetworkRouterBody {
-    /// A router of the project by name; `null`: the shared edge.
-    router: Option<String>,
-}
-
-/// `PUT /projects/{id}/networks/{name}/router`: put an existing NAT network
-/// on one of the project's routers, or back on the shared edge.
+/// `PUT /projects/{id}/networks/{network}/router` `{router}`: put a NAT or
+/// isolated network on one of the project's routers, or (`null`) back on
+/// the shared edge.
 pub async fn set_network_router(
     c: Caller,
-    Path((project, name)): Path<(String, String)>,
-    Json(b): Json<NetworkRouterBody>,
+    Path((project, network)): Path<(String, String)>,
+    Json(v): Json<Value>,
 ) -> Result<impl IntoResponse, ApiErr> {
-    let project = c.target_project(Some(&project))?;
-    c.set_project(&project);
-    c.set_target(format!("network:{name}"));
-    c.require(
-        Ent::Project(project.clone()),
-        super::project_entities(&project),
-    )?;
-    Ok(Json(
-        c.manager()
-            .set_network_router(&project, &name, b.router.as_deref())
-            .await
-            .map_err(manager_err)?,
+    let req: pb::SetNetworkRouterRequest =
+        body_with(v, &[("project", &project), ("network", &network)])?;
+    Ok(Proto(
+        StatusCode::OK,
+        svc::set_network_router(&c, req).await?,
     ))
 }
 
 pub async fn delete_router(
     c: Caller,
-    Path((project, name)): Path<(String, String)>,
-) -> Result<impl IntoResponse, ApiErr> {
-    let project = c.target_project(Some(&project))?;
-    c.set_project(&project);
-    c.set_target(format!("router:{name}"));
-    c.require(
-        Ent::Project(project.clone()),
-        super::project_entities(&project),
-    )?;
-    c.manager()
-        .delete_router(&project, &name)
-        .await
-        .map_err(manager_err)?;
-    Ok(StatusCode::NO_CONTENT)
+    Path((project, router)): Path<(String, String)>,
+) -> Result<axum::response::Response, ApiErr> {
+    let req = pb::DeleteRouterRequest {
+        project,
+        router,
+        ..Default::default()
+    };
+    svc::delete_router(&c, req).await?;
+    Ok(proto_no_content())
 }
 
-// ---- sharing project networks (spec §6.2.1) -------------------------------
-
-#[derive(Deserialize)]
-pub struct OfferBody {
-    /// Target project id.
-    project: String,
-}
-
+/// `202` whether or not the target exists (spec/security.md §6.2.1).
 pub async fn offer_share(
     c: Caller,
-    Path(name): Path<String>,
-    Json(body): Json<OfferBody>,
+    Path(id): Path<String>,
+    Json(v): Json<Value>,
 ) -> Result<impl IntoResponse, ApiErr> {
-    let n = c.manager().get_network(&name).map_err(manager_err)?;
-    c.set_target(format!("network:{}", n.name));
-    if let Some(p) = &n.project {
-        c.set_project(p);
-    }
-    let (e, mut es) = network_entities(&n);
-    es.project(&body.project);
-    // D25: only within the network's tenant. A target elsewhere gets the
-    // answer a missing one does, so offers can't probe other tenants.
-    let tenant_of = |p: &str| {
-        c.manager()
-            .projects()
-            .get(p)
-            .ok()
-            .flatten()
-            .map(|p| p.tenant_id)
-    };
-    let same_tenant = match (
-        n.project.as_deref().and_then(tenant_of),
-        tenant_of(&body.project),
-    ) {
-        (Some(a), Some(b)) => a == b,
-        _ => true,
-    };
-    if !same_tenant {
-        c.detail("to_project", serde_json::json!(body.project));
-        c.detail("refused", serde_json::json!("another tenant"));
-        return Ok(StatusCode::ACCEPTED);
-    }
-    c.require_action(
-        "offerNetworkShare",
-        e,
-        es,
-        &[("project", Ent::Project(body.project.clone()))],
-    )?;
-    c.detail("to_project", serde_json::json!(body.project));
-    let by = c.p.user_id().unwrap_or("-").to_string();
-    c.manager()
-        .offer_network_share(&name, &body.project, &by)
-        .map_err(manager_err)?;
-    // The same answer whether or not the target exists (spec §6.2.1).
-    Ok(StatusCode::ACCEPTED)
+    let req: pb::OfferNetworkShareRequest = body_with(v, &[("id", &id)])?;
+    Ok(Proto(StatusCode::ACCEPTED, svc::offer_share(&c, req)?))
 }
 
 pub async fn unshare(
     c: Caller,
-    Path((name, project)): Path<(String, String)>,
-) -> Result<impl IntoResponse, ApiErr> {
-    let n = c.manager().get_network(&name).map_err(manager_err)?;
-    c.set_target(format!("network:{}", n.name));
-    let (e, mut es) = network_entities(&n);
-    es.project(&project);
-    c.require_action(
-        "unshareNetwork",
-        e,
-        es,
-        &[("project", Ent::Project(project.clone()))],
-    )?;
-    c.manager()
-        .end_network_share(&name, &project)
-        .await
-        .map_err(manager_err)?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-#[derive(Serialize)]
-struct ShareView {
-    network: String,
-    owner_project: Option<String>,
-    status: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    expires_at: Option<u64>,
+    Path((id, project)): Path<(String, String)>,
+) -> Result<axum::response::Response, ApiErr> {
+    let req = pb::UnshareNetworkRequest {
+        id,
+        project,
+        ..Default::default()
+    };
+    svc::unshare(&c, req).await?;
+    Ok(proto_no_content())
 }
 
 pub async fn list_shares(
     c: Caller,
     Path(project): Path<String>,
 ) -> Result<impl IntoResponse, ApiErr> {
-    let project = c.target_project(Some(&project))?;
-    c.require(
-        Ent::Project(project.clone()),
-        super::project_entities(&project),
-    )?;
-    let out: Vec<ShareView> = c
-        .manager()
-        .network_shares_for(&project)
-        .map_err(manager_err)?
-        .into_iter()
-        .map(|n| {
-            let accepted = n.shares.contains(&project);
-            ShareView {
-                expires_at: (!accepted)
-                    .then(|| {
-                        n.share_offers
-                            .iter()
-                            .find(|o| o.project == project)
-                            .map(|o| o.expires_at)
-                    })
-                    .flatten(),
-                status: if accepted { "accepted" } else { "offered" },
-                owner_project: n.project.clone(),
-                network: n.name,
-            }
-        })
-        .collect();
-    Ok(Json(out))
-}
-
-async fn share_target(
-    c: &Caller,
-    project: &str,
-    network: &str,
-    action: &str,
-) -> Result<(String, Network), ApiErr> {
-    let project = c.target_project(Some(project))?;
-    c.set_project(&project);
-    c.set_target(format!("network:{}", network));
-    let n = c.manager().get_network(network).map_err(manager_err)?;
-    let mut es = super::project_entities(&project);
-    let ne = add_network(&mut es, &n);
-    c.require_action(
-        action,
-        Ent::Project(project.clone()),
-        es,
-        &[("network", ne)],
-    )?;
-    Ok((project, n))
+    let req = pb::ListNetworkSharesRequest {
+        project,
+        ..Default::default()
+    };
+    Ok(Proto(StatusCode::OK, svc::list_shares(&c, req)?))
 }
 
 pub async fn accept_share(
     c: Caller,
     Path((project, network)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, ApiErr> {
-    let (project, _) = share_target(&c, &project, &network, "acceptNetworkShare").await?;
-    Ok(Json(
-        c.manager()
-            .accept_network_share(&project, &network)
-            .map_err(manager_err)?,
-    ))
+    let req = pb::AcceptNetworkShareRequest {
+        project,
+        network,
+        ..Default::default()
+    };
+    Ok(Proto(StatusCode::OK, svc::accept_share(&c, req)?))
 }
 
 pub async fn leave_share(
     c: Caller,
     Path((project, network)): Path<(String, String)>,
-) -> Result<impl IntoResponse, ApiErr> {
-    let (project, _) = share_target(&c, &project, &network, "leaveNetworkShare").await?;
-    c.manager()
-        .end_network_share(&network, &project)
-        .await
-        .map_err(manager_err)?;
-    Ok(StatusCode::NO_CONTENT)
+) -> Result<axum::response::Response, ApiErr> {
+    let req = pb::LeaveNetworkShareRequest {
+        project,
+        network,
+        ..Default::default()
+    };
+    svc::leave_share(&c, req).await?;
+    Ok(proto_no_content())
 }
 
 // ---- host networking -----------------------------------------------------

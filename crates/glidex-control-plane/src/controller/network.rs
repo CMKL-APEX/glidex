@@ -20,9 +20,9 @@ use std::time::Duration;
 type Next = Result<Option<Duration>, VmManagerError>;
 
 impl VmManager {
-    /// One round for network `name`.
-    pub async fn reconcile_network(&self, name: &str) -> Next {
-        let Some(mut net) = self.networks.get(name)? else {
+    /// One round for network `id`.
+    pub async fn reconcile_network(&self, id: &str) -> Next {
+        let Some(mut net) = self.networks.get(id)? else {
             return Ok(None);
         };
         if net
@@ -90,7 +90,7 @@ impl VmManager {
                 {
                     Ok(_) if restore => {
                         let _ = self.store.push_event(
-                            &event_key("network", &net.name),
+                            &event_key("network", &net.id),
                             Event::new(
                                 "controller",
                                 EventKind::Warning,
@@ -101,7 +101,7 @@ impl VmManager {
                     }
                     Ok(_) => {
                         let _ = self.store.push_event(
-                            &event_key("network", &net.name),
+                            &event_key("network", &net.id),
                             Event::new(
                                 "controller",
                                 EventKind::Normal,
@@ -130,7 +130,7 @@ impl VmManager {
             {
                 Ok(nats) => match nats.iter().find(|n| n.state.bridge == net.bridge) {
                     None => {
-                        let users = Self::network_users(&*self.vms.read().await, &net.name);
+                        let users = Self::network_users(&*self.vms.read().await, &net.id);
                         if !net.owns_bridge || !users.is_empty() {
                             problems.push("netd has no NAT for it".into());
                         } else {
@@ -148,7 +148,7 @@ impl VmManager {
                             {
                                 Ok(n) => {
                                     let _ = self.store.push_event(
-                                        &event_key("network", &net.name),
+                                        &event_key("network", &net.id),
                                         Event::new(
                                             "controller",
                                             EventKind::Warning,
@@ -185,7 +185,7 @@ impl VmManager {
             let msg = problems.join("; ");
             if net.phase != NetworkPhase::Degraded {
                 let _ = self.store.push_event(
-                    &event_key("network", &net.name),
+                    &event_key("network", &net.id),
                     Event::new("controller", EventKind::Warning, "Degraded", msg.clone()),
                 );
             }
@@ -207,7 +207,7 @@ impl VmManager {
     /// administrator's). Waits, with the reason in `Ready`, while netd is
     /// unreachable or a VM still uses the network.
     async fn finish_network_delete(&self, net: crate::network::Network) -> Next {
-        let users = Self::network_users(&*self.vms.read().await, &net.name);
+        let users = Self::network_users(&*self.vms.read().await, &net.id);
         if !users.is_empty() {
             let msg = format!("waiting for VM(s) to leave it: {}", users.join(", "));
             return self.set_network_status(
@@ -259,7 +259,7 @@ impl VmManager {
                         c.kind == "Ready" && c.reason == "DeleteFailed" && c.message == msg
                     }) {
                         let _ = self.store.push_event(
-                            &event_key("network", &net.name),
+                            &event_key("network", &net.id),
                             Event::new(
                                 "controller",
                                 EventKind::Warning,
@@ -279,12 +279,12 @@ impl VmManager {
                 }
             }
         }
-        self.networks.delete(&net.name)?;
+        self.networks.delete(&net.id)?;
         let _ = self.store.push_event(
-            &event_key("network", &net.name),
+            &event_key("network", &net.id),
             Event::new("controller", EventKind::Normal, "Deleted", ""),
         );
-        tracing::info!(network = %net.name, "network deleted");
+        tracing::info!(network = %net.name, id = %net.id, "network deleted");
         Ok(None)
     }
 
@@ -303,7 +303,7 @@ impl VmManager {
         if before != (net.phase, net.conditions.clone()) {
             // Keep grants and shares written meanwhile: only the status
             // fields come from this round.
-            if let Some(mut current) = self.networks.get(&net.name)? {
+            if let Some(mut current) = self.networks.get(&net.id)? {
                 current.phase = net.phase;
                 current.conditions = net.conditions;
                 self.networks.put(&current)?;

@@ -69,18 +69,21 @@ impl VmManager {
         let reservations = crate::ipam::list_reservations(&self.store.database())
             .map_err(|e| crate::state::VmManagerError::PersistenceError(e.to_string()))?;
         let mut d = Desired::default();
+        // Network id → the name its OVN objects have (`ovn_key`).
+        let mut keys: std::collections::HashMap<String, String> = Default::default();
         for n in self
             .networks
             .list()?
             .into_iter()
             .filter(|n| n.scope == NetworkScope::Cluster && n.deletion_requested_at.is_none())
         {
-            let sub = subnets.iter().find(|s| s.network == n.name);
+            let sub = subnets.iter().find(|s| s.network == n.id);
             if sub.is_none() && n.mode != NetworkMode::Bridged {
                 continue;
             }
+            keys.insert(n.id.clone(), n.ovn_key().to_string());
             d.networks.push(NetworkSpec {
-                name: n.name.clone(),
+                name: n.ovn_key().to_string(),
                 kind: match (&n.mode, &n.physnet) {
                     (NetworkMode::Bridged, Some(p)) => NetKind::Provider {
                         physnet: p.clone(),
@@ -104,9 +107,9 @@ impl VmManager {
                 continue;
             };
             for (i, a) in vm.config().networks.iter().enumerate() {
-                if !d.networks.iter().any(|n| n.name == a.network) {
+                let Some(key) = keys.get(&a.network) else {
                     continue;
-                }
+                };
                 let mac = a
                     .mac
                     .clone()
@@ -115,7 +118,7 @@ impl VmManager {
                 let provider = d
                     .networks
                     .iter()
-                    .any(|n| n.name == a.network && matches!(n.kind, NetKind::Provider { .. }));
+                    .any(|n| &n.name == key && matches!(n.kind, NetKind::Provider { .. }));
                 let ip = if provider {
                     None
                 } else {
@@ -131,7 +134,7 @@ impl VmManager {
                     continue;
                 };
                 d.ports.push(PortSpec {
-                    network: a.network.clone(),
+                    network: key.clone(),
                     lport,
                     mac: mac.to_ascii_lowercase(),
                     ip,
@@ -319,15 +322,15 @@ impl VmManager {
     fn finish_cluster_network_deletes(&self) {
         for n in self.networks.list().unwrap_or_default() {
             if n.scope == NetworkScope::Cluster && n.deletion_requested_at.is_some() {
-                let name = n.name.clone();
+                let id = n.id.clone();
                 let _ = self
                     .store
                     .database()
                     .write(crate::store::Origin::Network, |tx| {
-                        crate::ipam::free_subnet(tx, &name)
+                        crate::ipam::free_subnet(tx, &id)
                     });
-                let _ = self.networks.remove(&name);
-                tracing::info!(network = %n.name, "cluster network deleted");
+                let _ = self.networks.remove(&id);
+                tracing::info!(network = %n.name, id = %n.id, "cluster network deleted");
             }
         }
     }
@@ -599,7 +602,7 @@ impl VmManager {
         )
     }
 
-    /// `GET /networks/{name}/ovn`: a cluster network's switch, its ports and
+    /// `GET /networks/{id}/ovn`: a cluster network's switch, its ports and
     /// where they are bound, and its router.
     pub async fn network_ovn(
         &self,
@@ -622,7 +625,7 @@ impl VmManager {
             self.ovn_endpoints(glidex_ovs::ovn::NB_PORT),
             self.ovn_endpoints(glidex_ovs::ovn::SB_PORT),
         );
-        let switch = format!("gx-{}", net.name);
+        let switch = format!("gx-{}", net.ovn_key());
         let router = match (&net.mode, &net.router) {
             (NetworkMode::Nat, Some(r)) => Some(format!("gxr-{r}")),
             (NetworkMode::Nat, None) => Some(glidex_ovn::EDGE.to_string()),

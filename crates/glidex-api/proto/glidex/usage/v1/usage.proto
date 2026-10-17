@@ -112,14 +112,14 @@ service MetricsService {
     option (glidex.api.v1.op) = {
       action: "readNetworkBandwidth"
       kind: KIND_READ
-      rest: "GET /networks/{name}/bandwidth"
+      rest: "GET /networks/{id}/bandwidth"
     };
   }
   rpc GetNetworkStats(GetNetworkStatsRequest) returns (GetNetworkStatsResponse) {
     option (glidex.api.v1.op) = {
       action: "readNetworkStats"
       kind: KIND_READ
-      rest: "GET /networks/{name}/stats"
+      rest: "GET /networks/{id}/stats"
     };
   }
 }

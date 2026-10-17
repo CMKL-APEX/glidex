@@ -8,10 +8,12 @@ const PROJECT = "e2e-netproj";
 const NETWORK = "e2e-iso";
 const OWNER_NETWORK = "e2e-own";
 
+/** Every network, from `GET /networks` (glidex.network.v1: `{networks}`). */
+const listNetworks = async () => (await api<{ networks?: any[] }>("/networks")).networks ?? [];
+
 async function cleanup() {
-  for (const name of [NETWORK, OWNER_NETWORK]) {
-    if ((await api<any[]>("/networks")).some((x) => x.name === name)) await del(`/networks/${name}?wait=30`);
-  }
+  // By id: a name is unique only within a tenant.
+  for (const n of (await listNetworks()).filter((x) => [NETWORK, OWNER_NETWORK].includes(x.name))) await del(`/networks/${n.id}?wait=30`);
   for (const t of ((await api<{ tokens?: any[] }>("/tokens")).tokens ?? []).filter((t) => t.name === "e2e-net-owner")) await del(`/tokens/${t.id}`);
   const p = ((await api<{ projects?: any[] }>("/projects")).projects ?? []).find((x) => x.name === PROJECT);
   if (p) await del(`/projects/${p.id}`);
@@ -41,15 +43,20 @@ test("a project network is created from the Networking page", async ({ page }) =
   await field(page, "Network for").selectOption(project.id);
 
   await page.getByPlaceholder("lab").fill(NETWORK);
-  await mode.selectOption("isolated");
+  await mode.selectOption("NETWORK_MODE_ISOLATED");
   await page.getByRole("button", { name: "Create", exact: true }).click();
 
   const row = page.getByRole("row", { name: new RegExp(NETWORK) });
   await expect(row).toContainText(PROJECT, { timeout: 30_000 });
   await expect(row).toContainText("isolated");
   await expect(row).toContainText(/gxp-[0-9a-f]{8}/);
-  const net = await api(`/networks/${NETWORK}`);
-  expect([net.project, net.mode, net.port_type]).toEqual([project.id, "isolated", "tap"]);
+  const net = (await listNetworks()).find((x) => x.name === NETWORK && x.project === project.id);
+  expect(net?.id).toMatch(/^[0-9a-f-]{36}$/);
+  // By id, and by its name (unique in the tenant).
+  for (const key of [net.id, NETWORK]) {
+    const got = (await api(`/networks/${key}`)).network;
+    expect([got?.id, got?.project, got?.mode, got?.port_type]).toEqual([net.id, project.id, "NETWORK_MODE_ISOLATED", "PORT_TYPE_TAP"]);
+  }
 
   // The project page lists it; its owner deletes it from the Networking page.
   await page.goto(`/projects/${project.id}`);

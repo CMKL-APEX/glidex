@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import * as api from "../api";
-import { isTombstone, type Network, type OvnOverview, type Router } from "../types";
+import { isClusterNetwork, isTombstone, type Network, type OvnOverview, type Router } from "../types";
 import { useNodes } from "../nodes";
 import { useSession } from "../session";
 import ConfirmDialog from "./ConfirmDialog";
@@ -31,8 +31,8 @@ function NewRouterDialog({ project, pool, onClose, onDone }: { project: string; 
       await api.createRouter(project, {
         name,
         external,
-        external_ip: external && site && address.trim() ? address.trim() : null,
-        gateway_nodes: external && site && gateways.length ? gateways : null,
+        external_ip: external && site && address.trim() ? address.trim() : undefined,
+        gateway_nodes: external && site && gateways.length ? gateways : undefined,
       });
       onDone();
       onClose();
@@ -119,8 +119,9 @@ function AttachDialog({ project, router, routers, candidates, onClose, onDone }:
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const via = (n: Network) =>
-    n.router ? `now via router ${routers.find((r) => r.id === n.router)?.spec.name ?? n.router}` : n.mode === "isolated" ? "isolated now" : "now via the shared edge";
-  const isolated = candidates.filter((n) => n.mode === "isolated" && !n.router && picked.includes(n.name));
+    n.router ? `now via router ${routers.find((r) => r.id === n.router)?.spec.name ?? n.router}` : n.mode === "NETWORK_MODE_ISOLATED" ? "isolated now" : "now via the shared edge";
+  const isolated = candidates.filter((n) => n.mode === "NETWORK_MODE_ISOLATED" && !n.router && picked.includes(n.id));
+  const nameOf = (id: string) => candidates.find((n) => n.id === id)?.name ?? id;
 
   const attach = async () => {
     setBusy(true);
@@ -128,8 +129,8 @@ function AttachDialog({ project, router, routers, candidates, onClose, onDone }:
     const done: string[] = [];
     try {
       for (const n of picked) {
-        await api.setNetworkRouter(project, n, router.spec.name);
-        done.push(n);
+        await api.setNetworkRouter(project, n, router.id);
+        done.push(nameOf(n));
       }
       onDone();
       onClose();
@@ -149,9 +150,9 @@ function AttachDialog({ project, router, routers, candidates, onClose, onDone }:
         ) : (
           <ul className="space-y-1">
             {candidates.map((n) => (
-              <li key={n.name}>
+              <li key={n.id}>
                 <label className="flex items-center gap-2">
-                  <input type="checkbox" checked={picked.includes(n.name)} onChange={(e) => setPicked(e.target.checked ? [...picked, n.name] : picked.filter((x) => x !== n.name))} />
+                  <input type="checkbox" checked={picked.includes(n.id)} onChange={(e) => setPicked(e.target.checked ? [...picked, n.id] : picked.filter((x) => x !== n.id))} />
                   <span className="font-mono">{n.name}</span>
                   <span className="text-xs text-gray-500">{via(n)}</span>
                 </label>
@@ -161,7 +162,7 @@ function AttachDialog({ project, router, routers, candidates, onClose, onDone }:
         )}
         <p className="text-xs text-gray-600 bg-gray-50 border border-gray-200 rounded-lg p-2">
           The networks reach every network on {router.spec.name}, and{" "}
-          {router.spec.external ? `leave with its address ${router.status.external_ip ?? ""}` : "no longer reach outside (the router is internal only)"}. VMs keep
+          {router.spec.external ? `leave with its address ${router.status?.external_ip ?? ""}` : "no longer reach outside (the router is internal only)"}. VMs keep
           their addresses and gateway; connections they have open through the old way out are cut.
         </p>
         {isolated.length > 0 && (
@@ -233,7 +234,7 @@ export default function RoutersCard({ project, networks, manage, onChanged }: { 
   const attached = (r: Router) => networks.filter((n) => n.router === r.id);
   // What can go on `r`: the project's other NAT and isolated networks that span the nodes.
   const candidates = (r: Router) =>
-    networks.filter((n) => n.scope === "cluster" && (n.mode === "nat" || n.mode === "isolated") && n.router !== r.id && !n.deletion_requested_at);
+    networks.filter((n) => isClusterNetwork(n) && (n.mode === "NETWORK_MODE_NAT" || n.mode === "NETWORK_MODE_ISOLATED") && n.router !== r.id && !n.deletion_requested_at);
   const active = (r: Router) => overview?.gateways?.find((g) => g.router === `gxr-${r.id}`)?.active;
 
   return (
@@ -273,7 +274,7 @@ export default function RoutersCard({ project, networks, manage, onChanged }: { 
                   <td className="py-2 font-medium">
                     {r.spec.name} <span className="font-mono text-xs text-gray-400">gxr-{r.id}</span>
                   </td>
-                  <td className="py-2">{r.spec.external ? <span className="font-mono">{r.status.external_ip ?? "—"}</span> : <Badge kind="muted">internal only</Badge>}</td>
+                  <td className="py-2">{r.spec.external ? <span className="font-mono">{r.status?.external_ip ?? "—"}</span> : <Badge kind="muted">internal only</Badge>}</td>
                   <td className="py-2 text-xs">
                     {!r.spec.external ? (
                       "—"
@@ -287,7 +288,7 @@ export default function RoutersCard({ project, networks, manage, onChanged }: { 
                   <td className="py-2">
                     {nets.length === 0 && <span className="text-gray-400">none</span>}
                     {nets.map((n) => (
-                      <div key={n.name}>
+                      <div key={n.id}>
                         <span className="font-mono">{n.name}</span>
                         {manage && (
                           <button className="ml-2 text-xs text-red-600 hover:underline" onClick={() => setDetaching(n)}>
@@ -302,7 +303,7 @@ export default function RoutersCard({ project, networks, manage, onChanged }: { 
                           Attach network…
                         </button>
                         <Link
-                          to={`/networking?new=${encodeURIComponent(project)}&router=${encodeURIComponent(r.spec.name)}`}
+                          to={`/networking?new=${encodeURIComponent(project)}&router=${encodeURIComponent(r.id)}`}
                           className="text-xs text-sky-700 hover:underline"
                         >
                           + network on {r.spec.name}
@@ -335,13 +336,13 @@ export default function RoutersCard({ project, networks, manage, onChanged }: { 
         <ConfirmDialog
           title={`Detach ${detaching.name}`}
           consequence={
-            detaching.mode === "isolated"
+            detaching.mode === "NETWORK_MODE_ISOLATED"
               ? `${detaching.name} is isolated again: its VMs reach only each other. Its gateway goes away; VMs keep their addresses.`
               : `${detaching.name} goes back to the cluster's shared edge: it no longer reaches the router's other networks, and leaves with the edge's address. VMs keep their addresses; open connections are cut.`
           }
           actionLabel="Detach"
           onConfirm={async () => {
-            await api.setNetworkRouter(project, detaching.name, null);
+            await api.setNetworkRouter(project, detaching.id, null);
             changed();
           }}
           onClose={() => setDetaching(null)}
@@ -351,10 +352,10 @@ export default function RoutersCard({ project, networks, manage, onChanged }: { 
       {removing && (
         <ConfirmDialog
           title={`Delete router ${removing.spec.name}`}
-          consequence={removing.status.external_ip ? `Its address ${removing.status.external_ip} goes back to the pool.` : "It has no networks left."}
+          consequence={removing.status?.external_ip ? `Its address ${removing.status.external_ip} goes back to the pool.` : "It has no networks left."}
           actionLabel="Delete"
           onConfirm={async () => {
-            await api.deleteRouter(project, removing.spec.name);
+            await api.deleteRouter(project, removing.id);
             changed();
           }}
           onClose={() => setRemoving(null)}

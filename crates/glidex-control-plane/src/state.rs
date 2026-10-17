@@ -679,7 +679,7 @@ impl VmManager {
             net_nodes: c
                 .networks
                 .iter()
-                .filter_map(|a| nets.iter().find(|n| n.name == a.network))
+                .filter_map(|a| nets.iter().find(|n| n.id == a.network))
                 .filter(|n| n.scope == crate::network::NetworkScope::Node)
                 .filter_map(|n| n.node.clone())
                 .collect(),
@@ -687,14 +687,14 @@ impl VmManager {
             physnets: c
                 .networks
                 .iter()
-                .filter_map(|a| nets.iter().find(|n| n.name == a.network))
+                .filter_map(|a| nets.iter().find(|n| n.id == a.network))
                 .filter(|n| n.scope == crate::network::NetworkScope::Cluster)
                 .filter_map(|n| n.physnet.clone())
                 .collect(),
             vhost_user_on_cluster: c
                 .networks
                 .iter()
-                .filter_map(|a| nets.iter().find(|n| n.name == a.network))
+                .filter_map(|a| nets.iter().find(|n| n.id == a.network))
                 .any(|n| {
                     n.scope == crate::network::NetworkScope::Cluster
                         && n.port_type == glidex_ovs::vm_port::VmPortKind::VhostUser
@@ -702,7 +702,7 @@ impl VmManager {
             ovn_northd: c
                 .networks
                 .iter()
-                .filter_map(|a| nets.iter().find(|n| n.name == a.network))
+                .filter_map(|a| nets.iter().find(|n| n.id == a.network))
                 .any(|n| n.scope == crate::network::NetworkScope::Cluster)
                 .then(|| crate::node::cluster_northd_ovn(&self.nodes().list().unwrap_or_default()))
                 .flatten(),
@@ -767,10 +767,11 @@ impl VmManager {
     pub async fn drop_stock_default_network(&self) -> Result<(), VmManagerError> {
         if let Some(n) = self
             .networks
-            .get(network::DEFAULT_NETWORK)?
-            .filter(Self::is_stock_default)
+            .list()?
+            .into_iter()
+            .find(Self::is_stock_default)
         {
-            self.delete_network(&n.name).await?;
+            self.delete_network(&n.id).await?;
         }
         Ok(())
     }
@@ -1382,10 +1383,12 @@ impl VmManager {
         Ok(())
     }
 
+    /// Check a VM's NICs, and name each network by its id (a request may
+    /// give a name, which resolves in the project's tenant).
     fn check_networks(
         &self,
         project: &str,
-        networks: &[NetworkAttachment],
+        networks: &mut [NetworkAttachment],
     ) -> Result<(), VmManagerError> {
         if networks.len() > glidex_ovs::names::MAX_NICS as usize {
             return Err(invalid(format!(
@@ -1399,7 +1402,15 @@ impl VmManager {
             .map(|p| p.tenant_id)
             .unwrap_or_else(|| crate::tenants::DEFAULT_TENANT.to_string());
         for att in networks {
-            match self.networks.get(&att.network)? {
+            let found = match self.find_network(project, &att.network) {
+                Ok(n) => Some(n),
+                Err(VmManagerError::Network(NetError::NotFound(_))) => None,
+                Err(e) => return Err(e),
+            };
+            if let Some(n) = &found {
+                att.network = n.id.clone();
+            }
+            match found {
                 None => return Err(invalid(format!("network not found: {}", att.network))),
                 Some(n) if !n.usable_by(project, &tenant) => {
                     return Err(invalid(format!(
@@ -1542,7 +1553,7 @@ impl VmManager {
         Self::check_options(&opts)?;
         self.check_paths(&config)?;
         self.refuse_dpdk_uplink_devices(&config.vfio_devices)?;
-        self.check_networks(project, &config.networks)?;
+        self.check_networks(project, &mut config.networks)?;
 
         let mut vms = self.vms.write().await;
 
@@ -2150,7 +2161,7 @@ impl VmManager {
                         att.mac = glidex_ovs::names::mac_address(&vm.id, i as u8).ok();
                     }
                 }
-                self.check_networks(&project, &nets)?;
+                self.check_networks(&project, &mut nets)?;
                 vm.spec.config.networks = nets;
             }
             if let Some(keys) = c.data_disks {
@@ -3132,11 +3143,69 @@ impl VmManager {
         Ok(self.networks.list()?)
     }
 
-    pub fn get_network(&self, name: &str) -> Result<Network, VmManagerError> {
+    /// By id.
+    pub fn get_network(&self, id: &str) -> Result<Network, VmManagerError> {
         Ok(self
             .networks
-            .get(name)?
-            .ok_or_else(|| NetError::NotFound(name.to_string()))?)
+            .get(id)?
+            .ok_or_else(|| NetError::NotFound(id.to_string()))?)
+    }
+
+    /// Network `key` as `project` sees it (spec/tenancy.md D24): its id,
+    /// or a name: of a host network, or of a project network in the
+    /// project's tenant.
+    pub fn find_network(&self, project: &str, key: &str) -> Result<Network, VmManagerError> {
+        self.find_network_in(key, self.tenant_scope(project))
+    }
+
+    /// Network `key`: its id, or the name of one network among the host
+    /// networks and the project networks of the projects `in_scope` accepts
+    /// (`409 ambiguous` when several have it).
+    pub fn find_network_in(
+        &self,
+        key: &str,
+        in_scope: impl Fn(&str) -> bool,
+    ) -> Result<Network, VmManagerError> {
+        if let Some(n) = self.networks.get(key)? {
+            return Ok(n);
+        }
+        let all = self.networks.list()?;
+        let mut named = all
+            .into_iter()
+            .filter(|n| n.name == key && n.project.as_deref().is_none_or(&in_scope));
+        match (named.next(), named.next()) {
+            (Some(n), None) => Ok(n),
+            (Some(_), Some(_)) => Err(NetError::Ambiguous(format!(
+                "more than one network is named {key}: give its id"
+            ))
+            .into()),
+            (None, _) => Err(NetError::NotFound(key.to_string()).into()),
+        }
+    }
+
+    /// Why `name` can't be a new network's: a host network has it, or (for
+    /// a project network) one in the same tenant does; a host network's
+    /// name is unique among all networks (D24).
+    fn network_name_taken(
+        &self,
+        name: &str,
+        project: Option<&str>,
+    ) -> Result<Option<String>, VmManagerError> {
+        let scope = project.map(|p| self.tenant_scope(p));
+        let taken = self.networks.list()?.into_iter().find(|n| {
+            n.name == name
+                && match (&n.project, &scope) {
+                    (None, _) | (_, None) => true,
+                    (Some(p), Some(in_tenant)) => in_tenant(p),
+                }
+        });
+        Ok(taken.map(|other| {
+            if other.deletion_requested_at.is_some() {
+                format!("network '{name}' is being deleted; try again once it is gone")
+            } else {
+                format!("network '{name}' already exists")
+            }
+        }))
     }
 
     /// Whether networks are cluster networks (OVN) unless they say otherwise.
@@ -3149,6 +3218,7 @@ impl VmManager {
     async fn create_cluster_network(
         &self,
         req: CreateNetworkRequest,
+        project: Option<&str>,
     ) -> Result<Network, VmManagerError> {
         if !self.ovn_enabled() {
             return Err(NetError::Invalid(
@@ -3219,10 +3289,9 @@ impl VmManager {
                     .unwrap_or(ovn.underlay_mtu.unwrap_or(1500).saturating_sub(58)),
             )
         };
-        if self.networks.get(&net.name)?.is_some() {
-            return Err(
-                NetError::Conflict(format!("network '{}' already exists", net.name)).into(),
-            );
+        net.project = project.map(str::to_string);
+        if let Some(why) = self.network_name_taken(&net.name, project)? {
+            return Err(NetError::Conflict(why).into());
         }
         if provider {
             if let Some(v) = req.vlan
@@ -3243,12 +3312,12 @@ impl VmManager {
         let node_nat: glidex_ovs::net::Ipv4Net = glidex_ovs::nat::DEFAULT_SUPERNET
             .parse()
             .map_err(|e: glidex_ovs::OvsError| NetError::Invalid(e.to_string()))?;
-        let name = net.name.clone();
+        let id = net.id.clone();
         let requested = req.subnet;
         self.store
             .database()
             .write(crate::store::Origin::Network, |tx| {
-                crate::ipam::allocate_subnet(tx, &name, requested, supernet, &[node_nat])
+                crate::ipam::allocate_subnet(tx, &id, requested, supernet, &[node_nat])
             })
             .map_err(|e| match e {
                 crate::ipam::IpamError::Overlap(..) | crate::ipam::IpamError::Invalid(_) => {
@@ -3261,7 +3330,7 @@ impl VmManager {
                 .store
                 .database()
                 .write(crate::store::Origin::Network, |tx| {
-                    crate::ipam::free_subnet(tx, &name)
+                    crate::ipam::free_subnet(tx, &id)
                 });
             return Err(e.into());
         }
@@ -3278,7 +3347,7 @@ impl VmManager {
             .enumerate()
             .filter(|(_, a)| {
                 nets.iter().any(|n| {
-                    n.name == a.network
+                    n.id == a.network
                         && n.scope == crate::network::NetworkScope::Cluster
                         && n.mode != NetworkMode::Bridged
                 })
@@ -3297,28 +3366,22 @@ impl VmManager {
     }
 
     /// Create a network: host side in netd first, record only on success.
+    /// `project`: a project network's (its name is unique in the project's
+    /// tenant); `None`: a host network.
     pub async fn create_network(
         &self,
         req: CreateNetworkRequest,
+        project: Option<&str>,
     ) -> Result<Network, VmManagerError> {
         if req.scope == Some(crate::network::NetworkScope::Cluster)
             || (req.scope.is_none() && self.ovn_enabled())
         {
-            return self.create_cluster_network(req).await;
+            return self.create_cluster_network(req, project).await;
         }
-        let net = req.to_network()?;
-        if let Some(other) = self.networks.get(&net.name)? {
-            return Err(
-                NetError::Conflict(if other.deletion_requested_at.is_some() {
-                    format!(
-                        "network '{}' is being deleted; try again once it is gone",
-                        net.name
-                    )
-                } else {
-                    format!("network '{}' already exists", net.name)
-                })
-                .into(),
-            );
+        let mut net = req.to_network()?;
+        net.project = project.map(str::to_string);
+        if let Some(why) = self.network_name_taken(&net.name, project)? {
+            return Err(NetError::Conflict(why).into());
         }
         if let Some(other) = self
             .networks
@@ -3372,17 +3435,17 @@ impl VmManager {
             }
         }
         self.networks.insert(&net)?;
-        tracing::info!(network = %net.name, bridge = %net.bridge, mode = ?net.mode, "network created");
-        self.queue.add(Key::Network(net.name.clone()));
+        tracing::info!(network = %net.name, id = %net.id, bridge = %net.bridge, mode = ?net.mode, "network created");
+        self.queue.add(Key::Network(net.id.clone()));
         Ok(net)
     }
 
-    /// VMs whose spec or live NICs use network `name`.
-    pub(crate) fn network_users(vms: &HashMap<String, Vm>, name: &str) -> Vec<String> {
+    /// VMs whose spec or live NICs use network `id`.
+    pub(crate) fn network_users(vms: &HashMap<String, Vm>, id: &str) -> Vec<String> {
         vms.values()
             .filter(|vm| {
-                vm.config().networks.iter().any(|a| a.network == name)
-                    || vm.status.nics.iter().any(|n| n.network == name)
+                vm.config().networks.iter().any(|a| a.network == id)
+                    || vm.status.nics.iter().any(|n| n.network == id)
             })
             .map(|vm| vm.name.clone())
             .collect()
@@ -3392,16 +3455,16 @@ impl VmManager {
     /// request the network controller finishes (netd's NAT and bridge for a
     /// network glidex created, then the record). Returns the network while
     /// that is still under way (netd unreachable, say), `None` once gone.
-    pub async fn delete_network(&self, name: &str) -> Result<Option<Network>, VmManagerError> {
+    pub async fn delete_network(&self, id: &str) -> Result<Option<Network>, VmManagerError> {
         {
             // Write lock: no VM may attach to it while it starts going away.
             let vms = self.vms.write().await;
-            let mut net = self.get_network(name)?;
-            let users = Self::network_users(&vms, name);
+            let mut net = self.get_network(id)?;
+            let users = Self::network_users(&vms, id);
             if !users.is_empty() {
                 return Err(NetError::Conflict(format!(
                     "network '{}' is used by VM(s): {}",
-                    name,
+                    net.name,
                     users.join(", ")
                 ))
                 .into());
@@ -3411,8 +3474,8 @@ impl VmManager {
                 self.networks.put(&net)?;
             }
         }
-        self.reconcile_network(name).await?;
-        Ok(self.networks.get(name)?)
+        self.reconcile_network(id).await?;
+        Ok(self.networks.get(id)?)
     }
 
     /// Create a host network usable by `grants` (or every project).
@@ -3434,7 +3497,7 @@ impl VmManager {
             )
             .into());
         }
-        let mut net = self.create_network(req).await?;
+        let mut net = self.create_network(req, None).await?;
         net.grants = grants;
         net.tenant_grants = tenant_grants;
         net.all_projects = all_projects;
@@ -3497,9 +3560,7 @@ impl VmManager {
         {
             req.bridge = Some(format!("gxp-{}", &id[..8]));
         }
-        let mut net = self.create_network(req).await?;
-        net.project = Some(project.to_string());
-        self.networks.put(&net)?;
+        let net = self.create_network(req, Some(project)).await?;
         drop(vms);
         Ok((net, bypassed))
     }
@@ -3630,6 +3691,7 @@ impl VmManager {
             .ok_or_else(|| NetError::NotFound(network.to_string()))?;
         // An isolated network on a router is routed like a NAT one there,
         // and isolated again once it leaves.
+        let network = net.name.clone();
         if net.scope != network::NetworkScope::Cluster || net.mode == NetworkMode::Bridged {
             return Err(NetError::Invalid(format!("only a NAT or isolated network that spans the nodes goes on a router; '{network}' is {:?} on {:?} scope", net.mode, net.scope).to_lowercase()).into());
         }
@@ -3648,7 +3710,7 @@ impl VmManager {
             None => None,
         };
         if net.router != id {
-            tracing::info!(network, from = ?net.router, to = ?id, "network moves router");
+            tracing::info!(network = %net.id, from = ?net.router, to = ?id, "network moves router");
             net.router = id;
             self.networks.put(&net)?;
         }
@@ -3658,12 +3720,12 @@ impl VmManager {
     /// Set which projects may use a host network.
     pub fn grant_network(
         &self,
-        name: &str,
+        id: &str,
         grants: Vec<String>,
         tenant_grants: Vec<String>,
         all_projects: bool,
     ) -> Result<Network, VmManagerError> {
-        let mut net = self.get_network(name)?;
+        let mut net = self.get_network(id)?;
         if net.project.is_some() {
             return Err(
                 NetError::Invalid("project networks are shared, not granted".into()).into(),
@@ -3685,11 +3747,11 @@ impl VmManager {
     /// target doesn't exist, so offers can't probe for projects.
     pub fn offer_network_share(
         &self,
-        name: &str,
+        id: &str,
         target: &str,
         by: &str,
     ) -> Result<(), VmManagerError> {
-        let mut net = self.get_network(name)?;
+        let mut net = self.get_network(id)?;
         if net.project.is_none() {
             return Err(NetError::Invalid("only project networks can be shared".into()).into());
         }
@@ -3725,13 +3787,9 @@ impl VmManager {
             .collect())
     }
 
-    /// Accept an open offer of `name` to `project`.
-    pub fn accept_network_share(
-        &self,
-        project: &str,
-        name: &str,
-    ) -> Result<Network, VmManagerError> {
-        let mut net = self.get_network(name)?;
+    /// Accept an open offer of network `id` to `project`.
+    pub fn accept_network_share(&self, project: &str, id: &str) -> Result<Network, VmManagerError> {
+        let mut net = self.get_network(id)?;
         let now = tenancy::now();
         let Some(pos) = net
             .share_offers
@@ -3740,7 +3798,7 @@ impl VmManager {
         else {
             return Err(NetError::NotFound(format!(
                 "no open share offer of network '{}' to this project",
-                name
+                net.name
             ))
             .into());
         };
@@ -3754,13 +3812,14 @@ impl VmManager {
 
     /// End a share (unshare by the owner, or leave by the target).
     /// Refused while VMs of `project` use the network.
-    pub async fn end_network_share(&self, name: &str, project: &str) -> Result<(), VmManagerError> {
+    pub async fn end_network_share(&self, id: &str, project: &str) -> Result<(), VmManagerError> {
         let vms = self.vms.read().await;
-        let mut net = self.get_network(name)?;
+        let mut net = self.get_network(id)?;
+        let name = net.name.clone();
         let users: Vec<String> = vms
             .values()
             .filter(|vm| {
-                vm.project == project && vm.config().networks.iter().any(|a| a.network == name)
+                vm.project == project && vm.config().networks.iter().any(|a| a.network == id)
             })
             .map(|vm| vm.name.clone())
             .collect();

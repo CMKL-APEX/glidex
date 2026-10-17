@@ -11,6 +11,7 @@
 mod access;
 mod directory;
 mod login;
+mod network;
 mod storage;
 mod system;
 mod tenancy;
@@ -64,6 +65,7 @@ pub(crate) fn routes(app: &AppState) -> Router<AppState> {
     let connect = storage::register(app, connect);
     let connect = vm::register(app, connect);
     let connect = usage::register(app, connect);
+    let connect = network::register(app, connect);
     let (connect, _health) = connectrpc_health::install_static(connect, glidex_api::services());
     let svc = ConnectRpcService::new(connect)
         .with_limits(

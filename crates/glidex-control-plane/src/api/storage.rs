@@ -238,29 +238,6 @@ pub async fn delete_image(
     })
 }
 
-/// The answer to a deletion still under way: `202` with the object, or
-/// with `?wait`, `200` once `look` finds it gone (`202` on timeout). For
-/// the families not ported yet (networks).
-pub(crate) async fn deleted_reply<T: serde::Serialize>(
-    m: &crate::state::VmManager,
-    still: T,
-    wait: Option<u64>,
-    look: impl FnMut() -> Option<T>,
-) -> Result<Response, ApiErr> {
-    let Some(secs) = wait else {
-        return Ok((StatusCode::ACCEPTED, Json(still)).into_response());
-    };
-    Ok(
-        match m
-            .wait_gone(std::time::Duration::from_secs(secs.min(300)), look)
-            .await
-        {
-            None => StatusCode::OK.into_response(),
-            Some(t) => (StatusCode::ACCEPTED, Json(t)).into_response(),
-        },
-    )
-}
-
 pub async fn image_events(c: Caller, Path(id): Path<String>) -> Result<impl IntoResponse, ApiErr> {
     let req = pb::ListImageEventsRequest {
         id,

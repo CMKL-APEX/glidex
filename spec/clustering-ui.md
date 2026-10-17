@@ -458,7 +458,7 @@ from a file and changes the host's identity.
   external IP, active gateway node, ports with their chassis.
 
 All need a read-only server endpoint (§9 `GET /cluster/ovn`,
-`GET /networks/{name}/ovn`); the UI never talks to OVN.
+`GET /networks/{id}/ovn`); the UI never talks to OVN.
 
 ## 8a. Turning OVN on from the UI (U6)
 
@@ -611,7 +611,7 @@ own way out instead of the shared edge. The UI:
 - **Network form**: a project NAT network that spans the nodes gets
   *Leaves through* (the shared edge, or one of the project's routers), an
   isolated one *Routed through* (not routed, or one of them).
-- **Moving a network** (`PUT /projects/{id}/networks/{name}/router`,
+- **Moving a network** (`PUT /projects/{id}/networks/{network}/router`,
   `{router: name | null}`, action `createRouter`): only the project's own
   NAT or isolated networks that span the nodes. An isolated network on a
   router keeps `mode: isolated` but is routed there exactly like a NAT
@@ -643,7 +643,7 @@ with the router's address, not the shared edge's.
 | `group_by=node` on `/usage` | U2 §5.4 | |
 | CA expiry (`not_after`) and the trust bundle in `/cluster/status` `ca` (which has `signing`, `retiring`, `retire_at`, `started_at` today), and each node's certificate issuer and expiry | U4 §7.6 | |
 | Detach progress in node status (`departure: {plan, step}`) | U3 §6.4 | |
-| `GET /cluster/ovn`, `GET /networks/{name}/ovn` | U5 | Read-only; the same permission as `GET /cluster/status` / `GET /networks/{name}`. |
+| `GET /cluster/ovn`, `GET /networks/{id}/ovn` | U5 | Read-only; the same permission as `GET /cluster/status` / `GET /networks/{id}`. |
 | UI relay on agents: `/cluster/v1/ui/{*path}` on servers, the agent's UI socket relaying to it, host-local paths sent back through the node relay, `cluster.ui_relay` | U1 | §3.6 |
 | `POST /authz/allowed` | U0 | §3.5 |
 | Watch kinds `node`, `import`, `cluster`, `policy` | U0 | §3.7 |

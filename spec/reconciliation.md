@@ -974,7 +974,7 @@ D13 (`Ready` when the phase is `Ready` and spec and status agree).
 | `DELETE /vms/{id}[?keep_disk=true]` | deletion request | `deleteVm` |
 | `POST /disks/{id}/resize`, `/extend-root` | Disk spec writes | unchanged |
 | `POST /images/{id}/retry` (new) | bump `retry_seq` | `pullImage` |
-| `DELETE /images/{id}[?wait]`, `DELETE /networks/{name}[?wait]` | deletion request (§6.3) | `deleteImage`; `deleteNetwork` / `deleteProjectNetwork` (unchanged) |
+| `DELETE /images/{id}[?wait]`, `DELETE /networks/{id}[?wait]` | deletion request (§6.3) | `deleteImage`; `deleteNetwork` / `deleteProjectNetwork` (unchanged) |
 | `GET /watch[?kinds=…][&project=…]` (new) | live stream (§12.6) | any authenticated caller; each kind filtered as its list endpoint |
 | `GET /{vms,disks,images,networks}/{id}/events` (new) | event ring | `readVm` / `readDisk` / `readImage` / `readNetwork` |
 | `GET /system/reconcile` (new) | §12.5 | **`readSystemStatus` (new) on `Host::"local"`**, in the `host.read` group (with `readOvsStatus`, `listBridges`, …) |
@@ -1313,7 +1313,7 @@ Differences from §10:
   running VM. netd `sync_vms` is sent only when some VM uses networks,
   at startup and when netd restarted (socket inode changed).
 - Events: `GET /{disks,images}/{id}/events` and
-  `GET /networks/{name}/events`; `POST /images/{id}/retry`.
+  `GET /networks/{id}/events`; `POST /images/{id}/retry`.
 
 **M1 — Detached instances (imperative API unchanged).**
 `glidex-hv-client`, `glidex-vm-shim`, both runners, `launch.json` /

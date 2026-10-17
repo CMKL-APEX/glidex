@@ -409,7 +409,7 @@ impl VmManager {
             .unwrap_or_default()
             .into_iter()
             .filter(|x| x.node.as_deref() == Some(id.as_str()))
-            .map(|x| x.name)
+            .map(|x| x.id)
             .collect();
         // One write: its records go and it becomes Removed together.
         self.database()

@@ -399,26 +399,46 @@ export const deleteCredential = (username: string, project?: string | null) =>
   del(`/credentials/${enc(username)}${inProject(project)}`);
 
 // ---- networks ---------------------------------------------------------------
+// glidex.network.v1 (types.ts): networks are keyed by id (a name works in
+// paths too); answers wrap their object (`{network}`, `{router}`) and lists
+// (`{networks}`, `{routers}`, `{shares}`).
 
-export const listNetworks = () => get<Network[]>("/networks");
-export const createNetwork = (req: CreateNetworkRequest) => post<Network>("/networks", req);
+export const listNetworks = () => get<{ networks?: Network[] }>("/networks").then((r) => r?.networks ?? []);
+/** By id, or by name (409 `ambiguous` when several networks the caller can see have it). */
+export const getNetwork = (id: string) => get<{ network?: Network }>(`/networks/${enc(id)}`).then((r) => r?.network as Network);
+export const createNetwork = (req: CreateNetworkRequest) =>
+  post<{ network?: Network }>("/networks", req).then((r) => r?.network as Network);
 /** `undefined` when gone (204), else the network its controller is still deleting (202). */
-export const deleteNetwork = (name: string) => del<Network | undefined>(`/networks/${enc(name)}`);
-export const createProjectNetwork = (project: string, req: CreateNetworkRequest) =>
-  post<Network>(`/projects/${enc(project)}/networks`, req);
-export const listRouters = (project: string) => get<Router[]>(`/projects/${enc(project)}/routers`);
-export const createRouter = (project: string, spec: RouterSpec) => post<Router>(`/projects/${enc(project)}/routers`, spec);
-export const deleteRouter = (project: string, name: string) => del<void>(`/projects/${enc(project)}/routers/${enc(name)}`);
-/** Put an existing NAT network on one of the project's routers, or (`null`) back on the shared edge. */
+export const deleteNetwork = (id: string) =>
+  del<{ network?: Network } | undefined>(`/networks/${enc(id)}`).then((r) => r?.network);
+export const networkEvents = (id: string) =>
+  get<{ events?: StorageEvent[] }>(`/networks/${enc(id)}/events`).then((r) => r?.events ?? []);
+/** Which projects and tenants may use a host network (replaces the grants). */
+export const grantNetwork = (id: string, req: { grants?: string[]; tenants?: string[]; all_projects?: boolean }) =>
+  put<{ network?: Network }>(`/networks/${enc(id)}/grants`, req).then((r) => r?.network as Network);
+export const createProjectNetwork = (project: string, req: Omit<CreateNetworkRequest, "bridge" | "physnet" | "grants" | "tenants" | "all_projects">) =>
+  post<{ network?: Network }>(`/projects/${enc(project)}/networks`, req).then((r) => r?.network as Network);
+export const listRouters = (project: string) =>
+  get<{ routers?: Router[] }>(`/projects/${enc(project)}/routers`).then((r) => r?.routers ?? []);
+export const getRouter = (project: string, router: string) =>
+  get<{ router?: Router }>(`/projects/${enc(project)}/routers/${enc(router)}`).then((r) => r?.router as Router);
+export const createRouter = (project: string, spec: RouterSpec) =>
+  post<{ router?: Router }>(`/projects/${enc(project)}/routers`, spec).then((r) => r?.router as Router);
+/** By id or name. */
+export const deleteRouter = (project: string, router: string) => del<void>(`/projects/${enc(project)}/routers/${enc(router)}`);
+/** Put an existing NAT network (id) on one of the project's routers (id), or (`null`) back on the shared edge. */
 export const setNetworkRouter = (project: string, network: string, router: string | null) =>
-  put<Network>(`/projects/${enc(project)}/networks/${enc(network)}/router`, { router });
+  put<{ network?: Network }>(`/projects/${enc(project)}/networks/${enc(network)}/router`, { router }).then(
+    (r) => r?.network as Network,
+  );
 export const offerNetworkShare = (network: string, project: string) =>
   post<void>(`/networks/${enc(network)}/shares`, { project });
 export const unshareNetwork = (network: string, project: string) =>
   del(`/networks/${enc(network)}/shares/${enc(project)}`);
-export const listNetworkShares = (project: string) => get<NetworkShare[]>(`/projects/${enc(project)}/network-shares`);
+export const listNetworkShares = (project: string) =>
+  get<{ shares?: NetworkShare[] }>(`/projects/${enc(project)}/network-shares`).then((r) => r?.shares ?? []);
 export const acceptNetworkShare = (project: string, network: string) =>
-  post<Network>(`/projects/${enc(project)}/network-shares/${enc(network)}/accept`);
+  post<{ network?: Network }>(`/projects/${enc(project)}/network-shares/${enc(network)}/accept`).then((r) => r?.network as Network);
 export const leaveNetworkShare = (project: string, network: string) =>
   del(`/projects/${enc(project)}/network-shares/${enc(network)}`);
 
@@ -669,7 +689,7 @@ export const clusterTunnels = () => get<{ enabled: boolean; nodes?: NodeTunnels[
 export const getEdgeDefaults = () => get<{ edge: OvnEdge; complete: boolean; notes: string[] }>("/cluster/settings/ovn/edge-defaults");
 export const getOvnSettings = () => get<OvnSettingsView>("/cluster/settings/ovn");
 export const putOvnSettings = (s: Omit<OvnSettings, "updated_by" | "updated_at">) => put<OvnSettingsView>("/cluster/settings/ovn", s);
-export const networkOvn = (name: string) => get<NetworkOvn>(`/networks/${enc(name)}/ovn`);
+export const networkOvn = (id: string) => get<NetworkOvn>(`/networks/${enc(id)}/ovn`);
 
 // ---- cluster lifecycle (spec/clustering-ui.md §7.5–7.8) ---------------------------
 

@@ -1808,9 +1808,10 @@ async fn cluster_networks_get_a_subnet_and_vms_get_addresses_that_go_when_they_d
     )
     .await;
     assert_eq!(s, StatusCode::CREATED, "{n}");
+    let n = &n["network"];
     assert_eq!(
         (n["scope"].as_str(), n["bridge"].as_str(), n["mtu"].as_u64()),
-        (Some("cluster"), Some("br-int"), Some(1442))
+        (Some("NETWORK_SCOPE_CLUSTER"), Some("br-int"), Some(1442))
     );
     let (s, n2) = call(&server, "POST", "/networks", Some(json!({ "name": "lab", "mode": "isolated", "port_type": "tap", "scope": "cluster", "subnet": "10.89.200.0/24" })), &[]).await;
     assert_eq!(s, StatusCode::CREATED, "{n2}");
@@ -1938,8 +1939,11 @@ async fn provider_networks_and_vpc_routers() {
     )
     .await;
     assert_eq!(s, StatusCode::CREATED, "{n}");
+    // OVN knows a network by its id (spec/tenancy.md D24).
+    let id_of = |n: &serde_json::Value| n["network"]["id"].as_str().unwrap().to_string();
+    let p1 = id_of(&n);
     let d = server.manager.__desired_ovn_for_tests().await.unwrap();
-    assert!(d.networks.iter().any(|n| n.name == "p1" && matches!(&n.kind, glidex_ovn::NetKind::Provider { physnet, vlan: Some(30) } if physnet == "lan")));
+    assert!(d.networks.iter().any(|n| n.name == p1 && matches!(&n.kind, glidex_ovn::NetKind::Provider { physnet, vlan: Some(30) } if physnet == "lan")));
     assert!(
         glidex_control_plane::ipam::list_subnets(&server.manager.database())
             .unwrap()
@@ -1984,8 +1988,8 @@ async fn provider_networks_and_vpc_routers() {
     )
     .await;
     assert_eq!(s, StatusCode::CREATED, "{r}");
-    assert_eq!(r["status"]["external_ip"], "192.0.2.3");
-    assert_eq!(r["status"]["snat_ct_zone"], 60001);
+    assert_eq!(r["router"]["status"]["external_ip"], "192.0.2.3");
+    assert_eq!(r["router"]["status"]["snat_ct_zone"], 60001);
     // The site's pool (.3-.6 here, the gateway and edge take .1 and .2) runs out; the admin is
     // allowed past quota, so the pool is what stops it.
     for n in ["r2", "r3", "r4"] {
@@ -2022,6 +2026,7 @@ async fn provider_networks_and_vpc_routers() {
     // A NAT network on the router: by name, and the plan shows the router and its zone.
     let (s, n) = call(&server, "POST", "/projects/default/networks", Some(json!({ "name": "app", "mode": "nat", "port_type": "tap", "scope": "cluster", "router": "r1" })), &[]).await;
     assert_eq!(s, StatusCode::CREATED, "{n}");
+    let app = id_of(&n);
     let (s, n) = call(&server, "POST", "/projects/default/networks", Some(json!({ "name": "bad", "mode": "nat", "port_type": "tap", "scope": "cluster", "router": "nope" })), &[]).await;
     assert_eq!(s, StatusCode::BAD_REQUEST, "{n}");
     let d = server.manager.__desired_ovn_for_tests().await.unwrap();
@@ -2041,7 +2046,7 @@ async fn provider_networks_and_vpc_routers() {
     assert!(
         d.networks
             .iter()
-            .any(|n| n.name == "app" && n.router.as_deref() == Some(r1.name.as_str()))
+            .any(|n| n.name == app && n.router.as_deref() == Some(r1.name.as_str()))
     );
 
     // An existing network moves onto a router and back to the edge.
@@ -2054,6 +2059,7 @@ async fn provider_networks_and_vpc_routers() {
     )
     .await;
     assert_eq!(s, StatusCode::CREATED, "{n}");
+    let web = id_of(&n);
     let (s, n) = call(
         &server,
         "PUT",
@@ -2067,7 +2073,7 @@ async fn provider_networks_and_vpc_routers() {
     assert!(
         d.networks
             .iter()
-            .any(|n| n.name == "web" && n.router.as_deref() == Some(r1.name.as_str())),
+            .any(|n| n.name == web && n.router.as_deref() == Some(r1.name.as_str())),
         "on r1"
     );
     let (s, e) = call(
@@ -2090,10 +2096,11 @@ async fn provider_networks_and_vpc_routers() {
     )
     .await;
     assert_eq!(s, StatusCode::CREATED, "{n}");
+    let iso = id_of(&n);
     let kind = |d: &glidex_ovn::Desired| {
         d.networks
             .iter()
-            .find(|n| n.name == "iso")
+            .find(|n| n.name == iso)
             .map(|n| (n.kind.clone(), n.router.clone()))
             .unwrap()
     };
@@ -2110,7 +2117,10 @@ async fn provider_networks_and_vpc_routers() {
     )
     .await;
     assert_eq!(s, StatusCode::OK, "{n}");
-    assert_eq!(n["mode"], "isolated", "its mode stays: {n}");
+    assert_eq!(
+        n["network"]["mode"], "NETWORK_MODE_ISOLATED",
+        "its mode stays: {n}"
+    );
     assert_eq!(
         kind(&server.manager.__desired_ovn_for_tests().await.unwrap()),
         (glidex_ovn::NetKind::Nat, Some(r1.name.clone()))
@@ -2151,7 +2161,7 @@ async fn provider_networks_and_vpc_routers() {
     )
     .await;
     assert_eq!(s, StatusCode::OK, "{n}");
-    assert!(n["router"].is_null(), "back on the edge: {n}");
+    assert!(n["network"]["router"].is_null(), "back on the edge: {n}");
     for name in ["web", "iso"] {
         let (s, _) = call(&server, "DELETE", &format!("/networks/{name}"), None, &[]).await;
         assert!(s.is_success(), "{s}");
@@ -2177,10 +2187,13 @@ async fn provider_networks_and_vpc_routers() {
     .await;
     assert_eq!(s, StatusCode::CREATED, "{r}");
     assert_eq!(
-        r["status"]["external_ip"], "192.0.2.4",
+        r["router"]["status"]["external_ip"], "192.0.2.4",
         "the address came back"
     );
-    assert_eq!(r["status"]["snat_ct_zone"], 60002, "and so did the zone");
+    assert_eq!(
+        r["router"]["status"]["snat_ct_zone"], 60002,
+        "and so did the zone"
+    );
 }
 
 async fn node_json(cp: &Cp, key: &str) -> Value {

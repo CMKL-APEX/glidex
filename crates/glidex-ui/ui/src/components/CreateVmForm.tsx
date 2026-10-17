@@ -2,7 +2,7 @@ import { useRef, useEffect, useState, type FormEvent } from "react";
 import { listCredentials, listDisks, listImages, listNetworks } from "../api";
 import { Link } from "react-router-dom";
 import type { CreateVmRequest, CredentialInfo, DiskInfo, HypervisorType, ImageInfo, Network } from "../types";
-import { HYPERVISOR_LABELS, HYPERVISOR_TO_PROTO, archLabel, firmwareFor, formatBytes, imageState, isFirmware, networkUsableBy } from "../types";
+import { HYPERVISOR_LABELS, HYPERVISOR_TO_PROTO, archLabel, firmwareFor, formatBytes, imageState, isFirmware, networkModeLabel, networkUsableBy } from "../types";
 import { useSession } from "../session";
 import { useNodes } from "../nodes";
 import PlacementPicker from "./PlacementPicker";
@@ -85,8 +85,10 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
         const nets = all.filter((n) => networkUsableBy(n, project));
         setNetworks(nets);
         // A network named `default`, else the project's only one.
-        if (nets.some((n) => n.name === "default")) setSelectedNetworks(["default"]);
-        else if (nets.length === 1) setSelectedNetworks([nets[0].name]);
+        // (By id: a project network and a host network may share a name.)
+        const def = nets.find((n) => n.name === "default");
+        if (def) setSelectedNetworks([def.id]);
+        else if (nets.length === 1) setSelectedNetworks([nets[0].id]);
       })
       .catch(() => setNetworks([]));
     listImages()
@@ -462,18 +464,18 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
           </label>
           <div className="mt-1 flex flex-wrap gap-3">
             {networks.map((n) => (
-              <label key={n.name} className="flex items-center space-x-2 text-sm">
+              <label key={n.id} className="flex items-center space-x-2 text-sm">
                 <input
                   type="checkbox"
-                  checked={selectedNetworks.includes(n.name)}
+                  checked={selectedNetworks.includes(n.id)}
                   onChange={(e) =>
                     setSelectedNetworks((cur) =>
-                      e.target.checked ? [...cur, n.name] : cur.filter((x) => x !== n.name),
+                      e.target.checked ? [...cur, n.id] : cur.filter((x) => x !== n.id),
                     )
                   }
                 />
                 <span className="font-mono">{n.name}</span>
-                <span className="text-gray-400">({n.mode})</span>
+                <span className="text-gray-400">({networkModeLabel(n.mode)})</span>
               </label>
             ))}
           </div>
