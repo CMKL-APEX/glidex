@@ -89,6 +89,7 @@ crates/glidex-api/
 │   ├── glidex/network/v1/network.proto # G3: NetworkService, NetworkShareService, RouterService
 │   ├── glidex/host/v1/host.proto     # G3: HostNetworkService, PciService
 │   ├── glidex/cluster/v1/cluster.proto # G3: ClusterService, NodeService, ImportService
+│   ├── glidex/watch/v1/watch.proto   # G4: WatchService (server stream)
 │   ├── glidex/…/v1/*.proto           # tenancy, directory, auth; vm, storage, … as ported (§9)
 │   └── google/rpc/error_details.proto # vendored ErrorInfo only (excluded from buf lint)
 └── src/lib.rs            # generated modules + OPERATIONS
@@ -273,10 +274,16 @@ When every family is ported (G5), `models.rs` keeps only internal
 store records, and nothing in `src/api/` defines a request or
 response type.
 
-**Watch** keeps the SSE semantics (`api/watch.rs`): a snapshot of
-visible objects, `synced`, then `added`/`modified`/`deleted`, each
-re-filtered by the caller's current rights; the stream ends after
-`MAX_LIFETIME` and the client reconnects. **Console** moves to a bidi
+**Watch** keeps the SSE semantics on both transports (`service::watch`):
+a snapshot of visible objects, `synced`, then `added`/`modified`/`deleted`,
+each re-filtered by the caller's current rights; the stream ends
+(`expired`) after `MAX_LIFETIME` and the client reconnects.
+`glidex.watch.v1.WatchService.Watch` is a server stream of
+`WatchResponse` (the type, kind, id and the object as its own message in
+a `oneof`); `GET /watch` sends the same events as server-sent events.
+Opening a stream is checked and audited like a unary call (the
+`unary` helper with the stream as its value), so a refusal is the call's
+error before any event. **Console** moves to a bidi
 stream only after the WebSocket path (tickets, shim relay) has an
 equivalent test suite; until then it stays WebSocket.
 
@@ -371,6 +378,7 @@ equivalent test suite; until then it stays WebSocket.
 | Network family (G3): `NetworkService` (networks, grants, project networks, a network's router, events, OVN view), `NetworkShareService`, `RouterService` | proto `glidex/network/v1/network.proto`; `service/network.rs`; RPC `api/rpc/network.rs`; REST twins `api/net.rs` (host networking — `/ovs`, bridges, uplinks, PCI — and `/cluster/ovn` stay for `host.v1`/`cluster.v1`); networks re-keyed by id first (tenancy.md D24, schema 4); a VM's `Nic` gains `network_name`; gxctl `network …` on the generated clients; tests `tests/network_tests.rs` |
 | Host family (G3): `HostNetworkService` (OVS status and install, DPDK, bridges, uplinks), `PciService` | proto `glidex/host/v1/host.proto`; `service/host.rs`; RPC `api/rpc/host.rs`; REST twins in `api/net.rs`; host-local in `gate::is_host_local` and relayed from an agent's UI like the REST paths (`relay::is_remote_host_path`, `relay::remote_host` on the RPC mount, the action from the operation table; the agent runs it `PreAuthorized`); gxctl and the UI on the new shapes; tests `network_tests.rs::ovs_status_and_bridges`, `cluster_tests.rs::an_agents_ui_is_relayed_to_a_server_and_host_paths_run_on_the_agent` (gRPC-Web through the relay) |
 | Cluster family (G3): `ClusterService` (init, join, import, rejoin, status, join tokens, promote, dissolve, leave, CA and secrets-key rotation, OVN settings, edge defaults, OVN overview and tunnels), `NodeService` (nodes, drain, br-int and mappings, spare image files, remove, forget, purge, rejoin tokens, detach, abort, departed, departures), `ImportService` | proto `glidex/cluster/v1/cluster.proto`; `service/cluster.rs`, `service/node.rs` (the cluster code's JSON turned into the messages by `cluster::proto_of`: times and enum names by field path); RPC `api/rpc/cluster.rs`; REST twins `api/cluster.rs`, `api/nodes.rs`; `GET /cluster/snapshot` stays REST (a binary download); init, join and leave are host-local as RPCs too, and leave runs on the agent from its UI; `/watch` nodes and imports are the messages; gxctl and the UI on the new shapes; tests `tests/cluster_tests.rs` |
+| Watch (G4): `WatchService.Watch`, a server stream | proto `glidex/watch/v1/watch.proto`; `service/watch.rs` (snapshots, diffs, watcher slots; events as data); RPC `api/rpc/watch.rs`; `GET /watch` as server-sent events in `api/watch.rs`; gxctl `watch` on the stream; tests `api_tests.rs::test_watch_over_rpc_streams_the_same_events` and the REST watch tests |
 | Forwarding by `kind`, trailers (§8) | `api/gate.rs`, `cluster/net.rs` (`Reply.trailers`) |
 | CI (G-D9) | `.github/workflows/rust.yml` job `proto` |
 | Tests | `tests/rpc_tests.rs`; `cluster_tests.rs::rpc_reads_are_answered_by_the_server_that_takes_them`; unit tests in `api/rpc` and `glidex-api` |

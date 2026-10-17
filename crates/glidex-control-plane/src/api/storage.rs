@@ -15,10 +15,6 @@ use axum::{
 use glidex_api::proto::glidex::storage::v1 as pb;
 use serde_json::Value;
 
-pub(crate) fn manager_err(e: crate::state::VmManagerError) -> ApiErr {
-    super::error_to_response(e)
-}
-
 #[derive(Debug, serde::Deserialize, Default)]
 pub struct ProjectQuery {
     #[serde(default)]

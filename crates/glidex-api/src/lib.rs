@@ -149,7 +149,8 @@ mod tests {
                 "glidex.system.v1.SystemService",
                 "glidex.usage.v1.UsageService",
                 "glidex.usage.v1.MetricsService",
-                "glidex.vm.v1.VmService"
+                "glidex.vm.v1.VmService",
+                "glidex.watch.v1.WatchService"
             ]
         );
         let w = operation("/glidex.tenancy.v1.TenantService/CreateTenant").unwrap();

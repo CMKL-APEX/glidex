@@ -22,6 +22,7 @@ pub mod system;
 pub mod tenancy;
 pub mod usage;
 pub mod vm;
+pub mod watch;
 
 use crate::api::ApiErr;
 use crate::models::ApiError;
