@@ -447,6 +447,23 @@ async fn three_control_planes_survive_losing_the_leader() {
     }
 }
 
+/// Servers heartbeat the leader like any node (spec/clustering.md §7.2):
+/// past the grace, the followers are still Ready.
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn servers_stay_ready_past_the_grace() {
+    let _one = serial().await;
+    let cps = form(3).await;
+    let lead = leader_index(&cps, &[0, 1, 2]).await;
+    // The grace and two liveness rounds.
+    let grace = test_config().cluster.node_grace_secs;
+    tokio::time::sleep(Duration::from_secs(grace + 4)).await;
+    let (s, v) = call(&cps[lead], "GET", "/nodes", None, &[]).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let nodes = nodes_of(&v);
+    assert_eq!(nodes.len(), 3, "{v}");
+    assert!(nodes.iter().all(|n| n["status"]["ready"] == READY), "{v}");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn rpc_reads_are_answered_by_the_server_that_takes_them() {
     let _one = serial().await;
