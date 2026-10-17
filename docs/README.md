@@ -39,8 +39,12 @@ RUSTDOCFLAGS="-D warnings -A rustdoc::private_intra_doc_links" \
 
 CI builds all three on every pull request
 ([`.github/workflows/docs.yml`](../.github/workflows/docs.yml)) and keeps
-the output as workflow artifacts. Nothing is published yet; the internal
-set must only ever go to an access-controlled host.
+the output as workflow artifacts. On every push to `main` it publishes the
+public site to the `gh-pages` branch: the landing page in
+[`docs/site/`](site/) at the root and the public book under `docs/`
+(<https://cmkl-apex.github.io/glidex/>, once GitHub Pages serves that
+branch). The internal set is never published there; it must only ever go
+to an access-controlled host.
 
 ## Still to do
 
@@ -53,5 +57,4 @@ set must only ever go to an access-controlled host.
   are clap; commands are parsed by hand, so there is nothing to generate
   it from yet.
 - Resolve the `<!-- TODO(verify) -->` comments in `docs/public/src`.
-- Publishing: the public book to a public site, the internal set to an
-  access-controlled one.
+- Publishing the internal set to an access-controlled host.
