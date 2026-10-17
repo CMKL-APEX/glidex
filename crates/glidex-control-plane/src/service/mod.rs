@@ -9,12 +9,14 @@
 
 #![allow(clippy::result_large_err)] // ServiceError mirrors the REST error body, as api/ does
 
+pub mod access;
 pub mod common;
 pub mod directory;
 pub mod login;
 pub mod storage;
 pub mod system;
 pub mod tenancy;
+pub mod usage;
 pub mod vm;
 
 use crate::api::ApiErr;

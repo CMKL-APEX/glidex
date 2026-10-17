@@ -89,12 +89,14 @@ fn entity_ref(e: &Ent) -> EntityRef {
     }
 }
 
-/// `WhoAmI`: who the caller is and which roles they hold. RPC only until
-/// the access family is ported (G2); `GET /auth/whoami` keeps its own
-/// shape until then, built from the same [`roles_of`].
+/// `WhoAmI`: who the caller is and which roles they hold; also the
+/// answer to a browser login (`api/access.rs`).
 pub fn whoami(call: &Call) -> ServiceResult<WhoAmIResponse> {
-    let p = &call.p;
-    let (host_roles, project_roles) = roles_of(&call.app, p)?;
+    whoami_of(&call.app, &call.p)
+}
+
+pub fn whoami_of(app: &App, p: &crate::auth::Principal) -> ServiceResult<WhoAmIResponse> {
+    let (host_roles, project_roles) = roles_of(app, p)?;
     Ok(WhoAmIResponse {
         user_id: p.user.as_ref().map(|u| u.id.clone()),
         display_name: p
@@ -121,6 +123,23 @@ pub fn whoami(call: &Call) -> ServiceResult<WhoAmIResponse> {
         default_project: p.default_project().map(String::from),
         mfa: Some(p.mfa),
         directory_id: p.directory_id().into(),
+        user: p
+            .user
+            .as_ref()
+            .map(|u| crate::service::access::user_pb(u, &[]))
+            .into(),
+        token: p
+            .token
+            .as_ref()
+            .map(|t| glidex_api::proto::glidex::system::v1::TokenSummary {
+                id: t.id.clone(),
+                name: t.name.clone(),
+                device: t.device.clone(),
+                client: t.client.clone(),
+                ..Default::default()
+            })
+            .into(),
+        csrf: p.csrf.clone(),
         ..Default::default()
     })
 }

@@ -34,7 +34,7 @@ export default function Audit() {
         since: since ? new Date(since).getTime() : undefined,
         limit: 500,
       });
-      setEntries([...e].sort((a, b) => b.time - a.time));
+      setEntries([...e].sort((a, b) => Date.parse(b.time) - Date.parse(a.time)));
     } catch (e) {
       setEntries([]);
       setError(errorMessage(e));

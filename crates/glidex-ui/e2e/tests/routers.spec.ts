@@ -10,7 +10,7 @@ test.use({ ignoredConsoleErrors: /Failed to load resource/ });
 const PROJECT = "e2e-routers";
 
 async function cleanup() {
-  const p = (await api<any[]>("/projects")).find((x) => x.name === PROJECT);
+  const p = ((await api<{ projects?: any[] }>("/projects")).projects ?? []).find((x) => x.name === PROJECT);
   if (p) await del(`/projects/${p.id}`);
 }
 test.beforeAll(cleanup);
@@ -93,7 +93,7 @@ async function mockOvn(page: Page, project: string, pool = true): Promise<Seen> 
 }
 
 test("a project's routers: listed with their address and gateway, created and deleted", async ({ page }) => {
-  const project = await api("/projects", { method: "POST", body: { name: PROJECT } });
+  const project = (await api("/projects", { method: "POST", body: { name: PROJECT } })).project;
   const seen = await mockOvn(page, project.id);
   await page.goto(`/projects/${project.id}`);
 
@@ -130,7 +130,7 @@ test("a project's routers: listed with their address and gateway, created and de
 });
 
 test("without a pool a router can only join its networks", async ({ page }) => {
-  const project = await api("/projects", { method: "POST", body: { name: `${PROJECT}-np` } });
+  const project = (await api("/projects", { method: "POST", body: { name: `${PROJECT}-np` } })).project;
   try {
     const seen = await mockOvn(page, project.id, false);
     await page.goto(`/projects/${project.id}`);
@@ -149,7 +149,7 @@ test("without a pool a router can only join its networks", async ({ page }) => {
 });
 
 test("a network made from a router's card goes on that router", async ({ page }) => {
-  const project = await api("/projects", { method: "POST", body: { name: `${PROJECT}-net` } });
+  const project = (await api("/projects", { method: "POST", body: { name: `${PROJECT}-net` } })).project;
   try {
     const seen = await mockOvn(page, project.id);
     // The form opens where netd can make networks (none on the scratch host).
@@ -177,7 +177,7 @@ test("a network made from a router's card goes on that router", async ({ page })
 });
 
 test("existing networks attach to a router and detach back to the edge", async ({ page }) => {
-  const project = await api("/projects", { method: "POST", body: { name: `${PROJECT}-att` } });
+  const project = (await api("/projects", { method: "POST", body: { name: `${PROJECT}-att` } })).project;
   try {
     const seen = await mockOvn(page, project.id);
     await page.goto(`/projects/${project.id}`);
@@ -209,7 +209,7 @@ test("existing networks attach to a router and detach back to the edge", async (
 });
 
 test("an isolated network attaches to a router and is isolated again when detached", async ({ page }) => {
-  const project = await api("/projects", { method: "POST", body: { name: `${PROJECT}-iso` } });
+  const project = (await api("/projects", { method: "POST", body: { name: `${PROJECT}-iso` } })).project;
   try {
     const seen = await mockOvn(page, project.id);
     await page.goto(`/projects/${project.id}`);

@@ -1179,7 +1179,7 @@ pub(crate) fn proto_no_content() -> axum::response::Response {
 /// before the port sent (spec/grpc.md §9.1 step 3): `enums` names fields
 /// whose old lower-case values become `PREFIX_VALUE` (`-` as `_`), and
 /// `renames` maps old values that don't follow that rule.
-pub(crate) fn proto_body<T: serde::de::DeserializeOwned>(
+pub(crate) fn proto_body<T: serde::de::DeserializeOwned + buffa::MessageName>(
     mut v: serde_json::Value,
     enums: &[(&str, &str)],
     renames: &[(&str, &str, &str)],
@@ -1199,6 +1199,14 @@ pub(crate) fn proto_body<T: serde::de::DeserializeOwned>(
                     });
             }
         }
+    }
+    // proto3 JSON refuses unknown fields by default; a typo isn't ignored.
+    if let Some(f) = glidex_api::unknown_field(T::FULL_NAME, &v) {
+        return Err(err(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid",
+            format!("unknown field `{f}`"),
+        ));
     }
     // As axum's `Json` answers a body that is JSON but not the message.
     serde_json::from_value(v)

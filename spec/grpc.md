@@ -84,6 +84,8 @@ crates/glidex-api/
 │   ├── glidex/common/v1/common.proto # shared: Arch, Hypervisor, Condition, Event
 │   ├── glidex/storage/v1/storage.proto # G2: CredentialService, ImageService, DiskService
 │   ├── glidex/vm/v1/vm.proto         # G2: VmService
+│   ├── glidex/usage/v1/usage.proto   # G2: UsageService, MetricsService
+│   ├── glidex/access/v1/access.proto # G2: Project, User, Team, Token, SystemBinding, Policy, Audit, Authz services
 │   ├── glidex/…/v1/*.proto           # tenancy, directory, auth; vm, storage, … as ported (§9)
 │   └── google/rpc/error_details.proto # vendored ErrorInfo only (excluded from buf lint)
 └── src/lib.rs            # generated modules + OPERATIONS
@@ -253,7 +255,11 @@ When a family is ported:
    shape (the few value conversions above, done in the adapter before
    decoding), and responses carry `Glidex-Api-Shape: proto` so clients
    can tell. gxctl and the UI move to generated clients in the same
-   change.
+   change. A body field the message doesn't have is refused with
+   `422 invalid` ("unknown field `quotas.vm`"), as proto3 JSON parsers
+   do by default: `proto_body` checks the body against a table of each
+   message's JSON names that `build.rs` writes (`glidex_api::unknown_field`),
+   since `buffa` ignores unknown fields.
 4. The hand-written types, their serde attributes and gxctl's mirrors
    are deleted in that change; the family's REST tests are rewritten
    against the generated types.
@@ -355,6 +361,8 @@ equivalent test suite; until then it stays WebSocket.
 | `ConnectorService` (T1) | `service/directory.rs`, `api/rpc/directory.rs`; REST twins `api/connectors.rs`; `SetSecretRequest.value` is the first field marked `secret` |
 | Storage family (G2): `CredentialService`, `ImageService`, `DiskService` | protos `glidex/storage/v1/storage.proto`, shared `glidex/common/v1/common.proto`; `service/storage.rs` (with `service/common.rs`); RPC `api/rpc/storage.rs`; REST twins `api/storage.rs` (`Proto`, `proto_body` in `api/mod.rs` for the shape header and the old request values); tests `tests/storage_tests.rs` |
 | VM family (G2): `VmService` | proto `glidex/vm/v1/vm.proto`; `service/vm.rs`; RPC `api/rpc/vm.rs`; REST twins `api/vms.rs` (with the console WebSocket, `?view=full` and `/system/reconcile`, which stay REST); `PATCH` reads `{change, update_mask}` and, for one release, the old merge patch; tests `tests/vm_tests.rs` |
+| Usage family (G2): `UsageService` (usage records, billing-month reports), `MetricsService` (5-minute series, live rates) | proto `glidex/usage/v1/usage.proto`; `service/usage.rs`; RPC `api/rpc/usage.rs`; REST twins `api/usage.rs`, `api/rates.rs` (the `format=csv` exports stay REST-only); gxctl `usage`, `stats`, `bandwidth`, `io`, `compute` on the generated clients (`--csv` from REST); tests `tests/usage_tests.rs`; shape changes in metering.md §9.5 |
+| Access family (G2): `ProjectService`, `UserService`, `TeamService`, `TokenService`, `SystemBindingService`, `PolicyService`, `AuditService`, `AuthzService`; `SystemService.WhoAmI` gains `user`, `token`, `csrf` and the REST twin `GET /auth/whoami` | proto `glidex/access/v1/access.proto`; `service/access.rs` (`whoami_of` in `service/system.rs`); RPC `api/rpc/access.rs`; REST twins `api/access.rs` (updates take `update_mask` or the fields present); gxctl and the UI on the new shapes; tests `tests/access_tests.rs` |
 | Forwarding by `kind`, trailers (§8) | `api/gate.rs`, `cluster/net.rs` (`Reply.trailers`) |
 | CI (G-D9) | `.github/workflows/rust.yml` job `proto` |
 | Tests | `tests/rpc_tests.rs`; `cluster_tests.rs::rpc_reads_are_answered_by_the_server_that_takes_them`; unit tests in `api/rpc` and `glidex-api` |

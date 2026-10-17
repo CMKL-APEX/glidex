@@ -282,7 +282,8 @@ export async function logout(): Promise<void> {
   setCsrf(null);
 }
 
-export const updateMe = (body: { default_project: string | null }) => patch<User>("/users/me", body);
+/** Set (or, with `""`, clear) the caller's default project. */
+export const updateMe = (body: { default_project: string }) => patch<{ user?: User }>("/users/me", body).then((r) => r?.user);
 
 /** Capability checks for the caller (spec §7.7): one boolean per check.
  * An action only a fresh login would allow (`reauth`, a step-up action
@@ -290,8 +291,8 @@ export const updateMe = (body: { default_project: string | null }) => patch<User
  * the login (ReauthDialog) and is retried. */
 export async function checkAccess(checks: { action: string; resource: EntityRef }[]): Promise<boolean[]> {
   if (checks.length === 0) return [];
-  const r = await query<{ results: { allowed: boolean; reauth?: boolean }[] }>("/authz/check", { checks });
-  return r.results.map((x) => x.allowed || !!x.reauth);
+  const r = await query<{ results?: { allowed?: boolean; reauth?: boolean }[] }>("/authz/check", { checks });
+  return checks.map((_, i) => !!r?.results?.[i]?.allowed || !!r?.results?.[i]?.reauth);
 }
 
 /** The actions allowed on each resource, in one call (spec/clustering-ui.md
@@ -299,9 +300,9 @@ export async function checkAccess(checks: { action: string; resource: EntityRef 
  * action that doesn't apply to a resource's type is left out. */
 export async function allowedActions(actions: string[], resources: EntityRef[]): Promise<string[][]> {
   if (actions.length === 0 || resources.length === 0) return resources.map(() => []);
-  const r = await query<{ allowed: string[][]; reauth?: string[][] }>("/authz/allowed", { actions, resources });
+  const r = await query<{ allowed?: { actions?: string[] }[]; reauth?: { actions?: string[] }[] }>("/authz/allowed", { actions, resources });
   // As checkAccess: what a fresh login would allow counts.
-  return r.allowed.map((a, i) => [...a, ...(r.reauth?.[i] ?? [])]);
+  return resources.map((_, i) => [...(r?.allowed?.[i]?.actions ?? []), ...(r?.reauth?.[i]?.actions ?? [])]);
 }
 
 // ---- VMs --------------------------------------------------------------------
@@ -381,7 +382,9 @@ export interface MySshKeys {
   keys: string[];
   reason?: string;
 }
-export const mySshKeys = () => get<MySshKeys>("/users/me/ssh-keys");
+/** Proto JSON leaves out a false `available` and empty `keys`. */
+export const mySshKeys = () =>
+  get<Partial<MySshKeys>>("/users/me/ssh-keys").then((r) => ({ ...r, available: !!r?.available, keys: r?.keys ?? [] }));
 
 // The storage routes answer in the proto3 JSON shape (types.ts): each wraps
 // its object (`{credential}`, `{disk}`, …) and lists (`{disks}`, `{items}`).
@@ -481,53 +484,67 @@ export const diskEvents = (id: string) =>
   get<{ events?: StorageEvent[] }>(`/disks/${enc(id)}/events`).then((r) => r?.events ?? []);
 
 // ---- projects and role links ------------------------------------------------
+// The access routes answer in the proto3 JSON shape (types.ts): each wraps
+// its object (`{project}`, `{binding}`, …) and lists (`{projects}`, …).
 
-export const listProjects = () => get<ProjectView[]>("/projects");
-export const getProject = (id: string) => get<ProjectView>(`/projects/${enc(id)}`);
-export const createProject = (req: { name: string; description?: string; quotas?: Partial<Quotas>; owners?: string[] }) =>
-  post<Project>("/projects", req);
+export const listProjects = () => get<{ projects?: ProjectView[] }>("/projects").then((r) => r?.projects ?? []);
+export const getProject = (id: string) => get<{ project?: ProjectView }>(`/projects/${enc(id)}`).then((r) => r?.project as ProjectView);
+export const createProject = (req: { name: string; description?: string; quotas?: Quotas; owners?: string[]; tenant?: string }) =>
+  post<{ project?: Project }>("/projects", req).then((r) => r?.project as Project);
+/** Changes the fields present; `quotas` replaces the limits (an absent one is unlimited). */
 export const updateProject = (id: string, req: { description?: string; quotas?: Quotas }) =>
-  patch<Project>(`/projects/${enc(id)}`, req);
+  patch<{ project?: Project }>(`/projects/${enc(id)}`, req).then((r) => r?.project as Project);
 export const deleteProject = (id: string) => del(`/projects/${enc(id)}`);
 
-export const listBindings = (project: string) => get<Binding[]>(`/projects/${enc(project)}/bindings`);
+export const listBindings = (project: string) =>
+  get<{ bindings?: Binding[] }>(`/projects/${enc(project)}/bindings`).then((r) => r?.bindings ?? []);
 export const addBinding = (project: string, role: string, principal: EntityRef) =>
-  post<Binding>(`/projects/${enc(project)}/bindings`, { role, principal });
+  post<{ binding?: Binding }>(`/projects/${enc(project)}/bindings`, { role, principal }).then((r) => r?.binding as Binding);
 export const removeBinding = (project: string, link: string) => del(`/projects/${enc(project)}/bindings/${enc(link)}`);
 
-export const listSystemBindings = () => get<Binding[]>("/system/bindings");
+export const listSystemBindings = () => get<{ bindings?: Binding[] }>("/system/bindings").then((r) => r?.bindings ?? []);
 export const addSystemBinding = (role: string, principal: EntityRef) =>
-  post<Binding>("/system/bindings", { role, principal });
+  post<{ binding?: Binding }>("/system/bindings", { role, principal }).then((r) => r?.binding as Binding);
 export const removeSystemBinding = (link: string) => del(`/system/bindings/${enc(link)}`);
 
 // ---- users, teams and tokens --------------------------------------------------
 
-export const listUsers = () => get<UserView[]>("/users");
+export const listUsers = () => get<{ users?: UserView[] }>("/users").then((r) => r?.users ?? []);
 export const updateUser = (id: string, req: { display_name?: string; disabled?: boolean; default_project?: string }) =>
-  patch<User>(`/users/${enc(id)}`, req);
+  patch<{ user?: User }>(`/users/${enc(id)}`, req).then((r) => r?.user as User);
 
-export const listTeams = () => get<Team[]>("/teams");
-export const createTeam = (name: string) => post<Team>("/teams", { name });
+export const listTeams = () => get<{ teams?: Team[] }>("/teams").then((r) => r?.teams ?? []);
+export const createTeam = (name: string) => post<{ team?: Team }>("/teams", { name }).then((r) => r?.team as Team);
 export const deleteTeam = (id: string) => del(`/teams/${enc(id)}`);
-export const addTeamMember = (team: string, user: string) => put<Team>(`/teams/${enc(team)}/members/${enc(user)}`);
-export const removeTeamMember = (team: string, user: string) => del<Team>(`/teams/${enc(team)}/members/${enc(user)}`);
+export const addTeamMember = (team: string, user: string) =>
+  put<{ team?: Team }>(`/teams/${enc(team)}/members/${enc(user)}`).then((r) => r?.team as Team);
+export const removeTeamMember = (team: string, user: string) =>
+  del<{ team?: Team }>(`/teams/${enc(team)}/members/${enc(user)}`).then((r) => r?.team as Team);
 
-export const listTokens = () => get<ApiToken[]>("/tokens");
+export const listTokens = () => get<{ tokens?: ApiToken[] }>("/tokens").then((r) => r?.tokens ?? []);
 export const createToken = (req: CreateTokenRequest) => post<CreatedToken>("/tokens", req);
 export const revokeToken = (id: string) => del(`/tokens/${enc(id)}`);
 
 // ---- policies and audit -------------------------------------------------------
 
-export const listPolicies = () => get<{ policies: PolicyInfo[]; site: SitePolicy[] }>("/authz/policies");
-export const policyVersions = (id: string) => get<SitePolicyVersion[]>(`/authz/policies/${enc(id)}/versions`);
+export const listPolicies = () =>
+  get<{ policies?: PolicyInfo[]; site?: SitePolicy[] }>("/authz/policies").then((r) => ({
+    policies: r?.policies ?? [],
+    site: r?.site ?? [],
+  }));
+export const policyVersions = (id: string) =>
+  get<{ versions?: SitePolicyVersion[] }>(`/authz/policies/${enc(id)}/versions`).then((r) => r?.versions ?? []);
 export const validatePolicy = (id: string, text: string) =>
-  post<{ valid: boolean; errors?: string[] }>("/authz/validate", { id, text });
+  post<{ valid?: boolean; errors?: string[] }>("/authz/validate", { id, text }).then((r) => ({ valid: !!r?.valid, errors: r?.errors }));
 export const simulatePolicy = (changes: PolicyChange[], requests: SimulationRequest[]) =>
-  post<{ results: SimulationResult[] }>("/authz/simulate", { changes, requests });
+  post<{ results?: SimulationResult[] }>("/authz/simulate", { changes, requests }).then((r) => ({ results: r?.results ?? [] }));
+/** Save a site policy; `version` is the one it replaces (0 for a new one).
+ * Answers the saved policy, or nothing when the policy was removed. */
 export const putPolicy = (id: string, req: { text: string; description: string; enabled: boolean; version: number }) =>
-  put<SitePolicy | null>(`/authz/policies/${enc(id)}`, req);
+  put<{ policy?: SitePolicy }>(`/authz/policies/${enc(id)}`, req).then((r) => r?.policy ?? null);
 export const deletePolicy = (id: string, version: number) => del(`/authz/policies/${enc(id)}?version=${version}`);
 
+/** `since` is Unix milliseconds. */
 export function readAudit(q: { project?: string; user?: string; since?: number; limit?: number }): Promise<AuditEntry[]> {
   const p = new URLSearchParams();
   if (q.project) p.set("project", q.project);
@@ -535,7 +552,7 @@ export function readAudit(q: { project?: string; user?: string; since?: number; 
   if (q.since) p.set("since", String(q.since));
   if (q.limit) p.set("limit", String(q.limit));
   const s = p.toString();
-  return get<AuditEntry[]>(`/audit${s ? `?${s}` : ""}`);
+  return get<{ entries?: AuditEntry[] }>(`/audit${s ? `?${s}` : ""}`).then((r) => r?.entries ?? []);
 }
 
 // ---- usage (spec/metering.md §9) ---------------------------------------------

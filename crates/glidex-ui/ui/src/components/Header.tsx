@@ -35,7 +35,7 @@ export default function Header() {
     };
   }, [directoryReader, me.token]);
 
-  const ownsAProject = me.project_roles.some((r) => r.role === "role.owner");
+  const ownsAProject = (me.project_roles ?? []).some((r) => r.role === "role.owner");
   const nav = [
     { to: "/", label: "VMs", show: true },
     { to: "/images", label: "Images", show: true },
@@ -48,13 +48,13 @@ export default function Header() {
     { to: "/connectors", label: "Connectors", show: host.listConnectors },
     { to: "/tokens", label: "Tokens", show: !me.token },
     { to: "/policies", label: "Policies", show: host.readPolicy },
-    { to: "/usage", label: "Usage", show: host.readUsage || me.project_roles.length > 0 },
+    { to: "/usage", label: "Usage", show: host.readUsage || (me.project_roles ?? []).length > 0 },
     { to: "/audit", label: "Audit", show: host.readAudit || ownsAProject },
     { to: "/cluster", label: "Cluster", show: host.readCluster },
     { to: "/admissions", label: "Admissions", show: host.listAdmissions },
   ].filter((n) => n.show);
 
-  const who = me.user?.display_name ?? me.token?.name ?? "unknown";
+  const who = me.user?.display_name ?? me.token?.name ?? (me.display_name || "unknown");
 
   return (
     <header className="bg-white shadow-sm border-b border-gray-200">
@@ -100,7 +100,7 @@ export default function Header() {
                 ))}
               </select>
             </label>
-            <span className="text-sm text-gray-700" title={me.user?.id ?? me.token?.id}>
+            <span className="text-sm text-gray-700" title={me.user_id ?? me.token_id ?? me.user?.id ?? me.token?.id}>
               {who}
               {me.break_glass && <span className="ml-1 text-xs text-amber-600">(admin)</span>}
             </span>

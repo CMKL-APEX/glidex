@@ -31,6 +31,47 @@ unknown enum value, a wrong type) is `422 invalid`, as before; so is a
 no required fields, so the REST twin checks them). The families not
 ported yet keep their shapes.
 
+The usage family (`/usage…`, the `/…/bandwidth`, `/…/io` and
+`/…/compute` series, and `/…/stats`) is served in the proto shape too:
+the `glidex.usage.v1` messages as JSON (`{from, to, granularity, timezone,
+group_by, rows, complete_through, metering_started_at}` and so on), with
+`group_by` and `granularity` by enum name (`GROUP_KEY_VM`,
+`GRANULARITY_DAY`), a meter's `raw` value as a string, and fields that
+are unknown, empty or zero left out (no `null`s). The query parameters are
+unchanged (and also take the enum names). `format=csv` still answers the
+same CSV ([metering.md](metering.md) §9.5).
+
+The access family (projects and their bindings, users, teams, tokens,
+system bindings, site policies, audit, `/authz/check` and
+`/authz/allowed`, and `GET /auth/whoami`, `GET`/`PATCH /users/me`,
+`GET /users/me/ssh-keys`) is served in the proto shape too: the
+`glidex.access.v1` messages, wrapped (`{projects}`, `{project}`,
+`{bindings}`, `{binding}`, `{users}`, `{user}`, `{teams}`, `{team}`,
+`{tokens}`, `{token, record}`, `{versions}`, `{entries}`). What changed:
+- `GET /auth/whoami`, `GET /users/me` and a successful PAM `POST
+  /auth/login` answer `WhoAmIResponse`: `user_id`, `display_name`,
+  `method`, `token_id`, `teams`, `break_glass`, `host_roles`,
+  `project_roles`, `default_project`, `mfa`, `directory_id`, and `user`
+  (the access `User`), `token` (`{id, name, device, client}`) and, for a
+  session, `csrf`.
+- A binding's `template` is `role`; it carries `resource: {type, id}`.
+- A token's `kind` is `TOKEN_KIND_PERSONAL` or
+  `TOKEN_KIND_SERVICE_ACCOUNT` (`"service_account"` is still read), with
+  `owner` and `project` beside it; its times are RFC 3339.
+- Quotas: an absent limit is unlimited (no `null`); a project's
+  `networks`, `routers` and `external_ips`, when left out, take their
+  defaults ([security.md](security.md) §6.3). `usage` (on list and get)
+  leaves out zero counts.
+- `PATCH /projects/{id}`, `/users/{id}` and `/teams/{id}` change the
+  fields present, or those in `update_mask` (`"description,quotas"`).
+- `GET /authz/policies/{id}` answers `{source, site?|loaded?}`; a policy
+  `version` is a string. `POST /authz/allowed` answers `{allowed:
+  [{actions}], reauth: [{actions}]}`. Audit `time` is RFC 3339 (the
+  `since` parameter is still unix ms).
+
+In every ported family, a body field the message doesn't have is
+`422 invalid` ("unknown field `quotas.vm`").
+
 VMs, disks and guest credentials belong to a project: responses carry
 `project`, create bodies accept `project` (id or name; default: the
 caller's default project), and lists and `/credentials/{username}`
@@ -99,11 +140,11 @@ reported as `404`.
 | `GET` | `/watch[?kinds=…][&project=…]` | `watch` | Live stream of VM, disk, image and network changes (server-sent events; below) |
 | `POST` | `/vms/{id}/disks` | `attach_disk` | Attach a data disk; on a running VM it takes effect at the next start (`restart_required`) |
 | `DELETE` | `/vms/{id}/disks/{disk}` | `detach_disk` | Detach a data disk; on a running VM at the next start, and the disk stays claimed until then |
-| `GET` | `/usage[?project=&from=&to=&granularity=&group_by=&meters=&tz=&format=csv]` | `usage::usage` | Usage records ([metering.md §9.1](metering.md#91-get-usage)): hour/day/month buckets, grouped by project, VM, disk, NIC or network; host readers see every project, others their own (`404` for one they can't read) |
+| `GET` | `/usage[?project=&from=&to=&month=&granularity=&group_by=&meters=&tz=&format=csv]` | `usage::usage` | `GetUsageResponse`: usage records ([metering.md §9.1](metering.md#91-get-usage)): hour/day/month buckets, grouped by project, VM, disk, NIC or network; host readers see every project, others their own (`404` for one they can't read) |
 | `GET` | `/projects/{id}/usage`, `/vms/{id}/usage[?include=disks]`, `/disks/{id}/usage` | `usage::*_usage` | The same, for one project, VM (and its NICs) or disk |
 | `GET` | `/usage/bandwidth`, `/usage/disk-io`, `/usage/compute` `[?project=&month=YYYY-MM&group_by=&tz=&format=csv]` | `rates::bandwidth` / `disk_io` / `compute` | Per billing month: average, 30-second peak and 5-minute 95th percentile (billable: network max(in, out), disk read+write; CPU and memory: cores, MiB and utilization) ([metering.md §9.3](metering.md#93-bandwidth)) |
-| `GET` | `/vms/{id}/bandwidth`, `/networks/{name}/bandwidth`, `/vms/{id}/io`, `/vms/{id}/compute`, `/disks/{id}/io` `[?from=&to=&p95=true]` | `rates::*` | 5-minute series for graphs (default: the last 24 h; at most 31 days) |
-| `GET` | `/vms/{id}/stats`, `/networks/{name}/stats` | `rates::*_stats` | Current rates from the last two samples (CPU %, memory, Mbps, pps, IOPS, MB/s); not stored |
+| `GET` | `/vms/{id}/bandwidth`, `/networks/{name}/bandwidth`, `/vms/{id}/io`, `/vms/{id}/compute`, `/disks/{id}/io` `[?from=&to=&p95=true]` | `rates::*` | 5-minute series for graphs, `{from, to, points, p95?}` (`/vms/{id}/io` adds `disks`; default: the last 24 h; at most 31 days) |
+| `GET` | `/vms/{id}/stats`, `/networks/{name}/stats` | `rates::*_stats` | Current rates from the last two samples (CPU %, memory, Mbps, pps, IOPS, MB/s), `{sampled_at?, resolution_secs, vm?, nics?, disks?}` / `{sampled_at?, resolution_secs, values?}`; not stored |
 
 Image and disk payloads, semantics and invariants are in
 [images.md](images.md#8-rest-api).

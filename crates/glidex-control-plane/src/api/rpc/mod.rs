@@ -8,11 +8,13 @@
 //! operation, applies the per-listener protocol and credential rules,
 //! builds the [`Call`], runs the service function and audits the result.
 
+mod access;
 mod directory;
 mod login;
 mod storage;
 mod system;
 mod tenancy;
+mod usage;
 mod vm;
 
 use super::{AppState, Caller, Listener, PUBLIC, RequestId, write_audit};
@@ -55,11 +57,13 @@ pub(crate) fn is_local(path: &str) -> bool {
 pub(crate) fn routes(app: &AppState) -> Router<AppState> {
     let connect = connectrpc::Router::new();
     let connect = system::register(app, connect);
+    let connect = access::register(app, connect);
     let connect = tenancy::register(app, connect);
     let connect = directory::register(app, connect);
     let connect = login::register(app, connect);
     let connect = storage::register(app, connect);
     let connect = vm::register(app, connect);
+    let connect = usage::register(app, connect);
     let (connect, _health) = connectrpc_health::install_static(connect, glidex_api::services());
     let svc = ConnectRpcService::new(connect)
         .with_limits(

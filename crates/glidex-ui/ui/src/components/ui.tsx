@@ -140,7 +140,7 @@ export function BindingTable({
               {principalName(b.principal, dir, b.principal_name)}
             </td>
             <td className="py-2">
-              <Badge kind="role">{roleLabel(b.template)}</Badge>
+              <Badge kind="role">{roleLabel(b.role)}</Badge>
             </td>
             <td className="py-2 font-mono text-xs text-gray-500">{b.id}</td>
             {onRemove && (

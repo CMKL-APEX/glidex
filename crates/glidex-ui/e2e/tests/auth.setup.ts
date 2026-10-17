@@ -17,19 +17,19 @@ setup("open a browser session", async () => {
   expect(me.user?.id, `whoami over the socket: ${JSON.stringify(me)}`).toBeTruthy();
   expect(me.break_glass, "the test user is the scratch control plane's admin").toBe(true);
 
-  const bindings: any[] = await api("/system/bindings");
+  const bindings: any[] = (await api("/system/bindings")).bindings ?? [];
   const has = bindings.some(
-    (b) => b.template === "role.system-admin" && b.principal.type === "User" && b.principal.id === me.user.id,
+    (b) => b.role === "role.system-admin" && b.principal.type === "User" && b.principal.id === me.user.id,
   );
   if (!has) {
-    const b = await api("/system/bindings", {
+    const { binding: b } = await api("/system/bindings", {
       method: "POST",
       body: { role: "role.system-admin", principal: { type: "User", id: me.user.id } },
     });
-    expect(b.id, JSON.stringify(b)).toBeTruthy();
+    expect(b?.id, JSON.stringify(b)).toBeTruthy();
   }
   const updated = await api("/users/me", { method: "PATCH", body: { default_project: "default" } });
-  expect(updated.default_project, JSON.stringify(updated)).toBeTruthy();
+  expect(updated.user?.default_project, JSON.stringify(updated)).toBeTruthy();
 
   const s = await api("/auth/session", { method: "POST", body: {} });
   expect(s.cookie_name, JSON.stringify(s)).toBe("gx_session");

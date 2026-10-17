@@ -318,7 +318,7 @@ async fn tenants_are_closed_to_each_other_and_to_non_owners() {
         )
         .await;
     assert_eq!(s, StatusCode::CREATED, "{v}");
-    assert_eq!(v["tenant_id"], acme.as_str());
+    assert_eq!(v["project"]["tenant_id"], acme.as_str());
     let (s, _) = h
         .rest(
             "POST",

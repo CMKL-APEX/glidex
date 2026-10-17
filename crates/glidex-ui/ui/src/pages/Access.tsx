@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import * as api from "../api";
 import type { Binding, Team } from "../types";
-import { HOST_ROLES, formatTime } from "../types";
+import { HOST_ROLES, formatTimestamp } from "../types";
 import { Loading } from "../components/Loading";
 import AddBindingForm from "../components/AddBindingForm";
 import {
@@ -41,7 +41,8 @@ function TeamCard({
       onError(errorMessage(e));
     }
   };
-  const members = team.members.map((m) => m.user_id);
+  const teamMembers = team.members ?? [];
+  const members = teamMembers.map((m) => m.user_id);
   return (
     <div className="py-3 border-b border-gray-100 last:border-0">
       <div className="flex items-center justify-between">
@@ -56,8 +57,8 @@ function TeamCard({
         )}
       </div>
       <div className="mt-2 flex flex-wrap gap-2">
-        {team.members.length === 0 && <span className="text-sm text-gray-500">No members.</span>}
-        {team.members.map((m) => (
+        {teamMembers.length === 0 && <span className="text-sm text-gray-500">No members.</span>}
+        {teamMembers.map((m) => (
           <span key={`${m.user_id}-${m.source}`} className="inline-flex items-center gap-1 px-2 py-0.5 bg-gray-100 rounded-full text-sm">
             {name(m.user_id)}
             {m.source !== "manual" && <span className="text-xs text-gray-500">({m.source})</span>}
@@ -171,7 +172,7 @@ export default function Access() {
                       <code className="text-xs text-gray-400 font-mono">{u.id}</code>
                     </td>
                     <td className="py-2 text-xs font-mono text-gray-600">
-                      {u.identities.map((i) => (
+                      {(u.identities ?? []).map((i) => (
                         <div key={`${i.provider}:${i.subject}`}>
                           {i.provider}:{i.subject}
                         </div>
@@ -201,7 +202,7 @@ export default function Access() {
                         projectName(u.default_project)
                       )}
                     </td>
-                    <td className="py-2 text-gray-500">{formatTime(u.created_at)}</td>
+                    <td className="py-2 text-gray-500">{formatTimestamp(u.created_at)}</td>
                     <td className="py-2">
                       {u.disabled ? <Badge kind="denied">disabled</Badge> : <Badge kind="ok">active</Badge>}
                       {host.manageUsers && (
@@ -279,7 +280,7 @@ export default function Access() {
               onRemove={
                 host.manageSystemBindings
                   ? (b) =>
-                      confirm(`Remove ${b.template} from this principal?`) &&
+                      confirm(`Remove ${b.role} from this principal?`) &&
                       run(() => api.removeSystemBinding(b.id), refreshSystem)
                   : undefined
               }

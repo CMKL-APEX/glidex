@@ -10,13 +10,14 @@ import { useSession } from "../session";
 import { useDirectory } from "../hooks";
 
 /** `used / limit` (or `used` when unlimited). */
-export function UsageCell({ used, limit }: { used: number; limit: number | null }) {
-  const over = limit !== null && used > limit;
-  const full = limit !== null && used >= limit;
+export function UsageCell({ used = 0, limit }: { used?: number; limit?: number | null }) {
+  const limited = limit !== undefined && limit !== null;
+  const over = limited && used > limit;
+  const full = limited && used >= limit;
   return (
     <span className={over ? "text-red-600 font-medium" : full ? "text-amber-700" : "text-gray-700"}>
       {used}
-      <span className="text-gray-400"> / {limit === null ? "∞" : limit}</span>
+      <span className="text-gray-400"> / {limited ? limit : "∞"}</span>
     </span>
   );
 }
@@ -158,7 +159,7 @@ export default function Projects() {
                   )}
                   {QUOTA_KEYS.map((k) => (
                     <td key={k} className="px-4 py-3">
-                      <UsageCell used={p.usage[k]} limit={p.quotas[k]} />
+                      <UsageCell used={p.usage?.[k]} limit={p.quotas?.[k]} />
                     </td>
                   ))}
                 </tr>

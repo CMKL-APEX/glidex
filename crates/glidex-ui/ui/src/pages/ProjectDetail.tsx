@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import * as api from "../api";
-import type { Binding, Network, NetworkShare, ProjectView, Quotas, Router } from "../types";
-import { PROJECT_ROLES, QUOTA_KEYS, QUOTA_LABELS, formatTime, notReady } from "../types";
+import type { Binding, Network, NetworkShare, ProjectView, QuotaKey, Quotas, Router } from "../types";
+import { PROJECT_ROLES, QUOTA_KEYS, QUOTA_LABELS, formatTime, formatTimestamp, notReady } from "../types";
 import { useLiveRefresh } from "../live";
 import { Loading } from "../components/Loading";
 import AddBindingForm from "../components/AddBindingForm";
@@ -35,8 +35,8 @@ const CAPS = [
 type Cap = (typeof CAPS)[number];
 
 function QuotaEditor({ quotas, onSave, onCancel }: { quotas: Quotas; onSave: (q: Quotas) => Promise<void>; onCancel: () => void }) {
-  const [values, setValues] = useState<Record<keyof Quotas, string>>(
-    () => Object.fromEntries(QUOTA_KEYS.map((k) => [k, quotas[k] === null ? "" : String(quotas[k])])) as Record<keyof Quotas, string>,
+  const [values, setValues] = useState<Record<QuotaKey, string>>(
+    () => Object.fromEntries(QUOTA_KEYS.map((k) => [k, quotas[k] === undefined ? "" : String(quotas[k])])) as Record<QuotaKey, string>,
   );
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -46,9 +46,10 @@ function QuotaEditor({ quotas, onSave, onCancel }: { quotas: Quotas; onSave: (q:
     setBusy(true);
     setError(null);
     try {
-      const q = Object.fromEntries(
-        QUOTA_KEYS.map((k) => [k, values[k].trim() === "" ? null : Number(values[k])]),
-      ) as unknown as Quotas;
+      // An absent limit is unlimited: send only the ones set.
+      const q: Quotas = Object.fromEntries(
+        QUOTA_KEYS.filter((k) => values[k].trim() !== "").map((k) => [k, Number(values[k])]),
+      );
       await onSave(q);
     } catch (err) {
       setError(errorMessage(err));
@@ -303,7 +304,7 @@ export default function ProjectDetail() {
           {project.description && <p className="text-gray-500 mt-1">{project.description}</p>}
           <p className="mt-1 text-xs text-gray-500">
             Project id <code className="font-mono bg-gray-100 px-1 rounded select-all">{project.id}</code> · created{" "}
-            {formatTime(project.created_at)}
+            {formatTimestamp(project.created_at)}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -346,7 +347,7 @@ export default function ProjectDetail() {
       >
         {editingQuotas ? (
           <QuotaEditor
-            quotas={project.quotas}
+            quotas={project.quotas ?? {}}
             onCancel={() => setEditingQuotas(false)}
             onSave={async (quotas) => {
               await api.updateProject(project.id, { quotas });
@@ -360,7 +361,7 @@ export default function ProjectDetail() {
               <div key={k}>
                 <div className="text-xs text-gray-500">{QUOTA_LABELS[k]}</div>
                 <div className="text-lg">
-                  <UsageCell used={project.usage[k]} limit={project.quotas[k]} />
+                  <UsageCell used={project.usage?.[k]} limit={project.quotas?.[k]} />
                 </div>
               </div>
             ))}

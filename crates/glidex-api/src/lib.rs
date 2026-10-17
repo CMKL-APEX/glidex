@@ -53,6 +53,50 @@ pub fn services() -> Vec<&'static str> {
     out
 }
 
+/// A field of a message's JSON form.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Field {
+    pub name: &'static str,
+    /// The glidex message its values are, if any (a list's items, a map's values).
+    pub message: Option<&'static str>,
+    pub map: bool,
+}
+
+include!(concat!(env!("OUT_DIR"), "/fields.rs"));
+
+/// The first field of `v` that the message `full_name` doesn't have, as
+/// a path (`quotas.vm`). Only glidex messages are checked; well-known
+/// types (Struct, Timestamp, …) are taken as they come.
+pub fn unknown_field(full_name: &str, v: &serde_json::Value) -> Option<String> {
+    let i = MESSAGE_FIELDS
+        .binary_search_by(|(n, _)| (*n).cmp(full_name))
+        .ok()?;
+    let fields = MESSAGE_FIELDS[i].1;
+    for (k, val) in v.as_object()? {
+        let Some(f) = fields.iter().find(|f| f.name == k) else {
+            return Some(k.clone());
+        };
+        let Some(nested) = f.message else { continue };
+        let inner = |path: String, x: &serde_json::Value| {
+            unknown_field(nested, x).map(|u| format!("{path}.{u}"))
+        };
+        let found = match val {
+            serde_json::Value::Object(o) if f.map => {
+                o.iter().find_map(|(mk, x)| inner(format!("{k}.{mk}"), x))
+            }
+            serde_json::Value::Array(a) => a
+                .iter()
+                .enumerate()
+                .find_map(|(n, x)| inner(format!("{k}[{n}]"), x)),
+            x => inner(k.clone(), x),
+        };
+        if found.is_some() {
+            return found;
+        }
+    }
+    None
+}
+
 /// Domain of every `google.rpc.ErrorInfo` glidex sends (spec/grpc.md §7).
 pub const ERROR_DOMAIN: &str = "glidex";
 
@@ -67,18 +111,28 @@ mod tests {
         assert_eq!(o.kind, Kind::Read);
         assert_eq!(o.rest, Some(("GET", "/auth/server-info")));
         let w = operation("/glidex.system.v1.SystemService/WhoAmI").unwrap();
-        assert_eq!(w.rest, None);
+        assert_eq!(w.rest, Some(("GET", "/auth/whoami")));
         assert_eq!(
             services(),
             vec![
+                "glidex.tenancy.v1.TenantService",
+                "glidex.tenancy.v1.AdmissionService",
+                "glidex.access.v1.ProjectService",
+                "glidex.access.v1.UserService",
+                "glidex.access.v1.TeamService",
+                "glidex.access.v1.TokenService",
+                "glidex.access.v1.SystemBindingService",
+                "glidex.access.v1.PolicyService",
+                "glidex.access.v1.AuditService",
+                "glidex.access.v1.AuthzService",
                 "glidex.auth.v1.LoginService",
                 "glidex.directory.v1.ConnectorService",
                 "glidex.storage.v1.CredentialService",
                 "glidex.storage.v1.ImageService",
                 "glidex.storage.v1.DiskService",
                 "glidex.system.v1.SystemService",
-                "glidex.tenancy.v1.TenantService",
-                "glidex.tenancy.v1.AdmissionService",
+                "glidex.usage.v1.UsageService",
+                "glidex.usage.v1.MetricsService",
                 "glidex.vm.v1.VmService"
             ]
         );

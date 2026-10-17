@@ -24,7 +24,9 @@ test("the Usage page shows each tab and exports CSV", async ({ page }) => {
 });
 
 test("the usage API answers for the e2e user", async () => {
-  const u = await api<{ rows: unknown[]; timezone: string }>("/usage?granularity=month");
-  expect(Array.isArray(u.rows)).toBe(true);
+  // The proto JSON shape (spec/grpc.md §9.1): no rows yet means no `rows`.
+  const u = await api<{ rows?: unknown[]; timezone: string; granularity: string }>("/usage?granularity=month");
+  expect(u.rows === undefined || Array.isArray(u.rows)).toBe(true);
   expect(u.timezone).toBeTruthy();
+  expect(u.granularity).toBe("GRANULARITY_MONTH");
 });

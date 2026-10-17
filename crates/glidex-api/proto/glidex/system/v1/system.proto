@@ -3,6 +3,7 @@ syntax = "proto3";
 
 package glidex.system.v1;
 
+import "glidex/access/v1/access.proto";
 import "glidex/api/v1/options.proto";
 
 service SystemService {
@@ -16,12 +17,13 @@ service SystemService {
     };
   }
 
-  // Who the caller is. RPC only until the access family is ported
-  // (spec/grpc.md §13: GET /auth/whoami moves onto this message in G2).
+  // Who the caller is, and which roles they hold. Also the answer to a
+  // browser login and `GET /users/me`.
   rpc WhoAmI(WhoAmIRequest) returns (WhoAmIResponse) {
     option (glidex.api.v1.op) = {
       action: "authenticated"
       kind: KIND_READ
+      rest: "GET /auth/whoami"
     };
   }
 }
@@ -63,6 +65,19 @@ message WhoAmIResponse {
   // A multi-factor login (spec/tenancy.md §6).
   optional bool mfa = 10;
   string directory_id = 11 [json_name = "directory_id"];
+  // Absent for a service-account token.
+  glidex.access.v1.User user = 12;
+  // The token the caller presented.
+  TokenSummary token = 13;
+  // A browser session's CSRF value, for `X-Glidex-CSRF` on writes.
+  optional string csrf = 14;
+}
+
+message TokenSummary {
+  string id = 1;
+  string name = 2;
+  optional string device = 3;
+  optional string client = 4;
 }
 
 message ProjectRole {

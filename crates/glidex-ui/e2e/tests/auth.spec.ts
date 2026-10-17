@@ -32,7 +32,7 @@ test.describe("signed in", () => {
 
   test("shows who is signed in and the selected project", async ({ page }) => {
     const me = await api("/auth/whoami");
-    const projects: any[] = await api("/projects");
+    const projects: any[] = (await api("/projects")).projects ?? [];
     const dflt = projects.find((p) => p.name === "default");
     await page.goto("/");
     await expect(page.getByRole("heading", { name: "Virtual Machines" })).toBeVisible();
@@ -66,7 +66,7 @@ test.describe("signed in", () => {
     expect(refused.status).toBe(403);
     expect(refused.body.error).toBe("csrf_failed");
 
-    for (const t of (await api<any[]>("/teams")).filter((t) => t.name.startsWith("e2e-"))) {
+    for (const t of ((await api<{ teams?: any[] }>("/teams")).teams ?? []).filter((t) => t.name.startsWith("e2e-"))) {
       await del(`/teams/${t.id}`);
     }
   });

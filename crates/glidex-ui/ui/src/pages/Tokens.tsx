@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import * as api from "../api";
 import type { ApiToken, CreatedToken, CreateTokenRequest } from "../types";
-import { HOST_ROLES, PROJECT_ROLES, formatTime, roleLabel } from "../types";
+import { HOST_ROLES, PROJECT_ROLES, formatTimestamp, isServiceToken, roleLabel, tsSecs } from "../types";
 import Modal from "../components/Modal";
 import { LoadingCard } from "../components/Loading";
 import {
@@ -45,7 +45,7 @@ function CreateTokenForm({ onCreated, onCancel }: { onCreated: (t: CreatedToken)
     const req: CreateTokenRequest = {
       name,
       expires_in_days: days ? Number(days) : undefined,
-      kind,
+      kind: service ? "TOKEN_KIND_SERVICE_ACCOUNT" : "TOKEN_KIND_PERSONAL",
       project: service ? project ?? undefined : undefined,
       roles: roles.map((r) => ({
         role: r.role,
@@ -189,7 +189,7 @@ function SecretBox({ created, onClose }: { created: CreatedToken; onClose: () =>
       </div>
       <p className="text-xs text-gray-500">
         Send it as <code>Authorization: Bearer …</code>. Expires{" "}
-        {formatTime(created.record.expires_at)}.
+        {formatTimestamp(created.record.expires_at)}.
       </p>
       <div className="flex justify-end">
         <button className={primaryButton} onClick={onClose}>
@@ -210,7 +210,7 @@ export default function Tokens() {
   const refresh = useCallback(() => {
     api
       .listTokens()
-      .then((t) => setTokens(t.sort((a, b) => b.created_at - a.created_at)))
+      .then((t) => setTokens(t.sort((a, b) => tsSecs(b.created_at) - tsSecs(a.created_at))))
       .catch((e) => setError(errorMessage(e)));
   }, []);
 
@@ -263,7 +263,7 @@ export default function Tokens() {
                     <code className="text-xs text-gray-400 font-mono">{t.id}</code>
                   </td>
                   <td className="px-4 py-3">
-                    {t.kind === "service_account" ? (
+                    {isServiceToken(t) ? (
                       <>
                         <Badge kind="role">service account</Badge>{" "}
                         <span className="text-xs text-gray-500">{projectName(t.project)}</span>
@@ -278,26 +278,26 @@ export default function Tokens() {
                     )}
                   </td>
                   <td className="px-4 py-3">
-                    {t.roles.length === 0 ? (
-                      <span className="text-xs text-gray-500">{t.kind === "personal" ? "as owner" : "none"}</span>
+                    {(t.roles ?? []).length === 0 ? (
+                      <span className="text-xs text-gray-500">{isServiceToken(t) ? "none" : "as owner"}</span>
                     ) : (
                       <div className="flex flex-wrap gap-1">
-                        {t.roles.map((r) => (
+                        {(t.roles ?? []).map((r) => (
                           <Badge key={r.id} kind="role">
-                            {roleLabel(r.template)}
-                            {r.resource.type === "Project" ? ` @ ${projectName(r.resource.id)}` : ""}
+                            {roleLabel(r.role)}
+                            {r.resource?.type === "Project" ? ` @ ${projectName(r.resource.id)}` : ""}
                           </Badge>
                         ))}
                       </div>
                     )}
                   </td>
-                  <td className={`px-4 py-3 ${t.expires_at < now ? "text-red-600" : "text-gray-600"}`}>
-                    {formatTime(t.expires_at)}
+                  <td className={`px-4 py-3 ${t.expires_at && tsSecs(t.expires_at) < now ? "text-red-600" : "text-gray-600"}`}>
+                    {formatTimestamp(t.expires_at)}
                   </td>
                   <td className="px-4 py-3 text-gray-600">
                     {t.last_used_at ? (
                       <>
-                        {formatTime(t.last_used_at)}
+                        {formatTimestamp(t.last_used_at)}
                         {t.last_used_from && <div className="text-xs text-gray-400">{t.last_used_from}</div>}
                       </>
                     ) : (
