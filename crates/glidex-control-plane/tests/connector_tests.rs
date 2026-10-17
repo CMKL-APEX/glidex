@@ -1148,8 +1148,8 @@ async fn checks_say_when_a_fresh_login_would_allow() {
     let (_, v) = h
         .rest("POST", "/authz/allowed", Some(allowed.clone()), &s)
         .await;
-    assert_eq!(v["allowed"][0], json!(["listConnectors"]), "{v}");
-    assert_eq!(v["reauth"][0], json!(["createConnector"]), "{v}");
+    assert_eq!(v["allowed"][0]["actions"], json!(["listConnectors"]), "{v}");
+    assert_eq!(v["reauth"][0]["actions"], json!(["createConnector"]), "{v}");
     // A token can't log in again: nothing to offer.
     let (_, v) = h
         .rest("POST", "/authz/check", Some(check), &h.token(&admin))
@@ -1160,7 +1160,7 @@ async fn checks_say_when_a_fresh_login_would_allow() {
     let (_, v) = h
         .rest("POST", "/authz/allowed", Some(allowed), &h.session(&bob))
         .await;
-    assert_eq!(v["reauth"][0], json!([]), "{v}");
+    assert!(v["reauth"][0].get("actions").is_none(), "nothing: {v}");
 }
 
 #[tokio::test]

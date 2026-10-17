@@ -196,10 +196,15 @@ pub fn parse_principal(s: &str) -> Result<serde_json::Value, String> {
     Ok(serde_json::json!({ "type": ty, "id": id }))
 }
 
-/// Entity JSON → `user:<id>` etc. (`host` for the host).
-pub fn format_entity(v: &serde_json::Value) -> String {
-    let ty = v["type"].as_str().unwrap_or("?").to_lowercase();
-    match v["id"].as_str() {
+/// An entity (`EntityRef`'s type and id) → `user:<id>` etc. (`host` for
+/// the host).
+pub fn format_entity(ty: &str, id: Option<&str>) -> String {
+    let ty = if ty.is_empty() {
+        "?".to_string()
+    } else {
+        ty.to_lowercase()
+    };
+    match id {
         Some(id) => format!("{}:{}", ty, id),
         None => ty,
     }
@@ -214,8 +219,8 @@ pub fn role_name(r: &str) -> String {
     }
 }
 
-/// `ROLE[@PROJECT]` → `{"role": …, "project": …}`.
-pub fn parse_role_ref(s: &str) -> Result<serde_json::Value, String> {
+/// `ROLE[@PROJECT]` → the role name and the project.
+pub fn parse_role_ref(s: &str) -> Result<(String, Option<String>), String> {
     let (role, project) = match s.split_once('@') {
         Some((r, p)) if !p.is_empty() => (r, Some(p)),
         Some(_) => return Err(format!("'{}': project missing after @", s)),
@@ -224,11 +229,7 @@ pub fn parse_role_ref(s: &str) -> Result<serde_json::Value, String> {
     if role.is_empty() {
         return Err(format!("'{}': role missing", s));
     }
-    let mut v = serde_json::json!({ "role": role_name(role) });
-    if let Some(p) = project {
-        v["project"] = serde_json::json!(p);
-    }
-    Ok(v)
+    Ok((role_name(role), project.map(str::to_string)))
 }
 
 /// Percent-encode a query or path value.
@@ -249,11 +250,9 @@ pub fn add_query(path: &str, key: &str, value: &str) -> String {
 
 // ---- errors ----------------------------------------------------------------
 
-/// A failed request: transport trouble (`status: None`) or an API error.
+/// A failed request: transport trouble or an API error, as a message.
 #[derive(Debug, Clone)]
 pub struct Failure {
-    pub status: Option<StatusCode>,
-    pub code: Option<String>,
     pub message: String,
 }
 
@@ -265,11 +264,7 @@ impl fmt::Display for Failure {
 
 impl Failure {
     fn transport(message: String) -> Self {
-        Failure {
-            status: None,
-            code: None,
-            message,
-        }
+        Failure { message }
     }
 }
 
@@ -355,11 +350,7 @@ pub fn render_error(status: StatusCode, body: &[u8], tcp: bool) -> Failure {
             ));
         }
     }
-    Failure {
-        status: Some(status),
-        code,
-        message: msg,
-    }
+    Failure { message: msg }
 }
 
 // ---- the client ------------------------------------------------------------
@@ -1217,21 +1208,18 @@ mod tests {
         assert!(parse_principal("abc").is_err());
         assert!(parse_principal("user:").is_err());
         assert!(parse_principal("project:p").is_err());
-        assert_eq!(
-            format_entity(&serde_json::json!({"type": "Team", "id": "x"})),
-            "team:x"
-        );
-        assert_eq!(format_entity(&serde_json::json!({"type": "Host"})), "host");
+        assert_eq!(format_entity("Team", Some("x")), "team:x");
+        assert_eq!(format_entity("Host", None), "host");
 
         assert_eq!(role_name("owner"), "role.owner");
         assert_eq!(role_name("grant.host-paths"), "grant.host-paths");
         assert_eq!(
             parse_role_ref("viewer@lab").unwrap(),
-            serde_json::json!({"role": "role.viewer", "project": "lab"})
+            ("role.viewer".to_string(), Some("lab".to_string()))
         );
         assert_eq!(
             parse_role_ref("role.auditor").unwrap(),
-            serde_json::json!({"role": "role.auditor"})
+            ("role.auditor".to_string(), None)
         );
         assert!(parse_role_ref("viewer@").is_err());
         assert!(parse_role_ref("@lab").is_err());
@@ -1284,7 +1272,6 @@ mod tests {
             e.message,
             "permission denied (forbidden): not allowed: createVm"
         );
-        assert_eq!(e.code.as_deref(), Some("forbidden"));
         let e = render_error(
             StatusCode::NOT_FOUND,
             &body("not_found", "VM not found"),

@@ -1,33 +1,23 @@
-//! Authentication, identity, projects, role links, tokens, site policies
-//! and audit (spec/security.md §5, §6, §7, §10, §13).
+//! Logging in and out, and the REST twins of `glidex.access.v1`
+//! (spec/security.md §5, §6, §7, §10, §13): projects, role links, users,
+//! teams, tokens, site policies, audit and capability checks. Logins set
+//! cookies and stay HTTP-only; the rest is in `service::access`.
 
 use super::{
-    ApiErr, Caller, ClientAddr, Listener, RequestId, add_network, auth_error, credential_entities,
-    disk_entities, err, error_to_response, vm_entities,
+    ApiErr, AppState, Caller, ClientAddr, Listener, Proto, RequestId, auth_error, err, proto_body,
 };
-use crate::auth::store::{Identity, MemberSource, StoreError, Team, TeamMember, TokenKind, User};
-use crate::auth::{self, AuthError, Method, Principal};
-use crate::authz::{self, Ent, EntitySet, SiteSource};
-use crate::tenancy::Quotas;
+use crate::auth::{self, Method, Principal};
+use crate::service::access as acc;
+use crate::service::login::{self as svc, audit_login, oidc_client, oidc_error, oidc_user};
 use axum::{
     Extension, Json,
     extract::{Path, Query, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Redirect, Response},
 };
-use serde::{Deserialize, Serialize};
+use glidex_api::proto::glidex::access::v1 as pb;
+use serde::Deserialize;
 use zeroize::Zeroizing;
-
-use super::AppState;
-use crate::service::login::{self as svc, audit_login, oidc_client, oidc_error, oidc_user};
-
-fn store_err(e: StoreError) -> ApiErr {
-    auth_error(AuthError::Store(e))
-}
-
-fn manager_err(e: crate::state::VmManagerError) -> ApiErr {
-    error_to_response(e)
-}
 
 // ---- login -------------------------------------------------------------
 
@@ -97,26 +87,11 @@ fn session_cookie(value: &str, secure: bool, max_age: Option<u64>) -> HeaderValu
     HeaderValue::from_str(&c).expect("cookie is ASCII")
 }
 
-/// Who the caller is, for `/auth/whoami` and login responses.
+/// Who the caller is, for `/auth/whoami` and login responses: the
+/// `SystemService.WhoAmI` message (spec/grpc.md §9.1).
 fn whoami_json(app: &AppState, p: &Principal) -> Result<serde_json::Value, ApiErr> {
-    let (host_roles, project_roles) = crate::service::system::roles_of(app, p)?;
-    let project_roles: Vec<serde_json::Value> = project_roles
-        .iter()
-        .map(|r| serde_json::json!({ "project": r.project, "project_name": r.project_name, "role": r.role, "via": r.via }))
-        .collect();
-    Ok(serde_json::json!({
-        "user": p.user,
-        "token": p.token.as_ref().map(|t| serde_json::json!({ "id": t.id, "name": t.name, "device": t.device, "client": t.client })),
-        "method": p.method,
-        "teams": p.teams,
-        "break_glass": p.is_break_glass(),
-        "csrf": p.csrf,
-        "host_roles": host_roles,
-        "project_roles": project_roles,
-        "default_project": p.default_project(),
-        "mfa": p.mfa,
-        "directory_id": p.directory_id(),
-    }))
+    let w = crate::service::system::whoami_of(app, p)?;
+    Ok(serde_json::to_value(w).unwrap_or_default())
 }
 
 pub async fn login(
@@ -182,7 +157,7 @@ pub async fn login(
             )
         })?;
     audit_login(&app, Some(&p), &rid.0, "pam", "ok", &body.username);
-    let mut resp = Json(whoami_json(&app, &p)?).into_response();
+    let mut resp = ([(super::API_SHAPE, "proto")], Json(whoami_json(&app, &p)?)).into_response();
     resp.headers_mut().insert(
         header::SET_COOKIE,
         session_cookie(&cookie, secure_transport(&app, &headers, listener), None),
@@ -291,84 +266,24 @@ pub async fn logout(
 }
 
 pub async fn whoami(c: Caller) -> Result<impl IntoResponse, ApiErr> {
-    Ok(Json(whoami_json(&c.app, &c.p)?))
+    Ok(Proto(StatusCode::OK, crate::service::system::whoami(&c)?))
 }
 
-#[derive(Deserialize)]
-pub struct UpdateMe {
-    #[serde(default)]
-    default_project: Option<String>,
-}
-
-pub async fn update_me(c: Caller, Json(body): Json<UpdateMe>) -> Result<impl IntoResponse, ApiErr> {
-    let Some(mut user) = c.p.user.clone() else {
-        return Err(err(
-            StatusCode::BAD_REQUEST,
-            "invalid",
-            "service accounts have no profile",
-        ));
-    };
-    if c.p.method == Method::Disabled {
-        return Err(err(
-            StatusCode::BAD_REQUEST,
-            "invalid",
-            "authentication is disabled",
-        ));
-    }
-    user.default_project = match body.default_project.as_deref() {
-        None | Some("") => None,
-        Some(k) => {
-            let id = c.target_project(Some(k))?;
-            c.require_action(
-                "readProject",
-                Ent::Project(id.clone()),
-                super::project_entities(&id),
-                &[],
-            )?;
-            Some(id)
-        }
-    };
-    c.auth().store.put_user(&user).map_err(store_err)?;
-    Ok(Json(user))
+pub async fn update_me(
+    c: Caller,
+    Json(v): Json<serde_json::Value>,
+) -> Result<impl IntoResponse, ApiErr> {
+    let req: pb::UpdateMeRequest = proto_body(v, &[], &[])?;
+    Ok(Proto(StatusCode::OK, acc::update_me(&c, req)?))
 }
 
 /// The caller's own SSH public keys from their home directory, read by
-/// glidex-authd (the control plane can't read home directories). Only
-/// for users with a local (PAM or Unix) account; for prefilling guest
-/// login credentials.
+/// glidex-authd: `{available, reason?, username?, keys}`.
 pub async fn my_ssh_keys(c: Caller) -> Result<impl IntoResponse, ApiErr> {
-    let unavailable = |reason: &str| {
-        Json(serde_json::json!({ "available": false, "reason": reason, "keys": [] }))
-    };
-    let Some(user) = c.p.user.clone() else {
-        return Ok(unavailable("service accounts have no home directory"));
-    };
-    let identities = c.auth().store.identities_of(&user.id).map_err(store_err)?;
-    let Some(login) = ["pam", "unix"].iter().find_map(|p| {
-        identities
-            .iter()
-            .find(|i| i.provider == *p)
-            .map(|i| i.subject.clone())
-    }) else {
-        return Ok(unavailable(
-            "your account has no local login on this host; paste your public key",
-        ));
-    };
-    let client = glidex_authd::client::AuthdClient::new(&c.auth().config.auth.pam.authd_socket);
-    let who = login.clone();
-    let result = tokio::task::spawn_blocking(move || client.public_keys(&who))
-        .await
-        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()))?;
-    Ok(match result {
-        Ok(keys) => Json(serde_json::json!({ "available": true, "username": login, "keys": keys })),
-        Err(glidex_authd::client::AuthdError::Denied) => {
-            unavailable("your local account can't log in to glidex")
-        }
-        Err(e) => {
-            tracing::warn!("reading public keys for {}: {}", login, e);
-            unavailable("your public keys can't be read right now (glidex-authd)")
-        }
-    })
+    Ok(Proto(
+        StatusCode::OK,
+        acc::my_ssh_keys(&c, Default::default()).await?,
+    ))
 }
 
 // ---- OIDC ----------------------------------------------------------------
@@ -629,1253 +544,346 @@ pub async fn connector_device_poll(
     poll_device(app, Some(&id), rid, body).await
 }
 
+// ---- REST twins of glidex.access.v1 (spec/grpc.md §9.1) -----------------
+//
+// The proto messages as JSON, path and query parameters merged in, on the
+// same `service::access` functions as the RPCs. Status codes are as before
+// (`201` for a create, `204` for a delete).
+
+/// Without an `update_mask`, the fields present (of `fields`) are the
+/// ones changed.
+fn masked<T: serde::de::DeserializeOwned + buffa::MessageName>(
+    v: serde_json::Value,
+    fields: &[&str],
+) -> Result<(T, Vec<String>), ApiErr> {
+    let explicit: Option<Vec<String>> = v.get("update_mask").and_then(|m| m.as_str()).map(|s| {
+        s.split(',')
+            .filter(|p| !p.is_empty())
+            .map(str::to_string)
+            .collect()
+    });
+    let present: Vec<String> = v
+        .as_object()
+        .map(|o| {
+            o.keys()
+                .filter(|k| fields.contains(&k.as_str()))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    let req = proto_body(v, &[], &[])?;
+    Ok((req, explicit.unwrap_or(present)))
+}
+
+fn field_mask(paths: Vec<String>) -> buffa_types::google::protobuf::FieldMask {
+    buffa_types::google::protobuf::FieldMask {
+        paths,
+        ..Default::default()
+    }
+}
+
 // ---- capability checks (spec §7.7) ---------------------------------------
-
-#[derive(Deserialize)]
-pub struct CheckItem {
-    action: String,
-    #[serde(default = "host_ent")]
-    resource: Ent,
-}
-
-fn host_ent() -> Ent {
-    Ent::Cluster
-}
-
-#[derive(Deserialize)]
-pub struct CheckBody {
-    checks: Vec<CheckItem>,
-}
-
-/// Entities for any resource, loaded from the managers.
-async fn resource_entities(c: &Caller, e: &Ent) -> Option<EntitySet> {
-    let m = c.manager();
-    Some(match e {
-        Ent::Cluster => EntitySet::new(),
-        // A node's host sits under the cluster: links on the cluster cover it.
-        Ent::Host | Ent::Node(_) => {
-            let mut es = EntitySet::new();
-            es.host(&e.id());
-            es
-        }
-        Ent::Project(id) => {
-            m.projects().get(id).ok().flatten()?;
-            super::project_entities(id)
-        }
-        Ent::Vm(id) => vm_entities(&m.get_vm(id).await.ok()?).1,
-        Ent::Disk(id) => {
-            let d = m.get_disk(id).await.ok()?;
-            disk_entities(&d.id, &d.project).1
-        }
-        Ent::Credential(key) => {
-            let (project, username) = key.split_once('/')?;
-            credential_entities(project, username).1
-        }
-        Ent::Network(name) => {
-            let n = m.get_network(name).ok()?;
-            let mut es = EntitySet::new();
-            add_network(&mut es, &n);
-            es
-        }
-        Ent::Image(id) => {
-            let mut es = EntitySet::new();
-            es.image(id);
-            es
-        }
-        Ent::PciDevice(bdf) => super::vms::pci_entities(c, bdf).1,
-        // Tenants and the directory are filled in by AuthService.
-        Ent::Tenant(id) => {
-            c.auth().tenants.get(id).ok().flatten()?;
-            EntitySet::new()
-        }
-        Ent::Directory(id) if id == crate::tenants::LOCAL_DIRECTORY => EntitySet::new(),
-        Ent::Directory(_) => return None,
-        Ent::User(id) => {
-            let mut es = EntitySet::new();
-            if c.p.user_id() != Some(id) {
-                es.user(id, false, &[]);
-            }
-            es
-        }
-        Ent::Team(_) | Ent::Token(_) => return None,
-    })
-}
 
 pub async fn authz_check(
     c: Caller,
-    Json(body): Json<CheckBody>,
+    Json(v): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, ApiErr> {
-    if body.checks.len() > 200 {
-        return Err(err(
-            StatusCode::BAD_REQUEST,
-            "invalid",
-            "at most 200 checks",
-        ));
-    }
-    let schema_actions: Vec<String> = c
-        .auth()
-        .engine
-        .schema()
-        .actions()
-        .map(|a| a.id().unescaped().to_string())
-        .collect();
-    let mut out = Vec::new();
-    for item in &body.checks {
-        if !schema_actions.contains(&item.action) {
-            out.push(serde_json::json!({ "allowed": false, "error": "unknown action" }));
-            continue;
-        }
-        let Some(es) = resource_entities(&c, &item.resource).await else {
-            out.push(serde_json::json!({ "allowed": false }));
-            continue;
-        };
-        if c.allowed(&item.action, item.resource.clone(), es.clone()) {
-            out.push(serde_json::json!({ "allowed": true }));
-        } else {
-            // Step-up refuses it only until the user logs in again: say so,
-            // so a client offers the action and its re-login.
-            let reauth = c.allowed_after_reauth(&item.action, item.resource.clone(), es);
-            out.push(serde_json::json!({ "allowed": false, "reauth": reauth }));
-        }
-    }
-    Ok(Json(serde_json::json!({ "results": out })))
+    let req: pb::CheckRequest = proto_body(v, &[], &[])?;
+    Ok(Proto(StatusCode::OK, acc::check(&c, req).await?))
 }
 
-#[derive(Deserialize)]
-pub struct AllowedBody {
-    actions: Vec<String>,
-    resources: Vec<Ent>,
-}
-
-const MAX_ALLOWED_ACTIONS: usize = 50;
-const MAX_ALLOWED_RESOURCES: usize = 500;
-
-/// `POST /authz/allowed` (spec/clustering-ui.md §3.5): for each resource,
-/// the actions the caller may take on it. An action that doesn't apply to
-/// the resource's type (the schema's `appliesTo`) is left out; an unknown
-/// action is an error, so a typo in a client fails loudly.
+/// `POST /authz/allowed` (spec/clustering-ui.md §3.5): `{allowed:
+/// [{actions}], reauth: [{actions}]}`, one entry per resource.
 pub async fn authz_allowed(
     c: Caller,
-    Json(body): Json<AllowedBody>,
+    Json(v): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, ApiErr> {
-    if body.actions.len() > MAX_ALLOWED_ACTIONS || body.resources.len() > MAX_ALLOWED_RESOURCES {
-        return Err(err(
-            StatusCode::BAD_REQUEST,
-            "invalid",
-            format!("at most {MAX_ALLOWED_ACTIONS} actions and {MAX_ALLOWED_RESOURCES} resources"),
-        ));
-    }
-    let schema = c.auth().engine.schema();
-    // action → the resource types it applies to.
-    let mut applies: Vec<(&str, Vec<String>)> = Vec::new();
-    for a in &body.actions {
-        let uid: cedar_policy::EntityUid =
-            format!("Glidex::Action::{:?}", a).parse().map_err(|_| {
-                err(
-                    StatusCode::BAD_REQUEST,
-                    "invalid",
-                    format!("bad action name {a}"),
-                )
-            })?;
-        let Some(types) = schema.resources_for_action(&uid) else {
-            return Err(err(
-                StatusCode::BAD_REQUEST,
-                "invalid",
-                format!("unknown action {a}"),
-            ));
-        };
-        applies.push((
-            a.as_str(),
-            types.map(|t| t.basename().to_string()).collect(),
-        ));
-    }
-    let mut out: Vec<Vec<String>> = Vec::new();
-    let mut reauth: Vec<Vec<String>> = Vec::new();
-    for r in &body.resources {
-        let ty = r.type_name();
-        let candidates: Vec<&str> = applies
-            .iter()
-            .filter(|(_, ts)| ts.iter().any(|t| t == ty))
-            .map(|(a, _)| *a)
-            .collect();
-        if candidates.is_empty() {
-            out.push(Vec::new());
-            reauth.push(Vec::new());
-            continue;
-        }
-        let Some(es) = resource_entities(&c, r).await else {
-            out.push(Vec::new());
-            reauth.push(Vec::new());
-            continue;
-        };
-        let (ok, later): (Vec<&str>, Vec<&str>) = candidates
-            .into_iter()
-            .partition(|a| c.allowed(a, r.clone(), es.clone()));
-        reauth.push(
-            later
-                .into_iter()
-                .filter(|a| c.allowed_after_reauth(a, r.clone(), es.clone()))
-                .map(String::from)
-                .collect(),
-        );
-        out.push(ok.into_iter().map(String::from).collect());
-    }
-    // `reauth`: per resource, the actions a fresh login would allow.
-    Ok(Json(
-        serde_json::json!({ "allowed": out, "reauth": reauth }),
-    ))
+    let req: pb::AllowedRequest = proto_body(v, &[], &[])?;
+    Ok(Proto(StatusCode::OK, acc::allowed(&c, req).await?))
 }
 
 // ---- tokens --------------------------------------------------------------
 
-#[derive(Deserialize)]
-pub struct RoleRef {
-    role: String,
-    /// Project id or name; absent for host roles.
-    #[serde(default)]
-    project: Option<String>,
-}
-
-#[derive(Deserialize)]
-pub struct CreateToken {
-    name: String,
-    #[serde(default)]
-    expires_in_days: Option<u64>,
-    /// `personal` (default) or `service_account`.
-    #[serde(default)]
-    kind: Option<String>,
-    #[serde(default)]
-    project: Option<String>,
-    /// Links for the token itself (narrowing a personal token).
-    #[serde(default)]
-    roles: Vec<RoleRef>,
-    /// What the creating client says it is; display only, never checked
-    /// (spec/gxctl-auth.md §7.2).
-    #[serde(default)]
-    device: Option<String>,
-    #[serde(default)]
-    client: Option<String>,
-}
-
-#[derive(Serialize)]
-struct TokenView {
-    #[serde(flatten)]
-    token: crate::auth::store::Token,
-    roles: Vec<crate::auth::store::LinkRecord>,
-}
-
-fn self_entities(c: &Caller) -> (Ent, EntitySet) {
-    let id = c.p.user_id().unwrap_or_default().to_string();
-    (Ent::User(id), EntitySet::new())
-}
-
 pub async fn list_tokens(c: Caller) -> Result<impl IntoResponse, ApiErr> {
-    let all = c.allowed("manageAnyTokens", super::directory_ent(), EntitySet::new());
-    let links = c.auth().store.links().map_err(store_err)?;
-    let mut out = Vec::new();
-    for (_, t) in c.auth().store.tokens().map_err(store_err)? {
-        let visible = all
-            || match &t.kind {
-                TokenKind::Personal { owner } => c.p.user_id() == Some(owner.as_str()),
-                TokenKind::ServiceAccount { project } => c.allowed(
-                    "manageServiceTokens",
-                    Ent::Project(project.clone()),
-                    super::project_entities(project),
-                ),
-            };
-        if visible {
-            let roles = links
-                .iter()
-                .filter(|l| l.link.principal == Ent::Token(t.id.clone()))
-                .cloned()
-                .collect();
-            out.push(TokenView { token: t, roles });
-        }
-    }
-    Ok(Json(out))
-}
-
-pub async fn create_token(
-    c: Caller,
-    Json(body): Json<CreateToken>,
-) -> Result<impl IntoResponse, ApiErr> {
-    if c.p.token.is_some() {
-        return Err(err(
-            StatusCode::FORBIDDEN,
-            "forbidden",
-            "tokens can't create tokens",
-        ));
-    }
-    let by = c.p.user_id().unwrap_or("-").to_string();
-    let service = body.kind.as_deref() == Some("service_account");
-    let kind = if service {
-        let project = c.target_project(body.project.as_deref())?;
-        c.set_project(&project);
-        c.require_action(
-            "manageServiceTokens",
-            Ent::Project(project.clone()),
-            super::project_entities(&project),
-            &[],
-        )?;
-        for r in &body.roles {
-            if !authz::PROJECT_ROLES.contains(&r.role.as_str())
-                || r.project.as_deref().is_some_and(|p| {
-                    c.target_project(Some(p)).ok().as_deref() != Some(project.as_str())
-                })
-            {
-                return Err(err(
-                    StatusCode::BAD_REQUEST,
-                    "invalid",
-                    "a service account only gets project roles in its own project",
-                ));
-            }
-        }
-        TokenKind::ServiceAccount { project }
-    } else {
-        let (e, es) = self_entities(&c);
-        c.require_action("manageOwnTokens", e, es, &[])?;
-        TokenKind::Personal { owner: by.clone() }
-    };
-    let (secret, token) = c
-        .auth()
-        .create_token(
-            &body.name,
-            kind.clone(),
-            &by,
-            body.expires_in_days,
-            body.device.as_deref(),
-            body.client.as_deref(),
-        )
-        .map_err(auth_error)?;
-    c.set_target(format!("token:{}", token.id));
-    let mut roles = Vec::new();
-    for r in &body.roles {
-        let resource = match &r.project {
-            Some(p) => Ent::Project(c.target_project(Some(p))?),
-            None => match &kind {
-                TokenKind::ServiceAccount { project } => Ent::Project(project.clone()),
-                TokenKind::Personal { .. } => Ent::Cluster,
-            },
-        };
-        match c
-            .auth()
-            .add_link(&r.role, Ent::Token(token.id.clone()), resource, &by)
-        {
-            Ok(l) => roles.push(l),
-            Err(e) => {
-                let _ = c.auth().revoke_token(&token.id);
-                return Err(auth_error(e));
-            }
-        }
-    }
-    Ok((
-        StatusCode::CREATED,
-        Json(serde_json::json!({ "token": secret, "record": TokenView { token, roles } })),
+    Ok(Proto(
+        StatusCode::OK,
+        acc::list_tokens(&c, Default::default())?,
     ))
 }
 
-pub async fn revoke_token(c: Caller, Path(id): Path<String>) -> Result<impl IntoResponse, ApiErr> {
-    let (_, t) = c
-        .auth()
-        .store
-        .token_by_id(&id)
-        .map_err(store_err)?
-        .ok_or_else(|| err(StatusCode::NOT_FOUND, "not_found", "token not found"))?;
-    c.set_target(format!("token:{}", t.id));
-    let mine =
-        matches!(&t.kind, TokenKind::Personal { owner } if c.p.user_id() == Some(owner.as_str()));
-    let ok =
-        mine || match &t.kind {
-            TokenKind::ServiceAccount { project } => c.allowed(
-                "manageServiceTokens",
-                Ent::Project(project.clone()),
-                super::project_entities(project),
-            ),
-            _ => false,
-        } || c.allowed("manageAnyTokens", super::directory_ent(), EntitySet::new());
-    if !ok {
-        return Err(err(StatusCode::NOT_FOUND, "not_found", "token not found"));
-    }
-    c.auth().revoke_token(&id).map_err(auth_error)?;
-    Ok(StatusCode::NO_CONTENT)
+/// `{token, record}`: the secret is shown once.
+pub async fn create_token(
+    c: Caller,
+    Json(v): Json<serde_json::Value>,
+) -> Result<impl IntoResponse, ApiErr> {
+    let req: pb::CreateTokenRequest = proto_body(v, &[("kind", "TOKEN_KIND")], &[])?;
+    Ok(Proto(StatusCode::CREATED, acc::create_token(&c, req)?))
+}
+
+pub async fn revoke_token(c: Caller, Path(id): Path<String>) -> Result<Response, ApiErr> {
+    let req = pb::RevokeTokenRequest {
+        id,
+        ..Default::default()
+    };
+    acc::revoke_token(&c, req)?;
+    Ok(super::proto_no_content())
 }
 
 // ---- users and teams -----------------------------------------------------
 
-#[derive(Serialize)]
-struct UserView {
-    #[serde(flatten)]
-    user: User,
-    identities: Vec<Identity>,
-}
-
 pub async fn list_users(c: Caller) -> Result<impl IntoResponse, ApiErr> {
-    c.require(super::directory_ent(), EntitySet::new())?;
-    let s = &c.auth().store;
-    let out: Vec<UserView> = s
-        .users()
-        .map_err(store_err)?
-        .into_iter()
-        .map(|u| UserView {
-            identities: s.identities_of(&u.id).unwrap_or_default(),
-            user: u,
-        })
-        .collect();
-    Ok(Json(out))
-}
-
-#[derive(Deserialize)]
-pub struct IdentityRef {
-    provider: String,
-    subject: String,
-}
-
-#[derive(Deserialize)]
-pub struct CreateUser {
-    display_name: String,
-    #[serde(default)]
-    identities: Vec<IdentityRef>,
-}
-
-fn valid_provider(p: &str) -> bool {
-    p == "pam" || p == "unix" || p.starts_with("oidc:")
+    Ok(Proto(
+        StatusCode::OK,
+        acc::list_users(&c, Default::default())?,
+    ))
 }
 
 pub async fn create_user(
     c: Caller,
-    Json(body): Json<CreateUser>,
+    Json(v): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, ApiErr> {
-    c.require(super::directory_ent(), EntitySet::new())?;
-    let s = &c.auth().store;
-    for i in &body.identities {
-        if !valid_provider(&i.provider) || i.subject.is_empty() {
-            return Err(err(
-                StatusCode::BAD_REQUEST,
-                "invalid",
-                "identities are pam:, unix: or oidc:<issuer> with a subject",
-            ));
-        }
-        if s.identity(&i.provider, &i.subject)
-            .map_err(store_err)?
-            .is_some()
-        {
-            return Err(err(
-                StatusCode::CONFLICT,
-                "conflict",
-                format!("identity {}:{} is already linked", i.provider, i.subject),
-            ));
-        }
-    }
-    let u = User {
-        id: uuid::Uuid::new_v4().to_string(),
-        display_name: body.display_name,
-        disabled: false,
-        default_project: None,
-        created_at: crate::auth::store::now(),
-    };
-    s.put_user(&u).map_err(store_err)?;
-    for i in body.identities {
-        s.put_identity(&Identity {
-            provider: i.provider,
-            subject: i.subject,
-            user_id: u.id.clone(),
-            email: None,
-            created_at: u.created_at,
-        })
-        .map_err(store_err)?;
-    }
-    c.set_target(format!("user:{}", u.id));
-    Ok((StatusCode::CREATED, Json(u)))
-}
-
-#[derive(Deserialize)]
-pub struct UpdateUser {
-    #[serde(default)]
-    display_name: Option<String>,
-    #[serde(default)]
-    disabled: Option<bool>,
-    #[serde(default)]
-    default_project: Option<String>,
+    let req: pb::CreateUserRequest = proto_body(v, &[], &[])?;
+    Ok(Proto(StatusCode::CREATED, acc::create_user(&c, req)?))
 }
 
 pub async fn update_user(
     c: Caller,
     Path(id): Path<String>,
-    Json(body): Json<UpdateUser>,
+    Json(v): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, ApiErr> {
-    c.require(super::directory_ent(), EntitySet::new())?;
-    c.set_target(format!("user:{}", id));
-    let s = &c.auth().store;
-    let mut u = s
-        .user(&id)
-        .map_err(store_err)?
-        .ok_or_else(|| err(StatusCode::NOT_FOUND, "not_found", "user not found"))?;
-    if let Some(n) = body.display_name {
-        u.display_name = n;
-    }
-    if let Some(d) = body.default_project {
-        u.default_project = if d.is_empty() {
-            None
-        } else {
-            Some(c.target_project(Some(&d))?)
-        };
-    }
-    if let Some(d) = body.disabled {
-        u.disabled = d;
-        if d {
-            s.remove_sessions_of(&u.id).map_err(store_err)?;
-        }
-    }
-    s.put_user(&u).map_err(store_err)?;
-    Ok(Json(u))
+    let (mut req, mask): (pb::UpdateUserRequest, _) =
+        masked(v, &["display_name", "disabled", "default_project"])?;
+    req.id = id;
+    req.update_mask = field_mask(mask).into();
+    Ok(Proto(StatusCode::OK, acc::update_user(&c, req)?))
 }
 
 pub async fn link_identity(
     c: Caller,
     Path(id): Path<String>,
-    Json(body): Json<IdentityRef>,
+    Json(v): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, ApiErr> {
-    c.require(super::directory_ent(), EntitySet::new())?;
-    c.set_target(format!("user:{}", id));
-    let s = &c.auth().store;
-    s.user(&id)
-        .map_err(store_err)?
-        .ok_or_else(|| err(StatusCode::NOT_FOUND, "not_found", "user not found"))?;
-    if !valid_provider(&body.provider) || body.subject.is_empty() {
-        return Err(err(
-            StatusCode::BAD_REQUEST,
-            "invalid",
-            "identities are pam:, unix: or oidc:<issuer> with a subject",
-        ));
-    }
-    if s.identity(&body.provider, &body.subject)
-        .map_err(store_err)?
-        .is_some()
-    {
-        return Err(err(
-            StatusCode::CONFLICT,
-            "conflict",
-            "identity is already linked",
-        ));
-    }
-    let i = Identity {
-        provider: body.provider,
-        subject: body.subject,
-        user_id: id,
-        email: None,
-        created_at: crate::auth::store::now(),
-    };
-    s.put_identity(&i).map_err(store_err)?;
-    Ok((StatusCode::CREATED, Json(i)))
+    let mut req: pb::LinkIdentityRequest = proto_body(v, &[], &[])?;
+    req.id = id;
+    Ok(Proto(StatusCode::CREATED, acc::link_identity(&c, req)?))
 }
 
 pub async fn unlink_identity(
     c: Caller,
     Path((id, key)): Path<(String, String)>,
-) -> Result<impl IntoResponse, ApiErr> {
-    c.require(super::directory_ent(), EntitySet::new())?;
-    c.set_target(format!("user:{}", id));
-    let s = &c.auth().store;
-    let found = s
-        .identities_of(&id)
-        .map_err(store_err)?
-        .into_iter()
-        .find(|i| Identity::key(&i.provider, &i.subject) == key);
-    let Some(i) = found else {
-        return Err(err(
-            StatusCode::NOT_FOUND,
-            "not_found",
-            "identity not found",
-        ));
+) -> Result<Response, ApiErr> {
+    let req = pb::UnlinkIdentityRequest {
+        id,
+        key,
+        ..Default::default()
     };
-    s.remove_identity(&i.provider, &i.subject)
-        .map_err(store_err)?;
-    Ok(StatusCode::NO_CONTENT)
+    acc::unlink_identity(&c, req)?;
+    Ok(super::proto_no_content())
 }
 
 pub async fn list_teams(c: Caller) -> Result<impl IntoResponse, ApiErr> {
-    c.require(super::directory_ent(), EntitySet::new())?;
-    Ok(Json(c.auth().store.teams().map_err(store_err)?))
-}
-
-#[derive(Deserialize)]
-pub struct TeamBody {
-    name: String,
-}
-
-fn valid_team_name(name: &str) -> Result<(), ApiErr> {
-    // unix:* teams come only from peer groups (spec §7.3).
-    if name.is_empty() || name.len() > 64 || name.starts_with("unix:") {
-        return Err(err(
-            StatusCode::BAD_REQUEST,
-            "invalid",
-            "team names are 1-64 characters and can't start with \"unix:\"",
-        ));
-    }
-    Ok(())
+    Ok(Proto(
+        StatusCode::OK,
+        acc::list_teams(&c, Default::default())?,
+    ))
 }
 
 pub async fn create_team(
     c: Caller,
-    Json(body): Json<TeamBody>,
+    Json(v): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, ApiErr> {
-    c.require(super::directory_ent(), EntitySet::new())?;
-    valid_team_name(&body.name)?;
-    let s = &c.auth().store;
-    if s.team_by_name(&body.name).map_err(store_err)?.is_some() {
-        return Err(err(StatusCode::CONFLICT, "conflict", "team exists"));
-    }
-    let t = Team {
-        id: uuid::Uuid::new_v4().to_string(),
-        name: body.name,
-        members: vec![],
-        created_at: crate::auth::store::now(),
-    };
-    s.put_team(&t).map_err(store_err)?;
-    c.set_target(format!("team:{}", t.id));
-    Ok((StatusCode::CREATED, Json(t)))
-}
-
-fn team(c: &Caller, id: &str) -> Result<Team, ApiErr> {
-    c.set_target(format!("team:{}", id));
-    c.auth()
-        .store
-        .team(id)
-        .map_err(store_err)?
-        .ok_or_else(|| err(StatusCode::NOT_FOUND, "not_found", "team not found"))
+    let req: pb::CreateTeamRequest = proto_body(v, &[], &[])?;
+    Ok(Proto(StatusCode::CREATED, acc::create_team(&c, req)?))
 }
 
 pub async fn update_team(
     c: Caller,
     Path(id): Path<String>,
-    Json(body): Json<TeamBody>,
+    Json(v): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, ApiErr> {
-    c.require(super::directory_ent(), EntitySet::new())?;
-    valid_team_name(&body.name)?;
-    let mut t = team(&c, &id)?;
-    t.name = body.name;
-    c.auth().store.put_team(&t).map_err(store_err)?;
-    Ok(Json(t))
+    let mut req: pb::UpdateTeamRequest = proto_body(v, &[], &[])?;
+    req.id = id;
+    Ok(Proto(StatusCode::OK, acc::update_team(&c, req)?))
 }
 
-pub async fn delete_team(c: Caller, Path(id): Path<String>) -> Result<impl IntoResponse, ApiErr> {
-    c.require(super::directory_ent(), EntitySet::new())?;
-    team(&c, &id)?;
-    c.auth().store.remove_team(&id).map_err(store_err)?;
-    c.auth().forget_entity(&Ent::Team(id)).map_err(auth_error)?;
-    Ok(StatusCode::NO_CONTENT)
+pub async fn delete_team(c: Caller, Path(id): Path<String>) -> Result<Response, ApiErr> {
+    let req = pb::DeleteTeamRequest {
+        id,
+        ..Default::default()
+    };
+    acc::delete_team(&c, req)?;
+    Ok(super::proto_no_content())
 }
 
 pub async fn add_member(
     c: Caller,
     Path((id, user)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, ApiErr> {
-    c.require(super::directory_ent(), EntitySet::new())?;
-    let mut t = team(&c, &id)?;
-    c.auth()
-        .store
-        .user(&user)
-        .map_err(store_err)?
-        .ok_or_else(|| err(StatusCode::NOT_FOUND, "not_found", "user not found"))?;
-    if !t
-        .members
-        .iter()
-        .any(|m| m.user_id == user && m.source == MemberSource::Manual)
-    {
-        t.members.push(TeamMember {
-            user_id: user,
-            source: MemberSource::Manual,
-        });
-        c.auth().store.put_team(&t).map_err(store_err)?;
-    }
-    Ok(Json(t))
+    let req = pb::AddTeamMemberRequest {
+        id,
+        user,
+        ..Default::default()
+    };
+    Ok(Proto(StatusCode::OK, acc::add_team_member(&c, req)?))
 }
 
 pub async fn remove_member(
     c: Caller,
     Path((id, user)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, ApiErr> {
-    c.require(super::directory_ent(), EntitySet::new())?;
-    let mut t = team(&c, &id)?;
-    t.members.retain(|m| m.user_id != user);
-    c.auth().store.put_team(&t).map_err(store_err)?;
-    Ok(Json(t))
+    let req = pb::RemoveTeamMemberRequest {
+        id,
+        user,
+        ..Default::default()
+    };
+    Ok(Proto(StatusCode::OK, acc::remove_team_member(&c, req)?))
 }
 
 // ---- projects and role links ---------------------------------------------
 
-#[derive(Serialize)]
-struct ProjectView {
-    #[serde(flatten)]
-    project: crate::tenancy::Project,
-    usage: crate::tenancy::Usage,
-}
-
 pub async fn list_projects(c: Caller) -> Result<impl IntoResponse, ApiErr> {
-    let visible = c.visible_projects()?;
-    let mut out = Vec::new();
-    for p in c
-        .manager()
-        .projects()
-        .list()
-        .map_err(|e| manager_err(e.into()))?
-    {
-        if visible.contains(&p.id)
-            && c.allowed(
-                "readProject",
-                Ent::Project(p.id.clone()),
-                super::project_entities(&p.id),
-            )
-        {
-            let usage = c.manager().usage(&p.id).await.map_err(manager_err)?;
-            out.push(ProjectView { project: p, usage });
-        }
-    }
-    Ok(Json(out))
-}
-
-#[derive(Deserialize)]
-pub struct CreateProject {
-    name: String,
-    #[serde(default)]
-    description: String,
-    #[serde(default)]
-    quotas: Option<Quotas>,
-    /// Users (ids) to make owners.
-    #[serde(default)]
-    owners: Vec<String>,
-    /// Tenant id or slug (spec/tenancy.md D1); `default` when absent.
-    #[serde(default)]
-    tenant: Option<String>,
+    Ok(Proto(
+        StatusCode::OK,
+        acc::list_projects(&c, Default::default()).await?,
+    ))
 }
 
 pub async fn create_project(
     c: Caller,
-    Json(body): Json<CreateProject>,
+    Json(v): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, ApiErr> {
-    let key = body
-        .tenant
-        .as_deref()
-        .unwrap_or(crate::tenants::DEFAULT_TENANT);
-    let tenant = c
-        .auth()
-        .tenants
-        .resolve(key)
-        .map_err(|_| err(StatusCode::NOT_FOUND, "not_found", "tenant not found"))?;
-    c.require(Ent::Tenant(tenant.id.clone()), EntitySet::new())?;
-    // Without explicit quotas a project gets the site default (spec §6.3).
-    let quotas = body
-        .quotas
-        .unwrap_or_else(|| c.auth().config.quotas.default.clone());
-    let p = c
-        .manager()
-        .projects()
-        .create_in(&tenant.id, &body.name, body.description, Some(quotas))
-        .map_err(|e| manager_err(e.into()))?;
-    c.set_project(&p.id);
-    c.set_target(format!("project:{}", p.id));
-    let by = c.p.user_id().unwrap_or("-").to_string();
-    for o in body.owners {
-        c.auth()
-            .add_link("role.owner", Ent::User(o), Ent::Project(p.id.clone()), &by)
-            .map_err(auth_error)?;
-    }
-    Ok((StatusCode::CREATED, Json(p)))
-}
-
-fn visible_project(c: &Caller, key: &str) -> Result<crate::tenancy::Project, ApiErr> {
-    let p = c
-        .manager()
-        .projects()
-        .resolve(key)
-        .map_err(|_| err(StatusCode::NOT_FOUND, "not_found", "project not found"))?;
-    c.set_project(&p.id);
-    c.set_target(format!("project:{}", p.id));
-    c.require_visible(
-        "readProject",
-        Ent::Project(p.id.clone()),
-        super::project_entities(&p.id),
-        "project",
-    )?;
-    Ok(p)
+    let req: pb::CreateProjectRequest = proto_body(v, &[], &[])?;
+    Ok(Proto(StatusCode::CREATED, acc::create_project(&c, req)?))
 }
 
 pub async fn get_project(c: Caller, Path(id): Path<String>) -> Result<impl IntoResponse, ApiErr> {
-    let p = visible_project(&c, &id)?;
-    let usage = c.manager().usage(&p.id).await.map_err(manager_err)?;
-    Ok(Json(ProjectView { project: p, usage }))
-}
-
-#[derive(Deserialize)]
-pub struct UpdateProject {
-    #[serde(default)]
-    description: Option<String>,
-    #[serde(default)]
-    quotas: Option<Quotas>,
+    let req = pb::GetProjectRequest {
+        id,
+        ..Default::default()
+    };
+    Ok(Proto(StatusCode::OK, acc::get_project(&c, req).await?))
 }
 
 pub async fn update_project(
     c: Caller,
     Path(id): Path<String>,
-    Json(body): Json<UpdateProject>,
+    Json(v): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, ApiErr> {
-    let mut p = visible_project(&c, &id)?;
-    if let Some(d) = body.description {
-        p.description = d;
-    }
-    if let Some(q) = body.quotas {
-        c.detail("quotas", serde_json::json!(q));
-        p.quotas = q;
-    }
-    c.manager()
-        .projects()
-        .put(&p)
-        .map_err(|e| manager_err(e.into()))?;
-    Ok(Json(p))
+    let (mut req, mask): (pb::UpdateProjectRequest, _) = masked(v, &["description", "quotas"])?;
+    req.id = id;
+    req.update_mask = field_mask(mask).into();
+    Ok(Proto(StatusCode::OK, acc::update_project(&c, req)?))
 }
 
-pub async fn delete_project(
-    c: Caller,
-    Path(id): Path<String>,
-) -> Result<impl IntoResponse, ApiErr> {
-    let p = visible_project(&c, &id)?;
-    if let Some(what) = c
-        .manager()
-        .project_in_use(&p.id)
-        .await
-        .map_err(manager_err)?
-    {
-        return Err(err(
-            StatusCode::CONFLICT,
-            "conflict",
-            format!("project still owns {}", what),
-        ));
-    }
-    c.manager()
-        .projects()
-        .delete(&p.id)
-        .map_err(|e| manager_err(e.into()))?;
-    c.manager().forget_project(&p.id).map_err(manager_err)?;
-    c.auth()
-        .forget_entity(&Ent::Project(p.id.clone()))
-        .map_err(auth_error)?;
-    // Service accounts of the project go with it.
-    for (_, t) in c.auth().store.tokens().map_err(store_err)? {
-        if matches!(&t.kind, TokenKind::ServiceAccount { project } if *project == p.id) {
-            c.auth().revoke_token(&t.id).map_err(auth_error)?;
-        }
-    }
-    Ok(StatusCode::NO_CONTENT)
-}
-
-#[derive(Deserialize)]
-pub struct BindingBody {
-    role: String,
-    principal: Ent,
-}
-
-fn check_principal_exists(c: &Caller, e: &Ent) -> Result<(), ApiErr> {
-    let s = &c.auth().store;
-    let ok = match e {
-        Ent::User(id) => s.user(id).map_err(store_err)?.is_some(),
-        Ent::Team(id) => id.starts_with("unix:") || s.team(id).map_err(store_err)?.is_some(),
-        Ent::Token(id) => s.token_by_id(id).map_err(store_err)?.is_some(),
-        _ => false,
+pub async fn delete_project(c: Caller, Path(id): Path<String>) -> Result<Response, ApiErr> {
+    let req = pb::DeleteProjectRequest {
+        id,
+        ..Default::default()
     };
-    if ok {
-        Ok(())
-    } else {
-        Err(err(
-            StatusCode::BAD_REQUEST,
-            "invalid",
-            format!("{} doesn't exist", e),
-        ))
-    }
-}
-
-/// A role link as listed: with its principal's name, so that whoever may
-/// read the links sees who they are without listing users or teams
-/// (host rights). Only the display name is added.
-#[derive(Serialize)]
-pub struct BindingView {
-    #[serde(flatten)]
-    record: auth::store::LinkRecord,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    principal_name: Option<String>,
-}
-
-fn with_names(c: &Caller, links: Vec<auth::store::LinkRecord>) -> Result<Vec<BindingView>, ApiErr> {
-    let s = &c.auth().store;
-    let mut tokens: Option<Vec<(String, auth::store::Token)>> = None;
-    links
-        .into_iter()
-        .map(|record| {
-            let principal_name = match &record.link.principal {
-                Ent::User(id) => s.user(id).map_err(store_err)?.map(|u| u.display_name),
-                Ent::Team(id) if !id.starts_with("unix:") => {
-                    s.team(id).map_err(store_err)?.map(|t| t.name)
-                }
-                Ent::Token(id) => {
-                    if tokens.is_none() {
-                        tokens = Some(s.tokens().map_err(store_err)?);
-                    }
-                    tokens
-                        .as_ref()
-                        .and_then(|ts| ts.iter().find(|(_, t)| &t.id == id))
-                        .map(|(_, t)| t.name.clone())
-                }
-                _ => None,
-            };
-            Ok(BindingView {
-                record,
-                principal_name,
-            })
-        })
-        .collect()
+    acc::delete_project(&c, req).await?;
+    Ok(super::proto_no_content())
 }
 
 pub async fn list_bindings(c: Caller, Path(id): Path<String>) -> Result<impl IntoResponse, ApiErr> {
-    let p = visible_project(&c, &id)?;
-    let links: Vec<_> = c
-        .auth()
-        .store
-        .links()
-        .map_err(store_err)?
-        .into_iter()
-        .filter(|l| l.link.resource == Ent::Project(p.id.clone()))
-        .collect();
-    Ok(Json(with_names(&c, links)?))
+    let req = pb::ListProjectBindingsRequest {
+        id,
+        ..Default::default()
+    };
+    Ok(Proto(StatusCode::OK, acc::list_project_bindings(&c, req)?))
 }
 
 pub async fn add_binding(
     c: Caller,
     Path(id): Path<String>,
-    Json(body): Json<BindingBody>,
+    Json(v): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, ApiErr> {
-    let p = visible_project(&c, &id)?;
-    if !authz::PROJECT_ROLES.contains(&body.role.as_str()) {
-        return Err(err(
-            StatusCode::BAD_REQUEST,
-            "invalid",
-            "only project roles can be given in a project",
-        ));
-    }
-    check_principal_exists(&c, &body.principal)?;
-    c.detail("role", serde_json::json!(body.role));
-    c.detail("principal", serde_json::json!(body.principal));
-    let l = c
-        .auth()
-        .add_link(
-            &body.role,
-            body.principal,
-            Ent::Project(p.id),
-            c.p.user_id().unwrap_or("-"),
-        )
-        .map_err(auth_error)?;
-    Ok((StatusCode::CREATED, Json(l)))
+    let mut req: pb::AddProjectBindingRequest = proto_body(v, &[], &[])?;
+    req.id = id;
+    Ok(Proto(
+        StatusCode::CREATED,
+        acc::add_project_binding(&c, req)?,
+    ))
 }
 
 pub async fn remove_binding(
     c: Caller,
     Path((id, link)): Path<(String, String)>,
-) -> Result<impl IntoResponse, ApiErr> {
-    let p = visible_project(&c, &id)?;
-    let found = c
-        .auth()
-        .store
-        .links()
-        .map_err(store_err)?
-        .into_iter()
-        .find(|l| l.link.id == link);
-    match found {
-        Some(l) if l.link.resource == Ent::Project(p.id.clone()) => {
-            c.detail("link", serde_json::json!(l.link));
-            c.auth().remove_link(&link).map_err(auth_error)?;
-            Ok(StatusCode::NO_CONTENT)
-        }
-        _ => Err(err(StatusCode::NOT_FOUND, "not_found", "binding not found")),
-    }
+) -> Result<Response, ApiErr> {
+    let req = pb::RemoveProjectBindingRequest {
+        id,
+        link,
+        ..Default::default()
+    };
+    acc::remove_project_binding(&c, req)?;
+    Ok(super::proto_no_content())
 }
 
 pub async fn list_system_bindings(c: Caller) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Cluster, EntitySet::new())?;
-    let links: Vec<_> = c
-        .auth()
-        .store
-        .links()
-        .map_err(store_err)?
-        .into_iter()
-        .filter(|l| l.link.resource == Ent::Cluster)
-        .collect();
-    Ok(Json(with_names(&c, links)?))
+    Ok(Proto(
+        StatusCode::OK,
+        acc::list_system_bindings(&c, Default::default())?,
+    ))
 }
 
 pub async fn add_system_binding(
     c: Caller,
-    Json(body): Json<BindingBody>,
+    Json(v): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Cluster, EntitySet::new())?;
-    if !authz::HOST_ROLES.contains(&body.role.as_str()) {
-        return Err(err(
-            StatusCode::BAD_REQUEST,
-            "invalid",
-            "only host roles and grants are given on the host",
-        ));
-    }
-    check_principal_exists(&c, &body.principal)?;
-    // Host roles go to the operator's people only (spec/tenancy.md D4).
-    let operator = c
-        .auth()
-        .tenants
-        .operator()
-        .map_err(|e| auth_error(crate::auth::tenant_err(e)))?;
-    if !c
-        .auth()
-        .is_member(&body.principal, &operator)
-        .map_err(auth_error)?
-    {
-        return Err(err(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "not_operator_member",
-            format!(
-                "{} isn't a member of tenant {operator}, which operates this cluster: add them there first",
-                body.principal
-            ),
-        ));
-    }
-    c.detail("role", serde_json::json!(body.role));
-    c.detail("principal", serde_json::json!(body.principal));
-    let l = c
-        .auth()
-        .add_link(
-            &body.role,
-            body.principal,
-            Ent::Cluster,
-            c.p.user_id().unwrap_or("-"),
-        )
-        .map_err(auth_error)?;
-    Ok((StatusCode::CREATED, Json(l)))
+    let req: pb::AddSystemBindingRequest = proto_body(v, &[], &[])?;
+    Ok(Proto(
+        StatusCode::CREATED,
+        acc::add_system_binding(&c, req)?,
+    ))
 }
 
 pub async fn remove_system_binding(
     c: Caller,
     Path(link): Path<String>,
-) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Cluster, EntitySet::new())?;
-    let found = c
-        .auth()
-        .store
-        .links()
-        .map_err(store_err)?
-        .into_iter()
-        .find(|l| l.link.id == link);
-    match found {
-        Some(l) if l.link.resource == Ent::Cluster => {
-            c.detail("link", serde_json::json!(l.link));
-            c.auth().remove_link(&link).map_err(auth_error)?;
-            Ok(StatusCode::NO_CONTENT)
-        }
-        _ => Err(err(StatusCode::NOT_FOUND, "not_found", "binding not found")),
-    }
+) -> Result<Response, ApiErr> {
+    let req = pb::RemoveSystemBindingRequest {
+        link,
+        ..Default::default()
+    };
+    acc::remove_system_binding(&c, req)?;
+    Ok(super::proto_no_content())
 }
 
 // ---- site policies (spec §7.6) -------------------------------------------
 
-/// Limits on site policies.
-const MAX_POLICY_BYTES: usize = 64 * 1024;
-const MAX_SITE_POLICIES: usize = 200;
-
-#[derive(Serialize)]
-struct PolicyListing {
-    policies: Vec<authz::PolicyInfo>,
-    site: Vec<crate::auth::store::SitePolicy>,
-}
-
 pub async fn list_policies(c: Caller) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Cluster, EntitySet::new())?;
-    Ok(Json(PolicyListing {
-        policies: c.auth().engine.listing(),
-        site: c.auth().store.site_policies().map_err(store_err)?,
-    }))
+    Ok(Proto(
+        StatusCode::OK,
+        acc::list_policies(&c, Default::default())?,
+    ))
 }
 
 pub async fn get_policy(c: Caller, Path(id): Path<String>) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Cluster, EntitySet::new())?;
-    if let Some(p) = c.auth().store.site_policy(&id).map_err(store_err)? {
-        return Ok(Json(serde_json::json!({ "source": "site", "policy": p })));
-    }
-    match c.auth().engine.listing().into_iter().find(|p| p.id == id) {
-        Some(p) => Ok(Json(serde_json::json!({ "source": p.source, "policy": p }))),
-        None => Err(err(StatusCode::NOT_FOUND, "not_found", "policy not found")),
-    }
+    let req = pb::GetPolicyRequest {
+        id,
+        ..Default::default()
+    };
+    Ok(Proto(StatusCode::OK, acc::get_policy(&c, req)?))
 }
 
 pub async fn policy_versions(
     c: Caller,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Cluster, EntitySet::new())?;
-    Ok(Json(
-        c.auth()
-            .store
-            .site_policy_versions(&id)
-            .map_err(store_err)?,
-    ))
-}
-
-#[derive(Deserialize, Clone)]
-pub struct PolicyChange {
-    id: String,
-    #[serde(default)]
-    text: Option<String>,
-    #[serde(default)]
-    description: Option<String>,
-    #[serde(default)]
-    enabled: Option<bool>,
-    #[serde(default)]
-    delete: bool,
-}
-
-/// Inputs with `changes` applied to the stored site policies.
-fn candidate_inputs(
-    c: &Caller,
-    changes: &[PolicyChange],
-) -> Result<(Vec<authz::Link>, Vec<SiteSource>), ApiErr> {
-    let (links, mut site) = c.auth().policy_inputs().map_err(auth_error)?;
-    let stored = c.auth().store.site_policies().map_err(store_err)?;
-    for ch in changes {
-        if site
-            .iter()
-            .any(|s| s.id == ch.id && s.source == authz::PolicySource::File)
-        {
-            return Err(err(
-                StatusCode::CONFLICT,
-                "conflict",
-                format!(
-                    "{} comes from a policy file and can't be changed here",
-                    ch.id
-                ),
-            ));
-        }
-        site.retain(|s| s.id != ch.id);
-        if ch.delete {
-            continue;
-        }
-        let current = stored.iter().find(|p| p.id == ch.id);
-        let text = ch
-            .text
-            .clone()
-            .or(current.map(|p| p.text.clone()))
-            .unwrap_or_default();
-        let enabled = ch.enabled.or(current.map(|p| p.enabled)).unwrap_or(true);
-        if enabled {
-            site.push(SiteSource {
-                id: ch.id.clone(),
-                text,
-                source: authz::PolicySource::Site,
-            });
-        }
-    }
-    Ok((links, site))
-}
-
-/// Refuse a change that would stop the caller from writing policies
-/// (spec §7.6). Break-glass principals can always recover.
-fn lock_out_check(c: &Caller, set: &cedar_policy::PolicySet) -> Result<(), ApiErr> {
-    if c.p.is_break_glass() {
-        return Ok(());
-    }
-    let d = c.auth().authorize_in(
-        Some(set),
-        &c.p,
-        "writePolicy",
-        Ent::Cluster,
-        EntitySet::new(),
-        &[],
-    );
-    if d.allowed {
-        Ok(())
-    } else {
-        Err(err(
-            StatusCode::CONFLICT,
-            "would_lock_out",
-            "after this change you could no longer manage policies",
-        ))
-    }
-}
-
-#[derive(Deserialize)]
-pub struct PutPolicy {
-    text: String,
-    #[serde(default)]
-    description: String,
-    #[serde(default = "yes")]
-    enabled: bool,
-    /// The version being replaced; 0 to create.
-    version: u64,
-}
-
-fn yes() -> bool {
-    true
+    let req = pb::ListPolicyVersionsRequest {
+        id,
+        ..Default::default()
+    };
+    Ok(Proto(StatusCode::OK, acc::policy_versions(&c, req)?))
 }
 
 pub async fn put_policy(
     c: Caller,
     Path(id): Path<String>,
-    Json(body): Json<PutPolicy>,
+    Json(v): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Cluster, EntitySet::new())?;
-    c.set_target(format!("policy:{}", id));
-    if body.text.len() > MAX_POLICY_BYTES {
-        return Err(err(
-            StatusCode::PAYLOAD_TOO_LARGE,
-            "invalid_policy",
-            "a policy is at most 64 KiB",
-        ));
-    }
-    let stored = c.auth().store.site_policies().map_err(store_err)?;
-    if body.version == 0 && stored.len() >= MAX_SITE_POLICIES {
-        return Err(err(
-            StatusCode::CONFLICT,
-            "conflict",
-            "at most 200 site policies",
-        ));
-    }
-    c.auth()
-        .engine
-        .validate_site_policy(&id, &body.text)
-        .map_err(|e| auth_error(e.into()))?;
-    let change = PolicyChange {
-        id: id.clone(),
-        text: Some(body.text.clone()),
-        description: None,
-        enabled: Some(body.enabled),
-        delete: false,
-    };
-    let (links, site) = candidate_inputs(&c, &[change])?;
-    let set = c
-        .auth()
-        .engine
-        .build(&links, &site)
-        .map_err(|e| auth_error(e.into()))?;
-    lock_out_check(&c, &set)?;
-    c.detail(
-        "sha256",
-        serde_json::json!(auth::sha256_hex(body.text.as_bytes())),
-    );
-    let p = c
-        .auth()
-        .store
-        .write_site_policy(
-            &id,
-            body.version,
-            Some((&body.text, &body.description, body.enabled)),
-            c.p.user_id().unwrap_or("-"),
-        )
-        .map_err(store_err)?;
-    c.auth().reload_policies().map_err(auth_error)?;
-    c.detail("version", serde_json::json!(p.as_ref().map(|p| p.version)));
-    Ok(Json(p))
+    let mut req: pb::PutPolicyRequest = proto_body(v, &[], &[])?;
+    req.id = id;
+    Ok(Proto(StatusCode::OK, acc::put_policy(&c, req)?))
 }
 
 #[derive(Deserialize)]
@@ -1887,131 +895,35 @@ pub async fn delete_policy(
     c: Caller,
     Path(id): Path<String>,
     Query(q): Query<VersionQuery>,
-) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Cluster, EntitySet::new())?;
-    c.set_target(format!("policy:{}", id));
-    let change = PolicyChange {
-        id: id.clone(),
-        text: None,
-        description: None,
-        enabled: None,
-        delete: true,
+) -> Result<Response, ApiErr> {
+    let req = pb::DeletePolicyRequest {
+        id,
+        version: q.version,
+        ..Default::default()
     };
-    let (links, site) = candidate_inputs(&c, &[change])?;
-    let set = c
-        .auth()
-        .engine
-        .build(&links, &site)
-        .map_err(|e| auth_error(e.into()))?;
-    lock_out_check(&c, &set)?;
-    c.auth()
-        .store
-        .write_site_policy(&id, q.version, None, c.p.user_id().unwrap_or("-"))
-        .map_err(store_err)?;
-    c.auth().reload_policies().map_err(auth_error)?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-#[derive(Deserialize)]
-pub struct ValidateBody {
-    id: String,
-    text: String,
+    acc::delete_policy(&c, req)?;
+    Ok(super::proto_no_content())
 }
 
 pub async fn validate_policy(
     c: Caller,
-    Json(body): Json<ValidateBody>,
+    Json(v): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Cluster, EntitySet::new())?;
-    match c.auth().engine.validate_site_policy(&body.id, &body.text) {
-        Ok(()) => Ok(Json(serde_json::json!({ "valid": true }))),
-        Err(authz::AuthzError::Validation(errors)) => Ok(Json(
-            serde_json::json!({ "valid": false, "errors": errors }),
-        )),
-        Err(e) => Ok(Json(
-            serde_json::json!({ "valid": false, "errors": [e.to_string()] }),
-        )),
-    }
-}
-
-#[derive(Deserialize)]
-pub struct SimRequest {
-    principal: Ent,
-    action: String,
-    #[serde(default = "host_ent")]
-    resource: Ent,
-}
-
-#[derive(Deserialize)]
-pub struct SimulateBody {
-    #[serde(default)]
-    changes: Vec<PolicyChange>,
-    requests: Vec<SimRequest>,
+    let req: pb::ValidatePolicyRequest = proto_body(v, &[], &[])?;
+    Ok(Proto(StatusCode::OK, acc::validate_policy(&c, req)?))
 }
 
 pub async fn simulate_policy(
     c: Caller,
-    Json(body): Json<SimulateBody>,
+    Json(v): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Cluster, EntitySet::new())?;
-    if body.requests.len() > 100 {
-        return Err(err(
-            StatusCode::BAD_REQUEST,
-            "invalid",
-            "at most 100 requests",
-        ));
-    }
-    for ch in &body.changes {
-        if let Some(t) = &ch.text {
-            c.auth()
-                .engine
-                .validate_site_policy(&ch.id, t)
-                .map_err(|e| auth_error(e.into()))?;
-        }
-        let _ = &ch.description;
-    }
-    let (links, site) = candidate_inputs(&c, &body.changes)?;
-    let candidate = c
-        .auth()
-        .engine
-        .build(&links, &site)
-        .map_err(|e| auth_error(e.into()))?;
-    let (links, site) = c.auth().policy_inputs().map_err(auth_error)?;
-    let current = c
-        .auth()
-        .engine
-        .build(&links, &site)
-        .map_err(|e| auth_error(e.into()))?;
-    let mut out = Vec::new();
-    for r in &body.requests {
-        let Some(p) = c.auth().principal_for(&r.principal).map_err(auth_error)? else {
-            out.push(serde_json::json!({ "error": format!("{} not found", r.principal) }));
-            continue;
-        };
-        let Some(es) = resource_entities(&c, &r.resource).await else {
-            out.push(serde_json::json!({ "error": format!("{} not found", r.resource) }));
-            continue;
-        };
-        let before = c.auth().authorize_in(
-            Some(&current),
-            &p,
-            &r.action,
-            r.resource.clone(),
-            es.clone(),
-            &[],
-        );
-        let after =
-            c.auth()
-                .authorize_in(Some(&candidate), &p, &r.action, r.resource.clone(), es, &[]);
-        out.push(serde_json::json!({ "current": before, "candidate": after }));
-    }
-    Ok(Json(serde_json::json!({ "results": out })))
+    let req: pb::SimulatePolicyRequest = proto_body(v, &[], &[])?;
+    Ok(Proto(StatusCode::OK, acc::simulate_policy(&c, req).await?))
 }
 
-pub async fn reload_policies(c: Caller) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Cluster, EntitySet::new())?;
-    c.auth().reload_policies().map_err(auth_error)?;
-    Ok(StatusCode::NO_CONTENT)
+pub async fn reload_policies(c: Caller) -> Result<Response, ApiErr> {
+    acc::reload_policies(&c, Default::default())?;
+    Ok(super::proto_no_content())
 }
 
 // ---- audit (spec §10) ----------------------------------------------------
@@ -2026,42 +938,27 @@ pub struct AuditQuery {
     #[serde(default)]
     user: Option<String>,
     #[serde(default)]
-    limit: Option<usize>,
+    limit: Option<u32>,
 }
 
+/// `GET /audit` → `{entries}`.
 pub async fn read_audit(
     c: Caller,
     Query(q): Query<AuditQuery>,
 ) -> Result<impl IntoResponse, ApiErr> {
-    let all = c.allowed("readAudit", Ent::Cluster, EntitySet::new());
-    let project = match &q.project {
-        Some(p) => Some(c.target_project(Some(p))?),
-        None => None,
+    let req = pb::ReadAuditRequest {
+        since: q
+            .since
+            .map(|ms| buffa_types::google::protobuf::Timestamp {
+                seconds: (ms / 1000) as i64,
+                nanos: ((ms % 1000) * 1_000_000) as i32,
+                ..Default::default()
+            })
+            .into(),
+        project: q.project,
+        user: q.user,
+        limit: q.limit,
+        ..Default::default()
     };
-    if !all {
-        // Project owners read their project's entries.
-        match &project {
-            Some(p) => c.require_action(
-                "readProjectAudit",
-                Ent::Project(p.clone()),
-                super::project_entities(p),
-                &[],
-            )?,
-            None => c.require_action("readAudit", Ent::Cluster, EntitySet::new(), &[])?,
-        }
-    }
-    let limit = q.limit.unwrap_or(500).min(5000);
-    let entries = c
-        .auth()
-        .store
-        .audit(q.since.unwrap_or(0), limit, |e| {
-            project
-                .as_ref()
-                .is_none_or(|p| e.project.as_deref() == Some(p.as_str()))
-                && q.user.as_ref().is_none_or(|u| {
-                    e.principal.get("user").and_then(|v| v.as_str()) == Some(u.as_str())
-                })
-        })
-        .map_err(store_err)?;
-    Ok(Json(entries))
+    Ok(Proto(StatusCode::OK, acc::read_audit(&c, req)?))
 }

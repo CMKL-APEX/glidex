@@ -254,7 +254,8 @@ async fn create_project(cp: &Cp, name: &str) -> (StatusCode, Value) {
 async fn project_names(cp: &Cp) -> Vec<String> {
     let (s, v) = call(cp, "GET", "/projects", None, &[]).await;
     assert_eq!(s, StatusCode::OK, "{v}");
-    v.as_array()
+    v["projects"]
+        .as_array()
         .unwrap()
         .iter()
         .map(|p| p["name"].as_str().unwrap().to_string())
@@ -1672,7 +1673,7 @@ async fn the_scheduler_spreads_vms_honours_pins_and_disks_and_explains_itself() 
     // A disk bound to agent2 pulls its VM there.
     let a2 = agents[1].manager.local_node_id();
     let (_, projects) = call(&server, "GET", "/projects", None, &[]).await;
-    let project = projects.as_array().unwrap()[0]["id"]
+    let project = projects["projects"].as_array().unwrap()[0]["id"]
         .as_str()
         .unwrap()
         .to_string();
@@ -3216,7 +3217,7 @@ async fn a_detached_host_imports_into_another_cluster_with_its_vm_after_approval
     let v = vm_of(&v).clone();
     assert_eq!(v["node"], out["node_id"], "{v}");
     let (_, projects) = call(&b, "GET", "/projects", None, &[]).await;
-    let default_id = projects
+    let default_id = projects["projects"]
         .as_array()
         .unwrap()
         .iter()

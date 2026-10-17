@@ -55,7 +55,7 @@ const RENAMES: &[(&str, &str, &str)] = &[(
     "HYPERVISOR_CLOUD_HYPERVISOR",
 )];
 
-fn body<T: serde::de::DeserializeOwned>(v: Value) -> Result<T, ApiErr> {
+fn body<T: serde::de::DeserializeOwned + buffa::MessageName>(v: Value) -> Result<T, ApiErr> {
     proto_body(v, ENUMS, RENAMES)
 }
 

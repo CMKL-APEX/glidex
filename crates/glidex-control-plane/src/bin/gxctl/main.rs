@@ -1,5 +1,6 @@
 //! `gxctl`: interactive CLI for the glidex control plane (spec/cli.md).
 
+mod access;
 mod admin;
 mod client;
 mod config;
@@ -7,6 +8,7 @@ mod console;
 mod directory;
 mod storage;
 mod tenancy;
+mod usage;
 mod vm;
 
 use clap::Parser;
@@ -236,21 +238,7 @@ impl NodeRow {
     }
 }
 
-/// Project names by id (best effort: an empty map when not allowed).
-async fn project_names(client: &ApiClient) -> std::collections::HashMap<String, String> {
-    client
-        .request_json::<Vec<serde_json::Value>>(Method::GET, "/projects", None)
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|p| {
-            Some((
-                p["id"].as_str()?.to_string(),
-                p["name"].as_str()?.to_string(),
-            ))
-        })
-        .collect()
-}
+use access::project_names;
 
 #[derive(Debug, Deserialize, Tabled)]
 struct NetworkRow {
@@ -1201,12 +1189,8 @@ fn read_public_key_files(input: &str) -> Result<Vec<String>, String> {
 
 /// The signed-in user's name (the login name for local accounts).
 async fn signed_in_name(client: &CliClient) -> Option<String> {
-    let w: serde_json::Value = client
-        .request_json(Method::GET, "/auth/whoami", None)
-        .await
-        .ok()?;
-    w["user"]["display_name"]
-        .as_str()
+    let w = access::who_am_i(client).await.ok()?;
+    access::user_name(&w)
         .filter(|n| !n.is_empty())
         .map(str::to_string)
 }
@@ -1937,28 +1921,28 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
         "networks" | "nets" => list_networks(client).await,
 
         "network" | "net" => admin::network(client, &parts[1..]).await,
-        "whoami" => admin::whoami(client).await,
+        "whoami" => access::whoami(client).await,
         "cluster" => admin::cluster(client, &parts[1..]).await,
         "auth" => admin::auth(client, &parts[1..]).await,
         "login" => admin::login(client, &parts[1..]).await,
         "logout" => admin::logout(client, &parts[1..]).await,
         "ui" => admin::ui(),
-        "token" | "tokens" => admin::token(client, &parts[1..]).await,
+        "token" | "tokens" => access::token(client, &parts[1..]).await,
         "tenant" | "tenants" => tenancy::tenant(client, &parts[1..]).await,
         "admission" | "admissions" => tenancy::admission(client, &parts[1..]).await,
         "connector" | "connectors" => directory::connector(client, &parts[1..]).await,
-        "project" | "projects" => admin::project(client, &parts[1..]).await,
-        "binding" | "bindings" => admin::binding(client, &parts[1..]).await,
-        "system-binding" => admin::system_binding(client, &parts[1..]).await,
-        "user" | "users" => admin::user(client, &parts[1..]).await,
-        "team" | "teams" => admin::team(client, &parts[1..]).await,
-        "policy" | "policies" => admin::policy(client, &parts[1..]).await,
-        "audit" => admin::audit(client, &parts[1..]).await,
-        "usage" => admin::resource_usage(client, &parts[1..]).await,
-        "stats" => admin::stats(client, &parts[1..]).await,
-        "bandwidth" => admin::series(client, "bandwidth", &parts[1..]).await,
-        "io" => admin::series(client, "io", &parts[1..]).await,
-        "compute" => admin::series(client, "compute", &parts[1..]).await,
+        "project" | "projects" => access::project(client, &parts[1..]).await,
+        "binding" | "bindings" => access::binding(client, &parts[1..]).await,
+        "system-binding" => access::system_binding(client, &parts[1..]).await,
+        "user" | "users" => access::user(client, &parts[1..]).await,
+        "team" | "teams" => access::team(client, &parts[1..]).await,
+        "policy" | "policies" => access::policy(client, &parts[1..]).await,
+        "audit" => access::audit(client, &parts[1..]).await,
+        "usage" => usage::resource_usage(client, &parts[1..]).await,
+        "stats" => usage::stats(client, &parts[1..]).await,
+        "bandwidth" => usage::series(client, "bandwidth", &parts[1..]).await,
+        "io" => usage::series(client, "io", &parts[1..]).await,
+        "compute" => usage::series(client, "compute", &parts[1..]).await,
 
         "network-add" | "net-add" => handle_network_add(client, &parts[1..]).await,
 
@@ -2494,11 +2478,8 @@ mod tests {
         client.health_check().await.unwrap();
         assert!(client.list_vms().await.unwrap().is_empty());
 
-        let who: serde_json::Value = client
-            .request_json(Method::GET, "/auth/whoami", None)
-            .await
-            .unwrap();
-        assert_eq!(who["method"], "disabled");
+        let who = access::who_am_i(&client).await.unwrap();
+        assert_eq!(who.method, "disabled");
 
         let c = storage::create_credential(
             &client,
@@ -2513,11 +2494,20 @@ mod tests {
         assert_eq!(c.has_password, Some(false));
 
         // Scoped to a project by name: the request's `project`.
-        let projects: Vec<serde_json::Value> = client
-            .request_json(Method::GET, "/projects", None)
-            .await
-            .unwrap();
-        let project = projects[0]["name"].as_str().unwrap().to_string();
+        let projects = access::list_projects(&client).await.unwrap();
+        let project = projects[0].name.clone();
+        assert_eq!(
+            access::project_names(&client).await.get(&projects[0].id),
+            Some(&project)
+        );
+        // Teams on their RPC client, by name.
+        access::team(&client, &["create", "ops"]).await;
+        let t = client.rpc_transport().await.unwrap();
+        let teams =
+            glidex_api::proto::glidex::access::v1::TeamServiceClient::new(t.clone(), t.config());
+        let id = access::resolve_team(&teams, "ops").await.unwrap();
+        assert_eq!(access::resolve_team(&teams, &id).await.unwrap(), id);
+        assert!(access::resolve_team(&teams, "nope").await.is_err());
         client.set_project(Some(project.clone()));
         let creds = storage::list_credentials(&client).await.unwrap();
         assert_eq!(
@@ -2527,7 +2517,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["alice"]
         );
-        assert_eq!(creds[0].project, projects[0]["id"].as_str().unwrap());
+        assert_eq!(creds[0].project, projects[0].id);
         assert!(creds[0].updated_at.is_set());
         assert!(client.list_vms().await.unwrap().is_empty());
 

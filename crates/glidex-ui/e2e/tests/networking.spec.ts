@@ -12,8 +12,8 @@ async function cleanup() {
   for (const name of [NETWORK, OWNER_NETWORK]) {
     if ((await api<any[]>("/networks")).some((x) => x.name === name)) await del(`/networks/${name}?wait=30`);
   }
-  for (const t of (await api<any[]>("/tokens")).filter((t) => t.name === "e2e-net-owner")) await del(`/tokens/${t.id}`);
-  const p = (await api<any[]>("/projects")).find((x) => x.name === PROJECT);
+  for (const t of ((await api<{ tokens?: any[] }>("/tokens")).tokens ?? []).filter((t) => t.name === "e2e-net-owner")) await del(`/tokens/${t.id}`);
+  const p = ((await api<{ projects?: any[] }>("/projects")).projects ?? []).find((x) => x.name === PROJECT);
   if (p) await del(`/projects/${p.id}`);
 }
 
@@ -24,7 +24,7 @@ test("a project network is created from the Networking page", async ({ page }) =
   const status = await api("/ovs/status");
   test.skip(status?.netd?.access !== "full" || status?.host?.ovs_running !== true, "needs glidex-netd and a running Open vSwitch");
 
-  const project = await api("/projects", { method: "POST", body: { name: PROJECT } });
+  const project = (await api("/projects", { method: "POST", body: { name: PROJECT } })).project;
   await page.goto(`/projects/${project.id}`);
   await page.getByRole("link", { name: "Create a project network" }).click();
   await expect(page).toHaveURL(/\/networking/);
@@ -69,10 +69,10 @@ test.describe("as a project owner", () => {
     const status = await api("/ovs/status");
     test.skip(status?.netd?.access !== "full" || status?.host?.ovs_running !== true, "needs glidex-netd and a running Open vSwitch");
     const project =
-      (await api<any[]>("/projects")).find((x) => x.name === PROJECT) ?? (await api("/projects", { method: "POST", body: { name: PROJECT } }));
+      ((await api<{ projects?: any[] }>("/projects")).projects ?? []).find((x) => x.name === PROJECT) ?? ((await api("/projects", { method: "POST", body: { name: PROJECT } })).project);
     const t = await api("/tokens", {
       method: "POST",
-      body: { name: "e2e-net-owner", kind: "personal", expires_in_days: 1, roles: [{ role: "role.owner", project: project.id }] },
+      body: { name: "e2e-net-owner", kind: "TOKEN_KIND_PERSONAL", expires_in_days: 1, roles: [{ role: "role.owner", project: project.id }] },
     });
     expect(t.token, JSON.stringify(t)).toBeTruthy();
     const context = await browser.newContext({

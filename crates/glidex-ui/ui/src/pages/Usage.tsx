@@ -54,7 +54,8 @@ function thisMonth(): string {
 }
 
 function who(r: { [k in GroupKey]?: Named }, group: GroupKey): string {
-  return r[group]?.name ?? (group === "project" ? "(host)" : "—");
+  const k = r[group];
+  return k ? k.name || k.id : group === "project" ? "(host)" : "—";
 }
 
 function n(v: number | null | undefined, digits = 1): string {
@@ -68,7 +69,8 @@ function Flags({ flags }: { flags?: string[] }) {
 }
 
 function UsageTable({ data, group }: { data: UsageResponse; group: GroupKey }) {
-  const cols = (group === "network" ? NETWORK_METERS : USAGE_METERS).filter(([m]) => data.rows.some((r) => r.meters[m]));
+  const rows = data.rows ?? [];
+  const cols = (group === "network" ? NETWORK_METERS : USAGE_METERS).filter(([m]) => rows.some((r) => r.meters?.[m]));
   return (
     <table className="w-full text-sm">
       <thead className="bg-gray-50">
@@ -82,7 +84,7 @@ function UsageTable({ data, group }: { data: UsageResponse; group: GroupKey }) {
         </tr>
       </thead>
       <tbody>
-        {data.rows.map((r: UsageRow, i) => (
+        {rows.map((r: UsageRow, i) => (
           <tr key={i} className="border-t border-gray-100">
             <td className={td}>
               {who(r, group)}
@@ -90,9 +92,9 @@ function UsageTable({ data, group }: { data: UsageResponse; group: GroupKey }) {
             </td>
             {cols.map(([m]) => (
               <td key={m} className={tdNum}>
-                {r.meters[m] ? (
+                {r.meters?.[m] ? (
                   <>
-                    {n(r.meters[m].value, 2)} <span className="text-xs text-gray-500">{r.meters[m].unit}</span>
+                    {n(r.meters[m].value ?? 0, 2)} <span className="text-xs text-gray-500">{r.meters[m].unit}</span>
                   </>
                 ) : (
                   "—"
@@ -122,7 +124,7 @@ function BandwidthTable({ data, group }: { data: RateResponse; group: GroupKey }
         </tr>
       </thead>
       <tbody>
-        {data.rows.map((r: RateRow, i) => (
+        {(data.rows ?? []).map((r: RateRow, i) => (
           <tr key={i} className="border-t border-gray-100">
             <td className={td}>{who(r, group)}</td>
             <td className={tdNum}>{net ? n(r.avg?.mbps) : `${n(r.avg?.rx_mbps)} / ${n(r.avg?.tx_mbps)}`}</td>
@@ -130,7 +132,7 @@ function BandwidthTable({ data, group }: { data: RateResponse; group: GroupKey }
             <td className={tdNum}>{net ? n(r.p95?.billable_mbps) : `${n(r.p95?.rx_mbps)} / ${n(r.p95?.tx_mbps)}`}</td>
             <td className={`${tdNum} font-medium`}>{n(r.p95?.billable_mbps)}</td>
             <td className={tdNum}>{n(r.p95?.ext_billable_mbps)}</td>
-            <td className={tdNum}>{r.slots ? r.slots.counted : "—"}</td>
+            <td className={tdNum}>{r.slots ? (r.slots.counted ?? 0) : "—"}</td>
           </tr>
         ))}
       </tbody>
@@ -153,14 +155,14 @@ function DiskIoTable({ data, group }: { data: RateResponse; group: GroupKey }) {
         </tr>
       </thead>
       <tbody>
-        {data.rows.map((r: RateRow, i) => (
+        {(data.rows ?? []).map((r: RateRow, i) => (
           <tr key={i} className="border-t border-gray-100">
             <td className={td}>{who(r, group)}</td>
             <td className={tdNum}>
               {n(r.avg?.read_iops)} / {n(r.avg?.write_iops)}
             </td>
             <td className={tdNum}>
-              {r.latency_source === "none" ? (
+              {r.latency_source === "LATENCY_SOURCE_NONE" ? (
                 <span className="text-xs text-gray-500">not available</span>
               ) : (
                 `${n(r.avg?.read_latency_ms, 2)} / ${n(r.avg?.write_latency_ms, 2)}`
@@ -198,7 +200,7 @@ function ComputeTable({ data, group }: { data: RateResponse; group: GroupKey }) 
         </tr>
       </thead>
       <tbody>
-        {data.rows.map((r: RateRow, i) => (
+        {(data.rows ?? []).map((r: RateRow, i) => (
           <tr key={i} className="border-t border-gray-100">
             <td className={td}>{who(r, group)}</td>
             <td className={tdNum}>
@@ -265,7 +267,7 @@ export default function Usage() {
     tab === "usage"
       ? usage &&
         `${Date.parse(usage.complete_through) > 0 ? `Complete through ${new Date(usage.complete_through).toLocaleString()}` : "No hour closed yet"} · ${usage.timezone}`
-      : rates && `${rates.final ? "Final" : "Month to date"} · ${rates.timezone}${rates.from_final_figures ? " · stored monthly figures" : ""}`;
+      : rates && `${rates.final ? "Final" : "Month to date"} · ${rates.timezone ?? ""}${rates.from_final_figures ? " · stored monthly figures" : ""}`;
 
   return (
     <div>
@@ -323,7 +325,7 @@ export default function Usage() {
       ) : data ? (
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-x-auto">
           <div className="px-3 py-2 text-xs text-gray-500 border-b border-gray-100">{status}</div>
-          {data.rows.length === 0 ? (
+          {(data.rows ?? []).length === 0 ? (
             <p className="p-6 text-sm text-gray-500">Nothing recorded for this month.</p>
           ) : tab === "usage" ? (
             <UsageTable data={usage!} group={g} />

@@ -8,7 +8,7 @@ const POLL_MS = 30_000;
 
 function points(s: SeriesResponse | null, keys: string[]): ChartPoint[] {
   return (s?.points ?? []).map((p) => ({
-    t: Date.parse(p.slot as string),
+    t: Date.parse(p.slot),
     values: Object.fromEntries(keys.map((k) => [k, typeof p[k] === "number" ? (p[k] as number) : undefined])),
   }));
 }
@@ -69,8 +69,8 @@ export default function VmUsage({ vmId, hypervisor }: { vmId: string; hypervisor
 
   if (error) return <p className="text-sm text-gray-500">{error}</p>;
 
-  const nicSum = (k: string) => stats?.nics.reduce((a, n) => a + (n.values[k] ?? 0), 0) ?? null;
-  const diskSum = (k: string) => stats?.disks.reduce((a, d) => a + (d.values[k] ?? 0), 0) ?? null;
+  const nicSum = (k: string) => (stats ? (stats.nics ?? []).reduce((a, n) => a + (n.values?.[k] ?? 0), 0) : null);
+  const diskSum = (k: string) => (stats ? (stats.disks ?? []).reduce((a, d) => a + (d.values?.[k] ?? 0), 0) : null);
   const bwP95 = num(bw?.p95?.billable_mbps);
   const ioP95 = num(io?.p95?.billable_iops);
   const cpuP95 = num(cm?.p95?.cpu_percent);

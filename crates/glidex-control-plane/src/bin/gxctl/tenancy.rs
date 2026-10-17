@@ -16,11 +16,10 @@ pub(crate) fn usage(u: &str) {
     println!("{}", u.yellow());
 }
 
-/// A connectrpc error as gxctl shows errors: the message, and the stable
-/// code when the server sent one (`ErrorInfo.reason`).
-pub(crate) fn rpc_err(e: connectrpc::ConnectError) -> String {
-    let reason = e
-        .details
+/// The stable error code of a connectrpc error (`ErrorInfo.reason`),
+/// when the server sent one.
+pub(crate) fn rpc_reason(e: &connectrpc::ConnectError) -> Option<String> {
+    e.details
         .iter()
         .find(|d| d.type_url.ends_with("google.rpc.ErrorInfo"))
         .and_then(|d| d.value.as_deref())
@@ -34,12 +33,17 @@ pub(crate) fn rpc_err(e: connectrpc::ConnectError) -> String {
             <glidex_api::proto::google::rpc::ErrorInfo as buffa::Message>::decode_from_slice(&b)
                 .ok()
         })
-        .map(|i| i.reason);
+        .map(|i| i.reason)
+}
+
+/// A connectrpc error as gxctl shows errors: the message, and the stable
+/// code when the server sent one (`ErrorInfo.reason`).
+pub(crate) fn rpc_err(e: connectrpc::ConnectError) -> String {
     let msg = e
         .message
         .clone()
         .unwrap_or_else(|| e.code.as_str().to_string());
-    match reason {
+    match rpc_reason(&e) {
         Some(r) => format!("{msg} ({r})"),
         None => msg,
     }
@@ -378,7 +382,7 @@ pub async fn tenant(client: &ApiClient, args: &[&str]) {
     }
 }
 
-fn principal_ref(s: &str) -> Result<EntityRef, String> {
+pub(crate) fn principal_ref(s: &str) -> Result<EntityRef, String> {
     let v = parse_principal(s)?;
     Ok(EntityRef {
         r#type: v["type"].as_str().unwrap_or_default().into(),

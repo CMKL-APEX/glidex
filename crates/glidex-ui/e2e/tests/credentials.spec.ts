@@ -6,7 +6,7 @@ const KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9o
 const USER = "e2e-keys";
 
 async function defaultProject(): Promise<string> {
-  const projects = await api<{ id: string; name: string }[]>("/projects");
+  const projects = (await api<{ projects?: { id: string; name: string }[] }>("/projects")).projects ?? [];
   return projects.find((p) => p.name === "default")!.id;
 }
 

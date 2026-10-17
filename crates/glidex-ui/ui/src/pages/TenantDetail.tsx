@@ -42,11 +42,11 @@ type Cap = (typeof CAPS)[number];
 function asBinding(tenant: string, b: TenantBinding): Binding {
   return {
     id: b.id,
-    template: b.role,
+    role: b.role,
     principal: b.principal,
     resource: { type: "Tenant", id: tenant },
-    created_by: b.created_by ?? "",
-    created_at: b.created_at ? Math.floor(Date.parse(b.created_at) / 1000) : 0,
+    created_by: b.created_by,
+    created_at: b.created_at,
     principal_name: b.principal_name || undefined,
   };
 }

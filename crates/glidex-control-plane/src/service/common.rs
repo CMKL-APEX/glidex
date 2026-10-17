@@ -79,3 +79,44 @@ pub fn event_pb(e: &crate::store::Event) -> pb::Event {
         ..Default::default()
     }
 }
+
+/// A Cedar entity as `{type, id}`.
+pub fn entity_ref(e: &crate::authz::Ent) -> glidex_api::proto::glidex::api::v1::EntityRef {
+    glidex_api::proto::glidex::api::v1::EntityRef {
+        r#type: e.type_name().into(),
+        id: Some(e.id().into_owned()),
+        ..Default::default()
+    }
+}
+
+/// Any Cedar entity from `{type, id}` (singletons without an id).
+pub fn entity_of(
+    r: &glidex_api::proto::glidex::api::v1::EntityRef,
+) -> super::ServiceResult<crate::authz::Ent> {
+    let mut v = serde_json::json!({ "type": r.r#type });
+    if let Some(id) = &r.id {
+        v["id"] = serde_json::json!(id);
+    }
+    serde_json::from_value(v).map_err(|_| {
+        super::ServiceError::new(
+            axum::http::StatusCode::BAD_REQUEST,
+            "invalid",
+            format!("no such entity type: {}", r.r#type),
+        )
+    })
+}
+
+/// A principal from `{type, id}`: a user, team or token.
+pub fn principal_of(
+    r: &glidex_api::proto::glidex::api::v1::EntityRef,
+) -> super::ServiceResult<crate::authz::Ent> {
+    use crate::authz::Ent;
+    match entity_of(r)? {
+        e @ (Ent::User(_) | Ent::Team(_) | Ent::Token(_)) => Ok(e),
+        _ => Err(super::ServiceError::new(
+            axum::http::StatusCode::BAD_REQUEST,
+            "invalid",
+            "principal must be a User, Team or Token with an id",
+        )),
+    }
+}

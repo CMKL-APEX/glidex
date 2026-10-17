@@ -11,7 +11,7 @@ import type {
   SitePolicy,
   SitePolicyVersion,
 } from "../types";
-import { formatTime, isSingleton } from "../types";
+import { formatTimestamp, isSingleton, num, policySource } from "../types";
 import { Loading } from "../components/Loading";
 import Modal from "../components/Modal";
 import { Badge, Card, ErrorBanner, PageHeader, errorMessage, inputClass, primaryButton, secondaryButton } from "../components/ui";
@@ -149,7 +149,7 @@ function History({ id, onRestore }: { id: string; onRestore: (v: SitePolicyVersi
   useEffect(() => {
     api
       .policyVersions(id)
-      .then((v) => setVersions([...v].sort((a, b) => b.version - a.version)))
+      .then((v) => setVersions([...v].sort((a, b) => num(b.version) - num(a.version))))
       .catch((e) => setError(errorMessage(e)));
   }, [id]);
   if (error) return <p className="text-sm text-red-600">{error}</p>;
@@ -158,11 +158,11 @@ function History({ id, onRestore }: { id: string; onRestore: (v: SitePolicyVersi
   return (
     <div className="max-h-[60vh] overflow-y-auto space-y-3">
       {versions.map((v) => (
-        <div key={v.version} className="border border-gray-200 rounded-lg p-3">
+        <div key={String(v.version ?? 0)} className="border border-gray-200 rounded-lg p-3">
           <div className="flex items-center justify-between text-sm">
             <span>
-              <span className="font-medium">v{v.version}</span> · {v.author.slice(0, 8)} · {new Date(v.time * 1000).toLocaleString()}{" "}
-              {v.deleted ? <Badge kind="denied">deleted</Badge> : !v.enabled && <Badge kind="muted">disabled</Badge>}
+              <span className="font-medium">v{num(v.version)}</span> · {(v.author ?? "").slice(0, 8)} · {formatTimestamp(v.time)}{" "}
+              {v.deleted ? <Badge kind="denied">deleted</Badge> : v.enabled === false && <Badge kind="muted">disabled</Badge>}
             </span>
             {!v.deleted && (
               <button className="text-sm text-sky-700 hover:underline" onClick={() => onRestore(v)}>
@@ -205,9 +205,15 @@ export default function Policies() {
 
   const rows = useMemo<Row[]>(() => {
     if (!data) return [];
-    const out: Row[] = data.policies.map((p) => ({ ...p, site: data.site.find((s) => s.id === p.id) }));
+    const out: Row[] = data.policies.map((p) => ({
+      id: p.id,
+      source: policySource(p.source) || "base",
+      template: !!p.template,
+      text: p.text ?? "",
+      site: data.site.find((s) => s.id === p.id),
+    }));
     for (const s of data.site) {
-      if (!out.some((r) => r.id === s.id)) out.push({ id: s.id, source: "site", template: false, text: s.text, site: s });
+      if (!out.some((r) => r.id === s.id)) out.push({ id: s.id, source: "site", template: false, text: s.text ?? "", site: s });
     }
     const order = (s: PolicySource) => SOURCES.indexOf(s);
     return out.sort((a, b) => order(a.source) - order(b.source) || a.id.localeCompare(b.id));
@@ -228,7 +234,7 @@ export default function Policies() {
             text: r.site?.text ?? r.text,
             description: r.site?.description ?? "",
             enabled: r.site?.enabled ?? true,
-            version: r.site?.version ?? 0,
+            version: num(r.site?.version),
           }
         : null,
     );
@@ -290,8 +296,8 @@ export default function Policies() {
         enabled: draft.enabled,
         version: draft.version,
       });
-      setStatus({ kind: "ok", text: `Saved${saved ? ` as version ${saved.version}` : ""}.` });
-      if (saved) setDraft({ ...draft, version: saved.version });
+      setStatus({ kind: "ok", text: `Saved${saved ? ` as version ${num(saved.version)}` : ""}.` });
+      if (saved) setDraft({ ...draft, version: num(saved.version) });
       setSelected(draft.id);
       await refresh();
     } catch (e) {
@@ -375,7 +381,7 @@ export default function Policies() {
                     <span className="font-mono truncate">{r.id}</span>
                     <span className="flex items-center gap-1 shrink-0">
                       {r.template && <Badge kind="muted">template</Badge>}
-                      {r.site && !r.site.enabled && <Badge kind="muted">disabled</Badge>}
+                      {r.site && r.site.enabled === false && <Badge kind="muted">disabled</Badge>}
                       <Badge kind={r.source}>{r.source}</Badge>
                     </span>
                   </button>
@@ -483,7 +489,7 @@ export default function Policies() {
                 <pre className="text-xs font-mono bg-gray-50 p-3 rounded-lg overflow-x-auto whitespace-pre-wrap">{row.text}</pre>
                 {row.site && (
                   <p className="mt-2 text-xs text-gray-500">
-                    version {row.site.version} · updated {formatTime(row.site.updated_at)} by {row.site.updated_by.slice(0, 8)}
+                    version {num(row.site.version)} · updated {formatTimestamp(row.site.updated_at)} by {(row.site.updated_by ?? "").slice(0, 8)}
                   </p>
                 )}
               </Card>
@@ -519,22 +525,22 @@ export default function Policies() {
                               {q.resource.type}
                               {"id" in q.resource ? `:${q.resource.id.slice(0, 12)}` : ""}
                             </td>
-                            {r && "error" in r ? (
+                            {r && r.error !== undefined ? (
                               <td colSpan={2} className="py-2 text-red-600 text-xs">
                                 {r.error}
                               </td>
                             ) : r ? (
                               <>
                                 <td className="py-2">
-                                  <DecisionBadge allowed={r.current.allowed} />
-                                  <div className="text-xs text-gray-500 font-mono">{r.current.policies.join(", ")}</div>
+                                  <DecisionBadge allowed={!!r.current?.allowed} />
+                                  <div className="text-xs text-gray-500 font-mono">{(r.current?.policies ?? []).join(", ")}</div>
                                 </td>
                                 <td className="py-2">
-                                  <DecisionBadge allowed={r.candidate.allowed} />
-                                  {r.candidate.allowed !== r.current.allowed && (
+                                  <DecisionBadge allowed={!!r.candidate?.allowed} />
+                                  {!!r.candidate?.allowed !== !!r.current?.allowed && (
                                     <span className="ml-1 text-xs font-medium text-amber-700">changed</span>
                                   )}
-                                  <div className="text-xs text-gray-500 font-mono">{r.candidate.policies.join(", ")}</div>
+                                  <div className="text-xs text-gray-500 font-mono">{(r.candidate?.policies ?? []).join(", ")}</div>
                                 </td>
                               </>
                             ) : (
@@ -575,11 +581,11 @@ export default function Policies() {
               const base = draft ?? {
                 id: v.id,
                 description: row?.site?.description ?? "",
-                enabled: v.enabled,
-                version: row?.site?.version ?? 0,
-                text: v.text,
+                enabled: v.enabled ?? true,
+                version: num(row?.site?.version),
+                text: v.text ?? "",
               };
-              setDraft({ ...base, text: v.text, enabled: v.enabled });
+              setDraft({ ...base, text: v.text ?? "", enabled: v.enabled ?? true });
               setHistory(false);
             }}
           />

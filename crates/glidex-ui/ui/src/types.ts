@@ -886,55 +886,75 @@ export interface AuthMethods {
   connectors?: LoginConnector[];
 }
 
-export interface User {
-  id: string;
-  display_name: string;
-  disabled: boolean;
-  default_project?: string;
-  created_at: number;
-}
+// The access routes (projects, bindings, users, teams, tokens, policies,
+// audit, capability checks, whoami) answer in the proto3 JSON shape of
+// glidex.access.v1 (spec/grpc.md §9.1): timestamps RFC 3339, enums by their
+// full names, 64-bit numbers as strings, fields at their default left out.
 
 export interface Identity {
   provider: string;
   subject: string;
   user_id: string;
   email?: string;
-  created_at: number;
+  /** RFC 3339. */
+  created_at?: string;
 }
 
-export interface UserView extends User {
-  identities: Identity[];
+/** A user (glidex.access.v1.User). */
+export interface User {
+  id: string;
+  display_name: string;
+  disabled?: boolean;
+  default_project?: string;
+  /** RFC 3339. */
+  created_at?: string;
+  /** Sent by `GET /users`. */
+  identities?: Identity[];
 }
 
+export type UserView = User;
+
+export interface ProjectRole {
+  project: string;
+  project_name?: string;
+  role: string;
+  via: EntityRef;
+}
+
+/** `GET /auth/whoami` and a PAM login's answer (glidex.system.v1.WhoAmIResponse). */
 export interface WhoAmI {
-  user: User | null;
-  token: { id: string; name: string } | null;
+  /** Absent for a service-account token. */
+  user_id?: string;
+  display_name?: string;
   method: "peer" | "pam" | "oidc" | "token" | "disabled";
-  teams: string[];
-  break_glass: boolean;
-  csrf: string | null;
-  host_roles: string[];
-  project_roles: { project: string; project_name?: string | null; role: string; via: EntityRef }[];
-  default_project: string | null;
+  token_id?: string;
+  teams?: string[];
+  break_glass?: boolean;
+  host_roles?: string[];
+  project_roles?: ProjectRole[];
+  default_project?: string;
+  mfa?: boolean;
+  directory_id?: string;
+  /** Absent for a service-account token. */
+  user?: User;
+  /** The token the caller presented. */
+  token?: { id: string; name: string; device?: string; client?: string };
+  /** A browser session's CSRF value. */
+  csrf?: string;
 }
 
-export interface Quotas {
-  vms: number | null;
-  vcpus: number | null;
-  memory_mib: number | null;
-  disk_gib: number | null;
-  running_vms: number | null;
-  networks: number | null;
-  /** VPC routers, and those with an external address (spec/clustering.md §11.2a). */
-  routers: number | null;
-  external_ips: number | null;
-}
+export type QuotaKey = "vms" | "vcpus" | "memory_mib" | "disk_gib" | "running_vms" | "networks" | "routers" | "external_ips";
 
-export type Usage = { [K in keyof Quotas]: number };
+/** Limits (glidex.tenancy.v1.Quotas): an absent one is unlimited. VPC routers,
+ * and those with an external address, are spec/clustering.md §11.2a. */
+export type Quotas = Partial<Record<QuotaKey, number>>;
 
-export const QUOTA_KEYS: (keyof Quotas)[] = ["vms", "running_vms", "vcpus", "memory_mib", "disk_gib", "networks", "routers", "external_ips"];
+/** What a project uses; a count of zero is left out. */
+export type Usage = Partial<Record<QuotaKey, number>>;
 
-export const QUOTA_LABELS: Record<keyof Quotas, string> = {
+export const QUOTA_KEYS: QuotaKey[] = ["vms", "running_vms", "vcpus", "memory_mib", "disk_gib", "networks", "routers", "external_ips"];
+
+export const QUOTA_LABELS: Record<QuotaKey, string> = {
   vms: "VMs",
   running_vms: "Running VMs",
   vcpus: "vCPUs",
@@ -945,43 +965,48 @@ export const QUOTA_LABELS: Record<keyof Quotas, string> = {
   external_ips: "External IPs",
 };
 
+/** A project (glidex.access.v1.Project). */
 export interface Project {
   id: string;
   name: string;
-  /** The tenant owning it (spec/tenancy.md D1); absent from older servers. */
+  /** The tenant owning it (spec/tenancy.md D1). */
   tenant_id?: string;
-  description: string;
-  quotas: Quotas;
-  created_at: number;
+  description?: string;
+  quotas?: Quotas;
+  /** RFC 3339. */
+  created_at?: string;
+  /** On list and get only. */
+  usage?: Usage;
 }
 
-export interface ProjectView extends Project {
-  usage: Usage;
-}
+export type ProjectView = Project;
 
 export interface TeamMember {
   user_id: string;
-  source: "manual" | "pam" | "oidc";
+  /** `manual`, `pam`, `oidc` or `connector:<id>`. */
+  source: string;
 }
 
 export interface Team {
   id: string;
   name: string;
-  members: TeamMember[];
-  created_at: number;
+  members?: TeamMember[];
+  /** RFC 3339. */
+  created_at?: string;
 }
 
-/** A role link (a Cedar template-linked policy). */
+/** A role link (a Cedar template-linked policy; glidex.access.v1.Binding). */
 export interface Binding {
   id: string;
-  template: string;
+  role: string;
   principal: EntityRef;
-  resource: EntityRef;
-  created_by: string;
-  created_at: number;
   /** The principal's display name (user), team or token name, for callers
    * who may read the link but not list users or teams. */
   principal_name?: string;
+  resource?: EntityRef;
+  created_by?: string;
+  /** RFC 3339. */
+  created_at?: string;
 }
 
 export const PROJECT_ROLES = ["role.viewer", "role.operator", "role.editor", "role.owner"] as const;
@@ -993,30 +1018,40 @@ export const HOST_ROLES = [
   "grant.host-paths",
 ] as const;
 
-export function roleLabel(template: string): string {
-  return template.replace(/^(role|grant)\./, "");
+export function roleLabel(role: string): string {
+  return role.replace(/^(role|grant)\./, "");
 }
 
+export type TokenKind = "TOKEN_KIND_PERSONAL" | "TOKEN_KIND_SERVICE_ACCOUNT";
+
+/** An API token (glidex.access.v1.Token); never its secret. */
 export interface ApiToken {
   id: string;
   name: string;
-  kind: "personal" | "service_account";
+  kind?: TokenKind;
   owner?: string;
   project?: string;
-  created_by: string;
-  created_at: number;
-  expires_at: number;
-  last_used_at?: number;
+  created_by?: string;
+  /** RFC 3339, like the other times. */
+  created_at?: string;
+  expires_at?: string;
+  last_used_at?: string;
   last_used_from?: string;
-  roles: Binding[];
+  device?: string;
+  client?: string;
+  roles?: Binding[];
 }
+
+export const isServiceToken = (t: Pick<ApiToken, "kind">) => t.kind === "TOKEN_KIND_SERVICE_ACCOUNT";
 
 export interface CreateTokenRequest {
   name: string;
   expires_in_days?: number;
-  kind?: "personal" | "service_account";
+  kind?: TokenKind;
   project?: string;
   roles?: { role: string; project?: string }[];
+  device?: string;
+  client?: string;
 }
 
 export interface CreatedToken {
@@ -1026,37 +1061,47 @@ export interface CreatedToken {
 }
 
 export type PolicySource = "base" | "role" | "link" | "site" | "file";
+export type ProtoPolicySource = `POLICY_SOURCE_${Uppercase<PolicySource>}`;
 
-export interface PolicyInfo {
+/** `POLICY_SOURCE_SITE` → `site`. */
+export const policySource = (s: ProtoPolicySource | undefined) => enumLabel(s, "POLICY_SOURCE_") as PolicySource | "";
+
+/** A policy the engine has loaded (glidex.access.v1.LoadedPolicy). */
+export interface LoadedPolicy {
   id: string;
-  source: PolicySource;
-  template: boolean;
-  text: string;
+  source?: ProtoPolicySource;
+  template?: boolean;
+  text?: string;
 }
+
+export type PolicyInfo = LoadedPolicy;
 
 export interface SitePolicy {
   id: string;
-  text: string;
-  description: string;
-  enabled: boolean;
-  version: number;
-  updated_by: string;
-  updated_at: number;
+  text?: string;
+  description?: string;
+  enabled?: boolean;
+  /** uint64: read with `num`. */
+  version?: U64;
+  updated_by?: string;
+  /** RFC 3339. */
+  updated_at?: string;
 }
 
 export interface SitePolicyVersion {
   id: string;
-  version: number;
-  text: string;
-  enabled: boolean;
-  author: string;
-  time: number;
-  deleted: boolean;
+  version?: U64;
+  text?: string;
+  enabled?: boolean;
+  author?: string;
+  /** RFC 3339. */
+  time?: string;
+  deleted?: boolean;
 }
 
 export interface Decision {
-  allowed: boolean;
-  policies: string[];
+  allowed?: boolean;
+  policies?: string[];
   errors?: string[];
 }
 
@@ -1066,7 +1111,12 @@ export interface SimulationRequest {
   resource: EntityRef;
 }
 
-export type SimulationResult = { current: Decision; candidate: Decision } | { error: string };
+/** One simulated request: `error`, or the decisions now and with the change. */
+export interface SimulationResult {
+  error?: string;
+  current?: Decision;
+  candidate?: Decision;
+}
 
 export interface PolicyChange {
   id: string;
@@ -1077,11 +1127,11 @@ export interface PolicyChange {
 }
 
 export interface AuditEntry {
-  /** Unix milliseconds. */
-  time: number;
+  /** RFC 3339, with milliseconds. */
+  time: string;
   request_id: string;
-  /** Null for unauthenticated requests; `{ system }` for the control plane's own writes. */
-  principal: { user?: string | null; name?: string | null; token?: string | null; method?: string; system?: string; [k: string]: unknown } | null;
+  /** Absent for unauthenticated requests; `{ system }` for the control plane's own writes. */
+  principal?: { user?: string | null; name?: string | null; token?: string | null; method?: string; system?: string; [k: string]: unknown } | null;
   source: string;
   action: string;
   project?: string;
@@ -1105,20 +1155,27 @@ export function formatTime(secs: number | undefined | null): string {
   return new Date(secs * 1000).toLocaleString();
 }
 
-// ---- usage (spec/metering.md §9) ---------------------------------------------
+// ---- usage (spec/metering.md §9; glidex.usage.v1, proto JSON shape) ---------
+// Fields at their default are left out (empty lists, maps and strings),
+// 64-bit numbers are strings, enums are their proto names.
 
 export interface Named {
   id: string;
-  name: string;
+  name?: string;
 }
 
 export interface MeterValue {
-  raw: number;
-  value: number;
-  unit: string;
+  /** uint64, as a string. */
+  raw?: string;
+  value?: number;
+  unit?: string;
 }
 
+/** What the UI groups by; requests send these words. */
 export type GroupKey = "project" | "vm" | "disk" | "nic" | "network" | "node";
+/** The same keys in answers (`GROUP_KEY_VM`). */
+export type ProtoGroupKey = `GROUP_KEY_${Uppercase<GroupKey>}`;
+export type Granularity = "GRANULARITY_HOUR" | "GRANULARITY_DAY" | "GRANULARITY_MONTH";
 
 export interface UsageRow {
   start: string;
@@ -1128,20 +1185,29 @@ export interface UsageRow {
   disk?: Named;
   nic?: Named;
   network?: Named;
-  meters: Record<string, MeterValue>;
+  node?: Named;
+  meters?: Record<string, MeterValue>;
   flags?: string[];
 }
 
 export interface UsageResponse {
   from: string;
   to: string;
-  granularity: string;
-  timezone: string;
-  group_by: GroupKey[];
-  rows: UsageRow[];
+  granularity?: Granularity;
+  timezone?: string;
+  group_by?: ProtoGroupKey[];
+  rows?: UsageRow[];
   complete_through: string;
   metering_started_at: string;
 }
+
+export interface SlotCounts {
+  counted?: number;
+  interpolated?: number;
+}
+
+/** Averages, peaks or p95s of one family; absent when unknown. */
+export type Rates = Record<string, number | undefined> & { slots?: SlotCounts };
 
 export interface RateRow {
   project?: Named;
@@ -1149,48 +1215,52 @@ export interface RateRow {
   disk?: Named;
   nic?: Named;
   network?: Named;
-  avg?: Record<string, number | null>;
-  peak?: Record<string, number | null>;
-  p95?: Record<string, number | null>;
-  slots?: { counted: number; interpolated: number };
-  latency_source?: "counter" | "none";
+  node?: Named;
+  avg?: Rates;
+  peak?: Rates;
+  p95?: Rates;
+  slots?: SlotCounts;
+  latency_source?: "LATENCY_SOURCE_COUNTER" | "LATENCY_SOURCE_NONE";
 }
 
 export interface RateResponse {
-  month: string | null;
+  /** Set for a billing month. */
+  month?: string;
   from: string;
   to: string;
-  timezone: string;
-  final: boolean;
-  from_final_figures: boolean;
-  group_by: GroupKey[];
-  rows: RateRow[];
+  timezone?: string;
+  final?: boolean;
+  from_final_figures?: boolean;
+  group_by?: ProtoGroupKey[];
+  rows?: RateRow[];
 }
 
-/** One 5-minute point of a series; keys depend on the series. */
-export type SeriesPoint = { slot: string } & Record<string, number | string>;
+/** One 5-minute point of a series; which rates are set depends on the series. */
+export type SeriesPoint = { slot: string } & Partial<Record<string, number | string>>;
 
 export interface SeriesResponse {
   from: string;
   to: string;
-  points: SeriesPoint[];
-  p95?: Record<string, number | null | { counted: number; interpolated: number }>;
+  points?: SeriesPoint[];
+  p95?: Rates;
+  /** `GET /vms/{id}/io`: disk id → that disk's series. */
   disks?: Record<string, SeriesResponse>;
 }
 
 export interface LiveEntry {
   id: string;
-  name: string;
-  network?: string | null;
-  values: Record<string, number>;
+  name?: string;
+  network?: string;
+  values?: Record<string, number>;
 }
 
 export interface VmStats {
-  sampled_at: string | null;
-  resolution_secs: number;
-  vm: Record<string, number> | null;
-  nics: LiveEntry[];
-  disks: LiveEntry[];
+  /** Absent when there is no recent sample. */
+  sampled_at?: string;
+  resolution_secs?: number;
+  vm?: Record<string, number>;
+  nics?: LiveEntry[];
+  disks?: LiveEntry[];
 }
 
 // ---- nodes (spec/clustering.md §7) -------------------------------------------
@@ -1416,7 +1486,7 @@ export interface ImportPlanView {
 // may be left out.
 
 /** A tenant or admission cap; an absent field is unlimited. */
-export type TenantQuotas = Partial<Record<keyof Quotas, number>>;
+export type TenantQuotas = Quotas;
 
 export type AdmissionStatus = "ADMISSION_STATUS_UNSPECIFIED" | "ADMISSION_STATUS_ADMITTED" | "ADMISSION_STATUS_SUSPENDED";
 

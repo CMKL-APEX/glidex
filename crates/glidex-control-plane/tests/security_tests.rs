@@ -329,7 +329,7 @@ async fn project_members_are_listed_with_names() {
         .call("GET", &format!("/projects/{pa}/bindings"), None, &v)
         .await;
     assert_eq!(s, StatusCode::OK, "{body}");
-    let mut names: Vec<(String, String)> = body
+    let mut names: Vec<(String, String)> = body["bindings"]
         .as_array()
         .unwrap()
         .iter()
@@ -422,7 +422,7 @@ async fn quotas_are_enforced_and_system_admin_may_exceed() {
     let (s, v, _) = h.call("POST", "/vms", Some(vm_body("v3", "pa")), &a).await;
     assert_eq!(s, StatusCode::CREATED, "{v}");
     let (_, project, _) = h.call("GET", &format!("/projects/{pa}"), None, &a).await;
-    assert_eq!(project["usage"]["vms"], 2);
+    assert_eq!(project["project"]["usage"]["vms"], 2);
     // The overrun is audited.
     let entries = h
         .app
@@ -599,9 +599,9 @@ async fn tokens_are_capped_by_their_links_and_owner() {
     assert_eq!(s, StatusCode::FORBIDDEN);
     // Listed (without the secret), then revoked.
     let (_, list, _) = h.call("GET", "/tokens", None, &session).await;
-    assert_eq!(list.as_array().unwrap().len(), 1);
+    assert_eq!(list["tokens"].as_array().unwrap().len(), 1);
     assert!(!list.to_string().contains(&secret));
-    let id = list[0]["id"].as_str().unwrap();
+    let id = list["tokens"][0]["id"].as_str().unwrap();
     let (s, _, _) = h
         .call("DELETE", &format!("/tokens/{id}"), None, &session)
         .await;
@@ -696,7 +696,7 @@ async fn site_policies_api_and_break_glass() {
         )
         .await;
     assert_eq!(s, StatusCode::OK, "{v}");
-    assert_eq!(v["version"], 1);
+    assert_eq!(v["policy"]["version"], "1", "64-bit: a string");
     let (s, _, _) = h.call("GET", &format!("/projects/{pa}"), None, &al).await;
     assert_eq!(s, StatusCode::NOT_FOUND, "the site forbid applies");
     let (s, _, _) = h
@@ -743,7 +743,7 @@ async fn site_policies_api_and_break_glass() {
             &As::Peer(me),
         )
         .await;
-    assert_eq!(hist.as_array().unwrap().len(), 1);
+    assert_eq!(hist["versions"].as_array().unwrap().len(), 1);
     let (s, _, _) = h
         .call(
             "DELETE",
@@ -817,7 +817,7 @@ async fn audit_records_decisions_without_secrets() {
         !text.contains(pw) && !text.contains(&t),
         "no secrets in the audit log"
     );
-    let created = v
+    let created = v["entries"]
         .as_array()
         .unwrap()
         .iter()
@@ -832,7 +832,7 @@ async fn audit_records_decisions_without_secrets() {
             .iter()
             .any(|p| p.as_str().unwrap().starts_with("link."))
     );
-    let denied = v
+    let denied = v["entries"]
         .as_array()
         .unwrap()
         .iter()
@@ -896,14 +896,30 @@ async fn usage_is_project_scoped_and_exports_are_audited() {
             .map(|r| r["project"]["id"].as_str().unwrap().to_string())
             .collect()
     };
-    let (s, body, _) = h
+    let (s, body, headers) = h
         .call("GET", "/usage?project=pa&granularity=month", None, &v)
         .await;
     assert_eq!(s, StatusCode::OK, "{body}");
+    assert_eq!(headers["glidex-api-shape"], "proto");
     assert_eq!(ids(&body), vec![pa.clone()]);
     assert_eq!(body["rows"][0]["project"]["name"], "pa");
+    // The proto shape (spec/grpc.md §9.1): enums by name, uint64 as strings.
+    assert_eq!(body["granularity"], "GRANULARITY_MONTH", "{body}");
+    assert_eq!(body["group_by"], json!(["GROUP_KEY_PROJECT"]), "{body}");
+    assert_eq!(body["rows"][0]["meters"]["cpu.used"]["raw"], "3600000000");
     assert_eq!(body["rows"][0]["meters"]["cpu.used"]["value"], 1.0);
     assert_eq!(body["rows"][0]["meters"]["cpu.used"]["unit"], "core-hours");
+    // The proto enum names are accepted in the query too.
+    let (s, body, _) = h
+        .call(
+            "GET",
+            "/usage?project=pa&granularity=GRANULARITY_MONTH&group_by=GROUP_KEY_VM",
+            None,
+            &v,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    assert_eq!(body["rows"][0]["vm"]["id"], "vm-a", "{body}");
     // Without ?project: only the caller's own.
     let (_, body, _) = h.call("GET", "/usage", None, &v).await;
     assert_eq!(ids(&body), vec![pa.clone()]);
@@ -937,6 +953,12 @@ async fn usage_is_project_scoped_and_exports_are_audited() {
             .starts_with("text/csv")
     );
     let (_, log, _) = h.call("GET", "/audit", None, &a).await;
+    // `{entries}` once the access family is ported, a bare list before.
+    let log = if log["entries"].is_array() {
+        log["entries"].clone()
+    } else {
+        log
+    };
     let export = log
         .as_array()
         .unwrap()
@@ -1245,7 +1267,7 @@ async fn pam_login_provisions_on_first_login() {
     assert!(keys["reason"].as_str().unwrap().contains("paste"));
     // New users have no rights yet.
     let (_, projects, _) = h.call("GET", "/projects", None, &me).await;
-    assert_eq!(projects.as_array().unwrap().len(), 0);
+    assert!(projects.get("projects").is_none(), "{projects}");
     // Logout ends the session.
     let (s, _, _) = h.call("POST", "/auth/logout", None, &me).await;
     assert_eq!(s, StatusCode::NO_CONTENT);
@@ -1903,10 +1925,8 @@ async fn site_default_quotas_apply_to_new_projects() {
         .call("POST", "/projects", Some(json!({"name": "lab"})), &a)
         .await;
     assert_eq!(s, StatusCode::CREATED, "{p}");
-    assert_eq!(
-        p["quotas"],
-        json!({"vms": 1, "vcpus": null, "memory_mib": null, "disk_gib": null, "running_vms": null, "networks": 2, "routers": null, "external_ips": null})
-    );
+    // Unlimited (absent) limits are left out.
+    assert_eq!(p["project"]["quotas"], json!({"vms": 1, "networks": 2}));
     // Explicit quotas win.
     let (s, q, _) = h
         .call(
@@ -1919,8 +1939,8 @@ async fn site_default_quotas_apply_to_new_projects() {
     assert_eq!(s, StatusCode::CREATED, "{q}");
     assert_eq!(
         (
-            q["quotas"]["vms"].as_u64(),
-            q["quotas"]["networks"].as_u64()
+            q["project"]["quotas"]["vms"].as_u64(),
+            q["project"]["quotas"]["networks"].as_u64()
         ),
         (Some(10), Some(2))
     );
@@ -1936,7 +1956,7 @@ async fn site_default_quotas_apply_to_new_projects() {
     assert!(s.is_client_error());
 
     // The default is enforced for the project's members.
-    let lab = p["id"].as_str().unwrap().to_string();
+    let lab = p["project"]["id"].as_str().unwrap().to_string();
     let owner = h.user("owner");
     h.link(
         "role.owner",
@@ -2028,13 +2048,12 @@ async fn allowed_lists_the_actions_per_resource_and_agrees_with_check() {
         .await;
     assert_eq!(s, StatusCode::OK, "{v}");
     let allowed = v["allowed"].as_array().unwrap();
+    // Each resource's `{actions}`; an empty list is left out.
     let names = |i: usize| -> Vec<String> {
-        allowed[i]
+        allowed[i]["actions"]
             .as_array()
-            .unwrap()
-            .iter()
-            .map(|x| x.as_str().unwrap().to_string())
-            .collect()
+            .map(|a| a.iter().map(|x| x.as_str().unwrap().to_string()).collect())
+            .unwrap_or_default()
     };
     assert_eq!(
         names(0),
@@ -2078,7 +2097,7 @@ async fn allowed_lists_the_actions_per_resource_and_agrees_with_check() {
             .as_array()
             .unwrap()
             .iter()
-            .all(|x| x.as_array().unwrap().is_empty()),
+            .all(|x| x.get("actions").is_none()),
         "{v}"
     );
 

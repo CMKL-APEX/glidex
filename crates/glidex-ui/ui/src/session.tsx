@@ -164,7 +164,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     setProject((current) => {
       const known = (id: string | null | undefined) => !!id && projects.some((p) => p.id === id);
       if (known(current)) return current;
-      if (known(me.default_project)) return me.default_project;
+      if (known(me.default_project)) return me.default_project ?? null;
       const stored = localStorage.getItem(PROJECT_KEY);
       if (known(stored)) return stored;
       return projects[0]?.id ?? null;

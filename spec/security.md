@@ -442,8 +442,9 @@ Share offers, acceptances and ends are audited on both projects.
 Projects sharing a network share its L2 segment (§6.2). The NAT
 isolation of §8 still separates it from every other network.
 
-VM names are unique per project. Disk names stay globally unique, so a
-disk can still be named without its project. Lookups
+VM names are unique per project. Disk names are unique per tenant
+(tenancy.md D24), so a disk can be named without its project within the
+caller's tenant. Lookups
 by name need `?project=`, or resolve within the caller's default project.
 
 ### 6.3 Quotas
@@ -455,7 +456,10 @@ explicit quotas get the site default `quotas.default` from
 which stays 2; `null` is unlimited); the `default` project takes it once,
 on the first start that sees it. Unknown quota names are refused. Checked under the `VmManager`
 write lock at create, start, disk create, resize and network create.
-`null` means unlimited.
+In `control-plane.json`, `null` means unlimited. Over the API (the
+`glidex.tenancy.v1.Quotas` message, rest-api.md) an absent limit is
+unlimited, except that `networks`, `routers` and `external_ips` left out
+of a project's quotas take their defaults; there is no `null`.
 
 Over quota, the control plane asks Cedar for `exceedQuota` on the
 project. If that is allowed (`system-admin`, through `quota.exceed`),
