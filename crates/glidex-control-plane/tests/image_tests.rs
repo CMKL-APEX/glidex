@@ -213,7 +213,9 @@ fn create_app(dir: &Path) -> (Router, Arc<VmManager>) {
 async fn ready_disk(app: &Router, key: &str) -> Value {
     for _ in 0..150 {
         let (_, d) = request(app, "GET", &format!("/disks/{key}"), None).await;
+        let d = disk_of(&d);
         if d["status"] == "ready" {
+            assert_eq!(d["phase"], "DISK_PHASE_READY", "{d}");
             return d;
         }
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -227,7 +229,7 @@ async fn disk_events(app: &Router, key: &str) -> Vec<(String, String)> {
     let (_, ev) = request(
         app,
         "GET",
-        &format!("/disks/{}/events", d["id"].as_str().unwrap()),
+        &format!("/disks/{}/events", d["disk"]["id"].as_str().unwrap()),
         None,
     )
     .await;
@@ -250,6 +252,16 @@ async fn request(
     uri: &str,
     body: Option<Value>,
 ) -> (StatusCode, Value) {
+    let (status, v, _) = request_with_headers(app, method, uri, body).await;
+    (status, v)
+}
+
+async fn request_with_headers(
+    app: &Router,
+    method: &str,
+    uri: &str,
+    body: Option<Value>,
+) -> (StatusCode, Value, HeaderMap) {
     let mut builder = Request::builder().method(method).uri(uri);
     let body = match body {
         Some(b) => {
@@ -264,11 +276,40 @@ async fn request(
         .await
         .unwrap();
     let status = resp.status();
+    let headers = resp.headers().clone();
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     (
         status,
         serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        headers,
     )
+}
+
+/// A proto3 JSON 64-bit integer: a string (`"1073741824"`), or a number
+/// (REST error details); left out (null) at its default, 0.
+fn num(v: &Value) -> u64 {
+    match v {
+        Value::Null => 0,
+        Value::String(s) => s.parse().unwrap_or_else(|_| panic!("not a number: {v}")),
+        _ => v.as_u64().unwrap_or_else(|| panic!("not a number: {v}")),
+    }
+}
+
+/// The disk of a `{disk, settled?}` or `{disk}` answer.
+fn disk_of(v: &Value) -> Value {
+    v["disk"].clone()
+}
+
+/// The image of an `{image, created?}` or `{image}` answer.
+fn image_of(v: &Value) -> Value {
+    v["image"].clone()
+}
+
+/// The `key` list of a wrapped list answer (`{images: [...]}`); proto3 JSON
+/// leaves an empty list out.
+fn items(v: &Value, key: &str) -> Vec<Value> {
+    assert!(v.is_object(), "not a wrapped list: {v}");
+    v[key].as_array().cloned().unwrap_or_default()
 }
 
 /// Poll an image until it leaves downloading/verifying.
@@ -277,8 +318,9 @@ async fn wait_image(app: &Router, id: &str) -> Value {
     loop {
         let (status, img) = request(app, "GET", &format!("/images/{id}"), None).await;
         assert_eq!(status, StatusCode::OK, "{img}");
+        let img = image_of(&img);
         let state = img["status"]["state"].as_str().unwrap().to_string();
-        if state != "downloading" && state != "verifying" {
+        if state != "IMAGE_STATE_DOWNLOADING" && state != "IMAGE_STATE_VERIFYING" {
             return img;
         }
         assert!(Instant::now() < deadline, "image {id} stuck: {img}");
@@ -296,8 +338,8 @@ async fn pull_firmware(app: &Router, base: &str, name: &str, hypervisor: &str) -
     let body = json!({"url": format!("{base}/fw.fd"), "name": name, "kind": "firmware", "hypervisor": hypervisor, "sha256": sha256_hex(FIRMWARE)});
     let (status, img) = request(app, "POST", "/images", Some(body)).await;
     assert_eq!(status, StatusCode::ACCEPTED, "{img}");
-    let img = wait_image(app, img["id"].as_str().unwrap()).await;
-    assert_eq!(img["status"]["state"], "ready", "{img}");
+    let img = wait_image(app, img["image"]["id"].as_str().unwrap()).await;
+    assert_eq!(img["status"]["state"], "IMAGE_STATE_READY", "{img}");
     img
 }
 
@@ -308,8 +350,8 @@ async fn pull_ready(app: &Router, base: &str, file: &str, name: &str, sha: Optio
     }
     let (status, img) = request(app, "POST", "/images", Some(body)).await;
     assert_eq!(status, StatusCode::ACCEPTED, "{img}");
-    let img = wait_image(app, img["id"].as_str().unwrap()).await;
-    assert_eq!(img["status"]["state"], "ready", "{img}");
+    let img = wait_image(app, img["image"]["id"].as_str().unwrap()).await;
+    assert_eq!(img["status"]["state"], "IMAGE_STATE_READY", "{img}");
     img
 }
 
@@ -349,11 +391,17 @@ fn marker_intact(disk: &Path, format: &str, dir: &Path) -> bool {
 async fn catalog_lists_host_images() {
     let tmp = TempDir::new().unwrap();
     let (app, _m) = create_app(tmp.path());
-    let (status, cat) = request(&app, "GET", "/images/catalog", None).await;
+    let (status, cat, headers) = request_with_headers(&app, "GET", "/images/catalog", None).await;
     assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        headers
+            .get("glidex-api-shape")
+            .and_then(|v| v.to_str().ok()),
+        Some("proto"),
+        "{headers:?}"
+    );
+    let cat = items(&cat, "items");
     let keys: Vec<_> = cat
-        .as_array()
-        .unwrap()
         .iter()
         .map(|e| e["key"].as_str().unwrap().to_string())
         .collect();
@@ -389,7 +437,7 @@ async fn download_verify_then_linked_and_full_disks() {
     let img = pull_ready(&app, &base, "good.qcow2", "base", Some(&sha)).await;
     assert_eq!(img["verified"], true);
     assert_eq!(img["sha256"], sha);
-    assert_eq!(img["virtual_size_bytes"], 32 * MIB);
+    assert_eq!(num(&img["virtual_size_bytes"]), 32 * MIB, "{img}");
     let img_path = PathBuf::from(img["path"].as_str().unwrap());
     use std::os::unix::fs::PermissionsExt;
     assert_eq!(
@@ -418,7 +466,7 @@ async fn download_verify_then_linked_and_full_disks() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{err}");
     assert_eq!(err["error"], "invalid_disk");
-    assert_eq!(err["details"]["min_size_bytes"], 32 * MIB);
+    assert_eq!(num(&err["details"]["min_size_bytes"]), 32 * MIB, "{err}");
 
     // Linked, larger: root partition extended offline.
     let (status, d) = request(
@@ -429,20 +477,24 @@ async fn download_verify_then_linked_and_full_disks() {
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{d}");
-    assert_eq!(d["origin"]["mode"], "linked");
+    let d = disk_of(&d);
+    assert_eq!(d["origin"]["image"]["mode"], "CLONE_MODE_LINKED", "{d}");
+    assert_eq!(d["origin"]["image"]["image_id"], img["id"], "{d}");
     let (_, detail) = request(&app, "GET", "/disks/web-root", None).await;
+    let detail = disk_of(&detail);
     assert_eq!(
-        detail["info"]["backing-filename"],
-        img_path.to_str().unwrap()
+        detail["info"]["backing_filename"],
+        img_path.to_str().unwrap(),
+        "{detail}"
     );
     let parts = detail["partition_table"]["partitions"].as_array().unwrap();
     assert_eq!(parts.len(), 2);
     assert_eq!(parts[1]["is_root"], true);
     assert_eq!(
-        parts[1]["start_bytes"].as_u64().unwrap() + parts[1]["size_bytes"].as_u64().unwrap(),
+        num(&parts[1]["start_bytes"]) + num(&parts[1]["size_bytes"]),
         64 * MIB - 33 * 512
     );
-    assert_eq!(detail["partition_table"]["free_tail_bytes"], 0);
+    assert_eq!(num(&detail["partition_table"]["free_tail_bytes"]), 0);
     let linked_path = PathBuf::from(d["path"].as_str().unwrap());
     assert!(sgdisk_verify(&linked_path, "qcow2", tmp.path()).contains("No problems found"));
     assert!(marker_intact(&linked_path, "qcow2", tmp.path()));
@@ -455,8 +507,9 @@ async fn download_verify_then_linked_and_full_disks() {
     // Full clone, default size (GLIDEX_DEFAULT_ROOT_GIB is 10 GiB).
     let (status, full) = request(&app, "POST", "/disks?wait=30", Some(json!({"name": "copy", "image": "base", "clone": "full", "format": "raw", "extend_root": false}))).await;
     assert_eq!(status, StatusCode::CREATED, "{full}");
-    assert_eq!(full["size_bytes"], 10 * 1024 * MIB);
-    assert_eq!(full["format"], "raw");
+    let full = disk_of(&full);
+    assert_eq!(num(&full["size_bytes"]), 10 * 1024 * MIB, "{full}");
+    assert_eq!(full["format"], "DISK_FORMAT_RAW");
 
     // Raw + linked is impossible.
     let (status, _) = request(
@@ -484,9 +537,11 @@ async fn download_verify_then_linked_and_full_disks() {
     drop(manager);
     let (app, _m) = create_app(tmp.path());
     let (_, disks) = request(&app, "GET", "/disks", None).await;
-    assert_eq!(disks.as_array().unwrap().len(), 1);
+    let disks = items(&disks, "disks");
+    assert_eq!(disks.len(), 1);
     assert_eq!(disks[0]["name"], "copy");
     assert_eq!(disks[0]["status"], "ready");
+    assert_eq!(disks[0]["phase"], "DISK_PHASE_READY");
 }
 
 #[tokio::test]
@@ -507,8 +562,8 @@ async fn checksum_mismatch_and_backing_file_fail() {
     )
     .await;
     assert_eq!(status, StatusCode::ACCEPTED);
-    let img = wait_image(&app, img["id"].as_str().unwrap()).await;
-    assert_eq!(img["status"]["state"], "failed");
+    let img = wait_image(&app, img["image"]["id"].as_str().unwrap()).await;
+    assert_eq!(img["status"]["state"], "IMAGE_STATE_FAILED");
     assert!(
         img["status"]["reason"]
             .as_str()
@@ -530,8 +585,8 @@ async fn checksum_mismatch_and_backing_file_fail() {
         Some(json!({"url": format!("{base}/backing.qcow2"), "name": "evil"})),
     )
     .await;
-    let img = wait_image(&app, img["id"].as_str().unwrap()).await;
-    assert_eq!(img["status"]["state"], "failed");
+    let img = wait_image(&app, img["image"]["id"].as_str().unwrap()).await;
+    assert_eq!(img["status"]["state"], "IMAGE_STATE_FAILED");
     assert!(
         img["status"]["reason"]
             .as_str()
@@ -559,7 +614,7 @@ async fn checksum_mismatch_and_backing_file_fail() {
     assert_eq!(status, StatusCode::ACCEPTED, "{r}");
     // The image controller acts on the retry a moment later; until then the
     // image still reads "failed" from before.
-    let id = before["id"].as_str().unwrap();
+    let id = before["image"]["id"].as_str().unwrap();
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let (_, ev) = request(&app, "GET", &format!("/images/{id}/events"), None).await;
@@ -579,7 +634,7 @@ async fn checksum_mismatch_and_backing_file_fail() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     let img = wait_image(&app, id).await;
-    assert_eq!(img["status"]["state"], "failed");
+    assert_eq!(img["status"]["state"], "IMAGE_STATE_FAILED");
     assert!(
         img["status"]["reason"]
             .as_str()
@@ -623,13 +678,15 @@ async fn disks_wait_for_their_image_and_notice_a_lost_file() {
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{d}");
+    let d = disk_of(&d);
     assert_eq!(d["status"], "pending", "{d}");
+    assert_eq!(d["phase"], "DISK_PHASE_PENDING", "{d}");
     // The image can't be deleted from under a disk waiting for it.
     let (status, e) = request(&app, "DELETE", "/images/slow", None).await;
     assert_eq!(status, StatusCode::CONFLICT, "{e}");
     assert!(e["message"].as_str().unwrap().contains("early"), "{e}");
     let d = ready_disk(&app, "early").await;
-    assert_eq!(d["size_bytes"], 64 * MIB);
+    assert_eq!(num(&d["size_bytes"]), 64 * MIB);
     let reasons: Vec<String> = disk_events(&app, "early")
         .await
         .into_iter()
@@ -654,7 +711,9 @@ async fn disks_wait_for_their_image_and_notice_a_lost_file() {
         )
         .await;
         let (_, d) = request(&app, "GET", "/disks/early", None).await;
+        let d = disk_of(&d);
         if d["status"] == "missing" {
+            assert_eq!(d["phase"], "DISK_PHASE_MISSING", "{d}");
             missing = true;
             break;
         }
@@ -691,7 +750,7 @@ async fn resume_after_dropped_connection_and_raw_conversion() {
     // A raw download is stored as qcow2; the stored digest is the qcow2's.
     let raw_sha = sha256_hex(&fx.raw);
     let img = pull_ready(&app, &base, "disk.raw", "fromraw", Some(&raw_sha)).await;
-    assert_eq!(img["format"], "qcow2");
+    assert_eq!(img["format"], "DISK_FORMAT_QCOW2");
     assert_ne!(img["sha256"], raw_sha);
     let info = qemu_img::info(Path::new(img["path"].as_str().unwrap()), None).unwrap();
     assert_eq!(info.format, "qcow2");
@@ -726,7 +785,8 @@ async fn grow_shrink_and_extend_root() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{d}");
-    assert_eq!(d["size_bytes"], 2 * 1024 * MIB);
+    assert_eq!(d["settled"], true, "{d}");
+    assert_eq!(num(&disk_of(&d)["size_bytes"]), 2 * 1024 * MIB);
     let (status, err) = request(
         &app,
         "POST",
@@ -755,7 +815,7 @@ async fn grow_shrink_and_extend_root() {
         )
         .await;
         assert_eq!(status, StatusCode::CREATED, "{d}");
-        let path = PathBuf::from(d["path"].as_str().unwrap());
+        let path = PathBuf::from(d["disk"]["path"].as_str().unwrap());
 
         // Root partition ends at 25 MiB (+ GPT backup) → minimum 26 MiB.
         let (status, err) = request(
@@ -766,7 +826,7 @@ async fn grow_shrink_and_extend_root() {
         )
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{err}");
-        assert_eq!(err["details"]["min_size_bytes"], 26 * MIB);
+        assert_eq!(num(&err["details"]["min_size_bytes"]), 26 * MIB, "{err}");
         let (status, d) = request(
             &app,
             "POST",
@@ -775,7 +835,7 @@ async fn grow_shrink_and_extend_root() {
         )
         .await;
         assert_eq!(status, StatusCode::OK, "{d}");
-        assert_eq!(d["size_bytes"], 26 * MIB);
+        assert_eq!(num(&disk_of(&d)["size_bytes"]), 26 * MIB);
         assert_eq!(qemu_img::info(&path, None).unwrap().virtual_size, 26 * MIB);
         assert!(sgdisk_verify(&path, format, tmp.path()).contains("No problems found"));
         assert!(marker_intact(&path, format, tmp.path()));
@@ -801,7 +861,11 @@ async fn grow_shrink_and_extend_root() {
             disk_events(&app, &name).await
         );
         let (_, detail) = request(&app, "GET", &format!("/disks/{name}"), None).await;
-        assert_eq!(detail["partition_table"]["free_tail_bytes"], 0, "{detail}");
+        assert_eq!(
+            num(&detail["disk"]["partition_table"]["free_tail_bytes"]),
+            0,
+            "{detail}"
+        );
         assert!(sgdisk_verify(&path, format, tmp.path()).contains("No problems found"));
         assert!(marker_intact(&path, format, tmp.path()));
 
@@ -829,7 +893,7 @@ async fn grow_shrink_and_extend_root() {
             disk_events(&app, &name).await.last().unwrap(),
             &("RootExtended".to_string(), "OnBoot".to_string())
         );
-        assert_eq!(d["pending_growpart"], true);
+        assert_eq!(d["disk"]["pending_growpart"], true, "{d}");
     }
 
     // Linked disks cannot shrink below their image.
@@ -848,7 +912,7 @@ async fn grow_shrink_and_extend_root() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{err}");
-    assert_eq!(err["details"]["min_size_bytes"], 32 * MIB);
+    assert_eq!(num(&err["details"]["min_size_bytes"]), 32 * MIB, "{err}");
 }
 
 #[tokio::test]
@@ -888,7 +952,7 @@ async fn vms_create_attach_and_own_disks() {
     let root = ready_disk(&app, &root_id).await;
     assert_eq!(root["name"], "web-1-root");
     assert_eq!(root["attached_to"], vm_id.as_str());
-    assert_eq!(root["size_bytes"], 1024 * MIB);
+    assert_eq!(num(&root["size_bytes"]), 1024 * MIB);
     let internal = manager.get_vm(&vm_id).await.unwrap();
     assert_eq!(
         internal.spec.config.rootfs_path,
@@ -908,7 +972,7 @@ async fn vms_create_attach_and_own_disks() {
     let (status, err) = request(&app, "DELETE", "/images/edk2", None).await;
     assert_eq!(status, StatusCode::CONFLICT, "{err}");
     let (_, img) = request(&app, "GET", "/images/edk2", None).await;
-    assert_eq!(img["used_by_vms"], json!(["web 1"]));
+    assert_eq!(img["image"]["used_by_vms"], json!(["web 1"]), "{img}");
 
     // Attached: no delete; a Created VM's disk can still be resized.
     let (status, _) = request(&app, "DELETE", &format!("/disks/{root_id}"), None).await;
@@ -982,6 +1046,7 @@ async fn vms_create_attach_and_own_disks() {
     assert_eq!(status, StatusCode::NO_CONTENT);
     for name in ["mine", "data1"] {
         let (_, d) = request(&app, "GET", &format!("/disks/{name}"), None).await;
+        let d = disk_of(&d);
         assert_eq!(d["status"], "ready", "{d}");
         assert!(d["attached_to"].is_null(), "{d}");
     }
@@ -1004,6 +1069,8 @@ async fn vms_create_attach_and_own_disks() {
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
     let (_, d) = request(&app, "GET", &format!("/disks/{vm3_root}"), None).await;
+    let d = disk_of(&d);
+    assert!(d.is_object(), "{d}");
     assert!(d["attached_to"].is_null(), "{d}");
 
     // Deleting the image-built VM deletes its owned root disk.
@@ -1036,12 +1103,9 @@ async fn deleting_an_image_cancels_its_download() {
     )
     .await;
     assert_eq!(status, StatusCode::ACCEPTED, "{img}");
-    let id = img["id"].as_str().unwrap().to_string();
+    let id = img["image"]["id"].as_str().unwrap().to_string();
     let (status, body) = request(&app, "DELETE", "/images/doomed?wait=10", None).await;
-    assert!(
-        matches!(status, StatusCode::NO_CONTENT | StatusCode::OK),
-        "{status} {body}"
-    );
+    assert_eq!(status, StatusCode::NO_CONTENT, "gone in time: {body}");
     let (status, _) = request(&app, "GET", &format!("/images/{id}"), None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     // Give an aborted download a moment to have written, had it survived.
@@ -1058,12 +1122,10 @@ async fn deleting_an_image_cancels_its_download() {
         .filter(|n| n.contains(&id))
         .collect();
     assert!(left.is_empty(), "files left: {left:?}");
-    let (status, events) = request(&app, "GET", "/images", None).await;
+    let (status, images) = request(&app, "GET", "/images", None).await;
     assert_eq!(status, StatusCode::OK);
     assert!(
-        events
-            .as_array()
-            .unwrap()
+        items(&images, "images")
             .iter()
             .all(|i| i["name"] != "doomed")
     );
@@ -1085,10 +1147,9 @@ async fn firmware_images() {
     let (status, cat) = request(&app, "GET", "/images/firmware-catalog", None).await;
     assert_eq!(status, StatusCode::OK);
     assert!(
-        cat.as_array()
-            .unwrap()
+        items(&cat, "items")
             .iter()
-            .any(|e| e["key"] == "cloudhv-edk2" && e["hypervisor"] == "cloudhypervisor"),
+            .any(|e| e["key"] == "cloudhv-edk2" && e["hypervisor"] == "HYPERVISOR_CLOUD_HYPERVISOR"),
         "{cat}"
     );
 
@@ -1104,7 +1165,7 @@ async fn firmware_images() {
     let fw = pull_firmware(&app, &base, "ovmf-test", "qemu").await;
     assert_eq!(
         (fw["kind"].as_str(), fw["hypervisor"].as_str()),
-        (Some("firmware"), Some("qemu"))
+        (Some("IMAGE_KIND_FIRMWARE"), Some("HYPERVISOR_QEMU"))
     );
     assert_eq!(fw["sha256"], sha256_hex(FIRMWARE));
     assert!(fw["path"].as_str().unwrap().ends_with(".fd"));
@@ -1174,12 +1235,17 @@ async fn ovmf_firmware_is_imported_from_the_host_package() {
     let (app, _manager) = create_app(tmp.path());
     let (status, img) = request(&app, "POST", "/images", Some(json!({"firmware": "ovmf"}))).await;
     assert_eq!(status, StatusCode::ACCEPTED, "{img}");
-    assert_eq!(img["status"]["state"], "ready", "{img}");
+    let img = image_of(&img);
+    assert_eq!(img["status"]["state"], "IMAGE_STATE_READY", "{img}");
     assert_eq!(
         (img["name"].as_str(), img["hypervisor"].as_str()),
-        (Some("ovmf"), Some("qemu"))
+        (Some("ovmf"), Some("HYPERVISOR_QEMU"))
     );
-    assert_eq!(img["source"]["url"], code.to_str().unwrap());
+    assert_eq!(
+        img["source"]["firmware"]["url"],
+        code.to_str().unwrap(),
+        "{img}"
+    );
     assert_eq!(
         std::fs::read(img["path"].as_str().unwrap()).unwrap(),
         std::fs::read(code).unwrap()
@@ -1190,9 +1256,7 @@ async fn ovmf_firmware_is_imported_from_the_host_package() {
         "the variable store template comes along"
     );
     let (_, cat) = request(&app, "GET", "/images/firmware-catalog", None).await;
-    let entry = cat
-        .as_array()
-        .unwrap()
+    let entry = items(&cat, "items")
         .iter()
         .find(|e| e["key"] == "ovmf")
         .unwrap()
@@ -1224,17 +1288,18 @@ async fn local_firmware_is_auto_imported_once() {
         "{first:?}"
     );
     let (_, img) = request(&app, "GET", "/images/ovmf", None).await;
+    let img = image_of(&img);
     assert_eq!(
         (img["kind"].as_str(), img["status"]["state"].as_str()),
-        (Some("firmware"), Some("ready"))
+        (Some("IMAGE_KIND_FIRMWARE"), Some("IMAGE_STATE_READY")),
+        "{img}"
     );
     // Cloud Hypervisor's entry depends on this host's ~/.glidex; it never downloads.
     let (_, all) = request(&app, "GET", "/images", None).await;
     assert!(
-        all.as_array()
-            .unwrap()
+        items(&all, "images")
             .iter()
-            .all(|i| i["status"]["state"] == "ready"),
+            .all(|i| i["status"]["state"] == "IMAGE_STATE_READY"),
         "{all}"
     );
 
@@ -1277,10 +1342,9 @@ async fn auto_import_leaves_existing_firmware_alone() {
     }
     let (_, all) = request(&app, "GET", "/images", None).await;
     assert_eq!(
-        all.as_array()
-            .unwrap()
+        items(&all, "images")
             .iter()
-            .filter(|i| i["hypervisor"] == "qemu")
+            .filter(|i| i["hypervisor"] == "HYPERVISOR_QEMU")
             .count(),
         1,
         "{all}"
@@ -1338,8 +1402,8 @@ async fn firmware_download_with_a_vars_template() {
     )
     .await;
     assert_eq!(status, StatusCode::ACCEPTED, "{img}");
-    let img = wait_image(&app, img["id"].as_str().unwrap()).await;
-    assert_eq!(img["status"]["state"], "ready", "{img}");
+    let img = wait_image(&app, img["image"]["id"].as_str().unwrap()).await;
+    assert_eq!(img["status"]["state"], "IMAGE_STATE_READY", "{img}");
     assert_eq!(
         (img["vars_template"].as_bool(), img["verified"].as_bool()),
         (Some(true), Some(true))
@@ -1362,10 +1426,10 @@ async fn firmware_download_with_a_vars_template() {
         )),
     )
     .await;
-    let img = wait_image(&app, img["id"].as_str().unwrap()).await;
+    let img = wait_image(&app, img["image"]["id"].as_str().unwrap()).await;
     assert_eq!(
         (img["status"]["state"].as_str(), img["verified"].as_bool()),
-        (Some("ready"), Some(false)),
+        (Some("IMAGE_STATE_READY"), Some(false)),
         "{img}"
     );
     let (_, img) = request(
@@ -1378,8 +1442,8 @@ async fn firmware_download_with_a_vars_template() {
         )),
     )
     .await;
-    let img = wait_image(&app, img["id"].as_str().unwrap()).await;
-    assert_eq!(img["status"]["state"], "failed", "{img}");
+    let img = wait_image(&app, img["image"]["id"].as_str().unwrap()).await;
+    assert_eq!(img["status"]["state"], "IMAGE_STATE_FAILED", "{img}");
     assert!(
         img["status"]["reason"]
             .as_str()
@@ -1403,9 +1467,7 @@ async fn ovmf_debian_is_downloaded_and_unpacked() {
     let (app, _manager) = create_app(tmp.path());
     let (status, cat) = request(&app, "GET", "/images/firmware-catalog", None).await;
     assert_eq!(status, StatusCode::OK);
-    let entry = cat
-        .as_array()
-        .unwrap()
+    let entry = items(&cat, "items")
         .iter()
         .find(|e| e["key"] == "ovmf-debian")
         .unwrap()
@@ -1424,7 +1486,7 @@ async fn ovmf_debian_is_downloaded_and_unpacked() {
     )
     .await;
     assert_eq!(status, StatusCode::ACCEPTED, "{img}");
-    let mut img = img;
+    let mut img = image_of(&img);
     for _ in 0..600 {
         let (_, i) = request(
             &app,
@@ -1433,29 +1495,29 @@ async fn ovmf_debian_is_downloaded_and_unpacked() {
             None,
         )
         .await;
-        img = i;
+        img = image_of(&i);
         if !matches!(
             img["status"]["state"].as_str(),
-            Some("downloading" | "verifying")
+            Some("IMAGE_STATE_DOWNLOADING" | "IMAGE_STATE_VERIFYING")
         ) {
             break;
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
-    assert_eq!(img["status"]["state"], "ready", "{img}");
+    assert_eq!(img["status"]["state"], "IMAGE_STATE_READY", "{img}");
     assert_eq!(
         (
             img["hypervisor"].as_str(),
             img["vars_template"].as_bool(),
             img["verified"].as_bool()
         ),
-        (Some("qemu"), Some(true), Some(true))
+        (Some("HYPERVISOR_QEMU"), Some(true), Some(true))
     );
     assert_eq!(
         img["sha256"], "624e06de18b4fa535e90db7160d00d3d07d206422b89999bf1e27d920264e4e0",
         "the unpacked OVMF_CODE_4M.fd"
     );
-    assert_eq!(img["file_size_bytes"], 3653632);
+    assert_eq!(num(&img["file_size_bytes"]), 3653632);
     let path = img["path"].as_str().unwrap();
     assert!(!Path::new(&format!("{}.part", path.trim_end_matches(".fd"))).exists());
     assert_eq!(

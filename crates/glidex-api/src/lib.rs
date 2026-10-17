@@ -73,6 +73,9 @@ mod tests {
             vec![
                 "glidex.auth.v1.LoginService",
                 "glidex.directory.v1.ConnectorService",
+                "glidex.storage.v1.CredentialService",
+                "glidex.storage.v1.ImageService",
+                "glidex.storage.v1.DiskService",
                 "glidex.system.v1.SystemService",
                 "glidex.tenancy.v1.TenantService",
                 "glidex.tenancy.v1.AdmissionService"

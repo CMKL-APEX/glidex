@@ -148,6 +148,23 @@ async fn call(
     )
 }
 
+/// A proto3 JSON 64-bit integer: a string (`"100000"`) or a number; left
+/// out (null) at its default, 0.
+fn num(v: &Value) -> u64 {
+    match v {
+        Value::Null => 0,
+        Value::String(s) => s.parse().unwrap_or_else(|_| panic!("not a number: {v}")),
+        _ => v.as_u64().unwrap_or_else(|| panic!("not a number: {v}")),
+    }
+}
+
+/// The copies of the image in a `GET /images/{id}` answer (`{image}`);
+/// proto3 JSON leaves an empty list out.
+fn image_copies(v: &Value) -> Vec<Value> {
+    assert!(v["image"].is_object(), "not an image: {v}");
+    v["image"]["copies"].as_array().cloned().unwrap_or_default()
+}
+
 fn cluster(cp: &Cp) -> Arc<Cluster> {
     cp.manager.cluster().expect("clustered")
 }
@@ -1316,12 +1333,8 @@ async fn image_copies_go_where_they_are_wanted_and_spare_files_are_used() {
     assert_eq!(s, StatusCode::ACCEPTED, "{v}");
     wait_until("the server's copy back", || async { server_file.exists() }).await;
     let (_, v) = call(&server, "GET", "/images/img-here", None, &[]).await;
-    let pinned: Vec<&Value> = v["copies"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|c| c["pinned"] == true)
-        .collect();
+    let copies = image_copies(&v);
+    let pinned: Vec<&Value> = copies.iter().filter(|c| c["pinned"] == true).collect();
     assert_eq!(
         (pinned.len(), pinned[0]["node"].as_str()),
         (1, Some(server_id.as_str())),
@@ -1365,9 +1378,7 @@ async fn image_copies_go_where_they_are_wanted_and_spare_files_are_used() {
     // no longer counted, and deleting the image doesn't wait for it.
     let (_, v) = call(&server, "GET", "/images/img-here", None, &[]).await;
     assert!(
-        v["copies"]
-            .as_array()
-            .unwrap()
+        image_copies(&v)
             .iter()
             .any(|c| c["node"] == agent_node.as_str()),
         "{v}"
@@ -1379,9 +1390,7 @@ async fn image_copies_go_where_they_are_wanted_and_spare_files_are_used() {
     store.put(&gone).unwrap();
     let (_, v) = call(&server, "GET", "/images/img-here", None, &[]).await;
     assert!(
-        !v["copies"]
-            .as_array()
-            .unwrap()
+        !image_copies(&v)
             .iter()
             .any(|c| c["node"] == agent_node.as_str()),
         "a node that left has no copy: {v}"
@@ -1496,12 +1505,12 @@ async fn a_node_copies_an_image_it_needs_from_a_holder_and_checks_it() {
     // The image says where its copies are (spec/clustering-ui.md §5.3).
     let (s, v) = call(&server, "GET", &format!("/images/{img_id}"), None, &[]).await;
     assert_eq!(s, StatusCode::OK, "{v}");
-    let copies = v["copies"].as_array().expect("copies");
+    let copies = image_copies(&v);
     assert_eq!(copies.len(), 2, "{v}");
     assert!(
         copies
             .iter()
-            .all(|c| c["state"] == "ready" && c["bytes"] == data.len()),
+            .all(|c| c["state"] == "ready" && num(&c["bytes"]) == data.len() as u64),
         "{v}"
     );
     assert!(copies.iter().any(|c| c["node_name"] == "agent1"), "{v}");

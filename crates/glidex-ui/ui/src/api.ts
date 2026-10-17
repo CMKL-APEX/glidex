@@ -5,11 +5,15 @@ import type {
   Binding,
   CatalogItem,
   FirmwareCatalogItem,
-  HypervisorType,
   CreateDiskRequest,
   CreatedToken,
   CreateTokenRequest,
   DiskInfo,
+  DiskWriteResponse,
+  ExtendMode,
+  PullImageRequest,
+  PullImageResponse,
+  StorageEvent,
   EntityRef,
   ImageInfo,
   BridgeRecord,
@@ -374,10 +378,15 @@ export interface MySshKeys {
 }
 export const mySshKeys = () => get<MySshKeys>("/users/me/ssh-keys");
 
-export const listCredentials = (project?: string | null) => get<CredentialInfo[]>(`/credentials${inProject(project)}`);
-export const createCredential = (req: CreateCredentialRequest) => post<CredentialInfo>("/credentials", req);
+// The storage routes answer in the proto3 JSON shape (types.ts): each wraps
+// its object (`{credential}`, `{disk}`, …) and lists (`{disks}`, `{items}`).
+
+export const listCredentials = (project?: string | null) =>
+  get<{ credentials?: CredentialInfo[] }>(`/credentials${inProject(project)}`).then((r) => r?.credentials ?? []);
+export const createCredential = (req: CreateCredentialRequest) =>
+  post<{ credential?: CredentialInfo }>("/credentials", req).then((r) => r?.credential);
 export const updateCredential = (username: string, req: UpdateCredentialRequest, project?: string | null) =>
-  put<CredentialInfo>(`/credentials/${enc(username)}${inProject(project)}`, req);
+  put<{ credential?: CredentialInfo }>(`/credentials/${enc(username)}${inProject(project)}`, req).then((r) => r?.credential);
 export const deleteCredential = (username: string, project?: string | null) =>
   del(`/credentials/${enc(username)}${inProject(project)}`);
 
@@ -427,51 +436,44 @@ export const deleteUplink = (bridge: string, name: string) => del(`/ovs/bridges/
 
 // ---- images and disks ---------------------------------------------------------
 
-/** The cloud image catalog for `arch` (default: the server's). */
-export const imageCatalog = (arch?: string) => get<CatalogItem[]>(`/images/catalog${arch ? `?arch=${enc(arch)}` : ""}`);
-export const listImages = () => get<ImageInfo[]>("/images");
-export const getImage = (id: string) => get<ImageInfo>(`/images/${enc(id)}`);
-export const firmwareCatalog = (arch?: string) => get<FirmwareCatalogItem[]>(`/images/firmware-catalog${arch ? `?arch=${enc(arch)}` : ""}`);
-export const pullImage = (req: {
-  catalog?: string;
-  /** Firmware catalog key. */
-  firmware?: string;
-  url?: string;
-  sha256?: string;
-  name?: string;
-  /** With `url`: the download is UEFI firmware for `hypervisor`. */
-  kind?: "firmware";
-  hypervisor?: HypervisorType;
-  /** With a QEMU firmware `url`: its UEFI variable-store template. */
-  vars_url?: string;
-  vars_sha256?: string;
-  /** In a cluster (spec/clustering.md §9.2.1–2): the architecture, nodes
-   * that get a copy, and whether the server keeps its own. */
-  arch?: string;
-  nodes?: string[];
-  keep_server_copy?: boolean;
-}) => post<ImageInfo>("/images", req);
+/** The cloud image catalog for `arch` (`x86_64`, `aarch64`; default: the server's). */
+export const imageCatalog = (arch?: string) =>
+  get<{ items?: CatalogItem[] }>(`/images/catalog${arch ? `?arch=${enc(arch)}` : ""}`).then((r) => r?.items ?? []);
+export const firmwareCatalog = (arch?: string) =>
+  get<{ items?: FirmwareCatalogItem[] }>(`/images/firmware-catalog${arch ? `?arch=${enc(arch)}` : ""}`).then((r) => r?.items ?? []);
+export const listImages = () => get<{ images?: ImageInfo[] }>("/images").then((r) => r?.images ?? []);
+export const getImage = (id: string) => get<{ image?: ImageInfo }>(`/images/${enc(id)}`).then((r) => r?.image as ImageInfo);
+/** 202 for a new download, 200 when one is already in flight: `{image, created}`. */
+export const pullImage = (req: PullImageRequest) => post<PullImageResponse>("/images", req).then((r) => r ?? {});
 /** Keep a copy on a node ahead of need, or let one go (§9.2.2). */
-export const addImageCopy = (id: string, node: string) => post<ImageInfo>(`/images/${enc(id)}/copies`, { node });
-export const removeImageCopy = (id: string, node: string) => del<ImageInfo>(`/images/${enc(id)}/copies/${enc(node)}`);
+export const addImageCopy = (id: string, node: string) =>
+  post<{ image?: ImageInfo }>(`/images/${enc(id)}/copies`, { node }).then((r) => r?.image);
+export const removeImageCopy = (id: string, node: string) =>
+  del<{ image?: ImageInfo } | undefined>(`/images/${enc(id)}/copies/${enc(node)}`).then((r) => r?.image);
 /** The node deletes the unrecorded image files it reported (§9.2.3). */
 export const deleteSpareImageFiles = (node: string) => post<{ node: string; files: number; bytes: number }>(`/nodes/${enc(node)}/spare-image-files/delete`, {});
 /** `undefined` when gone (204), else the image its controller is still deleting (202). */
-export const deleteImage = (id: string) => del<ImageInfo | undefined>(`/images/${enc(id)}`);
+export const deleteImage = (id: string) => del<{ image?: ImageInfo } | undefined>(`/images/${enc(id)}`).then((r) => r?.image);
 /** Download a failed image again (spec/reconciliation.md D19). */
-export const retryImage = (id: string) => post<ImageInfo>(`/images/${enc(id)}/retry`);
+export const retryImage = (id: string) => post<{ image?: ImageInfo }>(`/images/${enc(id)}/retry`).then((r) => r?.image);
+export const imageEvents = (id: string) =>
+  get<{ events?: StorageEvent[] }>(`/images/${enc(id)}/events`).then((r) => r?.events ?? []);
 
-export const listDisks = (project?: string | null) => get<DiskInfo[]>(`/disks${inProject(project)}`);
-export const getDisk = (id: string) => get<DiskInfo>(`/disks/${enc(id)}`);
+export const listDisks = (project?: string | null) => get<{ disks?: DiskInfo[] }>(`/disks${inProject(project)}`).then((r) => r?.disks ?? []);
+/** By id, or by name (unique per tenant; a name two of the caller's tenants share answers 409 `ambiguous`). */
+export const getDisk = (id: string) => get<{ disk?: DiskInfo }>(`/disks/${enc(id)}`).then((r) => r?.disk as DiskInfo);
 // Disk writes are carried out by the disk controller (spec/reconciliation.md
 // §10.1): wait for it, and show what is still pending if it isn't done.
-export const createDisk = (req: CreateDiskRequest) => post<DiskInfo>(`/disks?wait=${WAIT_SECS}`, req);
+// They answer `{disk, settled}`; a 204 (gone meanwhile) reads `{}`.
+export const createDisk = (req: CreateDiskRequest) => post<DiskWriteResponse | undefined>(`/disks?wait=${WAIT_SECS}`, req).then((r) => r ?? {});
 export const resizeDisk = (id: string, sizeGib: number, extendRoot?: boolean) =>
-  post<DiskInfo>(`/disks/${enc(id)}/resize?wait=${WAIT_SECS}`, { size_gib: sizeGib, extend_root: extendRoot });
-export const extendRoot = (id: string, mode: "offline" | "on-boot") =>
-  post<DiskInfo>(`/disks/${enc(id)}/extend-root?wait=${WAIT_SECS}`, { mode });
+  post<DiskWriteResponse | undefined>(`/disks/${enc(id)}/resize?wait=${WAIT_SECS}`, { size_gib: sizeGib, extend_root: extendRoot }).then((r) => r ?? {});
+export const extendRoot = (id: string, mode: ExtendMode) =>
+  post<DiskWriteResponse | undefined>(`/disks/${enc(id)}/extend-root?wait=${WAIT_SECS}`, { mode }).then((r) => r ?? {});
 /** `undefined` when gone (204), else the disk, deleted once its operation finishes (202). */
-export const deleteDisk = (id: string) => del<DiskInfo | undefined>(`/disks/${enc(id)}`);
+export const deleteDisk = (id: string) => del<{ disk?: DiskInfo } | undefined>(`/disks/${enc(id)}`).then((r) => r?.disk);
+export const diskEvents = (id: string) =>
+  get<{ events?: StorageEvent[] }>(`/disks/${enc(id)}/events`).then((r) => r?.events ?? []);
 
 // ---- projects and role links ------------------------------------------------
 

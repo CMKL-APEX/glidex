@@ -201,7 +201,7 @@ test.describe("without a leader", () => {
     await page.unroute("**/api/vms*");
     await page.route("**/api/credentials*", (r) =>
       r.request().headers()["x-glidex-consistency"] === "local"
-        ? r.fulfill({ status: 200, contentType: "application/json", body: "[]" })
+        ? r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ credentials: [] }) })
         : r.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "cluster_unavailable", message: "no quorum" }) }),
     );
     await page.getByRole("link", { name: "Credentials", exact: true }).click();

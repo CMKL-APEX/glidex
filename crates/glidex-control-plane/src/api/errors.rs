@@ -34,6 +34,7 @@ pub(crate) fn netd_error_response(body: &ErrorBody) -> (StatusCode, Json<ApiErro
 fn image_error_response(e: &ImageError) -> (StatusCode, Json<ApiError>) {
     let (status, code) = match e {
         ImageError::NotFound(_) => (StatusCode::NOT_FOUND, "not_found"),
+        ImageError::Ambiguous(_) => (StatusCode::CONFLICT, "ambiguous"),
         ImageError::AlreadyExists(_)
         | ImageError::InUse(_)
         | ImageError::Busy(_)

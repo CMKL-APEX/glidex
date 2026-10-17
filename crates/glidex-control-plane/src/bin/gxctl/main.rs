@@ -5,6 +5,7 @@ mod client;
 mod config;
 mod console;
 mod directory;
+mod storage;
 mod tenancy;
 
 use clap::Parser;
@@ -703,52 +704,6 @@ struct NetworkAttachmentReq {
     network: String,
 }
 
-#[derive(Debug, Deserialize)]
-struct CredentialInfo {
-    username: String,
-    has_password: bool,
-    #[serde(default)]
-    ssh_authorized_keys: Vec<String>,
-    updated_at: u64,
-}
-
-#[derive(Tabled)]
-struct CredentialRow {
-    username: String,
-    password: &'static str,
-    ssh_keys: usize,
-    updated: String,
-}
-
-impl From<&CredentialInfo> for CredentialRow {
-    fn from(c: &CredentialInfo) -> Self {
-        Self {
-            username: c.username.clone(),
-            password: if c.has_password { "set" } else { "-" },
-            ssh_keys: c.ssh_authorized_keys.len(),
-            updated: format_unix_time(c.updated_at),
-        }
-    }
-}
-
-/// Request bodies carrying a plaintext password deliberately don't derive
-/// `Debug`, so the password can't end up in a log line by accident.
-#[derive(Serialize)]
-struct CreateCredentialRequest {
-    username: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    password: Option<String>,
-    ssh_authorized_keys: Vec<String>,
-}
-
-#[derive(Serialize)]
-struct UpdateCredentialRequest {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    password: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    ssh_authorized_keys: Option<Vec<String>>,
-}
-
 #[derive(Debug, Serialize)]
 struct CreateVmRequest {
     name: String,
@@ -884,44 +839,6 @@ impl ApiClient {
             .await
     }
 
-    async fn list_credentials(&self) -> Result<Vec<CredentialInfo>, String> {
-        self.request_json(Method::GET, &self.scoped("/credentials"), None)
-            .await
-    }
-
-    async fn create_credential(
-        &self,
-        request: &CreateCredentialRequest,
-    ) -> Result<CredentialInfo, String> {
-        let mut body = serde_json::to_value(request).map_err(|e| e.to_string())?;
-        self.scope_body(&mut body);
-        self.request_json(Method::POST, "/credentials", Some(body))
-            .await
-    }
-
-    async fn update_credential(
-        &self,
-        username: &str,
-        request: &UpdateCredentialRequest,
-    ) -> Result<CredentialInfo, String> {
-        let body = serde_json::to_value(request).map_err(|e| e.to_string())?;
-        self.request_json(
-            Method::PUT,
-            &self.scoped(&format!("/credentials/{}", enc(username))),
-            Some(body),
-        )
-        .await
-    }
-
-    async fn delete_credential(&self, username: &str) -> Result<(), String> {
-        self.request_json(
-            Method::DELETE,
-            &self.scoped(&format!("/credentials/{}", enc(username))),
-            None,
-        )
-        .await
-    }
-
     async fn health_check(&self) -> Result<(), String> {
         self.request_bytes(Method::GET, "/health", None)
             .await
@@ -996,234 +913,6 @@ fn format_bytes(n: u64) -> String {
     }
 }
 
-fn image_status(img: &serde_json::Value) -> String {
-    let st = &img["status"];
-    match st["state"].as_str().unwrap_or("?") {
-        "downloading" => {
-            let got = st["received_bytes"].as_u64().unwrap_or(0);
-            match st["total_bytes"].as_u64() {
-                Some(t) if t > 0 => format!("downloading {:.0}%", got as f64 * 100.0 / t as f64),
-                _ => format!("downloading {}", format_bytes(got)),
-            }
-        }
-        "failed" => format!("failed: {}", st["reason"].as_str().unwrap_or(""))
-            .red()
-            .to_string(),
-        "ready" => "ready".green().to_string(),
-        other => other.to_string(),
-    }
-}
-
-async fn handle_image(client: &CliClient, args: &[&str]) {
-    let usage = "Usage: image catalog | list | pull <catalog-key|url> [--name N] [--sha256 H] [--firmware-for <cloudhypervisor|qemu> [--vars-url U] [--vars-sha256 H]] | pull --firmware <key> [--name N] | retry <name|id> | rm <name|id>";
-    match args.first().copied().unwrap_or("list") {
-        "catalog" => match client
-            .request_json::<Vec<serde_json::Value>>(Method::GET, "/images/catalog", None)
-            .await
-        {
-            Ok(items) => {
-                println!("{}", "Cloud images (image pull <key>):".bold());
-                for i in items {
-                    println!(
-                        "  {:<14} {} {}{}",
-                        i["key"].as_str().unwrap_or("?").cyan(),
-                        i["distro"].as_str().unwrap_or(""),
-                        i["release"].as_str().unwrap_or(""),
-                        if i["downloaded_image_id"].is_null() {
-                            String::new()
-                        } else {
-                            " (downloaded)".green().to_string()
-                        }
-                    );
-                }
-                if let Ok(fw) = client
-                    .request_json::<Vec<serde_json::Value>>(
-                        Method::GET,
-                        "/images/firmware-catalog",
-                        None,
-                    )
-                    .await
-                {
-                    println!("{}", "UEFI firmware (image pull --firmware <key>):".bold());
-                    for i in fw {
-                        let note = if !i["downloaded_image_id"].is_null() {
-                            " (downloaded)".green().to_string()
-                        } else if let Some(h) = i["hint"].as_str() {
-                            format!(" ({})", h).yellow().to_string()
-                        } else {
-                            String::new()
-                        };
-                        println!(
-                            "  {:<14} {} [{}] {}{}",
-                            i["key"].as_str().unwrap_or("?").cyan(),
-                            i["name"].as_str().unwrap_or(""),
-                            i["hypervisor"].as_str().unwrap_or(""),
-                            i["version"].as_str().unwrap_or(""),
-                            note
-                        );
-                    }
-                }
-            }
-            Err(e) => println!("{} {}", "Error:".red(), e),
-        },
-        "list" | "ls" => match client
-            .request_json::<Vec<serde_json::Value>>(Method::GET, "/images", None)
-            .await
-        {
-            Ok(imgs) if imgs.is_empty() => {
-                println!("No images. Pull one with 'image pull <key>' (see 'image catalog').")
-            }
-            Ok(imgs) => {
-                for i in imgs {
-                    let src = &i["source"];
-                    let from = match src["kind"].as_str() {
-                        Some("catalog") | Some("firmware") => format!(
-                            "{} {}",
-                            src["key"].as_str().unwrap_or(""),
-                            src["version"].as_str().unwrap_or("")
-                        ),
-                        _ => src["url"].as_str().unwrap_or("").to_string(),
-                    };
-                    let kind = match i["hypervisor"].as_str() {
-                        Some(h) if i["kind"] == "firmware" => format!("firmware/{}", h),
-                        _ => "disk".to_string(),
-                    };
-                    println!(
-                        "  {:<20} {:<20} {:<22} {:>9}  {}{}",
-                        i["name"].as_str().unwrap_or("?").cyan(),
-                        kind,
-                        image_status(&i),
-                        format_bytes(i["virtual_size_bytes"].as_u64().unwrap_or(0)),
-                        from.trim(),
-                        if i["verified"] == true {
-                            ""
-                        } else {
-                            " (unverified)"
-                        }
-                    );
-                }
-            }
-            Err(e) => println!("{} {}", "Error:".red(), e),
-        },
-        "pull" => {
-            let firmware = flag_value(args, "--firmware");
-            let Some(what) =
-                firmware.or_else(|| args.get(1).copied().filter(|a| !a.starts_with("--")))
-            else {
-                println!("{}", usage.yellow());
-                return;
-            };
-            let mut body = if firmware.is_some() {
-                serde_json::json!({ "firmware": what })
-            } else if what.contains("://") {
-                serde_json::json!({ "url": what })
-            } else {
-                serde_json::json!({ "catalog": what })
-            };
-            if let Some(h) = flag_value(args, "--firmware-for") {
-                body["kind"] = serde_json::json!("firmware");
-                body["hypervisor"] = serde_json::json!(h);
-            }
-            // A split OVMF build's variable-store template (QEMU).
-            if let Some(u) = flag_value(args, "--vars-url") {
-                body["vars_url"] = serde_json::json!(u);
-            }
-            if let Some(h) = flag_value(args, "--vars-sha256") {
-                body["vars_sha256"] = serde_json::json!(h);
-            }
-            if let Some(n) = flag_value(args, "--name") {
-                body["name"] = serde_json::json!(n);
-            }
-            if let Some(h) = flag_value(args, "--sha256") {
-                body["sha256"] = serde_json::json!(h);
-            }
-            let img = match client
-                .request_json::<serde_json::Value>(Method::POST, "/images", Some(body))
-                .await
-            {
-                Ok(i) => i,
-                Err(e) => {
-                    println!("{} {}", "Error:".red(), e);
-                    return;
-                }
-            };
-            let id = img["id"].as_str().unwrap_or("").to_string();
-            println!(
-                "Pulling {} as {} (Ctrl-C stops watching; the download continues)",
-                what,
-                img["name"].as_str().unwrap_or("?").yellow()
-            );
-            loop {
-                match client
-                    .request_json::<serde_json::Value>(
-                        Method::GET,
-                        &format!("/images/{}", id),
-                        None,
-                    )
-                    .await
-                {
-                    Ok(i) => {
-                        let state = i["status"]["state"].as_str().unwrap_or("").to_string();
-                        print!("\r  {:<60}", image_status(&i));
-                        let _ = io::stdout().flush();
-                        if state != "downloading" && state != "verifying" {
-                            println!();
-                            if state == "ready" {
-                                println!(
-                                    "{} {} ({}, sha256 {})",
-                                    "Image ready:".green(),
-                                    i["name"].as_str().unwrap_or(""),
-                                    format_bytes(i["virtual_size_bytes"].as_u64().unwrap_or(0)),
-                                    i["sha256"].as_str().unwrap_or("")
-                                );
-                            }
-                            break;
-                        }
-                    }
-                    Err(e) => {
-                        println!("\n{} {}", "Error:".red(), e);
-                        break;
-                    }
-                }
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            }
-        }
-        "retry" => match args.get(1) {
-            Some(name) => match client
-                .request_json::<serde_json::Value>(
-                    Method::POST,
-                    &format!("/images/{}/retry", name),
-                    None,
-                )
-                .await
-            {
-                Ok(_) => println!(
-                    "{} {} (follow it with: image list)",
-                    "Downloading again:".green(),
-                    name
-                ),
-                Err(e) => println!("{} {}", "Error:".red(), e),
-            },
-            None => println!("{}", usage.yellow()),
-        },
-        "rm" | "delete" => match args.get(1) {
-            Some(name) => match client
-                .request_json::<serde_json::Value>(
-                    Method::DELETE,
-                    &format!("/images/{}?wait=60", name),
-                    None,
-                )
-                .await
-            {
-                Ok(v) => print_delete_result("Image", name, &v),
-                Err(e) => println!("{} {}", "Error:".red(), e),
-            },
-            None => println!("{}", usage.yellow()),
-        },
-        _ => println!("{}", usage.yellow()),
-    }
-}
-
 /// One line for an object from `/watch`: its name and what it is doing.
 fn watch_summary(kind: &str, o: &serde_json::Value) -> (String, String) {
     let name = o["name"].as_str().unwrap_or("?").to_string();
@@ -1239,16 +928,29 @@ fn watch_summary(kind: &str, o: &serde_json::Value) -> (String, String) {
             }
         }
         "disk" => o["status"].as_str().unwrap_or("?").to_string(),
-        "image" => match o["status"]["state"].as_str().unwrap_or("?") {
-            "downloading" => match (
-                o["status"]["received_bytes"].as_u64(),
-                o["status"]["total_bytes"].as_u64(),
-            ) {
-                (Some(r), Some(t)) if t > 0 => format!("downloading {}%", r * 100 / t),
-                _ => "downloading".to_string(),
-            },
-            s => s.to_string(),
-        },
+        // The proto shape (spec/grpc.md §9.1): `IMAGE_STATE_*`, 64-bit
+        // numbers as strings.
+        "image" => {
+            let n = |v: &serde_json::Value| {
+                v.as_str()
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .or(v.as_u64())
+            };
+            match o["status"]["state"]
+                .as_str()
+                .unwrap_or("?")
+                .trim_start_matches("IMAGE_STATE_")
+            {
+                "DOWNLOADING" => match (
+                    n(&o["status"]["received_bytes"]),
+                    n(&o["status"]["total_bytes"]),
+                ) {
+                    (Some(r), Some(t)) if t > 0 => format!("downloading {}%", r * 100 / t),
+                    _ => "downloading".to_string(),
+                },
+                s => s.to_ascii_lowercase(),
+            }
+        }
         _ => o["phase"].as_str().unwrap_or("ready").replace('_', " "),
     };
     if deleting {
@@ -1392,230 +1094,6 @@ pub(crate) fn print_delete_result(kind: &str, name: &str, v: &serde_json::Value)
             ready["reason"].as_str().unwrap_or(""),
             ready["message"].as_str().unwrap_or("")
         );
-    }
-}
-
-/// A disk after a write the disk controller carries out (spec/
-/// reconciliation.md §10.1): its state, and what is still pending.
-fn print_disk_result(d: &serde_json::Value) {
-    println!(
-        "  {} {} {} {}",
-        d["name"].as_str().unwrap_or("?").cyan(),
-        format_bytes(d["size_bytes"].as_u64().unwrap_or(0)),
-        d["format"].as_str().unwrap_or(""),
-        d["status"].as_str().unwrap_or("")
-    );
-    if let Some(ready) = d["conditions"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .find(|c| c["kind"] == "Ready" && c["status"] != "True")
-    {
-        println!(
-            "  {} {}: {}",
-            "Not there yet:".yellow(),
-            ready["reason"].as_str().unwrap_or(""),
-            ready["message"].as_str().unwrap_or("")
-        );
-    }
-    for w in d["warnings"].as_array().into_iter().flatten() {
-        println!("  {} {}", "Warning:".yellow(), w.as_str().unwrap_or(""));
-    }
-}
-
-async fn handle_disk(client: &CliClient, args: &[&str]) {
-    let usage = "Usage: disk list | show <disk> | create <name> [--size-gib N] [--image I] [--full] [--raw] [--no-extend] | resize <disk> <GiB> [--no-extend] | extend-root <disk> [--on-boot] | rm <disk>";
-    let gib = |s: &str| {
-        s.parse::<u64>()
-            .map_err(|_| format!("{} is not a whole number of GiB", s))
-    };
-    match args.first().copied().unwrap_or("list") {
-        "list" | "ls" => match client
-            .request_json::<Vec<serde_json::Value>>(Method::GET, &client.scoped("/disks"), None)
-            .await
-        {
-            Ok(disks) if disks.is_empty() => println!("No disks."),
-            Ok(disks) => {
-                let vms = client.list_vms().await.unwrap_or_default();
-                for d in disks {
-                    let vm = d["attached_to"].as_str().map(|id| {
-                        vms.iter()
-                            .find(|v| v.id == id)
-                            .map(|v| v.name.clone())
-                            .unwrap_or_else(|| id.to_string())
-                    });
-                    let origin = match d["origin"]["kind"].as_str() {
-                        Some("image") => {
-                            format!("image ({})", d["origin"]["mode"].as_str().unwrap_or(""))
-                        }
-                        _ => "blank".to_string(),
-                    };
-                    println!(
-                        "  {:<20} {:>9} {:<6} {:<14} {:<7} {}",
-                        d["name"].as_str().unwrap_or("?").cyan(),
-                        format_bytes(d["size_bytes"].as_u64().unwrap_or(0)),
-                        d["format"].as_str().unwrap_or(""),
-                        origin,
-                        d["status"].as_str().unwrap_or(""),
-                        vm.map(|v| format!("→ {}", v)).unwrap_or_default()
-                    );
-                }
-            }
-            Err(e) => println!("{} {}", "Error:".red(), e),
-        },
-        "show" | "get" => match args.get(1) {
-            Some(name) => match client
-                .request_json::<serde_json::Value>(Method::GET, &format!("/disks/{}", name), None)
-                .await
-            {
-                Ok(d) => {
-                    print_disk_result(&d);
-                    println!("  path: {}", d["path"].as_str().unwrap_or(""));
-                    if let Some(b) = d["info"]["backing-filename"].as_str() {
-                        println!("  backing file: {}", b);
-                    }
-                    if d["pending_growpart"] == true {
-                        println!("  root partition grows on next boot");
-                    }
-                    let t = &d["partition_table"];
-                    match t["partitions"].as_array() {
-                        Some(parts) => {
-                            println!("  partitions ({}):", t["kind"].as_str().unwrap_or(""));
-                            for p in parts {
-                                println!(
-                                    "    {} start {:>9} size {:>9} {}{}",
-                                    p["number"],
-                                    format_bytes(p["start_bytes"].as_u64().unwrap_or(0)),
-                                    format_bytes(p["size_bytes"].as_u64().unwrap_or(0)),
-                                    p["type"].as_str().unwrap_or(""),
-                                    if p["is_root"] == true { " (root)" } else { "" }
-                                );
-                            }
-                            println!(
-                                "  free at end: {}",
-                                format_bytes(t["free_tail_bytes"].as_u64().unwrap_or(0))
-                            );
-                        }
-                        None => println!("  no partition table"),
-                    }
-                }
-                Err(e) => println!("{} {}", "Error:".red(), e),
-            },
-            None => println!("{}", usage.yellow()),
-        },
-        "create" => {
-            let Some(name) = args.get(1).filter(|a| !a.starts_with("--")) else {
-                println!("{}", usage.yellow());
-                return;
-            };
-            let mut body = serde_json::json!({ "name": name });
-            if let Some(n) = flag_value(args, "--size-gib") {
-                match gib(n) {
-                    Ok(n) => body["size_gib"] = serde_json::json!(n),
-                    Err(e) => return println!("{} {}", "Error:".red(), e),
-                }
-            }
-            if let Some(i) = flag_value(args, "--image") {
-                body["image"] = serde_json::json!(i);
-            }
-            if has_flag(args, "--full") {
-                body["clone"] = serde_json::json!("full");
-            }
-            if has_flag(args, "--raw") {
-                body["format"] = serde_json::json!("raw");
-            }
-            if has_flag(args, "--no-extend") {
-                body["extend_root"] = serde_json::json!(false);
-            }
-            client.scope_body(&mut body);
-            // Making it may wait for its image to download.
-            match client
-                .request_json::<serde_json::Value>(Method::POST, "/disks?wait=300", Some(body))
-                .await
-            {
-                Ok(d) => {
-                    println!("{}", "Disk created:".green());
-                    print_disk_result(&d);
-                }
-                Err(e) => println!("{} {}", "Error:".red(), e),
-            }
-        }
-        "resize" => match (args.get(1), args.get(2)) {
-            (Some(name), Some(size)) => {
-                let size = match gib(size) {
-                    Ok(n) => n,
-                    Err(e) => return println!("{} {}", "Error:".red(), e),
-                };
-                let mut body = serde_json::json!({ "size_gib": size });
-                if has_flag(args, "--no-extend") {
-                    body["extend_root"] = serde_json::json!(false);
-                }
-                match client
-                    .request_json::<serde_json::Value>(
-                        Method::POST,
-                        &format!("/disks/{}/resize?wait=120", name),
-                        Some(body),
-                    )
-                    .await
-                {
-                    Ok(d) => {
-                        println!("{}", "Disk resize:".green());
-                        print_disk_result(&d);
-                    }
-                    Err(e) => println!("{} {}", "Error:".red(), e),
-                }
-            }
-            _ => println!("{}", usage.yellow()),
-        },
-        "extend-root" => match args.get(1) {
-            Some(name) => {
-                let mode = if has_flag(args, "--on-boot") {
-                    "on-boot"
-                } else {
-                    "offline"
-                };
-                match client
-                    .request_json::<serde_json::Value>(
-                        Method::POST,
-                        &format!("/disks/{}/extend-root?wait=120", name),
-                        Some(serde_json::json!({ "mode": mode })),
-                    )
-                    .await
-                {
-                    Ok(d) => print_disk_result(&d),
-                    Err(e) => println!("{} {}", "Error:".red(), e),
-                }
-            }
-            None => println!("{}", usage.yellow()),
-        },
-        "rm" | "delete" => match args.get(1) {
-            Some(name) => {
-                if prompt(&format!("Delete disk {} and its data? [y/N]: ", name)).to_lowercase()
-                    != "y"
-                {
-                    println!("Cancelled");
-                    return;
-                }
-                match client
-                    .request_json::<serde_json::Value>(
-                        Method::DELETE,
-                        &format!("/disks/{}", name),
-                        None,
-                    )
-                    .await
-                {
-                    Ok(serde_json::Value::Null) => println!("{} {}", "Disk deleted:".green(), name),
-                    Ok(_) => println!(
-                        "{} {} (once the operation on it finishes)",
-                        "Deleting:".green(),
-                        name
-                    ),
-                    Err(e) => println!("{} {}", "Error:".red(), e),
-                }
-            }
-            None => println!("{}", usage.yellow()),
-        },
-        _ => println!("{}", usage.yellow()),
     }
 }
 
@@ -1996,83 +1474,6 @@ fn chosen_key_files(answer: &str, defaults: &[String]) -> Option<String> {
         "" => Some(defaults.join(",")),
         a if a.eq_ignore_ascii_case("none") => None,
         a => Some(a.to_string()),
-    }
-}
-
-async fn handle_credential_add(client: &CliClient) {
-    let me = std::env::var("USER").unwrap_or_default();
-    let username = if me.is_empty() {
-        prompt("Username: ")
-    } else {
-        let u = prompt(&format!("Username [{}]: ", me));
-        if u.is_empty() { me } else { u }
-    };
-    if username.is_empty() {
-        println!("{}", "Error: username is required".red());
-        return;
-    }
-    println!(
-        "{}",
-        "Leave the password empty for SSH-key-only login.".dimmed()
-    );
-    let password = match prompt_new_password(true) {
-        Ok(p) => p,
-        Err(e) => {
-            println!("{} {}", "Error:".red(), e);
-            return;
-        }
-    };
-    // Offer your own ~/.ssh/*.pub by default.
-    let defaults = own_public_key_files();
-    let question = if defaults.is_empty() {
-        "SSH public key files (optional, comma-separated, e.g. ~/.ssh/id_ed25519.pub): ".to_string()
-    } else {
-        format!(
-            "SSH public key files (comma-separated; 'none' for no keys) [{}]: ",
-            defaults.join(", ")
-        )
-    };
-    let keys = match chosen_key_files(&prompt_path(&question), &defaults)
-        .map(|s| read_public_key_files(&s))
-        .transpose()
-    {
-        Ok(k) => k.unwrap_or_default(),
-        Err(e) => {
-            println!("{} {}", "Error:".red(), e);
-            return;
-        }
-    };
-    let request = CreateCredentialRequest {
-        username,
-        password,
-        ssh_authorized_keys: keys,
-    };
-    match client.create_credential(&request).await {
-        Ok(c) => println!(
-            "{} {} (password: {}, SSH keys: {})",
-            "Credential created:".green(),
-            c.username.yellow(),
-            if c.has_password { "set" } else { "none" },
-            c.ssh_authorized_keys.len()
-        ),
-        Err(e) => println!("{} {}", "Error:".red(), e),
-    }
-}
-
-async fn handle_credential_update(
-    client: &CliClient,
-    username: &str,
-    request: UpdateCredentialRequest,
-) {
-    match client.update_credential(username, &request).await {
-        Ok(c) => {
-            println!("{} {}", "Credential updated:".green(), c.username.yellow());
-            println!(
-                "{} Changes apply to VMs on their first boot only; running or already-provisioned VMs keep their current login.",
-                "Note:".dimmed()
-            );
-        }
-        Err(e) => println!("{} {}", "Error:".red(), e),
     }
 }
 
@@ -2476,19 +1877,18 @@ async fn handle_create(client: &CliClient) {
             Some("qemu") => "qemu",
             _ => "cloudhypervisor",
         };
-        let ready: Vec<String> = client
-            .request_json::<Vec<serde_json::Value>>(Method::GET, "/images", None)
+        let ready: Vec<String> = storage::list_images(client)
             .await
             .unwrap_or_default()
             .into_iter()
             .rev() // newest first
             .filter(|i| {
-                i["kind"] == "firmware"
-                    && i["hypervisor"] == ty
-                    && i["status"]["state"] == "ready"
-                    && i["deleting"] != true
+                storage::is_firmware(i)
+                    && storage::hypervisor_name(&i.hypervisor) == ty
+                    && storage::is_ready(i)
+                    && i.deleting != Some(true)
             })
-            .filter_map(|i| i["name"].as_str().map(str::to_string))
+            .map(|i| i.name)
             .collect();
         if ready.is_empty() {
             let key = if ty == "qemu" { "ovmf" } else { "cloudhv-edk2" };
@@ -2540,13 +1940,12 @@ async fn handle_create(client: &CliClient) {
         (String::new(), None, None, None);
     let mut choice = "path".to_string();
     if firmware_boot {
-        let ready: Vec<String> = client
-            .request_json::<Vec<serde_json::Value>>(Method::GET, "/images", None)
+        let ready: Vec<String> = storage::list_images(client)
             .await
             .unwrap_or_default()
             .into_iter()
-            .filter(|i| i["status"]["state"] == "ready" && i["kind"] != "firmware")
-            .filter_map(|i| i["name"].as_str().map(str::to_string))
+            .filter(|i| storage::is_ready(i) && !storage::is_firmware(i))
+            .map(|i| i.name)
             .collect();
         let default = if ready.is_empty() { "path" } else { "image" };
         choice =
@@ -2621,8 +2020,7 @@ async fn handle_create(client: &CliClient) {
 
     // A stored credential is provisioned through the generated seed only.
     let credential = if firmware_boot && cloud_init_path.is_none() {
-        let names: Vec<String> = client
-            .list_credentials()
+        let names: Vec<String> = storage::list_credentials(client)
             .await
             .map(|cs| cs.into_iter().map(|c| c.username).collect())
             .unwrap_or_default();
@@ -3403,57 +2801,19 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
             }
         }
 
-        "credentials" | "creds" => match client.list_credentials().await {
-            Ok(creds) if creds.is_empty() => println!("No credentials stored."),
-            Ok(creds) => {
-                let rows: Vec<CredentialRow> = creds.iter().map(CredentialRow::from).collect();
-                println!("{}", Table::new(rows));
-            }
-            Err(e) => println!("{} {}", "Error:".red(), e),
-        },
+        "credentials" | "creds" => storage::credentials(client).await,
 
-        "credential-add" | "cred-add" => handle_credential_add(client).await,
+        "credential-add" | "cred-add" => storage::credential_add(client).await,
 
-        "credential-passwd" | "cred-passwd" => match parts.get(1) {
-            Some(username) => match prompt_new_password(false) {
-                Ok(password) => {
-                    let request = UpdateCredentialRequest {
-                        password,
-                        ssh_authorized_keys: None,
-                    };
-                    handle_credential_update(client, username, request).await
-                }
-                Err(e) => println!("{} {}", "Error:".red(), e),
-            },
-            None => println!("{}", "Usage: credential-passwd <user>".yellow()),
-        },
+        "credential-passwd" | "cred-passwd" => {
+            storage::credential_passwd(client, parts.get(1).copied()).await
+        }
 
-        "credential-keys" | "cred-keys" => match parts.get(1) {
-            Some(username) => {
-                let input = prompt_path(
-                    "SSH public key files (comma-separated; empty to remove all keys): ",
-                );
-                match read_public_key_files(&input) {
-                    Ok(keys) => {
-                        let request = UpdateCredentialRequest {
-                            password: None,
-                            ssh_authorized_keys: Some(keys),
-                        };
-                        handle_credential_update(client, username, request).await
-                    }
-                    Err(e) => println!("{} {}", "Error:".red(), e),
-                }
-            }
-            None => println!("{}", "Usage: credential-keys <user>".yellow()),
-        },
+        "credential-keys" | "cred-keys" => {
+            storage::credential_keys(client, parts.get(1).copied()).await
+        }
 
-        "credential-rm" | "cred-rm" => match parts.get(1) {
-            Some(username) => match client.delete_credential(username).await {
-                Ok(()) => println!("{} {}", "Credential deleted:".green(), username),
-                Err(e) => println!("{} {}", "Error:".red(), e),
-            },
-            None => println!("{}", "Usage: credential-rm <user>".yellow()),
-        },
+        "credential-rm" | "cred-rm" => storage::credential_rm(client, parts.get(1).copied()).await,
 
         "networks" | "nets" => list_networks(client).await,
 
@@ -3594,9 +2954,9 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
             _ => println!("{}", "Usage: uplink-rm <bridge> <name>".yellow()),
         },
 
-        "image" | "images" => handle_image(client, &parts[1..]).await,
+        "image" | "images" => storage::image(client, &parts[1..]).await,
 
-        "disk" | "disks" => handle_disk(client, &parts[1..]).await,
+        "disk" | "disks" => storage::disk(client, &parts[1..]).await,
 
         "health" => match client.health_check().await {
             Ok(()) => println!("{} API server is healthy", "OK:".green()),
@@ -3999,23 +3359,26 @@ mod tests {
             .unwrap();
         assert_eq!(who["method"], "disabled");
 
-        let req = CreateCredentialRequest {
-            username: "alice".into(),
-            password: None,
-            ssh_authorized_keys: vec!["ssh-ed25519 AAAAC3Nza alice@host".into()],
-        };
-        let c = client.create_credential(&req).await.unwrap();
+        let c = storage::create_credential(
+            &client,
+            "alice".into(),
+            None,
+            vec!["ssh-ed25519 AAAAC3Nza alice@host".into()],
+        )
+        .await
+        .unwrap();
         assert_eq!(c.username, "alice");
         assert_eq!(c.ssh_authorized_keys.len(), 1);
+        assert_eq!(c.has_password, Some(false));
 
-        // Scoped to a project by name: ?project= on lists and /credentials/{user}.
+        // Scoped to a project by name: the request's `project`.
         let projects: Vec<serde_json::Value> = client
             .request_json(Method::GET, "/projects", None)
             .await
             .unwrap();
         let project = projects[0]["name"].as_str().unwrap().to_string();
         client.set_project(Some(project.clone()));
-        let creds = client.list_credentials().await.unwrap();
+        let creds = storage::list_credentials(&client).await.unwrap();
         assert_eq!(
             creds
                 .iter()
@@ -4023,18 +3386,14 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["alice"]
         );
-        let one: serde_json::Value = client
-            .request_json(Method::GET, &client.scoped("/credentials/alice"), None)
-            .await
-            .unwrap();
-        assert_eq!(one["username"], "alice");
-        assert_eq!(one["project"], projects[0]["id"]);
+        assert_eq!(creds[0].project, projects[0]["id"].as_str().unwrap());
+        assert!(creds[0].updated_at.is_set());
         assert!(client.list_vms().await.unwrap().is_empty());
 
         // A project that doesn't exist is an API error, rendered.
         client.set_project(Some("no-such-project".into()));
-        let e = client.list_credentials().await.unwrap_err();
-        assert!(e.starts_with("not_found:"), "{e}");
+        let e = storage::list_credentials(&client).await.unwrap_err();
+        assert!(e.contains("not_found"), "{e}");
         client.set_project(None);
 
         let e = client
@@ -4050,18 +3409,55 @@ mod tests {
                 .contains("not found")
         );
 
-        client
-            .update_credential(
-                "alice",
-                &UpdateCredentialRequest {
-                    password: None,
-                    ssh_authorized_keys: Some(vec!["ssh-ed25519 BBBBC3Nza alice@new".into()]),
-                },
-            )
+        let c = storage::update_credential(
+            &client,
+            "alice",
+            None,
+            Some(vec!["ssh-ed25519 BBBBC3Nza alice@new".into()]),
+        )
+        .await
+        .unwrap();
+        assert_eq!(c.ssh_authorized_keys, ["ssh-ed25519 BBBBC3Nza alice@new"]);
+        // An empty key list clears the keys: refused here, as alice has
+        // no password to fall back on.
+        let e = storage::update_credential(&client, "alice", None, Some(vec![]))
             .await
-            .unwrap();
-        client.delete_credential("alice").await.unwrap();
-        assert!(client.list_credentials().await.unwrap().is_empty());
+            .unwrap_err();
+        assert!(e.contains("invalid_credential"), "{e}");
+        storage::delete_credential(&client, "alice").await.unwrap();
+        assert!(storage::list_credentials(&client).await.unwrap().is_empty());
+
+        // Images and disks on their RPC clients.
+        {
+            use glidex_api::proto::glidex::storage::v1::*;
+            let t = client.rpc_transport().await.unwrap();
+            assert!(storage::list_images(&client).await.unwrap().is_empty());
+            let images = ImageServiceClient::new(t.clone(), t.config());
+            let e = images
+                .get_image(GetImageRequest {
+                    id: "nope".into(),
+                    ..Default::default()
+                })
+                .await
+                .unwrap_err();
+            assert_eq!(e.code, connectrpc::ErrorCode::NotFound);
+            let disks = DiskServiceClient::new(t.clone(), t.config());
+            let list = disks
+                .list_disks(ListDisksRequest::default())
+                .await
+                .unwrap()
+                .into_owned();
+            assert!(list.disks.is_empty());
+            let e = disks
+                .get_disk(GetDiskRequest {
+                    id: "nope".into(),
+                    ..Default::default()
+                })
+                .await
+                .unwrap_err();
+            assert_eq!(e.code, connectrpc::ErrorCode::NotFound);
+            assert!(tenancy::rpc_err(e).contains("not_found"));
+        }
 
         // The console WebSocket goes over the same socket; errors come back
         // as API errors.

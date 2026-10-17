@@ -77,6 +77,16 @@ async fn request(
     (status, json)
 }
 
+/// A proto3 JSON 64-bit integer: a string (`"17179869184"`) or a number;
+/// left out (null) at its default, 0.
+fn num(v: &Value) -> u64 {
+    match v {
+        Value::Null => 0,
+        Value::String(s) => s.parse().unwrap_or_else(|_| panic!("not a number: {v}")),
+        _ => v.as_u64().unwrap_or_else(|| panic!("not a number: {v}")),
+    }
+}
+
 fn firmware_vm(name: &str) -> Value {
     json!({
         "name": name,
@@ -585,16 +595,17 @@ async fn pull_firmware_image(app: &Router, hypervisor: &str) -> String {
     };
     let (status, fw) = request(app, "POST", "/images", Some(json!({"firmware": key}))).await;
     assert_eq!(status, StatusCode::ACCEPTED, "{fw}");
-    let id = fw["id"].as_str().unwrap().to_string();
+    let id = fw["image"]["id"].as_str().unwrap().to_string();
     let deadline = Instant::now() + Duration::from_secs(300);
     loop {
         let (_, fw) = request(app, "GET", &format!("/images/{id}"), None).await;
+        let fw = &fw["image"];
         match fw["status"]["state"].as_str() {
-            Some("downloading" | "verifying") => {
+            Some("IMAGE_STATE_DOWNLOADING" | "IMAGE_STATE_VERIFYING") => {
                 assert!(Instant::now() < deadline, "firmware download timed out")
             }
             _ => {
-                assert_eq!(fw["status"]["state"], "ready", "{fw}");
+                assert_eq!(fw["status"]["state"], "IMAGE_STATE_READY", "{fw}");
                 return id;
             }
         }
@@ -1801,33 +1812,35 @@ async fn catalog_image_e2e(hypervisor: &str) {
     };
     let (status, fw) = request(&app, "POST", "/images", Some(json!({"firmware": fw_key}))).await;
     assert_eq!(status, StatusCode::ACCEPTED, "{fw}");
-    let fw_id = fw["id"].as_str().unwrap().to_string();
+    let fw_id = fw["image"]["id"].as_str().unwrap().to_string();
     let fw = loop {
         let (_, fw) = request(&app, "GET", &format!("/images/{fw_id}"), None).await;
+        let fw = fw["image"].clone();
         if !matches!(
             fw["status"]["state"].as_str(),
-            Some("downloading" | "verifying")
+            Some("IMAGE_STATE_DOWNLOADING" | "IMAGE_STATE_VERIFYING")
         ) {
             break fw;
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
     };
-    assert_eq!(fw["status"]["state"], "ready", "{fw}");
+    assert_eq!(fw["status"]["state"], "IMAGE_STATE_READY", "{fw}");
 
     let (status, img) = request(&app, "POST", "/images", Some(json!({"catalog": key}))).await;
     assert_eq!(status, StatusCode::ACCEPTED, "{img}");
-    let image_id = img["id"].as_str().unwrap().to_string();
+    let image_id = img["image"]["id"].as_str().unwrap().to_string();
     let deadline = Instant::now() + Duration::from_secs(1800);
     let img = loop {
         let (_, img) = request(&app, "GET", &format!("/images/{image_id}"), None).await;
+        let img = img["image"].clone();
         match img["status"]["state"].as_str().unwrap() {
-            "downloading" | "verifying" => {}
+            "IMAGE_STATE_DOWNLOADING" | "IMAGE_STATE_VERIFYING" => {}
             _ => break img,
         }
         assert!(Instant::now() < deadline, "download timed out: {img}");
         tokio::time::sleep(Duration::from_secs(2)).await;
     };
-    assert_eq!(img["status"]["state"], "ready", "{img}");
+    assert_eq!(img["status"]["state"], "IMAGE_STATE_READY", "{img}");
     assert_eq!(img["verified"], true);
     eprintln!("pulled {key}: {}", img["source"]);
 
@@ -1864,13 +1877,18 @@ async fn catalog_image_e2e(hypervisor: &str) {
     for _ in 0..240 {
         disk = request(&app, "GET", &format!("/disks/{root}"), None)
             .await
-            .1;
-        if disk["busy_op"].is_null() && disk["phase"] != "pending" {
+            .1["disk"]
+            .clone();
+        if disk["busy_op"].is_null() && disk["phase"] != "DISK_PHASE_PENDING" {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
-    assert_eq!(disk["partition_table"]["free_tail_bytes"], 0, "{disk}");
+    assert_eq!(
+        num(&disk["partition_table"]["free_tail_bytes"]),
+        0,
+        "{disk}"
+    );
 
     // Boot, log in, and check the root filesystem against `min_gib`.
     let boot_and_check = |min_gib: u32, marker: &'static str| {
@@ -1918,8 +1936,11 @@ async fn catalog_image_e2e(hypervisor: &str) {
     assert_eq!(status, StatusCode::OK, "{d}");
     // Grown, root partition included (offline: nothing left for the boot);
     // the guest's own view of it is checked next.
-    assert_eq!(d["size_bytes"], 16u64 << 30, "{d}");
-    assert_eq!(d["pending_growpart"], false, "{d}");
+    assert_eq!(d["settled"], true, "{d}");
+    let d = &d["disk"];
+    assert_eq!(num(&d["size_bytes"]), 16u64 << 30, "{d}");
+    // An optional bool: sent when set, absent otherwise.
+    assert_ne!(d["pending_growpart"], true, "{d}");
 
     boot_and_check(15, "GX_ROOT16").await;
 

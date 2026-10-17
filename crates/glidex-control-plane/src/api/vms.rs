@@ -272,7 +272,13 @@ pub async fn preview(c: Caller, Json(b): Json<PreviewBody>) -> Result<Response, 
         .map_err(|e| err(StatusCode::BAD_REQUEST, "invalid", e.to_string()))?;
     let fits = c
         .manager()
-        .preview_placement(&config, b.node.clone(), &b.data_disks, b.image.as_deref())
+        .preview_placement(
+            &project,
+            &config,
+            b.node.clone(),
+            &b.data_disks,
+            b.image.as_deref(),
+        )
         .await
         .map_err(super::storage::manager_err)?;
     let pick = fits
@@ -297,7 +303,7 @@ pub async fn create(
 
     let sel = req.disk_selection();
     for key in sel.data_disks.iter().chain(sel.root_disk.iter()) {
-        if let Ok(d) = c.manager().get_disk(key).await {
+        if let Ok(d) = c.manager().get_disk_for(&project, key).await {
             let (e, es) = super::disk_entities(&d.id, &d.project);
             c.require_action("useDisk", e, es, with_project)?;
         }
@@ -575,7 +581,7 @@ pub async fn patch_one(
         if let Some(keys) = &cp.data_disks {
             let mut ids = Vec::new();
             for key in keys {
-                if let Ok(d) = c.manager().get_disk(key).await {
+                if let Ok(d) = c.manager().get_disk_for(&project, key).await {
                     if !cur.data_disks.contains(&d.id) {
                         c.require_action("attachDisk", e.clone(), es.clone(), &[])?;
                         let (de, des) = super::disk_entities(&d.id, &d.project);
@@ -972,7 +978,11 @@ pub async fn attach_disk(
     Json(req): Json<AttachDiskRequest>,
 ) -> Result<Response, ApiErr> {
     let (vm, _, _) = visible_vm(&c, &id).await?;
-    let d = c.manager().get_disk(&req.disk).await.map_err(manager_err)?;
+    let d = c
+        .manager()
+        .get_disk_for(&vm.project, &req.disk)
+        .await
+        .map_err(manager_err)?;
     let (e, es) = super::disk_entities(&d.id, &d.project);
     c.require_action(
         "useDisk",

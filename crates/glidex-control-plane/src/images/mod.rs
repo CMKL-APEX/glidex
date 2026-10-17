@@ -49,6 +49,9 @@ pub enum ImageError {
     NotFound(String),
     #[error("{0}")]
     AlreadyExists(String),
+    /// A name more than one record has, where a name was given.
+    #[error("{0}")]
+    Ambiguous(String),
     #[error("{0}")]
     InUse(String),
     #[error("{0}")]
@@ -1166,17 +1169,44 @@ impl ImageManager {
         v
     }
 
+    /// Disk `key`: an id, or a name that only one disk has. Names are
+    /// unique per tenant (spec/tenancy.md D24): where a tenant is known,
+    /// [`get_disk_in`](Self::get_disk_in) resolves them.
     pub fn get_disk(&self, key: &str) -> Result<Disk, ImageError> {
-        let disks = self.disks.read().unwrap();
-        disks
-            .get(key)
-            .or_else(|| disks.values().find(|d| d.name == key))
-            .cloned()
-            .ok_or_else(|| ImageError::NotFound(format!("disk not found: {}", key)))
+        self.get_disk_in(key, |_| true)
     }
 
-    pub fn disk_name_taken(&self, name: &str) -> bool {
-        self.disks.read().unwrap().values().any(|d| d.name == name)
+    /// Disk `key`: an id, or a name among the disks of the projects
+    /// `in_scope` accepts (a tenant's). A name two of them share is
+    /// refused: give the id.
+    pub fn get_disk_in(
+        &self,
+        key: &str,
+        in_scope: impl Fn(&str) -> bool,
+    ) -> Result<Disk, ImageError> {
+        let disks = self.disks.read().unwrap();
+        if let Some(d) = disks.get(key) {
+            return Ok(d.clone());
+        }
+        let mut named = disks
+            .values()
+            .filter(|d| d.name == key && in_scope(&d.project));
+        match (named.next(), named.next()) {
+            (Some(d), None) => Ok(d.clone()),
+            (Some(_), Some(_)) => Err(ImageError::Ambiguous(format!(
+                "more than one disk is named {key}: give its id"
+            ))),
+            (None, _) => Err(ImageError::NotFound(format!("disk not found: {}", key))),
+        }
+    }
+
+    /// Whether a disk of the projects `in_scope` accepts is named `name`.
+    pub fn disk_name_taken_in(&self, name: &str, in_scope: impl Fn(&str) -> bool) -> bool {
+        self.disks
+            .read()
+            .unwrap()
+            .values()
+            .any(|d| d.name == name && in_scope(&d.project))
     }
 
     pub fn linked_disks(&self, image_id: &str) -> Vec<Disk> {

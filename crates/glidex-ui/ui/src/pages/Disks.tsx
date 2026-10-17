@@ -2,8 +2,8 @@ import { useCallback, useEffect, useState, type FormEvent } from "react";
 import * as api from "../api";
 import { ApiRequestError } from "../api";
 import { useCan, useSession } from "../session";
-import type { DiskInfo, ImageInfo, VmResponse } from "../types";
-import { diskActivity, diskWaiting, formatBytes, notReady } from "../types";
+import type { CloneMode, DiskFormat, DiskInfo, ImageInfo, VmResponse } from "../types";
+import { cloneLabel, diskActivity, diskPhase, diskWaiting, formatBytes, formatLabel, imageState, isFirmware, notReady, num, enumLabel } from "../types";
 import { Spinner } from "../components/Activity";
 import { useLiveRefresh } from "../live";
 import Modal from "../components/Modal";
@@ -16,6 +16,10 @@ const inputClass =
 
 const GIB = 1024 * 1024 * 1024;
 
+/** The form's choices in the API's enum names. */
+const CLONE_MODE: Record<"linked" | "full", CloneMode> = { linked: "CLONE_MODE_LINKED", full: "CLONE_MODE_FULL" };
+const DISK_FORMAT: Record<"qcow2" | "raw", DiskFormat> = { qcow2: "DISK_FORMAT_QCOW2", raw: "DISK_FORMAT_RAW" };
+
 function errorText(e: unknown): string {
   if (e instanceof ApiRequestError && e.details?.min_size_bytes) {
     return `${e.message} (minimum ${formatBytes(e.details.min_size_bytes)})`;
@@ -23,7 +27,8 @@ function errorText(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-function resultNotes(d: DiskInfo): string[] {
+function resultNotes(d: DiskInfo | undefined): string[] {
+  if (!d) return [];
   const notes = [...(d.warnings ?? [])];
   const waiting = notReady(d.conditions);
   if (d.deleting) notes.unshift(`${d.name} is deleted once its current operation finishes.`);
@@ -36,7 +41,7 @@ function DiskStatus({ d }: { d: DiskInfo }) {
   const why = notReady(d.conditions);
   const color = d.status === "failed" || d.status === "missing" ? "text-red-700" : d.status === "ready" ? "" : "text-sky-700";
   return (
-    <div title={why ? `${why.reason}: ${why.message}` : undefined}>
+    <div title={why ? `${why.reason ?? ""}: ${why.message ?? ""}` : undefined}>
       <span className={`inline-flex items-center gap-1 ${color}`}>
         {diskActivity(d) && !diskWaiting(d) && <Spinner />}
         {d.deleting ? "deleting" : d.status === "busy" ? `busy (${d.busy_op})` : d.status}
@@ -56,12 +61,12 @@ function CreateDiskForm({
   onCancel,
 }: {
   images: ImageInfo[];
-  onDone: (d: DiskInfo) => void;
+  onDone: (d: DiskInfo | undefined) => void;
   onCancel: () => void;
 }) {
   const { project } = useSession();
   // Firmware images are never a disk source.
-  const ready = images.filter((i) => i.status.state === "ready" && !i.deleting && i.kind !== "firmware");
+  const ready = images.filter((i) => imageState(i) === "ready" && !i.deleting && !isFirmware(i));
   const [name, setName] = useState("");
   const [image, setImage] = useState(ready[0]?.id ?? "");
   const [size, setSize] = useState("");
@@ -80,10 +85,10 @@ function CreateDiskForm({
         name,
         image: image || undefined,
         size_gib: size ? Number(size) : undefined,
-        clone: image ? clone : undefined,
-        format,
+        clone: image ? CLONE_MODE[clone] : undefined,
+        format: DISK_FORMAT[format],
       });
-      onDone(d);
+      onDone(d.disk);
     } catch (err) {
       setError(errorText(err));
       setSubmitting(false);
@@ -161,19 +166,19 @@ function CreateDiskForm({
   );
 }
 
-function ResizeForm({ disk, onDone, onCancel }: { disk: DiskInfo; onDone: (d: DiskInfo) => void; onCancel: () => void }) {
-  const [size, setSize] = useState(String(Math.ceil(disk.size_bytes / GIB)));
-  const [extend, setExtend] = useState(disk.origin.kind === "image");
+function ResizeForm({ disk, onDone, onCancel }: { disk: DiskInfo; onDone: (d: DiskInfo | undefined) => void; onCancel: () => void }) {
+  const [size, setSize] = useState(String(Math.ceil(num(disk.size_bytes) / GIB)));
+  const [extend, setExtend] = useState(!!disk.origin?.image);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const shrinking = Number(size) * GIB < disk.size_bytes;
+  const shrinking = Number(size) * GIB < num(disk.size_bytes);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     setSubmitting(true);
     setError(null);
     try {
-      onDone(await api.resizeDisk(disk.id, Number(size), shrinking ? undefined : extend));
+      onDone((await api.resizeDisk(disk.id, Number(size), shrinking ? undefined : extend)).disk);
     } catch (err) {
       setError(errorText(err));
       setSubmitting(false);
@@ -244,7 +249,7 @@ export default function Disks() {
     return () => clearInterval(id);
   }, [busy, waiting, live, refresh]);
 
-  const done = (d: DiskInfo) => {
+  const done = (d: DiskInfo | undefined) => {
     setNotes(resultNotes(d));
     setCreating(false);
     setResizing(null);
@@ -322,9 +327,9 @@ export default function Disks() {
                     </button>
                   </td>
                   <td className="px-4 py-3">{formatBytes(d.size_bytes)}</td>
-                  <td className="px-4 py-3">{d.format}</td>
+                  <td className="px-4 py-3">{formatLabel(d.format)}</td>
                   <td className="px-4 py-3 text-xs">
-                    {d.origin.kind === "image" ? `${imageName(d.origin.image_id)} (${d.origin.mode})` : "blank"}
+                    {d.origin?.image ? `${imageName(d.origin.image.image_id)} (${cloneLabel(d.origin.image.mode)})` : "blank"}
                   </td>
                   <td className="px-4 py-3 font-mono text-xs">{vmName(d.attached_to) ?? "—"}</td>
                   {nodes.clustered && (
@@ -338,16 +343,16 @@ export default function Disks() {
                   <td className="px-4 py-3 text-right space-x-2 whitespace-nowrap">
                     <button
                       className="px-3 py-1 text-xs font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg disabled:opacity-40"
-                      disabled={d.phase !== "ready" || !!d.deleting}
+                      disabled={diskPhase(d) !== "ready" || !!d.deleting}
                       onClick={() => setResizing(d)}
                     >
                       Resize
                     </button>
-                    {d.origin.kind === "image" && (
+                    {d.origin?.image && (
                       <button
                         className="px-3 py-1 text-xs font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg disabled:opacity-40"
-                        disabled={d.phase !== "ready" || !!d.deleting}
-                        onClick={() => act(() => api.extendRoot(d.id, "offline"))}
+                        disabled={diskPhase(d) !== "ready" || !!d.deleting}
+                        onClick={() => act(() => api.extendRoot(d.id, "EXTEND_MODE_OFFLINE").then((r) => r.disk))}
                       >
                         Extend root
                       </button>
@@ -393,7 +398,7 @@ export default function Disks() {
                   </tr>
                 </thead>
                 <tbody>
-                  {detail.partition_table.partitions.map((p) => (
+                  {(detail.partition_table.partitions ?? []).map((p) => (
                     <tr key={p.number} className={p.is_root ? "font-semibold" : ""}>
                       <td className="py-1">{p.number}</td>
                       <td>{formatBytes(p.start_bytes)}</td>
@@ -411,7 +416,7 @@ export default function Disks() {
             )}
             {detail.partition_table && (
               <p className="text-gray-600">
-                {detail.partition_table.kind.toUpperCase()}, free at end: {formatBytes(detail.partition_table.free_tail_bytes)}
+                {enumLabel(detail.partition_table.kind, "PARTITION_TABLE_KIND_").toUpperCase()}, free at end: {formatBytes(detail.partition_table.free_tail_bytes)}
               </p>
             )}
           </div>

@@ -9,13 +9,13 @@ test("lists the firmware catalog and the firmware images", async ({ page, hyperv
   await expect(page.getByRole("heading", { name: "Firmware catalog" })).toBeVisible();
 
   const catalog = page.getByTestId("firmware-catalog");
-  for (const entry of await api<any[]>("/images/firmware-catalog")) {
+  for (const entry of (await api<{ items?: any[] }>("/images/firmware-catalog")).items ?? []) {
     await expect(catalog).toContainText(entry.key);
   }
   // The pulled entry reads as downloaded.
   // By the exact key: "ovmf" is also a prefix of "ovmf-debian".
   const card = catalog.locator("> div").filter({ has: page.locator("span.font-mono", { hasText: new RegExp(`^${FIRMWARE_KEY[hypervisor]}$`) }) });
-  if (fw.source?.key === FIRMWARE_KEY[hypervisor]) await expect(card).toContainText(/Downloaded|Imported/);
+  if (fw.source?.firmware?.key === FIRMWARE_KEY[hypervisor]) await expect(card).toContainText(/Downloaded|Imported/);
 
   // Firmware sits in its own table, with its hypervisor, not among the cloud images.
   const row = page.getByTestId("firmware-images").locator("tr").filter({ hasText: fw.name });

@@ -102,9 +102,15 @@ impl ImageManager {
     /// Validate a create request (spec §6.1) and return the record, in
     /// phase `Pending` and not yet persisted: the disk controller makes its
     /// file once the source image is ready (spec/reconciliation.md §10.1).
-    pub fn new_disk_record(&self, req: &CreateDiskRequest) -> Result<Disk, ImageError> {
+    /// `in_tenant` accepts the projects of the new disk's tenant, among
+    /// which its name must be unique (spec/tenancy.md D24).
+    pub fn new_disk_record(
+        &self,
+        req: &CreateDiskRequest,
+        in_tenant: impl Fn(&str) -> bool,
+    ) -> Result<Disk, ImageError> {
         validate_name("disk", &req.name)?;
-        if self.disk_name_taken(&req.name) {
+        if self.disk_name_taken_in(&req.name, in_tenant) {
             return Err(ImageError::AlreadyExists(format!(
                 "a disk named {} already exists",
                 req.name

@@ -166,10 +166,17 @@ export async function bootPrerequisites(hypervisor: Hypervisor): Promise<string[
 /** Ready firmware images for `hypervisor`, newest first: what CreateVmForm
  * offers, and the first is what it preselects. */
 export async function firmwareImages(hypervisor: Hypervisor): Promise<any[]> {
-  return (await api<any[]>("/images"))
-    .filter((i) => i.kind === "firmware" && i.hypervisor === hypervisor && i.status.state === "ready" && !i.deleting)
-    .sort((a, b) => b.created_at - a.created_at);
+  // The storage routes answer in the proto3 JSON shape (spec/grpc.md §9.1).
+  return ((await api<{ images?: any[] }>("/images")).images ?? [])
+    .filter((i) => i.kind === "IMAGE_KIND_FIRMWARE" && i.hypervisor === PROTO_HYPERVISOR[hypervisor] && i.status?.state === "IMAGE_STATE_READY" && !i.deleting)
+    .sort((a, b) => Date.parse(b.created_at ?? "") - Date.parse(a.created_at ?? ""));
 }
+
+/** A hypervisor as the storage API names it. */
+export const PROTO_HYPERVISOR: Record<Hypervisor, string> = {
+  cloudhypervisor: "HYPERVISOR_CLOUD_HYPERVISOR",
+  qemu: "HYPERVISOR_QEMU",
+};
 
 /** A ready firmware image for `hypervisor`, pulled from the firmware
  * catalog if there is none (the installer's pinned CLOUDHV.fd or the
@@ -178,14 +185,15 @@ export async function ensureFirmware(hypervisor: Hypervisor): Promise<any> {
   const have = await firmwareImages(hypervisor);
   if (have.length > 0) return have[0];
   const key = FIRMWARE_KEY[hypervisor];
-  let img = await api("/images", { method: "POST", body: { firmware: key } });
-  if (!img?.id) throw new Error(`firmware ${key} can't be pulled: ${img?.message ?? JSON.stringify(img)}`);
+  const pulled = await api("/images", { method: "POST", body: { firmware: key } });
+  let img = pulled?.image;
+  if (!img?.id) throw new Error(`firmware ${key} can't be pulled: ${pulled?.message ?? JSON.stringify(pulled)}`);
   const deadline = Date.now() + 120_000;
-  while (img.status?.state === "downloading" || img.status?.state === "verifying") {
+  while (img.status?.state === "IMAGE_STATE_DOWNLOADING" || img.status?.state === "IMAGE_STATE_VERIFYING") {
     if (Date.now() > deadline) throw new Error(`firmware ${key} did not download in time`);
     await new Promise((r) => setTimeout(r, 1000));
-    img = await api(`/images/${img.id}`);
+    img = (await api(`/images/${img.id}`)).image;
   }
-  if (img.status?.state !== "ready") throw new Error(`firmware ${key} is ${JSON.stringify(img.status)}`);
+  if (img.status?.state !== "IMAGE_STATE_READY") throw new Error(`firmware ${key} is ${JSON.stringify(img.status)}`);
   return img;
 }

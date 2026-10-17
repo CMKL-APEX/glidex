@@ -26,12 +26,13 @@ function node(id: string, name: string, role: string, arch: string, spare: { nam
   };
 }
 
+/** An image in the storage API's proto3 JSON shape (spec/grpc.md §9.1). */
 function image(id: string, name: string, arch: string, copies: unknown[]) {
   return {
-    id, name, kind: "disk", arch, copies,
-    source: { kind: "catalog", key: name, url: "https://example.invalid/x.img", version: "" },
-    status: { state: "ready" }, format: "qcow2", virtual_size_bytes: 3758096384, file_size_bytes: 600000000,
-    sha256: "ab".repeat(32), created_at: 1790000000, verified: true, path: "", linked_disks: [],
+    id, name, kind: "IMAGE_KIND_DISK", arch: `ARCH_${arch.toUpperCase()}`, copies,
+    source: { catalog: { key: name, url: "https://example.invalid/x.img" } },
+    status: { state: "IMAGE_STATE_READY" }, format: "DISK_FORMAT_QCOW2", virtual_size_bytes: "3758096384", file_size_bytes: "600000000",
+    sha256: "ab".repeat(32), created_at: "2026-09-21T13:46:40Z", verified: true,
   };
 }
 
@@ -56,25 +57,27 @@ async function mock(page: Page): Promise<Seen> {
   await page.route("**/api/images/catalog*", (r) => {
     record(r);
     const arch = new URL(r.request().url()).searchParams.get("arch") ?? "x86_64";
-    return json(r, [{ key: "ubuntu-26.04", distro: "Ubuntu", release: "26.04", arch, url: "https://example.invalid/x.img", downloaded_image_id: null }]);
+    return json(r, { items: [{ key: "ubuntu-26.04", distro: "Ubuntu", release: "26.04", arch: `ARCH_${arch.toUpperCase()}`, url: "https://example.invalid/x.img" }] });
   });
-  await page.route("**/api/images/firmware-catalog*", (r) => json(r, []));
+  await page.route("**/api/images/firmware-catalog*", (r) => json(r, { items: [] }));
   await page.route("**/api/images", (r) => {
     if (r.request().method() === "POST") {
       record(r);
-      return json(r, image("new", "ubuntu-26.04-aarch64", "aarch64", []), 202);
+      return json(r, { image: image("new", "ubuntu-26.04-aarch64", "aarch64", []), created: true }, 202);
     }
-    return json(r, [
-      image("img-x", "ubuntu-26.04", "x86_64", [
-        { node: S1, node_name: "s1", state: "ready", bytes: 600000000 },
-        { node: A1, node_name: "a1", state: "ready", bytes: 600000000, pinned: true },
-      ]),
-    ]);
+    return json(r, {
+      images: [
+        image("img-x", "ubuntu-26.04", "x86_64", [
+          { node: S1, node_name: "s1", state: "ready", bytes: "600000000" },
+          { node: A1, node_name: "a1", state: "ready", bytes: "600000000", pinned: true },
+        ]),
+      ],
+    });
   });
   for (const pattern of ["**/api/images/*/copies", "**/api/images/*/copies/*"]) {
     await page.route(pattern, (r) => {
       record(r);
-      return json(r, image("img-x", "ubuntu-26.04", "x86_64", []), 202);
+      return json(r, { image: image("img-x", "ubuntu-26.04", "x86_64", []) }, 202);
     });
   }
   await page.route("**/api/nodes/*/spare-image-files/delete", (r) => {
@@ -104,7 +107,7 @@ test("the catalogs follow the chosen architecture and a pull says where copies g
   await dialog.getByRole("button", { name: "Pull" }).click();
   await expect.poll(() => seen.find((s) => s.method === "POST" && s.path === "/images")?.body).toEqual({
     catalog: "ubuntu-26.04",
-    arch: "aarch64",
+    arch: "ARCH_AARCH64",
     nodes: [A1],
     keep_server_copy: false,
   });

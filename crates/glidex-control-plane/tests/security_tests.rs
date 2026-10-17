@@ -278,8 +278,15 @@ async fn project_isolation_and_not_found() {
     assert_eq!(s, StatusCode::CREATED, "{v}");
     let (s, _, _) = h.call("GET", "/credentials/ops?project=pa", None, &b).await;
     assert_eq!(s, StatusCode::NOT_FOUND);
-    let (_, list, _) = h.call("GET", "/credentials", None, &b).await;
-    assert_eq!(list.as_array().unwrap().len(), 0);
+    let (s, list, _) = h.call("GET", "/credentials", None, &b).await;
+    assert_eq!(s, StatusCode::OK, "{list}");
+    // `{credentials: [...]}`; proto3 JSON leaves an empty list out.
+    assert!(list.is_object(), "{list}");
+    assert_eq!(
+        list["credentials"].as_array().map_or(0, |l| l.len()),
+        0,
+        "{list}"
+    );
     // A VM can't use another project's credential.
     let mut body = vm_body("v3", "pb");
     body["credential"] = json!("ops");

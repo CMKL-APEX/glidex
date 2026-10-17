@@ -20,6 +20,12 @@ the error codes `401 unauthenticated`, `401 reauth_required`,
 `403 forbidden`, `403 quota_exceeded`, `409 would_lock_out` and
 `422 invalid_policy`.
 
+The storage family (guest credentials, images, disks) is served in the
+proto shape ([grpc.md](grpc.md) §9.1, [images.md](images.md) §8): the
+`glidex.storage.v1` messages as JSON, wrapped (`{disks}`, `{disk}`,
+`{disk, settled}`, …), with 64-bit numbers as strings, enum names in
+full and RFC 3339 times. The families not ported yet keep their shapes.
+
 VMs, disks and guest credentials belong to a project: responses carry
 `project`, create bodies accept `project` (id or name; default: the
 caller's default project), and lists and `/credentials/{username}`
