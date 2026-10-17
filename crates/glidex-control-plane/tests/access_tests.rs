@@ -2,6 +2,8 @@
 //! projects and bindings, users, teams, tokens, host bindings, policies,
 //! audit and capability checks, in the proto shape on both transports.
 
+mod common;
+
 use axum::{
     Router,
     body::Body,
@@ -13,7 +15,6 @@ use glidex_control_plane::api::{self, App, AppState};
 use glidex_control_plane::auth::{AuthService, store::TokenKind};
 use glidex_control_plane::authz::Ent;
 use glidex_control_plane::config::Config;
-use glidex_control_plane::state::VmManager;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -30,7 +31,7 @@ fn harness() -> H {
     let dir = TempDir::new().unwrap();
     // SAFETY: test-only; every test sets it the same way before reading it.
     unsafe { std::env::set_var("GLIDEX_RUN_DIR", dir.path().join("run")) };
-    let manager = VmManager::with_db_path(dir.path().join("t.db")).unwrap();
+    let manager = common::with_db_path(dir.path().join("t.db")).unwrap();
     let mut cfg = Config::default();
     cfg.authz.policy_files_dir = dir.path().join("policies");
     cfg.auth.allowed_origins = vec![ORIGIN.into()];

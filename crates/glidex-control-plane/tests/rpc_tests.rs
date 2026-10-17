@@ -3,6 +3,8 @@
 //! and service functions as REST, with the per-listener protocol and
 //! credential rules of §6 and the error mapping of §7.
 
+mod common;
+
 use axum::{
     Router,
     body::Body,
@@ -15,7 +17,6 @@ use glidex_api::proto::google::rpc::ErrorInfo;
 use glidex_control_plane::api::{self, App, AppState, Listener, PeerUid};
 use glidex_control_plane::auth::{self, AuthService, Method, store::TokenKind};
 use glidex_control_plane::config::Config;
-use glidex_control_plane::state::VmManager;
 use http_body_util::BodyExt;
 use serde_json::Value;
 use std::sync::Arc;
@@ -36,7 +37,7 @@ fn harness() -> H {
     let dir = TempDir::new().unwrap();
     // SAFETY: test-only; every test sets it the same way before reading it.
     unsafe { std::env::set_var("GLIDEX_RUN_DIR", dir.path().join("run")) };
-    let manager = VmManager::with_db_path(dir.path().join("t.db")).unwrap();
+    let manager = common::with_db_path(dir.path().join("t.db")).unwrap();
     let mut cfg = Config::default();
     cfg.authz.policy_files_dir = dir.path().join("policies");
     cfg.auth.allowed_origins = vec![ORIGIN.into()];

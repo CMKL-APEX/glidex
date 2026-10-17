@@ -3,6 +3,8 @@
 //! step-up, CSRF/Origin, tokens, site policies, break-glass, audit, PAM
 //! login through an in-process glidex-authd, and OIDC against a mock IdP.
 
+mod common;
+
 use axum::{
     Router,
     body::Body,
@@ -12,7 +14,6 @@ use glidex_control_plane::api::{self, App, AppState, Listener, PeerUid};
 use glidex_control_plane::auth::{self, AuthService, Method, store::TokenKind};
 use glidex_control_plane::authz::Ent;
 use glidex_control_plane::config::Config;
-use glidex_control_plane::state::VmManager;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -31,7 +32,7 @@ fn harness_with(f: impl FnOnce(&mut Config)) -> H {
     let dir = TempDir::new().unwrap();
     // SAFETY: test-only; every test sets it the same way before reading it.
     unsafe { std::env::set_var("GLIDEX_RUN_DIR", dir.path().join("run")) };
-    let manager = VmManager::with_db_path(dir.path().join("t.db")).unwrap();
+    let manager = common::with_db_path(dir.path().join("t.db")).unwrap();
     let mut cfg = Config::default();
     cfg.authz.policy_files_dir = dir.path().join("policies");
     cfg.auth.allowed_origins = vec![ORIGIN.into()];
@@ -1998,7 +1999,7 @@ async fn control_plane_json_drives_the_service() {
     assert_eq!(cfg.quotas.default.vms, Some(4));
     assert_eq!(cfg.quotas.default.networks, None, "null means unlimited");
 
-    let manager = VmManager::with_db_path(dir.path().join("t.db")).unwrap();
+    let manager = common::with_db_path(dir.path().join("t.db")).unwrap();
     // The default project takes the site default once (main.rs does this
     // at startup).
     assert!(

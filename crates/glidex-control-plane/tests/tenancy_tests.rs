@@ -3,6 +3,8 @@
 //! tenant, operator and directory boundaries; admission and caps; the
 //! host-link boundary; and the migration of a pre-tenancy database.
 
+mod common;
+
 use axum::{
     Router,
     body::Body,
@@ -14,7 +16,6 @@ use glidex_control_plane::api::{self, App, AppState};
 use glidex_control_plane::auth::{AuthService, store::TokenKind};
 use glidex_control_plane::authz::Ent;
 use glidex_control_plane::config::Config;
-use glidex_control_plane::state::VmManager;
 use glidex_control_plane::tenants::{ADMIN_TENANT, DEFAULT_TENANT};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
@@ -32,7 +33,7 @@ fn harness() -> H {
     let dir = TempDir::new().unwrap();
     // SAFETY: test-only; every test sets it the same way before reading it.
     unsafe { std::env::set_var("GLIDEX_RUN_DIR", dir.path().join("run")) };
-    let manager = VmManager::with_db_path(dir.path().join("t.db")).unwrap();
+    let manager = common::with_db_path(dir.path().join("t.db")).unwrap();
     let mut cfg = Config::default();
     cfg.authz.policy_files_dir = dir.path().join("policies");
     cfg.auth.allowed_origins = vec![ORIGIN.into()];
@@ -588,7 +589,7 @@ async fn migration_keeps_an_existing_system_admin_whole() {
     let dir = TempDir::new().unwrap();
     // SAFETY: test-only; every test sets it the same way before reading it.
     unsafe { std::env::set_var("GLIDEX_RUN_DIR", dir.path().join("run")) };
-    let manager = VmManager::with_db_path(dir.path().join("t.db")).unwrap();
+    let manager = common::with_db_path(dir.path().join("t.db")).unwrap();
     // A host from before tenants: a user with system-admin on the cluster.
     let uid = {
         let store =

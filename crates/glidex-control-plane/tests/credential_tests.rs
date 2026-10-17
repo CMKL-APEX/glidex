@@ -1,5 +1,7 @@
 //! REST API tests for the credential store and its use by VMs.
 
+mod common;
+
 use axum::{
     Router,
     body::Body,
@@ -18,7 +20,7 @@ use glidex_control_plane::state::VmManager;
 
 fn create_test_app() -> (Router, Arc<VmManager>, TempDir) {
     let temp_dir = TempDir::new().unwrap();
-    let manager = VmManager::with_db_path(temp_dir.path().join("test.db")).unwrap();
+    let manager = common::with_db_path(temp_dir.path().join("test.db")).unwrap();
     (create_router(manager.clone()), manager, temp_dir)
 }
 
@@ -253,10 +255,10 @@ async fn credentials_persist_across_restart() {
     let tmp = TempDir::new().unwrap();
     let db = tmp.path().join("test.db");
     {
-        let manager = VmManager::with_db_path(db.clone()).unwrap();
+        let manager = common::with_db_path(db.clone()).unwrap();
         create_alice(&create_router(manager)).await;
     }
-    let manager = VmManager::with_db_path(db.clone()).unwrap();
+    let manager = common::with_db_path(db.clone()).unwrap();
     let cred = manager.get_credential("alice").unwrap();
     assert_eq!(cred.ssh_authorized_keys, vec![KEY.to_string()]);
 

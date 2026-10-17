@@ -6,6 +6,8 @@
 //! The process-wide identity in `authz` is shared by the three, which is
 //! harmless here because authentication is off.
 
+mod common;
+
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use glidex_control_plane::api::create_router;
@@ -158,7 +160,7 @@ fn new_cp() -> Cp {
         .with_test_writer()
         .try_init();
     let dir = tempfile::tempdir().unwrap();
-    let manager = VmManager::with_db_path(dir.path().join("glidex.db")).unwrap();
+    let manager = common::with_db_path(dir.path().join("glidex.db")).unwrap();
     let router = create_router(manager.clone());
     manager.set_api_router(router.clone());
     Cp {
@@ -820,13 +822,8 @@ async fn a_new_cluster_starts_from_a_snapshot() {
     // Not the default :8842: the machine running the tests may be a cluster node itself.
     let mut cfg = cfg.clone();
     cfg.cluster.listen = format!("127.0.0.1:{}", free_port()).parse().unwrap();
-    let manager = VmManager::open(
-        db_path,
-        glidex_control_plane::network::Netd::from_env(),
-        &cfg,
-    )
-    .await
-    .unwrap();
+    let netd = common::no_netd(&db_path);
+    let manager = VmManager::open(db_path, netd, &cfg).await.unwrap();
     let router = create_router(manager.clone());
     manager.set_api_router(router.clone());
     let cp = Cp {
@@ -2910,7 +2907,7 @@ async fn a_node_detaches_with_its_vms_and_the_cluster_lets_go() {
         !fresh.path().join("cluster").exists(),
         "identity, certificates and the CA key are gone"
     );
-    let standalone = VmManager::with_db_path(fresh.path().join("glidex.db")).unwrap();
+    let standalone = common::with_db_path(fresh.path().join("glidex.db")).unwrap();
     standalone.initialize().await.unwrap();
     let vms = standalone.list_vms().await;
     assert_eq!(vms.len(), 1, "{vms:?}");
@@ -3090,7 +3087,7 @@ async fn a_removed_agent_leaves_offline_once_a_server_confirms_it() {
         !before.path().join("cluster").exists(),
         "identity, certificates and key are gone"
     );
-    let standalone = VmManager::with_db_path(before.path().join("glidex.db")).unwrap();
+    let standalone = common::with_db_path(before.path().join("glidex.db")).unwrap();
     standalone.initialize().await.unwrap();
     assert!(standalone.cluster().is_none());
     assert!(standalone.list_vms().await.is_empty());
@@ -3176,7 +3173,7 @@ async fn a_node_that_left_on_its_own_is_forgotten_as_departed_and_its_bundle_can
         !copy.path().join("cluster").exists() && !pending_db(copy.path()).exists(),
         "switched and cleaned up"
     );
-    let standalone = VmManager::with_db_path(copy.path().join("glidex.db")).unwrap();
+    let standalone = common::with_db_path(copy.path().join("glidex.db")).unwrap();
     standalone.initialize().await.unwrap();
     assert_eq!(standalone.list_vms().await.len(), 1);
 
@@ -3276,7 +3273,7 @@ async fn a_detached_host_imports_into_another_cluster_with_its_vm_after_approval
     .unwrap();
     std::fs::write(fresh.path().join("glidex.db"), b"old").unwrap();
     assert!(finish_pending(&fresh.path().join("glidex.db")).unwrap());
-    let host = VmManager::with_db_path(fresh.path().join("glidex.db")).unwrap();
+    let host = common::with_db_path(fresh.path().join("glidex.db")).unwrap();
     host.initialize().await.unwrap();
     assert_eq!(host.list_vms().await.len(), 1);
 
@@ -3532,7 +3529,7 @@ async fn the_last_node_dissolves_the_cluster_and_keeps_everything() {
     .unwrap();
     std::fs::write(fresh.path().join("glidex.db"), b"old").unwrap();
     assert!(finish_pending(&fresh.path().join("glidex.db")).unwrap());
-    let host = VmManager::with_db_path(fresh.path().join("glidex.db")).unwrap();
+    let host = common::with_db_path(fresh.path().join("glidex.db")).unwrap();
     host.initialize().await.unwrap();
     assert_eq!(
         host.list_vms()

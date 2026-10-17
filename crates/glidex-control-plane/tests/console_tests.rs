@@ -5,10 +5,11 @@
 //! connect it replays the console log, then relays the guest's output, and
 //! it takes keystrokes; it keeps listening after the guest exits.
 
+mod common;
+
 use axum::Router;
 use futures_util::{SinkExt, StreamExt};
 use glidex_control_plane::api::create_router;
-use glidex_control_plane::state::VmManager;
 use serde_json::{Value, json};
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -40,7 +41,7 @@ struct Served {
 async fn serve() -> Served {
     run_dir();
     let dir = TempDir::new().unwrap();
-    let manager = VmManager::with_db_path(dir.path().join("glidex.db")).unwrap();
+    let manager = common::with_db_path(dir.path().join("glidex.db")).unwrap();
     let app = create_router(manager);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

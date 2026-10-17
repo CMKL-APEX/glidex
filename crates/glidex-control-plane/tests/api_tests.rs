@@ -1,3 +1,5 @@
+mod common;
+
 use axum::{
     body::Body,
     http::{Request, StatusCode},
@@ -8,13 +10,12 @@ use tempfile::TempDir;
 use tower::ServiceExt;
 
 use glidex_control_plane::api::create_router;
-use glidex_control_plane::state::VmManager;
 
 /// Helper to create a test app instance with a temporary database
 fn create_test_app() -> (axum::Router, TempDir) {
     let temp_dir = TempDir::new().unwrap();
     let db_path = temp_dir.path().join("test.db");
-    let vm_manager = VmManager::with_db_path(db_path).unwrap();
+    let vm_manager = common::with_db_path(db_path).unwrap();
     (create_router(vm_manager), temp_dir)
 }
 
@@ -840,7 +841,7 @@ async fn test_vm_persists_across_restart() {
 
     // Phase 1: Create a VM with the first manager instance
     {
-        let vm_manager = VmManager::with_db_path(db_path.clone()).unwrap();
+        let vm_manager = common::with_db_path(db_path.clone()).unwrap();
         vm_manager.initialize().await.unwrap();
         let app = create_router(vm_manager);
 
@@ -872,7 +873,7 @@ async fn test_vm_persists_across_restart() {
 
     // Phase 2: Create a new manager and verify VM is recovered
     {
-        let vm_manager = VmManager::with_db_path(db_path).unwrap();
+        let vm_manager = common::with_db_path(db_path).unwrap();
         vm_manager.initialize().await.unwrap();
         let app = create_router(vm_manager);
 
@@ -920,7 +921,7 @@ async fn test_vm_delete_persists() {
 
     // Phase 1: Create and then delete a VM
     {
-        let vm_manager = VmManager::with_db_path(db_path.clone()).unwrap();
+        let vm_manager = common::with_db_path(db_path.clone()).unwrap();
         vm_manager.initialize().await.unwrap();
         let app = create_router(vm_manager);
 
@@ -966,7 +967,7 @@ async fn test_vm_delete_persists() {
 
     // Phase 2: Verify VM is still deleted after restart
     {
-        let vm_manager = VmManager::with_db_path(db_path).unwrap();
+        let vm_manager = common::with_db_path(db_path).unwrap();
         vm_manager.initialize().await.unwrap();
         let app = create_router(vm_manager);
 
@@ -1002,7 +1003,7 @@ async fn test_multiple_vms_persist() {
 
     // Phase 1: Create multiple VMs
     {
-        let vm_manager = VmManager::with_db_path(db_path.clone()).unwrap();
+        let vm_manager = common::with_db_path(db_path.clone()).unwrap();
         vm_manager.initialize().await.unwrap();
         let app = create_router(vm_manager);
 
@@ -1034,7 +1035,7 @@ async fn test_multiple_vms_persist() {
 
     // Phase 2: Verify all VMs are recovered
     {
-        let vm_manager = VmManager::with_db_path(db_path).unwrap();
+        let vm_manager = common::with_db_path(db_path).unwrap();
         vm_manager.initialize().await.unwrap();
         let app = create_router(vm_manager);
 
@@ -1163,7 +1164,7 @@ async fn test_watch_streams_changes() {
 #[tokio::test]
 async fn test_watch_streams_nodes_and_the_policy_marker() {
     let dir = TempDir::new().unwrap();
-    let manager = VmManager::with_db_path(dir.path().join("glidex.db")).unwrap();
+    let manager = common::with_db_path(dir.path().join("glidex.db")).unwrap();
     manager.initialize().await.unwrap();
     let app = create_router(manager);
     let resp = app
@@ -1321,7 +1322,7 @@ async fn call(
 #[tokio::test]
 async fn a_standalone_host_is_one_node_and_places_vms_on_it() {
     let dir = TempDir::new().unwrap();
-    let manager = VmManager::with_db_path(dir.path().join("glidex.db")).unwrap();
+    let manager = common::with_db_path(dir.path().join("glidex.db")).unwrap();
     manager.initialize().await.unwrap();
     let app = create_router(manager);
 
