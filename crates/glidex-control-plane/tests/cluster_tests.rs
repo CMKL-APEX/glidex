@@ -2499,6 +2499,15 @@ async fn the_ca_rotates_and_every_node_renews_before_the_old_one_is_retired() {
     assert!(st["raft"]["id"].is_string(), "a uint64 is a string: {st}");
     // The CA's expiry and each node's certificate (spec/clustering-ui.md §7.6).
     assert!(is_time(&st["ca"]["not_after"]), "{st}");
+    // Every node reports ready once it has sent its first report.
+    wait_for("every node to report ready", || async {
+        let (_, st) = call(&cps[lead], "GET", "/cluster/status", None, &[]).await;
+        st["nodes"]
+            .as_array()
+            .is_some_and(|ns| ns.iter().all(|n| n["ready"] == READY))
+    })
+    .await;
+    let (_, st) = call(&cps[lead], "GET", "/cluster/status", None, &[]).await;
     assert!(
         st["nodes"]
             .as_array()
