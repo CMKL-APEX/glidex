@@ -219,7 +219,7 @@ scripts/dev/              test helpers
 
 ## License
 
-Copyright (c) 2025-2026 The Glidex Project Contributors.
+Copyright (c) 2025-2026 CMKL University and The Glidex Project Contributors.
 
 Glidex is dual-licensed under either of
 
