@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { IssuedToken } from "../types";
+import { num } from "../types";
 
 /** A join or rejoin token, shown once (spec/clustering-ui.md §2.3): masked
  * until asked, copied to the clipboard on request, never put in a URL,
@@ -16,7 +17,7 @@ export default function TokenReveal({ issued, commands }: { issued: IssuedToken;
       setCopied("failed");
     }
   };
-  const hours = Math.round(issued.ttl_secs / 360) / 10;
+  const hours = Math.round(num(issued.ttl_secs) / 360) / 10;
   return (
     <div className="space-y-3 text-sm">
       <p className="text-gray-700">

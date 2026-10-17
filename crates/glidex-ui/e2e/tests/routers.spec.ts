@@ -18,11 +18,19 @@ test.afterAll(cleanup);
 
 const json = (r: Route, v: unknown, status = 200) => r.fulfill({ status, contentType: "application/json", body: JSON.stringify(v) });
 
-function node(id: string, name: string, phase = "Active") {
+/** A server node as glidex.cluster.v1 sends it (proto3 JSON). */
+function node(id: string, name: string, phase = "NODE_PHASE_ACTIVE") {
   return {
-    meta: { id, name, created_at: 1790000000, generation: 1, resource_version: 1 },
-    spec: { name, role: "server", unschedulable: false, labels: {} },
-    status: { phase, ready: "True", versions: { glidex: "0.1.0" }, capacity: { cpus: 8, memory_mib: 16384 }, allocatable: { cpus: 7, memory_mib: 14336 }, features: {} },
+    meta: { id, name, created_at: "2026-09-21T14:13:20Z", generation: "1", resource_version: "1" },
+    spec: { name, role: "NODE_ROLE_SERVER" },
+    status: {
+      phase,
+      ready: "CONDITION_STATUS_TRUE",
+      versions: { glidex: "0.1.0" },
+      capacity: { cpus: 8, memory_mib: "16384" },
+      allocatable: { cpus: 7, memory_mib: "14336" },
+      features: {},
+    },
   };
 }
 
@@ -49,15 +57,19 @@ async function mockOvn(page: Page, project: string, pool = true): Promise<Seen> 
   // glidex.network.v1 shapes: fields at their default left out, RFC 3339 times.
   const routers: any[] = [{ id: R1, project, spec: { name: "r1", external: true }, status: { external_ip: "192.0.2.240", snat_ct_zone: 60001 }, created_at: "2026-09-21T12:00:00Z" }];
   await page.route("**/api/watch*", (r) => json(r, { error: "too_many_watchers", message: "poll" }, 503));
-  await page.route("**/api/nodes", (r) => json(r, [
-      node("11111111-1111-4111-8111-111111111111", "s1"),
-      node("22222222-2222-4222-8222-222222222222", "s2"),
-      // s2 before it left and joined again: a tombstone with the same name.
-      node("33333333-3333-4333-8333-333333333333", "s2", "Removed"),
-    ]));
+  await page.route("**/api/nodes", (r) =>
+    json(r, {
+      nodes: [
+        node("11111111-1111-4111-8111-111111111111", "s1"),
+        node("22222222-2222-4222-8222-222222222222", "s2"),
+        // s2 before it left and joined again: a tombstone with the same name.
+        node("33333333-3333-4333-8333-333333333333", "s2", "NODE_PHASE_REMOVED"),
+      ],
+    }),
+  );
   await page.route("**/api/cluster/settings/ovn", (r) => json(r, { enabled: true, edge: true, vpc_pool: pool }));
   await page.route("**/api/cluster/ovn", (r) =>
-    json(r, { enabled: true, nb: [], sb: [], chassis: [], gateways: [{ router: "gxr-a1b2c3d4", active: { chassis: "node:1", node: "1", node_name: "s1" }, candidates: [] }] }),
+    json(r, { enabled: true, gateways: [{ router: "gxr-a1b2c3d4", active: { chassis: "node:1", node: "1", node_name: "s1" } }] }),
   );
   await page.route(`**/api/projects/${project}/routers`, async (r) => {
     const req = r.request();

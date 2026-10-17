@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import * as api from "../api";
 import type { ClusterStatus } from "../api";
 import type { Departure, NodeRecord, VmResponse } from "../types";
-import { formatTime, isTombstone, nodeLabel } from "../types";
+import { departureStateLabel, formatTimestamp, isTombstone, nodeLabel, nodePhaseLabel, nodeReady, nodeRoleLabel, num, raftStateLabel, tsSecs } from "../types";
 import { useLive, useLiveCluster, useLiveRefresh } from "../live";
 import { useNodes } from "../nodes";
 import { useSession } from "../session";
@@ -21,7 +21,7 @@ import type { OvnSettingsView } from "../types";
 const PORTS_EVERY_MS = 60_000;
 
 function ReadyCell({ n }: { n: NodeRecord }) {
-  const r = n.status.ready;
+  const r = nodeReady(n);
   return (
     <span title={n.status.ready_reason ?? ""}>
       <Badge kind={r === "True" ? "ok" : r === "Unknown" ? "warn" : "denied"}>{r === "True" ? "ready" : r === "Unknown" ? "unreachable" : "not ready"}</Badge>
@@ -126,9 +126,12 @@ export default function Cluster() {
   const gone = nodes.filter((n) => isTombstone(n.status.phase));
   const vmCount = (id: string) => vms.filter((v) => v.node === id).length;
   const gaps = (status.ports ?? []).filter((p) => !p.reachable);
-  const pendingImports = [...imports.values()].filter((p) => p.state === "pending");
-  const activeDetaches = departures.filter((d) => d.state === "frozen");
-  const rotating = !!summary.ca && summary.ca.retiring.length > 0;
+  const pendingImports = [...imports.values()].filter((p) => p.state === "IMPORT_STATE_PENDING");
+  const activeDetaches = departures.filter((d) => d.state === "DEPARTURE_STATE_FROZEN");
+  const retiring = summary.ca?.retiring ?? [];
+  const rotating = retiring.length > 0;
+  /** A cluster network by its name (detaches map them by id). */
+  const networkName = (id: string) => live.networks.get(id)?.name ?? id;
   const raft = summary.raft;
 
   const nodeRow = (n: NodeRecord) => (
@@ -139,13 +142,13 @@ export default function Cluster() {
         </Link>
         {dir.self === n.meta.id && <span className="text-gray-400"> (this node)</span>}
       </td>
-      <td>{n.spec.role}</td>
+      <td>{nodeRoleLabel(n.spec.role)}</td>
       <td>
-        <Badge kind={PHASE_KIND[n.status.phase] ?? "muted"}>{n.status.phase}</Badge>
+        <Badge kind={PHASE_KIND[nodePhaseLabel(n.status.phase)] ?? "muted"}>{nodePhaseLabel(n.status.phase)}</Badge>
       </td>
       <td>{isTombstone(n.status.phase) ? "—" : <ReadyCell n={n} />}</td>
       <td className="font-mono text-xs">{n.status.advertise ?? "—"}</td>
-      <td>{n.status.versions.glidex}</td>
+      <td>{n.status.versions?.glidex ?? "—"}</td>
       <td>{vmCount(n.meta.id) || "—"}</td>
       <td className="text-right">
         <NodeActions node={n} onDone={refreshAll} />
@@ -175,16 +178,16 @@ export default function Cluster() {
       )}
       {rotating && (
         <div className="mb-4 p-4 bg-sky-50 border border-sky-200 rounded-lg text-sm text-sky-800">
-          A CA rotation is under way: {summary.ca!.retiring.length} old CA still trusted
-          {summary.ca!.retire_at ? ` until ${formatTime(summary.ca!.retire_at)}` : ""}.
+          A CA rotation is under way: {retiring.length} old CA still trusted
+          {summary.ca?.retire_at ? ` until ${formatTimestamp(summary.ca.retire_at)}` : ""}.
         </div>
       )}
       {activeDetaches.length > 0 && (
         <div className="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-800">
           {activeDetaches.map((d) => (
             <div key={d.plan}>
-              {d.node_name ?? d.node} is detaching: frozen since {formatTime(d.started_at)}
-              {d.acknowledged ? ", acknowledged by the node" : ", waiting for the node"}; gives up {formatTime(d.deadline)}.
+              {d.node_name ?? d.node} is detaching: frozen since {formatTimestamp(d.started_at)}
+              {d.acknowledged ? ", acknowledged by the node" : ", waiting for the node"}; gives up {formatTimestamp(d.deadline)}.
             </div>
           ))}
         </div>
@@ -239,15 +242,15 @@ export default function Cluster() {
                   <tr key={p.plan} className="border-t border-gray-100">
                     <td className="py-1.5">
                       <Link to={`/cluster/imports/${encodeURIComponent(p.plan)}`} className="text-sky-700 hover:underline">
-                        {p.node}
+                        {p.node ?? p.plan}
                       </Link>{" "}
                       <span className="font-mono text-xs text-gray-400">{p.advertise}</span>
                     </td>
                     <td>
-                      {p.summary.vms} VMs, {p.summary.disks} disks, {p.summary.networks} networks, {p.summary.projects} projects
+                      {p.summary?.vms ?? 0} VMs, {p.summary?.disks ?? 0} disks, {p.summary?.networks ?? 0} networks, {p.summary?.projects ?? 0} projects
                     </td>
-                    <td>{p.problems.length ? <Badge kind="warn">{p.problems.length}</Badge> : <Badge kind="ok">none</Badge>}</td>
-                    <td>{formatTime(p.expires_at)}</td>
+                    <td>{p.problems?.length ? <Badge kind="warn">{p.problems.length}</Badge> : <Badge kind="ok">none</Badge>}</td>
+                    <td>{formatTimestamp(p.expires_at)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -270,17 +273,19 @@ export default function Cluster() {
             <tbody>
               {departures
                 .slice()
-                .sort((a, b) => b.started_at - a.started_at)
+                .sort((a, b) => tsSecs(b.started_at) - tsSecs(a.started_at))
                 .map((d) => (
                   <tr key={d.plan} className="border-t border-gray-100">
                     <td className="py-1.5">{d.node_name ?? d.node}</td>
                     <td>
-                      <Badge kind={d.state === "frozen" ? "warn" : d.state === "committed" ? "ok" : "muted"}>{d.state}</Badge>
+                      <Badge kind={d.state === "DEPARTURE_STATE_FROZEN" ? "warn" : d.state === "DEPARTURE_STATE_COMMITTED" ? "ok" : "muted"}>
+                        {departureStateLabel(d.state)}
+                      </Badge>
                     </td>
-                    <td>{formatTime(d.started_at)}</td>
+                    <td>{formatTimestamp(d.started_at)}</td>
                     <td className="text-xs">
-                      {Object.entries(d.map_networks)
-                        .map(([a, b]) => `${a} → ${b}`)
+                      {Object.entries(d.map_networks ?? {})
+                        .map(([a, b]) => `${networkName(a)} → ${networkName(b)}`)
                         .join(", ") || "—"}
                     </td>
                   </tr>
@@ -294,11 +299,11 @@ export default function Cluster() {
         <Card title="Raft">
           <p className="text-sm text-gray-700">
             {summary.served_by ? `${summary.served_by.name} is ` : ""}
-            {raft.state}, term {raft.term}, leader {raft.leader?.name ?? "none"}
+            {raftStateLabel(raft.state)}, term {num(raft.term)}, leader {raft.leader?.name ?? raft.leader?.address ?? "none"}
           </p>
           <p className="text-sm text-gray-500 mt-1">
-            Voters: {raft.voters.map((v) => v.name ?? v.address).join(", ") || "none"}
-            {raft.learners.length > 0 && ` · learners: ${raft.learners.map((v) => v.name ?? v.address).join(", ")}`}
+            Voters: {(raft.voters ?? []).map((v) => v.name ?? v.address).join(", ") || "none"}
+            {(raft.learners ?? []).length > 0 && ` · learners: ${(raft.learners ?? []).map((v) => v.name ?? v.address).join(", ")}`}
           </p>
         </Card>
       )}

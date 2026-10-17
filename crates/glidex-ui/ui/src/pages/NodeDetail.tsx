@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import * as api from "../api";
 import type { DiskInfo, NodeRecord, VmResponse } from "../types";
-import { formatBytes, formatTime, nodeLabel, stateLabel, vmState, wantedBrInt } from "../types";
+import { brIntLabel, formatBytes, formatTimestamp, nodeLabel, nodePhaseLabel, nodeReady, nodeRoleLabel, num, stateLabel, vmState, wantedBrInt } from "../types";
 import BrIntDialog from "../components/BrIntDialog";
 import MappingsDialog from "../components/MappingsDialog";
 import { hostOf, useAllowed } from "../nodes";
@@ -14,10 +14,11 @@ import { useCan, useSession } from "../session";
 import { LoadingCard } from "../components/Loading";
 import { Badge, Card, ErrorBanner, PageHeader, errorMessage } from "../components/ui";
 
+/** Badge kinds by phase label (`nodePhaseLabel`). */
 export const PHASE_KIND: Record<string, string> = { Active: "ok", Draining: "warn", Departing: "warn", Departed: "muted", Removed: "muted", Forgotten: "muted" };
 
 function ReadyBadge({ node }: { node: NodeRecord }) {
-  const r = node.status.ready;
+  const r = nodeReady(node);
   const kind = r === "True" ? "ok" : r === "Unknown" ? "warn" : "denied";
   const label = r === "True" ? "ready" : r === "Unknown" ? "unreachable" : "not ready";
   return (
@@ -81,6 +82,11 @@ export default function NodeDetail() {
   const node = (live.live ? live.nodes.get(id) : null) ?? polled;
   if (!node) return error ? <ErrorBanner error={error} /> : <LoadingCard />;
   const s = node.status;
+  const ready = nodeReady(node);
+  const phase = nodePhaseLabel(s.phase);
+  const cap = { cpus: s.capacity?.cpus ?? 0, mem: num(s.capacity?.memory_mib) };
+  const alloc = { cpus: s.allocatable?.cpus ?? 0, mem: num(s.allocatable?.memory_mib) };
+  const labels = node.spec.labels ?? {};
   const requested = (vms ?? []).reduce((a, v) => ({ cpu: a.cpu + v.vcpu_count, mem: a.mem + v.mem_size_mib }), { cpu: 0, mem: 0 });
   const running = (vms ?? []).filter((v) => vmState(v) === "running").length;
 
@@ -95,8 +101,8 @@ export default function NodeDetail() {
         title={nodeLabel(node)}
         subtitle={
           <span className="inline-flex flex-wrap items-center gap-2">
-            <span>{node.spec.role}</span>
-            <Badge kind={PHASE_KIND[s.phase] ?? "muted"}>{s.phase}</Badge>
+            <span>{nodeRoleLabel(node.spec.role)}</span>
+            <Badge kind={PHASE_KIND[phase] ?? "muted"}>{phase}</Badge>
             <ReadyBadge node={node} />
             {dir.self === id && <span className="text-gray-400">(this node)</span>}
             <span className="font-mono text-xs text-gray-400">{id}</span>
@@ -106,9 +112,9 @@ export default function NodeDetail() {
         <NodeActions node={node} onDone={load} />
       </PageHeader>
       <ErrorBanner error={error} onDismiss={() => setError(null)} />
-      {s.ready !== "True" && s.ready_reason && (
+      {ready !== "True" && s.ready_reason && (
         <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-800">
-          {s.ready === "Unknown"
+          {ready === "Unknown"
             ? "This node stopped reporting. Its VMs may still be running; nothing is restarted elsewhere."
             : `Not ready: ${s.ready_reason}`}
         </div>
@@ -117,22 +123,22 @@ export default function NodeDetail() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <Card title="Capacity">
           <div className="space-y-3">
-            <Use label="vCPUs requested by its VMs" taken={requested.cpu} total={s.allocatable.cpus} unit="allocatable" />
-            <Use label="Memory requested by its VMs" taken={requested.mem} total={s.allocatable.memory_mib} unit="MiB allocatable" />
+            <Use label="vCPUs requested by its VMs" taken={requested.cpu} total={alloc.cpus} unit="allocatable" />
+            <Use label="Memory requested by its VMs" taken={requested.mem} total={alloc.mem} unit="MiB allocatable" />
           </div>
           <dl className="mt-4 grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
             <dt className="text-gray-500">CPUs</dt>
             <dd>
-              {s.capacity.cpus} ({s.allocatable.cpus} allocatable)
+              {cap.cpus} ({alloc.cpus} allocatable)
             </dd>
             <dt className="text-gray-500">Memory</dt>
             <dd>
-              {formatBytes(s.capacity.memory_mib * 1048576)} ({formatBytes(s.allocatable.memory_mib * 1048576)} allocatable)
+              {formatBytes(cap.mem * 1048576)} ({formatBytes(alloc.mem * 1048576)} allocatable)
             </dd>
-            {Object.entries(s.allocatable.hugepages ?? {}).map(([size, n]) => (
+            {Object.entries(s.allocatable?.hugepages ?? {}).map(([size, n]) => (
               <span key={size} className="contents">
                 <dt className="text-gray-500">Hugepages {size} KiB</dt>
-                <dd>{n}</dd>
+                <dd>{num(n)}</dd>
               </span>
             ))}
             <dt className="text-gray-500">VMs</dt>
@@ -150,14 +156,14 @@ export default function NodeDetail() {
             <dt className="text-gray-500">Tunnel IP</dt>
             <dd className="font-mono">{s.tunnel_ip ?? "—"}</dd>
             <dt className="text-gray-500">glidex</dt>
-            <dd>{s.versions.glidex}</dd>
-            {s.versions.ovs && (
+            <dd>{s.versions?.glidex ?? "—"}</dd>
+            {s.versions?.ovs && (
               <>
                 <dt className="text-gray-500">Open vSwitch</dt>
                 <dd>{s.versions.ovs}</dd>
               </>
             )}
-            {s.versions.ovn && (
+            {s.versions?.ovn && (
               <>
                 <dt className="text-gray-500">OVN</dt>
                 <dd>{s.versions.ovn}</dd>
@@ -166,7 +172,7 @@ export default function NodeDetail() {
             <dt className="text-gray-500">Architecture</dt>
             <dd>{s.features?.arch || "—"}</dd>
             <dt className="text-gray-500">Hypervisors</dt>
-            <dd>{s.features?.hypervisors.join(", ") || "—"}</dd>
+            <dd>{(s.features?.hypervisors ?? []).join(", ") || "—"}</dd>
             <dt className="text-gray-500">KVM / IOMMU / DPDK</dt>
             <dd>
               {s.features?.kvm ? "yes" : "no"} / {s.features?.iommu ? "yes" : "no"} / {s.features?.dpdk ? "yes" : "no"}
@@ -176,7 +182,7 @@ export default function NodeDetail() {
               {s.features?.br_int_datapath ?? <span className="text-gray-400">not a chassis</span>}
               <span className="text-gray-500">
                 {" "}
-                (setting: {node.spec.br_int_datapath ?? "auto"}
+                (setting: {brIntLabel(node.spec.br_int_datapath)}
                 {s.features?.br_int_datapath && s.features.br_int_datapath !== wantedBrInt(node) ? `; moving to ${wantedBrInt(node)}` : ""})
               </span>
               {canConfigure && (
@@ -199,18 +205,18 @@ export default function NodeDetail() {
             <dt className="text-gray-500">PCI devices</dt>
             <dd>{s.pci_devices?.length ?? 0}</dd>
             <dt className="text-gray-500">Joined</dt>
-            <dd>{formatTime(node.meta.created_at)}</dd>
+            <dd>{formatTimestamp(node.meta.created_at)}</dd>
             {s.heartbeat && (
               <>
                 <dt className="text-gray-500">Last readiness change</dt>
-                <dd>{formatTime(s.heartbeat)}</dd>
+                <dd>{formatTimestamp(s.heartbeat)}</dd>
               </>
             )}
-            {Object.keys(node.spec.labels).length > 0 && (
+            {Object.keys(labels).length > 0 && (
               <>
                 <dt className="text-gray-500">Labels</dt>
                 <dd>
-                  {Object.entries(node.spec.labels)
+                  {Object.entries(labels)
                     .map(([k, v]) => `${k}=${v}`)
                     .join(", ")}
                 </dd>
@@ -308,7 +314,7 @@ function SpareFilesCard({ node }: { node: NodeRecord }) {
   const [error, setError] = useState<string | null>(null);
   const [asked, setAsked] = useState(false);
   if (files.length === 0) return null;
-  const bytes = files.reduce((n, f) => n + f.bytes, 0);
+  const bytes = files.reduce((n, f) => n + num(f.bytes), 0);
   const drop = async () => {
     if (!confirm(`Delete ${files.length} unrecorded file(s) (${formatBytes(bytes)}) on ${node.spec.name}?`)) return;
     setError(null);

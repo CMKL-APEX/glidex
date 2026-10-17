@@ -3,6 +3,7 @@
 mod access;
 mod admin;
 mod client;
+mod cluster;
 mod config;
 mod console;
 mod directory;
@@ -29,7 +30,6 @@ use rustyline::{CompletionType, Config, Context, Editor, Helper};
 use std::io::{self, IsTerminal, Write};
 use std::os::fd::AsFd;
 use std::path::PathBuf;
-use tabled::{Table, Tabled};
 
 #[derive(Parser)]
 #[command(name = "gxctl")]
@@ -212,33 +212,6 @@ fn profile_client(cli: &Cli, sel: &config::Selected) -> Result<ApiClient, String
     Ok(c)
 }
 
-/// A `nodes` row.
-#[derive(Tabled)]
-struct NodeRow {
-    id: String,
-    name: String,
-    role: String,
-    phase: String,
-    ready: String,
-    cpus: u64,
-    memory_mib: u64,
-}
-
-impl NodeRow {
-    fn from_json(n: &serde_json::Value) -> NodeRow {
-        let text = |v: &serde_json::Value| v.as_str().unwrap_or("").to_string();
-        NodeRow {
-            id: text(&n["meta"]["id"]),
-            name: text(&n["spec"]["name"]),
-            role: text(&n["spec"]["role"]),
-            phase: text(&n["status"]["phase"]),
-            ready: text(&n["status"]["ready"]),
-            cpus: n["status"]["capacity"]["cpus"].as_u64().unwrap_or(0),
-            memory_mib: n["status"]["capacity"]["memory_mib"].as_u64().unwrap_or(0),
-        }
-    }
-}
-
 use access::project_names;
 
 fn display_opt_u16(o: &Option<u16>) -> String {
@@ -352,7 +325,27 @@ fn condition_true(status: &serde_json::Value) -> bool {
 
 /// One line for an object from `/watch`: its name and what it is doing.
 fn watch_summary(kind: &str, o: &serde_json::Value) -> (String, String) {
-    let name = o["name"].as_str().unwrap_or("?").to_string();
+    // A node (the proto Node) is named in its spec, an import plan
+    // (the proto ImportPlan) by the joining host.
+    let name = match kind {
+        "node" => o["spec"]["name"].as_str().or(o["meta"]["name"].as_str()),
+        "import" => o["node"].as_str(),
+        _ => o["name"].as_str(),
+    }
+    .unwrap_or("?")
+    .to_string();
+    // `NODE_PHASE_ACTIVE` → `Active`, as `nodes` prints it.
+    let title = |v: &serde_json::Value, prefix: &str| {
+        let w = v
+            .as_str()
+            .unwrap_or("")
+            .trim_start_matches(prefix)
+            .to_ascii_lowercase();
+        let mut c = w.chars();
+        c.next()
+            .map(|f| f.to_ascii_uppercase().to_string() + c.as_str())
+            .unwrap_or_else(|| "?".to_string())
+    };
     // `deletion_requested_at`: RFC 3339 in the proto shape (networks), unix
     // seconds in the older bodies.
     let deleting = o["deleting"].as_bool().unwrap_or(false)
@@ -393,6 +386,17 @@ fn watch_summary(kind: &str, o: &serde_json::Value) -> (String, String) {
                 s => s.to_ascii_lowercase(),
             }
         }
+        // Nodes in the proto shape: `NODE_PHASE_*`, ready a `CONDITION_STATUS_*`.
+        "node" => {
+            let phase = title(&o["status"]["phase"], "NODE_PHASE_");
+            if condition_true(&o["status"]["ready"]) {
+                phase
+            } else {
+                format!("{}, not ready", phase)
+            }
+        }
+        // Import plans: `IMPORT_STATE_*`.
+        "import" => title(&o["state"], "IMPORT_STATE_").to_ascii_lowercase(),
         // Networks in the proto shape: `NETWORK_PHASE_*`.
         _ => o["phase"]
             .as_str()
@@ -1329,204 +1333,7 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
 
         "delete" | "rm" => vm::delete(client, &parts[1..]).await,
 
-        "nodes" | "node" if matches!(parts.get(1), Some(&"drain") | Some(&"undrain")) => {
-            let Some(id) = parts.get(2) else {
-                println!("{}", format!("Usage: node {} <node>", parts[1]).yellow());
-                return true;
-            };
-            // Accept a node's name as well as its id.
-            let nodes: serde_json::Value = client
-                .request_json(Method::GET, "/nodes", None)
-                .await
-                .unwrap_or_default();
-            let found = nodes
-                .as_array()
-                .into_iter()
-                .flatten()
-                .find(|n| n["meta"]["id"] == *id || n["spec"]["name"] == *id)
-                .and_then(|n| n["meta"]["id"].as_str().map(String::from));
-            let Some(nid) = found else {
-                println!("{} no node {}", "Error:".red(), id);
-                return true;
-            };
-            match client
-                .request_json::<serde_json::Value>(
-                    Method::POST,
-                    &format!("/nodes/{}/{}", nid, parts[1]),
-                    None,
-                )
-                .await
-            {
-                Ok(v) => {
-                    println!(
-                        "{} {} is now {}",
-                        "OK".green(),
-                        v["node"].as_str().unwrap_or(""),
-                        v["phase"].as_str().unwrap_or("")
-                    );
-                    let r = &v["remaining"];
-                    println!(
-                        "  still on it: {} VMs, {} disks, {} networks",
-                        r["vms"].as_array().map_or(0, |a| a.len()),
-                        r["disks"].as_array().map_or(0, |a| a.len()),
-                        r["networks"].as_array().map_or(0, |a| a.len())
-                    );
-                }
-                Err(e) => println!("{} {}", "Error:".red(), e),
-            }
-        }
-        "nodes" | "node" if parts.get(1) == Some(&"import") => {
-            let rest = &parts[2..];
-            let sub = rest.first().copied().unwrap_or("list");
-            let plan = rest.get(1).copied().filter(|a| !a.starts_with("--"));
-            let map_of = |flag: &str| {
-                let mut m = serde_json::Map::new();
-                for v in flag_values(rest, flag) {
-                    if let Some((a, b)) = v.split_once('=') {
-                        m.insert(a.to_string(), b.into());
-                    }
-                }
-                m
-            };
-            let result = match (sub, plan) {
-                ("list", _) => {
-                    client
-                        .request_json::<serde_json::Value>(Method::GET, "/imports", None)
-                        .await
-                }
-                ("show", Some(p)) => {
-                    client
-                        .request_json::<serde_json::Value>(
-                            Method::GET,
-                            &format!("/imports/{p}"),
-                            None,
-                        )
-                        .await
-                }
-                ("approve", Some(p)) => {
-                    let body = serde_json::json!({ "projects": map_of("--project"), "networks": map_of("--network"), "credentials": map_of("--credential"), "over_quota": has_flag(rest, "--over-quota"), "dry_run": has_flag(rest, "--dry-run") });
-                    client
-                        .request_json::<serde_json::Value>(
-                            Method::POST,
-                            &format!("/imports/{p}/approve"),
-                            Some(body),
-                        )
-                        .await
-                }
-                ("reject", Some(p)) => client
-                    .request_json::<serde_json::Value>(
-                        Method::POST,
-                        &format!("/imports/{p}/reject"),
-                        Some(serde_json::json!({})),
-                    )
-                    .await
-                    .or_else(|e| {
-                        if e.to_string().is_empty() {
-                            Ok(serde_json::Value::Null)
-                        } else {
-                            Err(e)
-                        }
-                    }),
-                _ => {
-                    println!("{}", "Usage: node import list | show <plan> | approve <plan> [--project src=existing|src=new:name] [--network a=b] [--credential proj/user=new] [--over-quota] [--dry-run] | reject <plan>".yellow());
-                    return true;
-                }
-            };
-            match result {
-                Ok(v) => println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default()),
-                Err(e) => println!("{} {}", "Error:".red(), e),
-            }
-        }
-        "nodes" | "node"
-            if matches!(
-                parts.get(1),
-                Some(&"remove")
-                    | Some(&"forget")
-                    | Some(&"purge")
-                    | Some(&"rejoin-token")
-                    | Some(&"detach")
-            ) =>
-        {
-            let Some(id) = parts.get(2).filter(|a| !a.starts_with("--")) else {
-                println!(
-                    "{}",
-                    format!(
-                        "Usage: node {} <node> [--force] [--fenced] [--raft-lost]",
-                        parts[1]
-                    )
-                    .yellow()
-                );
-                return true;
-            };
-            let rest = &parts[3..];
-            let mut maps = serde_json::Map::new();
-            for m in flag_values(rest, "--map-network") {
-                if let Some((a, b)) = m.split_once('=') {
-                    maps.insert(a.to_string(), b.into());
-                }
-            }
-            let body = serde_json::json!({
-                "map_networks": maps,
-                "with_access": has_flag(rest, "--with-access"),
-                "abort": has_flag(rest, "--abort"),
-                "departed": has_flag(rest, "--departed"),
-                "timeout_secs": flag_value(rest, "--timeout").and_then(|t| t.parse::<u64>().ok()),
-                "force": has_flag(rest, "--force"),
-                "fenced": has_flag(rest, "--fenced"),
-                "raft_intact": !has_flag(rest, "--raft-lost"),
-            });
-            // The node's name goes in the path as it is: the server resolves names too.
-            match client
-                .request_json::<serde_json::Value>(
-                    Method::POST,
-                    &format!("/nodes/{}/{}", id, parts[1]),
-                    Some(body),
-                )
-                .await
-            {
-                Ok(v) if parts[1] == "rejoin-token" => {
-                    println!("{}", v["token"].as_str().unwrap_or(""));
-                    eprintln!(
-                        "Shown once, for node {} ({}). On the host, as root: glidex-install --rejoin <server:8842>, token on stdin.{}",
-                        v["node"].as_str().unwrap_or(""),
-                        v["node_id"].as_str().unwrap_or(""),
-                        if v["raft_intact"] == false {
-                            " Its Raft state will be started afresh."
-                        } else {
-                            ""
-                        }
-                    );
-                }
-                Ok(v) => println!(
-                    "{} {}",
-                    "OK".green(),
-                    serde_json::to_string(&v).unwrap_or_default()
-                ),
-                Err(e) => println!("{} {}", "Error:".red(), e),
-            }
-        }
-        "nodes" | "node" => {
-            let path = match parts.get(1) {
-                Some(id) => format!("/nodes/{}", id),
-                None => "/nodes".to_string(),
-            };
-            match client
-                .request_json::<serde_json::Value>(Method::GET, &path, None)
-                .await
-            {
-                Ok(v) if v.is_array() => {
-                    let rows: Vec<NodeRow> = v
-                        .as_array()
-                        .unwrap()
-                        .iter()
-                        .map(NodeRow::from_json)
-                        .collect();
-                    println!("{}", Table::new(rows));
-                }
-                Ok(v) => println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default()),
-                Err(e) => println!("{} {}", "Error:".red(), e),
-            }
-        }
+        "nodes" | "node" => cluster::node(client, &parts[1..]).await,
 
         "pci" | "pci-devices" => host::pci(client, &parts[1..]).await,
 
@@ -1551,7 +1358,7 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
 
         "network" | "net" => network::network(client, &parts[1..]).await,
         "whoami" => access::whoami(client).await,
-        "cluster" => admin::cluster(client, &parts[1..]).await,
+        "cluster" => cluster::cluster(client, &parts[1..]).await,
         "auth" => admin::auth(client, &parts[1..]).await,
         "login" => admin::login(client, &parts[1..]).await,
         "logout" => admin::logout(client, &parts[1..]).await,
@@ -1800,6 +1607,33 @@ mod tests {
     }
 
     #[test]
+    fn watch_summary_reads_proto_nodes_and_imports() {
+        let n = serde_json::json!({
+            "meta": {"id": "n-1", "name": "alpha", "generation": "2"},
+            "spec": {"name": "alpha", "role": "NODE_ROLE_SERVER"},
+            "status": {"phase": "NODE_PHASE_DRAINING", "ready": "CONDITION_STATUS_TRUE"},
+        });
+        assert_eq!(
+            watch_summary("node", &n),
+            ("alpha".to_string(), "Draining".to_string())
+        );
+        let n = serde_json::json!({
+            "spec": {"name": "beta"},
+            "status": {"phase": "NODE_PHASE_ACTIVE", "ready": "CONDITION_STATUS_UNKNOWN"},
+        });
+        assert_eq!(watch_summary("node", &n).1, "Active, not ready");
+        let p = serde_json::json!({
+            "plan": "p-1",
+            "node": "edge",
+            "state": "IMPORT_STATE_PENDING",
+        });
+        assert_eq!(
+            watch_summary("import", &p),
+            ("edge".to_string(), "pending".to_string())
+        );
+    }
+
+    #[test]
     fn watch_summary_reads_proto_networks() {
         let n = serde_json::json!({
             "id": "6f1c0000-0000-4000-8000-000000000000",
@@ -1994,6 +1828,8 @@ mod tests {
         use glidex_control_plane::state::VmManager;
         let dir = tempfile::TempDir::new().unwrap();
         let manager = VmManager::with_db_path(dir.path().join("t.db")).unwrap();
+        // The standalone host's own node record, as `initialize` writes it.
+        manager.report_self().unwrap();
         let sock = dir.path().join("api.sock");
         let l = bind_unix(&sock).unwrap();
         let (tx, rx) = tokio::sync::watch::channel(false);
@@ -2213,6 +2049,56 @@ mod tests {
         if netd.available != Some(true) {
             assert!(netd.error.is_some(), "{netd:?}");
             assert!(status.host.as_option().is_none());
+        }
+
+        // The cluster and its nodes on their RPC clients: a standalone
+        // host says so and lists its one node.
+        {
+            use glidex_api::proto::glidex::cluster::v1::*;
+            let status = cluster::rpc(&client)
+                .await
+                .unwrap()
+                .get_cluster_status(GetClusterStatusRequest::default())
+                .await
+                .unwrap()
+                .into_owned();
+            assert_eq!(status.clustered, Some(false));
+            assert_eq!(status.nodes.len(), 1, "{status:?}");
+            let nodes = cluster::list_nodes(&client).await.unwrap();
+            assert_eq!(nodes.len(), 1);
+            let id = nodes[0].meta.as_option().unwrap().id.clone();
+            let got = cluster::node_rpc(&client)
+                .await
+                .unwrap()
+                .get_node(GetNodeRequest {
+                    id: id.clone(),
+                    ..Default::default()
+                })
+                .await
+                .unwrap()
+                .into_owned();
+            assert_eq!(
+                got.node.as_option().unwrap().meta.as_option().unwrap().id,
+                id
+            );
+            let e = cluster::node_rpc(&client)
+                .await
+                .unwrap()
+                .get_node(GetNodeRequest {
+                    id: "nope".into(),
+                    ..Default::default()
+                })
+                .await
+                .unwrap_err();
+            assert_eq!(e.code, connectrpc::ErrorCode::NotFound);
+            // Imports need a cluster.
+            let e = cluster::import_rpc(&client)
+                .await
+                .unwrap()
+                .list_imports(ListImportsRequest::default())
+                .await
+                .unwrap_err();
+            assert!(tenancy::rpc_err(e).contains("not_clustered"));
         }
 
         let _ = stop.send(true);

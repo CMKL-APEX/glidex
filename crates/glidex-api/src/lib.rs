@@ -64,6 +64,14 @@ pub struct Field {
 
 include!(concat!(env!("OUT_DIR"), "/fields.rs"));
 
+/// Whether the message `full_name` has the JSON field `name` (a message
+/// this crate doesn't know has none).
+pub fn has_field(full_name: &str, name: &str) -> bool {
+    MESSAGE_FIELDS
+        .binary_search_by(|(n, _)| (*n).cmp(full_name))
+        .is_ok_and(|i| MESSAGE_FIELDS[i].1.iter().any(|f| f.name == name))
+}
+
 /// The first field of `v` that the message `full_name` doesn't have, as
 /// a path (`quotas.vm`). Only glidex messages are checked; well-known
 /// types (Struct, Timestamp, …) are taken as they come.
@@ -126,6 +134,9 @@ mod tests {
                 "glidex.access.v1.AuditService",
                 "glidex.access.v1.AuthzService",
                 "glidex.auth.v1.LoginService",
+                "glidex.cluster.v1.ClusterService",
+                "glidex.cluster.v1.NodeService",
+                "glidex.cluster.v1.ImportService",
                 "glidex.directory.v1.ConnectorService",
                 "glidex.host.v1.HostNetworkService",
                 "glidex.host.v1.PciService",

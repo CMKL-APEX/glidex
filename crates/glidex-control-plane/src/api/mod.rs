@@ -539,12 +539,17 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         "readCluster",
         get(cluster::status),
     )
-    .add("GET", "/cluster/ovn", "readCluster", get(net::cluster_ovn))
+    .add(
+        "GET",
+        "/cluster/ovn",
+        "readCluster",
+        get(cluster::cluster_ovn),
+    )
     .add(
         "GET",
         "/cluster/ovn/tunnels",
         "readCluster",
-        get(net::cluster_ovn_tunnels),
+        get(cluster::cluster_ovn_tunnels),
     )
     .add(
         "GET",

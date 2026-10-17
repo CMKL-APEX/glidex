@@ -1204,7 +1204,11 @@ async fn test_watch_streams_nodes_and_the_policy_marker() {
         ("modified", Some("node"), Some(node.as_str())),
         "{data}"
     );
-    assert_eq!(data["object"]["status"]["phase"], "Draining");
+    assert_eq!(
+        data["object"]["status"]["phase"], "NODE_PHASE_DRAINING",
+        "{data}"
+    );
+    assert_eq!(data["object"]["meta"]["id"], node.as_str(), "{data}");
 }
 
 // ---- nodes (spec/clustering.md C1) ------------------------------------------
@@ -1241,15 +1245,24 @@ async fn a_standalone_host_is_one_node_and_places_vms_on_it() {
 
     let (status, nodes) = call(&app, "GET", "/nodes", None).await;
     assert_eq!(status, StatusCode::OK);
-    let nodes = nodes.as_array().unwrap();
+    let nodes = nodes["nodes"].as_array().unwrap();
     assert_eq!(nodes.len(), 1, "{nodes:?}");
     assert_eq!(nodes[0]["meta"]["id"], "local");
-    assert_eq!(nodes[0]["status"]["phase"], "Active");
+    assert_eq!(nodes[0]["status"]["phase"], "NODE_PHASE_ACTIVE");
     assert!(nodes[0]["status"]["capacity"]["cpus"].as_u64().unwrap() >= 1);
+    // A uint64 is a JSON string (proto3 JSON).
+    assert!(
+        nodes[0]["status"]["capacity"]["memory_mib"].is_string(),
+        "{nodes:?}"
+    );
+    assert!(
+        nodes[0]["meta"]["resource_version"].is_string(),
+        "{nodes:?}"
+    );
 
     let (status, one) = call(&app, "GET", "/nodes/local", None).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(one["spec"]["role"], "server");
+    assert_eq!(one["node"]["spec"]["role"], "NODE_ROLE_SERVER", "{one}");
     let (status, _) = call(&app, "GET", "/nodes/nope", None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 

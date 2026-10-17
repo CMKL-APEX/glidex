@@ -2,18 +2,13 @@
 //! networking through glidex-netd (spec/networking.md §11,
 //! spec/security.md §6.2, §8).
 
-use super::{ApiErr, Caller, Proto, error_to_response, proto_body, proto_no_content};
+use super::{ApiErr, Caller, Proto, proto_body, proto_no_content};
 use crate::service::host;
 use crate::service::network as svc;
-use crate::state::VmManagerError;
 use axum::{Json, extract::Path, http::StatusCode, response::IntoResponse};
 use glidex_api::proto::glidex::host::v1 as hpb;
 use glidex_api::proto::glidex::network::v1 as pb;
 use serde_json::Value;
-
-fn manager_err(e: VmManagerError) -> ApiErr {
-    error_to_response(e)
-}
 
 // ---- networks, shares, routers: REST twins of glidex.network.v1 ----------
 
@@ -64,18 +59,6 @@ pub async fn network_ovn(c: Caller, Path(id): Path<String>) -> Result<impl IntoR
         ..Default::default()
     };
     Ok(Proto(StatusCode::OK, svc::network_ovn(&c, req).await?))
-}
-
-/// `GET /cluster/ovn/tunnels` (spec/clustering-ui.md §8b): each node's tunnels.
-pub async fn cluster_ovn_tunnels(c: Caller) -> Result<impl IntoResponse, ApiErr> {
-    c.require(crate::authz::Ent::Cluster, crate::authz::EntitySet::new())?;
-    Ok(Json(c.manager().ovn_tunnels().await))
-}
-
-/// `GET /cluster/ovn` (spec/clustering-ui.md §8): the OVN databases, chassis and gateways.
-pub async fn cluster_ovn(c: Caller) -> Result<impl IntoResponse, ApiErr> {
-    c.require(crate::authz::Ent::Cluster, crate::authz::EntitySet::new())?;
-    Ok(Json(c.manager().ovn_overview().await.map_err(manager_err)?))
 }
 
 pub async fn network_events(

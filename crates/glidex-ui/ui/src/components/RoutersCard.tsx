@@ -220,7 +220,7 @@ export default function RoutersCard({ project, networks, manage, onChanged }: { 
     api
       .getOvnSettings()
       .then((v) => {
-        setOvn(v.enabled);
+        setOvn(!!v.enabled);
         setPool(!!v.vpc_pool);
       })
       .catch(() => setOvn(false));
