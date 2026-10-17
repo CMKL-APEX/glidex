@@ -9,7 +9,6 @@
 //! (spec/reconciliation.md §12.3).
 
 use super::{ApiErr, Caller, Proto, err, proto_body, proto_no_content, vm_entities};
-use crate::auth::Method;
 use crate::authz::{Ent, EntitySet};
 use crate::models::{Vm, VmResponse};
 use crate::service::vm::{self as svc, VmReply};
@@ -25,7 +24,6 @@ use axum::{
 use glidex_api::proto::glidex::vm::v1 as pb;
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::UnixStream;
 
 fn manager_err(e: crate::state::VmManagerError) -> ApiErr {
     super::error_to_response(e)
@@ -545,65 +543,29 @@ pub async fn console_ws(
     Query(q): Query<TicketQuery>,
     ws: WebSocketUpgrade,
 ) -> Response {
-    let vm = match visible_vm(&c, &id).await {
-        Ok((vm, _, _)) => vm,
-        Err(e) => return e.into_response(),
+    let target = match svc::console_target(&c, &id, q.ticket.as_deref()).await {
+        Ok(t) => t,
+        Err(e) => return ApiErr::from(e).into_response(),
     };
-    if matches!(c.p.method, Method::Pam | Method::Oidc)
-        && !q
-            .ticket
-            .as_deref()
-            .is_some_and(|t| c.auth().redeem_ticket(&c.p, &vm.id, t))
-    {
-        return err(
-            StatusCode::FORBIDDEN,
-            "ticket_required",
-            "open the console with a fresh ticket",
-        )
-        .into_response();
-    }
-    // A VM on another node: the console is relayed through that node (§8.4).
-    if let Some(addr) = c.manager().remote_node_addr(&vm) {
-        let Some(cluster) = c.manager().cluster() else {
-            return err(StatusCode::SERVICE_UNAVAILABLE, "unavailable", "no cluster")
-                .into_response();
-        };
-        return match cluster
-            .client
-            .upgrade(&addr, &format!("/cluster/v1/vms/{}/console", vm.id))
-            .await
-        {
+    let m = c.app.manager.clone();
+    // A relayed console must answer before the upgrade (its node may be away).
+    if let svc::ConsoleTarget::Remote { .. } = &target {
+        return match svc::console_connect(&m, target).await {
             Ok(stream) => ws.on_upgrade(move |socket| bridge_stream(socket, stream)),
-            Err(e) => err(
-                StatusCode::BAD_GATEWAY,
-                "node_unreachable",
-                format!("the VM's node can't be reached: {e}"),
-            )
-            .into_response(),
+            Err(e) => err(StatusCode::BAD_GATEWAY, "node_unreachable", e).into_response(),
         };
     }
-    let console_path = vm.paths().console_socket;
-    ws.on_upgrade(move |socket| bridge_console(socket, console_path))
-}
-
-/// Pump bytes in both directions between a browser WebSocket and the VM's
-/// console Unix socket until either side closes. The shim keeps the
-/// listener alive even after the guest exits, so connecting to a dead VM
-/// still succeeds and replays the log.
-async fn bridge_console(mut ws: WebSocket, console_path: String) {
-    let unix = match UnixStream::connect(&console_path).await {
-        Ok(s) => s,
-        Err(e) => {
-            let _ = ws
-                .send(Message::Text(
-                    format!("Failed to connect to the VM console: {}", e).into(),
-                ))
-                .await;
-            let _ = ws.send(Message::Close(None)).await;
-            return;
+    // The shim keeps the listener alive even after the guest exits, so a
+    // dead VM still replays its log; no socket at all is said in the stream.
+    ws.on_upgrade(move |mut socket| async move {
+        match svc::console_connect(&m, target).await {
+            Ok(stream) => bridge_stream(socket, stream).await,
+            Err(e) => {
+                let _ = socket.send(Message::Text(e.into())).await;
+                let _ = socket.send(Message::Close(None)).await;
+            }
         }
-    };
-    bridge_stream(ws, unix).await
+    })
 }
 
 /// The same, over any byte stream (a local socket, or a node relay).

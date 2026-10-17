@@ -3,7 +3,7 @@
 use super::{Svc, unary};
 use crate::api::AppState;
 use crate::service::vm as svc;
-use connectrpc::{RequestContext, ServiceRequest, ServiceResult};
+use connectrpc::{InboundStream, RequestContext, ServiceRequest, ServiceResult, ServiceStream};
 use glidex_api::proto::glidex::vm::v1::*;
 
 pub(super) fn register(app: &AppState, router: connectrpc::Router) -> connectrpc::Router {
@@ -40,6 +40,78 @@ macro_rules! vm_write {
 // The generated trait returns `impl Encodable<_>`; the concrete message is fine.
 #[allow(refining_impl_trait)]
 impl VmService for Svc {
+    async fn console(
+        &self,
+        ctx: RequestContext,
+        mut requests: InboundStream<ConsoleRequest>,
+    ) -> ServiceResult<ServiceStream<ConsoleResponse>> {
+        use crate::service::ServiceError;
+        use axum::http::StatusCode;
+        use futures_util::StreamExt;
+        use glidex_api::proto::glidex::vm::v1::__buffa::oneof::console_request::Request as R;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let app = self.app.clone();
+        unary(&self.app, &ctx, |c| async move {
+            let c = c.expect("authenticated operation");
+            let bad = |m: &str| ServiceError::new(StatusCode::BAD_REQUEST, "invalid", m);
+            // The first message says which console (soon: a stream that
+            // never says doesn't hold a handler).
+            let first = tokio::time::timeout(std::time::Duration::from_secs(30), requests.next())
+                .await
+                .map_err(|_| bad("no {open: {id}} within 30 s"))?;
+            let open = match first {
+                Some(Ok(m)) => match m.to_owned_message().request {
+                    Some(R::Open(o)) => *o,
+                    _ => return Err(bad("the first message opens the console: {open: {id}}")),
+                },
+                _ => return Err(bad("the first message opens the console: {open: {id}}")),
+            };
+            let target = svc::console_target(&c, &open.id, open.ticket.as_deref()).await?;
+            let io = svc::console_connect(&app.manager, target)
+                .await
+                .map_err(|m| {
+                    ServiceError::new(StatusCode::SERVICE_UNAVAILABLE, "console_unavailable", m)
+                })?;
+            let (rx, mut tx) = tokio::io::split(io);
+            // Keystrokes in, until the client stops sending (a half-close
+            // ends the call, as closing a WebSocket does) or the console goes.
+            let (done_tx, done) = tokio::sync::oneshot::channel::<()>();
+            tokio::spawn(async move {
+                while let Some(Ok(m)) = requests.next().await {
+                    if let Some(R::Input(bytes)) = m.to_owned_message().request
+                        && tx.write_all(&bytes).await.is_err()
+                    {
+                        break;
+                    }
+                }
+                let _ = tx.shutdown().await;
+                let _ = done_tx.send(());
+            });
+            // The console's bytes out, until it closes or the client is done.
+            let out = futures_util::stream::unfold((rx, done), |(mut rx, mut done)| async move {
+                let mut buf = vec![0u8; 4096];
+                tokio::select! {
+                    read = rx.read(&mut buf) => match read {
+                        Ok(0) | Err(_) => None,
+                        Ok(n) => {
+                            buf.truncate(n);
+                            Some((
+                                Ok(ConsoleResponse {
+                                    output: buf,
+                                    ..Default::default()
+                                }),
+                                (rx, done),
+                            ))
+                        }
+                    },
+                    _ = &mut done => None,
+                }
+            });
+            Ok(Box::pin(out) as ServiceStream<ConsoleResponse>)
+        })
+        .await
+    }
+
     async fn list_vms(
         &self,
         ctx: RequestContext,

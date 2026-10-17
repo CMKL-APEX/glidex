@@ -24,6 +24,40 @@ pub(super) fn register(app: &AppState, router: connectrpc::Router) -> connectrpc
 
 #[allow(refining_impl_trait)]
 impl WatchService for Svc {
+    async fn watch_events(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, WatchEventsRequest>,
+    ) -> ServiceResult<ServiceStream<WatchEventsResponse>> {
+        let req = req.to_owned_message();
+        unary(&self.app, &ctx, |c| async move {
+            let c = c.expect("authenticated operation");
+            let kind = svc::events_kind(&req).ok_or_else(|| {
+                crate::service::ServiceError::new(
+                    axum::http::StatusCode::BAD_REQUEST,
+                    "invalid",
+                    "events are kept for VMs, disks, images and networks",
+                )
+            })?;
+            let rx = svc::open_events(c, kind, req.id.clone()).await?;
+            let stream = futures_util::stream::unfold(rx, |mut rx| async move {
+                match tokio::time::timeout(KEEPALIVE, rx.recv()).await {
+                    Ok(Some(e)) => Some((Ok(svc::object_event_pb(e)), rx)),
+                    Ok(None) => None,
+                    Err(_) => Some((
+                        Ok(WatchEventsResponse {
+                            r#type: WatchEventType::WATCH_EVENT_TYPE_KEEPALIVE.into(),
+                            ..Default::default()
+                        }),
+                        rx,
+                    )),
+                }
+            });
+            Ok(Box::pin(stream) as ServiceStream<WatchEventsResponse>)
+        })
+        .await
+    }
+
     async fn watch(
         &self,
         ctx: RequestContext,
