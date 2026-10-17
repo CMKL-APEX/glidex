@@ -295,6 +295,10 @@ pub struct PciGrant {
     /// Project ids or names.
     #[serde(default)]
     pub projects: Vec<String>,
+    /// Tenant ids or slugs: every project of theirs may use the device
+    /// (spec/tenancy.md D25).
+    #[serde(default)]
+    pub tenants: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

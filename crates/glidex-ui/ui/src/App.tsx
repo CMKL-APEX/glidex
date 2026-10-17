@@ -19,6 +19,10 @@ import Cluster from "./pages/Cluster";
 import NodeDetail from "./pages/NodeDetail";
 import ImportPlan from "./pages/ImportPlan";
 import Usage from "./pages/Usage";
+import Tenants from "./pages/Tenants";
+import TenantDetail from "./pages/TenantDetail";
+import Admissions from "./pages/Admissions";
+import Connectors from "./pages/Connectors";
 import { SessionProvider, useSession } from "./session";
 import { LiveProvider } from "./live";
 import { Loading } from "./components/Loading";
@@ -53,6 +57,10 @@ function Shell() {
             <Route path="/disks" element={<Disks />} />
             <Route path="/projects" element={<Projects />} />
             <Route path="/projects/:id" element={<ProjectDetail />} />
+            <Route path="/tenants" element={<Tenants />} />
+            <Route path="/tenants/:id" element={<TenantDetail />} />
+            <Route path="/admissions" element={<Admissions />} />
+            <Route path="/connectors" element={<Connectors />} />
             <Route path="/access" element={<Access />} />
             <Route path="/tokens" element={<Tokens />} />
             <Route path="/policies" element={<Policies />} />

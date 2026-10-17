@@ -80,6 +80,10 @@ pub struct Network {
     pub all_projects: bool,
     #[serde(default)]
     pub grants: Vec<String>,
+    /// Tenants whose every project may use this host network
+    /// (spec/tenancy.md D25).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tenant_grants: Vec<String>,
     /// Projects that accepted a share of this project network.
     #[serde(default)]
     pub shares: Vec<String>,
@@ -125,11 +129,16 @@ pub struct ShareOffer {
 }
 
 impl Network {
-    /// Whether VMs of `project` may attach (mirrors `base.network-grant`).
-    pub fn usable_by(&self, project: &str) -> bool {
+    /// Whether VMs of `project`, in `tenant`, may attach (mirrors
+    /// `base.network-grant`).
+    pub fn usable_by(&self, project: &str, tenant: &str) -> bool {
         match &self.project {
             Some(p) => p == project || self.shares.iter().any(|s| s == project),
-            None => self.all_projects || self.grants.iter().any(|g| g == project),
+            None => {
+                self.all_projects
+                    || self.grants.iter().any(|g| g == project)
+                    || self.tenant_grants.iter().any(|t| t == tenant)
+            }
         }
     }
 }
@@ -367,6 +376,7 @@ impl CreateNetworkRequest {
             project: None,
             all_projects: false,
             grants: Vec::new(),
+            tenant_grants: Vec::new(),
             shares: Vec::new(),
             share_offers: Vec::new(),
             phase: NetworkPhase::Ready,

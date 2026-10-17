@@ -157,10 +157,7 @@ impl H {
 
     /// The Connect protocol with JSON.
     async fn connect(&self, method: &str, body: Value, who: &str) -> (StatusCode, Value) {
-        let b = self.with_auth(
-            Request::post(format!("/glidex.directory.v1.ConnectorService/{method}")),
-            who,
-        );
+        let b = self.with_auth(Request::post(procedure(method)), who);
         let (s, v, _) = self
             .send(
                 b.header(header::CONTENT_TYPE, "application/json")
@@ -177,10 +174,7 @@ impl H {
         let mut body = vec![0u8];
         body.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
         body.extend_from_slice(&bytes);
-        let b = self.with_auth(
-            Request::post(format!("/glidex.directory.v1.ConnectorService/{method}")),
-            who,
-        );
+        let b = self.with_auth(Request::post(procedure(method)), who);
         let resp = self
             .router
             .clone()
@@ -279,6 +273,15 @@ impl H {
             .unwrap();
         let (s, _, h) = self.send(req).await;
         (s, h)
+    }
+}
+
+/// `Method` of ConnectorService, or a full `package.Service/Method`.
+fn procedure(method: &str) -> String {
+    if method.contains('/') {
+        format!("/{method}")
+    } else {
+        format!("/glidex.directory.v1.ConnectorService/{method}")
     }
 }
 
@@ -953,5 +956,311 @@ async fn pam_connector_tokens_are_clamped_to_its_maximum() {
     assert!(
         st == StatusCode::UNAUTHORIZED || st == StatusCode::FORBIDDEN,
         "{st}"
+    );
+}
+
+// ---- the close-out of T0/T1 -----------------------------------------------
+
+use glidex_api::proto::glidex::auth::v1 as login;
+
+#[tokio::test]
+async fn login_service_over_connect_and_grpc() {
+    let mock = idp::start().await;
+    let dir = TempDir::new().unwrap();
+    let sock = fake_authd(&dir);
+    let h = harness_with(|c| c.auth.pam.authd_socket = sock.clone());
+    h.oidc_connector(&mock, "corp", json!({})).await;
+
+    // Discover: public, on both transports.
+    let (st, v) = h
+        .connect(
+            "glidex.auth.v1.LoginService/Discover",
+            json!({"hint": "default"}),
+            "",
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    assert_eq!(v["tenant"]["slug"], "default");
+    assert!(
+        v["connectors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["id"] == "corp"),
+        "{v}"
+    );
+    let req = login::DiscoverRequest {
+        hint: "nobody@nowhere".into(),
+        ..Default::default()
+    };
+    let (st, bytes) = h
+        .grpc("glidex.auth.v1.LoginService/Discover", &req, "")
+        .await;
+    assert_eq!(st, "0");
+    let got = login::DiscoverResponse::decode_from_slice(&bytes).unwrap();
+    assert!(
+        got.tenant.as_option().is_none(),
+        "an unknown hint names no tenant"
+    );
+
+    // The device grant through connector corp, over Connect.
+    let start = json!({"connector": "corp"});
+    let (st, v) = h
+        .connect("glidex.auth.v1.LoginService/StartDevice", start, "")
+        .await;
+    assert_eq!(
+        (st, v["user_code"].as_str()),
+        (StatusCode::OK, Some("ABCD-EFGH")),
+        "{v}"
+    );
+    let mut c = claims(&mock, "");
+    c.as_object_mut().unwrap().remove("nonce");
+    *mock.id_token.lock().unwrap() = Some(idp::sign(c, "k1"));
+    let poll = json!({"connector": "corp", "device_code": "dev-1", "token_name": "rpc"});
+    let (st, v) = h
+        .connect("glidex.auth.v1.LoginService/PollDevice", poll.clone(), "")
+        .await;
+    assert_eq!(
+        (st, v["pending"].as_bool()),
+        (StatusCode::OK, Some(true)),
+        "{v}"
+    );
+    let (st, v) = h
+        .connect("glidex.auth.v1.LoginService/PollDevice", poll, "")
+        .await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    let token = v["issued"]["token"].as_str().unwrap().to_string();
+    assert_eq!(v["issued"]["display_name"], "Alice");
+    let (_, who) = h.rest("GET", "/auth/whoami", None, &token).await;
+    assert_eq!(who["token"]["name"], "rpc");
+
+    // A password token over gRPC: the request's password is a secret
+    // field, the answer carries the token once.
+    let req = login::PasswordTokenRequest {
+        username: "bob".into(),
+        password: "bob-password".into(),
+        days: Some(2),
+        ..Default::default()
+    };
+    let (st, bytes) = h
+        .grpc("glidex.auth.v1.LoginService/PasswordToken", &req, "")
+        .await;
+    assert_eq!(st, "0");
+    let got = login::PasswordTokenResponse::decode_from_slice(&bytes).unwrap();
+    let issued = got.issued.as_option().unwrap();
+    assert!(issued.token.starts_with("gxt_"));
+    let days =
+        (issued.expires_at.as_option().unwrap().seconds as u64).saturating_sub(now()) / 86_400;
+    assert!(days <= 2, "{days}");
+    let bad = login::PasswordTokenRequest {
+        username: "bob".into(),
+        password: "wrong".into(),
+        ..Default::default()
+    };
+    let (st, _) = h
+        .grpc("glidex.auth.v1.LoginService/PasswordToken", &bad, "")
+        .await;
+    assert_eq!(st, "16", "unauthenticated");
+    // The password never reaches the audit log.
+    let entries = h.app.auth.store.audit(0, 1000, |_| true).unwrap();
+    assert!(
+        !serde_json::to_string(&entries)
+            .unwrap()
+            .contains("bob-password")
+    );
+}
+
+#[tokio::test]
+async fn mfa_logins_are_marked_and_policies_can_ask() {
+    let mock = idp::start().await;
+    let h = harness();
+    h.oidc_connector(&mock, "corp", json!({})).await;
+    for (amr, mfa) in [(json!(["pwd"]), false), (json!(["pwd", "mfa"]), true)] {
+        let (state, nonce, _, browser) = h.begin("corp").await;
+        let mut c = claims(&mock, &nonce);
+        c["amr"] = amr;
+        *mock.id_token.lock().unwrap() = Some(idp::sign(c, "k1"));
+        let (st, headers) = h.finish("corp", &state, &browser).await;
+        assert_eq!(st, StatusCode::SEE_OTHER);
+        let cookie = format!("{}={}", auth::SESSION_COOKIE, session_of(&headers));
+        let (_, who, _) = h
+            .send(
+                Request::get("/auth/whoami")
+                    .header(header::COOKIE, cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(who["mfa"], mfa, "{who}");
+        assert_eq!(who["directory_id"], "local");
+    }
+    // Site policies can require it (context.auth.mfa is in the schema).
+    let admin = h.admin("ada");
+    let text = "@id(\"site.mfa-for-host\")\nforbid (principal, action in Glidex::Action::\"host.cluster\", resource)\nunless { context.auth.mfa };";
+    let (st, v) = h
+        .rest(
+            "POST",
+            "/authz/validate",
+            Some(json!({"id": "site.mfa-for-host", "text": text})),
+            &h.token(&admin),
+        )
+        .await;
+    assert_eq!(
+        (st, v["valid"].as_bool()),
+        (StatusCode::OK, Some(true)),
+        "{v}"
+    );
+}
+
+#[tokio::test]
+async fn checks_say_when_a_fresh_login_would_allow() {
+    let h = harness();
+    let admin = h.admin("ada");
+    let s = h.session(&admin);
+    let check = json!({"checks": [{"action": "createConnector", "resource": {"type": "Directory", "id": "local"}}]});
+    let (_, v) = h
+        .rest("POST", "/authz/check", Some(check.clone()), &s)
+        .await;
+    assert_eq!(v["results"][0]["allowed"], true, "{v}");
+    // Age the session past the step-up window.
+    let cookie = s
+        .strip_prefix("session:")
+        .unwrap()
+        .split_once('|')
+        .unwrap()
+        .0;
+    let hash = auth::sha256_hex(cookie.as_bytes());
+    let mut rec = h.app.auth.store.session(&hash).unwrap().unwrap();
+    rec.authenticated_at -= 3600;
+    h.app.auth.store.put_session(&hash, &rec).unwrap();
+    let (_, v) = h
+        .rest("POST", "/authz/check", Some(check.clone()), &s)
+        .await;
+    assert_eq!(
+        (
+            v["results"][0]["allowed"].as_bool(),
+            v["results"][0]["reauth"].as_bool()
+        ),
+        (Some(false), Some(true)),
+        "{v}"
+    );
+    let allowed = json!({"actions": ["createConnector", "listConnectors"], "resources": [{"type": "Directory", "id": "local"}]});
+    let (_, v) = h
+        .rest("POST", "/authz/allowed", Some(allowed.clone()), &s)
+        .await;
+    assert_eq!(v["allowed"][0], json!(["listConnectors"]), "{v}");
+    assert_eq!(v["reauth"][0], json!(["createConnector"]), "{v}");
+    // A token can't log in again: nothing to offer.
+    let (_, v) = h
+        .rest("POST", "/authz/check", Some(check), &h.token(&admin))
+        .await;
+    assert_eq!(v["results"][0]["reauth"], false, "{v}");
+    // Nor for someone a fresh login wouldn't help.
+    let bob = h.user("bob");
+    let (_, v) = h
+        .rest("POST", "/authz/allowed", Some(allowed), &h.session(&bob))
+        .await;
+    assert_eq!(v["reauth"][0], json!([]), "{v}");
+}
+
+#[tokio::test]
+async fn a_peer_seen_first_joins_the_pam_connectors_tenant() {
+    let me = nix::unistd::getuid().as_raw();
+    let group = nix::unistd::Group::from_gid(nix::unistd::getgid())
+        .unwrap()
+        .unwrap()
+        .name;
+    let h = harness_with(|c| {
+        c.auth.pam.enabled = false;
+        c.users_group = group.clone();
+        c.admin_group = "no-such-group-abc".into();
+    });
+    let s = h.session(&h.admin("ada"));
+    let (st, t) = h
+        .rest("POST", "/tenants", Some(json!({"slug": "lab"})), &s)
+        .await;
+    assert_eq!(st, StatusCode::CREATED, "{t}");
+    let lab = t["tenant"]["id"].as_str().unwrap().to_string();
+    let c = json!({"connector": {"id": "host", "jit": true, "default_tenant": "lab", "pam": {"allowed_groups": [group]}}});
+    let (st, v) = h.rest("POST", "/connectors", Some(c), &s).await;
+    assert_eq!(st, StatusCode::CREATED, "{v}");
+    let req = Request::get("/auth/whoami")
+        .extension(api::Listener::Api)
+        .extension(api::PeerUid(me))
+        .body(Body::empty())
+        .unwrap();
+    let (st, who, _) = h.send(req).await;
+    assert_eq!(st, StatusCode::OK, "{who}");
+    let user = who["user"]["id"].as_str().unwrap().to_string();
+    assert!(h.app.auth.is_member(&Ent::User(user), &lab).unwrap());
+}
+
+#[tokio::test]
+async fn a_standalone_host_rotates_its_secrets_key() {
+    let mock = idp::start().await;
+    let h = harness();
+    h.oidc_connector(&mock, "corp", json!({})).await;
+    let before = h.app.auth.connectors.kek_id();
+    let s = h.session(&h.admin("root"));
+    let (st, v) = h
+        .rest(
+            "POST",
+            "/cluster/rotate-secrets-key",
+            Some(json!({})),
+            &h.token(&h.admin("tok")),
+        )
+        .await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED, "a step-up action: {v}");
+    let (st, v) = h
+        .rest("POST", "/cluster/rotate-secrets-key", Some(json!({})), &s)
+        .await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    assert_eq!(v["rewrapped"], 1, "{v}");
+    let after = h.app.auth.connectors.kek_id();
+    assert_ne!(before, after);
+    assert_eq!(v["kek_id"], after);
+    assert!(h.dir.path().join("secrets.kek.prev").exists());
+    // The stored secret still opens, and a login still sends it.
+    let c = h.app.auth.connectors.get("corp").unwrap().unwrap();
+    assert_eq!(
+        h.app
+            .auth
+            .connectors
+            .secret(&c, "client_secret")
+            .unwrap()
+            .unwrap()
+            .as_str(),
+        SECRET
+    );
+    let (state, nonce, _, browser) = h.begin("corp").await;
+    *mock.id_token.lock().unwrap() = Some(idp::sign(claims(&mock, &nonce), "k1"));
+    let (st, _) = h.finish("corp", &state, &browser).await;
+    assert_eq!(st, StatusCode::SEE_OTHER);
+    assert!(
+        mock.token_requests
+            .lock()
+            .unwrap()
+            .last()
+            .unwrap()
+            .contains(&base64_basic())
+    );
+    // Twice in a row: the first rotation's key becomes the previous one.
+    let (st, v) = h
+        .rest("POST", "/cluster/rotate-secrets-key", Some(json!({})), &s)
+        .await;
+    assert_eq!(
+        (st, v["rewrapped"].as_u64()),
+        (StatusCode::OK, Some(1)),
+        "{v}"
+    );
+    assert_eq!(
+        h.app
+            .auth
+            .connectors
+            .secret(&c, "client_secret")
+            .unwrap()
+            .unwrap()
+            .as_str(),
+        SECRET
     );
 }

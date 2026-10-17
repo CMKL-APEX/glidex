@@ -451,6 +451,7 @@ impl EntitySet {
         all_projects: bool,
         grants: &[String],
         shares: &[String],
+        tenant_grants: &[String],
     ) -> &mut Self {
         for p in grants
             .iter()
@@ -467,8 +468,10 @@ impl EntitySet {
                     .collect(),
             )
         };
-        let mut attrs =
-            json!({ "all_projects": all_projects, "grants": set(grants), "shares": set(shares) });
+        let mut attrs = json!({
+            "all_projects": all_projects, "grants": set(grants), "shares": set(shares),
+            "tenant_grants": tenant_set(tenant_grants),
+        });
         let parent = match project {
             Some(p) => {
                 attrs["project"] = Ent::Project(p.into()).json_ref();
@@ -479,7 +482,12 @@ impl EntitySet {
         self.add(Ent::Network(name.into()), attrs, vec![parent])
     }
 
-    pub fn pci_device(&mut self, bdf: &str, grants: &[String]) -> &mut Self {
+    pub fn pci_device(
+        &mut self,
+        bdf: &str,
+        grants: &[String],
+        tenant_grants: &[String],
+    ) -> &mut Self {
         for p in grants {
             self.project(p);
         }
@@ -491,7 +499,7 @@ impl EntitySet {
         );
         self.add(
             Ent::PciDevice(bdf.into()),
-            json!({ "grants": set }),
+            json!({ "grants": set, "tenant_grants": tenant_set(tenant_grants) }),
             vec![Ent::Host],
         )
     }
@@ -518,13 +526,18 @@ pub struct AuthContext {
     pub method: String,
     pub transport: String,
     pub age_secs: i64,
+    /// A multi-factor login (spec/tenancy.md §6), for site policies.
+    pub mfa: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_ip: Option<std::net::IpAddr>,
 }
 
 impl AuthContext {
     fn to_json(&self) -> Value {
-        let mut v = json!({ "method": self.method, "transport": self.transport, "age_secs": self.age_secs });
+        let mut v = json!({
+            "method": self.method, "transport": self.transport, "age_secs": self.age_secs,
+            "mfa": self.mfa,
+        });
         if let Some(ip) = self.source_ip {
             v["source_ip"] = json!({ "__extn": { "fn": "ip", "arg": ip.to_string() } });
         }
@@ -925,6 +938,15 @@ pub const HOST_ROLES: [&str; 5] = [
     "grant.host-paths",
 ];
 
+/// A set of tenant references (grants by tenant, spec/tenancy.md D25).
+fn tenant_set(ids: &[String]) -> Value {
+    Value::Array(
+        ids.iter()
+            .map(|t| Ent::Tenant(t.clone()).json_ref())
+            .collect(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -934,6 +956,7 @@ mod tests {
             method: "pam".into(),
             transport: "tcp".into(),
             age_secs: age,
+            mfa: false,
             source_ip: None,
         }
     }
@@ -1325,9 +1348,9 @@ mod tests {
         let mut es = base_entities();
         es.user("o", false, &[]).user("n", false, &[]);
         es.in_project(Ent::Disk("d".into()), "pa");
-        es.network("pnet", Some("pa"), false, &[], &[]);
-        es.network("shared", Some("pa"), false, &[], &["pb".into()]);
-        es.network("hostnet", None, false, &["pa".into()], &[]);
+        es.network("pnet", Some("pa"), false, &[], &[], &[]);
+        es.network("shared", Some("pa"), false, &[], &["pb".into()], &[]);
+        es.network("hostnet", None, false, &["pa".into()], &[], &[]);
         let q = |p: &str, a: &str, r: Ent, proj: &str| {
             tq(Ent::User(p.into()), a, r, auth(0), es.clone())
                 .with("project", Ent::Project(proj.into()))
@@ -1370,6 +1393,55 @@ mod tests {
         assert!(e.check(&offer).allowed);
         let own = q("o", "offerNetworkShare", Ent::Network("pnet".into()), "pa");
         assert!(e.check(&own).denied_by("base.share-elsewhere"));
+    }
+
+    /// D25: host networks and devices granted to a tenant reach each of its
+    /// projects; project networks are shared within their tenant only.
+    #[test]
+    fn tenant_grants_and_shares_within_a_tenant() {
+        let e = engine_with(&[
+            link(
+                "link.1",
+                "role.owner",
+                Ent::User("o".into()),
+                Ent::Project("pa".into()),
+            ),
+            link(
+                "link.2",
+                "role.owner",
+                Ent::User("o".into()),
+                Ent::Project("pc".into()),
+            ),
+        ]);
+        let mut es = base_entities();
+        es.project("pc");
+        es.set_project_tenant("pa", "default");
+        es.set_project_tenant("pb", "default");
+        es.set_project_tenant("pc", "acme");
+        es.tenant("acme", "local", false, false, false, true);
+        es.user("o", false, &[]);
+        es.network("acmenet", None, false, &[], &[], &["acme".into()]);
+        es.network("pnet", Some("pa"), false, &[], &[], &[]);
+        es.pci_device("0000:01:00.0", &[], &["acme".into()]);
+        let q = |a: &str, r: Ent, proj: &str| {
+            tq(Ent::User("o".into()), a, r, auth(0), es.clone())
+                .with("project", Ent::Project(proj.into()))
+        };
+        let net = || Ent::Network("acmenet".into());
+        assert!(e.check(&q("useNetwork", net(), "pc")).allowed);
+        assert!(
+            e.check(&q("useNetwork", net(), "pa"))
+                .denied_by("base.network-grant")
+        );
+        let dev = || Ent::PciDevice("0000:01:00.0".into());
+        assert!(e.check(&q("usePciDevice", dev(), "pc")).allowed);
+        assert!(!e.check(&q("usePciDevice", dev(), "pa")).allowed);
+        let pnet = || Ent::Network("pnet".into());
+        assert!(e.check(&q("offerNetworkShare", pnet(), "pb")).allowed);
+        assert!(
+            e.check(&q("offerNetworkShare", pnet(), "pc"))
+                .denied_by("base.share-same-tenant")
+        );
     }
 
     #[test]

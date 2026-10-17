@@ -71,6 +71,7 @@ mod tests {
         assert_eq!(
             services(),
             vec![
+                "glidex.auth.v1.LoginService",
                 "glidex.directory.v1.ConnectorService",
                 "glidex.system.v1.SystemService",
                 "glidex.tenancy.v1.TenantService",

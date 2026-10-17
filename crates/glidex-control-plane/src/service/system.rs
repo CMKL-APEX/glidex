@@ -119,6 +119,8 @@ pub fn whoami(call: &Call) -> ServiceResult<WhoAmIResponse> {
             })
             .collect(),
         default_project: p.default_project().map(String::from),
+        mfa: Some(p.mfa),
+        directory_id: p.directory_id().into(),
         ..Default::default()
     })
 }

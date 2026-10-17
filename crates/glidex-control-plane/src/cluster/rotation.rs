@@ -169,6 +169,68 @@ impl Cluster {
         Ok(())
     }
 
+    /// Rotate the secrets key (spec/tenancy.md §13, leader): a new key to
+    /// every other server with the current one as its previous, then here,
+    /// then every data key re-wrapped in one write. Until that write each
+    /// server opens the data keys with the previous key, so a rotation cut
+    /// short loses nothing and can be run again.
+    pub async fn rotate_secrets_key(&self) -> Result<Value, ClusterError> {
+        let _one = self.ca_op.lock().await;
+        let node = self
+            .node
+            .as_ref()
+            .ok_or_else(|| other("only a server rotates the secrets key"))?;
+        if !node.is_leader() {
+            return Err(other("this is not the leader"));
+        }
+        let s = self
+            .secrets
+            .get()
+            .ok_or_else(|| other("nothing holds the secrets key here"))?;
+        s.can_rotate().map_err(other)?;
+        let (current, _) = s.kek();
+        let new = zeroize::Zeroizing::new(crate::auth::random_bytes(
+            crate::directory::secrets::KEK_LEN,
+        ));
+        use base64::Engine;
+        let b64 = |v: &[u8]| base64::engine::general_purpose::STANDARD.encode(v);
+        let body = json!({ "kek": b64(&new), "previous": b64(&current) }).to_string();
+        let nodes = NodeStore::new(self.db.clone()).list().map_err(other)?;
+        let mut servers = 0;
+        for n in nodes.iter().filter(|n| {
+            n.spec.role == NodeRole::Server
+                && !n.status.phase.is_tombstone()
+                && n.meta.id != self.identity.node_id
+        }) {
+            let addr = n
+                .status
+                .advertise
+                .ok_or_else(|| other(format!("{} has no address", n.spec.name)))?;
+            let r = self
+                .client
+                .request(
+                    &addr.to_string(),
+                    hyper::Method::PUT,
+                    "/cluster/v1/secrets-key",
+                    &[("content-type", "application/json".into())],
+                    body.clone().into(),
+                )
+                .await
+                .map_err(other)?;
+            if !r.status.is_success() {
+                return Err(other(format!(
+                    "{} did not take the new secrets key: {}",
+                    n.spec.name, r.status
+                )));
+            }
+            servers += 1;
+        }
+        s.install_kek(&new, Some(&current)).map_err(other)?;
+        let rewrapped = s.rewrap().map_err(other)?;
+        tracing::info!(servers, rewrapped, "rotated the secrets key");
+        Ok(json!({ "kek_id": s.kek_id(), "servers": servers + 1, "rewrapped": rewrapped }))
+    }
+
     /// Steps 1–2 (leader): a new CA, its key to every server, then trust both.
     pub async fn rotate_ca(&self, grace_secs: Option<u64>) -> Result<Value, ClusterError> {
         let mut last = self.ca_op.lock().await;

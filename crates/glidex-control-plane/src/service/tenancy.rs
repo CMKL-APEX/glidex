@@ -113,8 +113,11 @@ pub fn parse_principal(key: &str) -> ServiceResult<EntityRef> {
     })
 }
 
-fn admission_pb(a: &tenants::Admission) -> pb::Admission {
+fn admission_pb(call: &Call, a: &tenants::Admission) -> pb::Admission {
+    let t = call.auth().tenants.get(&a.tenant_id).ok().flatten();
     pb::Admission {
+        tenant_slug: t.as_ref().map(|t| t.slug.clone()).unwrap_or_default(),
+        tenant_display_name: t.map(|t| t.display_name).unwrap_or_default(),
         tenant_id: a.tenant_id.clone(),
         directory_id: a.directory_id.clone(),
         cap: quotas_to_pb(&a.cap).into(),
@@ -140,7 +143,8 @@ fn tenant_pb(call: &Call, t: &tenants::Tenant) -> ServiceResult<pb::Tenant> {
         operator: Some(t.operator),
         suspended: Some(t.suspended),
         created_at: ts(t.created_at).into(),
-        admission: admission.as_ref().map(admission_pb).into(),
+        admission: admission.as_ref().map(|a| admission_pb(call, a)).into(),
+        operates_here: Some(call.auth().tenants.operator().map_err(tenant_error)? == t.id),
         ..Default::default()
     })
 }
@@ -343,14 +347,15 @@ pub fn delete_tenant(
 
 // ---- members --------------------------------------------------------------
 
-fn member_pb(m: &tenants::Member) -> pb::Member {
-    pb::Member {
+fn member_pb(call: &Call, m: &tenants::Member) -> ServiceResult<pb::Member> {
+    Ok(pb::Member {
+        principal_name: principal_name(call, &m.principal)?.unwrap_or_default(),
         tenant_id: m.tenant_id.clone(),
         principal: entity_ref(&m.principal).into(),
         by: m.by.clone(),
         at: ts(m.at).into(),
         ..Default::default()
-    }
+    })
 }
 
 pub fn list_members(
@@ -361,7 +366,10 @@ pub fn list_members(
     call.require(Ent::Tenant(t.id.clone()), EntitySet::new())?;
     let members = call.auth().tenants.members(&t.id).map_err(tenant_error)?;
     Ok(pb::ListMembersResponse {
-        members: members.iter().map(member_pb).collect(),
+        members: members
+            .iter()
+            .map(|m| member_pb(call, m))
+            .collect::<ServiceResult<_>>()?,
         ..Default::default()
     })
 }
@@ -381,7 +389,7 @@ pub fn add_member(call: &Call, req: pb::AddMemberRequest) -> ServiceResult<pb::A
         .add_member(&t.id, principal, &by)
         .map_err(tenant_error)?;
     Ok(pb::AddMemberResponse {
-        member: member_pb(&m).into(),
+        member: member_pb(call, &m)?.into(),
         ..Default::default()
     })
 }
@@ -403,9 +411,10 @@ pub fn remove_member(
 
 // ---- bindings (tenant roles) ---------------------------------------------
 
-fn binding_pb(call: &Call, l: &crate::auth::store::LinkRecord) -> ServiceResult<pb::Binding> {
+/// A user's display name, a team's or a token's name.
+fn principal_name(call: &Call, e: &Ent) -> ServiceResult<Option<String>> {
     let s = &call.auth().store;
-    let name = match &l.link.principal {
+    Ok(match e {
         Ent::User(id) => s
             .user(id)
             .map_err(|e| auth_error(e.into()))?
@@ -419,7 +428,11 @@ fn binding_pb(call: &Call, l: &crate::auth::store::LinkRecord) -> ServiceResult<
             .map_err(|e| auth_error(e.into()))?
             .map(|t| t.1.name),
         _ => None,
-    };
+    })
+}
+
+fn binding_pb(call: &Call, l: &crate::auth::store::LinkRecord) -> ServiceResult<pb::Binding> {
+    let name = principal_name(call, &l.link.principal)?;
     Ok(pb::Binding {
         id: l.link.id.clone(),
         role: l.link.template.clone(),
@@ -517,7 +530,7 @@ pub fn list_admissions(
     call.require(Ent::Cluster, EntitySet::new())?;
     let all = call.auth().tenants.admissions().map_err(tenant_error)?;
     Ok(pb::ListAdmissionsResponse {
-        admissions: all.iter().map(admission_pb).collect(),
+        admissions: all.iter().map(|a| admission_pb(call, a)).collect(),
         ..Default::default()
     })
 }
@@ -547,7 +560,7 @@ pub fn set_admission(
     let by = call.p.user_id().unwrap_or("-").to_string();
     let a = store.admit(&t.id, cap, status, &by).map_err(tenant_error)?;
     Ok(pb::SetAdmissionResponse {
-        admission: admission_pb(&a).into(),
+        admission: admission_pb(call, &a).into(),
         ..Default::default()
     })
 }

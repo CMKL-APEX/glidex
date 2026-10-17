@@ -798,6 +798,9 @@ established pair keeps working, including logins and feeds.
   only with a CA key that matches the cluster's), never in Raft,
   snapshots, feeds or bundles. A server whose KEK is a credential can't
   take another one: every server gets the same credential.
+- The KEK rotates on demand (`gxctl cluster rotate-secrets-key`): every
+  server takes the new key and keeps the previous one, then the leader
+  re-wraps the data keys in one write; a wrapped key names its KEK by id.
 - Each directory has its own **signing keys** (ID tokens, access tokens),
   rotated on demand and every 90 days, the old one kept for verification
   until every token it signed has expired; public keys travel in feeds.
@@ -1173,16 +1176,29 @@ Decided while building:
   token acting as its owner never counts as a recent login
   (security.md §7.5).
 
-Not yet in T0, next to do:
-- the UI's Tenants and Admissions pages, and a tenant column in lists;
-- `tenant_grants` on host networks and PCI devices (D23);
-- per-cluster project quotas (on one cluster, a project's quotas are its
-  quotas for this cluster);
-- moving guest credentials' table to directory scope (marked, not yet
-  separated) and names unique per tenant for disks and project networks
-  (projects already are).
+Closed out after T1 (the T0 parts):
+- **UI**: Tenants (list, detail with members and tenant roles),
+  Admissions, and a Tenant column on Projects (`pages/Tenants.tsx`,
+  `TenantDetail.tsx`, `Admissions.tsx`).
+- **`tenant_grants` (D25)**: `Network.tenant_grants` (`tenants` in
+  `POST /networks` and `PUT /networks/{name}/grants`, gxctl `network
+  grant --tenant`), `pci.allow[].tenants`; `base.network-grant` and
+  `base.pci-grant` take them; `base.share-same-tenant` keeps project
+  network shares inside a tenant, and an offer across tenants gets the
+  answer a missing target does.
+- **Every project's tenant is an entity** in each decision, whether or
+  not the caller is a member of it: before, an operator acting through a
+  cluster role on a tenant's project was refused `useCluster`.
+- Names by id or slug where a tenant is named (`default_tenant`, grants).
 
-
+Left for later, and why:
+- **Names unique per tenant for disks and project networks (D24)**:
+  networks are keyed by name (REST paths, Cedar entities, OVS/OVN), so
+  this re-keys them by id. It lands with their port to gRPC (grpc.md G2
+  for disks, G3 for networks), so the messages carry ids from the start.
+- **Per-cluster project quotas** and **guest credentials apart from the
+  cluster** (their table is already directory-scoped): both only differ
+  from today once a directory serves several clusters (T6).
 
 **T1** (connector framework) is implemented on the same one-host shape.
 
@@ -1192,11 +1208,11 @@ Not yet in T0, next to do:
 | Data keys and KEK (§13, D21) | `src/directory/secrets.rs` (`Kek`, `seal`/`open`, `rewrap`); `auth.secrets_key` in `config.rs`; `#LoadCredential=secrets-kek` in the unit |
 | KEK transfer to joining servers | `cluster/runtime.rs` (`SecretsKey`), `cluster/server.rs` (`join_ready` sends, `put_ca` installs after the CA key checks out), `state.rs::lend_secrets_key` (before `join/ready`) |
 | File-defined connectors (§16 step 5) | `directory::file_connectors`: `file-pam` from `auth.pam`, `file-oidc` from `auth.oidc` (secret from `oidc-client-secret`), read-only |
-| The `ExternalIdentity` path: rules, JIT, teams, `default_tenant`, MFA (`amr`/`acr`), D20 clamp | `auth/mod.rs::external_login`, `login_pam_with`, `oidc_for` (one client per connector, rebuilt when it changes); `auth/oidc.rs` (`ClientSecret::Stored`, `mfa`) |
+| The `ExternalIdentity` path: rules, JIT, teams, `default_tenant`, MFA (`amr`/`acr`), D20 clamp | `auth/mod.rs::external_login`, `login_pam_with`, `oidc_for` (one client per connector, rebuilt when it changes); `directory/oidc.rs` (`ClientSecret::Stored`, `mfa`) |
 | Discovery and per-connector routes (§6) | `api/access.rs` (`discover`, `connector_start`/`callback`/`device_start`/`device_poll`, `connector` on `/auth/login` and `/auth/token`) |
 | `ConnectorService` on both transports (§14) | proto `glidex/directory/v1/connectors.proto`; `service/directory.rs`; REST `api/connectors.rs`; RPC `api/rpc/directory.rs`; actions under `directory.connectors` (`role.directory-admin`, step-up on writes) |
 | gxctl and UI | `bin/gxctl/directory.rs` (`connector …`), `login --oidc --connector`, `auth login --connector`; a sign-in button per OIDC connector (`pages/Login.tsx`) |
-| Tests | `tests/connector_tests.rs`; `cluster_tests.rs::a_new_server_receives_the_secrets_key`; gxctl `connector_client_over_the_unix_socket`; unit tests in `directory/` |
+| Tests | `tests/connector_tests.rs` (with LoginService, MFA, reauth checks, peer first sight, standalone rotation); `cluster_tests.rs::a_new_server_receives_the_secrets_key`, `the_secrets_key_rotates_on_every_server`; `network_tests.rs::host_networks_are_granted_to_tenants_and_shares_stay_in_one`; gxctl `connector_client_over_the_unix_socket`; unit tests in `directory/` and `authz.rs` (`tenant_grants_and_shares_within_a_tenant`) |
 
 Decided while building:
 - **File-defined connectors keep their identity keys** (`pam`,
@@ -1211,13 +1227,38 @@ Decided while building:
 - **API-connector OIDC callbacks** are `/api/auth/c/<id>/callback`; the
   file connector keeps `/api/auth/oidc/callback`.
 
-Not yet in T1, next to do:
-- peer (`api.sock`) resolution through PAM connectors, and identities
-  with the node in the subject (D23);
-- `Principal.directory_id` and the acting tenant (one directory per host
-  makes them constant for now);
-- `LoginService` (`glidex/auth/v1/login.proto`) for the device and
-  password logins over RPC;
-- the UI's connector management pages;
-- KEK rotation with the CA, and TPM2 sealing;
-- moving `auth/oidc.rs` to `directory/oidc.rs`.
+Closed out after T1:
+- **`LoginService`** (`glidex/auth/v1/login.proto`: `Discover`,
+  `StartDevice`, `PollDevice`, `PasswordToken`) on `service/login.rs`,
+  which the REST twins (`/auth/discover`, `/auth/c/{id}/device…`,
+  `/auth/token`) call too; RPC adapter `api/rpc/login.rs`.
+- **MFA in decisions**: sessions record whether the login was
+  multi-factor (`Session.mfa`, from the connector's `amr`/`acr` check);
+  Cedar's `context.auth.mfa` (tokens, peer and PAM logins: `false`), so a
+  site policy can say `forbid … unless { context.auth.mfa }`; `whoami`
+  shows `mfa` and `directory_id`.
+- **`Principal::directory_id()`** (constant `local` until T6).
+- **Peers through the PAM connector (D23)**: a local user seen first on
+  `api.sock` joins the host PAM connector's `default_tenant`; local
+  identities already carry the node (`<name>@<node>`) in a cluster, and
+  root and `glidex-admin` resolve to the operator tenant.
+- **KEK rotation** (`gxctl cluster rotate-secrets-key`, `POST
+  /cluster/rotate-secrets-key`, `rotateSecretsKey` in
+  `host.cluster.critical`): the leader sends every other server the new
+  key with the current one as its previous (`PUT
+  /cluster/v1/secrets-key`, outside Raft), takes it, then re-wraps every
+  data key in one write. Each server keeps the previous key
+  (`secrets.kek.prev`) and opens a data key with whichever its `kek_id`
+  names, so a rotation cut short loses nothing and can be run again. A
+  KEK from the `secrets-kek` credential is rotated by changing the
+  credential instead (`409`).
+- **Connector management pages** (`pages/Connectors.tsx`).
+- **Step-up and capability checks**: `/authz/check` answers `reauth:
+  true`, and `/authz/allowed` a `reauth` list, for what only a fresh
+  browser login would allow; the UI shows those actions and its re-login
+  dialog runs when they're used.
+- `auth/oidc.rs` moved to `directory/oidc.rs`.
+
+Left for later: the acting tenant (the UI and gxctl asking which tenant
+when a user is in several; projects say their own tenant today), TPM2
+sealing of the KEK, and rotating the KEK with the CA.

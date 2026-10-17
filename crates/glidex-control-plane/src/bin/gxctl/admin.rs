@@ -2479,7 +2479,7 @@ pub async fn series(client: &ApiClient, what: &str, args: &[&str]) {
 // ---- project networks and sharing ------------------------------------------
 
 pub async fn network(client: &ApiClient, args: &[&str]) {
-    let u = "Usage: network list | create <name> [--project P [--isolated] [--vhost-user]] [--subnet CIDR] ... | rm <name> | share <net> <project-id> | unshare <net> <project-id> | shares <project> | accept <project> <net> | leave <project> <net>";
+    let u = "Usage: network list | create <name> [--project P [--isolated] [--vhost-user]] [--subnet CIDR] ... | rm <name> | grant <host-net> [--project P]... [--tenant T]... [--all-projects] | share <net> <project-id> | unshare <net> <project-id> | shares <project> | accept <project> <net> | leave <project> <net>";
     match args.first().copied().unwrap_or("list") {
         "list" | "ls" => crate::list_networks(client).await,
         "create" | "add" => {
@@ -2542,6 +2542,46 @@ pub async fn network(client: &ApiClient, args: &[&str]) {
             },
             None => usage(u),
         },
+        // Who may use a host network: projects, whole tenants (D25), or all.
+        // The lists replace the network's current grants.
+        "grant" => {
+            let Some(net) = args.get(1) else {
+                return usage(u);
+            };
+            let body = json!({
+                "grants": flag_values(args, "--project"),
+                "tenants": flag_values(args, "--tenant"),
+                "all_projects": has_flag(args, "--all-projects"),
+            });
+            match client
+                .request_json::<Value>(
+                    Method::PUT,
+                    &format!("/networks/{}/grants", enc(net)),
+                    Some(body),
+                )
+                .await
+            {
+                Ok(n) => {
+                    let list = |v: &Value| {
+                        v.as_array()
+                            .map(|a| {
+                                a.iter()
+                                    .map(|x| s(x).to_string())
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            })
+                            .unwrap_or_default()
+                    };
+                    println!("{} {}", "Grants set:".green(), s(&n["name"]).yellow());
+                    if n["all_projects"] == json!(true) {
+                        println!("  every project");
+                    }
+                    println!("  projects: {}", list(&n["grants"]));
+                    println!("  tenants:  {}", list(&n["tenant_grants"]));
+                }
+                Err(e) => err(e),
+            }
+        }
         "share" => {
             let (Some(net), Some(project)) = (args.get(1), args.get(2)) else {
                 return usage(u);
@@ -2960,6 +3000,22 @@ pub async fn cluster(client: &ApiClient, args: &[&str]) {
                 Err(e) => err(e),
             }
         }
+        // A new key for the connector secrets' data keys (spec/tenancy.md §13).
+        Some("rotate-secrets-key") => {
+            match client
+                .request_json::<Value>(Method::POST, "/cluster/rotate-secrets-key", Some(json!({})))
+                .await
+            {
+                Ok(v) => println!(
+                    "{} secrets key {} on {} server(s); {} data key(s) re-wrapped",
+                    "Rotated:".green(),
+                    s(&v["kek_id"]),
+                    v["servers"],
+                    v["rewrapped"]
+                ),
+                Err(e) => err(e),
+            }
+        }
         Some("snapshot") => {
             let Some(file) = args.get(1) else {
                 return usage("Usage: cluster snapshot <file>");
@@ -2991,7 +3047,7 @@ pub async fn cluster(client: &ApiClient, args: &[&str]) {
             }
         }
         Some(other) => usage(&format!(
-            "Unknown cluster command '{other}'. Try: init, join, join-token, status, promote, snapshot, rotate-ca, rejoin, leave, dissolve"
+            "Unknown cluster command '{other}'. Try: init, join, join-token, status, promote, snapshot, rotate-ca, rotate-secrets-key, rejoin, leave, dissolve"
         )),
     }
 }

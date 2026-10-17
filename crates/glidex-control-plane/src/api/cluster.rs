@@ -403,6 +403,31 @@ pub async fn rotate_ca(
     Ok(Json(out))
 }
 
+/// Rotate the secrets key that wraps the directories' data keys (spec/
+/// tenancy.md §13). A cluster's leader hands the new key to every server
+/// first; a standalone host rotates its own.
+pub async fn rotate_secrets_key(c: Caller) -> Result<impl IntoResponse, ApiErr> {
+    c.require(Ent::Cluster, EntitySet::new())?;
+    c.set_target("cluster".to_string());
+    c.audit_always();
+    if let Some(cl) = c.manager().cluster() {
+        return Ok(Json(cl.rotate_secrets_key().await.map_err(cluster_err)?));
+    }
+    use crate::cluster::runtime::SecretsKey;
+    let s = c.auth();
+    let refused = |m: String| err(StatusCode::CONFLICT, "conflict", m);
+    s.can_rotate().map_err(refused)?;
+    let (current, _) = s.kek();
+    let new = zeroize::Zeroizing::new(crate::auth::random_bytes(
+        crate::directory::secrets::KEK_LEN,
+    ));
+    s.install_kek(&new, Some(&current)).map_err(refused)?;
+    let rewrapped = s.rewrap().map_err(refused)?;
+    Ok(Json(
+        json!({ "kek_id": s.kek_id(), "servers": 1, "rewrapped": rewrapped }),
+    ))
+}
+
 /// A consistent snapshot of the replicated tables, streamed to the caller.
 /// It holds credential and token hashes: store it like the database itself.
 pub async fn snapshot(c: Caller) -> Result<impl IntoResponse, ApiErr> {

@@ -23,6 +23,7 @@ unless { resource.project == context.project };
 forbid (principal, action == Glidex::Action::"useNetwork", resource)
 unless {
   resource.all_projects || resource.grants.contains(context.project) ||
+  resource.tenant_grants.contains(context.project.tenant) ||
   (resource has project && resource.project == context.project) ||
   (resource has project && resource.shares.contains(context.project))
 };
@@ -35,7 +36,10 @@ permit (principal, action == Glidex::Action::"useNetwork", resource);
 // Which PCI devices a project may use without host.devices.
 @id("base.pci-grant")
 permit (principal, action == Glidex::Action::"usePciDevice", resource)
-when { resource.grants.contains(context.project) };
+when {
+  resource.grants.contains(context.project) ||
+  resource.tenant_grants.contains(context.project.tenant)
+};
 
 // Project networks are never opened up by net-admin grants; sharing them
 // takes the two-sided offer/accept.
@@ -105,6 +109,11 @@ unless {
 // the place.
 @id("base.cluster-use")
 permit (principal, action == Glidex::Action::"useCluster", resource);
+
+// D25: project networks are shared within one tenant only.
+@id("base.share-same-tenant")
+forbid (principal, action == Glidex::Action::"offerNetworkShare", resource)
+when { resource has project && resource.project.tenant != context.project.tenant };
 
 // A suspended tenant's members can't act on its resources.
 @id("base.tenant-suspended")

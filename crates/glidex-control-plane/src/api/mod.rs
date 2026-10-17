@@ -607,6 +607,12 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         post(cluster::rotate_ca),
     )
     .add(
+        "POST",
+        "/cluster/rotate-secrets-key",
+        "rotateSecretsKey",
+        post(cluster::rotate_secrets_key),
+    )
+    .add(
         "GET",
         "/cluster/snapshot",
         "snapshotCluster",
@@ -1545,6 +1551,24 @@ impl Caller {
         d
     }
 
+    /// Whether a fresh login would allow what step-up now refuses: a
+    /// browser session older than the step-up window. A token can't log
+    /// in again, so it never would (spec/security.md §7.5).
+    pub fn allowed_after_reauth(&self, action: &str, resource: Ent, es: EntitySet) -> bool {
+        if !matches!(
+            self.p.method,
+            crate::auth::Method::Pam | crate::auth::Method::Oidc
+        ) {
+            return false;
+        }
+        let mut fresh = self.p.clone();
+        fresh.authenticated_at = crate::auth::store::now();
+        self.app
+            .auth
+            .authorize(&fresh, action, resource, es, &[])
+            .allowed
+    }
+
     pub fn allowed(&self, action: &str, resource: Ent, es: EntitySet) -> bool {
         if self.pre_authorized(action, &resource).is_some() {
             return true;
@@ -1831,6 +1855,7 @@ pub(crate) fn add_network(es: &mut EntitySet, n: &crate::network::Network) -> En
         n.all_projects,
         &n.grants,
         &n.shares,
+        &n.tenant_grants,
     );
     Ent::Network(n.name.clone())
 }

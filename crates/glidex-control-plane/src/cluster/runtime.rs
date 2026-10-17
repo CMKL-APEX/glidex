@@ -53,10 +53,22 @@ pub trait NodeHandlers: Send + Sync {
 }
 
 /// The host's secrets key (spec/tenancy.md §13): the leader sends it to a
-/// new server with the CA key, outside Raft.
+/// new server with the CA key, and to every server when it rotates it,
+/// outside Raft.
 pub trait SecretsKey: Send + Sync {
-    fn kek(&self) -> zeroize::Zeroizing<Vec<u8>>;
-    fn install_kek(&self, bytes: &[u8]) -> Result<(), String>;
+    /// The current key, and the previous one during a rotation.
+    fn kek(
+        &self,
+    ) -> (
+        zeroize::Zeroizing<Vec<u8>>,
+        Option<zeroize::Zeroizing<Vec<u8>>>,
+    );
+    fn install_kek(&self, bytes: &[u8], previous: Option<&[u8]>) -> Result<(), String>;
+    /// `Err` with why when this key can't be rotated here (a credential).
+    fn can_rotate(&self) -> Result<(), String>;
+    /// Re-wrap every data key with the current key; how many changed.
+    fn rewrap(&self) -> Result<usize, String>;
+    fn kek_id(&self) -> String;
 }
 
 pub struct Cluster {

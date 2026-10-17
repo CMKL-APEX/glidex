@@ -9,6 +9,7 @@
 //! builds the [`Call`], runs the service function and audits the result.
 
 mod directory;
+mod login;
 mod system;
 mod tenancy;
 
@@ -54,6 +55,7 @@ pub(crate) fn routes(app: &AppState) -> Router<AppState> {
     let connect = system::register(app, connect);
     let connect = tenancy::register(app, connect);
     let connect = directory::register(app, connect);
+    let connect = login::register(app, connect);
     let (connect, _health) = connectrpc_health::install_static(connect, glidex_api::services());
     let svc = ConnectRpcService::new(connect)
         .with_limits(

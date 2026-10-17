@@ -1,0 +1,130 @@
+// Logging in at a directory (spec/tenancy.md §6, §14): what to offer for a
+// hint, the device grant for gxctl, and password tokens through a PAM
+// connector. Browser logins are redirects and stay HTTP-only.
+syntax = "proto3";
+
+package glidex.auth.v1;
+
+import "glidex/api/v1/options.proto";
+import "google/protobuf/timestamp.proto";
+
+service LoginService {
+  // The tenant a hint (slug or email) names, and the connectors to offer.
+  // No authentication; unknown hints reveal nothing.
+  rpc Discover(DiscoverRequest) returns (DiscoverResponse) {
+    option (glidex.api.v1.op) = {
+      action: "public"
+      kind: KIND_READ
+      rest: "POST /auth/discover"
+    };
+  }
+
+  // Start the OIDC device grant through a connector (the first OIDC one
+  // when none is named).
+  rpc StartDevice(StartDeviceRequest) returns (StartDeviceResponse) {
+    option (glidex.api.v1.op) = {
+      action: "public"
+      kind: KIND_READ
+      rest: "POST /auth/c/{id}/device"
+    };
+  }
+
+  // Poll a device grant: `pending` until the user finishes, then a
+  // personal token (at most a day, and the connector's token_max_days).
+  rpc PollDevice(PollDeviceRequest) returns (PollDeviceResponse) {
+    option (glidex.api.v1.op) = {
+      action: "public"
+      kind: KIND_WRITE
+      rest: "POST /auth/c/{id}/device/poll"
+    };
+  }
+
+  // PAM credentials in, a personal token out (spec/gxctl-auth.md §7.3).
+  // Over TLS or from this host only.
+  rpc PasswordToken(PasswordTokenRequest) returns (PasswordTokenResponse) {
+    option (glidex.api.v1.op) = {
+      action: "public"
+      kind: KIND_WRITE
+      rest: "POST /auth/token"
+    };
+  }
+}
+
+message DiscoverRequest {
+  // A tenant slug or an email address.
+  string hint = 1;
+}
+
+message DiscoverResponse {
+  // Absent unless the hint names a tenant of this directory.
+  DiscoveredTenant tenant = 1;
+  repeated LoginConnector connectors = 2;
+}
+
+message DiscoveredTenant {
+  string slug = 1;
+  string display_name = 2 [json_name = "display_name"];
+}
+
+// An enabled connector, as the login page shows it.
+message LoginConnector {
+  string id = 1;
+  // `pam` or `oidc`.
+  string kind = 2;
+  string display_name = 3 [json_name = "display_name"];
+}
+
+message StartDeviceRequest {
+  optional string connector = 1;
+}
+
+message StartDeviceResponse {
+  string device_code = 1 [json_name = "device_code"];
+  string user_code = 2 [json_name = "user_code"];
+  string verification_uri = 3 [json_name = "verification_uri"];
+  optional string verification_uri_complete = 4 [json_name = "verification_uri_complete"];
+  // Seconds between polls.
+  uint64 interval = 5;
+  uint64 expires_in = 6 [json_name = "expires_in"];
+}
+
+message PollDeviceRequest {
+  optional string connector = 1;
+  string device_code = 2 [json_name = "device_code"];
+  optional string token_name = 3 [json_name = "token_name"];
+  // What the client says about its machine and build; shown, never checked.
+  optional string device = 4;
+  optional string client = 5;
+}
+
+message PollDeviceResponse {
+  // The user hasn't finished yet: poll again after `interval`.
+  optional bool pending = 1;
+  // Set once done.
+  IssuedToken issued = 2;
+}
+
+message PasswordTokenRequest {
+  string username = 1;
+  string password = 2 [(glidex.api.v1.secret) = true];
+  // A PAM connector; the first one when absent.
+  optional string connector = 3;
+  // Capped by the connector's token_max_days.
+  optional uint32 days = 4;
+  optional string token_name = 5 [json_name = "token_name"];
+  optional string device = 6;
+  optional string client = 7;
+}
+
+message PasswordTokenResponse {
+  IssuedToken issued = 1;
+}
+
+// A new personal token. `token` is shown once and never again.
+message IssuedToken {
+  string token = 1;
+  string token_id = 2 [json_name = "token_id"];
+  google.protobuf.Timestamp expires_at = 3 [json_name = "expires_at"];
+  string user_id = 4 [json_name = "user_id"];
+  string display_name = 5 [json_name = "display_name"];
+}

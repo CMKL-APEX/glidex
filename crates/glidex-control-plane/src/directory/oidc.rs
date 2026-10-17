@@ -83,7 +83,7 @@ pub struct IdClaims {
     pub rest: HashMap<String, serde_json::Value>,
 }
 
-/// A verified login: what [`AuthService`](super::AuthService) needs.
+/// A verified login: what [`AuthService`](crate::auth::AuthService) needs.
 #[derive(Debug, Clone)]
 pub struct OidcIdentity {
     pub issuer: String,
@@ -294,10 +294,10 @@ impl OidcState {
         reauth: bool,
     ) -> Result<Start, OidcError> {
         let d = self.discovery().await?;
-        let state = super::random_token(24);
-        let nonce = super::random_token(24);
-        let verifier = super::random_token(48);
-        let browser = super::random_token(24);
+        let state = crate::auth::random_token(24);
+        let nonce = crate::auth::random_token(24);
+        let verifier = crate::auth::random_token(48);
+        let browser = crate::auth::random_token(24);
         let challenge = b64url(&sha2::Sha256::digest_bytes(verifier.as_bytes()));
         {
             let mut p = self.pending.lock().unwrap();
@@ -355,7 +355,7 @@ impl OidcState {
         if pending.created + STATE_SECS <= now() {
             return Err(OidcError::Invalid("login state expired".into()));
         }
-        if !browser.is_some_and(|b| super::constant_eq(b, &pending.browser)) {
+        if !browser.is_some_and(|b| crate::auth::constant_eq(b, &pending.browser)) {
             return Err(OidcError::Invalid(
                 "login state belongs to another browser".into(),
             ));
@@ -460,7 +460,7 @@ impl OidcState {
             && !c
                 .nonce
                 .as_deref()
-                .is_some_and(|n| super::constant_eq(n, expected))
+                .is_some_and(|n| crate::auth::constant_eq(n, expected))
         {
             return Err(OidcError::Invalid("id_token nonce mismatch".into()));
         }

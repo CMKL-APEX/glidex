@@ -58,6 +58,14 @@ import type {
   BrIntDatapath,
   UplinkKind,
   UplinkResult,
+  Admission,
+  Connector,
+  ConnectorInput,
+  ConnectorTestStep,
+  Tenant,
+  TenantBinding,
+  TenantMember,
+  TenantQuotas,
 } from "./types";
 
 const API_BASE = "/api";
@@ -270,11 +278,14 @@ export async function logout(): Promise<void> {
 
 export const updateMe = (body: { default_project: string | null }) => patch<User>("/users/me", body);
 
-/** Capability checks for the caller (spec §7.7): one boolean per check. */
+/** Capability checks for the caller (spec §7.7): one boolean per check.
+ * An action only a fresh login would allow (`reauth`, a step-up action
+ * after the step-up window) counts as allowed: the request then asks for
+ * the login (ReauthDialog) and is retried. */
 export async function checkAccess(checks: { action: string; resource: EntityRef }[]): Promise<boolean[]> {
   if (checks.length === 0) return [];
-  const r = await query<{ results: { allowed: boolean }[] }>("/authz/check", { checks });
-  return r.results.map((x) => x.allowed);
+  const r = await query<{ results: { allowed: boolean; reauth?: boolean }[] }>("/authz/check", { checks });
+  return r.results.map((x) => x.allowed || !!x.reauth);
 }
 
 /** The actions allowed on each resource, in one call (spec/clustering-ui.md
@@ -282,8 +293,9 @@ export async function checkAccess(checks: { action: string; resource: EntityRef 
  * action that doesn't apply to a resource's type is left out. */
 export async function allowedActions(actions: string[], resources: EntityRef[]): Promise<string[][]> {
   if (actions.length === 0 || resources.length === 0) return resources.map(() => []);
-  const r = await query<{ allowed: string[][] }>("/authz/allowed", { actions, resources });
-  return r.allowed;
+  const r = await query<{ allowed: string[][]; reauth?: string[][] }>("/authz/allowed", { actions, resources });
+  // As checkAccess: what a fresh login would allow counts.
+  return r.allowed.map((a, i) => [...a, ...(r.reauth?.[i] ?? [])]);
 }
 
 // ---- VMs --------------------------------------------------------------------
@@ -649,3 +661,64 @@ export const checkImport = (plan: string, m: ImportMappings) => post<ImportPlanV
 export const approveImport = (plan: string, m: ImportMappings) => post<ImportPlanView>(`/imports/${enc(plan)}/approve`, m);
 export const rejectImport = (plan: string) => post<ImportPlanView>(`/imports/${enc(plan)}/reject`);
 export const drainNode = (id: string, drain: boolean) => post<unknown>(`/nodes/${enc(id)}/${drain ? "drain" : "undrain"}`);
+
+// ---- tenants and admissions (spec/tenancy.md §14) -----------------------------
+
+/** Every tenant the caller may read, over all pages. */
+export async function listTenants(): Promise<Tenant[]> {
+  const out: Tenant[] = [];
+  let token = "";
+  do {
+    const r = await get<{ tenants?: Tenant[]; next_page_token?: string }>(
+      `/tenants?page_size=500${token ? `&page_token=${enc(token)}` : ""}`,
+    );
+    out.push(...(r.tenants ?? []));
+    token = r.next_page_token ?? "";
+  } while (token);
+  return out;
+}
+export const getTenant = (id: string) => get<{ tenant: Tenant }>(`/tenants/${enc(id)}`).then((r) => r.tenant);
+export const createTenant = (req: { slug: string; display_name?: string; operator?: boolean }) =>
+  post<{ tenant: Tenant }>("/tenants", req).then((r) => r.tenant);
+export const updateTenant = (id: string, req: { display_name?: string; operator?: boolean }) =>
+  patch<{ tenant: Tenant }>(`/tenants/${enc(id)}`, req).then((r) => r.tenant);
+export const suspendTenant = (id: string) => post<{ tenant: Tenant }>(`/tenants/${enc(id)}/suspend`);
+export const resumeTenant = (id: string) => post<{ tenant: Tenant }>(`/tenants/${enc(id)}/resume`);
+export const deleteTenant = (id: string) => del(`/tenants/${enc(id)}`);
+
+export const listTenantMembers = (id: string) =>
+  get<{ members?: TenantMember[] }>(`/tenants/${enc(id)}/members`).then((r) => r.members ?? []);
+export const addTenantMember = (id: string, principal: EntityRef) => post(`/tenants/${enc(id)}/members`, { principal });
+/** `principal` is a User or Team; the path names it `user:<id>` / `team:<id>`. */
+export const removeTenantMember = (id: string, principal: EntityRef) =>
+  del(`/tenants/${enc(id)}/members/${enc(`${principal.type.toLowerCase()}:${"id" in principal ? principal.id : ""}`)}`);
+
+export const listTenantBindings = (id: string) =>
+  get<{ bindings?: TenantBinding[] }>(`/tenants/${enc(id)}/bindings`).then((r) => r.bindings ?? []);
+export const addTenantBinding = (id: string, role: string, principal: EntityRef) =>
+  post(`/tenants/${enc(id)}/bindings`, { role, principal });
+export const removeTenantBinding = (id: string, link: string) => del(`/tenants/${enc(id)}/bindings/${enc(link)}`);
+
+export const listAdmissions = () => get<{ admissions?: Admission[] }>("/admissions").then((r) => r.admissions ?? []);
+/** Admit a tenant or change its admission. An absent `cap` keeps the current
+ * one (unlimited for a new admission); `{}` is unlimited. */
+export const setAdmission = (tenant: string, req: { cap?: TenantQuotas; suspended?: boolean }) =>
+  put<{ admission: Admission }>(`/admissions/${enc(tenant)}`, req).then((r) => r.admission);
+export const removeAdmission = (tenant: string) => del(`/admissions/${enc(tenant)}`);
+
+// ---- login connectors (spec/tenancy.md §5, §14) ------------------------------
+
+export const listConnectors = () => get<{ connectors?: Connector[] }>("/connectors").then((r) => r.connectors ?? []);
+export const getConnector = (id: string) => get<{ connector: Connector }>(`/connectors/${enc(id)}`).then((r) => r.connector);
+export const createConnector = (connector: ConnectorInput) =>
+  post<{ connector: Connector }>("/connectors", { connector }).then((r) => r.connector);
+/** Only the fields present are changed (the server derives the mask). */
+export const updateConnector = (id: string, connector: Partial<ConnectorInput>) =>
+  patch<{ connector: Connector }>(`/connectors/${enc(id)}`, { connector }).then((r) => r.connector);
+export const deleteConnector = (id: string) => del(`/connectors/${enc(id)}`);
+/** Write-only: the value is sealed server-side and never comes back. */
+export const setConnectorSecret = (id: string, field: string, value: string) =>
+  put<{ connector: Connector }>(`/connectors/${enc(id)}/secrets/${enc(field)}`, { value }).then((r) => r.connector);
+/** Checks that need no user; reads only, so safe to retry. */
+export const testConnector = (id: string) =>
+  query<{ steps?: ConnectorTestStep[] }>(`/connectors/${enc(id)}/test`, {}).then((r) => r.steps ?? []);

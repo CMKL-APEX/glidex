@@ -1392,10 +1392,15 @@ impl VmManager {
                 glidex_ovs::names::MAX_NICS
             )));
         }
+        let tenant = self
+            .projects
+            .get(project)?
+            .map(|p| p.tenant_id)
+            .unwrap_or_else(|| crate::tenants::DEFAULT_TENANT.to_string());
         for att in networks {
             match self.networks.get(&att.network)? {
                 None => return Err(invalid(format!("network not found: {}", att.network))),
-                Some(n) if !n.usable_by(project) => {
+                Some(n) if !n.usable_by(project, &tenant) => {
                     return Err(invalid(format!(
                         "network '{}' is not available to this project",
                         att.network
@@ -3371,6 +3376,7 @@ impl VmManager {
         &self,
         req: CreateNetworkRequest,
         grants: Vec<String>,
+        tenant_grants: Vec<String>,
         all_projects: bool,
     ) -> Result<Network, VmManagerError> {
         for g in &grants {
@@ -3386,6 +3392,7 @@ impl VmManager {
         }
         let mut net = self.create_network(req).await?;
         net.grants = grants;
+        net.tenant_grants = tenant_grants;
         net.all_projects = all_projects;
         self.networks.put(&net)?;
         Ok(net)
@@ -3609,6 +3616,7 @@ impl VmManager {
         &self,
         name: &str,
         grants: Vec<String>,
+        tenant_grants: Vec<String>,
         all_projects: bool,
     ) -> Result<Network, VmManagerError> {
         let mut net = self.get_network(name)?;
@@ -3623,6 +3631,7 @@ impl VmManager {
             }
         }
         net.grants = grants;
+        net.tenant_grants = tenant_grants;
         net.all_projects = all_projects;
         self.networks.put(&net)?;
         Ok(net)

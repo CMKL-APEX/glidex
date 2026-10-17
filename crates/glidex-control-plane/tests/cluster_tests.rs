@@ -3916,3 +3916,85 @@ async fn gateway_nodes_need_the_physnet_and_the_kernel_datapath() {
     assert_eq!(s, StatusCode::CONFLICT, "{v}");
     assert_eq!(v["error"], "dpdk_not_running", "{v}");
 }
+
+/// Rotating the secrets key (spec/tenancy.md §13): every server takes the
+/// new key, the data keys are re-wrapped once, and every server still
+/// opens the secrets.
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn the_secrets_key_rotates_on_every_server() {
+    use glidex_control_plane::directory::{Connector, Kind, Source};
+    let _one = SERIAL.lock().await;
+    let cps = form_with(2, || with_secrets(new_cp())).await;
+    let leader = leader_index(&cps, &[0, 1]).await;
+    let other = 1 - leader;
+    let store = |i: usize| &cps[i].secrets.as_ref().unwrap().connectors;
+    let c = Connector {
+        id: "corp".into(),
+        directory_id: "local".into(),
+        kind: Kind::Oidc,
+        display_name: "Corp".into(),
+        enabled: true,
+        jit: false,
+        required_groups: vec![],
+        require_mfa: false,
+        group_teams: Default::default(),
+        default_tenant: None,
+        token_max_days: None,
+        settings: json!({"issuer": "https://idp.example", "client_id": "glidex"}),
+        source: Source::Api,
+        created_at: 0,
+        updated_at: 0,
+    };
+    // Replicated writes block: off the test's runtime thread.
+    let holder = cps[leader].secrets.clone().unwrap();
+    let c2 = c.clone();
+    tokio::task::spawn_blocking(move || {
+        holder.connectors.create(&c2).unwrap();
+        holder
+            .connectors
+            .set_secret(&c2, "client_secret", "s3cret-value")
+            .unwrap();
+    })
+    .await
+    .unwrap();
+    let before = store(leader).kek_id();
+    wait_for("the follower opens the secret", || {
+        let ok = store(other)
+            .secret(&c, "client_secret")
+            .ok()
+            .flatten()
+            .is_some_and(|v| v.as_str() == "s3cret-value");
+        async move { ok }
+    })
+    .await;
+
+    let (st, out) = call(
+        &cps[leader],
+        "POST",
+        "/cluster/rotate-secrets-key",
+        Some(json!({})),
+        &[],
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{out}");
+    assert_eq!(out["servers"], 2, "{out}");
+    assert_eq!(out["rewrapped"], 1, "{out}");
+    let after = store(leader).kek_id();
+    assert_ne!(before, after);
+    assert_eq!(
+        store(other).kek_id(),
+        after,
+        "the follower took the new key"
+    );
+    wait_for("the follower opens the re-wrapped secret", || {
+        let ok = store(other)
+            .secret(&c, "client_secret")
+            .ok()
+            .flatten()
+            .is_some_and(|v| v.as_str() == "s3cret-value");
+        async move { ok }
+    })
+    .await;
+    // A follower doesn't rotate itself.
+    assert!(cluster(&cps[other]).rotate_secrets_key().await.is_err());
+}

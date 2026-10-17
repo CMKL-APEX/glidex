@@ -60,6 +60,18 @@ const HOST_ACTION_RESOURCE = {
   initCluster: "Host",
   leaveCluster: "Host",
   configureOvn: "Cluster",
+  // Tenants, admissions and login connectors (spec/tenancy.md §14); the
+  // per-tenant actions are checked on each tenant by its page.
+  listTenants: "Directory",
+  createTenant: "Directory",
+  listAdmissions: "Cluster",
+  manageAdmissions: "Cluster",
+  listConnectors: "Directory",
+  createConnector: "Directory",
+  updateConnector: "Directory",
+  deleteConnector: "Directory",
+  setConnectorSecret: "Directory",
+  testConnector: "Directory",
 } as const satisfies Record<string, HostResourceType>;
 
 export type HostAction = keyof typeof HOST_ACTION_RESOURCE;

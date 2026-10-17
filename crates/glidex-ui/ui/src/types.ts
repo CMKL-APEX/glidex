@@ -667,6 +667,8 @@ export const QUOTA_LABELS: Record<keyof Quotas, string> = {
 export interface Project {
   id: string;
   name: string;
+  /** The tenant owning it (spec/tenancy.md D1); absent from older servers. */
+  tenant_id?: string;
   description: string;
   quotas: Quotas;
   created_at: number;
@@ -1125,4 +1127,123 @@ export interface ImportPlanView {
   created_by: string;
   created_at: number;
   expires_at: number;
+}
+
+// ---- tenants, admissions and login connectors (spec/tenancy.md §14) ----------
+// These are protobuf messages as JSON: snake_case names, enums by proto
+// name, timestamps RFC 3339, and an optional field that is false or unset
+// may be left out.
+
+/** A tenant or admission cap; an absent field is unlimited. */
+export type TenantQuotas = Partial<Record<keyof Quotas, number>>;
+
+export type AdmissionStatus = "ADMISSION_STATUS_UNSPECIFIED" | "ADMISSION_STATUS_ADMITTED" | "ADMISSION_STATUS_SUSPENDED";
+
+/** This cluster's admission of a tenant (D9, D19). */
+export interface Admission {
+  tenant_id: string;
+  directory_id: string;
+  cap?: TenantQuotas;
+  status?: AdmissionStatus;
+  by?: string;
+  at?: string;
+  /** The tenant's slug and name, for operators who can't read tenants. */
+  tenant_slug?: string;
+  tenant_display_name?: string;
+}
+
+export interface Tenant {
+  id: string;
+  directory_id: string;
+  slug: string;
+  display_name: string;
+  owns_directory?: boolean;
+  operator?: boolean;
+  suspended?: boolean;
+  created_at?: string;
+  /** This cluster's admission of the tenant, if any. */
+  admission?: Admission;
+  /** The tenant operating this cluster: never suspended or unadmitted here. */
+  operates_here?: boolean;
+}
+
+/** An explicit member of a tenant: a user or a team. */
+export interface TenantMember {
+  tenant_id: string;
+  principal: EntityRef;
+  by?: string;
+  at?: string;
+  principal_name?: string;
+}
+
+/** A role link on a tenant. */
+export interface TenantBinding {
+  id: string;
+  role: string;
+  principal: EntityRef;
+  principal_name?: string;
+  created_by?: string;
+  created_at?: string;
+}
+
+export const TENANT_ROLES = ["role.tenant-admin", "role.tenant-auditor"] as const;
+
+export interface PamSettings {
+  allowed_groups?: string[];
+}
+
+export interface OidcSettings {
+  issuer: string;
+  client_id: string;
+  scopes?: string[];
+  groups_claim?: string;
+  allowed_domains?: string[];
+  redirect_uri?: string;
+  mfa_acr_values?: string[];
+}
+
+/** Which of a connector's secrets are set; never their values. */
+export interface SecretStatus {
+  field: string;
+  set?: boolean;
+  updated_at?: string;
+}
+
+/** A login connector of the directory (spec/tenancy.md §5). Exactly one
+ * of `pam` and `oidc` is set; `kind` says which. */
+export interface Connector {
+  id: string;
+  directory_id?: string;
+  kind: "pam" | "oidc";
+  display_name: string;
+  enabled?: boolean;
+  jit?: boolean;
+  required_groups?: string[];
+  require_mfa?: boolean;
+  group_teams?: Record<string, string>;
+  default_tenant?: string | null;
+  token_max_days?: number | null;
+  pam?: PamSettings;
+  oidc?: OidcSettings;
+  secrets?: SecretStatus[];
+  /** `api`, or `file` for the read-only ones from control-plane.json. */
+  source?: "api" | "file";
+  created_at?: string;
+  updated_at?: string;
+}
+
+/** The settable part of a connector, as POST and PATCH take it. */
+export type ConnectorInput = Omit<Connector, "directory_id" | "kind" | "secrets" | "source" | "created_at" | "updated_at">;
+
+export interface ConnectorTestStep {
+  name: string;
+  ok?: boolean;
+  message: string;
+}
+
+/** An RFC 3339 timestamp, for display. */
+export function formatTimestamp(ts: string | undefined | null): string {
+  if (!ts) return "—";
+  const d = new Date(ts);
+  return Number.isNaN(d.getTime()) ? ts : d.toLocaleString();
 }

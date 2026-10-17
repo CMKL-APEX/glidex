@@ -129,23 +129,20 @@ fn settings_json(s: &Settings) -> (Kind, serde_json::Value) {
 }
 
 /// Whether new users of `c` join the directory's owner or an operator
-/// tenant (spec/tenancy.md D22).
-fn guarded(call: &Call, c: &Connector) -> ServiceResult<bool> {
+/// tenant (spec/tenancy.md D22). The default tenant may be named by id or
+/// slug; it is stored by id.
+fn guarded(call: &Call, c: &mut Connector) -> ServiceResult<bool> {
     let Some(t) = &c.default_tenant else {
         return Ok(false);
     };
-    let tenant = call
-        .auth()
-        .tenants
-        .get(t)
-        .map_err(|e| auth_error(crate::auth::tenant_err(e)))?
-        .ok_or_else(|| {
-            ServiceError::new(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "invalid_connector",
-                format!("no tenant {t}"),
-            )
-        })?;
+    let tenant = call.auth().tenants.resolve(t).map_err(|_| {
+        ServiceError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "invalid_connector",
+            format!("no tenant {t}"),
+        )
+    })?;
+    c.default_tenant = Some(tenant.id.clone());
     Ok(tenant.owns_directory || tenant.operator)
 }
 
@@ -229,7 +226,7 @@ pub fn create_connector(
         created_at: now,
         updated_at: now,
     };
-    let g = guarded(call, &c)?;
+    let g = guarded(call, &mut c)?;
     // D22: MFA on by default where new users join the owner or an operator.
     if g && p.require_mfa.is_none() && kind == Kind::Oidc {
         c.require_mfa = true;
@@ -307,7 +304,8 @@ pub fn update_connector(
         }
     }
     c.updated_at = crate::tenancy::now();
-    c.validate(guarded(call, &c)?).map_err(err_of)?;
+    let g = guarded(call, &mut c)?;
+    c.validate(g).map_err(err_of)?;
     call.detail("fields", serde_json::json!(paths));
     call.auth().connectors.update(&c).map_err(err_of)?;
     Ok(pb::UpdateConnectorResponse {

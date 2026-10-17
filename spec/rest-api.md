@@ -140,6 +140,24 @@ the first one when absent); a token is clamped to the connector's
 `token_max_days`. A refused login is `403 login_not_allowed`. The
 `/auth/oidc/*` routes remain for the first OIDC connector.
 
+The login operations are also `glidex.auth.v1.LoginService` RPCs
+(`Discover`, `StartDevice`, `PollDevice`, `PasswordToken`), one
+implementation with the REST routes above; the RPCs answer with proto
+messages (`PollDevice`: `{pending: true}` until done, then `{issued:
+{token, token_id, expires_at, user_id, display_name}}`).
+
+Host networks are granted to projects or to whole tenants: `POST
+/networks` and `PUT /networks/{name}/grants` take `tenants` (ids or
+slugs) next to `grants` and `all_projects`, and networks show
+`tenant_grants`. A PCI device's `pci.allow` entry takes `tenants` too.
+Project networks are shared only between projects of one tenant: an
+offer to another tenant's project answers `202` like one to a missing
+project, and records nothing.
+
+`POST /cluster/rotate-secrets-key` (`rotateSecretsKey`, step-up) rotates
+the key that wraps the directories' data keys and answers `{kek_id,
+servers, rewrapped}`; `409` when the key is the `secrets-kek` credential.
+
 `POST /projects` takes `tenant` (id or slug, default `default`) and needs
 `createProject` on that tenant. Creating a VM, disk, project network or
 router, and starting a VM, also need the project's tenant admitted here:

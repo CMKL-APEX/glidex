@@ -36,10 +36,13 @@ fn unb64(s: &str) -> Result<Vec<u8>, SecretError> {
         .map_err(|_| SecretError::Decrypt)
 }
 
-/// The host's key-encryption key.
+/// The host's key-encryption key, and the one before it while a rotation
+/// re-wraps the data keys (each wrapped key names its KEK by id).
 pub struct Kek {
     bytes: Zeroizing<Vec<u8>>,
-    /// Where it lives, if anywhere (a one-off key has none).
+    previous: Option<Zeroizing<Vec<u8>>>,
+    /// Where it lives, if anywhere (a one-off key has none); the previous
+    /// key sits beside it as `<path>.prev`.
     path: Option<PathBuf>,
     /// It came from a systemd credential: read-only, provisioned by the
     /// operator on every server.
@@ -66,6 +69,7 @@ impl Kek {
                 tracing::info!(path = %p.display(), "created the secrets key");
                 Ok(Kek {
                     bytes,
+                    previous: None,
                     path: Some(p.to_path_buf()),
                     credential: false,
                 })
@@ -76,6 +80,7 @@ impl Kek {
                 );
                 Ok(Kek {
                     bytes: Zeroizing::new(crate::auth::random_bytes(KEK_LEN)),
+                    previous: None,
                     path: None,
                     credential: false,
                 })
@@ -84,43 +89,86 @@ impl Kek {
     }
 
     fn read(p: &Path) -> Result<Kek, SecretError> {
-        let bytes = Zeroizing::new(
-            std::fs::read(p).map_err(|e| SecretError::Key(format!("{}: {e}", p.display())))?,
-        );
-        if bytes.len() != KEK_LEN {
-            return Err(SecretError::Key(format!(
-                "{} must hold {KEK_LEN} bytes",
-                p.display()
-            )));
-        }
+        let read = |p: &Path| -> Result<Zeroizing<Vec<u8>>, SecretError> {
+            let b = Zeroizing::new(
+                std::fs::read(p).map_err(|e| SecretError::Key(format!("{}: {e}", p.display())))?,
+            );
+            if b.len() != KEK_LEN {
+                return Err(SecretError::Key(format!(
+                    "{} must hold {KEK_LEN} bytes",
+                    p.display()
+                )));
+            }
+            Ok(b)
+        };
+        let prev = prev_path(p);
+        let previous = if prev.exists() {
+            Some(read(&prev)?)
+        } else {
+            None
+        };
         Ok(Kek {
-            bytes,
+            bytes: read(p)?,
+            previous,
             path: Some(p.to_path_buf()),
             credential: false,
         })
     }
 
-    /// Replace the key with `bytes` (a new server receiving the cluster's
-    /// key), writing it to its file when there is one. A key from a
-    /// credential can't be replaced: it must already be the cluster's.
-    pub fn install(&mut self, bytes: &[u8]) -> Result<(), SecretError> {
-        if bytes.len() != KEK_LEN {
+    /// Take `bytes` as the key, and `previous` as the one before it (a
+    /// new server receiving the cluster's keys, or a rotation), writing
+    /// them to their files when there are any. A key from a credential
+    /// can't be replaced: it must already be the cluster's.
+    pub fn install(&mut self, bytes: &[u8], previous: Option<&[u8]>) -> Result<(), SecretError> {
+        if bytes.len() != KEK_LEN || previous.is_some_and(|p| p.len() != KEK_LEN) {
             return Err(SecretError::Key(format!(
                 "a secrets key is {KEK_LEN} bytes"
             )));
         }
         if self.credential {
             if *self.bytes != bytes {
-                return Err(SecretError::Key("this server's secrets-kek credential is not the cluster's: give every server the same one".into()));
+                return Err(SecretError::Key(
+                    "this server's secrets-kek credential is not the cluster's: give every server the same one".into(),
+                ));
             }
             return Ok(());
         }
         if let Some(p) = &self.path {
+            let prev = prev_path(p);
+            match previous {
+                Some(b) => crate::cluster::pki::write_private(&prev, b)
+                    .map_err(|e| SecretError::Key(e.to_string()))?,
+                None => {
+                    let _ = std::fs::remove_file(&prev);
+                }
+            }
             crate::cluster::pki::write_private(p, bytes)
                 .map_err(|e| SecretError::Key(e.to_string()))?;
         }
         self.bytes = Zeroizing::new(bytes.to_vec());
+        self.previous = previous.map(|b| Zeroizing::new(b.to_vec()));
         Ok(())
+    }
+
+    /// Whether the key comes from a systemd credential (read-only: it is
+    /// rotated by changing the credential on every server).
+    pub fn is_credential(&self) -> bool {
+        self.credential
+    }
+
+    pub fn previous(&self) -> Option<&[u8]> {
+        self.previous.as_deref().map(|v| v.as_slice())
+    }
+
+    /// The key named `id`: the current one or the previous one.
+    fn by_id(&self, id: &str) -> Option<&[u8]> {
+        if id == self.id() {
+            return Some(&self.bytes);
+        }
+        self.previous
+            .as_deref()
+            .filter(|p| key_id(p) == id)
+            .map(|v| v.as_slice())
     }
 
     pub fn bytes(&self) -> &[u8] {
@@ -129,9 +177,19 @@ impl Kek {
 
     /// Short public id: which KEK wrapped a data key.
     pub fn id(&self) -> String {
-        let d = sha2::Sha256::digest(&*self.bytes);
-        d[..6].iter().map(|b| format!("{b:02x}")).collect()
+        key_id(&self.bytes)
     }
+}
+
+fn key_id(bytes: &[u8]) -> String {
+    let d = sha2::Sha256::digest(bytes);
+    d[..6].iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn prev_path(p: &Path) -> PathBuf {
+    let mut s = p.as_os_str().to_owned();
+    s.push(".prev");
+    PathBuf::from(s)
 }
 
 /// A data key as stored: wrapped by the KEK.
@@ -205,22 +263,20 @@ pub fn new_data_key(kek: &Kek, directory: &str) -> WrappedKey {
     }
 }
 
+/// Opens with whichever of `kek`'s keys wrapped `w`.
 pub fn unwrap_data_key(kek: &Kek, w: &WrappedKey) -> Result<Zeroizing<Vec<u8>>, SecretError> {
-    open_with(
-        kek.bytes(),
-        &wrap_aad(&w.directory_id),
-        &w.nonce,
-        &w.wrapped,
-    )
+    let k = kek.by_id(&w.kek_id).ok_or(SecretError::Decrypt)?;
+    open_with(k, &wrap_aad(&w.directory_id), &w.nonce, &w.wrapped)
 }
 
-/// The same data key wrapped by another KEK (rotation).
-pub fn rewrap(old: &Kek, new: &Kek, w: &WrappedKey) -> Result<WrappedKey, SecretError> {
-    let dk = unwrap_data_key(old, w)?;
-    let (nonce, wrapped) = seal_with(new.bytes(), &wrap_aad(&w.directory_id), &dk);
+/// The same data key wrapped by `kek`'s current key (rotation), opened
+/// with whichever of its keys wrapped it.
+pub fn rewrap(kek: &Kek, w: &WrappedKey) -> Result<WrappedKey, SecretError> {
+    let dk = unwrap_data_key(kek, w)?;
+    let (nonce, wrapped) = seal_with(kek.bytes(), &wrap_aad(&w.directory_id), &dk);
     Ok(WrappedKey {
         directory_id: w.directory_id.clone(),
-        kek_id: new.id(),
+        kek_id: kek.id(),
         nonce,
         wrapped,
     })
@@ -284,11 +340,19 @@ mod tests {
         // Bound to where it belongs: another connector or field can't use it.
         assert!(open(&dk, "local", "c2", "client_secret", &s).is_err());
         assert!(open(&dk, "local", "c1", "other", &s).is_err());
-        // Another KEK can't unwrap the data key; a rewrap can.
-        let other = Kek::load(None).unwrap();
+        // Another KEK can't unwrap the data key; after a rotation the
+        // previous key still can, and a rewrap moves it to the new one.
+        let mut other = Kek::load(None).unwrap();
         assert!(unwrap_data_key(&other, &w).is_err());
-        let w2 = rewrap(&kek, &other, &w).unwrap();
+        let old = kek.bytes().to_vec();
+        let new = other.bytes().to_vec();
+        other.install(&new, Some(&old)).unwrap();
+        assert_eq!(*unwrap_data_key(&other, &w).unwrap(), *dk);
+        let w2 = rewrap(&other, &w).unwrap();
+        assert_eq!(w2.kek_id, other.id());
+        other.install(&new, None).unwrap();
         assert_eq!(*unwrap_data_key(&other, &w2).unwrap(), *dk);
+        assert!(unwrap_data_key(&other, &w).is_err(), "the old key is gone");
     }
 
     #[test]
@@ -303,5 +367,19 @@ mod tests {
         );
         let b = Kek::load(Some(&p)).unwrap();
         assert_eq!(a.id(), b.id());
+        // A rotation keeps the previous key beside it until the next one.
+        let mut c = Kek::load(Some(&p)).unwrap();
+        let new = crate::auth::random_bytes(KEK_LEN);
+        c.install(&new, Some(a.bytes())).unwrap();
+        let d = Kek::load(Some(&p)).unwrap();
+        assert_eq!((d.bytes(), d.previous()), (&new[..], Some(a.bytes())));
+        assert_eq!(
+            std::fs::metadata(dir.path().join("secrets.kek.prev"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
     }
 }

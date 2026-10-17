@@ -7,6 +7,7 @@ namespace Glidex {
     method: String,        // "peer" | "pam" | "oidc" | "token" | "disabled"
     transport: String,     // "unix" | "tcp"
     age_secs: Long,        // seconds since this principal last authenticated
+    mfa: Bool,             // a multi-factor login (a session from an MFA'd connector)
     source_ip?: ipaddr,    // TCP clients (from X-Forwarded-For only via glidex-ui)
   };
   // Every request is decided for one cluster (or directory) by one control
@@ -41,10 +42,13 @@ namespace Glidex {
   entity Image in [Cluster];
   // Host networks: parent Cluster, no `project`. Project networks: parent Project.
   // shares: projects that accepted a share of a project network.
+  // tenant_grants: tenants whose every project may use a host network or
+  // a device (spec/tenancy.md D25).
   entity Network in [Cluster, Project] {
     project?: Project, all_projects: Bool, grants: Set<Project>, shares: Set<Project>,
+    tenant_grants: Set<Tenant>,
   };
-  entity PciDevice in [Host] { grants: Set<Project> };
+  entity PciDevice in [Host] { grants: Set<Project>, tenant_grants: Set<Tenant> };
 
   // Marker groups (spec/tenancy.md §10): every concrete action is in
   // exactly one of these; base.cedar bounds who can ever pass each.
@@ -245,7 +249,7 @@ namespace Glidex {
   action createJoinToken, promoteNode, snapshotCluster in ["host.cluster.critical", "host-scoped"]
     appliesTo { principal: [User, Token], resource: [Cluster], context: Ctx };
   // Membership (spec/clustering.md §5.5-5.7).
-  action removeNode, forgetNode, purgeNode, createRejoinToken, rotateCa, detachNode, approveImport, rejectImport, dissolveCluster in ["host.cluster.critical", "host-scoped"]
+  action removeNode, forgetNode, purgeNode, createRejoinToken, rotateCa, rotateSecretsKey, detachNode, approveImport, rejectImport, dissolveCluster in ["host.cluster.critical", "host-scoped"]
     appliesTo { principal: [User, Token], resource: [Cluster], context: Ctx };
   // OVN as a cluster setting (spec/clustering-ui.md §8a).
   action configureOvn in ["host.cluster.critical", "host-scoped"]

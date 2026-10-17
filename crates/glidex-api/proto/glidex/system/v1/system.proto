@@ -60,6 +60,9 @@ message WhoAmIResponse {
   repeated string host_roles = 7 [json_name = "host_roles"];
   repeated ProjectRole project_roles = 8 [json_name = "project_roles"];
   optional string default_project = 9 [json_name = "default_project"];
+  // A multi-factor login (spec/tenancy.md §6).
+  optional bool mfa = 10;
+  string directory_id = 11 [json_name = "directory_id"];
 }
 
 message ProjectRole {
