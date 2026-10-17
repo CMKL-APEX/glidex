@@ -1,0 +1,507 @@
+// Networks, their grants and shares, and VPC routers (spec/networking.md
+// §11, spec/security.md §6.2, spec/clustering.md §11.2a). Networks are
+// keyed by id; where a request names one, a name works too: of a host
+// network, or of a project network the caller can see, unique in its
+// tenant (spec/tenancy.md D24). The REST twins answer with these messages
+// as JSON (spec/grpc.md §9.1).
+syntax = "proto3";
+
+package glidex.network.v1;
+
+import "glidex/api/v1/options.proto";
+import "glidex/common/v1/common.proto";
+import "google/protobuf/timestamp.proto";
+
+// ---- networks ---------------------------------------------------------------
+
+service NetworkService {
+  // Host networks, and project networks of (or shared with) projects the
+  // caller can see.
+  rpc ListNetworks(ListNetworksRequest) returns (ListNetworksResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readNetwork"
+      kind: KIND_READ
+      rest: "GET /networks"
+    };
+  }
+  // A host network: usable by the projects it grants (default: the
+  // caller's default project), the tenants it grants, or every project.
+  rpc CreateNetwork(CreateNetworkRequest) returns (CreateNetworkResponse) {
+    option (glidex.api.v1.op) = {
+      action: "createNetwork"
+      kind: KIND_WRITE
+      rest: "POST /networks"
+    };
+  }
+  rpc GetNetwork(GetNetworkRequest) returns (GetNetworkResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readNetwork"
+      kind: KIND_READ
+      rest: "GET /networks/{id}"
+    };
+  }
+  // Refused while a VM uses it; the network controller finishes it.
+  rpc DeleteNetwork(DeleteNetworkRequest) returns (DeleteNetworkResponse) {
+    option (glidex.api.v1.op) = {
+      action: "deleteNetwork"
+      kind: KIND_WRITE
+      rest: "DELETE /networks/{id}"
+    };
+  }
+  rpc ListNetworkEvents(ListNetworkEventsRequest) returns (ListNetworkEventsResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readNetwork"
+      kind: KIND_READ
+      rest: "GET /networks/{id}/events"
+    };
+  }
+  // A cluster network as OVN has it (spec/clustering-ui.md §8).
+  rpc GetNetworkOvn(GetNetworkOvnRequest) returns (GetNetworkOvnResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readNetwork"
+      kind: KIND_READ
+      rest: "GET /networks/{id}/ovn"
+    };
+  }
+  // Which projects and tenants may use a host network: replaces its grants
+  // (all empty: none, unless `all_projects`).
+  rpc GrantNetwork(GrantNetworkRequest) returns (GrantNetworkResponse) {
+    option (glidex.api.v1.op) = {
+      action: "grantNetwork"
+      kind: KIND_WRITE
+      rest: "PUT /networks/{id}/grants"
+    };
+  }
+  // A network private to a project: NAT or isolated, counted against its
+  // `networks` quota.
+  rpc CreateProjectNetwork(CreateProjectNetworkRequest) returns (CreateProjectNetworkResponse) {
+    option (glidex.api.v1.op) = {
+      action: "createProjectNetwork"
+      kind: KIND_WRITE
+      rest: "POST /projects/{id}/networks"
+    };
+  }
+  // Put a project's NAT or isolated cluster network on one of its routers,
+  // or (no `router`) back on the shared edge.
+  rpc SetNetworkRouter(SetNetworkRouterRequest) returns (SetNetworkRouterResponse) {
+    option (glidex.api.v1.op) = {
+      action: "createRouter"
+      kind: KIND_WRITE
+      rest: "PUT /projects/{id}/networks/{network}/router"
+    };
+  }
+}
+
+enum NetworkMode {
+  NETWORK_MODE_UNSPECIFIED = 0;
+  // A bridge, gateway, DHCP and masquerade.
+  NETWORK_MODE_NAT = 1;
+  // A bridge with an uplink onto a LAN (on OVN: a provider network).
+  NETWORK_MODE_BRIDGED = 2;
+  // VM to VM only.
+  NETWORK_MODE_ISOLATED = 3;
+}
+
+enum NetworkScope {
+  NETWORK_SCOPE_UNSPECIFIED = 0;
+  // An OVS bridge on one node.
+  NETWORK_SCOPE_NODE = 1;
+  // Across the cluster, on OVN.
+  NETWORK_SCOPE_CLUSTER = 2;
+}
+
+enum PortType {
+  PORT_TYPE_UNSPECIFIED = 0;
+  PORT_TYPE_TAP = 1;
+  PORT_TYPE_VHOST_USER = 2;
+}
+
+// What the network controller last saw in netd.
+enum NetworkPhase {
+  NETWORK_PHASE_UNSPECIFIED = 0;
+  NETWORK_PHASE_PENDING = 1;
+  NETWORK_PHASE_READY = 2;
+  // netd lacks part of it (bridge, NAT); see its `Ready` condition.
+  NETWORK_PHASE_DEGRADED = 3;
+  NETWORK_PHASE_NETD_UNAVAILABLE = 4;
+}
+
+message Network {
+  // UUID.
+  string id = 1;
+  string name = 2;
+  NetworkScope scope = 3;
+  // The node of a node network.
+  optional string node = 4;
+  // A provider network's physical network.
+  optional string physnet = 5;
+  // The id of the VPC router it is on; absent: the shared edge.
+  optional string router = 6;
+  string bridge = 7;
+  NetworkMode mode = 8;
+  PortType port_type = 9 [json_name = "port_type"];
+  optional uint32 vlan = 10;
+  optional uint32 mtu = 11;
+  // NAT networks: DNS as well as DHCP.
+  optional bool dns = 12;
+  // The network made its bridge (and NAT) and removes them.
+  optional bool owns_bridge = 13 [json_name = "owns_bridge"];
+  google.protobuf.Timestamp created_at = 14 [json_name = "created_at"];
+  // A project network's project; absent for a host network.
+  optional string project = 15;
+  // A host network every project may use.
+  optional bool all_projects = 16 [json_name = "all_projects"];
+  // Projects that may use a host network.
+  repeated string grants = 17;
+  // Tenants whose every project may use a host network.
+  repeated string tenant_grants = 18 [json_name = "tenant_grants"];
+  // Projects that accepted a share of a project network.
+  repeated string shares = 19;
+  // Open share offers (shown to whoever may manage the shares).
+  repeated ShareOffer share_offers = 20 [json_name = "share_offers"];
+  NetworkPhase phase = 21;
+  repeated glidex.common.v1.Condition conditions = 22;
+  google.protobuf.Timestamp deletion_requested_at = 23 [json_name = "deletion_requested_at"];
+}
+
+message ShareOffer {
+  string project = 1;
+  string offered_by = 2 [json_name = "offered_by"];
+  google.protobuf.Timestamp offered_at = 3 [json_name = "offered_at"];
+  google.protobuf.Timestamp expires_at = 4 [json_name = "expires_at"];
+}
+
+message ListNetworksRequest {}
+message ListNetworksResponse {
+  repeated Network networks = 1;
+}
+
+message CreateNetworkRequest {
+  string name = 1;
+  NetworkMode mode = 2;
+  PortType port_type = 3 [json_name = "port_type"];
+  optional string bridge = 4;
+  optional string subnet = 5;
+  optional uint32 vlan = 6;
+  optional uint32 mtu = 7;
+  optional bool dns = 8;
+  NetworkScope scope = 9;
+  optional string physnet = 10;
+  optional string router = 11;
+  // Projects (ids or names) that may use it. With no grants, tenants or
+  // `all_projects`: the caller's default project.
+  repeated string grants = 12;
+  // Tenants (ids or slugs) whose every project may use it.
+  repeated string tenants = 13;
+  bool all_projects = 14 [json_name = "all_projects"];
+}
+message CreateNetworkResponse {
+  Network network = 1;
+}
+
+message GetNetworkRequest {
+  // Id or name.
+  string id = 1;
+}
+message GetNetworkResponse {
+  Network network = 1;
+}
+
+message DeleteNetworkRequest {
+  string id = 1;
+  // Wait this long (at most 300) for it to be gone.
+  optional uint32 wait_secs = 2 [json_name = "wait_secs"];
+}
+message DeleteNetworkResponse {
+  // Still there while the network controller finishes; absent once gone.
+  Network network = 1;
+}
+
+message ListNetworkEventsRequest {
+  string id = 1;
+}
+message ListNetworkEventsResponse {
+  repeated glidex.common.v1.Event events = 1;
+}
+
+// An OVN chassis, with the glidex node it is.
+message Chassis {
+  // `node:<id>`.
+  string chassis = 1;
+  optional string node = 2;
+  optional string node_name = 3 [json_name = "node_name"];
+  // Gateway candidates: the HA priority.
+  optional int64 priority = 4;
+}
+
+message OvnPort {
+  string name = 1;
+  // `router`, `localnet`, or empty for a VM port.
+  string kind = 2;
+  repeated string addresses = 3;
+  optional bool up = 4;
+  Chassis bound = 5;
+  // The VM whose NIC it is.
+  VmRef vm = 6;
+}
+
+message VmRef {
+  string id = 1;
+  string name = 2;
+}
+
+message OvnRouter {
+  // `gx-edge` or `gxr-<router id>`.
+  string name = 1;
+  repeated string nat = 2;
+  Chassis active_gateway = 3 [json_name = "active_gateway"];
+  repeated Chassis gateway_candidates = 4 [json_name = "gateway_candidates"];
+}
+
+message GetNetworkOvnRequest {
+  string id = 1;
+}
+message GetNetworkOvnResponse {
+  // The logical switch: `gx-<id>` (or `gx-<name>` for a network from
+  // before ids).
+  string switch = 1;
+  repeated OvnPort ports = 2;
+  OvnRouter router = 3;
+}
+
+message GrantNetworkRequest {
+  string id = 1;
+  // Projects (ids or names).
+  repeated string grants = 2;
+  // Tenants (ids or slugs).
+  repeated string tenants = 3;
+  bool all_projects = 4 [json_name = "all_projects"];
+}
+message GrantNetworkResponse {
+  Network network = 1;
+}
+
+message CreateProjectNetworkRequest {
+  // The project (id or name).
+  string project = 1;
+  string name = 2;
+  NetworkMode mode = 3;
+  PortType port_type = 4 [json_name = "port_type"];
+  optional string subnet = 5;
+  optional uint32 vlan = 6;
+  optional uint32 mtu = 7;
+  optional bool dns = 8;
+  NetworkScope scope = 9;
+  // One of the project's VPC routers (id or name).
+  optional string router = 10;
+}
+message CreateProjectNetworkResponse {
+  Network network = 1;
+}
+
+message SetNetworkRouterRequest {
+  string project = 1;
+  // The network (id or name).
+  string network = 2;
+  // A router of the project (id or name); absent: the shared edge.
+  optional string router = 3;
+}
+message SetNetworkRouterResponse {
+  Network network = 1;
+}
+
+// ---- sharing project networks (spec/security.md §6.2.1) ---------------------
+
+service NetworkShareService {
+  // Offer a project network to another project of its tenant. The answer
+  // is the same whether or not the target exists.
+  rpc OfferNetworkShare(OfferNetworkShareRequest) returns (OfferNetworkShareResponse) {
+    option (glidex.api.v1.op) = {
+      action: "offerNetworkShare"
+      kind: KIND_WRITE
+      rest: "POST /networks/{id}/shares"
+    };
+  }
+  // End a share or withdraw an offer (the owner); refused while VMs of
+  // that project use the network.
+  rpc UnshareNetwork(UnshareNetworkRequest) returns (UnshareNetworkResponse) {
+    option (glidex.api.v1.op) = {
+      action: "unshareNetwork"
+      kind: KIND_WRITE
+      rest: "DELETE /networks/{id}/shares/{project}"
+    };
+  }
+  // The networks offered to, or shared with, a project.
+  rpc ListNetworkShares(ListNetworkSharesRequest) returns (ListNetworkSharesResponse) {
+    option (glidex.api.v1.op) = {
+      action: "listNetworkShares"
+      kind: KIND_READ
+      rest: "GET /projects/{id}/network-shares"
+    };
+  }
+  rpc AcceptNetworkShare(AcceptNetworkShareRequest) returns (AcceptNetworkShareResponse) {
+    option (glidex.api.v1.op) = {
+      action: "acceptNetworkShare"
+      kind: KIND_WRITE
+      rest: "POST /projects/{id}/network-shares/{network}/accept"
+    };
+  }
+  // Leave a share or turn an offer down (the target).
+  rpc LeaveNetworkShare(LeaveNetworkShareRequest) returns (LeaveNetworkShareResponse) {
+    option (glidex.api.v1.op) = {
+      action: "leaveNetworkShare"
+      kind: KIND_WRITE
+      rest: "DELETE /projects/{id}/network-shares/{network}"
+    };
+  }
+}
+
+enum ShareStatus {
+  SHARE_STATUS_UNSPECIFIED = 0;
+  SHARE_STATUS_OFFERED = 1;
+  SHARE_STATUS_ACCEPTED = 2;
+}
+
+message NetworkShare {
+  // The network's id.
+  string network = 1;
+  string network_name = 2 [json_name = "network_name"];
+  optional string owner_project = 3 [json_name = "owner_project"];
+  ShareStatus status = 4;
+  // An offer's.
+  google.protobuf.Timestamp expires_at = 5 [json_name = "expires_at"];
+}
+
+message OfferNetworkShareRequest {
+  // The network (id or name).
+  string id = 1;
+  // The target project's id.
+  string project = 2;
+}
+message OfferNetworkShareResponse {}
+
+message UnshareNetworkRequest {
+  string id = 1;
+  string project = 2;
+}
+message UnshareNetworkResponse {}
+
+message ListNetworkSharesRequest {
+  string project = 1;
+}
+message ListNetworkSharesResponse {
+  repeated NetworkShare shares = 1;
+}
+
+message AcceptNetworkShareRequest {
+  string project = 1;
+  // The network (id or name).
+  string network = 2;
+}
+message AcceptNetworkShareResponse {
+  Network network = 1;
+}
+
+message LeaveNetworkShareRequest {
+  string project = 1;
+  string network = 2;
+}
+message LeaveNetworkShareResponse {}
+
+// ---- VPC routers (spec/clustering.md §11.2a) --------------------------------
+
+service RouterService {
+  rpc ListRouters(ListRoutersRequest) returns (ListRoutersResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readRouter"
+      kind: KIND_READ
+      rest: "GET /projects/{id}/routers"
+    };
+  }
+  rpc GetRouter(GetRouterRequest) returns (GetRouterResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readRouter"
+      kind: KIND_READ
+      rest: "GET /projects/{id}/routers/{router}"
+    };
+  }
+  // Takes the next free external address (or the one asked for, a site
+  // resource) and a conntrack zone; counted against the `routers` and
+  // `external_ips` quotas.
+  rpc CreateRouter(CreateRouterRequest) returns (CreateRouterResponse) {
+    option (glidex.api.v1.op) = {
+      action: "createRouter"
+      kind: KIND_WRITE
+      rest: "POST /projects/{id}/routers"
+    };
+  }
+  // Refused while networks are attached.
+  rpc DeleteRouter(DeleteRouterRequest) returns (DeleteRouterResponse) {
+    option (glidex.api.v1.op) = {
+      action: "deleteRouter"
+      kind: KIND_WRITE
+      rest: "DELETE /projects/{id}/routers/{router}"
+    };
+  }
+}
+
+message RouterSpec {
+  // `[a-z0-9-]`, at most 32, unique in the project.
+  string name = 1;
+  // Has a gateway: SNAT to the outside.
+  optional bool external = 2;
+  // Asked for explicitly; else the next free pool address.
+  optional string external_ip = 3 [json_name = "external_ip"];
+  // Chassis nodes (ids or names); default: the edge's.
+  repeated string gateway_nodes = 4 [json_name = "gateway_nodes"];
+}
+
+message RouterStatus {
+  // The address reserved.
+  optional string external_ip = 1 [json_name = "external_ip"];
+  // The conntrack zone of its SNAT.
+  optional uint32 snat_ct_zone = 2 [json_name = "snat_ct_zone"];
+}
+
+message Router {
+  // Short id; the OVN router is `gxr-<id>`.
+  string id = 1;
+  string project = 2;
+  RouterSpec spec = 3;
+  RouterStatus status = 4;
+  google.protobuf.Timestamp created_at = 5 [json_name = "created_at"];
+}
+
+message ListRoutersRequest {
+  string project = 1;
+}
+message ListRoutersResponse {
+  repeated Router routers = 1;
+}
+
+message GetRouterRequest {
+  string project = 1;
+  // Id or name.
+  string router = 2;
+}
+message GetRouterResponse {
+  Router router = 1;
+}
+
+message CreateRouterRequest {
+  string project = 1;
+  string name = 2;
+  // Default true.
+  optional bool external = 3;
+  optional string external_ip = 4 [json_name = "external_ip"];
+  repeated string gateway_nodes = 5 [json_name = "gateway_nodes"];
+}
+message CreateRouterResponse {
+  Router router = 1;
+}
+
+message DeleteRouterRequest {
+  string project = 1;
+  string router = 2;
+}
+message DeleteRouterResponse {}

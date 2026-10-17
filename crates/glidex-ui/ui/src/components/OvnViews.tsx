@@ -6,7 +6,7 @@ import { Badge, Card, errorMessage } from "./ui";
 import Modal from "./Modal";
 
 /** A chassis as its node's name, linked. */
-function Chassis({ c }: { c: ChassisRef | null }) {
+function Chassis({ c }: { c: Pick<ChassisRef, "chassis"> & { node?: string | null; node_name?: string | null } | null | undefined }) {
   if (!c) return <span className="text-gray-400">none</span>;
   if (!c.node) return <span className="font-mono text-xs">{c.chassis}</span>;
   return (
@@ -158,15 +158,15 @@ export function NodeOvnCard({ node }: { node: string }) {
 }
 
 /** A cluster network as OVN has it: its ports, where each is bound, and its router. */
-export function NetworkOvnDialog({ name, onClose }: { name: string; onClose: () => void }) {
+export function NetworkOvnDialog({ id, name, onClose }: { id: string; name: string; onClose: () => void }) {
   const [v, setV] = useState<NetworkOvn | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     api
-      .networkOvn(name)
+      .networkOvn(id)
       .then(setV)
       .catch((e) => setError(errorMessage(e)));
-  }, [name]);
+  }, [id]);
   return (
     <Modal title={`${name} on OVN`} onClose={onClose}>
       {error && <p className="text-sm text-red-600">{error}</p>}
@@ -186,14 +186,14 @@ export function NetworkOvnDialog({ name, onClose }: { name: string; onClose: () 
               </tr>
             </thead>
             <tbody>
-              {v.ports.map((p) => (
+              {(v.ports ?? []).map((p) => (
                 <tr key={p.name} className="border-t border-gray-100">
                   <td className="py-1 font-mono text-xs">
                     {p.name}
                     {p.kind && <span className="text-gray-400"> ({p.kind})</span>}
                   </td>
                   <td>{p.vm ? <Link to={`/vms/${p.vm.id}`} className="text-sky-700 hover:underline">{p.vm.name}</Link> : "—"}</td>
-                  <td className="font-mono text-xs">{p.addresses.join(" ")}</td>
+                  <td className="font-mono text-xs">{(p.addresses ?? []).join(" ")}</td>
                   <td>
                     {p.bound ? <Chassis c={p.bound} /> : p.kind ? "—" : <span className="text-amber-700">not bound</span>}
                     {p.up === false && <span className="text-amber-700"> (down)</span>}
@@ -207,9 +207,9 @@ export function NetworkOvnDialog({ name, onClose }: { name: string; onClose: () 
               <p>
                 Router <span className="font-mono">{v.router.name}</span>, gateway active on <Chassis c={v.router.active_gateway} />
               </p>
-              {v.router.nat.length > 0 && (
+              {(v.router.nat ?? []).length > 0 && (
                 <ul className="mt-1 font-mono text-xs text-gray-600">
-                  {v.router.nat.map((n) => (
+                  {(v.router.nat ?? []).map((n) => (
                     <li key={n}>{n}</li>
                   ))}
                 </ul>

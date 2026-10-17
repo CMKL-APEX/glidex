@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import * as api from "../api";
 import type { Binding, Network, NetworkShare, ProjectView, QuotaKey, Quotas, Router } from "../types";
-import { PROJECT_ROLES, QUOTA_KEYS, QUOTA_LABELS, formatTime, formatTimestamp, notReady } from "../types";
+import { PROJECT_ROLES, QUOTA_KEYS, QUOTA_LABELS, formatTimestamp, isClusterNetwork, networkModeLabel, notReady } from "../types";
 import { useLiveRefresh } from "../live";
 import { Loading } from "../components/Loading";
 import AddBindingForm from "../components/AddBindingForm";
@@ -126,10 +126,10 @@ function NetworkRow({
         <div>
           <span className="font-medium text-gray-900">{net.name}</span>{" "}
           <span className="text-xs text-gray-500">
-            {net.mode} on {net.scope === "cluster" ? "OVN" : net.bridge}
-            {net.scope === "cluster" && net.mode === "nat" &&
+            {networkModeLabel(net.mode)} on {isClusterNetwork(net) ? "OVN" : net.bridge}
+            {isClusterNetwork(net) && net.mode === "NETWORK_MODE_NAT" &&
               (net.router ? ` · leaves via router ${routers.find((r) => r.id === net.router)?.spec.name ?? net.router}` : " · leaves via the shared edge")}
-            {net.scope === "cluster" && net.mode === "isolated" && net.router && ` · routed via router ${routers.find((r) => r.id === net.router)?.spec.name ?? net.router}`}
+            {isClusterNetwork(net) && net.mode === "NETWORK_MODE_ISOLATED" && net.router && ` · routed via router ${routers.find((r) => r.id === net.router)?.spec.name ?? net.router}`}
           </span>
           {net.deletion_requested_at && (
             <span className="ml-2 text-xs text-gray-500" title={notReady(net.conditions)?.message}>
@@ -140,7 +140,7 @@ function NetworkRow({
         {manage && !net.deletion_requested_at && (
           <button
             className={dangerLink}
-            onClick={() => confirm(`Delete network ${net.name}?`) && run(() => api.deleteNetwork(net.name))}
+            onClick={() => confirm(`Delete network ${net.name}?`) && run(() => api.deleteNetwork(net.id))}
           >
             Delete
           </button>
@@ -153,7 +153,7 @@ function NetworkRow({
               <Badge kind="ok">shared</Badge>
               <span title={p}>{projectName(p)}</span>
               {share && (
-                <button className={dangerLink} onClick={() => run(() => api.unshareNetwork(net.name, p))}>
+                <button className={dangerLink} onClick={() => run(() => api.unshareNetwork(net.id, p))}>
                   Unshare
                 </button>
               )}
@@ -165,9 +165,9 @@ function NetworkRow({
               <span className="font-mono text-xs" title={o.project}>
                 {projectName(o.project)}
               </span>
-              <span className="text-xs text-gray-500">until {formatTime(o.expires_at)}</span>
+              <span className="text-xs text-gray-500">until {formatTimestamp(o.expires_at)}</span>
               {share && (
-                <button className={dangerLink} onClick={() => run(() => api.unshareNetwork(net.name, o.project))}>
+                <button className={dangerLink} onClick={() => run(() => api.unshareNetwork(net.id, o.project))}>
                   Withdraw
                 </button>
               )}
@@ -183,7 +183,7 @@ function NetworkRow({
             const to = target.trim();
             if (!to) return;
             run(async () => {
-              await api.offerNetworkShare(net.name, to);
+              await api.offerNetworkShare(net.id, to);
               setTarget("");
               setNote(`Offered to ${to}. The other project's owner must accept it.`);
             });
@@ -403,7 +403,7 @@ export default function ProjectDetail() {
         ) : (
           networks.map((n) => (
             <NetworkRow
-              key={n.name}
+              key={n.id}
               net={n}
               routers={routers}
               manage={can("createProjectNetwork")}
@@ -443,22 +443,24 @@ export default function ProjectDetail() {
               <tbody>
                 {shares.map((s) => (
                   <tr key={s.network} className="border-b border-gray-50">
-                    <td className="py-2 font-medium">{s.network}</td>
+                    <td className="py-2 font-medium" title={s.network}>
+                      {s.network_name || s.network}
+                    </td>
                     <td className="py-2" title={s.owner_project ?? ""}>
                       {s.owner_project ? projectName(s.owner_project) : "—"}
                     </td>
                     <td className="py-2">
-                      {s.status === "accepted" ? (
+                      {s.status === "SHARE_STATUS_ACCEPTED" ? (
                         <Badge kind="ok">accepted</Badge>
                       ) : (
                         <>
                           <Badge kind="muted">offered</Badge>{" "}
-                          <span className="text-xs text-gray-500">until {formatTime(s.expires_at)}</span>
+                          <span className="text-xs text-gray-500">until {formatTimestamp(s.expires_at)}</span>
                         </>
                       )}
                     </td>
                     <td className="py-2 text-right">
-                      {s.status === "offered" ? (
+                      {s.status !== "SHARE_STATUS_ACCEPTED" ? (
                         <button
                           className={secondaryButton}
                           onClick={() => run(() => api.acceptNetworkShare(project.id, s.network), refreshShares)}

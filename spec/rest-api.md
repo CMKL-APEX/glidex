@@ -69,6 +69,23 @@ system bindings, site policies, audit, `/authz/check` and
   [{actions}], reauth: [{actions}]}`. Audit `time` is RFC 3339 (the
   `since` parameter is still unix ms).
 
+The network family (networks, their grants, events and OVN view,
+project networks and their routers, shares, VPC routers) is served in
+the proto shape too: the `glidex.network.v1` messages, wrapped
+(`{networks}`, `{network}`, `{shares}`, `{routers}`, `{router}`), with
+enum names in full (`NETWORK_MODE_NAT`, `PORT_TYPE_TAP`,
+`NETWORK_SCOPE_CLUSTER`, `NETWORK_PHASE_READY`, `SHARE_STATUS_OFFERED`;
+the old lowercase request values are still read) and RFC 3339 times.
+Networks have an `id` (tenancy.md D24): every path and body that names
+a network takes its id or its name (a name several visible networks
+have is `409 ambiguous`), and answers name networks by id: a share's
+`network` is the id, with `network_name`; a VM's `nics[].network` is the
+id, with `network_name`. New node networks' default bridge is
+`gxbr-<first 8 of the id>`. `DELETE /networks/{id}?wait=N` answers `204`
+once gone (was `200`); a share offer answers `202 {}`. Host networking
+(`/ovs…`, bridges, uplinks, PCI devices) and `/cluster/ovn…` keep their
+shapes.
+
 In every ported family, a body field the message doesn't have is
 `422 invalid` ("unknown field `quotas.vm`").
 
@@ -118,11 +135,11 @@ reported as `404`.
 | `POST` | `/disks/{id}/resize[?wait=N]` | `resize_disk` | Grow (extends root) or shrink (never into a partition); `202`, applied by the disk controller |
 | `POST` | `/disks/{id}/extend-root[?wait=N]` | `extend_root` | Grow the root partition, `offline` or `on-boot`; `202`, applied by the disk controller |
 | `GET` | `/disks/{id}/events` | `disk_events` | The disk's last 50 events (`readDisk`) |
-| `GET` | `/networks/{name}/events` | `network_events` | The network's last 50 events (`readNetwork`) |
-| `DELETE` | `/networks/{name}[?wait=N]` | `delete_network` | Delete (`204`, or `202` while the network controller tears it down; `409` while a VM uses it; below) |
+| `GET` | `/networks/{id}/events` | `network_events` | The network's last 50 events (`readNetwork`) |
+| `DELETE` | `/networks/{id}[?wait=N]` | `delete_network` | Delete (`204`, or `202` while the network controller tears it down; `409` while a VM uses it; below) |
 | `GET` / `POST` | `/projects/{id}/routers` | `list_routers` / `create_router` | VPC routers of a project; create one (`201`; `409 external_pool_exhausted`; quotas `routers`, `external_ips`; [clustering.md §11.2a](clustering.md#112a-vpc-routers)) |
-| `GET` / `DELETE` | `/projects/{id}/routers/{name}` | `get_router` / `delete_router` | Details; delete (`204`; `409` while a network is attached) |
-| `PUT` | `/projects/{id}/networks/{name}/router` | `set_network_router` | Put an existing NAT or isolated cluster network of the project on one of its routers, `{"router": "<name>"}`, or back on the shared edge (an isolated one: not routed), `{"router": null}` (`createRouter`; `400` for another kind of network or an unknown router, `404` for a network that isn't the project's; [clustering-ui.md §8d](clustering-ui.md#8d-a-projects-own-routers)) |
+| `GET` / `DELETE` | `/projects/{id}/routers/{router}` | `get_router` / `delete_router` | Details; delete (`204`; `409` while a network is attached) |
+| `PUT` | `/projects/{id}/networks/{network}/router` | `set_network_router` | Put an existing NAT or isolated cluster network of the project on one of its routers, `{"router": "<name>"}`, or back on the shared edge (an isolated one: not routed), `{"router": null}` (`createRouter`; `400` for another kind of network or an unknown router, `404` for a network that isn't the project's; [clustering-ui.md §8d](clustering-ui.md#8d-a-projects-own-routers)) |
 | `GET` | `/cluster/status[?ports=true]` | `cluster::status` | Raft group, nodes with version and feature level, CA rotation, and TCP reachability of the cluster ports from the serving server |
 | `POST` | `/cluster/{init,join,import,rejoin,leave,dissolve,rotate-ca,promote,join-tokens}` | `cluster::*` | Forming, joining (with `import` for a host with resources), leaving and operating a cluster ([clustering.md §5](clustering.md#5-cluster-lifecycle), [runbook](cluster-runbook.md)) |
 | `GET` | `/cluster/snapshot` | `cluster::snapshot` | A consistent snapshot of the replicated store (0600 material; always audited) |
@@ -130,7 +147,7 @@ reported as `404`.
 | `GET` | `/cluster/settings/ovn/edge-defaults` | `cluster::edge_defaults` | A suggested shared edge for this cluster (`readCluster`): `{edge, complete, notes}`, the edge with a pool for VPC routers when the LAN has room (spec/clustering-ui.md §8a) |
 | `GET` | `/cluster/ovn/tunnels` | `net::cluster_ovn_tunnels` | Each node's Geneve tunnels from its own Open vSwitch (`readCluster`): per node `answered`, `tunnels` (`peer`, `remote_ip`, `state`: `present` / `error` / `bfd_down`, OVS `error`, BFD state and diagnostic, rx/tx packets and bytes) and `missing` peers (spec/clustering-ui.md §8b) |
 | `GET` | `/cluster/ovn` | `net::cluster_ovn` | OVN as it is now (`readCluster`): NB and SB members (reachable, leader), chassis (node, tunnel endpoints), each router's HA gateway (active chassis, candidates by priority); `{"enabled": false}` without OVN (spec/clustering-ui.md §8) |
-| `GET` | `/networks/{name}/ovn` | `net::network_ovn` | A cluster network on OVN (`readNetwork`, the network's visibility): its switch, ports (VM, addresses, the chassis each is bound to) and router (NAT rules, active gateway) |
+| `GET` | `/networks/{id}/ovn` | `net::network_ovn` | A cluster network on OVN (`readNetwork`, the network's visibility): its switch, ports (VM, addresses, the chassis each is bound to) and router (NAT rules, active gateway) |
 | `POST` | `/ovs/bridges/{b}/uplinks/{u}/reapply` | `net::reapply_uplink` | Set up again an uplink netd rolled back at start (`confirmUplink`, recent login): `202` pending commit, as when added (networking.md §8.5). `POST /ovs/bridges/{b}/uplinks` takes `accept_dhcp` |
 | `PUT` | `/nodes/{id}/ovn` | `nodes::put_node_ovn` | A node's `br-int` datapath, `{br_int_datapath: auto\|system\|netdev}`, and/or its physical networks `{bridge_mappings: {physnet: bridge}}` (replaces the node's own; the file's still count, the setting wins; no restart) (`configureNode` on its `Host`, recent login, audited); `409 dpdk_not_running`, `409 gateway_node`, `409 vhost_user_vms` (clustering.md §11.6) |
 | `GET` | `/departures` | `nodes::list_departures` | Detaches with their state (`frozen`, `committed`, `aborted`), node, mapped networks and whether the node acknowledged (`readCluster`) |
@@ -143,8 +160,8 @@ reported as `404`.
 | `GET` | `/usage[?project=&from=&to=&month=&granularity=&group_by=&meters=&tz=&format=csv]` | `usage::usage` | `GetUsageResponse`: usage records ([metering.md §9.1](metering.md#91-get-usage)): hour/day/month buckets, grouped by project, VM, disk, NIC or network; host readers see every project, others their own (`404` for one they can't read) |
 | `GET` | `/projects/{id}/usage`, `/vms/{id}/usage[?include=disks]`, `/disks/{id}/usage` | `usage::*_usage` | The same, for one project, VM (and its NICs) or disk |
 | `GET` | `/usage/bandwidth`, `/usage/disk-io`, `/usage/compute` `[?project=&month=YYYY-MM&group_by=&tz=&format=csv]` | `rates::bandwidth` / `disk_io` / `compute` | Per billing month: average, 30-second peak and 5-minute 95th percentile (billable: network max(in, out), disk read+write; CPU and memory: cores, MiB and utilization) ([metering.md §9.3](metering.md#93-bandwidth)) |
-| `GET` | `/vms/{id}/bandwidth`, `/networks/{name}/bandwidth`, `/vms/{id}/io`, `/vms/{id}/compute`, `/disks/{id}/io` `[?from=&to=&p95=true]` | `rates::*` | 5-minute series for graphs, `{from, to, points, p95?}` (`/vms/{id}/io` adds `disks`; default: the last 24 h; at most 31 days) |
-| `GET` | `/vms/{id}/stats`, `/networks/{name}/stats` | `rates::*_stats` | Current rates from the last two samples (CPU %, memory, Mbps, pps, IOPS, MB/s), `{sampled_at?, resolution_secs, vm?, nics?, disks?}` / `{sampled_at?, resolution_secs, values?}`; not stored |
+| `GET` | `/vms/{id}/bandwidth`, `/networks/{id}/bandwidth`, `/vms/{id}/io`, `/vms/{id}/compute`, `/disks/{id}/io` `[?from=&to=&p95=true]` | `rates::*` | 5-minute series for graphs, `{from, to, points, p95?}` (`/vms/{id}/io` adds `disks`; default: the last 24 h; at most 31 days) |
+| `GET` | `/vms/{id}/stats`, `/networks/{id}/stats` | `rates::*_stats` | Current rates from the last two samples (CPU %, memory, Mbps, pps, IOPS, MB/s), `{sampled_at?, resolution_secs, vm?, nics?, disks?}` / `{sampled_at?, resolution_secs, values?}`; not stored |
 
 Image and disk payloads, semantics and invariants are in
 [images.md](images.md#8-rest-api).
@@ -199,7 +216,7 @@ messages (`PollDevice`: `{pending: true}` until done, then `{issued:
 {token, token_id, expires_at, user_id, display_name}}`).
 
 Host networks are granted to projects or to whole tenants: `POST
-/networks` and `PUT /networks/{name}/grants` take `tenants` (ids or
+/networks` and `PUT /networks/{id}/grants` take `tenants` (ids or
 slugs) next to `grants` and `all_projects`, and networks show
 `tenant_grants`. A PCI device's `pci.allow` entry takes `tenants` too.
 Project networks are shared only between projects of one tenant: an
@@ -310,7 +327,7 @@ the record is gone (normally at once), or `202` with the disk
 
 ### Images and networks
 
-`DELETE /images/{id}` and `DELETE /networks/{name}` are admitted
+`DELETE /images/{id}` and `DELETE /networks/{id}` are admitted
 synchronously (`409 conflict` while a disk uses the image as its
 backing file, waits for it or clones from it; while any VM uses the
 network) and record `deletion_requested_at`; the image or network
@@ -320,7 +337,7 @@ controller finishes the deletion. Both accept `?wait=<secs>`:
 |---|---|
 | gone at once (the normal case for an image) | `204` |
 | no `wait`, still deleting | `202` with the image (`deleting: true`) or network (`deletion_requested_at`, `phase`, `conditions`) |
-| gone within `wait` | `200` |
+| gone within `wait` | `200` (a network: `204`) |
 | timeout (e.g. netd unreachable) | `202` as above |
 
 While deleting, an image can't be the source of a new disk or be
@@ -329,7 +346,7 @@ the same name is `409 conflict` until it is gone. Details:
 [images.md §8](images.md#8-rest-api), [networking.md](networking.md).
 
 Image, disk and network events (`GET /{images,disks}/{id}/events`,
-`GET /networks/{name}/events`) have the shape of the VM's below.
+`GET /networks/{id}/events`) have the shape of the VM's below.
 
 ## Live stream: `GET /watch`
 

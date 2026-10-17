@@ -28,10 +28,26 @@ function node(id: string, name: string, phase = "Active") {
 
 type Seen = { method: string; path: string; body: any }[];
 
+/** r1's id. */
+const R1 = "a1b2c3d4";
+/** A project NAT network spanning the nodes, as glidex.network.v1 sends it. */
+const CLUSTER_NAT = {
+  scope: "NETWORK_SCOPE_CLUSTER",
+  mode: "NETWORK_MODE_NAT",
+  bridge: "br-int",
+  port_type: "PORT_TYPE_TAP",
+  dns: true,
+  owns_bridge: false,
+  all_projects: false,
+  created_at: "2026-09-21T12:00:00Z",
+  phase: "NETWORK_PHASE_READY",
+};
+
 /** OVN on with a router pool, two nodes, and a project's routers kept in memory. */
 async function mockOvn(page: Page, project: string, pool = true): Promise<Seen> {
   const seen: Seen = [];
-  const routers: any[] = [{ id: "a1b2c3d4", project, spec: { name: "r1", external: true, external_ip: null, gateway_nodes: null }, status: { external_ip: "192.0.2.240", snat_ct_zone: 60001 }, created_at: 1790000000 }];
+  // glidex.network.v1 shapes: fields at their default left out, RFC 3339 times.
+  const routers: any[] = [{ id: R1, project, spec: { name: "r1", external: true }, status: { external_ip: "192.0.2.240", snat_ct_zone: 60001 }, created_at: "2026-09-21T12:00:00Z" }];
   await page.route("**/api/watch*", (r) => json(r, { error: "too_many_watchers", message: "poll" }, 503));
   await page.route("**/api/nodes", (r) => json(r, [
       node("11111111-1111-4111-8111-111111111111", "s1"),
@@ -48,24 +64,26 @@ async function mockOvn(page: Page, project: string, pool = true): Promise<Seen> 
     if (req.method() === "POST") {
       const body = req.postDataJSON();
       seen.push({ method: "POST", path: "routers", body });
-      const made = { id: "e5f6a7b8", project, spec: body, status: { external_ip: body.external ? "192.0.2.241" : null, snat_ct_zone: null }, created_at: 1790000001 };
+      const made = { id: "e5f6a7b8", project, spec: body, status: body.external ? { external_ip: "192.0.2.241" } : {}, created_at: "2026-09-21T12:00:01Z" };
       routers.push(made);
-      return json(r, made, 201);
+      return json(r, { router: made }, 201);
     }
-    return json(r, routers);
+    return json(r, { routers });
   });
   await page.route(`**/api/projects/${project}/routers/*`, async (r) => {
-    const name = decodeURIComponent(new URL(r.request().url()).pathname.split("/").pop()!);
-    seen.push({ method: r.request().method(), path: `routers/${name}`, body: null });
-    routers.splice(routers.findIndex((x) => x.spec.name === name), 1);
+    // By id or name, as the server takes it; recorded by name.
+    const key = decodeURIComponent(new URL(r.request().url()).pathname.split("/").pop()!);
+    const i = routers.findIndex((x) => x.id === key || x.spec.name === key);
+    seen.push({ method: r.request().method(), path: `routers/${routers[i]?.spec.name ?? key}`, body: null });
+    routers.splice(i, 1);
     return r.fulfill({ status: 204 });
   });
   // The project's NAT networks, `app` on r1 and `web` on the edge (the
   // networks list is otherwise real).
   const nets: any[] = [
-    { name: "app", scope: "cluster", mode: "nat", bridge: "br-int", port_type: "tap", project, router: "a1b2c3d4", grants: [], shares: [], phase: "ready" },
-    { name: "web", scope: "cluster", mode: "nat", bridge: "br-int", port_type: "tap", project, router: null, grants: [], shares: [], phase: "ready" },
-    { name: "lab", scope: "cluster", mode: "isolated", bridge: "br-int", port_type: "tap", project, router: null, grants: [], shares: [], phase: "ready" },
+    { id: "0a000000-0000-4000-8000-000000000001", name: "app", ...CLUSTER_NAT, project, router: R1 },
+    { id: "0a000000-0000-4000-8000-000000000002", name: "web", ...CLUSTER_NAT, project },
+    { id: "0a000000-0000-4000-8000-000000000003", name: "lab", ...CLUSTER_NAT, mode: "NETWORK_MODE_ISOLATED", project },
   ];
   await page.route("**/api/networks", async (r) => {
     if (r.request().method() !== "GET") return r.continue();
@@ -75,19 +93,21 @@ async function mockOvn(page: Page, project: string, pool = true): Promise<Seen> 
       .then((x) => x.json())
       .catch(() => null);
     if (real === null) return;
-    return json(r, [...real, ...nets]);
+    return json(r, { networks: [...(real.networks ?? []), ...nets] });
   });
   await page.route(`**/api/projects/${project}/networks/*/router`, async (r) => {
-    const name = decodeURIComponent(new URL(r.request().url()).pathname.split("/").slice(-2)[0]);
+    // The network and router by id or name; recorded by the network's name.
+    const key = decodeURIComponent(new URL(r.request().url()).pathname.split("/").slice(-2)[0]);
     const body = r.request().postDataJSON();
-    seen.push({ method: "PUT", path: `networks/${name}/router`, body });
-    const n = nets.find((x) => x.name === name)!;
-    n.router = body.router ? routers.find((x) => x.spec.name === body.router)!.id : null;
-    return json(r, n);
+    const n = nets.find((x) => x.id === key || x.name === key)!;
+    seen.push({ method: "PUT", path: `networks/${n.name}/router`, body });
+    if (body.router) n.router = routers.find((x) => x.id === body.router || x.spec.name === body.router)!.id;
+    else delete n.router;
+    return json(r, { network: n });
   });
   await page.route(`**/api/projects/${project}/networks`, async (r) => {
     seen.push({ method: "POST", path: "networks", body: r.request().postDataJSON() });
-    return json(r, { name: "db", scope: "cluster", mode: "nat", bridge: "br-int", project }, 201);
+    return json(r, { network: { id: "0a000000-0000-4000-8000-000000000004", name: "db", ...CLUSTER_NAT, project } }, 201);
   });
   return seen;
 }
@@ -165,12 +185,12 @@ test("a network made from a router's card goes on that router", async ({ page })
     await page.getByRole("link", { name: "+ network on r1" }).click();
     await expect(page).toHaveURL(/\/networking/);
     await expect(field(page, "Network for")).toHaveValue(project.id);
-    await expect(field(page, "Leaves through")).toHaveValue("r1");
+    await expect(field(page, "Leaves through")).toHaveValue(R1);
     // The shared edge is the other choice.
     await expect(field(page, "Leaves through").locator("option")).toHaveText([/shared edge/, /Router r1 \(192\.0\.2\.240\)/]);
     await page.getByPlaceholder("lab").fill("db");
     await page.getByRole("button", { name: "Create", exact: true }).click();
-    await expect.poll(() => seen.find((s) => s.path === "networks")?.body).toMatchObject({ name: "db", mode: "nat", scope: "cluster", router: "r1" });
+    await expect.poll(() => seen.find((s) => s.path === "networks")?.body).toMatchObject({ name: "db", mode: "NETWORK_MODE_NAT", scope: "NETWORK_SCOPE_CLUSTER", router: R1 });
   } finally {
     await del(`/projects/${project.id}`);
   }
@@ -193,7 +213,7 @@ test("existing networks attach to a router and detach back to the edge", async (
     await dialog.getByRole("checkbox", { name: /web/ }).check();
     await dialog.getByRole("button", { name: "Attach" }).click();
     await expect(dialog).toHaveCount(0);
-    expect(seen.find((s) => s.path === "networks/web/router")?.body).toEqual({ router: "r1" });
+    expect(seen.find((s) => s.path === "networks/web/router")?.body).toEqual({ router: R1 });
     await expect(page.getByText(/web.*leaves via router r1/)).toBeVisible();
     // r1 now has both, so it still can't be deleted.
     await expect(r1).toContainText("web");
@@ -223,7 +243,7 @@ test("an isolated network attaches to a router and is isolated again when detach
     await expect(dialog.getByText(/DHCP lease renews/)).toBeVisible();
     await dialog.getByRole("button", { name: "Attach" }).click();
     await expect(dialog).toHaveCount(0);
-    expect(seen.find((s) => s.path === "networks/lab/router")?.body).toEqual({ router: "r1" });
+    expect(seen.find((s) => s.path === "networks/lab/router")?.body).toEqual({ router: R1 });
     await expect(page.getByText(/lab.*routed via router r1/)).toBeVisible();
 
     await r1.getByText("lab", { exact: true }).locator("..").getByRole("button", { name: "Detach" }).click();

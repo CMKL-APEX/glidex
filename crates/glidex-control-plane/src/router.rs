@@ -122,10 +122,11 @@ pub fn get(db: &Db, id: &str) -> Result<Option<Router>, RouterError> {
         .transpose()?)
 }
 
-pub fn find(db: &Db, project: &str, name: &str) -> Result<Option<Router>, RouterError> {
+/// A router of `project` by id or name.
+pub fn find(db: &Db, project: &str, key: &str) -> Result<Option<Router>, RouterError> {
     Ok(list(db)?
         .into_iter()
-        .find(|r| r.project == project && r.spec.name == name))
+        .find(|r| r.project == project && (r.id == key || r.spec.name == key)))
 }
 
 /// Create a router: name uniqueness, the external address and the

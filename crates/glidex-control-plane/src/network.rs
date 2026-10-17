@@ -43,7 +43,16 @@ pub enum NetworkScope {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Network {
+    /// UUID; the key of the record, of Cedar's `Network` entity, of VM
+    /// NICs and of IPAM (spec/tenancy.md D24).
+    pub id: String,
+    /// `[a-z0-9-]`, at most 32; a project network's is unique in its
+    /// tenant, a host network's on the cluster (D24).
     pub name: String,
+    /// What a network from before ids was known by in OVN (its name): its
+    /// switch stays `gx-<name>`. Absent: `gx-<id>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ovn_key: Option<String>,
     /// `node`: the bridge, NAT and leases are on `node` only.
     #[serde(default)]
     pub scope: NetworkScope,
@@ -128,7 +137,20 @@ pub struct ShareOffer {
     pub expires_at: u64,
 }
 
+/// The id a network from before ids gets: derived from its name, so every
+/// server of a cluster migrating its copy picks the same one.
+pub fn legacy_id(name: &str) -> String {
+    uuid::Uuid::new_v5(&LEGACY_NAMESPACE, name.as_bytes()).to_string()
+}
+
+const LEGACY_NAMESPACE: uuid::Uuid = uuid::uuid!("6b2b8f0e-6f1d-4f0a-9a43-2f6f3b1c9d10");
+
 impl Network {
+    /// The name its OVN objects are made under (`gx-<key>`).
+    pub fn ovn_key(&self) -> &str {
+        self.ovn_key.as_deref().unwrap_or(&self.id)
+    }
+
     /// Whether VMs of `project`, in `tenant`, may attach (mirrors
     /// `base.network-grant`).
     pub fn usable_by(&self, project: &str, tenant: &str) -> bool {
@@ -170,7 +192,7 @@ pub struct CreateNetworkRequest {
     #[serde(default)]
     pub physnet: Option<String>,
     /// A VPC router to attach a NAT network to (§11.2a); moved later with
-    /// `PUT /projects/{id}/networks/{name}/router`.
+    /// `PUT /projects/{id}/networks/{network}/router`.
     #[serde(default)]
     pub router: Option<String>,
 }
@@ -195,6 +217,9 @@ pub enum NetError {
     Invalid(String),
     #[error("network not found: {0}")]
     NotFound(String),
+    /// A name more than one network in scope has (D24).
+    #[error("{0}")]
+    Ambiguous(String),
     #[error("{0}")]
     Conflict(String),
     #[error("the external address pool has no free address")]
@@ -245,16 +270,15 @@ impl NetworkStore {
         })
     }
 
-    /// Record a new network.
     /// Remove a record (its network is gone everywhere).
-    pub fn remove(&self, name: &str) -> Result<(), NetError> {
+    pub fn remove(&self, id: &str) -> Result<(), NetError> {
         let _w = self.write.lock().unwrap();
         self.db.write(
             crate::store::Origin::Network,
             |tx| -> Result<(), NetError> {
                 tx.open_table(NETWORKS_TABLE)
                     .map_err(storage)?
-                    .remove(name)
+                    .remove(id)
                     .map_err(storage)?;
                 Ok(())
             },
@@ -266,10 +290,11 @@ impl NetworkStore {
         self.write_record(net)
     }
 
-    pub fn get(&self, name: &str) -> Result<Option<Network>, NetError> {
+    /// By id.
+    pub fn get(&self, id: &str) -> Result<Option<Network>, NetError> {
         let txn = self.db.begin_read().map_err(storage)?;
         let t = txn.open_table(NETWORKS_TABLE).map_err(storage)?;
-        match t.get(name).map_err(storage)? {
+        match t.get(id).map_err(storage)? {
             Some(v) => serde_json::from_slice(v.value()).map(Some).map_err(storage),
             None => Ok(None),
         }
@@ -291,7 +316,7 @@ impl NetworkStore {
     /// requested deletion is kept.
     pub fn put(&self, net: &Network) -> Result<(), NetError> {
         let _w = self.write.lock().unwrap();
-        let Some(current) = self.get(&net.name)? else {
+        let Some(current) = self.get(&net.id)? else {
             return Ok(());
         };
         let mut net = net.clone();
@@ -307,14 +332,14 @@ impl NetworkStore {
             .map_err(storage)?;
         {
             let mut t = txn.open_table(NETWORKS_TABLE).map_err(storage)?;
-            t.insert(net.name.as_str(), bytes.as_slice())
+            t.insert(net.id.as_str(), bytes.as_slice())
                 .map_err(storage)?;
         }
         txn.commit().map_err(storage)?;
         Ok(())
     }
 
-    pub fn delete(&self, name: &str) -> Result<(), NetError> {
+    pub fn delete(&self, id: &str) -> Result<(), NetError> {
         let _w = self.write.lock().unwrap();
         let txn = self
             .db
@@ -322,7 +347,7 @@ impl NetworkStore {
             .map_err(storage)?;
         {
             let mut t = txn.open_table(NETWORKS_TABLE).map_err(storage)?;
-            t.remove(name).map_err(storage)?;
+            t.remove(id).map_err(storage)?;
         }
         txn.commit().map_err(storage)?;
         Ok(())
@@ -334,6 +359,7 @@ impl CreateNetworkRequest {
     pub fn to_network(&self) -> Result<Network, NetError> {
         let invalid = |e: glidex_ovs::OvsError| NetError::Invalid(e.to_string());
         validate_name("network", &self.name, 32).map_err(invalid)?;
+        let id = uuid::Uuid::new_v4().to_string();
         let bridge = match (&self.bridge, self.mode) {
             (Some(b), _) => b.clone(),
             (None, NetworkMode::Bridged) => {
@@ -341,7 +367,8 @@ impl CreateNetworkRequest {
                     "a bridged network needs an existing bridge".into(),
                 ));
             }
-            (None, _) => format!("gxbr-{}", self.name),
+            // Names repeat across tenants; the id doesn't.
+            (None, _) => format!("gxbr-{}", &id[..8]),
         };
         validate_name("bridge", &bridge, MAX_IFNAME).map_err(|_| {
             NetError::Invalid(format!(
@@ -360,7 +387,9 @@ impl CreateNetworkRequest {
             return Err(NetError::Invalid("vlan must be 1-4094".into()));
         }
         Ok(Network {
+            id,
             name: self.name.clone(),
+            ovn_key: None,
             scope: NetworkScope::Node,
             node: Some(crate::authz::node_id()),
             physnet: None,
@@ -502,14 +531,20 @@ mod tests {
     #[test]
     fn derives_bridge_names_and_validates() {
         let n = req("lab", NetworkMode::Nat).to_network().unwrap();
-        assert_eq!(n.bridge, "gxbr-lab");
+        assert_eq!(n.bridge, format!("gxbr-{}", &n.id[..8]));
+        assert_eq!(n.ovn_key(), n.id);
         assert!(n.owns_bridge);
+        let mut r = req("lab", NetworkMode::Nat);
+        r.bridge = Some("averyverylongname".into());
+        assert!(r.to_network().is_err(), "bridge would exceed 15 chars");
         assert!(
-            req("averyverylongname", NetworkMode::Nat)
+            req("a-name-of-thirty-two-characters0", NetworkMode::Nat)
                 .to_network()
-                .is_err(),
-            "bridge would exceed 15 chars"
+                .is_ok(),
+            "the name no longer makes the bridge's"
         );
+        assert_eq!(legacy_id("lab"), legacy_id("lab"));
+        assert_ne!(legacy_id("lab"), legacy_id("lab2"));
         assert!(
             req("lan", NetworkMode::Bridged).to_network().is_err(),
             "bridged needs a bridge"

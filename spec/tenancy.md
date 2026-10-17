@@ -1181,7 +1181,7 @@ Closed out after T1 (the T0 parts):
   Admissions, and a Tenant column on Projects (`pages/Tenants.tsx`,
   `TenantDetail.tsx`, `Admissions.tsx`).
 - **`tenant_grants` (D25)**: `Network.tenant_grants` (`tenants` in
-  `POST /networks` and `PUT /networks/{name}/grants`, gxctl `network
+  `POST /networks` and `PUT /networks/{id}/grants`, gxctl `network
   grant --tenant`), `pci.allow[].tenants`; `base.network-grant` and
   `base.pci-grant` take them; `base.share-same-tenant` keeps project
   network shares inside a tenant, and an offer across tenants gets the
@@ -1191,12 +1191,23 @@ Closed out after T1 (the T0 parts):
   cluster role on a tenant's project was refused `useCluster`.
 - Names by id or slug where a tenant is named (`default_tenant`, grants).
 
+- **Names unique per tenant (D24)**: **disks** since the storage
+  family's port (G2, images.md §8); **networks** since the network
+  family's (G3): a network has an `id` (UUID), the key of its record, of
+  Cedar's `Network` entity, of VM NICs and of IPAM. A project network's
+  name is unique in its tenant, a host network's on the cluster; where a
+  request names a network, a name resolves among host networks and the
+  project networks of the projects the caller sees (or, for a VM's NICs,
+  in its project's tenant), and one several have is `409 ambiguous`.
+  Schema 4 (`store::migrate_network_ids`) gives existing networks an id
+  derived from the name (`network::legacy_id`, UUID v5, so each server of
+  a cluster derives the same one) and rewrites the NICs and IPAM rows; a
+  migrated network keeps its OVN objects (`ovn_key`: `gx-<name>`), new
+  ones are `gx-<id>`, and new node networks' bridges are `gxbr-<first 8
+  of the id>`. An import gives a network a new id if one here has it.
+  Metering rows from before keep the name as the network's subject id.
+
 Left for later, and why:
-- **Names unique per tenant for project networks (D24)**: networks are
-  keyed by name (REST paths, Cedar entities, OVS/OVN), so this re-keys
-  them by id; it lands with their port to gRPC (grpc.md G3), so the
-  messages carry ids from the start. **Disk** names are unique per tenant
-  since the storage family's port (G2, images.md §8).
 - **Per-cluster project quotas** and **guest credentials apart from the
   cluster** (their table is already directory-scoped): both only differ
   from today once a directory serves several clusters (T6).

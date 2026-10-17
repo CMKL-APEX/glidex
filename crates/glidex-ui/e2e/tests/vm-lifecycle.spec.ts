@@ -19,6 +19,9 @@ test("boots a cloud image and runs it from the UI", async ({ page, hypervisor })
   const disk = `${E2E_HOME}/images/${vmName}.img`;
   execFileSync("cp", ["--sparse=always", testImage()!, disk]);
   const vm = async () => (await listVms()).find((v) => v.name === vmName);
+  // The host network of that name (glidex.network.v1: `{networks}`).
+  const networkOf = async (name: string) =>
+    ((await api<{ networks?: any[] }>("/networks")).networks ?? []).find((n) => n.name === name && !n.project);
 
   try {
     await test.step("add a credential", async () => {
@@ -37,7 +40,8 @@ test("boots a cloud image and runs it from the UI", async ({ page, hypervisor })
       await page.getByRole("button", { name: "Add Network" }).click();
       await page.getByPlaceholder("lab").fill(network);
       await page.getByRole("button", { name: "Create", exact: true }).click();
-      await expect(page.getByText(`gxbr-${network}`).first()).toBeVisible({ timeout: 30_000 });
+      // A new node network's bridge is named from its id (spec/tenancy.md D24).
+      await expect(page.getByRole("row", { name: new RegExp(network) })).toContainText(/gxbr-[0-9a-f]{8}/, { timeout: 30_000 });
     });
 
     await test.step("create the VM", async () => {
@@ -62,7 +66,9 @@ test("boots a cloud image and runs it from the UI", async ({ page, hypervisor })
       const created = await vm();
       expect(created.hypervisor).toBe(PROTO_HYPERVISOR[hypervisor]);
       const full = (await api(`/vms/${created.id}`)).vm;
-      expect(full.nics.map((n: any) => n.network)).toEqual([network]);
+      // NICs name their network by id, with its name beside it.
+      const net = (await networkOf(network))!;
+      expect(full.nics.map((n: any) => [n.network, n.network_name])).toEqual([[net.id, network]]);
     });
 
     let ip = "";
@@ -133,7 +139,8 @@ test("boots a cloud image and runs it from the UI", async ({ page, hypervisor })
   } finally {
     const left = await vm();
     if (left) await del(`/vms/${left.id}`);
-    await del(`/networks/${network}`);
+    const net = await networkOf(network);
+    if (net) await del(`/networks/${net.id}`);
     await del(`/credentials/${username}`);
     rmSync(disk, { force: true });
   }

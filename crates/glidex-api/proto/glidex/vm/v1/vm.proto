@@ -220,10 +220,13 @@ message NetworkAttachment {
 
 // A NIC as last seen.
 message Nic {
+  // The network's id (spec/tenancy.md D24).
   string network = 1;
   string mac = 2;
   optional string port = 3;
   optional string ipv4 = 4;
+  // The network's name, when the caller can see the network.
+  optional string network_name = 5 [json_name = "network_name"];
 }
 
 message Vm {

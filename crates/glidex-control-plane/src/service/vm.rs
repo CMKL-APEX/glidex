@@ -170,7 +170,11 @@ fn vm_pb_from(r: &m::VmResponse) -> pb::Vm {
 /// the address the control plane reserved (OVN's DHCP hands it out, so
 /// the controller on the VM's node never learns it).
 pub fn vm_pb(call: &Call, vm: &Vm) -> pb::Vm {
-    vm_pb_from(&crate::api::vms::vm_response(call, vm))
+    let mut v = vm_pb_from(&crate::api::vms::vm_response(call, vm));
+    for n in &mut v.nics {
+        n.network_name = call.manager().get_network(&n.network).ok().map(|n| n.name);
+    }
+    v
 }
 
 // ---- answers to writes ----------------------------------------------------
@@ -387,7 +391,7 @@ pub async fn create_vm(call: &Call, req: pb::CreateVmRequest) -> ServiceResult<V
     if !req.networks.is_empty() {
         call.require_action("attachNetwork", pent.clone(), pes.clone(), &[])?;
         for att in &req.networks {
-            if let Ok(n) = call.manager().get_network(&att.network) {
+            if let Ok(n) = call.manager().find_network(&project, &att.network) {
                 let mut es = pes.clone();
                 let e = crate::api::add_network(&mut es, &n);
                 call.require_action("useNetwork", e, es, with_project)?;
@@ -681,25 +685,32 @@ pub async fn update_vm(call: &Call, req: pb::UpdateVmRequest) -> ServiceResult<V
             }
         }
         if let Some(nets) = &cp.networks {
-            let new: Vec<&str> = nets.iter().map(|a| a.network.as_str()).collect();
-            let added: Vec<_> = nets
+            // NICs name their network by id; a request may give a name.
+            let new: Vec<(String, Option<crate::network::Network>)> = nets
                 .iter()
-                .filter(|a| !cur.networks.iter().any(|b| b.network == a.network))
+                .map(
+                    |a| match call.manager().find_network(&project, &a.network) {
+                        Ok(n) => (n.id.clone(), Some(n)),
+                        Err(_) => (a.network.clone(), None),
+                    },
+                )
+                .collect();
+            let added: Vec<_> = new
+                .iter()
+                .filter(|(id, _)| !cur.networks.iter().any(|b| &b.network == id))
                 .collect();
             if !added.is_empty() {
                 call.require_action("attachNetwork", e.clone(), es.clone(), &[])?;
-                for att in added {
-                    if let Ok(n) = call.manager().get_network(&att.network) {
-                        let mut nes = project_entities(&project);
-                        let ne = crate::api::add_network(&mut nes, &n);
-                        call.require_action("useNetwork", ne, nes, with_project)?;
-                    }
+                for n in added.into_iter().filter_map(|(_, n)| n.as_ref()) {
+                    let mut nes = project_entities(&project);
+                    let ne = crate::api::add_network(&mut nes, n);
+                    call.require_action("useNetwork", ne, nes, with_project)?;
                 }
             }
             if cur
                 .networks
                 .iter()
-                .any(|b| !new.contains(&b.network.as_str()))
+                .any(|b| !new.iter().any(|(id, _)| id == &b.network))
             {
                 call.require_action("detachNetwork", e.clone(), es.clone(), &[])?;
             }

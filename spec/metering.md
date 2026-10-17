@@ -1185,8 +1185,8 @@ service function each in `service/usage.rs`, RPC adapter
 |---|---|
 | `UsageService.GetUsage`, `GetProjectUsage`, `GetVmUsage`, `GetDiskUsage` | `GET /usage`, `/projects/{id}/usage`, `/vms/{id}/usage`, `/disks/{id}/usage` |
 | `UsageService.GetBandwidthReport`, `GetDiskIoReport`, `GetComputeReport` | `GET /usage/bandwidth`, `/usage/disk-io`, `/usage/compute` |
-| `MetricsService.GetVmBandwidth`, `GetNetworkBandwidth`, `GetVmIo`, `GetDiskIo`, `GetVmCompute` | `GET /vms/{id}/bandwidth`, `/networks/{name}/bandwidth`, `/vms/{id}/io`, `/disks/{id}/io`, `/vms/{id}/compute` |
-| `MetricsService.GetVmStats`, `GetNetworkStats` | `GET /vms/{id}/stats`, `/networks/{name}/stats` |
+| `MetricsService.GetVmBandwidth`, `GetNetworkBandwidth`, `GetVmIo`, `GetDiskIo`, `GetVmCompute` | `GET /vms/{id}/bandwidth`, `/networks/{id}/bandwidth`, `/vms/{id}/io`, `/disks/{id}/io`, `/vms/{id}/compute` |
+| `MetricsService.GetVmStats`, `GetNetworkStats` | `GET /vms/{id}/stats`, `/networks/{id}/stats` |
 
 Requests carry the query as messages: `projects` (ids or names; REST
 `project=a,b`), and `query` (`UsageQuery`: `from`, `to` as timestamps,

@@ -14,7 +14,7 @@ mod connectors;
 pub(crate) mod errors;
 pub mod gate;
 mod net;
-mod nodes;
+pub(crate) mod nodes;
 mod rates;
 pub mod relay;
 mod rpc;
@@ -372,43 +372,43 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
     )
     .add(
         "GET",
-        "/networks/{name}",
+        "/networks/{id}",
         "readNetwork",
         get(net::get_network),
     )
     .add(
         "DELETE",
-        "/networks/{name}",
+        "/networks/{id}",
         "deleteNetwork",
         delete(net::delete_network),
     )
     .add(
         "GET",
-        "/networks/{name}/events",
+        "/networks/{id}/events",
         "readNetwork",
         get(net::network_events),
     )
     .add(
         "GET",
-        "/networks/{name}/ovn",
+        "/networks/{id}/ovn",
         "readNetwork",
         get(net::network_ovn),
     )
     .add(
         "PUT",
-        "/networks/{name}/grants",
+        "/networks/{id}/grants",
         "grantNetwork",
         put(net::grant_network),
     )
     .add(
         "POST",
-        "/networks/{name}/shares",
+        "/networks/{id}/shares",
         "offerNetworkShare",
         post(net::offer_share),
     )
     .add(
         "DELETE",
-        "/networks/{name}/shares/{project}",
+        "/networks/{id}/shares/{project}",
         "unshareNetwork",
         delete(net::unshare),
     )
@@ -420,7 +420,7 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
     )
     .add(
         "PUT",
-        "/projects/{id}/networks/{name}/router",
+        "/projects/{id}/networks/{network}/router",
         "createRouter",
         put(net::set_network_router),
     )
@@ -438,13 +438,13 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
     )
     .add(
         "GET",
-        "/projects/{id}/routers/{name}",
+        "/projects/{id}/routers/{router}",
         "readRouter",
         get(net::get_router),
     )
     .add(
         "DELETE",
-        "/projects/{id}/routers/{name}",
+        "/projects/{id}/routers/{router}",
         "deleteRouter",
         delete(net::delete_router),
     )
@@ -1140,13 +1140,13 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
     )
     .add(
         "GET",
-        "/networks/{name}/bandwidth",
+        "/networks/{id}/bandwidth",
         "readNetworkBandwidth",
         get(rates::network_bandwidth),
     )
     .add(
         "GET",
-        "/networks/{name}/stats",
+        "/networks/{id}/stats",
         "readNetworkStats",
         get(rates::network_stats),
     );
@@ -1906,14 +1906,14 @@ pub(crate) fn credential_entities(project: &str, username: &str) -> (Ent, Entity
 
 pub(crate) fn add_network(es: &mut EntitySet, n: &crate::network::Network) -> Ent {
     es.network(
-        &n.name,
+        &n.id,
         n.project.as_deref(),
         n.all_projects,
         &n.grants,
         &n.shares,
         &n.tenant_grants,
     );
-    Ent::Network(n.name.clone())
+    Ent::Network(n.id.clone())
 }
 
 /// Where `gxctl` on an agent logs in: a server's API (spec/gxctl-auth.md).

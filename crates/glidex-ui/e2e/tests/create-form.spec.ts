@@ -21,7 +21,7 @@ test("offers firmware boot through the hypervisor's firmware image", async ({ pa
   await expect(field(page, "UEFI Firmware")).toHaveValue(newest.id);
   await expect(page.getByTestId("firmware-hint")).toContainText("built for this hypervisor");
   await expect(page.getByText("Login Credential")).toBeVisible();
-  if ((await api<unknown[]>("/networks")).length > 0) {
+  if (((await api<{ networks?: unknown[] }>("/networks")).networks ?? []).length > 0) {
     await expect(page.getByText("Networks", { exact: true })).toBeVisible();
   }
 
@@ -58,7 +58,7 @@ test.afterEach(async ({ hypervisor }) => {
 });
 
 test("submits hypervisor, firmware and networks", async ({ page, hypervisor }) => {
-  const networks = await api<{ name: string }[]>("/networks");
+  const networks = (await api<{ networks?: { id: string; name: string }[] }>("/networks")).networks ?? [];
   await field(page, "VM Name").fill(`form-${hypervisor}`);
   await field(page, "Hypervisor Backend").selectOption(hypervisor);
   await field(page, "Boot Disk").selectOption("path");
@@ -82,8 +82,11 @@ test("submits hypervisor, firmware and networks", async ({ page, hypervisor }) =
   // Created stopped unless asked to start.
   expect(body.power).toBeUndefined();
   // The `default` network, if there is one, is preselected.
-  if (networks.some((n) => n.name === "default")) {
-    expect(body.networks).toEqual([{ network: "default" }]);
+  // It is sent by id (a project network and a host network may share a name).
+  const defaults = networks.filter((n) => n.name === "default").map((n) => n.id);
+  if (defaults.length) {
+    expect(body.networks).toHaveLength(1);
+    expect(defaults).toContain(body.networks[0].network);
   }
 
   // The control plane accepted it; the dashboard lists it with its hypervisor.

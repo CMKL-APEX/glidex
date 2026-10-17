@@ -6,6 +6,7 @@ mod client;
 mod config;
 mod console;
 mod directory;
+mod network;
 mod storage;
 mod tenancy;
 mod usage;
@@ -240,44 +241,6 @@ impl NodeRow {
 
 use access::project_names;
 
-#[derive(Debug, Deserialize, Tabled)]
-struct NetworkRow {
-    name: String,
-    mode: String,
-    bridge: String,
-    port_type: String,
-    #[tabled(display_with = "display_opt_u16")]
-    #[serde(default)]
-    vlan: Option<u16>,
-    /// Owning project (project networks); host networks have none.
-    #[tabled(display_with = "display_option")]
-    #[serde(default)]
-    project: Option<String>,
-}
-
-async fn list_networks(client: &ApiClient) {
-    match client
-        .request_json::<Vec<NetworkRow>>(Method::GET, "/networks", None)
-        .await
-    {
-        Ok(nets) if nets.is_empty() => {
-            println!("No networks. Create one with 'network create <name>'.")
-        }
-        Ok(mut nets) => {
-            let names = project_names(client).await;
-            for n in &mut nets {
-                if let Some(p) = n.project.as_mut()
-                    && let Some(name) = names.get(p.as_str())
-                {
-                    *p = name.clone();
-                }
-            }
-            println!("{}", Table::new(nets))
-        }
-        Err(e) => println!("{} {}", "Error:".red(), e),
-    }
-}
-
 fn display_opt_u16(o: &Option<u16>) -> String {
     o.map(|v| v.to_string()).unwrap_or_else(|| "-".to_string())
 }
@@ -343,59 +306,6 @@ fn split_line(line: &str) -> Result<Vec<String>, String> {
 
 fn has_flag(args: &[&str], flag: &str) -> bool {
     args.contains(&flag)
-}
-
-async fn handle_network_add(client: &CliClient, args: &[&str]) {
-    let Some(name) = args.first().filter(|a| !a.starts_with("--")) else {
-        println!("{}", "Usage: network-add <name> [--nat [--subnet CIDR] | --isolated | --bridged <bridge>] [--vhost-user] [--vlan N] [--bridge NAME] [--cluster | --node]".yellow());
-        return;
-    };
-    let (mode, bridge) = if let Some(b) = flag_value(args, "--bridged") {
-        ("bridged", Some(b))
-    } else if has_flag(args, "--isolated") {
-        ("isolated", flag_value(args, "--bridge"))
-    } else {
-        ("nat", flag_value(args, "--bridge"))
-    };
-    let mut body = serde_json::json!({
-        "name": name,
-        "mode": mode,
-        "port_type": if has_flag(args, "--vhost-user") { "vhost_user" } else { "tap" },
-    });
-    if let Some(b) = bridge {
-        body["bridge"] = serde_json::json!(b);
-    }
-    // Cluster (OVN) or one node's bridge; default: the cluster's when OVN is enabled.
-    if has_flag(args, "--cluster") {
-        body["scope"] = serde_json::json!("cluster");
-    } else if has_flag(args, "--node") {
-        body["scope"] = serde_json::json!("node");
-    }
-    if let Some(s) = flag_value(args, "--subnet") {
-        body["subnet"] = serde_json::json!(s);
-    }
-    if let Some(v) = flag_value(args, "--vlan") {
-        match v.parse::<u16>() {
-            Ok(v) => body["vlan"] = serde_json::json!(v),
-            Err(_) => {
-                println!("{} --vlan must be a number", "Error:".red());
-                return;
-            }
-        }
-    }
-    match client
-        .request_json::<NetworkRow>(Method::POST, "/networks", Some(body))
-        .await
-    {
-        Ok(n) => println!(
-            "{} {} ({} on {})",
-            "Network created:".green(),
-            n.name.yellow(),
-            n.mode,
-            n.bridge
-        ),
-        Err(e) => println!("{} {}", "Error:".red(), e),
-    }
 }
 
 async fn handle_uplink_add(client: &CliClient, args: &[&str]) {
@@ -687,7 +597,11 @@ fn condition_true(status: &serde_json::Value) -> bool {
 /// One line for an object from `/watch`: its name and what it is doing.
 fn watch_summary(kind: &str, o: &serde_json::Value) -> (String, String) {
     let name = o["name"].as_str().unwrap_or("?").to_string();
-    let deleting = o["deleting"].as_bool().unwrap_or(false) || o["deletion_requested_at"].is_u64();
+    // `deletion_requested_at`: RFC 3339 in the proto shape (networks), unix
+    // seconds in the older bodies.
+    let deleting = o["deleting"].as_bool().unwrap_or(false)
+        || o["deletion_requested_at"].is_u64()
+        || o["deletion_requested_at"].is_string();
     let mut what = match kind {
         // The proto shape (spec/grpc.md §9.1): `VM_STATE_*`, `POWER_STATE_*`.
         "vm" => {
@@ -723,7 +637,13 @@ fn watch_summary(kind: &str, o: &serde_json::Value) -> (String, String) {
                 s => s.to_ascii_lowercase(),
             }
         }
-        _ => o["phase"].as_str().unwrap_or("ready").replace('_', " "),
+        // Networks in the proto shape: `NETWORK_PHASE_*`.
+        _ => o["phase"]
+            .as_str()
+            .unwrap_or("ready")
+            .trim_start_matches("NETWORK_PHASE_")
+            .to_ascii_lowercase()
+            .replace('_', " "),
     };
     if deleting {
         what = format!("deleting ({})", what);
@@ -844,31 +764,6 @@ fn chrono_now() -> String {
 
 /// After a `DELETE …?wait`: gone (no body), or still being deleted by its
 /// controller (spec/reconciliation.md §6.3), with the reason it waits.
-pub(crate) fn print_delete_result(kind: &str, name: &str, v: &serde_json::Value) {
-    if v.is_null() {
-        println!("{} {}", format!("{} deleted:", kind).green(), name);
-        return;
-    }
-    println!(
-        "{} {} (the control plane finishes it)",
-        "Deleting:".yellow(),
-        name
-    );
-    if let Some(ready) = v["conditions"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .find(|c| c["kind"] == "Ready" && !condition_true(&c["status"]))
-    {
-        println!(
-            "  {} {}: {}",
-            "Waiting:".yellow(),
-            ready["reason"].as_str().unwrap_or(""),
-            ready["message"].as_str().unwrap_or("")
-        );
-    }
-}
-
 fn print_help() {
     println!("{}", "Available commands:".bold());
     println!("  {}              - List all VMs", "list".cyan());
@@ -1088,6 +983,10 @@ fn print_help() {
     println!(
         "  {} - Shares offered to a project",
         "network shares <p> | accept <p> <net> | leave <p> <net>".cyan()
+    );
+    println!(
+        "  {} - A network's id, mode, grants or shares",
+        "network show <net>".cyan()
     );
     println!();
     println!("  {}              - Show this help", "help".cyan());
@@ -1415,7 +1314,8 @@ const SUBCOMMANDS: &[(&str, &[&str])] = &[
     (
         "network",
         &[
-            "list", "create", "rm", "share", "unshare", "shares", "accept", "leave",
+            "list", "show", "create", "rm", "grant", "share", "unshare", "shares", "accept",
+            "leave",
         ],
     ),
 ];
@@ -1918,9 +1818,9 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
 
         "credential-rm" | "cred-rm" => storage::credential_rm(client, parts.get(1).copied()).await,
 
-        "networks" | "nets" => list_networks(client).await,
+        "networks" | "nets" => network::list_networks(client).await,
 
-        "network" | "net" => admin::network(client, &parts[1..]).await,
+        "network" | "net" => network::network(client, &parts[1..]).await,
         "whoami" => access::whoami(client).await,
         "cluster" => admin::cluster(client, &parts[1..]).await,
         "auth" => admin::auth(client, &parts[1..]).await,
@@ -1944,20 +1844,10 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
         "io" => usage::series(client, "io", &parts[1..]).await,
         "compute" => usage::series(client, "compute", &parts[1..]).await,
 
-        "network-add" | "net-add" => handle_network_add(client, &parts[1..]).await,
+        "network-add" | "net-add" => network::create_host(client, &parts[1..]).await,
 
         "network-rm" | "net-rm" => match parts.get(1) {
-            Some(name) => match client
-                .request_json::<serde_json::Value>(
-                    Method::DELETE,
-                    &format!("/networks/{}?wait=60", name),
-                    None,
-                )
-                .await
-            {
-                Ok(v) => print_delete_result("Network", name, &v),
-                Err(e) => println!("{} {}", "Error:".red(), e),
-            },
+            Some(name) => network::delete(client, name).await,
             None => println!("{}", "Usage: network-rm <name>".yellow()),
         },
 
@@ -2262,6 +2152,25 @@ mod tests {
             "conditions": [{"kind": "Ready", "status": "CONDITION_STATUS_TRUE"}]
         });
         assert_eq!(watch_summary("vm", &vm).1, "deleting (created)");
+    }
+
+    #[test]
+    fn watch_summary_reads_proto_networks() {
+        let n = serde_json::json!({
+            "id": "6f1c0000-0000-4000-8000-000000000000",
+            "name": "web",
+            "phase": "NETWORK_PHASE_NETD_UNAVAILABLE",
+        });
+        assert_eq!(
+            watch_summary("network", &n),
+            ("web".to_string(), "netd unavailable".to_string())
+        );
+        let n = serde_json::json!({
+            "name": "web",
+            "phase": "NETWORK_PHASE_READY",
+            "deletion_requested_at": "2026-10-17T10:00:00Z",
+        });
+        assert_eq!(watch_summary("network", &n).1, "deleting (ready)");
     }
 
     fn replacements(result: rustyline::Result<(usize, Vec<Pair>)>) -> (usize, Vec<String>) {
@@ -2617,6 +2526,48 @@ mod tests {
                 id: "nope".into(),
                 ..Default::default()
             })
+            .await
+            .unwrap_err();
+        assert_eq!(e.code, connectrpc::ErrorCode::NotFound);
+
+        // Networks on their RPC clients: by name or id.
+        let before = network::list(&client).await.unwrap().len();
+        let e = network::rpc(&client)
+            .await
+            .unwrap()
+            .get_network(glidex_api::proto::glidex::network::v1::GetNetworkRequest {
+                id: "nope".into(),
+                ..Default::default()
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(e.code, connectrpc::ErrorCode::NotFound);
+        assert!(tenancy::rpc_err(e).contains("not_found"));
+        // (Creating one needs glidex-netd, which this test doesn't run.)
+        assert_eq!(network::list(&client).await.unwrap().len(), before);
+        let shares = glidex_api::proto::glidex::network::v1::NetworkShareServiceClient::new(
+            t.clone(),
+            t.config(),
+        )
+        .list_network_shares(
+            glidex_api::proto::glidex::network::v1::ListNetworkSharesRequest {
+                project: project.clone(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap()
+        .into_owned();
+        assert!(shares.shares.is_empty());
+        let e = network::rpc(&client)
+            .await
+            .unwrap()
+            .delete_network(
+                glidex_api::proto::glidex::network::v1::DeleteNetworkRequest {
+                    id: "nope".into(),
+                    ..Default::default()
+                },
+            )
             .await
             .unwrap_err();
         assert_eq!(e.code, connectrpc::ErrorCode::NotFound);

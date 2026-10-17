@@ -1124,7 +1124,7 @@ impl VmManager {
             };
             if !st.nics.iter().any(|n| n.nic_index as usize == i) {
                 st.nics.push(NicStatus {
-                    network: net.name.clone(),
+                    network: net.id.clone(),
                     nic_index: i as u8,
                     mac: mac.clone(),
                     port: None,

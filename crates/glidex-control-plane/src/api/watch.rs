@@ -11,9 +11,9 @@
 //! stream ends after `MAX_LIFETIME`; clients reconnect (EventSource does on
 //! its own) and get a fresh snapshot.
 
-use super::net::network_view;
 use super::{ApiErr, Caller, disk_entities, err, vm_entities};
 use crate::authz::{Ent, EntitySet};
+use crate::service::network::network_view;
 use axum::extract::Query;
 use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -165,8 +165,9 @@ async fn snapshot(
                     for n in m.list_networks().map_err(super::storage::manager_err)? {
                         if let Some(n) = network_view(c, &visible, n) {
                             view.insert(
-                                (Kind::Network, n.name.clone()),
-                                serde_json::to_value(&n).unwrap_or_default(),
+                                (Kind::Network, n.id.clone()),
+                                serde_json::to_value(crate::service::network::network_pb(&n))
+                                    .unwrap_or_default(),
                             );
                         }
                     }

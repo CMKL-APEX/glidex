@@ -5,14 +5,13 @@
 use crate::client::{ApiClient, RpcTransport};
 use crate::tenancy::{err, rpc_err, usage};
 use crate::{
-    NetworkRow, credential_choice, format_unix_time, has_flag, project_names, prompt,
-    prompt_optional, prompt_path, prompt_path_optional, signed_in_name, storage,
+    credential_choice, format_unix_time, has_flag, project_names, prompt, prompt_optional,
+    prompt_path, prompt_path_optional, signed_in_name, storage,
 };
 use buffa::{EnumValue, Enumeration};
 use colored::Colorize;
 use glidex_api::proto::glidex::common::v1::{ConditionStatus, EventKind, Hypervisor};
 use glidex_api::proto::glidex::vm::v1::*;
-use hyper::Method;
 use tabled::{Table, Tabled};
 
 pub(crate) type Client = VmServiceClient<RpcTransport>;
@@ -359,7 +358,7 @@ pub async fn get(client: &ApiClient, args: &[&str]) {
         println!(
             "  NIC {}:      {} {} {}{}",
             i,
-            nic.network.cyan(),
+            nic.network_name.as_deref().unwrap_or(&nic.network).cyan(),
             nic.mac,
             nic.ipv4
                 .as_deref()
@@ -773,11 +772,7 @@ pub async fn create(client: &ApiClient) {
 
     // Networks: offer the ones that exist.
     let networks: Vec<NetworkAttachment> = {
-        let names: Vec<String> = client
-            .request_json::<Vec<NetworkRow>>(Method::GET, "/networks", None)
-            .await
-            .map(|ns| ns.into_iter().map(|n| n.name).collect())
-            .unwrap_or_default();
+        let names = crate::network::names(client).await;
         if names.is_empty() {
             Vec::new()
         } else {

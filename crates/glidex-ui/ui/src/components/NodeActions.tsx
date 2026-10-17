@@ -1,7 +1,7 @@
 import { useState } from "react";
 import * as api from "../api";
 import type { IssuedToken, NodeRecord } from "../types";
-import { nodeLabel } from "../types";
+import { isClusterNetwork, nodeLabel } from "../types";
 import { hostOf, useAllowed, useNodes } from "../nodes";
 import { useSession } from "../session";
 import { useLive } from "../live";
@@ -241,7 +241,8 @@ function RejoinDialog({ node, onClose }: { node: NodeRecord; onClose: () => void
 function DetachDialog({ node, onClose }: { node: NodeRecord; onClose: () => void }) {
   const live = useLive();
   // Cluster networks its VMs use need a node network to land on.
-  const clusterNets = [...live.networks.values()].filter((n) => n.scope === "cluster").map((n) => n.name);
+  // Keyed by id (names repeat across tenants); the target may be a name or an id.
+  const clusterNets = [...live.networks.values()].filter(isClusterNetwork);
   const [map, setMap] = useState<Record<string, string>>({});
   const [withAccess, setWithAccess] = useState(false);
   return (
@@ -266,13 +267,15 @@ function DetachDialog({ node, onClose }: { node: NodeRecord; onClose: () => void
         <div className="space-y-2">
           <p className="font-medium">Cluster network → node network on {node.spec.name}</p>
           {clusterNets.map((n) => (
-            <div key={n} className="grid grid-cols-2 gap-2 items-center">
-              <span className="font-mono text-xs">{n}</span>
+            <div key={n.id} className="grid grid-cols-2 gap-2 items-center">
+              <span className="font-mono text-xs" title={n.id}>
+                {n.name}
+              </span>
               <input
                 className={inputClass}
                 placeholder="leave empty to drop"
-                value={map[n] ?? ""}
-                onChange={(e) => setMap((m) => ({ ...m, [n]: e.target.value }))}
+                value={map[n.id] ?? ""}
+                onChange={(e) => setMap((m) => ({ ...m, [n.id]: e.target.value }))}
               />
             </div>
           ))}

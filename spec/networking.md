@@ -921,7 +921,7 @@ error gives `Ready=False/DeleteFailed` (phase `degraded`, event
 retried every 30 s. Finally the record is removed (event `Deleted`).
 
 Only `phase` and `conditions` are written by the controller; grants and
-shares written meanwhile are kept. `GET /networks/{name}/events` returns
+shares written meanwhile are kept. `GET /networks/{id}/events` returns
 the network's event ring.
 
 ### 11.3 REST
@@ -934,7 +934,7 @@ the network's event ring.
 | `GET` · `POST /ovs/bridges`, `DELETE /ovs/bridges/{name}` | `list_bridges` · `ensure_bridge` · `delete_bridge` | 200 · 201 · 204 |
 | `GET` · `POST /ovs/bridges/{b}/uplinks`, `DELETE …/{u}`, `POST …/{u}/commit {token}` | uplink ops | 200 · 201 or 202 (pending) · 204 · 200 |
 | `GET` · `POST /networks` | control-plane store (+ `ensure_bridge`/`ensure_nat` for NAT) | 200 · 201 |
-| `DELETE /networks/{name}[?wait=N]` | records `deletion_requested_at`; the controller calls `delete_nat`/`delete_bridge` (§11.2a) | 204 when gone at once, else 202 with the network; with `wait`, 200 once gone |
+| `DELETE /networks/{id}[?wait=N]` | records `deletion_requested_at`; the controller calls `delete_nat`/`delete_bridge` (§11.2a) | 204 when gone (at once, or within `wait`), else 202 with the network |
 | `POST /vms` with `networks` | validation only | 201 |
 
 Error mapping:

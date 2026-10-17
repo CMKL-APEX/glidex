@@ -151,7 +151,7 @@ pub fn sources(db: &Db, plan: &ImportPlan) -> Value {
         .collect();
     let networks: Vec<Value> = table_rows(&rows, TableId::Networks)
         .into_iter()
-        .map(|(name, n)| serde_json::json!({ "name": name, "mode": n["mode"] }))
+        .map(|(id, n)| serde_json::json!({ "id": id, "name": n["name"], "mode": n["mode"] }))
         .collect();
     let credentials: Vec<Value> = table_rows(&rows, TableId::Credentials)
         .into_iter()
@@ -207,6 +207,10 @@ struct Resolved {
     pmap: BTreeMap<String, String>,
     /// Source projects that become new projects here (id kept, name maybe changed).
     new_projects: BTreeMap<String, String>,
+    /// Source network id → its id here: kept, unless a network here has
+    /// it (two hosts that named a network alike before networks had ids
+    /// derived the same one, `network::legacy_id`).
+    net_ids: BTreeMap<String, String>,
     problems: Vec<String>,
 }
 
@@ -214,6 +218,7 @@ fn resolve(db: &Db, rows: &[Row], m: &ImportMappings) -> Resolved {
     let mut r = Resolved {
         pmap: BTreeMap::new(),
         new_projects: BTreeMap::new(),
+        net_ids: BTreeMap::new(),
         problems: Vec::new(),
     };
     let projects = values_of(db, TableId::Projects);
@@ -286,15 +291,55 @@ fn resolve(db: &Db, rows: &[Row], m: &ImportMappings) -> Resolved {
             }
         }
     }
-    let nets = keys_of(db, TableId::Networks);
-    let mut taken: BTreeSet<String> = BTreeSet::new();
-    for (name, _) in table_rows(rows, TableId::Networks) {
+    // D24: a host network's name is unique here, a project network's in
+    // its tenant (and no host network has it).
+    let tenant_of = |p: &str| -> String {
+        by_id(p)
+            .or_else(|| {
+                table_rows(rows, TableId::Projects)
+                    .into_iter()
+                    .find(|(k, _)| k == p)
+                    .map(|(_, v)| v)
+            })
+            .and_then(|v| v["tenant_id"].as_str().map(String::from))
+            .unwrap_or_else(|| crate::tenants::DEFAULT_TENANT.to_string())
+    };
+    let scope_of = |v: &Value, pmap: &BTreeMap<String, String>| -> Option<String> {
+        v["project"]
+            .as_str()
+            .map(|p| tenant_of(pmap.get(p).map(String::as_str).unwrap_or(p)))
+    };
+    let clash = |a: &Option<String>, b: &Option<String>| a.is_none() || b.is_none() || a == b;
+    let here: Vec<(String, Option<String>)> = values_of(db, TableId::Networks)
+        .into_iter()
+        .map(|(_, v)| {
+            let name = v["name"].as_str().unwrap_or("").to_string();
+            let scope = v["project"].as_str().map(tenant_of);
+            (name, scope)
+        })
+        .collect();
+    let ids_here = keys_of(db, TableId::Networks);
+    let mut taken: Vec<(String, Option<String>)> = Vec::new();
+    for (id, n) in table_rows(rows, TableId::Networks) {
+        let name = n["name"].as_str().unwrap_or(&id).to_string();
         let to = m.networks.get(&name).cloned().unwrap_or(name.clone());
-        if nets.contains(&to) || !taken.insert(to.clone()) {
+        let scope = scope_of(&n, &r.pmap);
+        if here
+            .iter()
+            .chain(taken.iter())
+            .any(|(other, s)| *other == to && clash(s, &scope))
+        {
             r.problems.push(format!(
                 "network '{to}' already exists: rename it with --network {name}=<new name>"
             ));
         }
+        taken.push((to, scope));
+        let dest = if ids_here.contains(&id) {
+            uuid::Uuid::new_v4().to_string()
+        } else {
+            id.clone()
+        };
+        r.net_ids.insert(id, dest);
     }
     let creds = keys_of(db, TableId::Credentials);
     for (key, c) in table_rows(rows, TableId::Credentials) {
@@ -760,6 +805,7 @@ impl Cluster {
 fn rewrite(rows: Vec<Row>, res: &Resolved, m: &ImportMappings, node: &str) -> Vec<Row> {
     let pmap = |p: &str| res.pmap.get(p).cloned().unwrap_or_else(|| p.to_string());
     let nmap = |n: &str| m.networks.get(n).cloned().unwrap_or_else(|| n.to_string());
+    let nid = |n: &str| res.net_ids.get(n).cloned().unwrap_or_else(|| n.to_string());
     let cname = |proj: &str, u: &str| {
         m.credentials
             .get(&format!("{proj}/{u}"))
@@ -782,7 +828,7 @@ fn rewrite(rows: Vec<Row>, res: &Resolved, m: &ImportMappings, node: &str) -> Ve
                     .and_then(|l| l.as_array_mut())
                 {
                     for a in list {
-                        if let Some(n) = a["network"].as_str().map(nmap) {
+                        if let Some(n) = a["network"].as_str().map(nid) {
                             a["network"] = n.into();
                         }
                     }
@@ -801,8 +847,9 @@ fn rewrite(rows: Vec<Row>, res: &Resolved, m: &ImportMappings, node: &str) -> Ve
                 v["node"] = node.into();
             }
             Some(TableId::Networks) => {
-                let name = nmap(&r.key);
-                key = name.clone();
+                let name = nmap(v["name"].as_str().unwrap_or(&r.key));
+                key = nid(&r.key);
+                v["id"] = key.clone().into();
                 v["name"] = name.into();
                 v["node"] = node.into();
                 if let Some(p) = v["project"].as_str().map(pmap) {

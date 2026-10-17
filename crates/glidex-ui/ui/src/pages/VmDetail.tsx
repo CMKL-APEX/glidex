@@ -6,6 +6,7 @@ import {
   describeExit,
   desiredState,
   generationBehind,
+  nicNetworkLabel,
   num,
   settled,
   nodeUnreachable,
@@ -236,7 +237,7 @@ export default function VmDetail() {
                   <ul className="mt-1 space-y-1 text-sm">
                     {vm.nics.map((nic, i) => (
                       <li key={i} className="font-mono">
-                        <span className="text-gray-900">{nic.network}</span>{" "}
+                        <span className="text-gray-900" title={nic.network}>{nicNetworkLabel(nic)}</span>{" "}
                         <span className="text-gray-500">{nic.mac}</span>{" "}
                         <span className={nic.ipv4 ? "text-green-700" : "text-gray-400"}>
                           {nic.ipv4 ?? "no address"}

@@ -118,7 +118,7 @@ fn none_if_empty(s: &str) -> Option<&str> {
 /// names from `names` when given.
 fn named_pb(k: GroupKey, n: &Named, names: Option<&BTreeMap<String, String>>) -> pb::Named {
     let name = match names {
-        Some(names) if matches!(k, GroupKey::Project | GroupKey::Node) => {
+        Some(names) if matches!(k, GroupKey::Project | GroupKey::Node | GroupKey::Network) => {
             names.get(&n.id).unwrap_or(&n.name).clone()
         }
         _ => n.name.clone(),
@@ -167,7 +167,8 @@ pub fn recast<A: buffa::Message, B: buffa::Message + Default>(a: &A) -> B {
     B::decode_from_slice(&a.encode_to_vec()).unwrap_or_default()
 }
 
-/// Display names of projects and nodes, by id (the ids don't collide).
+/// Display names of projects, nodes and networks, by id (the ids don't
+/// collide).
 fn names(c: &Call) -> BTreeMap<String, String> {
     let mut m: BTreeMap<String, String> = c
         .manager()
@@ -184,6 +185,13 @@ fn names(c: &Call) -> BTreeMap<String, String> {
             .unwrap_or_default()
             .into_iter()
             .map(|n| (n.meta.id, n.spec.name)),
+    );
+    m.extend(
+        c.manager()
+            .list_networks()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|n| (n.id, n.name)),
     );
     m
 }
@@ -273,15 +281,10 @@ async fn visible_disk(c: &Call, id: &str) -> ServiceResult<crate::images::DiskRe
     Ok(d)
 }
 
-fn visible_network(c: &Call, name: &str) -> ServiceResult<crate::network::Network> {
-    let not_found = || ServiceError::new(StatusCode::NOT_FOUND, "not_found", "network not found");
-    let n = c.manager().get_network(name).map_err(|_| not_found())?;
+fn visible_network(c: &Call, key: &str) -> ServiceResult<crate::network::Network> {
+    let n = crate::service::network::visible_network(c, key)?;
     let mut es = EntitySet::new();
     let e = add_network(&mut es, &n);
-    if !c.allowed("readNetwork", e.clone(), es.clone()) {
-        return Err(not_found());
-    }
-    c.set_target(format!("network:{}", n.name));
     c.require(e, es)?;
     Ok(n)
 }
@@ -1099,7 +1102,7 @@ pub async fn vm_bandwidth(
     })
 }
 
-/// `GET /networks/{name}/bandwidth`.
+/// `GET /networks/{id}/bandwidth`.
 pub async fn network_bandwidth(
     c: &Call,
     req: pb::GetNetworkBandwidthRequest,
@@ -1111,7 +1114,7 @@ pub async fn network_bandwidth(
         SubjectKind::Network,
         n.project.as_deref(),
         &[GroupKey::Network],
-        |s| s.id == n.name,
+        |s| s.id == n.id,
     )?;
     Ok(pb::GetNetworkBandwidthResponse {
         from: s.from.into(),
@@ -1289,14 +1292,14 @@ pub(crate) fn live_vm_stats(meter: &Meter, vm_id: &str) -> pb::GetVmStatsRespons
     }
 }
 
-/// `GET /networks/{name}/stats` (§9.4).
+/// `GET /networks/{id}/stats` (§9.4).
 pub async fn network_stats(
     c: &Call,
     req: pb::GetNetworkStatsRequest,
 ) -> ServiceResult<pb::GetNetworkStatsResponse> {
     let n = visible_network(c, &req.name)?;
     let meter = meter(c)?;
-    let live = meter.live_stats(|s| s.kind == SubjectKind::Network && s.id == n.name);
+    let live = meter.live_stats(|s| s.kind == SubjectKind::Network && s.id == n.id);
     Ok(pb::GetNetworkStatsResponse {
         sampled_at: live.first().map(|l| ts(l.sampled_at / 1000)).into(),
         resolution_secs: Some(meter.config().sample_secs as u32),

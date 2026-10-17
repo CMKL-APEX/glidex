@@ -187,7 +187,7 @@ impl VmManager {
             keys.extend(
                 nets.into_iter()
                     .filter(|n| n.node.as_deref().is_none_or(|x| x == me))
-                    .map(|n| Key::Network(n.name)),
+                    .map(|n| Key::Network(n.id)),
             );
         }
         keys
@@ -215,7 +215,7 @@ impl VmManager {
                 Key::Vm(id) => self.reconcile_vm(id).await,
                 Key::Disk(id) => self.reconcile_disk(id).await,
                 Key::Image(id) => self.reconcile_image(id).await,
-                Key::Network(name) => self.reconcile_network(name).await,
+                Key::Network(id) => self.reconcile_network(id).await,
             };
             match result {
                 Ok(next) => {

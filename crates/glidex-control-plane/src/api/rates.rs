@@ -186,7 +186,7 @@ pub async fn vm_bandwidth(
     Ok(Proto(StatusCode::OK, svc::vm_bandwidth(&c, req).await?).into_response())
 }
 
-/// `GET /networks/{name}/bandwidth`.
+/// `GET /networks/{id}/bandwidth`.
 pub async fn network_bandwidth(
     c: Caller,
     Path(name): Path<String>,
@@ -257,7 +257,7 @@ pub(crate) fn live_vm_stats(meter: &crate::metering::Meter, vm_id: &str) -> Valu
     serde_json::to_value(svc::live_vm_stats(meter, vm_id)).unwrap_or_default()
 }
 
-/// `GET /networks/{name}/stats` (§9.4).
+/// `GET /networks/{id}/stats` (§9.4).
 pub async fn network_stats(c: Caller, Path(name): Path<String>) -> Result<Response, ApiErr> {
     let req = pb::GetNetworkStatsRequest {
         name,
