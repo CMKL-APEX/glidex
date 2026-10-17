@@ -44,6 +44,30 @@ impl Cluster {
                 }
             }
         });
+        // A server is a node too: while it follows, it heartbeats the leader
+        // like an agent does (§7.2). The leader doesn't count itself.
+        let me = self.clone();
+        tokio::spawn(async move {
+            let mut stop = me.stop_rx();
+            loop {
+                if !me.is_leader()
+                    && let Some(addr) = me.leader_addr()
+                {
+                    let _ = me
+                        .client
+                        .request_timeout(
+                            &addr,
+                            hyper::Method::POST,
+                            "/cluster/v1/heartbeat",
+                            &[("content-type", "application/json".into())],
+                            bytes::Bytes::from_static(b"{}"),
+                            Duration::from_secs(4),
+                        )
+                        .await;
+                }
+                tokio::select! { _ = tokio::time::sleep(Duration::from_secs(5)) => {}, _ = stop.changed() => return }
+            }
+        });
     }
 
     /// The cluster's feature level is the lowest any server reports; it only

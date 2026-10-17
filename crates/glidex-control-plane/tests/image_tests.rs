@@ -5,6 +5,8 @@
 //! network. They need `qemu-img`, `qemu-io`, `sgdisk` and `growpart`, and
 //! are skipped (with a note) where those are missing.
 
+mod common;
+
 use axum::{
     Router,
     body::{Body, Bytes},
@@ -202,7 +204,7 @@ fn create_app(dir: &Path) -> (Router, Arc<VmManager>) {
     // Every test sets the same value, so parallel tests don't race on it.
     // SAFETY: test-only; every test sets it the same way before reading it.
     unsafe { std::env::set_var("GLIDEX_ALLOW_PRIVATE_IMAGE_URLS", "1") };
-    let manager = VmManager::with_db_path(dir.join("test.db")).unwrap();
+    let manager = common::with_db_path(dir.join("test.db")).unwrap();
     // Disks are made, resized and extended by the disk controller
     // (spec/reconciliation.md §10.1); the tests wait for it with ?wait.
     manager.start_controllers();
