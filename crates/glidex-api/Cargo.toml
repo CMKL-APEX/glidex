@@ -2,6 +2,7 @@
 name = "glidex-api"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 description = "Protos, generated messages, services and clients, and the operation table of the glidex RPC API (spec/grpc.md)"
 
 [dependencies]
