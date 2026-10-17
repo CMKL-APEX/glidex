@@ -255,115 +255,308 @@ export interface PlacementPreview {
 }
 
 // ---- images and disks (spec/images.md) ------------------------------------
+//
+// The storage routes (/credentials, /images, /disks) answer in the proto3
+// JSON shape of glidex.storage.v1 (spec/grpc.md §9.1): 64-bit numbers are
+// strings, enums their full names, timestamps RFC 3339, fields at their
+// default left out. The helpers below read them back for display.
 
-export type ImageStatus =
-  | { state: "downloading"; received_bytes: number; total_bytes?: number | null }
-  | { state: "verifying" }
-  | { state: "ready" }
-  | { state: "failed"; reason: string }
-  | { state: "missing" };
+/** A proto3 JSON 64-bit integer: a decimal string (a number is accepted too). */
+export type U64 = string | number;
 
-export type ImageSource =
-  | { kind: "catalog"; key: string; url: string; version: string }
-  | { kind: "url"; url: string; expected_sha256?: string | null }
-  | { kind: "firmware"; key: string; url: string; version: string };
+/** A 64-bit field as a number (absent: 0). */
+export function num(v: U64 | null | undefined): number {
+  if (v === undefined || v === null || v === "") return 0;
+  const n = typeof v === "number" ? v : Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
 
-/** `disk`: a cloud image disks are cloned from; `firmware`: UEFI firmware VMs boot through. */
-export type ImageKind = "disk" | "firmware";
+/** An RFC 3339 timestamp as Unix seconds (absent: 0). A number passes through. */
+export function tsSecs(v: string | number | null | undefined): number {
+  if (v === undefined || v === null || v === "") return 0;
+  if (typeof v === "number") return v;
+  const ms = Date.parse(v);
+  return Number.isNaN(ms) ? 0 : Math.floor(ms / 1000);
+}
+
+/** An enum value without its prefix, lower-cased: `DISK_PHASE_READY` → `ready`. */
+export function enumLabel(v: string | undefined, prefix: string): string {
+  if (!v) return "";
+  return (v.startsWith(prefix) ? v.slice(prefix.length) : v).toLowerCase();
+}
+
+export type Arch = "ARCH_X86_64" | "ARCH_AARCH64";
+
+/** `ARCH_X86_64` → `x86_64` (the form nodes report). */
+export const archLabel = (a: string | undefined) => enumLabel(a, "ARCH_");
+
+/** `x86_64` → `ARCH_X86_64` for a request. */
+export function archToProto(a: string): Arch {
+  return (a.startsWith("ARCH_") ? a : `ARCH_${a.toUpperCase()}`) as Arch;
+}
+
+export type ProtoHypervisor = "HYPERVISOR_CLOUD_HYPERVISOR" | "HYPERVISOR_QEMU";
+
+export const HYPERVISOR_FROM_PROTO: Record<ProtoHypervisor, HypervisorType> = {
+  HYPERVISOR_CLOUD_HYPERVISOR: "cloudhypervisor",
+  HYPERVISOR_QEMU: "qemu",
+};
+
+export const HYPERVISOR_TO_PROTO: Record<HypervisorType, ProtoHypervisor> = {
+  cloudhypervisor: "HYPERVISOR_CLOUD_HYPERVISOR",
+  qemu: "HYPERVISOR_QEMU",
+};
+
+/** A storage object's hypervisor in the VM API's form. */
+export function hypervisorOf(h: ProtoHypervisor | undefined): HypervisorType | undefined {
+  return h ? HYPERVISOR_FROM_PROTO[h] : undefined;
+}
+
+export type ConditionStatus = "CONDITION_STATUS_TRUE" | "CONDITION_STATUS_FALSE" | "CONDITION_STATUS_UNKNOWN";
+
+/** A storage object's condition (glidex.common.v1.Condition). */
+export interface StorageCondition {
+  kind: string;
+  status?: ConditionStatus;
+  reason?: string;
+  message?: string;
+  last_transition_at?: string;
+}
+
+/** An entry of an image's or disk's event log (glidex.common.v1.Event). */
+export interface StorageEvent {
+  at?: string;
+  actor?: string;
+  kind?: "EVENT_KIND_NORMAL" | "EVENT_KIND_WARNING";
+  reason?: string;
+  message?: string;
+}
+
+export type ImageState =
+  | "IMAGE_STATE_DOWNLOADING"
+  | "IMAGE_STATE_VERIFYING"
+  | "IMAGE_STATE_READY"
+  | "IMAGE_STATE_FAILED"
+  | "IMAGE_STATE_MISSING";
+
+export interface ImageStatus {
+  state?: ImageState;
+  received_bytes?: U64;
+  total_bytes?: U64;
+  reason?: string;
+}
+
+export interface CatalogSource {
+  key?: string;
+  url?: string;
+  version?: string;
+}
+
+/** Where an image came from (a oneof: exactly one key is set). */
+export interface ImageSource {
+  catalog?: CatalogSource;
+  url?: { url?: string; expected_sha256?: string };
+  firmware?: CatalogSource;
+}
+
+/** `IMAGE_KIND_DISK`: a cloud image disks are cloned from; `IMAGE_KIND_FIRMWARE`: UEFI firmware VMs boot through. */
+export type ImageKind = "IMAGE_KIND_DISK" | "IMAGE_KIND_FIRMWARE";
+
+export type DiskFormat = "DISK_FORMAT_QCOW2" | "DISK_FORMAT_RAW";
+
+/** `DISK_FORMAT_QCOW2` → `qcow2`. */
+export const formatLabel = (f: DiskFormat | undefined) => enumLabel(f, "DISK_FORMAT_");
+
+/** `qemu-img info` of a file. */
+export interface ImgInfo {
+  format?: string;
+  virtual_size?: U64;
+  actual_size?: U64;
+  backing_filename?: string;
+  backing_format?: string;
+}
+
+export interface ImageCopy {
+  node: string;
+  node_name?: string;
+  /** `wanted` is pinned and not started, `releasing` asked to go. */
+  state: "downloading" | "ready" | "failed" | "wanted" | "releasing";
+  bytes?: U64;
+  error?: string;
+  pinned?: boolean;
+}
 
 export interface ImageInfo {
   id: string;
   name: string;
-  kind: ImageKind;
+  kind?: ImageKind;
   /** The hypervisor a firmware image is built for. */
-  hypervisor?: HypervisorType;
-  source: ImageSource;
-  status: ImageStatus;
-  format: "qcow2" | "raw";
-  virtual_size_bytes: number;
-  file_size_bytes: number;
-  sha256: string;
-  arch: string;
-  created_at: number;
-  verified: boolean;
-  path: string;
-  linked_disks: string[];
+  hypervisor?: ProtoHypervisor;
+  source?: ImageSource;
+  status?: ImageStatus;
+  format?: DiskFormat;
+  virtual_size_bytes?: U64;
+  file_size_bytes?: U64;
+  sha256?: string;
+  arch?: Arch;
+  created_at?: string;
+  verified?: boolean;
+  path?: string;
+  linked_disks?: string[];
   /** A firmware image carries a UEFI variable-store template (QEMU keeps a per-VM store; without one, `-bios`). */
   vars_template?: boolean;
   /** VMs booting through this firmware image. */
   used_by_vms?: string[];
-  /** In a cluster, each node's copy of the file (spec/clustering-ui.md §5.3). */
-  /** Each node's copy (spec/clustering.md §9.2.2): `wanted` is pinned and not started, `releasing` asked to go. */
-  copies?: { node: string; node_name?: string; state: "downloading" | "ready" | "failed" | "wanted" | "releasing"; bytes: number; error?: string; pinned?: boolean }[];
+  /** Each node's copy (spec/clustering.md §9.2.2, spec/clustering-ui.md §5.3). */
+  copies?: ImageCopy[];
+  info?: ImgInfo;
   /** Deletion requested; the image controller is removing it. */
   deleting?: boolean;
 }
 
+/** An image's state without its prefix: `ready`, `downloading`, … (`""` when unset). */
+export const imageState = (i: ImageInfo) => enumLabel(i.status?.state, "IMAGE_STATE_");
+
+export const isFirmware = (i: ImageInfo) => i.kind === "IMAGE_KIND_FIRMWARE";
+
+/** The catalog (or firmware catalog) key an image was pulled from. */
+export function sourceKey(i: ImageInfo): { kind: "catalog" | "firmware" | "url"; key?: string } | undefined {
+  const s = i.source;
+  if (s?.catalog) return { kind: "catalog", key: s.catalog.key };
+  if (s?.firmware) return { kind: "firmware", key: s.firmware.key };
+  if (s?.url) return { kind: "url" };
+  return undefined;
+}
+
 export interface CatalogItem {
   key: string;
-  distro: string;
-  release: string;
-  arch: string;
-  url: string;
-  downloaded_image_id?: string | null;
+  distro?: string;
+  release?: string;
+  arch?: Arch;
+  url?: string;
+  downloaded_image_id?: string;
 }
 
 export interface FirmwareCatalogItem {
   key: string;
-  name: string;
-  hypervisor: HypervisorType;
-  arch: string;
+  name?: string;
+  hypervisor?: ProtoHypervisor;
+  arch?: Arch;
   /** `download`: a pinned build; `debian`: a pinned Debian package, unpacked; `host`: copied from the host's package. */
-  source: "download" | "debian" | "host";
+  source?: "download" | "debian" | "host";
   url?: string;
   version?: string;
   /** Whether it can be pulled now (a host entry needs its package). */
-  available: boolean;
+  available?: boolean;
   hint?: string;
-  downloaded_image_id?: string | null;
+  downloaded_image_id?: string;
+}
+
+export interface PullImageRequest {
+  catalog?: string;
+  /** Firmware catalog key. */
+  firmware?: string;
+  url?: string;
+  sha256?: string;
+  name?: string;
+  /** With `url`: the download is UEFI firmware for `hypervisor`. */
+  kind?: ImageKind;
+  hypervisor?: ProtoHypervisor;
+  /** With a QEMU firmware `url`: its UEFI variable-store template. */
+  vars_url?: string;
+  vars_sha256?: string;
+  /** In a cluster (spec/clustering.md §9.2.1–2): the architecture, nodes
+   * that get a copy, and whether the server keeps its own. */
+  arch?: Arch;
+  nodes?: string[];
+  keep_server_copy?: boolean;
+}
+
+export interface PullImageResponse {
+  image?: ImageInfo;
+  /** A new download (false: one was already in flight). */
+  created?: boolean;
 }
 
 /** Ready firmware images for `hypervisor`, newest first (the server's default). */
 export function firmwareFor(images: ImageInfo[], hypervisor: HypervisorType): ImageInfo[] {
   return images
-    .filter((i) => i.kind === "firmware" && i.hypervisor === hypervisor && i.status.state === "ready" && !i.deleting)
-    .sort((a, b) => b.created_at - a.created_at);
+    .filter((i) => isFirmware(i) && hypervisorOf(i.hypervisor) === hypervisor && imageState(i) === "ready" && !i.deleting)
+    .sort((a, b) => tsSecs(b.created_at) - tsSecs(a.created_at));
 }
 
 export interface PartitionInfo {
-  number: number;
-  start_bytes: number;
-  size_bytes: number;
-  type: string;
-  is_root: boolean;
+  number?: number;
+  start_bytes?: U64;
+  size_bytes?: U64;
+  type?: string;
+  is_root?: boolean;
+}
+
+export interface PartitionTable {
+  kind?: "PARTITION_TABLE_KIND_GPT" | "PARTITION_TABLE_KIND_MBR";
+  partitions?: PartitionInfo[];
+  free_tail_bytes?: U64;
+}
+
+export type CloneMode = "CLONE_MODE_LINKED" | "CLONE_MODE_FULL";
+
+/** `CLONE_MODE_LINKED` → `linked`. */
+export const cloneLabel = (m: CloneMode | undefined) => enumLabel(m, "CLONE_MODE_");
+
+export type DiskPhase =
+  | "DISK_PHASE_PENDING"
+  | "DISK_PHASE_CREATING"
+  | "DISK_PHASE_READY"
+  | "DISK_PHASE_RESIZING"
+  | "DISK_PHASE_MISSING"
+  | "DISK_PHASE_FAILED";
+
+export type ExtendMode = "EXTEND_MODE_OFFLINE" | "EXTEND_MODE_ON_BOOT";
+
+/** What a disk is made from (a oneof: exactly one key is set). */
+export interface DiskOrigin {
+  blank?: Record<string, never>;
+  image?: { image_id: string; mode?: CloneMode };
 }
 
 export interface DiskInfo {
   id: string;
   name: string;
-  format: "qcow2" | "raw";
-  size_bytes: number;
-  origin: { kind: "blank" } | { kind: "image"; image_id: string; mode: "linked" | "full" };
-  attached_to?: string | null;
-  pending_growpart: boolean;
+  project?: string;
+  format?: DiskFormat;
+  size_bytes?: U64;
+  origin?: DiskOrigin;
+  attached_to?: string;
+  /** The node holding the disk's file (spec/clustering.md §9.2). */
+  node?: string;
+  node_name?: string;
+  pending_growpart?: boolean;
   /** `pending` waits for its image; `failed` and the `Ready` condition say why. */
-  status: "pending" | "creating" | "ready" | "resizing" | "busy" | "missing" | "failed";
-  phase: "pending" | "creating" | "ready" | "resizing" | "missing" | "failed";
-  conditions?: Condition[];
+  status?: "pending" | "creating" | "ready" | "resizing" | "busy" | "missing" | "failed";
+  phase?: DiskPhase;
+  conditions?: StorageCondition[];
   /** A resize not applied yet: a running VM has the disk open. */
-  pending_size_bytes?: number;
+  pending_size_bytes?: U64;
   /** The VM that owns it (created with the VM from an image). */
   owner?: string;
   deleting?: boolean;
   busy_op?: string;
-  path: string;
-  project?: string;
-  /** The node holding the disk's file (spec/clustering.md §9.2). */
-  node?: string;
-  node_name?: string;
-  created_at: number;
-  partition_table?: { kind: "gpt" | "mbr"; partitions: PartitionInfo[]; free_tail_bytes: number };
+  path?: string;
+  created_at?: string;
+  info?: ImgInfo;
+  partition_table?: PartitionTable;
+  extend_root?: "EXTEND_OUTCOME_GROWN" | "EXTEND_OUTCOME_ALREADY_FULL" | "EXTEND_OUTCOME_ON_BOOT" | "EXTEND_OUTCOME_SKIPPED";
   warnings?: string[];
+}
+
+/** A disk's phase without its prefix: `ready`, `creating`, … (`""` when unset). */
+export const diskPhase = (d: DiskInfo) => enumLabel(d.phase, "DISK_PHASE_");
+
+/** A disk write's answer: `settled` is absent when not waited, else whether it finished in time. */
+export interface DiskWriteResponse {
+  disk?: DiskInfo;
+  settled?: boolean;
 }
 
 /** Still changing: the disk controller is working on it. */
@@ -386,17 +579,18 @@ export function diskActivity(d: DiskInfo): string | null {
 /** Waiting on something outside the control plane (a VM to stop), not
  * working: worth showing, not worth polling fast for. */
 export function diskWaiting(d: DiskInfo): boolean {
-  return !d.deleting && d.phase === "ready" && d.status === "ready" && d.pending_size_bytes !== undefined;
+  return !d.deleting && diskPhase(d) === "ready" && d.status === "ready" && d.pending_size_bytes !== undefined;
 }
 
 /** A deletion, a download or its verification in progress. */
 export function imageActivity(i: ImageInfo): string | null {
   if (i.deleting) return "Deleting";
-  if (i.status.state === "downloading") {
-    const s = i.status;
-    return s.total_bytes ? `Downloading ${Math.floor((s.received_bytes * 100) / s.total_bytes)}%` : "Downloading";
+  const state = imageState(i);
+  if (state === "downloading") {
+    const total = num(i.status?.total_bytes);
+    return total ? `Downloading ${Math.floor((num(i.status?.received_bytes) * 100) / total)}%` : "Downloading";
   }
-  return i.status.state === "verifying" ? "Verifying" : null;
+  return state === "verifying" ? "Verifying" : null;
 }
 
 /** A network deletion in progress (it waits for netd, or for a VM to leave). */
@@ -406,9 +600,11 @@ export function networkActivity(n: Network): string | null {
   return why && why.reason !== "Converged" ? `Deleting (${why.reason})` : "Deleting";
 }
 
-/** The `Ready` condition when it isn't True: why an object hasn't converged. */
-export function notReady(conditions?: Condition[]): Condition | undefined {
-  return conditions?.find((c) => c.kind === "Ready" && c.status !== "True");
+/** The `Ready` condition when it isn't True: why an object hasn't converged.
+ * Takes a VM's or network's conditions (`True`) or a storage object's
+ * (`CONDITION_STATUS_TRUE`). */
+export function notReady<C extends { kind: string; status?: string }>(conditions?: C[]): C | undefined {
+  return conditions?.find((c) => c.kind === "Ready" && c.status !== "True" && c.status !== "CONDITION_STATUS_TRUE");
 }
 
 export interface CreateDiskRequest {
@@ -416,12 +612,15 @@ export interface CreateDiskRequest {
   project?: string;
   size_gib?: number;
   image?: string;
-  clone?: "linked" | "full";
-  format?: "qcow2" | "raw";
+  clone?: CloneMode;
+  format?: DiskFormat;
   extend_root?: boolean;
+  node?: string;
 }
 
-export function formatBytes(n: number): string {
+/** A byte count for display; takes a 64-bit proto field (a string) too. */
+export function formatBytes(bytes: U64 | undefined): string {
+  const n = num(bytes);
   const units = ["B", "KiB", "MiB", "GiB", "TiB"];
   let v = n;
   let u = 0;
@@ -436,10 +635,11 @@ export function formatBytes(n: number): string {
 export interface CredentialInfo {
   project?: string;
   username: string;
-  has_password: boolean;
-  ssh_authorized_keys: string[];
-  created_at: number;
-  updated_at: number;
+  has_password?: boolean;
+  ssh_authorized_keys?: string[];
+  /** RFC 3339. */
+  created_at?: string;
+  updated_at?: string;
 }
 
 export interface CreateCredentialRequest {

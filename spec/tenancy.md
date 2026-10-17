@@ -1192,10 +1192,11 @@ Closed out after T1 (the T0 parts):
 - Names by id or slug where a tenant is named (`default_tenant`, grants).
 
 Left for later, and why:
-- **Names unique per tenant for disks and project networks (D24)**:
-  networks are keyed by name (REST paths, Cedar entities, OVS/OVN), so
-  this re-keys them by id. It lands with their port to gRPC (grpc.md G2
-  for disks, G3 for networks), so the messages carry ids from the start.
+- **Names unique per tenant for project networks (D24)**: networks are
+  keyed by name (REST paths, Cedar entities, OVS/OVN), so this re-keys
+  them by id; it lands with their port to gRPC (grpc.md G3), so the
+  messages carry ids from the start. **Disk** names are unique per tenant
+  since the storage family's port (G2, images.md §8).
 - **Per-cluster project quotas** and **guest credentials apart from the
   cluster** (their table is already directory-scoped): both only differ
   from today once a directory serves several clusters (T6).

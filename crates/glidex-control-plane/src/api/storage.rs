@@ -1,16 +1,19 @@
-//! Guest credentials, images and disks (spec/images.md §8,
-//! spec/credentials.md), scoped to projects.
+//! REST twins of `glidex.storage.v1` (spec/images.md §8,
+//! spec/credentials.md): the proto messages as JSON, path and query
+//! parameters merged in, and the same `service::storage` functions as the
+//! RPCs. Status codes say what the RPCs put in their answers (`202` for a
+//! write still under way, `204` once a deletion is done).
 
-use super::{ApiErr, Caller, credential_entities, disk_entities, err};
-use crate::authz::{Ent, EntitySet};
-use crate::credentials::{CreateCredentialRequest, CredentialInfo, UpdateCredentialRequest};
-use crate::images::{CreateDiskRequest, ExtendRootRequest, PullImageRequest, ResizeDiskRequest};
+use super::{ApiErr, Caller, Proto, proto_body, proto_no_content};
+use crate::service::storage::{self as svc, DiskReply};
 use axum::{
     Json,
     extract::{Path, Query},
     http::StatusCode,
-    response::IntoResponse,
+    response::{IntoResponse, Response},
 };
+use glidex_api::proto::glidex::storage::v1 as pb;
+use serde_json::Value;
 
 pub(crate) fn manager_err(e: crate::state::VmManagerError) -> ApiErr {
     super::error_to_response(e)
@@ -22,67 +25,56 @@ pub struct ProjectQuery {
     project: Option<String>,
 }
 
-// ---- guest credentials ---------------------------------------------------
-
-#[derive(serde::Deserialize)]
-pub struct CreateCredentialBody {
+#[derive(Debug, serde::Deserialize, Default)]
+pub struct WaitQuery {
     #[serde(default)]
-    project: Option<String>,
-    #[serde(flatten)]
-    req: CreateCredentialRequest,
+    pub(crate) wait: Option<u64>,
 }
+
+impl WaitQuery {
+    fn secs(&self) -> Option<u32> {
+        self.wait.map(|w| w.min(u64::from(u32::MAX)) as u32)
+    }
+}
+
+/// The old shape's enum values (spec/grpc.md §9.1 step 3).
+const ENUMS: &[(&str, &str)] = &[
+    ("format", "DISK_FORMAT"),
+    ("clone", "CLONE_MODE"),
+    ("mode", "EXTEND_MODE"),
+    ("kind", "IMAGE_KIND"),
+    ("hypervisor", "HYPERVISOR"),
+    ("arch", "ARCH"),
+];
+const RENAMES: &[(&str, &str, &str)] = &[(
+    "hypervisor",
+    "cloudhypervisor",
+    "HYPERVISOR_CLOUD_HYPERVISOR",
+)];
+
+fn body<T: serde::de::DeserializeOwned>(v: Value) -> Result<T, ApiErr> {
+    proto_body(v, ENUMS, RENAMES)
+}
+
+// ---- guest credentials ----------------------------------------------------
 
 pub async fn list_credentials(
     c: Caller,
     Query(q): Query<ProjectQuery>,
 ) -> Result<impl IntoResponse, ApiErr> {
-    let only = match &q.project {
-        Some(p) => Some(c.target_project(Some(p))?),
-        None => None,
+    let req = pb::ListCredentialsRequest {
+        project: q.project,
+        ..Default::default()
     };
-    let visible = c.visible_projects()?;
-    let creds = c
-        .manager()
-        .list_credentials_in(only.as_deref())
-        .map_err(manager_err)?;
-    let out: Vec<CredentialInfo> = creds
-        .iter()
-        .filter(|cr| visible.contains(&cr.project))
-        .filter(|cr| {
-            let (e, es) = credential_entities(&cr.project, &cr.username);
-            c.allowed("readCredential", e, es)
-        })
-        .map(CredentialInfo::from)
-        .collect();
-    Ok(Json(out))
+    Ok(Proto(StatusCode::OK, svc::list_credentials(&c, req)?))
 }
 
 pub async fn create_credential(
     c: Caller,
-    Json(body): Json<CreateCredentialBody>,
+    Json(v): Json<Value>,
 ) -> Result<impl IntoResponse, ApiErr> {
-    let project = c.target_project(body.project.as_deref())?;
-    c.set_project(&project);
-    c.set_target(format!("credential:{}", body.req.username));
-    c.require(
-        Ent::Project(project.clone()),
-        super::project_entities(&project),
-    )?;
-    let cred = c
-        .manager()
-        .create_credential_in(&project, body.req)
-        .map_err(manager_err)?;
-    Ok((StatusCode::CREATED, Json(CredentialInfo::from(&cred))))
-}
-
-/// A credential in the requested (or default) project the caller may see.
-fn visible_credential(c: &Caller, project: Option<&str>, username: &str) -> Result<String, ApiErr> {
-    let project = c.target_project(project)?;
-    c.set_project(&project);
-    c.set_target(format!("credential:{}", username));
-    let (e, es) = credential_entities(&project, username);
-    c.require_visible("readCredential", e, es, "credential")?;
-    Ok(project)
+    let req: pb::CreateCredentialRequest = body(v)?;
+    Ok(Proto(StatusCode::CREATED, svc::create_credential(&c, req)?))
 }
 
 pub async fn get_credential(
@@ -90,143 +82,171 @@ pub async fn get_credential(
     Path(username): Path<String>,
     Query(q): Query<ProjectQuery>,
 ) -> Result<impl IntoResponse, ApiErr> {
-    let project = visible_credential(&c, q.project.as_deref(), &username)?;
-    let cred = c
-        .manager()
-        .get_credential_in(&project, &username)
-        .map_err(manager_err)?;
-    Ok(Json(CredentialInfo::from(&cred)))
+    let req = pb::GetCredentialRequest {
+        username,
+        project: q.project,
+        ..Default::default()
+    };
+    Ok(Proto(StatusCode::OK, svc::get_credential(&c, req)?))
 }
 
+/// `PUT /credentials/{username}`: the fields present are the ones changed
+/// (an empty `ssh_authorized_keys` clears the keys), unless the body names
+/// an `update_mask`.
 pub async fn update_credential(
     c: Caller,
     Path(username): Path<String>,
     Query(q): Query<ProjectQuery>,
-    Json(req): Json<UpdateCredentialRequest>,
+    Json(v): Json<Value>,
 ) -> Result<impl IntoResponse, ApiErr> {
-    let project = visible_credential(&c, q.project.as_deref(), &username)?;
-    let cred = c
-        .manager()
-        .update_credential_in(&project, &username, req)
-        .map_err(manager_err)?;
-    Ok(Json(CredentialInfo::from(&cred)))
+    let present: Vec<String> = v
+        .as_object()
+        .map(|o| {
+            o.keys()
+                .filter(|k| *k == "password" || *k == "ssh_authorized_keys")
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut req: pb::UpdateCredentialRequest = body(v)?;
+    req.username = username;
+    if req.project.is_none() {
+        req.project = q.project;
+    }
+    if req
+        .update_mask
+        .as_option()
+        .is_none_or(|m| m.paths.is_empty())
+    {
+        req.update_mask = buffa_types::google::protobuf::FieldMask {
+            paths: present,
+            ..Default::default()
+        }
+        .into();
+    }
+    Ok(Proto(StatusCode::OK, svc::update_credential(&c, req)?))
 }
 
 pub async fn delete_credential(
     c: Caller,
     Path(username): Path<String>,
     Query(q): Query<ProjectQuery>,
-) -> Result<impl IntoResponse, ApiErr> {
-    let project = visible_credential(&c, q.project.as_deref(), &username)?;
-    c.manager()
-        .delete_credential_in(&project, &username)
-        .await
-        .map_err(manager_err)?;
-    Ok(StatusCode::NO_CONTENT)
+) -> Result<Response, ApiErr> {
+    let req = pb::DeleteCredentialRequest {
+        username,
+        project: q.project,
+        ..Default::default()
+    };
+    svc::delete_credential(&c, req).await?;
+    Ok(proto_no_content())
 }
 
 // ---- images (a shared, read-only library) --------------------------------
 
 #[derive(serde::Deserialize, Default)]
 pub struct ArchQuery {
-    /// `x86_64` or `aarch64` (default: this host's), spec/clustering.md §9.2.1.
+    /// `x86_64` or `aarch64` (or `ARCH_…`); default: this host's
+    /// (spec/clustering.md §9.2.1).
     #[serde(default)]
     arch: Option<String>,
 }
 
-fn arch_of(q: &ArchQuery) -> Result<Option<crate::images::catalog::Arch>, ApiErr> {
-    q.arch
+fn arch_of(q: &ArchQuery) -> Result<glidex_api::proto::glidex::common::v1::Arch, ApiErr> {
+    use glidex_api::proto::glidex::common::v1::Arch;
+    match q
+        .arch
         .as_deref()
-        .map(|a| {
-            crate::images::catalog::Arch::parse(a).ok_or_else(|| {
-                super::err(
-                    StatusCode::BAD_REQUEST,
-                    "invalid",
-                    format!("unknown arch {a}: x86_64 or aarch64"),
-                )
-            })
-        })
-        .transpose()
+        .map(|a| a.trim_start_matches("ARCH_").to_ascii_lowercase())
+    {
+        None => Ok(Arch::ARCH_UNSPECIFIED),
+        Some(a) if a == "x86_64" => Ok(Arch::ARCH_X86_64),
+        Some(a) if a == "aarch64" => Ok(Arch::ARCH_AARCH64),
+        Some(a) => Err(super::err(
+            StatusCode::BAD_REQUEST,
+            "invalid",
+            format!("unknown arch {a}: x86_64 or aarch64"),
+        )),
+    }
 }
 
 pub async fn image_catalog(
     c: Caller,
-    axum::extract::Query(q): axum::extract::Query<ArchQuery>,
+    Query(q): Query<ArchQuery>,
 ) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Cluster, EntitySet::new())?;
-    Ok(Json(c.manager().image_catalog(arch_of(&q)?)))
-}
-
-pub async fn list_images(c: Caller) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Cluster, EntitySet::new())?;
-    Ok(Json(c.manager().list_images().await))
+    let req = pb::GetImageCatalogRequest {
+        arch: arch_of(&q)?.into(),
+        ..Default::default()
+    };
+    Ok(Proto(StatusCode::OK, svc::image_catalog(&c, req)?))
 }
 
 pub async fn firmware_catalog(
     c: Caller,
-    axum::extract::Query(q): axum::extract::Query<ArchQuery>,
+    Query(q): Query<ArchQuery>,
 ) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Cluster, EntitySet::new())?;
-    Ok(Json(c.manager().firmware_catalog(arch_of(&q)?)))
+    let req = pb::GetFirmwareCatalogRequest {
+        arch: arch_of(&q)?.into(),
+        ..Default::default()
+    };
+    Ok(Proto(StatusCode::OK, svc::firmware_catalog(&c, req)?))
+}
+
+pub async fn list_images(c: Caller) -> Result<impl IntoResponse, ApiErr> {
+    Ok(Proto(
+        StatusCode::OK,
+        svc::list_images(&c, Default::default()).await?,
+    ))
 }
 
 pub async fn get_image(c: Caller, Path(id): Path<String>) -> Result<impl IntoResponse, ApiErr> {
-    let mut es = EntitySet::new();
-    es.image(&id);
-    c.require(Ent::Image(id.clone()), es)?;
-    Ok(Json(c.manager().get_image(&id).await.map_err(manager_err)?))
+    let req = pb::GetImageRequest {
+        id,
+        ..Default::default()
+    };
+    Ok(Proto(StatusCode::OK, svc::get_image(&c, req).await?))
 }
 
 /// `202` for a new download, `200` for one already in flight.
-pub async fn pull_image(
-    c: Caller,
-    Json(req): Json<PullImageRequest>,
-) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Cluster, EntitySet::new())?;
-    let (img, created) = c.manager().pull_image(req).await.map_err(manager_err)?;
-    c.set_target(format!("image:{}", img.id));
-    let status = if created {
+pub async fn pull_image(c: Caller, Json(v): Json<Value>) -> Result<impl IntoResponse, ApiErr> {
+    let req: pb::PullImageRequest = body(v)?;
+    let r = svc::pull_image(&c, req).await?;
+    let status = if r.created == Some(true) {
         StatusCode::ACCEPTED
     } else {
         StatusCode::OK
     };
-    Ok((status, Json(img)))
+    Ok(Proto(status, r))
 }
 
 /// A deletion request the image controller finishes (spec/reconciliation.md
-/// §6.3): `204` when the image is gone at once (normally), else `202` with
-/// it; with `?wait`, `200` once it is gone.
+/// §6.3): `204` once the image is gone (normally at once, or with `?wait`
+/// when it went in time), else `202` with it.
 pub async fn delete_image(
     c: Caller,
     Path(id): Path<String>,
     Query(w): Query<WaitQuery>,
-) -> Result<axum::response::Response, ApiErr> {
-    let mut es = EntitySet::new();
-    es.image(&id);
-    c.set_target(format!("image:{}", id));
-    c.require(Ent::Image(id.clone()), es)?;
-    let m = c.manager();
-    let Some(still) = m.delete_image(&id).await.map_err(manager_err)? else {
-        return Ok(StatusCode::NO_CONTENT.into_response());
+) -> Result<Response, ApiErr> {
+    let req = pb::DeleteImageRequest {
+        id,
+        wait_secs: w.secs(),
+        ..Default::default()
     };
-    let id = still.id.clone();
-    deleted_reply(m, still, w.wait, || {
-        m.images
-            .get_image(&id)
-            .ok()
-            .map(|i| m.images.image_response(&i, false))
+    let r = svc::delete_image(&c, req).await?;
+    Ok(match r.image.as_option() {
+        None => proto_no_content(),
+        Some(_) => Proto(StatusCode::ACCEPTED, r).into_response(),
     })
-    .await
 }
 
 /// The answer to a deletion still under way: `202` with the object, or
-/// with `?wait`, `200` once `look` finds it gone (`202` on timeout).
+/// with `?wait`, `200` once `look` finds it gone (`202` on timeout). For
+/// the families not ported yet (networks).
 pub(crate) async fn deleted_reply<T: serde::Serialize>(
     m: &crate::state::VmManager,
     still: T,
     wait: Option<u64>,
     look: impl FnMut() -> Option<T>,
-) -> Result<axum::response::Response, ApiErr> {
+) -> Result<Response, ApiErr> {
     let Some(secs) = wait else {
         return Ok((StatusCode::ACCEPTED, Json(still)).into_response());
     };
@@ -241,220 +261,35 @@ pub(crate) async fn deleted_reply<T: serde::Serialize>(
     )
 }
 
-// ---- disks -------------------------------------------------------------
-
-pub async fn list_disks(
-    c: Caller,
-    Query(q): Query<ProjectQuery>,
-) -> Result<impl IntoResponse, ApiErr> {
-    let only = match &q.project {
-        Some(p) => Some(c.target_project(Some(p))?),
-        None => None,
-    };
-    let visible = c.visible_projects()?;
-    let out: Vec<_> = c
-        .manager()
-        .list_disks()
-        .into_iter()
-        .filter(|d| only.as_ref().is_none_or(|p| *p == d.project) && visible.contains(&d.project))
-        .filter(|d| {
-            let (e, es) = disk_entities(&d.id, &d.project);
-            c.allowed("readDisk", e, es)
-        })
-        .collect();
-    Ok(Json(out))
-}
-
-/// The disk `key` if the caller may see it (else 404).
-async fn visible_disk(c: &Caller, key: &str) -> Result<crate::images::DiskResponse, ApiErr> {
-    let d = c
-        .manager()
-        .get_disk(key)
-        .await
-        .map_err(|_| err(StatusCode::NOT_FOUND, "not_found", "disk not found"))?;
-    c.set_project(&d.project);
-    c.set_target(format!("disk:{}", d.id));
-    let (e, es) = disk_entities(&d.id, &d.project);
-    c.require_visible("readDisk", e, es, "disk")?;
-    Ok(d)
-}
-
-pub async fn get_disk(c: Caller, Path(id): Path<String>) -> Result<impl IntoResponse, ApiErr> {
-    Ok(Json(visible_disk(&c, &id).await?))
-}
-
-#[derive(Debug, serde::Deserialize, Default)]
-pub struct WaitQuery {
-    #[serde(default)]
-    pub(crate) wait: Option<u64>,
-}
-
-/// The answer to a disk write (spec/reconciliation.md §12.3): at once with
-/// `immediate` (`201` for a create, else `202`); with `?wait`, once the
-/// disk settled (`ok`), failed (the error the call would have returned
-/// synchronously), or the time ran out (`202`).
-async fn disk_reply(
-    c: &Caller,
-    id: &str,
-    wait: Option<u64>,
-    ok: StatusCode,
-    immediate: StatusCode,
-) -> axum::response::Response {
-    let Some(secs) = wait else {
-        return match c.manager().get_disk(id).await {
-            Ok(d) => (immediate, Json(d)).into_response(),
-            Err(_) => StatusCode::NO_CONTENT.into_response(),
-        };
-    };
-    match c
-        .manager()
-        .wait_disk(id, std::time::Duration::from_secs(secs.min(300)))
-        .await
-    {
-        (_, None) => StatusCode::NO_CONTENT.into_response(),
-        (false, Some(d)) => (StatusCode::ACCEPTED, Json(d)).into_response(),
-        (true, Some(d)) => {
-            let ready = d.conditions.iter().find(|c| c.kind == "Ready").cloned();
-            match ready.as_ref().map(|c| c.reason.as_str()) {
-                Some("InvalidDisk") | Some("ResizeInvalid") => {
-                    let msg = ready.map(|c| c.message).unwrap_or_default();
-                    err(StatusCode::BAD_REQUEST, "invalid_disk", msg).into_response()
-                }
-                _ if d.phase == crate::images::DiskPhase::Failed
-                    || d.phase == crate::images::DiskPhase::Missing =>
-                {
-                    let msg = ready.map(|c| c.message).unwrap_or_default();
-                    err(StatusCode::INTERNAL_SERVER_ERROR, "image_error", msg).into_response()
-                }
-                _ => (ok, Json(d)).into_response(),
-            }
-        }
-    }
-}
-
-pub async fn create_disk(
-    c: Caller,
-    Query(w): Query<WaitQuery>,
-    Json(req): Json<CreateDiskRequest>,
-) -> Result<axum::response::Response, ApiErr> {
-    let project = c.target_project(req.project.as_deref())?;
-    c.set_project(&project);
-    c.require(
-        Ent::Project(project.clone()),
-        super::project_entities(&project),
-    )?;
-    c.require_admitted(&project)?;
-    if let Some(image) = &req.image {
-        let mut es = EntitySet::new();
-        es.image(image);
-        c.require_action("readImage", Ent::Image(image.clone()), es, &[])?;
-    }
-    let quota = c.quota_mode(&project);
-    let (disk, over) = c
-        .manager()
-        .create_disk_in(&project, req, quota)
-        .await
-        .map_err(manager_err)?;
-    c.note_overruns(&over);
-    c.set_target(format!("disk:{}", disk.id));
-    Ok(disk_reply(
-        &c,
-        &disk.id,
-        w.wait,
-        StatusCode::CREATED,
-        StatusCode::CREATED,
-    )
-    .await)
-}
-
-pub async fn resize_disk(
-    c: Caller,
-    Path(id): Path<String>,
-    Query(w): Query<WaitQuery>,
-    Json(req): Json<ResizeDiskRequest>,
-) -> Result<axum::response::Response, ApiErr> {
-    let d = visible_disk(&c, &id).await?;
-    let quota = c.quota_mode(&d.project);
-    let (disk, over) = c
-        .manager()
-        .resize_disk_with(&d.id, req, quota)
-        .await
-        .map_err(manager_err)?;
-    c.note_overruns(&over);
-    Ok(disk_reply(&c, &disk.id, w.wait, StatusCode::OK, StatusCode::ACCEPTED).await)
-}
-
-pub async fn extend_root(
-    c: Caller,
-    Path(id): Path<String>,
-    Query(w): Query<WaitQuery>,
-    body: Option<Json<ExtendRootRequest>>,
-) -> Result<axum::response::Response, ApiErr> {
-    let d = visible_disk(&c, &id).await?;
-    let mode = body.map(|Json(b)| b.mode).unwrap_or_default();
-    let disk = c
-        .manager()
-        .extend_root(&d.id, mode)
-        .await
-        .map_err(manager_err)?;
-    Ok(disk_reply(&c, &disk.id, w.wait, StatusCode::OK, StatusCode::ACCEPTED).await)
-}
-
-/// `204` once the disk is gone (normally at once), `202` while an
-/// operation on it finishes first.
-pub async fn delete_disk(
-    c: Caller,
-    Path(id): Path<String>,
-) -> Result<axum::response::Response, ApiErr> {
-    let d = visible_disk(&c, &id).await?;
-    c.manager().delete_disk(&d.id).await.map_err(manager_err)?;
-    Ok(match c.manager().get_disk(&d.id).await {
-        Ok(still) => (StatusCode::ACCEPTED, Json(still)).into_response(),
-        Err(_) => StatusCode::NO_CONTENT.into_response(),
-    })
-}
-
-pub async fn disk_events(c: Caller, Path(id): Path<String>) -> Result<impl IntoResponse, ApiErr> {
-    let d = visible_disk(&c, &id).await?;
-    Ok(Json(
-        serde_json::json!({ "events": c.manager().object_events("disk", &d.id).map_err(manager_err)? }),
-    ))
-}
-
 pub async fn image_events(c: Caller, Path(id): Path<String>) -> Result<impl IntoResponse, ApiErr> {
-    let mut es = EntitySet::new();
-    es.image(&id);
-    c.require(Ent::Image(id.clone()), es)?;
-    let img = c.manager().get_image(&id).await.map_err(manager_err)?;
-    Ok(Json(
-        serde_json::json!({ "events": c.manager().object_events("image", &img.id).map_err(manager_err)? }),
-    ))
+    let req = pb::ListImageEventsRequest {
+        id,
+        ..Default::default()
+    };
+    Ok(Proto(StatusCode::OK, svc::image_events(&c, req).await?))
 }
 
 /// `POST /images/{id}/retry` (`pullImage`): download a failed image again.
-#[derive(serde::Deserialize)]
-pub struct CopyBody {
-    /// A node id or name.
-    node: String,
+pub async fn retry_image(c: Caller, Path(id): Path<String>) -> Result<impl IntoResponse, ApiErr> {
+    let req = pb::RetryImageRequest {
+        id,
+        ..Default::default()
+    };
+    Ok(Proto(StatusCode::ACCEPTED, svc::retry_image(&c, req)?))
 }
 
-/// `POST /images/{id}/copies`: keep a copy on a node ahead of need
+/// `POST /images/{id}/copies` `{node}`: keep a copy on a node ahead of need
 /// (spec/clustering.md §9.2.2).
 pub async fn add_image_copy(
     c: Caller,
     Path(id): Path<String>,
-    Json(b): Json<CopyBody>,
+    Json(v): Json<Value>,
 ) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Cluster, EntitySet::new())?;
-    c.set_target(format!("image:{}", id));
-    Ok((
+    let mut req: pb::AddImageCopyRequest = body(v)?;
+    req.id = id;
+    Ok(Proto(
         StatusCode::ACCEPTED,
-        Json(
-            c.manager()
-                .add_image_copy(&id, &b.node)
-                .await
-                .map_err(manager_err)?,
-        ),
+        svc::add_image_copy(&c, req).await?,
     ))
 }
 
@@ -463,24 +298,120 @@ pub async fn remove_image_copy(
     c: Caller,
     Path((id, node)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Cluster, EntitySet::new())?;
-    c.set_target(format!("image:{}", id));
-    Ok((
+    let req = pb::RemoveImageCopyRequest {
+        id,
+        node,
+        ..Default::default()
+    };
+    Ok(Proto(
         StatusCode::ACCEPTED,
-        Json(
-            c.manager()
-                .remove_image_copy(&id, &node)
-                .await
-                .map_err(manager_err)?,
-        ),
+        svc::remove_image_copy(&c, req).await?,
     ))
 }
 
-pub async fn retry_image(c: Caller, Path(id): Path<String>) -> Result<impl IntoResponse, ApiErr> {
-    c.require(Ent::Cluster, EntitySet::new())?;
-    c.set_target(format!("image:{}", id));
-    Ok((
-        StatusCode::ACCEPTED,
-        Json(c.manager().retry_image(&id).map_err(manager_err)?),
-    ))
+// ---- disks -------------------------------------------------------------
+
+pub async fn list_disks(
+    c: Caller,
+    Query(q): Query<ProjectQuery>,
+) -> Result<impl IntoResponse, ApiErr> {
+    let req = pb::ListDisksRequest {
+        project: q.project,
+        ..Default::default()
+    };
+    Ok(Proto(StatusCode::OK, svc::list_disks(&c, req)?))
+}
+
+pub async fn get_disk(c: Caller, Path(id): Path<String>) -> Result<impl IntoResponse, ApiErr> {
+    let req = pb::GetDiskRequest {
+        id,
+        ..Default::default()
+    };
+    Ok(Proto(StatusCode::OK, svc::get_disk(&c, req).await?))
+}
+
+/// The answer to a disk write (spec/reconciliation.md §12.3): at once with
+/// `immediate` (`201` for a create, else `202`); with `?wait`, `ok` once
+/// the disk settled, `202` when the time ran out; `204` once it's gone.
+/// The body is `{disk, settled}` (every write's response has that shape).
+fn disk_reply(r: DiskReply, ok: StatusCode, immediate: StatusCode) -> Response {
+    let status = match &r {
+        DiskReply::Gone => return proto_no_content(),
+        DiskReply::Now(_) => immediate,
+        DiskReply::Settled(_) => ok,
+        DiskReply::Pending(_) => StatusCode::ACCEPTED,
+    };
+    let (disk, settled) = r.parts();
+    let body = pb::CreateDiskResponse {
+        disk: disk.into(),
+        settled,
+        ..Default::default()
+    };
+    Proto(status, body).into_response()
+}
+
+pub async fn create_disk(
+    c: Caller,
+    Query(w): Query<WaitQuery>,
+    Json(v): Json<Value>,
+) -> Result<Response, ApiErr> {
+    let mut req: pb::CreateDiskRequest = body(v)?;
+    req.wait_secs = req.wait_secs.or(w.secs());
+    let r = svc::create_disk(&c, req).await?;
+    Ok(disk_reply(r, StatusCode::CREATED, StatusCode::CREATED))
+}
+
+pub async fn resize_disk(
+    c: Caller,
+    Path(id): Path<String>,
+    Query(w): Query<WaitQuery>,
+    Json(v): Json<Value>,
+) -> Result<Response, ApiErr> {
+    let mut req: pb::ResizeDiskRequest = body(v)?;
+    req.id = id;
+    req.wait_secs = req.wait_secs.or(w.secs());
+    let r = svc::resize_disk(&c, req).await?;
+    Ok(disk_reply(r, StatusCode::OK, StatusCode::ACCEPTED))
+}
+
+pub async fn extend_root(
+    c: Caller,
+    Path(id): Path<String>,
+    Query(w): Query<WaitQuery>,
+    v: Option<Json<Value>>,
+) -> Result<Response, ApiErr> {
+    let v = v.map(|Json(v)| v).unwrap_or_else(|| serde_json::json!({}));
+    let mut req: pb::ExtendRootRequest = body(v)?;
+    req.id = id;
+    req.wait_secs = req.wait_secs.or(w.secs());
+    let r = svc::extend_root(&c, req).await?;
+    Ok(disk_reply(r, StatusCode::OK, StatusCode::ACCEPTED))
+}
+
+/// `204` once the disk is gone (normally at once), `202` while an
+/// operation on it finishes first.
+pub async fn delete_disk(c: Caller, Path(id): Path<String>) -> Result<Response, ApiErr> {
+    let req = pb::DeleteDiskRequest {
+        id,
+        ..Default::default()
+    };
+    Ok(match svc::delete_disk(&c, req).await? {
+        None => proto_no_content(),
+        Some(d) => Proto(
+            StatusCode::ACCEPTED,
+            pb::DeleteDiskResponse {
+                disk: svc::disk_pb(&d).into(),
+                ..Default::default()
+            },
+        )
+        .into_response(),
+    })
+}
+
+pub async fn disk_events(c: Caller, Path(id): Path<String>) -> Result<impl IntoResponse, ApiErr> {
+    let req = pb::ListDiskEventsRequest {
+        id,
+        ..Default::default()
+    };
+    Ok(Proto(StatusCode::OK, svc::disk_events(&c, req).await?))
 }

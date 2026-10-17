@@ -2,7 +2,7 @@ import { useRef, useEffect, useState, type FormEvent } from "react";
 import { listCredentials, listDisks, listImages, listNetworks } from "../api";
 import { Link } from "react-router-dom";
 import type { CreateVmRequest, CredentialInfo, DiskInfo, HypervisorType, ImageInfo, Network } from "../types";
-import { HYPERVISOR_LABELS, firmwareFor, formatBytes, networkUsableBy } from "../types";
+import { HYPERVISOR_LABELS, archLabel, firmwareFor, formatBytes, imageState, isFirmware, networkUsableBy } from "../types";
 import { useSession } from "../session";
 import { useNodes } from "../nodes";
 import PlacementPicker from "./PlacementPicker";
@@ -91,7 +91,7 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
       .catch(() => setNetworks([]));
     listImages()
       .then((imgs) => {
-        const ready = imgs.filter((i) => i.status.state === "ready" && !i.deleting && i.kind !== "firmware");
+        const ready = imgs.filter((i) => imageState(i) === "ready" && !i.deleting && !isFirmware(i));
         setImages(ready);
         setFirmwareImages(imgs);
         setFirmwareImage((cur) => cur || (firmwareFor(imgs, "cloudhypervisor")[0]?.id ?? ""));
@@ -266,7 +266,7 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
               {firmwareChoices.map((i) => (
                 <option key={i.id} value={i.id}>
                   {i.name}
-                  {i.source.kind === "firmware" && i.source.version ? ` (${i.source.version})` : ""}
+                  {i.source?.firmware?.version ? ` (${i.source.firmware.version})` : ""}
                 </option>
               ))}
             </select>
@@ -315,7 +315,7 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
                 >
                   {images.map((i) => (
                     <option key={i.id} value={i.id}>
-                      {i.name} ({i.arch}, {formatBytes(i.virtual_size_bytes)})
+                      {i.name} ({archLabel(i.arch)}, {formatBytes(i.virtual_size_bytes)})
                     </option>
                   ))}
                 </select>

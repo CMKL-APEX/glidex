@@ -20,7 +20,7 @@ test.afterEach(async () => {
 
 test("the VM form says there is no login without credentials", async ({ page }) => {
   const project = await defaultProject();
-  for (const c of await api<{ username: string }[]>(`/credentials?project=${project}`)) {
+  for (const c of (await api<{ credentials?: { username: string }[] }>(`/credentials?project=${project}`)).credentials ?? []) {
     await removeCredential(c.username);
   }
   await page.goto("/");

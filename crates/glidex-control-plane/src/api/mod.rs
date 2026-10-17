@@ -1157,6 +1157,51 @@ async fn health_check() -> impl IntoResponse {
     Json(serde_json::json!({ "status": "ok" }))
 }
 
+/// A REST answer in the proto shape (spec/grpc.md §9.1): the message as
+/// proto3 JSON, marked `Glidex-Api-Shape: proto` so clients can tell.
+pub(crate) struct Proto<T>(pub StatusCode, pub T);
+
+pub(crate) const API_SHAPE: &str = "glidex-api-shape";
+
+impl<T: serde::Serialize> axum::response::IntoResponse for Proto<T> {
+    fn into_response(self) -> axum::response::Response {
+        (self.0, [(API_SHAPE, "proto")], Json(self.1)).into_response()
+    }
+}
+
+/// `204`, marked as a proto-shape answer.
+pub(crate) fn proto_no_content() -> axum::response::Response {
+    (StatusCode::NO_CONTENT, [(API_SHAPE, "proto")]).into_response()
+}
+
+/// Read a REST body as proto message `T`, first mapping what the shape
+/// before the port sent (spec/grpc.md §9.1 step 3): `enums` names fields
+/// whose old lower-case values become `PREFIX_VALUE` (`-` as `_`), and
+/// `renames` maps old values that don't follow that rule.
+pub(crate) fn proto_body<T: serde::de::DeserializeOwned>(
+    mut v: serde_json::Value,
+    enums: &[(&str, &str)],
+    renames: &[(&str, &str, &str)],
+) -> Result<T, ApiErr> {
+    if let Some(o) = v.as_object_mut() {
+        for (field, prefix) in enums {
+            if let Some(serde_json::Value::String(s)) = o.get_mut(*field)
+                && !s.starts_with(prefix)
+            {
+                let old = s.clone();
+                *s = renames
+                    .iter()
+                    .find(|(f, from, _)| f == field && *from == old)
+                    .map(|(_, _, to)| to.to_string())
+                    .unwrap_or_else(|| {
+                        format!("{prefix}_{}", old.to_ascii_uppercase().replace('-', "_"))
+                    });
+            }
+        }
+    }
+    serde_json::from_value(v).map_err(|e| err(StatusCode::BAD_REQUEST, "invalid", e.to_string()))
+}
+
 pub(crate) fn err(status: StatusCode, code: &str, message: impl Into<String>) -> ApiErr {
     (status, Json(ApiError::new(code, message)))
 }

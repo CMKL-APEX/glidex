@@ -140,9 +140,11 @@ async fn snapshot(
                     }
                     let (e, es) = disk_entities(&d.id, &d.project);
                     if c.allowed("readDisk", e, es) {
+                        // The proto shape, as REST answers (spec/grpc.md §9.1).
                         view.insert(
                             (Kind::Disk, d.id.clone()),
-                            serde_json::to_value(&d).unwrap_or_default(),
+                            serde_json::to_value(crate::service::storage::disk_pb(&d))
+                                .unwrap_or_default(),
                         );
                     }
                 }
@@ -152,7 +154,8 @@ async fn snapshot(
                     for img in m.list_images().await {
                         view.insert(
                             (Kind::Image, img.id.clone()),
-                            serde_json::to_value(&img).unwrap_or_default(),
+                            serde_json::to_value(crate::service::storage::image_pb(&img))
+                                .unwrap_or_default(),
                         );
                     }
                 }

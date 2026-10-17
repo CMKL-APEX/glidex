@@ -719,7 +719,7 @@ Running or Paused VMs get `400 invalid_state` in v1.
 | `GET` | `/images` | List images |
 | `POST` | `/images` | `{catalog, name?}`, `{firmware, name?}` or `{url, sha256?, name?, kind?, hypervisor?, vars_url?, vars_sha256?}`. Returns `202` and an `Image` (`200` with the existing record if that catalog or firmware key is already downloading) |
 | `GET` | `/images/{id}` | Image, including download progress |
-| `DELETE` | `/images/{id}[?wait=N]` | Delete, or cancel a download (§6.6). `204`, or `202` with the image while the controller finishes; with `wait`, `200` once gone. `409` while a disk uses it |
+| `DELETE` | `/images/{id}[?wait=N]` | Delete, or cancel a download (§6.6). `204` once gone (with `wait`, if it went in time), else `202` with the image while the controller finishes. `409` while a disk uses it |
 | `POST` | `/images/{id}/retry` | Download a failed image again (§5). Returns `202` |
 | `GET` | `/images/{id}/events` | The image's events |
 | `GET` | `/disks` | List disks |
@@ -732,20 +732,48 @@ Running or Paused VMs get `400 invalid_state` in v1.
 | `POST` | `/vms/{id}/disks` | Attach a data disk (stopped VM) |
 | `DELETE` | `/vms/{id}/disks/{disk}` | Detach a data disk (stopped VM) |
 
-Image responses carry `kind` (`disk` | `firmware`), `hypervisor` (firmware
-only), `used_by_vms` (firmware in use) and `deleting: true` while a
-deletion is in progress (omitted otherwise).
+These are the REST twins of `glidex.storage.v1` (`ImageService`,
+`DiskService`, and `CredentialService` for spec/credentials.md;
+[grpc.md](grpc.md) §9.1). Bodies are the proto messages as JSON:
+- **Wrapped answers**: lists are `{images}`, `{disks}`, `{items}` (the
+  catalogs), `{events}`; one object is `{image}` or `{disk}`; disk writes
+  answer `{disk, settled}` (`settled` only with `wait`), a pull `{image,
+  created}`.
+- **Values**: 64-bit numbers (`size_bytes`, `virtual_size_bytes`, …) are
+  strings, timestamps RFC 3339, enums their proto names
+  (`DISK_PHASE_READY`, `IMAGE_STATE_DOWNLOADING`, `DISK_FORMAT_QCOW2`,
+  `CLONE_MODE_LINKED`, `IMAGE_KIND_FIRMWARE`, `HYPERVISOR_QEMU`,
+  `ARCH_X86_64`, `EXTEND_MODE_ON_BOOT`).
+- **Oneofs**: an image's `source` is `{catalog}`, `{url}` or
+  `{firmware}`, and a disk's `origin` is `{blank: {}}` or `{image:
+  {image_id, mode}}`.
+- **Absent fields**: fields at their default are left out (`deleting`,
+  `pinned` and `vars_template` appear only when true).
+- **Old requests**: for one release, request bodies may still use the old
+  lower-case enum values (`"qcow2"`, `"on-boot"`, `"x86_64"`), and
+  responses carry `Glidex-Api-Shape: proto`.
+- **Deleting an image with `wait`**: answers `204` once it is gone (`200`
+  before).
+
+Image responses carry `kind`, `hypervisor` (firmware only), `used_by_vms`
+(firmware in use) and `deleting: true` while a deletion is in progress.
 
 For images and disks, `{id}` path segments (and the `image`, `root_disk`,
-`data_disks` and `disk` request fields) accept an id or a unique name.
-Names are 1–64 characters of `A-Z a-z 0-9 . _ -` and must not start with
-`.`. VM routes still take ids only.
+`data_disks` and `disk` request fields) accept an id or a name. Names are
+1–64 characters of `A-Z a-z 0-9 . _ -` and must not start with `.`. Image
+names are unique on the cluster. **Disk names are unique per tenant**
+([tenancy.md](tenancy.md) D24): two tenants may each have a disk `data`.
+A name resolves among the disks of the tenant in question (a VM's
+project's tenant for the VM's disks, the caller's tenants for
+`/disks/{id}`); a name two of the caller's tenants share answers `409
+ambiguous`, and the id works. VM routes still take ids only.
 
 New error codes for the `ApiError` envelope (`api::image_error_response`):
 
 | `ImageError` variant | HTTP | `error` |
 |---|---|---|
 | `NotFound` | `404` | `not_found` |
+| `Ambiguous` (a name more than one disk of the caller's tenants has) | `409` | `ambiguous` |
 | `AlreadyExists`, `InUse`, `Busy`, `NotReady` | `409` | `conflict` |
 | `InvalidImage` (bad URL, scheme, catalog key, size) | `400` | `invalid_image` |
 | `InvalidDisk` (size, layout, shrink below minimum; `details.min_size_bytes`) | `400` | `invalid_disk` |

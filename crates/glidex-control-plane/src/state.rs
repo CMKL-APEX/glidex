@@ -631,6 +631,7 @@ impl VmManager {
     /// node by node, the scheduler's choice first (spec/clustering-ui.md §5.1).
     pub async fn preview_placement(
         &self,
+        project: &str,
         config: &VmConfig,
         pin: Option<String>,
         data_disks: &[String],
@@ -638,7 +639,7 @@ impl VmManager {
     ) -> Result<Vec<crate::scheduler::NodeFit>, VmManagerError> {
         let mut disks = Vec::new();
         for key in data_disks {
-            disks.push(self.images.get_disk(key)?);
+            disks.push(self.images.get_disk_in(key, self.tenant_scope(project))?);
         }
         let mut req = self.sched_request_for(config, pin, &disks);
         if let Some(key) = image {
@@ -1484,7 +1485,11 @@ impl VmManager {
         // The VM's architecture: its root disk's image's (§9.2.1).
         let root_arch = match (&sel.image, &sel.root_disk) {
             (Some(key), _) => Some(self.images.get_image(key)?.arch),
-            (None, Some(key)) => match self.images.get_disk(key)?.origin {
+            (None, Some(key)) => match self
+                .images
+                .get_disk_in(key, self.tenant_scope(project))?
+                .origin
+            {
                 crate::images::DiskOrigin::Image { image_id, .. } => {
                     self.images.get_image(&image_id).ok().map(|i| i.arch)
                 }
@@ -1648,7 +1653,10 @@ impl VmManager {
             // controller makes it once the image is ready (§7.6), so the
             // image may still be downloading.
             let mut disk_name = root_disk_name(&vm.name);
-            if self.images.disk_name_taken(&disk_name) {
+            if self
+                .images
+                .disk_name_taken_in(&disk_name, self.tenant_scope(&vm.project))
+            {
                 disk_name = format!("{}-{}", disk_name.trim_end_matches("-root"), &vm.id[..8]);
             }
             let req = CreateDiskRequest {
@@ -1658,7 +1666,9 @@ impl VmManager {
                 image: Some(image.clone()),
                 ..Default::default()
             };
-            let mut d = self.images.new_disk_record(&req)?;
+            let mut d = self
+                .images
+                .new_disk_record(&req, self.tenant_scope(&vm.project))?;
             if sel.root_disk_size_gib.is_none() {
                 let disk_delta = Delta {
                     disk_gib: gib_ceil(self.estimated_size(&d)),
@@ -1873,7 +1883,7 @@ impl VmManager {
         project: &str,
         vm_id: Option<&str>,
     ) -> Result<Disk, VmManagerError> {
-        let d = self.images.get_disk(key)?;
+        let d = self.images.get_disk_in(key, self.tenant_scope(project))?;
         if d.project != project {
             return Err(invalid(format!(
                 "disk {} belongs to another project",
@@ -2288,7 +2298,9 @@ impl VmManager {
     /// launch (`RestartRequired`, §7.3).
     pub async fn attach_disk(&self, vm_id: &str, key: &str) -> Result<Vm, VmManagerError> {
         let vm = self.get_vm(vm_id).await?;
-        let d = self.images.get_disk(key)?;
+        let d = self
+            .images
+            .get_disk_in(key, self.tenant_scope(&vm.project))?;
         let mut keys = vm.config().data_disks.clone();
         keys.push(d.id);
         let patch = VmPatch {
@@ -2305,7 +2317,9 @@ impl VmManager {
 
     pub async fn detach_disk(&self, vm_id: &str, key: &str) -> Result<Vm, VmManagerError> {
         let vm = self.get_vm(vm_id).await?;
-        let disk = self.images.get_disk(key)?;
+        let disk = self
+            .images
+            .get_disk_in(key, self.tenant_scope(&vm.project))?;
         let mut keys = vm.config().data_disks.clone();
         let Some(pos) = keys.iter().position(|d| *d == disk.id) else {
             let msg = if vm.config().root_disk.as_ref() == Some(&disk.id) {
@@ -2767,6 +2781,34 @@ impl VmManager {
             .collect()
     }
 
+    /// Which projects share `project`'s tenant: the scope disk names are
+    /// unique and resolved in (spec/tenancy.md D24).
+    pub fn tenant_scope(&self, project: &str) -> impl Fn(&str) -> bool + use<> {
+        let all = self.projects.list().unwrap_or_default();
+        let tenant = all
+            .iter()
+            .find(|p| p.id == project)
+            .map(|p| p.tenant_id.clone());
+        let ids: std::collections::HashSet<String> = all
+            .into_iter()
+            .filter(|p| Some(&p.tenant_id) == tenant.as_ref())
+            .map(|p| p.id)
+            .collect();
+        let me = project.to_string();
+        move |p: &str| p == me || ids.contains(p)
+    }
+
+    /// Disk `key` (id, or a name in `project`'s tenant), as the API shows it.
+    pub async fn get_disk_for(
+        &self,
+        project: &str,
+        key: &str,
+    ) -> Result<DiskResponse, VmManagerError> {
+        let d = self.images.get_disk_in(key, self.tenant_scope(project))?;
+        let mgr = self.images.clone();
+        Ok(blocking(move || Ok(mgr.disk_response(&d, true))).await?)
+    }
+
     pub async fn get_disk(&self, key: &str) -> Result<DiskResponse, VmManagerError> {
         let d = self.images.get_disk(key)?;
         let mgr = self.images.clone();
@@ -2817,7 +2859,9 @@ impl VmManager {
         req.project = Some(project.to_string());
         // The VM lock serializes quota checks with VM creation.
         let vms = self.vms.write().await;
-        let disk = self.images.new_disk_record(&req)?;
+        let disk = self
+            .images
+            .new_disk_record(&req, self.tenant_scope(project))?;
         let usage = self.usage_locked(project, &vms)?;
         let mut bypassed = Vec::new();
         let delta = Delta {

@@ -46,6 +46,16 @@ fn json_of(body: &str) -> Value {
     serde_json::from_str(body).unwrap_or(Value::Null)
 }
 
+/// The `credential` a write or get answers with (`{credential: {...}}`).
+fn credential_of(v: &Value) -> &Value {
+    &v["credential"]
+}
+
+/// A repeated field: proto3 JSON leaves an empty list out.
+fn list(v: &Value) -> Vec<Value> {
+    v.as_array().cloned().unwrap_or_default()
+}
+
 const PASSWORD: &str = "correct-horse-battery";
 const KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample alice@host";
 
@@ -81,6 +91,7 @@ async fn responses_never_contain_password_or_hash() {
     let (app, manager, _tmp) = create_test_app();
 
     let created = create_alice(&app).await;
+    let created = credential_of(&created);
     assert_eq!(created["username"], "alice");
     assert_eq!(created["has_password"], true);
     assert_eq!(created["ssh_authorized_keys"], json!([KEY]));
@@ -88,6 +99,15 @@ async fn responses_never_contain_password_or_hash() {
     for (method, uri) in [("GET", "/credentials"), ("GET", "/credentials/alice")] {
         let (status, body) = request(&app, method, uri, None).await;
         assert_eq!(status, StatusCode::OK);
+        let v = json_of(&body);
+        let names: Vec<Value> = match uri {
+            "/credentials" => list(&v["credentials"])
+                .iter()
+                .map(|c| c["username"].clone())
+                .collect(),
+            _ => vec![credential_of(&v)["username"].clone()],
+        };
+        assert_eq!(names, vec![json!("alice")], "{uri}: {body}");
         assert!(!body.contains(PASSWORD), "{uri} leaked the password");
         assert!(!body.contains("$6$"), "{uri} leaked the hash");
         assert!(!body.contains("password_hash"), "{uri}: {body}");
@@ -132,7 +152,12 @@ async fn credential_crud_status_codes() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(json_of(&body)["ssh_authorized_keys"], json!([]));
+    let updated = json_of(&body);
+    assert_eq!(credential_of(&updated)["username"], "alice", "{body}");
+    assert!(
+        list(&credential_of(&updated)["ssh_authorized_keys"]).is_empty(),
+        "{body}"
+    );
 
     let (status, _) = request(&app, "GET", "/credentials/nobody-here", None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);

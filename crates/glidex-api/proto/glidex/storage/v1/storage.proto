@@ -1,0 +1,647 @@
+// Guest credentials, images and disks (spec/images.md §8,
+// spec/credentials.md), scoped to projects. The REST twins answer with
+// these messages as JSON (spec/grpc.md §9.1).
+syntax = "proto3";
+
+package glidex.storage.v1;
+
+import "glidex/api/v1/options.proto";
+import "glidex/common/v1/common.proto";
+import "google/protobuf/field_mask.proto";
+import "google/protobuf/timestamp.proto";
+
+// ---- guest credentials ------------------------------------------------------
+
+service CredentialService {
+  rpc ListCredentials(ListCredentialsRequest) returns (ListCredentialsResponse) {
+    option (glidex.api.v1.op) = {
+      action: "listCredentials"
+      kind: KIND_READ
+      rest: "GET /credentials"
+    };
+  }
+  rpc CreateCredential(CreateCredentialRequest) returns (CreateCredentialResponse) {
+    option (glidex.api.v1.op) = {
+      action: "createCredential"
+      kind: KIND_WRITE
+      rest: "POST /credentials"
+    };
+  }
+  rpc GetCredential(GetCredentialRequest) returns (GetCredentialResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readCredential"
+      kind: KIND_READ
+      rest: "GET /credentials/{username}"
+    };
+  }
+  // Changes the fields `update_mask` names (`password`,
+  // `ssh_authorized_keys`); an empty key list clears the keys.
+  rpc UpdateCredential(UpdateCredentialRequest) returns (UpdateCredentialResponse) {
+    option (glidex.api.v1.op) = {
+      action: "updateCredential"
+      kind: KIND_WRITE
+      rest: "PUT /credentials/{username}"
+    };
+  }
+  rpc DeleteCredential(DeleteCredentialRequest) returns (DeleteCredentialResponse) {
+    option (glidex.api.v1.op) = {
+      action: "deleteCredential"
+      kind: KIND_WRITE
+      rest: "DELETE /credentials/{username}"
+    };
+  }
+}
+
+// A guest login (everything but the password hash).
+message Credential {
+  string username = 1;
+  string project = 2;
+  optional bool has_password = 3 [json_name = "has_password"];
+  repeated string ssh_authorized_keys = 4 [json_name = "ssh_authorized_keys"];
+  google.protobuf.Timestamp created_at = 5 [json_name = "created_at"];
+  google.protobuf.Timestamp updated_at = 6 [json_name = "updated_at"];
+}
+
+message ListCredentialsRequest {
+  // Project id or name; all the caller may see when absent.
+  optional string project = 1;
+}
+message ListCredentialsResponse {
+  repeated Credential credentials = 1;
+}
+
+message CreateCredentialRequest {
+  // Default: the caller's default project.
+  optional string project = 1;
+  string username = 2;
+  optional string password = 3 [(glidex.api.v1.secret) = true];
+  repeated string ssh_authorized_keys = 4 [json_name = "ssh_authorized_keys"];
+}
+message CreateCredentialResponse {
+  Credential credential = 1;
+}
+
+message GetCredentialRequest {
+  string username = 1;
+  optional string project = 2;
+}
+message GetCredentialResponse {
+  Credential credential = 1;
+}
+
+message UpdateCredentialRequest {
+  string username = 1;
+  optional string project = 2;
+  optional string password = 3 [(glidex.api.v1.secret) = true];
+  repeated string ssh_authorized_keys = 4 [json_name = "ssh_authorized_keys"];
+  // Which of `password`, `ssh_authorized_keys` to change. REST derives it
+  // from the fields present.
+  google.protobuf.FieldMask update_mask = 5 [json_name = "update_mask"];
+}
+message UpdateCredentialResponse {
+  Credential credential = 1;
+}
+
+message DeleteCredentialRequest {
+  string username = 1;
+  optional string project = 2;
+}
+message DeleteCredentialResponse {}
+
+// ---- images (a shared, read-only library) -------------------------------------
+
+service ImageService {
+  rpc GetImageCatalog(GetImageCatalogRequest) returns (GetImageCatalogResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readImage"
+      kind: KIND_READ
+      rest: "GET /images/catalog"
+    };
+  }
+  rpc GetFirmwareCatalog(GetFirmwareCatalogRequest) returns (GetFirmwareCatalogResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readImage"
+      kind: KIND_READ
+      rest: "GET /images/firmware-catalog"
+    };
+  }
+  rpc ListImages(ListImagesRequest) returns (ListImagesResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readImage"
+      kind: KIND_READ
+      rest: "GET /images"
+    };
+  }
+  rpc GetImage(GetImageRequest) returns (GetImageResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readImage"
+      kind: KIND_READ
+      rest: "GET /images/{id}"
+    };
+  }
+  // A new download (`created`), or the one already in flight.
+  rpc PullImage(PullImageRequest) returns (PullImageResponse) {
+    option (glidex.api.v1.op) = {
+      action: "pullImage"
+      kind: KIND_WRITE
+      rest: "POST /images"
+    };
+  }
+  rpc DeleteImage(DeleteImageRequest) returns (DeleteImageResponse) {
+    option (glidex.api.v1.op) = {
+      action: "deleteImage"
+      kind: KIND_WRITE
+      rest: "DELETE /images/{id}"
+    };
+  }
+  // Download a failed image again.
+  rpc RetryImage(RetryImageRequest) returns (RetryImageResponse) {
+    option (glidex.api.v1.op) = {
+      action: "pullImage"
+      kind: KIND_WRITE
+      rest: "POST /images/{id}/retry"
+    };
+  }
+  // Keep a copy on a node ahead of need (spec/clustering.md §9.2.2).
+  rpc AddImageCopy(AddImageCopyRequest) returns (AddImageCopyResponse) {
+    option (glidex.api.v1.op) = {
+      action: "pullImage"
+      kind: KIND_WRITE
+      rest: "POST /images/{id}/copies"
+    };
+  }
+  rpc RemoveImageCopy(RemoveImageCopyRequest) returns (RemoveImageCopyResponse) {
+    option (glidex.api.v1.op) = {
+      action: "pullImage"
+      kind: KIND_WRITE
+      rest: "DELETE /images/{id}/copies/{node}"
+    };
+  }
+  rpc ListImageEvents(ListImageEventsRequest) returns (ListImageEventsResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readImage"
+      kind: KIND_READ
+      rest: "GET /images/{id}/events"
+    };
+  }
+}
+
+enum ImageKind {
+  IMAGE_KIND_UNSPECIFIED = 0;
+  // A bootable cloud image disks are cloned from (qcow2).
+  IMAGE_KIND_DISK = 1;
+  // UEFI firmware a VM boots through (raw `.fd`).
+  IMAGE_KIND_FIRMWARE = 2;
+}
+
+enum DiskFormat {
+  DISK_FORMAT_UNSPECIFIED = 0;
+  DISK_FORMAT_QCOW2 = 1;
+  DISK_FORMAT_RAW = 2;
+}
+
+enum ImageState {
+  IMAGE_STATE_UNSPECIFIED = 0;
+  IMAGE_STATE_DOWNLOADING = 1;
+  IMAGE_STATE_VERIFYING = 2;
+  IMAGE_STATE_READY = 3;
+  IMAGE_STATE_FAILED = 4;
+  IMAGE_STATE_MISSING = 5;
+}
+
+message ImageStatus {
+  ImageState state = 1;
+  // Downloading: so far, and in all when the server said.
+  uint64 received_bytes = 2 [json_name = "received_bytes"];
+  optional uint64 total_bytes = 3 [json_name = "total_bytes"];
+  // Failed: why.
+  string reason = 4;
+}
+
+// Where an image came from.
+message ImageSource {
+  oneof source {
+    CatalogSource catalog = 1;
+    UrlSource url = 2;
+    // A firmware catalog entry: `url` is the pinned download or, for a
+    // host package, the file it was copied from.
+    CatalogSource firmware = 3;
+  }
+}
+message CatalogSource {
+  string key = 1;
+  string url = 2;
+  string version = 3;
+}
+message UrlSource {
+  string url = 1;
+  optional string expected_sha256 = 2 [json_name = "expected_sha256"];
+}
+
+// `qemu-img info`, the parts glidex uses.
+message ImgInfo {
+  string format = 1;
+  uint64 virtual_size = 2 [json_name = "virtual_size"];
+  uint64 actual_size = 3 [json_name = "actual_size"];
+  optional string backing_filename = 4 [json_name = "backing_filename"];
+  optional string backing_format = 5 [json_name = "backing_format"];
+}
+
+// A node's copy of an image (spec/clustering.md §9.2).
+message ImageCopy {
+  string node = 1;
+  optional string node_name = 2 [json_name = "node_name"];
+  // `downloading`, `ready`, `failed`, `wanted` (pinned, not started) or
+  // `releasing` (asked to go).
+  string state = 3;
+  // Copied so far (all of them once ready).
+  uint64 bytes = 4;
+  string error = 5;
+  // Kept whether or not the node needs it.
+  optional bool pinned = 6;
+}
+
+message Image {
+  string id = 1;
+  string name = 2;
+  ImageKind kind = 3;
+  // Firmware: the hypervisor it is for.
+  glidex.common.v1.Hypervisor hypervisor = 4;
+  ImageSource source = 5;
+  ImageStatus status = 6;
+  DiskFormat format = 7;
+  uint64 virtual_size_bytes = 8 [json_name = "virtual_size_bytes"];
+  uint64 file_size_bytes = 9 [json_name = "file_size_bytes"];
+  string sha256 = 10;
+  glidex.common.v1.Arch arch = 11;
+  google.protobuf.Timestamp created_at = 12 [json_name = "created_at"];
+  optional bool verified = 13;
+  string path = 14;
+  // Linked disks that depend on it.
+  repeated string linked_disks = 15 [json_name = "linked_disks"];
+  // Firmware with a UEFI variable-store template (QEMU maps code and a
+  // per-VM store; without one, `-bios`).
+  optional bool vars_template = 16 [json_name = "vars_template"];
+  // VMs that boot through this firmware image.
+  repeated string used_by_vms = 17 [json_name = "used_by_vms"];
+  // In a cluster, each node's copy of the file.
+  repeated ImageCopy copies = 18;
+  ImgInfo info = 19;
+  // Deletion requested and not finished yet.
+  optional bool deleting = 20;
+}
+
+message CatalogItem {
+  string key = 1;
+  string distro = 2;
+  string release = 3;
+  glidex.common.v1.Arch arch = 4;
+  string url = 5;
+  optional string downloaded_image_id = 6 [json_name = "downloaded_image_id"];
+}
+
+message FirmwareCatalogItem {
+  string key = 1;
+  string name = 2;
+  glidex.common.v1.Hypervisor hypervisor = 3;
+  glidex.common.v1.Arch arch = 4;
+  // `download` (pinned) or `host` (copied from the host's package).
+  string source = 5;
+  // The download URL, or the host file that would be copied.
+  optional string url = 6;
+  string version = 7;
+  // Whether it can be pulled now (a host entry needs its package).
+  optional bool available = 8;
+  // What to install when it isn't.
+  optional string hint = 9;
+  optional string downloaded_image_id = 10 [json_name = "downloaded_image_id"];
+}
+
+message GetImageCatalogRequest {
+  // Default: this host's (or in a cluster, its nodes').
+  glidex.common.v1.Arch arch = 1;
+}
+message GetImageCatalogResponse {
+  repeated CatalogItem items = 1;
+}
+
+message GetFirmwareCatalogRequest {
+  glidex.common.v1.Arch arch = 1;
+}
+message GetFirmwareCatalogResponse {
+  repeated FirmwareCatalogItem items = 1;
+}
+
+message ListImagesRequest {}
+message ListImagesResponse {
+  repeated Image images = 1;
+}
+
+message GetImageRequest {
+  // Id or name.
+  string id = 1;
+}
+message GetImageResponse {
+  Image image = 1;
+}
+
+message PullImageRequest {
+  // A catalog key, or `url` (with `sha256`), or a firmware catalog key.
+  optional string catalog = 1;
+  optional string url = 2;
+  optional string sha256 = 3;
+  optional string name = 4;
+  optional string firmware = 5;
+  // With `url`: `IMAGE_KIND_FIRMWARE` for UEFI firmware of `hypervisor`.
+  ImageKind kind = 6;
+  glidex.common.v1.Hypervisor hypervisor = 7;
+  // With a QEMU firmware `url`: its variable-store template.
+  optional string vars_url = 8 [json_name = "vars_url"];
+  optional string vars_sha256 = 9 [json_name = "vars_sha256"];
+  glidex.common.v1.Arch arch = 10;
+  // In a cluster: nodes (ids or names) that get a copy once downloaded.
+  repeated string nodes = 11;
+  // `false`: the server's copy goes once one of `nodes` has one.
+  optional bool keep_server_copy = 12 [json_name = "keep_server_copy"];
+}
+message PullImageResponse {
+  Image image = 1;
+  // A new download (REST: `202`); else the one already in flight (`200`).
+  optional bool created = 2;
+}
+
+message DeleteImageRequest {
+  string id = 1;
+  // Wait this long (at most 300 s) for the image to be gone.
+  optional uint32 wait_secs = 2 [json_name = "wait_secs"];
+}
+message DeleteImageResponse {
+  // Still there (its deletion under way); absent once gone.
+  Image image = 1;
+}
+
+message RetryImageRequest {
+  string id = 1;
+}
+message RetryImageResponse {
+  Image image = 1;
+}
+
+message AddImageCopyRequest {
+  string id = 1;
+  // A node id or name.
+  string node = 2;
+}
+message AddImageCopyResponse {
+  Image image = 1;
+}
+
+message RemoveImageCopyRequest {
+  string id = 1;
+  string node = 2;
+}
+message RemoveImageCopyResponse {
+  Image image = 1;
+}
+
+message ListImageEventsRequest {
+  string id = 1;
+}
+message ListImageEventsResponse {
+  repeated glidex.common.v1.Event events = 1;
+}
+
+// ---- disks ------------------------------------------------------------------
+
+service DiskService {
+  rpc ListDisks(ListDisksRequest) returns (ListDisksResponse) {
+    option (glidex.api.v1.op) = {
+      action: "listDisks"
+      kind: KIND_READ
+      rest: "GET /disks"
+    };
+  }
+  rpc GetDisk(GetDiskRequest) returns (GetDiskResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readDisk"
+      kind: KIND_READ
+      rest: "GET /disks/{id}"
+    };
+  }
+  rpc CreateDisk(CreateDiskRequest) returns (CreateDiskResponse) {
+    option (glidex.api.v1.op) = {
+      action: "createDisk"
+      kind: KIND_WRITE
+      rest: "POST /disks"
+    };
+  }
+  rpc ResizeDisk(ResizeDiskRequest) returns (ResizeDiskResponse) {
+    option (glidex.api.v1.op) = {
+      action: "resizeDisk"
+      kind: KIND_WRITE
+      rest: "POST /disks/{id}/resize"
+    };
+  }
+  // Grow the root partition into the rest of the disk.
+  rpc ExtendRoot(ExtendRootRequest) returns (ExtendRootResponse) {
+    option (glidex.api.v1.op) = {
+      action: "extendRoot"
+      kind: KIND_WRITE
+      rest: "POST /disks/{id}/extend-root"
+    };
+  }
+  rpc DeleteDisk(DeleteDiskRequest) returns (DeleteDiskResponse) {
+    option (glidex.api.v1.op) = {
+      action: "deleteDisk"
+      kind: KIND_WRITE
+      rest: "DELETE /disks/{id}"
+    };
+  }
+  rpc ListDiskEvents(ListDiskEventsRequest) returns (ListDiskEventsResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readDisk"
+      kind: KIND_READ
+      rest: "GET /disks/{id}/events"
+    };
+  }
+}
+
+enum CloneMode {
+  CLONE_MODE_UNSPECIFIED = 0;
+  // A qcow2 overlay with the image as backing file.
+  CLONE_MODE_LINKED = 1;
+  // A standalone copy.
+  CLONE_MODE_FULL = 2;
+}
+
+// Where a disk is in its life (spec/reconciliation.md §10.1).
+enum DiskPhase {
+  DISK_PHASE_UNSPECIFIED = 0;
+  // Recorded; its file is made once the source image is ready.
+  DISK_PHASE_PENDING = 1;
+  DISK_PHASE_CREATING = 2;
+  DISK_PHASE_READY = 3;
+  DISK_PHASE_RESIZING = 4;
+  // The file is gone. Never recreated: the data is gone.
+  DISK_PHASE_MISSING = 5;
+  // Creating it failed; see its `Ready` condition.
+  DISK_PHASE_FAILED = 6;
+}
+
+enum ExtendMode {
+  EXTEND_MODE_UNSPECIFIED = 0;
+  // Now, with the disk detached (the default).
+  EXTEND_MODE_OFFLINE = 1;
+  // By the guest's cloud-init at its next boot.
+  EXTEND_MODE_ON_BOOT = 2;
+}
+
+// What an extend-root step did.
+enum ExtendOutcome {
+  EXTEND_OUTCOME_UNSPECIFIED = 0;
+  EXTEND_OUTCOME_GROWN = 1;
+  EXTEND_OUTCOME_ALREADY_FULL = 2;
+  // Deferred to the guest's cloud-init on next boot.
+  EXTEND_OUTCOME_ON_BOOT = 3;
+  EXTEND_OUTCOME_SKIPPED = 4;
+}
+
+message DiskOrigin {
+  oneof origin {
+    Blank blank = 1;
+    ImageOrigin image = 2;
+  }
+}
+message Blank {}
+message ImageOrigin {
+  string image_id = 1 [json_name = "image_id"];
+  CloneMode mode = 2;
+}
+
+enum PartitionTableKind {
+  PARTITION_TABLE_KIND_UNSPECIFIED = 0;
+  PARTITION_TABLE_KIND_GPT = 1;
+  PARTITION_TABLE_KIND_MBR = 2;
+}
+message PartitionTable {
+  PartitionTableKind kind = 1;
+  repeated Partition partitions = 2;
+  // Unpartitioned space after the last partition.
+  uint64 free_tail_bytes = 3 [json_name = "free_tail_bytes"];
+}
+message Partition {
+  uint32 number = 1;
+  uint64 start_bytes = 2 [json_name = "start_bytes"];
+  uint64 size_bytes = 3 [json_name = "size_bytes"];
+  // GPT type GUID (upper case) or MBR type byte as `0x83`.
+  string type = 4;
+  optional bool is_root = 5 [json_name = "is_root"];
+}
+
+message Disk {
+  string id = 1;
+  // Unique within its tenant (spec/tenancy.md D24).
+  string name = 2;
+  string project = 3;
+  DiskFormat format = 4;
+  uint64 size_bytes = 5 [json_name = "size_bytes"];
+  DiskOrigin origin = 6;
+  // The VM using it.
+  optional string attached_to = 7 [json_name = "attached_to"];
+  // The node holding the file, once bound (spec/clustering.md §9.2).
+  optional string node = 8;
+  optional string node_name = 9 [json_name = "node_name"];
+  optional bool pending_growpart = 10 [json_name = "pending_growpart"];
+  // `pending`, `creating`, `ready`, `resizing`, `busy`, `missing` or
+  // `failed`: the phase, or `busy` during an operation.
+  string status = 11;
+  DiskPhase phase = 12;
+  repeated glidex.common.v1.Condition conditions = 13;
+  // A resize not applied yet (the disk is in use).
+  optional uint64 pending_size_bytes = 14 [json_name = "pending_size_bytes"];
+  optional string owner = 15;
+  optional bool deleting = 16;
+  optional string busy_op = 17 [json_name = "busy_op"];
+  string path = 18;
+  google.protobuf.Timestamp created_at = 19 [json_name = "created_at"];
+  ImgInfo info = 20;
+  PartitionTable partition_table = 21 [json_name = "partition_table"];
+  ExtendOutcome extend_root = 22 [json_name = "extend_root"];
+  repeated string warnings = 23;
+}
+
+message ListDisksRequest {
+  optional string project = 1;
+}
+message ListDisksResponse {
+  repeated Disk disks = 1;
+}
+
+message GetDiskRequest {
+  // Id, or a name in the caller's tenants.
+  string id = 1;
+}
+message GetDiskResponse {
+  Disk disk = 1;
+}
+
+message CreateDiskRequest {
+  string name = 1;
+  // Project id or name; default: the caller's default project.
+  optional string project = 2;
+  optional uint64 size_gib = 3 [json_name = "size_gib"];
+  optional uint64 size_bytes = 4 [json_name = "size_bytes"];
+  // Image id or name.
+  optional string image = 5;
+  CloneMode clone = 6;
+  DiskFormat format = 7;
+  optional bool extend_root = 8 [json_name = "extend_root"];
+  // Bind the disk to a node now (id or name); otherwise it binds to the
+  // node of the first VM that uses it.
+  optional string node = 9;
+  // Wait this long (at most 300 s) for the disk to settle.
+  optional uint32 wait_secs = 10 [json_name = "wait_secs"];
+}
+// The answer to a disk write (spec/reconciliation.md §12.3).
+message CreateDiskResponse {
+  Disk disk = 1;
+  // With `wait_secs`: whether it settled in time (REST: `202` when not).
+  optional bool settled = 2;
+}
+
+message ResizeDiskRequest {
+  string id = 1;
+  optional uint64 size_gib = 2 [json_name = "size_gib"];
+  optional uint64 size_bytes = 3 [json_name = "size_bytes"];
+  optional bool extend_root = 4 [json_name = "extend_root"];
+  optional uint32 wait_secs = 5 [json_name = "wait_secs"];
+}
+message ResizeDiskResponse {
+  Disk disk = 1;
+  optional bool settled = 2;
+}
+
+message ExtendRootRequest {
+  string id = 1;
+  ExtendMode mode = 2;
+  optional uint32 wait_secs = 3 [json_name = "wait_secs"];
+}
+message ExtendRootResponse {
+  Disk disk = 1;
+  optional bool settled = 2;
+}
+
+message DeleteDiskRequest {
+  string id = 1;
+}
+message DeleteDiskResponse {
+  // Still there while an operation on it finishes; absent once gone.
+  Disk disk = 1;
+}
+
+message ListDiskEventsRequest {
+  string id = 1;
+}
+message ListDiskEventsResponse {
+  repeated glidex.common.v1.Event events = 1;
+}
