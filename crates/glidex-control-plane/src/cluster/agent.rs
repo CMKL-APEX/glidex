@@ -33,6 +33,8 @@ pub struct NodeLink {
     /// The cache holds a usable copy (listed once, or kept from before).
     ready: tokio::sync::watch::Sender<bool>,
     stop: tokio::sync::watch::Sender<bool>,
+    /// This link, for the requests `submit` hands to the runtime.
+    me: std::sync::Weak<NodeLink>,
 }
 
 impl NodeLink {
@@ -40,7 +42,7 @@ impl NodeLink {
     /// cluster store and runs the list/watch, heartbeat and outbox loops.
     pub fn start(cluster: Arc<Cluster>, db: Arc<Db>, seeds: Vec<String>) -> Arc<NodeLink> {
         let (stop, _) = tokio::sync::watch::channel(false);
-        let link = Arc::new(NodeLink {
+        let link = Arc::new_cyclic(|me| NodeLink {
             cluster,
             db: db.clone(),
             servers: Mutex::new(seeds),
@@ -52,6 +54,7 @@ impl NodeLink {
             partitioned: AtomicBool::new(false),
             ready: tokio::sync::watch::channel(false).0,
             stop,
+            me: me.clone(),
         });
         db.set_revision(db.stored_mirror_revision());
         if db.revision() > 0 {
@@ -475,8 +478,13 @@ impl NodeLink {
             .map_err(|_| "no server could be reached".to_string())
     }
 
-    fn block<F: std::future::Future>(&self, f: F) -> F::Output {
-        tokio::task::block_in_place(|| self.runtime.block_on(f))
+    /// `None` when the control plane is shutting down.
+    fn block<F>(&self, f: F) -> Option<F::Output>
+    where
+        F: std::future::Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
+        super::wait_on(&self.runtime, f)
     }
 }
 
@@ -491,12 +499,19 @@ impl Mirror for NodeLink {
             serde_json::to_vec(ws)
                 .map_err(|e| StoreError::Io(std::io::Error::other(e.to_string())))?,
         );
-        match self.block(self.to_leader(
-            hyper::Method::POST,
-            "/cluster/v1/status-write",
-            body,
-            Duration::from_secs(10),
-        )) {
+        let me = self.me.upgrade().expect("the link submits through itself");
+        let sent = self.block(async move {
+            me.to_leader(
+                hyper::Method::POST,
+                "/cluster/v1/status-write",
+                body,
+                Duration::from_secs(10),
+            )
+            .await
+        });
+        // Shutting down: queued like a write the leader didn't get, and sent
+        // after the restart.
+        match sent.unwrap_or(Err(None)) {
             Ok(r) if r.status.is_success() => {
                 let index = serde_json::from_slice::<Value>(&r.body)
                     .ok()

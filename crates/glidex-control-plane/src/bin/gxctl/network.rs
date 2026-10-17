@@ -81,11 +81,11 @@ pub(crate) struct NetworkRow {
     mode: String,
     bridge: String,
     port_type: String,
-    #[tabled(display_with = "display_opt_u16")]
+    #[tabled(display = "display_opt_u16")]
     vlan: Option<u16>,
     /// Owning project (project networks), by name when known; host
     /// networks have none.
-    #[tabled(display_with = "display_option")]
+    #[tabled(display = "display_option")]
     project: Option<String>,
 }
 
