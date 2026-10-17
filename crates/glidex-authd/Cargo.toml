@@ -2,6 +2,7 @@
 name = "glidex-authd"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 description = "Privileged glidex PAM helper: verifies local users' passwords for the control plane"
 
 [lib]

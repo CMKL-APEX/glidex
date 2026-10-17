@@ -213,9 +213,26 @@ crates/
   glidex-ui/ui/           web UI (Vite + React)
   glidex-ui/e2e/          web UI end-to-end tests (Playwright)
 spec/                     design docs, start with spec/README.md
+LICENSES/                 MIT and Apache-2.0 texts, COPYRIGHT
 scripts/dev/              test helpers
 ```
 
 ## License
 
-MIT
+Copyright (c) 2025-2026 CMKL University and The Glidex Project Contributors.
+
+Glidex is dual-licensed under either of
+
+- the Apache License, Version 2.0 ([LICENSES/LICENSE-APACHE](LICENSES/LICENSE-APACHE)), or
+- the MIT license ([LICENSES/LICENSE-MIT](LICENSES/LICENSE-MIT)),
+
+at your option (SPDX: `MIT OR Apache-2.0`). See
+[LICENSES/COPYRIGHT](LICENSES/COPYRIGHT) for who holds the copyright and
+for vendored third-party code.
+
+### Contribution
+
+Unless you explicitly state otherwise, any contribution intentionally
+submitted for inclusion in Glidex by you, as defined in the Apache-2.0
+license, shall be dual licensed as above, without any additional terms or
+conditions.
