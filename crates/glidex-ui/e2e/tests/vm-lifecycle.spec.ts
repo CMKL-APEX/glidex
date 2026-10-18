@@ -4,7 +4,7 @@
 // GLIDEX_TEST_IMAGE (a UEFI-bootable cloud image, copied first).
 import { existsSync, rmSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { api, bootPrerequisites, CLEAN_POWEROFF, del, E2E_HOME, expect, field, firmwareImages, LABEL, listVms, PROTO_HYPERVISOR, test, testImage, vmCard } from "../fixtures";
+import { api, bootPrerequisites, CLEAN_POWEROFF, consoleTerminal, consoleText, del, E2E_HOME, expect, field, firmwareImages, LABEL, listVms, PROTO_HYPERVISOR, test, testImage, vmCard } from "../fixtures";
 
 test("boots a cloud image and runs it from the UI", async ({ page, hypervisor }) => {
   test.setTimeout(10 * 60_000);
@@ -90,25 +90,25 @@ test("boots a cloud image and runs it from the UI", async ({ page, hypervisor })
     await test.step("log in on the web console", async () => {
       await page.getByText("Open Console").click();
       await expect(page).toHaveURL(/\/console$/);
-      const screen = page.locator(".xterm-rows");
+      const screen = () => consoleText(page);
       await expect(page.getByText("connected", { exact: true })).toBeVisible();
       // Nudge getty until the login prompt is on screen.
       await expect
         .poll(async () => {
-          if ((await screen.innerText()).includes(`${vmName} login:`)) return true;
-          await page.locator(".xterm").click();
+          if ((await screen()).includes(`${vmName} login:`)) return true;
+          await consoleTerminal(page).click();
           await page.keyboard.press("Enter");
           return false;
         }, { timeout: 300_000, intervals: [2_000] })
         .toBe(true);
-      await page.locator(".xterm").click();
+      await consoleTerminal(page).click();
       await page.keyboard.type(`${username}\n`, { delay: 20 });
-      await expect(screen).toContainText("Password:", { timeout: 30_000 });
+      await expect.poll(screen, { timeout: 30_000 }).toContain("Password:");
       await page.keyboard.type(`${password}\n`, { delay: 20 });
-      await expect(screen).toContainText(`${username}@${vmName}:~$`, { timeout: 60_000 });
+      await expect.poll(screen, { timeout: 60_000 }).toContain(`${username}@${vmName}:~$`);
       // The guest has the address the UI showed.
       await page.keyboard.type(`ip -4 -o addr | grep -q ' ${ip}/' && echo GX_UI_$((40+2))\n`, { delay: 10 });
-      await expect(screen).toContainText("GX_UI_42", { timeout: 30_000 });
+      await expect.poll(screen, { timeout: 30_000 }).toContain("GX_UI_42");
     });
 
     await test.step("pause and resume", async () => {

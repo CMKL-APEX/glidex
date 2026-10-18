@@ -1,7 +1,7 @@
 // Login, session and browser protections (spec/security.md §5.5, §5.6,
 // §14 "UI e2e"): the login page, CSRF on writes, logout, console tickets,
 // and glidex-ui's Host allowlist and security headers.
-import { api, createVm, del, expect, rawRequest, test, UI_SERVER_PORT, waitForRpc } from "../fixtures";
+import { api, consoleText, createVm, del, expect, rawRequest, test, UI_SERVER_PORT, waitForRpc } from "../fixtures";
 
 const UI_SERVER = `http://localhost:${UI_SERVER_PORT}`;
 
@@ -126,7 +126,7 @@ test.describe("console", () => {
       const ws = await socket;
       expect(ws.url()).toMatch(/\/api\/vms\/[^/]+\/console\/ws\?ticket=.+/);
       // The VM isn't running: the server accepted the upgrade and says so.
-      await expect(page.locator(".xterm-rows")).toContainText("Failed to connect to the VM console", { timeout: 15_000 });
+      await expect.poll(() => consoleText(page), { timeout: 15_000 }).toContain("Failed to connect to the VM console");
     });
   }
 

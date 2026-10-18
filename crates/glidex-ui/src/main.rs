@@ -47,7 +47,7 @@ const PORT: u16 = 5173;
 /// `Content-Security-Policy` of everything the UI serves. The built app
 /// is a module script plus stylesheets from `/assets`; xterm.js and React
 /// set inline styles, hence `'unsafe-inline'` for styles only. The
-/// console's experimental ghostty-web terminal compiles WebAssembly from
+/// console's ghostty-web terminal compiles WebAssembly from
 /// `/assets`, hence `'wasm-unsafe-eval'` (it allows no JavaScript eval).
 const CSP: &str = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'; img-src 'self' data:; \
                    style-src 'self' 'unsafe-inline'; \

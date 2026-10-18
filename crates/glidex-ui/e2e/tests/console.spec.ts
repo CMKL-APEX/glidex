@@ -3,7 +3,7 @@
 // (React StrictMode's double mount in dev, or leaving the page at once).
 // The `pageErrors` fixture fails the test on any such error.
 import type { Page } from "@playwright/test";
-import { expect, test } from "../fixtures";
+import { consoleTerminal, consoleText, expect, test } from "../fixtures";
 
 // There is no such VM: the console WebSocket is refused and its detail
 // page gets 404s.
@@ -17,7 +17,7 @@ for (const kind of ["xterm", "ghostty"]) {
 
     test("opening the console page leaves no errors behind", async ({ page }) => {
       await page.goto("/vms/no-such-vm/console");
-      await expect(page.getByTestId("console-terminal").locator(kind === "xterm" ? ".xterm" : "canvas")).toHaveCount(1);
+      await expect(consoleTerminal(page).locator(kind === "xterm" ? ".xterm" : "canvas")).toHaveCount(1);
       // Let the terminal's queued timers run.
       await page.waitForTimeout(1_000);
     });
@@ -79,7 +79,7 @@ for (const kind of ["xterm", "ghostty"]) {
 
     // Select the first word (ghostty-web copies a selection as it is made:
     // clear the clipboard after), then copy it.
-    const terminal = page.getByTestId("console-terminal");
+    const terminal = consoleTerminal(page);
     await terminal.dblclick({ position: { x: 12, y: 8 } });
     await page.waitForTimeout(300);
     await page.evaluate(() => navigator.clipboard.writeText(""));
@@ -98,22 +98,27 @@ for (const kind of ["xterm", "ghostty"]) {
   });
 }
 
-test("the terminal picker switches terminals and is remembered", async ({ page }) => {
+test("ghostty-web is the default; the picker switches terminals and is remembered", async ({ page }) => {
   await mockConsole(page, "hello\r\n");
   await page.goto("/vms/mock-vm/console");
-  const terminal = page.getByTestId("console-terminal");
-  await expect(terminal.locator(".xterm")).toHaveCount(1);
-
-  await page.getByLabel("Terminal:").selectOption("ghostty");
+  const picker = page.getByLabel("Terminal:");
+  const terminal = consoleTerminal(page);
+  await expect(picker).toHaveValue("ghostty");
+  await expect(picker.locator("option")).toHaveText(["ghostty-web", "xterm.js"]);
   await expect(page.getByText("connected", { exact: true })).toBeVisible();
   await expect(terminal.locator("canvas")).toHaveCount(1);
-  await expect(terminal.locator(".xterm")).toHaveCount(0);
+  await expect.poll(() => consoleText(page)).toContain("hello");
 
-  await page.reload();
-  await expect(page.getByLabel("Terminal:")).toHaveValue("ghostty");
-  await expect(terminal.locator("canvas")).toHaveCount(1);
-
-  await page.getByLabel("Terminal:").selectOption("xterm");
+  await picker.selectOption("xterm");
   await expect(terminal.locator(".xterm")).toHaveCount(1);
   await expect(terminal.locator("canvas")).toHaveCount(0);
+  await expect.poll(() => consoleText(page)).toContain("hello");
+
+  await page.reload();
+  await expect(picker).toHaveValue("xterm");
+  await expect(terminal.locator(".xterm")).toHaveCount(1);
+
+  await picker.selectOption("ghostty");
+  await expect(terminal.locator("canvas")).toHaveCount(1);
+  await expect(terminal.locator(".xterm")).toHaveCount(0);
 });

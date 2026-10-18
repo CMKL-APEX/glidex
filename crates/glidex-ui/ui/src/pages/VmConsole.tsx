@@ -66,6 +66,10 @@ export default function VmConsole() {
           return;
         }
         term = t;
+        // The terminal's text, for the e2e suite: ghostty-web draws on a
+        // canvas. (Nothing new to a script on the page: xterm.js keeps
+        // the same text in the DOM.)
+        Object.defineProperty(container, "screenText", { value: () => t.screenText(), configurable: true });
         inputDisposable = t.onData((data) => {
           if (ws?.readyState === WebSocket.OPEN) {
             ws.send(encoder.encode(data));
@@ -121,6 +125,7 @@ export default function VmConsole() {
         }
       }
       term?.dispose();
+      Reflect.deleteProperty(container, "screenText");
       // Whatever the terminal left behind: the next one opens here.
       container.replaceChildren();
     };

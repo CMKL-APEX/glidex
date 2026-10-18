@@ -1,24 +1,21 @@
-// The console's terminal: xterm.js, or ghostty-web (experimental: Ghostty's
-// VT engine as WebAssembly). Chosen on the console page and remembered in
-// this browser. ghostty-web is loaded only when chosen.
-import { Terminal as XTerm } from "@xterm/xterm";
-import { FitAddon as XFitAddon } from "@xterm/addon-fit";
-import "@xterm/xterm/css/xterm.css";
+// The console's terminal: ghostty-web (Ghostty's VT engine as WebAssembly,
+// the default) or xterm.js. Chosen on the console page and remembered in
+// this browser. Each library is loaded only when chosen.
 
 export type TerminalKind = "xterm" | "ghostty";
 
 export const TERMINAL_KINDS: { kind: TerminalKind; label: string }[] = [
+  { kind: "ghostty", label: "ghostty-web" },
   { kind: "xterm", label: "xterm.js" },
-  { kind: "ghostty", label: "ghostty-web (experimental)" },
 ];
 
 const STORAGE_KEY = "glidex.console.terminal";
 
 export function savedTerminalKind(): TerminalKind {
   try {
-    return localStorage.getItem(STORAGE_KEY) === "ghostty" ? "ghostty" : "xterm";
+    return localStorage.getItem(STORAGE_KEY) === "xterm" ? "xterm" : "ghostty";
   } catch {
-    return "xterm";
+    return "ghostty";
   }
 }
 
@@ -35,7 +32,23 @@ export interface ConsoleTerminal {
   write(data: string | Uint8Array): void;
   onData(listener: (data: string) => void): { dispose(): void };
   fit(): void;
+  /** Everything in the buffer (scrollback and screen), one line each. */
+  screenText(): string;
   dispose(): void;
+}
+
+/** The part of a buffer `screenText` reads; both libraries have it. */
+interface Buffer {
+  readonly length: number;
+  getLine(y: number): { translateToString(trimRight?: boolean): string } | undefined;
+}
+
+function bufferText(buffer: Buffer): string {
+  const lines: string[] = [];
+  for (let y = 0; y < buffer.length; y++) {
+    lines.push(buffer.getLine(y)?.translateToString(true) ?? "");
+  }
+  return lines.join("\n");
 }
 
 const OPTIONS = {
@@ -48,7 +61,7 @@ const OPTIONS = {
 
 /** A terminal of `kind`, open in `parent`. */
 export function openTerminal(kind: TerminalKind, parent: HTMLElement): Promise<ConsoleTerminal> {
-  return kind === "ghostty" ? openGhostty(parent) : Promise.resolve(openXterm(parent));
+  return kind === "ghostty" ? openGhostty(parent) : openXterm(parent);
 }
 
 /** Put `text` on the clipboard; outside a secure context (plain HTTP)
@@ -72,9 +85,14 @@ function copyText(text: string) {
 const ctrlShift = (ev: KeyboardEvent, code: string) =>
   ev.ctrlKey && ev.shiftKey && !ev.altKey && !ev.metaKey && ev.code === code;
 
-function openXterm(parent: HTMLElement): ConsoleTerminal {
-  const term = new XTerm(OPTIONS);
-  const fitAddon = new XFitAddon();
+async function openXterm(parent: HTMLElement): Promise<ConsoleTerminal> {
+  const [{ Terminal }, { FitAddon }] = await Promise.all([
+    import("@xterm/xterm"),
+    import("@xterm/addon-fit"),
+    import("@xterm/xterm/css/xterm.css"),
+  ]);
+  const term = new Terminal(OPTIONS);
+  const fitAddon = new FitAddon();
   term.loadAddon(fitAddon);
   term.open(parent);
   fitAddon.fit();
@@ -100,6 +118,7 @@ function openXterm(parent: HTMLElement): ConsoleTerminal {
     write: (data) => term.write(data),
     onData: (listener) => term.onData(listener),
     fit: () => fitAddon.fit(),
+    screenText: () => bufferText(term.buffer.active),
     dispose: () => {
       // xterm 5.5 queues a setTimeout(syncScrollArea) in open(); disposing
       // before it runs (StrictMode's mount/unmount, a quick navigation)
@@ -144,6 +163,7 @@ async function openGhostty(parent: HTMLElement): Promise<ConsoleTerminal> {
     write: (data) => term.write(data),
     onData: (listener) => term.onData(listener),
     fit: () => fitAddon.fit(),
+    screenText: () => bufferText(term.buffer.active),
     dispose: () => term.dispose(),
   };
 }
