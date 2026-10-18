@@ -806,10 +806,14 @@ export const addBinding = (project: string, role: string, principal: EntityRef) 
 export const removeBinding = (project: string, link: string) =>
   rpc(ProjectService.method.removeProjectBinding, { id: project, link }).then(none);
 
-export const listSystemBindings = () =>
-  rpc(SystemBindingService.method.listSystemBindings).then((r) => (r.bindings ?? []) as Binding[]);
-export const addSystemBinding = (role: string, principal: EntityRef) =>
-  rpc(SystemBindingService.method.addSystemBinding, { role, principal }).then((r) => r.binding as Binding);
+/** Every system binding, or with `node` only those on that node's host. */
+export const listSystemBindings = (node?: string) =>
+  rpc(SystemBindingService.method.listSystemBindings, node ? { node } : {}).then((r) => (r.bindings ?? []) as Binding[]);
+/** A system role, cluster-wide or (with `node`) on one node's host only. */
+export const addSystemBinding = (role: string, principal: EntityRef, node?: string) =>
+  rpc(SystemBindingService.method.addSystemBinding, node ? { role, principal, node } : { role, principal }).then(
+    (r) => r.binding as Binding,
+  );
 export const removeSystemBinding = (link: string) => rpc(SystemBindingService.method.removeSystemBinding, { link }).then(none);
 
 // ---- users, teams and tokens --------------------------------------------------

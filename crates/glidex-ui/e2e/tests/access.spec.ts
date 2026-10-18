@@ -135,3 +135,30 @@ test("audit: lists recent writes", async ({ page }) => {
   // Earlier tests created and deleted things.
   await expect(page.locator("td", { hasText: /^createProject$|^writePolicy$|^manageTeams$/ }).first()).toBeVisible();
 });
+
+test("system roles: grant and remove; no host scope on a standalone host", async ({ page }) => {
+  const me = await api("/auth/whoami");
+  const auditor = async () =>
+    ((await api<{ bindings?: any[] }>("/system/bindings")).bindings ?? []).filter(
+      (b) => b.role === "role.auditor" && b.principal?.id === me.user.id,
+    );
+  for (const b of await auditor()) await del(`/system/bindings/${b.id}`);
+
+  await page.goto("/directory/access");
+  const card = page.locator("section", { has: page.getByRole("heading", { name: "System roles" }) });
+  await expect(card.locator("tbody")).toBeVisible();
+  // One host: every role is host-wide, so there is nothing to scope.
+  await expect(card.getByLabel("Scope")).toHaveCount(0);
+  await expect(card.getByRole("columnheader", { name: "Scope" })).toHaveCount(0);
+  await card.locator("select").nth(0).selectOption("role.auditor");
+  await card.locator("select").nth(2).selectOption(me.user.id);
+  await card.getByRole("button", { name: "Add role" }).click();
+  const row = card.locator("tbody tr", { hasText: "auditor" });
+  await expect(row).toHaveCount(1);
+  const [b] = await auditor();
+  expect(b.resource.type).toBe("Cluster");
+
+  await row.getByRole("button", { name: "Remove" }).click();
+  await expect(row).toHaveCount(0);
+  expect(await auditor()).toHaveLength(0);
+});

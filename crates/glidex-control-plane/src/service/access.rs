@@ -20,6 +20,10 @@ fn store_err(e: StoreError) -> ServiceError {
     auth_error(AuthError::Store(e)).into()
 }
 
+fn node_err(e: crate::node::NodeError) -> ServiceError {
+    ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string())
+}
+
 fn manager_err(e: crate::state::VmManagerError) -> ServiceError {
     crate::api::error_to_response(e).into()
 }
@@ -536,21 +540,45 @@ pub fn remove_project_binding(
 
 pub fn list_system_bindings(
     call: &Call,
-    _req: pb::ListSystemBindingsRequest,
+    req: pb::ListSystemBindingsRequest,
 ) -> ServiceResult<pb::ListSystemBindingsResponse> {
     call.require(Ent::Cluster, EntitySet::new())?;
+    let only = match req.node {
+        Some(key) => Some(Ent::Node(binding_node(call, &key)?)),
+        None => None,
+    };
     let links: Vec<_> = call
         .auth()
         .store
         .links()
         .map_err(store_err)?
         .into_iter()
-        .filter(|l| l.link.resource == Ent::Cluster)
+        .filter(|l| match &only {
+            Some(host) => &l.link.resource == host,
+            None => is_system_resource(&l.link.resource),
+        })
         .collect();
     Ok(pb::ListSystemBindingsResponse {
         bindings: bindings_pb(call, links)?,
         ..Default::default()
     })
+}
+
+/// Where system bindings live: the cluster, or one node's host.
+fn is_system_resource(e: &Ent) -> bool {
+    matches!(e, Ent::Cluster | Ent::Node(_))
+}
+
+/// The id of the node `key` names (id or name) for a host binding. A node
+/// that has left can still be named, to list or clear what it had.
+fn binding_node(call: &Call, key: &str) -> ServiceResult<String> {
+    if key == authz::node_id() {
+        return Ok(key.to_string());
+    }
+    let nodes = call.manager().nodes().list().map_err(node_err)?;
+    crate::cluster::membership::resolve(&nodes, key)
+        .map(|n| n.meta.id)
+        .map_err(|_| not_found("node"))
 }
 
 pub fn add_system_binding(
@@ -561,6 +589,33 @@ pub fn add_system_binding(
     if !authz::HOST_ROLES.contains(&req.role.as_str()) {
         return Err(bad("only host roles and grants are given on the host"));
     }
+    let resource = match &req.node {
+        None => Ent::Cluster,
+        Some(key) => {
+            if !authz::PER_HOST_ROLES.contains(&req.role.as_str()) {
+                return Err(bad(format!(
+                    "{} is cluster-wide: only {} can be given on one host",
+                    req.role,
+                    authz::PER_HOST_ROLES.join(", ")
+                )));
+            }
+            let id = binding_node(call, key)?;
+            let live = call
+                .manager()
+                .nodes()
+                .get(&id)
+                .map_err(node_err)?
+                .is_none_or(|n| !n.status.phase.is_tombstone());
+            if !live {
+                return Err(ServiceError::new(
+                    StatusCode::CONFLICT,
+                    "node_departed",
+                    format!("node {key} has left the cluster"),
+                ));
+            }
+            Ent::Node(id)
+        }
+    };
     let principal = principal_of(
         req.principal
             .as_option()
@@ -589,12 +644,13 @@ pub fn add_system_binding(
     }
     call.detail("role", serde_json::json!(req.role));
     call.detail("principal", serde_json::json!(principal));
+    call.detail("resource", serde_json::json!(resource));
     let l = call
         .auth()
         .add_link(
             &req.role,
             principal,
-            Ent::Cluster,
+            resource,
             call.p.user_id().unwrap_or("-"),
         )
         .map_err(|e| ServiceError::from(auth_error(e)))?;
@@ -617,7 +673,7 @@ pub fn remove_system_binding(
         .into_iter()
         .find(|l| l.link.id == req.link);
     match found {
-        Some(l) if l.link.resource == Ent::Cluster => {
+        Some(l) if is_system_resource(&l.link.resource) => {
             call.detail("link", serde_json::json!(l.link));
             call.auth()
                 .remove_link(&req.link)

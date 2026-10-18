@@ -102,8 +102,8 @@ gxctl binding list web
 gxctl binding remove web <binding-id>
 ```
 
-On the host (the web UI's **Access** page, **System roles**). The person
-must be in the `admin` tenant first:
+On the host (the web UI's **Directory** page, **Users & roles**, **System
+roles**). The person must be in the `admin` tenant first:
 
 ```bash
 gxctl tenant add-member admin user:3f0c…
@@ -111,6 +111,21 @@ gxctl system-binding add net-admin user:3f0c…
 gxctl system-binding list
 gxctl system-binding remove <binding-id>
 ```
+
+In a cluster, a system role covers every host. `auditor`, `net-admin`
+and the host-paths grant can instead be given on one host, by node name
+or id:
+
+```bash
+gxctl system-binding add net-admin user:3f0c… --node hv2
+gxctl system-binding list --node hv2
+```
+
+Someone with `net-admin` on `hv2` manages `hv2`'s Open vSwitch, uplinks
+and devices only; an `auditor` there reads that node and nothing
+cluster-wide. `system-admin` and `image-admin` are about the whole
+cluster and can't be given on one host. A binding on a host that later
+leaves the cluster does nothing; remove it with `system-binding remove`.
 
 On a tenant:
 

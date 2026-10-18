@@ -2,13 +2,15 @@ import { useCallback, useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import * as api from "../api";
 import type { DiskInfo, NodeRecord, VmResponse } from "../types";
-import { brIntLabel, formatBytes, formatTimestamp, nodeLabel, nodePhaseLabel, nodeReady, nodeRoleLabel, num, stateLabel, vmState, wantedBrInt } from "../types";
+import { brIntLabel, formatBytes, formatTimestamp, isTombstone, nodeLabel, nodePhaseLabel, nodeReady, nodeRoleLabel, num, stateLabel, vmState, wantedBrInt } from "../types";
 import BrIntDialog from "../components/BrIntDialog";
 import MappingsDialog from "../components/MappingsDialog";
 import { hostOf, useAllowed } from "../nodes";
 import { useLive, useLiveRefresh } from "../live";
 import { useNodes } from "../nodes";
 import NodeActions from "../components/NodeActions";
+import SystemRoles from "../components/SystemRoles";
+import { useDirectory } from "../hooks";
 import { NodeOvnCard } from "../components/OvnViews";
 import { useCan, useSession } from "../session";
 import { LoadingCard } from "../components/Loading";
@@ -53,6 +55,7 @@ export default function NodeDetail() {
   const live = useLive();
   const dir = useNodes();
   const { host } = useSession();
+  const [people] = useDirectory();
   const [polled, setPolled] = useState<NodeRecord | null>(null);
   const [vms, setVms] = useState<VmResponse[] | null>(null);
   const [disks, setDisks] = useState<DiskInfo[]>([]);
@@ -286,6 +289,8 @@ export default function NodeDetail() {
           </table>
         )}
       </Card>
+
+      {dir.clustered && host.readSystemBindings && !isTombstone(node.status.phase) && <SystemRoles dir={people} node={id} />}
 
       {disks.length > 0 && (
         <Card title={`Disks (${disks.length})`}>

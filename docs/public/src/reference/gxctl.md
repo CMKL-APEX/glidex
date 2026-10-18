@@ -193,7 +193,7 @@ Times (`--from`, `--to`) are Unix seconds or RFC 3339. See
 | `binding list <p>` | A project's role bindings |
 | `binding add <p> <role> user:<id>\|team:<id>\|token:<id>` | Grant a role on a project |
 | `binding remove <p> <binding-id>` | Remove a binding |
-| `system-binding list \| add <role> <principal> \| remove <binding-id>` | Host-wide role bindings |
+| `system-binding list [--node N] \| add <role> <principal> [--node N] \| remove <binding-id>` | System role bindings, cluster-wide or on one node's host |
 | `token list`, `tokens` | Your API tokens |
 | `token create <name> [--days N] [--service-account [--project P]] [--role ROLE[@PROJECT]]…` | Create a token; the secret is printed once |
 | `token revoke <id>` | Revoke a token |

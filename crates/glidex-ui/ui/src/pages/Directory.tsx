@@ -112,7 +112,7 @@ function Overview() {
               projects, tenant and project roles, and tokens. Every server of a cluster has the same copy.
             </li>
             <li>
-              <strong>This cluster</strong> holds the system roles (on the cluster, so on every host), its site policies,
+              <strong>This cluster</strong> holds the system roles (on the whole cluster, or some on one host), its site policies,
               admissions, and the VMs, disks and networks that run on it.
             </li>
             <li>

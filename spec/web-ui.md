@@ -312,7 +312,11 @@ count as idle for that. `api.ts` dispatches `glidex:changed` on
   teams (create, delete, add / remove manual members; `pam` / `oidc`
   memberships are shown but managed by the login sync), and system roles
   (`/system/bindings`: auditor, image-admin, net-admin, system-admin,
-  `grant.host-paths`).
+  `grant.host-paths`). In a cluster the table has a Scope column (the
+  whole cluster, or a host linking to its node page) and the form a Scope
+  select; on a host only auditor, net-admin and host paths are offered
+  (clustering.md §12.2). A node's page has a **Roles on this host** card
+  with the bindings on that host alone (`?node=`), to add and remove.
 - **Tokens** — the caller's tokens and the service accounts it may
   manage. Create (name, expiry, optional narrowing roles; service accounts
   of the selected project with `manageServiceTokens`) shows the secret

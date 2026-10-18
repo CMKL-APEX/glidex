@@ -560,7 +560,8 @@ service SystemBindingService {
     };
   }
   // Host roles go to members of the operator tenant only (spec/tenancy.md
-  // D4): `422 not_operator_member` otherwise.
+  // D4): `422 not_operator_member` otherwise. With `node`, the role covers
+  // that host only.
   rpc AddSystemBinding(AddSystemBindingRequest) returns (AddSystemBindingResponse) {
     option (glidex.api.v1.op) = {
       action: "manageSystemBindings"
@@ -577,7 +578,11 @@ service SystemBindingService {
   }
 }
 
-message ListSystemBindingsRequest {}
+message ListSystemBindingsRequest {
+  // Only the bindings on this node's host (id or name); all of them, the
+  // cluster's and every host's, when absent.
+  optional string node = 1;
+}
 message ListSystemBindingsResponse {
   repeated Binding bindings = 1;
 }
@@ -586,6 +591,10 @@ message AddSystemBindingRequest {
   // A host role or grant.
   string role = 1;
   glidex.api.v1.EntityRef principal = 2;
+  // Grant it on this node's host only (id or name), not cluster-wide.
+  // `role.auditor`, `role.net-admin` and `grant.host-paths` can be; the
+  // others are cluster-wide (spec/clustering.md §12.2).
+  optional string node = 3;
 }
 message AddSystemBindingResponse {
   Binding binding = 1;

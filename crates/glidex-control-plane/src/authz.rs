@@ -937,6 +937,10 @@ pub const HOST_ROLES: [&str; 5] = [
     "role.system-admin",
     "grant.host-paths",
 ];
+/// Host roles that may also be linked on one node's `Host` (spec/clustering.md
+/// §12.2). The others are about cluster-wide things (images, the cluster
+/// itself), which a host link wouldn't cover.
+pub const PER_HOST_ROLES: [&str; 3] = ["role.auditor", "role.net-admin", "grant.host-paths"];
 
 /// A set of tenant references (grants by tenant, spec/tenancy.md D25).
 fn tenant_set(ids: &[String]) -> Value {

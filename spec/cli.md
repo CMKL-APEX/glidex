@@ -177,7 +177,7 @@ name (ids when `/projects` isn't readable).
 | `binding list <p>` | `GET /projects/{p}/bindings` |
 | `binding add <p> <role> <principal>` | `POST /projects/{p}/bindings {role, principal}` |
 | `binding remove <p> <binding-id>` | `DELETE /projects/{p}/bindings/{id}` |
-| `system-binding list` / `add <role> <principal>` / `remove <id>` | `GET/POST/DELETE /system/bindings` |
+| `system-binding list [--node N]` / `add <role> <principal> [--node N]` / `remove <id>` | `GET/POST/DELETE /system/bindings` (`?node=` / `node` for one node's host) |
 | `user list` | `GET /users` (with identities) |
 | `team list` / `create <name>` / `delete <team>` | `GET/POST /teams`, `DELETE /teams/{id}` |
 | `team add-member <team> <user-id>` / `remove-member …` | `PUT/DELETE /teams/{id}/members/{user}` (team by id or name) |
