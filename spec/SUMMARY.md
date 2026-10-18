@@ -33,6 +33,7 @@
 - [Security](security.md)
 - [Tailscale certificates](tailscale-tls.md)
 - [Tenancy](tenancy.md)
+- [Real-IdP checks](idp-checks.md)
 
 # Clusters
 

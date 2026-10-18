@@ -216,6 +216,78 @@ gxctl connector list
 
 Run `gxctl connector` without arguments for every option.
 
+### Google
+
+A `google` connector logs in Google accounts. In the Google Cloud
+console, create an OAuth client of type *Web application* with the
+connector's redirect URI. For `gxctl login --oidc`, create a second
+client of type *TVs and Limited Input devices*: Google only allows
+device logins through that type.
+
+```bash
+# Google Workspace: accounts of these domains.
+gxctl connector add google gws --client-id <web-client-id> --domain example.org \
+  --device-client-id <tv-client-id> --name "Example (Google)"
+gxctl connector secret set gws client_secret
+gxctl connector secret set gws device_client_secret
+gxctl connector test gws
+```
+
+- **Workspace** (the default) allows the accounts of the `--domain`
+  domains. It checks the Workspace the account belongs to, never the
+  email address: anyone can open a personal Google account under any
+  address. Set the OAuth consent screen's user type to *Internal* as
+  well, so only the Workspace's accounts can use the client.
+- Google doesn't report whether a login used a second factor. If the
+  Workspace enforces 2-step verification, `--trust-2sv` makes its logins
+  count as multi-factor. The `admin` tenant and operator tenants only
+  take a Workspace connector with `--trust-2sv`.
+- **`--consumer`** allows personal Google accounts too, but only for
+  people you already know: with `--jit` it needs `--allow-email` for each
+  address; without it, people get in through an [invitation](#invitations).
+  A personal account can't join the `admin` tenant or an operator tenant.
+- Google sends no groups, so `--require-group` and `--team` don't apply;
+  give people roles in Glidex instead.
+
+### JumpCloud
+
+A `jumpcloud` connector logs in JumpCloud users. In JumpCloud, add an
+SSO application with OIDC, the connector's redirect URI, and *Include
+group attribute* if logins should carry the user's groups.
+
+```bash
+gxctl connector add jumpcloud jc --client-id <client-id> --groups-claim memberOf \
+  --require-group glidex-users --team lab-staff=staff
+gxctl connector secret set jc
+```
+
+- `--groups-claim` is the name set under *Include group attribute*
+  (`memberOf` by default); `--require-group` and `--team` read it.
+- `--allow-email` limits which addresses get a new account with `--jit`.
+
+## Invitations
+
+An invitation lets one person into a tenant, with a role, through one
+connector, even when the connector doesn't create users (`--no-jit`):
+the usual way to let in people with personal Google accounts.
+
+```bash
+gxctl invite create web bob@gmail.com --connector google-personal --role member
+gxctl invite list web
+gxctl invite revoke <id>
+```
+
+- `create` prints a link, once. Send it to the person; it lets in the
+  first login through that connector with that verified email address,
+  once, within 7 days (`--days`, at most 30). Another account can't use
+  it.
+- `--role` is `member` (the default: membership only),
+  `role.tenant-admin` or `role.tenant-auditor`.
+- Tenant administrators invite to their tenant from its page in the web
+  UI too (**Invitations**), where the link is likewise shown once.
+- Invitations into the `admin` tenant or an operator tenant go only
+  through a connector that requires MFA.
+
 ## Access tokens
 
 Tokens are for `gxctl` on other machines, scripts and API clients. A

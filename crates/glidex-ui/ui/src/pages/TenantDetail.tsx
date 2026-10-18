@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import * as api from "../api";
 import type { Binding, EntityRef, Tenant, TenantBinding, TenantMember } from "../types";
-import { TENANT_ROLES, entityLabel, formatTimestamp } from "../types";
+import { TENANT_ROLES, entityLabel, formatTimestamp, isOidcKind } from "../types";
 import Modal from "../components/Modal";
 import ConfirmDialog from "../components/ConfirmDialog";
 import AddBindingForm from "../components/AddBindingForm";
@@ -204,7 +204,7 @@ function InvitationsCard({ tenant, canManage }: { tenant: Tenant; canManage: boo
       .authMethods()
       .then((m) => {
         const cs = (m.connectors ?? [])
-          .filter((c) => c.kind === "oidc" || c.kind === "google")
+          .filter((c) => isOidcKind(c.kind))
           .map((c) => ({ id: c.id, label: c.display_name || c.id }));
         setConnectors(cs);
         setConnector((cur) => cur || cs[0]?.id || "");

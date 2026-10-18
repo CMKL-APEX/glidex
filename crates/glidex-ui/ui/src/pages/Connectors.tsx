@@ -18,22 +18,34 @@ import {
 } from "../components/ui";
 import { useSession } from "../session";
 
-/** The secret field each kind has (spec/rest-api.md: `oidc`: `client_secret`).
- *  A `google` connector's device client has `device_client_secret` too
- *  (gxctl `connector secret set`). */
-const SECRET_FIELD: Record<Connector["kind"], string | null> = { pam: null, oidc: "client_secret", google: "client_secret" };
+/** The secret field each kind has (spec/rest-api.md: `oidc`: `client_secret`). */
+const SECRET_FIELD: Record<Connector["kind"], string | null> = {
+  pam: null,
+  oidc: "client_secret",
+  google: "client_secret",
+  jumpcloud: "client_secret",
+};
 
-/** The form edits `pam` and `oidc`; `google` is edited with gxctl until
- *  its own form (spec/tenancy.md §18, T2 task 5). */
-const formEdits = (c: Connector) => c.kind !== "google";
+/** Every secret a connector has: a `google` one's device client has its own. */
+const secretFields = (c: Connector): string[] => {
+  const main = SECRET_FIELD[c.kind];
+  const out = main ? [main] : [];
+  if (c.kind === "google" && c.google?.device_client_id) out.push("device_client_secret");
+  return out;
+};
+
+const KIND_LABEL: Record<Connector["kind"], string> = { oidc: "OIDC", pam: "PAM", google: "Google", jumpcloud: "JumpCloud" };
+
+/** Where the IdP sends the browser back: what to register with it. */
+const callbackUri = (id: string) => `${window.location.origin}/api/auth/c/${id || "<id>"}/callback`;
 
 /** Read-only connectors come from control-plane.json. */
 const fromFile = (c: Connector) => c.source === "file";
 
 function secretSet(c: Connector): boolean | null {
-  const field = SECRET_FIELD[c.kind];
-  if (!field) return null;
-  return !!c.secrets?.find((s) => s.field === field)?.set;
+  const fields = secretFields(c);
+  if (fields.length === 0) return null;
+  return fields.every((f) => !!c.secrets?.find((s) => s.field === f)?.set);
 }
 
 /** Comma- or space-separated words. */
@@ -75,6 +87,12 @@ interface FormState {
   allowed_domains: string;
   redirect_uri: string;
   mfa_acr_values: string;
+  /** `google`: Workspace by `hd`, or any account for invited and listed people. */
+  google_accounts: "workspace" | "any";
+  domains: string;
+  allowed_emails: string;
+  device_client_id: string;
+  trust_2sv: boolean;
 }
 
 function formState(c?: Connector): FormState {
@@ -91,12 +109,17 @@ function formState(c?: Connector): FormState {
     token_max_days: c?.token_max_days ? String(c.token_max_days) : "",
     allowed_groups: (c?.pam?.allowed_groups ?? []).join(", "),
     issuer: c?.oidc?.issuer ?? "",
-    client_id: c?.oidc?.client_id ?? "",
+    client_id: c?.oidc?.client_id ?? c?.google?.client_id ?? c?.jumpcloud?.client_id ?? "",
     scopes: (c?.oidc?.scopes ?? []).join(" "),
-    groups_claim: c?.oidc?.groups_claim ?? "",
+    groups_claim: c?.oidc?.groups_claim ?? c?.jumpcloud?.groups_claim ?? "",
     allowed_domains: (c?.oidc?.allowed_domains ?? []).join(", "),
-    redirect_uri: c?.oidc?.redirect_uri ?? "",
+    redirect_uri: c?.oidc?.redirect_uri ?? c?.google?.redirect_uri ?? c?.jumpcloud?.redirect_uri ?? "",
     mfa_acr_values: (c?.oidc?.mfa_acr_values ?? []).join(" "),
+    google_accounts: c?.google?.accounts === "GOOGLE_ACCOUNTS_ANY" ? "any" : "workspace",
+    domains: (c?.google?.domains ?? []).join(", "),
+    allowed_emails: (c?.google?.allowed_emails ?? c?.jumpcloud?.allowed_emails ?? []).join(", "),
+    device_client_id: c?.google?.device_client_id ?? "",
+    trust_2sv: !!c?.google?.trust_2sv,
   };
 }
 
@@ -115,6 +138,21 @@ function toInput(f: FormState): ConnectorInput {
   if (f.require_mfa) c.require_mfa = f.require_mfa === "on";
   if (f.kind === "pam") {
     c.pam = { allowed_groups: words(f.allowed_groups) };
+  } else if (f.kind === "google") {
+    const workspace = f.google_accounts === "workspace";
+    c.google = {
+      accounts: workspace ? "GOOGLE_ACCOUNTS_WORKSPACE" : "GOOGLE_ACCOUNTS_ANY",
+      client_id: f.client_id.trim(),
+      domains: workspace ? words(f.domains) : [],
+      allowed_emails: words(f.allowed_emails),
+      trust_2sv: workspace && f.trust_2sv,
+    };
+    if (f.device_client_id.trim()) c.google.device_client_id = f.device_client_id.trim();
+    if (f.redirect_uri.trim()) c.google.redirect_uri = f.redirect_uri.trim();
+  } else if (f.kind === "jumpcloud") {
+    c.jumpcloud = { client_id: f.client_id.trim(), allowed_emails: words(f.allowed_emails) };
+    if (f.groups_claim.trim()) c.jumpcloud.groups_claim = f.groups_claim.trim();
+    if (f.redirect_uri.trim()) c.jumpcloud.redirect_uri = f.redirect_uri.trim();
   } else {
     c.oidc = {
       issuer: f.issuer.trim(),
@@ -156,6 +194,7 @@ function ConnectorForm({
   // A new OIDC connector's client secret, set right after it is created;
   // never kept beyond that.
   const [secret, setSecret] = useState("");
+  const [deviceSecret, setDeviceSecret] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const set = <K extends keyof FormState>(k: K, v: FormState[K]) => setF((s) => ({ ...s, [k]: v }));
@@ -178,10 +217,16 @@ function ConnectorForm({
           setSecret("");
           await api.setConnectorSecret(created.id, field, value);
         }
+        if (created.kind === "google" && deviceSecret) {
+          const value = deviceSecret;
+          setDeviceSecret("");
+          await api.setConnectorSecret(created.id, "device_client_secret", value);
+        }
       }
       onDone();
     } catch (err) {
       setSecret("");
+      setDeviceSecret("");
       setError(errorMessage(err));
       setBusy(false);
     }
@@ -201,6 +246,13 @@ function ConnectorForm({
     </Field>
   );
 
+  const secretInput = (id: string, label: string, value: string, setValue: (v: string) => void) => (
+    <Field label={`${label} (optional)`} htmlFor={id}>
+      <input id={id} type="password" autoComplete="new-password" className={inputClass} value={value} onChange={(e) => setValue(e.target.value)} />
+      <p className="mt-1 text-xs text-gray-500">Write-only: it is sealed on the server and never shown again.</p>
+    </Field>
+  );
+
   return (
     <form onSubmit={submit} className="space-y-4">
       {error && <p className="text-sm text-red-600 whitespace-pre-wrap">{error}</p>}
@@ -209,6 +261,8 @@ function ConnectorForm({
           <Field label="Kind" htmlFor="connector-kind">
             <select id="connector-kind" className={selectClass} value={f.kind} onChange={(e) => set("kind", e.target.value as Connector["kind"])}>
               <option value="oidc">OIDC</option>
+              <option value="google">Google</option>
+              <option value="jumpcloud">JumpCloud</option>
               <option value="pam">PAM</option>
             </select>
           </Field>
@@ -244,25 +298,76 @@ function ConnectorForm({
         </select>
       </Field>
 
+      {f.kind !== "pam" && (
+        <div className="p-3 rounded-lg bg-sky-50 border border-sky-100 text-xs text-sky-900" data-testid="redirect-uri">
+          Register this redirect URI with the identity provider:
+          <code className="block mt-1 font-mono break-all">{f.redirect_uri.trim() || callbackUri(f.id.trim())}</code>
+        </div>
+      )}
       {f.kind === "pam" ? (
         text("allowed_groups", "Allowed Unix groups", { placeholder: "any", hint: "Comma-separated; empty lets any account in." })
+      ) : f.kind === "google" ? (
+        <>
+          <Field label="Google accounts" htmlFor="connector-google-accounts">
+            <select
+              id="connector-google-accounts"
+              className={selectClass}
+              value={f.google_accounts}
+              onChange={(e) => set("google_accounts", e.target.value as FormState["google_accounts"])}
+            >
+              <option value="workspace">Google Workspace (by domain)</option>
+              <option value="any">Any Google account (invited or listed people)</option>
+            </select>
+          </Field>
+          {f.google_accounts === "workspace" ? (
+            <>
+              {text("domains", "Workspace domains", {
+                required: true,
+                placeholder: "example.org",
+                hint: "Comma-separated. A login is allowed by the account's Workspace domain (hd), never by its email address.",
+              })}
+              <label className="flex items-start gap-2 text-sm text-gray-700">
+                <input id="connector-trust-2sv" type="checkbox" className="mt-1" checked={f.trust_2sv} onChange={(e) => set("trust_2sv", e.target.checked)} />
+                <span>
+                  This Workspace enforces 2-step verification: count its logins as MFA.
+                  <span className="block text-xs text-gray-500">Google doesn't say whether a login used a second factor; only check this if the Workspace's admin console enforces it.</span>
+                </span>
+              </label>
+              <p className="text-xs text-gray-500">On Google's side, set the OAuth consent screen's user type to Internal, so only the Workspace's accounts can use the client.</p>
+            </>
+          ) : (
+            <>
+              {text("allowed_emails", "Allowed emails", {
+                placeholder: "bob@gmail.com",
+                hint: "Comma-separated. With “Create users” on, only these addresses get an account; otherwise invite people from a tenant's page.",
+              })}
+              <p className="text-xs text-amber-700" data-testid="consumer-warning">
+                Anyone can open a Google account. Without allowed emails, turn off “Create users” and invite people.
+              </p>
+            </>
+          )}
+          {text("client_id", "Client ID (web application)", { required: true })}
+          {!editing && secretInput("connector-secret", "Client secret", secret, setSecret)}
+          {text("device_client_id", "Device client ID (optional)", {
+            hint: "For gxctl logins: a separate OAuth client of type “TVs and Limited Input devices”.",
+          })}
+          {!editing && f.device_client_id.trim() && secretInput("connector-device-secret", "Device client secret", deviceSecret, setDeviceSecret)}
+        </>
+      ) : f.kind === "jumpcloud" ? (
+        <>
+          {text("client_id", "Client ID", { required: true })}
+          {!editing && secretInput("connector-secret", "Client secret", secret, setSecret)}
+          {text("groups_claim", "Groups claim", {
+            placeholder: "memberOf",
+            hint: "The name set under the application's “Include group attribute” in JumpCloud.",
+          })}
+          {text("allowed_emails", "Allowed emails", { hint: "Comma-separated. With “Create users” on, only these addresses get an account." })}
+        </>
       ) : (
         <>
           {text("issuer", "Issuer", { required: true, placeholder: "https://idp.example.com" })}
           {text("client_id", "Client ID", { required: true })}
-          {!editing && (
-            <Field label="Client secret (optional)" htmlFor="connector-secret">
-              <input
-                id="connector-secret"
-                type="password"
-                autoComplete="new-password"
-                className={inputClass}
-                value={secret}
-                onChange={(e) => setSecret(e.target.value)}
-              />
-              <p className="mt-1 text-xs text-gray-500">Write-only: it is sealed on the server and never shown again.</p>
-            </Field>
-          )}
+          {!editing && secretInput("connector-secret", "Client secret", secret, setSecret)}
           <div className="grid grid-cols-2 gap-3">
             {text("scopes", "Scopes", { placeholder: "openid profile email" })}
             {text("groups_claim", "Groups claim", { placeholder: "groups" })}
@@ -497,7 +602,7 @@ export default function Connectors() {
               {connectors.map((c) => {
                 const readOnly = fromFile(c);
                 const secret = secretSet(c);
-                const field = SECRET_FIELD[c.kind];
+                const fields = secretFields(c);
                 return (
                   <tr key={c.id} className="border-b border-gray-50 hover:bg-gray-50 align-top">
                     <td className="px-4 py-3">
@@ -505,7 +610,7 @@ export default function Connectors() {
                       <code className="text-xs font-mono text-gray-500">{c.id}</code>
                     </td>
                     <td className="px-4 py-3">
-                      <Badge kind="base">{c.kind.toUpperCase()}</Badge>
+                      <Badge kind="base">{KIND_LABEL[c.kind] ?? c.kind}</Badge>
                     </td>
                     <td className="px-4 py-3">{c.enabled ? <Badge kind="ok">enabled</Badge> : <Badge kind="muted">disabled</Badge>}</td>
                     <td className="px-4 py-3">
@@ -528,6 +633,7 @@ export default function Connectors() {
                     </td>
                     <td className="px-4 py-3 text-xs text-gray-600 space-y-0.5">
                       {c.oidc && <div className="font-mono">{c.oidc.issuer}</div>}
+                      {c.jumpcloud && <div>groups in {c.jumpcloud.groups_claim || "memberOf"}</div>}
                       {c.google && (
                         <div>
                           {c.google.accounts === "GOOGLE_ACCOUNTS_ANY"
@@ -548,15 +654,9 @@ export default function Connectors() {
                       )}
                       {!readOnly && host.updateConnector && (
                         <>
-                          {formEdits(c) ? (
-                            <button className="text-sm text-sky-700 hover:underline" onClick={() => setDialog({ kind: "edit", connector: c })}>
-                              Edit
-                            </button>
-                          ) : (
-                            <span className="text-xs text-gray-400" title="Edit with gxctl: connector update">
-                              edit with gxctl
-                            </span>
-                          )}
+                          <button className="text-sm text-sky-700 hover:underline" onClick={() => setDialog({ kind: "edit", connector: c })}>
+                            Edit
+                          </button>
                           <button
                             className="text-sm text-sky-700 hover:underline"
                             onClick={() => run(() => api.updateConnector(c.id, { enabled: !c.enabled }))}
@@ -565,14 +665,17 @@ export default function Connectors() {
                           </button>
                         </>
                       )}
-                      {!readOnly && field && host.setConnectorSecret && (
-                        <button
-                          className="text-sm text-sky-700 hover:underline"
-                          onClick={() => setDialog({ kind: "secret", connector: c, field })}
-                        >
-                          Set secret
-                        </button>
-                      )}
+                      {!readOnly &&
+                        host.setConnectorSecret &&
+                        fields.map((field) => (
+                          <button
+                            key={field}
+                            className="text-sm text-sky-700 hover:underline"
+                            onClick={() => setDialog({ kind: "secret", connector: c, field })}
+                          >
+                            {field === "device_client_secret" ? "Set device secret" : "Set secret"}
+                          </button>
+                        ))}
                       {!readOnly && host.deleteConnector && (
                         <button className={dangerLink} onClick={() => setDialog({ kind: "delete", connector: c })}>
                           Delete

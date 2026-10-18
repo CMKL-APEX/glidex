@@ -231,7 +231,7 @@ claim) and checks the rest. Each has a module under
 | Preset | `settings` | Fixed | Checks at login | MFA |
 |---|---|---|---|---|
 | `google` | `accounts` (`workspace` default \| `any`), `client_id`, `domains` (Workspace: one or more), `allowed_emails`, `device_client_id`, `trust_2sv` (Workspace) | issuer `https://accounts.google.com`, scopes `openid email profile` | Workspace: `hd` ∈ `domains` (the `hd=` request parameter is only a hint for Google's account chooser). Consumer: `email_verified`, then an invitation, `allowed_emails`, or an existing identity | `trust_2sv: true` (the operator says the Workspace domain enforces 2-step verification) makes every login count as MFA; otherwise none does. Consumer: none |
-| `jumpcloud` | `client_id`, `groups_claim` (the name set under the app's *Include group attribute* in JumpCloud; default `memberOf`), `allowed_emails` | issuer `https://oauth.id.jumpcloud.com/` | as `oidc` | `amr`/`acr` as `oidc` |
+| `jumpcloud` | `client_id`, `groups_claim` (the name set under the app's *Include group attribute* in JumpCloud; default `memberOf`), `allowed_emails` | issuer `https://oauth.id.jumpcloud.com/`, scopes `openid email profile` | as `oidc`; an email the token says nothing about counts as verified (the organization sets its users' addresses), `email_verified: false` is believed | `amr`/`acr` as `oidc` |
 | `oidc` | as today | — | as today | `amr` `mfa`, or `acr` ∈ `mfa_acr_values` |
 
 - **Two Google clients.** Google allows the device grant (gxctl) only
@@ -1071,7 +1071,8 @@ one login for both (D3). Nothing a user does today changes.
   by hand against an installed host, with test accounts kept outside
   the repository: their passwords are entered only in the IdP's own
   page, and OAuth client secrets only through `gxctl connector secret
-  set` on standard input. `docs/` holds the checklist, never accounts.
+  set` on standard input. [idp-checks.md](idp-checks.md) holds the
+  checklist and its results, never accounts.
 - **SCIM:** Entra and Okta sequences as fixtures; `active: false`
   revokes within the request; connector X's token can't touch Y.
 - **Pull sync:** failing APIs change nothing; the safety stop holds;
@@ -1406,4 +1407,14 @@ Done (task 3):
 | API on both transports | proto `glidex/directory/v1/invitations.proto` (`InvitationService`), `LoginService.InspectInvitation`; `service/invitations.rs`; RPC `api/rpc/directory.rs`, `api/rpc/login.rs`; REST `api/invitations.rs`, `POST /auth/c/{id}/start` in `api/access.rs`; Cedar `readTenantInvitations`, `manageTenantInvitations` |
 | gxctl and UI | `gxctl invite list|create|revoke`; the tenant page's Invitations card (the link shown once); the signed-out page `/invite/<id>` (`pages/Invite.tsx`) |
 | Tests | `invitations.rs` unit tests; `connector_tests.rs::invitations_let_one_known_person_in_once`; UI e2e `invitations.spec.ts` |
+
+Done (tasks 4 and 5):
+
+| Spec | Code |
+|---|---|
+| `jumpcloud` (§5.1): JumpCloud's issuer and scopes, groups in its claim (`memberOf`), an unstated email counted as verified | `src/directory/presets/jumpcloud.rs`; proto `JumpcloudSettings`; preset checks answer MFA and email verification (`presets::Checked`) |
+| The connector form per preset | `pages/Connectors.tsx`: Google (Workspace or any account, the gate, `trust_2sv`, the device client and its secret), JumpCloud (groups claim), the redirect URI to register; `isOidcKind` for the login page and invitations |
+| gxctl | `connector add jumpcloud` |
+| Docs | the operator guide's Google, JumpCloud and invitations sections; [idp-checks.md](idp-checks.md) for the real providers |
+| Tests | `presets/jumpcloud.rs` unit tests; `connector_tests.rs::jumpcloud_*`; UI e2e `connectors.spec.ts` |
 

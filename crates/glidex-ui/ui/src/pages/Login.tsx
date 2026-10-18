@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from "react";
 import * as api from "../api";
-import type { AuthMethods } from "../types";
+import { isOidcKind, type AuthMethods } from "../types";
 
 const inputClass =
   "mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-transparent";
@@ -80,9 +80,10 @@ function currentPath(): string {
 }
 
 /** One button per OIDC-code connector of the directory (`oidc`, the
- *  `google` preset); one plain "SSO" button for a server that doesn't list them. */
+ *  `google` and `jumpcloud` presets); one plain "SSO" button for a server
+ *  that doesn't list them. */
 export function SsoButtons({ methods, reauth = false }: { methods: AuthMethods; reauth?: boolean }) {
-  const oidc = methods.connectors?.filter((c) => c.kind === "oidc" || c.kind === "google");
+  const oidc = methods.connectors?.filter((c) => isOidcKind(c.kind));
   const buttons = oidc ? oidc.map((c) => ({ id: c.id as string | undefined, label: c.display_name || "SSO" })) : [{ id: undefined, label: "SSO" }];
   return (
     <div className="space-y-2">
