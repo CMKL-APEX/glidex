@@ -126,7 +126,11 @@ pub fn whoami_of(app: &App, p: &crate::auth::Principal) -> ServiceResult<WhoAmIR
         user: p
             .user
             .as_ref()
-            .map(|u| crate::service::access::user_pb(u, &[]))
+            // Its own sign-in methods (the account page lists them).
+            .map(|u| {
+                let ids = app.auth.store.identities_of(&u.id).unwrap_or_default();
+                crate::service::access::user_pb(u, &ids)
+            })
             .into(),
         token: p
             .token

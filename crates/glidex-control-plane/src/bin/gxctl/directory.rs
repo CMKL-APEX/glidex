@@ -17,6 +17,7 @@ const USAGE: &str = "Usage: connector list | show <id> \
     | add oidc <id> --issuer URL --client-id ID [--name TEXT] [--scope S]... [--groups-claim C] [--domain D]... [--mfa-acr V]... [COMMON] \
     | add pam <id> [--name TEXT] [--allow-group G]... [COMMON] \
     | add google <id> --client-id ID [--name TEXT] (--domain D... [--trust-2sv] | --consumer [--allow-email E]...) [--device-client-id ID] [COMMON] \
+    | add jumpcloud <id> --client-id ID [--name TEXT] [--groups-claim C] [--allow-email E]... [COMMON] \
     | update <id> [--name TEXT] [--enable|--disable] [COMMON] \
     | secret set <id> [field] [--from-file PATH] | test <id> | remove <id>\n\
     COMMON: [--jit|--no-jit] [--require-group G]... [--mfa|--no-mfa] [--team GROUP=TEAM]... [--default-tenant T] [--token-max-days N]";
@@ -26,6 +27,7 @@ fn kind(c: &Connector) -> &'static str {
         Some(Settings::Pam(_)) => "pam",
         Some(Settings::Oidc(_)) => "oidc",
         Some(Settings::Google(_)) => "google",
+        Some(Settings::Jumpcloud(_)) => "jumpcloud",
         None => "?",
     }
 }
@@ -94,6 +96,16 @@ fn show(c: &Connector) {
             );
             if g.trust_2sv == Some(true) {
                 println!("  2-step:         trusted (its logins count as MFA)");
+            }
+        }
+        Some(Settings::Jumpcloud(j)) => {
+            println!("  Client id:      {}", j.client_id);
+            println!(
+                "  Groups claim:   {}",
+                j.groups_claim.as_deref().unwrap_or("memberOf")
+            );
+            if !j.allowed_emails.is_empty() {
+                println!("  Allowed emails: {}", j.allowed_emails.join(", "));
             }
         }
         Some(Settings::Pam(p)) if !p.allowed_groups.is_empty() => {
@@ -281,6 +293,17 @@ pub async fn connector(client: &ApiClient, args: &[&str]) {
                         allowed_emails: strings(args, "--allow-email"),
                         device_client_id: flag_value(args, "--device-client-id").map(Into::into),
                         trust_2sv: has_flag(args, "--trust-2sv").then_some(true),
+                        ..Default::default()
+                    })))
+                }
+                "jumpcloud" => {
+                    let Some(client_id) = flag_value(args, "--client-id") else {
+                        return usage(USAGE);
+                    };
+                    Some(Settings::Jumpcloud(Box::new(JumpcloudSettings {
+                        client_id: client_id.into(),
+                        groups_claim: flag_value(args, "--groups-claim").map(Into::into),
+                        allowed_emails: strings(args, "--allow-email"),
                         ..Default::default()
                     })))
                 }

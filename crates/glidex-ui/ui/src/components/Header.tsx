@@ -101,7 +101,13 @@ export default function Header() {
               </select>
             </label>
             <span className="text-sm text-gray-700" title={me.user_id ?? me.token_id ?? me.user?.id ?? me.token?.id}>
-              {who}
+              {me.user ? (
+                <NavLink to="/account" className="hover:underline" title="Your account: sign-in methods">
+                  {who}
+                </NavLink>
+              ) : (
+                who
+              )}
               {me.break_glass && <span className="ml-1 text-xs text-amber-600">(admin)</span>}
             </span>
             {me.method !== "disabled" && me.method !== "peer" && (

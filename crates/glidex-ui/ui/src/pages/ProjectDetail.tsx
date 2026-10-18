@@ -19,7 +19,7 @@ import {
 } from "../components/ui";
 import { UsageCell } from "./Projects";
 import { useCan, useSession } from "../session";
-import { useDirectory } from "../hooks";
+import { useConnectorNames, useDirectory } from "../hooks";
 import RoutersCard from "../components/RoutersCard";
 
 const CAPS = [
@@ -210,6 +210,7 @@ export default function ProjectDetail() {
   const navigate = useNavigate();
   const session = useSession();
   const [dir] = useDirectory();
+  const connectors = useConnectorNames();
   const [project, setProject] = useState<ProjectView | null>(null);
   const [bindings, setBindings] = useState<Binding[] | null>(null);
   const [networks, setNetworks] = useState<Network[]>([]);
@@ -375,6 +376,7 @@ export default function ProjectDetail() {
             <Loading />
           ) : (
             <BindingTable
+              connectors={connectors}
               bindings={bindings}
               dir={dir ?? { users: [], teams: [] }}
               onRemove={

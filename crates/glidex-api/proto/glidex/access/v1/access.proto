@@ -307,6 +307,8 @@ message UnlinkIdentityRequest {
   string id = 1;
   // `<provider>:<subject>`.
   string key = 2;
+  // Also end the user's sessions (an administrator taking a sign-in away).
+  optional bool end_sessions = 3 [json_name = "end_sessions"];
 }
 message UnlinkIdentityResponse {}
 

@@ -58,9 +58,43 @@ struct Pending {
     return_to: String,
     browser: String,
     created: u64,
-    /// The invitation the login brings (spec/tenancy.md §6.1): kept here,
-    /// never in a URL.
-    invite: Option<String>,
+    /// What the login is for: kept here, never in a URL.
+    after: After,
+}
+
+/// A failed callback, and what its login was for once the state was this
+/// browser's (`(return_to, after)`).
+#[derive(Debug)]
+pub struct CallbackError {
+    pub error: OidcError,
+    pub started: Option<(String, After)>,
+}
+
+impl From<OidcError> for CallbackError {
+    fn from(error: OidcError) -> Self {
+        CallbackError {
+            error,
+            started: None,
+        }
+    }
+}
+
+/// What a browser login is for.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum After {
+    /// Signing in.
+    #[default]
+    Login,
+    /// Signing in and taking an invitation (`<id>.<secret>`, spec/tenancy.md §6.1).
+    Invite(String),
+    /// Adding this sign-in to `user`, who started it signed in through
+    /// `session` (its hash; §6.2). The session cookie is `SameSite=Strict`
+    /// and doesn't come back on the IdP's redirect, so the callback checks
+    /// that session is still live instead.
+    Link {
+        user: String,
+        session: Option<String>,
+    },
 }
 
 struct Jwks {
@@ -148,6 +182,24 @@ pub struct OidcState {
     pending: Mutex<HashMap<String, Pending>>,
     /// Device grants: device_code → nonce-free marker of when it started.
     devices: Mutex<HashMap<String, u64>>,
+}
+
+/// `application/x-www-form-urlencoded`, as client credentials go in a
+/// Basic header (RFC 6749 §2.3.1): an IdP that follows it (Ory Hydra,
+/// JumpCloud's) decodes them, so a secret with `+`, `/` or `%` sent as is
+/// would not match. Letters, digits and `*-._` stay as they are.
+fn form_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'*' | b'-' | b'.' | b'_' => {
+                out.push(b as char)
+            }
+            b' ' => out.push('+'),
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
 }
 
 fn b64url(data: &[u8]) -> String {
@@ -302,13 +354,13 @@ impl OidcState {
     }
 
     /// Begin a browser login. `reauth` forces a fresh login (step-up);
-    /// `invite` comes back from [`callback`](Self::callback).
+    /// `after` comes back from [`callback`](Self::callback).
     pub async fn start(
         &self,
         return_to: Option<&str>,
         redirect_uri: &str,
         reauth: bool,
-        invite: Option<String>,
+        after: After,
     ) -> Result<Start, OidcError> {
         let d = self.discovery().await?;
         let state = crate::auth::random_token(24);
@@ -328,7 +380,7 @@ impl OidcState {
                     return_to: safe_return_to(return_to),
                     browser: browser.clone(),
                     created: t,
-                    invite,
+                    after,
                 },
             );
         }
@@ -359,14 +411,14 @@ impl OidcState {
 
     /// Finish a browser login: check `state` against the browser cookie,
     /// redeem the code, verify the ID token. Returns the identity, the
-    /// path to return to and the invitation the login started with.
+    /// path to return to and what the login was for.
     pub async fn callback(
         &self,
         code: &str,
         state: &str,
         browser: Option<&str>,
         redirect_uri: &str,
-    ) -> Result<(OidcIdentity, String, Option<String>), OidcError> {
+    ) -> Result<(OidcIdentity, String, After), CallbackError> {
         let pending = self
             .pending
             .lock()
@@ -374,14 +426,17 @@ impl OidcState {
             .remove(state)
             .ok_or_else(|| OidcError::Invalid("unknown or expired login state".into()))?;
         if pending.created + STATE_SECS <= now() {
-            return Err(OidcError::Invalid("login state expired".into()));
+            return Err(OidcError::Invalid("login state expired".into()).into());
         }
         if !browser.is_some_and(|b| crate::auth::constant_eq(b, &pending.browser)) {
-            return Err(OidcError::Invalid(
-                "login state belongs to another browser".into(),
-            ));
+            return Err(OidcError::Invalid("login state belongs to another browser".into()).into());
         }
-        let d = self.discovery().await?;
+        // From here the login is this browser's: a failure says what it was for.
+        let with = |e: OidcError| CallbackError {
+            error: e,
+            started: Some((pending.return_to.clone(), pending.after.clone())),
+        };
+        let d = self.discovery().await.map_err(with)?;
         let resp = self
             .token_request(
                 &d,
@@ -392,13 +447,17 @@ impl OidcState {
                     ("code_verifier", &pending.verifier),
                 ],
             )
-            .await?;
+            .await
+            .map_err(with)?;
         let id_token = resp
             .get("id_token")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| OidcError::Invalid("token response has no id_token".into()))?;
-        let identity = self.verify(&d, id_token, Some(&pending.nonce)).await?;
-        Ok((identity, pending.return_to, pending.invite))
+            .ok_or_else(|| with(OidcError::Invalid("token response has no id_token".into())))?;
+        let identity = self
+            .verify(&d, id_token, Some(&pending.nonce))
+            .await
+            .map_err(with)?;
+        Ok((identity, pending.return_to, pending.after))
     }
 
     async fn token_request(
@@ -410,7 +469,7 @@ impl OidcState {
         let resp = self
             .http
             .post(&d.token_endpoint)
-            .basic_auth(&self.cfg.client_id, Some(secret))
+            .basic_auth(form_encode(&self.cfg.client_id), Some(form_encode(&secret)))
             .form(form)
             .send()
             .await
@@ -529,7 +588,7 @@ impl OidcState {
             .or(c.email.clone())
             .unwrap_or_else(|| c.sub.clone());
         // The preset's checks, and its word on MFA where it has one.
-        let preset_mfa = self
+        let preset = self
             .preset
             .rule
             .check(&c.rest)
@@ -540,18 +599,19 @@ impl OidcState {
             .get("acr")
             .and_then(|a| a.as_str())
             .is_some_and(|a| self.mfa_acr.iter().any(|m| m == a));
-        let email_verified = matches!(
-            c.rest.get("email_verified"),
-            Some(serde_json::Value::Bool(true))
-        ) || c.rest.get("email_verified").and_then(|v| v.as_str())
-            == Some("true");
+        let email_verified = preset.email_verified.unwrap_or(
+            matches!(
+                c.rest.get("email_verified"),
+                Some(serde_json::Value::Bool(true))
+            ) || c.rest.get("email_verified").and_then(|v| v.as_str()) == Some("true"),
+        );
         Ok(OidcIdentity {
             issuer: d.issuer.clone(),
             subject: c.sub,
             display_name,
             email: c.email,
             groups,
-            mfa: preset_mfa.unwrap_or(amr_mfa || acr_mfa),
+            mfa: preset.mfa.unwrap_or(amr_mfa || acr_mfa),
             email_verified,
         })
     }
@@ -566,7 +626,7 @@ impl OidcState {
         let resp = self
             .http
             .post(&endpoint)
-            .basic_auth(&self.cfg.client_id, Some(secret))
+            .basic_auth(form_encode(&self.cfg.client_id), Some(form_encode(&secret)))
             .form(&[
                 ("client_id", self.cfg.client_id.as_str()),
                 ("scope", &self.cfg.scopes.join(" ")),
@@ -631,6 +691,16 @@ impl DigestBytes for sha2::Sha256 {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn client_credentials_are_form_encoded_for_basic() {
+        assert_eq!(super::form_encode("glidex-web_1.0"), "glidex-web_1.0");
+        assert_eq!(
+            super::form_encode("a+b/c=d%e~f g"),
+            "a%2Bb%2Fc%3Dd%25e%7Ef+g"
+        );
+    }
+
     use super::*;
 
     #[test]

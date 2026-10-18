@@ -6,8 +6,9 @@
 use super::{
     ApiErr, AppState, Caller, ClientAddr, Listener, Proto, RequestId, auth_error, err, proto_body,
 };
-use crate::auth::{self, Method, Principal};
+use crate::auth::{self, AuthError, Method, Principal};
 use crate::directory::invitations::InviteToken;
+use crate::directory::oidc::After;
 use crate::service::access as acc;
 use crate::service::login::{self as svc, audit_login, oidc_client, oidc_error, oidc_user_invited};
 use axum::{
@@ -293,7 +294,7 @@ async fn begin_oidc(
     headers: &HeaderMap,
     return_to: Option<&str>,
     reauth: bool,
-    invite: Option<String>,
+    after: After,
 ) -> Result<(String, HeaderValue), ApiErr> {
     let (_, oidc) = oidc_client(app, id)?;
     let start = oidc
@@ -301,7 +302,7 @@ async fn begin_oidc(
             return_to,
             &oidc.redirect_uri(first_origin(app)),
             reauth,
-            invite,
+            after,
         )
         .await
         .map_err(oidc_error)?;
@@ -331,7 +332,7 @@ async fn start_oidc(
         &headers,
         q.return_to.as_deref(),
         q.reauth,
-        None,
+        After::Login,
     )
     .await?;
     let mut resp = Redirect::to(&redirect).into_response();
@@ -370,9 +371,9 @@ pub async fn connector_start_post(
                     "no such invitation",
                 ));
             }
-            Some(s.trim().to_string())
+            After::Invite(s.trim().to_string())
         }
-        None => None,
+        None => After::Login,
     };
     let (redirect, cookie) = begin_oidc(
         &app,
@@ -387,6 +388,61 @@ pub async fn connector_start_post(
     let mut resp = Json(serde_json::json!({ "redirect": redirect })).into_response();
     resp.headers_mut().insert(header::SET_COOKIE, cookie);
     Ok(resp)
+}
+
+/// `POST /auth/link/c/{id}/start` (spec/tenancy.md §6.2): add a sign-in
+/// through connector `id` to the caller, who is signed in, beside the ones
+/// it has. `manageOwnSignIns` (a recent login). Answers `{redirect}`; the
+/// callback goes back to `return_to` with `?linked=<id>` or
+/// `?link_error=<code>`.
+pub async fn link_start(
+    c: Caller,
+    Path(id): Path<String>,
+    listener: Option<Extension<Listener>>,
+    headers: HeaderMap,
+    Json(b): Json<StartBody>,
+) -> Result<Response, ApiErr> {
+    let Some(user) = c.p.user_id().map(String::from) else {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            "invalid",
+            "only a user signs in: a service account has no sign-in methods",
+        ));
+    };
+    c.require_action(
+        "manageOwnSignIns",
+        crate::authz::Ent::User(user.clone()),
+        crate::authz::EntitySet::new(),
+        &[],
+    )?;
+    c.set_target(format!("user:{user}"));
+    c.detail("connector", serde_json::json!(id));
+    let (redirect, cookie) = begin_oidc(
+        &c.app,
+        Some(&id),
+        listener,
+        &headers,
+        b.return_to.as_deref(),
+        true,
+        After::Link {
+            user,
+            session: c.p.session_hash.clone(),
+        },
+    )
+    .await?;
+    let mut resp = Json(serde_json::json!({ "redirect": redirect })).into_response();
+    resp.headers_mut().insert(header::SET_COOKIE, cookie);
+    Ok(resp)
+}
+
+/// `return_to` with `key=value` added.
+fn with_query(path: &str, key: &str, value: &str) -> String {
+    let sep = if path.contains('?') { '&' } else { '?' };
+    let value: String = value
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .collect();
+    format!("{path}{sep}{key}={value}")
 }
 
 /// `GET /auth/oidc/start`: the first OIDC connector (from before connectors).
@@ -444,7 +500,7 @@ async fn finish_oidc(
     };
     let (c, oidc) = oidc_client(&app, id)?;
     let browser = super::cookie(&headers, OIDC_COOKIE);
-    let (identity, return_to, invite) = match oidc
+    let (identity, return_to, after) = match oidc
         .callback(
             &code,
             &state,
@@ -454,12 +510,65 @@ async fn finish_oidc(
         .await
     {
         Ok(v) => v,
+        // A sign-in being added goes back to its page with why it wasn't.
+        Err(crate::directory::oidc::CallbackError {
+            started: Some((return_to, After::Link { user: uid, .. })),
+            ..
+        }) => {
+            audit_login(&app, None, &rid.0, "oidc-link", "denied", &uid);
+            return Ok(
+                Redirect::to(&with_query(&return_to, "link_error", "not_allowed")).into_response(),
+            );
+        }
         Err(e) => {
             audit_login(&app, None, &rid.0, "oidc", "denied", "-");
-            return Err(oidc_error(e).into());
+            return Err(oidc_error(e.error).into());
         }
     };
-    let invite = invite.as_deref().and_then(InviteToken::parse);
+    let clear_oidc = || {
+        HeaderValue::from_str(&format!(
+            "{}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0",
+            OIDC_COOKIE
+        ))
+        .expect("ascii")
+    };
+    let invite = match after {
+        After::Link { user: uid, session } => {
+            // The session that started it must still be live: the login
+            // state is this browser's (its Lax cookie), and the session
+            // cookie (Strict) doesn't come back on the IdP's redirect.
+            let current = session
+                .as_deref()
+                .filter(|h| app.auth.session_is_live(h, &uid))
+                .and_then(|_| app.auth.store.user(&uid).ok().flatten());
+            let ext = svc::external_of(&c, &identity);
+            let outcome = match &current {
+                None => Err("not_signed_in"),
+                Some(_) => match app.auth.link_external(&c, &ext, &uid) {
+                    Ok(_) => Ok(()),
+                    Err(AuthError::NotAllowed(m)) if m.contains("another user") => Err("taken"),
+                    Err(_) => Err("not_allowed"),
+                },
+            };
+            audit_login(
+                &app,
+                None,
+                &rid.0,
+                "oidc-link",
+                if outcome.is_ok() { "ok" } else { "denied" },
+                &uid,
+            );
+            let to = match outcome {
+                Ok(()) => with_query(&return_to, "linked", &c.id),
+                Err(code) => with_query(&return_to, "link_error", code),
+            };
+            let mut resp = Redirect::to(&to).into_response();
+            resp.headers_mut().append(header::SET_COOKIE, clear_oidc());
+            return Ok(resp);
+        }
+        After::Invite(s) => InviteToken::parse(&s),
+        After::Login => None,
+    };
     let user = match oidc_user_invited(&app, &c, &identity, invite.as_ref()) {
         Ok(u) => u,
         Err(e) => {
@@ -706,13 +815,22 @@ pub async fn link_identity(
     Ok(Proto(StatusCode::CREATED, acc::link_identity(&c, req)?))
 }
 
+#[derive(Deserialize, Default)]
+pub struct UnlinkQuery {
+    #[serde(default)]
+    end_sessions: bool,
+}
+
+/// `DELETE /users/{id}/identities/{key}[?end_sessions=true]`.
 pub async fn unlink_identity(
     c: Caller,
     Path((id, key)): Path<(String, String)>,
+    Query(q): Query<UnlinkQuery>,
 ) -> Result<Response, ApiErr> {
     let req = pb::UnlinkIdentityRequest {
         id,
         key,
+        end_sessions: q.end_sessions.then_some(true),
         ..Default::default()
     };
     acc::unlink_identity(&c, req)?;

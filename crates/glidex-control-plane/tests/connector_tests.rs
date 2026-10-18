@@ -1391,6 +1391,11 @@ async fn google_workspace_logins_are_allowed_by_hd_not_by_the_email() {
         v["connector"]["google"]["accounts"],
         "GOOGLE_ACCOUNTS_WORKSPACE"
     );
+    // The login page offers it: SSO is on with a preset alone.
+    let (_, m, _) = h
+        .send(Request::get("/auth/methods").body(Body::empty()).unwrap())
+        .await;
+    assert_eq!(m["oidc"], true, "{m}");
     let ok = google_claims(&mock, "g-1", "alice@example.org", Some("example.org"));
     assert_eq!(
         h.login_with(&mock, "gw", ok.clone()).await,
@@ -1809,4 +1814,286 @@ async fn invitations_let_one_known_person_in_once() {
         st == StatusCode::FORBIDDEN || st == StatusCode::NOT_FOUND,
         "{st}"
     );
+}
+
+#[tokio::test]
+async fn jumpcloud_groups_come_in_its_claim_and_its_emails_are_the_organizations() {
+    // spec/tenancy.md §5.1: JumpCloud's issuer and scopes are fixed; groups
+    // come in the claim its "Include group attribute" names (memberOf);
+    // an email the token says nothing about counts as verified, one it
+    // says is unverified doesn't.
+    let mock = idp::start().await;
+    let h = harness();
+    let s = h.session(&h.admin("admin-jc"));
+    let c = json!({"connector": {"id": "jc", "display_name": "JumpCloud", "jit": true,
+        "required_groups": ["lab-staff"],
+        "jumpcloud": {"client_id": "glidex", "issuer": mock.base, "allowed_emails": ["alice@corp.example"]}}});
+    let (st, v) = h.rest("POST", "/connectors", Some(c), &s).await;
+    assert_eq!(st, StatusCode::CREATED, "{v}");
+    assert_eq!(v["connector"]["kind"], "jumpcloud");
+    let (st, r) = h
+        .rest(
+            "PUT",
+            "/connectors/jc/secrets/client_secret",
+            Some(json!({"value": SECRET})),
+            &s,
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "{r}");
+    let base = |sub: &str, email: &str| {
+        json!({"iss": mock.base, "aud": "glidex", "sub": sub, "exp": now() + 300, "iat": now(),
+               "email": email, "name": sub, "memberOf": ["lab-staff"]})
+    };
+    assert_eq!(
+        h.login_with(&mock, "jc", base("j-1", "alice@corp.example"))
+            .await,
+        StatusCode::SEE_OTHER
+    );
+    let mut no_group = base("j-2", "alice@corp.example");
+    no_group["memberOf"] = json!(["other"]);
+    assert_eq!(
+        h.login_with(&mock, "jc", no_group).await,
+        StatusCode::FORBIDDEN
+    );
+    // Not on the allowlist.
+    assert_eq!(
+        h.login_with(&mock, "jc", base("j-3", "bob@corp.example"))
+            .await,
+        StatusCode::FORBIDDEN
+    );
+    let mut unverified = base("j-4", "alice@corp.example");
+    unverified["email_verified"] = json!(false);
+    assert_eq!(
+        h.login_with(&mock, "jc", unverified).await,
+        StatusCode::FORBIDDEN
+    );
+    // The issuer is JumpCloud's, or a local mock.
+    let bad = json!({"connector": {"id": "jc2", "jumpcloud": {"client_id": "glidex", "issuer": "https://evil.example"}}});
+    let (st, v) = h.rest("POST", "/connectors", Some(bad), &s).await;
+    assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+}
+
+/// The session cookie and CSRF value of a `session:<cookie>|<csrf>` login.
+fn session_parts(who: &str) -> (String, String) {
+    let (c, csrf) = who
+        .strip_prefix("session:")
+        .unwrap()
+        .split_once('|')
+        .unwrap();
+    (c.to_string(), csrf.to_string())
+}
+
+/// Add a sign-in through connector `id` to the user signed in as `who`
+/// (the account page's way): its status at the start, and where the
+/// callback sent the browser. The callback comes as a browser sends it
+/// after the IdP's cross-site redirect: with the Lax login cookie, without
+/// the Strict session cookie.
+async fn link_through(
+    h: &H,
+    mock: &idp::Mock,
+    id: &str,
+    who: &str,
+    claims: Value,
+) -> (StatusCode, Option<String>) {
+    link_through_then(h, mock, id, who, claims, || async {}).await
+}
+
+/// [`link_through`], running `before_callback` while the user is at the IdP.
+async fn link_through_then<F: std::future::Future<Output = ()>>(
+    h: &H,
+    mock: &idp::Mock,
+    id: &str,
+    who: &str,
+    mut claims: Value,
+    before_callback: impl FnOnce() -> F,
+) -> (StatusCode, Option<String>) {
+    let (cookie, csrf) = session_parts(who);
+    let req = Request::post(format!("/auth/link/c/{id}/start"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::COOKIE, format!("{}={cookie}", auth::SESSION_COOKIE))
+        .header(auth::CSRF_HEADER, csrf)
+        .header(header::ORIGIN, ORIGIN)
+        .body(Body::from(json!({"return_to": "/account"}).to_string()))
+        .unwrap();
+    let (s, v, headers) = h.send(req).await;
+    if s != StatusCode::OK {
+        return (s, None);
+    }
+    let loc = reqwest::Url::parse(v["redirect"].as_str().unwrap()).unwrap();
+    let q: std::collections::HashMap<_, _> = loc.query_pairs().into_owned().collect();
+    let browser = headers
+        .get(header::SET_COOKIE)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string();
+    claims["nonce"] = json!(q["nonce"]);
+    *mock.id_token.lock().unwrap() = Some(idp::sign(claims, "k1"));
+    before_callback().await;
+    let req = Request::get(format!(
+        "/auth/c/{id}/callback?code=c1&state={}",
+        q["state"]
+    ))
+    .header(header::COOKIE, browser)
+    .body(Body::empty())
+    .unwrap();
+    let (st, _, headers) = h.send(req).await;
+    (
+        st,
+        headers
+            .get(header::LOCATION)
+            .map(|l| l.to_str().unwrap().to_string()),
+    )
+}
+
+#[tokio::test]
+async fn a_user_adds_and_removes_sign_in_methods() {
+    // spec/tenancy.md §6.2: a signed-in user adds a sign-in through a
+    // connector, beside the ones it has; it then reaches the same user.
+    let mock = idp::start().await;
+    let h = harness();
+    let (st, v) = h
+        .google_connector(
+            &mock,
+            "gw",
+            json!({"domains": ["example.org"]}),
+            json!({"jit": false}),
+        )
+        .await;
+    assert_eq!(st, StatusCode::CREATED, "{v}");
+    let ada = h.admin("ada");
+    let s = h.session(&ada);
+    let mine = google_claims(&mock, "g-ada", "ada@example.org", Some("example.org"));
+    let (st, to) = link_through(&h, &mock, "gw", &s, mine.clone()).await;
+    assert_eq!(
+        (st, to.as_deref()),
+        (StatusCode::SEE_OTHER, Some("/account?linked=gw"))
+    );
+    let ids = h.app.auth.store.identities_of(&ada).unwrap();
+    assert!(
+        ids.iter()
+            .any(|i| i.provider == "conn:gw" && i.subject == "g-ada"),
+        "{ids:?}"
+    );
+    assert!(ids.len() >= 2, "beside the others: {ids:?}");
+    // The Google login is now Ada, though the connector creates nobody.
+    assert_eq!(
+        h.login_with(&mock, "gw", mine.clone()).await,
+        StatusCode::SEE_OTHER
+    );
+    // whoami lists them.
+    let (_, who) = h.rest("GET", "/auth/whoami", None, &s).await;
+    assert!(who.to_string().contains("conn:gw"), "{who}");
+
+    // A sign-in that is someone else's is refused.
+    let bob = h.admin("bob");
+    let sb = h.session(&bob);
+    let (st, to) = link_through(&h, &mock, "gw", &sb, mine.clone()).await;
+    assert_eq!(
+        (st, to.as_deref()),
+        (StatusCode::SEE_OTHER, Some("/account?link_error=taken"))
+    );
+    // Signed out while at the IdP: nothing to add it to.
+    let carol = h.admin("carol");
+    let sc = h.session(&carol);
+    let carols = google_claims(&mock, "g-carol", "carol@example.org", Some("example.org"));
+    let (st, to) = link_through_then(&h, &mock, "gw", &sc, carols, || async {
+        let (st, _) = h.rest("POST", "/auth/logout", Some(json!({})), &sc).await;
+        assert!(st.is_success(), "{st}");
+    })
+    .await;
+    assert_eq!(
+        (st, to.as_deref()),
+        (
+            StatusCode::SEE_OTHER,
+            Some("/account?link_error=not_signed_in")
+        )
+    );
+    // Without a session, there's nothing to add it to.
+    let req = Request::post("/auth/link/c/gw/start")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from("{}"))
+        .unwrap();
+    assert_eq!(h.send(req).await.0, StatusCode::UNAUTHORIZED);
+    // The connector's rules apply: another Workspace isn't added.
+    let other = google_claims(&mock, "g-x", "x@other.org", Some("other.org"));
+    let (st, to) = link_through(&h, &mock, "gw", &sb, other).await;
+    assert_eq!(
+        (st, to.as_deref()),
+        (
+            StatusCode::SEE_OTHER,
+            Some("/account?link_error=not_allowed")
+        )
+    );
+
+    // Removing: one's own, but never the last; an administrator's too.
+    let key = "conn:gw:g-ada".to_string();
+    let (st, v) = h
+        .rest(
+            "DELETE",
+            &format!("/users/{ada}/identities/{key}"),
+            None,
+            &s,
+        )
+        .await;
+    assert_eq!(st, StatusCode::NO_CONTENT, "{v}");
+    assert!(
+        h.app
+            .auth
+            .store
+            .identities_of(&ada)
+            .unwrap()
+            .iter()
+            .all(|i| i.provider != "conn:gw")
+    );
+    let last = h.app.auth.store.identities_of(&bob).unwrap();
+    assert_eq!(last.len(), 1, "{last:?}");
+    let k = format!("{}:{}", last[0].provider, last[0].subject);
+    let (st, v) = h
+        .rest("DELETE", &format!("/users/{bob}/identities/{k}"), None, &sb)
+        .await;
+    assert_eq!(
+        (st, v["error"].as_str()),
+        (StatusCode::CONFLICT, Some("last_identity")),
+        "{v}"
+    );
+    // Disabled, its last one can go (to be added to the user its person
+    // really is): an administrator takes Bob's away.
+    let root = h.session(&h.admin("root-admin"));
+    let (st, v) = h
+        .rest(
+            "PATCH",
+            &format!("/users/{bob}"),
+            Some(json!({"disabled": true})),
+            &root,
+        )
+        .await;
+    assert!(st.is_success(), "{v}");
+    let (st, v) = h
+        .rest(
+            "DELETE",
+            &format!("/users/{bob}/identities/{k}"),
+            None,
+            &root,
+        )
+        .await;
+    assert_eq!(st, StatusCode::NO_CONTENT, "{v}");
+    assert!(h.app.auth.store.identities_of(&bob).unwrap().is_empty());
+    // An administrator takes Ada's Google sign-in away and ends her sessions.
+    let (st, _) = link_through(&h, &mock, "gw", &s, mine).await;
+    assert_eq!(st, StatusCode::SEE_OTHER);
+    let (st, v) = h
+        .rest(
+            "DELETE",
+            &format!("/users/{ada}/identities/{key}?end_sessions=true"),
+            None,
+            &root,
+        )
+        .await;
+    assert_eq!(st, StatusCode::NO_CONTENT, "{v}");
+    let (st, _) = h.rest("GET", "/auth/whoami", None, &s).await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED, "her session ended");
 }

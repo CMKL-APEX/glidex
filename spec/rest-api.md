@@ -225,9 +225,9 @@ tenant (D7); every write needs a recent login. Secrets go in through
 | Method | Path | RPC | Purpose |
 |---|---|---|---|
 | `GET` | `/connectors` | `ConnectorService.ListConnectors` | The directory's connectors, file-defined ones (`file-pam`, `file-oidc`, `source: file`) included |
-| `POST` | `/connectors` | `CreateConnector` | `{connector: {id, display_name?, enabled?, jit?, required_groups?, require_mfa?, group_teams?, default_tenant?, token_max_days?, pam: {allowed_groups} \| oidc: {issuer, client_id, scopes?, groups_claim?, allowed_domains?, redirect_uri?, mfa_acr_values?} \| google: {accounts?, client_id, domains?, allowed_emails?, device_client_id?, trust_2sv?, redirect_uri?}}}`; `422 invalid_connector` (D22: `jit` into the owner or an operator tenant needs `required_groups`; such an OIDC or `google` connector has `require_mfa` on unless set, and a `google` one there needs `GOOGLE_ACCOUNTS_WORKSPACE` with `trust_2sv`. `google`: Workspace needs `domains`, never a public mail domain; `GOOGLE_ACCOUNTS_ANY` with `jit` needs `allowed_emails`; tenancy.md D39, §5.1) |
+| `POST` | `/connectors` | `CreateConnector` | `{connector: {id, display_name?, enabled?, jit?, required_groups?, require_mfa?, group_teams?, default_tenant?, token_max_days?, pam: {allowed_groups} \| oidc: {issuer, client_id, scopes?, groups_claim?, allowed_domains?, redirect_uri?, mfa_acr_values?} \| google: {accounts?, client_id, domains?, allowed_emails?, device_client_id?, trust_2sv?, redirect_uri?} \| jumpcloud: {client_id, groups_claim?, allowed_emails?, redirect_uri?}}}`; `422 invalid_connector` (D22: `jit` into the owner or an operator tenant needs `required_groups`; such an OIDC or `google` connector has `require_mfa` on unless set, and a `google` one there needs `GOOGLE_ACCOUNTS_WORKSPACE` with `trust_2sv`. `google`: Workspace needs `domains`, never a public mail domain; `GOOGLE_ACCOUNTS_ANY` with `jit` needs `allowed_emails`; tenancy.md D39, §5.1) |
 | `GET` / `PATCH` / `DELETE` | `/connectors/{id}` | `GetConnector` / `UpdateConnector` / `DeleteConnector` | PATCH `{connector: {…}, update_mask?}`: without a mask, the fields present are the ones changed. File-defined connectors are read-only (`409`) |
-| `PUT` | `/connectors/{id}/secrets/{field}` | `SetSecret` | `{value}`; the kind's secret fields only (`oidc`: `client_secret`; `google`: `client_secret`, `device_client_secret` for its device client); sealed with the directory's data key |
+| `PUT` | `/connectors/{id}/secrets/{field}` | `SetSecret` | `{value}`; the kind's secret fields only (`oidc`, `jumpcloud`: `client_secret`; `google`: `client_secret`, `device_client_secret` for its device client); sealed with the directory's data key |
 | `POST` | `/connectors/{id}/test` | `TestConnector` | `{steps: [{name, ok, message}]}`: PAM reaches authd; OIDC and `google` check the secrets, discovery and the device grant (`google`: whether it has a device client) |
 
 Logging in through a connector, all public: `GET /auth/methods` lists the
@@ -240,6 +240,13 @@ instead of redirecting, for a page that brings an invitation's secret
 (tenancy.md §6.1; `404` for an invitation that isn't open or is for
 another connector), and `POST /auth/invitation {invitation}` says what
 an invitation is for (`LoginService.InspectInvitation`). `POST
+/auth/link/c/{id}/start {return_to?}` adds a sign-in through connector
+`id` to the signed-in caller (`manageOwnSignIns`, a recent login;
+tenancy.md §6.2), answering `{redirect}`; its callback returns to
+`return_to` with `?linked=<id>` or `?link_error=<code>`. `DELETE
+/users/{id}/identities/{key}[?end_sessions=true]` removes one of a
+user's sign-in methods (one's own, or with `manageUsers`), never the
+last (`409 last_identity`) unless the user is disabled. `POST
 /auth/login` and `POST /auth/token` take `connector` (a PAM connector,
 the first one when absent); a token is clamped to the connector's
 `token_max_days`. A refused login is `403 login_not_allowed`. The

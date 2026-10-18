@@ -865,7 +865,7 @@ export function entityLabel(e: EntityRef): string {
 
 export interface LoginConnector {
   id: string;
-  kind: "pam" | "oidc" | "google";
+  kind: "pam" | "oidc" | "google" | "jumpcloud";
   display_name: string;
 }
 
@@ -1794,6 +1794,23 @@ export interface GoogleSettings {
   redirect_uri?: string;
 }
 
+/** `jumpcloud` settings (spec/tenancy.md §5.1). */
+export interface JumpcloudSettings {
+  client_id: string;
+  /** The claim JumpCloud's "Include group attribute" names; default `memberOf`. */
+  groups_claim?: string;
+  allowed_emails?: string[];
+  redirect_uri?: string;
+}
+
+/** Kinds that log in through the OIDC code: a button on the login page,
+ *  and a way in for invitations (a verified email). */
+export const isOidcKind = (k?: string) => k === "oidc" || k === "google" || k === "jumpcloud";
+
+/** Whether the login page offers single sign-on: the server says so, or
+ *  it lists a connector that logs in through the OIDC code. */
+export const offersSso = (m: AuthMethods) => !!m.oidc || !!m.connectors?.some((c) => isOidcKind(c.kind));
+
 /** Which of a connector's secrets are set; never their values. */
 export interface SecretStatus {
   field: string;
@@ -1806,7 +1823,7 @@ export interface SecretStatus {
 export interface Connector {
   id: string;
   directory_id?: string;
-  kind: "pam" | "oidc" | "google";
+  kind: "pam" | "oidc" | "google" | "jumpcloud";
   display_name: string;
   enabled?: boolean;
   jit?: boolean;
@@ -1818,6 +1835,7 @@ export interface Connector {
   pam?: PamSettings;
   oidc?: OidcSettings;
   google?: GoogleSettings;
+  jumpcloud?: JumpcloudSettings;
   secrets?: SecretStatus[];
   /** `api`, or `file` for the read-only ones from control-plane.json. */
   source?: "api" | "file";

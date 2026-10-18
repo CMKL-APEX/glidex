@@ -149,14 +149,12 @@ pub fn oidc_user(
     oidc_user_invited(app, c, id, None)
 }
 
-/// [`oidc_user`] for a login that brings an invitation (§6.1).
-pub fn oidc_user_invited(
-    app: &AppState,
+/// A verified OIDC identity as the common path takes it.
+pub fn external_of(
     c: &Connector,
     id: &crate::directory::oidc::OidcIdentity,
-    invite: Option<&crate::directory::invitations::InviteToken>,
-) -> ServiceResult<User> {
-    let ext = crate::directory::ExternalIdentity {
+) -> crate::directory::ExternalIdentity {
+    crate::directory::ExternalIdentity {
         connector_id: c.id.clone(),
         subject: id.subject.clone(),
         display_name: id.display_name.clone(),
@@ -164,7 +162,17 @@ pub fn oidc_user_invited(
         groups: id.groups.clone(),
         mfa: id.mfa,
         email_verified: id.email_verified,
-    };
+    }
+}
+
+/// [`oidc_user`] for a login that brings an invitation (§6.1).
+pub fn oidc_user_invited(
+    app: &AppState,
+    c: &Connector,
+    id: &crate::directory::oidc::OidcIdentity,
+    invite: Option<&crate::directory::invitations::InviteToken>,
+) -> ServiceResult<User> {
+    let ext = external_of(c, id);
     app.auth
         .external_login_invited(c, &ext, invite)
         .map_err(|e| auth_error(e).into())

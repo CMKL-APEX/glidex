@@ -32,6 +32,7 @@ const Admissions = lazy(() => import("./pages/Admissions"));
 const Connectors = lazy(() => import("./pages/Connectors"));
 const VmConsole = lazy(() => import("./pages/VmConsole"));
 const Invite = lazy(() => import("./pages/Invite"));
+const Account = lazy(() => import("./pages/Account"));
 
 function Shell() {
   const { project } = useSession();
@@ -65,6 +66,7 @@ function Shell() {
             <Route path="/cluster/nodes/:id" element={<NodeDetail />} />
             <Route path="/cluster/imports/:plan" element={<ImportPlan />} />
             <Route path="/usage" element={<Usage />} />
+            <Route path="/account" element={<Account />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
           </Suspense>

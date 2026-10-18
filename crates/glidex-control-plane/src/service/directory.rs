@@ -81,6 +81,17 @@ pub fn to_pb(call: &Call, c: &Connector) -> ServiceResult<pb::Connector> {
                 ..Default::default()
             }))
         }
+        Kind::Jumpcloud => {
+            let s = c.jumpcloud().map_err(err_of)?;
+            Settings::Jumpcloud(Box::new(pb::JumpcloudSettings {
+                client_id: s.client_id,
+                groups_claim: s.groups_claim,
+                allowed_emails: s.allowed_emails,
+                redirect_uri: s.redirect_uri,
+                issuer: s.issuer,
+                ..Default::default()
+            }))
+        }
     };
     Ok(pb::Connector {
         id: c.id.clone(),
@@ -167,6 +178,22 @@ fn settings_json(s: &Settings) -> (Kind, serde_json::Value) {
                 }
             }
             (Kind::Google, v)
+        }
+        Settings::Jumpcloud(j) => {
+            let mut v = serde_json::json!({
+                "client_id": j.client_id,
+                "allowed_emails": j.allowed_emails,
+            });
+            for (k, x) in [
+                ("groups_claim", &j.groups_claim),
+                ("redirect_uri", &j.redirect_uri),
+                ("issuer", &j.issuer),
+            ] {
+                if let Some(x) = x {
+                    v[k] = serde_json::json!(x);
+                }
+            }
+            (Kind::Jumpcloud, v)
         }
     }
 }
@@ -319,7 +346,7 @@ pub fn update_connector(
             }
             "default_tenant" => c.default_tenant = p.default_tenant.clone(),
             "token_max_days" => c.token_max_days = p.token_max_days.map(u64::from),
-            "pam" | "oidc" | "google" => {
+            "pam" | "oidc" | "google" | "jumpcloud" => {
                 let s = p.settings.as_ref().ok_or_else(|| {
                     ServiceError::new(
                         StatusCode::UNPROCESSABLE_ENTITY,
@@ -412,7 +439,7 @@ pub async fn test_connector(
                 },
             ));
         }
-        Kind::Oidc | Kind::Google => {
+        Kind::Oidc | Kind::Google | Kind::Jumpcloud => {
             if c.source == Source::Api {
                 // The device client's secret only where there is one.
                 let fields: &[&str] = if c.kind == Kind::Google && c.has_device_client() {

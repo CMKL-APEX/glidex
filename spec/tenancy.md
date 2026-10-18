@@ -231,7 +231,7 @@ claim) and checks the rest. Each has a module under
 | Preset | `settings` | Fixed | Checks at login | MFA |
 |---|---|---|---|---|
 | `google` | `accounts` (`workspace` default \| `any`), `client_id`, `domains` (Workspace: one or more), `allowed_emails`, `device_client_id`, `trust_2sv` (Workspace) | issuer `https://accounts.google.com`, scopes `openid email profile` | Workspace: `hd` ∈ `domains` (the `hd=` request parameter is only a hint for Google's account chooser). Consumer: `email_verified`, then an invitation, `allowed_emails`, or an existing identity | `trust_2sv: true` (the operator says the Workspace domain enforces 2-step verification) makes every login count as MFA; otherwise none does. Consumer: none |
-| `jumpcloud` | `client_id`, `groups_claim` (the name set under the app's *Include group attribute* in JumpCloud; default `memberOf`), `allowed_emails` | issuer `https://oauth.id.jumpcloud.com/` | as `oidc` | `amr`/`acr` as `oidc` |
+| `jumpcloud` | `client_id`, `groups_claim` (the name set under the app's *Include group attribute* in JumpCloud; default `memberOf`), `allowed_emails` | issuer `https://oauth.id.jumpcloud.com/`, scopes `openid email profile` | as `oidc`; an email the token says nothing about counts as verified (the organization sets its users' addresses), `email_verified: false` is believed | `amr`/`acr` as `oidc` |
 | `oidc` | as today | — | as today | `amr` `mfa`, or `acr` ∈ `mfa_acr_values` |
 
 - **Two Google clients.** Google allows the device grant (gxctl) only
@@ -329,6 +329,41 @@ expires_at, secret_hash, taken_by?, taken_at?}`, a directory record.
 
 A connector's own rules still apply: an invitation
 through a Workspace `google` connector still needs `hd` ∈ `domains`.
+
+### 6.2 Sign-in methods
+
+A user is reached by its identities (D17), and may have **several**: a
+local account, a Google account, a JumpCloud one. Each is a way to sign
+in as that user, with the same roles; adding one never replaces another.
+Without linking, one person signing in two ways is two users.
+
+- **Adding one** is the user's own act, proving both: signed in, the user
+  starts `POST /auth/link/c/{id}/start` (`manageOwnSignIns` on itself, a
+  step-up action, so a stolen session can't add its thief's account) and
+  signs in at the IdP. The login state carries "add to user X" and the session that
+  started it; at the callback (the login state is this browser's, by its
+  `Lax` cookie) that session must still be live and X's — its `Strict`
+  cookie doesn't come back on the IdP's cross-site redirect — and the connector's
+  rules apply as at a login (groups, MFA, `hd`). The identity is added to
+  X; it is refused if it is another user's (`taken`), a no-op if X's. The
+  browser returns to the page with `?linked=<connector>` or
+  `?link_error=taken|not_allowed|not_signed_in`.
+- **Removing one:** the user's own with `manageOwnSignIns`, anyone's with
+  `manageUsers`; never a user's last identity (`409 last_identity`), so
+  nobody is locked out by accident, **unless the user is disabled** (it
+  can't sign in anyway): then an administrator may take its last one, so
+  that its person can add it to the user they really are (a Google login
+  that made a second user before linking existed).
+- **Labels:** `pam` is a host account's password ("Local password"),
+  `unix` the host's local socket ("Host socket": gxctl on the host, no
+  password), `conn:<id>` a connector by its display name. An
+  administrator's removal may also end the user's sessions
+  (`end_sessions`). Sessions and tokens belong to the user, not the
+  identity: without that, they stay valid until they expire or are
+  revoked.
+- `LinkIdentity` (an administrator naming `pam:`, `unix:` or
+  `oidc:<issuer>` and a subject) stays for local accounts; a connector's
+  identity is added only by its user signing in.
 
 `Principal` gains `directory_id` and the acting `tenant_id`; Cedar's
 `Auth` context gains `mfa: Bool`, so site policies can require MFA
@@ -1071,7 +1106,8 @@ one login for both (D3). Nothing a user does today changes.
   by hand against an installed host, with test accounts kept outside
   the repository: their passwords are entered only in the IdP's own
   page, and OAuth client secrets only through `gxctl connector secret
-  set` on standard input. `docs/` holds the checklist, never accounts.
+  set` on standard input. [idp-checks.md](idp-checks.md) holds the
+  checklist and its results, never accounts.
 - **SCIM:** Entra and Okta sequences as fixtures; `active: false`
   revokes within the request; connector X's token can't touch Y.
 - **Pull sync:** failing APIs change nothing; the safety stop holds;
@@ -1406,4 +1442,16 @@ Done (task 3):
 | API on both transports | proto `glidex/directory/v1/invitations.proto` (`InvitationService`), `LoginService.InspectInvitation`; `service/invitations.rs`; RPC `api/rpc/directory.rs`, `api/rpc/login.rs`; REST `api/invitations.rs`, `POST /auth/c/{id}/start` in `api/access.rs`; Cedar `readTenantInvitations`, `manageTenantInvitations` |
 | gxctl and UI | `gxctl invite list|create|revoke`; the tenant page's Invitations card (the link shown once); the signed-out page `/invite/<id>` (`pages/Invite.tsx`) |
 | Tests | `invitations.rs` unit tests; `connector_tests.rs::invitations_let_one_known_person_in_once`; UI e2e `invitations.spec.ts` |
+
+Done (tasks 4 and 5):
+
+| Spec | Code |
+|---|---|
+| `jumpcloud` (§5.1): JumpCloud's issuer and scopes, groups in its claim (`memberOf`), an unstated email counted as verified | `src/directory/presets/jumpcloud.rs`; proto `JumpcloudSettings`; preset checks answer MFA and email verification (`presets::Checked`) |
+| The connector form per preset | `pages/Connectors.tsx`: Google (Workspace or any account, the gate, `trust_2sv`, the device client and its secret), JumpCloud (groups claim), the redirect URI to register; `isOidcKind` for the login page and invitations |
+| gxctl | `connector add jumpcloud` |
+| Who signs in how (D17: one person through two connectors is two users) | `components/ui.tsx::SignInMethods`, `signInLabel` (a local account, or a connector by name): the tenant page's members and roles, a project's members, and the Access page's users; a membership says it came through a connector or an invitation |
+| Several sign-in methods per user (§6.2) | `AuthService::link_external`; `POST /auth/link/c/{id}/start` and the callback's `After::Link` (`directory/oidc.rs`, `CallbackError` keeps the login's purpose); Cedar `manageOwnSignIns` (`base.own-sign-ins`, step-up); `UnlinkIdentity` (own or `manageUsers`, never the last, `end_sessions`); WhoAmI's user lists its identities; UI **Your account** (`pages/Account.tsx`, from the header's name) and the Access page's per-identity remove |
+| Docs | the operator guide's Google, JumpCloud and invitations sections; [idp-checks.md](idp-checks.md) for the real providers |
+| Tests | `presets/jumpcloud.rs` unit tests; `connector_tests.rs::jumpcloud_*`; UI e2e `connectors.spec.ts` |
 

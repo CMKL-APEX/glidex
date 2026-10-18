@@ -1391,13 +1391,83 @@ impl AuthService {
         Ok(user)
     }
 
-    /// Any enabled OIDC connector.
+    /// Whether session `hash` is still `user_id`'s and live: not ended,
+    /// idle or past its lifetime, its user not disabled.
+    pub fn session_is_live(&self, hash: &str, user_id: &str) -> bool {
+        let Ok(Some(s)) = self.store.session(hash) else {
+            return false;
+        };
+        let now = store::now();
+        let cfg = &self.config.auth.session;
+        s.user_id == user_id
+            && now <= s.last_seen + cfg.idle_minutes * 60
+            && now <= s.created_at + cfg.absolute_hours * 3600
+            && self
+                .store
+                .user(user_id)
+                .ok()
+                .flatten()
+                .is_some_and(|u| !u.disabled)
+    }
+
+    /// Add a sign-in through connector `c` to user `user_id`, who is
+    /// signed in (spec/tenancy.md §6.2): beside the ones it has, never in
+    /// place of them. The connector's rules apply as at a login; a sign-in
+    /// that already reaches another user is refused, one that reaches this
+    /// user is a no-op. Returns whether it was added.
+    pub fn link_external(
+        &self,
+        c: &crate::directory::Connector,
+        id: &crate::directory::ExternalIdentity,
+        user_id: &str,
+    ) -> Result<bool, AuthError> {
+        if !c.enabled {
+            return Err(AuthError::NotAllowed("this connector is disabled".into()));
+        }
+        if !c.required_groups.is_empty() && !id.groups.iter().any(|g| c.required_groups.contains(g))
+        {
+            return Err(AuthError::NotAllowed("not in a required group".into()));
+        }
+        if c.require_mfa && !id.mfa {
+            return Err(AuthError::NotAllowed(
+                "this connector requires a multi-factor login".into(),
+            ));
+        }
+        let provider = c.identity_provider();
+        if let Some(i) = self.store.identity(&provider, &id.subject)? {
+            if i.user_id == user_id {
+                return Ok(false);
+            }
+            return Err(AuthError::NotAllowed(
+                "this sign-in already belongs to another user".into(),
+            ));
+        }
+        self.store.put_identity(&store::Identity {
+            provider,
+            subject: id.subject.clone(),
+            user_id: user_id.into(),
+            email: id.email.clone(),
+            created_at: store::now(),
+        })?;
+        let teams: Vec<String> = id
+            .groups
+            .iter()
+            .filter_map(|g| c.group_teams.get(g).cloned())
+            .collect();
+        self.store
+            .sync_memberships(user_id, c.member_source(), &teams)?;
+        Ok(true)
+    }
+
+    /// Any enabled connector that logs in through the OIDC code: `oidc`
+    /// or a preset (`google`, `jumpcloud`). The login page shows its
+    /// sign-in buttons by it.
     pub fn oidc_enabled(&self) -> bool {
         self.connectors
-            .first(crate::directory::Kind::Oidc)
-            .ok()
-            .flatten()
-            .is_some()
+            .list()
+            .unwrap_or_default()
+            .iter()
+            .any(|c| c.enabled && c.kind.is_oidc())
     }
 
     /// The OIDC client of connector `id` (or the first OIDC connector, for

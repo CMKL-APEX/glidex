@@ -67,6 +67,11 @@ when { resource has project && resource.project == context.project };
 @id("base.read-shared")
 permit (principal, action in [Glidex::Action::"readImage", Glidex::Action::"readNetwork"], resource);
 
+// Users manage their own sign-in methods (with a recent login: step-up).
+@id("base.own-sign-ins")
+permit (principal is Glidex::User, action == Glidex::Action::"manageOwnSignIns", resource)
+when { resource == principal };
+
 // Users manage their own tokens.
 @id("base.own-tokens")
 permit (principal is Glidex::User, action == Glidex::Action::"manageOwnTokens", resource)
