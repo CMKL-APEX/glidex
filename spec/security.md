@@ -178,6 +178,13 @@ redirect: API clients should be told, not silently upgraded.
   only `localhost` and the host name are known, so every LAN or VPN
   address gets `421` and is missing from the certificate. A failed
   lookup is logged as a warning.
+- Configured and self-signed certificate files are checked once a
+  minute and a replaced, matching pair is served without a restart; a
+  pair that fails to load or doesn't match keeps the current one and is
+  logged ([tailscale-tls.md](tailscale-tls.md) §4.1). The control plane
+  re-publishes `tls.crt` after a reload. A key read from a systemd
+  credential is the copy made at service start, so a new key still needs
+  a restart.
 - Regenerated only when missing, unreadable or within 30 days of
   expiry. Invariant: the fingerprint stays stable across restarts and
   address changes, so clients that pinned it keep working; to cover a
@@ -1378,7 +1385,8 @@ None. Earlier questions were answered and recorded as decisions 10–17 (§2).
 | OIDC (§5.4) | `src/directory/oidc.rs` |
 | API, route table, compound checks (§7.4, §7.7, §13) | `src/api/` |
 | Listeners, TLS (§5.1, §5.1.1) | `src/serve.rs`, `src/config.rs`; certificates, listeners, local names and client trust shared with glidex-ui, gxctl and the installer in `crates/glidex-tls` |
-| Tailscale certificates for the UI, reloadable certificates (decision 19) | *(draft)* not started — [tailscale-tls.md](tailscale-tls.md) §10 |
+| Reloadable certificates ([tailscale-tls.md](tailscale-tls.md) TS0) | `glidex_tls::{CertSlot, Resolver, FileCert}`; control plane `serve.rs`/`main.rs` (re-publishes `tls.crt`), UI `main.rs` |
+| Tailscale certificates for the UI (decision 19) | *(draft)* not started — [tailscale-tls.md](tailscale-tls.md) §10 TS1–TS2 |
 | Private VM runtime directories (§9) | `src/paths.rs` |
 | VM units, polkit rule, shim allowlist (§3, §9) | `packaging/glidex-vm@.service.in`, `packaging/50-glidex-vm.rules.in`, `crates/glidex-vm-shim/src/launch.rs`, `crates/glidex-install` (`install_vm_units`) |
 | PAM helper (§5.3) | `crates/glidex-authd` |

@@ -1,6 +1,6 @@
 # Tailscale certificates for the web UI
 
-Status: **design accepted; specs updated, code pending** (milestones §10).
+Status: **design accepted; TS0 implemented, TS1–TS2 pending** (milestones §10).
 The open questions are settled as decisions T6–T11 (§8).
 Extends [security.md](security.md) §5.1 and §5.1.1 and
 [web-ui.md](web-ui.md) *Server*. The edits it needs in those documents
@@ -97,9 +97,22 @@ Today `glidex_tls::server_config` builds a rustls `ServerConfig` with
   (`CertifiedKey::keys_match`), and a swap never drops connections
   already established.
 
-Both services move to the resolver. It also fixes renewing an
-operator's own certificate, which currently needs a restart
-(operator-guide `tls.md`, *Renewing*).
+Both services use the resolver. It also lets an operator renew their
+own certificate without a restart (operator-guide `tls.md`,
+*Renewing*), with one exception: a key given as a systemd credential
+(`LoadCredential=`, the documented way) is copied into
+`$CREDENTIALS_DIRECTORY` when the service starts, so a renewal that
+changes the key still needs a restart; the reload warning says so. The
+Tailscale slot (§4.2) never touches files, so it is unaffected.
+
+The control plane re-publishes `<run dir>/tls.crt` after a reload, so
+local clients trust the new certificate; `GET /auth/server-info` reads
+the certificate file per request and needs no change.
+
+Implementation: `glidex_tls::{CertSlot, Resolver, FileCert,
+resolver_config, certified_key}`; a file's identity for change
+detection is device, inode, size and modification time, so
+write-then-rename and in-place rewrites are both seen.
 
 ### 4.2 The Tailscale slot (`glidex-ui`)
 
@@ -300,7 +313,7 @@ in §2.
 
 | # | Scope | Acceptance |
 |---|---|---|
-| **TS0** reloadable certificates | `CertSlot` and SNI `Resolver` in `glidex-tls`; control plane and UI use them; configured certificate files reload on change | §9 `glidex-tls` tests; operator guide drops "restart to renew". |
+| **TS0** reloadable certificates *(done)* | `CertSlot` and SNI `Resolver` in `glidex-tls`; control plane and UI use them; configured certificate files reload on change | §9 `glidex-tls` tests; operator guide drops "restart to renew". |
 | **TS1** Tailscale slot in the UI | `GLIDEX_UI_TLS_TAILSCALE`, local API client, polling and renewal, `Host` allowlist, HSTS, the T7 Origin rule | §9 `glidex-ui` tests; host test. |
 | **TS2** installer | Option precedence, prompt, `tailscaled` drop-in with refusal (T6), UI drop-in, usage blurb, uninstall, operator guide section | Installer tests; host test from a clean install. |
 | **TS3** *(gated upstream)* | Embedded tailscale-rs node (§6) | — |

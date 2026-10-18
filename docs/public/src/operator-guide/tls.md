@@ -130,12 +130,23 @@ also set `GLIDEX_UI_HOSTS` and `auth.allowed_origins` (see
 
 ### Renewing
 
-Neither service watches the files. Replace them, then restart the
-service; running VMs keep running:
+Both services check their certificate and key files once a minute and
+serve a replaced pair without a restart. Replace each file in one step
+(write a new file, then `mv` it over the old one), the key and the
+certificate in either order: until the two match again, the service
+keeps serving the previous pair and logs a warning. The control plane
+also refreshes its public copy, `/run/glidex-cp/tls.crt`.
+
+A key given as a systemd credential (`LoadCredential=`) is copied when
+the service starts, so a renewal that changes the key needs a restart;
+running VMs keep running:
 
 ```bash
 sudo systemctl restart glidex-control-plane glidex-ui
 ```
+
+`journalctl -u glidex-ui` (or `-u glidex-control-plane`) shows
+`TLS certificate reloaded` with the new fingerprint.
 
 ## Plain HTTP
 

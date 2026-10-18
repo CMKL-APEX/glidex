@@ -911,12 +911,15 @@ async fn serve() -> Result<(), String> {
     let tls_on = tls_enabled(env("GLIDEX_UI_TLS"))?;
     check_listen(&listen, tls_on)?;
     let cert = if tls_on { Some(ui_cert()?) } else { None };
-    let tls = match &cert {
-        Some(c) => Some(tokio_rustls::TlsAcceptor::from(glidex_tls::server_config(
-            &c.cert,
-            &c.key,
-            &[b"http/1.1"],
-        )?)),
+    // Re-read when the files change (spec/tailscale-tls.md §4.1).
+    let files = match &cert {
+        Some(c) => Some(glidex_tls::FileCert::load(&c.cert, &c.key)?),
+        None => None,
+    };
+    let tls = match &files {
+        Some(f) => Some(tokio_rustls::TlsAcceptor::from(
+            glidex_tls::resolver_config(glidex_tls::Resolver::new(f.slot.clone()), &[b"http/1.1"])?,
+        )),
         None => None,
     };
     let hosts = match env("GLIDEX_UI_HOSTS") {
@@ -970,14 +973,21 @@ async fn serve() -> Result<(), String> {
             describe
         );
     }
-    if let Some(c) = &cert {
+    if let (Some(c), Some(f)) = (&cert, files) {
         tracing::info!(
             cert = %c.cert.display(),
-            fingerprint = %glidex_tls::fingerprint(&c.cert)?,
+            fingerprint = %glidex_tls::fingerprint_certified(&f.slot.get()),
             self_signed = c.self_signed,
             generated = c.generated,
             "TLS certificate"
         );
+        f.watch(glidex_tls::RELOAD_EVERY, |f| {
+            tracing::info!(
+                cert = %f.cert.display(),
+                fingerprint = %glidex_tls::fingerprint_certified(&f.slot.get()),
+                "TLS certificate reloaded"
+            );
+        });
     }
     let loops: Vec<_> = listeners
         .into_iter()

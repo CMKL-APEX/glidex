@@ -5,6 +5,9 @@
 //! - Self-signed certificates (§5.1.1): generated once, kept until they
 //!   are missing, unreadable or near expiry, so their fingerprint stays
 //!   stable for clients that trust them.
+//! - Serving certificates that can change while running
+//!   (spec/tailscale-tls.md §4.1): a slot per certificate, chosen per
+//!   handshake by SNI, and certificate files re-read when they change.
 //! - The local names of this host: certificate SANs, the UI's `Host`
 //!   allowlist and the control plane's default `Origin`s.
 //! - Client trust for gxctl and the UI's TCP fallback: the system store,
@@ -19,7 +22,9 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tokio_rustls::rustls;
+use tokio_rustls::rustls::sign::CertifiedKey;
 
 pub use tokio_rustls;
 
@@ -278,17 +283,193 @@ pub fn server_config(
     key: &Path,
     alpn: &[&[u8]],
 ) -> Result<Arc<rustls::ServerConfig>, String> {
-    let certs = load_certs(cert)?;
-    let key = PrivateKeyDer::from_pem_file(key).map_err(|e| format!("{}: {}", key.display(), e))?;
+    let slot = CertSlot::new(certified_key(cert, key)?);
+    resolver_config(Resolver::new(slot), alpn)
+}
+
+/// A server config whose certificate `resolver` picks per handshake,
+/// offering `alpn`.
+pub fn resolver_config(
+    resolver: Arc<Resolver>,
+    alpn: &[&[u8]],
+) -> Result<Arc<rustls::ServerConfig>, String> {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let mut cfg = rustls::ServerConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()
         .map_err(|e| e.to_string())?
         .with_no_client_auth()
-        .with_single_cert(certs, key)
-        .map_err(|e| format!("TLS: {}", e))?;
+        .with_cert_resolver(resolver);
     cfg.alpn_protocols = alpn.iter().map(|p| p.to_vec()).collect();
     Ok(Arc::new(cfg))
+}
+
+/// A PEM chain (leaf first) and its key, refused unless the key belongs
+/// to the leaf.
+pub fn certified_key(cert: &Path, key: &Path) -> Result<Arc<CertifiedKey>, String> {
+    let certs = load_certs(cert)?;
+    let der = PrivateKeyDer::from_pem_file(key).map_err(|e| format!("{}: {}", key.display(), e))?;
+    CertifiedKey::from_der(certs, der, &rustls::crypto::ring::default_provider())
+        .map(Arc::new)
+        .map_err(|e| format!("{} with key {}: {}", cert.display(), key.display(), e))
+}
+
+/// Fingerprint of a serving certificate's leaf.
+pub fn fingerprint_certified(key: &CertifiedKey) -> String {
+    key.cert
+        .first()
+        .map(|c| fingerprint_der(c))
+        .unwrap_or_default()
+}
+
+// ---- reloadable certificates (spec/tailscale-tls.md §4.1) --------------------
+
+/// One certificate being served, replaceable while running. A swap is
+/// seen by the next handshake; established connections keep theirs.
+#[derive(Debug)]
+pub struct CertSlot(arc_swap::ArcSwap<CertifiedKey>);
+
+impl CertSlot {
+    pub fn new(key: Arc<CertifiedKey>) -> Arc<Self> {
+        Arc::new(CertSlot(arc_swap::ArcSwap::new(key)))
+    }
+
+    pub fn get(&self) -> Arc<CertifiedKey> {
+        self.0.load_full()
+    }
+
+    pub fn set(&self, key: Arc<CertifiedKey>) {
+        self.0.store(key);
+    }
+}
+
+/// Picks the certificate for a handshake: the slot named by the client's
+/// SNI (exact, ASCII case-insensitive), else the default. No SNI (an IP
+/// address in the URL) gets the default.
+#[derive(Debug)]
+pub struct Resolver {
+    default: Arc<CertSlot>,
+    named: arc_swap::ArcSwap<Vec<(String, Arc<CertSlot>)>>,
+}
+
+impl Resolver {
+    pub fn new(default: Arc<CertSlot>) -> Arc<Self> {
+        Arc::new(Resolver {
+            default,
+            named: Default::default(),
+        })
+    }
+
+    /// Serve `slot` to clients asking for `name`; `None` stops.
+    pub fn set_named(&self, name: &str, slot: Option<Arc<CertSlot>>) {
+        let name = name.trim_end_matches('.').to_ascii_lowercase();
+        self.named.rcu(|cur| {
+            let mut v: Vec<_> = cur.iter().filter(|(n, _)| *n != name).cloned().collect();
+            if let Some(s) = &slot {
+                v.push((name.clone(), s.clone()));
+            }
+            v
+        });
+    }
+
+    fn pick(&self, sni: Option<&str>) -> Arc<CertifiedKey> {
+        let named = self.named.load();
+        sni.and_then(|h| named.iter().find(|(n, _)| n.eq_ignore_ascii_case(h)))
+            .map(|(_, s)| s.get())
+            .unwrap_or_else(|| self.default.get())
+    }
+}
+
+impl rustls::server::ResolvesServerCert for Resolver {
+    fn resolve(&self, hello: rustls::server::ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
+        Some(self.pick(hello.server_name()))
+    }
+}
+
+/// What a file looked like: changes when it is rewritten or replaced.
+type Stamp = Option<(u64, u64, u64, i64, i64)>;
+
+fn stamp(path: &Path) -> Stamp {
+    let m = std::fs::metadata(path).ok()?;
+    Some((m.dev(), m.ino(), m.size(), m.mtime(), m.mtime_nsec()))
+}
+
+/// A slot backed by a certificate and a key file, re-read when either
+/// changes (spec/tailscale-tls.md §4.1).
+#[derive(Debug)]
+pub struct FileCert {
+    pub slot: Arc<CertSlot>,
+    pub cert: PathBuf,
+    pub key: PathBuf,
+    seen: (Stamp, Stamp),
+}
+
+impl FileCert {
+    pub fn load(cert: &Path, key: &Path) -> Result<FileCert, String> {
+        // Looked at before reading, so a change during the read is
+        // caught by the next poll rather than missed.
+        let seen = (stamp(cert), stamp(key));
+        Ok(FileCert {
+            slot: CertSlot::new(certified_key(cert, key)?),
+            cert: cert.to_path_buf(),
+            key: key.to_path_buf(),
+            seen,
+        })
+    }
+
+    /// Re-read the files if they changed since the last look. `Ok(true)`:
+    /// the slot now holds them. On error the slot keeps its pair, and the
+    /// same files aren't retried until one of them changes again (a
+    /// certificate written before its key is picked up once the key is).
+    pub fn poll(&mut self) -> Result<bool, String> {
+        let now = (stamp(&self.cert), stamp(&self.key));
+        if now == self.seen {
+            return Ok(false);
+        }
+        self.seen = now;
+        let key = certified_key(&self.cert, &self.key).map_err(|e| {
+            if is_credential(&self.key) {
+                format!(
+                    "{e} (the key is a systemd credential, copied when the service starts: restart it to load a new key)"
+                )
+            } else {
+                e
+            }
+        })?;
+        self.slot.set(key);
+        Ok(true)
+    }
+
+    /// Poll every `every` in the background; `on_change` runs after each
+    /// swap. Errors are logged and the current pair kept.
+    pub fn watch<F>(mut self, every: Duration, on_change: F) -> tokio::task::JoinHandle<()>
+    where
+        F: Fn(&FileCert) + Send + 'static,
+    {
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(every);
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            tick.tick().await;
+            loop {
+                tick.tick().await;
+                match self.poll() {
+                    Ok(true) => on_change(&self),
+                    Ok(false) => {}
+                    Err(e) => tracing::warn!(
+                        "TLS certificate not reloaded, keeping the current one: {}",
+                        e
+                    ),
+                }
+            }
+        })
+    }
+}
+
+/// How often certificate files are checked for changes.
+pub const RELOAD_EVERY: Duration = Duration::from_secs(60);
+
+/// A file under systemd's `$CREDENTIALS_DIRECTORY`.
+fn is_credential(path: &Path) -> bool {
+    std::env::var_os("CREDENTIALS_DIRECTORY").is_some_and(|d| path.starts_with(d))
 }
 
 /// A self-signed certificate and its key.
@@ -916,6 +1097,141 @@ mod tests {
         assert!(all_loopback(&l));
         assert!(parse_addresses(" ,", "X").is_err());
         assert!(parse_addresses("nope", "X").is_err());
+    }
+
+    /// A certificate for one DNS name, written as `<dir>/<stem>.{crt,key}`.
+    fn cert_for(dir: &Path, stem: &str, name: &str) -> (PathBuf, PathBuf) {
+        let n = LocalNames {
+            dns: vec![name.into()],
+            ips: vec![],
+        };
+        let (c, k) = generate(&n).unwrap();
+        let (cert, key) = (
+            dir.join(format!("{stem}.crt")),
+            dir.join(format!("{stem}.key")),
+        );
+        write_file(&key, k.as_bytes(), 0o600).unwrap();
+        write_file(&cert, c.as_bytes(), 0o644).unwrap();
+        (cert, key)
+    }
+
+    /// The leaf a handshake for `name` was served, by a client trusting
+    /// `trust`. The connection is returned too, to show it outlives a swap.
+    async fn served(
+        cfg: &Arc<rustls::ServerConfig>,
+        trust: &[PathBuf],
+        name: &str,
+    ) -> (
+        String,
+        tokio_rustls::client::TlsStream<tokio::io::DuplexStream>,
+    ) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (c, s) = tokio::io::duplex(1 << 16);
+        let acceptor = tokio_rustls::TlsAcceptor::from(cfg.clone());
+        tokio::spawn(async move {
+            let mut t = acceptor.accept(s).await.unwrap();
+            let mut b = [0u8; 4];
+            while let Ok(n @ 1..) = t.read(&mut b).await {
+                t.write_all(&b[..n]).await.unwrap();
+            }
+        });
+        let tls = ClientTls::new(trust, &[]).unwrap();
+        let t = tokio_rustls::TlsConnector::from(tls.config.clone())
+            .connect(ServerName::try_from(name.to_string()).unwrap(), c)
+            .await
+            .unwrap();
+        let fp = fingerprint_der(&t.get_ref().1.peer_certificates().unwrap()[0]);
+        (fp, t)
+    }
+
+    /// SNI picks the named slot (any case, trailing dot in the name), and
+    /// everything else gets the default. A swap is seen by the next
+    /// handshake only (spec/tailscale-tls.md §4.1).
+    #[tokio::test]
+    async fn resolver_picks_by_sni_and_swaps() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (a, ak) = cert_for(tmp.path(), "a", "a.example");
+        let (b, bk) = cert_for(tmp.path(), "b", "b.example");
+        let (a2, a2k) = cert_for(tmp.path(), "a2", "a.example");
+        let fp = |p: &PathBuf| fingerprint(p).unwrap();
+        let default = CertSlot::new(certified_key(&a, &ak).unwrap());
+        let r = Resolver::new(default.clone());
+        r.set_named(
+            "B.Example.",
+            Some(CertSlot::new(certified_key(&b, &bk).unwrap())),
+        );
+        assert_eq!(fingerprint_certified(&r.pick(Some("b.example"))), fp(&b));
+        assert_eq!(fingerprint_certified(&r.pick(Some("B.EXAMPLE"))), fp(&b));
+        assert_eq!(fingerprint_certified(&r.pick(Some("c.example"))), fp(&a));
+        assert_eq!(fingerprint_certified(&r.pick(None)), fp(&a));
+
+        let cfg = resolver_config(r.clone(), &[]).unwrap();
+        let trust = [a.clone(), b.clone(), a2.clone()];
+        assert_eq!(served(&cfg, &trust, "b.example").await.0, fp(&b));
+        let (got, mut open) = served(&cfg, &trust, "a.example").await;
+        assert_eq!(got, fp(&a));
+
+        default.set(certified_key(&a2, &a2k).unwrap());
+        assert_eq!(served(&cfg, &trust, "a.example").await.0, fp(&a2));
+        r.set_named("b.example", None);
+        assert_eq!(served(&cfg, &trust, "a.example").await.0, fp(&a2));
+        assert_eq!(fingerprint_certified(&r.pick(Some("b.example"))), fp(&a2));
+        // The connection made before the swaps still works, on its
+        // original certificate.
+        open.write_all(b"ping").await.unwrap();
+        let mut echo = [0u8; 4];
+        open.read_exact(&mut echo).await.unwrap();
+        assert_eq!(&echo, b"ping");
+        assert_eq!(
+            fingerprint_der(&open.get_ref().1.peer_certificates().unwrap()[0]),
+            fp(&a)
+        );
+    }
+
+    /// File-backed slots: unchanged files aren't re-read, a replaced pair
+    /// is, a bad or half-written pair keeps the old one, and a key that
+    /// arrives after its certificate completes the swap.
+    #[test]
+    fn file_cert_reloads_on_change_only() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let d = tmp.path();
+        let (cert, key) = cert_for(d, "live", "a.example");
+        let fp0 = fingerprint(&cert).unwrap();
+        let mut f = FileCert::load(&cert, &key).unwrap();
+        assert_eq!(f.poll(), Ok(false));
+
+        let (b, bk) = cert_for(d, "b", "a.example");
+        std::fs::rename(&bk, &key).unwrap();
+        std::fs::rename(&b, &cert).unwrap();
+        assert_eq!(f.poll(), Ok(true));
+        let fp1 = fingerprint_certified(&f.slot.get());
+        assert_ne!(fp1, fp0);
+        assert_eq!(fp1, fingerprint(&cert).unwrap());
+        assert_eq!(f.poll(), Ok(false));
+
+        // Garbage: refused, the slot keeps serving, not retried until the
+        // files change again.
+        write_file(&cert, b"not a certificate", 0o644).unwrap();
+        assert!(f.poll().is_err());
+        assert_eq!(fingerprint_certified(&f.slot.get()), fp1);
+        assert_eq!(f.poll(), Ok(false));
+
+        // The new certificate lands before its key: mismatch, kept...
+        let (c, ck) = cert_for(d, "c", "a.example");
+        std::fs::rename(&c, &cert).unwrap();
+        let err = f.poll().unwrap_err();
+        assert!(err.contains("key"), "{err}");
+        assert_eq!(fingerprint_certified(&f.slot.get()), fp1);
+        // ...until the key follows.
+        std::fs::rename(&ck, &key).unwrap();
+        assert_eq!(f.poll(), Ok(true));
+        assert_eq!(
+            fingerprint_certified(&f.slot.get()),
+            fingerprint(&cert).unwrap()
+        );
+
+        assert!(FileCert::load(&d.join("missing.crt"), &key).is_err());
     }
 
     /// End to end: a server with a self-signed certificate is verified by
