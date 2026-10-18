@@ -14,9 +14,10 @@ import {
   errorMessage,
   primaryButton,
   secondaryButton,
+  signInLabel,
 } from "../components/ui";
 import { useSession } from "../session";
-import { useDirectory } from "../hooks";
+import { useConnectorNames, useDirectory } from "../hooks";
 
 function TeamCard({
   team,
@@ -107,6 +108,7 @@ function TeamCard({
 export default function Access() {
   const { host, projects, projectName } = useSession();
   const [dir, reloadDir] = useDirectory();
+  const connectors = useConnectorNames();
   const [system, setSystem] = useState<Binding[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [teamName, setTeamName] = useState("");
@@ -174,7 +176,8 @@ export default function Access() {
                     <td className="py-2 text-xs font-mono text-gray-600">
                       {(u.identities ?? []).map((i) => (
                         <div key={`${i.provider}:${i.subject}`}>
-                          {i.provider}:{i.subject}
+                          <span className="font-sans text-gray-700">{signInLabel(i.provider, connectors)}</span>{" "}
+                          <span className="text-gray-400">{i.email ?? i.subject}</span>
                         </div>
                       ))}
                     </td>

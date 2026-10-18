@@ -20,9 +20,11 @@ import {
   principalName,
   secondaryButton,
   selectClass,
+  SignInMethods,
+  userIdOf,
 } from "../components/ui";
 import { useCan } from "../session";
-import { useDirectory } from "../hooks";
+import { useConnectorNames, useDirectory } from "../hooks";
 import { AdmissionBadge, TenantFlags } from "./Tenants";
 
 /** What the page offers, each checked on the tenant. */
@@ -347,10 +349,24 @@ function InvitationsCard({ tenant, canManage }: { tenant: Tenant; canManage: boo
   );
 }
 
+/** How a membership was made: `connector:<id>` (a connector's default
+ *  tenant), `invitation:<id>`, or the user who added it. */
+function addedBy(by: string | undefined, connectors: Record<string, string>, names: Directory): string | null {
+  if (!by) return null;
+  if (by.startsWith("connector:")) {
+    const id = by.slice("connector:".length);
+    return `joined through ${connectors[id] ?? id}`;
+  }
+  if (by.startsWith("invitation:")) return "by invitation";
+  const u = names.users.find((x) => x.id === by);
+  return `by ${u?.display_name ?? by.slice(0, 8)}`;
+}
+
 export default function TenantDetail() {
   const { id = "" } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const [dir] = useDirectory();
+  const connectors = useConnectorNames();
   const [tenant, setTenant] = useState<Tenant | null>(null);
   const [members, setMembers] = useState<TenantMember[] | null>(null);
   const [bindings, setBindings] = useState<TenantBinding[] | null>(null);
@@ -490,10 +506,15 @@ export default function TenantDetail() {
                   <tr key={entityLabel(m.principal)} className="border-b border-gray-50">
                     <td className="py-2" title={entityLabel(m.principal)}>
                       {m.principal_name || principalName(m.principal, names)}
+                      {userIdOf(m.principal) && (
+                        <SignInMethods user={names.users.find((u) => u.id === userIdOf(m.principal))} connectors={connectors} />
+                      )}
                     </td>
                     <td className="py-2 text-gray-500">
                       {formatTimestamp(m.at)}
-                      {m.by && <span className="text-xs text-gray-400"> by {m.by.slice(0, 8)}</span>}
+                      {addedBy(m.by, connectors, names) && (
+                        <span className="text-xs text-gray-400"> {addedBy(m.by, connectors, names)}</span>
+                      )}
                     </td>
                     {can("manageTenantMembers") && (
                       <td className="py-2 text-right">
@@ -532,6 +553,7 @@ export default function TenantDetail() {
             <BindingTable
               bindings={bindings.map((b) => asBinding(tenant.id, b))}
               dir={names}
+              connectors={connectors}
               onRemove={
                 can("manageTenantBindings")
                   ? (b) => run(() => api.removeTenantBinding(tenant.id, b.id), refreshBindings)

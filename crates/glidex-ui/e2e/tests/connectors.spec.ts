@@ -68,3 +68,12 @@ test("Google and JumpCloud connectors are made with their own fields", async ({ 
     await del(`/connectors/${JUMPCLOUD}`);
   }
 });
+
+test("users show how they sign in", async ({ page }) => {
+  // spec/tenancy.md D17: one person through two connectors is two users;
+  // the lists say which way each signs in.
+  await page.goto("/access");
+  const users = page.locator("section", { has: page.getByRole("heading", { name: "Users" }) });
+  await expect(users.getByText("Local account").first()).toBeVisible();
+  await expect(users.getByText(/^(unix|pam):/)).toHaveCount(0);
+});
