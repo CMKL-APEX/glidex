@@ -380,7 +380,12 @@ selects TCP.
   `X-Forwarded-Host` is also accepted: the UI sets that header to the
   request's `Host`, which it has already checked against its allowlist,
   so this is a same-origin check. Over TCP only `auth.allowed_origins`
-  counts.
+  counts. Consequence: `auth.allowed_origins` doesn't narrow browser
+  traffic through the UI; every `Host` the UI accepts is an accepted
+  origin there. To restrict the names browsers may use, narrow
+  `GLIDEX_UI_HOSTS`. `auth.allowed_origins` still governs browsers that
+  call the API directly over TCP, and the default OIDC `redirect_uri`
+  (§5.4).
 - **CSRF:** requests authenticated by cookie and not `GET`/`HEAD` must
   send `X-Glidex-CSRF` equal to the session's CSRF value (returned by
   `GET /auth/whoami`). `SameSite=Strict` and the Origin check are the

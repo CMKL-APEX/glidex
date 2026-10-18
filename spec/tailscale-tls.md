@@ -165,7 +165,10 @@ copy under `/var/lib/tailscale/certs`).
   and admits no name the UI wouldn't serve. It applies with the
   feature off too, which also covers custom names in an explicit
   `GLIDEX_UI_HOSTS`. Over TCP, and from any other peer, only
-  `auth.allowed_origins` counts, as before.
+  `auth.allowed_origins` counts, as before. Consequence: an
+  `auth.allowed_origins` narrower than `GLIDEX_UI_HOSTS` no longer
+  restricts traffic through the UI; `GLIDEX_UI_HOSTS` is where to
+  restrict the names browsers may use.
 
 ### 4.4 HSTS
 
