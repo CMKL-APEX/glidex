@@ -1266,6 +1266,7 @@ impl AuthService {
             email: None,
             groups: groups.to_vec(),
             mfa: false,
+            email_verified: false,
         };
         // A host account's refusals all look like a wrong password.
         self.external_login(c, &id).map_err(|e| match e {
@@ -1296,6 +1297,21 @@ impl AuthService {
         }
         let provider = c.identity_provider();
         let existed = self.store.identity(&provider, &id.subject)?.is_some();
+        // A connector with an allowlist gives new accounts to those
+        // verified addresses only (D39).
+        let allowed = c.allowed_emails();
+        if !existed
+            && !allowed.is_empty()
+            && !(id.email_verified
+                && id
+                    .email
+                    .as_deref()
+                    .is_some_and(|e| allowed.iter().any(|a| a.eq_ignore_ascii_case(e))))
+        {
+            return Err(AuthError::NotAllowed(
+                "this address may not get an account through this connector".into(),
+            ));
+        }
         let user = self
             .store
             .user_for_identity(
@@ -1349,23 +1365,61 @@ impl AuthService {
         ),
         AuthError,
     > {
+        self.oidc_client(id, false)
+    }
+
+    /// The device-grant client of connector `id`: its own client for a
+    /// `google` connector (Google takes the grant only from a *TVs and
+    /// Limited Input* client), the browser's otherwise.
+    pub fn oidc_device_for(
+        self: &Arc<Self>,
+        id: Option<&str>,
+    ) -> Result<
+        (
+            crate::directory::Connector,
+            Arc<crate::directory::oidc::OidcState>,
+        ),
+        AuthError,
+    > {
+        self.oidc_client(id, true)
+    }
+
+    fn oidc_client(
+        self: &Arc<Self>,
+        id: Option<&str>,
+        device: bool,
+    ) -> Result<
+        (
+            crate::directory::Connector,
+            Arc<crate::directory::oidc::OidcState>,
+        ),
+        AuthError,
+    > {
         use crate::directory::{FILE_OIDC, Kind};
         let c = match id {
             Some(id) => self
                 .connectors
                 .get(id)
                 .map_err(connector_err)?
-                .filter(|c| c.kind == Kind::Oidc && c.enabled),
+                .filter(|c| c.kind.is_oidc() && c.enabled),
             None => self.connectors.first(Kind::Oidc).map_err(connector_err)?,
         }
         .ok_or_else(|| AuthError::Store(StoreError::NotFound("no such OIDC connector".into())))?;
+        // Google's device client is a client of its own.
+        let device = device && c.kind == Kind::Google;
+        let key = if device {
+            format!("{}#device", c.id)
+        } else {
+            c.id.clone()
+        };
         let mut cache = self.oidc.lock().unwrap();
-        if let Some((rec, state)) = cache.get(&c.id)
+        if let Some((rec, state)) = cache.get(&key)
             && *rec == c
         {
             return Ok((c, state.clone()));
         }
-        let s = c.oidc().map_err(connector_err)?;
+        let profile = c.oidc_profile(device).map_err(connector_err)?;
+        let s = &profile.settings;
         let cfg = crate::config::OidcConfig {
             enabled: true,
             issuer: s.issuer.clone(),
@@ -1390,25 +1444,24 @@ impl AuthService {
         } else {
             let me = Arc::downgrade(self);
             let rec = c.clone();
+            let field = profile.secret_field;
             let f = move || -> Result<zeroize::Zeroizing<String>, String> {
                 let svc = me.upgrade().ok_or("shutting down")?;
                 svc.connectors
-                    .secret(&rec, "client_secret")
+                    .secret(&rec, field)
                     .map_err(|e| e.to_string())?
-                    .ok_or_else(|| format!("connector {} has no client_secret", rec.id))
+                    .ok_or_else(|| format!("connector {} has no {field}", rec.id))
             };
             (
                 crate::directory::oidc::ClientSecret::Stored(Box::new(f)),
                 format!("/api/auth/c/{}/callback", c.id),
             )
         };
-        let state = Arc::new(crate::directory::oidc::OidcState::with(
-            &cfg,
-            secret,
-            s.mfa_acr_values.clone(),
-            &path,
-        ));
-        cache.insert(c.id.clone(), (c.clone(), state.clone()));
+        let state = Arc::new(
+            crate::directory::oidc::OidcState::with(&cfg, secret, s.mfa_acr_values.clone(), &path)
+                .with_preset(profile.preset.clone()),
+        );
+        cache.insert(key, (c.clone(), state.clone()));
         Ok((c, state))
     }
 

@@ -865,7 +865,7 @@ export function entityLabel(e: EntityRef): string {
 
 export interface LoginConnector {
   id: string;
-  kind: "pam" | "oidc";
+  kind: "pam" | "oidc" | "google";
   display_name: string;
 }
 
@@ -1782,6 +1782,18 @@ export interface OidcSettings {
   mfa_acr_values?: string[];
 }
 
+/** `google` settings (spec/tenancy.md D39, §5.1). */
+export interface GoogleSettings {
+  /** Workspace by `hd`, or any account for invited and listed people. */
+  accounts?: "GOOGLE_ACCOUNTS_WORKSPACE" | "GOOGLE_ACCOUNTS_ANY";
+  client_id: string;
+  domains?: string[];
+  allowed_emails?: string[];
+  device_client_id?: string;
+  trust_2sv?: boolean;
+  redirect_uri?: string;
+}
+
 /** Which of a connector's secrets are set; never their values. */
 export interface SecretStatus {
   field: string;
@@ -1794,7 +1806,7 @@ export interface SecretStatus {
 export interface Connector {
   id: string;
   directory_id?: string;
-  kind: "pam" | "oidc";
+  kind: "pam" | "oidc" | "google";
   display_name: string;
   enabled?: boolean;
   jit?: boolean;
@@ -1805,6 +1817,7 @@ export interface Connector {
   token_max_days?: number | null;
   pam?: PamSettings;
   oidc?: OidcSettings;
+  google?: GoogleSettings;
   secrets?: SecretStatus[];
   /** `api`, or `file` for the read-only ones from control-plane.json. */
   source?: "api" | "file";

@@ -79,10 +79,10 @@ function currentPath(): string {
   return window.location.pathname + window.location.search;
 }
 
-/** One button per OIDC connector of the directory; one plain "SSO"
- *  button for a server that doesn't list them. */
+/** One button per OIDC-code connector of the directory (`oidc`, the
+ *  `google` preset); one plain "SSO" button for a server that doesn't list them. */
 export function SsoButtons({ methods, reauth = false }: { methods: AuthMethods; reauth?: boolean }) {
-  const oidc = methods.connectors?.filter((c) => c.kind === "oidc");
+  const oidc = methods.connectors?.filter((c) => c.kind === "oidc" || c.kind === "google");
   const buttons = oidc ? oidc.map((c) => ({ id: c.id as string | undefined, label: c.display_name || "SSO" })) : [{ id: undefined, label: "SSO" }];
   return (
     <div className="space-y-2">

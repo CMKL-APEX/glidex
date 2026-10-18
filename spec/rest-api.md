@@ -223,10 +223,10 @@ tenant (D7); every write needs a recent login. Secrets go in through
 | Method | Path | RPC | Purpose |
 |---|---|---|---|
 | `GET` | `/connectors` | `ConnectorService.ListConnectors` | The directory's connectors, file-defined ones (`file-pam`, `file-oidc`, `source: file`) included |
-| `POST` | `/connectors` | `CreateConnector` | `{connector: {id, display_name?, enabled?, jit?, required_groups?, require_mfa?, group_teams?, default_tenant?, token_max_days?, pam: {allowed_groups} \| oidc: {issuer, client_id, scopes?, groups_claim?, allowed_domains?, redirect_uri?, mfa_acr_values?}}}`; `422 invalid_connector` (D22: `jit` into the owner or an operator tenant needs `required_groups`; such an OIDC connector has `require_mfa` on unless set) |
+| `POST` | `/connectors` | `CreateConnector` | `{connector: {id, display_name?, enabled?, jit?, required_groups?, require_mfa?, group_teams?, default_tenant?, token_max_days?, pam: {allowed_groups} \| oidc: {issuer, client_id, scopes?, groups_claim?, allowed_domains?, redirect_uri?, mfa_acr_values?} \| google: {accounts?, client_id, domains?, allowed_emails?, device_client_id?, trust_2sv?, redirect_uri?}}}`; `422 invalid_connector` (D22: `jit` into the owner or an operator tenant needs `required_groups`; such an OIDC or `google` connector has `require_mfa` on unless set, and a `google` one there needs `GOOGLE_ACCOUNTS_WORKSPACE` with `trust_2sv`. `google`: Workspace needs `domains`, never a public mail domain; `GOOGLE_ACCOUNTS_ANY` with `jit` needs `allowed_emails`; tenancy.md D39, §5.1) |
 | `GET` / `PATCH` / `DELETE` | `/connectors/{id}` | `GetConnector` / `UpdateConnector` / `DeleteConnector` | PATCH `{connector: {…}, update_mask?}`: without a mask, the fields present are the ones changed. File-defined connectors are read-only (`409`) |
-| `PUT` | `/connectors/{id}/secrets/{field}` | `SetSecret` | `{value}`; the kind's secret fields only (`oidc`: `client_secret`); sealed with the directory's data key |
-| `POST` | `/connectors/{id}/test` | `TestConnector` | `{steps: [{name, ok, message}]}`: PAM reaches authd; OIDC checks the secret, discovery and the device grant |
+| `PUT` | `/connectors/{id}/secrets/{field}` | `SetSecret` | `{value}`; the kind's secret fields only (`oidc`: `client_secret`; `google`: `client_secret`, `device_client_secret` for its device client); sealed with the directory's data key |
+| `POST` | `/connectors/{id}/test` | `TestConnector` | `{steps: [{name, ok, message}]}`: PAM reaches authd; OIDC and `google` check the secrets, discovery and the device grant (`google`: whether it has a device client) |
 
 Logging in through a connector, all public: `GET /auth/methods` lists the
 enabled ones (`connectors: [{id, kind, display_name}]`); `POST
@@ -236,7 +236,9 @@ enabled ones (`connectors: [{id, kind, display_name}]`); `POST
 /auth/login` and `POST /auth/token` take `connector` (a PAM connector,
 the first one when absent); a token is clamped to the connector's
 `token_max_days`. A refused login is `403 login_not_allowed`. The
-`/auth/oidc/*` routes remain for the first OIDC connector.
+`/auth/oidc/*` routes remain for the first OIDC connector. A `google`
+connector's device grant uses its device client; without one, `POST
+/auth/c/{id}/device` answers `400 device_flow_unsupported`.
 
 The login operations are also `glidex.auth.v1.LoginService` RPCs
 (`Discover`, `StartDevice`, `PollDevice`, `PasswordToken`), one

@@ -153,9 +153,29 @@ pub fn oidc_user(
         email: id.email.clone(),
         groups: id.groups.clone(),
         mfa: id.mfa,
+        email_verified: id.email_verified,
     };
     app.auth
         .external_login(c, &ext)
+        .map_err(|e| auth_error(e).into())
+}
+
+/// Connector `id`'s device-grant client (gxctl); `400
+/// device_flow_unsupported` for a `google` connector without one (§5.1).
+fn device_client(
+    app: &AppState,
+    id: Option<&str>,
+) -> ServiceResult<(Connector, Arc<crate::directory::oidc::OidcState>)> {
+    let (c, _) = oidc_client(app, id)?;
+    if !c.has_device_client() {
+        return Err(ServiceError::new(
+            StatusCode::BAD_REQUEST,
+            "device_flow_unsupported",
+            "this connector has no device client: log in with a token, or ask for a device client",
+        ));
+    }
+    app.auth
+        .oidc_device_for(Some(&c.id))
         .map_err(|e| auth_error(e).into())
 }
 
@@ -163,7 +183,7 @@ pub async fn start_device(
     app: &AppState,
     req: pb::StartDeviceRequest,
 ) -> ServiceResult<pb::StartDeviceResponse> {
-    let (_, oidc) = oidc_client(app, req.connector.as_deref())?;
+    let (_, oidc) = device_client(app, req.connector.as_deref())?;
     let d = oidc.device_start().await.map_err(oidc_error)?;
     Ok(pb::StartDeviceResponse {
         device_code: d.device_code,
@@ -182,7 +202,7 @@ pub async fn poll_device(
     origin: &Origin<'_>,
     req: pb::PollDeviceRequest,
 ) -> ServiceResult<Option<Minted>> {
-    let (c, oidc) = oidc_client(app, req.connector.as_deref())?;
+    let (c, oidc) = device_client(app, req.connector.as_deref())?;
     let identity = match oidc.device_poll(&req.device_code).await {
         Ok(i) => i,
         Err(crate::directory::oidc::OidcError::Pending) => return Ok(None),

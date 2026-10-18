@@ -67,7 +67,7 @@ message Connector {
   // control-plane.json.
   string id = 1;
   string directory_id = 2 [json_name = "directory_id"];
-  // `pam` or `oidc`: which settings it has. Output only.
+  // `pam`, `oidc` or `google`: which settings it has. Output only.
   string kind = 3;
   string display_name = 4 [json_name = "display_name"];
   optional bool enabled = 5;
@@ -84,6 +84,8 @@ message Connector {
   oneof settings {
     PamSettings pam = 12;
     OidcSettings oidc = 13;
+    // The `google` preset (spec/tenancy.md D39, §5.1).
+    GoogleSettings google = 18;
   }
   // Which secrets are set; never their values. Output only.
   repeated SecretStatus secrets = 14;
@@ -105,6 +107,37 @@ message OidcSettings {
   repeated string allowed_domains = 5 [json_name = "allowed_domains"];
   optional string redirect_uri = 6 [json_name = "redirect_uri"];
   repeated string mfa_acr_values = 7 [json_name = "mfa_acr_values"];
+}
+
+// Which Google accounts a `google` connector serves (spec/tenancy.md D39).
+enum GoogleAccounts {
+  // Workspace.
+  GOOGLE_ACCOUNTS_UNSPECIFIED = 0;
+  // Accounts of the Workspace domains in `domains`, by the token's `hd`.
+  GOOGLE_ACCOUNTS_WORKSPACE = 1;
+  // Any Google account, consumer ones included: only for people the
+  // directory knows (an invitation, `allowed_emails`, or `jit` off).
+  GOOGLE_ACCOUNTS_ANY = 2;
+}
+
+// Secrets: `client_secret`, and `device_client_secret` for the device client.
+message GoogleSettings {
+  GoogleAccounts accounts = 1;
+  // The web application client.
+  string client_id = 2 [json_name = "client_id"];
+  // Workspace domains (`hd`); required for Workspace. Never a public mail
+  // domain.
+  repeated string domains = 3;
+  // With `jit`, only these verified addresses get a new account.
+  repeated string allowed_emails = 4 [json_name = "allowed_emails"];
+  // The "TVs and Limited Input devices" client for gxctl's device grant.
+  optional string device_client_id = 5 [json_name = "device_client_id"];
+  // The Workspace domain enforces 2-step verification: its logins count
+  // as multi-factor.
+  optional bool trust_2sv = 6 [json_name = "trust_2sv"];
+  optional string redirect_uri = 7 [json_name = "redirect_uri"];
+  // A local mock IdP instead of Google, for tests: a loopback URL only.
+  optional string issuer = 8;
 }
 
 message SecretStatus {

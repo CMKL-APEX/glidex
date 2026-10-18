@@ -61,6 +61,26 @@ pub fn to_pb(call: &Call, c: &Connector) -> ServiceResult<pb::Connector> {
                 ..Default::default()
             }))
         }
+        Kind::Google => {
+            let s = c.google().map_err(err_of)?;
+            Settings::Google(Box::new(pb::GoogleSettings {
+                accounts: match s.accounts {
+                    dir::presets::google::Accounts::Workspace => {
+                        pb::GoogleAccounts::GOOGLE_ACCOUNTS_WORKSPACE
+                    }
+                    dir::presets::google::Accounts::Any => pb::GoogleAccounts::GOOGLE_ACCOUNTS_ANY,
+                }
+                .into(),
+                client_id: s.client_id,
+                domains: s.domains,
+                allowed_emails: s.allowed_emails,
+                device_client_id: s.device_client_id,
+                trust_2sv: Some(s.trust_2sv),
+                redirect_uri: s.redirect_uri,
+                issuer: s.issuer,
+                ..Default::default()
+            }))
+        }
     };
     Ok(pb::Connector {
         id: c.id.clone(),
@@ -124,6 +144,29 @@ fn settings_json(s: &Settings) -> (Kind, serde_json::Value) {
                 v["redirect_uri"] = serde_json::json!(r);
             }
             (Kind::Oidc, v)
+        }
+        Settings::Google(g) => {
+            let accounts = match g.accounts.as_known().unwrap_or_default() {
+                pb::GoogleAccounts::GOOGLE_ACCOUNTS_ANY => "any",
+                _ => "workspace",
+            };
+            let mut v = serde_json::json!({
+                "accounts": accounts,
+                "client_id": g.client_id,
+                "domains": g.domains,
+                "allowed_emails": g.allowed_emails,
+                "trust_2sv": g.trust_2sv.unwrap_or(false),
+            });
+            for (k, x) in [
+                ("device_client_id", &g.device_client_id),
+                ("redirect_uri", &g.redirect_uri),
+                ("issuer", &g.issuer),
+            ] {
+                if let Some(x) = x {
+                    v[k] = serde_json::json!(x);
+                }
+            }
+            (Kind::Google, v)
         }
     }
 }
@@ -228,7 +271,7 @@ pub fn create_connector(
     };
     let g = guarded(call, &mut c)?;
     // D22: MFA on by default where new users join the owner or an operator.
-    if g && p.require_mfa.is_none() && kind == Kind::Oidc {
+    if g && p.require_mfa.is_none() && kind.is_oidc() {
         c.require_mfa = true;
     }
     c.validate(g).map_err(err_of)?;
@@ -276,7 +319,7 @@ pub fn update_connector(
             }
             "default_tenant" => c.default_tenant = p.default_tenant.clone(),
             "token_max_days" => c.token_max_days = p.token_max_days.map(u64::from),
-            "pam" | "oidc" => {
+            "pam" | "oidc" | "google" => {
                 let s = p.settings.as_ref().ok_or_else(|| {
                     ServiceError::new(
                         StatusCode::UNPROCESSABLE_ENTITY,
@@ -369,37 +412,46 @@ pub async fn test_connector(
                 },
             ));
         }
-        Kind::Oidc => {
+        Kind::Oidc | Kind::Google => {
             if c.source == Source::Api {
-                let set = call
-                    .auth()
-                    .connectors
-                    .secret(&c, "client_secret")
-                    .map_err(err_of)?
-                    .is_some();
-                steps.push(step(
-                    "client_secret",
-                    set,
-                    if set {
-                        "set"
-                    } else {
-                        "not set: PUT /connectors/{id}/secrets/client_secret"
-                    },
-                ));
+                // The device client's secret only where there is one.
+                let fields: &[&str] = if c.kind == Kind::Google && c.has_device_client() {
+                    &["client_secret", "device_client_secret"]
+                } else {
+                    &["client_secret"]
+                };
+                for field in fields {
+                    let set = call
+                        .auth()
+                        .connectors
+                        .secret(&c, field)
+                        .map_err(err_of)?
+                        .is_some();
+                    steps.push(step(
+                        field,
+                        set,
+                        if set {
+                            "set".to_string()
+                        } else {
+                            format!("not set: PUT /connectors/{{id}}/secrets/{field}")
+                        },
+                    ));
+                }
             }
             match call.app.auth.oidc_for(Some(&c.id)) {
                 Ok((_, oidc)) => match oidc.discovery().await {
                     Ok(d) => {
                         steps.push(step("discovery", true, format!("issuer {}", d.issuer)));
-                        steps.push(step(
-                            "device grant",
-                            d.device_authorization_endpoint.is_some(),
-                            if d.device_authorization_endpoint.is_some() {
-                                "offered (gxctl logins)"
-                            } else {
-                                "not offered: gxctl needs a token or PAM"
-                            },
-                        ));
+                        let offered = d.device_authorization_endpoint.is_some();
+                        let (ok, what) = match (offered, c.has_device_client()) {
+                            (true, true) => (true, "offered (gxctl logins)"),
+                            (true, false) => (
+                                false,
+                                "no device client: set device_client_id (a TVs and Limited Input client) for gxctl logins",
+                            ),
+                            (false, _) => (false, "not offered: gxctl needs a token or PAM"),
+                        };
+                        steps.push(step("device grant", ok, what));
                     }
                     Err(e) => steps.push(step("discovery", false, e.to_string())),
                 },
