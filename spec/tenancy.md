@@ -297,11 +297,23 @@ expires_at, secret_hash, taken_by?, taken_at?}`, a directory record.
 - **Who.** Tenant admins (`tenant.members`) invite to their tenant with
   any role they may link; directory owners (`directory.tenants`) to any
   tenant of the directory, including the first `tenant-admin` at tenant
-  creation (§11).
+  creation (§11). Actions `readTenantInvitations` and
+  `manageTenantInvitations`; creating one also takes `manageTenantMembers`,
+  and `manageTenantBindings` unless the role is `member`.
+- **Role.** `member` (membership only), `role.tenant-admin` or
+  `role.tenant-auditor`.
+- **Connector.** An enabled `oidc` or `google` one: their logins carry a
+  verified email. Into the directory owner's or an operator's tenant,
+  only through a connector D22 allows there (as if `jit` were off) that
+  requires MFA, so an invitation can't get around D22.
 - **The link.** Creating one answers its URL once:
   `<directory>/invite/<id>#<secret>`. The secret is in the fragment, so
-  it never reaches a log or a `Referer`. The page starts a login
-  through the invitation's connector and sends the secret with it.
+  it never reaches a log or a `Referer`. The page (signed out) drops the
+  fragment from the address, asks `POST /auth/invitation
+  {invitation: "<id>.<secret>"}` what it is for (`404` unless the secret
+  matches an open one), and starts the login with `POST
+  /auth/c/{id}/start {invitation}`, which answers `{redirect}`. The
+  invitation stays in the login's server-side state until its callback.
 - **Taking it.** At the login's callback, the invitation is taken when
   its secret matches, it is open (not taken, revoked or expired), and
   the identity's verified email equals `email`. The identity then
@@ -1384,4 +1396,14 @@ sealing of the KEK, and rotating the KEK with the CA.
 | Google's device client | `AuthService::oidc_device_for`; `service/login.rs::device_client` (`400 device_flow_unsupported`); the connector test's device-grant step |
 | gxctl and UI | `gxctl connector add google`; the UI lists `google` connectors and offers them at login (its form is task 5) |
 | Tests | `presets/google.rs` unit tests; `connector_tests.rs::google_*` against the mock IdP |
+
+Done (task 3):
+
+| Spec | Code |
+|---|---|
+| Invitations (D40, §6.1): the store, a secret's hash, single use, lifetime, pruning | `src/directory/invitations.rs` (`InvitationStore`, `InviteToken`); table `invitations` (directory scope) |
+| Taking one at login | `AuthService::external_login_invited`: the user (with `jit` off too), tenant membership and the role link; `OidcState::start`/`callback` carry it in the login state |
+| API on both transports | proto `glidex/directory/v1/invitations.proto` (`InvitationService`), `LoginService.InspectInvitation`; `service/invitations.rs`; RPC `api/rpc/directory.rs`, `api/rpc/login.rs`; REST `api/invitations.rs`, `POST /auth/c/{id}/start` in `api/access.rs`; Cedar `readTenantInvitations`, `manageTenantInvitations` |
+| gxctl and UI | `gxctl invite list|create|revoke`; the tenant page's Invitations card (the link shown once); the signed-out page `/invite/<id>` (`pages/Invite.tsx`) |
+| Tests | `invitations.rs` unit tests; `connector_tests.rs::invitations_let_one_known_person_in_once`; UI e2e `invitations.spec.ts` |
 

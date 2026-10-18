@@ -406,3 +406,93 @@ pub async fn connector(client: &ApiClient, args: &[&str]) {
         _ => usage(USAGE),
     }
 }
+
+const INVITE_USAGE: &str = "Usage: invite list <tenant> \
+    | create <tenant> <email> --connector C [--role member|role.tenant-admin|role.tenant-auditor] [--days N] \
+    | revoke <id>";
+
+/// `invite list|create|revoke` (spec/tenancy.md §6.1): an invitation is a
+/// link, shown once, that lets one email address in through one connector.
+pub async fn invite(client: &ApiClient, args: &[&str]) {
+    let Some(t) = transport(client).await else {
+        return;
+    };
+    let svc = InvitationServiceClient::new(t.clone(), t.config());
+    match args.first().copied().unwrap_or("") {
+        "list" | "ls" => {
+            let Some(tenant) = args.get(1) else {
+                return usage(INVITE_USAGE);
+            };
+            let req = ListInvitationsRequest {
+                tenant: tenant.to_string(),
+                ..Default::default()
+            };
+            match svc.list_invitations(req).await.map(|r| r.into_owned()) {
+                Ok(r) if r.invitations.is_empty() => println!("No invitations"),
+                Ok(r) => {
+                    for i in &r.invitations {
+                        let state = match i.state.as_known() {
+                            Some(InvitationState::INVITATION_STATE_OPEN) => "open".green(),
+                            Some(InvitationState::INVITATION_STATE_TAKEN) => "taken".normal(),
+                            _ => "expired".dimmed(),
+                        };
+                        println!(
+                            "  {}  {}  {}  via {}  {}",
+                            i.id.yellow(),
+                            i.email,
+                            i.role,
+                            i.connector_id,
+                            state
+                        );
+                    }
+                }
+                Err(e) => err(rpc_err(e)),
+            }
+        }
+        "create" | "add" => {
+            let (Some(tenant), Some(email), Some(connector)) = (
+                args.get(1).filter(|a| !a.starts_with("--")),
+                args.get(2).filter(|a| !a.starts_with("--")),
+                flag_value(args, "--connector"),
+            ) else {
+                return usage(INVITE_USAGE);
+            };
+            let req = CreateInvitationRequest {
+                tenant: tenant.to_string(),
+                email: email.to_string(),
+                role: flag_value(args, "--role").unwrap_or("member").into(),
+                connector: connector.into(),
+                days: flag_value(args, "--days").and_then(|d| d.parse().ok()),
+                ..Default::default()
+            };
+            match svc.create_invitation(req).await.map(|r| r.into_owned()) {
+                Ok(r) => {
+                    let i = r.invitation.as_option().cloned().unwrap_or_default();
+                    println!(
+                        "{} {} for {}",
+                        "Invitation created:".green(),
+                        i.id.yellow(),
+                        i.email
+                    );
+                    println!("  Send this link to them; it is shown once:");
+                    println!("  {}", r.link.cyan());
+                }
+                Err(e) => err(rpc_err(e)),
+            }
+        }
+        "revoke" | "rm" => {
+            let Some(id) = args.get(1) else {
+                return usage(INVITE_USAGE);
+            };
+            let req = RevokeInvitationRequest {
+                id: id.to_string(),
+                ..Default::default()
+            };
+            match svc.revoke_invitation(req).await {
+                Ok(_) => println!("{} {}", "Invitation revoked:".green(), id.yellow()),
+                Err(e) => err(rpc_err(e)),
+            }
+        }
+        _ => usage(INVITE_USAGE),
+    }
+}

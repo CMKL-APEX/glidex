@@ -58,6 +58,9 @@ struct Pending {
     return_to: String,
     browser: String,
     created: u64,
+    /// The invitation the login brings (spec/tenancy.md §6.1): kept here,
+    /// never in a URL.
+    invite: Option<String>,
 }
 
 struct Jwks {
@@ -298,12 +301,14 @@ impl OidcState {
         })
     }
 
-    /// Begin a browser login. `reauth` forces a fresh login (step-up).
+    /// Begin a browser login. `reauth` forces a fresh login (step-up);
+    /// `invite` comes back from [`callback`](Self::callback).
     pub async fn start(
         &self,
         return_to: Option<&str>,
         redirect_uri: &str,
         reauth: bool,
+        invite: Option<String>,
     ) -> Result<Start, OidcError> {
         let d = self.discovery().await?;
         let state = crate::auth::random_token(24);
@@ -323,6 +328,7 @@ impl OidcState {
                     return_to: safe_return_to(return_to),
                     browser: browser.clone(),
                     created: t,
+                    invite,
                 },
             );
         }
@@ -352,15 +358,15 @@ impl OidcState {
     }
 
     /// Finish a browser login: check `state` against the browser cookie,
-    /// redeem the code, verify the ID token. Returns the identity and the
-    /// path to return to.
+    /// redeem the code, verify the ID token. Returns the identity, the
+    /// path to return to and the invitation the login started with.
     pub async fn callback(
         &self,
         code: &str,
         state: &str,
         browser: Option<&str>,
         redirect_uri: &str,
-    ) -> Result<(OidcIdentity, String), OidcError> {
+    ) -> Result<(OidcIdentity, String, Option<String>), OidcError> {
         let pending = self
             .pending
             .lock()
@@ -392,7 +398,7 @@ impl OidcState {
             .and_then(|v| v.as_str())
             .ok_or_else(|| OidcError::Invalid("token response has no id_token".into()))?;
         let identity = self.verify(&d, id_token, Some(&pending.nonce)).await?;
-        Ok((identity, pending.return_to))
+        Ok((identity, pending.return_to, pending.invite))
     }
 
     async fn token_request(

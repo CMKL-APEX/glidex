@@ -111,6 +111,8 @@ tables! {
     Connectors = 42 => "connectors",
     ConnectorSecrets = 43 => "connector_secrets",
     DirectoryKeys = 44 => "directory_keys",
+    // Invitations to tenants (spec/tenancy.md §6.1).
+    Invitations = 45 => "invitations",
 }
 
 /// Whose a table's records are (spec/tenancy.md §4): a directory's (they
@@ -129,9 +131,8 @@ impl TableId {
         use TableId::*;
         match self {
             Users | Identities | Teams | ApiTokens | Projects | Credentials | Directories
-            | Tenants | TenantMembers | Connectors | ConnectorSecrets | DirectoryKeys => {
-                Scope::Directory
-            }
+            | Tenants | TenantMembers | Connectors | ConnectorSecrets | DirectoryKeys
+            | Invitations => Scope::Directory,
             PolicyLinks | Audit | Meta => Scope::Both,
             _ => Scope::Cluster,
         }

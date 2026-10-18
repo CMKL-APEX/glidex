@@ -106,6 +106,8 @@ import { NetworkService, NetworkShareService, RouterService } from "./gen/glidex
 import { HostNetworkService, PciService } from "./gen/glidex/host/v1/host_pb";
 import { ClusterService, ImportService, NodeService, type PutOvnSettingsRequestJson } from "./gen/glidex/cluster/v1/cluster_pb";
 import { AdmissionService, TenantService, type SetAdmissionRequestJson } from "./gen/glidex/tenancy/v1/tenancy_pb";
+import { InvitationService, type InvitationJson } from "./gen/glidex/directory/v1/invitations_pb";
+import type { InspectInvitationResponseJson } from "./gen/glidex/auth/v1/login_pb";
 import { ConnectorService, type ConnectorJson } from "./gen/glidex/directory/v1/connectors_pb";
 import {
   MetricsService,
@@ -1022,6 +1024,23 @@ export const updateTenant = (id: string, req: { display_name?: string; operator?
 export const suspendTenant = (id: string) => rpc(TenantService.method.suspendTenant, { id }).then((r) => r as { tenant: Tenant });
 export const resumeTenant = (id: string) => rpc(TenantService.method.resumeTenant, { id }).then((r) => r as { tenant: Tenant });
 export const deleteTenant = (id: string) => rpc(TenantService.method.deleteTenant, { id }).then(none);
+
+// ---- invitations (spec/tenancy.md §6.1) -----------------------------------
+
+export type Invitation = InvitationJson;
+export const listInvitations = (tenant: string) =>
+  rpc(InvitationService.method.listInvitations, { tenant }).then((r) => (r.invitations ?? []) as Invitation[]);
+/** The link is answered once; it carries the secret in its fragment. */
+export const createInvitation = (req: { tenant: string; email: string; role: string; connector: string; days?: number }) =>
+  rpc(InvitationService.method.createInvitation, req).then((r) => ({ invitation: r.invitation as Invitation, link: r.link ?? "" }));
+export const revokeInvitation = (id: string) => rpc(InvitationService.method.revokeInvitation, { id }).then(none);
+/** What an invitation link is for (public; needs `<id>.<secret>`). REST,
+ *  like the rest of the login page. */
+export const inspectInvitation = (invitation: string) =>
+  request<InspectInvitationResponseJson>("POST", "/auth/invitation", { invitation }, { quiet401: true });
+/** Start the invitation's login: the secret goes in the body, never a URL. */
+export const startInvitedLogin = (connector: string, invitation: string) =>
+  request<{ redirect: string }>("POST", `/auth/c/${encodeURIComponent(connector)}/start`, { invitation, return_to: "/" }, { quiet401: true });
 
 export const listTenantMembers = (id: string) =>
   rpc(TenantService.method.listMembers, { id }).then((r) => (r.members ?? []) as TenantMember[]);

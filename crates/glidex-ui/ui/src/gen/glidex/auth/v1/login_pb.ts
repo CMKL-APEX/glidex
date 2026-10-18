@@ -17,7 +17,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file glidex/auth/v1/login.proto.
  */
 export const file_glidex_auth_v1_login: GenFile = /*@__PURE__*/
-  fileDesc("ChpnbGlkZXgvYXV0aC92MS9sb2dpbi5wcm90bxIOZ2xpZGV4LmF1dGgudjEiHwoPRGlzY292ZXJSZXF1ZXN0EgwKBGhpbnQYASABKAkieAoQRGlzY292ZXJSZXNwb25zZRIwCgZ0ZW5hbnQYASABKAsyIC5nbGlkZXguYXV0aC52MS5EaXNjb3ZlcmVkVGVuYW50EjIKCmNvbm5lY3RvcnMYAiADKAsyHi5nbGlkZXguYXV0aC52MS5Mb2dpbkNvbm5lY3RvciJEChBEaXNjb3ZlcmVkVGVuYW50EgwKBHNsdWcYASABKAkSIgoMZGlzcGxheV9uYW1lGAIgASgJUgxkaXNwbGF5X25hbWUiTgoOTG9naW5Db25uZWN0b3ISCgoCaWQYASABKAkSDAoEa2luZBgCIAEoCRIiCgxkaXNwbGF5X25hbWUYAyABKAlSDGRpc3BsYXlfbmFtZSI6ChJTdGFydERldmljZVJlcXVlc3QSFgoJY29ubmVjdG9yGAEgASgJSACIAQFCDAoKX2Nvbm5lY3RvciKUAgoTU3RhcnREZXZpY2VSZXNwb25zZRIgCgtkZXZpY2VfY29kZRgBIAEoCVILZGV2aWNlX2NvZGUSHAoJdXNlcl9jb2RlGAIgASgJUgl1c2VyX2NvZGUSKgoQdmVyaWZpY2F0aW9uX3VyaRgDIAEoCVIQdmVyaWZpY2F0aW9uX3VyaRJBChl2ZXJpZmljYXRpb25fdXJpX2NvbXBsZXRlGAQgASgJSABSGXZlcmlmaWNhdGlvbl91cmlfY29tcGxldGWIAQESEAoIaW50ZXJ2YWwYBSABKAQSHgoKZXhwaXJlc19pbhgGIAEoBFIKZXhwaXJlc19pbkIcChpfdmVyaWZpY2F0aW9uX3VyaV9jb21wbGV0ZSLPAQoRUG9sbERldmljZVJlcXVlc3QSFgoJY29ubmVjdG9yGAEgASgJSACIAQESIAoLZGV2aWNlX2NvZGUYAiABKAlSC2RldmljZV9jb2RlEiMKCnRva2VuX25hbWUYAyABKAlIAVIKdG9rZW5fbmFtZYgBARITCgZkZXZpY2UYBCABKAlIAogBARITCgZjbGllbnQYBSABKAlIA4gBAUIMCgpfY29ubmVjdG9yQg0KC190b2tlbl9uYW1lQgkKB19kZXZpY2VCCQoHX2NsaWVudCJjChJQb2xsRGV2aWNlUmVzcG9uc2USFAoHcGVuZGluZxgBIAEoCEgAiAEBEisKBmlzc3VlZBgCIAEoCzIbLmdsaWRleC5hdXRoLnYxLklzc3VlZFRva2VuQgoKCF9wZW5kaW5nIvYBChRQYXNzd29yZFRva2VuUmVxdWVzdBIQCgh1c2VybmFtZRgBIAEoCRIWCghwYXNzd29yZBgCIAEoCUIE0OkYARIWCgljb25uZWN0b3IYAyABKAlIAIgBARIRCgRkYXlzGAQgASgNSAGIAQESIwoKdG9rZW5fbmFtZRgFIAEoCUgCUgp0b2tlbl9uYW1liAEBEhMKBmRldmljZRgGIAEoCUgDiAEBEhMKBmNsaWVudBgHIAEoCUgEiAEBQgwKCl9jb25uZWN0b3JCBwoFX2RheXNCDQoLX3Rva2VuX25hbWVCCQoHX2RldmljZUIJCgdfY2xpZW50IkQKFVBhc3N3b3JkVG9rZW5SZXNwb25zZRIrCgZpc3N1ZWQYASABKAsyGy5nbGlkZXguYXV0aC52MS5Jc3N1ZWRUb2tlbiKyAQoLSXNzdWVkVG9rZW4SDQoFdG9rZW4YASABKAkSGgoIdG9rZW5faWQYAiABKAlSCHRva2VuX2lkEjoKCmV4cGlyZXNfYXQYAyABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wUgpleHBpcmVzX2F0EhgKB3VzZXJfaWQYBCABKAlSB3VzZXJfaWQSIgoMZGlzcGxheV9uYW1lGAUgASgJUgxkaXNwbGF5X25hbWUyigQKDExvZ2luU2VydmljZRJyCghEaXNjb3ZlchIfLmdsaWRleC5hdXRoLnYxLkRpc2NvdmVyUmVxdWVzdBogLmdsaWRleC5hdXRoLnYxLkRpc2NvdmVyUmVzcG9uc2UiI8rpGB8KBnB1YmxpYxABGhNQT1NUIC9hdXRoL2Rpc2NvdmVyEoABCgtTdGFydERldmljZRIiLmdsaWRleC5hdXRoLnYxLlN0YXJ0RGV2aWNlUmVxdWVzdBojLmdsaWRleC5hdXRoLnYxLlN0YXJ0RGV2aWNlUmVzcG9uc2UiKMrpGCQKBnB1YmxpYxABGhhQT1NUIC9hdXRoL2Mve2lkfS9kZXZpY2USggEKClBvbGxEZXZpY2USIS5nbGlkZXguYXV0aC52MS5Qb2xsRGV2aWNlUmVxdWVzdBoiLmdsaWRleC5hdXRoLnYxLlBvbGxEZXZpY2VSZXNwb25zZSItyukYKQoGcHVibGljEAIaHVBPU1QgL2F1dGgvYy97aWR9L2RldmljZS9wb2xsEn4KDVBhc3N3b3JkVG9rZW4SJC5nbGlkZXguYXV0aC52MS5QYXNzd29yZFRva2VuUmVxdWVzdBolLmdsaWRleC5hdXRoLnYxLlBhc3N3b3JkVG9rZW5SZXNwb25zZSIgyukYHAoGcHVibGljEAIaEFBPU1QgL2F1dGgvdG9rZW5iBnByb3RvMw", [file_glidex_api_v1_options, file_google_protobuf_timestamp]);
+  fileDesc("ChpnbGlkZXgvYXV0aC92MS9sb2dpbi5wcm90bxIOZ2xpZGV4LmF1dGgudjEiHwoPRGlzY292ZXJSZXF1ZXN0EgwKBGhpbnQYASABKAkieAoQRGlzY292ZXJSZXNwb25zZRIwCgZ0ZW5hbnQYASABKAsyIC5nbGlkZXguYXV0aC52MS5EaXNjb3ZlcmVkVGVuYW50EjIKCmNvbm5lY3RvcnMYAiADKAsyHi5nbGlkZXguYXV0aC52MS5Mb2dpbkNvbm5lY3RvciJEChBEaXNjb3ZlcmVkVGVuYW50EgwKBHNsdWcYASABKAkSIgoMZGlzcGxheV9uYW1lGAIgASgJUgxkaXNwbGF5X25hbWUiTgoOTG9naW5Db25uZWN0b3ISCgoCaWQYASABKAkSDAoEa2luZBgCIAEoCRIiCgxkaXNwbGF5X25hbWUYAyABKAlSDGRpc3BsYXlfbmFtZSI6ChJTdGFydERldmljZVJlcXVlc3QSFgoJY29ubmVjdG9yGAEgASgJSACIAQFCDAoKX2Nvbm5lY3RvciKUAgoTU3RhcnREZXZpY2VSZXNwb25zZRIgCgtkZXZpY2VfY29kZRgBIAEoCVILZGV2aWNlX2NvZGUSHAoJdXNlcl9jb2RlGAIgASgJUgl1c2VyX2NvZGUSKgoQdmVyaWZpY2F0aW9uX3VyaRgDIAEoCVIQdmVyaWZpY2F0aW9uX3VyaRJBChl2ZXJpZmljYXRpb25fdXJpX2NvbXBsZXRlGAQgASgJSABSGXZlcmlmaWNhdGlvbl91cmlfY29tcGxldGWIAQESEAoIaW50ZXJ2YWwYBSABKAQSHgoKZXhwaXJlc19pbhgGIAEoBFIKZXhwaXJlc19pbkIcChpfdmVyaWZpY2F0aW9uX3VyaV9jb21wbGV0ZSLPAQoRUG9sbERldmljZVJlcXVlc3QSFgoJY29ubmVjdG9yGAEgASgJSACIAQESIAoLZGV2aWNlX2NvZGUYAiABKAlSC2RldmljZV9jb2RlEiMKCnRva2VuX25hbWUYAyABKAlIAVIKdG9rZW5fbmFtZYgBARITCgZkZXZpY2UYBCABKAlIAogBARITCgZjbGllbnQYBSABKAlIA4gBAUIMCgpfY29ubmVjdG9yQg0KC190b2tlbl9uYW1lQgkKB19kZXZpY2VCCQoHX2NsaWVudCJjChJQb2xsRGV2aWNlUmVzcG9uc2USFAoHcGVuZGluZxgBIAEoCEgAiAEBEisKBmlzc3VlZBgCIAEoCzIbLmdsaWRleC5hdXRoLnYxLklzc3VlZFRva2VuQgoKCF9wZW5kaW5nIvYBChRQYXNzd29yZFRva2VuUmVxdWVzdBIQCgh1c2VybmFtZRgBIAEoCRIWCghwYXNzd29yZBgCIAEoCUIE0OkYARIWCgljb25uZWN0b3IYAyABKAlIAIgBARIRCgRkYXlzGAQgASgNSAGIAQESIwoKdG9rZW5fbmFtZRgFIAEoCUgCUgp0b2tlbl9uYW1liAEBEhMKBmRldmljZRgGIAEoCUgDiAEBEhMKBmNsaWVudBgHIAEoCUgEiAEBQgwKCl9jb25uZWN0b3JCBwoFX2RheXNCDQoLX3Rva2VuX25hbWVCCQoHX2RldmljZUIJCgdfY2xpZW50IkQKFVBhc3N3b3JkVG9rZW5SZXNwb25zZRIrCgZpc3N1ZWQYASABKAsyGy5nbGlkZXguYXV0aC52MS5Jc3N1ZWRUb2tlbiKyAQoLSXNzdWVkVG9rZW4SDQoFdG9rZW4YASABKAkSGgoIdG9rZW5faWQYAiABKAlSCHRva2VuX2lkEjoKCmV4cGlyZXNfYXQYAyABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wUgpleHBpcmVzX2F0EhgKB3VzZXJfaWQYBCABKAlSB3VzZXJfaWQSIgoMZGlzcGxheV9uYW1lGAUgASgJUgxkaXNwbGF5X25hbWUiNAoYSW5zcGVjdEludml0YXRpb25SZXF1ZXN0EhgKCmludml0YXRpb24YASABKAlCBNDpGAEizAIKGUluc3BlY3RJbnZpdGF0aW9uUmVzcG9uc2USIAoLdGVuYW50X3NsdWcYASABKAlSC3RlbmFudF9zbHVnEjAKE3RlbmFudF9kaXNwbGF5X25hbWUYAiABKAlSE3RlbmFudF9kaXNwbGF5X25hbWUSIgoMY29ubmVjdG9yX2lkGAMgASgJUgxjb25uZWN0b3JfaWQSNgoWY29ubmVjdG9yX2Rpc3BsYXlfbmFtZRgEIAEoCVIWY29ubmVjdG9yX2Rpc3BsYXlfbmFtZRImCg5jb25uZWN0b3Jfa2luZBgFIAEoCVIOY29ubmVjdG9yX2tpbmQSDQoFZW1haWwYBiABKAkSDAoEcm9sZRgHIAEoCRI6CgpleHBpcmVzX2F0GAggASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcFIKZXhwaXJlc19hdDKcBQoMTG9naW5TZXJ2aWNlEnIKCERpc2NvdmVyEh8uZ2xpZGV4LmF1dGgudjEuRGlzY292ZXJSZXF1ZXN0GiAuZ2xpZGV4LmF1dGgudjEuRGlzY292ZXJSZXNwb25zZSIjyukYHwoGcHVibGljEAEaE1BPU1QgL2F1dGgvZGlzY292ZXISgAEKC1N0YXJ0RGV2aWNlEiIuZ2xpZGV4LmF1dGgudjEuU3RhcnREZXZpY2VSZXF1ZXN0GiMuZ2xpZGV4LmF1dGgudjEuU3RhcnREZXZpY2VSZXNwb25zZSIoyukYJAoGcHVibGljEAEaGFBPU1QgL2F1dGgvYy97aWR9L2RldmljZRKCAQoKUG9sbERldmljZRIhLmdsaWRleC5hdXRoLnYxLlBvbGxEZXZpY2VSZXF1ZXN0GiIuZ2xpZGV4LmF1dGgudjEuUG9sbERldmljZVJlc3BvbnNlIi3K6RgpCgZwdWJsaWMQAhodUE9TVCAvYXV0aC9jL3tpZH0vZGV2aWNlL3BvbGwSfgoNUGFzc3dvcmRUb2tlbhIkLmdsaWRleC5hdXRoLnYxLlBhc3N3b3JkVG9rZW5SZXF1ZXN0GiUuZ2xpZGV4LmF1dGgudjEuUGFzc3dvcmRUb2tlblJlc3BvbnNlIiDK6RgcCgZwdWJsaWMQAhoQUE9TVCAvYXV0aC90b2tlbhKPAQoRSW5zcGVjdEludml0YXRpb24SKC5nbGlkZXguYXV0aC52MS5JbnNwZWN0SW52aXRhdGlvblJlcXVlc3QaKS5nbGlkZXguYXV0aC52MS5JbnNwZWN0SW52aXRhdGlvblJlc3BvbnNlIiXK6RghCgZwdWJsaWMQARoVUE9TVCAvYXV0aC9pbnZpdGF0aW9uYgZwcm90bzM", [file_glidex_api_v1_options, file_google_protobuf_timestamp]);
 
 /**
  * @generated from message glidex.auth.v1.DiscoverRequest
@@ -601,6 +601,134 @@ export const IssuedTokenSchema: GenMessage<IssuedToken, {jsonType: IssuedTokenJs
   messageDesc(file_glidex_auth_v1_login, 10);
 
 /**
+ * @generated from message glidex.auth.v1.InspectInvitationRequest
+ */
+export type InspectInvitationRequest = Message<"glidex.auth.v1.InspectInvitationRequest"> & {
+  /**
+   * `<id>.<secret>`, from the link.
+   *
+   * @generated from field: string invitation = 1;
+   */
+  invitation: string;
+};
+
+/**
+ * @generated from message glidex.auth.v1.InspectInvitationRequest
+ */
+export type InspectInvitationRequestJson = {
+  /**
+   * `<id>.<secret>`, from the link.
+   *
+   * @generated from field: string invitation = 1;
+   */
+  invitation?: string;
+};
+
+/**
+ * Describes the message glidex.auth.v1.InspectInvitationRequest.
+ * Use `create(InspectInvitationRequestSchema)` to create a new message.
+ */
+export const InspectInvitationRequestSchema: GenMessage<InspectInvitationRequest, {jsonType: InspectInvitationRequestJson}> = /*@__PURE__*/
+  messageDesc(file_glidex_auth_v1_login, 11);
+
+/**
+ * @generated from message glidex.auth.v1.InspectInvitationResponse
+ */
+export type InspectInvitationResponse = Message<"glidex.auth.v1.InspectInvitationResponse"> & {
+  /**
+   * @generated from field: string tenant_slug = 1 [json_name = "tenant_slug"];
+   */
+  tenantSlug: string;
+
+  /**
+   * @generated from field: string tenant_display_name = 2 [json_name = "tenant_display_name"];
+   */
+  tenantDisplayName: string;
+
+  /**
+   * @generated from field: string connector_id = 3 [json_name = "connector_id"];
+   */
+  connectorId: string;
+
+  /**
+   * @generated from field: string connector_display_name = 4 [json_name = "connector_display_name"];
+   */
+  connectorDisplayName: string;
+
+  /**
+   * @generated from field: string connector_kind = 5 [json_name = "connector_kind"];
+   */
+  connectorKind: string;
+
+  /**
+   * @generated from field: string email = 6;
+   */
+  email: string;
+
+  /**
+   * @generated from field: string role = 7;
+   */
+  role: string;
+
+  /**
+   * @generated from field: google.protobuf.Timestamp expires_at = 8 [json_name = "expires_at"];
+   */
+  expiresAt?: Timestamp | undefined;
+};
+
+/**
+ * @generated from message glidex.auth.v1.InspectInvitationResponse
+ */
+export type InspectInvitationResponseJson = {
+  /**
+   * @generated from field: string tenant_slug = 1 [json_name = "tenant_slug"];
+   */
+  tenant_slug?: string;
+
+  /**
+   * @generated from field: string tenant_display_name = 2 [json_name = "tenant_display_name"];
+   */
+  tenant_display_name?: string;
+
+  /**
+   * @generated from field: string connector_id = 3 [json_name = "connector_id"];
+   */
+  connector_id?: string;
+
+  /**
+   * @generated from field: string connector_display_name = 4 [json_name = "connector_display_name"];
+   */
+  connector_display_name?: string;
+
+  /**
+   * @generated from field: string connector_kind = 5 [json_name = "connector_kind"];
+   */
+  connector_kind?: string;
+
+  /**
+   * @generated from field: string email = 6;
+   */
+  email?: string;
+
+  /**
+   * @generated from field: string role = 7;
+   */
+  role?: string;
+
+  /**
+   * @generated from field: google.protobuf.Timestamp expires_at = 8 [json_name = "expires_at"];
+   */
+  expires_at?: TimestampJson;
+};
+
+/**
+ * Describes the message glidex.auth.v1.InspectInvitationResponse.
+ * Use `create(InspectInvitationResponseSchema)` to create a new message.
+ */
+export const InspectInvitationResponseSchema: GenMessage<InspectInvitationResponse, {jsonType: InspectInvitationResponseJson}> = /*@__PURE__*/
+  messageDesc(file_glidex_auth_v1_login, 12);
+
+/**
  * @generated from service glidex.auth.v1.LoginService
  */
 export const LoginService: GenService<{
@@ -647,6 +775,18 @@ export const LoginService: GenService<{
     methodKind: "unary";
     input: typeof PasswordTokenRequestSchema;
     output: typeof PasswordTokenResponseSchema;
+  },
+  /**
+   * What an invitation link is for, before its login (spec/tenancy.md
+   * §6.1): the tenant, the connector and the invited address. Needs the
+   * invitation's secret; any other answer is `404`.
+   *
+   * @generated from rpc glidex.auth.v1.LoginService.InspectInvitation
+   */
+  inspectInvitation: {
+    methodKind: "unary";
+    input: typeof InspectInvitationRequestSchema;
+    output: typeof InspectInvitationResponseSchema;
   },
 }> = /*@__PURE__*/
   serviceDesc(file_glidex_auth_v1_login, 0);

@@ -7,8 +7,9 @@ use super::{
     ApiErr, AppState, Caller, ClientAddr, Listener, Proto, RequestId, auth_error, err, proto_body,
 };
 use crate::auth::{self, Method, Principal};
+use crate::directory::invitations::InviteToken;
 use crate::service::access as acc;
-use crate::service::login::{self as svc, audit_login, oidc_client, oidc_error, oidc_user};
+use crate::service::login::{self as svc, audit_login, oidc_client, oidc_error, oidc_user_invited};
 use axum::{
     Extension, Json,
     extract::{Path, Query, State},
@@ -283,28 +284,28 @@ fn first_origin(app: &AppState) -> Option<&str> {
         .map(String::as_str)
 }
 
-async fn start_oidc(
-    app: AppState,
+/// Start a login through connector `id`: where to send the browser, and
+/// the cookie that binds the login to it.
+async fn begin_oidc(
+    app: &AppState,
     id: Option<&str>,
     listener: Option<Extension<Listener>>,
-    headers: HeaderMap,
-    q: OidcStartQuery,
-) -> Result<Response, ApiErr> {
-    let (_, oidc) = oidc_client(&app, id)?;
+    headers: &HeaderMap,
+    return_to: Option<&str>,
+    reauth: bool,
+    invite: Option<String>,
+) -> Result<(String, HeaderValue), ApiErr> {
+    let (_, oidc) = oidc_client(app, id)?;
     let start = oidc
         .start(
-            q.return_to.as_deref(),
-            &oidc.redirect_uri(first_origin(&app)),
-            q.reauth,
+            return_to,
+            &oidc.redirect_uri(first_origin(app)),
+            reauth,
+            invite,
         )
         .await
         .map_err(oidc_error)?;
-    let secure = secure_transport(
-        &app,
-        &headers,
-        listener.map(|l| l.0).unwrap_or(Listener::Tcp),
-    );
-    let mut resp = Redirect::to(&start.redirect).into_response();
+    let secure = secure_transport(app, headers, listener.map(|l| l.0).unwrap_or(Listener::Tcp));
     // Lax: it must come back on the IdP's top-level redirect.
     let mut c = format!(
         "{}={}; HttpOnly; SameSite=Lax; Path=/; Max-Age=600",
@@ -313,10 +314,78 @@ async fn start_oidc(
     if secure {
         c.push_str("; Secure");
     }
-    resp.headers_mut().insert(
-        header::SET_COOKIE,
-        HeaderValue::from_str(&c).expect("ascii"),
-    );
+    Ok((start.redirect, HeaderValue::from_str(&c).expect("ascii")))
+}
+
+async fn start_oidc(
+    app: AppState,
+    id: Option<&str>,
+    listener: Option<Extension<Listener>>,
+    headers: HeaderMap,
+    q: OidcStartQuery,
+) -> Result<Response, ApiErr> {
+    let (redirect, cookie) = begin_oidc(
+        &app,
+        id,
+        listener,
+        &headers,
+        q.return_to.as_deref(),
+        q.reauth,
+        None,
+    )
+    .await?;
+    let mut resp = Redirect::to(&redirect).into_response();
+    resp.headers_mut().insert(header::SET_COOKIE, cookie);
+    Ok(resp)
+}
+
+#[derive(Deserialize, Default)]
+pub struct StartBody {
+    #[serde(default)]
+    return_to: Option<String>,
+    /// `<id>.<secret>` from an invitation link (spec/tenancy.md §6.1).
+    #[serde(default)]
+    invitation: Option<String>,
+}
+
+/// `POST /auth/c/{id}/start`: `{redirect}` for the page to follow, so an
+/// invitation's secret goes in a body, never in a URL. `404` for an
+/// invitation that isn't open or isn't for this connector.
+pub async fn connector_start_post(
+    State(app): State<AppState>,
+    Path(id): Path<String>,
+    listener: Option<Extension<Listener>>,
+    headers: HeaderMap,
+    Json(b): Json<StartBody>,
+) -> Result<Response, ApiErr> {
+    let invite = match b.invitation.as_deref() {
+        Some(s) => {
+            let open = InviteToken::parse(s)
+                .and_then(|t| app.auth.invitations.open(&t).ok().flatten())
+                .filter(|i| i.connector_id == id);
+            if open.is_none() {
+                return Err(err(
+                    StatusCode::NOT_FOUND,
+                    "not_found",
+                    "no such invitation",
+                ));
+            }
+            Some(s.trim().to_string())
+        }
+        None => None,
+    };
+    let (redirect, cookie) = begin_oidc(
+        &app,
+        Some(&id),
+        listener,
+        &headers,
+        b.return_to.as_deref(),
+        false,
+        invite,
+    )
+    .await?;
+    let mut resp = Json(serde_json::json!({ "redirect": redirect })).into_response();
+    resp.headers_mut().insert(header::SET_COOKIE, cookie);
     Ok(resp)
 }
 
@@ -375,7 +444,7 @@ async fn finish_oidc(
     };
     let (c, oidc) = oidc_client(&app, id)?;
     let browser = super::cookie(&headers, OIDC_COOKIE);
-    let (identity, return_to) = match oidc
+    let (identity, return_to, invite) = match oidc
         .callback(
             &code,
             &state,
@@ -390,7 +459,8 @@ async fn finish_oidc(
             return Err(oidc_error(e).into());
         }
     };
-    let user = match oidc_user(&app, &c, &identity) {
+    let invite = invite.as_deref().and_then(InviteToken::parse);
+    let user = match oidc_user_invited(&app, &c, &identity, invite.as_ref()) {
         Ok(u) => u,
         Err(e) => {
             audit_login(&app, None, &rid.0, "oidc", "denied", &identity.subject);

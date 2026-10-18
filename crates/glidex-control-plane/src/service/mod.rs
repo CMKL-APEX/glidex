@@ -14,6 +14,7 @@ pub mod cluster;
 pub mod common;
 pub mod directory;
 pub mod host;
+pub mod invitations;
 pub mod login;
 pub mod network;
 pub mod node;

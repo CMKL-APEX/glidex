@@ -39,6 +39,18 @@ impl LoginService for Svc {
         .await
     }
 
+    async fn inspect_invitation(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, InspectInvitationRequest>,
+    ) -> ServiceResult<InspectInvitationResponse> {
+        let req = req.to_owned_message();
+        unary(&self.app, &ctx, |_| async {
+            crate::service::invitations::inspect_invitation(&self.app, req)
+        })
+        .await
+    }
+
     async fn start_device(
         &self,
         ctx: RequestContext,
