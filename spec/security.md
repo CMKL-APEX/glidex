@@ -48,6 +48,7 @@ bullets of [networking.md §14](networking.md#14-security).
 | 16 | Sharing project networks | A project network is private unless **both** projects agree explicitly: the network's owner offers it, the receiving project's owner accepts. Either side can end it (§6.2.1). |
 | 17 | Policy change control | Site policy changes need step-up and are audited; **no two-person approval**. |
 | 18 | Client trust | Self-signed control planes are accepted by **pinning the leaf certificate's SHA-256**, trusted on first use at `gxctl auth login` (TOFU); chain, dates and name keep verifying against the pinned certificate. A verify-nothing mode exists only as an explicitly confirmed, per-profile, loudly marked escape hatch ([gxctl-auth.md §5](gxctl-auth.md)). |
+| 19 | Browser-trusted certificates on a tailnet *(draft)* | On a host on Tailscale, `glidex-ui` may serve the node's Tailscale (Let's Encrypt) certificate for its `ts.net` names, fetched from the host's `tailscaled`, chosen by SNI next to the usual certificate. Opt-in, because the name lands in Certificate Transparency logs ([tailscale-tls.md](tailscale-tls.md)). |
 
 ## 3. Threat model
 
@@ -150,6 +151,7 @@ the UI, [web-ui.md](web-ui.md#server)):
 |---|---|
 | `"auto"` (default) | A self-signed certificate, generated on first start (§5.1.1). |
 | `{"cert": …, "key": …}` | That PEM chain and key (the key defaults to the systemd credential `tls-key`). |
+| Tailscale, UI only *(draft)* | In addition to one of the above, `GLIDEX_UI_TLS_TAILSCALE=on` serves the node's Tailscale certificate to clients whose SNI is one of its `ts.net` certificate domains, renewed in place ([tailscale-tls.md](tailscale-tls.md) §4). |
 | `"off"` | Plain HTTP. Accepted **only** when every listener is a loopback address; otherwise the process refuses to start. For development and tests. |
 
 `glidex-ui` follows the same rules, sets cookies `Secure` whenever it
@@ -198,7 +200,10 @@ redirect: API clients should be told, not silently upgraded.
 - `Strict-Transport-Security` is sent only with a configured
   certificate, never with a self-signed one: browsers make certificate
   errors non-bypassable for an HSTS host, which would lock users out of
-  a host whose self-signed certificate they had not yet trusted.
+  a host whose self-signed certificate they had not yet trusted. The
+  Tailscale certificate counts as configured: HSTS is sent on the
+  connections that were served it *(draft,
+  [tailscale-tls.md](tailscale-tls.md) §4.4)*.
 
 **Exposure.** Listening on every address also listens on the gateway
 addresses of glidex NAT bridges; the `input` chain of §8.4 keeps guests
@@ -351,7 +356,10 @@ selects TCP.
   With the default list, an IP address the host has *at request
   time* is also accepted, so an interface that comes up after startup
   (a VPN, a DHCP change) works without a restart; an explicit
-  `GLIDEX_UI_HOSTS` is taken as is. Other `Host` values get `421`. This
+  `GLIDEX_UI_HOSTS` is taken as is. With `GLIDEX_UI_TLS_TAILSCALE=on`,
+  the ts.net names the UI currently holds a certificate for are allowed
+  in either case *(draft, [tailscale-tls.md](tailscale-tls.md) §4.3)*.
+  Other `Host` values get `421`. This
   blocks DNS rebinding: an attacker's domain never matches, and names or
   addresses that do belong to the host are not a rebinding risk.
 - **Origin check (control plane):** state-changing methods and every
@@ -1364,6 +1372,7 @@ None. Earlier questions were answered and recorded as decisions 10–17 (§2).
 | OIDC (§5.4) | `src/directory/oidc.rs` |
 | API, route table, compound checks (§7.4, §7.7, §13) | `src/api/` |
 | Listeners, TLS (§5.1, §5.1.1) | `src/serve.rs`, `src/config.rs`; certificates, listeners, local names and client trust shared with glidex-ui, gxctl and the installer in `crates/glidex-tls` |
+| Tailscale certificates for the UI, reloadable certificates (decision 19) | *(draft)* not started — [tailscale-tls.md](tailscale-tls.md) §10 |
 | Private VM runtime directories (§9) | `src/paths.rs` |
 | VM units, polkit rule, shim allowlist (§3, §9) | `packaging/glidex-vm@.service.in`, `packaging/50-glidex-vm.rules.in`, `crates/glidex-vm-shim/src/launch.rs`, `crates/glidex-install` (`install_vm_units`) |
 | PAM helper (§5.3) | `crates/glidex-authd` |

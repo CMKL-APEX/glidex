@@ -241,6 +241,13 @@ by later runs (flags override the saved values):
       SHA-256 fingerprints of their self-signed certificates
       (spec/security.md §5.1.1), read once the services have started.
       The installer does not touch the host firewall.
+    - *(draft, [tailscale-tls.md](tailscale-tls.md) §4.6)* when
+      `tailscaled` runs and reports certificate domains, it offers the
+      UI's Tailscale certificate (`--tailscale-cert` /
+      `--no-tailscale-cert`, saved in `install.conf`), noting that the
+      name becomes public in Certificate Transparency logs; once on, the
+      blurb prints `https://<node>.<tailnet>.ts.net:5173` first, without
+      a fingerprint.
     If the previous unit ran the control plane as the invoking user, a
     note says that their `~/.glidex` data was not moved.
 14. **Save options** to `/etc/glidex/install.conf` when they changed,
