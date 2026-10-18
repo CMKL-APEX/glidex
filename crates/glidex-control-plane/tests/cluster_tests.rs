@@ -1900,18 +1900,17 @@ async fn the_scheduler_spreads_vms_honours_pins_and_disks_and_explains_itself() 
         "{waiting}"
     );
     let id = vm["id"].as_str().unwrap().to_string();
-    let (s, _) = call(
-        &server,
-        "POST",
-        &format!("/nodes/{}/undrain", ids[0]),
-        None,
-        &[],
-    )
-    .await;
-    assert_eq!(s, StatusCode::OK);
+    // A node is named by its id or its name, here and in a get.
+    let agent1 = agents[0].manager.local_node_id();
+    let (s, one) = call(&server, "GET", "/nodes/agent1", None, &[]).await;
+    assert_eq!(s, StatusCode::OK, "{one}");
+    assert_eq!(one["node"]["meta"]["id"], agent1.as_str(), "{one}");
+    let (s, v) = call(&server, "POST", "/nodes/agent1/undrain", None, &[]).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["phase"], "NODE_PHASE_ACTIVE", "{v}");
     wait_for("the waiting VM to be placed", || async {
         let (_, v) = call(&server, "GET", &format!("/vms/{id}"), None, &[]).await;
-        vm_of(&v)["node"].as_str() == Some(ids[0].as_str())
+        vm_of(&v)["node"].as_str() == Some(agent1.as_str())
     })
     .await;
 }
@@ -2730,8 +2729,11 @@ async fn a_node_detaches_with_its_vms_and_the_cluster_lets_go() {
         finish_pending, pending_db, pending_sha_file, receipt_file,
     };
     let _one = serial().await;
-    let cfg = test_config();
+    let mut cfg = test_config();
+    // For a cluster network the detach maps onto one of the node's.
+    cfg.cluster.ovn.enabled = true;
     let server = new_cp();
+    server.manager.configure(&cfg);
     manage::init(
         &server.manager,
         &cfg,
@@ -2771,14 +2773,19 @@ async fn a_node_detaches_with_its_vms_and_the_cluster_lets_go() {
     assert!(link.wait_ready(Duration::from_secs(20)).await);
     agent.manager.initialize().await.unwrap();
     agent.manager.start_controllers();
-    let (s, vm) = call(
+    let (s, cn) = call(
         &server,
         "POST",
-        "/vms",
-        Some(vm_body("travels", "agent1")),
+        "/networks",
+        Some(json!({ "name": "c-web", "mode": "NETWORK_MODE_ISOLATED", "scope": "NETWORK_SCOPE_CLUSTER", "subnet": "10.89.70.0/24" })),
         &[],
     )
     .await;
+    assert_eq!(s, StatusCode::CREATED, "{cn}");
+    let cid = cn["network"]["id"].as_str().unwrap().to_string();
+    let mut body = vm_body("travels", "agent1");
+    body["networks"] = json!([{ "network": "c-web" }]);
+    let (s, vm) = call(&server, "POST", "/vms", Some(body), &[]).await;
     assert_eq!(s, StatusCode::CREATED, "{vm}");
     let id = vm_of(&vm)["id"].as_str().unwrap().to_string();
     wait_for("the agent to be ready", || async {
@@ -2801,7 +2808,9 @@ async fn a_node_detaches_with_its_vms_and_the_cluster_lets_go() {
         "NODE_PHASE_ACTIVE"
     );
 
-    // An abort returns the node to Active.
+    // An abort returns the node to Active. The VM's NIC on a cluster network
+    // goes with no network mapped for it, and the plan names the network
+    // (NICs name networks by id since D24).
     let (s, p) = call(
         &server,
         "POST",
@@ -2813,6 +2822,8 @@ async fn a_node_detaches_with_its_vms_and_the_cluster_lets_go() {
     assert_eq!(s, StatusCode::OK, "{p}");
     assert_eq!(p["vms"], 1, "{p}");
     assert!(is_time(&p["deadline"]), "{p}");
+    assert_eq!(p["dropped_networks"], json!([cid]), "{p}");
+    assert_eq!(p["network_names"], json!({ cid.as_str(): "c-web" }), "{p}");
     let plan = p["plan"].as_str().unwrap().to_string();
     let (s, a) = call(
         &server,
@@ -2864,8 +2875,9 @@ async fn a_node_detaches_with_its_vms_and_the_cluster_lets_go() {
         "{deps:?}"
     );
     assert!(
-        deps.iter()
-            .any(|d| d["state"] == "DEPARTURE_STATE_ABORTED" && d["plan"] == plan.as_str()),
+        deps.iter().any(|d| d["state"] == "DEPARTURE_STATE_ABORTED"
+            && d["plan"] == plan.as_str()
+            && d["network_names"][cid.as_str()] == "c-web"),
         "{deps:?}"
     );
     assert!(

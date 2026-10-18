@@ -65,6 +65,7 @@ enum Who {
 }
 
 /// What came back: status, headers, body bytes, trailers.
+#[derive(Debug)]
 struct Reply {
     status: StatusCode,
     headers: HeaderMap,
@@ -128,7 +129,7 @@ impl H {
         }
         if let Some(l) = listener {
             b = b.extension(l);
-            if l == Listener::Ui {
+            if matches!(l, Listener::Ui | Listener::Api) {
                 b = b.extension(PeerUid(nix::unistd::getuid().as_raw()));
             }
         }
@@ -381,4 +382,78 @@ async fn unknown_methods_are_unimplemented() {
         .grpc("/glidex.system.v1.SystemService/Nope", &Who::Nobody, None)
         .await;
     assert_eq!(grpc_status(&r).as_deref(), Some("12"));
+}
+
+const REFLECT: &str = "/grpc.reflection.v1.ServerReflection/ServerReflectionInfo";
+
+/// One reflection request, one answer (the stream half-closes after it).
+async fn reflect(
+    h: &H,
+    request: connectrpc_reflection::wire::v1::server_reflection_request::MessageRequest,
+    who: &Who,
+    listener: Listener,
+) -> (
+    Reply,
+    Option<connectrpc_reflection::wire::v1::ServerReflectionResponse>,
+) {
+    let req = connectrpc_reflection::wire::v1::ServerReflectionRequest {
+        message_request: Some(request),
+        ..Default::default()
+    };
+    let r = h
+        .send(
+            REFLECT,
+            "application/grpc",
+            envelope(0, &req.encode_to_vec()),
+            who,
+            Some(listener),
+        )
+        .await;
+    let answer = envelopes(&r.body).first().map(|(_, m)| {
+        connectrpc_reflection::wire::v1::ServerReflectionResponse::decode_from_slice(m).unwrap()
+    });
+    (r, answer)
+}
+
+#[tokio::test]
+async fn reflection_lists_the_services_on_the_api_socket_only() {
+    use connectrpc_reflection::wire::v1::{
+        server_reflection_request::MessageRequest as Req,
+        server_reflection_response::MessageResponse as Resp,
+    };
+    let h = harness();
+    let (r, answer) = reflect(
+        &h,
+        Req::ListServices(String::new()),
+        &Who::Nobody,
+        Listener::Api,
+    )
+    .await;
+    assert_eq!(grpc_status(&r).as_deref(), Some("0"), "{r:?}");
+    let Some(Resp::ListServicesResponse(list)) = answer.and_then(|a| a.message_response) else {
+        panic!("not a service list: {r:?}");
+    };
+    let names: Vec<&str> = list.service.iter().map(|s| s.name.as_str()).collect();
+    for s in glidex_api::services() {
+        assert!(names.contains(&s), "{s} in {names:?}");
+    }
+    // A symbol's file, as grpcurl and buf curl ask for it.
+    let (r, answer) = reflect(
+        &h,
+        Req::FileContainingSymbol("glidex.vm.v1.VmService".into()),
+        &Who::Nobody,
+        Listener::Api,
+    )
+    .await;
+    let Some(Resp::FileDescriptorResponse(files)) = answer.and_then(|a| a.message_response) else {
+        panic!("not a file: {r:?}");
+    };
+    assert!(!files.file_descriptor_proto.is_empty());
+
+    // Not on the TCP port or the UI socket, whoever asks.
+    let token = Who::Bearer(h.token(&h.user("ada")));
+    for l in [Listener::Tcp, Listener::Ui] {
+        let (r, _) = reflect(&h, Req::ListServices(String::new()), &token, l).await;
+        assert_eq!(r.status, StatusCode::NOT_FOUND, "{l:?}: {r:?}");
+    }
 }

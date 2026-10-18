@@ -1,3 +1,5 @@
+import type { ErrorJson } from "./gen/glidex/api/v1/errors_pb";
+
 // ---- VMs (glidex.vm.v1, spec/grpc.md §9.1) ---------------------------------
 //
 // The VM routes answer in the proto3 JSON shape (see the storage section
@@ -720,9 +722,10 @@ export interface UpdateCredentialRequest {
   ssh_authorized_keys?: string[];
 }
 
-export interface ApiError {
-  error: string;
-  message: string;
+/** A REST error: `glidex.api.v1.Error` as JSON (spec/grpc.md §9.1), its
+ * `details` narrowed to the keys the pages read. RPC errors become the
+ * same thing (`api.ts::rpcError`). */
+export type ApiError = Required<Pick<ErrorJson, "error" | "message">> & {
   details?: {
     impact?: string;
     missing?: string[];
@@ -731,7 +734,7 @@ export interface ApiError {
     /** 422 invalid_policy: the validator's messages. */
     errors?: string[];
   };
-}
+};
 
 export interface HealthResponse {
   status: string;
@@ -1666,6 +1669,8 @@ export interface Departure {
   with_access?: boolean;
   /** The node confirmed it has its bundle. */
   acknowledged?: boolean;
+  /** Network id → name, as they were when the detach started. */
+  network_names?: Record<string, string>;
 }
 
 /** A join or rejoin token, shown once (spec/clustering-ui.md §2.3). */
