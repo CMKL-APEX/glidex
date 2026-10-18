@@ -58,9 +58,37 @@ struct Pending {
     return_to: String,
     browser: String,
     created: u64,
-    /// The invitation the login brings (spec/tenancy.md §6.1): kept here,
-    /// never in a URL.
-    invite: Option<String>,
+    /// What the login is for: kept here, never in a URL.
+    after: After,
+}
+
+/// A failed callback, and what its login was for once the state was this
+/// browser's (`(return_to, after)`).
+#[derive(Debug)]
+pub struct CallbackError {
+    pub error: OidcError,
+    pub started: Option<(String, After)>,
+}
+
+impl From<OidcError> for CallbackError {
+    fn from(error: OidcError) -> Self {
+        CallbackError {
+            error,
+            started: None,
+        }
+    }
+}
+
+/// What a browser login is for.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum After {
+    /// Signing in.
+    #[default]
+    Login,
+    /// Signing in and taking an invitation (`<id>.<secret>`, spec/tenancy.md §6.1).
+    Invite(String),
+    /// Adding this sign-in to user `0`, who is signed in (§6.2).
+    Link(String),
 }
 
 struct Jwks {
@@ -320,13 +348,13 @@ impl OidcState {
     }
 
     /// Begin a browser login. `reauth` forces a fresh login (step-up);
-    /// `invite` comes back from [`callback`](Self::callback).
+    /// `after` comes back from [`callback`](Self::callback).
     pub async fn start(
         &self,
         return_to: Option<&str>,
         redirect_uri: &str,
         reauth: bool,
-        invite: Option<String>,
+        after: After,
     ) -> Result<Start, OidcError> {
         let d = self.discovery().await?;
         let state = crate::auth::random_token(24);
@@ -346,7 +374,7 @@ impl OidcState {
                     return_to: safe_return_to(return_to),
                     browser: browser.clone(),
                     created: t,
-                    invite,
+                    after,
                 },
             );
         }
@@ -377,14 +405,14 @@ impl OidcState {
 
     /// Finish a browser login: check `state` against the browser cookie,
     /// redeem the code, verify the ID token. Returns the identity, the
-    /// path to return to and the invitation the login started with.
+    /// path to return to and what the login was for.
     pub async fn callback(
         &self,
         code: &str,
         state: &str,
         browser: Option<&str>,
         redirect_uri: &str,
-    ) -> Result<(OidcIdentity, String, Option<String>), OidcError> {
+    ) -> Result<(OidcIdentity, String, After), CallbackError> {
         let pending = self
             .pending
             .lock()
@@ -392,14 +420,17 @@ impl OidcState {
             .remove(state)
             .ok_or_else(|| OidcError::Invalid("unknown or expired login state".into()))?;
         if pending.created + STATE_SECS <= now() {
-            return Err(OidcError::Invalid("login state expired".into()));
+            return Err(OidcError::Invalid("login state expired".into()).into());
         }
         if !browser.is_some_and(|b| crate::auth::constant_eq(b, &pending.browser)) {
-            return Err(OidcError::Invalid(
-                "login state belongs to another browser".into(),
-            ));
+            return Err(OidcError::Invalid("login state belongs to another browser".into()).into());
         }
-        let d = self.discovery().await?;
+        // From here the login is this browser's: a failure says what it was for.
+        let with = |e: OidcError| CallbackError {
+            error: e,
+            started: Some((pending.return_to.clone(), pending.after.clone())),
+        };
+        let d = self.discovery().await.map_err(with)?;
         let resp = self
             .token_request(
                 &d,
@@ -410,13 +441,17 @@ impl OidcState {
                     ("code_verifier", &pending.verifier),
                 ],
             )
-            .await?;
+            .await
+            .map_err(with)?;
         let id_token = resp
             .get("id_token")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| OidcError::Invalid("token response has no id_token".into()))?;
-        let identity = self.verify(&d, id_token, Some(&pending.nonce)).await?;
-        Ok((identity, pending.return_to, pending.invite))
+            .ok_or_else(|| with(OidcError::Invalid("token response has no id_token".into())))?;
+        let identity = self
+            .verify(&d, id_token, Some(&pending.nonce))
+            .await
+            .map_err(with)?;
+        Ok((identity, pending.return_to, pending.after))
     }
 
     async fn token_request(

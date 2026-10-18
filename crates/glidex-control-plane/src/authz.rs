@@ -1624,6 +1624,29 @@ mod tests {
     }
 
     #[test]
+    fn own_sign_ins_only_and_with_a_recent_login() {
+        let e = Engine::new().unwrap();
+        let mut es = base_entities();
+        es.user("a", false, &[]).user("b", false, &[]);
+        let q = |r: &str, age: i64| {
+            tq(
+                Ent::User("a".into()),
+                "manageOwnSignIns",
+                Ent::User(r.into()),
+                auth(age),
+                es.clone(),
+            )
+        };
+        assert!(e.check(&q("a", 0)).allowed);
+        assert!(!e.check(&q("b", 0)).allowed, "someone else's");
+        let late = e.check(&q("a", 3600));
+        assert!(
+            !late.allowed && late.denied_by("base.step-up"),
+            "an old login"
+        );
+    }
+
+    #[test]
     fn own_tokens_only() {
         let e = Engine::new().unwrap();
         let mut es = base_entities();

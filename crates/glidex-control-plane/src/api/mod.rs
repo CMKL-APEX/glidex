@@ -745,6 +745,13 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         PUBLIC,
         post(invitations::inspect),
     )
+    // Add a sign-in method to the caller (§6.2): `manageOwnSignIns` inside.
+    .add(
+        "POST",
+        "/auth/link/c/{id}/start",
+        AUTHENTICATED,
+        post(access::link_start),
+    )
     .add(
         "GET",
         "/auth/c/{id}/callback",

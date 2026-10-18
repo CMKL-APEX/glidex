@@ -287,6 +287,11 @@ namespace Glidex {
     appliesTo { principal: [User, Token], resource: [Directory], context: Ctx };
   action manageOwnTokens in ["shared"]
     appliesTo { principal: [User, Token], resource: [User], context: Ctx };
+  // A user's own sign-in methods (spec/tenancy.md §6.2): adding or
+  // removing one needs a recent login, so a stolen session can't add its
+  // thief's account.
+  action manageOwnSignIns in ["shared", "step-up"]
+    appliesTo { principal: [User, Token], resource: [User], context: Ctx };
   action readAudit in ["system.audit", "host-scoped"]
     appliesTo { principal: [User, Token], resource: [Cluster], context: Ctx };
   action readPolicy, validatePolicy, simulatePolicy in ["policy.read", "host-scoped"]

@@ -777,19 +777,39 @@ pub fn unlink_identity(
     call: &Call,
     req: pb::UnlinkIdentityRequest,
 ) -> ServiceResult<pb::UnlinkIdentityResponse> {
-    call.require(directory_ent(), EntitySet::new())?;
+    // One's own sign-in methods with a recent login (spec/tenancy.md §6.2),
+    // anyone's as a directory administrator.
+    let own = call.p.user_id() == Some(req.id.as_str());
+    if own {
+        let (e, es) = self_entities(call);
+        call.require_action("manageOwnSignIns", e, es, &[])?;
+    } else {
+        call.require(directory_ent(), EntitySet::new())?;
+    }
     call.set_target(format!("user:{}", req.id));
     let s = &call.auth().store;
-    let found = s
-        .identities_of(&req.id)
-        .map_err(store_err)?
-        .into_iter()
+    let all = s.identities_of(&req.id).map_err(store_err)?;
+    let found = all
+        .iter()
         .find(|i| Identity::key(&i.provider, &i.subject) == req.key);
     let Some(i) = found else {
         return Err(not_found("identity"));
     };
+    // A user may have many sign-in methods, but not none.
+    if all.len() <= 1 {
+        return Err(ServiceError::new(
+            StatusCode::CONFLICT,
+            "last_identity",
+            "this is the user's only way to sign in: add another first, or disable the user",
+        ));
+    }
+    call.detail("identity", serde_json::json!(req.key));
     s.remove_identity(&i.provider, &i.subject)
         .map_err(store_err)?;
+    if req.end_sessions == Some(true) && !own {
+        let n = s.remove_sessions_of(&req.id).map_err(store_err)?;
+        call.detail("sessions_ended", serde_json::json!(n));
+    }
     Ok(pb::UnlinkIdentityResponse::default())
 }
 
