@@ -340,8 +340,10 @@ Without linking, one person signing in two ways is two users.
 - **Adding one** is the user's own act, proving both: signed in, the user
   starts `POST /auth/link/c/{id}/start` (`manageOwnSignIns` on itself, a
   step-up action, so a stolen session can't add its thief's account) and
-  signs in at the IdP. The login state carries "add to user X"; at the
-  callback the browser's session must still be X, and the connector's
+  signs in at the IdP. The login state carries "add to user X" and the session that
+  started it; at the callback (the login state is this browser's, by its
+  `Lax` cookie) that session must still be live and X's — its `Strict`
+  cookie doesn't come back on the IdP's cross-site redirect — and the connector's
   rules apply as at a login (groups, MFA, `hd`). The identity is added to
   X; it is refused if it is another user's (`taken`), a no-op if X's. The
   browser returns to the page with `?linked=<connector>` or

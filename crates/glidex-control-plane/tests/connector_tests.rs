@@ -1885,13 +1885,27 @@ fn session_parts(who: &str) -> (String, String) {
 
 /// Add a sign-in through connector `id` to the user signed in as `who`
 /// (the account page's way): its status at the start, and where the
-/// callback sent the browser.
+/// callback sent the browser. The callback comes as a browser sends it
+/// after the IdP's cross-site redirect: with the Lax login cookie, without
+/// the Strict session cookie.
 async fn link_through(
     h: &H,
     mock: &idp::Mock,
     id: &str,
     who: &str,
+    claims: Value,
+) -> (StatusCode, Option<String>) {
+    link_through_then(h, mock, id, who, claims, || async {}).await
+}
+
+/// [`link_through`], running `before_callback` while the user is at the IdP.
+async fn link_through_then<F: std::future::Future<Output = ()>>(
+    h: &H,
+    mock: &idp::Mock,
+    id: &str,
+    who: &str,
     mut claims: Value,
+    before_callback: impl FnOnce() -> F,
 ) -> (StatusCode, Option<String>) {
     let (cookie, csrf) = session_parts(who);
     let req = Request::post(format!("/auth/link/c/{id}/start"))
@@ -1918,14 +1932,12 @@ async fn link_through(
         .to_string();
     claims["nonce"] = json!(q["nonce"]);
     *mock.id_token.lock().unwrap() = Some(idp::sign(claims, "k1"));
+    before_callback().await;
     let req = Request::get(format!(
         "/auth/c/{id}/callback?code=c1&state={}",
         q["state"]
     ))
-    .header(
-        header::COOKIE,
-        format!("{browser}; {}={cookie}", auth::SESSION_COOKIE),
-    )
+    .header(header::COOKIE, browser)
     .body(Body::empty())
     .unwrap();
     let (st, _, headers) = h.send(req).await;
@@ -1983,6 +1995,22 @@ async fn a_user_adds_and_removes_sign_in_methods() {
     assert_eq!(
         (st, to.as_deref()),
         (StatusCode::SEE_OTHER, Some("/account?link_error=taken"))
+    );
+    // Signed out while at the IdP: nothing to add it to.
+    let carol = h.admin("carol");
+    let sc = h.session(&carol);
+    let carols = google_claims(&mock, "g-carol", "carol@example.org", Some("example.org"));
+    let (st, to) = link_through_then(&h, &mock, "gw", &sc, carols, || async {
+        let (st, _) = h.rest("POST", "/auth/logout", Some(json!({})), &sc).await;
+        assert!(st.is_success(), "{st}");
+    })
+    .await;
+    assert_eq!(
+        (st, to.as_deref()),
+        (
+            StatusCode::SEE_OTHER,
+            Some("/account?link_error=not_signed_in")
+        )
     );
     // Without a session, there's nothing to add it to.
     let req = Request::post("/auth/link/c/gw/start")

@@ -1391,6 +1391,25 @@ impl AuthService {
         Ok(user)
     }
 
+    /// Whether session `hash` is still `user_id`'s and live: not ended,
+    /// idle or past its lifetime, its user not disabled.
+    pub fn session_is_live(&self, hash: &str, user_id: &str) -> bool {
+        let Ok(Some(s)) = self.store.session(hash) else {
+            return false;
+        };
+        let now = store::now();
+        let cfg = &self.config.auth.session;
+        s.user_id == user_id
+            && now <= s.last_seen + cfg.idle_minutes * 60
+            && now <= s.created_at + cfg.absolute_hours * 3600
+            && self
+                .store
+                .user(user_id)
+                .ok()
+                .flatten()
+                .is_some_and(|u| !u.disabled)
+    }
+
     /// Add a sign-in through connector `c` to user `user_id`, who is
     /// signed in (spec/tenancy.md §6.2): beside the ones it has, never in
     /// place of them. The connector's rules apply as at a login; a sign-in

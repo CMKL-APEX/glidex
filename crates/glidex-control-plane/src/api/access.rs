@@ -424,7 +424,10 @@ pub async fn link_start(
         &headers,
         b.return_to.as_deref(),
         true,
-        After::Link(user),
+        After::Link {
+            user,
+            session: c.p.session_hash.clone(),
+        },
     )
     .await?;
     let mut resp = Json(serde_json::json!({ "redirect": redirect })).into_response();
@@ -509,7 +512,7 @@ async fn finish_oidc(
         Ok(v) => v,
         // A sign-in being added goes back to its page with why it wasn't.
         Err(crate::directory::oidc::CallbackError {
-            started: Some((return_to, After::Link(uid))),
+            started: Some((return_to, After::Link { user: uid, .. })),
             ..
         }) => {
             audit_login(&app, None, &rid.0, "oidc-link", "denied", &uid);
@@ -530,16 +533,14 @@ async fn finish_oidc(
         .expect("ascii")
     };
     let invite = match after {
-        After::Link(uid) => {
-            // The browser's session must still be the user who started it.
-            let current = super::cookie(&headers, auth::SESSION_COOKIE)
-                .and_then(|ck| {
-                    app.auth
-                        .session_principal(&ck, auth::Transport::Tcp, None)
-                        .ok()
-                        .flatten()
-                })
-                .filter(|p| p.user_id() == Some(uid.as_str()));
+        After::Link { user: uid, session } => {
+            // The session that started it must still be live: the login
+            // state is this browser's (its Lax cookie), and the session
+            // cookie (Strict) doesn't come back on the IdP's redirect.
+            let current = session
+                .as_deref()
+                .filter(|h| app.auth.session_is_live(h, &uid))
+                .and_then(|_| app.auth.store.user(&uid).ok().flatten());
             let ext = svc::external_of(&c, &identity);
             let outcome = match &current {
                 None => Err("not_signed_in"),
@@ -551,7 +552,7 @@ async fn finish_oidc(
             };
             audit_login(
                 &app,
-                current.as_ref(),
+                None,
                 &rid.0,
                 "oidc-link",
                 if outcome.is_ok() { "ok" } else { "denied" },

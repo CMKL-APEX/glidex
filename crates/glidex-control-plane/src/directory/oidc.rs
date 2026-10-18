@@ -87,8 +87,14 @@ pub enum After {
     Login,
     /// Signing in and taking an invitation (`<id>.<secret>`, spec/tenancy.md §6.1).
     Invite(String),
-    /// Adding this sign-in to user `0`, who is signed in (§6.2).
-    Link(String),
+    /// Adding this sign-in to `user`, who started it signed in through
+    /// `session` (its hash; §6.2). The session cookie is `SameSite=Strict`
+    /// and doesn't come back on the IdP's redirect, so the callback checks
+    /// that session is still live instead.
+    Link {
+        user: String,
+        session: Option<String>,
+    },
 }
 
 struct Jwks {
