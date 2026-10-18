@@ -277,13 +277,14 @@ fn proxy_loop(
         if let Ok((stream, _)) = listener.accept() {
             // Replay the current log, then live output (rotated logs are
             // reachable through the API). Queued, so a slow client never
-            // stalls the console.
+            // stalls the console. Without the guest's terminal queries: a
+            // replayed one would be answered now, as stale typed input.
             let mut content = Vec::new();
             if let Ok(mut existing) = File::open(&log.path) {
                 let _ = existing.read_to_end(&mut content);
             }
             stream.set_nonblocking(true).ok();
-            let mut c = Client::new(stream, content);
+            let mut c = Client::new(stream, crate::replay::strip_queries(&content));
             if c.flush() {
                 clients.push(c);
             }
@@ -469,6 +470,42 @@ mod tests {
             std::fs::read_to_string(&log_path)
                 .unwrap()
                 .contains("last words")
+        );
+    }
+
+    /// A query in the log is not replayed (it would be answered as stale
+    /// input); a live one reaches the client, and the log keeps both.
+    #[test]
+    fn replay_leaves_out_the_guests_terminal_queries() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("console.log");
+        std::fs::write(&log_path, b"boot\x1b[6n log\r\n").unwrap();
+        let sock = dir.path().join("console.sock");
+        let proxy = Proxy::start(&sock, LogWriter::open(&log_path, 1 << 20).unwrap()).unwrap();
+        let (master, mut slave) = raw_pty();
+        let (err_r, _err_w) = pipe();
+        proxy.attach(master, err_r);
+
+        let mut client = UnixStream::connect(&sock).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut got = Vec::new();
+        while !got.ends_with(b"boot log\r\n") {
+            let mut b = [0u8; 256];
+            let n = client.read(&mut b).unwrap();
+            got.extend_from_slice(&b[..n]);
+        }
+        assert_eq!(got, b"boot log\r\n");
+
+        slave.write_all(b"\x1b[6n").unwrap();
+        let mut live = [0u8; 4];
+        client.read_exact(&mut live).unwrap();
+        assert_eq!(&live, b"\x1b[6n");
+        proxy.stop();
+        assert_eq!(
+            std::fs::read(&log_path).unwrap(),
+            b"boot\x1b[6n log\r\n\x1b[6n"
         );
     }
 }

@@ -14,6 +14,7 @@ pub mod client;
 pub mod launch;
 pub mod proto;
 pub mod proxy;
+pub mod replay;
 pub mod sd;
 pub mod state;
 pub mod supervisor;

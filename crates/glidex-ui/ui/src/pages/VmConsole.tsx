@@ -17,6 +17,27 @@ async function whyFailed(id: string, fallback: string): Promise<string> {
 
 type Status = "connecting" | "connected" | "closed" | "error";
 
+/** Put `text` on the clipboard; outside a secure context (plain HTTP)
+ *  `navigator.clipboard` is missing, so copy from a scratch textarea. */
+function copyText(text: string) {
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(text).catch(() => {});
+    return;
+  }
+  const scratch = document.createElement("textarea");
+  scratch.value = text;
+  scratch.style.position = "fixed";
+  scratch.style.opacity = "0";
+  document.body.appendChild(scratch);
+  scratch.select();
+  document.execCommand("copy");
+  scratch.remove();
+}
+
+/** Ctrl+Shift+<key>, as terminals copy and paste where Ctrl+C is ^C. */
+const ctrlShift = (ev: KeyboardEvent, code: string) =>
+  ev.ctrlKey && ev.shiftKey && !ev.altKey && !ev.metaKey && ev.code === code;
+
 export default function VmConsole() {
   const { id } = useParams<{ id: string }>();
   const containerRef = useRef<HTMLDivElement>(null);
@@ -42,6 +63,22 @@ export default function VmConsole() {
     term.loadAddon(fitAddon);
     term.open(containerRef.current);
     fitAddon.fit();
+
+    // Ctrl+Shift+C / Ctrl+Shift+V copy and paste; Ctrl+C stays ^C for the
+    // guest. (On macOS ⌘C / ⌘V already do, through xterm's own copy and
+    // paste handlers.) Paste is left to the browser: its paste event
+    // reaches xterm, which asks for no clipboard permission.
+    term.attachCustomKeyEventHandler((ev) => {
+      if (ctrlShift(ev, "KeyC")) {
+        // Chrome's Ctrl+Shift+C opens the element inspector.
+        ev.preventDefault();
+        if (ev.type === "keydown" && term.hasSelection()) {
+          copyText(term.getSelection());
+        }
+        return false;
+      }
+      return !ctrlShift(ev, "KeyV");
+    });
 
     const handleResize = () => {
       try {
@@ -183,7 +220,8 @@ export default function VmConsole() {
       />
 
       <p className="mt-2 text-xs text-gray-500">
-        Tip: input is sent directly to the VM's serial console.
+        Tip: input is sent directly to the VM's serial console. Copy and
+        paste with Ctrl+Shift+C / Ctrl+Shift+V (⌘C / ⌘V on macOS).
       </p>
     </div>
   );
