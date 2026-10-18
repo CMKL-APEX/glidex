@@ -150,6 +150,24 @@ pub struct OidcState {
     devices: Mutex<HashMap<String, u64>>,
 }
 
+/// `application/x-www-form-urlencoded`, as client credentials go in a
+/// Basic header (RFC 6749 §2.3.1): an IdP that follows it (Ory Hydra,
+/// JumpCloud's) decodes them, so a secret with `+`, `/` or `%` sent as is
+/// would not match. Letters, digits and `*-._` stay as they are.
+fn form_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'*' | b'-' | b'.' | b'_' => {
+                out.push(b as char)
+            }
+            b' ' => out.push('+'),
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
 fn b64url(data: &[u8]) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(data)
 }
@@ -410,7 +428,7 @@ impl OidcState {
         let resp = self
             .http
             .post(&d.token_endpoint)
-            .basic_auth(&self.cfg.client_id, Some(secret))
+            .basic_auth(form_encode(&self.cfg.client_id), Some(form_encode(&secret)))
             .form(form)
             .send()
             .await
@@ -567,7 +585,7 @@ impl OidcState {
         let resp = self
             .http
             .post(&endpoint)
-            .basic_auth(&self.cfg.client_id, Some(secret))
+            .basic_auth(form_encode(&self.cfg.client_id), Some(form_encode(&secret)))
             .form(&[
                 ("client_id", self.cfg.client_id.as_str()),
                 ("scope", &self.cfg.scopes.join(" ")),
@@ -632,6 +650,16 @@ impl DigestBytes for sha2::Sha256 {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn client_credentials_are_form_encoded_for_basic() {
+        assert_eq!(super::form_encode("glidex-web_1.0"), "glidex-web_1.0");
+        assert_eq!(
+            super::form_encode("a+b/c=d%e~f g"),
+            "a%2Bb%2Fc%3Dd%25e%7Ef+g"
+        );
+    }
+
     use super::*;
 
     #[test]
