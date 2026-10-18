@@ -2215,3 +2215,92 @@ async fn deleting_a_user_takes_what_is_its_alone() {
         .await;
     assert_eq!(st, StatusCode::FORBIDDEN);
 }
+
+#[tokio::test]
+async fn a_new_tenant_invites_its_first_administrator() {
+    // spec/tenancy.md §11: a directory owner creates a tenant with its
+    // first tenant-admin invited; the invitation follows §6.1's rules, and
+    // a create whose invitation can't be made makes no tenant.
+    let mock = idp::start().await;
+    let h = harness();
+    let (st, v) = h
+        .google_connector(
+            &mock,
+            "gc",
+            json!({"accounts": "GOOGLE_ACCOUNTS_ANY"}),
+            json!({"jit": false}),
+        )
+        .await;
+    assert_eq!(st, StatusCode::CREATED, "{v}");
+    let s = h.session(&h.admin("ada"));
+    let (st, v) = h
+        .rest(
+            "POST",
+            "/tenants",
+            Some(json!({"slug": "acme", "display_name": "Acme", "first_admin": {"email": "Erin@gmail.com", "connector": "gc"}})),
+            &s,
+        )
+        .await;
+    assert!(st.is_success(), "{v}");
+    let link = v["invitation_link"].as_str().unwrap().to_string();
+    let acme = v["tenant"]["id"].as_str().unwrap().to_string();
+    // Erin takes it: acme's tenant-admin.
+    let (_, started) = h.begin_invited("gc", &invite_token(&link)).await;
+    let (state, nonce, browser) = started.unwrap();
+    let mut c = google_claims(&mock, "c-erin", "erin@gmail.com", None);
+    c["nonce"] = json!(nonce);
+    *mock.id_token.lock().unwrap() = Some(idp::sign(c, "k1"));
+    assert_eq!(
+        h.finish("gc", &state, &browser).await.0,
+        StatusCode::SEE_OTHER
+    );
+    let (_, b) = h
+        .rest("GET", &format!("/tenants/{acme}/bindings"), None, &s)
+        .await;
+    assert!(
+        b["bindings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|x| x["role"] == "role.tenant-admin" && x["principal_name"] == "c-erin"),
+        "{b}"
+    );
+
+    // No invitation, no tenant.
+    for (slug, body, why) in [
+        (
+            "bad1",
+            json!({"email": "x@gmail.com", "connector": "nope"}),
+            "no such connector",
+        ),
+        (
+            "bad2",
+            json!({"email": "not-an-email", "connector": "gc"}),
+            "not an email",
+        ),
+    ] {
+        let (st, v) = h
+            .rest(
+                "POST",
+                "/tenants",
+                Some(json!({"slug": slug, "first_admin": body})),
+                &s,
+            )
+            .await;
+        assert_eq!(st, StatusCode::BAD_REQUEST, "{why}: {v}");
+        let (st, _) = h.rest("GET", &format!("/tenants/{slug}"), None, &s).await;
+        assert_eq!(st, StatusCode::NOT_FOUND, "{why}: no tenant {slug}");
+    }
+    // An operator tenant's first administrator, never through consumer accounts (D22).
+    let (st, v) = h
+        .rest(
+            "POST",
+            "/tenants",
+            Some(json!({"slug": "ops2", "operator": true, "first_admin": {"email": "x@gmail.com", "connector": "gc"}})),
+            &s,
+        )
+        .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST, "{v}");
+    let (st, _) = h.rest("GET", "/tenants/ops2", None, &s).await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
+}

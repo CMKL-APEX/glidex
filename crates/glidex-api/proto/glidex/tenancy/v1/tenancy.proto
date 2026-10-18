@@ -216,6 +216,16 @@ message CreateTenantRequest {
   string slug = 1;
   string display_name = 2 [json_name = "display_name"];
   optional bool operator = 3;
+  // Invite the tenant's first administrator (spec/tenancy.md §6.1, §11):
+  // role.tenant-admin, through `connector`. The link comes back once.
+  FirstAdmin first_admin = 4 [json_name = "first_admin"];
+}
+
+message FirstAdmin {
+  string email = 1;
+  string connector = 2;
+  // 1-30; default 7.
+  optional uint32 days = 3;
 }
 
 message UpdateTenantRequest {
@@ -306,6 +316,9 @@ message GetTenantResponse {
 
 message CreateTenantResponse {
   Tenant tenant = 1;
+  // With `first_admin`: the invitation's link (`…/invite/<id>#<secret>`),
+  // shown once.
+  optional string invitation_link = 2 [json_name = "invitation_link"];
 }
 
 message UpdateTenantResponse {
