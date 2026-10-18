@@ -318,6 +318,22 @@ in §2.
   the self-signed certificate, login and console work, HSTS header only
   on the ts.net name.
 
+  Done for TS1 on 2026-10-18 against `tailscaled` 1.102.4, the UI as a
+  transient unit with `glidex-ui.service`'s user and sandbox. Without
+  `TS_PERMIT_CERT_UID` the socket was reachable from the sandbox, the
+  domains were read and the fetch got `403` with the hint logged; the
+  ts.net name got the self-signed certificate. After the grant and a
+  `tailscaled` restart (back to `Running` in 6 s), the next retry
+  obtained a Let's Encrypt certificate (the first issuance took about
+  40 s inside one request) and `curl` verified it with only the system
+  trust store; HSTS `max-age=86400` on that connection only; `localhost`
+  kept the self-signed certificate without HSTS; the ts.net `Host` was
+  accepted over the `localhost` certificate, an unknown one got `421`;
+  `/api` reached the control plane through `ui.sock`. Not covered live:
+  renewal (a fresh certificate is valid 90 days) and the T7 `Origin`
+  rule (the host's installed control plane predates it; covered by
+  `security_tests.rs`).
+
 ## 10. Milestones
 
 | # | Scope | Acceptance |
