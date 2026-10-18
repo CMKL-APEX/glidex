@@ -285,7 +285,11 @@ export default function Cluster() {
                     <td>{formatTimestamp(d.started_at)}</td>
                     <td className="text-xs">
                       {Object.entries(d.map_networks ?? {})
-                        .map(([a, b]) => `${networkName(a)} → ${networkName(b)}`)
+                        .map(([a, b]) => {
+                          // The names the plan recorded: a network may be gone since.
+                          const name = (id: string) => d.network_names?.[id] ?? networkName(id);
+                          return `${name(a)} → ${name(b)}`;
+                        })
                         .join(", ") || "—"}
                     </td>
                   </tr>

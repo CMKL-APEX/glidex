@@ -37,6 +37,10 @@ pub struct Operation {
 
 include!(concat!(env!("OUT_DIR"), "/operations.rs"));
 
+/// Every glidex proto file and its imports, as a `FileDescriptorSet`:
+/// what server reflection answers from.
+pub const DESCRIPTOR_SET: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/glidex.fds"));
+
 /// The operation served at `path`.
 pub fn operation(path: &str) -> Option<&'static Operation> {
     OPERATIONS.iter().find(|o| o.procedure == path)

@@ -26,6 +26,7 @@ use crate::auth::Principal;
 use crate::service::{Call, ServiceError};
 use axum::Router;
 use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use connectrpc::{
     ConnectError, ConnectRpcService, DeadlinePolicy, ErrorCode, ErrorDetail, Limits, Protocol,
     RequestContext,
@@ -44,7 +45,12 @@ const MAX_DEADLINE: Duration = Duration::from_secs(300);
 
 /// Services that aren't in the operation table: answered by whichever
 /// server receives them, never forwarded, never audited.
-const LOCAL_SERVICES: &[&str] = &["grpc.health.v1.Health"];
+const LOCAL_SERVICES: &[&str] = &["grpc.health.v1.Health", REFLECTION, REFLECTION_ALPHA];
+
+/// Server reflection (spec/grpc.md §3): on `api.sock` only, where the
+/// caller is a local user.
+const REFLECTION: &str = "grpc.reflection.v1.ServerReflection";
+const REFLECTION_ALPHA: &str = "grpc.reflection.v1alpha.ServerReflection";
 
 /// The service an RPC path belongs to, if it is one of ours or a local one.
 fn service_of(path: &str) -> Option<&str> {
@@ -83,15 +89,39 @@ pub(crate) fn routes(app: &AppState) -> Router<AppState> {
     let mut r = Router::new();
     for s in glidex_api::services()
         .into_iter()
-        .chain(LOCAL_SERVICES.iter().copied())
+        .chain(["grpc.health.v1.Health"])
     {
         r = r.route_service(&format!("/{s}/{{*method}}"), svc.clone());
+    }
+    let reflector =
+        connectrpc_reflection::Reflector::from_descriptor_set_bytes(glidex_api::DESCRIPTOR_SET)
+            .expect("glidex-api's descriptor set reads");
+    let reflection = ConnectRpcService::new(connectrpc_reflection::install(
+        connectrpc::Router::new(),
+        reflector,
+    ));
+    for s in [REFLECTION, REFLECTION_ALPHA] {
+        r = r.route_service(
+            &format!("/{s}/{{*method}}"),
+            tower::ServiceBuilder::new()
+                .layer(axum::middleware::from_fn(api_socket_only))
+                .service(reflection.clone()),
+        );
     }
     // A host RPC relayed from an agent's UI runs on that agent (§8).
     r.layer(axum::middleware::from_fn_with_state(
         app.clone(),
         crate::api::relay::remote_host,
     ))
+}
+
+/// Reflection is answered on `api.sock` only; elsewhere it isn't there.
+async fn api_socket_only(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
+    if req.extensions().get::<Listener>() == Some(&Listener::Api) {
+        next.run(req).await
+    } else {
+        StatusCode::NOT_FOUND.into_response()
+    }
 }
 
 /// Which protocols a listener takes (spec/grpc.md §6): gRPC-Web is the
