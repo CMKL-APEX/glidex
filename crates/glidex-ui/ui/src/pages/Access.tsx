@@ -18,7 +18,7 @@ import {
   signInLabel,
 } from "../components/ui";
 import { useSession } from "../session";
-import { useConnectorNames, useDirectory } from "../hooks";
+import { useConnectorNames, useDirectory, useNodeNames } from "../hooks";
 
 function TeamCard({
   team,
@@ -110,6 +110,7 @@ export default function Access() {
   const { host, projects, projectName, me } = useSession();
   const [dir, reloadDir] = useDirectory();
   const connectors = useConnectorNames();
+  const nodes = useNodeNames();
   const [system, setSystem] = useState<Binding[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   // An administrator taking one of a user's sign-in methods away.
@@ -187,7 +188,7 @@ export default function Access() {
                     <td className="py-2 text-xs font-mono text-gray-600">
                       {(u.identities ?? []).map((i) => {
                         const key = `${i.provider}:${i.subject}`;
-                        const label = signInLabel(i.provider, connectors);
+                        const label = signInLabel(i.provider, connectors, i.subject, nodes);
                         return (
                           <div key={key}>
                             <span className="font-sans text-gray-700">{label}</span>{" "}

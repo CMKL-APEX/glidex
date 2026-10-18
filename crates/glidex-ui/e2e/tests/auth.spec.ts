@@ -38,7 +38,7 @@ test.describe("signed in", () => {
     await expect(page.getByRole("heading", { name: "Virtual Machines" })).toBeVisible();
     await expect(page.getByText(me.user.display_name, { exact: true })).toBeVisible();
     await expect(page.getByLabel("Project")).toHaveValue(dflt.id);
-    await expect(page.getByRole("link", { name: "Policies" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Directory" })).toBeVisible();
     await expect(page.getByRole("link", { name: "Audit" })).toBeVisible();
   });
 

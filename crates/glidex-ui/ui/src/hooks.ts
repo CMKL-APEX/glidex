@@ -42,3 +42,20 @@ export function useConnectorNames(): Record<string, string> {
   }, []);
   return names;
 }
+
+/** Node id → name, when the caller may list nodes: a local account in a
+ *  cluster is one host's. Empty otherwise. */
+export function useNodeNames(): Record<string, string> {
+  const [names, setNames] = useState<Record<string, string>>({});
+  useEffect(() => {
+    let live = true;
+    api
+      .listNodes()
+      .then((ns) => live && setNames(Object.fromEntries(ns.map((n) => [n.meta.id, n.spec.name]))))
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, []);
+  return names;
+}
