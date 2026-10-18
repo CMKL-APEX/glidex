@@ -56,7 +56,7 @@ system bindings, site policies, audit, `/authz/check` and
   session, `csrf`.
 - A binding's `template` is `role`; it carries `resource: {type, id}`.
 - A token's `kind` is `TOKEN_KIND_PERSONAL` or
-  `TOKEN_KIND_SERVICE_ACCOUNT` (`"service_account"` is still read), with
+  `TOKEN_KIND_SERVICE_ACCOUNT`, with
   `owner` and `project` beside it; its times are RFC 3339.
 - Quotas: an absent limit is unlimited (no `null`); a project's
   `networks`, `routers` and `external_ips`, when left out, take their
@@ -74,8 +74,8 @@ project networks and their routers, shares, VPC routers) is served in
 the proto shape too: the `glidex.network.v1` messages, wrapped
 (`{networks}`, `{network}`, `{shares}`, `{routers}`, `{router}`), with
 enum names in full (`NETWORK_MODE_NAT`, `PORT_TYPE_TAP`,
-`NETWORK_SCOPE_CLUSTER`, `NETWORK_PHASE_READY`, `SHARE_STATUS_OFFERED`;
-the old lowercase request values are still read) and RFC 3339 times.
+`NETWORK_SCOPE_CLUSTER`, `NETWORK_PHASE_READY`, `SHARE_STATUS_OFFERED`)
+and RFC 3339 times.
 Networks have an `id` (tenancy.md D24): every path and body that names
 a network takes its id or its name (a name several visible networks
 have is `409 ambiguous`), and answers name networks by id: a share's
@@ -91,8 +91,8 @@ bridges, uplinks and `/pci-devices`) is served in the proto shape too:
 the `glidex.host.v1` messages, wrapped (`{bridges}`, `{bridge}`,
 `{uplinks}`, `{uplink}`, `{devices}`), with enum names in full
 (`NETD_ACCESS_FULL`, `DATAPATH_SYSTEM`, `UPLINK_KIND_KERNEL`,
-`UPLINK_PHASE_PENDING_COMMIT`, `XDP_MODE_NATIVE`, `OVS_PROFILE_DPDK`; the
-old lowercase request values are still read), an uplink's commit
+`UPLINK_PHASE_PENDING_COMMIT`, `XDP_MODE_NATIVE`, `OVS_PROFILE_DPDK`), an
+uplink's commit
 `deadline` and `boot_rollback.at` in RFC 3339, and hugepage sizes and
 counts as strings. Status codes are unchanged. These operations act on
 the host that answers them; from an agent's UI they run on the agent
@@ -104,8 +104,7 @@ The cluster family (`/cluster/…` but the snapshot, `/nodes…`,
 `{plan}`, `{departures}`), with enum names in full (`NODE_PHASE_ACTIVE`,
 `NODE_ROLE_SERVER`, `CONDITION_STATUS_TRUE` for a node's `ready`,
 `RAFT_STATE_LEADER`, `BR_INT_DATAPATH_SYSTEM`, `IMPORT_STATE_PENDING`,
-`DEPARTURE_STATE_FROZEN`, `TUNNEL_STATE_BFD_DOWN`; the old request values
-are still read), RFC 3339 times (an OVN chassis' `nb_cfg_timestamp` in
+`DEPARTURE_STATE_FROZEN`, `TUNNEL_STATE_BFD_DOWN`), RFC 3339 times (an OVN chassis' `nb_cfg_timestamp` in
 ms is `nb_cfg_at`), and 64-bit numbers (Raft ids, terms and indexes,
 generations, memory, bytes, counters) as strings. `GET /cluster/status`
 always says `clustered`; `cluster_networks` in the OVN settings are
@@ -241,9 +240,10 @@ the first one when absent); a token is clamped to the connector's
 
 The login operations are also `glidex.auth.v1.LoginService` RPCs
 (`Discover`, `StartDevice`, `PollDevice`, `PasswordToken`), one
-implementation with the REST routes above; the RPCs answer with proto
-messages (`PollDevice`: `{pending: true}` until done, then `{issued:
-{token, token_id, expires_at, user_id, display_name}}`).
+implementation with the REST routes above, which take and answer the
+same messages: `POST /auth/token` answers `{issued: {token, token_id,
+expires_at, user_id, display_name}}`, and a device poll `202
+{pending: true}` until the user is done, then `200 {issued: …}`.
 
 Host networks are granted to projects or to whole tenants: `POST
 /networks` and `PUT /networks/{id}/grants` take `tenants` (ids or
@@ -466,8 +466,7 @@ beyond that the call is `503 too_many_watchers` (poll instead).
   `on_host_boot` (`HOST_BOOT_POLICY_RESUME` / `HOST_BOOT_POLICY_STOP`,
   default from `reconcile.on_host_boot`) and `stop_grace_secs` (0–300,
   default 0 = hard stop) are optional. `hypervisor` is
-  `HYPERVISOR_CLOUD_HYPERVISOR` or `HYPERVISOR_QEMU`. For one release
-  the old values (`"running"`, `"never"`, `"qemu"`, …) are still read.
+  `HYPERVISOR_CLOUD_HYPERVISOR` or `HYPERVISOR_QEMU`.
 - Paths that reach the hypervisor command line must not contain `"` or
   control characters, and with the systemd runner must not be under
   `/tmp` or `/var/tmp` (`400 invalid_config`).
@@ -533,13 +532,6 @@ The fields: `power`, `restart_policy`, `on_host_boot`,
 `networks`. Without `update_mask` the fields present in `change` are
 the ones changed. Another path is `400 invalid_config`.
 `expected_resource_version` (or `If-Match`) and `?wait` as above.
-
-For one release the merge patch from before the port is still read:
-`{"power": "running", "stop_grace_secs": 30, "config": {"mem_size_mib":
-4096, "credential": null}}`. Its immutable fields (`hypervisor`,
-`kernel_image_path`, `firmware_path`, `firmware`, `rootfs_path`,
-`cloud_init_path`, `root_disk`, `image`) are refused with `400
-invalid_config` ("immutable field(s): …") before anything is authorized.
 
 When each change takes effect is in
 [data-model.md](data-model.md) (mutability); changes that need a new

@@ -453,7 +453,7 @@ async fn host_network_changes_need_a_recent_login() {
     s.authenticated_at -= 700;
     h.app.auth.store.put_session(&hash, &s).unwrap();
     let stale = As::Cookie(cookie, csrf, origin);
-    let body = json!({"profile": "kernel"});
+    let body = json!({"profile": "OVS_PROFILE_KERNEL"});
     let (st, v, _) = h
         .call("POST", "/ovs/install", Some(body.clone()), &stale)
         .await;
@@ -614,14 +614,14 @@ async fn tokens_are_capped_by_their_links_and_owner() {
         .call(
             "POST",
             "/tokens",
-            Some(json!({"name": "ci", "kind": "service_account", "project": "pa"})),
+            Some(json!({"name": "ci", "kind": "TOKEN_KIND_SERVICE_ACCOUNT", "project": "pa"})),
             &session,
         )
         .await;
     assert_eq!(s, StatusCode::FORBIDDEN);
     h.link("role.owner", Ent::User(u.clone()), Ent::Project(pa.clone()));
     let (s, v, _) = h
-        .call("POST", "/tokens", Some(json!({"name": "ci", "kind": "service_account", "project": "pa", "roles": [{"role": "role.operator"}]})), &session)
+        .call("POST", "/tokens", Some(json!({"name": "ci", "kind": "TOKEN_KIND_SERVICE_ACCOUNT", "project": "pa", "roles": [{"role": "role.operator"}]})), &session)
         .await;
     assert_eq!(s, StatusCode::CREATED, "{v}");
     let sa = As::Bearer(v["token"].as_str().unwrap().into());
@@ -897,11 +897,10 @@ async fn usage_is_project_scoped_and_exports_are_audited() {
             .map(|r| r["project"]["id"].as_str().unwrap().to_string())
             .collect()
     };
-    let (s, body, headers) = h
+    let (s, body, _) = h
         .call("GET", "/usage?project=pa&granularity=month", None, &v)
         .await;
     assert_eq!(s, StatusCode::OK, "{body}");
-    assert_eq!(headers["glidex-api-shape"], "proto");
     assert_eq!(ids(&body), vec![pa.clone()]);
     assert_eq!(body["rows"][0]["project"]["name"], "pa");
     // The proto shape (spec/grpc.md §9.1): enums by name, uint64 as strings.
@@ -1372,7 +1371,7 @@ async fn pam_token_exchanges_credentials_for_a_personal_token() {
     let body = json!({"username": "bob", "password": "bob-password", "token_name": "gxctl@lab", "device": "laptop-7", "client": "gxctl/1.0"});
     let (s, v, _) = h.call("POST", "/auth/token", Some(body), &As::Nobody).await;
     assert_eq!(s, StatusCode::OK, "{v}");
-    let secret = v["token"].as_str().unwrap().to_string();
+    let secret = v["issued"]["token"].as_str().unwrap().to_string();
     assert!(secret.starts_with("gxt_"), "a gxt_ token");
     // The token acts as bob and carries the claimed device strings (display only).
     let (_, who, _) = h
@@ -1382,7 +1381,7 @@ async fn pam_token_exchanges_credentials_for_a_personal_token() {
     assert_eq!(who["token"]["name"], "gxctl@lab");
     assert_eq!(who["token"]["device"], "laptop-7");
     // Revocation takes it down.
-    let id = v["token_id"].as_str().unwrap().to_string();
+    let id = v["issued"]["token_id"].as_str().unwrap().to_string();
     h.app.auth.revoke_token(&id).unwrap();
     let (s, _, _) = h
         .call("GET", "/auth/whoami", None, &As::Bearer(secret))
@@ -1820,14 +1819,14 @@ async fn oidc_login_rules_and_device_grant() {
         )
         .await;
     assert_eq!(
-        (s, v["status"].as_str()),
-        (StatusCode::ACCEPTED, Some("pending"))
+        (s, v["pending"].as_bool()),
+        (StatusCode::ACCEPTED, Some(true))
     );
     let (s, v, _) = h
         .call("POST", "/auth/oidc/device/poll", Some(poll), &As::Nobody)
         .await;
     assert_eq!(s, StatusCode::OK, "{v}");
-    let token = v["token"].as_str().unwrap().to_string();
+    let token = v["issued"]["token"].as_str().unwrap().to_string();
     let (_, who, _) = h
         .call("GET", "/auth/whoami", None, &As::Bearer(token))
         .await;

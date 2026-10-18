@@ -25,7 +25,7 @@ pub mod vm;
 pub mod watch;
 
 use crate::api::ApiErr;
-use crate::models::ApiError;
+use crate::api::errors::ApiError;
 use axum::Json;
 use axum::http::StatusCode;
 

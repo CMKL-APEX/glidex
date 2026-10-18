@@ -662,7 +662,7 @@ async fn test_patch_edits_spec_and_refuses_immutable_fields() {
         &app,
         "PATCH",
         format!("/vms/{}", vm_id),
-        Some(json!({"config": {"vcpu_count": 4}, "restart_policy": "never"})),
+        Some(json!({"change": {"vcpu_count": 4, "restart_policy": "RESTART_POLICY_NEVER"}})),
         &[],
     )
     .await;
@@ -679,7 +679,7 @@ async fn test_patch_edits_spec_and_refuses_immutable_fields() {
         &app,
         "PATCH",
         format!("/vms/{}", vm_id),
-        Some(json!({"config": {"hypervisor": "qemu"}})),
+        Some(json!({"change": {}, "update_mask": "hypervisor"})),
         &[],
     )
     .await;
@@ -698,7 +698,7 @@ async fn test_patch_edits_spec_and_refuses_immutable_fields() {
         &app,
         "PATCH",
         format!("/vms/{}", vm_id),
-        Some(json!({"stop_grace_secs": 301})),
+        Some(json!({"change": {"stop_grace_secs": 301}})),
         &[],
     )
     .await;
@@ -1353,7 +1353,7 @@ async fn a_standalone_host_is_one_node_and_places_vms_on_it() {
         &app,
         "POST",
         "/vms",
-        Some(json!({ "name": "placed", "vcpu_count": 1, "mem_size_mib": 256, "hypervisor": "cloudhypervisor",
+        Some(json!({ "name": "placed", "vcpu_count": 1, "mem_size_mib": 256, "hypervisor": "HYPERVISOR_CLOUD_HYPERVISOR",
                      "firmware_path": "/f.fd", "rootfs_path": "/r.raw" })),
     )
     .await;

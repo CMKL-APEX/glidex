@@ -10,7 +10,7 @@
 
 use super::{ApiErr, Caller, Proto, err, proto_body, proto_no_content, vm_entities};
 use crate::authz::{Ent, EntitySet};
-use crate::models::{Vm, VmResponse};
+use crate::models::Vm;
 use crate::service::vm::{self as svc, VmReply};
 use axum::{
     Json,
@@ -40,21 +40,8 @@ fn secs(w: Option<u64>) -> Option<u32> {
     w.map(|w| w.min(u64::from(u32::MAX)) as u32)
 }
 
-/// The old shape's enum values (spec/grpc.md §9.1 step 3).
-const ENUMS: &[(&str, &str)] = &[
-    ("hypervisor", "HYPERVISOR"),
-    ("power", "POWER_STATE"),
-    ("restart_policy", "RESTART_POLICY"),
-    ("on_host_boot", "HOST_BOOT_POLICY"),
-];
-const RENAMES: &[(&str, &str, &str)] = &[(
-    "hypervisor",
-    "cloudhypervisor",
-    "HYPERVISOR_CLOUD_HYPERVISOR",
-)];
-
 fn body<T: serde::de::DeserializeOwned + buffa::MessageName>(v: Value) -> Result<T, ApiErr> {
-    proto_body(v, ENUMS, RENAMES)
+    proto_body(v)
 }
 
 /// The answer to a VM write: at once `immediate` (`201` for a create,
@@ -98,35 +85,6 @@ fn if_match(headers: &HeaderMap) -> Result<Option<u64>, ApiErr> {
                 )
             }),
     }
-}
-
-/// A VM as the API shows it, with its node's name.
-pub(crate) fn vm_response(c: &Caller, vm: &Vm) -> VmResponse {
-    let mut r = VmResponse::from(vm);
-    r.node_name = r
-        .node
-        .as_deref()
-        .and_then(|n| c.manager().nodes().get(n).ok().flatten())
-        .map(|n| n.spec.name);
-    // On OVN networks netd hands out no address: OVN's DHCP serves the
-    // control plane's reservation, which is then the NIC's address. The
-    // reservations are in the cluster store, so this is filled here, not by
-    // the controller on the VM's node (an agent doesn't hold them).
-    if r.nics.iter().any(|n| n.ipv4.is_none()) {
-        let res = crate::ipam::list_reservations(&c.manager().store.database()).unwrap_or_default();
-        for (i, nic) in r
-            .nics
-            .iter_mut()
-            .enumerate()
-            .filter(|(_, n)| n.ipv4.is_none())
-        {
-            nic.ipv4 = res
-                .iter()
-                .find(|x| x.vm_id == vm.id && x.nic as usize == i && x.network == nic.network)
-                .map(|x| x.ip);
-        }
-    }
-    r
 }
 
 /// The VM `id`, if the caller may see it (else 404), and its entities.
@@ -313,56 +271,8 @@ pub async fn pause(
     ))
 }
 
-/// The JSON merge patch `PATCH /vms/{id}` took before the port
-/// (`{power, restart_policy, on_host_boot, stop_grace_secs, config: {…}}`),
-/// as a change and its mask (spec/grpc.md §9.1 step 3). The immutable
-/// fields it used to refuse by name are refused the same way.
-fn merge_patch(v: &Value) -> Result<(Value, Vec<String>), ApiErr> {
-    const IMMUTABLE: &[&str] = &[
-        "hypervisor",
-        "kernel_image_path",
-        "firmware_path",
-        "firmware",
-        "rootfs_path",
-        "cloud_init_path",
-        "root_disk",
-        "image",
-    ];
-    let o = v.as_object().cloned().unwrap_or_default();
-    let mut change = serde_json::Map::new();
-    let mut mask = Vec::new();
-    for (k, val) in o {
-        if k == "config" {
-            let cfg = val.as_object().cloned().unwrap_or_default();
-            let fixed: Vec<&str> = IMMUTABLE
-                .iter()
-                .copied()
-                .filter(|f| cfg.contains_key(*f))
-                .collect();
-            if !fixed.is_empty() {
-                return Err(err(
-                    StatusCode::BAD_REQUEST,
-                    "invalid_config",
-                    format!("immutable field(s): {}", fixed.join(", ")),
-                ));
-            }
-            for (ck, cv) in cfg {
-                mask.push(ck.clone());
-                if !cv.is_null() {
-                    change.insert(ck, cv);
-                }
-            }
-        } else {
-            mask.push(k.clone());
-            change.insert(k, val);
-        }
-    }
-    Ok((Value::Object(change), mask))
-}
-
-/// `PATCH /vms/{id}`: `{change, update_mask}` (`UpdateVmRequest`), or,
-/// for one release, the merge patch from before the port. Without a mask
-/// the fields of `change` present are the ones changed.
+/// `PATCH /vms/{id}`: `{change, update_mask}` (`UpdateVmRequest`).
+/// Without a mask the fields of `change` present are the ones changed.
 pub async fn patch_one(
     c: Caller,
     Path(id): Path<String>,
@@ -370,36 +280,27 @@ pub async fn patch_one(
     headers: HeaderMap,
     Json(v): Json<Value>,
 ) -> Result<Response, ApiErr> {
-    let proto_shape = v.get("change").is_some() || v.get("update_mask").is_some();
-    let (change, mask, rest) = if proto_shape {
-        let mask: Vec<String> = match v.get("update_mask").and_then(|m| m.as_str()) {
-            // proto3 JSON: a FieldMask is one comma-separated string.
-            Some(s) => s
-                .split(',')
-                .filter(|p| !p.is_empty())
-                .map(str::to_string)
-                .collect(),
-            None => v["change"]
-                .as_object()
-                .map(|o| o.keys().cloned().collect())
-                .unwrap_or_default(),
-        };
-        let mut rest = v.clone();
-        if let Some(o) = rest.as_object_mut() {
-            o.remove("change");
-            o.remove("update_mask");
-        }
-        (
-            v.get("change")
-                .cloned()
-                .unwrap_or_else(|| serde_json::json!({})),
-            mask,
-            rest,
-        )
-    } else {
-        let (change, mask) = merge_patch(&v)?;
-        (change, mask, serde_json::json!({}))
+    let mask: Vec<String> = match v.get("update_mask").and_then(|m| m.as_str()) {
+        // proto3 JSON: a FieldMask is one comma-separated string.
+        Some(s) => s
+            .split(',')
+            .filter(|p| !p.is_empty())
+            .map(str::to_string)
+            .collect(),
+        None => v["change"]
+            .as_object()
+            .map(|o| o.keys().cloned().collect())
+            .unwrap_or_default(),
     };
+    let mut rest = v.clone();
+    if let Some(o) = rest.as_object_mut() {
+        o.remove("change");
+        o.remove("update_mask");
+    }
+    let change = v
+        .get("change")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
     let change: pb::VmChange = body(change)?;
     let mut req: pb::UpdateVmRequest = body(rest)?;
     req.id = id;
@@ -666,23 +567,25 @@ pub(crate) async fn read_log_tail(
     .map_err(std::io::Error::other)?
 }
 
-#[derive(serde::Deserialize)]
-pub struct DeviceBody {
-    device_path: String,
+/// A body as message `T`, with the VM's id from the path.
+fn body_for<T: serde::de::DeserializeOwned + buffa::MessageName>(
+    mut v: Value,
+    id: String,
+) -> Result<T, ApiErr> {
+    if let Some(o) = v.as_object_mut() {
+        o.insert("id".into(), Value::String(id));
+    }
+    body(v)
 }
 
 pub async fn attach_device(
     c: Caller,
     Path(id): Path<String>,
     Query(w): Query<WaitQuery>,
-    Json(b): Json<DeviceBody>,
+    Json(v): Json<Value>,
 ) -> Result<Response, ApiErr> {
-    let req = pb::AttachDeviceRequest {
-        id,
-        device_path: b.device_path,
-        wait_secs: secs(w.wait),
-        ..Default::default()
-    };
+    let mut req: pb::AttachDeviceRequest = body_for(v, id)?;
+    req.wait_secs = req.wait_secs.or(secs(w.wait));
     Ok(reply(
         svc::attach_device(&c, req).await?,
         StatusCode::OK,
@@ -694,14 +597,10 @@ pub async fn detach_device(
     c: Caller,
     Path(id): Path<String>,
     Query(w): Query<WaitQuery>,
-    Json(b): Json<DeviceBody>,
+    Json(v): Json<Value>,
 ) -> Result<Response, ApiErr> {
-    let req = pb::DetachDeviceRequest {
-        id,
-        device_path: b.device_path,
-        wait_secs: secs(w.wait),
-        ..Default::default()
-    };
+    let mut req: pb::DetachDeviceRequest = body_for(v, id)?;
+    req.wait_secs = req.wait_secs.or(secs(w.wait));
     Ok(reply(
         svc::detach_device(&c, req).await?,
         StatusCode::OK,
@@ -709,23 +608,14 @@ pub async fn detach_device(
     ))
 }
 
-#[derive(serde::Deserialize)]
-pub struct AttachDiskBody {
-    disk: String,
-}
-
 pub async fn attach_disk(
     c: Caller,
     Path(id): Path<String>,
     Query(w): Query<WaitQuery>,
-    Json(b): Json<AttachDiskBody>,
+    Json(v): Json<Value>,
 ) -> Result<Response, ApiErr> {
-    let req = pb::AttachDiskRequest {
-        id,
-        disk: b.disk,
-        wait_secs: secs(w.wait),
-        ..Default::default()
-    };
+    let mut req: pb::AttachDiskRequest = body_for(v, id)?;
+    req.wait_secs = req.wait_secs.or(secs(w.wait));
     Ok(reply(
         svc::attach_disk(&c, req).await?,
         StatusCode::OK,

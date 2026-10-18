@@ -1,7 +1,19 @@
-// Error details sent with every RPC error (spec/grpc.md §7).
+// The errors of both transports (spec/grpc.md §7): the REST error body,
+// and the details sent with every RPC error.
 syntax = "proto3";
 
 package glidex.api.v1;
+
+import "google/protobuf/struct.proto";
+
+// The body of a REST error. `error` is the code an RPC error carries as
+// `google.rpc.ErrorInfo.reason`.
+message Error {
+  string error = 1;
+  string message = 2;
+  // What the error is about (`{"quota": …}`, `{"resource_version": …}`).
+  google.protobuf.Value details = 3;
+}
 
 // The `details` object of the REST error body, as JSON text.
 message ErrorDetails {

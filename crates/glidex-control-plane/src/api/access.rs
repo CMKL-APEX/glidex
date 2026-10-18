@@ -16,6 +16,7 @@ use axum::{
     response::{IntoResponse, Redirect, Response},
 };
 use glidex_api::proto::glidex::access::v1 as pb;
+use glidex_api::proto::glidex::auth::v1 as login_pb;
 use serde::Deserialize;
 use zeroize::Zeroizing;
 
@@ -34,7 +35,7 @@ pub async fn methods(State(app): State<AppState>) -> impl IntoResponse {
 /// `LoginService.Discover`.
 pub async fn discover(
     State(app): State<AppState>,
-    Json(req): Json<glidex_api::proto::glidex::auth::v1::DiscoverRequest>,
+    Json(req): Json<login_pb::DiscoverRequest>,
 ) -> impl IntoResponse {
     Json(svc::discover(&app, req))
 }
@@ -157,7 +158,7 @@ pub async fn login(
             )
         })?;
     audit_login(&app, Some(&p), &rid.0, "pam", "ok", &body.username);
-    let mut resp = ([(super::API_SHAPE, "proto")], Json(whoami_json(&app, &p)?)).into_response();
+    let mut resp = Json(whoami_json(&app, &p)?).into_response();
     resp.headers_mut().insert(
         header::SET_COOKIE,
         session_cookie(&cookie, secure_transport(&app, &headers, listener), None),
@@ -202,50 +203,25 @@ pub async fn server_info(State(app): State<AppState>) -> impl IntoResponse {
     Json(crate::service::system::server_info(&app))
 }
 
-#[derive(Deserialize)]
-pub struct PamTokenBody {
-    username: String,
-    password: Zeroizing<String>,
-    /// A PAM connector; the first one when absent.
-    #[serde(default)]
-    connector: Option<String>,
-    #[serde(default)]
-    token_name: Option<String>,
-    #[serde(default)]
-    device: Option<String>,
-    #[serde(default)]
-    client: Option<String>,
-    #[serde(default)]
-    days: Option<u64>,
-}
-
 /// `POST /auth/token`, the REST twin of `LoginService.PasswordToken`.
 pub async fn pam_token(
     State(app): State<AppState>,
     Extension(rid): Extension<RequestId>,
     listener: Option<Extension<Listener>>,
     addr: Option<Extension<ClientAddr>>,
-    Json(body): Json<PamTokenBody>,
+    Json(v): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, ApiErr> {
     let origin = svc::Origin {
         request_id: &rid.0,
         listener: listener.map(|l| l.0).unwrap_or(Listener::Tcp),
         client_ip: addr.map(|a| a.0.0.ip()),
     };
-    let req = glidex_api::proto::glidex::auth::v1::PasswordTokenRequest {
-        username: body.username,
-        password: body.password.to_string(),
-        connector: body.connector,
-        days: body.days.map(|d| d.min(u64::from(u32::MAX)) as u32),
-        token_name: body.token_name,
-        device: body.device,
-        client: body.client,
-        ..Default::default()
-    };
+    let req = proto_body(v)?;
     let m = svc::password_token(&app, &origin, req).await?;
-    Ok(Json(
-        serde_json::json!({ "token": m.secret, "token_id": m.token.id, "expires_at": m.token.expires_at, "user": m.user }),
-    ))
+    Ok(Json(login_pb::PasswordTokenResponse {
+        issued: m.to_pb().into(),
+        ..Default::default()
+    }))
 }
 
 pub async fn logout(
@@ -273,7 +249,7 @@ pub async fn update_me(
     c: Caller,
     Json(v): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, ApiErr> {
-    let req: pb::UpdateMeRequest = proto_body(v, &[], &[])?;
+    let req: pb::UpdateMeRequest = proto_body(v)?;
     Ok(Proto(StatusCode::OK, acc::update_me(&c, req)?))
 }
 
@@ -478,70 +454,62 @@ pub async fn connector_device_start(
     State(app): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, ApiErr> {
-    let req = glidex_api::proto::glidex::auth::v1::StartDeviceRequest {
+    let req = login_pb::StartDeviceRequest {
         connector: Some(id),
         ..Default::default()
     };
     Ok(Json(svc::start_device(&app, req).await?))
 }
 
-#[derive(Deserialize)]
-pub struct DevicePoll {
-    device_code: String,
-    #[serde(default)]
-    token_name: Option<String>,
-    /// What the minting gxctl profile says about its device and build;
-    /// stored redacted-for-display, never checked (spec/gxctl-auth.md §7.2).
-    #[serde(default)]
-    device: Option<String>,
-    #[serde(default)]
-    client: Option<String>,
-}
-
+/// `POST …/device/poll`, the REST twin of `LoginService.PollDevice`:
+/// `202` while the user hasn't finished.
 async fn poll_device(
     app: AppState,
-    id: Option<&str>,
+    id: Option<String>,
     rid: RequestId,
-    body: DevicePoll,
+    mut v: serde_json::Value,
 ) -> Result<Response, ApiErr> {
     let origin = svc::Origin {
         request_id: &rid.0,
         listener: Listener::Tcp,
         client_ip: None,
     };
-    let req = glidex_api::proto::glidex::auth::v1::PollDeviceRequest {
-        connector: id.map(str::to_string),
-        device_code: body.device_code,
-        token_name: body.token_name,
-        device: body.device,
-        client: body.client,
-        ..Default::default()
-    };
-    match svc::poll_device(&app, &origin, req).await? {
-        None => Ok((
-            StatusCode::ACCEPTED,
-            Json(serde_json::json!({ "status": "pending" })),
-        )
-            .into_response()),
-        Some(m) => Ok(Json(serde_json::json!({ "status": "ok", "token": m.secret, "expires_at": m.token.expires_at, "user": m.user })).into_response()),
+    if let (Some(id), Some(o)) = (id, v.as_object_mut()) {
+        o.insert("connector".into(), id.into());
     }
+    let req = proto_body(v)?;
+    Ok(match svc::poll_device(&app, &origin, req).await? {
+        None => (
+            StatusCode::ACCEPTED,
+            Json(login_pb::PollDeviceResponse {
+                pending: Some(true),
+                ..Default::default()
+            }),
+        )
+            .into_response(),
+        Some(m) => Json(login_pb::PollDeviceResponse {
+            issued: m.to_pb().into(),
+            ..Default::default()
+        })
+        .into_response(),
+    })
 }
 
 pub async fn oidc_device_poll(
     State(app): State<AppState>,
     Extension(rid): Extension<RequestId>,
-    Json(body): Json<DevicePoll>,
+    Json(v): Json<serde_json::Value>,
 ) -> Result<Response, ApiErr> {
-    poll_device(app, None, rid, body).await
+    poll_device(app, None, rid, v).await
 }
 
 pub async fn connector_device_poll(
     State(app): State<AppState>,
     Path(id): Path<String>,
     Extension(rid): Extension<RequestId>,
-    Json(body): Json<DevicePoll>,
+    Json(v): Json<serde_json::Value>,
 ) -> Result<Response, ApiErr> {
-    poll_device(app, Some(&id), rid, body).await
+    poll_device(app, Some(id), rid, v).await
 }
 
 // ---- REST twins of glidex.access.v1 (spec/grpc.md §9.1) -----------------
@@ -571,7 +539,7 @@ fn masked<T: serde::de::DeserializeOwned + buffa::MessageName>(
                 .collect()
         })
         .unwrap_or_default();
-    let req = proto_body(v, &[], &[])?;
+    let req = proto_body(v)?;
     Ok((req, explicit.unwrap_or(present)))
 }
 
@@ -588,7 +556,7 @@ pub async fn authz_check(
     c: Caller,
     Json(v): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, ApiErr> {
-    let req: pb::CheckRequest = proto_body(v, &[], &[])?;
+    let req: pb::CheckRequest = proto_body(v)?;
     Ok(Proto(StatusCode::OK, acc::check(&c, req).await?))
 }
 
@@ -598,7 +566,7 @@ pub async fn authz_allowed(
     c: Caller,
     Json(v): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, ApiErr> {
-    let req: pb::AllowedRequest = proto_body(v, &[], &[])?;
+    let req: pb::AllowedRequest = proto_body(v)?;
     Ok(Proto(StatusCode::OK, acc::allowed(&c, req).await?))
 }
 
@@ -616,7 +584,7 @@ pub async fn create_token(
     c: Caller,
     Json(v): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, ApiErr> {
-    let req: pb::CreateTokenRequest = proto_body(v, &[("kind", "TOKEN_KIND")], &[])?;
+    let req: pb::CreateTokenRequest = proto_body(v)?;
     Ok(Proto(StatusCode::CREATED, acc::create_token(&c, req)?))
 }
 
@@ -642,7 +610,7 @@ pub async fn create_user(
     c: Caller,
     Json(v): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, ApiErr> {
-    let req: pb::CreateUserRequest = proto_body(v, &[], &[])?;
+    let req: pb::CreateUserRequest = proto_body(v)?;
     Ok(Proto(StatusCode::CREATED, acc::create_user(&c, req)?))
 }
 
@@ -663,7 +631,7 @@ pub async fn link_identity(
     Path(id): Path<String>,
     Json(v): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, ApiErr> {
-    let mut req: pb::LinkIdentityRequest = proto_body(v, &[], &[])?;
+    let mut req: pb::LinkIdentityRequest = proto_body(v)?;
     req.id = id;
     Ok(Proto(StatusCode::CREATED, acc::link_identity(&c, req)?))
 }
@@ -692,7 +660,7 @@ pub async fn create_team(
     c: Caller,
     Json(v): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, ApiErr> {
-    let req: pb::CreateTeamRequest = proto_body(v, &[], &[])?;
+    let req: pb::CreateTeamRequest = proto_body(v)?;
     Ok(Proto(StatusCode::CREATED, acc::create_team(&c, req)?))
 }
 
@@ -701,7 +669,7 @@ pub async fn update_team(
     Path(id): Path<String>,
     Json(v): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, ApiErr> {
-    let mut req: pb::UpdateTeamRequest = proto_body(v, &[], &[])?;
+    let mut req: pb::UpdateTeamRequest = proto_body(v)?;
     req.id = id;
     Ok(Proto(StatusCode::OK, acc::update_team(&c, req)?))
 }
@@ -752,7 +720,7 @@ pub async fn create_project(
     c: Caller,
     Json(v): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, ApiErr> {
-    let req: pb::CreateProjectRequest = proto_body(v, &[], &[])?;
+    let req: pb::CreateProjectRequest = proto_body(v)?;
     Ok(Proto(StatusCode::CREATED, acc::create_project(&c, req)?))
 }
 
@@ -797,7 +765,7 @@ pub async fn add_binding(
     Path(id): Path<String>,
     Json(v): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, ApiErr> {
-    let mut req: pb::AddProjectBindingRequest = proto_body(v, &[], &[])?;
+    let mut req: pb::AddProjectBindingRequest = proto_body(v)?;
     req.id = id;
     Ok(Proto(
         StatusCode::CREATED,
@@ -829,7 +797,7 @@ pub async fn add_system_binding(
     c: Caller,
     Json(v): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, ApiErr> {
-    let req: pb::AddSystemBindingRequest = proto_body(v, &[], &[])?;
+    let req: pb::AddSystemBindingRequest = proto_body(v)?;
     Ok(Proto(
         StatusCode::CREATED,
         acc::add_system_binding(&c, req)?,
@@ -881,7 +849,7 @@ pub async fn put_policy(
     Path(id): Path<String>,
     Json(v): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, ApiErr> {
-    let mut req: pb::PutPolicyRequest = proto_body(v, &[], &[])?;
+    let mut req: pb::PutPolicyRequest = proto_body(v)?;
     req.id = id;
     Ok(Proto(StatusCode::OK, acc::put_policy(&c, req)?))
 }
@@ -909,7 +877,7 @@ pub async fn validate_policy(
     c: Caller,
     Json(v): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, ApiErr> {
-    let req: pb::ValidatePolicyRequest = proto_body(v, &[], &[])?;
+    let req: pb::ValidatePolicyRequest = proto_body(v)?;
     Ok(Proto(StatusCode::OK, acc::validate_policy(&c, req)?))
 }
 
@@ -917,7 +885,7 @@ pub async fn simulate_policy(
     c: Caller,
     Json(v): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, ApiErr> {
-    let req: pb::SimulatePolicyRequest = proto_body(v, &[], &[])?;
+    let req: pb::SimulatePolicyRequest = proto_body(v)?;
     Ok(Proto(StatusCode::OK, acc::simulate_policy(&c, req).await?))
 }
 

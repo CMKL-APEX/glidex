@@ -118,59 +118,83 @@ fn attachment_of(a: &pb::NetworkAttachment) -> m::NetworkAttachment {
 }
 
 /// A VM as the API shows it, without the caller's view (its node's name,
-/// OVN addresses): for error details.
+/// OVN addresses): for error details. The runtime paths stay private
+/// (spec/security.md §9).
 pub fn vm_pb_plain(vm: &Vm) -> pb::Vm {
-    vm_pb_from(&m::VmResponse::from(vm))
-}
-
-fn vm_pb_from(r: &m::VmResponse) -> pb::Vm {
+    let config = vm.config();
     pb::Vm {
-        id: r.id.clone(),
-        name: r.name.clone(),
-        project: r.project.clone(),
-        state: state_pb(r.state.clone()).into(),
-        desired_state: power_pb(r.desired_state).into(),
-        generation: r.generation,
-        observed_generation: r.observed_generation,
-        resource_version: r.resource_version,
-        restart_required: Some(r.restart_required),
-        conditions: r.conditions.iter().map(condition_pb).collect(),
-        last_exit: r.last_exit.as_ref().map(exit_pb).into(),
-        restart_policy: restart_pb(r.restart_policy).into(),
-        on_host_boot: boot_pb(r.on_host_boot).into(),
-        stop_grace_secs: r.stop_grace_secs,
-        deleting: r.deleting.then_some(true),
-        node: r.node.clone(),
-        node_name: r.node_name.clone(),
-        vcpu_count: u32::from(r.vcpu_count),
-        mem_size_mib: r.mem_size_mib,
-        hypervisor: hypervisor_pb(r.hypervisor).into(),
-        vfio_devices: r.vfio_devices.clone(),
-        credential: r.credential.clone(),
-        nics: r
-            .nics
+        id: vm.id.clone(),
+        name: vm.name.clone(),
+        project: vm.project.clone(),
+        state: state_pb(vm.state()).into(),
+        desired_state: power_pb(vm.spec.power).into(),
+        generation: vm.generation,
+        observed_generation: vm.status.observed_generation,
+        resource_version: vm.resource_version,
+        restart_required: Some(
+            vm.condition("RestartRequired")
+                .is_some_and(|c| c.status == m::Tristate::True),
+        ),
+        conditions: vm.status.conditions.iter().map(condition_pb).collect(),
+        last_exit: vm.status.last_exit.as_ref().map(exit_pb).into(),
+        restart_policy: restart_pb(vm.spec.restart_policy).into(),
+        on_host_boot: boot_pb(vm.spec.on_host_boot).into(),
+        stop_grace_secs: vm.spec.stop_grace_secs,
+        deleting: vm.deletion_requested_at.is_some().then_some(true),
+        node: vm.status.placement.as_ref().map(|p| p.node.clone()),
+        vcpu_count: u32::from(config.vcpu_count),
+        mem_size_mib: config.mem_size_mib,
+        hypervisor: hypervisor_pb(config.hypervisor).into(),
+        vfio_devices: config.vfio_devices.clone(),
+        credential: config.credential.clone(),
+        nics: config
+            .networks
             .iter()
-            .map(|n| pb::Nic {
-                network: n.network.clone(),
-                mac: n.mac.clone(),
-                port: n.port.clone(),
-                ipv4: n.ipv4.map(|ip| ip.to_string()),
-                ..Default::default()
+            .enumerate()
+            .map(|(i, a)| {
+                let live = vm.status.nics.iter().find(|n| n.nic_index as usize == i);
+                pb::Nic {
+                    network: a.network.clone(),
+                    mac: a.mac.clone().unwrap_or_default(),
+                    port: live.and_then(|n| n.port.clone()),
+                    ipv4: live.and_then(|n| n.ipv4).map(|ip| ip.to_string()),
+                    ..Default::default()
+                }
             })
             .collect(),
-        firmware: r.firmware.clone(),
-        root_disk: r.root_disk.clone(),
-        data_disks: r.data_disks.clone(),
-        warnings: r.warnings.clone(),
+        firmware: config.firmware_image.clone(),
+        root_disk: config.root_disk.clone(),
+        data_disks: config.data_disks.clone(),
         ..Default::default()
     }
 }
 
-/// A VM as the caller sees it: with its node's name and, on OVN networks,
-/// the address the control plane reserved (OVN's DHCP hands it out, so
-/// the controller on the VM's node never learns it).
+/// A VM as the caller sees it: with its node's name, its networks' names
+/// and, on OVN networks, the address the control plane reserved (OVN's
+/// DHCP hands it out, so the controller on the VM's node never learns it;
+/// the reservations are in the cluster store, which an agent doesn't hold).
 pub fn vm_pb(call: &Call, vm: &Vm) -> pb::Vm {
-    let mut v = vm_pb_from(&crate::api::vms::vm_response(call, vm));
+    let mut v = vm_pb_plain(vm);
+    v.node_name = v
+        .node
+        .as_deref()
+        .and_then(|n| call.manager().nodes().get(n).ok().flatten())
+        .map(|n| n.spec.name);
+    if v.nics.iter().any(|n| n.ipv4.is_none()) {
+        let res =
+            crate::ipam::list_reservations(&call.manager().store.database()).unwrap_or_default();
+        for (i, nic) in v
+            .nics
+            .iter_mut()
+            .enumerate()
+            .filter(|(_, n)| n.ipv4.is_none())
+        {
+            nic.ipv4 = res
+                .iter()
+                .find(|x| x.vm_id == vm.id && x.nic as usize == i && x.network == nic.network)
+                .map(|x| x.ip.to_string());
+        }
+    }
     for n in &mut v.nics {
         n.network_name = call.manager().get_network(&n.network).ok().map(|n| n.name);
     }
@@ -414,43 +438,48 @@ pub async fn create_vm(call: &Call, req: pb::CreateVmRequest) -> ServiceResult<V
     }
 
     let wait = req.wait_secs;
-    let domain = m::CreateVmRequest {
-        name: req.name.clone(),
-        project: Some(project.clone()),
-        vcpu_count: req.vcpu_count.min(u32::from(u8::MAX)) as u8,
-        mem_size_mib: req.mem_size_mib,
-        kernel_image_path: req.kernel_image_path,
-        firmware_path: req.firmware_path,
-        firmware: req.firmware,
-        cloud_init_path: req.cloud_init_path,
-        credential: req.credential,
-        rootfs_path: req.rootfs_path,
-        image: req.image,
+    let hypervisor =
+        hypervisor_of(req.hypervisor.as_known().unwrap_or_default()).unwrap_or_default();
+    let sel = m::DiskSelection {
+        firmware: req.firmware.clone(),
+        image: req.image.clone(),
         root_disk_size_gib: req.root_disk_size_gib.map(u64::from),
-        root_disk: req.root_disk,
-        data_disks: (!req.data_disks.is_empty()).then_some(req.data_disks),
-        kernel_args: req.kernel_args,
-        hypervisor: hypervisor_of(req.hypervisor.as_known().unwrap_or_default()),
-        vfio_devices: (!req.vfio_devices.is_empty()).then_some(req.vfio_devices),
-        networks: (!req.networks.is_empty())
-            .then(|| req.networks.iter().map(attachment_of).collect()),
-        hugepages: req.hugepages.unwrap_or(false),
+        root_disk: req.root_disk.clone(),
+        data_disks: req.data_disks.clone(),
+    };
+    let name = req.name.clone();
+    let opts = VmOptions {
         power: power_of(req.power.as_known().unwrap_or_default()),
         restart_policy: restart_of(req.restart_policy.as_known().unwrap_or_default()),
         on_host_boot: boot_of(req.on_host_boot.as_known().unwrap_or_default()),
         stop_grace_secs: req.stop_grace_secs,
-        node: req.node,
+        node: req.node.clone(),
     };
-    let sel = domain.disk_selection();
-    let name = domain.name.clone();
-    let opts = VmOptions {
-        power: domain.power,
-        restart_policy: domain.restart_policy,
-        on_host_boot: domain.on_host_boot,
-        stop_grace_secs: domain.stop_grace_secs,
-        node: domain.node.clone(),
+    let config = VmConfig {
+        vcpu_count: req.vcpu_count.min(u32::from(u8::MAX)) as u8,
+        mem_size_mib: req.mem_size_mib,
+        kernel_image_path: m::expand_tilde(req.kernel_image_path),
+        firmware_path: req.firmware_path.map(m::expand_tilde),
+        cloud_init_path: req.cloud_init_path.map(m::expand_tilde),
+        credential: req.credential,
+        rootfs_path: m::expand_tilde(req.rootfs_path),
+        kernel_args: req
+            .kernel_args
+            .unwrap_or_else(|| hypervisor.default_kernel_args().to_string()),
+        hypervisor,
+        vfio_devices: req.vfio_devices,
+        networks: req.networks.iter().map(attachment_of).collect(),
+        hugepages: req.hugepages.unwrap_or(false),
+        firmware_image: None,
+        nic_bindings: Vec::new(),
+        root_disk: None,
+        data_disks: Vec::new(),
+        owns_root_disk: false,
+        root_disk_binding: None,
+        firmware_vars_path: None,
+        firmware_vars_template: None,
+        data_disk_bindings: Vec::new(),
     };
-    let config = VmConfig::from(domain);
     let quota = call.quota_mode(&project);
     let (vm, warnings, over) = call
         .manager()

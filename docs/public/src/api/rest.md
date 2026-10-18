@@ -20,8 +20,7 @@
 ### Proto JSON
 
 Most families are served in the proto shape: the request and response
-are the RPC's message as proto3 JSON. Such responses carry the header
-`Glidex-Api-Shape: proto`. What that means for a client:
+are the RPC's message as proto3 JSON. What that means for a client:
 
 | Rule | Example |
 |---|---|
@@ -33,9 +32,8 @@ are the RPC's message as proto3 JSON. Such responses carry the header
 | Unset or default fields are left out, not `null` | an unlimited quota is absent |
 | A body field the message doesn't have is refused | `422 invalid` ("unknown field …") |
 
-For now, requests may still use the older lowercase enum values
-(`"hypervisor": "qemu"`, `"cloudhypervisor"`); responses always use the
-full names. Partial updates (`PATCH`) change the fields present, or
+Requests use the full enum names too; the lowercase values of earlier
+releases (`"qemu"`, `"running"`) are refused. Partial updates (`PATCH`) change the fields present, or
 those listed in `update_mask` (`"description,quotas"`).
 
 Ported families: VMs, guest credentials, images, disks, networks,

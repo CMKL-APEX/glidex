@@ -8,6 +8,7 @@ use crate::client::{self, ApiClient};
 use crate::config;
 use crate::{flag_value, flag_values, format_unix_time, has_flag, prompt, prompt_hidden};
 use colored::Colorize;
+use glidex_api::proto::glidex::auth::v1 as login_pb;
 use hyper::{Method, StatusCode};
 use serde_json::{Value, json};
 use std::io::IsTerminal;
@@ -181,9 +182,9 @@ async fn device_login_named(
                 continue;
             }
             st if st.is_success() => {
-                let v: Value = serde_json::from_slice(&r.body).unwrap_or(Value::Null);
-                return match v["token"].as_str() {
-                    Some(t) => Some(Zeroizing::new(t.to_string())),
+                let v: Option<login_pb::PollDeviceResponse> = serde_json::from_slice(&r.body).ok();
+                return match v.as_ref().and_then(|v| v.issued.as_option()) {
+                    Some(i) => Some(Zeroizing::new(i.token.clone())),
                     None => {
                         err("the control plane returned no token");
                         None
@@ -553,9 +554,10 @@ async fn auth_login(session: &ApiClient, args: &[&str]) {
         }
         match cl.send(Method::POST, "/auth/token", Some(&body)).await {
             Ok(r) if r.status.is_success() => {
-                let v: Value = serde_json::from_slice(&r.body).unwrap_or(Value::Null);
-                match v["token"].as_str() {
-                    Some(t) => (Zeroizing::new(t.to_string()), "pam"),
+                let v: Option<login_pb::PasswordTokenResponse> =
+                    serde_json::from_slice(&r.body).ok();
+                match v.as_ref().and_then(|v| v.issued.as_option()) {
+                    Some(i) => (Zeroizing::new(i.token.clone()), "pam"),
                     None => {
                         err("the control plane returned no token");
                         return;

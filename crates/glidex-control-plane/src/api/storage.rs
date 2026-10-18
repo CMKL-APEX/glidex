@@ -33,23 +33,8 @@ impl WaitQuery {
     }
 }
 
-/// The old shape's enum values (spec/grpc.md §9.1 step 3).
-const ENUMS: &[(&str, &str)] = &[
-    ("format", "DISK_FORMAT"),
-    ("clone", "CLONE_MODE"),
-    ("mode", "EXTEND_MODE"),
-    ("kind", "IMAGE_KIND"),
-    ("hypervisor", "HYPERVISOR"),
-    ("arch", "ARCH"),
-];
-const RENAMES: &[(&str, &str, &str)] = &[(
-    "hypervisor",
-    "cloudhypervisor",
-    "HYPERVISOR_CLOUD_HYPERVISOR",
-)];
-
 fn body<T: serde::de::DeserializeOwned + buffa::MessageName>(v: Value) -> Result<T, ApiErr> {
-    proto_body(v, ENUMS, RENAMES)
+    proto_body(v)
 }
 
 // ---- guest credentials ----------------------------------------------------

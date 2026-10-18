@@ -39,6 +39,7 @@ The web UI moves to gRPC-Web through Connect (G-D8, §11).
 | G-D9 | **`buf` for lint, breaking checks and TypeScript generation.** Rust code is generated in `build.rs` by `connectrpc-build` from a descriptor set that `protox` (a Rust protobuf compiler) produces, so building the workspace needs neither `protoc` nor `buf`. | Contributors and packaging build with `cargo` alone; CI runs `buf lint`, `buf breaking` and checks the generated TypeScript is current. |
 | G-D10 | **Runtime: `connectrpc`, not tonic.** One tower service answers Connect, gRPC and gRPC-Web, with binary or JSON messages; messages are `buffa` types, which carry their own proto3 JSON; health is `connectrpc-health`. Pinned to an exact version (`=0.9.x`), upgraded deliberately, like `openraft`. | Replaces `tonic`, `tonic-web`, `tonic-health`, `prost` and `pbjson` with one stack from the Connect project, the same protocol family as the browser client. It passes the ConnectRPC conformance suite; the cost is a pre-1.0 API that may still move. |
 | G-D11 | **JSON names are the proto names.** Every field whose name has an underscore declares `json_name` equal to its name (`uint32 mem_size_mib = 3 [json_name = "mem_size_mib"];`); `build.rs` fails otherwise. | proto3 JSON defaults to `lowerCamelCase`; the REST API is `snake_case`. Declaring it in the proto (rather than rewriting descriptors at build time) keeps every generator, the TypeScript one included, and `buf curl` on the same names. |
+| G-D12 | **No transition release (G5).** The one-release window of §9.1 step 3 is waived: G5 drops the old request shapes and the `Glidex-Api-Shape` header in the same release as the ports, and clients from before the ports break against it. | No release shipped the proto shapes before G5 (v0.0.3 predates every port), so the window would only have covered clients that already moved; one shape to read and test is simpler than two. |
 | G-D7 | **Versioned packages** `glidex.<area>.v1`; breaking changes need a `v2` package served alongside `v1`. | Rolling upgrades (cluster-runbook.md) run mixed versions; field numbers and names are the compatibility contract. |
 
 ## 3. Stack
@@ -267,11 +268,12 @@ When a family is ported:
    always sends, even at its default (`"oidc": false`), is declared
    `optional` and always set, because proto3 JSON leaves out default
    values of fields without presence.
-3. For **one release** the REST adapter also accepts the old request
-   shape (the few value conversions above, done in the adapter before
-   decoding), and responses carry `Glidex-Api-Shape: proto` so clients
-   can tell. gxctl and the UI move to generated clients in the same
-   change. A body field the message doesn't have is refused with
+3. gxctl and the UI move to generated clients in the same change. The
+   plan was for the REST adapter to also accept the old request shape
+   for one release, with responses marked `Glidex-Api-Shape: proto`;
+   G5 removed both before any release carried them (G-D12), so a
+   request in the old shape is refused like any other body that isn't
+   the message. A body field the message doesn't have is refused with
    `422 invalid` ("unknown field `quotas.vm`"), as proto3 JSON parsers
    do by default: `proto_body` checks the body against a table of each
    message's JSON names that `build.rs` writes (`glidex_api::unknown_field`),
@@ -282,7 +284,14 @@ When a family is ported:
 
 When every family is ported (G5), `models.rs` keeps only internal
 store records, and nothing in `src/api/` defines a request or
-response type.
+response type: bodies are messages (`proto_body`), and so are REST
+errors (`glidex.api.v1.Error`, `{error, message, details}`, built from
+the internal `api::errors::ApiError`). What `src/api/` still declares
+is REST transport: query-string parsers (`?wait=`, `?project=`,
+`?view=`), and the bodies of the REST-only routes, which have no
+message because they have no RPC (§11: `/auth/login` and the OIDC
+redirects, `/auth/methods`, `/auth/session`, `/system/reconcile`, `GET
+/vms/{id}?view=full`, which answers the stored record).
 
 **Watch** keeps the SSE semantics on both transports (`service::watch`):
 a snapshot of visible objects, `synced`, then `added`/`modified`/`deleted`,
@@ -375,8 +384,8 @@ a client that stops sending (half-close) ends the call.
 - Limits: oversize message → `RESOURCE_EXHAUSTED`; deadline honored.
 - Compatibility: `buf lint`, `buf breaking` against `main`, and a
   stale-generated-TypeScript check in CI.
-- Shape: each ported family's REST tests run against the proto JSON
-  form and, for its transition release, the old request shape.
+- Shape: each family's REST tests run against the proto JSON form; an
+  old request shape is refused (`vm_tests` for the merge patch).
 
 ## 13. Milestones
 
@@ -410,8 +419,8 @@ a client that stops sending (half-close) ends the call.
 | `TenantService`, `AdmissionService` (T0) | `service/tenancy.rs`, `api/rpc/tenancy.rs`; REST twins `api/tenants.rs` |
 | `LoginService` (G1's last service) | `service/login.rs`, `api/rpc/login.rs`; REST twins in `api/access.rs`; public operations get the request's listener and address from the adapter |
 | `ConnectorService` (T1) | `service/directory.rs`, `api/rpc/directory.rs`; REST twins `api/connectors.rs`; `SetSecretRequest.value` is the first field marked `secret` |
-| Storage family (G2): `CredentialService`, `ImageService`, `DiskService` | protos `glidex/storage/v1/storage.proto`, shared `glidex/common/v1/common.proto`; `service/storage.rs` (with `service/common.rs`); RPC `api/rpc/storage.rs`; REST twins `api/storage.rs` (`Proto`, `proto_body` in `api/mod.rs` for the shape header and the old request values); tests `tests/storage_tests.rs` |
-| VM family (G2): `VmService` | proto `glidex/vm/v1/vm.proto`; `service/vm.rs`; RPC `api/rpc/vm.rs`; REST twins `api/vms.rs` (with the console WebSocket, `?view=full` and `/system/reconcile`, which stay REST); `PATCH` reads `{change, update_mask}` and, for one release, the old merge patch; tests `tests/vm_tests.rs` |
+| Storage family (G2): `CredentialService`, `ImageService`, `DiskService` | protos `glidex/storage/v1/storage.proto`, shared `glidex/common/v1/common.proto`; `service/storage.rs` (with `service/common.rs`); RPC `api/rpc/storage.rs`; REST twins `api/storage.rs` (`Proto`, `proto_body` in `api/mod.rs`); tests `tests/storage_tests.rs` |
+| VM family (G2): `VmService` | proto `glidex/vm/v1/vm.proto`; `service/vm.rs`; RPC `api/rpc/vm.rs`; REST twins `api/vms.rs` (with the console WebSocket, `?view=full` and `/system/reconcile`, which stay REST); `PATCH` reads `{change, update_mask}`; tests `tests/vm_tests.rs` |
 | Usage family (G2): `UsageService` (usage records, billing-month reports), `MetricsService` (5-minute series, live rates) | proto `glidex/usage/v1/usage.proto`; `service/usage.rs`; RPC `api/rpc/usage.rs`; REST twins `api/usage.rs`, `api/rates.rs` (the `format=csv` exports stay REST-only); gxctl `usage`, `stats`, `bandwidth`, `io`, `compute` on the generated clients (`--csv` from REST); tests `tests/usage_tests.rs`; shape changes in metering.md §9.5 |
 | Access family (G2): `ProjectService`, `UserService`, `TeamService`, `TokenService`, `SystemBindingService`, `PolicyService`, `AuditService`, `AuthzService`; `SystemService.WhoAmI` gains `user`, `token`, `csrf` and the REST twin `GET /auth/whoami` | proto `glidex/access/v1/access.proto`; `service/access.rs` (`whoami_of` in `service/system.rs`); RPC `api/rpc/access.rs`; REST twins `api/access.rs` (updates take `update_mask` or the fields present); gxctl and the UI on the new shapes; tests `tests/access_tests.rs` |
 | Network family (G3): `NetworkService` (networks, grants, project networks, a network's router, events, OVN view), `NetworkShareService`, `RouterService` | proto `glidex/network/v1/network.proto`; `service/network.rs`; RPC `api/rpc/network.rs`; REST twins `api/net.rs` (host networking — `/ovs`, bridges, uplinks, PCI — and `/cluster/ovn` stay for `host.v1`/`cluster.v1`); networks re-keyed by id first (tenancy.md D24, schema 4); a VM's `Nic` gains `network_name`; gxctl `network …` on the generated clients; tests `tests/network_tests.rs` |
@@ -420,6 +429,7 @@ a client that stops sending (half-close) ends the call.
 | Watch (G4): `WatchService.Watch`, a server stream | proto `glidex/watch/v1/watch.proto`; `service/watch.rs` (snapshots, diffs, watcher slots; events as data); RPC `api/rpc/watch.rs`; `GET /watch` as server-sent events in `api/watch.rs`; gxctl `watch` on the stream; tests `api_tests.rs::test_watch_over_rpc_streams_the_same_events` and the REST watch tests |
 | Object events and console (G4): `WatchService.WatchEvents` (server stream), `VmService.Console` (bidi) | `service/watch.rs::open_events` (through each kind's events list, with its read action via `Caller::with_action`); `service/vm.rs::console_target`/`console_connect`, shared with the WebSocket (`api/vms.rs::console_ws`); RPC `api/rpc/watch.rs`, `api/rpc/vm.rs::console`; gxctl `console` on the RPC; tests `tests/console_tests.rs`, `network_tests.rs::a_networks_events_stream_as_they_happen` |
 | UI on gRPC-Web (G4) | `crates/glidex-ui/ui/src/gen/` (generated, committed; CI checks it is current), `api.ts::rpc()` and `rpcError()`, `live.tsx` on `WatchService.Watch` (keep-alives every 15 s); dev and e2e through `ui.sock` (§6); `ErrorInfo.metadata.http_status` (§7) |
+| One type system (G5) | the REST error body is `glidex.api.v1.Error` (`api/errors.rs` serializes `ApiError` through it); `proto_body` decodes every REST body, the old request values, the VM merge patch and `Glidex-Api-Shape` removed (G-D12); `/auth/token` and the device polls answer `PasswordTokenResponse`/`PollDeviceResponse`; VM create and the VM message built in `service/vm.rs` (no `CreateVmRequest`/`VmResponse` in `models.rs`) |
 | Forwarding by `kind`, trailers (§8) | `api/gate.rs`, `cluster/net.rs` (`Reply.trailers`) |
 | CI (G-D9) | `.github/workflows/rust.yml` job `proto` |
 | Tests | `tests/rpc_tests.rs`; `cluster_tests.rs::rpc_reads_are_answered_by_the_server_that_takes_them`; unit tests in `api/rpc` and `glidex-api` |

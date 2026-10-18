@@ -9,7 +9,7 @@ use uuid::Uuid;
 /// don't do shell-style expansion themselves, so paths like
 /// `~/.glidex/rootfs.ext4` need to be resolved before being passed to
 /// qemu-system-x86_64 / cloud-hypervisor.
-fn expand_tilde(path: String) -> String {
+pub(crate) fn expand_tilde(path: String) -> String {
     if path == "~" {
         return dirs::home_dir()
             .map(|h| h.to_string_lossy().into_owned())
@@ -191,17 +191,6 @@ pub struct NicBinding {
     pub binding: VmPortBinding,
     pub queue_pairs: u8,
     pub mtu: Option<u16>,
-}
-
-/// Last known state of a VM NIC, shown in `VmResponse`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct NicState {
-    pub network: String,
-    pub mac: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub port: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ipv4: Option<Ipv4Addr>,
 }
 
 /// The VM resource (spec/reconciliation.md §6.1, §7): what the user asked
@@ -457,63 +446,7 @@ impl Vm {
     }
 }
 
-#[derive(Debug, Deserialize)]
-pub struct CreateVmRequest {
-    pub name: String,
-    /// Project id or name; default: the caller's default project.
-    #[serde(default)]
-    pub project: Option<String>,
-    pub vcpu_count: u8,
-    pub mem_size_mib: u32,
-    #[serde(default)]
-    pub kernel_image_path: String,
-    /// Host path of UEFI firmware (needs `useHostPath`); prefer `firmware`.
-    #[serde(default)]
-    pub firmware_path: Option<String>,
-    /// Firmware image id/name to boot through.
-    #[serde(default)]
-    pub firmware: Option<String>,
-    #[serde(default)]
-    pub cloud_init_path: Option<String>,
-    #[serde(default)]
-    pub credential: Option<String>,
-    #[serde(default)]
-    pub rootfs_path: String,
-    /// Image id/name: create a linked root disk for this VM from it.
-    #[serde(default)]
-    pub image: Option<String>,
-    #[serde(default)]
-    pub root_disk_size_gib: Option<u64>,
-    /// Existing, unattached disk (id/name) to boot from.
-    #[serde(default)]
-    pub root_disk: Option<String>,
-    #[serde(default)]
-    pub data_disks: Option<Vec<String>>,
-    #[serde(default)]
-    pub kernel_args: Option<String>,
-    #[serde(default)]
-    pub hypervisor: Option<HypervisorType>,
-    #[serde(default)]
-    pub vfio_devices: Option<Vec<String>>,
-    #[serde(default)]
-    pub networks: Option<Vec<NetworkAttachment>>,
-    #[serde(default)]
-    pub hugepages: bool,
-    /// Desired power state; default `stopped` (create, then start).
-    #[serde(default)]
-    pub power: Option<PowerState>,
-    #[serde(default)]
-    pub restart_policy: Option<RestartPolicy>,
-    #[serde(default)]
-    pub on_host_boot: Option<HostBootPolicy>,
-    #[serde(default)]
-    pub stop_grace_secs: Option<u32>,
-    /// Run on this node (id or name): `spec.node`, spec/clustering.md §9.1.
-    #[serde(default)]
-    pub node: Option<String>,
-}
-
-/// The managed-disk part of `CreateVmRequest`, resolved by `create_vm`.
+/// The managed disks a new VM asks for, resolved by `create_vm`.
 #[derive(Debug, Clone, Default)]
 pub struct DiskSelection {
     /// Firmware image id/name.
@@ -522,176 +455,4 @@ pub struct DiskSelection {
     pub root_disk_size_gib: Option<u64>,
     pub root_disk: Option<String>,
     pub data_disks: Vec<String>,
-}
-
-impl CreateVmRequest {
-    pub fn disk_selection(&self) -> DiskSelection {
-        DiskSelection {
-            firmware: self.firmware.clone(),
-            image: self.image.clone(),
-            root_disk_size_gib: self.root_disk_size_gib,
-            root_disk: self.root_disk.clone(),
-            data_disks: self.data_disks.clone().unwrap_or_default(),
-        }
-    }
-}
-
-impl From<CreateVmRequest> for VmConfig {
-    fn from(req: CreateVmRequest) -> Self {
-        let hypervisor = req.hypervisor.unwrap_or_default();
-        VmConfig {
-            vcpu_count: req.vcpu_count,
-            mem_size_mib: req.mem_size_mib,
-            kernel_image_path: expand_tilde(req.kernel_image_path),
-            firmware_path: req.firmware_path.map(expand_tilde),
-            firmware_image: None,
-            cloud_init_path: req.cloud_init_path.map(expand_tilde),
-            credential: req.credential,
-            rootfs_path: expand_tilde(req.rootfs_path),
-            kernel_args: req
-                .kernel_args
-                .unwrap_or_else(|| hypervisor.default_kernel_args().to_string()),
-            hypervisor,
-            vfio_devices: req.vfio_devices.unwrap_or_default(),
-            networks: req.networks.unwrap_or_default(),
-            hugepages: req.hugepages,
-            nic_bindings: Vec::new(),
-            root_disk: None,
-            data_disks: Vec::new(),
-            owns_root_disk: false,
-            root_disk_binding: None,
-            firmware_vars_path: None,
-            firmware_vars_template: None,
-            data_disk_bindings: Vec::new(),
-        }
-    }
-}
-
-/// The API projection of a [`Vm`]: today's flat fields plus the desired
-/// state and the controller's view (§7.4). The runtime paths stay private
-/// (spec/security.md §9).
-#[derive(Debug, Serialize)]
-pub struct VmResponse {
-    pub id: String,
-    pub name: String,
-    pub project: String,
-    pub state: VmState,
-    pub desired_state: PowerState,
-    pub generation: u64,
-    pub observed_generation: u64,
-    /// For `If-Match` (spec/reconciliation.md §12.1).
-    pub resource_version: u64,
-    pub restart_required: bool,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub conditions: Vec<Condition>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_exit: Option<ExitRecord>,
-    pub restart_policy: RestartPolicy,
-    pub on_host_boot: HostBootPolicy,
-    pub stop_grace_secs: u32,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub deleting: bool,
-    /// The node the VM is placed on (spec/clustering.md §9.1).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub node: Option<String>,
-    /// That node's name, for callers who can't list nodes
-    /// (spec/clustering-ui.md §9). Filled in by the API.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub node_name: Option<String>,
-    pub vcpu_count: u8,
-    pub mem_size_mib: u32,
-    pub hypervisor: HypervisorType,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub vfio_devices: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub credential: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub nics: Vec<NicState>,
-    /// Firmware image id.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub firmware: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub root_disk: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub data_disks: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub warnings: Vec<String>,
-}
-
-impl From<&Vm> for VmResponse {
-    fn from(vm: &Vm) -> Self {
-        let config = vm.config();
-        VmResponse {
-            id: vm.id.clone(),
-            name: vm.name.clone(),
-            project: vm.project.clone(),
-            state: vm.state(),
-            desired_state: vm.spec.power,
-            generation: vm.generation,
-            observed_generation: vm.status.observed_generation,
-            resource_version: vm.resource_version,
-            restart_required: vm
-                .condition("RestartRequired")
-                .is_some_and(|c| c.status == Tristate::True),
-            conditions: vm.status.conditions.clone(),
-            last_exit: vm.status.last_exit.clone(),
-            restart_policy: vm.spec.restart_policy,
-            on_host_boot: vm.spec.on_host_boot,
-            stop_grace_secs: vm.spec.stop_grace_secs,
-            deleting: vm.deletion_requested_at.is_some(),
-            node: vm.status.placement.as_ref().map(|p| p.node.clone()),
-            node_name: None,
-            vcpu_count: config.vcpu_count,
-            mem_size_mib: config.mem_size_mib,
-            hypervisor: config.hypervisor,
-            vfio_devices: config.vfio_devices.clone(),
-            credential: config.credential.clone(),
-            firmware: config.firmware_image.clone(),
-            root_disk: config.root_disk.clone(),
-            data_disks: config.data_disks.clone(),
-            warnings: Vec::new(),
-            nics: config
-                .networks
-                .iter()
-                .enumerate()
-                .map(|(i, a)| {
-                    let live = vm.status.nics.iter().find(|n| n.nic_index as usize == i);
-                    NicState {
-                        network: a.network.clone(),
-                        mac: a.mac.clone().unwrap_or_default(),
-                        port: live.and_then(|n| n.port.clone()),
-                        ipv4: live.and_then(|n| n.ipv4),
-                    }
-                })
-                .collect(),
-        }
-    }
-}
-
-#[derive(Debug, Deserialize)]
-pub struct DeviceRequest {
-    pub device_path: String,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ApiError {
-    pub error: String,
-    pub message: String,
-    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
-    pub details: serde_json::Value,
-}
-
-impl ApiError {
-    pub fn new(error: impl Into<String>, message: impl Into<String>) -> Self {
-        Self {
-            error: error.into(),
-            message: message.into(),
-            details: serde_json::Value::Null,
-        }
-    }
-
-    pub fn with_details(mut self, details: serde_json::Value) -> Self {
-        self.details = details;
-        self
-    }
 }
