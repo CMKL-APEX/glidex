@@ -95,7 +95,7 @@ organizations that **operate** it, and lets each keep its own identity.
 | D19 | Quotas | Each admission carries the tenant's **cap on that cluster**, set by the operator. Tenant admins set each project's quota per cluster. Both are checked by the cluster at create, start and resize. Exceeding a cap needs `exceedQuota` from the operator. | Capacity belongs to whoever owns the hardware; the tenant splits its share. |
 | D20 | Deprovisioning | A user disabled or removed by provisioning is **disabled at once** in the directory: sessions and tokens revoked, managed team memberships dropped; clusters drop the user's sessions as their feed delivers it. Connectors without provisioning clamp tokens to `token_max_days` (default 30). | Closes the "removed from the IdP, still has a 365-day token" gap. |
 | D21 | Connector secrets | Stored **only in the directory**, encrypted with a key of that directory (§13). Write-only. Never in a feed. SCIM bearer tokens stored as SHA-256 only. | Clusters don't need them: logins happen at the directory. |
-| D22 | Owner and operator connectors | Connectors of an owner tenant or an operator tenant must restrict who gets in (`jit: false`, non-empty `required_groups`, or provisioning) and require MFA by default (`amr`/`acr`). | A connector admitting "anyone in the IdP" would make every employee of that organization a directory or cluster administrator. |
+| D22 | Owner and operator connectors | Connectors of an owner tenant or an operator tenant must restrict who gets in (`jit: false`, non-empty `required_groups`, or provisioning) and require MFA by default (`amr`/`acr`). Google sends no `amr`: a `google` connector there needs `accounts: workspace` and `trust_2sv` (§5.1), and consumer accounts are refused. | A connector admitting "anyone in the IdP" would make every employee of that organization a directory or cluster administrator. |
 | D23 | PAM and peer | Unix accounts exist on one cluster's hosts. A `pam` connector belongs to a directory **hosted on that same control plane** and checks that cluster's accounts; PAM and peer logins give sessions valid on that cluster only. Root and `glidex-admin` resolve to the operator tenant. `glidex-authd`'s `allowed_groups` stays the outer fence. | Host accounts can't be a credential for other clusters, or for an organization whose directory lives elsewhere. |
 | D24 | Names | In a directory: tenant slugs, and per tenant the names of projects, service accounts and guest credentials. In a cluster: VM names per project, disk and project network names per tenant. Ids stay global UUIDs; flat REST paths stay (security.md decision 8). | No cross-tenant existence oracles; no id-based path changes. |
 | D25 | Grants | Operators grant host networks and PCI devices on their cluster to a **tenant** (`tenant_grants`) or to projects. Project networks are shared only between projects of one tenant, within one cluster. | One grant per customer; cross-tenant L2 sharing stays an operator decision. |
@@ -112,6 +112,8 @@ organizations that **operate** it, and lets each keep its own identity.
 | D36 | Self-service registration | A fleet user registers, in its **account** (D38), a directory, tenant or cluster and gets a one-time **claim code**; the owner of that directory, the tenant's admin or the cluster's operator redeems it **there**, which sends the registration signed with the directory's or cluster's own key. Fleet admins decide what each account may register (directories, user tenants, operator tenants, clusters) and whether registrations need approval (`approval`, the default, or `open`). Approval is needed once per directory and once per operator tenant: user tenants of an approved directory, and clusters of an approved operator tenant, are active as soon as they are claimed; fleet admins can still suspend any registration. A registered directory's key can afterwards change only by a rotation signed with its previous key, never by the fleet. | Organizations join without a person at the fleet in the loop; holding a fleet account isn't enough to claim someone else's directory or cluster, and a compromised or careless fleet can add new directories but can't take over existing ones. |
 | D37 | Moving clusters | A cluster belongs to at most one fleet. Leaving keeps every established admission and directory pin as pairwise trust (the operator may instead end the ones the fleet's policy created, with notice to those tenants); joining another fleet applies that fleet's registry and the operator's policies from then on. Directories and tenants may register in several fleets. | Operators can change brokers without evicting tenants; tenants can use clusters of several fleets. |
 | D38 | The fleet's directory and accounts | A fleet runs a directory of its own (the same directory software, D27), owned by the fleet operator's tenant: **fleet admins** are its members. Each organization that uses the fleet has an **account**, a tenant of that directory whose members (**fleet users**: mostly tenant admins and cluster operators of that organization) manage the account's registrations. An account can add a connector for its own IdP, so its people log in with their usual identity. Fleet admins manage accounts and their registry rights. Consolidated billing will attach to accounts (§20). | The registry needs owners and administrators like anything else; reusing the directory and tenant model gives logins, connectors, roles, audit and Cedar boundaries without a second system. |
+| D39 | Google accounts | The `google` preset serves **Google Workspace** (`accounts: workspace`, the default) and **consumer Google accounts** (`accounts: any`). Workspace logins are allowed by the ID token's `hd` claim, which must be one of `settings.domains`, never by the email's domain. A consumer connector admits only people the directory already knows: an invitation (D40), an address in `allowed_emails`, or (with `jit: false`) a linked identity. It needs `email_verified`. No tenant claims a public mail domain (`gmail.com`, `googlemail.com`). | Anyone can open a consumer Google account under any email address, so only `hd` proves Workspace membership. Consumer logins are a way in for known people, not signup (D31). |
+| D40 | Invitations | A directory owner or a tenant admin invites an **email address** to a tenant, with a tenant role, through one connector. The invitation is a link with a secret. The first login through that connector that brings the secret, with a **verified** email equal to the invited one, takes it: once, within 7 days. Only a hash of the secret is stored. It works with `jit: false`. | A gated connector needs a way in that doesn't need the IdP's subject in advance. The invitation names the tenant and the role up front. |
 
 ## 3. Threat model additions
 
@@ -209,9 +211,9 @@ only whether each is set and when.
 | `pam` | `glidex-authd` on the co-hosted cluster | JIT at login | `~/.ssh/*.pub` via authd | `<name>@<node>` | D23. |
 | `ldap` | simple bind over LDAPS / StartTLS (never plain) | pull: users and groups by filter | `sshPublicKey`, `mail`, `displayName` | `entryUUID` / `objectGUID` | AD, FreeIPA, OpenLDAP, JumpCloud LDAP. Bind with the user's DN after a search with the service account; password never stored. |
 | `oidc` | Authorization Code + PKCE; device grant for gxctl | JIT; optional SCIM | claims | `sub` | Generic: Keycloak, Okta, Authentik, Auth0, Dex, Zitadel. Today's `auth.oidc` behavior (security.md §5.4) unchanged. |
-| `google` | OIDC preset; `hd` must equal one of `settings.domains` | pull: Admin SDK Directory API (domain-wide delegation, read-only scopes) | custom schema field for SSH keys | `sub` | Google ID tokens carry no groups; group mapping needs pull sync. |
-| `azure` | OIDC preset (`…/<tid>/v2.0`); `tid` checked | SCIM (Entra provisioning) or pull via Microsoft Graph (delta) | — | `oid` (not the pairwise `sub`) | Group overage is resolved through Graph when pull is configured; otherwise the login is refused rather than mapping no groups. |
-| `github` | OAuth 2.0 web and device flow (not OIDC) | pull: org members and teams via a GitHub App | public SSH keys | numeric user id | Login requires membership of `settings.org`, checked at every login and sync. |
+| `google` | OIDC preset (§5.1). Workspace: `hd` must be one of `settings.domains`; consumer accounts gated (D39) | Workspace: pull via the Admin SDK Directory API (domain-wide delegation, read-only scopes, T4); consumer: none | custom schema field for SSH keys (Workspace, T4) | `sub` | Google ID tokens carry no groups and no `amr`. |
+| `azure` | OIDC preset (`…/<tid>/v2.0`); `tid` checked | SCIM (Entra provisioning) or pull via Microsoft Graph (delta) | — | `oid` (not the pairwise `sub`) | Group overage is resolved through Graph when pull is configured; otherwise the login is refused rather than mapping no groups. Later: not in T2 (§18). |
+| `github` | OAuth 2.0 web and device flow (not OIDC) | pull: org members and teams via a GitHub App | public SSH keys | numeric user id | Login requires membership of `settings.org`, checked at every login and sync. Later: not in T2 (§18). |
 | `jumpcloud` | OIDC preset | SCIM or LDAP | via LDAP `sshPublicKey` | `sub` | |
 | `scim` | — (pair with a login connector via `login_connector`) | SCIM 2.0 push | — | SCIM `externalId` | For IdPs that provision by SCIM but log in through another connector. |
 
@@ -219,6 +221,37 @@ only whether each is set and when.
 their code is `oidc` or OAuth 2.0 plus a short validation and
 claim-mapping module. Adding one (Okta, OneLogin, Keycloak) is a
 settings schema and a claim map.
+
+### 5.1 Presets in T2
+
+A preset fixes what the IdP fixes (endpoints, scopes, the subject
+claim) and checks the rest. Each has a module under
+`src/directory/presets/`, over the `oidc` code.
+
+| Preset | `settings` | Fixed | Checks at login | MFA |
+|---|---|---|---|---|
+| `google` | `accounts` (`workspace` default \| `any`), `client_id`, `domains` (Workspace: one or more), `allowed_emails`, `device_client_id`, `trust_2sv` (Workspace) | issuer `https://accounts.google.com`, scopes `openid email profile` | Workspace: `hd` ∈ `domains` (the `hd=` request parameter is only a hint for Google's account chooser). Consumer: `email_verified`, then an invitation, `allowed_emails`, or an existing identity | `trust_2sv: true` (the operator says the Workspace domain enforces 2-step verification) makes every login count as MFA; otherwise none does. Consumer: none |
+| `jumpcloud` | `client_id`, `groups_claim` (the name set under the app's *Include group attribute* in JumpCloud; default `memberOf`), `allowed_emails` | issuer `https://oauth.id.jumpcloud.com/` | as `oidc` | `amr`/`acr` as `oidc` |
+| `oidc` | as today | — | as today | `amr` `mfa`, or `acr` ∈ `mfa_acr_values` |
+
+- **Two Google clients.** Google allows the device grant (gxctl) only
+  for an OAuth client of type *TVs and Limited Input devices*. A
+  `google` connector therefore has the browser's client (`client_id`,
+  secret `client_secret`) and optionally a device client
+  (`device_client_id`, secret `device_client_secret`). Without one,
+  device login answers `400 device_flow_unsupported`.
+- **A consumer connector that would admit anyone is refused** at
+  create and update: `accounts: any` with `jit: true` needs a
+  non-empty `allowed_emails`. Invitations work either way.
+- **Where users land.** Neither consumer accounts nor Workspace ID
+  tokens carry groups, so `group_teams` maps nothing for `google` until
+  T4's pull sync. New users join `default_tenant`, or the invitation's
+  tenant with its role.
+- **Consent screen.** For Workspace, the OAuth client's user type
+  *Internal* limits it to the organization on Google's side too. The
+  wizard says so; glidex can't check it.
+- `domains` and `allowed_emails` are compared case-insensitively.
+  `domains` never holds a public mail domain.
 
 **AWS.** IAM Identity Center offers SAML, not OIDC, to applications like
 glidex (D30); AWS users log in through the IdP Identity Center itself
@@ -244,15 +277,46 @@ per step. Never returns secrets or directory contents beyond counts.
    groups, mfa}`. The common path then:
    - refuses if the connector is disabled;
    - looks up `(connector_id, subject)`;
-   - if absent: JIT-creates the user in the directory when `jit` and
-     `required_groups`/domain rules pass; refused otherwise (same error
-     and timing as a wrong password);
+   - if absent: takes the invitation the login brings (its secret, and
+     a verified email equal to the invited one, §6.1), else JIT-creates the user in the directory
+     when `jit` and `required_groups`/domain/`allowed_emails` rules
+     pass; refused otherwise (same error and timing as a wrong
+     password);
    - refuses `require_mfa` connectors without `mfa`;
    - syncs managed team memberships from `groups` (D18);
    - creates a **directory session** (browser) or a refresh token
      (gxctl), with `auth_time` and `amr`.
 3. The user then works in any tenant of the directory they are a
    member of (D3); the UI and gxctl ask which when there are several.
+
+### 6.1 Invitations (D40)
+
+`{id, tenant_id, email, role, connector_id, invited_by, created_at,
+expires_at, secret_hash, taken_by?, taken_at?}`, a directory record.
+
+- **Who.** Tenant admins (`tenant.members`) invite to their tenant with
+  any role they may link; directory owners (`directory.tenants`) to any
+  tenant of the directory, including the first `tenant-admin` at tenant
+  creation (§11).
+- **The link.** Creating one answers its URL once:
+  `<directory>/invite/<id>#<secret>`. The secret is in the fragment, so
+  it never reaches a log or a `Referer`. The page starts a login
+  through the invitation's connector and sends the secret with it.
+- **Taking it.** At the login's callback, the invitation is taken when
+  its secret matches, it is open (not taken, revoked or expired), and
+  the identity's verified email equals `email`. The identity then
+  binds to a new user, or to the user it already has. The tenant link
+  with `role` is added, and the user is created even with `jit: false`.
+  An invitation is never taken by email alone: a login without its
+  secret doesn't take it, so a known email can't claim another
+  person's invitation.
+- **Refusals** look like any refused login (`403 login_not_allowed`).
+  The audit says why.
+- **Lifetime.** 7 days, at most 30 when created. Revoking deletes it.
+  Taken and expired ones stay listed for 30 days, then go.
+
+A connector's own rules still apply: an invitation
+through a Workspace `google` connector still needs `hd` ∈ `domains`.
 
 `Principal` gains `directory_id` and the acting `tenant_id`; Cedar's
 `Auth` context gains `mfa: Bool`, so site policies can require MFA
@@ -621,8 +685,7 @@ deletes.
 
 **A directory owner** owns, through directory roles, in its directory:
 tenants (*create* `{slug, display_name, domains, self_tags, operator}`,
-optionally with a first `tenant-admin` invitation bound to the first
-login with that verified email, single-use, 7 days; *suspend*/*resume*,
+optionally with a first `tenant-admin` invitation (§6.1); *suspend*/*resume*,
 delivered to every cluster by its feed; *delete*, refused while a
 cluster reports resources of the tenant), connectors, users, teams,
 domains, self tags, its site policies, and its registrations in
@@ -831,6 +894,7 @@ with one directory); cluster operations on the cluster.
 | `createDirectory`, `listDirectories` | host | `POST/GET /directories` | `DirectoryService.Create`, `List` | the host cluster's `system-admin` |
 | `listTenants` … `deleteTenant` | directory | `/tenants…` | `TenantService.…` | `directory.read` / `directory.tenants`; own tenant |
 | `optIn` (an offer token, or a fleet cluster), `optOut`, `listClusters` | directory | `POST /tenants/{id}/clusters` (`{offer}` or `{fleet, cluster}`), `DELETE …/{cluster}`, `GET …` | `TenantService.OptIn`, `OptOut`, `ListClusters` | `tenant.clusters` |
+| `createInvitation`, `listInvitations`, `revokeInvitation` | directory | `POST/GET /tenants/{id}/invitations`, `DELETE /invitations/{id}` | `InvitationService.Create`, `List`, `Revoke` | `tenant.members`; `directory.tenants` |
 | `listTenantBindings`, `setTenantBinding`, `deleteTenantBinding` | directory | `/tenants/{id}/bindings` | `TenantService.…Binding` | `tenant.members` |
 | projects, guest credentials | directory | `/projects…`, `/credentials…` | `ProjectService.…`, `CredentialService.…` | `tenant.projects`, project roles |
 | users, teams, connectors, SCIM tokens | directory | `/users`, `/teams`, `/connectors…` | `DirectoryService.…`, `ConnectorService.…` | `directory.*`; own profile |
@@ -903,7 +967,8 @@ file-defined connectors of the host's first directory. New:
 - Tenant admin: **Projects** (per-cluster quotas, where each project has
   resources), **Clusters** (the fleets' catalogs, opt in, accept offers,
   opt out, each admission),
-  **Members**, **Federations**.
+  **Members** (with invitations: invite, copy the link once, revoke),
+  **Federations**.
 - Lists of VMs, disks and networks show their cluster; a tenant's view
   gathers them from every cluster it uses.
 
@@ -914,6 +979,7 @@ gxctl tenant list|show|create|update|suspend|resume|delete|opt-in|opt-out
 gxctl directory create|list|promote                     # on a host
 gxctl connector list|show|add <kind>|update|secret set <field>|test|sync|remove
 gxctl connector scim-token create|list|revoke
+gxctl invite create <tenant> <email> --role R --connector C | list [<tenant>] | revoke <id>
 gxctl federation list|add|remove
 gxctl admission offer|list|update|remove                # on a cluster
 gxctl trust list|update|remove                          # on a cluster
@@ -981,6 +1047,19 @@ one login for both (D3). Nothing a user does today changes.
 - **Connectors, per protocol** against local mocks (OIDC with
   `tid`/`hd`/`oid`, Entra group overage; GitHub org membership; LDAP
   StartTLS and `objectGUID`; MFA without `amr`).
+- **Google (T2)** against a mock: a forged email domain without `hd` is
+  refused; `hd` not in `domains` is refused; `email_verified: false` is
+  refused; a consumer login without an invitation or allowlist entry is
+  refused; the device grant uses the device client; `trust_2sv`
+  decides MFA; D22 refuses consumer mode for the owner and operators.
+- **Invitations:** taken once; not by another email, not without the
+  secret, not after expiry or revocation; the secret is never stored or
+  answered again; `jit: false` still lets the invitee in.
+- **Real IdPs** (Google Workspace and consumer, JumpCloud) are checked
+  by hand against an installed host, with test accounts kept outside
+  the repository: their passwords are entered only in the IdP's own
+  page, and OAuth client secrets only through `gxctl connector secret
+  set` on standard input. `docs/` holds the checklist, never accounts.
 - **SCIM:** Entra and Okta sequences as fixtures; `active: false`
   revokes within the request; connector X's token can't touch Y.
 - **Pull sync:** failing APIs change nothing; the safety stop holds;
@@ -1037,7 +1116,8 @@ Each milestone ships its API, CLI, UI and tests together and leaves
 |---|---|---|
 | **T0** tenants, operators, admission | needs grpc.md **G0**. The model for one host: §10 entities (`Directory`, `Tenant`, `Cluster.operator`, `Vm in [Project, Cluster]`, membership), table scopes with `directory_id` keys, `directories`, `tenants`, `admissions`, projects and guest credentials as directory records, `useCluster` and `base.admission`, the operator, owner and tenant boundaries, roles, link boundary, caps and per-cluster project quotas, names, `tenant_grants`, migration (§16 steps 1–4, 6–7), APIs on both transports through `service::directory`, gxctl `tenant`/`admission`, UI Tenants, Admissions and cluster columns | §17 policy, route-coverage, link, names, caps and migration tests on both transports; existing suites green. |
 | **T1** connector framework | `connectors`, data keys and KEK, the `ExternalIdentity` path, discovery, per-connector routes, file-defined PAM/OIDC (§16 step 5), PAM co-hosting (D23), D22 rules, D20 clamp, `gxctl connector`, UI connectors (PAM, OIDC) | Existing OIDC and PAM tests pass through connectors; secrets and peer tests. |
-| **T2** OIDC presets and GitHub | `google`, `azure`, `jumpcloud`, `oidc` presets; MFA; GitHub OAuth + device flow; connector test | Mock tests per preset; manual checks against real Google, Entra, GitHub, JumpCloud. |
+| **T2** OIDC presets and invitations | §5.1: `google` (Workspace and gated consumer accounts, D39), `jumpcloud`, `oidc`; invitations (§6.1, D40); MFA per preset; per-preset connector tests, wizard and gxctl | Mock tests per preset and for invitations (§17); manual checks against real Google (both kinds of account) and JumpCloud. |
+| **T2b** Entra and GitHub | `azure` (`tid`, `oid`, group overage) and `github` (OAuth 2.0 web and device flow, org membership); moved out of T2 | Mock tests; manual checks against real Entra and GitHub. T4's Graph and GitHub sync need it. Not scheduled. |
 | **T3** SCIM | §8.1, managed users and teams, D20, field ownership | SCIM fixtures; deprovision-revokes test. |
 | **T4** pull sync and attributes | `directory_sync`, LDAP, Google Directory, Graph, GitHub, safety stop; SSH keys from connectors | Pull sync tests; LDAP against OpenLDAP in CI. |
 | **T5** workload federation | `federations`, `POST /auth/exchange`, `jwt` and `aws` kinds | Federation tests; a GitHub Actions workflow deploys without a stored token. |
@@ -1081,7 +1161,22 @@ Each milestone ships its API, CLI, UI and tests together and leaves
    `src/service/{directory,login}.rs` and adapters; gxctl `connector`;
    UI connectors.
 
-T2–T7 get their own task lists when T1 lands; per-protocol code under
+**T2 tasks** (one PR each, in order):
+1. This spec (D39, D40, §5.1, §6.1).
+2. Preset framework and `google`: `Kind::Google` over the OIDC code (`directory/presets/{mod,google}.rs`: fixed
+   endpoints and scopes, settings validation, claim checks, MFA rule);
+   the device client; D22 extended; mock-IdP tests.
+3. Invitations: `directory::invitations` store, the callback path in
+   `auth::external_login`, `InvitationService` on both transports
+   (`glidex/directory/v1/invitations.proto`), `allowed_emails`; gxctl
+   `invite`; UI under the tenant's members.
+4. `jumpcloud` (`Kind::Jumpcloud`, `directory/presets/jumpcloud.rs`).
+5. UI wizard per preset (fields, the redirect URI to register, Google's
+   two clients and the consumer gate), `gxctl connector add <preset>`,
+   connector test steps per preset, and `docs/` checklist for the real
+   IdPs.
+
+T3–T7 get their own task lists when they start; per-protocol code under
 `src/directory/<protocol>.rs`, presets under `src/directory/presets/`.
 
 ## 19. Out of scope
@@ -1094,7 +1189,8 @@ T2–T7 get their own task lists when T1 lands; per-protocol code under
   identities), a follow-up of T4's SSH keys.
 - SCIM outbound.
 - SAML (D30).
-- Tenant or directory self-service signup (D31).
+- Tenant or directory self-service signup (D31), including public
+  signup with Google accounts (§20).
 
 ## 20. Later designs
 
@@ -1109,6 +1205,10 @@ T2–T7 get their own task lists when T1 lands; per-protocol code under
 - **Consolidated billing** per fleet account: usage reported by the
   account's clusters and tenants (metering.md) gathered at the fleet,
   priced and invoiced per account.
+- **Public signup**: anyone with a Google (or other social) account
+  signs in and gets a tenant of their own. It needs tenant creation per
+  user, default caps and admission on clusters, abuse controls and
+  account deletion, and would revisit D31 and D39.
 - **A tenant's view across clusters**: resources, usage and audit from
   every cluster in one place, assembled by the UI and gxctl from each
   cluster's API at first, perhaps kept at the directory later.
