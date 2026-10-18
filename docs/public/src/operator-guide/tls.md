@@ -125,8 +125,9 @@ With a configured certificate the UI also sends
 `Strict-Transport-Security`.
 
 If users reach the UI under a name that isn't one of the host's own,
-also set `GLIDEX_UI_HOSTS` and `auth.allowed_origins` (see
-[Configuration](configuration.md#web-ui)).
+also set `GLIDEX_UI_HOSTS` (see [Configuration](configuration.md#web-ui)).
+The control plane accepts the browser's requests through the UI for
+any name the UI serves.
 
 ### Renewing
 
@@ -147,6 +148,71 @@ sudo systemctl restart glidex-control-plane glidex-ui
 
 `journalctl -u glidex-ui` (or `-u glidex-control-plane`) shows
 `TLS certificate reloaded` with the new fingerprint.
+
+## Tailscale certificates
+
+On a host that is on a [Tailscale](https://tailscale.com) tailnet with
+HTTPS certificates enabled (admin console → DNS → HTTPS Certificates),
+the web UI can serve the node's Let's Encrypt certificate to browsers
+that open `https://<node>.<tailnet>.ts.net:5173`. There's no browser
+warning and no fingerprint to compare. Every other name and address
+keeps the UI's usual certificate, and the API on port 8841 is
+unchanged.
+
+Before you turn it on: every Let's Encrypt certificate is published in
+public Certificate Transparency logs, so `<node>.<tailnet>.ts.net`
+becomes public. Tailscale can give your tailnet a randomly generated
+DNS name that reveals less. The name only resolves and routes inside
+the tailnet; use Tailscale ACLs to limit who can reach port 5173. Don't
+expose the UI with Tailscale Funnel.
+
+`tailscaled` hands certificates only to root or to the one user named
+in its `TS_PERMIT_CERT_UID`. If that variable is already set for another
+service (a web server, say), these steps would take the permission away
+from it; stop and resolve that first:
+
+```bash
+systemctl show tailscaled -p Environment
+grep TS_PERMIT_CERT_UID /etc/default/tailscaled
+```
+
+Grant it to `glidex-ui` (restarting `tailscaled` drops the tailnet
+connection for a few seconds):
+
+```bash
+sudo mkdir -p /etc/systemd/system/tailscaled.service.d
+printf '[Service]\nEnvironment=TS_PERMIT_CERT_UID=glidex-ui\n' |
+  sudo tee /etc/systemd/system/tailscaled.service.d/50-glidex-cert.conf
+sudo systemctl daemon-reload
+sudo systemctl restart tailscaled
+```
+
+Then turn it on in the UI:
+
+```bash
+sudo systemctl edit glidex-ui
+```
+
+```ini
+[Service]
+Environment=GLIDEX_UI_TLS_TAILSCALE=on
+```
+
+```bash
+sudo systemctl restart glidex-ui
+journalctl -u glidex-ui -f    # "Tailscale certificate" with its fingerprint and expiry
+```
+
+The first certificate can take a minute to be issued; until then, and
+whenever `tailscaled` can't provide one, the ts.net name gets the UI's
+usual certificate and the log says why. The UI asks `tailscaled` every
+six hours, so renewals happen in place, without a restart. Connections
+served the Tailscale certificate get `Strict-Transport-Security` with a
+one-day lifetime.
+
+To turn it off, remove the line from the drop-in and restart the UI; to
+also revoke the permission, delete `50-glidex-cert.conf` and restart
+`tailscaled`.
 
 ## Plain HTTP
 

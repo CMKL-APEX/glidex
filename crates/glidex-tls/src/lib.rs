@@ -313,6 +313,41 @@ pub fn certified_key(cert: &Path, key: &Path) -> Result<Arc<CertifiedKey>, Strin
         .map_err(|e| format!("{} with key {}: {}", cert.display(), key.display(), e))
 }
 
+/// A key and its chain from one PEM buffer, in any order (`tailscaled`
+/// sends the key first), refused unless the key belongs to the leaf.
+pub fn certified_key_pem(pem: &[u8]) -> Result<Arc<CertifiedKey>, String> {
+    let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_slice_iter(pem)
+        .collect::<Result<_, _>>()
+        .map_err(|e| format!("certificate: {e}"))?;
+    if certs.is_empty() {
+        return Err("no certificate".into());
+    }
+    let key = PrivateKeyDer::from_pem_slice(pem).map_err(|e| format!("key: {e}"))?;
+    CertifiedKey::from_der(certs, key, &rustls::crypto::ring::default_provider())
+        .map(Arc::new)
+        .map_err(|e| e.to_string())
+}
+
+/// The leaf's DNS names (lowercase) and its expiry (Unix seconds).
+pub fn leaf_names(key: &CertifiedKey) -> Result<(Vec<String>, i64), String> {
+    let der = key.cert.first().ok_or("no certificate")?;
+    let (_, c) = x509_parser::parse_x509_certificate(der).map_err(|e| e.to_string())?;
+    let names = match c.subject_alternative_name() {
+        Ok(Some(san)) => san
+            .value
+            .general_names
+            .iter()
+            .filter_map(|n| match n {
+                x509_parser::extensions::GeneralName::DNSName(d) => Some(d.to_ascii_lowercase()),
+                _ => None,
+            })
+            .collect(),
+        Ok(None) => vec![],
+        Err(e) => return Err(e.to_string()),
+    };
+    Ok((names, c.validity().not_after.timestamp()))
+}
+
 /// Fingerprint of a serving certificate's leaf.
 pub fn fingerprint_certified(key: &CertifiedKey) -> String {
     key.cert
@@ -371,7 +406,8 @@ impl Resolver {
         });
     }
 
-    fn pick(&self, sni: Option<&str>) -> Arc<CertifiedKey> {
+    /// The certificate a handshake naming `sni` gets.
+    pub fn pick(&self, sni: Option<&str>) -> Arc<CertifiedKey> {
         let named = self.named.load();
         sni.and_then(|h| named.iter().find(|(n, _)| n.eq_ignore_ascii_case(h)))
             .map(|(_, s)| s.get())

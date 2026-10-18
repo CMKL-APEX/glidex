@@ -1,6 +1,6 @@
 # Tailscale certificates for the web UI
 
-Status: **design accepted; TS0 implemented, TS1–TS2 pending** (milestones §10).
+Status: **design accepted; TS0–TS1 implemented, TS2 (installer) pending** (milestones §10).
 The open questions are settled as decisions T6–T11 (§8).
 Extends [security.md](security.md) §5.1 and §5.1.1 and
 [web-ui.md](web-ui.md) *Server*. The edits it needs in those documents
@@ -134,7 +134,16 @@ With `GLIDEX_UI_TLS_TAILSCALE=on` (and TLS not `off`):
 5. A domain that disappears from the list (node or tailnet renamed)
    loses its slot at the next poll; a new one gains one.
 
-The certificate's fingerprint and expiry are logged when it changes.
+A held certificate whose expiry passes without a renewal is dropped at
+the next poll, so that name falls back to the default certificate
+rather than an expired one. The certificate's fingerprint and expiry
+are logged when it changes; errors are logged when they change, not on
+every retry.
+
+Implementation: `crates/glidex-ui/src/tailscale.rs`. The UI checks the
+SNI of each finished handshake against the held names to mark the
+connection for HSTS (§4.4), so HSTS follows the certificate actually
+chosen, not the `Host` header.
 The key is never written to disk by glidex (`tailscaled` keeps its own
 copy under `/var/lib/tailscale/certs`).
 
@@ -314,7 +323,7 @@ in §2.
 | # | Scope | Acceptance |
 |---|---|---|
 | **TS0** reloadable certificates *(done)* | `CertSlot` and SNI `Resolver` in `glidex-tls`; control plane and UI use them; configured certificate files reload on change | §9 `glidex-tls` tests; operator guide drops "restart to renew". |
-| **TS1** Tailscale slot in the UI | `GLIDEX_UI_TLS_TAILSCALE`, local API client, polling and renewal, `Host` allowlist, HSTS, the T7 Origin rule | §9 `glidex-ui` tests; host test. |
+| **TS1** Tailscale slot in the UI *(done)* | `GLIDEX_UI_TLS_TAILSCALE`, local API client, polling and renewal, `Host` allowlist, HSTS, the T7 Origin rule | §9 `glidex-ui` tests; host test. |
 | **TS2** installer | Option precedence, prompt, `tailscaled` drop-in with refusal (T6), UI drop-in, usage blurb, uninstall, operator guide section | Installer tests; host test from a clean install. |
 | **TS3** *(gated upstream)* | Embedded tailscale-rs node (§6) | — |
 

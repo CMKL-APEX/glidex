@@ -20,7 +20,11 @@
 //! on every response, and TLS (spec §5.1): `GLIDEX_UI_TLS_CERT` +
 //! `GLIDEX_UI_TLS_KEY` (or the `ui-tls-key` systemd credential), else a
 //! self-signed certificate. `GLIDEX_UI_TLS=off` serves plain HTTP, only on
-//! loopback addresses.
+//! loopback addresses. `GLIDEX_UI_TLS_TAILSCALE=on` also serves the node's
+//! Tailscale certificate to its ts.net names (`tailscale`,
+//! spec/tailscale-tls.md).
+
+mod tailscale;
 
 use axum::Router;
 use axum::body::Body;
@@ -185,12 +189,20 @@ struct HostPolicy {
     /// (a VPN, DHCP) works without a restart. Still no rebinding risk: an
     /// attacker's domain is never an IP literal of this host.
     local_ips: bool,
+    /// The ts.net names a Tailscale certificate is held for, allowed
+    /// with either list: the UI holds a certificate for them, so they are
+    /// this host's (spec/tailscale-tls.md §4.3).
+    tailscale: Option<Arc<tailscale::Held>>,
 }
 
 impl HostPolicy {
     fn allows(&self, host: &str) -> bool {
         host_allowed(&self.rules, host)
             || (self.local_ips && host_ip(host).is_some_and(glidex_tls::is_local_ip))
+            || self
+                .tailscale
+                .as_ref()
+                .is_some_and(|t| split_host_port(host).is_some_and(|(h, _)| t.contains(&h)))
     }
 }
 
@@ -216,10 +228,17 @@ async fn host_check(State(policy): State<Arc<HostPolicy>>, req: Request, next: N
 
 // ---- response headers -------------------------------------------------------
 
-/// `hsts`: TLS with a configured certificate. Never with a self-signed
-/// one: browsers make certificate errors non-bypassable for an HSTS host
+/// HSTS with a configured certificate. Never with a self-signed one:
+/// browsers make certificate errors non-bypassable for an HSTS host
 /// (spec §5.1.1).
-fn add_security_headers(h: &mut HeaderMap, hsts: bool) {
+const HSTS_CONFIGURED: &str = "max-age=31536000";
+/// HSTS on a connection served the Tailscale certificate: one day while
+/// the feature is new, since it covers the control plane's port of that
+/// name too (spec/tailscale-tls.md §4.4).
+const HSTS_TAILSCALE: &str = "max-age=86400";
+
+/// `hsts`: the `Strict-Transport-Security` value, if any.
+fn add_security_headers(h: &mut HeaderMap, hsts: Option<&'static str>) {
     h.insert(
         header::CONTENT_SECURITY_POLICY,
         HeaderValue::from_static(CSP),
@@ -233,15 +252,24 @@ fn add_security_headers(h: &mut HeaderMap, hsts: bool) {
         HeaderValue::from_static("no-referrer"),
     );
     h.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
-    if hsts {
+    if let Some(v) = hsts {
         h.insert(
             header::STRICT_TRANSPORT_SECURITY,
-            HeaderValue::from_static("max-age=31536000"),
+            HeaderValue::from_static(v),
         );
     }
 }
 
+/// Set on requests of a connection that was served a Tailscale certificate.
+#[derive(Debug, Clone, Copy)]
+struct TailscaleCert;
+
 async fn security_headers(State(hsts): State<bool>, req: Request, next: Next) -> Response {
+    let hsts = if req.extensions().get::<TailscaleCert>().is_some() {
+        Some(HSTS_TAILSCALE)
+    } else {
+        hsts.then_some(HSTS_CONFIGURED)
+    };
     let mut resp = next.run(req).await;
     add_security_headers(resp.headers_mut(), hsts);
     resp
@@ -793,13 +821,16 @@ fn ui_cert() -> Result<UiCert, String> {
     }
 }
 
-async fn serve_conn<I>(io: I, router: Router, addr: SocketAddr)
+async fn serve_conn<I>(io: I, router: Router, addr: SocketAddr, tailscale_cert: bool)
 where
     I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let svc = hyper::service::service_fn(move |mut req: hyper::Request<hyper::body::Incoming>| {
         let router = router.clone();
         req.extensions_mut().insert(PeerAddr(addr));
+        if tailscale_cert {
+            req.extensions_mut().insert(TailscaleCert);
+        }
         async move { router.oneshot(req.map(Body::new)).await }
     });
     let conn = hyper::server::conn::http1::Builder::new()
@@ -831,7 +862,7 @@ fn redirect_router(hosts: Arc<HostPolicy>) -> Router {
                     .into_response(),
                 Err(_) => StatusCode::BAD_REQUEST.into_response(),
             };
-            add_security_headers(resp.headers_mut(), false);
+            add_security_headers(resp.headers_mut(), None);
             resp
         })
         .layer(from_fn_with_state(hosts, host_check))
@@ -849,6 +880,7 @@ async fn accept_loop(
     router: Router,
     tls: Option<tokio_rustls::TlsAcceptor>,
     redirect: Router,
+    tailscale: Option<Arc<tailscale::Held>>,
 ) {
     loop {
         let (stream, addr) = match listener.accept().await {
@@ -860,6 +892,7 @@ async fn accept_loop(
         };
         let router = router.clone();
         let redirect = redirect.clone();
+        let tailscale = tailscale.clone();
         match tls.clone() {
             Some(acceptor) => {
                 tokio::spawn(async move {
@@ -868,7 +901,7 @@ async fn accept_loop(
                             .await;
                     match sniff {
                         Ok(true) => {}
-                        Ok(false) => return serve_conn(stream, redirect, addr).await,
+                        Ok(false) => return serve_conn(stream, redirect, addr, false).await,
                         Err(_) => return tracing::debug!(%addr, "no request"),
                     }
                     match tokio::time::timeout(
@@ -877,14 +910,22 @@ async fn accept_loop(
                     )
                     .await
                     {
-                        Ok(Ok(s)) => serve_conn(s, router, addr).await,
+                        Ok(Ok(s)) => {
+                            // The resolver served the Tailscale certificate
+                            // to exactly these names.
+                            let ts =
+                                s.get_ref().1.server_name().is_some_and(|n| {
+                                    tailscale.as_ref().is_some_and(|t| t.contains(n))
+                                });
+                            serve_conn(s, router, addr, ts).await
+                        }
                         Ok(Err(e)) => tracing::debug!(%addr, "TLS handshake failed: {}", e),
                         Err(_) => tracing::debug!(%addr, "TLS handshake timed out"),
                     }
                 });
             }
             None => {
-                tokio::spawn(serve_conn(stream, router, addr));
+                tokio::spawn(serve_conn(stream, router, addr, false));
             }
         }
     }
@@ -910,26 +951,47 @@ async fn serve() -> Result<(), String> {
     };
     let tls_on = tls_enabled(env("GLIDEX_UI_TLS"))?;
     check_listen(&listen, tls_on)?;
+    let tailscale_on = tailscale::enabled(env("GLIDEX_UI_TLS_TAILSCALE").as_deref())?;
+    if tailscale_on && !tls_on {
+        return Err("GLIDEX_UI_TLS_TAILSCALE=on needs TLS (GLIDEX_UI_TLS is off)".into());
+    }
     let cert = if tls_on { Some(ui_cert()?) } else { None };
     // Re-read when the files change (spec/tailscale-tls.md §4.1).
     let files = match &cert {
         Some(c) => Some(glidex_tls::FileCert::load(&c.cert, &c.key)?),
         None => None,
     };
-    let tls = match &files {
-        Some(f) => Some(tokio_rustls::TlsAcceptor::from(
-            glidex_tls::resolver_config(glidex_tls::Resolver::new(f.slot.clone()), &[b"http/1.1"])?,
+    let resolver = files
+        .as_ref()
+        .map(|f| glidex_tls::Resolver::new(f.slot.clone()));
+    let tls = match &resolver {
+        Some(r) => Some(tokio_rustls::TlsAcceptor::from(
+            glidex_tls::resolver_config(r.clone(), &[b"http/1.1"])?,
         )),
         None => None,
     };
+    // The node's Tailscale certificates, fetched in the background once
+    // the listeners are up (spec/tailscale-tls.md §4.2).
+    let tailscale = match (&resolver, tailscale_on) {
+        (Some(r), true) => Some(tailscale::Tailscale::new(
+            env("GLIDEX_UI_TAILSCALE_SOCKET")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from(tailscale::DEFAULT_SOCKET)),
+            r.clone(),
+        )),
+        _ => None,
+    };
+    let held = tailscale.as_ref().map(|t| t.held());
     let hosts = match env("GLIDEX_UI_HOSTS") {
         Some(list) => HostPolicy {
             rules: parse_host_rules(&list)?,
             local_ips: false,
+            tailscale: held.clone(),
         },
         None => HostPolicy {
             rules: default_host_rules(&glidex_tls::LocalNames::discover()),
             local_ips: true,
+            tailscale: held.clone(),
         },
     };
     let spec = upstream_spec(
@@ -997,9 +1059,14 @@ async fn serve() -> Result<(), String> {
                 router.clone(),
                 tls.clone(),
                 redirect.clone(),
+                held.clone(),
             ))
         })
         .collect();
+    if let Some(t) = tailscale {
+        tracing::info!("Tailscale certificates: on");
+        tokio::spawn(t.run());
+    }
     shutdown_signal().await;
     for l in loops {
         l.abort();
@@ -1113,6 +1180,7 @@ mod tests {
         let startup = HostPolicy {
             rules: default_host_rules(&glidex_tls::LocalNames::default()),
             local_ips: true,
+            tailscale: None,
         };
         let explicit = HostPolicy {
             local_ips: false,
@@ -1245,7 +1313,7 @@ mod tests {
     #[test]
     fn security_headers_and_hsts_only_with_a_configured_certificate() {
         let mut h = HeaderMap::new();
-        add_security_headers(&mut h, false);
+        add_security_headers(&mut h, None);
         assert!(
             h["content-security-policy"]
                 .to_str()
@@ -1256,8 +1324,10 @@ mod tests {
         assert_eq!(h["referrer-policy"], "no-referrer");
         assert_eq!(h["x-frame-options"], "DENY");
         assert!(h.get("strict-transport-security").is_none());
-        add_security_headers(&mut h, true);
+        add_security_headers(&mut h, Some(HSTS_CONFIGURED));
         assert_eq!(h["strict-transport-security"], "max-age=31536000");
+        add_security_headers(&mut h, Some(HSTS_TAILSCALE));
+        assert_eq!(h["strict-transport-security"], "max-age=86400");
     }
 
     #[test]
@@ -1433,6 +1503,7 @@ mod tests {
             HostPolicy {
                 rules: default_host_rules(&local()),
                 local_ips: false,
+                tailscale: None,
             },
         );
         let get = |path: &str, encoding: Option<&str>| {
@@ -1519,11 +1590,12 @@ mod tests {
             HostPolicy {
                 rules: default_host_rules(&local()),
                 local_ips: false,
+                tailscale: None,
             },
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        tokio::spawn(accept_loop(listener, router, None, Router::new()));
+        tokio::spawn(accept_loop(listener, router, None, Router::new(), None));
 
         let out = exchange(
             addr,
@@ -1602,6 +1674,7 @@ mod tests {
             echo,
             Some(cp_acceptor),
             Router::new(),
+            None,
         ));
         let spec = UpstreamSpec {
             socket: None,
@@ -1620,6 +1693,7 @@ mod tests {
         let hosts = HostPolicy {
             rules: default_host_rules(&names),
             local_ips: false,
+            tailscale: None,
         };
         let router = app(
             dir.path(),
@@ -1637,6 +1711,7 @@ mod tests {
             router,
             Some(acceptor),
             redirect_router(Arc::new(hosts)),
+            None,
         ));
 
         // Plain HTTP: redirected; a foreign Host isn't.
@@ -1693,5 +1768,126 @@ mod tests {
         );
         let out = https("/api/vms").await;
         assert!(out.contains("upstream path=/vms"), "{out}");
+    }
+
+    /// The Tailscale certificate end to end (spec/tailscale-tls.md §4):
+    /// fetched from a fake `tailscaled`, served for its ts.net name only,
+    /// that name allowed as `Host` once held, and one-day HSTS on exactly
+    /// the connections that got it.
+    #[tokio::test]
+    async fn tailscale_certificate_by_sni_with_short_hsts() {
+        use std::collections::HashMap;
+        use std::sync::Mutex;
+        const NODE: &str = "node.tail.ts.net";
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("index.html"), "<html>ui</html>").unwrap();
+        let ts_pair = tailscale::tests::pair(&[NODE], 80);
+        let ts_cert = dir.path().join("ts.crt");
+        std::fs::write(
+            &ts_cert,
+            &ts_pair[ts_pair.find("-----BEGIN CERTIFICATE").unwrap()..],
+        )
+        .unwrap();
+        let fake = Arc::new(Mutex::new(tailscale::tests::Fake {
+            domains: Some(vec![NODE.into()]),
+            pairs: HashMap::from([(NODE.into(), ts_pair.clone())]),
+            ..Default::default()
+        }));
+        let sock = tailscale::tests::serve_fake(dir.path(), fake);
+
+        let ui = glidex_tls::ensure_self_signed(&dir.path().join("ui"), "ui", &local()).unwrap();
+        let files = glidex_tls::FileCert::load(&ui.cert, &ui.key).unwrap();
+        let resolver = glidex_tls::Resolver::new(files.slot.clone());
+        let acceptor = tokio_rustls::TlsAcceptor::from(
+            glidex_tls::resolver_config(resolver.clone(), &[b"http/1.1"]).unwrap(),
+        );
+        let ts = tailscale::Tailscale::new(sock, resolver);
+        let held = ts.held();
+        let hosts = HostPolicy {
+            rules: default_host_rules(&local()),
+            local_ips: false,
+            tailscale: Some(held.clone()),
+        };
+        let router = app(
+            dir.path(),
+            AppState {
+                upstream: Upstream::new(
+                    UpstreamSpec {
+                        socket: Some(dir.path().join("no-such.sock")),
+                        tcp: None,
+                    },
+                    None,
+                )
+                .unwrap(),
+                tls: true,
+                hsts: false,
+            },
+            hosts.clone(),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(accept_loop(
+            listener,
+            router,
+            Some(acceptor),
+            redirect_router(Arc::new(hosts)),
+            Some(held.clone()),
+        ));
+
+        let client =
+            glidex_tls::ClientTls::new(&[ui.cert.clone(), ts_cert], &[b"http/1.1"]).unwrap();
+        let https = |sni: &'static str, host: &'static str| {
+            let client = client.clone();
+            async move {
+                let tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
+                let name = rustls_pki_types::ServerName::try_from(sni).unwrap();
+                let mut s = tokio_rustls::TlsConnector::from(client.config.clone())
+                    .connect(name, tcp)
+                    .await
+                    .unwrap();
+                let leaf =
+                    glidex_tls::fingerprint_der(&s.get_ref().1.peer_certificates().unwrap()[0]);
+                s.write_all(
+                    format!("GET / HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n")
+                        .as_bytes(),
+                )
+                .await
+                .unwrap();
+                let mut out = String::new();
+                let _ = s.read_to_string(&mut out).await;
+                (leaf, out.to_ascii_lowercase())
+            }
+        };
+
+        // Not held yet: the name isn't served.
+        let (_, out) = https("localhost", "node.tail.ts.net:5173").await;
+        assert!(out.starts_with("http/1.1 421"), "{out}");
+
+        tokio::spawn(ts.run());
+        for _ in 0..100 {
+            if held.contains(NODE) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(held.contains(NODE));
+
+        let ts_fp = glidex_tls::fingerprint_pem(ts_pair.as_bytes()).unwrap();
+        let (leaf, out) = https(NODE, "node.tail.ts.net:5173").await;
+        assert_eq!(leaf, ts_fp);
+        assert!(out.starts_with("http/1.1 200"), "{out}");
+        assert!(
+            out.contains("strict-transport-security: max-age=86400"),
+            "{out}"
+        );
+
+        // Other names keep the usual certificate and get no HSTS, even
+        // when the Host is the ts.net name.
+        let (leaf, out) = https("localhost", "node.tail.ts.net:5173").await;
+        assert_eq!(leaf, glidex_tls::fingerprint(&ui.cert).unwrap());
+        assert!(out.starts_with("http/1.1 200"), "{out}");
+        assert!(!out.contains("strict-transport-security"), "{out}");
+        let (_, out) = https("localhost", "localhost:5173").await;
+        assert!(!out.contains("strict-transport-security"), "{out}");
     }
 }

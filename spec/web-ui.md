@@ -27,8 +27,8 @@ The installer builds the UI, copies `dist` to
 | `GLIDEX_UI_HOSTS` | `localhost`, `127.0.0.1`, `[::1]`, the host name and FQDN, the interface addresses (any port; an address that appears after startup counts too) | Allowed `Host` values, `host[:port]` comma-separated (a port pins it); setting it replaces the default. Anything else gets `421 Misdirected Request`, static files and `/api` alike (DNS rebinding). |
 | `GLIDEX_UI_TLS` | `auto` | `auto`: HTTPS (rustls with `ring`, HTTP/1.1) with `GLIDEX_UI_TLS_CERT`/`_KEY` if set, else a self-signed certificate generated on first start (security.md §5.1.1). `off`: plain HTTP, refused at startup unless every listen address is loopback. |
 | `GLIDEX_UI_TLS_CERT`, `GLIDEX_UI_TLS_KEY` | unset | PEM certificate chain and key to use instead of the self-signed one. The key may instead be the systemd credential `ui-tls-key` (`LoadCredential=`). |
-| `GLIDEX_UI_TLS_TAILSCALE` *(draft)* | `off` | `on`: also serve the node's Tailscale certificate, fetched from `tailscaled` and renewed in place, to clients whose SNI is one of its ts.net certificate domains; other names keep the certificate above. Refused with `GLIDEX_UI_TLS=off`. See [tailscale-tls.md](tailscale-tls.md). |
-| `GLIDEX_UI_TAILSCALE_SOCKET` *(draft)* | `/run/tailscale/tailscaled.sock` | The `tailscaled` local API socket. |
+| `GLIDEX_UI_TLS_TAILSCALE` | `off` | `on`: also serve the node's Tailscale certificate, fetched from `tailscaled` and renewed in place, to clients whose SNI is one of its ts.net certificate domains; other names keep the certificate above. Refused with `GLIDEX_UI_TLS=off`. See [tailscale-tls.md](tailscale-tls.md). |
+| `GLIDEX_UI_TAILSCALE_SOCKET` | `/run/tailscale/tailscaled.sock` | The `tailscaled` local API socket. |
 | `GLIDEX_API_SOCKET` | `/run/glidex-cp/ui.sock` | The control plane's UI socket. It only accepts the `glidex-ui` user. Set alone (the packaged unit), it is the only upstream: until it exists requests get `502`, never a TCP fallback. |
 | `GLIDEX_API_URL` | `https://127.0.0.1:8841` | The control plane over TCP, verified against the system store, `GLIDEX_API_CA_CERT` (a PEM file) and the control plane's published certificate (`/run/glidex-cp/tls.crt` or the hand-started run directory's, security.md §5.1.1). Set alone, it is the only upstream (development against a scratch control plane). With neither variable set, the default socket is used when it exists, else this default URL. |
 
@@ -55,7 +55,7 @@ connect-src 'self'; img-src 'self' data:; style-src 'self'
 `X-Frame-Options: DENY`, and with a configured certificate (not a
 self-signed one, security.md §5.1.1) `Strict-Transport-Security:
 max-age=31536000`; on connections served the Tailscale certificate,
-`max-age=86400` *(draft)*. A plain-HTTP request on the HTTPS port gets `308` to
+`max-age=86400`. A plain-HTTP request on the HTTPS port gets `308` to
 the `https://` URL.
 
 ## Authentication flow
