@@ -517,11 +517,19 @@ impl AuthService {
     /// of the admin group a system administrator and owner of the default
     /// project, so they can also manage glidex from a browser session.
     pub fn bootstrap(&self, default_project: &str) -> Result<Vec<String>, AuthError> {
-        let members = nix::unistd::Group::from_name(&self.config.admin_group)
+        let listed = nix::unistd::Group::from_name(&self.config.admin_group)
             .ok()
             .flatten()
             .map(|g| g.mem)
             .unwrap_or_default();
+        let me = nix::unistd::User::from_uid(nix::unistd::getuid())
+            .ok()
+            .flatten()
+            .map(|u| {
+                let groups = unix_groups(&u);
+                (u.name, groups)
+            });
+        let members = bootstrap_members(&self.config.admin_group, listed, me);
         self.bootstrap_with(&members, default_project)
     }
 
@@ -1663,6 +1671,25 @@ impl LinkedProjects {
     }
 }
 
+/// Whom bootstrap makes administrators: the members `admin_group` lists,
+/// and the user this process runs as (`me`: name and [`unix_groups`]) when
+/// it is in the group. The group's member list leaves out those whose
+/// primary group it is, while `api.sock` counts them as admins; only this
+/// one user is looked up, not every account.
+fn bootstrap_members(
+    admin_group: &str,
+    mut listed: Vec<String>,
+    me: Option<(String, Vec<String>)>,
+) -> Vec<String> {
+    if let Some((name, groups)) = me
+        && groups.iter().any(|g| g == admin_group)
+        && !listed.contains(&name)
+    {
+        listed.push(name);
+    }
+    listed
+}
+
 /// Names of every group `user` belongs to (primary first).
 pub fn unix_groups(user: &nix::unistd::User) -> Vec<String> {
     let Ok(name) = std::ffi::CString::new(user.name.clone()) else {
@@ -1949,6 +1976,43 @@ mod tests {
             s.bootstrap_with(&["other".into()], "pdefault")
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn bootstrap_counts_the_process_user_in_the_admin_group() {
+        let me = |groups: &[&str]| {
+            Some((
+                "tester".to_string(),
+                groups.iter().map(|g| g.to_string()).collect(),
+            ))
+        };
+        // Its primary group, which the group's member list leaves out.
+        assert_eq!(
+            bootstrap_members("tester", vec![], me(&["tester"])),
+            vec!["tester"]
+        );
+        assert_eq!(
+            bootstrap_members(
+                "glidex-admin",
+                vec!["alice".into()],
+                me(&["tester", "glidex-admin"])
+            ),
+            vec!["alice", "tester"]
+        );
+        // Listed already: once.
+        assert_eq!(
+            bootstrap_members("glidex-admin", vec!["tester".into()], me(&["glidex-admin"])),
+            vec!["tester"]
+        );
+        // Not in the group (the packaged service user): nobody added.
+        assert_eq!(
+            bootstrap_members("glidex-admin", vec!["alice".into()], me(&["glidex"])),
+            vec!["alice"]
+        );
+        assert_eq!(
+            bootstrap_members("glidex-admin", vec![], None),
+            Vec::<String>::new()
         );
     }
 
