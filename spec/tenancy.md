@@ -1415,7 +1415,7 @@ Done (tasks 4 and 5):
 | `jumpcloud` (§5.1): JumpCloud's issuer and scopes, groups in its claim (`memberOf`), an unstated email counted as verified | `src/directory/presets/jumpcloud.rs`; proto `JumpcloudSettings`; preset checks answer MFA and email verification (`presets::Checked`) |
 | The connector form per preset | `pages/Connectors.tsx`: Google (Workspace or any account, the gate, `trust_2sv`, the device client and its secret), JumpCloud (groups claim), the redirect URI to register; `isOidcKind` for the login page and invitations |
 | gxctl | `connector add jumpcloud` |
-| Who signs in how (D17: one person through two connectors is two users) | `components/ui.tsx::SignInMethods`, `signInLabel` (a local account, or a connector by name): the tenant page's members and roles, and the Access page's users; a membership says it came through a connector or an invitation |
+| Who signs in how (D17: one person through two connectors is two users) | `components/ui.tsx::SignInMethods`, `signInLabel` (a local account, or a connector by name): the tenant page's members and roles, a project's members, and the Access page's users; a membership says it came through a connector or an invitation |
 | Docs | the operator guide's Google, JumpCloud and invitations sections; [idp-checks.md](idp-checks.md) for the real providers |
 | Tests | `presets/jumpcloud.rs` unit tests; `connector_tests.rs::jumpcloud_*`; UI e2e `connectors.spec.ts` |
 
