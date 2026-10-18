@@ -115,6 +115,11 @@ pub struct Plan {
     pub state: String,
     #[serde(default)]
     pub receipt: Option<Receipt>,
+    /// The names of the networks the plan names (`map_networks`, the
+    /// dropped ones), as they were when it started: a network can be gone
+    /// by the time the plan is read.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub network_names: BTreeMap<String, String>,
 }
 
 const PLAN_PREFIX: &str = "departure/";
@@ -823,6 +828,19 @@ impl VmManager {
         opts.map_networks = mapped;
         let id = uuid::Uuid::new_v4().simple().to_string()[..12].to_string();
         let now = crate::tenancy::now();
+        // What the bundle will hold; the answer gives its counts.
+        let b = build_bundle(&self.database(), &id, &n.meta.id, &opts);
+        let named: std::collections::BTreeSet<&String> = opts
+            .map_networks
+            .iter()
+            .flat_map(|(a, b)| [a, b])
+            .chain(b.dropped_networks.iter())
+            .collect();
+        let network_names = nets
+            .iter()
+            .filter(|x| named.contains(&x.id))
+            .map(|x| (x.id.clone(), x.name.clone()))
+            .collect();
         let plan = Plan {
             plan: id.clone(),
             node: n.meta.id.clone(),
@@ -831,6 +849,7 @@ impl VmManager {
             deadline: now + timeout_secs.unwrap_or(c.config.detach_freeze_secs),
             state: "frozen".into(),
             receipt: None,
+            network_names,
         };
         let nid = n.meta.id.clone();
         self.database()
@@ -857,9 +876,8 @@ impl VmManager {
                 Ok(())
             })
             .map_err(failed)?;
-        let b = build_bundle(&self.database(), &id, &n.meta.id, &plan.options);
         Ok(
-            json!({ "plan": id, "node": n.spec.name, "deadline": plan.deadline, "vms": b.vm_ids.len(), "disks": b.disk_ids.len(), "images": b.image_ids.len(), "mapped": b.mapped, "dropped_networks": b.dropped_networks }),
+            json!({ "plan": id, "node": n.spec.name, "deadline": plan.deadline, "vms": b.vm_ids.len(), "disks": b.disk_ids.len(), "images": b.image_ids.len(), "mapped": b.mapped, "dropped_networks": b.dropped_networks, "network_names": plan.network_names }),
         )
     }
 

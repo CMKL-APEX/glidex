@@ -930,6 +930,8 @@ message DetachNodeResponse {
   map<string, string> mapped = 7;
   // Cluster networks whose NICs go.
   repeated string dropped_networks = 8 [json_name = "dropped_networks"];
+  // Network id → name, for the networks above.
+  map<string, string> network_names = 9 [json_name = "network_names"];
 }
 
 message AbortDetachRequest {
@@ -971,6 +973,9 @@ message Departure {
   optional bool with_access = 8 [json_name = "with_access"];
   // The node confirmed it has its bundle.
   optional bool acknowledged = 9;
+  // Network id → name, for `map_networks` and the networks whose NICs go,
+  // as they were when the detach started.
+  map<string, string> network_names = 10 [json_name = "network_names"];
 }
 
 message ListDeparturesRequest {}

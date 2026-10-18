@@ -271,8 +271,10 @@ async fn usage_over_rest_connect_and_grpc() {
     let (s, rpc) = h
         .connect(
             &format!("{USAGE}/GetUsage"),
+            // REST's window: a month can turn between the two calls.
             json!({"projects": ["p"], "query": {"granularity": "GRANULARITY_MONTH",
-                   "group_by": ["GROUP_KEY_PROJECT", "GROUP_KEY_VM"]}}),
+                   "group_by": ["GROUP_KEY_PROJECT", "GROUP_KEY_VM"],
+                   "from": rest["from"], "to": rest["to"]}}),
             &t,
         )
         .await;
@@ -393,7 +395,7 @@ async fn reports_series_and_stats() {
     let (s, rpc) = h
         .connect(
             &format!("{USAGE}/GetBandwidthReport"),
-            json!({"projects": ["p"], "query": {"group_by": ["GROUP_KEY_VM"]}}),
+            json!({"projects": ["p"], "query": {"group_by": ["GROUP_KEY_VM"], "month": rest["month"]}}),
             &t,
         )
         .await;
@@ -469,10 +471,25 @@ async fn reports_series_and_stats() {
     assert!(points[0]["slot"].as_str().unwrap().ends_with('Z'));
     assert_eq!(rest["p95"]["rx_mbps"], 10.0, "{rest}");
     assert_eq!(rest["p95"]["slots"]["counted"], 2, "{rest}");
+    // Both transports over one explicit window: each call's default ends at
+    // its own now, and a 5-minute slot can turn between them. (An explicit
+    // window is whole hours, so it holds the points above too.)
+    let (from, to) = (
+        rest["from"].as_str().unwrap().to_string(),
+        rest["to"].as_str().unwrap().to_string(),
+    );
+    let (s, rest) = h
+        .rest(
+            &format!("/vms/{vm}/bandwidth?p95=true&from={from}&to={to}"),
+            &t,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{rest}");
+    assert_eq!(rest["points"].as_array().unwrap().len(), 2, "{rest}");
     let (s, rpc) = h
         .connect(
             &format!("{METRICS}/GetVmBandwidth"),
-            json!({"id": vm, "query": {"p95": true}}),
+            json!({"id": vm, "query": {"p95": true, "from": from, "to": to}}),
             &t,
         )
         .await;

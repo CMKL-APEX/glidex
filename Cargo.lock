@@ -761,6 +761,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "connectrpc-reflection"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "97d238bfbb8155bfa144b62b2f03b8285063c59cbdcba53b14dfb93b68e6673a"
+dependencies = [
+ "buffa",
+ "buffa-descriptor",
+ "connectrpc",
+ "futures",
+ "http-body",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.17",
+]
+
+[[package]]
 name = "const-oid"
 version = "0.9.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1580,6 +1596,7 @@ dependencies = [
  "colored",
  "connectrpc",
  "connectrpc-health",
+ "connectrpc-reflection",
  "dirs",
  "futures-util",
  "getrandom 0.3.4",

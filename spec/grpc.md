@@ -59,8 +59,12 @@ The web UI moves to gRPC-Web through Connect (G-D8, §11).
   no listener change.
 - `grpc.health.v1.Health` (`connectrpc-health`; its default features
   add zstd, a C build dependency only) on every listener, no auth, like
-  `GET /health`, always answered by the server that receives it. Server reflection (`connectrpc-reflection`)
-  on `api.sock` only (later; not in G0).
+  `GET /health`, always answered by the server that receives it. Server reflection (`connectrpc-reflection`,
+  `grpc.reflection.v1` and `v1alpha`) on `api.sock` only, from the
+  descriptor set `build.rs` writes (`glidex_api::DESCRIPTOR_SET`):
+  `grpcurl -plaintext -unix /run/glidex-cp/api.sock list` and `buf curl`
+  work without the protos. Elsewhere it answers `404`; like health it
+  is answered by the server that receives it.
 - Limits: 4 MiB per message (configurable, never above 16 MiB),
   deadlines from `grpc-timeout` / `connect-timeout-ms` capped at 5
   minutes for unary calls.
@@ -428,8 +432,9 @@ a client that stops sending (half-close) ends the call.
 | Cluster family (G3): `ClusterService` (init, join, import, rejoin, status, join tokens, promote, dissolve, leave, CA and secrets-key rotation, OVN settings, edge defaults, OVN overview and tunnels), `NodeService` (nodes, drain, br-int and mappings, spare image files, remove, forget, purge, rejoin tokens, detach, abort, departed, departures), `ImportService` | proto `glidex/cluster/v1/cluster.proto`; `service/cluster.rs`, `service/node.rs` (the cluster code's JSON turned into the messages by `cluster::proto_of`: times and enum names by field path); RPC `api/rpc/cluster.rs`; REST twins `api/cluster.rs`, `api/nodes.rs`; `GET /cluster/snapshot` stays REST (a binary download); init, join and leave are host-local as RPCs too, and leave runs on the agent from its UI; `/watch` nodes and imports are the messages; gxctl and the UI on the new shapes; tests `tests/cluster_tests.rs` |
 | Watch (G4): `WatchService.Watch`, a server stream | proto `glidex/watch/v1/watch.proto`; `service/watch.rs` (snapshots, diffs, watcher slots; events as data); RPC `api/rpc/watch.rs`; `GET /watch` as server-sent events in `api/watch.rs`; gxctl `watch` on the stream; tests `api_tests.rs::test_watch_over_rpc_streams_the_same_events` and the REST watch tests |
 | Object events and console (G4): `WatchService.WatchEvents` (server stream), `VmService.Console` (bidi) | `service/watch.rs::open_events` (through each kind's events list, with its read action via `Caller::with_action`); `service/vm.rs::console_target`/`console_connect`, shared with the WebSocket (`api/vms.rs::console_ws`); RPC `api/rpc/watch.rs`, `api/rpc/vm.rs::console`; gxctl `console` on the RPC; tests `tests/console_tests.rs`, `network_tests.rs::a_networks_events_stream_as_they_happen` |
-| UI on gRPC-Web (G4) | `crates/glidex-ui/ui/src/gen/` (generated, committed; CI checks it is current), `api.ts::rpc()` and `rpcError()`, `live.tsx` on `WatchService.Watch` (keep-alives every 15 s); dev and e2e through `ui.sock` (§6); `ErrorInfo.metadata.http_status` (§7) |
+| UI on gRPC-Web (G4) | `crates/glidex-ui/ui/src/gen/` (generated, committed; CI checks it is current), `api.ts::rpc()` and `rpcError()`, `live.tsx` on `WatchService.Watch` (keep-alives every 15 s); dev and e2e through `ui.sock` (§6); `ErrorInfo.metadata.http_status` (§7); REST errors typed from `glidex.api.v1.Error` (`types.ts::ApiError`) |
 | One type system (G5) | the REST error body is `glidex.api.v1.Error` (`api/errors.rs` serializes `ApiError` through it); `proto_body` decodes every REST body, the old request values, the VM merge patch and `Glidex-Api-Shape` removed (G-D12); `/auth/token` and the device polls answer `PasswordTokenResponse`/`PollDeviceResponse`; VM create and the VM message built in `service/vm.rs` (no `CreateVmRequest`/`VmResponse` in `models.rs`) |
+| Server reflection (§3) | `api/rpc/mod.rs` (`REFLECTION`, `api_socket_only`), `glidex_api::DESCRIPTOR_SET` |
 | Forwarding by `kind`, trailers (§8) | `api/gate.rs`, `cluster/net.rs` (`Reply.trailers`) |
 | CI (G-D9) | `.github/workflows/rust.yml` job `proto` |
 | Tests | `tests/rpc_tests.rs`; `cluster_tests.rs::rpc_reads_are_answered_by_the_server_that_takes_them`; unit tests in `api/rpc` and `glidex-api` |
@@ -441,5 +446,6 @@ over api.sock by `gxctl` `rpc_clients_over_the_unix_socket`. The UI on
 gRPC-Web is exercised by its e2e suite (crates/glidex-ui/e2e, through
 `glidex-ui` and the dev server on the scratch control plane's `ui.sock`;
 RPC mocks with `fixtures.ts::rpcRoute`), and the TypeScript generation
-check runs in CI's `proto` job. Not yet exercised: reflection.
+check runs in CI's `proto` job. Reflection is covered by
+`rpc_tests.rs::reflection_lists_the_services_on_the_api_socket_only`.
 

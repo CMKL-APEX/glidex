@@ -35,7 +35,9 @@ fn failed(e: impl std::fmt::Display) -> MemberError {
     MemberError::Failed(e.to_string())
 }
 
-fn resolve(nodes: &[Node], key: &str) -> Result<Node, MemberError> {
+/// The node `key` names: an id, else a live node's name, else a departed
+/// one's.
+pub(crate) fn resolve(nodes: &[Node], key: &str) -> Result<Node, MemberError> {
     nodes
         .iter()
         .find(|n| n.meta.id == key)

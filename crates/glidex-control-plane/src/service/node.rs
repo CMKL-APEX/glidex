@@ -29,6 +29,16 @@ fn store_err(e: crate::node::NodeError) -> ApiErr {
     err(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string())
 }
 
+/// The id of the node `key` names (an id or a name, as membership
+/// operations take it); `key` itself when there is none, so the caller
+/// is authorized before learning that.
+fn node_key(call: &Call, key: String) -> ServiceResult<String> {
+    let nodes = call.manager().nodes().list().map_err(store_err)?;
+    Ok(crate::cluster::membership::resolve(&nodes, &key)
+        .map(|n| n.meta.id)
+        .unwrap_or(key))
+}
+
 pub fn list(call: &Call, _req: pb::ListNodesRequest) -> ServiceResult<pb::ListNodesResponse> {
     call.require(Ent::Cluster, EntitySet::new())?;
     let nodes = call.manager().nodes().list().map_err(store_err)?;
@@ -39,7 +49,7 @@ pub fn list(call: &Call, _req: pb::ListNodesRequest) -> ServiceResult<pb::ListNo
 }
 
 pub fn get_node(call: &Call, req: pb::GetNodeRequest) -> ServiceResult<pb::GetNodeResponse> {
-    let id = req.id;
+    let id = node_key(call, req.id)?;
     let mut es = EntitySet::new();
     es.host(&id);
     call.require(Ent::host_of(&id), es)?;
@@ -79,7 +89,8 @@ fn contents(c: &Caller, id: &str) -> Value {
     serde_json::json!({ "vms": vms, "disks": disks, "networks": networks })
 }
 
-async fn set_drain(c: &Caller, id: &str, drain: bool) -> Result<Value, ApiErr> {
+async fn set_drain(c: &Caller, key: String, drain: bool) -> Result<Value, ApiErr> {
+    let id = &node_key(c, key)?;
     let mut es = EntitySet::new();
     es.host(id);
     c.require(Ent::host_of(id), es)?;
@@ -115,14 +126,14 @@ async fn set_drain(c: &Caller, id: &str, drain: bool) -> Result<Value, ApiErr> {
 }
 
 pub async fn drain(call: &Call, req: pb::DrainNodeRequest) -> ServiceResult<pb::DrainNodeResponse> {
-    proto_of(set_drain(call, &req.id, true).await?, PHASE)
+    proto_of(set_drain(call, req.id, true).await?, PHASE)
 }
 
 pub async fn undrain(
     call: &Call,
     req: pb::UndrainNodeRequest,
 ) -> ServiceResult<pb::UndrainNodeResponse> {
-    proto_of(set_drain(call, &req.id, false).await?, PHASE)
+    proto_of(set_drain(call, req.id, false).await?, PHASE)
 }
 
 fn member_err(e: crate::cluster::membership::MemberError) -> ApiErr {
@@ -386,7 +397,7 @@ pub fn list_departures(
                 "plan": p.plan, "node": p.node, "node_name": names.get(&p.node), "state": p.state,
                 "started_at": p.started_at, "deadline": p.deadline,
                 "map_networks": p.options.map_networks, "with_access": p.options.with_access,
-                "acknowledged": p.receipt.is_some(),
+                "acknowledged": p.receipt.is_some(), "network_names": p.network_names,
             })
         })
         .collect();
@@ -563,7 +574,7 @@ pub async fn put_node_ovn(
 ) -> ServiceResult<pb::ConfigureNodeOvnResponse> {
     use crate::node::BrIntDatapath as Dp;
     let c = call;
-    let id = req.id;
+    let id = node_key(c, req.id)?;
     let b = NodeOvnBody {
         br_int_datapath: match req.br_int_datapath.as_known().unwrap_or_default() {
             pb::BrIntDatapath::BR_INT_DATAPATH_AUTO => Some(Dp::Auto),
@@ -768,7 +779,7 @@ pub fn delete_spare_image_files(
     req: pb::DeleteSpareImageFilesRequest,
 ) -> ServiceResult<pb::DeleteSpareImageFilesResponse> {
     let c = call;
-    let id = req.id;
+    let id = node_key(c, req.id)?;
     c.require(Ent::Cluster, EntitySet::new())?;
     c.set_target(format!("node:{id}"));
     c.audit_always();
