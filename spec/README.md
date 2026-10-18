@@ -21,7 +21,7 @@ fresh reader cannot infer just by reading the source.
 | [images.md](images.md) | Image catalog + verified download, managed disks: create/delete, grow/shrink, root-partition extend |
 | [credentials.md](credentials.md) | Credential store: guest logins for cloud-init, hashing, security rules |
 | [networking.md](networking.md) | VM networking: `glidex-ovs` + root `glidex-netd` — OVS install (distro or pinned source), bridges, uplinks with IP migration, NAT + DHCP, vhost-user/tap VM ports; host-test findings in §0 |
-| [console.md](console.md) | Console proxy in the shim, listener invariant, log append/rotation, WebSocket bridge, xterm |
+| [console.md](console.md) | The one console per VM (`ttyS0`/`hvc0` on a PTY), its proxy in the shim, listener invariant, log append/rotation, the WebSocket and RPC clients, the browser terminal (ghostty-web/xterm.js), known gaps |
 | [cli.md](cli.md) | `gxctl` interactive CLI, command semantics, console attach loop |
 | [web-ui.md](web-ui.md) | Vite + React UI structure, routes, API client, dev-proxy |
 | [installer.md](installer.md) | `glidex-install` bootstrap flow and what it brings up |

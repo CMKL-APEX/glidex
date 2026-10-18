@@ -8,14 +8,14 @@ host.
 
 ```
  ┌───────────────────────────┐         ┌──────────────────────────┐
- │  Browser (xterm.js)       │         │  gxctl (interactive CLI) │
+ │  Browser (ghostty-web)    │         │  gxctl (interactive CLI) │
  └──────────────┬────────────┘         └──────────────┬───────────┘
                 │ HTTP + WebSocket (via glidex-ui)    │ HTTP over api.sock / TCP
                 ▼                                     ▼
  ┌────────────────────────────────────────────────────────────────┐
  │  glidex-control-plane  (user glidex)                           │
  │  ├── REST API, admission   (api/, state.rs)                    │
- │  ├── Console WS bridge     (api/vms.rs::bridge_console)        │
+ │  ├── Console bridge        (api/vms.rs::bridge_stream)         │
  │  ├── Store / ReDB          (store.rs; images/, network.rs, …)  │
  │  ├── VM controller + queue (controller/)                       │
  │  ├── Instances, runners    (instance/)                         │
@@ -143,19 +143,27 @@ and `crates/glidex-hv-client` (CH HTTP and QMP clients, used by both).
 
 ## Data flow: "open console in the browser"
 
-1. Browser navigates to `/vms/:id/console` → React renders `VmConsole`.
-2. The page opens a WebSocket to `ws(s)://…/api/vms/:id/console/ws`
-   with `binaryType = "arraybuffer"`.
-3. Vite proxy forwards the upgrade to the control plane on `:8841`.
-4. `api::console_ws` looks up the VM, grabs its `console_socket_path`,
-   and on upgrade hands off to `bridge_console`.
-5. `bridge_console` opens a `tokio::net::UnixStream` to the console
-   socket (bound by the shim's proxy thread — see
-   [console.md](console.md)) and enters a `select!` loop copying
-   bytes both ways.
+1. Browser navigates to `/vms/:id/console` → React renders `VmConsole`
+   with its terminal (ghostty-web by default, or xterm.js).
+2. The page gets a single-use console ticket (`CreateConsoleTicket`,
+   valid 30 s), then opens a WebSocket to
+   `ws(s)://…/api/vms/:id/console/ws?ticket=…` with
+   `binaryType = "arraybuffer"`.
+3. glidex-ui (or the Vite dev proxy) passes the upgrade to the control
+   plane over `ui.sock` and splices the two connections.
+4. `api::console_ws` checks access and redeems the ticket
+   (`service/vm.rs::console_target`), connects to the VM's console
+   socket (or, for a VM on another node, to that node's relay), and on
+   upgrade hands off to `bridge_stream`.
+5. `bridge_stream` copies bytes both ways in a `select!` loop with
+   the console socket, bound by the shim's proxy thread — see
+   [console.md](console.md).
 6. New clients get the current console log replayed to them at connect
    time by the shim's proxy thread, so the terminal shows history even
    on first connect.
+
+gxctl reaches the same console over the bidi RPC `VmService.Console`
+instead of the WebSocket.
 
 ## Shutdown, restart and adoption
 

@@ -46,9 +46,11 @@ over TCP it goes by the browser's session cookie alone. `Origin`,
 `Cookie`, `X-Glidex-CSRF` and `Authorization` pass through untouched.
 
 Every response carries `Content-Security-Policy: default-src 'self';
-connect-src 'self'; img-src 'self' data:; style-src 'self'
-'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action
-'self'` (inline styles: React and xterm.js set `style` attributes),
+script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'; img-src 'self'
+data:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none';
+base-uri 'none'; form-action 'self'` (`'wasm-unsafe-eval'`: the
+console's ghostty-web terminal is WebAssembly; inline styles: React and
+the terminals set `style` attributes),
 `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`,
 `X-Frame-Options: DENY`, and with a configured certificate (not a
 self-signed one, security.md §5.1.1) `Strict-Transport-Security:
@@ -90,7 +92,8 @@ the `https://` URL.
 - **React 19** with **react-router-dom 7** for client-side routing.
 - **TypeScript 5** (strict).
 - **Tailwind CSS 3** for styling; config in `ui/tailwind.config.js`.
-- **@xterm/xterm + @xterm/addon-fit** for the VM console page.
+- **ghostty-web** (default) and **@xterm/xterm + @xterm/addon-fit** for
+  the VM console page, each loaded only when chosen.
 - **bun** is the package manager (the lockfile is `bun.lock`).
 
 ## Dev-server proxy
@@ -134,7 +137,8 @@ ui/src/
 └── pages/
     ├── Dashboard.tsx       # List VMs, open create modal; follows the live stream (polls without it)
     ├── VmDetail.tsx        # VM details, Ready reason, restart notice, actions, events, Open Console link
-    ├── VmConsole.tsx       # xterm.js + console WebSocket; Reconnect after it closes
+    ├── VmConsole.tsx       # Console page: ticket + WebSocket, terminal choice, Reconnect after it closes
+    ├── consoleTerminal.ts  # The two terminals (ghostty-web, xterm.js) behind one interface
     ├── Credentials.tsx     # List / add / edit / delete guest logins
     ├── Images.tsx          # Cloud image and firmware catalogs (Pull), downloaded images and firmware with progress
     ├── Disks.tsx           # Disks: create, resize, extend root, delete, partitions
@@ -420,25 +424,38 @@ shows no branch.
 
 The console page is the non-obvious component. It:
 
-1. Creates an `xterm` `Terminal` and fits it to a ref'd container.
-2. Gets a single-use ticket (`POST /api/vms/:id/console/ticket`, valid
-   30 s), then opens
-   `ws(s)://<location.host>/api/vms/:id/console/ws?ticket=<ticket>` with
-   `binaryType = "arraybuffer"`. A failed ticket request is shown as the
-   page's error.
+1. Opens the chosen terminal (`consoleTerminal.ts`) in a ref'd container
+   and fits it. **ghostty-web** (Ghostty's terminal engine as
+   WebAssembly) is the default, **xterm.js** the alternative; the
+   choice is a select on the page, kept in `localStorage`
+   (`glidex.console.terminal`). Each library is loaded on demand;
+   ghostty-web's `.wasm` is fetched from `/assets` (its default `data:`
+   URL isn't allowed by `connect-src`). Both get the same options
+   (`convertEol`, font, theme) and Ctrl+Shift+C / Ctrl+Shift+V copy and
+   paste, so Ctrl+C stays `^C` for the guest.
+2. Gets a single-use ticket (`CreateConsoleTicket`, valid 30 s), then
+   opens `ws(s)://<location.host>/api/vms/:id/console/ws?ticket=<ticket>`
+   with `binaryType = "arraybuffer"`. A failed ticket request is shown
+   as the page's error.
 3. Maps:
    - **WS → term**: `message` event → `term.write(Uint8Array)` for
      binary frames, `term.write(string)` for text frames (used by
      the server to surface a connect failure).
    - **term → WS**: `term.onData(d => ws.send(TextEncoder.encode(d)))`.
 4. Tracks a `Status` enum (`connecting | connected | closed | error`)
-   for the status pill shown in the page header.
-5. On unmount, disposes the input handler, detaches the socket's
-   handlers and closes it, takes the terminal off the page, and disposes
-   it on the next tick. xterm 5.5's `open()` queues a timer that reads
-   the renderer; disposing before it runs (React StrictMode mounts twice
-   in dev) throws "reading 'dimensions'". `e2e/tests/console.spec.ts`
-   covers this.
+   for the status pill shown in the page header; on `closed` or `error`
+   a **Reconnect** button runs steps 2-3 again with a new ticket. When
+   the VM's node stopped reporting, the error says so.
+5. Fits the terminal on window resize. The size stays in the browser:
+   it isn't sent to the server ([console.md](console.md) "Known gaps").
+6. Exposes the terminal's text as `screenText()` on the container, for
+   the e2e suite (ghostty-web draws on a canvas).
+7. On unmount, disposes the input handler, detaches the socket's
+   handlers and closes it, and disposes the terminal. xterm 5.5's
+   `open()` queues a timer that reads the renderer, so xterm.js is taken
+   off the page at once and disposed on the next tick; disposing before
+   that timer runs (React StrictMode mounts twice in dev) throws
+   "reading 'dimensions'". `e2e/tests/console.spec.ts` covers this.
 
 See [console.md](console.md) for how the server side of that
 WebSocket is implemented.
