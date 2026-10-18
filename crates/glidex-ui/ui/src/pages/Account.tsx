@@ -7,7 +7,8 @@ import { useConnectorNames } from "../hooks";
 import { useSession } from "../session";
 
 const LINK_ERRORS: Record<string, string> = {
-  taken: "That sign-in already belongs to another user. Ask an administrator to remove it there first.",
+  taken:
+    "That sign-in already belongs to another user. An administrator can disable that user and remove the sign-in on the Access page; then add it here.",
   not_allowed: "The connector didn't allow that sign-in (a group, MFA or domain rule).",
   not_signed_in: "You were signed out before the sign-in finished. Sign in and try again.",
 };

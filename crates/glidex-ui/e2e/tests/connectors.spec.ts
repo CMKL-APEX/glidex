@@ -74,7 +74,7 @@ test("users show how they sign in", async ({ page }) => {
   // the lists say which way each signs in.
   await page.goto("/access");
   const users = page.locator("section", { has: page.getByRole("heading", { name: "Users" }) });
-  await expect(users.getByText("Local account").first()).toBeVisible();
+  await expect(users.getByText(/^(Local password|Host socket)$/).first()).toBeVisible();
   await expect(users.getByText(/^(unix|pam):/)).toHaveCount(0);
 });
 
@@ -92,7 +92,7 @@ test("your account lists your sign-in methods and offers more", async ({ page })
     await expect(page).toHaveURL(/\/account$/);
     await expect(page.getByRole("heading", { name: "Your account" })).toBeVisible();
     const list = page.getByTestId("sign-in-methods-list");
-    await expect(list.getByText("Local account")).toBeVisible();
+    await expect(list.getByText(/^(Local password|Host socket)$/).first()).toBeVisible();
     await expect(list.getByRole("button", { name: "Remove" })).toHaveCount(0);
     await expect(page.getByRole("button", { name: "E2E Add SSO" })).toBeVisible();
   } finally {
@@ -120,6 +120,14 @@ test("an administrator removes one of a user's sign-in methods", async ({ page }
     await expect(row.getByRole("button", { name: "remove" })).toHaveCount(0);
     const user = ((await api("/users")).users ?? []).find((u: { id: string }) => u.id === id);
     expect(user?.identities?.length, JSON.stringify(user)).toBe(1);
+    // Disabled, its last one can go too (to be added to the right user).
+    await api(`/users/${id}`, { method: "PATCH", body: { disabled: true } });
+    await page.reload();
+    await row.getByRole("button", { name: "remove" }).click();
+    await dialog.getByRole("button", { name: "Remove" }).click();
+    await expect(dialog).toBeHidden();
+    const gone = ((await api("/users")).users ?? []).find((u: { id: string }) => u.id === id);
+    expect(gone?.identities ?? [], JSON.stringify(gone)).toHaveLength(0);
   } finally {
     await del(`/users/${id}`);
   }

@@ -795,12 +795,18 @@ pub fn unlink_identity(
     let Some(i) = found else {
         return Err(not_found("identity"));
     };
-    // A user may have many sign-in methods, but not none.
-    if all.len() <= 1 {
+    // A user may have many sign-in methods, but not none, unless it is
+    // disabled (it can't sign in anyway): then its last one can go, to be
+    // added to the user its person really is.
+    let disabled = s
+        .user(&req.id)
+        .map_err(store_err)?
+        .is_some_and(|u| u.disabled);
+    if all.len() <= 1 && !disabled {
         return Err(ServiceError::new(
             StatusCode::CONFLICT,
             "last_identity",
-            "this is the user's only way to sign in: add another first, or disable the user",
+            "this is the user's only way to sign in: add another first, or disable the user to take it away",
         ));
     }
     call.detail("identity", serde_json::json!(req.key));

@@ -350,7 +350,13 @@ Without linking, one person signing in two ways is two users.
   `?link_error=taken|not_allowed|not_signed_in`.
 - **Removing one:** the user's own with `manageOwnSignIns`, anyone's with
   `manageUsers`; never a user's last identity (`409 last_identity`), so
-  nobody is locked out by accident (disable the user instead). An
+  nobody is locked out by accident, **unless the user is disabled** (it
+  can't sign in anyway): then an administrator may take its last one, so
+  that its person can add it to the user they really are (a Google login
+  that made a second user before linking existed).
+- **Labels:** `pam` is a host account's password ("Local password"),
+  `unix` the host's local socket ("Host socket": gxctl on the host, no
+  password), `conn:<id>` a connector by its display name. An
   administrator's removal may also end the user's sessions
   (`end_sessions`). Sessions and tokens belong to the user, not the
   identity: without that, they stay valid until they expire or are

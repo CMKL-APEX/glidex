@@ -185,7 +185,7 @@ export default function Access() {
                           <div key={key}>
                             <span className="font-sans text-gray-700">{label}</span>{" "}
                             <span className="text-gray-400">{i.email ?? i.subject}</span>
-                            {host.manageUsers && (u.identities ?? []).length > 1 && (
+                            {host.manageUsers && ((u.identities ?? []).length > 1 || u.disabled) && (
                               <button
                                 className="ml-2 font-sans text-red-600 hover:underline"
                                 title="Remove this sign-in method"
@@ -324,7 +324,7 @@ export default function Access() {
       {unlinking && (
         <ConfirmDialog
           title="Remove a sign-in method"
-          consequence={`${unlinking.name} won't be able to sign in with ${unlinking.label} any more. Their other sign-in methods stay.`}
+          consequence={`${unlinking.name} won't be able to sign in with ${unlinking.label} any more. Their other sign-in methods stay; a disabled user's last one can go, so it can be added to the right user.`}
           actionLabel="Remove"
           onConfirm={async () => {
             await api.unlinkIdentity(unlinking.user, unlinking.key, endSessions);

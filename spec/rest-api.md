@@ -246,7 +246,7 @@ tenancy.md §6.2), answering `{redirect}`; its callback returns to
 `return_to` with `?linked=<id>` or `?link_error=<code>`. `DELETE
 /users/{id}/identities/{key}[?end_sessions=true]` removes one of a
 user's sign-in methods (one's own, or with `manageUsers`), never the
-last (`409 last_identity`). `POST
+last (`409 last_identity`) unless the user is disabled. `POST
 /auth/login` and `POST /auth/token` take `connector` (a PAM connector,
 the first one when absent); a token is clamped to the connector's
 `token_max_days`. A refused login is `403 login_not_allowed`. The

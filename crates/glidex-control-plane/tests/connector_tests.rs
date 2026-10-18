@@ -2060,10 +2060,31 @@ async fn a_user_adds_and_removes_sign_in_methods() {
         (StatusCode::CONFLICT, Some("last_identity")),
         "{v}"
     );
+    // Disabled, its last one can go (to be added to the user its person
+    // really is): an administrator takes Bob's away.
+    let root = h.session(&h.admin("root-admin"));
+    let (st, v) = h
+        .rest(
+            "PATCH",
+            &format!("/users/{bob}"),
+            Some(json!({"disabled": true})),
+            &root,
+        )
+        .await;
+    assert!(st.is_success(), "{v}");
+    let (st, v) = h
+        .rest(
+            "DELETE",
+            &format!("/users/{bob}/identities/{k}"),
+            None,
+            &root,
+        )
+        .await;
+    assert_eq!(st, StatusCode::NO_CONTENT, "{v}");
+    assert!(h.app.auth.store.identities_of(&bob).unwrap().is_empty());
     // An administrator takes Ada's Google sign-in away and ends her sessions.
     let (st, _) = link_through(&h, &mock, "gw", &s, mine).await;
     assert_eq!(st, StatusCode::SEE_OTHER);
-    let root = h.session(&h.admin("root-admin"));
     let (st, v) = h
         .rest(
             "DELETE",

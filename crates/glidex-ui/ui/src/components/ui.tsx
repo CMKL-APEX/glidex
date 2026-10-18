@@ -113,10 +113,13 @@ export function principalName(e: EntityRef, dir: Directory, known?: string): str
 }
 
 /** A role-link table with optional remove buttons. */
-/** How an identity signs in: a local account, or a connector by its name
- *  (`conn:<id>`; `oidc:<issuer>` is the file-defined OIDC connector). */
+/** How an identity signs in: a host account's password (`pam`), the
+ *  host's local socket (`unix`: gxctl on the host, no password), or a
+ *  connector by its name (`conn:<id>`; `oidc:<issuer>` is the
+ *  file-defined OIDC connector). */
 export function signInLabel(provider: string, connectors: Record<string, string>): string {
-  if (provider === "pam" || provider === "unix") return "Local account";
+  if (provider === "pam") return "Local password";
+  if (provider === "unix") return "Host socket";
   if (provider.startsWith("conn:")) {
     const id = provider.slice(5);
     return connectors[id] ?? id;
