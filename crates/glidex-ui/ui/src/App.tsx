@@ -3,32 +3,33 @@ import { Routes, Route } from "react-router-dom";
 import Header from "./components/Header";
 import Footer from "./components/Footer";
 import Dashboard from "./pages/Dashboard";
-import VmDetail from "./pages/VmDetail";
 import NotFound from "./pages/NotFound";
-import Credentials from "./pages/Credentials";
-import Networking from "./pages/Networking";
-import Images from "./pages/Images";
-import Disks from "./pages/Disks";
-import Projects from "./pages/Projects";
-import ProjectDetail from "./pages/ProjectDetail";
-import Access from "./pages/Access";
-import Tokens from "./pages/Tokens";
-import Policies from "./pages/Policies";
-import Audit from "./pages/Audit";
-import Cluster from "./pages/Cluster";
-import NodeDetail from "./pages/NodeDetail";
-import ImportPlan from "./pages/ImportPlan";
-import Usage from "./pages/Usage";
-import Tenants from "./pages/Tenants";
-import TenantDetail from "./pages/TenantDetail";
-import Admissions from "./pages/Admissions";
-import Connectors from "./pages/Connectors";
 import { SessionProvider, useSession } from "./session";
 import { LiveProvider } from "./live";
 import { Loading } from "./components/Loading";
 import ClusterBanner from "./components/ClusterBanner";
 
-// The console pulls in xterm; load it only when a console is opened.
+// Each page but the landing one loads when it is first opened, the console
+// (xterm) included: the first load is the shell, React and the RPC client.
+const VmDetail = lazy(() => import("./pages/VmDetail"));
+const Credentials = lazy(() => import("./pages/Credentials"));
+const Networking = lazy(() => import("./pages/Networking"));
+const Images = lazy(() => import("./pages/Images"));
+const Disks = lazy(() => import("./pages/Disks"));
+const Projects = lazy(() => import("./pages/Projects"));
+const ProjectDetail = lazy(() => import("./pages/ProjectDetail"));
+const Access = lazy(() => import("./pages/Access"));
+const Tokens = lazy(() => import("./pages/Tokens"));
+const Policies = lazy(() => import("./pages/Policies"));
+const Audit = lazy(() => import("./pages/Audit"));
+const Cluster = lazy(() => import("./pages/Cluster"));
+const NodeDetail = lazy(() => import("./pages/NodeDetail"));
+const ImportPlan = lazy(() => import("./pages/ImportPlan"));
+const Usage = lazy(() => import("./pages/Usage"));
+const Tenants = lazy(() => import("./pages/Tenants"));
+const TenantDetail = lazy(() => import("./pages/TenantDetail"));
+const Admissions = lazy(() => import("./pages/Admissions"));
+const Connectors = lazy(() => import("./pages/Connectors"));
 const VmConsole = lazy(() => import("./pages/VmConsole"));
 
 function Shell() {
@@ -40,17 +41,11 @@ function Shell() {
         <ClusterBanner />
         {/* Remount the pages when the project changes: they list its resources. */}
         <main key={project ?? "-"} className="container mx-auto px-4 py-8 flex-1">
+          <Suspense fallback={<Loading />}>
           <Routes>
             <Route path="/" element={<Dashboard />} />
             <Route path="/vms/:id" element={<VmDetail />} />
-            <Route
-              path="/vms/:id/console"
-              element={
-                <Suspense fallback={<Loading />}>
-                  <VmConsole />
-                </Suspense>
-              }
-            />
+            <Route path="/vms/:id/console" element={<VmConsole />} />
             <Route path="/credentials" element={<Credentials />} />
             <Route path="/networking" element={<Networking />} />
             <Route path="/images" element={<Images />} />
@@ -71,6 +66,7 @@ function Shell() {
             <Route path="/usage" element={<Usage />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
+          </Suspense>
         </main>
         <Footer />
       </div>
