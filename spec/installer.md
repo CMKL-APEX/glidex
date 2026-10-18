@@ -34,6 +34,7 @@ by later runs (flags override the saved values):
 | `--ovs-profile kernel\|dpdk` | OVS flavour (default `kernel`; `dpdk` reserves hugepages and PMD cores). A host installed with `dpdk` keeps it on re-runs (saved in `install.conf`) |
 | `--pmd-cpu-mask MASK` | OVS-DPDK PMD CPU mask (`auto` clears it) |
 | `--allow-ovs-restart` | allow restarting an ovs-vswitchd that has bridges (interrupts their traffic) |
+| `--tailscale-cert` / `--no-tailscale-cert` | serve the node's Tailscale certificate from the web UI, and grant `glidex-ui` `TS_PERMIT_CERT_UID` in a `tailscaled` drop-in (refused when another user holds it). **Opt-in**, unlike the other flags: without the flag or a saved choice, an interactive run asks once (default no, before the build; the answer is saved) when `tailscale status` reports certificate domains, and a non-interactive run leaves it off and unsaved. See [tailscale-tls.md](tailscale-tls.md) §4.6 |
 | `--prebuilt` | use the release binaries and web UI already built in this checkout: no Rust or Bun toolchain, no build (never saved; the nested e2e test uses it) |
 
 ## Inputs it discovers
@@ -241,6 +242,22 @@ by later runs (flags override the saved values):
       SHA-256 fingerprints of their self-signed certificates
       (spec/security.md §5.1.1), read once the services have started.
       The installer does not touch the host firewall.
+    - ([tailscale-tls.md](tailscale-tls.md) §4.6) Tailscale
+      certificate: decided by the flag, else the saved choice, else a
+      prompt (interactive, `tailscaled` reporting certificate domains,
+      default no, asked before the build), else off. When on,
+      `TS_PERMIT_CERT_UID=glidex-ui`
+      goes in `/etc/systemd/system/tailscaled.service.d/50-glidex-cert.conf`
+      unless `tailscaled` already has it (nothing to do) or has it set to
+      another user (refused: nothing changed, the previous choice kept;
+      likewise without `tailscaled`), and `GLIDEX_UI_TLS_TAILSCALE=on`
+      in `glidex-ui.service.d/50-tailscale-cert.conf`. `tailscaled` is
+      restarted, and waited for, before the UI. The blurb prints
+      `https://<node>.<tailnet>.ts.net:5173` first, without a
+      fingerprint, once a handshake verified against the system trust
+      store succeeds (up to a minute), else says the certificate isn't
+      served yet. Turning it off removes only those two (marked)
+      drop-ins.
     If the previous unit ran the control plane as the invoking user, a
     note says that their `~/.glidex` data was not moved.
 14. **Save options** to `/etc/glidex/install.conf` when they changed,
@@ -367,7 +384,13 @@ removed. Order:
    `glidex-netd`, `glidex-ui`, `glidex-authd`, `glidex-vm-shim` from
    `/usr/local/bin` and `~/.local/bin`.
 4. Remove the glidex unit files (including `glidex-vm@.service` and
-   `glidex-vms.slice`), the polkit rule
+   `glidex-vms.slice`), the Tailscale certificate's drop-ins
+   `glidex-ui.service.d/50-tailscale-cert.conf` and
+   `tailscaled.service.d/50-glidex-cert.conf` while they carry the
+   installer's marker (each directory too when nothing else is in it;
+   then `systemctl try-restart tailscaled` after the `daemon-reload`; a
+   `TS_PERMIT_CERT_UID` set by hand stays),
+   the polkit rule
    `/etc/polkit-1/rules.d/50-glidex-vm.rules`, and `daemon-reload`.
    `/etc/glidex/vm-shim.json` goes with the installer's other
    configuration files.
@@ -467,7 +490,11 @@ but needs a user-supplied kernel + rootfs.
   `/etc/glidex/vm-shim.json`, `/etc/sysctl.d/90-glidex.conf`, `/etc/modules-load.d/glidex.conf`,
   `/etc/glidex/install.conf`, `/etc/glidex/authd.json` (once),
   `/etc/glidex/control-plane.json.example`, `/etc/glidex/policies/`
-  (the directory), and `/etc/pam.d/glidex` while it carries the marker
+  (the directory), `/etc/pam.d/glidex` while it carries the marker,
+  and with `--tailscale-cert` the drop-ins
+  `/etc/systemd/system/glidex-ui.service.d/50-tailscale-cert.conf` and
+  `/etc/systemd/system/tailscaled.service.d/50-glidex-cert.conf` (both
+  marked)
   (plus what package installs and `useradd`/`usermod`/`gpasswd` do).
   The uninstaller removes them. It never writes
   `/etc/glidex/control-plane.json`.

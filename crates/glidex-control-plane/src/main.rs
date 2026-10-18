@@ -414,7 +414,7 @@ async fn main() {
     vm_manager.set_api_router(router.clone());
     let app = router.layer(TraceLayer::new_for_http());
 
-    let tls = match serve::tls_setup(&cfg.tls) {
+    let mut tls = match serve::tls_setup(&cfg.tls) {
         Ok(t) => t,
         Err(e) => {
             eprintln!("TLS: {}", e);
@@ -471,6 +471,18 @@ async fn main() {
         );
         println!("  SHA-256:   {}", t.fingerprint);
         tracing::info!(cert = %t.cert.display(), fingerprint = %t.fingerprint, self_signed = t.self_signed, "TLS certificate");
+    }
+    // Replaced certificate files are served without a restart, and
+    // published again for local clients (spec/tailscale-tls.md §4.1).
+    if let Some(files) = tls.as_mut().and_then(|t| t.files.take()) {
+        let run_dir = run_dir.clone();
+        files.watch(glidex_tls::RELOAD_EVERY, move |f| {
+            let fingerprint = glidex_tls::fingerprint_certified(&f.slot.get());
+            tracing::info!(cert = %f.cert.display(), %fingerprint, "TLS certificate reloaded");
+            if let Err(e) = glidex_tls::publish(&f.cert, &run_dir) {
+                tracing::warn!("cannot publish the reloaded TLS certificate: {}", e);
+            }
+        });
     }
     for (_, kind, path) in &unix {
         println!("  Listening on {} ({:?})", path.display(), kind);

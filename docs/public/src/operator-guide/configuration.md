@@ -45,7 +45,7 @@ sudo systemctl restart glidex-control-plane
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `auth.allowed_origins` | array of URLs | `[]` | Browser origins allowed to make changes and open consoles. Empty means `https://<name>:5173` for every name and address of this host. Set it when users reach the UI under another name; it then replaces the default list. |
+| `auth.allowed_origins` | array of URLs | `[]` | Browser origins allowed to make changes and open consoles when they call the API directly on port 8841. Empty means `https://<name>:5173` for every name and address of this host. Set it when browsers call the API under another name; it then replaces the default list. It doesn't restrict the web UI: requests through the UI are accepted from the address the user opened, once the UI has checked that name against `GLIDEX_UI_HOSTS`. To limit the names browsers may use, narrow `GLIDEX_UI_HOSTS` instead. |
 | `auth.session.idle_minutes` | integer | `30` | A browser session ends after this long without a request. |
 | `auth.session.absolute_hours` | integer | `12` | A browser session ends this long after login, whatever its use. |
 | `auth.tokens.default_days` | integer | `90` | Lifetime of a new access token when none is asked for. |
@@ -259,10 +259,12 @@ configuration.
 | Variable | Default | Meaning |
 |---|---|---|
 | `GLIDEX_UI_LISTEN` | `0.0.0.0:5173,[::]:5173` | Comma-separated addresses to listen on. |
-| `GLIDEX_UI_HOSTS` | this host's names and addresses | Allowed `Host` values, `host[:port]`, comma-separated; other requests get `421`. Set it, together with `auth.allowed_origins`, when users reach the UI under another name. |
+| `GLIDEX_UI_HOSTS` | this host's names and addresses | Allowed `Host` values, `host[:port]`, comma-separated; other requests get `421`. Set it when users reach the UI under another name. The ts.net names of `GLIDEX_UI_TLS_TAILSCALE` are allowed either way. |
 | `GLIDEX_UI_TLS` | `auto` | `auto` (HTTPS) or `off` (plain HTTP, loopback addresses only). |
 | `GLIDEX_UI_TLS_CERT` | a self-signed certificate | PEM certificate chain. |
 | `GLIDEX_UI_TLS_KEY` | the `ui-tls-key` credential | PEM private key. Prefer the credential. |
+| `GLIDEX_UI_TLS_TAILSCALE` | `off` | `on`: also serve the node's Tailscale certificate to its ts.net names ([TLS](tls.md#tailscale-certificates)). |
+| `GLIDEX_UI_TAILSCALE_SOCKET` | `/run/tailscale/tailscaled.sock` | `tailscaled`'s local API socket. |
 | `GLIDEX_UI_DIR` | `/usr/local/share/glidex/ui` (unit) | The built UI. |
 | `GLIDEX_API_SOCKET` | `/run/glidex-cp/ui.sock` | The control plane's UI socket, used when it exists. |
 | `GLIDEX_API_URL` | `https://127.0.0.1:8841` | The control plane over TCP, when there is no socket (development). |

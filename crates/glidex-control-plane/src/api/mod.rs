@@ -1265,6 +1265,9 @@ async fn authenticate(State(app): State<AppState>, mut req: Request, next: Next)
         if !matches!(listener, Listener::Cluster | Listener::Relay)
             && (!safe || websocket)
             && !app.auth.config.auth.origin_allowed(o)
+            && !(listener == Listener::Ui
+                && ui_same_origin(o, &headers)
+                && ui_peer_ok(&app, req.extensions().get::<PeerUid>()))
         {
             return plain_error(
                 StatusCode::FORBIDDEN,
@@ -1375,6 +1378,20 @@ async fn authenticate(State(app): State<AppState>, mut req: Request, next: Next)
         resp.headers_mut().insert("x-request-id", v);
     }
     resp
+}
+
+/// From glidex-ui: an `Origin` equal to `https://` + `X-Forwarded-Host`.
+/// The UI sets that header to the request's `Host`, which it has already
+/// checked against its allowlist, so this is a same-origin check that
+/// admits no name the UI wouldn't serve (spec/tailscale-tls.md T7).
+fn ui_same_origin(origin: &str, headers: &HeaderMap) -> bool {
+    let header = |n: &str| headers.get(n).and_then(|v| v.to_str().ok());
+    match (header("x-forwarded-proto"), header("x-forwarded-host")) {
+        (Some("https"), Some(host)) if !host.is_empty() => origin
+            .strip_prefix("https://")
+            .is_some_and(|o| o.eq_ignore_ascii_case(host)),
+        _ => false,
+    }
 }
 
 fn ui_peer_ok(app: &App, peer: Option<&PeerUid>) -> bool {

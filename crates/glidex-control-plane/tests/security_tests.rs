@@ -471,6 +471,127 @@ async fn host_network_changes_need_a_recent_login() {
     );
 }
 
+/// From glidex-ui on ui.sock, an Origin equal to `https://` +
+/// `X-Forwarded-Host` passes without being listed: the UI already checked
+/// that Host (spec/tailscale-tls.md T7). Over TCP, from another peer, over
+/// plain HTTP or for a different host it doesn't.
+#[tokio::test]
+async fn ui_peer_same_origin_from_forwarded_host() {
+    let me = nix::unistd::getuid().as_raw();
+    let h = harness_with(|c| {
+        c.ui_user = nix::unistd::User::from_uid(nix::unistd::getuid())
+            .unwrap()
+            .unwrap()
+            .name;
+    });
+    h.project("pa");
+    let u = h.user("u");
+    h.link(
+        "role.editor",
+        Ent::User(u.clone()),
+        Ent::Project(h.project("pb")),
+    );
+    let As::Cookie(cookie, Some(csrf), _) = h.session(&u) else {
+        unreachable!()
+    };
+    let n = std::sync::atomic::AtomicUsize::new(0);
+    let post = |ui: Option<u32>, origin: &str, host: &str, proto: &str| {
+        let i = n.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut b = Request::builder()
+            .method("POST")
+            .uri("/credentials")
+            .header(
+                header::COOKIE,
+                format!("{}={}", auth::SESSION_COOKIE, cookie),
+            )
+            .header(auth::CSRF_HEADER, &csrf)
+            .header(header::ORIGIN, origin)
+            .header("x-forwarded-host", host)
+            .header("x-forwarded-proto", proto)
+            .header("x-forwarded-for", "100.64.0.7")
+            .header(header::CONTENT_TYPE, "application/json");
+        if let Some(uid) = ui {
+            b = b.extension(Listener::Ui).extension(PeerUid(uid));
+        }
+        let req = b
+            .body(Body::from(
+                json!({"username": format!("c{i}"), "project": "pb", "password": "long-enough-password"})
+                    .to_string(),
+            ))
+            .unwrap();
+        let router = h.router.clone();
+        async move {
+            let resp = router.oneshot(req).await.unwrap();
+            let status = resp.status();
+            let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+            let v: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+            (status, v["error"].as_str().map(String::from))
+        }
+    };
+    const TS: &str = "https://node.tail.ts.net:5173";
+    let (s, e) = post(Some(me), TS, "node.tail.ts.net:5173", "https").await;
+    assert_eq!(s, StatusCode::CREATED, "{e:?}");
+    let (s, e) = post(
+        Some(me),
+        "https://NODE.tail.ts.net:5173",
+        "node.tail.ts.net:5173",
+        "https",
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{e:?}");
+
+    let refused = Some("origin_not_allowed".to_string());
+    // A different host than the one the UI checked.
+    assert_eq!(
+        post(
+            Some(me),
+            "https://evil.example:5173",
+            "node.tail.ts.net:5173",
+            "https"
+        )
+        .await,
+        (StatusCode::FORBIDDEN, refused.clone())
+    );
+    // Another port.
+    assert_eq!(
+        post(
+            Some(me),
+            "https://node.tail.ts.net:5174",
+            "node.tail.ts.net:5173",
+            "https"
+        )
+        .await,
+        (StatusCode::FORBIDDEN, refused.clone())
+    );
+    // Plain HTTP at the UI.
+    assert_eq!(
+        post(
+            Some(me),
+            "http://node.tail.ts.net:5173",
+            "node.tail.ts.net:5173",
+            "http"
+        )
+        .await,
+        (StatusCode::FORBIDDEN, refused.clone())
+    );
+    // Over TCP the forwarded headers mean nothing.
+    assert_eq!(
+        post(None, TS, "node.tail.ts.net:5173", "https").await,
+        (StatusCode::FORBIDDEN, refused.clone())
+    );
+    // ui.sock, but not the UI's user.
+    assert_eq!(
+        post(
+            Some(me.wrapping_add(1)),
+            TS,
+            "node.tail.ts.net:5173",
+            "https"
+        )
+        .await,
+        (StatusCode::FORBIDDEN, refused)
+    );
+}
+
 #[tokio::test]
 async fn cookie_writes_need_csrf_and_origin() {
     let h = harness();

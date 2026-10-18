@@ -94,7 +94,12 @@ certificate (`tls` in `/etc/glidex/control-plane.json`;
 `GLIDEX_UI_TLS_CERT` / `GLIDEX_UI_TLS_KEY` for the UI), each one
 generates a self-signed certificate on first start and prints its SHA-256
 fingerprint (so does the installer): compare it with what your browser
-shows before accepting the warning. `listen` / `GLIDEX_LISTEN` and
+shows before accepting the warning. On a host on a Tailscale tailnet with
+HTTPS certificates, the web UI can instead serve the node's Let's Encrypt
+certificate at `https://<node>.<tailnet>.ts.net:5173`, trusted by browsers
+with no warning (installer option `--tailscale-cert`; see
+[Tailscale certificates](docs/public/src/operator-guide/tls.md#tailscale-certificates)).
+`listen` / `GLIDEX_LISTEN` and
 `GLIDEX_UI_LISTEN` narrow the addresses; plain HTTP (`"tls": "off"`,
 `GLIDEX_UI_TLS=off`) is only allowed on loopback. The installer doesn't
 touch the firewall.

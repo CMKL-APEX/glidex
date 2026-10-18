@@ -31,6 +31,7 @@
 # Security and tenancy
 
 - [Security](security.md)
+- [Tailscale certificates](tailscale-tls.md)
 - [Tenancy](tenancy.md)
 
 # Clusters

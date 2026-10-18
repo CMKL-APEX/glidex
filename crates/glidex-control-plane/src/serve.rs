@@ -66,6 +66,8 @@ pub struct Tls {
     pub self_signed: bool,
     /// Generated on this start.
     pub generated: bool,
+    /// The files behind it, to watch for changes; taken by `main`.
+    pub files: Option<glidex_tls::FileCert>,
 }
 
 /// Where `"auto"` keeps its certificate: `~/.glidex/tls`
@@ -99,14 +101,19 @@ pub fn tls_setup(tls: &TlsSetting) -> Result<Option<Tls>, String> {
             (f.cert.clone(), key, false, false)
         }
     };
-    let cfg = glidex_tls::server_config(&cert, &key, &[b"h2", b"http/1.1"])?;
-    let fingerprint = glidex_tls::fingerprint(&cert)?;
+    let files = glidex_tls::FileCert::load(&cert, &key)?;
+    let fingerprint = glidex_tls::fingerprint_certified(&files.slot.get());
+    let cfg = glidex_tls::resolver_config(
+        glidex_tls::Resolver::new(files.slot.clone()),
+        &[b"h2", b"http/1.1"],
+    )?;
     Ok(Some(Tls {
         acceptor: tokio_rustls::TlsAcceptor::from(cfg),
         cert,
         fingerprint,
         self_signed,
         generated,
+        files: Some(files),
     }))
 }
 

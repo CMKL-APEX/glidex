@@ -19,7 +19,10 @@ rustls-pki-types = { version = "1", features = ["std"] }
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["fs"] }
 tracing.workspace = true
+serde_json = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
 tempfile = "3"
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
+time = "0.3"
