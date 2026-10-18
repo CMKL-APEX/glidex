@@ -32,6 +32,46 @@ function ReadyCell({ n }: { n: NodeRecord }) {
 /** The cluster (spec/clustering-ui.md §6): its nodes and what can be done to
  * them, pending imports and detaches, Raft, the CA, and the cluster's own
  * lifecycle. */
+/** A standalone host is one node (`local`): its page has its capacity,
+ *  VMs, disks, br-int and the rest, as a cluster node's does. */
+function ThisHost() {
+  const [node, setNode] = useState<NodeRecord | null>(null);
+  const [vms, setVms] = useState<VmResponse[] | null>(null);
+  useEffect(() => {
+    api
+      .listNodes()
+      .then((ns) => setNode(ns.find((n) => !isTombstone(n.status.phase)) ?? null))
+      .catch(() => setNode(null));
+    api
+      .listVms(null)
+      .then(setVms)
+      .catch(() => setVms(null));
+  }, []);
+  if (!node) return null;
+  const s = node.status;
+  const ready = nodeReady(node);
+  const placed = (vms ?? []).filter((v) => v.node === node.meta.id).length;
+  return (
+    <Card title="This host">
+      <div className="flex flex-wrap items-center justify-between gap-4" data-testid="this-host">
+        <div className="space-y-1 text-sm">
+          <div className="text-base font-medium text-gray-900">{nodeLabel(node)}</div>
+          <div className="flex flex-wrap gap-2 items-center">
+            <Badge kind={PHASE_KIND[s.phase ?? ""] ?? "base"}>{nodePhaseLabel(s.phase)}</Badge>
+            <Badge kind={ready === "True" ? "ok" : "warn"}>{ready === "True" ? "ready" : "not ready"}</Badge>
+          </div>
+          <div className="text-gray-600">
+            {s.capacity?.cpus ?? 0} CPUs, {Math.round(num(s.capacity?.memory_mib) / 1024)} GiB memory · {placed} VMs
+          </div>
+        </div>
+        <Link to={`/cluster/nodes/${encodeURIComponent(node.meta.id)}`} className={primaryButton}>
+          Open this host's page
+        </Link>
+      </div>
+    </Card>
+  );
+}
+
 export default function Cluster() {
   const { host } = useSession();
   const live = useLive();
@@ -114,6 +154,7 @@ export default function Cluster() {
       <div>
         <PageHeader title="Cluster" subtitle="This host is standalone." />
         <ErrorBanner error={error} onDismiss={() => setError(null)} />
+        <ThisHost />
         <InitCluster onDone={refreshAll} />
       </div>
     );
