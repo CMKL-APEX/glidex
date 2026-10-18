@@ -72,7 +72,8 @@ The loop, every 10 ms:
 
 1. **Non-blocking `accept()`.** A new client gets the *current*
    `console.log` queued as replay, then live output. This is what gives
-   late-joining browsers the pre-boot output.
+   late-joining browsers the pre-boot output. The replay leaves out the
+   guest's queries to its terminal (see [Log files](#log-files)).
 2. **Read the PTY** (non-blocking): append to the log, queue for every
    client. **Read the stderr pipe**: append to the log and keep the last
    64 KiB for a launch error; stderr is never sent to clients.
@@ -132,6 +133,18 @@ rules; in short:
   instances, expect-style clients should skip it up to the current
   instance's `started` line. `GET /vms/{id}/console/log?previous=true`
   returns `console.log.1` (`404` if there is none).
+- Replay leaves out the guest's **terminal queries**: DSR (`CSI … n`,
+  which includes the cursor-position request `CSI 6 n`), DA (`CSI … c`),
+  DECRQM (`CSI … $ p`), XTVERSION (`CSI > … q`), the kitty keyboard
+  query (`CSI ? u`), XTWINOPS reports (`CSI 11/13-16/18-21 t`),
+  XTGETTCAP / DECRQSS (`DCS + q` / `DCS $ q`) and OSC colour and
+  clipboard queries (OSC 4, 5, 10-19, 52 with a `?` field). Why: the
+  client's terminal answers what it is replayed, and the guest reads
+  those stale answers as typed input. systemd probes a serial
+  console's size and name at each getty start, so every new browser
+  tab would type `^[[38;1R` at the prompt. A query cut off at the end
+  of the file is passed on (the guest is waiting for its answer); live
+  output and the log file itself are unchanged.
 - Removed with the VM's runtime directory when the VM is deleted, not
   at stop. Lost on host reboot (`/run`).
 
