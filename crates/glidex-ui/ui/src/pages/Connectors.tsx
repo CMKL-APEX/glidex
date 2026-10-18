@@ -206,6 +206,15 @@ function ConnectorForm({
     setError(null);
     try {
       const next = toInput(f);
+      // A new connector's redirect URI is the one shown: this page's
+      // address, unless one was typed (the server's own default is its
+      // first allowed origin, which may not be the name used here).
+      if (!connector && f.kind !== "pam" && !f.redirect_uri.trim()) {
+        const uri = callbackUri(f.id.trim());
+        if (next.oidc) next.oidc.redirect_uri = uri;
+        if (next.google) next.google.redirect_uri = uri;
+        if (next.jumpcloud) next.jumpcloud.redirect_uri = uri;
+      }
       if (connector) {
         const patch = changes(toInput(formState(connector)), next);
         if (Object.keys(patch).length > 0) await api.updateConnector(connector.id, patch);
@@ -299,9 +308,20 @@ function ConnectorForm({
       </Field>
 
       {f.kind !== "pam" && (
-        <div className="p-3 rounded-lg bg-sky-50 border border-sky-100 text-xs text-sky-900" data-testid="redirect-uri">
-          Register this redirect URI with the identity provider:
-          <code className="block mt-1 font-mono break-all">{f.redirect_uri.trim() || callbackUri(f.id.trim())}</code>
+        <div className="p-3 rounded-lg bg-sky-50 border border-sky-100 text-xs text-sky-900 space-y-2" data-testid="redirect-uri">
+          <p>Register this redirect URI with the identity provider:</p>
+          <code className="block font-mono break-all">
+            {f.redirect_uri.trim() || (editing ? "the server's default (its first allowed origin)" : callbackUri(f.id.trim()))}
+          </code>
+          <input
+            id="connector-redirect_uri"
+            aria-label="Redirect URI"
+            className={`${inputClass} font-mono text-xs`}
+            placeholder={editing ? "the server's default" : callbackUri(f.id.trim())}
+            value={f.redirect_uri}
+            onChange={(e) => set("redirect_uri", e.target.value)}
+          />
+          {!editing && <p className="text-sky-800">Empty: this page's address, as above.</p>}
         </div>
       )}
       {f.kind === "pam" ? (
@@ -373,7 +393,6 @@ function ConnectorForm({
             {text("groups_claim", "Groups claim", { placeholder: "groups" })}
           </div>
           {text("allowed_domains", "Allowed email domains", { hint: "Comma-separated; empty allows any." })}
-          {text("redirect_uri", "Redirect URI", { hint: "Empty: derived from the request." })}
           {text("mfa_acr_values", "MFA acr values", { hint: "Space-separated values that count as MFA." })}
         </>
       )}

@@ -217,7 +217,9 @@ function InvitationsCard({ tenant, canManage }: { tenant: Tenant; canManage: boo
     setError(null);
     try {
       const r = await api.createInvitation({ tenant: tenant.id, email: email.trim(), role, connector });
-      setLink(r.link);
+      // On the address used here: the server's is its first allowed origin.
+      const u = new URL(r.link);
+      setLink(`${window.location.origin}${u.pathname}${u.hash}`);
       setCopied(false);
       setEmail("");
       refresh();

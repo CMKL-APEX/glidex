@@ -40,6 +40,8 @@ test("Google and JumpCloud connectors are made with their own fields", async ({ 
     await expect(row.getByRole("button", { name: "Set device secret" })).toBeVisible();
     const made = (await api(`/connectors/${GOOGLE}`)).connector;
     expect(made.google).toMatchObject({ accounts: "GOOGLE_ACCOUNTS_ANY", client_id: "web-client", allowed_emails: ["bob@gmail.com"], device_client_id: "tv-client" });
+    // Saved with the redirect URI it showed: this page's address.
+    expect(made.google.redirect_uri).toBe(`${new URL(page.url()).origin}/api/auth/c/${GOOGLE}/callback`);
 
     // Edited in the same form.
     await row.getByRole("button", { name: "Edit" }).click();
