@@ -1391,13 +1391,15 @@ impl AuthService {
         Ok(user)
     }
 
-    /// Any enabled OIDC connector.
+    /// Any enabled connector that logs in through the OIDC code: `oidc`
+    /// or a preset (`google`, `jumpcloud`). The login page shows its
+    /// sign-in buttons by it.
     pub fn oidc_enabled(&self) -> bool {
         self.connectors
-            .first(crate::directory::Kind::Oidc)
-            .ok()
-            .flatten()
-            .is_some()
+            .list()
+            .unwrap_or_default()
+            .iter()
+            .any(|c| c.enabled && c.kind.is_oidc())
     }
 
     /// The OIDC client of connector `id` (or the first OIDC connector, for

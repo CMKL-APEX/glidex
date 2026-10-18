@@ -1391,6 +1391,11 @@ async fn google_workspace_logins_are_allowed_by_hd_not_by_the_email() {
         v["connector"]["google"]["accounts"],
         "GOOGLE_ACCOUNTS_WORKSPACE"
     );
+    // The login page offers it: SSO is on with a preset alone.
+    let (_, m, _) = h
+        .send(Request::get("/auth/methods").body(Body::empty()).unwrap())
+        .await;
+    assert_eq!(m["oidc"], true, "{m}");
     let ok = google_claims(&mock, "g-1", "alice@example.org", Some("example.org"));
     assert_eq!(
         h.login_with(&mock, "gw", ok.clone()).await,

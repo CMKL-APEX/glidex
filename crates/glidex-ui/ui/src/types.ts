@@ -1807,6 +1807,10 @@ export interface JumpcloudSettings {
  *  and a way in for invitations (a verified email). */
 export const isOidcKind = (k?: string) => k === "oidc" || k === "google" || k === "jumpcloud";
 
+/** Whether the login page offers single sign-on: the server says so, or
+ *  it lists a connector that logs in through the OIDC code. */
+export const offersSso = (m: AuthMethods) => !!m.oidc || !!m.connectors?.some((c) => isOidcKind(c.kind));
+
 /** Which of a connector's secrets are set; never their values. */
 export interface SecretStatus {
   field: string;

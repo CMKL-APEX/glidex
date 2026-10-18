@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from "react";
 import * as api from "../api";
-import { isOidcKind, type AuthMethods } from "../types";
+import { isOidcKind, offersSso, type AuthMethods } from "../types";
 
 const inputClass =
   "mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-transparent";
@@ -102,7 +102,8 @@ export function SsoButtons({ methods, reauth = false }: { methods: AuthMethods; 
 }
 
 export default function Login({ methods, onLoggedIn }: { methods: AuthMethods; onLoggedIn: () => void }) {
-  const none = !methods.pam && !methods.oidc;
+  const sso = offersSso(methods);
+  const none = !methods.pam && !sso;
   return (
     <div className="min-h-screen flex items-start justify-center pt-24 px-4">
       <div className="max-w-sm w-full bg-white rounded-xl shadow-md border border-gray-100 p-6">
@@ -111,14 +112,14 @@ export default function Login({ methods, onLoggedIn }: { methods: AuthMethods; o
           <h1 className="mt-1 text-sm text-gray-500">Sign in to the VM Control Panel</h1>
         </div>
         {methods.pam && <PamForm submitLabel="Sign in" onDone={onLoggedIn} />}
-        {methods.pam && methods.oidc && (
+        {methods.pam && sso && (
           <div className="my-4 flex items-center text-xs text-gray-400">
             <span className="flex-1 border-t border-gray-200" />
             <span className="px-2">or</span>
             <span className="flex-1 border-t border-gray-200" />
           </div>
         )}
-        {methods.oidc && <SsoButtons methods={methods} />}
+        {sso && <SsoButtons methods={methods} />}
         {none && (
           <p className="text-sm text-gray-600">
             No login method is enabled on this host. Ask an administrator, or use <code>gxctl</code> on the host.
