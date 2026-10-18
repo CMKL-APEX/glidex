@@ -77,3 +77,50 @@ test("users show how they sign in", async ({ page }) => {
   await expect(users.getByText("Local account").first()).toBeVisible();
   await expect(users.getByText(/^(unix|pam):/)).toHaveCount(0);
 });
+
+test("your account lists your sign-in methods and offers more", async ({ page }) => {
+  // spec/tenancy.md §6.2: a user may have several; the only one isn't removable.
+  const made = await api("/connectors", {
+    method: "POST",
+    body: { connector: { id: "e2e-add-sso", display_name: "E2E Add SSO", oidc: { issuer: "https://idp.example", client_id: "glidex" } } },
+  });
+  expect(made.connector?.id, JSON.stringify(made)).toBe("e2e-add-sso");
+  try {
+    // The header's name leads there.
+    await page.goto("/");
+    await page.locator('a[href="/account"]').click();
+    await expect(page).toHaveURL(/\/account$/);
+    await expect(page.getByRole("heading", { name: "Your account" })).toBeVisible();
+    const list = page.getByTestId("sign-in-methods-list");
+    await expect(list.getByText("Local account")).toBeVisible();
+    await expect(list.getByRole("button", { name: "Remove" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "E2E Add SSO" })).toBeVisible();
+  } finally {
+    await del("/connectors/e2e-add-sso");
+  }
+});
+
+test("an administrator removes one of a user's sign-in methods", async ({ page }) => {
+  const made = await api("/users", {
+    method: "POST",
+    body: { display_name: "Two Ways", identities: [{ provider: "pam", subject: "e2e-twoways" }, { provider: "oidc:https://idp.example", subject: "tw-1" }] },
+  });
+  const id = made.user?.id as string;
+  expect(id, JSON.stringify(made)).toBeTruthy();
+  try {
+    await page.goto("/access");
+    const row = page.getByRole("row", { name: /Two Ways/ });
+    await expect(row.getByRole("button", { name: "remove" })).toHaveCount(2);
+    await row.getByRole("button", { name: "remove" }).first().click();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog.getByText("Also sign them out everywhere")).toBeVisible();
+    await dialog.getByRole("button", { name: "Remove" }).click();
+    await expect(dialog).toBeHidden();
+    // One left, and the last one isn't offered for removal.
+    await expect(row.getByRole("button", { name: "remove" })).toHaveCount(0);
+    const user = ((await api("/users")).users ?? []).find((u: { id: string }) => u.id === id);
+    expect(user?.identities?.length, JSON.stringify(user)).toBe(1);
+  } finally {
+    await del(`/users/${id}`);
+  }
+});

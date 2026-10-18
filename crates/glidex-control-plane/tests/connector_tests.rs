@@ -2002,7 +2002,7 @@ async fn a_user_adds_and_removes_sign_in_methods() {
     );
 
     // Removing: one's own, but never the last; an administrator's too.
-    let key = format!("conn:gw:g-ada");
+    let key = "conn:gw:g-ada".to_string();
     let (st, v) = h
         .rest(
             "DELETE",

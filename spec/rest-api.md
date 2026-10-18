@@ -240,6 +240,13 @@ instead of redirecting, for a page that brings an invitation's secret
 (tenancy.md §6.1; `404` for an invitation that isn't open or is for
 another connector), and `POST /auth/invitation {invitation}` says what
 an invitation is for (`LoginService.InspectInvitation`). `POST
+/auth/link/c/{id}/start {return_to?}` adds a sign-in through connector
+`id` to the signed-in caller (`manageOwnSignIns`, a recent login;
+tenancy.md §6.2), answering `{redirect}`; its callback returns to
+`return_to` with `?linked=<id>` or `?link_error=<code>`. `DELETE
+/users/{id}/identities/{key}[?end_sessions=true]` removes one of a
+user's sign-in methods (one's own, or with `manageUsers`), never the
+last (`409 last_identity`). `POST
 /auth/login` and `POST /auth/token` take `connector` (a PAM connector,
 the first one when absent); a token is clamped to the connector's
 `token_max_days`. A refused login is `403 login_not_allowed`. The

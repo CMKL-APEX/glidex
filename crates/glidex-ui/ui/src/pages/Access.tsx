@@ -3,6 +3,7 @@ import * as api from "../api";
 import type { Binding, Team } from "../types";
 import { HOST_ROLES, formatTimestamp } from "../types";
 import { Loading } from "../components/Loading";
+import ConfirmDialog from "../components/ConfirmDialog";
 import AddBindingForm from "../components/AddBindingForm";
 import {
   Badge,
@@ -111,6 +112,9 @@ export default function Access() {
   const connectors = useConnectorNames();
   const [system, setSystem] = useState<Binding[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // An administrator taking one of a user's sign-in methods away.
+  const [unlinking, setUnlinking] = useState<{ user: string; name: string; key: string; label: string } | null>(null);
+  const [endSessions, setEndSessions] = useState(true);
   const [teamName, setTeamName] = useState("");
 
   const refreshSystem = useCallback(() => {
@@ -174,12 +178,28 @@ export default function Access() {
                       <code className="text-xs text-gray-400 font-mono">{u.id}</code>
                     </td>
                     <td className="py-2 text-xs font-mono text-gray-600">
-                      {(u.identities ?? []).map((i) => (
-                        <div key={`${i.provider}:${i.subject}`}>
-                          <span className="font-sans text-gray-700">{signInLabel(i.provider, connectors)}</span>{" "}
-                          <span className="text-gray-400">{i.email ?? i.subject}</span>
-                        </div>
-                      ))}
+                      {(u.identities ?? []).map((i) => {
+                        const key = `${i.provider}:${i.subject}`;
+                        const label = signInLabel(i.provider, connectors);
+                        return (
+                          <div key={key}>
+                            <span className="font-sans text-gray-700">{label}</span>{" "}
+                            <span className="text-gray-400">{i.email ?? i.subject}</span>
+                            {host.manageUsers && (u.identities ?? []).length > 1 && (
+                              <button
+                                className="ml-2 font-sans text-red-600 hover:underline"
+                                title="Remove this sign-in method"
+                                onClick={() => {
+                                  setEndSessions(true);
+                                  setUnlinking({ user: u.id, name: u.display_name, key, label });
+                                }}
+                              >
+                                remove
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })}
                     </td>
                     <td className="py-2">
                       {host.manageUsers ? (
@@ -300,6 +320,23 @@ export default function Access() {
             />
           )}
         </Card>
+      )}
+      {unlinking && (
+        <ConfirmDialog
+          title="Remove a sign-in method"
+          consequence={`${unlinking.name} won't be able to sign in with ${unlinking.label} any more. Their other sign-in methods stay.`}
+          actionLabel="Remove"
+          onConfirm={async () => {
+            await api.unlinkIdentity(unlinking.user, unlinking.key, endSessions);
+            reloadDir();
+          }}
+          onClose={() => setUnlinking(null)}
+        >
+          <label className="flex items-center gap-2 text-sm text-gray-700">
+            <input type="checkbox" checked={endSessions} onChange={(e) => setEndSessions(e.target.checked)} />
+            Also sign them out everywhere (end their sessions)
+          </label>
+        </ConfirmDialog>
       )}
     </div>
   );

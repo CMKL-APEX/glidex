@@ -476,6 +476,21 @@ export async function loginPam(username: string, password: string): Promise<WhoA
 
 /** Leave the page for the identity provider: connector `connector`, or
  *  the first OIDC connector. */
+/** Add a sign-in through `connector` to the signed-in user (spec/tenancy.md
+ *  §6.2): a recent login first (the re-auth dialog asks), then the IdP; it
+ *  comes back to /account with `?linked=<id>` or `?link_error=<code>`. */
+export async function startLink(connector: string): Promise<void> {
+  const { redirect } = await request<{ redirect: string }>("POST", `/auth/link/c/${encodeURIComponent(connector)}/start`, {
+    return_to: "/account",
+  });
+  window.location.assign(redirect);
+}
+
+/** Remove one of a user's sign-in methods (`<provider>:<subject>`); never
+ *  the last. `endSessions` (an administrator's): sign the user out too. */
+export const unlinkIdentity = (user: string, key: string, endSessions = false) =>
+  rpc(UserService.method.unlinkIdentity, { id: user, key, end_sessions: endSessions || undefined }).then(none);
+
 export function startOidc(returnTo: string, reauth = false, connector?: string) {
   const q = new URLSearchParams({ return_to: returnTo });
   if (reauth) q.set("reauth", "1");

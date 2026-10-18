@@ -330,6 +330,33 @@ expires_at, secret_hash, taken_by?, taken_at?}`, a directory record.
 A connector's own rules still apply: an invitation
 through a Workspace `google` connector still needs `hd` ∈ `domains`.
 
+### 6.2 Sign-in methods
+
+A user is reached by its identities (D17), and may have **several**: a
+local account, a Google account, a JumpCloud one. Each is a way to sign
+in as that user, with the same roles; adding one never replaces another.
+Without linking, one person signing in two ways is two users.
+
+- **Adding one** is the user's own act, proving both: signed in, the user
+  starts `POST /auth/link/c/{id}/start` (`manageOwnSignIns` on itself, a
+  step-up action, so a stolen session can't add its thief's account) and
+  signs in at the IdP. The login state carries "add to user X"; at the
+  callback the browser's session must still be X, and the connector's
+  rules apply as at a login (groups, MFA, `hd`). The identity is added to
+  X; it is refused if it is another user's (`taken`), a no-op if X's. The
+  browser returns to the page with `?linked=<connector>` or
+  `?link_error=taken|not_allowed|not_signed_in`.
+- **Removing one:** the user's own with `manageOwnSignIns`, anyone's with
+  `manageUsers`; never a user's last identity (`409 last_identity`), so
+  nobody is locked out by accident (disable the user instead). An
+  administrator's removal may also end the user's sessions
+  (`end_sessions`). Sessions and tokens belong to the user, not the
+  identity: without that, they stay valid until they expire or are
+  revoked.
+- `LinkIdentity` (an administrator naming `pam:`, `unix:` or
+  `oidc:<issuer>` and a subject) stays for local accounts; a connector's
+  identity is added only by its user signing in.
+
 `Principal` gains `directory_id` and the acting `tenant_id`; Cedar's
 `Auth` context gains `mfa: Bool`, so site policies can require MFA
 (e.g. `forbid … host.cluster.critical unless context.auth.mfa`).
@@ -1416,6 +1443,7 @@ Done (tasks 4 and 5):
 | The connector form per preset | `pages/Connectors.tsx`: Google (Workspace or any account, the gate, `trust_2sv`, the device client and its secret), JumpCloud (groups claim), the redirect URI to register; `isOidcKind` for the login page and invitations |
 | gxctl | `connector add jumpcloud` |
 | Who signs in how (D17: one person through two connectors is two users) | `components/ui.tsx::SignInMethods`, `signInLabel` (a local account, or a connector by name): the tenant page's members and roles, a project's members, and the Access page's users; a membership says it came through a connector or an invitation |
+| Several sign-in methods per user (§6.2) | `AuthService::link_external`; `POST /auth/link/c/{id}/start` and the callback's `After::Link` (`directory/oidc.rs`, `CallbackError` keeps the login's purpose); Cedar `manageOwnSignIns` (`base.own-sign-ins`, step-up); `UnlinkIdentity` (own or `manageUsers`, never the last, `end_sessions`); WhoAmI's user lists its identities; UI **Your account** (`pages/Account.tsx`, from the header's name) and the Access page's per-identity remove |
 | Docs | the operator guide's Google, JumpCloud and invitations sections; [idp-checks.md](idp-checks.md) for the real providers |
 | Tests | `presets/jumpcloud.rs` unit tests; `connector_tests.rs::jumpcloud_*`; UI e2e `connectors.spec.ts` |
 
