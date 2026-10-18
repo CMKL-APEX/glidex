@@ -77,7 +77,7 @@ function manualChunks(id: string): string | undefined {
 }
 
 /**
- * A `.gz` and a `.br` beside each built text file: glidex-ui serves them
+ * A `.gz` and a `.br` beside each built text (or WebAssembly) file: glidex-ui serves them
  * to browsers that accept them (`ServeDir::precompressed_*`).
  */
 function precompress(): Plugin {
@@ -86,7 +86,7 @@ function precompress(): Plugin {
     apply: "build",
     writeBundle(options, bundle) {
       const dir = options.dir ?? "dist";
-      const files = [...Object.keys(bundle)].filter((f) => /\.(js|css|html|svg|json)$/.test(f));
+      const files = [...Object.keys(bundle)].filter((f) => /\.(js|css|html|svg|json|wasm)$/.test(f));
       for (const file of files) {
         const path = join(dir, file);
         const data = readFileSync(path);

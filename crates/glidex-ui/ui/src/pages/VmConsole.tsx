@@ -1,10 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { Terminal } from "@xterm/xterm";
-import { FitAddon } from "@xterm/addon-fit";
-import "@xterm/xterm/css/xterm.css";
 import * as api from "../api";
 import { nodeUnreachable } from "../types";
+import {
+  type ConsoleTerminal,
+  type TerminalKind,
+  TERMINAL_KINDS,
+  openTerminal,
+  saveTerminalKind,
+  savedTerminalKind,
+} from "./consoleTerminal";
 
 /** When the console fails: its node may be the reason (spec/clustering-ui.md §4). */
 async function whyFailed(id: string, fallback: string): Promise<string> {
@@ -17,27 +22,6 @@ async function whyFailed(id: string, fallback: string): Promise<string> {
 
 type Status = "connecting" | "connected" | "closed" | "error";
 
-/** Put `text` on the clipboard; outside a secure context (plain HTTP)
- *  `navigator.clipboard` is missing, so copy from a scratch textarea. */
-function copyText(text: string) {
-  if (navigator.clipboard?.writeText) {
-    navigator.clipboard.writeText(text).catch(() => {});
-    return;
-  }
-  const scratch = document.createElement("textarea");
-  scratch.value = text;
-  scratch.style.position = "fixed";
-  scratch.style.opacity = "0";
-  document.body.appendChild(scratch);
-  scratch.select();
-  document.execCommand("copy");
-  scratch.remove();
-}
-
-/** Ctrl+Shift+<key>, as terminals copy and paste where Ctrl+C is ^C. */
-const ctrlShift = (ev: KeyboardEvent, code: string) =>
-  ev.ctrlKey && ev.shiftKey && !ev.altKey && !ev.metaKey && ev.code === code;
-
 export default function VmConsole() {
   const { id } = useParams<{ id: string }>();
   const containerRef = useRef<HTMLDivElement>(null);
@@ -46,102 +30,90 @@ export default function VmConsole() {
   // Bumped by Reconnect: the VM outlives the connection (a restart of the
   // VM or of the control plane closes it), so connecting again picks up.
   const [attempt, setAttempt] = useState(0);
+  const [kind, setKind] = useState<TerminalKind>(savedTerminalKind);
 
   useEffect(() => {
-    if (!id || !containerRef.current) return;
+    const container = containerRef.current;
+    if (!id || !container) return;
     setStatus("connecting");
     setError(null);
 
-    const term = new Terminal({
-      fontFamily: "Menlo, Monaco, Consolas, monospace",
-      fontSize: 13,
-      cursorBlink: true,
-      convertEol: true,
-      theme: { background: "#000000", foreground: "#e6e6e6" },
-    });
-    const fitAddon = new FitAddon();
-    term.loadAddon(fitAddon);
-    term.open(containerRef.current);
-    fitAddon.fit();
-
-    // Ctrl+Shift+C / Ctrl+Shift+V copy and paste; Ctrl+C stays ^C for the
-    // guest. (On macOS ⌘C / ⌘V already do, through xterm's own copy and
-    // paste handlers.) Paste is left to the browser: its paste event
-    // reaches xterm, which asks for no clipboard permission.
-    term.attachCustomKeyEventHandler((ev) => {
-      if (ctrlShift(ev, "KeyC")) {
-        // Chrome's Ctrl+Shift+C opens the element inspector.
-        ev.preventDefault();
-        if (ev.type === "keydown" && term.hasSelection()) {
-          copyText(term.getSelection());
-        }
-        return false;
-      }
-      return !ctrlShift(ev, "KeyV");
-    });
+    let term: ConsoleTerminal | null = null;
+    let ws: WebSocket | null = null;
+    let inputDisposable: { dispose(): void } | null = null;
+    let disposed = false;
+    const encoder = new TextEncoder();
 
     const handleResize = () => {
       try {
-        fitAddon.fit();
+        term?.fit();
       } catch {
         /* container not laid out yet */
       }
     };
     window.addEventListener("resize", handleResize);
 
-    let ws: WebSocket | null = null;
-    let disposed = false;
-    const encoder = new TextEncoder();
-    const inputDisposable = term.onData((data) => {
-      if (ws?.readyState === WebSocket.OPEN) {
-        ws.send(encoder.encode(data));
-      }
-    });
+    const fail = (e: unknown) => {
+      if (disposed) return;
+      setStatus("error");
+      whyFailed(id, e instanceof Error ? e.message : String(e)).then((m) => !disposed && setError(m));
+    };
 
-    // Browsers open the console with a fresh single-use ticket
-    // (spec/security.md §5.6): POST for it, then connect at once.
-    api
-      .consoleTicket(id)
-      .then(({ ticket }) => {
-        if (disposed) return;
-        const wsProto = window.location.protocol === "https:" ? "wss:" : "ws:";
-        const wsUrl = `${wsProto}//${window.location.host}/api/vms/${encodeURIComponent(id)}/console/ws?ticket=${encodeURIComponent(ticket)}`;
-        const sock = new WebSocket(wsUrl);
-        sock.binaryType = "arraybuffer";
-        ws = sock;
+    openTerminal(kind, container)
+      .then((t) => {
+        if (disposed) {
+          t.dispose();
+          return;
+        }
+        term = t;
+        // The terminal's text, for the e2e suite: ghostty-web draws on a
+        // canvas. (Nothing new to a script on the page: xterm.js keeps
+        // the same text in the DOM.)
+        Object.defineProperty(container, "screenText", { value: () => t.screenText(), configurable: true });
+        inputDisposable = t.onData((data) => {
+          if (ws?.readyState === WebSocket.OPEN) {
+            ws.send(encoder.encode(data));
+          }
+        });
+        // Browsers open the console with a fresh single-use ticket
+        // (spec/security.md §5.6): POST for it, then connect at once.
+        return api.consoleTicket(id).then(({ ticket }) => {
+          if (disposed) return;
+          const wsProto = window.location.protocol === "https:" ? "wss:" : "ws:";
+          const wsUrl = `${wsProto}//${window.location.host}/api/vms/${encodeURIComponent(id)}/console/ws?ticket=${encodeURIComponent(ticket)}`;
+          const sock = new WebSocket(wsUrl);
+          sock.binaryType = "arraybuffer";
+          ws = sock;
 
-        sock.onopen = () => {
-          setStatus("connected");
-          setError(null);
-        };
-        sock.onclose = (ev) => {
-          setStatus("closed");
-          if (ev.code !== 1000 && ev.code !== 1005) {
-            whyFailed(id, `WebSocket closed (code ${ev.code})`).then((m) => !disposed && setError(m));
-          }
-        };
-        sock.onerror = () => {
-          setStatus("error");
-          whyFailed(id, "WebSocket connection error").then((m) => !disposed && setError(m));
-        };
-        sock.onmessage = (ev) => {
-          if (typeof ev.data === "string") {
-            term.write(ev.data);
-          } else {
-            term.write(new Uint8Array(ev.data as ArrayBuffer));
-          }
-        };
+          sock.onopen = () => {
+            setStatus("connected");
+            setError(null);
+          };
+          sock.onclose = (ev) => {
+            setStatus("closed");
+            if (ev.code !== 1000 && ev.code !== 1005) {
+              whyFailed(id, `WebSocket closed (code ${ev.code})`).then((m) => !disposed && setError(m));
+            }
+          };
+          sock.onerror = () => {
+            setStatus("error");
+            whyFailed(id, "WebSocket connection error").then((m) => !disposed && setError(m));
+          };
+          sock.onmessage = (ev) => {
+            if (typeof ev.data === "string") {
+              t.write(ev.data);
+            } else {
+              t.write(new Uint8Array(ev.data as ArrayBuffer));
+            }
+          };
+        });
       })
-      .catch((e) => {
-        if (disposed) return;
-        setStatus("error");
-        whyFailed(id, e instanceof Error ? e.message : String(e)).then((m) => !disposed && setError(m));
-      });
+      .catch(fail);
 
     return () => {
       disposed = true;
       window.removeEventListener("resize", handleResize);
-      inputDisposable.dispose();
+      inputDisposable?.dispose();
       // Detach first: a message already in flight would otherwise be
       // written to the disposed terminal (xterm throws on "dimensions").
       if (ws) {
@@ -152,14 +124,12 @@ export default function VmConsole() {
           /* already closed */
         }
       }
-      // xterm 5.5 queues a setTimeout(syncScrollArea) in open(); disposing
-      // before it runs (StrictMode's mount/unmount, a quick navigation)
-      // makes it throw on the disposed renderer. Take the terminal off the
-      // page now and dispose it once that timer has run.
-      term.element?.remove();
-      setTimeout(() => term.dispose(), 0);
+      term?.dispose();
+      Reflect.deleteProperty(container, "screenText");
+      // Whatever the terminal left behind: the next one opens here.
+      container.replaceChildren();
     };
-  }, [id, attempt]);
+  }, [id, attempt, kind]);
 
   const statusColor =
     status === "connected"
@@ -193,6 +163,24 @@ export default function VmConsole() {
           Back to VM
         </Link>
         <span className="flex items-center gap-3 text-sm text-gray-600">
+          <label className="flex items-center gap-1">
+            Terminal:
+            <select
+              className="px-2 py-1 text-xs border border-gray-300 rounded-lg bg-white"
+              value={kind}
+              onChange={(e) => {
+                const k = e.target.value as TerminalKind;
+                saveTerminalKind(k);
+                setKind(k);
+              }}
+            >
+              {TERMINAL_KINDS.map((t) => (
+                <option key={t.kind} value={t.kind}>
+                  {t.label}
+                </option>
+              ))}
+            </select>
+          </label>
           <span>
             Status: <span className={`font-medium ${statusColor}`}>{status}</span>
           </span>
@@ -215,6 +203,7 @@ export default function VmConsole() {
 
       <div
         ref={containerRef}
+        data-testid="console-terminal"
         className="flex-1 rounded-lg overflow-hidden border border-gray-800"
         style={{ backgroundColor: "#000" }}
       />

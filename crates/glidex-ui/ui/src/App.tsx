@@ -9,8 +9,8 @@ import { LiveProvider } from "./live";
 import { Loading } from "./components/Loading";
 import ClusterBanner from "./components/ClusterBanner";
 
-// Each page but the landing one loads when it is first opened, the console
-// (xterm) included: the first load is the shell, React and the RPC client.
+// Each page but the landing one loads when it is first opened (the console
+// and its terminal too): the first load is the shell, React and the RPC client.
 const VmDetail = lazy(() => import("./pages/VmDetail"));
 const Credentials = lazy(() => import("./pages/Credentials"));
 const Networking = lazy(() => import("./pages/Networking"));

@@ -77,6 +77,19 @@ export function vmCard(page: Page, name: string) {
     .last();
 }
 
+/** The console page's terminal. */
+export function consoleTerminal(page: Page) {
+  return page.getByTestId("console-terminal");
+}
+
+/** The text in the console's terminal, whichever it is: ghostty-web draws
+ *  on a canvas, so it is read through the page's `screenText` hook. */
+export function consoleText(page: Page): Promise<string> {
+  return consoleTerminal(page).evaluate(
+    (el) => (el as HTMLElement & { screenText?: () => string }).screenText?.() ?? "",
+  );
+}
+
 /** The scratch control plane's local socket: requests on it are made as
  * the user running the tests, who is its break-glass administrator
  * (scripts/start-control-plane.sh sets `admin_group`). */
