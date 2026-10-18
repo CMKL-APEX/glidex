@@ -745,7 +745,7 @@ fn print_help() {
         "  {} - Tenants admitted on this cluster, and their caps",
         "admission list | set <t> [vms=N … | unlimited] [--suspend|--resume] | remove <t>".cyan()
     );
-    println!("  {} - Login connectors of this directory", "connector list | show <id> | add oidc|pam|google <id> … | update <id> … | secret set <id> | test <id> | remove <id>".cyan());
+    println!("  {} - Login connectors of this directory", "connector list | show <id> | add oidc|pam|google|jumpcloud <id> … | update <id> … | secret set <id> | test <id> | remove <id>".cyan());
     println!("  {} - Invite an email address to a tenant (a link, shown once)", "invite list <tenant> | create <tenant> <email> --connector C [--role R] [--days N] | revoke <id>".cyan());
     println!(
         "  {} - Projects",

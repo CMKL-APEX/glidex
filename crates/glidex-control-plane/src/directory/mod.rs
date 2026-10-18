@@ -17,6 +17,7 @@ pub mod presets;
 pub mod secrets;
 
 pub use presets::google::GoogleSettings;
+pub use presets::jumpcloud::JumpcloudSettings;
 
 use crate::config::Config;
 use crate::store::Db;
@@ -77,6 +78,8 @@ pub enum Kind {
     Oidc,
     /// The `google` preset over the OIDC code (§5.1).
     Google,
+    /// The `jumpcloud` preset over the OIDC code (§5.1).
+    Jumpcloud,
 }
 
 impl Kind {
@@ -85,12 +88,13 @@ impl Kind {
             Kind::Pam => "pam",
             Kind::Oidc => "oidc",
             Kind::Google => "google",
+            Kind::Jumpcloud => "jumpcloud",
         }
     }
 
     /// Whether it logs in through the OIDC code.
     pub fn is_oidc(&self) -> bool {
-        matches!(self, Kind::Oidc | Kind::Google)
+        matches!(self, Kind::Oidc | Kind::Google | Kind::Jumpcloud)
     }
 
     pub fn parse(s: &str) -> Option<Kind> {
@@ -98,6 +102,7 @@ impl Kind {
             "pam" => Some(Kind::Pam),
             "oidc" => Some(Kind::Oidc),
             "google" => Some(Kind::Google),
+            "jumpcloud" => Some(Kind::Jumpcloud),
             _ => None,
         }
     }
@@ -108,6 +113,7 @@ impl Kind {
             Kind::Pam => &[],
             Kind::Oidc => &["client_secret"],
             Kind::Google => &["client_secret", "device_client_secret"],
+            Kind::Jumpcloud => &["client_secret"],
         }
     }
 }
@@ -214,6 +220,11 @@ impl Connector {
             .map_err(|e| ConnectorError::Invalid(format!("google settings: {e}")))
     }
 
+    pub fn jumpcloud(&self) -> Result<JumpcloudSettings, ConnectorError> {
+        serde_json::from_value(self.settings.clone())
+            .map_err(|e| ConnectorError::Invalid(format!("jumpcloud settings: {e}")))
+    }
+
     /// How an OIDC-code connector logs in: the browser's client, or with
     /// `device` gxctl's (Google keeps a separate one for the device grant).
     pub fn oidc_profile(&self, device: bool) -> Result<OidcProfile, ConnectorError> {
@@ -250,6 +261,22 @@ impl Connector {
                     },
                 })
             }
+            Kind::Jumpcloud => {
+                let j = self.jumpcloud()?;
+                Ok(OidcProfile {
+                    settings: OidcSettings {
+                        issuer: j.issuer().to_string(),
+                        client_id: j.client_id.clone(),
+                        scopes: presets::jumpcloud::SCOPES.map(String::from).to_vec(),
+                        groups_claim: j.groups_claim().to_string(),
+                        allowed_domains: Vec::new(),
+                        redirect_uri: j.redirect_uri.clone(),
+                        mfa_acr_values: Vec::new(),
+                    },
+                    preset: j.preset(),
+                    secret_field: "client_secret",
+                })
+            }
             Kind::Pam => Err(ConnectorError::Invalid(
                 "a pam connector has no OIDC client".into(),
             )),
@@ -259,7 +286,8 @@ impl Connector {
     /// Whether gxctl's device grant goes through it.
     pub fn has_device_client(&self) -> bool {
         match self.kind {
-            Kind::Oidc => true,
+            // Whether the IdP offers the grant, its discovery says.
+            Kind::Oidc | Kind::Jumpcloud => true,
             Kind::Google => self.google().is_ok_and(|g| g.device_client_id.is_some()),
             Kind::Pam => false,
         }
@@ -270,6 +298,10 @@ impl Connector {
     pub fn allowed_emails(&self) -> Vec<String> {
         match self.kind {
             Kind::Google => self.google().map(|g| g.allowed_emails).unwrap_or_default(),
+            Kind::Jumpcloud => self
+                .jumpcloud()
+                .map(|j| j.allowed_emails)
+                .unwrap_or_default(),
             _ => Vec::new(),
         }
     }
@@ -284,7 +316,7 @@ impl Connector {
             (Kind::Oidc, FILE_OIDC) => {
                 format!("oidc:{}", self.oidc().map(|s| s.issuer).unwrap_or_default())
             }
-            (Kind::Oidc | Kind::Google, id) => format!("conn:{id}"),
+            (Kind::Oidc | Kind::Google | Kind::Jumpcloud, id) => format!("conn:{id}"),
         }
     }
 
@@ -352,6 +384,11 @@ impl Connector {
             Kind::Google => {
                 self.google()?
                     .validate(self.jit, guarded)
+                    .map_err(ConnectorError::Invalid)?;
+            }
+            Kind::Jumpcloud => {
+                self.jumpcloud()?
+                    .validate()
                     .map_err(ConnectorError::Invalid)?;
             }
         }

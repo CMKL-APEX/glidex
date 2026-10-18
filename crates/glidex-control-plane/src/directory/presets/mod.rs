@@ -4,6 +4,7 @@
 //! verified.
 
 pub mod google;
+pub mod jumpcloud;
 
 /// What a preset checks in a verified ID token.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -12,18 +13,32 @@ pub enum ClaimRule {
     #[default]
     None,
     Google(google::Rule),
+    Jumpcloud,
+}
+
+/// What a preset says about a login it allows, where it decides instead
+/// of the generic claims.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Checked {
+    /// Whether the login counts as multi-factor.
+    pub mfa: Option<bool>,
+    /// Whether the email is the user's.
+    pub email_verified: Option<bool>,
 }
 
 impl ClaimRule {
-    /// `Err` with why the login isn't allowed; `Ok(Some(mfa))` when the
-    /// preset decides whether the login counts as multi-factor.
+    /// `Err` with why the login isn't allowed.
     pub fn check(
         &self,
         claims: &std::collections::HashMap<String, serde_json::Value>,
-    ) -> Result<Option<bool>, String> {
+    ) -> Result<Checked, String> {
         match self {
-            ClaimRule::None => Ok(None),
-            ClaimRule::Google(r) => r.check(claims).map(Some),
+            ClaimRule::None => Ok(Checked::default()),
+            ClaimRule::Google(r) => r.check(claims).map(|mfa| Checked {
+                mfa: Some(mfa),
+                email_verified: Some(true),
+            }),
+            ClaimRule::Jumpcloud => Ok(jumpcloud::check(claims)),
         }
     }
 }

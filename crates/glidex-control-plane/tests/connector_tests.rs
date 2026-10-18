@@ -1810,3 +1810,60 @@ async fn invitations_let_one_known_person_in_once() {
         "{st}"
     );
 }
+
+#[tokio::test]
+async fn jumpcloud_groups_come_in_its_claim_and_its_emails_are_the_organizations() {
+    // spec/tenancy.md §5.1: JumpCloud's issuer and scopes are fixed; groups
+    // come in the claim its "Include group attribute" names (memberOf);
+    // an email the token says nothing about counts as verified, one it
+    // says is unverified doesn't.
+    let mock = idp::start().await;
+    let h = harness();
+    let s = h.session(&h.admin("admin-jc"));
+    let c = json!({"connector": {"id": "jc", "display_name": "JumpCloud", "jit": true,
+        "required_groups": ["lab-staff"],
+        "jumpcloud": {"client_id": "glidex", "issuer": mock.base, "allowed_emails": ["alice@corp.example"]}}});
+    let (st, v) = h.rest("POST", "/connectors", Some(c), &s).await;
+    assert_eq!(st, StatusCode::CREATED, "{v}");
+    assert_eq!(v["connector"]["kind"], "jumpcloud");
+    let (st, r) = h
+        .rest(
+            "PUT",
+            "/connectors/jc/secrets/client_secret",
+            Some(json!({"value": SECRET})),
+            &s,
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "{r}");
+    let base = |sub: &str, email: &str| {
+        json!({"iss": mock.base, "aud": "glidex", "sub": sub, "exp": now() + 300, "iat": now(),
+               "email": email, "name": sub, "memberOf": ["lab-staff"]})
+    };
+    assert_eq!(
+        h.login_with(&mock, "jc", base("j-1", "alice@corp.example"))
+            .await,
+        StatusCode::SEE_OTHER
+    );
+    let mut no_group = base("j-2", "alice@corp.example");
+    no_group["memberOf"] = json!(["other"]);
+    assert_eq!(
+        h.login_with(&mock, "jc", no_group).await,
+        StatusCode::FORBIDDEN
+    );
+    // Not on the allowlist.
+    assert_eq!(
+        h.login_with(&mock, "jc", base("j-3", "bob@corp.example"))
+            .await,
+        StatusCode::FORBIDDEN
+    );
+    let mut unverified = base("j-4", "alice@corp.example");
+    unverified["email_verified"] = json!(false);
+    assert_eq!(
+        h.login_with(&mock, "jc", unverified).await,
+        StatusCode::FORBIDDEN
+    );
+    // The issuer is JumpCloud's, or a local mock.
+    let bad = json!({"connector": {"id": "jc2", "jumpcloud": {"client_id": "glidex", "issuer": "https://evil.example"}}});
+    let (st, v) = h.rest("POST", "/connectors", Some(bad), &s).await;
+    assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+}

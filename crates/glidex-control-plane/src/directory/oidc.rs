@@ -529,7 +529,7 @@ impl OidcState {
             .or(c.email.clone())
             .unwrap_or_else(|| c.sub.clone());
         // The preset's checks, and its word on MFA where it has one.
-        let preset_mfa = self
+        let preset = self
             .preset
             .rule
             .check(&c.rest)
@@ -540,18 +540,19 @@ impl OidcState {
             .get("acr")
             .and_then(|a| a.as_str())
             .is_some_and(|a| self.mfa_acr.iter().any(|m| m == a));
-        let email_verified = matches!(
-            c.rest.get("email_verified"),
-            Some(serde_json::Value::Bool(true))
-        ) || c.rest.get("email_verified").and_then(|v| v.as_str())
-            == Some("true");
+        let email_verified = preset.email_verified.unwrap_or(
+            matches!(
+                c.rest.get("email_verified"),
+                Some(serde_json::Value::Bool(true))
+            ) || c.rest.get("email_verified").and_then(|v| v.as_str()) == Some("true"),
+        );
         Ok(OidcIdentity {
             issuer: d.issuer.clone(),
             subject: c.sub,
             display_name,
             email: c.email,
             groups,
-            mfa: preset_mfa.unwrap_or(amr_mfa || acr_mfa),
+            mfa: preset.mfa.unwrap_or(amr_mfa || acr_mfa),
             email_verified,
         })
     }
