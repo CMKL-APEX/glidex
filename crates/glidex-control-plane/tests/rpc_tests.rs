@@ -47,6 +47,12 @@ fn harness() -> H {
         .unwrap()
         .unwrap()
         .name;
+    // api.sock takes members of the users group: make that our own group,
+    // whatever groups the machine running the tests has.
+    cfg.users_group = nix::unistd::Group::from_gid(nix::unistd::getgid())
+        .unwrap()
+        .unwrap()
+        .name;
     let auth = AuthService::new(manager.database(), cfg).unwrap();
     let app = Arc::new(App { manager, auth });
     H {
@@ -409,7 +415,13 @@ async fn reflect(
             Some(listener),
         )
         .await;
-    let answer = envelopes(&r.body).first().map(|(_, m)| {
+    // A refusal before the RPC (a REST error) has no frames to read.
+    let frames = if r.status == StatusCode::OK {
+        envelopes(&r.body)
+    } else {
+        Vec::new()
+    };
+    let answer = frames.first().map(|(_, m)| {
         connectrpc_reflection::wire::v1::ServerReflectionResponse::decode_from_slice(m).unwrap()
     });
     (r, answer)
@@ -429,6 +441,7 @@ async fn reflection_lists_the_services_on_the_api_socket_only() {
         Listener::Api,
     )
     .await;
+    assert_eq!(r.status, StatusCode::OK, "{r:?}");
     assert_eq!(grpc_status(&r).as_deref(), Some("0"), "{r:?}");
     let Some(Resp::ListServicesResponse(list)) = answer.and_then(|a| a.message_response) else {
         panic!("not a service list: {r:?}");
