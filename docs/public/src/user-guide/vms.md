@@ -113,11 +113,14 @@ curl -H "Authorization: Bearer $GLIDEX_TOKEN" -H 'Content-Type: application/json
     "name": "web-1", "vcpu_count": 2, "mem_size_mib": 2048,
     "image": "ubuntu-26.04", "root_disk_size_gib": 20,
     "credential": "alice", "networks": [{"network": "lab"}],
-    "power": "running"
+    "power": "POWER_STATE_RUNNING"
   }'
 ```
 
-`name`, `vcpu_count` and `mem_size_mib` are required. See
+`name`, `vcpu_count` and `mem_size_mib` are required. Values from a
+fixed list take their full names, as in the table below
+(`POWER_STATE_RUNNING`, not `running`); a short name is refused with
+`422` (see [Proto JSON](../api/rest.md#proto-json)). See
 [REST API](../api/rest.md#vms) for every field.
 
 ## VM settings
@@ -128,7 +131,7 @@ curl -H "Authorization: Bearer $GLIDEX_TOKEN" -H 'Content-Type: application/json
 | Project | `project` | Id or name; default: your default project. |
 | vCPUs | `vcpu_count` | At least 1. Changeable; applies at the next start. |
 | Memory | `mem_size_mib` | In MiB, at least 1. Changeable; applies at the next start. |
-| Hypervisor | `hypervisor` | `cloudhypervisor` (default) or `qemu`. Fixed. |
+| Hypervisor | `hypervisor` | `HYPERVISOR_CLOUD_HYPERVISOR` (default) or `HYPERVISOR_QEMU`. Fixed. |
 | Boot disk | `image`, `root_disk` or `rootfs_path` | Exactly one. Fixed. See below. |
 | Root disk size | `root_disk_size_gib` | With `image` only. Default: the image's size, at least 10 GiB. |
 | Firmware | `firmware` | A firmware image (name or id). Fixed. |
@@ -137,10 +140,10 @@ curl -H "Authorization: Bearer $GLIDEX_TOKEN" -H 'Content-Type: application/json
 | Networks | `networks` | Up to 8 NICs, in order. Changeable; applies at the next start. |
 | Data disks | `data_disks` | Disks of the project, attached after the boot disk. Changeable; applies at the next start. |
 | PCI devices | `vfio_devices` | Changeable while the VM runs. |
-| Restart policy | `restart_policy` | `on_failure` (default) or `never`. Changeable. |
-| On host boot | `on_host_boot` | `resume` (default) or `stop`. Changeable. |
+| Restart policy | `restart_policy` | `RESTART_POLICY_ON_FAILURE` (default) or `RESTART_POLICY_NEVER`. Changeable. |
+| On host boot | `on_host_boot` | `HOST_BOOT_POLICY_RESUME` (default) or `HOST_BOOT_POLICY_STOP`. Changeable. |
 | Stop grace | `stop_grace_secs` | Seconds a stop waits after the power button; 0 (default) stops at once; at most 300. Changeable. |
-| Initial power | `power` | `stopped` (default), `running` or `paused`. |
+| Initial power | `power` | `POWER_STATE_STOPPED` (default), `POWER_STATE_RUNNING` or `POWER_STATE_PAUSED`. |
 | Node | `node` | Clusters: pin the VM to a node (name or id). Fixed. |
 | Hugepages | `hugepages` | Back guest memory with hugepages. Changeable; applies at the next start. |
 | Hugepage size | `hugepage_size` | `2M` or `1G`, with `hugepages`; the memory must be a whole number of pages. Default: the host's default size (usually 2M). Changeable; applies at the next start. |
@@ -327,29 +330,31 @@ inside the guest restarts the guest and the VM stays running.
 - **The guest powers off** (for example `poweroff` inside it): the
   desired state becomes stopped, and the VM stays stopped whatever its
   restart policy.
-- **The hypervisor crashes**: with the restart policy `on_failure`, the
+- **The hypervisor crashes**: with the restart policy **on failure**, the
   VM is started again after 10 seconds, doubling with each crash in a
   row up to 5 minutes; after 10 minutes of running the count starts
-  over. With `never`, the desired state becomes stopped.
+  over. With **never**, the desired state becomes stopped.
 - **It fails to launch**: the VM is `failed` and Glidex retries with a
   growing delay. Its details and events say why.
-- **The host reboots**: with `on_host_boot` `resume`, a VM that was
-  running is started again; with `stop`, it stays stopped.
+- **The host reboots**: with the host-boot policy **resume**, a VM
+  that was running is started again; with **stop**, it stays stopped.
 
 Change these policies with the API:
 
 ```bash
 curl -H "Authorization: Bearer $GLIDEX_TOKEN" -H 'Content-Type: application/json' \
   -X PATCH https://host.example.org:8841/vms/<id> \
-  -d '{"change": {"restart_policy": "never"}, "update_mask": "restart_policy"}'
+  -d '{"change": {"restart_policy": "RESTART_POLICY_NEVER"}, "update_mask": "restart_policy"}'
 ```
 
 ### Change a VM
 
 Change vCPUs, memory, networks, data disks, PCI devices, kernel
 arguments, the credential, hugepages and the policies with
-`PATCH /vms/{id}`. `change` holds the new values, `update_mask` lists
-the fields to change (comma-separated):
+`PATCH /vms/{id}`. The body has two fields: `change` holds the new
+values, and `update_mask` lists the fields to change (comma-separated;
+without it, the fields present in `change` are changed). Settings
+outside `change` are refused:
 
 ```bash
 curl -H "Authorization: Bearer $GLIDEX_TOKEN" -H 'Content-Type: application/json' \
@@ -414,8 +419,8 @@ restarts, warnings such as a lost network port.
 gxctl> events my-vm           # time, who, reason, message
 ```
 
-In the web UI they are under **Events** on the VM's page. With the API,
-`GET /vms/{id}/events`.
+In the web UI they are under **Events** on the VM's page, where new
+ones appear as they happen. With the API, `GET /vms/{id}/events`.
 
 To follow every VM, disk, image and network of your projects as they
 change:
@@ -496,7 +501,7 @@ anything:
 ```bash
 curl -H "Authorization: Bearer $GLIDEX_TOKEN" -H 'Content-Type: application/json' \
   -X POST https://host.example.org:8841/scheduler/preview \
-  -d '{"vcpu_count": 2, "mem_size_mib": 2048, "hypervisor": "qemu"}'
+  -d '{"vcpu_count": 2, "mem_size_mib": 2048, "hypervisor": "HYPERVISOR_QEMU"}'
 ```
 
 The answer has the node it would pick (`pick`) and every node's fit

@@ -6,11 +6,13 @@
   (`https://host.example.org:8841/vms`). Locally, the same paths over the
   Unix socket `/run/glidex-cp/api.sock`.
 - **JSON** in and out (`Content-Type: application/json`), except the
-  console WebSocket, CSV exports and the cluster snapshot.
+  console WebSocket, the console log (raw bytes), CSV exports, the
+  cluster snapshot and `/watch` (server-sent events).
 - **Ids and names**: VM paths take the VM's id. Disks, images,
-  networks, projects and nodes take an id or a name, tenants an id or a
-  slug; a name that several visible resources share is `409 ambiguous`.
-  `gxctl` resolves VM names for you.
+  networks, projects and nodes take an id or a name (for nodes, a live
+  node's name before a departed one's), tenants an id or a slug; a name
+  that several visible resources share is `409 ambiguous`. `gxctl`
+  resolves VM names for you.
 - **Projects**: VMs, disks, guest credentials and project networks
   belong to a project. Creates take `project` (id or name) and default to
   your default project; lists take `?project=`.
@@ -19,29 +21,42 @@
 
 ### Proto JSON
 
-Most families are served in the proto shape: the request and response
-are the RPC's message as proto3 JSON. What that means for a client:
+Every operation with an RPC twin takes and answers that RPC's message as
+proto3 JSON. What that means for a client:
 
 | Rule | Example |
 |---|---|
 | Field names are `snake_case`, as in the proto | `mem_size_mib`, `root_disk_size_gib` |
 | Responses are wrapped in the message's fields | `{"vms": [...]}`, `{"vm": {...}}`, `{"vm": {...}, "settled": true}` |
 | 64-bit integers are JSON strings | `"size_bytes": "21474836480"` |
-| Enum values are full proto names | `"hypervisor": "HYPERVISOR_QEMU"`, `"mode": "NETWORK_MODE_NAT"` |
+| Enum values are full proto names, in requests too | `"hypervisor": "HYPERVISOR_QEMU"`, `"mode": "NETWORK_MODE_NAT"` |
 | Times are RFC 3339 | `"created_at": "2026-10-17T08:00:00Z"` |
 | Unset or default fields are left out, not `null` | an unlimited quota is absent |
-| A body field the message doesn't have is refused | `422 invalid` ("unknown field …") |
+| A body that isn't the message is refused | `422 invalid`: an unknown field, a wrong type, an unknown enum value |
 
-Requests use the full enum names too; the lowercase values of earlier
-releases (`"qemu"`, `"running"`) are refused. Partial updates (`PATCH`) change the fields present, or
-those listed in `update_mask` (`"description,quotas"`).
+Lowercase enum values (`"qemu"`, `"nat"`, `"running"`) are not accepted:
+they are `422 invalid`. Path and query parameters fill the message's
+fields of the same meaning (`?wait=60` is `wait_secs`, `If-Match` is
+`expected_resource_version`).
 
-Ported families: VMs, guest credentials, images, disks, networks,
-routers and shares, host networking and PCI, usage and metrics,
-projects, users, teams, tokens, bindings, policies, audit, tenants,
-admissions, login connectors, and `GET /auth/server-info`,
-`GET /auth/whoami`. Cluster, node and import endpoints, `/watch`,
-`/auth/methods`, the OIDC routes and `/health` keep plain JSON bodies.
+Partial updates (`PATCH`) change the fields present, or those listed in
+`update_mask`, a comma-separated string (`"description,quotas"`). A
+VM's `PATCH` puts its fields under `change`:
+
+```json
+{
+  "change": {"power": "POWER_STATE_RUNNING", "mem_size_mib": 4096},
+  "update_mask": "power,mem_size_mib"
+}
+```
+
+Without `update_mask`, the fields present in `change` are the ones
+changed. `credential` in the mask but absent from `change` removes the
+VM's credential.
+
+Plain JSON bodies of their own: `/health`, `/auth/methods`,
+`/auth/login`, `/auth/logout`, the OIDC and connector redirects, and
+`/system/reconcile`.
 
 ### Authentication
 
@@ -52,13 +67,15 @@ admissions, login connectors, and `GET /auth/server-info`,
 
 Without a credential, protected endpoints answer `401 unauthenticated`.
 A request from a browser `Origin` the site doesn't allow is
-`403 origin_not_allowed` on writes and WebSocket upgrades. See
+`403 origin_not_allowed` on writes and WebSocket upgrades; through the
+web UI, the names the UI serves are allowed. See
 [API overview](README.md#authentication).
 
 ### Errors
 
-Errors are JSON with a stable `error` code, a human `message` and,
-for some codes, `details`:
+Errors are a `glidex.api.v1.Error`: a stable `error` code, a human
+`message` and, for some codes, `details`. RPC errors carry the same
+code ([RPC errors](rpc.md#errors)).
 
 ```json
 {
@@ -141,25 +158,47 @@ disks, images and networks you may list:
 
 The stream starts with an `added` event per object, then `synced`;
 after that `added`, `modified` and `deleted` as things change. Each
-event's data is `{"kind": "vm", "id": "…", "object": {…}}` (no `object`
-on `deleted`). Authorization is re-checked for every event. The server
-ends a stream after 5 minutes with `expired`; reconnect for a fresh
-snapshot (a browser `EventSource` does this by itself). Too many open
-streams on a host give `503 too_many_watchers`: poll instead.
+event's data is `{"kind": "vm", "id": "…", "object": {…}}`, with the
+object as its list answers it (no `object` on `deleted`). Authorization
+is re-checked for every event. A comment line every 15 s keeps a quiet
+stream open through proxies. The server ends a stream after 5 minutes
+with `expired`; reconnect for a fresh snapshot (a browser `EventSource`
+does this by itself). Too many open streams on a server give
+`503 too_many_watchers`: poll instead. `WatchService.Watch` is the same
+stream over RPC ([Streams](rpc.md#streams)).
 
 ### Console WebSocket
 
 1. `GET /vms/{id}/console` says whether the console is available and
    gives the WebSocket path.
-2. Browsers with a session cookie first get a single-use ticket,
-   `POST /vms/{id}/console/ticket`, and pass it as `?ticket=`. Token and
+2. A browser with a session cookie first gets a ticket,
+   `POST /vms/{id}/console/ticket`, and passes it as `?ticket=`. A
+   ticket is good for 30 s and one connection: a reconnect needs a new
+   one. Without it a session gets `403 ticket_required`. Token and
    Unix-socket clients don't need one.
-3. `GET /vms/{id}/console/ws` upgrades to a WebSocket. Output arrives
-   as binary frames of raw serial bytes; send keystrokes as binary or
-   text frames. Any number of clients can share a console.
+3. `GET /vms/{id}/console/ws` upgrades to a WebSocket. An unknown VM, or
+   one you can't read, is `404`; a VM on a node that can't be reached is
+   `502 node_unreachable`, before the upgrade.
+
+On the WebSocket:
+
+- The server first replays the console log, then sends the guest's
+  output live, as binary frames of raw serial bytes. Use
+  `binaryType = "arraybuffer"`.
+- Send keystrokes as binary or text frames (text is sent as its UTF-8
+  bytes).
+- There are no control messages: no resize, no framing beyond the
+  bytes.
+- If the console can't be reached after the upgrade, the server sends
+  one text frame with the error, then closes.
+- Any number of clients can share a console.
+
+`VmService.Console` is the same console as a bidirectional RPC stream,
+for clients that speak HTTP/2 ([Streams](rpc.md#streams)).
 
 `GET /vms/{id}/console/log?tail_bytes=N` returns the end of the console
-log (at most 1 MiB); `previous=true` reads the rotated one. See
+log as raw bytes (`application/octet-stream`, at most 1 MiB);
+`previous=true` reads the rotated one. See
 [Console](../user-guide/console.md).
 
 ### Cluster reads
@@ -192,6 +231,20 @@ api -X POST 'https://host.example.org:8841/vms?wait=60' \
 api -X POST 'https://host.example.org:8841/vms/<vm-id>/stop?graceful_timeout_secs=60&wait=90'
 ```
 
+Change a VM, then get a token from a script:
+
+```bash
+api -X PATCH 'https://host.example.org:8841/vms/<vm-id>?wait=60' \
+  -H 'Content-Type: application/json' \
+  -d '{"change": {"vcpu_count": 4}, "update_mask": "vcpu_count"}'
+
+curl --cacert tls.crt -X POST https://host.example.org:8841/auth/token \
+  -H 'Content-Type: application/json' \
+  -d '{"username": "alice", "password": "<password>", "token_name": "ci"}'
+# {"issued": {"token": "<token>", "token_id": "…",
+#   "expires_at": "2026-11-17T08:00:00Z", "user_id": "…", "display_name": "Alice"}}
+```
+
 On the host itself, no token is needed:
 
 ```bash
@@ -212,11 +265,11 @@ The RPC twin of each operation is in [RPC API](rpc.md#services).
 | `GET` | `/auth/server-info` | The server's identity: version, cluster, certificate fingerprint; no credential |
 | `POST` | `/auth/discover` | Which login connectors to offer for a tenant slug or email (`{hint}`) |
 | `POST` | `/auth/login` | Password login for the browser: sets a session cookie |
-| `POST` | `/auth/token` | Password login for tools: returns an API token |
+| `POST` | `/auth/token` | Password login for tools: `{issued: {token, token_id, expires_at, user_id, display_name}}` |
 | `GET` | `/auth/oidc/start`, `/auth/oidc/callback` | OIDC browser login (redirects) |
-| `POST` | `/auth/oidc/device`, `/auth/oidc/device/poll` | OIDC device flow for CLIs: start, then poll for the token |
+| `POST` | `/auth/oidc/device`, `/auth/oidc/device/poll` | OIDC device flow for CLIs: start, then poll: `202 {pending: true}` until the user is done, then `200 {issued: …}` |
 | `GET` | `/auth/c/{id}/start`, `/auth/c/{id}/callback` | Browser login through connector `{id}` |
-| `POST` | `/auth/c/{id}/device`, `/auth/c/{id}/device/poll` | Device flow through connector `{id}` |
+| `POST` | `/auth/c/{id}/device`, `/auth/c/{id}/device/poll` | Device flow through connector `{id}`, answered the same way |
 | `POST` | `/auth/logout` | End the current session |
 | `GET` | `/auth/whoami` | Who you are: user, method, teams, roles, default project |
 | `POST` | `/authz/check` | Would these actions be allowed? One answer per check |
@@ -243,7 +296,7 @@ The RPC twin of each operation is in [RPC API](rpc.md#services).
 | `GET` | `/vms/{id}/console` | Console availability and WebSocket path |
 | `POST` | `/vms/{id}/console/ticket` | Single-use console ticket for a browser session |
 | `GET` | `/vms/{id}/console/ws` | Console WebSocket |
-| `GET` | `/vms/{id}/console/log` | Console log tail (`?tail_bytes=`, `?previous=true`) |
+| `GET` | `/vms/{id}/console/log` | Console log tail, raw bytes (`?tail_bytes=`, `?previous=true`) |
 
 ### Guest credentials
 
@@ -428,7 +481,8 @@ them to the node being managed).
 ### Cluster and nodes
 
 Administrator operations; see [Clusters](../operator-guide/clusters.md).
-`gxctl cluster …` and `gxctl node …` wrap them.
+`gxctl cluster …` and `gxctl node …` wrap them. A node's `{id}` is its
+id or its name.
 
 | Method | Path | What it does |
 |---|---|---|
@@ -463,10 +517,10 @@ Administrator operations; see [Clusters](../operator-guide/clusters.md).
 | `POST` | `/nodes/{id}/forget` | Forget a node that is gone for good |
 | `POST` | `/nodes/{id}/purge` | Drop a forgotten node's record |
 | `POST` | `/nodes/{id}/rejoin-token` | Token for a node to rejoin as itself |
-| `POST` | `/nodes/{id}/detach` | Detach a node with its resources, back to standalone |
+| `POST` | `/nodes/{id}/detach` | Detach a node with its resources, back to standalone (`map_networks`, `with_access`); the answer names the networks it maps or drops in `network_names` (id → name). With `abort`: cancel a detach; with `departed`: forget the departed node |
 | `PUT` | `/nodes/{id}/ovn` | A node's `br-int` datapath and physical network mappings |
 | `POST` | `/nodes/{id}/spare-image-files/delete` | Delete image files a node holds that nothing records |
-| `GET` | `/departures` | Detaches in progress or done |
+| `GET` | `/departures` | Detaches in progress or done, with `network_names` as the detach saw them |
 | `GET` | `/imports` | Import plans |
 | `GET` | `/imports/{plan}` | One plan and what it brings |
 | `POST` | `/imports/{plan}/approve` | Approve a plan with mappings (`dry_run` checks only) |

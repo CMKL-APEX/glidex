@@ -60,7 +60,9 @@ cargo run -p glidex-install                   # install, or update everything
 cargo run -p glidex-install -- uninstall      # --dry-run shows what would go
 ```
 
-The installer asks nothing but your sudo password. It installs what is
+The installer asks for your sudo password and, once, on a host on a
+Tailscale tailnet with HTTPS certificates, whether the web UI should
+use the node's Tailscale certificate (see [Run](#run)). It installs what is
 missing and updates what is outdated: system packages, Rust, Bun, Cloud
 Hypervisor and its firmware (pinned versions, downloads checked against
 pinned sha256s), QEMU with OVMF, VM networking (Open vSwitch,
@@ -142,14 +144,16 @@ api() { curl --cacert /run/glidex-cp/tls.crt -H "Authorization: Bearer $GLIDEX_T
 api -X POST https://localhost:8841/images -H 'Content-Type: application/json' -d '{"catalog": "ubuntu-26.04"}'
 api -X POST https://localhost:8841/vms -H 'Content-Type: application/json' -d '{
   "name": "my-vm", "vcpu_count": 2, "mem_size_mib": 2048,
-  "hypervisor": "qemu", "image": "ubuntu-26.04", "root_disk_size_gib": 20,
+  "hypervisor": "HYPERVISOR_QEMU", "image": "ubuntu-26.04", "root_disk_size_gib": 20,
   "credential": "alice", "networks": [{"network": "lab"}]
 }'
 api -X POST https://localhost:8841/vms/<id>/start
 api -X POST 'https://localhost:8841/vms/<id>/stop?graceful_timeout_secs=60'
 ```
 
-- `hypervisor` is `cloudhypervisor` (default) or `qemu`. With an `image`
+- Request bodies are proto JSON: values from a fixed list take their
+  full names, so `hypervisor` is `HYPERVISOR_CLOUD_HYPERVISOR` (default)
+  or `HYPERVISOR_QEMU` (`qemu` alone is refused). With an `image`
   or `root_disk`, the VM boots through UEFI firmware, a *firmware image*
   managed like the cloud images. The control plane imports the
   installer's pinned `CLOUDHV.fd` (`cloudhv-edk2`) and the host's OVMF
@@ -164,7 +168,8 @@ api -X POST 'https://localhost:8841/vms/<id>/stop?graceful_timeout_secs=60'
   and a locked password: nobody can log in, so add a credential.
   `cloud_init_path` replaces the generated seed.
 - Give the root disk a size (`root_disk_size_gib`, or type one at
-  `gxctl create`'s prompt): without one, the disk is the size of the image.
+  `gxctl create`'s prompt): without one, it gets 10 GiB, or the image's
+  size if that is larger.
 - Networks: glidex creates none by itself. Add one first with
   `gxctl network-add` or the web UI's Networking page (e.g. a NAT network
   `lab`); a network named `default` is preselected in the VM form. Only

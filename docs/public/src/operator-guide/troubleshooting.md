@@ -50,6 +50,14 @@ see [Maintenance](maintenance.md#logs).
 | `unauthenticated` over TCP | No token, or an expired one. `gxctl login --oidc` or `--token`, or `gxctl auth login`. |
 | A TLS or certificate error over TCP | See [Certificate fingerprints](#certificate-fingerprints). |
 
+## The web UI
+
+| Symptom | Cause and fix |
+| --- | --- |
+| `421 Misdirected Request` | The browser used a name the UI doesn't serve. Add it to `GLIDEX_UI_HOSTS` (see [Configuration](configuration.md#web-ui)). |
+| `403 origin_not_allowed` | A change came from a page on another site, or a page calls the API on port 8841 directly from an origin not in `auth.allowed_origins`. Pages served by the web UI don't need that list. |
+| A page doesn't load after an update | The tab still runs the old UI. Reload it. |
+
 ## Error codes
 
 API errors come back as JSON with a code, a message and sometimes
@@ -106,8 +114,9 @@ The installer also prints both at the end.
   accept it until you know why.
 - **`gxctl` says the certificate is not among the profile's pins.** The
   host's certificate changed. Glidex regenerates it only in narrow
-  cases (a configured certificate replaced, `cluster rotate-ca`, a
-  re-init). Confirm the new fingerprint on the host through another
+  cases (a configured certificate replaced, which is served within a
+  minute without a restart; `cluster rotate-ca`; a re-init). Confirm
+  the new fingerprint on the host through another
   channel, then:
 
   ```bash
@@ -116,6 +125,12 @@ The installer also prints both at the end.
 
   `gxctl auth trust list` shows a profile's pins; `gxctl auth trust
   fetch` shows what a server presents.
+- **The `ts.net` name still gets a certificate warning** with
+  `--tailscale-cert` on. The UI serves its usual certificate until
+  `tailscaled` hands it one: `journalctl -u glidex-ui` says why (HTTPS
+  certificates not enabled for the tailnet, `TS_PERMIT_CERT_UID` not
+  `glidex-ui`, the first certificate still being issued). See
+  [Tailscale certificates](tls.md#tailscale-certificates).
 - **A join says the server's CA is not the one the token names.** The
   cluster CA rotated after the token was issued (for example a server
   left). Issue a new token.

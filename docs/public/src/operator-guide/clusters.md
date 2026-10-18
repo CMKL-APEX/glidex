@@ -222,11 +222,13 @@ node** on its page.
 Each node has a phase: `Active`, `Draining`, `Departing` (a detach in
 progress), or one of the end states `Departed`, `Removed`, `Forgotten`.
 The Cluster page's **Nodes** card shows phase and readiness; a node's
-page has an **Operations…** menu for everything below.
+page has an **Operations…** menu for everything below. The `gxctl node`
+commands take a node's name or its id.
 
 ### A node is down for a while
 
-Nothing to do. A node that stops reporting for 40 seconds
+Nothing to do. Every node, servers included, reports to the leader
+every 5 seconds. A node that stops reporting for 40 seconds
 (`cluster.node_grace_secs`) becomes not ready, and so do its VMs
 (`NodeUnreachable`). Nothing is restarted elsewhere. The node comes back
 by itself with its identity.
@@ -269,7 +271,8 @@ The node leaves *with* its VMs, disks and node networks and becomes a
 standalone host that owns them. `--with-access` also carries the
 projects' users, teams and role bindings (never sessions or tokens).
 The node is frozen while the handover runs. The Cluster page shows it
-under **Detaches**.
+under **Detaches**, with the networks it maps or drops by the names
+they had when it started, even if they are gone since.
 
 If no server can be reached at all, a node can leave on its own:
 
@@ -367,7 +370,8 @@ it again.
 Upgrade one node at a time: agents first, then servers. On each host,
 update the checkout and re-run the installer (see
 [Maintenance](maintenance.md#updating)). VMs keep running while the
-control plane restarts.
+control plane restarts. An agent stopped in the middle of reporting a
+status sends that report once it is back.
 
 `gxctl cluster status` shows each node's version and feature level. The
 cluster runs at the lowest feature level any server reports, and uses

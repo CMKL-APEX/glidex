@@ -17,6 +17,11 @@ is outdated, and restarts only the services whose binary or unit
 changed. Running VMs keep running. Details are in
 [Installation](installation.md#updating).
 
+Browsers check for a new web UI every time they load a page, so a
+reload is enough to get it. A tab left open from before the update
+keeps the old UI, and may fail to open pages it hadn't loaded yet:
+reload it.
+
 In a cluster, update one node at a time, agents first, then servers;
 see [Rolling upgrades](clusters.md#rolling-upgrades).
 

@@ -106,7 +106,7 @@ gxctl> network create lab2 --project my-project --subnet 10.88.42.0/24 --mtu 145
 ```bash
 curl -H "Authorization: Bearer $GLIDEX_TOKEN" -H 'Content-Type: application/json' \
   -X POST https://host.example.org:8841/projects/my-project/networks \
-  -d '{"name": "lab", "mode": "nat"}'
+  -d '{"name": "lab", "mode": "NETWORK_MODE_NAT"}'
 ```
 
 See [REST API](../api/rest.md#networks).

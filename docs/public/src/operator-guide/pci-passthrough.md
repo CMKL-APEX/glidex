@@ -179,7 +179,8 @@ gxctl detach-device gpu-vm /sys/bus/pci/devices/0000:41:00.0
 ```
 
 Over the API these are `POST` and `DELETE /vms/{id}/devices`, or a
-`PATCH` of `vfio_devices`. The VM's page lists its **VFIO PCI Devices**.
+`PATCH` whose `change` sets `vfio_devices` (with `update_mask`
+`vfio_devices`). The VM's page lists its **VFIO PCI Devices**.
 
 What happens:
 

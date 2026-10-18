@@ -48,6 +48,13 @@ On its first start the control plane makes every member of
 - member of the `admin` tenant, `tenant-admin` of `admin` and `default`,
   and `directory-admin` of the host's directory.
 
+"Members" are the users listed in the group (`usermod -aG` adds them
+there), plus the user the control plane runs as, if that user belongs
+to the group (its primary group counts). The installed service runs as
+`glidex`, which doesn't, so on a normal install it is the listed
+members; the second case is for a control plane you run by hand as
+yourself.
+
 It does this only while nobody has `system-admin`, so adding people to
 `glidex-admin` later makes them break-glass users on the socket, but
 gives them no roles in the web UI. Give roles instead.

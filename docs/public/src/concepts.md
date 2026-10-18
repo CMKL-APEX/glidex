@@ -102,8 +102,9 @@ starts, exits, restarts. See [Virtual machines](user-guide/vms.md).
 
 Each VM runs on one **hypervisor**:
 
-- **Cloud Hypervisor** (`cloudhypervisor`), the default.
-- **QEMU** (`qemu`).
+- **Cloud Hypervisor** (`cloudhypervisor` in `gxctl`,
+  `HYPERVISOR_CLOUD_HYPERVISOR` in the API), the default.
+- **QEMU** (`qemu` in `gxctl`, `HYPERVISOR_QEMU` in the API).
 
 Both support the same features in Glidex: UEFI boot of cloud images,
 direct kernel boot, networks, disks, PCI passthrough (VFIO), pause and
@@ -183,7 +184,7 @@ and [Host networking](operator-guide/host-networking.md).
 
 ## Console
 
-Every VM has a **serial console**. Any number of clients (browser tabs,
+Every VM has one **serial console**. Any number of clients (browser tabs,
 `gxctl connect`) can share it at once, and everything it prints is
 logged to disk, so you can read what happened before you connected. See
 [The console](user-guide/console.md).

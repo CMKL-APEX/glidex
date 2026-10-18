@@ -58,7 +58,10 @@ fingerprints of their certificates:
 ```
 
 Compare these with what your browser shows before you accept the
-certificate warning (see [TLS certificates](tls.md)).
+certificate warning (see [TLS certificates](tls.md)). With
+`--tailscale-cert`, the summary also gives the
+`https://<node>.<tailnet>.ts.net:5173` address, and says whether the
+UI already serves the Tailscale certificate there.
 
 The installer added you to `glidex-users` and `glidex-admin`. Log out and
 back in so your session has the new groups, then check:
@@ -91,8 +94,8 @@ cargo run -p glidex-install -- --no-qemu --ovs-profile dpdk
 | `--pmd-cpu-mask MASK` | OVS-DPDK PMD CPU mask, in hex. `auto` clears it. |
 | `--allow-ovs-restart` | Allow restarting `ovs-vswitchd` while it has bridges (interrupts their traffic). Not saved. |
 | `--no-ovn` | Skip OVN. Cluster networks need it; by default it is installed with its services off until the host is in a cluster. |
-| `--tailscale-cert` | Serve the web UI with this node's Tailscale certificate, trusted by browsers at `https://<node>.<tailnet>.ts.net:5173`. Grants `glidex-ui` `TS_PERMIT_CERT_UID` in a `tailscaled` drop-in and restarts `tailscaled` once; refused, changing nothing, when another user already holds it. Off unless chosen: an interactive run on a node with HTTPS certificates asks once. See [Tailscale certificates](tls.md#tailscale-certificates). |
-| `--no-tailscale-cert` | Turn it off: removes the installer's two drop-ins. |
+| `--tailscale-cert` | Serve the web UI with this node's Tailscale certificate, trusted by browsers at `https://<node>.<tailnet>.ts.net:5173`. Grants `glidex-ui` `TS_PERMIT_CERT_UID` in a `tailscaled` drop-in and restarts `tailscaled` once; refused, changing nothing, when another user already holds it or there is no `tailscaled`. Off unless chosen: an interactive run on a node with HTTPS certificates asks once. See [Tailscale certificates](tls.md#tailscale-certificates). |
+| `--no-tailscale-cert` | Turn it off: removes the drop-ins the installer wrote (a grant you set by hand stays) and restarts `tailscaled` if it removed its grant. |
 | `--qemu`, `--networking`, `--services`, `--ovn` | Undo an earlier `--no-…`. |
 | `--prebuilt` | Install the binaries already in `target/release` and the built UI in `crates/glidex-ui/ui/dist` (built on another host with the same OS) instead of installing Rust and Bun and building. Not saved. |
 | `-h`, `--help` | Show the options. |
@@ -165,6 +168,7 @@ Cloud Hypervisor, the binaries and the UI, and restarts the services
 whose binary or unit changed. Running VMs keep running across a control
 plane restart: each runs in its own `glidex-vm@<id>` unit. A running VM
 keeps the Cloud Hypervisor binary it started with until it is restarted.
+Reload web UI tabs that were open before the update to get the new UI.
 
 If something else listens on port 8841 or 5173 (a control plane or UI you
 started by hand), the installer leaves the service stopped and tells you
@@ -185,7 +189,9 @@ networking (uplinks give the host's address back to its NIC, NAT,
 bridges and VM ports are removed); then removes the units, binaries,
 installer-written configuration, runtime directories, the users and the
 groups. Kernel settings the installer changed go back to their previous
-values.
+values. With `--tailscale-cert` on, it also removes the installer's
+`tailscaled` drop-in and restarts `tailscaled`; a `TS_PERMIT_CERT_UID`
+you set yourself stays.
 
 By default it keeps your data and site configuration, and says so:
 

@@ -127,7 +127,7 @@ See [Clusters](clusters.md).
 |---|---|---|---|
 | `cluster.listen` | `"addr:port"` | `"0.0.0.0:8842"` | The node API, between nodes. |
 | `cluster.advertise` | `"addr:port"` | `listen`, with this host's first non-loopback address | Where other nodes reach this one. |
-| `cluster.node_grace_secs` | integer, 5–3600 | `40` | How long a node may be silent before it counts as unreachable. |
+| `cluster.node_grace_secs` | integer, 5–3600 | `40` | How long a node may be silent before it counts as unreachable. Every node, servers included, reports to the leader every 5 seconds: keep this well above that. |
 | `cluster.shared_local_accounts` | bool | `false` | Treat a local account name as the same person on every node (only if your hosts share one account database). |
 | `cluster.raft.heartbeat_ms` | integer, 50–5000 | `250` | Raft heartbeat. |
 | `cluster.raft.election_ms` | `[min, max]` | `[1000, 2000]` | Raft election timeout; `min` at least 3 heartbeats, `max` above `min`. |
@@ -174,8 +174,10 @@ single sign-on:
 }
 ```
 
-The TLS key and the OIDC client secret are not in the file: see
-[Secrets](#secrets).
+`allowed_origins` here lets browsers call the API on port 8841 under
+that name and gives OIDC its default `redirect_uri`; the web UI doesn't
+need it. The TLS key and the OIDC client secret are not in the file:
+see [Secrets](#secrets).
 
 ## Secrets
 

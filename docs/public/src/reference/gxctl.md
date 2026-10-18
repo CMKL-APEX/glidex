@@ -255,6 +255,8 @@ Common connector flags: `--jit` / `--no-jit`, `--require-group G`…,
 
 ## Cluster and nodes
 
+`<node>` is a node's name or id.
+
 | Command | Effect |
 |---|---|
 | `cluster status`, `cluster` | Raft group, nodes, versions and port reachability; says so on a standalone host |
@@ -262,14 +264,14 @@ Common connector flags: `--jit` / `--no-jit`, `--require-group G`…,
 | `cluster join-token [--role agent\|server] [--ttl <hours>h] [--allow-import]` | Create a one-time join token, printed once (default role `agent`) |
 | `cluster join --server <ip:8842> [--role server\|agent] [--advertise <ip:port>] [--tunnel-ip <ip>] [--name <name>] [--token-file <file>] [--import]` | Join this host to a cluster. The token is read from the file (mode `0600`) or stdin, never from the command line. `--import` brings this host's VMs and disks once an administrator approves |
 | `cluster rejoin --server <ip:8842> [--node-id <id>] [--advertise <ip:port>] [--tunnel-ip <ip>] [--token-file <file>]` | Come back as the same node, with a token from `node rejoin-token` |
-| `cluster promote <node>… [--force]` | Promote agents to servers |
+| `cluster promote <node>… [--force]` | Make learner servers Raft voters; `--force` allows an even number of voters |
 | `cluster leave` | Go back to standalone after this node was removed |
 | `cluster dissolve --force` | The last node ends the cluster, keeping everything |
 | `cluster rotate-ca [--grace <secs>]` | Rotate the cluster CA |
 | `cluster rotate-secrets-key` | Rotate the key that protects connector secrets |
 | `cluster snapshot <file>` | Save a snapshot of the replicated store (written `0600`; store it like the database) |
 | `nodes`, `node` | List nodes |
-| `node <id>` | One node in detail |
+| `node <node>` | One node in detail |
 | `node drain <node>`, `node undrain <node>` | Stop or resume placing VMs on a node |
 | `node prepare-device <node> <address>`, `node release-device <node> <address>` | Bind a device's IOMMU group to vfio-pci on its node, or put it back on its drivers |
 | `node sriov <node> <pf-address> <vfs>` | Give a physical function that many SR-IOV virtual functions (0 removes them) |
@@ -279,10 +281,8 @@ Common connector flags: `--jit` / `--no-jit`, `--require-group G`…,
 | `node forget <node> [--fenced] [--force]` | Forget a node that is gone for good |
 | `node purge <node>` | Drop a forgotten node's record |
 | `node rejoin-token <node> [--raft-lost]` | Token for the node to rejoin as itself, printed once |
-| `node detach <node> [--map-network <cluster-net>=<node-net>]… [--with-access] [--timeout <secs>]` | Detach a node with its resources, back to standalone. `--abort` cancels; `--departed` records a node that already left on its own |
+| `node detach <node> [--map-network <cluster-net>=<node-net>]… [--with-access] [--timeout <secs>]` | Detach a node with its resources, back to standalone. `--abort` cancels; `--departed` records a node that already left on its own. The answer names the networks mapped or dropped |
 | `node import list \| show <plan> \| reject <plan>` | Import plans |
 | `node import approve <plan> [--project src=existing\|src=new:name]… [--network a=b]… [--credential proj/user=new]… [--over-quota] [--dry-run]` | Approve an import with its mappings |
-
-<!-- TODO(verify): the clustering design describes `node forget <node> --departed`; in the code only `node detach --departed` sends a flag the server reads (`/nodes/{id}/forget` ignores `departed`). -->
 
 See [Clusters](../operator-guide/clusters.md).

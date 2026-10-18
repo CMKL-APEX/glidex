@@ -16,7 +16,8 @@ Everything in this guide can be done in at least one of these:
 
 - **Web UI**, at `https://<host>:5173` by default. Sign in with your
   account; the header has a project selector and a page per resource
-  (VMs, Images, Disks, Credentials, Networking, Projects, Usage).
+  (VMs, Images, Disks, Credentials, Networking, Projects, Usage). Pages
+  follow changes as they happen, without reloading.
 - **`gxctl`**, the command-line client. Run `gxctl` for an interactive
   shell (`gxctl>` prompt, Tab completion, `help` lists every command), or
   `gxctl <command>` to run one command and exit:

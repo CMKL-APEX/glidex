@@ -29,7 +29,11 @@ administrator, or use `gxctl` on the host.
 The first time, your browser may warn that the certificate is not
 trusted: the host made its own. Compare the SHA-256 fingerprint the
 browser shows with the one your operator gives you before you accept it
-(see [TLS](../operator-guide/tls.md)).
+(see [TLS](../operator-guide/tls.md)). If the host is on a Tailscale
+tailnet and your operator turned on its Tailscale certificate, open the
+UI at its `https://<node>.<tailnet>.ts.net:5173` address instead: the
+browser trusts that one, with no warning (see
+[Tailscale certificates](../operator-guide/tls.md#tailscale-certificates)).
 
 A browser session ends after 30 minutes without activity and after 12
 hours at most, unless the operator changed these. **Log out**, in the

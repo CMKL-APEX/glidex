@@ -134,7 +134,6 @@ authorization grant for `gxctl`.
    ```json
    {
      "auth": {
-       "allowed_origins": ["https://glidex.example.org:5173"],
        "oidc": {
          "enabled": true,
          "issuer": "https://idp.example.org",
@@ -152,9 +151,11 @@ authorization grant for `gxctl`.
 
 Set `redirect_uri` explicitly: by default it is built from the first of
 `auth.allowed_origins`, which, when that list is empty, is the host's
-own name. The issuer must be an `https://` URL; the control plane fetches
-its discovery document and keys from it, so it needs outbound HTTPS to
-the provider.
+own name. The web UI needs no `allowed_origins` entry for the name
+users reach it by; [`GLIDEX_UI_HOSTS`](configuration.md#web-ui) decides
+which names it answers. The issuer must be an `https://` URL; the
+control plane fetches its discovery document and keys from it, so it
+needs outbound HTTPS to the provider.
 
 Who gets in:
 
