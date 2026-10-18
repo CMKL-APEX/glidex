@@ -805,6 +805,15 @@ pub async fn update_user(
     Ok(Proto(StatusCode::OK, acc::update_user(&c, req)?))
 }
 
+/// `DELETE /users/{id}`: what went with the user.
+pub async fn delete_user(c: Caller, Path(id): Path<String>) -> Result<impl IntoResponse, ApiErr> {
+    let req = pb::DeleteUserRequest {
+        id,
+        ..Default::default()
+    };
+    Ok(Proto(StatusCode::OK, acc::delete_user(&c, req)?))
+}
+
 pub async fn link_identity(
     c: Caller,
     Path(id): Path<String>,

@@ -773,6 +773,67 @@ pub fn link_identity(
     })
 }
 
+/// Roles whose last holder can't be deleted: they administer everything.
+const ADMIN_ROLES: [&str; 2] = ["role.system-admin", "role.directory-admin"];
+
+pub fn delete_user(
+    call: &Call,
+    req: pb::DeleteUserRequest,
+) -> ServiceResult<pb::DeleteUserResponse> {
+    call.require(directory_ent(), EntitySet::new())?;
+    call.set_target(format!("user:{}", req.id));
+    if call.p.user_id() == Some(req.id.as_str()) {
+        return Err(ServiceError::new(
+            StatusCode::CONFLICT,
+            "cannot_delete_self",
+            "you can't delete yourself: another administrator can",
+        ));
+    }
+    let s = &call.auth().store;
+    let user = s
+        .user(&req.id)
+        .map_err(store_err)?
+        .ok_or_else(|| not_found("user"))?;
+    // Nobody is left unable to administer the cluster or the directory.
+    let links = s.links().map_err(store_err)?;
+    let me = Ent::User(req.id.clone());
+    for l in links
+        .iter()
+        .filter(|l| l.link.principal == me && ADMIN_ROLES.contains(&l.link.template.as_str()))
+    {
+        let others = links.iter().any(|o| {
+            o.link.id != l.link.id
+                && o.link.template == l.link.template
+                && o.link.resource == l.link.resource
+        });
+        if !others {
+            return Err(ServiceError::new(
+                StatusCode::CONFLICT,
+                "last_admin",
+                format!(
+                    "{} is the last {} of {}: give the role to someone else first",
+                    user.display_name, l.link.template, l.link.resource
+                ),
+            ));
+        }
+    }
+    call.detail("display_name", serde_json::json!(user.display_name));
+    let d = s
+        .delete_user(&req.id)
+        .map_err(store_err)?
+        .ok_or_else(|| not_found("user"))?;
+    let n = |x: usize| x.min(u32::MAX as usize) as u32;
+    Ok(pb::DeleteUserResponse {
+        identities: n(d.identities),
+        sessions: n(d.sessions),
+        tokens: n(d.tokens),
+        links: n(d.links),
+        teams: n(d.teams),
+        tenants: n(d.tenants),
+        ..Default::default()
+    })
+}
+
 pub fn unlink_identity(
     call: &Call,
     req: pb::UnlinkIdentityRequest,

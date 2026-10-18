@@ -209,6 +209,17 @@ service UserService {
       rest: "PATCH /users/{id}"
     };
   }
+  // Deletes the user and what is its alone (spec/tenancy.md §6.3): its
+  // identities, sessions, personal tokens, team memberships, role links
+  // and tenant memberships. Never oneself, nor the last holder of
+  // system-admin or directory-admin.
+  rpc DeleteUser(DeleteUserRequest) returns (DeleteUserResponse) {
+    option (glidex.api.v1.op) = {
+      action: "manageUsers"
+      kind: KIND_WRITE
+      rest: "DELETE /users/{id}"
+    };
+  }
   rpc LinkIdentity(LinkIdentityRequest) returns (LinkIdentityResponse) {
     option (glidex.api.v1.op) = {
       action: "manageUsers"
@@ -301,6 +312,19 @@ message LinkIdentityRequest {
 }
 message LinkIdentityResponse {
   Identity identity = 1;
+}
+
+message DeleteUserRequest {
+  string id = 1;
+}
+// What went with the user.
+message DeleteUserResponse {
+  uint32 identities = 1;
+  uint32 sessions = 2;
+  uint32 tokens = 3;
+  uint32 links = 4;
+  uint32 teams = 5;
+  uint32 tenants = 6;
 }
 
 message UnlinkIdentityRequest {

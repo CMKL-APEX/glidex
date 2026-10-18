@@ -2097,3 +2097,121 @@ async fn a_user_adds_and_removes_sign_in_methods() {
     let (st, _) = h.rest("GET", "/auth/whoami", None, &s).await;
     assert_eq!(st, StatusCode::UNAUTHORIZED, "her session ended");
 }
+
+#[tokio::test]
+async fn deleting_a_user_takes_what_is_its_alone() {
+    // spec/tenancy.md §6.3: identities, sessions, personal tokens, teams,
+    // role links and tenant memberships go with the user; never oneself,
+    // nor the last directory or system administrator.
+    let h = harness();
+    let ada = h.admin("ada");
+    let s = h.session(&ada);
+    let bob = h.user("bob");
+    let bob_session = h.session(&bob);
+    let bob_token = h.token(&bob);
+    h.app
+        .auth
+        .store
+        .put_team(&auth::store::Team {
+            id: "team-lab".into(),
+            name: "lab".into(),
+            members: vec![auth::store::TeamMember {
+                user_id: bob.clone(),
+                source: auth::store::MemberSource::Manual,
+            }],
+            created_at: 0,
+        })
+        .unwrap();
+    h.app
+        .auth
+        .add_link(
+            "role.tenant-auditor",
+            Ent::User(bob.clone()),
+            Ent::Tenant("default".into()),
+            "test",
+        )
+        .unwrap();
+    h.app
+        .auth
+        .tenants
+        .add_member("default", Ent::User(bob.clone()), "test")
+        .unwrap();
+    let (st, _) = h.rest("GET", "/auth/whoami", None, &bob_token).await;
+    assert_eq!(st, StatusCode::OK);
+
+    let (st, v) = h.rest("DELETE", &format!("/users/{bob}"), None, &s).await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    for k in [
+        "identities",
+        "sessions",
+        "tokens",
+        "links",
+        "teams",
+        "tenants",
+    ] {
+        assert!(v[k].as_u64().unwrap_or(0) >= 1, "{k}: {v}");
+    }
+    assert!(h.app.auth.store.user(&bob).unwrap().is_none());
+    assert!(h.app.auth.store.identities_of(&bob).unwrap().is_empty());
+    let (st, _) = h.rest("GET", "/auth/whoami", None, &bob_token).await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED, "his token went");
+    let (st, _) = h.rest("GET", "/auth/whoami", None, &bob_session).await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED, "his session went");
+    let team = h.app.auth.store.team("team-lab").unwrap().unwrap();
+    assert!(team.members.is_empty(), "{team:?}");
+    let (_, m) = h.rest("GET", "/tenants/default/members", None, &s).await;
+    assert!(!m.to_string().contains(&bob), "{m}");
+    let (st, _) = h.rest("DELETE", &format!("/users/{bob}"), None, &s).await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
+
+    // Never oneself.
+    let (st, v) = h.rest("DELETE", &format!("/users/{ada}"), None, &s).await;
+    assert_eq!(
+        (st, v["error"].as_str()),
+        (StatusCode::CONFLICT, Some("cannot_delete_self")),
+        "{v}"
+    );
+    // Nor the last system administrator (whoever else holds the role, a
+    // team included, counts: here, nobody else does). Ada stays able to
+    // manage users as a directory administrator.
+    h.app
+        .auth
+        .add_link(
+            "role.directory-admin",
+            Ent::User(ada.clone()),
+            Ent::Directory("local".into()),
+            "test",
+        )
+        .unwrap();
+    for l in h.app.auth.store.links().unwrap() {
+        if l.link.template == "role.system-admin" {
+            h.app.auth.store.remove_link(&l.link.id).unwrap();
+        }
+    }
+    let dee = h.user("dee");
+    h.app
+        .auth
+        .add_link(
+            "role.system-admin",
+            Ent::User(dee.clone()),
+            Ent::Cluster,
+            "test",
+        )
+        .unwrap();
+    let (st, v) = h.rest("DELETE", &format!("/users/{dee}"), None, &s).await;
+    assert_eq!(
+        (st, v["error"].as_str()),
+        (StatusCode::CONFLICT, Some("last_admin")),
+        "{v}"
+    );
+    // Only a directory administrator deletes users.
+    let (st, _) = h
+        .rest(
+            "DELETE",
+            &format!("/users/{dee}"),
+            None,
+            &h.session(&h.user("eve")),
+        )
+        .await;
+    assert_eq!(st, StatusCode::FORBIDDEN);
+}
