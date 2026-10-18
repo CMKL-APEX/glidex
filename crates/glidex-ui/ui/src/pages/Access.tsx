@@ -107,7 +107,7 @@ function TeamCard({
 }
 
 export default function Access() {
-  const { host, projects, projectName } = useSession();
+  const { host, projects, projectName, me } = useSession();
   const [dir, reloadDir] = useDirectory();
   const connectors = useConnectorNames();
   const [system, setSystem] = useState<Binding[] | null>(null);
@@ -115,6 +115,8 @@ export default function Access() {
   // An administrator taking one of a user's sign-in methods away.
   const [unlinking, setUnlinking] = useState<{ user: string; name: string; key: string; label: string } | null>(null);
   const [endSessions, setEndSessions] = useState(true);
+  const [deleting, setDeleting] = useState<{ id: string; name: string } | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [teamName, setTeamName] = useState("");
 
   const refreshSystem = useCallback(() => {
@@ -154,6 +156,11 @@ export default function Access() {
     <div>
       <PageHeader title="Access" subtitle="Users, teams and host-wide roles. Project roles are set on each project's page." />
       <ErrorBanner error={error} onDismiss={() => setError(null)} />
+      {notice && (
+        <div className="mb-4 p-3 rounded-lg bg-green-50 border border-green-200 text-sm text-green-800" role="status">
+          {notice}
+        </div>
+      )}
 
       {host.listUsers && (
         <Card title="Users">
@@ -239,6 +246,11 @@ export default function Access() {
                           {u.disabled ? "Enable" : "Disable"}
                         </button>
                       )}
+                      {host.manageUsers && u.id !== me.user?.id && (
+                        <button className={`ml-2 ${dangerLink}`} onClick={() => setDeleting({ id: u.id, name: u.display_name })}>
+                          Delete
+                        </button>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -320,6 +332,28 @@ export default function Access() {
             />
           )}
         </Card>
+      )}
+      {deleting && (
+        <ConfirmDialog
+          title={`Delete ${deleting.name}`}
+          consequence={
+            <>
+              The user goes with its sign-in methods, sessions, personal tokens, team memberships, role links and tenant
+              memberships. Service-account tokens it made stay. This can't be undone; a local account that signs in again
+              becomes a new user.
+            </>
+          }
+          typeToConfirm={deleting.name}
+          actionLabel="Delete user"
+          onConfirm={async () => {
+            const d = await api.deleteUser(deleting.id);
+            setNotice(
+              `Deleted ${deleting.name}: ${d.identities} sign-in methods, ${d.sessions} sessions, ${d.tokens} tokens, ${d.links} role links, ${d.teams} teams, ${d.tenants} tenant memberships.`,
+            );
+            reloadDir();
+          }}
+          onClose={() => setDeleting(null)}
+        />
       )}
       {unlinking && (
         <ConfirmDialog

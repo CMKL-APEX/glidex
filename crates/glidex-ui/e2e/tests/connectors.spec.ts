@@ -128,6 +128,15 @@ test("an administrator removes one of a user's sign-in methods", async ({ page }
     await expect(dialog).toBeHidden();
     const gone = ((await api("/users")).users ?? []).find((u: { id: string }) => u.id === id);
     expect(gone?.identities ?? [], JSON.stringify(gone)).toHaveLength(0);
+
+    // Then deleted, typing its name to confirm.
+    await row.getByRole("button", { name: "Delete" }).click();
+    await dialog.getByRole("textbox").fill("Two Ways");
+    await dialog.getByRole("button", { name: "Delete user" }).click();
+    await expect(dialog).toBeHidden();
+    await expect(page.getByRole("status")).toContainText("Deleted Two Ways");
+    await expect(page.getByRole("row", { name: /Two Ways/ })).toHaveCount(0);
+    expect(((await api("/users")).users ?? []).some((u: { id: string }) => u.id === id)).toBe(false);
   } finally {
     await del(`/users/${id}`);
   }
