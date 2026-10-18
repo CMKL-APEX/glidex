@@ -9,6 +9,18 @@ scripts/dev/ui-e2e.sh -H ch       # or -H qemu: the ui project plus one hypervis
 scripts/dev/ui-e2e.sh -- --headed -g "create form"   # extra Playwright arguments
 ```
 
+For the whole suite, with nothing skipped (it fails if a test skips):
+
+```bash
+scripts/dev/ui-e2e-full.sh -i ~/images/resolute-server-cloudimg-amd64.img -H ch
+```
+
+It checks the image, `/dev/kvm` and glidex-netd's socket first. If you
+aren't in the socket's group (`glidex`), which full netd access needs, it
+runs the suite with that group as your primary group for that run only
+(`sudo setpriv`), and you stay the scratch control plane's admin
+(`GLIDEX_E2E_GROUP`). Other options go to `ui-e2e.sh`.
+
 The script installs the UI's and the suite's dependencies and
 Playwright's Chromium (into `~/.cache/ms-playwright`) when missing,
 refuses to start if `:8851` / `:5174` / `:5175` are taken, and passes everything
@@ -51,6 +63,12 @@ rights. No PAM or IdP is needed.
 
 It never attaches to an already running control plane
 (`reuseExistingServer: false`), so a real glidex on `:8841` is left alone.
+One run at a time per machine: `scripts/start-control-plane.sh` takes
+`/tmp/glidex-ui-e2e.lock` (`GLIDEX_E2E_LOCK`) before it wipes the scratch
+home, and the control plane holds it until the suite ends, so a second
+run, `playwright test` run directly included, fails at once saying which
+run holds it, instead of breaking the first. Runs share the host's
+glidex-netd and Open vSwitch even with their own ports and home.
 It does use the host's glidex-netd and Open vSwitch: the scratch control
 plane registers its own `default` network on the existing `gxbr-nat`
 bridge (netd treats that as a no-op), and the boot tests create and
