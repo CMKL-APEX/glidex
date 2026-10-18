@@ -26,7 +26,7 @@ use axum::Router;
 use axum::body::Body;
 use axum::extract::{Request, State};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, Uri, Version, header};
-use axum::middleware::{Next, from_fn_with_state};
+use axum::middleware::{Next, from_fn, from_fn_with_state};
 use axum::response::{IntoResponse, Response};
 use axum::routing::any;
 use hyper_util::rt::TokioIo;
@@ -640,14 +640,55 @@ async fn proxy_api(State(s): State<AppState>, mut req: Request) -> Response {
 fn app(dist: &Path, state: AppState, hosts: HostPolicy) -> Router {
     let index = dist.join("index.html");
     let hsts = state.hsts;
+    // The build's .br/.gz beside each file go to browsers that take them.
+    let assets = ServeDir::new(dist.join("assets"))
+        .precompressed_br()
+        .precompressed_gzip();
     // Unknown paths get index.html: they are client-side routes.
+    let pages = ServeDir::new(dist)
+        .precompressed_br()
+        .precompressed_gzip()
+        .fallback(
+            ServeFile::new(&index)
+                .precompressed_br()
+                .precompressed_gzip(),
+        );
     Router::new()
         .route("/api", any(proxy_api))
         .route("/api/{*rest}", any(proxy_api))
-        .fallback_service(ServeDir::new(dist).fallback(ServeFile::new(&index)))
+        // A missing asset is a 404, never index.html: it would be cached as the asset.
+        .nest_service("/assets", assets)
+        .fallback_service(pages)
         .with_state(state)
+        .layer(from_fn(cache_headers))
         .layer(from_fn_with_state(Arc::new(hosts), host_check))
         .layer(from_fn_with_state(hsts, security_headers))
+}
+
+/// `Cache-Control` of the built UI (the control plane's answers under
+/// `/api` keep their own). The files in `/assets` are named by their
+/// content, so browsers keep them for good; everything else (index.html,
+/// which names them) is checked again on every use.
+async fn cache_headers(req: Request, next: Next) -> Response {
+    let path = req.uri().path();
+    if path == "/api" || path.starts_with("/api/") {
+        return next.run(req).await;
+    }
+    let asset = path.starts_with("/assets/");
+    let mut resp = next.run(req).await;
+    let kept = asset && (resp.status().is_success() || resp.status() == StatusCode::NOT_MODIFIED);
+    let headers = resp.headers_mut();
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static(if kept {
+            "public, max-age=31536000, immutable"
+        } else {
+            "no-cache"
+        }),
+    );
+    // The body depends on Accept-Encoding (the precompressed files).
+    headers.insert(header::VARY, HeaderValue::from_static("accept-encoding"));
+    resp
 }
 
 // ---- listener and TLS --------------------------------------------------------
@@ -1348,6 +1389,89 @@ mod tests {
         let mut out = String::new();
         s.read_to_string(&mut out).await.unwrap();
         out
+    }
+
+    /// Built files: the precompressed copy the browser takes, assets kept
+    /// for good, index.html checked again, a missing asset a 404, and the
+    /// control plane's answers left alone.
+    #[tokio::test]
+    async fn static_files_are_precompressed_and_cached_by_kind() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let assets = dir.path().join("assets");
+        std::fs::create_dir(&assets).unwrap();
+        std::fs::write(dir.path().join("index.html"), "<html>ui</html>").unwrap();
+        std::fs::write(assets.join("app-1a2b.js"), "plain").unwrap();
+        std::fs::write(assets.join("app-1a2b.js.gz"), "gzipped").unwrap();
+        std::fs::write(assets.join("app-1a2b.js.br"), "brotli").unwrap();
+        let router = app(
+            dir.path(),
+            AppState {
+                upstream: Upstream::new(
+                    UpstreamSpec {
+                        socket: Some(dir.path().join("no-such.sock")),
+                        tcp: None,
+                    },
+                    None,
+                )
+                .unwrap(),
+                tls: false,
+                hsts: false,
+            },
+            HostPolicy {
+                rules: default_host_rules(&local()),
+                local_ips: false,
+            },
+        );
+        let get = |path: &str, encoding: Option<&str>| {
+            let mut req = Request::get(path).header(header::HOST, "localhost:5173");
+            if let Some(e) = encoding {
+                req = req.header(header::ACCEPT_ENCODING, e);
+            }
+            router.clone().oneshot(req.body(Body::empty()).unwrap())
+        };
+        let text = |r: Response| async move {
+            String::from_utf8(
+                axum::body::to_bytes(r.into_body(), 1 << 20)
+                    .await
+                    .unwrap()
+                    .to_vec(),
+            )
+            .unwrap()
+        };
+        let h = |r: &Response, name: header::HeaderName| {
+            r.headers()
+                .get(name)
+                .map(|v| v.to_str().unwrap().to_string())
+        };
+        let immutable = Some("public, max-age=31536000, immutable".to_string());
+        let no_cache = Some("no-cache".to_string());
+
+        for (accept, encoding, body) in [
+            (Some("gzip, deflate, br"), Some("br"), "brotli"),
+            (Some("gzip"), Some("gzip"), "gzipped"),
+            (None, None, "plain"),
+        ] {
+            let r = get("/assets/app-1a2b.js", accept).await.unwrap();
+            assert_eq!(r.status(), StatusCode::OK);
+            assert_eq!(h(&r, header::CONTENT_ENCODING).as_deref(), encoding);
+            assert_eq!(h(&r, header::CACHE_CONTROL), immutable);
+            assert_eq!(h(&r, header::VARY).as_deref(), Some("accept-encoding"));
+            assert!(h(&r, header::CONTENT_SECURITY_POLICY).is_some());
+            assert_eq!(text(r).await, body);
+        }
+        // Not index.html: that would be kept for good as the asset.
+        let r = get("/assets/gone-9z9z.js", Some("br")).await.unwrap();
+        assert_eq!(r.status(), StatusCode::NOT_FOUND);
+        assert_eq!(h(&r, header::CACHE_CONTROL), no_cache);
+        for path in ["/", "/index.html", "/projects/p1"] {
+            let r = get(path, Some("br")).await.unwrap();
+            assert_eq!(r.status(), StatusCode::OK, "{path}");
+            assert_eq!(h(&r, header::CACHE_CONTROL), no_cache, "{path}");
+            assert_eq!(text(r).await, "<html>ui</html>", "{path}");
+        }
+        let r = get("/api/vms", None).await.unwrap();
+        assert_eq!(r.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(h(&r, header::CACHE_CONTROL), None);
     }
 
     /// The UI in front of a fake control plane on a Unix socket that
