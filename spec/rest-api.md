@@ -210,6 +210,8 @@ the same operations are served as RPCs ([grpc.md](grpc.md)):
 | `DELETE` | `/tenants/{id}/members/{user:<id>\|team:<id>}` | `RemoveMember` | |
 | `GET` / `POST` | `/tenants/{id}/bindings` | `ListBindings` / `AddBinding` | Tenant roles: `role.tenant-admin`, `role.tenant-auditor` |
 | `DELETE` | `/tenants/{id}/bindings/{link}` | `RemoveBinding` | |
+| `GET` / `POST` | `/tenants/{id}/invitations` | `InvitationService.ListInvitations` / `CreateInvitation` | Invitations ([tenancy.md](tenancy.md) §6.1): `{email, role, connector, days?}` (`role`: `member` or a tenant role; `connector`: an `oidc` or `google` one; 1-30 days, default 7) → `201 {invitation, link}`, the link (`…/invite/<id>#<secret>`) answered once; listed without secrets, open ones and taken or expired ones for 30 days |
+| `DELETE` | `/invitations/{id}` | `RevokeInvitation` | `204`; revoking deletes it |
 | `GET` | `/admissions` | `AdmissionService.ListAdmissions` | The cluster operator's (`listAdmissions`) |
 | `PUT` / `DELETE` | `/admissions/{tenant}` | `SetAdmission` / `RemoveAdmission` | `{cap?, suspended?}`; needs a recent login |
 
@@ -233,6 +235,11 @@ enabled ones (`connectors: [{id, kind, display_name}]`); `POST
 /auth/discover {hint}` says which to offer for a tenant slug or email;
 `GET /auth/c/{id}/start`, `/auth/c/{id}/callback` (browser), `POST
 /auth/c/{id}/device`, `/auth/c/{id}/device/poll` (gxctl). `POST
+/auth/c/{id}/start {return_to?, invitation?}` answers `{redirect}`
+instead of redirecting, for a page that brings an invitation's secret
+(tenancy.md §6.1; `404` for an invitation that isn't open or is for
+another connector), and `POST /auth/invitation {invitation}` says what
+an invitation is for (`LoginService.InspectInvitation`). `POST
 /auth/login` and `POST /auth/token` take `connector` (a PAM connector,
 the first one when absent); a token is clamped to the connector's
 `token_max_days`. A refused login is `403 login_not_allowed`. The

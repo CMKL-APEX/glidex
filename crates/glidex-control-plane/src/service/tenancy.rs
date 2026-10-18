@@ -175,7 +175,7 @@ fn principal_exists(call: &Call, e: &Ent) -> ServiceResult<()> {
 
 /// A tenant the caller may read, by id or slug; `404` otherwise (as for
 /// projects, security.md §7.4).
-fn visible(call: &Call, key: &str) -> ServiceResult<tenants::Tenant> {
+pub(crate) fn visible(call: &Call, key: &str) -> ServiceResult<tenants::Tenant> {
     let not_found = || ServiceError::new(StatusCode::NOT_FOUND, "not_found", "tenant not found");
     let t = call.auth().tenants.resolve(key).map_err(|_| not_found())?;
     call.set_target(format!("tenant:{}", t.id));

@@ -745,7 +745,8 @@ fn print_help() {
         "  {} - Tenants admitted on this cluster, and their caps",
         "admission list | set <t> [vms=N … | unlimited] [--suspend|--resume] | remove <t>".cyan()
     );
-    println!("  {} - Login connectors of this directory", "connector list | show <id> | add oidc|pam <id> … | update <id> … | secret set <id> | test <id> | remove <id>".cyan());
+    println!("  {} - Login connectors of this directory", "connector list | show <id> | add oidc|pam|google <id> … | update <id> … | secret set <id> | test <id> | remove <id>".cyan());
+    println!("  {} - Invite an email address to a tenant (a link, shown once)", "invite list <tenant> | create <tenant> <email> --connector C [--role R] [--days N] | revoke <id>".cyan());
     println!(
         "  {} - Projects",
         "project list | show <p> | create <name> [--description D] | delete <p>".cyan()
@@ -1036,6 +1037,7 @@ const COMMANDS: &[&str] = &[
     "admissions",
     "connector",
     "connectors",
+    "invite",
 ];
 
 /// Subcommands offered by Tab after these commands.
@@ -1064,6 +1066,7 @@ const SUBCOMMANDS: &[(&str, &[&str])] = &[
         "connector",
         &["list", "show", "add", "update", "secret", "test", "remove"],
     ),
+    ("invite", &["list", "create", "revoke"]),
     (
         "disk",
         &["list", "show", "create", "resize", "extend-root", "rm"],
@@ -1420,6 +1423,9 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
         "tenant" | "tenants" => tenancy::tenant(client, &parts[1..]).await,
         "admission" | "admissions" => tenancy::admission(client, &parts[1..]).await,
         "connector" | "connectors" => directory::connector(client, &parts[1..]).await,
+        "invite" | "invites" | "invitation" | "invitations" => {
+            directory::invite(client, &parts[1..]).await
+        }
         "project" | "projects" => access::project(client, &parts[1..]).await,
         "binding" | "bindings" => access::binding(client, &parts[1..]).await,
         "system-binding" => access::system_binding(client, &parts[1..]).await,

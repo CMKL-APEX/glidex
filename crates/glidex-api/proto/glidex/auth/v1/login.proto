@@ -48,6 +48,17 @@ service LoginService {
       rest: "POST /auth/token"
     };
   }
+
+  // What an invitation link is for, before its login (spec/tenancy.md
+  // §6.1): the tenant, the connector and the invited address. Needs the
+  // invitation's secret; any other answer is `404`.
+  rpc InspectInvitation(InspectInvitationRequest) returns (InspectInvitationResponse) {
+    option (glidex.api.v1.op) = {
+      action: "public"
+      kind: KIND_READ
+      rest: "POST /auth/invitation"
+    };
+  }
 }
 
 message DiscoverRequest {
@@ -127,4 +138,20 @@ message IssuedToken {
   google.protobuf.Timestamp expires_at = 3 [json_name = "expires_at"];
   string user_id = 4 [json_name = "user_id"];
   string display_name = 5 [json_name = "display_name"];
+}
+
+message InspectInvitationRequest {
+  // `<id>.<secret>`, from the link.
+  string invitation = 1 [(glidex.api.v1.secret) = true];
+}
+
+message InspectInvitationResponse {
+  string tenant_slug = 1 [json_name = "tenant_slug"];
+  string tenant_display_name = 2 [json_name = "tenant_display_name"];
+  string connector_id = 3 [json_name = "connector_id"];
+  string connector_display_name = 4 [json_name = "connector_display_name"];
+  string connector_kind = 5 [json_name = "connector_kind"];
+  string email = 6;
+  string role = 7;
+  google.protobuf.Timestamp expires_at = 8 [json_name = "expires_at"];
 }

@@ -288,6 +288,38 @@ impl H {
         self.finish(id, &state, &browser).await.0
     }
 
+    /// Start a login the way an invitation page does (`POST
+    /// /auth/c/{id}/start` with the invitation in the body); returns the
+    /// status, and (state, nonce, browser cookie) when it started.
+    async fn begin_invited(
+        &self,
+        id: &str,
+        invitation: &str,
+    ) -> (StatusCode, Option<(String, String, String)>) {
+        let req = Request::post(format!("/auth/c/{id}/start"))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                json!({"invitation": invitation, "return_to": "/"}).to_string(),
+            ))
+            .unwrap();
+        let (s, v, headers) = self.send(req).await;
+        if s != StatusCode::OK {
+            return (s, None);
+        }
+        let loc = reqwest::Url::parse(v["redirect"].as_str().unwrap()).unwrap();
+        let q: std::collections::HashMap<_, _> = loc.query_pairs().into_owned().collect();
+        let browser = headers
+            .get(header::SET_COOKIE)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_string();
+        (s, Some((q["state"].clone(), q["nonce"].clone(), browser)))
+    }
+
     /// Start a browser login through connector `id`; returns (state, nonce,
     /// redirect_uri, browser cookie).
     async fn begin(&self, id: &str) -> (String, String, String, String) {
@@ -1570,4 +1602,211 @@ async fn google_device_logins_use_the_device_client() {
             "{name}: {v}"
         );
     }
+}
+
+/// `<id>.<secret>` from an invitation link (`…/invite/<id>#<secret>`).
+fn invite_token(link: &str) -> String {
+    let (path, secret) = link.split_once('#').unwrap();
+    format!("{}.{}", path.rsplit('/').next().unwrap(), secret)
+}
+
+#[tokio::test]
+async fn invitations_let_one_known_person_in_once() {
+    // spec/tenancy.md D40, §6.1: a gated connector (consumer Google, jit
+    // off) lets in whoever takes an invitation for their verified address.
+    let mock = idp::start().await;
+    let h = harness();
+    let (st, v) = h
+        .google_connector(
+            &mock,
+            "gc",
+            json!({"accounts": "GOOGLE_ACCOUNTS_ANY"}),
+            json!({"jit": false}),
+        )
+        .await;
+    assert_eq!(st, StatusCode::CREATED, "{v}");
+    let s = h.session(&h.admin("ada"));
+    let invite = |email: &str, role: &str| json!({"email": email, "role": role, "connector": "gc"});
+    let (st, v) = h
+        .rest(
+            "POST",
+            "/tenants/default/invitations",
+            Some(invite("Dave@gmail.com", "role.tenant-admin")),
+            &s,
+        )
+        .await;
+    assert_eq!(st, StatusCode::CREATED, "{v}");
+    let link = v["link"].as_str().unwrap().to_string();
+    assert!(link.contains("/invite/") && link.contains('#'), "{link}");
+    let token = invite_token(&link);
+    let secret = token.split_once('.').unwrap().1.to_string();
+    assert_eq!(v["invitation"]["email"], "dave@gmail.com");
+    assert_eq!(v["invitation"]["state"], "INVITATION_STATE_OPEN");
+    // Listed, never with its secret.
+    let (st, v) = h
+        .rest("GET", "/tenants/default/invitations", None, &s)
+        .await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    assert_eq!(v["invitations"].as_array().unwrap().len(), 1, "{v}");
+    assert!(!v.to_string().contains(&secret), "{v}");
+
+    // The page learns what it's for only with the secret.
+    let (st, v) = h
+        .rest(
+            "POST",
+            "/auth/invitation",
+            Some(json!({"invitation": token})),
+            "",
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    assert_eq!(
+        (v["tenant_slug"].as_str(), v["connector_id"].as_str()),
+        (Some("default"), Some("gc"))
+    );
+    let id = token.split_once('.').unwrap().0;
+    let (st, _) = h
+        .rest(
+            "POST",
+            "/auth/invitation",
+            Some(json!({"invitation": format!("{id}.wrong")})),
+            "",
+        )
+        .await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
+    // Not through another connector.
+    h.oidc_connector(&mock, "corp", json!({})).await;
+    assert_eq!(
+        h.begin_invited("corp", &token).await.0,
+        StatusCode::NOT_FOUND
+    );
+
+    // Without the invitation, a gated connector lets nobody new in.
+    let dave = google_claims(&mock, "c-dave", "dave@gmail.com", None);
+    assert_eq!(
+        h.login_with(&mock, "gc", dave.clone()).await,
+        StatusCode::FORBIDDEN
+    );
+    // Another address can't take it.
+    let (st, started) = h.begin_invited("gc", &token).await;
+    assert_eq!(st, StatusCode::OK);
+    let (state, nonce, browser) = started.unwrap();
+    let mut eve = google_claims(&mock, "c-eve", "eve@gmail.com", None);
+    eve["nonce"] = json!(nonce);
+    *mock.id_token.lock().unwrap() = Some(idp::sign(eve, "k1"));
+    assert_eq!(
+        h.finish("gc", &state, &browser).await.0,
+        StatusCode::FORBIDDEN
+    );
+    // Nor an unverified one.
+    let (_, started) = h.begin_invited("gc", &token).await;
+    let (state, nonce, browser) = started.unwrap();
+    let mut unverified = dave.clone();
+    unverified["nonce"] = json!(nonce);
+    unverified["email_verified"] = json!(false);
+    *mock.id_token.lock().unwrap() = Some(idp::sign(unverified, "k1"));
+    assert_eq!(
+        h.finish("gc", &state, &browser).await.0,
+        StatusCode::FORBIDDEN
+    );
+
+    // Dave takes it: a user, a member of the tenant with its role.
+    let (_, started) = h.begin_invited("gc", &token).await;
+    let (state, nonce, browser) = started.unwrap();
+    let mut c = dave.clone();
+    c["nonce"] = json!(nonce);
+    *mock.id_token.lock().unwrap() = Some(idp::sign(c, "k1"));
+    let (st, headers) = h.finish("gc", &state, &browser).await;
+    assert_eq!(st, StatusCode::SEE_OTHER);
+    assert!(
+        headers
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .any(|c| c.to_str().unwrap().starts_with("gx_session="))
+    );
+    let (_, b) = h.rest("GET", "/tenants/default/bindings", None, &s).await;
+    assert!(
+        b["bindings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|x| x["role"] == "role.tenant-admin" && x["principal_name"] == "c-dave"),
+        "{b}"
+    );
+    let (_, m) = h.rest("GET", "/tenants/default/members", None, &s).await;
+    assert!(m.to_string().contains("c-dave"), "{m}");
+    // Once: the invitation is taken, and Dave logs in on his own now.
+    assert_eq!(h.begin_invited("gc", &token).await.0, StatusCode::NOT_FOUND);
+    assert_eq!(h.login_with(&mock, "gc", dave).await, StatusCode::SEE_OTHER);
+    let (_, v) = h
+        .rest("GET", "/tenants/default/invitations", None, &s)
+        .await;
+    assert_eq!(
+        v["invitations"][0]["state"], "INVITATION_STATE_TAKEN",
+        "{v}"
+    );
+
+    // Revoked ones are gone.
+    let (_, v) = h
+        .rest(
+            "POST",
+            "/tenants/default/invitations",
+            Some(invite("erin@gmail.com", "member")),
+            &s,
+        )
+        .await;
+    let erin = invite_token(v["link"].as_str().unwrap());
+    let erin_id = v["invitation"]["id"].as_str().unwrap().to_string();
+    let (st, _) = h
+        .rest("DELETE", &format!("/invitations/{erin_id}"), None, &s)
+        .await;
+    assert_eq!(st, StatusCode::NO_CONTENT);
+    assert_eq!(h.begin_invited("gc", &erin).await.0, StatusCode::NOT_FOUND);
+
+    // Bad requests.
+    for (body, why) in [
+        (
+            invite("erin@gmail.com", "role.system-admin"),
+            "not a tenant role",
+        ),
+        (invite("not-an-email", "member"), "an email address"),
+        (
+            json!({"email": "x@gmail.com", "role": "member", "connector": "nope"}),
+            "a connector",
+        ),
+        (
+            json!({"email": "x@gmail.com", "role": "member", "connector": "gc", "days": 31}),
+            "at most 30 days",
+        ),
+    ] {
+        let (st, v) = h
+            .rest("POST", "/tenants/default/invitations", Some(body), &s)
+            .await;
+        assert_eq!(st, StatusCode::BAD_REQUEST, "{why}: {v}");
+    }
+    // D22: into the owner's tenant only through a connector it allows
+    // there, requiring MFA.
+    let (st, v) = h
+        .rest(
+            "POST",
+            "/tenants/admin/invitations",
+            Some(invite("x@gmail.com", "member")),
+            &s,
+        )
+        .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST, "{v}");
+    // Who may invite: not a member without tenant rights.
+    let nobody = h.session(&h.user("nobody"));
+    let (st, _) = h
+        .rest(
+            "POST",
+            "/tenants/default/invitations",
+            Some(invite("y@gmail.com", "member")),
+            &nobody,
+        )
+        .await;
+    assert!(
+        st == StatusCode::FORBIDDEN || st == StatusCode::NOT_FOUND,
+        "{st}"
+    );
 }

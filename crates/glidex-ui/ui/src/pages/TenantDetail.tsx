@@ -35,6 +35,8 @@ const CAPS = [
   "manageTenantMembers",
   "readTenantBindings",
   "manageTenantBindings",
+  "readTenantInvitations",
+  "manageTenantInvitations",
 ] as const;
 type Cap = (typeof CAPS)[number];
 
@@ -169,6 +171,177 @@ function AddMemberForm({ dir, onAdd }: { dir: Directory | null; onAdd: (p: Entit
       </div>
       {error && <p className="md:col-span-3 text-sm text-red-600">{error}</p>}
     </form>
+  );
+}
+
+const INVITE_ROLES = ["member", ...TENANT_ROLES] as const;
+const inviteRoleLabel = (r: string) => (r === "member" ? "member (no tenant role)" : r);
+
+/** A tenant's invitations (spec/tenancy.md §6.1): a link, shown once, that
+ *  lets one email address in through one connector. */
+function InvitationsCard({ tenant, canManage }: { tenant: Tenant; canManage: boolean }) {
+  const [list, setList] = useState<api.Invitation[] | null>(null);
+  const [connectors, setConnectors] = useState<{ id: string; label: string }[]>([]);
+  const [email, setEmail] = useState("");
+  const [role, setRole] = useState<string>("member");
+  const [connector, setConnector] = useState("");
+  const [link, setLink] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = useCallback(() => {
+    api
+      .listInvitations(tenant.id)
+      .then(setList)
+      .catch((e) => setError(errorMessage(e)));
+  }, [tenant.id]);
+  useEffect(() => refresh(), [refresh]);
+  // The login connectors anyone may see: an invitation goes through one of
+  // those that log in by a verified email.
+  useEffect(() => {
+    if (!canManage) return;
+    api
+      .authMethods()
+      .then((m) => {
+        const cs = (m.connectors ?? [])
+          .filter((c) => c.kind === "oidc" || c.kind === "google")
+          .map((c) => ({ id: c.id, label: c.display_name || c.id }));
+        setConnectors(cs);
+        setConnector((cur) => cur || cs[0]?.id || "");
+      })
+      .catch(() => setConnectors([]));
+  }, [canManage]);
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    try {
+      const r = await api.createInvitation({ tenant: tenant.id, email: email.trim(), role, connector });
+      setLink(r.link);
+      setCopied(false);
+      setEmail("");
+      refresh();
+    } catch (e) {
+      setError(errorMessage(e));
+    }
+  };
+  const revoke = async (id: string) => {
+    setError(null);
+    try {
+      await api.revokeInvitation(id);
+      refresh();
+    } catch (e) {
+      setError(errorMessage(e));
+    }
+  };
+  const state = (i: api.Invitation) =>
+    i.state === "INVITATION_STATE_OPEN" ? "open" : i.state === "INVITATION_STATE_TAKEN" ? "taken" : "expired";
+
+  return (
+    <Card title="Invitations">
+      <ErrorBanner error={error} onDismiss={() => setError(null)} />
+      {link && (
+        <div className="mb-4 p-3 rounded-lg bg-amber-50 border border-amber-200 text-sm" data-testid="invitation-link">
+          <p className="text-amber-900">Send this link to the person invited. It is shown once and can't be shown again.</p>
+          <div className="mt-2 flex items-center gap-2">
+            <code className="flex-1 break-all font-mono text-xs bg-white px-2 py-1 rounded border border-amber-200">{link}</code>
+            <button
+              type="button"
+              className={secondaryButton}
+              onClick={() => {
+                void navigator.clipboard?.writeText(link).then(() => setCopied(true));
+              }}
+            >
+              {copied ? "Copied" : "Copy"}
+            </button>
+            <button type="button" className="text-sm text-gray-500 hover:underline" onClick={() => setLink(null)}>
+              Done
+            </button>
+          </div>
+        </div>
+      )}
+      {list === null ? (
+        <Loading />
+      ) : list.length === 0 ? (
+        <p className="text-sm text-gray-500">No invitations.</p>
+      ) : (
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-left text-gray-500 border-b border-gray-100">
+              <th className="py-2 font-medium">Email</th>
+              <th className="py-2 font-medium">Role</th>
+              <th className="py-2 font-medium">Connector</th>
+              <th className="py-2 font-medium">State</th>
+              <th className="py-2 font-medium">Expires</th>
+              {canManage && <th className="py-2" />}
+            </tr>
+          </thead>
+          <tbody>
+            {list.map((i) => (
+              <tr key={i.id} className="border-b border-gray-50">
+                <td className="py-2">{i.email}</td>
+                <td className="py-2">{inviteRoleLabel(i.role ?? "member")}</td>
+                <td className="py-2 font-mono text-xs">{i.connector_id}</td>
+                <td className="py-2">{state(i)}</td>
+                <td className="py-2 text-gray-500">{formatTimestamp(i.expires_at)}</td>
+                {canManage && (
+                  <td className="py-2 text-right">
+                    {state(i) === "open" && (
+                      <button className={dangerLink} onClick={() => void revoke(i.id ?? "")}>
+                        Revoke
+                      </button>
+                    )}
+                  </td>
+                )}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {canManage && (
+        <form onSubmit={submit} className="mt-4 grid grid-cols-1 md:grid-cols-4 gap-3 items-end">
+          <Field label="Email" htmlFor="invite-email">
+            <input
+              id="invite-email"
+              type="email"
+              required
+              className={inputClass}
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="person@example.org"
+            />
+          </Field>
+          <Field label="Role" htmlFor="invite-role">
+            <select id="invite-role" className={selectClass} value={role} onChange={(e) => setRole(e.target.value)}>
+              {INVITE_ROLES.map((r) => (
+                <option key={r} value={r}>
+                  {inviteRoleLabel(r)}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Connector" htmlFor="invite-connector">
+            <select
+              id="invite-connector"
+              className={selectClass}
+              value={connector}
+              onChange={(e) => setConnector(e.target.value)}
+              required
+            >
+              {connectors.length === 0 && <option value="">No OIDC or Google connector</option>}
+              {connectors.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.label}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <button type="submit" className={primaryButton} disabled={!connector || !email.trim()}>
+            Invite
+          </button>
+        </form>
+      )}
+    </Card>
   );
 }
 
@@ -346,6 +519,8 @@ export default function TenantDetail() {
           )}
         </Card>
       )}
+
+      {can("readTenantInvitations") && <InvitationsCard tenant={tenant} canManage={can("manageTenantInvitations")} />}
 
       {canReadBindings && (
         <Card title="Tenant roles">

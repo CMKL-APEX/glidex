@@ -13,6 +13,7 @@ mod cluster;
 mod connectors;
 pub(crate) mod errors;
 pub mod gate;
+mod invitations;
 mod net;
 pub(crate) mod nodes;
 mod rates;
@@ -731,6 +732,19 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         PUBLIC,
         get(access::connector_start),
     )
+    // An invitation page's login: the invitation in the body (§6.1).
+    .add(
+        "POST",
+        "/auth/c/{id}/start",
+        PUBLIC,
+        post(access::connector_start_post),
+    )
+    .add(
+        "POST",
+        "/auth/invitation",
+        PUBLIC,
+        post(invitations::inspect),
+    )
     .add(
         "GET",
         "/auth/c/{id}/callback",
@@ -901,6 +915,25 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         "/tenants/{id}/bindings/{link}",
         "manageTenantBindings",
         delete(tenants::remove_binding),
+    )
+    // ---- invitations (spec/tenancy.md §6.1)
+    .add(
+        "GET",
+        "/tenants/{id}/invitations",
+        "readTenantInvitations",
+        get(invitations::list),
+    )
+    .add(
+        "POST",
+        "/tenants/{id}/invitations",
+        "manageTenantInvitations",
+        post(invitations::create),
+    )
+    .add(
+        "DELETE",
+        "/invitations/{id}",
+        "manageTenantInvitations",
+        delete(invitations::revoke),
     )
     // ---- directory connectors (spec/tenancy.md §5; REST twins of glidex.directory.v1)
     .add(
@@ -2009,6 +2042,8 @@ mod tests {
                 "/auth/oidc/device/poll",
                 "/auth/discover",
                 "/auth/c/{id}/start",
+                "/auth/c/{id}/start",
+                "/auth/invitation",
                 "/auth/c/{id}/callback",
                 "/auth/c/{id}/device",
                 "/auth/c/{id}/device/poll",

@@ -2,12 +2,13 @@
 
 use super::{Svc, unary};
 use crate::api::AppState;
-use crate::service::directory;
+use crate::service::{directory, invitations};
 use connectrpc::{RequestContext, ServiceRequest, ServiceResult};
 use glidex_api::proto::glidex::directory::v1::*;
 
 pub(super) fn register(app: &AppState, router: connectrpc::Router) -> connectrpc::Router {
-    ConnectorServiceExt::register(Svc::new(app), router)
+    let router = ConnectorServiceExt::register(Svc::new(app), router);
+    InvitationServiceExt::register(Svc::new(app), router)
 }
 
 macro_rules! op {
@@ -81,5 +82,32 @@ impl ConnectorService for Svc {
             directory::test_connector(&c.expect("authenticated operation"), req).await
         })
         .await
+    }
+}
+
+#[allow(refining_impl_trait)]
+impl InvitationService for Svc {
+    async fn list_invitations(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, ListInvitationsRequest>,
+    ) -> ServiceResult<ListInvitationsResponse> {
+        op!(self, ctx, req, invitations::list_invitations)
+    }
+
+    async fn create_invitation(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, CreateInvitationRequest>,
+    ) -> ServiceResult<CreateInvitationResponse> {
+        op!(self, ctx, req, invitations::create_invitation)
+    }
+
+    async fn revoke_invitation(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, RevokeInvitationRequest>,
+    ) -> ServiceResult<RevokeInvitationResponse> {
+        op!(self, ctx, req, invitations::revoke_invitation)
     }
 }

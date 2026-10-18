@@ -1,5 +1,5 @@
 import { lazy, Suspense } from "react";
-import { Routes, Route } from "react-router-dom";
+import { Routes, Route, useLocation } from "react-router-dom";
 import Header from "./components/Header";
 import Footer from "./components/Footer";
 import Dashboard from "./pages/Dashboard";
@@ -31,6 +31,7 @@ const TenantDetail = lazy(() => import("./pages/TenantDetail"));
 const Admissions = lazy(() => import("./pages/Admissions"));
 const Connectors = lazy(() => import("./pages/Connectors"));
 const VmConsole = lazy(() => import("./pages/VmConsole"));
+const Invite = lazy(() => import("./pages/Invite"));
 
 function Shell() {
   const { project } = useSession();
@@ -75,6 +76,15 @@ function Shell() {
 }
 
 export default function App() {
+  const { pathname } = useLocation();
+  // An invitation link works signed out: it is its own way to log in.
+  if (pathname.startsWith("/invite/")) {
+    return (
+      <Suspense fallback={<Loading />}>
+        <Invite />
+      </Suspense>
+    );
+  }
   return (
     <SessionProvider>
       <Shell />

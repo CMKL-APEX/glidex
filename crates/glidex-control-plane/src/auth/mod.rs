@@ -243,6 +243,8 @@ pub struct AuthService {
     tickets: Mutex<HashMap<String, Ticket>>,
     /// Directory connectors and their secrets (spec/tenancy.md §5).
     pub connectors: crate::directory::ConnectorStore,
+    /// Invitations to the directory's tenants (spec/tenancy.md §6.1).
+    pub invitations: crate::directory::invitations::InvitationStore,
     /// One OIDC client per connector, rebuilt when its record changes.
     oidc: Mutex<
         HashMap<
@@ -363,6 +365,7 @@ impl AuthService {
             engine: Engine::new()?,
             connectors: crate::directory::ConnectorStore::new(db.clone(), &config)
                 .map_err(connector_err)?,
+            invitations: crate::directory::invitations::InvitationStore::new(db.clone()),
             oidc: Mutex::new(HashMap::new()),
             config,
             disabled: false,
@@ -395,6 +398,7 @@ impl AuthService {
             engine: Engine::new()?,
             connectors: crate::directory::ConnectorStore::new(db.clone(), &config)
                 .map_err(connector_err)?,
+            invitations: crate::directory::invitations::InvitationStore::new(db.clone()),
             oidc: Mutex::new(HashMap::new()),
             config,
             disabled: true,
@@ -1283,6 +1287,20 @@ impl AuthService {
         c: &crate::directory::Connector,
         id: &crate::directory::ExternalIdentity,
     ) -> Result<User, AuthError> {
+        self.external_login_invited(c, id, None)
+    }
+
+    /// [`external_login`](Self::external_login) bringing an invitation
+    /// (§6.1): taken when its secret, connector and the verified email
+    /// match, it makes the user (even with `jit` off) a member of its
+    /// tenant with its role. A login with an invitation it can't take is
+    /// refused, like any other.
+    pub fn external_login_invited(
+        &self,
+        c: &crate::directory::Connector,
+        id: &crate::directory::ExternalIdentity,
+        invite: Option<&crate::directory::invitations::InviteToken>,
+    ) -> Result<User, AuthError> {
         if !c.enabled {
             return Err(AuthError::NotAllowed("this connector is disabled".into()));
         }
@@ -1297,10 +1315,20 @@ impl AuthService {
         }
         let provider = c.identity_provider();
         let existed = self.store.identity(&provider, &id.subject)?.is_some();
+        let invited = match invite {
+            Some(t) => Some(
+                self.invitations
+                    .would_take(t, &c.id, id.email.as_deref(), id.email_verified)
+                    .map_err(|e| AuthError::Invalid(e.to_string()))?
+                    .ok_or_else(|| AuthError::NotAllowed("the invitation can't be taken".into()))?,
+            ),
+            None => None,
+        };
         // A connector with an allowlist gives new accounts to those
-        // verified addresses only (D39).
+        // verified addresses only (D39); an invitation is its own way in.
         let allowed = c.allowed_emails();
         if !existed
+            && invited.is_none()
             && !allowed.is_empty()
             && !(id.email_verified
                 && id
@@ -1319,11 +1347,30 @@ impl AuthService {
                 &id.subject,
                 &id.display_name,
                 id.email.clone(),
-                c.jit,
+                c.jit || invited.is_some(),
             )?
             .ok_or_else(|| AuthError::NotAllowed("no glidex account for this identity".into()))?;
         if user.disabled {
             return Err(AuthError::NotAllowed("this account is disabled".into()));
+        }
+        if let Some(t) = invite {
+            let inv = self
+                .invitations
+                .take(t, &c.id, id.email.as_deref(), id.email_verified, &user.id)
+                .map_err(|_| AuthError::NotAllowed("the invitation can't be taken".into()))?;
+            let by = format!("invitation:{}", inv.id);
+            self.tenants
+                .add_member(&inv.tenant_id, Ent::User(user.id.clone()), &by)
+                .map_err(tenant_err)?;
+            // `member` is membership alone.
+            if inv.role != crate::service::invitations::MEMBER {
+                self.add_link(
+                    &inv.role,
+                    Ent::User(user.id.clone()),
+                    Ent::Tenant(inv.tenant_id.clone()),
+                    &by,
+                )?;
+            }
         }
         let teams: Vec<String> = id
             .groups
