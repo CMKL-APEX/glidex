@@ -267,6 +267,33 @@ pub fn plan(host: &dyn HostView, opts: &Options, user_home: &Path) -> Vec<Step> 
         }
     }
 
+    // Drop-ins of the Tailscale certificate (spec/tailscale-tls.md §4.6):
+    // the UI's, and tailscaled's grant while it is ours (marked); a grant
+    // set by hand stays. tailscaled restarts without it below.
+    let mut restart_tailscaled = false;
+    for (file, is_tailscaled) in [
+        (crate::tailscale::UI_DROPIN, false),
+        (crate::tailscale::TAILSCALED_DROPIN, true),
+    ] {
+        let path = Path::new(file);
+        let Some(text) = host.read(path) else {
+            continue;
+        };
+        if !text.contains(crate::PAM_MARKER) {
+            continue;
+        }
+        let dir = path.parent().expect("a drop-in has a directory");
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        // The directory too when nothing else is in it.
+        if host.list(dir) == [name] {
+            steps.push(Step::Remove(dir.to_path_buf()));
+        } else {
+            steps.push(Step::Remove(path.to_path_buf()));
+        }
+        removed_units = true;
+        restart_tailscaled |= is_tailscaled;
+    }
+
     // 5. OVS (optional).
     if opts.reset_dpdk && !opts.remove_ovs && host.exists(Path::new("/usr/bin/ovs-vsctl")) {
         steps.push(run(&[
@@ -324,6 +351,9 @@ pub fn plan(host: &dyn HostView, opts: &Options, user_home: &Path) -> Vec<Step> 
     }
     if removed_units {
         steps.push(run(&["systemctl", "daemon-reload"]));
+    }
+    if restart_tailscaled {
+        steps.push(run(&["systemctl", "try-restart", "tailscaled.service"]));
     }
 
     // 6. State, configuration, runtime files.
@@ -962,6 +992,69 @@ mod tests {
         ] {
             assert!(!l.iter().any(|s| s.contains(absent)), "unexpected {absent}");
         }
+    }
+
+    /// The Tailscale certificate's drop-ins (spec/tailscale-tls.md §4.6):
+    /// ours go (their directory too when they were alone), tailscaled
+    /// restarts after the reload; a grant set by hand and an administrator's
+    /// own drop-ins stay.
+    #[test]
+    fn tailscale_dropins() {
+        use crate::tailscale::{TAILSCALED_DROPIN, UI_DROPIN, tailscaled_dropin, ui_dropin};
+        let ui_dir = Path::new(UI_DROPIN).parent().unwrap().to_path_buf();
+        let ts_dir = Path::new(TAILSCALED_DROPIN).parent().unwrap().to_path_buf();
+        let name = |p: &str| {
+            Path::new(p)
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        };
+
+        let mut h = full_install();
+        h.files.insert(UI_DROPIN.into(), ui_dropin());
+        h.files
+            .insert(TAILSCALED_DROPIN.into(), tailscaled_dropin());
+        h.dirs.insert(ui_dir.clone(), vec![name(UI_DROPIN)]);
+        h.dirs.insert(ts_dir.clone(), vec![name(TAILSCALED_DROPIN)]);
+        let l = lines(&plan(&h, &Options::default(), Path::new("/home/alice")));
+        let pos = |needle: &str| {
+            l.iter()
+                .position(|s| s == needle)
+                .unwrap_or_else(|| panic!("missing {needle}: {l:#?}"))
+        };
+        pos(&format!("remove: {}", ui_dir.display()));
+        let ts_removed = pos(&format!("remove: {}", ts_dir.display()));
+        let reload = pos("run: systemctl daemon-reload");
+        let restart = pos("run: systemctl try-restart tailscaled.service");
+        assert!(ts_removed < reload && reload < restart, "{l:#?}");
+
+        // Set by hand (no marker): kept, no restart. The UI's directory
+        // holds an administrator's drop-in too: only ours goes.
+        h.files.insert(
+            TAILSCALED_DROPIN.into(),
+            "[Service]\nEnvironment=TS_PERMIT_CERT_UID=glidex-ui\n".into(),
+        );
+        h.dirs
+            .insert(ui_dir.clone(), vec!["10-tls.conf".into(), name(UI_DROPIN)]);
+        let l = lines(&plan(&h, &Options::default(), Path::new("/home/alice")));
+        assert!(l.contains(&format!("remove: {UI_DROPIN}")), "{l:#?}");
+        for absent in [
+            format!("remove: {}", ui_dir.display()),
+            format!("remove: {}", ts_dir.display()),
+            format!("remove: {TAILSCALED_DROPIN}"),
+            "run: systemctl try-restart tailscaled.service".into(),
+        ] {
+            assert!(!l.contains(&absent), "unexpected {absent}: {l:#?}");
+        }
+
+        // Without them: nothing about tailscaled.
+        let l = lines(&plan(
+            &full_install(),
+            &Options::default(),
+            Path::new("/home/alice"),
+        ));
+        assert!(!l.iter().any(|s| s.contains("tailscale")), "{l:#?}");
     }
 
     #[test]

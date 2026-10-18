@@ -10,6 +10,7 @@ use tempfile::TempDir;
 
 mod ovn_match;
 mod sysconfig;
+mod tailscale;
 mod uninstall;
 
 const CLOUD_HYPERVISOR_VERSION: &str = "v53.0";
@@ -108,6 +109,24 @@ fn main() -> Result<()> {
     }
     print_banner();
 
+    // Asked before the long build, while someone is at the terminal.
+    let mut opts = opts;
+    let saved_tailscale_cert = Options::parse(saved.as_deref(), &[])?.tailscale_cert;
+    let ts_node = if opts.services {
+        tailscale::node()
+    } else {
+        None
+    };
+    if opts.services {
+        use std::io::IsTerminal;
+        let domain = ts_node.as_ref().and_then(|n| n.domains.first().cloned());
+        let can_ask = io::stdin().is_terminal() && io::stdout().is_terminal() && domain.is_some();
+        opts.tailscale_cert = tailscale::decide(opts.tailscale_cert, can_ask, || {
+            ask_tailscale_cert(domain.as_deref().unwrap_or_default())
+        })
+        .1;
+    }
+
     let platform = detect_platform()?;
     println!(
         "{} {}-{}",
@@ -145,9 +164,24 @@ fn main() -> Result<()> {
     if opts.networking {
         setup_networking(&opts, &changed)?;
     }
+    let mut tailscale_on = false;
     if opts.services {
         install_service_config()?;
-        install_services(&changed, user.as_deref(), &user_home)?;
+        let ts = install_services(
+            &changed,
+            user.as_deref(),
+            &user_home,
+            opts.tailscale_cert == Some(true),
+            ts_node.as_ref(),
+        )?;
+        if let Some(ts) = ts {
+            tailscale_on = ts.on;
+            // Not enabled after all: keep what was saved, so this run's
+            // choice isn't recorded as on (spec/tailscale-tls.md §4.6).
+            if ts.refused.is_some() {
+                opts.tailscale_cert = saved_tailscale_cert;
+            }
+        }
     }
     opts.save(saved.as_deref())?;
     if let Some(j) = &opts.join {
@@ -158,7 +192,8 @@ fn main() -> Result<()> {
     if opts.networking && opts.ovn && cluster_identity().is_some() {
         ensure_ovn_matches_cluster(opts.join.is_some())?;
     }
-    print_usage(&opts);
+    let ts_domain = ts_node.and_then(|n| n.domains.into_iter().next());
+    print_usage(&opts, tailscale_on.then_some(ts_domain).as_ref());
     Ok(())
 }
 
@@ -632,6 +667,10 @@ struct Options {
     /// `--keep-resources --offline` with `--leave`: take this host's VMs along
     /// while no server can be reached (§5.8.3).
     offline: bool,
+    /// Serve the node's Tailscale certificate from the web UI
+    /// (spec/tailscale-tls.md §4.6). Opt-in: `None` (nothing chosen yet)
+    /// asks on an interactive run, else stays off.
+    tailscale_cert: Option<bool>,
 }
 
 /// `--join <server:8842> [--role server|agent] [--token-file F] [--advertise A] [--node-name N]`.
@@ -665,6 +704,7 @@ impl Default for Options {
             leave: false,
             offline: false,
             prebuilt: false,
+            tailscale_cert: None,
         }
     }
 }
@@ -684,6 +724,7 @@ impl Options {
                 "ovs_profile" => o.ovs_profile = OvsProfile::parse(v).unwrap_or(OvsProfile::Kernel),
                 "pmd_cpu_mask" => o.pmd_cpu_mask = (!v.is_empty()).then(|| v.to_string()),
                 "ovn" => o.ovn = v == "true",
+                "tailscale_cert" => o.tailscale_cert = Some(v == "true"),
                 _ => {}
             }
         }
@@ -709,6 +750,8 @@ impl Options {
                 "--allow-ovs-restart" => o.allow_ovs_restart = true,
                 "--ovn" => o.ovn = true,
                 "--no-ovn" => o.ovn = false,
+                "--tailscale-cert" => o.tailscale_cert = Some(true),
+                "--no-tailscale-cert" => o.tailscale_cert = Some(false),
                 "--join" => {
                     let server = value("--join")?;
                     o.join
@@ -777,7 +820,7 @@ impl Options {
     }
 
     fn render(&self) -> String {
-        format!(
+        let mut text = format!(
             "# Written by glidex-install: the choices re-runs reuse (flags override).\n\
              qemu={}\nnetworking={}\nservices={}\novs_profile={}\npmd_cpu_mask={}\novn={}\n",
             self.qemu,
@@ -786,7 +829,12 @@ impl Options {
             self.ovs_profile.name(),
             self.pmd_cpu_mask.as_deref().unwrap_or(""),
             self.ovn
-        )
+        );
+        // Only once chosen: until then an interactive run asks.
+        if let Some(t) = self.tailscale_cert {
+            text.push_str(&format!("tailscale_cert={t}\n"));
+        }
+        text
     }
 
     fn save(&self, saved: Option<&str>) -> Result<()> {
@@ -814,6 +862,10 @@ fn print_help() {
          \x20     --no-ovn               skip OVN (cluster networks need it; default: installed,\n\
          \x20                            its services off until the host is in a cluster)\n\
          \x20     --qemu, --networking, --services   undo an earlier --no-*\n\
+         \x20     --tailscale-cert       serve the web UI with this node's Tailscale certificate\n\
+         \x20                            (lets glidex-ui fetch it from tailscaled; its ts.net\n\
+         \x20                            name becomes public in Certificate Transparency logs)\n\
+         \x20     --no-tailscale-cert    stop doing so (default: asked once when interactive)\n\
          \x20     --prebuilt             use the binaries already in target/release (and the\n\
          \x20                            built UI) instead of installing Rust and building\n\n\
          Joining a cluster (spec/clustering.md §5.2); the token comes from\n\
@@ -873,7 +925,31 @@ fn print_plan(opts: &Options) {
         ADMIN_GROUP,
         on(opts.services)
     );
+    if opts.services {
+        println!(
+            "  - web UI with this node's Tailscale certificate: {}",
+            on(opts.tailscale_cert == Some(true))
+        );
+    }
     println!();
+}
+
+/// The opt-in question (spec/tailscale-tls.md §4.6), default no.
+fn ask_tailscale_cert(domain: &str) -> bool {
+    println!();
+    println!(
+        "This host is on a Tailscale tailnet with HTTPS certificates ({}).",
+        domain.cyan()
+    );
+    println!(
+        "The web UI can serve its Tailscale certificate, trusted by browsers at https://{}:5173.",
+        domain
+    );
+    println!(
+        "Its name then becomes public in Certificate Transparency logs, and tailscaled is\n\
+         restarted once to let glidex-ui fetch the certificate (the tailnet drops for a few seconds)."
+    );
+    confirm_yn("Use the Tailscale certificate?", false).unwrap_or(false)
 }
 
 fn section(title: &str) {
@@ -2801,11 +2877,18 @@ fn authd_actions(
 /// (reconciles bridges, DPDK binding, IP migrations, NAT) → control plane
 /// (as `glidex`) → web UI (as `glidex-ui`), plus the socket-activated
 /// glidex-authd (root).
-fn install_services(changed: &Changes, invoking: Option<&str>, user_home: &Path) -> Result<()> {
+/// Returns what the Tailscale certificate step did (`None` without systemd).
+fn install_services(
+    changed: &Changes,
+    invoking: Option<&str>,
+    user_home: &Path,
+    tailscale_cert: bool,
+    ts_node: Option<&tailscale::Node>,
+) -> Result<Option<tailscale::Applied>> {
     section("Services (systemd)");
     if !Path::new("/run/systemd/system").exists() {
         println!("{}", "systemd is not running here; skipping".yellow());
-        return Ok(());
+        return Ok(None);
     }
     let root = workspace_root();
     let previous_user = fs::read_to_string(CONTROL_PLANE_UNIT)
@@ -2836,13 +2919,19 @@ fn install_services(changed: &Changes, invoking: Option<&str>, user_home: &Path)
         AUTHD_SERVICE_UNIT,
         "0644",
     )?;
+    let ts = tailscale::apply(tailscale_cert, ts_node)?;
     if cp_unit_changed
         || ui_unit_changed
         || authd_socket_changed
         || authd_service_changed
         || vm_units_changed
+        || ts.reload
     {
         sudo(&argv(&["systemctl", "daemon-reload"]))?;
+    }
+    // Before the UI (re)starts, so its first fetch finds the permission.
+    if ts.restart_tailscaled {
+        tailscale::restart_tailscaled()?;
     }
     if vm_units_changed {
         apply_vm_accounting();
@@ -2917,7 +3006,7 @@ fn install_services(changed: &Changes, invoking: Option<&str>, user_home: &Path)
             UI_ADDR,
             ui
         );
-    } else if !unit_active(ui) || changed.ui || ui_unit_changed {
+    } else if !unit_active(ui) || changed.ui || ui_unit_changed || ts.ui_dropin_changed {
         sudo(&argv(&["systemctl", "restart", ui]))?;
         println!(
             "{} {} on https://{}:5173",
@@ -2942,7 +3031,7 @@ fn install_services(changed: &Changes, invoking: Option<&str>, user_home: &Path)
             user_home.join(".glidex").display()
         );
     }
-    Ok(())
+    Ok(Some(ts))
 }
 
 /// The VM unit template, its slice, the polkit rule and the shim's
@@ -3071,7 +3160,8 @@ fn cert_fingerprint(path: &str) -> Option<String> {
     None
 }
 
-fn print_usage(opts: &Options) {
+/// `tailscale`: the feature is on, with the node's ts.net name if known.
+fn print_usage(opts: &Options, tailscale: Option<&Option<String>>) {
     section("Quick Start");
     println!();
     if opts.services {
@@ -3079,6 +3169,25 @@ fn print_usage(opts: &Options) {
             "glidex runs as systemd services (control plane as '{}', web UI as '{}'):",
             SERVICE_USER, UI_USER
         );
+        match tailscale {
+            Some(Some(domain)) => {
+                let url = format!("https://{}:5173", domain);
+                // The first certificate can take a minute to be issued.
+                if tailscale::served_trusted(UI_ADDR, domain, std::time::Duration::from_secs(60)) {
+                    println!("     web UI:  {} (Tailscale certificate)", url.green());
+                } else {
+                    println!(
+                        "     web UI:  {} (Tailscale certificate not served yet; see journalctl -u glidex-ui)",
+                        url.yellow()
+                    );
+                }
+            }
+            Some(None) => println!(
+                "     web UI:  Tailscale certificate on, but tailscaled reports no certificate domains \
+                 (enable HTTPS certificates for the tailnet); see journalctl -u glidex-ui"
+            ),
+            None => {}
+        }
         let host = host_name();
         println!("     web UI:  {}", format!("https://{}:5173", host).green());
         println!(
@@ -3171,6 +3280,28 @@ mod tests {
         let restart = Options::parse(None, &args(&["--allow-ovs-restart"])).unwrap();
         assert!(restart.allow_ovs_restart);
         assert_eq!(restart.render(), Options::default().render(), "never saved");
+
+        // The Tailscale certificate: not saved until chosen (so an
+        // interactive run still asks), then kept; flags override.
+        assert_eq!(Options::default().tailscale_cert, None);
+        assert!(!Options::default().render().contains("tailscale_cert"));
+        let on = Options::parse(None, &args(&["--tailscale-cert"])).unwrap();
+        assert!(
+            on.render().ends_with("tailscale_cert=true\n"),
+            "{}",
+            on.render()
+        );
+        let kept = Options::parse(Some(&on.render()), &[]).unwrap();
+        assert_eq!(kept.tailscale_cert, Some(true));
+        let off = Options::parse(Some(&on.render()), &args(&["--no-tailscale-cert"])).unwrap();
+        assert_eq!(off.tailscale_cert, Some(false));
+        assert_eq!(
+            Options::parse(Some(&off.render()), &[])
+                .unwrap()
+                .tailscale_cert,
+            Some(false),
+            "a 'no' is remembered too: not asked again"
+        );
 
         assert!(Options::parse(None, &args(&["--bogus"])).is_err());
         assert!(Options::parse(None, &args(&["--ovs-profile", "fast"])).is_err());

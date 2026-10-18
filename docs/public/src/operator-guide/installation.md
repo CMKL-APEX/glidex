@@ -91,6 +91,8 @@ cargo run -p glidex-install -- --no-qemu --ovs-profile dpdk
 | `--pmd-cpu-mask MASK` | OVS-DPDK PMD CPU mask, in hex. `auto` clears it. |
 | `--allow-ovs-restart` | Allow restarting `ovs-vswitchd` while it has bridges (interrupts their traffic). Not saved. |
 | `--no-ovn` | Skip OVN. Cluster networks need it; by default it is installed with its services off until the host is in a cluster. |
+| `--tailscale-cert` | Serve the web UI with this node's Tailscale certificate, trusted by browsers at `https://<node>.<tailnet>.ts.net:5173`. Grants `glidex-ui` `TS_PERMIT_CERT_UID` in a `tailscaled` drop-in and restarts `tailscaled` once; refused, changing nothing, when another user already holds it. Off unless chosen: an interactive run on a node with HTTPS certificates asks once. See [Tailscale certificates](tls.md#tailscale-certificates). |
+| `--no-tailscale-cert` | Turn it off: removes the installer's two drop-ins. |
 | `--qemu`, `--networking`, `--services`, `--ovn` | Undo an earlier `--no-…`. |
 | `--prebuilt` | Install the binaries already in `target/release` and the built UI in `crates/glidex-ui/ui/dist` (built on another host with the same OS) instead of installing Rust and Bun and building. Not saved. |
 | `-h`, `--help` | Show the options. |

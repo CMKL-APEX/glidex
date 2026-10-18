@@ -1386,7 +1386,7 @@ None. Earlier questions were answered and recorded as decisions 10–17 (§2).
 | API, route table, compound checks (§7.4, §7.7, §13) | `src/api/` |
 | Listeners, TLS (§5.1, §5.1.1) | `src/serve.rs`, `src/config.rs`; certificates, listeners, local names and client trust shared with glidex-ui, gxctl and the installer in `crates/glidex-tls` |
 | Reloadable certificates ([tailscale-tls.md](tailscale-tls.md) TS0) | `glidex_tls::{CertSlot, Resolver, FileCert}`; control plane `serve.rs`/`main.rs` (re-publishes `tls.crt`), UI `main.rs` |
-| Tailscale certificates for the UI (decision 19) | UI: `crates/glidex-ui/src/tailscale.rs` (local API client, polling), `main.rs` (`Host`, HSTS); same-origin rule `api/mod.rs` `ui_same_origin`. Installer *(draft)*: [tailscale-tls.md](tailscale-tls.md) TS2 |
+| Tailscale certificates for the UI (decision 19) | UI: `crates/glidex-ui/src/tailscale.rs` (local API client, polling), `main.rs` (`Host`, HSTS); same-origin rule `api/mod.rs` `ui_same_origin`. Installer: `crates/glidex-install/src/tailscale.rs` ([tailscale-tls.md](tailscale-tls.md) §4.6) |
 | Private VM runtime directories (§9) | `src/paths.rs` |
 | VM units, polkit rule, shim allowlist (§3, §9) | `packaging/glidex-vm@.service.in`, `packaging/50-glidex-vm.rules.in`, `crates/glidex-vm-shim/src/launch.rs`, `crates/glidex-install` (`install_vm_units`) |
 | PAM helper (§5.3) | `crates/glidex-authd` |

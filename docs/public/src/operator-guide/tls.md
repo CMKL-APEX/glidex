@@ -166,6 +166,12 @@ DNS name that reveals less. The name only resolves and routes inside
 the tailnet; use Tailscale ACLs to limit who can reach port 5173. Don't
 expose the UI with Tailscale Funnel.
 
+The installer sets it up: `--tailscale-cert` (an interactive run on
+such a node also asks once). It checks the steps below for you, refuses
+rather than take the permission from another service, and prints the
+`ts.net` URL once the certificate is served. `--no-tailscale-cert` and
+uninstall undo it. To do it by hand instead:
+
 `tailscaled` hands certificates only to root or to the one user named
 in its `TS_PERMIT_CERT_UID`. If that variable is already set for another
 service (a web server, say), these steps would take the permission away

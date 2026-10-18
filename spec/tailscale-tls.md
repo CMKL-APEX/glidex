@@ -1,11 +1,11 @@
 # Tailscale certificates for the web UI
 
-Status: **design accepted; TS0–TS1 implemented, TS2 (installer) pending** (milestones §10).
+Status: **implemented (TS0–TS2)**; TS3 waits on tailscale-rs (§6).
 The open questions are settled as decisions T6–T11 (§8).
 Extends [security.md](security.md) §5.1 and §5.1.1 and
 [web-ui.md](web-ui.md) *Server*. The edits it needs in those documents
-and in [installer.md](installer.md) are applied and tagged *(draft)*;
-§11 is their change record.
+and in [installer.md](installer.md) are applied; §11 is their change
+record.
 
 The web UI serves HTTPS with a self-signed certificate unless the
 operator supplies one (security.md §5.1.1). Every user's first visit is
@@ -197,37 +197,59 @@ order:
 1. The command-line option, when given.
 2. Otherwise the saved choice of a previous install, so an update (and
    a non-interactive re-run) keeps the feature as it was.
-3. Otherwise, interactively and only when `tailscaled` runs and reports
-   certificate domains: a prompt, default **no**, explaining the
-   Certificate Transparency exposure in one line (§7).
-4. Otherwise (non-interactive, nothing saved): off.
+3. Otherwise, interactively (stdin and stdout are terminals) and only
+   when `tailscale status` reports certificate domains: a prompt,
+   default **no**, explaining the Certificate Transparency exposure and
+   the `tailscaled` restart. It is asked before the build, while the
+   operator is at the terminal. The answer is saved either way, so a
+   "no" isn't asked again (`--tailscale-cert` turns it on later).
+4. Otherwise (non-interactive, nothing saved): off, and nothing saved,
+   so a later interactive run still asks.
 
 When the result is on:
 
-- **`tailscaled` (T6).** Read the running daemon's environment
-  (`systemctl show tailscaled -p Environment` and its
-  `EnvironmentFiles`, e.g. `/etc/default/tailscaled`):
-  - already `TS_PERMIT_CERT_UID=glidex-ui` (or its uid), by glidex's
-    drop-in or by hand: nothing to do;
+- **`tailscaled` (T6).** Its configured `TS_PERMIT_CERT_UID`:
+  `systemctl show tailscaled -p Environment`, overridden by its
+  `EnvironmentFiles` (e.g. `/etc/default/tailscaled`), later files
+  winning, as systemd applies them:
+  - already `glidex-ui` (or its uid), by glidex's drop-in or by hand:
+    nothing to write; `tailscaled` is restarted only if the running
+    daemon's environment (`/proc/<MainPID>/environ`) lacks it;
   - set to another user: **refuse** — say which user holds it, leave
-    `tailscaled` untouched, and leave the UI setting off for this run
-    (not saved as on), so the operator can resolve it and re-run;
+    `tailscaled` untouched, and leave the UI setting off for this run.
+    `install.conf` keeps its previous value (this run's choice isn't
+    saved as on), so the operator can resolve it and re-run;
   - unset: write `/etc/systemd/system/tailscaled.service.d/50-glidex-cert.conf`
     (`[Service]` + `Environment=TS_PERMIT_CERT_UID=glidex-ui`, with a
     comment naming glidex), `daemon-reload`, and restart `tailscaled`
     after saying the tailnet connection drops for a few seconds.
+- **No `tailscaled`** (`tailscale status` fails): treated like a
+  refusal: said, nothing written, previous value kept.
 - **UI.** `GLIDEX_UI_TLS_TAILSCALE=on` in
   `/etc/systemd/system/glidex-ui.service.d/50-tailscale-cert.conf`; the
-  UI is restarted with the other services.
+  UI is restarted when that file changes. `tailscaled` is restarted
+  (and waited for, up to 30 s, until `Running`) before the UI, so the
+  UI's first fetch finds the permission.
+- Both drop-ins carry the `Managed by glidex-install` marker; only
+  marked files are ever removed.
 - **Blurb.** `https://<node>.<tailnet>.ts.net:5173` first, without a
-  fingerprint; LAN URLs and fingerprints follow as today. If the UI
-  hasn't obtained the certificate yet, the blurb says so and how to
-  check (`journalctl -u glidex-ui`).
+  fingerprint; LAN URLs and fingerprints follow as today. The
+  installer checks it as a browser would: a TLS handshake to
+  `127.0.0.1:5173` with that SNI, verified against the system trust
+  store, retried for up to a minute (a first issuance takes about
+  40 s). If it doesn't verify by then, the blurb says so and points to
+  `journalctl -u glidex-ui`.
 
 When the result is off and a previous install had turned it on
-(`--no-tailscale-cert`), both drop-ins written by glidex are removed and
-`tailscaled` restarted; a `TS_PERMIT_CERT_UID` set by hand is left
-alone. Uninstall does the same.
+(`--no-tailscale-cert`), both drop-ins written by glidex are removed
+(each directory too, if that leaves it empty) and `tailscaled`
+restarted; a `TS_PERMIT_CERT_UID` set by hand is left alone. Uninstall
+does the same (`systemctl try-restart tailscaled` after its
+`daemon-reload`) and keeps an administrator's other drop-ins.
+
+Implementation: `crates/glidex-install/src/tailscale.rs` (decisions as
+pure functions, tested), wired into `main.rs` (`install_services`,
+`print_usage`) and `uninstall.rs` (`plan`).
 
 Because the UI only needs the permission to exist (§4.5), a host where
 the operator granted it by hand works with the UI drop-in alone.
@@ -340,7 +362,7 @@ in §2.
 |---|---|---|
 | **TS0** reloadable certificates *(done)* | `CertSlot` and SNI `Resolver` in `glidex-tls`; control plane and UI use them; configured certificate files reload on change | §9 `glidex-tls` tests; operator guide drops "restart to renew". |
 | **TS1** Tailscale slot in the UI *(done)* | `GLIDEX_UI_TLS_TAILSCALE`, local API client, polling and renewal, `Host` allowlist, HSTS, the T7 Origin rule | §9 `glidex-ui` tests; host test. |
-| **TS2** installer | Option precedence, prompt, `tailscaled` drop-in with refusal (T6), UI drop-in, usage blurb, uninstall, operator guide section | Installer tests; host test from a clean install. |
+| **TS2** installer *(done)* | Option precedence, prompt, `tailscaled` drop-in with refusal (T6), UI drop-in, usage blurb, uninstall, operator guide section | Installer tests; host test from a clean install. |
 | **TS3** *(gated upstream)* | Embedded tailscale-rs node (§6) | — |
 
 ## 11. Changes to other specs (applied — change record)
@@ -348,11 +370,9 @@ in §2.
 - **security.md:** decision 19; §5.1 certificate table, row
   "Tailscale"; §5.1.1 HSTS bullet; §5.6 `Host` and `Origin` checks;
   §17 status row.
-  All tagged *(draft)*.
 - **web-ui.md:** *Server* environment table rows for
   `GLIDEX_UI_TLS_TAILSCALE` and `GLIDEX_UI_TAILSCALE_SOCKET`; the HSTS
-  sentence. Tagged *(draft)*.
+  sentence.
 - **installer.md:** the `--tailscale-cert` option, step 13's
   Tailscale step and usage blurb, uninstall.
-  Tagged *(draft)*.
 - **README.md, SUMMARY.md:** this document's entry.
