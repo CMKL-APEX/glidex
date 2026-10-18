@@ -18,8 +18,14 @@ import {
 } from "../components/ui";
 import { useSession } from "../session";
 
-/** The secret field each kind has (spec/rest-api.md: `oidc`: `client_secret`). */
-const SECRET_FIELD: Record<Connector["kind"], string | null> = { pam: null, oidc: "client_secret" };
+/** The secret field each kind has (spec/rest-api.md: `oidc`: `client_secret`).
+ *  A `google` connector's device client has `device_client_secret` too
+ *  (gxctl `connector secret set`). */
+const SECRET_FIELD: Record<Connector["kind"], string | null> = { pam: null, oidc: "client_secret", google: "client_secret" };
+
+/** The form edits `pam` and `oidc`; `google` is edited with gxctl until
+ *  its own form (spec/tenancy.md §18, T2 task 5). */
+const formEdits = (c: Connector) => c.kind !== "google";
 
 /** Read-only connectors come from control-plane.json. */
 const fromFile = (c: Connector) => c.source === "file";
@@ -522,6 +528,13 @@ export default function Connectors() {
                     </td>
                     <td className="px-4 py-3 text-xs text-gray-600 space-y-0.5">
                       {c.oidc && <div className="font-mono">{c.oidc.issuer}</div>}
+                      {c.google && (
+                        <div>
+                          {c.google.accounts === "GOOGLE_ACCOUNTS_ANY"
+                            ? "any Google account (invited or listed people)"
+                            : `Workspace: ${(c.google.domains ?? []).join(", ")}`}
+                        </div>
+                      )}
                       {c.jit && <div>JIT{c.default_tenant ? ` into ${tenantSlug(c.default_tenant)}` : ""}</div>}
                       {c.require_mfa && <div>MFA required</div>}
                       {(c.required_groups?.length ?? 0) > 0 && <div>groups: {c.required_groups!.join(", ")}</div>}
@@ -535,9 +548,15 @@ export default function Connectors() {
                       )}
                       {!readOnly && host.updateConnector && (
                         <>
-                          <button className="text-sm text-sky-700 hover:underline" onClick={() => setDialog({ kind: "edit", connector: c })}>
-                            Edit
-                          </button>
+                          {formEdits(c) ? (
+                            <button className="text-sm text-sky-700 hover:underline" onClick={() => setDialog({ kind: "edit", connector: c })}>
+                              Edit
+                            </button>
+                          ) : (
+                            <span className="text-xs text-gray-400" title="Edit with gxctl: connector update">
+                              edit with gxctl
+                            </span>
+                          )}
                           <button
                             className="text-sm text-sky-700 hover:underline"
                             onClick={() => run(() => api.updateConnector(c.id, { enabled: !c.enabled }))}

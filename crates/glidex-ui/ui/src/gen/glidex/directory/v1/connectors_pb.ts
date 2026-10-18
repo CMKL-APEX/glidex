@@ -5,8 +5,8 @@
 // @generated from file glidex/directory/v1/connectors.proto (package glidex.directory.v1, syntax proto3)
 /* eslint-disable */
 
-import type { GenFile, GenMessage, GenService } from "@bufbuild/protobuf/codegenv2";
-import { fileDesc, messageDesc, serviceDesc } from "@bufbuild/protobuf/codegenv2";
+import type { GenEnum, GenFile, GenMessage, GenService } from "@bufbuild/protobuf/codegenv2";
+import { enumDesc, fileDesc, messageDesc, serviceDesc } from "@bufbuild/protobuf/codegenv2";
 import { file_glidex_api_v1_options } from "../../api/v1/options_pb";
 import type { FieldMask, FieldMaskJson, Timestamp, TimestampJson } from "@bufbuild/protobuf/wkt";
 import { file_google_protobuf_field_mask, file_google_protobuf_timestamp } from "@bufbuild/protobuf/wkt";
@@ -16,7 +16,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file glidex/directory/v1/connectors.proto.
  */
 export const file_glidex_directory_v1_connectors: GenFile = /*@__PURE__*/
-  fileDesc("CiRnbGlkZXgvZGlyZWN0b3J5L3YxL2Nvbm5lY3RvcnMucHJvdG8SE2dsaWRleC5kaXJlY3RvcnkudjEiuwYKCUNvbm5lY3RvchIKCgJpZBgBIAEoCRIiCgxkaXJlY3RvcnlfaWQYAiABKAlSDGRpcmVjdG9yeV9pZBIMCgRraW5kGAMgASgJEiIKDGRpc3BsYXlfbmFtZRgEIAEoCVIMZGlzcGxheV9uYW1lEhQKB2VuYWJsZWQYBSABKAhIAYgBARIQCgNqaXQYBiABKAhIAogBARIoCg9yZXF1aXJlZF9ncm91cHMYByADKAlSD3JlcXVpcmVkX2dyb3VwcxIlCgtyZXF1aXJlX21mYRgIIAEoCEgDUgtyZXF1aXJlX21mYYgBARJQCgtncm91cF90ZWFtcxgJIAMoCzIuLmdsaWRleC5kaXJlY3RvcnkudjEuQ29ubmVjdG9yLkdyb3VwVGVhbXNFbnRyeVILZ3JvdXBfdGVhbXMSKwoOZGVmYXVsdF90ZW5hbnQYCiABKAlIBFIOZGVmYXVsdF90ZW5hbnSIAQESKwoOdG9rZW5fbWF4X2RheXMYCyABKA1IBVIOdG9rZW5fbWF4X2RheXOIAQESLwoDcGFtGAwgASgLMiAuZ2xpZGV4LmRpcmVjdG9yeS52MS5QYW1TZXR0aW5nc0gAEjEKBG9pZGMYDSABKAsyIS5nbGlkZXguZGlyZWN0b3J5LnYxLk9pZGNTZXR0aW5nc0gAEjIKB3NlY3JldHMYDiADKAsyIS5nbGlkZXguZGlyZWN0b3J5LnYxLlNlY3JldFN0YXR1cxIOCgZzb3VyY2UYDyABKAkSOgoKY3JlYXRlZF9hdBgQIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXBSCmNyZWF0ZWRfYXQSOgoKdXBkYXRlZF9hdBgRIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXBSCnVwZGF0ZWRfYXQaMQoPR3JvdXBUZWFtc0VudHJ5EgsKA2tleRgBIAEoCRINCgV2YWx1ZRgCIAEoCToCOAFCCgoIc2V0dGluZ3NCCgoIX2VuYWJsZWRCBgoEX2ppdEIOCgxfcmVxdWlyZV9tZmFCEQoPX2RlZmF1bHRfdGVuYW50QhEKD190b2tlbl9tYXhfZGF5cyI1CgtQYW1TZXR0aW5ncxImCg5hbGxvd2VkX2dyb3VwcxgBIAMoCVIOYWxsb3dlZF9ncm91cHMi/AEKDE9pZGNTZXR0aW5ncxIOCgZpc3N1ZXIYASABKAkSHAoJY2xpZW50X2lkGAIgASgJUgljbGllbnRfaWQSDgoGc2NvcGVzGAMgAygJEiIKDGdyb3Vwc19jbGFpbRgEIAEoCVIMZ3JvdXBzX2NsYWltEigKD2FsbG93ZWRfZG9tYWlucxgFIAMoCVIPYWxsb3dlZF9kb21haW5zEicKDHJlZGlyZWN0X3VyaRgGIAEoCUgAUgxyZWRpcmVjdF91cmmIAQESJgoObWZhX2Fjcl92YWx1ZXMYByADKAlSDm1mYV9hY3JfdmFsdWVzQg8KDV9yZWRpcmVjdF91cmkicwoMU2VjcmV0U3RhdHVzEg0KBWZpZWxkGAEgASgJEhAKA3NldBgCIAEoCEgAiAEBEjoKCnVwZGF0ZWRfYXQYAyABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wUgp1cGRhdGVkX2F0QgYKBF9zZXQiFwoVTGlzdENvbm5lY3RvcnNSZXF1ZXN0IkwKFkxpc3RDb25uZWN0b3JzUmVzcG9uc2USMgoKY29ubmVjdG9ycxgBIAMoCzIeLmdsaWRleC5kaXJlY3RvcnkudjEuQ29ubmVjdG9yIiEKE0dldENvbm5lY3RvclJlcXVlc3QSCgoCaWQYASABKAkiSQoUR2V0Q29ubmVjdG9yUmVzcG9uc2USMQoJY29ubmVjdG9yGAEgASgLMh4uZ2xpZGV4LmRpcmVjdG9yeS52MS5Db25uZWN0b3IiSwoWQ3JlYXRlQ29ubmVjdG9yUmVxdWVzdBIxCgljb25uZWN0b3IYASABKAsyHi5nbGlkZXguZGlyZWN0b3J5LnYxLkNvbm5lY3RvciJMChdDcmVhdGVDb25uZWN0b3JSZXNwb25zZRIxCgljb25uZWN0b3IYASABKAsyHi5nbGlkZXguZGlyZWN0b3J5LnYxLkNvbm5lY3RvciKVAQoWVXBkYXRlQ29ubmVjdG9yUmVxdWVzdBIKCgJpZBgBIAEoCRIxCgljb25uZWN0b3IYAiABKAsyHi5nbGlkZXguZGlyZWN0b3J5LnYxLkNvbm5lY3RvchI8Cgt1cGRhdGVfbWFzaxgDIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5GaWVsZE1hc2tSC3VwZGF0ZV9tYXNrIkwKF1VwZGF0ZUNvbm5lY3RvclJlc3BvbnNlEjEKCWNvbm5lY3RvchgBIAEoCzIeLmdsaWRleC5kaXJlY3RvcnkudjEuQ29ubmVjdG9yIiQKFkRlbGV0ZUNvbm5lY3RvclJlcXVlc3QSCgoCaWQYASABKAkiGQoXRGVsZXRlQ29ubmVjdG9yUmVzcG9uc2UiQgoQU2V0U2VjcmV0UmVxdWVzdBIKCgJpZBgBIAEoCRINCgVmaWVsZBgCIAEoCRITCgV2YWx1ZRgDIAEoCUIE0OkYASJGChFTZXRTZWNyZXRSZXNwb25zZRIxCgljb25uZWN0b3IYASABKAsyHi5nbGlkZXguZGlyZWN0b3J5LnYxLkNvbm5lY3RvciIiChRUZXN0Q29ubmVjdG9yUmVxdWVzdBIKCgJpZBgBIAEoCSJFChVUZXN0Q29ubmVjdG9yUmVzcG9uc2USLAoFc3RlcHMYASADKAsyHS5nbGlkZXguZGlyZWN0b3J5LnYxLlRlc3RTdGVwIkEKCFRlc3RTdGVwEgwKBG5hbWUYASABKAkSDwoCb2sYAiABKAhIAIgBARIPCgdtZXNzYWdlGAMgASgJQgUKA19vazLQCAoQQ29ubmVjdG9yU2VydmljZRKSAQoOTGlzdENvbm5lY3RvcnMSKi5nbGlkZXguZGlyZWN0b3J5LnYxLkxpc3RDb25uZWN0b3JzUmVxdWVzdBorLmdsaWRleC5kaXJlY3RvcnkudjEuTGlzdENvbm5lY3RvcnNSZXNwb25zZSInyukYIwoObGlzdENvbm5lY3RvcnMQARoPR0VUIC9jb25uZWN0b3JzEpABCgxHZXRDb25uZWN0b3ISKC5nbGlkZXguZGlyZWN0b3J5LnYxLkdldENvbm5lY3RvclJlcXVlc3QaKS5nbGlkZXguZGlyZWN0b3J5LnYxLkdldENvbm5lY3RvclJlc3BvbnNlIivK6RgnCg1yZWFkQ29ubmVjdG9yEAEaFEdFVCAvY29ubmVjdG9ycy97aWR9EpcBCg9DcmVhdGVDb25uZWN0b3ISKy5nbGlkZXguZGlyZWN0b3J5LnYxLkNyZWF0ZUNvbm5lY3RvclJlcXVlc3QaLC5nbGlkZXguZGlyZWN0b3J5LnYxLkNyZWF0ZUNvbm5lY3RvclJlc3BvbnNlIinK6RglCg9jcmVhdGVDb25uZWN0b3IQAhoQUE9TVCAvY29ubmVjdG9ycxKdAQoPVXBkYXRlQ29ubmVjdG9yEisuZ2xpZGV4LmRpcmVjdG9yeS52MS5VcGRhdGVDb25uZWN0b3JSZXF1ZXN0GiwuZ2xpZGV4LmRpcmVjdG9yeS52MS5VcGRhdGVDb25uZWN0b3JSZXNwb25zZSIvyukYKwoPdXBkYXRlQ29ubmVjdG9yEAIaFlBBVENIIC9jb25uZWN0b3JzL3tpZH0SngEKD0RlbGV0ZUNvbm5lY3RvchIrLmdsaWRleC5kaXJlY3RvcnkudjEuRGVsZXRlQ29ubmVjdG9yUmVxdWVzdBosLmdsaWRleC5kaXJlY3RvcnkudjEuRGVsZXRlQ29ubmVjdG9yUmVzcG9uc2UiMMrpGCwKD2RlbGV0ZUNvbm5lY3RvchACGhdERUxFVEUgL2Nvbm5lY3RvcnMve2lkfRKcAQoJU2V0U2VjcmV0EiUuZ2xpZGV4LmRpcmVjdG9yeS52MS5TZXRTZWNyZXRSZXF1ZXN0GiYuZ2xpZGV4LmRpcmVjdG9yeS52MS5TZXRTZWNyZXRSZXNwb25zZSJAyukYPAoSc2V0Q29ubmVjdG9yU2VjcmV0EAIaJFBVVCAvY29ubmVjdG9ycy97aWR9L3NlY3JldHMve2ZpZWxkfRKZAQoNVGVzdENvbm5lY3RvchIpLmdsaWRleC5kaXJlY3RvcnkudjEuVGVzdENvbm5lY3RvclJlcXVlc3QaKi5nbGlkZXguZGlyZWN0b3J5LnYxLlRlc3RDb25uZWN0b3JSZXNwb25zZSIxyukYLQoNdGVzdENvbm5lY3RvchABGhpQT1NUIC9jb25uZWN0b3JzL3tpZH0vdGVzdGIGcHJvdG8z", [file_glidex_api_v1_options, file_google_protobuf_field_mask, file_google_protobuf_timestamp]);
+  fileDesc("CiRnbGlkZXgvZGlyZWN0b3J5L3YxL2Nvbm5lY3RvcnMucHJvdG8SE2dsaWRleC5kaXJlY3RvcnkudjEi8gYKCUNvbm5lY3RvchIKCgJpZBgBIAEoCRIiCgxkaXJlY3RvcnlfaWQYAiABKAlSDGRpcmVjdG9yeV9pZBIMCgRraW5kGAMgASgJEiIKDGRpc3BsYXlfbmFtZRgEIAEoCVIMZGlzcGxheV9uYW1lEhQKB2VuYWJsZWQYBSABKAhIAYgBARIQCgNqaXQYBiABKAhIAogBARIoCg9yZXF1aXJlZF9ncm91cHMYByADKAlSD3JlcXVpcmVkX2dyb3VwcxIlCgtyZXF1aXJlX21mYRgIIAEoCEgDUgtyZXF1aXJlX21mYYgBARJQCgtncm91cF90ZWFtcxgJIAMoCzIuLmdsaWRleC5kaXJlY3RvcnkudjEuQ29ubmVjdG9yLkdyb3VwVGVhbXNFbnRyeVILZ3JvdXBfdGVhbXMSKwoOZGVmYXVsdF90ZW5hbnQYCiABKAlIBFIOZGVmYXVsdF90ZW5hbnSIAQESKwoOdG9rZW5fbWF4X2RheXMYCyABKA1IBVIOdG9rZW5fbWF4X2RheXOIAQESLwoDcGFtGAwgASgLMiAuZ2xpZGV4LmRpcmVjdG9yeS52MS5QYW1TZXR0aW5nc0gAEjEKBG9pZGMYDSABKAsyIS5nbGlkZXguZGlyZWN0b3J5LnYxLk9pZGNTZXR0aW5nc0gAEjUKBmdvb2dsZRgSIAEoCzIjLmdsaWRleC5kaXJlY3RvcnkudjEuR29vZ2xlU2V0dGluZ3NIABIyCgdzZWNyZXRzGA4gAygLMiEuZ2xpZGV4LmRpcmVjdG9yeS52MS5TZWNyZXRTdGF0dXMSDgoGc291cmNlGA8gASgJEjoKCmNyZWF0ZWRfYXQYECABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wUgpjcmVhdGVkX2F0EjoKCnVwZGF0ZWRfYXQYESABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wUgp1cGRhdGVkX2F0GjEKD0dyb3VwVGVhbXNFbnRyeRILCgNrZXkYASABKAkSDQoFdmFsdWUYAiABKAk6AjgBQgoKCHNldHRpbmdzQgoKCF9lbmFibGVkQgYKBF9qaXRCDgoMX3JlcXVpcmVfbWZhQhEKD19kZWZhdWx0X3RlbmFudEIRCg9fdG9rZW5fbWF4X2RheXMiNQoLUGFtU2V0dGluZ3MSJgoOYWxsb3dlZF9ncm91cHMYASADKAlSDmFsbG93ZWRfZ3JvdXBzIvwBCgxPaWRjU2V0dGluZ3MSDgoGaXNzdWVyGAEgASgJEhwKCWNsaWVudF9pZBgCIAEoCVIJY2xpZW50X2lkEg4KBnNjb3BlcxgDIAMoCRIiCgxncm91cHNfY2xhaW0YBCABKAlSDGdyb3Vwc19jbGFpbRIoCg9hbGxvd2VkX2RvbWFpbnMYBSADKAlSD2FsbG93ZWRfZG9tYWlucxInCgxyZWRpcmVjdF91cmkYBiABKAlIAFIMcmVkaXJlY3RfdXJpiAEBEiYKDm1mYV9hY3JfdmFsdWVzGAcgAygJUg5tZmFfYWNyX3ZhbHVlc0IPCg1fcmVkaXJlY3RfdXJpIu8CCg5Hb29nbGVTZXR0aW5ncxI1CghhY2NvdW50cxgBIAEoDjIjLmdsaWRleC5kaXJlY3RvcnkudjEuR29vZ2xlQWNjb3VudHMSHAoJY2xpZW50X2lkGAIgASgJUgljbGllbnRfaWQSDwoHZG9tYWlucxgDIAMoCRImCg5hbGxvd2VkX2VtYWlscxgEIAMoCVIOYWxsb3dlZF9lbWFpbHMSLwoQZGV2aWNlX2NsaWVudF9pZBgFIAEoCUgAUhBkZXZpY2VfY2xpZW50X2lkiAEBEiEKCXRydXN0XzJzdhgGIAEoCEgBUgl0cnVzdF8yc3aIAQESJwoMcmVkaXJlY3RfdXJpGAcgASgJSAJSDHJlZGlyZWN0X3VyaYgBARITCgZpc3N1ZXIYCCABKAlIA4gBAUITChFfZGV2aWNlX2NsaWVudF9pZEIMCgpfdHJ1c3RfMnN2Qg8KDV9yZWRpcmVjdF91cmlCCQoHX2lzc3VlciJzCgxTZWNyZXRTdGF0dXMSDQoFZmllbGQYASABKAkSEAoDc2V0GAIgASgISACIAQESOgoKdXBkYXRlZF9hdBgDIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXBSCnVwZGF0ZWRfYXRCBgoEX3NldCIXChVMaXN0Q29ubmVjdG9yc1JlcXVlc3QiTAoWTGlzdENvbm5lY3RvcnNSZXNwb25zZRIyCgpjb25uZWN0b3JzGAEgAygLMh4uZ2xpZGV4LmRpcmVjdG9yeS52MS5Db25uZWN0b3IiIQoTR2V0Q29ubmVjdG9yUmVxdWVzdBIKCgJpZBgBIAEoCSJJChRHZXRDb25uZWN0b3JSZXNwb25zZRIxCgljb25uZWN0b3IYASABKAsyHi5nbGlkZXguZGlyZWN0b3J5LnYxLkNvbm5lY3RvciJLChZDcmVhdGVDb25uZWN0b3JSZXF1ZXN0EjEKCWNvbm5lY3RvchgBIAEoCzIeLmdsaWRleC5kaXJlY3RvcnkudjEuQ29ubmVjdG9yIkwKF0NyZWF0ZUNvbm5lY3RvclJlc3BvbnNlEjEKCWNvbm5lY3RvchgBIAEoCzIeLmdsaWRleC5kaXJlY3RvcnkudjEuQ29ubmVjdG9yIpUBChZVcGRhdGVDb25uZWN0b3JSZXF1ZXN0EgoKAmlkGAEgASgJEjEKCWNvbm5lY3RvchgCIAEoCzIeLmdsaWRleC5kaXJlY3RvcnkudjEuQ29ubmVjdG9yEjwKC3VwZGF0ZV9tYXNrGAMgASgLMhouZ29vZ2xlLnByb3RvYnVmLkZpZWxkTWFza1ILdXBkYXRlX21hc2siTAoXVXBkYXRlQ29ubmVjdG9yUmVzcG9uc2USMQoJY29ubmVjdG9yGAEgASgLMh4uZ2xpZGV4LmRpcmVjdG9yeS52MS5Db25uZWN0b3IiJAoWRGVsZXRlQ29ubmVjdG9yUmVxdWVzdBIKCgJpZBgBIAEoCSIZChdEZWxldGVDb25uZWN0b3JSZXNwb25zZSJCChBTZXRTZWNyZXRSZXF1ZXN0EgoKAmlkGAEgASgJEg0KBWZpZWxkGAIgASgJEhMKBXZhbHVlGAMgASgJQgTQ6RgBIkYKEVNldFNlY3JldFJlc3BvbnNlEjEKCWNvbm5lY3RvchgBIAEoCzIeLmdsaWRleC5kaXJlY3RvcnkudjEuQ29ubmVjdG9yIiIKFFRlc3RDb25uZWN0b3JSZXF1ZXN0EgoKAmlkGAEgASgJIkUKFVRlc3RDb25uZWN0b3JSZXNwb25zZRIsCgVzdGVwcxgBIAMoCzIdLmdsaWRleC5kaXJlY3RvcnkudjEuVGVzdFN0ZXAiQQoIVGVzdFN0ZXASDAoEbmFtZRgBIAEoCRIPCgJvaxgCIAEoCEgAiAEBEg8KB21lc3NhZ2UYAyABKAlCBQoDX29rKmkKDkdvb2dsZUFjY291bnRzEh8KG0dPT0dMRV9BQ0NPVU5UU19VTlNQRUNJRklFRBAAEh0KGUdPT0dMRV9BQ0NPVU5UU19XT1JLU1BBQ0UQARIXChNHT09HTEVfQUNDT1VOVFNfQU5ZEAIy0AgKEENvbm5lY3RvclNlcnZpY2USkgEKDkxpc3RDb25uZWN0b3JzEiouZ2xpZGV4LmRpcmVjdG9yeS52MS5MaXN0Q29ubmVjdG9yc1JlcXVlc3QaKy5nbGlkZXguZGlyZWN0b3J5LnYxLkxpc3RDb25uZWN0b3JzUmVzcG9uc2UiJ8rpGCMKDmxpc3RDb25uZWN0b3JzEAEaD0dFVCAvY29ubmVjdG9ycxKQAQoMR2V0Q29ubmVjdG9yEiguZ2xpZGV4LmRpcmVjdG9yeS52MS5HZXRDb25uZWN0b3JSZXF1ZXN0GikuZ2xpZGV4LmRpcmVjdG9yeS52MS5HZXRDb25uZWN0b3JSZXNwb25zZSIryukYJwoNcmVhZENvbm5lY3RvchABGhRHRVQgL2Nvbm5lY3RvcnMve2lkfRKXAQoPQ3JlYXRlQ29ubmVjdG9yEisuZ2xpZGV4LmRpcmVjdG9yeS52MS5DcmVhdGVDb25uZWN0b3JSZXF1ZXN0GiwuZ2xpZGV4LmRpcmVjdG9yeS52MS5DcmVhdGVDb25uZWN0b3JSZXNwb25zZSIpyukYJQoPY3JlYXRlQ29ubmVjdG9yEAIaEFBPU1QgL2Nvbm5lY3RvcnMSnQEKD1VwZGF0ZUNvbm5lY3RvchIrLmdsaWRleC5kaXJlY3RvcnkudjEuVXBkYXRlQ29ubmVjdG9yUmVxdWVzdBosLmdsaWRleC5kaXJlY3RvcnkudjEuVXBkYXRlQ29ubmVjdG9yUmVzcG9uc2UiL8rpGCsKD3VwZGF0ZUNvbm5lY3RvchACGhZQQVRDSCAvY29ubmVjdG9ycy97aWR9Ep4BCg9EZWxldGVDb25uZWN0b3ISKy5nbGlkZXguZGlyZWN0b3J5LnYxLkRlbGV0ZUNvbm5lY3RvclJlcXVlc3QaLC5nbGlkZXguZGlyZWN0b3J5LnYxLkRlbGV0ZUNvbm5lY3RvclJlc3BvbnNlIjDK6RgsCg9kZWxldGVDb25uZWN0b3IQAhoXREVMRVRFIC9jb25uZWN0b3JzL3tpZH0SnAEKCVNldFNlY3JldBIlLmdsaWRleC5kaXJlY3RvcnkudjEuU2V0U2VjcmV0UmVxdWVzdBomLmdsaWRleC5kaXJlY3RvcnkudjEuU2V0U2VjcmV0UmVzcG9uc2UiQMrpGDwKEnNldENvbm5lY3RvclNlY3JldBACGiRQVVQgL2Nvbm5lY3RvcnMve2lkfS9zZWNyZXRzL3tmaWVsZH0SmQEKDVRlc3RDb25uZWN0b3ISKS5nbGlkZXguZGlyZWN0b3J5LnYxLlRlc3RDb25uZWN0b3JSZXF1ZXN0GiouZ2xpZGV4LmRpcmVjdG9yeS52MS5UZXN0Q29ubmVjdG9yUmVzcG9uc2UiMcrpGC0KDXRlc3RDb25uZWN0b3IQARoaUE9TVCAvY29ubmVjdG9ycy97aWR9L3Rlc3RiBnByb3RvMw", [file_glidex_api_v1_options, file_google_protobuf_field_mask, file_google_protobuf_timestamp]);
 
 /**
  * @generated from message glidex.directory.v1.Connector
@@ -36,7 +36,7 @@ export type Connector = Message<"glidex.directory.v1.Connector"> & {
   directoryId: string;
 
   /**
-   * `pam` or `oidc`: which settings it has. Output only.
+   * `pam`, `oidc` or `google`: which settings it has. Output only.
    *
    * @generated from field: string kind = 3;
    */
@@ -105,6 +105,14 @@ export type Connector = Message<"glidex.directory.v1.Connector"> & {
      */
     value: OidcSettings;
     case: "oidc";
+  } | {
+    /**
+     * The `google` preset (spec/tenancy.md D39, §5.1).
+     *
+     * @generated from field: glidex.directory.v1.GoogleSettings google = 18;
+     */
+    value: GoogleSettings;
+    case: "google";
   } | { case: undefined; value?: undefined };
 
   /**
@@ -150,7 +158,7 @@ export type ConnectorJson = {
   directory_id?: string;
 
   /**
-   * `pam` or `oidc`: which settings it has. Output only.
+   * `pam`, `oidc` or `google`: which settings it has. Output only.
    *
    * @generated from field: string kind = 3;
    */
@@ -213,6 +221,13 @@ export type ConnectorJson = {
    * @generated from field: glidex.directory.v1.OidcSettings oidc = 13;
    */
   oidc?: OidcSettingsJson;
+
+  /**
+   * The `google` preset (spec/tenancy.md D39, §5.1).
+   *
+   * @generated from field: glidex.directory.v1.GoogleSettings google = 18;
+   */
+  google?: GoogleSettingsJson;
 
   /**
    * Which secrets are set; never their values. Output only.
@@ -361,6 +376,135 @@ export const OidcSettingsSchema: GenMessage<OidcSettings, {jsonType: OidcSetting
   messageDesc(file_glidex_directory_v1_connectors, 2);
 
 /**
+ * Secrets: `client_secret`, and `device_client_secret` for the device client.
+ *
+ * @generated from message glidex.directory.v1.GoogleSettings
+ */
+export type GoogleSettings = Message<"glidex.directory.v1.GoogleSettings"> & {
+  /**
+   * @generated from field: glidex.directory.v1.GoogleAccounts accounts = 1;
+   */
+  accounts: GoogleAccounts;
+
+  /**
+   * The web application client.
+   *
+   * @generated from field: string client_id = 2 [json_name = "client_id"];
+   */
+  clientId: string;
+
+  /**
+   * Workspace domains (`hd`); required for Workspace. Never a public mail
+   * domain.
+   *
+   * @generated from field: repeated string domains = 3;
+   */
+  domains: string[];
+
+  /**
+   * With `jit`, only these verified addresses get a new account.
+   *
+   * @generated from field: repeated string allowed_emails = 4 [json_name = "allowed_emails"];
+   */
+  allowedEmails: string[];
+
+  /**
+   * The "TVs and Limited Input devices" client for gxctl's device grant.
+   *
+   * @generated from field: optional string device_client_id = 5 [json_name = "device_client_id"];
+   */
+  deviceClientId?: string | undefined;
+
+  /**
+   * The Workspace domain enforces 2-step verification: its logins count
+   * as multi-factor.
+   *
+   * @generated from field: optional bool trust_2sv = 6 [json_name = "trust_2sv"];
+   */
+  trust2sv?: boolean | undefined;
+
+  /**
+   * @generated from field: optional string redirect_uri = 7 [json_name = "redirect_uri"];
+   */
+  redirectUri?: string | undefined;
+
+  /**
+   * A local mock IdP instead of Google, for tests: a loopback URL only.
+   *
+   * @generated from field: optional string issuer = 8;
+   */
+  issuer?: string | undefined;
+};
+
+/**
+ * Secrets: `client_secret`, and `device_client_secret` for the device client.
+ *
+ * @generated from message glidex.directory.v1.GoogleSettings
+ */
+export type GoogleSettingsJson = {
+  /**
+   * @generated from field: glidex.directory.v1.GoogleAccounts accounts = 1;
+   */
+  accounts?: GoogleAccountsJson;
+
+  /**
+   * The web application client.
+   *
+   * @generated from field: string client_id = 2 [json_name = "client_id"];
+   */
+  client_id?: string;
+
+  /**
+   * Workspace domains (`hd`); required for Workspace. Never a public mail
+   * domain.
+   *
+   * @generated from field: repeated string domains = 3;
+   */
+  domains?: string[];
+
+  /**
+   * With `jit`, only these verified addresses get a new account.
+   *
+   * @generated from field: repeated string allowed_emails = 4 [json_name = "allowed_emails"];
+   */
+  allowed_emails?: string[];
+
+  /**
+   * The "TVs and Limited Input devices" client for gxctl's device grant.
+   *
+   * @generated from field: optional string device_client_id = 5 [json_name = "device_client_id"];
+   */
+  device_client_id?: string;
+
+  /**
+   * The Workspace domain enforces 2-step verification: its logins count
+   * as multi-factor.
+   *
+   * @generated from field: optional bool trust_2sv = 6 [json_name = "trust_2sv"];
+   */
+  trust_2sv?: boolean;
+
+  /**
+   * @generated from field: optional string redirect_uri = 7 [json_name = "redirect_uri"];
+   */
+  redirect_uri?: string;
+
+  /**
+   * A local mock IdP instead of Google, for tests: a loopback URL only.
+   *
+   * @generated from field: optional string issuer = 8;
+   */
+  issuer?: string;
+};
+
+/**
+ * Describes the message glidex.directory.v1.GoogleSettings.
+ * Use `create(GoogleSettingsSchema)` to create a new message.
+ */
+export const GoogleSettingsSchema: GenMessage<GoogleSettings, {jsonType: GoogleSettingsJson}> = /*@__PURE__*/
+  messageDesc(file_glidex_directory_v1_connectors, 3);
+
+/**
  * @generated from message glidex.directory.v1.SecretStatus
  */
 export type SecretStatus = Message<"glidex.directory.v1.SecretStatus"> & {
@@ -405,7 +549,7 @@ export type SecretStatusJson = {
  * Use `create(SecretStatusSchema)` to create a new message.
  */
 export const SecretStatusSchema: GenMessage<SecretStatus, {jsonType: SecretStatusJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_directory_v1_connectors, 3);
+  messageDesc(file_glidex_directory_v1_connectors, 4);
 
 /**
  * @generated from message glidex.directory.v1.ListConnectorsRequest
@@ -424,7 +568,7 @@ export type ListConnectorsRequestJson = {
  * Use `create(ListConnectorsRequestSchema)` to create a new message.
  */
 export const ListConnectorsRequestSchema: GenMessage<ListConnectorsRequest, {jsonType: ListConnectorsRequestJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_directory_v1_connectors, 4);
+  messageDesc(file_glidex_directory_v1_connectors, 5);
 
 /**
  * @generated from message glidex.directory.v1.ListConnectorsResponse
@@ -451,7 +595,7 @@ export type ListConnectorsResponseJson = {
  * Use `create(ListConnectorsResponseSchema)` to create a new message.
  */
 export const ListConnectorsResponseSchema: GenMessage<ListConnectorsResponse, {jsonType: ListConnectorsResponseJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_directory_v1_connectors, 5);
+  messageDesc(file_glidex_directory_v1_connectors, 6);
 
 /**
  * @generated from message glidex.directory.v1.GetConnectorRequest
@@ -478,7 +622,7 @@ export type GetConnectorRequestJson = {
  * Use `create(GetConnectorRequestSchema)` to create a new message.
  */
 export const GetConnectorRequestSchema: GenMessage<GetConnectorRequest, {jsonType: GetConnectorRequestJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_directory_v1_connectors, 6);
+  messageDesc(file_glidex_directory_v1_connectors, 7);
 
 /**
  * @generated from message glidex.directory.v1.GetConnectorResponse
@@ -505,7 +649,7 @@ export type GetConnectorResponseJson = {
  * Use `create(GetConnectorResponseSchema)` to create a new message.
  */
 export const GetConnectorResponseSchema: GenMessage<GetConnectorResponse, {jsonType: GetConnectorResponseJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_directory_v1_connectors, 7);
+  messageDesc(file_glidex_directory_v1_connectors, 8);
 
 /**
  * @generated from message glidex.directory.v1.CreateConnectorRequest
@@ -532,7 +676,7 @@ export type CreateConnectorRequestJson = {
  * Use `create(CreateConnectorRequestSchema)` to create a new message.
  */
 export const CreateConnectorRequestSchema: GenMessage<CreateConnectorRequest, {jsonType: CreateConnectorRequestJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_directory_v1_connectors, 8);
+  messageDesc(file_glidex_directory_v1_connectors, 9);
 
 /**
  * @generated from message glidex.directory.v1.CreateConnectorResponse
@@ -559,7 +703,7 @@ export type CreateConnectorResponseJson = {
  * Use `create(CreateConnectorResponseSchema)` to create a new message.
  */
 export const CreateConnectorResponseSchema: GenMessage<CreateConnectorResponse, {jsonType: CreateConnectorResponseJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_directory_v1_connectors, 9);
+  messageDesc(file_glidex_directory_v1_connectors, 10);
 
 /**
  * @generated from message glidex.directory.v1.UpdateConnectorRequest
@@ -614,7 +758,7 @@ export type UpdateConnectorRequestJson = {
  * Use `create(UpdateConnectorRequestSchema)` to create a new message.
  */
 export const UpdateConnectorRequestSchema: GenMessage<UpdateConnectorRequest, {jsonType: UpdateConnectorRequestJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_directory_v1_connectors, 10);
+  messageDesc(file_glidex_directory_v1_connectors, 11);
 
 /**
  * @generated from message glidex.directory.v1.UpdateConnectorResponse
@@ -641,7 +785,7 @@ export type UpdateConnectorResponseJson = {
  * Use `create(UpdateConnectorResponseSchema)` to create a new message.
  */
 export const UpdateConnectorResponseSchema: GenMessage<UpdateConnectorResponse, {jsonType: UpdateConnectorResponseJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_directory_v1_connectors, 11);
+  messageDesc(file_glidex_directory_v1_connectors, 12);
 
 /**
  * @generated from message glidex.directory.v1.DeleteConnectorRequest
@@ -668,7 +812,7 @@ export type DeleteConnectorRequestJson = {
  * Use `create(DeleteConnectorRequestSchema)` to create a new message.
  */
 export const DeleteConnectorRequestSchema: GenMessage<DeleteConnectorRequest, {jsonType: DeleteConnectorRequestJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_directory_v1_connectors, 12);
+  messageDesc(file_glidex_directory_v1_connectors, 13);
 
 /**
  * @generated from message glidex.directory.v1.DeleteConnectorResponse
@@ -687,7 +831,7 @@ export type DeleteConnectorResponseJson = {
  * Use `create(DeleteConnectorResponseSchema)` to create a new message.
  */
 export const DeleteConnectorResponseSchema: GenMessage<DeleteConnectorResponse, {jsonType: DeleteConnectorResponseJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_directory_v1_connectors, 13);
+  messageDesc(file_glidex_directory_v1_connectors, 14);
 
 /**
  * @generated from message glidex.directory.v1.SetSecretRequest
@@ -734,7 +878,7 @@ export type SetSecretRequestJson = {
  * Use `create(SetSecretRequestSchema)` to create a new message.
  */
 export const SetSecretRequestSchema: GenMessage<SetSecretRequest, {jsonType: SetSecretRequestJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_directory_v1_connectors, 14);
+  messageDesc(file_glidex_directory_v1_connectors, 15);
 
 /**
  * @generated from message glidex.directory.v1.SetSecretResponse
@@ -761,7 +905,7 @@ export type SetSecretResponseJson = {
  * Use `create(SetSecretResponseSchema)` to create a new message.
  */
 export const SetSecretResponseSchema: GenMessage<SetSecretResponse, {jsonType: SetSecretResponseJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_directory_v1_connectors, 15);
+  messageDesc(file_glidex_directory_v1_connectors, 16);
 
 /**
  * @generated from message glidex.directory.v1.TestConnectorRequest
@@ -788,7 +932,7 @@ export type TestConnectorRequestJson = {
  * Use `create(TestConnectorRequestSchema)` to create a new message.
  */
 export const TestConnectorRequestSchema: GenMessage<TestConnectorRequest, {jsonType: TestConnectorRequestJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_directory_v1_connectors, 16);
+  messageDesc(file_glidex_directory_v1_connectors, 17);
 
 /**
  * @generated from message glidex.directory.v1.TestConnectorResponse
@@ -815,7 +959,7 @@ export type TestConnectorResponseJson = {
  * Use `create(TestConnectorResponseSchema)` to create a new message.
  */
 export const TestConnectorResponseSchema: GenMessage<TestConnectorResponse, {jsonType: TestConnectorResponseJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_directory_v1_connectors, 17);
+  messageDesc(file_glidex_directory_v1_connectors, 18);
 
 /**
  * @generated from message glidex.directory.v1.TestStep
@@ -862,7 +1006,49 @@ export type TestStepJson = {
  * Use `create(TestStepSchema)` to create a new message.
  */
 export const TestStepSchema: GenMessage<TestStep, {jsonType: TestStepJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_directory_v1_connectors, 18);
+  messageDesc(file_glidex_directory_v1_connectors, 19);
+
+/**
+ * Which Google accounts a `google` connector serves (spec/tenancy.md D39).
+ *
+ * @generated from enum glidex.directory.v1.GoogleAccounts
+ */
+export enum GoogleAccounts {
+  /**
+   * Workspace.
+   *
+   * @generated from enum value: GOOGLE_ACCOUNTS_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * Accounts of the Workspace domains in `domains`, by the token's `hd`.
+   *
+   * @generated from enum value: GOOGLE_ACCOUNTS_WORKSPACE = 1;
+   */
+  WORKSPACE = 1,
+
+  /**
+   * Any Google account, consumer ones included: only for people the
+   * directory knows (an invitation, `allowed_emails`, or `jit` off).
+   *
+   * @generated from enum value: GOOGLE_ACCOUNTS_ANY = 2;
+   */
+  ANY = 2,
+}
+
+/**
+ * Which Google accounts a `google` connector serves (spec/tenancy.md D39).
+ *
+ * @generated from enum glidex.directory.v1.GoogleAccounts
+ */
+export type GoogleAccountsJson = "GOOGLE_ACCOUNTS_UNSPECIFIED" | "GOOGLE_ACCOUNTS_WORKSPACE" | "GOOGLE_ACCOUNTS_ANY";
+
+/**
+ * Describes the enum glidex.directory.v1.GoogleAccounts.
+ */
+export const GoogleAccountsSchema: GenEnum<GoogleAccounts, GoogleAccountsJson> = /*@__PURE__*/
+  enumDesc(file_glidex_directory_v1_connectors, 0);
 
 /**
  * @generated from service glidex.directory.v1.ConnectorService

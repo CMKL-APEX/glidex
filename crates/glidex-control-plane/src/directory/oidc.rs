@@ -91,8 +91,11 @@ pub struct OidcIdentity {
     pub display_name: String,
     pub email: Option<String>,
     pub groups: Vec<String>,
-    /// `amr` says `mfa`, or `acr` is one of the connector's MFA values.
+    /// `amr` says `mfa`, or `acr` is one of the connector's MFA values;
+    /// a preset may decide instead (Google: `trust_2sv`).
     pub mfa: bool,
+    /// The token's `email_verified`.
+    pub email_verified: bool,
 }
 
 /// Where a connector's client secret comes from.
@@ -130,6 +133,8 @@ fn default_interval() -> u64 {
 
 pub struct OidcState {
     cfg: OidcConfig,
+    /// What its preset adds (spec/tenancy.md §5.1).
+    preset: super::presets::Preset,
     secret: ClientSecret,
     mfa_acr: Vec<String>,
     /// Default callback path on the UI origin.
@@ -183,6 +188,7 @@ impl OidcState {
     ) -> Self {
         Self {
             cfg: cfg.clone(),
+            preset: Default::default(),
             secret,
             mfa_acr,
             callback_path: callback_path.to_string(),
@@ -196,6 +202,12 @@ impl OidcState {
             pending: Mutex::new(HashMap::new()),
             devices: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// With a preset's issuer spellings, request parameters and checks.
+    pub fn with_preset(mut self, preset: super::presets::Preset) -> Self {
+        self.preset = preset;
+        self
     }
 
     pub fn enabled(&self) -> bool {
@@ -329,6 +341,9 @@ impl OidcState {
             if reauth {
                 q.append_pair("prompt", "login").append_pair("max_age", "0");
             }
+            for (k, v) in &self.preset.auth_params {
+                q.append_pair(k, v);
+            }
         }
         Ok(Start {
             redirect: url.to_string(),
@@ -444,7 +459,9 @@ impl OidcState {
         let key =
             DecodingKey::from_jwk(&jwk).map_err(|e| OidcError::Invalid(format!("jwk: {}", e)))?;
         let mut v = Validation::new(header.alg);
-        v.set_issuer(&[d.issuer.as_str()]);
+        let mut issuers = vec![d.issuer.as_str()];
+        issuers.extend(self.preset.issuer_aliases.iter().map(String::as_str));
+        v.set_issuer(&issuers);
         v.set_audience(&[self.cfg.client_id.as_str()]);
         v.leeway = SKEW_SECS;
         v.set_required_spec_claims(&["exp", "iss", "aud", "sub"]);
@@ -505,19 +522,31 @@ impl OidcState {
             .or(c.preferred_username.clone())
             .or(c.email.clone())
             .unwrap_or_else(|| c.sub.clone());
+        // The preset's checks, and its word on MFA where it has one.
+        let preset_mfa = self
+            .preset
+            .rule
+            .check(&c.rest)
+            .map_err(OidcError::NotAllowed)?;
         let amr_mfa = matches!(c.rest.get("amr"), Some(serde_json::Value::Array(a)) if a.iter().any(|m| m.as_str() == Some("mfa")));
         let acr_mfa = c
             .rest
             .get("acr")
             .and_then(|a| a.as_str())
             .is_some_and(|a| self.mfa_acr.iter().any(|m| m == a));
+        let email_verified = matches!(
+            c.rest.get("email_verified"),
+            Some(serde_json::Value::Bool(true))
+        ) || c.rest.get("email_verified").and_then(|v| v.as_str())
+            == Some("true");
         Ok(OidcIdentity {
             issuer: d.issuer.clone(),
             subject: c.sub,
             display_name,
             email: c.email,
             groups,
-            mfa: amr_mfa || acr_mfa,
+            mfa: preset_mfa.unwrap_or(amr_mfa || acr_mfa),
+            email_verified,
         })
     }
 

@@ -24,6 +24,7 @@ use tower::ServiceExt;
 
 const ORIGIN: &str = "https://localhost:5173";
 const SECRET: &str = "corp-client-secret-0001";
+const DEVICE_SECRET: &str = "corp-device-secret-0002";
 
 struct H {
     router: Router,
@@ -229,6 +230,62 @@ impl H {
             .await;
         assert_eq!(st, StatusCode::OK, "{v}");
         v
+    }
+
+    /// A `google` connector (spec/tenancy.md §5.1) against the mock, with
+    /// its client secret set; `google` adds to its settings, `extra` to the
+    /// connector.
+    async fn google_connector(
+        &self,
+        mock: &idp::Mock,
+        id: &str,
+        google: Value,
+        extra: Value,
+    ) -> (StatusCode, Value) {
+        let s = self.session(&self.admin(&format!("admin-{id}")));
+        let mut g = json!({"client_id": "glidex", "issuer": mock.base});
+        for (k, v) in google.as_object().unwrap() {
+            g[k] = v.clone();
+        }
+        let mut c = json!({"id": id, "display_name": "Google", "jit": true, "google": g});
+        for (k, v) in extra.as_object().unwrap() {
+            c[k] = v.clone();
+        }
+        let (st, v) = self
+            .rest("POST", "/connectors", Some(json!({ "connector": c })), &s)
+            .await;
+        if st != StatusCode::CREATED {
+            return (st, v);
+        }
+        let mut fields = vec!["client_secret"];
+        if g.get("device_client_id").is_some() {
+            fields.push("device_client_secret");
+        }
+        for f in fields {
+            let value = if f == "client_secret" {
+                SECRET
+            } else {
+                DEVICE_SECRET
+            };
+            let (st, r) = self
+                .rest(
+                    "PUT",
+                    &format!("/connectors/{id}/secrets/{f}"),
+                    Some(json!({ "value": value })),
+                    &s,
+                )
+                .await;
+            assert_eq!(st, StatusCode::OK, "{r}");
+        }
+        (st, v)
+    }
+
+    /// A browser login through `id` with `claims` (its nonce filled in).
+    async fn login_with(&self, mock: &idp::Mock, id: &str, mut claims: Value) -> StatusCode {
+        let (state, nonce, _, browser) = self.begin(id).await;
+        claims["nonce"] = json!(nonce);
+        *mock.id_token.lock().unwrap() = Some(idp::sign(claims, "k1"));
+        self.finish(id, &state, &browser).await.0
     }
 
     /// Start a browser login through connector `id`; returns (state, nonce,
@@ -1273,4 +1330,244 @@ async fn a_standalone_host_rotates_its_secrets_key() {
             .as_str(),
         SECRET
     );
+}
+
+/// A Google ID token for `email` (verified), with `hd` when given.
+fn google_claims(mock: &idp::Mock, sub: &str, email: &str, hd: Option<&str>) -> Value {
+    let mut c = json!({
+        "iss": mock.base, "aud": "glidex", "sub": sub, "exp": now() + 300, "iat": now(),
+        "email": email, "email_verified": true, "name": sub,
+    });
+    if let Some(hd) = hd {
+        c["hd"] = json!(hd);
+    }
+    c
+}
+
+#[tokio::test]
+async fn google_workspace_logins_are_allowed_by_hd_not_by_the_email() {
+    // spec/tenancy.md D39: anyone can open a consumer Google account under
+    // a company's address; only `hd` says it is the company's Workspace.
+    let mock = idp::start().await;
+    let h = harness();
+    let (st, v) = h
+        .google_connector(&mock, "gw", json!({"domains": ["example.org"]}), json!({}))
+        .await;
+    assert_eq!(st, StatusCode::CREATED, "{v}");
+    assert_eq!(v["connector"]["kind"], "google");
+    assert_eq!(
+        v["connector"]["google"]["accounts"],
+        "GOOGLE_ACCOUNTS_WORKSPACE"
+    );
+    let ok = google_claims(&mock, "g-1", "alice@example.org", Some("example.org"));
+    assert_eq!(
+        h.login_with(&mock, "gw", ok.clone()).await,
+        StatusCode::SEE_OTHER
+    );
+    let forged = google_claims(&mock, "g-2", "mallory@example.org", None);
+    assert_eq!(
+        h.login_with(&mock, "gw", forged).await,
+        StatusCode::FORBIDDEN
+    );
+    let other = google_claims(&mock, "g-3", "eve@other.org", Some("other.org"));
+    assert_eq!(
+        h.login_with(&mock, "gw", other).await,
+        StatusCode::FORBIDDEN
+    );
+    let mut unverified = ok.clone();
+    unverified["email_verified"] = json!(false);
+    assert_eq!(
+        h.login_with(&mock, "gw", unverified).await,
+        StatusCode::FORBIDDEN
+    );
+
+    // Google sends no amr: MFA is the operator's word on 2-step
+    // verification, and amr in a token counts for nothing.
+    let (st, v) = h
+        .google_connector(
+            &mock,
+            "gw-mfa",
+            json!({"domains": ["example.org"]}),
+            json!({"require_mfa": true}),
+        )
+        .await;
+    assert_eq!(st, StatusCode::CREATED, "{v}");
+    let mut with_amr = ok.clone();
+    with_amr["amr"] = json!(["mfa"]);
+    assert_eq!(
+        h.login_with(&mock, "gw-mfa", with_amr).await,
+        StatusCode::FORBIDDEN
+    );
+    let (st, v) = h
+        .google_connector(
+            &mock,
+            "gw-2sv",
+            json!({"domains": ["example.org"], "trust_2sv": true}),
+            json!({"require_mfa": true}),
+        )
+        .await;
+    assert_eq!(st, StatusCode::CREATED, "{v}");
+    assert_eq!(
+        h.login_with(&mock, "gw-2sv", ok).await,
+        StatusCode::SEE_OTHER
+    );
+
+    // No Workspace is a public mail domain.
+    let (st, v) = h
+        .google_connector(
+            &mock,
+            "gw-bad",
+            json!({"domains": ["gmail.com"]}),
+            json!({}),
+        )
+        .await;
+    assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+}
+
+#[tokio::test]
+async fn google_consumer_accounts_are_for_people_the_directory_knows() {
+    let mock = idp::start().await;
+    let h = harness();
+    // Anyone with a Google account would get in: refused.
+    let any = json!({"accounts": "GOOGLE_ACCOUNTS_ANY"});
+    let (st, v) = h
+        .google_connector(&mock, "gc", any.clone(), json!({}))
+        .await;
+    assert_eq!(
+        (st, v["error"].as_str()),
+        (StatusCode::UNPROCESSABLE_ENTITY, Some("invalid_connector")),
+        "{v}"
+    );
+    let listed = json!({"accounts": "GOOGLE_ACCOUNTS_ANY", "allowed_emails": ["Bob@gmail.com"]});
+    let (st, v) = h
+        .google_connector(&mock, "gc", listed, json!({"default_tenant": "default"}))
+        .await;
+    assert_eq!(st, StatusCode::CREATED, "{v}");
+    let bob = google_claims(&mock, "c-bob", "bob@gmail.com", None);
+    assert_eq!(
+        h.login_with(&mock, "gc", bob.clone()).await,
+        StatusCode::SEE_OTHER
+    );
+    let carol = google_claims(&mock, "c-carol", "carol@gmail.com", None);
+    assert_eq!(
+        h.login_with(&mock, "gc", carol).await,
+        StatusCode::FORBIDDEN
+    );
+    let mut unverified = google_claims(&mock, "c-bob2", "bob@gmail.com", None);
+    unverified["email_verified"] = json!(false);
+    assert_eq!(
+        h.login_with(&mock, "gc", unverified).await,
+        StatusCode::FORBIDDEN
+    );
+    // Known already: bob logs in again.
+    assert_eq!(h.login_with(&mock, "gc", bob).await, StatusCode::SEE_OTHER);
+    // Without jit, nobody new gets an account (invitations will).
+    let (st, v) = h
+        .google_connector(&mock, "gc-closed", any, json!({"jit": false}))
+        .await;
+    assert_eq!(st, StatusCode::CREATED, "{v}");
+    let dave = google_claims(&mock, "c-dave", "dave@gmail.com", None);
+    assert_eq!(
+        h.login_with(&mock, "gc-closed", dave).await,
+        StatusCode::FORBIDDEN
+    );
+
+    // D22: consumer accounts never join the owner or an operator, and a
+    // Workspace there needs the operator's word on 2-step verification.
+    let guarded = json!({"default_tenant": "admin", "jit": false});
+    let (st, v) = h
+        .google_connector(
+            &mock,
+            "gc-ops",
+            json!({"accounts": "GOOGLE_ACCOUNTS_ANY"}),
+            guarded.clone(),
+        )
+        .await;
+    assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    let (st, v) = h
+        .google_connector(
+            &mock,
+            "gw-ops",
+            json!({"domains": ["example.org"]}),
+            guarded.clone(),
+        )
+        .await;
+    assert_eq!(st, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    let (st, v) = h
+        .google_connector(
+            &mock,
+            "gw-ops",
+            json!({"domains": ["example.org"], "trust_2sv": true}),
+            guarded,
+        )
+        .await;
+    assert_eq!(st, StatusCode::CREATED, "{v}");
+    assert_eq!(v["connector"]["require_mfa"], true, "{v}");
+}
+
+#[tokio::test]
+async fn google_device_logins_use_the_device_client() {
+    // Google takes the device grant only from a TVs and Limited Input
+    // client, a client of its own.
+    let mock = idp::start().await;
+    let h = harness();
+    let (st, v) = h
+        .google_connector(&mock, "gw", json!({"domains": ["example.org"]}), json!({}))
+        .await;
+    assert_eq!(st, StatusCode::CREATED, "{v}");
+    let (st, v) = h.rest("POST", "/auth/c/gw/device", None, "").await;
+    assert_eq!(
+        (st, v["error"].as_str()),
+        (StatusCode::BAD_REQUEST, Some("device_flow_unsupported")),
+        "{v}"
+    );
+    let (st, v) = h
+        .google_connector(
+            &mock,
+            "gw-tv",
+            json!({"domains": ["example.org"], "device_client_id": "glidex-tv"}),
+            json!({}),
+        )
+        .await;
+    assert_eq!(st, StatusCode::CREATED, "{v}");
+    let (st, v) = h.rest("POST", "/auth/c/gw-tv/device", None, "").await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    let mut c = google_claims(&mock, "g-tv", "alice@example.org", Some("example.org"));
+    c["aud"] = json!("glidex-tv");
+    *mock.id_token.lock().unwrap() = Some(idp::sign(c, "k1"));
+    let poll = json!({"device_code": "dev-1"});
+    let (st, _) = h
+        .rest("POST", "/auth/c/gw-tv/device/poll", Some(poll.clone()), "")
+        .await;
+    assert_eq!(st, StatusCode::ACCEPTED);
+    let (st, v) = h
+        .rest("POST", "/auth/c/gw-tv/device/poll", Some(poll), "")
+        .await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    use base64::Engine as _;
+    let tv = base64::engine::general_purpose::STANDARD.encode(format!("glidex-tv:{DEVICE_SECRET}"));
+    assert!(
+        mock.token_requests
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|r| r.starts_with(&format!("Basic {tv} "))),
+        "every device token request used the device client"
+    );
+    // The connector test says gxctl logins work.
+    let s = h.session(&h.admin("admin-gw-tv"));
+    let (st, v) = h.rest("POST", "/connectors/gw-tv/test", None, &s).await;
+    assert_eq!(st, StatusCode::OK, "{v}");
+    let steps = v["steps"].as_array().unwrap();
+    for name in [
+        "client_secret",
+        "device_client_secret",
+        "discovery",
+        "device grant",
+    ] {
+        assert!(
+            steps.iter().any(|x| x["name"] == name && x["ok"] == true),
+            "{name}: {v}"
+        );
+    }
 }

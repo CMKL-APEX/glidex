@@ -16,6 +16,7 @@ type Settings = glidex_api::proto::glidex::directory::v1::__buffa::oneof::connec
 const USAGE: &str = "Usage: connector list | show <id> \
     | add oidc <id> --issuer URL --client-id ID [--name TEXT] [--scope S]... [--groups-claim C] [--domain D]... [--mfa-acr V]... [COMMON] \
     | add pam <id> [--name TEXT] [--allow-group G]... [COMMON] \
+    | add google <id> --client-id ID [--name TEXT] (--domain D... [--trust-2sv] | --consumer [--allow-email E]...) [--device-client-id ID] [COMMON] \
     | update <id> [--name TEXT] [--enable|--disable] [COMMON] \
     | secret set <id> [field] [--from-file PATH] | test <id> | remove <id>\n\
     COMMON: [--jit|--no-jit] [--require-group G]... [--mfa|--no-mfa] [--team GROUP=TEAM]... [--default-tenant T] [--token-max-days N]";
@@ -24,6 +25,7 @@ fn kind(c: &Connector) -> &'static str {
     match c.settings {
         Some(Settings::Pam(_)) => "pam",
         Some(Settings::Oidc(_)) => "oidc",
+        Some(Settings::Google(_)) => "google",
         None => "?",
     }
 }
@@ -65,6 +67,33 @@ fn show(c: &Connector) {
             }
             if let Some(r) = &o.redirect_uri {
                 println!("  Redirect URI:   {r}");
+            }
+        }
+        Some(Settings::Google(g)) => {
+            let consumer = g.accounts.as_known() == Some(GoogleAccounts::GOOGLE_ACCOUNTS_ANY);
+            println!(
+                "  Accounts:       {}",
+                if consumer {
+                    "any Google account (invited or listed people)"
+                } else {
+                    "Google Workspace"
+                }
+            );
+            println!("  Client id:      {}", g.client_id);
+            if !g.domains.is_empty() {
+                println!("  Workspace:      {}", g.domains.join(", "));
+            }
+            if !g.allowed_emails.is_empty() {
+                println!("  Allowed emails: {}", g.allowed_emails.join(", "));
+            }
+            println!(
+                "  Device client:  {}",
+                g.device_client_id
+                    .as_deref()
+                    .unwrap_or("none (no gxctl device login)")
+            );
+            if g.trust_2sv == Some(true) {
+                println!("  2-step:         trusted (its logins count as MFA)");
             }
         }
         Some(Settings::Pam(p)) if !p.allowed_groups.is_empty() => {
@@ -234,6 +263,27 @@ pub async fn connector(client: &ApiClient, args: &[&str]) {
                     allowed_groups: strings(args, "--allow-group"),
                     ..Default::default()
                 }))),
+                // Workspace by `hd`, or consumer accounts for invited and
+                // listed people (spec/tenancy.md D39).
+                "google" => {
+                    let Some(client_id) = flag_value(args, "--client-id") else {
+                        return usage(USAGE);
+                    };
+                    Some(Settings::Google(Box::new(GoogleSettings {
+                        accounts: if has_flag(args, "--consumer") {
+                            GoogleAccounts::GOOGLE_ACCOUNTS_ANY
+                        } else {
+                            GoogleAccounts::GOOGLE_ACCOUNTS_WORKSPACE
+                        }
+                        .into(),
+                        client_id: client_id.into(),
+                        domains: strings(args, "--domain"),
+                        allowed_emails: strings(args, "--allow-email"),
+                        device_client_id: flag_value(args, "--device-client-id").map(Into::into),
+                        trust_2sv: has_flag(args, "--trust-2sv").then_some(true),
+                        ..Default::default()
+                    })))
+                }
                 _ => return usage(USAGE),
             };
             match svc

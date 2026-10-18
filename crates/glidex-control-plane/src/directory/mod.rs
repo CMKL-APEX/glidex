@@ -2,7 +2,8 @@
 //!
 //! A connector is one IdP or user source of a directory: in T1, `pam`
 //! (the co-hosted cluster's Unix accounts through glidex-authd) and
-//! `oidc` (any OpenID Connect provider). Connectors made through the API
+//! `oidc` (any OpenID Connect provider); in T2 the OIDC presets
+//! ([`presets`]: `google`). Connectors made through the API
 //! live in the `connectors` table; `auth.pam` and `auth.oidc` in
 //! `control-plane.json` are **file-defined** connectors (`file-pam`,
 //! `file-oidc`), listed with the rest and read-only through the API.
@@ -11,7 +12,10 @@
 //! which `AuthService::external_login` turns into a user (§6).
 
 pub mod oidc;
+pub mod presets;
 pub mod secrets;
+
+pub use presets::google::GoogleSettings;
 
 use crate::config::Config;
 use crate::store::Db;
@@ -70,6 +74,8 @@ storage_from!(
 pub enum Kind {
     Pam,
     Oidc,
+    /// The `google` preset over the OIDC code (§5.1).
+    Google,
 }
 
 impl Kind {
@@ -77,13 +83,20 @@ impl Kind {
         match self {
             Kind::Pam => "pam",
             Kind::Oidc => "oidc",
+            Kind::Google => "google",
         }
+    }
+
+    /// Whether it logs in through the OIDC code.
+    pub fn is_oidc(&self) -> bool {
+        matches!(self, Kind::Oidc | Kind::Google)
     }
 
     pub fn parse(s: &str) -> Option<Kind> {
         match s {
             "pam" => Some(Kind::Pam),
             "oidc" => Some(Kind::Oidc),
+            "google" => Some(Kind::Google),
             _ => None,
         }
     }
@@ -93,6 +106,7 @@ impl Kind {
         match self {
             Kind::Pam => &[],
             Kind::Oidc => &["client_secret"],
+            Kind::Google => &["client_secret", "device_client_secret"],
         }
     }
 }
@@ -194,6 +208,71 @@ impl Connector {
             .map_err(|e| ConnectorError::Invalid(format!("oidc settings: {e}")))
     }
 
+    pub fn google(&self) -> Result<GoogleSettings, ConnectorError> {
+        serde_json::from_value(self.settings.clone())
+            .map_err(|e| ConnectorError::Invalid(format!("google settings: {e}")))
+    }
+
+    /// How an OIDC-code connector logs in: the browser's client, or with
+    /// `device` gxctl's (Google keeps a separate one for the device grant).
+    pub fn oidc_profile(&self, device: bool) -> Result<OidcProfile, ConnectorError> {
+        match self.kind {
+            Kind::Oidc => Ok(OidcProfile {
+                settings: self.oidc()?,
+                preset: presets::Preset::default(),
+                secret_field: "client_secret",
+            }),
+            Kind::Google => {
+                let g = self.google()?;
+                let client_id = if device {
+                    g.device_client_id.clone().ok_or_else(|| {
+                        ConnectorError::Invalid("this connector has no device client".into())
+                    })?
+                } else {
+                    g.client_id.clone()
+                };
+                Ok(OidcProfile {
+                    settings: OidcSettings {
+                        issuer: g.issuer().to_string(),
+                        client_id,
+                        scopes: presets::google::SCOPES.map(String::from).to_vec(),
+                        groups_claim: default_groups_claim(),
+                        allowed_domains: Vec::new(),
+                        redirect_uri: g.redirect_uri.clone(),
+                        mfa_acr_values: Vec::new(),
+                    },
+                    preset: g.preset(),
+                    secret_field: if device {
+                        "device_client_secret"
+                    } else {
+                        "client_secret"
+                    },
+                })
+            }
+            Kind::Pam => Err(ConnectorError::Invalid(
+                "a pam connector has no OIDC client".into(),
+            )),
+        }
+    }
+
+    /// Whether gxctl's device grant goes through it.
+    pub fn has_device_client(&self) -> bool {
+        match self.kind {
+            Kind::Oidc => true,
+            Kind::Google => self.google().is_ok_and(|g| g.device_client_id.is_some()),
+            Kind::Pam => false,
+        }
+    }
+
+    /// The verified addresses that alone may get a new account through it,
+    /// when not empty.
+    pub fn allowed_emails(&self) -> Vec<String> {
+        match self.kind {
+            Kind::Google => self.google().map(|g| g.allowed_emails).unwrap_or_default(),
+            _ => Vec::new(),
+        }
+    }
+
     /// The `provider` its identities are stored under. The file-defined
     /// connectors keep today's keys (`pam`, `oidc:<issuer>`), so nothing
     /// needs migrating; host accounts are `pam` whichever connector checks
@@ -204,7 +283,7 @@ impl Connector {
             (Kind::Oidc, FILE_OIDC) => {
                 format!("oidc:{}", self.oidc().map(|s| s.issuer).unwrap_or_default())
             }
-            (Kind::Oidc, id) => format!("conn:{id}"),
+            (Kind::Oidc | Kind::Google, id) => format!("conn:{id}"),
         }
     }
 
@@ -269,6 +348,11 @@ impl Connector {
                     return Err(ConnectorError::Invalid("scopes must include openid".into()));
                 }
             }
+            Kind::Google => {
+                self.google()?
+                    .validate(self.jit, guarded)
+                    .map_err(ConnectorError::Invalid)?;
+            }
         }
         if let Some(d) = self.token_max_days
             && (d == 0 || d > 365)
@@ -296,6 +380,16 @@ pub struct ExternalIdentity {
     pub groups: Vec<String>,
     /// The IdP said the login used more than one factor.
     pub mfa: bool,
+    /// The IdP vouches that `email` is the user's.
+    pub email_verified: bool,
+}
+
+/// An OIDC-code connector's client: its settings and preset.
+pub struct OidcProfile {
+    pub settings: OidcSettings,
+    pub preset: presets::Preset,
+    /// Which secret authenticates the client.
+    pub secret_field: &'static str,
 }
 
 /// The connectors defined in `control-plane.json`.

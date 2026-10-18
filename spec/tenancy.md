@@ -1374,3 +1374,14 @@ Closed out after T1:
 Left for later: the acting tenant (the UI and gxctl asking which tenant
 when a user is in several; projects say their own tenant today), TPM2
 sealing of the KEK, and rotating the KEK with the CA.
+
+**T2** (presets and invitations) is in progress. Done (task 2):
+
+| Spec | Code |
+|---|---|
+| Preset framework (§5.1) | `src/directory/presets/mod.rs` (`Preset`: issuer spellings, authorization parameters, `ClaimRule`); `Connector::oidc_profile` (the browser's client, or with `device` gxctl's), `OidcState::with_preset`; `Kind::is_oidc` |
+| `google` (D39): Workspace by `hd`, consumer accounts gated, `email_verified`, `trust_2sv` as MFA, public mail domains refused, D22 | `src/directory/presets/google.rs` (`GoogleSettings`, `Rule`); proto `GoogleSettings`, `GoogleAccounts`; `allowed_emails` in `AuthService::external_login` |
+| Google's device client | `AuthService::oidc_device_for`; `service/login.rs::device_client` (`400 device_flow_unsupported`); the connector test's device-grant step |
+| gxctl and UI | `gxctl connector add google`; the UI lists `google` connectors and offers them at login (its form is task 5) |
+| Tests | `presets/google.rs` unit tests; `connector_tests.rs::google_*` against the mock IdP |
+
