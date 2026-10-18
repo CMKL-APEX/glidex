@@ -1,6 +1,7 @@
 # Tailscale certificates for the web UI
 
-Status: **draft; open questions in §8, no code yet** (milestones §10).
+Status: **design accepted; specs updated, code pending** (milestones §10).
+The open questions are settled as decisions T6–T11 (§8).
 Extends [security.md](security.md) §5.1 and §5.1.1 and
 [web-ui.md](web-ui.md) *Server*. The edits it needs in those documents
 and in [installer.md](installer.md) are applied and tagged *(draft)*;
@@ -23,14 +24,14 @@ renewal in place.
   are on the UI origin (security.md §5.4).
 - **In:** reloading a certificate without a restart (§4.1), which
   operator-supplied certificates get too.
-- **Out, for now:** the control plane's port 8841. Its clients (gxctl,
-  scripts) pin or are given a CA (gxctl-auth.md §5); see §8 Q3.
+- **Out:** the control plane's port 8841. Its clients (gxctl,
+  scripts) pin or are given a CA (gxctl-auth.md §5); see T8.
 - **Out:** reaching glidex from the public internet. A ts.net
   certificate is browser-trusted, but the name only resolves and routes
   inside the tailnet. Tailscale Funnel would publish it to the internet;
   glidex does not configure it (§7).
 
-## 2. Decisions (proposed)
+## 2. Decisions
 
 | # | Topic | Decision |
 |---|---|---|
@@ -39,6 +40,12 @@ renewal in place.
 | T3 | Which connections | Selected per handshake by SNI: a ts.net certificate domain gets the Tailscale certificate; every other name or address keeps today's certificate (self-signed or configured). LAN users and existing pins are unaffected. |
 | T4 | Opt-in | Off by default (`GLIDEX_UI_TLS_TAILSCALE=off`). Turning it on publishes the node's ts.net name in Certificate Transparency logs (§7), so it is the operator's choice, offered by the installer. |
 | T5 | Failure | Never a failed handshake because of Tailscale: without a usable Tailscale certificate, ts.net names get the default certificate and a warning is logged. A held certificate is kept until it expires. |
+| T6 | `TS_PERMIT_CERT_UID` | The installer writes a `tailscaled.service` drop-in setting it to `glidex-ui`, **only after the operator accepts the prompt**, and refuses when `tailscaled` already has it set to another user. A non-interactive run does not turn the feature on unless asked (`--tailscale-cert`); a previous install's choice is kept on updates (§4.6). |
+| T7 | Control plane `Origin` | From the `glidex-ui` peer on `ui.sock` only, an `Origin` equal to `https://` + `X-Forwarded-Host` is accepted, since the UI has already checked that `Host` against its allowlist (§4.3). |
+| T8 | Port 8841 | Not in scope; the control plane keeps its own certificate. |
+| T9 | Port | The UI stays on 5173. |
+| T10 | HSTS on ts.net names | `max-age=86400` (one day) in the first release (§4.4). |
+| T11 | Older `tailscaled` | Certificate domains come from `cert-domains`, falling back to `CertDomains` in `status` when that endpoint is missing (`404`). |
 
 ## 3. What `tailscaled` provides
 
@@ -125,43 +132,83 @@ copy under `/var/lib/tailscale/certs`).
   Tailscale state above, so this works with the default list *and* an
   explicit `GLIDEX_UI_HOSTS`. That name is one the UI holds a
   certificate for, so it is not a rebinding risk.
-- **Control plane `Origin` check:** its default `auth.allowed_origins`
-  is computed from the host's local names and doesn't know the ts.net
-  name. See §8 Q2; the recommendation is that the control plane accept,
-  **from the `glidex-ui` peer on `ui.sock` only**, an `Origin` equal to
-  `https://` + `X-Forwarded-Host`, since the UI has already checked that
-  `Host` against its allowlist.
+- **Control plane `Origin` check (T7):** its default
+  `auth.allowed_origins` is computed from the host's local names and
+  doesn't know the ts.net name. The control plane also accepts, **from
+  the `glidex-ui` peer on `ui.sock` only**, an `Origin` equal to
+  `https://` + `X-Forwarded-Host` (scheme, host and port compared as
+  the browser serializes them; ASCII case-insensitive host). The UI
+  overwrites `X-Forwarded-Host` with the request's `Host`, which it has
+  already checked against its allowlist, so this is a same-origin check
+  and admits no name the UI wouldn't serve. It applies with the
+  feature off too, which also covers custom names in an explicit
+  `GLIDEX_UI_HOSTS`. Over TCP, and from any other peer, only
+  `auth.allowed_origins` counts, as before.
 
 ### 4.4 HSTS
 
-`Strict-Transport-Security: max-age=31536000` is sent on connections
-that were served the Tailscale certificate, as with any configured
-certificate (security.md §5.1.1). HSTS applies to every port of the
-name, so a browser that later opens `https://<node>.ts.net:8841` (where
-the control plane serves its self-signed certificate) gets a
-non-bypassable error. Browsers have no reason to go there (§1). See §8
-Q5.
+`Strict-Transport-Security: max-age=86400` (T10) is sent on
+connections that were served the Tailscale certificate, as with any
+configured certificate (security.md §5.1.1) but shorter. HSTS applies
+to every port of the name, so a browser that later opens
+`https://<node>.ts.net:8841` (where the control plane serves its
+self-signed certificate) gets a non-bypassable error. Browsers have no
+reason to go there (§1), and one day bounds the damage while the
+feature is new; raising it to a year is a later, separate change.
 
 ### 4.5 Permissions and sandbox
 
 - `glidex-ui.service` already allows `AF_UNIX` and doesn't hide
   `/run/tailscale`. `tailscaled.sock` is `0666`, and `ProtectSystem=strict`
   doesn't prevent `connect()` on a read-only mount. **No unit change.**
-- `tailscaled` must run with `TS_PERMIT_CERT_UID=glidex-ui`. This is
-  `tailscaled`'s configuration, not glidex's: see §8 Q1 for whether the
-  installer writes it.
+- `tailscaled` must run with `TS_PERMIT_CERT_UID=glidex-ui`. The
+  installer arranges it (T6, §4.6); an operator may also set it by hand.
+  The UI only needs the permission to exist: it never checks how it was
+  granted.
 
 ### 4.6 Installer
 
-When `tailscaled` is running and reports certificate domains:
+Options `--tailscale-cert` / `--no-tailscale-cert`, saved in
+`install.conf` like the other options. The setting is decided in this
+order:
 
-- Offer to turn it on (`--tailscale-cert` / `--no-tailscale-cert`,
-  saved in `install.conf`), explaining the Certificate Transparency
-  exposure in one line (§7).
-- If accepted: set `GLIDEX_UI_TLS_TAILSCALE=on` in a `glidex-ui`
-  drop-in, and arrange `TS_PERMIT_CERT_UID` (§8 Q1).
-- The usage blurb prints `https://<node>.<tailnet>.ts.net:5173` first,
-  without a fingerprint; LAN URLs and fingerprints follow as today.
+1. The command-line option, when given.
+2. Otherwise the saved choice of a previous install, so an update (and
+   a non-interactive re-run) keeps the feature as it was.
+3. Otherwise, interactively and only when `tailscaled` runs and reports
+   certificate domains: a prompt, default **no**, explaining the
+   Certificate Transparency exposure in one line (§7).
+4. Otherwise (non-interactive, nothing saved): off.
+
+When the result is on:
+
+- **`tailscaled` (T6).** Read the running daemon's environment
+  (`systemctl show tailscaled -p Environment` and its
+  `EnvironmentFiles`, e.g. `/etc/default/tailscaled`):
+  - already `TS_PERMIT_CERT_UID=glidex-ui` (or its uid), by glidex's
+    drop-in or by hand: nothing to do;
+  - set to another user: **refuse** — say which user holds it, leave
+    `tailscaled` untouched, and leave the UI setting off for this run
+    (not saved as on), so the operator can resolve it and re-run;
+  - unset: write `/etc/systemd/system/tailscaled.service.d/50-glidex-cert.conf`
+    (`[Service]` + `Environment=TS_PERMIT_CERT_UID=glidex-ui`, with a
+    comment naming glidex), `daemon-reload`, and restart `tailscaled`
+    after saying the tailnet connection drops for a few seconds.
+- **UI.** `GLIDEX_UI_TLS_TAILSCALE=on` in
+  `/etc/systemd/system/glidex-ui.service.d/50-tailscale-cert.conf`; the
+  UI is restarted with the other services.
+- **Blurb.** `https://<node>.<tailnet>.ts.net:5173` first, without a
+  fingerprint; LAN URLs and fingerprints follow as today. If the UI
+  hasn't obtained the certificate yet, the blurb says so and how to
+  check (`journalctl -u glidex-ui`).
+
+When the result is off and a previous install had turned it on
+(`--no-tailscale-cert`), both drop-ins written by glidex are removed and
+`tailscaled` restarted; a `TS_PERMIT_CERT_UID` set by hand is left
+alone. Uninstall does the same.
+
+Because the UI only needs the permission to exist (§4.5), a host where
+the operator granted it by hand works with the UI drop-in alone.
 
 ## 5. Configuration
 
@@ -170,7 +217,7 @@ When `tailscaled` is running and reports certificate domains:
 | `GLIDEX_UI_TLS_TAILSCALE` | `off` | `on`: also serve the node's Tailscale certificate for its ts.net names (§4.2). Refused at startup with `GLIDEX_UI_TLS=off`. |
 | `GLIDEX_UI_TAILSCALE_SOCKET` | `/run/tailscale/tailscaled.sock` | The `tailscaled` local API socket. |
 
-Nothing changes in `control-plane.json` unless §8 Q3 is answered yes.
+Nothing changes in `control-plane.json`. Installer options: §4.6.
 
 ## 6. Later: embedding tailscale-rs
 
@@ -211,38 +258,19 @@ support, direct connections, and a stability statement.
   checked (`keys_match`, the leaf's SAN covers the domain, not expired)
   before use.
 
-## 8. Open questions
+## 8. Settled questions
 
-1. **Granting `TS_PERMIT_CERT_UID`.** It holds one uid, and it belongs
-   to `tailscaled`'s configuration. Options: (a) the installer writes a
-   `tailscaled.service` drop-in setting it to `glidex-ui` and restarts
-   `tailscaled` (a brief tailnet blip), refusing if it is already set to
-   another user (e.g. Caddy's); (b) the installer only prints the
-   instruction; (c) a root helper fetches for the UI instead (a new
-   privileged component). *Recommendation: (a) with the refusal, behind
-   the installer prompt.*
-2. **Control plane `Origin` for the new name.** (a) Accept
-   `Origin == https://<X-Forwarded-Host>` from the `glidex-ui` peer only
-   (general, also fixes custom names behind the UI); (b) the control
-   plane reads the certificate domains itself (read-only, no permission
-   needed) and adds `https://<domain>:5173`; (c) the operator adds it to
-   `auth.allowed_origins`. *Recommendation: (a). It changes the Origin
-   rule in security.md §5.6, so it needs an explicit yes.*
-3. **Port 8841 too?** Would gxctl users on the tailnet benefit enough
-   to justify it? Because of the one-uid limit it means a second
-   fetcher (root helper, or the control plane fetching and handing the
-   pair to the UI over `ui.sock`). *Recommendation: no for now; pins
-   already work.*
-4. **Port 443.** Browsers would get `https://<node>.ts.net/` with no
-   port. That needs `CAP_NET_BIND_SERVICE` (or
-   `net.ipv4.ip_unprivileged_port_start`), or a listener only on the
-   Tailscale address. *Recommendation: stay on 5173.*
-5. **HSTS on the ts.net name** (§4.4): send it from the start, start
-   with a short `max-age` (e.g. one day) and raise it later, or not at
-   all? *Recommendation: one day in the first release.*
-6. **Minimum `tailscaled` version.** Support only daemons with
-   `cert-domains`, or fall back to `status`? *Recommendation: fall back;
-   it costs one more request.*
+Each was an open question in the draft; the answer is now a decision
+in §2.
+
+| Question | Answer |
+|---|---|
+| Who grants `TS_PERMIT_CERT_UID`, which holds one uid? | The installer, behind its prompt, refusing when another user holds it; updates keep a previous choice (T6, §4.6). Rejected: printing instructions only; a root fetch helper (a new privileged component). |
+| How does the control plane accept the ts.net `Origin`? | Same-origin against `X-Forwarded-Host`, from the UI peer only (T7). Rejected: the control plane querying `tailscaled` itself (couples it to Tailscale); manual `auth.allowed_origins` (breaks on rename). |
+| Port 8841 too? | No (T8). Pins already work for gxctl; the one-uid limit would need a second fetcher. |
+| Port 443? | No, 5173 (T9). 443 needs `CAP_NET_BIND_SERVICE` or a sysctl. |
+| HSTS on ts.net names? | One day for now (T10). |
+| `tailscaled` without `cert-domains`? | Fall back to `status` (T11). |
 
 ## 9. Testing
 
@@ -254,7 +282,15 @@ support, direct connections, and a stability statement.
   pairs): startup without the socket, `403`, empty domains, `429` with
   `Retry-After`, renewal below 14 days with `min_validity`, a domain
   rename, a chain whose SAN doesn't cover the domain (rejected). `Host`
-  allowlist includes the domain while it is held.
+  allowlist includes the domain while it is held. HSTS `max-age=86400`
+  only on connections served the Tailscale certificate.
+- Control plane: from the `glidex-ui` peer, `Origin` equal to
+  `https://` + `X-Forwarded-Host` is accepted (port and case variants
+  per T7), a different one refused; over TCP the same pair is refused
+  unless listed in `auth.allowed_origins`.
+- Installer: the four-step precedence of §4.6; `TS_PERMIT_CERT_UID`
+  unset / ours / another user's (refusal, nothing changed, not saved);
+  `--no-tailscale-cert` removes only glidex's drop-ins.
 - Host test (manual, on a tailnet with HTTPS enabled): a browser with
   no warning on `https://<node>.<tailnet>.ts.net:5173`, LAN URL still
   the self-signed certificate, login and console work, HSTS header only
@@ -265,19 +301,20 @@ support, direct connections, and a stability statement.
 | # | Scope | Acceptance |
 |---|---|---|
 | **TS0** reloadable certificates | `CertSlot` and SNI `Resolver` in `glidex-tls`; control plane and UI use them; configured certificate files reload on change | §9 `glidex-tls` tests; operator guide drops "restart to renew". |
-| **TS1** Tailscale slot in the UI | `GLIDEX_UI_TLS_TAILSCALE`, local API client, polling and renewal, `Host` allowlist, HSTS, the §8 Q2 Origin rule | §9 `glidex-ui` tests; host test. |
-| **TS2** installer | Detection, prompt and option, `TS_PERMIT_CERT_UID` per §8 Q1, usage blurb, operator guide section | Installer tests; host test from a clean install. |
-| **TS3** *(conditional)* | Port 8841 (§8 Q3) | — |
-| **TS4** *(gated upstream)* | Embedded tailscale-rs node (§6) | — |
+| **TS1** Tailscale slot in the UI | `GLIDEX_UI_TLS_TAILSCALE`, local API client, polling and renewal, `Host` allowlist, HSTS, the T7 Origin rule | §9 `glidex-ui` tests; host test. |
+| **TS2** installer | Option precedence, prompt, `tailscaled` drop-in with refusal (T6), UI drop-in, usage blurb, uninstall, operator guide section | Installer tests; host test from a clean install. |
+| **TS3** *(gated upstream)* | Embedded tailscale-rs node (§6) | — |
 
 ## 11. Changes to other specs (applied — change record)
 
 - **security.md:** decision 19; §5.1 certificate table, row
-  "Tailscale"; §5.1.1 HSTS bullet; §5.6 `Host` check; §17 status row.
+  "Tailscale"; §5.1.1 HSTS bullet; §5.6 `Host` and `Origin` checks;
+  §17 status row.
   All tagged *(draft)*.
 - **web-ui.md:** *Server* environment table rows for
   `GLIDEX_UI_TLS_TAILSCALE` and `GLIDEX_UI_TAILSCALE_SOCKET`; the HSTS
   sentence. Tagged *(draft)*.
-- **installer.md:** step 13 usage blurb and the Tailscale prompt.
+- **installer.md:** the `--tailscale-cert` option, step 13's
+  Tailscale step and usage blurb, uninstall.
   Tagged *(draft)*.
 - **README.md, SUMMARY.md:** this document's entry.

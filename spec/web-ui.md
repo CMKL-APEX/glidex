@@ -53,9 +53,9 @@ connect-src 'self'; img-src 'self' data:; style-src 'self'
 'self'` (inline styles: React and xterm.js set `style` attributes),
 `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`,
 `X-Frame-Options: DENY`, and with a configured certificate (not a
-self-signed one, security.md §5.1.1; the Tailscale certificate counts,
-on the connections served it *(draft)*) `Strict-Transport-Security:
-max-age=31536000`. A plain-HTTP request on the HTTPS port gets `308` to
+self-signed one, security.md §5.1.1) `Strict-Transport-Security:
+max-age=31536000`; on connections served the Tailscale certificate,
+`max-age=86400` *(draft)*. A plain-HTTP request on the HTTPS port gets `308` to
 the `https://` URL.
 
 ## Authentication flow

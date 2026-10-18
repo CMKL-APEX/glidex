@@ -48,7 +48,7 @@ bullets of [networking.md §14](networking.md#14-security).
 | 16 | Sharing project networks | A project network is private unless **both** projects agree explicitly: the network's owner offers it, the receiving project's owner accepts. Either side can end it (§6.2.1). |
 | 17 | Policy change control | Site policy changes need step-up and are audited; **no two-person approval**. |
 | 18 | Client trust | Self-signed control planes are accepted by **pinning the leaf certificate's SHA-256**, trusted on first use at `gxctl auth login` (TOFU); chain, dates and name keep verifying against the pinned certificate. A verify-nothing mode exists only as an explicitly confirmed, per-profile, loudly marked escape hatch ([gxctl-auth.md §5](gxctl-auth.md)). |
-| 19 | Browser-trusted certificates on a tailnet *(draft)* | On a host on Tailscale, `glidex-ui` may serve the node's Tailscale (Let's Encrypt) certificate for its `ts.net` names, fetched from the host's `tailscaled`, chosen by SNI next to the usual certificate. Opt-in, because the name lands in Certificate Transparency logs ([tailscale-tls.md](tailscale-tls.md)). |
+| 19 | Browser-trusted certificates on a tailnet *(draft)* | On a host on Tailscale, `glidex-ui` may serve the node's Tailscale (Let's Encrypt) certificate for its `ts.net` names, fetched from the host's `tailscaled` (granted by `TS_PERMIT_CERT_UID=glidex-ui`), chosen by SNI next to the usual certificate. Opt-in, because the name lands in Certificate Transparency logs. UI only, port 5173; the control plane keeps its certificate ([tailscale-tls.md](tailscale-tls.md) §2). |
 
 ## 3. Threat model
 
@@ -201,9 +201,9 @@ redirect: API clients should be told, not silently upgraded.
   certificate, never with a self-signed one: browsers make certificate
   errors non-bypassable for an HSTS host, which would lock users out of
   a host whose self-signed certificate they had not yet trusted. The
-  Tailscale certificate counts as configured: HSTS is sent on the
-  connections that were served it *(draft,
-  [tailscale-tls.md](tailscale-tls.md) §4.4)*.
+  Tailscale certificate counts as configured, with `max-age=86400`
+  for now: HSTS is sent on the connections that were served it
+  *(draft, [tailscale-tls.md](tailscale-tls.md) §4.4)*.
 
 **Exposure.** Listening on every address also listens on the gateway
 addresses of glidex NAT bridges; the `input` chain of §8.4 keeps guests
@@ -367,7 +367,13 @@ selects TCP.
   (default: the UI's origins, `https://<h>:5173` for every default
   `GLIDEX_UI_HOSTS` entry `<h>`, computed at startup, plus
   `https://<ip>:5173` for any address the host has at request time). Bearer-token requests without `Origin`
-  (non-browser clients) are allowed.
+  (non-browser clients) are allowed. *(draft,
+  [tailscale-tls.md](tailscale-tls.md) §4.3)* From the `glidex-ui`
+  peer on `ui.sock` only, an `Origin` equal to `https://` +
+  `X-Forwarded-Host` is also accepted: the UI sets that header to the
+  request's `Host`, which it has already checked against its allowlist,
+  so this is a same-origin check. Over TCP only `auth.allowed_origins`
+  counts.
 - **CSRF:** requests authenticated by cookie and not `GET`/`HEAD` must
   send `X-Glidex-CSRF` equal to the session's CSRF value (returned by
   `GET /auth/whoami`). `SameSite=Strict` and the Origin check are the
