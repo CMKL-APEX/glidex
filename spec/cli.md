@@ -324,34 +324,37 @@ The request is `POST /vms`. Tilde in paths is expanded server-side
 ### `connect` loop
 
 The VM's console socket is in its private `0700` run directory
-(`paths::vm_dir`), so gxctl goes through the API like the browser does:
+(`paths::vm_dir`), so gxctl goes through the API
+(`bin/gxctl/console.rs`):
 
-1. `GET /vms/{id}/console` → `{available, websocket}`; a VM with no
-   instance is refused before anything else. A VM whose guest has
-   exited but whose shim is not yet released still connects and
-   replays its log.
-2. `ApiClient::connect` opens the same kind of stream as any request
-   (Unix socket, TCP or TLS) and `tokio_tungstenite::client_async` does
-   the WebSocket handshake on it for `GET /vms/{id}/console/ws`, with the
-   bearer header on TCP. Local peers and token holders need no console
-   ticket (tickets are for browser sessions, security.md §5.6), and no
-   `Origin` is sent. A refused handshake shows the API error.
+1. `GetConsoleInfo` → `available`; a VM with no instance is refused
+   before anything else. A VM whose guest has exited but whose shim is
+   not yet released still connects and replays its log.
+2. The console is the bidi RPC `VmService.Console`, on an HTTP/2
+   connection of its own made like every other (Unix socket, TCP or
+   TLS, with the bearer token on TCP). The first message is
+   `{open: {id}}`; the server's answer, or its refusal (unknown VM, not
+   allowed, no console), comes back before the terminal is touched.
+   Local peers and token holders need no console ticket (tickets are for
+   browser sessions, security.md §5.6). Browsers use the WebSocket
+   instead (gRPC-Web can't stream both ways).
 3. stdin goes into raw mode (termios: no `ICANON`, `ECHO`, `ISIG`, so
    Ctrl+C reaches the guest). A thread `poll`s fd 0 every 100 ms and
    `read`s it directly, forwarding chunks over a channel; it stops at
    `0x1D` (`Ctrl+]`), sending what came before it.
-4. The async loop writes binary (and text) frames to stdout and sends
-   stdin chunks as binary frames, until `Ctrl+]` ("Detached") or the
-   server closes ("Console closed").
-5. The terminal is restored and a Close frame sent.
+4. The async loop writes each `output` message to stdout and sends
+   stdin chunks as `input` messages, until `Ctrl+]` ("Detached from
+   console") or the server ends the stream ("Console closed").
+5. The terminal is restored.
 
-The console proxy behind the WebSocket supports many clients, so
-several `gxctl connect` sessions and browser sessions can share a VM.
-They all see the same output and share one input stream (no locking).
+The console proxy behind it supports many clients, so several
+`gxctl connect` sessions and browser sessions can share a VM. They all
+see the same output and share one input stream (no locking). The
+terminal size is not sent ([console.md](console.md) "Known gaps").
 
 ### `log` command
 
-`GET /vms/{id}/console/log` (needs `vm.console`) returns the last 1 MiB
+`GetConsoleLog` (`GET /vms/{id}/console/log`, needs `vm.console`) returns the last 1 MiB
 of the captured console output, printed as is. Not a follow; to
 live-tail, use `connect`. The log spans the VM's earlier instances,
 separated by `--- glidex: instance … ---` lines; the rotated

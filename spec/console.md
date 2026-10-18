@@ -1,8 +1,12 @@
 # Console subsystem
 
 > Access: the console socket and log live in the VM's private runtime
-> directory (`0700`); clients reach them only through the API
-> (`/vms/{id}/console/ws`, `/vms/{id}/console/log`, both `vm.console`).
+> directory (`0700`); clients reach them only through the API: the
+> WebSocket `/vms/{id}/console/ws` (browsers), the bidi RPC
+> `VmService.Console` (gxctl and other API clients) and
+> `/vms/{id}/console/log` (`GetConsoleLog`), all `openConsole`
+> (`vm.console`). Browser sessions also need a single-use console ticket
+> ([security.md §5.6](security.md)).
 
 Each running VM's serial console is owned by its `glidex-vm-shim`
 ([reconciliation.md §8](reconciliation.md#8-instances)), not by the
@@ -12,8 +16,12 @@ down or restarting. It is:
 1. **Captured** to an append-only, rotated log file on disk.
 2. **Broadcast** to any number of concurrently-connected clients
    over a per-VM Unix socket (`<run dir>/vms/<id>/console.sock`).
-3. **Bridged** to browsers via a WebSocket endpoint on the control
-   plane.
+3. **Bridged** by the control plane to browsers (a WebSocket) and to
+   API clients such as gxctl (a bidi gRPC stream), relayed through the
+   VM's node in a cluster.
+
+Each VM has **one** guest console: the hypervisor's single stdio-backed
+device, `ttyS0` or `hvc0` (below). Any number of clients may share it.
 
 This document explains the invariants that make that work and why
 the code is structured the way it is.
@@ -24,10 +32,17 @@ Both hypervisors are wired the same way (`glidex-vm-shim`,
 `supervisor.rs::spawn`): the shim allocates a `pty(7)` pair (both ends
 close-on-exec), puts the slave in raw mode, passes it as the
 hypervisor's stdin and stdout, puts the hypervisor's stderr on a pipe,
-and keeps the master. QEMU gets `-serial stdio`; Cloud-Hypervisor gets
-`--console tty` / `--serial tty` — the virtio console (`hvc0`) for
-kernel boots, the serial port (`ttyS0`) for firmware boots, see
-[hypervisors.md](hypervisors.md#firmware-boot).
+and keeps the master. The guest device on the other end:
+
+| Hypervisor, boot | Arguments | Guest console |
+|---|---|---|
+| QEMU, any | `-nodefaults … -serial stdio -display none` | serial port, `ttyS0` |
+| Cloud Hypervisor, firmware | `--console off --serial tty` | serial port, `ttyS0` |
+| Cloud Hypervisor, kernel | `--console tty --serial off` | virtio console, `hvc0` |
+
+(`hypervisor/qemu.rs`, `hypervisor/cloud_hypervisor.rs`; why, in
+[hypervisors.md](hypervisors.md#firmware-boot).) There is no second
+console device and no setting that picks one.
 
 In the child, `pre_exec` calls `setsid()` and `TIOCSCTTY`, making the
 PTY the hypervisor's controlling terminal, and sets `PR_SET_PDEATHSIG =
@@ -163,45 +178,98 @@ rules; in short:
 
 ## Clients
 
-One first-party client connects to the console Unix socket:
+Only the control plane connects to the console Unix socket, from
+`service/vm.rs`:
 
-- **Control plane's WebSocket bridge** (`api/vms.rs::bridge_console`)
-  — the only client of the raw socket. Browsers and `gxctl connect`
-  (stdin in raw mode, `Ctrl+]` to detach; [cli.md](cli.md)) both go
-  through it.
+- `console_target` checks access: the caller must be able to read the
+  VM (else `404`), and a browser session (PAM or OIDC login) must redeem
+  a fresh single-use ticket for this VM (else `403 ticket_required`).
+  Tokens and peers on the API socket need none. It answers `Local(<run
+  dir>/vms/<id>/console.sock)`, or `Remote{node, vm}` when the VM runs on
+  another node.
+- `console_connect` opens the target: `UnixStream::connect` for a local
+  one; for a remote one an upgraded connection to
+  `/cluster/v1/vms/{id}/console` on the VM's node, whose
+  `cluster/server.rs::relay_console` connects to its own console socket
+  and copies bytes both ways ([clustering.md](clustering.md)).
+
+Over that byte stream:
+
+- **Browsers**: the WebSocket bridge, `api/vms.rs::console_ws` and
+  `bridge_stream` (below).
+- **gxctl and other API clients**: the bidi RPC `VmService.Console`
+  (`api/rpc/vm.rs`; [grpc.md](grpc.md)). The first request must be
+  `{open: {id, ticket?}}` within 30 s; later `input` messages are
+  written to the console and output comes back as `output` messages.
+  `gxctl connect` uses it (stdin in raw mode, `Ctrl+]` to detach;
+  [cli.md](cli.md)). gRPC-Web can't stream both ways, so browsers stay
+  on the WebSocket.
+- **The log**: `GET /vms/{id}/console/log` (`GetConsoleLog`) reads
+  `console.log` (or `console.log.1` with `previous`) itself, not the
+  socket, relayed through the VM's node in a cluster
+  (`/cluster/v1/vms/{id}/console-log`).
 
 ## Browser bridge
 
-`GET /vms/:id/console/ws` in the control plane:
+`GET /vms/{id}/console/ws?ticket=…` in the control plane
+(`api/vms.rs::console_ws`):
 
-1. Validates the VM id.
-2. `UnixStream::connect` to the VM's console socket.
-3. Upgrades the HTTP request to a WebSocket and enters a
-   `tokio::select!` copying bytes both ways.
+1. `console_target` (above): access and the ticket.
+2. A remote console is connected **before** the upgrade, so an
+   unreachable node is a `502 node_unreachable` answer. A local one is
+   connected **after** it; since the shim keeps its listener after the
+   guest exits (until `release`), that rarely fails, and a failure is
+   sent in the stream: one `Message::Text` with the error, then `Close`.
+3. `bridge_stream` copies both ways in a `tokio::select!` loop: up to
+   4 KiB read from the console → one `Message::Binary`; `Binary` or
+   `Text` frames from the browser → written as bytes. Close, an error or
+   the end of either side ends it.
 
-On the UI side, `crates/glidex-ui/ui/src/pages/VmConsole.tsx`:
+glidex-ui doesn't look inside the WebSocket: `/api/*` upgrades are
+passed to the control plane over `ui.sock` (or TCP) and the two
+upgraded connections are spliced with `copy_bidirectional`
+([web-ui.md](web-ui.md)).
 
-- Creates an `@xterm/xterm` `Terminal` with the `@xterm/addon-fit`
-  addon.
-- Opens `ws(s)://<location.host>/api/vms/:id/console/ws` with
-  `binaryType = "arraybuffer"`.
-- On `message`, writes the received `ArrayBuffer` (or string) into
-  the terminal.
-- On `term.onData`, UTF-8 encodes and sends as a binary frame.
-- Disposes terminal + socket + listeners on unmount.
+On the UI side, `crates/glidex-ui/ui/src/pages/VmConsole.tsx` with
+`consoleTerminal.ts`:
+
+- **Terminal**: ghostty-web (Ghostty's terminal engine as WebAssembly,
+  the default) or xterm.js, chosen on the page and remembered in the
+  browser (`localStorage`). Each library is loaded only when chosen;
+  ghostty-web's `.wasm` comes from `/assets` (the UI's CSP allows
+  `'wasm-unsafe-eval'`, not `data:` URLs).
+- **Ticket, then connect**: `CreateConsoleTicket` (`POST
+  /vms/{id}/console/ticket` over REST; valid 30 s, single use), then at
+  once `ws(s)://<location.host>/api/vms/{id}/console/ws?ticket=<ticket>`
+  with `binaryType = "arraybuffer"`.
+- **WS → terminal**: binary frames as bytes; a text frame (the
+  connect-failure message) as text.
+- **Terminal → WS**: `onData`, UTF-8 encoded, as a binary frame.
+- **Status** `connecting | connected | closed | error`; on `closed` or
+  `error` a **Reconnect** button runs ticket and connect again (the VM
+  outlives a connection: restarts of the VM or the control plane close
+  it). A failure on a VM whose node stopped reporting says so.
+- **Size**: the terminal is fitted to the page on window resize; the
+  size is not sent anywhere (below).
+- On unmount it detaches the socket's handlers, closes it and disposes
+  the terminal (xterm.js only after its open-time timer has run).
 
 ### Dev-server proxying
 
 Vite's dev server must forward WebSocket upgrades for this to work.
 See `vite.config.ts` — the `/api` proxy is configured with
-`ws: true`.
+`ws: true` (to `ui.sock` or the control plane's TCP port).
 
-## Observability gaps (intentionally unsolved)
+## Known gaps
 
-- **Resize**: we don't yet propagate terminal size. xterm.js sends
-  a resize event; we currently ignore it. A future `Message::Text`
-  sub-protocol could carry PTY ioctls. Not needed for the serial
-  console of a microVM, which is 80x24 by default and not reshaped.
-- **Authentication**: the WebSocket has none. Anyone who can reach
-  `:8841` can read/write every console. This matches the overall
-  security model (see [README](README.md) "non-goals").
+- **Resize**: the terminal size is not propagated. The browser fits
+  the terminal to the page, but neither the WebSocket nor the RPC
+  carries a size, and the shim never sets one on the PTY (`openpty`
+  without a size). A serial console has no size of its own: the guest
+  uses its default, or what it learns by querying the terminal. A future
+  `Message::Text` sub-protocol (and an RPC message) could carry it.
+- **No input locking**: every client's input goes to the guest (see
+  [Console Unix socket](#console-unix-socket)).
+- **One console per VM**: no second serial port or virtio console, and
+  no choice between them beyond what the boot mode decides
+  ([Physical I/O](#physical-io)).

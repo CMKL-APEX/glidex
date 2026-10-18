@@ -395,7 +395,9 @@ selects TCP.
   `?ticket=`; tickets are single use, bound to the principal and VM, and
   the session is re-checked at upgrade.
 - Response headers from the UI: `Content-Security-Policy: default-src
-  'self'; connect-src 'self'; frame-ancestors 'none'`,
+  'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self';
+  frame-ancestors 'none'` and more (web-ui.md; `'wasm-unsafe-eval'` for
+  the console's WebAssembly terminal),
   `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, and
   `Strict-Transport-Security` under TLS with a configured certificate
   (§5.1.1).

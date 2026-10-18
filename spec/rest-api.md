@@ -654,21 +654,25 @@ built — happen in the controller and reach the caller only through
 (`glidex.vm.v1.VmService.Console` is the same console as a bidi RPC
 stream over HTTP/2, for API clients and gxctl; grpc.md §9.1.)
 
-`GET /vms/{id}/console/ws` upgrades to a WebSocket. The handler
-`console_ws → bridge_console`:
+`GET /vms/{id}/console/ws[?ticket=…]` upgrades to a WebSocket
+(`api/vms.rs::console_ws`, then `bridge_stream`):
 
-1. Looks up the VM. If `VmNotFound`, responds `404`. Any other
-   lookup error responds `500`.
-2. Opens a `tokio::net::UnixStream` to the VM's console socket (in its
-   private runtime directory; never exposed to clients).
-   If the connect fails, sends a `Message::Text` containing the
-   error string and then `Message::Close`.
-3. Enters a `select!` loop:
-   - Bytes read from the Unix socket → sent as `Message::Binary` to
-     the browser.
-   - `Message::Binary` / `Message::Text` from the browser → written
-     to the Unix socket. Close / error / `None` from the browser
-     ends the loop.
+1. Checks access (`openConsole`): an unknown or unreadable VM is `404`.
+   A browser session (PAM or OIDC login) needs `?ticket=` with a fresh
+   single-use ticket for this VM from `POST /vms/{id}/console/ticket`
+   (valid 30 s, security.md §5.6), else `403 ticket_required`; tokens
+   and the API socket need none.
+2. Connects to the console: the VM's console socket in its private
+   runtime directory (never exposed to clients), or, for a VM on another
+   node, that node's relay. An unreachable node answers `502
+   node_unreachable` before the upgrade; a local connect failure is
+   sent after it, as a `Message::Text` with the error and then
+   `Message::Close`.
+3. Copies both ways in a `select!` loop:
+   - Bytes read from the console (up to 4 KiB at a time) → sent as
+     `Message::Binary`.
+   - `Message::Binary` / `Message::Text` from the client → written to
+     the console. Close / error / `None` from the client ends the loop.
 
 ### Client expectations
 
@@ -680,6 +684,10 @@ stream over HTTP/2, for API clients and gxctl; grpc.md §9.1.)
 - No framing — this is a byte stream of terminal data in both
   directions. The *only* transport semantics are WebSocket
   boundaries, which are irrelevant to the consumer.
+- No control messages: there is no resize (the terminal size is not
+  carried, console.md "Known gaps").
+- A ticket is used up by the connect: each new connection, a reconnect
+  included, needs a new one.
 
 ### Replay-on-connect behavior
 
@@ -688,5 +696,5 @@ The console Unix socket is listened on by a proxy thread in the VM's
 spans earlier instances of the VM, separated by `--- glidex: instance …
 started … ---` lines) to every newly-accepted client before starting
 live broadcast. So opening a WebSocket on a VM that has already
-booted will immediately flush the boot-time output into your xterm.
+booted will immediately flush the boot-time output into your terminal.
 See [console.md](console.md).
