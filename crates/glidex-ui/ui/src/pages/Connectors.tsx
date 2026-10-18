@@ -375,6 +375,10 @@ function ConnectorForm({
         </>
       ) : f.kind === "jumpcloud" ? (
         <>
+          <p className="text-xs text-gray-600">
+            In JumpCloud, set the application's Client Authentication Type to <strong>Client Secret Basic</strong>, and its Login URL to{" "}
+            <code className="font-mono break-all">{`${window.location.origin}/api/auth/c/${f.id.trim() || "<id>"}/start`}</code>.
+          </p>
           {text("client_id", "Client ID", { required: true })}
           {!editing && secretInput("connector-secret", "Client secret", secret, setSecret)}
           {text("groups_claim", "Groups claim", {

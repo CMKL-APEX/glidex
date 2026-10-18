@@ -41,7 +41,10 @@ and build, never with account names or tokens.
 
 ## JumpCloud (`jumpcloud`)
 
-1. An SSO application with OIDC and *Include group attribute*.
+1. An SSO application with OIDC: the redirect URI, the Login URL
+   `…/api/auth/c/<id>/start`, *Client Authentication Type* **Client
+   Secret Basic** (with *Post*, the token request is refused with
+   `invalid_client`), and *Include group attribute*.
 2. A user in the required group logs in, and lands in the mapped team.
 3. A user outside it is refused.
 4. **Whether the ID token carries `email_verified`.** The preset counts

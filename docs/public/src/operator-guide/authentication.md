@@ -252,8 +252,17 @@ gxctl connector test gws
 ### JumpCloud
 
 A `jumpcloud` connector logs in JumpCloud users. In JumpCloud, add an
-SSO application with OIDC, the connector's redirect URI, and *Include
-group attribute* if logins should carry the user's groups.
+SSO application with OIDC:
+
+- **Redirect URIs:** the connector's redirect URI,
+  `https://<ui-host>:5173/api/auth/c/<id>/callback`.
+- **Login URL** (where JumpCloud's user portal sends people):
+  `https://<ui-host>:5173/api/auth/c/<id>/start`.
+- **Client Authentication Type:** *Client Secret Basic*. Glidex sends
+  its client secret that way, the OpenID Connect default; with *Client
+  Secret Post* JumpCloud refuses the login (`invalid_client`).
+- *Include group attribute*, if logins should carry the user's groups,
+  and the user groups allowed to use the application.
 
 ```bash
 gxctl connector add jumpcloud jc --client-id <client-id> --groups-claim memberOf \
