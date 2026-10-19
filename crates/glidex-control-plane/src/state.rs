@@ -661,13 +661,8 @@ impl VmManager {
         let page = if self.cluster().is_none() {
             self.standalone_page_kib(vm.config())
         } else {
-            let others: HashMap<String, Vm> = vms
-                .iter()
-                .filter(|(id, _)| **id != vm.id)
-                .map(|(id, v)| (id.clone(), v.clone()))
-                .collect();
             let Some((n, load)) = self
-                .node_loads(&others)
+                .node_loads_except(vms, Some(&vm.id))
                 .into_iter()
                 .find(|(n, _)| n.meta.id == node)
             else {
@@ -692,8 +687,18 @@ impl VmManager {
         &self,
         vms: &HashMap<String, Vm>,
     ) -> Vec<(crate::node::Node, crate::scheduler::Load)> {
+        self.node_loads_except(vms, None)
+    }
+
+    /// [`Self::node_loads`] without what VM `except` takes.
+    fn node_loads_except(
+        &self,
+        vms: &HashMap<String, Vm>,
+        except: Option<&str>,
+    ) -> Vec<(crate::node::Node, crate::scheduler::Load)> {
         let nodes = self.nodes.list().unwrap_or_default();
-        let mut loads = crate::scheduler::loads(vms.values().filter_map(|v| {
+        let others = vms.values().filter(|v| Some(v.id.as_str()) != except);
+        let mut loads = crate::scheduler::loads(others.filter_map(|v| {
             v.status
                 .placement
                 .as_ref()
