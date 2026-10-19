@@ -1708,6 +1708,11 @@ async fn a_vm_boots_through_its_nodes_copy_of_the_firmware() {
             },
         )
         .unwrap();
+    // The write reaches the server's cache asynchronously.
+    wait_for("the firmware record on the server", || async {
+        server.manager.images().get_image(fw_id).is_ok()
+    })
+    .await;
 
     let (s, vm) = call(
         &server,
@@ -1833,8 +1838,9 @@ async fn disk_edits_are_checked_on_the_disks_node() {
             },
         )
         .unwrap();
-    wait_for("the disk on the agent", || async {
-        agent.manager.images().get_disk("dr").is_ok()
+    wait_for("the disk on the server and the agent", || async {
+        server.manager.images().get_disk("dr").is_ok()
+            && agent.manager.images().get_disk("dr").is_ok()
     })
     .await;
 
