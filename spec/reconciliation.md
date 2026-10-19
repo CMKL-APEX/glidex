@@ -524,6 +524,12 @@ the intent record:
   run by the shim: if the hypervisor exits before its socket answers and
   its captured output contains one of the strings (case-insensitive),
   the shim runs `fallback.argv` once.
+- `job` (default `false`): a one-shot run, not a VM
+  ([kernel-boot.md §10.2](kernel-boot.md#102-run), the kernel
+  extractor). The shim reports `Running` as soon as the hypervisor
+  starts, without waiting for `api_socket`, and records its exit as for
+  a VM (`clean_exit` on status 0). Such instances are named `extract-…`
+  and are no VM's; startup's orphan scan leaves them alone.
 - The environment is not configurable: the shim starts the hypervisor
   with `LC_ALL=C`, `PATH=/usr/sbin:/usr/bin:/sbin:/bin` and nothing else.
 - No secret is ever in `argv` (it is visible in `/proc`): credentials

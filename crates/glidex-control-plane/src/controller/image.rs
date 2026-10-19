@@ -55,7 +55,16 @@ impl VmManager {
         if !leads {
             return self.reconcile_image_cache(&img).await;
         }
+        let extracted = matches!(img.source, crate::images::ImageSource::Extracted { .. });
         match img.status.clone() {
+            // A kernel extraction (spec/kernel-boot.md §10), resumed if its
+            // task is gone (a restart).
+            ImageStatus::Extracting => {
+                if !self.images.download_running(&img.id) {
+                    self.spawn_extraction(&img.id);
+                }
+                Ok(Some(Duration::from_secs(10)))
+            }
             ImageStatus::Downloading { .. } | ImageStatus::Verifying => {
                 if !self.images.download_running(&img.id) {
                     tracing::info!(image = %img.name, "resuming image download");
@@ -65,9 +74,13 @@ impl VmManager {
             }
             ImageStatus::Failed { .. } if img.retry_seq > img.applied_retry_seq => {
                 img.applied_retry_seq = img.retry_seq;
-                img.status = ImageStatus::Downloading {
-                    received_bytes: 0,
-                    total_bytes: None,
+                img.status = if extracted {
+                    ImageStatus::Extracting
+                } else {
+                    ImageStatus::Downloading {
+                        received_bytes: 0,
+                        total_bytes: None,
+                    }
                 };
                 let _ = std::fs::remove_file(self.images.part_path(&img.id));
                 let _ = std::fs::remove_file(self.images.initrd_part_path(&img.id));
@@ -76,9 +89,17 @@ impl VmManager {
                     &img.id,
                     EventKind::Normal,
                     "Retrying",
-                    format!("download {}", img.retry_seq),
+                    format!(
+                        "{} {}",
+                        if extracted { "extraction" } else { "download" },
+                        img.retry_seq
+                    ),
                 );
-                self.images.spawn_download(img.id.clone());
+                if extracted {
+                    self.spawn_extraction(&img.id);
+                } else {
+                    self.images.spawn_download(img.id.clone());
+                }
                 Ok(Some(Duration::from_secs(10)))
             }
             ImageStatus::Failed { .. } => Ok(None),

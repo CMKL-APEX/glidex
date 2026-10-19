@@ -209,6 +209,8 @@ enum ImageState {
   IMAGE_STATE_READY = 3;
   IMAGE_STATE_FAILED = 4;
   IMAGE_STATE_MISSING = 5;
+  // A kernel image waiting for, or running, its extraction.
+  IMAGE_STATE_EXTRACTING = 6;
 }
 
 message ImageStatus {
@@ -230,10 +232,19 @@ message ImageSource {
     CatalogSource firmware = 3;
     // Copied from a host file by an admin (a kernel's `kernel_path`).
     HostSource host = 4;
+    // Extracted from a disk image's /boot (spec/kernel-boot.md §10).
+    ExtractedSource extracted = 5;
   }
 }
 message HostSource {
   string path = 1;
+}
+message ExtractedSource {
+  // The disk image, and the digest of the copy that was read.
+  string image_id = 1 [json_name = "image_id"];
+  string image_sha256 = 2 [json_name = "image_sha256"];
+  // Where the kernel was in it (`vda13:/vmlinuz-…`); empty until extracted.
+  string path = 3;
 }
 message CatalogSource {
   string key = 1;
@@ -298,6 +309,8 @@ message Image {
   optional bool deleting = 20;
   // A kernel image's initramfs, command line and release.
   KernelInfo kernel = 21;
+  // The disk image a kernel image was extracted from.
+  optional string for_image = 22 [json_name = "for_image"];
 }
 
 message KernelInfo {
@@ -394,6 +407,11 @@ message PullImageRequest {
   // Copy a kernel (and initramfs) from host files: needs `useHostPath`.
   optional string kernel_path = 16 [json_name = "kernel_path"];
   optional string initrd_path = 17 [json_name = "initrd_path"];
+  // Extract a kernel image from this disk image (id or name).
+  optional string kernel_from = 18 [json_name = "kernel_from"];
+  // With a disk image pull: also extract its kernel (default: on for a
+  // catalog pull when this host can, off for a URL).
+  optional bool with_kernel = 19 [json_name = "with_kernel"];
 }
 message PullImageResponse {
   Image image = 1;

@@ -101,7 +101,8 @@ impl VmManager {
         if let Ok(dir) = std::fs::read_dir(crate::paths::run_dir().join("vms")) {
             for e in dir.flatten() {
                 let name = e.file_name().to_string_lossy().into_owned();
-                if !ids.contains(&name) {
+                // Kernel extractions are one-shot jobs, not VMs (§10.2).
+                if !ids.contains(&name) && !crate::controller::extract::is_job(&name) {
                     orphans.push(Orphan {
                         kind: "runtime_dir",
                         id: name,
@@ -111,7 +112,7 @@ impl VmManager {
         }
         if let Ok(units) = self.runner().list_units().await {
             for u in units {
-                if !ids.contains(&u) {
+                if !ids.contains(&u) && !crate::controller::extract::is_job(&u) {
                     orphans.push(Orphan {
                         kind: "unit",
                         id: crate::instance::runner::unit_name(&u),

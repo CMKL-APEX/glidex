@@ -3450,7 +3450,26 @@ impl VmManager {
             }
             req.nodes = nodes.into_iter().map(|n| n.meta.id).collect();
         }
+        // A catalog pull brings the image's kernel (spec/kernel-boot.md K10).
+        let with_kernel = req.with_kernel.unwrap_or(req.catalog.is_some());
+        let (name, nodes) = (req.name.clone(), req.nodes.clone());
         let (img, created) = self.images.pull_image(req).await?;
+        if created && img.kind == images::ImageKind::Disk && with_kernel {
+            if !self.images.can_extract(img.arch) {
+                tracing::info!(image = %img.name, "no kernel extracted: no extractor on this host");
+            } else {
+                let kernel_name = name.map(|n| {
+                    let mut k = format!("{n}-kernel");
+                    k.truncate(64);
+                    k
+                });
+                match self.images.pull_kernel_from(&img.id, kernel_name, nodes) {
+                    Ok((k, _)) => self.queue.add(Key::Image(k.id)),
+                    Err(e) => tracing::warn!(image = %img.name, "no kernel extracted: {e}"),
+                }
+            }
+        }
+        self.queue.add(Key::Image(img.id.clone()));
         Ok((self.images.image_response(&img, false), created))
     }
 

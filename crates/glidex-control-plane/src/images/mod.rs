@@ -23,6 +23,8 @@
 pub mod catalog;
 pub mod disk;
 pub mod download;
+pub mod extract;
+pub mod extractor;
 pub mod firmware;
 pub mod kernel;
 pub mod partition;
@@ -158,6 +160,19 @@ pub enum ImageSource {
     },
     /// Copied from a host file by an admin (a kernel image's `kernel_path`).
     Host { path: String },
+    /// Extracted from a disk image's `/boot` (spec/kernel-boot.md §10):
+    /// the image, the digest of the copy read, the kernel's place in it
+    /// (`vda13:/vmlinuz-…`; empty until extracted), and whether that image
+    /// was verified.
+    Extracted {
+        image_id: String,
+        #[serde(default)]
+        image_sha256: String,
+        #[serde(default)]
+        path: String,
+        #[serde(default)]
+        verified: bool,
+    },
 }
 
 /// What an image is for.
@@ -182,6 +197,8 @@ pub enum ImageStatus {
         total_bytes: Option<u64>,
     },
     Verifying,
+    /// A kernel image waiting for, or running, its extraction (§10).
+    Extracting,
     Ready,
     Failed {
         reason: String,
@@ -275,6 +292,9 @@ pub struct Image {
     /// A kernel image's release, from its header when it has one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kernel_release: Option<String>,
+    /// The disk image (id) a kernel image was extracted from (K3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub for_image: Option<String>,
 }
 
 fn keep_copies() -> bool {
@@ -302,15 +322,18 @@ impl Image {
             }
             // An admin's file: nothing glidex checked it against.
             ImageSource::Host { .. } => false,
+            // As trusted as the image it came from.
+            ImageSource::Extracted { verified, .. } => *verified,
         }
     }
 
     pub fn catalog_key(&self) -> Option<&str> {
         match &self.source {
             ImageSource::Catalog { key, .. } => Some(key),
-            ImageSource::Url { .. } | ImageSource::Firmware { .. } | ImageSource::Host { .. } => {
-                None
-            }
+            ImageSource::Url { .. }
+            | ImageSource::Firmware { .. }
+            | ImageSource::Host { .. }
+            | ImageSource::Extracted { .. } => None,
         }
     }
 
@@ -557,6 +580,14 @@ pub struct PullImageRequest {
     pub kernel_path: Option<String>,
     #[serde(default)]
     pub initrd_path: Option<String>,
+    /// Extract a kernel image from this disk image (id or name, §10).
+    #[serde(default)]
+    pub kernel_from: Option<String>,
+    /// With a disk image pull: also extract its kernel once downloaded
+    /// (K10; default: on for catalog pulls with an extractor for the
+    /// architecture, off for URL pulls).
+    #[serde(default)]
+    pub with_kernel: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -671,6 +702,9 @@ pub struct ImageResponse {
     /// A kernel image's initramfs, command line and release.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kernel: Option<KernelResponse>,
+    /// The disk image a kernel image was extracted from.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub for_image: Option<String>,
     /// In a cluster, each node's copy of the file (spec/clustering.md §9.2,
     /// spec/clustering-ui.md §5.3; filled in by `VmManager`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -796,6 +830,11 @@ pub struct ImageSettings {
     /// A kernel image's kernel and initramfs limits (spec/kernel-boot.md §4.3).
     pub max_kernel_size: u64,
     pub max_initrd_size: u64,
+    /// Extractions at once on this node (`GLIDEX_MAX_EXTRACTIONS`, §10.2).
+    pub max_extractions: usize,
+    /// `GLIDEX_KERNEL_EXTRACTION=off`: never extract kernels (a host that
+    /// can't download the extractor, or tests).
+    pub kernel_extraction: bool,
 }
 
 impl ImageSettings {
@@ -833,6 +872,13 @@ impl ImageSettings {
                 .ok()
                 .and_then(|v| parse_size(&v))
                 .unwrap_or(kernel::MAX_INITRD_SIZE),
+            max_extractions: std::env::var("GLIDEX_MAX_EXTRACTIONS")
+                .ok()
+                .and_then(|v| v.trim().parse().ok())
+                .filter(|n| *n > 0)
+                .unwrap_or(1),
+            kernel_extraction: std::env::var("GLIDEX_KERNEL_EXTRACTION")
+                .map_or(true, |v| v != "off"),
         }
     }
 }
@@ -898,6 +944,10 @@ pub struct ImageManager {
     /// Image id → disks being cloned from it but not yet committed.
     holds: Mutex<HashMap<String, usize>>,
     downloads: Arc<tokio::sync::Semaphore>,
+    /// Extractor runs at once (§10.2), and the extractor appliance's
+    /// download and assembly, done once.
+    pub(crate) extractions: Arc<tokio::sync::Semaphore>,
+    pub(crate) extractor_lock: tokio::sync::Mutex<()>,
     tasks: Mutex<HashMap<String, tokio::task::AbortHandle>>,
     http: reqwest::Client,
     /// The `local` datastore's driver, over `settings.disk_dir`.
@@ -957,6 +1007,8 @@ impl ImageManager {
 
         let mgr = Self {
             downloads: Arc::new(tokio::sync::Semaphore::new(settings.max_downloads)),
+            extractions: Arc::new(tokio::sync::Semaphore::new(settings.max_extractions)),
+            extractor_lock: tokio::sync::Mutex::new(()),
             http: download::http_client(settings.allow_private_urls)?,
             local: Arc::new(crate::datastore::file::FileDriver::new(
                 settings.disk_dir.clone(),
@@ -1064,6 +1116,7 @@ impl ImageManager {
             known.extend(self.image_files(&img).into_iter().map(|(_, p)| p));
             known.insert(self.part_path(&img.id));
             known.insert(self.initrd_part_path(&img.id));
+            known.insert(self.extract_out_path(&img.id));
             let exists = self.image_file(&img).exists();
             let new_status = match &img.status {
                 ImageStatus::Ready if !exists && held_elsewhere(&img) => None,
@@ -1095,7 +1148,9 @@ impl ImageManager {
             if let Ok(rd) = std::fs::read_dir(dir) {
                 for entry in rd.flatten() {
                     let p = entry.path();
-                    let index = p.file_name().is_some_and(|n| n == "spare-index.json");
+                    let index = p
+                        .file_name()
+                        .is_some_and(|n| n == "spare-index.json" || n == extract::EXTRACTOR_DIR);
                     if !known.contains(&p) && !index {
                         tracing::warn!(path = %p.display(), "file without a glidex record left in place");
                     }
@@ -1477,6 +1532,7 @@ impl ImageManager {
                 cmdline: img.cmdline.clone(),
                 initrd: img.initrd.clone(),
             }),
+            for_image: img.for_image.clone(),
             info,
             deleting: img.deletion_requested_at.is_some(),
         }
@@ -1798,6 +1854,7 @@ mod tests {
             initrd: None,
             cmdline: None,
             kernel_release: None,
+            for_image: None,
         };
         mgr.insert_image(&img).unwrap();
         let hold = mgr.hold_image("img-1");

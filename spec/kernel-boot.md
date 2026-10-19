@@ -1,6 +1,6 @@
 # Direct kernel boot
 
-Status: **draft**; K0, K1 and K2 implemented (§12). The open questions of the first
+Status: **draft**; K0 to K3 implemented (§12). The open questions of the first
 draft are settled (§9): kernels come from the cloud image itself (K3,
 K9, K13), a catalog pull brings its kernel (K10), a VM's kernel may
 change at the next restart (K6), and a VM may opt in to following the
@@ -68,7 +68,7 @@ same disk handling.
 | K10 | Catalog pulls | **Settled: yes.** `POST /images {"catalog": …}` also extracts the image's kernel once it is `Ready` (`with_kernel`, default `true` for catalog pulls and `false` for URL pulls). The kernel is a separate image record (`<image name>-kernel`). A failed extraction fails only that record; the disk image stays `Ready` and firmware boot is unaffected. |
 | K11 | Guest kernel updates | **Opt-in** per VM (`kernel_from_disk`, §10.5): before each launch glidex extracts the kernel from the VM's own root disk, so kernels the guest installs boot like they would under a bootloader. Off by default: the VM boots the kernel image it names. |
 | K12 | Kernel versions | Kernel images are **never replaced in place**. A newer build, or a kernel a guest installed, is a new record; every VM keeps the version it names until it is changed (K6). Identical files are stored once: extraction reuses a kernel image with the same kernel and initrd digests. Kernels extracted for one VM (`owner`) keep its current and previous version, and are deleted when no VM uses them (§10.5). |
-| K13 | Extractor source | A Debian kernel (`linux-image-<version>-amd64`, `-arm64`) and `busybox-static` from `snapshot.debian.org`, sha256-pinned, with the initramfs written by glidex (§10.1). |
+| K13 | Extractor source | A Debian cloud kernel (`linux-image-<version>-cloud-amd64`; arm64 later) and `busybox-static` from `snapshot.debian.org`, sha256-pinned, with the initramfs written by glidex (§10.1). |
 
 ## 3. Verified facts
 
@@ -139,6 +139,13 @@ the pinned version; QEMU from the host's packages):
   kernel next to the generic one; extraction takes whichever kernel the
   image itself has, which is the generic one in the catalog's `amd64`
   image.
+- **F-K9.** The Debian appliance of §10.1 (cloud kernel
+  `6.12.107+deb13-cloud-amd64`, `busybox-static`, the twelve modules)
+  extracts Ubuntu 26.04 in 1.8 s, AlmaLinux 9 (XFS) in 1.8 s, Fedora 44
+  (btrfs) in 1.8 s and Debian 13 in 1.7 s under Cloud Hypervisor, and
+  Ubuntu 26.04 in 2.2 s under QEMU, reading every partition including
+  the ESP. A first build lacked `nls_ascii` and the ESP failed to mount
+  ("IO charset ascii not found").
 
 ## 4. Kernel images
 
@@ -180,8 +187,10 @@ files on the placed node.
 ### 4.2 Sources
 
 **From a disk image** (K3, K9). `POST /images {"kernel_from": "<image id
-or name>", name?}` records a kernel image in `Extracting` and returns
-`202`. The image controller runs the extractor (§10) once the disk image
+or name>", name?, nodes?}` records a kernel image in `Extracting`
+(`IMAGE_STATE_EXTRACTING`), with `for_image` and an `extracted` source
+(`image_id`, and once done `image_sha256` and the kernel's `path` in the
+image), and returns `202`. The image controller runs the extractor (§10) once the disk image
 is `Ready` (it may still be downloading). The disk image must be of kind
 `disk`; a firmware or kernel image is `400 invalid_image`. Default name
 `<image name>-kernel`. A second request for the same image while one is
@@ -408,37 +417,60 @@ firmware boot" check in `check_credential` (credentials.md *Use by VMs*).
 
 ### 10.1 Appliance
 
-The extractor is a pinned kernel and initramfs, pulled and verified like
-a firmware image and stored as an image of kind `kernel` with `role:
-extractor`. It is auto-imported from the network at first use and never
-offered to VMs.
+The extractor is a pinned kernel and initramfs (`images/extractor.rs`),
+built on a node the first time it extracts and kept in the image
+directory's `.extractor/<release>/` (`kernel`, `initrd`, `0444`). It is
+not an image record: it is never offered to VMs, never copied between
+nodes (each node builds the same bytes from the same pins), and a
+release bump is a new directory.
 
-- **Source (K13):** Debian's `linux-image-<version>-amd64` and
-  `busybox-static` from `snapshot.debian.org`, both sha256-pinned, parsed
-  with `firmware::extract_deb`. glidex writes the initramfs itself (a
-  `newc` cpio): busybox, the modules for `virtio_blk`, `ext4`, `xfs`,
-  `btrfs`, `vfat` and their dependencies (from `modules.dep`), and the
-  `/init` script. One pinned build per architecture, bumped together
-  with the firmware pins.
-- **Prototype (F-K7)** used Ubuntu's published kernel and initrd with a
-  script appended. That works, but Ubuntu prunes dated directories, so a
-  pin would break within months.
+- **Source (K13):** Debian trixie's **cloud** kernel package
+  `linux-image-6.12.107+deb13-cloud-amd64` (34 MB, against 108 MB for the
+  generic flavour) and `busybox-static` 1.37.0-6+b9, from
+  `snapshot.debian.org`. The packages and every file taken from them
+  (the kernel, twelve modules, busybox) are sha256-pinned and unpacked
+  with `firmware::extract_deb`, so the archive's pool dropping the
+  version never matters.
+- **Initramfs:** glidex writes a `newc` cpio itself: `/bin/busybox`,
+  `/init` (`extractor-init.sh`) and the modules, decompressed (they ship
+  as `.ko.xz`; busybox `insmod` loads them in order). The modules are
+  those this build doesn't have built in: `virtio_blk`, `xfs`, `btrfs`,
+  `vfat` and `fat`, NLS `cp437`, `iso8859-1`, `utf8` and `ascii` (FAT's
+  default iocharset is a module here), and their dependencies
+  (`libcrc32c`, `xor`, `raid6_pq`). Debian ships no `modules.dep` (it is
+  made at install time), so the load order is pinned and each module's
+  own `depends=` is checked against it when the appliance is built. ext4
+  is built in. 13 MB in all.
+- **Architectures:** x86_64 only so far; an aarch64 pin is a table entry
+  (`EXTRACTORS`). Without one, `kernel_from` is refused and catalog pulls
+  don't extract.
+- `GLIDEX_KERNEL_EXTRACTION=off` turns extraction off on a host (an
+  air-gapped one, or tests).
 
 ### 10.2 Run
 
 The image controller runs the extractor on a node holding a `Ready`
 copy of the disk image, under the extraction limit (one at a time per
-node by default, `GLIDEX_MAX_EXTRACTIONS`):
+node by default, `GLIDEX_MAX_EXTRACTIONS`). It holds the disk image
+(`ImageHold`) for the run, so it can't be deleted meanwhile.
 
-- the preferred hypervisor that is installed (Cloud Hypervisor, else
-  QEMU), as the control-plane user, as a direct child with a 120 s
-  timeout. No shim: nothing outlives the call, and there is no console;
-- 1 vCPU, 1 GiB, no NIC, no seed;
-- disk 0: the image's file, `readonly=on`, with its recorded format;
-- disk 1: a new sparse raw file in the image directory's temporaries
-  (`.gx-tmp`), 2 GiB, `0600`, deleted afterwards;
-- kernel command line `console=ttyS0 panic=-1 quiet rdinit=/init`; the
-  serial output goes to the image's events on failure only.
+- **As a VM instance, not a child process.** The installed control
+  plane's sandbox closes `/dev` and sets `no_new_privs`; hypervisors only
+  run in `glidex-vm@` units. So the run is a one-shot **job** of the
+  shim: `launch.json` with `job: true` (`instance id extract-<image id>`)
+  makes the shim report `Running` as soon as the hypervisor starts,
+  without waiting for an API socket, and its exit is recorded as a VM's
+  (`clean_exit` on status 0). The control plane starts it through the
+  runner, polls `instance.json`, kills it after 120 s, then releases the
+  shim and removes the instance directory. Startup's orphan scan leaves
+  `extract-*` units and directories alone.
+- The preferred hypervisor that is installed (Cloud Hypervisor, else
+  QEMU), 1 vCPU, 1 GiB, no NIC, no API socket, no seed.
+- Disk 0: the image's file, read-only (QEMU: `backing` null).
+  Disk 1: `<image dir>/.<kernel image id>.extract.raw`, sparse, 2 GiB,
+  `0600`, removed afterwards.
+- Kernel command line `console=ttyS0 panic=-1 quiet`; the console log's
+  last 4 KiB go into the image's failure reason.
 
 ### 10.3 Output stream
 
@@ -453,7 +485,8 @@ GXEND\n
 It writes, for every partition it can mount read-only: each
 `vmlinuz-*`, each `initrd.img-*` and `initramfs-*.img` (no `*rescue*`),
 `grub.cfg` files and BLS entries (`loader/entries/*.conf`), at most four
-levels deep. The host reads the stream sequentially and refuses it
+levels deep. A path with a space is skipped: the header is
+space-separated. The host reads the stream sequentially and refuses it
 (image `Failed`, with the reason) on: a malformed header line, a name
 with `..`, a NUL or a control character, more than 64 files, a file over
 the K8 size limits, or a total over 2 GiB. It never follows a name to a
@@ -570,6 +603,31 @@ next launch would extract again).
   Done on 2026-10-19 with Ubuntu 26.04 build `20260927` (kernel
   `7.0.0-34-generic`) on Cloud Hypervisor v53.0 and QEMU: both passed in
   68 s together.
+- **K3 tests.** Unit: `images::extractor::tests` (stream round trip and
+  refusals: no end, `..`, control characters, spaces, sizes per kind,
+  too many files; version order; the four catalog layouts of F-K6 from
+  their real boot configs in `tests/fixtures/boot/`; newest kernel with
+  an initramfs; failures without initramfs, config or `root=`; `newc`
+  layout; `depends=`; pins), `images::extract::tests`, the extractor
+  argv for both backends (Cloud Hypervisor parses it), and the shim's
+  `a_job_records_its_exit`. API: `kernel_extraction_requests` (with
+  extraction off: `kernel_from` refused with the reason, bad
+  combinations refused, `with_kernel` pulls the disk anyway).
+- **K3 host test (`#[ignore]`d, network: `extracted_kernel_boots_its_image`
+  and its `qemu_` twin).** Pull `GLIDEX_TEST_CATALOG`, which also
+  extracts its kernel through the pinned Debian appliance (built on the
+  first run) as a shim job; check the kernel image is verified, records
+  the image's digest, and has a `root=` command line; boot a VM from the
+  image with that kernel, a generated seed and a credential; log in and
+  check `uname -r`; stop; delete.
+
+  Done on 2026-10-19, each from a fresh data directory (so including the
+  appliance's download and build): Ubuntu 26.04 (`7.0.0-34-generic`,
+  `vda13:`) on Cloud Hypervisor in 84 s and QEMU in 78 s; AlmaLinux 9
+  (`5.14.0-687.53.1.el9_8`, XFS, BLS) in 61 s; Fedora 44
+  (`6.19.10-300.fc44`, btrfs, `rootflags=subvol=root`) in 121 s; Debian
+  13 (`6.12.113+deb13-amd64`, `root=PARTUUID=…`) in 105 s, all on Cloud
+  Hypervisor.
 - **K0 host test (`#[ignore]`d, `kernel_boot_with_initrd` and
   `qemu_kernel_boot_with_initrd` in `tests/functional_tests.rs`).**
   `GLIDEX_TEST_KERNEL`, `GLIDEX_TEST_INITRD` and `GLIDEX_TEST_IMAGE` are
@@ -592,8 +650,8 @@ next launch would extract again).
 | **K0** backends *(done)* | `initrd_path` (host path), `ConsoleDevice` (K5) and the shared `console=ttyS0` default, `kernel_args` limits (K7), K2 conflict check | §11 backend unit tests; host boot of F-K3 through glidex with host paths. |
 | **K1** kernel images *(done)* | `ImageKind::Kernel`, storage (datastore copies), URL pull and host import, verify (K8), lifecycle, image cache | §11 image unit and API tests. |
 | **K2** VM integration *(done)* | `kernel`, `generate_seed` (K4), credentials, mutability (K6), arch; the UI keeps kernel images out of its disk-image lists and lists them under *Kernels* | §11 VM API tests; the functional test with a kernel image and a credential. |
-| **K3** extraction | The extractor appliance (§10.1, K13), runs (§10.2), stream (§10.3), choice (§10.4), `kernel_from`, `with_kernel` on catalog pulls (K10), `POST /vms/{id}/extract-kernel` (§10.5) | Stream and choice unit tests; the functional test on the five catalog distros (Ubuntu 22.04, 24.04 and 26.04, Debian 13, Fedora, Alma 9). |
-| **K3b** following the guest | `kernel_from_disk` (K11), owned kernel images and their cleanup, `previous_kernel` (K12) | A functional test that installs a second kernel in the guest, restarts, sees `uname -r` change, and goes back with a PATCH. |
+| **K3** extraction *(done)* | The extractor appliance (§10.1, K13), runs as shim jobs (§10.2), stream (§10.3), choice (§10.4), `kernel_from`, `with_kernel` on catalog pulls (K10) | Stream and choice unit tests; the functional test on the catalog distros (§11). |
+| **K3b** following the guest | `POST /vms/{id}/extract-kernel` (§10.5; moved from K3: it makes VM-owned kernel images), `kernel_from_disk` (K11), owned kernel images and their cleanup, `previous_kernel` (K12) | A functional test that installs a second kernel in the guest, restarts, sees `uname -r` change, and goes back with a PATCH. |
 | **K4** clients and docs | UI, gxctl, user guide (`vms.md`, `images.md`, `credentials.md`, `console.md`) | UI e2e; docs build. |
 
 ## 13. Changes to other specs (to apply on acceptance)

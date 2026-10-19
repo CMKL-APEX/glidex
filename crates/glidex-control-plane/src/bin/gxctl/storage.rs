@@ -325,6 +325,7 @@ fn image_status(img: &Image) -> String {
         Some(ImageState::IMAGE_STATE_READY) => "ready".green().to_string(),
         Some(ImageState::IMAGE_STATE_VERIFYING) => "verifying".into(),
         Some(ImageState::IMAGE_STATE_MISSING) => "missing".into(),
+        Some(ImageState::IMAGE_STATE_EXTRACTING) => "extracting".into(),
         _ => "?".into(),
     }
 }
@@ -401,6 +402,8 @@ pub async fn image(client: &ApiClient, args: &[&str]) {
                         }
                         Some(Source::Url(s)) => s.url.clone(),
                         Some(Source::Host(h)) => h.path.clone(),
+                        Some(Source::Extracted(x)) if x.path.is_empty() => "extracting".into(),
+                        Some(Source::Extracted(x)) => format!("extracted: {}", x.path),
                         None => String::new(),
                     };
                     let kind = match hypervisor_name(&i.hypervisor) {

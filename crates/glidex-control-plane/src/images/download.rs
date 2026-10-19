@@ -194,6 +194,34 @@ impl ImageManager {
         self: &Arc<Self>,
         req: PullImageRequest,
     ) -> Result<(Image, bool), ImageError> {
+        // A kernel extracted from a disk image (spec/kernel-boot.md §10).
+        if let Some(from) = &req.kernel_from {
+            if req.catalog.is_some()
+                || req.url.is_some()
+                || req.firmware.is_some()
+                || req.kernel_path.is_some()
+                || req.initrd_path.is_some()
+                || req.initrd_url.is_some()
+                || req.cmdline.is_some()
+                || req.with_kernel.is_some()
+                || req.hypervisor.is_some()
+                || req.kind.is_some_and(|k| k != ImageKind::Kernel)
+            {
+                return Err(ImageError::InvalidImage(
+                    "kernel_from takes a disk image and, optionally, name and nodes".into(),
+                ));
+            }
+            return self.pull_kernel_from(from, req.name.clone(), req.nodes.clone());
+        }
+        if req.with_kernel.is_some()
+            && (req.firmware.is_some()
+                || req.kernel_path.is_some()
+                || req.kind.is_some_and(|k| k != ImageKind::Disk))
+        {
+            return Err(ImageError::InvalidImage(
+                "with_kernel is for a disk image pull (catalog or url)".into(),
+            ));
+        }
         // In a cluster the leader downloads for any node's architecture (§9.2.1).
         let arch = match req.arch.as_deref() {
             Some(a) => Arch::parse(a).ok_or_else(|| {
@@ -468,6 +496,8 @@ impl ImageManager {
                 ImageSource::Host { path } => {
                     kernel_name(path.rsplit('/').next().unwrap_or_default())
                 }
+                // `kernel_from` names its own (extract.rs).
+                ImageSource::Extracted { .. } => "kernel".to_string(),
                 ImageSource::Url { url, .. } => {
                     let file = catalog::url_file_name(url);
                     let stem = file.split('.').next().unwrap_or(file);
@@ -523,7 +553,8 @@ impl ImageManager {
                     ImageSource::Firmware { url, .. } if import.is_none() => url.clone(),
                     ImageSource::Firmware { .. }
                     | ImageSource::Catalog { .. }
-                    | ImageSource::Host { .. } => String::new(),
+                    | ImageSource::Host { .. }
+                    | ImageSource::Extracted { .. } => String::new(),
                 },
                 vars_url,
                 vars_sha256,
@@ -555,6 +586,7 @@ impl ImageManager {
             initrd: None,
             cmdline: req.cmdline.clone(),
             kernel_release: None,
+            for_image: None,
         };
         if let Some((kernel_file, initrd_file)) = kernel_import {
             // Copied before the record exists, so a failure leaves nothing.
@@ -676,6 +708,20 @@ impl ImageManager {
     /// and the controller that resumes one race for the same image, and two
     /// downloads into one `.part` file fail each other.
     pub(crate) fn spawn_download(self: &Arc<Self>, id: String) {
+        let mgr = self.clone();
+        let task_id = id.clone();
+        self.spawn_task(id, async move { mgr.run_download(&task_id).await });
+    }
+
+    /// Run `work` for image `id` unless a task for it already runs (a
+    /// download, or an extraction, spec/kernel-boot.md §10). If it fails,
+    /// its temporary files go and an image still in progress is `Failed`;
+    /// never one that finished.
+    pub(crate) fn spawn_task(
+        self: &Arc<Self>,
+        id: String,
+        work: impl std::future::Future<Output = Result<(), ImageError>> + Send + 'static,
+    ) {
         let mut tasks = self.tasks.lock().unwrap();
         if tasks.contains_key(&id) {
             return;
@@ -683,17 +729,23 @@ impl ImageManager {
         let mgr = self.clone();
         let task_id = id.clone();
         let handle = tokio::spawn(async move {
-            let result = mgr.run_download(&task_id).await;
+            let result = work.await;
             mgr.tasks.lock().unwrap().remove(&task_id);
             if let Err(e) = result {
-                tracing::warn!(image = %task_id, "image download failed: {}", e);
-                let _ = std::fs::remove_file(mgr.part_path(&task_id));
-                let _ = std::fs::remove_file(mgr.initrd_part_path(&task_id));
-                // Only a download still in progress fails; never one that finished.
+                tracing::warn!(image = %task_id, "image download or extraction failed: {}", e);
+                for p in [
+                    mgr.part_path(&task_id),
+                    mgr.initrd_part_path(&task_id),
+                    mgr.extract_out_path(&task_id),
+                ] {
+                    let _ = std::fs::remove_file(p);
+                }
                 if let Some(mut img) = mgr.get_image(&task_id).ok().filter(|i| {
                     matches!(
                         i.status,
-                        ImageStatus::Downloading { .. } | ImageStatus::Verifying
+                        ImageStatus::Downloading { .. }
+                            | ImageStatus::Verifying
+                            | ImageStatus::Extracting
                     )
                 }) {
                     img.status = ImageStatus::Failed {
@@ -715,6 +767,11 @@ impl ImageManager {
             .await
             .map_err(|e| ImageError::Io(e.to_string()))?;
         let mut img = self.get_image(id)?;
+        if matches!(img.source, ImageSource::Extracted { .. }) {
+            return Err(ImageError::InvalidImage(
+                "an extracted kernel is not downloaded".into(),
+            ));
+        }
 
         if img.download.url.is_empty() {
             self.resolve_catalog(&mut img).await?;
@@ -1263,7 +1320,7 @@ impl ImageManager {
     /// (`<id>.initrd.part`, when there is one): the header must be a
     /// kernel for `arch` (K8). The initramfs is moved first, so a kernel
     /// file in place means a complete image. Blocking.
-    fn install_kernel(
+    pub(super) fn install_kernel(
         &self,
         id: &str,
         arch: Arch,
@@ -1408,15 +1465,15 @@ impl ImageManager {
 }
 
 /// What installing a kernel image found.
-struct InstalledKernel {
-    size: u64,
-    sha256: String,
-    release: Option<String>,
-    initrd: Option<FileMeta>,
+pub(super) struct InstalledKernel {
+    pub(super) size: u64,
+    pub(super) sha256: String,
+    pub(super) release: Option<String>,
+    pub(super) initrd: Option<FileMeta>,
 }
 
 impl InstalledKernel {
-    fn apply(self, img: &mut Image) {
+    pub(super) fn apply(self, img: &mut Image) {
         img.virtual_size_bytes = self.size;
         img.file_size_bytes = self.size + self.initrd.as_ref().map_or(0, |i| i.size_bytes);
         img.sha256 = self.sha256;

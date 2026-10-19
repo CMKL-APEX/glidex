@@ -44,6 +44,8 @@ function StatusBadge({ image }: { image: ImageInfo }) {
     }
     case "verifying":
       return <span className="text-xs text-sky-700">Verifying…</span>;
+    case "extracting":
+      return <span className="text-xs text-sky-700">Extracting…</span>;
     case "ready":
       return <span className="text-xs text-green-700">Ready</span>;
     case "missing":
@@ -169,6 +171,8 @@ function SourceCell({ img }: { img: ImageInfo }) {
         <span className="break-all">{s.url.url}</span>
       ) : s.host ? (
         <span className="break-all">{s.host.path}</span>
+      ) : s.extracted ? (
+        <span className="break-all">{s.extracted.path ? `extracted: ${s.extracted.path}` : "extracting from its image"}</span>
       ) : (
         <span>
           {cat?.key} <span className="text-gray-400">{cat?.version}</span>
@@ -480,7 +484,9 @@ export default function Images() {
 
   // Follow the live stream; without it, poll while anything is downloading.
   const live = useLiveRefresh(["image", "disk", "vm"], refresh);
-  const busy = images?.some((i) => imageState(i) === "downloading" || imageState(i) === "verifying" || i.deleting);
+  const busy = images?.some(
+    (i) => imageState(i) === "downloading" || imageState(i) === "verifying" || imageState(i) === "extracting" || i.deleting,
+  );
   useEffect(() => {
     if (!busy || live) return;
     const id = setInterval(refresh, 1500);

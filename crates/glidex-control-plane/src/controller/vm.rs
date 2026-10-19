@@ -1193,6 +1193,7 @@ impl VmManager {
             meter_poll_secs: settings.meter_poll_secs,
             cpu_affinity: cpu_affinity.clone(),
             vcpu_pins: launch_pins,
+            job: false,
         };
         launch
             .write(&paths.launch)

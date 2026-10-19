@@ -283,6 +283,12 @@ impl Supervisor {
                     self.instance.hypervisor_starttime = proc_starttime(child.id()).ok().flatten();
                     self.child = Some(child);
                     self.save();
+                    if self.launch.job {
+                        // Nothing to wait for: the run ends when it exits.
+                        self.instance.phase = Phase::Running;
+                        self.save();
+                        return;
+                    }
                 }
                 Err(e) => {
                     self.record_exit(

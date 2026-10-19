@@ -109,6 +109,17 @@ pub fn image_pb(i: &ImageResponse) -> pb::Image {
             path: path.clone(),
             ..Default::default()
         })),
+        img::ImageSource::Extracted {
+            image_id,
+            image_sha256,
+            path,
+            ..
+        } => Source::Extracted(Box::new(pb::ExtractedSource {
+            image_id: image_id.clone(),
+            image_sha256: image_sha256.clone(),
+            path: path.clone(),
+            ..Default::default()
+        })),
     };
     let status = match &i.status {
         img::ImageStatus::Downloading {
@@ -122,6 +133,10 @@ pub fn image_pb(i: &ImageResponse) -> pb::Image {
         },
         img::ImageStatus::Verifying => pb::ImageStatus {
             state: pb::ImageState::IMAGE_STATE_VERIFYING.into(),
+            ..Default::default()
+        },
+        img::ImageStatus::Extracting => pb::ImageStatus {
+            state: pb::ImageState::IMAGE_STATE_EXTRACTING.into(),
             ..Default::default()
         },
         img::ImageStatus::Ready => pb::ImageStatus {
@@ -175,6 +190,7 @@ pub fn image_pb(i: &ImageResponse) -> pb::Image {
             .collect(),
         info: i.info.as_ref().map(info_pb).into(),
         deleting: i.deleting.then_some(true),
+        for_image: i.for_image.clone(),
         kernel: i
             .kernel
             .as_ref()
@@ -532,6 +548,8 @@ pub async fn pull_image(
         cmdline: req.cmdline,
         kernel_path: req.kernel_path.map(crate::models::expand_tilde),
         initrd_path: req.initrd_path.map(crate::models::expand_tilde),
+        kernel_from: req.kernel_from,
+        with_kernel: req.with_kernel,
     };
     let (i, created) = call.manager().pull_image(r).await.map_err(manager_err)?;
     call.set_target(format!("image:{}", i.id));

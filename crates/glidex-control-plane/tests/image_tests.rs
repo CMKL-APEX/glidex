@@ -213,6 +213,10 @@ fn create_app(dir: &Path) -> (Router, Arc<VmManager>) {
     // Every test sets the same value, so parallel tests don't race on it.
     // SAFETY: test-only; every test sets it the same way before reading it.
     unsafe { std::env::set_var("GLIDEX_ALLOW_PRIVATE_IMAGE_URLS", "1") };
+    // Never download the kernel extractor here; extraction runs in the
+    // ignored functional tests (spec/kernel-boot.md §10).
+    // SAFETY: as above.
+    unsafe { std::env::set_var("GLIDEX_KERNEL_EXTRACTION", "off") };
     let manager = common::with_db_path(dir.join("test.db")).unwrap();
     // Disks are made, resized and extended by the disk controller
     // (spec/reconciliation.md §10.1); the tests wait for it with ?wait.
@@ -1936,4 +1940,69 @@ async fn vms_boot_kernel_images() {
     // k1 is used by kb2 only now.
     let (_, img) = request(&app, "GET", "/images/k1", None).await;
     assert_eq!(img["image"]["used_by_vms"], json!(["kb2"]), "{img}");
+}
+
+/// `kernel_from` and `with_kernel` (spec/kernel-boot.md §10, K10), on a
+/// host where extraction is off: refused clearly, and a disk pull that
+/// asks for its kernel still pulls the disk.
+#[tokio::test]
+async fn kernel_extraction_requests() {
+    if !tools_present() {
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    let fx = fixtures(tmp.path());
+    let (base, _) = start_server(&fx).await;
+    let (app, _manager) = create_app(tmp.path());
+    pull_ready(&app, &base, "good.qcow2", "base", None).await;
+    pull_firmware(&app, &base, "edk2", "cloudhypervisor").await;
+
+    let (status, err) = request(
+        &app,
+        "POST",
+        "/images",
+        Some(json!({"kernel_from": "base"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{err}");
+    assert!(
+        err["message"]
+            .as_str()
+            .unwrap()
+            .contains("can't be extracted"),
+        "{err}"
+    );
+    for body in [
+        json!({"kernel_from": "base", "url": format!("{base}/good.qcow2")}),
+        json!({"kernel_from": "base", "cmdline": "ro"}),
+        json!({"kernel_from": "base", "kind": "IMAGE_KIND_DISK"}),
+        json!({"kernel_from": "edk2"}),
+        json!({"kernel_from": "nope"}),
+        json!({"firmware": "cloudhv-edk2", "with_kernel": true}),
+        json!({"url": format!("{base}/vmlinuz-6.8.0-1-generic"), "kind": "IMAGE_KIND_KERNEL", "with_kernel": true}),
+    ] {
+        let (status, err) = request(&app, "POST", "/images", Some(body.clone())).await;
+        assert!(status.is_client_error(), "{body}: {status} {err}");
+    }
+
+    // The disk comes anyway; no kernel record without an extractor.
+    let (status, img) = request(
+        &app,
+        "POST",
+        "/images",
+        Some(json!({
+            "url": format!("{base}/good.qcow2"), "name": "with-k", "with_kernel": true
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{img}");
+    let img = wait_image(&app, img["image"]["id"].as_str().unwrap()).await;
+    assert_eq!(img["status"]["state"], "IMAGE_STATE_READY", "{img}");
+    let (_, all) = request(&app, "GET", "/images", None).await;
+    assert!(
+        !items(&all, "images")
+            .iter()
+            .any(|i| i["kind"] == "IMAGE_KIND_KERNEL"),
+        "{all}"
+    );
 }
