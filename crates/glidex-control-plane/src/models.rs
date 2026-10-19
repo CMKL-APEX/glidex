@@ -154,6 +154,10 @@ pub struct VmConfig {
     /// Dedicated: each vCPU on a host CPU of its own (H6).
     #[serde(default, skip_serializing_if = "CpuPolicy::is_shared")]
     pub cpu_policy: CpuPolicy,
+    /// Devices asked for by pool (spec/host-topology.md §6, §9); the
+    /// scheduler picks them, `vfio_devices` names them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub devices: Vec<DeviceRequest>,
     /// At launch: the host NUMA node guest RAM is bound to, and the host
     /// CPU of each vCPU (dedicated), from the placement. Never persisted.
     #[serde(skip)]
@@ -265,10 +269,35 @@ pub struct Placement {
     /// whole cores, the idle siblings follow.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cpus: Vec<u32>,
+    /// The devices picked for the VM's pool requests (§9).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pool_devices: Vec<PoolDevice>,
 }
 
 /// KiB of ordinary memory pages.
 pub const SMALL_PAGE_KIB: u64 = 4;
+
+/// `count` devices of pool `pool` (spec/host-topology.md §6).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceRequest {
+    pub pool: String,
+    #[serde(default = "one")]
+    pub count: u32,
+    /// All of them under one PCIe switch.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub same_switch: bool,
+}
+
+fn one() -> u32 {
+    1
+}
+
+/// A device the scheduler picked for a pool request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PoolDevice {
+    pub pool: String,
+    pub address: String,
+}
 
 /// spec/host-topology.md H5: `preferred` keeps memory (and CPUs and
 /// devices) on one host NUMA node when one fits, `strict` refuses a node

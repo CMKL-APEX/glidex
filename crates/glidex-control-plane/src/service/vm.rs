@@ -209,8 +209,64 @@ pub fn vm_pb_plain(vm: &Vm) -> pb::Vm {
             .as_ref()
             .map(|p| p.cpus.clone())
             .unwrap_or_default(),
+        devices: config.devices.iter().map(device_request_pb).collect(),
+        pool_devices: vm
+            .status
+            .placement
+            .iter()
+            .flat_map(|p| p.pool_devices.iter())
+            .map(pool_device_pb)
+            .collect(),
         ..Default::default()
     }
+}
+
+fn device_request_pb(r: &m::DeviceRequest) -> pb::DeviceRequest {
+    pb::DeviceRequest {
+        pool: r.pool.clone(),
+        count: r.count,
+        same_switch: r.same_switch,
+        ..Default::default()
+    }
+}
+
+fn pool_device_pb(d: &m::PoolDevice) -> pb::PoolDevice {
+    pb::PoolDevice {
+        pool: d.pool.clone(),
+        address: d.address.clone(),
+        ..Default::default()
+    }
+}
+
+/// Pool requests as the model has them: a count of 0 means 1.
+fn device_requests_of(rs: &[pb::DeviceRequest]) -> Vec<m::DeviceRequest> {
+    rs.iter()
+        .map(|r| m::DeviceRequest {
+            pool: r.pool.clone(),
+            count: r.count.max(1),
+            same_switch: r.same_switch,
+        })
+        .collect()
+}
+
+/// Each requested pool exists, and the caller may use it for `project`
+/// (`usePciPool`, spec/host-topology.md §9).
+fn check_pools(call: &Call, project: &str, rs: &[m::DeviceRequest]) -> ServiceResult<()> {
+    let pools = call.manager().pci_pools();
+    let with_project: &[(&'static str, Ent)] = &[("project", Ent::Project(project.to_string()))];
+    for r in rs {
+        if !pools.iter().any(|p| p.name == r.pool) {
+            return Err(ServiceError::new(
+                StatusCode::BAD_REQUEST,
+                "invalid_config",
+                format!("no device pool {}", r.pool),
+            ));
+        }
+        let (e, mut es) = crate::api::vms::pci_pool_entities(call, &r.pool);
+        es.project(project);
+        call.require_action("usePciPool", e, es, with_project)?;
+    }
+    Ok(())
 }
 
 /// A VM as the caller sees it: with its node's name, its networks' names
@@ -386,6 +442,7 @@ pub async fn preview_placement(
         "hugepage_size": req.hugepage_size,
         "numa_policy": numa_of(req.numa_policy.as_known().unwrap_or_default()).unwrap_or_default(),
         "cpu_policy": cpu_of(req.cpu_policy.as_known().unwrap_or_default()).unwrap_or_default(),
+        "devices": device_requests_of(&req.devices),
     });
     if let Some(h) = hypervisor {
         cfg["hypervisor"] = serde_json::json!(h);
@@ -427,6 +484,7 @@ pub async fn preview_placement(
                     .then_some(f.numa_aligned),
                 numa_node: f.numa_node,
                 cpus: f.cpus,
+                pool_devices: f.pool_devices.iter().map(pool_device_pb).collect(),
                 ..Default::default()
             })
             .collect(),
@@ -486,6 +544,8 @@ pub async fn create_vm(call: &Call, req: pb::CreateVmRequest) -> ServiceResult<V
             .map_or_else(|| n.to_string(), |x| x.meta.id)
     });
     let device_nodes = device_nodes(call, &project, &req.vfio_devices, pin)?;
+    let pool_requests = device_requests_of(&req.devices);
+    check_pools(call, &project, &pool_requests)?;
     if names_host_path(&req) {
         call.require_action("useHostPath", Ent::Host, EntitySet::new(), &[])?;
     }
@@ -536,6 +596,7 @@ pub async fn create_vm(call: &Call, req: pb::CreateVmRequest) -> ServiceResult<V
         hugepage_size: req.hugepage_size,
         numa_policy: numa_of(req.numa_policy.as_known().unwrap_or_default()).unwrap_or_default(),
         cpu_policy: cpu_of(req.cpu_policy.as_known().unwrap_or_default()).unwrap_or_default(),
+        devices: pool_requests,
         host_numa_node: None,
         vcpu_pins: Vec::new(),
         firmware_image: None,
@@ -638,6 +699,7 @@ pub const UPDATABLE: &[&str] = &[
     "hugepage_size",
     "numa_policy",
     "cpu_policy",
+    "devices",
     "vfio_devices",
     "data_disks",
     "networks",
@@ -686,6 +748,7 @@ fn patch_of(change: &pb::VmChange, mask: &[String]) -> ServiceResult<VmPatch> {
                                 .unwrap_or_default(),
                         )
                     }
+                    "devices" => c.devices = Some(device_requests_of(&change.devices)),
                     "hugepage_size" => {
                         c.hugepage_size = Some(match change.hugepage_size.as_str() {
                             "" => serde_json::Value::Null,
@@ -780,6 +843,12 @@ pub async fn update_vm(call: &Call, req: pb::UpdateVmRequest) -> ServiceResult<V
                 ces.project(&project);
                 call.require_action("useCredential", ce, ces, with_project)?;
             }
+        }
+        if let Some(rs) = &cp.devices
+            && rs != &cur.devices
+        {
+            call.require_action("attachDevice", e.clone(), es.clone(), &[])?;
+            check_pools(call, &project, rs)?;
         }
         if let Some(devs) = &cp.vfio_devices {
             if devs.iter().any(|d| !cur.vfio_devices.contains(d)) {

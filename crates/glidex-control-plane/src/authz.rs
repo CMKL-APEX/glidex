@@ -114,6 +114,7 @@ pub enum Ent {
     Datastore(String),
     Network(String),
     PciDevice(String),
+    PciPool(String),
     /// spec/tenancy.md §10.1.
     Tenant(String),
     Directory(String),
@@ -149,6 +150,7 @@ impl Ent {
             Ent::Datastore(_) => "Datastore",
             Ent::Network(_) => "Network",
             Ent::PciDevice(_) => "PciDevice",
+            Ent::PciPool(_) => "PciPool",
             Ent::Tenant(_) => "Tenant",
             Ent::Directory(_) => "Directory",
         }
@@ -171,6 +173,7 @@ impl Ent {
             | Ent::Datastore(s)
             | Ent::Network(s)
             | Ent::PciDevice(s)
+            | Ent::PciPool(s)
             | Ent::Tenant(s)
             | Ent::Directory(s) => Cow::Borrowed(s),
         }
@@ -193,6 +196,7 @@ impl Ent {
             "Datastore" => Ent::Datastore(id),
             "Network" => Ent::Network(id),
             "PciDevice" => Ent::PciDevice(id),
+            "PciPool" => Ent::PciPool(id),
             "Tenant" => Ent::Tenant(id),
             "Directory" => Ent::Directory(id),
             _ => return None,
@@ -494,6 +498,29 @@ impl EntitySet {
             None => Ent::Cluster,
         };
         self.add(Ent::Network(name.into()), attrs, vec![parent])
+    }
+
+    /// Pool `name`, granted to `grants` and `tenant_grants`.
+    pub fn pci_pool(
+        &mut self,
+        name: &str,
+        grants: &[String],
+        tenant_grants: &[String],
+    ) -> &mut Self {
+        for p in grants {
+            self.project(p);
+        }
+        let set = Value::Array(
+            grants
+                .iter()
+                .map(|p| Ent::Project(p.clone()).json_ref())
+                .collect(),
+        );
+        self.add(
+            Ent::PciPool(name.into()),
+            json!({ "grants": set, "tenant_grants": tenant_set(tenant_grants) }),
+            vec![Ent::Cluster],
+        )
     }
 
     /// PCI device `bdf` of node `node`: `PciDevice::"<node>/<bdf>"` in that

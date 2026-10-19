@@ -672,6 +672,7 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         "readHostTopology",
         get(nodes::topology),
     )
+    .add("GET", "/pci-pools", "listPciPools", get(nodes::pci_pools))
     .add(
         "POST",
         "/nodes/{id}/devices/{address}/prepare",

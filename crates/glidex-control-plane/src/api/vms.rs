@@ -370,6 +370,33 @@ pub(crate) fn device_bdf(path: &str) -> Result<String, ApiErr> {
     }
 }
 
+/// Pool `name` as an entity, with the projects and tenants granted it in
+/// the config (`pci.allow` entries with `pool`).
+pub(crate) fn pci_pool_entities(c: &Caller, name: &str) -> (Ent, EntitySet) {
+    let projects = c.manager().projects();
+    let allow: Vec<_> = c
+        .auth()
+        .config
+        .pci
+        .allow
+        .iter()
+        .filter(|g| g.pool.as_deref() == Some(name))
+        .collect();
+    let grants: Vec<String> = allow
+        .iter()
+        .flat_map(|g| g.projects.iter())
+        .filter_map(|p| projects.resolve(p).ok().map(|p| p.id))
+        .collect();
+    let tenants: Vec<String> = allow
+        .iter()
+        .flat_map(|g| g.tenants.iter())
+        .filter_map(|t| c.auth().tenants.resolve(t).ok().map(|t| t.id))
+        .collect();
+    let mut es = EntitySet::new();
+    es.pci_pool(name, &grants, &tenants);
+    (Ent::PciPool(name.to_string()), es)
+}
+
 /// Node `node`'s PCI device `bdf` as an entity, with the projects and
 /// tenants granted it in the config: grants for that address on every
 /// node, or on this one by id or name (spec/host-topology.md §8.5).
@@ -388,7 +415,11 @@ pub(crate) fn pci_entities(c: &Caller, node: &str, bdf: &str) -> (Ent, EntitySet
         .pci
         .allow
         .iter()
-        .filter(|g| g.bdf.eq_ignore_ascii_case(bdf))
+        .filter(|g| {
+            g.bdf
+                .as_deref()
+                .is_some_and(|b| b.eq_ignore_ascii_case(bdf))
+        })
         .filter(|g| {
             g.node
                 .as_deref()

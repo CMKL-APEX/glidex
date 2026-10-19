@@ -161,6 +161,7 @@ Routers have no `gxctl` command yet: use the web UI or the
 | `uplink-reapply <bridge> <name>` | Set up again an uplink rolled back at start |
 | `uplink-rm <bridge> <name>` | Remove an uplink, restoring the NIC |
 | `pci`, `pci-devices` | List the host's PCI devices, with their NUMA node and whether each is ready for passthrough |
+| `pci pools` | The device pools: their devices per node, holders, and how many are free |
 | `pci <address>` | One device in detail |
 
 See [Host networking](../operator-guide/host-networking.md) and

@@ -231,6 +231,44 @@ firmware reports `-1`, are refused. Each node reports its NUMA nodes,
 cores and devices' NUMA nodes in its record (`GET /nodes/{id}`,
 `status.topology`).
 
+## Device pools
+
+Instead of naming devices by address, a VM can ask for a number of
+devices from a pool, and the scheduler picks them. Pools are defined in
+`/etc/glidex/control-plane.json` (on each server, the same):
+
+```json
+{
+  "pci": {
+    "pools": [
+      { "name": "a100", "class": "gpu",
+        "match": { "vendor_id": "0x10de", "device_id": "0x20b0" } },
+      { "name": "cx7", "class": "nic",
+        "match": { "vendor_id": "0x15b3", "device_id": "0x1021" },
+        "nodes": ["gpu-01", "gpu-02"] }
+    ],
+    "allow": [
+      { "pool": "a100", "tenants": ["research"] },
+      { "pool": "cx7", "projects": ["ml-team"] }
+    ]
+  }
+}
+```
+
+- `match` takes `vendor_id`, `device_id`, `class_code` (or its start,
+  `0x0302`) and `addresses`; every key given must match. `nodes` limits
+  the pool to some nodes.
+- A grant with `pool` lets a project or tenant ask for that pool's
+  devices (`usePciPool`); `net-admin` and `system-admin` may use any.
+- A VM asks with `devices`: `[{"pool": "a100", "count": 2,
+  "same_switch": true}]` (`gxctl vm create` asks for `a100:2:switch`).
+  The scheduler gives it ready, uncordoned devices no other VM holds, on
+  the NUMA node of its other devices first; with `same_switch`, all
+  under one PCIe switch. The VM shows them as `pool_devices`, and gets
+  them at its next start.
+- `gxctl pci pools` (`GET /pci-pools`, a host role) lists each pool's
+  devices per node, who holds them, and how many are free.
+
 ## Device health and cordoning
 
 Each node reads its devices' PCIe error counters (AER), shown in

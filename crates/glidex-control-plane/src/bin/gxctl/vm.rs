@@ -354,6 +354,25 @@ pub async fn get(client: &ApiClient, args: &[&str]) {
     if !vm.vfio_devices.is_empty() {
         println!("  VFIO:       {}", vm.vfio_devices.join(", "));
     }
+    for r in &vm.devices {
+        let got: Vec<&str> = vm
+            .pool_devices
+            .iter()
+            .filter(|d| d.pool == r.pool)
+            .map(|d| d.address.as_str())
+            .collect();
+        println!(
+            "  Pool:       {} × {}{} → {}",
+            r.count.max(1),
+            r.pool,
+            if r.same_switch { " (one switch)" } else { "" },
+            if got.is_empty() {
+                "-".to_string()
+            } else {
+                got.join(", ")
+            }
+        );
+    }
     for (i, nic) in vm.nics.iter().enumerate() {
         println!(
             "  NIC {}:      {} {} {}{}",
@@ -549,6 +568,27 @@ pub async fn device(client: &ApiClient, attach: bool, args: &[&str]) {
 }
 
 /// `create` (interactive).
+/// `a100:2, cx7` → pool requests (count 1 by default; `:switch` after the
+/// count keeps them under one PCIe switch, spec/host-topology.md §9).
+pub(crate) fn parse_device_requests(s: &str) -> Vec<DeviceRequest> {
+    s.split(',')
+        .map(str::trim)
+        .filter(|x| !x.is_empty())
+        .map(|x| {
+            let mut parts = x.split(':');
+            let pool = parts.next().unwrap_or_default().to_string();
+            let count = parts.next().and_then(|c| c.parse().ok()).unwrap_or(1);
+            let same_switch = parts.next() == Some("switch");
+            DeviceRequest {
+                pool,
+                count,
+                same_switch,
+                ..Default::default()
+            }
+        })
+        .collect()
+}
+
 pub async fn create(client: &ApiClient) {
     println!("{}", "Create new VM".bold());
     println!("{}", "-".repeat(40));
@@ -818,6 +858,10 @@ pub async fn create(client: &ApiClient) {
     })
     .unwrap_or_default();
 
+    let devices = parse_device_requests(&prompt(
+        "Device pools (comma-separated pool[:count], e.g. a100:2; optional): ",
+    ));
+
     let request = CreateVmRequest {
         name,
         project: client.project(),
@@ -837,6 +881,7 @@ pub async fn create(client: &ApiClient) {
         hypervisor: hypervisor.into(),
         vfio_devices,
         networks,
+        devices,
         ..Default::default()
     };
 
@@ -859,6 +904,22 @@ pub async fn create(client: &ApiClient) {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn device_requests_parse() {
+        let r = parse_device_requests("a100:2:switch, cx7 ,");
+        assert_eq!(r.len(), 2);
+        assert_eq!(
+            (r[0].pool.as_str(), r[0].count, r[0].same_switch),
+            ("a100", 2, true)
+        );
+        assert_eq!(
+            (r[1].pool.as_str(), r[1].count, r[1].same_switch),
+            ("cx7", 1, false)
+        );
+        assert!(parse_device_requests("").is_empty());
+    }
+
     use super::*;
 
     #[test]

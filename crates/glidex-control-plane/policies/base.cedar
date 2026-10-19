@@ -33,6 +33,15 @@ unless {
 @id("base.network-use")
 permit (principal, action == Glidex::Action::"useNetwork", resource);
 
+// Which pools a project may ask for devices of without host.devices
+// (spec/host-topology.md §9).
+@id("base.pci-pool-grant")
+permit (principal, action == Glidex::Action::"usePciPool", resource)
+when {
+  resource.grants.contains(context.project) ||
+  resource.tenant_grants.contains(context.project.tenant)
+};
+
 // Which PCI devices a project may use without host.devices.
 @id("base.pci-grant")
 permit (principal, action == Glidex::Action::"usePciDevice", resource)

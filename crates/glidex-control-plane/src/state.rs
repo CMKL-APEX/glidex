@@ -266,6 +266,9 @@ pub struct ConfigPatch {
     pub numa_policy: Option<crate::models::NumaPolicy>,
     #[serde(default)]
     pub cpu_policy: Option<crate::models::CpuPolicy>,
+    /// Pool requests, replacing the list.
+    #[serde(default)]
+    pub devices: Option<Vec<crate::models::DeviceRequest>>,
     #[serde(default)]
     pub vfio_devices: Option<Vec<String>>,
     /// Disk ids or names, replacing the list.
@@ -341,6 +344,8 @@ pub struct VmManager {
     pub(crate) controllers_started: std::sync::atomic::AtomicBool,
     sched: ArcSwap<crate::cluster::config::SchedulerConfig>,
     reserved: ArcSwap<crate::cluster::config::NodeReserved>,
+    /// `pci.pools` of the control-plane config (spec/host-topology.md §9).
+    pci_pools: ArcSwap<Vec<crate::config::PciPool>>,
     /// What this host runs OVN with: the cluster setting (if written) over
     /// the file's per-host part (spec/clustering-ui.md §8a).
     pub(crate) ovn: ArcSwap<crate::cluster::config::OvnConfig>,
@@ -519,6 +524,7 @@ impl VmManager {
             controllers_started: std::sync::atomic::AtomicBool::new(false),
             sched: ArcSwap::from_pointee(Default::default()),
             reserved: ArcSwap::from_pointee(Default::default()),
+            pci_pools: ArcSwap::from_pointee(Vec::new()),
             ovn: ArcSwap::from_pointee(Default::default()),
             ovn_file: ArcSwap::from_pointee(Default::default()),
             ovn_file_warned: std::sync::atomic::AtomicBool::new(false),
@@ -550,6 +556,7 @@ impl VmManager {
         self.sched.store(Arc::new(cfg.cluster.scheduler.clone()));
         self.reserved
             .store(Arc::new(cfg.cluster.node_reserved.clone()));
+        self.pci_pools.store(Arc::new(cfg.pci.pools.clone()));
         self.ovn_file.store(Arc::new(cfg.cluster.ovn.clone()));
         self.apply_ovn_settings();
     }
@@ -664,6 +671,17 @@ impl VmManager {
             .or(Some(2048))
     }
 
+    /// The configured device pools (spec/host-topology.md §9).
+    pub fn pci_pools(&self) -> Arc<Vec<crate::config::PciPool>> {
+        self.pci_pools.load_full()
+    }
+
+    /// Every node with what is placed on it, for the pool listing.
+    pub(crate) async fn loads_by_node(&self) -> Vec<(crate::node::Node, crate::scheduler::Load)> {
+        let vms = self.vms.read().await;
+        self.node_loads(&vms)
+    }
+
     /// The CPUs shared VMs on this node run on: all but the reserved and
     /// those the dedicated VMs placed here hold; empty while none are
     /// (spec/host-topology.md §8.1).
@@ -701,7 +719,7 @@ impl VmManager {
             numa_aligned: true,
             ..Default::default()
         };
-        if c.numa_policy.is_none() && c.cpu_policy.is_shared() {
+        if c.numa_policy.is_none() && c.cpu_policy.is_shared() && c.devices.is_empty() {
             return Ok(fit);
         }
         let local = self.local_node_id();
@@ -715,7 +733,7 @@ impl VmManager {
             )));
         };
         let req = self.sched_request(vm, disks);
-        crate::scheduler::numa_fit(&n, &load, &req, &self.sched.load(), fit.page_kib)
+        crate::scheduler::place_on(&n, &load, &req, &self.sched.load(), fit.page_kib)
             .map_err(|why| VmManagerError::Network(NetError::Conflict(why)))
     }
 
@@ -734,6 +752,7 @@ impl VmManager {
             p.page_kib = page;
             p.numa_node = fit.numa_node;
             p.cpus = fit.cpus;
+            p.pool_devices = fit.pool_devices;
         }
         Self::note_numa_alignment(vm, policy, fit.numa_aligned);
     }
@@ -796,7 +815,7 @@ impl VmManager {
                 )))
             };
             let page = crate::scheduler::page_kib(&n, &load, &req).map_err(conflict)?;
-            crate::scheduler::numa_fit(&n, &load, &req, &self.sched.load(), page)
+            crate::scheduler::place_on(&n, &load, &req, &self.sched.load(), page)
                 .map_err(conflict)?
         };
         self.apply_fit(vm, fit);
@@ -916,6 +935,21 @@ impl VmManager {
                 .collect(),
             vfio: c.vfio_devices.clone(),
             device_nodes: None,
+            pools: {
+                let defs = self.pci_pools.load();
+                c.devices
+                    .iter()
+                    .filter_map(|r| {
+                        defs.iter().find(|p| p.name == r.pool).map(|p| {
+                            crate::scheduler::PoolRequest {
+                                pool: p.clone(),
+                                count: r.count,
+                                same_switch: r.same_switch,
+                            }
+                        })
+                    })
+                    .collect()
+            },
             physnets: c
                 .networks
                 .iter()
@@ -1142,6 +1176,12 @@ impl VmManager {
         if let (Some(t), Some(list)) = (probe.topology.as_mut(), &self.reserved.load().cpu_list) {
             t.reserve(glidex_ovs::tuning::parse_cpu_list(list), "config");
             t.reserved_by_config = true;
+        }
+        // The devices a VM could be given, with their readiness, for pools
+        // (spec/host-topology.md §9).
+        if let Some(t) = probe.topology.as_mut() {
+            t.devices =
+                crate::topology::read_tree(t.clone(), self.dpdk_uplink_bdfs()).summary_devices();
         }
         // The address each migrated uplink carries on its bridge.
         if let Ok(ups) = self
@@ -2098,6 +2138,7 @@ impl VmManager {
                 page_kib: None,
                 numa_node: None,
                 cpus: Vec::new(),
+                pool_devices: Vec::new(),
             });
             let fit = self.standalone_fit(&vms, &vm, &disks)?;
             self.apply_fit(&mut vm, fit);
@@ -2111,6 +2152,7 @@ impl VmManager {
                         page_kib: Some(choice.page_kib),
                         numa_node: choice.numa_node,
                         cpus: choice.cpus,
+                        pool_devices: choice.pool_devices,
                     });
                     let policy =
                         !vm.config().numa_policy.is_none() || !vm.config().cpu_policy.is_shared();
@@ -2247,12 +2289,21 @@ impl VmManager {
     /// The VFIO devices `vm` claims: its spec's, and those its instance
     /// still holds (a claim lasts until the instance is gone).
     fn devices_held(vm: &Vm) -> impl Iterator<Item = &String> {
-        vm.config().vfio_devices.iter().chain(
-            vm.status
-                .instance
-                .iter()
-                .flat_map(|i| i.vfio_devices.iter()),
-        )
+        vm.config()
+            .vfio_devices
+            .iter()
+            .chain(
+                vm.status
+                    .instance
+                    .iter()
+                    .flat_map(|i| i.vfio_devices.iter()),
+            )
+            .chain(
+                vm.status
+                    .placement
+                    .iter()
+                    .flat_map(|p| p.pool_devices.iter().map(|d| &d.address)),
+            )
     }
 
     /// Refuse `devices` that a VM other than `except` claims on `node`,
@@ -2571,6 +2622,9 @@ impl VmManager {
             if let Some(p) = c.cpu_policy {
                 config.cpu_policy = p;
             }
+            if let Some(d) = c.devices {
+                config.devices = d;
+            }
             match c.hugepage_size {
                 None => {}
                 Some(serde_json::Value::Null) => config.hugepage_size = None,
@@ -2659,6 +2713,7 @@ impl VmManager {
                     c.vfio_devices.clone(),
                     c.numa_policy,
                     c.cpu_policy,
+                    c.devices.clone(),
                 )
             };
             if fitted(a) != fitted(b) {
@@ -3579,6 +3634,19 @@ impl VmManager {
 
     /// A NIC bound to vfio-pci for a DPDK uplink must not also be passed
     /// through to a VM (spec §8.3). Without netd there are no uplinks.
+    /// The addresses of this host's OVS-DPDK uplinks, from netd.
+    fn dpdk_uplink_bdfs(&self) -> std::collections::BTreeSet<String> {
+        self.netd
+            .call::<Vec<glidex_netd::proto::UplinkResult>>(Op::ListUplinks)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|u| match u.record.spec.kind {
+                glidex_ovs::uplink::UplinkKind::Dpdk { pci, .. } => Some(pci.to_ascii_lowercase()),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// This host's full topology (spec/host-topology.md §3.2): its node
     /// record's summary (OVS-DPDK's share and the reserved CPUs applied)
     /// and the PCIe tree read now.
@@ -3591,17 +3659,7 @@ impl VmManager {
             .and_then(|n| n.status.topology)
             .or_else(crate::topology::read)
             .unwrap_or_default();
-        let uplinks = self
-            .netd
-            .call::<Vec<glidex_netd::proto::UplinkResult>>(Op::ListUplinks)
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|u| match u.record.spec.kind {
-                glidex_ovs::uplink::UplinkKind::Dpdk { pci, .. } => Some(pci.to_ascii_lowercase()),
-                _ => None,
-            })
-            .collect();
-        crate::topology::read_tree(summary, uplinks)
+        crate::topology::read_tree(summary, self.dpdk_uplink_bdfs())
     }
 
     /// `prepare` or `release` this host's PCI device `address` through
@@ -3611,7 +3669,12 @@ impl VmManager {
         address: &str,
         op: &str,
     ) -> Result<serde_json::Value, VmManagerError> {
-        device_op_on(&self.netd, address, op)
+        let r = device_op_on(&self.netd, address, op)?;
+        // Readiness changed: pools see it at once (§9).
+        if let Err(e) = self.report_self() {
+            tracing::warn!("reporting this node after a device {op}: {e}");
+        }
+        Ok(r)
     }
 
     /// `prepare` or `release` node `id`'s device `address`: here, or on that
@@ -3624,9 +3687,13 @@ impl VmManager {
     ) -> Result<serde_json::Value, VmManagerError> {
         if id == self.local_node_id() {
             let (netd, a, o) = (self.netd.clone(), address.to_string(), op.to_string());
-            return tokio::task::spawn_blocking(move || device_op_on(&netd, &a, &o))
+            let r = tokio::task::spawn_blocking(move || device_op_on(&netd, &a, &o))
                 .await
-                .map_err(|e| VmManagerError::Network(NetError::Unavailable(e.to_string())))?;
+                .map_err(|e| VmManagerError::Network(NetError::Unavailable(e.to_string())))??;
+            if let Err(e) = self.report_self() {
+                tracing::warn!("reporting this node after a device {op}: {e}");
+            }
+            return Ok(r);
         }
         let unavailable = |m: String| VmManagerError::Network(NetError::Unavailable(m));
         let cluster = self

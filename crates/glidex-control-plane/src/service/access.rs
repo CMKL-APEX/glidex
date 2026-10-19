@@ -1820,6 +1820,7 @@ pub async fn resource_entities(call: &Call, e: &Ent) -> Option<EntitySet> {
             es.datastore(id);
             es
         }
+        Ent::PciPool(name) => crate::api::vms::pci_pool_entities(call, name).1,
         Ent::PciDevice(id) => {
             let local = call.manager().local_node_id();
             let (node, bdf) = id.split_once('/').unwrap_or((local.as_str(), id.as_str()));
