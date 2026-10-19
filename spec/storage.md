@@ -1,7 +1,8 @@
 # Datastores
 
 Status: **design (draft)**. Only S0's fixes 1–4 (§15) are implemented;
-the rest is design. The milestones are S0–S7 (§16), and the open questions are in §17. The edits this
+the rest is design. The milestones are S0–S7 (§16). Decisions S13–S15 settle three of the
+first draft's questions; the rest are in §17. The edits this
 document needs in other specs are listed in §18. They are **not applied
 yet**.
 
@@ -40,7 +41,8 @@ later milestones (§11, §12).
   - automatic failover and fencing hardware (D8 stays);
   - disk snapshots;
   - encryption at rest;
-  - provisioned IOPS (metering.md §16).
+  - provisioned IOPS (metering.md §16);
+  - per-datastore quotas (queued for later, S15).
 - **Out, designed only far enough to keep the interface right:**
   - block drivers (`lvm`, `rbd`);
   - the CSI adapter.
@@ -61,6 +63,9 @@ later milestones (§11, §12).
 | S10 | **Moving a VM stays explicit and offline**, and needs every disk on a shared datastore. A **stopped** VM can be re-placed (`POST /vms/{id}/place`). A **`Lost`** VM can be re-placed after `node forget --fenced`. Nothing moves automatically. | D8 still holds: a partitioned node may still be running the VM. Today only the operator's `--fenced` statement establishes that it isn't. Hypervisor file locks (§10) are a second check, not the guarantee. |
 | S11 | **Mount points live under one root, `/srv/glidex/<name>`**, which both units list as `ReadWritePaths=-/srv/glidex`. Paths outside it are refused unless an operator adds a drop-in. | Registering a datastore through the API must not require editing systemd units on every node, and the control plane can't widen its own sandbox (security.md §10). |
 | S12 | **Block volumes and a privileged storage helper come later** (`glidex-stord`, §11), on the netd pattern. | Mapping LUNs, activating LVs and `rbd map` need root. The unprivileged control plane asks a small root daemon, as it does with netd for networking. |
+| S13 | **New disks default to `local`, even once a shared datastore exists.** The operator moves the default with `default_for` (`gxctl datastore set <name> --default disks`). When the installer registers a shared datastore, it asks whether that datastore should become the default; the suggested answer is no. | `local` is what every existing install uses, and it is the fastest store. Choosing shared storage (VMs can move, at network-storage speed) is the operator's call, made once, not something glidex decides for them. |
+| S14 | **A datastore has one path, which each node may override** (`node_paths: {node: path}`). A node without an override uses `path`. Every path, default or override, is under the S11 root. | Most sites mount the same export at the same place everywhere, so one path covers them. Some nodes can't (an existing mount, a different vendor agent layout). Overrides cost little: backing paths are relative (S8), and the marker plus `fs_id` (§4.1) prove that every node's path reaches the same filesystem. |
+| S15 | **Per-datastore quotas are queued, not built now.** Project `disk_gib` stays cluster-wide across all datastores. | No site has a scarce fast datastore yet. When one does, the quota follows tenancy.md's per-cluster model (T6): `disk_gib` per project per datastore, checked where `disk_gib` is checked today. |
 
 ## 3. What changes, at a glance
 
@@ -95,8 +100,14 @@ pub struct Datastore {
 }
 
 pub enum DriverSpec {
-    Dir { path: Option<String> },    // None = built-in local: env directories
-    SharedDir { path: String },      // under /srv/glidex (S11)
+    Dir {
+        path: Option<String>,        // None = built-in local: env directories
+        node_paths: BTreeMap<String, String>, // node id -> path (S14)
+    },
+    SharedDir {
+        path: String,                // under /srv/glidex (S11)
+        node_paths: BTreeMap<String, String>, // node id -> path (S14)
+    },
     // Later (§11, §12):
     // Lvm { vg: String, thin_pool: Option<String> },
     // Rbd { pool: String, monitors: Vec<String>, credential: String },
@@ -105,6 +116,18 @@ pub enum DriverSpec {
 
 pub enum Topology { NodeLocal, Shared }
 ```
+
+**A node's path** is `node_paths[node]` when set, else `path` (S14). The
+built-in `local` takes no overrides, since its paths come from each node's
+`GLIDEX_IMAGE_DIR` and `GLIDEX_DISK_DIR` already. Admission refuses:
+- an override for a node that doesn't exist;
+- any path outside the S11 root, or containing `..`.
+
+A node uses only its own path. Records never store resolved paths (no
+`firmware_path`-style copies, §15), so changing an override needs no
+rewrite. A change takes effect at the node's next probe (§4.1). It is
+refused with `409` while a running VM on that node has a volume in the
+datastore open, because the hypervisor holds the old path.
 
 Per-node status is a replicated table that each node writes about
 itself, like `image_caches`:
@@ -175,8 +198,8 @@ linked disk in that datastore uses it. This extends images.md §3's
 
 1. `POST /datastores {name, driver: {shared-dir: {path}}}` records the
    datastore in phase `Pending`.
-2. The leader picks one Ready node that has the path writable and asks
-   it to **claim** the directory:
+2. The leader picks one Ready node that has its path (S14) writable and
+   asks it to **claim** the directory:
    - An empty directory gets the marker, created with `O_EXCL`, then
      `images/`, `disks/` and `.gx-tmp/`.
    - A directory with this datastore's marker is adopted as is.
@@ -312,7 +335,7 @@ unchanged.
 - A worker that comes back after losing the role must not finish its
   rename. It re-reads `worker` before the rename and abandons the
   operation if it changed. **Open:** this leaves a tiny window
-  (check-then-rename); see §17 Q2.
+  (check-then-rename); see §17, open question 1.
 
 ### 8.2 API side
 
@@ -457,7 +480,7 @@ methods, an opaque `VolumeHandle`, topology as data, and capabilities.
 | `GET /datastores` | `readDatastore` |
 | `POST /datastores` | `manageDatastore` |
 | `GET /datastores/{id}` (incl. `nodes`) | `readDatastore` |
-| `PATCH /datastores/{id}` (`nodes`, `default_for`, `linked_clones`, `overcommit`) | `manageDatastore` |
+| `PATCH /datastores/{id}` (`nodes`, `node_paths`, `default_for`, `linked_clones`, `overcommit`) | `manageDatastore` |
 | `DELETE /datastores/{id}` (refused while volumes or copies exist; `Draining` refuses new ones) | `manageDatastore` |
 | `POST /disks {…, datastore?}` (default: `default_for: disks`) | + `useDatastore` |
 | `POST /disks/{id}/move` | `updateDisk` + `useDatastore` (destination) |
@@ -486,8 +509,9 @@ methods, an opaque `VolumeHandle`, topology as data, and capabilities.
   root like the managed directories: a raw path into it needs
   `useHostPath`.
 
-**Quota:** project `disk_gib` stays cluster-wide (clustering.md §9.2).
-Per-datastore quotas are §17 Q4.
+**Quota:** project `disk_gib` stays cluster-wide (clustering.md §9.2),
+counting disks on every datastore. Per-datastore quotas are queued
+(S15).
 
 **Metering** (metering.md):
 - `disk.alloc` doesn't change.
@@ -565,41 +589,38 @@ described below; fix 5 is part of S2.
 |---|---|---|
 | S0 | §15 fixes 1–4, with tests for each (two nodes with different `GLIDEX_IMAGE_DIR`, shrink through a server that isn't the disk's node, `node` by name). **Implemented.** | — |
 | S1 | `StorageDriver` trait. Today's code moved into `FileDriver` and `local` created by migration. `Disk.datastore`, `VolumeBinding`. **No behaviour change:** the command-line pin tests and every current storage test pass unchanged. | S0 |
-| S2 | The `Datastore` resource, `datastore_nodes`, capacity, the API/gxctl/UI surfaces, Cedar, registered `dir` datastores under `/srv/glidex`, and the unit changes (S11) | S1 |
-| S3 | `shared-dir`: marker and claim, reachability, `worker` (§8.1), the scheduler topology filter, image copies per location, linked clones with relative paths, QEMU `locking=on`, and the CH lock **(verify)** | S2 |
+| S2 | The `Datastore` resource with `default_for` (S13) and `node_paths` (S14), `datastore_nodes`, capacity, the API/gxctl/UI surfaces, Cedar, registered `dir` datastores under `/srv/glidex`, and the unit changes (S11) | S1 |
+| S3 | `shared-dir`: marker and claim, reachability, `worker` (§8.1), the scheduler topology filter, image copies per location, linked clones with relative paths, QEMU `locking=on`, the CH lock **(verify)**, and the installer's register-and-ask step (S13) | S2 |
 | S4 | `POST /vms/{id}/place` for stopped VMs, and for `Lost` VMs after `forget --fenced` | S3 |
 | S5 | `POST /disks/{id}/move` (within a node, between nodes, onto or off shared datastores) | S3 |
 | S6 | `glidex-stord`, `VolumeBinding::Block`, and the `lvm` driver; then `rbd` | S2 |
 | S7 | The CSI adapter, **only if the §12.3 gate is met** | S6 |
+| — | Per-datastore quotas (S15): queued, no milestone yet | S2 |
 
-## 17. Open questions
+## 17. Questions
 
-1. **Per-node mount paths.**
-   - S11 assumes one path on every node.
-   - Allowing `paths: {node: path}` is cheap, because §6 makes backing
-     paths relative and the marker identifies the filesystem.
-   - Is a single path enough in practice?
-2. **Worker hand-over window** (§8.1).
+Settled:
+- **Default for new disks** once a shared datastore exists: `local`,
+  and the operator changes it; the installer asks (S13).
+- **Per-node mount paths:** one path with per-node overrides (S14).
+- **Per-datastore quotas:** queued for later (S15).
+
+Open:
+
+1. **Worker hand-over window** (§8.1).
    - A paused old worker can still rename after re-checking.
    - Options:
      - do the rename under an OFD lock on a per-disk lock file in the
        datastore;
      - or accept the window, since reassignment needs the old worker
        `Unknown` for the full grace period.
-3. **Default for new disks** once a shared datastore exists:
-   - keep `local` (safe, fast);
-   - or switch to shared (VMs can move)?
-   - Proposal: the operator sets `default_for`, and the installer asks.
-4. **Per-datastore quotas** (`disk_gib` per project per datastore).
-   - Needed if a fast datastore is scarce.
-   - It would follow tenancy.md's per-cluster quota model (T6).
-5. **NFS client options.**
+2. **NFS client options.**
    - glidex doesn't mount, but QEMU `cache.direct` on NFS needs `O_DIRECT`
      support.
    - qcow2 on NFS wants `hard` mounts.
    - Should the node probe warn on `soft` mounts, and on `actimeo` large
      enough to hide another node's writes to the marker?
-6. **Mounts made after the units start.**
+3. **Mounts made after the units start.**
    - `ProtectSystem=strict` builds each unit's mount namespace at start.
    - A datastore mounted under `/srv/glidex` later has to propagate in,
      and be writable there.
@@ -632,4 +653,7 @@ described below; fix 5 is part of S2.
 - **metering.md:** per-worker sampling and `group_by=datastore`.
 - **installer.md:** create `/srv/glidex` (`0755 root`). Explain that
   operators mount datastores under it, owned by `glidex` (NFS: export with
-  that uid, root squash is fine).
+  that uid, root squash is fine). Add the optional step that registers a
+  mounted shared datastore and asks whether it becomes the default for new
+  disks (S13; suggested answer no; `--datastore-default` when
+  non-interactive).
