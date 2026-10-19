@@ -28,7 +28,8 @@ and pools for GPUs, DPUs and NICs.
   spec, and how both hypervisors apply it (§6, §7). Per-NUMA-node
   accounting and filters in the scheduler (§8). Device requests by class
   rather than address, and device pools that tenants are granted (§9).
-  SR-IOV virtual functions as devices (§10).
+  Hugepage accounting per node, page size and NUMA node (§8a). Device
+  health (§5.4). SR-IOV virtual functions as devices (§10).
 - **Out:** mediated devices and vGPU (NVIDIA vGPU, Intel GVT-g, AMD
   MxGPU). They need vendor host drivers and licensing; §13. Live
   migration of VMs with devices. Changing a placed VM's NUMA binding
@@ -46,13 +47,18 @@ and pools for GPUs, DPUs and NICs.
 | H4 | Unknown NUMA | A device whose `numa_node` reads `-1` (one-node hosts, some firmware) is reported as `numa_node: null`. On a host with one NUMA node it counts as node 0. On a multi-node host it fits any NUMA policy except `strict`, and the node shows a `topology_warnings` entry. Glidex never guesses from the bus number. |
 | H5 | VM NUMA policy | `numa: none \| preferred \| strict` (default `none`, today's behaviour). `preferred` aligns vCPUs, memory and devices on one host NUMA node when one fits and falls back otherwise. `strict` refuses a node where they can't all be on one NUMA node. One host NUMA node per VM in this design; spanning nodes with a guest NUMA topology is §13. |
 | H6 | CPU policy | `cpu: shared \| dedicated` (default `shared`). `shared` vCPUs float over the NUMA node's (or host's) shareable CPUs and count against `cpu_overcommit`. `dedicated` pins each vCPU to its own host CPU, exclusively, never overcommitted. |
-| H7 | Reserved CPUs | Never given to `dedicated` vCPUs, nor counted as shareable: the OS core OVS-DPDK reserves (`dpdk-lcore-mask`), PMD cores (networking.md §3), and `node.reserved_cpus` from the control-plane config. `isolcpus`/`nohz_full` CPUs are *preferred* for dedicated vCPUs, not reserved. |
+| H7 | Reserved CPUs | Never given to `dedicated` vCPUs, nor counted as shareable: the OS core OVS-DPDK reserves (`dpdk-lcore-mask`), PMD cores (networking.md §3), and CPUs kept for the host. By default, once a node holds any `dedicated` VM, the first physical core of each NUMA node is reserved for the host (the OVS-DPDK OS core counts as node 0's). `node.reserved_cpus` in the control-plane config overrides that default, including with an empty list. `isolcpus`/`nohz_full` CPUs are *preferred* for dedicated vCPUs, not reserved. |
 | H8 | Who allocates CPUs | The **scheduler** picks the node and NUMA node and writes the exact CPU set into `status.placement`. The node never chooses CPUs itself. The leader is the one writer, so two VMs can't take the same CPU. A standalone host runs the same code locally. |
 | H9 | Mechanism | Process-level binding through the VM's systemd unit (`CPUAffinity=`, `NUMAPolicy=bind`, `NUMAMask=`) for every VM with a policy. Per-vCPU pinning on top: Cloud Hypervisor's `--cpus affinity=`, and for QEMU the shim pinning vCPU threads it reads from QMP `query-cpus-fast`. Memory comes from the hypervisor's own NUMA-bound memory (§7). |
 | H10 | Device classes | Requests by class (`gpu`, `nic`, `nvme`, `dpu`, `accelerator`) are matched against **pools** the operator defines, not raw PCI class codes. A pool names devices by vendor and device id, address or label, per node or cluster-wide (§9). Raw addresses keep working. |
 | H11 | Grants | Pools are what tenants and projects are granted (`pci.allow` gains `pool`). Today's address grants stay (tenancy.md D25). |
 | H12 | Preparation | Glidex reports whether each device is ready (§5) and can bind a device to `vfio-pci` through netd, reusing `glidex_ovs::nic::bind_driver`, on request by `net-admin` or for a pool with `prepare: true`. It never changes the kernel command line or firmware. |
 | H13 | Who sees topology | The full tree and every node's summary need a host role (`auditor`, `net-admin`, `system-admin`), the same as `/pci-devices`. A project sees only what its VMs hold (the device's class, model and NUMA node), and the pools it may request with their free counts per cluster, not per node. |
+| H15 | Shared vCPUs under a NUMA policy | `cpu: shared` with `numa: preferred` or `strict` binds **memory** (and hugepages) to the chosen NUMA node, not CPUs. The vCPUs float over every shareable CPU of the host, so binding never strands CPU capacity on one socket. Devices still decide the NUMA node. |
+| H16 | Whole cores | Whether `dedicated` takes whole SMT cores is a per-cluster switch, `cluster.scheduler.dedicated_whole_cores`, default `true` (§6). A standalone host reads the same key from its config. |
+| H17 | Pool scope | Two levels. The operator defines **cluster pools** (§9.1) and grants them to tenants and projects. A tenant granted a cluster pool can define **tenant pools** on top of it (§9.1a), splitting its share among its projects. A tenant pool never names more than its tenant's grant on the cluster pool. |
+| H18 | Device health | Each node reports device errors (AER counters, link changes, reset failures, devices gone from the bus) and shows them on the device and on the VM holding it (§5.4). Reporting only: the scheduler does not refuse a device for its error history. An operator can cordon a device by hand. |
+| H19 | Hugepages | Hugepages are accounted as their own resource, per page size and NUMA node: what the node reserved, what OVS-DPDK takes, and what placed VMs hold. They are never overcommitted and don't count as ordinary memory. The scheduler, not the node at start, decides when a vhost-user VM gets hugepages implicitly (§8a). |
 | H14 | Refresh | A node reads its topology at start, on a udev `pci`/`vfio` event batch (debounced 5 s), on `gxctl node topology refresh`, and every ten minutes with the rest of node status. A status write happens only when the summary changes. |
 
 ## 3. Model
@@ -279,6 +285,36 @@ The installer gains `--vfio-devices <pool or addresses>` for the
 `modprobe.d` / `driverctl` persistence. A pool with `prepare: true`
 (§9.1) is prepared by each node at start.
 
+### 5.4 Health
+
+Each node reads, per assignable device:
+
+- AER counters: `aer_dev_correctable`, `aer_dev_nonfatal`,
+  `aer_dev_fatal` (per error type);
+- link changes: `current_link_speed` or `current_link_width` different
+  from the last read while held by a VM, and link down;
+- device gone: the address disappears from `/sys/bus/pci/devices` (a
+  surprise removal, or a GPU that fell off the bus);
+- reset failures: the hypervisor's VFIO errors at start, stop and
+  hot-plug (from the shim's log), and a function-level reset that times
+  out.
+
+Deltas since the last read become **device events**:
+`DeviceError {address, kind, count, detail}`. They go in the node's
+events, and in the events of the VM holding the device
+(`gxctl events <vm>`, the VM page). The full tree and
+`gxctl node topology --devices` show the counters and the last error. A
+fatal error or a missing device sets condition
+`DeviceHealthy=False` on the VM holding it, with the device and the
+error. Guest-side errors (NVIDIA Xid and other vendor errors) are only
+visible inside the guest and stay out of scope.
+
+No automatic action (H18). A device the operator no longer trusts is
+cordoned with `gxctl node cordon-device <node> <address>`
+(`POST /nodes/{id}/devices/{address}/cordon`, under `net-admin` and
+`system-admin`), which the scheduler refuses for new placements
+(`0000:41:00.0 is cordoned`). The VM holding it keeps it.
+
 ## 6. VM spec
 
 `VmConfig` gains:
@@ -305,19 +341,22 @@ pub struct DeviceRequest {
 - `numa: strict` with `hugepages` takes the hugepages from the chosen
   NUMA node only.
 - `cpu: dedicated` implies `numa: preferred` unless `strict` is given,
-  and needs `vcpu_count` free, non-reserved CPUs (§8.1). When the node's
-  cores have SMT siblings, it takes **whole cores** (both threads of a
-  core to one VM, or the sibling left unused) so another VM's vCPU never
-  shares a core. `vcpu_count` odd → one sibling stays idle and is
-  counted as taken.
+  and needs `vcpu_count` free, non-reserved CPUs (§8.1). With
+  `dedicated_whole_cores` on (H16, the default) and SMT siblings on the
+  node, it takes **whole cores**: both threads of a core go to one VM, or
+  the sibling is left unused, so another VM's vCPU never shares a core.
+  An odd `vcpu_count` leaves one sibling idle and counted as taken. With
+  the switch off, single threads are given out, and the siblings of
+  dedicated CPUs may go to other dedicated VMs.
+- `cpu: shared` with a NUMA policy binds memory only (H15).
 - A VM's devices, from `vfio_devices` and `devices`, define its NUMA
   node: every device must be on one node under `strict`. Under
   `preferred`, the node holding the most of them wins.
 - `status.placement` gains the outcome, written by the scheduler (H8):
   `{node, numa_node, cpus: CpuSet?, devices: [address], at}`. `devices`
   is the concrete addresses picked for `devices` requests. The VM's page
-  shows them. `cpus` is set for `dedicated` and is the NUMA node's
-  shareable set for `shared` with a policy.
+  shows them. `cpus` is set for `dedicated` only. `numa_node` is set
+  whenever a policy binds memory.
 - A change to `placement` on an existing VM applies at its next start.
   The scheduler re-picks CPUs and devices only if the VM is stopped and
   the change needs it. The node stays (D6).
@@ -341,14 +380,17 @@ shim and the unit do the binding.
 `NUMAMask=` from a per-instance drop-in the controller writes before
 start (`/run/systemd/system/glidex-vm@<id>.service.d/placement.conf`).
 For `numa: none` and `cpu: shared` there is no drop-in, so behaviour is
-as today. The hypervisor's own threads (I/O, vhost) stay inside this set.
+as today. For `cpu: shared` with a NUMA policy, the drop-in has
+`NUMAPolicy=`/`NUMAMask=` only (H15). For `dedicated`, `CPUAffinity=` is
+the VM's CPUs. The hypervisor's own threads (I/O, vhost) stay inside
+that set.
 
 ### 7.2 Cloud Hypervisor
 
 ```text
 --cpus boot=N,max=N[,affinity=[0@[c0],1@[c1],…]]      # dedicated: one host CPU per vCPU
 --memory size=0[,shared=on]
---memory-zone id=mem0,size=<M>M,host_numa_node=<n>[,hugepages=on][,shared=on]
+--memory-zone id=mem0,size=<M>M,host_numa_node=<n>[,hugepages=on,hugepage_size=<2M|1G>][,shared=on]
 --numa guest_numa_id=0,cpus=[0-<N-1>],memory_zones=[mem0]
 ```
 
@@ -358,7 +400,7 @@ Devices keep `--device path=…,id=_vfio_…`. One guest NUMA node, so no
 ### 7.3 QEMU
 
 ```text
--object memory-backend-memfd,id=mem,size=<M>M,share=on,host-nodes=<n>,policy=bind[,hugetlb=on]
+-object memory-backend-memfd,id=mem,size=<M>M,share=on,host-nodes=<n>,policy=bind[,hugetlb=on,hugetlbsize=<2M|1G>]
 -machine q35,memory-backend=mem
 -numa node,nodeid=0,cpus=0-<N-1>,memdev=mem
 ```
@@ -406,8 +448,9 @@ pub struct NumaLoad {
 }
 ```
 
-Unbound VMs (`numa: none`, `shared`) keep counting only in the node-wide
-`Load`. For capacity, they are spread over the NUMA nodes in proportion
+A `shared` VM with a NUMA policy counts its memory and hugepages on its
+NUMA node and its vCPUs node-wide (H15). Unbound VMs (`numa: none`,
+`shared`) keep counting only in the node-wide `Load`. For capacity, they are spread over the NUMA nodes in proportion
 to each node's shareable CPUs and memory. The shareable CPUs of a NUMA
 node are its CPUs minus reserved (H7) minus `dedicated`. Shared capacity
 is `shareable × cpu_overcommit`.
@@ -418,9 +461,10 @@ Added after today's filters, in this order, each with a reason:
 
 1. **Topology reported** when the VM has a policy or `devices`
    requests: `it reports no topology` (§4.1).
-2. **Devices present and ready:** each `vfio_devices` address is on the
-   node *and* `ready` (`0000:41:00.0 is not ready: not bound to
-   vfio-pci`). This replaces today's "present" check.
+2. **Devices present, ready and not cordoned:** each `vfio_devices`
+   address is on the node, `ready`, and not cordoned (§5.4)
+   (`0000:41:00.0 is not ready: not bound to vfio-pci`). This replaces
+   today's "present" check.
 3. **Devices free on this node** (§8.4): `0000:41:00.0 is used by VM x`.
 4. **Pool requests:** enough free, ready devices of the pool on the node,
    or on one switch for `same_switch`:
@@ -428,8 +472,9 @@ Added after today's filters, in this order, each with a reason:
 5. **NUMA fit**, for `preferred` and `strict`: the candidate NUMA nodes
    are those holding every requested device (`strict`). For `preferred`,
    take the ones holding the most devices, then all. A candidate fits
-   if it has `vcpu_count` shareable or dedicated CPUs as the policy
-   needs, the memory, and the hugepages. `strict` with no candidate:
+   if it has the memory and the hugepages and, for `dedicated`,
+   `vcpu_count` free CPUs. A `shared` VM's vCPUs are checked node-wide
+   (H15). `strict` with no candidate:
    `no NUMA node has the devices, 16 CPUs and 64 GiB together`.
    `preferred` with no candidate falls back to the whole node, and
    the VM gets condition `NumaAligned=False` with the reason.
@@ -460,16 +505,31 @@ other VM in the cluster holds. Two nodes each with a GPU at
 `0000:41:00.0` (common: identical servers) can therefore hold one such
 VM between them, not one each. With H3:
 
-- At admission, a request names an address. The address is checked
-  against the VMs **placed on the same node**, plus unplaced VMs pinned to
-  that node. The claim check moves into the scheduler filter (§8.2 3),
-  which knows the node.
-- An unplaced VM with an address is not a claim on any node until it is
-  placed. Two such VMs can wait at once; the scheduler places them one
-  at a time on different nodes or leaves one `Unschedulable`.
-- Claims are by IOMMU group (§5.1). Group peers held by a VM count as
-  taken.
-- Standalone hosts: one node, so the behaviour is as today.
+- A node's **claims** are the devices of the VMs placed on it: each VM's
+  `vfio_devices` and the devices its instance still holds (a claim lasts
+  until the instance is gone, as today). Devices are compared by PCI
+  address (lowercase BDF), never by the sysfs path as written.
+- An unplaced VM claims nothing. Two such VMs can wait at once; the
+  scheduler places them one at a time (it holds the VM write lock and
+  counts each placement before the next), on different nodes or
+  leaving one `Unschedulable`.
+- **Create:** on a standalone host, and in a cluster for a VM pinned to
+  a node (`spec.node`), a device claimed on that node is refused with
+  `409` (`PCI device … is used by VM …`), as today. In a cluster
+  without a pin, the scheduler filter (§8.2 3) skips nodes where it is
+  claimed, and the VM waits as `Unschedulable` if none is left.
+- **Change** (`PATCH vfio_devices`, attach): for a placed VM, checked
+  against its node's claims, other than its own, with `409`. For an
+  unplaced VM, the scheduler checks when it places it.
+- Claims are by IOMMU group (§5.1). Until HT1 reports topology, a node
+  reports the IOMMU group of each non-bridge PCI function
+  (`status.pci_groups`). A device whose group holds a claimed device
+  counts as taken (`0000:41:00.1 shares IOMMU group 31 with
+  0000:41:00.0, used by VM x`). A node of an older version reports no
+  groups, and claims are then per address only.
+- The scheduler's presence filter compares BDFs too. Before HT0 it
+  compared the stored sysfs path with the node's bare addresses, so in a
+  cluster a VM with VFIO devices fitted no node.
 
 This is a correctness fix independent of the rest and can ship first
 (HT0).
@@ -484,6 +544,117 @@ as the address. Cedar's `PciDevice` entity becomes
 `PciDevice::"<node>/<address>"`, with parent `Host::"<node>"`, so a
 role granted on one host (clustering.md §12.2) covers that host's
 devices.
+
+The check runs at admission, but for an unpinned VM the node is only
+known when the scheduler places it, possibly later in the leader's
+placement loop, where there is no caller to authorize. So admission
+evaluates `usePciDevice` for each requested device on every node that
+reports it, and keeps the nodes where every device is allowed:
+
+- None → `403`, as today.
+- All of them, or the caller's role covers the whole cluster → no
+  constraint.
+- Otherwise the set is stored with the VM, as `spec.device_nodes`, and
+  the scheduler adds a filter: `devices not granted on this node`. It
+  is recomputed whenever `vfio_devices` changes. A later change to
+  `pci.allow` doesn't move or unplace a VM. For a VM still waiting, it
+  takes effect when the VM's devices are next changed. This is HT0b.
+
+## 8a. Hugepages
+
+### 8a.1 Today
+
+- A node reports `nr_hugepages` per page size, host-wide, as both
+  `capacity.hugepages` and `allocatable.hugepages` (`node.rs`).
+- `allocatable.memory_mib` is `MemTotal` minus `node_reserved`.
+  `MemTotal` includes the hugepage pool, so memory reserved as
+  hugepages is counted twice: as ordinary memory and as hugepages.
+- The scheduler's filter for `hugepages: true` is "the node has some
+  hugepages". It does not count what placed VMs hold.
+- OVS-DPDK's `dpdk-socket-mem` takes hugepages per NUMA node from the
+  same pool, and nothing deducts it.
+- A VM with a vhost-user NIC is given hugepages at start when the host
+  has 2 MiB pages to spare (`hugepages_available_for`: free minus
+  reserved, keeping 25% and at least 256 MiB). The scheduler never knows,
+  and the outcome depends on what is free at that moment. Since
+  `config.hugepages` stays `false`, metering's hugepage correction
+  (`mem.used` adds guest RAM when `hugepages`, sampler.rs) may not see
+  it either.
+- Page size: Cloud Hypervisor's `hugepages=on` and QEMU's
+  `hugetlb=on` use the host's default size. 1 GiB pages are never chosen
+  explicitly.
+
+### 8a.2 Model
+
+Per node, per NUMA node (§3.1 `NumaNode.hugepages`) and page size:
+
+| Field | Meaning | Source |
+|---|---|---|
+| `total` | pages in the pool | `nr_hugepages` per NUMA node |
+| `dpdk` | pages OVS-DPDK takes | `dpdk-socket-mem` (MiB per NUMA node), rounded up to pages of the size DPDK uses (its default size) |
+| `reserved` | pages kept back for the host | `node.reserved_hugepages` in config, default none |
+| `allocatable` | `total − dpdk − reserved` | |
+
+`free` and `resv` (in use or promised now) are observations. They are in
+the full tree (§4.2) and used by the start check (§8a.5), never
+replicated, because they change all the time.
+
+Node-wide sums stay in `Resources.hugepages` for older readers. Ordinary
+memory changes to
+`allocatable.memory_mib = MemTotal − hugepage pool (all sizes) − node_reserved.memory_mib`,
+so a hugepage is counted once.
+
+### 8a.3 VM
+
+- `hugepages: bool` stays. `hugepage_size: "2M" | "1G"` is added
+  (optional). Without it, the smallest size the node has allocatable
+  pages of is used, so 2 MiB on most hosts.
+- `mem_size_mib` must be a multiple of the page size (`400`, `memory
+  must be a multiple of 1 GiB for 1G hugepages`).
+- **Implicit hugepages** for vhost-user (networking.md §0) move from the
+  node at start to the scheduler. If the chosen node has the allocatable
+  hugepages, the placement records them. Otherwise the VM gets 4 KiB
+  shared memory, as today's fallback. The 25% / 256 MiB headroom stays,
+  applied to allocatable rather than free pages.
+- `status.placement` gains `hugepages: {size_kib, pages, numa_node?}`,
+  which is what the scheduler counted. The node launches with exactly
+  that: Cloud Hypervisor `hugepage_size=`, QEMU `hugetlbsize=`. A VM
+  placed before this change has none recorded and keeps today's
+  behaviour until it is next stopped and started, when the node asks
+  the scheduler for a placement update (same node, D6).
+- Metering reads the placement's hugepages, so implicit ones are
+  counted in `mem.used` too.
+
+### 8a.4 Scheduler
+
+- `Load` gains pages held per size (node-wide in HT1b, per NUMA node in
+  HT2), from placed VMs running or not, like memory. Hugepages are
+  never overcommitted (`memory_overcommit` does not apply).
+- A hugepage VM counts against hugepages only, not against ordinary
+  memory. Its non-RAM overhead stays in `node_reserved`.
+- Filter: `not enough 2M hugepages (3072 of 4096 MiB taken)`; for an
+  explicit size the node lacks: `no 1G hugepages`.
+- Score: hugepage share joins the score as a third share,
+  `max(cpu, memory, hugepages)`, for VMs that use them.
+- `POST /scheduler/preview` shows hugepages taken and capacity per size.
+- Under a NUMA policy (§8.2 5), the pages come from the chosen NUMA node
+  (H15: also for `shared`).
+
+### 8a.5 Start check
+
+Before launch, the node checks that `free − resv` pages of the size (on
+the NUMA node, when bound) cover the VM. If not, the VM is not started
+and gets `HugepagesUnavailable` with the counts. Pages used outside
+glidex (DPDK beyond `socket-mem`, another process) make the observed free
+count fall below what the accounting expects. The node then shows the
+warning `hugepages_in_use_outside` with the difference (§5.2).
+
+### 8a.6 Reservation
+
+Glidex does not change `nr_hugepages` at run time. The installer
+reserves them (today for DPDK only; §13 sizes them for VMs per NUMA
+node). The pool is read again on each refresh (H14), so an operator's
+change shows up within ten minutes or on `gxctl node topology refresh`.
 
 ## 9. Pools and classes
 
@@ -523,6 +694,34 @@ in the cluster config (`control-plane.json`, replicated with the rest of
   devices over its nodes. Projects that may use the pool see this count.
 - `GET /pci-pools`, `gxctl pci pools`: each pool with its devices per
   node, free counts and holders (holders need a host role).
+
+### 9.1a Tenant pools
+
+A tenant granted a cluster pool (by `pci.allow` with `pool` and
+`tenants`) can split its share among its projects (H17). Its owners
+(tenancy.md roles) define tenant pools in the tenant, per cluster:
+
+```json
+{ "name": "team-a-gpus", "from": "h100", "max": 4,
+  "projects": ["team-a", "team-a-ci"] }
+```
+
+- `from` names a cluster pool the tenant is granted. `max` is how many
+  devices of it the tenant pool's projects hold at once, in total.
+- Members are by count, not specific devices: the devices stay the
+  cluster's, and the scheduler picks them as for the cluster pool.
+- The sum of a tenant's tenant pools' `max` may exceed the tenant's
+  grant. The tenant's cap on the cluster pool (`tenant_grants` with
+  `max`, and the `devices.<pool>` quota) is still checked as well, so
+  oversubscribing tenant pools only shares the tenant's own share.
+- A device request may name a tenant pool. Admission resolves it to the
+  cluster pool and checks the tenant pool's `max` and the project's
+  membership in the same write as quotas (§9.3).
+- `GET/PUT /tenants/{id}/device-pools` (RPC `TenantService`), under the
+  tenant's owner role; `gxctl tenant device-pool …`. Each lists its
+  cluster pool's free count, so projects see what they can get.
+- A tenant pool on a cluster pool the tenant loses its grant on stays,
+  holds nothing new, and shows `ungranted`.
 
 ### 9.2 Classes
 
@@ -616,7 +815,7 @@ is a device of class `dpu`:
   VM's network (networking.md).
 - **Hugepage reservation per NUMA node** by the installer, sized from
   pools and policy (today the installer reserves hugepages for DPDK
-  only).
+  only). §8a accounts for whatever is reserved.
 - **Topology-aware DPDK:** `glidex_ovs::tuning` consuming the same model
   and placing PMDs on the NUMA nodes of the NICs rather than of the
   hugepages.
@@ -629,40 +828,47 @@ is a device of class `dpu`:
 |---|---|
 | clustering.md | §9.1 filters and score per §8; §9.1's VFIO filter points to §8.4 (claims per node) and §8.5 (`pci.allow[].node`, `pool`). |
 | hypervisors.md | The arguments of §7.2 and §7.3 here; the QEMU shim's vCPU pinning after launch and adoption. |
-| data-model.md | `VmConfig.placement`, `status.placement.{numa_node, cpus, devices}`, condition `NumaAligned`. |
+| data-model.md | `VmConfig.placement`, `hugepage_size`, `spec.device_nodes`; `status.placement.{numa_node, cpus, devices, hugepages}`; conditions `NumaAligned`, `DeviceHealthy`, `HugepagesUnavailable`; node `status.pci_groups`. |
 | reconciliation.md | The placement drop-in (§7.1) and the start-time check (§7.4). |
 | networking.md | netd ops `prepare_device`, `release_device`, `set_sriov_vfs`; Appendix B's "NUMA locality" note points here. |
 | rest-api.md, grpc.md, cli.md, web-ui.md | §4.2, §4.3, §5.3, §9.1 endpoints and commands; the Topology card; Placement in the VM form. |
-| security.md | `PciDevice::"<node>/<address>"`, action `host.device.prepare`. |
-| tenancy.md | §20 points here (done); quotas `devices.<pool>`; `pci.allow` grants by pool. |
-| metering.md | §16's GPU item: `device.alloc` per pool (§9.4). |
+| security.md | `PciDevice::"<node>/<address>"`, actions `host.device.prepare` and `host.device.cordon`. |
+| tenancy.md | §20 points here (done); quotas `devices.<pool>`; `pci.allow` grants by pool; tenant pools (§9.1a). |
+| metering.md | §16's GPU item: `device.alloc` per pool (§9.4); `mem.used` from the placement's hugepages (§8a.3). |
 | operator guide | PCI passthrough: readiness, prepare, pools, NUMA policy. |
 
 ## 15. Milestones
 
 | # | Scope | Acceptance |
 |---|---|---|
-| **HT0** Claims per node | §8.4: the claim moves into the scheduler, per node and by IOMMU group; `pci.allow[].node` (§8.5) | Scheduler unit tests: two nodes with the same address each take one VM; a group peer counts as taken; standalone behaviour unchanged (existing tests). |
+| **HT0** Claims per node | §8.4: claims per node and by IOMMU group (`status.pci_groups`), compared by BDF; the scheduler's presence filter by BDF | Scheduler unit tests: two nodes with the same address each take one VM; a group peer counts as taken; a sysfs path matches the node's address; standalone behaviour unchanged (existing tests). |
+| **HT0b** Grants per node | §8.5: `pci.allow[].node`, `PciDevice::"<node>/<address>"` under `Host::"<node>"`, `spec.device_nodes` and its filter | Cedar tests for a per-node grant and a per-host role; an unpinned VM with a grant on one node is placed there. |
 | **HT1** Read and report | `glidex-topology` crate (merging `glidex_ovs::tuning::read_topology`); summary in node status; `GET /host/topology`, `/nodes/{id}/topology`; `/pci-devices` fields; `gxctl node topology`; readiness and warnings | Fixture sysfs trees (one socket; two sockets with switches; `numa_node = -1`; shared IOMMU group; SR-IOV PF); the OVS planner gives the same plans from the new reader; UI node page shows the card. |
+| **HT1b** Hugepages | §8a: pools per size and NUMA node in node status, DPDK's share deducted, ordinary memory without the pool, `hugepage_size`, accounting and filter node-wide, implicit vhost-user hugepages decided by the scheduler, placement-driven launch, start check, metering from the placement | Scheduler tests: hugepage VMs fill the pool and not memory; DPDK's share is excluded; vhost-user VMs fall back to 4 KiB when full. Argument tests for both sizes on both hypervisors. |
 | **HT2** NUMA and dedicated CPUs | `placement.numa`, `placement.cpu`; scheduler §8.1–8.3; unit drop-in; Cloud Hypervisor and QEMU arguments; QEMU shim vCPU pinning; start-time check | Unit tests per filter and per tie-break; argument tests for both hypervisors; host test on a two-socket machine: a `strict` VM with a GPU has its vCPUs, memory (`numastat -p`) and device on one node, for both hypervisors, and across a control-plane restart. |
-| **HT3** Prepare | §5.3 prepare/release through netd, udev rule, installer `--vfio-devices` | netd tests with a fake sysfs; host test: prepare a NIC, pass it through, release it, host driver back. |
-| **HT4** Pools | §9: pools, `devices` requests, `same_switch`, grants and quotas by pool, `device.alloc` metering, UI | Scheduler tests for pools across nodes and switches; quota refusal; metering ledger rows per pool. |
+| **HT3** Prepare and health | §5.3 prepare/release through netd, udev rule, installer `--vfio-devices`; §5.4 error counters, device events, `DeviceHealthy`, cordon | netd tests with a fake sysfs; host test: prepare a NIC, pass it through, release it, host driver back. |
+| **HT4** Pools | §9: cluster pools, `devices` requests, `same_switch`, grants and quotas by pool, `device.alloc` metering, UI | Scheduler tests for pools across nodes and switches; quota refusal; metering ledger rows per pool. |
+| **HT4b** Tenant pools | §9.1a: tenant pools over cluster pools, their API, CLI and UI | Admission tests: a tenant pool's `max`, membership, and the tenant's own cap all apply. |
 | **HT5** SR-IOV VFs | §10.1 VF enumeration, `sriov_numvfs` through netd, VF pools | Host test with an SR-IOV NIC: enable VFs, a pool of VFs, two VMs each with one, NUMA-aligned. |
 
-HT0 is a fix and can merge alone. HT1 changes nothing for VMs. HT2 and
-HT4 are the user-visible parts.
+HT0 is a fix and can merge alone. HT1 changes nothing for VMs. HT1b
+fixes hugepage accounting without NUMA and can follow HT0 directly. HT2
+and HT4 are the user-visible parts.
 
 ## 16. Open questions
 
-- **Shared vCPUs under a NUMA policy:** binding a `shared` VM to one
-  node's CPUs can strand capacity on the other node. Should `preferred`
-  plus `shared` bind only memory, and leave CPUs free across the host?
-- **Whole cores for `dedicated`:** always, or a per-cluster switch for
-  hosts where SMT siblings are acceptable?
-- **Pool scope:** pools in the cluster config (operator) only, or also
-  per tenant on top of a cluster pool (a tenant splitting its GPUs among
-  its projects)?
-- **Reserved CPUs default:** reserve one core per NUMA node for the host
-  when any VM is `dedicated`, or leave it to `node.reserved_cpus`?
-- **Device health:** report Xid errors, AER counters or link retraining,
-  or leave health to vendor tooling?
+Settled (see the decisions): shared vCPUs under a NUMA policy bind
+memory only (H15); whole cores is a per-cluster switch (H16); pools at
+the cluster and per tenant (H17); one host core per NUMA node reserved
+by default once a node holds a `dedicated` VM, overridden by
+`node.reserved_cpus` (H7); device errors reported, not acted on (H18).
+
+Still open:
+
+- **1 GiB pages and DPDK:** DPDK uses the host's default page size. When
+  a host has both sizes, should the installer pin DPDK to one size
+  (`--huge-dir`) so the accounting knows which pool it draws from?
+- **Tenant pool caps by node:** should a tenant pool be able to say
+  "at most 2 on any one node", for spreading a team's GPUs?
+- **Cordon scope:** cordon a device per node (as written) or by model
+  across the cluster (a firmware recall)?
