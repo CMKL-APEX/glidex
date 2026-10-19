@@ -888,6 +888,19 @@ impl VmManager {
         }
     }
 
+    /// The id of a live node named by id or name.
+    fn resolve_node(&self, want: &str) -> Result<String, VmManagerError> {
+        let nodes = self
+            .nodes
+            .list()
+            .map_err(|e| VmManagerError::PersistenceError(e.to_string()))?;
+        nodes
+            .iter()
+            .find(|n| (n.meta.id == want || n.spec.name == want) && !n.status.phase.is_tombstone())
+            .map(|n| n.meta.id.clone())
+            .ok_or_else(|| invalid(format!("no node {want}")))
+    }
+
     /// Whether this node owns `disk`'s file: bound here, or (standalone) unbound.
     pub(crate) fn is_local_disk(&self, disk: &Disk) -> bool {
         match &disk.node {
@@ -1605,17 +1618,7 @@ impl VmManager {
         vm.project = project.to_string();
         // `spec.node`: an optional pin, by id or name.
         if let Some(want) = &opts.node {
-            let nodes = self
-                .nodes
-                .list()
-                .map_err(|e| VmManagerError::PersistenceError(e.to_string()))?;
-            let n = nodes
-                .iter()
-                .find(|n| {
-                    (&n.meta.id == want || &n.spec.name == want) && !n.status.phase.is_tombstone()
-                })
-                .ok_or_else(|| invalid(format!("no node {want}")))?;
-            vm.spec.node = Some(n.meta.id.clone());
+            vm.spec.node = Some(self.resolve_node(want)?);
         }
         // A device another VM on the node claims (spec/host-topology.md
         // §8.4). Unpinned in a cluster, the node isn't known yet: the
@@ -2005,6 +2008,28 @@ impl VmManager {
             .map(|id| bind(id).map(|(b, _)| b))
             .collect::<Result<Vec<_>, _>>()?;
         Ok((root, data))
+    }
+
+    /// This node's copy of a VM's firmware image, checked to exist: the
+    /// stored `firmware_path` is the creating server's, which another node
+    /// need not share (spec/storage.md §15). `None` without a firmware image.
+    pub(crate) fn firmware_binding(&self, vm: &Vm) -> Result<Option<String>, VmManagerError> {
+        let Some(id) = vm.config().firmware_image.as_deref() else {
+            return Ok(None);
+        };
+        let path = self.images.firmware_path(id);
+        if !path.exists() {
+            let name = self
+                .images
+                .get_image(id)
+                .map(|i| i.name)
+                .unwrap_or_else(|_| id.to_string());
+            return Err(ImageError::NotReady(format!(
+                "firmware {name} has not been copied to this node yet"
+            ))
+            .into());
+        }
+        Ok(Some(path.to_string_lossy().into_owned()))
     }
 
     // ---- desired power state ----------------------------------------------
@@ -2903,6 +2928,11 @@ impl VmManager {
             .get(project)?
             .ok_or_else(|| TenancyError::NotFound(project.to_string()))?;
         req.project = Some(project.to_string());
+        // Bound to a node by id or name, like a VM's pin; stored as the id,
+        // which is what `is_local_disk` compares (spec/storage.md §15).
+        if let Some(want) = &req.node {
+            req.node = Some(self.resolve_node(want)?);
+        }
         // The VM lock serializes quota checks with VM creation.
         let vms = self.vms.write().await;
         let disk = self
@@ -3029,7 +3059,9 @@ impl VmManager {
                 &vms,
             )?;
         }
-        if size < current.size_bytes {
+        // Answered early only where the file is: elsewhere the disk's node
+        // checks it and reports `ResizeInvalid` (spec/storage.md §8.2).
+        if size < current.size_bytes && self.is_local_disk(&current) {
             let (mgr, d) = (self.images.clone(), current.clone());
             let (min, _) = blocking(move || mgr.shrink_minimum(&d)).await?;
             if size < min {
@@ -3082,14 +3114,18 @@ impl VmManager {
             ))
             .into());
         }
-        let (mgr, d) = (self.images.clone(), current.clone());
-        blocking(move || {
-            let path = mgr.disk_path(&d);
-            let table = images::partition::read_table(&path, d.format, d.size_bytes)?
-                .ok_or_else(|| ImageError::invalid_disk("disk has no partition table"))?;
-            images::partition::growable_root(&table).map(|_| ())
-        })
-        .await?;
+        // As for a shrink: elsewhere the disk's node checks it and reports
+        // `ExtendRootFailed` (spec/storage.md §8.2).
+        if self.is_local_disk(&current) {
+            let (mgr, d) = (self.images.clone(), current.clone());
+            blocking(move || {
+                let path = mgr.disk_path(&d);
+                let table = images::partition::read_table(&path, d.format, d.size_bytes)?
+                    .ok_or_else(|| ImageError::invalid_disk("disk has no partition table"))?;
+                images::partition::growable_root(&table).map(|_| ())
+            })
+            .await?;
+        }
         let mut disk = current;
         let seq = disk
             .extend_root

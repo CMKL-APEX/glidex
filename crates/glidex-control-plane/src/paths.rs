@@ -58,6 +58,24 @@ pub fn file_in(dir: &Path, name: &str) -> PathBuf {
     checked_path(&dir.join(name)).unwrap_or_else(|e| panic!("{e}"))
 }
 
+/// `target` as a path relative to the directory `from`, both resolved
+/// first (`None` if either can't be). A linked disk names its image this
+/// way, so the overlay stays valid wherever the two directories are
+/// mounted, as long as they keep their places relative to each other
+/// (spec/storage.md S8).
+pub fn relative_to(target: &Path, from: &Path) -> Option<PathBuf> {
+    let target = target.canonicalize().ok()?;
+    let from = from.canonicalize().ok()?;
+    let common = target
+        .components()
+        .zip(from.components())
+        .take_while(|(a, b)| a == b)
+        .count();
+    let mut rel: PathBuf = from.components().skip(common).map(|_| "..").collect();
+    rel.extend(target.components().skip(common));
+    Some(rel)
+}
+
 pub fn vm_dir(vm_id: &str) -> PathBuf {
     run_dir().join("vms").join(vm_id)
 }
@@ -157,6 +175,26 @@ mod tests {
         std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o755)).unwrap();
         ensure_private_dir(&d).unwrap();
         assert_eq!(std::fs::metadata(&d).unwrap().mode() & 0o777, 0o700);
+    }
+
+    #[test]
+    fn relative_paths_climb_out_of_the_base() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (images, disks) = (tmp.path().join("images"), tmp.path().join("disks"));
+        std::fs::create_dir_all(&images).unwrap();
+        std::fs::create_dir_all(disks.join("deep")).unwrap();
+        let img = images.join("a.qcow2");
+        std::fs::write(&img, b"").unwrap();
+        assert_eq!(
+            relative_to(&img, &disks).unwrap(),
+            Path::new("../images/a.qcow2")
+        );
+        assert_eq!(
+            relative_to(&img, &disks.join("deep")).unwrap(),
+            Path::new("../../images/a.qcow2")
+        );
+        assert_eq!(relative_to(&img, &images).unwrap(), Path::new("a.qcow2"));
+        assert_eq!(relative_to(&tmp.path().join("gone"), &disks), None);
     }
 
     #[test]

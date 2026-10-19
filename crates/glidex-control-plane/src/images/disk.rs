@@ -262,7 +262,13 @@ impl ImageManager {
                 let size = self.root_size(spec.size_bytes, image_size);
                 match mode {
                     CloneMode::Linked => {
-                        qemu_img::create(tmp.path(), disk.format, size, Some(&image_path))?
+                        // Named relative to the disk directory, where the
+                        // overlay lives, so it never depends on where that
+                        // is mounted (spec/storage.md §15).
+                        let backing =
+                            crate::paths::relative_to(&image_path, &self.settings.disk_dir)
+                                .unwrap_or_else(|| image_path.clone());
+                        qemu_img::create(tmp.path(), disk.format, size, Some(&backing))?
                     }
                     CloneMode::Full => {
                         qemu_img::convert(&image_path, DiskFormat::Qcow2, tmp.path(), disk.format)?;

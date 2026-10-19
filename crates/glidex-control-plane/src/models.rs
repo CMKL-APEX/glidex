@@ -104,7 +104,8 @@ pub struct VmConfig {
     /// image (`OVMF_CODE*.fd`) for QEMU. When set, the guest boots from its
     /// disk's bootloader and `kernel_image_path` / `kernel_args` are
     /// ignored. For a firmware image (`firmware_image`) this is the image's
-    /// file, so backends see one field either way.
+    /// file, so backends see one field either way: stored as the creating
+    /// server's path, and replaced at launch with the placed node's copy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub firmware_path: Option<String>,
     /// Firmware image (id) the VM boots through; see spec/images.md §7.
