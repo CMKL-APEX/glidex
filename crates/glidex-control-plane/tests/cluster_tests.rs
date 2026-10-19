@@ -1681,53 +1681,7 @@ async fn a_vm_boots_through_its_nodes_copy_of_the_firmware() {
     use glidex_control_plane::store::{Origin, TableId};
     use sha2::{Digest, Sha256};
     let _one = serial().await;
-    let mut cfg = test_config();
-    cfg.reconcile.resync_secs = 5;
-    let server = new_cp();
-    server.manager.configure(&cfg);
-    manage::init(
-        &server.manager,
-        &cfg,
-        InitOptions {
-            advertise: Some(server.addr),
-            tunnel_ip: None,
-            listen: Some(server.addr),
-        },
-    )
-    .await
-    .unwrap();
-    server.manager.initialize().await.unwrap();
-    server.manager.start_controllers();
-    let agent = new_cp();
-    agent.manager.configure(&cfg);
-    let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test")
-        .await
-        .unwrap();
-    manage::join(
-        &agent.manager,
-        &cfg,
-        JoinOptions {
-            server: server.addr,
-            token,
-            role: NodeRole::Agent,
-            advertise: Some(agent.addr),
-            tunnel_ip: None,
-            name: Some("agent1".into()),
-            listen: Some(agent.addr),
-        },
-    )
-    .await
-    .unwrap();
-    assert!(
-        agent
-            .manager
-            .node_link()
-            .unwrap()
-            .wait_ready(Duration::from_secs(20))
-            .await
-    );
-    agent.manager.initialize().await.unwrap();
-    agent.manager.start_controllers();
+    let (server, agent) = server_and_agent().await;
 
     // A firmware image only the server holds.
     let data = vec![9u8; 4096];
@@ -1787,6 +1741,139 @@ async fn a_vm_boots_through_its_nodes_copy_of_the_firmware() {
         !argv.contains(server_path.to_str().unwrap()),
         "launched through the server's path: {argv}"
     );
+}
+
+/// A server and an agent named `agent1`, both running their controllers.
+async fn server_and_agent() -> (Cp, Cp) {
+    let mut cfg = test_config();
+    cfg.reconcile.resync_secs = 5;
+    let server = new_cp();
+    server.manager.configure(&cfg);
+    manage::init(
+        &server.manager,
+        &cfg,
+        InitOptions {
+            advertise: Some(server.addr),
+            tunnel_ip: None,
+            listen: Some(server.addr),
+        },
+    )
+    .await
+    .unwrap();
+    server.manager.initialize().await.unwrap();
+    server.manager.start_controllers();
+    let agent = new_cp();
+    agent.manager.configure(&cfg);
+    let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test")
+        .await
+        .unwrap();
+    manage::join(
+        &agent.manager,
+        &cfg,
+        JoinOptions {
+            server: server.addr,
+            token,
+            role: NodeRole::Agent,
+            advertise: Some(agent.addr),
+            tunnel_ip: None,
+            name: Some("agent1".into()),
+            listen: Some(agent.addr),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        agent
+            .manager
+            .node_link()
+            .unwrap()
+            .wait_ready(Duration::from_secs(20))
+            .await
+    );
+    agent.manager.initialize().await.unwrap();
+    agent.manager.start_controllers();
+    (server, agent)
+}
+
+/// Shrinking or extending the root of a disk on another node is checked
+/// there, not by reading a file the server doesn't have (spec/storage.md
+/// §8.2).
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn disk_edits_are_checked_on_the_disks_node() {
+    use glidex_control_plane::store::{Origin, TableId};
+    let _one = serial().await;
+    let (server, agent) = server_and_agent().await;
+
+    // A raw disk with no partition table, on the agent only.
+    let (_, projects) = call(&server, "GET", "/projects", None, &[]).await;
+    let project = projects["projects"].as_array().unwrap()[0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let size = 4 * 1024 * 1024u64;
+    let disk = json!({ "id": "dr", "name": "dr", "project": project, "format": "raw", "size_bytes": size,
+        "origin": { "kind": "blank" }, "created_at": 1, "phase": "ready", "node": agent.manager.local_node_id() });
+    let record: glidex_control_plane::images::Disk = serde_json::from_value(disk.clone()).unwrap();
+    let agent_path = agent.manager.images().disk_path(&record);
+    std::fs::create_dir_all(agent_path.parent().unwrap()).unwrap();
+    std::fs::File::create(&agent_path)
+        .unwrap()
+        .set_len(size)
+        .unwrap();
+    assert!(!server.manager.images().disk_path(&record).exists());
+    server
+        .manager
+        .database()
+        .write(
+            Origin::Api,
+            |tx| -> Result<(), glidex_control_plane::store::StoreError> {
+                tx.open_table(TableId::Disks.definition())?
+                    .insert("dr", disk.to_string().as_bytes())?;
+                Ok(())
+            },
+        )
+        .unwrap();
+    wait_for("the disk on the agent", || async {
+        agent.manager.images().get_disk("dr").is_ok()
+    })
+    .await;
+
+    // Accepted by the server; refused by the agent, which has the file.
+    let (s, v) = call(
+        &server,
+        "POST",
+        "/disks/dr/resize",
+        Some(json!({ "size_bytes": size / 2 })),
+        &[],
+    )
+    .await;
+    assert!(s.is_success(), "{s} {v}");
+    wait_for("the agent's verdict on the shrink", || async {
+        server
+            .manager
+            .images()
+            .get_disk("dr")
+            .is_ok_and(|d| d.conditions.iter().any(|c| c.reason == "ResizeInvalid"))
+    })
+    .await;
+    let (s, v) = call(
+        &server,
+        "POST",
+        "/disks/dr/extend-root",
+        Some(json!({ "mode": "EXTEND_MODE_OFFLINE" })),
+        &[],
+    )
+    .await;
+    assert!(s.is_success(), "{s} {v}");
+    wait_for("the agent to take up the extend-root", || async {
+        server
+            .manager
+            .images()
+            .get_disk("dr")
+            .is_ok_and(|d| d.applied_extend_root_seq == 1)
+    })
+    .await;
+    assert_eq!(std::fs::metadata(&agent_path).unwrap().len(), size);
 }
 
 /// The `launch.json` a node wrote for `id`, once it has.

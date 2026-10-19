@@ -3024,7 +3024,9 @@ impl VmManager {
                 &vms,
             )?;
         }
-        if size < current.size_bytes {
+        // Answered early only where the file is: elsewhere the disk's node
+        // checks it and reports `ResizeInvalid` (spec/storage.md §8.2).
+        if size < current.size_bytes && self.is_local_disk(&current) {
             let (mgr, d) = (self.images.clone(), current.clone());
             let (min, _) = blocking(move || mgr.shrink_minimum(&d)).await?;
             if size < min {
@@ -3077,14 +3079,18 @@ impl VmManager {
             ))
             .into());
         }
-        let (mgr, d) = (self.images.clone(), current.clone());
-        blocking(move || {
-            let path = mgr.disk_path(&d);
-            let table = images::partition::read_table(&path, d.format, d.size_bytes)?
-                .ok_or_else(|| ImageError::invalid_disk("disk has no partition table"))?;
-            images::partition::growable_root(&table).map(|_| ())
-        })
-        .await?;
+        // As for a shrink: elsewhere the disk's node checks it and reports
+        // `ExtendRootFailed` (spec/storage.md §8.2).
+        if self.is_local_disk(&current) {
+            let (mgr, d) = (self.images.clone(), current.clone());
+            blocking(move || {
+                let path = mgr.disk_path(&d);
+                let table = images::partition::read_table(&path, d.format, d.size_bytes)?
+                    .ok_or_else(|| ImageError::invalid_disk("disk has no partition table"))?;
+                images::partition::growable_root(&table).map(|_| ())
+            })
+            .await?;
+        }
         let mut disk = current;
         let seq = disk
             .extend_root
