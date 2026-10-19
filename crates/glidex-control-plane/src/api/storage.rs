@@ -373,3 +373,70 @@ pub async fn disk_events(c: Caller, Path(id): Path<String>) -> Result<impl IntoR
     };
     Ok(Proto(StatusCode::OK, svc::disk_events(&c, req).await?))
 }
+
+// ---- datastores (spec/storage.md §13) -------------------------------------
+
+pub async fn list_datastores(c: Caller) -> Result<impl IntoResponse, ApiErr> {
+    let req = pb::ListDatastoresRequest::default();
+    Ok(Proto(StatusCode::OK, svc::list_datastores(&c, req)?))
+}
+
+pub async fn get_datastore(c: Caller, Path(id): Path<String>) -> Result<impl IntoResponse, ApiErr> {
+    let req = pb::GetDatastoreRequest {
+        id,
+        ..Default::default()
+    };
+    Ok(Proto(StatusCode::OK, svc::get_datastore(&c, req)?))
+}
+
+pub async fn create_datastore(
+    c: Caller,
+    Json(v): Json<Value>,
+) -> Result<impl IntoResponse, ApiErr> {
+    let req: pb::CreateDatastoreRequest = body(v)?;
+    Ok(Proto(
+        StatusCode::CREATED,
+        svc::create_datastore(&c, req).await?,
+    ))
+}
+
+/// `PATCH`: changes the fields present.
+pub async fn update_datastore(
+    c: Caller,
+    Path(id): Path<String>,
+    Json(v): Json<Value>,
+) -> Result<impl IntoResponse, ApiErr> {
+    const FIELDS: [&str; 4] = ["node_paths", "nodes", "default_for_disks", "overcommit"];
+    let present: Vec<String> = v
+        .as_object()
+        .map(|o| {
+            o.keys()
+                .filter(|k| FIELDS.contains(&k.as_str()))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut req: pb::UpdateDatastoreRequest = body(v)?;
+    req.id = id;
+    if req
+        .update_mask
+        .as_option()
+        .is_none_or(|m| m.paths.is_empty())
+    {
+        req.update_mask = buffa_types::google::protobuf::FieldMask {
+            paths: present,
+            ..Default::default()
+        }
+        .into();
+    }
+    Ok(Proto(StatusCode::OK, svc::update_datastore(&c, req).await?))
+}
+
+pub async fn delete_datastore(c: Caller, Path(id): Path<String>) -> Result<Response, ApiErr> {
+    let req = pb::DeleteDatastoreRequest {
+        id,
+        ..Default::default()
+    };
+    svc::delete_datastore(&c, req).await?;
+    Ok(proto_no_content())
+}

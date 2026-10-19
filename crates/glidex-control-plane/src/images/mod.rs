@@ -75,6 +75,12 @@ pub enum ImageError {
     Download(String),
     #[error("image storage error: {0}")]
     Storage(String),
+    /// A datastore that doesn't overcommit has no room (spec/storage.md §5.2).
+    #[error("{message}")]
+    InsufficientStorage {
+        message: String,
+        details: serde_json::Value,
+    },
 }
 
 impl ImageError {
@@ -87,7 +93,8 @@ impl ImageError {
 
     pub fn details(&self) -> serde_json::Value {
         match self {
-            ImageError::InvalidDisk { details, .. } => details.clone(),
+            ImageError::InvalidDisk { details, .. }
+            | ImageError::InsufficientStorage { details, .. } => details.clone(),
             _ => serde_json::Value::Null,
         }
     }
@@ -520,6 +527,10 @@ pub struct CreateDiskRequest {
     /// node of the first VM that uses it (spec/clustering.md §9.2).
     #[serde(default)]
     pub node: Option<String>,
+    /// Datastore id or name; default: the one that is default for disks,
+    /// else `local` (spec/storage.md S13).
+    #[serde(default)]
+    pub datastore: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -652,6 +663,7 @@ pub struct DiskResponse {
     pub extend_root: Option<ExtendOutcome>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+    pub datastore: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -808,7 +820,9 @@ pub struct ImageManager {
     tasks: Mutex<HashMap<String, tokio::task::AbortHandle>>,
     http: reqwest::Client,
     /// The `local` datastore's driver, over `settings.disk_dir`.
-    local: crate::datastore::file::FileDriver,
+    local: Arc<crate::datastore::file::FileDriver>,
+    /// This node's id: which of a datastore's paths is this node's (S14).
+    node_id: arc_swap::ArcSwap<String>,
 }
 
 /// Marks a disk busy for as long as it lives.
@@ -863,7 +877,10 @@ impl ImageManager {
         let mgr = Self {
             downloads: Arc::new(tokio::sync::Semaphore::new(settings.max_downloads)),
             http: download::http_client(settings.allow_private_urls)?,
-            local: crate::datastore::file::FileDriver::new(settings.disk_dir.clone()),
+            local: Arc::new(crate::datastore::file::FileDriver::new(
+                settings.disk_dir.clone(),
+            )),
+            node_id: arc_swap::ArcSwap::from_pointee(crate::authz::node_id()),
             db,
             settings,
             images: RwLock::new(HashMap::new()),
@@ -1051,25 +1068,47 @@ impl ImageManager {
         )
     }
 
-    /// The file of a disk in the `local` datastore, whether or not it
-    /// exists: for reading it (responses, metering). Changes to a disk go
-    /// through its datastore's driver ([`Self::driver`]).
+    /// The file of a disk on this node, whether or not it exists: for
+    /// reading it (responses, metering). Changes to a disk go through its
+    /// datastore's driver ([`Self::driver`]). A disk on a datastore this
+    /// node can't reach gets the path it would have in `local`, which
+    /// doesn't exist.
     pub fn disk_path(&self, d: &Disk) -> PathBuf {
-        self.local.path(d)
+        self.driver(d)
+            .map(|dr| dr.binding(d).path().to_path_buf())
+            .unwrap_or_else(|_| self.local.path(d))
     }
 
-    /// The driver of `d`'s datastore. Only `local` exists so far
-    /// (spec/storage.md S1); a disk on any other is refused rather than
-    /// looked for in the local directory.
-    pub fn driver(&self, d: &Disk) -> Result<&dyn crate::datastore::StorageDriver, ImageError> {
+    /// The driver of `d`'s datastore on this node: `local`, or a registered
+    /// `dir` datastore at this node's path to it (spec/storage.md S14). A
+    /// datastore this node isn't on is refused rather than looked for
+    /// somewhere else.
+    pub fn driver(&self, d: &Disk) -> Result<Arc<dyn crate::datastore::StorageDriver>, ImageError> {
+        use crate::datastore::record;
         if d.datastore == crate::datastore::LOCAL {
-            Ok(&self.local)
-        } else {
-            Err(ImageError::NotReady(format!(
-                "disk {} is on datastore {}, which this node doesn't have",
-                d.name, d.datastore
-            )))
+            return Ok(self.local.clone());
         }
+        let missing = |why: &str| {
+            ImageError::NotReady(format!(
+                "disk {} is on datastore {}, {why}",
+                d.name, d.datastore
+            ))
+        };
+        let ds = record::find(&self.db, &d.datastore)
+            .map_err(|e| ImageError::Io(e.to_string()))?
+            .ok_or_else(|| missing("which doesn't exist"))?;
+        let node = self.node_id.load();
+        if !ds.on_node(&node) {
+            return Err(missing("which this node isn't on"));
+        }
+        let dir = std::path::Path::new(ds.path_for(&node)).join("disks");
+        crate::paths::checked_path(&dir).map_err(ImageError::Io)?;
+        Ok(Arc::new(crate::datastore::file::FileDriver::new(dir)))
+    }
+
+    /// The node this manager works for (cluster attach and detach).
+    pub fn set_node_id(&self, id: &str) {
+        self.node_id.store(Arc::new(id.to_string()));
     }
 
     // ---- persistence -------------------------------------------------------
@@ -1380,6 +1419,7 @@ impl ImageManager {
             partition_table: table,
             extend_root: None,
             warnings: Vec::new(),
+            datastore: d.datastore.clone(),
         }
     }
 

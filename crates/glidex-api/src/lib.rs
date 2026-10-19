@@ -153,6 +153,7 @@ mod tests {
                 "glidex.storage.v1.CredentialService",
                 "glidex.storage.v1.ImageService",
                 "glidex.storage.v1.DiskService",
+                "glidex.storage.v1.DatastoreService",
                 "glidex.system.v1.SystemService",
                 "glidex.usage.v1.UsageService",
                 "glidex.usage.v1.MetricsService",

@@ -790,6 +790,25 @@ impl VmManager {
         if let Some(why) = self.gateway_blocker(&n) {
             return Err(DepartureError::Conflict(why));
         }
+        // The other cluster has no record of a registered datastore
+        // (spec/storage.md §14).
+        let mut elsewhere: Vec<String> = self
+            .images
+            .list_disks()
+            .into_iter()
+            .filter(|d| {
+                d.node.as_deref() == Some(n.meta.id.as_str())
+                    && d.datastore != crate::datastore::LOCAL
+            })
+            .map(|d| format!("{} (datastore {})", d.name, d.datastore))
+            .collect();
+        if !elsewhere.is_empty() {
+            elsewhere.sort();
+            return Err(DepartureError::Conflict(format!(
+                "disks on registered datastores can't leave with the node: {}; move them to local first",
+                elsewhere.join(", ")
+            )));
+        }
         if let Some(rid) = n.status.raft_id {
             c.check_voter_leaves(rid, false)
                 .map_err(|e| DepartureError::Conflict(e.to_string()))?;

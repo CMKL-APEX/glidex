@@ -65,11 +65,12 @@ UMask=0077
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
-# The service home holds the database, images, disks, firmware and logs.
-# Disk images and kernels given to the API must be outside /home, /root
-# and /run/user (ProtectHome).
+# The service home holds the database, images, disks, firmware and logs;
+# registered datastores are mounted under /srv/glidex (spec/storage.md
+# S11). Disk images and kernels given to the API must be outside /home,
+# /root and /run/user (ProtectHome).
 ProtectHome=yes
-ReadWritePaths=@HOME@
+ReadWritePaths=@HOME@ -/srv/glidex
 DevicePolicy=closed
 # Unix sockets (API, netd, authd, D-Bus, shims, hypervisor APIs), TCP
 # (the API listeners, image downloads, OIDC) and netlink, read-only, to

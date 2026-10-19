@@ -63,9 +63,15 @@ unless { context.network has project };
 forbid (principal, action == Glidex::Action::"offerNetworkShare", resource)
 when { resource has project && resource.project == context.project };
 
-// The shared image library and network names are visible to every user.
+// The shared image library, network names and datastores are visible to
+// every user.
 @id("base.read-shared")
-permit (principal, action in [Glidex::Action::"readImage", Glidex::Action::"readNetwork"], resource);
+permit (principal, action in [Glidex::Action::"readImage", Glidex::Action::"readNetwork", Glidex::Action::"readDatastore"], resource);
+
+// Every user may put disks on any datastore; a site policy can forbid one
+// to some (spec/storage.md §13).
+@id("base.use-datastore")
+permit (principal, action == Glidex::Action::"useDatastore", resource);
 
 // Users manage their own sign-in methods (with a recent login: step-up).
 @id("base.own-sign-ins")

@@ -155,18 +155,35 @@ const SHARED: [TableId; 8] = [
     TableId::CaBundle,
 ];
 
+/// Shared like `SHARED`, but only with nodes that know these tables
+/// (`DATASTORE_FEATURE_LEVEL`): an older agent can't read a write set that
+/// names a table it doesn't know (spec/clustering.md §6.6).
+const SHARED_DATASTORES: [TableId; 2] = [TableId::Datastores, TableId::DatastoreNodes];
+
+/// The feature level `node` reports (1 when it says nothing).
+fn node_level(db: &Db, node: &str) -> u32 {
+    get_json(db, TableId::Nodes, node)
+        .and_then(|n| n.pointer("/status/features/feature_level")?.as_u64())
+        .map(|l| l as u32)
+        .unwrap_or(1)
+}
+
 /// The part of `ws` a node may see: shared catalogs, and the VMs, disks,
 /// events and credentials that are its own. Deletions of keys in its tables
 /// pass (an id reveals nothing).
 pub fn filter_for(db: &Db, node: &str, ws: &WriteSet) -> WriteSet {
     let mut mine: Option<HashSet<String>> = None;
     let mut creds: Option<HashSet<String>> = None;
+    let mut level: Option<u32> = None;
     let mut ops = Vec::new();
     for op in &ws.ops {
         let t = op.table();
         let key = String::from_utf8_lossy(op.key()).into_owned();
         let keep = if SHARED.contains(&t) {
             true
+        } else if SHARED_DATASTORES.contains(&t) {
+            *level.get_or_insert_with(|| node_level(db, node))
+                >= crate::datastore::record::DATASTORE_FEATURE_LEVEL
         } else {
             match (t, op) {
                 (TableId::Vms, Op::Put { value, .. }) => serde_json::from_slice::<Value>(value)
@@ -291,6 +308,7 @@ pub fn snapshot_for(db: &Db, node: &str) -> Result<WriteSet, StoreError> {
     let txn = db.begin_read()?;
     for &t in TableId::ALL.iter().filter(|t| !t.is_local()) {
         let relevant = SHARED.contains(&t)
+            || SHARED_DATASTORES.contains(&t)
             || matches!(
                 t,
                 TableId::Vms | TableId::Disks | TableId::Events | TableId::Credentials
@@ -441,6 +459,11 @@ pub fn check_status_write(
             (TableId::ImageCaches, _) => {
                 if !key.rsplit_once('/').is_some_and(|(_, n)| n == node) {
                     return Err(format!("{key}: another node's image cache"));
+                }
+            }
+            (TableId::DatastoreNodes, _) => {
+                if !key.rsplit_once('/').is_some_and(|(_, n)| n == node) {
+                    return Err(format!("{key}: another node's datastore row"));
                 }
             }
             (TableId::Nodes, op) => {
@@ -675,5 +698,73 @@ mod tests {
                 .ops
                 .is_empty()
         );
+    }
+
+    /// Datastores reach only nodes that know their tables, and a node
+    /// writes only its own row (spec/storage.md S2).
+    #[test]
+    fn datastores_go_to_nodes_that_know_them_and_rows_are_each_nodes_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::create(dir.path().join("db")).unwrap();
+        let node = |level: u32| serde_json::json!({ "status": { "features": { "feature_level": level } } });
+        db.write(Origin::Api, |tx| -> Result<(), StoreError> {
+            let mut t = tx.open_table(TableId::Nodes.definition())?;
+            t.insert("old", node(1).to_string().as_bytes())?;
+            t.insert("new", node(2).to_string().as_bytes())?;
+            Ok(())
+        })
+        .unwrap();
+        let ds = serde_json::json!({ "id": "d1" });
+        let ws = WriteSet {
+            format: WRITE_SET_FORMAT,
+            origin: Origin::Api,
+            ops: vec![
+                put(TableId::Datastores, "d1", &ds),
+                put(TableId::DatastoreNodes, "d1/new", &ds),
+                put(TableId::Projects, "p", &ds),
+            ],
+        };
+        let tables = |n: &str| -> Vec<TableId> {
+            filter_for(&db, n, &ws)
+                .ops
+                .iter()
+                .map(|o| o.table())
+                .collect()
+        };
+        assert_eq!(tables("old"), [TableId::Projects]);
+        assert_eq!(
+            tables("new"),
+            [
+                TableId::Datastores,
+                TableId::DatastoreNodes,
+                TableId::Projects
+            ]
+        );
+        assert_eq!(
+            snapshot_for(&db, "old")
+                .unwrap()
+                .ops
+                .iter()
+                .filter(|o| SHARED_DATASTORES.contains(&o.table()))
+                .count(),
+            0
+        );
+
+        let row = |key: &str| WriteSet {
+            format: WRITE_SET_FORMAT,
+            origin: Origin::Controller,
+            ops: vec![put(TableId::DatastoreNodes, key, &ds)],
+        };
+        let check = |n: &str, ws: &WriteSet| {
+            db.write(
+                Origin::Controller,
+                |tx| -> Result<Result<(), String>, StoreError> {
+                    Ok(check_status_write(tx, n, ws))
+                },
+            )
+            .unwrap()
+        };
+        assert!(check("new", &row("d1/new")).is_ok());
+        assert!(check("new", &row("d1/old")).is_err());
     }
 }

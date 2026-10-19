@@ -1976,6 +1976,87 @@ async fn disk_edits_are_checked_on_the_disks_node() {
     assert_eq!(std::fs::metadata(&agent_path).unwrap().len(), size);
 }
 
+/// A datastore on some nodes, at each one's own path: each node says what
+/// it finds there through the leader, and a VM whose disk is on it goes to
+/// a node that reaches it (spec/storage.md S2, S14).
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn a_disk_on_a_datastore_goes_where_the_datastore_is() {
+    let _one = serial().await;
+    let root = datastore_root();
+    let (server, agent) = server_and_agent().await;
+    let agent_id = agent.manager.local_node_id();
+    let agent_dir = root.join(format!("agent-{}", uuid::Uuid::new_v4().simple()));
+    std::fs::create_dir(&agent_dir).unwrap();
+
+    // On the agent only, at a path of its own (the default doesn't exist).
+    let body = json!({ "name": "fast", "path": root.join("nowhere"), "nodes": ["agent1"],
+                       "node_paths": { "agent1": agent_dir } });
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let ds = loop {
+        let (s, v) = call(&server, "POST", "/datastores", Some(body.clone()), &[]).await;
+        // Until the leader has seen every server's feature level.
+        if s == StatusCode::CONFLICT && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            continue;
+        }
+        assert_eq!(s, StatusCode::CREATED, "{v}");
+        break v["datastore"].clone();
+    };
+    assert_eq!(ds["nodes"], json!([agent_id]), "{ds}");
+    wait_for("the agent's row", || async {
+        let (_, v) = call(&server, "GET", "/datastores/fast", None, &[]).await;
+        v["datastore"]["node_status"].as_array().is_some_and(|r| {
+            r.iter()
+                .any(|r| r["node"] == agent_id.as_str() && r["reachable"] == true)
+        })
+    })
+    .await;
+    let (_, v) = call(&server, "GET", "/datastores/fast", None, &[]).await;
+    let rows = v["datastore"]["node_status"].as_array().unwrap();
+    assert_eq!(rows.len(), 1, "only the agent is on it: {v}");
+    assert_eq!(rows[0]["path"], agent_dir.to_str().unwrap(), "{v}");
+
+    // An unbound disk on it pulls its VM to the agent, where it is made.
+    let (_, projects) = call(&server, "GET", "/projects", None, &[]).await;
+    let project = projects["projects"][0]["id"].as_str().unwrap().to_string();
+    let (s, d) = call(
+        &server,
+        "POST",
+        "/disks",
+        Some(json!({ "name": "fd", "project": project, "size_gib": 1, "datastore": "fast" })),
+        &[],
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{d}");
+    assert_eq!(d["disk"]["datastore"], ds["id"], "{d}");
+    let mut vm = vm_unpinned("on-fast");
+    vm["data_disks"] = json!(["fd"]);
+    let (s, v) = call(&server, "POST", "/vms", Some(vm), &[]).await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    assert_eq!(vm_of(&v)["node"], agent_id.as_str(), "{v}");
+    wait_for("the disk's file at the agent's path", || async {
+        std::fs::read_dir(agent_dir.join("disks"))
+            .map(|d| {
+                d.flatten()
+                    .any(|e| e.file_name().to_string_lossy().ends_with(".qcow2"))
+            })
+            .unwrap_or(false)
+    })
+    .await;
+}
+
+/// The datastore root of this test process (spec/storage.md S11), set once.
+fn datastore_root() -> &'static std::path::Path {
+    static ROOT: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+    ROOT.get_or_init(|| {
+        let d = tempfile::TempDir::new().unwrap();
+        // SAFETY: test-only; every test sets it the same way before reading it.
+        unsafe { std::env::set_var("GLIDEX_DATASTORE_ROOT", d.path()) };
+        d
+    })
+    .path()
+}
+
 /// The `launch.json` a node wrote for `id`, once it has.
 async fn wait_for_launch_file(cp: &Cp, id: &str) -> Value {
     let vm = cp

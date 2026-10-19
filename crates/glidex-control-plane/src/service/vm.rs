@@ -494,6 +494,10 @@ pub async fn create_vm(call: &Call, req: pb::CreateVmRequest) -> ServiceResult<V
         es.image(image);
         call.require_action("readImage", Ent::Image(image.clone()), es, &[])?;
     }
+    // An image means a new root disk, on the default datastore.
+    if req.image.is_some() {
+        crate::service::storage::disk_datastore(call, None)?;
+    }
 
     let wait = req.wait_secs;
     let hypervisor =

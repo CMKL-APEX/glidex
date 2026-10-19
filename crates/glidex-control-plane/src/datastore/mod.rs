@@ -1,12 +1,16 @@
 //! Datastores (spec/storage.md): where disks live, behind a driver.
 //!
-//! As built (S1), only the built-in `local` datastore exists: each node's
-//! disk directory, through [`file::FileDriver`]. It has no stored record
-//! yet (S2), and disk records that name no datastore are `local`.
+//! The built-in `local` datastore is each node's disk directory, through
+//! [`file::FileDriver`]; disk records that name no datastore are on it. It
+//! is never stored ([`record`]). Registered `dir` datastores (S2) are a
+//! directory on each node, through the same driver.
 //!
 //! Like the disk operations that call it, everything here blocks.
 
 pub mod file;
+pub mod manage;
+pub mod probe;
+pub mod record;
 
 use crate::images::qemu_img::DiskFormat;
 use crate::images::{Disk, ImageError};

@@ -103,6 +103,16 @@ impl VmManager {
                 m.ensure_ovn_node().await;
             }
         }));
+        // What this node finds at each datastore, every minute (and when
+        // datastores change, `cache_sync`).
+        let m = me.clone();
+        tasks.push(tokio::spawn(async move {
+            loop {
+                let m2 = m.clone();
+                let _ = tokio::task::spawn_blocking(move || m2.probe_datastores()).await;
+                tokio::time::sleep(Duration::from_secs(60)).await;
+            }
+        }));
         // What this node reports about itself, refreshed every two minutes.
         let m = me.clone();
         tasks.push(tokio::spawn(async move {

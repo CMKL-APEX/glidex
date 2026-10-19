@@ -60,6 +60,7 @@ pub enum VmManagerError {
     },
     Network(NetError),
     Image(ImageError),
+    Datastore(crate::datastore::record::DatastoreError),
     /// The request would go over these project quotas.
     QuotaExceeded(Vec<QuotaOverrun>),
     /// The request would go over the tenant's cap on this cluster
@@ -109,6 +110,7 @@ impl std::fmt::Display for VmManagerError {
             VmManagerError::Credential(e) => write!(f, "{}", e),
             VmManagerError::Network(e) => write!(f, "{}", e),
             VmManagerError::Image(e) => write!(f, "{}", e),
+            VmManagerError::Datastore(e) => write!(f, "{}", e),
             VmManagerError::QuotaExceeded(o) => {
                 write!(
                     f,
@@ -161,6 +163,12 @@ impl From<NetError> for VmManagerError {
 impl From<ImageError> for VmManagerError {
     fn from(e: ImageError) -> Self {
         VmManagerError::Image(e)
+    }
+}
+
+impl From<crate::datastore::record::DatastoreError> for VmManagerError {
+    fn from(e: crate::datastore::record::DatastoreError) -> Self {
+        VmManagerError::Datastore(e)
     }
 }
 
@@ -898,6 +906,7 @@ impl VmManager {
             cpu: c.cpu_policy,
             pin,
             disk_nodes: disks.iter().map(|d| d.node.clone()).collect(),
+            disk_reach: self.disk_reach(disks),
             net_nodes: c
                 .networks
                 .iter()
@@ -934,6 +943,30 @@ impl VmManager {
                 .map(|a| a.as_str().to_string())
                 .unwrap_or_default(),
         }
+    }
+
+    /// For each unbound disk on a registered datastore, the nodes that can
+    /// make it: on the datastore's nodes and reaching it now (spec/storage.md
+    /// §5.2).
+    fn disk_reach(&self, disks: &[Disk]) -> Vec<(String, Vec<String>)> {
+        use crate::datastore::record;
+        let db = self.store.database();
+        disks
+            .iter()
+            .filter(|d| d.node.is_none() && d.datastore != crate::datastore::LOCAL)
+            .map(|d| match record::find(&db, &d.datastore).ok().flatten() {
+                Some(ds) => {
+                    let nodes = record::rows(&db, &ds.id)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter(|(n, r)| r.reachable && ds.on_node(n))
+                        .map(|(n, _)| n)
+                        .collect();
+                    (ds.name, nodes)
+                }
+                None => (d.datastore.clone(), Vec::new()),
+            })
+            .collect()
     }
 
     /// A VM's architecture (spec/clustering.md §9.2.1): that of the image a
@@ -997,6 +1030,51 @@ impl VmManager {
             self.delete_network(&n.id).await?;
         }
         Ok(())
+    }
+
+    /// Whether datastores may be written: on a standalone host, or once
+    /// every server of the cluster supports them (spec/clustering.md §6.6).
+    pub fn datastores_supported(&self) -> bool {
+        match self.cluster() {
+            None => true,
+            Some(c) => c.feature_level() >= crate::datastore::record::DATASTORE_FEATURE_LEVEL,
+        }
+    }
+
+    /// Look at every datastore this node is on and say what it finds
+    /// (`datastore_nodes`, spec/storage.md §4.1); drop its rows about the
+    /// ones it is no longer on. Writes only what changed. Blocks.
+    pub fn probe_datastores(&self) {
+        use crate::datastore::{probe, record};
+        if !self.datastores_supported() {
+            return;
+        }
+        let db = self.store.database();
+        let me = self.local_node_id();
+        let Ok(all) = record::list(&db) else { return };
+        let root = record::root();
+        let now = crate::tenancy::now();
+        for ds in all {
+            let old = record::rows(&db, &ds.id)
+                .ok()
+                .and_then(|mut r| r.remove(&me));
+            let new = if ds.is_builtin() {
+                // `local` is the disk directory, wherever it is.
+                probe::probe_dir(&self.images.settings.disk_dir, now)
+            } else if ds.on_node(&me) {
+                probe::probe(&ds, &me, &root, now)
+            } else {
+                if old.is_some() {
+                    let _ = record::put_row(&db, &ds.id, &me, None);
+                }
+                continue;
+            };
+            if probe::worth_writing(old.as_ref(), &new)
+                && let Err(e) = record::put_row(&db, &ds.id, &me, Some(&new))
+            {
+                tracing::warn!(datastore = %ds.name, "recording what this node finds: {}", e);
+            }
+        }
     }
 
     /// Refresh this node's own record with what the host has now. Writes
@@ -1142,7 +1220,7 @@ impl VmManager {
     }
 
     /// The id of a live node named by id or name.
-    fn resolve_node(&self, want: &str) -> Result<String, VmManagerError> {
+    pub(crate) fn resolve_node(&self, want: &str) -> Result<String, VmManagerError> {
         let nodes = self
             .nodes
             .list()
@@ -1225,6 +1303,7 @@ impl VmManager {
             );
             let _ = self.node_link.set(link);
         }
+        self.images.set_node_id(&cluster.identity.node_id);
         self.cluster.store(Some(cluster));
         // The meter now samples into a node-local ledger and ships it.
         self.restart_metering();
@@ -1235,6 +1314,7 @@ impl VmManager {
     /// Stop this host's cluster runtime and forget it (a rejoin starts a new one).
     pub async fn detach_cluster(&self) {
         if let Some(c) = self.cluster.swap(None) {
+            self.images.set_node_id(&crate::authz::node_id());
             c.stop().await;
             // Its Raft log is open until every holder lets go: wait for them, so a
             // runtime started next can open the same files.
@@ -1314,6 +1394,12 @@ impl VmManager {
                                 let _ = m.report_self();
                             }
                         });
+                    }
+                    // A datastore added or changed: look at it now rather
+                    // than at the next minute.
+                    if a.tables.contains(&crate::store::TableId::Datastores) {
+                        let m = self.clone();
+                        tokio::task::spawn_blocking(move || m.probe_datastores());
                     }
                     // A copy of an image becoming ready on some node: nodes
                     // waiting to fetch it can go now.
@@ -3219,18 +3305,7 @@ impl VmManager {
     /// What a pending disk will take, for quotas: its requested size, else
     /// its image's size or the default root size.
     fn estimated_size(&self, d: &Disk) -> u64 {
-        let requested = d.create.as_ref().and_then(|c| c.size_bytes);
-        match &d.origin {
-            images::DiskOrigin::Blank => requested.unwrap_or(d.size_bytes),
-            images::DiskOrigin::Image { image_id, .. } => {
-                let image_size = self
-                    .images
-                    .get_image(image_id)
-                    .map(|i| i.virtual_size_bytes)
-                    .unwrap_or(0);
-                self.images.root_size(requested, image_size)
-            }
-        }
+        self.images.estimated_size(d)
     }
 
     /// Create a disk in `project`, checking its `disk_gib` quota. The disk

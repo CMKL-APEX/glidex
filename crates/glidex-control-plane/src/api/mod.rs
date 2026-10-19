@@ -41,7 +41,7 @@ use axum::{
     http::{HeaderMap, HeaderValue, Method as HttpMethod, StatusCode, header, request::Parts},
     middleware::{Next, from_fn_with_state},
     response::{IntoResponse, Response},
-    routing::{MethodRouter, delete, get, post, put},
+    routing::{MethodRouter, delete, get, patch, post, put},
 };
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
@@ -305,6 +305,36 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         "/images/firmware-catalog",
         "readImage",
         get(storage::firmware_catalog),
+    )
+    .add(
+        "GET",
+        "/datastores",
+        "readDatastore",
+        get(storage::list_datastores),
+    )
+    .add(
+        "POST",
+        "/datastores",
+        "manageDatastore",
+        post(storage::create_datastore),
+    )
+    .add(
+        "GET",
+        "/datastores/{id}",
+        "readDatastore",
+        get(storage::get_datastore),
+    )
+    .add(
+        "PATCH",
+        "/datastores/{id}",
+        "manageDatastore",
+        patch(storage::update_datastore),
+    )
+    .add(
+        "DELETE",
+        "/datastores/{id}",
+        "manageDatastore",
+        delete(storage::delete_datastore),
     )
     .add("GET", "/images", "readImage", get(storage::list_images))
     .add("POST", "/images", "pullImage", post(storage::pull_image))

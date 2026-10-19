@@ -9,6 +9,7 @@ use glidex_api::proto::glidex::storage::v1::*;
 pub(super) fn register(app: &AppState, router: connectrpc::Router) -> connectrpc::Router {
     let router = CredentialServiceExt::register(Svc::new(app), router);
     let router = ImageServiceExt::register(Svc::new(app), router);
+    let router = DatastoreServiceExt::register(Svc::new(app), router);
     DiskServiceExt::register(Svc::new(app), router)
 }
 
@@ -241,5 +242,48 @@ impl DiskService for Svc {
         req: ServiceRequest<'_, ListDiskEventsRequest>,
     ) -> ServiceResult<ListDiskEventsResponse> {
         op_async!(self, ctx, req, svc::disk_events)
+    }
+}
+
+#[allow(refining_impl_trait)]
+impl DatastoreService for Svc {
+    async fn list_datastores(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, ListDatastoresRequest>,
+    ) -> ServiceResult<ListDatastoresResponse> {
+        op!(self, ctx, req, svc::list_datastores)
+    }
+
+    async fn get_datastore(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, GetDatastoreRequest>,
+    ) -> ServiceResult<GetDatastoreResponse> {
+        op!(self, ctx, req, svc::get_datastore)
+    }
+
+    async fn create_datastore(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, CreateDatastoreRequest>,
+    ) -> ServiceResult<CreateDatastoreResponse> {
+        op_async!(self, ctx, req, svc::create_datastore)
+    }
+
+    async fn update_datastore(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, UpdateDatastoreRequest>,
+    ) -> ServiceResult<UpdateDatastoreResponse> {
+        op_async!(self, ctx, req, svc::update_datastore)
+    }
+
+    async fn delete_datastore(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, DeleteDatastoreRequest>,
+    ) -> ServiceResult<DeleteDatastoreResponse> {
+        op_async!(self, ctx, req, svc::delete_datastore)
     }
 }

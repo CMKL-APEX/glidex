@@ -77,6 +77,9 @@ const AUTHD_CONFIG_DEFAULT: &str =
 pub(crate) const CP_CONFIG_EXAMPLE: &str = "/etc/glidex/control-plane.json.example";
 /// Read-only site policy files (spec/security.md §7.6), root:glidex 0750.
 pub(crate) const POLICY_DIR: &str = "/etc/glidex/policies";
+/// Where operators mount registered datastores (spec/storage.md S11); the
+/// control plane and VM units may write under it.
+pub(crate) const DATASTORE_ROOT: &str = "/srv/glidex";
 /// The control plane's local API socket (RuntimeDirectory=glidex-cp).
 const API_SOCKET: &str = "/run/glidex-cp/api.sock";
 /// Loopback ends of the default listeners (every address, spec/security.md
@@ -2945,6 +2948,26 @@ fn install_service_config() -> Result<()> {
             NETD_GROUP
         );
     }
+    // Datastores are mounted here, each owned by glidex; the root itself is
+    // root's, so only an operator adds one.
+    if !Path::new(DATASTORE_ROOT).is_dir() {
+        sudo(&argv(&[
+            "install",
+            "-d",
+            "-m",
+            "0755",
+            "-o",
+            "root",
+            "-g",
+            "root",
+            DATASTORE_ROOT,
+        ]))?;
+        println!(
+            "{} {} (mount datastores under it)",
+            "Ready:".green(),
+            DATASTORE_ROOT
+        );
+    }
     Ok(())
 }
 
@@ -3889,7 +3912,7 @@ mod tests {
             "Restart=no",
             "Slice=glidex-vms.slice",
             "PrivateTmp=yes",
-            "ReadWritePaths=/var/lib/glidex-control-plane /run/glidex-cp/vms/%i -/run/glidex/vhost",
+            "ReadWritePaths=/var/lib/glidex-control-plane /run/glidex-cp/vms/%i -/run/glidex/vhost -/srv/glidex",
             "DeviceAllow=/dev/kvm rw",
         ] {
             assert!(s.contains(&line), "missing {line:?}");
@@ -3937,7 +3960,7 @@ mod tests {
             "PrivateTmp=yes",
             "ProtectSystem=strict",
             "ProtectHome=yes",
-            "ReadWritePaths=/var/lib/glidex-control-plane",
+            "ReadWritePaths=/var/lib/glidex-control-plane -/srv/glidex",
             "DevicePolicy=closed",
             "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK",
             "LockPersonality=yes",
